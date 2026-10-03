@@ -105,6 +105,7 @@ describe('interactive session persistence', () => {
     /** @type {import('./queue-store.js').ConversationState} */
     const conversation = {
       stop: 'recovery:authority',
+      wait_id: null,
       processed_message_at: 40,
       message_excerpt: '범위 밖입니다',
       result: { kind: 'handoff', line: '인계 · 범위 확장 승인', at: 41 },
@@ -112,7 +113,9 @@ describe('interactive session persistence', () => {
         line: '인계 · 범위 확장 승인',
         source: 'result_line',
         message_at: 40,
-        reserved_at: 41
+        reserved_at: 41,
+        target: null,
+        started_at: null
       },
       takeover_notified_at: null
     };
@@ -152,11 +155,120 @@ describe('interactive session persistence', () => {
       store.snapshot(WS).interactive_sessions['B1:inquiry'].conversation
     ).toEqual({
       stop: 'awaiting_user=x',
+      wait_id: null,
       processed_message_at: null,
       message_excerpt: null,
       result: null,
       handoff: null,
       takeover_notified_at: null
+    });
+  });
+
+  test('persists a failure handoff target and its start through a cold reload', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(
+      WS,
+      record({ conversation: { stop: '실패 정리 중단 · x' } })
+    );
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      conversation: {
+        stop: '실패 정리 중단 · x',
+        wait_id: null,
+        processed_message_at: 40,
+        message_excerpt: null,
+        result: { kind: 'handoff', line: '인계 · 다시 돌린다', at: 41 },
+        handoff: {
+          line: '인계 · 다시 돌린다',
+          source: 'result_line',
+          message_at: 40,
+          reserved_at: 41,
+          target: { kind: 'cleanup', identity: 'cleanup:post_merge_jobs:7' },
+          started_at: 50
+        },
+        takeover_notified_at: null
+      }
+    });
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+        .conversation?.handoff
+    ).toMatchObject({
+      target: { kind: 'cleanup', identity: 'cleanup:post_merge_jobs:7' },
+      started_at: 50
+    });
+  });
+
+  test('keeps the wait id of an external conversation', () => {
+    const store = createQueueStore();
+
+    store.recordInteractiveSession(
+      WS,
+      record({
+        kind: 'external_resume',
+        conversation: { stop: '외부 작업 완료 w-1', wait_id: 'w-1' }
+      })
+    );
+
+    expect(
+      store.snapshot(WS).interactive_sessions['B1:external_resume'].conversation
+        ?.wait_id
+    ).toBe('w-1');
+  });
+
+  test('refuses to replace a conversation of any kind holding a handoff', () => {
+    const store = createQueueStore();
+    const held = record({
+      conversation: {
+        stop: '실패 정리 중단 · x',
+        handoff: {
+          line: '인계 · 다시',
+          source: 'result_line',
+          message_at: 1,
+          reserved_at: 2
+        }
+      }
+    });
+    store.recordInteractiveSession(WS, held);
+
+    const result = store.recordInteractiveSession(
+      WS,
+      record({ pane_id: '%2', conversation: { stop: '실패 정리 중단 · y' } })
+    );
+
+    expect(result.ok).toBe(false);
+    expect(
+      store.snapshot(WS).interactive_sessions['B1:resolve'].conversation
+        ?.handoff?.line
+    ).toBe('인계 · 다시');
+  });
+
+  test('records a refusal and clears it when a new conversation launches', () => {
+    const store = createQueueStore();
+    store.recordConversationRefusal(WS, 'B1', {
+      reason: '결과 미상',
+      kind: 'resolve'
+    });
+
+    store.recordInteractiveSession(
+      WS,
+      record({ conversation: { stop: '실패 정리 중단 · x' } })
+    );
+
+    expect(store.snapshot(WS).conversation_refusals).toEqual({});
+  });
+
+  test('persists a refusal through a cold reload', () => {
+    const store = createQueueStore();
+
+    store.recordConversationRefusal(WS, 'B1', {
+      reason: 'action_in_flight',
+      kind: 'external_resume'
+    });
+
+    expect(createQueueStore().load(WS).conversation_refusals.B1).toMatchObject({
+      reason: 'action_in_flight',
+      kind: 'external_resume'
     });
   });
 

@@ -662,7 +662,8 @@ describe('completion hold projection', () => {
           failure_class: '머지 전 검증 실패',
           reason: 'script_failed',
           stage: 'verify',
-          detail: 'build failed · 로그 /logs/verify.log',
+          detail: 'build failed',
+          log_path: '/logs/verify.log',
           exit: 'fix_commit_push'
         }
       })

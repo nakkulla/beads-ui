@@ -122,7 +122,7 @@ export const WAIT_KINDS = Object.freeze(
       release:
         '같은 세션과의 대화에서 답하고 인계하면 Worker가 같은 세션을 이어감',
       action:
-        '[세션에서 해결] · [워커로 이어가기] · 폐기 — 대화가 답을 기다리면 [워커로 이어가기] · 폐기',
+        '[세션에서 이어가기] · [워커로 이어가기] · 폐기 — 대화가 답을 기다리면 [워커로 이어가기] · 폐기',
       elapsed_word: '대기',
       next_word: ''
     },

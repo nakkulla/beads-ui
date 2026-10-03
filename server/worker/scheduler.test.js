@@ -159,7 +159,7 @@ describe('interactive session reconciliation', () => {
     expect(h.timeline.append).toHaveBeenCalledWith(
       expect.objectContaining({
         seq: 'resolve:10:ended',
-        summary: `해결 세션 종료 · ${reason}`
+        summary: `대화 세션 종료 · ${reason}`
       })
     );
     expect(h.changed).toHaveBeenCalledWith(WS);
@@ -374,7 +374,7 @@ describe('interactive session reconciliation', () => {
     expect(h.timeline.append).toHaveBeenCalledWith(
       expect.objectContaining({
         seq: 'external_resume:10:started',
-        summary: '재개 세션 시작 · 보존 세션'
+        summary: '대화 세션 시작 · 보존 세션'
       })
     );
   });
@@ -396,7 +396,7 @@ describe('interactive session reconciliation', () => {
       h.store.snapshot(WS).interactive_sessions['B1:external_resume']
     ).toBeUndefined();
     expect(h.timeline.append).toHaveBeenCalledWith(
-      expect.objectContaining({ summary: '재개 세션 종료 · pane_gone' })
+      expect.objectContaining({ summary: '대화 세션 종료 · pane_gone' })
     );
   });
 
@@ -607,7 +607,7 @@ describe('interactive session reconciliation', () => {
     expect(h.launcher.capturePaneTail).not.toHaveBeenCalled();
     expect(h.current()).toBeUndefined();
     expect(h.timeline.append).toHaveBeenCalledWith(
-      expect.objectContaining({ summary: '해결 세션 종료 · killed' })
+      expect.objectContaining({ summary: '대화 세션 종료 · killed' })
     );
   });
 
@@ -1728,6 +1728,7 @@ function setup(opts) {
     notify: opts.notify,
     disposition: opts.disposition,
     directionInquiry: opts.directionInquiry,
+    conversationExits: /** @type {any} */ (opts).conversationExits,
     backupFreshResidue: /** @type {any} */ (opts).backupFreshResidue,
     // Absent by default: the external registry is a live-wiring dep, and a
     // scheduler built without it must refuse the external dispatch outright.
@@ -3445,6 +3446,575 @@ describe('same-session conversation return (UI-nuwy)', () => {
     expect(children(env, prior.attempt_id)).toHaveLength(0);
     expect(attemptOf(env, prior.attempt_id).cause_detail).not.toHaveProperty(
       'conversation'
+    );
+  });
+});
+
+describe('failure conversation (UI-18a5 §3.4)', () => {
+  const BEAD = 'F1';
+  const KEY = `${BEAD}:resolve`;
+
+  /**
+   * A failure conversation pass harness: a real queue store (optionally with
+   * extra snapshot material layered on), one `resolve` pane, a transcript the
+   * test moves, and the three Worker exits as spies.
+   *
+   * @param {{ patch?: () => Record<string, any>, exits?: Record<string, any> }} [options]
+   */
+  function failureEnv(options = {}) {
+    let at = 1000;
+    const real = makeQueueStore({ now: () => at });
+    /** @type {any} */
+    const store = new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'snapshot') {
+          return (/** @type {string} */ ws) => ({
+            ...target.snapshot(ws),
+            ...(options.patch ? options.patch() : {})
+          });
+        }
+        const value = /** @type {any} */ (target)[prop];
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_jobs',
+      reason: 'post_merge_job_failed'
+    });
+    const pane = {
+      key: BEAD,
+      pane: '%7',
+      dead: '0',
+      session: 'dev',
+      window: `resolve-${BEAD}`,
+      cwd: WS,
+      agent_runtime: 'claude',
+      agent_running: '',
+      agent_attention: ''
+    };
+    const panes = { rows: [pane] };
+    const launcher = {
+      listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
+        ok: true,
+        rows: marker === RESOLVE_PANE_MARKER ? panes.rows : []
+      })),
+      readPaneOption: vi.fn(async () => ({ ok: true, value: null })),
+      capturePaneTail: vi.fn(async () => ({ ok: true, line: '❯ ' })),
+      sendExit: vi.fn(async () => ({ ok: true })),
+      killWindow: vi.fn(async () => ({ ok: true }))
+    };
+    /** @type {{ current: any }} */
+    const message = { current: null };
+    const transcript = {
+      location: { locality: 'local', file: '/t', last_event_at: 450 }
+    };
+    const exits = {
+      retryCleanup: vi.fn(async () => {
+        real.clearCleanupFailure(WS, BEAD);
+        return { ok: true, reason: null };
+      }),
+      retryDiscard: vi.fn(async () => ({ ok: true, reason: null })),
+      enqueueMerge: vi.fn(async () => ({ ok: true, reason: null })),
+      ...options.exits
+    };
+    const notify = {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn(),
+      conversationAnswer: vi.fn(),
+      conversationTakeover: vi.fn(),
+      conversationResumed: vi.fn()
+    };
+    const timeline = { append: vi.fn() };
+    const env = setup({
+      config: { [BEAD]: { status: 'open' } },
+      store,
+      timeline,
+      notify,
+      now: () => at,
+      resolveSessionFile: () => transcript.location,
+      ...{
+        interactiveLauncher: launcher,
+        readLastAssistantMessage: () => message.current,
+        conversationExits: exits
+      }
+    });
+    return {
+      ...env,
+      real,
+      launcher,
+      pane,
+      panes,
+      message,
+      transcript,
+      exits,
+      notify,
+      timeline,
+      /** @param {number} value */
+      setTime(value) {
+        at = value;
+      }
+    };
+  }
+
+  /**
+   * @param {ReturnType<typeof failureEnv>} env
+   * @param {Record<string, any>} [patch]
+   */
+  function openFailureConversation(env, patch = {}) {
+    env.real.recordInteractiveSession(WS, {
+      bead_id: BEAD,
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%7',
+      tmux_session: 'dev',
+      tmux_window: `resolve-${BEAD}`,
+      cwd: WS,
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'fork',
+      source: 'attempt',
+      session_id: 'fork-session',
+      session_id_source: 'launch',
+      conversation: { stop: '실패 정리 중단 · post_merge_job_failed' },
+      ...patch
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof failureEnv>} env
+   * @param {string} text
+   * @param {number} [at]
+   */
+  function say(env, text, at = 900) {
+    env.message.current = { text, at, first_line: text, excerpt: text };
+    env.transcript.location = {
+      ...env.transcript.location,
+      last_event_at: at + 50
+    };
+  }
+
+  /** @param {ReturnType<typeof failureEnv>} env */
+  const record = (env) => env.real.snapshot(WS).interactive_sessions[KEY];
+
+  /**
+   * A handoff reservation as the result-line pass writes it.
+   *
+   * @param {ReturnType<typeof failureEnv>} env
+   * @param {Record<string, any>} [handoff]
+   */
+  function reservedHandoff(env, handoff = {}) {
+    const cleanup = env.real.snapshot(WS).cleanup_failed[BEAD];
+    return {
+      stop: '실패 정리 중단 · post_merge_job_failed',
+      processed_message_at: 900,
+      result: { kind: 'handoff', line: '인계 · 잡 다시', at: 950 },
+      handoff: {
+        line: '인계 · 잡 다시',
+        source: 'result_line',
+        message_at: 900,
+        reserved_at: 950,
+        target: {
+          kind: 'cleanup',
+          identity: `cleanup:post_merge_jobs:${cleanup?.at}`
+        },
+        started_at: null,
+        ...handoff
+      }
+    };
+  }
+
+  test('reserves a failure handoff with the row it will act on', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '인계 · 잡 다시');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    const cleanup = env.real.snapshot(WS).cleanup_failed[BEAD];
+    expect(record(env)?.conversation?.handoff).toMatchObject({
+      line: '인계 · 잡 다시',
+      target: {
+        kind: 'cleanup',
+        identity: `cleanup:post_merge_jobs:${cleanup.at}`
+      },
+      started_at: null
+    });
+    expect(env.launcher.sendExit).toHaveBeenCalledWith('%7');
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+  });
+
+  test('sends one answer wait per new non-result message', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '배포 스크립트를 고칠까요?');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    say(env, '그럼 로그를 먼저 볼까요?', 960);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.notify.conversationAnswer).toHaveBeenCalledTimes(2);
+    expect(env.notify.conversationAnswer).toHaveBeenLastCalledWith({
+      bead_id: BEAD,
+      excerpt: '그럼 로그를 먼저 볼까요?',
+      tmux_window: `resolve-${BEAD}`
+    });
+  });
+
+  test('sends the takeover push once and runs no exit', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '인수 · 내가 끝까지 간다');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.notify.conversationTakeover).toHaveBeenCalledExactlyOnceWith({
+      bead_id: BEAD
+    });
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('runs the cleanup retry with click authority once the window is gone', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '인계 · 잡 다시');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+
+    expect(env.exits.retryCleanup).toHaveBeenCalledExactlyOnceWith(WS, BEAD);
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('announces the run exit once as the Worker continuing', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '인계 · 잡 다시');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.notify.conversationResumed).toHaveBeenCalledExactlyOnceWith({
+      bead_id: BEAD,
+      decision: '인계 · 잡 다시',
+      action: '정리 재시도',
+      repo: WS
+    });
+  });
+
+  test('records the handoff on the timeline with its row kind', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '인계 · 잡 다시');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seq: 'resolve:500:handoff',
+        summary: '대화 인계 · 실패 — 머지 후 정리 · 인계 · 잡 다시'
+      })
+    );
+  });
+
+  test('runs the discard retry of a failed discard', async () => {
+    const env = failureEnv({
+      patch: () => ({
+        cleanup_failed: {},
+        discard_operations: {
+          op1: {
+            operation_id: 'op1',
+            bead_id: BEAD,
+            phase: 'closing_pr',
+            last_error: 'pr_close_failed',
+            requested_at: 5
+          }
+        }
+      })
+    });
+    openFailureConversation(env, {
+      conversation: {
+        ...reservedHandoff(env, {
+          target: {
+            kind: 'discard',
+            identity: 'discard:op1:closing_pr:pr_close_failed'
+          }
+        }),
+        stop: '실패 폐기 실패 · pr_close_failed'
+      }
+    });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryDiscard).toHaveBeenCalledExactlyOnceWith(WS, 'op1');
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+  });
+
+  test('re-enqueues the merge of a pre-merge verify hold', async () => {
+    const env = failureEnv({
+      patch: () => ({
+        cleanup_failed: {},
+        completion_intents: {
+          [BEAD]: { phase: 'holding', hold: { head_sha: 'h1' } }
+        }
+      })
+    });
+    openFailureConversation(env, {
+      conversation: reservedHandoff(env, {
+        target: { kind: 'verify_hold', identity: 'verify_hold:h1:none' }
+      })
+    });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.enqueueMerge).toHaveBeenCalledExactlyOnceWith(WS, BEAD);
+  });
+
+  test('runs nothing for a merge-gate needs_human and ends like a hold', async () => {
+    const env = failureEnv({
+      patch: () => ({
+        cleanup_failed: {},
+        completion_intents: {
+          [BEAD]: { phase: 'needs_human', subject: { head_sha: 'h2' } }
+        }
+      })
+    });
+    openFailureConversation(env, {
+      conversation: reservedHandoff(env, {
+        target: { kind: 'merge_gate', identity: 'merge_gate:h2' }
+      })
+    });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.exits.enqueueMerge).not.toHaveBeenCalled();
+    expect(env.notify.conversationResumed).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('refuses a handoff whose row settled before it ran', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, { conversation: reservedHandoff(env) });
+    env.real.clearCleanupFailure(WS, BEAD);
+    env.real.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'branch_cleanup',
+      reason: 'other'
+    });
+    env.setTime(2000);
+    env.real.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'branch_cleanup',
+      reason: 'other'
+    });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).conversation_refusals[BEAD]).toMatchObject({
+      reason: '이미 정산됨',
+      kind: 'resolve'
+    });
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('refuses with the exit reason when the exit did not run', async () => {
+    const env = failureEnv({
+      exits: {
+        retryCleanup: vi.fn(async () => ({
+          ok: false,
+          reason: 'action_in_flight'
+        }))
+      }
+    });
+    openFailureConversation(env, { conversation: reservedHandoff(env) });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+
+    expect(env.real.snapshot(WS).conversation_refusals[BEAD]?.reason).toBe(
+      'action_in_flight'
+    );
+    expect(env.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seq: 'resolve:500:handoff_refused',
+        summary: '대화 인계 거절 · action_in_flight'
+      })
+    );
+    expect(env.notify.conversationResumed).not.toHaveBeenCalled();
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('never reruns an exit a restart left after its start record', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, {
+      conversation: reservedHandoff(env, { started_at: 960 })
+    });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).conversation_refusals[BEAD]?.reason).toBe(
+      '결과 미상'
+    );
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('treats an exit a restart left after the row settled as run', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, {
+      conversation: reservedHandoff(env, { started_at: 960 })
+    });
+    env.real.clearCleanupFailure(WS, BEAD);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('writes the start before the exit is called', async () => {
+    const env = failureEnv();
+    /** @type {any} */
+    let seen = null;
+    env.exits.retryCleanup.mockImplementation(async () => {
+      seen = record(env)?.conversation?.handoff?.started_at;
+      return { ok: true, reason: null };
+    });
+    openFailureConversation(env, { conversation: reservedHandoff(env) });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(seen).toBe(1000);
+  });
+
+  test('finishes a cleanup handoff whose exit reconciles the conversations again', async () => {
+    const env = failureEnv();
+    let inner_done = false;
+    env.exits.retryCleanup.mockImplementation(async () => {
+      env.real.clearCleanupFailure(WS, BEAD);
+      env.real.markInteractiveSessionsSettled(WS, BEAD, 'done');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      inner_done = true;
+      return { ok: true, reason: null };
+    });
+    openFailureConversation(env, { conversation: reservedHandoff(env) });
+    env.panes.rows = [];
+
+    const outcome = await Promise.race([
+      env.scheduler.reconcileInteractiveSessions(WS).then(() => 'returned'),
+      new Promise((resolve) => setTimeout(() => resolve('deadlocked'), 300))
+    ]);
+    await flush();
+
+    expect([outcome, inner_done]).toEqual(['returned', true]);
+  });
+
+  test('removes the conversation record once the exit returns', async () => {
+    const env = failureEnv();
+    env.exits.retryCleanup.mockImplementation(async () => {
+      env.real.clearCleanupFailure(WS, BEAD);
+      env.real.markInteractiveSessionsSettled(WS, BEAD, 'done');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      return { ok: true, reason: null };
+    });
+    openFailureConversation(env, { conversation: reservedHandoff(env) });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+
+    expect(record(env)).toBeUndefined();
+    expect(env.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seq: 'resolve:500:ended',
+        summary: '대화 세션 종료 · handoff'
+      })
+    );
+  });
+
+  test('keeps a running exit from a second pass', async () => {
+    const env = failureEnv();
+    /** @type {(value: any) => void} */
+    let finish = () => {};
+    env.exits.retryCleanup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    openFailureConversation(env, { conversation: reservedHandoff(env) });
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const between = {
+      kept: record(env) !== undefined,
+      refusal: env.real.snapshot(WS).conversation_refusals[BEAD] ?? null
+    };
+    env.real.clearCleanupFailure(WS, BEAD);
+    finish({ ok: true, reason: null });
+    await flush();
+
+    expect(between).toEqual({ kept: true, refusal: null });
+    expect(env.exits.retryCleanup).toHaveBeenCalledOnce();
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('keeps the row after a hold and runs nothing', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '보류 · 내일 본다');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launcher.sendExit).toHaveBeenCalledOnce();
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).cleanup_failed[BEAD]).toBeDefined();
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('settles a pre-contract resolve record by the old rules', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, { conversation: undefined });
+    say(env, '인계 · 옛 세션');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+    expect(env.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({ summary: '대화 세션 종료 · pane_gone' })
     );
   });
 });

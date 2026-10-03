@@ -10,19 +10,21 @@ import {
   inquiryWrapper,
   parkSentence,
   recoverySentence,
-  shellQuote
+  shellQuote,
+  stopConversationReason
 } from './direction-inquiry.js';
 
 /**
  * Digest of the fenced `text` block under `## Worker 세션 대화` in dotfiles
  * `src/shared/skills/flow/workflow/references/execution-common.md` at commit
- * `f031c9853f536c1478e9d1129b8c69628be27ef8`, taken over the block's inner
- * content WITHOUT a trailing newline (1950 bytes). The two repositories are
- * deliberately NOT compared at runtime: the Worker `[verify]` checkout has no
- * dotfiles path, so a cross-repo read would be a test that never runs.
+ * `78eddcdb7b05c8b1ddc5f98663144022899d5601` (dotfiles-xto5b, UI-18a5 §3.3),
+ * taken over the block's inner content WITHOUT a trailing newline (2533
+ * bytes). The two repositories are deliberately NOT compared at runtime: the
+ * Worker `[verify]` checkout has no dotfiles path, so a cross-repo read would
+ * be a test that never runs.
  */
 const ENTRY_BLOCK_DIGEST =
-  'cdc347bb4d34ba40d2ae5f3292f134a86998605630d7a88ff7185a8561092d56';
+  '926b1826fe63f3edbc396bd7b503e87a63cf17861efd22e4e1e5c0ad86110edc';
 
 const BEAD = 'UI-7uid';
 const AWAITING = 'spec_review_stale:revise';
@@ -301,43 +303,51 @@ describe('direction-inquiry entry block', () => {
   test('carries no trailing newline', () => {
     const bytes = Buffer.byteLength(CONVERSATION_ENTRY_BLOCK, 'utf8');
 
-    expect(bytes).toBe(1950);
+    expect(bytes).toBe(2533);
     expect(CONVERSATION_ENTRY_BLOCK.endsWith('\n')).toBe(false);
   });
 
-  test('fills the stop label in the opening, the stop line, and step 2', () => {
+  test('fills the conversation reason in the opening, the reason line, and step 2', () => {
     const block = fillConversationEntry({
-      stop: 'recovery:authority',
-      sentence: '범위 밖',
+      reason: '멈춤 recovery:authority',
+      situation: '범위 밖',
       worktree: WORKTREE,
       checkout: '/repo'
     });
 
-    expect(block.split('\n')[0]).toContain('recovery:authority로 멈춰');
-    expect(block).toContain('- 멈춤 사유: recovery:authority\n');
-    expect(block).toContain(
-      '`대화 결정: recovery:authority — 사용자 답: <원문>`'
+    expect(block.split('\n')[0]).toContain(
+      'Worker 작업이 멈춤 recovery:authority에 이르러'
     );
-    expect(block).not.toContain('<멈춤 사유>');
+    expect(block).toContain('- 대화 사유: 멈춤 recovery:authority\n');
+    expect(block).toContain(
+      '`대화 결정: 멈춤 recovery:authority — 사용자 답: <원문>`'
+    );
+    expect(block).not.toContain('<대화 사유>');
   });
 
-  test('fills the sentence and the two paths positionally', () => {
+  test('fills the situation and the two paths positionally', () => {
     const block = fillConversationEntry({
-      stop: 'awaiting_user=x',
-      sentence: '세션 문장',
+      reason: '멈춤 awaiting_user=x',
+      situation: '세션 문장',
       worktree: WORKTREE,
       checkout: '/repo'
     });
 
-    expect(block).toContain('- 세션이 남긴 문장: 세션 문장\n');
+    expect(block).toContain('- 상황: 세션 문장\n');
     expect(block).toContain(`- 구현 워크트리: ${WORKTREE}\n`);
     expect(block).toContain('- target_base 체크아웃: /repo\n');
   });
 
+  test('prefixes a stop label with the 멈춤 kind word', () => {
+    const reason = stopConversationReason('awaiting_user=x');
+
+    expect(reason).toBe('멈춤 awaiting_user=x');
+  });
+
   test('leaves the session-owned slots untouched', () => {
     const block = fillConversationEntry({
-      stop: 's',
-      sentence: 'x',
+      reason: 's',
+      situation: 'x',
       worktree: '/w',
       checkout: '/c'
     });
@@ -350,27 +360,25 @@ describe('direction-inquiry entry block', () => {
 
   test('prints absent values explicitly', () => {
     const block = fillConversationEntry({
-      stop: 's',
-      sentence: null,
+      reason: 's',
+      situation: null,
       worktree: null,
       checkout: null
     });
 
-    expect(block).toContain('- 세션이 남긴 문장: (없음)\n');
+    expect(block).toContain('- 상황: (없음)\n');
     expect(block).toContain('- 구현 워크트리: (없음)\n');
   });
 
   test('never rescans a value that quotes a slot', () => {
     const block = fillConversationEntry({
-      stop: 's',
-      sentence: '- target_base 체크아웃: <path>',
+      reason: 's',
+      situation: '- target_base 체크아웃: <path>',
       worktree: '/w',
       checkout: '/c'
     });
 
-    expect(block).toContain(
-      '- 세션이 남긴 문장: - target_base 체크아웃: <path>\n'
-    );
+    expect(block).toContain('- 상황: - target_base 체크아웃: <path>\n');
     expect(block).toContain('\n- target_base 체크아웃: /c\n');
   });
 });
@@ -460,8 +468,8 @@ describe('direction-inquiry same-session launch', () => {
     await inquiry.onParkedAttempt(recoveryInput());
 
     const expected = fillConversationEntry({
-      stop: 'recovery:authority',
-      sentence: null,
+      reason: '멈춤 recovery:authority',
+      situation: null,
       worktree: WORKTREE,
       checkout: '/repo'
     });
@@ -495,7 +503,8 @@ describe('direction-inquiry same-session launch', () => {
         launched_at: 2000,
         state: 'live',
         conversation: {
-          stop: `awaiting_user=${AWAITING}`,
+          stop: `멈춤 awaiting_user=${AWAITING}`,
+          wait_id: null,
           processed_message_at: null,
           message_excerpt: null,
           result: null,
@@ -513,7 +522,7 @@ describe('direction-inquiry same-session launch', () => {
     await inquiry.onParkedAttempt(parkedInput());
 
     expect(tmux.wrapper()).toContain(
-      `- 세션이 남긴 문장: park: ${AWAITING} — 방향 충돌 · ADR 0012`
+      `- 상황: park: ${AWAITING} — 방향 충돌 · ADR 0012`
     );
   });
 
@@ -527,7 +536,7 @@ describe('direction-inquiry same-session launch', () => {
 
     await inquiry.onParkedAttempt(recoveryInput());
 
-    expect(tmux.wrapper()).toContain('- 세션이 남긴 문장: 범위 밖 파일');
+    expect(tmux.wrapper()).toContain('- 상황: 범위 밖 파일');
   });
 
   test('labels a legacy recovery stop as an old record', async () => {
@@ -539,7 +548,7 @@ describe('direction-inquiry same-session launch', () => {
     );
 
     expect(tmux.wrapper()).toContain(
-      '- 멈춤 사유: recovery:verification (옛 기록)'
+      '- 대화 사유: 멈춤 recovery:verification (옛 기록)'
     );
   });
 });
@@ -839,7 +848,7 @@ describe('direction-inquiry click', () => {
       recoveryInput({ recovery: { reason: 'provider' } })
     );
 
-    expect(tmux.wrapper()).toContain('- 멈춤 사유: recovery:provider\n');
+    expect(tmux.wrapper()).toContain('- 대화 사유: 멈춤 recovery:provider\n');
   });
 
   test('points a click at the live conversation pane it observed', async () => {

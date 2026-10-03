@@ -38,7 +38,7 @@ export const FAILURE_SENTENCES = Object.freeze({
   // 경로는 이전 base의 스크립트만 실행하므로, 이전 base에 선언이 없는 첫
   // 활성화는 사람 승인 없이 돌지 않는다 — 문장이 출구까지 말해야 카드가 답이 된다.
   bootstrap_not_approved:
-    '첫 [deploy] 선언은 사람 승인 없이 실행하지 않습니다. Worker 설정의 [배포 실행]으로 원격 base tip을 한 번 배포한 뒤 [정리 재시도]를 누르세요 — 그 뒤 머지부터는 자동 배포됩니다.',
+    '첫 [deploy] 선언은 사람 승인 없이 실행하지 않습니다. Worker 설정의 [배포 실행]으로 원격 base tip을 한 번 배포한 뒤 [워커로 이어가기]를 누르세요 — 그 뒤 머지부터는 자동 배포됩니다.',
   // Cleanup step 1 (base 포함 확인). This step runs before any repo operation
   // exists, so a stop here produces no operation card and no failure_kind —
   // the cleanup record's raw reason is the ONLY thing that can say what

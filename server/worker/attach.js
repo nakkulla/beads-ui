@@ -1316,6 +1316,22 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // every other runtime singleton: its duplicate guard is a tmux pane marker,
     // which is one truth for the whole machine.
     directionInquiry: runtime.directionInquiry,
+    // The Worker exits a failure conversation's `인계` runs (UI-18a5 §3.4):
+    // the SAME owners the row's `[워커로 이어가기]` and `[머지]` clicks reach,
+    // bound late because both are built after the scheduler.
+    conversationExits: {
+      retryCleanup: (_ws, bead_id) =>
+        prActions
+          ? prActions.retryCleanup(bead_id)
+          : Promise.resolve({ ok: false, reason: 'no_attachment' }),
+      retryDiscard: (_ws, operation_id) =>
+        discardCoordinator.retry(operation_id),
+      enqueueMerge: (ws, bead_id) =>
+        enqueueWorkerManualMerge(ws, {
+          bead_id,
+          expected_revision: runtime.queueStore.snapshot(ws).revision
+        })
+    },
     backupFreshResidue: (identity, input) =>
       discardCoordinator.backupFreshResidue(identity, input),
     // The external-row evidence the attempt-less conflict dispatch stands on

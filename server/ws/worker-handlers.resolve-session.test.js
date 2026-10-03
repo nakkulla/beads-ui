@@ -1,5 +1,6 @@
 /**
- * `worker-resolve-in-session` (UI-jw27 §4): the `[세션에서 해결]` click.
+ * `worker-resolve-in-session` (UI-jw27 §4, UI-18a5 §3.2): the
+ * `[세션에서 이어가기]` click.
  *
  * The launcher itself is mocked — `server/worker/resolve-session.test.js` owns
  * the tmux and fork behaviour. This file owns the ws contract: the payload
@@ -187,7 +188,8 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
           failure_class: '정리 중단',
           reason: 'local_branch_delete_failed',
           stage: 'branch_cleanup',
-          detail: null
+          detail: null,
+          log_path: null
         }
       }
     ]);
@@ -271,5 +273,154 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
     });
 
     expect(reply.payload.queue.revision).toBe(revision());
+  });
+});
+
+describe('worker-resolve-in-session picks the launcher by row (UI-18a5 §3.2)', () => {
+  /** @type {any} */
+  let original_inquiry;
+  /** @type {any} */
+  let original_external_wait;
+  /** @type {any} */
+  let original_external_store;
+  /** @type {any[]} */
+  let inquiry_launches;
+  /** @type {any[]} */
+  let session_resumes;
+  /** @type {any} */
+  let completing;
+
+  beforeEach(() => {
+    const runtime = getWorkerRuntime();
+    original_inquiry = runtime.directionInquiry;
+    original_external_wait = runtime.externalWait;
+    original_external_store = runtime.externalWaitStore;
+    inquiry_launches = [];
+    session_resumes = [];
+    completing = null;
+    runtime.directionInquiry = /** @type {any} */ ({
+      /** @param {any} input */
+      launchForClick: async (input) => {
+        inquiry_launches.push(input);
+        return { launched: true, session: 'launched', mode: 'resume' };
+      }
+    });
+    runtime.externalWaitStore = /** @type {any} */ ({
+      ...original_external_store,
+      findByBead: () => completing
+    });
+    runtime.externalWait = /** @type {any} */ ({
+      ...original_external_wait,
+      /**
+       * @param {string} workspace
+       * @param {string} wait_id
+       * @param {string} mode
+       */
+      resume: async (workspace, wait_id, mode) => {
+        session_resumes.push({ workspace, wait_id, mode });
+        return {
+          ok: true,
+          mode: 'session',
+          session: 'not_launched',
+          reason: 'owner_alive',
+          command: "claude --resume 'user-session'",
+          owner_tmux: 'dev:3',
+          placement: null,
+          tmux_session: null,
+          tmux_window: null,
+          pane_id: null,
+          bridge_active: false
+        };
+      }
+    });
+  });
+
+  afterEach(() => {
+    const runtime = getWorkerRuntime();
+    runtime.directionInquiry = original_inquiry;
+    runtime.externalWait = original_external_wait;
+    runtime.externalWaitStore = original_external_store;
+  });
+
+  test('opens the same-session conversation for a recovery wait', async () => {
+    getWorkerRuntime().queueStore.appendAttempt(WS, {
+      expected_revision: revision(),
+      attempt: {
+        attempt_id: 'a-stop',
+        bead_id: BEAD,
+        status: 'waiting',
+        cause_detail: { recovery: { reason: 'authority' } }
+      }
+    });
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(inquiry_launches).toHaveLength(1);
+    expect(launches).toEqual([]);
+    expect(reply.payload.row).toBe('stop');
+  });
+
+  test('opens the failure conversation for a stopped cleanup', async () => {
+    recordCleanupStop();
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(launches).toHaveLength(1);
+    expect(inquiry_launches).toEqual([]);
+    expect(reply.payload.row).toBe('failure');
+  });
+
+  test('accepts a session-owned completing wait and resumes its session', async () => {
+    completing = {
+      wait_id: 'w-0123456789ab',
+      bead_id: BEAD,
+      stage: 'completing',
+      owner: { kind: 'session' }
+    };
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(session_resumes).toEqual([
+      { workspace: WS, wait_id: 'w-0123456789ab', mode: 'session' }
+    ]);
+    expect(launches).toEqual([]);
+    expect(reply.payload).toMatchObject({
+      row: 'external',
+      mode: 'session',
+      reason: 'owner_alive',
+      command: "claude --resume 'user-session'",
+      owner_tmux: 'dev:3'
+    });
+  });
+
+  test('refuses a click while a handoff reservation holds the Bead', async () => {
+    recordCleanupStop();
+    getWorkerRuntime().queueStore.recordInteractiveSession(WS, {
+      bead_id: BEAD,
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%4',
+      tmux_session: 'dev',
+      tmux_window: `resolve-${BEAD}`,
+      launched_at: 10,
+      state: 'exiting',
+      conversation: {
+        stop: '실패 정리 중단 · x',
+        handoff: {
+          line: '인계 · 다시',
+          source: 'result_line',
+          message_at: 1,
+          reserved_at: 2
+        }
+      }
+    });
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(reply.payload).toMatchObject({
+      launched: false,
+      reason: 'handoff_pending'
+    });
+    expect(launches).toEqual([]);
   });
 });

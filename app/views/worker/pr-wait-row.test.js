@@ -1,6 +1,7 @@
 import { html, render } from 'lit-html';
 import { describe, expect, test } from 'vitest';
 import { buildLanes } from './lane-model.js';
+import { miniRow } from './lanes.js';
 import { pendingKey, prWaitRowsOf } from './pr-wait-row.js';
 
 const WS_A = '/tmp/example/repo-a';
@@ -155,19 +156,31 @@ describe('shared PR 대기 projection — 정리 멈춤 (UI-jw27 §3)', () => {
     pr_observations: { 'A-1': MERGED_GATE }
   });
 
-  test('names the stopped-cleanup action 정리 재시도', () => {
+  test('names the stopped-cleanup action 워커로 이어가기', () => {
     const [row] = rowsOf(stopped);
 
-    expect(row.merge_label).toBe('정리 재시도');
+    expect(row.merge_label).toBe('워커로 이어가기');
   });
 
-  test('offers [세션에서 해결] on a stopped cleanup', () => {
+  test('moves the resume step into the worker-continuation tooltip', () => {
+    const [row] = rowsOf(stopped);
+
+    expect(row.merge_title).toContain('단계부터 다시 돌립니다');
+  });
+
+  test('offers [세션에서 이어가기] on a stopped cleanup', () => {
     const [row] = rowsOf(stopped);
 
     expect(row.resolve_action).toBe(true);
   });
 
-  test('locks [세션에서 해결] while that row of that repository waits', () => {
+  test('anchors the session button before the stopped-cleanup primary button', () => {
+    const [row] = rowsOf(stopped);
+
+    expect(row.pair_anchor).toBe('merge');
+  });
+
+  test('locks [세션에서 이어가기] while that row of that repository waits', () => {
     const [row] = rowsOf(stopped, {
       isPending: (kind, root_dir, bead_id) =>
         kind === 'resolve' &&
@@ -177,12 +190,12 @@ describe('shared PR 대기 projection — 정리 멈춤 (UI-jw27 §3)', () => {
     expect(row.resolve_enabled).toBe(false);
   });
 
-  test('draws the 정리 재시도 요청 중 window of a pending cleanup click', () => {
+  test('draws the 워커로 이어가기 요청 중 window of a pending cleanup click', () => {
     const [row] = rowsOf(stopped, {
       isPending: (kind) => kind === 'cleanup'
     });
 
-    expect(badgeText(row)).toBe('정리 재시도 요청 중');
+    expect(badgeText(row)).toBe('워커로 이어가기 요청 중');
   });
 });
 
@@ -413,5 +426,52 @@ describe('shared PR 대기 projection — 머지 재료 (UI-f2sy §4)', () => {
       `cleanup:${pendingKey(WS_A, 'A-1')}`,
       `resolve:${pendingKey(WS_A, 'A-1')}`
     ]);
+  });
+});
+
+describe('shared PR 대기 projection — 폐기 실패 짝 (UI-18a5 §3.4)', () => {
+  const taken_over = workspace({
+    pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+    pr_observations: { 'A-1': GREEN_GATE },
+    discard_operations: {
+      op1: {
+        operation_id: 'op1',
+        bead_id: 'A-1',
+        phase: 'closing_pr',
+        last_error: 'pr_close_failed',
+        requested_at: 5
+      }
+    },
+    interactive_sessions: {
+      'A-1:resolve': {
+        bead_id: 'A-1',
+        kind: 'resolve',
+        provider: 'claude',
+        session_id: 'sid',
+        mode: 'fork',
+        source: 'attempt',
+        tmux_session: 'dev',
+        tmux_window: 'resolve-A-1',
+        state: 'live',
+        settled_at: null,
+        launched_at: 1,
+        conversation: {
+          result: { kind: 'takeover', line: '인수 · 내가 끝낸다', at: 2 },
+          handoff: null
+        }
+      }
+    }
+  });
+
+  test('draws no discard retry on a row the conversation took over', () => {
+    const [row] = rowsOf(taken_over);
+    const host = document.createElement('div');
+
+    render(miniRow(row), host);
+
+    const labels = Array.from(host.querySelectorAll('button')).map((button) =>
+      button.textContent?.trim()
+    );
+    expect(labels).not.toContain('워커로 이어가기');
   });
 });

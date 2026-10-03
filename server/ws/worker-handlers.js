@@ -106,6 +106,7 @@ import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
   COMPLETION_RETRY_MAX,
   MANUAL_MERGE_CONTINUATION,
+  beadHoldsHandoffReservation,
   orderLaneByBlocks
 } from '../worker/queue-store.js';
 import { summarizeReceiptCheck } from '../worker/receipt-check.js';
@@ -6352,6 +6353,13 @@ export async function handleWorkerDiscard(ws, req) {
   if (key === null) {
     return;
   }
+  // A failed Bead discard's retry is that row's `[워커로 이어가기]`
+  // (UI-18a5 §3.2); a stale-work backup keeps its own words.
+  const retried = /** @type {any} */ (
+    p.operation_id == null
+      ? null
+      : queueStore().snapshot(key).discard_operations?.[p.operation_id]
+  );
   /** @type {any} */
   let result;
   try {
@@ -6365,7 +6373,16 @@ export async function handleWorkerDiscard(ws, req) {
     log('worker-discard failed for %s/%s: %o', key, p.bead_id, err);
     result = { ok: false, reason: 'error' };
   }
-  recordUserAction(key, p.bead_id, 'discard', '[폐기] 클릭');
+  recordUserAction(
+    key,
+    p.bead_id,
+    'discard',
+    retried &&
+      typeof retried.last_error === 'string' &&
+      retried.kind !== 'stale_work_backup_fresh'
+      ? '[워커로 이어가기] 클릭'
+      : '[폐기] 클릭'
+  );
   const queue = /** @type {any} */ (queueStore().snapshot(key));
   const accepted = typeof result.operation_id === 'string';
   const operation = accepted
@@ -6678,7 +6695,7 @@ export async function handleWorkerCleanupRetry(ws, req) {
     log('worker cleanup retry failed for %s/%s: %o', key, p.bead_id, err);
     result = { ok: false, reason: 'error' };
   }
-  recordUserAction(key, p.bead_id, 'cleanup_retry', '[정리 재시도] 클릭');
+  recordUserAction(key, p.bead_id, 'cleanup_retry', '[워커로 이어가기] 클릭');
   const latest = /** @type {any} */ (queueStore().snapshot(key));
   ws.send(
     JSON.stringify(
@@ -6699,11 +6716,14 @@ export async function handleWorkerCleanupRetry(ws, req) {
 /**
  * Handle `worker-resolve-in-session`. Payload: `{ bead_id, expected_revision }`.
  *
- * [세션에서 해결] (UI-jw27 §4): start the interactive session a person would
- * otherwise open by hand for a terminal failure, forked off the bead's recorded
- * session when one can be forked. The CLICK is the only trigger — nothing here
- * is reachable from an automatic path, and ADR 0005's ban on automatic repair
- * dispatch is untouched.
+ * `[세션에서 이어가기]` (UI-jw27 §4, UI-18a5 §3.2): the ONE click that opens
+ * a Worker session conversation. The server reads the row's state and picks
+ * the launcher — 확인 필요 (park, recovery wait) → the same-session
+ * conversation, 외부 작업 완료 (a session-owned `completing` wait) → the
+ * session resume, 실패 → the failure conversation forked off the bead's
+ * recorded session. The CLICK is the only trigger — nothing here is reachable
+ * from an automatic path, and ADR 0005's ban on automatic repair dispatch is
+ * untouched.
  *
  * Same skeleton as {@link handleWorkerCleanupRetry}: the queue revision is
  * checked BEFORE anything is looked up, so a stale click has no action-side
@@ -6764,6 +6784,24 @@ export async function handleWorkerResolveInSession(ws, req) {
     latest_attempt?.status === 'waiting'
       ? latest_attempt.cause_detail?.recovery
       : null;
+  // 외부 작업 완료 (UI-18a5 §3.1): the same session-owned `completing` row
+  // `wait-judgment` projects the click on.
+  /** @type {any} */
+  let completing = null;
+  if (!recovery) {
+    try {
+      const found = getWorkerRuntime().externalWaitStore?.findByBead(
+        key,
+        p.bead_id
+      );
+      completing =
+        found?.stage === 'completing' && found.owner.kind === 'session'
+          ? found
+          : null;
+    } catch (err) {
+      log('external wait read failed for %s/%s: %o', key, p.bead_id, err);
+    }
+  }
   const failure = recovery
     ? {
         failure_class: '확인 필요',
@@ -6771,8 +6809,18 @@ export async function handleWorkerResolveInSession(ws, req) {
         stage: null,
         detail: null
       }
-    : resolveFailureContext(current, p.bead_id);
-  if (failure === null) {
+    : completing
+      ? null
+      : resolveFailureContext(current, p.bead_id);
+  // A handoff reservation of any kind is an operation in progress for this
+  // Bead (UI-18a5 §3.4): only the pass that settles it may end it.
+  const refusal =
+    failure === null && completing === null
+      ? 'no_terminal_failure'
+      : beadHoldsHandoffReservation(current.interactive_sessions, p.bead_id)
+        ? 'handoff_pending'
+        : null;
+  if (refusal !== null) {
     ws.send(
       JSON.stringify(
         makeOk(req, {
@@ -6780,7 +6828,7 @@ export async function handleWorkerResolveInSession(ws, req) {
           launched: false,
           conflict: false,
           session: 'not_launched',
-          reason: 'no_terminal_failure',
+          reason: refusal,
           mode: null,
           fallback_reason: null,
           command: null,
@@ -6793,8 +6841,42 @@ export async function handleWorkerResolveInSession(ws, req) {
   }
   /** @type {any} */
   let result;
+  /** @type {'stop'|'failure'|'external'} */
+  const row = completing
+    ? 'external'
+    : failure?.failure_class === '파킹' || recovery
+      ? 'stop'
+      : 'failure';
   try {
-    if (failure.failure_class === '파킹' || recovery) {
+    if (row === 'external') {
+      const resumed = /** @type {any} */ (
+        await getWorkerRuntime().externalWait.resume(
+          key,
+          completing.wait_id,
+          'session'
+        )
+      );
+      result =
+        resumed && resumed.ok === true
+          ? {
+              ...resumed,
+              launched: resumed.session === 'launched',
+              mode: 'session',
+              source: 'session_ref',
+              fallback_reason: null,
+              session_id: null,
+              runner: 'claude'
+            }
+          : {
+              launched: false,
+              session: 'not_launched',
+              reason: resumed?.error || resumed?.reason || 'error',
+              mode: 'session',
+              fallback_reason: null,
+              command: null,
+              bridge_active: false
+            };
+    } else if (row === 'stop') {
       /** @type {any} */
       let attempt = null;
       for (const value of Object.values(current.attempts || {})) {
@@ -6819,7 +6901,7 @@ export async function handleWorkerResolveInSession(ws, req) {
         workspace: key,
         repo: key,
         bead_id: p.bead_id,
-        failure,
+        failure: /** @type {any} */ (failure),
         attempt: latest_attempt
       });
     }
@@ -6839,7 +6921,7 @@ export async function handleWorkerResolveInSession(ws, req) {
     key,
     p.bead_id,
     'resolve_in_session',
-    '[세션에서 해결] 클릭'
+    '[세션에서 이어가기] 클릭'
   );
   const latest = /** @type {any} */ (queueStore().snapshot(key));
   ws.send(
@@ -6866,7 +6948,13 @@ export async function handleWorkerResolveInSession(ws, req) {
         placement: result.placement || null,
         tmux_session: result.tmux_session || null,
         tmux_window: result.tmux_window || null,
-        failure_class: failure.failure_class,
+        // Which row's launcher the click reached (UI-18a5 §3.2), and for an
+        // 외부 작업 완료 refusal the resume command the toast copies.
+        row,
+        ...(row === 'external'
+          ? { owner_tmux: result.owner_tmux || null }
+          : {}),
+        failure_class: failure ? failure.failure_class : '외부 작업 완료',
         queue: decorateQueue(key, latest)
       })
     )

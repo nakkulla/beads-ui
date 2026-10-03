@@ -2803,7 +2803,7 @@ describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
     );
 
     expect(map.get('A-1')?.failure?.resume_reason).toBe(
-      '확인 필요 — [세션에서 해결]로 같은 세션과 대화합니다'
+      '확인 필요 — [세션에서 이어가기]로 같은 세션과 대화합니다'
     );
   });
 
@@ -5195,7 +5195,11 @@ describe('lane model worker group values (UI-4tud §4.3)', () => {
         output_tail: undefined,
         log_path: undefined,
         retry_count: 2,
-        failure_code: 'push_rejected'
+        failure_code: 'push_rejected',
+        pair: expect.objectContaining({
+          resolve_action: true,
+          pair_anchor: 'merge'
+        })
       }
     ]);
   });

@@ -1,12 +1,23 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { CONVERSATION_ENTRY_BLOCK } from '../direction-inquiry.js';
 import { EXTERNAL_RESUME_PANE_MARKER } from '../tmux-launcher.js';
+import { externalWaitCompletionPrompt } from './completion-prompt.js';
 import {
-  SESSION_RESUME_PROMPT_LEAD,
+  EXTERNAL_CONVERSATION_LEAD,
   createExternalWaitSessionResume
 } from './session-resume.js';
+
+/**
+ * The dotfiles entry block digest the 외부 작업 완료 conversation opens with
+ * (`78eddcdb7b05c8b1ddc5f98663144022899d5601`, 2533 bytes without a trailing
+ * newline) — the same pin `direction-inquiry.test.js` holds (UI-18a5 §3.3).
+ */
+const ENTRY_BLOCK_DIGEST =
+  '926b1826fe63f3edbc396bd7b503e87a63cf17861efd22e4e1e5c0ad86110edc';
 
 const WS = '/repo';
 const WAIT = 'w-0123456789ab';
@@ -371,9 +382,29 @@ describe('session resume launch', () => {
     expect(input.commandArgs.slice(0, 2)).toEqual(['--resume', SESSION]);
     expect(input.commandArgs).toHaveLength(3);
     expect(input.commandArgs[2].split('\n')[0]).toBe(
-      SESSION_RESUME_PROMPT_LEAD
+      `이 세션은 Worker 작업이 외부 작업 완료 ${WAIT}에 이르러 지금 사용자와 대화하도록 다시 열렸다. 사용자는 이 tmux 창이나 Discord 스레드에서 답한다.`
     );
     expect(input.commandArgs[2]).toContain('## 외부 작업 완료');
+  });
+
+  test('opens on the pinned dotfiles entry block', () => {
+    const digest = createHash('sha256')
+      .update(CONVERSATION_ENTRY_BLOCK)
+      .digest('hex');
+
+    expect(digest).toBe(ENTRY_BLOCK_DIGEST);
+  });
+
+  test('fills the situation with the contract line and the completion block', async () => {
+    const env = fixture();
+
+    await env.resume();
+
+    /** @type {any} */
+    const input = /** @type {any[][]} */ (env.launcher.launch.mock.calls)[0][0];
+    expect(input.commandArgs[2]).toContain(
+      `- 상황: ${EXTERNAL_CONVERSATION_LEAD}\n${externalWaitCompletionPrompt(env.recordOf())}\n- 구현 워크트리: ${path.join(root, 'wt')}\n- target_base 체크아웃: ${WS}\n`
+    );
   });
 
   test('asks the launcher for the user placement', async () => {
@@ -386,17 +417,13 @@ describe('session resume launch', () => {
     expect(input.placement).toBe('user');
   });
 
-  test('tells the resumed session to summarize and wait for instructions', () => {
-    const lead = SESSION_RESUME_PROMPT_LEAD;
-
-    const clauses = lead.split(' · ');
+  test('states the three facts the external-wait contract puts before the block', () => {
+    const clauses = EXTERNAL_CONVERSATION_LEAD.split(' · ');
 
     expect(clauses).toEqual([
-      '사람이 beads-ui [세션에서 이어가기]로 이 세션을 사용자의 tmux 창에서 재개했다',
-      '아래 완료 블록을 몇 줄로 요약하고 사람의 지시를 기다린다',
-      '지시 전에는 클레임·파일 편집·잡 제출을 하지 않는다',
       '대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다',
-      '지시를 받아 작업을 시작할 때 첫 편집 전에 bd show --json으로 external_wait 키가 없음을 확인하고 워크플로 절차대로 in_progress를 클레임한다'
+      '이 세션은 외부 작업 완료 Worker 세션 대화로 열린다(`references/execution-common.md` `## Worker 세션 대화`)',
+      '`인수` 뒤 첫 편집 전에 `bd show --json`으로 `external_wait` 키가 없음을 확인한 뒤 Bead를 클레임한다'
     ]);
   });
 
@@ -474,6 +501,27 @@ describe('session resume launch', () => {
       })
     );
     expect(env.unsetExternalWait).toHaveBeenCalledWith('B1');
+  });
+
+  test('records the reopened session as a conversation naming its wait', async () => {
+    const env = fixture();
+
+    await env.resume();
+
+    expect(env.recordInteractiveSession).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({
+        conversation: {
+          stop: `외부 작업 완료 ${WAIT}`,
+          wait_id: WAIT,
+          processed_message_at: null,
+          message_excerpt: null,
+          result: null,
+          handoff: null,
+          takeover_notified_at: null
+        }
+      })
+    );
   });
 
   test('settles an already running resume pane', async () => {

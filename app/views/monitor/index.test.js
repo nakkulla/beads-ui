@@ -5259,7 +5259,7 @@ describe('views/monitor external job lines and resume window (UI-a119)', () => {
         mount,
         '.rtile[data-bead-id="A-1"] .interactive-session-badge'
       ).textContent?.trim()
-    ).toBe('▤ 재개 세션 · dev:A-1');
+    ).toBe('▤ 대화 세션 · dev:A-1');
   });
 });
 
@@ -6307,7 +6307,7 @@ describe('views/monitor PR 대기 줄 공유 투영 (UI-f2sy §4·§5)', () => {
     ).toBe('다시 머지');
   });
 
-  test('labels a stopped cleanup 정리 재시도 beside [세션에서 해결]', () => {
+  test('labels a stopped cleanup [워커로 이어가기] beside [세션에서 이어가기]', () => {
     const { mount, view } = setup({
       workspaces: [stoppedCleanup()],
       workspaces_state: [state()]
@@ -6318,7 +6318,26 @@ describe('views/monitor PR 대기 줄 공유 투영 (UI-f2sy §4·§5)', () => {
     expect([
       el(mount, '#monitor-pr_wait .worker-mini__merge')?.textContent?.trim(),
       mount.querySelector('#monitor-pr_wait .worker-mini__resolve') !== null
-    ]).toEqual(['정리 재시도', true]);
+    ]).toEqual(['워커로 이어가기', true]);
+  });
+
+  test('stands the session button right before the stopped cleanup continuation', () => {
+    const { mount, view } = setup({
+      workspaces: [stoppedCleanup()],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const labels = Array.from(
+      mount.querySelectorAll(
+        '#monitor-pr_wait .worker-mini__foot .worker-mini__actions button'
+      )
+    ).map((button) => button.textContent?.trim());
+    expect(labels.slice(0, 2)).toEqual([
+      '세션에서 이어가기',
+      '워커로 이어가기'
+    ]);
   });
 
   test('sends worker-cleanup-retry with its repository from a stopped cleanup row', () => {

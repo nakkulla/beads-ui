@@ -1186,7 +1186,7 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
     });
 
     expect(messageOf(spawn.last())).toContain(
-      '\n대화를 열지 못함 · tmux_unavailable — Worker 탭 [세션에서 해결]'
+      '\n대화를 열지 못함 · tmux_unavailable — Worker 탭 [세션에서 이어가기]'
     );
   });
 
@@ -1257,6 +1257,28 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
     );
   });
 
+  test('names the exit a failure handoff ran on the resumed push', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conversationResumed({
+      bead_id: 'UI-1',
+      title: '워커 알림',
+      decision: '인계 · 배포 스크립트를 고쳤다',
+      action: '정리 재시도',
+      repo: '/r/proj'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '↪ Worker가 이어감 — UI-1 워커 알림',
+        '결정: 인계 · 배포 스크립트를 고쳤다',
+        '실행: 정리 재시도',
+        '리포: proj'
+      ].join('\n')
+    );
+  });
+
   test('sends nothing from the conversation pushes when notifications are off', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(
@@ -1267,10 +1289,11 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
     const sent = await Promise.all([
       notifier.conversationConfirm({ bead_id: 'UI-1' }),
       notifier.conversationAnswer({ bead_id: 'UI-1' }),
-      notifier.conversationTakeover({ bead_id: 'UI-1' })
+      notifier.conversationTakeover({ bead_id: 'UI-1' }),
+      notifier.conversationResumed({ bead_id: 'UI-1' })
     ]);
 
-    expect(sent).toEqual([false, false, false]);
+    expect(sent).toEqual([false, false, false, false]);
     expect(spawn.calls).toHaveLength(0);
   });
 
@@ -1366,7 +1389,7 @@ describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
         '🤖 ⏸️ 파킹 — UI-7uid 방향 질의 트리거',
         '파킹: spec_review_stale:revise',
         '문의 세션: stale · not_launched · stale_kind_missing',
-        '처분: Worker 탭 [세션에서 해결] · [폐기]',
+        '처분: Worker 탭 [세션에서 이어가기] · [폐기]',
         '브리지: 활성',
         '리포: beads-ui'
       ].join('\n')
@@ -1439,7 +1462,7 @@ describe('worker/notify needs_human transition', () => {
       failure_class: '머지 전 검증 실패',
       reason: 'script_failed',
       reason_detail: 'build failed',
-      next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 해결]',
+      next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 이어가기]',
       pr_url: 'https://github.com/o/r/pull/7',
       repo: '/repos/beads-ui'
     });
@@ -1449,7 +1472,7 @@ describe('worker/notify needs_human transition', () => {
         '🤖 ⏸️ 머지 보류 — UI-1 검증 보류',
         '클래스: 머지 전 검증 실패',
         '사유: script_failed — build failed',
-        '다음: 수정 커밋 push(자동 재검증) 또는 [세션에서 해결]',
+        '다음: 수정 커밋 push(자동 재검증) 또는 [세션에서 이어가기]',
         'https://github.com/o/r/pull/7',
         '리포: beads-ui'
       ].join('\n')
@@ -1465,7 +1488,7 @@ describe('worker/notify needs_human transition', () => {
       failure_class: '배포 실패',
       reason: 'cleanup_failed:script_failed',
       reason_detail: 'deploy exited 2',
-      next_action: '[정리 재시도] 또는 [세션에서 해결]',
+      next_action: '[세션에서 이어가기] 또는 [워커로 이어가기]',
       pr_url: 'https://github.com/o/r/pull/7',
       repo: '/Users/me/GitHub/beads-ui'
     });
@@ -1475,7 +1498,7 @@ describe('worker/notify needs_human transition', () => {
         '🤖 🚨 사람 필요 — UI-1 워커 알림',
         '클래스: 배포 실패',
         '사유: cleanup_failed:script_failed — deploy exited 2',
-        '다음: [정리 재시도] 또는 [세션에서 해결]',
+        '다음: [세션에서 이어가기] 또는 [워커로 이어가기]',
         'https://github.com/o/r/pull/7',
         '리포: beads-ui'
       ].join('\n')

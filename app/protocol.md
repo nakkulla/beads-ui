@@ -445,13 +445,14 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   older server omits the whole key. It is UI projection only and never Worker
   scheduler authority.
 - `interactive_sessions` is a record keyed by `<bead_id>:<kind>`, where `kind`
-  is `resolve` or `inquiry`. Each live session carries its `bead_id`, `kind`,
-  `provider`, nullable `session_id`, `mode`, `source`, `fallback_reason`,
-  `attempt_id`, tmux coordinates, `state`, `settled_at`, and `launched_at`. The
-  server decorates each record with `discord_url: string|null`; a missing URL
-  produces no link. Records exist only while the session is alive; ended session
-  history is available through `get-bead-timeline` events of kind
-  `interactive_session`. Missing records produce no session badges.
+  is `resolve`, `inquiry` or `external_resume`. Each live session carries its
+  `bead_id`, `kind`, `provider`, nullable `session_id`, `mode`, `source`,
+  `fallback_reason`, `attempt_id`, tmux coordinates, `state`, `settled_at`, and
+  `launched_at`. The server decorates each record with
+  `discord_url: string|null`; a missing URL produces no link. Records exist only
+  while the session is alive; ended session history is available through
+  `get-bead-timeline` events of kind `interactive_session`. Missing records
+  produce no session badges.
 - Each `interactive_sessions` record also carries four nullable turn fields
   written by the reconcile pass (UI-ri8n): `turn_state`
   (`running`|`question`|`limit`|`idle`, `null` until the first observation of
@@ -465,6 +466,27 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   fork origin: `attempt`, `session_ref`, or `fresh` (`null` when the launch
   response has no source). `mode` and `fallback_reason` retain their existing
   meaning.
+- `worker-resolve-in-session` is the one `[세션에서 이어가기]` click (UI-18a5
+  §3.2): the server picks the launcher from the row — a park or recovery wait
+  opens the same-session conversation, a session-owned `completing` external
+  wait the session resume, any other failure row the failure conversation. The
+  response adds `row: 'stop'|'failure'|'external'`; an `external` reply carries
+  `mode: 'session'` and `owner_tmux`, and its `command` is the resume command
+  the client copies on `owner_alive`/`owner_unverified`. A Bead whose
+  conversation still holds a handoff reservation of any kind is refused
+  `handoff_pending`.
+- `interactive_sessions` records of every kind (`resolve`, `inquiry`,
+  `external_resume`) launched since UI-18a5 carry `conversation`
+  (`{ stop, wait_id, processed_message_at, message_excerpt, result, handoff, takeover_notified_at }`);
+  `stop` is the entry block's `대화 사유` and `wait_id` names the external wait
+  an 외부 작업 완료 conversation reopened. A record without it predates the
+  contract for its kind and keeps the old rules.
+- `conversation_refusals` is a record keyed by bead id
+  (`{ reason, at, kind: 'resolve'|'external_resume' }`): why the last failure or
+  외부 작업 완료 conversation handoff was refused before it ran. The card shows
+  `이어가기 거절: <reason>` in its `[세션에서 이어가기]` tooltip; a new
+  conversation for the Bead or the row's settlement removes the entry. An older
+  server omits the key, which reads as no refusal.
 - A `pr_wait` entry the server SYNTHESIZED for an external PR (UI-7agi §2) is
   marked `external: true` and carries `wt_present: boolean`. When the row comes
   from the external-PR registry it additionally carries that registry's own PR

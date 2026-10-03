@@ -2718,7 +2718,7 @@ describe('archive-stage discard failure notification (UI-e98l)', () => {
         bead_id: 'UI-1',
         failure_class: '폐기 실패',
         reason: 'ps_failed',
-        next_action: '재클릭·[폐기 포기]·[세션에서 해결]',
+        next_action: '[세션에서 이어가기]·[워커로 이어가기]·[폐기 포기]',
         repo: '/repo'
       })
     ]);

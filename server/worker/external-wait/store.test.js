@@ -217,3 +217,75 @@ test('rejects a session resume that names an attempt', () => {
 
   expect(write).toThrow('Invalid external wait resume');
 });
+
+/**
+ * A `resumed` record a `session` resume closed (UI-18a5 §3.4).
+ *
+ * @param {'session'|'fork'} mode
+ */
+function resumedRecord(mode) {
+  return store.insert(
+    workspace,
+    input({
+      owner: {
+        kind: 'session',
+        session_ref: 'claude:user-session@host',
+        session_pid: 3333,
+        session_start: '2026-09-21T00:00:00.000Z'
+      },
+      stage: 'resumed',
+      resume: {
+        mode,
+        attempt_id: mode === 'fork' ? 'attempt-2' : null,
+        reserved_at: '2026-09-21T00:00:00.000Z',
+        launched_at: '2026-09-21T00:00:01.000Z',
+        session_id: 'user-session',
+        error: null
+      }
+    })
+  );
+}
+
+test('refuses resumed to completing through a plain update', () => {
+  const record = resumedRecord('session');
+
+  const write = () =>
+    store.update(workspace, record.wait_id, (next) => {
+      next.stage = 'completing';
+    });
+
+  expect(write).toThrow(
+    'Illegal external wait transition: resumed -> completing'
+  );
+});
+
+test('returns a session resume to completing through the revert path', () => {
+  const record = resumedRecord('session');
+
+  const reverted = store.revertSessionResume(workspace, record.wait_id);
+
+  expect(reverted).toMatchObject({ stage: 'completing', resume: null });
+  expect(store.get(workspace, record.wait_id)).toMatchObject({
+    stage: 'completing',
+    resume: null
+  });
+});
+
+test('refuses to revert a fork resume', () => {
+  const record = resumedRecord('fork');
+
+  const revert = () => store.revertSessionResume(workspace, record.wait_id);
+
+  expect(revert).toThrow('Illegal external wait revert');
+});
+
+test('leaves a record already back at completing unchanged', () => {
+  const record = resumedRecord('session');
+  store.revertSessionResume(workspace, record.wait_id);
+  const before = fs.readFileSync(file, 'utf8');
+
+  const again = store.revertSessionResume(workspace, record.wait_id);
+
+  expect(again.stage).toBe('completing');
+  expect(fs.readFileSync(file, 'utf8')).toBe(before);
+});

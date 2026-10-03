@@ -1,12 +1,15 @@
 /**
- * The `[세션에서 해결]` launcher (UI-jw27 §4).
+ * The failure conversation launcher behind a 실패 row's `[세션에서 이어가기]`
+ * (UI-jw27 §4, UI-18a5 §3.2).
  *
  * A terminal failure the Worker cannot retry away lands the bead on
  * `needs_human`, and ADR 0005 forbids dispatching an automatic repair session
  * for it. What this module starts is NOT that: it is the interactive session a
  * person would otherwise open by hand in a terminal, started by their own
- * CLICK, marked so the external `claude-discord-bridge` relays it. beads-ui
- * starts it, marks it, and reports what it did — nothing else.
+ * CLICK, marked so the external `claude-discord-bridge` relays it. Its first
+ * input is the dotfiles entry block (`direction-inquiry.js`), and its record
+ * carries a `conversation` so the reconcile pass observes its result line like
+ * every other Worker session conversation (UI-18a5 §3.4).
  *
  * Two properties are load-bearing:
  *
@@ -23,10 +26,16 @@
  * machine: at most one live resolution session per bead.
  */
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
 import { PRE_MERGE_HOLD_NOTIFY_LABEL } from './completion-intent.js';
+import {
+  failureConversationReason,
+  fillConversationEntry
+} from './direction-inquiry.js';
 import { discardOperationActive } from './discard-phase.js';
 import { qualifyInteractiveForkSource } from './session-ref.js';
 import {
@@ -106,12 +115,13 @@ const COMPLETION_DEFAULT_CLASS = '완료 중단';
  * @property {string} reason
  * @property {string|null} stage
  * @property {string|null} detail
+ * @property {string|null} [log_path]
  * @property {'fix_commit_push'} [exit]
  */
 
 /**
- * The terminal failure a `[세션에서 해결]` click is about, read off the queue
- * snapshot the click was validated against.
+ * The terminal failure a 실패 row's `[세션에서 이어가기]` click is about, read
+ * off the queue snapshot the click was validated against.
  *
  * The order is most-terminal first. A ladder step's failure writes BOTH a
  * `cleanup_failed` record and — once the ladder is spent — a `needs_human`
@@ -132,10 +142,9 @@ export function resolveFailureContext(queue, bead_id) {
       failure_class: PRE_MERGE_HOLD_NOTIFY_LABEL,
       reason: hold.reason,
       stage: 'verify',
-      detail:
-        [hold.summary, hold.log_path && `로그 ${hold.log_path}`]
-          .filter(Boolean)
-          .join(' · ') || null,
+      detail: typeof hold.summary === 'string' ? hold.summary || null : null,
+      log_path:
+        typeof hold.log_path === 'string' ? hold.log_path || null : null,
       exit: 'fix_commit_push'
     };
   }
@@ -155,7 +164,11 @@ export function resolveFailureContext(queue, bead_id) {
       reason:
         typeof terminal?.reason === 'string' ? terminal.reason : '원인 미상',
       stage,
-      detail: typeof terminal?.evidence === 'string' ? terminal.evidence : null
+      detail: typeof terminal?.evidence === 'string' ? terminal.evidence : null,
+      log_path:
+        typeof terminal?.log_path === 'string' && terminal.log_path.length > 0
+          ? terminal.log_path
+          : null
     };
   }
   const cleanup = queue?.cleanup_failed?.[bead_id];
@@ -164,34 +177,19 @@ export function resolveFailureContext(queue, bead_id) {
       failure_class: '정리 중단',
       reason: typeof cleanup.reason === 'string' ? cleanup.reason : '원인 미상',
       stage: typeof cleanup.step === 'string' ? cleanup.step : null,
-      detail: typeof cleanup.detail === 'string' ? cleanup.detail : null
+      detail: typeof cleanup.detail === 'string' ? cleanup.detail : null,
+      log_path:
+        typeof cleanup.log_path === 'string' && cleanup.log_path.length > 0
+          ? cleanup.log_path
+          : null
     };
   }
-  const operations = queue?.discard_operations;
-  const discard = Object.values(
-    operations && typeof operations === 'object' ? operations : {}
-  )
-    .filter(
-      (/** @type {any} */ value) =>
-        value &&
-        value.bead_id === bead_id &&
-        discardOperationActive(value) &&
-        typeof value.last_error === 'string' &&
-        value.last_error.length > 0
-    )
-    .sort(
-      (/** @type {any} */ left, /** @type {any} */ right) =>
-        (left.requested_at || 0) - (right.requested_at || 0)
-    )
-    .at(-1);
+  const discard = failedDiscardOperation(queue, bead_id);
   if (discard) {
     return {
       failure_class: '폐기 실패',
-      reason: /** @type {any} */ (discard).last_error,
-      stage:
-        typeof (/** @type {any} */ (discard).phase) === 'string'
-          ? /** @type {any} */ (discard).phase
-          : null,
+      reason: discard.last_error,
+      stage: typeof discard.phase === 'string' ? discard.phase : null,
       detail: null
     };
   }
@@ -221,61 +219,129 @@ export function resolveFailureContext(queue, bead_id) {
 }
 
 /**
- * The first input of a resolution session.
+ * The `상황` slot of a failure conversation (dotfiles `Worker 세션 대화`):
+ * class, cause code, stage, diagnosis and log path, in that order, on one
+ * line. A field with nothing behind it is left out.
  *
- * It states the four things the spec names — class, cause code, Bead id,
- * candidate actions — and nothing else. The procedure is deliberately thin: a
- * forked session already carries the work's whole history, and a fresh one is
- * told where to read it rather than being handed a summary this server would
- * have to invent.
- *
- * @param {{ bead_id: string, failure: ResolveFailureContext, checkout: string, fallback_reason: string|null }} input
+ * @param {ResolveFailureContext} failure
  * @returns {string}
  */
-export function buildResolvePrompt(input) {
-  const lines = [];
-  const holding = input.failure.exit === 'fix_commit_push';
-  lines.push(
-    holding
-      ? `이 세션이 맡았던 Bead ${input.bead_id}의 PR이 머지 전 검증에 실패해 보류 중입니다. 수정 커밋을 같은 브랜치에 push하면 Worker가 자동으로 재검증·머지합니다.${input.fallback_reason === null ? '' : ` 기록된 세션을 이어받지 못했습니다(${input.fallback_reason}) — 계보는 \`bd show ${input.bead_id} --json\`의 notes와 댓글에서 읽으세요.`}`
-      : input.fallback_reason === null
-        ? `이 세션이 맡았던 Bead ${input.bead_id}의 작업이 terminal 실패로 멈춰 사람 확인이 필요합니다.`
-        : `Bead ${input.bead_id}의 작업이 terminal 실패로 멈춰 사람 확인이 필요합니다. 기록된 세션을 이어받지 못했습니다(${input.fallback_reason}) — 계보는 \`bd show ${input.bead_id} --json\`의 notes와 댓글에서 읽으세요.`
-  );
-  lines.push(`- 클래스: ${input.failure.failure_class}`);
-  lines.push(`- 원인 코드: ${input.failure.reason}`);
-  if (input.failure.stage) {
-    lines.push(`- 단계: ${input.failure.stage}`);
+export function failureSituation(failure) {
+  /**
+   * @param {unknown} value
+   * @returns {string}
+   */
+  const flat = (value) =>
+    typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  return [
+    `클래스 ${flat(failure.failure_class)}`,
+    `원인 코드 ${flat(failure.reason)}`,
+    flat(failure.stage) && `단계 ${flat(failure.stage)}`,
+    flat(failure.detail) && `진단 ${flat(failure.detail)}`,
+    flat(failure.log_path) && `로그 ${flat(failure.log_path)}`
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
+ * The first input of a failure conversation: the dotfiles entry block with
+ * the `실패 <클래스> · <원인 코드>` reason, the failure's situation line, the
+ * row's worktree (`(없음)` when there is none) and the checkout. The retired
+ * beads-ui prompt (`buildResolvePrompt`) said no more than the block does.
+ *
+ * @param {{ failure: ResolveFailureContext, worktree: string|null, checkout: string }} input
+ * @returns {string}
+ */
+export function buildFailureEntry(input) {
+  return fillConversationEntry({
+    reason: failureConversationReason(input.failure),
+    situation: failureSituation(input.failure),
+    worktree: input.worktree,
+    checkout: input.checkout
+  });
+}
+
+/**
+ * The row a failure conversation's `인계` acts on, fingerprinted as it stands
+ * now (UI-18a5 §3.4 한 번 규칙). The kind picks the exit; the identity
+ * changes once that exit settles the row, which is how a restarted pass tells
+ * a run exit from one that never started.
+ *
+ *   - `verify_hold`: a pre-merge verify hold — the exit is the `[머지]`
+ *     merge-queue re-enqueue, which issues a new authority.
+ *   - `cleanup`: a stopped post-merge cleanup (a needs-human post-merge
+ *     terminal keeps its cleanup record) — the exit is the cleanup retry.
+ *   - `merge_gate`: any other needs-human terminal, the merge gate's forged
+ *     receipts above all (`receipt_hold`) — no exit; only a person's `[머지]`
+ *     waives it.
+ *   - `discard`: a failed discard operation — the exit is its retry.
+ *
+ * @param {any} queue - Queue snapshot.
+ * @param {string} bead_id
+ * @returns {{ kind: 'cleanup'|'discard'|'verify_hold'|'merge_gate', identity: string }|null}
+ */
+export function failureHandoffTarget(queue, bead_id) {
+  const intent = queue?.completion_intents?.[bead_id];
+  const cleanup = queue?.cleanup_failed?.[bead_id];
+  if (intent?.phase === 'holding' && intent.hold) {
+    const entry = (Array.isArray(queue?.merge_queue) ? queue.merge_queue : [])
+      .filter((/** @type {any} */ item) => item?.bead_id === bead_id)
+      .at(-1);
+    return {
+      kind: 'verify_hold',
+      identity: `verify_hold:${intent.hold.head_sha || intent.subject?.head_sha || ''}:${entry?.authority?.id || 'none'}`
+    };
   }
-  if (input.failure.detail) {
-    lines.push(`- 진단: ${input.failure.detail}`);
+  if (cleanup && typeof cleanup === 'object') {
+    return {
+      kind: 'cleanup',
+      identity: `cleanup:${cleanup.step}:${cleanup.at}`
+    };
   }
-  lines.push(`- 체크아웃: ${input.checkout}`);
-  lines.push('');
-  lines.push('후보 행동');
-  lines.push(
-    '1. 원인 코드와 로그를 읽고 무엇이 막혔는지 한 문단으로 확정한다.'
-  );
-  lines.push(
-    holding
-      ? '2. 고칠 수 있는 원인이면 고쳐서 같은 브랜치에 push한다 — 재검증과 머지는 Worker가 자동으로 잇는다.'
-      : '2. 고칠 수 있는 원인이면 고치고, 사용자에게 Worker 화면의 [정리 재시도]로 재개하라고 알린다.'
-  );
-  lines.push(
-    '3. 판단이 필요하면 `AskUserQuestion`을 부른다 — 이 세션은 Discord로 중계된다.'
-  );
-  lines.push('4. 확인한 것과 바꾼 것을 Bead notes에 남긴다.');
-  lines.push(
-    '이 세션은 Worker attempt를 이어받은 승계 세션이다 — workflow `Attempt continuation`대로 `impl_entry`·`plan_approval`을 쓰지 않고 `workflow_mode=fast_track`으로 잇는다.'
-  );
-  lines.push(
-    '이 Bead가 머지·close·폐기로 정산되면 Worker가 이 세션을 닫고(claude: `/exit`) Discord 스레드는 아카이브된다.'
-  );
-  lines.push('');
-  lines.push(
-    '금지: 머지·폐기 실행 · Worker 큐 상태 직접 편집 · 실패 기록 삭제.'
-  );
-  return lines.join('\n') + '\n';
+  if (intent?.phase === 'needs_human') {
+    return {
+      kind: 'merge_gate',
+      identity: `merge_gate:${intent.subject?.head_sha || ''}`
+    };
+  }
+  const discard = failedDiscardOperation(queue, bead_id);
+  if (discard) {
+    return {
+      kind: 'discard',
+      identity: `discard:${discard.operation_id}:${discard.phase}:${discard.last_error}`
+    };
+  }
+  return null;
+}
+
+/**
+ * The Bead's newest active discard operation that stopped on an error — the
+ * one a 폐기 실패 row retries.
+ *
+ * @param {any} queue
+ * @param {string} bead_id
+ * @returns {{ operation_id: string, phase: string, last_error: string }|null}
+ */
+export function failedDiscardOperation(queue, bead_id) {
+  const operations = queue?.discard_operations;
+  const found = Object.values(
+    operations && typeof operations === 'object' ? operations : {}
+  )
+    .filter(
+      (/** @type {any} */ value) =>
+        value &&
+        value.bead_id === bead_id &&
+        discardOperationActive(value) &&
+        typeof value.last_error === 'string' &&
+        value.last_error.length > 0
+    )
+    .sort(
+      (/** @type {any} */ left, /** @type {any} */ right) =>
+        (left.requested_at || 0) - (right.requested_at || 0)
+    )
+    .at(-1);
+  return found ? /** @type {any} */ (found) : null;
 }
 
 /**
@@ -296,6 +362,8 @@ export function buildResolvePrompt(input) {
  * bead names no session at all (codex-orchestration-parity §4.1): a recorded
  * source that merely cannot be forked keeps its own provider, so a tool error
  * never moves the work between CLIs.
+ * @property {(file_path: string) => boolean} [existsSync] - Whether the row's
+ * worktree is there, for the entry block's `구현 워크트리` slot.
  */
 
 /**
@@ -353,6 +421,8 @@ export function interactiveTmuxSessionName(getConfig, log) {
  */
 export function createResolveSession(deps) {
   const log = deps.log || default_log;
+  const existsSync =
+    deps.existsSync || ((/** @type {string} */ p) => fs.existsSync(p));
   const launcher = createTmuxLauncher({
     ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
     ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
@@ -454,11 +524,11 @@ export function createResolveSession(deps) {
         input.bead_id,
         input.attempt
       );
-      const prompt = buildResolvePrompt({
-        bead_id: input.bead_id,
+      const row_worktree = path.join(checkout, '.worktrees', input.bead_id);
+      const prompt = buildFailureEntry({
         failure: input.failure,
-        checkout,
-        fallback_reason
+        worktree: existsSync(row_worktree) ? row_worktree : null,
+        checkout
       });
       const launch_session_id = runner === 'claude' ? randomUUID() : null;
       const command_args =
@@ -507,7 +577,16 @@ export function createResolveSession(deps) {
               settled_by: null,
               state: 'live',
               exit_requested_at: null,
-              defer_since: null
+              defer_since: null,
+              conversation: {
+                stop: failureConversationReason(input.failure),
+                wait_id: null,
+                processed_message_at: null,
+                message_excerpt: null,
+                result: null,
+                handoff: null,
+                takeover_notified_at: null
+              }
             });
           } else {
             log('interactive session store unavailable for %s', input.bead_id);

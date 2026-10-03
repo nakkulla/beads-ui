@@ -88,6 +88,7 @@ import {
   releasedChip,
   resolvedBlockerChip
 } from './queue-blockers.js';
+import { tileResolveFields } from './tile-resolve.js';
 import { waitKindRow } from './wait-vocabulary.js';
 
 /**
@@ -577,7 +578,8 @@ const DONE_KIND_LABELS = {
  * @property {string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null} token_total
  * - 이 레포 완료 레인의 토큰 합계. 아무 행도 보고하지 않았으면 `null`이다.
  * @property {Array<Record<string, any>>} cleanup_failures - durable 정리 실패
- * 기록 (worker-phase2 §6).
+ * 기록 (worker-phase2 §6). 각 기록의 `pair`는 타임라인이 그리는 짝의
+ * `tileResolveFields` 판정이다 (UI-18a5 §3.2).
  * @property {string|null} declared_base - 워크스페이스가 선언한 base (UI-j6wa
  * §3). 선언을 읽지 못했거나 구서버면 `null`이다 (fail-quiet).
  * @property {Array<Record<string, any>>} repo_operations - 서버가 이미 투영한
@@ -844,7 +846,7 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
               // §3.2): 대화가 인계하면 Worker가 그 세션을 이어간다.
               resume_eligible: false,
               resume_reason:
-                '확인 필요 — [세션에서 해결]로 같은 세션과 대화합니다',
+                '확인 필요 — [세션에서 이어가기]로 같은 세션과 대화합니다',
               confirmation: discard.confirmation,
               history: input.bead_timelines?.[bead_id]
             })
@@ -2933,6 +2935,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const list = Array.isArray(workspaces) ? workspaces : [];
   /** @type {Map<string, InteractiveSessionView[]>} */
   const interactive_by_bead = new Map();
+  /** @type {Map<string, string>} */
+  const refusal_by_bead = new Map();
   const states = Array.isArray(workspaces_state) ? workspaces_state : [];
   const done_since =
     options && typeof options.done_since === 'number'
@@ -3067,6 +3071,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
           ? workspace.revision
           : 0;
     const attempts = objectOf(workspace.attempts);
+    // 실패·외부 작업 완료 대화의 인계 거절 사유 (UI-18a5 §3.4). 키가 없는
+    // 구서버 스냅샷은 거절이 없는 것으로 읽는다 (fail-quiet).
+    for (const [bead_id, refusal] of Object.entries(
+      objectOf(/** @type {any} */ (workspace).conversation_refusals)
+    )) {
+      const reason = /** @type {any} */ (refusal)?.reason;
+      if (typeof reason === 'string' && reason.length > 0) {
+        refusal_by_bead.set(`${root_dir}\u0000${bead_id}`, reason);
+      }
+    }
     for (const [key, record] of Object.entries(
       objectOf(workspace.interactive_sessions)
     )) {
@@ -3170,7 +3184,23 @@ export function buildLanes(workspaces, workspaces_state, options) {
         failure_code:
           rec && typeof rec.failure_code === 'string'
             ? rec.failure_code
-            : undefined
+            : undefined,
+        // 저장소 작업 타임라인의 짝도 카드와 같은 판정 하나를 읽는다 (UI-18a5
+        // §3.2): 멈춘 정리 행의 재료와 이 Bead의 대화형 세션·거절 기록을
+        // `tileResolveFields`에 넘긴 답이다.
+        pair: tileResolveFields({
+          id: bead_id,
+          failure_material: {
+            cleanup: true,
+            cleanup_retry: true,
+            completion_phase: null
+          },
+          interactive_sessions:
+            interactive_by_bead.get(`${root_dir}\u0000${bead_id}`) || [],
+          conversation_refusal: refusal_by_bead.get(
+            `${root_dir}\u0000${bead_id}`
+          )
+        })
       }))
     );
     // 이슈 필드 오버레이 (§4.1): `{ priority?, from_id?, metadata?, labels?,
@@ -4833,6 +4863,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
   ]) {
     item.interactive_sessions =
       interactive_by_bead.get(`${item.root_dir}\u0000${item.id}`) || [];
+    const refusal = refusal_by_bead.get(`${item.root_dir}\u0000${item.id}`);
+    if (refusal) {
+      item.conversation_refusal = refusal;
+    }
   }
 
   // plan 묶음은 한 경로로 모든 레인 행에 얹는다 (UI-ruwu §2): 행이 이미 자기

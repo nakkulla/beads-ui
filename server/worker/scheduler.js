@@ -137,6 +137,10 @@ import {
   receiptProbeError
 } from './receipt-check.js';
 import {
+  failedDiscardOperation,
+  failureHandoffTarget
+} from './resolve-session.js';
+import {
   acquireClaudeLaunch,
   liftDelegation,
   observeClaudeLaunch
@@ -148,6 +152,7 @@ import { terminalResultOf } from './runner/session.js';
 import { stderrPathOf } from './session-log.js';
 import {
   resolveSessionFile as defaultResolveSessionFile,
+  qualifySessionEntry,
   qualifySessionFork
 } from './session-ref.js';
 import { isSessionStalledRecovery } from './session-stall.js';
@@ -701,7 +706,12 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
  * @property {ReturnType<typeof import('./tmux-launcher.js').createTmuxLauncher>} [interactiveLauncher]
- * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'> & {onCompletion?:import('./external-wait/observer.js').RecordCallback, stop?:(workspace: string, wait_id: string, bead_id?: string) => Promise<{ ok?: boolean, status?: number, error?: string }|Record<string, unknown>>}} [externalWait]
+ * @property {{ retryCleanup: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, retryDiscard: (workspace: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }>, enqueueMerge: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }> }} [conversationExits]
+ * The Worker exits a failure conversation's `인계` runs (UI-18a5 §3.4): the
+ * same cleanup retry, discard retry and `[머지]` merge-queue re-enqueue the
+ * row's own buttons call. Absent wiring refuses the handoff
+ * (`exit_unwired`) instead of guessing.
+ * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'> & Partial<Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'revertSessionResume'>> & {onCompletion?:import('./external-wait/observer.js').RecordCallback, stop?:(workspace: string, wait_id: string, bead_id?: string) => Promise<{ ok?: boolean, status?: number, error?: string }|Record<string, unknown>>}} [externalWait]
  * `stop` is the service's [관찰 중단]: it ends observation AND unsets the
  * bead's `external_wait` key; given the `bead_id` it also clears a key whose
  * wait record is gone. The ✕ withdrawal of an external-job attempt runs it
@@ -854,6 +864,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   awaitingUser?: (i: any) => void,
  *   conversationAnswer?: (i: any) => void,
  *   conversationTakeover?: (i: any) => void,
+ *   conversationResumed?: (i: any) => void,
  *   providerHoldEntered?: (i: any) => void,
  *   providerRecovered?: (i: any) => void,
  *   providerLivePreempt?: (i: any) => void,
@@ -1311,15 +1322,55 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
 }
 
 /**
- * Timeline label of each interactive session kind (`… 세션 시작`).
+ * Timeline label of each interactive session kind (`… 세션 시작`). Every kind
+ * reads `대화` since UI-18a5 §3.5: the fork / same-session difference is the
+ * launch fact the start line already carries, not a different session type.
  *
  * @type {Record<import('./queue-store.js').InteractiveSession['kind'], string>}
  */
 const INTERACTIVE_KIND_LABELS = {
-  resolve: '해결',
-  inquiry: '문의',
-  external_resume: '재개'
+  resolve: '대화',
+  inquiry: '대화',
+  external_resume: '대화'
 };
+
+/**
+ * The 외부 작업 완료 conversation an `인계` dispatch continues (UI-18a5 §3.4):
+ * its result line for the `## 대화 결과` block, its record key and launch for
+ * the attempt's `conversation_source`, and its own session as the fork source.
+ *
+ * @typedef {Object} ExternalConversationDispatch
+ * @property {string} line
+ * @property {string} key
+ * @property {number} launched_at
+ * @property {'claude'|'codex'} provider
+ * @property {string|null} session_id
+ */
+
+/**
+ * What a failure conversation's `인계` runs, per handoff target kind
+ * (UI-18a5 §3.4 인계 표), in the `↪ Worker가 이어감` push's `실행:` words.
+ * `merge_gate` has none: only a person's `[머지]` waives that hold.
+ *
+ * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold', string>>}
+ */
+const FAILURE_HANDOFF_ACTIONS = Object.freeze({
+  cleanup: '정리 재시도',
+  discard: '폐기 재시도',
+  verify_hold: '머지 큐 재등록'
+});
+
+/**
+ * The `<행 종류>` word of the `대화 인계 · <행 종류> · <결과 줄>` timeline line.
+ *
+ * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'merge_gate', string>>}
+ */
+const FAILURE_HANDOFF_ROWS = Object.freeze({
+  cleanup: '실패 — 머지 후 정리',
+  discard: '실패 — 폐기',
+  verify_hold: '실패 — 머지 전 검증 보류',
+  merge_gate: '실패 — 머지 게이트'
+});
 
 /**
  * The turn stage a live interactive pane's hook options describe (UI-ri8n
@@ -1760,7 +1811,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationAnswer'|'conversationTakeover'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerLivePreempt'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationAnswer'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerLivePreempt'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -9459,6 +9510,32 @@ export function createScheduler(deps) {
   const interactive_passes = new Map();
 
   /**
+   * Failure-handoff exits this process started and has not settled, keyed by
+   * `[workspace, record key]` → the record's `launched_at`. An exit runs
+   * outside the pass that started it: its own success path settles the row and
+   * reconciles the conversations again, and that pass queues behind the lock.
+   * A pass skips the record while its exit runs; a restart forgets the entry
+   * and the durable `started_at` decides (UI-18a5 §3.4 한 번 규칙).
+   *
+   * @type {Map<string, number>}
+   */
+  const failure_exits = new Map();
+
+  /**
+   * Whether this process is still running the failure-handoff exit of this
+   * very conversation record.
+   *
+   * @param {string} workspace
+   * @param {string} key
+   * @param {{ launched_at: number }} record
+   */
+  function failureExitRunning(workspace, key, record) {
+    return (
+      failure_exits.get(JSON.stringify([workspace, key])) === record.launched_at
+    );
+  }
+
+  /**
    * Run one interactive-session step behind every earlier one for this
    * workspace: the periodic pass, a settlement-triggered pass, and the
    * `[워커로 이어가기]` click all read and write the same records.
@@ -9498,20 +9575,16 @@ export function createScheduler(deps) {
   const CONVERSATION_BUTTON_LINE = '사용자가 [워커로 이어가기]로 인계';
 
   /**
-   * Whether an interactive record is a same-session conversation still owned
-   * by the reconcile pass (UI-nuwy §3.3). A legacy fork record has no
-   * `conversation` and keeps the old rules everywhere.
+   * Whether an interactive record is a Worker session conversation still
+   * owned by the reconcile pass (UI-nuwy §3.3) — of any kind since UI-18a5
+   * §3.4. A record launched before its kind carried `conversation` keeps the
+   * old rules everywhere until it settles.
    *
    * @param {import('./queue-store.js').InteractiveSession|undefined|null} record
    * @returns {record is import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }}
    */
   function isOpenConversation(record) {
-    return (
-      !!record &&
-      record.kind === 'inquiry' &&
-      record.settled_at === null &&
-      !!record.conversation
-    );
+    return !!record && record.settled_at === null && !!record.conversation;
   }
 
   /**
@@ -9797,7 +9870,9 @@ export function createScheduler(deps) {
             line: CONVERSATION_BUTTON_LINE,
             source: /** @type {const} */ ('button'),
             message_at: record.conversation.processed_message_at,
-            reserved_at: at
+            reserved_at: at,
+            target: null,
+            started_at: null
           }
         };
         if (!patchInteractiveRecord(workspace, key, record, { conversation })) {
@@ -9838,6 +9913,391 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Leave a failure or 외부 작업 완료 conversation's refused handoff on the
+   * card and the timeline (UI-18a5 §3.4 실행 전 거절). The conversation record
+   * itself is removed by the caller; the row stays and the pair returns.
+   *
+   * @param {string} workspace
+   * @param {import('./queue-store.js').InteractiveSession} record
+   * @param {string} reason
+   */
+  function refuseConversationHandoff(workspace, record, reason) {
+    if (record.kind === 'resolve' || record.kind === 'external_resume') {
+      const written = deps.store.recordConversationRefusal?.(
+        workspace,
+        record.bead_id,
+        { reason, kind: record.kind }
+      );
+      if (written?.ok) {
+        notifyChanged(workspace);
+      }
+    }
+    appendTimeline({
+      bead_id: record.bead_id,
+      ...(record.attempt_id ? { attempt_id: record.attempt_id } : {}),
+      kind: 'interactive_session',
+      seq: `${record.kind}:${record.launched_at}:handoff_refused`,
+      summary: `대화 인계 거절 · ${reason}`
+    });
+  }
+
+  /**
+   * Whether an attempt already carries this 외부 작업 완료 conversation's
+   * identity — the handoff's one dispatch is spent (UI-18a5 §3.4 한 번 규칙).
+   *
+   * @param {string} workspace
+   * @param {string} key
+   * @param {number} launched_at
+   * @returns {boolean}
+   */
+  function externalHandoffSpent(workspace, key, launched_at) {
+    return Object.values(deps.store.snapshot(workspace).attempts || {}).some(
+      (attempt) =>
+        attempt.conversation_source?.key === key &&
+        attempt.conversation_source.launched_at === launched_at
+    );
+  }
+
+  /**
+   * The dispatch identity of an 외부 작업 완료 conversation's `인계`.
+   *
+   * @param {string} key
+   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+   * @returns {ExternalConversationDispatch}
+   */
+  function externalConversationDispatch(key, record) {
+    return {
+      line: /** @type {import('./queue-store.js').ConversationHandoff} */ (
+        record.conversation.handoff
+      ).line,
+      key,
+      launched_at: record.launched_at,
+      provider: record.provider,
+      session_id: record.session_id
+    };
+  }
+
+  /**
+   * The 외부 작업 완료 conversation whose `인계` owns this wait's resume, read
+   * from its still-stored record. The record is removed only after the
+   * handoff's dispatch returned, so a restart between the reservation and the
+   * attempt record finds it here and the settled resume is that same
+   * dispatch (UI-18a5 §3.4 한 번 규칙).
+   *
+   * @param {string} workspace
+   * @param {WaitRecord} wait
+   * @returns {ExternalConversationDispatch|null}
+   */
+  function externalHandoffOf(workspace, wait) {
+    const key = `${wait.bead_id}:external_resume`;
+    const record = deps.store.snapshot(workspace).interactive_sessions?.[key];
+    if (
+      !isOpenConversation(record) ||
+      record.kind !== 'external_resume' ||
+      !record.conversation.handoff ||
+      record.conversation.wait_id !== wait.wait_id
+    ) {
+      return null;
+    }
+    return externalConversationDispatch(key, record);
+  }
+
+  /**
+   * Return an 외부 작업 완료 conversation that ended without `인수` or `인계`
+   * to its completion row (UI-18a5 §3.4 되돌림): re-set the Bead's
+   * `external_wait` key to the same `wait_id`, read it back, then move the
+   * record `resumed → completing` with `resume` cleared. The order is fixed
+   * and every step is the same value again, so a pass that stopped midway
+   * re-runs it from the top.
+   *
+   * @param {string} workspace
+   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+   * @returns {Promise<'reverted'|'retry'|'gone'>} `retry` keeps the
+   * conversation record for the next pass; `gone` means there is no
+   * completion row left to return to.
+   */
+  async function revertExternalConversation(workspace, record) {
+    const store = deps.externalWait;
+    const wait_id = record.conversation.wait_id;
+    if (!store || typeof store.revertSessionResume !== 'function' || !wait_id) {
+      return 'gone';
+    }
+    const wait = store.get(workspace, wait_id);
+    if (!wait || wait.bead_id !== record.bead_id) {
+      return 'gone';
+    }
+    if (wait.stage === 'completing') {
+      return 'reverted';
+    }
+    if (wait.stage !== 'resumed' || wait.resume?.mode !== 'session') {
+      return 'gone';
+    }
+    const live = store.findByBead(workspace, record.bead_id);
+    if (live && live.wait_id !== wait_id) {
+      return 'gone';
+    }
+    try {
+      await deps.bd.setMetadata(record.bead_id, 'external_wait', wait_id);
+      if (
+        (await deps.bd.readMetadata(record.bead_id, 'external_wait')) !==
+        wait_id
+      ) {
+        throw new Error('external_wait_set_readback');
+      }
+      store.revertSessionResume(workspace, wait_id);
+    } catch (err) {
+      log(
+        'external conversation revert failed for %s/%s: %o',
+        workspace,
+        record.bead_id,
+        err
+      );
+      return 'retry';
+    }
+    appendTimeline({
+      bead_id: record.bead_id,
+      kind: 'interactive_session',
+      seq: `${record.kind}:${record.launched_at}:reverted`,
+      summary: `외부 작업 완료로 되돌림 · ${wait_id}`
+    });
+    notifyChanged(workspace);
+    return 'reverted';
+  }
+
+  /**
+   * Run a failure conversation's `인계` once its window is gone (UI-18a5 §3.4
+   * 인계 표): the row's own Worker exit with the person's click authority —
+   * the cleanup retry (an unknown-outcome post-merge job included), the
+   * discard retry, or the `[머지]` merge-queue re-enqueue. A merge-gate hold
+   * runs nothing and ends like `보류`.
+   *
+   * 한 번 규칙: `started_at` is written durably before the exit is called. A
+   * restarted pass that finds it never calls the exit again — a changed
+   * target identity means the exit settled the row, an unchanged one ends as
+   * `결과 미상` so the person decides.
+   *
+   * The exit itself runs outside the pass: the cleanup and discard exits
+   * reconcile the conversations again on success, and that pass waits for
+   * this one to finish. Until the exit returns the record stays and later
+   * passes skip it; `end` then removes it.
+   *
+   * @param {string} workspace
+   * @param {string} key
+   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+   * @param {() => void} end - Removes the record once a started exit returned.
+   * @returns {Promise<{ done: boolean }>} `done: false` keeps the record for
+   * the next pass or the running exit.
+   */
+  async function executeFailureHandoff(workspace, key, record, end) {
+    const conversation = record.conversation;
+    const handoff =
+      /** @type {import('./queue-store.js').ConversationHandoff} */ (
+        conversation.handoff
+      );
+    const bead_id = record.bead_id;
+    const target = handoff.target;
+    const identityNow = () =>
+      failureHandoffTarget(deps.store.snapshot(workspace), bead_id)?.identity ??
+      null;
+    const unchanged = target !== null && identityNow() === target.identity;
+    if (handoff.started_at !== null) {
+      if (!unchanged) {
+        return { done: true };
+      }
+      refuseConversationHandoff(workspace, record, '결과 미상');
+      return { done: true };
+    }
+    if (!unchanged || target === null) {
+      refuseConversationHandoff(workspace, record, '이미 정산됨');
+      return { done: true };
+    }
+    if (target.kind === 'merge_gate') {
+      // `receipt_hold`: only a person's `[머지]` waives it — the handoff runs
+      // nothing and ends like `보류` (UI-18a5 §3.4 결정).
+      appendTimeline({
+        bead_id,
+        kind: 'interactive_session',
+        seq: `${record.kind}:${record.launched_at}:handoff`,
+        summary: `대화 인계 · ${FAILURE_HANDOFF_ROWS.merge_gate} · ${handoff.line} · 실행 없음`
+      });
+      return { done: true };
+    }
+    const exits = deps.conversationExits;
+    if (!exits) {
+      refuseConversationHandoff(workspace, record, 'exit_unwired');
+      return { done: true };
+    }
+    const discard =
+      target.kind === 'discard'
+        ? failedDiscardOperation(deps.store.snapshot(workspace), bead_id)
+        : null;
+    if (target.kind === 'discard' && !discard) {
+      refuseConversationHandoff(workspace, record, '이미 정산됨');
+      return { done: true };
+    }
+    if (
+      !patchInteractiveRecord(workspace, key, record, {
+        conversation: {
+          ...conversation,
+          handoff: { ...handoff, started_at: now() }
+        }
+      })
+    ) {
+      return { done: false };
+    }
+    appendTimeline({
+      bead_id,
+      kind: 'interactive_session',
+      seq: `${record.kind}:${record.launched_at}:handoff`,
+      summary: `대화 인계 · ${FAILURE_HANDOFF_ROWS[target.kind]} · ${handoff.line}`
+    });
+    const action = FAILURE_HANDOFF_ACTIONS[target.kind];
+    const flight = JSON.stringify([workspace, key]);
+    failure_exits.set(flight, record.launched_at);
+    const run = async () => {
+      /** @type {{ ok: boolean, reason?: string|null }} */
+      let result;
+      try {
+        result =
+          target.kind === 'cleanup'
+            ? await exits.retryCleanup(workspace, bead_id)
+            : target.kind === 'discard'
+              ? await exits.retryDiscard(
+                  workspace,
+                  /** @type {{ operation_id: string }} */ (discard).operation_id
+                )
+              : await exits.enqueueMerge(workspace, bead_id);
+      } catch (err) {
+        log('conversation handoff exit failed for %s: %o', bead_id, err);
+        result = { ok: false, reason: 'error' };
+      }
+      try {
+        if (!result.ok && identityNow() === target.identity) {
+          refuseConversationHandoff(
+            workspace,
+            record,
+            result.reason || 'exit_refused'
+          );
+        } else {
+          notifyLifecycle('conversationResumed', {
+            bead_id,
+            decision: handoff.line,
+            action,
+            repo: workspace
+          });
+        }
+        end();
+      } finally {
+        failure_exits.delete(flight);
+      }
+    };
+    run().catch((err) => {
+      log('conversation handoff settlement failed for %s: %o', bead_id, err);
+    });
+    return { done: false };
+  }
+
+  /**
+   * Run an 외부 작업 완료 conversation's `인계` once its window is gone
+   * (UI-18a5 §3.4 인계 표): return the record to its completion row, then
+   * dispatch one Worker attempt from that conversation session under the
+   * current `[워커로 이어가기]` fork rule and admission, with the `## 대화
+   * 결과` block at the head of its prompt. The attempt carries the
+   * conversation's identity, so a restarted pass that finds it treats the
+   * handoff as spent; a refusal leaves the row at `completing` with the pair.
+   *
+   * @param {string} workspace
+   * @param {string} key
+   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+   * @returns {Promise<{ done: boolean }>}
+   */
+  async function executeExternalHandoff(workspace, key, record) {
+    const handoff =
+      /** @type {import('./queue-store.js').ConversationHandoff} */ (
+        record.conversation.handoff
+      );
+    if (externalHandoffSpent(workspace, key, record.launched_at)) {
+      return { done: true };
+    }
+    const reverted = await revertExternalConversation(workspace, record);
+    if (reverted === 'retry') {
+      return { done: false };
+    }
+    if (reverted === 'gone') {
+      refuseConversationHandoff(workspace, record, '이미 정산됨');
+      return { done: true };
+    }
+    const wait_id = /** @type {string} */ (record.conversation.wait_id);
+    appendTimeline({
+      bead_id: record.bead_id,
+      kind: 'interactive_session',
+      seq: `${record.kind}:${record.launched_at}:handoff`,
+      summary: `대화 인계 · 외부 작업 완료 · ${handoff.line}`
+    });
+    /** @type {{ ok: boolean, reason?: string }} */
+    let result;
+    try {
+      result = /** @type {{ ok: boolean, reason?: string }} */ (
+        await resumeExternalWait(workspace, wait_id, {
+          mode: 'fork',
+          conversation: externalConversationDispatch(key, record)
+        })
+      );
+    } catch (err) {
+      log('external conversation dispatch failed for %s: %o', key, err);
+      result = { ok: false, reason: 'error' };
+    }
+    if (result.ok || externalHandoffSpent(workspace, key, record.launched_at)) {
+      return { done: true };
+    }
+    // A refusal before any attempt was reserved returns the row as the
+    // revert left it (`resume` cleared), so the pair stands again.
+    const wait = deps.externalWait?.get(workspace, wait_id);
+    if (
+      wait?.stage === 'completing' &&
+      wait.resume !== null &&
+      wait.resume.attempt_id === null
+    ) {
+      deps.externalWait?.update(workspace, wait_id, (current) => {
+        current.resume = null;
+      });
+      notifyChanged(workspace);
+    }
+    refuseConversationHandoff(
+      workspace,
+      record,
+      result.reason || 'dispatch_refused'
+    );
+    return { done: true };
+  }
+
+  /**
+   * Drop the refusal records whose row is gone: a settled failure, or an
+   * 외부 작업 완료 row no longer at `completing`. The card reads a refusal
+   * only while its row still stands (UI-18a5 §3.4).
+   *
+   * @param {string} workspace
+   */
+  function pruneConversationRefusals(workspace) {
+    const q = deps.store.snapshot(workspace);
+    for (const [bead_id, refusal] of Object.entries(
+      q.conversation_refusals || {}
+    )) {
+      const stands =
+        refusal.kind === 'resolve'
+          ? failureHandoffTarget(q, bead_id) !== null
+          : deps.externalWait?.findByBead(workspace, bead_id)?.stage ===
+            'completing';
+      if (
+        !stands &&
+        deps.store.clearConversationRefusal?.(workspace, bead_id)?.ok
+      ) {
+        notifyChanged(workspace);
+      }
+    }
+  }
+
+  /**
    * @param {string} workspace
    */
   async function reconcileInteractivePass(workspace) {
@@ -9845,6 +10305,7 @@ export function createScheduler(deps) {
     if (!launcher) {
       return;
     }
+    pruneConversationRefusals(workspace);
     const records =
       /** @type {Record<string, import('./queue-store.js').InteractiveSession>} */ (
         deps.store.snapshot(workspace).interactive_sessions || {}
@@ -9943,16 +10404,51 @@ export function createScheduler(deps) {
     }
     /**
      * Settle a conversation whose window is confirmed gone (UI-nuwy §3.4,
-     * §3.5): a handoff continues the attempt first and the record is removed
-     * only after that returns, so a restart mid-way re-runs it; without a
-     * result line the attempt is stamped `pane_gone` and the card offers the
-     * `[워커로 이어가기]` fallback.
+     * §3.5, UI-18a5 §3.4): a handoff runs the row's Worker exit first and the
+     * record is removed only after that returns — a failure exit after it
+     * returns outside this pass — so a restart mid-way re-runs it under the
+     * one-shot rule. Without a handoff the kinds part:
+     *
+     *   - 멈춤 (`inquiry`): without a result line the attempt is stamped
+     *     `pane_gone` and the card offers the `[워커로 이어가기]` fallback.
+     *   - 실패 (`resolve`): the row stays as it is and the pair stands again.
+     *   - 외부 작업 완료 (`external_resume`): `인수` leaves the Bead to the
+     *     session; `보류` or no result line returns the record to its
+     *     completion row first.
      *
      * @param {string} key
      * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
      */
     async function finishConversation(key, record) {
       const conversation = record.conversation;
+      if (record.kind === 'resolve' || record.kind === 'external_resume') {
+        if (conversation.handoff) {
+          const outcome =
+            record.kind === 'resolve'
+              ? await executeFailureHandoff(workspace, key, record, () =>
+                  ended(key, record, 'handoff')
+                )
+              : await executeExternalHandoff(workspace, key, record);
+          if (!outcome.done) {
+            return;
+          }
+          ended(key, record, 'handoff');
+          return;
+        }
+        if (
+          record.kind === 'external_resume' &&
+          conversation.result?.kind !== 'takeover' &&
+          (await revertExternalConversation(workspace, record)) === 'retry'
+        ) {
+          return;
+        }
+        ended(
+          key,
+          record,
+          record.state === 'exiting' ? 'exit_sent' : 'pane_gone'
+        );
+        return;
+      }
       if (conversation.handoff) {
         stampConversationEnd(
           workspace,
@@ -10048,7 +10544,17 @@ export function createScheduler(deps) {
           line: parsed.line,
           source: 'result_line',
           message_at,
-          reserved_at: at
+          reserved_at: at,
+          // A failure handoff fixes the row it will act on NOW (UI-18a5 §3.4
+          // 한 번 규칙); the other kinds carry their target on the record.
+          target:
+            record.kind === 'resolve'
+              ? failureHandoffTarget(
+                  deps.store.snapshot(workspace),
+                  record.bead_id
+                )
+              : null,
+          started_at: null
         };
       }
       if (parsed?.kind === 'takeover') {
@@ -10064,19 +10570,21 @@ export function createScheduler(deps) {
           bead_id: record.bead_id,
           ...(record.attempt_id ? { attempt_id: record.attempt_id } : {}),
           kind: 'interactive_session',
-          seq: `inquiry:${record.launched_at}:${parsed.kind}`,
+          seq: `${record.kind}:${record.launched_at}:${parsed.kind}`,
           summary: `대화 결과 · ${parsed.line}`
         });
       }
       if (parsed?.kind === 'handoff') {
         await closeConversationWindow(workspace, key, record);
       } else if (parsed?.kind === 'hold') {
-        stampConversationEnd(
-          workspace,
-          record.attempt_id,
-          record.launched_at,
-          'hold'
-        );
+        if (record.kind === 'inquiry') {
+          stampConversationEnd(
+            workspace,
+            record.attempt_id,
+            record.launched_at,
+            'hold'
+          );
+        }
         await closeConversationWindow(workspace, key, record);
       } else if (parsed?.kind === 'takeover') {
         notifyLifecycle('conversationTakeover', { bead_id: record.bead_id });
@@ -10196,7 +10704,12 @@ export function createScheduler(deps) {
       }
     }
     for (const [key, record] of Object.entries(records)) {
-      if (!isCurrent(key, record)) {
+      // A failure handoff whose exit is still running belongs to that exit
+      // until it returns — even after the exit settled the row.
+      if (
+        !isCurrent(key, record) ||
+        failureExitRunning(workspace, key, record)
+      ) {
         continue;
       }
       const label = INTERACTIVE_KIND_LABELS[record.kind];
@@ -12866,7 +13379,15 @@ export function createScheduler(deps) {
           current.resume = null;
         });
         if (record.owner.kind === 'session') {
-          await resumeExternalWait(workspace, record.wait_id, { mode });
+          // A reservation an 외부 작업 완료 conversation's `인계` made is that
+          // handoff's one dispatch: it resumes with the same conversation, so
+          // the handoff pass then finds it spent (UI-18a5 §3.4).
+          const conversation =
+            mode === 'fork' ? externalHandoffOf(workspace, record) : null;
+          await resumeExternalWait(workspace, record.wait_id, {
+            mode,
+            ...(conversation ? { conversation } : {})
+          });
           continue;
         }
       }
@@ -12887,12 +13408,22 @@ export function createScheduler(deps) {
    * Reserve exactly one continuation of a completed wait. Only this entry may
    * bypass the external_wait admission key, after proving the record's owner.
    *
+   * `conversation` is set only by an 외부 작업 완료 conversation's `인계`
+   * (UI-18a5 §3.4) — its handoff pass, or the restart settlement of the
+   * reservation that pass made: the `fork` attempt it dispatches forks the
+   * conversation's own session, puts the conversation's `## 대화 결과` block
+   * at the head of its prompt and carries the conversation's identity.
+   *
    * @param {string} workspace
    * @param {string} wait_id
-   * @param {{ mode: 'fork'|'fresh'|'session' }} options
+   * @param {{ mode: 'fork'|'fresh'|'session', conversation?: ExternalConversationDispatch }} options
    * @returns {Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>}
    */
-  async function resumeExternalWait(workspace, wait_id, { mode }) {
+  async function resumeExternalWait(
+    workspace,
+    wait_id,
+    { mode, conversation }
+  ) {
     const store = deps.externalWait;
     const key = JSON.stringify([workspace, wait_id]);
     if (!store || (mode !== 'fork' && mode !== 'fresh' && mode !== 'session')) {
@@ -13062,7 +13593,8 @@ export function createScheduler(deps) {
           attempt_id,
           mode,
           completion_prompt,
-          reserveResume
+          reserveResume,
+          mode === 'fork' ? (conversation ?? null) : null
         );
       }
       if (!result.ok) {
@@ -13105,6 +13637,12 @@ export function createScheduler(deps) {
    * @param {'fork'|'fresh'} mode
    * @param {string} completion_prompt
    * @param {() => void} reserveResume
+   * @param {ExternalConversationDispatch|null} [conversation]
+   * - The 외부 작업 완료 conversation whose `인계` this launch is (UI-18a5
+   * §3.4): its own session is the fork source — not the newest `session_ref`
+   * item, which a session added during the conversation would be — its result
+   * line heads the prompt as the `## 대화 결과` block, the launch is announced
+   * as `↪ Worker가 이어감`, and the attempt carries its identity.
    */
   async function launchExternalWaitSession(
     workspace,
@@ -13113,14 +13651,28 @@ export function createScheduler(deps) {
     attempt_id,
     mode,
     completion_prompt,
-    reserveResume
+    reserveResume,
+    conversation = null
   ) {
     const qualified =
-      mode === 'fork'
-        ? qualifySessionFork({ session_ref: snap.session_ref }, null, {
-            home_dir: deps.homeDir
-          })
-        : null;
+      mode !== 'fork'
+        ? null
+        : !conversation
+          ? qualifySessionFork({ session_ref: snap.session_ref }, null, {
+              home_dir: deps.homeDir
+            })
+          : conversation.session_id === null
+            ? { ok: /** @type {const} */ (false), reason: 'no_session_id' }
+            : qualifySessionEntry(
+                {
+                  index: 0,
+                  provider: conversation.provider,
+                  session_id: conversation.session_id,
+                  host: os.hostname()
+                },
+                null,
+                { home_dir: deps.homeDir }
+              );
     if (qualified && !qualified.ok) {
       return { ok: false, reason: qualified.reason };
     }
@@ -13282,6 +13834,14 @@ export function createScheduler(deps) {
           quickfix_lane,
           forked_from_session_id: resume_session_id,
           continuation_mode: resume_session_id ? 'session' : 'fresh',
+          ...(conversation
+            ? {
+                conversation_source: {
+                  key: conversation.key,
+                  launched_at: conversation.launched_at
+                }
+              }
+            : {}),
           worker_claim: 'pending',
           status: 'running',
           started_at: null,
@@ -13314,14 +13874,17 @@ export function createScheduler(deps) {
       prior_wf,
       stamped_keys,
       wt_path: prepared_worktree.path,
-      launch_kind: /** @type {const} */ ('resume'),
+      launch_kind: conversation
+        ? /** @type {const} */ ('conversation_return')
+        : /** @type {const} */ ('resume'),
+      ...(conversation ? { conversation_decision: conversation.line } : {}),
       resume_session_id,
       ...(resume_session_id ? { fork_session: true } : {}),
       verify_worktree: true,
       quickfix_lane,
       spawnBead: {
         id: bead_id,
-        prompt: `${mode === 'fork' ? resumePrompt(bead_id, null) : defaultTaskPrompt(bead_id)}\n\n${completion_prompt}`
+        prompt: `${conversation ? `${conversationReturnBlock(conversation.line)}\n\n` : ''}${mode === 'fork' ? resumePrompt(bead_id, null) : defaultTaskPrompt(bead_id)}\n\n${completion_prompt}`
       }
     };
     const claim = await claimBeadForDispatch(workspace, bead_id, attempt_id);
