@@ -462,6 +462,22 @@ export function qualifySessionFork(metadata, runner_name, options = {}) {
   if (current === undefined) {
     return { ok: false, reason: 'no_session_ref' };
   }
+  return qualifySessionEntry(current, runner_name, options);
+}
+
+/**
+ * Qualify one named session as a fork source by the same three checks, in
+ * the same order, that {@link qualifySessionFork} applies to the current
+ * `session_ref` item. A caller that already knows WHICH session it must fork
+ * (an 외부 작업 완료 conversation's own session, UI-18a5 §3.4) passes it here
+ * instead of re-picking the newest item.
+ *
+ * @param {SessionRefEntry} current
+ * @param {string|null} runner_name
+ * @param {{ home_dir?: string, hostname?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
+ * @returns {SessionForkQualification}
+ */
+export function qualifySessionEntry(current, runner_name, options = {}) {
   if (
     !isSafeSessionId(current.session_id) ||
     current.session_id.startsWith('-')

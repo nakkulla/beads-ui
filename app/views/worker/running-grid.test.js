@@ -4124,6 +4124,100 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
     ]);
   });
 
+  test('stands the failed discard pair in the action foot of a failed tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        failedTile({
+          discard: failedDiscard({ label: '워커로 이어가기' }),
+          resolve_action: true,
+          resolve_enabled: true,
+          pair_anchor: 'discard'
+        })
+      ]),
+      mount
+    );
+
+    const foot = mount.querySelector('.rtile__foot');
+    expect(
+      Array.from(foot?.querySelectorAll('button') || []).map((el) =>
+        el.textContent?.trim()
+      )
+    ).toEqual(['세션에서 이어가기', '워커로 이어가기', '폐기 포기']);
+    expect(
+      mount.querySelector('.rtile__hd-actions button.rtile__discard')
+    ).toBe(null);
+  });
+
+  test('stands the failed discard pair in the action foot of a running tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        failedTile({
+          failed: false,
+          status: /** @type {const} */ ('running'),
+          status_label: '실행 중',
+          discard: failedDiscard({ label: '워커로 이어가기' }),
+          resolve_action: true,
+          resolve_enabled: true,
+          pair_anchor: 'discard'
+        })
+      ]),
+      mount
+    );
+
+    const foot = mount.querySelector('.rtile__foot');
+    expect(
+      Array.from(foot?.querySelectorAll('button') || []).map((el) =>
+        el.textContent?.trim()
+      )
+    ).toEqual(['세션에서 이어가기', '워커로 이어가기', '폐기 포기']);
+  });
+
+  test('keeps a plain discard in the header actions', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        failedTile({
+          discard: failedDiscard({
+            label: '폐기',
+            error: null,
+            operation: null,
+            abandon: { action: false, label: '폐기 포기', title: '' }
+          })
+        })
+      ]),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.rtile__hd-actions .rtile__discard')?.textContent
+    ).toContain('폐기');
+  });
+
+  test('keeps the abandon exit while a takeover hides the pair', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        failedTile({
+          discard: failedDiscard({ action: false }),
+          pair_anchor: 'discard',
+          pair_held: true
+        })
+      ]),
+      mount
+    );
+
+    expect([
+      mount.querySelector('.rtile__discard'),
+      mount.querySelector('.rtile__discard-abandon')?.textContent?.trim()
+    ]).toEqual([null, '폐기 포기']);
+  });
+
   test('carries the operation identity the abandon request needs', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 

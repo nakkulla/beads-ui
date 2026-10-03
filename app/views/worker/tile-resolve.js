@@ -164,7 +164,7 @@ function failureRow(item) {
  * or a PR 대기 row (`failure_material`, `merge_action`).
  * @param {boolean} [resolve_pending]
  * @param {boolean} [handoff_pending]
- * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string, handoff_action?: boolean, handoff_enabled?: boolean, handoff_title?: string, handoff_attempt_id?: string|null, pair_anchor?: 'handoff'|'merge'|'discard'|'external'|null, pair_held?: boolean, discard?: any, merge_action?: boolean }}
+ * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string, handoff_action?: boolean, handoff_enabled?: boolean, handoff_title?: string, handoff_attempt_id?: string|null, pair_anchor?: 'handoff'|'merge'|'discard'|'external'|null, pair_held?: boolean, discard?: any, discard_action?: boolean, merge_action?: boolean }}
  */
 export function tileResolveFields(
   item,
@@ -213,11 +213,14 @@ export function tileResolveFields(
           ? 'external'
           : null;
   const held = holdsConversationOutcome(item.interactive_sessions);
-  /** @type {{ pair_anchor?: 'handoff'|'merge'|'discard'|'external'|null, pair_held?: boolean, discard?: any, merge_action?: boolean }} */
+  /** @type {{ pair_anchor?: 'handoff'|'merge'|'discard'|'external'|null, pair_held?: boolean, discard?: any, discard_action?: boolean, merge_action?: boolean }} */
   const pair =
     anchor === null && !held ? {} : { pair_anchor: anchor, pair_held: held };
   if (held && anchor === 'discard') {
+    // A PR 대기 row also carries the button as its own `discard_action` copy;
+    // both are this row's `[워커로 이어가기]`.
     pair.discard = { ...item.discard, action: false };
+    pair.discard_action = false;
   }
   if (held && anchor === 'merge') {
     pair.merge_action = false;

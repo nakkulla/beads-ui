@@ -88,6 +88,7 @@ import {
   releasedChip,
   resolvedBlockerChip
 } from './queue-blockers.js';
+import { tileResolveFields } from './tile-resolve.js';
 import { waitKindRow } from './wait-vocabulary.js';
 
 /**
@@ -577,7 +578,8 @@ const DONE_KIND_LABELS = {
  * @property {string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null} token_total
  * - 이 레포 완료 레인의 토큰 합계. 아무 행도 보고하지 않았으면 `null`이다.
  * @property {Array<Record<string, any>>} cleanup_failures - durable 정리 실패
- * 기록 (worker-phase2 §6).
+ * 기록 (worker-phase2 §6). 각 기록의 `pair`는 타임라인이 그리는 짝의
+ * `tileResolveFields` 판정이다 (UI-18a5 §3.2).
  * @property {string|null} declared_base - 워크스페이스가 선언한 base (UI-j6wa
  * §3). 선언을 읽지 못했거나 구서버면 `null`이다 (fail-quiet).
  * @property {Array<Record<string, any>>} repo_operations - 서버가 이미 투영한
@@ -3182,7 +3184,23 @@ export function buildLanes(workspaces, workspaces_state, options) {
         failure_code:
           rec && typeof rec.failure_code === 'string'
             ? rec.failure_code
-            : undefined
+            : undefined,
+        // 저장소 작업 타임라인의 짝도 카드와 같은 판정 하나를 읽는다 (UI-18a5
+        // §3.2): 멈춘 정리 행의 재료와 이 Bead의 대화형 세션·거절 기록을
+        // `tileResolveFields`에 넘긴 답이다.
+        pair: tileResolveFields({
+          id: bead_id,
+          failure_material: {
+            cleanup: true,
+            cleanup_retry: true,
+            completion_phase: null
+          },
+          interactive_sessions:
+            interactive_by_bead.get(`${root_dir}\u0000${bead_id}`) || [],
+          conversation_refusal: refusal_by_bead.get(
+            `${root_dir}\u0000${bead_id}`
+          )
+        })
       }))
     );
     // 이슈 필드 오버레이 (§4.1): `{ priority?, from_id?, metadata?, labels?,

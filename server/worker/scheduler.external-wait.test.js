@@ -1625,7 +1625,10 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
     };
     const env = fixture({
       seed_prior: false,
-      snapshot: { session_ref: 'claude:user-session@host' },
+      snapshot: {
+        session_ref: 'claude:user-session@host',
+        ...options.snapshot
+      },
       record: {
         owner: {
           kind: 'session',
@@ -1641,7 +1644,8 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
           launched_at: AT,
           session_id: 'user-session',
           error: null
-        }
+        },
+        ...options.record
       },
       deps: {
         interactiveLauncher: launcher,
@@ -1872,5 +1876,85 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
       kind: 'external_resume'
     });
     expect(conversationOf(env)).toBeUndefined();
+  });
+
+  /**
+   * A handoff whose dispatch reserved its attempt and then lost the process
+   * before the attempt was recorded: the record is back at `completing` with
+   * the key re-set, and the conversation record still holds the handoff.
+   */
+  function interruptedHandoff() {
+    const env = conversationFixture({
+      conversation: HANDOFF,
+      record: {
+        stage: 'completing',
+        resume: {
+          mode: 'fork',
+          attempt_id: 'reserved',
+          reserved_at: AT,
+          launched_at: null,
+          session_id: null,
+          error: null
+        }
+      }
+    });
+    env.metadata.external_wait = WAIT;
+    env.panes.rows = [];
+    return env;
+  }
+
+  test('carries the conversation result into the dispatch a restart settles', async () => {
+    const env = interruptedHandoff();
+
+    await env.scheduler.reconcile(WS);
+
+    const prompt = String(env.launches[0]?.bead.prompt);
+    const attempt = Object.values(env.store.snapshot(WS).attempts).at(-1);
+    expect(prompt.startsWith('## 대화 결과\n')).toBe(true);
+    expect(attempt?.conversation_source).toEqual({
+      key: KEY,
+      launched_at: 500
+    });
+  });
+
+  test('spends the handoff once a restart settled its reservation', async () => {
+    const env = interruptedHandoff();
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.launches).toHaveLength(1);
+    expect(env.store.snapshot(WS).conversation_refusals.B1).toBeUndefined();
+    expect(conversationOf(env)).toBeUndefined();
+  });
+
+  test('forks the conversation session rather than a newer session_ref entry', async () => {
+    const env = conversationFixture({
+      conversation: HANDOFF,
+      snapshot: {
+        session_ref: 'claude:user-session@host; claude:other-session@host'
+      }
+    });
+    fs.writeFileSync(
+      path.join(root, '.claude', 'projects', '-repo', 'other-session.jsonl'),
+      '{}\n'
+    );
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launches[0]?.settings.resume_session_id).toBe('user-session');
+  });
+
+  test('refuses the dispatch when the conversation session transcript is gone', async () => {
+    const env = conversationFixture({ conversation: HANDOFF });
+    env.store.updateInteractiveSession(WS, KEY, { session_id: 'gone-session' });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launches).toHaveLength(0);
+    expect(env.store.snapshot(WS).conversation_refusals.B1?.reason).toBe(
+      'not_local'
+    );
   });
 });

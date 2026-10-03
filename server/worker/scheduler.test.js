@@ -3689,6 +3689,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     env.panes.rows = [];
 
     await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
 
     expect(env.exits.retryCleanup).toHaveBeenCalledExactlyOnceWith(WS, BEAD);
     expect(record(env)).toBeUndefined();
@@ -3702,6 +3703,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     env.panes.rows = [];
 
     await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
     await env.scheduler.reconcileInteractiveSessions(WS);
 
     expect(env.notify.conversationResumed).toHaveBeenCalledExactlyOnceWith({
@@ -3849,6 +3851,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     env.panes.rows = [];
 
     await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
 
     expect(env.real.snapshot(WS).conversation_refusals[BEAD]?.reason).toBe(
       'action_in_flight'
@@ -3908,6 +3911,79 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     await env.scheduler.reconcileInteractiveSessions(WS);
 
     expect(seen).toBe(1000);
+  });
+
+  test('finishes a cleanup handoff whose exit reconciles the conversations again', async () => {
+    const env = failureEnv();
+    let inner_done = false;
+    env.exits.retryCleanup.mockImplementation(async () => {
+      env.real.clearCleanupFailure(WS, BEAD);
+      env.real.markInteractiveSessionsSettled(WS, BEAD, 'done');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      inner_done = true;
+      return { ok: true, reason: null };
+    });
+    openFailureConversation(env, { conversation: reservedHandoff(env) });
+    env.panes.rows = [];
+
+    const outcome = await Promise.race([
+      env.scheduler.reconcileInteractiveSessions(WS).then(() => 'returned'),
+      new Promise((resolve) => setTimeout(() => resolve('deadlocked'), 300))
+    ]);
+    await flush();
+
+    expect([outcome, inner_done]).toEqual(['returned', true]);
+  });
+
+  test('removes the conversation record once the exit returns', async () => {
+    const env = failureEnv();
+    env.exits.retryCleanup.mockImplementation(async () => {
+      env.real.clearCleanupFailure(WS, BEAD);
+      env.real.markInteractiveSessionsSettled(WS, BEAD, 'done');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      return { ok: true, reason: null };
+    });
+    openFailureConversation(env, { conversation: reservedHandoff(env) });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+
+    expect(record(env)).toBeUndefined();
+    expect(env.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seq: 'resolve:500:ended',
+        summary: '대화 세션 종료 · handoff'
+      })
+    );
+  });
+
+  test('keeps a running exit from a second pass', async () => {
+    const env = failureEnv();
+    /** @type {(value: any) => void} */
+    let finish = () => {};
+    env.exits.retryCleanup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    openFailureConversation(env, { conversation: reservedHandoff(env) });
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const between = {
+      kept: record(env) !== undefined,
+      refusal: env.real.snapshot(WS).conversation_refusals[BEAD] ?? null
+    };
+    env.real.clearCleanupFailure(WS, BEAD);
+    finish({ ok: true, reason: null });
+    await flush();
+
+    expect(between).toEqual({ kept: true, refusal: null });
+    expect(env.exits.retryCleanup).toHaveBeenCalledOnce();
+    expect(record(env)).toBeUndefined();
   });
 
   test('keeps the row after a hold and runs nothing', async () => {

@@ -950,7 +950,9 @@ function sessionOpenButton(current) {
  * 폐기 버튼이 없으면 `''`이라 foot 자체가 재료 없는 줄이 된다.
  * @param {import('lit-html').TemplateResult|''} [dependency_chips] - 슬롯 4a 칩,
  * 이미 계산된 것 그대로. 재료가 없으면 `''`이라 줄이 통째로 빠진다 (fail-quiet).
- * @param {import('lit-html').TemplateResult|''} [resolve_action] - parked 출구.
+ * @param {import('lit-html').TemplateResult|''} [resolve_action] - 폐기 무리에
+ * 붙지 않은 짝(`[세션에서 이어가기]`, 확인 필요의 대화 인계). 짝은 어느 held
+ * 타일에서나 슬롯 6 foot이다 (UI-18a5 §3.2).
  * @param {boolean} [discard_failed] - `true`면 같은 실패를 다루는 폐기 짝
  * (`[세션에서 이어가기]` · `[워커로 이어가기]`)을 대화 인계 조작보다 먼저
  * 그린다.
@@ -983,13 +985,13 @@ function heldBodyTemplate(
         >
           ⋯ 다른 방법으로
         </button>
-        ${discard_actions}
+        ${resolve_action}${discard_actions}
       </div>`;
   }
   if (kind === 'retry_wait') {
     return html`${dependency_chips}
-    ${discard_actions
-      ? html`<div class="rtile__foot">${discard_actions}</div>`
+    ${discard_actions || resolve_action
+      ? html`<div class="rtile__foot">${resolve_action}${discard_actions}</div>`
       : ''}`;
   }
   const wait = kind === 'waiting' ? /** @type {WaitTile|null} */ (held) : null;
@@ -1430,9 +1432,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 폐기 실패는 실행 중·held·파킹 타일 어디서나 나므로 이 버튼도 `[폐기]`와
   // 같은 자리에서 같은 재료로 만들고, 순서는 `[세션에서 이어가기] →
   // [워커로 이어가기] → [폐기 포기]`다 — 짝이 붙어 서고 되돌리는 정도가 약한
-  // 것부터 읽힌다. `[워커로 이어가기]`가 없는 타일에서는 이 출구도 없다.
+  // 것부터 읽힌다. 인수가 짝만 숨겨도 이 출구는 남는다 (UI-18a5 §3.4).
   const abandon_button =
-    discard_button && tile.discard?.abandon?.action === true
+    tile.discard?.abandon?.action === true &&
+    !(failed && failure?.landed === true)
       ? html`<button
           type="button"
           class="op-btn rtile__discard-abandon"
@@ -1454,11 +1457,23 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     loose_session || handoff_button
       ? html`${loose_session}${handoff_button}`
       : '';
-  const discard_actions = discard_button
-    ? html`${session_at_discard
-        ? resolve_only
-        : ''}${discard_button}${abandon_button}`
-    : '';
+  const discard_actions =
+    discard_button || abandon_button
+      ? html`${session_at_discard
+          ? resolve_only
+          : ''}${discard_button}${abandon_button}`
+      : '';
+  // 짝은 슬롯 6 foot에 선다 (UI-18a5 §3.2). 실패한 Bead 폐기의 재시도가 이
+  // 타일의 `[워커로 이어가기]`이면 그 무리(`[폐기 포기]` 포함)도 짝과 함께
+  // foot으로 가고, 실행 중·실패 타일의 슬롯 1에는 짝이 아닌 폐기 조작(`폐기`,
+  // 잔재 백업)만 남는다. held·외부 대기 타일은 폐기 조작이 이미 foot이다.
+  const discard_slot1 = anchor === 'discard' ? '' : discard_actions;
+  const discard_paired =
+    anchor === 'discard' && !session ? discard_actions : '';
+  const pair_foot =
+    resolve_button || discard_paired
+      ? html`<div class="rtile__foot">${resolve_button}${discard_paired}</div>`
+      : '';
   // 외부 작업 완료 타일의 짝: 세션 버튼이 fork 재개 바로 앞에 선다.
   const external_pair = session_at_external
     ? html`${resolve_only}${external_foot}`
@@ -1567,7 +1582,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 >
                   ↻ ${resume_label}
                 </button>
-                ${discard_actions}`
+                ${discard_slot1}`
             : html`<button
                   type="button"
                   class="op-btn rtile__session"
@@ -1596,9 +1611,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     >
                       ⏸
                     </button>`}
-                ${discard_actions}`}${parked || waiting
-          ? ''
-          : resolve_button}${withdraw_button}
+                ${discard_slot1}`}${withdraw_button}
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
@@ -1607,9 +1620,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       : ''}${external_wait
       ? // 세션 소유 외부 대기 타일 (UI-l48z §4.1): 활동 줄 없이 4a·4b·5 재료와
         // 슬롯 6 조작만 싣는다.
-        html`${monitor_relations}${tile_meta}${external_foot || discard_actions
+        html`${monitor_relations}${tile_meta}${external_foot ||
+        discard_actions ||
+        resolve_button
           ? html`<div class="rtile__foot">
-              ${external_pair}${discard_actions}
+              ${resolve_button}${external_pair}${discard_actions}
             </div>`
           : ''}`
       : held
@@ -1636,7 +1651,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 ? html`${retry_now_button}${discard_actions}`
                 : discard_actions,
             waiting ? monitor_relations : '',
-            parked || waiting ? resolve_button : '',
+            resolve_button,
             parked && !!tile.discard?.error
           )
         : failed
@@ -1657,8 +1672,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     >
                   </div>`
                 : ''}
-              ${monitor_relations} ${tile_meta} ${discardReceiptTemplate(tile)}
-              ${times_el}
+              ${monitor_relations} ${tile_meta}
+              ${discardReceiptTemplate(tile)}${pair_foot} ${times_el}
               <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
          quick_fix landing의 실제 진행은 위의 별도 진행 줄이 소유한다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
@@ -1667,6 +1682,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
     ${(held || failed) && lane_chip
       ? html`<div class="worker-chips worker-chips--coords">${lane_chip}</div>`
+      : ''}${failed && !held && !external_wait
+      ? pair_foot
       : ''}${refusal_times || wait_body_lines.times}${failurePopoverTemplate(
       failure,
       now

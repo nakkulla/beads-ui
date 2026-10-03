@@ -514,9 +514,11 @@ function operationEventTemplate(event, repo_ops) {
  * Both exits live in the SAME action group as the card's pair (UI-jw27 §3·§4,
  * UI-18a5 §3.2): `[세션에서 이어가기]` opens the failure conversation that works
  * out why it stopped, and `[워커로 이어가기]` is the cleanup retry — its
- * tooltip names the step it resumes from. A stopped cleanup always has both —
- * the row exists only because the cursor could not finish — so neither is
- * conditional here.
+ * tooltip names the step it resumes from. Whether each stands is the card's
+ * own decision, `tileResolveFields`, carried on the entry as `pair` by the
+ * lane model: a live conversation drops the session half, a taken-over or
+ * handed-off one both halves. An entry without that decision draws no session
+ * button (fail-quiet).
  *
  * @param {any} event
  * @returns {TemplateResult}
@@ -524,6 +526,7 @@ function operationEventTemplate(event, repo_ops) {
 function cleanupEventTemplate(event) {
   const cleanup = event.cleanup;
   const step_label = cleanupStepLabel(cleanup.step);
+  const pair = cleanup.pair || {};
   return html`<li
     class="worker-ev"
     data-bead-id=${cleanup.bead_id}
@@ -561,26 +564,34 @@ function cleanupEventTemplate(event) {
           : '정리를 다시 시도하면 멈춘 단계부터 다시 진행합니다.',
         true
       )}
-      <div class="worker-ev__acts">
-        <button
-          type="button"
-          class="op-btn worker-ev__btn worker-cleanup__resolve"
-          data-bead-id=${cleanup.bead_id}
-          title="기록된 세션을 대화로 엽니다 — 인계하면 Worker가 실패한 단계를 다시 돌립니다"
-        >
-          세션에서 이어가기
-        </button>
-        <button
-          type="button"
-          class="op-btn worker-ev__btn worker-ev__btn--warn worker-cleanup__resume"
-          data-bead-id=${cleanup.bead_id}
-          title=${step_label
-            ? `Worker가 정리를 ${step_label} 단계부터 다시 돌립니다`
-            : 'Worker가 정리를 멈춘 단계부터 다시 돌립니다'}
-        >
-          워커로 이어가기
-        </button>
-      </div>
+      ${pair.resolve_action === true || pair.merge_action !== false
+        ? html`<div class="worker-ev__acts">
+            ${pair.resolve_action === true
+              ? html`<button
+                  type="button"
+                  class="op-btn worker-ev__btn worker-cleanup__resolve"
+                  data-bead-id=${cleanup.bead_id}
+                  ?disabled=${pair.resolve_enabled === false}
+                  title=${pair.resolve_title ||
+                  '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 실패한 단계를 다시 돌립니다'}
+                >
+                  세션에서 이어가기
+                </button>`
+              : ''}
+            ${pair.merge_action !== false
+              ? html`<button
+                  type="button"
+                  class="op-btn worker-ev__btn worker-ev__btn--warn worker-cleanup__resume"
+                  data-bead-id=${cleanup.bead_id}
+                  title=${step_label
+                    ? `Worker가 정리를 ${step_label} 단계부터 다시 돌립니다`
+                    : 'Worker가 정리를 멈춘 단계부터 다시 돌립니다'}
+                >
+                  워커로 이어가기
+                </button>`
+              : ''}
+          </div>`
+        : ''}
       ${detailsTemplate([
         { term: '실패 코드', value: cleanup.reason || '' },
         { term: '진단', value: cleanup.detail || '' },

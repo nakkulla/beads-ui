@@ -5195,7 +5195,11 @@ describe('lane model worker group values (UI-4tud §4.3)', () => {
         output_tail: undefined,
         log_path: undefined,
         retry_count: 2,
-        failure_code: 'push_rejected'
+        failure_code: 'push_rejected',
+        pair: expect.objectContaining({
+          resolve_action: true,
+          pair_anchor: 'merge'
+        })
       }
     ]);
   });

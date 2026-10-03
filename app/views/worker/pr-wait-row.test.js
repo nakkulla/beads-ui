@@ -1,6 +1,7 @@
 import { html, render } from 'lit-html';
 import { describe, expect, test } from 'vitest';
 import { buildLanes } from './lane-model.js';
+import { miniRow } from './lanes.js';
 import { pendingKey, prWaitRowsOf } from './pr-wait-row.js';
 
 const WS_A = '/tmp/example/repo-a';
@@ -425,5 +426,52 @@ describe('shared PR 대기 projection — 머지 재료 (UI-f2sy §4)', () => {
       `cleanup:${pendingKey(WS_A, 'A-1')}`,
       `resolve:${pendingKey(WS_A, 'A-1')}`
     ]);
+  });
+});
+
+describe('shared PR 대기 projection — 폐기 실패 짝 (UI-18a5 §3.4)', () => {
+  const taken_over = workspace({
+    pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+    pr_observations: { 'A-1': GREEN_GATE },
+    discard_operations: {
+      op1: {
+        operation_id: 'op1',
+        bead_id: 'A-1',
+        phase: 'closing_pr',
+        last_error: 'pr_close_failed',
+        requested_at: 5
+      }
+    },
+    interactive_sessions: {
+      'A-1:resolve': {
+        bead_id: 'A-1',
+        kind: 'resolve',
+        provider: 'claude',
+        session_id: 'sid',
+        mode: 'fork',
+        source: 'attempt',
+        tmux_session: 'dev',
+        tmux_window: 'resolve-A-1',
+        state: 'live',
+        settled_at: null,
+        launched_at: 1,
+        conversation: {
+          result: { kind: 'takeover', line: '인수 · 내가 끝낸다', at: 2 },
+          handoff: null
+        }
+      }
+    }
+  });
+
+  test('draws no discard retry on a row the conversation took over', () => {
+    const [row] = rowsOf(taken_over);
+    const host = document.createElement('div');
+
+    render(miniRow(row), host);
+
+    const labels = Array.from(host.querySelectorAll('button')).map((button) =>
+      button.textContent?.trim()
+    );
+    expect(labels).not.toContain('워커로 이어가기');
   });
 });

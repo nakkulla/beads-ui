@@ -1,5 +1,6 @@
 import { render } from 'lit-html';
 import { describe, expect, test, vi } from 'vitest';
+import { buildLanes } from './lane-model.js';
 import {
   createRepoOpsDrawer,
   jobFileName,
@@ -1052,7 +1053,11 @@ describe('post_merge_jobs 정리 멈춤 행 (UI-i60a §1)', () => {
   // 실패를 사람이 이어받는 대화와, Worker의 재시도.
   test('offers the session-then-worker pair on a stopped job step', () => {
     const row = renderCleanupRow(
-      cleanup({ step: 'post_merge_jobs', reason: 'post_merge_job_failed' })
+      cleanup({
+        step: 'post_merge_jobs',
+        reason: 'post_merge_job_failed',
+        pair: { resolve_action: true, pair_anchor: 'merge' }
+      })
     );
 
     const buttons = Array.from(
@@ -1075,5 +1080,88 @@ describe('post_merge_jobs 정리 멈춤 행 (UI-i60a §1)', () => {
     expect(details?.textContent).toContain(
       'post_merge_job_target_moved:010-reindex@abc'
     );
+  });
+});
+
+describe('정리 멈춤 행의 짝 판정 (UI-18a5 §3.2)', () => {
+  const ROOT = '/tmp/example/repo-a';
+
+  /**
+   * The stopped-cleanup row of a lane model whose Bead has one failure
+   * conversation, rendered the way the drawer does.
+   *
+   * @param {Record<string, any>} conversation
+   * @returns {HTMLElement}
+   */
+  function cleanupRowWith(conversation) {
+    const model = buildLanes(
+      [
+        {
+          root_dir: ROOT,
+          name: 'repo-a',
+          revision: 3,
+          queue: [],
+          serial_lanes: [],
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          done: [],
+          runnable: [],
+          attempts: {},
+          cleanup_failed: {
+            'A-1': { step: 'post_merge_jobs', reason: 'x', at: 300 }
+          },
+          interactive_sessions: {
+            'A-1:resolve': {
+              bead_id: 'A-1',
+              kind: 'resolve',
+              provider: 'claude',
+              session_id: 'sid',
+              mode: 'fork',
+              source: 'attempt',
+              tmux_session: 'dev',
+              tmux_window: 'resolve-A-1',
+              state: 'live',
+              settled_at: null,
+              launched_at: 1,
+              conversation
+            }
+          }
+        }
+      ],
+      [{ root_dir: ROOT, name: 'repo-a', revision: 3, slots: 1 }]
+    );
+    const group = model.groups_by_root.get(ROOT);
+    const view = timelineView([], group?.cleanup_failures, { expanded: false });
+    const mount = document.createElement('div');
+    render(
+      repoOpsTimelineTemplate({
+        events: view.visible,
+        hidden: view.hidden,
+        expanded: false,
+        repo: ROOT
+      }),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-ev'));
+  }
+
+  test('drops the session half while the conversation is live', () => {
+    const row = cleanupRowWith({ result: null, handoff: null });
+
+    const buttons = Array.from(row.querySelectorAll('button')).map((button) =>
+      button.textContent?.trim()
+    );
+
+    expect(buttons).toEqual(['워커로 이어가기']);
+  });
+
+  test('hides both halves after the conversation took over', () => {
+    const row = cleanupRowWith({
+      result: { kind: 'takeover', line: '인수 · 내가 끝낸다', at: 2 },
+      handoff: null
+    });
+
+    const buttons = row.querySelectorAll('.worker-ev__acts button');
+
+    expect(buttons.length).toBe(0);
   });
 });
