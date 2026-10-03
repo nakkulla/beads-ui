@@ -5,7 +5,10 @@ import {
   SUMMARY_CHIPS,
   WAIT_KINDS,
   WAIT_VERDICTS,
+  externalJobDisplayName,
   externalJobRows,
+  externalSpawnedSummary,
+  externalSpawnedTable,
   representativeWaitReason,
   waitBadgeText,
   waitKindRow,
@@ -567,5 +570,306 @@ describe('externalJobRows (UI-a119 §3.4)', () => {
     const result = externalJobRows(undefined, NOW);
 
     expect(result).toEqual({ rows: [], more: '' });
+  });
+});
+
+describe('externalJobDisplayName (UI-q15q §3.3)', () => {
+  test.each([
+    ['strips the sjob tail', { name: 'snake__20260921_090000_ab12' }, 'snake'],
+    ['keeps a plain JobName', { name: 'align' }, 'align'],
+    [
+      'names the rule from the comment',
+      { name: 'x', rule: 'rule_align_reads' },
+      'align_reads'
+    ],
+    [
+      'drops a UUID run id',
+      { name: 'pre_0b5e2f3a-1c2d-4e5f-8a9b-0c1d2e3f4a5b' },
+      ''
+    ],
+    ['drops an empty name', { name: '' }, ''],
+    ['drops a name that is only the tail', { name: '__20260921_090000_ab' }, '']
+  ])('%s', (_case, job, name) => {
+    const result = externalJobDisplayName(job);
+
+    expect(result.name).toBe(name);
+  });
+
+  test('moves rule wildcards into the detail', () => {
+    const result = externalJobDisplayName({
+      rule: 'rule_align_reads_wildcards_sample=A,lane=1'
+    });
+
+    expect(result).toEqual({
+      name: 'align_reads',
+      detail: 'wildcards sample=A,lane=1'
+    });
+  });
+});
+
+describe('external sub-job summary and table (UI-q15q §3.5·§3.6)', () => {
+  /**
+   * @param {Record<string, any>} patch
+   * @returns {any}
+   */
+  function row(patch) {
+    return {
+      job_id: '201',
+      name: 'run_0b5e2f3a-1c2d-4e5f-8a9b-0c1d2e3f4a5b',
+      rule: '',
+      state: 'COMPLETED',
+      submitted_at: '2026-09-21T09:10:00',
+      started_at: '2026-09-21T09:11:00',
+      ended_at: '2026-09-21T09:30:00',
+      elapsed_seconds: 1140,
+      time_limit_seconds: 3600,
+      unlimited: false,
+      cpus: 4,
+      memory: '16G',
+      exit_code: 0,
+      ...patch
+    };
+  }
+
+  /**
+   * @param {Record<string, number>} counts
+   * @param {any[]} [rows]
+   * @param {number} [omitted]
+   * @returns {any}
+   */
+  function spawned(counts, rows = [], omitted = 0) {
+    const full = {
+      running: 0,
+      pending: 0,
+      completed: 0,
+      failed: 0,
+      unknown: 0,
+      ...counts
+    };
+    return {
+      total: Object.values(full).reduce((sum, value) => sum + value, 0),
+      counts: full,
+      rows,
+      omitted
+    };
+  }
+
+  /**
+   * @param {any[]} spawned_list
+   * @returns {any}
+   */
+  function record(spawned_list) {
+    return {
+      jobs: spawned_list.map((value, index) => ({
+        adapter: 'slurm',
+        ssh_host: 'wallace',
+        job_id: String(100 + index),
+        submitted_at: '2026-09-21T00:00:00Z',
+        log_path: '/log',
+        terminal: null,
+        ...(value ? { spawned: value } : {})
+      }))
+    };
+  }
+
+  test('drops zero counts from the count line', () => {
+    const summary = externalSpawnedSummary(
+      record([spawned({ completed: 3, running: 1 })])
+    );
+
+    expect(summary?.total).toBe(4);
+    expect(summary?.parts).toEqual([
+      { key: 'completed', label: '완료', count: 3 },
+      { key: 'running', label: '실행', count: 1 }
+    ]);
+  });
+
+  test('names the most recently ended failures first', () => {
+    const rows = [
+      row({ job_id: '1', state: 'RUNNING', rule: 'rule_live' }),
+      row({
+        job_id: '2',
+        state: 'FAILED',
+        rule: 'rule_old',
+        ended_at: '2026-09-21T09:20:00'
+      }),
+      row({
+        job_id: '3',
+        state: 'FAILED',
+        rule: 'rule_new',
+        ended_at: '2026-09-21T09:40:00'
+      }),
+      row({ job_id: '4', state: 'TIMEOUT', ended_at: '2026-09-21T09:30:00' })
+    ];
+
+    const summary = externalSpawnedSummary(
+      record([spawned({ running: 1, failed: 3 }, rows)])
+    );
+
+    expect(summary?.names).toEqual({
+      tone: 'danger',
+      glyph: '✕',
+      items: [
+        { name: 'new', title: '' },
+        { name: '4', title: '' }
+      ],
+      more: 1
+    });
+  });
+
+  test('names the most recently started running jobs without a failure', () => {
+    const rows = [
+      row({
+        job_id: '1',
+        state: 'RUNNING',
+        rule: 'rule_a',
+        started_at: '2026-09-21T09:11:00'
+      }),
+      row({
+        job_id: '2',
+        state: 'RUNNING',
+        rule: 'rule_b',
+        started_at: '2026-09-21T09:15:00'
+      })
+    ];
+
+    const summary = externalSpawnedSummary(
+      record([spawned({ running: 2 }, rows)])
+    );
+
+    expect(summary?.names).toEqual({
+      tone: 'progress',
+      glyph: '◐',
+      items: [
+        { name: 'b', title: '' },
+        { name: 'a', title: '' }
+      ],
+      more: 0
+    });
+  });
+
+  test('carries the wildcards of a named sub-job as its title', () => {
+    const rows = [
+      row({
+        job_id: '1',
+        state: 'RUNNING',
+        rule: 'rule_align_wildcards_sample=A',
+        started_at: '2026-09-21T09:11:00'
+      })
+    ];
+
+    const summary = externalSpawnedSummary(
+      record([spawned({ running: 1 }, rows)])
+    );
+
+    expect(summary?.names?.items).toEqual([
+      { name: 'align', title: 'wildcards sample=A' }
+    ]);
+  });
+
+  test('sums two registered jobs into one count line without names', () => {
+    const summary = externalSpawnedSummary(
+      record([
+        spawned({ completed: 2 }, [row({ state: 'FAILED' })]),
+        spawned({ completed: 1, failed: 1 })
+      ])
+    );
+
+    expect(summary).toEqual({
+      total: 4,
+      parts: [
+        { key: 'completed', label: '완료', count: 3 },
+        { key: 'failed', label: '실패', count: 1 }
+      ],
+      names: null
+    });
+  });
+
+  test('draws no summary without sub-jobs', () => {
+    const summary = externalSpawnedSummary(record([null]));
+
+    expect(summary).toBeNull();
+  });
+
+  test('orders open rows running, pending, failed, then unknown', () => {
+    const table = externalSpawnedTable(
+      spawned({ running: 1, pending: 1, failed: 1, unknown: 1, completed: 1 }, [
+        row({ job_id: 'u', state: 'UNKNOWN' }),
+        row({ job_id: 'f', state: 'FAILED', exit_code: 1 }),
+        row({ job_id: 'c' }),
+        row({ job_id: 'p', state: 'PENDING', elapsed_seconds: 600 }),
+        row({ job_id: 'r', state: 'RUNNING', elapsed_seconds: 1800 })
+      ])
+    );
+
+    expect(table?.open.map((cell) => cell.id)).toEqual(['r', 'p', 'f', 'u']);
+    expect(table?.completed.map((cell) => cell.id)).toEqual(['c']);
+  });
+
+  test.each([
+    [
+      'a running row with its limit',
+      { state: 'RUNNING', elapsed_seconds: 1800 },
+      '30m / 1h00m'
+    ],
+    [
+      'an unlimited running row',
+      {
+        state: 'RUNNING',
+        elapsed_seconds: 1800,
+        unlimited: true,
+        time_limit_seconds: null
+      },
+      '30m'
+    ],
+    ['a pending row', { state: 'PENDING', elapsed_seconds: 600 }, '대기 10m'],
+    ['an ended row', { state: 'COMPLETED', elapsed_seconds: 1140 }, '19m']
+  ])('words the elapsed cell of %s', (_case, patch, elapsed) => {
+    const table = externalSpawnedTable(spawned({ running: 1 }, [row(patch)]));
+
+    const cell = [...(table?.open || []), ...(table?.completed || [])][0];
+    expect(cell.elapsed).toBe(elapsed);
+  });
+
+  test('words resources as cores and memory', () => {
+    const table = externalSpawnedTable(spawned({ completed: 1 }, [row({})]));
+
+    expect(table?.completed[0].resources).toBe('4코어 16G');
+  });
+
+  test('carries the completed count and omitted rows', () => {
+    const table = externalSpawnedTable(
+      spawned({ completed: 302 }, [row({})], 301)
+    );
+
+    expect(table).toMatchObject({ completed_count: 302, omitted: 301 });
+  });
+});
+
+describe('externalJobRows names (UI-q15q §3.5)', () => {
+  test('names the registered job and moves its number into the title', () => {
+    const { rows } = externalJobRows(
+      /** @type {any} */ ({
+        jobs: [
+          {
+            adapter: 'slurm',
+            ssh_host: 'wallace',
+            job_id: '42',
+            name: 'snake__20260921_090000_ab12',
+            submitted_at: '2026-09-21T00:00:00Z',
+            log_path: '/log',
+            state: 'RUNNING',
+            terminal: null
+          }
+        ]
+      }),
+      Date.parse('2026-09-21T01:00:00Z')
+    );
+
+    expect(rows[0]).toMatchObject({
+      id: '42',
+      name: 'snake',
+      title: '42 · RUNNING'
+    });
   });
 });

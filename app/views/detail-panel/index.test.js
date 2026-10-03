@@ -78,7 +78,7 @@ test('renders jobs and expected results on the consumer detail', () => {
 
   const table = mount.querySelector('.detail-external-wait__jobs');
   expect(table?.querySelectorAll('tbody tr')).toHaveLength(1);
-  expect(table?.textContent).toContain('wallace · 42');
+  expect(table?.textContent).toContain('wallace 42');
   expect(table?.textContent).toContain('COMPLETED');
   expect(table?.textContent).toContain('/results/output.tsv');
   expect(table?.textContent).toContain('존재');
@@ -4566,6 +4566,187 @@ describe('views/detail-panel plan 묶음 칩과 일괄 배치 (UI-ruwu §2·§3)
         ?.textContent?.replace(/\s+/g, ' ')
         .trim()
     ).toBe('⛓ UI-p1 · 세션 필요');
+    panel.destroy();
+  });
+});
+
+describe('external wait sub-job table (UI-q15q §3.6)', () => {
+  /**
+   * @param {Record<string, any>} patch
+   * @returns {any}
+   */
+  function spawnedRow(patch) {
+    return {
+      job_id: '201',
+      name: '',
+      rule: '',
+      state: 'COMPLETED',
+      submitted_at: '2026-09-21T09:10:00',
+      started_at: '2026-09-21T09:11:00',
+      ended_at: '2026-09-21T09:30:00',
+      elapsed_seconds: 1140,
+      time_limit_seconds: 3600,
+      unlimited: false,
+      cpus: 4,
+      memory: '16G',
+      exit_code: 0,
+      ...patch
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} job_patch
+   */
+  function renderSpawnedDetail(job_patch) {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const record = externalWait();
+    record.jobs[0] = { ...record.jobs[0], ...job_patch };
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      onClose: vi.fn(),
+      getWorkspacePath: () => '/repo',
+      pipelineStore: {
+        get: () => [{ root_dir: '/repo', external_waits: [record] }]
+      }
+    });
+    issueStores.register('detail:A-1', {
+      type: 'issue-detail',
+      params: { id: 'A-1' }
+    });
+    issueStores.getStore('detail:A-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:A-1',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        { id: 'A-1', title: '분석', status: 'open', issue_type: 'task' }
+      ])
+    });
+    panel.load('A-1');
+    return { mount, panel };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function firstCells(mount) {
+    return Array.from(
+      mount.querySelectorAll('.detail-external-wait__jobs tbody tr')
+    ).map((row) =>
+      (row.querySelector('td')?.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+  }
+
+  const SPAWNED = {
+    total: 4,
+    counts: { running: 1, pending: 1, completed: 2, failed: 0, unknown: 0 },
+    rows: [
+      spawnedRow({ job_id: '201' }),
+      spawnedRow({
+        job_id: '202',
+        rule: 'rule_sort',
+        state: 'PENDING',
+        started_at: null,
+        ended_at: null,
+        elapsed_seconds: 600,
+        exit_code: null
+      }),
+      spawnedRow({
+        job_id: '203',
+        rule: 'rule_align',
+        state: 'RUNNING',
+        ended_at: null,
+        elapsed_seconds: 1800,
+        exit_code: null
+      })
+    ],
+    omitted: 1
+  };
+
+  test('draws the columns of the external work table', () => {
+    const { mount, panel } = renderSpawnedDetail({ spawned: SPAWNED });
+
+    const headers = Array.from(
+      mount.querySelectorAll('.detail-external-wait__jobs th')
+    ).map((cell) => cell.textContent?.trim());
+
+    expect(headers).toEqual([
+      '이름',
+      '상태',
+      '경과 / 제한',
+      '자원',
+      '번호',
+      'exit',
+      'expected 경로별 결과',
+      '로그'
+    ]);
+    panel.destroy();
+  });
+
+  test('indents open sub-jobs under the registered job, folding completed ones', () => {
+    const { mount, panel } = renderSpawnedDetail({
+      name: 'snake__20260921_090000_ab12',
+      spawned: SPAWNED
+    });
+
+    const cells = firstCells(mount);
+
+    expect(cells).toEqual([
+      'wallace snake',
+      '├ align',
+      '├ sort',
+      '├ 완료 2개 ▸',
+      '└ 완료 중 1개는 목록에서 생략'
+    ]);
+    panel.destroy();
+  });
+
+  test('unfolds the completed sub-jobs in submission order', () => {
+    const { mount, panel } = renderSpawnedDetail({ spawned: SPAWNED });
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-external-wait__fold-btn')
+    ).click();
+
+    expect(firstCells(mount)).toEqual([
+      'wallace 42',
+      '├ align',
+      '├ sort',
+      '├ 완료 2개 ▾',
+      '├ 201',
+      '└ 완료 중 1개는 목록에서 생략'
+    ]);
+    panel.destroy();
+  });
+
+  test('fills the elapsed, resource and number cells of a sub-job row', () => {
+    const { mount, panel } = renderSpawnedDetail({ spawned: SPAWNED });
+
+    const running = mount.querySelector(
+      '.detail-external-wait__sub[data-spawned-group="running"]'
+    );
+    const cells = Array.from(running?.querySelectorAll('td') || []).map(
+      (cell) => cell.textContent?.trim()
+    );
+
+    expect(cells.slice(1, 6)).toEqual([
+      'RUNNING',
+      '30m / 1h00m',
+      '4코어 16G',
+      '203',
+      ''
+    ]);
+    panel.destroy();
+  });
+
+  test('draws no sub-job row for an old record', () => {
+    const { mount, panel } = renderSpawnedDetail({});
+
+    const rows = mount.querySelectorAll('.detail-external-wait__jobs tbody tr');
+
+    expect(rows).toHaveLength(1);
     panel.destroy();
   });
 });

@@ -2113,6 +2113,55 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     ).toBe('로컬');
   });
 
+  test('draws the sub-job summary on an external wait tile and keeps the badge (UI-q15q)', () => {
+    const tile = renderExternalSession({
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '42',
+          submitted_at: '2026-09-21T00:00:00Z',
+          log_path: '/logs/job.log',
+          state: 'RUNNING',
+          observed_at: '2026-09-21T03:12:00Z',
+          terminal: null,
+          spawned: {
+            total: 2,
+            counts: {
+              running: 1,
+              pending: 1,
+              completed: 0,
+              failed: 0,
+              unknown: 0
+            },
+            rows: [
+              {
+                job_id: '201',
+                name: 'align',
+                rule: '',
+                state: 'RUNNING',
+                submitted_at: '2026-09-21T01:00:00',
+                started_at: '2026-09-21T01:01:00'
+              }
+            ],
+            omitted: 0
+          }
+        }
+      ]
+    });
+
+    const lines = Array.from(tile.querySelectorAll('.external-spawned')).map(
+      (line) => (line.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+
+    expect(lines).toEqual(['하위 잡 2개 · 실행 1 · 대기 1', '◐ align']);
+    expect(
+      tile
+        .querySelector('.rtile__hd .wait-verdict summary')
+        ?.textContent?.trim()
+    ).toBe('⏳ 외부 작업');
+  });
+
   test('keeps the session identity chip on an external wait tile', () => {
     const tile = renderExternalSession();
 

@@ -149,3 +149,58 @@ test('preserves job order and result changes in the digest', () => {
   expect(completionDigest([first, first])).not.toBe(forward);
   expect(() => completionDigest([slurm()])).toThrow('terminal');
 });
+
+test('ignores sub-job display fields in the digest (UI-q15q §3.4)', () => {
+  const plain = slurm({ terminal: TERMINAL });
+  const spawned = slurm({
+    terminal: TERMINAL,
+    name: 'snake__20260921_090000_ab12',
+    anchor: {
+      user: 'alice',
+      workdir: '/work',
+      started_at: '2026-09-21T09:00:00'
+    },
+    spawned: {
+      total: 1,
+      counts: { running: 0, pending: 0, completed: 0, failed: 1, unknown: 0 },
+      rows: [
+        {
+          job_id: '201',
+          name: 'run-a',
+          rule: 'rule_align',
+          state: 'FAILED',
+          submitted_at: '2026-09-21T09:10:00',
+          started_at: '2026-09-21T09:11:00',
+          ended_at: '2026-09-21T09:30:00',
+          elapsed_seconds: 1140,
+          time_limit_seconds: 3600,
+          unlimited: false,
+          cpus: 4,
+          memory: '16G',
+          exit_code: 1
+        }
+      ],
+      omitted: 0
+    }
+  });
+
+  const digest = completionDigest([spawned]);
+
+  expect(digest).toBe(completionDigest([plain]));
+});
+
+test('keeps the registration decision blind to sub-jobs', () => {
+  const job = slurm({
+    state: 'RUNNING',
+    spawned: {
+      total: 1,
+      counts: { running: 0, pending: 1, completed: 0, failed: 0, unknown: 0 },
+      rows: [],
+      omitted: 0
+    }
+  });
+
+  const decision = registrationDecision([job]);
+
+  expect(decision).toBe(registrationDecision([slurm({ state: 'RUNNING' })]));
+});

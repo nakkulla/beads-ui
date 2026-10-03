@@ -84,7 +84,7 @@
  * @property {string} next_observation_at
  * @property {number} error_count
  * @property {string|null} last_error
- * @property {Array<{adapter:'slurm'|'process', ssh_host?:string, job_id?:string, pid?:number, submitted_at:string, log_path:string, state?:string, observed_at?:string, terminal:null|{exit_code:number|null, evidence:string, recovery_needed:boolean, expected_results:Array<{path:string, exists:boolean, size:number|null, mtime:number|null}>}}>} jobs
+ * @property {Array<{adapter:'slurm'|'process', ssh_host?:string, job_id?:string, pid?:number, submitted_at:string, log_path:string, state?:string, observed_at?:string, name?:string, anchor?:{user:string, workdir:string, started_at:string}, spawned?:SpawnedView, terminal:null|{exit_code:number|null, evidence:string, recovery_needed:boolean, expected_results:Array<{path:string, exists:boolean, size:number|null, mtime:number|null}>}}>} jobs - Slurm jobs may carry the display-only `name`·`anchor`·`spawned` (UI-q15q §3.4).
  * @property {{digest:string, completed_at:string, recovery_needed:boolean}|null} completion
  * @property {{mode:'fork'|'fresh', attempt_id:string|null, reserved_at:string|null, launched_at:string|null, session_id:string|null, error:string|null}|null} resume
  */
@@ -111,6 +111,118 @@
  * @property {Array<{ op: string, label: string, title?: string, placement?: 'card'|'detail', confirm?: string, payload: Record<string, any> }>} actions
  * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan
  */
+
+/** Slurm states of a running job (UI-q15q §3.4). */
+export const SLURM_RUNNING_STATES = Object.freeze(['RUNNING', 'COMPLETING']);
+
+/**
+ * Slurm states that end a job. The observer, the card and the completion
+ * block share these pure sub-job helpers (UI-q15q §3.3·§3.4), so they live in
+ * this module the server and the client both load.
+ */
+export const SLURM_TERMINAL_STATES = Object.freeze([
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'TIMEOUT',
+  'NODE_FAIL',
+  'OUT_OF_MEMORY',
+  'PREEMPTED',
+  'BOOT_FAIL',
+  'DEADLINE',
+  'REVOKED',
+  'SPECIAL_EXIT'
+]);
+
+/**
+ * @typedef {'running'|'pending'|'completed'|'failed'|'unknown'} SpawnedClass
+ * @typedef {{ name?: string, rule?: string }} NamedJob
+ * @typedef {{ job_id: string, name?: string, rule?: string, state?: string, submitted_at?: string, started_at?: string|null, ended_at?: string|null, elapsed_seconds?: number|null, time_limit_seconds?: number|null, unlimited?: boolean, cpus?: number|null, memory?: string, exit_code?: number|null }} SpawnedRowView
+ * @typedef {{ total: number, counts: Record<SpawnedClass, number>, rows: SpawnedRowView[], omitted: number }} SpawnedView
+ */
+
+/**
+ * One sub-job's class (UI-q15q §3.4 table). `UNKNOWN` is the server's mark
+ * for a job that vanished from both observation materials; a state that is
+ * neither running nor terminal still waits.
+ *
+ * @param {{ state?: string, exit_code?: number|null }} row
+ * @returns {SpawnedClass}
+ */
+export function externalSpawnedClass(row) {
+  const state = typeof row.state === 'string' ? row.state : '';
+  if (state === 'UNKNOWN') {
+    return 'unknown';
+  }
+  if (SLURM_RUNNING_STATES.includes(state)) {
+    return 'running';
+  }
+  if (SLURM_TERMINAL_STATES.includes(state)) {
+    return state === 'COMPLETED' &&
+      (typeof row.exit_code !== 'number' || row.exit_code === 0)
+      ? 'completed'
+      : 'failed';
+  }
+  return 'pending';
+}
+
+/** sjob's generated name tail `__YYYYmmdd_HHMMSS_<hex>`. */
+const SJOB_NAME_TAIL_RE = /__\d{8}_\d{6}_[0-9a-f]+$/;
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const RULE_COMMENT_RE = /^rule_(.+?)(?:_wildcards_(.*))?$/;
+
+/**
+ * The display name of a registered or spawned Slurm job (UI-q15q §3.3). A
+ * `rule_<rule>[_wildcards_<w>]` comment names the rule and moves wildcards to
+ * `detail`; otherwise the JobName loses the sjob tail. An empty name or one
+ * carrying a UUID run id yields `''`, so the caller shows the job number.
+ *
+ * @param {NamedJob|null|undefined} job
+ * @returns {{ name: string, detail: string }}
+ */
+export function externalJobDisplayName(job) {
+  const rule = RULE_COMMENT_RE.exec(
+    typeof job?.rule === 'string' ? job.rule : ''
+  );
+  if (rule) {
+    return {
+      name: rule[1],
+      detail: rule[2] ? `wildcards ${rule[2]}` : ''
+    };
+  }
+  const name = (typeof job?.name === 'string' ? job.name : '')
+    .replace(SJOB_NAME_TAIL_RE, '')
+    .trim();
+  if (!name || UUID_RE.test(name)) {
+    return { name: '', detail: '' };
+  }
+  return { name, detail: '' };
+}
+
+/** Count words of the sub-job summary, in drawing order (UI-q15q §3.5). */
+const SPAWNED_COUNT_WORDS = Object.freeze(
+  /** @type {Array<[SpawnedClass, string]>} */ ([
+    ['completed', '완료'],
+    ['running', '실행'],
+    ['pending', '대기'],
+    ['failed', '실패'],
+    ['unknown', '확인 중']
+  ])
+);
+
+/**
+ * The nonzero count parts of a sub-job summary, `0` items dropped.
+ *
+ * @param {Partial<Record<SpawnedClass, number>>|null|undefined} counts
+ * @returns {Array<{ key: SpawnedClass, label: string, count: number }>}
+ */
+export function externalSpawnedCountParts(counts) {
+  return SPAWNED_COUNT_WORDS.map(([key, label]) => ({
+    key,
+    label,
+    count: Number.isInteger(counts?.[key]) ? Number(counts?.[key]) : 0
+  })).filter((part) => part.count > 0);
+}
 
 const EXTERNAL_WAIT_FIELDS = new Set([
   'wait_id',
@@ -167,8 +279,38 @@ export function isExternalWaitObservation(value) {
           ? typeof job.ssh_host === 'string' && typeof job.job_id === 'string'
           : Number.isInteger(job.pid)) &&
         (job.terminal === null ||
-          (job.terminal && Array.isArray(job.terminal.expected_results)))
+          (job.terminal && Array.isArray(job.terminal.expected_results))) &&
+        isSpawnedFields(job)
     )
+  );
+}
+
+/**
+ * The optional display-only fields of a slurm job (UI-q15q §3.4). Old jobs
+ * without them pass unchanged.
+ *
+ * @param {Record<string, any>} job
+ * @returns {boolean}
+ */
+function isSpawnedFields(job) {
+  const anchor = job.anchor;
+  const spawned = job.spawned;
+  return (
+    (job.name === undefined || typeof job.name === 'string') &&
+    (anchor === undefined ||
+      (!!anchor &&
+        typeof anchor === 'object' &&
+        ['user', 'workdir', 'started_at'].every(
+          (key) => typeof anchor[key] === 'string'
+        ))) &&
+    (spawned === undefined ||
+      (!!spawned &&
+        typeof spawned === 'object' &&
+        Number.isInteger(spawned.total) &&
+        !!spawned.counts &&
+        typeof spawned.counts === 'object' &&
+        Array.isArray(spawned.rows) &&
+        Number.isInteger(spawned.omitted)))
   );
 }
 

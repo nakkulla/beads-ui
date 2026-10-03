@@ -86,6 +86,42 @@ describe('protocol', () => {
     expect(isExternalWaitObservation(externalWait(patch))).toBe(false);
   });
 
+  test('accepts slurm sub-job display fields (UI-q15q §3.4)', () => {
+    const record = externalWait();
+    record.jobs[0] = {
+      ...record.jobs[0],
+      name: 'snake__20260921_090000_ab12',
+      anchor: {
+        user: 'alice',
+        workdir: '/work',
+        started_at: '2026-09-21T09:00:00'
+      },
+      spawned: {
+        total: 0,
+        counts: { running: 0, pending: 0, completed: 0, failed: 0, unknown: 0 },
+        rows: [],
+        omitted: 0
+      }
+    };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(true);
+  });
+
+  test.each([
+    { name: 42 },
+    { anchor: { user: 'alice' } },
+    { spawned: { total: 1, counts: {}, rows: 'x', omitted: 0 } }
+  ])('rejects malformed sub-job display fields %j', (patch) => {
+    const record = externalWait();
+    record.jobs[0] = { ...record.jobs[0], ...patch };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(false);
+  });
+
   test('version and message types', () => {
     expect(Array.isArray(MESSAGE_TYPES)).toBe(true);
     expect(MESSAGE_TYPES.length).toBeGreaterThan(3);

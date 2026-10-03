@@ -8304,3 +8304,133 @@ describe('바인딩된 판정 칩 (UI-wg68 §5)', () => {
     );
   });
 });
+
+describe('external sub-job summary in slot three (UI-q15q §3.5)', () => {
+  /**
+   * @param {Record<string, number>} counts
+   * @param {any[]} [rows]
+   * @returns {any}
+   */
+  function spawned(counts, rows = []) {
+    const full = {
+      running: 0,
+      pending: 0,
+      completed: 0,
+      failed: 0,
+      unknown: 0,
+      ...counts
+    };
+    return {
+      total: Object.values(full).reduce((sum, value) => sum + value, 0),
+      counts: full,
+      rows,
+      omitted: 0
+    };
+  }
+
+  const FAILED_ROW = {
+    job_id: '202',
+    name: 'run_0b5e2f3a-1c2d-4e5f-8a9b-0c1d2e3f4a5b',
+    rule: 'rule_sort',
+    state: 'FAILED',
+    submitted_at: '2026-09-21T09:10:00',
+    started_at: '2026-09-21T09:11:00',
+    ended_at: '2026-09-21T09:30:00',
+    exit_code: 1
+  };
+
+  /**
+   * @param {any[]} jobs
+   */
+  function renderSpawned(jobs) {
+    return renderRow({
+      lane: 'queue',
+      done: false,
+      external_wait: externalWait({ jobs }),
+      wait_reasons: [waitReason({ kind: 'external_job' })]
+    });
+  }
+
+  test('names the registered job and keeps its number in the title', () => {
+    const row = renderSpawned([
+      slurmJob({ name: 'snake__20260921_090000_ab12' })
+    ]);
+
+    const line = row.querySelector('.external-job');
+    expect(line?.querySelector('.external-job__name')?.textContent).toBe(
+      'snake'
+    );
+    expect(line?.getAttribute('title')).toContain('42');
+  });
+
+  test('draws the count line and the failed names line after the job lines', () => {
+    const row = renderSpawned([
+      slurmJob({
+        spawned: spawned({ completed: 3, running: 1, failed: 1 }, [FAILED_ROW])
+      })
+    ]);
+
+    const lines = Array.from(row.querySelectorAll('.external-spawned')).map(
+      (line) => (line.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+    expect(lines).toEqual(['하위 잡 5개 · 완료 3 · 실행 1 · 실패 1', '✕ sort']);
+    expect(
+      row.querySelector('.external-spawned__part--failed')?.textContent
+    ).toBe('실패 1');
+  });
+
+  test('puts the wildcards of a named sub-job in its title', () => {
+    const row = renderSpawned([
+      slurmJob({
+        spawned: spawned({ failed: 1 }, [
+          { ...FAILED_ROW, rule: 'rule_sort_wildcards_sample=A' }
+        ])
+      })
+    ]);
+
+    const name = row.querySelector(
+      '.external-spawned__names .external-spawned__name'
+    );
+    expect(name?.textContent).toBe('sort');
+    expect(name?.getAttribute('title')).toBe('wildcards sample=A');
+  });
+
+  test('sums two registered jobs into one count line', () => {
+    const row = renderSpawned([
+      slurmJob({ spawned: spawned({ completed: 2 }, [FAILED_ROW]) }),
+      slurmJob({ job_id: '43', spawned: spawned({ failed: 1 }) })
+    ]);
+
+    expect(row.querySelectorAll('.external-spawned')).toHaveLength(1);
+    expect(row.querySelector('.external-spawned__names')).toBeNull();
+  });
+
+  test('keeps the badge on registered jobs only', () => {
+    const row = renderSpawned([
+      slurmJob({ spawned: spawned({ completed: 4, failed: 2 }, [FAILED_ROW]) })
+    ]);
+
+    expect(
+      row.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('⏳ 외부 작업');
+  });
+
+  test('draws no summary line for an old record', () => {
+    const row = renderSpawned([slurmJob()]);
+
+    expect(row.querySelector('.external-spawned')).toBeNull();
+  });
+
+  test('draws the same summary on a candidate card', () => {
+    const card = renderCandidate({
+      external_wait: externalWait({
+        jobs: [slurmJob({ spawned: spawned({ running: 2 }) })]
+      }),
+      wait_reasons: [waitReason({ kind: 'external_job' })]
+    });
+
+    expect(
+      card.querySelector('.external-spawned__counts')?.textContent
+    ).toContain('하위 잡 2개');
+  });
+});
