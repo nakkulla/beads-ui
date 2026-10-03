@@ -43,31 +43,31 @@ beads-ui가 띄우는 대화형 세션은 세 종류이고, 사용자에게 보�
 
 ## 2. 검증된 전제
 
-beads-ui 기준은 `ecddf5c7`, dotfiles 기준은 `f0542a1c`이다.
+beads-ui 기준은 `71dbb1ed`, dotfiles 기준은 `f0542a1c`이다.
 
-- `[세션에서 해결]` 클릭 하나가 파킹·복구 대기는 문의 런처로, 그 밖은 해결 런처로 가른다 — server/ws/worker-handlers.js:6792
-- 실패 행이 아닌 클릭은 `no_terminal_failure`로 거절한다 — server/ws/worker-handlers.js:6778
+- `[세션에서 해결]` 클릭 하나가 파킹·복구 대기는 문의 런처로, 그 밖은 해결 런처로 가른다 — server/ws/worker-handlers.js:6797
+- 실패 행이 아닌 클릭은 `no_terminal_failure`로 거절한다 — server/ws/worker-handlers.js:6783
 - 해결 세션 재료는 머지 전 검증 보류·`needs_human`·`cleanup_failed`·실패한 폐기다 — server/worker/resolve-session.js:127-228
 - 해결 세션 첫 입력은 beads-ui 소유 `buildResolvePrompt`이고 "고친 뒤 [정리 재시도]"를 안내한다 — server/worker/resolve-session.js:235
 - 해결 세션 창 이름은 `resolve-<bead>`이고 레코드 kind는 `resolve`다 — server/worker/resolve-session.js:478,490
 - 외부 작업 재개는 같은 세션을 `claude --resume`로 열고 기동 뒤 대기 키를 지운다. 레코드 kind는 `external_resume`이다 — server/worker/external-wait/session-resume.js:42,256,286
 - 외부 `[세션에서 이어가기]`는 세션 소유 `completing` 행에, `[워커로 이어가기]`·`[새 세션으로]`는 세션 소유이거나 `resume.error`가 있는 `completing` 행에 서는 서버 투영 action이다 — server/worker/wait-judgment.js:451-481
 - 문의 레코드만 `conversation`을 갖는다 — server/worker/direction-inquiry.js:592
-- 결과 줄 관측은 `conversation`이 있는 문의 레코드에만 돈다 — server/worker/scheduler.js:9480,9980; server/worker/interactive-progress.js:35
-- 인계 이어가기는 최신 implementation attempt가 대기·파킹일 때만 재개하고, 중복 방지는 자식 attempt의 `resumed_from`이다 — server/worker/scheduler.js:9633
+- 결과 줄 관측은 `conversation`이 있는 문의 레코드에만 돈다 — server/worker/scheduler.js:9508,10008; server/worker/interactive-progress.js:35
+- 인계 이어가기는 최신 implementation attempt가 대기·파킹일 때만 재개하고, 중복 방지는 자식 attempt의 `resumed_from`이다 — server/worker/scheduler.js:9661
 - 외부 대기 admission은 bd `external_wait` 키 존재만 막는다 — server/worker/admission.js:192
-- 외부 대기 레코드 전이에서 `resumed`는 끝 단계다 — server/worker/external-wait/store.js:31-38
+- 외부 대기 레코드 전이에서 `resumed`는 끝 단계다 — server/worker/external-wait/store.js:36-43
 - 진입 블록 다이제스트는 테스트로 고정한다 — server/worker/direction-inquiry.test.js:293
 - `🙋 확인 필요`는 자동 경로(`onParkedAttempt`)만 보내고 클릭 경로(`launchForClick`)는 보내지 않는다 — server/worker/direction-inquiry.js:650,701
 - `[세션에서 해결]` 타일 술어는 파킹·복구·폐기 실패만 자격으로 보고, 살아 있는 세션은 `inquiry`·`resolve`만 센다 — app/views/worker/tile-resolve.js:12-18,102-106
-- PR 대기 행은 별도 술어(정리 실패·`needs_human`·`holding`·폐기 실패)를 쓴다 — app/views/worker/index.js:1489
-- PR 대기 행의 주 버튼은 정리 실패 때 `정리 재시도`·`배포 재시도 후 정리`·`검증 재시도 후 정리`로 바뀐다 — app/views/worker/index.js:1694-1701
-- 폐기 실패의 재시도 라벨은 `재시도`, 잔재 백업이면 `백업 정리 재시도`다 — app/views/worker/lanes.js:600-603
+- PR 대기 행은 별도 술어(정리 실패·`needs_human`·`holding`·폐기 실패)를 쓴다. Worker·Monitor가 함께 쓰는 PR 대기 줄 공유 투영(UI-f2sy)이 소유한다 — app/views/worker/pr-wait-row.js:1059
+- PR 대기 행의 주 버튼은 정리 실패 때 `정리 재시도`·`배포 재시도 후 정리`·`검증 재시도 후 정리`로 바뀐다 — app/views/worker/pr-wait-row.js:1264-1271
+- 폐기 실패의 재시도 라벨은 `재시도`, 잔재 백업이면 `백업 정리 재시도`다 — app/views/worker/lanes.js:601-604
 - 저장소 작업 타임라인은 `정리 재시도 — <단계> 단계부터`와 `[세션에서 해결]`을 한 묶음으로 그린다 — app/views/worker/repo-ops-timeline.js:514,569
 - 정리 재시도는 사람 클릭에만 결과 미상 머지 후 잡의 재실행 권한(`job_retry_authorized`)을 준다 — server/worker/pr-actions.js:2208-2222,3702,3729
 - 폐기 재시도는 `retry(operation_id)`다 — server/worker/discard-coordinator.js:2569
-- 대화형 세션 배지는 kind별로 `재개`·`해결`·`문의` 세션이라 쓴다 — app/views/worker/lanes.js:1797; server/worker/scheduler.js:1290
-- 사용자에게 보이는 옛 버튼 이름 인용 — server/worker/notify.js:727,914; app/views/worker/lane-model.js:816
+- 대화형 세션 배지는 kind별로 `재개`·`해결`·`문의` 세션이라 쓴다 — app/views/worker/lanes.js:1798; server/worker/scheduler.js:1318
+- 사용자에게 보이는 옛 버튼 이름 인용 — server/worker/notify.js:727,914; app/views/worker/lane-model.js:847
 - 자동 수리 세션 dispatch는 핀 정책이 금지한다 — generated/contracts/repo-operation-policy.json:60,73-82
 - Discord 이름표는 브리지가 pane 마커 셋을 읽어 붙인다(이 저장소 밖) — dotfiles src/claude/scripts/discord-bridge/bridge.py:608-622
 - 대화 계약(진입 블록·결과 줄·금지)은 문의 종류에만 정의돼 있다 — dotfiles src/shared/skills/flow/workflow/references/execution-common.md:27-110
@@ -172,7 +172,7 @@ beads-ui 기준은 `ecddf5c7`, dotfiles 기준은 `f0542a1c`이다.
 3. 세 종류 모두 결과 줄이 아닌 새 메시지마다 답 대기 판정과 `❓ 답 대기`가 한 번 나온다.
 4. 실패 대화의 `인계 ·`는 창 소멸 뒤 §3.4 표의 실행을 많아야 한 번 하고, 머지 후 정리는 결과 미상 잡도 다시 돈다. 머지 게이트 `needs_human`은 아무것도 실행하지 않는다.
 5. 외부 작업 완료 대화의 `인계 ·`는 창 소멸 뒤 Worker attempt 하나를 dispatch하고, 재개 프롬프트에 `## 대화 결과` 블록이 있다.
-6. 확인 필요의 인계·인수·보류는 현행과 같다(UI-nuwy 회귀 없음).
+6. 확인 필요의 인계·인수·보류는 현행과 같다(UI-nuwy 계보의 현행 ADR UI-ny0h-2 회귀 없음).
 7. `인수 ·`는 짝만 숨기고 `🙋 사람 인수`를 한 번 보낸다. `보류 ·`는 짝이 다시 서고 알림이 없다.
 8. 인계 실행 전 거절은 카드와 타임라인에 이유를 남기고 짝이 다시 선다.
 9. 대화형 세션 배지가 `대화 세션`으로 보인다. Worker·Monitor 화면이 같은 표면을 그리고, 390px·1280px 폭 넘침 탐침이 0이다.
@@ -193,7 +193,7 @@ beads-ui 기준은 `ecddf5c7`, dotfiles 기준은 `f0542a1c`이다.
 - `server/worker/wait-judgment.test.js`: 외부 완료 자격 투영, 세 종류 답 대기 verdict.
 - `server/worker/notify.test.js`: 바뀐 버튼 이름 문구와 `↪` 실행 줄(회귀 검사 — 알림 함수는 kind를 보지 않고 중복 억제는 scheduler가 소유한다).
 - `server/worker/external-wait/store.test.js`: `resumed → completing` 전이가 되돌림에서만 허용된다.
-- 렌더러 테스트(`running-grid`·`lanes`·`index`·`repo-ops-timeline`·Monitor): 짝 자리와 순서, 옛 라벨 부재.
+- 렌더러 테스트(`running-grid`·`lanes`·`index`·`pr-wait-row`·`repo-ops-timeline`·Monitor): 짝 자리와 순서, 옛 라벨 부재.
 - 저장소 기본 검증은 `AGENTS.md` Unit Testing Standards·Pre-Handoff Validation 그대로다. 폭 넘침은 `scripts/ui-overflow-probe.mjs`.
 
 ## 6. 경계·후속
@@ -204,7 +204,7 @@ beads-ui 기준은 `ecddf5c7`, dotfiles 기준은 `f0542a1c`이다.
 
 - 형제가 정할 것: 세 종류의 진입 블록과 금지 범위, 실패·외부 작업 완료의 `인계` 의미와 권한(계약 문구 — 생성 핀 JSON은 바꾸지 않는다), 외부 작업 완료 대화가 인수·인계 없이 끝날 때의 대기 키 재설정과 `resumed → completing` 전이, 버튼 어휘(`[세션에서 해결]` → `[세션에서 이어가기]`, needs-human 재진입 두 클릭의 이름), 브리지 이름표 하나, ADR dotfiles/dotfiles-dolcw 처분.
 - 결정: 이 Bead의 구현은 형제 착지 뒤에만 시작한다(foreign `blocks`) — 진입 블록 바이트와 어휘의 정본이 형제다(ADR UI-u6ud-2).
-- 결정: UI-ny0h(`docs/superpowers/specs/2026-10-02-worker-timing-settings-design.md`)도 ADR UI-nuwy를 대체하지만 바꾸는 조항이 겹치지 않으므로 순서만 맞춘다. Finish의 ADR 단계에서 `docs/adr/README.md` 현재 표를 다시 읽어, UI-ny0h의 ADR이 먼저 착지했으면 그 ADR을 supersede 대상으로 삼고 그 조항(UI-ny0h가 바꾼 조항 포함)을 승계한다. 대상 id가 바뀌면 이 스펙의 §7 후보 줄을 정정해 재게시한다(staleness 재검토 경로).
+- 결정: ADR UI-nuwy는 UI-q15q(`docs/superpowers/specs/2026-10-02-external-job-spawned-slurm-jobs-design.md`)를 거쳐 UI-ny0h-2(`docs/superpowers/specs/2026-10-02-worker-timing-settings-design.md`)로 대체돼 착지했다. 두 대체는 이 스펙과 바꾸는 조항이 겹치지 않으므로 §7 첫 후보는 UI-ny0h-2를 supersede 대상으로 삼고 그 조항(하위 잡 관찰·재시도 지연 설정 포함)을 승계한다. Finish의 ADR 단계에서 `docs/adr/README.md` 현재 표를 다시 읽어 대상 id가 또 바뀌었으면 §7 후보 줄을 정정해 재게시한다(staleness 재검토 경로).
 
 ## 7. 결정 (ADR 후보)
 
@@ -219,8 +219,8 @@ beads-ui 기준은 `ecddf5c7`, dotfiles 기준은 `f0542a1c`이다.
     - 대안 둘과 기각 이유:
       - 종류별 표면 유지: 같은 이름이 다른 세션을 열어 혼동이 남는다.
       - 실패 인계는 창만 닫고 재시도는 사람이 누름: 버튼을 합쳐도 끝맺음이 종류마다 달라진다.
-  - ADR UI-nuwy를 supersede한다. 소비자 집합(`wait-judgment` verdict·`notify` 대화 알림·`tile-resolve` 술어)을 공유하며, 그 결정의 대화 대상(멈춤만)과 `[세션에서 해결]`·`[워커로 이어가기]` 출구 조항을 넓히고 나머지는 승계한다.
-  - `summary`: "beads-ui가 여는 대화형 세션(확인 필요·실패·외부 작업 완료)은 모두 [세션에서 이어가기] 하나로 열고 인계·인수·보류로 끝난다; [워커로 이어가기]는 대화 없이 Worker가 잇는 짝이고 인계는 그 행의 Worker 출구(같은 세션 재개·정리 재시도·폐기 재시도·머지 큐 재등록·attempt dispatch)를 사용자 답의 권한으로 많아야 한 번 실행하며 머지 게이트 위조 판정은 예외다; 외부 작업 완료 대화가 인수·인계 없이 끝나면 대기 키를 다시 써 완료 행으로 되돌린다; 자동 기동은 사람 판단 멈춤에만 두고 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다" → ADR, supersede UI-nuwy
+  - ADR UI-ny0h-2(UI-nuwy → UI-q15q → UI-ny0h-2 계보의 현행 결정)를 supersede한다. 소비자 집합(`wait-judgment` verdict·`notify` 대화 알림·`tile-resolve` 술어)을 공유하며, 그 결정의 대화 대상(멈춤만)과 `[세션에서 해결]`·`[워커로 이어가기]` 출구 조항을 넓히고 나머지(외부 작업 하위 잡 관찰, 재시도 사다리·base_moved 지연 설정 포함)는 승계한다.
+  - `summary`: "beads-ui가 여는 대화형 세션(확인 필요·실패·외부 작업 완료)은 모두 [세션에서 이어가기] 하나로 열고 인계·인수·보류로 끝난다; [워커로 이어가기]는 대화 없이 Worker가 잇는 짝이고 인계는 그 행의 Worker 출구(같은 세션 재개·정리 재시도·폐기 재시도·머지 큐 재등록·attempt dispatch)를 사용자 답의 권한으로 많아야 한 번 실행하며 머지 게이트 위조 판정은 예외다; 외부 작업 완료 대화가 인수·인계 없이 끝나면 대기 키를 다시 써 완료 행으로 되돌린다; 자동 기동은 사람 판단 멈춤에만 두고 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다; 외부 작업의 하위 잡은 등록 잡과 같은 사용자·WorkDir에서 등록 잡 시작 이후 제출된 Slurm 잡이고 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하며, 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다; 미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정한다" → ADR, supersede UI-ny0h-2
 - 대화형 레코드는 세 종류 모두 `conversation`을 갖고 정산 write에 `인계`(창 소멸 뒤 그 행의 Worker 출구 하나)·`보류`가 더해진다. 해결 세션의 fork 원천과 이력·생존·선점 조항은 승계한다.
   - 되돌리기 어려움: `queue-store.js` 레코드 필드, `scheduler.js` `reconcileInteractivePass` 정산, 세 런처의 레코드 쓰기가 함께 움직인다.
   - 맥락 없이 놀라움: fork로 연 해결 세션도 대화 레코드이고, 그 인계는 세션 재개가 아니라 행의 조작을 실행한다.
@@ -228,7 +228,7 @@ beads-ui 기준은 `ecddf5c7`, dotfiles 기준은 `f0542a1c`이다.
   - ADR UI-nuwy-2를 supersede한다. 소비자 집합(대화형 레코드·reconcile 정산)을 공유하며, "문의 종류만 `conversation`·인계·보류 정산" 조항을 세 종류로 넓히고 나머지는 승계한다. 위 후보와 소비자 집합이 달라 둘째 ADR(-2)로 둔다.
   - `summary`: "Worker 이력의 SoT는 bead별 append-only events.jsonl이고 queue.json은 살아 있는 상태만 담으며 살아 있는 queue.attempts는 bead 이력의 최신 접미다; 구현·리뷰 attempt의 생존·슬롯 점유·정산 시작은 scheduler reconcile이, 결과 판정은 큐가 소유한다; beads-ui가 띄운 대화형 세션은 슬롯을 점유하지 않는 별도 큐 레코드로 투영되고 그 생존·종료만 reconcile이 소유하며, 세 종류(문의·해결·외부 재개) 모두 conversation을 갖고 정산에 인계(창 소멸 뒤 그 행의 Worker 출구 하나)·보류가 더해진다; Worker는 구현 attempt dispatch에서만 open Bead를 in_progress로 선점하고 session_ref는 쓰지 않는다" → ADR, supersede UI-nuwy-2
 - 실패 행의 출구는 `[워커로 이어가기]`(정리·폐기 재시도), `[머지]` 재클릭, `[세션에서 이어가기]`(실패 대화), `[폐기 포기]`다. 실패 대화의 첫 입력은 dotfiles 진입 블록이고(보류형 의미 — 수정 push가 보류를 푼다 — 유지), 그 인계는 행의 Worker 출구를 많아야 한 번 실행한다. 위조 3종 terminal의 waive는 사람 `[머지]`뿐이다.
-  - 되돌리기 어려움: `pr-actions.js` 정리 재시도 권한, `discard-coordinator.js` 재시도, 머지 큐 재등록, `scheduler.js` 인계 실행·한 번 규칙, PR 대기 행 버튼과 `index.js` 술어, `notify.js` 다음 행동 문구가 함께 움직인다.
+  - 되돌리기 어려움: `pr-actions.js` 정리 재시도 권한, `discard-coordinator.js` 재시도, 머지 큐 재등록, `scheduler.js` 인계 실행·한 번 규칙, PR 대기 행 버튼과 `pr-wait-row.js` 술어, `notify.js` 다음 행동 문구가 함께 움직인다.
   - 맥락 없이 놀라움: 세션 결과 줄로 정리 재시도·머지 큐 재등록이 일어나고, 위조 판정 행에서만 인계가 아무것도 하지 않는다.
   - 실제 절충:
     - 얻는 것: 실패를 고친 뒤 사람이 다시 누를 필요가 없다.
