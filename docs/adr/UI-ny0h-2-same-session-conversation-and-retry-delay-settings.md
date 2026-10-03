@@ -1,17 +1,25 @@
 ---
-id: UI-q15q
-title: 외부 작업 하위 Slurm 잡 표시와 같은 Worker 세션 대화
+id: UI-ny0h-2
+title: 같은 Worker 세션 대화와 재시도 지연 설정
 status: accepted
 date: 2026-10-03
-summary: "사람이 필요한 멈춤(파킹, recovery authority·no_progress, 옛 사유 읽기 호환)은 같은 Worker 세션을 fork 없이 tmux 대화형으로 열어 해결한다; 대화 턴 종료는 답 대기(action_required)이고 첫 줄 인계를 관측하면 창 소멸 확인 뒤 같은 attempt를 같은 세션·기록 실행 설정으로 재개하며(parked·awaiting_user 예외는 이 경로뿐, 사람 ↻·자동 재디스패치는 없음) 인수면 관찰만, 보류면 대기로 남는다; 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다; 외부 작업의 하위 잡은 등록 잡과 같은 사용자·WorkDir에서 등록 잡 시작 이후 제출된 Slurm 잡이고 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하며, 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다"
-supersedes: ["UI-nuwy"]
-spec: docs/superpowers/specs/2026-10-02-external-job-spawned-slurm-jobs-design.md
-bead: UI-q15q
+summary: "사람이 필요한 멈춤(파킹, recovery authority·no_progress, 옛 사유 읽기 호환)은 같은 Worker 세션을 fork 없이 tmux 대화형으로 열어 해결한다; 대화 턴 종료는 답 대기(action_required)이고 첫 줄 인계를 관측하면 창 소멸 확인 뒤 같은 attempt를 같은 세션·기록 실행 설정으로 재개하며(parked·awaiting_user 예외는 이 경로뿐, 사람 ↻·자동 재디스패치는 없음) 인수면 관찰만, 보류면 대기로 남는다; 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다; 외부 작업의 하위 잡은 등록 잡과 같은 사용자·WorkDir에서 등록 잡 시작 이후 제출된 Slurm 잡이고 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하며, 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다; 미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정한다"
+supersedes: ["UI-q15q"]
+spec: docs/superpowers/specs/2026-10-02-worker-timing-settings-design.md
+bead: UI-ny0h
 ---
 
-# 외부 작업 하위 Slurm 잡 표시와 같은 Worker 세션 대화
+# 같은 Worker 세션 대화와 재시도 지연 설정
 
 ## Context
+
+이 결정은 `ADR UI-q15q`(외부 작업 하위 Slurm 잡 표시와 같은 Worker 세션 대화)를 다시 쓴다. UI-q15q와 소비자(`server/worker/scheduler.js`·`queue-hold.js`·`failure-class.js`·`continuation-refusal.js`·`tmux-launcher.js`·Worker 카드 렌더러·외부 대기 관찰과 상세 패널)를 공유하므로 새 주제가 아니다.
+
+UI-ny0h(2026-10-02 사용자 결정): Worker의 대기·관찰·재시도 시간을 서버를 다시 띄우지 않고 설정 화면에서 바꾼다. 미분류 실패 재시도 사다리와 base_moved 재개 지연도 그 대상이고, base_moved 재개 지연은 사다리 첫 칸을 빌려 쓰지 않는 별도 값이 된다. 조정 가능한 수치는 ADR 결정 문장으로 고정하지 않는다.
+
+- `UI-q15q`: 그 결정의 "사다리(2·5·15분, 3회)"와 "`base_moved`는 기록 직후 2분 뒤 … 자동 재개" 조항의 길이를 서버 전역 타이밍 설정으로 옮기고, 승계 조항 안의 다른 조정 가능한 수치는 값의 정본을 가리키는 현재 값으로 바꿔 적으며, 나머지 조항 전부를 아래에 승계한다.
+
+아래는 UI-q15q에서 승계한 맥락이다.
 
 이 결정은 `ADR UI-nuwy`(사람 대화는 같은 Worker 세션에서 하고 인계 뒤 Worker가 이어간다)를 다시
 쓴다. UI-nuwy와 소비자(`projectExternalWait`, 상세 패널 `externalJobsTemplate`, 외부 대기 카드
@@ -34,6 +42,10 @@ bead: UI-q15q
 - 전제: ADR UI-u6ud-2 — beads-ui는 dotfiles 계약의 소비자이고 새 필드는 계약 정정과 함께 움직인다.
 
 ## Decision
+
+**미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정하고 두 값은 서로 독립이다.** 사다리 칸 길이는 `env_retry_delays_seconds`, base_moved 재개 지연은 `base_moved_retry_seconds`(`server/timing-settings.js`)이다. 값은 지연을 계산하는 순간에 읽고, 바뀐 값은 다음 예약부터 적용되며 기록된 `next_at`은 다시 쓰지 않는다.
+
+### ADR UI-q15q에서 승계하는 조항
 
 **외부 작업의 하위 잡은 등록 잡과 같은 사용자·같은 `WorkDir`에서 등록 잡 시작 이후 제출된 Slurm
 잡이다. 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하고 로그는 읽지 않는다. 하위 잡은 표시
@@ -93,7 +105,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
 관측과 판정 — 새 assistant 메시지 단위
 
 - 대화가 살아 있는 동안 단계(`turn_state`)는 현행대로 pane 옵션이 정한다. 결과 줄과 답 대기는
-  단계 전환이 아니라 **새 assistant 메시지** 단위로 처리한다: 매 pass(30초) 전사 끝 64KB에서
+  단계 전환이 아니라 **새 assistant 메시지** 단위로 처리한다: 매 pass(`INTERACTIVE_RECONCILE_INTERVAL_SECONDS`, 현재 30초) 전사 끝(현재 64KB)에서
   마지막 assistant 메시지와 그 식별자(메시지 시각, 없으면 전사 mtime)를 읽고, 기동 뒤이면서
   마지막 처리 식별자보다 새 메시지이고 단계가 `running`이 아니면 한 번 처리한다. 관측 사이에
   시작하고 끝난 턴도 잡힌다. 처리한 식별자와 발췌(400자)는 같은 레코드 쓰기에 남는다.
@@ -188,7 +200,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
   reconcile pass가 `listPanesExtended` 포맷에 실린 `@agent_running`·`@agent_attention`으로 단계를
   정하고(`1` → `running`; `question`·`plan` → `question`; `limit` → `limit`; 그 밖·둘 다 비어
   있음 → `idle`), 값이 바뀔 때만 `turn_state_since`를 쓴다. `null`은 첫 관측 전 레코드뿐이다.
-  전사는 `session_id`가 있고 로컬이며 mtime이 새로울 때만 끝 64KB를 읽는다
+  전사는 `session_id`가 있고 로컬이며 mtime이 새로울 때만 끝(현재 64KB)을 읽는다
   (`interactive-progress.js`).
 - 시작 타임라인 이벤트는 레코드당 1회다(첫 관측 pass).
 
@@ -380,7 +392,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
   티어다(env 패턴이 맞으면 그 그룹, 아니면 `unknown`).
 - 재시도는 이 호스트에 실패 attempt의 세션 기록이 있으면 같은 세션·러너·모델·effort·
   계정을 `resume`하고, 없으면 같은 실행 설정을 승계한 새 `dispatch`다.
-- 사다리(2·5·15분, 3회)를 다 쓰면 attempt는 `failed`, 카드는 실패 타일(`↻`·`폐기`),
+- 사다리(칸 길이는 서버 전역 타이밍 설정 `env_retry_delays_seconds`, 기본 2·5·15분; 횟수는 `RETRY_MAX`, 현재 3회)를 다 쓰면 attempt는 `failed`, 카드는 실패 타일(`↻`·`폐기`),
   `❌ 실패` 알림 1회, Bead는 `open`이다. `transient_retry_exhausted → wait`는 없고 예산은
   리셋되지 않으며 사람의 `↻`는 같은 계보의 수동 재개다. 저장된 `waiting/unclassified`
   기록은 로드 시 `failed`(`retry.migrated:'unclassified_wait'`)로 이행하고 알림·자동
@@ -417,8 +429,8 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
 
 base_moved와 재개 종류
 
-- `base_moved`는 기록 직후 2분 뒤 같은 세션을 자동 재개하고(방아쇠만 자동), 같은
-  계보에서 세 번 반복되면 `확인 필요`(`reason: no_progress`, `base가 반복 이동함 ·
+- `base_moved`는 기록 직후 서버 전역 타이밍 설정 `base_moved_retry_seconds`(기본 2분)만큼 뒤 같은 세션을
+  자동 재개하고(방아쇠만 자동, 미분류 실패 사다리와 독립), 같은 계보에서 반복 상한(현재 세 번)에 이르면 `확인 필요`(`reason: no_progress`, `base가 반복 이동함 ·
   후보 <sha7>`)이다.
 - 재개 종류는 `resumeKindOf(quickfix_landing)`이 사유 문자열로 정하고 `session` 목록에
   `base_moved`가 있다. 기계 정산은 같은 attempt의 착지 후 단계 재실행이며 버튼은
@@ -550,6 +562,7 @@ UI-l48z에서 승계한 대안:
 
 ## Consequences
 
+- 두 지연은 설정 화면 `대기·주기` 묶음에서 따로 바뀐다. 되돌리려면 위 소비자와 함께 `server/timing-settings.js`의 두 키와 저장 파일 `timing-settings.json`이 움직인다.
 - 하위 잡 관찰을 되돌리려면 dotfiles `docs/contracts/external-wait.md` Record·관찰 절,
   `server/worker/external-wait/adapters/slurm.js` 원격 프로그램, `observer.js`·`store.js` 저장,
   `server/worker/attach.js` 투영, 카드 렌더러(`app/views/worker/wait-vocabulary.js`·`lanes.js`),
@@ -567,7 +580,7 @@ UI-l48z에서 승계한 대안:
   억제, `tile-resolve.js`의 두 버튼 술어, `session-stall.js` 술어, 핀 투영 schema 2가 함께 움직인다.
 - 맥락 없이는 놀랍다: 파킹된 attempt가 `awaiting_user`를 단 채 재개되고, 그런데도 사람 `↻`는
   없다. 재개는 대화의 `인계`(또는 `[워커로 이어가기]`) 뒤 창 소멸을 확인한 한 경로뿐이다.
-- 감수하는 것: 메시지 단위 관측을 위해 30초마다 대화 전사 끝 64KB를 읽는다. 무인 세션 이력에
+- 감수하는 것: 메시지 단위 관측을 위해 매 pass(현재 30초)마다 대화 전사 끝(현재 64KB)을 읽는다. 무인 세션 이력에
   대화가 섞인다. 인수 세션의 push는 가드 밖이다.
 - 미확인 전제: 대화형 Codex 창이 기본 `CODEX_HOME`에서 attempt 세션을 `codex resume`로 이어 쓰고
   이후 attempt 홈의 `codex exec resume`가 같은 rollout을 찾는지는 배포 뒤 첫 실제 대화에서

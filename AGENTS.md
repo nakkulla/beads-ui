@@ -32,7 +32,7 @@
 `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md`(§2 줄
 순서, §5.1 슬롯 표), `2026-08-28-chip-grammar-unify-design.md`(칩 클릭 의미),
 `2026-09-02-worker-operation-surface-unify-design.md`(§3.2 `.op-btn`). 슬롯이
-없는 새 라벨·칩·버튼은 스펙을 먼저 갱신해 슬롯을 정한 뒤 단다(ADR UI-q15q).
+없는 새 라벨·칩·버튼은 스펙을 먼저 갱신해 슬롯을 정한 뒤 단다(ADR UI-ny0h-2).
 재료가 없는 줄은 그리지 않는다(fail-quiet).
 `[세션에서 해결]`·`[워커로 이어가기]`의 유무는 `tileResolveFields` 하나가 정한다
 — 렌더러는 다시 판정하지 않는다.
@@ -100,7 +100,7 @@
 ## GitHub Actions
 
 - `.github/workflows/`는 비어 있고 재추가하면 테스트가 실패한다. 머지 자격은
-  checks를 보지 않는다(ADR UI-6mpl) — `gh pr checks`를 호출하지 않는다.
+  checks를 보지 않는다(ADR UI-ny0h) — `gh pr checks`를 호출하지 않는다.
 - 머지 전 검증은 Pre-Handoff Validation이 맡고,
   `[verify]`(`repo-ops/script/verify`)는 머지 직전 candidate에서 도는 별개
   안전망이다.

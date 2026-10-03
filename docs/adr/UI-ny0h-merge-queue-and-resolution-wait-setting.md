@@ -1,18 +1,21 @@
 ---
-id: UI-6mpl
-title: Worker 머지 큐·머지 자격과 독립 자동화 스위치
+id: UI-ny0h
+title: Worker 머지 큐·머지 자격·독립 스위치와 해소 대기 설정
 status: accepted
-date: 2026-10-02
-summary: "PR 랜딩 작업의 머지는 Worker의 단일 순차 큐만 실행하고 완료는 MERGED 관측이다; 머지 자격은 저장소 안의 입력(PR·base·head identity, mergeability, 리뷰·실행 영수증, [verify])만 보고 GitHub checks는 읽지 않는다; auto_merge와 auto_advance는 독립 스위치이고 어떤 클릭도 둘을 함께 바꾸지 않는다; 30분은 실패가 아니라 queue-yield deadline이고 충돌 해소 fence는 수동 권한 면제·슬롯 여유로 판정한다"
-supersedes: ["UI-u6ud-3"]
-spec: docs/superpowers/specs/2026-10-01-automation-auto-merge-toggle-split-design.md
-bead: UI-6mpl
+date: 2026-10-03
+summary: "PR 랜딩 작업의 머지는 Worker의 단일 순차 큐만 실행하고 완료는 MERGED 관측이다; 머지 자격은 저장소 안의 입력(PR·base·head identity, mergeability, 리뷰·실행 영수증, [verify])만 보고 GitHub checks는 읽지 않는다; auto_merge와 auto_advance는 독립 스위치이고 어떤 클릭도 둘을 함께 바꾸지 않는다; 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이고 그 길이는 서버 전역 타이밍 설정이 정하며 충돌 해소 fence는 수동 권한 면제·슬롯 여유로 판정한다"
+supersedes: ["UI-6mpl"]
+spec: docs/superpowers/specs/2026-10-02-worker-timing-settings-design.md
+bead: UI-ny0h
 ---
 
-# Worker 머지 큐·머지 자격과 독립 자동화 스위치
+# Worker 머지 큐·머지 자격·독립 스위치와 해소 대기 설정
 
 ## Context
 
+- `UI-6mpl`(Worker 머지 큐·머지 자격과 독립 자동화 스위치)을 대체한다. 그 결정의 "30분은 queue-yield deadline이다" 조항에서 deadline의 의미는 그대로 두고 길이를 서버 전역 타이밍 설정으로 옮기며, 나머지 조항 전부를 아래에 그대로 승계한다. 같은 소비자(`server/worker/merge-queue.js`·`merge-gate.js`·`pr-actions.js`·`auto-merge.js`·Worker 툴바)를 공유하므로 새 주제가 아니다.
+- 바꾸는 이유(UI-ny0h, 2026-10-02 사용자 결정): Worker의 대기·관찰·재시도 시간을 서버를 다시 띄우지 않고 설정 화면에서 바꾼다. 머지 해결 대기도 그 다섯 묶음에 들고, 조정 가능한 수치는 ADR 결정 문장으로 고정하지 않는다.
+- 아래 `UI-u6ud-3` 대체 맥락은 UI-6mpl에서 승계한 것이다.
 - `UI-u6ud-3`(Worker 머지 큐와 머지 자격)을 대체한다. 그 결정의 "`자동화` 버튼을 켜거나 끄는 클릭만 두 플래그를 같은 값으로 맞추는 단일 원자 mutation" 조항 하나를 뒤집고, 단일 순차 큐·저장소 안 자격 입력·queue-yield deadline·fence 조항은 그대로 승계한다.
 - 뒤집는 이유: UI-u6ud-3이 흡수한 `0011`은 "단일 자동화 스위치"를 되돌릴 수 없는 머지를 되돌릴 수 있는 자동 진행과 한 클릭에 묶는다는 이유로 기각했는데, 남은 예외(자동화 클릭이 `auto_merge`도 켠다)가 그 논리와 어긋났다. 사용자는 머지하지 않고 보류하려는 PR이 있는 상태에서 자동 진행만 켜고 싶었고(2026-10-01), 켠 직후 `자동 머지`를 끄는 우회는 서버가 PR 관측·등록을 비동기로 시작해 경합이 남았다.
 - 모니터 전체 스위치 `monitor-auto-toggle`은 UI-yu2o가 이미 지웠으므로 이 결정이 다룰 다중 저장소 스위치는 없다.
@@ -30,12 +33,13 @@ bead: UI-6mpl
 - `auto_advance`와 `auto_merge`는 독립 필드이고 한쪽이 다른 쪽의 전제가 아니며 마스터 스위치로 접지 않는다.
 - `자동화` 버튼(`worker-automation-toggle`)은 켜기·끄기 모두 `auto_advance`만 바꾸고, `자동 머지` 버튼(`worker-merge-auto-toggle`)만 `auto_merge`를 바꾼다. 어떤 클릭도 두 플래그를 함께 바꾸지 않는다. 자동화 켜기의 부수효과는 dispatch tick 하나이고 PR 관측·머지 등록을 시작하지 않으며, 자동화 끄기는 머지 대기열을 건드리지 않는다. 여러 저장소의 자동 머지를 한 클릭으로 켜는 경로는 두지 않는다.
 - 머지 큐 항목의 authority(사용자가 직접 등록한 항목의 continuation)는 전역 `auto_merge` 토글과 별개의 축이다.
-- 30분은 queue-yield deadline이다. 그 시점에 해소 세션은 머지 큐의 턴만 양보하고 세션도 큐 항목도 종료되지 않는다. deadline은 절대 시각이라 재시작이 시계를 되감지 않고, 늦게 끝난 해소는 다음 턴에 다시 게이트를 통과한다.
+- 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이다. 그 길이는 서버 전역 타이밍 설정 `merge_resolution_wait_seconds`(`server/timing-settings.js`, 기본 30분)가 정하고, 타이머를 거는 순간의 값으로 계산한다. 그 시점에 해소 세션은 머지 큐의 턴만 양보하고 세션도 큐 항목도 종료되지 않는다. deadline은 절대 시각이라 재시작이 시계를 되감지 않고, 늦게 끝난 해소는 다음 턴에 다시 게이트를 통과한다.
 - 실패 예산은 시간이 아니라 횟수(해소 라운드 상한과 큐가 유발한 재충돌 상한)와 실패한 head SHA에 핀된 durable exclusion이 맡는다.
 - 충돌 해소 fence는 수동 권한으로 등록된 항목을 면제하고 자동 항목만 워크스페이스 실행 슬롯 여유로 판정한다. 슬롯 계산에서 subject Bead는 빼되 큐 root는 면제하지 않는다. 슬롯이 없어 보류된 상태는 화면의 보류 사유로 투영한다.
 
 ## Consequences
 
+- 해소 대기 길이를 바꾸면 그다음에 거는 deadline부터 적용되고, 이미 기록된 절대 deadline은 다시 쓰지 않는다. 되돌리려면 위 소비자와 함께 `server/timing-settings.js`의 키와 설정 화면 `대기·주기` 묶음이 움직인다.
 - 머지 권한은 `자동 머지` 한 곳에서만 켜지고, 한 클릭으로 둘 다 켜던 편의는 사라진다. 머지를 멈추는 길은 `자동 머지` 끄기(자동 등록된 대기 항목만 비우고 활성 항목·해소 journal·수동 항목은 남긴다)와 항목 `[취소]`다.
 - 이미 저장된 `auto_merge` 값은 옮기지 않는다. 과거 `자동화` 클릭으로 켜진 워크스페이스는 사용자가 `자동 머지`를 끌 때까지 켜진 채 남는다.
 - WS op 이름과 payload는 그대로다 — `worker-automation-toggle`은 의미만 `worker-queue-toggle`과 같아졌다.
