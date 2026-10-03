@@ -4198,7 +4198,14 @@ function externalSpawnedTemplate(summary) {
         >
           <span class="external-spawned__glyph" aria-hidden="true"
             >${names.glyph}</span
-          >${` ${names.items.join(' · ')}${names.more > 0 ? ` 외 ${names.more}` : ''}`}
+          >${' '}${names.items.map(
+            (item, index) =>
+              html`${index > 0 ? ' · ' : ''}<span
+                  class="external-spawned__name"
+                  title=${ifDefined(item.title || undefined)}
+                  >${item.name}</span
+                >`
+          )}${names.more > 0 ? ` 외 ${names.more}` : ''}
         </div>`
       : ''}`;
 }

@@ -8379,6 +8379,22 @@ describe('external sub-job summary in slot three (UI-q15q §3.5)', () => {
     ).toBe('실패 1');
   });
 
+  test('puts the wildcards of a named sub-job in its title', () => {
+    const row = renderSpawned([
+      slurmJob({
+        spawned: spawned({ failed: 1 }, [
+          { ...FAILED_ROW, rule: 'rule_sort_wildcards_sample=A' }
+        ])
+      })
+    ]);
+
+    const name = row.querySelector(
+      '.external-spawned__names .external-spawned__name'
+    );
+    expect(name?.textContent).toBe('sort');
+    expect(name?.getAttribute('title')).toBe('wildcards sample=A');
+  });
+
   test('sums two registered jobs into one count line', () => {
     const row = renderSpawned([
       slurmJob({ spawned: spawned({ completed: 2 }, [FAILED_ROW]) }),

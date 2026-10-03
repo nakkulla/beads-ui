@@ -68,15 +68,20 @@ $0 == "__EWM_TAC_FAIL__" { print "__EWM_COMP_FAIL__"; exit }
   end = val("EndTime")
   if (end ~ ${ISO_AWK} && end < start) { exit }
   if (index(" " $0, " UserId=" user "(") == 0) { next }
-  if (++printed > limit) { exit }
+  if (++printed > limit) { over = 1; exit }
   mem = ""
   n = split(val("Tres"), parts, ",")
   for (i = 1; i <= n; i++) { if (substr(parts[i], 1, 4) == "mem=") { mem = substr(parts[i], 5) } }
   print "C|" val("JobId") "|" val("Name") "||" val("JobState") "|" val("SubmitTime") "|" val("StartTime") "|" end "||" val("TimeLimit") "|" val("ProcCnt") "|" mem "|" val("ExitCode") "|" val("WorkDir")
-}`;
+}
+END { if (over) { print "__EWM_COMP_FAIL__" } }`;
 
 // Normalized row: src|id|name|comment|state|submit|start|end|runtime|limit|cpus|mem|exit|workdir.
 // Counts cover every member before the completed rows are capped remotely.
+// A registered sibling seen started in the same place bounds the submission
+// window like a stored later anchor; a pending StartTime is only an estimate,
+// and an ended job whose start equals its end never ran. The window applies
+// once every row is read, so the attribution does not depend on input order.
 const MERGE_AWK = `
 BEGIN {
   OFS = "|"
@@ -88,16 +93,25 @@ BEGIN {
   for (i = 1; i <= n; i++) { skip[a[i]] = 1 }
   n = split(previous, a, " ")
   for (i = 1; i <= n; i++) { prev[a[i]] = 1 }
+  n = split(siblings, a, " ")
+  for (i = 1; i <= n; i++) { sib[a[i]] = 1 }
   cutoff = ""
   n = split(later, a, " ")
   for (i = 1; i <= n; i++) { if (a[i] > start && (cutoff == "" || a[i] < cutoff)) { cutoff = a[i] } }
 }
-NR > limit { exit }
+NR > limit { over = 1; exit }
 NF >= 14 {
   wd = $14
   for (i = 15; i <= NF; i++) { wd = wd "|" $i }
   id = $2
-  if (id == "" || (id in skip) || wd != workdir || $6 !~ ${ISO_AWK} || $6 < start || (cutoff != "" && $6 >= cutoff)) { next }
+  if (id in sib) {
+    st = $5
+    sub(/[ +].*$/, "", st)
+    began = (st in run) || (($1 == "C" || (st in term)) && $8 ~ ${ISO_AWK} && $7 < $8)
+    if (began && wd == workdir && $7 ~ ${ISO_AWK} && $7 > start && (cutoff == "" || $7 < cutoff)) { cutoff = $7 }
+    next
+  }
+  if (id == "" || (id in skip) || wd != workdir || $6 !~ ${ISO_AWK} || $6 < start) { next }
   if (!(id in row)) { order[++count] = id }
   if ($1 == "Q") {
     c = $4
@@ -110,9 +124,14 @@ NF >= 14 {
   }
 }
 END {
+  if (over) {
+    print "__EWM_SPAWN_FAIL__"
+    exit
+  }
   for (k = 1; k <= count; k++) {
     id = order[k]
     $0 = row[id]
+    if (cutoff != "" && $6 >= cutoff) { continue }
     $4 = comment[id]
     st = $5
     sub(/[ +].*$/, "", st)
@@ -129,13 +148,27 @@ END {
 }`;
 
 /**
- * @typedef {{exclude?: string[], previous?: string[], later?: string[]}} SpawnedContext
+ * @typedef {{exclude?: string[], previous?: string[], later?: string[], siblings?: string[]}} SpawnedContext
  */
+
+/**
+ * Seconds each sub-job read may take under coreutils `timeout` (UI-q15q §4).
+ * Together they stay well inside the 60 s observation ssh, so a stuck read
+ * fails only the sub-job material, never the registered job's observation.
+ */
+export const SPAWNED_TIMEOUT_SECONDS = Object.freeze({
+  queue: 10,
+  config: 5,
+  completion: 15
+});
 
 /**
  * The read-only sub-job section of the observation program (UI-q15q §3.2):
  * the user queue and, under `jobcomp/filetxt`, the completion file read
- * backward to the anchor. It never submits, cancels or changes a job.
+ * backward to the anchor. It never submits, cancels or changes a job. Without
+ * a completion file the completed members beyond the row cap still name
+ * themselves (`__EWM_SPAWN_OMIT__=<end>|<id>`), so the server can tell a capped
+ * row from one that left the queue.
  *
  * @param {import('../store.js').SlurmJob} job
  * @param {SpawnedContext} context
@@ -147,6 +180,7 @@ function spawnedScript(job, context) {
   const list = (values) => shellQuote((values || []).join(' '));
   return [
     "printf '\\n__EWM_SPAWN_BEGIN__\\n'",
+    '__ewm_to() { if command -v timeout >/dev/null 2>&1; then timeout -k 2 "$@"; else shift; "$@"; fi; }',
     "__ewm_anchor=''",
     `if [ "$__ewm_ctl_rc" -eq 0 ]; then __ewm_anchor=$(printf '%s\\n' "$__ewm_ctl" | awk -v started_states=${shellQuote([...SLURM_RUNNING_STATES, ...SLURM_TERMINAL_STATES].join(' '))} ${shellQuote(ANCHOR_AWK)}); fi`,
     `__ewm_su=$(printf '%s\\n' "$__ewm_anchor" | sed -n 1p)`,
@@ -157,9 +191,9 @@ function spawnedScript(job, context) {
     "printf '__EWM_SPAWN__=none\\n'",
     'else',
     `printf '__EWM_SPAWN_USER__=%s\\n__EWM_SPAWN_WORKDIR__=%s\\n__EWM_SPAWN_START__=%s\\n' "$__ewm_su" "$__ewm_sw" "$__ewm_ss"`,
-    `__ewm_uq=$(squeue -h -r -u "$__ewm_su" -t all -o '%i|%j|%k|%T|%V|%S|%e|%M|%l|%C|%m||%Z')`,
+    `__ewm_uq=$(__ewm_to ${SPAWNED_TIMEOUT_SECONDS.queue} squeue -h -r -u "$__ewm_su" -t all -o '%i|%j|%k|%T|%V|%S|%e|%M|%l|%C|%m||%Z')`,
     '__ewm_uq_rc=$?',
-    '__ewm_cfg=$(scontrol show config 2>/dev/null)',
+    `__ewm_cfg=$(__ewm_to ${SPAWNED_TIMEOUT_SECONDS.config} scontrol show config 2>/dev/null)`,
     '__ewm_cfg_rc=$?',
     `__ewm_ctype=$(printf '%s\\n' "$__ewm_cfg" | awk '$1 == "JobCompType" { sub(/^[^=]*=[ ]*/, ""); print; exit }')`,
     `__ewm_cloc=$(printf '%s\\n' "$__ewm_cfg" | awk '$1 == "JobCompLoc" { sub(/^[^=]*=[ ]*/, ""); print; exit }')`,
@@ -167,13 +201,14 @@ function spawnedScript(job, context) {
     'if [ "$__ewm_cfg_rc" -ne 0 ]; then __ewm_comp=failed',
     `elif [ "$__ewm_ctype" != 'jobcomp/filetxt' ] || [ -z "$__ewm_cloc" ] || [ ! -e "$__ewm_cloc" ]; then __ewm_comp=unsupported`,
     'elif [ ! -r "$__ewm_cloc" ]; then __ewm_comp=failed',
-    `else __ewm_cl=$({ tac -- "$__ewm_cloc" || printf '__EWM_TAC_FAIL__\\n'; } 2>/dev/null | awk -v user="$__ewm_su" -v start="$__ewm_ss" -v limit=${SPAWNED_MATERIAL_LINE_LIMIT} ${shellQuote(COMPLETION_AWK)}); case "$__ewm_cl" in *__EWM_COMP_FAIL__*) __ewm_comp=failed;; *) __ewm_comp=filetxt;; esac`,
+    `else __ewm_cl=$({ __ewm_to ${SPAWNED_TIMEOUT_SECONDS.completion} tac -- "$__ewm_cloc" || printf '__EWM_TAC_FAIL__\\n'; } 2>/dev/null | awk -v user="$__ewm_su" -v start="$__ewm_ss" -v limit=${SPAWNED_MATERIAL_LINE_LIMIT} ${shellQuote(COMPLETION_AWK)}); case "$__ewm_cl" in *__EWM_COMP_FAIL__*) __ewm_comp=failed;; *) __ewm_comp=filetxt;; esac`,
     'fi',
     `printf '__EWM_SPAWN_UQ_RC__=%s\\n__EWM_SPAWN_COMP__=%s\\n' "$__ewm_uq_rc" "$__ewm_comp"`,
     'if [ "$__ewm_uq_rc" -eq 0 ] && [ "$__ewm_comp" != failed ]; then',
-    `__ewm_merged=$({ printf '%s\\n' "$__ewm_uq" | sed 's/^/Q|/'; if [ "$__ewm_comp" = filetxt ]; then printf '%s\\n' "$__ewm_cl"; fi; } | awk -F '|' -v workdir="$__ewm_sw" -v start="$__ewm_ss" -v limit=${SPAWNED_MATERIAL_LINE_LIMIT} -v exclude=${list(context.exclude)} -v previous=${list(context.previous)} -v later=${list(context.later)} -v running_states=${shellQuote(SLURM_RUNNING_STATES.join(' '))} -v terminal_states=${shellQuote(SLURM_TERMINAL_STATES.join(' '))} ${shellQuote(MERGE_AWK)})`,
+    `__ewm_merged=$({ printf '%s\\n' "$__ewm_uq" | sed 's/^/Q|/'; if [ "$__ewm_comp" = filetxt ]; then printf '%s\\n' "$__ewm_cl"; fi; } | awk -F '|' -v workdir="$__ewm_sw" -v start="$__ewm_ss" -v limit=${SPAWNED_MATERIAL_LINE_LIMIT} -v exclude=${list(context.exclude)} -v previous=${list(context.previous)} -v later=${list(context.later)} -v siblings=${list(context.siblings)} -v running_states=${shellQuote(SLURM_RUNNING_STATES.join(' '))} -v terminal_states=${shellQuote(SLURM_TERMINAL_STATES.join(' '))} ${shellQuote(MERGE_AWK)})`,
     `printf '%s\\n' "$__ewm_merged" | grep -v '^__EWM_SPAWN_DONE__='`,
     `printf '%s\\n' "$__ewm_merged" | grep '^__EWM_SPAWN_DONE__=' | sort -r | head -n ${SPAWNED_COMPLETED_ROW_LIMIT}`,
+    `if [ "$__ewm_comp" = unsupported ]; then printf '%s\\n' "$__ewm_merged" | grep '^__EWM_SPAWN_DONE__=' | sort -r | tail -n +${SPAWNED_COMPLETED_ROW_LIMIT + 1} | cut -d '|' -f 1,3 | sed 's/^__EWM_SPAWN_DONE__=/__EWM_SPAWN_OMIT__=/'; fi`,
     `printf '__EWM_SPAWN_NOW__=%s\\n' "$(date +%Y-%m-%dT%H:%M:%S)"`,
     'fi',
     "printf '__EWM_SPAWN_END__\\n'",
@@ -341,6 +376,13 @@ function looseDurationSeconds(value) {
 }
 
 /**
+ * Sub-job material as read from one observation. Without a completion file,
+ * `truncated` names the completed members the remote row cap left out.
+ *
+ * @typedef {import('../store.js').SpawnedMaterial & {truncated?: Array<{job_id: string, ended_at: string}>}} SpawnedReading
+ */
+
+/**
  * One normalized remote row as a stored sub-job row.
  *
  * @param {string} line
@@ -349,7 +391,7 @@ function looseDurationSeconds(value) {
  */
 function spawnedRow(line, remote_now) {
   const parts = line.split('|');
-  if (parts.length < 14 || !parts[1]) {
+  if (parts.length < 14 || !parts[1] || !REMOTE_TIME_RE.test(parts[5])) {
     return null;
   }
   const [source, job_id, name, comment, raw_state, submitted, started, ended] =
@@ -390,11 +432,12 @@ function spawnedRow(line, remote_now) {
 
 /**
  * The sub-job section of the remote output (UI-q15q §3.2, §4). Any read or
- * parse failure is `failed`, which leaves the stored rows unchanged; it never
- * throws, so it cannot reach the registered job's error accounting.
+ * parse failure — a malformed row, or a material that reached its line limit —
+ * is `failed`, which leaves the stored rows unchanged; it never throws, so it
+ * cannot reach the registered job's error accounting.
  *
  * @param {string} text
- * @returns {{anchor?: import('../store.js').SpawnedAnchor, spawned: import('../store.js').SpawnedMaterial}}
+ * @returns {{anchor?: import('../store.js').SpawnedAnchor, spawned: SpawnedReading}}
  */
 function parseSpawned(text) {
   try {
@@ -424,6 +467,7 @@ function parseSpawned(text) {
     if (
       !anchor ||
       !lines.includes('__EWM_SPAWN_END__') ||
+      lines.includes('__EWM_SPAWN_FAIL__') ||
       value('UQ_RC') !== '0' ||
       (completion_log !== 'filetxt' && completion_log !== 'unsupported') ||
       !counts
@@ -434,16 +478,32 @@ function parseSpawned(text) {
     const remote_now = now && REMOTE_TIME_RE.test(now) ? now : null;
     /** @type {import('../store.js').SpawnedRow[]} */
     const rows = [];
+    /** @type {Array<{job_id: string, ended_at: string}>} */
+    const truncated = [];
     for (const line of lines) {
+      const omit = line.startsWith('__EWM_SPAWN_OMIT__=')
+        ? /^__EWM_SPAWN_OMIT__=([^|]*)\|([^|]+)$/.exec(line)
+        : undefined;
+      if (omit !== undefined) {
+        if (!omit || !REMOTE_TIME_RE.test(omit[1])) {
+          return { anchor, spawned: { status: 'failed' } };
+        }
+        truncated.push({ job_id: omit[2], ended_at: omit[1] });
+        continue;
+      }
       const body = line.startsWith('__EWM_SPAWN_ROW__=')
         ? line.slice('__EWM_SPAWN_ROW__='.length)
         : line.startsWith('__EWM_SPAWN_DONE__=')
           ? line.slice('__EWM_SPAWN_DONE__='.length).replace(/^[^|]*\|/, '')
           : null;
-      const row = body === null ? null : spawnedRow(body, remote_now);
-      if (row) {
-        rows.push(row);
+      if (body === null) {
+        continue;
       }
+      const row = spawnedRow(body, remote_now);
+      if (!row) {
+        return { anchor, spawned: { status: 'failed' } };
+      }
+      rows.push(row);
     }
     return {
       anchor,
@@ -456,7 +516,8 @@ function parseSpawned(text) {
           completed: Number(counts[3]),
           failed: Number(counts[4])
         },
-        rows
+        rows,
+        ...(completion_log === 'unsupported' ? { truncated } : {})
       }
     };
   } catch {

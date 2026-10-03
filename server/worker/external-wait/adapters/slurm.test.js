@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { expect, test, vi } from 'vitest';
-import { observeSlurmJob } from './slurm.js';
+import { SPAWNED_TIMEOUT_SECONDS, observeSlurmJob } from './slurm.js';
 
 const execFileAsync = promisify(execFile);
 /** @type {import('../store.js').SlurmJob} */
@@ -522,11 +522,16 @@ function queueLine({
 }
 
 /**
- * Run the generated program through `/bin/sh` against fake Slurm commands.
- *
- * @param {{queue?: string[], queue_rc?: number, completion?: string[], config?: string|null, readable?: boolean, context?: import('./slurm.js').SpawnedContext, job?: Partial<import('../store.js').SlurmJob>, control?: string}} options
+ * @typedef {{queue?: string[], queue_rc?: number, completion?: string[], config?: string|null, readable?: boolean, context?: import('./slurm.js').SpawnedContext, job?: Partial<import('../store.js').SlurmJob>, control?: string, tools?: Record<string, string>}} ProgramOptions
  */
-async function runProgram({
+
+/**
+ * Run the generated program through `/bin/sh` against fake Slurm commands;
+ * `tools` adds or replaces fake commands, which see the fixture dir as `$EWM_DIR`.
+ *
+ * @param {ProgramOptions} options
+ */
+async function runObservation({
   queue = [],
   queue_rc = 0,
   completion = [],
@@ -534,7 +539,8 @@ async function runProgram({
   readable = true,
   context = {},
   job = {},
-  control = `JobId=123 JobName=snake__20260921_090000_ab12\n   UserId=alice(1001) GroupId=g(1001)\n   JobState=RUNNING Reason=None\n   RunTime=01:00:00 TimeLimit=1-00:00:00\n   StartTime=${START} EndTime=2026-09-22T09:00:00\n   WorkDir=/work`
+  control = `JobId=123 JobName=snake__20260921_090000_ab12\n   UserId=alice(1001) GroupId=g(1001)\n   JobState=RUNNING Reason=None\n   RunTime=01:00:00 TimeLimit=1-00:00:00\n   StartTime=${START} EndTime=2026-09-22T09:00:00\n   WorkDir=/work`,
+  tools = {}
 }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'external-wait-spawn-'));
   const completion_path = path.join(dir, 'jobcomp.log');
@@ -554,7 +560,8 @@ async function runProgram({
     squeue: `case "$*" in *-u*) cat '${dir}/queue.txt'; exit ${queue_rc};; *) echo RUNNING;; esac`,
     scontrol: `case "$1 $2" in "show job") cat '${dir}/control.txt';; "show config") ${config === null ? 'exit 1' : `cat '${dir}/config.txt'`};; esac`,
     tac: `awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }' "$2"`,
-    date: 'case "$1" in +*) echo 2026-09-21T10:00:00;; *) exit 1;; esac'
+    date: 'case "$1" in +*) echo 2026-09-21T10:00:00;; *) exit 1;; esac',
+    ...tools
   })) {
     fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`, {
       mode: 0o755
@@ -565,15 +572,25 @@ async function runProgram({
     const result = await execFileAsync('/bin/sh', ['-c', argv[6]], {
       timeout: 10000,
       maxBuffer: 16 * 1024 * 1024,
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, EWM_DIR: dir }
     });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };
   };
-  const result = await observeSlurmJob(
+  const observation = await observeSlurmJob(
     { ...JOB, ...job },
     { run, spawned: context }
   );
-  return result.spawned;
+  return { observation, dir };
+}
+
+/**
+ * The sub-job material of {@link runObservation}.
+ *
+ * @param {ProgramOptions} options
+ */
+async function runProgram(options) {
+  const { observation } = await runObservation(options);
+  return observation.spawned;
 }
 
 /**
@@ -775,4 +792,172 @@ test('takes no anchor from a registered job that has not started', async () => {
   });
 
   expect(spawned).toEqual({ status: 'none' });
+}, 15000);
+
+test('bounds each sub-job read by its own timeout budget', async () => {
+  const { dir } = await runObservation({
+    queue: [queueLine({ id: '201' })],
+    tools: {
+      timeout:
+        'printf "%s %s\\n" "$3" "$4" >> "$EWM_DIR/budgets"; shift 3; exec "$@"'
+    }
+  });
+
+  expect(
+    fs.readFileSync(path.join(dir, 'budgets'), 'utf8').trim().split('\n')
+  ).toEqual([
+    `${SPAWNED_TIMEOUT_SECONDS.queue} squeue`,
+    `${SPAWNED_TIMEOUT_SECONDS.config} scontrol`,
+    `${SPAWNED_TIMEOUT_SECONDS.completion} tac`
+  ]);
+}, 15000);
+
+test('keeps the registered observation when the user queue read times out', async () => {
+  const { observation } = await runObservation({
+    queue: [queueLine({ id: '201' })],
+    tools: {
+      timeout: 'shift 3; case "$*" in squeue*-u*) exit 124;; esac; exec "$@"'
+    }
+  });
+
+  expect(observation).toMatchObject({
+    state: 'RUNNING',
+    terminal: false,
+    run_time_seconds: 3600,
+    spawned: { status: 'failed' }
+  });
+}, 15000);
+
+test('fails the sub-job material when the completion read times out', async () => {
+  const spawned = await runProgram({
+    queue: [queueLine({ id: '201' })],
+    completion: [completionLine({ id: '301', end: '2026-09-21T09:30:00' })],
+    tools: {
+      timeout: 'shift 3; case "$1" in tac) exit 124;; esac; exec "$@"'
+    }
+  });
+
+  expect(spawned).toEqual({ status: 'failed' });
+}, 15000);
+
+test('ends the window at a started sibling the queue shows before its anchor is stored', async () => {
+  const spawned = okMaterial(
+    await runProgram({
+      queue: [
+        queueLine({ id: '201', submit: '2026-09-21T09:05:00' }),
+        queueLine({ id: '202', submit: '2026-09-21T09:30:00' }),
+        `124|sib|(null)|RUNNING|2026-09-21T08:50:00|2026-09-21T09:20:00|2026-09-22T09:20:00|10:00|1-00:00:00|2|8G||/work`
+      ],
+      context: { exclude: ['123', '124'], siblings: ['124'] }
+    })
+  );
+
+  expect(spawned.rows.map((row) => row.job_id)).toEqual(['201']);
+}, 15000);
+
+test('ignores the estimated start of a pending sibling', async () => {
+  const spawned = okMaterial(
+    await runProgram({
+      queue: [
+        queueLine({ id: '201', submit: '2026-09-21T09:05:00' }),
+        queueLine({ id: '202', submit: '2026-09-21T09:30:00' }),
+        `124|sib|(null)|PENDING|2026-09-21T08:50:00|2026-09-21T09:20:00|2026-09-22T09:20:00|0:00|1-00:00:00|2|8G||/work`
+      ],
+      context: { exclude: ['123', '124'], siblings: ['124'] }
+    })
+  );
+
+  expect(spawned.rows.map((row) => row.job_id).sort()).toEqual(['201', '202']);
+}, 15000);
+
+test('ends the window at a sibling found ended in the completion log', async () => {
+  const spawned = okMaterial(
+    await runProgram({
+      queue: [queueLine({ id: '202', submit: '2026-09-21T09:30:00' })],
+      completion: [
+        completionLine({
+          id: '201',
+          submit: '2026-09-21T09:05:00',
+          end: '2026-09-21T09:40:00'
+        }),
+        completionLine({
+          id: '124',
+          submit: '2026-09-21T08:50:00',
+          start: '2026-09-21T09:20:00',
+          end: '2026-09-21T09:50:00'
+        })
+      ],
+      context: { exclude: ['123', '124'], siblings: ['124'] }
+    })
+  );
+
+  expect(spawned.rows.map((row) => row.job_id)).toEqual(['201']);
+}, 15000);
+
+test('fails the merge that reaches its line limit', async () => {
+  const queue = Array.from({ length: 200001 }, (_, index) =>
+    queueLine({ id: String(10000 + index) })
+  );
+
+  const spawned = await runProgram({ queue, config: 'JobCompType = none\n' });
+
+  expect(spawned).toEqual({ status: 'failed' });
+}, 60000);
+
+test('fails the completion read that reaches its line limit', async () => {
+  const completion = Array.from(
+    { length: 200001 },
+    (_, index) =>
+      `JobId=${10000 + index} UserId=alice(1001) EndTime=2026-09-21T09:30:00`
+  );
+
+  const spawned = await runProgram({ completion });
+
+  expect(spawned).toEqual({ status: 'failed' });
+}, 60000);
+
+test('reports a malformed row as failed sub-job material', async () => {
+  const result = await observeSpawned(
+    spawnSection({
+      lines: ['__EWM_SPAWN_ROW__=Q|201|broken|(null)|RUNNING'],
+      counts: '1|0|0|0'
+    })
+  );
+
+  expect(result.spawned).toEqual({ status: 'failed' });
+});
+
+test('names the completed members beyond the cap without a completion log', async () => {
+  const queue = Array.from({ length: 302 }, (_, index) =>
+    queueLine({ id: String(1000 + index), state: 'COMPLETED' }).replace(
+      '|N/A|',
+      `|2026-09-21T09:${String(10 + Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}|`
+    )
+  );
+
+  const spawned = okMaterial(
+    await runProgram({ queue, config: 'JobCompType = jobcomp/none\n' })
+  );
+
+  expect(spawned.counts.completed).toBe(302);
+  expect(spawned.rows).toHaveLength(300);
+  expect(
+    /** @type {import('./slurm.js').SpawnedReading} */ (spawned).truncated
+  ).toEqual([
+    { job_id: '1001', ended_at: '2026-09-21T09:10:01' },
+    { job_id: '1000', ended_at: '2026-09-21T09:10:00' }
+  ]);
+}, 15000);
+
+test('names no capped member when the completion log is read', async () => {
+  const completion = Array.from({ length: 302 }, (_, index) =>
+    completionLine({
+      id: String(1000 + index),
+      end: `2026-09-21T09:${String(10 + Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}`
+    })
+  );
+
+  const spawned = okMaterial(await runProgram({ completion }));
+
+  expect(spawned).not.toHaveProperty('truncated');
 }, 15000);

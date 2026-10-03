@@ -20,7 +20,9 @@ import { completionDigest } from './decision.js';
  * every registered id is excluded, previously nonterminal rows come back
  * regardless of the row cap, and a later-started sibling in the same place
  * bounds the submission window so each sub-job belongs to one registered job.
- * A sibling without an anchor has not started and owns no sub-job.
+ * A sibling without an anchor has not started and owns no sub-job. The
+ * sibling ids on the same host let the remote read a start the record has not
+ * stored yet, so the first observation already attributes each sub-job once.
  *
  * @param {SlurmJob} job
  * @param {import('./store.js').Job[]} jobs
@@ -47,23 +49,70 @@ function spawnedContext(job, jobs) {
           other.anchor.workdir === own.workdir))
         ? [other.anchor.started_at]
         : []
+    ),
+    siblings: jobs.flatMap((other) =>
+      other !== job &&
+      other.adapter === 'slurm' &&
+      other.ssh_host === job.ssh_host &&
+      other.job_id !== job.job_id
+        ? [other.job_id]
+        : []
     )
   };
 }
 
 /**
+ * The earliest stored start of a later-started registered sibling in the same
+ * place — the end of this job's submission window, `''` without one.
+ *
+ * @param {SlurmJob} job
+ * @param {import('./store.js').Job[]} jobs
+ * @returns {string}
+ */
+function spawnedCutoff(job, jobs) {
+  const own = job.anchor;
+  if (!own) {
+    return '';
+  }
+  /** @type {string[]} */
+  const starts = [];
+  for (const other of jobs) {
+    if (
+      other !== job &&
+      other.adapter === 'slurm' &&
+      other.ssh_host === job.ssh_host &&
+      other.anchor &&
+      other.anchor.user === own.user &&
+      other.anchor.workdir === own.workdir &&
+      other.anchor.started_at > own.started_at
+    ) {
+      starts.push(other.anchor.started_at);
+    }
+  }
+  return starts.sort()[0] || '';
+}
+
+/**
  * Merge one observation's sub-job material into the stored snapshot
- * (UI-q15q §3.4, §4). Failed or absent material keeps the stored value. Only
- * without a completion file does a vanished nonterminal row become `UNKNOWN`,
- * and then the counts are the stored rows, `omitted` and this queue together;
- * with a completion file the remote counts stand and a vanished row keeps its
- * stored state. Completed rows are capped, oldest end first.
+ * (UI-q15q §3.4, §4). Failed or absent material keeps the stored value.
+ *
+ * With a completion file the material is the whole membership since the
+ * anchor: its counts stand, and a stored row it no longer carries is dropped —
+ * it belongs to another registered job now.
+ *
+ * Without one the counts start from the whole current queue. A stored row that
+ * is neither a returned row nor a capped member (`truncated`) has left the
+ * queue: it stays, a nonterminal one as `UNKNOWN`, and is counted. Previously
+ * omitted completed rows count again unless they are still in the queue. A
+ * stored row submitted at or after `cutoff` belongs to a later sibling and is
+ * not carried. Completed rows are capped, oldest end first.
  *
  * @param {Spawned|undefined} previous
- * @param {import('./store.js').SpawnedMaterial|undefined} material
+ * @param {import('./adapters/slurm.js').SpawnedReading|undefined} material
+ * @param {string} [cutoff]
  * @returns {Spawned|undefined}
  */
-export function mergeSpawned(previous, material) {
+export function mergeSpawned(previous, material, cutoff = '') {
   if (!material || material.status !== 'ok') {
     return previous;
   }
@@ -80,36 +129,50 @@ export function mergeSpawned(previous, material) {
     });
   }
   /** @type {import('./store.js').SpawnedCounts} */
-  let counts = { ...material.counts, unknown: 0 };
+  const counts = { ...material.counts, unknown: 0 };
   if (material.completion_log === 'unsupported') {
+    const truncated = material.truncated || [];
+    const members = new Set([
+      ...merged.keys(),
+      ...truncated.map((entry) => entry.job_id)
+    ]);
     for (const old of prior_rows) {
-      if (!merged.has(old.job_id)) {
-        const group = externalSpawnedClass(old);
-        merged.set(
-          old.job_id,
-          group === 'running' || group === 'pending'
-            ? { ...old, state: 'UNKNOWN' }
-            : old
-        );
+      if (members.has(old.job_id) || (cutoff && old.submitted_at >= cutoff)) {
+        continue;
       }
-    }
-    counts = { running: 0, pending: 0, completed: 0, failed: 0, unknown: 0 };
-    for (const row of merged.values()) {
-      counts[externalSpawnedClass(row)] += 1;
-    }
-    counts.completed += previous?.omitted || 0;
-  } else {
-    for (const old of prior_rows) {
       const group = externalSpawnedClass(old);
-      if (
-        !merged.has(old.job_id) &&
-        group !== 'completed' &&
-        group !== 'failed'
-      ) {
-        merged.set(old.job_id, old);
-        counts[group] += 1;
+      const carried =
+        group === 'running' || group === 'pending'
+          ? { ...old, state: 'UNKNOWN' }
+          : old;
+      merged.set(old.job_id, carried);
+      counts[externalSpawnedClass(carried)] += 1;
+    }
+    const omitted = previous?.omitted || 0;
+    const kept_ends = prior_rows
+      .filter((row) => externalSpawnedClass(row) === 'completed')
+      .map((row) => row.ended_at || '')
+      .filter(Boolean)
+      .sort();
+    const oldest = kept_ends[0];
+    let still = 0;
+    if (omitted > 0 && oldest) {
+      for (const entry of [
+        ...material.rows
+          .filter((row) => externalSpawnedClass(row) === 'completed')
+          .map((row) => ({ job_id: row.job_id, ended_at: row.ended_at || '' })),
+        ...truncated
+      ]) {
+        if (
+          !prior.has(entry.job_id) &&
+          entry.ended_at &&
+          entry.ended_at <= oldest
+        ) {
+          still += 1;
+        }
       }
     }
+    counts.completed += Math.max(0, omitted - still);
   }
   const rows = [...merged.values()];
   const kept = new Set(
@@ -143,15 +206,20 @@ export function mergeSpawned(previous, material) {
  *
  * @param {SlurmJob} job
  * @param {import('./store.js').Observation} observation
+ * @param {import('./store.js').Job[]} jobs
  */
-function applySpawned(job, observation) {
+function applySpawned(job, observation, jobs) {
   if (observation.name) {
     job.name = observation.name;
   }
   if (observation.anchor) {
     job.anchor = observation.anchor;
   }
-  const spawned = mergeSpawned(job.spawned, observation.spawned);
+  const spawned = mergeSpawned(
+    job.spawned,
+    observation.spawned,
+    spawnedCutoff(job, jobs)
+  );
   if (spawned) {
     job.spawned = spawned;
   }
@@ -258,7 +326,7 @@ export function createExternalWaitObserver({
           job.run_time_seconds = observation.run_time_seconds;
           job.unlimited = observation.unlimited;
           job.unparseable = observation.unparseable;
-          applySpawned(job, observation);
+          applySpawned(job, observation, record.jobs);
         }
         if (observation.terminal) {
           job.terminal = {

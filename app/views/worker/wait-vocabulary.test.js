@@ -709,7 +709,10 @@ describe('external sub-job summary and table (UI-q15q §3.5·§3.6)', () => {
     expect(summary?.names).toEqual({
       tone: 'danger',
       glyph: '✕',
-      items: ['new', '4'],
+      items: [
+        { name: 'new', title: '' },
+        { name: '4', title: '' }
+      ],
       more: 1
     });
   });
@@ -737,9 +740,31 @@ describe('external sub-job summary and table (UI-q15q §3.5·§3.6)', () => {
     expect(summary?.names).toEqual({
       tone: 'progress',
       glyph: '◐',
-      items: ['b', 'a'],
+      items: [
+        { name: 'b', title: '' },
+        { name: 'a', title: '' }
+      ],
       more: 0
     });
+  });
+
+  test('carries the wildcards of a named sub-job as its title', () => {
+    const rows = [
+      row({
+        job_id: '1',
+        state: 'RUNNING',
+        rule: 'rule_align_wildcards_sample=A',
+        started_at: '2026-09-21T09:11:00'
+      })
+    ];
+
+    const summary = externalSpawnedSummary(
+      record([spawned({ running: 1 }, rows)])
+    );
+
+    expect(summary?.names?.items).toEqual([
+      { name: 'align', title: 'wildcards sample=A' }
+    ]);
   });
 
   test('sums two registered jobs into one count line without names', () => {

@@ -357,7 +357,7 @@ function isSpawnedView(value) {
  * @typedef {Object} ExternalSpawnedSummary
  * @property {number} total
  * @property {Array<{ key: SpawnedClass, label: string, count: number }>} parts
- * @property {{ tone: 'danger'|'progress', glyph: string, items: string[], more: number }|null} names
+ * @property {{ tone: 'danger'|'progress', glyph: string, items: Array<{ name: string, title: string }>, more: number }|null} names - Each item is a display name (the job number without one) and its wildcards `title`, `''` without one.
  */
 
 /**
@@ -413,9 +413,10 @@ export function externalSpawnedSummary(record) {
     const pick = failed.length > 0 ? failed : running;
     const count = failed.length > 0 ? counts.failed : counts.running;
     if (pick.length > 0) {
-      const items = pick
-        .slice(0, 2)
-        .map((row) => externalJobDisplayName(row).name || row.job_id);
+      const items = pick.slice(0, 2).map((row) => {
+        const display = externalJobDisplayName(row);
+        return { name: display.name || row.job_id, title: display.detail };
+      });
       names = {
         tone: failed.length > 0 ? 'danger' : 'progress',
         glyph: failed.length > 0 ? '✕' : '◐',
