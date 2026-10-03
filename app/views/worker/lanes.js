@@ -596,12 +596,14 @@ export function discardProjection(operations, bead_id, input = {}) {
   return {
     action: !input.external && !input.done,
     enabled: !blocked_reason && (!operation || !!error),
+    // 실패한 Bead 폐기의 재시도는 그 행의 `[워커로 이어가기]`다 (UI-18a5
+    // §3.2). 잔재 백업 폐기는 Bead 폐기 실패가 아니라 그대로 둔다.
     label: stale_recovery
       ? error
         ? '백업 정리 재시도'
         : '백업 후 새로 시작'
       : error
-        ? '재시도'
+        ? '워커로 이어가기'
         : '폐기',
     title:
       blocked_reason ||
@@ -610,7 +612,7 @@ export function discardProjection(operations, bead_id, input = {}) {
           ? `폐기 실패: ${error} — ${guidance}`
           : stale_recovery
             ? `백업 뒤 정리 실패: ${error} — 원본과 검증 영수증을 보존한 채 재시도합니다`
-            : `폐기 실패: ${error} — 같은 작업을 재시도합니다`
+            : `폐기 실패: ${error} — Worker가 같은 폐기를 다시 시도합니다`
         : operation
           ? `${progress || '폐기 처리 중'} — 완료를 기다리세요`
           : confirmation === 'merged'
@@ -1777,7 +1779,16 @@ export function interactiveSessionBadgesTemplate(views, options) {
       view.tmux_session && view.tmux_window
         ? `${view.tmux_session}:${view.tmux_window}`
         : '';
+    // 종류 이름은 `대화 세션` 하나다 (UI-18a5 §3.5): 무엇에서 열렸는지와
+    // fork·같은 세션·새 세션·복구 구분은 title에만 둔다.
+    const row_word =
+      view.kind === 'resolve'
+        ? '실패'
+        : view.kind === 'external_resume'
+          ? '외부 작업 완료'
+          : '확인 필요';
     const title = [
+      row_word,
       resumed
         ? `resume · ${view.source === 'recovered' ? '복구' : 'session_ref'}`
         : origin,
@@ -1785,22 +1796,8 @@ export function interactiveSessionBadgesTemplate(views, options) {
     ]
       .filter(Boolean)
       .join(' · ');
-    // 창 자리는 라벨이 말한다 (UI-a119 §3.3): 같은 세션(`resume`)은 모드 낱말 없이
-    // title로 가고, fork·새 세션·복구만 라벨에 남는다.
-    const mode_word = resumed
-      ? view.source === 'recovered'
-        ? '복구'
-        : ''
-      : mode === '같은 세션'
-        ? ''
-        : mode;
-    const head = [
-      `▤ ${resumed ? '재개' : view.kind === 'resolve' ? '해결' : '문의'} 세션`,
-      mode_word,
-      place
-    ]
-      .filter(Boolean)
-      .join(' · ');
+    // 창 자리는 라벨이 말한다 (UI-a119 §3.3).
+    const head = ['▤ 대화 세션', place].filter(Boolean).join(' · ');
     const label = tail ? html`${head} · ${tail}` : head;
     return html`${view.session_id
       ? html`<button
@@ -1825,6 +1822,28 @@ export function interactiveSessionBadgesTemplate(views, options) {
         >`
       : ''}`;
   });
+}
+
+/**
+ * The `[세션에서 이어가기]` button (UI-18a5 §3.2), one part for every card
+ * that carries `resolve_action` — the caller decides where it stands
+ * (`pair_anchor`), never whether. `cls` is the card's own delegation class.
+ *
+ * @param {{ id: string, resolve_enabled?: boolean, resolve_title?: string }} item
+ * @param {string} cls
+ */
+export function resolveSessionButton(item, cls) {
+  return html`<button
+    type="button"
+    class="op-btn ${cls}"
+    data-bead-id=${item.id}
+    aria-label="세션에서 이어가기"
+    ?disabled=${item.resolve_enabled === false}
+    title=${item.resolve_title ||
+    '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 이 행을 잇습니다'}
+  >
+    세션에서 이어가기
+  </button>`;
 }
 
 /**
@@ -1895,18 +1914,29 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {boolean} [merge_action] - Render the [머지] action (`pr_wait` rows
  * only, worker-phase2 §6).
  * @property {boolean} [discard_action] - Render the [폐기] action.
- * @property {boolean} [resolve_action] - Render the [세션에서 해결] action
- * (UI-jw27 §4). 슬롯 6 액션 foot의 [정리 재시도] 옆에 서고, 재료(=기동 가능한
- * terminal 실패 행)가 없으면 필드도 없어 버튼 자체가 그려지지 않는다.
- * @property {boolean} [resolve_enabled] - Whether [세션에서 해결] may be
+ * @property {boolean} [resolve_action] - Render the [세션에서 이어가기] action
+ * (UI-jw27 §4, UI-18a5 §3.2). 슬롯 6 액션 foot에서 그 행의 [워커로 이어가기]
+ * 바로 앞에 서고, 재료(확인 필요·실패·외부 작업 완료 행)가 없으면 필드도
+ * 없어 버튼 자체가 그려지지 않는다.
+ * @property {boolean} [resolve_enabled] - Whether [세션에서 이어가기] may be
  * clicked; false while this row's own click is in flight.
  * @property {string} [resolve_title] - Tooltip: what the click starts.
  * @property {boolean} [handoff_action] - Render [워커로 이어가기] (UI-nuwy
- * §3.6) beside [세션에서 해결]; set by `tileResolveFields` from the server
+ * §3.6) beside [세션에서 이어가기]; set by `tileResolveFields` from the server
  * projection only.
  * @property {boolean} [handoff_enabled] - false while this row's click waits.
  * @property {string} [handoff_title] - Tooltip.
  * @property {string|null} [handoff_attempt_id] - The stopped attempt handed back.
+ * @property {'handoff'|'merge'|'discard'|'external'|null} [pair_anchor] -
+ * Which button is this row's [워커로 이어가기] (UI-18a5 §3.2); the session
+ * button stands right in front of it. Set by `tileResolveFields` only.
+ * @property {boolean} [pair_held] - A decided conversation outcome holds the
+ * pair (both halves hidden); set by `tileResolveFields` only.
+ * @property {{ cleanup: boolean, cleanup_retry: boolean, completion_phase: 'needs_human'|'holding'|null }} [failure_material] -
+ * A PR 대기 row's 실패 material, read by `tileResolveFields`.
+ * @property {string|null} [conversation_refusal] - Why the last failure or
+ * 외부 작업 완료 conversation handoff of this Bead was refused (UI-18a5
+ * §3.4), from the snapshot's `conversation_refusals`.
  * @property {ReturnType<typeof discardProjection>} [discard] - Shared durable
  * discard eligibility, phase, error, archive, and PR-receipt projection.
  * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
@@ -2611,9 +2641,10 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
       : [];
   const inquiry = overrides.inquiry || null;
   const inquiry_tail = inquiry ? interactiveTurnTail(inquiry, now) : '';
-  // 살아 있는 문의 세션이 이 대기에 이미 답하고 있다 (UI-ri8n §3.3).
+  // 살아 있는 대화 세션이 이 대기에 이미 답하고 있다 (UI-ri8n §3.3). 종류
+  // 이름은 `대화 세션` 하나다 (UI-18a5 §3.5).
   const inquiry_line = inquiry
-    ? `문의 세션 ${inquiry.tmux_session}:${inquiry.tmux_window}${inquiry_tail ? ` · ${inquiry_tail}` : ''}`
+    ? `대화 세션 ${inquiry.tmux_session}:${inquiry.tmux_window}${inquiry_tail ? ` · ${inquiry_tail}` : ''}`
     : '';
   const lines = reason
     ? [
@@ -2758,7 +2789,7 @@ export function waitReasonLines(reason, options = {}) {
     external && record
       ? externalWaitTimes(record, now_ms)
       : inquiry && inquiry_elapsed && !observed_line
-        ? timeSpan(inquiry.launched_at, 'since', now_ms, { pre: '문의 세션 ' })
+        ? timeSpan(inquiry.launched_at, 'since', now_ms, { pre: '대화 세션 ' })
         : observed_line
           ? reset
             ? `리셋 ${reset}`
@@ -3831,23 +3862,17 @@ export function miniRow(item, options = {}) {
         ${discard.abandon.label}
       </button>`
     : '';
-  // [세션에서 해결] (UI-jw27 §4). 평소에는 아무것도 되돌리지 않으므로 [폐기]
-  // 앞에 선다. requested 실패에서는 더 약한 복구부터 읽히도록 재시도와 포기 뒤로
-  // 이동한다 (discard-abandon §3.1).
+  // 세션·워커 이어가기 짝 (UI-18a5 §3.2): `[세션에서 이어가기]` ·
+  // `[워커로 이어가기]` 순서로 붙어 선다. 어느 버튼이 이 행의 `[워커로
+  // 이어가기]`인지(`pair_anchor`)는 `tileResolveFields` 하나가 정하고, 여기는
+  // 그 바로 앞에 세션 버튼을 둘 뿐이다 — 확인 필요의 대화 인계, 정리 실패의 주
+  // 버튼, 폐기 실패의 재시도, 외부 작업 완료의 fork 재개.
   const resolve_only = item.resolve_action
-    ? html`<button
-        type="button"
-        class="op-btn worker-mini__resolve"
-        data-bead-id=${item.id}
-        ?disabled=${item.resolve_enabled === false}
-        title=${item.resolve_title ||
-        '실패한 작업을 이어받는 대화형 세션을 띄웁니다 (기록된 세션이 있으면 fork)'}
-      >
-        세션에서 해결
-      </button>`
+    ? resolveSessionButton(item, 'worker-mini__resolve')
     : '';
-  // [워커로 이어가기] (UI-nuwy §3.6) takes the same `.op-btn` slot right after
-  // [세션에서 해결]; `tileResolveFields` alone decides whether it stands.
+  const anchor = item.pair_anchor ?? null;
+  // [워커로 이어가기] (UI-nuwy §3.6) for a 확인 필요 row: the conversation
+  // handoff, server-projected.
   const handoff_el = item.handoff_action
     ? html`<button
         type="button"
@@ -3861,11 +3886,16 @@ export function miniRow(item, options = {}) {
         워커로 이어가기
       </button>`
     : '';
-  const resolve_el =
-    resolve_only || handoff_el ? html`${resolve_only}${handoff_el}` : '';
+  const session_before = (/** @type {string} */ slot) =>
+    anchor === slot ? resolve_only : '';
+  const resolve_el = html`${anchor === null || anchor === 'handoff'
+    ? resolve_only
+    : ''}${handoff_el}`;
+  // requested 실패의 [폐기 포기]는 짝 뒤에 선다 (discard-abandon §3.1): 더
+  // 약한 복구가 먼저 읽힌다.
   const discard_actions_el = discard?.abandon.action
-    ? html`${discard_el}${abandon_el}${resolve_el}`
-    : html`${resolve_el}${discard_el}`;
+    ? html`${session_before('discard')}${discard_el}${abandon_el}${resolve_el}`
+    : html`${resolve_el}${session_before('discard')}${discard_el}`;
   // 파킹 처분 두 버튼 (UI-hs11 §3.5). 대기 레인 행에만 붙고, 머지/폐기와 같은
   // 클릭 위임·CAS 재시도 계약을 쓴다. findings 상세는 카드 클릭 → 이슈 상세
   // (notes 섹션, UI-yp64 §4)로 가고 여기서는 툴팁 요약만 싣는다.
@@ -4036,7 +4066,9 @@ export function miniRow(item, options = {}) {
                 >`
               : ''}${badge_els}${merge_step_el}
             <span class="worker-mini__actions"
-              >${merge_el}${cancel_el}${discard_actions_el}</span
+              >${session_before(
+                'merge'
+              )}${merge_el}${cancel_el}${discard_actions_el}</span
             >
             ${timesMeta(item)}
           </div>`
@@ -4053,7 +4085,11 @@ export function miniRow(item, options = {}) {
             ? html`<div class="worker-mini__foot">
                 ${merge_step_el}
                 <span class="worker-mini__actions"
-                  >${external_foot_el}${merge_el}${cancel_el}${shelve_el}${discard_actions_el}${revise_els}</span
+                  >${session_before(
+                    'external'
+                  )}${external_foot_el}${session_before(
+                    'merge'
+                  )}${merge_el}${cancel_el}${shelve_el}${discard_actions_el}${revise_els}</span
                 >
                 ${discardReceiptTemplate(item)}
               </div>`
@@ -4817,6 +4853,12 @@ export function candidateCard(item, place_menu = null, options = {}) {
     ? ''
     : readinessChipTemplate(readiness_judgement, readiness_open);
   const external = externalWaitCardParts(item);
+  // 외부 작업 완료 행의 `[세션에서 이어가기]` (UI-18a5 §3.2): 유무와 자리는
+  // `tileResolveFields`가 정한다 — 그 행의 `[워커로 이어가기]`(fork 재개) 앞.
+  const external_session_el =
+    item.resolve_action && item.pair_anchor === 'external'
+      ? resolveSessionButton(item, 'worker-mini__resolve')
+      : '';
   const slot4_el = html`${spec_after_blocker_el}${spec_after_blocker_open
     ? judgementPopover(item)
     : ''}${readiness_el}${readiness_open ? judgementPopover(item) : ''}`;
@@ -4958,7 +5000,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
           >
             ${item.reason
               ? html`<span class="worker-card__reason">${item.reason}</span>`
-              : ''}${external.badge ? external.actions : ''}
+              : ''}${external.badge
+              ? html`${external_session_el}${external.actions}`
+              : ''}
           </div>`
         : ''
       : html`<div
@@ -4988,8 +5032,10 @@ export function candidateCard(item, place_menu = null, options = {}) {
                   >`
                 : ''}${external.badge
                 ? // 외부 대기 사유가 입장을 막으므로 `↴ 대기로`는 뜻이 없다 —
-                  // 그 자리가 대기 처분 조작이다 (UI-l48z §4.3).
-                  external.actions
+                  // 그 자리가 대기 처분 조작이다 (UI-l48z §4.3). 외부 작업
+                  // 완료면 짝의 세션 버튼이 fork 재개 바로 앞에 선다 (UI-18a5
+                  // §3.2).
+                  html`${external_session_el}${external.actions}`
                 : html` <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 후보 레인에서 대기로 가는
                  유일한 경로다 (UI-d13v §6). queue_placeable 하나가 준비도
                  세그먼트와 같은 자격을 말하며, blocked 자체는 막지 않는다.

@@ -144,12 +144,12 @@ describe('completion verify hold', () => {
       `- 대상: ${'a'.repeat(40)} (base ${'b'.repeat(40)})`
     );
     expect(comment.mock.calls[0][1]).toContain(
-      '- 다음: 수정 커밋을 같은 브랜치에 push → 자동 재검증·머지 · 또는 [세션에서 해결]'
+      '- 다음: 수정 커밋을 같은 브랜치에 push → 자동 재검증·머지 · 또는 [세션에서 이어가기]'
     );
     expect(hold).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         failure_class: '머지 전 검증 실패',
-        next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 해결]'
+        next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 이어가기]'
       })
     );
   });
@@ -3154,7 +3154,7 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
     );
 
     expect(comment).toContain(
-      '- 다음: 수정 Bead UI-repair의 PR·배포 뒤 [정리 재시도] · 원본 실패 기록은 보존됨'
+      '- 다음: 수정 Bead UI-repair의 PR·배포 뒤 [워커로 이어가기] · 원본 실패 기록은 보존됨'
     );
     expect(comment).toContain('- 복구: repair:repair');
   });
@@ -3182,7 +3182,9 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
       { op_id: 'op', reason: 'cleanup_failed' }
     );
 
-    expect(comment).toContain(`- 다음: ${label} — 조건 확인 뒤 [정리 재시도]`);
+    expect(comment).toContain(
+      `- 다음: ${label} — 조건 확인 뒤 [워커로 이어가기]`
+    );
     expect(comment).toContain(`- 복구: wait:${reason}`);
   });
 
@@ -3786,7 +3788,7 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
         failure_class: '배포 실패',
         reason: 'cleanup_failed:script_failed',
         reason_detail: 'deploy exited 2',
-        next_action: '[정리 재시도] 또는 [세션에서 해결]',
+        next_action: '[세션에서 이어가기] 또는 [워커로 이어가기]',
         pr_url: 'https://github.com/o/r/pull/1',
         repo: '/Users/me/GitHub/beads-ui'
       })
@@ -3992,7 +3994,7 @@ describe('영수증 보류의 해소 가능성 분류 (UI-jxs3 §4)', () => {
         bead_id: 'UI-root',
         failure_class: '머지 게이트 보류',
         reason: 'receipt_unresolvable:approval_forged',
-        next_action: '[머지] 재클릭 또는 [세션에서 해결]'
+        next_action: '[머지] 재클릭 또는 [세션에서 이어가기]'
       })
     ]);
   });

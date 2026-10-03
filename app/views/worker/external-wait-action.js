@@ -49,8 +49,8 @@ export function sessionWindowText(res) {
 }
 
 /**
- * The success sentence of a `[세션에서 해결]` launch, shared by the Worker and
- * Monitor tabs: the window sentence, then the fresh-session caveat when the
+ * The success sentence of a `[세션에서 이어가기]` launch, shared by the Worker
+ * and Monitor tabs: the window sentence, then the fresh-session caveat when the
  * recorded session was not reopened. The caveat stays on purpose — a fresh
  * session and a fork look the same from outside. The runner is the RESULT's,
  * never the current global setting (codex-orchestration-parity §4.2).
@@ -60,9 +60,10 @@ export function sessionWindowText(res) {
  */
 export function resolveLaunchText(res) {
   const opened = sessionWindowText(res) ?? '세션을 열었습니다';
-  // A fork or a same-session conversation (`resume`, UI-nuwy §3.2) reopened
-  // exactly the session the card names, so it needs no caveat.
-  if (res.mode === 'fork' || res.mode === 'resume') {
+  // A fork, a same-session conversation (`resume`, UI-nuwy §3.2) or an
+  // 외부 작업 완료 session resume (`session`) reopened exactly the session
+  // the card names, so it needs no caveat.
+  if (res.mode === 'fork' || res.mode === 'resume' || res.mode === 'session') {
     return opened;
   }
   const runner = typeof res.runner === 'string' ? res.runner : 'claude';
@@ -70,13 +71,15 @@ export function resolveLaunchText(res) {
 }
 
 /**
- * Toast text for a `mode: 'session'` resume response. The `not_launched`
- * owner cases copy the resume command first.
+ * Toast text for a `mode: 'session'` resume response — the detail panel's
+ * external op and an 외부 작업 완료 row's `[세션에서 이어가기]` reply alike
+ * (UI-18a5 §3.2). The `not_launched` owner cases copy the resume command
+ * first.
  *
  * @param {Record<string, any>} res
  * @returns {Promise<{ text: string, variant: 'success'|'error' }>}
  */
-async function sessionResumeToast(res) {
+export async function sessionResumeToast(res) {
   if (res.session === 'launched') {
     return {
       text: `${sessionWindowText(res)}${res.bridge_active ? ' · Discord 브리지 활성' : ''}`,

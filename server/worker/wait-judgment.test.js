@@ -7,6 +7,7 @@ import {
 import { createWaitJudge, projectExternalWait } from './attach.js';
 import {
   WAIT_THRESHOLDS,
+  conversationVerdict,
   externalJobHeadline,
   judgeWaitReasons
 } from './wait-judgment.js';
@@ -44,7 +45,7 @@ describe('operation recovery wait reasons', () => {
       expect.objectContaining({
         kind: 'recovery',
         headline: '수정 작업 대기 · UI-repair · 원인 script_failed',
-        release: '수정 Bead의 PR·배포 뒤 [정리 재시도]',
+        release: '수정 Bead의 PR·배포 뒤 [워커로 이어가기]',
         targets: [{ id: 'UI-repair', kind: 'issue' }],
         since: NOW - 30_000,
         verdict: 'normal',
@@ -123,7 +124,7 @@ describe('operation recovery wait reasons', () => {
       expect.objectContaining({
         kind: 'recovery',
         headline: 'npm test 실패',
-        release: expect.stringContaining('[정리 재시도]'),
+        release: expect.stringContaining('[워커로 이어가기]'),
         verdict: 'action_required',
         actions: [
           expect.objectContaining({ op: 'worker-resolve-in-session' }),
@@ -424,7 +425,7 @@ describe('recovery wait judgment', () => {
         verdict_reason: {
           code: 'decision',
           message:
-            '문의 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답'
+            '대화 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답'
         },
         actions: DISCARD_ONLY
       });
@@ -722,7 +723,7 @@ describe('recovery wait judgment', () => {
       expect(result.actions).toEqual([
         {
           op: 'worker-resolve-in-session',
-          label: '[세션에서 해결]',
+          label: '[세션에서 이어가기]',
           payload: { root_dir: ROOT, bead_id: 'UI-consumer', attempt_id: 'a' }
         },
         {
@@ -888,7 +889,12 @@ describe('wait judgment external work', () => {
     [
       'session',
       null,
-      ['external_wait_resume', 'external_wait_resume', 'external_wait_stop']
+      [
+        'worker-resolve-in-session',
+        'external_wait_resume',
+        'external_wait_resume',
+        'external_wait_stop'
+      ]
     ],
     ['worker', null, ['external_wait_stop']],
     [
@@ -979,8 +985,16 @@ describe('wait judgment external work', () => {
       {
         label: '[세션에서 이어가기]',
         title:
-          '보존 세션을 같은 워크트리의 tmux 창에서 재개한다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
+          '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 — 인계하면 Worker가 그 세션에서 attempt를 시작합니다',
         placement: 'card',
+        confirm: undefined,
+        mode: undefined
+      },
+      {
+        label: '[세션에서 이어가기]',
+        title:
+          '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
+        placement: 'detail',
         confirm: undefined,
         mode: 'session'
       },
@@ -1018,10 +1032,31 @@ describe('wait judgment external work', () => {
 
     expect(result.actions.map((action) => action.label)).toEqual([
       '[세션에서 이어가기]',
+      '[세션에서 이어가기]',
       '[워커로 이어가기]',
       '[새 세션으로]',
       '[대기 해제]'
     ]);
+  });
+
+  test('projects the 외부 작업 완료 session click as the one session op', () => {
+    const result = run({
+      external_waits: [
+        external({
+          owner_kind: 'session',
+          stage: 'completing',
+          completion: { completed_at: new Date(NOW).toISOString() }
+        })
+      ],
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    }).wait_reasons[0];
+
+    expect(
+      result.actions.find((action) => action.op === 'worker-resolve-in-session')
+    ).toMatchObject({
+      placement: 'card',
+      payload: { bead_id: 'UI-consumer', wait_id: 'w-0123456789ab' }
+    });
   });
 
   test('omits the session resume from a worker-owned failed resume', () => {
@@ -1978,4 +2013,78 @@ test('marks a retry overdue exactly after its scheduled grace', () => {
     'normal',
     'retry_stalled'
   ]);
+});
+
+describe('conversation answer-wait verdict (UI-18a5 §3.4)', () => {
+  /**
+   * One live conversation record of `kind`.
+   *
+   * @param {'inquiry'|'resolve'|'external_resume'} kind
+   * @param {Record<string, any>} [patch]
+   */
+  function conversationRecord(kind, patch = {}) {
+    return {
+      kind,
+      state: 'live',
+      settled_at: null,
+      turn_state: 'idle',
+      conversation: {
+        stop: 's',
+        processed_message_at: 900,
+        result: null,
+        handoff: null
+      },
+      ...patch
+    };
+  }
+
+  test.each(['inquiry', 'resolve', 'external_resume'])(
+    'reads an idle turn after a processed message as the answer wait for %s',
+    (kind) => {
+      const record = conversationRecord(
+        /** @type {'inquiry'|'resolve'|'external_resume'} */ (kind)
+      );
+
+      const verdict = conversationVerdict(record);
+
+      expect(verdict).toBe('answer');
+    }
+  );
+
+  test.each(['inquiry', 'resolve', 'external_resume'])(
+    'reads a running turn as working for %s',
+    (kind) => {
+      const record = conversationRecord(
+        /** @type {'inquiry'|'resolve'|'external_resume'} */ (kind),
+        { turn_state: 'running' }
+      );
+
+      const verdict = conversationVerdict(record);
+
+      expect(verdict).toBe('working');
+    }
+  );
+
+  test('reads a decided result as ended', () => {
+    const record = conversationRecord('resolve', {
+      conversation: {
+        stop: 's',
+        processed_message_at: 900,
+        result: { kind: 'hold', line: '보류 · x', at: 1 },
+        handoff: null
+      }
+    });
+
+    const verdict = conversationVerdict(record);
+
+    expect(verdict).toBe('ended');
+  });
+
+  test('reads a record without a conversation as no conversation', () => {
+    const record = conversationRecord('resolve', { conversation: null });
+
+    const verdict = conversationVerdict(record);
+
+    expect(verdict).toBeNull();
+  });
 });

@@ -1,13 +1,16 @@
 /**
- * The external-wait `[세션에서 이어가기]` launcher (UI-r6xq §4.3).
+ * The external-wait `[세션에서 이어가기]` launcher (UI-r6xq §4.3, UI-18a5
+ * §3.3).
  *
  * A session-owned wait that completed is continued by the person's own
  * preserved session: this module reopens that session with `--resume` (no
- * fork) in a tmux window on the wait's worktree, gives it the completion block
- * as its first prompt, and only after the window is confirmed removes the
- * `external_wait` key. It is a sibling of `resolve-session.js` and shares the
- * same launcher, but it creates no attempt, claims nothing, and runs no
- * admission.
+ * fork) in a tmux window on the wait's worktree, gives it the dotfiles entry
+ * block (`외부 작업 완료 <wait_id>`, the completion block as its situation) as
+ * its first prompt, and only after the window is confirmed removes the
+ * `external_wait` key. Its record carries a `conversation`, so the reconcile
+ * pass observes the result line like every other Worker session
+ * conversation. It is a sibling of `resolve-session.js` and shares the same
+ * launcher, but it creates no attempt, claims nothing, and runs no admission.
  *
  * Two properties are load-bearing:
  *
@@ -26,6 +29,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { runShell } from '../../bd.js';
 import { debug } from '../../logging.js';
+import {
+  externalConversationReason,
+  fillConversationEntry
+} from '../direction-inquiry.js';
 import { qualifySessionFork, sessionResumeCommand } from '../session-ref.js';
 import { EXTERNAL_RESUME_PANE_MARKER } from '../tmux-launcher.js';
 import { externalWaitCompletionPrompt } from './completion-prompt.js';
@@ -33,14 +40,36 @@ import { externalWaitCompletionPrompt } from './completion-prompt.js';
 const default_log = debug('worker:external-wait-session-resume');
 
 /**
- * The line the resumed session reads before the completion block. A person
- * clicked, so the session reports and waits instead of proceeding on its own
- * (UI-a119 §3.2) — the difference from `[워커로 이어가기]`.
+ * The one line dotfiles `docs/contracts/external-wait.md` (Session resume)
+ * puts before the `## 외부 작업 완료` block: the server unsets the key after
+ * confirming this launch, the session opens as the 외부 작업 완료 Worker
+ * session conversation, and after `인수` — before its first edit — it
+ * confirms the key is absent and then claims the Bead. The retired lead
+ * sentence's own wording is gone (UI-18a5 §3.3); this contract line is the
+ * whole of beads-ui's addition to the entry block's `상황` slot.
  *
  * @type {string}
  */
-export const SESSION_RESUME_PROMPT_LEAD =
-  '사람이 beads-ui [세션에서 이어가기]로 이 세션을 사용자의 tmux 창에서 재개했다 · 아래 완료 블록을 몇 줄로 요약하고 사람의 지시를 기다린다 · 지시 전에는 클레임·파일 편집·잡 제출을 하지 않는다 · 대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다 · 지시를 받아 작업을 시작할 때 첫 편집 전에 bd show --json으로 external_wait 키가 없음을 확인하고 워크플로 절차대로 in_progress를 클레임한다';
+export const EXTERNAL_CONVERSATION_LEAD =
+  '대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다 · 이 세션은 외부 작업 완료 Worker 세션 대화로 열린다(`references/execution-common.md` `## Worker 세션 대화`) · `인수` 뒤 첫 편집 전에 `bd show --json`으로 `external_wait` 키가 없음을 확인한 뒤 Bead를 클레임한다';
+
+/**
+ * The first input of an 외부 작업 완료 conversation: the dotfiles entry block
+ * with the `외부 작업 완료 <wait_id>` reason, the contract line and the
+ * completion block as its situation, the record's worktree, and the
+ * workspace checkout.
+ *
+ * @param {WaitRecord} record
+ * @returns {string}
+ */
+export function externalConversationEntry(record) {
+  return fillConversationEntry({
+    reason: externalConversationReason(record.wait_id),
+    situation: `${EXTERNAL_CONVERSATION_LEAD}\n${externalWaitCompletionPrompt(record)}`,
+    worktree: record.worktree || null,
+    checkout: record.root_dir || null
+  });
+}
 
 /**
  * @typedef {'alive'|'dead'|'unverified'} OwnerLivenessState
@@ -273,7 +302,16 @@ export function createExternalWaitSessionResume(deps) {
           settled_by: null,
           state: 'live',
           exit_requested_at: null,
-          defer_since: null
+          defer_since: null,
+          conversation: {
+            stop: externalConversationReason(record.wait_id),
+            wait_id: record.wait_id,
+            processed_message_at: null,
+            message_excerpt: null,
+            result: null,
+            handoff: null,
+            takeover_notified_at: null
+          }
         });
       } catch (err) {
         log(
@@ -453,7 +491,7 @@ export function createExternalWaitSessionResume(deps) {
       recordFailure(workspace, record, 'worktree_missing', session_id);
       return notLaunched('worktree_missing');
     }
-    const prompt = `${SESSION_RESUME_PROMPT_LEAD}\n\n${externalWaitCompletionPrompt(record)}`;
+    const prompt = externalConversationEntry(record);
     deps.externalWait.update(workspace, record.wait_id, (current) => {
       current.resume = {
         mode: 'session',

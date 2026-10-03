@@ -1005,9 +1005,9 @@ export function completionFailureComment(
   const handoff_bead_id = recovery?.handoff?.handoff_bead_id;
   const recovery_reason = recovery?.reason || recovery?.disposition;
   const next = handoff_bead_id
-    ? `- 다음: 수정 Bead ${handoff_bead_id}의 PR·배포 뒤 [정리 재시도] · 원본 실패 기록은 보존됨`
+    ? `- 다음: 수정 Bead ${handoff_bead_id}의 PR·배포 뒤 [워커로 이어가기] · 원본 실패 기록은 보존됨`
     : recovery
-      ? `- 다음: ${RECOVERY_WAIT_SENTENCES[recovery_reason] || recovery_reason} — 조건 확인 뒤 [정리 재시도]`
+      ? `- 다음: ${RECOVERY_WAIT_SENTENCES[recovery_reason] || recovery_reason} — 조건 확인 뒤 [워커로 이어가기]`
       : '- 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead';
   // 헤딩·요약·로그 세 행은 `failure-comment.js`가 소유한다
   // (record-timeline-retention §9): 세션 실패·파킹 댓글이 같은 형식을 써야
@@ -1052,7 +1052,7 @@ export function completionHoldComment(intent, queue, hold) {
     ...summaryRow(summary),
     `- 대상: ${hold.head_sha || intent.subject.head_sha} (base ${hold.base_sha || intent.subject.base_sha})`,
     ...(hold.log_path ? [logRow(hold.log_path)] : []),
-    '- 다음: 수정 커밋을 같은 브랜치에 push → 자동 재검증·머지 · 또는 [세션에서 해결]'
+    '- 다음: 수정 커밋을 같은 브랜치에 push → 자동 재검증·머지 · 또는 [세션에서 이어가기]'
   ].join('\n');
 }
 
@@ -1629,13 +1629,13 @@ export function createCompletionActionDriver(deps) {
           failure_class,
           reason: terminal.reason,
           reason_detail: summary,
-          // `[정리 재시도]` is a post-merge cleanup button that does not exist
-          // yet at the merge gate, so that class names the two exits it really
-          // has (spec §5.2).
+          // The cleanup retry (`[워커로 이어가기]`, UI-18a5 §3.2) is a
+          // post-merge cleanup button that does not exist yet at the merge
+          // gate, so that class names the two exits it really has (spec §5.2).
           next_action:
             token === 'merge_gate'
-              ? '[머지] 재클릭 또는 [세션에서 해결]'
-              : '[정리 재시도] 또는 [세션에서 해결]',
+              ? '[머지] 재클릭 또는 [세션에서 이어가기]'
+              : '[세션에서 이어가기] 또는 [워커로 이어가기]',
           pr_url: intent?.subject?.pr_url ?? null,
           repo: deps.repo ?? null
         })
@@ -2386,7 +2386,8 @@ export function createCompletionActionDriver(deps) {
               failure_class: PRE_MERGE_HOLD_NOTIFY_LABEL,
               reason: hold.reason,
               reason_detail: hold.summary,
-              next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 해결]',
+              next_action:
+                '수정 커밋 push(자동 재검증) 또는 [세션에서 이어가기]',
               pr_url: current.subject.pr_url,
               repo: deps.repo ?? null
             })

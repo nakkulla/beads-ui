@@ -222,6 +222,10 @@
  * result line it was handed and where that line came from. It is the durable
  * boundary two judgments read — a handed-back stale park settles without
  * failing, and the same-cause count does not carry across it. Null elsewhere.
+ * @property {{ key: string, launched_at: number }|null} conversation_source -
+ * Set only on the attempt an 외부 작업 완료 conversation's `인계` dispatched
+ * (UI-18a5 §3.4 한 번 규칙): the conversation record's key and launch time.
+ * A restarted pass that finds it treats the handoff as spent. Null elsewhere.
  * @property {'session'|'fresh'|null} continuation_mode - Whether this child
  * reused the provider session or started a replacement session. Null keeps
  * legacy history neutral.
@@ -520,9 +524,11 @@
  * @property {number|null} turn_state_since
  * @property {InteractiveLastMessage|null} last_message
  * @property {number|null} last_message_read_at
- * @property {ConversationState|null} conversation - Present only on an
- * inquiry launched as a same-session conversation (UI-nuwy §3.2). A record
- * without it is a legacy fork/fresh inquiry and keeps the old rules.
+ * @property {ConversationState|null} conversation - Present on every
+ * conversation a launcher opened since UI-18a5 §3.4 — 멈춤 (`inquiry`),
+ * 실패 (`resolve`) and 외부 작업 완료 (`external_resume`). A record without
+ * it predates the conversation contract for its kind and keeps the old rules
+ * until it settles.
  */
 /**
  * The last assistant message a reconcile pass read. `excerpt` (≤400 code
@@ -541,22 +547,63 @@
  * @typedef {'handoff'|'takeover'|'hold'} ConversationResultKind
  */
 /**
- * Message-unit processing state of one same-session conversation
- * (UI-nuwy §3.3-§3.6). `processed_message_at` is the identity of the last
- * message handled exactly once; `handoff` is the reservation the pass turns
- * into the Worker resume only after the window is confirmed gone.
+ * The row a failure conversation's handoff will act on, fixed when the
+ * handoff is reserved (UI-18a5 §3.4 한 번 규칙). `identity` fingerprints the
+ * failure as it stood then — the cleanup step and its record time, the
+ * discard operation and its error, the held head — so a later pass can tell
+ * whether the exit already settled it.
+ *
+ * @typedef {Object} ConversationHandoffTarget
+ * @property {'cleanup'|'discard'|'verify_hold'|'merge_gate'} kind
+ * @property {string} identity
+ */
+/**
+ * A conversation's handoff reservation (UI-nuwy §3.4, UI-18a5 §3.4).
+ * `target` and `started_at` belong to a failure conversation only:
+ * `started_at` is written durably right before the exit is called, so a
+ * restart never runs it a second time.
+ *
+ * @typedef {Object} ConversationHandoff
+ * @property {string} line
+ * @property {'result_line'|'button'} source
+ * @property {number|null} message_at
+ * @property {number} reserved_at
+ * @property {ConversationHandoffTarget|null} target
+ * @property {number|null} started_at
+ */
+/**
+ * Message-unit processing state of one Worker session conversation
+ * (UI-nuwy §3.3-§3.6, UI-18a5 §3.4). `processed_message_at` is the identity
+ * of the last message handled exactly once; `handoff` is the reservation the
+ * pass turns into the row's Worker exit only after the window is confirmed
+ * gone.
  *
  * @typedef {Object} ConversationState
- * @property {string} stop - The stop label the entry block printed.
+ * @property {string} stop - The `대화 사유` the entry block printed.
+ * @property {string|null} wait_id - The external wait an 외부 작업 완료
+ * conversation reopened; null for the other two kinds.
  * @property {number|null} processed_message_at
  * @property {string|null} message_excerpt
  * @property {{ kind: ConversationResultKind, line: string, at: number }|null} result
- * @property {{ line: string, source: 'result_line'|'button', message_at: number|null, reserved_at: number }|null} handoff
+ * @property {ConversationHandoff|null} handoff
  * @property {number|null} takeover_notified_at
+ */
+/**
+ * Why a failure or 외부 작업 완료 conversation's handoff did not run
+ * (UI-18a5 §3.4 실행 전 거절). The conversation record is gone by then, so
+ * the card reads the reason here until the next conversation for the Bead.
+ *
+ * @typedef {Object} ConversationRefusal
+ * @property {string} reason
+ * @property {number} at
+ * @property {'resolve'|'external_resume'} kind
  */
 /**
  * @typedef {Object} Queue
  * @property {Record<string, InteractiveSession>} interactive_sessions - Live interactive panes, keyed by bead and kind.
+ * @property {Record<string, ConversationRefusal>} conversation_refusals - The
+ * last refused conversation handoff of a failure or 외부 작업 완료 row, keyed
+ * by bead (UI-18a5 §3.4).
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
  * Cold load resets this OFF; only a verified terminal self-deploy may restore
@@ -2292,6 +2339,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'completion_intents',
   'discard_operations',
   'interactive_sessions',
+  'conversation_refusals',
   'merge_policy',
   'drift_policy',
   'worker_runner',
@@ -2358,6 +2406,7 @@ function emptyQueue() {
     completion_intents: {},
     discard_operations: {},
     interactive_sessions: {},
+    conversation_refusals: {},
     repo_ops_opt_out: { verify: false, deploy: false },
     repo_operations: {},
     post_merge_jobs: {},
@@ -3297,6 +3346,17 @@ function normalizeConversation(raw) {
         }
       : null;
   const handoff_raw = raw.handoff;
+  const target_raw = isRecord(handoff_raw) ? handoff_raw.target : null;
+  /** @type {ConversationHandoffTarget|null} */
+  const target =
+    isRecord(target_raw) &&
+    (target_raw.kind === 'cleanup' ||
+      target_raw.kind === 'discard' ||
+      target_raw.kind === 'verify_hold' ||
+      target_raw.kind === 'merge_gate') &&
+    typeof target_raw.identity === 'string'
+      ? { kind: target_raw.kind, identity: target_raw.identity }
+      : null;
   const handoff =
     isRecord(handoff_raw) &&
     stringOrNullValue(handoff_raw.line) !== null &&
@@ -3306,11 +3366,14 @@ function normalizeConversation(raw) {
           line: String(handoff_raw.line),
           source: /** @type {'result_line'|'button'} */ (handoff_raw.source),
           message_at: finiteOrNull(handoff_raw.message_at),
-          reserved_at: /** @type {number} */ (handoff_raw.reserved_at)
+          reserved_at: /** @type {number} */ (handoff_raw.reserved_at),
+          target,
+          started_at: finiteOrNull(handoff_raw.started_at)
         }
       : null;
   return {
     stop: raw.stop,
+    wait_id: stringOrNullValue(raw.wait_id),
     processed_message_at: finiteOrNull(raw.processed_message_at),
     message_excerpt: stringOrNullValue(raw.message_excerpt),
     result,
@@ -3322,17 +3385,59 @@ function normalizeConversation(raw) {
 /**
  * Whether an interactive record is an unsettled conversation holding a
  * handoff reservation (UI-nuwy §3.4) — the one record no launch may replace.
+ * Every conversation kind holds one the same way (UI-18a5 §3.4).
  *
  * @param {InteractiveSession|undefined} record
  * @returns {boolean}
  */
 export function holdsHandoffReservation(record) {
   return (
-    !!record &&
-    record.kind === 'inquiry' &&
-    record.settled_at === null &&
-    !!record.conversation?.handoff
+    !!record && record.settled_at === null && !!record.conversation?.handoff
   );
+}
+
+/**
+ * Whether any of a Bead's interactive records holds a handoff reservation,
+ * whatever its kind: a new conversation for that Bead must wait for the pass
+ * that settles it (UI-18a5 §3.4 진행 중 조작).
+ *
+ * @param {Record<string, InteractiveSession>|undefined} sessions
+ * @param {string} bead_id
+ * @returns {boolean}
+ */
+export function beadHoldsHandoffReservation(sessions, bead_id) {
+  return Object.values(sessions || {}).some(
+    (record) => record.bead_id === bead_id && holdsHandoffReservation(record)
+  );
+}
+
+/**
+ * Normalize the per-bead refusal records, dropping malformed entries.
+ *
+ * @param {unknown} raw
+ * @returns {Record<string, ConversationRefusal>}
+ */
+function normalizeConversationRefusals(raw) {
+  /** @type {Record<string, ConversationRefusal>} */
+  const out = {};
+  if (!isRecord(raw)) {
+    return out;
+  }
+  for (const [bead_id, value] of Object.entries(raw)) {
+    if (
+      isRecord(value) &&
+      stringOrNullValue(value.reason) !== null &&
+      finiteOrNull(value.at) !== null &&
+      (value.kind === 'resolve' || value.kind === 'external_resume')
+    ) {
+      out[bead_id] = {
+        reason: String(value.reason),
+        at: /** @type {number} */ (value.at),
+        kind: value.kind
+      };
+    }
+  }
+  return out;
 }
 
 /**
@@ -3753,6 +3858,17 @@ export function makeAttempt(fields) {
         ? {
             line: fields.conversation_return.line,
             source: fields.conversation_return.source
+          }
+        : null,
+    conversation_source:
+      isRecord(fields.conversation_source) &&
+      typeof fields.conversation_source.key === 'string' &&
+      fields.conversation_source.key.length > 0 &&
+      typeof fields.conversation_source.launched_at === 'number' &&
+      Number.isFinite(fields.conversation_source.launched_at)
+        ? {
+            key: fields.conversation_source.key,
+            launched_at: fields.conversation_source.launched_at
           }
         : null,
     forked_from_session_id:
@@ -5166,6 +5282,9 @@ function normalizeQueue(raw) {
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
   q.interactive_sessions = normalizeInteractiveSessions(
     raw.interactive_sessions
+  );
+  q.conversation_refusals = normalizeConversationRefusals(
+    raw.conversation_refusals
   );
   // 부재·비객체·비불리언은 모두 '실행'으로 읽는다: opt-out은 사용자가 명시적으로
   // 켠 설정이며, 읽을 수 없는 값이 게이트를 건너뛰게 만들어서는 안 된다.
@@ -6732,6 +6851,51 @@ export function createQueueStore(options = {}) {
           return false;
         }
         Object.assign(next.interactive_sessions, records);
+        // A new conversation answers the last refusal (UI-18a5 §3.4): the
+        // card names only the refusal of the conversation it came from.
+        for (const record of Object.values(records)) {
+          if (record.conversation && next.conversation_refusals) {
+            delete next.conversation_refusals[record.bead_id];
+          }
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Record why a failure or 외부 작업 완료 conversation's handoff did not
+     * run (UI-18a5 §3.4 실행 전 거절).
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @param {{ reason: string, kind: 'resolve'|'external_resume' }} input
+     * @returns {QueueOpResult}
+     */
+    recordConversationRefusal(workspace, bead_id, input) {
+      return applyUnconditional(workspace, (next) => {
+        next.conversation_refusals ||= {};
+        next.conversation_refusals[bead_id] = {
+          reason: input.reason,
+          at: now(),
+          kind: input.kind
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Drop a Bead's refusal record once its row is gone.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {QueueOpResult}
+     */
+    clearConversationRefusal(workspace, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        if (!Object.hasOwn(next.conversation_refusals || {}, bead_id)) {
+          return false;
+        }
+        delete next.conversation_refusals[bead_id];
         return true;
       });
     },

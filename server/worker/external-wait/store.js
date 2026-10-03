@@ -379,6 +379,53 @@ export function createExternalWaitStore({
   }
 
   /**
+   * Return a `session` resume whose conversation ended without `인수` or
+   * `인계` to its completion row (UI-18a5 §3.4 되돌림): `resumed →
+   * completing` with `resume` cleared. This is the ONE path that may take
+   * that transition — {@link update} still refuses it — and the caller has
+   * already re-set the Bead's `external_wait` key to this `wait_id` and read
+   * it back. A record already back at `completing` is left as is, so a pass
+   * that stopped midway re-runs the same order harmlessly.
+   *
+   * @param {string} workspace
+   * @param {string} wait_id
+   * @returns {WaitRecord}
+   */
+  function revertSessionResume(workspace, wait_id) {
+    const records = list(workspace);
+    const index = records.findIndex((item) => item.wait_id === wait_id);
+    if (index < 0) {
+      throw new Error('External wait not found');
+    }
+    const previous = records[index];
+    if (previous.stage === 'completing') {
+      return structuredClone(previous);
+    }
+    if (previous.stage !== 'resumed' || previous.resume?.mode !== 'session') {
+      throw new Error(
+        `Illegal external wait revert: ${previous.stage} -> completing`
+      );
+    }
+    if (
+      records.some(
+        (item) =>
+          item.wait_id !== wait_id &&
+          item.bead_id === previous.bead_id &&
+          LIVE_STAGES.has(item.stage)
+      )
+    ) {
+      throw new Error('External wait already exists');
+    }
+    const record = structuredClone(previous);
+    record.stage = 'completing';
+    record.resume = null;
+    validate(record);
+    records[index] = record;
+    persist(workspace, records);
+    return structuredClone(record);
+  }
+
+  /**
    * @param {string} workspace
    * @param {string} wait_id
    * @returns {boolean}
@@ -400,6 +447,7 @@ export function createExternalWaitStore({
     findByBead,
     insert,
     update,
+    revertSessionResume,
     remove,
     get last_read_error() {
       return last_read_error;

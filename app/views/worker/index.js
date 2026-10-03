@@ -69,6 +69,7 @@ import {
 import {
   resolveLaunchText,
   runExternalWaitAction,
+  sessionResumeToast,
   sessionWindowText
 } from './external-wait-action.js';
 import { createIssueSearch } from './issue-search.js';
@@ -436,7 +437,7 @@ export function mergeQueueRefusalText(reason) {
 }
 
 /**
- * The one sentence a `[세션에서 해결]` reply becomes on screen: where the
+ * The one sentence a `[세션에서 이어가기]` reply becomes on screen: where the
  * window is (UI-a119 §3.3), then any fallback caveat.
  *
  * The fallback reason is carried into the toast on purpose: a fresh session and
@@ -475,6 +476,24 @@ export function resolveSessionTone(res) {
     return 'info';
   }
   return res && res.launched === true ? 'success' : 'error';
+}
+
+/**
+ * Show the toast of one `[세션에서 이어가기]` reply. An 외부 작업 완료 reply
+ * (`row: 'external'`, UI-18a5 §3.2) reads like the session resume it is — its
+ * owner-alive refusals copy the resume command; every other reply keeps the
+ * window-and-fallback sentence.
+ *
+ * @param {any} res
+ * @returns {Promise<void>}
+ */
+export async function showResolveToast(res) {
+  if (res && res.row === 'external' && res.conflict !== true) {
+    const toast = await sessionResumeToast(res);
+    showToast(toast.text, toast.variant, 4000);
+    return;
+  }
+  showToast(resolveSessionToast(res), resolveSessionTone(res), 4000);
 }
 
 /**
@@ -725,7 +744,7 @@ export function createWorkerView(mount_element, options = {}) {
   /** @type {Set<string>} Beads with one manual cleanup retry in flight. */
   const cleanup_pending = new Set();
   /**
-   * Beads whose `[세션에서 해결]` click is in flight (UI-jw27 §4). The pane
+   * Beads whose `[세션에서 이어가기]` click is in flight (UI-jw27 §4). The pane
    * marker on the server is the AUTHORITY for "one live resolution session per
    * bead"; this only keeps the row from inviting a second click the server
    * would answer with `already_running`.
@@ -1229,7 +1248,7 @@ export function createWorkerView(mount_element, options = {}) {
       );
       adopt(res);
       if (res && !res.retried && !res.conflict && res.reason) {
-        showToast(`정리 재시도 거부: ${res.reason}`, 'error', 2400);
+        showToast(`워커로 이어가기 거부: ${res.reason}`, 'error', 2400);
       }
     } finally {
       cleanup_pending.delete(bead_id);
@@ -1238,11 +1257,12 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Start the interactive resolution session for one terminal failure row
-   * (UI-jw27 §4). The click is the ONLY trigger — nothing else in this view
-   * calls it — and the reply is reported verbatim rather than folded away: a
-   * fresh-session fallback and a fork look identical on screen otherwise, and
-   * the person is about to work inside the difference.
+   * `[세션에서 이어가기]` (UI-jw27 §4, UI-18a5 §3.2): open the Worker session
+   * conversation of one 확인 필요, 실패 or 외부 작업 완료 row — the server
+   * picks the launcher. The click is the ONLY trigger — nothing else in this
+   * view calls it — and the reply is reported verbatim rather than folded
+   * away: a fresh-session fallback and a fork look identical on screen
+   * otherwise, and the person is about to work inside the difference.
    *
    * @param {string} bead_id
    */
@@ -1260,7 +1280,7 @@ export function createWorkerView(mount_element, options = {}) {
         })
       );
       adopt(res);
-      showToast(resolveSessionToast(res), resolveSessionTone(res), 4000);
+      await showResolveToast(res);
     } finally {
       resolve_pending.delete(bead_id);
       doRender();
@@ -1998,7 +2018,26 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {any[]}
    */
   function candidateRows(m) {
-    return m.runnable.map((item) => rowOf(item));
+    return m.runnable.map((item) => candidateOf(item));
+  }
+
+  /**
+   * A 후보·보류 card: the shared row projection plus the session/worker pair
+   * an 외부 작업 완료 card carries (UI-18a5 §3.2) — `tileResolveFields`
+   * decides it as for every other card.
+   *
+   * @param {LaneItem} item
+   * @returns {any}
+   */
+  function candidateOf(item) {
+    return {
+      ...rowOf(item),
+      ...tileResolveFields(
+        item,
+        resolve_pending.has(item.id),
+        handoff_pending.has(item.id)
+      )
+    };
   }
 
   /**
@@ -2009,7 +2048,7 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {any[]}
    */
   function deferredRows(m) {
-    return m.deferred.map((item) => rowOf(item));
+    return m.deferred.map((item) => candidateOf(item));
   }
 
   /**
@@ -3541,8 +3580,9 @@ export function createWorkerView(mount_element, options = {}) {
       void dismissRepoOperation(repoOpDismiss.dataset.operationId || '');
       return;
     }
-    // 타임라인의 정리 재시도는 PR 대기 카드의 [정리 재시도]와 같은 mutation이다 —
-    // 서버가 멈춘 단계부터 재개하는 기존 semantics 그대로다 (§4.4).
+    // 타임라인의 [워커로 이어가기]는 PR 대기 카드의 정리 실패 [워커로
+    // 이어가기]와 같은 mutation이다 — 서버가 멈춘 단계부터 재개하는 기존
+    // semantics 그대로다 (§4.4).
     const cleanupResume = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-cleanup__resume')
     );
@@ -3553,7 +3593,7 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
-    // 타임라인의 [세션에서 해결]도 PR 대기 카드의 것과 같은 mutation이다
+    // 타임라인의 [세션에서 이어가기]도 PR 대기 카드의 것과 같은 mutation이다
     // (UI-jw27 §4): 같은 실패 행의 두 번째 출구이므로 두 표면이 같은 클릭을
     // 같은 액션으로 보낸다.
     const cleanupResolve = /** @type {HTMLElement|null} */ (

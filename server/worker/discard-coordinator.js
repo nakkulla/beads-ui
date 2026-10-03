@@ -88,7 +88,7 @@ export function createDiscardCoordinator(deps, options = {}) {
           bead_id,
           failure_class: '폐기 실패',
           reason,
-          next_action: '재클릭·[폐기 포기]·[세션에서 해결]',
+          next_action: '[세션에서 이어가기]·[워커로 이어가기]·[폐기 포기]',
           repo: deps.repo
         })
       ).catch((err) => {

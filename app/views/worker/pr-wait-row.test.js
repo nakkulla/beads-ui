@@ -155,19 +155,31 @@ describe('shared PR 대기 projection — 정리 멈춤 (UI-jw27 §3)', () => {
     pr_observations: { 'A-1': MERGED_GATE }
   });
 
-  test('names the stopped-cleanup action 정리 재시도', () => {
+  test('names the stopped-cleanup action 워커로 이어가기', () => {
     const [row] = rowsOf(stopped);
 
-    expect(row.merge_label).toBe('정리 재시도');
+    expect(row.merge_label).toBe('워커로 이어가기');
   });
 
-  test('offers [세션에서 해결] on a stopped cleanup', () => {
+  test('moves the resume step into the worker-continuation tooltip', () => {
+    const [row] = rowsOf(stopped);
+
+    expect(row.merge_title).toContain('단계부터 다시 돌립니다');
+  });
+
+  test('offers [세션에서 이어가기] on a stopped cleanup', () => {
     const [row] = rowsOf(stopped);
 
     expect(row.resolve_action).toBe(true);
   });
 
-  test('locks [세션에서 해결] while that row of that repository waits', () => {
+  test('anchors the session button before the stopped-cleanup primary button', () => {
+    const [row] = rowsOf(stopped);
+
+    expect(row.pair_anchor).toBe('merge');
+  });
+
+  test('locks [세션에서 이어가기] while that row of that repository waits', () => {
     const [row] = rowsOf(stopped, {
       isPending: (kind, root_dir, bead_id) =>
         kind === 'resolve' &&
@@ -177,12 +189,12 @@ describe('shared PR 대기 projection — 정리 멈춤 (UI-jw27 §3)', () => {
     expect(row.resolve_enabled).toBe(false);
   });
 
-  test('draws the 정리 재시도 요청 중 window of a pending cleanup click', () => {
+  test('draws the 워커로 이어가기 요청 중 window of a pending cleanup click', () => {
     const [row] = rowsOf(stopped, {
       isPending: (kind) => kind === 'cleanup'
     });
 
-    expect(badgeText(row)).toBe('정리 재시도 요청 중');
+    expect(badgeText(row)).toBe('워커로 이어가기 요청 중');
   });
 });
 

@@ -7,6 +7,7 @@ import { createExternalWaitStore } from './external-wait/store.js';
 import { resolveExecSettings } from './policy.js';
 import { createQueueStore } from './queue-store.js';
 import { createScheduler } from './scheduler.js';
+import { EXTERNAL_RESUME_PANE_MARKER } from './tmux-launcher.js';
 
 const WS = '/repo';
 const WAIT = 'w-0123456789ab';
@@ -1570,5 +1571,306 @@ describe('external wait session reservation recovery', () => {
       resume: reservation
     });
     expect(env.metadata).toHaveProperty('external_wait', WAIT);
+  });
+});
+
+describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
+  const KEY = 'B1:external_resume';
+
+  /**
+   * A session resume that already opened its conversation: the record sits at
+   * `resumed` with the key unset, and one live `external_resume` pane.
+   *
+   * @param {Record<string, any>} [options]
+   */
+  function conversationFixture(options = {}) {
+    const transcript_dir = path.join(root, '.claude', 'projects', '-repo');
+    fs.mkdirSync(transcript_dir, { recursive: true });
+    fs.writeFileSync(path.join(transcript_dir, 'user-session.jsonl'), '{}\n');
+    const pane = {
+      key: 'B1',
+      pane: '%8',
+      dead: '0',
+      session: 'dev',
+      window: 'B1',
+      cwd: WS,
+      agent_runtime: 'claude',
+      agent_running: '',
+      agent_attention: ''
+    };
+    const panes = { rows: [pane] };
+    const launcher = {
+      launch: vi.fn(),
+      listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
+        ok: true,
+        rows: marker === EXTERNAL_RESUME_PANE_MARKER ? panes.rows : []
+      })),
+      readPaneOption: vi.fn(async () => ({ ok: true, value: null })),
+      capturePaneTail: vi.fn(async () => ({ ok: true, line: '❯ ' })),
+      sendExit: vi.fn(async () => ({ ok: true })),
+      killWindow: vi.fn(async () => ({ ok: true })),
+      bridgeActive: vi.fn(() => false)
+    };
+    /** @type {{ current: any }} */
+    const message = { current: null };
+    const transcript = {
+      location: { locality: 'local', file: '/t', last_event_at: 450 }
+    };
+    const notify = {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn(),
+      conversationAnswer: vi.fn(),
+      conversationTakeover: vi.fn()
+    };
+    const env = fixture({
+      seed_prior: false,
+      snapshot: { session_ref: 'claude:user-session@host' },
+      record: {
+        owner: {
+          kind: 'session',
+          session_ref: 'claude:user-session@host',
+          session_pid: 3333,
+          session_start: AT
+        },
+        stage: 'resumed',
+        resume: {
+          mode: 'session',
+          attempt_id: null,
+          reserved_at: AT,
+          launched_at: AT,
+          session_id: 'user-session',
+          error: null
+        }
+      },
+      deps: {
+        interactiveLauncher: launcher,
+        readLastAssistantMessage: () => message.current,
+        resolveSessionFile: () => transcript.location,
+        notify,
+        timeline: { append: vi.fn() },
+        ...options.deps
+      }
+    });
+    delete env.metadata.external_wait;
+    env.store.recordInteractiveSession(WS, {
+      bead_id: 'B1',
+      kind: 'external_resume',
+      provider: 'claude',
+      pane_id: '%8',
+      tmux_session: 'dev',
+      tmux_window: 'B1',
+      cwd: WS,
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'resume',
+      source: 'session_ref',
+      session_id: 'user-session',
+      session_id_source: 'launch',
+      conversation: {
+        stop: `외부 작업 완료 ${WAIT}`,
+        wait_id: WAIT,
+        ...options.conversation
+      }
+    });
+    return { ...env, launcher, panes, message, transcript, notify };
+  }
+
+  /** @param {ReturnType<typeof conversationFixture>} env */
+  const conversationOf = (env) =>
+    env.store.snapshot(WS).interactive_sessions[KEY];
+
+  /**
+   * @param {ReturnType<typeof conversationFixture>} env
+   * @param {string} text
+   * @param {number} [at]
+   */
+  function say(env, text, at = 900) {
+    env.message.current = { text, at, first_line: text, excerpt: text };
+    env.transcript.location = {
+      ...env.transcript.location,
+      last_event_at: at + 50
+    };
+  }
+
+  /** A handoff reservation as the result-line pass writes it. */
+  const HANDOFF = {
+    processed_message_at: 900,
+    result: { kind: 'handoff', line: '인계 · 결과 확인 뒤 커밋', at: 950 },
+    handoff: {
+      line: '인계 · 결과 확인 뒤 커밋',
+      source: 'result_line',
+      message_at: 900,
+      reserved_at: 950
+    }
+  };
+
+  test('sends one answer wait per new non-result message', async () => {
+    const env = conversationFixture();
+    say(env, '결과 파일을 다시 볼까요?');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    say(env, '그럼 재실행할까요?', 960);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.notify.conversationAnswer).toHaveBeenCalledTimes(2);
+  });
+
+  test('returns a held conversation to its completion row', async () => {
+    const env = conversationFixture();
+    say(env, '보류 · 내일 본다');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.metadata.external_wait).toBe(WAIT);
+    expect(recordOf(env)).toMatchObject({ stage: 'completing', resume: null });
+    expect(conversationOf(env)).toBeUndefined();
+  });
+
+  test('returns a conversation whose window vanished without a result line', async () => {
+    const env = conversationFixture();
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.bd.setMetadata).toHaveBeenCalledWith(
+      'B1',
+      'external_wait',
+      WAIT
+    );
+    expect(recordOf(env)).toMatchObject({ stage: 'completing', resume: null });
+    expect(conversationOf(env)).toBeUndefined();
+  });
+
+  test('re-runs the revert after a stop between the key write and the record move', async () => {
+    const env = conversationFixture();
+    vi.spyOn(env.externalWait, 'revertSessionResume').mockImplementationOnce(
+      () => {
+        throw new Error('disk full');
+      }
+    );
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const midway = {
+      key: env.metadata.external_wait,
+      stage: recordOf(env)?.stage,
+      kept: conversationOf(env) !== undefined
+    };
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(midway).toEqual({ key: WAIT, stage: 'resumed', kept: true });
+    expect(recordOf(env)).toMatchObject({ stage: 'completing', resume: null });
+    expect(conversationOf(env)).toBeUndefined();
+  });
+
+  test('leaves a taken-over Bead to the session without re-setting the key', async () => {
+    const env = conversationFixture();
+    say(env, '인수 · 이 세션에서 끝까지 간다');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.notify.conversationTakeover).toHaveBeenCalledExactlyOnceWith({
+      bead_id: 'B1'
+    });
+    expect(env.metadata).not.toHaveProperty('external_wait');
+    expect(recordOf(env)?.stage).toBe('resumed');
+  });
+
+  test('dispatches one Worker attempt from the conversation session on handoff', async () => {
+    const env = conversationFixture({ conversation: HANDOFF });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launches).toHaveLength(1);
+    expect(env.launches[0].settings).toMatchObject({
+      resume_session_id: 'user-session',
+      fork_session: true
+    });
+    const attempt = Object.values(env.store.snapshot(WS).attempts).at(-1);
+    expect(attempt?.conversation_source).toEqual({
+      key: KEY,
+      launched_at: 500
+    });
+    expect(conversationOf(env)).toBeUndefined();
+  });
+
+  test('heads the dispatched prompt with the conversation result block', async () => {
+    const env = conversationFixture({ conversation: HANDOFF });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    const prompt = String(env.launches[0].bead.prompt);
+    expect(prompt.startsWith('## 대화 결과\n')).toBe(true);
+    expect(prompt).toContain('- 이번 대화의 결과 줄: 인계 · 결과 확인 뒤 커밋');
+    expect(prompt).toContain('## 외부 작업 완료');
+  });
+
+  test('announces the dispatch once as the Worker continuing with its decision', async () => {
+    const env = conversationFixture({ conversation: HANDOFF });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(
+      env.notify.attemptStarted.mock.calls.filter(
+        ([input]) => input.kind === 'conversation_return'
+      )
+    ).toEqual([
+      [
+        expect.objectContaining({
+          bead_id: 'B1',
+          decision: '인계 · 결과 확인 뒤 커밋'
+        })
+      ]
+    ]);
+  });
+
+  test('treats the handoff as spent when its attempt survived a restart', async () => {
+    const env = conversationFixture({ conversation: HANDOFF });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'dispatched',
+        bead_id: 'B1',
+        status: 'running',
+        conversation_source: { key: KEY, launched_at: 500 }
+      }
+    });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launches).toHaveLength(0);
+    expect(env.metadata).not.toHaveProperty('external_wait');
+    expect(conversationOf(env)).toBeUndefined();
+  });
+
+  test('returns the row and names the refusal when the dispatch is refused', async () => {
+    const env = conversationFixture({ conversation: HANDOFF });
+    env.admission.validate.mockResolvedValue({
+      ok: false,
+      reason: 'provider_gate'
+    });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launches).toHaveLength(0);
+    expect(env.metadata.external_wait).toBe(WAIT);
+    expect(recordOf(env)).toMatchObject({ stage: 'completing', resume: null });
+    expect(env.store.snapshot(WS).conversation_refusals.B1).toMatchObject({
+      reason: 'provider_gate',
+      kind: 'external_resume'
+    });
+    expect(conversationOf(env)).toBeUndefined();
   });
 });

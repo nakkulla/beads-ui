@@ -1,7 +1,7 @@
 /**
  * PR 대기 줄 투영 (UI-f2sy §4). Worker 탭과 Monitor 탭이 저장소마다 이 모듈의
  * `prWaitRowsOf`를 불러 같은 PR 대기 줄 — 상태 배지(머지 대기 #N·충돌·리뷰
- * 세션·자동 제외·정리 멈춤 등), `[세션에서 해결]`, 이어하기·권한·게이트 버튼
+ * 세션·자동 제외·정리 멈춤 등), 세션·워커 이어가기 짝, 이어하기·권한·게이트 버튼
  * 라벨 — 을 얻는다. 입력은 그 저장소의 장식 스냅샷, 그 저장소 그룹의 머지
  * 재료, 그리고 `(root_dir, bead_id)`로 키를 단 뷰 로컬 진행 중 집합이다.
  *
@@ -24,7 +24,7 @@ import {
 import { discardProjection, reviewSessionRowState } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
-import { hasLiveResolveSession } from './tile-resolve.js';
+import { tileResolveFields } from './tile-resolve.js';
 
 /**
  * @import { LaneItem, LaneMergeQueue, LaneModel, LaneQueueGroup } from './lane-model.js'
@@ -562,7 +562,7 @@ export function prStatusBadge(input) {
   // and it never claims a merge step: the queue place is not taken yet.
   if (input.queueing) {
     return input.queueing === 'cleanup'
-      ? badge('정리 재시도 요청 중', {
+      ? badge('워커로 이어가기 요청 중', {
           title: '서버 응답을 기다리는 중입니다',
           live: true
         })
@@ -800,7 +800,8 @@ export function prStatusBadge(input) {
  * disabled tooltip carries the refusal reason so the badge is not the only
  * explanation. [폐기] is visually subordinate: a misclick there discards a PR.
  * It is withheld entirely on a merged tile — a landed merge cannot be discarded
- * (discard spec §2), and there [정리 재시도] is the cleanup-retry button.
+ * (discard spec §2), and there the cleanup retry — the row's
+ * [워커로 이어가기] — is the button.
  *
  * The gate shown here is ADVISORY. The click re-queries `gh` server-side and
  * decides again, so a badge that went stale between render and click cannot
@@ -824,7 +825,7 @@ export function prStatusBadge(input) {
  * normal session delivered, with no worker attempt behind it (UI-7agi §5).
  * Two affordances change: [폐기] disappears (the server's discard needs the
  * durable lane membership an external row does not have), and a MERGED row
- * becomes a [정리 재시도] button because nothing auto-cleans it. 충돌 해소 is NOT one
+ * becomes a cleanup-retry [워커로 이어가기] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
  * @param {{ position: number, active: boolean, failure: string|null, waiting?: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, hold?: any, authority?: any, review_dispatch?: any }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
@@ -854,9 +855,6 @@ export function prStatusBadge(input) {
  * `[리뷰 후 머지]` 세션 상태 (UI-d7fy §5.4). 실행 중이면 버튼이 잠기고, 마지막
  * 세션의 종료 사유는 게이트 뱃지 옆 텍스트가 된다. `origin`은 그 세션을 사람이
  * 눌렀는지 큐가 자동으로 띄웠는지다 (UI-qksl §7).
- * @param {boolean} [resolve_pending] - 이 행의 `[세션에서 해결]` 클릭이 아직
- * 서버 응답을 기다리는 중인지 (UI-jw27 §4). 클라이언트만 아는 사실이라 스냅샷에
- * 없다 — 두 번째 클릭이 두 번째 창을 요청하지 않도록 버튼을 잠근다.
  * @param {{ foreign?: boolean, repo_slug?: string, pr_url?: string, pr_number?: number }} [external_pr]
  * The four PR facts the external-PR registry owns (UI-kyky §6.1), carried on the
  * synthesized overlay row only. `foreign === true` means the url names ANOTHER
@@ -888,7 +886,6 @@ function prWaitRow(
   progress_input = {},
   dependency_chips = null,
   review_session = { active: false, failure: null, origin: null },
-  resolve_pending = false,
   external_pr = {},
   shelved = false
 ) {
@@ -984,8 +981,8 @@ function prWaitRow(
   // wanted the AI-repair ladder there; UI-s582 removed that ladder).
   // A `post_merge_jobs` stall is the same click again (UI-i60a §4): the resume
   // re-runs the cleanup, whose ledger reconcile decides whether the job is
-  // re-adopted or re-run. UI-jw27 §3 renamed this button to [정리 재시도] and
-  // §4 put the row's second exit — [세션에서 해결] — beside it.
+  // re-adopted or re-run. UI-18a5 §3.2 names this button the row's
+  // [워커로 이어가기] and puts [세션에서 이어가기] right in front of it.
   const cleanup_retry =
     !!cleanup_failed &&
     [
@@ -1052,15 +1049,18 @@ function prWaitRow(
     merged: !!cleanup_failed || gate?.tier === 'merged'
   });
   const discard_blocks_merge = !!discard.operation;
-  // [세션에서 해결]의 재료 (UI-jw27 §4): 이 행이 사람이 직접 이어받아야 하는
-  // 실패 또는 보류인가 (UI-g0lk §5.1). 재료는 넷이다 — 멈춘 머지 후 정리,
-  // needs_human 종단, holding 보류, 실패한 폐기 작업. 없으면 그리지 않는다:
-  // 실패가 아닌 행에서 이 클릭은 무엇을 해결하라고 말할지가 없다.
-  const resolve_action =
-    !!cleanup_failed ||
-    completion?.phase === 'needs_human' ||
-    completion?.phase === 'holding' ||
-    !!discard.error;
+  // 실패 행 재료 (UI-jw27 §4, UI-g0lk §5.1): 멈춘 머지 후 정리, needs_human
+  // 종단, holding 보류. 실패한 폐기는 `discard` 투영이 싣는다. `[세션에서
+  // 이어가기]`의 유무는 이 재료를 읽는 `tileResolveFields` 하나가 정한다
+  // (UI-18a5 §3.2) — 이 행은 재료만 싣고 다시 판정하지 않는다.
+  const failure_material = {
+    cleanup: !!cleanup_failed,
+    cleanup_retry: cleanup_retry || external_cleanup,
+    completion_phase:
+      completion?.phase === 'needs_human' || completion?.phase === 'holding'
+        ? completion.phase
+        : null
+  };
   // The queue will act on this row without a click (UI-kxhf): it is queued and
   // nothing terminal or choice-bound stands in the way.
   const auto_pending =
@@ -1202,11 +1202,7 @@ function prWaitRow(
           : '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)',
     discard,
     discard_action: discard.action,
-    resolve_action,
-    resolve_enabled: !resolve_pending,
-    resolve_title: resolve_pending
-      ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
-      : '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다',
+    failure_material,
     merge_step,
     discard_enabled: discard.enabled,
     discard_title: discard.title,
@@ -1261,14 +1257,12 @@ function prWaitRow(
     // 해소만 하고 멈추는 것처럼 읽히던 라벨을 실제 동작에 맞춘다 (UI-yk55 §1):
     // 이 클릭이 띄우는 세션은 완료 후 자동으로 재머지된다 — 툴팁이 이미 그렇게
     // 말하고 있었고, 라벨만 어긋나 있었다.
+    // 정리 실패 행의 주 버튼은 그 행의 `[워커로 이어가기]`다 (UI-18a5 §3.2):
+    // 무엇부터 다시 도는지(배포·검증·실패 단계)는 툴팁이 말한다.
     merge_label: continuation_required
       ? '이어하기 선택'
       : cleanup_retry || external_cleanup
-        ? stalled_script === 'deploy'
-          ? '배포 재시도 후 정리'
-          : stalled_script === 'verify'
-            ? '검증 재시도 후 정리'
-            : '정리 재시도'
+        ? '워커로 이어가기'
         : conflicting && !merge_step && !cleanup_retry
           ? '충돌 해소 후 머지'
           : gate?.reason === 'base_behind'
@@ -1280,18 +1274,18 @@ function prWaitRow(
                 : undefined,
     merge_title: discard_blocks_merge
       ? discard.error
-        ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
+        ? `폐기 실패: ${discard.error} — [워커로 이어가기]로 다시 시도하거나 상태를 확인하세요`
         : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
       : continuation_required
         ? '실행 provider가 변경되었습니다 — 이어갈 방식을 선택하세요'
         : queueing
           ? '요청을 보내는 중 — 서버 응답을 기다립니다'
           : stalled_script
-            ? `머지 완료 — ${stalled_script === 'deploy' ? '배포' : '검증'} 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 저장소 작업부터 정리를 다시 진행합니다`
+            ? `머지 완료 — ${stalled_script === 'deploy' ? '배포' : '검증'} 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 Worker가 ${stalled_script === 'deploy' ? '배포를' : '검증을'} 다시 돌린 뒤 저장소 작업부터 정리를 잇습니다`
             : merge_step
               ? `머지 진행 중 — ${merge_step.label}`
               : external_cleanup
-                ? '머지 완료 — 클릭하면 실패한 정리를 다시 시도합니다'
+                ? '머지 완료 — 클릭하면 Worker가 실패한 정리를 다시 돌립니다'
                 : external_conflict_unresolvable
                   ? '워크트리 없음 — 세션에서 직접 해소하세요'
                   : conflict_session === 'running'
@@ -1299,7 +1293,7 @@ function prWaitRow(
                     : conflict_session === 'paused'
                       ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
                       : cleanup_retry
-                        ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 다시 시도합니다'
+                        ? `머지 완료 — 클릭하면 Worker가 남은 정리를 ${cleanup_failed ? `${cleanupStepLabel(cleanup_failed.step)} 단계` : '실패 단계'}부터 다시 돌립니다`
                         : conflicting
                           ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
                           : gate?.reason === 'base_behind'
@@ -1375,7 +1369,7 @@ const EMPTY_MERGE = {
  * are read (title, chips, plan bundle, filter state, interactive sessions).
  * @property {(kind: PrWaitPendingKind, root_dir: string, bead_id: string) => boolean} isPending -
  * The view-local in-flight sets keyed by `(root_dir, bead_id)`: a [머지]
- * click, a cleanup retry, or a `[세션에서 해결]` click still waiting for its
+ * click, a cleanup retry, or a `[세션에서 이어가기]` click still waiting for its
  * reply.
  * @property {(item: LaneItem) => DependencyChips|null} dependencyChipsOf - The
  * tab's dependency/overlap chips for one lane item.
@@ -1555,7 +1549,6 @@ export function prWaitRowsOf(input) {
         },
         item ? input.dependencyChipsOf(item) : null,
         reviewSessionRowState(attempts, e.bead_id),
-        input.isPending('resolve', root_dir, e.bead_id),
         // 등록부가 소유한 네 필드 (UI-kyky §6.1). 합성 행에만 실리고, merge
         // queue만으로 합성한 행에는 없다 — 없으면 없는 대로 넘긴다.
         {
@@ -1569,12 +1562,19 @@ export function prWaitRowsOf(input) {
         // 세션이 배달한 외부 행도 보관된다 (UI-8d8y) — 기록이 곧 판정이다.
         Object.hasOwn(merge_shelved, e.bead_id)
       );
-      // 살아 있는 해결 세션이 이미 이 질문에 답하고 있다 (UI-ri8n §3.4).
+      // 세션·워커 이어가기 짝은 `tileResolveFields` 하나가 정한다 (UI-18a5
+      // §3.2): 이 행의 실패 재료와 Bead의 대화형 세션·거절 기록을 그 함수에
+      // 넘기고, 그 답만 싣는다.
       const row = {
         ...pr_row,
-        resolve_action:
-          pr_row.resolve_action &&
-          !hasLiveResolveSession(item?.interactive_sessions)
+        ...tileResolveFields(
+          {
+            ...pr_row,
+            interactive_sessions: item?.interactive_sessions,
+            conversation_refusal: item?.conversation_refusal
+          },
+          input.isPending('resolve', root_dir, e.bead_id)
+        )
       };
       return {
         ...row,

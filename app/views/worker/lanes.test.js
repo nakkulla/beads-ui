@@ -100,26 +100,25 @@ function interactiveView(patch = {}) {
 }
 
 describe('interactive session badges', () => {
+  // 종류 이름은 `대화 세션` 하나이고 무엇에서 열렸는지와 fork·같은 세션·새
+  // 세션·복구 구분은 title에만 있다 (UI-18a5 §3.5).
+  const LABEL = '▤ 대화 세션 · bdui-inquiry:resolve-UI-x1';
   test.each([
-    [
-      {},
-      '▤ 해결 세션 · fork · bdui-inquiry:resolve-UI-x1',
-      'fork · attempt 12345678'
-    ],
+    [{}, LABEL, '실패 · fork · attempt 12345678'],
     [
       { source: 'session_ref', kind: 'inquiry' },
-      '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1',
-      'fork · session_ref'
+      LABEL,
+      '확인 필요 · fork · session_ref'
     ],
     [
       { mode: 'fresh', source: 'fresh', fallback_reason: 'no_session_ref' },
-      '▤ 해결 세션 · 새 세션 · bdui-inquiry:resolve-UI-x1',
-      '새 세션 · no_session_ref'
+      LABEL,
+      '실패 · 새 세션 · no_session_ref'
     ],
     [
       { kind: 'inquiry', mode: 'resume', source: 'attempt' },
-      '▤ 문의 세션 · bdui-inquiry:resolve-UI-x1',
-      '같은 세션 · attempt 12345678'
+      LABEL,
+      '확인 필요 · 같은 세션 · attempt 12345678'
     ],
     [
       {
@@ -128,13 +127,14 @@ describe('interactive session badges', () => {
         source: 'fresh',
         fallback_reason: 'no_session_id'
       },
-      '▤ 문의 세션 · 새 세션 · bdui-inquiry:resolve-UI-x1',
-      '새 세션 · no_session_id'
+      LABEL,
+      '확인 필요 · 새 세션 · no_session_id'
     ],
+    [{ mode: null, source: 'recovered' }, LABEL, '실패 · 복구'],
     [
-      { mode: null, source: 'recovered' },
-      '▤ 해결 세션 · 복구 · bdui-inquiry:resolve-UI-x1',
-      '복구'
+      { kind: 'external_resume', mode: 'resume', source: 'session_ref' },
+      LABEL,
+      '외부 작업 완료 · resume · session_ref'
     ]
   ])('renders the label and provenance for %j', (patch, label, title) => {
     const view = interactiveView(/** @type {any} */ (patch));
@@ -264,7 +264,7 @@ describe('interactive session badges', () => {
 
     expect(
       row.querySelector('.worker-mini__resolve')?.textContent?.trim()
-    ).toBe('세션에서 해결');
+    ).toBe('세션에서 이어가기');
   });
 });
 
@@ -272,14 +272,11 @@ describe('inquiry session live card (UI-ri8n)', () => {
   const NOW = 10 * 60_000;
 
   test.each([
-    [
-      'running',
-      '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1 · 작업 중 8분'
-    ],
-    ['question', '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1 · 질문 대기'],
-    ['limit', '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1 · 한도 대기'],
-    ['idle', '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1 · 턴 종료 8분'],
-    [null, '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1']
+    ['running', '▤ 대화 세션 · bdui-inquiry:resolve-UI-x1 · 작업 중 8분'],
+    ['question', '▤ 대화 세션 · bdui-inquiry:resolve-UI-x1 · 질문 대기'],
+    ['limit', '▤ 대화 세션 · bdui-inquiry:resolve-UI-x1 · 한도 대기'],
+    ['idle', '▤ 대화 세션 · bdui-inquiry:resolve-UI-x1 · 턴 종료 8분'],
+    [null, '▤ 대화 세션 · bdui-inquiry:resolve-UI-x1']
   ])('renders the %s turn tail on the badge', (turn_state, label) => {
     const view = interactiveView({
       kind: 'inquiry',
@@ -346,11 +343,11 @@ describe('inquiry session live card (UI-ri8n)', () => {
 
     expect(
       mount.querySelector('.interactive-session-badge')?.textContent?.trim()
-    ).toBe('▤ 문의 세션 · bdui-inquiry:resolve-UI-x1 · 대화 중 8분');
+    ).toBe('▤ 대화 세션 · bdui-inquiry:resolve-UI-x1 · 대화 중 8분');
   });
 
   test.each([
-    [{ kind: 'external_resume', mode: 'resume' }, '▤ 재개 세션 · dev:7'],
+    [{ kind: 'external_resume', mode: 'resume' }, '▤ 대화 세션 · dev:7'],
     [
       {
         kind: 'inquiry',
@@ -359,12 +356,9 @@ describe('inquiry session live card (UI-ri8n)', () => {
         turn_state_since: 5 * 60_000,
         conversation: { processed_message_at: null, result: null }
       },
-      '▤ 문의 세션 · dev:7 · 대화 중 5분'
+      '▤ 대화 세션 · dev:7 · 대화 중 5분'
     ],
-    [
-      { kind: 'resolve', mode: 'fresh', source: 'fresh' },
-      '▤ 해결 세션 · 새 세션 · dev:7'
-    ]
+    [{ kind: 'resolve', mode: 'fresh', source: 'fresh' }, '▤ 대화 세션 · dev:7']
   ])('puts the window place on the badge label for %j', (patch, label) => {
     const view = interactiveView({
       tmux_session: 'dev',
@@ -399,7 +393,7 @@ describe('inquiry session live card (UI-ri8n)', () => {
       /** @type {HTMLElement} */ (
         mount.querySelector('.interactive-session-badge')
       ).title
-    ).toBe('같은 세션 · attempt 12345678 · dev:7');
+    ).toBe('확인 필요 · 같은 세션 · attempt 12345678 · dev:7');
   });
 
   test('draws the handoff button beside the resolve action', () => {
@@ -470,7 +464,7 @@ describe('inquiry session live card (UI-ri8n)', () => {
     const row = renderRow(/** @type {any} */ (item));
 
     expect(row.querySelector('.wait-reason__times')?.textContent?.trim()).toBe(
-      '문의 세션 5분째'
+      '대화 세션 5분째'
     );
   });
 
@@ -485,7 +479,7 @@ describe('inquiry session live card (UI-ri8n)', () => {
             verdict: 'action_required',
             verdict_reason: {
               code: 'decision',
-              message: '문의 세션이 답을 기다림'
+              message: '대화 세션이 답을 기다림'
             }
           })
         ],
@@ -495,8 +489,8 @@ describe('inquiry session live card (UI-ri8n)', () => {
     );
 
     const text = mount.querySelector('.wait-verdict')?.textContent || '';
-    expect(text).toContain('문의 세션이 답을 기다림');
-    expect(text).toContain('문의 세션 bdui-inquiry:resolve-UI-x1 · 질문 대기');
+    expect(text).toContain('대화 세션이 답을 기다림');
+    expect(text).toContain('대화 세션 bdui-inquiry:resolve-UI-x1 · 질문 대기');
   });
 
   test('draws no resolve button on a recovery row without resolve_action', () => {
@@ -1751,6 +1745,116 @@ function placedExternalActions() {
   ];
 }
 
+describe('세션·워커 이어가기 짝 자리 (UI-18a5 §3.2)', () => {
+  /**
+   * The foot's button labels in order.
+   *
+   * @param {Element} root
+   * @param {string} selector
+   */
+  function footLabels(root, selector) {
+    return Array.from(root.querySelectorAll(`${selector} button`)).map(
+      (button) => button.textContent?.trim()
+    );
+  }
+
+  test('stands the session button right before the cleanup-retry primary button', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      merge_action: true,
+      merge_label: '워커로 이어가기',
+      resolve_action: true,
+      pair_anchor: 'merge',
+      discard_action: true
+    });
+
+    const labels = footLabels(row, '.worker-mini__foot');
+
+    expect(labels.slice(0, 2)).toEqual([
+      '세션에서 이어가기',
+      '워커로 이어가기'
+    ]);
+  });
+
+  test('stands the session button before the external fork resume on a candidate', () => {
+    const card = renderCandidate({
+      external_wait: externalWait({ stage: 'completing' }),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: externalActions() })
+      ],
+      resolve_action: true,
+      pair_anchor: 'external'
+    });
+
+    const labels = footLabels(card, '.worker-card__foot');
+
+    expect(labels).toEqual([
+      '세션에서 이어가기',
+      '대기 해제',
+      '워커로 이어가기'
+    ]);
+  });
+
+  test('draws no session button on a candidate the decider left without one', () => {
+    const card = renderCandidate({
+      external_wait: externalWait({ stage: 'completing' }),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: externalActions() })
+      ]
+    });
+
+    expect(card.querySelector('.worker-mini__resolve')).toBeNull();
+  });
+
+  test('labels a failed Bead discard retry as the worker continuation', () => {
+    const discard = discardProjection(
+      {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'UI-x1',
+          phase: 'closing_pr',
+          last_error: 'pr_close_failed'
+        }
+      },
+      'UI-x1'
+    );
+
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      discard,
+      resolve_action: true,
+      pair_anchor: 'discard'
+    });
+
+    expect(footLabels(row, '.worker-mini__foot')).toEqual([
+      '세션에서 이어가기',
+      '워커로 이어가기'
+    ]);
+  });
+
+  test('keeps the stale-work backup retry words', () => {
+    const discard = discardProjection(
+      {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'UI-x1',
+          kind: 'stale_work_backup_fresh',
+          phase: 'requested',
+          last_error: 'archive_failed'
+        }
+      },
+      'UI-x1'
+    );
+
+    expect([discard.label, discard.abandon.label]).toEqual([
+      '백업 정리 재시도',
+      '백업 포기'
+    ]);
+  });
+});
+
 describe('external wait placement and confirm (UI-r6xq §4.1)', () => {
   test('drops a detail-placed operation from the candidate card', () => {
     const card = renderCandidate({
@@ -2951,7 +3055,7 @@ describe('discard receipts', () => {
     );
 
     expect(discard.operation?.operation_id).toBe('newer');
-    expect(discard.label).toBe('재시도');
+    expect(discard.label).toBe('워커로 이어가기');
   });
 
   test('orders failed abandon exits and preserves the normal action order', () => {
@@ -2970,7 +3074,8 @@ describe('discard receipts', () => {
       lane: 'queue',
       done: false,
       discard: failed,
-      resolve_action: true
+      resolve_action: true,
+      pair_anchor: 'discard'
     });
     const failed_labels = Array.from(
       failed_row.querySelectorAll('.worker-mini__foot button')
@@ -2992,13 +3097,17 @@ describe('discard receipts', () => {
       normal_row.querySelectorAll('.worker-mini__foot button')
     ).map((button) => button.textContent?.trim());
 
-    expect(failed_labels).toEqual(['재시도', '폐기 포기', '세션에서 해결']);
+    expect(failed_labels).toEqual([
+      '세션에서 이어가기',
+      '워커로 이어가기',
+      '폐기 포기'
+    ]);
     expect(abandon_bead_id).toBe('UI-x1');
     expect(abandon_operation_id).toBe('op1');
     expect(abandon_title).toBe(
       '실패한 폐기 작업을 포기합니다 — 백업·폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다'
     );
-    expect(normal_labels).toEqual(['세션에서 해결', '폐기']);
+    expect(normal_labels).toEqual(['세션에서 이어가기', '폐기']);
   });
 });
 

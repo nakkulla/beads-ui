@@ -429,6 +429,7 @@ function headline(transition, bead_id, bead_title) {
  *   conversationConfirm: (input: ConversationConfirmInput) => Promise<boolean>,
  *   conversationAnswer: (input: ConversationAnswerInput) => Promise<boolean>,
  *   conversationTakeover: (input: { bead_id: string }) => Promise<boolean>,
+ *   conversationResumed: (input: { bead_id: string, title?: string|null, decision?: string|null, action?: string|null, repo?: string|null }) => Promise<boolean>,
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
@@ -724,7 +725,7 @@ export function createNotifier(deps) {
           lines.push(`대화: Discord 스레드 · tmux ${place || '?'}`);
         } else {
           lines.push(
-            `대화를 열지 못함 · ${text(input.reason) ?? 'unknown'} — Worker 탭 [세션에서 해결]`
+            `대화를 열지 못함 · ${text(input.reason) ?? 'unknown'} — Worker 탭 [세션에서 이어가기]`
           );
         }
         const repo = repoLabel(input.repo);
@@ -752,6 +753,32 @@ export function createNotifier(deps) {
         `${CONVERSATION_TITLE.takeover} — ${input.bead_id}`,
         'Worker는 정산만 관찰'
       ]);
+    },
+    // The `↪ Worker가 이어감` push of a handoff that runs a row's exit rather
+    // than resuming an attempt (UI-18a5 §3.4): headline, decision, then what
+    // ran. It does not look at the conversation kind — the scheduler sends it
+    // once, when the exit started.
+    conversationResumed(input) {
+      return sendConversation('conversationResumed', async () => {
+        const bead_title =
+          text(input.title) ?? (await lookupTitle(input.bead_id));
+        const lines = [
+          headline(CONVERSATION_TITLE.resumed, input.bead_id, bead_title)
+        ];
+        const decision = firstLine(input.decision);
+        if (decision) {
+          lines.push(`결정: ${decision}`);
+        }
+        const action = text(input.action);
+        if (action) {
+          lines.push(`실행: ${action}`);
+        }
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        return lines;
+      });
     },
     async externalWaitCompleted(input) {
       try {
@@ -911,7 +938,7 @@ export function createNotifier(deps) {
         ) {
           // The manual escape hatch stays the answer whenever no session came
           // up, so the push names it instead of leaving a dead end.
-          lines.push('처분: Worker 탭 [세션에서 해결] · [폐기]');
+          lines.push('처분: Worker 탭 [세션에서 이어가기] · [폐기]');
         }
         lines.push(
           `브리지: ${

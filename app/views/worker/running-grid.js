@@ -148,9 +148,14 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * quick_fix landing progress projected by `prWaitProgress`; absent omits the
  * line (fail-quiet).
  * @property {any} [discard] - Shared durable discard UI projection.
- * @property {boolean} [resolve_action] - Render `[세션에서 해결]` (UI-jw27 §4).
- * 이 타일이 실패한 폐기 작업을 싣고 있을 때만 Worker 어댑터가 켠다 — Monitor는
- * 이 필드를 넘기지 않으므로 클릭을 배선하지 않은 탭에 죽은 버튼이 서지 않는다.
+ * @property {boolean} [resolve_action] - Render `[세션에서 이어가기]` (UI-jw27
+ * §4, UI-18a5 §3.2). `tileResolveFields`가 켠다 — 확인 필요·실패·외부 작업
+ * 완료 타일이고 살아 있는 대화형 세션이 없을 때만이다.
+ * @property {'handoff'|'merge'|'discard'|'external'|null} [pair_anchor] - Which
+ * button is this tile's `[워커로 이어가기]`; the session button stands right in
+ * front of it (`tileResolveFields`).
+ * @property {boolean} [pair_held] - A decided conversation outcome holds the
+ * pair (`tileResolveFields`).
  * @property {boolean} [resolve_enabled] - false면 이 타일의 클릭이 아직 서버
  * 응답을 기다리는 중이라 버튼이 잠긴다.
  * @property {string} [resolve_title] - hover 문구: 이 클릭이 무엇을 띄우는지.
@@ -946,8 +951,9 @@ function sessionOpenButton(current) {
  * @param {import('lit-html').TemplateResult|''} [dependency_chips] - 슬롯 4a 칩,
  * 이미 계산된 것 그대로. 재료가 없으면 `''`이라 줄이 통째로 빠진다 (fail-quiet).
  * @param {import('lit-html').TemplateResult|''} [resolve_action] - parked 출구.
- * @param {boolean} [discard_failed] - `true`면 같은 실패를 다루는 폐기 조작을
- * 문의 세션 조작보다 먼저 그린다.
+ * @param {boolean} [discard_failed] - `true`면 같은 실패를 다루는 폐기 짝
+ * (`[세션에서 이어가기]` · `[워커로 이어가기]`)을 대화 인계 조작보다 먼저
+ * 그린다.
  * @returns {import('lit-html').TemplateResult|''}
  */
 function heldBodyTemplate(
@@ -1374,23 +1380,25 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     resume_kind === 'settlement'
       ? '착지 후 정리 절차를 다시 실행 (세션을 열지 않습니다)'
       : '같은 세션으로 이어서 진행';
-  // 실패한 폐기 작업의 두 번째 출구 (UI-jw27 §4). 폐기 실패는 실행 중·held·
-  // 파킹 타일 어디서나 날 수 있으므로 상태 분기 밖에서 한 번만 만들고, 자리는
-  // `[폐기]`와 같은 슬롯 1 오른쪽 끝이다 — 같은 실패가 내는 두 조작이다.
+  // 세션·워커 이어가기 짝 (UI-18a5 §3.2). 실패한 폐기는 실행 중·held·파킹
+  // 타일 어디서나 날 수 있으므로 상태 분기 밖에서 한 번만 만든다. 유무와 어느
+  // 버튼이 이 타일의 `[워커로 이어가기]`인지(`pair_anchor`)는
+  // `tileResolveFields`가 정하고, 세션 버튼은 그 바로 앞에 선다.
   const resolve_only = tile.resolve_action
     ? html`<button
         type="button"
         class="op-btn rtile__resolve"
         ?disabled=${tile.resolve_enabled === false}
         title=${tile.resolve_title ||
-        '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다'}
-        aria-label="세션에서 해결"
+        '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 이 행을 잇습니다'}
+        aria-label="세션에서 이어가기"
       >
-        세션에서 해결
+        세션에서 이어가기
       </button>`
     : '';
-  // [워커로 이어가기] (UI-nuwy §3.6) stands in the same `.op-btn` slot right
-  // after [세션에서 해결]; `tileResolveFields` alone decides whether it does.
+  // [워커로 이어가기] (UI-nuwy §3.6) of a 확인 필요 tile: the conversation
+  // handoff, right after [세션에서 이어가기]; `tileResolveFields` alone decides
+  // whether it stands.
   const handoff_button = tile.handoff_action
     ? html`<button
         type="button"
@@ -1404,10 +1412,6 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         워커로 이어가기
       </button>`
     : '';
-  const resolve_button =
-    resolve_only || handoff_button
-      ? html`${resolve_only}${handoff_button}`
-      : '';
   const discard_button =
     tile.discard?.action && !(failed && failure?.landed === true)
       ? html`<button
@@ -1424,9 +1428,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       : '';
   // 아카이브 단계에서 영구 실패한 폐기의 세 번째 출구 (discard-abandon §3.1).
   // 폐기 실패는 실행 중·held·파킹 타일 어디서나 나므로 이 버튼도 `[폐기]`와
-  // 같은 자리에서 같은 재료로 만들고, 순서는 `[재시도] → [폐기 포기] →
-  // [세션에서 해결]`이다 — 되돌리는 정도가 약한 것부터 읽힌다. `[재시도]`가
-  // 없는 타일에서는 이 출구도 없다: 같은 실패 하나가 내는 두 조작이다.
+  // 같은 자리에서 같은 재료로 만들고, 순서는 `[세션에서 이어가기] →
+  // [워커로 이어가기] → [폐기 포기]`다 — 짝이 붙어 서고 되돌리는 정도가 약한
+  // 것부터 읽힌다. `[워커로 이어가기]`가 없는 타일에서는 이 출구도 없다.
   const abandon_button =
     discard_button && tile.discard?.abandon?.action === true
       ? html`<button
@@ -1441,9 +1445,24 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           ${tile.discard.abandon.label}
         </button>`
       : '';
-  const discard_actions = abandon_button
-    ? html`${discard_button}${abandon_button}`
-    : discard_button;
+  const anchor = tile.pair_anchor ?? null;
+  const session_at_discard = anchor === 'discard' && discard_button !== '';
+  const session_at_external = anchor === 'external' && external_foot !== '';
+  const loose_session =
+    session_at_discard || session_at_external ? '' : resolve_only;
+  const resolve_button =
+    loose_session || handoff_button
+      ? html`${loose_session}${handoff_button}`
+      : '';
+  const discard_actions = discard_button
+    ? html`${session_at_discard
+        ? resolve_only
+        : ''}${discard_button}${abandon_button}`
+    : '';
+  // 외부 작업 완료 타일의 짝: 세션 버튼이 fork 재개 바로 앞에 선다.
+  const external_pair = session_at_external
+    ? html`${resolve_only}${external_foot}`
+    : external_foot;
   // 폐기가 진행 중인 attempt는 그 작업이 처분을 쥐고 있다 — 서버도 내리기를
   // `discard_in_progress`로 거부하므로 두 조작을 함께 세우지 않는다.
   const discard_running = Boolean(tile.discard && tile.discard.operation);
@@ -1590,7 +1609,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         // 슬롯 6 조작만 싣는다.
         html`${monitor_relations}${tile_meta}${external_foot || discard_actions
           ? html`<div class="rtile__foot">
-              ${external_foot}${discard_actions}
+              ${external_pair}${discard_actions}
             </div>`
           : ''}`
       : held
@@ -1612,7 +1631,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   : wait
                 : hold,
             external_foot
-              ? html`${external_foot}${discard_actions}`
+              ? html`${external_pair}${discard_actions}`
               : retry_now_button
                 ? html`${retry_now_button}${discard_actions}`
                 : discard_actions,

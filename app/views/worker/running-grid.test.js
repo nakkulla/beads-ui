@@ -61,7 +61,7 @@ describe('worker failed running tile template', () => {
         mount
           .querySelector('.rtile__hd > .interactive-session-badge')
           ?.textContent?.trim()
-      ).toBe('▤ 해결 세션 · fork · bdui-inquiry:resolve-UI-1');
+      ).toBe('▤ 대화 세션 · bdui-inquiry:resolve-UI-1');
       expect(
         mount.querySelector('.rtile__hd-actions .interactive-session-closing')
           ?.textContent
@@ -69,7 +69,7 @@ describe('worker failed running tile template', () => {
     }
   );
 
-  test('labels an external resume interactive session as 재개 세션', () => {
+  test('labels an external resume interactive session as 대화 세션', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const tile = {
       bead_id: 'UI-1',
@@ -111,7 +111,7 @@ describe('worker failed running tile template', () => {
       mount
         .querySelector('.rtile__hd > .interactive-session-badge')
         ?.textContent?.trim()
-    ).toBe('▤ 재개 세션 · dev:UI-1');
+    ).toBe('▤ 대화 세션 · dev:UI-1');
   });
 
   test('renders the categorized cause badge without dismiss', () => {
@@ -2610,7 +2610,8 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
         quickfix_lane: false,
         quickfix_landing: null,
         resume_eligible: false,
-        resume_reason: '확인 필요 — [세션에서 해결]로 같은 세션과 대화합니다',
+        resume_reason:
+          '확인 필요 — [세션에서 이어가기]로 같은 세션과 대화합니다',
         landed: false,
         confirmation: 'unmerged'
       },
@@ -2702,7 +2703,7 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
     expect(mount.querySelector('[data-seam="tile-log-path"]')).toBeNull();
   });
 
-  test('offers 세션에서 해결 and 폐기 in the parked action foot', () => {
+  test('offers 세션에서 이어가기 and 폐기 in the parked action foot', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(runningGridTemplate([parkTile()]), mount);
@@ -2711,7 +2712,7 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
       mount.querySelector('.rtile__foot')
     );
     expect(foot.querySelector('.rtile__resolve')?.textContent?.trim()).toBe(
-      '세션에서 해결'
+      '세션에서 이어가기'
     );
     expect(foot.querySelector('.rtile__discard')?.textContent?.trim()).toBe(
       '폐기'
@@ -3194,9 +3195,9 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     );
     expect(
       tile.querySelector('.interactive-session-badge')?.textContent?.trim()
-    ).toBe('▤ 문의 세션 · fork · bdui-inquiry:UI-w1 · 작업 중 8분');
+    ).toBe('▤ 대화 세션 · bdui-inquiry:UI-w1 · 작업 중 8분');
     expect(tile.querySelector('.wait-reason__times')?.textContent?.trim()).toBe(
-      '문의 세션 7분째'
+      '대화 세션 7분째'
     );
   });
 
@@ -3794,9 +3795,9 @@ describe('worker failed tile resume button (UI-8h1x §3.3a)', () => {
   });
 });
 
-// UI-jw27 §4: 폐기는 실행 중 타일에서도 시작되므로 그 실패 행도 [세션에서 해결]
-// 출구를 가져야 한다. 필드는 Worker 어댑터만 켠다 — Monitor는 넘기지 않는다.
-describe('worker running tile — [세션에서 해결] (UI-jw27 §4)', () => {
+// UI-jw27 §4: 폐기는 실행 중 타일에서도 시작되므로 그 실패 행도
+// [세션에서 이어가기] 출구를 가져야 한다 (UI-18a5 §3.2).
+describe('worker running tile — [세션에서 이어가기] (UI-jw27 §4)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
   });
@@ -3839,7 +3840,7 @@ describe('worker running tile — [세션에서 해결] (UI-jw27 §4)', () => {
 
     expect([button.disabled, button.textContent?.trim()]).toEqual([
       false,
-      '세션에서 해결'
+      '세션에서 이어가기'
     ]);
   });
 
@@ -4095,7 +4096,7 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
     };
   }
 
-  test('orders 재시도 · 폐기 포기 · 세션에서 해결 on a failed tile', () => {
+  test('orders 세션에서 이어가기 · 워커로 이어가기 · 폐기 포기 on a failed tile', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
@@ -4103,7 +4104,8 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
         failedTile({
           discard: failedDiscard(),
           resolve_action: true,
-          resolve_enabled: true
+          resolve_enabled: true,
+          pair_anchor: 'discard'
         })
       ]),
       mount
@@ -4116,9 +4118,9 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
     ).map((el) => el.className);
 
     expect(order).toEqual([
+      'op-btn rtile__resolve',
       'op-btn op-btn--danger rtile__discard',
-      'op-btn rtile__discard-abandon',
-      'op-btn rtile__resolve'
+      'op-btn rtile__discard-abandon'
     ]);
   });
 
@@ -4194,7 +4196,7 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
       Array.from(foot.querySelectorAll('button')).map((el) =>
         el.textContent?.trim()
       )
-    ).toEqual(['백업 정리 재시도', '폐기 포기', '세션에서 해결']);
+    ).toEqual(['백업 정리 재시도', '폐기 포기', '세션에서 이어가기']);
   });
 });
 

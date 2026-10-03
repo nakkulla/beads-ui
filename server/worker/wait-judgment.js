@@ -97,6 +97,9 @@ function recoveryHeadline(summary, token) {
   );
 }
 
+/** The one click that opens a Worker session conversation (UI-18a5 §3.2). */
+export const SESSION_CONTINUE_OP = 'worker-resolve-in-session';
+
 /**
  * The same interactive exits serve parked and recovery sessions.
  *
@@ -106,9 +109,38 @@ function recoveryHeadline(summary, token) {
 function sessionActions(result, attempt_id) {
   const payload = { ...result.subject, ...(attempt_id ? { attempt_id } : {}) };
   result.actions.push(
-    { op: 'worker-resolve-in-session', label: '[세션에서 해결]', payload },
+    { op: SESSION_CONTINUE_OP, label: '[세션에서 이어가기]', payload },
     { op: 'worker-discard', label: '폐기', payload }
   );
+}
+
+/**
+ * Where a live Worker session conversation stands, whatever its kind
+ * (UI-nuwy §3.3 표, UI-18a5 §3.4): `answer` is the person's turn — a
+ * question or limit prompt, or an idle turn after a processed non-result
+ * message — `working` is any other live turn, and `ended` means a result line
+ * already decided it. Null for a record that is not an open conversation.
+ *
+ * @param {Record<string, any>|null|undefined} record - An interactive record.
+ * @returns {'answer'|'working'|'ended'|null}
+ */
+export function conversationVerdict(record) {
+  const conversation = record?.conversation;
+  if (!record || record.settled_at !== null || !conversation) {
+    return null;
+  }
+  if (conversation.handoff || conversation.result) {
+    return 'ended';
+  }
+  if (record.state !== 'live') {
+    return 'working';
+  }
+  const turn = record.turn_state;
+  return turn === 'question' ||
+    turn === 'limit' ||
+    (turn === 'idle' && typeof conversation.processed_message_at === 'number')
+    ? 'answer'
+    : 'working';
 }
 
 /**
@@ -192,12 +224,12 @@ function judge(result, verdict, code) {
  */
 const OPERATION_RECOVERY_RELEASE = {
   repair:
-    '검증 실패를 세션에서 고친 뒤 [정리 재시도] — 이어갈 지시 또는 폐기를 결정합니다.',
+    '검증 실패를 세션에서 고친 뒤 [워커로 이어가기] — 이어갈 지시 또는 폐기를 결정합니다.',
   reconcile: RECOVERY_WAIT_SENTENCES.reconcile
 };
 
 const INQUIRY_WAITING_MESSAGE =
-  '문의 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답';
+  '대화 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답';
 const CONVERSATION_WAITING_MESSAGE =
   '답 대기 — Discord 스레드 또는 tmux 창에서 답';
 
@@ -267,8 +299,8 @@ function judgeStalledSession(result, queue, bead_id, attempt) {
       ...(attempt_id ? { attempt_id } : {})
     };
     result.actions.push({
-      op: 'worker-resolve-in-session',
-      label: '[세션에서 해결]',
+      op: SESSION_CONTINUE_OP,
+      label: '[세션에서 이어가기]',
       payload
     });
     if (attempt?.cause_detail?.conversation?.ended_by === 'pane_gone') {
@@ -288,12 +320,7 @@ function judgeStalledSession(result, queue, bead_id, attempt) {
     discardAction(result, attempt_id);
     return;
   }
-  const turn = inquiry.turn_state;
-  const answered =
-    turn === 'question' ||
-    turn === 'limit' ||
-    (turn === 'idle' && typeof conversation.processed_message_at === 'number');
-  if (turn !== 'running' && answered) {
+  if (conversationVerdict(inquiry) === 'answer') {
     result.verdict = 'action_required';
     result.verdict_reason = {
       code: 'decision',
@@ -453,14 +480,28 @@ export function judgeWaitReasons(input) {
     ) {
       const retry_allowed = !row.resume || Boolean(row.resume.error);
       if (row.owner_kind === 'session' && retry_allowed) {
-        result.actions.push({
-          op: 'external_wait_resume',
-          label: '[세션에서 이어가기]',
-          title:
-            '보존 세션을 같은 워크트리의 tmux 창에서 재개한다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
-          placement: 'card',
-          payload: { ...payload, mode: 'session' }
-        });
+        // 외부 작업 완료 자격 (UI-18a5 §3.2): the card's `[세션에서 이어가기]`
+        // is the one session click every row shares — `tileResolveFields`
+        // reads this projection and the server routes the click to the
+        // session resume launcher. The detail panel keeps the external op.
+        result.actions.push(
+          {
+            op: SESSION_CONTINUE_OP,
+            label: '[세션에서 이어가기]',
+            title:
+              '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 — 인계하면 Worker가 그 세션에서 attempt를 시작합니다',
+            placement: 'card',
+            payload: { root_dir, bead_id: row.bead_id, wait_id: row.wait_id }
+          },
+          {
+            op: 'external_wait_resume',
+            label: '[세션에서 이어가기]',
+            title:
+              '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
+            placement: 'detail',
+            payload: { ...payload, mode: 'session' }
+          }
+        );
       }
       if (retry_allowed) {
         result.actions.push({
@@ -768,7 +809,7 @@ export function judgeWaitReasons(input) {
           bead_id,
           root_dir,
           `수정 작업 대기 · ${handoff_bead_id} · 원인 ${line(operation.failure?.code)}`,
-          '수정 Bead의 PR·배포 뒤 [정리 재시도]'
+          '수정 Bead의 PR·배포 뒤 [워커로 이어가기]'
         );
         result.targets.push({ id: handoff_bead_id, kind: 'issue' });
         addClocks(result, { since: handoff.recorded_at });

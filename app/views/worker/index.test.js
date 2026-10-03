@@ -4892,7 +4892,7 @@ describe('views/worker', () => {
     const retry = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.rtile[data-attempt-id="f1"] .rtile__discard')
     );
-    expect(retry.textContent?.trim()).toBe('재시도');
+    expect(retry.textContent?.trim()).toBe('워커로 이어가기');
     expect(retry.dataset.operationId).toBe('op-failed');
 
     retry.click();
@@ -6034,7 +6034,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(cleanup.disabled).toBe(true);
     expect(cleanup.title).toContain('폐기 실패: revert_pr_failed');
     expect(discard.disabled).toBe(false);
-    expect(discard.textContent?.trim()).toBe('재시도');
+    expect(discard.textContent?.trim()).toBe('워커로 이어가기');
   });
 
   test('offers discard on a cleanup_failed tile even without observations', () => {
@@ -6290,7 +6290,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       row.querySelector('.worker-mini__discard')
     );
     expect(row.getAttribute('draggable')).toBe('false');
-    expect(retry.textContent?.trim()).toBe('재시도');
+    expect(retry.textContent?.trim()).toBe('워커로 이어가기');
     expect(row.textContent).toContain('/state/op-queue');
 
     retry.click();
@@ -6440,7 +6440,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect(
       drawer.querySelector('.worker-cleanup__resume')?.textContent?.trim()
-    ).toBe('정리 재시도 — 저장소 작업 단계부터');
+    ).toBe('워커로 이어가기');
   });
 
   test('mentions retry only when durable cleanup evidence consumed it', () => {
@@ -6629,7 +6629,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect([btn.disabled, btn.textContent?.trim()]).toEqual([
       false,
-      '정리 재시도'
+      '워커로 이어가기'
     ]);
   });
 
@@ -6650,7 +6650,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect([btn.disabled, btn.textContent?.trim()]).toEqual([
       false,
-      '정리 재시도'
+      '워커로 이어가기'
     ]);
   });
 
@@ -6667,7 +6667,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       button.textContent?.trim()
     );
 
-    expect(labels).toContain('세션에서 해결');
+    expect(labels).toContain('세션에서 이어가기');
   });
 
   // UI-jw27 §4: terminal 실패 행 3종이 같은 출구를 얻는다. 자리는 슬롯 6 액션
@@ -6680,7 +6680,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     const button = mount.querySelector('.worker-mini__resolve');
 
-    expect(button?.textContent?.trim()).toBe('세션에서 해결');
+    expect(button?.textContent?.trim()).toBe('세션에서 이어가기');
   });
 
   test('offers 세션에서 해결 on a needs_human completion row', () => {
@@ -6772,7 +6772,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     const button = mount.querySelector('.worker-mini__resolve');
 
-    expect(button?.textContent?.trim()).toBe('세션에서 해결');
+    expect(button?.textContent?.trim()).toBe('세션에서 이어가기');
   });
 
   test('preserves the verify gate merge action while holding', () => {
@@ -7016,7 +7016,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect([
       mount.querySelector('.worker-mini__merge')?.textContent?.trim(),
       mount.querySelector('.worker-mini__timeline')
-    ]).toEqual(['정리 재시도', null]);
+    ]).toEqual(['워커로 이어가기', null]);
   });
 
   test('resumes the cleanup from that button', async () => {
@@ -9206,7 +9206,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     expect(row.textContent?.replace(/\s+/g, '')).toContain('검증실패3/6');
     expect(row.querySelector('.merge-step--failed')).not.toBeNull();
     expect(row.querySelector('.worker-mini__merge')?.textContent?.trim()).toBe(
-      '검증 재시도 후 정리'
+      '워커로 이어가기'
     );
   });
 
@@ -9265,7 +9265,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     );
 
     expect(merge.title).toBe(
-      '머지 완료 — 검증 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 저장소 작업부터 정리를 다시 진행합니다'
+      '머지 완료 — 검증 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 Worker가 검증을 다시 돌린 뒤 저장소 작업부터 정리를 잇습니다'
     );
   });
 
@@ -11260,7 +11260,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-mini__merge')
     );
-    expect(btn.textContent?.trim()).toBe('정리 재시도');
+    expect(btn.textContent?.trim()).toBe('워커로 이어가기');
     expect(btn.disabled).toBe(false);
   });
 
@@ -18371,14 +18371,29 @@ describe('resolve action while an interactive session lives (UI-ri8n)', () => {
     expect(button).toBeNull();
   });
 
-  test('keeps the PR-wait button beside an external_resume session', () => {
+  // UI-18a5 §3.2: 살아 있는 대화형 세션은 종류와 상관없이 세션 버튼을 거둔다
+  // — external_resume도 그 Bead의 대화다.
+  test('hides the PR-wait button beside an external_resume session', () => {
     const { mount } = mountQueue(
       prWaitQueue(liveSession('external_resume', 'RD-1'))
     );
 
     const button = mount.querySelector('.worker-mini__resolve');
 
-    expect(button).not.toBeNull();
+    expect(button).toBeNull();
+  });
+
+  test('stands the PR-wait session button right before its worker continuation', () => {
+    const { mount } = mountQueue(prWaitQueue({}));
+
+    const labels = Array.from(
+      mount.querySelectorAll('.worker-mini__foot .worker-mini__actions button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(labels.slice(0, 2)).toEqual([
+      '세션에서 이어가기',
+      '워커로 이어가기'
+    ]);
   });
 
   test('tones the already_running reply as info', () => {
@@ -18389,7 +18404,7 @@ describe('resolve action while an interactive session lives (UI-ri8n)', () => {
     expect(tone).toBe('info');
   });
 
-  test('keeps the waiting-row button beside an external_resume session', () => {
+  test('hides the waiting-row button beside an external_resume session', () => {
     const { mount } = mountQueue(
       queueOf({
         queue: [{ bead_id: 'Q1', added_at: 1 }],
@@ -18400,7 +18415,22 @@ describe('resolve action while an interactive session lives (UI-ri8n)', () => {
 
     const button = mount.querySelector('.worker-mini__resolve');
 
-    expect(button).not.toBeNull();
+    expect(button).toBeNull();
+  });
+
+  test('names a refused handoff in the PR-wait session button tooltip', () => {
+    const { mount } = mountQueue({
+      ...prWaitQueue({}),
+      conversation_refusals: {
+        'RD-1': { reason: '결과 미상', at: 1, kind: 'resolve' }
+      }
+    });
+
+    const button = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini__resolve')
+    );
+
+    expect(button.title.startsWith('이어가기 거절: 결과 미상 — ')).toBe(true);
   });
 });
 

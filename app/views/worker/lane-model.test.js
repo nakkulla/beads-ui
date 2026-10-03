@@ -2803,7 +2803,7 @@ describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
     );
 
     expect(map.get('A-1')?.failure?.resume_reason).toBe(
-      '확인 필요 — [세션에서 해결]로 같은 세션과 대화합니다'
+      '확인 필요 — [세션에서 이어가기]로 같은 세션과 대화합니다'
     );
   });
 

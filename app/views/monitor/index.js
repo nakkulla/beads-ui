@@ -53,6 +53,7 @@ import {
 import {
   resolveLaunchText,
   runExternalWaitAction,
+  sessionResumeToast,
   sessionWindowText
 } from '../worker/external-wait-action.js';
 import { createIssueSearch } from '../worker/issue-search.js';
@@ -649,7 +650,7 @@ export function createMonitorView(mount_element, options) {
   const resolve_pending = new Set();
   /** [머지] 클릭이 응답을 기다리는 행. @type {Set<string>} */
   const merge_pending = new Set();
-  /** [정리 재시도] 클릭이 응답을 기다리는 행. @type {Set<string>} */
+  /** 정리 실패 행의 [워커로 이어가기] 클릭이 응답을 기다리는 행. @type {Set<string>} */
   const cleanup_pending = new Set();
   /** @type {Set<string>} */
   const handoff_pending = new Set();
@@ -1105,8 +1106,9 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Launch the interactive session for one terminal or parked tile, or for a
-   * PR 대기 row's `[세션에서 해결]` (UI-f2sy §4).
+   * `[세션에서 이어가기]` of one 확인 필요, 실패 or 외부 작업 완료 card, PR
+   * 대기 rows included (UI-f2sy §4, UI-18a5 §3.2) — the server picks the
+   * launcher.
    *
    * @param {string} bead_id
    * @param {string} root_dir
@@ -1128,7 +1130,11 @@ export function createMonitorView(mount_element, options) {
         false
       );
       // 성공은 언제나 창 자리를 말한다 (UI-a119 §3.3) — Worker 탭과 같은 문장이다.
-      if (res?.session === 'already_running') {
+      // 외부 작업 완료 응답은 세션 재개 응답과 같이 읽는다 (UI-18a5 §3.2).
+      if (res?.row === 'external' && res.conflict !== true) {
+        const toast = await sessionResumeToast(res);
+        showToast(toast.text, toast.variant, 4000);
+      } else if (res?.session === 'already_running') {
         showToast(String(sessionWindowText(res)), 'info');
       } else if (res?.launched !== true) {
         showToast(`세션 기동 실패: ${res?.reason || 'unknown'}`, 'error');
@@ -1176,7 +1182,7 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Retry the stopped post-merge cleanup of one PR 대기 row — [정리 재시도]
+   * Retry the stopped post-merge cleanup of one PR 대기 row — its [워커로 이어가기]
    * (UI-f2sy §4), the Worker tab's `retryCleanup` against the row's own repository. A
    * conflict is adopted but never retried automatically: another explicit
    * click against the fresh snapshot is the authorization boundary.
@@ -1201,7 +1207,7 @@ export function createMonitorView(mount_element, options) {
         false
       );
       if (res && !res.retried && !res.conflict && res.reason) {
-        showToast(`정리 재시도 거부: ${res.reason}`, 'error', 2400);
+        showToast(`워커로 이어가기 거부: ${res.reason}`, 'error', 2400);
       }
     } finally {
       cleanup_pending.delete(key);
@@ -1595,12 +1601,25 @@ export function createMonitorView(mount_element, options) {
   function candidateRow(item) {
     return itemShell(
       item,
-      html`${candidateCard(withOverlaps(item), placeMenuFor(item), {
-        onOpenDoc: openDoc
-          ? (/** @type {Event} */ _ev, /** @type {any} */ doc) =>
-              openDoc(doc, item.root_dir)
-          : undefined
-      })}`
+      html`${candidateCard(
+        {
+          ...withOverlaps(item),
+          // 외부 작업 완료 카드의 짝 (UI-18a5 §3.2): Worker 탭 후보와 같은
+          // 함수가 정한다.
+          ...tileResolveFields(
+            item,
+            resolve_pending.has(pendingKey(item.root_dir, item.id)),
+            handoff_pending.has(item.id)
+          )
+        },
+        placeMenuFor(item),
+        {
+          onOpenDoc: openDoc
+            ? (/** @type {Event} */ _ev, /** @type {any} */ doc) =>
+                openDoc(doc, item.root_dir)
+            : undefined
+        }
+      )}`
     );
   }
 
@@ -3042,7 +3061,7 @@ export function createMonitorView(mount_element, options) {
       );
       return;
     }
-    // 대기·PR 대기 줄의 `[세션에서 해결]`도 타일과 같은 op다 (UI-f2sy §4).
+    // 대기·PR 대기 줄의 `[세션에서 이어가기]`도 타일과 같은 op다 (UI-f2sy §4).
     if (
       cls.contains('rtile__resolve') ||
       cls.contains('worker-mini__resolve')
@@ -3106,7 +3125,7 @@ export function createMonitorView(mount_element, options) {
     }
     if (cls.contains('worker-mini__merge')) {
       // Worker 탭과 같은 분기 (UI-f2sy §4): 정리가 멈춘 행의 같은 버튼은
-      // [정리 재시도]다 — 머지 큐에 넣는 클릭이 아니다.
+      // 그 행의 [워커로 이어가기](정리 재시도)다 — 머지 큐에 넣는 클릭이 아니다.
       if (queueOf(root_dir).cleanup_failed?.[bead_id]) {
         void retryCleanup(bead_id, root_dir, revision);
       } else {

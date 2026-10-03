@@ -511,9 +511,10 @@ function operationEventTemplate(event, repo_ops) {
  * yellow banner without losing any of its information — the output tail and log
  * path move into 세부.
  *
- * Both exits live in the SAME action group (UI-jw27 §3·§4): `[정리 재시도]`
- * names the step it resumes from, and `[세션에서 해결]` starts the interactive
- * session that works out why it stopped. A stopped cleanup always has both —
+ * Both exits live in the SAME action group as the card's pair (UI-jw27 §3·§4,
+ * UI-18a5 §3.2): `[세션에서 이어가기]` opens the failure conversation that works
+ * out why it stopped, and `[워커로 이어가기]` is the cleanup retry — its
+ * tooltip names the step it resumes from. A stopped cleanup always has both —
  * the row exists only because the cursor could not finish — so neither is
  * conditional here.
  *
@@ -563,18 +564,21 @@ function cleanupEventTemplate(event) {
       <div class="worker-ev__acts">
         <button
           type="button"
-          class="op-btn worker-ev__btn worker-ev__btn--warn worker-cleanup__resume"
+          class="op-btn worker-ev__btn worker-cleanup__resolve"
           data-bead-id=${cleanup.bead_id}
+          title="기록된 세션을 대화로 엽니다 — 인계하면 Worker가 실패한 단계를 다시 돌립니다"
         >
-          정리 재시도${step_label ? ` — ${step_label} 단계부터` : ''}
+          세션에서 이어가기
         </button>
         <button
           type="button"
-          class="op-btn worker-ev__btn worker-cleanup__resolve"
+          class="op-btn worker-ev__btn worker-ev__btn--warn worker-cleanup__resume"
           data-bead-id=${cleanup.bead_id}
-          title="이 실패를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다"
+          title=${step_label
+            ? `Worker가 정리를 ${step_label} 단계부터 다시 돌립니다`
+            : 'Worker가 정리를 멈춘 단계부터 다시 돌립니다'}
         >
-          세션에서 해결
+          워커로 이어가기
         </button>
       </div>
       ${detailsTemplate([

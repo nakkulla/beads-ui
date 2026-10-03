@@ -1024,21 +1024,33 @@ describe('post_merge_jobs 정리 멈춤 행 (UI-i60a §1)', () => {
     expect(stalled?.getAttribute('data-step')).toBe('post_merge_jobs');
   });
 
-  test('resumes a stopped job step from the existing 정리 재시도 button', () => {
+  test('resumes a stopped job step from the worker-continuation button', () => {
     const row = renderCleanupRow(
       cleanup({ step: 'post_merge_jobs', reason: 'post_merge_job_failed' })
     );
 
     const button = row.querySelector('.worker-cleanup__resume');
 
-    expect(button?.textContent?.trim()).toBe(
-      '정리 재시도 — 머지 후 잡 단계부터'
+    expect(button?.textContent?.trim()).toBe('워커로 이어가기');
+  });
+
+  test('names the resume step in the worker-continuation tooltip', () => {
+    const row = renderCleanupRow(
+      cleanup({ step: 'post_merge_jobs', reason: 'post_merge_job_failed' })
+    );
+
+    const button = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-cleanup__resume')
+    );
+
+    expect(button.title).toBe(
+      'Worker가 정리를 머지 후 잡 단계부터 다시 돌립니다'
     );
   });
 
-  // UI-jw27 §4: 멈춘 정리 행은 두 출구를 함께 낸다 — 재시도와, 그 실패를 사람이
-  // 이어받는 세션. UI-i60a 시절의 "재시도 하나뿐" 단언을 뒤집는다.
-  test('offers both cleanup exits on a stopped job step', () => {
+  // UI-jw27 §4, UI-18a5 §3.2: 멈춘 정리 행은 카드와 같은 짝을 낸다 — 그
+  // 실패를 사람이 이어받는 대화와, Worker의 재시도.
+  test('offers the session-then-worker pair on a stopped job step', () => {
     const row = renderCleanupRow(
       cleanup({ step: 'post_merge_jobs', reason: 'post_merge_job_failed' })
     );
@@ -1047,10 +1059,7 @@ describe('post_merge_jobs 정리 멈춤 행 (UI-i60a §1)', () => {
       row.querySelectorAll('.worker-ev__acts button')
     ).map((button) => button.textContent?.trim());
 
-    expect(buttons).toEqual([
-      '정리 재시도 — 머지 후 잡 단계부터',
-      '세션에서 해결'
-    ]);
+    expect(buttons).toEqual(['세션에서 이어가기', '워커로 이어가기']);
   });
 
   test('keeps the raw job reason inspectable in 세부', () => {

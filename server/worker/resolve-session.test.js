@@ -1,12 +1,24 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { CONVERSATION_ENTRY_BLOCK } from './direction-inquiry.js';
 import {
-  buildResolvePrompt,
+  buildFailureEntry,
   createResolveSession,
+  failureHandoffTarget,
+  failureSituation,
   resolveFailureContext
 } from './resolve-session.js';
+
+/**
+ * The dotfiles entry block digest the failure conversation opens with
+ * (`78eddcdb7b05c8b1ddc5f98663144022899d5601`, 2533 bytes without a trailing
+ * newline) — the same pin `direction-inquiry.test.js` holds (UI-18a5 §3.3).
+ */
+const ENTRY_BLOCK_DIGEST =
+  '926b1826fe63f3edbc396bd7b503e87a63cf17861efd22e4e1e5c0ad86110edc';
 
 const BEAD = 'UI-jw27';
 const REPO = '/tmp/example-workspace/project-a';
@@ -134,12 +146,13 @@ const FAILURE = {
 };
 
 /**
- * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'] }} [input]
+ * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean }} [input]
  */
 function makeLauncher(input = {}) {
   const tmux = input.tmux ?? makeTmux();
   const resolver = createResolveSession({
     getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
+    existsSync: input.existsSync ?? (() => false),
     bd: {
       readIssue:
         input.readIssue ??
@@ -192,7 +205,8 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
       failure_class: '머지 전 검증 실패',
       reason: 'script_failed',
       stage: 'verify',
-      detail: 'build failed · 로그 /logs/verify.log',
+      detail: 'build failed',
+      log_path: '/logs/verify.log',
       exit: 'fix_commit_push'
     });
   });
@@ -228,7 +242,8 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
       failure_class: '배포 실패',
       reason: 'deploy_script_failure',
       stage: 'repo_operations',
-      detail: 'exit 1'
+      detail: 'exit 1',
+      log_path: null
     });
   });
 
@@ -268,7 +283,8 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
       failure_class: '정리 중단',
       reason: 'local_branch_delete_failed',
       stage: 'branch_cleanup',
-      detail: 'RD-1'
+      detail: 'RD-1',
+      log_path: null
     });
   });
 
@@ -376,79 +392,145 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
   });
 });
 
-describe('buildResolvePrompt (UI-jw27 §4)', () => {
-  test.each([null, 'no_session_ref'])(
-    'explains the held PR exit with fallback %s',
-    (fallback_reason) => {
-      const failure = {
-        ...FAILURE,
-        exit: /** @type {const} */ ('fix_commit_push')
-      };
+describe('failure conversation entry block (UI-18a5 §3.3)', () => {
+  test('opens on the pinned dotfiles entry block', () => {
+    const digest = createHash('sha256')
+      .update(CONVERSATION_ENTRY_BLOCK)
+      .digest('hex');
 
-      const prompt = buildResolvePrompt({
-        bead_id: BEAD,
-        failure,
-        checkout: REPO,
-        fallback_reason
-      });
-
-      expect(prompt).toContain(
-        `이 세션이 맡았던 Bead ${BEAD}의 PR이 머지 전 검증에 실패해 보류 중입니다. 수정 커밋을 같은 브랜치에 push하면 Worker가 자동으로 재검증·머지합니다.`
-      );
-      expect(prompt).toContain(
-        '2. 고칠 수 있는 원인이면 고쳐서 같은 브랜치에 push한다 — 재검증과 머지는 Worker가 자동으로 잇는다.'
-      );
-      expect(prompt).toContain(
-        '금지: 머지·폐기 실행 · Worker 큐 상태 직접 편집 · 실패 기록 삭제.'
-      );
-      if (fallback_reason) {
-        expect(prompt).toContain(`bd show ${BEAD} --json`);
-      }
-    }
-  );
-
-  test.each([undefined, 'fix_commit_push'])(
-    'includes attempt-continuation guidance for exit %s',
-    (exit) => {
-      const failure = {
-        ...FAILURE,
-        exit: /** @type {'fix_commit_push'|undefined} */ (exit)
-      };
-
-      const prompt = buildResolvePrompt({
-        bead_id: BEAD,
-        failure,
-        checkout: REPO,
-        fallback_reason: null
-      });
-
-      expect(prompt).toContain(
-        '이 세션은 Worker attempt를 이어받은 승계 세션이다 — workflow `Attempt continuation`대로 `impl_entry`·`plan_approval`을 쓰지 않고 `workflow_mode=fast_track`으로 잇는다.'
-      );
-    }
-  );
-  test('states the class, cause code and bead id', () => {
-    const prompt = buildResolvePrompt({
-      bead_id: BEAD,
-      failure: FAILURE,
-      checkout: REPO,
-      fallback_reason: null
-    });
-
-    expect(prompt).toContain(`Bead ${BEAD}`);
-    expect(prompt).toContain('- 클래스: 배포 실패');
-    expect(prompt).toContain('- 원인 코드: deploy_script_failure');
+    expect(digest).toBe(ENTRY_BLOCK_DIGEST);
   });
 
-  test('names the refused fork in a fallback prompt', () => {
-    const prompt = buildResolvePrompt({
-      bead_id: BEAD,
+  test('names the failure class and cause code as the conversation reason', () => {
+    const entry = buildFailureEntry({
       failure: FAILURE,
-      checkout: REPO,
-      fallback_reason: 'no_session_ref'
+      worktree: null,
+      checkout: REPO
     });
 
-    expect(prompt).toContain('no_session_ref');
+    expect(entry).toContain(
+      '- 대화 사유: 실패 배포 실패 · deploy_script_failure\n'
+    );
+    expect(entry).toContain(
+      '`대화 결정: 실패 배포 실패 · deploy_script_failure — 사용자 답: <원문>`'
+    );
+  });
+
+  test('fills the situation with class, cause, stage, diagnosis and log', () => {
+    const situation = failureSituation({
+      failure_class: '머지 전 검증 실패',
+      reason: 'script_failed',
+      stage: 'verify',
+      detail: 'build\nfailed',
+      log_path: '/logs/verify.log'
+    });
+
+    expect(situation).toBe(
+      '클래스 머지 전 검증 실패 · 원인 코드 script_failed · 단계 verify · 진단 build failed · 로그 /logs/verify.log'
+    );
+  });
+
+  test('prints a missing worktree as absent', () => {
+    const entry = buildFailureEntry({
+      failure: FAILURE,
+      worktree: null,
+      checkout: REPO
+    });
+
+    expect(entry).toContain('- 구현 워크트리: (없음)\n');
+    expect(entry).toContain(`- target_base 체크아웃: ${REPO}\n`);
+  });
+
+  test('adds nothing past the dotfiles block', () => {
+    const entry = buildFailureEntry({
+      failure: FAILURE,
+      worktree: null,
+      checkout: REPO
+    });
+
+    expect(entry.endsWith('중첩 헤드리스 세션 기동.')).toBe(true);
+    expect(entry).not.toContain('[정리 재시도]');
+  });
+});
+
+describe('failureHandoffTarget (UI-18a5 §3.4)', () => {
+  test('targets a stopped cleanup with its step and record time', () => {
+    const queue = {
+      cleanup_failed: { [BEAD]: { step: 'post_merge_jobs', at: 77 } }
+    };
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target).toEqual({
+      kind: 'cleanup',
+      identity: 'cleanup:post_merge_jobs:77'
+    });
+  });
+
+  test('targets a needs-human post-merge terminal through its cleanup record', () => {
+    const queue = {
+      completion_intents: { [BEAD]: { phase: 'needs_human' } },
+      cleanup_failed: { [BEAD]: { step: 'repo_operations', at: 5 } }
+    };
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target?.kind).toBe('cleanup');
+  });
+
+  test('targets a merge-gate needs-human terminal without an exit', () => {
+    const queue = {
+      completion_intents: {
+        [BEAD]: { phase: 'needs_human', subject: { head_sha: 'h1' } }
+      }
+    };
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target).toEqual({ kind: 'merge_gate', identity: 'merge_gate:h1' });
+  });
+
+  test('targets a verify hold with its head and merge authority', () => {
+    const queue = {
+      completion_intents: {
+        [BEAD]: { phase: 'holding', hold: { head_sha: 'h2' } }
+      },
+      merge_queue: [{ bead_id: BEAD, authority: { id: 'auth-1' } }]
+    };
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target).toEqual({
+      kind: 'verify_hold',
+      identity: 'verify_hold:h2:auth-1'
+    });
+  });
+
+  test('targets a failed discard with its operation and error', () => {
+    const queue = {
+      discard_operations: {
+        op1: {
+          operation_id: 'op1',
+          bead_id: BEAD,
+          phase: 'closing_pr',
+          last_error: 'pr_close_failed',
+          requested_at: 5
+        }
+      }
+    };
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target).toEqual({
+      kind: 'discard',
+      identity: 'discard:op1:closing_pr:pr_close_failed'
+    });
+  });
+
+  test('returns null for a settled row', () => {
+    const target = failureHandoffTarget({}, BEAD);
+
+    expect(target).toBeNull();
   });
 });
 
@@ -498,8 +580,40 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       settled_by: null,
       state: 'live',
       exit_requested_at: null,
-      defer_since: null
+      defer_since: null,
+      conversation: {
+        stop: '실패 배포 실패 · deploy_script_failure',
+        wait_id: null,
+        processed_message_at: null,
+        message_excerpt: null,
+        result: null,
+        handoff: null,
+        takeover_notified_at: null
+      }
     });
+  });
+
+  test('opens the fork with the filled failure entry block', async () => {
+    const { resolver, tmux } = makeLauncher({
+      metadata: { session_ref: `claude:${SESSION_ID}@${HOST}` },
+      existsSync: (file_path) =>
+        file_path === path.join(REPO, '.worktrees', BEAD)
+    });
+
+    await resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.at(-1);
+    expect(wrapper).toContain(
+      `'${buildFailureEntry({
+        failure: FAILURE,
+        worktree: path.join(REPO, '.worktrees', BEAD),
+        checkout: REPO
+      })}'`
+    );
   });
 
   test('assigns a launch UUID to a fresh claude session', async () => {
@@ -559,7 +673,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       expect(wrapper).toContain(
         fork
           ? `exec '/usr/local/bin/codex' 'fork' '${SESSION_ID}'`
-          : `exec '/usr/local/bin/codex' 'Bead`
+          : `exec '/usr/local/bin/codex' '이 세션은 Worker 작업이`
       );
     }
   );
@@ -614,21 +728,6 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     });
 
     expect(outcome.session).toBe('launched');
-  });
-
-  test('explains settlement immediately after the continuation instruction', () => {
-    const input = {
-      bead_id: BEAD,
-      failure: FAILURE,
-      checkout: REPO,
-      fallback_reason: null
-    };
-
-    const prompt = buildResolvePrompt(input);
-
-    expect(prompt).toContain(
-      '`workflow_mode=fast_track`으로 잇는다.\n이 Bead가 머지·close·폐기로 정산되면 Worker가 이 세션을 닫고(claude: `/exit`) Discord 스레드는 아카이브된다.'
-    );
   });
 
   test('forks the recorded claude session', async () => {
@@ -692,11 +791,10 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     expect(wrapper).toBe(
       `tmux set-option -p -t "$TMUX_PANE" @bdui_resolve_bead '${BEAD}' && exec ` +
         `'/usr/local/bin/claude' '--resume' '${SESSION_ID}' '--fork-session' '--session-id' '${launch_id}' ` +
-        `'${buildResolvePrompt({
-          bead_id: BEAD,
+        `'${buildFailureEntry({
           failure: FAILURE,
-          checkout: REPO,
-          fallback_reason: null
+          worktree: null,
+          checkout: REPO
         })}'`
     );
   });

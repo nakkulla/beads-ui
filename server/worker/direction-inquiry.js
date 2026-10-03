@@ -5,7 +5,7 @@
  * Every string-valued `awaiting_user` park and every conversation-target
  * recovery wait (`session-stall.js`) reaches this module. `onParkedAttempt` is
  * the automatic trigger and obeys `worker_direction_inquiry.enabled`;
- * `launchForClick` is the user's explicit `[세션에서 해결]` action and
+ * `launchForClick` is the user's explicit `[세션에서 이어가기]` action and
  * deliberately ignores that automatic-launch gate. Both reopen the attempt's
  * OWN runner session interactively in tmux — no fork — with the one dotfiles
  * entry block as its first input, at most one live conversation pane per Bead.
@@ -37,9 +37,9 @@ import {
 } from './process-controller.js';
 import { qualifyAttemptSession } from './session-ref.js';
 import { conversationStopLabel } from './session-stall.js';
-// The tmux launch primitives are shared with the `[세션에서 해결]` resolve
-// session (UI-jw27 §4). The marker option, the entry block, and the launch
-// reason all stay this module's.
+// The tmux launch primitives are shared with the failure conversation
+// (`resolve-session.js`, UI-jw27 §4). The marker option and the entry block
+// stay this module's; the other two launchers fill the same block.
 import {
   INQUIRY_PANE_MARKER,
   createTmuxLauncher,
@@ -56,58 +56,95 @@ const PANE_MARKER = INQUIRY_PANE_MARKER;
 const ABSENT = '(없음)';
 
 /**
- * The first input of a same-session conversation, quoted verbatim from dotfiles
+ * The first input of every Worker session conversation — 멈춤, 실패 and
+ * 외부 작업 완료 alike (UI-18a5 §3.3) — quoted verbatim from dotfiles
  * `src/shared/skills/flow/workflow/references/execution-common.md`
- * (`## Worker 세션 대화`, commit `f031c9853f536c1478e9d1129b8c69628be27ef8`),
+ * (`## Worker 세션 대화`, commit `78eddcdb7b05c8b1ddc5f98663144022899d5601`),
  * with no trailing newline. This is the TEMPLATE: beads-ui fills only the
- * stop label, the session's sentence, and the two paths; `<원문>`,
+ * conversation reason, the situation, and the two paths; `<원문>`,
  * `<결정 한 줄>` and `<한 줄>` belong to the session. beads-ui adds no
  * procedure and no prohibition of its own.
  *
  * @type {string}
  */
 export const CONVERSATION_ENTRY_BLOCK = [
-  '이 세션은 방금까지 무인 Worker attempt였고 <멈춤 사유>로 멈춰, 지금 사용자와 대화하도록 다시 열렸다. 사용자는 이 tmux 창이나 Discord 스레드에서 답한다.',
-  '- 멈춤 사유: <awaiting_user=<값> | recovery:<authority|no_progress> | recovery:<옛 사유> (옛 기록)>',
-  '- 세션이 남긴 문장: <blocker 문장>',
+  '이 세션은 Worker 작업이 <대화 사유>에 이르러 지금 사용자와 대화하도록 다시 열렸다. 사용자는 이 tmux 창이나 Discord 스레드에서 답한다.',
+  '- 대화 사유: <멈춤 awaiting_user=<값> | 멈춤 recovery:<authority|no_progress> | 멈춤 recovery:<옛 사유> (옛 기록) | 실패 <클래스> · <원인 코드> | 외부 작업 완료 <wait_id>>',
+  '- 상황: <세션이 남긴 문장 | 실패 진단 | 외부 작업 완료 블록>',
   '- 구현 워크트리: <path>',
   '- target_base 체크아웃: <path>',
   '',
   '절차',
-  '1. 무엇이 막혔고 사용자가 무엇을 정해야 하는지 한 문단으로 요약하고, 선택지와 권고를 붙여 묻는다. 질문 도구가 있으면 쓰고, 없으면 산문으로 묻고 턴을 끝낸다. 턴이 끝나면 사용자 차례다.',
-  '2. 답이 결정을 주면 notes에 `대화 결정: <멈춤 사유> — 사용자 답: <원문>` 한 줄을 남긴다. 결정을 확인하는 데 필요한 읽기·진단·워크트리 안 로컬 수정·로컬 검증은 이 대화에서 해도 된다.',
+  '1. 무엇이 막혔거나 끝났고 사용자가 무엇을 정해야 하는지 한 문단으로 요약하고, 선택지와 권고를 붙여 묻는다. 질문 도구가 있으면 쓰고, 없으면 산문으로 묻고 턴을 끝낸다. 턴이 끝나면 사용자 차례다.',
+  '2. 답이 결정을 주면 notes에 `대화 결정: <대화 사유> — 사용자 답: <원문>` 한 줄을 남긴다. 결정을 확인하는 데 필요한 읽기·진단·워크트리 안 로컬 수정·로컬 검증은 이 대화에서 해도 된다.',
   '3. 대화를 끝내는 턴의 마지막 메시지 첫 줄에 결과 줄 하나를 쓴다.',
-  '   - `인계 · <결정 한 줄>`: Worker가 이 세션을 무인으로 이어받아 결정의 적용·영수증·해제·발행·push·보고를 한다.',
+  '   - `인계 · <결정 한 줄>`: Worker가 이 행을 잇는다. 멈춤이면 이 세션을 무인으로 이어받아 결정의 적용·영수증·해제·발행·push·보고를 하고, 실패면 실패한 단계를 한 번 다시 돌리며(사용자 답이 그 클릭의 권한이다), 외부 작업 완료면 이 세션에서 Worker attempt를 시작한다. 머지 게이트 보류는 사람의 `[머지]`만 풀므로 인계하지 않고 보류로 끝낸다.',
   '   - `인수 · <한 줄>`: 사용자가 이 대화에서 끝까지 가겠다고 명시했을 때만. 그 뒤 이 세션은 대화형 세션 규칙으로 finish까지 간다.',
-  '   - `보류 · <한 줄>`: 사용자가 나중에 보겠다고 했을 때. 대화를 끝내고 attempt는 대기로 남는다.',
+  '   - `보류 · <한 줄>`: 사용자가 나중에 보겠다고 했을 때. 대화를 끝내고 그 행은 그대로 남는다.',
   '   결과 줄 없이 끝난 턴은 사용자 답을 기다리는 턴이다.',
   '',
-  '금지(인수 전): push·PR·발행·배포·릴리스 · Bead 상태 변경 · metadata 영수증 쓰기와 `awaiting_user` 해제(예외: 사용자 답 턴에서만 쓸 수 있는 `plan_approval=user@<sha>`와, 그와 같은 쓰기로 하는 `awaiting_user` 해제) · 외부 리뷰어 dispatch · 공급자 세션 상태 파일 직접 수정 · 중첩 헤드리스 세션 기동.'
+  '금지(인수 전): push·PR·발행·배포·릴리스(예외: 머지 전 검증 보류의 같은 PR 브랜치 수정 커밋 push) · 머지·폐기 실행, Worker 큐 상태 편집, 실패 기록 삭제 · Bead 상태 변경 · metadata 영수증 쓰기와 `awaiting_user` 해제(예외: 사용자 답 턴에서만 쓸 수 있는 `plan_approval=user@<sha>`와, 그와 같은 쓰기로 하는 `awaiting_user` 해제) · 외부 리뷰어 dispatch · 공급자 세션 상태 파일 직접 수정 · 중첩 헤드리스 세션 기동.'
 ].join('\n');
 
 /** The server-owned slots; every other `<…>` belongs to the session. */
-const SLOT_STOP_LINE =
-  '<awaiting_user=<값> | recovery:<authority|no_progress> | recovery:<옛 사유> (옛 기록)>';
-const SLOT_STOP = '<멈춤 사유>';
-const SLOT_SENTENCE = '<blocker 문장>';
+const SLOT_REASON_LINE =
+  '- 대화 사유: <멈춤 awaiting_user=<값> | 멈춤 recovery:<authority|no_progress> | 멈춤 recovery:<옛 사유> (옛 기록) | 실패 <클래스> · <원인 코드> | 외부 작업 완료 <wait_id>>';
+const SLOT_REASON = '<대화 사유>';
+const SLOT_SITUATION_LINE =
+  '- 상황: <세션이 남긴 문장 | 실패 진단 | 외부 작업 완료 블록>';
 const SLOT_WORKTREE = '- 구현 워크트리: <path>';
 const SLOT_CHECKOUT = '- target_base 체크아웃: <path>';
 
 /**
- * Fill the entry block's server-owned slots in ONE pass, so an inserted value
- * that quotes a slot is never rescanned. The two `<path>` slots are told
- * apart by their line prefix.
+ * The `대화 사유` of a 멈춤 conversation: the stop label
+ * (`session-stall.js` `conversationStopLabel`) under the kind word, or null
+ * when no label could be read.
  *
- * @param {{ stop: string|null, sentence: string|null, worktree: string|null, checkout: string|null }} input
+ * @param {string|null|undefined} stop
+ * @returns {string|null}
+ */
+export function stopConversationReason(stop) {
+  return typeof stop === 'string' && stop.length > 0 ? `멈춤 ${stop}` : null;
+}
+
+/**
+ * The `대화 사유` of a 실패 conversation: `실패 <클래스> · <원인 코드>`.
+ *
+ * @param {{ failure_class: string, reason: string }} failure
+ * @returns {string}
+ */
+export function failureConversationReason(failure) {
+  return `실패 ${failure.failure_class} · ${failure.reason}`;
+}
+
+/**
+ * The `대화 사유` an 외부 작업 완료 conversation prints: the kind words and
+ * the completed wait's id.
+ *
+ * @param {string} wait_id
+ * @returns {string}
+ */
+export function externalConversationReason(wait_id) {
+  return `외부 작업 완료 ${wait_id}`;
+}
+
+/**
+ * Fill the entry block's server-owned slots in ONE pass, so an inserted value
+ * that quotes a slot is never rescanned. `<대화 사유>` stands twice (the
+ * opening sentence and step 2) and takes the same value; the two `<path>`
+ * slots are told apart by their line prefix. The three launchers share this
+ * one filler (UI-18a5 §3.3).
+ *
+ * @param {{ reason: string|null, situation: string|null, worktree: string|null, checkout: string|null }} input
  * @returns {string}
  */
 export function fillConversationEntry(input) {
-  const stop = input.stop || ABSENT;
+  const reason = input.reason || ABSENT;
   /** @type {Map<string, string>} */
   const values = new Map([
-    [SLOT_STOP_LINE, stop],
-    [SLOT_STOP, stop],
-    [SLOT_SENTENCE, input.sentence || ABSENT],
+    [SLOT_REASON_LINE, `- 대화 사유: ${reason}`],
+    [SLOT_REASON, reason],
+    [SLOT_SITUATION_LINE, `- 상황: ${input.situation || ABSENT}`],
     [SLOT_WORKTREE, `- 구현 워크트리: ${input.worktree || ABSENT}`],
     [SLOT_CHECKOUT, `- target_base 체크아웃: ${input.checkout || ABSENT}`]
   ]);
@@ -530,9 +567,10 @@ export function createDirectionInquiry(deps) {
         stop
       };
     }
+    const reason = stopConversationReason(stop);
     const block = fillConversationEntry({
-      stop,
-      sentence,
+      reason,
+      situation: sentence,
       worktree,
       checkout
     });
@@ -590,7 +628,8 @@ export function createDirectionInquiry(deps) {
             exit_requested_at: null,
             defer_since: null,
             conversation: {
-              stop: stop ?? ABSENT,
+              stop: reason ?? ABSENT,
+              wait_id: null,
               processed_message_at: null,
               message_excerpt: null,
               result: null,
