@@ -117,6 +117,15 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(mq).toMatch(/\.mon2-deck__strip\s*{[^}]*overflow-x:\s*auto/);
   });
 
+  test('sizes the search box by width so the stacked totals bar keeps it one input tall (UI-2zss)', () => {
+    const rule = CSS.match(/\.issue-search\s*{([^}]*)}/)?.[1] || '';
+
+    // 640px 이하에서 합계 줄은 세로 flex라 길이 basis가 높이로 읽힌다 — 상자가
+    // 180px 높이를 차지해 레포 띠를 밀어냈다.
+    expect(rule).toMatch(/width:\s*180px/);
+    expect(rule).not.toMatch(/flex:\s*\S+\s+\S+\s+\d+px/);
+  });
+
   test('leaves no rule behind for the retired wait-lane surfaces (UI-e6hw §4.3)', () => {
     expect(CSS).not.toContain('.mon2-sec[data-section="queue"]');
     expect(CSS).not.toContain('.mon2-chains');
