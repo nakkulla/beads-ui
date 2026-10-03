@@ -34,8 +34,8 @@ scope:
 
 - Bead: `UI-ny0h`
 - 경로: `spec_backed`. beads-ui 안의 구현 묶음 하나와 dotfiles 크로스 리포 unit 둘(계약 선행 — 착지 완료, adr 스킬 규칙 — 선행 아님)로 이루어진다.
-- 기준: beads-ui `main` / `a26956cf82ce6991bf9ee82e1f70b85591b5c6fe`, dotfiles `main` / `f0542a1c61a028f446bf440b961b511791359163`
-- 상태: spec 리뷰 r1(REVISE) 반영 개정안. 사용자 재승인 대기.
+- 기준: beads-ui `main` / `a26956cf82ce6991bf9ee82e1f70b85591b5c6fe`(재검토 갱신 `643211a9e846f49b489defb032bc32a527a2fcaf`), dotfiles `main` / `f0542a1c61a028f446bf440b961b511791359163`
+- 상태: spec 리뷰 r2 승인. 스테일 재검토 correction — UI-6mpl·UI-q15q 착지로 ADR 후보의 supersede 대상과 전제 인용 줄을 갱신했다(결정 불변).
 
 ## 1. 목표
 
@@ -54,23 +54,23 @@ Worker가 일을 바로 시작하지 않고 기다리는 시간, 외부 작업�
 
 - 대기 진입 유예는 20초 고정 상수이고 "설정으로 열지 않는다"는 이전 스펙 결정 8에 묶여 있다 — `server/worker/scheduler.js:171-176`, `docs/superpowers/specs/2026-09-03-monitor-exec-material-queue-grace-design.md:393`. 이 결정은 현재 유효한 ADR 목록에 없다(`docs/adr/README.md` `## 현재 유효한 결정`에 유예 관련 행 없음; 주석이 가리키는 ADR 0032는 superseded이고 주제가 프리셋이다 — `docs/adr/history/0032-execution-preset-is-lane-neutral-applied-per-lane.md:4-5`).
 - 유예는 판정 시점마다 `added_at + QUEUE_GRACE_MS`로 계산한다 — `server/worker/scheduler.js:977`, `:1003`, `:1069`.
-- 클라이언트가 남은 초 표시를 위해 같은 20초를 복제한다 — `app/views/worker/lane-model.js:155-160`, `app/views/worker/lanes.js:2155`.
+- 클라이언트가 남은 초 표시를 위해 같은 20초를 복제한다 — `app/views/worker/lane-model.js:157-163`, `app/views/worker/lanes.js:2153`.
 - 외부 작업 관찰 주기(slurm 120초·process 30초·오류 백오프 60/120/300/900초)는 dotfiles 계약 값의 코드 사본이다 — `server/worker/external-wait/contract.js:1-5`, `:17-21`.
 - 선행 dotfiles-4yl8n이 착지해 계약이 두 간격을 기본값으로, beads-ui Worker의 서버 전역 타이밍 설정을 덮어쓰기 출처로 선언한다 — dotfiles `docs/contracts/workflow-state.yaml:1191-1199`(`interval_policy`: `values: defaults`, `override_owner: beads_ui_worker`, `override_source: server_global_timing_settings`, `override_fields: [slurm_interval_seconds, process_interval_seconds]`), dotfiles 커밋 `f0542a1c61a028f446bf440b961b511791359163`.
-- 관찰기는 관찰이 끝날 때마다 위 간격으로 `next_observation_at`을 계산해 기록하고, 15초 틱마다 기한이 지난 기록만 관찰한다 — `server/worker/external-wait/observer.js:22`, `:140-155`, `:239-241`.
+- 관찰기는 관찰이 끝날 때마다 위 간격으로 `next_observation_at`을 계산해 기록하고, 15초 틱마다 기한이 지난 기록만 관찰한다 — `server/worker/external-wait/observer.js:239`, `:362-378`, `:461-463`.
 - 기한 초과 판정이 같은 간격을 다시 계산한다 — `server/worker/wait-judgment.js:500-522`.
 - 환경 실패 재시도 사다리 2/5/15분은 분류 결과에 실리고 `queue-hold.js`가 소비하며, `base_moved` 재시도는 별도 값 없이 그 사다리의 첫 칸을 빌려 쓴다 — `server/worker/failure-class.js:74`, `:77`, `:390-396`; `server/worker/queue-hold.js:141-145`, `:218-224`.
 - 완료 작업 재시도 사다리 1/5/15분과 검증 환경 오류의 300초 고정 분기 — `server/worker/completion-intent.js:200`, `:1806-1809`, `:2271-2273`.
 - 자동 재개 거절 뒤 대기 5/15/30/60분, 마지막 칸 반복 — `server/worker/continuation-refusal.js:58-63`, `:104-111`.
 - 공급자 보류 재확인: 장애 백오프 1분→1시간 6칸, 한도 리셋 시각을 모를 때 15분, 리셋 뒤 60초. 계산한 `next_probe_at`을 저장한 뒤 타이머를 건다 — `server/worker/provider-health.js:21-25`, `:574-590`.
-- 머지 큐의 세 대기(해결 세션 30분, 미확정 재관측 60초, 미확정 상한 30분)는 생성 시점에 deps로 한 번 읽힌다 — `server/worker/merge-queue.js:66-84`, `:200-210`; 생성 지점 `server/worker/attach.js:1878`.
-- PR 폴링 45초는 `deps.intervalSeconds`로 주입 가능하지만 생성 지점이 넘기지 않는다 — `server/worker/pr-poller.js:54`, `:834-838`; `server/worker/attach.js:2245`.
-- 목록 새로고침 `poll_interval_seconds`(기본 30, 0이면 끔)는 config.toml에 있고 기동 시 한 번 읽히며, 모니터 갱신 구동기는 그 값을 모듈 변수에 캐시한다 — `server/config.js:9`, `:253-255`; `server/index.js:110-114`; `server/ws/monitor-handlers.js:1383-1397`, `:1422-1428`, `:1444`.
+- 머지 큐의 세 대기(해결 세션 30분, 미확정 재관측 60초, 미확정 상한 30분)는 생성 시점에 deps로 한 번 읽힌다 — `server/worker/merge-queue.js:66-84`, `:200-210`; 생성 지점 `server/worker/attach.js:1888`.
+- PR 폴링 45초는 `deps.intervalSeconds`로 주입 가능하지만 생성 지점이 넘기지 않는다 — `server/worker/pr-poller.js:54`, `:834-838`; `server/worker/attach.js:2255`.
+- 목록 새로고침 `poll_interval_seconds`(기본 30, 0이면 끔)는 config.toml에 있고 기동 시 한 번 읽히며, 모니터 갱신 구동기는 그 값을 모듈 변수에 캐시한다 — `server/config.js:9`, `:253-255`; `server/index.js:110-114`; `server/ws/monitor-handlers.js:1415-1430`, `:1454-1460`, `:1476`.
 - 공용 폴러는 고정 간격 `setInterval`이고 간격을 바꾸는 길이 없다 — `server/poller.js:18-43`.
-- attempt 재조정 주기 60초와 대화형 세션 재조정 주기 30초 — `server/worker/attach.js:359`, `:369`.
+- attempt 재조정 주기 60초와 대화형 세션 재조정 주기 30초 — `server/worker/attach.js:369`, `:379`.
 - 서버 전역 설정 저장 선례: 상태 디렉터리의 JSON 파일, 정수 `revision` CAS, 구독자 fanout, 읽기는 fail-quiet·쓰기는 strict — `server/model-visibility-store.js:1-15`, `:100-108`; `server/worker/state-paths.js:154`.
-- 서버 전역 값의 편집 위치는 일괄 창의 `전역` 탭 하나이고 두 번째 전역 탭을 만들지 않는다 — `docs/adr/UI-u6ud-10-exec-presets-and-chips.md:39`, `docs/adr/UI-ooc0-model-visibility-disabled-list.md:55-56`; 탭 구현 `app/views/settings-dialog/index.js:55-65`, `:78-79`, `:317-337`.
-- 현재 유효한 ADR이 값을 결정으로 적어 둔 곳: UI-u6ud-3의 "30분은 queue-yield deadline이다" — `docs/adr/UI-u6ud-3-worker-merge-queue.md:6`, `:19`, `:33`; UI-nuwy의 "사다리(2·5·15분, 3회)"와 "base_moved는 기록 직후 2분 뒤 자동 재개" — `docs/adr/UI-nuwy-same-worker-session-conversation-and-return.md:364`, `:401`.
+- 서버 전역 값의 편집 위치는 일괄 창의 `전역` 탭 하나이고 두 번째 전역 탭을 만들지 않는다 — `docs/adr/UI-u6ud-10-exec-presets-and-chips.md:39`, `docs/adr/UI-ooc0-model-visibility-disabled-list.md:55-56`; 탭 구현 `app/views/settings-dialog/index.js:67-77`, `:90-91`, `:419-439`.
+- 현재 유효한 ADR이 값을 결정으로 적어 둔 곳: UI-6mpl(UI-u6ud-3 대체)의 "30분은 queue-yield deadline이다" — `docs/adr/UI-6mpl-merge-queue-and-independent-toggles.md:6`, `:33`; UI-q15q(UI-nuwy 대체)의 "사다리(2·5·15분, 3회)"와 "base_moved는 기록 직후 2분 뒤 자동 재개" — `docs/adr/UI-q15q-external-spawned-jobs-and-same-session-conversation.md:383`, `:420`.
 - 워크스페이스 kv `workflow_session_defaults`의 키 어휘는 dotfiles 소유라 넓힐 수 없다 — `server/session-defaults.js:5-9`.
 
 ## 3. 설계
@@ -142,10 +142,10 @@ Worker가 일을 바로 시작하지 않고 기다리는 시간, 외부 작업�
 
 현재 유효한 ADR 두 개가 이 스펙이 여는 값을 결정 문장으로 적고 있으므로, Finish에서 두 ADR을 각각 전면 대체한다(§7). 새 ADR은 원 ADR의 모든 조항을 승계하고 다음만 바꾼다.
 
-- UI-u6ud-3 → 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이라는 의미는 그대로 두고, 그 길이는 서버 전역 타이밍 설정(`merge_resolution_wait_seconds`)이 정한다고 적는다. deadline이 거는 순간의 값으로 계산한 절대 시각이라 재시작이 시계를 되감지 않는다는 조항도 승계한다.
-- UI-nuwy → 미분류 실패 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정(`env_retry_delays_seconds`·`base_moved_retry_seconds`)이 정한다고 적는다. 바뀐 값은 다음 예약부터 적용되고 기록된 `next_at`은 다시 쓰지 않는다.
-- 두 새 ADR 모두, 승계하는 조항 안의 다른 조정 가능한 수치(예: UI-nuwy의 매 pass 30초, 재시도 횟수 3회, base_moved 반복 3회, UI-u6ud-3의 라운드 상한)도 결정 문장으로 고정하지 않는다. 값의 정본(설정 키 또는 코드 상수 이름)을 가리키고 필요하면 현재 값을 "기본값" 또는 "현재 값"으로만 적는다.
-- 결정: UI-nuwy를 대체하는 열린 스펙이 하나 더 있다(UI-18a5, `docs/superpowers/specs/2026-10-02-session-worker-continue-pair-design.md` §7 — 대화 대상·출구 조항을 넓힌다). 바꾸는 조항이 겹치지 않으므로 순서만 맞춘다. Finish의 ADR 단계에서 `docs/adr/README.md` 현재 표를 다시 읽어, UI-18a5의 ADR이 먼저 착지했으면 그 ADR을 supersede 대상으로 삼고 그 조항(UI-18a5가 넓힌 조항 포함)을 승계한다. 대상 id가 바뀌면 이 스펙의 §7 후보 줄을 정정해 재게시한다(staleness 재검토 경로).
+- UI-6mpl(UI-u6ud-3 대체) → 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이라는 의미는 그대로 두고, 그 길이는 서버 전역 타이밍 설정(`merge_resolution_wait_seconds`)이 정한다고 적는다. deadline이 거는 순간의 값으로 계산한 절대 시각이라 재시작이 시계를 되감지 않는다는 조항도 승계한다.
+- UI-q15q(UI-nuwy 대체) → 미분류 실패 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정(`env_retry_delays_seconds`·`base_moved_retry_seconds`)이 정한다고 적는다. 바뀐 값은 다음 예약부터 적용되고 기록된 `next_at`은 다시 쓰지 않는다.
+- 두 새 ADR 모두, 승계하는 조항 안의 다른 조정 가능한 수치(예: UI-q15q의 매 pass 30초, 재시도 횟수 3회, base_moved 반복 3회, UI-6mpl의 라운드 상한)도 결정 문장으로 고정하지 않는다. 값의 정본(설정 키 또는 코드 상수 이름)을 가리키고 필요하면 현재 값을 "기본값" 또는 "현재 값"으로만 적는다.
+- 결정: 같은 조항 묶음(UI-nuwy 계보, 지금은 UI-q15q)을 대체하는 열린 스펙이 하나 더 있다(UI-18a5, `docs/superpowers/specs/2026-10-02-session-worker-continue-pair-design.md` §7 — 대화 대상·출구 조항을 넓힌다; 그 스펙은 아직 UI-nuwy를 대상으로 적고 있고 그 정정은 UI-18a5 자신의 재검토 몫이다). 바꾸는 조항이 겹치지 않으므로 순서만 맞춘다. Finish의 ADR 단계에서 `docs/adr/README.md` 현재 표를 다시 읽어, UI-18a5의 ADR이 먼저 착지했으면 그 ADR을 supersede 대상으로 삼고 그 조항(UI-18a5가 넓힌 조항 포함)을 승계한다. 대상 id가 바뀌면 이 스펙의 §7 후보 줄을 정정해 재게시한다(staleness 재검토 경로).
 - 다른 유효 ADR(UI-nuwy-2의 대화형 종료 유예 등)은 이 스펙이 값을 열지 않으므로 건드리지 않는다. 그 수치는 그 ADR을 다음에 대체할 때 같은 원칙으로 고친다.
 
 ## 4. 경계
@@ -187,8 +187,8 @@ Worker가 일을 바로 시작하지 않고 기다리는 시간, 외부 작업�
 
 - 전제: ADR UI-u6ud-2 — beads-ui는 dotfiles 계약을 코드 사본으로 소비하고 정의하지 않는다. 외부 작업 관찰 주기는 계약의 `interval_policy`가 덮어쓰기를 허용한 두 필드만 설정으로 연다.
 - 전제: ADR UI-u6ud-10, UI-ooc0 — 서버 전역 값의 편집 위치는 일괄 창의 `전역` 탭 하나이고 두 번째 전역 탭을 만들지 않는다. 타이밍 설정은 그 탭 안의 세 번째 묶음이다.
-- 해소 세션의 큐 점유는 queue-yield deadline이고 그 길이는 서버 전역 타이밍 설정이 정한다(UI-u6ud-3의 나머지 조항 전부 승계, 수치는 결정 문장에서 뺀다). 되돌리기 어려움: 성립 — 원 ADR과 같은 소비자(`server/worker/merge-queue.js`·`server/worker/merge-gate.js`·`server/worker/pr-actions.js`·`server/worker/auto-merge.js`·Worker 툴바 `app/views/worker/index.js`)에 이 스펙의 타이밍 설정(`server/timing-settings*`)이 더해져 함께 움직인다. 맥락 없이 놀라움: 성립 — 원 ADR을 읽은 사람은 30분 고정을 기대하고, deadline 길이가 설정에서 바뀌는 이유를 모른다. 실제 트레이드오프: 성립 — 고정 30분 유지를 버리고 운영자가 길이를 고르게 했다. `summary`: "PR 랜딩 작업의 머지는 Worker의 단일 순차 큐만 실행하고 완료는 MERGED 관측이다; 머지 자격은 저장소 안의 입력(PR·base·head identity, mergeability, 리뷰·실행 영수증, [verify])만 보고 GitHub checks는 읽지 않는다; auto_merge와 auto_advance는 독립 스위치이고 자동화 클릭만 둘을 원자적으로 맞춘다; 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이고 그 길이는 서버 전역 타이밍 설정이 정하며 충돌 해소 fence는 수동 권한 면제·슬롯 여유로 판정한다" → ADR, supersede UI-u6ud-3
-- 미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정하고 두 값은 서로 독립이다(UI-nuwy의 나머지 조항 전부 승계, 수치는 결정 문장에서 뺀다; 새 ADR id는 UI-ny0h-2). 되돌리기 어려움: 성립 — 원 ADR과 같은 소비자(`server/worker/scheduler.js`·`server/worker/queue-hold.js`·`server/worker/failure-class.js`·`server/worker/continuation-refusal.js`·`server/worker/tmux-launcher.js`·Worker 카드 렌더러)에 타이밍 설정이 더해지고, base_moved를 사다리 첫 칸에서 떼어 낸 분리를 되돌리려면 설정 키와 저장 파일까지 함께 고쳐야 한다. 맥락 없이 놀라움: 성립 — 원 ADR을 읽은 사람은 2·5·15분과 2분 고정을 기대하고, 두 지연이 왜 따로 움직이는지 모른다. 실제 트레이드오프: 성립 — 사다리 첫 칸 공유와 고정값을 버렸다. `summary`: "사람이 필요한 멈춤(파킹, recovery authority·no_progress, 옛 사유 읽기 호환)은 같은 Worker 세션을 fork 없이 tmux 대화형으로 열어 해결한다; 대화 턴 종료는 답 대기(action_required)이고 첫 줄 인계를 관측하면 창 소멸 확인 뒤 같은 attempt를 같은 세션·기록 실행 설정으로 재개하며(parked·awaiting_user 예외는 이 경로뿐, 사람 ↻·자동 재디스패치는 없음) 인수면 관찰만, 보류면 대기로 남는다; 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다; 미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정한다" → ADR, supersede UI-nuwy
+- 해소 세션의 큐 점유는 queue-yield deadline이고 그 길이는 서버 전역 타이밍 설정이 정한다(UI-6mpl의 나머지 조항 전부 승계, 수치는 결정 문장에서 뺀다). 되돌리기 어려움: 성립 — 원 ADR과 같은 소비자(`server/worker/merge-queue.js`·`server/worker/merge-gate.js`·`server/worker/pr-actions.js`·`server/worker/auto-merge.js`·Worker 툴바 `app/views/worker/index.js`, 승계하는 독립 스위치 조항의 queue-store 자동화 mutation과 `worker-automation-toggle` 핸들러)에 이 스펙의 타이밍 설정(`server/timing-settings*`)이 더해져 함께 움직인다. 맥락 없이 놀라움: 성립 — 원 ADR을 읽은 사람은 30분 고정을 기대하고, deadline 길이가 설정에서 바뀌는 이유를 모른다. 실제 트레이드오프: 성립 — 고정 30분 유지를 버리고 운영자가 길이를 고르게 했다. `summary`: "PR 랜딩 작업의 머지는 Worker의 단일 순차 큐만 실행하고 완료는 MERGED 관측이다; 머지 자격은 저장소 안의 입력(PR·base·head identity, mergeability, 리뷰·실행 영수증, [verify])만 보고 GitHub checks는 읽지 않는다; auto_merge와 auto_advance는 독립 스위치이고 어떤 클릭도 둘을 함께 바꾸지 않는다; 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이고 그 길이는 서버 전역 타이밍 설정이 정하며 충돌 해소 fence는 수동 권한 면제·슬롯 여유로 판정한다" → ADR, supersede UI-6mpl
+- 미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정하고 두 값은 서로 독립이다(UI-q15q의 나머지 조항 전부 승계, 수치는 결정 문장에서 뺀다; 새 ADR id는 UI-ny0h-2). 되돌리기 어려움: 성립 — 원 ADR과 같은 소비자(`server/worker/scheduler.js`·`server/worker/queue-hold.js`·`server/worker/failure-class.js`·`server/worker/continuation-refusal.js`·`server/worker/tmux-launcher.js`·Worker 카드 렌더러, UI-q15q가 더한 하위 잡 관찰·표시 소비자 `server/worker/external-wait/adapters/slurm.js`·`observer.js`·`store.js`·상세 패널)에 타이밍 설정이 더해지고, base_moved를 사다리 첫 칸에서 떼어 낸 분리를 되돌리려면 설정 키와 저장 파일까지 함께 고쳐야 한다. 맥락 없이 놀라움: 성립 — 원 ADR을 읽은 사람은 2·5·15분과 2분 고정을 기대하고, 두 지연이 왜 따로 움직이는지 모른다. 실제 트레이드오프: 성립 — 사다리 첫 칸 공유와 고정값을 버렸다. `summary`: "사람이 필요한 멈춤(파킹, recovery authority·no_progress, 옛 사유 읽기 호환)은 같은 Worker 세션을 fork 없이 tmux 대화형으로 열어 해결한다; 대화 턴 종료는 답 대기(action_required)이고 첫 줄 인계를 관측하면 창 소멸 확인 뒤 같은 attempt를 같은 세션·기록 실행 설정으로 재개하며(parked·awaiting_user 예외는 이 경로뿐, 사람 ↻·자동 재디스패치는 없음) 인수면 관찰만, 보류면 대기로 남는다; 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다; 외부 작업의 하위 잡은 등록 잡과 같은 사용자·WorkDir에서 등록 잡 시작 이후 제출된 Slurm 잡이고 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하며, 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다; 미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정한다" → ADR, supersede UI-q15q
 - 그 밖의 Worker 대기·관찰·재시도·폴링 시간을 서버 전역 타이밍 설정 파일(덮어쓴 값만 저장, 다음 계산부터 적용)이 소유한다 — 기본 제외 목록의 "재시도 횟수·타임아웃·한도·임계 수치" 항목이고, 저장 방식은 UI-ooc0의 서버 전역 스토어 패턴을 그대로 따르며 적용 시점은 설정 화면이 직접 말하므로 맥락 없이 놀라움 불성립 → ADR 아님
 - 대기 진입 유예를 설정으로 연다(이전 스펙 결정 8 번복) — 유효 ADR 조항이 아니고 기본 제외 목록의 수치 항목이다 → ADR 아님
 - 오류 백오프·hold 예산·대화형 종료 유예를 고정으로 둔다 — 실제 트레이드오프 불성립(현행 유지) → ADR 아님
