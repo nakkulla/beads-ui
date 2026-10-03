@@ -49,6 +49,7 @@ vi.mock('./worker-handlers.js', () => ({
   // 검증하므로 워커 구독자는 없다.
   workerQueueSubscriberTotal: () => 0,
   workerQueueSubscribedWorkspaces: () => [],
+  setHistoricalUsageRetainer: () => {},
   fanout: () => {}
 }));
 

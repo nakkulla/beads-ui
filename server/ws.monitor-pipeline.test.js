@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MESSAGE_TYPES } from '../app/protocol.js';
+import * as registry from './registry-watcher.js';
+import { sharedVisibleWorkspacesStore } from './visible-workspaces-store.js';
 import { __resetWorkerAttachmentsForTest } from './worker/attach.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 import {
@@ -12,12 +14,13 @@ import {
   attachWsServer,
   handleMessage
 } from './ws.js';
+import { setConnWorkspace } from './ws/context.js';
 import {
   __resetMonitorPipelineForTest,
   buildMonitorPipeline,
   buildMonitorWorkspacesState
 } from './ws/monitor-handlers.js';
-import { decorateQueue } from './ws/worker-handlers.js';
+import { decorateQueue, detachWorkerQueue } from './ws/worker-handlers.js';
 
 /** @type {string} */
 let tmp_state;
@@ -142,6 +145,73 @@ describe('ws monitor-pipeline channel (UI-nprg)', () => {
     expect(snaps[0].id).toBe('monitor:pipeline');
   });
 });
+
+describe.each(['unsubscribe', 'disconnect'])(
+  'historical usage retention on worker %s (UI-4gth)',
+  (operation) => {
+    /** @param {ReturnType<typeof fakeSocket>} sock */
+    async function leaveWorker(sock) {
+      if (operation === 'disconnect') {
+        detachWorkerQueue(/** @type {any} */ (sock));
+      } else {
+        await send(sock, 'worker-off', 'unsubscribe-worker-queue', {
+          id: 'worker'
+        });
+      }
+    }
+
+    beforeEach(() => {
+      vi.spyOn(registry, 'getAvailableWorkspaces').mockReturnValue([
+        {
+          path: tmp_state,
+          database: path.join(tmp_state, '.beads'),
+          pid: process.pid,
+          version: 'test'
+        }
+      ]);
+      vi.spyOn(sharedVisibleWorkspacesStore(), 'listHidden').mockReturnValue(
+        []
+      );
+    });
+
+    test.each([
+      { monitor: true, hidden: false, retained: true },
+      { monitor: true, hidden: true, retained: false },
+      { monitor: false, hidden: false, retained: false }
+    ])(
+      'retains=$retained with monitor=$monitor and hidden=$hidden',
+      async ({ monitor, hidden, retained }) => {
+        const worker = fakeSocket();
+        setConnWorkspace(/** @type {any} */ (worker), {
+          root_dir: tmp_state,
+          db_path: path.join(tmp_state, '.beads')
+        });
+        vi.mocked(sharedVisibleWorkspacesStore().listHidden).mockReturnValue(
+          hidden ? [tmp_state] : []
+        );
+        const release = vi.spyOn(
+          getWorkerRuntime().workerSessionObservations,
+          'releaseHistorical'
+        );
+        await send(worker, 'worker-on', 'subscribe-worker-queue', {
+          id: 'worker'
+        });
+        if (monitor) {
+          await send(fakeSocket(), 'monitor-on', 'subscribe-monitor-pipeline');
+        }
+        release.mockClear();
+
+        await leaveWorker(worker);
+
+        if (retained) {
+          expect(release).not.toHaveBeenCalled();
+        } else {
+          expect(release).toHaveBeenCalledWith(tmp_state);
+        }
+      }
+    );
+  }
+);
 
 describe('monitor pipeline done retention (UI-qbbg §4.6)', () => {
   const DAY_MS = 86_400_000;

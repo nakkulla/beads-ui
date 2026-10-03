@@ -1858,6 +1858,11 @@ export function bootstrap(root_element) {
           s.view === 'monitor' || s.view === 'compare' || s.view === 'adr'
         );
       }
+      const pipeline_wanted = pipelineChannelWanted(s);
+      // Keep shared usage cached while ownership moves between the two channels.
+      if (pipeline_wanted) {
+        ensureMonitorPipelineChannel(true);
+      }
       // Restore updates must not start lists for the server's default workspace.
       if (workspace_bootstrap_done) {
         ensureWorkerSubscriptions(s.view === 'worker');
@@ -1865,7 +1870,9 @@ export function bootstrap(root_element) {
           s.view === 'worker' || settings_dialog_open || Boolean(s.selected_id)
         );
       }
-      ensureMonitorPipelineChannel(pipelineChannelWanted(s));
+      if (!pipeline_wanted) {
+        ensureMonitorPipelineChannel(false);
+      }
       ensureAdrChannel(s.view === 'adr');
       if (s.view === 'worker') {
         worker_view.load();

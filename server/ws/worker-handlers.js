@@ -223,6 +223,18 @@ function recordUserAction(workspace, bead_id, action, summary) {
  */
 const SUBSCRIBERS = new Map();
 
+/** @type {(workspace: string) => boolean} */
+let monitorRetainsHistoricalUsage = () => false;
+
+/**
+ * Inject monitor demand without importing the channel that consumes this one.
+ *
+ * @param {(workspace: string) => boolean} shouldRetain
+ */
+export function setHistoricalUsageRetainer(shouldRetain) {
+  monitorRetainsHistoricalUsage = shouldRetain;
+}
+
 /** Build the production account source shared with launch-time resolution. */
 function defaultWorkerAccountCatalog() {
   return createAccountCatalog({
@@ -3551,7 +3563,7 @@ export function detachWorkerQueue(ws) {
         set.delete(sub);
       }
     }
-    if (set.size === 0) {
+    if (set.size === 0 && !monitorRetainsHistoricalUsage(workspace)) {
       getWorkerRuntime().workerSessionObservations.releaseHistorical?.(
         workspace
       );
@@ -4497,7 +4509,7 @@ export function handleUnsubscribeWorkerQueue(ws, req) {
     }
   }
   for (const [workspace, set] of SUBSCRIBERS) {
-    if (set.size === 0) {
+    if (set.size === 0 && !monitorRetainsHistoricalUsage(workspace)) {
       getWorkerRuntime().workerSessionObservations.releaseHistorical?.(
         workspace
       );

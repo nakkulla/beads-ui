@@ -708,6 +708,34 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     expect(store.getWorkspacesState()).toEqual([]);
   });
 
+  test.each([
+    {
+      from: 'worker',
+      to: 'monitor',
+      expected: ['subscribe-monitor-pipeline', 'unsubscribe-worker-queue']
+    },
+    {
+      from: 'monitor',
+      to: 'worker',
+      expected: ['subscribe-worker-queue', 'unsubscribe-monitor-pipeline']
+    }
+  ])('subscribes $to before leaving $from', async ({ from, to, expected }) => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = `#/${from}`;
+    document.body.innerHTML = '<main id="app"></main>';
+    bootstrap(/** @type {HTMLElement} */ (document.getElementById('app')));
+    await flush();
+    client._clearSent();
+
+    window.location.hash = `#/${to}`;
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flush();
+
+    const types = sentTypes(client);
+    expect(types.indexOf(expected[0])).toBeGreaterThanOrEqual(0);
+    expect(types.indexOf(expected[0])).toBeLessThan(types.indexOf(expected[1]));
+  });
+
   test('unsubscribes the pipeline when the tab is left', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/monitor';

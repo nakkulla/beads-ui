@@ -65,6 +65,7 @@ import {
   decorateQueue,
   fanout,
   onWorkerSnapshotRefresh,
+  setHistoricalUsageRetainer,
   workerQueueSubscribedWorkspaces,
   workerQueueSubscriberCount,
   workerQueueSubscriberTotal
@@ -1297,6 +1298,11 @@ function queueRevisionMoved(workspace) {
  */
 function ensureRefreshWired() {
   if (!queue_changed_unsubscribe) {
+    setHistoricalUsageRetainer(
+      (workspace) =>
+        SUBSCRIBERS.size > 0 &&
+        visibleWorkspaceRoots().includes(path.resolve(workspace))
+    );
     queue_changed_unsubscribe = onQueueChanged((workspace) => {
       // `emitQueueChanged`는 진짜 레인 전이만이 아니라 세션 로그 하트비트
       // (`session-log.js`의 last_event_at fanout, 3초 코얼레스)로도 온다 —
