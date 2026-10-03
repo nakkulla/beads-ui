@@ -28632,6 +28632,10 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
   });
 
   describe('provider auto resume retry (D2)', () => {
+    afterEach(() => {
+      __resetTimingSettingsForTest();
+    });
+
     test('re-arms a bd_snapshot_failed refusal on the reconcile five minutes later', async () => {
       const env = stallEnv();
       const attempt_id = await refusedResume(env);
@@ -28664,6 +28668,20 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
       }
 
       expect(gaps).toEqual([5, 15, 30, 60, 60]);
+    });
+
+    test('spaces a refusal by the auto-resume timing setting', async () => {
+      __setTimingOverridesForTest({
+        auto_resume_retry_delays_seconds: [60, 120, 180, 240]
+      });
+      const env = stallEnv();
+
+      const attempt_id = await refusedResume(env);
+
+      const refusal = /** @type {any} */ (
+        env.store.snapshot(WS).attempts[attempt_id].auto_resume_refusal
+      );
+      expect((refusal.next_at - refusal.at) / MINUTE).toBe(1);
     });
 
     test('keeps the refused resume waiting until its retry time', async () => {

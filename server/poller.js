@@ -61,6 +61,11 @@ export function createPoller({ intervalSeconds, getClientCount, onTick }) {
    * @param {number} seconds
    */
   function setIntervalSeconds(seconds) {
+    // Every settings write notifies every listener; an unchanged cadence keeps
+    // its running timer instead of restarting the period.
+    if (seconds === interval_seconds) {
+      return;
+    }
     interval_seconds = seconds;
     if (started) {
       disarm();

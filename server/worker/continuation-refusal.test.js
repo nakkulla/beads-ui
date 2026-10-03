@@ -1,8 +1,4 @@
-import { afterEach, describe, expect, test } from 'vitest';
-import {
-  __resetTimingSettingsForTest,
-  __setTimingOverridesForTest
-} from '../timing-settings.js';
+import { describe, expect, test } from 'vitest';
 import {
   autoResumeRetryDelayMs,
   continuationRefusalClass
@@ -32,24 +28,20 @@ describe('continuationRefusalClass (2026-10-01 stall-reconcile D1)', () => {
 
 describe('autoResumeRetryDelayMs (D2)', () => {
   test('waits five, fifteen and thirty minutes, then an hour from then on', () => {
-    const delays = [1, 2, 3, 4, 9].map(autoResumeRetryDelayMs);
+    const delays = [1, 2, 3, 4, 9].map((count) =>
+      autoResumeRetryDelayMs(count)
+    );
 
     expect(delays.map((ms) => ms / 60_000)).toEqual([5, 15, 30, 60, 60]);
   });
 
-  describe('with the timing setting changed', () => {
-    afterEach(() => {
-      __resetTimingSettingsForTest();
-    });
+  test('follows the ladder the caller passes', () => {
+    const ladder_ms = [60_000, 120_000, 180_000, 240_000];
 
-    test('reads the auto-resume ladder at call time', () => {
-      __setTimingOverridesForTest({
-        auto_resume_retry_delays_seconds: [60, 120, 180, 240]
-      });
+    const delays = [1, 2, 3, 4, 9].map((count) =>
+      autoResumeRetryDelayMs(count, ladder_ms)
+    );
 
-      const delays = [1, 2, 3, 4, 9].map(autoResumeRetryDelayMs);
-
-      expect(delays.map((ms) => ms / 60_000)).toEqual([1, 2, 3, 4, 4]);
-    });
+    expect(delays.map((ms) => ms / 60_000)).toEqual([1, 2, 3, 4, 4]);
   });
 });

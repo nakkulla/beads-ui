@@ -62,7 +62,7 @@ import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
-import { timingSeconds } from '../timing-settings.js';
+import { timingLadder, timingSeconds } from '../timing-settings.js';
 import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
@@ -13770,7 +13770,13 @@ export function createScheduler(deps) {
       count,
       kind,
       next_at: isRetryableRefusal(kind)
-        ? at + autoResumeRetryDelayMs(count)
+        ? at +
+          autoResumeRetryDelayMs(
+            count,
+            timingLadder('auto_resume_retry_delays_seconds').map(
+              (seconds) => seconds * 1000
+            )
+          )
         : null
     };
   }
