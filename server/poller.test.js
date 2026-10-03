@@ -122,4 +122,73 @@ describe('server/poller', () => {
     vi.advanceTimersByTime(90_000);
     expect(onTick).toHaveBeenCalledTimes(1);
   });
+
+  test('re-arms a running poller at the new interval at once', () => {
+    const onTick = vi.fn();
+    const poller = createPoller({
+      intervalSeconds: 30,
+      getClientCount: () => 1,
+      onTick
+    });
+    poller.start();
+    vi.advanceTimersByTime(20_000);
+
+    poller.setIntervalSeconds(10);
+    vi.advanceTimersByTime(10_000);
+
+    expect(onTick).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(10_000);
+    expect(onTick).toHaveBeenCalledTimes(2);
+    poller.stop();
+  });
+
+  test('stops ticking when the interval becomes zero', () => {
+    const onTick = vi.fn();
+    const poller = createPoller({
+      intervalSeconds: 30,
+      getClientCount: () => 1,
+      onTick
+    });
+    poller.start();
+
+    poller.setIntervalSeconds(0);
+    vi.advanceTimersByTime(120_000);
+
+    expect(onTick).not.toHaveBeenCalled();
+    poller.stop();
+  });
+
+  test('restarts a switched-off poller when the interval turns positive', () => {
+    const onTick = vi.fn();
+    const poller = createPoller({
+      intervalSeconds: 0,
+      getClientCount: () => 1,
+      onTick
+    });
+    poller.start();
+
+    poller.setIntervalSeconds(15);
+    vi.advanceTimersByTime(15_000);
+
+    expect(onTick).toHaveBeenCalledTimes(1);
+    poller.stop();
+  });
+
+  test('records the interval without arming a poller that is not started', () => {
+    const onTick = vi.fn();
+    const poller = createPoller({
+      intervalSeconds: 30,
+      getClientCount: () => 1,
+      onTick
+    });
+
+    poller.setIntervalSeconds(10);
+    vi.advanceTimersByTime(60_000);
+    expect(onTick).not.toHaveBeenCalled();
+    poller.start();
+    vi.advanceTimersByTime(10_000);
+
+    expect(onTick).toHaveBeenCalledTimes(1);
+    poller.stop();
+  });
 });

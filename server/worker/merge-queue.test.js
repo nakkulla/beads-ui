@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../timing-settings.js';
 import { createCompletionIntentCoordinator } from './completion-intent.js';
 import { createMergeQueue } from './merge-queue.js';
 import {
@@ -25,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetTimingSettingsForTest();
   delete process.env.XDG_STATE_HOME;
   try {
     fs.rmSync(tmp_state, { recursive: true, force: true });
@@ -4306,5 +4311,121 @@ describe('worker/merge-queue — 보관 방어 (UI-sd12 §3.3)', () => {
     expect(spies.dispatchConflict).not.toHaveBeenCalled();
     expect(spies.reviewSession.startAuto).not.toHaveBeenCalled();
     expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+});
+
+describe('worker/merge-queue — timing settings read at arming time', () => {
+  /**
+   * A driver whose waits come from the timing settings: the test defaults are
+   * dropped so only the accessor can answer, and every armed timer is kept.
+   *
+   * @param {any} queue_store
+   * @param {any} deps
+   * @returns {{ mq: any, delays: number[] }}
+   */
+  function settingsDriver(queue_store, deps) {
+    /** @type {number[]} */
+    const delays = [];
+    const clock = fakeClock();
+    const mq = driver(queue_store, {
+      resolution_wait_ms: undefined,
+      unconfirmed_poll_ms: undefined,
+      unconfirmed_wait_ms: undefined,
+      now: clock.now,
+      setTimer: (/** @type {() => void} */ fn, /** @type {number} */ ms) => {
+        delays.push(ms);
+        return clock.setTimer(fn, ms);
+      },
+      ...deps
+    });
+    return { mq, delays };
+  }
+
+  /**
+   * Record a running conflict-resolution attempt for a bead.
+   *
+   * @param {any} queue_store
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   */
+  function dispatchResolution(queue_store, bead_id, attempt_id) {
+    queue_store.appendAttempt(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      attempt: {
+        attempt_id,
+        bead_id,
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 0
+      }
+    });
+  }
+
+  const unconfirmed = {
+    merge: async () => ({
+      ok: true,
+      action: 'merge_unconfirmed',
+      reason: 'merge_pending'
+    }),
+    observePr: async () => ({ state: null, error: 'gh_failed' })
+  };
+
+  test('re-observes an unconfirmed merge at the poll setting', async () => {
+    __setTimingOverridesForTest({
+      merge_unconfirmed_poll_seconds: 15,
+      merge_unconfirmed_wait_seconds: 300
+    });
+    const { mq, delays } = settingsDriver(seed(['UI-1']), unconfirmed);
+
+    await mq.kick();
+
+    expect(delays[0]).toBe(15_000);
+  });
+
+  test('gives up an unconfirmed merge at the wait setting', async () => {
+    __setTimingOverridesForTest({
+      merge_unconfirmed_poll_seconds: 15,
+      merge_unconfirmed_wait_seconds: 300
+    });
+    const { mq, delays } = settingsDriver(seed(['UI-1']), unconfirmed);
+
+    await mq.kick();
+
+    expect(mq.state().failures['UI-1']).toBe('merge_unconfirmed_timeout');
+    expect(delays.reduce((sum, ms) => sum + ms, 0)).toBe(300_000);
+  });
+
+  test('binds a resolution wait of the setting length', async () => {
+    __setTimingOverridesForTest({ merge_resolution_wait_seconds: 600 });
+    const store = seed(['UI-1', 'UI-2']);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const { mq } = settingsDriver(store, {
+      merge: async (/** @type {string} */ bead_id) => {
+        if (bead_id === 'UI-2') {
+          landMerge(store, bead_id);
+          return { ok: true, action: 'merged', reason: null };
+        }
+        dispatchResolution(store, bead_id, 'res-slow');
+        return {
+          ok: true,
+          action: 'conflict_resolution',
+          reason: null,
+          attempt_id: 'res-slow',
+          head_sha: RESOLUTION_DISPATCH_HEAD,
+          base_ref: 'main',
+          head_ref: 'feature-branch'
+        };
+      }
+    });
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).merge_queue[0].resolution).toMatchObject({
+      attempt_id: 'res-slow',
+      deadline_at: 600_000
+    });
   });
 });

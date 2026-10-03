@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../timing-settings.js';
 import { createActivityStore } from './activity-store.js';
 import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createPrObservationStore } from './pr-observations.js';
@@ -19,6 +23,8 @@ const BASE_SHA = 'b'.repeat(40);
 const PR_URL = 'https://github.com/o/r/pull/304';
 
 afterEach(() => {
+  vi.useRealTimers();
+  __resetTimingSettingsForTest();
   __resetQueueEventsForTest();
   __resetRepoOpsDisplayForTest();
 });
@@ -130,7 +136,8 @@ function repoOperations(input = {}) {
  *   onMerged?: any,
  *   onDeployment?: any,
  *   onDiscardObservation?: any,
- *   external?: any
+ *   external?: any,
+ *   timing_interval?: boolean
  * }} [input]
  */
 function makePoller(input = {}) {
@@ -188,7 +195,7 @@ function makePoller(input = {}) {
     onDiscardObservation: input.onDiscardObservation,
     external: input.external,
     notifyChanged,
-    intervalSeconds: 0,
+    ...(input.timing_interval ? {} : { intervalSeconds: 0 }),
     sleep: async () => {},
     now: () => 5000
   });
@@ -479,6 +486,46 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     await poller.tick();
 
     expect(observations.get('/ws', 'GONE-1')).toBe(null);
+  });
+});
+
+describe('worker/pr-poller — interval timing setting (UI-ny0h)', () => {
+  test('re-arms the running interval when the setting changes', async () => {
+    vi.useFakeTimers();
+    const { poller, prDetail } = makePoller({ timing_interval: true });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(prDetail).not.toHaveBeenCalled();
+
+    __setTimingOverridesForTest({ pr_poll_interval_seconds: 15 });
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(prDetail).toHaveBeenCalled();
+    poller.stop();
+  });
+
+  test('arms the interval a setting changed while stopped', async () => {
+    vi.useFakeTimers();
+    const { poller, prDetail } = makePoller({ timing_interval: true });
+    __setTimingOverridesForTest({ pr_poll_interval_seconds: 15 });
+    poller.start();
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(prDetail).toHaveBeenCalled();
+    poller.stop();
+  });
+
+  test('arms the default interval from the setting at start', async () => {
+    vi.useFakeTimers();
+    __setTimingOverridesForTest({ pr_poll_interval_seconds: 20 });
+    const { poller, prDetail } = makePoller({ timing_interval: true });
+    poller.start();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(prDetail).toHaveBeenCalled();
+    poller.stop();
   });
 });
 

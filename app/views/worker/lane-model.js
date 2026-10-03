@@ -155,12 +155,39 @@ export function prWaitLaneOriginFields(entry, last_impl_by_bead) {
 }
 
 /**
- * 대기 진입 유예의 길이. 서버 `QUEUE_GRACE_MS`(`server/worker/scheduler.js`)를
- * 이름 그대로 비춘다 — 클라이언트는 `server/**`에서 import할 수 없다. 남은 초
- * 표시는 이 상수와 큐 항목의 `added_at` 하나로만 판정하므로 (UI-q1tg §3.3), 두
- * 값이 갈리면 화면의 초가 스케줄러의 유예보다 먼저 또는 나중에 끝난다.
+ * 대기 진입 유예의 기본 길이. 서버 `QUEUE_GRACE_MS`(`server/worker/scheduler.js`)의
+ * 기본값을 이름 그대로 비춘다 — 클라이언트는 `server/**`에서 import할 수 없다.
+ * 실제 길이는 서버 전역 타이밍 설정 `queue_grace_seconds`이고 앱이 그 스냅샷을
+ * {@link bindQueueGraceSource}로 연결한다. 이 상수는 값이 아직 없을 때(구 서버·
+ * 구독 전)의 대체값으로만 남는다 (UI-ny0h §3.5).
  */
 export const QUEUE_GRACE_MS = 20_000;
+
+/** @type {(() => number|null)|null} */
+let queue_grace_seconds_source = null;
+
+/**
+ * Bind the queue grace source: 서버가 쓰는 유예 초(queue_grace_seconds)를 읽는
+ * 함수를 연결한다 (`null`이면 연결을 끊는다).
+ *
+ * @param {(() => number|null)|null} source - 초 단위 값, 없으면 null.
+ */
+export function bindQueueGraceSource(source) {
+  queue_grace_seconds_source = source;
+}
+
+/**
+ * Current grace in ms: 지금 화면이 쓸 유예 길이이고, 연결된 값이 없으면
+ * QUEUE_GRACE_MS 대체값이다.
+ *
+ * @returns {number}
+ */
+export function queueGraceMs() {
+  const seconds = queue_grace_seconds_source?.();
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0
+    ? seconds * 1000
+    : QUEUE_GRACE_MS;
+}
 
 /**
  * 실행가능 레인 정렬 (UI-eey2 §5). `updated_flat`만 섹션을 만들지 않는다 —

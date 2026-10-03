@@ -6,6 +6,10 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createExecPresetStore } from '../exec-preset-store.js';
+import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../timing-settings.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
@@ -26407,6 +26411,7 @@ describe('scheduler abandoned discard release', () => {
 describe('대기 진입 유예 (§3.3)', () => {
   afterEach(() => {
     vi.useRealTimers();
+    __resetTimingSettingsForTest();
   });
 
   /**
@@ -26436,6 +26441,50 @@ describe('대기 진입 유예 (§3.3)', () => {
 
     expect(env.store.snapshot(WS).admission.G1?.reason).toBe('grace_period');
     expect(env.scheduler.isRunning('G1')).toBe(false);
+  });
+
+  test('judges the grace by the timing setting at tick time', async () => {
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { G7: {} } });
+    seedQueue(env.store, ['G7']);
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.isRunning('G7')).toBe(false);
+
+    __setTimingOverridesForTest({ queue_grace_seconds: 0 });
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('G7')).toBe(true);
+  });
+
+  test('moves the grace wake-up when the grace setting shrinks', async () => {
+    vi.useFakeTimers();
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { GD: {} } });
+    seedQueue(env.store, ['GD']);
+    await env.scheduler.tick(WS);
+    clock.at = 2000;
+
+    __setTimingOverridesForTest({ queue_grace_seconds: 0 });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(env.scheduler.isRunning('GD')).toBe(true);
+  });
+
+  test('keeps a `[지금 시작]` request live past a zero grace', async () => {
+    __setTimingOverridesForTest({ queue_grace_seconds: 0 });
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { GE: {} } });
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'GE',
+      lane: 's1'
+    });
+    requestStartNow(WS, 'GE', clock.at);
+    clock.at += 1;
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('GE')).toBe(true);
   });
 
   test('dispatches the same bead one grace later', async () => {
@@ -28614,6 +28663,10 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
   });
 
   describe('provider auto resume retry (D2)', () => {
+    afterEach(() => {
+      __resetTimingSettingsForTest();
+    });
+
     test('re-arms a bd_snapshot_failed refusal on the reconcile five minutes later', async () => {
       const env = stallEnv();
       const attempt_id = await refusedResume(env);
@@ -28646,6 +28699,20 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
       }
 
       expect(gaps).toEqual([5, 15, 30, 60, 60]);
+    });
+
+    test('spaces a refusal by the auto-resume timing setting', async () => {
+      __setTimingOverridesForTest({
+        auto_resume_retry_delays_seconds: [60, 120, 180, 240]
+      });
+      const env = stallEnv();
+
+      const attempt_id = await refusedResume(env);
+
+      const refusal = /** @type {any} */ (
+        env.store.snapshot(WS).attempts[attempt_id].auto_resume_refusal
+      );
+      expect((refusal.next_at - refusal.at) / MINUTE).toBe(1);
     });
 
     test('keeps the refused resume waiting until its retry time', async () => {

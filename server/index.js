@@ -7,6 +7,7 @@ import { debug, enableAllDebug } from './logging.js';
 import { createPoller } from './poller.js';
 import { registerWorkspace, watchRegistry } from './registry-watcher.js';
 import { publishRuntimeIdentity } from './runtime-startup.js';
+import { onTimingSettingsChanged, timingSeconds } from './timing-settings.js';
 import { watchDb } from './watcher.js';
 import { initWorkerRuntime } from './worker/attach.js';
 import { getWorkerRuntime } from './worker/runtime.js';
@@ -106,12 +107,20 @@ const { wss, scheduleListRefresh } = attachWsServer(server, {
 // Periodic list-refresh poller (spec §7): remote `bd` writes through central
 // dolt never reach the local fs watcher, so on a fixed cadence — while at least
 // one client is connected — re-run the same refresh the watcher would trigger.
-// `poll_interval_seconds = 0` disables it.
-createPoller({
-  intervalSeconds: config.poll_interval_seconds,
+// The cadence is the server-global timing setting, whose default is config.toml
+// `poll_interval_seconds`; an off value (0) disables it and a settings change
+// re-arms the running poller at once (UI-ny0h §3.3).
+const list_poller = createPoller({
+  intervalSeconds: timingSeconds('list_poll_interval_seconds'),
   getClientCount: () => wss.clients.size,
   onTick: () => scheduleListRefresh('poll')
-}).start();
+});
+list_poller.start();
+onTimingSettingsChanged((snapshot) => {
+  list_poller.setIntervalSeconds(
+    /** @type {number} */ (snapshot.values.list_poll_interval_seconds)
+  );
+});
 
 watchRegistry(
   (entries) => {

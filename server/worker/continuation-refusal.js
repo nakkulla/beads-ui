@@ -8,6 +8,9 @@
  * condition does, `closed` means the bead is already closed, and every other
  * reason — including one this table has never heard of — is `permanent`, so
  * an unknown refusal is never retried forever.
+ *
+ * The browser bundle imports this module (`app/views/worker/lane-model.js`), so
+ * it stays free of Node imports: the caller passes the ladder in effect.
  */
 
 /** @typedef {'transient'|'wait'|'closed'|'permanent'} RefusalClass */
@@ -50,8 +53,11 @@ export const TRANSIENT_ADMISSION_REASONS = Object.freeze([
 ]);
 
 /**
- * Delay before the next automatic resume after the 1st, 2nd and 3rd
- * consecutive refusal; every later refusal waits the last entry (D2).
+ * Default delay before the next automatic resume after the 1st, 2nd and 3rd
+ * consecutive refusal; every later refusal waits the last entry (D2). The ladder
+ * in effect is the timing setting `auto_resume_retry_delays_seconds` (UI-ny0h),
+ * which the scheduler reads and hands to {@link autoResumeRetryDelayMs}; this
+ * constant is its default.
  *
  * @type {ReadonlyArray<number>}
  */
@@ -101,12 +107,16 @@ export function isRetryableRefusal(refusal_class) {
  * The wait after the `count`-th consecutive refusal (count ≥ 1).
  *
  * @param {number} count
+ * @param {ReadonlyArray<number>} [ladder_ms] - The ladder in effect, in ms.
  * @returns {number}
  */
-export function autoResumeRetryDelayMs(count) {
+export function autoResumeRetryDelayMs(
+  count,
+  ladder_ms = AUTO_RESUME_RETRY_DELAYS_MS
+) {
   const index = Math.min(
     Math.max(0, Math.floor(count) - 1),
-    AUTO_RESUME_RETRY_DELAYS_MS.length - 1
+    ladder_ms.length - 1
   );
-  return AUTO_RESUME_RETRY_DELAYS_MS[index];
+  return ladder_ms[index];
 }

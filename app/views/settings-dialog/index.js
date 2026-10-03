@@ -30,6 +30,7 @@ import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
 import { createModelVisibilitySection } from './model-visibility-section.js';
 import { createRepoPane } from './repo-pane.js';
+import { createTimingSection } from './timing-section.js';
 
 /**
  * The rail's tabs, in display order. `quick fix` carries `◈` — the same
@@ -124,6 +125,7 @@ const TAB_COPY = {
  *   queueStore?: { get: () => any, set?: (queue: any) => void },
  *   implPresetStore?: { get: () => any, subscribe?: (fn: () => void) => () => void },
  *   modelVisibilityStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
+ *   timingSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   labelOptions: () => string[],
  *   notify?: (message: string) => void,
  *   onOpenChange?: (open: boolean) => void,
@@ -176,10 +178,13 @@ export function createSettingsDialog(mount_element, options) {
   let chip_tab = null;
   /** @type {ReturnType<typeof createModelVisibilitySection>|null} */
   let model_section = null;
+  /** @type {ReturnType<typeof createTimingSection>|null} */
+  let timing_section = null;
   /**
    * The `전역` 탭's own host — 서버 전역 값이라 일괄 pane과 섞지 않는다 (§6).
-   * It holds two groups: the chip bindings under their own title, then the
-   * model-visibility section, each drawn into its own child host.
+   * It holds three groups: the chip bindings under their own title, then the
+   * model-visibility section, then the timing section (UI-ny0h §3.5), each drawn
+   * into its own child host.
    */
   const global_host = document.createElement('div');
   global_host.className = 'settings-dialog__pane-host';
@@ -191,7 +196,8 @@ export function createSettingsDialog(mount_element, options) {
   const chip_host = document.createElement('div');
   chip_group.append(chip_title, chip_host);
   const model_host = document.createElement('div');
-  global_host.append(chip_group, model_host);
+  const timing_host = document.createElement('div');
+  global_host.append(chip_group, model_host, timing_host);
 
   /** @type {ReturnType<typeof createExecutionPane>|null} */
   let execution_pane = null;
@@ -437,6 +443,15 @@ export function createSettingsDialog(mount_element, options) {
         });
       }
       model_section.render();
+      if (!timing_section) {
+        timing_section = createTimingSection(timing_host, {
+          transport,
+          timingSettingsStore: options.timingSettingsStore,
+          toast: (message, kind) =>
+            showToast(message, /** @type {any} */ (kind))
+        });
+      }
+      timing_section.render();
       return;
     }
     global_host.remove();
@@ -470,6 +485,8 @@ export function createSettingsDialog(mount_element, options) {
     chip_tab = null;
     model_section?.destroy();
     model_section = null;
+    timing_section?.destroy();
+    timing_section = null;
     global_host.remove();
   }
 

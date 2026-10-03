@@ -1,4 +1,8 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
+import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../timing-settings.js';
 import {
   RETRY_DELAYS_MS,
   dueRetries,
@@ -206,5 +210,82 @@ describe('per-Bead retry lineages', () => {
         }
       ]
     });
+  });
+});
+
+describe('retry delays follow the timing settings', () => {
+  afterEach(() => {
+    __resetTimingSettingsForTest();
+  });
+
+  test('reads the env ladder at scheduling time', () => {
+    __setTimingOverridesForTest({
+      env_retry_delays_seconds: [600, 600, 1200]
+    });
+
+    const { state } = reduceRetryState(null, retryEvent('UI-1', 1000), 1000);
+
+    expect(state.lineages[0].next_at).toBe(1000 + 600_000);
+  });
+
+  test('leaves the base_moved delay alone when the env ladder changes', () => {
+    __setTimingOverridesForTest({
+      env_retry_delays_seconds: [600, 600, 1200]
+    });
+
+    const { state } = reduceRetryState(
+      null,
+      retryEvent('UI-1', 1000, 'base_moved'),
+      1000
+    );
+
+    expect(state.lineages[0].next_at).toBe(1000 + 120_000);
+  });
+
+  test('reads the base_moved delay from its own setting', () => {
+    __setTimingOverridesForTest({ base_moved_retry_seconds: 300 });
+
+    const { state } = reduceRetryState(
+      null,
+      retryEvent('UI-1', 1000, 'base_moved'),
+      1000
+    );
+
+    expect(state.lineages[0].next_at).toBe(1000 + 300_000);
+  });
+
+  test('leaves env retries alone when the base_moved delay changes', () => {
+    __setTimingOverridesForTest({ base_moved_retry_seconds: 300 });
+
+    const { state } = reduceRetryState(null, retryEvent('UI-1', 1000), 1000);
+
+    expect(state.lineages[0].next_at).toBe(1000 + 120_000);
+  });
+
+  test('defers a base_moved lineage by the base_moved setting', () => {
+    const scheduled = reduceRetryState(
+      null,
+      retryEvent('UI-1', 0, 'base_moved'),
+      0
+    );
+    __setTimingOverridesForTest({ base_moved_retry_seconds: 300 });
+
+    const deferred = reduceRetryState(
+      scheduled.state,
+      { kind: 'retry_deferred', bead_id: 'UI-1', at: 5000 },
+      5000
+    );
+
+    expect(deferred.state.lineages[0].next_at).toBe(5000 + 300_000);
+  });
+
+  test('keeps a recorded next_at when the setting changes later', () => {
+    const scheduled = reduceRetryState(null, retryEvent('UI-1', 1000), 1000);
+
+    __setTimingOverridesForTest({
+      env_retry_delays_seconds: [3600, 3600, 3600]
+    });
+
+    expect(scheduled.state.lineages[0].next_at).toBe(1000 + 120_000);
   });
 });

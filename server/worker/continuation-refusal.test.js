@@ -28,8 +28,20 @@ describe('continuationRefusalClass (2026-10-01 stall-reconcile D1)', () => {
 
 describe('autoResumeRetryDelayMs (D2)', () => {
   test('waits five, fifteen and thirty minutes, then an hour from then on', () => {
-    const delays = [1, 2, 3, 4, 9].map(autoResumeRetryDelayMs);
+    const delays = [1, 2, 3, 4, 9].map((count) =>
+      autoResumeRetryDelayMs(count)
+    );
 
     expect(delays.map((ms) => ms / 60_000)).toEqual([5, 15, 30, 60, 60]);
+  });
+
+  test('follows the ladder the caller passes', () => {
+    const ladder_ms = [60_000, 120_000, 180_000, 240_000];
+
+    const delays = [1, 2, 3, 4, 9].map((count) =>
+      autoResumeRetryDelayMs(count, ladder_ms)
+    );
+
+    expect(delays.map((ms) => ms / 60_000)).toEqual([1, 2, 3, 4, 4]);
   });
 });

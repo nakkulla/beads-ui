@@ -1,5 +1,9 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { isExternalWaitObservation } from '../../app/protocol.js';
+import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../timing-settings.js';
 import { createWaitJudge, projectExternalWait } from './attach.js';
 import {
   WAIT_THRESHOLDS,
@@ -842,6 +846,31 @@ describe('wait judgment external work', () => {
     });
 
     expect(result.wait_reasons[0].verdict).toBe(verdict);
+  });
+
+  describe('with the observation interval settings changed', () => {
+    afterEach(() => {
+      __resetTimingSettingsForTest();
+    });
+
+    test.each([
+      [120000, 'normal'],
+      [120001, 'overdue']
+    ])('judges two overridden Slurm intervals at %i ms', (age, verdict) => {
+      __setTimingOverridesForTest({
+        external_wait_slurm_interval_seconds: 60
+      });
+
+      const result = run({
+        external_waits: [
+          external({
+            next_observation_at: new Date(NOW - Number(age)).toISOString()
+          })
+        ]
+      });
+
+      expect(result.wait_reasons[0].verdict).toBe(verdict);
+    });
   });
 
   test('marks three observation errors overdue and preserves the error line', () => {

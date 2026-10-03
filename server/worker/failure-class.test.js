@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../timing-settings.js';
+import {
   RETRY_DELAYS_MS,
   RETRY_MAX,
   causeKey,
@@ -251,6 +255,21 @@ describe('worker failure classification table', () => {
 
     expect(env.retry).toEqual({ max: RETRY_MAX, delays_ms: RETRY_DELAYS_MS });
     expect(individual.retry).toBeNull();
+  });
+
+  test('attaches the env ladder in effect at classification time', () => {
+    __setTimingOverridesForTest({
+      env_retry_delays_seconds: [600, 900, 1800]
+    });
+
+    const env = classifyFailure(input({ cause: 'verify_cmd_spawn_error' }));
+
+    __resetTimingSettingsForTest();
+
+    expect(env.retry).toEqual({
+      max: RETRY_MAX,
+      delays_ms: [600_000, 900_000, 1_800_000]
+    });
   });
 
   test('fails only the attempt on a bypassed prevention layer', () => {

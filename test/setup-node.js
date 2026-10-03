@@ -29,8 +29,21 @@ const ABSENT_CONFIG = path.join(
   'config.toml'
 );
 
+/**
+ * The same isolation for the operator's state directory. The server-global
+ * timing settings (`server/timing-settings.js`) are read by the scheduler,
+ * retry, poller, and merge-queue code every suite exercises, so a value the
+ * operator changed in `~/.local/state/bdui/timing-settings.json` would make a
+ * test that assumes the defaults fail on that machine. A suite that arms its
+ * own `XDG_STATE_HOME` keeps it; only an unset variable is pointed here.
+ */
+const ABSENT_STATE_HOME = path.join(os.tmpdir(), 'bdui-test-no-state');
+
 function isolateConfigPath() {
   process.env.BDUI_CONFIG_PATH = ABSENT_CONFIG;
+  if (!process.env.XDG_STATE_HOME) {
+    process.env.XDG_STATE_HOME = ABSENT_STATE_HOME;
+  }
 }
 
 isolateConfigPath();

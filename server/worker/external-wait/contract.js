@@ -20,6 +20,22 @@ export const OBSERVATION = Object.freeze({
   error_backoff_seconds: Object.freeze([60, 120, 300, 900])
 });
 
+/**
+ * Contract copy of `external_wait.observation.interval_policy`: the two
+ * interval values above are defaults, and only the named override fields may be
+ * replaced by the beads-ui server-global timing settings. Error backoff is not
+ * an override field.
+ */
+export const INTERVAL_POLICY = Object.freeze({
+  values: 'defaults',
+  override_owner: 'beads_ui_worker',
+  override_source: 'server_global_timing_settings',
+  override_fields: Object.freeze([
+    'slurm_interval_seconds',
+    'process_interval_seconds'
+  ])
+});
+
 /** Supported external job observation adapters. */
 export const ADAPTERS = Object.freeze(['slurm', 'process']);
 

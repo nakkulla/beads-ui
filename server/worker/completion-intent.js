@@ -15,9 +15,13 @@ import {
   FAILURE_SENTENCES,
   RECOVERY_WAIT_SENTENCES
 } from '../../app/utils/failure-sentences.js';
+import { timingLadder } from '../timing-settings.js';
 import { scriptSummary } from './failure-class.js';
 import { commentHeading, logRow, summaryRow } from './failure-comment.js';
-import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
+import {
+  RESOLUTION_ROUND_CAP,
+  resolutionWaitSettingMs
+} from './merge-queue.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
   COMPLETION_RETRY_MAX
@@ -198,6 +202,18 @@ export function createCompletionFailureKey(input) {
  * @type {number[]}
  */
 export const COMPLETION_RETRY_DELAYS_MS = [60_000, 300_000, 900_000];
+
+/**
+ * The delay before re-run number `attempts`, from the server-global timing
+ * setting `completion_retry_delays_seconds` (UI-ny0h) read at scheduling time.
+ * {@link COMPLETION_RETRY_DELAYS_MS} is that setting's default.
+ *
+ * @param {number} attempts
+ * @returns {number}
+ */
+function completionRetryDelayMs(attempts) {
+  return timingLadder('completion_retry_delays_seconds')[attempts] * 1000;
+}
 
 /**
  * The §3 policy table: which class of automatic resolution — if any — owns a
@@ -1327,7 +1343,7 @@ export function createCompletionActionDriver(deps) {
       op,
       resolution_attempt_id,
       resolution_rounds,
-      wait_ms: RESOLUTION_WAIT_MS
+      wait_ms: resolutionWaitSettingMs()
     });
     if (!adopted.ok) {
       return false;
@@ -1806,7 +1822,7 @@ export function createCompletionActionDriver(deps) {
             now() +
             (VERIFY_ENV_REASONS.has(reason)
               ? 300_000
-              : COMPLETION_RETRY_DELAYS_MS[attempts]),
+              : completionRetryDelayMs(attempts)),
           last_error: reason,
           op: carried
             ? carried.op
@@ -2270,7 +2286,7 @@ export function createCompletionActionDriver(deps) {
         attempts,
         next_at:
           attempts < COMPLETION_RETRY_MAX
-            ? now() + COMPLETION_RETRY_DELAYS_MS[attempts]
+            ? now() + completionRetryDelayMs(attempts)
             : null,
         last_error: null
       },

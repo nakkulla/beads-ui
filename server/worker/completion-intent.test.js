@@ -4,6 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../timing-settings.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import {
   COMPLETION_RETRY_DELAYS_MS,
@@ -555,6 +559,7 @@ function intent(patch = {}) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  __resetTimingSettingsForTest();
   // Only the timeline tests set it; deleting it unconditionally keeps a failed
   // one from leaking a temp state root into the rest of the file.
   delete process.env.XDG_STATE_HOME;
@@ -2829,6 +2834,44 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
     });
   });
 
+  test('arms the first retry at the completion ladder setting', async () => {
+    __setTimingOverridesForTest({
+      completion_retry_delays_seconds: [180, 600, 1200]
+    });
+    const store = seededCompletionStore();
+    const driver = settleDriver(store, { now: () => 10_000 });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'completion_gate_spawn_failed' },
+      current
+    );
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root'].auto_resolution
+    ).toMatchObject({ attempts: 0, next_at: 10_000 + 180_000 });
+  });
+
+  test('keeps the verify-environment wait at five minutes whatever the ladder says', async () => {
+    __setTimingOverridesForTest({
+      completion_retry_delays_seconds: [180, 600, 1200]
+    });
+    const store = seededCompletionStore();
+    const driver = settleDriver(store, { now: () => 10_000 });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'verify_cmd_timeout' },
+      current
+    );
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root'].auto_resolution
+    ).toMatchObject({ next_at: 10_000 + 300_000 });
+  });
+
   test('clears the retry once the gate produces a verdict', async () => {
     const store = seededCompletionStore();
     const completionGate = vi.fn(async () => redGate());
@@ -2848,6 +2891,33 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
     expect(
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({ phase: 'holding', auto_resolution: null });
+  });
+
+  test('widens a later retry by the completion ladder setting', async () => {
+    __setTimingOverridesForTest({
+      completion_retry_delays_seconds: [180, 600, 1200]
+    });
+    const store = seededCompletionStore();
+    const completionGate = vi.fn(async () => ({
+      ok: false,
+      reason: 'completion_gate_spawn_failed'
+    }));
+    const driver = settleDriver(store, {
+      prActions: { completionGate },
+      now: () => 10_000
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'completion_gate_spawn_failed' },
+      current
+    );
+    await driver.onAction('UI-root', { kind: 'retry_failed_op' }, current);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root'].auto_resolution
+    ).toMatchObject({ attempts: 1, next_at: 10_000 + 600_000 });
   });
 
   test('spends the budget and widens the delay when a retry fails again', async () => {

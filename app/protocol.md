@@ -1457,6 +1457,46 @@ pricing ignore it. State lives in `$XDG_STATE_HOME/bdui/model-visibility.json`.
   - `runner_all_disabled` — every model of one runner would be disabled.
   - `internal_error` — the file could not be written.
 
+## Timing settings channel
+
+Server-global wait, observation, retry, and refresh durations (UI-ny0h §3). One
+value per key applies to the whole server; there are no per-repository values.
+State lives in `$XDG_STATE_HOME/bdui/timing-settings.json` as
+`{ revision, overrides }` and `overrides` holds only the keys a person changed,
+so a code default that moves later still reaches every unchanged key. All values
+are integer seconds; the field `unit` (`seconds` or `minutes`) only drives
+display, and a `minutes` key must be a multiple of 60.
+
+- `subscribe-timing-settings` `{ id? }` → `ok { id }`, then an immediate
+  `timing-settings-snapshot`. `unsubscribe-timing-settings` `{ id? }` →
+  `ok { id, unsubscribed }`. Closing the connection drops its subscription.
+- `timing-settings-snapshot` payload:
+  `{ type, id, revision, values, overrides, fields }`. `values` is the effective
+  value per key (override over default), `overrides` is the changed keys only,
+  and `fields` is the server table per key:
+  `{ default, min, max, unit, rungs?, off_value? }`. `rungs` is present for a
+  ladder key (its value is an integer array of that length that never decreases)
+  and `off_value` only for a key with an off value (a value equal to it skips
+  the `min`/`max` check and reads as off). The server table owns the ranges;
+  clients do not copy them.
+- `timing-settings-set` `{ expected_revision, values }` where `values` maps a
+  key to an integer, an integer array (ladder), or `null` (clear that override).
+  The whole request is validated first; one bad key writes nothing. The reply is
+  `ok { ok, code?, key?, message?, snapshot }`:
+  - success: `ok: true` and the new `snapshot`, then the new snapshot is pushed
+    to every subscriber.
+  - `ok: false, code: 'conflict'` — `expected_revision` is not the current
+    revision; `snapshot` is the latest.
+  - `ok: false, code: 'invalid_value'` — a key is unknown, out of range, not a
+    minute multiple, a ladder of the wrong length, or a shrinking ladder; `key`
+    names it and `message` says why.
+  - an `internal_error` error reply — the file could not be written.
+- Consumers read the effective value at the moment they compute a time. An
+  already recorded retry `next_at`, provider `next_probe_at`, external-wait
+  `next_observation_at`, or merge-queue deadline is never rewritten. Periodic
+  pollers (PR polling, list refresh, monitor refresh) re-arm at once; a list
+  refresh value of 0 turns it off.
+
 ## ADR channel (UI-8uz7 §6)
 
 `subscribe-adr` / `unsubscribe-adr` (reply `ok` with `{ id }`) open and close a

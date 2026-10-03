@@ -10,6 +10,11 @@ import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
+import {
+  createTimingSettingsStore,
+  isTimingSnapshot,
+  queueGraceSecondsOf
+} from './data/timing-settings-store.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
 import { createHashRouter } from './router.js';
 import { createStore } from './state.js';
@@ -32,6 +37,7 @@ import { createNewIssueDialog } from './views/new-issue-dialog.js';
 import { createSettingsDialog } from './views/settings-dialog/index.js';
 import { createUsageMeter } from './views/usage-meter.js';
 import { createWorkerView } from './views/worker.js';
+import { bindQueueGraceSource } from './views/worker/lane-model.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
 
@@ -123,6 +129,9 @@ const EXEC_PRESETS_CLIENT_ID = 'exec:presets';
 
 /** Client id for the singleton server-global model-visibility subscription. */
 const MODEL_VISIBILITY_CLIENT_ID = 'model-visibility';
+
+/** Client id for the singleton server-global timing-settings subscription. */
+const TIMING_SETTINGS_CLIENT_ID = 'timing-settings';
 
 /**
  * Publish the sticky header's measured height as `--app-header-h`.
@@ -320,6 +329,10 @@ export function bootstrap(root_element) {
     const display_policy_store = createDisplayPolicyStore();
     const exec_preset_store = createExecPresetStore();
     const model_visibility_store = createModelVisibilityStore();
+    const timing_settings_store = createTimingSettingsStore();
+    // Worker 탭의 유예 남은 초는 서버가 쓰는 값을 따른다 (UI-ny0h §3.5); 값이
+    // 아직 없으면 lane-model의 20초 대체값이 남는다.
+    bindQueueGraceSource(() => queueGraceSecondsOf(timing_settings_store));
     const session_log_store = createSessionLogStore();
     const adr_store = createAdrStore();
 
@@ -353,6 +366,19 @@ export function bootstrap(root_element) {
           revision: snapshot.revision,
           disabled_models: snapshot.disabled_models,
           runners: snapshot.runners
+        });
+      }
+    });
+
+    // 타이밍 설정 채널(UI-ny0h §3.4)의 push. 서버 전역이라 워크스페이스 전환에도
+    // 비우지 않고, 스냅샷을 통째로 교체한다.
+    client.on('timing-settings-snapshot', (payload) => {
+      if (isTimingSnapshot(payload)) {
+        timing_settings_store.set({
+          revision: payload.revision,
+          values: payload.values,
+          overrides: payload.overrides,
+          fields: payload.fields
         });
       }
     });
@@ -977,6 +1003,25 @@ export function bootstrap(root_element) {
       });
     }
 
+    // --- Timing-settings subscription lifecycle (server-global singleton) ---
+    let timing_settings_subscribed = false;
+
+    function subscribeTimingSettings() {
+      if (timing_settings_subscribed) {
+        return;
+      }
+      timing_settings_subscribed = true;
+      void tracked_send('subscribe-timing-settings', {
+        id: TIMING_SETTINGS_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-timing-settings failed: %o', err);
+        // 구독에 실패하면(구 서버 등) 값 없음으로 두어 각 화면이 기본값으로 읽게
+        // 하고, 다음 재연결이 다시 구독하도록 플래그를 푼다.
+        timing_settings_store.clear();
+        timing_settings_subscribed = false;
+      });
+    }
+
     /**
      * Re-establish the per-workspace push subscriptions on a NEW socket after a
      * reconnect.
@@ -1004,6 +1049,7 @@ export function bootstrap(root_element) {
       // The last snapshot stays: filtering by it until the new one lands beats
       // flashing every hidden model back into the selectors.
       model_visibility_subscribed = false;
+      timing_settings_subscribed = false;
       worker_queue_unsub = null;
       worker_queue_recovering = false;
       monitor_pipeline_unsub = null;
@@ -1013,6 +1059,7 @@ export function bootstrap(root_element) {
       sub_generation.worker += 1;
       subscribeExecPresets();
       subscribeModelVisibility();
+      subscribeTimingSettings();
       const selected = store.getState().workspace.current?.path;
       if (selected) {
         try {
@@ -1501,6 +1548,7 @@ export function bootstrap(root_element) {
       queueStore: worker_queue_store,
       implPresetStore: exec_preset_store,
       modelVisibilityStore: model_visibility_store,
+      timingSettingsStore: timing_settings_store,
       transport: (type, payload) => tracked_send(type, payload),
       // 모니터 탭에서 연 헤더 ⚙의 일괄 모드는 보이는 저장소 행을 대상으로 쓴다
       // (UI-nu43 §4.1). 레포 카드 ⚙도 같은 창을 `scope: 'repo'`로 열므로 일괄
@@ -1617,6 +1665,7 @@ export function bootstrap(root_element) {
       // 저장소 하나를 읽는다 (UI-wg68 §3.1).
       execPresetStore: exec_preset_store,
       modelVisibilityStore: model_visibility_store,
+      timingSettingsStore: timing_settings_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
       getWorkspacePath: () => store.getState().workspace.current?.path,
       // blocked 칩이 타 레포 blocker를 열 때 쓰는 전환 경로 (UI-u6zf §5.3) —
@@ -1646,6 +1695,7 @@ export function bootstrap(root_element) {
       pipelineStore: monitor_pipeline_store,
       execPresetStore: exec_preset_store,
       modelVisibilityStore: model_visibility_store,
+      timingSettingsStore: timing_settings_store,
       // 실행 타일의 `▤ 세션`은 Worker 탭과 같은 드로어·같은 라인 스토어를 쓴다
       // (UI-eey2 §7); `root_dir`만 더 실어 다른 레포의 세션도 연다.
       sessionLogStore: session_log_store,
@@ -1844,6 +1894,7 @@ export function bootstrap(root_element) {
     subscribeDisplayPolicy();
     subscribeExecPresets();
     subscribeModelVisibility();
+    subscribeTimingSettings();
 
     // Load workspaces after startup subscriptions can safely resubscribe.
     void loadWorkspaces().finally(() => {
