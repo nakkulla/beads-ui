@@ -859,6 +859,10 @@ export function createPrPoller(deps) {
      * turn into `gh` traffic.
      */
     start() {
+      if (!fixed_interval) {
+        // A change made while stopped (or before the first start) still lands.
+        poller.setIntervalSeconds(timingSeconds('pr_poll_interval_seconds'));
+      }
       poller.start();
       if (!fixed_interval && !off_timing_changed) {
         // A settings change re-arms the running interval at once (UI-ny0h §3.3).

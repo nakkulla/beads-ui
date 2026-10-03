@@ -1665,6 +1665,7 @@ export function bootstrap(root_element) {
       // 저장소 하나를 읽는다 (UI-wg68 §3.1).
       execPresetStore: exec_preset_store,
       modelVisibilityStore: model_visibility_store,
+      timingSettingsStore: timing_settings_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
       getWorkspacePath: () => store.getState().workspace.current?.path,
       // blocked 칩이 타 레포 blocker를 열 때 쓰는 전환 경로 (UI-u6zf §5.3) —
@@ -1694,6 +1695,7 @@ export function bootstrap(root_element) {
       pipelineStore: monitor_pipeline_store,
       execPresetStore: exec_preset_store,
       modelVisibilityStore: model_visibility_store,
+      timingSettingsStore: timing_settings_store,
       // 실행 타일의 `▤ 세션`은 Worker 탭과 같은 드로어·같은 라인 스토어를 쓴다
       // (UI-eey2 §7); `root_dir`만 더 실어 다른 레포의 세션도 연다.
       sessionLogStore: session_log_store,

@@ -62,7 +62,11 @@ import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
-import { timingLadder, timingSeconds } from '../timing-settings.js';
+import {
+  onTimingSettingsChanged,
+  timingLadder,
+  timingSeconds
+} from '../timing-settings.js';
 import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
@@ -186,6 +190,18 @@ export const LIVE_PREEMPT_POLL_MS = 60_000;
  */
 function queueGraceMs() {
   return timingSeconds('queue_grace_seconds') * 1000;
+}
+
+/**
+ * How long a `[지금 시작]` request stays live, in ms: one whole grace, but never
+ * shorter than the default grace. The request also carries the provider-hold
+ * bypass that an async pass re-checks, so a grace set to 0 must not expire it
+ * before that pass reads it.
+ *
+ * @returns {number}
+ */
+function startNowLifetimeMs() {
+  return Math.max(queueGraceMs(), QUEUE_GRACE_MS);
 }
 /** @type {Set<string>} */
 const resume_in_flight = new Set();
@@ -986,7 +1002,7 @@ export function requestStartNow(workspace, bead_id, at) {
     by_bead = fresh;
   }
   for (const [id, requested_at] of by_bead) {
-    if (requested_at + queueGraceMs() < at) {
+    if (requested_at + startNowLifetimeMs() < at) {
       by_bead.delete(id);
     }
   }
@@ -995,7 +1011,7 @@ export function requestStartNow(workspace, bead_id, at) {
 
 /**
  * The click time of a live `[지금 시작]` request, or null. A request older than
- * one whole grace can no longer exempt anything — the row it named either
+ * its lifetime (`startNowLifetimeMs`) can no longer exempt anything — the row it named either
  * dispatched or outlived its own grace — so it is dropped on read.
  *
  * @param {string} workspace
@@ -1012,7 +1028,7 @@ function startNowRequestedAt(workspace, bead_id, at) {
   if (typeof requested_at !== 'number') {
     return null;
   }
-  if (requested_at + queueGraceMs() < at) {
+  if (requested_at + startNowLifetimeMs() < at) {
     by_bead.delete(bead_id);
     return null;
   }
@@ -16810,6 +16826,29 @@ export function createScheduler(deps) {
   const grace_timers = new Map();
 
   /**
+   * Every workspace whose grace wake-up this scheduler has armed, so a grace
+   * setting change can re-arm each of them.
+   *
+   * @type {Set<string>}
+   */
+  const grace_workspaces = new Set();
+
+  // A queue grace change reaches rows already waiting (UI-ny0h §3.3): the
+  // judgment reads the setting each time, so one pass per workspace dispatches
+  // a row whose grace the new value already ended and re-arms the wake-up for
+  // the rest (the pass's drain re-arms it on the way out).
+  onTimingSettingsChanged((snapshot, previous) => {
+    if (snapshot.values.queue_grace_seconds === previous.queue_grace_seconds) {
+      return;
+    }
+    for (const workspace of grace_workspaces) {
+      tick(workspace).catch((err) => {
+        log('grace re-judgment failed for %s: %o', workspace, err);
+      });
+    }
+  });
+
+  /**
    * @param {string} workspace
    */
   function clearGraceTimer(workspace) {
@@ -16863,6 +16902,7 @@ export function createScheduler(deps) {
    * @param {string} workspace
    */
   function armGraceTimer(workspace) {
+    grace_workspaces.add(workspace);
     clearGraceTimer(workspace);
     /** @type {any} */
     let q;

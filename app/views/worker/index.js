@@ -496,7 +496,7 @@ const WORKER_CLIENT_IDS = [
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, execPresetStore?: any, modelVisibilityStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void, onNewIssue?: () => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, execPresetStore?: any, modelVisibilityStore?: any, timingSettingsStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void, onNewIssue?: () => void }} [options]
  * @returns {{ load: () => void, pause: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -547,6 +547,7 @@ export function createWorkerView(mount_element, options = {}) {
     sessionLogStore,
     execPresetStore,
     modelVisibilityStore,
+    timingSettingsStore,
     gotoIssue,
     getWorkspacePath,
     switchWorkspace,
@@ -4167,6 +4168,14 @@ export function createWorkerView(mount_element, options = {}) {
     typeof modelVisibilityStore.subscribe === 'function'
   ) {
     unsubscribers.push(modelVisibilityStore.subscribe(() => doRender()));
+  }
+  // 유예 남은 초와 유예 타이머는 서버 전역 queue_grace_seconds를 읽으므로 그
+  // 값이 바뀌면 다시 그린다 (UI-ny0h §3.5).
+  if (
+    timingSettingsStore &&
+    typeof timingSettingsStore.subscribe === 'function'
+  ) {
+    unsubscribers.push(timingSettingsStore.subscribe(() => doRender()));
   }
   if (queueStore) {
     unsubscribers.push(

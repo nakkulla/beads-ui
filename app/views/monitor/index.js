@@ -394,6 +394,8 @@ export const MONITOR_PIPELINE_KEY = 'tab:monitor:pipeline';
  * @property {any} [execPresetStore]
  * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [modelVisibilityStore] - Server-global
  * model visibility the provider-resume selector filters its models by.
+ * @property {{ subscribe?: (fn: () => void) => () => void }} [timingSettingsStore] - Server-global
+ * timing settings; a change redraws the queue grace countdown.
  * @property {(root_dir: string) => void} [openRepoSettings] - 레포 카드 `⚙`가
  * 여는 설정 다이얼로그 (UI-e1ta §7).
  * @property {() => void} [closeRepoSettings]
@@ -660,6 +662,8 @@ export function createMonitorView(mount_element, options) {
   let unsubscribe_presets = null;
   /** @type {(() => void) | null} */
   let unsubscribe_model_visibility = null;
+  /** @type {(() => void) | null} */
+  let unsubscribe_timing_settings = null;
   /**
    * The 1s time-text ticker while the tab is loaded (UI-yu2o): it rewrites the
    * `[data-ts]` text only and never renders.
@@ -3706,6 +3710,17 @@ export function createMonitorView(mount_element, options) {
       }
     });
   }
+  // 유예 남은 초와 경계 타이머는 서버 전역 queue_grace_seconds를 읽으므로 그 값이
+  // 바뀌면 다시 그린다 (UI-ny0h §3.5).
+  if (typeof options.timingSettingsStore?.subscribe === 'function') {
+    unsubscribe_timing_settings = options.timingSettingsStore.subscribe(() => {
+      try {
+        doRender();
+      } catch {
+        // ignore
+      }
+    });
+  }
   // 공급자 재개 선택기의 모델 목록은 서버 전역 활성 모델을 읽는다 (UI-ooc0 §4.2).
   if (typeof options.modelVisibilityStore?.subscribe === 'function') {
     unsubscribe_model_visibility = options.modelVisibilityStore.subscribe(
@@ -3766,6 +3781,10 @@ export function createMonitorView(mount_element, options) {
       if (unsubscribe_model_visibility) {
         unsubscribe_model_visibility();
         unsubscribe_model_visibility = null;
+      }
+      if (unsubscribe_timing_settings) {
+        unsubscribe_timing_settings();
+        unsubscribe_timing_settings = null;
       }
       if (unsubscribe_viewport) {
         unsubscribe_viewport();

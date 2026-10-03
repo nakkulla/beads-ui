@@ -26456,6 +26456,37 @@ describe('대기 진입 유예 (§3.3)', () => {
     expect(env.scheduler.isRunning('G7')).toBe(true);
   });
 
+  test('moves the grace wake-up when the grace setting shrinks', async () => {
+    vi.useFakeTimers();
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { GD: {} } });
+    seedQueue(env.store, ['GD']);
+    await env.scheduler.tick(WS);
+    clock.at = 2000;
+
+    __setTimingOverridesForTest({ queue_grace_seconds: 0 });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(env.scheduler.isRunning('GD')).toBe(true);
+  });
+
+  test('keeps a `[지금 시작]` request live past a zero grace', async () => {
+    __setTimingOverridesForTest({ queue_grace_seconds: 0 });
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { GE: {} } });
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'GE',
+      lane: 's1'
+    });
+    requestStartNow(WS, 'GE', clock.at);
+    clock.at += 1;
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('GE')).toBe(true);
+  });
+
   test('dispatches the same bead one grace later', async () => {
     const clock = { at: 1000 };
     const env = graceEnv({ clock, config: { G2: {} } });

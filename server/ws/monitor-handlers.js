@@ -1447,6 +1447,8 @@ export function createRunnableRefreshDriver(options = {}) {
             /** @type {number} */ (snapshot.values.list_poll_interval_seconds)
           );
         });
+        // A change made while stopped (or before the first start) still lands.
+        poller.setIntervalSeconds(timingSeconds('list_poll_interval_seconds'));
       }
       poller.start();
     },

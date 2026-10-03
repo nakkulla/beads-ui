@@ -108,7 +108,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
   단계 전환이 아니라 **새 assistant 메시지** 단위로 처리한다: 매 pass(`INTERACTIVE_RECONCILE_INTERVAL_SECONDS`, 현재 30초) 전사 끝(현재 64KB)에서
   마지막 assistant 메시지와 그 식별자(메시지 시각, 없으면 전사 mtime)를 읽고, 기동 뒤이면서
   마지막 처리 식별자보다 새 메시지이고 단계가 `running`이 아니면 한 번 처리한다. 관측 사이에
-  시작하고 끝난 턴도 잡힌다. 처리한 식별자와 발췌(400자)는 같은 레코드 쓰기에 남는다.
+  시작하고 끝난 턴도 잡힌다. 처리한 식별자와 발췌(`PROGRESS_EXCERPT_MAX_CHARS`, 현재 400자)는 같은 레코드 쓰기에 남는다.
 - 첫 줄이 `인계 ·`·`인수 ·`·`보류 ·`로 시작하면 결과 줄이고, 그 밖은 답 대기다.
 
   | 대화 레코드 상태 | verdict | 카드 조작 |
@@ -195,8 +195,8 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
 단계 관측
 
 - `interactive_sessions` 레코드는 `turn_state`(`running`·`question`·`limit`·`idle`·`null`),
-  `turn_state_since`, `last_message`(`{ text, at }`, 마지막 assistant 메시지 첫 줄 ≤160자; 대화
-  레코드는 자르지 않은 첫 줄·400자 발췌·전사 mtime을 더 싣는다), `last_message_read_at`을 갖는다.
+  `turn_state_since`, `last_message`(`{ text, at }`, 마지막 assistant 메시지 첫 줄, `PROGRESS_MESSAGE_MAX_CHARS`(현재 160자) 이하; 대화
+  레코드는 자르지 않은 첫 줄·`PROGRESS_EXCERPT_MAX_CHARS`(현재 400자) 발췌·전사 mtime을 더 싣는다), `last_message_read_at`을 갖는다.
   reconcile pass가 `listPanesExtended` 포맷에 실린 `@agent_running`·`@agent_attention`으로 단계를
   정하고(`1` → `running`; `question`·`plan` → `question`; `limit` → `limit`; 그 밖·둘 다 비어
   있음 → `idle`), 값이 바뀔 때만 `turn_state_since`를 쓴다. `null`은 첫 관측 전 레코드뿐이다.

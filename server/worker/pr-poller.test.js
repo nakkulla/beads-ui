@@ -504,6 +504,18 @@ describe('worker/pr-poller — interval timing setting (UI-ny0h)', () => {
     poller.stop();
   });
 
+  test('arms the interval a setting changed while stopped', async () => {
+    vi.useFakeTimers();
+    const { poller, prDetail } = makePoller({ timing_interval: true });
+    __setTimingOverridesForTest({ pr_poll_interval_seconds: 15 });
+    poller.start();
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(prDetail).toHaveBeenCalled();
+    poller.stop();
+  });
+
   test('arms the default interval from the setting at start', async () => {
     vi.useFakeTimers();
     __setTimingOverridesForTest({ pr_poll_interval_seconds: 20 });
