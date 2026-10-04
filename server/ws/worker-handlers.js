@@ -1654,7 +1654,15 @@ function titleCacheHandle() {
     TITLE_FILL_WIRED.add(cache);
     cache.setOnFilled((workspace) => {
       try {
-        fanout(workspace, queueStore().snapshot(workspace));
+        const store = queueStore();
+        let queue = store.snapshot(workspace);
+        for (const lane of queue.serial_lanes) {
+          queue = store.recalibrateSerialLane(workspace, {
+            lane: lane.id,
+            blocks_edges: laneBlocksEdges(workspace, queue, lane.id, [])
+          }).queue;
+        }
+        fanout(workspace, queue);
       } catch (err) {
         log('title fill fanout failed for %s: %o', workspace, err);
       }

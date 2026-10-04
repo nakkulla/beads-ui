@@ -7,6 +7,7 @@ import {
   getWorkerRuntime
 } from '../worker/runtime.js';
 import {
+  laneBlocksEdges,
   onWorkerSnapshotRefresh,
   recalibrateSerialLaneAfterDepAdd
 } from './worker-handlers.js';
@@ -38,6 +39,82 @@ afterEach(() => {
   __resetWorkerRuntimeForTest();
   delete process.env.XDG_STATE_HOME;
   fs.rmSync(tmp_state, { recursive: true, force: true });
+});
+
+test('reorders a serial lane when a title-cache fill reveals a new blocker', () => {
+  const runtime = getWorkerRuntime();
+  runtime.titleCache.refreshFromIssue(WS, { id: 'A', title: 'A' });
+  runtime.titleCache.refreshFromIssue(WS, { id: 'B', title: 'B' });
+  const revision = runtime.queueStore.place(WS, {
+    expected_revision: 0,
+    bead_id: 'A',
+    lane: 's1'
+  }).queue.revision;
+  const queue = runtime.queueStore.place(WS, {
+    expected_revision: revision,
+    bead_id: 'B',
+    lane: 's1',
+    blocks_edges: laneBlocksEdges(
+      WS,
+      runtime.queueStore.snapshot(WS),
+      's1',
+      'B'
+    )
+  }).queue;
+  /** @type {string[][]} */
+  const published_orders = [];
+  const unsubscribe = onWorkerSnapshotRefresh((workspace) => {
+    published_orders.push(
+      runtime.queueStore
+        .snapshot(workspace)
+        .serial_lanes[0].entries.map((entry) => entry.bead_id)
+    );
+  });
+
+  runtime.titleCache.refreshFromIssue(WS, issueWithBlocker('A', 'B'));
+  unsubscribe();
+
+  expect(queue.serial_lanes[0].entries.map((entry) => entry.bead_id)).toEqual([
+    'A',
+    'B'
+  ]);
+  expect(
+    runtime.queueStore
+      .snapshot(WS)
+      .serial_lanes[0].entries.map((entry) => entry.bead_id)
+  ).toEqual(['B', 'A']);
+  expect(published_orders).toEqual([['B', 'A']]);
+});
+
+test('preserves the queue revision when a title-cache fill keeps the lane order', () => {
+  const runtime = getWorkerRuntime();
+  runtime.titleCache.refreshFromIssue(WS, { id: 'A', title: 'A' });
+  runtime.titleCache.refreshFromIssue(WS, { id: 'B', title: 'B' });
+  const revision = runtime.queueStore.place(WS, {
+    expected_revision: 0,
+    bead_id: 'B',
+    lane: 's1'
+  }).queue.revision;
+  const queue = runtime.queueStore.place(WS, {
+    expected_revision: revision,
+    bead_id: 'A',
+    lane: 's1',
+    blocks_edges: laneBlocksEdges(
+      WS,
+      runtime.queueStore.snapshot(WS),
+      's1',
+      'A'
+    )
+  }).queue;
+
+  runtime.titleCache.refreshFromIssue(WS, issueWithBlocker('A', 'B'));
+
+  expect(runtime.queueStore.snapshot(WS).revision).toBe(queue.revision);
+  expect(
+    runtime.queueStore
+      .snapshot(WS)
+      .serial_lanes[0].entries.map((entry) => entry.bead_id)
+  ).toEqual(['B', 'A']);
 });
 
 test('recalibrates and publishes a reverse edge within one lane', () => {
