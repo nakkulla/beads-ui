@@ -418,6 +418,32 @@ describe('runner/provider-outage recovery wait classification', () => {
 });
 
 describe('runner/provider-outage stderr classification', () => {
+  test.each([
+    "Error: Account-4 (held@example.com)'s session login is not valid — run `cswap session login 4`.",
+    "Error: Account-4 (held@example.com)'s session login has not finished — run `cswap session login 4` or `cswap session logout 4`.",
+    'Error: Session profile for Account-4 (held@example.com) failed validation. Log in with that account.'
+  ])('classifies a stderr-only cswap credential failure: %s', (message) => {
+    const stderr_tail = `starting session\n${message}\n`;
+
+    const result = classifyProviderOutage({ raw: [], stderr_tail });
+
+    expect(result).toEqual({
+      detail: 'credential',
+      scope: 'account',
+      message,
+      resets_at: null
+    });
+  });
+
+  test('leaves an unverifiable cswap profile on the environment failure path', () => {
+    const stderr_tail =
+      'Error: Session profile for Account-4 (held@example.com) could not be verified: `claude auth status` did not run. The profile is left in place — check that `claude` is on PATH, then retry.';
+
+    const result = classifyProviderOutage({ raw: [], stderr_tail });
+
+    expect(result).toBeNull();
+  });
+
   test('classifies a stderr-only 529 line as overloaded', () => {
     const stderr_tail = 'retrying\nAPI Error: 529';
 

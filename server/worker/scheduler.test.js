@@ -7123,6 +7123,59 @@ describe('scheduler provider hold and recovery', () => {
     }
   );
 
+  test('holds a stderr-only cswap login refusal on its account without scheduling retries', async () => {
+    const message =
+      "Error: Account-4 (held@example.com)'s session login is not valid — run `cswap session login 4`.";
+    const providerHealth = { sync: vi.fn() };
+    const env = setup({
+      config: { B1: { claude_account: 'held@example.com' } },
+      providerHealth,
+      ...accountDeps({
+        accountCatalog: {
+          ...accountDeps().accountCatalog,
+          readClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { email, status: 'ok', windows: [] }
+          }))
+        }
+      })
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    const log_path = path.join(tmp_state, `${attempt_id}.jsonl`);
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { log_path }
+    });
+    fs.writeFileSync(stderrPathOf(log_path), message);
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'no_result',
+      raw: []
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.attempts[attempt_id]).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:credential',
+      cause_detail: { message }
+    });
+    expect(queue.provider_hold.claude.targets).toMatchObject([
+      {
+        kind: 'outage',
+        detail: 'credential',
+        account: 'held@example.com',
+        last_error: message,
+        attempt_ids: [attempt_id]
+      }
+    ]);
+    expect(queue.lineages).toEqual([]);
+    expect(providerHealth.sync).toHaveBeenCalledWith(WS);
+  });
+
   // RED 14 (spec §5)
   test('moves an inherited account off a window past the preempt threshold', async () => {
     const append = vi.fn();

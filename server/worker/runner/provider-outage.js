@@ -16,6 +16,9 @@ export const LIMIT_RE =
 export const CREDENTIAL_RE =
   /Failed to authenticate|OAuth session expired|could not be refreshed|invalid_grant|401 Unauthorized|Missing bearer/i;
 
+const CSWAP_CREDENTIAL_RE =
+  /\bsession login (?:is not valid|has not finished)\b|\bfailed validation\. Log in with that account\b/i;
+
 const ACCESS_DISABLED_RE = /organization has disabled.*subscription access/i;
 
 /** @type {RegExp} */
@@ -143,7 +146,9 @@ function classifyLines(
   window_rejected = false
 ) {
   const first_line = lines[0] ?? null;
-  const credential_line = matchingLine(lines, CREDENTIAL_RE);
+  const credential_line =
+    matchingLine(lines, CREDENTIAL_RE) ??
+    matchingLine(lines, CSWAP_CREDENTIAL_RE);
   if (
     credential_line !== null &&
     (structured_status === null || structured_status === 401)
