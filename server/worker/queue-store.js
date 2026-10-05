@@ -277,13 +277,15 @@
  * not re-discover an empty `node_modules` with an `npm ls` round trip. Null
  * when the attempt adopted an existing worktree and nothing was installed.
  * @property {ExecPresetRecord|null} [exec_preset] - Observed dispatch preset, independent of workflow receipts.
- * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }|null} quickfix_landing -
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_backup?: { path: string, manifest_sha256: string, file_count: number }, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: { path: string, manifest_sha256: string, file_count: number } } }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
  * contract no-change close (`refuted:`·`no-delta:`) settled without a delta
  * head, `head_sha` is the 40hex bound by
  * `impl_review` (null under `no_change_close`), and `reason` records a landing
- * failure. Its shape is directly
+ * failure. `cleanup_backup` (or `cleanup_detail.backup` on a failed cleanup)
+ * is the receipt of the backup a cleanup made of leftover worktree content
+ * (UI-w2ou §3.4). Its shape is directly
  * consumable by the existing `prWaitProgress` projection.
  * @property {boolean} external_conflict - Whether this resolution attempt was
  * dispatched for an EXTERNAL PR row (UI-w0hi §1) — a bead a normal session

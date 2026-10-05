@@ -17,6 +17,11 @@ import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { runShell } from '../bd.js';
+import {
+  createRecoveryArchive,
+  inventoryDigest,
+  sameInventory
+} from './recovery-archive.js';
 import { prepareWorktreeContainer } from './worktree-container.js';
 
 /**
@@ -66,6 +71,18 @@ import { prepareWorktreeContainer } from './worktree-container.js';
  * @typedef {Object} WorktreePathState
  * @property {string} mode
  * @property {string} oid
+ */
+/**
+ * The receipt of a completed worktree's undelivered-content backup
+ * (UI-w2ou §3.3).
+ *
+ * @typedef {{ path: string, manifest_sha256: string, file_count: number }} WorktreeBackupReceipt
+ */
+/**
+ * @typedef {{ ok: boolean, removed: boolean, reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup: WorktreeBackupReceipt|null }} RemoveCompletedResult
+ */
+/**
+ * @typedef {(input: { archive_id: string, repo: string, worktree: string, branch: string, branch_head_sha: string, delivered_sha: string, inventory: import('./recovery-archive.js').WorktreeInventory }) => { ok: boolean, reason?: string, receipt?: WorktreeBackupReceipt, inventory?: import('./recovery-archive.js').WorktreeInventory }|Promise<{ ok: boolean, reason?: string, receipt?: WorktreeBackupReceipt, inventory?: import('./recovery-archive.js').WorktreeInventory }>} CreateWorktreeArchive
  */
 
 /**
@@ -679,10 +696,12 @@ async function observeStatusDigest(run, fs, wt, identity) {
 /**
  * Create a worktree manager bound to a lock manager.
  *
- * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, npm_runner?: GitRunner, fs?: typeof import('node:fs'), createBranchArchive?: (input: { archive_id: string, repo: string, ref: string, base_oid: string, branch_head_sha: string }) => { ok: boolean, reason?: string }|Promise<{ ok: boolean, reason?: string }> }} deps
+ * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, npm_runner?: GitRunner, fs?: typeof import('node:fs'), createBranchArchive?: (input: { archive_id: string, repo: string, ref: string, base_oid: string, branch_head_sha: string }) => { ok: boolean, reason?: string }|Promise<{ ok: boolean, reason?: string }>, createWorktreeArchive?: CreateWorktreeArchive }} deps
  * `npm_runner` is the dependency installer {@link installDependencies} spawns
  * (spec D3), injectable so a test can exercise the three outcomes without a
- * registry.
+ * registry. `createWorktreeArchive` backs up a completed worktree's
+ * undelivered content before `removeCompleted` deletes it (UI-w2ou); without
+ * it that content still refuses the cleanup.
  * @returns {{
  *   pathFor: (repo: string, bead_id: string) => string,
  *   exists: (repo: string, bead_id: string) => boolean,
@@ -692,7 +711,7 @@ async function observeStatusDigest(run, fs, wt, identity) {
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
  *   observeOwnedByBead: (input: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>,
  *   removeByBranch: (input: { repo: string, branch: string, expected_path?: string|null, expected_head?: string|null, expected_base_oid?: string|null, expected_status_digest?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
- *   removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed: boolean, branch_removed: boolean }>,
+ *   removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<RemoveCompletedResult>,
  *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>,
  *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
  *   removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>,
@@ -708,6 +727,11 @@ export function createWorktreeManager(deps) {
     deps.npm_runner || ((args, options) => runShell('npm', args, options));
   const fs = deps.fs || nodeFs;
   const createBranchArchive = deps.createBranchArchive;
+  const createWorktreeArchive = deps.createWorktreeArchive;
+  // Inventory reads need raw bytes, which the string-decoding `run` cannot
+  // carry; the archive module's own binary-safe reader is the one `create`
+  // records with, so both sides of the comparison read alike.
+  const inventory_reader = createRecoveryArchive();
 
   /**
    * @param {string} repo
@@ -1231,23 +1255,36 @@ export function createWorktreeManager(deps) {
      * against the delivered tree — after a base move that comparison always
      * differs and only ever produced a false refusal (UI-m55x).
      *
+     * Working content the delivered tree does not hold — uncommitted tracked
+     * edits and non-ignored new files — is backed up through
+     * `createWorktreeArchive` and then deleted with the worktree (UI-w2ou).
+     * Nothing is deleted before that backup verified and a raw-byte inventory
+     * taken right before the deletion equals the one its manifest recorded.
+     * Special files and unparseable status still refuse, and without the
+     * backup dependency the content refuses exactly as before. `backup` is
+     * the receipt once one was made, on success and on failure alike.
+     *
      * @param {{ repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }} input
-     * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed: boolean, branch_removed: boolean }>}
+     * @returns {Promise<RemoveCompletedResult>}
      */
     async removeCompleted(input) {
       const release = await locks.topologyLock(input.repo);
       let worktree_removed = false;
       let branch_removed = false;
+      /** @type {WorktreeBackupReceipt|null} */
+      let backup = null;
       /**
        * @param {boolean} ok
        * @param {string|null} [reason]
+       * @returns {RemoveCompletedResult}
        */
       const result = (ok, reason = null) => ({
         ok,
         removed: worktree_removed || branch_removed,
         reason,
         worktree_removed,
-        branch_removed
+        branch_removed,
+        backup
       });
       try {
         if (
@@ -1374,6 +1411,11 @@ export function createWorktreeManager(deps) {
         }
 
         let status_digest = null;
+        // The refusal this content would have produced without a backup —
+        // the first differing path's, in the staged → unstaged → untracked
+        // order the unwired cleanup always reported.
+        /** @type {string|null} */
+        let backup_reason = null;
         if (wt !== null) {
           const status = await observeStatusDigest(run, fs, wt, {
             worktree_realpath: wt,
@@ -1397,7 +1439,7 @@ export function createWorktreeManager(deps) {
               return result(false, 'observe_failed');
             }
             if (!samePathState(index_state.state, delivered_state.state)) {
-              return result(false, 'dirty_unique');
+              backup_reason = backup_reason || 'dirty_unique';
             }
           }
           for (const relative_path of [
@@ -1410,18 +1452,20 @@ export function createWorktreeManager(deps) {
             if (!worktree_state.ok || !delivered_state.ok) {
               return result(false, 'observe_failed');
             }
-            if (
-              worktree_state.special ||
-              !samePathState(worktree_state.state, delivered_state.state)
-            ) {
-              return result(
-                false,
-                status.parsed.untracked.has(relative_path)
+            if (worktree_state.special) {
+              return result(false, 'special_file');
+            }
+            if (!samePathState(worktree_state.state, delivered_state.state)) {
+              backup_reason =
+                backup_reason ||
+                (status.parsed.untracked.has(relative_path)
                   ? 'untracked_present'
-                  : 'dirty_unique'
-              );
+                  : 'dirty_unique');
             }
           }
+        }
+        if (backup_reason !== null && !createWorktreeArchive) {
+          return result(false, backup_reason);
         }
 
         if (archive_base !== null) {
@@ -1443,6 +1487,49 @@ export function createWorktreeManager(deps) {
           if (!archived.ok) {
             return result(false, 'archive_failed');
           }
+        }
+
+        /** @type {import('./recovery-archive.js').WorktreeInventory|null} */
+        let backup_inventory = null;
+        if (backup_reason !== null && wt !== null && createWorktreeArchive) {
+          const observed = inventory_reader.observeInventory(wt);
+          if (!observed.ok) {
+            return result(
+              false,
+              observed.reason === 'unsupported_file_type'
+                ? 'special_file'
+                : 'observe_failed'
+            );
+          }
+          let archived;
+          try {
+            archived = await createWorktreeArchive({
+              archive_id: `completed-worktree-${sha256(input.branch).slice(0, 12)}-${branch_head.slice(0, 12)}-${inventoryDigest(observed.inventory).slice(0, 12)}`,
+              repo: input.repo,
+              worktree: wt,
+              branch: input.branch,
+              branch_head_sha: branch_head,
+              delivered_sha: input.delivered_sha,
+              inventory: observed.inventory
+            });
+          } catch {
+            archived = { ok: false, reason: 'archive_failed' };
+          }
+          // git status never lists an untracked socket or FIFO; one that
+          // appears after the observation above shows in the archive's own
+          // walk, and is the same deterministic stop, not a backup failure.
+          if (!archived.ok && archived.reason === 'unsupported_file_type') {
+            return result(false, 'special_file');
+          }
+          if (!archived.ok || !archived.receipt || !archived.inventory) {
+            return result(false, 'archive_failed');
+          }
+          backup = {
+            path: archived.receipt.path,
+            manifest_sha256: archived.receipt.manifest_sha256,
+            file_count: archived.receipt.file_count
+          };
+          backup_inventory = archived.inventory;
         }
 
         const ref_recheck = await run(['rev-parse', '--verify', ref], {
@@ -1475,6 +1562,35 @@ export function createWorktreeManager(deps) {
             recheck.status_digest !== status_digest
           ) {
             return result(false, 'identity_changed');
+          }
+          // The digest hashes filtered content; only the raw-byte inventory
+          // proves the backup holds exactly what is about to be deleted.
+          // Both observations repeat the untracked socket/FIFO walk, which
+          // no git listing (and so no digest) covers (UI-w2ou §3.1).
+          if (backup_inventory !== null) {
+            const reobserved = inventory_reader.observeInventory(wt);
+            if (
+              !reobserved.ok &&
+              reobserved.reason === 'unsupported_file_type'
+            ) {
+              return result(false, 'special_file');
+            }
+            if (
+              !reobserved.ok ||
+              !sameInventory(reobserved.inventory, backup_inventory)
+            ) {
+              return result(false, 'identity_changed');
+            }
+          } else {
+            const special = inventory_reader.observeSpecialFiles(wt);
+            if (!special.ok) {
+              return result(
+                false,
+                special.reason === 'unsupported_file_type'
+                  ? 'special_file'
+                  : 'identity_changed'
+              );
+            }
           }
           const removed = await run(['worktree', 'remove', '--force', wt], {
             cwd: input.repo

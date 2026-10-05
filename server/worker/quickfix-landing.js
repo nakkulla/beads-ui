@@ -109,12 +109,47 @@ function noChangeCloseKind(close_reason) {
  */
 
 /**
- * Extra fields a landing record keeps across every later write. Today the only
- * one is `resolved_by`, which names the Worker's own evidence-based resolve
- * (§5.3) so a reader can tell it from a session's status write.
+ * The receipt of the backup a completed cleanup made of leftover worktree
+ * content before deleting it (UI-w2ou §3.3).
  *
- * @typedef {{ resolved_by?: string, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }|null|undefined} LandingExtra
+ * @typedef {{ path: string, manifest_sha256: string, file_count: number }} CleanupBackupReceipt
  */
+
+/**
+ * Extra fields a landing record keeps across every later write. `resolved_by`
+ * names the Worker's own evidence-based resolve (§5.3) so a reader can tell it
+ * from a session's status write; `cleanup_backup` keeps where a cleanup's
+ * backup went (UI-w2ou §3.4), so a rerun whose worktree is already gone does
+ * not lose it.
+ *
+ * @typedef {{ resolved_by?: string, cleanup_backup?: CleanupBackupReceipt, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt } }|null|undefined} LandingExtra
+ */
+
+/**
+ * A well-formed backup receipt, or null for anything else (an absent field,
+ * a legacy record, a fake without one).
+ *
+ * @param {unknown} value
+ * @returns {CleanupBackupReceipt|null}
+ */
+function cleanupBackupReceipt(value) {
+  const receipt = /** @type {any} */ (value);
+  if (
+    !receipt ||
+    typeof receipt !== 'object' ||
+    typeof receipt.path !== 'string' ||
+    receipt.path.length === 0 ||
+    typeof receipt.manifest_sha256 !== 'string' ||
+    typeof receipt.file_count !== 'number'
+  ) {
+    return null;
+  }
+  return {
+    path: receipt.path,
+    manifest_sha256: receipt.manifest_sha256,
+    file_count: receipt.file_count
+  };
+}
 
 /**
  * Create the quick_fix landing settlement for one workspace.
@@ -136,7 +171,7 @@ function noChangeCloseKind(close_reason) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   worktree: {
  *     removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
- *     removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean }>,
+ *     removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean, backup?: CleanupBackupReceipt|null }>,
  *     pathFor: (repo: string, bead_id: string) => string,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
@@ -253,6 +288,46 @@ export function createQuickfixLanding(deps) {
   }
 
   /**
+   * Put the one line a cleanup that backed up leftover content leaves on the
+   * bead's history (UI-w2ou §3.4), whether or not it then removed the
+   * worktree. Like {@link recordLandingStep} it never decides the landing.
+   * The seq names the backup and the outcome, so a rerun that reuses the
+   * backup keeps one line per outcome and a later removal still shows.
+   *
+   * @param {string} attempt_id
+   * @param {{ backup: CleanupBackupReceipt|null, worktree_removed: boolean }} cleaned
+   */
+  function recordCleanupBackup(attempt_id, cleaned) {
+    if (!deps.timeline || !cleaned.backup) {
+      return;
+    }
+    const removed = cleaned.worktree_removed === true;
+    try {
+      const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
+      const bead_id = snapshot?.attempts?.[attempt_id]?.bead_id;
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        return;
+      }
+      deps.timeline.append({
+        bead_id,
+        attempt_id,
+        kind: 'landing_step',
+        seq: `branch_cleanup:backup:${path.basename(cleaned.backup.path)}:${removed ? 'removed' : 'kept'}`,
+        summary: removed
+          ? `정리 — 커밋 안 된 변경 ${cleaned.backup.file_count}개를 백업하고 워크트리를 지움`
+          : `정리 — 커밋 안 된 변경 ${cleaned.backup.file_count}개를 백업함(워크트리는 남김)`,
+        detail: cleaned.backup.path
+      });
+    } catch (err) {
+      log(
+        'quick_fix cleanup backup timeline record failed for %s: %o',
+        attempt_id,
+        err
+      );
+    }
+  }
+
+  /**
    * @param {string} attempt_id
    * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'} cursor
    * @param {string} head_sha
@@ -278,7 +353,7 @@ export function createQuickfixLanding(deps) {
    * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
    * @param {string|null} head_sha
    * @param {LandingExtra} [extra]
-   * @returns {{ ok: false, reason: string, step: string|null, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }}
+   * @returns {{ ok: false, reason: string, step: string|null, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt } }}
    */
   function fail(attempt_id, reason, step, head_sha, extra = null) {
     // Existing needs_human/attemptFailed lanes own failure notifications.
@@ -626,9 +701,12 @@ export function createQuickfixLanding(deps) {
    * everything it holds is already on the base, and an absent worktree is
    * nothing left to remove. Only unique work refuses (`unique`/`unknown`).
    *
+   * A backup the manager made of leftover content (UI-w2ou) comes back as
+   * `backup` on either outcome, and inside `detail` on a failure.
+   *
    * @param {string} bead_id
    * @param {string} base_sha
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: QuickfixLandingReason, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }>}
+   * @returns {Promise<{ ok: true, backup: CleanupBackupReceipt|null, worktree_removed: boolean }|{ ok: false, reason: QuickfixLandingReason, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt }, backup: CleanupBackupReceipt|null, worktree_removed: boolean }>}
    */
   async function cleanupBranch(bead_id, base_sha) {
     const branch = branchForBead(bead_id);
@@ -638,7 +716,12 @@ export function createQuickfixLanding(deps) {
         { cwd: repo }
       );
       if (head.code !== 0 && head.code !== 1) {
-        return { ok: false, reason: 'worktree_remove_failed' };
+        return {
+          ok: false,
+          reason: 'worktree_remove_failed',
+          backup: null,
+          worktree_removed: false
+        };
       }
       const removed = await deps.worktree.removeCompleted({
         repo,
@@ -647,6 +730,8 @@ export function createQuickfixLanding(deps) {
         expected_head: head.code === 0 ? head.stdout.trim() : '0'.repeat(40),
         delivered_sha: base_sha
       });
+      const backup = cleanupBackupReceipt(removed.backup);
+      const worktree_removed = removed.worktree_removed === true;
       if (!removed.ok) {
         log('quick_fix worktree preserved for %s: %s', bead_id, removed.reason);
         return {
@@ -657,15 +742,23 @@ export function createQuickfixLanding(deps) {
               : 'worktree_remove_failed',
           detail: {
             manager_reason: removed.reason,
-            worktree_removed: removed.worktree_removed === true,
-            branch_removed: removed.branch_removed === true
-          }
+            worktree_removed,
+            branch_removed: removed.branch_removed === true,
+            ...(backup ? { backup } : {})
+          },
+          backup,
+          worktree_removed
         };
       }
-      return { ok: true };
+      return { ok: true, backup, worktree_removed };
     } catch (err) {
       log('quick_fix worktree removal failed for %s: %o', bead_id, err);
-      return { ok: false, reason: 'worktree_remove_failed' };
+      return {
+        ok: false,
+        reason: 'worktree_remove_failed',
+        backup: null,
+        worktree_removed: false
+      };
     }
   }
 
@@ -910,16 +1003,25 @@ export function createQuickfixLanding(deps) {
    * @param {string} bead_id
    * @param {string} target_base
    * @param {'refuted'|'no_delta'} kind
+   * @param {LandingExtra} [extra] - What every record of this attempt carries
+   * (a backup receipt restored from an earlier run, UI-w2ou §3.4).
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step: string|null }>}
    */
-  async function settleNoChangeClose(attempt_id, bead_id, target_base, kind) {
+  async function settleNoChangeClose(
+    attempt_id,
+    bead_id,
+    target_base,
+    kind,
+    extra = null
+  ) {
     const fetched = await fetchBase(target_base);
     if (!fetched.ok) {
       return fail(
         attempt_id,
         'containment_unobservable',
         'no_change_close',
-        null
+        null,
+        extra
       );
     }
     let residue;
@@ -935,9 +1037,11 @@ export function createQuickfixLanding(deps) {
         attempt_id,
         'worktree_remove_failed',
         'no_change_close',
-        null
+        null,
+        extra
       );
     }
+    recordCleanupBackup(attempt_id, residue);
     if (!residue.ok) {
       log(
         'quick_fix no-change residue preserved for %s: %s',
@@ -949,9 +1053,14 @@ export function createQuickfixLanding(deps) {
         residue.reason,
         'no_change_close',
         null,
-        residue.detail ? { cleanup_detail: residue.detail } : undefined
+        residue.detail
+          ? { ...(extra || {}), cleanup_detail: residue.detail }
+          : extra
       );
     }
+    const done_extra = residue.backup
+      ? { ...(extra || {}), cleanup_backup: residue.backup }
+      : extra;
     deps.store.moveToDone(workspace, {
       bead_id,
       attempt_id,
@@ -959,11 +1068,10 @@ export function createQuickfixLanding(deps) {
         status: 'done',
         finished_at: now(),
         done_kind: kind,
-        quickfix_landing: {
-          cursor: 'no_change_close',
-          head_sha: null,
-          reason: null
-        }
+        quickfix_landing: landingRecord(
+          { cursor: 'no_change_close', head_sha: null, reason: null },
+          done_extra
+        )
       }
     });
     notifyChanged(workspace);
@@ -994,6 +1102,19 @@ export function createQuickfixLanding(deps) {
       typeof durable_landing?.head_sha === 'string'
         ? durable_landing.head_sha
         : null;
+    // Fields every later landing record must carry, read at each write — a
+    // step that rewrites `quickfix_landing` whole would otherwise erase them.
+    // A backup an earlier run of this settlement recorded comes back first
+    // (UI-w2ou §3.4): a rerun whose worktree is already gone gets no new
+    // receipt from the manager and must not lose the old one. A failed
+    // cleanup's own receipt is the newer of the two when both are present.
+    const durable_backup =
+      cleanupBackupReceipt(durable_landing?.cleanup_detail?.backup) ||
+      cleanupBackupReceipt(durable_landing?.cleanup_backup);
+    /** @type {LandingExtra} */
+    let landing_extra = durable_backup
+      ? { cleanup_backup: durable_backup }
+      : null;
     // One `bd show` supplies status and close_reason from the same moment, so
     // the no-change judgment below cannot straddle a status change.
     /** @type {Record<string, any>} */
@@ -1004,7 +1125,7 @@ export function createQuickfixLanding(deps) {
       log('quick_fix status readback failed for %s: %o', bead_id, err);
       // An unreadable bead says nothing about the landing; naming the read is
       // what lets the classifier treat it as the environment failure it is.
-      return fail(attempt_id, 'bd_read_failed', null, null);
+      return fail(attempt_id, 'bd_read_failed', null, null, landing_extra);
     }
     const status = typeof issue.status === 'string' ? issue.status : null;
     if (
@@ -1019,11 +1140,14 @@ export function createQuickfixLanding(deps) {
         patch: {
           status: 'done',
           finished_at: now(),
-          quickfix_landing: {
-            cursor: 'parent_close',
-            head_sha: durable_head_sha,
-            reason: null
-          }
+          quickfix_landing: landingRecord(
+            {
+              cursor: 'parent_close',
+              head_sha: durable_head_sha,
+              reason: null
+            },
+            landing_extra
+          )
         }
       });
       notifyChanged(workspace);
@@ -1034,20 +1158,16 @@ export function createQuickfixLanding(deps) {
     if (status === 'closed') {
       const no_change_kind = noChangeCloseKind(issue.close_reason);
       if (no_change_kind === null) {
-        return fail(attempt_id, 'premature_close', null, null);
+        return fail(attempt_id, 'premature_close', null, null, landing_extra);
       }
       return settleNoChangeClose(
         attempt_id,
         bead_id,
         target_base,
-        no_change_kind
+        no_change_kind,
+        landing_extra
       );
     }
-    // Fields every later landing record must carry. Assigned only on the
-    // evidence path below, and read at each write — a step that rewrites
-    // `quickfix_landing` whole would otherwise erase what was recorded here.
-    /** @type {LandingExtra} */
-    let landing_extra = null;
 
     /** @type {string|null} */
     let receipt_head_sha = null;
@@ -1058,10 +1178,13 @@ export function createQuickfixLanding(deps) {
       // standing in for.
       const proven = await proveDelivery({ attempt_id, bead_id, target_base });
       if (!proven.ok) {
-        return fail(attempt_id, proven.reason, null, null);
+        return fail(attempt_id, proven.reason, null, null, landing_extra);
       }
       receipt_head_sha = proven.receipt_sha;
-      landing_extra = { resolved_by: 'worker:evidence' };
+      landing_extra = {
+        ...(landing_extra || {}),
+        resolved_by: 'worker:evidence'
+      };
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
@@ -1087,7 +1210,8 @@ export function createQuickfixLanding(deps) {
             ? 'bd_read_failed'
             : 'invalid_impl_review',
           null,
-          null
+          null,
+          landing_extra
         );
       }
       receipt_head_sha = receipt.sha;
@@ -1319,6 +1443,7 @@ export function createQuickfixLanding(deps) {
 
     markStep(attempt_id, 'branch_cleanup', head_sha, landing_extra);
     const cleaned = await cleanupBranch(bead_id, fetched.sha);
+    recordCleanupBackup(attempt_id, cleaned);
     if (!cleaned.ok) {
       return fail(
         attempt_id,
@@ -1329,6 +1454,12 @@ export function createQuickfixLanding(deps) {
           ? { ...(landing_extra || {}), cleanup_detail: cleaned.detail }
           : landing_extra
       );
+    }
+    if (cleaned.backup) {
+      landing_extra = {
+        ...(landing_extra || {}),
+        cleanup_backup: cleaned.backup
+      };
     }
 
     markStep(attempt_id, 'parent_close', head_sha, landing_extra);

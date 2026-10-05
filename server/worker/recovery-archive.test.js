@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -322,6 +323,173 @@ describe('worker recovery archive real-git integration', () => {
         'untracked/link'
       ])
     );
+  });
+
+  test('copies the staged index blob of a path whose worktree matches HEAD', () => {
+    write(path.join(repo, 'committed.txt'), 'ahead\n');
+    git(['add', 'committed.txt']);
+    git(['commit', '-m', 'ahead']);
+    write(path.join(repo, 'tracked.txt'), 'staged only\n');
+    git(['add', 'tracked.txt']);
+    write(path.join(repo, 'tracked.txt'), 'base\n');
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-index-only'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(
+      fs.readFileSync(
+        path.join(result.receipt.path, 'index/tracked.txt'),
+        'utf8'
+      )
+    ).toBe('staged only\n');
+  });
+
+  test('copies the HEAD-equal worktree bytes of a staged path', () => {
+    write(path.join(repo, 'committed.txt'), 'ahead\n');
+    git(['add', 'committed.txt']);
+    git(['commit', '-m', 'ahead']);
+    write(path.join(repo, 'tracked.txt'), 'staged only\n');
+    git(['add', 'tracked.txt']);
+    write(path.join(repo, 'tracked.txt'), 'base\n');
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-worktree-equal-head'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(
+      fs.readFileSync(
+        path.join(result.receipt.path, 'files/tracked.txt'),
+        'utf8'
+      )
+    ).toBe('base\n');
+  });
+
+  test('copies a non-UTF-8 symlink target byte for byte', () => {
+    write(path.join(repo, 'committed.txt'), 'ahead\n');
+    git(['add', 'committed.txt']);
+    git(['commit', '-m', 'ahead']);
+    const target = Buffer.from([0x61, 0xff, 0x62]);
+    fs.symlinkSync(target, path.join(repo, 'odd-link'));
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-odd-link'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(
+      fs.readlinkSync(path.join(result.receipt.path, 'files/odd-link'), {
+        encoding: 'buffer'
+      })
+    ).toEqual(target);
+  });
+
+  test('checksums a symlink by its raw target bytes', () => {
+    write(path.join(repo, 'committed.txt'), 'ahead\n');
+    git(['add', 'committed.txt']);
+    git(['commit', '-m', 'ahead']);
+    const target = Buffer.from([0x61, 0xff, 0x62]);
+    fs.symlinkSync(target, path.join(repo, 'odd-link'));
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-odd-link-sha'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(result.receipt.path, 'manifest.json'), 'utf8')
+    );
+    const entry = manifest.files.find(
+      (/** @type {any} */ file) => file.path === 'odd-link'
+    );
+    expect(entry.sha256).toBe(
+      crypto.createHash('sha256').update(target).digest('hex')
+    );
+  });
+
+  test('skips git-ignored directories in the special-file walk', () => {
+    write(path.join(repo, 'committed.txt'), 'ahead\n');
+    write(path.join(repo, '.gitignore'), 'node_modules/\n');
+    git(['add', 'committed.txt', '.gitignore']);
+    git(['commit', '-m', 'ahead']);
+    write(path.join(repo, 'node_modules/dep/index.js'), 'dep\n');
+    /** @type {string[]} */
+    const listed = [];
+    const counting_fs = {
+      ...fs,
+      readdirSync(/** @type {any} */ directory, /** @type {any} */ options) {
+        listed.push(String(directory));
+        return fs.readdirSync(directory, options);
+      }
+    };
+    const archive = createRecoveryArchive({
+      fs: /** @type {any} */ (counting_fs),
+      now: () => 5000
+    });
+
+    const result = archive.create(input('discard-ignored-dir'));
+
+    expect(result.ok).toBe(true);
+    expect(listed.filter((entry) => entry.includes('node_modules'))).toEqual(
+      []
+    );
+  });
+
+  test('rejects an archive whose index copy no longer matches its checksum', () => {
+    write(path.join(repo, 'committed.txt'), 'ahead\n');
+    git(['add', 'committed.txt']);
+    git(['commit', '-m', 'ahead']);
+    write(path.join(repo, 'tracked.txt'), 'staged only\n');
+    git(['add', 'tracked.txt']);
+    write(path.join(repo, 'tracked.txt'), 'base\n');
+    const archive = createRecoveryArchive({ now: () => 5000 });
+    const created = archive.create(input('discard-index-tampered'));
+    if (!created.ok) {
+      throw new Error(created.reason);
+    }
+    fs.writeFileSync(
+      path.join(created.receipt.path, 'index/tracked.txt'),
+      'tampered\n'
+    );
+
+    const verified = archive.verify(created.receipt.path);
+
+    expect(verified).toEqual({ ok: false, reason: 'index_checksum_mismatch' });
+  });
+
+  test('writes patches with the original bytes of a textconv path', () => {
+    const textconv = path.join(tmp, 'upper.sh');
+    write(textconv, '#!/bin/sh\ntr a-z A-Z < "$1"\n');
+    fs.chmodSync(textconv, 0o755);
+    write(path.join(repo, '.gitattributes'), '*.txt diff=upper\n');
+    git(['add', '.gitattributes']);
+    git(['commit', '-m', 'textconv attributes']);
+    git(['config', 'diff.upper.textconv', textconv]);
+    write(path.join(repo, 'tracked.txt'), 'modified\n');
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-textconv'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const patch = fs.readFileSync(
+      path.join(result.receipt.path, 'worktree.patch'),
+      'utf8'
+    );
+    expect(patch).toContain('+modified');
+    expect(patch).not.toContain('MODIFIED');
   });
 
   test('reuses an already verified final archive', () => {

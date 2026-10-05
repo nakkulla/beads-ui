@@ -371,7 +371,7 @@ function authoritativeMergeSha(pr) {
  *   worktree: {
  *     remove: (input: { repo: string, bead_id: string }) => Promise<unknown>,
  *     removeByBranch: (input: { repo: string, branch: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
- *     removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean }>,
+ *     removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean, backup?: { path: string, manifest_sha256: string, file_count: number }|null }>,
  *     pathFor: (repo: string, bead_id: string) => string,
  *     exists?: (repo: string, bead_id: string) => boolean,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
@@ -388,8 +388,11 @@ function authoritativeMergeSha(pr) {
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>, needsHuman?: (input: any) => Promise<void> },
  *   requeryDelayMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
- *   now?: () => number
+ *   now?: () => number,
+ *   timeline?: { append: (input: any) => unknown }
  * }} deps
+ * `timeline` is the workspace's bead-history writer; without it a cleanup
+ * that backed up leftover content records nothing and behaves identically.
  */
 export function createPrActions(deps) {
   const workspace = deps.workspace;
@@ -1583,6 +1586,37 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Put the one line a cleanup that backed up leftover content leaves on the
+   * bead's history (UI-w2ou §3.4), whether or not it then removed the
+   * worktree. The seq names the backup and the outcome, so a rerun that
+   * reuses the backup re-appends the same id and a later removal still
+   * shows. The result is ignored — history never decides whether a cleanup
+   * continues.
+   *
+   * @param {string} bead_id
+   * @param {{ path: string, file_count: number }} backup
+   * @param {boolean} worktree_removed
+   */
+  function recordCleanupBackup(bead_id, backup, worktree_removed) {
+    if (!deps.timeline) {
+      return;
+    }
+    try {
+      deps.timeline.append({
+        bead_id,
+        kind: 'merge_step',
+        seq: `branch_cleanup:backup:${path.basename(backup.path)}:${worktree_removed ? 'removed' : 'kept'}`,
+        summary: worktree_removed
+          ? `정리 — 커밋 안 된 변경 ${backup.file_count}개를 백업하고 워크트리를 지움`
+          : `정리 — 커밋 안 된 변경 ${backup.file_count}개를 백업함(워크트리는 남김)`,
+        detail: backup.path
+      });
+    } catch (err) {
+      log('cleanup backup timeline record failed for %s: %o', bead_id, err);
+    }
+  }
+
+  /**
    * Normal post-merge cleanup uses the manager's single-lock content proof for
    * the local worktree/ref, then keeps the existing remote ownership check.
    * Explicit discard continues to use {@link cleanupBranches}.
@@ -1622,14 +1656,23 @@ export function createPrActions(deps) {
       expected_head,
       delivered_sha: merge_sha
     });
+    const backup =
+      local.backup && typeof local.backup.path === 'string'
+        ? local.backup
+        : null;
+    if (backup) {
+      recordCleanupBackup(bead_id, backup, local.worktree_removed === true);
+    }
     if (!local.ok) {
+      // `backup=` is appended AFTER the one `manager_reason=` token the retry
+      // classifier counts (resolution-ladder.js), so the class is unchanged.
       return {
         ok: false,
         reason:
           local.reason === 'ref_delete_failed'
             ? 'local_branch_delete_failed'
             : 'worktree_remove_failed',
-        detail: `manager_reason=${local.reason ?? 'unknown'} worktree_removed=${local.worktree_removed === true} branch_removed=${local.branch_removed === true}`
+        detail: `manager_reason=${local.reason ?? 'unknown'} worktree_removed=${local.worktree_removed === true} branch_removed=${local.branch_removed === true}${backup ? ` backup=${backup.path}` : ''}`
       };
     }
     return deps.worktree.withTopologyLock(repo, async () => {

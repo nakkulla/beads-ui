@@ -89,6 +89,7 @@ scope:
 `branch_cleanup`·`base_containment` 단계에서 3.1에 없는 모든 사유. `removeCompleted`가 내용·소유·identity를 이유로 보존한
 경우 — `dirty_unique`, `untracked_present`, `special_file`, `identity_changed`, `ownership_changed`, `foreign_worktree`,
 `path_present`, `identity_invalid`, `archive_unavailable` — 가 대표다.
+정정(UI-w2ou, 2026-10-05): `dirty_unique`·`untracked_present`는 정상 배선에서는 착지 뒤 정리에서 생기지 않는다 — 남은 변경은 검증된 백업 뒤 지운다. 백업 배선(`createWorktreeArchive`)이 없을 때만 결정형으로 남는다(`2026-10-05-landed-cleanup-backs-up-leftovers-design.md` §3.3).
 
 ### 3.3 이 설계가 분류하지 않는 정리 실패
 
