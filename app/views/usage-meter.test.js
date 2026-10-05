@@ -1007,6 +1007,57 @@ describe('usage meter account switch', () => {
     meter.destroy();
   });
 
+  test('keeps the Claude switch pending until usage refresh settles', async () => {
+    const mount = mountMeter();
+    const fetchMock = stubSwitch({ ok: true, switched: true, warnings: [] });
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    /** @type {(value: unknown) => void} */
+    let release = () => {};
+    const pending_usage = new Promise((resolve) => {
+      release = resolve;
+    });
+    fetchMock.mockImplementation((url) => {
+      if (url === '/api/claude-usage') {
+        return pending_usage.then((payload) => ({
+          ok: true,
+          json: () => Promise.resolve(payload)
+        }));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ ok: true, switched: true, warnings: [] })
+      });
+    });
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.usage-meter__switch')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter((call) => call[0] === '/api/claude-usage')
+      ).toHaveLength(2)
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      document.querySelector('.usage-meter__switch')
+    );
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain('전환 중');
+    button.click();
+    expect(
+      fetchMock.mock.calls.filter(
+        (call) => call[0] === '/api/claude-account/switch'
+      )
+    ).toHaveLength(1);
+    release({
+      available: false,
+      accounts: [accountRow({ number: 1, status: 'token_expired' })]
+    });
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    meter.destroy();
+  });
+
   test.each(['claude', 'codex'])(
     'shows %s worker usage and login risk on the account row',
     async (provider) => {

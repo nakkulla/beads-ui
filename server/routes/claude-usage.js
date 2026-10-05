@@ -16,6 +16,8 @@ import path from 'node:path';
 
 const CSWAP_TIMEOUT_MS = 10_000;
 const CACHE_TTL_MS = 30_000;
+const SWITCH_RETRY_MS = 2_000;
+const SWITCH_MAX_RETRIES = 15;
 
 /** @type {ClaudeUsagePayload | null} */
 let cached_payload = null;
@@ -25,6 +27,8 @@ let in_flight = null;
 // Bumped by `invalidateCache()`; a lookup started under an older generation
 // never writes the cache, so a post-switch refresh cannot read pre-switch data.
 let cache_generation = 0;
+/** @type {number | null} */
+let expected_account_number = null;
 
 /**
  * Return the fail-quiet response shared by every invalid input path.
@@ -409,6 +413,37 @@ async function loadClaudeUsage(runCswap) {
 }
 
 /**
+ * Wait for cswap's active account to catch up to a successful switch. A tool
+ * failure returns immediately, and a superseded switch cannot keep polling.
+ *
+ * @param {() => Promise<{ code: number, stdout: string, stderr: string }>} runCswap
+ * @param {number | null} expected_number
+ * @param {number} generation
+ * @returns {Promise<ClaudeUsagePayload>}
+ */
+async function loadAfterSwitch(runCswap, expected_number, generation) {
+  let payload = await loadClaudeUsage(runCswap);
+  for (let retry = 0; retry < SWITCH_MAX_RETRIES; retry += 1) {
+    if (
+      expected_number === null ||
+      generation !== cache_generation ||
+      !Array.isArray(payload.accounts) ||
+      payload.accounts.some(
+        (account) => account.number === expected_number && account.active
+      )
+    ) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_RETRY_MS));
+    if (generation !== cache_generation) {
+      break;
+    }
+    payload = await loadClaudeUsage(runCswap);
+  }
+  return payload;
+}
+
+/**
  * Read the module-level positive/negative TTL cache.
  *
  * @param {() => Promise<{ code: number, stdout: string, stderr: string }>} runCswap
@@ -424,12 +459,17 @@ async function getClaudeUsage(runCswap, now) {
   }
 
   const generation = cache_generation;
-  const pending = loadClaudeUsage(runCswap).then((payload) => {
+  const pending = loadAfterSwitch(
+    runCswap,
+    expected_account_number,
+    generation
+  ).then((payload) => {
     if (generation !== cache_generation) {
       return payload;
     }
     cached_payload = payload;
     cache_expires_at = now() + CACHE_TTL_MS;
+    expected_account_number = null;
     return payload;
   });
   in_flight = pending;
@@ -443,9 +483,12 @@ async function getClaudeUsage(runCswap, now) {
 
 /**
  * Drop the cached snapshot and disown any in-flight lookup after a switch.
+ *
+ * @param {number | null} [expected_number]
  */
-export function invalidateCache() {
+export function invalidateCache(expected_number = null) {
   cache_generation += 1;
+  expected_account_number = expected_number;
   cached_payload = null;
   cache_expires_at = 0;
   in_flight = null;
@@ -501,8 +544,5 @@ export const claudeUsageHandler = createClaudeUsageHandler();
 
 /** Reset module state between cache tests. */
 export function __resetCacheForTest() {
-  cache_generation += 1;
-  cached_payload = null;
-  cache_expires_at = 0;
-  in_flight = null;
+  invalidateCache();
 }

@@ -101,7 +101,7 @@ async function startSwitchServer(handlers) {
 /**
  * @param {(account_number: number) => Promise<any>} runSwitch
  * @param {unknown} body
- * @param {() => void} [invalidateUsageCache]
+ * @param {(expected_number?: number) => void} [invalidateUsageCache]
  */
 async function requestSwitch(runSwitch, body, invalidateUsageCache) {
   const server = await startSwitchServer({
@@ -232,6 +232,7 @@ describe('successful switches', () => {
     await requestSwitch(runSwitch, { number: 2 }, invalidateUsageCache);
 
     expect(invalidateUsageCache).toHaveBeenCalledTimes(1);
+    expect(invalidateUsageCache).toHaveBeenCalledWith(2);
   });
 });
 

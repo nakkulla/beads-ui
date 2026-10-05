@@ -85,6 +85,7 @@ async function requestUsage(runCswap, now) {
 
 afterEach(() => {
   __resetCacheForTest();
+  vi.useRealTimers();
 });
 
 describe('claude usage normalization', () => {
@@ -494,6 +495,111 @@ describe('claude usage cache invalidation', () => {
     await pending;
 
     expect(second.body).toMatchObject({ email: 'new@example.com' });
+  });
+});
+
+describe('claude usage switch target', () => {
+  /**
+   * @param {number} number
+   */
+  function usageResult(number) {
+    return {
+      code: 0,
+      stdout: JSON.stringify({
+        accounts: [
+          accountRow({ number, email: `account-${number}@example.com` })
+        ]
+      }),
+      stderr: ''
+    };
+  }
+
+  test('waits for the switch target before sharing and caching usage', async () => {
+    vi.useFakeTimers();
+    const runCswap = vi
+      .fn()
+      .mockResolvedValueOnce(usageResult(1))
+      .mockResolvedValue(usageResult(2));
+    invalidateCache(2);
+    const settled = vi.fn();
+
+    const pending = listAccounts({ runCswap }).then(settled);
+    const concurrent = listAccounts({ runCswap });
+    await vi.advanceTimersByTimeAsync(1_999);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect(runCswap).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(await concurrent).toMatchObject({
+      active_key: 'account-2@example.com'
+    });
+    expect(await listAccounts({ runCswap })).toMatchObject({
+      active_key: 'account-2@example.com'
+    });
+    expect(runCswap).toHaveBeenCalledTimes(2);
+  });
+
+  test('returns the last result after 15 switch target retries', async () => {
+    vi.useFakeTimers();
+    const runCswap = vi.fn().mockResolvedValue(usageResult(1));
+    invalidateCache(2);
+    const settled = vi.fn();
+
+    const pending = listAccounts({ runCswap }).then(settled);
+    await vi.advanceTimersByTimeAsync(29_999);
+
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(settled).toHaveBeenCalledWith(
+      expect.objectContaining({ active_key: 'account-1@example.com' })
+    );
+    expect(runCswap).toHaveBeenCalledTimes(16);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await listAccounts({ runCswap });
+    expect(runCswap).toHaveBeenCalledTimes(17);
+  });
+
+  test.each([
+    { code: 1, stdout: '', stderr: 'failed' },
+    { code: 0, stdout: 'invalid JSON', stderr: '' }
+  ])(
+    'returns a failed switch target lookup without retrying: %j',
+    async (failure) => {
+      vi.useFakeTimers();
+      const runCswap = vi.fn().mockResolvedValue(failure);
+      invalidateCache(2);
+
+      const result = await listAccounts({ runCswap });
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(result).toEqual({
+        ok: false,
+        error: 'claude_account_list_unavailable'
+      });
+      expect(runCswap).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('stops an obsolete switch target retry without replacing a newer cache', async () => {
+    vi.useFakeTimers();
+    const runCswap = vi
+      .fn()
+      .mockResolvedValueOnce(usageResult(1))
+      .mockResolvedValue(usageResult(3));
+    invalidateCache(2);
+
+    const obsolete = listAccounts({ runCswap });
+    await vi.advanceTimersByTimeAsync(1);
+    invalidateCache(3);
+    const current = await listAccounts({ runCswap });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await obsolete;
+
+    expect(current).toMatchObject({ active_key: 'account-3@example.com' });
+    expect(await listAccounts({ runCswap })).toEqual(current);
+    expect(runCswap).toHaveBeenCalledTimes(2);
   });
 });
 

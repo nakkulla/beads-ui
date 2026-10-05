@@ -270,7 +270,7 @@ async function inUseBeads(provider, account_number) {
  * invalidated on every successful run, including `already-active`, so the
  * follow-up refresh cannot be served from a pre-switch snapshot.
  *
- * @param {{ provider: SwitchProvider, runSwitch?: (account_number: number) => Promise<SwitchResult>, invalidateUsageCache: () => void }} options
+ * @param {{ provider: SwitchProvider, runSwitch?: (account_number: number) => Promise<SwitchResult>, invalidateUsageCache: (expected_number?: number) => void }} options
  * @returns {RequestHandler}
  */
 export function createAccountSwitchHandler(options) {
@@ -334,7 +334,11 @@ export function createAccountSwitchHandler(options) {
         return;
       }
 
-      invalidateUsageCache();
+      if (provider === 'claude') {
+        invalidateUsageCache(account_number);
+      } else {
+        invalidateUsageCache();
+      }
       res.status(200).json(normalizeSwitchOutput(parsed));
     } catch {
       res.status(200).json({ ok: false, error: 'switch_failed' });

@@ -553,7 +553,9 @@ export function createUsageMeter(mount_element) {
     if (destroyed) {
       return;
     }
-    switching_rows.delete(provider.key);
+    if (provider.key !== 'claude' || !body || body.ok !== true) {
+      switching_rows.delete(provider.key);
+    }
 
     if (body && body.ok === false && body.error === 'account_in_use') {
       const in_use = Array.isArray(body.in_use)
@@ -593,6 +595,12 @@ export function createUsageMeter(mount_element) {
     }
     renderProviders();
     await refresh();
+    if (provider.key === 'claude') {
+      switching_rows.delete(provider.key);
+      if (!destroyed) {
+        renderProviders();
+      }
+    }
   }
 
   /**
