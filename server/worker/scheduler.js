@@ -8093,12 +8093,26 @@ export function createScheduler(deps) {
         bead_id,
         err
       );
+      const landing =
+        deps.store.snapshot(workspace).attempts[attempt_id]?.quickfix_landing;
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          quickfix_landing: {
+            cursor: null,
+            head_sha: null,
+            ...landing,
+            reason: 'workflow_mode_revert_failed'
+          }
+        }
+      });
       await failAttempt(
         workspace,
         attempt_id,
         bead_id,
         prior,
-        'workflow_mode_revert_failed'
+        'workflow_mode_revert_failed',
+        { reason: errorDetail(err) }
       );
       notifyChanged(workspace);
       await tick(workspace);

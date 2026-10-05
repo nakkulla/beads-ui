@@ -142,6 +142,56 @@ describe('runBd', () => {
     expect(res.stderr).toContain('boom');
   });
 
+  test('keeps an exited child successful after the event loop stalls past its timeout', async () => {
+    const { spawn } = /** @type {typeof import('node:child_process')} */ (
+      await vi.importActual('node:child_process')
+    );
+    mockedSpawn.mockImplementationOnce((_bin, _args, options) => {
+      const child = spawn(
+        process.execPath,
+        [
+          '-e',
+          'process.stdout.write("ready"); setTimeout(() => process.exit(0), 20)'
+        ],
+        options
+      );
+      child.stdout.once('data', () => {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+      });
+      return child;
+    });
+
+    const result = await runBd(['version'], { timeout_ms: 2000 });
+
+    expect(result).toMatchObject({
+      code: 0,
+      timed_out: false,
+      stdout: 'ready'
+    });
+  });
+
+  test('kills a child still running past its timeout with exit code 124', async () => {
+    const { spawn } = /** @type {typeof import('node:child_process')} */ (
+      await vi.importActual('node:child_process')
+    );
+    const kill = vi.fn();
+    mockedSpawn.mockImplementationOnce((_bin, _args, options) => {
+      const child = spawn(
+        process.execPath,
+        ['-e', 'setInterval(() => {}, 1000)'],
+        options
+      );
+      kill.mockImplementation(child.kill.bind(child));
+      child.kill = kill;
+      return child;
+    });
+
+    const result = await runBd(['version'], { timeout_ms: 100 });
+
+    expect(result).toMatchObject({ code: 124, timed_out: true });
+    expect(kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
   test('sets BEADS_DB for workspace-local SQLite db', async () => {
     const root = make_temp_dir();
     const beads_dir = path.join(root, '.beads');

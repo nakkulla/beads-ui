@@ -172,11 +172,20 @@ function runBdUnlocked(args, options = {}) {
 
     /** @type {ReturnType<typeof setTimeout> | undefined} */
     let timer;
+    /** @type {ReturnType<typeof setImmediate> | undefined} */
+    let timeout_check;
+    let settled = false;
     let timed_out = false;
     if (options.timeout_ms && options.timeout_ms > 0) {
       timer = setTimeout(() => {
-        timed_out = true;
-        child.kill('SIGKILL');
+        // Drain pending child exits before judging a timer delayed by a busy loop.
+        timeout_check = setImmediate(() => {
+          if (settled || child.exitCode != null || child.signalCode != null) {
+            return;
+          }
+          timed_out = true;
+          child.kill('SIGKILL');
+        });
       }, options.timeout_ms);
       timer.unref?.();
     }
@@ -190,8 +199,15 @@ function runBdUnlocked(args, options = {}) {
      * @param {number | string | null} code
      */
     const finish = (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       if (timer) {
         clearTimeout(timer);
+      }
+      if (timeout_check) {
+        clearImmediate(timeout_check);
       }
       const exit_code = Number(code || 0);
       resolve({
