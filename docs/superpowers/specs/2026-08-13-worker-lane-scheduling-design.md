@@ -154,6 +154,12 @@ serial 이슈가 실행 중이면 다른 모든 launch 거부)로 얹혀 있다.
   도달할 때까지 레인 점유를 유지한다. 같은 lineage의 후속 attempt(재개·repair·
   fresh recovery)는 `serial_lane_id`를 상속한다. 해제 조건은 머지·정리 완료
   또는 폐기 두 가지뿐이다.
+- **정정(UI-9r9p).** 보관된 PR 대기 행(`merge_shelved` 기록이 있는 Bead)은
+  `pr_wait` 점유에서 제외한다. 보관은 머지하지 않은 PR을 남겨 두는 조작이므로
+  같은 레인의 다음 대기 항목을 막지 않는다. 살아 있는 attempt·진행 중 폐기의
+  점유는 보관과 무관하게 유지한다. `[보관 해제]`로 기록을 지우면 같은 파생
+  판정에서 PR 대기 점유가 다시 생긴다(별도 점유 쓰기 없음). 서버의
+  `lane_states.occupied_by`를 읽는 헤더 점유 배지·ghost 행도 이 판정을 따른다.
 - dispatch 후보: 병렬 레인의 모든 ready 항목 + 점유 없는 각 직렬 레인의 head
   (entries[0])가 ready인 경우. 전역 실행 중 attempt 수 < `slots`일 때만
   launch한다. `slots=1`이 전역 순차 override로 계속 동작한다.

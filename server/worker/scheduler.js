@@ -1146,11 +1146,12 @@ function waitingEntryOf(q, bead_id) {
  *     owned by `queue-store.js` and imported rather than restated: the
  *     transfer predicate reads the same membership, and a second copy here
  *     would let occupancy and transfer mean two different things;
- *   - the bead sits in durable `pr_wait` (its terminal `done` attempt is the
- *     lane holder until merge cleanup moves it to Done);
+ *   - the bead sits in durable `pr_wait` without a `merge_shelved` record
+ *     (its terminal `done` attempt holds the lane until shelving or merge
+ *     cleanup); unshelving restores this occupancy on the next read;
  *   - a discard operation for the lineage is still in flight.
  *
- * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string, serial_lane_id?: string|null }>, discard_operations?: Record<string, any> }} q
+ * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string, serial_lane_id?: string|null }>, merge_shelved?: Record<string, unknown>, discard_operations?: Record<string, any> }} q
  * @returns {Map<string, Set<string>>} lane id → occupying lineage ids.
  */
 export function activeLaneLineages(q) {
@@ -1183,6 +1184,9 @@ export function activeLaneLineages(q) {
     occupy(attempt.serial_lane_id, serialLineageId(attempt));
   }
   for (const entry of q.pr_wait || []) {
+    if (Object.hasOwn(q.merge_shelved || {}, entry.bead_id)) {
+      continue;
+    }
     const attempt = [...values]
       .reverse()
       .find((item) => item?.bead_id === entry?.bead_id);

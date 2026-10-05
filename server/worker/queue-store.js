@@ -707,6 +707,9 @@
  * clicks [머지] on the row, or when the bead leaves the lane.
  * @property {Record<string, MergeShelf>} merge_shelved - PR 대기 beads a
  * person withdrew from EVERY automatic merge path with [보관] (UI-sd12 §3.1).
+ * Shelved `pr_wait` rows also release serial-lane occupancy; active attempts
+ * and in-flight discards still hold their lanes (UI-9r9p). Unshelving restores
+ * the row's occupancy through the same derived predicate, with no extra write.
  * Unlike {@link Queue.auto_merge_skips} the record is not pinned to a head and
  * survives a `pr_wait` re-entry: only [보관 해제], the MERGED completion move,
  * a discard, or a queue operation that takes the bead out of `pr_wait` drops

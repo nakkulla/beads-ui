@@ -23179,6 +23179,127 @@ function seedLanes(store, lanes) {
 }
 
 describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
+  test.each(['s1', null])(
+    'releases a shelved pr_wait lineage with attempt lane %s',
+    (serial_lane_id) => {
+      const queue = {
+        attempts: {
+          done: {
+            attempt_id: 'done',
+            bead_id: 'A',
+            status: 'done',
+            serial_lane_id
+          }
+        },
+        pr_wait: [{ bead_id: 'A', serial_lane_id: 's1' }],
+        merge_shelved: { A: { at: 1 } }
+      };
+
+      const occupancy = activeLaneLineages(queue);
+
+      expect(occupancy.size).toBe(0);
+    }
+  );
+
+  test('releases a shelved pr_wait row without an attempt', () => {
+    const queue = {
+      pr_wait: [{ bead_id: 'A', serial_lane_id: 's1' }],
+      merge_shelved: { A: { at: 1 } }
+    };
+
+    const occupancy = activeLaneLineages(queue);
+
+    expect(occupancy.size).toBe(0);
+  });
+
+  test.each(['running', 'paused', 'failed', 'orphaned'])(
+    'keeps a shelved lineage occupied by a %s attempt',
+    (status) => {
+      const queue = {
+        attempts: {
+          active: {
+            attempt_id: 'active',
+            bead_id: 'A',
+            status,
+            serial_lane_id: 's1'
+          }
+        },
+        pr_wait: [{ bead_id: 'A', serial_lane_id: 's1' }],
+        merge_shelved: { A: { at: 1 } }
+      };
+
+      const occupancy = activeLaneLineages(queue);
+
+      expect(occupancy.get('s1')).toEqual(new Set(['A']));
+    }
+  );
+
+  test('keeps a shelved lineage occupied during discard', () => {
+    const queue = {
+      attempts: {
+        done: {
+          attempt_id: 'done',
+          bead_id: 'A',
+          status: 'done',
+          serial_lane_id: 's1'
+        }
+      },
+      pr_wait: [{ bead_id: 'A', serial_lane_id: 's1' }],
+      merge_shelved: { A: { at: 1 } },
+      discard_operations: {
+        discard: { attempt_id: 'done', bead_id: 'A', phase: 'cleanup' }
+      }
+    };
+
+    const occupancy = activeLaneLineages(queue);
+
+    expect(occupancy.get('s1')).toEqual(new Set(['A']));
+  });
+
+  test('dispatches the next lane head after its predecessor is shelved', async () => {
+    const env = setup({ config: { A: {}, B: {} }, slots: 3 });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+    await env.scheduler.tick(WS);
+    env.runner.finish('A', { success: true });
+    await flush();
+    await flush();
+
+    env.store.setMergeShelved(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'A',
+      on: true
+    });
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A', 'B']);
+  });
+
+  test('restores occupancy when a shelved pr_wait row is unshelved', async () => {
+    const env = setup({ config: { A: {}, B: {} }, slots: 3 });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+    await env.scheduler.tick(WS);
+    env.runner.finish('A', { success: true });
+    await flush();
+    await flush();
+    env.store.setMergeShelved(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'A',
+      on: true
+    });
+
+    env.store.setMergeShelved(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'A',
+      on: false
+    });
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A']);
+    expect(activeLaneLineages(env.store.snapshot(WS)).get('s1')).toEqual(
+      new Set(['A'])
+    );
+  });
+
   test('restores pr_wait occupancy from the entry when the attempt lane is null', () => {
     const occupancy = activeLaneLineages({
       attempts: {
