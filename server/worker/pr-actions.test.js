@@ -6151,14 +6151,16 @@ describe('post-merge cleanup — completed worktree backup (UI-w2ou §3.4)', () 
 
   test('appends the backup path to the cleanup failure detail', async () => {
     const h = makeActions();
-    h.worktree.removeCompleted.mockResolvedValueOnce({
-      ok: false,
-      removed: true,
-      reason: 'ref_delete_failed',
-      worktree_removed: true,
-      branch_removed: false,
-      backup: RECEIPT
-    });
+    h.worktree.removeCompleted.mockResolvedValueOnce(
+      /** @type {any} */ ({
+        ok: false,
+        removed: true,
+        reason: 'ref_delete_failed',
+        worktree_removed: true,
+        branch_removed: false,
+        backup: RECEIPT
+      })
+    );
 
     await h.actions.merge(BEAD);
 
@@ -6178,14 +6180,16 @@ describe('post-merge cleanup — completed worktree backup (UI-w2ou §3.4)', () 
         }
       }
     });
-    h.worktree.removeCompleted.mockResolvedValueOnce({
-      ok: true,
-      removed: true,
-      reason: null,
-      worktree_removed: true,
-      branch_removed: true,
-      backup: RECEIPT
-    });
+    h.worktree.removeCompleted.mockResolvedValueOnce(
+      /** @type {any} */ ({
+        ok: true,
+        removed: true,
+        reason: null,
+        worktree_removed: true,
+        branch_removed: true,
+        backup: RECEIPT
+      })
+    );
 
     await h.actions.merge(BEAD);
 

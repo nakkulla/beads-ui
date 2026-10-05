@@ -1402,7 +1402,8 @@ test('keeps a cleanup backup receipt on the done record', async () => {
   await settle(landing);
 
   expect(
-    store.moveToDone.mock.calls.at(-1)?.[1].patch.quickfix_landing
+    /** @type {any} */ (store.moveToDone.mock.calls.at(-1))[1].patch
+      .quickfix_landing
   ).toMatchObject({ cursor: 'parent_close', cleanup_backup: BACKUP_RECEIPT });
 });
 
@@ -1449,7 +1450,8 @@ test('restores a failed cleanup backup receipt on the rerun that completes', asy
   await settle(landing);
 
   expect(
-    store.moveToDone.mock.calls.at(-1)?.[1].patch.quickfix_landing
+    /** @type {any} */ (store.moveToDone.mock.calls.at(-1))[1].patch
+      .quickfix_landing
   ).toMatchObject({ cursor: 'parent_close', cleanup_backup: BACKUP_RECEIPT });
 });
 
@@ -1467,7 +1469,8 @@ test('keeps the backup receipt through the parent close restart shortcut', async
   await settle(landing);
 
   expect(
-    store.moveToDone.mock.calls.at(-1)?.[1].patch.quickfix_landing
+    /** @type {any} */ (store.moveToDone.mock.calls.at(-1))[1].patch
+      .quickfix_landing
   ).toEqual({
     cursor: 'parent_close',
     head_sha: HEAD_SHA,
@@ -1486,7 +1489,8 @@ test('keeps a no-change cleanup backup receipt on the done record', async () => 
   await settle(landing);
 
   expect(
-    store.moveToDone.mock.calls.at(-1)?.[1].patch.quickfix_landing
+    /** @type {any} */ (store.moveToDone.mock.calls.at(-1))[1].patch
+      .quickfix_landing
   ).toEqual({
     cursor: 'no_change_close',
     head_sha: null,

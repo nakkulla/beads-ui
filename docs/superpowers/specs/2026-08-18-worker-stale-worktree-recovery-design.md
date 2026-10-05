@@ -42,6 +42,7 @@ Worker는 새 attempt를 만들기 전에 최신 target base를 다시 해석하
 1. 핀된 최신 base에 정확히 포함된 tracked 잔재는 사용자 개입 없이 회수하고 새
    worktree dispatch를 계속한다.
 2. base에 없는 파일 상태나 고유 commit은 자동으로 삭제하지 않는다.
+정정(UI-w2ou, 2026-10-05): 이 문장은 디스패치 잔재 회수의 것이다. 착지가 증명된 완료 정리는 base에 없는 작업 폴더 내용을 검증된 recovery archive 백업 뒤에만 지운다 — 백업 없는 삭제는 없다(불변식 5, `2026-10-05-landed-cleanup-backs-up-leftovers-design.md` §3.2).
 3. 고유 작업은 사용자가 기존 작업을 이어가거나, 검증된 recovery archive를 만든
    뒤 최신 base에서 새로 시작할 수 있다.
 4. 재개 가능한 기존 leaf attempt가 있으면 새 세션을 만들기 전에 그 resume 경로를

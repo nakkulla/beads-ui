@@ -94,6 +94,7 @@ no_delta: '무-delta'
 
 - `premature_close` 판정 위치와 의미, `bd_read_failed`, `containment_unobservable`,
   `worktree_remove_failed` 분기.
+정정(UI-w2ou, 2026-10-05): `worktree_remove_failed` 분기는 남는다. 다만 작업 폴더에 남은 새 파일·미커밋 수정은 멈춤 사유가 아니라 검증된 백업 뒤 진행한다(`2026-10-05-landed-cleanup-backs-up-leftovers-design.md` §3.1).
 - `quickfix_landing` 레코드 모양 — `no_change_close` 커서에 `head_sha: null`·`reason: null`.
   `prWaitProgress` 투영과 `resumeKindOf`(ADR 0018)는 건드리지 않는다.
 - `resolved`+접두어를 기대하는 코드는 없으므로 정정 없음. 계약 yaml 투영은 읽지 않는다

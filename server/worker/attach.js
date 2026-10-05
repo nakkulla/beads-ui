@@ -1077,6 +1077,13 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         recoveryArchive.createBranch({
           workspace: keyFor(workspace_root),
           ...input
+        }),
+      // The completed-cleanup backup of undelivered worktree content
+      // (UI-w2ou §3.3), in the same `discard-backups/` as every other archive.
+      createWorktreeArchive: (input) =>
+        recoveryArchive.createWorktree({
+          workspace: keyFor(workspace_root),
+          ...input
         })
     });
   // The pre-restart auto-advance restore controller asks whether a boot-time
@@ -1874,7 +1881,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // The SAME notifier the scheduler pushes attempt transitions through, so
     // the merge that closes a bead lands in the same channel as its start and
     // its PR (UI-9rrk).
-    notify
+    notify,
+    // The workspace's ONE timeline writer, for the line a post-merge cleanup
+    // that backed up leftover content leaves (UI-w2ou §3.4).
+    timeline
   });
 
   // The one-shot legacy-state migration (master spec §11). It converts durable
