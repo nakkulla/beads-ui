@@ -393,6 +393,50 @@ describe.each(/** @type {const} */ (['claude', 'codex']))(
       expect(listAccounts).not.toHaveBeenCalled();
     });
 
+    test('skips in-use confirmation only for a Claude own session login', async () => {
+      listAccounts.mockResolvedValue({
+        ok: true,
+        accounts: [
+          {
+            number: 2,
+            email: 'worker@example.com',
+            key: 'worker-key',
+            sessionLoginOwn: true
+          }
+        ]
+      });
+
+      const response = await request({ number: 2 });
+
+      if (provider === 'claude') {
+        expect(response.body.ok).toBe(true);
+        expect(response.runSwitch).toHaveBeenCalledWith(2);
+        expect(response.invalidateUsageCache).toHaveBeenCalledOnce();
+      } else {
+        expect(response.body.error).toBe('account_in_use');
+        expect(response.runSwitch).not.toHaveBeenCalled();
+      }
+    });
+
+    test('keeps in-use confirmation for a shared session login', async () => {
+      listAccounts.mockResolvedValue({
+        ok: true,
+        accounts: [
+          {
+            number: 2,
+            email: 'worker@example.com',
+            key: 'worker-key',
+            sessionLoginOwn: false
+          }
+        ]
+      });
+
+      const response = await request({ number: 2 });
+
+      expect(response.body.error).toBe('account_in_use');
+      expect(response.runSwitch).not.toHaveBeenCalled();
+    });
+
     test.each([false, 'true', 1])(
       'requires boolean true instead of %s',
       async (confirm) => {

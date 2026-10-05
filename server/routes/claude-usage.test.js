@@ -238,6 +238,29 @@ describe('GET /api/claude-usage', () => {
 });
 
 describe('claude account rows', () => {
+  test.each([
+    ['ok', {}],
+    ['token_expired', { usageStatus: 'token_expired' }],
+    ['no_usage_windows', { usage: {} }]
+  ])('preserves an own session login on a %s row', (status, overrides) => {
+    const account = accountRow({ ...overrides, sessionLogin: 'own' });
+
+    const payload = normalizeClaudeUsage({ accounts: [account] });
+
+    expect(payload.accounts).toMatchObject([{ status, sessionLoginOwn: true }]);
+  });
+
+  test.each([undefined, 'shared', 'OWN', true, null])(
+    'treats sessionLogin %s as a shared login',
+    (session_login) => {
+      const account = accountRow({ sessionLogin: session_login });
+
+      const payload = normalizeClaudeUsage({ accounts: [account] });
+
+      expect(payload.accounts).toMatchObject([{ sessionLoginOwn: false }]);
+    }
+  );
+
   test('lists the active account first and then ascending numbers', () => {
     const payload = normalizeClaudeUsage({
       accounts: [
@@ -372,6 +395,7 @@ describe('claude account rows', () => {
           alias: null,
           plan: null,
           active: true,
+          sessionLoginOwn: false,
           status: 'token_expired',
           windows: [],
           fetchedAt: null,
@@ -504,7 +528,11 @@ describe('claude account listing', () => {
       stdout: JSON.stringify({
         accounts: [
           accountRow({ active: false, email: 'old@example.com' }),
-          accountRow({ number: 2, email: 'active@example.com' })
+          accountRow({
+            number: 2,
+            email: 'active@example.com',
+            sessionLogin: 'own'
+          })
         ]
       }),
       stderr: ''
@@ -515,7 +543,10 @@ describe('claude account listing', () => {
     expect(result).toMatchObject({
       ok: true,
       active_key: 'active@example.com',
-      accounts: [{ key: 'active@example.com' }, { key: 'old@example.com' }]
+      accounts: [
+        { key: 'active@example.com', sessionLoginOwn: true },
+        { key: 'old@example.com', sessionLoginOwn: false }
+      ]
     });
   });
 

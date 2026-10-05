@@ -8,7 +8,7 @@ import path from 'node:path';
 
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string | null }} UsageWindow
- * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
+ * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, sessionLoginOwn: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
  * @typedef {{ available: false }} UsageUnavailable
  * @typedef {{ available: true, email: string, windows: UsageWindow[], fetchedAt: string, ageSeconds: number }} ClaudeUsageActive
  * @typedef {(UsageUnavailable | ClaudeUsageActive) & { accounts?: UsageAccount[] }} ClaudeUsagePayload
@@ -126,6 +126,7 @@ function normalizeAccountRow(input) {
   const alias =
     typeof row.alias === 'string' && row.alias.length > 0 ? row.alias : null;
   const active = row.active === true;
+  const session_login_own = row.sessionLogin === 'own';
 
   if (row.usageStatus !== 'ok') {
     return {
@@ -135,6 +136,7 @@ function normalizeAccountRow(input) {
       alias,
       plan: null,
       active,
+      sessionLoginOwn: session_login_own,
       status: row.usageStatus,
       windows: [],
       fetchedAt: null,
@@ -165,6 +167,7 @@ function normalizeAccountRow(input) {
       alias,
       plan: null,
       active,
+      sessionLoginOwn: session_login_own,
       status: 'no_usage_windows',
       windows: [],
       fetchedAt: row.usageFetchedAt,
@@ -179,6 +182,7 @@ function normalizeAccountRow(input) {
     alias,
     plan: null,
     active,
+    sessionLoginOwn: session_login_own,
     status: 'ok',
     windows,
     fetchedAt: row.usageFetchedAt,

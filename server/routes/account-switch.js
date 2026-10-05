@@ -232,6 +232,13 @@ async function inUseBeads(provider, account_number) {
     if (!account) {
       return [];
     }
+    if (
+      provider === 'claude' &&
+      'sessionLoginOwn' in account &&
+      account.sessionLoginOwn === true
+    ) {
+      return [];
+    }
     const account_key = provider === 'claude' ? account.email : account.key;
     if (!account_key) {
       return [];
