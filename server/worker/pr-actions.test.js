@@ -6197,7 +6197,42 @@ describe('post-merge cleanup — completed worktree backup (UI-w2ou §3.4)', () 
       expect.objectContaining({
         bead_id: BEAD,
         kind: 'merge_step',
+        seq: 'branch_cleanup:backup:completed-worktree-abc:removed',
         summary: '정리 — 커밋 안 된 변경 3개를 백업하고 워크트리를 지움'
+      })
+    ]);
+  });
+
+  test('records one timeline line for a cleanup that made a backup but kept the worktree', async () => {
+    /** @type {any[]} */
+    const events = [];
+    const h = makeActions({
+      timeline: {
+        append: (/** @type {any} */ input) => {
+          events.push(input);
+          return { ok: true };
+        }
+      }
+    });
+    h.worktree.removeCompleted.mockResolvedValueOnce(
+      /** @type {any} */ ({
+        ok: false,
+        removed: false,
+        reason: 'identity_changed',
+        worktree_removed: false,
+        branch_removed: false,
+        backup: RECEIPT
+      })
+    );
+
+    await h.actions.merge(BEAD);
+
+    expect(events.filter((event) => event.detail === RECEIPT.path)).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        kind: 'merge_step',
+        seq: 'branch_cleanup:backup:completed-worktree-abc:kept',
+        summary: '정리 — 커밋 안 된 변경 3개를 백업함(워크트리는 남김)'
       })
     ]);
   });

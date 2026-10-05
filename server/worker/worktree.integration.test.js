@@ -3010,4 +3010,155 @@ describe('worker/worktree dispatch-time dependency install (spec D3)', () => {
     expect(result).toMatchObject({ ok: true, worktree_removed: true });
     expect(calls).toHaveLength(0);
   });
+
+  test('removeCompleted keeps the index blob and the HEAD-equal worktree bytes of a staged path', async () => {
+    const { createWorktreeArchive } = completedArchive();
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      createWorktreeArchive
+    });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# staged\n');
+    git(['add', 'README.md'], created.path);
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# base\n');
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    const backup_path = /** @type {any} */ (result).backup.path;
+    expect([
+      fs.readFileSync(path.join(backup_path, 'index/README.md'), 'utf8'),
+      fs.readFileSync(path.join(backup_path, 'files/README.md'), 'utf8')
+    ]).toEqual(['# staged\n', '# base\n']);
+  });
+
+  test('removeCompleted keeps the worktree when a staged path changes only its line endings after the backup', async () => {
+    fs.writeFileSync(path.join(repo, '.gitattributes'), '*.md text eol=lf\n');
+    git(['add', '.gitattributes'], repo);
+    git(['commit', '-q', '-m', 'line endings'], repo);
+    const base = headOf(repo);
+    /** @type {string} */
+    let readme = '';
+    const { createWorktreeArchive } = completedArchive({
+      after: () => fs.writeFileSync(readme, '# base\r\n')
+    });
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      createWorktreeArchive
+    });
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    readme = path.join(created.path, 'README.md');
+    fs.writeFileSync(readme, '# staged\n');
+    git(['add', 'README.md'], created.path);
+    fs.writeFileSync(readme, '# base\n');
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'identity_changed' });
+    expect(fs.readFileSync(readme, 'utf8')).toBe('# base\r\n');
+    expect(headOf(repo, 'UI-complete')).toBe(base);
+  });
+
+  test('removeCompleted stops as special_file when a lone untracked FIFO is the only leftover', async () => {
+    const { createWorktreeArchive } = completedArchive();
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      createWorktreeArchive
+    });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    const fifo = path.join(created.path, 'leftover.fifo');
+    execFileSync('mkfifo', [fifo]);
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'special_file',
+      worktree_removed: false,
+      branch_removed: false
+    });
+    expect(fs.lstatSync(fifo).isFIFO()).toBe(true);
+    expect(headOf(repo, 'UI-complete')).toBe(base);
+  });
+
+  test('removeCompleted stops as special_file when an untracked FIFO appears beside a reused backup', async () => {
+    const { createWorktreeArchive } = completedArchive();
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      run: runFailingOnce(
+        (args) => args[0] === 'worktree' && args[1] === 'remove'
+      ),
+      createWorktreeArchive
+    });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    fs.writeFileSync(path.join(created.path, 'leftover.bak'), 'leftover\n');
+    const input = {
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    };
+    await wt.removeCompleted(input);
+    const fifo = path.join(created.path, 'leftover.fifo');
+    execFileSync('mkfifo', [fifo]);
+
+    const second = await wt.removeCompleted(input);
+
+    expect(second).toMatchObject({
+      ok: false,
+      reason: 'special_file',
+      worktree_removed: false,
+      branch_removed: false
+    });
+    expect(fs.lstatSync(fifo).isFIFO()).toBe(true);
+    expect(headOf(repo, 'UI-complete')).toBe(base);
+  });
+
+  test('removeCompleted removes a worktree whose FIFO sits inside an ignored directory', async () => {
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'build/\n');
+    git(['add', '.gitignore'], repo);
+    git(['commit', '-q', '-m', 'ignore build'], repo);
+    const base = headOf(repo);
+    const { createWorktreeArchive } = completedArchive();
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      createWorktreeArchive
+    });
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    fs.writeFileSync(path.join(created.path, 'leftover.bak'), 'leftover\n');
+    fs.mkdirSync(path.join(created.path, 'build'));
+    execFileSync('mkfifo', [path.join(created.path, 'build', 'cache.fifo')]);
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({ ok: true, worktree_removed: true });
+    expect(fs.existsSync(created.path)).toBe(false);
+  });
 });

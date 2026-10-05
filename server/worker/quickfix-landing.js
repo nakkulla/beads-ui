@@ -288,18 +288,20 @@ export function createQuickfixLanding(deps) {
   }
 
   /**
-   * Put the one line a cleanup that backed up leftover content and removed
-   * the worktree leaves on the bead's history (UI-w2ou §3.4). Like
-   * {@link recordLandingStep} it never decides the landing, and the seq names
-   * the backup so a rerun that reuses it keeps one line.
+   * Put the one line a cleanup that backed up leftover content leaves on the
+   * bead's history (UI-w2ou §3.4), whether or not it then removed the
+   * worktree. Like {@link recordLandingStep} it never decides the landing.
+   * The seq names the backup and the outcome, so a rerun that reuses the
+   * backup keeps one line per outcome and a later removal still shows.
    *
    * @param {string} attempt_id
    * @param {{ backup: CleanupBackupReceipt|null, worktree_removed: boolean }} cleaned
    */
   function recordCleanupBackup(attempt_id, cleaned) {
-    if (!deps.timeline || !cleaned.backup || !cleaned.worktree_removed) {
+    if (!deps.timeline || !cleaned.backup) {
       return;
     }
+    const removed = cleaned.worktree_removed === true;
     try {
       const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
       const bead_id = snapshot?.attempts?.[attempt_id]?.bead_id;
@@ -310,8 +312,10 @@ export function createQuickfixLanding(deps) {
         bead_id,
         attempt_id,
         kind: 'landing_step',
-        seq: `branch_cleanup:backup:${path.basename(cleaned.backup.path)}`,
-        summary: `정리 — 커밋 안 된 변경 ${cleaned.backup.file_count}개를 백업하고 워크트리를 지움`,
+        seq: `branch_cleanup:backup:${path.basename(cleaned.backup.path)}:${removed ? 'removed' : 'kept'}`,
+        summary: removed
+          ? `정리 — 커밋 안 된 변경 ${cleaned.backup.file_count}개를 백업하고 워크트리를 지움`
+          : `정리 — 커밋 안 된 변경 ${cleaned.backup.file_count}개를 백업함(워크트리는 남김)`,
         detail: cleaned.backup.path
       });
     } catch (err) {

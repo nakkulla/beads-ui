@@ -1515,7 +1515,37 @@ test('records one timeline line for a cleanup that made a backup', async () => {
       bead_id: BEAD,
       attempt_id: ATTEMPT,
       kind: 'landing_step',
+      seq: 'branch_cleanup:backup:completed-worktree-abc:removed',
       summary: '정리 — 커밋 안 된 변경 2개를 백업하고 워크트리를 지움'
+    })
+  ]);
+});
+
+test('records one timeline line for a cleanup that made a backup but kept the worktree', async () => {
+  const timeline = timelineRecorder();
+  const { landing } = makeLanding({
+    timeline,
+    discardResult: {
+      ok: false,
+      removed: false,
+      reason: 'identity_changed',
+      worktree_removed: false,
+      branch_removed: false,
+      backup: BACKUP_RECEIPT
+    }
+  });
+
+  await settle(landing);
+
+  expect(
+    timeline.events.filter((event) => event.detail === BACKUP_RECEIPT.path)
+  ).toEqual([
+    expect.objectContaining({
+      bead_id: BEAD,
+      attempt_id: ATTEMPT,
+      kind: 'landing_step',
+      seq: 'branch_cleanup:backup:completed-worktree-abc:kept',
+      summary: '정리 — 커밋 안 된 변경 2개를 백업함(워크트리는 남김)'
     })
   ]);
 });

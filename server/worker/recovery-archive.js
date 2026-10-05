@@ -184,11 +184,13 @@ function safePath(root, relative_path) {
 function checksumEntry(fs, file) {
   const stat = fs.lstatSync(file);
   if (stat.isSymbolicLink()) {
-    const target = fs.readlinkSync(file);
+    // Raw bytes: a string read replaces non-UTF-8 bytes, so a mangled copy
+    // would checksum equal to its source.
+    const target = fs.readlinkSync(file, { encoding: 'buffer' });
     return {
       type: 'symlink',
       mode: stat.mode & 0o7777,
-      size: Buffer.byteLength(target),
+      size: target.length,
       sha256: sha256(target)
     };
   }
@@ -384,11 +386,31 @@ export function createRecoveryArchive(deps = {}) {
 
   /**
    * Git's untracked inventory intentionally omits sockets/FIFOs. Walk only to
-   * detect those unsupported nodes, while honoring git-ignore exclusions.
+   * detect those unsupported nodes, while honoring git-ignore exclusions. A
+   * wholly ignored directory is not entered: any special node inside it is
+   * ignored too, so pruning keeps the verdict and bounds the walk.
    *
    * @param {string} worktree
    */
   function assertNoUntrackedSpecialFiles(worktree) {
+    let ignored_output;
+    try {
+      ignored_output = git(worktree, [
+        'ls-files',
+        '--others',
+        '--ignored',
+        '--exclude-standard',
+        '--directory',
+        '-z'
+      ]);
+    } catch {
+      throw new ArchiveError('file_inventory_failed');
+    }
+    const ignored_directories = new Set(
+      nulPaths(ignored_output)
+        .filter((entry) => entry.endsWith('/'))
+        .map((entry) => entry.slice(0, -1))
+    );
     /**
      * @param {string} directory
      */
@@ -401,7 +423,9 @@ export function createRecoveryArchive(deps = {}) {
         }
         const stat = fs.lstatSync(absolute);
         if (stat.isDirectory()) {
-          visit(absolute);
+          if (!ignored_directories.has(relative.split(path.sep).join('/'))) {
+            visit(absolute);
+          }
           continue;
         }
         if (stat.isFile() || stat.isSymbolicLink()) {
@@ -423,9 +447,34 @@ export function createRecoveryArchive(deps = {}) {
   }
 
   /**
+   * Whether a worktree holds a non-ignored untracked socket/FIFO — the
+   * `unsupported_file_type` stop of {@link assertNoUntrackedSpecialFiles},
+   * for a cleanup that has no backup to make (UI-w2ou §3.1).
+   *
+   * @param {string} worktree
+   * @returns {{ ok: true }|{ ok: false, reason: string }}
+   */
+  function observeSpecialFiles(worktree) {
+    try {
+      assertNoUntrackedSpecialFiles(worktree);
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        reason:
+          err instanceof ArchiveError
+            ? err.reason
+            : 'special_file_observation_failed'
+      };
+    }
+  }
+
+  /**
    * The two path sets an archive covers: staged paths (index differs from
    * HEAD) get an index-blob copy, and changed or untracked paths (worktree
-   * differs from HEAD, or not tracked and not ignored) get a worktree copy.
+   * differs from HEAD or from the index, or not tracked and not ignored) get
+   * a worktree copy — a staged path whose worktree went back to HEAD still
+   * has worktree bytes the deletion would lose.
    * The archive and the live inventory share this listing, so the two can
    * only differ in bytes, never in which paths they looked at.
    *
@@ -435,6 +484,7 @@ export function createRecoveryArchive(deps = {}) {
   function listInventoryPaths(worktree) {
     let staged;
     let tracked;
+    let unstaged;
     let untracked;
     try {
       staged = nulPaths(
@@ -442,6 +492,9 @@ export function createRecoveryArchive(deps = {}) {
       );
       tracked = nulPaths(
         git(worktree, ['diff', '--name-only', '-z', '--no-renames', 'HEAD'])
+      );
+      unstaged = nulPaths(
+        git(worktree, ['diff', '--name-only', '-z', '--no-renames'])
       );
       untracked = nulPaths(
         git(worktree, ['ls-files', '--others', '--exclude-standard', '-z'])
@@ -451,7 +504,7 @@ export function createRecoveryArchive(deps = {}) {
     }
     return {
       staged: [...new Set(staged)].sort(),
-      worktree: [...new Set([...tracked, ...untracked])].sort()
+      worktree: [...new Set([...tracked, ...unstaged, ...untracked])].sort()
     };
   }
 
@@ -520,6 +573,9 @@ export function createRecoveryArchive(deps = {}) {
     try {
       const { orphan_gitlinks } = classifySubmodules(worktree);
       const skipped = new Set(orphan_gitlinks);
+      // A reused archive skips `create`'s walk, so every observation repeats
+      // it: an untracked socket/FIFO no git listing names still stops here.
+      assertNoUntrackedSpecialFiles(worktree);
       const listed = listInventoryPaths(worktree);
       const index_map = readIndexMap(worktree);
       /** @type {InventoryEntry[]} */
@@ -958,7 +1014,7 @@ export function createRecoveryArchive(deps = {}) {
         );
         fs.mkdirSync(path.dirname(destination), { recursive: true });
         if (stat.isSymbolicLink()) {
-          const target = fs.readlinkSync(source_path);
+          const target = fs.readlinkSync(source_path, { encoding: 'buffer' });
           fs.symlinkSync(target, destination);
         } else if (stat.isFile()) {
           fs.copyFileSync(source_path, destination);
@@ -1379,6 +1435,7 @@ export function createRecoveryArchive(deps = {}) {
     createCommittedSource,
     createWorktree,
     observeInventory,
+    observeSpecialFiles,
     verify
   };
 }

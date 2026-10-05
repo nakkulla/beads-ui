@@ -1587,14 +1587,17 @@ export function createPrActions(deps) {
 
   /**
    * Put the one line a cleanup that backed up leftover content leaves on the
-   * bead's history (UI-w2ou §3.4). The seq names the backup, so a rerun that
-   * reuses it re-appends the same id. The result is ignored — history never
-   * decides whether a cleanup continues.
+   * bead's history (UI-w2ou §3.4), whether or not it then removed the
+   * worktree. The seq names the backup and the outcome, so a rerun that
+   * reuses the backup re-appends the same id and a later removal still
+   * shows. The result is ignored — history never decides whether a cleanup
+   * continues.
    *
    * @param {string} bead_id
    * @param {{ path: string, file_count: number }} backup
+   * @param {boolean} worktree_removed
    */
-  function recordCleanupBackup(bead_id, backup) {
+  function recordCleanupBackup(bead_id, backup, worktree_removed) {
     if (!deps.timeline) {
       return;
     }
@@ -1602,8 +1605,10 @@ export function createPrActions(deps) {
       deps.timeline.append({
         bead_id,
         kind: 'merge_step',
-        seq: `branch_cleanup:backup:${path.basename(backup.path)}`,
-        summary: `정리 — 커밋 안 된 변경 ${backup.file_count}개를 백업하고 워크트리를 지움`,
+        seq: `branch_cleanup:backup:${path.basename(backup.path)}:${worktree_removed ? 'removed' : 'kept'}`,
+        summary: worktree_removed
+          ? `정리 — 커밋 안 된 변경 ${backup.file_count}개를 백업하고 워크트리를 지움`
+          : `정리 — 커밋 안 된 변경 ${backup.file_count}개를 백업함(워크트리는 남김)`,
         detail: backup.path
       });
     } catch (err) {
@@ -1655,8 +1660,8 @@ export function createPrActions(deps) {
       local.backup && typeof local.backup.path === 'string'
         ? local.backup
         : null;
-    if (backup && local.worktree_removed === true) {
-      recordCleanupBackup(bead_id, backup);
+    if (backup) {
+      recordCleanupBackup(bead_id, backup, local.worktree_removed === true);
     }
     if (!local.ok) {
       // `backup=` is appended AFTER the one `manager_reason=` token the retry

@@ -1494,7 +1494,12 @@ export function createWorktreeManager(deps) {
         if (backup_reason !== null && wt !== null && createWorktreeArchive) {
           const observed = inventory_reader.observeInventory(wt);
           if (!observed.ok) {
-            return result(false, 'observe_failed');
+            return result(
+              false,
+              observed.reason === 'unsupported_file_type'
+                ? 'special_file'
+                : 'observe_failed'
+            );
           }
           let archived;
           try {
@@ -1510,9 +1515,9 @@ export function createWorktreeManager(deps) {
           } catch {
             archived = { ok: false, reason: 'archive_failed' };
           }
-          // git status never lists an untracked socket or FIFO, so the
-          // archive's own walk is where such a node first shows; it is the
-          // same deterministic stop as a listed one, not a backup failure.
+          // git status never lists an untracked socket or FIFO; one that
+          // appears after the observation above shows in the archive's own
+          // walk, and is the same deterministic stop, not a backup failure.
           if (!archived.ok && archived.reason === 'unsupported_file_type') {
             return result(false, 'special_file');
           }
@@ -1560,13 +1565,31 @@ export function createWorktreeManager(deps) {
           }
           // The digest hashes filtered content; only the raw-byte inventory
           // proves the backup holds exactly what is about to be deleted.
+          // Both observations repeat the untracked socket/FIFO walk, which
+          // no git listing (and so no digest) covers (UI-w2ou §3.1).
           if (backup_inventory !== null) {
             const reobserved = inventory_reader.observeInventory(wt);
+            if (
+              !reobserved.ok &&
+              reobserved.reason === 'unsupported_file_type'
+            ) {
+              return result(false, 'special_file');
+            }
             if (
               !reobserved.ok ||
               !sameInventory(reobserved.inventory, backup_inventory)
             ) {
               return result(false, 'identity_changed');
+            }
+          } else {
+            const special = inventory_reader.observeSpecialFiles(wt);
+            if (!special.ok) {
+              return result(
+                false,
+                special.reason === 'unsupported_file_type'
+                  ? 'special_file'
+                  : 'identity_changed'
+              );
             }
           }
           const removed = await run(['worktree', 'remove', '--force', wt], {
