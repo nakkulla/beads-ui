@@ -2938,6 +2938,29 @@ describe('worker/worktree dispatch-time dependency install (spec D3)', () => {
     expect(fs.existsSync(created.path)).toBe(true);
   });
 
+  test('removeCompleted stops as special_file when an untracked FIFO sits beside a backed-up file', async () => {
+    const { createWorktreeArchive } = completedArchive();
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      createWorktreeArchive
+    });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    fs.writeFileSync(path.join(created.path, 'leftover.bak'), 'leftover\n');
+    execFileSync('mkfifo', [path.join(created.path, 'leftover.fifo')]);
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'special_file' });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
   test('removeCompleted removes ignored-only leftovers without a backup', async () => {
     fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\n');
     git(['add', '.gitignore'], repo);

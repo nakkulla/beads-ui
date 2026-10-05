@@ -1510,6 +1510,12 @@ export function createWorktreeManager(deps) {
           } catch {
             archived = { ok: false, reason: 'archive_failed' };
           }
+          // git status never lists an untracked socket or FIFO, so the
+          // archive's own walk is where such a node first shows; it is the
+          // same deterministic stop as a listed one, not a backup failure.
+          if (!archived.ok && archived.reason === 'unsupported_file_type') {
+            return result(false, 'special_file');
+          }
           if (!archived.ok || !archived.receipt || !archived.inventory) {
             return result(false, 'archive_failed');
           }
