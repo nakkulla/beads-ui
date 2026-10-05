@@ -57,11 +57,11 @@ afterEach(() => {
  *   evidence?: any,
  *   repoOperations?: boolean,
  *   removeResult?: { ok: boolean, removed: boolean, reason: string|null },
- *   discardResult?: { ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean },
+ *   discardResult?: { ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean, backup?: { path: string, manifest_sha256: string, file_count: number }|null },
  *   exactDeploy?: any,
  *   branchDeleteCode?: number,
  *   branchVerifyCode?: number,
- *   landingProgress?: { cursor: string, head_sha: string|null, reason: string|null },
+ *   landingProgress?: { cursor: string, head_sha: string|null, reason: string|null, [key: string]: unknown },
  *   pushLog?: { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string } | null,
  *   resolveWriteSticks?: boolean,
  *   readIssueThrows?: boolean,
@@ -1356,6 +1356,164 @@ test('records failure reason without moving attempt to done', async () => {
       }
     }
   });
+});
+
+const BACKUP_RECEIPT = Object.freeze({
+  path: '/tmp/example-state/discard-backups/completed-worktree-abc',
+  manifest_sha256: 'd'.repeat(64),
+  file_count: 2
+});
+
+const BACKED_UP_CLEANUP = Object.freeze({
+  ok: true,
+  removed: true,
+  reason: null,
+  worktree_removed: true,
+  branch_removed: true,
+  backup: BACKUP_RECEIPT
+});
+
+/**
+ * The `quickfix_landing` record of the last store write for one cursor.
+ *
+ * @param {any} store
+ * @param {string} cursor
+ */
+function lastLandingAt(store, cursor) {
+  const writes = store.updateAttempt.mock.calls
+    .map((/** @type {any[]} */ call) => call[1].patch.quickfix_landing)
+    .filter((/** @type {any} */ landing) => landing.cursor === cursor);
+  return writes.at(-1);
+}
+
+test('carries a cleanup backup receipt into the parent close step record', async () => {
+  const { landing, store } = makeLanding({ discardResult: BACKED_UP_CLEANUP });
+
+  await settle(landing);
+
+  expect(lastLandingAt(store, 'parent_close').cleanup_backup).toEqual(
+    BACKUP_RECEIPT
+  );
+});
+
+test('keeps a cleanup backup receipt on the done record', async () => {
+  const { landing, store } = makeLanding({ discardResult: BACKED_UP_CLEANUP });
+
+  await settle(landing);
+
+  expect(
+    store.moveToDone.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toMatchObject({ cursor: 'parent_close', cleanup_backup: BACKUP_RECEIPT });
+});
+
+test('puts the backup receipt in the cleanup failure detail', async () => {
+  const { landing, store } = makeLanding({
+    discardResult: {
+      ok: false,
+      removed: true,
+      reason: 'ref_delete_failed',
+      worktree_removed: true,
+      branch_removed: false,
+      backup: BACKUP_RECEIPT
+    }
+  });
+
+  await settle(landing);
+
+  expect(
+    store.updateAttempt.mock.calls.at(-1)?.[1].patch.quickfix_landing
+      .cleanup_detail
+  ).toEqual({
+    manager_reason: 'ref_delete_failed',
+    worktree_removed: true,
+    branch_removed: false,
+    backup: BACKUP_RECEIPT
+  });
+});
+
+test('restores a failed cleanup backup receipt on the rerun that completes', async () => {
+  const { landing, store } = makeLanding({
+    landingProgress: {
+      cursor: 'branch_cleanup',
+      head_sha: HEAD_SHA,
+      reason: 'local_branch_delete_failed',
+      cleanup_detail: {
+        manager_reason: 'ref_delete_failed',
+        worktree_removed: true,
+        branch_removed: false,
+        backup: BACKUP_RECEIPT
+      }
+    }
+  });
+
+  await settle(landing);
+
+  expect(
+    store.moveToDone.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toMatchObject({ cursor: 'parent_close', cleanup_backup: BACKUP_RECEIPT });
+});
+
+test('keeps the backup receipt through the parent close restart shortcut', async () => {
+  const { landing, store } = makeLanding({
+    status: 'closed',
+    landingProgress: {
+      cursor: 'parent_close',
+      head_sha: HEAD_SHA,
+      reason: null,
+      cleanup_backup: BACKUP_RECEIPT
+    }
+  });
+
+  await settle(landing);
+
+  expect(
+    store.moveToDone.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toEqual({
+    cursor: 'parent_close',
+    head_sha: HEAD_SHA,
+    reason: null,
+    cleanup_backup: BACKUP_RECEIPT
+  });
+});
+
+test('keeps a no-change cleanup backup receipt on the done record', async () => {
+  const { landing, store } = makeLanding({
+    status: 'closed',
+    closeReason: 'refuted: 근거',
+    discardResult: BACKED_UP_CLEANUP
+  });
+
+  await settle(landing);
+
+  expect(
+    store.moveToDone.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toEqual({
+    cursor: 'no_change_close',
+    head_sha: null,
+    reason: null,
+    cleanup_backup: BACKUP_RECEIPT
+  });
+});
+
+test('records one timeline line for a cleanup that made a backup', async () => {
+  const timeline = timelineRecorder();
+  const { landing } = makeLanding({
+    timeline,
+    discardResult: BACKED_UP_CLEANUP
+  });
+
+  await settle(landing);
+
+  expect(
+    timeline.events.filter((event) => event.detail === BACKUP_RECEIPT.path)
+  ).toEqual([
+    expect.objectContaining({
+      bead_id: BEAD,
+      attempt_id: ATTEMPT,
+      kind: 'landing_step',
+      summary: '정리 — 커밋 안 된 변경 2개를 백업하고 워크트리를 지움'
+    })
+  ]);
 });
 
 test('judges a foreign landing in the pinned checkout, not the rig', async () => {

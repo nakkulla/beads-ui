@@ -166,7 +166,8 @@ function seedStore(options = {}) {
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   repoOperations?: any,
- *   noNotify?: boolean
+ *   noNotify?: boolean,
+ *   timeline?: { append: (input: any) => unknown }
  * }} [options]
  */
 function makeActions(options = {}) {
@@ -592,7 +593,8 @@ function makeActions(options = {}) {
     now: () => 1000,
     // `noNotify` builds the actions with no notifier at all — the shape every
     // pre-UI-9rrk construction site still has.
-    notify: options.noNotify === true ? undefined : notify
+    notify: options.noNotify === true ? undefined : notify,
+    timeline: options.timeline
   });
 
   return {
@@ -6137,5 +6139,62 @@ describe('worker/pr-actions — 영수증 detail과 verify 원인 전달 (UI-jxs
     expect(result.verdict.reason).toBe(
       'verify_config_invalid:operation_id_missing'
     );
+  });
+});
+
+describe('post-merge cleanup — completed worktree backup (UI-w2ou §3.4)', () => {
+  const RECEIPT = Object.freeze({
+    path: '/tmp/example-state/discard-backups/completed-worktree-abc',
+    manifest_sha256: 'd'.repeat(64),
+    file_count: 3
+  });
+
+  test('appends the backup path to the cleanup failure detail', async () => {
+    const h = makeActions();
+    h.worktree.removeCompleted.mockResolvedValueOnce({
+      ok: false,
+      removed: true,
+      reason: 'ref_delete_failed',
+      worktree_removed: true,
+      branch_removed: false,
+      backup: RECEIPT
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD].detail).toBe(
+      `manager_reason=ref_delete_failed worktree_removed=true branch_removed=false backup=${RECEIPT.path}`
+    );
+  });
+
+  test('records one timeline line for a cleanup that made a backup', async () => {
+    /** @type {any[]} */
+    const events = [];
+    const h = makeActions({
+      timeline: {
+        append: (/** @type {any} */ input) => {
+          events.push(input);
+          return { ok: true };
+        }
+      }
+    });
+    h.worktree.removeCompleted.mockResolvedValueOnce({
+      ok: true,
+      removed: true,
+      reason: null,
+      worktree_removed: true,
+      branch_removed: true,
+      backup: RECEIPT
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(events.filter((event) => event.detail === RECEIPT.path)).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        kind: 'merge_step',
+        summary: '정리 — 커밋 안 된 변경 3개를 백업하고 워크트리를 지움'
+      })
+    ]);
   });
 });

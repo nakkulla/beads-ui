@@ -99,6 +99,32 @@ describe('cleanup failure retry classification', () => {
     expect(result).toBe('transient');
   });
 
+  test('keeps an archive_failed detail transient when it carries a backup path', () => {
+    const failure = {
+      step: 'branch_cleanup',
+      reason: 'worktree_remove_failed',
+      detail:
+        'manager_reason=archive_failed worktree_removed=false branch_removed=false backup=/tmp/example-state/discard-backups/completed-worktree-abc'
+    };
+
+    const result = cleanupFailureRetryClass(failure);
+
+    expect(result).toBe('transient');
+  });
+
+  test('keeps an identity_changed detail deterministic when it carries a backup path', () => {
+    const failure = {
+      step: 'branch_cleanup',
+      reason: 'worktree_remove_failed',
+      detail:
+        'manager_reason=identity_changed worktree_removed=false branch_removed=false backup=/tmp/example-state/discard-backups/completed-worktree-abc'
+    };
+
+    const result = cleanupFailureRetryClass(failure);
+
+    expect(result).toBe('deterministic');
+  });
+
   test.each([
     'dirty_unique',
     'untracked_present',
