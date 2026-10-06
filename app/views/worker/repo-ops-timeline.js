@@ -22,11 +22,17 @@ import {
   retryOutcomeText,
   terminationText
 } from './failure-labels.js';
-import { formatClock, formatElapsed, shortSha } from './lanes.js';
+import {
+  formatClock,
+  formatElapsed,
+  interactiveSessionBadgesTemplate,
+  shortSha
+} from './lanes.js';
 // One template for the log path, shared with the Worker row's completion card
 // (UI-8w4t §4) so both surfaces offer the same affordance and the same toast.
 import { logPathTemplate } from './log-path.js';
 import { cleanupStepLabel, cleanupStepperView } from './merge-steps.js';
+import { repoOperationResolveFields } from './tile-resolve.js';
 
 /**
  * How many events the drawer shows. The rail is a "what just happened" surface,
@@ -400,9 +406,13 @@ function operationWhyTemplate(operation, timeout_ms) {
 }
 
 /**
- * The dismiss action on a failed operation (§4.2). A failed script is now a
- * terminal record: the only thing a reader can do to it is accept it, which
- * takes the row out of the attention count without erasing the evidence.
+ * The actions on a failed operation (§4.2). A failed script is a terminal
+ * record: a reader can accept it (`기록 닫기`), which takes the row out of the
+ * attention count without erasing the evidence. A failed MANUAL deploy also
+ * carries `[세션에서 이어가기]` (UI-jbl1 §3.3), which opens its failure
+ * conversation; whether it stands is `tile-resolve.js`'s decision, and a live
+ * conversation shows where it is instead of the button. The click is not the
+ * drawer's own — both tabs delegate it, like the cleanup row's.
  *
  * @param {any} operation
  * @returns {TemplateResult|string}
@@ -415,7 +425,27 @@ function operationActionsTemplate(operation) {
   ) {
     return '';
   }
+  const resolve = repoOperationResolveFields(operation);
   return html`<div class="worker-ev__acts">
+    ${resolve.resolve_action === true
+      ? html`<button
+          type="button"
+          class="op-btn worker-ev__btn worker-repo-op__resolve"
+          data-operation-id=${operation.operation_id}
+          ?disabled=${resolve.resolve_enabled === false}
+          title=${resolve.resolve_title || ''}
+        >
+          세션에서 이어가기
+        </button>`
+      : ''}
+    ${resolve.conversation
+      ? interactiveSessionBadgesTemplate(
+          // No transcript button here: the drawer row has no Bead to open
+          // its session log under.
+          [{ ...resolve.conversation, session_id: null }],
+          { bead_id: '' }
+        )
+      : ''}
     <button
       type="button"
       class="op-btn worker-ev__btn worker-repo-op__dismiss"

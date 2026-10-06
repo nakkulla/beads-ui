@@ -1202,3 +1202,123 @@ describe('정리 멈춤 행의 짝 판정 (UI-18a5 §3.2)', () => {
     expect(buttons.length).toBe(0);
   });
 });
+
+describe('수동 배포 실패 행의 [세션에서 이어가기] (UI-jbl1 §3.3)', () => {
+  /**
+   * A failed manual deploy card carrying the server's resolve material.
+   *
+   * @param {Record<string, any>} [patch]
+   */
+  function manualFailure(patch = {}) {
+    return operation({
+      state: 'failed',
+      source: 'manual',
+      failure: { code: 'script_failed' },
+      resolve: { terminal_failure: true, interactive_sessions: [] },
+      ...patch
+    });
+  }
+
+  /**
+   * @param {Record<string, any>} card
+   * @returns {HTMLElement}
+   */
+  function drawn(card) {
+    const mount = document.createElement('div');
+    const view = timelineView([card], [], { expanded: false });
+    render(
+      repoOpsTimelineTemplate({
+        events: view.visible,
+        hidden: view.hidden,
+        expanded: false,
+        repo: '/repo'
+      }),
+      mount
+    );
+    return mount;
+  }
+
+  test('draws the button next to 기록 닫기 with the operation id', () => {
+    const mount = drawn(manualFailure());
+
+    const buttons = Array.from(
+      mount.querySelectorAll('.worker-ev__acts button')
+    ).map((button) => [
+      button.textContent?.trim(),
+      /** @type {HTMLElement} */ (button).dataset.operationId
+    ]);
+
+    expect(buttons).toEqual([
+      ['세션에서 이어가기', 'op-1'],
+      ['기록 닫기', 'op-1']
+    ]);
+    expect(
+      mount
+        .querySelector('.worker-repo-op__resolve')
+        ?.classList.contains('op-btn')
+    ).toBe(true);
+  });
+
+  test('shows the live conversation window instead of the button', () => {
+    const mount = drawn(
+      manualFailure({
+        resolve: {
+          terminal_failure: true,
+          interactive_sessions: [
+            {
+              key: 'repo-op:op-1:resolve',
+              kind: 'resolve',
+              provider: 'claude',
+              session_id: 'sid',
+              mode: 'fresh',
+              source: 'fresh',
+              tmux_session: 'bdui-inquiry',
+              tmux_window: 'resolve-repo-op-op-1',
+              state: 'live',
+              closing: false,
+              discord_url: null
+            }
+          ]
+        }
+      })
+    );
+
+    expect(mount.querySelector('.worker-repo-op__resolve')).toBeNull();
+    expect(
+      mount.querySelector('.interactive-session-badge')?.textContent
+    ).toContain('bdui-inquiry:resolve-repo-op-op-1');
+  });
+
+  test('draws no button on an automatic deploy failure', () => {
+    const mount = drawn(
+      manualFailure({
+        source: 'automatic',
+        resolve: { terminal_failure: false, interactive_sessions: [] }
+      })
+    );
+
+    expect(mount.querySelector('.worker-repo-op__resolve')).toBeNull();
+  });
+
+  test('leaves the click to the tab that hosts the drawer', () => {
+    const host = document.createElement('div');
+    const drawer = createRepoOpsDrawer(host);
+    const delegated = vi.fn();
+    host.addEventListener('click', (event) => {
+      const target = /** @type {HTMLElement} */ (event.target);
+      delegated(
+        target
+          .closest('.worker-repo-op__resolve')
+          ?.getAttribute('data-operation-id')
+      );
+    });
+    drawer.open({ operations: [manualFailure()], cleanup_failures: [] });
+
+    /** @type {HTMLElement} */ (
+      host.querySelector('.worker-repo-op__resolve')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(delegated).toHaveBeenCalledWith('op-1');
+    expect(drawer.isOpen()).toBe(true);
+  });
+});

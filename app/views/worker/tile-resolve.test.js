@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { hasLiveConversation, tileResolveFields } from './tile-resolve.js';
+import {
+  hasLiveConversation,
+  repoOperationResolveFields,
+  tileResolveFields
+} from './tile-resolve.js';
 
 /**
  * @param {'inquiry'|'resolve'|'external_resume'} kind
@@ -419,5 +423,65 @@ describe('hasLiveConversation', () => {
     const live = hasLiveConversation(views);
 
     expect(live).toBe(true);
+  });
+});
+
+describe('repoOperationResolveFields (UI-jbl1 §3.3)', () => {
+  /**
+   * @param {Record<string, any>} [resolve]
+   */
+  function card(resolve = {}) {
+    return {
+      operation_id: 'op-1',
+      state: 'failed',
+      resolve: { terminal_failure: true, interactive_sessions: [], ...resolve }
+    };
+  }
+
+  test('draws the button on a failed manual deploy', () => {
+    const fields = repoOperationResolveFields(card());
+
+    expect(fields).toMatchObject({
+      resolve_action: true,
+      resolve_enabled: true
+    });
+  });
+
+  test('draws nothing for a card the server marked no terminal failure', () => {
+    const fields = repoOperationResolveFields(
+      card({ terminal_failure: false })
+    );
+
+    expect(fields).toEqual({});
+  });
+
+  test('shows the live conversation instead of the button', () => {
+    const live = session('resolve', { tmux_window: 'resolve-repo-op-op-1' });
+
+    const fields = repoOperationResolveFields(
+      card({ interactive_sessions: [live] })
+    );
+
+    expect(fields).toEqual({ conversation: live });
+  });
+
+  test('hides the button while a decided outcome holds the row', () => {
+    const closing = session('resolve', {
+      state: 'exiting',
+      closing: true,
+      conversation: { handoff: { line: '인계 · 다시' }, result: null }
+    });
+
+    const fields = repoOperationResolveFields(
+      card({ interactive_sessions: [closing] })
+    );
+
+    expect(fields).toEqual({});
+  });
+
+  test('locks the button while its request is pending', () => {
+    const fields = repoOperationResolveFields(card(), true);
+
+    expect(fields.resolve_enabled).toBe(false);
   });
 });

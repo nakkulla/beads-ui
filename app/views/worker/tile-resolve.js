@@ -247,3 +247,47 @@ export function tileResolveFields(
     ...pair
   };
 }
+
+/** What a repo-operation row's `[세션에서 이어가기]` opens (UI-jbl1 §3.3). */
+const REPO_OPERATION_SESSION_TITLE =
+  '새 세션을 저장소 루트에서 대화로 엽니다 — 원인을 읽기 전용으로 진단하고, 인계하면 Worker가 같은 배포를 한 번 다시 실행합니다';
+
+/**
+ * The `[세션에서 이어가기]` decision of one 저장소 작업 drawer row (UI-jbl1
+ * §3.3): the failed manual deploy the server marked `resolve.terminal_failure`
+ * draws the button unless the row's own conversation is live or holds a
+ * decided outcome — the same two judgments a lane card reads above. A live
+ * conversation is returned as `conversation` so the row shows where it is
+ * instead of the button.
+ *
+ * @param {any} operation - A projected repo-operation card.
+ * @param {boolean} [resolve_pending]
+ * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string, conversation?: any }}
+ */
+export function repoOperationResolveFields(operation, resolve_pending = false) {
+  const material = operation?.resolve;
+  if (!material || material.terminal_failure !== true) {
+    return {};
+  }
+  const views = Array.isArray(material.interactive_sessions)
+    ? material.interactive_sessions
+    : [];
+  if (hasLiveConversation(views)) {
+    return {
+      conversation: views.find(
+        (/** @type {any} */ view) =>
+          !!view && view.state === 'live' && !view.closing
+      )
+    };
+  }
+  if (holdsConversationOutcome(views)) {
+    return {};
+  }
+  return {
+    resolve_action: true,
+    resolve_enabled: !resolve_pending,
+    resolve_title: resolve_pending
+      ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
+      : REPO_OPERATION_SESSION_TITLE
+  };
+}
