@@ -19,7 +19,7 @@ scope:
 # Slurm 대기 카드는 막힌 이유와 클러스터 용량을 보이고, 사람이 확인하면 워크플로 전체를 Slurm 밖에서 바로 실행한다
 
 - Bead: UI-qbgj (`spec_backed`)
-- 작성: 2026-10-06 · r0
+- 작성: 2026-10-06 · r1 (spec_review r1 astra REVISE b7/m1 반영 — hold 뒤 대기 재확인, 기동 판정은 pid 기준·미기동 확정 때만 release, 단계별 진행 기록·재요청 같은 실행 조회·결과 불명 동안 종료 판정 차단, 로컬 실행에서 프로필 덮어쓰기 금지, 취소 미확인 표시·마무리 경로, 템플릿 착지 계약, UI-jbl1과 ADR 대체 순서, `sjob_local`에 cpus·mem_gb)
 - 사용자 결정: 2026-10-06 대화 — 바로 실행은 워크플로 전체(하위 단계 포함)를 Slurm 밖으로 꺼낸다. 자원 기본값은 실제 남는 자원의 80%이고 비율은 beads-ui 설정에서, 값은 실행마다 확인 창에서 고친다.
 
 ## 1. 목표
@@ -70,7 +70,7 @@ slurm 등록 잡의 상태가 `PENDING`일 때만, 기존 관찰 ssh 한 번 안
 
 - 표시 재료일 뿐이다. 등록 판정·hold 판정·`completion`·`completionDigest`·판정 배지·알림에 들어가지 않는다.
 - 각 조회는 `timeout`(5초)으로 감싼다. 재료 실패는 저장된 `capacity`를 그대로 두고, 레코드의 `error_count`·`last_error`·백오프에 닿지 않는다.
-- 투영은 잡 단위 선택 필드 `capacity`를 더한다. `EXTERNAL_WAIT_FIELDS`(최상위 키)는 바꾸지 않는다.
+- 투영은 잡 단위 선택 필드 `capacity`를 더하고, protocol의 잡 단위 검사가 그 형태를 검증한다. `EXTERNAL_WAIT_FIELDS`(최상위 키)는 바꾸지 않는다.
 
 ### 3.2 `sjob takeover` (dotfiles, 이 스펙이 계약을 정함)
 
@@ -87,27 +87,28 @@ sjob takeover <slurm-job-id> --result --json
   - `workflow_local_profile_missing`: workflow head(`workflow: true` 또는 `script_path`가 `<cwd>/scripts/run_workflow.sh`)인데 `<cwd>/profiles/server-local/config.yaml`이 없음
   - `insufficient_host_capacity`: 요청 CPU > CPU 수 − 1분 부하(내림), 또는 요청 메모리 > `MemAvailable`
   - `local_start_failed`, `busy`(같은 잡 takeover 진행 중; flock)
-- **순서**:
-  1. `scontrol hold <id>`를 한다. 실패하면(이미 시작·종료됨) `not_pending`으로 거부한다.
-  2. `sjob run --local`과 같은 경로(같은 레지스트리 `Lnnn`, exitcode 파일, 새 로그, `SJOB_*` env)로 `cwd`에서 같은 script·인자를 띄운다. 알림은 실행 기록의 `notify`를 따른다.
-  3. 프로세스가 살아 있는지 확인한다.
-  4. `scancel <id>`를 한다.
-  - 2·3이 실패하면 `scontrol release <id>`를 하고 `local_start_failed`로 거부한다.
-  - 4가 실패해도 로컬 실행은 유지한다. hold된 원 잡은 시작하지 않는다. 결과에 `slurm_cancel_failed: true`를 남긴다.
-- **성공 JSON**: `{ok:true, slurm_job_id, local_id, pid, process_start, host, workdir, log_path, exitcode_path, cpus, mem_gb, slurm_overcommit, slurm_cancel_failed}`
-  - `process_start`는 `LC_ALL=C ps -p <pid> -o lstart=`이다.
+- **진행 기록**: takeover는 단계마다 `~/.sjob/local/takeover-<slurm-job-id>.json`을 원자적으로(임시 파일 → rename) 다시 쓴다. `state`는 `holding` → `started` → `done`이고 `started`부터 로컬 실행 식별자(`local_id`·`pid`·`process_start`·`log_path`·`exitcode_path`)를 담는다. 같은 잡에 `started`·`done` 기록이 있으면 takeover는 새로 실행하지 않고 그 기록을 그대로 돌려준다(재요청은 같은 실행을 조회한다). `--result`는 기록을 그대로 출력하고, 기록이 없으면 `{ok:false, reason:"no_takeover"}`다.
+- **순서** (전체를 같은 잡 flock 안에서):
+  1. `scontrol hold <id>`를 하고 진행 기록을 `holding`으로 쓴다.
+  2. `scontrol show job <id>`를 다시 읽어 JobId·SubmitTime이 같고 `JobState=PENDING`이며 `Reason=JobHeldUser`인지 확인한다. hold 성공만으로는 대기 중이라는 증거가 아니다(실행 중 잡에도 성공할 수 있다). 아니면 `scontrol release <id>`, 진행 기록 삭제, `not_pending`으로 거부한다. hold가 걸린 PENDING 잡은 시작하지 않으므로 이 확인 뒤에는 중복 실행이 없다.
+  3. `sjob run --local`과 같은 경로(같은 레지스트리 `Lnnn`, exitcode 파일, 새 로그, `SJOB_*` env)로 `cwd`에서 같은 script·인자를 띄운다. 알림은 실행 기록의 `notify`를 따른다. workflow head면 `SNAKEMAKE_PROFILE=profiles/server-local`을 명시해 넘긴다(§3.3).
+  4. 기동이 pid를 돌려주면 시작된 것으로 본다. 곧바로 끝난 짧은 작업도 시작된 것이다(살아 있는지 확인으로 판정하지 않는다). 진행 기록을 `started`로 쓴다. 기동 호출 자체가 예외로 실패해 pid가 없을 때만 미기동이 확정이고, 그때만 `scontrol release <id>`, 진행 기록 삭제, `local_start_failed`로 거부한다.
+  5. `scancel <id>`를 최대 3회(5초 간격) 시도하고, `squeue -h -j <id>`가 비거나 상태가 `CANCELLED`인지 확인한다. 진행 기록을 `done`으로 쓰고 `slurm_cancel_failed`를 기록한다. 취소가 끝내 확인되지 않아도 로컬 실행은 유지한다. 원 잡은 hold로 남아 시작하지 않는다.
+- **성공 JSON**(= `started`·`done` 진행 기록): `{ok:true, state, slurm_job_id, local_id, pid, process_start, host, workdir, log_path, exitcode_path, cpus, mem_gb, slurm_overcommit, slurm_cancel_failed}`
+  - `process_start`는 `LC_ALL=C ps -p <pid> -o lstart=`이고, 이미 끝난 프로세스면 빈 값이다(§3.5 관찰이 exitcode로 판정한다).
   - `slurm_overcommit`은 요청이 노드의 Slurm 미배정 CPU·메모리를 넘었는지다. 거부 사유가 아니다(사람이 확인 창에서 이미 봤다).
-- **결과 보존**: 결과 JSON을 `~/.sjob/local/takeover-<slurm-job-id>.json`에 남기고, `--result`는 그것을 다시 출력한다(§3.4 결과 불명 복구).
+  - `state:"holding"` 기록은 takeover 프로세스가 2~4 사이에서 죽은 경우다. `--result`가 이 상태를 돌려주면 원 잡은 hold로 묶여 있고 로컬 실행 여부는 레지스트리로만 알 수 있다(§3.4).
 
 ### 3.3 서버 로컬 프로필 (research-repo-template, 감싼 외부 unit)
 
 - 템플릿은 scheduler가 slurm인 프로젝트에 `profiles/server-local/config.yaml`을 렌더한다. executor 없음(로컬), `software-deployment-method: conda`, `printshellcmds`, `rerun-incomplete`, `default-resources: mem_mb=8000`.
-- `run_workflow.sh`는 `SJOB_LOCAL=1`이고 `SNAKEMAKE_PROFILE`이 비어 있으면 `profiles/server-local`을 쓴다. 그리고 `--cores "$SJOB_CPUS" --resources "mem_mb=$((SJOB_MEM*1024))"`를 더한다. 그래서 바로 실행이 아니어도 `sjob run --local --workflow`가 같은 방식으로 돈다.
+- `run_workflow.sh`는 `SJOB_LOCAL=1`이면 상속된 `SNAKEMAKE_PROFILE` 값과 무관하게 항상 `profiles/server-local`을 쓴다. 그리고 `--cores "$SJOB_CPUS" --resources "mem_mb=$((SJOB_MEM*1024))"`를 더한다. 결정: 로컬 실행에서는 프로필 덮어쓰기를 받지 않는다 — 환경에 남은 `SNAKEMAKE_PROFILE=profiles/slurm`이 하위 단계를 다시 Slurm에 내면 "워크플로 전체를 Slurm 밖에서" 요구가 깨진다. `SJOB_LOCAL`이 없으면 지금 동작(`SNAKEMAKE_PROFILE` 또는 기본 slurm)을 그대로 둔다. 그래서 바로 실행이 아니어도 `sjob run --local --workflow`가 같은 방식으로 돈다.
+- `profiles/server-local/config.yaml`에는 `executor` 키가 없어야 한다(로컬 executor). 템플릿 검증이 이를 확인한다.
 - 기존 프로젝트는 `copier update`로 받는다(§8 prostate unit).
 
 ### 3.4 바로 실행 조작 (beads-ui)
 
-- **노출**: 레코드 stage가 `hold`·`detached`이고 잡이 정확히 하나이며 그 잡이 `PENDING`인 slurm이면, 서버가 카드 조작 `external_wait_takeover`(`▶ 바로 실행`, placement `card`)를 내린다. owner 종류(worker·session)는 가리지 않는다.
+- **노출**: 레코드 stage가 `hold`·`detached`이고 잡이 정확히 하나이며 그 잡이 `takeover` 표시 없는 `PENDING` slurm이면, 서버가 카드 조작 `external_wait_takeover`(`▶ 바로 실행`, placement `card`)를 내린다. owner 종류(worker·session)는 가리지 않는다.
 - **확인 창**: 누르면 모달(`provider-resume-dialog` 패턴)이 열린다. 창의 구성은 다음과 같다.
   - CPU 칸: 기본값은 `floor((host.cpus − host.load1) × 비율)`이다.
   - 메모리(G) 칸: 기본값은 `floor(host.mem_available × 비율)`이다.
@@ -120,19 +121,28 @@ sjob takeover <slurm-job-id> --result --json
   1. 입력을 검증한다(`cpus`·`mem_gb` 정수 ≥1).
   2. 레코드별 조작 잠금을 잡는다. 진행 중 관찰은 끝나기를 기다리고, 잠금 동안 그 레코드 관찰을 건너뛴다. 이미 잡혀 있으면 `busy`다.
   3. 현재 레코드로 노출 조건을 다시 판정한다.
-  4. `ssh -o BatchMode=yes <ssh_host> '$HOME/.local/bin/sjob takeover <id> -c .. -m .. --json'`를 실행한다(60초).
-  5. 결과에 따라 처리한다.
+  4. ssh 전에 그 slurm 잡에 영속 표시 `takeover:{state:'pending', requested_at, cpus, mem_gb}`를 쓴다. 이 표시가 있는 동안에는 다음이 성립한다.
+     - 노출 조건이 거짓이다. 버튼이 사라지고 재클릭은 `busy`다.
+     - 그 잡의 일반 slurm 종료 판정(CANCELLED 등 terminal로 레코드 완료)을 하지 않는다. 대신 관찰 차례마다 아래 복구를 한다.
+  5. `ssh -o BatchMode=yes <ssh_host> '$HOME/.local/bin/sjob takeover <id> -c .. -m .. --json'`를 실행한다(60초).
+  6. 결과에 따라 처리한다.
      - `ok:true`면 `store.update`로 그 잡을 제자리에서 `sjob_local` 잡으로 바꾼다(§3.5). `next_observation_at=지금`으로 두고, timeline `user_action`을 남기고, 변경을 통지한다.
-     - `ok:false`면 레코드를 바꾸지 않고 사유 문구로 오류를 돌려준다.
-     - ssh 실패·시간 초과·해석 불가면 결과 불명이다. 레코드 `last_error='takeover_unknown'`을 쓰고, 다음 관찰 차례에 `--result --json`을 한 번 읽어 성공이면 위와 같이 바꾼다. 결과 파일도 없으면 원 slurm 관찰을 그대로 잇는다(hold된 잡은 카드의 대기 이유가 `JobHeldUser`로 드러난다).
+     - `ok:false`면 `takeover` 표시를 지우고 레코드를 그대로 둔 채 사유 문구로 오류를 돌려준다.
+     - ssh 실패·시간 초과·해석 불가면 결과 불명이다. `takeover.state`를 `unknown`으로 두고 잠금을 푼다.
+- **결과 불명 복구**(관찰 차례마다, `takeover.state='unknown'`인 잡, 그리고 조작 잠금 없이 남은 `pending` — ssh 도중 서버 재시작). 같은 ssh에서 `sjob takeover <id> --result --json`과 원 잡 상태를 읽는다.
+  - `started`·`done`이면 위 성공과 같이 제자리 교체한다.
+  - `no_takeover`이고 원 잡이 hold 없이 PENDING·RUNNING이면 takeover가 일어나지 않은 것이다. 표시를 지우고 일반 slurm 관찰로 돌아간다.
+  - `holding`이 남았거나, `no_takeover`인데 원 잡이 hold·CANCELLED이면 사람이 판단해야 한다. 레코드를 바꾸지 않고, 카드 판정을 `⛔ 조치 필요 · 바로 실행 결과 확인 필요(sjob takeover <id> --result)`로 보인다. 이 상태의 잡은 표시를 남긴 채 일반 종료 판정을 계속 막는다. 사람이 `[관찰 중단]`이나 터미널 정리로 끝낸다.
 - bd `external_wait` 키와 `wait_id`, stage, owner, hold 예산은 바뀌지 않는다.
 
 ### 3.5 `sjob_local` 어댑터
 
-- 잡 형태: `{adapter:'sjob_local', ssh_host, local_id, pid, process_start, workdir, log_path, exitcode_path, submitted_at, expected, name, takeover_from:{job_id, at}}`
-  - `expected`·`name`은 원 slurm 잡에서 그대로 옮긴다.
-  - `bead-wait register`는 이 어댑터를 받지 않는다. takeover만 만든다.
+- 잡 형태: `{adapter:'sjob_local', ssh_host, local_id, pid, process_start, workdir, log_path, exitcode_path, submitted_at, expected, name, cpus, mem_gb, takeover_from:{job_id, at, cancel_failed}}`
+  - `expected`·`name`은 원 slurm 잡에서 그대로 옮긴다. `cpus`·`mem_gb`·`cancel_failed`는 takeover 결과에서 온다.
+  - 저장 검증(`contract.js` `ADAPTERS`·store 검증)과 `projectExternalWait` 투영·protocol 잡 검사가 이 형태를 함께 받는다. 등록 API(`validRegistration`, `bead-wait register`)는 계속 `slurm`·`process`만 받는다. takeover만 이 어댑터를 만든다.
+  - `cancel_failed: true`면 카드 잡 줄과 상세에 `원 Slurm <id> 취소 미확인 — hold 유지`를 보이고, 완료 프롬프트에도 그 줄을 넣는다. 재개된 세션이나 사람이 `scancel`로 마무리한다. hold된 원 잡은 실행되지 않으므로 대기 판정·완료에는 영향이 없다.
 - 관찰은 ssh 한 번이다. `LC_ALL=C ps -p <pid> -o lstart=`, `cat <exitcode_path>`, `expected` 원격 `stat`(slurm 어댑터와 같은 방식)을 읽는다.
+  - `process_start`가 비어 있으면(takeover 시점에 이미 끝남) exitcode만으로 판정한다.
   - `lstart`가 `process_start`와 같으면 `RUNNING`이다.
   - 프로세스가 사라졌고 exitcode가 정수면 0은 `COMPLETED`, 아니면 `FAILED`이고 evidence는 `exitcode`다.
   - 프로세스가 사라졌는데 exitcode가 없으면 `VANISHED`, `recovery_needed`다.
@@ -156,6 +166,14 @@ sjob takeover <slurm-job-id> --result --json
 - **설정**: 서버 전역 `외부 작업` 그룹에 `바로 실행 기본 자원 비율(%)`을 둔다. 기본 80, 범위 10–100.
   - 결정: 타이밍 설정 표에 넣지 않고 같은 패턴(`{revision, overrides}`, 읽기 fail-quiet, 쓰기 strict, subscribe/set/snapshot WS)의 별도 저장소로 둔다 — 타이밍 표는 모든 값이 정수 초라는 불변식을 갖는다.
 
+### 3.7 ADR UI-18a5 대체 순서
+
+- 결정: UI-jbl1의 열린 스펙도 UI-18a5를 다시 쓴다. 그 스펙은 "자동 기동은 사람 판단 멈춤에만" 조항을 실패 자동 기동으로 바꾸고, 이 문서는 외부 작업 조항만 더한다. 바꾸는 조항이 겹치지 않으므로 순서만 맞춘다.
+  - Finish의 ADR 단계에서 `docs/adr/README.md` 현재 표를 다시 읽는다.
+  - UI-jbl1의 ADR이 먼저 착지했으면 그 ADR을 supersede 대상으로 삼는다. 그 ADR이 바꾼 조항(실패 자동 기동·알림 통일 포함)까지 승계하고, 아래 summary의 승계 부분을 그 ADR summary로 바꾼다.
+  - 대상 id가 바뀌면 이 후보 줄을 정정해 재게시한다(staleness 재검토 경로).
+  - 이 문서가 먼저 착지하면 UI-jbl1이 같은 규칙으로 UI-qbgj ADR을 대체한다.
+
 ## 4. 오류와 대체
 
 - 용량 재료 조회가 실패하거나 시간을 넘기면 저장된 재료와 시각을 그대로 보인다(§3.1). 오래된 재료는 시각으로 드러난다.
@@ -167,20 +185,23 @@ sjob takeover <slurm-job-id> --result --json
 
 1. PROSTATE-c3o 같은 `PENDING` 단일 slurm 잡 카드에 대기 사유·앞 건수·예상 시작·Slurm 배정·실제 부하·쓸 수 있는 메모리가 보이고, 재료 조회 실패가 대기 판정·알림·백오프를 바꾸지 않는다.
 2. `▶ 바로 실행`은 위 조건에서만 서고, 확인 창 기본값이 실제 여유 × 설정 비율이다.
-3. takeover 성공 뒤 같은 `wait_id` 레코드의 잡이 `sjob_local`로 바뀌고, 원 Slurm 잡은 취소되며, 로컬 종료 시 기존 완료·재개 경로가 돈다.
-4. workflow head는 `profiles/server-local`이 있는 프로젝트에서만 실행되고, 하위 단계가 Slurm에 제출되지 않는다.
+3. takeover 성공 뒤 같은 `wait_id` 레코드의 잡이 `sjob_local`로 바뀌고 로컬 종료 시 기존 완료·재개 경로가 돈다. 원 Slurm 잡은 취소되거나, 취소가 확인되지 않으면 hold로 남아 실행되지 않고 `취소 미확인`이 카드·상세·완료 프롬프트에 보인다.
+4. workflow head는 `profiles/server-local`이 있는 프로젝트에서만 실행되고, 환경에 `SNAKEMAKE_PROFILE=profiles/slurm`이 남아 있어도 하위 단계가 Slurm에 제출되지 않는다.
+6. 어떤 시점에 연결이 끊겨도 Slurm과 로컬에서 같은 작업이 동시에 돌지 않는다. hold 뒤 대기 확인 → 시작 → 취소 순서, 재요청은 같은 실행 조회, 결과 불명 동안 일반 종료 판정·재실행 차단이 이를 보장한다.
 5. Worker 탭과 모니터 탭의 같은 Bead 카드가 같은 줄·버튼을 갖는다.
 
 ## 6. 테스트
 
 - `adapters/slurm.test.js`: 가짜 `scontrol`·`squeue`·`/proc` 출력으로 `capacity` 파싱, 비 PENDING이면 비움, 조회 실패 시 보존·`error_count` 불변.
-- `adapters/sjob-local.test.js`(새): RUNNING·COMPLETED·FAILED·VANISHED, `lstart` 불일치(pid 재사용).
-- `service.test.js`·`observer.test.js`: takeover 성공 시 제자리 교체와 `wait_id` 불변, 진행 중 관찰과 겹칠 때 교체가 사라지지 않음, `ok:false` 무변경, 결과 불명 → `--result` 복구.
-- `wait-judgment.test.js`: 노출 조건 4가지 경계.
+- `adapters/sjob-local.test.js`(새): RUNNING·COMPLETED·FAILED·VANISHED, `lstart` 불일치(pid 재사용), 빈 `process_start`(이미 끝남)는 exitcode로 판정.
+- `service.test.js`·`observer.test.js`: takeover 성공 시 제자리 교체와 `wait_id`·`cpus`·`mem_gb`·`cancel_failed` 보존, 진행 중 관찰과 겹칠 때 교체가 사라지지 않음, `ok:false` 시 표시 제거·무변경, `takeover` 표시 중 재클릭 `busy`·버튼 미노출·원 잡 CANCELLED 관찰이 완료로 가지 않음, 결과 불명 복구 세 갈래(`started`/`done` 교체, `no_takeover`+hold 없음 복귀, `holding`·hold된 원 잡 `⛔ 조치 필요`), 서버 재시작 뒤 표시 유지.
+- protocol·store: `sjob_local`·`capacity`는 저장·투영·클라이언트 검사를 통과하고 등록 API는 `sjob_local`을 거절한다.
+- `wait-judgment.test.js`: 노출 조건 경계(stage·잡 수·adapter·PENDING·`takeover` 표시).
 - `lanes.test.js`·`running-grid.test.js`·`detail-panel/index.test.js`: 용량 줄, 다중 잡이면 카드에서 생략, `sjob_local` 줄.
 - `card-parity.test.js`: 새 고정 자료.
 - 설정: 저장소 읽기 fail-quiet·쓰기 strict, 다이얼로그 기본값 계산.
-- dotfiles(형제 unit): `sjob takeover` 거부 사유별 테스트와 hold→start→cancel 순서·release 보상.
+- dotfiles(크로스 리포 unit): `sjob takeover` 거부 사유별 테스트, hold 뒤 재확인에서 RUNNING이면 release·`not_pending`, 기동 예외에서만 release, 즉시 끝난 작업도 `started`, 진행 기록 단계별 내용과 재요청 시 같은 실행 반환, `--result`의 `holding`·`no_takeover`, scancel 재시도·`slurm_cancel_failed`.
+- 템플릿(감싼 외부 unit): `SJOB_LOCAL=1`에 `SNAKEMAKE_PROFILE=profiles/slurm`을 함께 줘도 server-local 선택, `SJOB_LOCAL` 없으면 기존 선택.
 
 ## 7. 대안
 
@@ -198,13 +219,25 @@ sjob takeover <slurm-job-id> --result --json
 ## 경계·후속
 
 - 크로스 리포 unit: dotfiles — `sjob takeover`·실행 기록(`<wrapper>.launch.json`)·`docs/contracts/external-wait.md` 정정(`sjob_local` 어댑터 형태, slurm 잡 표시 필드 `capacity`, takeover 제자리 교체 조항)과 `workflow-state.yaml external_wait` 갱신(§3.1·§3.2·§3.5) quick_fix Bead dotfiles-kslis. UI-qbgj 구현 진입 전 선행(`blocks`)이다. dotfiles-k62bk(`--time`·Slurm 인지 `--local` 산정)와는 독립이다. 같은 파일을 만지므로 Worker 레인이 순서를 정한다.
-- 감싼 외부 unit: research-repo-template(rig 없음) — `template/profiles/server-local/config.yaml`(slurm scheduler 조건부)와 `run_workflow.sh.jinja`의 `SJOB_LOCAL` 분기(§3.3). UI-qbgj 구현 안에서 착지한다. 검증은 `copier copy`로 렌더한 임시 프로젝트에서 `bash -n scripts/run_workflow.sh`와 `SJOB_LOCAL=1 SJOB_CPUS=2 SJOB_MEM=4`를 넣은 dry-run(`snakemake -n`)이 server-local 프로필을 쓰는지 확인한다.
+- 감싼 외부 unit: research-repo-template(rig 없음, §3.3). UI-qbgj 구현 안에서 착지하고, 착지 계약은 다음과 같다.
+  - 저장소와 remote: UI-qbgj 저장소 루트의 부모 디렉터리에 있는 `research-repo-template` 체크아웃, remote `origin`(`git remote get-url --push origin`이 `nakkulla/research-repo-template`).
+  - base resolver: `git fetch origin` 뒤 `origin/main` tip을 핀한다.
+  - 작업 위치: 그 tip에서 만든 임시 detached worktree. 같은 common git dir인지와 시작 HEAD가 핀과 같은지 확인한다.
+  - 소유 경로: `template/{% if remote_host %}scripts{% endif %}/run_workflow.sh.jinja`, `template/profiles/{% if scheduler == "slurm" %}server-local{% endif %}/config.yaml.jinja`(새), 그리고 템플릿 저장소의 렌더 테스트가 있으면 그 테스트 파일.
+  - 커밋: 부모 하나인 커밋 하나. 바뀐 경로가 소유 경로에 포함돼야 한다.
+  - 검증: 임시 디렉터리에 `copier copy`로 scheduler=slurm·remote_host 있음 프로젝트를 렌더한다. 그 결과에서 다음 다섯 가지를 확인하고 모두 exit 0이어야 한다.
+    - `bash -n scripts/run_workflow.sh`
+    - `profiles/server-local/config.yaml`에 `executor` 키 없음, `software-deployment-method: conda` 있음
+    - `SJOB_LOCAL=1 SJOB_CPUS=2 SJOB_MEM=4 SNAKEMAKE_PROFILE=profiles/slurm`에서 스크립트가 고른 명령이 `--profile profiles/server-local --cores 2 --resources mem_mb=4096`임(`snakemake`를 echo 하는 가짜 `uv`를 PATH 앞에 두고 확인)
+    - `SJOB_LOCAL` 없이는 `profiles/slurm`
+    - scheduler=local 렌더에는 server-local이 없음
+  - 게시: 일반 `git push origin HEAD:main`만 허용한다(force 금지). 그 뒤 `git fetch origin`을 하고, 착지 SHA가 `origin/main`의 조상인지(`git merge-base --is-ancestor`) readback한다. 착지 SHA와 소유 커밋을 완료 보고서에 남긴다.
 - 크로스 리포 unit: prostate — `copier update`로 server-local 프로필·`run_workflow.sh` 분기 채택 quick_fix Bead PROSTATE-pbo. 선행은 UI-qbgj(템플릿 착지)다. 출처 provenance만 남기고 UI-qbgj를 막지 않는다.
 
 ## 결정 (ADR 후보)
 
 - 전제: ADR UI-u6ud-2 — beads-ui는 dotfiles 계약의 소비자다. `sjob_local` 어댑터와 `capacity` 필드는 계약 정정과 함께 움직인다(§8 dotfiles unit).
-- ADR UI-18a5를 supersede해 다시 쓴다(새 id UI-qbgj).
+- ADR UI-18a5를 supersede해 다시 쓴다(새 id UI-qbgj; §3.7의 순서 규칙에 따라 대상이 바뀔 수 있다).
   - 더하는 조항 1: Slurm 등록 잡이 대기 중이면 관찰은 같은 ssh 안의 읽기 전용 조회로 대기 사유·앞 대기 수·예상 시작·파티션 배정·ssh 호스트의 실제 부하와 쓸 수 있는 메모리를 표시 재료로 갖는다. 하위 잡처럼 대기 판정·완료·digest·알림에 들어가지 않는다.
   - 더하는 조항 2: 외부 잡을 바꾸는 유일한 경로는 사람이 확인한 `▶ 바로 실행`이다. 단일 PENDING slurm 잡을 `sjob takeover`(hold → 로컬 실행 → 취소, 실패 시 release) 한 명령으로 같은 호스트의 로컬 실행으로 옮긴다. 레코드는 같은 `wait_id`로 그 잡을 `sjob_local`로 제자리 교체한다. 관찰 자체는 여전히 잡을 바꾸지 않는다.
   - 더하는 조항 3: "실행 방식(작은 머리 잡 + 하위 잡)은 바꾸지 않는다"는 기본 실행 방식에 관한 것으로 유지한다. 바로 실행만 프로젝트의 `profiles/server-local`로 워크플로 전체를 정한 코어 안에서 로컬로 돌린다.
