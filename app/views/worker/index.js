@@ -2766,7 +2766,7 @@ export function createWorkerView(mount_element, options = {}) {
         ? candidateSortChainTemplate(candidate_sort)
         : undefined,
       controls: candidateControlsTemplate(m),
-      footer: deferredSectionTemplate(m),
+      shelf: deferredSectionTemplate(m),
       collapsible: true,
       collapsed: collapse.isCollapsed('candidate'),
       place_menu: currentPlaceMenu(candidates),
@@ -2803,7 +2803,7 @@ export function createWorkerView(mount_element, options = {}) {
             live: runningLive(m),
             running_body: running.length > 0 ? runningBody(m) : '',
             pr_wait_rows: pr_wait.map((/** @type {any} */ it) => miniRow(it)),
-            pr_wait_footer: pr_wait_shelved,
+            pr_wait_shelf: pr_wait_shelved,
             count: running.length + pr_wait.length
           })}
           ${paneTemplate({
@@ -2858,7 +2858,7 @@ export function createWorkerView(mount_element, options = {}) {
           title: 'PR 대기',
           items: pr_wait,
           empty: 'PR 대기 없음',
-          footer: pr_wait_shelved,
+          shelf: pr_wait_shelved,
           collapsible: true,
           collapsed: collapse.isCollapsed('pr_wait')
         })}

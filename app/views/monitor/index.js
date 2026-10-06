@@ -1984,7 +1984,7 @@ export function createMonitorView(mount_element, options) {
         src: meta.lane === 'runnable',
         empty: meta.empty,
         body,
-        footer: meta.lane === 'pr_wait' ? pr_wait_shelved : undefined,
+        shelf: meta.lane === 'pr_wait' ? pr_wait_shelved : undefined,
         live: meta.lane === 'running' && items.length > 0,
         collapsible: true,
         collapsed: collapse.isCollapsed(meta.pane),
@@ -2010,7 +2010,7 @@ export function createMonitorView(mount_element, options) {
               live: running.length > 0,
               running_body: running.length > 0 ? runningBody(now, running) : '',
               pr_wait_rows: pr_wait_open.map((row) => miniRow(row)),
-              pr_wait_footer: pr_wait_shelved,
+              pr_wait_shelf: pr_wait_shelved,
               count: running.length + pr_wait_open.length
             })}
             ${mobile_metas.map((meta) => lanePane(meta))}

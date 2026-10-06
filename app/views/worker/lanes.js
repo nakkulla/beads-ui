@@ -5081,14 +5081,14 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * 그대로 두므로 후보→대기 드롭이 띠 위에서도 성립한다. `live`는 실제로 일이
  * 도는 레인 하나를 표시한다 — 헤더 점이 숨쉬는 유일한 레인이다.
  *
- * `footer`는 본문 맨 아래, 행 목록 **뒤**에 서는 한 조각이다 (UI-p7s2 §3.2의
+ * `shelf`는 본문 맨 위, 행 목록 **앞**에 서는 한 조각이다 (UI-p7s2 §3.2의
  * 보류 선반). 헤더 건수는 `items`만 세므로 이 조각의 내용은 pane 건수에 들지
  * 않고, 재료가 없으면 호출 측이 키를 넘기지 않아 아무것도 그려지지 않는다.
  *
  * 헤더 토글은 두 탭 모두 공용 버튼 부품 `.op-btn`으로 그린다 (UI-kqta §3.3,
  * UI-k5s2).
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, footer?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, shelf?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -5136,6 +5136,7 @@ export function paneTemplate(pane) {
             ? pane.controls
             : ''}
           <div class="worker-pane__body">
+            ${pane.shelf ? pane.shelf : ''}
             ${pane.body
               ? pane.body
               : pane.items.length === 0
@@ -5148,7 +5149,7 @@ export function paneTemplate(pane) {
                           onOpenDoc: pane.onOpenDoc
                         })
                       : miniRow(it)
-                  )}${pane.footer ? pane.footer : ''}
+                  )}
           </div>`}
   </section>`;
 }
@@ -5371,15 +5372,16 @@ function serialLaneTemplate(lane) {
  * 패널 자체를 그리지 않는다 — 빈 관제 패널은 화면만 먹고 아무것도 말하지
  * 않는다.
  *
- * `pr_wait_footer` is the `보관 N` bundle (UI-sd12 §3.4). It is not part of
+ * `pr_wait_shelf` is the `보관 N` bundle (UI-sd12 §3.4), after running tiles
+ * and before PR 대기 rows. It is not part of
  * `count`, yet it keeps the panel up on its own: shelved rows have nowhere else
  * to stand on the narrow screen.
  *
- * @param {{ live?: boolean, running_body?: import('lit-html').TemplateResult|string, pr_wait_rows?: import('lit-html').TemplateResult[], pr_wait_footer?: import('lit-html').TemplateResult|string, count: number }} model
+ * @param {{ live?: boolean, running_body?: import('lit-html').TemplateResult|string, pr_wait_rows?: import('lit-html').TemplateResult[], pr_wait_shelf?: import('lit-html').TemplateResult|string, count: number }} model
  * @returns {import('lit-html').TemplateResult|string}
  */
 export function nowPanel(model) {
-  if (!model.count && !model.pr_wait_footer) {
+  if (!model.count && !model.pr_wait_shelf) {
     return '';
   }
   return html`<section
@@ -5395,14 +5397,14 @@ export function nowPanel(model) {
       <span class="worker-now__count">${model.count}</span>
     </header>
     ${model.running_body ? model.running_body : ''}
+    ${model.pr_wait_shelf ? model.pr_wait_shelf : ''}
     ${model.pr_wait_rows ? model.pr_wait_rows : ''}
-    ${model.pr_wait_footer ? model.pr_wait_footer : ''}
   </section>`;
 }
 
 /**
- * The collapsed `보관 N` bundle under the PR 대기 lane (UI-sd12 §3.4) — the
- * `보류 N` shelf's shape in the same lane-footer position. Both tabs draw it,
+ * The collapsed `보관 N` bundle atop the PR 대기 rows (UI-sd12 §3.4) — the
+ * `보류 N` shelf's shape in the same lane-body start position. Both tabs draw it,
  * each with its own viewer-local open state. Without rows there is no bundle
  * (fail-quiet).
  *

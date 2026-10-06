@@ -4966,6 +4966,75 @@ describe('candidate card stepper doc cells (UI-ajkn §5)', () => {
   });
 });
 
+describe('pane shelves (UI-l0b7)', () => {
+  test.each(/** @type {const} */ (['candidate', 'pr_wait']))(
+    'places the %s shelf after controls and before the first card',
+    (lane) => {
+      render(
+        paneTemplate({
+          id: 'shelf-pane',
+          lane,
+          title: '레인',
+          items: [{ id: 'UI-card', title: '카드', lane, draggable: false }],
+          controls: html`<div class="probe-controls"></div>`,
+          shelf: html`<details class="probe-shelf"></details>`
+        }),
+        mount
+      );
+
+      const body = /** @type {HTMLElement} */ (
+        mount.querySelector('.worker-pane__body')
+      );
+
+      expect(body.previousElementSibling?.className).toBe('probe-controls');
+      expect(body.firstElementChild?.className).toBe('probe-shelf');
+      expect(body.children[1].getAttribute('data-bead-id')).toBe('UI-card');
+    }
+  );
+
+  test('places the shelf before a custom lane body', () => {
+    render(
+      paneTemplate({
+        id: 'shelf-pane',
+        lane: 'pr_wait',
+        title: 'PR 대기',
+        items: [],
+        body: html`<div class="probe-card"></div>`,
+        shelf: html`<details class="probe-shelf"></details>`
+      }),
+      mount
+    );
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.worker-pane__body > *'),
+        (el) => el.className
+      )
+    ).toEqual(['probe-shelf', 'probe-card']);
+  });
+
+  test('places the shelf before the empty lane message', () => {
+    render(
+      paneTemplate({
+        id: 'shelf-pane',
+        lane: 'candidate',
+        title: '후보',
+        items: [],
+        empty: '후보 없음',
+        shelf: html`<details class="probe-shelf"></details>`
+      }),
+      mount
+    );
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.worker-pane__body > *'),
+        (el) => el.className
+      )
+    ).toEqual(['probe-shelf', 'worker-pane__empty']);
+  });
+});
+
 describe('collapsible pane header (UI-5ksp §4.4)', () => {
   /**
    * @param {Record<string, any>} [extra]
@@ -5987,6 +6056,28 @@ describe('miniRow row actions (UI-5ksp §4.6)', () => {
 });
 
 describe('nowPanel (UI-5ksp §4.7)', () => {
+  test('places the shelf between running tiles and PR waiting rows', () => {
+    render(
+      nowPanel({
+        count: 2,
+        running_body: html`<div class="worker-rungrid"></div>`,
+        pr_wait_rows: [html`<div class="pr-row"></div>`],
+        pr_wait_shelf: shelvedSectionTemplate(
+          [html`<div class="shelved-row"></div>`],
+          false
+        )
+      }),
+      mount
+    );
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('#worker-now > *'),
+        (el) => el.className
+      )
+    ).toEqual(['worker-now__hd', 'worker-rungrid', 'worker-shelved', 'pr-row']);
+  });
+
   test('renders nothing when nothing is running or waiting', () => {
     render(nowPanel({ count: 0 }), mount);
 
@@ -6024,7 +6115,7 @@ describe('nowPanel (UI-5ksp §4.7)', () => {
     render(
       nowPanel({
         count: 0,
-        pr_wait_footer: shelvedSectionTemplate(
+        pr_wait_shelf: shelvedSectionTemplate(
           [html`<div class="pr-row"></div>`],
           false
         )
