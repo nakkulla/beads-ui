@@ -5191,6 +5191,84 @@ export async function handleWorkerExternalWait(ws, req) {
 }
 
 /**
+ * Handle `external_wait_takeover` (`▶ 바로 실행`, UI-qbgj §3.4). Payload:
+ * `{ root_dir, wait_id, cpus, mem_gb }` with integer `cpus`/`mem_gb` ≥ 1. The
+ * service owns the record lock, the persisted marker and the ssh; this reply
+ * carries its Korean message on refusal. A successful takeover records the
+ * person's click on the consumer timeline.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerExternalWaitTakeover(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (
+    typeof p.root_dir !== 'string' ||
+    !p.root_dir ||
+    typeof p.wait_id !== 'string' ||
+    !/^w-[0-9a-f]{12}$/.test(p.wait_id) ||
+    !Number.isInteger(p.cpus) ||
+    p.cpus < 1 ||
+    !Number.isInteger(p.mem_gb) ||
+    p.mem_gb < 1
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { root_dir, wait_id, cpus: integer >= 1, mem_gb: integer >= 1 }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const service = getWorkerRuntime().externalWait;
+  try {
+    const result = await service.takeover(key, p.wait_id, {
+      cpus: p.cpus,
+      mem_gb: p.mem_gb
+    });
+    if ('status' in result) {
+      ws.send(
+        JSON.stringify(
+          makeError(req, result.error, result.message || result.error)
+        )
+      );
+      return;
+    }
+    const job = result.jobs[0];
+    if (job?.adapter === 'sjob_local') {
+      queueStore().recordTimelineEvent(key, {
+        bead_id: result.bead_id,
+        kind: 'user_action',
+        seq: `external-wait:${randomUUID()}`,
+        summary: `[▶ 바로 실행] 클릭 · Slurm ${job.takeover_from.job_id} → ${job.ssh_host}:${job.local_id} (${job.cpus} CPU · ${job.mem_gb}G)`
+      });
+    }
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          ...result,
+          queue: decorateQueue(key, queueStore().snapshot(key))
+        })
+      )
+    );
+  } catch (error) {
+    log('external wait takeover failed for %s: %o', key, error);
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'internal_error', '외부 작업 요청에 실패했습니다')
+      )
+    );
+  }
+}
+
+/**
  * Return the provider probe result with the queue readback and notify subscribers.
  *
  * @param {WebSocket} ws

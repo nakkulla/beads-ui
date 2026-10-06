@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { externalJobIdentity } from '../../../app/protocol.js';
 import { HOLD_BUDGET } from './contract.js';
 
 /**
@@ -79,7 +80,13 @@ export function completionDigest(jobs) {
     }
     return {
       adapter: job.adapter,
-      ...(job.adapter === 'slurm' ? { job_id: job.job_id } : { pid: job.pid }),
+      // The slurm and process projections stay as they were, so recorded
+      // digests keep their value; a takeover's local run is `<ssh_host>:<local_id>`.
+      ...(job.adapter === 'slurm'
+        ? { job_id: job.job_id }
+        : job.adapter === 'sjob_local'
+          ? { identity: externalJobIdentity(job) }
+          : { pid: job.pid }),
       exit_code: job.terminal.exit_code,
       evidence: job.terminal.evidence,
       expected_results: job.terminal.expected_results.map(

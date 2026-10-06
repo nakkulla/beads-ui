@@ -146,24 +146,39 @@ export function projectExternalWait(record) {
       adapter: job.adapter,
       ...(job.adapter === 'slurm'
         ? { ssh_host: job.ssh_host, job_id: job.job_id }
-        : { pid: job.pid }),
+        : job.adapter === 'sjob_local'
+          ? {
+              // A takeover's local run (UI-qbgj §3.5).
+              ssh_host: job.ssh_host,
+              local_id: job.local_id,
+              pid: job.pid,
+              cpus: job.cpus,
+              mem_gb: job.mem_gb,
+              takeover_from: job.takeover_from
+            }
+          : { pid: job.pid }),
       submitted_at: job.submitted_at,
       log_path: job.log_path,
       state: job.state,
       observed_at: job.observed_at,
-      // Display-only sub-job material (UI-q15q §3.4); old jobs keep their shape.
-      ...(job.adapter === 'slurm' && job.name !== undefined
+      // Display-only sub-job material (UI-q15q §3.4); old jobs keep their
+      // shape, and a takeover's local run keeps the last slurm snapshot.
+      ...(job.adapter !== 'process' && job.name !== undefined
         ? { name: job.name }
         : {}),
       ...(job.adapter === 'slurm' && job.anchor !== undefined
         ? { anchor: job.anchor }
         : {}),
-      ...(job.adapter === 'slurm' && job.spawned !== undefined
+      ...(job.adapter !== 'process' && job.spawned !== undefined
         ? { spawned: job.spawned }
         : {}),
       // Display-only pending capacity (UI-qbgj §3.1).
       ...(job.adapter === 'slurm' && job.capacity !== undefined
         ? { capacity: job.capacity }
+        : {}),
+      // Takeover progress marker (UI-qbgj §3.4).
+      ...(job.adapter === 'slurm' && job.takeover !== undefined
+        ? { takeover: job.takeover }
         : {}),
       terminal: job.terminal
         ? {

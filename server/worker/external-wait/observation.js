@@ -24,3 +24,18 @@ export function effectiveObservation() {
   }
   return effective;
 }
+
+/**
+ * The observation interval of one job: `process` jobs use the process
+ * interval, and `slurm` and `sjob_local` (a remote ssh read alike, UI-qbgj
+ * §3.5) use the slurm interval.
+ *
+ * @param {{adapter?: unknown}} job
+ * @param {{ slurm_interval_seconds: number, process_interval_seconds: number }} observation
+ * @returns {number}
+ */
+export function jobIntervalSeconds(job, observation) {
+  return job.adapter === 'process'
+    ? observation.process_interval_seconds
+    : observation.slurm_interval_seconds;
+}

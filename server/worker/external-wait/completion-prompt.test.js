@@ -137,3 +137,63 @@ test('keeps the old bytes for a record without sub-jobs', () => {
     ].join('\n')
   );
 });
+
+/**
+ * A completed record whose one job is a takeover's local run.
+ *
+ * @param {boolean} cancel_failed
+ * @returns {import('./store.js').WaitRecord}
+ */
+function localRecord(cancel_failed) {
+  return {
+    ...record(),
+    jobs: [
+      {
+        adapter: 'sjob_local',
+        ssh_host: 'wallace',
+        local_id: 'L003',
+        pid: 4242,
+        process_start: '',
+        workdir: '/work',
+        log_path: '/home/u/.sjob/logs/run.log',
+        exitcode_path: '/home/u/.sjob/local/L003.exitcode',
+        submitted_at: '2026-10-06T08:00:00.000Z',
+        expected: ['/result'],
+        cpus: 16,
+        mem_gb: 64,
+        takeover_from: {
+          job_id: '249043',
+          at: '2026-10-06T08:00:00.000Z',
+          cancel_failed
+        },
+        state: 'COMPLETED',
+        terminal: {
+          exit_code: 0,
+          evidence: 'exitcode',
+          expected_results: [],
+          recovery_needed: false,
+          completed_at: '2026-10-06T09:00:00Z'
+        }
+      }
+    ]
+  };
+}
+
+test('names the local run and the Slurm job it took over (UI-qbgj §3.5)', () => {
+  const prompt = externalWaitCompletionPrompt(localRecord(false));
+
+  expect(prompt.split('\n').slice(1, 4)).toEqual([
+    'wallace:L003 · COMPLETED · exit_code=0 · evidence=exitcode',
+    'Slurm 249043에서 바로 실행으로 전환(2026-10-06T08:00:00.000Z)',
+    'recovery_needed=false · log=/home/u/.sjob/logs/run.log'
+  ]);
+});
+
+test('adds the unconfirmed cancellation line when the cancel failed', () => {
+  const prompt = externalWaitCompletionPrompt(localRecord(true));
+
+  expect(prompt.split('\n').slice(2, 4)).toEqual([
+    'Slurm 249043에서 바로 실행으로 전환(2026-10-06T08:00:00.000Z)',
+    '원 Slurm 249043 취소 미확인 — hold 유지'
+  ]);
+});

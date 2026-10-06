@@ -4,7 +4,11 @@ import {
 } from '../../app/utils/active-attempts.js';
 import { RECOVERY_WAIT_SENTENCES } from '../../app/utils/failure-sentences.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
-import { effectiveObservation } from './external-wait/observation.js';
+import {
+  effectiveObservation,
+  jobIntervalSeconds
+} from './external-wait/observation.js';
+import { takeoverTarget } from './external-wait/takeover.js';
 import { isSessionStalledRecovery } from './session-stall.js';
 
 /** All display/notification thresholds live here (UI-n99w §5.2). */
@@ -19,7 +23,7 @@ export const WAIT_THRESHOLDS = Object.freeze({
 
 /**
  * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'provider_hold'|'awaiting_user'|'retry_wait'|'recovery'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_stalled'|'retry_stalled'|'decision'|'resume_failed'|'wait_key_missing'|'wait_record_missing'} VerdictCode
+ * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_stalled'|'retry_stalled'|'decision'|'resume_failed'|'wait_key_missing'|'wait_record_missing'|'takeover_unresolved'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
@@ -77,7 +81,8 @@ const VERDICT_MESSAGES = {
   reset_passed: '한도 리셋 후 5분이 지나도 보류가 유지됨',
   probe_stalled: '다음 프로브 시각에서 5분이 지나도 갱신되지 않음',
   retry_stalled: '재시도 시각에서 5분이 지나도 실행되지 않음',
-  decision: '사용자의 답변이 필요함'
+  decision: '사용자의 답변이 필요함',
+  takeover_unresolved: '바로 실행 결과 확인 필요'
 };
 
 /**
@@ -372,7 +377,7 @@ export function externalJobHeadline(row, now) {
       ? Math.max(0, Math.floor((now - submitted) / 60_000))
       : null;
   return [
-    [line(job.ssh_host), `작업 ${job.job_id ?? job.pid}`]
+    [line(job.ssh_host), `작업 ${job.job_id ?? job.local_id ?? job.pid}`]
       .filter(Boolean)
       .join(' '),
     line(job.state),
@@ -464,6 +469,24 @@ export function judgeWaitReasons(input) {
         placement: 'card',
         payload
       });
+      // `▶ 바로 실행` (UI-qbgj §3.4) stands only on a single pending slurm job
+      // without a takeover marker. The payload carries what the confirm dialog
+      // shows; the click sends `{ root_dir, wait_id, cpus, mem_gb }`.
+      const target = takeoverTarget(row);
+      if (target) {
+        result.actions.push({
+          op: 'external_wait_takeover',
+          label: '▶ 바로 실행',
+          title: `Slurm ${target.job_id} 대기를 멈추고 같은 서버에서 바로 실행한다 · 원 Slurm 작업은 취소된다`,
+          placement: 'card',
+          payload: {
+            ...payload,
+            job_id: target.job_id,
+            ssh_host: target.ssh_host,
+            ...(target.capacity ? { capacity: target.capacity } : {})
+          }
+        });
+      }
       result.actions.push({
         op: 'external_wait_stop',
         label: '[관찰 중단]',
@@ -541,11 +564,7 @@ export function judgeWaitReasons(input) {
     const effective_observation = effectiveObservation();
     const intervals = jobs
       .filter((job) => !job.terminal)
-      .map((job) =>
-        job.adapter === 'slurm'
-          ? effective_observation.slurm_interval_seconds
-          : effective_observation.process_interval_seconds
-      );
+      .map((job) => jobIntervalSeconds(job, effective_observation));
     const interval =
       row.error_count > 0
         ? effective_observation.error_backoff_seconds[
@@ -566,6 +585,20 @@ export function judgeWaitReasons(input) {
     }
     if (row.error_count >= WAIT_THRESHOLDS.observation_errors) {
       judge(result, 'overdue', 'observe_failing');
+    }
+    // A takeover whose recovery found a holding record, or a held, cancelled
+    // or vanished original job, waits for a person (UI-qbgj §3.4).
+    const unresolved = ['hold', 'detached'].includes(row.stage)
+      ? jobs.find(
+          (job) => job.adapter === 'slurm' && job.takeover?.operator === true
+        )
+      : undefined;
+    if (unresolved) {
+      judge(result, 'action_required', 'takeover_unresolved');
+      result.verdict_reason = {
+        code: 'takeover_unresolved',
+        message: `${VERDICT_MESSAGES.takeover_unresolved}(sjob takeover ${line(unresolved.job_id)} --result)`
+      };
     }
     if (row.stage === 'completing' && row.resume?.error) {
       judge(result, 'action_required', 'resume_failed');

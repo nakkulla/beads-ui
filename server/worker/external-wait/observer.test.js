@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   __resetTimingSettingsForTest,
   __setTimingOverridesForTest
@@ -1062,4 +1062,407 @@ test('keeps the stored capacity when the observed state is unknown', async () =>
   const result = await observer.observeRecord(workspace, record.wait_id);
 
   expect(slurmOf(result?.jobs[0]).capacity).toEqual(CAPACITY);
+});
+
+describe('takeover marker and local run (UI-qbgj §3.4, §3.5)', () => {
+  const START = 'Tue Oct  6 17:00:00 2026';
+  const LOCAL = {
+    ok: true,
+    state: 'done',
+    slurm_job_id: '123',
+    local_id: 'L003',
+    pid: 4242,
+    process_start: START,
+    host: 'cluster-node',
+    workdir: '/work',
+    log_path: '/home/u/.sjob/logs/run.log',
+    exitcode_path: '/home/u/.sjob/local/L003.exitcode',
+    cpus: 16,
+    mem_gb: 64,
+    slurm_overcommit: false,
+    slurm_cancel_failed: false
+  };
+  const CANCELLED_OUTPUT =
+    'CANCELLED\n__EWM_SQUEUE_RC__=0\nJobId=123 JobState=CANCELLED ExitCode=0:15\n__EWM_SCONTROL_RC__=0\n\n__EWM_LOG_RC__=1\n';
+
+  /**
+   * @param {'pending'|'unknown'} [state]
+   * @returns {import('./store.js').TakeoverMarker}
+   */
+  function marker(state = 'unknown') {
+    return {
+      state,
+      requested_at: new Date(time - 60000).toISOString(),
+      cpus: 16,
+      mem_gb: 64
+    };
+  }
+
+  /**
+   * The remote output of a recovery read.
+   *
+   * @param {Record<string, unknown>} record - What `--result` prints.
+   * @param {string} [queue] - `state|reason|priority`, empty when gone.
+   */
+  function recoveryStdout(record, queue = '') {
+    return [
+      '__EWM_TK_BEGIN__',
+      JSON.stringify(record),
+      '__EWM_TK_END__',
+      '__EWM_Q_RC__=0',
+      '__EWM_Q_BEGIN__',
+      queue,
+      '__EWM_Q_END__',
+      ''
+    ].join('\n');
+  }
+
+  /**
+   * The remote output of a local-run observation.
+   *
+   * @param {{ps_rc?: string, ps?: string, exit_rc?: string, exit?: string}} [options]
+   */
+  function localStdout({
+    ps_rc = '1',
+    ps = '',
+    exit_rc = '0',
+    exit = '0'
+  } = {}) {
+    return [
+      `__EWM_PS_RC__=${ps_rc}`,
+      '__EWM_PS_BEGIN__',
+      ps,
+      '__EWM_PS_END__',
+      `__EWM_EXIT_RC__=${exit_rc}`,
+      '__EWM_EXIT_BEGIN__',
+      exit,
+      '__EWM_EXIT_END__',
+      '__EWM_ARTIFACT__0=1|1|1',
+      ''
+    ].join('\n');
+  }
+
+  /** @returns {import('./store.js').SjobLocalJob} */
+  function localJob() {
+    return {
+      adapter: 'sjob_local',
+      ssh_host: 'cluster',
+      local_id: 'L003',
+      pid: 4242,
+      process_start: START,
+      workdir: '/work',
+      log_path: '/home/u/.sjob/logs/run.log',
+      exitcode_path: '/home/u/.sjob/local/L003.exitcode',
+      submitted_at: new Date(time).toISOString(),
+      expected: ['/result'],
+      cpus: 16,
+      mem_gb: 64,
+      takeover_from: {
+        job_id: '123',
+        at: new Date(time).toISOString(),
+        cancel_failed: false
+      },
+      state: 'UNKNOWN',
+      observed_at: new Date(time).toISOString(),
+      terminal: null
+    };
+  }
+
+  /** @returns {import('./store.js').WaitRecord} */
+  function insertLocal() {
+    return store.insert(workspace, {
+      root_dir: workspace,
+      bead_id: `UI-${sequence}`,
+      owner: { kind: 'worker', attempt_id: 'attempt-1' },
+      worktree: workspace,
+      execution_sha: 'a'.repeat(40),
+      stage: 'detached',
+      jobs: [localJob()]
+    });
+  }
+
+  test('skips a record while an operation owns it', async () => {
+    const record = insertSlurm([{ state: 'PENDING' }]);
+    const { observer, run } = sequenceObserver([capacityStdout()]);
+    /** @type {() => void} */
+    let release = () => {};
+
+    const owned = observer.withOperationLock(
+      workspace,
+      record.wait_id,
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(undefined);
+        })
+    );
+    await observer.tick();
+    await observer.observeRecord(workspace, record.wait_id);
+    release();
+    await owned;
+
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('answers a second operation on an owned record with null', async () => {
+    const record = insertSlurm([{ state: 'PENDING' }]);
+    const { observer } = sequenceObserver([]);
+    /** @type {() => void} */
+    let release = () => {};
+    const first = observer.withOperationLock(
+      workspace,
+      record.wait_id,
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve('first');
+        })
+    );
+
+    const second = await observer.withOperationLock(
+      workspace,
+      record.wait_id,
+      async () => 'second'
+    );
+    release();
+
+    expect(second).toBeNull();
+    expect(await first).toEqual({ value: 'first' });
+  });
+
+  test('keeps a job an operation replaced while the observation was in flight', async () => {
+    const record = insertSlurm([{ state: 'PENDING' }]);
+    /** @type {(value: {code:number, stdout:string, stderr:string}) => void} */
+    let finish = () => {};
+    const observer = createExternalWaitObserver({
+      store,
+      listWorkspaces: () => [workspace],
+      run: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      now: () => time
+    });
+
+    const observation = observer.observeRecord(workspace, record.wait_id);
+    await new Promise((resolve) => setImmediate(resolve));
+    store.update(workspace, record.wait_id, (current) => {
+      current.jobs[0] = localJob();
+    });
+    finish({ code: 0, stdout: capacityStdout(), stderr: '' });
+    await observation;
+
+    expect(store.get(workspace, record.wait_id)?.jobs[0]).toMatchObject({
+      adapter: 'sjob_local',
+      local_id: 'L003'
+    });
+  });
+
+  test('replaces a marked job when recovery finds a started takeover', async () => {
+    const record = insertSlurm([
+      { state: 'PENDING', takeover: marker(), name: 'snake' }
+    ]);
+    const { observer, run } = sequenceObserver([
+      recoveryStdout({ ...LOCAL, state: 'started', slurm_cancel_failed: true })
+    ]);
+
+    const result = await observer.observeRecord(workspace, record.wait_id);
+
+    expect(result?.jobs).toEqual([
+      expect.objectContaining({
+        adapter: 'sjob_local',
+        ssh_host: 'cluster',
+        local_id: 'L003',
+        name: 'snake',
+        submitted_at: marker().requested_at,
+        takeover_from: {
+          job_id: '123',
+          at: marker().requested_at,
+          cancel_failed: true
+        }
+      })
+    ]);
+    expect(result?.next_observation_at).toBe(new Date(time).toISOString());
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test('clears the marker and observes normally after no takeover on an unheld job', async () => {
+    const record = insertSlurm([{ state: 'PENDING', takeover: marker() }]);
+    const { observer, run } = sequenceObserver([
+      recoveryStdout(
+        { ok: false, reason: 'no_takeover' },
+        'PENDING|Resources|1000'
+      ),
+      capacityStdout()
+    ]);
+
+    const result = await observer.observeRecord(workspace, record.wait_id);
+
+    expect(result?.jobs[0]).not.toHaveProperty('takeover');
+    expect(result?.jobs[0]).toMatchObject({
+      adapter: 'slurm',
+      state: 'PENDING'
+    });
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    [
+      'a holding record',
+      { ok: false, state: 'holding', slurm_job_id: '123' },
+      'PENDING|JobHeldUser|0'
+    ],
+    [
+      'a user hold',
+      { ok: false, reason: 'no_takeover' },
+      'PENDING|JobHeldUser|0'
+    ],
+    [
+      'a zero priority',
+      { ok: false, reason: 'no_takeover' },
+      'PENDING|Resources|0'
+    ],
+    [
+      'a cancelled job',
+      { ok: false, reason: 'no_takeover' },
+      'CANCELLED|None|0'
+    ],
+    ['a vanished job', { ok: false, reason: 'no_takeover' }, '']
+  ])(
+    'flags operator recovery for %s and keeps the marker',
+    async (_label, saved, queue) => {
+      const record = insertSlurm([{ state: 'PENDING', takeover: marker() }]);
+      const { observer, run } = sequenceObserver([
+        recoveryStdout(saved, queue),
+        CANCELLED_OUTPUT
+      ]);
+
+      const result = await observer.observeRecord(workspace, record.wait_id);
+
+      expect(result).toMatchObject({
+        stage: 'detached',
+        completion: null,
+        error_count: 0,
+        jobs: [
+          {
+            adapter: 'slurm',
+            state: 'PENDING',
+            terminal: null,
+            takeover: { ...marker(), operator: true }
+          }
+        ]
+      });
+      expect(run).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('never completes a record whose marked job the queue shows cancelled', async () => {
+    const record = insertSlurm([{ state: 'PENDING', takeover: marker() }]);
+    const observer = createExternalWaitObserver({
+      store,
+      listWorkspaces: () => [workspace],
+      run: async (argv) => ({
+        code: 0,
+        stdout: argv[6].includes('--result')
+          ? recoveryStdout(
+              { ok: false, reason: 'no_takeover' },
+              'CANCELLED|None|0'
+            )
+          : CANCELLED_OUTPUT,
+        stderr: ''
+      }),
+      now: () => time
+    });
+
+    await observer.observeRecord(workspace, record.wait_id);
+    await observer.observeRecord(workspace, record.wait_id);
+
+    expect(store.get(workspace, record.wait_id)).toMatchObject({
+      stage: 'detached',
+      completion: null,
+      jobs: [{ state: 'PENDING', terminal: null }]
+    });
+  });
+
+  test('keeps the takeover marker across a store reload', () => {
+    const record = insertSlurm([
+      { state: 'PENDING', takeover: marker('pending') }
+    ]);
+
+    const reloaded = createExternalWaitStore({
+      filePathFor: (root) => path.join(root, 'external-wait.json')
+    });
+
+    expect(reloaded.get(workspace, record.wait_id)?.jobs[0]).toMatchObject({
+      takeover: marker('pending')
+    });
+  });
+
+  test('recovers a pending marker that no live operation owns', async () => {
+    const record = insertSlurm([
+      { state: 'PENDING', takeover: marker('pending') }
+    ]);
+    const restarted = createExternalWaitObserver({
+      store: createExternalWaitStore({
+        filePathFor: (root) => path.join(root, 'external-wait.json')
+      }),
+      listWorkspaces: () => [workspace],
+      run: async () => ({ code: 0, stdout: recoveryStdout(LOCAL), stderr: '' }),
+      now: () => time
+    });
+
+    await restarted.tick();
+
+    expect(store.get(workspace, record.wait_id)?.jobs[0]).toMatchObject({
+      adapter: 'sjob_local',
+      takeover_from: { job_id: '123', cancel_failed: false }
+    });
+  });
+
+  test('backs off and keeps the marker when the recovery read fails', async () => {
+    const record = insertSlurm([{ state: 'PENDING', takeover: marker() }]);
+    const observer = createExternalWaitObserver({
+      store,
+      listWorkspaces: () => [workspace],
+      run: async () => ({ code: 255, stdout: '', stderr: 'refused' }),
+      now: () => time
+    });
+
+    const result = await observer.observeRecord(workspace, record.wait_id);
+
+    expect(result).toMatchObject({
+      error_count: 1,
+      last_error: 'ssh takeover recovery failed',
+      jobs: [{ takeover: marker() }]
+    });
+  });
+
+  test('completes the record once the local run exits zero', async () => {
+    const record = insertLocal();
+    const { observer } = sequenceObserver([localStdout()]);
+
+    const result = await observer.observeRecord(workspace, record.wait_id);
+
+    expect(result).toMatchObject({
+      stage: 'completing',
+      completion: { recovery_needed: false },
+      jobs: [
+        {
+          adapter: 'sjob_local',
+          state: 'COMPLETED',
+          terminal: { exit_code: 0, evidence: 'exitcode' }
+        }
+      ]
+    });
+  });
+
+  test('observes a running local run at the slurm interval', async () => {
+    const record = insertLocal();
+    const { observer } = sequenceObserver([
+      localStdout({ ps_rc: '0', ps: START, exit_rc: 'absent', exit: '' })
+    ]);
+
+    const result = await observer.observeRecord(workspace, record.wait_id);
+
+    expect(result?.jobs[0]).toMatchObject({ state: 'RUNNING' });
+    expect(Date.parse(result?.next_observation_at || '') - time).toBe(120000);
+  });
 });

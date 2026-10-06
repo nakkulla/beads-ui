@@ -508,6 +508,118 @@ describe('external wait check-now attachment seams', () => {
     expect(isExternalWaitObservation(row)).toBe(true);
   });
 
+  test('projects a takeover local run and its client check accepts it (UI-qbgj §3.5)', () => {
+    const spawned = {
+      total: 0,
+      counts: { running: 0, pending: 0, completed: 0, failed: 0, unknown: 0 },
+      rows: [],
+      omitted: 0
+    };
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner: { kind: 'worker', attempt_id: 'attempt-1' },
+      stage: 'detached',
+      budget: { turns_total: 3, turns_used: 3 },
+      registered_at: '2026-10-06T00:00:00Z',
+      next_observation_at: '2026-10-06T00:02:00Z',
+      error_count: 0,
+      last_error: null,
+      completion: null,
+      resume: null,
+      jobs: [
+        {
+          adapter: 'sjob_local',
+          ssh_host: 'wallace',
+          local_id: 'L003',
+          pid: 4242,
+          process_start: 'Tue Oct  6 17:00:00 2026',
+          workdir: '/work',
+          log_path: '/home/u/.sjob/logs/run.log',
+          exitcode_path: '/home/u/.sjob/local/L003.exitcode',
+          submitted_at: '2026-10-06T08:00:00.000Z',
+          expected: ['/work/result'],
+          name: 'snake',
+          cpus: 16,
+          mem_gb: 64,
+          takeover_from: {
+            job_id: '249043',
+            at: '2026-10-06T08:00:00.000Z',
+            cancel_failed: true
+          },
+          spawned,
+          state: 'RUNNING',
+          terminal: null
+        }
+      ]
+    });
+
+    const row = attachModule.projectExternalWait(record);
+
+    expect(row.jobs[0]).toEqual({
+      adapter: 'sjob_local',
+      ssh_host: 'wallace',
+      local_id: 'L003',
+      pid: 4242,
+      cpus: 16,
+      mem_gb: 64,
+      takeover_from: {
+        job_id: '249043',
+        at: '2026-10-06T08:00:00.000Z',
+        cancel_failed: true
+      },
+      submitted_at: '2026-10-06T08:00:00.000Z',
+      log_path: '/home/u/.sjob/logs/run.log',
+      state: 'RUNNING',
+      observed_at: undefined,
+      name: 'snake',
+      spawned,
+      terminal: null
+    });
+    expect(isExternalWaitObservation(row)).toBe(true);
+  });
+
+  test('projects the slurm takeover marker and its client check accepts it (UI-qbgj §3.4)', () => {
+    const takeover = {
+      state: 'pending',
+      requested_at: '2026-10-06T08:00:00.000Z',
+      cpus: 16,
+      mem_gb: 64
+    };
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner: { kind: 'worker', attempt_id: 'attempt-1' },
+      stage: 'detached',
+      budget: { turns_total: 3, turns_used: 3 },
+      registered_at: '2026-10-06T00:00:00Z',
+      next_observation_at: '2026-10-06T00:02:00Z',
+      error_count: 0,
+      last_error: null,
+      completion: null,
+      resume: null,
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '249043',
+          submitted_at: '2026-10-06T00:00:00Z',
+          log_path: '/logs/job.log',
+          state: 'PENDING',
+          takeover,
+          terminal: null
+        }
+      ]
+    });
+
+    const row = attachModule.projectExternalWait(record);
+
+    expect(row.jobs[0]).toMatchObject({ takeover });
+    expect(isExternalWaitObservation(row)).toBe(true);
+  });
+
   test('omits capacity from a slurm job that has none', () => {
     const record = /** @type {any} */ ({
       wait_id: 'w-0123456789ab',

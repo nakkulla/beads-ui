@@ -10,8 +10,74 @@ const TERMINAL_STATES = new Set(SLURM_TERMINAL_STATES);
  * @param {string} value
  * @returns {string}
  */
-function shellQuote(value) {
+export function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** A non-option ssh alias the observation accepts. */
+export const SSH_HOST_RE = Object.freeze(/^[A-Za-z0-9_][A-Za-z0-9_.@:-]*$/);
+
+/**
+ * The batch-mode ssh argv that runs one generated program, quoted as a single
+ * remote-shell argument, on `ssh_host`.
+ *
+ * @param {string} ssh_host
+ * @param {string} script
+ * @returns {string[]}
+ */
+export function remoteShellArgv(ssh_host, script) {
+  return [
+    'ssh',
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'ConnectTimeout=10',
+    ssh_host,
+    `sh -c ${shellQuote(script)}`
+  ];
+}
+
+/**
+ * Remote `stat` lines of the expected artifacts, one marker line per path.
+ *
+ * @param {string[]} expected
+ * @returns {string[]}
+ */
+export function expectedArtifactLines(expected) {
+  return expected.map((item, index) => {
+    const quoted = shellQuote(item);
+    return `if [ -e ${quoted} ]; then stat -c '__EWM_ARTIFACT__${index}=1|%s|%Y' -- ${quoted}; else printf '__EWM_ARTIFACT__${index}=0|-|-\\n'; fi`;
+  });
+}
+
+/**
+ * The expected results read back from {@link expectedArtifactLines} output; a
+ * missing or malformed line reads as absent.
+ *
+ * @param {string} text
+ * @param {string[]} expected
+ * @returns {import('../store.js').ExpectedResult[]}
+ */
+export function expectedResults(text, expected) {
+  const artifacts = new Map(
+    [
+      ...text.matchAll(/^__EWM_ARTIFACT__(\d+)=(0|1)\|([^|\n]+)\|([^\n]+)$/gm)
+    ].map((match) => [Number(match[1]), match])
+  );
+  return expected.map((path, index) => {
+    const item = artifacts.get(index);
+    const exists =
+      !!item &&
+      item[2] === '1' &&
+      /^\d+$/.test(item[3]) &&
+      /^-?\d+$/.test(item[4]);
+    return {
+      path,
+      exists,
+      size: exists ? Number(item[3]) : null,
+      mtime: exists ? Number(item[4]) : null
+    };
+  });
 }
 
 /** Completed sub-job rows a record keeps (UI-q15q §3.4). */
@@ -369,12 +435,7 @@ END {
     'if [ -n "$__ewm_started" ]; then __ewm_epoch=$(date -d "$__ewm_started" +%s 2>/dev/null); if [ $? -eq 0 ]; then printf "__EWM_LOG_START_EPOCH__=%s\\n" "$__ewm_epoch"; fi; fi',
     'printf "\\n__EWM_LOG_RC__=%s\\n" "$__ewm_log_rc"'
   ];
-  for (const [index, expected] of job.expected.entries()) {
-    const quoted = shellQuote(expected);
-    lines.push(
-      `if [ -e ${quoted} ]; then stat -c '__EWM_ARTIFACT__${index}=1|%s|%Y' -- ${quoted}; else printf '__EWM_ARTIFACT__${index}=0|-|-\\n'; fi`
-    );
-  }
+  lines.push(...expectedArtifactLines(job.expected));
   lines.push(...spawnedScript(job, context));
   lines.push(...capacityScript(job));
   // A purged job can fail scontrol; section return codes carry that evidence.
@@ -798,27 +859,7 @@ function parseObservation(job, stdout, observed_at) {
   if (exit_code === null) {
     return { state: 'UNKNOWN', terminal: false, ...timing, ...extras };
   }
-  const artifacts = new Map(
-    [
-      ...result.artifacts.matchAll(
-        /^__EWM_ARTIFACT__(\d+)=(0|1)\|([^|\n]+)\|([^\n]+)$/gm
-      )
-    ].map((match) => [Number(match[1]), match])
-  );
-  const expected_results = job.expected.map((expected, index) => {
-    const item = artifacts.get(index);
-    const exists =
-      !!item &&
-      item[2] === '1' &&
-      /^\d+$/.test(item[3]) &&
-      /^-?\d+$/.test(item[4]);
-    return {
-      path: expected,
-      exists,
-      size: exists ? Number(item[3]) : null,
-      mtime: exists ? Number(item[4]) : null
-    };
-  });
+  const expected_results = expectedResults(result.artifacts, job.expected);
   return {
     state,
     terminal: true,
@@ -843,21 +884,13 @@ export async function observeSlurmJob(
   job,
   { run, now = () => Date.now(), spawned = {} }
 ) {
-  if (!/^[A-Za-z0-9_][A-Za-z0-9_.@:-]*$/.test(job.ssh_host)) {
+  if (!SSH_HOST_RE.test(job.ssh_host)) {
     throw new Error('Invalid non-option ssh_host');
   }
   let result;
   try {
     result = await run(
-      [
-        'ssh',
-        '-o',
-        'BatchMode=yes',
-        '-o',
-        'ConnectTimeout=10',
-        job.ssh_host,
-        `sh -c ${shellQuote(remoteScript(job, spawned))}`
-      ],
+      remoteShellArgv(job.ssh_host, remoteScript(job, spawned)),
       { timeout_ms: 60000 }
     );
   } catch {

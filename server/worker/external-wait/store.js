@@ -6,6 +6,7 @@ import {
   ADAPTERS,
   HOLD_BUDGET,
   RECORD_STAGES,
+  TAKEOVER_PROGRESS_STATES,
   WAIT_ID_RE
 } from './contract.js';
 
@@ -22,9 +23,12 @@ import {
  * @typedef {{name:string, cpus:number, load1:number, mem_available_mb:number}} CapacityHost
  * @typedef {{reason:string, est_start:string|null, partition:string, ahead:{jobs:number, cpus:number}, slurm:CapacitySlurm, host:CapacityHost|null, observed_at:string}} Capacity - Display-only pending Slurm capacity (UI-qbgj §3.1); `est_start` and `host` are `null` when absent.
  * @typedef {{status:'ok', capacity:Capacity}|{status:'failed'}} CapacityMaterial
- * @typedef {JobObservation & {adapter:'slurm', ssh_host:string, job_id:string, submitted_at:string, log_path:string, expected:string[], scheduler_submit_time?:string, name?:string, anchor?:SpawnedAnchor, spawned?:Spawned, capacity?:Capacity}} SlurmJob
+ * @typedef {{state:'pending'|'unknown', requested_at:string, cpus:number, mem_gb:number, operator?:boolean}} TakeoverMarker - Persisted takeover progress on a slurm job (UI-qbgj §3.4); `operator` marks a recovery that needs a human.
+ * @typedef {JobObservation & {adapter:'slurm', ssh_host:string, job_id:string, submitted_at:string, log_path:string, expected:string[], scheduler_submit_time?:string, name?:string, anchor?:SpawnedAnchor, spawned?:Spawned, capacity?:Capacity, takeover?:TakeoverMarker}} SlurmJob
  * @typedef {JobObservation & {adapter:'process', pid:number, submitted_at:string, workdir:string, log_path:string, expected?:string[], process_start?:string|null}} ProcessJob
- * @typedef {SlurmJob|ProcessJob} Job
+ * @typedef {{job_id:string, at:string, cancel_failed:boolean}} TakeoverFrom
+ * @typedef {JobObservation & {adapter:'sjob_local', ssh_host:string, local_id:string, pid:number, process_start:string, workdir:string, log_path:string, exitcode_path:string, submitted_at:string, expected?:string[], name?:string, cpus:number, mem_gb:number, takeover_from:TakeoverFrom, spawned?:Spawned}} SjobLocalJob - A takeover's local run on the same host (UI-qbgj §3.5); `spawned` is the last slurm snapshot, display only.
+ * @typedef {SlurmJob|ProcessJob|SjobLocalJob} Job
  * @typedef {'hold'|'done'|'detached'|'completing'|'resumed'|'stopped'} Stage
  * @typedef {{kind:'worker', attempt_id:string}|{kind:'session', session_ref:string, session_pid:number, session_start:string}} Owner
  * @typedef {{digest:string, completed_at:string, recovery_needed:boolean}} Completion
@@ -103,6 +107,69 @@ function isTimestamp(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && /** @type {number} */ (value) >= 1;
+}
+
+/**
+ * The identity fields of one stored job, by adapter.
+ *
+ * @param {Job} job
+ * @returns {boolean}
+ */
+function validJobIdentity(job) {
+  if (job.adapter === 'slurm') {
+    const marker = job.takeover;
+    return (
+      !!job.job_id &&
+      !!job.ssh_host &&
+      !job.ssh_host.startsWith('-') &&
+      !!job.expected.length &&
+      (marker === undefined ||
+        (!!marker &&
+          TAKEOVER_PROGRESS_STATES.includes(marker.state) &&
+          isTimestamp(marker.requested_at) &&
+          isPositiveInteger(marker.cpus) &&
+          isPositiveInteger(marker.mem_gb) &&
+          (marker.operator === undefined ||
+            typeof marker.operator === 'boolean')))
+    );
+  }
+  if (job.adapter === 'sjob_local') {
+    const from = job.takeover_from;
+    return (
+      typeof job.ssh_host === 'string' &&
+      !!job.ssh_host &&
+      !job.ssh_host.startsWith('-') &&
+      typeof job.local_id === 'string' &&
+      /^L\d+$/.test(job.local_id) &&
+      Number.isInteger(job.pid) &&
+      job.pid > 1 &&
+      typeof job.process_start === 'string' &&
+      [job.workdir, job.log_path, job.exitcode_path].every(
+        (item) => typeof item === 'string' && path.posix.isAbsolute(item)
+      ) &&
+      isPositiveInteger(job.cpus) &&
+      isPositiveInteger(job.mem_gb) &&
+      !!from &&
+      typeof from.job_id === 'string' &&
+      !!from.job_id &&
+      isTimestamp(from.at) &&
+      typeof from.cancel_failed === 'boolean'
+    );
+  }
+  return (
+    Number.isInteger(job.pid) &&
+    job.pid > 1 &&
+    path.isAbsolute(job.workdir) &&
+    path.isAbsolute(job.log_path)
+  );
+}
+
+/**
  * Validate the durable shape at the write boundary, including after mutation.
  *
  * @param {WaitRecord} record
@@ -159,17 +226,7 @@ function validate(record) {
     ) {
       throw new Error('Invalid external wait job');
     }
-    if (
-      job.adapter === 'slurm'
-        ? !job.job_id ||
-          !job.ssh_host ||
-          job.ssh_host.startsWith('-') ||
-          !job.expected.length
-        : !Number.isInteger(job.pid) ||
-          job.pid <= 1 ||
-          !path.isAbsolute(job.workdir) ||
-          !path.isAbsolute(job.log_path)
-    ) {
+    if (!validJobIdentity(job)) {
       throw new Error('Invalid external wait job identity');
     }
     if (

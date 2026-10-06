@@ -289,3 +289,113 @@ test('leaves a record already back at completing unchanged', () => {
   expect(again.stage).toBe('completing');
   expect(fs.readFileSync(file, 'utf8')).toBe(before);
 });
+
+/** @returns {import('./store.js').SlurmJob} */
+function pendingSlurm() {
+  return {
+    adapter: 'slurm',
+    ssh_host: 'wallace',
+    job_id: '249043',
+    submitted_at: '2026-09-21T00:00:00Z',
+    log_path: '/logs/job.log',
+    expected: ['/work/result'],
+    state: 'PENDING'
+  };
+}
+
+/** @returns {import('./store.js').SjobLocalJob} */
+function localRun() {
+  return {
+    adapter: 'sjob_local',
+    ssh_host: 'wallace',
+    local_id: 'L003',
+    pid: 4242,
+    process_start: '',
+    workdir: '/work',
+    log_path: '/home/u/.sjob/logs/run.log',
+    exitcode_path: '/home/u/.sjob/local/L003.exitcode',
+    submitted_at: '2026-09-21T00:00:00Z',
+    expected: ['/work/result'],
+    cpus: 16,
+    mem_gb: 64,
+    takeover_from: {
+      job_id: '249043',
+      at: '2026-09-21T00:00:00Z',
+      cancel_failed: true
+    }
+  };
+}
+
+test('stores and rereads a takeover marker and a local run', () => {
+  const marked = store.insert(
+    workspace,
+    input({
+      jobs: [
+        {
+          ...pendingSlurm(),
+          takeover: {
+            state: 'unknown',
+            requested_at: '2026-09-21T00:00:00Z',
+            cpus: 16,
+            mem_gb: 64,
+            operator: true
+          }
+        }
+      ]
+    })
+  );
+  const local = store.update(workspace, marked.wait_id, (current) => {
+    current.jobs[0] = localRun();
+  });
+
+  const reread = createExternalWaitStore({ filePathFor: () => file });
+
+  expect(reread.get(workspace, marked.wait_id)).toEqual(local);
+  expect(local.jobs[0]).toMatchObject({ adapter: 'sjob_local' });
+});
+
+test.each([
+  ['a marker state outside the contract', { state: 'operator' }],
+  ['a marker without resources', { cpus: 0 }],
+  ['a marker without a request time', { requested_at: 'now' }]
+])('rejects %s', (_label, patch) => {
+  const record = store.insert(workspace, input({ jobs: [pendingSlurm()] }));
+
+  const write = () =>
+    store.update(workspace, record.wait_id, (current) => {
+      Object.assign(current.jobs[0], {
+        takeover: {
+          state: 'pending',
+          requested_at: '2026-09-21T00:00:00Z',
+          cpus: 16,
+          mem_gb: 64,
+          ...patch
+        }
+      });
+    });
+
+  expect(write).toThrow('Invalid external wait job identity');
+  expect(store.get(workspace, record.wait_id)).toEqual(record);
+});
+
+test.each([
+  ['a relative exitcode path', { exitcode_path: 'L003.exitcode' }],
+  ['a malformed local id', { local_id: '3' }],
+  ['a missing takeover origin', { takeover_from: undefined }],
+  ['zero cpus', { cpus: 0 }]
+])('rejects a local run with %s', (_label, patch) => {
+  const insert = () =>
+    store.insert(
+      workspace,
+      input({
+        jobs: [
+          /** @type {import('./store.js').SjobLocalJob} */ ({
+            ...localRun(),
+            ...patch
+          })
+        ]
+      })
+    );
+
+  expect(insert).toThrow('Invalid external wait job identity');
+});

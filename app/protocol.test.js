@@ -4,6 +4,7 @@ import {
   MESSAGE_TYPES,
   decodeReply,
   decodeRequest,
+  externalJobIdentity,
   isExternalWaitObservation,
   isMessageType,
   isReply,
@@ -195,6 +196,90 @@ describe('protocol', () => {
     const valid = isExternalWaitObservation(record);
 
     expect(valid).toBe(false);
+  });
+
+  const LOCAL_RUN = {
+    adapter: 'sjob_local',
+    ssh_host: 'wallace',
+    local_id: 'L003',
+    pid: 4242,
+    cpus: 16,
+    mem_gb: 64,
+    takeover_from: {
+      job_id: '249043',
+      at: '2026-10-06T08:00:00.000Z',
+      cancel_failed: true
+    },
+    submitted_at: '2026-10-06T08:00:00.000Z',
+    log_path: '/home/u/.sjob/logs/run.log',
+    state: 'RUNNING',
+    terminal: null
+  };
+  const MARKER = {
+    state: 'unknown',
+    requested_at: '2026-10-06T08:00:00.000Z',
+    cpus: 16,
+    mem_gb: 64,
+    operator: true
+  };
+
+  test('accepts a takeover local run (UI-qbgj §3.5)', () => {
+    const record = externalWait();
+    record.jobs[0] = LOCAL_RUN;
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(true);
+  });
+
+  test('accepts a takeover marker on a slurm job (UI-qbgj §3.4)', () => {
+    const record = externalWait();
+    record.jobs[0] = { ...record.jobs[0], state: 'PENDING', takeover: MARKER };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(true);
+  });
+
+  test.each([
+    ['a local run without its origin', { ...LOCAL_RUN, takeover_from: null }],
+    ['a local run with zero cpus', { ...LOCAL_RUN, cpus: 0 }],
+    ['a local run with a malformed id', { ...LOCAL_RUN, local_id: '3' }],
+    ['a local run carrying a marker', { ...LOCAL_RUN, takeover: MARKER }],
+    [
+      'a marker state outside the contract',
+      {
+        adapter: 'slurm',
+        ssh_host: 'wallace',
+        job_id: '249043',
+        submitted_at: '2026-10-06T08:00:00.000Z',
+        log_path: '/logs/job.log',
+        terminal: null,
+        takeover: { ...MARKER, state: 'operator' }
+      }
+    ]
+  ])('rejects %s', (_label, job) => {
+    const record = externalWait();
+    record.jobs[0] = job;
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(false);
+  });
+
+  test('registers the takeover message type', () => {
+    expect(MESSAGE_TYPES).toContain('external_wait_takeover');
+  });
+
+  test.each([
+    [{ adapter: 'slurm', job_id: '249043', pid: 1 }, '249043'],
+    [{ adapter: 'process', pid: 4242 }, '4242'],
+    [
+      { adapter: 'sjob_local', ssh_host: 'wallace', local_id: 'L003' },
+      'wallace:L003'
+    ]
+  ])('names external job %j as %s', (job, identity) => {
+    expect(externalJobIdentity(job)).toBe(identity);
   });
 
   test('version and message types', () => {

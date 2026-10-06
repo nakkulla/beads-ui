@@ -110,6 +110,7 @@ import {
   handleWorkerDiscard,
   handleWorkerDiscardAbandon,
   handleWorkerExternalWait,
+  handleWorkerExternalWaitTakeover,
   handleWorkerMergeAutoToggle,
   handleWorkerMergeQueueAdd,
   handleWorkerMergeQueueAddAll,
@@ -618,6 +619,9 @@ export async function handleMessage(ws, data) {
     case 'external_wait_stop':
     case 'external_wait_resume':
       await handleWorkerExternalWait(ws, req);
+      return;
+    case 'external_wait_takeover':
+      await handleWorkerExternalWaitTakeover(ws, req);
       return;
     case 'worker-repo-operation-deploy-run':
       await handleWorkerRepoOperationDeployRun(ws, req);

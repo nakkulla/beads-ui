@@ -30,6 +30,7 @@
  */
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { externalJobIdentity } from '../../app/protocol.js';
 import { debug } from '../logging.js';
 import { parseSessionRef, sessionResumeCommand } from './session-ref.js';
 import { isSessionStalledRecovery } from './session-stall.js';
@@ -300,9 +301,7 @@ export async function notifyExternalWaitCompleted(input) {
     return;
   }
   const headline = record.jobs
-    .map(
-      (job) => `${job.adapter === 'slurm' ? job.job_id : job.pid} ${job.state}`
-    )
+    .map((job) => `${externalJobIdentity(job)} ${job.state}`)
     .join(' · ');
   if (
     await input.notifier.externalWaitCompleted({

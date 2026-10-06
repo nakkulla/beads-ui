@@ -1,11 +1,13 @@
 import { externalSpawnedClass } from '../../../app/protocol.js';
 import { observeProcessJob } from './adapters/process.js';
+import { observeSjobLocalJob } from './adapters/sjob-local.js';
 import {
   SPAWNED_COMPLETED_ROW_LIMIT,
   observeSlurmJob
 } from './adapters/slurm.js';
 import { completionDigest } from './decision.js';
-import { effectiveObservation } from './observation.js';
+import { effectiveObservation, jobIntervalSeconds } from './observation.js';
+import { recoverTakeover, sjobLocalJob } from './takeover.js';
 
 /**
  * @typedef {import('./store.js').WaitRecord} WaitRecord
@@ -245,6 +247,19 @@ function applyCapacity(job, observation) {
 }
 
 /**
+ * A job's adapter and takeover marker — what only an operation may change.
+ *
+ * @param {import('./store.js').Job} job
+ * @returns {string}
+ */
+function operationShape(job) {
+  return JSON.stringify([
+    job.adapter,
+    job.adapter === 'slurm' ? job.takeover || null : null
+  ]);
+}
+
+/**
  * @param {{store:ReturnType<import('./store.js').createExternalWaitStore>, listWorkspaces:()=>string[], run:import('./store.js').Run, now?:()=>number, onRecordChanged?:RecordCallback, onCompletion?:RecordCallback, log?:(message:string)=>void, interval_ms?:number}} options
  */
 export function createExternalWaitObserver({
@@ -259,6 +274,13 @@ export function createExternalWaitObserver({
 }) {
   /** @type {Map<string, Promise<WaitRecord|null>>} */
   const active = new Map();
+  /**
+   * Records an operation owns (UI-qbgj §3.4 step 2); their observation is
+   * skipped until the operation ends.
+   *
+   * @type {Set<string>}
+   */
+  const locked = new Set();
   /** @type {ReturnType<typeof setInterval>|null} */
   let timer = null;
   /** @type {Promise<void>|null} */
@@ -314,11 +336,36 @@ export function createExternalWaitObserver({
     }
     /** @type {string[]} */
     const errors = [];
-    for (const job of record.jobs) {
+    const started_shapes = record.jobs.map(operationShape);
+    let replaced = false;
+    for (const [index, job] of record.jobs.entries()) {
       if (job.terminal) {
         continue;
       }
       try {
+        // While a takeover marker exists the job's ordinary terminal
+        // recognition is blocked; each turn recovers the takeover instead.
+        if (job.adapter === 'slurm' && job.takeover) {
+          const outcome = await recoverTakeover(job, run);
+          if (outcome.kind === 'started') {
+            record.jobs[index] = sjobLocalJob(
+              job,
+              outcome.result,
+              job.takeover.requested_at
+            );
+            replaced = true;
+            continue;
+          }
+          if (outcome.kind === 'operator') {
+            job.takeover = {
+              ...job.takeover,
+              state: 'unknown',
+              operator: true
+            };
+            continue;
+          }
+          delete job.takeover;
+        }
         const observation =
           job.adapter === 'slurm'
             ? await observeSlurmJob(job, {
@@ -326,7 +373,9 @@ export function createExternalWaitObserver({
                 now,
                 spawned: spawnedContext(job, record.jobs)
               })
-            : await observeProcessJob(job, { run });
+            : job.adapter === 'sjob_local'
+              ? await observeSjobLocalJob(job, { run })
+              : await observeProcessJob(job, { run });
         if (
           job.adapter === 'process' &&
           'process_start' in observation &&
@@ -377,16 +426,22 @@ export function createExternalWaitObserver({
     const timestamp = now();
     const effective_observation = effectiveObservation();
     const observed = store.update(workspace, wait_id, (current) => {
-      current.jobs = record.jobs;
+      // A job whose adapter or takeover marker changed since this observation
+      // started belongs to that operation; this start-time snapshot never
+      // writes back over it (UI-qbgj §2, §3.4).
+      current.jobs =
+        current.jobs.length === record.jobs.length
+          ? record.jobs.map((job, index) =>
+              operationShape(current.jobs[index]) === started_shapes[index]
+                ? job
+                : current.jobs[index]
+            )
+          : current.jobs;
       current.error_count = errors.length ? current.error_count + 1 : 0;
       current.last_error = errors.length ? errors.join('; ') : null;
-      const intervals = record.jobs
+      const intervals = current.jobs
         .filter((job) => !job.terminal)
-        .map((job) =>
-          job.adapter === 'slurm'
-            ? effective_observation.slurm_interval_seconds
-            : effective_observation.process_interval_seconds
-        );
+        .map((job) => jobIntervalSeconds(job, effective_observation));
       const seconds = errors.length
         ? effective_observation.error_backoff_seconds[
             Math.min(
@@ -394,9 +449,11 @@ export function createExternalWaitObserver({
               effective_observation.error_backoff_seconds.length - 1
             )
           ]
-        : intervals.length
-          ? Math.min(...intervals)
-          : 0;
+        : replaced
+          ? 0
+          : intervals.length
+            ? Math.min(...intervals)
+            : 0;
       current.next_observation_at = new Date(
         timestamp + seconds * 1000
       ).toISOString();
@@ -425,6 +482,9 @@ export function createExternalWaitObserver({
    */
   function observeRecord(workspace, wait_id) {
     const key = JSON.stringify([workspace, wait_id]);
+    if (locked.has(key)) {
+      return Promise.resolve(store.get(workspace, wait_id));
+    }
     const pending = active.get(key);
     if (pending) {
       return pending;
@@ -434,6 +494,32 @@ export function createExternalWaitObserver({
     );
     active.set(key, promise);
     return promise;
+  }
+
+  /**
+   * Run `operation` while it owns the record (UI-qbgj §3.4 step 2). The lock
+   * is taken before waiting for an in-flight observation, so no observation
+   * can start in between; while it is held the record's observation is
+   * skipped. A record already owned answers null (`busy`).
+   *
+   * @template T
+   * @param {string} workspace
+   * @param {string} wait_id
+   * @param {() => Promise<T>} operation
+   * @returns {Promise<{value: T}|null>}
+   */
+  async function withOperationLock(workspace, wait_id, operation) {
+    const key = JSON.stringify([workspace, wait_id]);
+    if (locked.has(key)) {
+      return null;
+    }
+    locked.add(key);
+    try {
+      await active.get(key)?.catch(() => null);
+      return { value: await operation() };
+    } finally {
+      locked.delete(key);
+    }
   }
 
   /** @returns {Promise<void>} */
@@ -495,6 +581,7 @@ export function createExternalWaitObserver({
 
   return {
     observeRecord,
+    withOperationLock,
     tick,
     start,
     stop,

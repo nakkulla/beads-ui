@@ -7721,7 +7721,9 @@ export function createScheduler(deps) {
               adapter: job.adapter,
               ...(job.adapter === 'slurm'
                 ? { job_id: job.job_id }
-                : { pid: job.pid }),
+                : job.adapter === 'sjob_local'
+                  ? { ssh_host: job.ssh_host, local_id: job.local_id }
+                  : { pid: job.pid }),
               state: job.state,
               ...(job.terminal
                 ? { terminal: { exit_code: job.terminal.exit_code } }
