@@ -5352,3 +5352,123 @@ describe('automatic run failures stay unannounced here (UI-jw27 §2)', () => {
     expect(sent).toEqual([]);
   });
 });
+
+describe('failure evidence ignores attempt boundary lines (UI-i8cy §5.2)', () => {
+  /**
+   * Settle one failed run whose log holds `bytes`, and return the evidence the
+   * settlement recorded.
+   *
+   * @param {Buffer} bytes
+   */
+  async function settledEvidence(bytes) {
+    const log_path = path.join(root, 'operation.log');
+    fs.writeFileSync(log_path, bytes);
+    const { store, coordinator } = coordinatorWithFailedMarker(log_path);
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      target_sha: TARGET,
+      script_path: 'repo-ops/script/deploy',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id = store.snapshot(root).repo_operations['op-1'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path
+    });
+
+    await coordinator.reconcile(root);
+
+    const operation = store.snapshot(root).repo_operations['op-1'];
+    fs.rmSync(path.join(root, 'queue.json'), { force: true });
+    // A first script failure parks its evidence for the one automatic retry.
+    const failure = operation.failure || operation.retry?.first_failure;
+    return {
+      log_digest: operation.log_digest,
+      fingerprint: failure?.fingerprint,
+      summary: failure?.summary
+    };
+  }
+
+  /**
+   * @param {string} log_path
+   */
+  function coordinatorWithFailedMarker(log_path) {
+    return coordinatorFor({
+      runner: {
+        start: () => ({ ok: true, log_path }),
+        readMarker: () => ({
+          exit_code: 1,
+          signal: null,
+          started_at: 1,
+          finished_at: 2
+        }),
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+  }
+
+  /**
+   * The same script output framed by the runner's boundary lines.
+   *
+   * @param {Buffer} output
+   */
+  function framed(output) {
+    const sep = output.length > 0 && output[output.length - 1] !== 0x0a;
+    return Buffer.concat([
+      Buffer.from(
+        `##repo-ops## ${JSON.stringify({ event: 'start', attempt_id: 'op-1:9', at: 1791268149831 })}\n`
+      ),
+      output,
+      Buffer.from(
+        `${sep ? '\n' : ''}##repo-ops## ${JSON.stringify({
+          event: 'end',
+          attempt_id: 'op-1:9',
+          at: 1791268150000,
+          exit_code: 1,
+          signal: null,
+          timed_out: false,
+          ...(sep ? { sep: true } : {})
+        })}\n`
+      )
+    ]);
+  }
+
+  test.each(
+    /** @type {Array<[string, Buffer]>} */ ([
+      ['output ending with a newline', Buffer.from('step\nError: boom\n')],
+      ['output without a trailing newline', Buffer.from('step\nlast words')],
+      ['CRLF output', Buffer.from('one\r\nnpm ERR! failed\r\ntail')],
+      [
+        'invalid UTF-8 output',
+        Buffer.concat([
+          Buffer.from('bytes '),
+          Buffer.from([0xff, 0xc3]),
+          Buffer.from('\nfinal')
+        ])
+      ]
+    ])
+  )(
+    'records the same digest, fingerprint and summary for %s',
+    async (_name, output) => {
+      const plain = await settledEvidence(output);
+
+      const with_boundaries = await settledEvidence(framed(output));
+
+      expect(plain).toMatchObject({
+        log_digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        fingerprint: expect.any(String),
+        summary: expect.any(String)
+      });
+      expect(with_boundaries).toEqual(plain);
+    }
+  );
+});

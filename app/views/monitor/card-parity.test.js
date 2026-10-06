@@ -662,13 +662,15 @@ function mountMonitor(mount, raw_queue) {
  * Both tabs, drawn from the one raw state.
  *
  * @param {import('../../protocol.js').CapacityView['takeover_blocker']} [takeover_blocker]
+ * @param {Record<string, any>} [queue_patch] - Top-level fields laid over the
+ * raw queue record.
  * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
  */
-async function drawBothTabs(takeover_blocker) {
+async function drawBothTabs(takeover_blocker, queue_patch = {}) {
   stubBd();
   seedPrObservations();
   await warmServerCaches();
-  const raw_queue = rawQueue();
+  const raw_queue = { ...rawQueue(), ...queue_patch };
   seedExternalWait(raw_queue, takeover_blocker);
   const queue_snapshot = decorateQueue(WS, raw_queue);
   const worker = document.createElement('div');
@@ -884,6 +886,54 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
       }
     }
   );
+
+  test('draws the same log-view control on a PR 대기 row whose completion failed', async () => {
+    const log_path = path.join(tmp_root, 'state', 'deploy.log');
+    const { worker, monitor } = await drawBothTabs(undefined, {
+      completion_intents: {
+        'W-1': {
+          target_base: 'main',
+          phase: 'needs_human',
+          subject: { role: 'root', bead_id: 'W-1' },
+          active_op: null,
+          terminal_reason: { stage: 'deploy', reason: 'x', log_path },
+          auto_resolution: null,
+          paused_resolution: null
+        }
+      }
+    });
+
+    const controls = [worker, monitor].map((mount) => {
+      const control = /** @type {HTMLElement|null} */ (
+        cardsByBead(mount)
+          .get('W-1')
+          ?.querySelector('[data-seam="log-view-open"]') || null
+      );
+      return control
+        ? {
+            text: control.textContent?.trim(),
+            data: { ...control.dataset }
+          }
+        : null;
+    });
+
+    expect(controls[0]).toEqual({
+      text: '로그 보기',
+      data: {
+        seam: 'log-view-open',
+        workspace: WS,
+        logSource: 'completion',
+        logId: 'W-1',
+        logPath: log_path
+      }
+    });
+    expect(controls[1]).toEqual(controls[0]);
+    expect(
+      partsOf(/** @type {HTMLElement} */ (cardsByBead(monitor).get('W-1')))
+    ).toEqual(
+      partsOf(/** @type {HTMLElement} */ (cardsByBead(worker).get('W-1')))
+    );
+  });
 
   test('stands an issue closed outside the Worker only in the Worker done lane', async () => {
     const { worker, monitor } = await drawBothTabs();

@@ -14,6 +14,7 @@ import {
 import { claudeUsageHandler } from './routes/claude-usage.js';
 import { codexUsageHandler } from './routes/codex-usage.js';
 import { docHandler } from './routes/doc.js';
+import { repoOpsLogHandler } from './routes/repo-ops-log.js';
 import { repoOpsScriptHandler } from './routes/repo-ops-script.js';
 import {
   externalWaitCheckHandler,
@@ -153,6 +154,10 @@ export function createApp(config) {
 
   // Serve one resolver-verified repository-operation script from a pinned blob.
   app.get('/api/repo-ops-script', repoOpsScriptHandler);
+
+  // Read one repository-operation log, split into attempts, from the path the
+  // server's own record stores (UI-i8cy §5.3).
+  app.get('/api/repo-ops-log', repoOpsLogHandler);
 
   // Fail-quiet Claude Code usage snapshot for the header meter.
   app.get('/api/claude-usage', claudeUsageHandler);

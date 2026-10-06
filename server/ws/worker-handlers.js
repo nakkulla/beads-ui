@@ -77,6 +77,11 @@ import {
 } from '../worker/attach.js';
 import { implActorOf } from '../worker/compare-projection.js';
 import {
+  COMPLETION_PHASES,
+  boundedCompletionText,
+  completionLogPath
+} from '../worker/completion-log-path.js';
+import {
   normalizeDelegationSessions,
   readAttemptDelegationStreams
 } from '../worker/delegation-monitor.js';
@@ -110,6 +115,7 @@ import {
   orderLaneByBlocks
 } from '../worker/queue-store.js';
 import { summarizeReceiptCheck } from '../worker/receipt-check.js';
+import { stripBoundaryLines } from '../worker/repo-operation-log.js';
 import {
   classifyRepoOperationFailure,
   projectRepoOperationPolicy
@@ -2526,38 +2532,6 @@ function delegationStoreOrNull() {
 }
 
 /**
- * The durable `CompletionPhase` vocabulary, mirrored here because the queue
- * schema does not export its list. The auto-resolution phases are DERIVED from
- * the exported class→phase binding rather than retyped: a mirror that misses a
- * phase projects a live intent as `intent_state_invalid`, which is how UI-hk74
- * §4's three new phases would have been hidden from the card entirely.
- *
- * @type {Set<string>}
- */
-const COMPLETION_PHASES = new Set([
-  'gating',
-  'holding',
-  'merging',
-  'cleaning',
-  ...Object.values(COMPLETION_AUTO_RESOLUTION_PHASE),
-  'paused',
-  'needs_human',
-  'completed'
-]);
-
-/**
- * @param {unknown} value
- * @param {number} [limit]
- * @returns {string|null}
- */
-function boundedCompletionText(value, limit = 4000) {
-  if (typeof value !== 'string' || value.length === 0) {
-    return null;
-  }
-  return value.slice(-limit);
-}
-
-/**
  * Project the non-terminal automatic resolution state (UI-hk74 §4) the row
  * badge reads. Only the fields §9 shows travel: the class that names the badge,
  * the original terminal reason, the retry budget, its next wake, and the last
@@ -2669,33 +2643,26 @@ function completionStatusFor(workspace_key, queue) {
         ? queue.cleanup_failed[root_bead_id]
         : null;
     const failure_key = terminal?.failure_key || active_op?.failure_key || null;
+    const observe = () =>
+      getWorkerRuntime().prObservations.get(workspace_key, root_bead_id);
     let evidence = boundedCompletionText(terminal?.evidence);
-    let log_path = boundedCompletionText(terminal?.log_path, 1000);
     if (evidence === null && cleanup) {
       evidence =
         boundedCompletionText(cleanup.output_tail) ||
         boundedCompletionText(cleanup.detail);
     }
-    if (log_path === null && cleanup) {
-      log_path = boundedCompletionText(cleanup.log_path, 1000);
-    }
-    if (evidence === null || log_path === null) {
+    if (evidence === null) {
       let observed = null;
       try {
-        observed = getWorkerRuntime().prObservations.get(
-          workspace_key,
-          root_bead_id
-        );
+        observed = observe();
       } catch {
         observed = null;
       }
-      if (evidence === null) {
-        evidence = boundedCompletionText(observed?.verify?.output_tail);
-      }
-      if (log_path === null) {
-        log_path = boundedCompletionText(observed?.verify?.log_path, 1000);
-      }
+      evidence = boundedCompletionText(observed?.verify?.output_tail);
     }
+    // The log-reading API's `completion` source calls the same chooser
+    // (UI-i8cy §5.3), so the path on the card is the file the popup reads.
+    const log_path = completionLogPath(queue, root_bead_id, observe);
     const raw_hold =
       value.phase === 'holding' &&
       value.hold &&
@@ -2769,14 +2736,30 @@ function operationOutputTail(log_path) {
     if (length <= 0) {
       return '';
     }
-    const buffer = Buffer.alloc(length);
+    // One byte before the window too, to know whether the cut fell on a line
+    // start.
+    const read_from = start > 0 ? start - 1 : 0;
+    const raw = Buffer.alloc(size - read_from);
     const fd = nodeFs.openSync(log_path, 'r');
     try {
-      nodeFs.readSync(fd, buffer, 0, length, start);
+      nodeFs.readSync(fd, raw, 0, raw.length, read_from);
     } finally {
       nodeFs.closeSync(fd);
     }
-    return sanitizeOutput(buffer.toString('utf8'));
+    let buffer = start > 0 ? raw.subarray(1) : raw;
+    // A cut inside a line drops that fragment: a boundary line cut in half has
+    // lost its prefix, and its JSON tail would otherwise read as script output.
+    // A boundary line always ends with `\n`, so a window with no newline at all
+    // is the tail of one long script line and stays as it is.
+    if (start > 0 && raw[0] !== 0x0a) {
+      const newline = buffer.indexOf(0x0a);
+      if (newline !== -1) {
+        buffer = buffer.subarray(newline + 1);
+      }
+    }
+    // The runner's attempt boundary lines are not script output (UI-i8cy
+    // §5.2); the same stripper the failure settlement uses keeps them out.
+    return sanitizeOutput(stripBoundaryLines(buffer).toString('utf8'));
   } catch {
     return '';
   }

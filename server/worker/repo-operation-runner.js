@@ -71,7 +71,10 @@ export function createRepoOperationRunner(deps = {}) {
           log_path,
           marker_path,
           launch_marker_path,
-          timeout_ms: input.timeout_ms
+          timeout_ms: input.timeout_ms,
+          // Reference only on the log's boundary lines (UI-i8cy §5.1): an
+          // automatic retry re-uses the id, so it never tells attempts apart.
+          attempt_id: input.attempt_id
         })
       ],
       {

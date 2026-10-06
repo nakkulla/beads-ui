@@ -740,28 +740,63 @@ describe('카드 로그 경로 인계 (UI-8w4t §4)', () => {
     return mount;
   }
 
-  test('renders a failed operation log path as a copyable absolute path', () => {
+  test('renders a failed operation log as a log-view control with a path copy', () => {
     const mount = renderTimeline(
       [operation({ state: 'failed', log_path: '/state/logs/op-1.log' })],
       []
     );
 
-    const path_element = mount.querySelector('.worker-ev__path');
-    expect(path_element?.tagName).toBe('CODE');
-    expect(path_element?.textContent).toBe('/state/logs/op-1.log');
+    const control = /** @type {HTMLElement|null} */ (
+      mount.querySelector('[data-seam="log-view-open"]')
+    );
+    expect(control?.textContent?.trim()).toBe('로그 보기');
+    expect({ ...control?.dataset }).toEqual({
+      seam: 'log-view-open',
+      workspace: '/repo',
+      logSource: 'operation',
+      logId: 'op-1',
+      logPath: '/state/logs/op-1.log'
+    });
     expect(mount.querySelector('.worker-ev__copy')).not.toBe(null);
+    expect(mount.querySelector('.worker-ev__path')).toBe(null);
   });
 
-  test('renders a stopped cleanup log path as a copyable absolute path', () => {
+  test('renders a stopped cleanup log as a log-view control with a path copy', () => {
     const mount = renderTimeline(
       [],
       [cleanup({ reason: 'deploy_script_failure', log_path: '/state/c.log' })]
     );
 
-    expect(mount.querySelector('.worker-ev__path')?.textContent).toBe(
-      '/state/c.log'
+    const control = /** @type {HTMLElement|null} */ (
+      mount.querySelector('[data-seam="log-view-open"]')
     );
+    expect(control?.dataset.logSource).toBe('cleanup');
+    expect(control?.dataset.logPath).toBe('/state/c.log');
     expect(mount.querySelector('.worker-ev__copy')).not.toBe(null);
+  });
+
+  test('keeps the plain path and copy when the drawer has no workspace', () => {
+    const mount = document.createElement('div');
+    const view = timelineView(
+      [operation({ state: 'failed', log_path: '/state/logs/op-1.log' })],
+      [],
+      { expanded: false }
+    );
+
+    render(
+      repoOpsTimelineTemplate({
+        events: view.visible,
+        hidden: view.hidden,
+        expanded: false,
+        repo: ''
+      }),
+      mount
+    );
+
+    expect(mount.querySelector('.worker-ev__path')?.textContent).toBe(
+      '/state/logs/op-1.log'
+    );
+    expect(mount.querySelector('[data-seam="log-view-open"]')).toBe(null);
   });
 
   test('omits the copy control when a cleanup stopped before any operation ran', () => {
@@ -921,9 +956,11 @@ describe('post-merge 잡 행 (UI-i60a §4)', () => {
   test('offers the log path and exit code inside 세부 on a job row', () => {
     const row = renderRow(jobCard({ state: 'failed' }));
 
-    const details = row.querySelector('.worker-ev__details');
+    const control = /** @type {HTMLElement|null} */ (
+      row.querySelector('.worker-ev__details [data-seam="log-view-open"]')
+    );
 
-    expect(details?.textContent).toContain('/logs/op-job.log');
+    expect(control?.dataset.logPath).toBe('/logs/op-job.log');
   });
 
   test('reads 잡 실패 for a failed job rather than 배포 실패', () => {

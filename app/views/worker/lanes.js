@@ -1903,8 +1903,10 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {string|null} [completion_badge] - Root completion status badge.
  * @property {string} [completion_title] - Bounded completion evidence tooltip.
  * @property {string|null} [log_path] - 완료 실패가 남긴 로그 파일의 절대 경로
- * (UI-8w4t §4). 슬롯 5 (좌표·실행 사실)에 `<code>` + 복사 버튼으로 서고, 실행 전
- * 실패라 로그가 없으면 요소 자체가 없다.
+ * (UI-8w4t §4). 슬롯 5 (좌표·실행 사실)에 `[로그 보기]` + 경로 복사로 서고
+ * (UI-i8cy §5.5), 실행 전 실패라 로그가 없으면 요소 자체가 없다.
+ * @property {import('./log-path.js').LogViewMaterial} [log_view] - 로그 팝업
+ * 재료 (UI-i8cy §5.5). 공유 PR 대기 투영이 싣고, 없으면 경로 + 복사로 선다.
  * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
  * @property {string|null} [live_badge] - Which of {@link MiniItem.badges}
  * reports live server activity rather than a settled state (UI-raqh §3); it is
@@ -3967,7 +3969,7 @@ export function miniRow(item, options = {}) {
   // 것인가"는 이 줄이 답하는 질문이고, 복사 버튼은 값에 붙은 어포던스일 뿐
   // 카드의 처분을 바꾸지 않는다. 타임라인 `세부`와 같은 템플릿·같은 토스트를
   // 쓰므로 두 표면이 같은 값을 다르게 다루지 않는다. 재료가 없으면 없다.
-  const log_path_el = logPathTemplate(item.log_path);
+  const log_path_el = logPathTemplate(item.log_path, item.log_view);
   // plan 묶음 칩은 5a 좌표다 (UI-ruwu §2): 레인 출처 칩 다음, route 앞이고 팝업은
   // 그 칩이 선 이 줄 아래에 열린다.
   const plan_open = chipOpen(item, 'plan');
