@@ -2179,6 +2179,64 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     ).toBeNull();
   });
 
+  /** A pending Slurm job with capacity material (UI-qbgj §3.1). */
+  const PENDING_JOB = {
+    adapter: 'slurm',
+    ssh_host: 'wallace',
+    job_id: '42',
+    submitted_at: '2026-09-21T00:00:00Z',
+    log_path: '/logs/job.log',
+    state: 'PENDING',
+    observed_at: '2026-09-21T03:12:00Z',
+    terminal: null,
+    capacity: {
+      reason: 'Priority',
+      est_start: null,
+      partition: 'debug',
+      ahead: { jobs: 3, cpus: 48 },
+      slurm: {
+        cpu_alloc: 100,
+        cpu_total: 112,
+        mem_alloc_mb: 1024,
+        mem_total_mb: 4096
+      },
+      host: { name: 'wallace', cpus: 112, load1: 10.6, mem_available_mb: 2048 },
+      observed_at: '2026-09-21T03:12:00Z'
+    }
+  };
+
+  test('draws the capacity lines under a lone pending job on an external wait tile', () => {
+    const tile = renderExternalSession({ jobs: [PENDING_JOB] });
+
+    expect(
+      Array.from(tile.querySelectorAll('.external-job__note')).map((note) =>
+        (note.textContent || '').trim()
+      )
+    ).toEqual([
+      '대기 사유 우선순위 · 앞 3건',
+      'debug CPU 100/112 배정 · 실제 부하 11 · 쓸 수 있는 메모리 2G'
+    ]);
+  });
+
+  test('stands the run-now button after the check button in the tile foot', () => {
+    const tile = renderExternalSession({ jobs: [PENDING_JOB] }, [
+      CHECK_ACTIONS[0],
+      {
+        op: 'external_wait_takeover',
+        label: '▶ 바로 실행',
+        placement: 'card',
+        payload: { ...EXTERNAL_PAYLOAD, job_id: '42', ssh_host: 'wallace' }
+      },
+      CHECK_ACTIONS[1]
+    ]);
+
+    expect(
+      Array.from(
+        tile.querySelectorAll('.rtile__foot [data-external-wait-op]')
+      ).map((button) => button.textContent?.trim())
+    ).toEqual(['지금 확인', '▶ 바로 실행', '관찰 중단']);
+  });
+
   test('draws no coordinate chips on an external wait tile', () => {
     const tile = renderExternalSession();
 

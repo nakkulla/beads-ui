@@ -7,7 +7,8 @@ import { getWorkerRuntime } from '../worker/runtime.js';
 import { setConnWorkspace } from './context.js';
 import {
   __resetWorkerQueueForTest,
-  handleWorkerExternalWait
+  handleWorkerExternalWait,
+  handleWorkerExternalWaitTakeover
 } from './worker-handlers.js';
 
 vi.mock('../registry-watcher.js', async (importOriginal) => ({
@@ -168,5 +169,101 @@ describe('external wait operations', () => {
 
     expect(reply.error.code).toBe('bad_request');
     expect(resume).not.toHaveBeenCalled();
+  });
+});
+
+describe('external wait takeover (UI-qbgj §3.4)', () => {
+  /**
+   * @param {Record<string, any>} [patch]
+   */
+  async function takeover(patch = {}) {
+    const socket = /** @type {any} */ ({ send: vi.fn() });
+    setConnWorkspace(socket, { root_dir: WS, db_path: '' });
+    await handleWorkerExternalWaitTakeover(socket, {
+      id: 'action-2',
+      type: 'external_wait_takeover',
+      payload: {
+        root_dir: WS,
+        wait_id: 'w-0123456789ab',
+        cpus: 16,
+        mem_gb: 64,
+        ...patch
+      }
+    });
+    return JSON.parse(socket.send.mock.calls.at(-1)[0]);
+  }
+
+  test('routes the resources to the service and records the click', async () => {
+    const runtime = getWorkerRuntime();
+    const op = vi.spyOn(runtime.externalWait, 'takeover').mockResolvedValue(
+      /** @type {any} */ ({
+        bead_id: 'A-1',
+        jobs: [
+          {
+            adapter: 'sjob_local',
+            ssh_host: 'wallace',
+            local_id: 'L003',
+            cpus: 16,
+            mem_gb: 64,
+            takeover_from: { job_id: '249043' }
+          }
+        ]
+      })
+    );
+    const timeline = vi.spyOn(runtime.queueStore, 'recordTimelineEvent');
+
+    const reply = await takeover();
+
+    expect(op).toHaveBeenCalledExactlyOnceWith(WS, 'w-0123456789ab', {
+      cpus: 16,
+      mem_gb: 64
+    });
+    expect(reply.ok).toBe(true);
+    expect(timeline).toHaveBeenCalledExactlyOnceWith(
+      WS,
+      expect.objectContaining({
+        bead_id: 'A-1',
+        kind: 'user_action',
+        summary:
+          '[▶ 바로 실행] 클릭 · Slurm 249043 → wallace:L003 (16 CPU · 64G)'
+      })
+    );
+  });
+
+  test('replies with the refusal sentence and records nothing', async () => {
+    const runtime = getWorkerRuntime();
+    vi.spyOn(runtime.externalWait, 'takeover').mockResolvedValue({
+      ok: false,
+      status: 409,
+      error: 'not_owner',
+      message: '다른 사용자의 Slurm 작업이라 바로 실행할 수 없습니다'
+    });
+    const timeline = vi.spyOn(runtime.queueStore, 'recordTimelineEvent');
+
+    const reply = await takeover();
+
+    expect(reply).toMatchObject({
+      ok: false,
+      error: {
+        code: 'not_owner',
+        message: '다른 사용자의 Slurm 작업이라 바로 실행할 수 없습니다'
+      }
+    });
+    expect(timeline).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { cpus: 0 },
+    { cpus: 2.5 },
+    { mem_gb: '64' },
+    { mem_gb: undefined },
+    { wait_id: 'bad' }
+  ])('rejects the payload patch %j', async (patch) => {
+    const op = vi.spyOn(getWorkerRuntime().externalWait, 'takeover');
+
+    const reply = await takeover(patch);
+
+    expect(reply).toMatchObject({ ok: false, error: { code: 'bad_request' } });
+    expect(op).not.toHaveBeenCalled();
   });
 });

@@ -1,17 +1,29 @@
 ---
-id: UI-18a5
-title: 대화형 세션 이어가기 짝과 인계·인수·보류
+id: UI-qbgj
+title: 대화형 세션 이어가기 짝과 외부 작업 바로 실행
 status: accepted
-date: 2026-10-03
-summary: "beads-ui가 여는 대화형 세션(확인 필요·실패·외부 작업 완료)은 모두 [세션에서 이어가기] 하나로 열고 인계·인수·보류로 끝난다; [워커로 이어가기]는 대화 없이 Worker가 잇는 짝이고 인계는 그 행의 Worker 출구(같은 세션 재개·정리 재시도·폐기 재시도·머지 큐 재등록·attempt dispatch)를 사용자 답의 권한으로 많아야 한 번 실행하며 머지 게이트 위조 판정은 예외다; 외부 작업 완료 대화가 인수·인계 없이 끝나면 대기 키를 다시 써 완료 행으로 되돌린다; 자동 기동은 사람 판단 멈춤에만 두고 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다; 외부 작업의 하위 잡은 등록 잡과 같은 사용자·WorkDir에서 등록 잡 시작 이후 제출된 Slurm 잡이고 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하며, 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다; 미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정한다"
-supersedes: ["UI-ny0h-2"]
-spec: docs/superpowers/specs/2026-10-02-session-worker-continue-pair-design.md
-bead: UI-18a5
+date: 2026-10-06
+summary: "beads-ui가 여는 대화형 세션(확인 필요·실패·외부 작업 완료)은 모두 [세션에서 이어가기] 하나로 열고 인계·인수·보류로 끝난다; [워커로 이어가기]는 대화 없이 Worker가 잇는 짝이고 인계는 그 행의 Worker 출구(같은 세션 재개·정리 재시도·폐기 재시도·머지 큐 재등록·attempt dispatch)를 사용자 답의 권한으로 많아야 한 번 실행하며 머지 게이트 위조 판정은 예외다; 외부 작업 완료 대화가 인수·인계 없이 끝나면 대기 키를 다시 써 완료 행으로 되돌린다; 자동 기동은 사람 판단 멈춤에만 두고 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다; 외부 작업의 하위 잡은 등록 잡과 같은 사용자·WorkDir에서 등록 잡 시작 이후 제출된 Slurm 잡이고 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하며, 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다; 대기 중인 Slurm 등록 잡의 대기 사유·앞 대기 수·예상 시작·파티션 배정·호스트 실제 여유도 같은 관찰 ssh 안의 읽기 전용 조회로 얻는 표시 재료일 뿐 같은 자리에 들어가지 않는다; 외부 잡을 바꾸는 유일한 경로는 사람이 확인한 바로 실행으로, 단일 대기 Slurm 잡을 sjob takeover로 같은 호스트 로컬 실행(워크플로면 server-local 프로필로 하위 단계까지)으로 옮기고 같은 대기 레코드에서 sjob_local 잡으로 제자리 교체한다; 미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정한다"
+supersedes: ["UI-18a5"]
+spec: docs/superpowers/specs/2026-10-06-slurm-wait-capacity-and-local-takeover-design.md
+bead: UI-qbgj
 ---
 
-# 대화형 세션 이어가기 짝과 인계·인수·보류
+# 대화형 세션 이어가기 짝과 외부 작업 바로 실행
 
 ## Context
+
+이 결정은 `ADR UI-18a5`(대화형 세션 이어가기 짝과 인계·인수·보류)를 다시 쓴다. UI-18a5와 소비자(`projectExternalWait`, 외부 대기 카드 표면, 상세 패널, 완료 프롬프트)를 공유하므로 새 주제가 아니다. 레코드 형식의 정본은 dotfiles `docs/contracts/external-wait.md`(dotfiles `cb61fa51a`: `sjob_local` 어댑터, slurm 잡 표시 필드 `capacity`, takeover 제자리 교체)이고 이 ADR은 그 소비자 쪽 결정이다.
+
+UI-qbgj(2026-10-06): PROSTATE-c3o의 head job이 `Reason=Resources`로 4시간 넘게 대기했지만 카드에는 `대기 중`만 보여 왜 막혔는지·언제 풀릴지·다른 길이 있는지 판단할 재료가 없었다. 실측으로 노드 CPU는 모두 다른 사용자 작업에 배정됐지만 실제 부하와 쓸 수 있는 메모리는 충분히 남아 있었다.
+
+사용자 결정(2026-10-06): 바로 실행은 워크플로 전체(하위 단계 포함)를 Slurm 밖으로 꺼낸다. 자원 기본값은 실제 남는 자원에 서버 전역 비율을 곱한 값이고 실행마다 확인 창에서 고친다. 자동 실행은 하지 않는다.
+
+- `UI-18a5`: 외부 작업 조항에 대기 중 용량 재료와 사람이 확인한 바로 실행을 더하고, 나머지 조항 전부를 아래에 승계한다.
+- 전제: ADR UI-u6ud-2 — `sjob_local` 어댑터와 `capacity` 필드는 dotfiles 계약 정정과 함께 움직인다.
+
+아래는 UI-18a5에서 승계한 맥락이다.
+
 
 이 결정은 `ADR UI-ny0h-2`(같은 Worker 세션 대화와 재시도 지연 설정)를 다시 쓴다. UI-ny0h-2와 소비자(`wait-judgment` 대화 verdict·`notify` 대화 알림·`tile-resolve` 술어)를 공유하므로 새 주제가 아니다. 대화 계약의 정본은 dotfiles `ADR dotfiles/dotfiles-xto5b`·`dotfiles/dotfiles-xto5b-2`·`dotfiles/dotfiles-xto5b-3`(진입 블록 하나가 세 대화 사유를 받고, 재진입 두 액션 이름을 `[워커로 이어가기]`·`[세션에서 이어가기]`로 바꾸며, 외부 작업 완료 대화가 끝나면 완료 행으로 되돌린다)이고 이 ADR은 그 소비자 쪽 결정이다.
 
@@ -54,6 +66,26 @@ UI-ny0h(2026-10-02 사용자 결정): Worker의 대기·관찰·재시도 시간
 - 전제: ADR UI-u6ud-2 — beads-ui는 dotfiles 계약의 소비자이고 새 필드는 계약 정정과 함께 움직인다.
 
 ## Decision
+
+**대기 중인 Slurm 등록 잡의 대기 사유·앞 대기 수·예상 시작·파티션 배정·호스트 실제 여유는 같은 관찰 ssh 안의 읽기 전용 조회로 얻는 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다. 외부 잡을 바꾸는 유일한 경로는 사람이 확인한 `▶ 바로 실행`이고, 단일 대기 Slurm 잡을 `sjob takeover` 한 명령으로 같은 호스트 로컬 실행(워크플로면 `profiles/server-local`로 하위 단계까지)으로 옮긴 뒤 같은 대기 레코드에서 `sjob_local` 잡으로 제자리 교체한다.**
+
+용량 재료
+
+- slurm 등록 잡이 `PENDING`일 때만 관찰 ssh 한 번 안에서 각 조회를 시간 상한으로 감싸 읽는다. 재료 실패는 저장된 값을 그대로 두고 레코드의 오류 횟수·백오프에 닿지 않으며, `PENDING`을 벗어나면 지운다.
+- 호스트 실제 여유(CPU 수·1분 부하·`MemAvailable`)는 ssh 호스트가 파티션 노드일 때만 채운다. 바로 실행이 도는 곳이 그 호스트라서다.
+- 오래된 재료는 읽은 시각으로 드러낸다.
+
+바로 실행
+
+- 노출 조건은 레코드 stage가 `hold`·`detached`이고 잡이 정확히 하나이며 그 잡이 진행 표시 없는 `PENDING` slurm 잡인 경우다. 서버가 카드 조작을 내리고 렌더러는 다시 판정하지 않는다.
+- 레코드별 조작 잠금이 진행 중 관찰과 직렬화하고, ssh 전에 그 잡에 진행 표시(`takeover`, 계약 필드 `state`·`requested_at`·`cpus`·`mem_gb`)를 영속한다. 표시가 있는 동안 그 잡의 일반 Slurm 종료 판정과 재요청을 막는다.
+- 결과 불명은 관찰 차례마다 `sjob takeover <id> --result --json`으로 복구한다. `started`·`done`은 제자리 교체, 미보류 `no_takeover`는 원격 takeover가 ssh보다 오래 살 수 있으므로 정착 창(`TAKEOVER_SETTLE_MS`, 현재 기본 5분)이 지난 뒤에만 표시를 지운다. 정착 창을 넘긴 표시는 사람 조치(`바로 실행 결과 확인 필요`)로 판정한다.
+- 교체는 bd `external_wait` 키·`wait_id`·stage·owner·hold 예산을 바꾸지 않는다. 완료 식별은 `<ssh_host>:<local_id>`이고 완료 프롬프트는 Slurm에서의 전환과 원 잡 취소 미확인을 적는다.
+- 자원 기본값의 비율은 타이밍 설정 표가 아닌 별도 서버 전역 설정(`server/external-wait-settings.js`)이 소유한다.
+- 관찰 자체는 여전히 잡을 바꾸지 않는다. "실행 방식(작은 머리 잡 + 하위 잡)은 바꾸지 않는다"는 기본 실행 방식에 관한 것으로 유지하고, 바로 실행만 프로젝트의 `profiles/server-local`로 워크플로 전체를 정한 코어 안에서 로컬로 돌린다.
+
+### ADR UI-18a5에서 승계하는 조항
+
 
 **beads-ui가 여는 대화형 세션(확인 필요·실패·외부 작업 완료)은 모두 `[세션에서 이어가기]` 하나로 열고 `인계`·`인수`·`보류`로 끝난다. `[워커로 이어가기]`는 대화 없이 Worker가 잇는 짝이고, `인계`는 그 행의 Worker 출구를 사용자 답의 권한으로 많아야 한 번 실행하며 머지 게이트 위조 판정은 예외다. 외부 작업 완료 대화가 인수·인계 없이 끝나면 대기 키를 다시 써 완료 행으로 되돌린다. 자동 기동은 사람 판단 멈춤에만 둔다.**
 
@@ -605,6 +637,16 @@ UI-l48z에서 승계한 대안:
   줄로 같은 일이 된다.
 
 ## Consequences
+
+- 되돌리기 어렵다: dotfiles `docs/contracts/external-wait.md`·`workflow-state.yaml`, `sjob takeover`·실행 기록, 연구 템플릿 `profiles/server-local`·`run_workflow.sh`와 그것을 받은 프로젝트, `adapters/slurm.js`·`adapters/sjob-local.js`·`takeover.js`·`observer.js`·`service.js`, `attach.js` 투영, 카드·상세 렌더러, 완료 프롬프트가 함께 움직인다.
+- 맥락 없이는 놀랍다: 관찰 전용이던 외부 대기에 잡을 취소·실행하는 조작이 하나 있고, head job만이 아니라 워크플로 전체를 옮긴다.
+- 얻는 것: 큐 정체를 사람이 판단할 재료와 한 번의 확인으로 우회하는 길.
+- 감수하는 것: 공용 서버에서 다른 사용자에게 배정된 자원을 나눠 쓴다. sjob 실행 기록이 없는 옛 작업은 대상에서 빠진다. 결과 불명이면 정착 창만큼 표시가 남는다.
+- 대안과 기각 사유: wrapper 역파싱으로 원 명령 복원 — `--wrapper`·확장자 없는 실행을 놓친다. beads-ui가 `scancel`·`sjob run --local`을 직접 조합 — sjob 형식 지식이 새고 hold 보상 순서를 둘이 나눠 갖는다. head job만 로컬 — 하위 단계가 다시 같은 큐 뒤에 선다.
+- UI-18a5의 조항은 외부 작업 조항에 두 조항을 더한 것 외에 전부 승계했고 폐기한 조항은 없다.
+
+### ADR UI-18a5의 결과 (승계)
+
 
 - 되돌리기 어렵다: dotfiles 계약 어휘·진입 블록 핀(`direction-inquiry.js` 사본과 다이제스트 테스트), `tile-resolve.js` 술어, `worker-handlers.js` 클릭 라우팅, `scheduler.js` 인계 실행·한 번 규칙·외부 되돌림, `notify.js` 대화 알림, 카드 슬롯 표가 함께 움직인다.
 - 맥락 없이는 놀랍다: 실패 대화의 결과 줄 하나가 결과 미상 머지 후 잡을 다시 돌릴 수 있다. 같은 이름의 버튼이 행마다 다른 op를 부른다(뜻은 같다).

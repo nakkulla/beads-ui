@@ -8,7 +8,9 @@ import {
   NOTES_LINE_PREFIX,
   OBSERVATION,
   RECORD_STAGES,
+  REGISTRATION_ADAPTERS,
   RESULT_LINE_PREFIX,
+  TAKEOVER_PROGRESS_STATES,
   WAIT_ID_RE,
   externalWaitIdOf
 } from './contract.js';
@@ -19,6 +21,8 @@ test('copies the external-wait contract vocabulary', () => {
     HOLD_BUDGET,
     OBSERVATION,
     ADAPTERS,
+    REGISTRATION_ADAPTERS,
+    TAKEOVER_PROGRESS_STATES,
     RECORD_STAGES,
     EXTERNAL_WAIT_CAUSE,
     RESULT_LINE_PREFIX,
@@ -31,7 +35,9 @@ test('copies the external-wait contract vocabulary', () => {
       process_interval_seconds: 30,
       error_backoff_seconds: [60, 120, 300, 900]
     },
-    ADAPTERS: ['slurm', 'process'],
+    ADAPTERS: ['slurm', 'process', 'sjob_local'],
+    REGISTRATION_ADAPTERS: ['slurm', 'process'],
+    TAKEOVER_PROGRESS_STATES: ['pending', 'unknown'],
     RECORD_STAGES: [
       'hold',
       'done',
@@ -65,6 +71,8 @@ test.each([
   INTERVAL_POLICY.override_fields,
   OBSERVATION.error_backoff_seconds,
   ADAPTERS,
+  REGISTRATION_ADAPTERS,
+  TAKEOVER_PROGRESS_STATES,
   RECORD_STAGES,
   WAIT_ID_RE
 ])('freezes mutable contract values %j', (value) => {

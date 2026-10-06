@@ -194,11 +194,22 @@ the public projection of the server's external-wait records:
 `{wait_id, root_dir, bead_id, owner_kind, stage, budget, registered_at, next_observation_at, error_count, last_error, jobs, completion, resume}`.
 Each job carries `adapter`, `ssh_host` and `job_id` (Slurm) or `pid` (process),
 `submitted_at`, `log_path`, `state`, `observed_at`, and
-`terminal: null | {exit_code, evidence, recovery_needed, expected_results}`.
-Expected results contain path, existence, size and mtime; log and artifact
-contents are never projected. Cards attach live records (`hold`, `detached`,
-`completing`) to their consumer Bead. Missing metadata/records remain
-action-required wait reasons. Older servers omit the array.
+`terminal: null | {exit_code, evidence, recovery_needed, expected_results}`. A
+pending Slurm job may also carry the display-only `capacity`:
+`{reason, est_start, partition, ahead: {jobs, cpus}, slurm: {cpu_alloc, cpu_total, mem_alloc_mb, mem_total_mb}, host, observed_at}`
+(`est_start` and `host` may be `null`; the field is absent once the job leaves
+PENDING). It never affects completion or judgment. While a `▶ 바로 실행` is in
+flight or its outcome is unknown, the Slurm job also carries
+`takeover: {state: 'pending'|'unknown', requested_at, cpus, mem_gb}`; a marker
+still present `TAKEOVER_SETTLE_MS` (5 minutes) after `requested_at` is judged
+`takeover_unresolved`. A taken-over job is replaced in place by
+`adapter: 'sjob_local'` carrying `ssh_host`, `local_id`, `pid`, `cpus`,
+`mem_gb`, `takeover_from: {job_id, at, cancel_failed}` and the last Slurm `name`
+and `spawned` (display only). Expected results contain path, existence, size and
+mtime; log and artifact contents are never projected. Cards attach live records
+(`hold`, `detached`, `completing`) to their consumer Bead. Missing
+metadata/records remain action-required wait reasons. Older servers omit the
+array.
 
 The corresponding `workspaces_state[]` row carries `external_wait_count` (live
 records) and `external_wait_attention_count` (live records whose
@@ -1150,9 +1161,10 @@ JSON이며 GET은 쿼리로 받는다. 모든 응답에 `Cache-Control: no-store
   `workdir`와 `log_path`는 절대 경로다. `process_start`는 선택적 프로세스 시작
   식별 정보다. `submitted_at`은 두 어댑터 모두 ISO 시각이다.
 
-등록·hold 응답의 `jobs`는 `{adapter, job_id|pid, state, terminal}`로 투영한다.
-`budget`은 `{turns_total:3, turns_used}`다. hold는 최대 540초 기다리며 세 번째
-호출까지 턴을 소비하고 네 번째는 관찰 없이 `detached`로 바꾸고 Bead의
+등록·hold 응답의 `jobs`는 `{adapter, job_id|pid, state, terminal}`로 투영하고,
+바로 실행으로 바뀐 `sjob_local` 잡은 `job_id|pid` 대신 `ssh_host, local_id`를
+싣는다. `budget`은 `{turns_total:3, turns_used}`다. hold는 최대 540초 기다리며
+세 번째 호출까지 턴을 소비하고 네 번째는 관찰 없이 `detached`로 바꾸고 Bead의
 `external_wait` 키를 쓴 뒤 재확인한다. hold 중 완료는 `done` 응답만 반환하며
 재개하지 않는다. 동시에 중단되면 `state:'stopped'`를 반환한다.
 
@@ -1177,6 +1189,20 @@ JSON이며 GET은 쿼리로 받는다. 모든 응답에 `Cache-Control: no-store
 현재 키가 `wait_id`와 일치하는지 확인한 뒤에만 제거한다. 성공 응답은 서비스
 결과와 `queue`(갱신된 장식 스냅샷), 실패는 표준 오류 응답이다. 세 조작 모두
 소비자 이슈의 타임라인에 클릭을 기록한다.
+
+`external_wait_takeover`(`▶ 바로 실행`, UI-qbgj §3.4)의 본문은
+`{root_dir, wait_id, cpus, mem_gb}`이고 `cpus`·`mem_gb`는 1 이상의 정수다.
+서버는 레코드별 조작 잠금을 잡고(진행 중 관찰이 끝나기를 기다린다)
+`hold`·`detached`의 단일 `PENDING` Slurm 잡이며 `takeover` 표시가 없는지 다시
+판정한 뒤, ssh 전에 `takeover:{state:'pending'}`을 저장하고 그 호스트에서
+`sjob takeover <id> -c <cpus> -m <mem_gb> --json`을 실행한다. 성공하면 같은
+`wait_id`에서 그 잡을 `sjob_local`로 제자리 교체하고 응답은 레코드 전체와
+`queue`이며 타임라인에 클릭을 기록한다. 거부는 sjob 사유를 `error.code`로,
+한국어 문구를 `error.message`로 돌려주고 표시를 지운다. ssh 실패·시간 초과·해석
+불가·sjob `busy`는 결과 불명으로 표시를 `unknown`에 두고 관찰이 `--result`로
+복구한다. 잠금이나 표시가 이미 있으면 409 `busy`, 대상이 아니면 409
+`takeover_not_allowed`다. 카드 조작은 `placement:'card'`이고 payload에
+`job_id`·`ssh_host`·`capacity`(있을 때)를 싣는다 — `confirm`은 없다.
 
 ## Session-log (transcript) channel (spec §5.6)
 
@@ -1518,6 +1544,31 @@ display, and a `minutes` key must be a multiple of 60.
   `next_observation_at`, or merge-queue deadline is never rewritten. Periodic
   pollers (PR polling, list refresh, monitor refresh) re-arm at once; a list
   refresh value of 0 turns it off.
+
+## External-wait settings channel
+
+Server-global defaults of the external-wait surface (UI-qbgj §3.6). Today the
+one key is `takeover_ratio_percent` (default 80, integer 10–100): the
+`▶ 바로 실행` confirm dialog pre-fills
+`floor((host.cpus − host.load1) × ratio / 100)` CPUs and
+`floor(host.mem_available_mb / 1024 × ratio / 100)` G. It lives apart from the
+timing channel because that table stores only integer seconds. State lives in
+`$XDG_STATE_HOME/bdui/external-wait-settings.json` as `{ revision, overrides }`;
+reads are fail-quiet (a bad file or key falls back to the default).
+
+- `subscribe-external-wait-settings` `{ id? }` → `ok { id }`, then an immediate
+  `external-wait-settings-snapshot`. `unsubscribe-external-wait-settings`
+  `{ id? }` → `ok { id, unsubscribed }`. Closing the connection drops its
+  subscription.
+- `external-wait-settings-snapshot` payload:
+  `{ type, id, revision, values, overrides, fields }` with
+  `fields[key] = { default, min, max, unit: 'percent' }`.
+- `external-wait-settings-set` `{ expected_revision, values }` where `values`
+  maps a key to an integer or `null` (clear that override). Same reply shape and
+  codes as `timing-settings-set`: `ok: true` with the new `snapshot` (then
+  pushed to every subscriber), `ok: false, code: 'conflict'`,
+  `ok: false, code: 'invalid_value', key, message`, or an `internal_error` error
+  reply.
 
 ## ADR channel (UI-8uz7 §6)
 

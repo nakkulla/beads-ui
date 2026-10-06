@@ -10,8 +10,74 @@ const TERMINAL_STATES = new Set(SLURM_TERMINAL_STATES);
  * @param {string} value
  * @returns {string}
  */
-function shellQuote(value) {
+export function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** A non-option ssh alias the observation accepts. */
+export const SSH_HOST_RE = Object.freeze(/^[A-Za-z0-9_][A-Za-z0-9_.@:-]*$/);
+
+/**
+ * The batch-mode ssh argv that runs one generated program, quoted as a single
+ * remote-shell argument, on `ssh_host`.
+ *
+ * @param {string} ssh_host
+ * @param {string} script
+ * @returns {string[]}
+ */
+export function remoteShellArgv(ssh_host, script) {
+  return [
+    'ssh',
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'ConnectTimeout=10',
+    ssh_host,
+    `sh -c ${shellQuote(script)}`
+  ];
+}
+
+/**
+ * Remote `stat` lines of the expected artifacts, one marker line per path.
+ *
+ * @param {string[]} expected
+ * @returns {string[]}
+ */
+export function expectedArtifactLines(expected) {
+  return expected.map((item, index) => {
+    const quoted = shellQuote(item);
+    return `if [ -e ${quoted} ]; then stat -c '__EWM_ARTIFACT__${index}=1|%s|%Y' -- ${quoted}; else printf '__EWM_ARTIFACT__${index}=0|-|-\\n'; fi`;
+  });
+}
+
+/**
+ * The expected results read back from {@link expectedArtifactLines} output; a
+ * missing or malformed line reads as absent.
+ *
+ * @param {string} text
+ * @param {string[]} expected
+ * @returns {import('../store.js').ExpectedResult[]}
+ */
+export function expectedResults(text, expected) {
+  const artifacts = new Map(
+    [
+      ...text.matchAll(/^__EWM_ARTIFACT__(\d+)=(0|1)\|([^|\n]+)\|([^\n]+)$/gm)
+    ].map((match) => [Number(match[1]), match])
+  );
+  return expected.map((path, index) => {
+    const item = artifacts.get(index);
+    const exists =
+      !!item &&
+      item[2] === '1' &&
+      /^\d+$/.test(item[3]) &&
+      /^-?\d+$/.test(item[4]);
+    return {
+      path,
+      exists,
+      size: exists ? Number(item[3]) : null,
+      mtime: exists ? Number(item[4]) : null
+    };
+  });
 }
 
 /** Completed sub-job rows a record keeps (UI-q15q §3.4). */
@@ -162,6 +228,119 @@ export const SPAWNED_TIMEOUT_SECONDS = Object.freeze({
   completion: 15
 });
 
+/** Seconds each pending-capacity read may take under `timeout` (UI-qbgj §3.1). */
+export const CAPACITY_TIMEOUT_SECONDS = 5;
+
+const TIMEOUT_FUNCTION =
+  '__ewm_to() { if command -v timeout >/dev/null 2>&1; then timeout -k 2 "$@"; else shift; "$@"; fi; }';
+
+// First occurrence of each key of `scontrol show job`; one `|` row for the
+// capacity section: Reason|StartTime|Partition|Priority|SubmitTime.
+const CAPACITY_JOB_AWK = String.raw`
+{
+  for (i = 1; i <= NF; i++) {
+    p = index($i, "=")
+    if (p > 1) {
+      k = substr($i, 1, p - 1)
+      if (!(k in v)) { v[k] = substr($i, p + 1) }
+    }
+  }
+}
+END { print v["Reason"] "|" v["StartTime"] "|" v["Partition"] "|" v["Priority"] "|" v["SubmitTime"] }`;
+
+// Rows `id|priority|submit|reason|cpus` of the partition's pending jobs, array
+// tasks expanded. Earlier means higher priority, or equal priority submitted
+// first; held, dependent and deferred jobs cannot run next and are not counted.
+const CAPACITY_AHEAD_AWK = String.raw`
+$2 !~ /^[0-9]+$/ || $5 !~ /^[0-9]+$/ { next }
+$1 == job || index($1, job "_") == 1 { next }
+$4 ~ /^(Dependency|JobHeld|BeginTime)/ { next }
+{
+  if ($2 + 0 > priority + 0 || ($2 + 0 == priority + 0 && $3 < submit)) { jobs++; cpus += $5 }
+}
+END { print (jobs + 0) "|" (cpus + 0) }`;
+
+// `scontrol show node -o` lines summed over the partition's nodes; every node
+// must report all four numbers or nothing is printed.
+const CAPACITY_SLURM_AWK = String.raw`
+BEGIN {
+  n = split(nodes, a, " ")
+  for (i = 1; i <= n; i++) { if (!(a[i] in want)) { want[a[i]] = 1; total++ } }
+}
+{
+  split("", v)
+  for (i = 1; i <= NF; i++) {
+    p = index($i, "=")
+    if (p > 1) {
+      k = substr($i, 1, p - 1)
+      if (!(k in v)) { v[k] = substr($i, p + 1) }
+    }
+  }
+  if (!(v["NodeName"] in want)) { next }
+  if (v["CPUAlloc"] !~ /^[0-9]+$/ || v["CPUTot"] !~ /^[0-9]+$/ || v["AllocMem"] !~ /^[0-9]+$/ || v["RealMemory"] !~ /^[0-9]+$/) { bad = 1; next }
+  found++
+  cpu_alloc += v["CPUAlloc"]
+  cpu_total += v["CPUTot"]
+  mem_alloc += v["AllocMem"]
+  mem_total += v["RealMemory"]
+}
+END { if (total > 0 && found == total && !bad) { print cpu_alloc "|" cpu_total "|" mem_alloc "|" mem_total } }`;
+
+/**
+ * The read-only capacity section of the observation program (UI-qbgj §3.1).
+ * It runs only for a pending job, inside the same ssh, and each query is
+ * bounded by {@link CAPACITY_TIMEOUT_SECONDS}. The first failed read stops the
+ * section (`__EWM_CAP_OK__=0`), so a stuck cluster costs one bounded wait.
+ * The ssh host's own load is read only when it is one of the partition nodes.
+ *
+ * @param {import('../store.js').SlurmJob} job
+ * @returns {string[]}
+ */
+function capacityScript(job) {
+  const to = `__ewm_to ${CAPACITY_TIMEOUT_SECONDS}`;
+  return [
+    "printf '\\n__EWM_CAP_BEGIN__\\n'",
+    TIMEOUT_FUNCTION,
+    `__ewm_cap_state=$(printf '%s\\n' "$__ewm_queue" | awk 'NF { s = $1 } END { sub(/\\+.*$/, "", s); print s }')`,
+    `if [ -z "$__ewm_cap_state" ] && [ "$__ewm_ctl_rc" -eq 0 ]; then __ewm_cap_state=$(printf '%s\\n' "$__ewm_ctl" | awk '{ for (i = 1; i <= NF; i++) { if (index($i, "JobState=") == 1) { s = substr($i, 10); sub(/\\+.*$/, "", s); print s; exit } } }'); fi`,
+    'if [ "$__ewm_cap_state" = PENDING ]; then',
+    '__ewm_cap_ok=1',
+    "__ewm_cj=''",
+    `if [ "$__ewm_ctl_rc" -eq 0 ]; then __ewm_cj=$(printf '%s\\n' "$__ewm_ctl" | awk ${shellQuote(CAPACITY_JOB_AWK)}); else __ewm_cap_ok=0; fi`,
+    `__ewm_cap_reason=$(printf '%s\\n' "$__ewm_cj" | cut -d '|' -f 1)`,
+    `__ewm_cap_part=$(printf '%s\\n' "$__ewm_cj" | cut -d '|' -f 3)`,
+    `__ewm_cap_prio=$(printf '%s\\n' "$__ewm_cj" | cut -d '|' -f 4)`,
+    `__ewm_cap_submit=$(printf '%s\\n' "$__ewm_cj" | cut -d '|' -f 5)`,
+    'case "$__ewm_cap_part" in \'\'|*[!A-Za-z0-9_.,-]*) __ewm_cap_ok=0;; esac',
+    'case "$__ewm_cap_prio" in \'\'|*[!0-9]*) __ewm_cap_ok=0;; esac',
+    'if [ -z "$__ewm_cap_reason" ] || [ -z "$__ewm_cap_submit" ]; then __ewm_cap_ok=0; fi',
+    "__ewm_cap_q=''; __ewm_cap_nodes=''; __ewm_cap_nd=''; __ewm_cap_host=''",
+    `if [ "$__ewm_cap_ok" -eq 1 ]; then __ewm_cap_q=$(${to} squeue -h -r -t PD -p "$__ewm_cap_part" -o '%i|%Q|%V|%r|%C') || __ewm_cap_ok=0; fi`,
+    `if [ "$__ewm_cap_ok" -eq 1 ]; then __ewm_cap_nodes=$(${to} sinfo -h -N -p "$__ewm_cap_part" -o '%N') || __ewm_cap_ok=0; fi`,
+    `if [ "$__ewm_cap_ok" -eq 1 ]; then __ewm_cap_nd=$(${to} scontrol show node -o) || __ewm_cap_ok=0; fi`,
+    `__ewm_cap_nodes=$(printf '%s\\n' "$__ewm_cap_nodes" | sort -u | tr '\\n' ' ')`,
+    `__ewm_cap_ahead=''; __ewm_cap_slurm=''`,
+    `if [ "$__ewm_cap_ok" -eq 1 ]; then __ewm_cap_ahead=$(printf '%s\\n' "$__ewm_cap_q" | awk -F '|' -v job=${shellQuote(job.job_id)} -v priority="$__ewm_cap_prio" -v submit="$__ewm_cap_submit" ${shellQuote(CAPACITY_AHEAD_AWK)}); __ewm_cap_slurm=$(printf '%s\\n' "$__ewm_cap_nd" | awk -v nodes="$__ewm_cap_nodes" ${shellQuote(CAPACITY_SLURM_AWK)}); if [ -z "$__ewm_cap_ahead" ] || [ -z "$__ewm_cap_slurm" ]; then __ewm_cap_ok=0; fi; fi`,
+    `if [ "$__ewm_cap_ok" -eq 1 ]; then __ewm_cap_hn=$(${to} hostname -s) || __ewm_cap_ok=0; fi`,
+    `if [ "$__ewm_cap_ok" -eq 1 ] && printf '%s\\n' "$__ewm_cap_nodes" | tr ' ' '\\n' | grep -qxF -- "$__ewm_cap_hn"; then`,
+    `__ewm_cap_cpus=$(${to} nproc) || __ewm_cap_ok=0`,
+    `__ewm_cap_la=$(${to} cat /proc/loadavg) || __ewm_cap_ok=0`,
+    `__ewm_cap_mi=$(${to} cat /proc/meminfo) || __ewm_cap_ok=0`,
+    `__ewm_cap_load=$(printf '%s\\n' "$__ewm_cap_la" | awk '{ print $1; exit }')`,
+    `__ewm_cap_mem=$(printf '%s\\n' "$__ewm_cap_mi" | awk '/^MemAvailable:/ { printf "%d\\n", $2 / 1024; exit }')`,
+    `__ewm_cap_host="$__ewm_cap_hn|$__ewm_cap_cpus|$__ewm_cap_load|$__ewm_cap_mem"`,
+    'fi',
+    `printf '__EWM_CAP_NOW__=%s\\n' "$(date +%Y-%m-%dT%H:%M:%S)"`,
+    'if [ "$__ewm_cap_ok" -eq 1 ]; then',
+    `printf '__EWM_CAP_JOB__=%s\\n__EWM_CAP_AHEAD__=%s\\n__EWM_CAP_SLURM__=%s\\n' "$__ewm_cj" "$__ewm_cap_ahead" "$__ewm_cap_slurm"`,
+    `if [ -n "$__ewm_cap_host" ]; then printf '__EWM_CAP_HOST__=%s\\n' "$__ewm_cap_host"; fi`,
+    'fi',
+    `printf '__EWM_CAP_OK__=%s\\n' "$__ewm_cap_ok"`,
+    'fi',
+    "printf '__EWM_CAP_END__\\n'"
+  ];
+}
+
 /**
  * The read-only sub-job section of the observation program (UI-q15q §3.2):
  * the user queue and, under `jobcomp/filetxt`, the completion file read
@@ -180,7 +359,7 @@ function spawnedScript(job, context) {
   const list = (values) => shellQuote((values || []).join(' '));
   return [
     "printf '\\n__EWM_SPAWN_BEGIN__\\n'",
-    '__ewm_to() { if command -v timeout >/dev/null 2>&1; then timeout -k 2 "$@"; else shift; "$@"; fi; }',
+    TIMEOUT_FUNCTION,
     "__ewm_anchor=''",
     `if [ "$__ewm_ctl_rc" -eq 0 ]; then __ewm_anchor=$(printf '%s\\n' "$__ewm_ctl" | awk -v started_states=${shellQuote([...SLURM_RUNNING_STATES, ...SLURM_TERMINAL_STATES].join(' '))} ${shellQuote(ANCHOR_AWK)}); fi`,
     `__ewm_su=$(printf '%s\\n' "$__ewm_anchor" | sed -n 1p)`,
@@ -256,13 +435,9 @@ END {
     'if [ -n "$__ewm_started" ]; then __ewm_epoch=$(date -d "$__ewm_started" +%s 2>/dev/null); if [ $? -eq 0 ]; then printf "__EWM_LOG_START_EPOCH__=%s\\n" "$__ewm_epoch"; fi; fi',
     'printf "\\n__EWM_LOG_RC__=%s\\n" "$__ewm_log_rc"'
   ];
-  for (const [index, expected] of job.expected.entries()) {
-    const quoted = shellQuote(expected);
-    lines.push(
-      `if [ -e ${quoted} ]; then stat -c '__EWM_ARTIFACT__${index}=1|%s|%Y' -- ${quoted}; else printf '__EWM_ARTIFACT__${index}=0|-|-\\n'; fi`
-    );
-  }
+  lines.push(...expectedArtifactLines(job.expected));
   lines.push(...spawnedScript(job, context));
+  lines.push(...capacityScript(job));
   // A purged job can fail scontrol; section return codes carry that evidence.
   lines.push('exit 0');
   return lines.join('\n');
@@ -526,11 +701,95 @@ function parseSpawned(text) {
 }
 
 /**
+ * The pending-capacity section of the remote output (UI-qbgj §3.1). Any
+ * missing, failed or malformed part makes the whole reading `failed`, which
+ * leaves the stored capacity unchanged; it never throws, so it cannot reach
+ * the registered job's error accounting. `est_start` is kept only when it is
+ * after the remote clock, and the host only when the program read it.
+ *
+ * @param {string} text
+ * @param {string} observed_at
+ * @returns {import('../store.js').CapacityMaterial}
+ */
+function parseCapacity(text, observed_at) {
+  try {
+    const section =
+      /(?:^|\n)__EWM_CAP_BEGIN__\n([\s\S]*?)\n__EWM_CAP_END__(?:\n|$)/.exec(
+        text
+      );
+    if (!section) {
+      return { status: 'failed' };
+    }
+    const lines = section[1].split('\n');
+    /** @param {string} key */
+    const value = (key) => {
+      const prefix = `__EWM_CAP_${key}__=`;
+      const line = lines.find((entry) => entry.startsWith(prefix));
+      return line === undefined ? null : line.slice(prefix.length);
+    };
+    const job = (value('JOB') || '').split('|');
+    const ahead = /^(\d+)\|(\d+)$/.exec(value('AHEAD') || '');
+    const slurm = /^(\d+)\|(\d+)\|(\d+)\|(\d+)$/.exec(value('SLURM') || '');
+    const host_line = value('HOST');
+    const host =
+      host_line === null
+        ? null
+        : /^([^|]+)\|(\d+)\|(\d+(?:\.\d+)?)\|(\d+)$/.exec(host_line);
+    if (
+      value('OK') !== '1' ||
+      job.length !== 5 ||
+      !job[0] ||
+      !job[2] ||
+      !ahead ||
+      !slurm ||
+      (host_line !== null && !host)
+    ) {
+      return { status: 'failed' };
+    }
+    const now = value('NOW');
+    const est_start =
+      REMOTE_TIME_RE.test(job[1]) &&
+      now !== null &&
+      REMOTE_TIME_RE.test(now) &&
+      job[1] > now
+        ? job[1]
+        : null;
+    return {
+      status: 'ok',
+      capacity: {
+        reason: job[0],
+        est_start,
+        partition: job[2],
+        ahead: { jobs: Number(ahead[1]), cpus: Number(ahead[2]) },
+        slurm: {
+          cpu_alloc: Number(slurm[1]),
+          cpu_total: Number(slurm[2]),
+          mem_alloc_mb: Number(slurm[3]),
+          mem_total_mb: Number(slurm[4])
+        },
+        host: host
+          ? {
+              name: host[1],
+              cpus: Number(host[2]),
+              load1: Number(host[3]),
+              mem_available_mb: Number(host[4])
+            }
+          : null,
+        observed_at
+      }
+    };
+  } catch {
+    return { status: 'failed' };
+  }
+}
+
+/**
  * @param {import('../store.js').SlurmJob} job
  * @param {string} stdout
+ * @param {string} observed_at
  * @returns {import('../store.js').Observation}
  */
-function parseObservation(job, stdout) {
+function parseObservation(job, stdout, observed_at) {
   const result = splitRemoteOutput(stdout);
   if (result.queue_rc !== 0) {
     throw new Error('squeue query failed');
@@ -559,7 +818,8 @@ function parseObservation(job, stdout) {
       ? { name: fields.JobName }
       : {}),
     ...(display.anchor ? { anchor: display.anchor } : {}),
-    spawned: display.spawned
+    spawned: display.spawned,
+    capacity: parseCapacity(result.artifacts, observed_at)
   };
   const timing = {
     time_limit_seconds,
@@ -599,27 +859,7 @@ function parseObservation(job, stdout) {
   if (exit_code === null) {
     return { state: 'UNKNOWN', terminal: false, ...timing, ...extras };
   }
-  const artifacts = new Map(
-    [
-      ...result.artifacts.matchAll(
-        /^__EWM_ARTIFACT__(\d+)=(0|1)\|([^|\n]+)\|([^\n]+)$/gm
-      )
-    ].map((match) => [Number(match[1]), match])
-  );
-  const expected_results = job.expected.map((expected, index) => {
-    const item = artifacts.get(index);
-    const exists =
-      !!item &&
-      item[2] === '1' &&
-      /^\d+$/.test(item[3]) &&
-      /^-?\d+$/.test(item[4]);
-    return {
-      path: expected,
-      exists,
-      size: exists ? Number(item[3]) : null,
-      mtime: exists ? Number(item[4]) : null
-    };
-  });
+  const expected_results = expectedResults(result.artifacts, job.expected);
   return {
     state,
     terminal: true,
@@ -640,22 +880,17 @@ function parseObservation(job, stdout) {
  * @param {{run:import('../store.js').Run, now?:()=>number, spawned?:SpawnedContext}} options
  * @returns {Promise<import('../store.js').Observation>}
  */
-export async function observeSlurmJob(job, { run, spawned = {} }) {
-  if (!/^[A-Za-z0-9_][A-Za-z0-9_.@:-]*$/.test(job.ssh_host)) {
+export async function observeSlurmJob(
+  job,
+  { run, now = () => Date.now(), spawned = {} }
+) {
+  if (!SSH_HOST_RE.test(job.ssh_host)) {
     throw new Error('Invalid non-option ssh_host');
   }
   let result;
   try {
     result = await run(
-      [
-        'ssh',
-        '-o',
-        'BatchMode=yes',
-        '-o',
-        'ConnectTimeout=10',
-        job.ssh_host,
-        `sh -c ${shellQuote(remoteScript(job, spawned))}`
-      ],
+      remoteShellArgv(job.ssh_host, remoteScript(job, spawned)),
       { timeout_ms: 60000 }
     );
   } catch {
@@ -664,5 +899,5 @@ export async function observeSlurmJob(job, { run, spawned = {} }) {
   if (result.code !== 0) {
     throw new Error('ssh observation failed');
   }
-  return parseObservation(job, result.stdout);
+  return parseObservation(job, result.stdout, new Date(now()).toISOString());
 }

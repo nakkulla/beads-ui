@@ -961,3 +961,219 @@ test('names no capped member when the completion log is read', async () => {
 
   expect(spawned).not.toHaveProperty('truncated');
 }, 15000);
+
+/**
+ * A fake command body that prints each line.
+ *
+ * @param {string[]} lines
+ */
+function printLines(lines) {
+  return `printf '%s\\n' ${lines.map((line) => `'${line}'`).join(' ')}`;
+}
+
+const PENDING_CONTROL = [
+  'JobId=123 JobName=snake__20260921_090000_ab12',
+  '   UserId=alice(1001) GroupId=g(1001)',
+  '   Priority=1000 Nice=0 Account=a QOS=normal',
+  '   JobState=PENDING Reason=Resources Dependency=(null)',
+  '   RunTime=00:00:00 TimeLimit=1-00:00:00',
+  '   SubmitTime=2026-10-06T10:00:00 EligibleTime=2026-10-06T10:00:00',
+  '   StartTime=2026-10-08T13:38:00 EndTime=2026-10-09T13:38:00',
+  '   Partition=normal AllocNode:Sid=login:1',
+  '   WorkDir=/work'
+].join('\n');
+
+const PENDING_ROWS = [
+  '201|2000|2026-10-06T11:00:00|Resources|16',
+  '202_1|1000|2026-10-06T09:00:00|Priority|16',
+  '202_2|1000|2026-10-06T09:00:00|Priority|16',
+  '203|1000|2026-10-06T11:00:00|Priority|8',
+  '204|500|2026-10-06T08:00:00|Priority|8',
+  '205|3000|2026-10-06T08:00:00|Dependency|4',
+  '206|3000|2026-10-06T08:00:00|JobHeldUser|4',
+  '207|3000|2026-10-06T08:00:00|BeginTime|4',
+  '123|1000|2026-10-06T09:59:00|Resources|2'
+];
+
+const NODE_ROWS = [
+  'NodeName=n1 Arch=x86_64 CPUAlloc=100 CPUTot=112 CPULoad=61.2 RealMemory=1031000 AllocMem=512000 FreeMem=59000 State=ALLOCATED',
+  'NodeName=n2 Arch=x86_64 CPUAlloc=8 CPUTot=16 CPULoad=1.0 RealMemory=2000 AllocMem=1000 FreeMem=900 State=MIXED',
+  'NodeName=n3 Arch=x86_64 CPUAlloc=1 CPUTot=2 CPULoad=0.1 RealMemory=10 AllocMem=1 FreeMem=9 State=IDLE'
+];
+
+/**
+ * Fake commands of a pending job's capacity reads; `tools` replaces any.
+ *
+ * @param {{rows?: string[], host?: string, tools?: Record<string, string>}} [options]
+ * @returns {Record<string, string>}
+ */
+function capacityTools({ rows = PENDING_ROWS, host = 'n1', tools = {} } = {}) {
+  return {
+    squeue: `case "$*" in *"-t PD"*) ${printLines(rows)};; *) echo PENDING;; esac`,
+    sinfo: printLines(['n1', 'n2']),
+    scontrol: `case "$1 $2" in "show job") cat "$EWM_DIR/control.txt";; "show node") ${printLines(NODE_ROWS)};; esac`,
+    hostname: `echo ${host}`,
+    nproc: 'echo 112',
+    cat: `case "$1" in /proc/loadavg) echo '61.20 50.10 40.00 3/900 12345';; /proc/meminfo) printf 'MemTotal: 1000000 kB\\nMemAvailable:    2048000 kB\\n';; *) exec /bin/cat "$@";; esac`,
+    ...tools
+  };
+}
+
+/**
+ * @param {Parameters<typeof capacityTools>[0] & {control?: string}} [options]
+ */
+async function runCapacity({ control = PENDING_CONTROL, ...options } = {}) {
+  const { observation, dir } = await runObservation({
+    control,
+    tools: capacityTools(options)
+  });
+  return { observation, dir };
+}
+
+/**
+ * @param {import('../store.js').CapacityMaterial|undefined} material
+ */
+function okCapacity(material) {
+  if (material?.status !== 'ok') {
+    throw new Error(`capacity ${JSON.stringify(material)}`);
+  }
+  return material.capacity;
+}
+
+test('reads the raw reason, partition and a future start estimate of a pending job', async () => {
+  const { observation } = await runCapacity();
+
+  expect(observation).toMatchObject({ state: 'PENDING', terminal: false });
+  expect(okCapacity(observation.capacity)).toMatchObject({
+    reason: 'Resources',
+    partition: 'normal',
+    est_start: '2026-10-08T13:38:00',
+    observed_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/)
+  });
+}, 15000);
+
+test('drops a start estimate that is not after the remote clock', async () => {
+  const { observation } = await runCapacity({
+    control: PENDING_CONTROL.replace(
+      'StartTime=2026-10-08T13:38:00',
+      'StartTime=2026-09-21T09:59:59'
+    )
+  });
+
+  expect(okCapacity(observation.capacity).est_start).toBeNull();
+}, 15000);
+
+test('drops an unparseable start estimate', async () => {
+  const { observation } = await runCapacity({
+    control: PENDING_CONTROL.replace(
+      'StartTime=2026-10-08T13:38:00',
+      'StartTime=Unknown'
+    )
+  });
+
+  expect(okCapacity(observation.capacity).est_start).toBeNull();
+}, 15000);
+
+test('counts expanded array tasks that outrank the job and skips excluded reasons and itself', async () => {
+  const { observation } = await runCapacity();
+
+  expect(okCapacity(observation.capacity).ahead).toEqual({
+    jobs: 3,
+    cpus: 48
+  });
+}, 15000);
+
+test('sums CPU and memory allocation over the partition nodes only', async () => {
+  const { observation } = await runCapacity();
+
+  expect(okCapacity(observation.capacity).slurm).toEqual({
+    cpu_alloc: 108,
+    cpu_total: 128,
+    mem_alloc_mb: 513000,
+    mem_total_mb: 1033000
+  });
+}, 15000);
+
+test('reads the ssh host load when the host is a partition node', async () => {
+  const { observation } = await runCapacity({ host: 'n2' });
+
+  expect(okCapacity(observation.capacity).host).toEqual({
+    name: 'n2',
+    cpus: 112,
+    load1: 61.2,
+    mem_available_mb: 2000
+  });
+}, 15000);
+
+test('omits the host when the ssh host is not a partition node', async () => {
+  const { observation } = await runCapacity({ host: 'login' });
+
+  expect(okCapacity(observation.capacity).host).toBeNull();
+}, 15000);
+
+test('bounds each capacity read by five seconds', async () => {
+  const { dir } = await runObservation({
+    control: PENDING_CONTROL,
+    tools: capacityTools({
+      tools: {
+        timeout:
+          'printf "%s %s\\n" "$3" "$4" >> "$EWM_DIR/budgets"; shift 3; exec "$@"'
+      }
+    })
+  });
+
+  expect(
+    fs.readFileSync(path.join(dir, 'budgets'), 'utf8').trim().split('\n')
+  ).toEqual([
+    '5 squeue',
+    '5 sinfo',
+    '5 scontrol',
+    '5 hostname',
+    '5 nproc',
+    '5 cat',
+    '5 cat'
+  ]);
+}, 15000);
+
+test.each([
+  ['the pending queue', 'squeue'],
+  ['the partition nodes', 'sinfo'],
+  ['the host load', 'nproc']
+])(
+  'reports a failed capacity read when %s times out',
+  async (_label, command) => {
+    const { observation } = await runCapacity({
+      tools: {
+        timeout: `shift 3; case "$1" in ${command}) exit 124;; esac; exec "$@"`
+      }
+    });
+
+    expect(observation).toMatchObject({ state: 'PENDING', terminal: false });
+    expect(observation.capacity).toEqual({ status: 'failed' });
+  },
+  15000
+);
+
+test('reports a failed capacity read when a node lacks its memory allocation', async () => {
+  const { observation } = await runCapacity({
+    tools: {
+      scontrol: `case "$1 $2" in "show job") cat "$EWM_DIR/control.txt";; "show node") ${printLines(NODE_ROWS.map((row) => row.replace(' AllocMem=512000', '')))};; esac`
+    }
+  });
+
+  expect(observation.capacity).toEqual({ status: 'failed' });
+}, 15000);
+
+test('skips every capacity read once the job is no longer pending', async () => {
+  const { observation, dir } = await runObservation({
+    tools: capacityTools({
+      tools: {
+        squeue:
+          'case "$*" in *"-t PD"*) touch "$EWM_DIR/pd-read";; *) echo RUNNING;; esac'
+      }
+    })
+  });
+
+  expect(observation).toMatchObject({ state: 'RUNNING', terminal: false });
+  expect(fs.existsSync(path.join(dir, 'pd-read'))).toBe(false);
+}, 15000);

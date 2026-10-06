@@ -3,6 +3,7 @@ import { createExecPresetStore } from '../../data/exec-preset-store.js';
 import { createSessionLogStore } from '../../data/session-log-store.js';
 import { createSubscriptionIssueStores } from '../../data/subscription-issue-stores.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import { formatClockLocal } from '../../utils/relative-time.js';
 import { createDetailPanel } from './index.js';
 
 /**
@@ -92,11 +93,11 @@ test('renders jobs and expected results on the consumer detail', () => {
  * @returns {{ mount: HTMLElement, panel: ReturnType<typeof createDetailPanel> }}
  */
 function renderExternalDetail(options = {}) {
-  const { actions, ...panel_options } = options;
+  const { actions, record_patch, ...panel_options } = options;
   document.body.innerHTML = '<div id="m"></div>';
   const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
   const issueStores = createSubscriptionIssueStores();
-  const record = externalWait();
+  const record = externalWait(record_patch);
   const panel = createDetailPanel(mount, {
     issueStores,
     onClose: vi.fn(),
@@ -144,6 +145,123 @@ function renderExternalDetail(options = {}) {
   panel.load('A-1');
   return { mount, panel };
 }
+
+/**
+ * A pending Slurm job with capacity material (UI-qbgj §3.1).
+ *
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
+ */
+function pendingJob(patch = {}) {
+  return {
+    adapter: 'slurm',
+    ssh_host: 'wallace',
+    job_id: '249043',
+    submitted_at: '2026-09-21T00:00:00Z',
+    log_path: '/logs/job.log',
+    state: 'PENDING',
+    observed_at: '2026-09-21T03:12:00Z',
+    terminal: null,
+    capacity: {
+      reason: 'Resources',
+      est_start: '2026-10-08T13:38:00',
+      partition: 'debug',
+      ahead: { jobs: 39, cpus: 624 },
+      slurm: {
+        cpu_alloc: 112,
+        cpu_total: 112,
+        mem_alloc_mb: 900_000,
+        mem_total_mb: 1_000_000
+      },
+      host: {
+        name: 'wallace',
+        cpus: 112,
+        load1: 61,
+        mem_available_mb: 902 * 1024
+      },
+      observed_at: '2026-09-21T03:12:00Z'
+    },
+    ...patch
+  };
+}
+
+describe('external wait detail capacity and local run (UI-qbgj §3.6)', () => {
+  const READ_TIME = formatClockLocal('2026-09-21T03:12:00Z');
+
+  test('shows the read time of a fresh capacity on the detail allocation line', () => {
+    const { mount, panel } = renderExternalDetail({
+      record_patch: { jobs: [pendingJob()] }
+    });
+
+    const notes = Array.from(mount.querySelectorAll('.external-job__note')).map(
+      (note) => (note.textContent || '').trim()
+    );
+    expect(notes[1]).toMatch(/ · 용량 확인 (\d+\/\d+ )?\d\d:\d\d$/);
+    panel.destroy();
+  });
+
+  test('draws the capacity lines of every pending job under the job table', () => {
+    const { mount, panel } = renderExternalDetail({
+      record_patch: {
+        jobs: [pendingJob(), pendingJob({ job_id: '249044' })]
+      }
+    });
+
+    expect(
+      Array.from(mount.querySelectorAll('.external-job__note')).map((note) =>
+        (note.textContent || '').trim()
+      )
+    ).toEqual([
+      '249043 · 대기 사유 자원 부족 · 앞 39건 · Slurm 예상 10/08 13:38',
+      `debug CPU 112/112 배정 · 실제 부하 61 · 쓸 수 있는 메모리 902G · 용량 확인 ${READ_TIME}`,
+      '249044 · 대기 사유 자원 부족 · 앞 39건 · Slurm 예상 10/08 13:38',
+      `debug CPU 112/112 배정 · 실제 부하 61 · 쓸 수 있는 메모리 902G · 용량 확인 ${READ_TIME}`
+    ]);
+    expect(
+      mount.querySelector('.detail-external-wait__jobs + .external-job__note')
+    ).not.toBeNull();
+    panel.destroy();
+  });
+
+  test('fills the number and resource cells of a local run row', () => {
+    const { mount, panel } = renderExternalDetail({
+      record_patch: {
+        jobs: [
+          {
+            adapter: 'sjob_local',
+            ssh_host: 'wallace',
+            local_id: 'L003',
+            pid: 4242,
+            submitted_at: '2026-09-21T00:00:00Z',
+            log_path: '/logs/L003.log',
+            name: 'prostate-run',
+            cpus: 16,
+            mem_gb: 64,
+            takeover_from: {
+              job_id: '249043',
+              at: '2026-09-21T00:00:00Z',
+              cancel_failed: true
+            },
+            state: 'RUNNING',
+            observed_at: '2026-09-21T01:00:00Z',
+            terminal: null
+          }
+        ]
+      }
+    });
+
+    const cells = Array.from(
+      mount.querySelectorAll('.detail-external-wait__job td')
+    ).map((cell) => (cell.textContent || '').trim());
+    expect(cells[0]).toBe('wallace prostate-run');
+    expect(cells[3]).toBe('16 CPU · 64G');
+    expect(cells[4]).toBe('L003 · Slurm 249043에서 전환');
+    expect(
+      mount.querySelector('.external-job__note')?.textContent?.trim()
+    ).toBe('원 Slurm 249043 취소 미확인 — hold 유지');
+    panel.destroy();
+  });
+});
 
 describe('external wait detail ops (UI-l48z §4.2)', () => {
   test('draws the external operations under the job table', () => {

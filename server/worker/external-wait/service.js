@@ -1,8 +1,10 @@
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { SSH_HOST_RE } from './adapters/slurm.js';
 import { HOLD_BUDGET } from './contract.js';
 import { holdDecision, registrationDecision } from './decision.js';
 import { resumeBlocked } from './store.js';
+import { requestTakeover, sjobLocalJob, takeoverTarget } from './takeover.js';
 
 /**
  * @typedef {import('./store.js').WaitRecord} WaitRecord
@@ -14,10 +16,20 @@ import { resumeBlocked } from './store.js';
 /**
  * @param {number} status
  * @param {string} error
+ * @param {string} [message] - A sentence for the person, when the code alone
+ * does not say what happened.
  */
-function failure(status, error) {
-  return { ok: false, status, error };
+function failure(status, error, message) {
+  return { ok: false, status, error, ...(message ? { message } : {}) };
 }
+
+/** Reply sentence of a takeover refused because one is already in flight. */
+const TAKEOVER_BUSY_MESSAGE =
+  '바로 실행이 이미 진행 중이거나 결과를 확인하는 중입니다';
+
+/** Reply sentence of a takeover asked for a record it does not apply to. */
+const TAKEOVER_NOT_ALLOWED_MESSAGE =
+  '대기 중인 Slurm 작업 하나만 바로 실행할 수 있습니다';
 
 /** @param {unknown} value */
 function isText(value) {
@@ -92,7 +104,11 @@ function summary(record) {
     budget: record.budget,
     jobs: record.jobs.map((job) => ({
       adapter: job.adapter,
-      ...(job.adapter === 'slurm' ? { job_id: job.job_id } : { pid: job.pid }),
+      ...(job.adapter === 'slurm'
+        ? { job_id: job.job_id }
+        : job.adapter === 'sjob_local'
+          ? { ssh_host: job.ssh_host, local_id: job.local_id }
+          : { pid: job.pid }),
       state: job.state,
       terminal: job.terminal
     }))
@@ -100,12 +116,13 @@ function summary(record) {
 }
 
 /**
- * @param {{store:ReturnType<import('./store.js').createExternalWaitStore>, observer:Pick<ReturnType<import('./observer.js').createExternalWaitObserver>, 'observeRecord'>, bd:BeadWriter, resume?:ResumeHook, onRecordChanged?:import('./observer.js').RecordCallback, now?:()=>number, hold_turn_ms?:number, poll_interval_ms?:number, wait?:(ms:number)=>Promise<void>}} options
+ * @param {{store:ReturnType<import('./store.js').createExternalWaitStore>, observer:Pick<ReturnType<import('./observer.js').createExternalWaitObserver>, 'observeRecord'|'withOperationLock'>, bd:BeadWriter, run?:import('./store.js').Run, resume?:ResumeHook, onRecordChanged?:import('./observer.js').RecordCallback, now?:()=>number, hold_turn_ms?:number, poll_interval_ms?:number, wait?:(ms:number)=>Promise<void>}} options
  */
 export function createExternalWaitService({
   store,
   observer,
   bd,
+  run,
   resume = async () => ({ ok: false, reason: 'resume_unwired' }),
   onRecordChanged,
   now = () => Date.now(),
@@ -457,12 +474,131 @@ export function createExternalWaitService({
     }
   }
 
+  /**
+   * The owned part of a takeover: re-check the exposure on the current record,
+   * persist the `pending` marker before ssh, run `sjob takeover`, then replace
+   * the job in place, drop the marker, or leave it `unknown` for recovery.
+   *
+   * @param {string} workspace
+   * @param {string} wait_id
+   * @param {{cpus:number, mem_gb:number}} request
+   * @param {import('./store.js').Run} runner
+   */
+  async function takeoverOwned(workspace, wait_id, request, runner) {
+    const record = store.get(workspace, wait_id);
+    if (!record) {
+      return failure(404, 'not_found');
+    }
+    const job = takeoverTarget(record);
+    if (!job) {
+      return record.jobs.some(
+        (item) => item.adapter === 'slurm' && item.takeover
+      )
+        ? failure(409, 'busy', TAKEOVER_BUSY_MESSAGE)
+        : failure(409, 'takeover_not_allowed', TAKEOVER_NOT_ALLOWED_MESSAGE);
+    }
+    if (!SSH_HOST_RE.test(job.ssh_host)) {
+      return failure(409, 'takeover_not_allowed', TAKEOVER_NOT_ALLOWED_MESSAGE);
+    }
+    const requested_at = new Date(now()).toISOString();
+    /**
+     * Mutate the one slurm job this takeover marked.
+     *
+     * @param {(current:WaitRecord, target:import('./store.js').SlurmJob)=>void} mutate
+     */
+    const updateTarget = (mutate) =>
+      store.update(workspace, wait_id, (current) => {
+        const target = current.jobs[0];
+        if (
+          current.jobs.length !== 1 ||
+          target.adapter !== 'slurm' ||
+          target.job_id !== job.job_id
+        ) {
+          throw new Error('Takeover target changed');
+        }
+        mutate(current, target);
+      });
+    updateTarget((current, target) => {
+      target.takeover = {
+        state: 'pending',
+        requested_at,
+        cpus: request.cpus,
+        mem_gb: request.mem_gb
+      };
+    });
+    await notifyChanged(workspace, wait_id);
+    const outcome = await requestTakeover(job, request, runner);
+    try {
+      if (outcome.kind === 'started') {
+        updateTarget((current, target) => {
+          current.jobs[0] = sjobLocalJob(target, outcome.result, requested_at);
+          current.next_observation_at = new Date(now()).toISOString();
+        });
+        return /** @type {WaitRecord} */ (store.get(workspace, wait_id));
+      }
+      if (outcome.kind === 'refused') {
+        updateTarget((current, target) => {
+          delete target.takeover;
+        });
+        return failure(409, outcome.reason, outcome.message);
+      }
+      updateTarget((current, target) => {
+        if (target.takeover) {
+          target.takeover.state = 'unknown';
+        }
+      });
+      return failure(
+        outcome.reason === 'busy' ? 409 : 502,
+        outcome.reason,
+        outcome.message
+      );
+    } finally {
+      await notifyChanged(workspace, wait_id);
+    }
+  }
+
+  /**
+   * `▶ 바로 실행` (UI-qbgj §3.4): move the record's single pending slurm job to
+   * a local run on the same host, serialized with observation by the record's
+   * operation lock. A second request while one owns the record is `busy`.
+   *
+   * @param {string} workspace
+   * @param {string} wait_id
+   * @param {{cpus?: unknown, mem_gb?: unknown}} request
+   */
+  async function takeover(workspace, wait_id, request) {
+    const cpus = request?.cpus;
+    const mem_gb = request?.mem_gb;
+    if (
+      typeof cpus !== 'number' ||
+      !Number.isInteger(cpus) ||
+      cpus < 1 ||
+      typeof mem_gb !== 'number' ||
+      !Number.isInteger(mem_gb) ||
+      mem_gb < 1
+    ) {
+      return failure(400, 'bad_request');
+    }
+    if (!run) {
+      return failure(500, 'takeover_unwired');
+    }
+    const runner = run;
+    if (!store.get(workspace, wait_id)) {
+      return failure(404, 'not_found');
+    }
+    const owned = await observer.withOperationLock(workspace, wait_id, () =>
+      takeoverOwned(workspace, wait_id, { cpus, mem_gb }, runner)
+    );
+    return owned ? owned.value : failure(409, 'busy', TAKEOVER_BUSY_MESSAGE);
+  }
+
   return {
     register,
     hold,
     get,
     check,
     stop,
+    takeover,
     resume: resumeWait,
     listRecords,
     /** @param {ResumeHook} hook */

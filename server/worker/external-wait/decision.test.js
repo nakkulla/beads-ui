@@ -204,3 +204,33 @@ test('keeps the registration decision blind to sub-jobs', () => {
 
   expect(decision).toBe(registrationDecision([slurm({ state: 'RUNNING' })]));
 });
+
+test('identifies a takeover local run by its host and sjob id in the digest', () => {
+  /** @type {import('./store.js').SjobLocalJob} */
+  const job = {
+    adapter: 'sjob_local',
+    ssh_host: 'wallace',
+    local_id: 'L003',
+    pid: 4242,
+    process_start: '',
+    workdir: '/work',
+    log_path: '/home/u/.sjob/logs/run.log',
+    exitcode_path: '/home/u/.sjob/local/L003.exitcode',
+    submitted_at: '2026-10-06T08:00:00.000Z',
+    expected: [],
+    cpus: 16,
+    mem_gb: 64,
+    takeover_from: {
+      job_id: '249043',
+      at: '2026-10-06T08:00:00.000Z',
+      cancel_failed: false
+    },
+    terminal: { ...TERMINAL, evidence: 'exitcode' }
+  };
+  const expected_json =
+    '[{"adapter":"sjob_local","evidence":"exitcode","exit_code":0,"expected_results":[],"identity":"wallace:L003","recovery_needed":false}]';
+
+  const digest = completionDigest([job]);
+
+  expect(digest).toBe(createHash('sha256').update(expected_json).digest('hex'));
+});

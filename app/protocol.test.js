@@ -4,6 +4,7 @@ import {
   MESSAGE_TYPES,
   decodeReply,
   decodeRequest,
+  externalJobIdentity,
   isExternalWaitObservation,
   isMessageType,
   isReply,
@@ -120,6 +121,164 @@ describe('protocol', () => {
     const valid = isExternalWaitObservation(record);
 
     expect(valid).toBe(false);
+  });
+
+  const CAPACITY = {
+    reason: 'Resources',
+    est_start: '2026-10-08T13:38:00',
+    partition: 'normal',
+    ahead: { jobs: 39, cpus: 624 },
+    slurm: {
+      cpu_alloc: 112,
+      cpu_total: 112,
+      mem_alloc_mb: 512000,
+      mem_total_mb: 1031000
+    },
+    host: { name: 'wallace', cpus: 112, load1: 61.2, mem_available_mb: 902000 },
+    observed_at: '2026-10-06T06:00:00.000Z'
+  };
+
+  test('accepts the slurm pending capacity field (UI-qbgj §3.1)', () => {
+    const record = externalWait();
+    record.jobs[0] = {
+      ...record.jobs[0],
+      state: 'PENDING',
+      capacity: CAPACITY
+    };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(true);
+  });
+
+  test('accepts a capacity without an estimate or host', () => {
+    const record = externalWait();
+    record.jobs[0] = {
+      ...record.jobs[0],
+      capacity: { ...CAPACITY, est_start: null, host: null }
+    };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(true);
+  });
+
+  test.each([
+    ['a non-object capacity', 'x'],
+    ['a missing reason', { ...CAPACITY, reason: '' }],
+    [
+      'a non-integer ahead count',
+      { ...CAPACITY, ahead: { jobs: 1.5, cpus: 2 } }
+    ],
+    ['a missing slurm total', { ...CAPACITY, slurm: { cpu_alloc: 1 } }],
+    ['a malformed host', { ...CAPACITY, host: { name: 'wallace', cpus: 4 } }],
+    ['a non-string estimate', { ...CAPACITY, est_start: 5 }]
+  ])('rejects %s', (_label, capacity) => {
+    const record = externalWait();
+    record.jobs[0] = { ...record.jobs[0], capacity };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(false);
+  });
+
+  test('rejects a capacity on a process job', () => {
+    const record = externalWait();
+    record.jobs[0] = {
+      adapter: 'process',
+      pid: 42,
+      submitted_at: '2026-09-21T00:00:00Z',
+      log_path: '/logs/job.log',
+      terminal: null,
+      capacity: CAPACITY
+    };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(false);
+  });
+
+  const LOCAL_RUN = {
+    adapter: 'sjob_local',
+    ssh_host: 'wallace',
+    local_id: 'L003',
+    pid: 4242,
+    cpus: 16,
+    mem_gb: 64,
+    takeover_from: {
+      job_id: '249043',
+      at: '2026-10-06T08:00:00.000Z',
+      cancel_failed: true
+    },
+    submitted_at: '2026-10-06T08:00:00.000Z',
+    log_path: '/home/u/.sjob/logs/run.log',
+    state: 'RUNNING',
+    terminal: null
+  };
+  const MARKER = {
+    state: 'unknown',
+    requested_at: '2026-10-06T08:00:00.000Z',
+    cpus: 16,
+    mem_gb: 64
+  };
+
+  test('accepts a takeover local run (UI-qbgj §3.5)', () => {
+    const record = externalWait();
+    record.jobs[0] = LOCAL_RUN;
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(true);
+  });
+
+  test('accepts a takeover marker on a slurm job (UI-qbgj §3.4)', () => {
+    const record = externalWait();
+    record.jobs[0] = { ...record.jobs[0], state: 'PENDING', takeover: MARKER };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(true);
+  });
+
+  test.each([
+    ['a local run without its origin', { ...LOCAL_RUN, takeover_from: null }],
+    ['a local run with zero cpus', { ...LOCAL_RUN, cpus: 0 }],
+    ['a local run with a malformed id', { ...LOCAL_RUN, local_id: '3' }],
+    ['a local run carrying a marker', { ...LOCAL_RUN, takeover: MARKER }],
+    [
+      'a marker state outside the contract',
+      {
+        adapter: 'slurm',
+        ssh_host: 'wallace',
+        job_id: '249043',
+        submitted_at: '2026-10-06T08:00:00.000Z',
+        log_path: '/logs/job.log',
+        terminal: null,
+        takeover: { ...MARKER, state: 'operator' }
+      }
+    ]
+  ])('rejects %s', (_label, job) => {
+    const record = externalWait();
+    record.jobs[0] = job;
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(false);
+  });
+
+  test('registers the takeover message type', () => {
+    expect(MESSAGE_TYPES).toContain('external_wait_takeover');
+  });
+
+  test.each([
+    [{ adapter: 'slurm', job_id: '249043', pid: 1 }, '249043'],
+    [{ adapter: 'process', pid: 4242 }, '4242'],
+    [
+      { adapter: 'sjob_local', ssh_host: 'wallace', local_id: 'L003' },
+      'wallace:L003'
+    ]
+  ])('names external job %j as %s', (job, identity) => {
+    expect(externalJobIdentity(job)).toBe(identity);
   });
 
   test('version and message types', () => {

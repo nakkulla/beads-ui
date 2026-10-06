@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createExternalWaitObserver } from './observer.js';
 import { createExternalWaitService } from './service.js';
 import { createExternalWaitStore } from './store.js';
@@ -15,7 +15,7 @@ let store;
 /** @type {ReturnType<typeof createExternalWaitService>} */
 let service;
 let timestamp = Date.parse(TIMESTAMP);
-const observer = { observeRecord: vi.fn() };
+const observer = { observeRecord: vi.fn(), withOperationLock: vi.fn() };
 const bd = { setExternalWait: vi.fn(), unsetExternalWait: vi.fn() };
 const resume = vi.fn();
 
@@ -739,4 +739,464 @@ test('rejects checks after observation has stopped', async () => {
 
   expect(result).toMatchObject({ status: 409 });
   expect(observer.observeRecord).not.toHaveBeenCalled();
+});
+
+test('rejects registering a takeover-only sjob_local job', async () => {
+  const body = {
+    ...input(),
+    jobs: [
+      {
+        adapter: 'sjob_local',
+        ssh_host: 'wallace',
+        local_id: 'L003',
+        pid: 4242,
+        process_start: '',
+        workdir: '/work',
+        log_path: '/work/run.log',
+        exitcode_path: '/work/L003.exitcode',
+        submitted_at: TIMESTAMP,
+        expected: ['/work/result'],
+        cpus: 1,
+        mem_gb: 1,
+        takeover_from: { job_id: '1', at: TIMESTAMP, cancel_failed: false }
+      }
+    ]
+  };
+
+  const result = await service.register(WORKSPACE, body);
+
+  expect(result).toEqual({ ok: false, status: 400, error: 'bad_request' });
+  expect(store.list(WORKSPACE)).toEqual([]);
+});
+
+describe('takeover (UI-qbgj §3.4)', () => {
+  const START = 'Tue Oct  6 17:00:00 2026';
+  const LOCAL = {
+    ok: true,
+    state: 'done',
+    slurm_job_id: '249043',
+    local_id: 'L003',
+    pid: 4242,
+    process_start: START,
+    host: 'wallace-node',
+    workdir: '/work',
+    log_path: '/home/u/.sjob/logs/run.log',
+    exitcode_path: '/home/u/.sjob/local/L003.exitcode',
+    cpus: 16,
+    mem_gb: 64,
+    slurm_overcommit: true,
+    slurm_cancel_failed: false
+  };
+  const PENDING_OUTPUT =
+    'PENDING\n__EWM_SQUEUE_RC__=0\nJobId=249043 JobState=PENDING\n__EWM_SCONTROL_RC__=0\n\n__EWM_LOG_RC__=1\n';
+  const CAPACITY = {
+    reason: 'Resources',
+    est_start: null,
+    partition: 'debug',
+    ahead: { jobs: 39, cpus: 624 },
+    slurm: {
+      cpu_alloc: 112,
+      cpu_total: 112,
+      mem_alloc_mb: 1,
+      mem_total_mb: 2
+    },
+    host: { name: 'wallace', cpus: 112, load1: 61, mem_available_mb: 923648 },
+    observed_at: TIMESTAMP
+  };
+
+  /**
+   * A detached record whose single slurm job is pending.
+   *
+   * @param {Partial<import('./store.js').SlurmJob>} [patch]
+   * @returns {import('./store.js').WaitInput}
+   */
+  function pending(patch = {}) {
+    return {
+      ...input(),
+      stage: 'detached',
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '249043',
+          submitted_at: TIMESTAMP,
+          log_path: '/logs/job.log',
+          expected: ['/work/result'],
+          state: 'PENDING',
+          name: 'prostate__20261006_101500_ab12',
+          capacity: CAPACITY,
+          ...patch
+        }
+      ]
+    };
+  }
+
+  /**
+   * The generated remote program of one ssh argv.
+   *
+   * @param {string[]} argv
+   * @returns {string}
+   */
+  function remote(argv) {
+    return argv[6] || '';
+  }
+
+  /**
+   * A service over the real observer, both sharing `run`.
+   *
+   * @param {import('./store.js').Run} run
+   */
+  function wired(run) {
+    const real_observer = createExternalWaitObserver({
+      store,
+      listWorkspaces: () => [WORKSPACE],
+      run,
+      now: () => timestamp
+    });
+    return {
+      observer: real_observer,
+      service: createExternalWaitService({
+        store,
+        observer: real_observer,
+        bd,
+        run,
+        now: () => timestamp
+      })
+    };
+  }
+
+  /**
+   * @param {unknown} reply
+   * @returns {import('./store.js').Run}
+   */
+  function replying(reply) {
+    return vi.fn(async () => ({
+      code: 0,
+      stdout: `${JSON.stringify(reply)}\n`,
+      stderr: ''
+    }));
+  }
+
+  test('replaces the pending slurm job in place with the local run', async () => {
+    const record = store.insert(WORKSPACE, pending());
+    const { service: takeover_service } = wired(replying(LOCAL));
+    timestamp += 1000;
+
+    const result = await takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+
+    const at = new Date(timestamp).toISOString();
+    expect(result).toEqual(store.get(WORKSPACE, record.wait_id));
+    expect(store.get(WORKSPACE, record.wait_id)).toEqual({
+      ...record,
+      next_observation_at: at,
+      jobs: [
+        {
+          adapter: 'sjob_local',
+          ssh_host: 'wallace',
+          local_id: 'L003',
+          pid: 4242,
+          process_start: START,
+          workdir: '/work',
+          log_path: '/home/u/.sjob/logs/run.log',
+          exitcode_path: '/home/u/.sjob/local/L003.exitcode',
+          submitted_at: at,
+          expected: ['/work/result'],
+          name: 'prostate__20261006_101500_ab12',
+          cpus: 16,
+          mem_gb: 64,
+          takeover_from: { job_id: '249043', at, cancel_failed: false },
+          state: 'UNKNOWN',
+          observed_at: at,
+          terminal: null
+        }
+      ]
+    });
+  });
+
+  test('persists the pending marker before the takeover ssh', async () => {
+    const record = store.insert(WORKSPACE, pending());
+    /** @type {unknown[]} */
+    const markers = [];
+    const { service: takeover_service } = wired(async () => {
+      const job = store.get(WORKSPACE, record.wait_id)?.jobs[0];
+      markers.push(job?.adapter === 'slurm' ? job.takeover : null);
+      return { code: 0, stdout: JSON.stringify(LOCAL), stderr: '' };
+    });
+
+    await takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+
+    expect(markers).toEqual([
+      { state: 'pending', requested_at: TIMESTAMP, cpus: 16, mem_gb: 64 }
+    ]);
+  });
+
+  test('sends the fixed sjob takeover command over batch-mode ssh', async () => {
+    const record = store.insert(WORKSPACE, pending());
+    const run = replying(LOCAL);
+    const { service: takeover_service } = wired(run);
+
+    await takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+
+    expect(run).toHaveBeenCalledExactlyOnceWith(
+      [
+        'ssh',
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'ConnectTimeout=10',
+        'wallace',
+        `sh -c '"$HOME/.local/bin/sjob" takeover '\\''249043'\\'' -c 16 -m 64 --json'`
+      ],
+      { timeout_ms: 60000 }
+    );
+  });
+
+  test.each([
+    ['started', undefined, true],
+    ['done', true, true],
+    ['done', false, false]
+  ])(
+    'records a %s takeover with slurm_cancel_failed %s as cancel_failed %s',
+    async (state, slurm_cancel_failed, cancel_failed) => {
+      const record = store.insert(WORKSPACE, pending());
+      const { service: takeover_service } = wired(
+        replying({ ...LOCAL, state, slurm_cancel_failed })
+      );
+
+      await takeover_service.takeover(WORKSPACE, record.wait_id, {
+        cpus: 16,
+        mem_gb: 64
+      });
+
+      expect(store.get(WORKSPACE, record.wait_id)?.jobs[0]).toMatchObject({
+        adapter: 'sjob_local',
+        takeover_from: { cancel_failed }
+      });
+    }
+  );
+
+  test('keeps the replacement over an observation already in flight', async () => {
+    const record = store.insert(WORKSPACE, pending());
+    /** @type {string[]} */
+    const events = [];
+    /** @type {(value: {code:number, stdout:string, stderr:string}) => void} */
+    let finishObservation = () => {};
+    const { observer: real_observer, service: takeover_service } = wired(
+      async (argv) => {
+        if (remote(argv).includes('takeover')) {
+          events.push('takeover ssh');
+          return { code: 0, stdout: JSON.stringify(LOCAL), stderr: '' };
+        }
+        return new Promise((resolve) => {
+          finishObservation = resolve;
+        });
+      }
+    );
+
+    const observation = real_observer.observeRecord(WORKSPACE, record.wait_id);
+    void observation.then(() => events.push('observation settled'));
+    const takeover = takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    finishObservation({ code: 0, stdout: PENDING_OUTPUT, stderr: '' });
+    await Promise.all([observation, takeover]);
+
+    expect(events).toEqual(['observation settled', 'takeover ssh']);
+    expect(store.get(WORKSPACE, record.wait_id)?.jobs).toEqual([
+      expect.objectContaining({ adapter: 'sjob_local', local_id: 'L003' })
+    ]);
+  });
+
+  test('removes the marker and changes nothing else on a refusal', async () => {
+    const record = store.insert(WORKSPACE, pending());
+    const { service: takeover_service } = wired(
+      vi.fn(async () => ({
+        code: 1,
+        stdout: JSON.stringify({
+          ok: false,
+          reason: 'insufficient_host_capacity',
+          message: 'Requested CPU or memory exceeds host capacity'
+        }),
+        stderr: ''
+      }))
+    );
+
+    const result = await takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 200,
+      mem_gb: 64
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      error: 'insufficient_host_capacity',
+      message:
+        '요청한 CPU·메모리가 서버의 실제 여유보다 커서 바로 실행하지 않았습니다'
+    });
+    expect(store.get(WORKSPACE, record.wait_id)).toEqual(record);
+  });
+
+  test('keeps the raw reason of an unknown refusal in its message', async () => {
+    const record = store.insert(WORKSPACE, pending());
+    const { service: takeover_service } = wired(
+      replying({ ok: false, reason: 'future_reason', message: 'new rule' })
+    );
+
+    const result = await takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+
+    expect(result).toMatchObject({
+      error: 'future_reason',
+      message: '바로 실행이 거부되었습니다 · future_reason · new rule'
+    });
+  });
+
+  test.each([
+    ['an ssh failure', { code: 255, stdout: '', stderr: 'refused' }],
+    ['unreadable output', { code: 0, stdout: 'not json\n', stderr: '' }],
+    [
+      'a malformed success',
+      { code: 0, stdout: JSON.stringify({ ...LOCAL, pid: 1 }), stderr: '' }
+    ],
+    [
+      'a busy refusal',
+      {
+        code: 1,
+        stdout: JSON.stringify({ ok: false, reason: 'busy', message: 'held' }),
+        stderr: ''
+      }
+    ]
+  ])('leaves the marker unknown after %s', async (_label, reply) => {
+    const record = store.insert(WORKSPACE, pending());
+    const { service: takeover_service } = wired(vi.fn(async () => reply));
+
+    const result = await takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    expect(store.get(WORKSPACE, record.wait_id)?.jobs[0]).toMatchObject({
+      adapter: 'slurm',
+      takeover: {
+        state: 'unknown',
+        requested_at: TIMESTAMP,
+        cpus: 16,
+        mem_gb: 64
+      }
+    });
+  });
+
+  test('refuses a second request while the marker exists', async () => {
+    const record = store.insert(
+      WORKSPACE,
+      pending({
+        takeover: {
+          state: 'unknown',
+          requested_at: TIMESTAMP,
+          cpus: 16,
+          mem_gb: 64
+        }
+      })
+    );
+    const run = vi.fn();
+    const { service: takeover_service } = wired(run);
+
+    const result = await takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+
+    expect(result).toMatchObject({ ok: false, status: 409, error: 'busy' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('refuses a request while another takeover owns the record', async () => {
+    const record = store.insert(WORKSPACE, pending());
+    /** @type {(value: {code:number, stdout:string, stderr:string}) => void} */
+    let finishTakeover = () => {};
+    const { service: takeover_service } = wired(
+      () =>
+        new Promise((resolve) => {
+          finishTakeover = resolve;
+        })
+    );
+
+    const first = takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const second = await takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+    finishTakeover({ code: 0, stdout: JSON.stringify(LOCAL), stderr: '' });
+    await first;
+
+    expect(second).toMatchObject({ ok: false, status: 409, error: 'busy' });
+  });
+
+  test.each([
+    ['a completing record', { ...pending(), stage: 'completing' }],
+    ['a running job', pending({ state: 'RUNNING', capacity: undefined })],
+    [
+      'two jobs',
+      {
+        ...pending(),
+        jobs: [...pending().jobs, { ...pending().jobs[0], job_id: '249044' }]
+      }
+    ]
+  ])('refuses %s', async (_label, record_input) => {
+    const record = store.insert(
+      WORKSPACE,
+      /** @type {import('./store.js').WaitInput} */ (record_input)
+    );
+    const run = vi.fn();
+    const { service: takeover_service } = wired(run);
+
+    const result = await takeover_service.takeover(WORKSPACE, record.wait_id, {
+      cpus: 16,
+      mem_gb: 64
+    });
+
+    expect(result).toMatchObject({
+      status: 409,
+      error: 'takeover_not_allowed'
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { cpus: 0, mem_gb: 64 },
+    { cpus: 1.5, mem_gb: 64 },
+    { cpus: 16, mem_gb: '64' },
+    { cpus: 16 }
+  ])('rejects resources %j', async (request) => {
+    const record = store.insert(WORKSPACE, pending());
+    const run = vi.fn();
+    const { service: takeover_service } = wired(run);
+
+    const result = await takeover_service.takeover(
+      WORKSPACE,
+      record.wait_id,
+      request
+    );
+
+    expect(result).toEqual({ ok: false, status: 400, error: 'bad_request' });
+    expect(run).not.toHaveBeenCalled();
+  });
 });

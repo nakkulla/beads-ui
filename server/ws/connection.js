@@ -41,6 +41,12 @@ import {
   handleUnsubscribeImplPresets
 } from './exec-preset-handlers.js';
 import {
+  detachExternalWaitSettings,
+  handleExternalWaitSettingsSet,
+  handleSubscribeExternalWaitSettings,
+  handleUnsubscribeExternalWaitSettings
+} from './external-wait-settings-handlers.js';
+import {
   detachModelVisibility,
   handleModelVisibilitySet,
   handleSubscribeModelVisibility,
@@ -110,6 +116,7 @@ import {
   handleWorkerDiscard,
   handleWorkerDiscardAbandon,
   handleWorkerExternalWait,
+  handleWorkerExternalWaitTakeover,
   handleWorkerMergeAutoToggle,
   handleWorkerMergeQueueAdd,
   handleWorkerMergeQueueAddAll,
@@ -312,6 +319,7 @@ export function attachWsServer(http_server, options = {}) {
         detachImplPresets(ws);
         detachModelVisibility(ws);
         detachTimingSettings(ws);
+        detachExternalWaitSettings(ws);
       } catch {
         // ignore cleanup errors
       }
@@ -563,6 +571,15 @@ export async function handleMessage(ws, data) {
     case 'timing-settings-set':
       handleTimingSettingsSet(ws, req);
       return;
+    case 'subscribe-external-wait-settings':
+      handleSubscribeExternalWaitSettings(ws, req);
+      return;
+    case 'unsubscribe-external-wait-settings':
+      handleUnsubscribeExternalWaitSettings(ws, req);
+      return;
+    case 'external-wait-settings-set':
+      handleExternalWaitSettingsSet(ws, req);
+      return;
     case 'impl-preset-create':
       handleImplPresetCreate(ws, req);
       return;
@@ -618,6 +635,9 @@ export async function handleMessage(ws, data) {
     case 'external_wait_stop':
     case 'external_wait_resume':
       await handleWorkerExternalWait(ws, req);
+      return;
+    case 'external_wait_takeover':
+      await handleWorkerExternalWaitTakeover(ws, req);
       return;
     case 'worker-repo-operation-deploy-run':
       await handleWorkerRepoOperationDeployRun(ws, req);

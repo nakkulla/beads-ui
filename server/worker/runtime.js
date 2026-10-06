@@ -85,16 +85,19 @@ import { createUsageStore } from './usage-store.js';
  */
 export function createWorkerRuntime() {
   const externalWaitStore = createExternalWaitStore();
+  /** @type {import('./external-wait/store.js').Run} */
+  const externalWaitRun = (argv, options) =>
+    (externalWaitRunForTest || runExternalWait)(argv, options);
   const externalWaitObserver = createExternalWaitObserver({
     store: externalWaitStore,
     listWorkspaces: () =>
       getAvailableWorkspaces().map((workspace) => path.resolve(workspace.path)),
-    run: (argv, options) =>
-      (externalWaitRunForTest || runExternalWait)(argv, options)
+    run: externalWaitRun
   });
   const externalWait = createExternalWaitService({
     store: externalWaitStore,
     observer: externalWaitObserver,
+    run: externalWaitRun,
     bd: {
       /**
        * @param {string} workspace

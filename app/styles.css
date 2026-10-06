@@ -2056,6 +2056,19 @@ input.inline-edit:focus {
   white-space: nowrap;
 }
 
+/* 잡 줄 바로 아래의 용량 줄과 취소 미확인 줄 (UI-qbgj §3.6): 하위 잡 요약 줄처럼
+   잡 줄 격자의 전체 폭 줄이고, 취소 미확인만 경고 색이다. */
+.external-job__note {
+  grid-column: 1 / -1;
+  min-width: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.external-job__note[data-tone='warn'] {
+  color: var(--accent-warn);
+}
+
 .external-spawned__part--failed,
 .external-spawned__names[data-tone='danger'] .external-spawned__glyph {
   color: var(--accent-danger);
@@ -8541,6 +8554,47 @@ button.detail-session__leg:focus-visible {
 /* `.op-dialog__actions`는 왼쪽 정렬이 기본이므로 이 다이얼로그의 확인·취소만
    오른쪽 끝으로 덮는다. 나머지 간격은 토큰 그대로다. */
 .provider-resume-dialog__actions {
+  justify-content: flex-end;
+}
+
+/* `▶ 바로 실행` 확인 창 (UI-qbgj §3.4). 프레임·제목·버튼 줄은 `.op-dialog`·
+   `.op-btn`이, 입력 크기는 `.ui-input`이 정한다. 여기 남는 것은 두 칸 격자와
+   안내·경고·오류 줄뿐이다. */
+.takeover-dialog__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-10);
+}
+
+.takeover-dialog__fields > label {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+}
+
+.takeover-dialog__guide {
+  margin: var(--sp-10) 0 0;
+  padding: 0 0 0 var(--sp-16);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.takeover-dialog__warn {
+  margin: var(--sp-10) 0 0;
+  color: var(--accent-warn);
+  font-size: var(--fs-small);
+}
+
+.takeover-dialog__error {
+  margin: var(--sp-10) 0 0;
+  color: var(--accent-danger);
+  font-size: var(--fs-small);
+}
+
+.takeover-dialog__actions {
   justify-content: flex-end;
 }
 

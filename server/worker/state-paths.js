@@ -166,6 +166,16 @@ export function timingSettingsFilePath() {
 }
 
 /**
+ * Absolute path to the SERVER-GLOBAL external-wait settings file: the
+ * user-changed `▶ 바로 실행` defaults (UI-qbgj §3.6). Shared across workspaces.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/external-wait-settings.json`.
+ */
+export function externalWaitSettingsFilePath() {
+  return path.join(stateHome(), 'bdui', 'external-wait-settings.json');
+}
+
+/**
  * Absolute account-isolated Codex HOME for one durable account key.
  *
  * @param {string} key

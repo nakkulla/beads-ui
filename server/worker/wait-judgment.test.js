@@ -5,6 +5,7 @@ import {
   __setTimingOverridesForTest
 } from '../timing-settings.js';
 import { createWaitJudge, projectExternalWait } from './attach.js';
+import { TAKEOVER_SETTLE_MS } from './external-wait/takeover.js';
 import {
   WAIT_THRESHOLDS,
   conversationVerdict,
@@ -2086,5 +2087,207 @@ describe('conversation answer-wait verdict (UI-18a5 §3.4)', () => {
     const verdict = conversationVerdict(record);
 
     expect(verdict).toBeNull();
+  });
+});
+
+describe('wait judgment takeover (UI-qbgj §3.4)', () => {
+  const CAPACITY = {
+    reason: 'Resources',
+    est_start: '2026-10-08T13:38:00',
+    partition: 'debug',
+    ahead: { jobs: 39, cpus: 624 },
+    slurm: {
+      cpu_alloc: 112,
+      cpu_total: 112,
+      mem_alloc_mb: 900000,
+      mem_total_mb: 1000000
+    },
+    host: { name: 'wallace', cpus: 112, load1: 61, mem_available_mb: 923648 },
+    observed_at: '2026-09-15T02:59:00.000Z'
+  };
+  const FACTS = { 'UI-consumer': { external_wait: 'w-0123456789ab' } };
+
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function pendingJob(patch = {}) {
+    return {
+      adapter: 'slurm',
+      ssh_host: 'wallace',
+      job_id: '249043',
+      submitted_at: new Date(NOW - 192 * MINUTE).toISOString(),
+      log_path: '/logs/job.log',
+      state: 'PENDING',
+      observed_at: '2026-09-21T03:12:00Z',
+      terminal: null,
+      ...patch
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function judged(patch = {}) {
+    return run({
+      external_waits: [external({ jobs: [pendingJob()], ...patch })],
+      blocker_facts: FACTS
+    }).wait_reasons[0];
+  }
+
+  test.each([
+    ['hold', 'worker'],
+    ['detached', 'session']
+  ])(
+    'places ▶ 바로 실행 after [지금 확인] at %s for a %s owner',
+    (stage, owner_kind) => {
+      const result = judged({ stage, owner_kind });
+
+      expect(
+        result.actions.map((/** @type {any} */ action) => action.op)
+      ).toEqual([
+        'external_wait_check',
+        'external_wait_takeover',
+        'external_wait_stop'
+      ]);
+    }
+  );
+
+  test('carries the dialog material in the payload without a confirm', () => {
+    const result = judged({ jobs: [pendingJob({ capacity: CAPACITY })] });
+
+    expect(result.actions[1]).toEqual({
+      op: 'external_wait_takeover',
+      label: '▶ 바로 실행',
+      title:
+        'Slurm 249043 대기를 멈추고 같은 서버에서 바로 실행한다 · 원 Slurm 작업은 취소된다',
+      placement: 'card',
+      payload: {
+        root_dir: ROOT,
+        wait_id: 'w-0123456789ab',
+        job_id: '249043',
+        ssh_host: 'wallace',
+        capacity: CAPACITY
+      }
+    });
+  });
+
+  test.each([
+    ['a completing record', { stage: 'completing' }],
+    ['two jobs', { jobs: [pendingJob(), pendingJob({ job_id: '249044' })] }],
+    [
+      'a process job',
+      {
+        jobs: [
+          {
+            adapter: 'process',
+            pid: 4242,
+            submitted_at: new Date(NOW).toISOString(),
+            log_path: '/logs/run.log',
+            state: 'PENDING',
+            terminal: null
+          }
+        ]
+      }
+    ],
+    ['a running job', { jobs: [pendingJob({ state: 'RUNNING' })] }],
+    [
+      'a takeover marker',
+      {
+        jobs: [
+          pendingJob({
+            takeover: {
+              state: 'pending',
+              requested_at: new Date(NOW).toISOString(),
+              cpus: 16,
+              mem_gb: 64
+            }
+          })
+        ]
+      }
+    ]
+  ])('withholds ▶ 바로 실행 for %s', (_label, patch) => {
+    const result = judged(patch);
+
+    expect(
+      result.actions.map((/** @type {any} */ action) => action.op)
+    ).not.toContain('external_wait_takeover');
+  });
+
+  test.each(['pending', 'unknown'])(
+    'keeps a %s takeover marker inside the settle window off the action list',
+    (state) => {
+      const result = judged({
+        stage: 'detached',
+        jobs: [
+          pendingJob({
+            takeover: {
+              state,
+              requested_at: new Date(
+                NOW - TAKEOVER_SETTLE_MS + MINUTE
+              ).toISOString(),
+              cpus: 16,
+              mem_gb: 64
+            }
+          })
+        ]
+      });
+
+      expect(result.verdict).not.toBe('action_required');
+    }
+  );
+
+  test.each(['pending', 'unknown'])(
+    'asks for the takeover result once a %s marker outlives the settle window',
+    (state) => {
+      const result = judged({
+        stage: 'detached',
+        jobs: [
+          pendingJob({
+            takeover: {
+              state,
+              requested_at: new Date(NOW - TAKEOVER_SETTLE_MS).toISOString(),
+              cpus: 16,
+              mem_gb: 64
+            }
+          })
+        ]
+      });
+
+      expect(result).toMatchObject({
+        verdict: 'action_required',
+        verdict_reason: {
+          code: 'takeover_unresolved',
+          message: '바로 실행 결과 확인 필요(sjob takeover 249043 --result)'
+        }
+      });
+    }
+  );
+
+  test('names a local run by its sjob id in the headline', () => {
+    const result = judged({
+      jobs: [
+        {
+          adapter: 'sjob_local',
+          ssh_host: 'wallace',
+          local_id: 'L003',
+          pid: 4242,
+          cpus: 16,
+          mem_gb: 64,
+          takeover_from: {
+            job_id: '249043',
+            at: new Date(NOW).toISOString(),
+            cancel_failed: false
+          },
+          submitted_at: new Date(NOW - 192 * MINUTE).toISOString(),
+          log_path: '/logs/run.log',
+          state: 'RUNNING',
+          terminal: null
+        }
+      ]
+    });
+
+    expect(result.headline).toBe('wallace 작업 L003 · RUNNING · 경과 3h12m');
   });
 });

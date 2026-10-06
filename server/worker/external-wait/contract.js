@@ -36,8 +36,17 @@ export const INTERVAL_POLICY = Object.freeze({
   ])
 });
 
-/** Supported external job observation adapters. */
-export const ADAPTERS = Object.freeze(['slurm', 'process']);
+/** Supported external job observation adapters of a stored record. */
+export const ADAPTERS = Object.freeze(['slurm', 'process', 'sjob_local']);
+
+/**
+ * Adapters the registration API accepts. `sjob_local` is created only by an
+ * in-place takeover (UI-qbgj §3.5), never registered.
+ */
+export const REGISTRATION_ADAPTERS = Object.freeze(['slurm', 'process']);
+
+/** States of the persisted takeover progress marker on a slurm job. */
+export const TAKEOVER_PROGRESS_STATES = Object.freeze(['pending', 'unknown']);
 
 /** Persisted external wait record stages. */
 export const RECORD_STAGES = Object.freeze([

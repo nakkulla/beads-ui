@@ -12,7 +12,7 @@
 /** @typedef {{ provider: 'claude'|'codex', role: string, scope_id?: string, turn_id: string, model: string|null, usage: Record<string, number>, observed_from?: number|null, observed_through?: number|null, partial?: boolean, partial_reasons?: string[], cost_covered?: boolean }} UsageSegment */
 /** @typedef {{ provider: 'claude'|'codex', session_id: string|null, observed_at: number, model: string|null, usage: Record<string, number>|null, usage_legs: UsageSegment[], delegations: Array<Record<string, unknown>>, partial?: boolean }} SessionObservation */
 
-/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'set-worker-url-common'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-patch'|'worker-queue-place'|'worker-queue-place-plan'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-provider-limit-policy-set'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-dismiss'|'worker-repo-operation-deploy-run'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-queue-start-now'|'worker-attempt-pause'|'worker-attempt-withdraw'|'worker-attempt-retry-now'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-cleanup-retry'|'worker-resolve-in-session'|'worker-conversation-handoff'|'worker-provider-probe-now'|'external_wait_check'|'external_wait_stop'|'external_wait_resume'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-merge-shelve'|'worker-discard'|'worker-discard-abandon'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-bead-timeline'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-adr'|'unsubscribe-adr'|'adr-snapshot'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-pipeline-patch'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'impl-preset-bind'|'chip-preset-toggle'|'apply-impl-preset'|'apply-impl-preset-global'|'subscribe-model-visibility'|'unsubscribe-model-visibility'|'model-visibility-set'|'model-visibility-snapshot'|'subscribe-timing-settings'|'unsubscribe-timing-settings'|'timing-settings-set'|'timing-settings-snapshot'|'get-compare'|'compare-snapshot'|'search-issues'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'set-worker-url-common'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-patch'|'worker-queue-place'|'worker-queue-place-plan'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-provider-limit-policy-set'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-dismiss'|'worker-repo-operation-deploy-run'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-queue-start-now'|'worker-attempt-pause'|'worker-attempt-withdraw'|'worker-attempt-retry-now'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-cleanup-retry'|'worker-resolve-in-session'|'worker-conversation-handoff'|'worker-provider-probe-now'|'external_wait_check'|'external_wait_stop'|'external_wait_resume'|'external_wait_takeover'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-merge-shelve'|'worker-discard'|'worker-discard-abandon'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-bead-timeline'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-adr'|'unsubscribe-adr'|'adr-snapshot'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-pipeline-patch'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'impl-preset-bind'|'chip-preset-toggle'|'apply-impl-preset'|'apply-impl-preset-global'|'subscribe-model-visibility'|'unsubscribe-model-visibility'|'model-visibility-set'|'model-visibility-snapshot'|'subscribe-timing-settings'|'unsubscribe-timing-settings'|'timing-settings-set'|'timing-settings-snapshot'|'subscribe-external-wait-settings'|'unsubscribe-external-wait-settings'|'external-wait-settings-set'|'external-wait-settings-snapshot'|'get-compare'|'compare-snapshot'|'search-issues'} MessageType */
 
 /**
  * @typedef {Object} WorkerQueueSnapshotPayload
@@ -84,7 +84,7 @@
  * @property {string} next_observation_at
  * @property {number} error_count
  * @property {string|null} last_error
- * @property {Array<{adapter:'slurm'|'process', ssh_host?:string, job_id?:string, pid?:number, submitted_at:string, log_path:string, state?:string, observed_at?:string, name?:string, anchor?:{user:string, workdir:string, started_at:string}, spawned?:SpawnedView, terminal:null|{exit_code:number|null, evidence:string, recovery_needed:boolean, expected_results:Array<{path:string, exists:boolean, size:number|null, mtime:number|null}>}}>} jobs - Slurm jobs may carry the display-only `name`·`anchor`·`spawned` (UI-q15q §3.4).
+ * @property {Array<{adapter:'slurm'|'process'|'sjob_local', ssh_host?:string, job_id?:string, pid?:number, local_id?:string, cpus?:number, mem_gb?:number, takeover_from?:TakeoverFromView, takeover?:TakeoverMarkerView, submitted_at:string, log_path:string, state?:string, observed_at?:string, name?:string, anchor?:{user:string, workdir:string, started_at:string}, spawned?:SpawnedView, capacity?:CapacityView, terminal:null|{exit_code:number|null, evidence:string, recovery_needed:boolean, expected_results:Array<{path:string, exists:boolean, size:number|null, mtime:number|null}>}}>} jobs - Slurm jobs may carry the display-only `name`·`anchor`·`spawned` (UI-q15q §3.4), while pending `capacity` (UI-qbgj §3.1), and a `takeover` progress marker (UI-qbgj §3.4). A takeover's local run is `sjob_local` with `ssh_host`·`local_id`·`pid`·`cpus`·`mem_gb`·`takeover_from` and the last slurm `name`·`spawned` (UI-qbgj §3.5).
  * @property {{digest:string, completed_at:string, recovery_needed:boolean}|null} completion
  * @property {{mode:'fork'|'fresh', attempt_id:string|null, reserved_at:string|null, launched_at:string|null, session_id:string|null, error:string|null}|null} resume
  */
@@ -93,7 +93,7 @@
  * Server-owned display judgment; consumers never recompute verdicts.
  *
  * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'provider_hold'|'awaiting_user'|'retry_wait'|'recovery'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_stalled'|'retry_stalled'|'decision'|'resume_failed'|'wait_key_missing'|'wait_record_missing'} VerdictCode
+ * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_stalled'|'retry_stalled'|'decision'|'resume_failed'|'wait_key_missing'|'wait_record_missing'|'takeover_unresolved'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
@@ -139,7 +139,27 @@ export const SLURM_TERMINAL_STATES = Object.freeze([
  * @typedef {{ name?: string, rule?: string }} NamedJob
  * @typedef {{ job_id: string, name?: string, rule?: string, state?: string, submitted_at?: string, started_at?: string|null, ended_at?: string|null, elapsed_seconds?: number|null, time_limit_seconds?: number|null, unlimited?: boolean, cpus?: number|null, memory?: string, exit_code?: number|null }} SpawnedRowView
  * @typedef {{ total: number, counts: Record<SpawnedClass, number>, rows: SpawnedRowView[], omitted: number }} SpawnedView
+ * @typedef {{ reason: string, est_start?: string|null, partition: string, ahead: { jobs: number, cpus: number }, slurm: { cpu_alloc: number, cpu_total: number, mem_alloc_mb: number, mem_total_mb: number }, host?: { name: string, cpus: number, load1: number, mem_available_mb: number }|null, observed_at: string }} CapacityView
+ * @typedef {{ state: 'pending'|'unknown', requested_at: string, cpus: number, mem_gb: number }} TakeoverMarkerView
+ * @typedef {{ job_id: string, at: string, cancel_failed: boolean }} TakeoverFromView
  */
+
+/**
+ * The one identity of an external job: the Slurm job id, the process pid, or
+ * `<ssh_host>:<local_id>` for a takeover's local run (UI-qbgj §3.5).
+ *
+ * @param {{ adapter?: string, job_id?: string, pid?: number, ssh_host?: string, local_id?: string }} job
+ * @returns {string}
+ */
+export function externalJobIdentity(job) {
+  if (job.adapter === 'slurm') {
+    return String(job.job_id ?? '');
+  }
+  if (job.adapter === 'sjob_local') {
+    return `${job.ssh_host ?? ''}:${job.local_id ?? ''}`;
+  }
+  return String(job.pid ?? '');
+}
 
 /**
  * One sub-job's class (UI-q15q §3.4 table). `UNKNOWN` is the server's mark
@@ -272,16 +292,79 @@ export function isExternalWaitObservation(value) {
     row.jobs.every(
       (/** @type {any} */ job) =>
         job &&
-        ['slurm', 'process'].includes(job.adapter) &&
+        ['slurm', 'process', 'sjob_local'].includes(job.adapter) &&
         typeof job.submitted_at === 'string' &&
         typeof job.log_path === 'string' &&
         (job.adapter === 'slurm'
           ? typeof job.ssh_host === 'string' && typeof job.job_id === 'string'
-          : Number.isInteger(job.pid)) &&
+          : job.adapter === 'sjob_local'
+            ? isSjobLocalFields(job)
+            : Number.isInteger(job.pid)) &&
         (job.terminal === null ||
           (job.terminal && Array.isArray(job.terminal.expected_results))) &&
-        isSpawnedFields(job)
+        isSpawnedFields(job) &&
+        isCapacityField(job) &&
+        isTakeoverMarker(job)
     )
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isPositiveCount(value) {
+  return Number.isInteger(value) && /** @type {number} */ (value) >= 1;
+}
+
+/**
+ * The identity of a takeover's local run (UI-qbgj §3.5): the ssh host, the
+ * sjob local id, the pid, its resources, and where it was taken over from.
+ *
+ * @param {Record<string, any>} job
+ * @returns {boolean}
+ */
+function isSjobLocalFields(job) {
+  const from = job.takeover_from;
+  return (
+    typeof job.ssh_host === 'string' &&
+    job.ssh_host.length > 0 &&
+    typeof job.local_id === 'string' &&
+    /^L\d+$/.test(job.local_id) &&
+    Number.isInteger(job.pid) &&
+    isPositiveCount(job.cpus) &&
+    isPositiveCount(job.mem_gb) &&
+    !!from &&
+    typeof from === 'object' &&
+    typeof from.job_id === 'string' &&
+    from.job_id.length > 0 &&
+    typeof from.at === 'string' &&
+    from.at.length > 0 &&
+    typeof from.cancel_failed === 'boolean'
+  );
+}
+
+/**
+ * The optional takeover progress marker of a slurm job (UI-qbgj §3.4). The
+ * shape is strict, and only a slurm job may carry one.
+ *
+ * @param {Record<string, any>} job
+ * @returns {boolean}
+ */
+function isTakeoverMarker(job) {
+  const marker = job.takeover;
+  if (marker === undefined) {
+    return true;
+  }
+  return (
+    job.adapter === 'slurm' &&
+    !!marker &&
+    typeof marker === 'object' &&
+    ['pending', 'unknown'].includes(marker.state) &&
+    typeof marker.requested_at === 'string' &&
+    marker.requested_at.length > 0 &&
+    isPositiveCount(marker.cpus) &&
+    isPositiveCount(marker.mem_gb)
   );
 }
 
@@ -311,6 +394,63 @@ function isSpawnedFields(job) {
         typeof spawned.counts === 'object' &&
         Array.isArray(spawned.rows) &&
         Number.isInteger(spawned.omitted)))
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isCount(value) {
+  return Number.isInteger(value) && /** @type {number} */ (value) >= 0;
+}
+
+/**
+ * The optional display-only `capacity` of a slurm job (UI-qbgj §3.1). The
+ * shape is strict: a malformed value is rejected, never partly shown.
+ *
+ * @param {Record<string, any>} job
+ * @returns {boolean}
+ */
+function isCapacityField(job) {
+  const capacity = job.capacity;
+  if (capacity === undefined) {
+    return true;
+  }
+  if (job.adapter !== 'slurm' || !capacity || typeof capacity !== 'object') {
+    return false;
+  }
+  const ahead = capacity.ahead;
+  const slurm = capacity.slurm;
+  const host = capacity.host;
+  return (
+    typeof capacity.reason === 'string' &&
+    capacity.reason.length > 0 &&
+    (capacity.est_start === undefined ||
+      capacity.est_start === null ||
+      typeof capacity.est_start === 'string') &&
+    typeof capacity.partition === 'string' &&
+    capacity.partition.length > 0 &&
+    typeof capacity.observed_at === 'string' &&
+    !!ahead &&
+    typeof ahead === 'object' &&
+    isCount(ahead.jobs) &&
+    isCount(ahead.cpus) &&
+    !!slurm &&
+    typeof slurm === 'object' &&
+    isCount(slurm.cpu_alloc) &&
+    isCount(slurm.cpu_total) &&
+    isCount(slurm.mem_alloc_mb) &&
+    isCount(slurm.mem_total_mb) &&
+    (host === undefined ||
+      host === null ||
+      (typeof host === 'object' &&
+        typeof host.name === 'string' &&
+        host.name.length > 0 &&
+        isCount(host.cpus) &&
+        Number.isFinite(host.load1) &&
+        host.load1 >= 0 &&
+        isCount(host.mem_available_mb)))
   );
 }
 
@@ -433,6 +573,10 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'external_wait_check',
   'external_wait_stop',
   'external_wait_resume',
+  // `▶ 바로 실행` (UI-qbgj §3.4): payload `{ root_dir, wait_id, cpus, mem_gb }`.
+  // The server moves the record's single pending Slurm job to a local run on
+  // the same host and replaces it in place with an `sjob_local` job.
+  'external_wait_takeover',
   // Sequential merge queue (UI-5v7d): the [머지] click QUEUES, [일괄 머지]
   // queues every mergeable row at once, and remove cancels a waiting item. The
   // server-side driver is the only thing that merges, one item at a time.
@@ -517,6 +661,13 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'unsubscribe-timing-settings',
   'timing-settings-set',
   'timing-settings-snapshot',
+  // Server-global external-wait settings (UI-qbgj §3.6): the `▶ 바로 실행`
+  // default resource ratio. Same snapshot shape as the timing channel, kept
+  // apart because the timing table stores only integer seconds.
+  'subscribe-external-wait-settings',
+  'unsubscribe-external-wait-settings',
+  'external-wait-settings-set',
+  'external-wait-settings-snapshot',
   // Preset comparison table (preset-compare §3.5). A request/response pair, not
   // a subscription: the answer is read from dozens of attempt record files and
   // nothing a Worker tick changes needs to redraw it.

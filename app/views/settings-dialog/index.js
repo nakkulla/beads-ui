@@ -28,6 +28,7 @@ import { createBulkPane } from './bulk-pane.js';
 import { createChipBindingsTab } from './chip-bindings-tab.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
+import { createExternalWaitSection } from './external-wait-section.js';
 import { createModelVisibilitySection } from './model-visibility-section.js';
 import { createRepoPane } from './repo-pane.js';
 import { createTimingSection } from './timing-section.js';
@@ -126,6 +127,7 @@ const TAB_COPY = {
  *   implPresetStore?: { get: () => any, subscribe?: (fn: () => void) => () => void },
  *   modelVisibilityStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   timingSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
+ *   externalWaitSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   labelOptions: () => string[],
  *   notify?: (message: string) => void,
  *   onOpenChange?: (open: boolean) => void,
@@ -180,11 +182,13 @@ export function createSettingsDialog(mount_element, options) {
   let model_section = null;
   /** @type {ReturnType<typeof createTimingSection>|null} */
   let timing_section = null;
+  /** @type {ReturnType<typeof createExternalWaitSection>|null} */
+  let external_wait_section = null;
   /**
    * The `전역` 탭's own host — 서버 전역 값이라 일괄 pane과 섞지 않는다 (§6).
-   * It holds three groups: the chip bindings under their own title, then the
-   * model-visibility section, then the timing section (UI-ny0h §3.5), each drawn
-   * into its own child host.
+   * It holds four groups: the chip bindings under their own title, then the
+   * model-visibility section, then the timing section (UI-ny0h §3.5), then the
+   * external-wait section (UI-qbgj §3.6), each drawn into its own child host.
    */
   const global_host = document.createElement('div');
   global_host.className = 'settings-dialog__pane-host';
@@ -197,7 +201,8 @@ export function createSettingsDialog(mount_element, options) {
   chip_group.append(chip_title, chip_host);
   const model_host = document.createElement('div');
   const timing_host = document.createElement('div');
-  global_host.append(chip_group, model_host, timing_host);
+  const external_wait_host = document.createElement('div');
+  global_host.append(chip_group, model_host, timing_host, external_wait_host);
 
   /** @type {ReturnType<typeof createExecutionPane>|null} */
   let execution_pane = null;
@@ -452,6 +457,15 @@ export function createSettingsDialog(mount_element, options) {
         });
       }
       timing_section.render();
+      if (!external_wait_section) {
+        external_wait_section = createExternalWaitSection(external_wait_host, {
+          transport,
+          externalWaitSettingsStore: options.externalWaitSettingsStore,
+          toast: (message, kind) =>
+            showToast(message, /** @type {any} */ (kind))
+        });
+      }
+      external_wait_section.render();
       return;
     }
     global_host.remove();
@@ -487,6 +501,8 @@ export function createSettingsDialog(mount_element, options) {
     model_section = null;
     timing_section?.destroy();
     timing_section = null;
+    external_wait_section?.destroy();
+    external_wait_section = null;
     global_host.remove();
   }
 

@@ -1,5 +1,6 @@
 import {
   externalJobDisplayName,
+  externalJobIdentity,
   externalSpawnedClass,
   externalSpawnedCountParts
 } from '../../../app/protocol.js';
@@ -53,8 +54,16 @@ export function externalWaitCompletionPrompt(record) {
   for (const job of record.jobs) {
     const terminal = job.terminal;
     lines.push(
-      `${job.adapter === 'slurm' ? job.job_id : job.pid} · ${job.state} · exit_code=${terminal?.exit_code ?? 'unknown'} · evidence=${terminal?.evidence || 'unknown'}`
+      `${externalJobIdentity(job)} · ${job.state} · exit_code=${terminal?.exit_code ?? 'unknown'} · evidence=${terminal?.evidence || 'unknown'}`
     );
+    if (job.adapter === 'sjob_local') {
+      // The resumed session learns the result came from a local run (UI-qbgj §3.5).
+      const from = job.takeover_from;
+      lines.push(`Slurm ${from.job_id}에서 바로 실행으로 전환(${from.at})`);
+      if (from.cancel_failed) {
+        lines.push(`원 Slurm ${from.job_id} 취소 미확인 — hold 유지`);
+      }
+    }
     for (const result of terminal?.expected_results || []) {
       lines.push(
         `${result.path} exists=${result.exists} size=${result.size} mtime=${result.mtime}`
