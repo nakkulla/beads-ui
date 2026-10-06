@@ -6,6 +6,7 @@ scope:
   - server/worker/failure-class.js
   - server/routes/
   - server/app.js
+  - server/ws/worker-handlers.js
   - app/views/worker/log-path.js
   - app/views/worker/repo-ops-timeline.js
   - app/views/worker/repo-ops-script-viewer.js
@@ -42,11 +43,11 @@ scope:
 - 요약은 첫 실패 표지 줄, 없으면 마지막 비어 있지 않은 줄이다 — `server/worker/failure-class.js:235-254`
 - 실패 지문은 digest를 포함하고, `local_code_defect` 판정은 첫 실패와 현재 실패의 지문 일치를 요구한다 — `server/worker/repo-operation-coordinator.js:87-100`, `server/worker/operation-recovery.js:45-71`; 첫 지문은 1차 정산 값으로 고정된다 — `server/worker/queue-store.js:7669-7670`
 - operation 기록에는 `output_tail`이 채워지지 않는다 — `grep -c output_tail server/worker/repo-operation-coordinator.js server/worker/repo-operation-transition.js` 0건
-- 정리 실패 기록의 `log_path`는 실패한 명령의 전체 출력 파일이다 — `server/worker/queue-store.js:677-681`; verify-cmd 로그는 `verify-logs/`·`deploy-logs/`, repo-op 로그는 `repo-operation-logs/` 아래다 — `server/worker/verify-cmd.js:124-125`, `server/worker/state-paths.js:205-221`, `:341-343`
+- 정리 실패 기록의 `log_path`는 실패한 명령의 전체 출력 파일이다 — `server/worker/queue-store.js:677-681`; verify-cmd 로그는 `verify-logs/`·`deploy-logs/`, repo-op 로그는 `repo-operation-logs/` 아래다 — `server/worker/verify-cmd.js:124-125`, `server/worker/state-paths.js:215-231`, `:351-353`
 - verify-cmd 재시도는 시도마다 다른 파일을 남긴다 — `server/worker/verify-cmd.js:653-662`
 - repo-op 로그 디렉터리를 정리하는 보존 sweep은 없다 — `grep -rn "repoOperationLogDir"` 소비자는 runner와 completion-intent 주석뿐. verify-cmd 로그는 종류별 최근 20개만 남기고 지운다 — `server/worker/verify-cmd.js:76`, `:138-170`, `:232`
 - PR 대기 행의 완료 `log_path`는 서버 투영이 `terminal_reason.log_path` → `cleanup_failed[root].log_path` → `prObservations` verify `log_path` 순으로 고른다 — `server/ws/worker-handlers.js:2609`, `:2666-2697`
-- 로그 경로 표시는 공유 템플릿 하나가 그린다 — `app/views/worker/log-path.js:49`; 소비자는 타임라인 operation `세부`(`app/views/worker/repo-ops-timeline.js:501`), 정리 실패 `세부`(`:598`), PR 대기 `miniRow` 슬롯 5(`app/views/worker/lanes.js:3960`)
+- 로그 경로 표시는 공유 템플릿 하나가 그린다 — `app/views/worker/log-path.js:49`; 소비자는 타임라인 operation `세부`(`app/views/worker/repo-ops-timeline.js:501`), 정리 실패 `세부`(`:598`), PR 대기 `miniRow` 슬롯 5(`app/views/worker/lanes.js:3970`)
 - PR 대기 행 완료 툴팁은 `log_path`를 줄글 `title`로만 싣는다 — `app/views/worker/pr-wait-row.js:427-428`, `:473-474`
 - 타임라인 서랍은 Worker 탭과 모니터가 같은 `createRepoOpsDrawer`를 쓰고, 둘 다 작업공간 경로를 `repo`로 넘긴다 — `app/views/worker/index.js:131`, `:3243`, `app/views/monitor/index.js:108`, `:774`
 - 스크립트 팝업은 열려 있는 동안만 ESC를 듣고, 열 때 닫기 버튼에 포커스를 두고 닫을 때 연 요소로 포커스를 돌린다 — `app/views/worker/repo-ops-script-viewer.js:272-290`, `:314`, `:374-384`
