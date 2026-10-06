@@ -40,7 +40,7 @@ outage는 러너 단위로 한다. 원본은 서버 전역 하나로 둔다. 저
 
 ## 2. 검증된 전제
 
-base는 `origin/main` 472b50b0이다.
+base는 `origin/main` ec755e5b이다.
 
 - 보류는 큐의 top-level 필드이고 러너가 키다 — `server/worker/queue-store.js:650`.
   target 필드는 `kind·model·account·detail·last_error·resets_at·rearm_count·attempt_ids·auto_switch·switch_ready_*·next_probe_at`이다
@@ -91,9 +91,9 @@ base는 `origin/main` 472b50b0이다.
 - attachment는 서버 시작 때 `initWorkerRuntime`이 만든 목록뿐이다 — `attach.js:3154`.
   시작 뒤 등록된 저장소는 디스패치 루프가 없다.
 - 표시용 `next_probe_at`은 `rearm_count < 3`·24h 상한으로 계산된다. 프로버에는 이 상한이
-  없다 — `server/ws/worker-handlers.js:3019-3032`.
+  없다 — `server/ws/worker-handlers.js:3002-3017`.
 - 화면은 `decorateQueue`가 저장소마다 `provider_hold`를 실어 보낸다 —
-  `server/ws/worker-handlers.js:3197`, `3273`. 모니터도 같은 함수로 저장소마다
+  `server/ws/worker-handlers.js:3180`, `3256`. 모니터도 같은 함수로 저장소마다
   조립한다 — `server/ws/monitor-handlers.js:733`. 대기 행 칩은 그 저장소의
   `provider_hold`에서만 판정하고, target이 없으면 그리지 않는다 —
   `app/views/worker/lane-model.js:1571`, `1718`, `3300`.
@@ -454,7 +454,7 @@ stale 규칙으로만 판정된다. 그 attempt가 이관된 살아 있는 멤�
 ## 9. 경계·후속
 
 - 관찰: `publicProviderHolds`가 표시용 `next_probe_at`을 `rearm_count < 3`·24h 상한으로
-  계산한다(`server/ws/worker-handlers.js:3019-3032`). 프로버에는 이 상한이 없다(UI-inge).
+  계산한다(`server/ws/worker-handlers.js:3002-3017`). 프로버에는 이 상한이 없다(UI-inge).
   §5.5 투영을 고칠 때 같은 함수에 손이 간다. 구현 중 fix-now로 흡수할 수 있고, 별도 Bead
   후보는 아니다. 근거는 §2에 있다.
 - 관찰: attach되지 않은 저장소(시작 뒤 등록)는 디스패치하지 않는다. 그래서 정산 대상에서
