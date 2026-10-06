@@ -554,6 +554,11 @@ export function externalSpawnedTable(spawned) {
  * ended, whose elapsed still grows with the clock; `null` once it ended or
  * without material.
  * @property {string} title - The raw state, exit code and evidence.
+ * @property {ExternalJobNote[]} notes - Lines drawn right under this job line: the
+ * capacity lines of a lone pending Slurm job ({@link externalCapacityLines}) and
+ * the cancel-unconfirmed line of a takeover's local run (UI-qbgj §3.6). They
+ * sit outside the job-line cap, which counts job lines only.
+ * @typedef {{ text: string, tone: 'muted'|'warn' }} ExternalJobNote
  * @typedef {Object} ExternalJobRows
  * @property {ExternalJobRow[]} rows - At most four lines, overflow included.
  * @property {string} more - `외 <n>건 · 전체는 상세의 잡 표`, or `''`.
@@ -638,10 +643,10 @@ export function externalJobRows(record, now) {
       const judged = externalJobState(job);
       const submitted = Date.parse(job.submitted_at);
       const end = job.terminal ? Date.parse(job.observed_at || '') : now;
+      const remote = job.adapter === 'slurm' || job.adapter === 'sjob_local';
+      const local_run = job.adapter === 'sjob_local';
       const host =
-        job.adapter === 'slurm' &&
-        typeof job.ssh_host === 'string' &&
-        job.ssh_host.length > 0
+        remote && typeof job.ssh_host === 'string' && job.ssh_host.length > 0
           ? job.ssh_host
           : '로컬';
       const id =
@@ -649,21 +654,37 @@ export function externalJobRows(record, now) {
           ? typeof job.job_id === 'string'
             ? job.job_id
             : ''
-          : Number.isInteger(job.pid)
-            ? `pid ${job.pid}`
-            : '';
+          : local_run
+            ? typeof job.local_id === 'string'
+              ? job.local_id
+              : ''
+            : Number.isInteger(job.pid)
+              ? `pid ${job.pid}`
+              : '';
       const exit_code = job.terminal?.exit_code;
-      const display =
-        job.adapter === 'slurm'
-          ? externalJobDisplayName(job)
-          : { name: '', detail: '' };
+      const display = remote
+        ? externalJobDisplayName(job)
+        : { name: '', detail: '' };
+      // 바로 실행으로 옮긴 잡은 `<호스트> <이름> 로컬 <상태어>`다 (UI-qbgj §3.6).
+      const state =
+        local_run && judged.state ? `로컬 ${judged.state}` : judged.state;
+      const cancel_line = externalCancelUnconfirmedLine(job);
+      /** @type {ExternalJobNote[]} */
+      const notes = [
+        ...(jobs.length === 1 ? externalJobCapacityLines(job) : []).map(
+          (text) => ({ text, tone: /** @type {const} */ ('muted') })
+        ),
+        ...(cancel_line
+          ? [{ text: cancel_line, tone: /** @type {const} */ ('warn') }]
+          : [])
+      ];
       return {
         row: {
           glyph: judged.glyph,
           host,
           id,
           name: display.name,
-          state: judged.state,
+          state,
           tone: judged.tone,
           elapsed: externalJobElapsed(submitted, end),
           live_since:
@@ -673,10 +694,14 @@ export function externalJobRows(record, now) {
             job.state || '',
             typeof exit_code === 'number' ? `exit ${exit_code}` : '',
             job.terminal?.recovery_needed === true ? 'recovery_needed' : '',
-            job.terminal?.evidence || ''
+            job.terminal?.evidence || '',
+            local_run && job.takeover_from?.job_id
+              ? `Slurm ${job.takeover_from.job_id}에서 전환`
+              : ''
           ]
             .filter(Boolean)
-            .join(' · ')
+            .join(' · '),
+          notes
         },
         group: judged.group,
         submitted: Number.isFinite(submitted) ? submitted : Infinity,
@@ -706,6 +731,103 @@ export function externalJobRows(record, now) {
     rows: rows.slice(0, shown),
     more: `외 ${rows.length - shown}건 · 전체는 상세의 잡 표`
   };
+}
+
+/** Display words of the Slurm pending `Reason` (UI-qbgj §3.1). */
+const CAPACITY_REASON_WORDS = Object.freeze(
+  /** @type {Record<string, string>} */ ({
+    Resources: '자원 부족',
+    Priority: '우선순위',
+    JobArrayTaskLimit: '배열 동시 제한',
+    Dependency: '선행 대기'
+  })
+);
+
+/**
+ * The display word of a Slurm pending reason; any other token stays as it is.
+ *
+ * @param {string} reason
+ * @returns {string}
+ */
+export function capacityReasonWord(reason) {
+  return Object.hasOwn(CAPACITY_REASON_WORDS, reason)
+    ? CAPACITY_REASON_WORDS[reason]
+    : reason;
+}
+
+/**
+ * Slurm's expected start as local `MM/DD HH:mm`, or `''` when it does not
+ * parse.
+ *
+ * @param {string|null|undefined} value
+ * @returns {string}
+ */
+function formatEstimatedStart(value) {
+  const ms = typeof value === 'string' ? Date.parse(value) : NaN;
+  if (!Number.isFinite(ms)) {
+    return '';
+  }
+  const d = new Date(ms);
+  const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * The capacity lines of one pending Slurm job (UI-qbgj §3.6): the wait line
+ * `대기 사유 <표시어> · 앞 <n>건 · Slurm 예상 <MM/DD HH:mm>` and the allocation
+ * line `<partition> CPU <alloc>/<total> 배정 · 실제 부하 <n> · 쓸 수 있는 메모리
+ * <G>G`. An item without material is left out; without `host` the second line
+ * stops at the Slurm allocation. A job that is not a pending Slurm job with
+ * `capacity` gives no lines. The card shows them only for a record with one job;
+ * the detail panel shows them for every such job.
+ *
+ * @param {import('../../protocol.js').ExternalWaitObservation['jobs'][number]} job
+ * @returns {string[]}
+ */
+export function externalJobCapacityLines(job) {
+  const capacity = job?.capacity;
+  if (
+    !capacity ||
+    job.adapter !== 'slurm' ||
+    job.state !== 'PENDING' ||
+    job.terminal
+  ) {
+    return [];
+  }
+  const start = formatEstimatedStart(capacity.est_start);
+  const wait = [
+    capacity.reason ? `대기 사유 ${capacityReasonWord(capacity.reason)}` : '',
+    Number.isInteger(capacity.ahead?.jobs) ? `앞 ${capacity.ahead.jobs}건` : '',
+    start ? `Slurm 예상 ${start}` : ''
+  ].filter(Boolean);
+  const slurm = capacity.slurm;
+  const host = capacity.host;
+  const allocation = [
+    slurm && capacity.partition
+      ? `${capacity.partition} CPU ${slurm.cpu_alloc}/${slurm.cpu_total} 배정`
+      : '',
+    host && Number.isFinite(host.load1)
+      ? `실제 부하 ${Math.round(host.load1)}`
+      : '',
+    host && Number.isFinite(host.mem_available_mb)
+      ? `쓸 수 있는 메모리 ${Math.floor(host.mem_available_mb / 1024)}G`
+      : ''
+  ].filter(Boolean);
+  return [wait.join(' · '), allocation.join(' · ')].filter(Boolean);
+}
+
+/**
+ * `원 Slurm <id> 취소 미확인 — hold 유지` for a takeover's local run whose
+ * original Slurm job was never confirmed cancelled (UI-qbgj §3.5), else `''`.
+ *
+ * @param {import('../../protocol.js').ExternalWaitObservation['jobs'][number]} job
+ * @returns {string}
+ */
+export function externalCancelUnconfirmedLine(job) {
+  return job?.adapter === 'sjob_local' &&
+    job.takeover_from?.cancel_failed === true
+    ? `원 Slurm ${job.takeover_from.job_id} 취소 미확인 — hold 유지`
+    : '';
 }
 
 /**

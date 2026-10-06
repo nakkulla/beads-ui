@@ -5,6 +5,11 @@ import { html, render } from 'lit-html';
 import { closedRangeSince, normalizeDoneRange } from './data/closed-range.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
 import { createExecPresetStore } from './data/exec-preset-store.js';
+import {
+  createExternalWaitSettingsStore,
+  isExternalWaitSettingsSnapshot,
+  takeoverRatioOf
+} from './data/external-wait-settings-store.js';
 import { createModelVisibilityStore } from './data/model-visibility-store.js';
 import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
 import { createSessionLogStore } from './data/session-log-store.js';
@@ -37,6 +42,7 @@ import { createNewIssueDialog } from './views/new-issue-dialog.js';
 import { createSettingsDialog } from './views/settings-dialog/index.js';
 import { createUsageMeter } from './views/usage-meter.js';
 import { createWorkerView } from './views/worker.js';
+import { bindTakeoverRatioSource } from './views/worker/external-wait-takeover-dialog.js';
 import { bindQueueGraceSource } from './views/worker/lane-model.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
@@ -132,6 +138,9 @@ const MODEL_VISIBILITY_CLIENT_ID = 'model-visibility';
 
 /** Client id for the singleton server-global timing-settings subscription. */
 const TIMING_SETTINGS_CLIENT_ID = 'timing-settings';
+
+/** Client id for the singleton server-global external-wait settings subscription. */
+const EXTERNAL_WAIT_SETTINGS_CLIENT_ID = 'external-wait-settings';
 
 /**
  * Publish the sticky header's measured height as `--app-header-h`.
@@ -333,6 +342,12 @@ export function bootstrap(root_element) {
     // Worker 탭의 유예 남은 초는 서버가 쓰는 값을 따른다 (UI-ny0h §3.5); 값이
     // 아직 없으면 lane-model의 20초 대체값이 남는다.
     bindQueueGraceSource(() => queueGraceSecondsOf(timing_settings_store));
+    const external_wait_settings_store = createExternalWaitSettingsStore();
+    // `▶ 바로 실행` 확인 창의 기본 자원 비율은 서버 전역 설정을 따른다
+    // (UI-qbgj §3.6); 값이 아직 없으면 창이 80%로 읽는다.
+    bindTakeoverRatioSource(() =>
+      takeoverRatioOf(external_wait_settings_store)
+    );
     const session_log_store = createSessionLogStore();
     const adr_store = createAdrStore();
 
@@ -375,6 +390,19 @@ export function bootstrap(root_element) {
     client.on('timing-settings-snapshot', (payload) => {
       if (isTimingSnapshot(payload)) {
         timing_settings_store.set({
+          revision: payload.revision,
+          values: payload.values,
+          overrides: payload.overrides,
+          fields: payload.fields
+        });
+      }
+    });
+
+    // 외부 작업 설정 채널(UI-qbgj §3.6)의 push. 서버 전역이라 워크스페이스
+    // 전환에도 비우지 않고, 스냅샷을 통째로 교체한다.
+    client.on('external-wait-settings-snapshot', (payload) => {
+      if (isExternalWaitSettingsSnapshot(payload)) {
+        external_wait_settings_store.set({
           revision: payload.revision,
           values: payload.values,
           overrides: payload.overrides,
@@ -1022,6 +1050,25 @@ export function bootstrap(root_element) {
       });
     }
 
+    // --- External-wait settings subscription lifecycle (server-global) ---
+    let external_wait_settings_subscribed = false;
+
+    function subscribeExternalWaitSettings() {
+      if (external_wait_settings_subscribed) {
+        return;
+      }
+      external_wait_settings_subscribed = true;
+      void tracked_send('subscribe-external-wait-settings', {
+        id: EXTERNAL_WAIT_SETTINGS_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-external-wait-settings failed: %o', err);
+        // 구 서버 등으로 구독이 실패하면 값 없음으로 두어 확인 창이 기본 비율로
+        // 읽게 하고, 다음 재연결이 다시 구독하도록 플래그를 푼다.
+        external_wait_settings_store.clear();
+        external_wait_settings_subscribed = false;
+      });
+    }
+
     /**
      * Re-establish the per-workspace push subscriptions on a NEW socket after a
      * reconnect.
@@ -1050,6 +1097,7 @@ export function bootstrap(root_element) {
       // flashing every hidden model back into the selectors.
       model_visibility_subscribed = false;
       timing_settings_subscribed = false;
+      external_wait_settings_subscribed = false;
       worker_queue_unsub = null;
       worker_queue_recovering = false;
       monitor_pipeline_unsub = null;
@@ -1060,6 +1108,7 @@ export function bootstrap(root_element) {
       subscribeExecPresets();
       subscribeModelVisibility();
       subscribeTimingSettings();
+      subscribeExternalWaitSettings();
       const selected = store.getState().workspace.current?.path;
       if (selected) {
         try {
@@ -1549,6 +1598,7 @@ export function bootstrap(root_element) {
       implPresetStore: exec_preset_store,
       modelVisibilityStore: model_visibility_store,
       timingSettingsStore: timing_settings_store,
+      externalWaitSettingsStore: external_wait_settings_store,
       transport: (type, payload) => tracked_send(type, payload),
       // 모니터 탭에서 연 헤더 ⚙의 일괄 모드는 보이는 저장소 행을 대상으로 쓴다
       // (UI-nu43 §4.1). 레포 카드 ⚙도 같은 창을 `scope: 'repo'`로 열므로 일괄
@@ -1902,6 +1952,7 @@ export function bootstrap(root_element) {
     subscribeExecPresets();
     subscribeModelVisibility();
     subscribeTimingSettings();
+    subscribeExternalWaitSettings();
 
     // Load workspaces after startup subscriptions can safely resubscribe.
     void loadWorkspaces().finally(() => {

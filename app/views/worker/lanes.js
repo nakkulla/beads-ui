@@ -2810,6 +2810,7 @@ export function waitReasonLines(reason, options = {}) {
     if (
       [
         'external_wait_check',
+        'external_wait_takeover',
         'external_wait_stop',
         'external_wait_resume'
       ].includes(action.op) &&
@@ -2832,6 +2833,15 @@ export function waitReasonLines(reason, options = {}) {
         data-mode=${ifDefined(payload.mode)}
         data-bead-id=${ifDefined(payload.bead_id)}
         data-confirm=${ifDefined(action.confirm || undefined)}
+        data-takeover=${ifDefined(
+          action.op === 'external_wait_takeover'
+            ? JSON.stringify({
+                job_id: payload.job_id,
+                ssh_host: payload.ssh_host,
+                capacity: payload.capacity ?? null
+              })
+            : undefined
+        )}
       >
         ${action.label.replace(/^\[|\]$/g, '')}
       </button>`;
@@ -4164,30 +4174,33 @@ function externalJobLinesTemplate(reason, record, now) {
           ${rows.map(
             (row) =>
               html`<div
-                class="external-job"
-                data-tone=${row.tone}
-                title=${ifDefined(row.title || undefined)}
-              >
-                <span class="external-job__glyph" aria-hidden="true"
-                  >${row.glyph}</span
-                ><span class="external-job__host">${row.host}</span>${row.name
-                  ? html`<span class="external-job__id external-job__name"
-                      >${row.name}</span
-                    >`
-                  : row.id
-                    ? html`<span class="external-job__id">${row.id}</span>`
-                    : ''}${row.state
-                  ? html`<span class="external-job__state">${row.state}</span>`
-                  : ''}${row.elapsed && row.live_since !== null
-                  ? timeSpan(row.live_since, 'job', now, {
-                      cls: 'external-job__elapsed'
-                    })
-                  : row.elapsed
-                    ? html`<span class="external-job__elapsed"
-                        >${row.elapsed}</span
+                  class="external-job"
+                  data-tone=${row.tone}
+                  title=${ifDefined(row.title || undefined)}
+                >
+                  <span class="external-job__glyph" aria-hidden="true"
+                    >${row.glyph}</span
+                  ><span class="external-job__host">${row.host}</span>${row.name
+                    ? html`<span class="external-job__id external-job__name"
+                        >${row.name}</span
                       >`
-                    : ''}
-              </div>`
+                    : row.id
+                      ? html`<span class="external-job__id">${row.id}</span>`
+                      : ''}${row.state
+                    ? html`<span class="external-job__state"
+                        >${row.state}</span
+                      >`
+                    : ''}${row.elapsed && row.live_since !== null
+                    ? timeSpan(row.live_since, 'job', now, {
+                        cls: 'external-job__elapsed'
+                      })
+                    : row.elapsed
+                      ? html`<span class="external-job__elapsed"
+                          >${row.elapsed}</span
+                        >`
+                      : ''}
+                </div>
+                ${externalJobNotesTemplate(row.notes)}`
           )}${more
             ? html`<div class="external-jobs__more">${more}</div>`
             : ''}${spawned ? externalSpawnedTemplate(spawned) : ''}
@@ -4203,6 +4216,27 @@ function externalJobLinesTemplate(reason, record, now) {
       ? html`<div class="wait-reason__error">${reason.error}</div>`
       : ''}
   </div>`;
+}
+
+/**
+ * The lines right under one job line (UI-qbgj §3.6): the capacity lines of a
+ * lone pending Slurm job and the cancel-unconfirmed line of a takeover's local
+ * run. The card and the detail panel draw the same lines from
+ * {@link externalJobCapacityLines} and {@link externalCancelUnconfirmedLine}.
+ *
+ * @param {import('./wait-vocabulary.js').ExternalJobNote[]|undefined} notes
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function externalJobNotesTemplate(notes) {
+  if (!notes || notes.length === 0) {
+    return '';
+  }
+  return html`${notes.map(
+    (note) =>
+      html`<div class="external-job__note" data-tone=${note.tone}>
+        ${note.text}
+      </div>`
+  )}`;
 }
 
 /**

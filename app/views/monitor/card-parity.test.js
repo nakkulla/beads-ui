@@ -20,6 +20,15 @@ vi.mock('../../../server/bd.js', async (importOriginal) => {
   return { ...actual, runBdJsonProjected: vi.fn() };
 });
 
+// 외부 대기 판정은 attach된 Worker의 waitJudge 캐시가 들고 있고 이 테스트는 Worker를
+// attach하지 않는다. 그래서 `workerWaitState`만 바꿔, 고정 레코드를 서버의 진짜
+// 판정(`judgeWaitReasons`)에 넣은 결과를 돌려준다 — 카드 재료는 여전히 서버가 만든다.
+vi.mock('../../../server/worker/attach.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return { ...actual, workerWaitState: vi.fn(actual.workerWaitState) };
+});
+
 // 서버 모듈은 모듈 수준에서 `new URL(..., import.meta.url)`을 쓰므로, jsdom 환경의
 // 웹 변환으로는 읽히지 않는다. 이 파일은 node 환경에서 돌고 DOM은 vitest의 jsdom
 // 환경 설치기로 전역에 올린다 — 뷰 모듈은 `document`가 있어야 import되므로 모든
@@ -42,6 +51,9 @@ const { runBdJsonProjected } = await import('../../../server/bd.js');
 const { fetchListForSubscription } =
   await import('../../../server/list-adapters.js');
 const { makeAttempt } = await import('../../../server/worker/queue-store.js');
+const { workerWaitState } = await import('../../../server/worker/attach.js');
+const { judgeWaitReasons } =
+  await import('../../../server/worker/wait-judgment.js');
 const { getWorkerRuntime, __resetWorkerRuntimeForTest: resetWorkerRuntime } =
   await import('../../../server/worker/runtime.js');
 const {
@@ -183,7 +195,9 @@ function rawIssues() {
       priority: 3
     }),
     // 보류.
-    row('F-1', { status: 'deferred' })
+    row('F-1', { status: 'deferred' }),
+    // 대기 중인 Slurm 잡 하나를 기다리는 외부 대기 — 용량 줄·▶ 바로 실행.
+    row('E-1')
   ];
 }
 
@@ -293,7 +307,10 @@ function rawQueue() {
     auto_merge: false,
     slots: 3,
     serial_lane_count: 1,
-    queue: [{ bead_id: 'Q-1', added_at: NOW - 5 * HOUR }],
+    queue: [
+      { bead_id: 'Q-1', added_at: NOW - 5 * HOUR },
+      { bead_id: 'E-1', added_at: NOW - 4 * HOUR }
+    ],
     serial_lanes: [],
     pr_wait: [
       { bead_id: 'W-1', added_at: NOW - 4 * HOUR },
@@ -370,6 +387,86 @@ function rawQueue() {
       }
     }
   };
+}
+
+/**
+ * The public projection of E-1's external-wait record: one pending Slurm job
+ * with capacity material (UI-qbgj §3.1).
+ *
+ * @returns {Record<string, any>}
+ */
+function externalWaitRecord() {
+  return {
+    wait_id: 'w-0123456789ab',
+    root_dir: WS,
+    bead_id: 'E-1',
+    owner_kind: 'worker',
+    stage: 'detached',
+    budget: { turns_total: 3, turns_used: 0 },
+    registered_at: iso(NOW - 4 * HOUR),
+    next_observation_at: iso(NOW + 2 * 60 * 1000),
+    error_count: 0,
+    last_error: null,
+    jobs: [
+      {
+        adapter: 'slurm',
+        ssh_host: 'wallace',
+        job_id: '249043',
+        submitted_at: iso(NOW - 4 * HOUR),
+        log_path: '/logs/249043.log',
+        state: 'PENDING',
+        observed_at: iso(NOW - 60 * 1000),
+        capacity: {
+          reason: 'Resources',
+          est_start: iso(NOW + 2 * DAY),
+          partition: 'debug',
+          ahead: { jobs: 39, cpus: 624 },
+          slurm: {
+            cpu_alloc: 112,
+            cpu_total: 112,
+            mem_alloc_mb: 900 * 1024,
+            mem_total_mb: 1000 * 1024
+          },
+          host: {
+            name: 'wallace',
+            cpus: 112,
+            load1: 61,
+            mem_available_mb: 902 * 1024
+          },
+          observed_at: iso(NOW - 60 * 1000)
+        },
+        terminal: null
+      }
+    ],
+    completion: null,
+    resume: null
+  };
+}
+
+/**
+ * Answer `workerWaitState` with E-1's record and the server's own judgment of
+ * it against the raw queue.
+ *
+ * @param {Record<string, any>} raw_queue
+ */
+function seedExternalWait(raw_queue) {
+  vi.mocked(workerWaitState).mockImplementation((root) => {
+    const external_waits = root === WS ? [externalWaitRecord()] : [];
+    const judged = judgeWaitReasons(
+      /** @type {any} */ ({
+        root_dir: root,
+        queue: raw_queue,
+        external_waits,
+        now: NOW
+      })
+    );
+    return /** @type {any} */ ({
+      external_waits,
+      wait_reasons: judged.wait_reasons.filter(
+        (/** @type {any} */ reason) => reason.kind === 'external_job'
+      )
+    });
+  });
 }
 
 /**
@@ -567,6 +664,7 @@ async function drawBothTabs() {
   seedPrObservations();
   await warmServerCaches();
   const raw_queue = rawQueue();
+  seedExternalWait(raw_queue);
   const queue_snapshot = decorateQueue(WS, raw_queue);
   const worker = document.createElement('div');
   const monitor = document.createElement('div');
@@ -704,6 +802,7 @@ const SHARED_BEADS = [
   'C-2',
   'C-3',
   'D-1',
+  'E-1',
   'K-1',
   'O-1',
   'Q-1',
@@ -736,6 +835,20 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
     expect(partsByBead(monitor_cards, SHARED_BEADS)).toEqual(
       partsByBead(worker_cards, SHARED_BEADS)
     );
+  });
+
+  test('draws the capacity lines and the run-now button on the external wait card', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    for (const mount of [worker, monitor]) {
+      const card = /** @type {HTMLElement} */ (cardsByBead(mount).get('E-1'));
+      expect(card.querySelectorAll('.external-job__note')).toHaveLength(2);
+      expect(
+        card
+          .querySelector('[data-external-wait-op="external_wait_takeover"]')
+          ?.textContent?.trim()
+      ).toBe('▶ 바로 실행');
+    }
   });
 
   test('stands an issue closed outside the Worker only in the Worker done lane', async () => {

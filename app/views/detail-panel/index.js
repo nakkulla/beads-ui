@@ -33,6 +33,7 @@ import {
 } from '../settings-dialog/session-model.js';
 import { runExternalWaitAction } from '../worker/external-wait-action.js';
 import {
+  externalJobNotesTemplate,
   formatElapsed,
   placeMenuList,
   waitReasonLines
@@ -50,6 +51,8 @@ import {
 } from '../worker/plan-place.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import {
+  externalCancelUnconfirmedLine,
+  externalJobCapacityLines,
   externalJobDisplayName,
   externalJobElapsed,
   externalSpawnedTable
@@ -2490,6 +2493,28 @@ export function createDetailPanel(mount_element, options) {
     </tr>`;
   }
 
+  /**
+   * The lines under the job table (UI-qbgj §3.6): the capacity lines of every
+   * pending Slurm job — prefixed with the job number when the record has more
+   * than one job — and the cancel-unconfirmed line of a takeover's local run.
+   *
+   * @param {import('../../protocol.js').ExternalWaitObservation} record
+   * @returns {import('../worker/wait-vocabulary.js').ExternalJobNote[]}
+   */
+  function externalDetailNotes(record) {
+    const several = record.jobs.length > 1;
+    return record.jobs.flatMap((job) => {
+      const capacity = externalJobCapacityLines(job).map((text, index) => ({
+        text: several && index === 0 ? `${job.job_id} · ${text}` : text,
+        tone: /** @type {const} */ ('muted')
+      }));
+      const cancel = externalCancelUnconfirmedLine(job);
+      return cancel
+        ? [...capacity, { text: cancel, tone: /** @type {const} */ ('warn') }]
+        : capacity;
+    });
+  }
+
   /** Render expected-path observations on the consumer issue. */
   function externalJobsTemplate() {
     const root_dir = options.getWorkspacePath?.() || '';
@@ -2542,11 +2567,26 @@ export function createDetailPanel(mount_element, options) {
             (
               /** @type {import('../../protocol.js').ExternalWaitObservation['jobs'][number]} */ job
             ) => {
+              const local_run = job.adapter === 'sjob_local';
               const display =
-                job.adapter === 'slurm'
+                job.adapter === 'slurm' || local_run
                   ? externalJobDisplayName(job)
                   : { name: '', detail: '' };
-              const number = String(job.job_id ?? job.pid ?? '');
+              const number = String(
+                job.job_id ?? (local_run ? job.local_id : job.pid) ?? ''
+              );
+              // 바로 실행으로 옮긴 잡은 번호 칸에 출처를, 자원 칸에 고른 자원을
+              // 싣는다 (UI-qbgj §3.6).
+              const number_cell =
+                local_run && job.takeover_from?.job_id
+                  ? `${number} · Slurm ${job.takeover_from.job_id}에서 전환`
+                  : number;
+              const resource_cell =
+                local_run &&
+                Number.isInteger(job.cpus) &&
+                Number.isInteger(job.mem_gb)
+                  ? `${job.cpus} CPU · ${job.mem_gb}G`
+                  : '';
               const submitted = Date.parse(job.submitted_at);
               const end = job.terminal
                 ? Date.parse(job.observed_at || '')
@@ -2559,8 +2599,8 @@ export function createDetailPanel(mount_element, options) {
                   </td>
                   <td>${job.state || ''}</td>
                   <td>${externalJobElapsed(submitted, end)}</td>
-                  <td></td>
-                  <td>${number}</td>
+                  <td>${resource_cell}</td>
+                  <td>${number_cell}</td>
                   <td>${job.terminal?.exit_code ?? ''}</td>
                   <td>
                     ${(job.terminal?.expected_results || []).map(
@@ -2595,6 +2635,7 @@ export function createDetailPanel(mount_element, options) {
           )}
         </tbody>
       </table>
+      ${externalJobNotesTemplate(externalDetailNotes(record))}
       ${lines.actions
         ? html`<div
             class="detail-external-wait__ops"

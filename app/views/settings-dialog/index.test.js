@@ -93,7 +93,7 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any }} [options]
+ * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any, externalWaitSettings?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -142,6 +142,10 @@ function mount(options = {}) {
     },
     timingSettingsStore: {
       get: () => options.timingSettings ?? null,
+      set: () => {}
+    },
+    externalWaitSettingsStore: {
+      get: () => options.externalWaitSettings ?? null,
       set: () => {}
     },
     labelOptions: () => ['worker-serial'],
@@ -638,6 +642,35 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
     ).map((title) => title.textContent?.trim());
     expect(titles).toEqual(['판정 칩 프리셋', '활성 모델', '대기·주기']);
     expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    dialog.destroy();
+  });
+
+  test('draws the 외부 작업 group after the 활성 모델 group in the 전역 tab', async () => {
+    const { root, dialog } = mount({
+      modelVisibility: MODEL_VISIBILITY,
+      externalWaitSettings: {
+        revision: 0,
+        values: { takeover_ratio_percent: 80 },
+        overrides: {},
+        fields: {
+          takeover_ratio_percent: {
+            default: 80,
+            min: 10,
+            max: 100,
+            unit: 'percent'
+          }
+        }
+      }
+    });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+
+    const titles = Array.from(
+      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
+    ).map((title) => title.textContent?.trim());
+    expect(titles).toEqual(['판정 칩 프리셋', '활성 모델', '외부 작업']);
     dialog.destroy();
   });
 

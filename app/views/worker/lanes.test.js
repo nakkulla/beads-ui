@@ -1581,6 +1581,207 @@ describe('external job lines (UI-a119 §3.4)', () => {
 });
 
 /**
+ * The capacity material of a pending Slurm job (UI-qbgj §3.1).
+ *
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
+ */
+function capacity(patch = {}) {
+  return {
+    reason: 'Resources',
+    est_start: '2026-10-08T13:38:00',
+    partition: 'debug',
+    ahead: { jobs: 39, cpus: 624 },
+    slurm: {
+      cpu_alloc: 112,
+      cpu_total: 112,
+      mem_alloc_mb: 900_000,
+      mem_total_mb: 1_000_000
+    },
+    host: {
+      name: 'wallace',
+      cpus: 112,
+      load1: 61.4,
+      mem_available_mb: 902 * 1024 + 300
+    },
+    observed_at: '2026-10-06T05:54:00Z',
+    ...patch
+  };
+}
+
+/**
+ * A takeover's local run (UI-qbgj §3.5).
+ *
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
+ */
+function localJob(patch = {}) {
+  return {
+    adapter: 'sjob_local',
+    ssh_host: 'wallace',
+    local_id: 'L003',
+    pid: 4242,
+    process_start: 'Tue Oct  6 15:00:00 2026',
+    workdir: '/work',
+    log_path: '/logs/L003.log',
+    exitcode_path: '/home/u/.sjob/local/L003.exitcode',
+    submitted_at: '2026-09-21T00:00:00Z',
+    expected: [],
+    name: 'prostate-run',
+    cpus: 16,
+    mem_gb: 64,
+    takeover_from: {
+      job_id: '249043',
+      at: '2026-09-21T00:00:00Z',
+      cancel_failed: false
+    },
+    state: 'RUNNING',
+    observed_at: '2026-09-21T01:00:00Z',
+    terminal: null,
+    ...patch
+  };
+}
+
+describe('external capacity and takeover lines (UI-qbgj §3.6)', () => {
+  const NOW = Date.parse('2026-09-21T01:29:30Z');
+
+  /**
+   * @param {any[]} jobs
+   */
+  function renderBody(jobs) {
+    render(
+      externalWaitCardParts(
+        {
+          external_wait: externalWait({ jobs }),
+          wait_reasons: [waitReason({ kind: 'external_job' })]
+        },
+        NOW
+      ).body,
+      mount
+    );
+    return Array.from(mount.querySelectorAll('.external-job__note')).map(
+      (note) => (note.textContent || '').trim()
+    );
+  }
+
+  test('draws two capacity lines after a lone pending Slurm job', () => {
+    const notes = renderBody([
+      slurmJob({ state: 'PENDING', capacity: capacity() })
+    ]);
+
+    expect(notes).toEqual([
+      '대기 사유 자원 부족 · 앞 39건 · Slurm 예상 10/08 13:38',
+      'debug CPU 112/112 배정 · 실제 부하 61 · 쓸 수 있는 메모리 902G'
+    ]);
+    expect(
+      mount.querySelector('.external-job__glyph + .external-job__host')
+    ).not.toBeNull();
+  });
+
+  test('stops the allocation line at the Slurm share without a host', () => {
+    const notes = renderBody([
+      slurmJob({
+        state: 'PENDING',
+        capacity: capacity({ host: null, est_start: null, reason: 'Weird' })
+      })
+    ]);
+
+    expect(notes).toEqual([
+      '대기 사유 Weird · 앞 39건',
+      'debug CPU 112/112 배정'
+    ]);
+  });
+
+  test('leaves the capacity lines off the card with two jobs', () => {
+    const notes = renderBody([
+      slurmJob({ state: 'PENDING', capacity: capacity() }),
+      slurmJob({ job_id: '43' })
+    ]);
+
+    expect(notes).toEqual([]);
+  });
+
+  test('draws a local run line with the host, name and local state', () => {
+    renderBody([localJob()]);
+
+    const cells = Array.from(
+      mount.querySelectorAll('.external-job > span')
+    ).map((cell) => (cell.textContent || '').trim());
+    expect(cells).toEqual([
+      '◐',
+      'wallace',
+      'prostate-run',
+      '로컬 실행 중',
+      '1h29m'
+    ]);
+  });
+
+  test('draws the cancel-unconfirmed line under a local run', () => {
+    const notes = renderBody([
+      localJob({
+        takeover_from: {
+          job_id: '249043',
+          at: '2026-09-21T00:00:00Z',
+          cancel_failed: true
+        }
+      })
+    ]);
+
+    expect(notes).toEqual(['원 Slurm 249043 취소 미확인 — hold 유지']);
+    expect(
+      mount.querySelector('.external-job__note')?.getAttribute('data-tone')
+    ).toBe('warn');
+  });
+
+  test('stands the run-now button right after the check button', () => {
+    const payload = { root_dir: '/repo', wait_id: 'w-0123456789ab' };
+    const card = renderCandidate({
+      external_wait: externalWait({
+        jobs: [slurmJob({ state: 'PENDING', capacity: capacity() })]
+      }),
+      wait_reasons: [
+        waitReason({
+          kind: 'external_job',
+          actions: [
+            { op: 'external_wait_check', label: '[지금 확인]', payload },
+            {
+              op: 'external_wait_takeover',
+              label: '▶ 바로 실행',
+              placement: 'card',
+              payload: {
+                ...payload,
+                job_id: '42',
+                ssh_host: 'wallace',
+                capacity: capacity()
+              }
+            },
+            { op: 'external_wait_stop', label: '[관찰 중단]', payload }
+          ]
+        })
+      ]
+    });
+
+    const buttons = Array.from(
+      card.querySelectorAll('.worker-card__foot [data-external-wait-op]')
+    );
+    expect(
+      buttons.map(
+        (button) => /** @type {HTMLElement} */ (button).dataset.externalWaitOp
+      )
+    ).toEqual([
+      'external_wait_check',
+      'external_wait_takeover',
+      'external_wait_stop'
+    ]);
+    expect(buttons[1].classList.contains('op-btn')).toBe(true);
+    expect(buttons[1].textContent?.trim()).toBe('▶ 바로 실행');
+    expect(
+      JSON.parse(/** @type {HTMLElement} */ (buttons[1]).dataset.takeover || '')
+    ).toMatchObject({ job_id: '42', ssh_host: 'wallace' });
+  });
+});
+
+/**
  * @returns {any[]}
  */
 function externalActions() {

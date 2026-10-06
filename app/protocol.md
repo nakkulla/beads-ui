@@ -1544,6 +1544,31 @@ display, and a `minutes` key must be a multiple of 60.
   pollers (PR polling, list refresh, monitor refresh) re-arm at once; a list
   refresh value of 0 turns it off.
 
+## External-wait settings channel
+
+Server-global defaults of the external-wait surface (UI-qbgj §3.6). Today the
+one key is `takeover_ratio_percent` (default 80, integer 10–100): the
+`▶ 바로 실행` confirm dialog pre-fills
+`floor((host.cpus − host.load1) × ratio / 100)` CPUs and
+`floor(host.mem_available_mb / 1024 × ratio / 100)` G. It lives apart from the
+timing channel because that table stores only integer seconds. State lives in
+`$XDG_STATE_HOME/bdui/external-wait-settings.json` as `{ revision, overrides }`;
+reads are fail-quiet (a bad file or key falls back to the default).
+
+- `subscribe-external-wait-settings` `{ id? }` → `ok { id }`, then an immediate
+  `external-wait-settings-snapshot`. `unsubscribe-external-wait-settings`
+  `{ id? }` → `ok { id, unsubscribed }`. Closing the connection drops its
+  subscription.
+- `external-wait-settings-snapshot` payload:
+  `{ type, id, revision, values, overrides, fields }` with
+  `fields[key] = { default, min, max, unit: 'percent' }`.
+- `external-wait-settings-set` `{ expected_revision, values }` where `values`
+  maps a key to an integer or `null` (clear that override). Same reply shape and
+  codes as `timing-settings-set`: `ok: true` with the new `snapshot` (then
+  pushed to every subscriber), `ok: false, code: 'conflict'`,
+  `ok: false, code: 'invalid_value', key, message`, or an `internal_error` error
+  reply.
+
 ## ADR channel (UI-8uz7 §6)
 
 `subscribe-adr` / `unsubscribe-adr` (reply `ok` with `{ id }`) open and close a

@@ -26,6 +26,7 @@ import {
   createSettingsDialog
 } from './views/settings-dialog/index.js';
 import { createUsageMeter } from './views/usage-meter.js';
+import { openTakeoverDialog } from './views/worker/external-wait-takeover-dialog.js';
 import { createWorkerView } from './views/worker/index.js';
 import { candidateCard, miniRow, queueRowOps } from './views/worker/lanes.js';
 import {
@@ -2096,6 +2097,28 @@ describe('dialogs use parts (§3.4 check 3)', () => {
     await pending;
 
     expect(document.querySelectorAll('.continuation-dialog').length).toBe(0);
+    expect(missing).toEqual([]);
+  });
+
+  test('draws every run-now dialog control with a part', async () => {
+    const pending = openTakeoverDialog(
+      {
+        root_dir: '/repo',
+        wait_id: 'w-0123456789ab',
+        job_id: '249043',
+        ssh_host: 'wallace',
+        capacity: null
+      },
+      { transport: async () => ({ ok: true }) }
+    );
+
+    const missing = controlsWithoutPart(document.body);
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.takeover-dialog__cancel')
+    ).click();
+    await pending;
+
+    expect(document.querySelectorAll('.takeover-dialog').length).toBe(0);
     expect(missing).toEqual([]);
   });
 

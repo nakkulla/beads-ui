@@ -1,5 +1,9 @@
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { showToast } from '../../utils/toast.js';
+import {
+  openTakeoverDialog,
+  takeoverMaterialOf
+} from './external-wait-takeover-dialog.js';
 
 /**
  * Shared click rule for `data-external-wait-op` buttons on the Worker tab,
@@ -117,19 +121,37 @@ export async function sessionResumeToast(res) {
 /**
  * Confirm (when the button carries `data-confirm`), send the op, hand the
  * response to `adopt`, and show the result toast. A cancelled confirm sends
- * nothing and returns false.
+ * nothing and returns false. `▶ 바로 실행` opens its own resource dialog
+ * instead, which sends the request itself.
  *
  * @param {HTMLElement} button
  * @param {{ transport: (type: string, payload?: unknown) => Promise<any>, confirm?: (message: string) => boolean, adopt?: (res: any) => void }} deps
  * @returns {Promise<boolean>} Whether the op was sent.
  */
 export async function runExternalWaitAction(button, deps) {
+  const op = button.dataset.externalWaitOp || '';
+  // `▶ 바로 실행` asks for its resources in its own dialog, which sends the
+  // request and shows the server's refusal itself (UI-qbgj §3.4).
+  if (op === 'external_wait_takeover') {
+    const material = takeoverMaterialOf(button);
+    if (!material) {
+      showToast('바로 실행 재료가 없습니다', 'error', 4000);
+      return false;
+    }
+    const outcome = await openTakeoverDialog(material, {
+      transport: deps.transport,
+      ...(deps.adopt ? { adopt: deps.adopt } : {})
+    });
+    if (outcome.ok) {
+      showToast('바로 실행으로 전환했습니다', 'success', 4000);
+    }
+    return outcome.sent;
+  }
   const confirm_fn = deps.confirm || defaultExternalWaitConfirm;
   const message = button.dataset.confirm || '';
   if (message && !confirm_fn(message)) {
     return false;
   }
-  const op = button.dataset.externalWaitOp || '';
   try {
     const res = await deps.transport(op, {
       root_dir: button.dataset.rootDir || '',
