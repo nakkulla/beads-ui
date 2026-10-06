@@ -15,19 +15,19 @@ scope:
   - server/conversation-settings.js
   - server/ws/connection.js
   - server/ws/monitor-handlers.js
-  - app/screens/repo-ops/
-  - app/screens/settings/
-  - app/model/tile-resolve.js
+  - app/views/worker/repo-ops-timeline.js
+  - app/views/worker/tile-resolve.js
+  - app/views/settings-dialog/
 ---
 # 실패 해결 세션 개편 — 자동 진단 대화, 「확인 필요」 통일, 저장소 작업 세션 버튼, 해결 세션 실행 설정
 
-Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/specs/2026-10-06-failure-conversation-auto-launch-design.md`), `UI-dbn6`(프런트엔드 재작성, 통합 파이프라인 화면)
+Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/specs/2026-10-06-failure-conversation-auto-launch-design.md`)
 
 ## 1. 목표
 
 2026-10-06 사용자 결정:
 
-- (가) 수동 배포 실패에도 `[세션에서 이어가기]`를 둔다. 위치는 「저장소 작업」 안이다. UI-dbn6 착지 뒤 화면에서는 레포 범위 툴바의 저장소 작업 줄이 여는 타임라인 드로어다(3.3).
+- (가) 수동 배포 실패에도 `[세션에서 이어가기]`를 둔다. 위치는 「저장소 작업」 서랍 안이다(3.3).
 - (나) 해결 세션의 기본 런타임·모델·effort와 대화 자동 기동 스위치를 설정 창에서 정한다. 범위는 전체 공통 하나다.
 - (다) 실패 때도 대화 세션을 자동으로 띄운다. 세션은 읽기 전용 진단 뒤 질문만 하고, 답 전에는 상태를 바꾸지 않는다. 「🚨 사람 필요」 알림은 없애고 「🙋 확인 필요 · <클래스>」로 통일한다.
 
@@ -35,7 +35,7 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
 
 ## 2. 검증된 전제
 
-기준: beads-ui `f799f28a98b0957afe2412b545a20570e9b12651`(`2df994fd` 이후 범위 파일 변경 없음).
+기준: beads-ui `2acda092a3bbdb13123ce419c0fa0644af8b6f8d`. `server/` 인용은 `f799f28a`에서 확인했고 그 뒤 범위 파일 변경이 없다. `app/` 인용은 `2acda092`에서 확인했다.
 
 - 「사람 필요」 제목 상수와 「확인 필요」 대화 제목 — `server/worker/notify.js:66`, `:75`
 - 「사람 필요」 발신처: post-merge 잡·배포·머지 게이트 보류 클래스 표, 폐기 실패, 수동 배포 실패 — `server/worker/completion-intent.js:839-846`, `:1614`; `server/worker/discard-coordinator.js:87`; `server/worker/repo-operation-coordinator.js:671`
@@ -55,11 +55,13 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
 - 저장소 작업 투영은 의도적으로 해결 진입을 두지 않는다 — `server/ws/worker-handlers.js:2792-2798`
 - 해결 클릭 처리기는 Bead를 전제한다 — `server/ws/worker-handlers.js:6760`
 - 저장소 작업 서랍의 실패 행은 `기록 닫기`만 그리고, 정리 행은 해결 버튼을 그린다 — `app/views/worker/repo-ops-timeline.js:408`, `:526`
+- 저장소 작업 서랍은 모니터 탭과 Worker 탭이 같은 컴포넌트로 띄운다 — `app/views/worker/repo-ops-timeline.js:659`, `app/views/monitor/index.js:713`, `app/views/worker/index.js:877`
 - 살아 있는 대화가 있으면 버튼을 숨긴다 — `app/views/worker/tile-resolve.js:19`, `:228`
 - 자동 기동 스위치는 config.toml에서만 읽고 쓰는 경로가 없다 — `server/config.js:136-173`
 - 운영 config의 자동 기동 값은 `true`다 — 2026-10-06 `~/.config/bdui/config.toml` `[worker.direction_inquiry] enabled = true` 확인(실행)
 - 서버 전역 설정 저장소 선례 — `server/timing-settings.js:263`
 - 전역 탭은 하나뿐이다 — `docs/adr/UI-ooc0-model-visibility-disabled-list.md:56`
+- 전역 탭은 일괄 모드(모니터 탭 헤더 `⚙`)에만 있고, 섹션은 별도 파일로 붙는다 — `app/views/settings-dialog/index.js:69-77`, `:447`; `app/views/settings-dialog/timing-section.js:2`
 - `workflow_session_defaults`는 등록 키 밖을 거절한다 — `server/session-defaults.js:173`
 - 헤드리스 런너의 모델·effort 플래그 — `server/worker/runner/claude.js:825-828`, `server/worker/runner/codex.js:469-472`
 - 대화형 CLI 플래그: `claude --help`에 `--model`·`--effort`·`--fork-session`, `codex fork --help`에 `-c` — 2026-10-06 실행 확인
@@ -68,7 +70,7 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
 - 대화 레코드 키 조항 — `docs/adr/UI-18a5-2-conversation-records-three-kinds.md:36`
 - 원래 런타임으로 fork하는 현행 테스트가 있다 — `server/worker/resolve-session.test.js:842`
 - `needs_human_reentry`·`failure_classes`는 투영 없이 원천만 있어 beads-ui가 손으로 구현한다 — dotfiles `docs/contracts/workflow-state.yaml:1414-1415`
-- UI-dbn6은 Worker·Monitor 탭을 파이프라인 화면으로 대체하고 옛 뷰를 지운다. 저장소 작업 줄·타임라인은 레포 범위 툴바에, 전역 탭은 일괄 모드 설정에 둔다 — `docs/superpowers/specs/2026-09-23-frontend-rewrite-unified-pipeline-design.md:69-91`, `:113-143`, `:207-216`, `:361-373`; 새 화면 파일은 PR #338의 `app/screens/repo-ops/timeline.js`, `app/screens/settings/index.js`, `app/model/tile-resolve.js`(2026-10-06 `gh api .../pulls/338/files` 확인)
+- 프런트엔드 재작성 `UI-dbn6`은 2026-10-06 사용자 지시로 `deferred`다. 이 spec은 현행 뷰를 대상으로 하며 UI-dbn6에 의존하지 않는다 — 2026-10-06 `bd show UI-dbn6 --json` 확인(실행)
 - 미확인: Codex fresh 대화의 Discord 스레드 중계 — 브리지는 Codex 세션 소유 확인 경로가 있다(dotfiles `src/claude/scripts/discord-bridge/bridge.py:737-744`). 다만 beads-ui가 세션 id를 넘기지 않아 알림에 스레드 링크가 없다. 구현 때 실측한다.
 
 ## 3. 설계
@@ -106,8 +108,8 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
 
 ### 3.3 저장소 작업 실패의 `[세션에서 이어가기]`
 
-- 선행: UI-dbn6 착지 뒤에 구현한다. 옛 Worker·Monitor 뷰는 UI-dbn6이 지우므로 그 뷰에 버튼을 두지 않는다.
-- 위치: 파이프라인 화면 레포 범위 툴바의 「저장소 작업 줄」이 여는 타임라인 드로어에서, 실패한 수동 배포 행에 둔다. 버튼 재료 판정은 정리 행과 같은 `tile-resolve` 모델을 쓴다.
+- 위치: 「저장소 작업」 서랍(`repo-ops-timeline.js`)의 실패한 수동 배포 행이다. 지금 `기록 닫기`만 그리는 행 동작 자리에 버튼을 더한다. 서랍은 모니터 탭과 Worker 탭이 같이 쓰므로 두 탭에 함께 보인다.
+- 살아 있는 대화 판정은 정리 행과 같은 `tile-resolve.js`의 판정을 쓴다.
 - 서버: 저장소 작업 투영에 해결 진입 재료(종단 실패 여부, 대화 상태)를 더한다. 현행 "해결 진입 없음" 주석은 철회한다.
 - 클릭: 저장소 작업 실패 대화를 fresh로 연다(계약 3.5). 입력은 작업 식별자다. 처리기는 Bead 조회를 하지 않는다.
 - 대화 레코드: 저장소 작업 행은 작업 식별자로 키를 잡는다(예: `repo-op:<operation_id>:resolve`).
@@ -120,7 +122,7 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
 
 ### 3.4 설정: 자동 기동 스위치와 해결 세션 실행 설정
 
-- 위치: 설정 창 일괄 모드의 기존 전역 탭(UI-dbn6 화면 기준)에 섹션 하나를 더한다. 전역 탭은 하나뿐이라는 결정(UI-ooc0)을 따른다.
+- 위치: 설정 창 일괄 모드(모니터 탭 헤더 `⚙`)의 기존 `전역` 탭에 섹션 하나를 더한다. 타이밍 섹션처럼 별도 파일로 붙인다(예: `app/views/settings-dialog/conversation-section.js`). 전역 탭은 하나뿐이라는 결정(UI-ooc0)을 따른다.
 - 항목:
   - 대화 자동 기동: 켜기·끄기. 멈춤과 실패에 공용이다.
   - 새 세션 런타임: 원래 세션 따름, claude, codex 중 하나. 초기값은 claude다(사용자 결정 2026-10-06, Codex fresh 대화의 Discord 스레드 링크가 미확인이라서).
@@ -161,8 +163,8 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
   - 재시작 뒤에도 같은 인계를 다시 실행하지 않는다.
 - `server/ws/worker-handlers.resolve-session.test.js`: 저장소 작업 해결 요청 분기와 투영의 해결 재료.
 - `server/worker/direction-inquiry.test.js`: 새 진입 블록 digest.
-- `app/screens/repo-ops/timeline.test.js`, `app/model/tile-resolve.test.js`: 실패한 수동 배포 행의 버튼 렌더와 클릭, 살아 있는 대화 표시.
-- `app/screens/settings/index.test.js`: 전역 탭 섹션의 저장·로드, config.toml 대체값.
+- `app/views/worker/repo-ops-timeline.test.js`, `app/views/worker/tile-resolve.test.js`: 실패한 수동 배포 행의 버튼 렌더와 클릭, 살아 있는 대화 표시.
+- `app/views/settings-dialog/conversation-section.test.js`, `app/views/settings-dialog/index.test.js`: 전역 탭 섹션의 저장·로드, config.toml 대체값.
 
 보존(현행 동작 유지 확인, 실패 경계 아님):
 
