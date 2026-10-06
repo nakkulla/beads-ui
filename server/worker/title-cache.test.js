@@ -352,6 +352,157 @@ describe('worker title cache (UI-12k6)', () => {
   });
 });
 
+describe('worker title cache — blocker writes (UI-xwtj)', () => {
+  test.each(['refreshFromIssue', 'invalidate', 'expire'])(
+    'refreshes dependent blockers after %s without waiting for the TTL',
+    async (method) => {
+      const bd = fakeBd({
+        'UI-2': {
+          title: 'dependent',
+          dependencies: [
+            { id: 'UI-1', dependency_type: 'blocks', status: 'closed' }
+          ]
+        }
+      });
+      const cache = createTitleCache({
+        runJson: /** @type {any} */ (bd.runJson),
+        now: () => 1000
+      });
+      cache.refreshFromIssue('/ws', {
+        id: 'UI-2',
+        title: 'dependent',
+        dependencies: [
+          { id: 'UI-1', dependency_type: 'blocks', status: 'open' }
+        ]
+      });
+
+      if (method === 'refreshFromIssue') {
+        cache.refreshFromIssue('/ws', {
+          id: 'UI-1',
+          title: 'blocker',
+          status: 'closed'
+        });
+      } else if (method === 'invalidate') {
+        cache.invalidate('/ws', 'UI-1');
+      } else {
+        cache.expire('/ws', 'UI-1');
+      }
+      cache.blockedByFor('/ws', ['UI-2']);
+      await bd.settled();
+
+      expect(cache.blockedByFor('/ws', ['UI-2'])).toEqual({ 'UI-2': [] });
+      expect(bd.runJson).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('keeps the dependent title visible during a blocker-triggered refresh', async () => {
+    const bd = fakeBd({ 'UI-2': 'new title' }, { deferred: true });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-2',
+      title: 'old title',
+      dependencies: [{ id: 'UI-1', dependency_type: 'blocks' }]
+    });
+
+    cache.expire('/ws', 'UI-1');
+    const during_refresh = cache.titlesFor('/ws', ['UI-2']);
+    bd.release();
+    await bd.settled();
+
+    expect(during_refresh).toEqual({ 'UI-2': 'old title' });
+    expect(cache.titlesFor('/ws', ['UI-2'])).toEqual({ 'UI-2': 'new title' });
+    expect(bd.runJson).toHaveBeenCalledTimes(1);
+  });
+
+  test('expires only dependent records in the written workspace', async () => {
+    const bd = fakeBd({ 'UI-2': 'dependent' });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
+    const dependent = {
+      id: 'UI-2',
+      title: 'dependent',
+      dependencies: [{ id: 'UI-1', dependency_type: 'blocks' }]
+    };
+    cache.refreshFromIssue('/ws', dependent);
+    cache.refreshFromIssue('/other', dependent);
+    cache.refreshFromIssue('/ws', { id: 'UI-3', title: 'unrelated' });
+
+    cache.expire('/ws/', 'UI-1');
+    cache.titlesFor('/other', ['UI-2']);
+    cache.titlesFor('/ws', ['UI-3', 'UI-2']);
+    await bd.settled();
+
+    expect(bd.runJson.mock.calls.map((call) => call[1][1])).toEqual(['UI-2']);
+    expect(cache.blockedByFor('/other', ['UI-2'])).toEqual({
+      'UI-2': ['UI-1']
+    });
+    expect(cache.blockedByFor('/ws', ['UI-2'])).toEqual({ 'UI-2': [] });
+  });
+
+  test('rejects a dependent lookup started before the blocker write', async () => {
+    let clock = 1000;
+    const beads = {
+      'UI-2': {
+        title: 'dependent',
+        dependencies: [
+          { id: 'UI-1', dependency_type: 'blocks', status: 'open' }
+        ]
+      }
+    };
+    const bd = fakeBd(beads, { deferred: true });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      positive_ttl_ms: 100,
+      now: () => clock
+    });
+    cache.refreshFromIssue('/ws', { id: 'UI-2', ...beads['UI-2'] });
+    clock += 100;
+    cache.blockedByFor('/ws', ['UI-2']);
+
+    beads['UI-2'] = { title: 'dependent', dependencies: [] };
+    cache.expire('/ws', 'UI-1');
+    bd.release();
+    await bd.settled();
+    cache.blockedByFor('/ws', ['UI-2']);
+    bd.release();
+    await bd.settled();
+
+    expect(cache.blockedByFor('/ws', ['UI-2'])).toEqual({ 'UI-2': [] });
+    expect(bd.runJson).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries a failed dependent refresh after a blocker write', async () => {
+    let clock = 1000;
+    /** @type {Record<string, string>} */
+    const beads = {};
+    const bd = fakeBd(beads);
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      positive_ttl_ms: 100,
+      now: () => clock
+    });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-2',
+      title: 'dependent',
+      dependencies: [{ id: 'UI-1', dependency_type: 'blocks' }]
+    });
+    clock += 100;
+    cache.blockedByFor('/ws', ['UI-2']);
+    await bd.settled();
+
+    beads['UI-2'] = 'dependent';
+    cache.expire('/ws', 'UI-1');
+    cache.blockedByFor('/ws', ['UI-2']);
+    await bd.settled();
+
+    expect(cache.blockedByFor('/ws', ['UI-2'])).toEqual({ 'UI-2': [] });
+    expect(bd.runJson).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('worker title cache — ensureTitle (UI-vb0t)', () => {
   test('resolves a cold miss by filling it instead of omitting it', async () => {
     const bd = fakeBd({ 'UI-1': '첫 제목' });

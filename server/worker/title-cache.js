@@ -650,6 +650,28 @@ export function createTitleCache(options = {}) {
     return out;
   }
 
+  /**
+   * Keep dependent decorations visible while the next snapshot re-reads the
+   * blocker status from their own `bd show` payloads.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   */
+  function expireDependents(workspace, bead_id) {
+    const generations = generationsFor(workspace);
+    const failed = failedFor(workspace);
+    const missing = missingFor(workspace);
+    for (const [id, record] of laneFor(workspace)) {
+      if (record.blocked_by.includes(bead_id)) {
+        record.at = now() - positive_ttl_ms;
+        // A pre-write lookup or retry backoff must not postpone this refresh.
+        generations.set(id, (generations.get(id) || 0) + 1);
+        failed.delete(id);
+        missing.delete(id);
+      }
+    }
+  }
+
   return {
     /**
      * Register the "new titles landed" callback. The ws layer wires this to a
@@ -908,6 +930,7 @@ export function createTitleCache(options = {}) {
       const failed = failedFor(workspace);
       const missing = missingFor(workspace);
       const record = recordFromIssue(issue, workspace);
+      expireDependents(workspace, bead_id);
       if (record) {
         lane.set(bead_id, record);
         failed.delete(bead_id);
@@ -937,6 +960,7 @@ export function createTitleCache(options = {}) {
       laneFor(workspace).delete(id);
       failedFor(workspace).delete(id);
       missingFor(workspace).delete(id);
+      expireDependents(workspace, id);
     },
 
     /**
