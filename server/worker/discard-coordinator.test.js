@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createDiscardCoordinator } from './discard-coordinator.js';
+import { createNotifier } from './notify.js';
 import { createQueueStore } from './queue-store.js';
+import { createFailureConversationLauncher } from './resolve-session.js';
 
 /** @type {string} */
 let tmp;
@@ -44,7 +46,7 @@ afterEach(() => {
 });
 
 /**
- * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any, notify?: any, makeOperationId?: () => string }} [options]
+ * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any, notify?: any, failureConversation?: any, makeOperationId?: () => string }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore({ now: () => 100 });
@@ -347,6 +349,7 @@ function setup(options = {}) {
     archive,
     processController: options.processController || {},
     notify: options.notify,
+    failureConversation: options.failureConversation,
     sessionLog: options.sessionLog || { pathFor: () => '/state/session.jsonl' },
     revertBuilder: options.revertBuilder,
     verifyRevert: options.verifyRevert,
@@ -2653,6 +2656,130 @@ describe('discard failure notification (UI-jw27 §2)', () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: 'discard_driver_error' });
+  });
+});
+
+describe('discard failure conversation (UI-jbl1 §3.1)', () => {
+  /** A notifier fake that records every `needsHuman` body it is handed. */
+  function makeNotify() {
+    /** @type {any[]} */
+    const sent = [];
+    return {
+      sent,
+      needsHuman: vi.fn(async (/** @type {any} */ input) => {
+        sent.push(input);
+      })
+    };
+  }
+
+  /** A failure-conversation fake that records each automatic launch. */
+  function makeConversation() {
+    return {
+      launchForBead: vi.fn(async () => ({
+        session: 'launched',
+        reason: null,
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'resolve-UI-1'
+      }))
+    };
+  }
+
+  /** Let the fire-and-forget launch-then-notify chain run to its end. */
+  async function settleAnnouncements() {
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  test('launches once and notifies once with the opened window', async () => {
+    const notify = makeNotify();
+    const conversation = makeConversation();
+    const env = setup({ notify, failureConversation: conversation });
+    env.worktree.removeByBranch.mockRejectedValueOnce(
+      new Error('spawn failed')
+    );
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    await settleAnnouncements();
+
+    expect(conversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(conversation.launchForBead).toHaveBeenCalledWith({
+      workspace,
+      repo: '/repo',
+      bead_id: 'UI-1'
+    });
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        failure_class: '폐기 실패',
+        conversation: expect.objectContaining({ session: 'launched' })
+      })
+    ]);
+  });
+
+  test('launches nothing again when recovery re-observes the failed discard', async () => {
+    const notify = makeNotify();
+    const conversation = makeConversation();
+    const env = setup({ notify, failureConversation: conversation });
+    env.worktree.removeByBranch.mockRejectedValueOnce(
+      new Error('spawn failed')
+    );
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    await settleAnnouncements();
+
+    await env.coordinator.recover();
+    await settleAnnouncements();
+
+    expect(conversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(notify.sent).toHaveLength(1);
+  });
+
+  test('sends only the notification with the fallback line while the switch is off', async () => {
+    /** @type {string[]} */
+    const messages = [];
+    const resolve = vi.fn();
+    const env = setup({
+      notify: createNotifier({
+        getConfig: () => ({
+          worker_notify: { enabled: true, cmd: ['discord'] }
+        }),
+        spawnImpl: (
+          /** @type {string} */ _cmd,
+          /** @type {string[]} */ args
+        ) => {
+          messages.push(String(args.at(-1)));
+          return { on() {}, unref() {} };
+        }
+      }),
+      failureConversation: createFailureConversationLauncher({
+        resolveSession: /** @type {any} */ ({ resolve }),
+        snapshot: () => ({}),
+        getConfig: () => ({ worker_direction_inquiry: { enabled: true } }),
+        autoLaunchEnabled: () => false,
+        log: () => {}
+      })
+    });
+    env.worktree.removeByBranch.mockRejectedValueOnce(
+      new Error('spawn failed')
+    );
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    await settleAnnouncements();
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].split('\n')[0]).toBe(
+      '🤖 🙋 확인 필요 · 폐기 실패 — UI-1'
+    );
+    expect(messages[0]).toContain('대화를 열지 못함 — [세션에서 이어가기]');
   });
 });
 

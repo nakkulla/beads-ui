@@ -29,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { runShell } from '../bd.js';
+import { conversationSettingsStore } from '../conversation-settings.js';
 import { debug } from '../logging.js';
 import { ACTIVE_RUNNERS } from './runner-catalog.js';
 import { runtimeCatalog } from './runner/index.js';
@@ -305,6 +306,42 @@ async function ensureCodexProjectTrust(cwd) {
 }
 
 /**
+ * Put the conversation model/effort flags (UI-jbl1 §3.4) into one launch's
+ * argument list. A claude launch takes them up front; a codex launch takes
+ * them right after its `fork`/`resume` subcommand, before the session id and
+ * the prompt — the order the headless codex runner uses.
+ *
+ * @param {string} runner
+ * @param {string[]} args - The arguments AFTER the resolved executable.
+ * @param {string[]} flags
+ * @returns {string[]}
+ */
+export function withLaunchFlags(runner, args, flags) {
+  if (flags.length === 0) {
+    return [...args];
+  }
+  if (runner === 'codex' && (args[0] === 'fork' || args[0] === 'resume')) {
+    return [args[0], ...flags, ...args.slice(1)];
+  }
+  return [...flags, ...args];
+}
+
+/**
+ * The stored model/effort flags for one runner; a store that cannot be read
+ * adds none (the launch then keeps the CLI's own default).
+ *
+ * @param {string} runner
+ * @returns {string[]}
+ */
+function defaultLaunchFlags(runner) {
+  try {
+    return conversationSettingsStore().launchFlags(runner);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * @typedef {Object} TmuxLauncherDeps
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
  * @property {() => string|null} [resolveClaude] - Legacy claude-only seam; it
@@ -315,6 +352,8 @@ async function ensureCodexProjectTrust(cwd) {
  * @property {(...args: any[]) => void} [log]
  * @property {string} [heartbeatPath]
  * @property {string} [bridgeStateDir]
+ * @property {(runner: string) => string[]} [launchFlags] - The conversation
+ * settings' model/effort flags for a runner, read per launch.
  */
 
 /**
@@ -348,6 +387,7 @@ export function createTmuxLauncher(deps = {}) {
     deps.statFile || ((/** @type {string} */ p) => fs.statSync(p));
   const runTmux =
     deps.runTmux || ((/** @type {string[]} */ args) => runShell('tmux', args));
+  const launchFlags = deps.launchFlags || defaultLaunchFlags;
   const bridge_state_dir =
     deps.bridgeStateDir ||
     path.join(os.homedir(), 'tmp', 'claude-discord-bridge', 'state');
@@ -760,7 +800,10 @@ export function createTmuxLauncher(deps = {}) {
     const wrapper = markerWrapper({
       marker: input.marker,
       key: input.key,
-      argv: [executable, ...input.commandArgs]
+      argv: [
+        executable,
+        ...withLaunchFlags(runner, input.commandArgs, launchFlags(runner))
+      ]
     });
     /** @type {{ code: number, stdout: string }} */
     let opened;

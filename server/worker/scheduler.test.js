@@ -4187,6 +4187,240 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
   });
 });
 
+describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
+  const OP = 'op-m';
+  const ROW = `repo-op:${OP}`;
+  const KEY = `${ROW}:resolve`;
+
+  /**
+   * A repo-operation conversation pass harness: a real queue store holding
+   * one failed manual deploy, one `resolve` pane keyed by the operation, a
+   * transcript the test moves, and the manual deploy rerun as a spy that
+   * supersedes the failed record the way a same-target `[배포 실행]` does.
+   */
+  function repoOpEnv() {
+    let at = 1000;
+    const real = makeQueueStore({ now: () => at });
+    real.ensureRepoOperation(WS, {
+      operation_id: OP,
+      attempt_id: `${OP}:1`,
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'manual', merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      target_sha: 'a'.repeat(40),
+      script_mode: '100755',
+      script_blob_sha: 'c'.repeat(40),
+      source: 'manual',
+      manual_run_id: 1
+    });
+    real.settleRepoOperation(WS, {
+      operation_id: OP,
+      attempt_id: `${OP}:1`,
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f1',
+        detail: '',
+        interrupted: false
+      }
+    });
+    const pane = {
+      key: ROW,
+      pane: '%8',
+      dead: '0',
+      session: 'bdui-inquiry',
+      window: 'resolve-repo-op-op-m',
+      cwd: WS,
+      agent_runtime: 'claude',
+      agent_running: '',
+      agent_attention: ''
+    };
+    const panes = { rows: [pane] };
+    const launcher = {
+      listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
+        ok: true,
+        rows: marker === RESOLVE_PANE_MARKER ? panes.rows : []
+      })),
+      readPaneOption: vi.fn(async () => ({ ok: true, value: null })),
+      capturePaneTail: vi.fn(async () => ({ ok: true, line: '❯ ' })),
+      sendExit: vi.fn(async () => ({ ok: true })),
+      killWindow: vi.fn(async () => ({ ok: true }))
+    };
+    /** @type {{ current: any }} */
+    const message = { current: null };
+    const transcript = {
+      location: { locality: 'local', file: '/t', last_event_at: 450 }
+    };
+    const exits = {
+      retryCleanup: vi.fn(async () => ({ ok: true, reason: null })),
+      retryDiscard: vi.fn(async () => ({ ok: true, reason: null })),
+      enqueueMerge: vi.fn(async () => ({ ok: true, reason: null })),
+      rerunManualDeploy: vi.fn(async () => {
+        real.supersedeRepoOperation(WS, {
+          operation_id: OP,
+          successor_id: 'op-n'
+        });
+        return { ok: true, reason: null };
+      })
+    };
+    const notify = {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn(),
+      conversationAnswer: vi.fn(),
+      conversationTakeover: vi.fn(),
+      conversationResumed: vi.fn()
+    };
+    const env = setup({
+      config: {},
+      store: real,
+      timeline: { append: vi.fn() },
+      notify,
+      now: () => at,
+      resolveSessionFile: () => transcript.location,
+      ...{
+        interactiveLauncher: launcher,
+        readLastAssistantMessage: () => message.current,
+        conversationExits: exits
+      }
+    });
+    const readStatus = vi.spyOn(env.bd, 'readStatus');
+    return {
+      ...env,
+      real,
+      launcher,
+      panes,
+      message,
+      transcript,
+      exits,
+      notify,
+      readStatus
+    };
+  }
+
+  /**
+   * @param {ReturnType<typeof repoOpEnv>} env
+   * @param {Record<string, any>} [patch]
+   */
+  function openRepoOpConversation(env, patch = {}) {
+    env.real.recordInteractiveSession(WS, {
+      bead_id: ROW,
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%8',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-repo-op-op-m',
+      cwd: WS,
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'fresh',
+      source: 'fresh',
+      session_id: 'fresh-session',
+      session_id_source: 'launch',
+      conversation: { stop: '실패 수동 배포 실패 · script_failed' },
+      ...patch
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof repoOpEnv>} env
+   * @param {string} text
+   */
+  function say(env, text) {
+    env.message.current = { text, at: 900, first_line: text, excerpt: text };
+    env.transcript.location = {
+      ...env.transcript.location,
+      last_event_at: 950
+    };
+  }
+
+  /** @param {ReturnType<typeof repoOpEnv>} env */
+  const record = (env) => env.real.snapshot(WS).interactive_sessions[KEY];
+
+  test('settles a repo-operation record without reading a Bead status', async () => {
+    const env = repoOpEnv();
+    openRepoOpConversation(env);
+    say(env, '보류 · 나중에 본다');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.readStatus).not.toHaveBeenCalledWith(ROW);
+    expect(env.exits.rerunManualDeploy).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).repo_operations[OP].state).toBe('failed');
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('reserves the handoff against the repo-operation row', async () => {
+    const env = repoOpEnv();
+    openRepoOpConversation(env);
+    say(env, '인계 · 다시 배포');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(record(env)?.conversation?.handoff?.target).toEqual({
+      kind: 'repo_operation',
+      identity: `repo_operation:${OP}:f1`
+    });
+  });
+
+  test('runs the manual deploy rerun once for a handoff', async () => {
+    const env = repoOpEnv();
+    openRepoOpConversation(env);
+    say(env, '인계 · 다시 배포');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+
+    expect(env.exits.rerunManualDeploy).toHaveBeenCalledExactlyOnceWith(WS);
+    expect(env.notify.conversationResumed).toHaveBeenCalledWith(
+      expect.objectContaining({ bead_id: ROW, action: '수동 배포 재실행' })
+    );
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('runs no rerun again for a handoff a restart finds already started', async () => {
+    const env = repoOpEnv();
+    openRepoOpConversation(env, {
+      conversation: {
+        stop: '실패 수동 배포 실패 · script_failed',
+        processed_message_at: 900,
+        result: { kind: 'handoff', line: '인계 · 다시 배포', at: 950 },
+        handoff: {
+          line: '인계 · 다시 배포',
+          source: 'result_line',
+          message_at: 900,
+          reserved_at: 950,
+          target: {
+            kind: 'repo_operation',
+            identity: `repo_operation:${OP}:f1`
+          },
+          started_at: 960
+        }
+      }
+    });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+
+    expect(env.exits.rerunManualDeploy).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).conversation_refusals[ROW]).toMatchObject({
+      reason: '결과 미상'
+    });
+    expect(record(env)).toBeUndefined();
+  });
+});
+
 describe('scheduler route change refusal', () => {
   /**
    * @param {Record<string, any>} [options]

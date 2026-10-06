@@ -41,7 +41,10 @@ import {
   createQueueStore,
   holdsHandoffReservation
 } from './queue-store.js';
-import { createResolveSession } from './resolve-session.js';
+import {
+  createFailureConversationLauncher,
+  createResolveSession
+} from './resolve-session.js';
 import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
 import { createSessionLog } from './session-log.js';
@@ -68,6 +71,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
  * @property {ReturnType<typeof createDirectionInquiry>} directionInquiry
  * @property {ReturnType<typeof createResolveSession>} resolveSession
+ * @property {ReturnType<typeof createFailureConversationLauncher>} failureConversation
  * @property {ReturnType<typeof createTmuxLauncher>} interactiveLauncher
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {ReturnType<typeof createExternalWaitService>} externalWait
@@ -280,6 +284,14 @@ export function createWorkerRuntime() {
       }
     }
   });
+  // The automatic failure conversation (UI-jbl1 §3.1): the SAME launcher
+  // instance the click reaches, so the pane-marker duplicate guard and the
+  // in-flight reservation are one truth for both triggers.
+  const failureConversation = createFailureConversationLauncher({
+    resolveSession,
+    snapshot: (workspace) => queueStore.snapshot(workspace),
+    getConfig
+  });
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
@@ -370,6 +382,7 @@ export function createWorkerRuntime() {
     reviseParked,
     directionInquiry,
     resolveSession,
+    failureConversation,
     interactiveLauncher,
     sessionLog,
     /**

@@ -138,7 +138,8 @@ import {
 } from './receipt-check.js';
 import {
   failedDiscardOperation,
-  failureHandoffTarget
+  failureHandoffTarget,
+  repoOperationIdOf
 } from './resolve-session.js';
 import {
   acquireClaudeLaunch,
@@ -709,10 +710,11 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
  * @property {ReturnType<typeof import('./tmux-launcher.js').createTmuxLauncher>} [interactiveLauncher]
- * @property {{ retryCleanup: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, retryDiscard: (workspace: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }>, enqueueMerge: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }> }} [conversationExits]
+ * @property {{ retryCleanup: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, retryDiscard: (workspace: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }>, enqueueMerge: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, rerunManualDeploy?: (workspace: string) => Promise<{ ok: boolean, reason?: string|null }> }} [conversationExits]
  * The Worker exits a failure conversation's `인계` runs (UI-18a5 §3.4): the
  * same cleanup retry, discard retry and `[머지]` merge-queue re-enqueue the
- * row's own buttons call. Absent wiring refuses the handoff
+ * row's own buttons call, and a repo-operation row's one `[배포 실행]`
+ * re-click (UI-jbl1 §3.3). Absent wiring refuses the handoff
  * (`exit_unwired`) instead of guessing.
  * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'> & Partial<Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'revertSessionResume'>> & {onCompletion?:import('./external-wait/observer.js').RecordCallback, stop?:(workspace: string, wait_id: string, bead_id?: string) => Promise<{ ok?: boolean, status?: number, error?: string }|Record<string, unknown>>}} [externalWait]
  * `stop` is the service's [관찰 중단]: it ends observation AND unsets the
@@ -1359,24 +1361,26 @@ const INTERACTIVE_KIND_LABELS = {
  * (UI-18a5 §3.4 인계 표), in the `↪ Worker가 이어감` push's `실행:` words.
  * `merge_gate` has none: only a person's `[머지]` waives that hold.
  *
- * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold', string>>}
+ * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'repo_operation', string>>}
  */
 const FAILURE_HANDOFF_ACTIONS = Object.freeze({
   cleanup: '정리 재시도',
   discard: '폐기 재시도',
-  verify_hold: '머지 큐 재등록'
+  verify_hold: '머지 큐 재등록',
+  repo_operation: '수동 배포 재실행'
 });
 
 /**
  * The `<행 종류>` word of the `대화 인계 · <행 종류> · <결과 줄>` timeline line.
  *
- * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'merge_gate', string>>}
+ * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation', string>>}
  */
 const FAILURE_HANDOFF_ROWS = Object.freeze({
   cleanup: '실패 — 머지 후 정리',
   discard: '실패 — 폐기',
   verify_hold: '실패 — 머지 전 검증 보류',
-  merge_gate: '실패 — 머지 게이트'
+  merge_gate: '실패 — 머지 게이트',
+  repo_operation: '실패 — 수동 배포'
 });
 
 /**
@@ -10091,8 +10095,10 @@ export function createScheduler(deps) {
    * Run a failure conversation's `인계` once its window is gone (UI-18a5 §3.4
    * 인계 표): the row's own Worker exit with the person's click authority —
    * the cleanup retry (an unknown-outcome post-merge job included), the
-   * discard retry, or the `[머지]` merge-queue re-enqueue. A merge-gate hold
-   * runs nothing and ends like `보류`.
+   * discard retry, the `[머지]` merge-queue re-enqueue, or a repo-operation
+   * row's one manual deploy rerun (UI-jbl1 §3.3, the `[배포 실행]` re-click
+   * path at the fetched tip). A merge-gate hold runs nothing and ends like
+   * `보류`.
    *
    * 한 번 규칙: `started_at` is written durably before the exit is called. A
    * restarted pass that finds it never calls the exit again — a changed
@@ -10159,6 +10165,13 @@ export function createScheduler(deps) {
       return { done: true };
     }
     if (
+      target.kind === 'repo_operation' &&
+      typeof exits.rerunManualDeploy !== 'function'
+    ) {
+      refuseConversationHandoff(workspace, record, 'exit_unwired');
+      return { done: true };
+    }
+    if (
       !patchInteractiveRecord(workspace, key, record, {
         conversation: {
           ...conversation,
@@ -10189,7 +10202,11 @@ export function createScheduler(deps) {
                   workspace,
                   /** @type {{ operation_id: string }} */ (discard).operation_id
                 )
-              : await exits.enqueueMerge(workspace, bead_id);
+              : target.kind === 'repo_operation'
+                ? await /** @type {NonNullable<typeof exits.rerunManualDeploy>} */ (
+                    exits.rerunManualDeploy
+                  )(workspace)
+                : await exits.enqueueMerge(workspace, bead_id);
       } catch (err) {
         log('conversation handoff exit failed for %s: %o', bead_id, err);
         result = { ok: false, reason: 'error' };
@@ -10204,6 +10221,10 @@ export function createScheduler(deps) {
         } else {
           notifyLifecycle('conversationResumed', {
             bead_id,
+            // A repo-operation row names no Bead whose title could be read.
+            ...(repoOperationIdOf(bead_id) !== null
+              ? { title: FAILURE_HANDOFF_ROWS.repo_operation }
+              : {}),
             decision: handoff.line,
             action,
             repo: workspace
@@ -10709,11 +10730,15 @@ export function createScheduler(deps) {
         return {};
       }
     }
+    // A repo-operation row has no Bead (UI-jbl1 §3.3): its record settles by
+    // its result line and its window's end alone, never by a Bead status.
     const unsettled_beads = new Set(
       Object.entries(records)
         .filter(
           ([key, record]) =>
-            record.settled_at === null && isCurrent(key, record)
+            record.settled_at === null &&
+            isCurrent(key, record) &&
+            repoOperationIdOf(record.bead_id) === null
         )
         .map(([, record]) => record.bead_id)
     );

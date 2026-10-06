@@ -1100,6 +1100,7 @@ function operationIdentity(root_bead_id, kind, failure_key) {
  *   kickMerge?: () => Promise<unknown>|unknown,
  *   repo?: string,
  *   notify?: { needsHuman: (input: any) => Promise<void>, hold?: (input: any) => Promise<void> }|null,
+ *   failureConversation?: { launchForBead: (input: { workspace: string, repo: string|null, bead_id: string }) => Promise<any> }|null,
  *   now?: () => number,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -1113,6 +1114,9 @@ export function createCompletionActionDriver(deps) {
   // silence, never a terminalization failure. Named apart from the local
   // `notify()`, which is this driver's queue-event wakeup.
   const failure_notify = deps.notify || null;
+  // The automatic failure conversation (UI-jbl1 §3.1), optional on the same
+  // rule: without it the terminal is only announced.
+  const failure_conversation = deps.failureConversation || null;
 
   /**
    * Put one completion-saga fact on the root bead's permanent history
@@ -1598,13 +1602,16 @@ export function createCompletionActionDriver(deps) {
   }
 
   /**
-   * Push one `needs_human` terminal (UI-jw27 §2). This call site SOLELY owns
-   * the deploy and post-merge-job classes: the same failure also writes a
-   * `cleanup_failed` record on the way here, and announcing there too would
-   * mean an early push mid-ladder and a second one at the wall.
+   * Push one `needs_human` terminal (UI-jw27 §2) and, under the shared
+   * switch, open its failure conversation first (UI-jbl1 §3.1). This call
+   * site SOLELY owns the deploy, post-merge-job and merge-gate classes: the
+   * same failure also writes a `cleanup_failed` record on the way here, and
+   * announcing there too would mean an early push mid-ladder and a second one
+   * at the wall. The caller's once-guard (`comment_at`) is already durable, so
+   * a restart or re-observation reaches neither the launch nor the push.
    *
-   * Fire-and-forget and guarded: the notifier is no-throw by its own contract,
-   * and this guard keeps that true for an injected fake that breaks it.
+   * Fire-and-forget and guarded: the launch and the notifier are no-throw by
+   * contract, and this guard keeps that true for injected fakes.
    *
    * @param {string} root_bead_id
    * @param {any} intent
@@ -1612,7 +1619,7 @@ export function createCompletionActionDriver(deps) {
    * @param {string|null} summary
    */
   function announceNeedsHuman(root_bead_id, intent, terminal, summary) {
-    if (!failure_notify) {
+    if (!failure_notify && !failure_conversation) {
       return;
     }
     const token = terminal.failure_key?.stage || terminal.stage;
@@ -1622,29 +1629,34 @@ export function createCompletionActionDriver(deps) {
     if (failure_class === null) {
       return;
     }
-    try {
-      Promise.resolve(
-        failure_notify.needsHuman({
-          bead_id: root_bead_id,
-          failure_class,
-          reason: terminal.reason,
-          reason_detail: summary,
-          // The cleanup retry (`[워커로 이어가기]`, UI-18a5 §3.2) is a
-          // post-merge cleanup button that does not exist yet at the merge
-          // gate, so that class names the two exits it really has (spec §5.2).
-          next_action:
-            token === 'merge_gate'
-              ? '[머지] 재클릭 또는 [세션에서 이어가기]'
-              : '[세션에서 이어가기] 또는 [워커로 이어가기]',
-          pr_url: intent?.subject?.pr_url ?? null,
-          repo: deps.repo ?? null
-        })
-      ).catch((err) => {
-        log('needs_human notify failed for %s: %o', root_bead_id, err);
+    const run = async () => {
+      const conversation = failure_conversation
+        ? await failure_conversation.launchForBead({
+            workspace: deps.workspace,
+            repo: deps.repo ?? null,
+            bead_id: root_bead_id
+          })
+        : null;
+      await failure_notify?.needsHuman({
+        bead_id: root_bead_id,
+        failure_class,
+        reason: terminal.reason,
+        reason_detail: summary,
+        // The cleanup retry (`[워커로 이어가기]`, UI-18a5 §3.2) is a
+        // post-merge cleanup button that does not exist yet at the merge
+        // gate, so that class names the two exits it really has (spec §5.2).
+        next_action:
+          token === 'merge_gate'
+            ? '[머지] 재클릭 또는 [세션에서 이어가기]'
+            : '[세션에서 이어가기] 또는 [워커로 이어가기]',
+        conversation,
+        pr_url: intent?.subject?.pr_url ?? null,
+        repo: deps.repo ?? null
       });
-    } catch (err) {
+    };
+    run().catch((err) => {
       log('needs_human notify failed for %s: %o', root_bead_id, err);
-    }
+    });
   }
 
   /**

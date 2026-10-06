@@ -24,8 +24,10 @@ import {
   migrateStoredNeedsHumanReason
 } from './completion-intent.js';
 import { createMergeQueue } from './merge-queue.js';
+import { createNotifier } from './notify.js';
 import { createQueueStore } from './queue-store.js';
 import { EXEC_RECEIPT_MERGE_GATE } from './receipt-check.js';
+import { createFailureConversationLauncher } from './resolve-session.js';
 
 const DRIVER_WS = '/repo';
 /** @type {string[]} */
@@ -3720,7 +3722,7 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
    * which is what puts that step into the terminal's `failure_key.stage`.
    *
    * @param {string} step
-   * @param {{ notify?: any }} [overrides]
+   * @param {{ notify?: any, failureConversation?: any }} [overrides]
    */
   async function terminalizeCleanupStep(step, overrides = {}) {
     const store = seededCompletionStore();
@@ -3833,6 +3835,141 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
     expect(notify.sent).toHaveLength(1);
   });
 
+  /** A failure-conversation fake that records each automatic launch. */
+  function makeConversation() {
+    return {
+      launchForBead: vi.fn(async () => ({
+        session: 'launched',
+        reason: null,
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'resolve-UI-root'
+      }))
+    };
+  }
+
+  /** Let the fire-and-forget launch-then-notify chain run to its end. */
+  async function settleAnnouncements() {
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  test('launches the conversation once and notifies once on a new terminal (UI-jbl1 §3.1)', async () => {
+    const notify = makeNotify();
+    const conversation = makeConversation();
+
+    await terminalizeCleanupStep('repo_operations', {
+      notify,
+      failureConversation: conversation
+    });
+    await settleAnnouncements();
+
+    expect(conversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(conversation.launchForBead).toHaveBeenCalledWith({
+      workspace: DRIVER_WS,
+      repo: '/Users/me/GitHub/beads-ui',
+      bead_id: 'UI-root'
+    });
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        failure_class: '배포 실패',
+        conversation: expect.objectContaining({
+          session: 'launched',
+          tmux_window: 'resolve-UI-root'
+        })
+      })
+    ]);
+  });
+
+  test('launches nothing again when a re-click re-settles the same terminal', async () => {
+    const notify = makeNotify();
+    const conversation = makeConversation();
+    const driven = await terminalizeCleanupStep('repo_operations', {
+      notify,
+      failureConversation: conversation
+    });
+
+    driven.store.enqueueMergeManual(DRIVER_WS, {
+      expected_revision: driven.store.snapshot(DRIVER_WS).revision,
+      entries: [
+        { bead_id: 'UI-root', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+    await driven.settleOnce();
+    await settleAnnouncements();
+
+    expect(conversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(notify.sent).toHaveLength(1);
+  });
+
+  test('launches nothing for a terminal a restarted driver observes again', async () => {
+    const first = makeConversation();
+    const driven = await terminalizeCleanupStep('repo_operations', {
+      notify: makeNotify(),
+      failureConversation: first
+    });
+    const restarted = makeConversation();
+    const notify = makeNotify();
+    const driver = actionDriver(driven.store, {
+      notify,
+      failureConversation: restarted
+    });
+
+    const current =
+      driven.store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (action) {
+      await driver.onAction('UI-root', action, current);
+    }
+    await settleAnnouncements();
+
+    expect(restarted.launchForBead).not.toHaveBeenCalled();
+    expect(notify.sent).toEqual([]);
+  });
+
+  test('sends only the notification with the fallback line while the switch is off', async () => {
+    /** @type {string[]} */
+    const messages = [];
+    const resolve = vi.fn();
+    const driven = await terminalizeCleanupStep('post_merge_jobs', {
+      notify: createNotifier({
+        getConfig: () => ({
+          worker_notify: { enabled: true, cmd: ['discord'] }
+        }),
+        spawnImpl: (
+          /** @type {string} */ _cmd,
+          /** @type {string[]} */ args
+        ) => {
+          messages.push(String(args.at(-1)));
+          return { on() {}, unref() {} };
+        }
+      }),
+      failureConversation: createFailureConversationLauncher({
+        resolveSession: /** @type {any} */ ({ resolve }),
+        snapshot: () => ({}),
+        getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
+        autoLaunchEnabled: () => false,
+        log: () => {}
+      })
+    });
+    await settleAnnouncements();
+
+    expect(
+      driven.store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase
+    ).toBe('needs_human');
+    expect(resolve).not.toHaveBeenCalled();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].split('\n')[0]).toBe(
+      '🤖 🙋 확인 필요 · post-merge 잡 실패 — UI-root'
+    );
+    expect(messages[0]).toContain('대화를 열지 못함 — [세션에서 이어가기]');
+  });
+
   test('terminalizes normally when the notifier throws', async () => {
     const notify = {
       needsHuman: vi.fn(() => {
@@ -3909,6 +4046,42 @@ describe('영수증 보류의 해소 가능성 분류 (UI-jxs3 §4)', () => {
       intent: store.snapshot(DRIVER_WS).completion_intents['UI-root']
     };
   }
+
+  test('launches the merge-gate hold conversation once (UI-jbl1 §3.1)', async () => {
+    const store = seededCompletionStore();
+    const launchForBead = vi.fn(async () => ({
+      session: 'launched',
+      reason: null,
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-UI-root'
+    }));
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      notify: { needsHuman: vi.fn(async () => {}) },
+      failureConversation: { launchForBead },
+      prActions: {
+        completionGate: vi.fn(async () => receiptHoldGate('approval_forged'))
+      }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('receipt hold action missing');
+    }
+
+    await driver.onAction('UI-root', action, current);
+    await driver.commentsIdle();
+
+    expect(launchForBead).toHaveBeenCalledTimes(1);
+    expect(launchForBead).toHaveBeenCalledWith(
+      expect.objectContaining({ bead_id: 'UI-root' })
+    );
+  });
 
   test.each(['approval_forged', 'dispatch_forged', 'mode_authority_forged'])(
     'terminalizes %s without waiting for an observation nobody makes',

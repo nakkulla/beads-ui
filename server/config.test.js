@@ -314,6 +314,21 @@ enabled = "yes"
     expect(config.worker_notify.enabled).toBe(false);
   });
 
+  test('keeps the tmux session name of a disabled section', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.direction_inquiry]
+enabled = false
+tmux_session = "inquiry-lane"
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_direction_inquiry).toEqual({
+      enabled: false,
+      tmux_session: 'inquiry-lane'
+    });
+  });
+
   test('disables when the section is absent', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
 workspaces = ["/repo-a"]

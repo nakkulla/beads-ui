@@ -36,6 +36,8 @@ let launches;
 let launch_result;
 /** @type {any} */
 let original_resolve_session;
+/** @type {any[]} */
+let repo_launches;
 
 /**
  * @returns {any}
@@ -90,6 +92,7 @@ beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-resolve-session-'));
   process.env.XDG_STATE_HOME = tmp_state;
   launches = [];
+  repo_launches = [];
   launch_result = {
     launched: true,
     session: 'launched',
@@ -109,6 +112,11 @@ beforeEach(() => {
     /** @param {any} input */
     resolve: async (input) => {
       launches.push(input);
+      return launch_result;
+    },
+    /** @param {any} input */
+    resolveRepoOperation: async (input) => {
+      repo_launches.push(input);
       return launch_result;
     }
   };
@@ -422,5 +430,134 @@ describe('worker-resolve-in-session picks the launcher by row (UI-18a5 §3.2)', 
       reason: 'handoff_pending'
     });
     expect(launches).toEqual([]);
+  });
+});
+
+/**
+ * Put one failed MANUAL deploy on the workspace — the Bead-less row the
+ * drawer's `[세션에서 이어가기]` stands on (UI-jbl1 §3.3).
+ *
+ * @param {string} [operation_id]
+ */
+function recordManualDeployFailure(operation_id = 'op-manual') {
+  const store = getWorkerRuntime().queueStore;
+  store.ensureRepoOperation(WS, {
+    operation_id,
+    attempt_id: `${operation_id}:1`,
+    repo_id: WS,
+    kind: 'deploy',
+    subjects: [{ bead_id: 'manual', merged_sha: 'a'.repeat(40) }],
+    effective_base_sha: 'b'.repeat(40),
+    target_base: 'main',
+    target_sha: 'a'.repeat(40),
+    script_mode: '100755',
+    script_blob_sha: 'c'.repeat(40),
+    source: 'manual',
+    manual_run_id: 1
+  });
+  store.settleRepoOperation(WS, {
+    operation_id,
+    attempt_id: `${operation_id}:1`,
+    exit_code: 2,
+    signal: null,
+    failure: {
+      code: 'script_failed',
+      fingerprint: 'f1',
+      detail: '',
+      interrupted: false
+    }
+  });
+}
+
+describe('worker-resolve-in-session repo-operation row (UI-jbl1 §3.3)', () => {
+  test('opens the manual deploy failure conversation by operation id', async () => {
+    recordManualDeployFailure();
+
+    const reply = await click({
+      operation_id: 'op-manual',
+      expected_revision: revision()
+    });
+
+    expect(launches).toEqual([]);
+    expect(repo_launches).toEqual([
+      expect.objectContaining({
+        workspace: WS,
+        repo: WS,
+        operation_id: 'op-manual',
+        failure: expect.objectContaining({
+          failure_class: '수동 배포 실패',
+          reason: 'script_failed',
+          operation_id: 'op-manual'
+        })
+      })
+    ]);
+    expect(reply.payload).toMatchObject({
+      operation_id: 'op-manual',
+      launched: true,
+      row: 'failure',
+      failure_class: '수동 배포 실패'
+    });
+  });
+
+  test('refuses an operation that is not a failed manual deploy', async () => {
+    const reply = await click({
+      operation_id: 'op-missing',
+      expected_revision: revision()
+    });
+
+    expect(reply.payload).toMatchObject({
+      launched: false,
+      reason: 'no_terminal_failure'
+    });
+    expect(repo_launches).toEqual([]);
+  });
+
+  test('launches nothing on a stale revision click', async () => {
+    recordManualDeployFailure();
+
+    const reply = await click({
+      operation_id: 'op-manual',
+      expected_revision: 0
+    });
+
+    expect(reply.payload).toMatchObject({ conflict: true, launched: false });
+    expect(repo_launches).toEqual([]);
+  });
+
+  test('projects the resolve material and the row conversation on the card', () => {
+    recordManualDeployFailure();
+    getWorkerRuntime().queueStore.recordInteractiveSession(WS, {
+      bead_id: 'repo-op:op-manual',
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%5',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-repo-op-op-manual',
+      launched_at: 10,
+      state: 'live',
+      settled_at: null
+    });
+
+    const decorated = /** @type {any} */ (
+      handlers.decorateQueue(
+        WS,
+        /** @type {any} */ (getWorkerRuntime().queueStore.snapshot(WS))
+      )
+    );
+
+    const card = decorated.repo_operations.find(
+      (/** @type {any} */ entry) => entry.operation_id === 'op-manual'
+    );
+    expect(card.resolve).toMatchObject({
+      terminal_failure: true,
+      interactive_sessions: [
+        expect.objectContaining({
+          key: 'repo-op:op-manual:resolve',
+          state: 'live',
+          closing: false,
+          tmux_window: 'resolve-repo-op-op-manual'
+        })
+      ]
+    });
   });
 });

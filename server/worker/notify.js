@@ -60,13 +60,25 @@ const TITLE = {
   provider_recovered: `${SENDER} ✅ 공급자 회복`,
   provider_live_preempt: `${SENDER} 🔀 실행 중 계정 전환`,
   provider_disarmed: `${SENDER} 🚨 자동 재개 중단`,
-  // One transition for every user-initiated terminal failure (UI-jw27 §1). The
-  // kinds are told apart by the body's `클래스:` line rather than by their own
-  // titles: a push preview that says only which of five internal write paths
-  // failed would not tell the reader anything the class line does not.
-  needs_human: `${SENDER} 🚨 사람 필요`,
   hold: `${SENDER} ⏸️ 머지 보류`
 };
+
+/**
+ * The headline of a terminal failure push (UI-jbl1 §3.2): one `🙋 확인 필요`
+ * transition shared with the conversation stop, with the failure class as its
+ * suffix so the preview still says how urgent the wall is.
+ *
+ * @param {string|null} failure_class
+ * @returns {string}
+ */
+function confirmFailureTitle(failure_class) {
+  return failure_class
+    ? `${SENDER} 🙋 확인 필요 · ${failure_class}`
+    : `${SENDER} 🙋 확인 필요`;
+}
+
+/** The body line of a failure push whose conversation did not open. */
+const FAILURE_CONVERSATION_FALLBACK = '대화를 열지 못함 — [세션에서 이어가기]';
 
 /**
  * The four conversation-stage first lines (UI-nuwy §3.7). The spec fixes these
@@ -127,6 +139,9 @@ const TITLE_MAX = 60;
  * by the call site because only it knows which buttons that row draws.
  * @property {string|null} [pr_url]
  * @property {string|null} [repo]
+ * @property {{ session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null }|null} [conversation] -
+ * The automatic failure conversation's launch outcome (UI-jbl1 §3.1). Absent
+ * or not launched prints the fallback line; only the `needsHuman` push reads it.
  */
 
 /**
@@ -419,6 +434,29 @@ function headline(transition, bead_id, bead_title) {
 }
 
 /**
+ * The one conversation line of a terminal failure push (UI-jbl1 §3.2): where
+ * the automatic conversation opened, else the click that still opens it.
+ *
+ * @param {NeedsHumanInput['conversation']} conversation
+ * @returns {string}
+ */
+function failureConversationLine(conversation) {
+  if (
+    conversation?.session === 'launched' ||
+    conversation?.session === 'already_running'
+  ) {
+    const place = [
+      text(conversation.tmux_session),
+      text(conversation.tmux_window)
+    ]
+      .filter(Boolean)
+      .join(':');
+    return `대화: Discord 스레드 · tmux ${place || '?'}`;
+  }
+  return FAILURE_CONVERSATION_FALLBACK;
+}
+
+/**
  * Build the attempt-lifecycle notifier the scheduler fires on dispatch, on
  * failure, and on `pr_wait` entry, and the PR actions fire on merge cleanup.
  *
@@ -655,12 +693,14 @@ export function createNotifier(deps) {
   }
 
   /**
-   * Share failure rows while keeping the transition in the headline.
+   * Share failure rows while keeping the transition in the headline. The
+   * `needs_human` kind titles itself from the class and carries the one
+   * conversation line (UI-jbl1 §3.2); `hold` keeps its own title and body.
    *
    * @param {NeedsHumanInput} input
-   * @param {string} title
+   * @param {'needs_human'|'hold'} kind
    */
-  async function sendFailure(input, title) {
+  async function sendFailure(input, kind) {
     try {
       const cmd = resolveCmd();
       if (!cmd) {
@@ -668,8 +708,10 @@ export function createNotifier(deps) {
       }
       const bead_title =
         text(input.title) ?? (await lookupTitle(input.bead_id));
-      const lines = [headline(title, input.bead_id, bead_title)];
       const failure_class = text(input.failure_class);
+      const title =
+        kind === 'hold' ? TITLE.hold : confirmFailureTitle(failure_class);
+      const lines = [headline(title, input.bead_id, bead_title)];
       if (failure_class) {
         lines.push(`클래스: ${failure_class}`);
       }
@@ -681,6 +723,9 @@ export function createNotifier(deps) {
       const next_action = text(input.next_action);
       if (next_action) {
         lines.push(`다음: ${next_action}`);
+      }
+      if (kind === 'needs_human') {
+        lines.push(failureConversationLine(input.conversation));
       }
       const pr_url = text(input.pr_url);
       if (pr_url) {
@@ -1128,14 +1173,15 @@ export function createNotifier(deps) {
       }
     },
 
-    // Every user-initiated terminal failure (UI-jw27 §1·§2). The call sites are
-    // the four durable terminal WRITES, so a re-observation pass that finds an
-    // existing record sends nothing and a restart cannot produce a burst.
+    // Every user-initiated terminal failure (UI-jw27 §1·§2, UI-jbl1 §3.2). The
+    // call sites are the durable terminal WRITES, so a re-observation pass that
+    // finds an existing record sends nothing and a restart cannot produce a
+    // burst.
     async needsHuman(input) {
-      await sendFailure(input, TITLE.needs_human);
+      await sendFailure(input, 'needs_human');
     },
     async hold(input) {
-      await sendFailure(input, TITLE.hold);
+      await sendFailure(input, 'hold');
     }
   };
 }

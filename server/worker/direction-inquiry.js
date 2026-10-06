@@ -4,7 +4,9 @@
  *
  * Every string-valued `awaiting_user` park and every conversation-target
  * recovery wait (`session-stall.js`) reaches this module. `onParkedAttempt` is
- * the automatic trigger and obeys `worker_direction_inquiry.enabled`;
+ * the automatic trigger and obeys the ONE conversation auto-launch switch the
+ * failure conversation shares (`conversation-settings.js`, else config.toml
+ * `worker_direction_inquiry.enabled`, UI-jbl1 §3.4);
  * `launchForClick` is the user's explicit `[세션에서 이어가기]` action and
  * deliberately ignores that automatic-launch gate. Both reopen the attempt's
  * OWN runner session interactively in tmux — no fork — with the one dotfiles
@@ -30,6 +32,11 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
+import {
+  conversationAutoLaunchEnabled,
+  freshConversationRuntime,
+  getConversationSettings
+} from '../conversation-settings.js';
 import { debug } from '../logging.js';
 import {
   DEFAULT_START_TOLERANCE_MS,
@@ -264,6 +271,12 @@ export function inquiryWrapper(input) {
  * @property {(workspace: string, bead_id: string) => boolean} [handoffPending] - Injected queue-store judgment (`holdsHandoffReservation`): whether this Bead's inquiry record still holds an unsettled handoff reservation. Omission reads as none pending; the store's own write guard still refuses the overwrite.
  * @property {(pid: number) => { ok: true, identity: { pid: number, process_started_at: number } }|{ ok: false, reason: string }} [observeProcess]
  * @property {(file_path: string) => boolean} [existsSync]
+ * @property {(config_enabled: boolean) => boolean} [autoLaunchEnabled] - The
+ * shared switch over config.toml's own reading (UI-jbl1 §3.4).
+ * @property {() => import('../conversation-settings.js').ConversationSettingValues} [conversationSettings] -
+ * Read per launch for a fresh fallback's runtime.
+ * @property {(runner: string) => string[]} [launchFlags] - Passed to the
+ * launcher; defaults to the stored settings' model/effort flags.
  */
 
 /**
@@ -283,8 +296,11 @@ export function createDirectionInquiry(deps) {
     ...(deps.statFile ? { statFile: deps.statFile } : {}),
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
+    ...(deps.launchFlags ? { launchFlags: deps.launchFlags } : {}),
     log
   });
+  const autoLaunchEnabled =
+    deps.autoLaunchEnabled || conversationAutoLaunchEnabled;
   // Reserve a bead synchronously before either public entry reaches its first
   // `await`. Otherwise two calls in one tick both observe no owner and launch
   // duplicate panes before either can publish its marker.
@@ -304,8 +320,15 @@ export function createDirectionInquiry(deps) {
       return { enabled: false, tmux_session: DEFAULT_INQUIRY_TMUX_SESSION };
     }
     const name = section?.tmux_session;
+    /** @type {boolean} */
+    let enabled = false;
+    try {
+      enabled = autoLaunchEnabled(section?.enabled === true) === true;
+    } catch (err) {
+      log('conversation switch read failed: %o', err);
+    }
     return {
-      enabled: section?.enabled === true,
+      enabled,
       tmux_session:
         typeof name === 'string' && name.length > 0
           ? name
@@ -357,9 +380,21 @@ export function createDirectionInquiry(deps) {
         fallback_reason: null
       };
     }
+    // A fresh fallback takes the configured runtime (UI-jbl1 §3.4); the
+    // attempt's own session above always keeps its runtime.
+    /** @type {'claude'|'codex'} */
+    let fresh_runner = runner;
+    try {
+      fresh_runner = freshConversationRuntime(
+        (deps.conversationSettings || getConversationSettings)(),
+        runner
+      );
+    } catch (err) {
+      log('conversation settings read failed: %o', err);
+    }
     return {
       session_id: null,
-      runner,
+      runner: fresh_runner,
       source: 'fresh',
       fallback_reason: own.ok ? 'worktree_missing' : own.reason
     };

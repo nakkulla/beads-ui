@@ -205,6 +205,16 @@ function attempt(over = {}) {
   };
 }
 
+/** Conversation settings that keep every launch's provider (`inherit`). */
+const INHERIT_SETTINGS = {
+  auto_launch: true,
+  fresh_runtime: 'inherit',
+  claude_model: null,
+  claude_effort: null,
+  codex_model: null,
+  codex_effort: null
+};
+
 /**
  * Build a launcher with fake tmux/bd runners and an enabled config.
  *
@@ -222,7 +232,10 @@ function attempt(over = {}) {
  *   observeProcess?: any,
  *   existsSync?: (file_path: string) => boolean,
  *   now?: () => number,
- *   handoffPending?: (workspace: string, bead_id: string) => boolean
+ *   handoffPending?: (workspace: string, bead_id: string) => boolean,
+ *   autoLaunchEnabled?: (config_enabled: boolean) => boolean,
+ *   conversationSettings?: () => any,
+ *   launchFlags?: (runner: string) => string[]
  * }} [over]
  */
 function makeInquiry(over = {}) {
@@ -258,6 +271,12 @@ function makeInquiry(over = {}) {
     observeProcess: over.observeProcess,
     existsSync: over.existsSync || (() => true),
     handoffPending: over.handoffPending,
+    // The shared switch and the launch settings default to config.toml and
+    // "원래 세션 따름" here, so each test states the setting it is about.
+    autoLaunchEnabled:
+      over.autoLaunchEnabled || ((/** @type {boolean} */ value) => value),
+    conversationSettings: over.conversationSettings || (() => INHERIT_SETTINGS),
+    launchFlags: over.launchFlags || (() => []),
     log: () => {}
   });
   return { inquiry, tmux, conversationConfirm };
@@ -634,6 +653,45 @@ describe('direction-inquiry fresh fallback', () => {
     expect(outcome?.command).toBe(`claude --session-id '${record.session_id}'`);
   });
 
+  test('opens a fresh fallback on the configured runtime', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      tmux: launchingTmux(),
+      readAttempt: async () => attempt({ session_id: null }),
+      conversationSettings: () => ({
+        ...INHERIT_SETTINGS,
+        fresh_runtime: 'claude'
+      }),
+      store: { recordInteractiveSession }
+    });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: 'claude',
+      mode: 'fresh'
+    });
+  });
+
+  test('keeps the attempt runtime for its own session over the setting', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      tmux: launchingTmux(),
+      conversationSettings: () => ({
+        ...INHERIT_SETTINGS,
+        fresh_runtime: 'claude'
+      }),
+      store: { recordInteractiveSession }
+    });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: 'codex',
+      mode: 'resume'
+    });
+  });
+
   test('uses the current runner when the attempt names none', async () => {
     const currentRunner = vi.fn(() => /** @type {const} */ ('codex'));
     const recordInteractiveSession = vi.fn();
@@ -797,6 +855,30 @@ describe('direction-inquiry confirm notification', () => {
     expect(conversationConfirm).toHaveBeenCalledWith(
       expect.objectContaining({ session: 'not_launched', reason: 'disabled' })
     );
+  });
+
+  test('reads the stored shared switch over a disabled config', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({
+      tmux,
+      enabled: false,
+      autoLaunchEnabled: () => true
+    });
+
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
+
+    expect(outcome?.session).toBe('launched');
+  });
+
+  test('stays closed when the stored shared switch is off', async () => {
+    const { inquiry, tmux } = makeInquiry({
+      autoLaunchEnabled: () => false
+    });
+
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
+
+    expect(outcome?.reason).toBe('disabled');
+    expect(tmux.calls).toHaveLength(0);
   });
 
   test('stays silent when the caller already spent the notification', async () => {

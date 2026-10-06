@@ -126,7 +126,12 @@ import {
   repoOpsVerifyReceiptState
 } from '../worker/repo-ops-display.js';
 import { normalizeScriptRetry } from '../worker/resolution-ladder.js';
-import { resolveFailureContext } from '../worker/resolve-session.js';
+import {
+  failedManualDeploy,
+  repoOperationFailureContext,
+  repoOperationRowKey,
+  resolveFailureContext
+} from '../worker/resolve-session.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { createTailReader } from '../worker/runner/tail-reader.js';
@@ -2771,14 +2776,19 @@ function operationOutputTail(log_path) {
  * Each card carries kind, target SHA/tree, script path and blob, elapsed time,
  * state, a sanitized output tail, the full log path, and the exit code. It also
  * carries `failure_kind` — the pinned contract's classification — so the client
- * can NAME the failure without deciding for itself what it is. There is
- * deliberately no retry or resolve affordance in this projection: after the one
- * automatic `script_retry` a failure is terminal (UI-s582 §2).
+ * can NAME the failure without deciding for itself what it is. There is still
+ * no retry affordance — after the one automatic `script_retry` a failure is
+ * terminal (UI-s582 §2) — but a failed MANUAL deploy carries its
+ * `[세션에서 이어가기]` material (UI-jbl1 §3.3): whether it is a terminal
+ * failure the button stands on, and the row's conversation record as the
+ * same view the lane cards read, so the drawer judges a live conversation with
+ * `tile-resolve.js` rather than a rule of its own.
  *
  * @param {unknown} operations
+ * @param {Record<string, any>} [interactive_sessions] - The decorated records.
  * @returns {Record<string, any>[]}
  */
-function projectRepoOperations(operations) {
+function projectRepoOperations(operations, interactive_sessions = {}) {
   if (!operations || typeof operations !== 'object') {
     return [];
   }
@@ -2877,7 +2887,12 @@ function projectRepoOperations(operations) {
       // so the client renders nothing (fail-quiet).
       ...(raw.recovery && typeof raw.recovery === 'object'
         ? { recovery: structuredClone(raw.recovery) }
-        : {})
+        : {}),
+      resolve: repoOperationResolveMaterial(
+        operation_id,
+        raw,
+        interactive_sessions
+      )
     });
   }
   cards.sort(
@@ -2886,6 +2901,50 @@ function projectRepoOperations(operations) {
       left.operation_id.localeCompare(right.operation_id)
   );
   return cards;
+}
+
+/**
+ * One repo-operation card's `[세션에서 이어가기]` material (UI-jbl1 §3.3): a
+ * terminal failure flag (a failed manual deploy no successor or person has
+ * answered), and the row's conversation records as lane-card views.
+ *
+ * @param {string} operation_id
+ * @param {Record<string, any>} raw
+ * @param {Record<string, any>} interactive_sessions
+ * @returns {{ terminal_failure: boolean, interactive_sessions: Record<string, any>[] }}
+ */
+function repoOperationResolveMaterial(operation_id, raw, interactive_sessions) {
+  const row_key = repoOperationRowKey(operation_id);
+  return {
+    terminal_failure:
+      failedManualDeploy(
+        { repo_operations: { [operation_id]: raw } },
+        operation_id
+      ) !== null,
+    interactive_sessions: Object.entries(interactive_sessions || {})
+      .filter(([, record]) => record?.bead_id === row_key)
+      .map(([key, record]) => ({
+        key,
+        kind: record.kind,
+        provider: record.provider,
+        session_id: record.session_id ?? null,
+        mode: record.mode ?? null,
+        source: record.source ?? null,
+        fallback_reason: record.fallback_reason ?? null,
+        attempt_id: record.attempt_id ?? null,
+        tmux_session: record.tmux_session,
+        tmux_window: record.tmux_window,
+        state: record.state,
+        settled_at: record.settled_at ?? null,
+        launched_at: record.launched_at,
+        discord_url: record.discord_url ?? null,
+        turn_state: record.turn_state ?? null,
+        turn_state_since: record.turn_state_since ?? null,
+        last_message: record.last_message ?? null,
+        conversation: record.conversation ?? null,
+        closing: record.state === 'exiting' || record.settled_at != null
+      }))
+  };
 }
 
 /**
@@ -3243,7 +3302,8 @@ export function decorateQueue(workspace_key, raw_queue) {
   };
   // Only the OPERATIONS are trimmed (UI-qbbg §4.3).
   public_queue.repo_operations = projectRepoOperations(
-    public_queue.repo_operations
+    public_queue.repo_operations,
+    public_queue.interactive_sessions
   );
   public_queue.repo_operation_policy = projectRepoOperationPolicy();
   public_queue.cleanup_failed = overlaid.cleanup_failed || {};
@@ -6820,6 +6880,14 @@ export async function handleWorkerCleanupRetry(ws, req) {
  */
 export async function handleWorkerResolveInSession(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
+  if (
+    typeof p.operation_id === 'string' &&
+    p.operation_id.trim().length > 0 &&
+    p.bead_id === undefined
+  ) {
+    await resolveRepoOperationInSession(ws, req, p);
+    return;
+  }
   if (typeof p.bead_id !== 'string' || p.bead_id.trim().length === 0) {
     ws.send(
       JSON.stringify(
@@ -7039,6 +7107,126 @@ export async function handleWorkerResolveInSession(ws, req) {
         queue: decorateQueue(key, latest)
       })
     )
+  );
+  fanout(key, latest);
+}
+
+/**
+ * The `worker-resolve-in-session` branch of a repo-operation row (UI-jbl1
+ * §3.3): `{ operation_id, expected_revision }` opens the Bead-less manual
+ * deploy failure conversation. Nothing here reads a Bead — the row has none —
+ * and the session is always fresh in the repository root. Same skeleton as
+ * the Bead branch: the revision is checked first, and the precondition is
+ * re-read server-side.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {any} p
+ */
+async function resolveRepoOperationInSession(ws, req, p) {
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const operation_id = String(p.operation_id);
+  const row_key = repoOperationRowKey(operation_id);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  /**
+   * @param {Record<string, unknown>} body
+   * @param {any} queue
+   */
+  const reply = (body, queue) =>
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: null,
+          operation_id,
+          row: 'failure',
+          failure_class: '수동 배포 실패',
+          ...body,
+          queue: decorateQueue(key, queue)
+        })
+      )
+    );
+  if (revisionOf(p) !== current.revision) {
+    reply(
+      {
+        launched: false,
+        conflict: true,
+        session: null,
+        reason: null,
+        mode: null,
+        fallback_reason: null,
+        command: null,
+        bridge_active: false
+      },
+      current
+    );
+    return;
+  }
+  const failure = repoOperationFailureContext(current, operation_id);
+  const refusal =
+    failure === null
+      ? 'no_terminal_failure'
+      : beadHoldsHandoffReservation(current.interactive_sessions, row_key)
+        ? 'handoff_pending'
+        : null;
+  if (refusal !== null || failure === null) {
+    reply(
+      {
+        launched: false,
+        conflict: false,
+        session: 'not_launched',
+        reason: refusal,
+        mode: null,
+        fallback_reason: null,
+        command: null,
+        bridge_active: false
+      },
+      current
+    );
+    return;
+  }
+  /** @type {any} */
+  let result;
+  try {
+    result = await getWorkerRuntime().resolveSession.resolveRepoOperation({
+      workspace: key,
+      repo: key,
+      operation_id,
+      failure
+    });
+  } catch (err) {
+    log('repo-op resolve-in-session failed for %s/%s: %o', key, row_key, err);
+    result = {
+      launched: false,
+      session: 'not_launched',
+      reason: 'error',
+      mode: null,
+      fallback_reason: null,
+      command: null,
+      bridge_active: false
+    };
+  }
+  const latest = /** @type {any} */ (queueStore().snapshot(key));
+  reply(
+    {
+      launched: result.launched === true,
+      conflict: false,
+      session: result.session || null,
+      reason: result.reason || null,
+      mode: result.mode || null,
+      source: result.source || null,
+      fallback_reason: result.fallback_reason || null,
+      command: result.command || null,
+      bridge_active: result.bridge_active === true,
+      session_id: result.session_id || null,
+      runner: result.runner || null,
+      placement: result.placement || null,
+      tmux_session: result.tmux_session || null,
+      tmux_window: result.tmux_window || null
+    },
+    latest
   );
   fanout(key, latest);
 }
