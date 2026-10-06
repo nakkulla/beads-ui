@@ -1947,6 +1947,65 @@ describe('server-global probes and releases (UI-3v1h §5.4)', () => {
     );
   });
 
+  test('widens a credential outage to its runner on a provider-scope probe failure', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn(
+        { type: 'result', is_error: true, result: 'API Error: 529 Overloaded' },
+        1
+      )
+    );
+    holdIn(store, WS, 'a1', { kind: 'outage' });
+    const target = store.snapshot(WS).provider_hold.claude.targets[0];
+    store.providerHolds.update(String(target.target_id), {
+      detail: 'credential'
+    });
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect(store.snapshot(WS).provider_hold.claude.targets[0]).toMatchObject({
+      kind: 'outage',
+      detail: 'overloaded_529',
+      account: 'held@example.com',
+      last_error: 'API Error: 529 Overloaded'
+    });
+  });
+
+  test('retries a failed membership settlement and ticks that workspace', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    holdIn(store, WS, 'a1');
+    await env.health.start(WS);
+    vi.spyOn(store, 'settleProviderMembers').mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    timers.fireNext();
+    await flush();
+    env.tick.mockClear();
+
+    timers.fireNext();
+    await flush();
+
+    expect(store.snapshot(WS).auto_resume_pending).toEqual([
+      expect.objectContaining({
+        attempt_id: 'a1',
+        account: 'held@example.com',
+        kind: 'provider_outage'
+      })
+    ]);
+    expect(env.tick).toHaveBeenCalledWith(WS);
+  });
+
   test('skips a timer whose target left before it fired', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();

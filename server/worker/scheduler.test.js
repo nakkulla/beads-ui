@@ -15,6 +15,7 @@ import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { install as guardHookInstall } from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
+import { createProviderHealth } from './provider-health.js';
 import { RETRY_DELAYS_MS } from './queue-hold.js';
 import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
 import * as operationPolicy from './repo-operation-policy.js';
@@ -7913,6 +7914,66 @@ describe('scheduler provider hold and recovery', () => {
           unresolved: false
         }
       });
+    });
+
+    test('blocks another account once a probe widens a credential outage to the runner', async () => {
+      const env = twoAccountEnv();
+      holdElsewhere(env.store, {
+        kind: 'outage',
+        detail: 'credential',
+        account: 'held@example.com'
+      });
+      /** @type {Array<() => void>} */
+      const armed = [];
+      const health = createProviderHealth({
+        store: env.store,
+        accountCatalog: {
+          readClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { email, status: 'ok', windows: [] }
+          }))
+        },
+        spawnImpl: makeFixtureSpawn({
+          lines: [
+            JSON.stringify({
+              type: 'result',
+              is_error: true,
+              result: 'API Error: 529 Overloaded'
+            })
+          ],
+          exit: 1
+        }),
+        acquireClaudeLaunch: async () => () => {},
+        resolveCswapPath: () => '/bin/cswap',
+        catalog: /** @type {any} */ ({
+          model_index: { opus: 'claude' },
+          runners: {
+            claude: {
+              command: 'claude',
+              efforts: [],
+              models: { opus: { id: 'claude-opus-4-8' } }
+            }
+          }
+        }),
+        setTimeoutImpl: (fn) => {
+          armed.push(fn);
+          return {};
+        },
+        clearTimeoutImpl: () => {}
+      });
+      health.sync(WS);
+      armed.shift()?.();
+      await vi.waitFor(() => {
+        expect(
+          env.store.snapshot(WS).provider_hold.claude.targets[0].detail
+        ).toBe('overloaded_529');
+      });
+      health.stop(WS);
+      seedQueue(env.store, ['C2']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual([]);
     });
 
     test('blocks the whole runner on another workspace outage', async () => {

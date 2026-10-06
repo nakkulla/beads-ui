@@ -312,6 +312,11 @@ export function createProviderHealth(deps) {
   const active_workspaces = new Set();
   /** @type {Map<string, WorkspaceHooks>} */
   const registered = new Map();
+  // A release whose settlement failed in one workspace retries it there: the
+  // target is already gone, so no later probe would ever settle those
+  // memberships (UI-3v1h §5.4).
+  /** @type {Map<string, { timer: any, runners: Set<string> }>} */
+  const settle_retries = new Map();
 
   /**
    * One workspace's collaborators, falling back to the controller's own.
@@ -791,11 +796,69 @@ export function createProviderHealth(deps) {
   }
 
   /**
+   * Retry a workspace's failed settlement on the outage backoff ladder,
+   * capped at its last rung. A retry that lands runs the workspace's own
+   * follow-up — auto-resume, switch reevaluation, tick — and sends no
+   * recovery notification, as a settlement after a restart does (§5.4).
+   *
+   * @param {string} workspace
+   * @param {string[]} runners - Runners the failed release emptied.
+   * @param {number} failures - Settlement attempts that failed so far.
+   */
+  function scheduleSettleRetry(workspace, runners, failures) {
+    if (!active_workspaces.has(workspace)) {
+      return;
+    }
+    const pending = settle_retries.get(workspace);
+    if (pending) {
+      for (const runner of runners) {
+        pending.runners.add(runner);
+      }
+      return;
+    }
+    const ladder = outageBackoffMs();
+    /** @type {{ timer: any, runners: Set<string> }} */
+    const entry = { timer: null, runners: new Set(runners) };
+    entry.timer = setTimeoutImpl(
+      () => {
+        settle_retries.delete(workspace);
+        void retrySettlement(workspace, [...entry.runners], failures);
+      },
+      ladder[Math.min(Math.max(0, failures - 1), ladder.length - 1)]
+    );
+    entry.timer?.unref?.();
+    settle_retries.set(workspace, entry);
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {string[]} runners
+   * @param {number} failures
+   */
+  async function retrySettlement(workspace, runners, failures) {
+    if (!active_workspaces.has(workspace)) {
+      return;
+    }
+    try {
+      await settleWorkspace(workspace, runners);
+    } catch (err) {
+      log('membership settlement retry failed for %s: %o', workspace, err);
+      scheduleSettleRetry(workspace, runners, failures + 1);
+      return;
+    }
+    const hooks = hooksFor(workspace);
+    await hooks.onPending?.(workspace);
+    await reevaluateSwitches(workspace);
+    await hooks.tick?.(workspace);
+  }
+
+  /**
    * Release one global target (UI-3v1h §5.4): delete it once, settle every
    * attached workspace's memberships, run each workspace's own auto-resume and
    * switch reevaluation, report ONE recovery when any attempt became eligible
    * anywhere, and tick every workspace. A failed delete leaves the target
-   * standing for the next probe.
+   * standing for the next probe; a workspace whose settlement fails retries
+   * it by itself ({@link scheduleSettleRetry}).
    *
    * A release because the account left the catalog is not a recovery: as
    * before, it writes `provider_hold_released` history for each attempt and
@@ -830,6 +893,7 @@ export function createProviderHealth(deps) {
         });
       } catch (err) {
         log('membership settlement failed for %s: %o', workspace, err);
+        scheduleSettleRetry(workspace, [runner], 1);
       }
     }
     /** @type {string[]} */
@@ -964,12 +1028,30 @@ export function createProviderHealth(deps) {
       await releaseTarget(runner, generation, since, live_target, 'recovered');
       return;
     }
-    // The mirror of the provider-only promotion below: when the classifier
+    // A provider-wide failure widens the gate to the whole runner whatever the
+    // target was. `detail` moves with `kind`: the gate scope reads both
+    // (UI-3v1h §5.1), so a `credential` outage that kept its detail would
+    // stay account-scoped and let other accounts dispatch into the outage.
+    if (result.outage?.scope === 'provider') {
+      updateTarget(live_target.target_id, {
+        kind: 'outage',
+        detail: result.outage.detail,
+        last_error: result.error
+      });
+      if (live_target.kind === 'usage_limit') {
+        // A fresh outage: its backoff starts at the first rung.
+        sync();
+        return;
+      }
+      scheduleTarget(runner, generation, since, live_target, failures + 1);
+      return;
+    }
+    // The mirror of the provider-wide widening above: when the classifier
     // now reads a standing outage as an account failure, the target follows
-    // it down to an account-scoped gate. `rearm_count` and the hold's
-    // `since` are untouched and remain display observations. An
-    // `account === null` target is NOT demoted: it would become a target that
-    // neither probes nor auto-resumes (outage spec §6 F3).
+    // it down to an account-scoped gate, its detail with it. `rearm_count`
+    // and the hold's `since` are untouched and remain display observations.
+    // An `account === null` target is NOT demoted: it would become a target
+    // that neither probes nor auto-resumes (outage spec §6 F3).
     if (
       live_target.kind === 'outage' &&
       live_target.account !== null &&
@@ -977,6 +1059,7 @@ export function createProviderHealth(deps) {
     ) {
       updateTarget(live_target.target_id, {
         kind: 'usage_limit',
+        detail: result.outage.detail,
         resets_at: result.outage.resets_at,
         last_error: result.error
       });
@@ -996,8 +1079,6 @@ export function createProviderHealth(deps) {
           rearm_count: live_target.rearm_count + 1,
           last_error: result.error
         });
-      } else if (result.outage?.scope === 'provider') {
-        updateTarget(live_target.target_id, { kind: 'outage' });
       } else {
         updateTarget(live_target.target_id, {
           last_error: result.error,
@@ -1207,6 +1288,11 @@ export function createProviderHealth(deps) {
      */
     stop(workspace) {
       active_workspaces.delete(workspace);
+      const retry = settle_retries.get(workspace);
+      if (retry) {
+        clearTimeoutImpl(retry.timer);
+        settle_retries.delete(workspace);
+      }
       const prefix = `${JSON.stringify([workspace]).slice(0, -1)},`;
       for (const [key, entry] of switch_timers) {
         if (key.startsWith(prefix)) {

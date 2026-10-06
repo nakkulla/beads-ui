@@ -9591,7 +9591,8 @@ export function createQueueStore(options = {}) {
      * An attempt with a pending `account_switch` receipt gets no membership:
      * a switched attempt no longer waits on its source target (§5.4), and a
      * membership would make the stale rule drop the receipt the per-repository
-     * rule kept. Receipts themselves are left untouched.
+     * rule kept. Such a receipt only gains the source account as its
+     * `switched_from` when it lacks one; every other receipt is left untouched.
      *
      * @param {string} workspace
      * @returns {{ ok: boolean, migrated: number }}
@@ -9638,15 +9639,25 @@ export function createQueueStore(options = {}) {
             delete next.provider_hold[runner];
           }
           for (const attempt_id of target.attempt_ids) {
-            if (
-              !next.attempts[attempt_id] ||
-              next.auto_resume_pending.some(
-                (receipt) =>
-                  receipt.attempt_id === attempt_id &&
-                  receipt.kind === 'account_switch' &&
-                  receipt.origin !== 'live_preempt'
-              )
-            ) {
+            if (!next.attempts[attempt_id]) {
+              continue;
+            }
+            const switch_receipt = next.auto_resume_pending.find(
+              (receipt) =>
+                receipt.attempt_id === attempt_id &&
+                receipt.kind === 'account_switch' &&
+                receipt.origin !== 'live_preempt'
+            );
+            if (switch_receipt) {
+              // The source target leaves this queue here, and the attempt
+              // record need not name the account it switched away from: the
+              // receipt keeps it, or the switch recovery has nothing to name.
+              if (
+                typeof switch_receipt.switched_from !== 'string' &&
+                typeof target.account === 'string'
+              ) {
+                switch_receipt.switched_from = target.account;
+              }
               continue;
             }
             const auto_switch = target.auto_switch ?? null;

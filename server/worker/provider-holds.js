@@ -175,23 +175,29 @@ function normalizeGlobalTarget(value) {
 }
 
 /**
- * Normalize the stored file, or null when it is not a provider-hold state.
+ * Normalize the stored file, or null when it is not a whole provider-hold
+ * state. Damage anywhere — the counter, a hold record, a target missing its
+ * identity, a repeated `target_id` — rejects the file instead of filtering
+ * it: a filtered load would read as healthy, and the next write would
+ * overwrite the only copy of what was dropped (§6).
  *
  * @param {unknown} value
  * @returns {ProviderHoldState|null}
  */
 function normalizeState(value) {
-  if (!isRecord(value) || !isRecord(value.holds)) {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.holds) ||
+    !Number.isInteger(value.generation) ||
+    Number(value.generation) < 0
+  ) {
     return null;
   }
   /** @type {Record<string, GlobalProviderHold>} */
   const holds = {};
   /** @type {Set<string>} */
   const seen = new Set();
-  let generation =
-    Number.isInteger(value.generation) && Number(value.generation) >= 0
-      ? Number(value.generation)
-      : 0;
+  let generation = Number(value.generation);
   for (const [runner, raw_hold] of Object.entries(value.holds)) {
     if (
       runner.length === 0 ||
@@ -202,16 +208,17 @@ function normalizeState(value) {
       Number(raw_hold.generation) < 1 ||
       !Array.isArray(raw_hold.targets)
     ) {
-      continue;
+      return null;
     }
     /** @type {GlobalProviderTarget[]} */
     const targets = [];
     for (const raw_target of raw_hold.targets) {
       const target = normalizeGlobalTarget(raw_target);
-      if (target && !seen.has(target.target_id)) {
-        seen.add(target.target_id);
-        targets.push(target);
+      if (!target || seen.has(target.target_id)) {
+        return null;
       }
+      seen.add(target.target_id);
+      targets.push(target);
     }
     if (targets.length > 0) {
       holds[runner] = {

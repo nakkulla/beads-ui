@@ -169,6 +169,28 @@ describe('server-global provider hold store (UI-3v1h §5.1)', () => {
     ).toBe('{ not json');
   });
 
+  test('preserves a file with a damaged target aside and starts empty', () => {
+    const damaged = JSON.stringify({
+      generation: 1,
+      holds: {
+        claude: {
+          since: 1,
+          generation: 1,
+          targets: [{ kind: 'usage_limit', model: 'opus', account: 'a' }]
+        }
+      }
+    });
+    fs.mkdirSync(path.dirname(providerHoldsFilePath()), { recursive: true });
+    fs.writeFileSync(providerHoldsFilePath(), damaged);
+
+    const store = createProviderHoldStore({ now: () => 42, warn: vi.fn() });
+
+    expect(store.holds()).toEqual({});
+    expect(
+      fs.readFileSync(`${providerHoldsFilePath()}.corrupt-42`, 'utf8')
+    ).toBe(damaged);
+  });
+
   test('throws a failed write and keeps the prior state in memory', () => {
     const failing = {
       ...fs,

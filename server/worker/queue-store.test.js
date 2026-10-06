@@ -2116,6 +2116,33 @@ describe('worker/queue-store server-global provider holds (UI-3v1h)', () => {
     expect(store.snapshot(WS).provider_hold_members).toEqual({});
     expect(discarded.discarded_attempt_ids).toEqual([]);
   });
+
+  test('backfills the source account on a switch receipt the migration keeps', () => {
+    writeLegacyQueue(WS, {
+      ...legacyHeldQueue('a1', 3),
+      auto_resume_pending: [
+        {
+          attempt_id: 'a1',
+          generation: 3,
+          account: 'new@example.com',
+          kind: 'account_switch'
+        }
+      ]
+    });
+    const store = createQueueStore();
+
+    store.migrateProviderHolds(WS);
+
+    expect(store.snapshot(WS).auto_resume_pending).toEqual([
+      {
+        attempt_id: 'a1',
+        generation: 3,
+        account: 'new@example.com',
+        kind: 'account_switch',
+        switched_from: 'held@example.com'
+      }
+    ]);
+  });
 });
 
 afterEach(() => {
