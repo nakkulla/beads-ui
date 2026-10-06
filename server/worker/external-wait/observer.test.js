@@ -934,3 +934,132 @@ test('keeps rows and omitted counts that left the queue', () => {
   });
   expect(second?.rows).toHaveLength(300);
 });
+
+const CAPACITY = {
+  reason: 'Resources',
+  est_start: '2026-10-08T13:38:00',
+  partition: 'normal',
+  ahead: { jobs: 3, cpus: 48 },
+  slurm: {
+    cpu_alloc: 108,
+    cpu_total: 128,
+    mem_alloc_mb: 513000,
+    mem_total_mb: 1033000
+  },
+  host: { name: 'n1', cpus: 112, load1: 61.2, mem_available_mb: 2000 },
+  observed_at: '2026-10-06T06:00:00.000Z'
+};
+
+/**
+ * A remote observation of a registered job plus its capacity section.
+ *
+ * @param {{state?: string, capacity?: 'ok'|'failed'|'absent'}} [options]
+ */
+function capacityStdout({ state = 'PENDING', capacity = 'ok' } = {}) {
+  const section =
+    capacity === 'absent'
+      ? []
+      : [
+          '',
+          '__EWM_CAP_BEGIN__',
+          ...(capacity === 'ok'
+            ? [
+                '__EWM_CAP_NOW__=2026-09-21T10:00:00',
+                '__EWM_CAP_JOB__=Resources|2026-10-08T13:38:00|normal|1000|2026-10-06T10:00:00',
+                '__EWM_CAP_AHEAD__=3|48',
+                '__EWM_CAP_SLURM__=108|128|513000|1033000',
+                '__EWM_CAP_HOST__=n1|112|61.2|2000',
+                '__EWM_CAP_OK__=1'
+              ]
+            : ['__EWM_CAP_NOW__=2026-09-21T10:00:00', '__EWM_CAP_OK__=0']),
+          '__EWM_CAP_END__'
+        ];
+  return [
+    state,
+    '__EWM_SQUEUE_RC__=0',
+    `JobId=123 JobState=${state} TimeLimit=00:30:00 RunTime=00:00:00`,
+    '__EWM_SCONTROL_RC__=0',
+    '',
+    '__EWM_LOG_RC__=0',
+    '__EWM_ARTIFACT__0=1|1|1',
+    '__EWM_SPAWN_BEGIN__',
+    '__EWM_SPAWN__=none',
+    '__EWM_SPAWN_END__',
+    ...section,
+    ''
+  ].join('\n');
+}
+
+test('stores the pending capacity on the registered slurm job', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([capacityStdout()]);
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0]).capacity).toMatchObject({
+    reason: 'Resources',
+    ahead: { jobs: 3, cpus: 48 },
+    host: { name: 'n1' }
+  });
+});
+
+test('keeps the stored capacity when the capacity read fails', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([
+    capacityStdout(),
+    capacityStdout({ capacity: 'failed' })
+  ]);
+  const first = await observer.observeRecord(workspace, record.wait_id);
+  time += 120000;
+
+  const second = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(second?.jobs[0]).capacity).toEqual(
+    slurmOf(first?.jobs[0]).capacity
+  );
+});
+
+test('leaves the error accounting alone when the capacity read fails', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([
+    capacityStdout({ capacity: 'failed' })
+  ]);
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(result).toMatchObject({ error_count: 0, last_error: null });
+  expect(Date.parse(result?.next_observation_at || '') - time).toBe(120 * 1000);
+});
+
+test('keeps the stored capacity when a pending observation lacks the section', async () => {
+  const record = insertSlurm([{ capacity: CAPACITY }]);
+  const { observer } = sequenceObserver([
+    capacityStdout({ capacity: 'absent' })
+  ]);
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0]).capacity).toEqual(CAPACITY);
+});
+
+test('clears the stored capacity once the job is running', async () => {
+  const record = insertSlurm([{ capacity: CAPACITY }]);
+  const { observer } = sequenceObserver([
+    capacityStdout({ state: 'RUNNING', capacity: 'absent' })
+  ]);
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0])).not.toHaveProperty('capacity');
+});
+
+test('keeps the stored capacity when the observed state is unknown', async () => {
+  const record = insertSlurm([{ capacity: CAPACITY }]);
+  const { observer } = sequenceObserver([
+    capacityStdout({ state: 'UNKNOWN', capacity: 'absent' })
+  ]);
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0]).capacity).toEqual(CAPACITY);
+});

@@ -122,6 +122,81 @@ describe('protocol', () => {
     expect(valid).toBe(false);
   });
 
+  const CAPACITY = {
+    reason: 'Resources',
+    est_start: '2026-10-08T13:38:00',
+    partition: 'normal',
+    ahead: { jobs: 39, cpus: 624 },
+    slurm: {
+      cpu_alloc: 112,
+      cpu_total: 112,
+      mem_alloc_mb: 512000,
+      mem_total_mb: 1031000
+    },
+    host: { name: 'wallace', cpus: 112, load1: 61.2, mem_available_mb: 902000 },
+    observed_at: '2026-10-06T06:00:00.000Z'
+  };
+
+  test('accepts the slurm pending capacity field (UI-qbgj §3.1)', () => {
+    const record = externalWait();
+    record.jobs[0] = {
+      ...record.jobs[0],
+      state: 'PENDING',
+      capacity: CAPACITY
+    };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(true);
+  });
+
+  test('accepts a capacity without an estimate or host', () => {
+    const record = externalWait();
+    record.jobs[0] = {
+      ...record.jobs[0],
+      capacity: { ...CAPACITY, est_start: null, host: null }
+    };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(true);
+  });
+
+  test.each([
+    ['a non-object capacity', 'x'],
+    ['a missing reason', { ...CAPACITY, reason: '' }],
+    [
+      'a non-integer ahead count',
+      { ...CAPACITY, ahead: { jobs: 1.5, cpus: 2 } }
+    ],
+    ['a missing slurm total', { ...CAPACITY, slurm: { cpu_alloc: 1 } }],
+    ['a malformed host', { ...CAPACITY, host: { name: 'wallace', cpus: 4 } }],
+    ['a non-string estimate', { ...CAPACITY, est_start: 5 }]
+  ])('rejects %s', (_label, capacity) => {
+    const record = externalWait();
+    record.jobs[0] = { ...record.jobs[0], capacity };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(false);
+  });
+
+  test('rejects a capacity on a process job', () => {
+    const record = externalWait();
+    record.jobs[0] = {
+      adapter: 'process',
+      pid: 42,
+      submitted_at: '2026-09-21T00:00:00Z',
+      log_path: '/logs/job.log',
+      terminal: null,
+      capacity: CAPACITY
+    };
+
+    const valid = isExternalWaitObservation(record);
+
+    expect(valid).toBe(false);
+  });
+
   test('version and message types', () => {
     expect(Array.isArray(MESSAGE_TYPES)).toBe(true);
     expect(MESSAGE_TYPES.length).toBeGreaterThan(3);

@@ -194,11 +194,15 @@ the public projection of the server's external-wait records:
 `{wait_id, root_dir, bead_id, owner_kind, stage, budget, registered_at, next_observation_at, error_count, last_error, jobs, completion, resume}`.
 Each job carries `adapter`, `ssh_host` and `job_id` (Slurm) or `pid` (process),
 `submitted_at`, `log_path`, `state`, `observed_at`, and
-`terminal: null | {exit_code, evidence, recovery_needed, expected_results}`.
-Expected results contain path, existence, size and mtime; log and artifact
-contents are never projected. Cards attach live records (`hold`, `detached`,
-`completing`) to their consumer Bead. Missing metadata/records remain
-action-required wait reasons. Older servers omit the array.
+`terminal: null | {exit_code, evidence, recovery_needed, expected_results}`. A
+pending Slurm job may also carry the display-only `capacity`:
+`{reason, est_start, partition, ahead: {jobs, cpus}, slurm: {cpu_alloc, cpu_total, mem_alloc_mb, mem_total_mb}, host, observed_at}`
+(`est_start` and `host` may be `null`; the field is absent once the job leaves
+PENDING). It never affects completion or judgment. Expected results contain
+path, existence, size and mtime; log and artifact contents are never projected.
+Cards attach live records (`hold`, `detached`, `completing`) to their consumer
+Bead. Missing metadata/records remain action-required wait reasons. Older
+servers omit the array.
 
 The corresponding `workspaces_state[]` row carries `external_wait_count` (live
 records) and `external_wait_attention_count` (live records whose

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { isExternalWaitObservation } from '../../app/protocol.js';
 import {
   normalizeBdIssue,
   normalizeBdIssueList,
@@ -458,6 +459,76 @@ describe('external wait check-now attachment seams', () => {
     const row = attachModule.projectExternalWait(record);
 
     expect(row.jobs[0]).toMatchObject({ name: 'snake', anchor, spawned });
+  });
+
+  test('projects the slurm pending capacity and its client check accepts it (UI-qbgj §3.1)', () => {
+    const capacity = {
+      reason: 'Resources',
+      est_start: null,
+      partition: 'normal',
+      ahead: { jobs: 2, cpus: 8 },
+      slurm: {
+        cpu_alloc: 4,
+        cpu_total: 8,
+        mem_alloc_mb: 1024,
+        mem_total_mb: 2048
+      },
+      host: null,
+      observed_at: '2026-10-06T06:00:00.000Z'
+    };
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner: { kind: 'worker', attempt_id: 'attempt-1' },
+      stage: 'hold',
+      budget: { turns_total: 3, turns_used: 0 },
+      registered_at: '2026-10-06T00:00:00Z',
+      next_observation_at: '2026-10-06T00:02:00Z',
+      error_count: 0,
+      last_error: null,
+      completion: null,
+      resume: null,
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '123',
+          submitted_at: '2026-10-06T00:00:00Z',
+          log_path: '/logs/job.log',
+          capacity,
+          terminal: null
+        }
+      ]
+    });
+
+    const row = attachModule.projectExternalWait(record);
+
+    expect(row.jobs[0]).toMatchObject({ capacity });
+    expect(isExternalWaitObservation(row)).toBe(true);
+  });
+
+  test('omits capacity from a slurm job that has none', () => {
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner: { kind: 'worker', attempt_id: 'attempt-1' },
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '123',
+          submitted_at: '2026-10-06T00:00:00Z',
+          log_path: '/logs/job.log',
+          terminal: null
+        }
+      ]
+    });
+
+    const row = attachModule.projectExternalWait(record);
+
+    expect(row.jobs[0]).not.toHaveProperty('capacity');
   });
 
   test('keeps an old slurm job projection without sub-job fields', () => {

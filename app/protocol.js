@@ -84,7 +84,7 @@
  * @property {string} next_observation_at
  * @property {number} error_count
  * @property {string|null} last_error
- * @property {Array<{adapter:'slurm'|'process', ssh_host?:string, job_id?:string, pid?:number, submitted_at:string, log_path:string, state?:string, observed_at?:string, name?:string, anchor?:{user:string, workdir:string, started_at:string}, spawned?:SpawnedView, terminal:null|{exit_code:number|null, evidence:string, recovery_needed:boolean, expected_results:Array<{path:string, exists:boolean, size:number|null, mtime:number|null}>}}>} jobs - Slurm jobs may carry the display-only `name`·`anchor`·`spawned` (UI-q15q §3.4).
+ * @property {Array<{adapter:'slurm'|'process', ssh_host?:string, job_id?:string, pid?:number, submitted_at:string, log_path:string, state?:string, observed_at?:string, name?:string, anchor?:{user:string, workdir:string, started_at:string}, spawned?:SpawnedView, capacity?:CapacityView, terminal:null|{exit_code:number|null, evidence:string, recovery_needed:boolean, expected_results:Array<{path:string, exists:boolean, size:number|null, mtime:number|null}>}}>} jobs - Slurm jobs may carry the display-only `name`·`anchor`·`spawned` (UI-q15q §3.4) and, while pending, `capacity` (UI-qbgj §3.1).
  * @property {{digest:string, completed_at:string, recovery_needed:boolean}|null} completion
  * @property {{mode:'fork'|'fresh', attempt_id:string|null, reserved_at:string|null, launched_at:string|null, session_id:string|null, error:string|null}|null} resume
  */
@@ -139,6 +139,7 @@ export const SLURM_TERMINAL_STATES = Object.freeze([
  * @typedef {{ name?: string, rule?: string }} NamedJob
  * @typedef {{ job_id: string, name?: string, rule?: string, state?: string, submitted_at?: string, started_at?: string|null, ended_at?: string|null, elapsed_seconds?: number|null, time_limit_seconds?: number|null, unlimited?: boolean, cpus?: number|null, memory?: string, exit_code?: number|null }} SpawnedRowView
  * @typedef {{ total: number, counts: Record<SpawnedClass, number>, rows: SpawnedRowView[], omitted: number }} SpawnedView
+ * @typedef {{ reason: string, est_start?: string|null, partition: string, ahead: { jobs: number, cpus: number }, slurm: { cpu_alloc: number, cpu_total: number, mem_alloc_mb: number, mem_total_mb: number }, host?: { name: string, cpus: number, load1: number, mem_available_mb: number }|null, observed_at: string }} CapacityView
  */
 
 /**
@@ -280,7 +281,8 @@ export function isExternalWaitObservation(value) {
           : Number.isInteger(job.pid)) &&
         (job.terminal === null ||
           (job.terminal && Array.isArray(job.terminal.expected_results))) &&
-        isSpawnedFields(job)
+        isSpawnedFields(job) &&
+        isCapacityField(job)
     )
   );
 }
@@ -311,6 +313,63 @@ function isSpawnedFields(job) {
         typeof spawned.counts === 'object' &&
         Array.isArray(spawned.rows) &&
         Number.isInteger(spawned.omitted)))
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isCount(value) {
+  return Number.isInteger(value) && /** @type {number} */ (value) >= 0;
+}
+
+/**
+ * The optional display-only `capacity` of a slurm job (UI-qbgj §3.1). The
+ * shape is strict: a malformed value is rejected, never partly shown.
+ *
+ * @param {Record<string, any>} job
+ * @returns {boolean}
+ */
+function isCapacityField(job) {
+  const capacity = job.capacity;
+  if (capacity === undefined) {
+    return true;
+  }
+  if (job.adapter !== 'slurm' || !capacity || typeof capacity !== 'object') {
+    return false;
+  }
+  const ahead = capacity.ahead;
+  const slurm = capacity.slurm;
+  const host = capacity.host;
+  return (
+    typeof capacity.reason === 'string' &&
+    capacity.reason.length > 0 &&
+    (capacity.est_start === undefined ||
+      capacity.est_start === null ||
+      typeof capacity.est_start === 'string') &&
+    typeof capacity.partition === 'string' &&
+    capacity.partition.length > 0 &&
+    typeof capacity.observed_at === 'string' &&
+    !!ahead &&
+    typeof ahead === 'object' &&
+    isCount(ahead.jobs) &&
+    isCount(ahead.cpus) &&
+    !!slurm &&
+    typeof slurm === 'object' &&
+    isCount(slurm.cpu_alloc) &&
+    isCount(slurm.cpu_total) &&
+    isCount(slurm.mem_alloc_mb) &&
+    isCount(slurm.mem_total_mb) &&
+    (host === undefined ||
+      host === null ||
+      (typeof host === 'object' &&
+        typeof host.name === 'string' &&
+        host.name.length > 0 &&
+        isCount(host.cpus) &&
+        Number.isFinite(host.load1) &&
+        host.load1 >= 0 &&
+        isCount(host.mem_available_mb)))
   );
 }
 

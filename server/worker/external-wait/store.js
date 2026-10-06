@@ -18,7 +18,11 @@ import {
  * @typedef {{running:number, pending:number, completed:number, failed:number, unknown:number}} SpawnedCounts
  * @typedef {{total:number, counts:SpawnedCounts, rows:SpawnedRow[], omitted:number}} Spawned
  * @typedef {{status:'ok', completion_log:'filetxt'|'unsupported', counts:Omit<SpawnedCounts, 'unknown'>, rows:SpawnedRow[]}|{status:'failed'}|{status:'none'}} SpawnedMaterial
- * @typedef {JobObservation & {adapter:'slurm', ssh_host:string, job_id:string, submitted_at:string, log_path:string, expected:string[], scheduler_submit_time?:string, name?:string, anchor?:SpawnedAnchor, spawned?:Spawned}} SlurmJob
+ * @typedef {{cpu_alloc:number, cpu_total:number, mem_alloc_mb:number, mem_total_mb:number}} CapacitySlurm
+ * @typedef {{name:string, cpus:number, load1:number, mem_available_mb:number}} CapacityHost
+ * @typedef {{reason:string, est_start:string|null, partition:string, ahead:{jobs:number, cpus:number}, slurm:CapacitySlurm, host:CapacityHost|null, observed_at:string}} Capacity - Display-only pending Slurm capacity (UI-qbgj §3.1); `est_start` and `host` are `null` when absent.
+ * @typedef {{status:'ok', capacity:Capacity}|{status:'failed'}} CapacityMaterial
+ * @typedef {JobObservation & {adapter:'slurm', ssh_host:string, job_id:string, submitted_at:string, log_path:string, expected:string[], scheduler_submit_time?:string, name?:string, anchor?:SpawnedAnchor, spawned?:Spawned, capacity?:Capacity}} SlurmJob
  * @typedef {JobObservation & {adapter:'process', pid:number, submitted_at:string, workdir:string, log_path:string, expected?:string[], process_start?:string|null}} ProcessJob
  * @typedef {SlurmJob|ProcessJob} Job
  * @typedef {'hold'|'done'|'detached'|'completing'|'resumed'|'stopped'} Stage
@@ -28,7 +32,7 @@ import {
  * @typedef {{wait_id:string, root_dir:string, bead_id:string, owner:Owner, worktree:string, execution_sha:string, registered_at:string, stage:Stage, budget:{turns_total:number, turns_used:number}, next_observation_at:string, error_count:number, last_error:string|null, jobs:Job[], completion:Completion|null, resume:Resume|null}} WaitRecord
  * @typedef {Pick<WaitRecord, 'root_dir'|'bead_id'|'owner'|'worktree'|'execution_sha'|'jobs'> & Partial<Omit<WaitRecord, 'root_dir'|'bead_id'|'owner'|'worktree'|'execution_sha'|'jobs'>>} WaitInput
  * @typedef {(argv:string[], options:{timeout_ms:number}) => Promise<{code:number, stdout:string, stderr:string}>} Run
- * @typedef {{state:string, terminal:boolean, exit_code?:number|null, evidence?:string, expected_results?:ExpectedResult[], recovery_needed?:boolean, error?:string, time_limit_seconds?:number|null, run_time_seconds?:number|null, unlimited?:boolean, unparseable?:boolean, name?:string, anchor?:SpawnedAnchor, spawned?:SpawnedMaterial}} Observation
+ * @typedef {{state:string, terminal:boolean, exit_code?:number|null, evidence?:string, expected_results?:ExpectedResult[], recovery_needed?:boolean, error?:string, time_limit_seconds?:number|null, run_time_seconds?:number|null, unlimited?:boolean, unparseable?:boolean, name?:string, anchor?:SpawnedAnchor, spawned?:SpawnedMaterial, capacity?:CapacityMaterial}} Observation
  */
 
 const LIVE_STAGES = new Set(['hold', 'detached', 'completing']);

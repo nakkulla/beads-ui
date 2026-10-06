@@ -226,6 +226,25 @@ function applySpawned(job, observation, jobs) {
 }
 
 /**
+ * Store the display-only pending capacity of a slurm job (UI-qbgj §3.1). A
+ * failed read keeps the stored value; a job observed in any other known state
+ * drops it. It never touches the job's state, terminal proof or the record's
+ * error accounting.
+ *
+ * @param {SlurmJob} job
+ * @param {import('./store.js').Observation} observation
+ */
+function applyCapacity(job, observation) {
+  if (observation.state === 'PENDING') {
+    if (observation.capacity?.status === 'ok') {
+      job.capacity = observation.capacity.capacity;
+    }
+  } else if (observation.state !== 'UNKNOWN') {
+    delete job.capacity;
+  }
+}
+
+/**
  * @param {{store:ReturnType<import('./store.js').createExternalWaitStore>, listWorkspaces:()=>string[], run:import('./store.js').Run, now?:()=>number, onRecordChanged?:RecordCallback, onCompletion?:RecordCallback, log?:(message:string)=>void, interval_ms?:number}} options
  */
 export function createExternalWaitObserver({
@@ -327,6 +346,7 @@ export function createExternalWaitObserver({
           job.unlimited = observation.unlimited;
           job.unparseable = observation.unparseable;
           applySpawned(job, observation, record.jobs);
+          applyCapacity(job, observation);
         }
         if (observation.terminal) {
           job.terminal = {

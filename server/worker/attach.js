@@ -161,6 +161,10 @@ export function projectExternalWait(record) {
       ...(job.adapter === 'slurm' && job.spawned !== undefined
         ? { spawned: job.spawned }
         : {}),
+      // Display-only pending capacity (UI-qbgj §3.1).
+      ...(job.adapter === 'slurm' && job.capacity !== undefined
+        ? { capacity: job.capacity }
+        : {}),
       terminal: job.terminal
         ? {
             exit_code: job.terminal.exit_code,
