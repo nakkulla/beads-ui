@@ -1458,10 +1458,21 @@ function providerHoldProjection(attempt, input) {
   const account_alias = accountAliasOf(account, input.account_catalog);
   const history = timelineFields(input.history);
   // 활성 보류가 있으면 프로브가 판정하므로 배지는 지금 그대로다 (D5). 서버
-  // sweep과 같은 술어 — 그 러너에 보류 기록이 있는가 — 를 읽는다.
+  // sweep과 같은 술어 — 서 있는 보류가 이 attempt를 묶거나 그 러너 전체를
+  // 막는가 — 를 읽는다. 보류는 서버 전역이라 다른 계정의 한도는 이 attempt의
+  // 것이 아니다 (UI-3v1h §5.4).
+  const runner_targets = objectOf(
+    objectOf(input.provider_hold)[
+      typeof attempt.runner === 'string' ? attempt.runner : ''
+    ]
+  ).targets;
   const runner_held =
-    typeof attempt.runner === 'string' &&
-    Boolean(objectOf(input.provider_hold)[attempt.runner]);
+    target !== null ||
+    (Array.isArray(runner_targets) &&
+      runner_targets.some(
+        (/** @type {any} */ candidate) =>
+          candidate && providerTargetScope(candidate) !== 'account'
+      ));
   const auto_resume_refusal = runner_held ? null : autoResumeRefusalOf(attempt);
   return {
     kind:
@@ -1557,10 +1568,30 @@ function retryProjection(attempt) {
  */
 
 /**
+ * Which rows one provider target blocks — the server gate's scope rule
+ * (UI-3v1h §5.1, `provider-holds.js providerTargetScope`): `usage_limit` and a
+ * `credential` outage naming its account block that account, any other outage
+ * the whole runner, and an account-less `usage_limit` is `unresolved`.
+ *
+ * @param {any} target
+ * @returns {'account'|'runner'|'unresolved'}
+ */
+function providerTargetScope(target) {
+  if (target.kind === 'usage_limit') {
+    return typeof target.account === 'string' ? 'account' : 'unresolved';
+  }
+  return target.detail === 'credential' && typeof target.account === 'string'
+    ? 'account'
+    : 'runner';
+}
+
+/**
  * The provider gate standing against ONE row's resolved runner and account
- * (§3.1). `outage` blocks the whole runner; `usage_limit` is per account, and
- * an unresolvable account draws nothing — the server's admission is the truth
- * and this chip only states it in advance, so it may only err by saying less.
+ * (§3.1). A runner-scoped outage blocks the whole runner; an account-scoped
+ * target (`usage_limit`, a `credential` outage with its account) blocks only
+ * its account, and an unresolvable account draws nothing — the server's
+ * admission is the truth and this chip only states it in advance, so it may
+ * only err by saying less.
  *
  * @param {string|null} runner - 이 행이 launch될 러너 이름, 못 도출하면 null.
  * @param {string|null} account - 이 행이 쓸 계정 email, 모르면 null.
@@ -1575,18 +1606,21 @@ function providerGate(runner, account, provider_hold, account_catalog) {
   const entry = objectOf(objectOf(provider_hold)[runner]);
   const targets = Array.isArray(entry.targets) ? entry.targets : [];
   const outage = targets.find(
-    (/** @type {any} */ target) => target && target.kind === 'outage'
+    (/** @type {any} */ target) =>
+      target &&
+      target.kind === 'outage' &&
+      providerTargetScope(target) === 'runner'
   );
-  const usage = outage
+  const scoped = outage
     ? null
     : targets.find(
         (/** @type {any} */ target) =>
           target &&
-          target.kind === 'usage_limit' &&
-          (typeof target.account !== 'string' ||
+          (target.kind === 'usage_limit' || target.kind === 'outage') &&
+          (providerTargetScope(target) === 'unresolved' ||
             (account !== null && target.account === account))
       );
-  const target = outage || usage || null;
+  const target = outage || scoped || null;
   if (!target) {
     return null;
   }
@@ -1735,9 +1769,9 @@ function providerGateFromRecord(
   }
   const unresolved = gate.unresolved === true;
   const gate_account = typeof gate.account === 'string' ? gate.account : null;
-  // `outage`는 계정과 무관하게 러너 전체를 막으므로 언제나 유효하다.
-  // `usage_limit`은 계정별이라 "이 행이 지금 해석하는 계정이 기록과 같다"가
-  // 유효 조건이다.
+  // 러너 전체 `outage`는 계정과 무관하게 러너 전체를 막으므로 언제나 유효하다.
+  // 계정 단위 target(`usage_limit`, 계정을 가진 `credential` outage)은
+  // "이 행이 지금 해석하는 계정이 기록과 같다"가 유효 조건이다.
   //
   // 미해석 기록의 유효 조건은 `resolvedAccountOf`가 아니라 **선언 두 층**이
   // 비어 있는가다 (impl review r1). 서버가 미해석을 기록하는 이유에는 카탈로그
@@ -1746,7 +1780,20 @@ function providerGateFromRecord(
   // 사라진다(§2가 금지하는 상태). 선언 두 층은 서버와 프론트가 같은 스냅샷 값을
   // 읽으므로 거기서 어긋나야 비로소 진짜 설정 변경이고, 활성 로그인 층만으로
   // 설명되는 차이는 조회 시차라서 §3.3대로 기록이 이긴다.
-  const stands = outage
+  //
+  // 범위는 서버 게이트와 같은 `providerTargetScope`가 정한다 (UI-3v1h §5.1).
+  // 러너 전체 outage가 서 있으면 그것이 먼저다 — 어느 행이든 막는다.
+  const entry = objectOf(objectOf(provider_hold)[runner]);
+  const targets = Array.isArray(entry.targets) ? entry.targets : [];
+  const runner_wide = outage
+    ? targets.find(
+        (/** @type {any} */ candidate) =>
+          candidate &&
+          candidate.kind === 'outage' &&
+          providerTargetScope(candidate) === 'runner'
+      )
+    : undefined;
+  const stands = runner_wide
     ? true
     : unresolved
       ? declared === null
@@ -1754,20 +1801,20 @@ function providerGateFromRecord(
   if (!stands) {
     return null;
   }
-  const entry = objectOf(objectOf(provider_hold)[runner]);
-  const targets = Array.isArray(entry.targets) ? entry.targets : [];
-  const target = targets.find((/** @type {any} */ candidate) => {
-    if (!candidate) {
-      return false;
-    }
-    if (outage) {
-      return candidate.kind === 'outage';
-    }
-    return (
-      candidate.kind === 'usage_limit' &&
-      (unresolved || candidate.account === gate_account)
-    );
-  });
+  const target =
+    runner_wide ||
+    targets.find((/** @type {any} */ candidate) => {
+      if (
+        !candidate ||
+        candidate.kind !== (outage ? 'outage' : 'usage_limit')
+      ) {
+        return false;
+      }
+      return (
+        providerTargetScope(candidate) !== 'runner' &&
+        (unresolved || candidate.account === gate_account)
+      );
+    });
   // hold가 이미 풀렸거나 그 target이 사라진 기록은 그릴 재료가 없다 (fail-quiet,
   // 서버 정리와 겹치는 방어다).
   if (!target) {

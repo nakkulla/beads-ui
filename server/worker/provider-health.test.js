@@ -819,11 +819,14 @@ describe('provider health probe', () => {
     const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
     /** @type {string[]} */
     const order = [];
-    const recover = store.recoverProviderTarget.bind(store);
-    vi.spyOn(store, 'recoverProviderTarget').mockImplementation(
+    const settle = store.settleProviderMembers.bind(store);
+    vi.spyOn(store, 'settleProviderMembers').mockImplementation(
       (workspace, input) => {
-        order.push('persist');
-        return recover(workspace, input);
+        const settled = settle(workspace, input);
+        if (settled.ok) {
+          order.push('persist');
+        }
+        return settled;
       }
     );
     const env = setup(store, timers, spawnImpl, {
@@ -1205,7 +1208,7 @@ describe('provider health probe', () => {
     const spawnImpl = makeHangingSpawn();
     const env = setup(store, timers, spawnImpl);
     seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
-    env.health.probeNow(WS, 'claude');
+    env.health.probeNow('claude');
 
     await env.health.start(WS);
     await flush();
@@ -1455,7 +1458,7 @@ describe('provider health probe', () => {
     await env.health.start(WS);
     const armed_before = timers.entries.length;
 
-    const result = env.health.probeNow(WS, 'claude');
+    const result = env.health.probeNow('claude');
     await flush();
 
     expect(result.armed).toBe(2);
@@ -1475,7 +1478,7 @@ describe('provider health probe', () => {
     env.health.sync(WS);
     await flush();
 
-    const result = env.health.probeNow(WS, 'claude');
+    const result = env.health.probeNow('claude');
     await flush();
 
     expect(timers.next()).toBeUndefined();
@@ -1492,7 +1495,7 @@ describe('provider health probe', () => {
     seedHold(store, 'usage_limit', null);
     await env.health.start(WS);
 
-    const result = env.health.probeNow(WS, 'claude');
+    const result = env.health.probeNow('claude');
     await flush();
 
     expect(result).toEqual({ armed: 0, eligible: 0 });
@@ -1515,7 +1518,7 @@ describe('provider health probe', () => {
     timers.fireNext();
     await flush();
 
-    env.health.probeNow(WS, 'claude');
+    env.health.probeNow('claude');
     await flush();
 
     expect(timers.next()?.delay).toBe(480_000);
@@ -1530,8 +1533,8 @@ describe('provider health probe', () => {
     seedHold(store, 'outage', null);
     await env.health.start(WS);
 
-    const first = env.health.probeNow(WS, 'claude');
-    const second = env.health.probeNow(WS, 'claude');
+    const first = env.health.probeNow('claude');
+    const second = env.health.probeNow('claude');
 
     expect([first.armed, second.armed, second.eligible]).toEqual([1, 0, 1]);
   });
@@ -1563,10 +1566,10 @@ describe('provider health probe', () => {
     const env = setup(store, timers, spawnImpl);
     seedHold(store, 'outage', null);
     await env.health.start(WS);
-    env.health.probeNow(WS, 'claude');
+    env.health.probeNow('claude');
     await flush();
 
-    const again = env.health.probeNow(WS, 'claude');
+    const again = env.health.probeNow('claude');
     await flush();
 
     expect(again.armed).toBe(1);

@@ -618,13 +618,8 @@ describe('external wait resume', () => {
       expect(recordOf(env)?.resume?.error).toBe('provider_held');
       if (change === 'recovery') {
         const hold = env.store.snapshot(WS).provider_hold.claude;
-        env.store.recoverProviderTarget(WS, {
-          runner: 'claude',
-          generation: hold.generation,
-          kind: 'usage_limit',
-          model: 'opus',
-          account: 'held@example.com'
-        });
+        env.store.providerHolds.remove(String(hold.targets[0].target_id));
+        env.store.settleProviderMembers(WS, { runners: ['claude'] });
       } else {
         env.store.setProviderLimitPolicy(WS, {
           expected_revision: env.store.snapshot(WS).revision,

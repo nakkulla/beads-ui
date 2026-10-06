@@ -767,7 +767,7 @@ describe('worker provider probe-now handler', () => {
     await call(socket, { runner: 'claude', since: 500 });
 
     const payload = sent(socket)[0].payload;
-    expect(probeNow).toHaveBeenCalledWith(WS, 'claude');
+    expect(probeNow).toHaveBeenCalledWith('claude');
     expect(payload).toMatchObject({ ok: true, armed: 2 });
     expect(payload.queue).toMatchObject({ revision: expect.any(Number) });
   });

@@ -969,6 +969,27 @@ function makeQueueStore(options = {}) {
   return createQueueStore({ now: () => -QUEUE_GRACE_MS, ...options });
 }
 
+/**
+ * Release one global target and settle a workspace's memberships — the store
+ * half of a probe recovery (UI-3v1h §5.4). `listed` stands in for the account
+ * catalog; a runner listed without the target's account resumes unpinned.
+ *
+ * @param {ReturnType<typeof createQueueStore>} queue_store
+ * @param {string} workspace
+ * @param {{ runner: string, generation?: number, kind: 'outage'|'usage_limit', model: string, account: string|null }} key
+ * @param {Record<string, string[]|null>} [listed]
+ */
+function recoverTarget(queue_store, workspace, key, listed = {}) {
+  const found = queue_store.providerHolds.findBy(key);
+  if (found) {
+    queue_store.providerHolds.remove(found.target.target_id);
+  }
+  return queue_store.settleProviderMembers(workspace, {
+    listed,
+    runners: [key.runner]
+  });
+}
+
 /** @type {string} */
 let tmp_state;
 
@@ -5315,7 +5336,7 @@ describe('scheduler provider hold and recovery', () => {
         switch_ready_account: env.rows[1].key
       });
       env.rows[1].windows[0].pct = 0;
-      env.store.recoverProviderTarget(WS, {
+      recoverTarget(env.store, WS, {
         runner,
         generation: before.generation,
         kind: 'usage_limit',
@@ -5788,7 +5809,7 @@ describe('scheduler provider hold and recovery', () => {
     );
     seedQueue(env.store, ['X1']);
     await env.scheduler.tick(WS);
-    env.store.recoverProviderTarget(WS, {
+    recoverTarget(env.store, WS, {
       runner: 'codex',
       generation: held.generation,
       kind: 'usage_limit',
@@ -6493,7 +6514,7 @@ describe('scheduler provider hold and recovery', () => {
       'outage',
       'held@example.com'
     );
-    env.store.recoverProviderTarget(WS, {
+    recoverTarget(env.store, WS, {
       runner: 'claude',
       generation: held.generation,
       kind: 'outage',
@@ -6530,14 +6551,18 @@ describe('scheduler provider hold and recovery', () => {
       'outage',
       'deleted@example.com'
     );
-    env.store.releaseProviderTarget(WS, {
-      runner: 'claude',
-      generation: held.generation,
-      kind: 'outage',
-      model: 'opus',
-      account: 'deleted@example.com',
-      reason: 'account_absent'
-    });
+    recoverTarget(
+      env.store,
+      WS,
+      {
+        runner: 'claude',
+        generation: held.generation,
+        kind: 'outage',
+        model: 'opus',
+        account: 'deleted@example.com'
+      },
+      { claude: ['current@example.com'] }
+    );
 
     await env.scheduler.consumeProviderAutoResume(WS);
 
@@ -6559,7 +6584,7 @@ describe('scheduler provider hold and recovery', () => {
       session_id: 'sid-stop'
     });
     const held = registerProviderHold(env.store, 'held-stop', 'outage', null);
-    env.store.recoverProviderTarget(WS, {
+    recoverTarget(env.store, WS, {
       runner: 'claude',
       generation: held.generation,
       kind: 'outage',
@@ -6594,7 +6619,7 @@ describe('scheduler provider hold and recovery', () => {
       quickfix_lane: false
     });
     const held = registerProviderHold(env.store, 'held-route', 'outage', null);
-    env.store.recoverProviderTarget(WS, {
+    recoverTarget(env.store, WS, {
       runner: 'claude',
       generation: held.generation,
       kind: 'outage',
@@ -7502,7 +7527,7 @@ describe('scheduler provider hold and recovery', () => {
         account: 'held@example.com'
       });
 
-      env.store.recoverProviderTarget(WS, {
+      recoverTarget(env.store, WS, {
         runner,
         generation: held.provider_hold[runner].generation,
         kind: 'outage',
@@ -7752,7 +7777,7 @@ describe('scheduler provider hold and recovery', () => {
       'outage',
       'held@example.com'
     );
-    env.store.recoverProviderTarget(WS, {
+    recoverTarget(env.store, WS, {
       runner: 'claude',
       generation: held.generation,
       kind: 'outage',
@@ -14651,7 +14676,7 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     expect(release).toHaveBeenCalledWith('B1');
     expect(env.store.snapshot(WS).attempts[child].status).toBe('paused');
 
-    env.store.recoverProviderTarget(WS, {
+    recoverTarget(env.store, WS, {
       runner: 'claude',
       generation: held.generation,
       kind: 'outage',
@@ -29541,7 +29566,7 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
     });
     await flush();
     const hold = env.store.snapshot(WS).provider_hold.claude;
-    env.store.recoverProviderTarget(WS, {
+    recoverTarget(env.store, WS, {
       runner: 'claude',
       generation: hold.generation,
       kind: hold.targets[0].kind,
@@ -30204,7 +30229,7 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
       });
       await runDue(env);
       const deferred = env.store.snapshot(WS);
-      env.store.recoverProviderTarget(WS, {
+      recoverTarget(env.store, WS, {
         runner: 'claude',
         generation: Number(held.generation),
         kind: 'outage',
@@ -30369,7 +30394,7 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
         });
         await runDue(env);
         const deferred = env.store.snapshot(WS);
-        env.store.recoverProviderTarget(WS, {
+        recoverTarget(env.store, WS, {
           runner: 'claude',
           generation: Number(held.generation),
           kind: 'outage',
@@ -30605,7 +30630,7 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
           attempt_ids: []
         }
       });
-      env.store.recoverProviderTarget(WS, {
+      recoverTarget(env.store, WS, {
         runner: 'claude',
         generation: Number(held.generation),
         kind: 'outage',
@@ -30648,7 +30673,7 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
       });
       await env.scheduler.withdraw(WS, 'held');
 
-      env.store.recoverProviderTarget(WS, {
+      recoverTarget(env.store, WS, {
         runner: 'claude',
         generation: Number(held.generation),
         kind: 'outage',

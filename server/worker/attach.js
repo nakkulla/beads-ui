@@ -332,6 +332,9 @@ export function createWaitJudge(deps) {
     }
   });
 
+  // `provider_hold` here is the workspace's EFFECTIVE hold (UI-3v1h §5.5): a
+  // target another workspace observed changes it, and the global store's
+  // change announces a queue change for every attached workspace.
   function controlState() {
     const queue = deps.store.snapshot(deps.workspace);
     return JSON.stringify([
@@ -1430,22 +1433,34 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     notifier: notify
   });
 
+  // The process's ONE probe controller (UI-3v1h §5.4); this attachment only
+  // registers the collaborators a release runs for its own workspace.
   providerHealth =
     options.providerHealth ||
-    createProviderHealth({
-      store: runtime.queueStore,
+    sharedProviderHealth(runtime, {
       accountCatalog,
-      notify,
-      timeline,
+      spawn_impl: options.spawn_impl
+    });
+  if (typeof providerHealth.register === 'function') {
+    providerHealth.register(keyFor(workspace_root), {
       repo,
-      catalog: runtimeCatalog(),
-      resolveCswapPath,
-      spawnImpl: options.spawn_impl,
+      timeline,
+      notify,
       onPending: (workspace) => scheduler.consumeProviderAutoResume(workspace),
       onSwitchReady: (workspace, accounts) =>
         scheduler.reevaluateProviderSwitches(workspace, accounts),
       tick: (workspace) => scheduler.tick(workspace)
     });
+  }
+  // A global hold change is a queue change for every attached workspace
+  // (UI-3v1h §5.5): the Worker fanout, the monitor, and the wait judge all
+  // re-read the effective hold. Deferred so a hold entry's global write is
+  // not announced before its queue write lands.
+  const stopProviderHoldFanout = runtime.queueStore.providerHolds.onChange(
+    () => {
+      queueMicrotask(() => emitQueueChanged(keyFor(workspace_root)));
+    }
+  );
 
   const discardCoordinator =
     options.discardCoordinator ||
@@ -2455,6 +2470,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     recordRetention,
     recordRetentionPoller,
     providerHealth,
+    stopProviderHoldFanout,
     timeline,
     repo,
     resolveBase,
@@ -2475,6 +2491,39 @@ const ATTACHMENTS = new Map();
 
 /** @type {WeakMap<object, Map<string, { onRecordChanged: () => Promise<void>, onCompletion: (record: import('./external-wait/store.js').WaitRecord) => Promise<void>, resume: import('./external-wait/service.js').ResumeHook, stop: () => void }>>} */
 const EXTERNAL_WAIT_HOOKS = new WeakMap();
+
+/**
+ * The provider probe controller of each runtime — one per process (UI-3v1h
+ * §5.4), because a global target has one probe whichever workspace waits.
+ *
+ * @type {WeakMap<object, ReturnType<typeof createProviderHealth>>}
+ */
+const SHARED_PROVIDER_HEALTH = new WeakMap();
+
+/**
+ * The runtime's one provider probe controller, built on first use. The first
+ * attachment's catalog and spawn seam construct it; every production
+ * attachment passes the same process-wide defaults, so which one comes first
+ * does not matter there.
+ *
+ * @param {ReturnType<typeof getWorkerRuntime>} runtime
+ * @param {{ accountCatalog: ReturnType<typeof createAccountCatalog>, spawn_impl?: (command: string, args: string[], options: any) => any }} seed
+ * @returns {ReturnType<typeof createProviderHealth>}
+ */
+function sharedProviderHealth(runtime, seed) {
+  let health = SHARED_PROVIDER_HEALTH.get(runtime);
+  if (!health) {
+    health = createProviderHealth({
+      store: runtime.queueStore,
+      accountCatalog: seed.accountCatalog,
+      catalog: runtimeCatalog(),
+      resolveCswapPath,
+      spawnImpl: seed.spawn_impl
+    });
+    SHARED_PROVIDER_HEALTH.set(runtime, health);
+  }
+  return health;
+}
 
 /**
  * Route singleton runtime hooks to their workspace. Queue changes after the
@@ -3023,6 +3072,18 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     log('record migration failed for %s: %o', key, err);
     return;
   }
+  // Right after the record migration — the queue's first cacher — and before
+  // anything reads or writes a provider hold (UI-3v1h §5.6). A run that does
+  // not finish leaves the remaining per-repository targets gating this
+  // workspace as before; the next start moves them.
+  try {
+    const moved = att.runtime.queueStore.migrateProviderHolds(key);
+    if (!moved.ok) {
+      log('provider hold migration did not finish for %s', key);
+    }
+  } catch (err) {
+    log('provider hold migration failed for %s: %o', key, err);
+  }
   await retireRepairLanes(att, key);
   await retireKindAttempts(att, key);
   try {
@@ -3191,6 +3252,8 @@ export function initWorkerRuntime(input) {
     });
   }
   const restore_controller = auto_advance_restore_controller;
+  /** @type {Map<string, { att: ReturnType<typeof createWorkerAttachment>, created: boolean }>} */
+  const starts = new Map();
   for (const ws of input.workspaces || []) {
     if (!ws) {
       continue;
@@ -3217,17 +3280,28 @@ export function initWorkerRuntime(input) {
       notifyChanged: (workspace) => emitQueueChanged(workspace),
       tick: (workspace) => att.scheduler.tick(workspace)
     });
-    if (!ATTACHMENT_STARTUPS.has(key)) {
-      ATTACHMENT_STARTUPS.set(
-        key,
-        startWorkerAttachment(
-          att,
-          key,
-          created && typeof countFor === 'function'
-        )
-      );
+    if (!ATTACHMENT_STARTUPS.has(key) && !starts.has(key)) {
+      starts.set(key, { att, created });
     }
     built.push(att);
+  }
+  // Before any attachment starts (UI-3v1h §5.6): the global generation
+  // counter begins above every hold or receipt generation the queues already
+  // handed out. Read-only, so the record migration stays each queue's first
+  // cacher.
+  for (const [key, { att }] of starts) {
+    try {
+      const store = att.runtime.queueStore;
+      store.providerHolds.seedGeneration(store.providerGenerationFloor(key));
+    } catch (err) {
+      log('provider hold generation seed failed for %s: %o', key, err);
+    }
+  }
+  for (const [key, { att, created }] of starts) {
+    ATTACHMENT_STARTUPS.set(
+      key,
+      startWorkerAttachment(att, key, created && typeof countFor === 'function')
+    );
   }
   return built;
 }
@@ -3558,6 +3632,10 @@ export async function conversationHandoffWorker(workspace_root, input) {
  * makes it a no-op. Nothing is awaited: the reply reports that probes were
  * armed and the outcome flows through the existing recovery path.
  *
+ * The probes fired are the GLOBAL hold's (UI-3v1h §5.4): the workspace's
+ * effective hold carries the global hold's `since` whenever one stands, and
+ * the workspace itself only decides whether the click is allowed.
+ *
  * @param {string} workspace_root
  * @param {{ runner: string, since: number }} input
  * @returns {Promise<{ ok: boolean, reason?: string, armed?: number }>}
@@ -3573,7 +3651,7 @@ export async function probeProviderNow(workspace_root, input) {
   if (!hold || hold.since !== input.since) {
     return { ok: false, reason: 'hold_changed' };
   }
-  const fired = att.providerHealth.probeNow(key, input.runner);
+  const fired = att.providerHealth.probeNow(input.runner);
   if (fired.eligible === 0) {
     return { ok: false, reason: 'probe_ineligible' };
   }
@@ -4091,6 +4169,7 @@ export function __resetWorkerAttachmentsForTest() {
     } catch {
       /* ignore */
     }
+    att.stopProviderHoldFanout?.();
   }
   ATTACHMENTS.clear();
   ATTACHMENT_STARTUPS.clear();
