@@ -40,66 +40,66 @@ outage는 러너 단위로 한다. 원본은 서버 전역 하나로 둔다. 저
 
 ## 2. 검증된 전제
 
-base는 `origin/main` ec755e5b이다.
+base는 `origin/main` 3c89c2cd이다.
 
 - 보류는 큐의 top-level 필드이고 러너가 키다 — `server/worker/queue-store.js:650`.
   target 필드는 `kind·model·account·detail·last_error·resets_at·rearm_count·attempt_ids·auto_switch·switch_ready_*·next_probe_at`이다
   — `queue-store.js:791-812`.
 - 큐는 저장소마다 파일 하나이고, tmp+rename으로 쓰며 잠금은 없다(단일 프로세스) —
-  `queue-store.js:6274-6280`.
+  `queue-store.js:6295-6301`.
 - 보류 진입은 attempt pause, target 생성·병합, 전환 receipt를 큐 쓰기 한 번에 한다 —
-  `queue-store.js:8703`. 새 hold의 generation은 그 큐의 hold·pending generation 최댓값에
-  1을 더한 값이다 — `queue-store.js:8723-8737`.
+  `queue-store.js:8768`. 새 hold의 generation은 그 큐의 hold·pending generation 최댓값에
+  1을 더한 값이다 — `queue-store.js:8788-8802`.
 - 정리된 attempt는 같은 쓰기에서 target의 `attempt_ids`에서 빠진다. 비게 된 `usage_limit`
-  target도 같이 지워진다 — `queue-store.js:6513-6526`.
+  target도 같이 지워진다 — `queue-store.js:6534-6547`.
 - 해제는 target을 지우고, 보류된 attempt마다 `provider_outage` receipt를 만든다. 러너의
-  마지막 target이면 `provider_gate` admission도 지운다 — `queue-store.js:8994`.
-  계정이 사라진 경우의 해제는 재개 계정을 null로 둔다 — `queue-store.js:8983`.
+  마지막 target이면 `provider_gate` admission도 지운다 — `queue-store.js:9059`.
+  계정이 사라진 경우의 해제는 재개 계정을 null로 둔다 — `queue-store.js:9048`.
 - 디스패치 게이트는 그 저장소 스냅샷의 `provider_hold[runner]`만 읽는다. outage target이
   하나라도 있으면 러너 전체를 막고, `usage_limit`은 해석된 계정이 일치할 때만 막는다 —
-  `server/worker/scheduler.js:3821-3896`. 호출처는 네 곳이다 — `scheduler.js:11321`,
-  `13748`, `14213`, `16143`.
+  `server/worker/scheduler.js:3825-3900`. 호출처는 네 곳이다 — `scheduler.js:11346`,
+  `13773`, `14238`, `16168`.
 - 전환 후보 선택이 빼는 보류 계정 집합은 그 저장소의 보류에서만 만든다 —
-  `scheduler.js:1940-1950`. 전환 정책(`wait|switch`·허용 계정·`preempt_pct`)은 저장소별
-  큐에 있다 — `scheduler.js:3559`, `queue-store.js:8403`.
-- 프로브 컨트롤러는 attachment마다 하나씩 만들어진다 — `server/worker/attach.js:1424`.
+  `scheduler.js:1944-1954`. 전환 정책(`wait|switch`·허용 계정·`preempt_pct`)은 저장소별
+  큐에 있다 — `scheduler.js:3563`, `queue-store.js:8468`.
+- 프로브 컨트롤러는 attachment마다 하나씩 만들어진다 — `server/worker/attach.js:1435`.
   타이머 키에 workspace가 들어 있다 — `server/worker/provider-health.js:72`. 프로브는
   target의 계정 그대로 실행한다 — `provider-health.js:419`.
 - 회복 알림은 두 경로에서 나간다. 첫째, 프로브 성공 경로는 해제로 재개 자격이 생긴
   attempt가 있을 때만 한 번 알린다 — `provider-health.js:761-779`. 둘째, 계정 전환 재개는
-  전환된 attempt마다 알린다 — `scheduler.js:14700-14716`. 진입 알림은 새 target일 때
-  나간다 — `scheduler.js:6584`. 모두 저장소별이라 저장소 수만큼 중복된다.
-  `notify.js:959`에는 중복 제거가 없다.
+  전환된 attempt마다 알린다 — `scheduler.js:14725-14741`. 진입 알림은 새 target일 때
+  나간다 — `scheduler.js:6588`. 모두 저장소별이라 저장소 수만큼 중복된다.
+  `notify.js:1004`에는 중복 제거가 없다.
 - 프로브는 target의 `kind`를 그 자리에서 바꾼다. 계정이 있는 outage는 `usage_limit`으로
   강등하고, `usage_limit`은 outage로 승격한다 — `provider-health.js:796-845`. 계정 미해석
   `usage_limit` target은 프로브 타이머를 무장하지 않는다 — `provider-health.js:599`. 이
-  target은 수동 재개로만 지워진다 — `queue-store.js:9196`.
+  target은 수동 재개로만 지워진다 — `queue-store.js:9261`.
 - 인증 실패(`credential`)는 분류기가 계정 범위로 판정한다 — `server/worker/runner/provider-outage.js:156`.
   그런데 진입은 `usage_limit`·`access_disabled`만 `usage_limit` target으로 만들고,
-  `credential`은 계정을 가진 outage target이 된다 — `scheduler.js:6504-6508`. 게이트는
-  outage target이 하나라도 있으면 러너 전체를 막는다 — `scheduler.js:3829-3838`. 클라이언트
+  `credential`은 계정을 가진 outage target이 된다 — `scheduler.js:6508-6512`. 게이트는
+  outage target이 하나라도 있으면 러너 전체를 막는다 — `scheduler.js:3833-3842`. 클라이언트
   예측도 같다 — `app/views/worker/lane-model.js:1577`. ADR UI-a5l2가 승계한 조항은 인증
   실패를 "계정 단위 공급자 보류"로 적었지만, 지금 코드는 러너 전체를 막는다.
 - 보류 attempt의 계정은 시도에 기록된 계정이 없으면 카탈로그의 활성 계정으로 채운다 —
-  `scheduler.js:1845`. 그래서 attempt 레코드만으로는 보류된 계정을 되찾을 수 없다.
+  `scheduler.js:1849`. 그래서 attempt 레코드만으로는 보류된 계정을 되찾을 수 없다.
 - stale receipt 폐기는 receipt의 generation을 그 저장소 러너 hold의 generation과
-  비교한다. hold가 있고 값이 다르면 버린다 — `queue-store.js:9103-9120`. 버려진 attempt를
+  비교한다. hold가 있고 값이 다르면 버린다 — `queue-store.js:9168-9185`. 버려진 attempt를
   다시 무장하는 정리 경로는 `auto_resume_refused`가 있는 attempt만 본다 —
-  `scheduler.js:14466-14480`.
+  `scheduler.js:14491-14505`.
 - 재개 단일성(`resume_in_flight`)과 같은 계정 기동 간격(`launch_locks`)은 이미 프로세스
-  전역이다 — `scheduler.js:215`, `server/worker/runner/claude.js:31`.
-- attachment는 서버 시작 때 `initWorkerRuntime`이 만든 목록뿐이다 — `attach.js:3154`.
+  전역이다 — `scheduler.js:216`, `server/worker/runner/claude.js:31`.
+- attachment는 서버 시작 때 `initWorkerRuntime`이 만든 목록뿐이다 — `attach.js:3169`.
   시작 뒤 등록된 저장소는 디스패치 루프가 없다.
 - 표시용 `next_probe_at`은 `rearm_count < 3`·24h 상한으로 계산된다. 프로버에는 이 상한이
-  없다 — `server/ws/worker-handlers.js:3002-3017`.
+  없다 — `server/ws/worker-handlers.js:3061-3076`.
 - 화면은 `decorateQueue`가 저장소마다 `provider_hold`를 실어 보낸다 —
-  `server/ws/worker-handlers.js:3180`, `3256`. 모니터도 같은 함수로 저장소마다
+  `server/ws/worker-handlers.js:3239`, `3316`. 모니터도 같은 함수로 저장소마다
   조립한다 — `server/ws/monitor-handlers.js:733`. 대기 행 칩은 그 저장소의
   `provider_hold`에서만 판정하고, target이 없으면 그리지 않는다 —
   `app/views/worker/lane-model.js:1571`, `1718`, `3300`.
 - 대기 사유(`provider_hold`)는 보류된 paused attempt에만 붙는다 —
   `server/worker/wait-judgment.js:884-904`. 계정 카탈로그는 자기 보류가 있을 때만 읽는다 —
-  `attach.js:2387`.
+  `attach.js:2402`.
 - 서버 전역 상태 파일은 같은 패턴을 쓴다. `$XDG_STATE_HOME/bdui/<이름>.json`에
   tmp+rename으로 쓰고, 메모리 캐시를 두며, persist를 먼저 한 뒤 캐시에 반영한다 —
   `server/worker/state-paths.js:142-162`, `server/timing-settings.js:394`.
@@ -171,10 +171,10 @@ target은 지금 필드 중 시도 소속과 무관한 것만 가진다.
 `provider_hold_members: Record<attempt_id, {runner, target_id, account, auto_switch?, switch_ready_at?, switch_ready_account?}>`.
 보류된 attempt가 어느 전역 target을 기다리는지, 그리고 저장소 정책에 달린 전환 상태를
 담는다. 전환 상태가 여기 있는 이유: `auto_switch`는 저장소의 `provider_limit_policy`로
-판정된다(`queue-store.js:8768-8813`).
+판정된다(`queue-store.js:8833-8878`).
 
 결정: 멤버십은 진입할 때 target의 계정(`account`)을 함께 영속한다. 이유: attempt
-레코드에는 보류된 계정이 없을 수 있다(`scheduler.js:1845`). 그래서 전역 target이 이미
+레코드에는 보류된 계정이 없을 수 있다(`scheduler.js:1849`). 그래서 전역 target이 이미
 지워진 뒤(재시작·손상)에도 정산이 재개 계정을 정하려면 멤버십에 계정이 있어야 한다.
 target이 재분류돼도 계정은 바뀌지 않으므로 이 값은 낡지 않는다.
 
@@ -196,7 +196,7 @@ target은 전역으로 올리지 않고, 지금처럼 그 저장소 큐의 `prov
 사용자 규칙이 "`usage_limit`은 계정 단위"인데, 이 target에는 계정이 없다. 이 target이
 fail-closed로 러너 전체를 막는 범위를 모든 저장소로 넓히면, 한 저장소의 계정 해석 실패가
 서버 전체를 세운다. 이 target은 지금처럼 프로브하지 않고, 수동 재개로만 지워진다
-(`queue-store.js:9196`). 계정이 있는 outage target은 전역이다.
+(`queue-store.js:9261`). 계정이 있는 outage target은 전역이다.
 
 ### 5.2 진입
 
@@ -229,10 +229,10 @@ attempt는 잃지 않는다. 재시작한 정산이 같은 종료 결과로 다�
 **전환 후보와 선제 전환.** 전환 후보 선택이 빼는 보류 계정 집합은 전역 target 전체의 계정이다.
 이 기준은 다음 네 곳에 똑같이 적용한다.
 
-- 전환 후보 선택: `scheduler.js:1940`
-- 전환 준비: `scheduler.js:2012`
-- 진입 시 후보 보류 검사: `queue-store.js:8788`
-- 보류 attempt 전환: `queue-store.js:8917`
+- 전환 후보 선택: `scheduler.js:1944`
+- 전환 준비: `scheduler.js:2016`
+- 진입 시 후보 보류 검사: `queue-store.js:8853`
+- 보류 attempt 전환: `queue-store.js:8982`
 
 선제 전환(`applyPreemptSwitch`·`livePreemptPass`)의 "현재 계정이 보류 중" 판정도 전역
 `usage_limit`을 본다. 그래서 switch 모드 저장소는 다른 저장소가 관측한 한도에도 디스패치
@@ -263,7 +263,7 @@ workspace인지)에만 쓴다. 프로브는 target을 지우지 않는다(ADR UI
 계정 전환 재개(`consumeProviderAutoResume`의 `account_switch` 경로)의 회복 알림은 이 해제
 알림과 별개다. 지금처럼 전환된 attempt마다 한 번 보낸다. 전역화로 바뀌는 것은 없다.
 전환은 그 attempt를 다른 계정으로 옮긴 사건이고, 원래 target은 계속 서 있다
-(`queue-store.js:8904`).
+(`queue-store.js:8969`).
 
 **멤버십 정산.** 저장소 W에서 하는 일은 다음과 같다. 함수 하나가 해제 직후와 attachment
 `start()`에서 모두 쓰인다.
@@ -290,7 +290,7 @@ workspace인지)에만 쓴다. 프로브는 target을 지우지 않는다(ADR UI
 경우는 receipt 뒤에 다시 보류된 것이다. 러너의 전역 hold generation이 바뀌었다는 이유로는
 버리지 않는다. 이유: 전역에서는 다른 저장소의 무관한 보류가 generation을 바꾼다. 지금처럼
 generation만 비교하면 해제된 target의 receipt가 사라진다. 그러면 그 attempt는 멤버십도
-`auto_resume_refused`도 없어 재무장 경로(`scheduler.js:14466-14480`)에 걸리지 않는다.
+`auto_resume_refused`도 없어 재무장 경로(`scheduler.js:14491-14505`)에 걸리지 않는다.
 `live_preempt` receipt는 지금처럼 이 판정에서 빠진다. `account_switch` receipt도 같은
 규칙이다.
 
@@ -320,7 +320,7 @@ target은 지우지 않는다. 결정: 기다리는 attempt가 없는 `usage_lim
 
 **변경 전파.** 전역 저장소가 바뀌면 attach된 모든 저장소에 대해 큐 변경 이벤트를 낸다.
 그러면 Worker 탭 fanout, 모니터 재조립, wait-judge 재판정이 돈다. wait-judge의
-`controlState` 해시와 카탈로그 읽기 조건(`attach.js:339`, `2387`)은 유효 보류 투영을
+`controlState` 해시와 카탈로그 읽기 조건(`attach.js:339`, `2402`)은 유효 보류 투영을
 입력으로 쓴다.
 
 **동일성.** 같은 Bead 카드는 두 탭에서 같은 칩과 버튼을 갖는다. §9 의도된 차이는 늘지 않는다.
@@ -454,7 +454,7 @@ stale 규칙으로만 판정된다. 그 attempt가 이관된 살아 있는 멤�
 ## 9. 경계·후속
 
 - 관찰: `publicProviderHolds`가 표시용 `next_probe_at`을 `rearm_count < 3`·24h 상한으로
-  계산한다(`server/ws/worker-handlers.js:3002-3017`). 프로버에는 이 상한이 없다(UI-inge).
+  계산한다(`server/ws/worker-handlers.js:3061-3076`). 프로버에는 이 상한이 없다(UI-inge).
   §5.5 투영을 고칠 때 같은 함수에 손이 간다. 구현 중 fix-now로 흡수할 수 있고, 별도 Bead
   후보는 아니다. 근거는 §2에 있다.
 - 관찰: attach되지 않은 저장소(시작 뒤 등록)는 디스패치하지 않는다. 그래서 정산 대상에서
