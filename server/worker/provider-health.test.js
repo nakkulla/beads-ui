@@ -1947,6 +1947,26 @@ describe('server-global probes and releases (UI-3v1h §5.4)', () => {
     );
   });
 
+  test('skips a timer whose target left before it fired', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeHangingSpawn();
+    const env = setup(store, timers, spawnImpl);
+    holdIn(store, WS, 'a1');
+    await env.health.start(WS);
+    const stale = timers.next();
+    const target = store.snapshot(WS).provider_hold.claude.targets[0];
+    store.providerHolds.remove(String(target.target_id));
+    holdIn(store, OTHER, 'b1', { account: 'other@example.com' });
+
+    /** @type {NonNullable<typeof stale>} */ (stale).fired = true;
+    /** @type {NonNullable<typeof stale>} */ (stale).fn();
+    await flush();
+
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).auto_resume_pending).toEqual([]);
+  });
+
   test('probes in the origin workspace while it is attached', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
