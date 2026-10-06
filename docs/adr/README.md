@@ -6,6 +6,7 @@
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
 | UI-jbl1 | [실패 대화 자동 기동과 확인 필요 알림 통일](UI-jbl1-failure-conversation-auto-launch.md) | 2026-10-07 | 실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다 |
+| UI-3v1h | [공급자 보류의 서버 전역 원본과 Worker 가드](UI-3v1h-provider-hold-server-global.md) | 2026-10-07 | 공급자 보류의 원본은 서버 전역 하나이고 usage_limit·인증 실패는 계정, 그 밖의 outage는 러너 단위로 모든 저장소의 디스패치와 전환 후보를 막는다; 계정 미해석 target만 저장소에 남고, 저장소는 보류 attempt를 target_id·계정 멤버십으로 가리키며, 해제는 전역 한 번 뒤 각 저장소가 자기 멤버십을 정산한다 — UI-a5l2의 가드·공급자 조항은 그대로 승계한다 |
 | UI-ny0h | [Worker 머지 큐·머지 자격·독립 스위치와 해소 대기 설정](UI-ny0h-merge-queue-and-resolution-wait-setting.md) | 2026-10-03 | PR 랜딩 작업의 머지는 Worker의 단일 순차 큐만 실행하고 완료는 MERGED 관측이다; 머지 자격은 저장소 안의 입력(PR·base·head identity, mergeability, 리뷰·실행 영수증, [verify])만 보고 GitHub checks는 읽지 않는다; auto_merge와 auto_advance는 독립 스위치이고 어떤 클릭도 둘을 함께 바꾸지 않는다; 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이고 그 길이는 서버 전역 타이밍 설정이 정하며 충돌 해소 fence는 수동 권한 면제·슬롯 여유로 판정한다 |
 | UI-ooc0 | [모델 활성은 서버 전역 꺼 둔 모델 목록으로 선택지만 거른다](UI-ooc0-model-visibility-disabled-list.md) | 2026-09-29 | 모델 활성은 서버 전역 꺼 둔 모델 목록이 선택지 표시에서만 빼는 것이며 카탈로그·저장 값·디스패치 검증·단가는 그대로 둔다; 저장된 값이 꺼 둔 모델이면 (비활성)으로 남기고 러너마다 하나 이상 켜 둔다 |
 | UI-u6ud-9 | [사용량 집계](UI-u6ud-9-usage-aggregation.md) | 2026-09-23 | 사용량은 검증된 직접 사용량만 부모·자식 중복 없이 합산하고 입증되지 않은 값은 추정 가산하지 않으며 미관측 범위는 부분 집계로 표시한다; 직접 세션 카드는 현재 참조 대화 전체를 보이되 Bead별 배분·워크스페이스 합계 가산을 하지 않는다 |
@@ -14,7 +15,6 @@
 | UI-u6ud-11 | [Worker 주소와 저장소 defaults 소비](UI-u6ud-11-worker-url-and-defaults.md) | 2026-09-23 | Beads UI는 저장소 defaults 저장값과 Worker 주소 적용값을 분리하고 공통 주소의 조회·쓰기는 설치된 dotfiles worker-url CLI로만 하며 kv·공통 파일을 직접 쓰거나 적용값을 추측하지 않는다; defaults의 키·schema·허용값·부재 규칙은 dotfiles 계약이 정의하고 beads-ui는 어휘를 넓히거나 하네스 기본값을 복제하지 않으며 kv 읽기는 fail-quiet, 사용자 편집 쓰기는 strict 거절이다; 설정 화면은 적용 주소·저장소 예외·공통 기본값을 따로 보이고 새 연결 점검 API는 두지 않는다 |
 | UI-u6ud-10 | [실행 프리셋과 판정 칩](UI-u6ud-10-exec-presets-and-chips.md) | 2026-09-23 | 실행 프리셋은 applies_to 계열별 id 하나가 정체성이고 읽을 때 계열 키 집합을 대칭 비교하며 dispatchPreset과 카드 비교는 분리한다; 판정 칩 복잡·frontend·backend 클릭은 서버 전역 바인딩의 general 프리셋을 그 이슈에 적용하고 재클릭은 첫 클릭 전 핀으로 되돌리며 quick_fix 이슈는 거부한다; 칩 바인딩 편집은 모니터 일괄 창의 서버 전역 탭에만 있고 저장소 하나를 편집하는 창에는 섞지 않는다 |
 | UI-u6ud | [데이터 계층과 스냅샷 투영](UI-u6ud-data-layer-snapshot-projection.md) | 2026-09-23 | 데이터 계층은 bd CLI shell-out(스냅샷 세대당 기본 2회 read, legacy 3회)이고 DB 직결·daemon·batch RPC는 없다; issue-detail을 포함한 모든 목록은 같은 워크스페이스 스냅샷 세대에서 투영하고 상세 전용 bd read는 없다; 워크스페이스·후보 투영은 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스는 title-cache 외에 띄우지 않는다; 구독별 store는 전체 issue push를 받아 내용 변경만 통지하고 registry가 구독 출처를 전달한다 |
-| UI-a5l2 | [Worker 가드: 실행 전 거부·pre-push 예방·사후 base 착지 감지](UI-a5l2-guard-pre-tool-deny-no-kill-no-queue-hold.md) | 2026-09-21 | Worker 가드는 Claude·Codex 세션의 실행 전 거부 훅과 pre-push 예방, 사후 base 착지 감지로만 강제하며 텍스트 판정으로 세션을 죽이지 않고, 큐 단위 보류는 어떤 종류도 만들지 않으며, 뚫린 착지는 그 Bead의 개별 실패다 |
 
 ## 이력
 | # | 제목 | 상태 | 대체 |
@@ -25,7 +25,7 @@
 | 0004 | [impl_review 신선도를 exact-head 대신 ancestry로 판정](history/0004-impl-review-ancestry-freshness.md) | superseded | [0031](history/0031-impl-review-ancestry-and-hold-exit.md) |
 | 0005 | [자동 AI 수리 레인 폐기와 needs_human 종단](history/0005-no-auto-repair-lane.md) | superseded | [0022](history/0022-needs-human-auto-notify-click-driven-reentry.md) |
 | 0006 | [세션은 PR 배달까지, 머지는 Worker 단일 큐가 소유](history/0006-worker-owned-merge-queue.md) | superseded | [UI-u6ud-3](history/UI-u6ud-3-worker-merge-queue.md) |
-| 0007 | [머지 금지 강제를 git 수준 예방과 사후 ref 불변식으로 이전](history/0007-git-level-merge-guard-enforcement.md) | superseded | [UI-a5l2](UI-a5l2-guard-pre-tool-deny-no-kill-no-queue-hold.md) |
+| 0007 | [머지 금지 강제를 git 수준 예방과 사후 ref 불변식으로 이전](history/0007-git-level-merge-guard-enforcement.md) | superseded | [UI-a5l2](history/UI-a5l2-guard-pre-tool-deny-no-kill-no-queue-hold.md) |
 | 0008 | [데이터 계층은 bd CLI shell-out으로 고정](history/0008-bd-cli-shell-out-data-layer.md) | superseded | [UI-u6ud](UI-u6ud-data-layer-snapshot-projection.md) |
 | 0009 | [병렬성 분석 기능 전면 제거와 수동 배포 실행](history/0009-parallelism-analysis-removal.md) | superseded | [UI-u6ud-5](UI-u6ud-5-deploy-and-build.md) |
 | 0010 | [배포 실행은 Worker generic execution, 저장소 지식은 repo-ops 스크립트](history/0010-repo-operation-execution-ownership-split.md) | superseded | [UI-u6ud-5](UI-u6ud-5-deploy-and-build.md) |
@@ -97,10 +97,11 @@
 | UI-3pu9 | [자동 진행 꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다](history/UI-3pu9-auto-advance-off-quiet-wait-cards.md) | superseded | [UI-z437](history/UI-z437-external-wait-is-consumer-bead-state-fork-resume.md) |
 | UI-nu43 | [모니터 탭의 헤더 설정은 여러 저장소 일괄 적용 창이고 레포 카드 설정은 그 저장소만 편집한다](history/UI-nu43-monitor-header-settings-bulk-mode.md) | superseded | [UI-628r](history/UI-628r-bulk-settings-edit-surface-explicit-accounts.md) |
 | UI-628r | [여러 저장소 설정은 프리셋을 시작점으로 한 실행 프로필 편집면이고 계정은 명시 선택이다](history/UI-628r-bulk-settings-edit-surface-explicit-accounts.md) | superseded | [UI-e1ta](history/UI-e1ta-monitor-settings-observe-current-values-unified-dialog.md) |
+| UI-a5l2 | [Worker 가드: 실행 전 거부·pre-push 예방·사후 base 착지 감지](history/UI-a5l2-guard-pre-tool-deny-no-kill-no-queue-hold.md) | superseded | [UI-3v1h](UI-3v1h-provider-hold-server-global.md) |
 | UI-a5l2-2 | [사람 결정이 필요한 곳에서만 멈춘다 — 대기 어휘 4종, 알 수 없는 실패는 같은 세션 재시도 사다리 뒤 실패 타일, 복구 대기의 출구는 문의 세션, 잔재는 자동 처분](history/UI-a5l2-2-four-wait-kinds-env-ladder-inquiry-exit-auto-residue.md) | superseded | [UI-u6ud-7](history/UI-u6ud-7-worker-wait-resume-residue.md) |
 | UI-a5l2-3 | [머지 게이트의 verify_cmd red와 머지 후 정리 실패는 종단·알림 없이 그 Bead에 머문다](history/UI-a5l2-3-verify-cmd-red-is-hold-cleanup-failure-stays-quiet.md) | superseded | [UI-u6ud-4](history/UI-u6ud-4-merge-gate-holds.md) |
 | UI-g0lk | [머지 전 검증 실패는 completion intent의 비종단 holding 보류다](history/UI-g0lk-pre-merge-verify-failure-is-visible-holding-phase.md) | superseded | [UI-a5l2-3](history/UI-a5l2-3-verify-cmd-red-is-hold-cleanup-failure-stays-quiet.md) |
-| UI-inge | [자동 전환 모드에서는 계정 한도가 자동화를 세우지 않는다 — 실행 중 선제 전환·핀 덮기·usage_limit 상한 제거·credential 계정 보류](history/UI-inge-auto-switch-mode-account-limits-never-stall-automation.md) | superseded | [UI-a5l2](UI-a5l2-guard-pre-tool-deny-no-kill-no-queue-hold.md) |
+| UI-inge | [자동 전환 모드에서는 계정 한도가 자동화를 세우지 않는다 — 실행 중 선제 전환·핀 덮기·usage_limit 상한 제거·credential 계정 보류](history/UI-inge-auto-switch-mode-account-limits-never-stall-automation.md) | superseded | [UI-a5l2](history/UI-a5l2-guard-pre-tool-deny-no-kill-no-queue-hold.md) |
 | UI-mfm1 | [Worker와 Monitor의 후보 행은 같은 사실 키를 싣고 lane-model 한 경로가 자격을 접는다](history/UI-mfm1-candidate-facts-single-placement-path.md) | superseded | [UI-u6ud-8](history/UI-u6ud-8-candidate-lanes-and-cards.md) |
 | UI-obl0 | [유닛 실행자가 엇갈린 attempt는 미기록이 아니라 혼합이다](history/UI-obl0-mixed-unit-impl-actor.md) | superseded | 강등 — docs/superpowers/specs/2026-09-21-mixed-unit-impl-actor-design.md |
 | UI-p7s2 | [Board 탭은 퇴역하고 워커 탭이 저장소의 단일 이슈 면이 된다](history/UI-p7s2-board-retired-worker-single-issue-surface.md) | superseded | [UI-u6ud-8](history/UI-u6ud-8-candidate-lanes-and-cards.md) |
