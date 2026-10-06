@@ -461,4 +461,23 @@ describe('conversation section save (UI-jbl1 §3.4)', () => {
       '대화 세션 설정 저장 실패: bad effort'
     );
   });
+
+  test('restores the stored selection after a refused save', async () => {
+    const { host } = mountSection(async (type) =>
+      type === 'conversation-settings-get'
+        ? { snapshot: snapshotOf() }
+        : {
+            ok: false,
+            code: 'invalid_value',
+            message: 'bad effort',
+            snapshot: snapshotOf()
+          }
+    );
+    await settle();
+
+    choose(selectOf(host, 'claude_effort'), 'high');
+    await settle();
+
+    expect(selectOf(host, 'claude_effort').value).toBe('');
+  });
 });

@@ -243,6 +243,7 @@ export function createConversationSection(host, options) {
             <select
               class="ui-select"
               aria-label=${row.label}
+              .value=${live(String(value ?? ''))}
               ?disabled=${busy}
               @change=${(/** @type {Event} */ ev) => {
                 const next = /** @type {HTMLSelectElement} */ (ev.target).value;

@@ -167,8 +167,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
 - 한 세션 ID에는 프로세스 하나다. attempt의 `process_identity`가 가리키는 러너가 살아 있으면
   `runner_alive`, 확인할 수 없으면 `runner_liveness_unknown`으로 기동하지 않는다. Worker 재개도
   대화 창의 소멸을 reconcile이 확인한 뒤에만 한다.
-- 기록 세션을 열 수 없으면(전사 없음·다른 호스트·러너 불명·워크트리 없음) 같은 provider의
-  fresh 세션에 진입 블록을 주고 `fallback_reason`을 기록한다. 그때 인계 뒤 재개는 `resume()`의
+- 기록 세션을 열 수 없으면(전사 없음·다른 호스트·러너 불명·워크트리 없음) fresh 세션(변경, UI-jbl1: 런타임은 공용 대화 설정, "원래 세션 따름"이면 같은 provider)에 진입 블록을 주고 `fallback_reason`을 기록한다. 그때 인계 뒤 재개는 `resume()`의
   기존 사다리가 정한다.
 - 첫 입력은 dotfiles `execution-common.md` `## Worker 세션 대화` 진입 블록의 바이트 사본 하나
   (`CONVERSATION_ENTRY_BLOCK`, sha256 `cdc347bb…`)이고 beads-ui는 멈춤 사유·세션이 남긴 문장·두
@@ -651,8 +650,8 @@ UI-l48z에서 승계한 대안:
 - 자동 리뷰 전용 동시성 한도는 없다. 부팅 복구(`recoverReviewSessions`)는 살아 있거나 probe가 `unknown`인 기록을 그대로 두고 reconcile에 맡긴다.
 - beads-ui가 띄운 대화형 세션(문의·해결·외부 재개, claude·codex)은 큐 스냅샷의 durable 레코드 `interactive_sessions[<bead_id>:<kind>]`로 투영되고 슬롯을 점유하지 않는다. (변경, UI-jbl1) Bead 없는 저장소 작업 행(수동 배포 실패)의 해결 레코드 키는 `repo-op:<operation_id>:resolve`이고, 그 레코드는 Bead 상태를 읽지 않고 결과 줄과 세션 종료로 정산한다. 기동 직후 런처가 레코드를 쓰고 클라이언트 CAS op는 없다.
 - 대화형 세션의 생존·복구·종료는 scheduler reconcile이 소유한다. pane 마커·pane id로 생존을 판정하고, 레코드 없는 마커 pane은 복구 레코드로 재구성하며, tmux에 닿지 못하면 그 pass는 아무것도 판정하지 않는다.
-- 해결(resolve) 세션의 fork 원천은 `qualifyInteractiveForkSource` 하나가 정하고 순서는 최신 implementation attempt의 러너 세션(transcript가 local일 때) → bd `session_ref` 마지막 항목 → fresh다. fresh의 provider는 기록된 provider를 보존한다. (변경, UI-jbl1) 저장소 작업 행은 기록 세션이 없으므로 항상 fresh이고 cwd는 저장소 루트이며, fresh 기동의 런타임은 공용 대화 설정이 정한다("원래 세션 따름"이면 기록된 provider).
-- 문의(대화) 세션의 원천은 fork가 아니라 attempt 러너 세션의 fork 없는 재개다. 자격은 `qualifyAttemptSession`(러너·세션 ID·로컬 transcript)과 워크트리 존재가 정하고, 자격이 없으면 같은 provider의 fresh에 `fallback_reason`을 남긴다. 한 세션 ID에는 프로세스 하나다 — 러너가 살아 있으면 기동하지 않고 Worker 재개는 창 소멸 확인 뒤에만 한다.
+- 해결(resolve) 세션의 fork 원천은 `qualifyInteractiveForkSource` 하나가 정하고 순서는 최신 implementation attempt의 러너 세션(transcript가 local일 때) → bd `session_ref` 마지막 항목 → fresh다. (변경, UI-jbl1) fresh 기동의 런타임은 공용 대화 설정이 정하고 "원래 세션 따름"일 때만 기록된 provider를 보존한다. 저장소 작업 행은 기록 세션이 없으므로 항상 fresh이고 cwd는 저장소 루트다.
+- 문의(대화) 세션의 원천은 fork가 아니라 attempt 러너 세션의 fork 없는 재개다. 자격은 `qualifyAttemptSession`(러너·세션 ID·로컬 transcript)과 워크트리 존재가 정하고, 자격이 없으면 fresh(변경, UI-jbl1: 런타임은 공용 대화 설정, "원래 세션 따름"이면 같은 provider)에 `fallback_reason`을 남긴다. 한 세션 ID에는 프로세스 하나다 — 러너가 살아 있으면 기동하지 않고 Worker 재개는 창 소멸 확인 뒤에만 한다.
 - 세 종류(문의·해결·외부 재개)의 레코드 모두 `conversation`(대화 사유 표기·처리한 메시지 식별자·발췌·결과·`handoff` 예약·인수 알림 시각)을 갖는다(UI-18a5가 넓힘). 해결 레코드의 `handoff` 예약은 실패 행의 대상 식별과 실행 시작 시각을, 외부 재개 레코드는 `wait_id`를 함께 싣는다.
 - 대화형 세션의 정산은 전이 시점의 write(머지 뒤 `done` 이동, 일반 폐기 완료, 이슈 스냅샷의 `closed` 관측)다. 정산된 세션은 idle일 때만 닫는다 — claude는 `/exit` 주입 뒤 유예(현재 90초), codex는 `kill-window`; 턴 중·대화상자 대기는 미루되 상한(현재 30분) 뒤 `kill-window`. 스레드 아카이브는 브리지 소유다.
 - 세 종류 모두 정산 write에 `인계`와 `보류`가 더해진다(UI-18a5가 넓힘): `인계`(또는 `[워커로 이어가기]`)는 `handoff` 예약을 쓰고 창을 닫으며, 소멸을 확인한 pass가 그 행의 Worker 출구 하나(문의는 같은 세션 재개, 해결은 정리 재시도·폐기 재시도·머지 큐 재등록·저장소 작업 1회 재실행(변경, UI-jbl1), 외부 재개는 Worker attempt dispatch)를 실행한 뒤에야 레코드를 지운다; `보류`는 창을 닫는다; `인수`는 창을 두고 기존 정산(`bd_closed`·`done`·폐기)을 기다린다. 문의 대화의 끝은 attempt `cause_detail.conversation`(`pane_gone`·`hold`·`handoff`·`takeover`, 거절 사유)로 남고, 해결·외부 재개의 실행 전 거절은 카드와 타임라인에 남는다. `conversation` 없는 옛 레코드는 옛 규칙으로 정산한다.

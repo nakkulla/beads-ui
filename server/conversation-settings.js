@@ -105,44 +105,53 @@ function modelChoices(catalog, runner) {
 }
 
 /**
- * Every effort a runner accepts: its runner-wide list, then each model's own
- * additions, without repeats.
+ * The efforts the chosen model accepts — its own list when it pins one, else
+ * the runner's — or the runner-wide list when the model is left to the CLI
+ * default. An effort is only valid as a pair with the model it launches with.
  *
  * @param {CatalogLike} catalog
  * @param {string} runner
+ * @param {unknown} model - The stored model of that runner, or null.
  * @returns {string[]}
  */
-function effortChoices(catalog, runner) {
+function effortChoices(catalog, runner, model) {
   const entry = catalog?.runners?.[runner];
   if (!entry) {
     return [];
   }
-  /** @type {string[]} */
-  const out = [];
-  const lists = [
-    Array.isArray(entry.efforts) ? entry.efforts : [],
-    ...Object.values(isRecord(entry.models) ? entry.models : {}).map((model) =>
-      Array.isArray(model?.efforts) ? model.efforts : []
-    )
-  ];
-  for (const list of lists) {
-    for (const effort of list) {
-      if (typeof effort === 'string' && !out.includes(effort)) {
-        out.push(effort);
-      }
-    }
-  }
-  return out;
+  const model_entry =
+    typeof model === 'string' && isRecord(entry.models)
+      ? entry.models[model]
+      : undefined;
+  const list = Array.isArray(model_entry?.efforts)
+    ? model_entry.efforts
+    : Array.isArray(entry.efforts)
+      ? entry.efforts
+      : [];
+  return list.filter((effort) => typeof effort === 'string');
 }
 
 /**
- * The choices one field accepts.
+ * The stored model an effort field pairs with.
+ *
+ * @param {keyof ConversationSettingValues} key
+ * @param {Record<string, unknown>} overrides
+ * @returns {unknown}
+ */
+function pairedModel(key, overrides) {
+  const field = CONVERSATION_SETTINGS_FIELDS[key];
+  return field.kind === 'effort' ? overrides[`${field.runner}_model`] : null;
+}
+
+/**
+ * The choices one field accepts; an effort's depend on its runner's model.
  *
  * @param {keyof ConversationSettingValues} key
  * @param {CatalogLike} catalog
+ * @param {Record<string, unknown>} overrides - The overrides it pairs with.
  * @returns {string[]|null} Null for the boolean field.
  */
-function choicesOf(key, catalog) {
+function choicesOf(key, catalog, overrides) {
   const field = CONVERSATION_SETTINGS_FIELDS[key];
   if (field.kind === 'choice') {
     return [...FRESH_RUNTIMES];
@@ -151,9 +160,28 @@ function choicesOf(key, catalog) {
     return modelChoices(catalog, /** @type {string} */ (field.runner));
   }
   if (field.kind === 'effort') {
-    return effortChoices(catalog, /** @type {string} */ (field.runner));
+    return effortChoices(
+      catalog,
+      /** @type {string} */ (field.runner),
+      pairedModel(key, overrides)
+    );
   }
   return null;
+}
+
+/**
+ * Whether a key names an effort field.
+ *
+ * @param {string} key
+ * @returns {boolean}
+ */
+function isEffortKey(key) {
+  return (
+    Object.hasOwn(CONVERSATION_SETTINGS_FIELDS, key) &&
+    CONVERSATION_SETTINGS_FIELDS[
+      /** @type {keyof ConversationSettingValues} */ (key)
+    ].kind === 'effort'
+  );
 }
 
 /**
@@ -162,14 +190,15 @@ function choicesOf(key, catalog) {
  * @param {keyof ConversationSettingValues} key
  * @param {unknown} value
  * @param {CatalogLike} catalog
+ * @param {Record<string, unknown>} overrides - The overrides it pairs with.
  * @returns {string|null} Why the value is rejected, or null when it is valid.
  */
-function checkValue(key, value, catalog) {
+function checkValue(key, value, catalog, overrides) {
   const field = CONVERSATION_SETTINGS_FIELDS[key];
   if (field.kind === 'boolean') {
     return typeof value === 'boolean' ? null : '참·거짓이어야 합니다';
   }
-  const choices = /** @type {string[]} */ (choicesOf(key, catalog));
+  const choices = /** @type {string[]} */ (choicesOf(key, catalog, overrides));
   if (typeof value !== 'string' || !choices.includes(value)) {
     return `다음 중 하나여야 합니다: ${choices.join(', ')}`;
   }
@@ -328,12 +357,18 @@ export function createConversationSettingsStore(options = {}) {
     const current_catalog = catalog();
     /** @type {Record<string, unknown>} */
     const overrides = {};
-    for (const [key, value] of Object.entries(parsed.overrides)) {
+    // An effort is checked against the model already accepted, so efforts go
+    // last whatever the file's key order.
+    const entries = Object.entries(parsed.overrides).sort(
+      ([a], [b]) => Number(isEffortKey(a)) - Number(isEffortKey(b))
+    );
+    for (const [key, value] of entries) {
       const reason = Object.hasOwn(CONVERSATION_SETTINGS_FIELDS, key)
         ? checkValue(
             /** @type {keyof ConversationSettingValues} */ (key),
             value,
-            current_catalog
+            current_catalog,
+            overrides
           )
         : '알 수 없는 키입니다';
       if (reason) {
@@ -384,7 +419,8 @@ export function createConversationSettingsStore(options = {}) {
     for (const [key, field] of Object.entries(CONVERSATION_SETTINGS_FIELDS)) {
       const choices = choicesOf(
         /** @type {keyof ConversationSettingValues} */ (key),
-        current_catalog
+        current_catalog,
+        state.overrides
       );
       fields[key] = {
         kind: field.kind,
@@ -484,12 +520,13 @@ export function createConversationSettingsStore(options = {}) {
       const next = { ...state.overrides };
       for (const [key, value] of Object.entries(input.values)) {
         const reason = Object.hasOwn(CONVERSATION_SETTINGS_FIELDS, key)
-          ? value === null
+          ? value === null || isEffortKey(key)
             ? null
             : checkValue(
                 /** @type {keyof ConversationSettingValues} */ (key),
                 value,
-                current_catalog
+                current_catalog,
+                next
               )
           : '알 수 없는 키입니다';
         if (reason) {
@@ -505,6 +542,28 @@ export function createConversationSettingsStore(options = {}) {
           delete next[key];
         } else {
           next[key] = value;
+        }
+      }
+      // Every stored effort — sent now or kept — must pair with the model it
+      // will launch with after this request.
+      for (const key of Object.keys(next)) {
+        if (!isEffortKey(key)) {
+          continue;
+        }
+        const reason = checkValue(
+          /** @type {keyof ConversationSettingValues} */ (key),
+          next[key],
+          current_catalog,
+          next
+        );
+        if (reason) {
+          return {
+            ok: false,
+            code: 'invalid_value',
+            key,
+            message: reason,
+            snapshot: snapshot()
+          };
         }
       }
       const revision = state.revision + 1;

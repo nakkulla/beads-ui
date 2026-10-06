@@ -154,17 +154,66 @@ describe('conversation settings store (UI-jbl1 §3.4)', () => {
     });
   });
 
-  test('lists each runner models and the union of its efforts', () => {
+  test('lists each runner models and the runner efforts without a model', () => {
     const store = makeStore();
 
     const fields = store.snapshot().fields;
 
     expect(fields.claude_model.choices).toEqual(['opus', 'opus-4.8']);
-    expect(fields.codex_effort.choices).toEqual(['minimal', 'low', 'xhigh']);
+    expect(fields.codex_effort.choices).toEqual(['minimal', 'low']);
     expect(fields.fresh_runtime).toMatchObject({
       choices: ['inherit', 'claude', 'codex'],
       default: 'claude'
     });
+  });
+
+  test('lists the stored model own efforts', () => {
+    writeFile({ revision: 1, overrides: { codex_model: 'sol' } });
+    const store = makeStore();
+
+    const fields = store.snapshot().fields;
+
+    expect(fields.codex_effort.choices).toEqual(['low', 'xhigh']);
+  });
+
+  test('refuses an effort the chosen model does not accept', () => {
+    const store = makeStore();
+
+    const result = store.set({
+      expected_revision: 0,
+      values: { codex_model: 'sol', codex_effort: 'minimal' }
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_value',
+      key: 'codex_effort'
+    });
+    expect(store.effective().codex_model).toBeNull();
+  });
+
+  test('refuses a model change that strands the stored effort', () => {
+    writeFile({ revision: 1, overrides: { codex_effort: 'minimal' } });
+    const store = makeStore();
+
+    const result = store.set({
+      expected_revision: 1,
+      values: { codex_model: 'sol' }
+    });
+
+    expect(result).toMatchObject({ ok: false, key: 'codex_effort' });
+  });
+
+  test('drops a stored effort its stored model does not accept on load', () => {
+    writeFile({
+      revision: 1,
+      overrides: { codex_effort: 'minimal', codex_model: 'sol' }
+    });
+    const store = makeStore();
+
+    const values = store.effective();
+
+    expect(values).toMatchObject({ codex_model: 'sol', codex_effort: null });
   });
 
   test('builds the launch flags through the catalog model id', () => {
