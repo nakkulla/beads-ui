@@ -935,6 +935,44 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
     );
   });
 
+  // UI-3v1h §5.5: 이 저장소에 멤버가 없는 전역 target도 두 탭에 같은 칩을 세운다.
+  test('draws the same provider gate from a hold another workspace observed', async () => {
+    const { worker, monitor } = await drawBothTabs(undefined, {
+      provider_hold: {
+        claude: {
+          since: NOW - HOUR,
+          generation: 3,
+          targets: [
+            {
+              target_id: 't-elsewhere',
+              origin: '/elsewhere',
+              kind: 'outage',
+              model: 'opus',
+              account: null,
+              detail: 'overloaded_529',
+              last_error: 'API Error: 529 Overloaded',
+              resets_at: null,
+              rearm_count: 0,
+              attempt_ids: [],
+              next_probe_at: NOW + HOUR
+            }
+          ]
+        }
+      }
+    });
+
+    const worker_card = /** @type {HTMLElement} */ (
+      cardsByBead(worker).get('Q-1')
+    );
+    const monitor_card = /** @type {HTMLElement} */ (
+      cardsByBead(monitor).get('Q-1')
+    );
+    expect(partsOf(monitor_card)).toEqual(partsOf(worker_card));
+    expect(
+      worker_card.querySelector('.worker-dep--gate-provider_outage')
+    ).not.toBeNull();
+  });
+
   test('stands an issue closed outside the Worker only in the Worker done lane', async () => {
     const { worker, monitor } = await drawBothTabs();
 

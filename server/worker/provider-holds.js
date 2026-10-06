@@ -744,6 +744,14 @@ export function createProviderHoldStore(options = {}) {
       return () => {
         listeners.delete(listener);
       };
+    },
+
+    /**
+     * Drop the in-memory state (test hook): the next read cold-loads the file,
+     * exercising the restart path.
+     */
+    __clearCacheForTest() {
+      cache = null;
     }
   };
 }

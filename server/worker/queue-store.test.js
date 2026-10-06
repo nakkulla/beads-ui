@@ -6,6 +6,7 @@ import { activeAttemptStates } from '../../app/utils/active-attempts.js';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { ensureDelegationMonitorDir } from './delegation-monitor.js';
+import { createProviderHoldStore } from './provider-holds.js';
 import {
   GUARD_WARNINGS_CAP,
   GUARD_WARNING_COMMAND_MAX,
@@ -21,6 +22,7 @@ import {
   attemptRecordPath,
   delegationMonitorDir,
   deployLogDir,
+  providerHoldsFilePath,
   queueFilePath,
   usageReceiptInboxDir,
   verifyLogDir,
@@ -1798,6 +1800,321 @@ describe('worker/queue-store provider hold', () => {
 
     expect(discarded.discarded_attempt_ids).toEqual(['att-1']);
     expect(discarded.queue.auto_resume_pending).toEqual([]);
+  });
+});
+
+describe('worker/queue-store server-global provider holds (UI-3v1h)', () => {
+  const OTHER = '/tmp/example-workspace/project-b';
+
+  /**
+   * Add one running claude attempt to a workspace.
+   *
+   * @param {any} queue_store
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+   */
+  function seedAttempt(queue_store, workspace, attempt_id, patch = {}) {
+    queue_store.appendAttempt(workspace, {
+      expected_revision: queue_store.snapshot(workspace).revision,
+      attempt: { attempt_id, bead_id: `B-${attempt_id}` }
+    });
+    queue_store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { runner: 'claude', model: 'opus', status: 'running', ...patch }
+    });
+  }
+
+  /**
+   * Hold one attempt of a workspace on the shared usage-limit target.
+   *
+   * @param {ReturnType<typeof createQueueStore>} queue_store
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string|null} [account]
+   */
+  function holdUsage(
+    queue_store,
+    workspace,
+    attempt_id,
+    account = 'held@example.com'
+  ) {
+    return queue_store.holdProviderAttempt(workspace, {
+      attempt_id,
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account,
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+  }
+
+  /**
+   * Write one per-repository queue file the way the pre-global server did.
+   *
+   * @param {string} workspace
+   * @param {Record<string, unknown>} raw
+   */
+  function writeLegacyQueue(workspace, raw) {
+    fs.mkdirSync(path.dirname(queueFilePath(workspace)), { recursive: true });
+    fs.writeFileSync(queueFilePath(workspace), JSON.stringify(raw));
+  }
+
+  /**
+   * A legacy queue whose claude hold has one account target and one
+   * account-unresolved target.
+   *
+   * @param {string} attempt_id
+   * @param {number} generation
+   */
+  function legacyHeldQueue(attempt_id, generation) {
+    return {
+      attempts: {
+        [attempt_id]: {
+          attempt_id,
+          bead_id: `B-${attempt_id}`,
+          runner: 'claude',
+          status: 'paused',
+          cause: 'provider_outage:usage_limit'
+        },
+        [`${attempt_id}-null`]: {
+          attempt_id: `${attempt_id}-null`,
+          bead_id: `B-${attempt_id}-null`,
+          runner: 'claude',
+          status: 'paused',
+          cause: 'provider_outage:usage_limit'
+        }
+      },
+      provider_hold: {
+        claude: {
+          since: 50,
+          generation,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'opus',
+              account: 'held@example.com',
+              detail: 'usage_limit',
+              attempt_ids: [attempt_id],
+              auto_switch: 'none'
+            },
+            {
+              kind: 'usage_limit',
+              model: 'opus',
+              account: null,
+              detail: 'usage_limit',
+              attempt_ids: [`${attempt_id}-null`]
+            }
+          ]
+        }
+      }
+    };
+  }
+
+  test('reports entered once when two workspaces hold on the same target', () => {
+    const store = createQueueStore();
+    seedAttempt(store, WS, 'a1');
+    seedAttempt(store, OTHER, 'b1');
+
+    const first = holdUsage(store, WS, 'a1');
+    const second = holdUsage(store, OTHER, 'b1');
+
+    expect([first.entered, second.entered]).toEqual([true, false]);
+    expect(second.target_id).toBe(first.target_id);
+  });
+
+  test('projects another workspace target into a queue with no hold history', () => {
+    const store = createQueueStore();
+    seedAttempt(store, OTHER, 'b1');
+    holdUsage(store, OTHER, 'b1');
+
+    const queue = store.snapshot(WS);
+
+    expect(queue.provider_hold.claude.targets).toEqual([
+      expect.objectContaining({
+        account: 'held@example.com',
+        origin: OTHER,
+        attempt_ids: []
+      })
+    ]);
+  });
+
+  test('keeps an account-unresolved target in its own workspace', () => {
+    const store = createQueueStore();
+    seedAttempt(store, OTHER, 'b1');
+    holdUsage(store, OTHER, 'b1', null);
+
+    const own = store.snapshot(OTHER).provider_hold.claude.targets;
+    const elsewhere = store.snapshot(WS).provider_hold;
+
+    expect(own).toEqual([
+      expect.objectContaining({ account: null, attempt_ids: ['b1'] })
+    ]);
+    expect(elsewhere).toEqual({});
+  });
+
+  test('skips the queue write when the global write fails', () => {
+    const holds = createProviderHoldStore({
+      fs: /** @type {any} */ ({
+        ...fs,
+        writeFileSync: (
+          /** @type {string} */ file,
+          /** @type {string} */ data
+        ) => {
+          if (file.includes('provider-holds')) {
+            throw new Error('disk full');
+          }
+          fs.writeFileSync(file, data);
+        }
+      })
+    });
+    const store = createQueueStore({ providerHolds: holds });
+    seedAttempt(store, WS, 'a1');
+    const before = store.snapshot(WS);
+
+    expect(() => holdUsage(store, WS, 'a1')).toThrow('disk full');
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('settles with the membership account after the global file is lost', () => {
+    const store = createQueueStore();
+    seedAttempt(store, WS, 'a1');
+    holdUsage(store, WS, 'a1');
+    fs.writeFileSync(providerHoldsFilePath(), 'corrupt');
+    const restarted = createQueueStore({
+      providerHolds: createProviderHoldStore({ warn: () => {} })
+    });
+
+    const settled = restarted.settleProviderMembers(WS);
+
+    expect(restarted.snapshot(WS).attempts.a1.claude_account).toBeNull();
+    expect(settled.pending).toEqual([
+      expect.objectContaining({
+        attempt_id: 'a1',
+        account: 'held@example.com',
+        kind: 'provider_outage'
+      })
+    ]);
+  });
+
+  test('keeps a released receipt while another workspace holds the runner anew', () => {
+    const store = createQueueStore();
+    seedAttempt(store, WS, 'a1');
+    holdUsage(store, WS, 'a1');
+    const found = store.providerHolds.findBy({
+      runner: 'claude',
+      kind: 'usage_limit',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+    store.providerHolds.remove(String(found?.target.target_id));
+    store.settleProviderMembers(WS);
+    seedAttempt(store, OTHER, 'b1');
+    holdUsage(store, OTHER, 'b1', 'other@example.com');
+
+    const discarded = store.discardStaleAutoResumePending(WS);
+
+    expect(discarded.discarded_attempt_ids).toEqual([]);
+    expect(
+      store.snapshot(WS).auto_resume_pending.map((entry) => entry.attempt_id)
+    ).toEqual(['a1']);
+  });
+
+  test('merges the same target of two queues into one with memberships', () => {
+    writeLegacyQueue(WS, legacyHeldQueue('a1', 3));
+    writeLegacyQueue(OTHER, legacyHeldQueue('b1', 5));
+    const store = createQueueStore();
+
+    store.migrateProviderHolds(WS);
+    store.migrateProviderHolds(OTHER);
+
+    const targets = store.providerHolds.holds().claude.targets;
+    expect(targets).toHaveLength(1);
+    expect(store.snapshot(WS).provider_hold_members.a1).toEqual({
+      runner: 'claude',
+      target_id: targets[0].target_id,
+      account: 'held@example.com',
+      auto_switch: 'none',
+      switch_ready_at: null,
+      switch_ready_account: null
+    });
+    expect(store.snapshot(OTHER).provider_hold_members.b1).toMatchObject({
+      target_id: targets[0].target_id,
+      account: 'held@example.com'
+    });
+  });
+
+  test('leaves the same result when the migration runs again', () => {
+    writeLegacyQueue(WS, legacyHeldQueue('a1', 3));
+    const store = createQueueStore();
+    store.migrateProviderHolds(WS);
+    const holds = store.providerHolds.snapshot();
+    const queue = store.snapshot(WS);
+
+    const again = store.migrateProviderHolds(WS);
+
+    expect(again).toEqual({ ok: true, migrated: 0 });
+    expect(store.providerHolds.snapshot()).toEqual(holds);
+    expect(store.snapshot(WS)).toEqual(queue);
+  });
+
+  test('keeps an account-unresolved target in the migrated queue', () => {
+    writeLegacyQueue(WS, legacyHeldQueue('a1', 3));
+    const store = createQueueStore();
+
+    store.migrateProviderHolds(WS);
+
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(raw.provider_hold.claude.targets).toEqual([
+      expect.objectContaining({ account: null, attempt_ids: ['a1-null'] })
+    ]);
+  });
+
+  test('reads the migrated queues generations as the counter floor', () => {
+    writeLegacyQueue(WS, {
+      ...legacyHeldQueue('a1', 3),
+      auto_resume_pending: [
+        {
+          attempt_id: 'gone',
+          generation: 9,
+          account: null,
+          kind: 'provider_outage'
+        }
+      ]
+    });
+    const store = createQueueStore();
+
+    const floor = store.providerGenerationFloor(WS);
+
+    expect(floor).toBe(9);
+  });
+
+  test('binds no membership to an attempt whose switch receipt is pending', () => {
+    writeLegacyQueue(WS, {
+      ...legacyHeldQueue('a1', 3),
+      auto_resume_pending: [
+        {
+          attempt_id: 'a1',
+          generation: 3,
+          account: 'new@example.com',
+          kind: 'account_switch'
+        }
+      ]
+    });
+    const store = createQueueStore();
+    store.migrateProviderHolds(WS);
+
+    const discarded = store.discardStaleAutoResumePending(WS);
+
+    expect(store.snapshot(WS).provider_hold_members).toEqual({});
+    expect(discarded.discarded_attempt_ids).toEqual([]);
   });
 });
 

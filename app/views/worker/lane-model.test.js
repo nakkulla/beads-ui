@@ -7455,6 +7455,81 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     ]);
   });
 
+  // UI-3v1h §5.1: 계정을 가진 credential outage는 그 계정만 막는다 — 서버
+  // 게이트(`scheduler.js providerDispatchHeld`)와 같은 범위다.
+  test('gates a credential outage only on the row that resolves to its account', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          provider_hold: {
+            claude: {
+              since: 1,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'outage',
+                  detail: 'credential',
+                  model: 'sonnet',
+                  account: 'a@example.com',
+                  next_probe_at: 9000
+                }
+              ]
+            }
+          },
+          bead_overlay: {
+            'A-1': { metadata: { claude_account: 'a@example.com' } },
+            'A-2': { metadata: { claude_account: 'b@example.com' } }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([lanes.queue[0].gate?.kind, lanes.queue[1].gate]).toEqual([
+      'provider_outage',
+      undefined
+    ]);
+  });
+
+  // UI-3v1h §5.5: 이 저장소에 멤버가 없는 전역 target도 같은 칩을 세운다.
+  test('gates a row on a global target no attempt here waits on', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          provider_hold: {
+            claude: {
+              since: 1,
+              generation: 4,
+              targets: [
+                {
+                  target_id: 't-1',
+                  origin: '/elsewhere',
+                  kind: 'usage_limit',
+                  detail: 'usage_limit',
+                  model: 'sonnet',
+                  account: 'a@example.com',
+                  resets_at: 7000,
+                  attempt_ids: []
+                }
+              ]
+            }
+          },
+          bead_overlay: {
+            'A-1': { metadata: { claude_account: 'a@example.com' } }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([lanes.queue[0].gate?.kind, lanes.queue[0].gate?.runner]).toEqual([
+      'provider_usage',
+      'claude'
+    ]);
+  });
+
   test('resolves the row account from the workspace default before the active login', () => {
     const lanes = buildLanes(
       [
@@ -7815,6 +7890,43 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
           line.startsWith('계정: 미해석')
         )
       ]).toEqual(['provider_outage', false]);
+    });
+
+    // UI-3v1h §5.1: 계정 단위 credential 기록은 그 계정으로 해석되는 행에서만 선다.
+    test('drops a recorded credential gate once the row resolves another account', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: {
+              'A-1': { metadata: { claude_account: 'b@example.com' } }
+            },
+            provider_hold: {
+              claude: {
+                since: 1,
+                generation: 1,
+                targets: [
+                  {
+                    kind: 'outage',
+                    detail: 'credential',
+                    model: 'sonnet',
+                    account: 'a@example.com',
+                    next_probe_at: 9000
+                  }
+                ]
+              }
+            },
+            admission: admission({
+              kind: 'outage',
+              account: 'a@example.com',
+              unresolved: false
+            })
+          })
+        ],
+        [gateState()]
+      );
+
+      expect(lanes.queue[0].gate).toBeUndefined();
     });
 
     test('drops the recorded gate once that runner hold is gone', () => {

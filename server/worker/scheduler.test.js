@@ -7802,6 +7802,302 @@ describe('scheduler provider hold and recovery', () => {
       effort: 'high'
     });
   });
+
+  describe('holds another workspace observed (UI-3v1h)', () => {
+    const OTHER = '/tmp/example-workspace/project-other';
+
+    /**
+     * Hold one attempt of OTHER — a target this workspace never saw enter.
+     *
+     * @param {any} queue_store
+     * @param {{ kind: 'outage'|'usage_limit', detail: string, account: string|null }} input
+     */
+    function holdElsewhere(queue_store, input) {
+      queue_store.appendAttempt(OTHER, {
+        expected_revision: queue_store.snapshot(OTHER).revision,
+        attempt: { attempt_id: 'other-held', bead_id: 'O1' }
+      });
+      queue_store.updateAttempt(OTHER, {
+        attempt_id: 'other-held',
+        patch: { runner: 'claude', model: 'opus', status: 'running' }
+      });
+      const result = queue_store.holdProviderAttempt(OTHER, {
+        attempt_id: 'other-held',
+        patch: {
+          status: 'paused',
+          cause: `provider_outage:${input.detail}`,
+          finished_at: 1000
+        },
+        runner: 'claude',
+        target: {
+          kind: input.kind,
+          model: 'opus',
+          account: input.account,
+          detail: input.detail,
+          last_error: input.detail,
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        }
+      });
+      if (!result.ok) {
+        throw new Error('foreign hold setup failed');
+      }
+    }
+
+    /**
+     * Two claude rows pinned to two accounts, both dispatchable at once.
+     */
+    function twoAccountEnv() {
+      return setup({
+        config: {
+          C1: { claude_account: 'held@example.com' },
+          C2: { claude_account: 'other@example.com' }
+        },
+        slots: 2,
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { key: email, email }
+          })),
+          activeClaude: vi.fn(async () => ({
+            ok: true,
+            account: { key: 'held@example.com', email: 'held@example.com' }
+          }))
+        },
+        resolveCswapPath: () => '/bin/cswap'
+      });
+    }
+
+    test('blocks a same-account row on a usage limit another workspace observed', async () => {
+      const env = twoAccountEnv();
+      holdElsewhere(env.store, {
+        kind: 'usage_limit',
+        detail: 'usage_limit',
+        account: 'held@example.com'
+      });
+      seedQueue(env.store, ['C1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(env.store.snapshot(WS).admission.C1).toMatchObject({
+        reason: 'provider_gate',
+        gate: {
+          runner: 'claude',
+          kind: 'usage_limit',
+          account: 'held@example.com',
+          unresolved: false
+        }
+      });
+    });
+
+    test('blocks only the account of a credential outage another workspace observed', async () => {
+      const env = twoAccountEnv();
+      holdElsewhere(env.store, {
+        kind: 'outage',
+        detail: 'credential',
+        account: 'held@example.com'
+      });
+      seedQueue(env.store, ['C1', 'C2']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual(['C2']);
+      expect(env.store.snapshot(WS).admission.C1).toMatchObject({
+        reason: 'provider_gate',
+        gate: {
+          runner: 'claude',
+          kind: 'outage',
+          account: 'held@example.com',
+          unresolved: false
+        }
+      });
+    });
+
+    test('blocks the whole runner on another workspace outage', async () => {
+      const env = twoAccountEnv();
+      holdElsewhere(env.store, {
+        kind: 'outage',
+        detail: 'overloaded_529',
+        account: 'held@example.com'
+      });
+      seedQueue(env.store, ['C1', 'C2']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual([]);
+    });
+
+    test('lets a row through another account usage limit', async () => {
+      const env = twoAccountEnv();
+      holdElsewhere(env.store, {
+        kind: 'usage_limit',
+        detail: 'usage_limit',
+        account: 'elsewhere@example.com'
+      });
+      seedQueue(env.store, ['C1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual(['C1']);
+    });
+
+    test('keeps another workspace unresolved target out of this gate', async () => {
+      const env = twoAccountEnv();
+      holdElsewhere(env.store, {
+        kind: 'usage_limit',
+        detail: 'usage_limit',
+        account: null
+      });
+      seedQueue(env.store, ['C1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual(['C1']);
+    });
+
+    test('leaves an account another workspace holds out of the switch candidates', async () => {
+      const env = preemptEnv({ B1: { claude_account: 'hot@example.com' } });
+      allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
+        preempt_pct: 80
+      });
+      holdElsewhere(env.store, {
+        kind: 'usage_limit',
+        detail: 'usage_limit',
+        account: 'cool@example.com'
+      });
+      seedQueue(env.store, ['B1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.settingsFor('B1').claude_account).toBe(
+        'hot@example.com'
+      );
+    });
+
+    test('dispatches a switch-mode row past an account another workspace holds', async () => {
+      const env = preemptEnv({ B1: { claude_account: 'hot@example.com' } });
+      allowSwitchAccounts(env.store, 'claude', ['cool@example.com']);
+      holdElsewhere(env.store, {
+        kind: 'usage_limit',
+        detail: 'usage_limit',
+        account: 'hot@example.com'
+      });
+      seedQueue(env.store, ['B1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.settingsFor('B1').claude_account).toBe(
+        'cool@example.com'
+      );
+    });
+
+    test('announces a target two workspaces enter only once', async () => {
+      const notify = { providerHoldEntered: vi.fn() };
+      const env = setup({ config: { B1: {}, O1: {} }, notify });
+      seedProviderAttempt(env.store, 'held', 'B1');
+      env.store.appendAttempt(OTHER, {
+        expected_revision: env.store.snapshot(OTHER).revision,
+        attempt: { attempt_id: 'other-held', bead_id: 'O1' }
+      });
+      env.store.updateAttempt(OTHER, {
+        attempt_id: 'other-held',
+        patch: { runner: 'claude', model: 'opus', status: 'running' }
+      });
+      const classified = {
+        account: 'held@example.com',
+        outage: {
+          detail: 'usage_limit',
+          message: "You've hit your limit",
+          scope: /** @type {const} */ ('account'),
+          resets_at: null
+        }
+      };
+
+      await env.scheduler.holdAttempt(WS, 'held', 'B1', null, classified);
+      await env.scheduler.holdAttempt(
+        OTHER,
+        'other-held',
+        'O1',
+        null,
+        classified
+      );
+
+      expect(notify.providerHoldEntered).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ account: 'held@example.com', repo: WS })
+      );
+    });
+
+    test('announces each switched attempt of two workspaces once', async () => {
+      const notify = { providerRecovered: vi.fn() };
+      const env = setup({
+        config: { B1: {}, O1: {} },
+        notify,
+        ...accountDeps()
+      });
+      for (const [workspace, attempt_id, bead_id] of [
+        [WS, 'held', 'B1'],
+        [OTHER, 'other-held', 'O1']
+      ]) {
+        env.store.setProviderLimitPolicy(workspace, {
+          expected_revision: env.store.snapshot(workspace).revision,
+          runner: 'claude',
+          patch: { mode: 'switch', accounts: ['new@example.com'] }
+        });
+        env.store.appendAttempt(workspace, {
+          expected_revision: env.store.snapshot(workspace).revision,
+          attempt: { attempt_id, bead_id }
+        });
+        env.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            runner: 'claude',
+            model: 'opus',
+            status: 'running',
+            repo: '/repo',
+            session_id: `sid-${bead_id}`,
+            effort: 'high',
+            speed: 'default',
+            base_oid: `base-${bead_id}`,
+            target_base: 'main',
+            claude_account: 'old@example.com',
+            exec_values: resumableExecValues()
+          }
+        });
+        env.store.holdProviderAttempt(workspace, {
+          attempt_id,
+          runner: 'claude',
+          patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+          target: {
+            kind: 'usage_limit',
+            model: 'opus',
+            account: 'old@example.com',
+            detail: 'usage_limit',
+            last_error: '',
+            resets_at: null,
+            rearm_count: 0,
+            attempt_ids: []
+          },
+          auto_switch: { candidate_account: 'new@example.com' }
+        });
+      }
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+      await env.scheduler.consumeProviderAutoResume(OTHER);
+
+      expect(
+        notify.providerRecovered.mock.calls.map(([input]) => [
+          input.bead_id,
+          input.switched_from,
+          input.switched_to
+        ])
+      ).toEqual([
+        ['B1', 'old@example.com', 'new@example.com'],
+        ['O1', 'old@example.com', 'new@example.com']
+      ]);
+    });
+  });
 });
 
 /**

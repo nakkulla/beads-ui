@@ -12,6 +12,7 @@ import { createAccountCatalog } from './account-catalog.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { OUTAGE_BACKOFF_MS, createProviderHealth } from './provider-health.js';
 import { createQueueStore } from './queue-store.js';
+import { queueFilePath } from './state-paths.js';
 
 const WS = '/tmp/example-workspace/project-a';
 const NOW = Date.parse('2026-09-03T08:00:00Z');
@@ -1574,5 +1575,394 @@ describe('provider health probe', () => {
 
     expect(again.armed).toBe(1);
     expect(spawnImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps the target identity through a demotion', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      {
+        type: 'result',
+        is_error: true,
+        api_error_status: 429,
+        result: "You've hit your session limit · resets 6pm (Asia/Seoul)"
+      },
+      1
+    );
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', 'held@example.com');
+    const before = store.snapshot(WS).provider_hold.claude.targets[0];
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect(store.snapshot(WS).provider_hold.claude.targets[0]).toMatchObject({
+      kind: 'usage_limit',
+      target_id: before.target_id,
+      attempt_ids: ['att-1']
+    });
+  });
+});
+
+describe('server-global probes and releases (UI-3v1h §5.4)', () => {
+  const OTHER = '/tmp/example-workspace/project-b';
+
+  /**
+   * Hold one attempt of a workspace on a target.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {{ kind?: 'outage'|'usage_limit', account?: string|null, resets_at?: number|null, auto_switch?: { candidate_account: string|null } }} [input]
+   */
+  function holdIn(store, workspace, attempt_id, input = {}) {
+    const kind = input.kind ?? 'usage_limit';
+    store.appendAttempt(workspace, {
+      expected_revision: store.snapshot(workspace).revision,
+      attempt: { attempt_id, bead_id: `B-${attempt_id}` }
+    });
+    store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { runner: 'claude', model: 'opus', status: 'running' }
+    });
+    return store.holdProviderAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: 'paused',
+        cause: `provider_outage:${kind}`,
+        finished_at: NOW
+      },
+      runner: 'claude',
+      target: {
+        kind,
+        model: 'opus',
+        account:
+          input.account === undefined ? 'held@example.com' : input.account,
+        detail: kind,
+        last_error: kind,
+        resets_at: input.resets_at === undefined ? NOW : input.resets_at,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      ...(input.auto_switch ? { auto_switch: input.auto_switch } : {})
+    });
+  }
+
+  /**
+   * Register OTHER's own collaborators on the shared controller.
+   *
+   * @param {ReturnType<typeof setup>} env
+   * @param {string[]} [resumed_beads]
+   */
+  function registerOther(env, resumed_beads = ['B-b1']) {
+    const hooks = {
+      repo: OTHER,
+      notify: env.notify,
+      onPending: vi.fn(async () => ({ resumed_beads, refusals: [] })),
+      tick: vi.fn(async () => {})
+    };
+    env.health.register(OTHER, hooks);
+    return hooks;
+  }
+
+  test('probes a target two workspaces wait on with one process', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeHangingSpawn();
+    const env = setup(store, timers, spawnImpl);
+    registerOther(env);
+    holdIn(store, WS, 'a1');
+    holdIn(store, OTHER, 'b1');
+    await env.health.start(WS);
+    await env.health.start(OTHER);
+    const armed = timers.entries.filter(
+      (entry) => !entry.fired && !entry.cleared
+    ).length;
+
+    timers.fireNext();
+    await flush();
+
+    expect(armed).toBe(1);
+    expect(spawnImpl).toHaveBeenCalledOnce();
+  });
+
+  test('sends one recovery naming the beads both workspaces resumed', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    registerOther(env);
+    holdIn(store, WS, 'a1');
+    holdIn(store, OTHER, 'b1');
+    await env.health.start(WS);
+    await env.health.start(OTHER);
+
+    timers.fireNext();
+    await flush();
+
+    expect(env.notify.providerRecovered).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        resumed_beads: ['B1', 'B-b1'],
+        repo: WS
+      })
+    );
+  });
+
+  test('writes a receipt in both workspaces and ticks both', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    const other = registerOther(env);
+    holdIn(store, WS, 'a1');
+    holdIn(store, OTHER, 'b1');
+    await env.health.start(WS);
+    await env.health.start(OTHER);
+
+    timers.fireNext();
+    await flush();
+
+    expect(
+      [WS, OTHER].map((workspace) =>
+        store
+          .snapshot(workspace)
+          .auto_resume_pending.map((entry) => [
+            entry.attempt_id,
+            entry.account,
+            entry.kind
+          ])
+      )
+    ).toEqual([
+      [['a1', 'held@example.com', 'provider_outage']],
+      [['b1', 'held@example.com', 'provider_outage']]
+    ]);
+    expect(env.tick).toHaveBeenCalledWith(WS);
+    expect(other.tick).toHaveBeenCalledWith(OTHER);
+  });
+
+  test('sends no recovery once both workspaces switched their attempts away', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    registerOther(env, []);
+    env.onPending.mockImplementation(async () => ({
+      resumed_beads: [],
+      refusals: []
+    }));
+    for (const workspace of [WS, OTHER]) {
+      store.setProviderLimitPolicy(workspace, {
+        expected_revision: store.snapshot(workspace).revision,
+        runner: 'claude',
+        patch: { mode: 'switch', accounts: ['new@example.com'] }
+      });
+    }
+    holdIn(store, WS, 'a1', {
+      auto_switch: { candidate_account: 'new@example.com' }
+    });
+    holdIn(store, OTHER, 'b1', {
+      auto_switch: { candidate_account: 'new@example.com' }
+    });
+    await env.health.start(WS);
+    await env.health.start(OTHER);
+
+    timers.fireNext();
+    await flush();
+
+    expect(store.providerHolds.holds()).toEqual({});
+    expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+  });
+
+  test('reproduces a release a restart interrupted with exactly one receipt', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    holdIn(store, WS, 'a1');
+    const target = store.snapshot(WS).provider_hold.claude.targets[0];
+    store.providerHolds.remove(String(target.target_id));
+    const restarted = createQueueStore({ now: () => NOW });
+    const first = setup(restarted, makeTimers(), makeHangingSpawn());
+    await first.health.start(WS);
+    first.health.stop(WS);
+    const second = setup(
+      createQueueStore({ now: () => NOW }),
+      makeTimers(),
+      makeHangingSpawn()
+    );
+
+    await second.health.start(WS);
+
+    expect(createQueueStore().snapshot(WS).auto_resume_pending).toEqual([
+      expect.objectContaining({
+        attempt_id: 'a1',
+        account: 'held@example.com',
+        kind: 'provider_outage'
+      })
+    ]);
+  });
+
+  test('sends no recovery for a release a restart interrupted', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    holdIn(store, WS, 'a1');
+    const target = store.snapshot(WS).provider_hold.claude.targets[0];
+    store.providerHolds.remove(String(target.target_id));
+    const env = setup(
+      createQueueStore({ now: () => NOW }),
+      makeTimers(),
+      makeHangingSpawn()
+    );
+
+    await env.health.start(WS);
+
+    expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+  });
+
+  test('consumes a released receipt while another workspace holds the runner anew', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    holdIn(store, WS, 'a1');
+    const target = store.snapshot(WS).provider_hold.claude.targets[0];
+    store.providerHolds.remove(String(target.target_id));
+    store.settleProviderMembers(WS);
+    holdIn(store, OTHER, 'b1', { account: 'other@example.com' });
+    /** @type {string[]} */
+    const seen = [];
+    const env = setup(store, makeTimers(), makeHangingSpawn(), {
+      onPending: async () => {
+        seen.push(
+          ...store.snapshot(WS).auto_resume_pending.map((e) => e.attempt_id)
+        );
+        return { resumed_beads: [], refusals: [] };
+      }
+    });
+
+    await env.health.start(WS);
+
+    expect(seen).toEqual(['a1']);
+  });
+
+  test('consumes that receipt after a cold restart too', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    holdIn(store, WS, 'a1');
+    const target = store.snapshot(WS).provider_hold.claude.targets[0];
+    store.providerHolds.remove(String(target.target_id));
+    store.settleProviderMembers(WS);
+    holdIn(store, OTHER, 'b1', { account: 'other@example.com' });
+    const restarted = createQueueStore({ now: () => NOW });
+    /** @type {string[]} */
+    const seen = [];
+    const env = setup(restarted, makeTimers(), makeHangingSpawn(), {
+      onPending: async () => {
+        seen.push(
+          ...restarted.snapshot(WS).auto_resume_pending.map((e) => e.attempt_id)
+        );
+        return { resumed_beads: [], refusals: [] };
+      }
+    });
+
+    await env.health.start(WS);
+
+    expect(seen).toEqual(['a1']);
+  });
+
+  test('consumes a receipt that predates the migration at the first start', async () => {
+    /** @param {string} attempt_id */
+    const paused = (attempt_id) => ({
+      attempt_id,
+      bead_id: `B-${attempt_id}`,
+      runner: 'claude',
+      status: 'paused',
+      cause: 'provider_outage:usage_limit'
+    });
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: { a1: paused('a1'), older: paused('older') },
+        provider_hold: {
+          claude: {
+            since: NOW,
+            generation: 5,
+            targets: [
+              {
+                kind: 'usage_limit',
+                model: 'opus',
+                account: 'held@example.com',
+                detail: 'usage_limit',
+                attempt_ids: ['a1']
+              }
+            ]
+          }
+        },
+        auto_resume_pending: [
+          {
+            attempt_id: 'older',
+            generation: 4,
+            account: null,
+            kind: 'provider_outage'
+          }
+        ]
+      })
+    );
+    const store = createQueueStore({ now: () => NOW });
+    store.migrateProviderHolds(WS);
+    /** @type {string[]} */
+    const seen = [];
+    const env = setup(store, makeTimers(), makeHangingSpawn(), {
+      onPending: async () => {
+        seen.push(
+          ...store.snapshot(WS).auto_resume_pending.map((e) => e.attempt_id)
+        );
+        return { resumed_beads: [], refusals: [] };
+      }
+    });
+
+    await env.health.start(WS);
+
+    expect(seen).toEqual(['older']);
+  });
+
+  test('probes in the state directory when the origin is not attached', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeHangingSpawn();
+    const env = setup(store, timers, spawnImpl);
+    holdIn(store, OTHER, 'b1');
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect(spawnImpl).toHaveBeenCalledWith(
+      '/bin/cswap',
+      expect.any(Array),
+      expect.objectContaining({ cwd: path.join(tmp_state, 'bdui') })
+    );
+  });
+
+  test('probes in the origin workspace while it is attached', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeHangingSpawn();
+    const env = setup(store, timers, spawnImpl);
+    registerOther(env);
+    holdIn(store, OTHER, 'b1');
+    await env.health.start(OTHER);
+
+    timers.fireNext();
+    await flush();
+
+    expect(spawnImpl).toHaveBeenCalledWith(
+      '/bin/cswap',
+      expect.any(Array),
+      expect.objectContaining({ cwd: OTHER })
+    );
   });
 });

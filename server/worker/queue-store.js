@@ -13518,6 +13518,7 @@ export function createQueueStore(options = {}) {
       cache.clear();
       repair_lane_retirements.clear();
       retired_kind_attempts.clear();
+      provider_holds.__clearCacheForTest();
     }
   };
 }
