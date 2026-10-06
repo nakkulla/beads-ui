@@ -17,6 +17,8 @@ scope:
   - server/ws/monitor-handlers.js
   - app/views/worker/repo-ops-timeline.js
   - app/views/worker/tile-resolve.js
+  - app/views/monitor/index.js
+  - app/views/worker/index.js
   - app/views/settings-dialog/
 ---
 # 실패 해결 세션 개편 — 자동 진단 대화, 「확인 필요」 통일, 저장소 작업 세션 버튼, 해결 세션 실행 설정
@@ -56,6 +58,7 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
 - 해결 클릭 처리기는 Bead를 전제한다 — `server/ws/worker-handlers.js:6760`
 - 저장소 작업 서랍의 실패 행은 `기록 닫기`만 그리고, 정리 행은 해결 버튼을 그린다 — `app/views/worker/repo-ops-timeline.js:408`, `:526`
 - 저장소 작업 서랍은 모니터 탭과 Worker 탭이 같은 컴포넌트로 띄운다 — `app/views/worker/repo-ops-timeline.js:659`, `app/views/monitor/index.js:713`, `app/views/worker/index.js:877`
+- 서랍 버튼의 클릭은 서랍이 아니라 두 탭이 위임 처리한다 — `app/views/monitor/index.js:1280`, `app/views/worker/index.js:3600`
 - 살아 있는 대화가 있으면 버튼을 숨긴다 — `app/views/worker/tile-resolve.js:19`, `:228`
 - 자동 기동 스위치는 config.toml에서만 읽고 쓰는 경로가 없다 — `server/config.js:136-173`
 - 운영 config의 자동 기동 값은 `true`다 — 2026-10-06 `~/.config/bdui/config.toml` `[worker.direction_inquiry] enabled = true` 확인(실행)
@@ -108,7 +111,7 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
 
 ### 3.3 저장소 작업 실패의 `[세션에서 이어가기]`
 
-- 위치: 「저장소 작업」 서랍(`repo-ops-timeline.js`)의 실패한 수동 배포 행이다. 지금 `기록 닫기`만 그리는 행 동작 자리에 버튼을 더한다. 서랍은 모니터 탭과 Worker 탭이 같이 쓰므로 두 탭에 함께 보인다.
+- 위치: 「저장소 작업」 서랍(`repo-ops-timeline.js`)의 실패한 수동 배포 행이다. 지금 `기록 닫기`만 그리는 행 동작 자리에 버튼을 더한다. 서랍은 모니터 탭과 Worker 탭이 같이 쓰므로 두 탭에 함께 보인다. 클릭은 정리 행 버튼처럼 두 탭의 위임 처리기에 분기를 더해 보낸다.
 - 살아 있는 대화 판정은 정리 행과 같은 `tile-resolve.js`의 판정을 쓴다.
 - 서버: 저장소 작업 투영에 해결 진입 재료(종단 실패 여부, 대화 상태)를 더한다. 현행 "해결 진입 없음" 주석은 철회한다.
 - 클릭: 저장소 작업 실패 대화를 fresh로 연다(계약 3.5). 입력은 작업 식별자다. 처리기는 Bead 조회를 하지 않는다.
