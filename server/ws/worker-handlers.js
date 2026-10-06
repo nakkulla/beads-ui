@@ -3026,11 +3026,16 @@ function withSessionScope(rows, bead_scope) {
 }
 
 /**
- * Add the next deterministic probe boundary to public provider targets.
+ * Give every public provider target the probe boundary the prober keeps.
  *
- * The health controller owns the timer. Its durable inputs are sufficient for
- * usage-limit probes and the first outage probe; later outage backoff remains
- * fail-quiet because its in-memory failure counter is not durable.
+ * The workspace's effective hold already arrives projected (UI-3v1h §5.5).
+ * The prober persists `next_probe_at` before it arms each timer, so that
+ * value wins. A target it has not scheduled yet reads the prober's own delay
+ * rule — a usage limit's reset plus grace (or one unknown-reset wait per
+ * rearm), an outage's first backoff step — with no rearm or 24h cap: the
+ * prober keeps re-probing a usage limit for as long as the hold stands
+ * (UI-inge). A boundary already past, and an account-unresolved usage limit
+ * (never probed), get none.
  *
  * @param {unknown} value
  * @returns {Record<string, any>}
@@ -3055,15 +3060,17 @@ function publicProviderHolds(value) {
       if (!target || typeof target !== 'object' || Array.isArray(target)) {
         return target;
       }
+      if (
+        typeof target.next_probe_at === 'number' &&
+        Number.isFinite(target.next_probe_at)
+      ) {
+        return { ...target };
+      }
       /** @type {number|null} */
       let next_probe_at = null;
       const now = Date.now();
       if (target.kind === 'usage_limit') {
-        if (
-          target.account !== null &&
-          Number(target.rearm_count) < 3 &&
-          Date.now() - raw_hold.since < 24 * 60 * 60 * 1000
-        ) {
+        if (target.account !== null) {
           const candidate =
             typeof target.resets_at === 'number'
               ? target.resets_at + usageResetGraceMs()
@@ -3285,6 +3292,9 @@ export function decorateQueue(workspace_key, raw_queue) {
     log('snapshot retention failed for %s: %o', workspace_key, err);
   }
   public_queue.admission = publicAdmissions(overlaid.admission);
+  // The memberships already ride `provider_hold` as each target's
+  // `attempt_ids` (UI-3v1h §5.5); the raw map is server bookkeeping.
+  delete public_queue.provider_hold_members;
   delete public_queue.completion_intents;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;

@@ -36,6 +36,7 @@ import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
 import { createNotifier } from './notify.js';
 import { createPrObservationStore } from './pr-observations.js';
+import { createProviderHoldStore } from './provider-holds.js';
 import {
   MANUAL_MERGE_CONTINUATION,
   createQueueStore,
@@ -57,6 +58,9 @@ import { createUsageStore } from './usage-store.js';
 /**
  * @typedef {Object} WorkerRuntime
  * @property {ReturnType<typeof createQueueStore>} queueStore
+ * @property {ReturnType<typeof createProviderHoldStore>} providerHolds - The
+ * server-global provider holds (UI-3v1h §5.1), the same instance the queue
+ * store projects from.
  * @property {ReturnType<typeof createExecPresetCoordinator>} execPresetCoordinator
  * @property {ReturnType<typeof createLockManager>} locks
  * @property {ReturnType<typeof createGh>} gh
@@ -156,7 +160,11 @@ export function createWorkerRuntime() {
   // the usage store below. Built BEFORE the queue store because the terminal
   // settlement drains it into the durable patch in the same mutation.
   const delegationStore = createDelegationStore();
-  const queueStore = createQueueStore({ delegationStore });
+  // The ONE server-global provider-hold source (UI-3v1h §5.1). Every
+  // workspace's queue snapshot projects its effective hold from it, so it is
+  // handed to the one queue store rather than built per workspace.
+  const providerHolds = createProviderHoldStore();
+  const queueStore = createQueueStore({ delegationStore, providerHolds });
   const execPresetCoordinator = createExecPresetCoordinator({
     queueStore,
     presetStore: createExecPresetStore(),
@@ -368,6 +376,7 @@ export function createWorkerRuntime() {
       }
     },
     queueStore,
+    providerHolds,
     execPresetCoordinator,
     locks,
     gh,

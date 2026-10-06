@@ -30,7 +30,7 @@ import {
   pushLogPath as guardPushLogPath,
   install as installGuardHook
 } from './guard-hook.js';
-import { emitQueueChanged } from './queue-events.js';
+import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
 import { recordRepoOpsDisplay } from './repo-ops-display.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
@@ -1109,6 +1109,103 @@ describe('worker/attach construction + live loop (F1)', () => {
     __resetWorkerAttachmentsForTest();
 
     expect(providerHealth.stop).toHaveBeenCalledWith(WS);
+  });
+
+  // UI-3v1h §5.5: 전역 보류가 바뀌면 attach된 저장소마다 큐 변경으로 알린다.
+  test('announces a global provider hold change for the attached workspace', async () => {
+    const runtime = createWorkerRuntime();
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      providerHealth: /** @type {any} */ ({
+        start: vi.fn(async () => {}),
+        sync: vi.fn(),
+        stop: vi.fn(),
+        probeTarget: vi.fn()
+      }),
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+    /** @type {string[]} */
+    const seen = [];
+    const unsubscribe = onQueueChanged((workspace) => {
+      seen.push(workspace);
+    });
+
+    runtime.queueStore.providerHolds.enter({
+      runner: 'claude',
+      origin: '/elsewhere',
+      target: { kind: 'outage', model: 'opus', account: null }
+    });
+    await Promise.resolve();
+    unsubscribe();
+
+    expect(seen).toContain(path.resolve(WS));
+  });
+
+  test('migrates per-repository holds before starting provider probes', async () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          held: {
+            attempt_id: 'held',
+            bead_id: 'B1',
+            runner: 'claude',
+            status: 'paused',
+            cause: 'provider_outage:usage_limit'
+          }
+        },
+        provider_hold: {
+          claude: {
+            since: 1,
+            generation: 6,
+            targets: [
+              {
+                kind: 'usage_limit',
+                model: 'opus',
+                account: 'held@example.com',
+                detail: 'usage_limit',
+                attempt_ids: ['held']
+              }
+            ]
+          }
+        }
+      })
+    );
+    const runtime = createWorkerRuntime();
+    /** @type {string[]} */
+    const members_at_start = [];
+    const providerHealth = {
+      start: vi.fn(async (/** @type {string} */ workspace) => {
+        members_at_start.push(
+          ...Object.keys(
+            runtime.queueStore.snapshot(workspace).provider_hold_members
+          )
+        );
+      }),
+      sync: vi.fn(),
+      stop: vi.fn(),
+      probeTarget: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      providerHealth: /** @type {any} */ (providerHealth),
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => providerHealth.start.mock.calls.length === 1);
+
+    expect(members_at_start).toEqual(['held']);
+    expect(runtime.providerHolds.holds().claude.generation).toBe(7);
   });
 
   test('routes a bd issue-change event to the metadata re-check', async () => {

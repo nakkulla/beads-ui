@@ -493,6 +493,121 @@ describe('worker provider queue projection', () => {
     ).toBe(resets_at + 60_000);
   });
 
+  /**
+   * One usage-limit hold whose target has been rearmed `rearm_count` times.
+   *
+   * @param {number} since
+   * @param {number} rearm_count
+   * @param {number|null} resets_at
+   * @param {Record<string, unknown>} [extra] - More target fields.
+   */
+  function rearmedUsageQueue(since, rearm_count, resets_at, extra = {}) {
+    return {
+      ...getWorkerRuntime().queueStore.snapshot(WS),
+      provider_hold: {
+        claude: {
+          since,
+          generation: 1,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'opus',
+              account: 'one@example.com',
+              detail: 'usage_limit',
+              last_error: 'usage limit',
+              resets_at,
+              rearm_count,
+              attempt_ids: ['attempt-1'],
+              ...extra
+            }
+          ]
+        }
+      }
+    };
+  }
+
+  // UI-3v1h §9 흡수: 프로버에는 rearm·24h 상한이 없다 (UI-inge).
+  test('projects the next probe of a usage limit rearmed three times', () => {
+    const resets_at = Date.now() + 120_000;
+
+    const projected = decorateQueue(
+      WS,
+      rearmedUsageQueue(Date.now(), 3, resets_at)
+    );
+
+    expect(
+      /** @type {any} */ (projected).provider_hold.claude.targets[0]
+        .next_probe_at
+    ).toBe(resets_at + 60_000);
+  });
+
+  test('projects the next probe of a usage limit held past a day', () => {
+    const resets_at = Date.now() + 120_000;
+
+    const projected = decorateQueue(
+      WS,
+      rearmedUsageQueue(Date.now() - 25 * 60 * 60 * 1000, 0, resets_at)
+    );
+
+    expect(
+      /** @type {any} */ (projected).provider_hold.claude.targets[0]
+        .next_probe_at
+    ).toBe(resets_at + 60_000);
+  });
+
+  test('prefers the probe time the prober persisted', () => {
+    const raw = rearmedUsageQueue(Date.now(), 0, Date.now() + 120_000, {
+      next_probe_at: 4242
+    });
+
+    const projected = decorateQueue(WS, raw);
+
+    expect(
+      /** @type {any} */ (projected).provider_hold.claude.targets[0]
+        .next_probe_at
+    ).toBe(4242);
+  });
+
+  test('projects another workspace target into a queue with no hold of its own', () => {
+    const store = getWorkerRuntime().queueStore;
+    const other = '/tmp/provider-outage-handler-other';
+    store.appendAttempt(other, {
+      expected_revision: store.snapshot(other).revision,
+      attempt: { attempt_id: 'other-1', bead_id: 'O-1' }
+    });
+    store.updateAttempt(other, {
+      attempt_id: 'other-1',
+      patch: { runner: 'claude', model: 'opus', status: 'running' }
+    });
+    store.holdProviderAttempt(other, {
+      attempt_id: 'other-1',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'one@example.com',
+        detail: 'usage_limit',
+        last_error: 'usage limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+
+    const projected = decorateQueue(WS, store.snapshot(WS));
+
+    expect(/** @type {any} */ (projected).provider_hold.claude.targets).toEqual(
+      [
+        expect.objectContaining({
+          account: 'one@example.com',
+          origin: other,
+          attempt_ids: []
+        })
+      ]
+    );
+  });
+
   test('projects normalized Claude account rows from the account catalog', async () => {
     __setWorkerAccountCatalogForTest({
       listClaude: vi.fn(async () => ({
@@ -767,7 +882,7 @@ describe('worker provider probe-now handler', () => {
     await call(socket, { runner: 'claude', since: 500 });
 
     const payload = sent(socket)[0].payload;
-    expect(probeNow).toHaveBeenCalledWith(WS, 'claude');
+    expect(probeNow).toHaveBeenCalledWith('claude');
     expect(payload).toMatchObject({ ok: true, armed: 2 });
     expect(payload.queue).toMatchObject({ revision: expect.any(Number) });
   });

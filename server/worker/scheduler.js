@@ -120,6 +120,7 @@ import {
   readLastAssistantMessage as defaultReadLastAssistantMessage,
   parseConversationResult
 } from './interactive-progress.js';
+import { providerTargetScope } from './provider-holds.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
   DEFAULT_SLOTS,
@@ -2174,7 +2175,10 @@ export function createScheduler(deps) {
                     generation: /** @type {any} */ (hold).generation,
                     model: target.model,
                     account,
-                    candidate_account: candidate
+                    candidate_account: candidate,
+                    ...(typeof target.target_id === 'string'
+                      ? { target_id: target.target_id }
+                      : {})
                   }).ok
                 : false;
               if (!switched) {
@@ -2196,6 +2200,9 @@ export function createScheduler(deps) {
                     kind: target.kind,
                     model: target.model,
                     account,
+                    ...(typeof target.target_id === 'string'
+                      ? { target_id: target.target_id }
+                      : {}),
                     patch: ready
                   });
                 }
@@ -3816,6 +3823,13 @@ export function createScheduler(deps) {
   /**
    * Decide the provider gate for one fully resolved launch candidate.
    *
+   * The input is the workspace's effective hold (UI-3v1h §5.3): every global
+   * target plus the workspace's own account-unresolved ones. A runner-scoped
+   * outage blocks the whole runner; an account-scoped target (`usage_limit`,
+   * or a `credential` outage that names its account) blocks only a launch
+   * resolved to that account; an unresolved target fails closed. The client
+   * chip predicts with the same scope rule (`lane-model.js providerGate`).
+   *
    * @typedef {{ held: false } | { held: true, runner: string, kind: 'outage'|'usage_limit', account: string|null, unresolved: boolean }} ProviderGateVerdict
    * @param {string} workspace
    * @param {string} runner
@@ -3828,9 +3842,11 @@ export function createScheduler(deps) {
       return { held: false };
     }
     deps.providerHealth?.sync(workspace);
-    /** @type {Array<{ kind: string, account: string|null }>} */
+    /** @type {Array<{ kind: 'outage'|'usage_limit', detail?: string, account: string|null }>} */
     const targets = hold.targets;
-    const outage = targets.find((target) => target.kind === 'outage');
+    const outage = targets.find(
+      (target) => providerTargetScope(target) === 'runner'
+    );
     if (outage) {
       return {
         held: true,
@@ -3840,10 +3856,9 @@ export function createScheduler(deps) {
         unresolved: false
       };
     }
-    const usage_targets = targets.filter(
-      (target) => target.kind === 'usage_limit'
-    );
-    if (usage_targets.some((target) => target.account === null)) {
+    if (
+      targets.some((target) => providerTargetScope(target) === 'unresolved')
+    ) {
       return {
         held: true,
         runner,
@@ -3851,6 +3866,12 @@ export function createScheduler(deps) {
         account: null,
         unresolved: true
       };
+    }
+    const account_targets = targets.filter(
+      (target) => providerTargetScope(target) === 'account'
+    );
+    if (account_targets.length === 0) {
+      return { held: false };
     }
     /** @type {string|null} */
     let account =
@@ -3882,16 +3903,21 @@ export function createScheduler(deps) {
       return {
         held: true,
         runner,
-        kind: 'usage_limit',
+        kind: account_targets.some((target) => target.kind === 'usage_limit')
+          ? 'usage_limit'
+          : 'outage',
         account: null,
         unresolved: true
       };
     }
-    if (usage_targets.some((target) => target.account === account)) {
+    const matched = account_targets.find(
+      (target) => target.account === account
+    );
+    if (matched) {
       return {
         held: true,
         runner,
-        kind: 'usage_limit',
+        kind: matched.kind,
         account,
         unresolved: false
       };
@@ -6575,6 +6601,9 @@ export function createScheduler(deps) {
       summary: `${attempt.runner} ${outage.detail} 보류`,
       at: now()
     });
+    // `entered` is true only for the write that CREATED the target — for a
+    // global target, once across every workspace (UI-3v1h §5.2) — and the
+    // label is the workspace that first observed it.
     if (saved.entered) {
       // The stored reason, not the pre-write guess: the store also decides
       // `cap` and "the candidate is itself held", which this side cannot see.
@@ -6594,7 +6623,7 @@ export function createScheduler(deps) {
         account: classified.account,
         resets_at: outage.resets_at,
         ...(stored_switch ? { auto_switch: stored_switch } : {}),
-        repo: attempt.repo
+        repo: saved.origin ?? attempt.repo
       });
     }
     try {
@@ -14434,6 +14463,36 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Whether a standing hold still owns this attempt's recovery — the predicate
+   * `rearmAutoResume` re-reads: a hold binds the attempt itself, or one blocks
+   * its whole runner. Another account's limit, which with server-global holds
+   * may come from another workspace (UI-3v1h §5.4), is not the attempt's.
+   *
+   * @param {any} q - The workspace snapshot, its `provider_hold` the effective hold.
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function providerHoldOwnsRecovery(q, attempt) {
+    const holds = /** @type {Record<string, any>} */ (q.provider_hold || {});
+    if (
+      Object.values(holds).some((hold) =>
+        hold.targets?.some((/** @type {any} */ target) =>
+          target.attempt_ids?.includes(attempt.attempt_id)
+        )
+      )
+    ) {
+      return true;
+    }
+    const hold =
+      typeof attempt.runner === 'string' ? holds[attempt.runner] : undefined;
+    return Boolean(
+      hold?.targets?.some(
+        (/** @type {any} */ target) => providerTargetScope(target) !== 'account'
+      )
+    );
+  }
+
+  /**
    * The memory-only reconcile sweep (2026-10-01 stall-reconcile D2·D3·D6). It
    * reads the queue snapshot this process already holds and makes NO bd, git,
    * gh or network call; the only I/O it causes is a queue write. Executing
@@ -14441,8 +14500,9 @@ export function createScheduler(deps) {
    * bd calls happen only when one actually runs, at the D2/ladder cadence.
    *
    *   - D2: a leaf `paused` provider-outage attempt whose last automatic
-   *     resume was refused for a `transient`/`wait` reason, with no hold on
-   *     its runner, no receipt pending, no child and no ✕, gets its receipt
+   *     resume was refused for a `transient`/`wait` reason, with no standing
+   *     hold owning its recovery ({@link providerHoldOwnsRecovery}), no
+   *     receipt pending, no child and no ✕, gets its receipt
    *     back once the refusal's `next_at` passed. A refusal recorded before
    *     the refusal record existed is due at once; a `closed`/`permanent` one
    *     of that age only gains the record the badge reads, and is not retried.
@@ -14503,10 +14563,7 @@ export function createScheduler(deps) {
           typeof attempt.dismissed_at !== 'number' &&
           !resumed_from.has(attempt.attempt_id) &&
           !pending.has(attempt.attempt_id) &&
-          !(
-            typeof attempt.runner === 'string' &&
-            q.provider_hold?.[attempt.runner]
-          )
+          !providerHoldOwnsRecovery(q, attempt)
         ) {
           const refusal = attempt.auto_resume_refusal;
           const kind = refusal

@@ -647,7 +647,14 @@
  * @property {import('./queue-hold.js').RetryLineage[]} lineages - Live env
  * retry ladders, one per bead (spec §3.3). Empty means nothing is waiting to
  * retry, which is what every legacy `queue.json` loads as.
- * @property {Record<string, ProviderHold>} provider_hold - Provider-health dispatch gates by runner.
+ * @property {Record<string, ProviderHold>} provider_hold - Provider-health
+ * dispatch gates by runner. On disk this holds only the workspace's own
+ * account-unresolved `usage_limit` targets (UI-3v1h §5.1); every other target
+ * is server-global, and a snapshot leaving the store carries the workspace's
+ * EFFECTIVE hold — the global targets bound to its memberships plus these.
+ * @property {Record<string, import('./provider-holds.js').ProviderHoldMember>} provider_hold_members -
+ * Which held attempt waits on which global target, by attempt_id (UI-3v1h
+ * §5.1).
  * @property {Record<string, number>} wait_notified - Current wait notification suppression keys; history lives in the bead timeline.
  * @property {{ claude: ProviderLimitPolicy, codex: ProviderLimitPolicy }} provider_limit_policy -
  * Durable per-runner usage-limit policy (2026-09-09 usage-limit-account-switch
@@ -789,6 +796,10 @@
  */
 /**
  * @typedef {Object} ProviderTarget
+ * @property {string} [target_id] - Global target identity; absent on an
+ * account-unresolved target, which never leaves its workspace.
+ * @property {string} [origin] - The workspace that first observed a global
+ * target.
  * @property {'outage'|'usage_limit'} kind
  * @property {string} model
  * @property {string|null} account
@@ -1201,6 +1212,11 @@ import {
   normalizeAppliesTo
 } from './exec-enums.js';
 import { orderLaneByBlocks } from './lane-order.js';
+import {
+  createProviderHoldStore,
+  effectiveProviderHolds,
+  providerTargetScope
+} from './provider-holds.js';
 import {
   RETRY_MAX,
   normalizeRetryState,
@@ -2313,6 +2329,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'lineages',
   'hold_history',
   'provider_hold',
+  'provider_hold_members',
   // Legacy-drop key: the boolean the per-runner `provider_limit_policy`
   // replaced. Listed so it is read for migration and then DROPPED on load
   // instead of round-tripping as opaque data (spec §3.1).
@@ -2391,6 +2408,7 @@ function emptyQueue() {
     auto_advance: false,
     lineages: [],
     provider_hold: {},
+    provider_hold_members: {},
     wait_notified: {},
     provider_limit_policy: emptyProviderLimitPolicy(),
     auto_resume_pending: [],
@@ -4944,6 +4962,58 @@ function normalizeProviderHolds(value) {
 }
 
 /**
+ * Normalize the workspace's global-hold memberships (UI-3v1h §5.1). A record
+ * without a runner or target identity is dropped: nothing could ever settle it.
+ *
+ * @param {unknown} value
+ * @returns {Record<string, import('./provider-holds.js').ProviderHoldMember>}
+ */
+function normalizeProviderHoldMembers(value) {
+  /** @type {Record<string, import('./provider-holds.js').ProviderHoldMember>} */
+  const members = {};
+  if (!isRecord(value)) {
+    return members;
+  }
+  for (const [attempt_id, raw] of Object.entries(value)) {
+    if (
+      !isRecord(raw) ||
+      typeof raw.runner !== 'string' ||
+      raw.runner.length === 0 ||
+      typeof raw.target_id !== 'string' ||
+      raw.target_id.length === 0 ||
+      (raw.account !== null && typeof raw.account !== 'string')
+    ) {
+      continue;
+    }
+    const auto_switch =
+      raw.auto_switch === 'none' ||
+      raw.auto_switch === 'unconfigured' ||
+      raw.auto_switch === 'disabled'
+        ? raw.auto_switch
+        : null;
+    members[attempt_id] = {
+      runner: raw.runner,
+      target_id: raw.target_id,
+      account: raw.account,
+      auto_switch,
+      switch_ready_at:
+        auto_switch === 'none' &&
+        typeof raw.switch_ready_at === 'number' &&
+        Number.isFinite(raw.switch_ready_at)
+          ? raw.switch_ready_at
+          : null,
+      switch_ready_account:
+        auto_switch === 'none' &&
+        typeof raw.switch_ready_account === 'string' &&
+        raw.switch_ready_account.length > 0
+          ? raw.switch_ready_account
+          : null
+    };
+  }
+  return members;
+}
+
+/**
  * Normalize post-recovery receipts independently of the live provider target.
  *
  * @param {unknown} value
@@ -5030,6 +5100,9 @@ function normalizeQueue(raw) {
       ? Math.max(0, Math.floor(raw.revision))
       : 0;
   q.provider_hold = normalizeProviderHolds(raw.provider_hold);
+  q.provider_hold_members = normalizeProviderHoldMembers(
+    raw.provider_hold_members
+  );
   if (isRecord(raw.wait_notified)) {
     for (const [key, at] of Object.entries(raw.wait_notified)) {
       if (typeof at === 'number' && Number.isFinite(at)) {
@@ -6125,13 +6198,19 @@ function terminalEventFor(attempt) {
  * production registers per workspace through {@link useTimeline}; this option
  * is the single-workspace shorthand.
  *
- * @param {{ now?: () => number, randomUUID?: () => string, filePathFor?: (workspace: string) => string, fs?: typeof import('node:fs'), delegationStore?: ReturnType<typeof import('./delegation-store.js').createDelegationStore>, timeline?: ReturnType<typeof import('./bead-timeline.js').createBeadTimeline> }} [options]
+ * `providerHolds` is the server-global provider-hold source (UI-3v1h §5.1).
+ * The runtime builds one and hands it here, so every workspace this store
+ * serves reads the same holds; a store built without one owns its own.
+ *
+ * @param {{ now?: () => number, randomUUID?: () => string, filePathFor?: (workspace: string) => string, fs?: typeof import('node:fs'), delegationStore?: ReturnType<typeof import('./delegation-store.js').createDelegationStore>, timeline?: ReturnType<typeof import('./bead-timeline.js').createBeadTimeline>, providerHolds?: ReturnType<typeof createProviderHoldStore> }} [options]
  */
 export function createQueueStore(options = {}) {
   const now = options.now || (() => Date.now());
   const randomUUID = options.randomUUID || (() => nodeCrypto.randomUUID());
   const filePathFor = options.filePathFor || queueFilePath;
   const fs = options.fs || nodeFs;
+  const provider_holds =
+    options.providerHolds || createProviderHoldStore({ fs, now });
   /**
    * The process-wide live subagent tally (UI-2mpn §5.2), when one is wired. A
    * Claude subagent has no receipt file to scan, so terminal settlement is the
@@ -6276,14 +6355,153 @@ export function createQueueStore(options = {}) {
   }
 
   /**
-   * Clone a queue for a consumer outside the store.
+   * The hold set one workspace actually sees (UI-3v1h §5.3): the global
+   * targets with that workspace's memberships bound onto them, plus its own
+   * account-unresolved targets.
+   *
+   * @param {Queue} q
+   * @returns {Record<string, ProviderHold>}
+   */
+  function effectiveHoldsOf(q) {
+    return /** @type {Record<string, ProviderHold>} */ (
+      effectiveProviderHolds(
+        provider_holds.holds(),
+        q.provider_hold,
+        q.provider_hold_members
+      )
+    );
+  }
+
+  /**
+   * Whether this attempt waits on a hold that still stands: a membership whose
+   * global target exists, or one of the workspace's own unresolved targets.
+   * The one "still held" predicate the stale-receipt rule and the refused
+   * resume re-arm share (§5.4).
+   *
+   * @param {Queue} q
+   * @param {string} attempt_id
+   * @returns {boolean}
+   */
+  function attemptHeld(q, attempt_id) {
+    const member = q.provider_hold_members[attempt_id];
+    if (member && provider_holds.has(member.target_id)) {
+      return true;
+    }
+    return Object.values(q.provider_hold).some((hold) =>
+      hold.targets.some((target) => target.attempt_ids.includes(attempt_id))
+    );
+  }
+
+  /**
+   * Whether a standing hold still owns this attempt's recovery, so the
+   * refused-resume re-arm must leave it to the prober: a hold binds the
+   * attempt itself, or one blocks its whole runner (a runner-scoped outage,
+   * or this workspace's own unresolved target). Another account's limit —
+   * possibly observed by another workspace (UI-3v1h §5.1) — is not one.
+   *
+   * @param {Queue} q
+   * @param {Attempt} attempt
+   * @returns {boolean}
+   */
+  function holdOwnsRecovery(q, attempt) {
+    if (attemptHeld(q, attempt.attempt_id)) {
+      return true;
+    }
+    const hold =
+      typeof attempt.runner === 'string'
+        ? effectiveHoldsOf(q)[attempt.runner]
+        : undefined;
+    return Boolean(
+      hold?.targets.some((target) => providerTargetScope(target) !== 'account')
+    );
+  }
+
+  /**
+   * Every account a standing hold names, global or this workspace's own —
+   * the set a switch candidate must avoid (§5.3).
+   *
+   * @param {Queue} q
+   * @returns {Set<string>}
+   */
+  function heldAccountsOf(q) {
+    const accounts = provider_holds.heldAccounts();
+    for (const hold of Object.values(q.provider_hold)) {
+      for (const target of hold.targets) {
+        if (typeof target.account === 'string') {
+          accounts.add(target.account);
+        }
+      }
+    }
+    return accounts;
+  }
+
+  /**
+   * Decide one usage-limit entry's automatic switch from the workspace policy.
+   * The candidate was chosen OUTSIDE the mutation against an async catalog
+   * read, so the allowed set is re-read here: a user who unchecked that
+   * account meanwhile must not be switched onto (2026-09-09 spec §3.2 row 3).
+   *
+   * @param {Queue} next
+   * @param {string} runner
+   * @param {string|null} candidate_account
+   * @returns {'disabled'|'unconfigured'|'none'|'switch'}
+   */
+  function switchDecision(next, runner, candidate_account) {
+    const policy =
+      (runner === 'claude' || runner === 'codex'
+        ? next.provider_limit_policy?.[runner]
+        : null) ?? defaultProviderLimitPolicy();
+    if (policy.mode !== 'switch') {
+      return 'disabled';
+    }
+    if (policy.accounts.length === 0) {
+      return 'unconfigured';
+    }
+    if (
+      !candidate_account ||
+      !policy.accounts.includes(candidate_account) ||
+      heldAccountsOf(next).has(candidate_account)
+    ) {
+      return 'none';
+    }
+    return 'switch';
+  }
+
+  /**
+   * Set the workspace's switch state for one global target on every
+   * membership bound to it. The state is the workspace's verdict on the
+   * target, as it was when it lived on the per-repository target itself.
+   *
+   * @param {Queue} next
+   * @param {string} target_id
+   * @param {'none'|'unconfigured'|'disabled'|null} auto_switch
+   */
+  function bindMemberSwitch(next, target_id, auto_switch) {
+    for (const member of Object.values(next.provider_hold_members)) {
+      if (member.target_id !== target_id) {
+        continue;
+      }
+      member.auto_switch = auto_switch;
+      if (auto_switch !== 'none') {
+        member.switch_ready_at = null;
+        member.switch_ready_account = null;
+      }
+    }
+  }
+
+  /**
+   * Clone a queue for a consumer outside the store. `provider_hold` leaves as
+   * the workspace's effective hold (UI-3v1h §5.5), so the gate, the wait
+   * judge, and every screen read one projection; the raw field stays on disk.
    *
    * @param {string} workspace
    * @param {Queue} q
    * @returns {Queue}
    */
   function exportQueue(workspace, q) {
-    return clone(q);
+    const out = clone(q);
+    out.provider_hold = effectiveHoldsOf(q);
+    return out;
   }
 
   /**
@@ -6531,6 +6749,9 @@ export function createQueueStore(options = {}) {
         continue;
       }
       delete next.attempts[attempt.attempt_id];
+      // Only the membership leaves (UI-3v1h §5.4): a global target keeps
+      // blocking its account for every workspace until the probe releases it.
+      delete next.provider_hold_members[attempt.attempt_id];
       for (const [runner, hold] of Object.entries(next.provider_hold)) {
         for (const target of hold.targets) {
           target.attempt_ids = target.attempt_ids.filter(
@@ -6835,6 +7056,12 @@ export function createQueueStore(options = {}) {
   }
 
   return {
+    /**
+     * The server-global provider-hold source this store projects from (UI-3v1h
+     * §5.1); the probe controller releases targets through it.
+     */
+    providerHolds: provider_holds,
+
     /**
      * Cold-load (and cache) a workspace queue, forcing auto_advance=false.
      *
@@ -8759,24 +8986,66 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Pause one attempt and register its provider target in the same write.
+     * Pause one attempt and bind it to its provider target (UI-3v1h §5.2).
+     *
+     * A target with an account, and every outage, is server-global: it is
+     * created or merged in the global store FIRST, and only then does one
+     * queue write pause the attempt, add its membership, and record the
+     * switch verdict and receipt. A crash between the two leaves a global
+     * target that gates and probes like any other; the attempt is re-held by
+     * the restart's own settlement, and the merge makes that re-entry
+     * idempotent. A global write failure throws before the queue is touched
+     * (§6). An account-unresolved `usage_limit` target stays in this
+     * workspace's own `provider_hold` exactly as before (§5.1).
+     *
+     * An attempt the switch moves to another account gets its
+     * `account_switch` receipt INSTEAD of a membership: it no longer waits on
+     * the target, which keeps standing for everyone else (§5.4). That is what
+     * lets the stale-receipt rule read a live membership as "held again after
+     * the receipt" for both receipt kinds.
      *
      * @param {string} workspace
      * @param {{ attempt_id: string, patch: Partial<Attempt>, runner: string, target: ProviderTarget, auto_switch?: { candidate_account: string|null } }} input
-     * @returns {QueueOpResult & { entered?: boolean, generation?: number }}
+     * @returns {QueueOpResult & { entered?: boolean, generation?: number, target_id?: string, origin?: string }}
      */
     holdProviderAttempt(workspace, input) {
+      const target = normalizeProviderTarget(input.target);
+      if (
+        !target ||
+        input.runner.length === 0 ||
+        !ensureLoaded(workspace).attempts[input.attempt_id]
+      ) {
+        return {
+          ok: false,
+          conflict: false,
+          queue: exportQueue(workspace, ensureLoaded(workspace))
+        };
+      }
       const prepared = terminalReceiptPatch(
         workspace,
         input.attempt_id,
         input.patch
       );
-      let entered = false;
-      let generation = 0;
+      const global =
+        providerTargetScope(target) === 'unresolved'
+          ? null
+          : provider_holds.enter({
+              runner: input.runner,
+              origin: keyFor(workspace),
+              target
+            });
+      if (providerTargetScope(target) !== 'unresolved' && !global) {
+        return {
+          ok: false,
+          conflict: false,
+          queue: exportQueue(workspace, ensureLoaded(workspace))
+        };
+      }
+      let entered = global ? global.entered : false;
+      let generation = global ? global.generation : 0;
       const result = applyUnconditional(workspace, (next) => {
         const current = next.attempts[input.attempt_id];
-        const target = normalizeProviderTarget(input.target);
-        if (!current || !target || input.runner.length === 0) {
+        if (!current) {
           return false;
         }
         next.attempts[input.attempt_id] = makeAttempt({
@@ -8785,6 +9054,52 @@ export function createQueueStore(options = {}) {
           attempt_id: current.attempt_id,
           bead_id: current.bead_id
         });
+        if (global) {
+          const siblings = Object.values(next.provider_hold_members).filter(
+            (member) => member.target_id === global.target_id
+          );
+          const decision =
+            target.kind === 'usage_limit' && input.auto_switch
+              ? switchDecision(
+                  next,
+                  input.runner,
+                  input.auto_switch.candidate_account
+                )
+              : null;
+          if (decision === 'switch') {
+            delete next.provider_hold_members[input.attempt_id];
+            bindMemberSwitch(next, global.target_id, null);
+            if (
+              !next.auto_resume_pending.some(
+                (candidate) => candidate.attempt_id === input.attempt_id
+              )
+            ) {
+              next.auto_resume_pending.push({
+                attempt_id: input.attempt_id,
+                generation: global.generation,
+                account: input.auto_switch?.candidate_account ?? null,
+                kind: 'account_switch',
+                ...(typeof target.account === 'string'
+                  ? { switched_from: target.account }
+                  : {})
+              });
+            }
+            return true;
+          }
+          const lead = siblings[0];
+          next.provider_hold_members[input.attempt_id] = {
+            runner: input.runner,
+            target_id: global.target_id,
+            account: target.account,
+            auto_switch: lead?.auto_switch ?? null,
+            switch_ready_at: lead?.switch_ready_at ?? null,
+            switch_ready_account: lead?.switch_ready_account ?? null
+          };
+          if (decision !== null) {
+            bindMemberSwitch(next, global.target_id, decision);
+          }
+          return true;
+        }
         let hold = next.provider_hold[input.runner];
         if (!hold) {
           let last_generation = 0;
@@ -8832,65 +9147,128 @@ export function createQueueStore(options = {}) {
         }
         if (target.kind === 'usage_limit' && input.auto_switch) {
           const candidate_account = input.auto_switch.candidate_account;
-          const policy =
-            (input.runner === 'claude' || input.runner === 'codex'
-              ? next.provider_limit_policy?.[input.runner]
-              : null) ?? defaultProviderLimitPolicy();
-          // The candidate was chosen OUTSIDE this mutation against an async
-          // catalog read, so the allowed set is re-read here: a user who
-          // unchecked that account meanwhile must not be switched onto
-          // (spec §3.2 row 3).
-          if (policy.mode !== 'switch') {
-            stored_target.auto_switch = 'disabled';
-          } else if (policy.accounts.length === 0) {
-            stored_target.auto_switch = 'unconfigured';
-          } else if (
-            !candidate_account ||
-            !policy.accounts.includes(candidate_account)
-          ) {
-            stored_target.auto_switch = 'none';
+          const decision = switchDecision(
+            next,
+            input.runner,
+            candidate_account
+          );
+          if (decision !== 'switch') {
+            stored_target.auto_switch = decision;
           } else {
-            const candidate_held = Object.values(next.provider_hold).some(
-              (candidate_hold) =>
-                candidate_hold.targets.some(
-                  (candidate_target) =>
-                    candidate_target.account === candidate_account
-                )
-            );
-            if (candidate_held) {
-              stored_target.auto_switch = 'none';
-            } else {
-              stored_target.auto_switch = null;
-              const receipt = {
-                attempt_id: input.attempt_id,
-                generation: hold.generation,
-                account: candidate_account,
-                kind: /** @type {const} */ ('account_switch')
-              };
-              if (
-                !next.auto_resume_pending.some(
-                  (candidate) => candidate.attempt_id === input.attempt_id
-                )
-              ) {
-                next.auto_resume_pending.push(receipt);
-              }
+            stored_target.auto_switch = null;
+            const receipt = {
+              attempt_id: input.attempt_id,
+              generation: hold.generation,
+              account: candidate_account,
+              kind: /** @type {const} */ ('account_switch')
+            };
+            if (
+              !next.auto_resume_pending.some(
+                (candidate) => candidate.attempt_id === input.attempt_id
+              )
+            ) {
+              next.auto_resume_pending.push(receipt);
             }
           }
         }
         return true;
       });
       consumeTerminalReceipts(result, prepared.files, prepared.drain);
-      return result.ok ? { ...result, entered, generation } : result;
+      if (!result.ok) {
+        return result;
+      }
+      return {
+        ...result,
+        entered,
+        generation,
+        ...(global
+          ? { target_id: global.target_id, origin: global.origin }
+          : {})
+      };
     },
 
     /**
      * Change one provider target while preserving its identity binding.
      *
+     * A global target is addressed by `target_id` (a probe may have changed
+     * its `kind` since the caller read it), or by its merge key within the
+     * given generation. Its observation fields live in the global store; the
+     * `switch_ready_*` pair is this workspace's policy verdict and lands on its
+     * memberships (UI-3v1h §5.1). Anything else is one of the workspace's own
+     * account-unresolved targets, patched in place as before.
+     *
      * @param {string} workspace
-     * @param {{ runner: string, generation: number, kind: 'outage'|'usage_limit', model: string, account: string|null, patch: Partial<ProviderTarget> }} input
+     * @param {{ runner: string, generation: number, kind: 'outage'|'usage_limit', model: string, account: string|null, target_id?: string, patch: Partial<ProviderTarget> }} input
      * @returns {QueueOpResult}
      */
     updateProviderTarget(workspace, input) {
+      const located =
+        typeof input.target_id === 'string'
+          ? provider_holds.find(input.target_id)
+          : provider_holds.findBy({
+              runner: input.runner,
+              kind: input.kind,
+              model: input.model,
+              account: input.account
+            });
+      if (
+        located &&
+        located.runner === input.runner &&
+        (typeof input.target_id === 'string' ||
+          located.generation === input.generation)
+      ) {
+        const target_id = located.target.target_id;
+        /** @type {Parameters<typeof provider_holds.update>[1]} */
+        const observed = {};
+        for (const key of /** @type {const} */ ([
+          'kind',
+          'detail',
+          'last_error',
+          'resets_at',
+          'rearm_count',
+          'next_probe_at'
+        ])) {
+          if (Object.hasOwn(input.patch, key)) {
+            /** @type {any} */ (observed)[key] = input.patch[key];
+          }
+        }
+        if (Object.keys(observed).length > 0) {
+          provider_holds.update(target_id, observed);
+        }
+        if (!Object.hasOwn(input.patch, 'switch_ready_at')) {
+          return {
+            ok: true,
+            conflict: false,
+            queue: exportQueue(workspace, ensureLoaded(workspace))
+          };
+        }
+        return applyUnconditional(workspace, (next) => {
+          const members = Object.values(next.provider_hold_members).filter(
+            (member) => member.target_id === target_id
+          );
+          if (members.length === 0) {
+            return false;
+          }
+          const ready_at = input.patch.switch_ready_at;
+          const ready_account = input.patch.switch_ready_account;
+          const policy =
+            input.runner === 'claude' || input.runner === 'codex'
+              ? next.provider_limit_policy[input.runner]
+              : null;
+          for (const member of members) {
+            const valid =
+              member.auto_switch === 'none' &&
+              policy?.mode === 'switch' &&
+              typeof ready_at === 'number' &&
+              Number.isFinite(ready_at) &&
+              typeof ready_account === 'string' &&
+              policy.accounts.includes(ready_account);
+            member.switch_ready_at = valid ? ready_at : null;
+            member.switch_ready_account = valid ? ready_account : null;
+          }
+          return true;
+        });
+      }
       return applyUnconditional(workspace, (next) => {
         const hold = next.provider_hold[input.runner];
         if (!hold || hold.generation !== input.generation) {
@@ -8959,47 +9337,55 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Queue switches for the still-paused leaves of a none-held target. The
-     * exhausted source stays gated until its own probe releases it.
+     * Queue switches for this workspace's still-paused leaves of a none-held
+     * global target. The exhausted source stays gated — for every workspace —
+     * until its own probe releases it; each switched attempt leaves the target
+     * with its receipt (§5.4), the rest keep their membership.
      *
      * @param {string} workspace
-     * @param {{ runner: string, generation: number, model: string, account: string, candidate_account: string }} input
+     * @param {{ runner: string, generation: number, model: string, account: string, candidate_account: string, target_id?: string }} input
      * @returns {QueueOpResult}
      */
     switchHeldProviderAttempts(workspace, input) {
+      const located =
+        typeof input.target_id === 'string'
+          ? provider_holds.find(input.target_id)
+          : provider_holds.findBy({
+              runner: input.runner,
+              kind: 'usage_limit',
+              model: input.model,
+              account: input.account
+            });
       return applyUnconditional(workspace, (next) => {
-        const hold = next.provider_hold[input.runner];
         const policy =
           input.runner === 'claude' || input.runner === 'codex'
             ? next.provider_limit_policy[input.runner]
             : null;
         if (
-          !hold ||
-          hold.generation !== input.generation ||
+          !located ||
+          located.runner !== input.runner ||
+          (typeof input.target_id !== 'string' &&
+            located.generation !== input.generation) ||
+          located.target.kind !== 'usage_limit' ||
+          located.target.detail !== 'usage_limit' ||
+          located.target.model !== input.model ||
+          located.target.account !== input.account ||
           policy?.mode !== 'switch' ||
           !policy.accounts.includes(input.candidate_account) ||
           input.candidate_account === input.account ||
-          Object.values(next.provider_hold).some((candidate_hold) =>
-            candidate_hold.targets.some(
-              (target) => target.account === input.candidate_account
-            )
-          )
+          heldAccountsOf(next).has(input.candidate_account)
         ) {
           return false;
         }
-        const target = hold.targets.find(
-          (candidate) =>
-            candidate.kind === 'usage_limit' &&
-            candidate.detail === 'usage_limit' &&
-            candidate.model === input.model &&
-            candidate.account === input.account &&
-            candidate.auto_switch === 'none'
+        const target_id = located.target.target_id;
+        const members = Object.entries(next.provider_hold_members).filter(
+          ([, member]) => member.target_id === target_id
         );
-        if (!target) {
+        if (!members.some(([, member]) => member.auto_switch === 'none')) {
           return false;
         }
         let queued = false;
-        for (const attempt_id of target.attempt_ids) {
+        for (const [attempt_id, member] of members) {
           const attempt = next.attempts[attempt_id];
           if (
             !attempt ||
@@ -9023,78 +9409,77 @@ export function createQueueStore(options = {}) {
           }
           next.auto_resume_pending.push({
             attempt_id,
-            generation: hold.generation,
+            generation: located.generation,
             account: input.candidate_account,
-            kind: 'account_switch'
+            kind: 'account_switch',
+            switched_from: member.account ?? input.account
           });
+          delete next.provider_hold_members[attempt_id];
           queued = true;
         }
         if (queued) {
-          target.auto_switch = null;
-          target.switch_ready_at = null;
-          target.switch_ready_account = null;
+          bindMemberSwitch(next, target_id, null);
         }
         return queued;
       });
     },
 
     /**
-     * Release a deleted account's target without pinning resumes to that account.
+     * Membership settlement (UI-3v1h §5.4): every membership of this workspace
+     * whose global target no longer exists is a released hold. Each one is
+     * judged by the rule a per-repository release used — paused,
+     * `provider_outage:*`, undismissed, not yet resumed, no discard running —
+     * and either disarmed at the auto-resume cap or given a `provider_outage`
+     * receipt. The receipt and the membership's removal are one queue write,
+     * so a membership is never gone before its receipt is durable; that is
+     * what lets attachment `start()` call this same function and reproduce a
+     * release a restart interrupted.
+     *
+     * The resume account is the membership's own: an attempt record need not
+     * name the held account. `listed` is the account catalog keyed by runner;
+     * a membership account the catalog no longer lists resumes on null (normal
+     * resolution picks the account, exactly what a release by account absence
+     * did), and an unreadable catalog (`null` or absent) keeps the
+     * membership's account.
+     *
+     * The released runner — `runners`, plus the runner of every membership
+     * settled here — whose effective hold is now empty also loses this
+     * workspace's `provider_gate` admission records, as the per-repository
+     * release did for its last target. A workspace with no membership of the
+     * released target still loses its records: the global target blocked its
+     * rows too.
      *
      * @param {string} workspace
-     * @param {{ runner: string, generation: number, kind: 'outage'|'usage_limit', model: string, account: string, reason: 'account_absent' }} input
+     * @param {{ listed?: Record<string, string[]|null>, runners?: string[] }} [options]
+     * @returns {QueueOpResult & { pending: AutoResumePending[], disarmed_attempt_ids: string[], recovered_attempt_ids: string[] }}
      */
-    releaseProviderTarget(workspace, input) {
-      return this.recoverProviderTarget(workspace, input, null);
-    },
-
-    /**
-     * Remove one recovered target and prerecord every eligible resume.
-     *
-     * @param {string} workspace
-     * @param {{ runner: string, generation: number, kind: 'outage'|'usage_limit', model: string, account: string|null }} input
-     * @param {string|null} [resume_account] - Null lets normal account resolution choose the resume account.
-     * @returns {QueueOpResult & { pending?: AutoResumePending[], disarmed_attempt_ids?: string[], recovered_attempt_ids?: string[] }}
-     */
-    recoverProviderTarget(workspace, input, resume_account = input.account) {
+    settleProviderMembers(workspace, options = {}) {
+      const listed = options.listed || {};
+      /** @type {Set<string>} */
+      const released_runners = new Set(options.runners || []);
       /** @type {AutoResumePending[]} */
       const pending = [];
       /** @type {string[]} */
       const disarmed_attempt_ids = [];
       /** @type {string[]} */
       const recovered_attempt_ids = [];
+      const generation = Math.max(1, provider_holds.generation());
       const result = applyUnconditional(workspace, (next) => {
-        const hold = next.provider_hold[input.runner];
-        if (!hold || hold.generation !== input.generation) {
-          return false;
-        }
-        const index = hold.targets.findIndex(
-          (candidate) =>
-            candidate.kind === input.kind &&
-            candidate.model === input.model &&
-            candidate.account === input.account
-        );
-        if (index < 0) {
-          return false;
-        }
-        const [target] = hold.targets.splice(index, 1);
-        if (hold.targets.length === 0) {
-          delete next.provider_hold[input.runner];
-          for (const [bead_id, admission] of Object.entries(next.admission)) {
-            if (
-              admission.reason === 'provider_gate' &&
-              admission.gate?.runner === input.runner
-            ) {
-              delete next.admission[bead_id];
-            }
-          }
-        }
+        let changed = false;
         const resumed_ids = new Set(
           Object.values(next.attempts)
             .map((attempt) => attempt.resumed_from)
             .filter((id) => typeof id === 'string')
         );
-        for (const attempt_id of target.attempt_ids) {
+        for (const [attempt_id, member] of Object.entries(
+          next.provider_hold_members
+        )) {
+          if (provider_holds.has(member.target_id)) {
+            continue;
+          }
+          delete next.provider_hold_members[attempt_id];
+          released_runners.add(member.runner);
+          changed = true;
           const attempt = next.attempts[attempt_id];
           if (
             !attempt ||
@@ -9115,10 +9500,16 @@ export function createQueueStore(options = {}) {
             disarmed_attempt_ids.push(attempt_id);
             continue;
           }
+          const roster = listed[member.runner];
           const receipt = {
             attempt_id,
-            generation: hold.generation,
-            account: resume_account,
+            generation,
+            account:
+              member.account !== null &&
+              Array.isArray(roster) &&
+              !roster.includes(member.account)
+                ? null
+                : member.account,
             kind: /** @type {const} */ ('provider_outage')
           };
           if (
@@ -9130,11 +9521,189 @@ export function createQueueStore(options = {}) {
           }
           pending.push(receipt);
         }
+        const effective = effectiveHoldsOf(next);
+        for (const [bead_id, admission] of Object.entries(next.admission)) {
+          const runner = admission.gate?.runner;
+          if (
+            admission.reason === 'provider_gate' &&
+            typeof runner === 'string' &&
+            released_runners.has(runner) &&
+            !effective[runner]
+          ) {
+            delete next.admission[bead_id];
+            changed = true;
+          }
+        }
+        return changed;
+      });
+      return {
+        ...result,
+        pending,
+        disarmed_attempt_ids,
+        recovered_attempt_ids
+      };
+    },
+
+    /**
+     * The largest hold or receipt generation this workspace's queue FILE
+     * records, read without caching it (UI-3v1h §5.6): the global counter
+     * starts above every generation a migrated queue already handed out, and
+     * this read may run before the record migration that must be the queue's
+     * first cacher. A queue already in memory is read from memory.
+     *
+     * @param {string} workspace
+     * @returns {number}
+     */
+    providerGenerationFloor(workspace) {
+      const cached = cache.get(keyFor(workspace));
+      /** @type {Queue} */
+      let q;
+      if (cached) {
+        q = cached;
+      } else {
+        try {
+          q = normalizeQueue(
+            JSON.parse(fs.readFileSync(filePathFor(workspace), 'utf8'))
+          );
+        } catch {
+          return 0;
+        }
+      }
+      let floor = 0;
+      for (const hold of Object.values(q.provider_hold)) {
+        floor = Math.max(floor, hold.generation);
+      }
+      for (const entry of q.auto_resume_pending) {
+        floor = Math.max(floor, entry.generation);
+      }
+      return floor;
+    },
+
+    /**
+     * Move this workspace's account-bound and outage targets into the global
+     * store (UI-3v1h §5.6). Per target: global create-or-merge first (origin
+     * is this workspace), then ONE queue write that turns its `attempt_ids`
+     * into memberships carrying the target's account and switch state and
+     * drops the original, then a readback. Account-unresolved targets stay.
+     * Running it again finds nothing to move; a run that stopped part-way is
+     * finished by the next start, the merge making the re-entry idempotent.
+     *
+     * An attempt with a pending `account_switch` receipt gets no membership:
+     * a switched attempt no longer waits on its source target (§5.4), and a
+     * membership would make the stale rule drop the receipt the per-repository
+     * rule kept. Such a receipt only gains the source account as its
+     * `switched_from` when it lacks one; every other receipt is left untouched.
+     *
+     * @param {string} workspace
+     * @returns {{ ok: boolean, migrated: number }}
+     */
+    migrateProviderHolds(workspace) {
+      const origin = keyFor(workspace);
+      const source = ensureLoaded(workspace);
+      /** @type {Array<{ runner: string, target: ProviderTarget, entry: NonNullable<ReturnType<typeof provider_holds.enter>> }>} */
+      const moves = [];
+      for (const [runner, hold] of Object.entries(source.provider_hold)) {
+        for (const target of hold.targets) {
+          if (providerTargetScope(target) === 'unresolved') {
+            continue;
+          }
+          const entry = provider_holds.enter({
+            runner,
+            origin,
+            since: hold.since,
+            target
+          });
+          if (entry) {
+            moves.push({ runner, target, entry });
+          }
+        }
+      }
+      if (moves.length === 0) {
+        return { ok: true, migrated: 0 };
+      }
+      const result = applyUnconditional(workspace, (next) => {
+        for (const { runner, target, entry } of moves) {
+          const hold = next.provider_hold[runner];
+          if (!hold) {
+            continue;
+          }
+          hold.targets = hold.targets.filter(
+            (candidate) =>
+              !(
+                candidate.kind === target.kind &&
+                candidate.model === target.model &&
+                candidate.account === target.account
+              )
+          );
+          if (hold.targets.length === 0) {
+            delete next.provider_hold[runner];
+          }
+          for (const attempt_id of target.attempt_ids) {
+            if (!next.attempts[attempt_id]) {
+              continue;
+            }
+            const switch_receipt = next.auto_resume_pending.find(
+              (receipt) =>
+                receipt.attempt_id === attempt_id &&
+                receipt.kind === 'account_switch' &&
+                receipt.origin !== 'live_preempt'
+            );
+            if (switch_receipt) {
+              // The source target leaves this queue here, and the attempt
+              // record need not name the account it switched away from: the
+              // receipt keeps it, or the switch recovery has nothing to name.
+              if (
+                typeof switch_receipt.switched_from !== 'string' &&
+                typeof target.account === 'string'
+              ) {
+                switch_receipt.switched_from = target.account;
+              }
+              continue;
+            }
+            const auto_switch = target.auto_switch ?? null;
+            next.provider_hold_members[attempt_id] = {
+              runner,
+              target_id: entry.target_id,
+              account: target.account,
+              auto_switch,
+              switch_ready_at:
+                auto_switch === 'none'
+                  ? (target.switch_ready_at ?? null)
+                  : null,
+              switch_ready_account:
+                auto_switch === 'none'
+                  ? (target.switch_ready_account ?? null)
+                  : null
+            };
+          }
+        }
         return true;
       });
-      return result.ok
-        ? { ...result, pending, disarmed_attempt_ids, recovered_attempt_ids }
-        : result;
+      if (!result.ok) {
+        return { ok: false, migrated: 0 };
+      }
+      try {
+        const readback = normalizeQueue(
+          JSON.parse(fs.readFileSync(filePathFor(workspace), 'utf8'))
+        );
+        const left = Object.values(readback.provider_hold).some((hold) =>
+          hold.targets.some(
+            (target) => providerTargetScope(target) !== 'unresolved'
+          )
+        );
+        if (left) {
+          log('provider hold migration readback disagrees for %s', workspace);
+          return { ok: false, migrated: moves.length };
+        }
+      } catch (err) {
+        log(
+          'provider hold migration readback failed for %s: %s',
+          workspace,
+          errorDetail(err)
+        );
+        return { ok: false, migrated: moves.length };
+      }
+      return { ok: true, migrated: moves.length };
     },
 
     /**
@@ -9160,7 +9729,13 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Drop receipts superseded by a newer hold generation for their runner.
+     * Drop receipts whose attempt was held again after the receipt (UI-3v1h
+     * §5.4): the attempt has a live membership — its target still stands — or
+     * sits in one of the workspace's own unresolved targets. A generation that
+     * moved is NOT evidence: across workspaces an unrelated hold moves it, and
+     * dropping a released target's receipt would leave its attempt with
+     * neither a membership nor a refusal for the re-arm sweep to find.
+     * `live_preempt` receipts never take part.
      *
      * @param {string} workspace
      * @returns {QueueOpResult & { discarded_attempt_ids?: string[] }}
@@ -9174,9 +9749,7 @@ export function createQueueStore(options = {}) {
           if (entry.origin === 'live_preempt') {
             return true;
           }
-          const runner = next.attempts[entry.attempt_id]?.runner;
-          const hold = runner ? next.provider_hold[runner] : null;
-          const keep = !hold || hold.generation === entry.generation;
+          const keep = !attemptHeld(next, entry.attempt_id);
           if (!keep) {
             discarded_attempt_ids.push(entry.attempt_id);
           }
@@ -9194,15 +9767,18 @@ export function createQueueStore(options = {}) {
      * Re-arm one refused recovery resume (2026-10-01 stall-reconcile D2) with
      * the receipt a hold release writes. Every durable condition the reconcile
      * sweep selected on is re-read in this mutation: a leaf, undismissed,
-     * not-withdrawn `paused` provider-outage attempt, no hold on its runner (a
-     * live hold is the prober's to release), no receipt pending, no discard in
-     * flight, and the lineage's one automatic resume still unspent.
+     * not-withdrawn `paused` provider-outage attempt whose recovery no
+     * standing hold owns (a live hold is the prober's to release — but with
+     * server-global holds another account's limit, maybe from another
+     * workspace, is not one this attempt waits on, UI-3v1h §5.4), no receipt
+     * pending, no discard in flight, and the lineage's one automatic resume
+     * still unspent.
      *
-     * The generation obeys the hold rule: a hold that starts later takes a
-     * HIGHER generation than every receipt, so `discardStaleAutoResumePending`
-     * drops this receipt if the provider fails again before it is consumed. A
-     * null account lets ordinary resolution pick the account, as an
-     * account-less hold release does.
+     * The generation stays above every hold and receipt this workspace knows;
+     * a later re-hold makes the attempt a live member again, which is what
+     * `discardStaleAutoResumePending` drops this receipt for. A null account
+     * lets ordinary resolution pick the account, as an account-less hold
+     * release does.
      *
      * @param {string} workspace
      * @param {{ attempt_id: string }} input
@@ -9217,8 +9793,7 @@ export function createQueueStore(options = {}) {
           !attempt.cause?.startsWith('provider_outage:') ||
           attempt.withdrawn ||
           typeof attempt.dismissed_at === 'number' ||
-          (typeof attempt.runner === 'string' &&
-            Object.hasOwn(next.provider_hold, attempt.runner)) ||
+          holdOwnsRecovery(next, attempt) ||
           next.auto_resume_pending.some(
             (entry) => entry.attempt_id === attempt.attempt_id
           ) ||
@@ -9234,7 +9809,7 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
-        let generation = 1;
+        let generation = Math.max(1, provider_holds.generation());
         for (const hold of Object.values(next.provider_hold)) {
           generation = Math.max(generation, hold.generation);
         }
@@ -12954,6 +13529,7 @@ export function createQueueStore(options = {}) {
       cache.clear();
       repair_lane_retirements.clear();
       retired_kind_attempts.clear();
+      provider_holds.__clearCacheForTest();
     }
   };
 }

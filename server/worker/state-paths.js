@@ -176,6 +176,27 @@ export function externalWaitSettingsFilePath() {
 }
 
 /**
+ * Absolute path to the SERVER-GLOBAL `bdui` state root, the directory every
+ * per-workspace slug and server-global file lives in.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui`.
+ */
+export function stateRootDir() {
+  return path.join(stateHome(), 'bdui');
+}
+
+/**
+ * Absolute path to the SERVER-GLOBAL provider-hold file (UI-3v1h §5.1): the
+ * one source of every account- or runner-scoped provider hold, shared by all
+ * workspaces.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/provider-holds.json`.
+ */
+export function providerHoldsFilePath() {
+  return path.join(stateRootDir(), 'provider-holds.json');
+}
+
+/**
  * Absolute account-isolated Codex HOME for one durable account key.
  *
  * @param {string} key

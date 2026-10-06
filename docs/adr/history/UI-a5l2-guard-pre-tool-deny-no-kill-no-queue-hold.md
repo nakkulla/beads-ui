@@ -1,7 +1,8 @@
 ---
 id: UI-a5l2
 title: Worker 가드: 실행 전 거부·pre-push 예방·사후 base 착지 감지
-status: accepted
+status: superseded
+superseded_by: UI-3v1h
 date: 2026-09-21
 summary: "Worker 가드는 Claude·Codex 세션의 실행 전 거부 훅과 pre-push 예방, 사후 base 착지 감지로만 강제하며 텍스트 판정으로 세션을 죽이지 않고, 큐 단위 보류는 어떤 종류도 만들지 않으며, 뚫린 착지는 그 Bead의 개별 실패다"
 supersedes: [7, "UI-inge"]
