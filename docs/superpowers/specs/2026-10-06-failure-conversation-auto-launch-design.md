@@ -37,38 +37,38 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
 
 ## 2. 검증된 전제
 
-기준: beads-ui `2acda092a3bbdb13123ce419c0fa0644af8b6f8d`. `server/` 인용은 `f799f28a`에서 확인했고 그 뒤 범위 파일 변경이 없다. `app/` 인용은 `2acda092`에서 확인했다.
+기준: beads-ui `0f2c7ae856424dd568c017df4569ac72682929dc`. 처음 `server/` 인용은 `f799f28a`, `app/` 인용은 `2acda092`에서 확인했다. 스테일 재검토(UI-qbgj·UI-i8cy 착지)에서 `0f2c7ae8` 기준으로 줄 번호와 ADR 경로를 갱신했다.
 
-- 「사람 필요」 제목 상수와 「확인 필요」 대화 제목 — `server/worker/notify.js:66`, `:75`
-- 「사람 필요」 발신처: post-merge 잡·배포·머지 게이트 보류 클래스 표, 폐기 실패, 수동 배포 실패 — `server/worker/completion-intent.js:839-846`, `:1614`; `server/worker/discard-coordinator.js:87`; `server/worker/repo-operation-coordinator.js:671`
-- 실패 알림 본문의 `클래스:`·`다음:` 줄 — `server/worker/notify.js:664`
+- 「사람 필요」 제목 상수와 「확인 필요」 대화 제목 — `server/worker/notify.js:67`, `:76`
+- 「사람 필요」 발신처: post-merge 잡·배포·머지 게이트 보류 클래스 표, 폐기 실패, 수동 배포 실패 — `server/worker/completion-intent.js:839-846`, `:1614`; `server/worker/discard-coordinator.js:87`; `server/worker/repo-operation-coordinator.js:681`
+- 실패 알림 본문의 `클래스:`·`다음:` 줄 — `server/worker/notify.js:663`
 - 테스트가 `🚨 사람 필요` 문자열을 고정한다 — `server/worker/notify.test.js:1498`, `:1519`
-- 수동 배포 실패는 `manual` 자리표시로 기록되고, 실패 후속 처리에서 제외된다 — `server/worker/repo-operation-coordinator.js:688`, `:943`
-- 재시도 소진 경로 `settleConsumedRetry`는 알림 없이 `recoverAfterLadder`만 부른다 — `server/worker/repo-operation-coordinator.js:808-839`, `:883`
-- 수동 배포 실패 알림은 `settleFailure`의 종단 전이 안에서 한 번 보낸다 — `server/worker/repo-operation-coordinator.js:787-797`
-- reconcile은 저장된 모든 `failed` 작업마다 `recoverAfterLadder`를 다시 부른다 — `server/worker/repo-operation-coordinator.js:3170-3181`
-- 수동 배포 재실행 진입 — `server/worker/repo-operation-coordinator.js:2532-2579`
-- 대화 정산은 미정산 레코드의 `bead_id`로 Bead 상태를 읽고, 실패 인계는 `executeFailureHandoff`가 실행한다 — `server/worker/scheduler.js:10712-10726`, `:10112`
+- 수동 배포 실패는 `manual` 자리표시로 기록되고, 실패 후속 처리에서 제외된다 — `server/worker/repo-operation-coordinator.js:698`, `:953`
+- 재시도 소진 경로 `settleConsumedRetry`는 알림 없이 `recoverAfterLadder`만 부른다 — `server/worker/repo-operation-coordinator.js:818-849`, `:893`
+- 수동 배포 실패 알림은 `settleFailure`의 종단 전이 안에서 한 번 보낸다 — `server/worker/repo-operation-coordinator.js:797-807`
+- reconcile은 저장된 모든 `failed` 작업마다 `recoverAfterLadder`를 다시 부른다 — `server/worker/repo-operation-coordinator.js:3180-3191`
+- 수동 배포 재실행 진입 — `server/worker/repo-operation-coordinator.js:2542-2589`
+- 대화 정산은 미정산 레코드의 `bead_id`로 Bead 상태를 읽고, 실패 인계는 `executeFailureHandoff`가 실행한다 — `server/worker/scheduler.js:10714-10728`, `:10114`
 - 멈춤 자동 기동 파이프라인과 스위치 읽기, Bead 없는 행 거절 — `server/worker/direction-inquiry.js:293`, `:479`, `:689`
 - 진입 블록 원문 고정 — `server/worker/direction-inquiry.js:58-87`
 - Codex 기동에는 세션 id를 만들지 않는다 — `server/worker/direction-inquiry.js:577-580`
 - 클릭 해결 세션은 기록 세션을 fork하고 `placement: 'user'`로 연다 — `server/worker/resolve-session.js:63`, `:552`
 - 대화 레코드 키는 `<bead_id>:<kind>`다 — `server/worker/queue-store.js:3487`
-- 저장소 작업 투영은 의도적으로 해결 진입을 두지 않는다 — `server/ws/worker-handlers.js:2792-2798`
-- 해결 클릭 처리기는 Bead를 전제한다 — `server/ws/worker-handlers.js:6760`
-- 저장소 작업 서랍의 실패 행은 `기록 닫기`만 그리고, 정리 행은 해결 버튼을 그린다 — `app/views/worker/repo-ops-timeline.js:408`, `:526`
-- 저장소 작업 서랍은 모니터 탭과 Worker 탭이 같은 컴포넌트로 띄운다 — `app/views/worker/repo-ops-timeline.js:659`, `app/views/monitor/index.js:713`, `app/views/worker/index.js:877`
-- 서랍 버튼의 클릭은 서랍이 아니라 두 탭이 위임 처리한다 — `app/views/monitor/index.js:1280`, `app/views/worker/index.js:3600`
+- 저장소 작업 투영은 의도적으로 해결 진입을 두지 않는다 — `server/ws/worker-handlers.js:2775-2781`
+- 해결 클릭 처리기는 Bead를 전제한다 — `server/ws/worker-handlers.js:6821`
+- 저장소 작업 서랍의 실패 행은 `기록 닫기`만 그리고, 정리 행은 해결 버튼을 그린다 — `app/views/worker/repo-ops-timeline.js:410`, `:551`
+- 저장소 작업 서랍은 모니터 탭과 Worker 탭이 같은 컴포넌트로 띄운다 — `app/views/worker/repo-ops-timeline.js:689`, `app/views/monitor/index.js:718`, `app/views/worker/index.js:878`
+- 서랍 버튼의 클릭은 서랍이 아니라 두 탭이 위임 처리한다 — `app/views/monitor/index.js:1285`, `app/views/worker/index.js:3614`
 - 살아 있는 대화가 있으면 버튼을 숨긴다 — `app/views/worker/tile-resolve.js:19`, `:228`
 - 자동 기동 스위치는 config.toml에서만 읽고 쓰는 경로가 없다 — `server/config.js:136-173`
 - 운영 config의 자동 기동 값은 `true`다 — 2026-10-06 `~/.config/bdui/config.toml` `[worker.direction_inquiry] enabled = true` 확인(실행)
 - 서버 전역 설정 저장소 선례 — `server/timing-settings.js:263`
 - 전역 탭은 하나뿐이다 — `docs/adr/UI-ooc0-model-visibility-disabled-list.md:56`
-- 전역 탭은 일괄 모드(모니터 탭 헤더 `⚙`)에만 있고, 섹션은 별도 파일로 붙는다 — `app/views/settings-dialog/index.js:69-77`, `:447`; `app/views/settings-dialog/timing-section.js:2`
+- 전역 탭은 일괄 모드(모니터 탭 헤더 `⚙`)에만 있고, 섹션은 별도 파일로 붙는다 — `app/views/settings-dialog/index.js:70-78`, `:452`; `app/views/settings-dialog/timing-section.js:2`
 - `workflow_session_defaults`는 등록 키 밖을 거절한다 — `server/session-defaults.js:173`
 - 헤드리스 런너의 모델·effort 플래그 — `server/worker/runner/claude.js:825-828`, `server/worker/runner/codex.js:469-472`
 - 대화형 CLI 플래그: `claude --help`에 `--model`·`--effort`·`--fork-session`, `codex fork --help`에 `-c` — 2026-10-06 실행 확인
-- 현행 결정 "자동 기동은 사람 판단 멈춤에만", "실패의 🚨 사람 필요는 그대로" — `docs/adr/UI-18a5-session-worker-continue-pair.md:58`, `:70`
+- 현행 결정 "자동 기동은 사람 판단 멈춤에만", "실패의 🚨 사람 필요는 그대로" — `docs/adr/UI-qbgj-slurm-wait-capacity-and-local-takeover.md:90`, `:102`(UI-18a5에서 승계)
 - 남는 needs_human 알림 클래스 목록 — `docs/adr/UI-18a5-3-merge-gate-holds-and-failure-exits.md:57`
 - 대화 레코드 키 조항 — `docs/adr/UI-18a5-2-conversation-records-three-kinds.md:36`
 - 원래 런타임으로 fork하는 현행 테스트가 있다 — `server/worker/resolve-session.test.js:842`
@@ -194,7 +194,8 @@ Bead: UI-jbl1 · 선행: dotfiles `dotfiles-ids1k`(계약, `docs/superpowers/spe
 - 전제: ADR UI-u6ud-5 — 수동 `[배포 실행]`과 `script_retry` 한 단계 사다리를 그대로 쓴다.
 - 실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 한 번 자동으로 연다. 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일하고 「🚨 사람 필요」를 없앤다. 수동 배포 실패는 「저장소 작업」 서랍의 `[세션에서 이어가기]`와 작업 식별자 키의 대화 레코드를 가진다.
   - 되돌리기 어려움: 함께 움직이는 소비자는 알림 제목을 읽는 사람의 Discord 필터와 습관, 대화 레코드 키를 읽는 reconcile·투영·UI, 계약 사본과 진입 블록 digest다.
-  - 맥락 없이 놀라움: 4일 전 결정(UI-18a5, 자동 기동은 멈춤에만)과 ADR 0005의 자동 수리 폐기를 뒤집는 것처럼 보인다. 구분 근거는 "답 전 상태 변경 없음"이다.
+  - 맥락 없이 놀라움: 4일 전 결정(UI-18a5, 자동 기동은 멈춤에만 — UI-qbgj가 그대로 승계)과 ADR 0005의 자동 수리 폐기를 뒤집는 것처럼 보인다. 구분 근거는 "답 전 상태 변경 없음"이다.
   - 실제 절충: 실패마다 드는 세션 토큰과 알림 직후 진단을 받는 시간 이득을 맞바꿨다. 알림 종류를 하나로 줄이는 대신 제목 접미사로 급한 정도를 보인다.
-  - `summary`: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다" → ADR, supersede UI-18a5·UI-18a5-2·UI-18a5-3
+  - 승계: UI-qbgj 스펙 §3.7(ADR UI-18a5 대체 순서)에 따라 먼저 착지한 UI-qbgj ADR을 대체 대상으로 삼는다. UI-qbgj가 UI-18a5에 더한 외부 작업 조항(대기 중 용량 재료, 사람이 확인한 바로 실행)과 이 결정이 바꾸지 않는 나머지 조항은 그대로 승계한다.
+  - `summary`: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다" → ADR, supersede UI-qbgj·UI-18a5-2·UI-18a5-3
 - 해결 세션 런타임·모델·effort와 자동 기동 스위치를 전역 탭의 서버 전역 설정에 둔다 — 되돌리기 쉬움(설정 섹션과 파일 하나) → ADR 아님
