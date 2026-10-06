@@ -1269,9 +1269,13 @@ export function createWorkerView(mount_element, options = {}) {
    * away: a fresh-session fallback and a fork look identical on screen
    * otherwise, and the person is about to work inside the difference.
    *
-   * @param {string} bead_id
+   * A repo-operation row (UI-jbl1 §3.3) passes its row key and the
+   * `{ operation_id }` payload instead of a Bead.
+   *
+   * @param {string} bead_id - The Bead id, or a repo-operation row key.
+   * @param {Record<string, string>} [payload]
    */
-  async function resolveInSession(bead_id) {
+  async function resolveInSession(bead_id, payload = { bead_id }) {
     if (!transport || !bead_id || resolve_pending.has(bead_id)) {
       return;
     }
@@ -1280,7 +1284,7 @@ export function createWorkerView(mount_element, options = {}) {
     try {
       const res = /** @type {any} */ (
         await transport('worker-resolve-in-session', {
-          bead_id,
+          ...payload,
           expected_revision: currentRevision()
         })
       );
@@ -3592,6 +3596,18 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (repoOpDismiss) {
       void dismissRepoOperation(repoOpDismiss.dataset.operationId || '');
+      return;
+    }
+    // A failed manual deploy's `[세션에서 이어가기]` (UI-jbl1 §3.3): the same
+    // mutation as a card's, keyed by the operation instead of a Bead.
+    const repoOpResolve = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-repo-op__resolve')
+    );
+    if (repoOpResolve) {
+      const operation_id = repoOpResolve.dataset.operationId;
+      if (operation_id) {
+        void resolveInSession(`repo-op:${operation_id}`, { operation_id });
+      }
       return;
     }
     // 타임라인의 [워커로 이어가기]는 PR 대기 카드의 정리 실패 [워커로

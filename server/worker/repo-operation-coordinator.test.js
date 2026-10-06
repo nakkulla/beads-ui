@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from './bead-timeline.js';
 import { createLockManager } from './locks.js';
+import { createNotifier } from './notify.js';
 import { repairHandoffDescription } from './operation-recovery.js';
 import { __resetQueueEventsForTest, onQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
@@ -13,6 +14,7 @@ import {
   __resetRepoOpsDisplayForTest,
   repoOpsDisplayFor
 } from './repo-ops-display.js';
+import { createFailureConversationLauncher } from './resolve-session.js';
 import {
   repoOpsSpoolPendingDir,
   repoOpsSpoolProcessedDir
@@ -110,7 +112,7 @@ function gitWithAncestry(pairs, options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, repairHandoff?: import('./repo-operation-coordinator.js').RepairHandoffAdapter, policySupported?: () => boolean, notify?: any, timeline?: any, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, resolveBase?: (options?: { force?: boolean }) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, repairHandoff?: import('./repo-operation-coordinator.js').RepairHandoffAdapter, policySupported?: () => boolean, notify?: any, failureConversation?: any, timeline?: any, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, resolveBase?: (options?: { force?: boolean }) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -164,6 +166,7 @@ function coordinatorFor(overrides = {}) {
     policySupported: overrides.policySupported,
     repairHandoff: overrides.repairHandoff,
     notify: overrides.notify,
+    failureConversation: overrides.failureConversation,
     timeline: overrides.timeline,
     now: overrides.now,
     sleep: overrides.sleep
@@ -5471,4 +5474,255 @@ describe('failure evidence ignores attempt boundary lines (UI-i8cy §5.2)', () =
       expect(with_boundaries).toEqual(plain);
     }
   );
+});
+
+describe('manual deploy failure conversation (UI-jbl1 §3.1)', () => {
+  /** A runner whose every launch is refused, so nothing is spawned. */
+  const IDLE_RUNNER = {
+    start: vi.fn(),
+    readMarker: () => null,
+    readLaunchMarker: () => null,
+    processController: { probe: () => ({ state: 'owned' }) }
+  };
+
+  /**
+   * Fakes for the two outward effects: what was launched and what was sent.
+   */
+  function effects() {
+    /** @type {any[]} */
+    const sent = [];
+    const launchForRepoOperation = vi.fn(async () => ({
+      session: 'launched',
+      reason: null,
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-repo-op-manual-unp'
+    }));
+    return {
+      sent,
+      launchForRepoOperation,
+      notify: {
+        needsHuman: vi.fn(async (/** @type {any} */ input) => {
+          sent.push(input);
+        })
+      },
+      failureConversation: { launchForRepoOperation }
+    };
+  }
+
+  /**
+   * Seed one manual deploy that the next reconcile settles terminally failed
+   * (`manual_target_missing`), through `settleFailure`.
+   *
+   * @param {any} store
+   * @param {string} [operation_id]
+   */
+  function seedManualRun(store, operation_id = 'manual-unpinned') {
+    store.ensureRepoOperation(root, {
+      operation_id,
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'manual', merged_sha: TARGET }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      source: 'manual',
+      manual_run_id: 1
+    });
+  }
+
+  /** Let the fire-and-forget launch-then-notify chain run to its end. */
+  async function settleAnnouncements() {
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  test('launches once in the inquiry path and notifies once on a new terminal failure', async () => {
+    const fx = effects();
+    const { store, coordinator } = coordinatorFor({
+      notify: fx.notify,
+      failureConversation: fx.failureConversation,
+      runner: IDLE_RUNNER
+    });
+    seedManualRun(store);
+
+    await coordinator.reconcile(root);
+    await settleAnnouncements();
+
+    expect(fx.launchForRepoOperation).toHaveBeenCalledTimes(1);
+    expect(fx.launchForRepoOperation).toHaveBeenCalledWith({
+      workspace: root,
+      repo: root,
+      operation_id: 'manual-unpinned'
+    });
+    expect(fx.sent).toEqual([
+      expect.objectContaining({
+        failure_class: '수동 배포 실패',
+        reason: 'manual_target_missing',
+        conversation: expect.objectContaining({ session: 'launched' })
+      })
+    ]);
+  });
+
+  test('consumes the mark before the launch so a reconcile launches nothing again', async () => {
+    const fx = effects();
+    const { store, coordinator } = coordinatorFor({
+      notify: fx.notify,
+      failureConversation: fx.failureConversation,
+      runner: IDLE_RUNNER
+    });
+    seedManualRun(store);
+
+    await coordinator.reconcile(root);
+    await settleAnnouncements();
+    await coordinator.reconcile(root);
+    await settleAnnouncements();
+
+    expect(
+      store.snapshot(root).repo_operations['manual-unpinned'].failure_notice
+    ).toMatchObject({ consumed_at: expect.any(Number) });
+    expect(fx.launchForRepoOperation).toHaveBeenCalledTimes(1);
+    expect(fx.sent).toHaveLength(1);
+  });
+
+  test('launches nothing again after a restart', async () => {
+    const first = effects();
+    const before = coordinatorFor({
+      notify: first.notify,
+      failureConversation: first.failureConversation,
+      runner: IDLE_RUNNER
+    });
+    seedManualRun(before.store);
+    await before.coordinator.reconcile(root);
+    await settleAnnouncements();
+    const second = effects();
+
+    const after = coordinatorFor({
+      notify: second.notify,
+      failureConversation: second.failureConversation,
+      runner: IDLE_RUNNER
+    });
+    await after.coordinator.reconcile(root);
+    await settleAnnouncements();
+
+    expect(
+      after.store.snapshot(root).repo_operations['manual-unpinned'].state
+    ).toBe('failed');
+    expect(second.launchForRepoOperation).not.toHaveBeenCalled();
+    expect(second.sent).toEqual([]);
+  });
+
+  test('sends only the notification with the fallback line while the switch is off', async () => {
+    /** @type {string[]} */
+    const messages = [];
+    const resolveRepoOperation = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      notify: createNotifier({
+        getConfig: () => ({
+          worker_notify: { enabled: true, cmd: ['discord'] }
+        }),
+        spawnImpl: (
+          /** @type {string} */ _cmd,
+          /** @type {string[]} */ args
+        ) => {
+          messages.push(String(args.at(-1)));
+          return { on() {}, unref() {} };
+        }
+      }),
+      failureConversation: createFailureConversationLauncher({
+        resolveSession: /** @type {any} */ ({ resolveRepoOperation }),
+        snapshot: (workspace) => store.snapshot(workspace),
+        getConfig: () => ({ worker_direction_inquiry: { enabled: true } }),
+        autoLaunchEnabled: () => false,
+        log: () => {}
+      }),
+      runner: IDLE_RUNNER
+    });
+    seedManualRun(store);
+
+    await coordinator.reconcile(root);
+    await settleAnnouncements();
+
+    expect(resolveRepoOperation).not.toHaveBeenCalled();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].split('\n')[0]).toBe(
+      '🤖 🙋 확인 필요 · 수동 배포 실패 — manual'
+    );
+    expect(messages[0]).toContain('대화를 열지 못함 — [세션에서 이어가기]');
+  });
+
+  test('launches and notifies for a terminal reached through a consumed retry', async () => {
+    const fx = effects();
+    const { store, coordinator } = coordinatorFor({
+      notify: fx.notify,
+      failureConversation: fx.failureConversation,
+      runner: IDLE_RUNNER,
+      policySupported: () => false
+    });
+    seedManualRun(store, 'manual-retry');
+    const attempt_id =
+      store.snapshot(root).repo_operations['manual-retry'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'manual-retry',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+    store.deferRepoOperationRetry(root, {
+      operation_id: 'manual-retry',
+      attempt_id,
+      exit_code: 2,
+      signal: null,
+      log_digest: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
+
+    await coordinator.reconcile(root);
+    await settleAnnouncements();
+
+    expect(store.snapshot(root).repo_operations['manual-retry'].state).toBe(
+      'failed'
+    );
+    expect(fx.launchForRepoOperation).toHaveBeenCalledTimes(1);
+    expect(fx.sent).toEqual([
+      expect.objectContaining({ reason: 'script_failed' })
+    ]);
+  });
+
+  test('stays silent for a failed manual record stored without the mark', async () => {
+    const fx = effects();
+    const { store, coordinator } = coordinatorFor({
+      notify: fx.notify,
+      failureConversation: fx.failureConversation,
+      runner: IDLE_RUNNER
+    });
+    seedManualRun(store, 'manual-legacy');
+    const attempt_id =
+      store.snapshot(root).repo_operations['manual-legacy'].attempt_id;
+    store.settleRepoOperation(root, {
+      operation_id: 'manual-legacy',
+      attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
+
+    await coordinator.reconcile(root);
+    await settleAnnouncements();
+
+    expect(fx.launchForRepoOperation).not.toHaveBeenCalled();
+    expect(fx.sent).toEqual([]);
+  });
 });

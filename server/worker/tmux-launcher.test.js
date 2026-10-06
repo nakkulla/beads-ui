@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { __resetConversationSettingsForTest } from '../conversation-settings.js';
 import { __resetRuntimeCatalogForTest } from './runner/index.js';
 import {
   EXTERNAL_RESUME_PANE_MARKER,
@@ -13,7 +14,8 @@ import {
   defaultResolveRunner,
   markerWrapper,
   paneFormatExtended,
-  pickUserSession
+  pickUserSession,
+  withLaunchFlags
 } from './tmux-launcher.js';
 
 /**
@@ -1124,5 +1126,122 @@ describe('tmux-launcher runner resolution (UI-mn5u §4.2)', () => {
 
   test('refuses a runner outside the active vocabulary', () => {
     expect(defaultResolveRunner('grok')).toBeNull();
+  });
+});
+
+describe('tmux-launcher conversation flags (UI-jbl1 §3.4)', () => {
+  test('puts claude flags ahead of the resume arguments', () => {
+    const args = withLaunchFlags(
+      'claude',
+      ['--resume', 'sid', 'prompt'],
+      ['--model', 'sonnet', '--effort', 'high']
+    );
+
+    expect(args).toEqual([
+      '--model',
+      'sonnet',
+      '--effort',
+      'high',
+      '--resume',
+      'sid',
+      'prompt'
+    ]);
+  });
+
+  test('puts codex flags right after the fork subcommand', () => {
+    const args = withLaunchFlags(
+      'codex',
+      ['fork', 'sid', 'prompt'],
+      ['-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=xhigh']
+    );
+
+    expect(args).toEqual([
+      'fork',
+      '-m',
+      'gpt-6-sol',
+      '-c',
+      'model_reasoning_effort=xhigh',
+      'sid',
+      'prompt'
+    ]);
+  });
+
+  test('puts codex flags ahead of a fresh prompt', () => {
+    const args = withLaunchFlags('codex', ['prompt'], ['-m', 'gpt-6-sol']);
+
+    expect(args).toEqual(['-m', 'gpt-6-sol', 'prompt']);
+  });
+
+  test('keeps the arguments unchanged without flags', () => {
+    const args = withLaunchFlags('claude', ['--resume', 'sid'], []);
+
+    expect(args).toEqual(['--resume', 'sid']);
+  });
+
+  describe('stored settings', () => {
+    /** @type {string} */
+    let state_home = '';
+    beforeEach(() => {
+      state_home = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-conv-flags-'));
+      vi.stubEnv('XDG_STATE_HOME', state_home);
+      __resetConversationSettingsForTest();
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      __resetConversationSettingsForTest();
+      fs.rmSync(state_home, { recursive: true, force: true });
+    });
+
+    test('appends the stored model and effort to the launch argv', async () => {
+      fs.mkdirSync(path.join(state_home, 'bdui'), { recursive: true });
+      fs.writeFileSync(
+        path.join(state_home, 'bdui', 'conversation-settings.json'),
+        JSON.stringify({
+          revision: 1,
+          overrides: { claude_model: 'sonnet', claude_effort: 'high' }
+        })
+      );
+      /** @type {string[][]} */
+      const calls = [];
+      let opened = false;
+      const launcher = createTmuxLauncher({
+        runTmux: async (args) => {
+          calls.push(args);
+          if (args[0] === 'list-panes') {
+            return {
+              code: 0,
+              stdout: opened
+                ? `bdui-inquiry:%7:0:UI-jbl1\n`
+                : 'bdui-inquiry:%1:0:\n',
+              stderr: ''
+            };
+          }
+          if (args[0] === 'new-window') {
+            opened = true;
+            return { code: 0, stdout: '%7\n', stderr: '' };
+          }
+          return { code: 0, stdout: '', stderr: '' };
+        },
+        resolveRunner: () => '/usr/bin/claude',
+        log: () => {}
+      });
+
+      await launcher.launch({
+        marker: RESOLVE_PANE_MARKER,
+        key: 'UI-jbl1',
+        tmux_session: 'bdui-inquiry',
+        window_name: 'resolve-UI-jbl1',
+        cwd: '/tmp',
+        commandArgs: ['--session-id', 'sid', 'prompt'],
+        runner: 'claude',
+        placement: 'inquiry'
+      });
+
+      const wrapper =
+        calls.find((call) => call[0] === 'new-window')?.at(-1) ?? '';
+      expect(wrapper).toContain(
+        "exec '/usr/bin/claude' '--model' 'sonnet' '--effort' 'high' '--session-id' 'sid' 'prompt'"
+      );
+    });
   });
 });

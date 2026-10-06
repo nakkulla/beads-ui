@@ -102,7 +102,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, notify?: { needsHuman: (input: any) => Promise<void> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, notify?: { needsHuman: (input: any) => Promise<void> }|null, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -120,6 +120,9 @@ export function createRepoOperationCoordinator(deps) {
   // (and test) keeps working with no notifier at all — a missing one is
   // silence, never a settlement failure.
   const notify = deps.notify || null;
+  // The automatic failure conversation (UI-jbl1 §3.1). Optional on the same
+  // rule as the notifier: without it the failure is only announced.
+  const failure_conversation = deps.failureConversation || null;
   const now = deps.now || (() => Date.now());
   const sleep =
     deps.sleep ||
@@ -664,54 +667,81 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
-   * Announce a `[배포 실행]` click that ended in a terminal failure (UI-jw27
-   * §2). Reached only from the branch of {@link settleFailure} that has already
-   * written the durable settlement AND has no retry left — a deferred
-   * `script_retry` returns before this, so a run that still has a ladder step
-   * is not announced as a wall.
+   * Whether a record is a `[배포 실행]` click's own run — the one origin whose
+   * terminal failure this coordinator announces. An automatic deploy's wall
+   * is announced by `completion-intent.js terminalize()`, which owns that
+   * class; announcing it here as well would send it twice under two names.
    *
-   * MANUAL origin only. An automatic deploy's terminal failure is announced by
-   * `completion-intent.js terminalize()`, which owns that class; announcing it
-   * here as well would send the same wall twice under two names.
-   *
-   * @param {any} operation - The settled record, read back before the write.
-   * @param {{ code: string, detail?: string }} failure
-   * @param {string|null} summary
+   * @param {any} operation
+   * @returns {boolean}
    */
-  function announceManualDeployFailure(operation, failure, summary) {
+  function isManualRun(operation) {
+    return (
+      operation?.source === 'manual' &&
+      Number.isInteger(operation?.manual_run_id)
+    );
+  }
+
+  /**
+   * Announce a manual deploy's NEW terminal failure once (UI-jw27 §2,
+   * UI-jbl1 §3.1), from the common terminal entry {@link recoverAfterLadder}.
+   * The conversation mark is written by the same store write that made the
+   * record `failed` — {@link settleFailure} and {@link settleConsumedRetry}
+   * alike, so a consumed retry's wall is covered too — and consumed HERE
+   * before anything is sent or launched. A reconcile or restart pass finds it
+   * consumed and stays silent; a record failed before the mark existed has
+   * none and stays silent as well.
+   *
+   * Fire-and-forget and guarded: the launch and the notifier are no-throw by
+   * contract, and this guard keeps that true for injected fakes.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   */
+  function announceManualDeployFailure(workspace, operation_id) {
+    const operation =
+      deps.store.snapshot(workspace).repo_operations[operation_id];
     if (
-      !notify ||
-      operation?.source !== 'manual' ||
-      !Number.isInteger(operation?.manual_run_id)
+      !isManualRun(operation) ||
+      !operation.failure_notice ||
+      operation.failure_notice.consumed_at !== null ||
+      (!notify && !failure_conversation)
     ) {
       return;
     }
-    const subject = Array.isArray(operation.subjects)
-      ? operation.subjects.find(
-          (/** @type {any} */ entry) =>
-            typeof entry?.bead_id === 'string' && entry.bead_id.length > 0
-        )
-      : null;
-    try {
-      Promise.resolve(
-        notify.needsHuman({
-          bead_id: subject ? subject.bead_id : 'manual',
-          failure_class: '수동 배포 실패',
-          reason: failure.code,
-          reason_detail: summary ?? failure.detail ?? null,
-          // `[배포 실행]` 재클릭만이다. A manual run's subject is the `manual`
-          // sentinel rather than a bead, so no failure ROW carries it and
-          // `[세션에서 해결]` has nothing to open — naming it would send the
-          // operator looking for a button that is not drawn anywhere.
-          next_action: '[배포 실행] 재클릭',
-          repo: deps.repo
-        })
-      ).catch((err) => {
-        log('manual deploy failure notify failed: %o', err);
-      });
-    } catch (err) {
-      log('manual deploy failure notify failed: %o', err);
+    if (
+      !deps.store.consumeRepoOperationFailureNotice(workspace, {
+        operation_id
+      }).ok
+    ) {
+      return;
     }
+    /** @type {{ code: string, summary?: string, detail?: string }} */
+    const failure = operation.failure || { code: 'unknown_error' };
+    const run = async () => {
+      const conversation = failure_conversation
+        ? await failure_conversation.launchForRepoOperation({
+            workspace,
+            repo: deps.repo,
+            operation_id
+          })
+        : null;
+      await notify?.needsHuman({
+        bead_id: 'manual',
+        title: null,
+        failure_class: '수동 배포 실패',
+        reason: failure.code,
+        reason_detail: failure.summary ?? failure.detail ?? null,
+        // The body keeps its `다음:` line (UI-jbl1 §3.2); the drawer row's
+        // `[세션에서 이어가기]` is named by the conversation line below.
+        next_action: '[배포 실행] 재클릭',
+        conversation,
+        repo: deps.repo
+      });
+    };
+    run().catch((err) => {
+      log('manual deploy failure announce failed: %o', err);
+    });
   }
 
   /**
@@ -775,11 +805,9 @@ export function createRepoOperationCoordinator(deps) {
         ? 'schema_unsupported'
         : null;
     // A record that is ALREADY terminal is a no-op for the store, so the
-    // announcement below is bound to the same fact: this pass is what wrote the
-    // failure. A reconcile that re-settles the same run therefore sends nothing
-    // (UI-jw27 §2).
-    const settled_before =
-      current.state === 'succeeded' || current.state === 'failed';
+    // conversation mark below is bound to the same fact: this pass is what
+    // wrote the failure. A reconcile that re-settles the same run therefore
+    // earns no announcement (UI-jw27 §2, UI-jbl1 §3.1).
     deps.store.settleRepoOperation(workspace, {
       operation_id,
       attempt_id: current.attempt_id,
@@ -792,15 +820,9 @@ export function createRepoOperationCoordinator(deps) {
         (blocked_reason !== null || !scriptRetryApplicable(current))
           ? 'not_applicable'
           : undefined,
-      retry_blocked_reason: blocked_reason
+      retry_blocked_reason: blocked_reason,
+      conversation_target: isManualRun(current)
     });
-    if (
-      !settled_before &&
-      deps.store.snapshot(workspace).repo_operations[operation_id]?.state ===
-        'failed'
-    ) {
-      announceManualDeployFailure(current, failure_record, evidence.summary);
-    }
     recordOperationFailure(current, operation_id, failure, evidence.summary);
     await sweepDescendantCoverage(workspace, operation_id);
     transition.reclaim(workspace, operation_id);
@@ -831,6 +853,7 @@ export function createRepoOperationCoordinator(deps) {
     });
     const result = deps.store.settleConsumedRepoOperationRetry(workspace, {
       ...input,
+      conversation_target: isManualRun(operation),
       ...(classification
         ? {
             recovery: {
@@ -891,6 +914,7 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} operation_id
    */
   async function recoverAfterLadder(workspace, operation_id) {
+    announceManualDeployFailure(workspace, operation_id);
     let operation =
       deps.store.snapshot(workspace).repo_operations[operation_id];
     const supported = policySupported() && workRecoveryReady();

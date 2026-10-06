@@ -15525,3 +15525,121 @@ describe('worker/queue-store stall-reconcile records (2026-10-01)', () => {
     expect(Object.keys(store.snapshot(WS).admission)).toEqual(['B4']);
   });
 });
+
+describe('worker/queue-store manual deploy conversation mark (UI-jbl1 §3.1)', () => {
+  /**
+   * @param {any} store - A queue store from `createQueueStore()`.
+   * @param {boolean} conversation_target
+   */
+  function failManualDeploy(store, conversation_target) {
+    store.ensureRepoOperation(WS, {
+      operation_id: 'manual-1',
+      attempt_id: 'manual-1:1',
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'manual', merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'e'.repeat(40),
+      source: 'manual',
+      manual_run_id: 1
+    });
+    store.settleRepoOperation(WS, {
+      operation_id: 'manual-1',
+      attempt_id: 'manual-1:1',
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f',
+        detail: '',
+        interrupted: false
+      },
+      conversation_target
+    });
+  }
+
+  test('writes the mark in the write that makes the record failed', () => {
+    const store = createQueueStore();
+
+    failManualDeploy(store, true);
+
+    expect(
+      store.snapshot(WS).repo_operations['manual-1'].failure_notice
+    ).toEqual({ target_at: expect.any(Number), consumed_at: null });
+  });
+
+  test('keeps a consumed mark across a reload', () => {
+    const store = createQueueStore();
+    failManualDeploy(store, true);
+
+    const consumed = store.consumeRepoOperationFailureNotice(WS, {
+      operation_id: 'manual-1'
+    });
+
+    expect(consumed.ok).toBe(true);
+    expect(
+      createQueueStore().snapshot(WS).repo_operations['manual-1'].failure_notice
+    ).toEqual({
+      target_at: expect.any(Number),
+      consumed_at: expect.any(Number)
+    });
+  });
+
+  test('refuses to consume a record failed without the mark', () => {
+    const store = createQueueStore();
+    failManualDeploy(store, false);
+
+    const consumed = store.consumeRepoOperationFailureNotice(WS, {
+      operation_id: 'manual-1'
+    });
+
+    expect(consumed.ok).toBe(false);
+  });
+
+  test('refuses to consume the same mark twice', () => {
+    const store = createQueueStore();
+    failManualDeploy(store, true);
+    store.consumeRepoOperationFailureNotice(WS, { operation_id: 'manual-1' });
+
+    const again = store.consumeRepoOperationFailureNotice(WS, {
+      operation_id: 'manual-1'
+    });
+
+    expect(again.ok).toBe(false);
+  });
+
+  test('keeps a repo-operation handoff target across a reload', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, {
+      bead_id: 'repo-op:manual-1',
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%1',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-repo-op-manual-1',
+      launched_at: 1,
+      state: 'live',
+      conversation: {
+        stop: '실패 수동 배포 실패 · script_failed',
+        handoff: {
+          line: '인계 · 다시',
+          source: 'result_line',
+          reserved_at: 2,
+          target: { kind: 'repo_operation', identity: 'repo_operation:m:f' }
+        }
+      }
+    });
+
+    const reloaded =
+      createQueueStore().snapshot(WS).interactive_sessions[
+        'repo-op:manual-1:resolve'
+      ];
+
+    expect(reloaded?.conversation?.handoff?.target).toEqual({
+      kind: 'repo_operation',
+      identity: 'repo_operation:m:f'
+    });
+  });
+});

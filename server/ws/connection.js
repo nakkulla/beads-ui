@@ -23,6 +23,10 @@ import {
   setDefaultWorkspace
 } from './context.js';
 import {
+  handleConversationSettingsGet,
+  handleConversationSettingsSet
+} from './conversation-settings-handlers.js';
+import {
   detachDisplayPolicy,
   handleDisplayPolicySet,
   handleSubscribeDisplayPolicy,
@@ -579,6 +583,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'external-wait-settings-set':
       handleExternalWaitSettingsSet(ws, req);
+      return;
+    case 'conversation-settings-get':
+      handleConversationSettingsGet(ws, req);
+      return;
+    case 'conversation-settings-set':
+      handleConversationSettingsSet(ws, req);
       return;
     case 'impl-preset-create':
       handleImplPresetCreate(ws, req);

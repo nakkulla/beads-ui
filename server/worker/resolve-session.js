@@ -30,6 +30,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
+import {
+  conversationAutoLaunchEnabled,
+  freshConversationRuntime,
+  getConversationSettings
+} from '../conversation-settings.js';
 import { debug } from '../logging.js';
 import { PRE_MERGE_HOLD_NOTIFY_LABEL } from './completion-intent.js';
 import {
@@ -37,6 +42,7 @@ import {
   fillConversationEntry
 } from './direction-inquiry.js';
 import { discardOperationActive } from './discard-phase.js';
+import { holdsHandoffReservation } from './queue-store.js';
 import { qualifyInteractiveForkSource } from './session-ref.js';
 import {
   RESOLVE_PANE_MARKER,
@@ -110,6 +116,100 @@ const COMPLETION_STAGE_CLASSES = Object.freeze({
 const COMPLETION_DEFAULT_CLASS = '완료 중단';
 
 /**
+ * The row key prefix of a Bead-less repo-operation conversation (UI-jbl1
+ * §3.3): its interactive record stands under `repo-op:<operation_id>` where a
+ * Bead row's stands under its Bead id, so the record key reads
+ * `repo-op:<operation_id>:resolve`.
+ *
+ * @type {string}
+ */
+export const REPO_OPERATION_ROW_PREFIX = 'repo-op:';
+
+/** The `클래스:` word of a manual deploy failure (UI-jw27 §2). */
+export const MANUAL_DEPLOY_FAILURE_CLASS = '수동 배포 실패';
+
+/**
+ * The conversation row key of one repo operation.
+ *
+ * @param {string} operation_id
+ * @returns {string}
+ */
+export function repoOperationRowKey(operation_id) {
+  return `${REPO_OPERATION_ROW_PREFIX}${operation_id}`;
+}
+
+/**
+ * The repo-operation id a conversation row key names, or null for a Bead row.
+ *
+ * @param {unknown} row_key
+ * @returns {string|null}
+ */
+export function repoOperationIdOf(row_key) {
+  return typeof row_key === 'string' &&
+    row_key.startsWith(REPO_OPERATION_ROW_PREFIX) &&
+    row_key.length > REPO_OPERATION_ROW_PREFIX.length
+    ? row_key.slice(REPO_OPERATION_ROW_PREFIX.length)
+    : null;
+}
+
+/**
+ * The failed MANUAL deploy a repo-operation row stands for, or null when the
+ * record is gone, not a manual deploy, not failed, or already answered by a
+ * successor (`superseded_by`) or a person (`dismissed`) — the same rule the
+ * drawer's row actions draw by.
+ *
+ * @param {any} queue
+ * @param {string} operation_id
+ * @returns {any|null}
+ */
+export function failedManualDeploy(queue, operation_id) {
+  const operation = queue?.repo_operations?.[operation_id];
+  return operation &&
+    typeof operation === 'object' &&
+    operation.kind === 'deploy' &&
+    operation.source === 'manual' &&
+    operation.state === 'failed' &&
+    !operation.superseded_by &&
+    !operation.dismissed
+    ? operation
+    : null;
+}
+
+/**
+ * The terminal failure a repo-operation row's conversation is about (UI-jbl1
+ * §3.3, dotfiles `Worker 세션 대화` Bead-less row): the manual deploy failure
+ * class and cause code, with the operation id, target SHA and deploy worktree
+ * the situation adds.
+ *
+ * @param {any} queue
+ * @param {string} operation_id
+ * @returns {ResolveFailureContext|null}
+ */
+export function repoOperationFailureContext(queue, operation_id) {
+  const operation = failedManualDeploy(queue, operation_id);
+  if (!operation) {
+    return null;
+  }
+  const failure = operation.failure || {};
+  /**
+   * @param {unknown} value
+   * @returns {string|null}
+   */
+  const textOrNull = (value) =>
+    typeof value === 'string' && value.length > 0 ? value : null;
+  return {
+    failure_class: MANUAL_DEPLOY_FAILURE_CLASS,
+    reason: textOrNull(failure.code) ?? '원인 미상',
+    stage: 'deploy',
+    detail: textOrNull(failure.summary) ?? textOrNull(failure.detail),
+    log_path: textOrNull(operation.log_path),
+    operation_id,
+    target_sha: textOrNull(operation.target_sha),
+    deploy_worktree: textOrNull(operation.deploy_worktree)
+  };
+}
+
+/**
  * @typedef {Object} ResolveFailureContext
  * @property {string} failure_class
  * @property {string} reason
@@ -117,6 +217,10 @@ const COMPLETION_DEFAULT_CLASS = '완료 중단';
  * @property {string|null} detail
  * @property {string|null} [log_path]
  * @property {'fix_commit_push'} [exit]
+ * @property {string|null} [operation_id] - A repo-operation row's operation.
+ * @property {string|null} [target_sha] - A repo-operation row's target.
+ * @property {string|null} [deploy_worktree] - A repo-operation row's deploy
+ * worktree.
  */
 
 /**
@@ -135,6 +239,10 @@ const COMPLETION_DEFAULT_CLASS = '완료 중단';
  * @returns {ResolveFailureContext|null}
  */
 export function resolveFailureContext(queue, bead_id) {
+  const operation_id = repoOperationIdOf(bead_id);
+  if (operation_id !== null) {
+    return repoOperationFailureContext(queue, operation_id);
+  }
   const intent = queue?.completion_intents?.[bead_id];
   if (intent?.phase === 'holding' && intent.hold) {
     const hold = intent.hold;
@@ -221,7 +329,8 @@ export function resolveFailureContext(queue, bead_id) {
 /**
  * The `상황` slot of a failure conversation (dotfiles `Worker 세션 대화`):
  * class, cause code, stage, diagnosis and log path, in that order, on one
- * line. A field with nothing behind it is left out.
+ * line; a repo-operation row adds its operation id, target SHA and deploy
+ * worktree. A field with nothing behind it is left out.
  *
  * @param {ResolveFailureContext} failure
  * @returns {string}
@@ -238,7 +347,11 @@ export function failureSituation(failure) {
     `원인 코드 ${flat(failure.reason)}`,
     flat(failure.stage) && `단계 ${flat(failure.stage)}`,
     flat(failure.detail) && `진단 ${flat(failure.detail)}`,
-    flat(failure.log_path) && `로그 ${flat(failure.log_path)}`
+    flat(failure.log_path) && `로그 ${flat(failure.log_path)}`,
+    flat(failure.operation_id) && `작업 ${flat(failure.operation_id)}`,
+    flat(failure.target_sha) && `대상 ${flat(failure.target_sha)}`,
+    flat(failure.deploy_worktree) &&
+      `배포 워크트리 ${flat(failure.deploy_worktree)}`
   ]
     .filter(Boolean)
     .join(' · ');
@@ -276,12 +389,25 @@ export function buildFailureEntry(input) {
  *     receipts above all (`receipt_hold`) — no exit; only a person's `[머지]`
  *     waives it.
  *   - `discard`: a failed discard operation — the exit is its retry.
+ *   - `repo_operation`: a Bead-less manual deploy failure (UI-jbl1 §3.3) —
+ *     the exit is one manual deploy rerun; a rerun on the same target
+ *     supersedes the record, which changes the identity.
  *
  * @param {any} queue - Queue snapshot.
- * @param {string} bead_id
- * @returns {{ kind: 'cleanup'|'discard'|'verify_hold'|'merge_gate', identity: string }|null}
+ * @param {string} bead_id - The row key: a Bead id, or `repo-op:<id>`.
+ * @returns {{ kind: 'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation', identity: string }|null}
  */
 export function failureHandoffTarget(queue, bead_id) {
+  const operation_id = repoOperationIdOf(bead_id);
+  if (operation_id !== null) {
+    const operation = failedManualDeploy(queue, operation_id);
+    return operation
+      ? {
+          kind: 'repo_operation',
+          identity: `repo_operation:${operation_id}:${operation.failure?.fingerprint || ''}`
+        }
+      : null;
+  }
   const intent = queue?.completion_intents?.[bead_id];
   const cleanup = queue?.cleanup_failed?.[bead_id];
   if (intent?.phase === 'holding' && intent.hold) {
@@ -364,6 +490,11 @@ export function failedDiscardOperation(queue, bead_id) {
  * never moves the work between CLIs.
  * @property {(file_path: string) => boolean} [existsSync] - Whether the row's
  * worktree is there, for the entry block's `구현 워크트리` slot.
+ * @property {() => import('../conversation-settings.js').ConversationSettingValues} [conversationSettings] -
+ * The server-global conversation settings (UI-jbl1 §3.4), read per launch:
+ * the fresh runtime here, the model/effort flags in the launcher.
+ * @property {(runner: string) => string[]} [launchFlags] - Passed to the
+ * launcher; defaults to the stored settings.
  */
 
 /**
@@ -430,8 +561,59 @@ export function createResolveSession(deps) {
     ...(deps.statFile ? { statFile: deps.statFile } : {}),
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
+    ...(deps.launchFlags ? { launchFlags: deps.launchFlags } : {}),
     log
   });
+
+  /**
+   * The runtime a FRESH conversation runs (UI-jbl1 §3.4): the setting, else
+   * the provider this launch would have inherited.
+   *
+   * @param {'claude'|'codex'} inherited
+   * @returns {'claude'|'codex'}
+   */
+  function freshRunner(inherited) {
+    try {
+      return freshConversationRuntime(
+        (deps.conversationSettings || getConversationSettings)(),
+        inherited
+      );
+    } catch (err) {
+      log('conversation settings read failed: %o', err);
+      return inherited;
+    }
+  }
+
+  /**
+   * Record one launched failure conversation (UI-18a5 §3.4), no-throw.
+   *
+   * @param {string} workspace
+   * @param {string} row_key - The Bead id, or `repo-op:<id>`.
+   * @param {Record<string, any>} record
+   */
+  function recordLaunch(workspace, row_key, record) {
+    try {
+      const launched_at = deps.now ? deps.now() : Date.now();
+      if (!deps.store) {
+        log('interactive session store unavailable for %s', row_key);
+        return;
+      }
+      deps.store.recordInteractiveSession(workspace, {
+        bead_id: row_key,
+        kind: 'resolve',
+        ...record,
+        launched_at,
+        last_seen_alive_at: launched_at,
+        settled_at: null,
+        settled_by: null,
+        state: 'live',
+        exit_requested_at: null,
+        defer_since: null
+      });
+    } catch (err) {
+      log('interactive session record failed for %s: %o', row_key, err);
+    }
+  }
 
   /**
    * The tmux session resolution windows open in. It is the direction-inquiry
@@ -509,9 +691,12 @@ export function createResolveSession(deps) {
 
   return {
     /**
-     * Start (or find) this bead's resolution session.
+     * Start (or find) this bead's resolution session. A click opens it in the
+     * person's own tmux session; the automatic failure launch passes
+     * `placement: 'inquiry'` for the detached conversation session (UI-jbl1
+     * §3.1).
      *
-     * @param {{ workspace: string, repo?: string|null, bead_id: string, failure: ResolveFailureContext, attempt?: any }} input
+     * @param {{ workspace: string, repo?: string|null, bead_id: string, failure: ResolveFailureContext, attempt?: any, placement?: import('./tmux-launcher.js').LaunchPlacement }} input
      * @returns {Promise<ResolveSessionOutcome>}
      */
     async resolve(input) {
@@ -519,11 +704,16 @@ export function createResolveSession(deps) {
         typeof input.repo === 'string' && input.repo.length > 0
           ? input.repo
           : input.workspace;
-      const { session_id, runner, source, fallback_reason } = await forkTarget(
+      const target = await forkTarget(
         input.workspace,
         input.bead_id,
         input.attempt
       );
+      const { session_id, source, fallback_reason } = target;
+      // A fork keeps the recorded session's runtime; only a fresh session
+      // takes the configured one (UI-jbl1 §3.4).
+      const runner =
+        session_id === null ? freshRunner(target.runner) : target.runner;
       const row_worktree = path.join(checkout, '.worktrees', input.bead_id);
       const prompt = buildFailureEntry({
         failure: input.failure,
@@ -549,55 +739,25 @@ export function createResolveSession(deps) {
         cwd: checkout,
         commandArgs: command_args,
         runner,
-        placement: 'user'
+        placement: input.placement === 'inquiry' ? 'inquiry' : 'user'
       });
       if (outcome.session === 'launched') {
-        try {
-          const launched_at = deps.now ? deps.now() : Date.now();
-          if (deps.store) {
-            deps.store.recordInteractiveSession(input.workspace, {
-              bead_id: input.bead_id,
-              kind: 'resolve',
-              provider: runner,
-              session_id: launch_session_id,
-              session_id_source: launch_session_id === null ? null : 'launch',
-              mode: session_id === null ? 'fresh' : 'fork',
-              source,
-              forked_from: session_id,
-              fallback_reason,
-              attempt_id: input.attempt?.attempt_id ?? null,
-              failure_class: input.failure.failure_class,
-              tmux_session: outcome.tmux_session,
-              tmux_window: outcome.tmux_window,
-              pane_id: outcome.pane_id,
-              cwd: checkout,
-              launched_at,
-              last_seen_alive_at: launched_at,
-              settled_at: null,
-              settled_by: null,
-              state: 'live',
-              exit_requested_at: null,
-              defer_since: null,
-              conversation: {
-                stop: failureConversationReason(input.failure),
-                wait_id: null,
-                processed_message_at: null,
-                message_excerpt: null,
-                result: null,
-                handoff: null,
-                takeover_notified_at: null
-              }
-            });
-          } else {
-            log('interactive session store unavailable for %s', input.bead_id);
-          }
-        } catch (err) {
-          log(
-            'interactive session record failed for %s: %o',
-            input.bead_id,
-            err
-          );
-        }
+        recordLaunch(input.workspace, input.bead_id, {
+          provider: runner,
+          session_id: launch_session_id,
+          session_id_source: launch_session_id === null ? null : 'launch',
+          mode: session_id === null ? 'fresh' : 'fork',
+          source,
+          forked_from: session_id,
+          fallback_reason,
+          attempt_id: input.attempt?.attempt_id ?? null,
+          failure_class: input.failure.failure_class,
+          tmux_session: outcome.tmux_session,
+          tmux_window: outcome.tmux_window,
+          pane_id: outcome.pane_id,
+          cwd: checkout,
+          conversation: newConversation(input.failure)
+        });
       }
       return {
         launched: outcome.session === 'launched',
@@ -628,6 +788,331 @@ export function createResolveSession(deps) {
             ? null
             : (outcome.tmux_window ?? null)
       };
+    },
+
+    /**
+     * Start (or find) a Bead-less repo-operation row's failure conversation
+     * (UI-jbl1 §3.3, dotfiles `Worker 세션 대화`): no Bead is read, the row
+     * records no session so it is always fresh, the implementation worktree
+     * is `(없음)` and the checkout is the repository root.
+     *
+     * @param {{ workspace: string, repo?: string|null, operation_id: string, failure: ResolveFailureContext, placement?: import('./tmux-launcher.js').LaunchPlacement }} input
+     * @returns {Promise<ResolveSessionOutcome>}
+     */
+    async resolveRepoOperation(input) {
+      const checkout =
+        typeof input.repo === 'string' && input.repo.length > 0
+          ? input.repo
+          : input.workspace;
+      const row_key = repoOperationRowKey(input.operation_id);
+      /** @type {'claude'|'codex'} */
+      let inherited = 'claude';
+      if (typeof deps.currentRunner === 'function') {
+        try {
+          const current = deps.currentRunner(input.workspace, null);
+          inherited = current === 'codex' ? 'codex' : 'claude';
+        } catch (err) {
+          log('current runner resolution failed for %s: %o', row_key, err);
+        }
+      }
+      const runner = freshRunner(inherited);
+      const prompt = buildFailureEntry({
+        failure: input.failure,
+        worktree: null,
+        checkout
+      });
+      const launch_session_id = runner === 'claude' ? randomUUID() : null;
+      const outcome = await launcher.launch({
+        marker: RESOLVE_PANE_MARKER,
+        key: row_key,
+        tmux_session: tmuxSessionName(),
+        // A colon would split the window target (`session:window`) and the
+        // pane listing's fixed fields, so the window name uses a dash.
+        window_name: `resolve-repo-op-${input.operation_id.slice(0, 12)}`,
+        cwd: checkout,
+        commandArgs:
+          runner === 'claude'
+            ? [
+                '--session-id',
+                /** @type {string} */ (launch_session_id),
+                prompt
+              ]
+            : [prompt],
+        runner,
+        placement: input.placement === 'inquiry' ? 'inquiry' : 'user'
+      });
+      if (outcome.session === 'launched') {
+        recordLaunch(input.workspace, row_key, {
+          provider: runner,
+          session_id: launch_session_id,
+          session_id_source: launch_session_id === null ? null : 'launch',
+          mode: 'fresh',
+          source: 'fresh',
+          forked_from: null,
+          fallback_reason: 'repo_operation',
+          attempt_id: null,
+          failure_class: input.failure.failure_class,
+          tmux_session: outcome.tmux_session,
+          tmux_window: outcome.tmux_window,
+          pane_id: outcome.pane_id,
+          cwd: checkout,
+          conversation: newConversation(input.failure)
+        });
+      }
+      return {
+        launched: outcome.session === 'launched',
+        session: outcome.session,
+        reason: outcome.session === 'not_launched' ? outcome.reason : null,
+        mode: 'fresh',
+        source: 'fresh',
+        fallback_reason: 'repo_operation',
+        session_id: launch_session_id,
+        runner,
+        command:
+          runner === 'claude'
+            ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
+            : runner,
+        bridge_active: launcher.bridgeActive(),
+        placement:
+          outcome.session === 'not_launched'
+            ? null
+            : (outcome.placement ?? null),
+        tmux_session:
+          outcome.session === 'not_launched'
+            ? null
+            : (outcome.tmux_session ?? null),
+        tmux_window:
+          outcome.session === 'not_launched'
+            ? null
+            : (outcome.tmux_window ?? null)
+      };
+    }
+  };
+}
+
+/**
+ * The fresh `conversation` of a failure conversation record (UI-18a5 §3.4).
+ *
+ * @param {ResolveFailureContext} failure
+ */
+function newConversation(failure) {
+  return {
+    stop: failureConversationReason(failure),
+    wait_id: null,
+    processed_message_at: null,
+    message_excerpt: null,
+    result: null,
+    handoff: null,
+    takeover_notified_at: null
+  };
+}
+
+/**
+ * @typedef {Pick<ResolveSessionOutcome, 'session'|'reason'|'tmux_session'|'tmux_window'>} AutoLaunchOutcome
+ */
+
+/**
+ * Build the automatic failure-conversation launch (UI-jbl1 §3.1): the SAME
+ * resolution launcher a `[세션에서 이어가기]` click reaches, called once per
+ * terminal failure by the coordinator that wrote it, in the detached
+ * conversation session (`placement: 'inquiry'`).
+ *
+ * It is not repair dispatch (ADR 0005 stays): the session it opens does
+ * read-only diagnosis and asks before anything changes (dotfiles
+ * `Worker 세션 대화`). Three gates stand before the launch:
+ *
+ *   - the shared switch (`conversation-settings.js` stored value, else
+ *     config.toml `[worker.direction_inquiry] enabled`) — off means the
+ *     caller only notifies;
+ *   - at most one live conversation per row — a live record of ANY kind on
+ *     the row answers instead of a second window;
+ *   - a handoff reservation on the row belongs to the pass that settles it.
+ *
+ * NO-THROW: every path resolves to an outcome the notification can print.
+ *
+ * @param {{
+ *   resolveSession: Pick<ReturnType<typeof createResolveSession>, 'resolve'|'resolveRepoOperation'>,
+ *   snapshot: (workspace: string) => any,
+ *   getConfig: () => any,
+ *   autoLaunchEnabled?: (config_enabled: boolean) => boolean,
+ *   log?: (...args: any[]) => void
+ * }} deps
+ */
+export function createFailureConversationLauncher(deps) {
+  const log = deps.log || default_log;
+  const autoLaunchEnabled =
+    deps.autoLaunchEnabled || conversationAutoLaunchEnabled;
+
+  /** @returns {boolean} */
+  function enabled() {
+    /** @type {boolean} */
+    let config_enabled = false;
+    try {
+      config_enabled =
+        deps.getConfig()?.worker_direction_inquiry?.enabled === true;
+    } catch (err) {
+      log('config read failed: %o', err);
+    }
+    try {
+      return autoLaunchEnabled(config_enabled) === true;
+    } catch (err) {
+      log('conversation switch read failed: %o', err);
+      return false;
+    }
+  }
+
+  /**
+   * @param {string} reason
+   * @returns {AutoLaunchOutcome}
+   */
+  function notLaunched(reason) {
+    return {
+      session: 'not_launched',
+      reason,
+      tmux_session: null,
+      tmux_window: null
+    };
+  }
+
+  /**
+   * The gate a row's existing records put before a launch, or null.
+   *
+   * @param {any} queue
+   * @param {string} row_key
+   * @returns {AutoLaunchOutcome|null}
+   */
+  function rowGate(queue, row_key) {
+    const records = Object.values(queue?.interactive_sessions || {}).filter(
+      (/** @type {any} */ record) =>
+        record?.bead_id === row_key && record.settled_at === null
+    );
+    if (records.some((record) => holdsHandoffReservation(record))) {
+      return notLaunched('handoff_pending');
+    }
+    const live = records.find(
+      (/** @type {any} */ record) => record.state === 'live'
+    );
+    return live
+      ? {
+          session: 'already_running',
+          reason: null,
+          tmux_session: live.tmux_session ?? null,
+          tmux_window: live.tmux_window ?? null
+        }
+      : null;
+  }
+
+  /**
+   * @param {() => Promise<ResolveSessionOutcome>} launch
+   * @param {string} row_key
+   * @returns {Promise<AutoLaunchOutcome>}
+   */
+  async function guarded(launch, row_key) {
+    try {
+      const outcome = await launch();
+      return {
+        session: outcome.session,
+        reason: outcome.reason ?? null,
+        tmux_session: outcome.tmux_session ?? null,
+        tmux_window: outcome.tmux_window ?? null
+      };
+    } catch (err) {
+      log('automatic failure conversation failed for %s: %o', row_key, err);
+      return notLaunched('error');
+    }
+  }
+
+  return {
+    /**
+     * One Bead row's terminal failure: a deploy or post-merge job failure,
+     * a merge-gate hold, or a discard failure.
+     *
+     * @param {{ workspace: string, repo?: string|null, bead_id: string }} input
+     * @returns {Promise<AutoLaunchOutcome>}
+     */
+    async launchForBead(input) {
+      if (!enabled()) {
+        return notLaunched('disabled');
+      }
+      /** @type {any} */
+      let queue;
+      try {
+        queue = deps.snapshot(input.workspace);
+      } catch (err) {
+        log('queue read failed for %s: %o', input.bead_id, err);
+        return notLaunched('error');
+      }
+      const gate = rowGate(queue, input.bead_id);
+      if (gate) {
+        return gate;
+      }
+      const failure = resolveFailureContext(queue, input.bead_id);
+      if (!failure) {
+        return notLaunched('no_terminal_failure');
+      }
+      /** @type {any} */
+      let attempt = null;
+      for (const value of Object.values(queue?.attempts || {})) {
+        const record = /** @type {any} */ (value);
+        if (
+          record.bead_id === input.bead_id &&
+          isImplementationAttempt(record)
+        ) {
+          attempt = record;
+        }
+      }
+      return guarded(
+        () =>
+          deps.resolveSession.resolve({
+            workspace: input.workspace,
+            repo: input.repo ?? input.workspace,
+            bead_id: input.bead_id,
+            failure,
+            attempt,
+            placement: 'inquiry'
+          }),
+        input.bead_id
+      );
+    },
+
+    /**
+     * One repo-operation row's terminal failure (a manual deploy failure).
+     *
+     * @param {{ workspace: string, repo?: string|null, operation_id: string }} input
+     * @returns {Promise<AutoLaunchOutcome>}
+     */
+    async launchForRepoOperation(input) {
+      if (!enabled()) {
+        return notLaunched('disabled');
+      }
+      const row_key = repoOperationRowKey(input.operation_id);
+      /** @type {any} */
+      let queue;
+      try {
+        queue = deps.snapshot(input.workspace);
+      } catch (err) {
+        log('queue read failed for %s: %o', row_key, err);
+        return notLaunched('error');
+      }
+      const gate = rowGate(queue, row_key);
+      if (gate) {
+        return gate;
+      }
+      const failure = repoOperationFailureContext(queue, input.operation_id);
+      if (!failure) {
+        return notLaunched('no_terminal_failure');
+      }
+      return guarded(
+        () =>
+          deps.resolveSession.resolveRepoOperation({
+            workspace: input.workspace,
+            repo: input.repo ?? input.workspace,
+            operation_id: input.operation_id,
+            failure,
+            placement: 'inquiry'
+          }),
+        row_key
+      );
     }
   };
 }

@@ -38,7 +38,7 @@ const DISCARDABLE_ATTEMPT_STATUSES = new Set([
 ]);
 
 /**
- * @param {{ workspace: string, repo: string, store: any, gh: any, bd: any, worktree: any, gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>, scheduler: any, archive: any, processController: any, sessionLog: any, revertBuilder?: any, verifyRevert?: (input: any) => Promise<any>, rollbackBaseSync?: (refs: any) => Promise<any>, rollbackVerify?: (bead_id: string, base_sha: string) => Promise<any>, external?: { get: (workspace: string, bead_id: string) => any }, actionInFlight?: (bead_id: string) => boolean, makeOperationId?: () => string, now?: () => number, notifyChanged?: (workspace: string) => void, notify?: { needsHuman: (input: any) => Promise<void> }|null, log?: (...args: any[]) => void }} deps
+ * @param {{ workspace: string, repo: string, store: any, gh: any, bd: any, worktree: any, gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>, scheduler: any, archive: any, processController: any, sessionLog: any, revertBuilder?: any, verifyRevert?: (input: any) => Promise<any>, rollbackBaseSync?: (refs: any) => Promise<any>, rollbackVerify?: (bead_id: string, base_sha: string) => Promise<any>, external?: { get: (workspace: string, bead_id: string) => any }, actionInFlight?: (bead_id: string) => boolean, makeOperationId?: () => string, now?: () => number, notifyChanged?: (workspace: string) => void, notify?: { needsHuman: (input: any) => Promise<void> }|null, failureConversation?: { launchForBead: (input: { workspace: string, repo: string|null, bead_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void }} deps
  * @param {{ resolveBase?: (options?: { force?: boolean }) => Promise<{ ok: boolean, base?: string|null, base_oid?: string|null, step?: string }> }} [options]
  */
 export function createDiscardCoordinator(deps, options = {}) {
@@ -52,6 +52,9 @@ export function createDiscardCoordinator(deps, options = {}) {
   // Optional so every existing construction site (and test) keeps working with
   // no notifier at all — a missing one is silence, never a discard failure.
   const notify = deps.notify || null;
+  // The automatic failure conversation (UI-jbl1 §3.1), optional on the same
+  // rule: without it the failure is only announced.
+  const failure_conversation = deps.failureConversation || null;
   const revertBuilder =
     deps.revertBuilder || createRevertBuilder({ gitRun: deps.gitRun });
   /** @type {Map<string, Promise<any>>} */
@@ -67,36 +70,48 @@ export function createDiscardCoordinator(deps, options = {}) {
   }
 
   /**
-   * Announce one durable discard failure (UI-jw27 §2). The discard ladder has
-   * no retry step, so the FIRST failure is already terminal and every
-   * `failDiscardOperation` write announces — including the one a re-click
-   * produces, which is a new terminal record and a new fact.
+   * Announce one durable discard failure (UI-jw27 §2) and, under the shared
+   * switch, open its failure conversation first (UI-jbl1 §3.1). The discard
+   * ladder has no retry step, so the FIRST failure is already terminal and
+   * every `failDiscardOperation` write announces — including the one a
+   * re-click produces, which is a new terminal record and a new fact. The
+   * landed write is the once-mark: a restart re-reads the record and never
+   * writes it again.
    *
-   * Fire-and-forget and guarded: the notifier is no-throw by its own contract,
-   * and this guard keeps that true for an injected fake that breaks it.
+   * Fire-and-forget and guarded: the launch and the notifier are no-throw by
+   * contract, and this guard keeps that true for injected fakes.
    *
    * @param {unknown} bead_id
    * @param {string} reason
    */
   function announceDiscardFailure(bead_id, reason) {
-    if (!notify || typeof bead_id !== 'string' || bead_id.length === 0) {
+    if (
+      (!notify && !failure_conversation) ||
+      typeof bead_id !== 'string' ||
+      bead_id.length === 0
+    ) {
       return;
     }
-    try {
-      Promise.resolve(
-        notify.needsHuman({
-          bead_id,
-          failure_class: '폐기 실패',
-          reason,
-          next_action: '[세션에서 이어가기]·[워커로 이어가기]·[폐기 포기]',
-          repo: deps.repo
-        })
-      ).catch((err) => {
-        log('discard failure notify failed: %o', err);
+    const run = async () => {
+      const conversation = failure_conversation
+        ? await failure_conversation.launchForBead({
+            workspace: deps.workspace,
+            repo: deps.repo,
+            bead_id
+          })
+        : null;
+      await notify?.needsHuman({
+        bead_id,
+        failure_class: '폐기 실패',
+        reason,
+        next_action: '[세션에서 이어가기]·[워커로 이어가기]·[폐기 포기]',
+        conversation,
+        repo: deps.repo
       });
-    } catch (err) {
+    };
+    run().catch((err) => {
       log('discard failure notify failed: %o', err);
-    }
+    });
   }
 
   /**

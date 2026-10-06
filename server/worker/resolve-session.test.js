@@ -3,22 +3,25 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { conversationLaunchFlags } from '../conversation-settings.js';
 import { CONVERSATION_ENTRY_BLOCK } from './direction-inquiry.js';
 import {
   buildFailureEntry,
+  createFailureConversationLauncher,
   createResolveSession,
   failureHandoffTarget,
   failureSituation,
+  repoOperationFailureContext,
   resolveFailureContext
 } from './resolve-session.js';
 
 /**
  * The dotfiles entry block digest the failure conversation opens with
- * (`78eddcdb7b05c8b1ddc5f98663144022899d5601`, 2533 bytes without a trailing
+ * (`9e04a76d966994048d2e2e948b277adbce141db1`, 3179 bytes without a trailing
  * newline) — the same pin `direction-inquiry.test.js` holds (UI-18a5 §3.3).
  */
 const ENTRY_BLOCK_DIGEST =
-  '926b1826fe63f3edbc396bd7b503e87a63cf17861efd22e4e1e5c0ad86110edc';
+  'c08b50d08a5f1eddd32934db725972f9ade06e6a9de8bc5a9816660bbba0ea53';
 
 const BEAD = 'UI-jw27';
 const REPO = '/tmp/example-workspace/project-a';
@@ -146,9 +149,34 @@ const FAILURE = {
 };
 
 /**
- * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean }} [input]
+ * Conversation settings that keep every launch's provider and add no flag.
+ *
+ * @type {import('../conversation-settings.js').ConversationSettingValues}
+ */
+const INHERIT_SETTINGS = {
+  auto_launch: true,
+  fresh_runtime: 'inherit',
+  claude_model: null,
+  claude_effort: null,
+  codex_model: null,
+  codex_effort: null
+};
+
+/** A catalog slice the flag builder resolves model ids through. */
+const FLAG_CATALOG = {
+  runners: {
+    claude: { models: { sonnet: { id: 'sonnet' } }, efforts: ['high'] },
+    codex: { models: { sol: { id: 'gpt-6-sol' } }, efforts: ['xhigh'] }
+  }
+};
+
+/**
+ * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
  */
 function makeLauncher(input = {}) {
+  // Each test states the settings it is about; the default keeps every
+  // provider and adds no model/effort flag (UI-jbl1 §3.4 "따름").
+  const settings = { ...INHERIT_SETTINGS, ...(input.settings ?? {}) };
   const tmux = input.tmux ?? makeTmux();
   const resolver = createResolveSession({
     getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
@@ -170,6 +198,9 @@ function makeLauncher(input = {}) {
     now: () => 0,
     store: input.store,
     ...(input.currentRunner ? { currentRunner: input.currentRunner } : {}),
+    conversationSettings: () => settings,
+    launchFlags: (runner) =>
+      conversationLaunchFlags(runner, settings, FLAG_CATALOG),
     sessionRefOptions: {
       home_dir: HOME,
       hostname: HOST,
@@ -1147,5 +1178,378 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       false,
       'tmux_unavailable'
     ]);
+  });
+});
+
+/**
+ * The wrapper the launch handed `tmux new-window`.
+ *
+ * @param {ReturnType<typeof makeTmux>} tmux
+ * @returns {string}
+ */
+function launchedWrapper(tmux) {
+  return tmux.calls.find((call) => call[0] === 'new-window')?.at(-1) ?? '';
+}
+
+describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
+  test('opens a fresh session on the configured runtime with its flags', async () => {
+    const { resolver, tmux } = makeLauncher({
+      metadata: {},
+      currentRunner: () => 'codex',
+      settings: {
+        fresh_runtime: 'claude',
+        claude_model: 'sonnet',
+        claude_effort: 'high'
+      }
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect([outcome.mode, outcome.runner]).toEqual(['fresh', 'claude']);
+    expect(launchedWrapper(tmux)).toContain(
+      "exec '/usr/local/bin/claude' '--model' 'sonnet' '--effort' 'high' '--session-id'"
+    );
+  });
+
+  test('opens a fresh codex session with the codex model and effort flags', async () => {
+    const { resolver, tmux } = makeLauncher({
+      metadata: {},
+      settings: {
+        fresh_runtime: 'codex',
+        codex_model: 'sol',
+        codex_effort: 'xhigh'
+      }
+    });
+
+    await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect(launchedWrapper(tmux)).toContain(
+      "exec '/usr/local/bin/codex' '-m' 'gpt-6-sol' '-c' 'model_reasoning_effort=xhigh' '이 세션은"
+    );
+  });
+
+  test('forks on the recorded runtime with that runtime flags', async () => {
+    const { resolver, tmux } = makeLauncher({
+      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+      codex: true,
+      settings: {
+        fresh_runtime: 'claude',
+        claude_model: 'sonnet',
+        codex_model: 'sol',
+        codex_effort: 'xhigh'
+      }
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect([outcome.mode, outcome.runner]).toEqual(['fork', 'codex']);
+    expect(launchedWrapper(tmux)).toContain(
+      `exec '/usr/local/bin/codex' 'fork' '-m' 'gpt-6-sol' '-c' 'model_reasoning_effort=xhigh' '${SESSION_ID}'`
+    );
+  });
+
+  test('adds no model or effort flag when the settings follow the CLI', async () => {
+    const { resolver, tmux } = makeLauncher({
+      metadata: { session_ref: `claude:${SESSION_ID}@${HOST}` }
+    });
+
+    await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    const wrapper = launchedWrapper(tmux);
+    expect(wrapper).toContain(`exec '/usr/local/bin/claude' '--resume'`);
+    expect(wrapper).not.toContain('--model');
+    expect(wrapper).not.toContain('--effort');
+  });
+
+  test('opens the automatic placement in the detached inquiry session', async () => {
+    const { resolver, tmux } = makeLauncher({
+      metadata: {},
+      tmux: makeTmux({ sessions: '100:work\n' })
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE,
+      placement: 'inquiry'
+    });
+
+    const new_window = tmux.calls.find((call) => call[0] === 'new-window');
+    expect(outcome.placement).toBe('inquiry');
+    expect(new_window).toContain('-d');
+    expect(tmux.names()).not.toContain('list-sessions');
+  });
+});
+
+/** A failed manual deploy record, as the queue stores it. */
+const MANUAL_OPERATION = {
+  kind: 'deploy',
+  source: 'manual',
+  manual_run_id: 3,
+  state: 'failed',
+  target_sha: 'a'.repeat(40),
+  deploy_worktree: '/tmp/example-workspace/.worktrees/.repo-ops-deploy',
+  log_path: '/tmp/logs/op-1.log',
+  superseded_by: null,
+  dismissed: null,
+  failure: {
+    code: 'script_failed',
+    fingerprint: 'f1',
+    detail: '',
+    summary: 'deploy exited 2'
+  }
+};
+
+describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
+  test('reads a failed manual deploy as the manual deploy failure class', () => {
+    const queue = { repo_operations: { 'op-1': MANUAL_OPERATION } };
+
+    const failure = repoOperationFailureContext(queue, 'op-1');
+
+    expect(failure).toMatchObject({
+      failure_class: '수동 배포 실패',
+      reason: 'script_failed',
+      operation_id: 'op-1',
+      target_sha: 'a'.repeat(40),
+      deploy_worktree: '/tmp/example-workspace/.worktrees/.repo-ops-deploy'
+    });
+  });
+
+  test('reads no failure once a successor answered the row', () => {
+    const queue = {
+      repo_operations: {
+        'op-1': { ...MANUAL_OPERATION, superseded_by: 'op-2' }
+      }
+    };
+
+    expect(repoOperationFailureContext(queue, 'op-1')).toBeNull();
+  });
+
+  test('adds the operation id, target and deploy worktree to the situation', () => {
+    const failure = /** @type {any} */ (
+      repoOperationFailureContext(
+        { repo_operations: { 'op-1': MANUAL_OPERATION } },
+        'op-1'
+      )
+    );
+
+    expect(failureSituation(failure)).toBe(
+      `클래스 수동 배포 실패 · 원인 코드 script_failed · 단계 deploy · 진단 deploy exited 2 · 로그 /tmp/logs/op-1.log · 작업 op-1 · 대상 ${'a'.repeat(40)} · 배포 워크트리 /tmp/example-workspace/.worktrees/.repo-ops-deploy`
+    );
+  });
+
+  test('targets the repo-operation row for its handoff', () => {
+    const queue = { repo_operations: { 'op-1': MANUAL_OPERATION } };
+
+    expect(failureHandoffTarget(queue, 'repo-op:op-1')).toEqual({
+      kind: 'repo_operation',
+      identity: 'repo_operation:op-1:f1'
+    });
+  });
+
+  test('opens a fresh session in the repository root without a Bead read', async () => {
+    const readIssue = vi.fn(async () => ({ id: BEAD, metadata: {} }));
+    const recordInteractiveSession = vi.fn();
+    const { resolver, tmux } = makeLauncher({
+      readIssue,
+      store: { recordInteractiveSession }
+    });
+    const failure = /** @type {any} */ (
+      repoOperationFailureContext(
+        { repo_operations: { 'op-1': MANUAL_OPERATION } },
+        'op-1'
+      )
+    );
+
+    const outcome = await resolver.resolveRepoOperation({
+      workspace: REPO,
+      repo: REPO,
+      operation_id: 'op-1',
+      failure
+    });
+
+    const new_window =
+      tmux.calls.find((call) => call[0] === 'new-window') ?? [];
+    expect(readIssue).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ launched: true, mode: 'fresh' });
+    expect(new_window[new_window.indexOf('-c') + 1]).toBe(REPO);
+    expect(new_window[new_window.indexOf('-n') + 1]).toBe(
+      'resolve-repo-op-op-1'
+    );
+    expect(launchedWrapper(tmux)).toContain('@bdui_resolve_bead');
+    expect(launchedWrapper(tmux)).toContain("'repo-op:op-1'");
+    expect(launchedWrapper(tmux)).toContain('- 구현 워크트리: (없음)');
+    expect(launchedWrapper(tmux)).toContain(
+      '- 대화 사유: 실패 수동 배포 실패 · script_failed'
+    );
+    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+      bead_id: 'repo-op:op-1',
+      kind: 'resolve',
+      mode: 'fresh',
+      attempt_id: null,
+      cwd: REPO
+    });
+  });
+});
+
+describe('automatic failure conversation (UI-jbl1 §3.1)', () => {
+  /**
+   * @param {{ enabled?: boolean, queue?: any }} [over]
+   */
+  function makeAuto(over = {}) {
+    const resolve = vi.fn(async () => ({
+      launched: true,
+      session: /** @type {const} */ ('launched'),
+      reason: null,
+      tmux_session: 'bdui-inquiry',
+      tmux_window: `resolve-${BEAD}`
+    }));
+    const resolveRepoOperation = vi.fn(async () => ({
+      launched: true,
+      session: /** @type {const} */ ('launched'),
+      reason: null,
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-repo-op-op-1'
+    }));
+    const auto = createFailureConversationLauncher({
+      resolveSession: /** @type {any} */ ({ resolve, resolveRepoOperation }),
+      snapshot: () =>
+        over.queue ?? {
+          completion_intents: {
+            [BEAD]: {
+              phase: 'needs_human',
+              terminal_reason: {
+                reason: 'deploy_script_failure',
+                stage: 'repo_operations'
+              }
+            }
+          },
+          repo_operations: { 'op-1': MANUAL_OPERATION },
+          interactive_sessions: {},
+          attempts: {}
+        },
+      getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
+      autoLaunchEnabled: () => over.enabled !== false,
+      log: () => {}
+    });
+    return { auto, resolve, resolveRepoOperation };
+  }
+
+  test('launches a Bead row through the click launcher in the inquiry placement', async () => {
+    const { auto, resolve } = makeAuto();
+
+    const outcome = await auto.launchForBead({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD
+    });
+
+    expect(outcome.session).toBe('launched');
+    expect(resolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bead_id: BEAD,
+        placement: 'inquiry',
+        failure: expect.objectContaining({ failure_class: '배포 실패' })
+      })
+    );
+  });
+
+  test('launches nothing while the shared switch is off', async () => {
+    const { auto, resolve } = makeAuto({ enabled: false });
+
+    const outcome = await auto.launchForBead({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD
+    });
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'disabled'
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  test('answers with the live conversation instead of a second window', async () => {
+    const { auto, resolve } = makeAuto({
+      queue: {
+        completion_intents: {},
+        interactive_sessions: {
+          [`${BEAD}:inquiry`]: {
+            bead_id: BEAD,
+            kind: 'inquiry',
+            state: 'live',
+            settled_at: null,
+            tmux_session: 'bdui-inquiry',
+            tmux_window: BEAD,
+            conversation: null
+          }
+        }
+      }
+    });
+
+    const outcome = await auto.launchForBead({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD
+    });
+
+    expect(outcome).toMatchObject({
+      session: 'already_running',
+      tmux_window: BEAD
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  test('launches a repo-operation row fresh in the inquiry placement', async () => {
+    const { auto, resolveRepoOperation } = makeAuto();
+
+    await auto.launchForRepoOperation({
+      workspace: REPO,
+      repo: REPO,
+      operation_id: 'op-1'
+    });
+
+    expect(resolveRepoOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation_id: 'op-1',
+        placement: 'inquiry',
+        failure: expect.objectContaining({ failure_class: '수동 배포 실패' })
+      })
+    );
+  });
+
+  test('reports a launch that threw as not launched', async () => {
+    const { auto, resolve } = makeAuto();
+    resolve.mockRejectedValueOnce(new Error('tmux gone'));
+
+    const outcome = await auto.launchForBead({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD
+    });
+
+    expect(outcome).toMatchObject({ session: 'not_launched', reason: 'error' });
   });
 });

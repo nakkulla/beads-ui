@@ -146,6 +146,9 @@ function normalizeWorkerNotify(parsed) {
  * Same fail-quiet rules as `[worker.notify]`: an absent section or an `enabled`
  * that is not exactly `true` yields disabled, so a host without the Discord
  * bridge keeps the existing park-and-click behaviour by simply never opting in.
+ * `enabled` is only the fallback of the shared conversation auto-launch switch;
+ * a stored value in `server/conversation-settings.js` wins over it (UI-jbl1
+ * §3.4).
  *
  * @param {any} parsed
  * @returns {{ enabled: boolean, tmux_session: string }}
@@ -159,12 +162,12 @@ function normalizeDirectionInquiry(parsed) {
   if (!section || typeof section !== 'object' || Array.isArray(section)) {
     return disabled;
   }
-  if (/** @type {any} */ (section).enabled !== true) {
-    return disabled;
-  }
+  // `tmux_session` stands apart from `enabled`: the server-global conversation
+  // settings may turn the automatic launch on over a disabled section
+  // (UI-jbl1 §3.4), and the window must still open in the configured session.
   const name = /** @type {any} */ (section).tmux_session;
   return {
-    enabled: true,
+    enabled: /** @type {any} */ (section).enabled === true,
     tmux_session:
       typeof name === 'string' && name.trim().length > 0
         ? name.trim()

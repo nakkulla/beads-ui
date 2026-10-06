@@ -475,6 +475,33 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     });
   });
 
+  test('sends a manual deploy failure 세션에서 이어가기 by its operation (UI-jbl1 §3.3)', () => {
+    const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
+    const { mount } = mountWorker(
+      {
+        repo_operations: [
+          operationCard({
+            source: 'manual',
+            resolve: { terminal_failure: true, interactive_sessions: [] }
+          })
+        ]
+      },
+      transport
+    );
+
+    /** @type {HTMLElement} */ (
+      openTimeline(mount).querySelector('.worker-repo-op__resolve')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-resolve-in-session',
+      expect.objectContaining({ operation_id: 'op-1' })
+    );
+    expect(/** @type {any} */ (transport).mock.calls[0][1]).not.toHaveProperty(
+      'bead_id'
+    );
+  });
+
   test('merges operations and stopped cleanups newest first', () => {
     const { mount } = mountWorker({
       repo_operations: [operationCard({ finished_at: 1000 })],

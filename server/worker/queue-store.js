@@ -556,7 +556,7 @@
  * whether the exit already settled it.
  *
  * @typedef {Object} ConversationHandoffTarget
- * @property {'cleanup'|'discard'|'verify_hold'|'merge_gate'} kind
+ * @property {'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'} kind
  * @property {string} identity
  */
 /**
@@ -899,6 +899,12 @@
  * this failed row (UI-q0uy §4.6-2). NOT a state transition: the row stays
  * `failed` and auditable, and only the 해결 필요 tally leaves it out.
  * @property {{ approved_source_path: string, approved_source_sha: string, requested_by: string, requested_at: number }|null} bootstrap_provenance
+ * @property {{ target_at: number, consumed_at: number|null }} [failure_notice] -
+ * The once-per-failure conversation mark of a MANUAL deploy (UI-jbl1 §3.1):
+ * `target_at` is written in the same write that makes the record `failed`,
+ * `consumed_at` before the one notification and automatic conversation. A
+ * failed record without it — every record written before this field — reads
+ * as already consumed.
  */
 /**
  * @typedef {Object} DiscardOperation
@@ -3358,7 +3364,8 @@ function normalizeConversation(raw) {
     (target_raw.kind === 'cleanup' ||
       target_raw.kind === 'discard' ||
       target_raw.kind === 'verify_hold' ||
-      target_raw.kind === 'merge_gate') &&
+      target_raw.kind === 'merge_gate' ||
+      target_raw.kind === 'repo_operation') &&
     typeof target_raw.identity === 'string'
       ? { kind: target_raw.kind, identity: target_raw.identity }
       : null;
@@ -4420,6 +4427,20 @@ function normalizeRepoOperation(value) {
     ...(recovery ? { recovery } : {}),
     superseded_by:
       typeof value.superseded_by === 'string' ? value.superseded_by : null,
+    ...(isRecord(value.failure_notice) &&
+    typeof value.failure_notice.target_at === 'number' &&
+    Number.isFinite(value.failure_notice.target_at)
+      ? {
+          failure_notice: {
+            target_at: value.failure_notice.target_at,
+            consumed_at:
+              typeof value.failure_notice.consumed_at === 'number' &&
+              Number.isFinite(value.failure_notice.consumed_at)
+                ? value.failure_notice.consumed_at
+                : null
+          }
+        }
+      : {}),
     // Provenance of the request, not a state: only an exact `manual` marks the
     // 배포 실행 click, so an unreadable value reads as the Worker's own work.
     source: value.source === 'manual' ? 'manual' : 'automatic',
@@ -7719,7 +7740,7 @@ export function createQueueStore(options = {}) {
      * rolled back.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, blocked_reason?: string, recovery?: RepoOperationRecovery }} input
+     * @param {{ operation_id: string, blocked_reason?: string, recovery?: RepoOperationRecovery, conversation_target?: boolean }} input
      * @returns {QueueOpResult}
      */
     settleConsumedRepoOperationRetry(workspace, input) {
@@ -7741,6 +7762,12 @@ export function createQueueStore(options = {}) {
         operation.failure = { ...retry.first_failure };
         operation.finished_at = now();
         operation.process_identity = null;
+        if (input.conversation_target === true) {
+          operation.failure_notice = {
+            target_at: operation.finished_at,
+            consumed_at: null
+          };
+        }
         if (typeof input.blocked_reason === 'string') {
           retry.outcome = 'not_applicable';
           retry.blocked_reason = input.blocked_reason;
@@ -7760,7 +7787,7 @@ export function createQueueStore(options = {}) {
      * a previously terminal record.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null, target_sha?: string, deploy_worktree?: string, finished_at?: number }} input
+     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null, target_sha?: string, deploy_worktree?: string, finished_at?: number, conversation_target?: boolean }} input
      * @returns {QueueOpResult}
      */
     settleRepoOperation(workspace, input) {
@@ -7815,6 +7842,15 @@ export function createQueueStore(options = {}) {
             detail: '',
             interrupted: false
           };
+          // The conversation mark rides the SAME write that makes the record
+          // terminal (UI-jbl1 §3.1), so only a new terminal transition can
+          // earn the one notification and automatic conversation.
+          if (input.conversation_target === true) {
+            operation.failure_notice = {
+              target_at: operation.finished_at,
+              consumed_at: null
+            };
+          }
           if (input.retry_outcome) {
             operation.retry = {
               first_failure: operation.failure
@@ -7832,6 +7868,35 @@ export function createQueueStore(options = {}) {
             };
           }
         }
+        return true;
+      });
+    },
+
+    /**
+     * Consume a failed manual deploy's conversation mark (UI-jbl1 §3.1): the
+     * write that precedes its one notification and automatic conversation.
+     * Refused when the record carries no unconsumed mark — a legacy record, a
+     * restart's second pass, or a mark already spent.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    consumeRepoOperationFailureNotice(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (
+          !operation ||
+          operation.state !== 'failed' ||
+          !operation.failure_notice ||
+          operation.failure_notice.consumed_at !== null
+        ) {
+          return false;
+        }
+        operation.failure_notice = {
+          ...operation.failure_notice,
+          consumed_at: now()
+        };
         return true;
       });
     },

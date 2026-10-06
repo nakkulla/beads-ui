@@ -6584,6 +6584,35 @@ describe('views/monitor 저장소 작업 서랍 (UI-f2sy §7)', () => {
     });
   });
 
+  test('sends a manual deploy failure 세션에서 이어가기 by its operation (UI-jbl1 §3.3)', () => {
+    const { mount, view, sent } = twoRepos({
+      workspaces: [
+        workspace(),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          revision: 7,
+          repo_operations: [
+            {
+              ...FAILED_OP,
+              source: 'manual',
+              resolve: { terminal_failure: true, interactive_sessions: [] }
+            }
+          ]
+        })
+      ]
+    });
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-repo-op__resolve');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-resolve-in-session',
+      payload: { operation_id: 'op-1', root_dir: WS_B, expected_revision: 7 }
+    });
+  });
+
   test('retries a conflicting 기록 닫기 once on that repository revision', async () => {
     const { mount, view, sent } = twoRepos({
       transport: async (type, payload) =>

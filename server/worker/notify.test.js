@@ -1495,10 +1495,11 @@ describe('worker/notify needs_human transition', () => {
 
     expect(messageOf(spawn.last())).toBe(
       [
-        '🤖 🚨 사람 필요 — UI-1 워커 알림',
+        '🤖 🙋 확인 필요 · 배포 실패 — UI-1 워커 알림',
         '클래스: 배포 실패',
         '사유: cleanup_failed:script_failed — deploy exited 2',
         '다음: [세션에서 이어가기] 또는 [워커로 이어가기]',
+        '대화를 열지 못함 — [세션에서 이어가기]',
         'https://github.com/o/r/pull/7',
         '리포: beads-ui'
       ].join('\n')
@@ -1516,7 +1517,84 @@ describe('worker/notify needs_human transition', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '🤖 🚨 사람 필요 — UI-2\n클래스: 폐기 실패\n사유: attempt_settling'
+      '🤖 🙋 확인 필요 · 폐기 실패 — UI-2\n클래스: 폐기 실패\n사유: attempt_settling\n대화를 열지 못함 — [세션에서 이어가기]'
+    );
+  });
+
+  test('titles a terminal failure with the confirm transition and its class', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.needsHuman({
+      bead_id: 'UI-6',
+      failure_class: 'post-merge 잡 실패',
+      reason: 'job_failed'
+    });
+
+    const message = messageOf(spawn.last());
+    expect(message.split('\n')[0]).toBe(
+      '🤖 🙋 확인 필요 · post-merge 잡 실패 — UI-6'
+    );
+    expect(message).not.toContain('사람 필요');
+  });
+
+  test('names the opened conversation window in the conversation line', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.needsHuman({
+      bead_id: 'UI-7',
+      failure_class: '머지 게이트 보류',
+      reason: 'receipt_forged',
+      next_action: '[머지] 재클릭 또는 [세션에서 이어가기]',
+      conversation: {
+        session: 'launched',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'resolve-UI-7'
+      },
+      repo: '/repos/beads-ui'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '🤖 🙋 확인 필요 · 머지 게이트 보류 — UI-7',
+        '클래스: 머지 게이트 보류',
+        '사유: receipt_forged',
+        '다음: [머지] 재클릭 또는 [세션에서 이어가기]',
+        '대화: Discord 스레드 · tmux bdui-inquiry:resolve-UI-7',
+        '리포: beads-ui'
+      ].join('\n')
+    );
+  });
+
+  test('prints the fallback line when the conversation did not open', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.needsHuman({
+      bead_id: 'UI-8',
+      failure_class: '수동 배포 실패',
+      reason: 'script_failed',
+      conversation: { session: 'not_launched', reason: 'tmux_unavailable' }
+    });
+
+    expect(messageOf(spawn.last()).split('\n')).toContain(
+      '대화를 열지 못함 — [세션에서 이어가기]'
+    );
+  });
+
+  test('keeps the merge hold push free of a conversation line', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.hold({
+      bead_id: 'UI-9',
+      failure_class: '머지 전 검증 실패',
+      reason: 'script_failed'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      '🤖 ⏸️ 머지 보류 — UI-9\n클래스: 머지 전 검증 실패\n사유: script_failed'
     );
   });
 

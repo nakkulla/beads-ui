@@ -1169,6 +1169,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repairHandoff: createOperationRepairHandoff(bd),
     gitRun,
     notify,
+    // The automatic failure conversation of a manual deploy (UI-jbl1 §3.1).
+    failureConversation: runtime.failureConversation,
     autoAdvanceRestore: options.autoAdvanceRestore
   });
   const quickfixLanding =
@@ -1363,7 +1365,16 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         enqueueWorkerManualMerge(ws, {
           bead_id,
           expected_revision: runtime.queueStore.snapshot(ws).revision
-        })
+        }),
+      // A repo-operation conversation's `인계` (UI-jbl1 §3.3): the SAME entry
+      // as the `[배포 실행]` re-click, which reads the declaration at the
+      // fetched base tip.
+      rerunManualDeploy: async () => {
+        const result = await repoOperationCoordinator.runManualDeploy();
+        return result.ok
+          ? { ok: true, reason: null }
+          : { ok: false, reason: result.reason };
+      }
     },
     backupFreshResidue: (identity, input) =>
       discardCoordinator.backupFreshResidue(identity, input),
@@ -1451,6 +1462,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         archive: recoveryArchive,
         processController,
         notify,
+        // The automatic failure conversation (UI-jbl1 §3.1).
+        failureConversation: runtime.failureConversation,
         sessionLog: runtime.sessionLog,
         revertBuilder: createRevertBuilder({ gitRun }),
         verifyRevert: async (
@@ -2097,6 +2110,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       kickMerge: () => mergeQueue.kick(),
       repo,
       notify,
+      // The automatic failure conversation (UI-jbl1 §3.1).
+      failureConversation: runtime.failureConversation,
       log
     });
   completionActionDriver = resolvedCompletionActionDriver;

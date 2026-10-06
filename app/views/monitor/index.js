@@ -1113,13 +1113,20 @@ export function createMonitorView(mount_element, options) {
   /**
    * `[세션에서 이어가기]` of one 확인 필요, 실패 or 외부 작업 완료 card, PR
    * 대기 rows included (UI-f2sy §4, UI-18a5 §3.2) — the server picks the
-   * launcher.
+   * launcher. A repo-operation row (UI-jbl1 §3.3) passes its row key and the
+   * `{ operation_id }` payload instead of a Bead.
    *
-   * @param {string} bead_id
+   * @param {string} bead_id - The Bead id, or a repo-operation row key.
    * @param {string} root_dir
    * @param {number} revision
+   * @param {Record<string, string>} [payload]
    */
-  async function resolveInSession(bead_id, root_dir, revision) {
+  async function resolveInSession(
+    bead_id,
+    root_dir,
+    revision,
+    payload = { bead_id }
+  ) {
     const key = pendingKey(root_dir, bead_id);
     if (resolve_pending.has(key)) {
       return;
@@ -1129,7 +1136,7 @@ export function createMonitorView(mount_element, options) {
     try {
       const res = await sendCas(
         'worker-resolve-in-session',
-        { bead_id },
+        payload,
         root_dir,
         revision,
         false
@@ -1272,6 +1279,21 @@ export function createMonitorView(mount_element, options) {
     );
     if (dismiss) {
       void dismissRepoOperation(dismiss.dataset.operationId || '', root_dir);
+      return;
+    }
+    // A failed manual deploy's `[세션에서 이어가기]` (UI-jbl1 §3.3): the same
+    // click as a card's, keyed by the operation instead of a Bead.
+    const repo_op_resolve = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-repo-op__resolve')
+    );
+    if (repo_op_resolve?.dataset.operationId) {
+      const operation_id = repo_op_resolve.dataset.operationId;
+      void resolveInSession(
+        `repo-op:${operation_id}`,
+        root_dir,
+        revisionOf(root_dir),
+        { operation_id }
+      );
       return;
     }
     const resume = /** @type {HTMLElement|null} */ (

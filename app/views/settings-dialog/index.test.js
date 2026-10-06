@@ -93,7 +93,7 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any, externalWaitSettings?: any }} [options]
+ * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any, externalWaitSettings?: any, conversationSettings?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -109,6 +109,9 @@ function mount(options = {}) {
           values: options.values || {},
           warnings: options.warnings || []
         };
+      }
+      if (type === 'conversation-settings-get') {
+        return { snapshot: options.conversationSettings };
       }
       return { values: options.values || {}, warnings: [] };
     });
@@ -671,6 +674,65 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
       root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
     ).map((title) => title.textContent?.trim());
     expect(titles).toEqual(['판정 칩 프리셋', '활성 모델', '외부 작업']);
+    dialog.destroy();
+  });
+
+  test('draws the 대화 세션 group last in the 전역 tab from the server snapshot', async () => {
+    const { root, dialog, transport } = mount({
+      modelVisibility: MODEL_VISIBILITY,
+      conversationSettings: {
+        revision: 1,
+        values: { auto_launch: true },
+        overrides: {},
+        fields: { auto_launch: { kind: 'boolean', default: true } }
+      }
+    });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+    await settle();
+
+    const titles = Array.from(
+      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
+    ).map((title) => title.textContent?.trim());
+    expect(titles).toEqual(['판정 칩 프리셋', '활성 모델', '대화 세션']);
+    expect(transport).toHaveBeenCalledWith('conversation-settings-get', {});
+    dialog.destroy();
+  });
+
+  test('shows the config.toml fallback of the 대화 자동 기동 switch in the 전역 tab', async () => {
+    const { root, dialog } = mount({
+      modelVisibility: MODEL_VISIBILITY,
+      conversationSettings: {
+        revision: 1,
+        values: { auto_launch: true },
+        overrides: {},
+        fields: { auto_launch: { kind: 'boolean', default: true } }
+      }
+    });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+    await settle();
+
+    expect(
+      root.querySelector('[data-key="auto_launch"] .settings-timing__default')
+        ?.textContent
+    ).toBe('config.toml 켜짐');
+    dialog.destroy();
+  });
+
+  test('draws no 대화 세션 group before a conversation snapshot arrives', async () => {
+    const { root, dialog } = mount({ modelVisibility: MODEL_VISIBILITY });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+    await settle();
+
+    expect(root.querySelector('[data-group="conversation"]')).toBeNull();
     dialog.destroy();
   });
 
