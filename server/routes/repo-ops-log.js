@@ -18,8 +18,12 @@ import {
   completionLogPath,
   validCompletionIntent
 } from '../worker/completion-log-path.js';
+import { SUMMARY_MAX_CHARS } from '../worker/failure-class.js';
 import { sanitizeOutput } from '../worker/output-sanitize.js';
-import { parseRepoOperationLog } from '../worker/repo-operation-log.js';
+import {
+  parseRepoOperationLog,
+  stripAnsi
+} from '../worker/repo-operation-log.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   deployLogDir,
@@ -155,6 +159,32 @@ function insideAny(file, dirs) {
 }
 
 /**
+ * The failure summary normalized the way body lines are — redacted, ANSI
+ * removed — so the popup can compare the two. Settlement keeps at most
+ * `SUMMARY_MAX_CHARS` of the trimmed raw line, so a summary that long may be a
+ * cut prefix of its line: `prefix` tells the popup to compare by prefix, and a
+ * control sequence the cut left unterminated is dropped with the cut.
+ *
+ * @param {string|null} raw
+ * @returns {{ text: string|null, prefix: boolean }}
+ */
+function displaySummary(raw) {
+  if (raw === null) {
+    return { text: null, prefix: false };
+  }
+  const prefix = raw.length >= SUMMARY_MAX_CHARS;
+  let text = stripAnsi(sanitizeOutput(raw));
+  if (prefix) {
+    const escape = text.indexOf(String.fromCharCode(27));
+    if (escape !== -1) {
+      text = text.slice(0, escape);
+    }
+  }
+  text = text.trim();
+  return { text: text.length > 0 ? text : null, prefix };
+}
+
+/**
  * Build the handler. Production uses the registry and the Worker runtime; the
  * seams exist so a test can hand in a queue record without a running Worker.
  *
@@ -265,14 +295,15 @@ export function createRepoOpsLogHandler(deps = {}) {
     // (`output-sanitize.js`); it runs over each decoded run of output before it
     // is split, so a multi-line key block is still caught whole.
     const parsed = parseRepoOperationLog(bytes, { transform: sanitizeOutput });
+    const summary = displaySummary(located.summary);
     response.status(200).json({
       ok: true,
       path: located.log_path,
       total_bytes: parsed.total_bytes,
       truncated_bytes: parsed.truncated_bytes,
       running: located.running,
-      summary:
-        located.summary === null ? null : sanitizeOutput(located.summary),
+      summary: summary.text,
+      summary_prefix: summary.prefix,
       preamble: parsed.preamble,
       attempts: parsed.attempts
     });

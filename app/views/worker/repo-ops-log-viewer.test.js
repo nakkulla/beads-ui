@@ -3,7 +3,7 @@ import {
   LOG_POLL_MS,
   attemptHeaderText,
   createRepoOpsLogViewer,
-  formatAttemptStart,
+  formatAttemptClock,
   isSummaryLine,
   truncationText
 } from './repo-ops-log-viewer.js';
@@ -158,16 +158,40 @@ afterEach(() => {
 });
 
 describe('attempt header text', () => {
-  test('names number, start clock, duration and exit', () => {
+  test('names number, start clock, end clock, duration and exit', () => {
     const text = attemptHeaderText(attempt(), 1, { live: false, now: NOW });
 
-    expect(text).toBe('시도 1 · 13:50:00 시작 · 7분 45초 · exit 1');
+    expect(text).toBe(
+      '시도 1 · 13:50:00 시작 · 13:57:45 종료 · 7분 45초 · exit 1'
+    );
+  });
+
+  test('puts the date in front of an end clock that was not today', () => {
+    const started_at = new Date(2026, 9, 5, 23, 58, 0).getTime();
+    const finished_at = new Date(2026, 9, 6, 0, 3, 0).getTime();
+
+    const text = attemptHeaderText(attempt({ started_at, finished_at }), 1, {
+      live: false,
+      now: new Date(2026, 9, 7, 9, 0, 0).getTime()
+    });
+
+    expect(text).toBe(
+      '시도 1 · 10월 5일 23:58:00 시작 · 10월 6일 00:03:00 종료 · 5분 0초 · exit 1'
+    );
+  });
+
+  test('puts the year in front of a clock from another year', () => {
+    const at = new Date(2025, 11, 31, 23, 0, 0).getTime();
+
+    const text = formatAttemptClock(at, NOW);
+
+    expect(text).toBe('2025년 12월 31일 23:00:00');
   });
 
   test('puts the date in front of a start that was not today', () => {
     const at = new Date(2026, 9, 5, 23, 59, 30).getTime();
 
-    const text = formatAttemptStart(at, NOW);
+    const text = formatAttemptClock(at, NOW);
 
     expect(text).toBe('10월 5일 23:59:30');
   });
@@ -200,7 +224,7 @@ describe('attempt header text', () => {
     );
 
     expect(text).toBe(
-      '시도 1 · 13:50:00 시작 · 7분 45초 · 시간 초과 · exit 124'
+      '시도 1 · 13:50:00 시작 · 13:57:45 종료 · 7분 45초 · 시간 초과 · exit 124'
     );
   });
 });
@@ -215,9 +239,17 @@ describe('summary line match', () => {
   test('matches a long line by the summary prefix settlement kept', () => {
     const line = `E${'x'.repeat(300)}`;
 
-    const hit = isSummaryLine(line, line.slice(0, 200));
+    const hit = isSummaryLine(line, line.slice(0, 200), true);
 
     expect(hit).toBe(true);
+  });
+
+  test('rejects a prefix the server did not flag as cut', () => {
+    const line = `E${'x'.repeat(300)}`;
+
+    const hit = isSummaryLine(line, line.slice(0, 200), false);
+
+    expect(hit).toBe(false);
   });
 
   test('rejects a short summary that is only a prefix', () => {
@@ -260,7 +292,9 @@ describe('createRepoOpsLogViewer rendering', () => {
     expect(document.querySelector('details.repo-ops-log-viewer__attempt')).toBe(
       null
     );
-    expect(headTexts()).toEqual(['시도 1 · 13:50:00 시작 · 7분 45초 · exit 1']);
+    expect(headTexts()).toEqual([
+      '시도 1 · 13:50:00 시작 · 13:57:45 종료 · 7분 45초 · exit 1'
+    ]);
     viewer.destroy();
   });
 
@@ -323,6 +357,28 @@ describe('createRepoOpsLogViewer rendering', () => {
       document.querySelectorAll('.repo-ops-log-viewer__line--summary')
     ).map((el) => el.textContent?.trim());
     expect(hits).toEqual(['npm ERR! boom']);
+    viewer.destroy();
+  });
+
+  test('highlights a cut summary of a long line the server flagged as a prefix', async () => {
+    const long_line = `npm ERR! ${'y'.repeat(300)}`;
+    const { viewer } = viewerWith([
+      reply(
+        logBody({
+          summary: long_line.slice(0, 190),
+          summary_prefix: true,
+          attempts: [attempt({ lines: ['before', long_line] })]
+        })
+      )
+    ]);
+
+    await openOperation(viewer);
+
+    const hits = document.querySelectorAll(
+      '.repo-ops-log-viewer__line--summary'
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0].textContent?.trim()).toBe(long_line);
     viewer.destroy();
   });
 

@@ -2736,12 +2736,26 @@ function operationOutputTail(log_path) {
     if (length <= 0) {
       return '';
     }
-    const buffer = Buffer.alloc(length);
+    // One byte before the window too, to know whether the cut fell on a line
+    // start.
+    const read_from = start > 0 ? start - 1 : 0;
+    const raw = Buffer.alloc(size - read_from);
     const fd = nodeFs.openSync(log_path, 'r');
     try {
-      nodeFs.readSync(fd, buffer, 0, length, start);
+      nodeFs.readSync(fd, raw, 0, raw.length, read_from);
     } finally {
       nodeFs.closeSync(fd);
+    }
+    let buffer = start > 0 ? raw.subarray(1) : raw;
+    // A cut inside a line drops that fragment (the same rule as the log API's
+    // tail window): a boundary line cut in half has lost its prefix, and its
+    // JSON tail would otherwise read as script output.
+    if (start > 0 && raw[0] !== 0x0a) {
+      const newline = buffer.indexOf(0x0a);
+      buffer =
+        newline === -1
+          ? buffer.subarray(buffer.length)
+          : buffer.subarray(newline + 1);
     }
     // The runner's attempt boundary lines are not script output (UI-i8cy
     // §5.2); the same stripper the failure settlement uses keeps them out.

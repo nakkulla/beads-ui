@@ -22,12 +22,6 @@ export const LOG_POLL_MS = 3000;
 /** Consecutive failed refreshes after which polling gives up. */
 export const LOG_POLL_FAILURE_LIMIT = 3;
 
-/**
- * The longest summary line settlement keeps (`failure-class.js`
- * `SUMMARY_MAX_CHARS`); a summary this long may be a cut prefix of its line.
- */
-const SUMMARY_MAX_CHARS = 200;
-
 /** How close to the bottom still counts as "reading the end". */
 const BOTTOM_SLACK_PX = 4;
 
@@ -59,6 +53,7 @@ const BOTTOM_SLACK_PX = 4;
  * @property {number} truncated_bytes
  * @property {boolean} running
  * @property {string|null} [summary]
+ * @property {boolean} [summary_prefix]
  * @property {string[]} preamble
  * @property {LogAttemptView[]} attempts
  */
@@ -79,14 +74,14 @@ function pad2(value) {
 }
 
 /**
- * When an attempt started: `HH:MM:SS`, with the date in front when that is not
- * today.
+ * When an attempt started or ended: `HH:MM:SS`, with the date in front when
+ * that is not today, and the year too when it is not this year.
  *
  * @param {number} at
  * @param {number} now
  * @returns {string}
  */
-export function formatAttemptStart(at, now) {
+export function formatAttemptClock(at, now) {
   const date = new Date(at);
   const today = new Date(now);
   const clock = `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(
@@ -107,9 +102,10 @@ export function formatAttemptStart(at, now) {
 }
 
 /**
- * One attempt's header: `시도 N · HH:MM:SS 시작 · 7분 45초 · exit 1`. An attempt
- * with no end line says `진행 중` when it is the live last attempt of a running
- * record, otherwise `끝 기록 없음`.
+ * One attempt's header:
+ * `시도 N · HH:MM:SS 시작 · HH:MM:SS 종료 · 7분 45초 · exit 1` — start, end,
+ * duration and result (spec §3). An attempt with no end line says `진행 중` when
+ * it is the live last attempt of a running record, otherwise `끝 기록 없음`.
  *
  * @param {LogAttemptView} attempt
  * @param {number} number - 1-based position among the start lines.
@@ -120,12 +116,13 @@ export function attemptHeaderText(attempt, number, context) {
   /** @type {string[]} */
   const parts = [`시도 ${number}`];
   if (typeof attempt.started_at === 'number') {
-    parts.push(`${formatAttemptStart(attempt.started_at, context.now)} 시작`);
+    parts.push(`${formatAttemptClock(attempt.started_at, context.now)} 시작`);
   }
   if (typeof attempt.finished_at !== 'number') {
     parts.push(context.live ? '진행 중' : '끝 기록 없음');
     return parts.join(' · ');
   }
+  parts.push(`${formatAttemptClock(attempt.finished_at, context.now)} 종료`);
   if (typeof attempt.started_at === 'number') {
     parts.push(formatElapsed(attempt.finished_at - attempt.started_at));
   }
@@ -153,14 +150,17 @@ export function truncationText(truncated_bytes) {
 
 /**
  * Whether one log line is the line settlement chose as the failure summary.
- * Settlement trims the line and keeps at most {@link SUMMARY_MAX_CHARS}, so a
- * summary of that length matches the line it is a prefix of.
+ * Settlement trims the line and keeps at most a fixed number of characters,
+ * so a summary the server flags as cut (`prefix`) matches the line it starts.
+ * Both sides arrive already redacted and ANSI-free from the server.
  *
  * @param {string} line
  * @param {string|null|undefined} summary
+ * @param {boolean} [prefix] - The server's `summary_prefix`: the summary may
+ * be a cut prefix of its line.
  * @returns {boolean}
  */
-export function isSummaryLine(line, summary) {
+export function isSummaryLine(line, summary, prefix = false) {
   if (typeof summary !== 'string' || summary.length === 0) {
     return false;
   }
@@ -168,7 +168,7 @@ export function isSummaryLine(line, summary) {
   if (trimmed === summary) {
     return true;
   }
-  return summary.length >= SUMMARY_MAX_CHARS && trimmed.startsWith(summary);
+  return prefix === true && trimmed.startsWith(summary);
 }
 
 /**
@@ -204,6 +204,7 @@ function responseOf(value) {
     truncated_bytes: Number(data.truncated_bytes) || 0,
     running: data.running === true,
     summary: typeof data.summary === 'string' ? data.summary : null,
+    summary_prefix: data.summary_prefix === true,
     preamble: Array.isArray(data.preamble) ? data.preamble.map(String) : [],
     attempts: Array.isArray(data.attempts) ? data.attempts : []
   };
@@ -271,10 +272,10 @@ export function createRepoOpsLogViewer(options = {}) {
 
   /**
    * @param {string} line
-   * @param {string|null|undefined} summary
+   * @param {RepoOpsLogResponse} log - Carries the summary to highlight.
    */
-  function lineTemplate(line, summary) {
-    const hit = isSummaryLine(line, summary);
+  function lineTemplate(line, log) {
+    const hit = isSummaryLine(line, log.summary, log.summary_prefix);
     return html`<div
       class="repo-ops-log-viewer__line${hit
         ? ' repo-ops-log-viewer__line--summary'
@@ -286,16 +287,16 @@ export function createRepoOpsLogViewer(options = {}) {
 
   /**
    * @param {LogAttemptView} attempt
-   * @param {string|null|undefined} summary
+   * @param {RepoOpsLogResponse} log
    */
-  function attemptBody(attempt, summary) {
+  function attemptBody(attempt, log) {
     if (attempt.body_truncated === true) {
       return html`<div class="repo-ops-log-viewer__note">
         본문은 앞부분 생략에 포함됨
       </div>`;
     }
     return (Array.isArray(attempt.lines) ? attempt.lines : []).map((line) =>
-      lineTemplate(String(line), summary)
+      lineTemplate(String(line), log)
     );
   }
 
@@ -313,7 +314,7 @@ export function createRepoOpsLogViewer(options = {}) {
       if (count === 1) {
         return html`<section class="repo-ops-log-viewer__attempt">
           <div class="repo-ops-log-viewer__attempt-head">${header}</div>
-          ${attemptBody(attempt, log.summary)}
+          ${attemptBody(attempt, log)}
         </section>`;
       }
       return html`<details
@@ -332,7 +333,7 @@ export function createRepoOpsLogViewer(options = {}) {
         }}
       >
         <summary class="repo-ops-log-viewer__attempt-head">${header}</summary>
-        ${attemptBody(attempt, log.summary)}
+        ${attemptBody(attempt, log)}
       </details>`;
     });
     const empty = count === 0 && log.preamble.length === 0;
@@ -342,7 +343,7 @@ export function createRepoOpsLogViewer(options = {}) {
             ${truncationText(log.truncated_bytes)}
           </div>`
         : ''}
-      ${log.preamble.map((line) => lineTemplate(line, log.summary))} ${attempts}
+      ${log.preamble.map((line) => lineTemplate(line, log))} ${attempts}
       ${empty
         ? html`<div class="repo-ops-log-viewer__note">
             로그가 비어 있습니다

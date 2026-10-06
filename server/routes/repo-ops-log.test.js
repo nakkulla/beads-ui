@@ -221,6 +221,7 @@ describe('GET /api/repo-ops-log sources', () => {
       truncated_bytes: 0,
       running: false,
       summary: 'npm ERR! boom',
+      summary_prefix: false,
       preamble: [],
       attempts: [
         {
@@ -234,6 +235,47 @@ describe('GET /api/repo-ops-log sources', () => {
         }
       ]
     });
+  });
+
+  test('returns a colored failure summary in the same ANSI-free form as its line', () => {
+    const colored = '\u001b[31mnpm ERR! boom\u001b[0m';
+    const log_path = writeLog(
+      repoOperationLogDir(workspace),
+      'op-1.log',
+      `${boundary({ event: 'start', attempt_id: 'op-1:1', at: 10 })}${colored}\n${boundary({ event: 'end', attempt_id: 'op-1:1', at: 20, exit_code: 1, signal: null, timed_out: false })}`
+    );
+    queue.repo_operations['op-1'] = {
+      state: 'failed',
+      log_path,
+      failure: { code: 'script_failed', summary: colored }
+    };
+
+    const result = request({ workspace, source: 'operation', id: 'op-1' });
+
+    expect(result.body.summary).toBe('npm ERR! boom');
+    expect(result.body.attempts[0].lines).toEqual([result.body.summary]);
+  });
+
+  test('flags a summary cut at the settlement limit and drops its torn escape', () => {
+    const line = `\u001b[1mError: ${'z'.repeat(400)}\u001b[0m`;
+    const cut = line.slice(0, 200);
+    const torn = `${cut.slice(0, 197)}\u001b[3`;
+    const log_path = writeLog(
+      repoOperationLogDir(workspace),
+      'op-1.log',
+      `${line}\n`
+    );
+    queue.repo_operations['op-1'] = {
+      state: 'failed',
+      log_path,
+      failure: { code: 'script_failed', summary: torn }
+    };
+
+    const result = request({ workspace, source: 'operation', id: 'op-1' });
+
+    expect(result.body.summary_prefix).toBe(true);
+    expect(result.body.summary).toBe(cut.slice(4, 197));
+    expect(result.body.preamble[0].startsWith(result.body.summary)).toBe(true);
   });
 
   test('reads a cleanup failure log as a preamble-only log', () => {
