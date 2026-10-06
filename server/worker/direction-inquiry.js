@@ -59,7 +59,7 @@ const ABSENT = '(없음)';
  * The first input of every Worker session conversation — 멈춤, 실패 and
  * 외부 작업 완료 alike (UI-18a5 §3.3) — quoted verbatim from dotfiles
  * `src/shared/skills/flow/workflow/references/execution-common.md`
- * (`## Worker 세션 대화`, commit `78eddcdb7b05c8b1ddc5f98663144022899d5601`),
+ * (`## Worker 세션 대화`, commit `9e04a76d966994048d2e2e948b277adbce141db1`),
  * with no trailing newline. This is the TEMPLATE: beads-ui fills only the
  * conversation reason, the situation, and the two paths; `<원문>`,
  * `<결정 한 줄>` and `<한 줄>` belong to the session. beads-ui adds no
@@ -76,7 +76,9 @@ export const CONVERSATION_ENTRY_BLOCK = [
   '',
   '절차',
   '1. 무엇이 막혔거나 끝났고 사용자가 무엇을 정해야 하는지 한 문단으로 요약하고, 선택지와 권고를 붙여 묻는다. 질문 도구가 있으면 쓰고, 없으면 산문으로 묻고 턴을 끝낸다. 턴이 끝나면 사용자 차례다.',
-  '2. 답이 결정을 주면 notes에 `대화 결정: <대화 사유> — 사용자 답: <원문>` 한 줄을 남긴다. 결정을 확인하는 데 필요한 읽기·진단·워크트리 안 로컬 수정·로컬 검증은 이 대화에서 해도 된다.',
+  '   - 실패 대화이면 묻기 전에 원인을 읽기 전용으로 진단한다. 허용: 기록된 로그·실패 기록·Bead·git 상태 읽기, 원격 호스트의 읽기 조회(예: 서비스 `status`, 로그 `tail`, `ps`). 금지: 파일·서비스·Worker 큐·Bead·원격 상태를 바꾸는 명령, 실패 단계 재실행·재시도, 잠금 획득. 쓰기는 세션 임시 디렉터리 안에서만 한다.',
+  '   - 실패 대화의 요약에는 관찰한 사실, 원인 추정과 확신 정도, 선택지와 권고를 붙여 묻는다.',
+  '2. 답이 결정을 주면 notes에 `대화 결정: <대화 사유> — 사용자 답: <원문>` 한 줄을 남긴다. Bead 없는 저장소 작업 행이면 이 줄을 건너뛰고 결정은 결과 줄에만 남긴다. 결정을 확인하는 데 필요한 읽기·진단·워크트리 안 로컬 수정·로컬 검증은 이 대화에서 해도 된다.',
   '3. 대화를 끝내는 턴의 마지막 메시지 첫 줄에 결과 줄 하나를 쓴다.',
   '   - `인계 · <결정 한 줄>`: Worker가 이 행을 잇는다. 멈춤이면 이 세션을 무인으로 이어받아 결정의 적용·영수증·해제·발행·push·보고를 하고, 실패면 실패한 단계를 한 번 다시 돌리며(사용자 답이 그 클릭의 권한이다), 외부 작업 완료면 이 세션에서 Worker attempt를 시작한다. 머지 게이트 보류는 사람의 `[머지]`만 풀므로 인계하지 않고 보류로 끝낸다.',
   '   - `인수 · <한 줄>`: 사용자가 이 대화에서 끝까지 가겠다고 명시했을 때만. 그 뒤 이 세션은 대화형 세션 규칙으로 finish까지 간다.',
