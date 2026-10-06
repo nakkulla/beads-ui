@@ -73,6 +73,14 @@ describe('operation card output tail (UI-i8cy §5.2)', () => {
     expect(output).toBe(tail);
   });
 
+  test('keeps the tail of one long line the window cut without a newline', () => {
+    const long_line = `${'a'.repeat(1000)}${'b'.repeat(3000)}`;
+
+    const output = outputTailOf(long_line);
+
+    expect(output).toBe('b'.repeat(TAIL_BYTES));
+  });
+
   test('drops the whole boundary line inside the tail window', () => {
     const content = `${formatBoundaryLine({ event: 'start', attempt_id: 'op-1:1', at: 1 }, false)}npm ERR! boom\n`;
 
