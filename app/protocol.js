@@ -140,7 +140,7 @@ export const SLURM_TERMINAL_STATES = Object.freeze([
  * @typedef {{ job_id: string, name?: string, rule?: string, state?: string, submitted_at?: string, started_at?: string|null, ended_at?: string|null, elapsed_seconds?: number|null, time_limit_seconds?: number|null, unlimited?: boolean, cpus?: number|null, memory?: string, exit_code?: number|null }} SpawnedRowView
  * @typedef {{ total: number, counts: Record<SpawnedClass, number>, rows: SpawnedRowView[], omitted: number }} SpawnedView
  * @typedef {{ reason: string, est_start?: string|null, partition: string, ahead: { jobs: number, cpus: number }, slurm: { cpu_alloc: number, cpu_total: number, mem_alloc_mb: number, mem_total_mb: number }, host?: { name: string, cpus: number, load1: number, mem_available_mb: number }|null, observed_at: string }} CapacityView
- * @typedef {{ state: 'pending'|'unknown', requested_at: string, cpus: number, mem_gb: number, operator?: boolean }} TakeoverMarkerView
+ * @typedef {{ state: 'pending'|'unknown', requested_at: string, cpus: number, mem_gb: number }} TakeoverMarkerView
  * @typedef {{ job_id: string, at: string, cancel_failed: boolean }} TakeoverFromView
  */
 
@@ -364,8 +364,7 @@ function isTakeoverMarker(job) {
     typeof marker.requested_at === 'string' &&
     marker.requested_at.length > 0 &&
     isPositiveCount(marker.cpus) &&
-    isPositiveCount(marker.mem_gb) &&
-    (marker.operator === undefined || typeof marker.operator === 'boolean')
+    isPositiveCount(marker.mem_gb)
   );
 }
 

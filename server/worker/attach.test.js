@@ -620,6 +620,45 @@ describe('external wait check-now attachment seams', () => {
     expect(isExternalWaitObservation(row)).toBe(true);
   });
 
+  test('projects only the contract fields of a takeover marker (UI-qbgj §3.4)', () => {
+    const takeover = {
+      state: 'unknown',
+      requested_at: '2026-10-06T08:00:00.000Z',
+      cpus: 16,
+      mem_gb: 64
+    };
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner: { kind: 'worker', attempt_id: 'attempt-1' },
+      stage: 'detached',
+      budget: { turns_total: 3, turns_used: 3 },
+      registered_at: '2026-10-06T00:00:00Z',
+      next_observation_at: '2026-10-06T00:02:00Z',
+      error_count: 0,
+      last_error: null,
+      completion: null,
+      resume: null,
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '249043',
+          submitted_at: '2026-10-06T00:00:00Z',
+          log_path: '/logs/job.log',
+          state: 'PENDING',
+          takeover: { ...takeover, operator: true },
+          terminal: null
+        }
+      ]
+    });
+
+    const row = attachModule.projectExternalWait(record);
+
+    expect(row.jobs[0].takeover).toEqual(takeover);
+  });
+
   test('omits capacity from a slurm job that has none', () => {
     const record = /** @type {any} */ ({
       wait_id: 'w-0123456789ab',

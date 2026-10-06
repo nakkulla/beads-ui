@@ -22,6 +22,7 @@ import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { TAKEOVER_RATIO_FALLBACK } from '../../data/external-wait-settings-store.js';
 import { errorText } from '../../utils/error-text.js';
+import { formatClockLocal } from '../../utils/relative-time.js';
 
 /** The overcommit warning (UI-qbgj §3.4). */
 export const TAKEOVER_OVERCOMMIT_WARNING =
@@ -112,8 +113,9 @@ export function takeoverOvercommits(capacity, cpus, mem_gb) {
 }
 
 /**
- * The guidance lines: the Slurm allocation, the real headroom, and what the
- * run does to the original job. Lines without material are left out.
+ * The guidance lines: the Slurm allocation, the real headroom, when that
+ * capacity was read, and what the run does to the original job. Lines without
+ * material are left out.
  *
  * @param {TakeoverMaterial} material
  * @param {number|null} cpus
@@ -123,6 +125,7 @@ export function takeoverGuidance(material, cpus) {
   const capacity = material.capacity;
   const slurm = capacity?.slurm;
   const host = capacity?.host;
+  const read_time = formatClockLocal(capacity?.observed_at);
   return [
     slurm
       ? `Slurm 배정 · ${capacity.partition} CPU ${slurm.cpu_alloc}/${slurm.cpu_total} · 메모리 ${Math.floor(slurm.mem_alloc_mb / 1024)}/${Math.floor(slurm.mem_total_mb / 1024)}G`
@@ -130,6 +133,7 @@ export function takeoverGuidance(material, cpus) {
     host
       ? `실제 여유 · ${host.name} CPU ${Math.max(0, Math.floor(host.cpus - host.load1))}/${host.cpus} (부하 ${Math.round(host.load1)}) · 쓸 수 있는 메모리 ${Math.floor(host.mem_available_mb / 1024)}G`
       : '',
+    read_time ? `용량 확인 ${read_time}` : '',
     cpus !== null
       ? `원 Slurm 작업 ${material.job_id}는 취소되고, 워크플로면 하위 단계까지 이 서버에서 ${cpus}코어 안에서 돈다`
       : `원 Slurm 작업 ${material.job_id}는 취소되고, 워크플로면 하위 단계까지 이 서버에서 돈다`

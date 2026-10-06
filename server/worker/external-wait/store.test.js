@@ -337,8 +337,7 @@ test('stores and rereads a takeover marker and a local run', () => {
             state: 'unknown',
             requested_at: '2026-09-21T00:00:00Z',
             cpus: 16,
-            mem_gb: 64,
-            operator: true
+            mem_gb: 64
           }
         }
       ]

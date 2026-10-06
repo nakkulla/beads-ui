@@ -200,9 +200,10 @@ pending Slurm job may also carry the display-only `capacity`:
 (`est_start` and `host` may be `null`; the field is absent once the job leaves
 PENDING). It never affects completion or judgment. While a `▶ 바로 실행` is in
 flight or its outcome is unknown, the Slurm job also carries
-`takeover: {state: 'pending'|'unknown', requested_at, cpus, mem_gb, operator?}`
-(`operator: true` once recovery needs a person). A taken-over job is replaced in
-place by `adapter: 'sjob_local'` carrying `ssh_host`, `local_id`, `pid`, `cpus`,
+`takeover: {state: 'pending'|'unknown', requested_at, cpus, mem_gb}`; a marker
+still present `TAKEOVER_SETTLE_MS` (5 minutes) after `requested_at` is judged
+`takeover_unresolved`. A taken-over job is replaced in place by
+`adapter: 'sjob_local'` carrying `ssh_host`, `local_id`, `pid`, `cpus`,
 `mem_gb`, `takeover_from: {job_id, at, cancel_failed}` and the last Slurm `name`
 and `spawned` (display only). Expected results contain path, existence, size and
 mtime; log and artifact contents are never projected. Cards attach live records

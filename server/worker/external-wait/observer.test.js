@@ -8,6 +8,7 @@ import {
 } from '../../timing-settings.js';
 import { createExternalWaitObserver, mergeSpawned } from './observer.js';
 import { createExternalWaitStore } from './store.js';
+import { TAKEOVER_SETTLE_MS } from './takeover.js';
 
 let workspace = '';
 let time = 0;
@@ -1087,12 +1088,13 @@ describe('takeover marker and local run (UI-qbgj §3.4, §3.5)', () => {
 
   /**
    * @param {'pending'|'unknown'} [state]
+   * @param {number} [age_ms] - How long ago the takeover was requested.
    * @returns {import('./store.js').TakeoverMarker}
    */
-  function marker(state = 'unknown') {
+  function marker(state = 'unknown', age_ms = 60000) {
     return {
       state,
-      requested_at: new Date(time - 60000).toISOString(),
+      requested_at: new Date(time - age_ms).toISOString(),
       cpus: 16,
       mem_gb: 64
     };
@@ -1284,8 +1286,50 @@ describe('takeover marker and local run (UI-qbgj §3.4, §3.5)', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  test('clears the marker and observes normally after no takeover on an unheld job', async () => {
+  test('keeps an unknown marker for no takeover on an unheld job inside the settle window', async () => {
+    const record = insertSlurm([
+      { state: 'PENDING', takeover: marker('pending') }
+    ]);
+    const { observer, run } = sequenceObserver([
+      recoveryStdout(
+        { ok: false, reason: 'no_takeover' },
+        'PENDING|Resources|1000'
+      ),
+      CANCELLED_OUTPUT
+    ]);
+
+    const result = await observer.observeRecord(workspace, record.wait_id);
+
+    expect(result?.jobs[0]).toHaveProperty('takeover', marker('unknown'));
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test('skips terminal recognition for no takeover inside the settle window', async () => {
     const record = insertSlurm([{ state: 'PENDING', takeover: marker() }]);
+    const { observer } = sequenceObserver([
+      recoveryStdout(
+        { ok: false, reason: 'no_takeover' },
+        'PENDING|Resources|1000'
+      ),
+      CANCELLED_OUTPUT
+    ]);
+
+    const result = await observer.observeRecord(workspace, record.wait_id);
+
+    expect(result).toMatchObject({
+      stage: 'detached',
+      completion: null,
+      jobs: [{ state: 'PENDING', terminal: null }]
+    });
+  });
+
+  test('clears the marker and observes normally after a settled no takeover on an unheld job', async () => {
+    const record = insertSlurm([
+      {
+        state: 'PENDING',
+        takeover: marker('unknown', TAKEOVER_SETTLE_MS)
+      }
+    ]);
     const { observer, run } = sequenceObserver([
       recoveryStdout(
         { ok: false, reason: 'no_takeover' },
@@ -1327,9 +1371,10 @@ describe('takeover marker and local run (UI-qbgj §3.4, §3.5)', () => {
     ],
     ['a vanished job', { ok: false, reason: 'no_takeover' }, '']
   ])(
-    'flags operator recovery for %s and keeps the marker',
+    'keeps the marker unknown for an unresolved %s',
     async (_label, saved, queue) => {
-      const record = insertSlurm([{ state: 'PENDING', takeover: marker() }]);
+      const settled = marker('pending', TAKEOVER_SETTLE_MS);
+      const record = insertSlurm([{ state: 'PENDING', takeover: settled }]);
       const { observer, run } = sequenceObserver([
         recoveryStdout(saved, queue),
         CANCELLED_OUTPUT
@@ -1345,10 +1390,13 @@ describe('takeover marker and local run (UI-qbgj §3.4, §3.5)', () => {
           {
             adapter: 'slurm',
             state: 'PENDING',
-            terminal: null,
-            takeover: { ...marker(), operator: true }
+            terminal: null
           }
         ]
+      });
+      expect(result?.jobs[0]).toHaveProperty('takeover', {
+        ...settled,
+        state: 'unknown'
       });
       expect(run).toHaveBeenCalledTimes(1);
     }

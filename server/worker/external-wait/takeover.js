@@ -16,11 +16,14 @@ import { SSH_HOST_RE, remoteShellArgv, shellQuote } from './adapters/slurm.js';
  * @typedef {import('./store.js').Run} Run
  * @typedef {{state:'started'|'done', local_id:string, pid:number, process_start:string, workdir:string, log_path:string, exitcode_path:string, cpus:number, mem_gb:number, slurm_cancel_failed:boolean|null}} TakeoverResult
  * @typedef {{kind:'started', result:TakeoverResult}|{kind:'refused', reason:string, message:string}|{kind:'unknown', reason:string, message:string}} TakeoverOutcome
- * @typedef {{kind:'started', result:TakeoverResult}|{kind:'clear'}|{kind:'operator'}} RecoveryOutcome
+ * @typedef {{kind:'started', result:TakeoverResult}|{kind:'clear'}|{kind:'unresolved'}} RecoveryOutcome
  */
 
 /** Bound of one takeover or recovery ssh in ms (UI-qbgj §3.4 step 5). */
 export const TAKEOVER_TIMEOUT_MS = 60000;
+
+/** The remote takeover can outlive its 60 s ssh but its pre-hold steps are timeout-bounded, so past this window an unheld `no_takeover` read is final (UI-qbgj §3.4). */
+export const TAKEOVER_SETTLE_MS = 5 * 60_000;
 
 // A non-interactive ssh PATH lacks `sjob`; it is installed under ~/.local/bin.
 const SJOB = '"$HOME/.local/bin/sjob"';
@@ -332,8 +335,9 @@ function untouchedByTakeover(line) {
 /**
  * Recover a takeover whose outcome is not known (UI-qbgj §3.4 결과 불명 복구)
  * with one read-only ssh: `started`/`done` replaces the job, `no_takeover`
- * with an untouched original job clears the marker, and a `holding` record or
- * a held, cancelled or vanished original job needs a human. A failed or
+ * with an untouched original job may clear the marker once
+ * {@link TAKEOVER_SETTLE_MS} has passed, and a `holding` record or a held,
+ * cancelled or vanished original job stays `unresolved`. A failed or
  * unreadable read throws, so the observer backs off with the marker kept.
  *
  * @param {SlurmJob} job
@@ -373,7 +377,7 @@ export async function recoverTakeover(job, run) {
     return { kind: 'started', result };
   }
   if (record.state === 'holding') {
-    return { kind: 'operator' };
+    return { kind: 'unresolved' };
   }
   if (record.ok !== false || record.reason !== 'no_takeover') {
     throw new Error('takeover result unavailable');
@@ -387,5 +391,5 @@ export async function recoverTakeover(job, run) {
       .map((entry) => entry.trim())
       .filter(Boolean)
       .at(-1) || '';
-  return untouchedByTakeover(line) ? { kind: 'clear' } : { kind: 'operator' };
+  return untouchedByTakeover(line) ? { kind: 'clear' } : { kind: 'unresolved' };
 }

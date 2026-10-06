@@ -2504,7 +2504,10 @@ export function createDetailPanel(mount_element, options) {
   function externalDetailNotes(record) {
     const several = record.jobs.length > 1;
     return record.jobs.flatMap((job) => {
-      const capacity = externalJobCapacityLines(job).map((text, index) => ({
+      const capacity = externalJobCapacityLines(job, {
+        now: Date.now(),
+        read_time: true
+      }).map((text, index) => ({
         text: several && index === 0 ? `${job.job_id} · ${text}` : text,
         tone: /** @type {const} */ ('muted')
       }));

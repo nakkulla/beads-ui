@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { formatClockLocal } from '../../utils/relative-time.js';
 import { runExternalWaitAction } from './external-wait-action.js';
 import {
   TAKEOVER_OVERCOMMIT_WARNING,
@@ -158,6 +159,14 @@ describe('takeover dialog guidance (UI-qbgj §3.4)', () => {
     ).toContain(
       '원 Slurm 작업 249043는 취소되고, 워크플로면 하위 단계까지 이 서버에서 40코어 안에서 돈다'
     );
+  });
+
+  test('tells when the capacity was read', () => {
+    void openTakeoverDialog(material(), { transport: vi.fn() });
+
+    expect(
+      openDialog().querySelector('.takeover-dialog__guide')?.textContent
+    ).toContain(`용량 확인 ${formatClockLocal('2026-10-06T05:54:00Z')}`);
   });
 });
 

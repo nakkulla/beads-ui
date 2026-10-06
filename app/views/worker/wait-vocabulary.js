@@ -10,6 +10,7 @@ import {
   externalSpawnedClass,
   externalSpawnedCountParts
 } from '../../protocol.js';
+import { formatClockLocal } from '../../utils/relative-time.js';
 
 export {
   SLURM_RUNNING_STATES,
@@ -671,9 +672,10 @@ export function externalJobRows(record, now) {
       const cancel_line = externalCancelUnconfirmedLine(job);
       /** @type {ExternalJobNote[]} */
       const notes = [
-        ...(jobs.length === 1 ? externalJobCapacityLines(job) : []).map(
-          (text) => ({ text, tone: /** @type {const} */ ('muted') })
-        ),
+        ...(jobs.length === 1
+          ? externalJobCapacityLines(job, { now })
+          : []
+        ).map((text) => ({ text, tone: /** @type {const} */ ('muted') })),
         ...(cancel_line
           ? [{ text: cancel_line, tone: /** @type {const} */ ('warn') }]
           : [])
@@ -773,6 +775,13 @@ function formatEstimatedStart(value) {
 }
 
 /**
+ * How far a job observation may run ahead of its capacity read before the
+ * capacity counts as stale: the latest capacity read failed while the job
+ * observation advanced (UI-qbgj §4).
+ */
+export const CAPACITY_STALE_MS = 60_000;
+
+/**
  * The capacity lines of one pending Slurm job (UI-qbgj §3.6): the wait line
  * `대기 사유 <표시어> · 앞 <n>건 · Slurm 예상 <MM/DD HH:mm>` and the allocation
  * line `<partition> CPU <alloc>/<total> 배정 · 실제 부하 <n> · 쓸 수 있는 메모리
@@ -781,10 +790,15 @@ function formatEstimatedStart(value) {
  * `capacity` gives no lines. The card shows them only for a record with one job;
  * the detail panel shows them for every such job.
  *
+ * The read time closes the last line (UI-qbgj §4): the card adds
+ * ` · <HH:mm> 기준` only when the capacity is stale ({@link CAPACITY_STALE_MS}),
+ * and `read_time` (the detail panel) always adds ` · 용량 확인 <HH:mm>`.
+ *
  * @param {import('../../protocol.js').ExternalWaitObservation['jobs'][number]} job
+ * @param {{ now?: number, read_time?: boolean }} [options]
  * @returns {string[]}
  */
-export function externalJobCapacityLines(job) {
+export function externalJobCapacityLines(job, options = {}) {
   const capacity = job?.capacity;
   if (
     !capacity ||
@@ -813,7 +827,22 @@ export function externalJobCapacityLines(job) {
       ? `쓸 수 있는 메모리 ${Math.floor(host.mem_available_mb / 1024)}G`
       : ''
   ].filter(Boolean);
-  return [wait.join(' · '), allocation.join(' · ')].filter(Boolean);
+  const lines = [wait.join(' · '), allocation.join(' · ')].filter(Boolean);
+  const clock = formatClockLocal(capacity.observed_at, options.now);
+  const stale =
+    Date.parse(job.observed_at || '') - Date.parse(capacity.observed_at) >
+    CAPACITY_STALE_MS;
+  const suffix = !clock
+    ? ''
+    : options.read_time
+      ? `용량 확인 ${clock}`
+      : stale
+        ? `${clock} 기준`
+        : '';
+  if (suffix && lines.length > 0) {
+    lines[lines.length - 1] = `${lines[lines.length - 1]} · ${suffix}`;
+  }
+  return lines;
 }
 
 /**

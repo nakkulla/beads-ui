@@ -23,7 +23,7 @@ import {
  * @typedef {{name:string, cpus:number, load1:number, mem_available_mb:number}} CapacityHost
  * @typedef {{reason:string, est_start:string|null, partition:string, ahead:{jobs:number, cpus:number}, slurm:CapacitySlurm, host:CapacityHost|null, observed_at:string}} Capacity - Display-only pending Slurm capacity (UI-qbgj §3.1); `est_start` and `host` are `null` when absent.
  * @typedef {{status:'ok', capacity:Capacity}|{status:'failed'}} CapacityMaterial
- * @typedef {{state:'pending'|'unknown', requested_at:string, cpus:number, mem_gb:number, operator?:boolean}} TakeoverMarker - Persisted takeover progress on a slurm job (UI-qbgj §3.4); `operator` marks a recovery that needs a human.
+ * @typedef {{state:'pending'|'unknown', requested_at:string, cpus:number, mem_gb:number}} TakeoverMarker - Persisted takeover progress on a slurm job (UI-qbgj §3.4).
  * @typedef {JobObservation & {adapter:'slurm', ssh_host:string, job_id:string, submitted_at:string, log_path:string, expected:string[], scheduler_submit_time?:string, name?:string, anchor?:SpawnedAnchor, spawned?:Spawned, capacity?:Capacity, takeover?:TakeoverMarker}} SlurmJob
  * @typedef {JobObservation & {adapter:'process', pid:number, submitted_at:string, workdir:string, log_path:string, expected?:string[], process_start?:string|null}} ProcessJob
  * @typedef {{job_id:string, at:string, cancel_failed:boolean}} TakeoverFrom
@@ -133,9 +133,7 @@ function validJobIdentity(job) {
           TAKEOVER_PROGRESS_STATES.includes(marker.state) &&
           isTimestamp(marker.requested_at) &&
           isPositiveInteger(marker.cpus) &&
-          isPositiveInteger(marker.mem_gb) &&
-          (marker.operator === undefined ||
-            typeof marker.operator === 'boolean')))
+          isPositiveInteger(marker.mem_gb)))
     );
   }
   if (job.adapter === 'sjob_local') {

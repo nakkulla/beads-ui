@@ -7,7 +7,11 @@ import {
 } from './adapters/slurm.js';
 import { completionDigest } from './decision.js';
 import { effectiveObservation, jobIntervalSeconds } from './observation.js';
-import { recoverTakeover, sjobLocalJob } from './takeover.js';
+import {
+  TAKEOVER_SETTLE_MS,
+  recoverTakeover,
+  sjobLocalJob
+} from './takeover.js';
 
 /**
  * @typedef {import('./store.js').WaitRecord} WaitRecord
@@ -356,12 +360,11 @@ export function createExternalWaitObserver({
             replaced = true;
             continue;
           }
-          if (outcome.kind === 'operator') {
-            job.takeover = {
-              ...job.takeover,
-              state: 'unknown',
-              operator: true
-            };
+          // An unheld `no_takeover` read inside the settle window may still
+          // be followed by the remote hold, so only a settled read clears.
+          const age = now() - Date.parse(job.takeover.requested_at);
+          if (outcome.kind === 'unresolved' || age < TAKEOVER_SETTLE_MS) {
+            job.takeover = { ...job.takeover, state: 'unknown' };
             continue;
           }
           delete job.takeover;

@@ -7,6 +7,10 @@ import { afterEach, beforeEach, expect, test } from 'vitest';
 import { observeSjobLocalJob } from './sjob-local.js';
 
 const execFileAsync = promisify(execFile);
+
+// Each test runs the generated program through a real `/bin/sh`, which can
+// exceed the default 5 s under a loaded full-suite run.
+const SHELL_TEST_TIMEOUT_MS = 15000;
 const START = 'Tue Oct  6 17:00:00 2026';
 /** @type {string} */
 let dir;
@@ -86,126 +90,166 @@ function remote({ ps, exitcode, artifact = true }) {
   };
 }
 
-test('reports RUNNING while the saved start identity matches', async () => {
-  const run = remote({ ps: START, exitcode: '0' });
+test(
+  'reports RUNNING while the saved start identity matches',
+  async () => {
+    const run = remote({ ps: START, exitcode: '0' });
 
-  const result = await observeSjobLocalJob(job(), { run });
+    const result = await observeSjobLocalJob(job(), { run });
 
-  expect(result).toEqual({ state: 'RUNNING', terminal: false });
-});
+    expect(result).toEqual({ state: 'RUNNING', terminal: false });
+  },
+  SHELL_TEST_TIMEOUT_MS
+);
 
-test('completes on a zero exitcode once the process is gone', async () => {
-  const run = remote({ ps: 'gone', exitcode: '0\n' });
+test(
+  'completes on a zero exitcode once the process is gone',
+  async () => {
+    const run = remote({ ps: 'gone', exitcode: '0\n' });
 
-  const result = await observeSjobLocalJob(job(), { run });
+    const result = await observeSjobLocalJob(job(), { run });
 
-  expect(result).toEqual({
-    state: 'COMPLETED',
-    terminal: true,
-    exit_code: 0,
-    evidence: 'exitcode',
-    expected_results: [
-      { path: path.join(dir, 'result'), exists: true, size: 12, mtime: 100 }
-    ],
-    recovery_needed: false
-  });
-});
+    expect(result).toEqual({
+      state: 'COMPLETED',
+      terminal: true,
+      exit_code: 0,
+      evidence: 'exitcode',
+      expected_results: [
+        { path: path.join(dir, 'result'), exists: true, size: 12, mtime: 100 }
+      ],
+      recovery_needed: false
+    });
+  },
+  SHELL_TEST_TIMEOUT_MS
+);
 
-test('fails on a nonzero exitcode and asks for recovery', async () => {
-  const run = remote({ ps: 'gone', exitcode: '3' });
+test(
+  'fails on a nonzero exitcode and asks for recovery',
+  async () => {
+    const run = remote({ ps: 'gone', exitcode: '3' });
 
-  const result = await observeSjobLocalJob(job(), { run });
+    const result = await observeSjobLocalJob(job(), { run });
 
-  expect(result).toMatchObject({
-    state: 'FAILED',
-    exit_code: 3,
-    evidence: 'exitcode',
-    recovery_needed: true
-  });
-});
+    expect(result).toMatchObject({
+      state: 'FAILED',
+      exit_code: 3,
+      evidence: 'exitcode',
+      recovery_needed: true
+    });
+  },
+  SHELL_TEST_TIMEOUT_MS
+);
 
-test('vanishes when the process is gone without an exitcode', async () => {
-  const run = remote({ ps: 'gone' });
+test(
+  'vanishes when the process is gone without an exitcode',
+  async () => {
+    const run = remote({ ps: 'gone' });
 
-  const result = await observeSjobLocalJob(job(), { run });
+    const result = await observeSjobLocalJob(job(), { run });
 
-  expect(result).toMatchObject({
-    state: 'VANISHED',
-    terminal: true,
-    exit_code: null,
-    recovery_needed: true
-  });
-});
+    expect(result).toMatchObject({
+      state: 'VANISHED',
+      terminal: true,
+      exit_code: null,
+      recovery_needed: true
+    });
+  },
+  SHELL_TEST_TIMEOUT_MS
+);
 
-test('judges a reused pid by the exitcode', async () => {
-  const run = remote({ ps: 'Wed Oct  7 09:00:00 2026', exitcode: '0' });
+test(
+  'judges a reused pid by the exitcode',
+  async () => {
+    const run = remote({ ps: 'Wed Oct  7 09:00:00 2026', exitcode: '0' });
 
-  const result = await observeSjobLocalJob(job(), { run });
+    const result = await observeSjobLocalJob(job(), { run });
 
-  expect(result).toMatchObject({ state: 'COMPLETED', exit_code: 0 });
-});
+    expect(result).toMatchObject({ state: 'COMPLETED', exit_code: 0 });
+  },
+  SHELL_TEST_TIMEOUT_MS
+);
 
-test('judges an empty saved start by the exitcode alone', async () => {
-  const run = remote({ ps: START, exitcode: '0' });
+test(
+  'judges an empty saved start by the exitcode alone',
+  async () => {
+    const run = remote({ ps: START, exitcode: '0' });
 
-  const result = await observeSjobLocalJob(job({ process_start: '' }), {
-    run
-  });
+    const result = await observeSjobLocalJob(job({ process_start: '' }), {
+      run
+    });
 
-  expect(result).toMatchObject({ state: 'COMPLETED', terminal: true });
-});
+    expect(result).toMatchObject({ state: 'COMPLETED', terminal: true });
+  },
+  SHELL_TEST_TIMEOUT_MS
+);
 
-test('asks for recovery when an expected artifact is missing', async () => {
-  const run = remote({ ps: 'gone', exitcode: '0', artifact: false });
+test(
+  'asks for recovery when an expected artifact is missing',
+  async () => {
+    const run = remote({ ps: 'gone', exitcode: '0', artifact: false });
 
-  const result = await observeSjobLocalJob(job(), { run });
+    const result = await observeSjobLocalJob(job(), { run });
 
-  expect(result).toMatchObject({
-    state: 'COMPLETED',
-    expected_results: [{ exists: false, size: null, mtime: null }],
-    recovery_needed: true
-  });
-});
+    expect(result).toMatchObject({
+      state: 'COMPLETED',
+      expected_results: [{ exists: false, size: null, mtime: null }],
+      recovery_needed: true
+    });
+  },
+  SHELL_TEST_TIMEOUT_MS
+);
 
-test('throws when the ssh call fails', async () => {
-  /** @type {import('../store.js').Run} */
-  const run = async () => ({ code: 255, stdout: '', stderr: 'refused' });
+test(
+  'throws when the ssh call fails',
+  async () => {
+    /** @type {import('../store.js').Run} */
+    const run = async () => ({ code: 255, stdout: '', stderr: 'refused' });
 
-  const observation = observeSjobLocalJob(job(), { run });
+    const observation = observeSjobLocalJob(job(), { run });
 
-  await expect(observation).rejects.toThrow('ssh observation failed');
-});
+    await expect(observation).rejects.toThrow('ssh observation failed');
+  },
+  SHELL_TEST_TIMEOUT_MS
+);
 
-test('throws instead of judging when the process probe fails', async () => {
-  const run = remote({ ps: 'fail' });
+test(
+  'throws instead of judging when the process probe fails',
+  async () => {
+    const run = remote({ ps: 'fail' });
 
-  const observation = observeSjobLocalJob(job(), { run });
+    const observation = observeSjobLocalJob(job(), { run });
 
-  await expect(observation).rejects.toThrow('local process probe failed');
-});
+    await expect(observation).rejects.toThrow('local process probe failed');
+  },
+  SHELL_TEST_TIMEOUT_MS
+);
 
-test('reads the process before the exitcode in one batch-mode ssh', async () => {
-  /** @type {string[][]} */
-  const calls = [];
-  const inner = remote({ ps: START });
-  /** @type {import('../store.js').Run} */
-  const run = async (argv, options) => {
-    calls.push(argv);
-    return inner(argv, options);
-  };
+test(
+  'reads the process before the exitcode in one batch-mode ssh',
+  async () => {
+    /** @type {string[][]} */
+    const calls = [];
+    const inner = remote({ ps: START });
+    /** @type {import('../store.js').Run} */
+    const run = async (argv, options) => {
+      calls.push(argv);
+      return inner(argv, options);
+    };
 
-  await observeSjobLocalJob(job(), { run });
+    await observeSjobLocalJob(job(), { run });
 
-  expect(calls).toHaveLength(1);
-  expect(calls[0].slice(0, 6)).toEqual([
-    'ssh',
-    '-o',
-    'BatchMode=yes',
-    '-o',
-    'ConnectTimeout=10',
-    'wallace'
-  ]);
-  expect(calls[0][6].indexOf('ps -p 4242 -o lstart=')).toBeLessThan(
-    calls[0][6].indexOf('cat --')
-  );
-});
+    expect(calls).toHaveLength(1);
+    expect(calls[0].slice(0, 6)).toEqual([
+      'ssh',
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'ConnectTimeout=10',
+      'wallace'
+    ]);
+    expect(calls[0][6].indexOf('ps -p 4242 -o lstart=')).toBeLessThan(
+      calls[0][6].indexOf('cat --')
+    );
+  },
+  SHELL_TEST_TIMEOUT_MS
+);

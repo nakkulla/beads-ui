@@ -1647,15 +1647,16 @@ describe('external capacity and takeover lines (UI-qbgj §3.6)', () => {
 
   /**
    * @param {any[]} jobs
+   * @param {number} [now]
    */
-  function renderBody(jobs) {
+  function renderBody(jobs, now = NOW) {
     render(
       externalWaitCardParts(
         {
           external_wait: externalWait({ jobs }),
           wait_reasons: [waitReason({ kind: 'external_job' })]
         },
-        NOW
+        now
       ).body,
       mount
     );
@@ -1690,6 +1691,49 @@ describe('external capacity and takeover lines (UI-qbgj §3.6)', () => {
       '대기 사유 Weird · 앞 39건',
       'debug CPU 112/112 배정'
     ]);
+  });
+
+  test('closes the allocation line with the read time of a stale capacity', () => {
+    const local_now = new Date(2026, 8, 21, 10, 30).getTime();
+
+    const notes = renderBody(
+      [
+        slurmJob({
+          state: 'PENDING',
+          observed_at: new Date(2026, 8, 21, 10, 15).toISOString(),
+          capacity: capacity({
+            observed_at: new Date(2026, 8, 21, 10, 0).toISOString()
+          })
+        })
+      ],
+      local_now
+    );
+
+    expect(notes).toEqual([
+      '대기 사유 자원 부족 · 앞 39건 · Slurm 예상 10/08 13:38',
+      'debug CPU 112/112 배정 · 실제 부하 61 · 쓸 수 있는 메모리 902G · 10:00 기준'
+    ]);
+  });
+
+  test('leaves the read time off a capacity read with the job observation', () => {
+    const local_now = new Date(2026, 8, 21, 10, 30).getTime();
+
+    const notes = renderBody(
+      [
+        slurmJob({
+          state: 'PENDING',
+          observed_at: new Date(2026, 8, 21, 10, 15).toISOString(),
+          capacity: capacity({
+            observed_at: new Date(2026, 8, 21, 10, 15).toISOString()
+          })
+        })
+      ],
+      local_now
+    );
+
+    expect(notes[1]).toBe(
+      'debug CPU 112/112 배정 · 실제 부하 61 · 쓸 수 있는 메모리 902G'
+    );
   });
 
   test('leaves the capacity lines off the card with two jobs', () => {

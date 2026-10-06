@@ -219,8 +219,7 @@ describe('protocol', () => {
     state: 'unknown',
     requested_at: '2026-10-06T08:00:00.000Z',
     cpus: 16,
-    mem_gb: 64,
-    operator: true
+    mem_gb: 64
   };
 
   test('accepts a takeover local run (UI-qbgj §3.5)', () => {

@@ -5,6 +5,7 @@ import {
   __setTimingOverridesForTest
 } from '../timing-settings.js';
 import { createWaitJudge, projectExternalWait } from './attach.js';
+import { TAKEOVER_SETTLE_MS } from './external-wait/takeover.js';
 import {
   WAIT_THRESHOLDS,
   conversationVerdict,
@@ -2214,30 +2215,55 @@ describe('wait judgment takeover (UI-qbgj §3.4)', () => {
     ).not.toContain('external_wait_takeover');
   });
 
-  test('asks for the takeover result when recovery needs a person', () => {
-    const result = judged({
-      stage: 'detached',
-      jobs: [
-        pendingJob({
-          takeover: {
-            state: 'unknown',
-            requested_at: new Date(NOW).toISOString(),
-            cpus: 16,
-            mem_gb: 64,
-            operator: true
-          }
-        })
-      ]
-    });
+  test.each(['pending', 'unknown'])(
+    'keeps a %s takeover marker inside the settle window off the action list',
+    (state) => {
+      const result = judged({
+        stage: 'detached',
+        jobs: [
+          pendingJob({
+            takeover: {
+              state,
+              requested_at: new Date(
+                NOW - TAKEOVER_SETTLE_MS + MINUTE
+              ).toISOString(),
+              cpus: 16,
+              mem_gb: 64
+            }
+          })
+        ]
+      });
 
-    expect(result).toMatchObject({
-      verdict: 'action_required',
-      verdict_reason: {
-        code: 'takeover_unresolved',
-        message: '바로 실행 결과 확인 필요(sjob takeover 249043 --result)'
-      }
-    });
-  });
+      expect(result.verdict).not.toBe('action_required');
+    }
+  );
+
+  test.each(['pending', 'unknown'])(
+    'asks for the takeover result once a %s marker outlives the settle window',
+    (state) => {
+      const result = judged({
+        stage: 'detached',
+        jobs: [
+          pendingJob({
+            takeover: {
+              state,
+              requested_at: new Date(NOW - TAKEOVER_SETTLE_MS).toISOString(),
+              cpus: 16,
+              mem_gb: 64
+            }
+          })
+        ]
+      });
+
+      expect(result).toMatchObject({
+        verdict: 'action_required',
+        verdict_reason: {
+          code: 'takeover_unresolved',
+          message: '바로 실행 결과 확인 필요(sjob takeover 249043 --result)'
+        }
+      });
+    }
+  );
 
   test('names a local run by its sjob id in the headline', () => {
     const result = judged({

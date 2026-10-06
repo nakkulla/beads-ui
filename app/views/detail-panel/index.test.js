@@ -3,6 +3,7 @@ import { createExecPresetStore } from '../../data/exec-preset-store.js';
 import { createSessionLogStore } from '../../data/session-log-store.js';
 import { createSubscriptionIssueStores } from '../../data/subscription-issue-stores.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import { formatClockLocal } from '../../utils/relative-time.js';
 import { createDetailPanel } from './index.js';
 
 /**
@@ -185,6 +186,20 @@ function pendingJob(patch = {}) {
 }
 
 describe('external wait detail capacity and local run (UI-qbgj §3.6)', () => {
+  const READ_TIME = formatClockLocal('2026-09-21T03:12:00Z');
+
+  test('shows the read time of a fresh capacity on the detail allocation line', () => {
+    const { mount, panel } = renderExternalDetail({
+      record_patch: { jobs: [pendingJob()] }
+    });
+
+    const notes = Array.from(mount.querySelectorAll('.external-job__note')).map(
+      (note) => (note.textContent || '').trim()
+    );
+    expect(notes[1]).toMatch(/ · 용량 확인 (\d+\/\d+ )?\d\d:\d\d$/);
+    panel.destroy();
+  });
+
   test('draws the capacity lines of every pending job under the job table', () => {
     const { mount, panel } = renderExternalDetail({
       record_patch: {
@@ -198,9 +213,9 @@ describe('external wait detail capacity and local run (UI-qbgj §3.6)', () => {
       )
     ).toEqual([
       '249043 · 대기 사유 자원 부족 · 앞 39건 · Slurm 예상 10/08 13:38',
-      'debug CPU 112/112 배정 · 실제 부하 61 · 쓸 수 있는 메모리 902G',
+      `debug CPU 112/112 배정 · 실제 부하 61 · 쓸 수 있는 메모리 902G · 용량 확인 ${READ_TIME}`,
       '249044 · 대기 사유 자원 부족 · 앞 39건 · Slurm 예상 10/08 13:38',
-      'debug CPU 112/112 배정 · 실제 부하 61 · 쓸 수 있는 메모리 902G'
+      `debug CPU 112/112 배정 · 실제 부하 61 · 쓸 수 있는 메모리 902G · 용량 확인 ${READ_TIME}`
     ]);
     expect(
       mount.querySelector('.detail-external-wait__jobs + .external-job__note')

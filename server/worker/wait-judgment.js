@@ -8,7 +8,10 @@ import {
   effectiveObservation,
   jobIntervalSeconds
 } from './external-wait/observation.js';
-import { takeoverTarget } from './external-wait/takeover.js';
+import {
+  TAKEOVER_SETTLE_MS,
+  takeoverTarget
+} from './external-wait/takeover.js';
 import { isSessionStalledRecovery } from './session-stall.js';
 
 /** All display/notification thresholds live here (UI-n99w §5.2). */
@@ -586,11 +589,15 @@ export function judgeWaitReasons(input) {
     if (row.error_count >= WAIT_THRESHOLDS.observation_errors) {
       judge(result, 'overdue', 'observe_failing');
     }
-    // A takeover whose recovery found a holding record, or a held, cancelled
-    // or vanished original job, waits for a person (UI-qbgj §3.4).
+    // A marker that outlives the settle window means recovery found a state
+    // that needs a person or could not read the outcome (UI-qbgj §3.4).
     const unresolved = ['hold', 'detached'].includes(row.stage)
       ? jobs.find(
-          (job) => job.adapter === 'slurm' && job.takeover?.operator === true
+          (job) =>
+            job.adapter === 'slurm' &&
+            !!job.takeover &&
+            // An unparseable request time counts as settled, as in recovery.
+            !(now - Date.parse(job.takeover.requested_at) < TAKEOVER_SETTLE_MS)
         )
       : undefined;
     if (unresolved) {

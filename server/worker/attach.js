@@ -178,7 +178,14 @@ export function projectExternalWait(record) {
         : {}),
       // Takeover progress marker (UI-qbgj §3.4).
       ...(job.adapter === 'slurm' && job.takeover !== undefined
-        ? { takeover: job.takeover }
+        ? {
+            takeover: {
+              state: job.takeover.state,
+              requested_at: job.takeover.requested_at,
+              cpus: job.takeover.cpus,
+              mem_gb: job.takeover.mem_gb
+            }
+          }
         : {}),
       terminal: job.terminal
         ? {
