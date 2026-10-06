@@ -18,6 +18,7 @@ import {
   repairHandoffDescription
 } from './operation-recovery.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
+import { stripBoundaryLines } from './repo-operation-log.js';
 import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
@@ -219,13 +220,17 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * The success-path `log_digest`. Same input as {@link logEvidence}'s digest —
+   * the script's bytes without the runner's boundary lines (UI-i8cy §5.2) — so
+   * the one record field means one thing whichever way the run settled.
+   *
    * @param {string} file
    */
   function fileSha256(file) {
     try {
       return crypto
         .createHash('sha256')
-        .update(fs.readFileSync(file))
+        .update(stripBoundaryLines(fs.readFileSync(file)))
         .digest('hex');
     } catch {
       return null;
@@ -245,6 +250,11 @@ export function createRepoOperationCoordinator(deps) {
    * that line outside any tail. Scanning from the front is also what makes the
    * "last non-empty line" fallback mean what it says.
    *
+   * Both are computed over the SCRIPT'S bytes only: the runner's attempt
+   * boundary lines are stripped first (UI-i8cy §5.2), so the same output yields
+   * the same digest and summary it did before those lines existed, and an end
+   * line never takes the "last non-empty line" fallback.
+   *
    * @param {string} file
    * @returns {{ digest: string|null, summary: string|null }}
    */
@@ -252,7 +262,7 @@ export function createRepoOperationCoordinator(deps) {
     /** @type {Buffer} */
     let raw;
     try {
-      raw = fs.readFileSync(file);
+      raw = stripBoundaryLines(fs.readFileSync(file));
     } catch {
       return { digest: null, summary: null };
     }

@@ -287,12 +287,14 @@ function stateWordOf(event) {
  *
  * A row may ask for `copy`, which renders its value as a `<code>` path with the
  * copy control beside it. Rows with an empty value drop out first, so `copy`
- * never produces a control with nothing behind it.
+ * never produces a control with nothing behind it. A `copy` row that also
+ * carries `log` material draws `[로그 보기]` instead of the inline path
+ * (UI-i8cy §5.5); the row keeps its `로그` name.
  *
  * `open` is intentionally unbound, leaving it DOM state, so an expanded block
  * survives every snapshot re-render.
  *
- * @param {Array<{ term: string, value: string, copy?: boolean }>} rows
+ * @param {Array<{ term: string, value: string, copy?: boolean, log?: import('./log-path.js').LogViewMaterial }>} rows
  * @returns {TemplateResult|string}
  */
 function detailsTemplate(rows) {
@@ -305,7 +307,7 @@ function detailsTemplate(rows) {
     <dl class="worker-ev__kv">
       ${kept.map((row) => {
         const value =
-          row.copy === true ? logPathTemplate(row.value) : row.value;
+          row.copy === true ? logPathTemplate(row.value, row.log) : row.value;
         return html`<div>
           <dt>${row.term}</dt>
           <dd>${value}</dd>
@@ -426,14 +428,31 @@ function operationActionsTemplate(operation) {
 }
 
 /**
+ * The popup material of one record's log (UI-i8cy §5.5), or undefined when the
+ * drawer does not know its workspace — the row then keeps the plain path.
+ *
+ * @param {string} repo - The drawer's workspace path.
+ * @param {'operation'|'cleanup'} source
+ * @param {unknown} id
+ * @returns {import('./log-path.js').LogViewMaterial|undefined}
+ */
+function logMaterial(repo, source, id) {
+  if (!repo || typeof id !== 'string' || id.length === 0) {
+    return undefined;
+  }
+  return { workspace: repo, source, id };
+}
+
+/**
  * One repo-operation event.
  *
  * @param {any} event
  * @param {any} [repo_ops] - The snapshot's `workspace_info.repo_ops`, the only
  * place a lane's declared timeout exists.
+ * @param {string} [repo] - The drawer's workspace path; names the log's record.
  * @returns {TemplateResult}
  */
-function operationEventTemplate(event, repo_ops) {
+function operationEventTemplate(event, repo_ops, repo = '') {
   const operation = event.operation;
   const failed = operation.state === 'failed';
   const code = operation.failure ? operation.failure.code : '';
@@ -498,7 +517,12 @@ function operationEventTemplate(event, repo_ops) {
             .filter(Boolean)
             .join(' · ')
         },
-        { term: '로그', value: operation.log_path || '', copy: true },
+        {
+          term: '로그',
+          value: operation.log_path || '',
+          copy: true,
+          log: logMaterial(repo, 'operation', operation.operation_id)
+        },
         { term: '출력', value: operation.output_tail || '' }
       ])}
     </div>
@@ -521,9 +545,10 @@ function operationEventTemplate(event, repo_ops) {
  * button (fail-quiet).
  *
  * @param {any} event
+ * @param {string} [repo] - The drawer's workspace path; names the log's record.
  * @returns {TemplateResult}
  */
-function cleanupEventTemplate(event) {
+function cleanupEventTemplate(event, repo = '') {
   const cleanup = event.cleanup;
   const step_label = cleanupStepLabel(cleanup.step);
   const pair = cleanup.pair || {};
@@ -595,7 +620,12 @@ function cleanupEventTemplate(event) {
       ${detailsTemplate([
         { term: '실패 코드', value: cleanup.reason || '' },
         { term: '진단', value: cleanup.detail || '' },
-        { term: '로그', value: cleanup.log_path || '', copy: true },
+        {
+          term: '로그',
+          value: cleanup.log_path || '',
+          copy: true,
+          log: logMaterial(repo, 'cleanup', cleanup.bead_id)
+        },
         { term: '출력', value: cleanup.output_tail || '' }
       ])}
     </div>
@@ -630,8 +660,8 @@ export function repoOpsTimelineTemplate(model) {
       : html`<ul class="worker-rail">
           ${model.events.map((event) =>
             event.type === 'cleanup'
-              ? cleanupEventTemplate(event)
-              : operationEventTemplate(event, model.repo_ops)
+              ? cleanupEventTemplate(event, model.repo)
+              : operationEventTemplate(event, model.repo_ops, model.repo)
           )}
         </ul>`}
     ${hidden > 0 || expanded

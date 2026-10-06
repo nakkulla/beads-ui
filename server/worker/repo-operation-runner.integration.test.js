@@ -7,6 +7,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
+import {
+  parseRepoOperationLog,
+  scanBoundaryLines,
+  stripBoundaryLines
+} from './repo-operation-log.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { repoOperationMarkerPath } from './state-paths.js';
 
@@ -108,7 +113,11 @@ describe('RepoOperation runner', () => {
     await eventually(() =>
       expect(runner.readMarker(root, 'op', 'one')?.exit_code).toBe(0)
     );
-    const log = fs.readFileSync(started.log_path, 'utf8');
+    // The runner's attempt boundary lines (UI-i8cy §5.1) frame the script
+    // output; what the script itself printed is the log without them.
+    const log = stripBoundaryLines(fs.readFileSync(started.log_path)).toString(
+      'utf8'
+    );
     const environment = JSON.parse(log.split('\n')[0]);
     expect(
       Object.keys(environment)
@@ -275,6 +284,156 @@ describe('RepoOperation runner', () => {
       state: 'succeeded',
       exit_code: 0
     });
+  });
+
+  test('frames two runs of one operation with two start/end pairs in order', async () => {
+    const script = path.join(root, 'twice.js');
+    fs.writeFileSync(
+      script,
+      '#!/usr/bin/env node\nconsole.log("run");\nprocess.exitCode = 1;\n'
+    );
+    fs.chmodSync(script, 0o755);
+    const runner = createRepoOperationRunner({
+      processController: {
+        capture: () => ({
+          ok: true,
+          identity: { pid: 1, pgid: 1, started_at: 1 }
+        }),
+        probe: () => ({ state: 'owned' }),
+        signal: () => ({ ok: true, state: 'owned' }),
+        terminate: async () => ({ ok: true, state: 'gone', forced: false })
+      }
+    });
+    /** @type {string} */
+    let log_path = '';
+    for (const attempt_id of ['op-twice:1', 'op-twice:2']) {
+      const started = await runner.start({
+        workspace: root,
+        operation_id: 'op-twice',
+        attempt_id,
+        script_path: script,
+        cwd: root,
+        target_sha: 'a'.repeat(40),
+        target_base: 'main',
+        timeout_ms: SCRIPT_BUDGET_MS
+      });
+      if (started.ok && typeof started.log_path === 'string') {
+        log_path = started.log_path;
+      }
+      await eventually(() =>
+        expect(runner.readMarker(root, 'op-twice', attempt_id)?.exit_code).toBe(
+          1
+        )
+      );
+    }
+
+    const boundaries = scanBoundaryLines(fs.readFileSync(log_path));
+
+    expect(
+      boundaries.map((entry) => [entry.event, entry.payload.attempt_id])
+    ).toEqual([
+      ['start', 'op-twice:1'],
+      ['end', 'op-twice:1'],
+      ['start', 'op-twice:2'],
+      ['end', 'op-twice:2']
+    ]);
+    expect(
+      parseRepoOperationLog(fs.readFileSync(log_path)).attempts.map(
+        (attempt) => [attempt.exit_code, attempt.lines]
+      )
+    ).toEqual([
+      [1, ['run']],
+      [1, ['run']]
+    ]);
+  });
+
+  test('marks an end line sep after output that ended without a newline', async () => {
+    const script = path.join(root, 'no-newline.js');
+    fs.writeFileSync(
+      script,
+      '#!/usr/bin/env node\nprocess.stdout.write("unterminated");\n'
+    );
+    fs.chmodSync(script, 0o755);
+    const runner = createRepoOperationRunner({
+      processController: {
+        capture: () => ({
+          ok: true,
+          identity: { pid: 1, pgid: 1, started_at: 1 }
+        }),
+        probe: () => ({ state: 'owned' }),
+        signal: () => ({ ok: true, state: 'owned' }),
+        terminate: async () => ({ ok: true, state: 'gone', forced: false })
+      }
+    });
+    const started = await runner.start({
+      workspace: root,
+      operation_id: 'op-sep',
+      attempt_id: 'one',
+      script_path: script,
+      cwd: root,
+      target_sha: 'a'.repeat(40),
+      target_base: 'main',
+      timeout_ms: SCRIPT_BUDGET_MS
+    });
+    if (!started.ok || typeof started.log_path !== 'string') {
+      throw new Error('runner did not start');
+    }
+    await eventually(() =>
+      expect(runner.readMarker(root, 'op-sep', 'one')?.exit_code).toBe(0)
+    );
+
+    const bytes = fs.readFileSync(started.log_path);
+    const end_line = scanBoundaryLines(bytes).find(
+      (entry) => entry.event === 'end'
+    );
+
+    expect(end_line?.payload.sep).toBe(true);
+    expect(stripBoundaryLines(bytes).toString('utf8')).toBe('unterminated');
+  });
+
+  test('records timed_out on the end line of a killed script', async () => {
+    const script = path.join(root, 'slow-boundary.js');
+    fs.writeFileSync(
+      script,
+      '#!/usr/bin/env node\nsetTimeout(() => {}, 10000);\n'
+    );
+    fs.chmodSync(script, 0o755);
+    const runner = createRepoOperationRunner({
+      processController: {
+        capture: () => ({
+          ok: true,
+          identity: { pid: 1, pgid: 1, started_at: 1 }
+        }),
+        probe: () => ({ state: 'owned' }),
+        signal: () => ({ ok: true, state: 'owned' }),
+        terminate: async () => ({ ok: true, state: 'gone', forced: false })
+      }
+    });
+    const started = await runner.start({
+      workspace: root,
+      operation_id: 'op-slow-boundary',
+      attempt_id: 'one',
+      script_path: script,
+      cwd: root,
+      target_sha: 'a'.repeat(40),
+      target_base: 'main',
+      timeout_ms: 200
+    });
+    if (!started.ok || typeof started.log_path !== 'string') {
+      throw new Error('runner did not start');
+    }
+    await eventually(() =>
+      expect(
+        runner.readMarker(root, 'op-slow-boundary', 'one')?.exit_code
+      ).toBe(124)
+    );
+
+    const attempts = parseRepoOperationLog(
+      fs.readFileSync(started.log_path)
+    ).attempts;
+
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ exit_code: 124, timed_out: true });
   });
 
   test('does not read a stale marker from another attempt', () => {

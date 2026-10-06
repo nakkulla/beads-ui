@@ -1578,6 +1578,21 @@ export function prWaitRowsOf(input) {
       };
       return {
         ...row,
+        // 완료 실패 로그의 팝업 재료 (UI-i8cy §5.5): 서버가 같은 고르기 함수로
+        // 경로를 다시 찾으므로 요청은 저장소·출처·루트 id만 싣는다. 두 탭이 이
+        // 공유 투영에서 같은 재료를 얻고, 경로가 없으면 재료도 없다.
+        ...(typeof row.log_path === 'string' &&
+        row.log_path.length > 0 &&
+        typeof root_dir === 'string' &&
+        root_dir.length > 0
+          ? {
+              log_view: {
+                workspace: root_dir,
+                source: /** @type {const} */ ('completion'),
+                id: e.bead_id
+              }
+            }
+          : {}),
         ...prWaitLaneOriginFields(e, last_impl_by_bead),
         // 우선순위·타입·라벨 필터의 흐림 판정은 레인 모델이 소유한다 (UI-p7s2
         // §6). PR 대기 행은 행 투영이 새로 만드는 객체라 그 키를 여기서 옮겨

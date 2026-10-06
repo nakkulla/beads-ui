@@ -126,6 +126,7 @@ import {
 } from './provider-resume-dialog.js';
 import { deriveWorkerBlockers } from './queue-blockers.js';
 import { deriveWorkerOverlaps } from './queue-overlaps.js';
+import { createRepoOpsLogViewer } from './repo-ops-log-viewer.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
@@ -890,6 +891,10 @@ export function createWorkerView(mount_element, options = {}) {
   let script_viewer_workspace = getWorkspacePath
     ? getWorkspacePath() || ''
     : '';
+  // The one log popup of this tab (UI-i8cy §5.5): every `[로그 보기]` — a
+  // timeline `세부` row or a PR 대기 row — opens it through the delegated click
+  // below. Like the script popup it owns a `document.body` mount.
+  const repo_ops_log_viewer = createRepoOpsLogViewer();
 
   // Operational repo-op controls stay INLINE on the Worker screen (spec 비-목표):
   // the verify/deploy declaration and the pinned automation policy are not
@@ -3371,6 +3376,15 @@ export function createWorkerView(mount_element, options = {}) {
     if (target.closest('a.interactive-session-discord')) {
       return;
     }
+    // `[로그 보기]` consumes its own click (UI-i8cy §5.5) before any row or
+    // drawer branch reads it as "open the issue".
+    const log_view = /** @type {HTMLElement|null} */ (
+      target.closest('[data-seam="log-view-open"]')
+    );
+    if (log_view) {
+      repo_ops_log_viewer.openFrom(log_view);
+      return;
+    }
     const interactive_badge = target.closest(
       'button.interactive-session-badge'
     );
@@ -4226,6 +4240,7 @@ export function createWorkerView(mount_element, options = {}) {
         if (current_workspace !== script_viewer_workspace) {
           script_viewer_workspace = current_workspace;
           repo_ops_script_viewer.close();
+          repo_ops_log_viewer.close();
           issue_search.reset();
         }
         doRender();
@@ -4274,6 +4289,11 @@ export function createWorkerView(mount_element, options = {}) {
       drawer_overlay_el.hidden = true;
       try {
         repo_ops_script_viewer.destroy();
+      } catch {
+        /* ignore */
+      }
+      try {
+        repo_ops_log_viewer.destroy();
       } catch {
         /* ignore */
       }

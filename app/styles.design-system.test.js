@@ -33,6 +33,7 @@ import {
   providerResumeDialogTemplate,
   providerResumeDraft
 } from './views/worker/provider-resume-dialog.js';
+import { createRepoOpsLogViewer } from './views/worker/repo-ops-log-viewer.js';
 import { createRepoOpsScriptViewer } from './views/worker/repo-ops-script-viewer.js';
 import {
   repoOpsTimelineTemplate,
@@ -1642,8 +1643,61 @@ describe('drawers and the script viewer use parts (§3.4 check 3)', () => {
     );
 
     expect(mount.querySelector('.worker-ev__copy')).not.toBeNull();
+    expect(mount.querySelectorAll('[data-seam="log-view-open"]').length).toBe(
+      2
+    );
     expect(mount.querySelectorAll('button').length).toBeGreaterThan(5);
     expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the repo-ops log viewer controls with a part', async () => {
+    const viewer = createRepoOpsLogViewer({
+      fetchImpl: /** @type {any} */ (
+        vi.fn(async () => ({
+          ok: true,
+          json: async () => ({
+            ok: true,
+            path: '/state/repo-operation-logs/op-1.log',
+            total_bytes: 10,
+            truncated_bytes: 0,
+            running: false,
+            summary: null,
+            preamble: [],
+            attempts: [
+              {
+                attempt_id: 'op-1:1',
+                started_at: 1,
+                finished_at: 2,
+                exit_code: 1,
+                signal: null,
+                timed_out: false,
+                lines: ['one']
+              },
+              {
+                attempt_id: 'op-1:1',
+                started_at: 3,
+                finished_at: 4,
+                exit_code: 1,
+                signal: null,
+                timed_out: false,
+                lines: ['two']
+              }
+            ]
+          })
+        }))
+      )
+    });
+
+    await viewer.open(
+      { workspace: '/repo', source: 'operation', id: 'op-1' },
+      document.body
+    );
+
+    expect(
+      document.querySelectorAll('.repo-ops-log-viewer button').length
+    ).toBe(2);
+    expect(controlsWithoutPart(document.body)).toEqual([]);
+    viewer.destroy();
   });
 
   test('draws the repo-ops script viewer controls with a part', async () => {

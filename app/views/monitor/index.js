@@ -105,6 +105,7 @@ import {
   providerResumeOverride,
   showProviderResumeDialog
 } from '../worker/provider-resume-dialog.js';
+import { createRepoOpsLogViewer } from '../worker/repo-ops-log-viewer.js';
 import { createRepoOpsDrawer } from '../worker/repo-ops-timeline.js';
 import {
   drawsRunningTile,
@@ -708,6 +709,10 @@ export function createMonitorView(mount_element, options) {
    * @type {string|null}
    */
   let repo_ops_root = null;
+  // 이 탭의 로그 팝업 하나 (UI-i8cy §5.5): 타임라인 `세부`와 PR 대기 행의
+  // `[로그 보기]`가 아래 위임 클릭으로 연다. 요청은 버튼이 실은 저장소를 쓰므로
+  // 모니터처럼 여러 저장소가 섞인 화면에서도 그 행의 저장소를 읽는다.
+  const repo_ops_log_viewer = createRepoOpsLogViewer();
   // Session-ephemeral like the Worker tab's (§4.1): a drawer that reopened itself
   // on every reload would be the forced expansion the redesign removed.
   const repo_ops_drawer = createRepoOpsDrawer(repo_ops_drawer_el, {
@@ -3214,6 +3219,16 @@ export function createMonitorView(mount_element, options) {
     if (!target || typeof target.closest !== 'function') {
       return;
     }
+    // `[로그 보기]`는 자기 클릭만 쓴다 (UI-i8cy §5.5): 서랍 분기와 행 버튼
+    // 분기(`runRowAction`)보다 먼저 잡아야 행 열기로 흐르지 않는다.
+    const log_view = /** @type {HTMLElement|null} */ (
+      target.closest('[data-seam="log-view-open"]')
+    );
+    if (log_view) {
+      ev.preventDefault();
+      repo_ops_log_viewer.openFrom(log_view);
+      return;
+    }
     // 복구 선택기의 두 조작은 아래 `dialog` 가드보다 먼저 잡는다 — 가드가
     // 먼저 걸리면 다이얼로그 안의 클릭이 전부 무시된다 (Worker `onClick`과 같은
     // 순서).
@@ -3810,6 +3825,7 @@ export function createMonitorView(mount_element, options) {
         unsubscribe_viewport = null;
       }
       drawer.destroy();
+      repo_ops_log_viewer.destroy();
       drawer_overlay_el.hidden = true;
       deck?.destroy();
       deck = null;
