@@ -139,7 +139,7 @@ export const SLURM_TERMINAL_STATES = Object.freeze([
  * @typedef {{ name?: string, rule?: string }} NamedJob
  * @typedef {{ job_id: string, name?: string, rule?: string, state?: string, submitted_at?: string, started_at?: string|null, ended_at?: string|null, elapsed_seconds?: number|null, time_limit_seconds?: number|null, unlimited?: boolean, cpus?: number|null, memory?: string, exit_code?: number|null }} SpawnedRowView
  * @typedef {{ total: number, counts: Record<SpawnedClass, number>, rows: SpawnedRowView[], omitted: number }} SpawnedView
- * @typedef {{ reason: string, est_start?: string|null, partition: string, ahead: { jobs: number, cpus: number }, slurm: { cpu_alloc: number, cpu_total: number, mem_alloc_mb: number, mem_total_mb: number }, host?: { name: string, cpus: number, load1: number, mem_available_mb: number }|null, observed_at: string }} CapacityView
+ * @typedef {{ reason: string, est_start?: string|null, partition: string, ahead: { jobs: number, cpus: number }, slurm: { cpu_alloc: number, cpu_total: number, mem_alloc_mb: number, mem_total_mb: number }, host?: { name: string, cpus: number, load1: number, mem_available_mb: number }|null, observed_at: string, takeover_blocker?:'no_launch_record'|'workflow_local_profile_missing' }} CapacityView
  * @typedef {{ state: 'pending'|'unknown', requested_at: string, cpus: number, mem_gb: number }} TakeoverMarkerView
  * @typedef {{ job_id: string, at: string, cancel_failed: boolean }} TakeoverFromView
  */
@@ -432,6 +432,9 @@ function isCapacityField(job) {
     typeof capacity.partition === 'string' &&
     capacity.partition.length > 0 &&
     typeof capacity.observed_at === 'string' &&
+    (capacity.takeover_blocker === undefined ||
+      capacity.takeover_blocker === 'no_launch_record' ||
+      capacity.takeover_blocker === 'workflow_local_profile_missing') &&
     !!ahead &&
     typeof ahead === 'object' &&
     isCount(ahead.jobs) &&

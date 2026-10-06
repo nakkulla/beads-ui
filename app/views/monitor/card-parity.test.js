@@ -448,10 +448,14 @@ function externalWaitRecord() {
  * it against the raw queue.
  *
  * @param {Record<string, any>} raw_queue
+ * @param {import('../../protocol.js').CapacityView['takeover_blocker']} [takeover_blocker]
  */
-function seedExternalWait(raw_queue) {
+function seedExternalWait(raw_queue, takeover_blocker) {
   vi.mocked(workerWaitState).mockImplementation((root) => {
     const external_waits = root === WS ? [externalWaitRecord()] : [];
+    if (takeover_blocker && external_waits.length > 0) {
+      external_waits[0].jobs[0].capacity.takeover_blocker = takeover_blocker;
+    }
     const judged = judgeWaitReasons(
       /** @type {any} */ ({
         root_dir: root,
@@ -657,14 +661,15 @@ function mountMonitor(mount, raw_queue) {
 /**
  * Both tabs, drawn from the one raw state.
  *
+ * @param {import('../../protocol.js').CapacityView['takeover_blocker']} [takeover_blocker]
  * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
  */
-async function drawBothTabs() {
+async function drawBothTabs(takeover_blocker) {
   stubBd();
   seedPrObservations();
   await warmServerCaches();
   const raw_queue = rawQueue();
-  seedExternalWait(raw_queue);
+  seedExternalWait(raw_queue, takeover_blocker);
   const queue_snapshot = decorateQueue(WS, raw_queue);
   const worker = document.createElement('div');
   const monitor = document.createElement('div');
@@ -850,6 +855,35 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
       ).toBe('▶ 바로 실행');
     }
   });
+
+  test.each(
+    /** @type {const} */ ([
+      'no_launch_record',
+      'workflow_local_profile_missing'
+    ])
+  )(
+    'replaces run-now with the same %s explanation on both tabs',
+    async (takeover_blocker) => {
+      const { worker, monitor } = await drawBothTabs(takeover_blocker);
+
+      const worker_card = /** @type {HTMLElement} */ (
+        cardsByBead(worker).get('E-1')
+      );
+      const monitor_card = /** @type {HTMLElement} */ (
+        cardsByBead(monitor).get('E-1')
+      );
+
+      expect(partsOf(monitor_card)).toEqual(partsOf(worker_card));
+      for (const card of [worker_card, monitor_card]) {
+        const notes = card.querySelectorAll('.external-job__note');
+        expect(notes).toHaveLength(3);
+        expect(notes[2].textContent).toContain('바로 실행 불가 ·');
+        expect(
+          card.querySelector('[data-external-wait-op="external_wait_takeover"]')
+        ).toBeNull();
+      }
+    }
+  );
 
   test('stands an issue closed outside the Worker only in the Worker done lane', async () => {
     const { worker, monitor } = await drawBothTabs();

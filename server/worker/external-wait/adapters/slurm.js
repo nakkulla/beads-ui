@@ -248,6 +248,42 @@ const CAPACITY_JOB_AWK = String.raw`
 }
 END { print v["Reason"] "|" v["StartTime"] "|" v["Partition"] "|" v["Priority"] "|" v["SubmitTime"] }`;
 
+// sjob's prerequisites are read in the same order without invoking takeover.
+// A failed read is distinct from an absent file and preserves the last material.
+const TAKEOVER_PREFLIGHT_PY = String.raw`
+import json, os, re, stat, sys
+from pathlib import Path
+
+def preflight():
+    fields = dict(re.findall(r'(\w+)=(.*?)(?=\s+\w+=|$)', sys.stdin.read().strip()))
+    command = fields.get('Command')
+    if not command or command == '(null)':
+        return 'no_launch_record'
+    try:
+        launch = json.loads(Path(command + '.launch.json').read_text())
+    except FileNotFoundError:
+        return 'no_launch_record'
+    for key in ('script_path', 'cwd'):
+        if not isinstance(launch[key], str) or not os.path.isabs(launch[key]):
+            raise ValueError(key)
+    if not isinstance(launch['workflow'], bool):
+        raise ValueError('workflow')
+    cwd = Path(launch['cwd'])
+    if launch['workflow'] or Path(launch['script_path']) == cwd / 'scripts/run_workflow.sh':
+        try:
+            profile = (cwd / 'profiles/server-local/config.yaml').stat()
+        except FileNotFoundError:
+            return 'workflow_local_profile_missing'
+        if not stat.S_ISREG(profile.st_mode):
+            return 'workflow_local_profile_missing'
+    return 'ready'
+
+try:
+    print(preflight())
+except (OSError, ValueError, KeyError, TypeError):
+    sys.exit(1)
+`;
+
 // Rows `id|priority|submit|reason|cpus` of the partition's pending jobs, array
 // tasks expanded. Earlier means higher priority, or equal priority submitted
 // first; held, dependent and deferred jobs cannot run next and are not counted.
@@ -307,6 +343,8 @@ function capacityScript(job) {
     '__ewm_cap_ok=1',
     "__ewm_cj=''",
     `if [ "$__ewm_ctl_rc" -eq 0 ]; then __ewm_cj=$(printf '%s\\n' "$__ewm_ctl" | awk ${shellQuote(CAPACITY_JOB_AWK)}); else __ewm_cap_ok=0; fi`,
+    "__ewm_cap_takeover=''",
+    `if [ "$__ewm_cap_ok" -eq 1 ]; then __ewm_cap_takeover=$(printf '%s\\n' "$__ewm_ctl" | ${to} python3 -c ${shellQuote(TAKEOVER_PREFLIGHT_PY)}) || __ewm_cap_ok=0; fi`,
     `__ewm_cap_reason=$(printf '%s\\n' "$__ewm_cj" | cut -d '|' -f 1)`,
     `__ewm_cap_part=$(printf '%s\\n' "$__ewm_cj" | cut -d '|' -f 3)`,
     `__ewm_cap_prio=$(printf '%s\\n' "$__ewm_cj" | cut -d '|' -f 4)`,
@@ -333,6 +371,7 @@ function capacityScript(job) {
     `printf '__EWM_CAP_NOW__=%s\\n' "$(date +%Y-%m-%dT%H:%M:%S)"`,
     'if [ "$__ewm_cap_ok" -eq 1 ]; then',
     `printf '__EWM_CAP_JOB__=%s\\n__EWM_CAP_AHEAD__=%s\\n__EWM_CAP_SLURM__=%s\\n' "$__ewm_cj" "$__ewm_cap_ahead" "$__ewm_cap_slurm"`,
+    `printf '__EWM_CAP_TAKEOVER__=%s\\n' "$__ewm_cap_takeover"`,
     `if [ -n "$__ewm_cap_host" ]; then printf '__EWM_CAP_HOST__=%s\\n' "$__ewm_cap_host"; fi`,
     'fi',
     `printf '__EWM_CAP_OK__=%s\\n' "$__ewm_cap_ok"`,
@@ -731,6 +770,7 @@ function parseCapacity(text, observed_at) {
     const ahead = /^(\d+)\|(\d+)$/.exec(value('AHEAD') || '');
     const slurm = /^(\d+)\|(\d+)\|(\d+)\|(\d+)$/.exec(value('SLURM') || '');
     const host_line = value('HOST');
+    const takeover = value('TAKEOVER');
     const host =
       host_line === null
         ? null
@@ -742,6 +782,9 @@ function parseCapacity(text, observed_at) {
       !job[2] ||
       !ahead ||
       !slurm ||
+      (takeover !== 'ready' &&
+        takeover !== 'no_launch_record' &&
+        takeover !== 'workflow_local_profile_missing') ||
       (host_line !== null && !host)
     ) {
       return { status: 'failed' };
@@ -775,7 +818,11 @@ function parseCapacity(text, observed_at) {
               mem_available_mb: Number(host[4])
             }
           : null,
-        observed_at
+        observed_at,
+        ...(takeover === 'no_launch_record' ||
+        takeover === 'workflow_local_profile_missing'
+          ? { takeover_blocker: takeover }
+          : {})
       }
     };
   } catch {

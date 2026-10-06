@@ -522,7 +522,7 @@ function queueLine({
 }
 
 /**
- * @typedef {{queue?: string[], queue_rc?: number, completion?: string[], config?: string|null, readable?: boolean, context?: import('./slurm.js').SpawnedContext, job?: Partial<import('../store.js').SlurmJob>, control?: string, tools?: Record<string, string>}} ProgramOptions
+ * @typedef {{queue?: string[], queue_rc?: number, completion?: string[], config?: string|null, readable?: boolean, context?: import('./slurm.js').SpawnedContext, job?: Partial<import('../store.js').SlurmJob>, control?: string, tools?: Record<string, string>, prepare?:(dir:string)=>void}} ProgramOptions
  */
 
 /**
@@ -540,13 +540,17 @@ async function runObservation({
   context = {},
   job = {},
   control = `JobId=123 JobName=snake__20260921_090000_ab12\n   UserId=alice(1001) GroupId=g(1001)\n   JobState=RUNNING Reason=None\n   RunTime=01:00:00 TimeLimit=1-00:00:00\n   StartTime=${START} EndTime=2026-09-22T09:00:00\n   WorkDir=/work`,
-  tools = {}
+  tools = {},
+  prepare
 }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'external-wait-spawn-'));
   const completion_path = path.join(dir, 'jobcomp.log');
   fs.writeFileSync(path.join(dir, 'queue.txt'), queue.join('\n'));
   fs.writeFileSync(path.join(dir, 'control.txt'), control);
   fs.writeFileSync(completion_path, completion.join('\n'));
+  if (prepare) {
+    prepare(dir);
+  }
   if (!readable) {
     fs.chmodSync(completion_path, 0o000);
   }
@@ -1020,12 +1024,46 @@ function capacityTools({ rows = PENDING_ROWS, host = 'n1', tools = {} } = {}) {
 }
 
 /**
- * @param {Parameters<typeof capacityTools>[0] & {control?: string}} [options]
+ * @param {Parameters<typeof capacityTools>[0] & {control?: string, launch?:'valid'|'missing'|'unreadable'|'invalid', workflow?:boolean, script?:string, profile?:boolean}} [options]
  */
-async function runCapacity({ control = PENDING_CONTROL, ...options } = {}) {
+async function runCapacity({
+  control = PENDING_CONTROL,
+  launch = 'valid',
+  workflow = false,
+  script = 'script.sh',
+  profile = false,
+  ...options
+} = {}) {
   const { observation, dir } = await runObservation({
     control,
-    tools: capacityTools(options)
+    tools: capacityTools(options),
+    prepare(dir) {
+      const cwd = path.join(dir, "working dir's");
+      const command = path.join(cwd, 'wrapper.sh');
+      fs.mkdirSync(cwd);
+      fs.writeFileSync(
+        path.join(dir, 'control.txt'),
+        `${control}\n   Command=${command}\n   StdOut=/work/job.log`
+      );
+      if (launch !== 'missing') {
+        fs.writeFileSync(
+          `${command}.launch.json`,
+          launch === 'invalid'
+            ? '{broken'
+            : JSON.stringify({
+                cwd,
+                script_path: path.join(cwd, script),
+                workflow
+              }),
+          { mode: launch === 'unreadable' ? 0o000 : 0o600 }
+        );
+      }
+      if (profile) {
+        const profile_dir = path.join(cwd, 'profiles/server-local');
+        fs.mkdirSync(profile_dir, { recursive: true });
+        fs.writeFileSync(path.join(profile_dir, 'config.yaml'), 'cores: 4\n');
+      }
+    }
   });
   return { observation, dir };
 }
@@ -1112,19 +1150,17 @@ test('omits the host when the ssh host is not a partition node', async () => {
 }, 15000);
 
 test('bounds each capacity read by five seconds', async () => {
-  const { dir } = await runObservation({
-    control: PENDING_CONTROL,
-    tools: capacityTools({
-      tools: {
-        timeout:
-          'printf "%s %s\\n" "$3" "$4" >> "$EWM_DIR/budgets"; shift 3; exec "$@"'
-      }
-    })
+  const { dir } = await runCapacity({
+    tools: {
+      timeout:
+        'printf "%s %s\\n" "$3" "$4" >> "$EWM_DIR/budgets"; shift 3; exec "$@"'
+    }
   });
 
   expect(
     fs.readFileSync(path.join(dir, 'budgets'), 'utf8').trim().split('\n')
   ).toEqual([
+    '5 python3',
     '5 squeue',
     '5 sinfo',
     '5 scontrol',
@@ -1136,6 +1172,7 @@ test('bounds each capacity read by five seconds', async () => {
 }, 15000);
 
 test.each([
+  ['the takeover prerequisites', 'python3'],
   ['the pending queue', 'squeue'],
   ['the partition nodes', 'sinfo'],
   ['the host load', 'nproc']
@@ -1177,3 +1214,68 @@ test('skips every capacity read once the job is no longer pending', async () => 
   expect(observation).toMatchObject({ state: 'RUNNING', terminal: false });
   expect(fs.existsSync(path.join(dir, 'pd-read'))).toBe(false);
 }, 15000);
+
+test('marks a pending job without a launch record', async () => {
+  const { observation } = await runCapacity({ launch: 'missing' });
+
+  expect(okCapacity(observation.capacity).takeover_blocker).toBe(
+    'no_launch_record'
+  );
+}, 15000);
+
+test.each(['', '\n   Command=(null)'])(
+  'marks a pending job without a submitted command (%j)',
+  async (command) => {
+    const { observation } = await runObservation({
+      control: PENDING_CONTROL + command,
+      tools: capacityTools()
+    });
+
+    expect(okCapacity(observation.capacity).takeover_blocker).toBe(
+      'no_launch_record'
+    );
+  },
+  15000
+);
+
+test.each([
+  { workflow: true },
+  { workflow: false, script: 'scripts/run_workflow.sh' }
+])(
+  'marks a workflow without a server-local profile (%j)',
+  async (options) => {
+    const { observation } = await runCapacity(options);
+
+    expect(okCapacity(observation.capacity).takeover_blocker).toBe(
+      'workflow_local_profile_missing'
+    );
+  },
+  15000
+);
+
+test('leaves takeover available with the workflow profile present', async () => {
+  const { observation } = await runCapacity({ workflow: true, profile: true });
+
+  expect(okCapacity(observation.capacity)).not.toHaveProperty(
+    'takeover_blocker'
+  );
+}, 15000);
+
+test('requires no workflow profile for an ordinary script', async () => {
+  const { observation } = await runCapacity();
+
+  expect(okCapacity(observation.capacity)).not.toHaveProperty(
+    'takeover_blocker'
+  );
+}, 15000);
+
+test.each(/** @type {const} */ (['unreadable', 'invalid']))(
+  'preserves a failed capacity reading for an %s launch record',
+  async (launch) => {
+    const { observation } = await runCapacity({ launch });
+
+    expect(observation.capacity).toEqual({ status: 'failed' });
+    expect(observation).toMatchObject({ state: 'PENDING', terminal: false });
+  },
+  15000
+);

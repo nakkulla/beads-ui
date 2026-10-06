@@ -992,7 +992,7 @@ describe('takeover (UI-qbgj §3.4)', () => {
     let finishObservation = () => {};
     const { observer: real_observer, service: takeover_service } = wired(
       async (argv) => {
-        if (remote(argv).includes('takeover')) {
+        if (remote(argv).includes('"$HOME/.local/bin/sjob" takeover ')) {
           events.push('takeover ssh');
           return { code: 0, stdout: JSON.stringify(LOCAL), stderr: '' };
         }
@@ -1153,6 +1153,21 @@ describe('takeover (UI-qbgj §3.4)', () => {
   test.each([
     ['a completing record', { ...pending(), stage: 'completing' }],
     ['a running job', pending({ state: 'RUNNING', capacity: undefined })],
+    [
+      'a job without a launch record',
+      pending({
+        capacity: { ...CAPACITY, takeover_blocker: 'no_launch_record' }
+      })
+    ],
+    [
+      'a workflow without a local profile',
+      pending({
+        capacity: {
+          ...CAPACITY,
+          takeover_blocker: 'workflow_local_profile_missing'
+        }
+      })
+    ],
     [
       'two jobs',
       {

@@ -954,9 +954,13 @@ const CAPACITY = {
 /**
  * A remote observation of a registered job plus its capacity section.
  *
- * @param {{state?: string, capacity?: 'ok'|'failed'|'absent'}} [options]
+ * @param {{state?: string, capacity?: 'ok'|'failed'|'absent', takeover?:string}} [options]
  */
-function capacityStdout({ state = 'PENDING', capacity = 'ok' } = {}) {
+function capacityStdout({
+  state = 'PENDING',
+  capacity = 'ok',
+  takeover = 'ready'
+} = {}) {
   const section =
     capacity === 'absent'
       ? []
@@ -970,6 +974,7 @@ function capacityStdout({ state = 'PENDING', capacity = 'ok' } = {}) {
                 '__EWM_CAP_AHEAD__=3|48',
                 '__EWM_CAP_SLURM__=108|128|513000|1033000',
                 '__EWM_CAP_HOST__=n1|112|61.2|2000',
+                `__EWM_CAP_TAKEOVER__=${takeover}`,
                 '__EWM_CAP_OK__=1'
               ]
             : ['__EWM_CAP_NOW__=2026-09-21T10:00:00', '__EWM_CAP_OK__=0']),
@@ -1017,6 +1022,43 @@ test('keeps the stored capacity when the capacity read fails', async () => {
 
   expect(slurmOf(second?.jobs[0]).capacity).toEqual(
     slurmOf(first?.jobs[0]).capacity
+  );
+});
+
+test('keeps the stored takeover blocker when the prerequisite read fails', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([
+    capacityStdout({ takeover: 'no_launch_record' }),
+    capacityStdout({ capacity: 'failed' })
+  ]);
+  const first = await observer.observeRecord(workspace, record.wait_id);
+  time += 120000;
+
+  const second = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(first?.jobs[0]).capacity?.takeover_blocker).toBe(
+    'no_launch_record'
+  );
+  expect(slurmOf(second?.jobs[0]).capacity).toEqual(
+    slurmOf(first?.jobs[0]).capacity
+  );
+  expect(second).toMatchObject({ error_count: 0, last_error: null });
+  expect(Date.parse(second?.next_observation_at || '') - time).toBe(120 * 1000);
+});
+
+test('clears the stored takeover blocker when the prerequisites become available', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([
+    capacityStdout({ takeover: 'workflow_local_profile_missing' }),
+    capacityStdout()
+  ]);
+  await observer.observeRecord(workspace, record.wait_id);
+  time += 120000;
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0]).capacity).not.toHaveProperty(
+    'takeover_blocker'
   );
 });
 

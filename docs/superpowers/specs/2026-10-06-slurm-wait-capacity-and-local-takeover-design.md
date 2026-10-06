@@ -66,6 +66,13 @@ slurm 등록 잡의 상태가 `PENDING`일 때만, 기존 관찰 ssh 한 번 안
 - `host`: ssh 호스트 자신의 CPU 수·1분 부하(`/proc/loadavg`)·`MemAvailable`이다. 호스트 이름이 파티션 노드 중 하나일 때만 채운다. 바로 실행이 도는 곳이 이 호스트라서 이 숫자만 의미가 있다.
 - `observed_at`: 재료를 읽은 시각.
 
+**정정(UI-zjzh).** 같은 관찰 ssh에서 `Command` 옆 `.launch.json`을 먼저 읽고,
+workflow(`workflow: true` 또는 `script_path == <cwd>/scripts/run_workflow.sh`)이면
+`<cwd>/profiles/server-local/config.yaml`도 확인한다. 잡의 `capacity.takeover_blocker`는
+`no_launch_record` 또는 `workflow_local_profile_missing`이며, 전제가 갖춰졌으면 키를
+생략한다. 순서는 sjob의 실행 기록→프로필 판정과 같다. 파일 부재와 읽기·해석 실패를
+구분하고, 실패는 기존 용량 재료 실패 규칙대로 이전 값을 유지한다.
+
 규칙(ADR UI-18a5 하위 잡 조항과 같은 방식):
 
 - 표시 재료일 뿐이다. 등록 판정·hold 판정·`completion`·`completionDigest`·판정 배지·알림에 들어가지 않는다.
@@ -109,6 +116,8 @@ sjob takeover <slurm-job-id> --result --json
 ### 3.4 바로 실행 조작 (beads-ui)
 
 - **노출**: 레코드 stage가 `hold`·`detached`이고 잡이 정확히 하나이며 그 잡이 `takeover` 표시 없는 `PENDING` slurm이면, 서버가 카드 조작 `external_wait_takeover`(`▶ 바로 실행`, placement `card`)를 내린다. owner 종류(worker·session)는 가리지 않는다.
+  - **정정(UI-zjzh).** `capacity.takeover_blocker`가 있는 잡은 노출에서 제외한다.
+    같은 `takeoverTarget` 판정을 카드 조작 목록과 WS 재판정이 공유한다.
 - **확인 창**: 누르면 모달(`provider-resume-dialog` 패턴)이 열린다. 창의 구성은 다음과 같다.
   - CPU 칸: 기본값은 `floor((host.cpus − host.load1) × 비율)`이다.
   - 메모리(G) 칸: 기본값은 `floor(host.mem_available × 비율)`이다.
@@ -160,6 +169,11 @@ sjob takeover <slurm-job-id> --result --json
   - 레코드에 잡이 둘 이상이면 카드에는 그리지 않고 상세에만 보인다.
   - `sjob_local` 잡 줄은 `<글리프> <호스트> <이름> 로컬 <상태어> <경과>`다.
 - **카드 슬롯 6**(foot): `▶ 바로 실행` `.op-btn`이 `[지금 확인]` 뒤에 선다.
+  - **정정(UI-zjzh).** 전제가 빠지면 버튼 대신 슬롯 3의 용량 줄 뒤에
+    `바로 실행 불가 · 실행 기록 없음(sjob 1.7 이전 제출 — 다시 제출하면 가능)` 또는
+    `바로 실행 불가 · 서버 로컬 프로필 없음(profiles/server-local)` 한 줄을 더한다.
+    상세 패널도 같은 재료 함수를 써 같은 문구를 보인다. 여러 잡의 카드 용량 줄 생략
+    규칙은 그대로다.
 - **상세 패널**: 잡 표 아래에 같은 용량 줄을 보인다. `sjob_local` 행의 번호 칸은 `L003 · Slurm 249043에서 전환`, 자원 칸은 `16 CPU · 64G`다.
 - 카드 문법 스펙 §5.1에 UI-qbgj 정정 문단을 더한다(슬롯 3 용량 줄, 슬롯 6 `▶ 바로 실행`, `sjob_local` 잡 줄).
 - **Monitor·Worker 동등**: 두 탭이 같은 재료 함수를 쓴다. `card-parity.test.js` 고정 자료에 용량 재료가 있는 외부 대기 Bead를 더한다. §9 의도된 차이 행은 없다.

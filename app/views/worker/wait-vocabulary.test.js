@@ -5,6 +5,7 @@ import {
   SUMMARY_CHIPS,
   WAIT_KINDS,
   WAIT_VERDICTS,
+  externalJobCapacityLines,
   externalJobDisplayName,
   externalJobRows,
   externalSpawnedSummary,
@@ -14,6 +15,53 @@ import {
   waitKindRow,
   waitScopeOf
 } from './wait-vocabulary.js';
+
+test.each(
+  /** @type {const} */ ([
+    [
+      'no_launch_record',
+      '바로 실행 불가 · 실행 기록 없음(sjob 1.7 이전 제출 — 다시 제출하면 가능)'
+    ],
+    [
+      'workflow_local_profile_missing',
+      '바로 실행 불가 · 서버 로컬 프로필 없음(profiles/server-local)'
+    ]
+  ])
+)(
+  'appends the %s prerequisite after the capacity lines',
+  (takeover_blocker, text) => {
+    const job = {
+      adapter: /** @type {const} */ ('slurm'),
+      state: 'PENDING',
+      submitted_at: '2026-10-06T00:00:00Z',
+      log_path: '/work/job.log',
+      terminal: null,
+      capacity: {
+        reason: 'Resources',
+        partition: 'debug',
+        ahead: { jobs: 3, cpus: 48 },
+        slurm: {
+          cpu_alloc: 112,
+          cpu_total: 112,
+          mem_alloc_mb: 0,
+          mem_total_mb: 1000
+        },
+        observed_at: '2026-10-06T00:00:00Z',
+        takeover_blocker
+      }
+    };
+
+    const lines = externalJobCapacityLines(job);
+    const detail = externalJobCapacityLines(job, { read_time: true });
+
+    expect(lines).toEqual([
+      '대기 사유 자원 부족 · 앞 3건',
+      'debug CPU 112/112 배정',
+      text
+    ]);
+    expect(detail.at(-1)).toContain(`${text} · 용량 확인`);
+  }
+);
 
 describe('wait vocabulary table', () => {
   test('keeps every row id unique', () => {

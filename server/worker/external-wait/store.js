@@ -21,7 +21,7 @@ import {
  * @typedef {{status:'ok', completion_log:'filetxt'|'unsupported', counts:Omit<SpawnedCounts, 'unknown'>, rows:SpawnedRow[]}|{status:'failed'}|{status:'none'}} SpawnedMaterial
  * @typedef {{cpu_alloc:number, cpu_total:number, mem_alloc_mb:number, mem_total_mb:number}} CapacitySlurm
  * @typedef {{name:string, cpus:number, load1:number, mem_available_mb:number}} CapacityHost
- * @typedef {{reason:string, est_start:string|null, partition:string, ahead:{jobs:number, cpus:number}, slurm:CapacitySlurm, host:CapacityHost|null, observed_at:string}} Capacity - Display-only pending Slurm capacity (UI-qbgj §3.1); `est_start` and `host` are `null` when absent.
+ * @typedef {{reason:string, est_start:string|null, partition:string, ahead:{jobs:number, cpus:number}, slurm:CapacitySlurm, host:CapacityHost|null, observed_at:string, takeover_blocker?:'no_launch_record'|'workflow_local_profile_missing'}} Capacity - Display-only pending Slurm capacity (UI-qbgj §3.1); `est_start` and `host` are `null` when absent.
  * @typedef {{status:'ok', capacity:Capacity}|{status:'failed'}} CapacityMaterial
  * @typedef {{state:'pending'|'unknown', requested_at:string, cpus:number, mem_gb:number}} TakeoverMarker - Persisted takeover progress on a slurm job (UI-qbgj §3.4).
  * @typedef {JobObservation & {adapter:'slurm', ssh_host:string, job_id:string, submitted_at:string, log_path:string, expected:string[], scheduler_submit_time?:string, name?:string, anchor?:SpawnedAnchor, spawned?:Spawned, capacity?:Capacity, takeover?:TakeoverMarker}} SlurmJob

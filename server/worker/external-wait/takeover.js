@@ -69,7 +69,8 @@ export function takeoverReasonMessage(reason, message = '') {
  * The single job `▶ 바로 실행` may take over, or null (UI-qbgj §3.4 노출): the
  * record is at `hold` or `detached` without a completion, holds exactly one
  * job, and that job is a nonterminal `PENDING` slurm job without a takeover
- * marker. The stored record and its public projection share this check.
+ * marker or a known prerequisite blocker. The stored record and its public
+ * projection share this check.
  *
  * @param {{stage?: unknown, completion?: unknown, jobs?: unknown}|null|undefined} record
  * @returns {SlurmJob|null}
@@ -86,7 +87,8 @@ export function takeoverTarget(record) {
     job.adapter !== 'slurm' ||
     job.state !== 'PENDING' ||
     job.terminal ||
-    job.takeover
+    job.takeover ||
+    job.capacity?.takeover_blocker
   ) {
     return null;
   }

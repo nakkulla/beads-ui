@@ -781,6 +781,13 @@ function formatEstimatedStart(value) {
  */
 export const CAPACITY_STALE_MS = 60_000;
 
+const TAKEOVER_BLOCKER_LINES = Object.freeze({
+  no_launch_record:
+    '바로 실행 불가 · 실행 기록 없음(sjob 1.7 이전 제출 — 다시 제출하면 가능)',
+  workflow_local_profile_missing:
+    '바로 실행 불가 · 서버 로컬 프로필 없음(profiles/server-local)'
+});
+
 /**
  * The capacity lines of one pending Slurm job (UI-qbgj §3.6): the wait line
  * `대기 사유 <표시어> · 앞 <n>건 · Slurm 예상 <MM/DD HH:mm>` and the allocation
@@ -788,7 +795,8 @@ export const CAPACITY_STALE_MS = 60_000;
  * <G>G`. An item without material is left out; without `host` the second line
  * stops at the Slurm allocation. A job that is not a pending Slurm job with
  * `capacity` gives no lines. The card shows them only for a record with one job;
- * the detail panel shows them for every such job.
+ * the detail panel shows them for every such job. A known prerequisite blocker
+ * adds one line after the allocation (UI-zjzh).
  *
  * The read time closes the last line (UI-qbgj §4): the card adds
  * ` · <HH:mm> 기준` only when the capacity is stale ({@link CAPACITY_STALE_MS}),
@@ -828,6 +836,9 @@ export function externalJobCapacityLines(job, options = {}) {
       : ''
   ].filter(Boolean);
   const lines = [wait.join(' · '), allocation.join(' · ')].filter(Boolean);
+  if (capacity.takeover_blocker) {
+    lines.push(TAKEOVER_BLOCKER_LINES[capacity.takeover_blocker]);
+  }
   const clock = formatClockLocal(capacity.observed_at, options.now);
   const stale =
     Date.parse(job.observed_at || '') - Date.parse(capacity.observed_at) >

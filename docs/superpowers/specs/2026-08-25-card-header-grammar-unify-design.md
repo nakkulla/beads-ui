@@ -644,6 +644,13 @@ Slurm 잡이면, 잡 줄 바로 뒤에 용량 줄이 최대 두 줄 선다 —
 왔나"와 "무엇을 하나"다. 근거는
 `2026-10-06-slurm-wait-capacity-and-local-takeover-design.md` §3.6이 소유한다.
 
+**정정(UI-zjzh).** 외부 작업 슬롯 3의 용량 줄 뒤에 바로 실행 전제가 빠진 이유를
+한 줄 더한다: `바로 실행 불가 · 실행 기록 없음(sjob 1.7 이전 제출 — 다시 제출하면 가능)`
+또는 `바로 실행 불가 · 서버 로컬 프로필 없음(profiles/server-local)`이다. 서버 조작
+목록은 이때 슬롯 6의 `▶ 바로 실행`을 생략한다. Worker·Monitor·상세는 같은 재료를
+쓰며, 용량 재료가 없는 줄과 여러 잡의 카드 용량 줄은 계속 생략한다. 근거는
+`2026-10-06-slurm-wait-capacity-and-local-takeover-design.md` §3.1·§3.4·§3.6 정정이다.
+
 ### 5.2 `AGENTS.md`에 남길 규칙
 
 - 워커·모니터 카드(`candidateCard` · `miniRow` · `runningTile`)의 줄 순서는 §2

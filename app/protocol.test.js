@@ -163,6 +163,21 @@ describe('protocol', () => {
     expect(valid).toBe(true);
   });
 
+  test.each(['no_launch_record', 'workflow_local_profile_missing'])(
+    'accepts the takeover blocker %s',
+    (takeover_blocker) => {
+      const record = externalWait();
+      record.jobs[0] = {
+        ...record.jobs[0],
+        capacity: { ...CAPACITY, takeover_blocker }
+      };
+
+      const valid = isExternalWaitObservation(record);
+
+      expect(valid).toBe(true);
+    }
+  );
+
   test.each([
     ['a non-object capacity', 'x'],
     ['a missing reason', { ...CAPACITY, reason: '' }],
@@ -172,7 +187,12 @@ describe('protocol', () => {
     ],
     ['a missing slurm total', { ...CAPACITY, slurm: { cpu_alloc: 1 } }],
     ['a malformed host', { ...CAPACITY, host: { name: 'wallace', cpus: 4 } }],
-    ['a non-string estimate', { ...CAPACITY, est_start: 5 }]
+    ['a non-string estimate', { ...CAPACITY, est_start: 5 }],
+    [
+      'an unknown takeover blocker',
+      { ...CAPACITY, takeover_blocker: 'unknown' }
+    ],
+    ['a null takeover blocker', { ...CAPACITY, takeover_blocker: null }]
   ])('rejects %s', (_label, capacity) => {
     const record = externalWait();
     record.jobs[0] = { ...record.jobs[0], capacity };
