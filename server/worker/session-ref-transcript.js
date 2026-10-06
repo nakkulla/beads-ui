@@ -93,6 +93,38 @@ function functionCallCommand(args) {
  */
 function projectCodexEvent(payload) {
   switch (payload.type) {
+    case 'item_completed': {
+      const item = payload.item;
+      if (!isObject(item)) {
+        return [];
+      }
+      if (item.type === 'AgentMessage' || item.type === 'UserMessage') {
+        const text = outputText(item.content);
+        return text.length > 0
+          ? [
+              {
+                type: 'item.completed',
+                item: {
+                  type:
+                    item.type === 'AgentMessage'
+                      ? 'agent_message'
+                      : 'user_message',
+                  text
+                }
+              }
+            ]
+          : [];
+      }
+      if (item.type === 'Reasoning' && Array.isArray(item.summary_text)) {
+        const text = item.summary_text
+          .filter((part) => typeof part === 'string')
+          .join('\n');
+        return text.trim().length > 0
+          ? [{ type: 'item.completed', item: { type: 'reasoning', text } }]
+          : [];
+      }
+      return [];
+    }
     case 'user_message':
       return typeof payload.message === 'string'
         ? [

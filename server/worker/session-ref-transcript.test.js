@@ -76,6 +76,104 @@ describe('claude pass filter', () => {
 });
 
 describe('codex rollout projection', () => {
+  test.each(['commentary', 'final_answer'])(
+    'projects an AgentMessage in phase %s',
+    (phase) => {
+      const adapter = createSessionRefTranscript('codex');
+
+      const result = adapter.project(
+        rollout('event_msg', {
+          type: 'item_completed',
+          item: {
+            type: 'AgentMessage',
+            phase,
+            content: [
+              { type: 'Text', text: '인계 · ' },
+              { type: 'Text', text: '계속 진행' }
+            ]
+          }
+        })
+      );
+
+      expect(result).toEqual([
+        {
+          type: 'item.completed',
+          item: { type: 'agent_message', text: '인계 · 계속 진행' }
+        }
+      ]);
+    }
+  );
+
+  test('projects UserMessage text parts regardless of their type casing', () => {
+    const adapter = createSessionRefTranscript('codex');
+
+    const result = adapter.project(
+      rollout('event_msg', {
+        type: 'item_completed',
+        item: {
+          type: 'UserMessage',
+          content: [
+            { type: 'text', text: '이어' },
+            { type: 'Text', text: '가자' },
+            { type: 'image', url: 'image.png' },
+            { text: 42 },
+            null
+          ]
+        }
+      })
+    );
+
+    expect(result).toEqual([
+      {
+        type: 'item.completed',
+        item: { type: 'user_message', text: '이어가자' }
+      }
+    ]);
+  });
+
+  test('projects Reasoning summary strings onto a reasoning item', () => {
+    const adapter = createSessionRefTranscript('codex');
+
+    const result = adapter.project(
+      rollout('event_msg', {
+        type: 'item_completed',
+        item: {
+          type: 'Reasoning',
+          summary_text: ['첫 요약', '둘째 요약'],
+          raw_content: ['private reasoning']
+        }
+      })
+    );
+
+    expect(result).toEqual([
+      {
+        type: 'item.completed',
+        item: { type: 'reasoning', text: '첫 요약\n둘째 요약' }
+      }
+    ]);
+  });
+
+  test.each([
+    null,
+    {},
+    { type: 'AgentMessage', content: [] },
+    { type: 'UserMessage', content: null },
+    { type: 'Reasoning', summary_text: [] },
+    { type: 'Reasoning', summary_text: ['', ' '] },
+    { type: 'Reasoning', summary_text: [null, { text: 'unknown' }] },
+    { type: 'Reasoning', raw_content: ['private reasoning'] },
+    { type: 'CommandExecution', content: [{ text: 'duplicate command' }] },
+    { type: 'FileChange', content: [{ text: 'untracked event' }] }
+  ])('drops an unsupported or empty completed item %j', (item) => {
+    const adapter = createSessionRefTranscript('codex');
+
+    const result = adapter.project(
+      rollout('event_msg', { type: 'item_completed', item })
+    );
+
+    expect(result).toEqual([]);
+  });
+
   test('projects user_message onto the extension item', () => {
     const adapter = createSessionRefTranscript('codex');
 

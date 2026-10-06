@@ -65,12 +65,22 @@ function claudeAssistant(text, timestamp = '2026-09-29T08:00:00.000Z') {
   });
 }
 
-/** @param {string} message */
-function codexAgentMessage(message) {
+/**
+ * @param {string} message
+ * @param {string} [phase]
+ */
+function codexAgentMessage(message, phase = 'final_answer') {
   return JSON.stringify({
     timestamp: '2026-09-29T08:05:00.000Z',
     type: 'event_msg',
-    payload: { type: 'agent_message', message }
+    payload: {
+      type: 'item_completed',
+      item: {
+        type: 'AgentMessage',
+        content: [{ type: 'Text', text: message }],
+        phase
+      }
+    }
   });
 }
 
@@ -107,7 +117,13 @@ describe('readLastAssistantMessage', () => {
         codexAgentMessage('검증을 다시 돌립니다'),
         JSON.stringify({
           type: 'event_msg',
-          payload: { type: 'user_message', message: '이어가자' }
+          payload: {
+            type: 'item_completed',
+            item: {
+              type: 'UserMessage',
+              content: [{ type: 'text', text: '이어가자' }]
+            }
+          }
         }),
         ''
       ].join('\n')
@@ -120,6 +136,31 @@ describe('readLastAssistantMessage', () => {
       at: Date.parse('2026-09-29T08:05:00.000Z'),
       first_line: '검증을 다시 돌립니다',
       excerpt: '검증을 다시 돌립니다'
+    });
+  });
+
+  test('reads a Codex handoff result after commentary and reasoning', () => {
+    const file = transcriptFile(
+      [
+        codexAgentMessage('확인 중입니다', 'commentary'),
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'item_completed',
+            item: { type: 'Reasoning', summary_text: ['진행 조건 확인'] }
+          }
+        }),
+        codexAgentMessage('인계 · 승인 범위에서 계속\n확인 완료'),
+        ''
+      ].join('\n')
+    );
+
+    const result = readLastAssistantMessage({ provider: 'codex', file });
+
+    expect(result?.first_line).toBe('인계 · 승인 범위에서 계속');
+    expect(parseConversationResult(result?.first_line)).toEqual({
+      kind: 'handoff',
+      line: '인계 · 승인 범위에서 계속'
     });
   });
 

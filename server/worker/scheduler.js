@@ -178,6 +178,9 @@ const WAITING_RESCAN_COVER_MS = 2_000;
 const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
 export const INTERACTIVE_EXIT_GRACE_MS = 90_000;
 export const INTERACTIVE_EXIT_DEFER_MAX_MS = 1_800_000;
+const INTERACTIVE_UNREADABLE_GRACE_MS = 30_000;
+const INTERACTIVE_UNREADABLE_MESSAGE =
+  '마지막 답변을 읽지 못함 — tmux 창에서 확인한 뒤 답하거나 [워커로 이어가기]';
 /**
  * 대기 진입 유예의 기본값 (2026-09-03 monitor-exec-material-queue-grace §3.3):
  * 자동 dispatch는 큐 항목이 대기 레인에 앉은 지 이만큼 지나야 그 항목을 집는다.
@@ -10530,6 +10533,31 @@ export function createScheduler(deps) {
           await closeConversationWindow(workspace, key, record);
         }
         return;
+      }
+      const read_at = record.last_message_read_at;
+      const last_message_at =
+        record.last_message?.at ?? record.last_message?.event_at ?? null;
+      if (
+        record.turn_state === 'idle' &&
+        read_at !== null &&
+        read_at > record.launched_at &&
+        now() - read_at >= INTERACTIVE_UNREADABLE_GRACE_MS &&
+        (last_message_at === null || last_message_at <= record.launched_at)
+      ) {
+        if (
+          !patchInteractiveRecord(workspace, key, record, {
+            last_message: {
+              text: INTERACTIVE_UNREADABLE_MESSAGE,
+              first_line: INTERACTIVE_UNREADABLE_MESSAGE,
+              excerpt: INTERACTIVE_UNREADABLE_MESSAGE,
+              at: read_at,
+              event_at: read_at
+            }
+          })
+        ) {
+          return;
+        }
+        log('interactive last answer unreadable for %s/%s', workspace, key);
       }
       if (record.turn_state === 'running' || !record.last_message) {
         return;

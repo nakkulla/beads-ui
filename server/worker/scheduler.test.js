@@ -47,6 +47,7 @@ import {
   RESOLVE_PANE_MARKER
 } from './tmux-launcher.js';
 import { createUsageStore } from './usage-store.js';
+import { conversationVerdict } from './wait-judgment.js';
 import * as work_recovery_policy from './work-recovery-policy.js';
 
 // foreign blocker 조회의 양성 경로 seam (UI-d3i1 §12): 기본은 원 구현이고, 한
@@ -2592,9 +2593,17 @@ describe('same-session conversation return (UI-nuwy)', () => {
   const STALE_VALUE = 'plan_approval_stale:revise';
 
   /**
-   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any }} [options]
+   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any, kind?: 'inquiry'|'resolve'|'external_resume', provider?: 'claude'|'codex' }} [options]
    */
   function conversationEnv(options = {}) {
+    let at = 1000;
+    const kind = options.kind || 'inquiry';
+    const provider = options.provider || 'claude';
+    const pane_marker = {
+      inquiry: INQUIRY_PANE_MARKER,
+      resolve: RESOLVE_PANE_MARKER,
+      external_resume: EXTERNAL_RESUME_PANE_MARKER
+    }[kind];
     const pane = {
       key: 'S1',
       pane: '%5',
@@ -2602,7 +2611,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
       session: 'bdui-inquiry',
       window: 'S1',
       cwd: WS,
-      agent_runtime: 'claude',
+      agent_runtime: provider,
       agent_running: '',
       agent_attention: ''
     };
@@ -2610,7 +2619,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
     const launcher = {
       listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
         ok: true,
-        rows: marker === INQUIRY_PANE_MARKER ? panes.rows : []
+        rows: marker === pane_marker ? panes.rows : []
       })),
       readPaneOption: vi.fn(async () => ({ ok: true, value: null })),
       capturePaneTail: vi.fn(async () => ({ ok: true, line: '❯ ' })),
@@ -2637,6 +2646,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
     const env = setup({
       config,
       slots: 1,
+      now: () => at,
       verify: options.park
         ? {
             verifyPrSubmitted: vi.fn(async () => ({
@@ -2663,13 +2673,19 @@ describe('same-session conversation return (UI-nuwy)', () => {
     });
     return {
       ...env,
+      kind,
+      provider,
       config,
       launcher,
       pane,
       panes,
       message,
       transcript,
-      notify
+      notify,
+      /** @param {number} value */
+      setTime(value) {
+        at = value;
+      }
     };
   }
 
@@ -2705,8 +2721,8 @@ describe('same-session conversation return (UI-nuwy)', () => {
   function openConversation(env, prior, patch = {}) {
     env.store.recordInteractiveSession(WS, {
       bead_id: 'S1',
-      kind: 'inquiry',
-      provider: 'claude',
+      kind: env.kind,
+      provider: env.provider,
       pane_id: '%5',
       tmux_session: 'bdui-inquiry',
       tmux_window: 'S1',
@@ -2744,7 +2760,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
    * @returns {any}
    */
   const record = (env) =>
-    env.store.snapshot(WS).interactive_sessions['S1:inquiry'];
+    env.store.snapshot(WS).interactive_sessions[`S1:${env.kind}`];
 
   /**
    * @param {ReturnType<typeof conversationEnv>} env
@@ -2909,6 +2925,158 @@ describe('same-session conversation return (UI-nuwy)', () => {
     expect(record(env).conversation).toMatchObject({
       processed_message_at: 960,
       message_excerpt: '그럼 C는 어떤가요?'
+    });
+  });
+
+  describe('unreadable conversation answers', () => {
+    const WARNING =
+      '마지막 답변을 읽지 못함 — tmux 창에서 확인한 뒤 답하거나 [워커로 이어가기]';
+
+    test.each([
+      ['claude', 'inquiry'],
+      ['codex', 'inquiry'],
+      ['claude', 'resolve'],
+      ['codex', 'resolve'],
+      ['claude', 'external_resume'],
+      ['codex', 'external_resume']
+    ])(
+      'warns once for an idle %s %s turn after 30 seconds',
+      async (provider, kind) => {
+        const env = conversationEnv({
+          provider: /** @type {'claude'|'codex'} */ (provider),
+          kind: /** @type {'inquiry'|'resolve'|'external_resume'} */ (kind)
+        });
+        const prior = await stopForConversation(env);
+        openConversation(env, prior);
+        env.transcript.location.last_event_at = 950;
+        env.setTime(30_950);
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        await env.scheduler.reconcileInteractiveSessions(WS);
+
+        expect(record(env).last_message).toEqual({
+          text: WARNING,
+          first_line: WARNING,
+          excerpt: WARNING,
+          at: 950,
+          event_at: 950
+        });
+        expect(conversationVerdict(record(env))).toBe('answer');
+        expect(record(env).conversation.processed_message_at).toBe(950);
+        expect(env.notify.conversationAnswer).toHaveBeenCalledExactlyOnceWith({
+          bead_id: 'S1',
+          excerpt: WARNING,
+          tmux_window: 'S1'
+        });
+        expect(env.launcher.sendExit).not.toHaveBeenCalled();
+        expect(env.launcher.killWindow).not.toHaveBeenCalled();
+      }
+    );
+
+    test.each([
+      [30_949, '', ''],
+      [30_950, '1', ''],
+      [30_950, '', 'question'],
+      [30_950, '', 'limit']
+    ])(
+      'keeps an unreadable turn quiet at %i with running=%s attention=%s',
+      async (at, running, attention) => {
+        const env = conversationEnv();
+        const prior = await stopForConversation(env);
+        openConversation(env, prior);
+        env.transcript.location.last_event_at = 950;
+        env.setTime(at);
+        Object.assign(env.pane, {
+          agent_running: running,
+          agent_attention: attention
+        });
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+
+        expect(record(env).last_message).toBeNull();
+        expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+      }
+    );
+
+    test('waits for new transcript activity after launch', async () => {
+      const env = conversationEnv();
+      const prior = await stopForConversation(env);
+      openConversation(env, prior);
+      env.setTime(60_000);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).last_message).toBeNull();
+      expect(conversationVerdict(record(env))).toBe('working');
+      expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+    });
+
+    test('restarts the grace period when the transcript changes', async () => {
+      const env = conversationEnv();
+      const prior = await stopForConversation(env);
+      openConversation(env, prior);
+      env.transcript.location.last_event_at = 950;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.transcript.location.last_event_at = 30_950;
+      env.setTime(30_950);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).last_message).toBeNull();
+      expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+    });
+
+    test('warns when only a pre-launch answer remains readable', async () => {
+      const env = conversationEnv();
+      const prior = await stopForConversation(env);
+      openConversation(env, prior);
+      say(env, '이전 답변', 400);
+      env.transcript.location.last_event_at = 950;
+      env.setTime(30_950);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).last_message.text).toBe(WARNING);
+      expect(env.notify.conversationAnswer).toHaveBeenCalledOnce();
+    });
+
+    test.each([900, null])(
+      'keeps a readable answer with timestamp %j',
+      async (at) => {
+        const env = conversationEnv();
+        const prior = await stopForConversation(env);
+        openConversation(env, prior);
+        say(env, '읽힌 답변');
+        env.message.current.at = at;
+        env.setTime(30_950);
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        await env.scheduler.reconcileInteractiveSessions(WS);
+
+        expect(record(env).last_message.text).toBe('읽힌 답변');
+        expect(env.notify.conversationAnswer).toHaveBeenCalledExactlyOnceWith({
+          bead_id: 'S1',
+          excerpt: '읽힌 답변',
+          tmux_window: 'S1'
+        });
+      }
+    );
+
+    test('replaces the warning with a later readable handoff', async () => {
+      const env = conversationEnv();
+      const prior = await stopForConversation(env);
+      openConversation(env, prior);
+      env.transcript.location.last_event_at = 950;
+      env.setTime(30_950);
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      say(env, '인계 · 계속 진행', 31_000);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).last_message.text).toBe('인계 · 계속 진행');
+      expect(record(env).conversation.result.kind).toBe('handoff');
+      expect(env.notify.conversationAnswer).toHaveBeenCalledOnce();
+      expect(env.launcher.sendExit).toHaveBeenCalledOnce();
     });
   });
 
