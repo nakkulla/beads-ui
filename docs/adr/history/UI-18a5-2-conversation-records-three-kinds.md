@@ -1,7 +1,8 @@
 ---
 id: UI-18a5-2
 title: 대화형 레코드 원천과 정산 세 종류
-status: accepted
+status: superseded
+superseded_by: UI-jbl1
 date: 2026-10-03
 summary: "Worker 이력의 SoT는 bead별 append-only events.jsonl이고 queue.json은 살아 있는 상태만 담으며 살아 있는 queue.attempts는 bead 이력의 최신 접미다; 구현·리뷰 attempt의 생존·슬롯 점유·정산 시작은 scheduler reconcile이, 결과 판정은 큐가 소유한다; beads-ui가 띄운 대화형 세션은 슬롯을 점유하지 않는 별도 큐 레코드로 투영되고 그 생존·종료만 reconcile이 소유하며, 세 종류(문의·해결·외부 재개) 모두 conversation을 갖고 정산에 인계(창 소멸 뒤 그 행의 Worker 출구 하나)·보류가 더해진다; Worker는 구현 attempt dispatch에서만 open Bead를 in_progress로 선점하고 session_ref는 쓰지 않는다"
 supersedes: ["UI-nuwy-2"]

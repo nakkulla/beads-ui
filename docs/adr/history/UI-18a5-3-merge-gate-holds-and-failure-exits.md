@@ -1,7 +1,8 @@
 ---
 id: UI-18a5-3
 title: 머지 게이트 보류와 실패 행 출구
-status: accepted
+status: superseded
+superseded_by: UI-jbl1
 date: 2026-10-03
 summary: "impl_review 영수증은 head와 같거나 조상이면 유효하고 head 이동만으로 재리뷰하지 않는다; 영수증 부재·stale·invalid·undetermined는 terminal이 아니라 보류이며 큐가 head당 1회 같은 리뷰 lineage를 자동 dispatch하고 소진 뒤 출구는 [리뷰 후 머지] resume이다; 자동 해소 주체가 없는 위조 3종만 즉시 terminal needs_human이고 그 waive는 사람 [머지] 재클릭뿐이다; verify_cmd red는 비종단 verify_hold이고 머지 후 정리 실패는 카드에만 남고 알림하지 않는다; 실패 행의 출구는 [워커로 이어가기](정리·폐기 재시도)·[머지]·[세션에서 이어가기]·[폐기 포기]이고 실패 대화의 인계는 그 행의 Worker 출구를 사용자 답의 권한으로 많아야 한 번 실행한다"
 supersedes: ["UI-u6ud-4"]
