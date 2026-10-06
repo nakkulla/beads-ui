@@ -455,7 +455,12 @@ ${judgment_block}# 1) Is this push happening in the attempt's OWN repository? co
 #    injected process-wide, so every repository the session pushes from lands
 #    here; only this one is judged.
 here=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
-mine=$(git -C "$guard_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+# Git exports the pushing worktree's repository paths to hooks. Keep those for
+# here and ref judgment, but resolve guard_repo independently in this subshell.
+mine=$(
+  unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  git -C "$guard_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+) || exit 0
 [ -n "$here" ] || exit 0
 [ -n "$mine" ] || exit 0
 here=$(CDPATH= cd -- "$here" 2>/dev/null && pwd -P) || exit 0
