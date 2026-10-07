@@ -117,8 +117,11 @@ Codex의 "Your workspace is out of credits." 실패는 **워크스페이스**(�
 
 - 해제 조건은 바꾸지 않는다: 리셋 시각이 없으므로 `provider_usage_unknown_reset_seconds`
   간격으로 target 계정에서 프로브하고, 통과하면(= 워크스페이스가 충전됨) 해제한다.
-  같은 워크스페이스의 계정 target이 여럿이면 각자 프로브하고 각자 풀린다. 하나가
-  통과하면 나머지도 다음 프로브에서 통과한다.
+- 결정: 같은 워크스페이스의 계정 target이 여럿일 때 그중 하나의 프로브가 통과하면
+  크레딧이 워크스페이스 단위라 충전이 증명된 것이므로, 같은 `workspace`를 가진 target을
+  **함께 해제**한다(대안: 각자 프로브. 이유: 남은 target 하나가 최대 한 프로브 간격 동안
+  워크스페이스 전체를 계속 막는다). 각 저장소의 멤버십 정산은 해제된 target마다 기존
+  규칙대로 일어난다.
 - `account_absent` 해제는 그대로 둔다(§경계·후속 관찰).
 
 ### 3.6 표시
@@ -149,7 +152,8 @@ Codex의 "Your workspace is out of credits." 실패는 **워크스페이스**(�
    C로 가는 디스패치는 막히지 않는다.
 3. 개인 한도는 지금처럼 그 계정만 막는다.
 4. `::`가 없는 키의 워크스페이스 소진은 그 계정만 막는다.
-5. 프로브 통과로 해제되면 같은 워크스페이스 계정의 디스패치가 다시 열린다.
+5. 같은 워크스페이스 target이 여럿이어도 하나의 프로브 통과로 모두 해제되고, 같은
+   워크스페이스 계정의 디스패치가 다시 열린다.
 6. `workspace` 필드가 없는 기존 상태 파일을 읽어도 동작이 지금과 같다.
 7. 칩 예측(`providerGate`)과 서버 게이트가 같은 결과를 낸다.
 
@@ -163,7 +167,8 @@ Codex의 "Your workspace is out of credits." 실패는 **워크스페이스**(�
   게이트, 선제 전환), 기존 보류 없는 첫 진입에서 B보다 C를 고르고 잘못된
   `auto_switch:'none'` 알림이 없음.
 - `server/worker/queue-store.test.js`: `switchDecision`·보류 attempt 전환 재검증.
-- `server/worker/provider-health.test.js`: 재분류 시 `workspace` 유지·해제.
+- `server/worker/provider-health.test.js`: 재분류 시 `workspace` 유지·해제, 한 target
+  프로브 통과로 같은 워크스페이스 target 함께 해제.
 - `app/views/worker/lane-model.test.js`: 칩 예측이 같은 워크스페이스 계정을 막음.
 - `app/views/worker/failure-labels.test.js`, `server/worker/notify.test.js`: 문구.
 
