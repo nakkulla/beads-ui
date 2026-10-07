@@ -1,0 +1,64 @@
+{
+  "version": 2,
+  "slides": {
+    "s3": {
+      "text": "혼자도는이라고 하지말고 체계적으로 이슈들을 관리하고 진행을 체크하는 시스템이 필요했습니다. 이런식으로",
+      "title": "Limits of chat-based AI",
+      "kind": "edit",
+      "updated_at": "2026-10-07T22:31:26.285168+00:00"
+    },
+    "s5": {
+      "text": "그리고 충돌하는경우에는 자동해결 세션이 작동해서 adr 과 spec에 기반해 해소한다는것도 말하는게 나을듯",
+      "title": "Git: worktree, branch, PR",
+      "kind": "edit",
+      "updated_at": "2026-10-07T22:32:53.846567+00:00"
+    },
+    "s8": {
+      "text": "영수증에는 리뷰한 커밋이 붙고 구현 시작은 사람만 승인합니다. 이런거는 굳이 안말해도 되지 않나? 다른 슬라이드에서도 이런 중요하지 않는 말들을 정리하자",
+      "title": "Spec review",
+      "kind": "edit",
+      "updated_at": "2026-10-07T22:35:05.581820+00:00"
+    },
+    "s10": {
+      "text": "대부분 두번째 문단은 필요 없는 말인듯. ",
+      "title": "ADR: decision records",
+      "kind": "edit",
+      "updated_at": "2026-10-07T22:35:44.400726+00:00"
+    },
+    "s12": {
+      "text": "이거는 필요하고",
+      "title": "Lab servers: edit on the Mac, run on the server",
+      "kind": "edit",
+      "updated_at": "2026-10-07T22:36:24.573153+00:00"
+    },
+    "s22": {
+      "text": "이거를 모니터탭보다 먼저 보여줘야되는거 아닌가",
+      "title": "beads-ui: Worker tab",
+      "kind": "edit",
+      "updated_at": "2026-10-07T22:38:49.255249+00:00"
+    },
+    "s21": {
+      "text": "이거는 워커탭이랑 요소들을 설명한 후에 보이는게 나을듯",
+      "title": "beads-ui:Monitor tab",
+      "kind": "edit",
+      "updated_at": "2026-10-07T22:39:09.302932+00:00"
+    },
+    "s30": {
+      "text": "이거는 앞 섹션에 beads ui 설명하는 부분에서 다루는게 나을듯. 그리고 내가 Claude 100, team, codex 200 계정을 구독중이라고 말하는게 나을듯",
+      "title": "Multiple accounts",
+      "kind": "edit",
+      "updated_at": "2026-10-07T22:41:13.151229+00:00"
+    },
+    "s38": {
+      "text": "Dot 중계주소같은거는 굳이 안말해도 될듯",
+      "title": "Network:one Mac and Tailscale",
+      "kind": "edit",
+      "updated_at": "2026-10-07T22:42:49.531851+00:00"
+    }
+  },
+  "applied": {
+    "bead": "UI-riqv",
+    "at": "2026-10-08T07:51:38+09:00",
+    "note": "9건 모두 반영. s8·s10의 노트 둘째 문단 정리는 덱 본편 전체에 적용(s4·s7·s12·s17·s18·s20·s26·s31·s39 유지). 장 이동으로 s21~s30 번호가 바뀜(s-worker s21, s-detail s22, s-settings s23, s-monitor s24, s-accounts s25)."
+  }
+}

@@ -1284,8 +1284,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
     <p class="lead">대화에서 시작한 작업을 이슈로 기록하고 리뷰와 서버 분석을 거쳐 끝내는 방식</p>
   </div>
   <div class="by">Ilsun Yun &nbsp;/&nbsp; Lab group meeting, October 2026</div>
-  <aside class="notes">연구 저장소와 AI 세션이 늘면 어디까지 했고 다음에 무엇을 할지가 흩어집니다. 오늘은 일을 **이슈 단위로 기록하고 리뷰를 거쳐 끝내는 방식**을 보여 드리겠습니다.
-이슈는 제가 쓰는 이슈 트래커 Beads(명령어 bd)의 항목 하나입니다.</aside>
+  <aside class="notes">연구 저장소와 AI 세션이 늘면 어디까지 했고 다음에 무엇을 할지가 흩어집니다. 오늘은 일을 **이슈 단위로 기록하고 리뷰를 거쳐 끝내는 방식**을 보여 드리겠습니다.</aside>
 </section>
 
 <section class="slide sim" id="s-lost" data-theme="light" data-speed="1700">
@@ -1313,8 +1312,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
     </div>
   </div>
   <div class="simbar"></div>
-  <aside class="notes">대화로만 일하면 세션이 끝날 때 **왜 그렇게 정했는지**도 같이 사라집니다. 재생하면 왼쪽 대화는 흐려지고 오른쪽 카드에는 근거와 다음 행동이 남죠.
-화면의 문장은 설명용 예시입니다.</aside>
+  <aside class="notes">대화로만 일하면 세션이 끝날 때 **왜 그렇게 정했는지**도 같이 사라집니다. 재생하면 왼쪽 대화는 흐려지고 오른쪽 카드에는 근거와 다음 행동이 남죠.</aside>
 </section>
 
 <section class="slide" id="s-problem" data-theme="light">
@@ -1337,7 +1335,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
       <div class="a"><b>Worker: 대기열과 동시 실행</b>여러 저장소의 일을 줄 세워 두면 서버가 순서대로, 혹은 동시에 세션을 띄우고 PR까지 가져옵니다.</div>
     </div>
   </div>
-  <aside class="notes">채팅으로 분석을 맡기면 결정의 이유가 사라지고 검증은 작성한 모델의 자기 보고에 그치며 제가 화면을 지켜야 진행됩니다. 이를 막으려고 **일마다 남는 기록, 다른 모델의 리뷰, 혼자 도는 대기열**을 만들었습니다.</aside>
+  <aside class="notes">채팅으로 분석을 맡기면 결정의 이유가 사라지고 검증은 작성한 모델의 자기 보고에 그치며 제가 화면을 지켜야 진행됩니다. 그래서 이슈를 **체계적으로 관리하고 진행을 확인하는 시스템**이 필요했습니다.</aside>
 </section>
 
 <section class="slide sim" id="s-life" data-theme="light" data-speed="1500">
@@ -1372,11 +1370,11 @@ body.dk-receiver .jr .wire { animation: none !important; }
     <div><h3>작업 폴더 = 브랜치 = 이슈 ID</h3><p><code>.worktrees/&lt;이슈 ID&gt;</code>. 여러 세션이 동시에 돌아도 서로의 파일을 건드리지 않는다.</p></div>
     <div><h3>병렬과 직렬</h3><p>서로 무관한 이슈는 동시에 출발한다. 앞 결과가 필요한 이슈는 앞 이슈가 합쳐진 main에서 출발한다.</p></div>
     <div><h3>PR 하나 = main 커밋 하나</h3><p>squash로 합쳐서 main에는 이슈 하나가 커밋 하나로 남는다. 커밋 제목은 한국어와 이슈 ID.</p></div>
-    <div><h3>main이 앞서 가면</h3><p>다른 이슈가 먼저 합쳐지면 브랜치에 최신 main을 받아 다시 검증한 뒤 머지한다.</p></div>
+    <div><h3>main이 앞서 가면</h3><p>다른 이슈가 먼저 합쳐지면 브랜치에 최신 main을 받아 다시 검증한 뒤 머지한다. 충돌하면 자동 해결 세션이 ADR과 SPEC을 근거로 해소한다.</p></div>
   </div>
   <div class="simbar"></div>
   <aside class="notes">이슈마다 **작업 폴더와 브랜치가 따로** 생겨서 여러 세션이 동시에 돌아도 서로의 파일을 건드리지 않습니다. 서로 무관한 일은 병렬로 가고 앞 결과가 필요한 일은 앞 이슈가 main에 합쳐진 뒤 출발하죠.
-main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
+두 이슈가 같은 곳을 고쳐 충돌하면 **자동 해결 세션**이 떠서 ADR과 SPEC을 근거로 해소합니다.</aside>
 </section>
 
 <section class="slide sim" id="s-issue" data-theme="light" data-speed="1900">
@@ -1404,8 +1402,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
     </div>
   </div>
   <div class="simbar"></div>
-  <aside class="notes">대화에서 확인한 사실은 바로 이슈로 남깁니다. 증거를 파일과 수치로 적고 모르는 것과 파급까지 적어서 **다음 세션이 처음부터 다시 조사하지 않게** 합니다.
-아래 영수증 칸은 단계를 지날 때마다 채워집니다.</aside>
+  <aside class="notes">대화에서 확인한 사실은 바로 이슈로 남깁니다. 증거를 파일과 수치로 적고 모르는 것과 파급까지 적어서 **다음 세션이 처음부터 다시 조사하지 않게** 합니다.</aside>
 </section>
 
 <section class="slide" id="s-spec2" data-theme="light">
@@ -1433,7 +1430,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
       <div class="rv" style="--i:6"><span class="n">5</span><p><b>못 하는 검증도 적는다</b>R 실행 확인은 서버 재실행 이슈로 넘긴다고 명시했다.</p></div>
     </div>
   </div>
-  <aside class="notes">설계 선택이 있는 일은 코드보다 SPEC을 먼저 씁니다. 연구로 치면 **methods 절부터 쓰는 셈**이죠.
+  <aside class="notes">설계 선택이 있는 일은 코드보다 SPEC을 먼저 씁니다.
 고칠 범위와 바꾸지 않을 것, 성공을 판정할 기준을 먼저 정해 두면 결과를 원하는 쪽으로 맞추기 어렵습니다.</aside>
 </section>
 
@@ -1466,8 +1463,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
     </div>
   </div>
   <div class="simbar"></div>
-  <aside class="notes">구현하기 전에 SPEC을 **쓰지 않은 다른 모델**이 읽습니다. 판정은 APPROVE나 REVISE이고 지적은 하나씩 판단해 한 번에 고칩니다.
-영수증에는 리뷰한 커밋이 붙고 구현 시작은 사람만 승인합니다.</aside>
+  <aside class="notes">구현하기 전에 SPEC을 **쓰지 않은 다른 모델**의 독립리뷰를 거치게 해서 해당 spec의 견고성을 확인합니다.</aside>
 </section>
 
 <section class="slide" id="s-gates2" data-theme="light">
@@ -1496,8 +1492,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
     <div class="rv" style="--i:5"><b>영수증은 커밋에 묶인다</b>리뷰 뒤 코드가 바뀌면 그 영수증으로는 자동 머지되지 않는다.</div>
     <div class="rv" style="--i:6"><b>리뷰어 선택 순서</b>내가 지명 → 이슈 설정 → 기본값 Codex astra.</div>
   </div>
-  <aside class="notes">리뷰는 두 번이고 묻는 것이 다릅니다. SPEC 리뷰는 **무엇을 할지**가 맞는지, 구현 리뷰는 한 것이 승인된 범위와 계약을 지키는지 봅니다.
-독립 리뷰는 게이트마다 한 번이라 끝없이 주고받지 않습니다.</aside>
+  <aside class="notes">리뷰는 두 번이고 묻는 것이 다릅니다. SPEC 리뷰는 **무엇을 할지**가 맞는지, 구현 리뷰는 한 것이 승인된 범위와 계약을 지키는지 봅니다.</aside>
 </section>
 
 <section class="slide sim" id="s-adr" data-theme="light" data-speed="1700">
@@ -1530,8 +1525,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
     </div>
   </div>
   <div class="simbar"></div>
-  <aside class="notes">몇 달 뒤 **"왜 이렇게 했지?"**라고 물을 결정은 ADR로 남깁니다. 재생하면 에이전트가 세 조건을 판정하고 같은 PR에 ADR 파일을 쓰고 목록이 자동으로 다시 만들어지는 과정이 나옵니다.
-결정이 바뀌면 원본을 고치지 않고 새 ADR로 대체합니다.</aside>
+  <aside class="notes">몇 달 뒤 **"왜 이렇게 했지?"**라고 물을 결정은 ADR로 남깁니다. 재생하면 에이전트가 세 조건을 판정하고 같은 PR에 ADR 파일을 쓰고 목록이 자동으로 다시 만들어지는 과정이 나옵니다.</aside>
 </section>
 
 <section class="slide sim" id="s-implflow" data-theme="light" data-speed="1800">
@@ -1627,8 +1621,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
     <div><b>큰 데이터는 서버에만</b>원자료와 참조 DB는 git에 올리지 않는다</div>
     <div><b>성공 여부는 JobState로</b>메모리 초과로 죽은 잡도 종료 코드가 0일 수 있다</div>
   </div>
-  <aside class="notes">원자료와 참조 DB는 **서버에만** 두고 git에 올리지 않습니다. 결과는 필요한 것만 Mac으로 가져와 확인한 뒤 커밋하죠.
-메모리 초과로 죽은 잡도 종료 코드가 0일 수 있어서 성공 여부는 Slurm JobState로 봅니다.</aside>
+  <aside class="notes">원자료와 참조 DB는 **서버에만** 두고 git에 올리지 않습니다. 결과는 필요한 것만 Mac으로 가져와 확인한 뒤 커밋하죠.</aside>
 </section>
 
 <section class="slide" id="s-done" data-theme="light">
@@ -1661,13 +1654,12 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
       <div class="newis"><div class="iid">새 발견 → 새 이슈</div><p>재실행 중 새로 찾은 문제는 이 이슈 안에서 고치지 않고 따로 떼어 낸다.</p></div>
     </div>
   </div>
-  <aside class="notes">이슈를 닫는 기준은 **결과가 실제로 바뀌었는지**입니다. 바뀌지 않아야 할 결과가 그대로인지도 같이 확인합니다.
-수용 검사가 걸렸을 때 진행할지와 결과 해석은 제가 판단하고 새로 발견한 문제는 별도 이슈로 떼어 냅니다.</aside>
+  <aside class="notes">이슈를 닫는 기준은 **결과가 실제로 바뀌었는지**입니다. 바뀌지 않아야 할 결과가 그대로인지도 같이 확인합니다.</aside>
 </section>
 
 <section class="slide dark divider" id="s-part2" data-theme="dark">
   <div class="wrap"><div class="pn">2</div><div><h2>Multiple issues in parallel</h2><p class="ko-sub">여러 저장소의 이슈를 함께 처리한다</p>
-    <ul><li>대기열과 병렬 실행</li><li>밤사이 진행 (예시)</li><li>실패와 안전한 복귀 (예시)</li><li>실시간 화면: beads-ui</li></ul></div></div>
+    <ul><li>대기열과 병렬 실행</li><li>밤사이 진행 (예시)</li><li>실패와 안전한 복귀 (예시)</li><li>실시간 화면: beads-ui와 계정 전환</li></ul></div></div>
   <aside class="notes">지금까지는 이슈 하나의 흐름이었습니다. 실제로는 저장소 여러 곳의 이슈가 **동시에** 움직입니다.</aside>
 </section>
 
@@ -1678,8 +1670,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
   </div>
   <div class="lanes" id="lanes"></div>
   <div class="sim-log" id="sim-log">재생을 누르면 Worker가 대기열을 처리합니다. 동시 실행 2칸.</div>
-  <aside class="notes">가상의 작업이 대기열을 지나가는 모의 화면이고 레인 이름은 실제 Worker 탭과 같습니다. **직렬 레인**은 앞 일이 닫혀야 뒤 일이 출발해서 순서가 중요한 일에 씁니다.
-노란 테두리는 구현 시작 승인 대기이고 사람만 답할 수 있습니다.</aside>
+  <aside class="notes">가상의 작업이 대기열을 지나가는 모의 화면이고 레인 이름은 실제 Worker 탭과 같습니다. **직렬 레인**은 앞 일이 닫혀야 뒤 일이 출발해서 순서가 중요한 일에 씁니다.</aside>
 </section>
 
 <section class="slide" id="s-parallel" data-theme="light">
@@ -1735,8 +1726,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
     </div>
   </div>
   <div class="simbar"></div>
-  <aside class="notes">서버 잡이 실패해도 **이미 끝난 단계의 산출은 지키고** 남은 단계만 다시 돌립니다. 두 번째 실패의 원인이 다르면 새 이슈로 떼어 따로 고칩니다.
-오른쪽은 실패했을 때 자동으로 하는 일과 저에게 묻는 일의 경계입니다.</aside>
+  <aside class="notes">서버 잡이 실패해도 **이미 끝난 단계의 산출은 지키고** 남은 단계만 다시 돌립니다. 두 번째 실패의 원인이 다르면 새 이슈로 떼어 따로 고칩니다.</aside>
 </section>
 
 <section class="slide dark" id="s-live" data-theme="dark">
@@ -1749,37 +1739,16 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
       <p class="fb">연결이 안 되면 다음 네 장의 캡처로 진행합니다. 캡처는 미리 찍어 둔 화면입니다.</p>
     </div>
     <ol class="runs">
-      <li class="rv" style="--i:1"><div><b>Monitor</b><span>저장소 전체의 지금 상태와 남은 사용량</span></div></li>
-      <li class="rv" style="--i:2"><div><b>Worker · 저장소 하나</b><span>후보 → 대기(병렬·직렬) → 실행 중 → PR 대기 → 완료</span></div></li>
+      <li class="rv" style="--i:1"><div><b>Worker · 저장소 하나</b><span>후보 → 대기(병렬·직렬) → 실행 중 → PR 대기 → 완료</span></div></li>
+      <li class="rv" style="--i:2"><div><b>실행 중인 세션</b><span>질문과 로그, 토큰과 비용</span></div></li>
       <li class="rv" style="--i:3"><div><b>이슈 상세</b><span>단계 막대와 영수증 커밋, 본문과 작업 보고서</span></div></li>
       <li class="rv" style="--i:4"><div><b>설정과 프리셋</b><span>지휘·구현·리뷰 모델 조합, 이슈별 핀</span></div></li>
-      <li class="rv" style="--i:5"><div><b>실행 중인 세션</b><span>질문과 로그, 토큰과 비용</span></div></li>
+      <li class="rv" style="--i:5"><div><b>Monitor</b><span>저장소 전체의 지금 상태, 남은 사용량과 계정</span></div></li>
       <li class="rv" style="--i:6"><div><b>덱으로 돌아오기</b><span>다음 준비된 이슈를 가리키고 마무리</span></div></li>
     </ol>
   </div>
-  <aside class="notes">여기서 브라우저 탭을 바꿔 **지금 돌아가는 beads-ui**를 보여 드립니다. 주소는 http://100.122.98.8:3000 이고 Monitor, Worker, 이슈 상세 순서로 갑니다.
+  <aside class="notes">여기서 브라우저 탭을 바꿔 **지금 돌아가는 beads-ui**를 보여 드립니다. 주소는 http://100.122.98.8:3000 이고 Worker, 이슈 상세, Monitor 순서로 갑니다.
 접속이 안 되면 다음 네 장의 캡처로 같은 순서를 설명합니다.</aside>
-</section>
-
-<section class="slide dark" id="s-monitor" data-theme="dark">
-  <div class="wrap">
-    <h2>beads-ui:<br>Monitor tab</h2>
-    <p class="ko-sub">모든 저장소의 진행 상황</p>
-    <ol>
-      <li><span class="n">1</span><span><b>남은 사용량</b>Claude와 Codex 계정별 5시간, 7일 한도</span></li>
-      <li><span class="n">2</span><span><b>저장소 타일</b>저장소마다 자동화·자동 머지 스위치와 오케·워커·리뷰 모델</span></li>
-      <li><span class="n">3</span><span><b>후보에서 완료까지</b>후보 → 대기 → 실행 중 → PR 대기 → 완료</span></li>
-      <li><span class="n">4</span><span><b>카드 한 장 = 이슈 하나</b>단계 막대, 선행 관계, 오케·워커 모델</span></li>
-    </ol>
-  </div>
-  <div class="shot win"><div class="bar"><i></i><i></i><i></i><span>Mac Studio :3000 / #/monitor · 캡처 화면 (실시간 아님)</span></div><img src="{{IMG:monitor}}" alt="beads-ui 모니터 화면 캡처"></div>
-  <div class="mark" style="left:1100px;top:100px">1</div>
-  <div class="mark" style="left:546px;top:152px">2</div>
-  <div class="mark" style="left:546px;top:274px">3</div>
-  <div class="mark" style="left:838px;top:640px">4</div>
-  <div class="meta">오픈소스 beads-ui를 포크해 연구용 관제 화면으로 키웠습니다. 4번 카드는 microbiome_bile의 실제 대기 작업입니다.</div>
-  <aside class="notes">Monitor 탭은 **모든 저장소의 진행 상황**을 한 화면에 모읍니다. 저장소마다 타일이 하나 있고 카드 한 장이 이슈 하나입니다.
-일이 끝났는지는 서버가 실제 PR을 확인해서 판단합니다.</aside>
 </section>
 
 <section class="slide dark" id="s-worker" data-theme="dark">
@@ -1799,8 +1768,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
   <div class="cmark" style="left:741px;top:468px">3</div>
   <div class="cmark" style="left:1087px;top:381px">4</div>
   <div class="cmark" style="left:1394px;top:348px">5</div>
-  <aside class="notes">Worker 탭은 저장소 하나를 자세히 봅니다. 후보를 대기열로 끌어다 놓으면 병렬 영역은 빈 칸이 나는 대로 출발하고 **직렬 레인은 앞 일이 끝나야** 출발합니다.
-실행 중인 세션은 열어 보거나 멈출 수 있습니다.</aside>
+  <aside class="notes">Worker 탭은 저장소 하나를 자세히 봅니다. 후보를 대기열로 끌어다 놓으면 병렬 영역은 빈 칸이 나는 대로 출발하고 **직렬 레인은 앞 일이 끝나야** 출발합니다.</aside>
 </section>
 
 <section class="slide dark" id="s-detail" data-theme="dark">
@@ -1821,8 +1789,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
   <div class="cmark" style="left:780px;top:259px">3</div>
   <div class="cmark" style="left:780px;top:372px">4</div>
   <div class="cmark" style="left:780px;top:608px">5</div>
-  <aside class="notes">카드를 누르면 이슈 상세가 열립니다. 위쪽 막대는 리뷰와 구현이 어디까지 왔는지이고 **아래 숫자가 영수증에 남은 커밋**입니다.
-이 이슈만 다른 모델로 돌리고 싶으면 여기서 프리셋을 고릅니다.</aside>
+  <aside class="notes">카드를 누르면 이슈 상세가 열립니다. 위쪽 막대는 리뷰와 구현이 어디까지 왔는지이고 **아래 숫자가 영수증에 남은 커밋**입니다.</aside>
 </section>
 
 <section class="slide dark" id="s-settings" data-theme="dark">
@@ -1847,10 +1814,67 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
   <aside class="notes">지휘, 구현, 리뷰 모델을 매번 고르기 번거로워서 **조합에 이름을 붙인 프리셋**으로 씁니다. 보통은 저장소 전체에 적용하고 특정 이슈만 다르게 하고 싶으면 그 이슈에 핀을 꽂습니다.</aside>
 </section>
 
+<section class="slide dark" id="s-monitor" data-theme="dark">
+  <div class="wrap">
+    <h2>beads-ui:<br>Monitor tab</h2>
+    <p class="ko-sub">모든 저장소의 진행 상황</p>
+    <ol>
+      <li><span class="n">1</span><span><b>남은 사용량</b>Claude와 Codex 계정별 5시간, 7일 한도</span></li>
+      <li><span class="n">2</span><span><b>저장소 타일</b>저장소마다 자동화·자동 머지 스위치와 오케·워커·리뷰 모델</span></li>
+      <li><span class="n">3</span><span><b>후보에서 완료까지</b>후보 → 대기 → 실행 중 → PR 대기 → 완료</span></li>
+      <li><span class="n">4</span><span><b>카드 한 장 = 이슈 하나</b>단계 막대, 선행 관계, 오케·워커 모델</span></li>
+    </ol>
+  </div>
+  <div class="shot win"><div class="bar"><i></i><i></i><i></i><span>Mac Studio :3000 / #/monitor · 캡처 화면 (실시간 아님)</span></div><img src="{{IMG:monitor}}" alt="beads-ui 모니터 화면 캡처"></div>
+  <div class="mark" style="left:1100px;top:100px">1</div>
+  <div class="mark" style="left:546px;top:152px">2</div>
+  <div class="mark" style="left:546px;top:274px">3</div>
+  <div class="mark" style="left:838px;top:640px">4</div>
+  <div class="meta">오픈소스 beads-ui를 포크해 연구용 관제 화면으로 키웠습니다. 4번 카드는 microbiome_bile의 실제 대기 작업입니다.</div>
+  <aside class="notes">Monitor 탭은 **모든 저장소의 진행 상황**을 한 화면에 모읍니다. 저장소마다 타일이 하나 있고 카드 한 장이 이슈 하나입니다.</aside>
+</section>
+
+<section class="slide sim" id="s-accounts" data-theme="light" data-speed="1800">
+  <h2>Multiple accounts</h2>
+  <p class="ko-sub">사용 한도에 걸리면 여유 있는 계정으로 자동 전환</p>
+  <div class="prov"><span class="sim">모의</span></div>
+  <div class="acct">
+    <div class="um">
+      <h5>Claude · 활성 1 / 전체 2</h5>
+      <div class="ua on" id="acA"><div class="hd"><span>계정 A <em class="tg act">active</em></span><span class="tg">1분 전</span></div>
+        <div class="wn"><span>5h</span><span class="bar"><i id="acA5" style="width:27%"></i></span><span id="acA5t">27%</span><span class="rs">↻ 2h 32m · 13:00</span></div>
+        <div class="wn"><span>7d</span><span class="bar"><i style="width:17%"></i></span><span>17%</span><span class="rs">↻ 6d 9h · 10월 13일</span></div>
+        <div class="wn"><span>Fable</span><span class="bar"><i style="width:1%"></i></span><span>0%</span><span class="rs">↻ 6d 9h · 10월 13일</span></div></div>
+      <div class="ua" id="acB"><div class="hd"><span>계정 B</span><span class="sw">전환</span></div>
+        <div class="wn"><span>5h</span><span class="bar"><i style="width:1%"></i></span><span>0%</span><span class="rs">↻ 2h 32m · 13:00</span></div>
+        <div class="wn"><span>7d</span><span class="bar"><i style="width:41%"></i></span><span>41%</span><span class="rs">↻ 3d 4h · 10월 11일</span></div>
+        <div class="wn"><span>Fable</span><span class="bar"><i style="width:7%"></i></span><span>7%</span><span class="rs">↻ 23h 32m · 10월 8일</span></div></div>
+      <div class="runl" id="acRun" data-s="1"><i></i><span>EX-b2 · 계정 A로 실행 중</span></div>
+<h5 style="margin-top:14px">Codex · 활성 1 / 전체 6</h5>
+      <div class="ua on"><div class="hd"><span>계정 1 <em class="tg">pro</em> <em class="tg act">active</em></span><span class="tg">6분 전</span></div>
+        <div class="wn"><span>7d</span><span class="bar"><i class="warn" style="width:60%"></i></span><span>60%</span><span class="rs">↻ 2d 22h · 10월 10일</span></div></div>
+      <div class="ua mini"><div class="hd"><span>계정 2~6 <em class="tg">business · pro lite · free</em></span><span class="sw">전환</span></div></div>
+    </div>
+    <div class="acmd">
+      <div><h3>Claude는 cswap</h3><p>계정 정보를 macOS 키체인에 두고 바꿔 끼운다. 한 터미널에서만 다른 계정으로 돌리거나 대화 이력을 계정끼리 공유할 수도 있다.</p>
+<pre><span class="p">$</span> cswap list          <span class="p"># 계정별 5h · 7d 사용량</span>
+<span class="p">$</span> cswap switch --strategy best
+<span class="p">$</span> cswap run 4 --share-history</pre></div>
+      <div><h3>Codex는 codex-auth</h3><p>같은 방식으로 6개 계정을 나열하고 바꾼다.</p>
+<pre><span class="p">$</span> codex-auth list --live
+<span class="p">$</span> codex-auth switch -   <span class="p"># 직전 계정으로</span></pre></div>
+      <div><h3>한도에 걸리면 Worker가 자동 전환</h3><p>허용해 둔 계정 중 여유 있는 계정으로 그 실행만 넘긴다. 기다림 모드로 두면 전환하지 않고 리셋 뒤 자동으로 이어 간다. 화면의 [전환] 버튼은 cswap과 codex-auth를 직접 부른다.</p></div>
+    </div>
+  </div>
+  <div class="simbar"></div>
+  <aside class="notes">사용 한도에 걸리면 Worker가 **허용해 둔 내 계정 중 여유 있는 계정으로** 그 실행만 넘깁니다. 기다림 모드로 두면 넘기지 않고 리셋 뒤에 자동으로 이어 가죠.
+저는 Claude는 100달러 요금제와 Team 계정을, Codex는 200달러 요금제를 구독하고 있습니다.</aside>
+</section>
+
 <section class="slide dark divider" id="s-part3" data-theme="dark">
-  <div class="wrap"><div class="pn">3</div><div><h2>Roles, models, cost, and remote access</h2><p class="ko-sub">사람과 AI의 역할, 모델 고르기, 계정과 비용, 원격 접속</p>
-    <ul><li>사람이 정하는 것</li><li>모델과 effort</li><li>계정 자동 전환과 비용</li><li>폰과 원격 접속</li></ul></div></div>
-  <aside class="notes">마지막 부분은 **사람이 정하는 것**과 모델 고르기입니다. 계정과 비용, 밖에서 접속하는 방법까지 이어집니다.</aside>
+  <div class="wrap"><div class="pn">3</div><div><h2>Roles, models, cost, and remote access</h2><p class="ko-sub">사람과 AI의 역할, 모델 고르기, 비용, 원격 접속</p>
+    <ul><li>사람이 정하는 것</li><li>모델과 effort</li><li>비용</li><li>폰과 원격 접속</li></ul></div></div>
+  <aside class="notes">마지막 부분은 **사람이 정하는 것**과 모델 고르기입니다. 비용과 밖에서 접속하는 방법까지 이어집니다.</aside>
 </section>
 
 <section class="slide" id="s-who" data-theme="light">
@@ -1902,8 +1926,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
     </div>
   </div>
   <p class="small" style="margin-top:16px">오른쪽 숫자는 최근 30일 사용량을 API 가격으로 환산한 값. 역할 배정은 제공사 문서와 외부 비교를 근거로 정한 가설이고 beads-ui 비교 탭의 기록으로 계속 확인한다. 작업 종류로 고르고 파일 수나 변경 크기로는 고르지 않는다.</p>
-  <aside class="notes">Opus가 **지휘와 복잡한 구현**을 맡고 Sonnet은 범위와 검증이 정해진 구현에 씁니다. Codex astra는 원인 진단에 강해서 리뷰 기본값으로 두었습니다.
-오른쪽 숫자는 최근 30일 사용량을 API 가격으로 환산한 값입니다.</aside>
+  <aside class="notes">Opus가 **지휘와 복잡한 구현**을 맡고 Sonnet은 범위와 검증이 정해진 구현에 씁니다. Codex astra는 원인 진단에 강해서 리뷰 기본값으로 두었습니다.</aside>
 </section>
 
 <section class="slide" id="s-models" data-theme="light">
@@ -1927,8 +1950,7 @@ main에는 이슈 하나가 커밋 하나로 남습니다.</aside>
       <p>저장소마다 프리셋을 적용하고 특정 이슈에만 다른 모델을 쓰고 싶으면 그 이슈에 핀을 꽂는다. 핀이 프리셋보다 우선.</p>
     </div>
   </div>
-  <aside class="notes">저는 무엇을 언제 할지 정하고 **구현 시작과 여러 단계짜리 계획만** 직접 승인합니다. 지휘 모델은 일을 쪼개 맡긴 뒤 돌아온 결과를 다시 돌려 봅니다.
-모델 조합은 프리셋으로 한 번에 고릅니다.</aside>
+  <aside class="notes">저는 무엇을 언제 할지 정하고 **구현 시작과 여러 단계짜리 계획만** 직접 승인합니다. 지휘 모델은 일을 쪼개 맡긴 뒤 돌아온 결과를 다시 돌려 봅니다.</aside>
 </section>
 
 <section class="slide" id="s-effort" data-theme="light">
@@ -1954,43 +1976,6 @@ impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></di
 구현 sonnet · auto</code><p>auto면 지휘 모델이 작업마다 고른다</p></div>
   </div>
   <aside class="notes">effort를 높이면 더 오래 생각해서 정확해지지만 느리고 토큰을 많이 씁니다. 제 기준은 변경 크기보다 **작업의 모호함과 위험**입니다.</aside>
-</section>
-
-<section class="slide sim" id="s-accounts" data-theme="light" data-speed="1800">
-  <h2>Multiple accounts</h2>
-  <p class="ko-sub">사용 한도에 걸리면 여유 있는 계정으로 자동 전환</p>
-  <div class="prov"><span class="sim">모의</span></div>
-  <div class="acct">
-    <div class="um">
-      <h5>Claude · 활성 1 / 전체 2</h5>
-      <div class="ua on" id="acA"><div class="hd"><span>계정 A <em class="tg act">active</em></span><span class="tg">1분 전</span></div>
-        <div class="wn"><span>5h</span><span class="bar"><i id="acA5" style="width:27%"></i></span><span id="acA5t">27%</span><span class="rs">↻ 2h 32m · 13:00</span></div>
-        <div class="wn"><span>7d</span><span class="bar"><i style="width:17%"></i></span><span>17%</span><span class="rs">↻ 6d 9h · 10월 13일</span></div>
-        <div class="wn"><span>Fable</span><span class="bar"><i style="width:1%"></i></span><span>0%</span><span class="rs">↻ 6d 9h · 10월 13일</span></div></div>
-      <div class="ua" id="acB"><div class="hd"><span>계정 B</span><span class="sw">전환</span></div>
-        <div class="wn"><span>5h</span><span class="bar"><i style="width:1%"></i></span><span>0%</span><span class="rs">↻ 2h 32m · 13:00</span></div>
-        <div class="wn"><span>7d</span><span class="bar"><i style="width:41%"></i></span><span>41%</span><span class="rs">↻ 3d 4h · 10월 11일</span></div>
-        <div class="wn"><span>Fable</span><span class="bar"><i style="width:7%"></i></span><span>7%</span><span class="rs">↻ 23h 32m · 10월 8일</span></div></div>
-      <div class="runl" id="acRun" data-s="1"><i></i><span>EX-b2 · 계정 A로 실행 중</span></div>
-<h5 style="margin-top:14px">Codex · 활성 1 / 전체 6</h5>
-      <div class="ua on"><div class="hd"><span>계정 1 <em class="tg">pro</em> <em class="tg act">active</em></span><span class="tg">6분 전</span></div>
-        <div class="wn"><span>7d</span><span class="bar"><i class="warn" style="width:60%"></i></span><span>60%</span><span class="rs">↻ 2d 22h · 10월 10일</span></div></div>
-      <div class="ua mini"><div class="hd"><span>계정 2~6 <em class="tg">business · pro lite · free</em></span><span class="sw">전환</span></div></div>
-    </div>
-    <div class="acmd">
-      <div><h3>Claude는 cswap</h3><p>계정 정보를 macOS 키체인에 두고 바꿔 끼운다. 한 터미널에서만 다른 계정으로 돌리거나 대화 이력을 계정끼리 공유할 수도 있다.</p>
-<pre><span class="p">$</span> cswap list          <span class="p"># 계정별 5h · 7d 사용량</span>
-<span class="p">$</span> cswap switch --strategy best
-<span class="p">$</span> cswap run 4 --share-history</pre></div>
-      <div><h3>Codex는 codex-auth</h3><p>같은 방식으로 6개 계정을 나열하고 바꾼다.</p>
-<pre><span class="p">$</span> codex-auth list --live
-<span class="p">$</span> codex-auth switch -   <span class="p"># 직전 계정으로</span></pre></div>
-      <div><h3>한도에 걸리면 Worker가 자동 전환</h3><p>허용해 둔 계정 중 여유 있는 계정으로 그 실행만 넘긴다. 기다림 모드로 두면 전환하지 않고 리셋 뒤 자동으로 이어 간다. 화면의 [전환] 버튼은 cswap과 codex-auth를 직접 부른다.</p></div>
-    </div>
-  </div>
-  <div class="simbar"></div>
-  <aside class="notes">사용 한도에 걸리면 Worker가 **허용해 둔 내 계정 중 여유 있는 계정으로** 그 실행만 넘깁니다. 기다림 모드로 두면 넘기지 않고 리셋 뒤에 자동으로 이어 가죠.
-화면은 이메일을 가리려고 다시 그린 예시입니다.</aside>
 </section>
 
 <section class="slide" id="s-tokens" data-theme="light">
@@ -2045,8 +2030,7 @@ impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></di
     </div>
     <div class="note rv" style="--i:5"><b>숫자를 읽는 법</b><br>비용은 토큰을 API 가격으로 환산한 값이다. 실제 지출은 Claude·Codex 정액 구독료다. 최근 31일 203억 토큰은 환산하면 $14.3k.<br><br>사용 한도에 걸리면 내가 허용해 둔 내 계정들 중 여유 있는 쪽으로 그 실행만 넘긴다. 한도를 우회하지 않고 이미 가진 용량을 나눠 쓴다.</div>
   </div>
-  <aside class="notes">어떤 모델 조합을 쓸지는 **실행 기록**을 보고 정합니다. 착지율은 판정이 끝난 세션만 분모로 셉니다.
-비용은 API 가격 환산값이고 Opus 지휘에 Sonnet 구현이 더 쌌지만 아직 표본이 적습니다.</aside>
+  <aside class="notes">어떤 모델 조합을 쓸지는 **실행 기록**을 보고 정합니다. 착지율은 판정이 끝난 세션만 분모로 셉니다.</aside>
 </section>
 
 <section class="slide sim" id="s-phone" data-theme="light" data-speed="1800">
@@ -2072,8 +2056,7 @@ impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></di
     </div></div>
   </div>
   <div class="simbar"></div>
-  <aside class="notes">Claude 세션마다 Discord 스레드가 하나씩 생기고 **스레드에 답하면 Mac의 세션 입력창으로** 들어갑니다. 서버 잡 알림도 같은 곳으로 와서 밖에서도 진행을 따라갈 수 있습니다.
-폰 화면은 재구성한 예시입니다.</aside>
+  <aside class="notes">Claude 세션마다 Discord 스레드가 하나씩 생기고 **스레드에 답하면 Mac의 세션 입력창으로** 들어갑니다. 서버 잡 알림도 같은 곳으로 와서 밖에서도 진행을 따라갈 수 있습니다.</aside>
 </section>
 
 <section class="slide" id="s-remote" data-theme="light">
@@ -2086,7 +2069,6 @@ impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></di
         <div><span class="n">2</span><p>Termius에 Mac Studio를 tailnet 주소로 등록<small>접속은 SSH 키로. Mac에 Termius 전용 키를 따로 등록해 두었다</small></p></div>
         <div><span class="n">3</span><p>접속한 뒤 <code>tmux attach</code><small>Mac에서 돌던 세션이 그대로 나온다. 탭 이동 Alt+f/b, 칸 이동 Alt+h/j/k/l, 칸 확대 Ctrl+b z, 손가락 스크롤</small></p></div>
         <div><span class="n">4</span><p>화면은 브라우저로<small><code>&lt;tailnet 주소&gt;:3000</code> beads-ui, <code>:9000</code> 미리보기(이 발표 자료). 주소는 <code>ts-ip</code>로 확인</small></p></div>
-        <div><span class="n">5</span><p>공용 인터넷에 공개한 주소는 하나<small>ChatGPT의 dot이 들어오는 중계 주소만 Tailscale Funnel로 열고 OAuth 인증을 붙였다. 나머지는 tailnet 안에서만 보인다</small></p></div>
       </div>
       <p class="small" style="margin-top:14px">오른쪽 화면은 재구성한 예시입니다.</p>
     </div>
@@ -2105,8 +2087,7 @@ impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></di
       <div class="keys"><span>esc</span><span>ctrl</span><span>alt</span><span>tab</span><span>←</span><span>→</span><span>↑</span><span>↓</span></div>
     </div></div>
   </div>
-  <aside class="notes">기기마다 Tailscale을 같은 계정으로 깔면 공유기 포트를 열지 않아도 서로 보입니다. 폰에서는 Termius로 Mac에 SSH 접속한 뒤 **tmux attach**로 돌던 세션을 그대로 엽니다.
-공개 주소는 dot 중계 하나이고 나머지는 tailnet 밖에서 보이지 않습니다.</aside>
+  <aside class="notes">기기마다 Tailscale을 같은 계정으로 깔면 공유기 포트를 열지 않아도 서로 보입니다. 폰에서는 Termius로 Mac에 SSH 접속한 뒤 **tmux attach**로 돌던 세션을 그대로 엽니다.</aside>
 </section>
 
 <section class="slide dark divider" id="s-extra" data-theme="dark">
@@ -2129,8 +2110,7 @@ impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></di
       <div class="ex"><i>예</i>"리뷰 받아줘" → review 스킬을 읽고 그 절차대로 진행</div></div>
   </div>
   <p class="layers-foot">지침 파일이 길어지면 덜 지켜진다. 항상 필요한 규칙만 남기고 같은 실수가 반복되면 그때 규칙을 추가한다.</p>
-  <aside class="notes">에이전트는 세션을 시작할 때 지침 파일부터 읽습니다. 공통 규칙은 전역 지침에 적고 데이터 위치와 검증 방법은 **저장소의 AGENTS.md**에 적습니다.
-긴 절차는 스킬로 빼고 처음에는 저장소마다 AGENTS.md 한 장이면 충분합니다.</aside>
+  <aside class="notes">에이전트는 세션을 시작할 때 지침 파일부터 읽습니다. 공통 규칙은 전역 지침에 적고 데이터 위치와 검증 방법은 **저장소의 AGENTS.md**에 적습니다.</aside>
 </section>
 
 <section class="slide" id="s-sah" data-theme="light">
@@ -2148,17 +2128,16 @@ impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></di
     <p><b>플러그인</b> 남이 만든 스킬·훅·명령 묶음. 지금은 상태줄(claude-hud), Discord, 화면 디자인 3개를 켜 두었다.</p>
     <p><b>MCP</b> 외부 서비스 연결. 같은 저장소의 코드 구조 검색 도구나 Discord 연결이 MCP로 붙는다.</p>
   </div>
-  <aside class="notes">스킬은 작업 절차서라 해당 작업을 할 때만 본문을 읽습니다. 지침은 모델이 어길 수 있어서 **꼭 지켜야 하는 규칙은 훅으로 막습니다**.
-처음에는 자주 하는 절차 하나를 스킬로 만들어 보세요.</aside>
+  <aside class="notes">스킬은 작업 절차서라 해당 작업을 할 때만 본문을 읽습니다. 지침은 모델이 어길 수 있어서 **꼭 지켜야 하는 규칙은 훅으로 막습니다**.</aside>
 </section>
 
 <section class="slide dark" id="s-net" data-theme="dark">
   <svg id="net-svg" viewBox="0 0 1600 900" aria-label="tailnet으로 묶인 장치와 서비스 지도"></svg>
   <div class="wrap">
     <h2>Network:<br>one Mac and Tailscale</h2>
-    <p class="lead" style="font-size:21px">모든 세션과 DB와 화면은 집의 Mac Studio에서 돌고 폰·아이패드·노트북은 Tailscale 사설망으로 붙습니다. 공용 인터넷에 공개한 것은 dot 중계 주소 하나입니다.</p>
+    <p class="lead" style="font-size:21px">모든 세션과 DB와 화면은 집의 Mac Studio에서 돌고 폰·아이패드·노트북은 Tailscale 사설망으로 붙습니다.</p>
   </div>
-  <aside class="notes">에이전트 세션, 이슈 DB, 관제 화면, 이 발표 자료까지 **집의 Mac Studio 한 대**에서 돕니다. 폰과 노트북은 Tailscale 사설망으로 붙고 공용 인터넷에 공개한 건 dot 중계 주소 하나입니다.</aside>
+  <aside class="notes">에이전트 세션, 이슈 DB, 관제 화면, 이 발표 자료까지 **집의 Mac Studio 한 대**에서 돕니다. 폰과 노트북은 Tailscale 사설망으로 붙습니다.</aside>
 </section>
 
 <section class="slide dark" id="s-next" data-theme="dark">
@@ -3505,8 +3484,7 @@ Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을
       { x: 800, y: 755, r: 18, t: 'NAS', s: ['DB 백업 14세대'], c: '#7B96FF' },
       { x: 1350, y: 330, r: 20, t: 'wallace', s: ['Slurm, 연구 파이프라인'], c: '#45D98C', ssh: true },
       { x: 1390, y: 540, r: 20, t: 'fisher', s: ['GPU 학습'], c: '#45D98C', ssh: true },
-      { x: 1260, y: 175, r: 18, t: 'Discord', s: ['봇 연결', 'Mac에서 나가는 방향만'], c: '#F4C84A', out: true },
-      { x: 1330, y: 735, r: 18, t: 'dot 중계', s: ['Funnel로 이것만 공개', 'OAuth 인증'], c: '#F4C84A', out: true }
+      { x: 1260, y: 175, r: 18, t: 'Discord', s: ['봇 연결', 'Mac에서 나가는 방향만'], c: '#F4C84A', out: true }
     ];
     let s = '';
     s += `<ellipse cx="910" cy="480" rx="390" ry="320" fill="none" stroke="rgba(123,150,255,.28)" stroke-width="1.2" stroke-dasharray="3 6"/>`;
