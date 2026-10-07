@@ -1226,6 +1226,13 @@ body.dk-receiver .jr .wire { animation: none !important; }
 #s-live h2 { font-size: 88px; letter-spacing: -0.04em; display: flex; align-items: center; gap: 26px; }
 #s-live h2 .ld { width: 30px; height: 30px; border-radius: 50%; background: #E5484D; animation: livePulse 1.6s infinite; }
 #s-live .url { margin-top: 26px; font-family: var(--mono); font-size: 18px; color: var(--d-ink-2); }
+#s-embed .embnote { font-size: 15px; line-height: 1.6; color: var(--d-ink-2); }
+#s-embed .win .bar .embopen { margin-left: auto; font-size: 12px; color: #A3ABB9; font-family: var(--mono); text-decoration: none; }
+#s-embed .emb { background: #0B0E14; }
+#s-embed .emb::after { display: none; }
+#s-embed .emb iframe { position: absolute; left: 0; top: 0; width: 100%; height: 100%; border: 0; }
+#s-embed .embwait { position: absolute; inset: 0; display: none; place-items: center; font-size: 18px; color: var(--d-ink-3); }
+body.dk-receiver #s-embed .embwait { display: grid; }
 #s-live .fb { margin-top: 40px; font-size: 17px; line-height: 1.6; color: var(--d-ink-2); border-left: 2px solid #3A404C; padding-left: 16px; max-width: 560px; }
 .runs { list-style: none; counter-reset: rn; margin-top: 8px; }
 .runs li { counter-increment: rn; display: grid; grid-template-columns: 40px 1fr; gap: 10px; padding: 13px 0; border-top: 1px solid var(--d-rule); }
@@ -1285,7 +1292,6 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <canvas data-canvas="title"></canvas>
   <div class="wrap">
     <h1>How I run research work<br>with AI agents</h1>
-    <p class="lead">대화에서 시작한 작업을 이슈로 기록하고 리뷰와 서버 분석을 거쳐 끝내는 방식</p>
   </div>
   <div class="by">Ilsun Yun &nbsp;/&nbsp; Lab group meeting, October 2026</div>
   <aside class="notes">연구 저장소와 AI 세션이 늘면 어디까지 했고 다음에 무엇을 할지가 흩어집니다. 오늘은 일을 **이슈 단위로 기록하고 리뷰를 거쳐 끝내는 방식**을 보여 드리겠습니다.</aside>
@@ -1740,7 +1746,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
       <h2><span class="ld"></span>Live: beads-ui</h2>
       <p class="ko-sub">지금 돌아가는 화면으로 넘어갑니다</p>
       <div class="url">Mac Studio :3000 · tailnet</div>
-      <p class="fb">연결이 안 되면 다음 네 장의 캡처로 진행합니다. 캡처는 미리 찍어 둔 화면입니다.</p>
+      <p class="fb">연결이 안 되면 실시간 장 뒤의 캡처 네 장으로 진행합니다. 캡처는 미리 찍어 둔 화면입니다.</p>
     </div>
     <ol class="runs">
       <li class="rv" style="--i:1"><div><b>Worker · 저장소 하나</b><span>후보 → 대기(병렬·직렬) → 실행 중 → PR 대기 → 완료</span></div></li>
@@ -1751,8 +1757,19 @@ body.dk-receiver .jr .wire { animation: none !important; }
       <li class="rv" style="--i:6"><div><b>덱으로 돌아오기</b><span>다음 준비된 이슈를 가리키고 마무리</span></div></li>
     </ol>
   </div>
-  <aside class="notes">여기서 브라우저 탭을 바꿔 **지금 돌아가는 beads-ui**를 보여 드립니다. 주소는 http://100.122.98.8:3000 이고 Worker, 이슈 상세, Monitor 순서로 갑니다.
-접속이 안 되면 다음 네 장의 캡처로 같은 순서를 설명합니다.</aside>
+  <aside class="notes">다음 장에서 **지금 돌아가는 beads-ui**를 바로 보여 드립니다. Worker, 이슈 상세, Monitor 순서로 갑니다.
+접속이 안 되면 뒤의 캡처 네 장으로 같은 순서를 설명합니다.</aside>
+</section>
+
+<section class="slide dark" id="s-embed" data-theme="dark">
+  <div class="prov"><span class="live">실시간</span></div>
+  <div class="caphead">
+    <div><h2>beads-ui: live</h2><p class="ko-sub">지금 돌아가는 화면 · microbiome_bile</p></div>
+    <p class="embnote">처음이면 위쪽 저장소 선택에서 microbiome_bile을 고릅니다. 화면을 누른 뒤 장을 넘기려면 화면 밖을 한 번 누르거나 발표자 창에서 넘깁니다.</p>
+  </div>
+  <div class="capwrap"><div class="win"><div class="bar"><i></i><i></i><i></i><span>Mac Studio :3000 / #/worker · 실시간</span><a class="embopen" target="_blank" rel="noopener">새 탭에서 열기 ↗</a></div><div class="cin emb"><iframe title="beads-ui 실시간 화면"></iframe><p class="embwait">발표자 창 미리보기에서는 실시간 화면을 불러오지 않습니다</p></div></div></div>
+  <aside class="notes">지금 돌아가는 **microbiome_bile의 Worker 탭**입니다. 후보와 대기열, 실행 중인 세션을 눌러 보며 앞에서 본 흐름이 실제 화면에서 어떻게 보이는지 설명합니다.
+처음이면 위쪽 저장소 선택에서 microbiome_bile을 고르고, 장을 넘길 때는 화면 밖을 한 번 누릅니다.</aside>
 </section>
 
 <section class="slide dark" id="s-worker" data-theme="dark">
@@ -3135,6 +3152,13 @@ Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을
   leaveHooks['s-title'] = () => titleScene.stop();
   const endScene = threadScene(document.querySelector('[data-canvas=end]'), { n: 9, y: 318, amp: 18, r: 10, speed: 0.000009 });
   enterHooks['s-next'] = () => endScene.start();
+  const embedUrl = `http://${location.hostname || '100.122.98.8'}:3000/#/worker`;
+  const embedOpen = document.querySelector('#s-embed .embopen');
+  if (embedOpen) { embedOpen.href = embedUrl; }
+  enterHooks['s-embed'] = () => {
+    const frame = document.querySelector('#s-embed iframe');
+    if (ROLE !== 'receiver' && frame && !frame.getAttribute('src')) { frame.src = embedUrl; }
+  };
   leaveHooks['s-next'] = () => endScene.stop();
 
   /* ---------- journey: one issue's beads ---------- */
