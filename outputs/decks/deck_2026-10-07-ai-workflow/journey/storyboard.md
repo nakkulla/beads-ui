@@ -1,13 +1,15 @@
 ---
 status: working-ledger
 deck: journey (custom deck.html, source ../source/deck-journey.src.html)
-bead: UI-nqq2
+bead: UI-nqq2, UI-ympi
 written: 2026-10-08
 ---
 
 # 사실 원장과 시연 운영 메모 — journey 판
 
 이 파일은 storyboard 스킬의 동결본이 아니다. 사용자가 "완성 화면부터 만들고 피드백"을 골라 원장을 화면과 함께 만들었다. 화면의 주장마다 출처를 적고, 확인하지 못한 것은 미확인으로 남긴다. 시각은 모두 KST.
+
+2차(UI-ympi): 본편 영어 제목을 내용을 이름 붙인 명사구로 바꾸고(표지 키커 삭제), 본편 한국어 부제·화면 문구·노트를 korean-humanizer 기준으로 다듬었다. 수치·ID·시각과 원문 인용(이슈 제목, SPEC 제목)은 그대로다. 백업 장은 바꾸지 않았다.
 
 ## 본편 슬라이드별 출처
 
