@@ -4,6 +4,7 @@ scope:
   - server/worker/repo-operation-coordinator.js
   - server/worker/operation-recovery.js
   - server/worker/queue-store.js
+  - server/ws/worker-handlers.js
   - app/views/worker/failure-labels.js
   - docs/superpowers/specs/2026-10-06-repo-ops-log-viewer-design.md
 ---
@@ -48,6 +49,7 @@ Bead: UI-ff7r. 출처: UI-i8cy 스펙
 - child는 같은 `started_at` 값을 launch marker·시작 경계 줄·종료 marker에 쓴다 — `server/worker/repo-operation-runner-child.js:67`, `:81`, `:86`, `:127`; 정산은 그 실행의 종료 marker(`started_at` 포함)를 읽는다 — `server/worker/repo-operation-runner.js:169-176`, `server/worker/repo-operation-coordinator.js:3253`, `:3316`
 - 승인된 bootstrap 재요청은 실패한 operation을 새 `attempt_id`로 다시 열지만 같은 로그 파일을 계속 쓴다 — `server/worker/repo-operation-coordinator.js:1974-1985`, `server/worker/repo-operation-runner.js:33-36`
 - 「🙋 확인 필요」 알림의 `next_action`은 고정 문구이고 수정 Bead를 언급하지 않는다 — `server/worker/completion-intent.js:1648-1651`
+- 서버 투영은 `retry.first_fingerprint`·`retry.first_failure`(code·fingerprint·detail)를 카드에 싣는다 — `server/ws/worker-handlers.js:2862-2870`
 
 ## 3. 설계
 
@@ -107,8 +109,11 @@ Bead: UI-ff7r. 출처: UI-i8cy 스펙
   deploy·verify·job 실패는 `local_code_defect`가 되어 기존 경로대로 수정 Bead
   (`type:bug`, quick_fix handoff)가 자동으로 만들어진다. 사다리(`script_retry`
   한 번)와 수동 작업 제외 규칙은 바뀌지 않는다.
-- 실패 카드의 "같은 실패 / 다른 실패" 라벨은 이제 실제 재현 여부를 말한다. 라벨
-  코드는 바꾸지 않는다.
+- 결정: 실패 카드의 재시도 라벨도 확인 표지를 따른다. 두 지문이 같고 둘 다 확인된
+  증거면 지금처럼 `자동 재시도 1회 — 같은 실패`, 지문이 같지만 어느 한쪽이 확인 안 된
+  증거면 `자동 재시도 1회 — 재현 확인 불가`, 지문이 다르면 지금처럼 `다른 실패`다.
+  서버 투영(`retry.first_failure`와 `failure`)이 확인 표지를 함께 싣는다. 라벨과 수정
+  인계 판정이 같은 규칙을 쓰게 하려는 것이다.
 - 결정: 「🙋 확인 필요」 알림의 `next_action` 문구는 바꾸지 않는다 — 이 스펙은
   증거 범위만 다루고, 수정 Bead 언급 여부는 알림 문구 쪽 결정이다(§경계·후속
   관찰).
@@ -136,7 +141,7 @@ Bead: UI-ff7r. 출처: UI-i8cy 스펙
 4. 요약은 마지막 시도의 첫 실패 표지 줄이다(1차 시도의 줄을 고르지 않는다).
 5. absorbed 성공의 `log_digest`는 2차 출력만의 sha256이다.
 6. 2차 시작 경계 줄이 없고 2차가 무출력·같은 종료 코드로 끝나도 `local_code_defect`가
-   되지 않는다.
+   되지 않고, 카드는 `자동 재시도 1회 — 재현 확인 불가`를 보인다.
 
 ## 6. 테스트
 
@@ -149,6 +154,8 @@ Bead: UI-ff7r. 출처: UI-i8cy 스펙
   marker `started_at` 불일치; 표지 없는 기존 첫 실패 → 인계 없음; bootstrap 재요청 뒤
   같은 로그에서 새 실행의 확인된 지문.
 - `server/worker/operation-recovery.test.js`: 확인된 두 지문 일치만 `local_code_defect`.
+- `app/views/worker/failure-labels.test.js`: 같은 지문·둘 다 확인 → `같은 실패`, 같은
+  지문·한쪽 미확인 → `재현 확인 불가`, 다른 지문 → `다른 실패`.
 
 ## 7. 대안
 
@@ -164,7 +171,7 @@ Bead: UI-ff7r. 출처: UI-i8cy 스펙
 
 - 전제: ADR UI-jbl1 — UI-3vvi-2에서 승계한 "재시도 뒤 같은 fingerprint(exit·log digest)로 재현된 소유 코드 결함의 단일 자동 증명"을 그대로 따르고, digest의 입력 범위만 마지막 시도로 바로잡는다.
 - 전제: ADR UI-u6ud-5 — `script_retry` 한 단계 사다리는 바꾸지 않는다.
-- 정산 digest·요약·성공 `log_digest`를 마지막 시도 출력으로 계산 — 되돌리기 쉬움: 경계 줄 모듈의 함수 하나와 그 호출 두 곳, 실패 기록의 확인 표지 하나이고 계약이 바뀌지 않는다 → ADR 아님
+- 정산 digest·요약·성공 `log_digest`를 마지막 시도 출력으로 계산 — 되돌리기 쉬움: 경계 줄 모듈의 함수 하나와 그 호출 두 곳, 실패 기록의 확인 표지 하나와 라벨 한 갈래이고 계약이 바뀌지 않는다 → ADR 아님
 
 ## 경계·후속
 
