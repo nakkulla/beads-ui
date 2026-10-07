@@ -12,6 +12,7 @@ export default defineConfig([
       'dist',
       '.beads',
       '.worktrees/**',
+      'outputs/decks/**',
       'app/main.bundle.js',
       'app/main.bundle.js.map'
     ]

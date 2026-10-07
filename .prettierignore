@@ -4,6 +4,7 @@ dist
 .beads
 .worktrees/
 .superpowers/
+outputs/decks/
 docs/superpowers/
 CHANGES.md
 app/main.bundle.js

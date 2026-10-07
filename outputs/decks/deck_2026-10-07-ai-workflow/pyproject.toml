@@ -1,0 +1,5 @@
+[project]
+name = "ai-workflow-decks"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = ["fonttools[woff]==4.66.1"]

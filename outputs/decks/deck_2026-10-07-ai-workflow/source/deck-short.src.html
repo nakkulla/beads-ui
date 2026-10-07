@@ -1,0 +1,2579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Agents Intro</title>
+<style>
+/*FONTS*/
+:root {
+  --paper: #ECEEF1;
+  --paper-2: #E2E5EA;
+  --ink: #14161B;
+  --ink-2: #4A5160;
+  --ink-3: #8A92A0;
+  --rule: #C9CED6;
+  --tool: #2F5BEA;
+  --res: #14B07F;
+  --res-ink: #0B7A57;
+  --life: #A8235F;
+  --gate: #E8A317;
+  --gate-ink: #9A6800;
+  --field: #000000;
+  --d-ink: #E9ECF1;
+  --d-ink-2: #A3ABB9;
+  --d-ink-3: #5E6675;
+  --d-rule: #232833;
+  --d-tool: #7B96FF;
+  --d-res: #45D98C;
+  --d-life: #FF6B9E;
+  --d-gate: #F4C84A;
+  --win: #0E1320;
+  --sans: "Plex KR", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+  --mono: "Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #000; overflow: hidden; }
+body { font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; word-break: keep-all; overflow-wrap: break-word; }
+#viewport { position: fixed; inset: 0; overflow: hidden; }
+#stage { width: 1600px; height: 900px; position: absolute; left: 50%; top: 50%; margin: -450px 0 0 -800px; transform-origin: center center; }
+.slide { position: absolute; inset: 0; padding: 88px 104px 120px; background: var(--paper); color: var(--ink); visibility: hidden; opacity: 0; transition: opacity .35s ease; overflow: hidden; }
+.slide.active { visibility: visible; opacity: 1; }
+.slide.dark { background: var(--field); color: var(--d-ink); }
+.notes { display: none; }
+
+/* type */
+h1 { font-weight: 600; font-size: 104px; line-height: 1.04; letter-spacing: -0.035em; }
+h2 { font-weight: 600; font-size: 54px; line-height: 1.16; letter-spacing: -0.03em; max-width: 1100px; }
+.lead { font-size: 26px; line-height: 1.55; color: var(--ink-2); max-width: 820px; margin-top: 22px; font-weight: 400; }
+.dark .lead { color: var(--d-ink-2); }
+p, li { font-size: 21px; line-height: 1.6; }
+.small { font-size: 16px; line-height: 1.5; color: var(--ink-3); }
+.dark .small { color: var(--d-ink-3); }
+code, .mono { font-family: var(--mono); font-size: .9em; letter-spacing: -0.01em; }
+.num { font-weight: 100; font-feature-settings: "tnum"; letter-spacing: -0.04em; line-height: .9; }
+b, strong { font-weight: 600; }
+.k-tool { color: var(--tool); } .k-res { color: var(--res-ink); } .k-life { color: var(--life); } .k-gate { color: var(--gate-ink); }
+.dark .k-tool { color: var(--d-tool); } .dark .k-res { color: var(--d-res); } .dark .k-life { color: var(--d-life); } .dark .k-gate { color: var(--d-gate); }
+.emo { font-family: "Apple Color Emoji", "Segoe UI Emoji", sans-serif; font-weight: 400; }
+.sym { font-family: "Apple Symbols", "Segoe UI Symbol", system-ui, sans-serif; }
+.dot { display: inline-block; width: .62em; height: .62em; border-radius: 50%; vertical-align: .04em; margin-right: .35em; }
+
+/* progress thread */
+#thread { position: absolute; left: 104px; right: 104px; bottom: 38px; height: 24px; z-index: 50; }
+#thread .line { position: absolute; left: 0; right: 0; top: 11px; height: 1.5px; background: var(--rule); }
+#thread.on-dark .line { background: var(--d-rule); }
+#thread button { position: absolute; top: 4px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; border: 1.5px solid var(--ink-3); background: var(--paper); cursor: pointer; transition: transform .2s; }
+#thread.on-dark button { border-color: var(--d-ink-3); background: var(--field); }
+#thread button.past { background: var(--ink-3); border-color: var(--ink-3); }
+#thread.on-dark button.past { background: var(--d-ink-3); border-color: var(--d-ink-3); }
+#thread button.now { background: var(--ink); border-color: var(--ink); transform: scale(1.35); }
+#thread.on-dark button.now { background: var(--d-ink); border-color: var(--d-ink); box-shadow: 0 0 14px rgba(233,236,241,.55); }
+#thread button:focus-visible { outline: 2px solid var(--tool); outline-offset: 3px; }
+#counter { position: absolute; right: 104px; bottom: 64px; font-size: 14px; color: var(--ink-3); font-feature-settings: "tnum"; z-index: 50; }
+#counter.on-dark { color: var(--d-ink-3); }
+
+
+/* ===== s1 title ===== */
+#s-title canvas { position: absolute; inset: 0; }
+#s-title .wrap { position: relative; z-index: 2; margin-top: 210px; }
+#s-title h1 { font-size: 112px; }
+#s-title .lead { font-size: 28px; max-width: 760px; margin-top: 34px; }
+#s-title .by { position: absolute; left: 104px; bottom: 96px; font-size: 18px; color: var(--d-ink-2); z-index: 2; }
+
+/* ===== s2 field ===== */
+#s-field canvas { position: absolute; inset: 0; }
+#s-field .wrap { position: relative; z-index: 2; width: 520px; }
+#s-field h2 { font-size: 46px; }
+#s-field .month { font-weight: 100; font-size: 120px; letter-spacing: -0.04em; margin-top: 30px; font-feature-settings: "tnum"; line-height: 1; }
+#s-field .tally { margin-top: 26px; display: grid; gap: 10px; }
+#s-field .tally div { font-size: 21px; display: flex; align-items: baseline; gap: 12px; color: var(--d-ink-2); }
+#s-field .tally b { font-weight: 300; font-size: 34px; color: var(--d-ink); min-width: 110px; font-feature-settings: "tnum"; }
+#s-field .foot { position: absolute; left: 104px; bottom: 92px; z-index: 2; }
+
+/* ===== s3 chart ===== */
+.chart-wrap { display: grid; grid-template-columns: 1fr 330px; gap: 56px; margin-top: 40px; align-items: end; }
+#month-chart { width: 100%; height: 520px; display: block; overflow: visible; }
+#month-chart text { font-family: var(--sans); }
+.legend { display: flex; gap: 22px; margin-top: 8px; font-size: 16px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.side-notes { display: grid; gap: 26px; padding-bottom: 60px; }
+.side-notes div { border-left: 2px solid var(--rule); padding-left: 18px; }
+.side-notes b { display: block; font-size: 40px; font-weight: 300; letter-spacing: -0.03em; font-feature-settings: "tnum"; }
+.side-notes span { font-size: 17px; color: var(--ink-2); line-height: 1.5; display: block; margin-top: 4px; }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: #fff; font-size: 15px; padding: 8px 12px; border-radius: 6px; line-height: 1.5; opacity: 0; transition: opacity .12s; z-index: 30; white-space: nowrap; }
+
+/* ===== s4 problems ===== */
+.pairs { margin-top: 36px; display: grid; gap: 0; }
+.pair { display: grid; grid-template-columns: 420px 70px 1fr; align-items: center; padding: 38px 0; border-top: 1px solid var(--rule); }
+.pair:last-child { border-bottom: 1px solid var(--rule); }
+.pair .q { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; }
+.pair .q small { display: block; font-size: 18px; font-weight: 400; color: var(--ink-3); margin-top: 6px; letter-spacing: 0; }
+.pair .arrow { color: var(--ink-3); font-size: 28px; }
+.pair .a { font-size: 22px; line-height: 1.55; }
+.pair .a b { font-size: 26px; display: block; margin-bottom: 4px; }
+
+/* ===== s5 bead anatomy ===== */
+.anat { display: grid; grid-template-columns: 760px 1fr; gap: 64px; margin-top: 30px; }
+.bead-card { background: #fff; border-radius: 14px; padding: 30px 34px; box-shadow: 0 1px 0 var(--rule), 0 20px 50px -24px rgba(20,22,27,.35); position: relative; }
+.bead-card .id { font-family: var(--mono); font-size: 18px; color: var(--res-ink); display: flex; gap: 12px; align-items: center; }
+.chip { font-family: var(--sans); font-size: 14px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--rule); color: var(--ink-2); }
+.chip.solid { background: var(--ink); color: #fff; border-color: var(--ink); }
+.bead-card .title { font-size: 26px; font-weight: 600; line-height: 1.4; margin-top: 14px; letter-spacing: -0.02em; }
+.bead-card .body { font-size: 17px; line-height: 1.65; color: var(--ink-2); margin-top: 14px; }
+.receipts { margin-top: 20px; border-top: 1px dashed var(--rule); padding-top: 16px; display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; font-size: 15px; }
+.receipts dt { color: var(--ink-3); font-family: var(--mono); }
+.receipts dd { font-family: var(--mono); color: var(--ink); }
+.receipts dd em { font-style: normal; color: var(--ink-3); }
+.callouts { display: grid; gap: 28px; align-content: start; padding-top: 6px; }
+.callouts div { display: grid; grid-template-columns: 34px 1fr; gap: 10px; }
+.callouts .n { width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; font-size: 14px; display: grid; place-items: center; margin-top: 3px; }
+.callouts p { font-size: 20px; }
+.callouts p b { display: block; font-size: 22px; }
+.bead-card .pin { position: absolute; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; font-size: 14px; display: grid; place-items: center; }
+
+/* ===== s6 lifecycle ===== */
+#life-svg { width: 100%; height: 440px; margin-top: 18px; overflow: visible; }
+#life-svg text { font-family: var(--sans); }
+.life-foot { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; margin-top: 4px; }
+.life-foot h3 { font-size: 18px; font-weight: 600; margin-bottom: 10px; }
+.routes { display: grid; gap: 8px; }
+.routes div { font-size: 18px; color: var(--ink-2); display: grid; grid-template-columns: 150px 1fr; }
+.routes code { color: var(--ink); font-size: 17px; }
+.stops { display: flex; flex-wrap: wrap; gap: 8px; }
+.stops span { font-size: 16px; border: 1px solid var(--rule); padding: 5px 12px; border-radius: 999px; color: var(--ink-2); background: #fff; }
+
+/* ===== s7 team ===== */
+.team { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin-top: 44px; position: relative; }
+.team::before { content: ""; position: absolute; left: 30px; right: 30px; top: 30px; height: 1.5px; background: var(--rule); }
+.role { position: relative; padding-right: 26px; }
+.role .b { width: 60px; height: 60px; border-radius: 50%; position: relative; z-index: 1; margin-bottom: 26px; box-shadow: inset -8px -10px 18px rgba(0,0,0,.18), inset 6px 8px 14px rgba(255,255,255,.35); }
+.role h3 { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+.role .who { font-size: 18px; margin-top: 6px; font-weight: 600; }
+.role p { font-size: 18px; color: var(--ink-2); margin-top: 10px; line-height: 1.55; }
+.stat-row { display: grid; grid-template-columns: repeat(3, auto) 1fr; gap: 64px; margin-top: 48px; padding-top: 28px; border-top: 1px solid var(--rule); align-items: end; }
+.stat-row b { display: block; font-size: 64px; font-weight: 100; letter-spacing: -0.04em; line-height: 1; font-feature-settings: "tnum"; }
+.stat-row span { font-size: 17px; color: var(--ink-2); display: block; margin-top: 8px; }
+.stat-row .src { font-size: 15px; color: var(--ink-3); align-self: end; }
+
+/* ===== s8 jev ===== */
+.jev { display: grid; grid-template-columns: 1fr 1fr; gap: 72px; margin-top: 30px; }
+.ask { background: #fff; border-radius: 14px; padding: 20px 28px; box-shadow: 0 20px 50px -28px rgba(20,22,27,.4); }
+.ask .q { font-size: 22px; line-height: 1.5; }
+.ask .q small { display: block; font-size: 15px; color: var(--ink-3); margin-bottom: 8px; }
+.meter { margin-top: 10px; }
+.meter .bar { height: 10px; border-radius: 5px; background: var(--paper-2); position: relative; overflow: hidden; }
+.meter .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; background: var(--tool); width: 0; transition: width 1.2s cubic-bezier(.2,.8,.2,1); }
+.meter .lab { display: flex; justify-content: space-between; font-size: 15px; color: var(--ink-3); margin-top: 8px; }
+.meter .val { font-size: 42px; font-weight: 100; letter-spacing: -0.03em; margin-top: 10px; font-feature-settings: "tnum"; }
+.ask + .ask { margin-top: 16px; }
+.jev-facts { display: grid; gap: 22px; align-content: start; }
+.jev-facts div { border-left: 2px solid var(--rule); padding-left: 18px; }
+.jev-facts b { font-size: 44px; font-weight: 300; letter-spacing: -0.03em; display: block; line-height: 1.1; font-feature-settings: "tnum"; }
+.jev-facts span { font-size: 18px; color: var(--ink-2); }
+
+/* ===== s9 guard ===== */
+.incidents { margin-top: 44px; display: grid; gap: 0; }
+.inc { display: grid; grid-template-columns: 150px 1fr 60px 1fr; gap: 0 22px; padding: 22px 0; border-top: 1px solid var(--rule); align-items: start; }
+.inc:last-child { border-bottom: 1px solid var(--rule); }
+.inc .when { font-size: 16px; color: var(--ink-3); font-feature-settings: "tnum"; padding-top: 4px; }
+.inc .what { font-size: 20px; line-height: 1.5; }
+.inc .to { color: var(--ink-3); font-size: 24px; text-align: center; }
+.inc .rule { font-size: 20px; line-height: 1.5; font-weight: 600; }
+.inc .rule small { display: block; font-weight: 400; font-size: 15px; color: var(--ink-3); margin-top: 4px; font-family: var(--mono); }
+.counts { display: flex; gap: 56px; margin-top: 36px; }
+.counts div b { font-size: 46px; font-weight: 100; display: block; letter-spacing: -0.03em; line-height: 1; font-feature-settings: "tnum"; }
+.counts div span { font-size: 16px; color: var(--ink-2); }
+
+/* ===== window frame ===== */
+.win { background: var(--win); border-radius: 12px; overflow: hidden; box-shadow: 0 30px 80px -30px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.06); }
+.win .bar { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 12px; background: #161C2B; }
+.win .bar i { width: 10px; height: 10px; border-radius: 50%; background: #39414F; }
+.win .bar span { margin-left: 12px; font-size: 12px; color: #7C8597; font-family: var(--mono); }
+.win img { display: block; width: 100%; }
+
+/* ===== s10 monitor ===== */
+#s-monitor .shot { position: absolute; left: 560px; top: 70px; width: 1160px; }
+#s-monitor .wrap { width: 420px; }
+#s-monitor h2 { font-size: 48px; }
+#s-monitor ol { list-style: none; margin-top: 34px; display: grid; gap: 20px; }
+#s-monitor li { font-size: 18px; color: var(--d-ink-2); display: grid; grid-template-columns: 30px 1fr; line-height: 1.5; }
+#s-monitor li b { color: var(--d-ink); display: block; font-size: 20px; }
+#s-monitor li .n { width: 22px; height: 22px; border-radius: 50%; background: var(--d-gate); color: #000; font-size: 13px; font-weight: 600; display: grid; place-items: center; margin-top: 3px; }
+#s-monitor .mark { position: absolute; width: 30px; height: 30px; border-radius: 50%; background: var(--d-gate); color: #000; font-weight: 600; font-size: 15px; display: grid; place-items: center; box-shadow: 0 0 0 5px rgba(244,200,74,.25); z-index: 3; }
+#s-monitor .meta { position: absolute; left: 104px; bottom: 96px; font-size: 16px; color: var(--d-ink-3); width: 420px; line-height: 1.6; }
+
+/* ===== s11 simulation ===== */
+.sim-head { display: flex; justify-content: space-between; align-items: end; }
+.sim-ctrl { display: flex; gap: 10px; align-items: center; }
+.btn { font-family: var(--sans); font-size: 16px; padding: 9px 18px; border-radius: 999px; border: 1px solid var(--ink); background: var(--ink); color: #fff; cursor: pointer; }
+.btn.ghost { background: transparent; color: var(--ink); }
+.btn:focus-visible { outline: 2px solid var(--tool); outline-offset: 3px; }
+.sim-tag { font-size: 14px; color: var(--ink-3); }
+.lanes { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-top: 22px; height: 545px; }
+.lane .card + .card { margin-top: 0; }
+.lane[data-k=cand] .meta, .lane[data-k=cand] .steps { display: none; }
+.lane { background: var(--paper-2); border-radius: 12px; padding: 12px 10px; display: flex; flex-direction: column; gap: 8px; }
+.lane h4 { font-size: 16px; font-weight: 600; display: flex; justify-content: space-between; color: var(--ink-2); padding: 0 4px 6px; }
+.lane h4 span { font-weight: 400; color: var(--ink-3); font-feature-settings: "tnum"; }
+.card { background: #fff; border-radius: 10px; padding: 10px 12px; box-shadow: 0 1px 0 var(--rule); font-size: 15px; will-change: transform; }
+.card .cid { font-family: var(--mono); font-size: 13px; color: var(--res-ink); display: flex; justify-content: space-between; align-items: center; }
+.card .ct { font-size: 15px; line-height: 1.4; margin-top: 4px; font-weight: 500; }
+.card .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 10px; }
+.card .steps i { height: 5px; border-radius: 3px; background: var(--paper-2); transition: background .4s; }
+.card .steps i.on { background: var(--tool); }
+.card .steps i.ok { background: var(--res); }
+.card .meta { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; display: flex; justify-content: space-between; }
+.card .route { font-size: 12px; border: 1px solid var(--rule); border-radius: 999px; padding: 1px 8px; color: var(--ink-2); font-family: var(--sans); }
+.card.run { box-shadow: 0 0 0 2px var(--tool), 0 10px 24px -12px rgba(47,91,234,.6); }
+.card.wait { box-shadow: 0 0 0 2px var(--gate); }
+.card .gate { display: none; margin-top: 8px; font-size: 12.5px; color: var(--gate-ink); font-weight: 600; }
+.card.wait .gate { display: block; }
+.sim-log { margin-top: 12px; font-size: 16px; color: var(--ink-2); min-height: 26px; }
+
+/* ===== s12 live ===== */
+
+/* ===== s13 research map ===== */
+.rmap { display: grid; grid-template-columns: 1fr 420px; gap: 64px; margin-top: 30px; }
+.rrow { display: grid; grid-template-columns: 210px 1fr 90px; gap: 18px; padding: 18px 0; border-top: 1px solid var(--rule); align-items: baseline; }
+.rrow:last-child { border-bottom: 1px solid var(--rule); }
+.rrow .name { font-family: var(--mono); font-size: 18px; color: var(--res-ink); }
+.rrow .topic { font-size: 19px; line-height: 1.5; }
+.rrow .topic small { display: block; color: var(--ink-3); font-size: 15px; margin-top: 2px; }
+.rrow .cnt { text-align: right; font-size: 30px; font-weight: 300; font-feature-settings: "tnum"; letter-spacing: -0.02em; }
+.bones h3 { font-size: 22px; font-weight: 600; margin-bottom: 14px; }
+.tree { font-family: var(--mono); font-size: 15.5px; line-height: 1.7; background: #fff; border-radius: 12px; padding: 20px 24px; color: var(--ink-2); box-shadow: 0 1px 0 var(--rule); white-space: pre; }
+.tree b { color: var(--ink); font-weight: 500; }
+.bones p { font-size: 17px; color: var(--ink-2); margin-top: 16px; line-height: 1.6; }
+
+/* ===== stories ===== */
+.story { display: grid; grid-template-columns: 1fr 600px; gap: 60px; margin-top: 26px; }
+.tl { position: relative; padding-left: 34px; }
+.tl::before { content: ""; position: absolute; left: 9px; top: 10px; bottom: 10px; width: 1.5px; background: var(--rule); }
+.ev { position: relative; padding-bottom: 18px; }
+.ev::before { content: ""; position: absolute; left: -31px; top: 8px; width: 14px; height: 14px; border-radius: 50%; background: var(--tool); box-shadow: inset -2px -3px 4px rgba(0,0,0,.25); }
+.ev.human::before { background: var(--gate); }
+.ev.res::before { background: var(--res); }
+.ev .t { font-size: 15px; color: var(--ink-3); font-feature-settings: "tnum"; }
+.ev .d { font-size: 19px; line-height: 1.5; }
+.ev .d code { font-size: 15px; color: var(--ink-2); }
+.figbox { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 20px 50px -28px rgba(20,22,27,.4); }
+.figbox img { width: 100%; display: block; }
+.figcap { font-size: 15px; color: var(--ink-3); margin-top: 10px; line-height: 1.5; }
+.delta { display: flex; gap: 40px; margin-top: 26px; }
+.delta div b { font-size: 50px; font-weight: 100; letter-spacing: -0.03em; display: block; line-height: 1; font-feature-settings: "tnum"; }
+.delta div b s { text-decoration: none; color: var(--ink-3); }
+.delta div span { font-size: 16px; color: var(--ink-2); display: block; margin-top: 6px; }
+
+/* ===== s16 compute ===== */
+.flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; margin-top: 36px; }
+.step { border-top: 3px solid var(--ink); padding-top: 18px; }
+.step .where { font-size: 15px; color: var(--ink-3); }
+.step h3 { font-size: 24px; font-weight: 600; margin-top: 4px; letter-spacing: -0.02em; }
+.step p { font-size: 17px; color: var(--ink-2); margin-top: 10px; line-height: 1.55; }
+.step.s-tool { border-color: var(--tool); } .step.s-res { border-color: var(--res); } .step.s-gate { border-color: var(--gate); }
+.term { margin-top: 40px; display: grid; grid-template-columns: 1fr 440px; gap: 28px; }
+.term pre { background: var(--win); color: #C9D1E0; border-radius: 12px; padding: 22px 26px; font-family: var(--mono); font-size: 16px; line-height: 1.75; overflow: hidden; }
+.term pre .p { color: #6C7891; } .term pre .c { color: #7B96FF; } .term pre .g { color: #45D98C; } .term pre .y { color: #F4C84A; }
+.dc { background: #313338; border-radius: 12px; padding: 18px 20px; color: #DBDEE1; font-size: 15px; }
+.dc .who { display: flex; gap: 10px; align-items: center; font-weight: 600; font-size: 15px; }
+.dc .av { width: 30px; height: 30px; border-radius: 50%; background: #5865F2; display: grid; place-items: center; font-size: 13px; color: #fff; }
+.dc .emb { margin-top: 10px; border-left: 4px solid #23A55A; background: #2B2D31; border-radius: 4px; padding: 12px 14px; line-height: 1.6; }
+.dc .emb.bad { border-color: #F23F43; }
+.dc .emb b { color: #fff; }
+.dc .emb + .emb { margin-top: 10px; }
+
+/* ===== s17 network ===== */
+#net-svg { position: absolute; left: 0; top: 0; width: 1600px; height: 900px; }
+#net-svg text { font-family: var(--sans); }
+#s-net .wrap { position: relative; z-index: 2; width: 520px; }
+#s-net h2 { font-size: 46px; }
+
+/* ===== s18 tmux ===== */
+.tmux { margin-top: 28px; display: grid; grid-template-columns: 1fr 470px; gap: 48px; }
+.tmux .scr { background: #11131A; border-radius: 12px; overflow: hidden; box-shadow: 0 30px 80px -30px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.06); display: flex; flex-direction: column; height: 470px; }
+.tmux .pane { flex: 1; padding: 20px 24px; font-family: var(--mono); font-size: 15px; line-height: 1.75; color: #C9D1E0; white-space: pre; overflow: hidden; }
+.tmux .pane .p { color: #6C7891; } .tmux .pane .c { color: #7B96FF; } .tmux .pane .g { color: #45D98C; } .tmux .pane .y { color: #F4C84A; } .tmux .pane .m { color: #FF6B9E; }
+.tmux .status { height: 34px; background: #1A1D27; display: flex; align-items: center; font-family: var(--mono); font-size: 13.5px; color: #8A93A6; padding: 0 6px; gap: 2px; white-space: nowrap; overflow: hidden; }
+.tmux .tab { padding: 4px 9px; border-radius: 4px; display: inline-flex; gap: 6px; align-items: center; }
+.tmux .tab.cur { background: #2A2F3D; color: #E9ECF1; }
+.tmux .tab .ab { font-weight: 600; padding: 0 4px; border-radius: 3px; color: #11131A; font-size: 12px; }
+.tmux .run { color: #45D98C; animation: blink 1.2s steps(2, start) infinite; }
+@keyframes blink { to { visibility: hidden; } }
+.legend-list { display: grid; gap: 16px; align-content: start; }
+.legend-list div { display: grid; grid-template-columns: 44px 1fr; font-size: 19px; line-height: 1.5; color: var(--d-ink-2); }
+.legend-list div b { color: var(--d-ink); font-weight: 600; display: block; }
+.legend-list .ic { font-family: var(--mono); font-size: 20px; }
+
+/* ===== s19 phone ===== */
+.phone-wrap { display: grid; grid-template-columns: 1fr 380px; gap: 70px; margin-top: 30px; }
+.phone { width: 380px; height: 640px; margin-top: -70px; border-radius: 52px; background: #111; padding: 14px; box-shadow: 0 40px 80px -30px rgba(20,22,27,.6); }
+.phone .scr { width: 100%; height: 100%; border-radius: 40px; background: #313338; overflow: hidden; display: flex; flex-direction: column; color: #DBDEE1; }
+.phone .top { padding: 34px 20px 12px; font-size: 15px; font-weight: 600; border-bottom: 1px solid #26282C; color: #F2F3F5; }
+.phone .top small { display: block; font-weight: 400; font-size: 12px; color: #949BA4; }
+.phone .msgs { flex: 1; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; font-size: 13.5px; line-height: 1.5; }
+.msg { display: grid; grid-template-columns: 30px 1fr; gap: 9px; }
+.msg .av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; color: #fff; font-weight: 600; }
+.msg .nm { font-weight: 600; color: #F2F3F5; font-size: 13px; }
+.msg .nm small { font-weight: 400; color: #949BA4; font-size: 11px; margin-left: 6px; }
+.msg .emb { margin-top: 4px; border-left: 3px solid #23A55A; background: #2B2D31; border-radius: 3px; padding: 8px 10px; }
+.msg .btns { display: flex; gap: 6px; margin-top: 6px; }
+.msg .btns span { background: #4E5058; color: #fff; border-radius: 4px; padding: 4px 10px; font-size: 12.5px; }
+.msg .btns span.pri { background: #5865F2; }
+.msg .react { display: inline-block; margin-top: 4px; background: #2B2D31; border: 1px solid #5865F2; border-radius: 8px; padding: 0 6px; font-size: 12px; }
+.route-steps { display: grid; gap: 0; margin-top: 10px; }
+.route-steps div { display: grid; grid-template-columns: 40px 1fr; padding: 16px 0; border-top: 1px solid var(--rule); }
+.route-steps div:last-child { border-bottom: 1px solid var(--rule); }
+.route-steps .n { font-size: 15px; color: var(--ink-3); padding-top: 3px; font-feature-settings: "tnum"; }
+.route-steps p { font-size: 19px; line-height: 1.5; }
+.route-steps p small { display: block; color: var(--ink-3); font-size: 15px; margin-top: 2px; }
+.callout-box { margin-top: 26px; font-size: 17px; line-height: 1.6; color: var(--ink-2); border-left: 3px solid var(--gate); padding-left: 16px; }
+
+/* ===== s20 day ===== */
+.day { position: relative; margin-top: 56px; height: 330px; }
+.lifeline { margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 300px repeat(3, 1fr); gap: 30px; align-items: baseline; }
+.lifeline h4 { font-size: 20px; font-weight: 600; }
+.lifeline div b { font-size: 40px; font-weight: 100; letter-spacing: -0.03em; font-feature-settings: "tnum"; margin-right: 10px; }
+.lifeline div span { font-size: 18px; color: var(--ink-2); }
+.day .axis { position: absolute; left: 0; right: 0; top: 64px; height: 2px; background: var(--ink); }
+.day .ev2 { position: absolute; top: 0; width: 220px; }
+.day .ev2 .hr { font-size: 30px; font-weight: 300; font-feature-settings: "tnum"; letter-spacing: -0.02em; }
+.day .ev2 .pt { position: absolute; top: 56px; left: 0; width: 18px; height: 18px; border-radius: 50%; box-shadow: inset -3px -4px 6px rgba(0,0,0,.25), 0 0 0 4px var(--paper); }
+.day .ev2 h3 { font-size: 22px; font-weight: 600; margin-top: 62px; letter-spacing: -0.02em; }
+.day .ev2 p { font-size: 16.5px; color: var(--ink-2); margin-top: 8px; line-height: 1.55; }
+.day .ev2 .who { font-size: 14px; color: var(--ink-3); margin-top: 10px; }
+
+/* ===== s21 lessons ===== */
+.lessons { display: grid; grid-template-columns: 1fr 1fr; gap: 48px 80px; margin-top: 48px; }
+.lesson h3 { font-size: 32px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.35; }
+.lesson p { font-size: 20px; color: var(--ink-2); margin-top: 10px; line-height: 1.6; }
+.honest { margin-top: 48px; padding-top: 22px; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 170px 1fr; gap: 20px; }
+.honest h4 { font-size: 18px; font-weight: 600; }
+.honest p { font-size: 17px; color: var(--ink-2); line-height: 1.6; }
+
+/* ===== s22 start ===== */
+.startgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; margin-top: 150px; }
+.startgrid div { border-top: 1.5px solid var(--d-ink-3); padding-top: 18px; }
+.startgrid .n { font-size: 15px; color: var(--d-ink-3); font-feature-settings: "tnum"; }
+.startgrid h3 { font-size: 27px; font-weight: 600; margin-top: 8px; letter-spacing: -0.02em; line-height: 1.35; }
+.startgrid p { font-size: 19px; color: var(--d-ink-2); margin-top: 10px; line-height: 1.6; }
+.startgrid code { color: var(--d-ink); font-size: 15px; }
+#s-end canvas { position: absolute; inset: 0; }
+#s-end .wrap { position: relative; z-index: 2; }
+#s-end .closing { position: absolute; left: 104px; bottom: 100px; z-index: 2; font-size: 40px; font-weight: 600; letter-spacing: -0.03em; }
+#s-end .closing small { display: block; font-size: 18px; font-weight: 400; color: var(--d-ink-2); margin-top: 10px; letter-spacing: 0; }
+
+
+/* bilingual subtitle */
+.ko-sub { font-size: 23px; line-height: 1.5; color: var(--ink-2); margin-top: 10px; font-weight: 400; max-width: 1200px; letter-spacing: -0.01em; }
+.dark .ko-sub { color: var(--d-ink-2); }
+#s-field .tally div.dim { color: var(--d-ink-3); }
+#s-field .tally div.dim b { color: var(--d-ink-3); }
+/* research table */
+.rtable { margin-top: 34px; display: grid; }
+.rt-row { display: grid; grid-template-columns: 230px 1fr 1fr; gap: 28px; padding: 15px 0; border-top: 1px solid var(--rule); align-items: start; }
+.rt-row:last-child { border-bottom: 1px solid var(--rule); }
+.rt-k b { display: block; font-size: 21px; font-weight: 600; letter-spacing: -0.02em; }
+.rt-k span { font-size: 14px; color: var(--res-ink); }
+.rt-ex { font-size: 17px; line-height: 1.5; color: var(--ink); }
+.rt-ex code { display: block; font-size: 13px; color: var(--ink-3); margin-bottom: 2px; }
+
+
+
+/* ===== models ===== */
+.models { display: grid; grid-template-columns: 1fr 440px; gap: 56px; margin-top: 30px; }
+.mrow { display: grid; grid-template-columns: 120px 300px 1fr; gap: 22px; padding: 13px 0; border-top: 1px solid var(--rule); align-items: baseline; }
+.mrow:last-child { border-bottom: 1px solid var(--rule); }
+.mrow .r { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; display: flex; align-items: center; gap: 10px; }
+.mrow .r i { width: 14px; height: 14px; border-radius: 50%; flex: none; box-shadow: inset -2px -3px 4px rgba(0,0,0,.22); }
+.mrow .m { font-size: 18px; line-height: 1.45; }
+.mrow .m small { display: block; font-size: 14.5px; color: var(--ink-3); margin-top: 2px; }
+.mrow .w { font-size: 17px; color: var(--ink-2); line-height: 1.5; }
+.presets h3 { font-size: 19px; font-weight: 600; margin-bottom: 12px; }
+.pcard { background: var(--win); color: #C9D1E0; border-radius: 10px; padding: 13px 16px; margin-bottom: 10px; font-size: 14.5px; line-height: 1.55; }
+.pcard b { color: #E9ECF1; font-size: 16.5px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+.pcard b span { font-weight: 400; font-size: 12.5px; color: #F4C84A; border: 1px solid rgba(244,200,74,.45); border-radius: 999px; padding: 1px 9px; }
+.pcard code { color: #9FB2FF; font-size: 13.5px; }
+.presets p { font-size: 15.5px; color: var(--ink-2); line-height: 1.55; margin-top: 12px; }
+
+/* ===== spec ===== */
+.specwrap { display: grid; grid-template-columns: 790px 1fr; gap: 54px; margin-top: 26px; }
+.doc { background: #fff; border-radius: 12px; padding: 22px 30px 20px 40px; box-shadow: 0 1px 0 var(--rule), 0 24px 50px -28px rgba(20,22,27,.4); position: relative; font-size: 15.5px; line-height: 1.6; color: var(--ink-2); }
+.doc .fm { font-family: var(--mono); font-size: 13.5px; color: var(--ink-3); line-height: 1.5; }
+.doc .fm b { color: var(--res-ink); font-weight: 500; }
+.doc .h1 { font-size: 20px; font-weight: 600; color: var(--ink); margin: 8px 0 6px; letter-spacing: -0.02em; }
+.doc .h2 { font-size: 16px; font-weight: 600; color: var(--ink); margin-top: 9px; }
+.doc .t { padding-left: 14px; }
+.doc .pin { position: absolute; left: -53px; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; font-size: 14px; display: grid; place-items: center; }
+.doc mark { background: rgba(232,163,23,.22); color: var(--ink); padding: 0 3px; border-radius: 3px; }
+.callouts.tight { gap: 20px; }
+.callouts.tight p { font-size: 17.5px; line-height: 1.5; }
+.callouts.tight p b { font-size: 19.5px; }
+
+/* ===== impl ===== */
+.implwrap { display: grid; grid-template-columns: 1fr 560px; gap: 56px; margin-top: 22px; }
+.implwrap .route-steps div { padding: 13px 0; }
+.implwrap .route-steps p { font-size: 19px; }
+.implwrap .route-steps code { font-size: 13.5px; color: var(--ink-2); }
+.report { background: #fff; border-radius: 12px; padding: 18px 24px 16px; box-shadow: 0 1px 0 var(--rule), 0 24px 50px -28px rgba(20,22,27,.4); align-self: start; }
+.report .rh { font-size: 18px; font-weight: 600; border-bottom: 1px dashed var(--rule); padding-bottom: 10px; }
+.report .rh small { font-weight: 400; font-size: 13.5px; color: var(--ink-3); margin-left: 8px; }
+.report .rs { font-size: 13px; color: var(--ink-3); margin-top: 11px; }
+.report p { font-size: 15.5px; line-height: 1.55; color: var(--ink); margin-top: 2px; }
+.report p code { font-size: 13.5px; }
+.report .risk { border-left: 3px solid var(--gate); padding-left: 10px; }
+/* ===== review ===== */
+.gates { margin-top: 40px; display: grid; gap: 26px; }
+.gate-row { display: grid; grid-template-columns: 130px 1fr; gap: 20px; align-items: center; }
+.gate-row .gl { font-size: 19px; font-weight: 600; letter-spacing: -0.02em; }
+.gate-row .gl small { display: block; font-weight: 400; font-size: 14px; color: var(--ink-3); }
+.chain { display: grid; grid-template-columns: 1fr 26px 1.25fr 26px 1fr 26px 1fr 26px 1.05fr; align-items: stretch; }
+.chain .ar { align-self: center; text-align: center; color: var(--ink-3); font-size: 20px; }
+.nd { background: #fff; border-radius: 10px; padding: 14px 15px; box-shadow: 0 1px 0 var(--rule); font-size: 16.5px; line-height: 1.5; }
+.nd .k { font-size: 12.5px; color: var(--ink-3); display: block; margin-bottom: 3px; }
+.nd.rev { background: var(--ink); color: #E9ECF1; }
+.nd.rev .k { color: #A3ABB9; }
+.nd.rev b { color: var(--d-gate); }
+.nd.rcpt { background: transparent; box-shadow: inset 0 0 0 1.5px var(--res); }
+.nd.rcpt code { color: var(--res-ink); font-size: 14px; }
+.finding { margin-top: 44px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+.quote { border-left: 3px solid var(--gate); padding: 4px 0 4px 18px; font-size: 20px; line-height: 1.65; }
+.quote small { display: block; font-size: 14px; color: var(--ink-3); margin-bottom: 4px; }
+.rules4 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 30px; }
+.rules4 div { font-size: 16.5px; color: var(--ink-2); line-height: 1.5; }
+.rules4 b { display: block; color: var(--ink); font-size: 18px; }
+
+/* ===== git ===== */
+#git-svg { width: 100%; height: 330px; margin-top: 34px; overflow: visible; }
+#git-svg text { font-family: var(--sans); }
+.gitrules { display: grid; grid-template-columns: repeat(4, 1fr); gap: 26px; margin-top: 30px; }
+.gitrules div { border-top: 2px solid var(--ink); padding-top: 12px; }
+.gitrules h3 { font-size: 19px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.35; }
+.gitrules p { font-size: 15.5px; color: var(--ink-2); line-height: 1.55; margin-top: 7px; }
+.gitrules code { font-size: 13.5px; color: var(--ink); }
+.gitrules .no { border-color: var(--life); }
+
+/* ===== advisor ===== */
+.consult { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; margin-top: 40px; }
+.cs .b { width: 46px; height: 46px; border-radius: 50%; margin-bottom: 18px; box-shadow: inset -6px -8px 14px rgba(0,0,0,.2), inset 5px 6px 10px rgba(255,255,255,.35); }
+.cs h3 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
+.cs .tag { font-size: 16px; color: var(--ink-3); margin-top: 4px; }
+.cs p { font-size: 17.5px; color: var(--ink-2); line-height: 1.6; margin-top: 12px; }
+.cs .ex { margin-top: 14px; background: #fff; border-radius: 10px; padding: 12px 14px; font-size: 15.5px; line-height: 1.55; box-shadow: 0 1px 0 var(--rule); }
+.cs .ex small { display: block; font-size: 13px; color: var(--ink-3); margin-bottom: 3px; }
+.cs .meter2 { margin-top: 8px; display: grid; grid-template-columns: 1fr 44px; gap: 10px; align-items: center; font-size: 14px; color: var(--ink-3); }
+.cs .meter2 .bar { height: 8px; border-radius: 4px; background: var(--paper-2); position: relative; overflow: hidden; }
+.cs .meter2 .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--tool); }
+
+.ctable { display: grid; grid-template-columns: 130px repeat(4, 1fr); margin-top: 38px; border-top: 1px solid var(--rule); }
+.ctable div { font-size: 16px; color: var(--ink-2); padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); }
+.ctable .ch { font-weight: 600; color: var(--ink); font-size: 16.5px; }
+.ctable .rk { color: var(--ink-3); font-size: 15px; }
+/* ===== adr ===== */
+.adrwrap { display: grid; grid-template-columns: 1fr 620px; align-items: start; gap: 60px; margin-top: 30px; }
+.cond { display: grid; gap: 0; }
+.cond div { display: grid; grid-template-columns: 36px 1fr; padding: 13px 0; border-top: 1px solid var(--rule); font-size: 19px; line-height: 1.45; }
+.cond div:last-child { border-bottom: 1px solid var(--rule); }
+.cond .n { font-size: 15px; color: var(--ink-3); padding-top: 3px; }
+.cond small { display: block; font-size: 15px; color: var(--ink-3); }
+.adrflow { display: flex; gap: 8px; align-items: center; margin-top: 22px; flex-wrap: wrap; }
+.adrflow span { font-size: 15px; background: #fff; border-radius: 999px; padding: 6px 13px; box-shadow: 0 1px 0 var(--rule); }
+.adrflow em { font-style: normal; color: var(--ink-3); }
+.adrcount { display: flex; gap: 40px; margin-top: 24px; }
+.adrcount b { font-size: 44px; font-weight: 100; letter-spacing: -0.03em; display: block; line-height: 1; font-feature-settings: "tnum"; }
+.adrcount span { font-size: 15px; color: var(--ink-2); font-family: var(--mono); }
+.adrcard { background: #fff; border-radius: 12px; padding: 22px 28px; box-shadow: 0 1px 0 var(--rule), 0 24px 50px -28px rgba(20,22,27,.4); }
+.adrcard .fm { font-family: var(--mono); font-size: 14px; line-height: 1.6; color: var(--ink-3); border-bottom: 1px dashed var(--rule); padding-bottom: 12px; white-space: pre-wrap; }
+.adrcard .fm b { color: var(--res-ink); font-weight: 500; }
+.adrcard h4 { font-size: 22px; font-weight: 600; margin-top: 14px; letter-spacing: -0.02em; line-height: 1.4; }
+.adrcard .sec { font-size: 13.5px; color: var(--ink-3); margin-top: 12px; font-family: var(--mono); }
+.adrcard p { font-size: 16.5px; line-height: 1.6; color: var(--ink-2); margin-top: 4px; }
+
+/* ===== capture slides ===== */
+.capwrap { position: absolute; left: 104px; right: 104px; top: 222px; bottom: 96px; }
+.capwrap .win { height: 100%; display: flex; flex-direction: column; }
+.capwrap .cin { flex: 1; position: relative; overflow: hidden; }
+.capwrap .cin img { position: absolute; left: 0; top: 0; width: 100%; }
+.capwrap .cin::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 60px; background: linear-gradient(transparent, #000); }
+.cmark { position: absolute; width: 30px; height: 30px; border-radius: 50%; background: var(--d-gate); color: #000; font-weight: 600; font-size: 15px; display: grid; place-items: center; box-shadow: 0 0 0 5px rgba(244,200,74,.25); z-index: 3; }
+.caphead { display: grid; grid-template-columns: 1fr 640px; gap: 40px; align-items: end; }
+.capkeys { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 22px; }
+.capkeys div { font-size: 15.5px; color: var(--d-ink-2); line-height: 1.45; display: grid; grid-template-columns: 26px 1fr; }
+.capkeys .n { width: 20px; height: 20px; border-radius: 50%; background: var(--d-gate); color: #000; font-size: 12px; font-weight: 600; display: grid; place-items: center; margin-top: 1px; }
+.capkeys b { color: var(--d-ink); font-weight: 600; }
+
+/* compare */
+#s-compare .cmpimg { margin-top: 24px; }
+#s-compare .cmpimg img { display: block; width: 100%; }
+.cmpgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px; margin-top: 26px; }
+.cmpgrid h3 { font-size: 19px; font-weight: 600; color: var(--d-ink); }
+.cmpgrid p { font-size: 16px; line-height: 1.6; color: var(--d-ink-2); margin-top: 6px; }
+.cmpgrid b.big { display: block; font-size: 40px; font-weight: 100; letter-spacing: -0.03em; color: var(--d-ink); line-height: 1.1; font-feature-settings: "tnum"; }
+
+/* ===== accounts ===== */
+.acct { display: grid; grid-template-columns: 560px 1fr; gap: 64px; margin-top: 28px; }
+.um { background: #161A24; border-radius: 12px; padding: 16px 18px; color: #C9D1E0; box-shadow: 0 30px 70px -30px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06); font-size: 14px; }
+.um h5 { font-size: 13px; font-weight: 600; color: #A3ABB9; margin: 2px 0 8px; }
+.um h5 + .ua { margin-top: 0; }
+.ua { background: #1E2330; border-radius: 9px; padding: 9px 12px; margin-top: 7px; }
+.ua.on { box-shadow: inset 0 0 0 1px rgba(69,217,140,.45); }
+.ua .hd { display: flex; justify-content: space-between; align-items: center; font-size: 14.5px; color: #E9ECF1; }
+.ua .hd span { display: flex; gap: 6px; align-items: center; }
+.ua .tg { font-size: 11.5px; border-radius: 999px; padding: 0 7px; border: 1px solid #3A4152; color: #A3ABB9; }
+.ua .tg.act { border-color: rgba(69,217,140,.6); color: #45D98C; }
+.ua .sw { font-size: 12px; background: #2A3142; color: #E9ECF1; border-radius: 6px; padding: 2px 9px; }
+.ua .wn { display: grid; grid-template-columns: 44px 1fr 44px 150px; gap: 8px; align-items: center; margin-top: 5px; font-size: 13px; color: #A3ABB9; font-feature-settings: "tnum"; }
+.ua .wn .bar { height: 6px; border-radius: 3px; background: #2A3142; position: relative; overflow: hidden; }
+.ua .wn .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: #45D98C; }
+.ua .wn .bar i.warn { background: #F4C84A; } .ua .wn .bar i.bad { background: #FF6B6B; }
+.ua .wn .rs { color: #6C7891; font-size: 12px; }
+.ua .ex { font-size: 12.5px; color: #F4C84A; margin-top: 3px; }
+.ua.mini { padding: 6px 12px; }
+.ua.mini .hd { font-size: 13.5px; color: #A3ABB9; }
+.acmd { display: grid; gap: 18px; align-content: start; }
+.acmd div h3 { font-size: 21px; font-weight: 600; letter-spacing: -0.02em; }
+.acmd div p { font-size: 17px; color: var(--ink-2); line-height: 1.55; margin-top: 4px; }
+.acmd pre { background: var(--win); color: #C9D1E0; border-radius: 10px; padding: 12px 16px; font-family: var(--mono); font-size: 14px; line-height: 1.7; margin-top: 8px; }
+.acmd pre .p { color: #6C7891; }
+
+/* ===== limits ===== */
+.ltrack { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin-top: 44px; position: relative; }
+.ltrack::before { content: ""; position: absolute; left: 12px; right: 12px; top: 12px; height: 2px; background: var(--ink); }
+.lst { position: relative; padding-right: 26px; }
+.lst .pt { display: block; width: 26px; height: 26px; border-radius: 50%; position: relative; z-index: 1; box-shadow: inset -3px -4px 6px rgba(0,0,0,.25), 0 0 0 5px var(--paper); }
+.lst .when { font-size: 14.5px; color: var(--ink-3); margin-top: 16px; }
+.lst h3 { font-size: 23px; font-weight: 600; letter-spacing: -0.02em; margin-top: 2px; }
+.lst p { font-size: 16.5px; color: var(--ink-2); line-height: 1.55; margin-top: 8px; }
+.lst code { font-size: 13.5px; color: var(--ink); }
+.wstrip { margin-top: 34px; display: grid; grid-template-columns: 150px 1fr; gap: 20px; align-items: center; }
+.wstrip h4 { font-size: 16px; font-weight: 600; color: var(--ink-2); line-height: 1.4; }
+.wbar { position: relative; height: 34px; background: var(--paper-2); border-radius: 6px; }
+.wbar i { position: absolute; top: 4px; bottom: 4px; border-radius: 4px; background: rgba(47,91,234,.18); box-shadow: inset 3px 0 0 var(--tool); font-style: normal; font-size: 13px; color: var(--tool); padding-left: 9px; display: flex; align-items: center; }
+.wbar i.off { background: rgba(138,146,160,.14); box-shadow: inset 3px 0 0 var(--ink-3); color: var(--ink-3); }
+.wtick { position: relative; height: 18px; margin-top: 4px; font-size: 12.5px; color: var(--ink-3); font-feature-settings: "tnum"; }
+.wtick span { position: absolute; transform: translateX(-50%); }
+.lside { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 36px; margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--rule); }
+.lside h4 { font-size: 18px; font-weight: 600; }
+.lside p { font-size: 16px; color: var(--ink-2); line-height: 1.55; margin-top: 5px; }
+.lside code { font-size: 13.5px; color: var(--ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  .slide { transition: none; }
+  .meter .fill { transition: none; }
+  .tmux .run { animation: none; }
+}
+
+/* ===== v2 additions ===== */
+/* part dividers + agenda */
+.divider .wrap { position: relative; z-index: 2; margin-top: 120px; display: grid; grid-template-columns: 300px 1fr; gap: 40px; align-items: start; }
+.divider .pn { font-weight: 100; font-size: 220px; line-height: .8; letter-spacing: -0.05em; color: var(--d-ink-3); font-feature-settings: "tnum"; }
+.divider h2 { font-size: 64px; }
+.divider .ko-sub { font-size: 26px; }
+.divider ul { list-style: none; margin-top: 40px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 48px; max-width: 980px; }
+.divider li { font-size: 20px; color: var(--d-ink-2); border-top: 1px solid var(--d-rule); padding-top: 10px; }
+.agenda { margin-top: 44px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 26px; }
+.agenda > div { border-top: 3px solid var(--ink); padding-top: 16px; }
+.agenda .n { font-size: 15px; color: var(--ink-3); font-feature-settings: "tnum"; }
+.agenda h3 { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin-top: 4px; }
+.agenda .ko { font-size: 17px; color: var(--ink-2); margin-top: 2px; }
+.agenda ul { list-style: none; margin-top: 14px; display: grid; gap: 6px; }
+.agenda li { font-size: 16px; line-height: 1.45; color: var(--ink-2); }
+
+/* server sequence */
+.srv { display: grid; grid-template-columns: 1fr 470px; gap: 40px; margin-top: 26px; }
+.seq { display: grid; grid-template-columns: repeat(8, 1fr); row-gap: 9px; position: relative; padding-bottom: 6px;
+  background-image: linear-gradient(var(--rule), var(--rule)), linear-gradient(var(--rule), var(--rule)), linear-gradient(var(--rule), var(--rule)), linear-gradient(var(--rule), var(--rule));
+  background-size: 1.5px 100%; background-repeat: no-repeat; background-position: 12.5% 0, 37.5% 0, 62.5% 0, 87.5% 0; }
+.seq .hd { grid-row: 1; text-align: center; background: var(--paper); padding: 4px 0 8px; }
+.seq .hd b { display: block; font-size: 19px; }
+.seq .hd span { font-size: 13.5px; color: var(--ink-3); }
+.seq .self { background: #fff; border: 1.5px solid var(--ink); border-radius: 8px; padding: 6px 10px; font-size: 14.5px; line-height: 1.4; text-align: center; z-index: 1; }
+.seq .self.res { border-color: var(--res); } .seq .self.tool { border-color: var(--tool); }
+.seq .sm { position: relative; padding: 0 6px 12px; font-size: 14.5px; line-height: 1.35; text-align: center; color: var(--ink-2); align-self: end; }
+.seq .sm::after { content: ""; position: absolute; left: 0; right: 0; bottom: 4px; height: 2px; background: var(--ink); }
+.seq .sm::before { content: ""; position: absolute; right: -1px; bottom: 0; border: 5px solid transparent; border-left: 9px solid var(--ink); border-right: 0; }
+.seq .sm.l::before { right: auto; left: -1px; border-left: 0; border-right: 9px solid var(--ink); }
+.seq .sm.res::after { background: var(--res); } .seq .sm.res::before { border-left-color: var(--res); }
+.seq .sm.l.res::before { border-left-color: transparent; border-right-color: var(--res); }
+.seq .sm.gate::after { background: var(--gate); } .seq .sm.gate::before { border-left-color: var(--gate); }
+.seq .sm b, .seq .self b { color: var(--ink); font-weight: 600; }
+.seq .sk { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--ink); color: #fff; font-size: 12px; margin-right: 5px; vertical-align: 1px; }
+.srv .term2 pre { background: var(--win); color: #C9D1E0; border-radius: 12px; padding: 20px 22px; font-family: var(--mono); font-size: 14.5px; line-height: 1.7; white-space: pre-wrap; }
+.term2 pre .p { color: #6C7891; } .term2 pre .c { color: #7B96FF; } .term2 pre .g { color: #45D98C; } .term2 pre .y { color: #F4C84A; }
+.srv .term2 .small { margin-top: 10px; }
+
+/* where things live */
+.wl { display: grid; grid-template-columns: 1fr 420px; gap: 44px; margin-top: 30px; }
+.wtab { display: grid; grid-template-columns: 190px repeat(3, 1fr); border-top: 1.5px solid var(--ink); }
+.wtab div { padding: 11px 12px 11px 0; border-bottom: 1px solid var(--rule); font-size: 16px; line-height: 1.45; color: var(--ink-2); }
+.wtab .h { font-weight: 600; color: var(--ink); font-size: 16.5px; }
+.wtab .r { font-weight: 600; color: var(--ink); }
+.wtab .r small { display: block; font-weight: 400; font-size: 13.5px; color: var(--ink-3); font-family: var(--mono); }
+.wtab .on { color: var(--ink); }
+.wtab .on::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--res); margin-right: 7px; vertical-align: 1px; }
+.wtab .ed::before { background: var(--tool); }
+.wtab .ro::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.wrules h3 { font-size: 22px; font-weight: 600; }
+.wrules ol { margin: 10px 0 0 22px; display: grid; gap: 8px; }
+.wrules li { font-size: 17px; line-height: 1.5; color: var(--ink-2); }
+.wrules .dc { margin-top: 22px; }
+.wkey { display: flex; gap: 18px; font-size: 14.5px; color: var(--ink-3); margin-top: 12px; }
+.wkey span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.wkey .a::before { background: var(--tool); } .wkey .b::before { background: var(--res); } .wkey .c::before { box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+
+/* glossary */
+.gloss { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 44px; margin-top: 26px; }
+.gloss div { padding: 9px 0; border-top: 1px solid var(--rule); font-size: 15.5px; line-height: 1.45; color: var(--ink-2); }
+.gloss b { display: block; color: var(--ink); font-size: 17.5px; letter-spacing: -0.01em; }
+.gloss b em { font-style: normal; font-weight: 400; color: var(--ink-3); font-size: 14.5px; margin-left: 6px; }
+
+/* claude code basics */
+.cc { display: grid; grid-template-columns: 620px 1fr; gap: 44px; margin-top: 26px; }
+.cc pre { background: var(--win); color: #C9D1E0; border-radius: 12px; padding: 20px 22px; font-family: var(--mono); font-size: 14.5px; line-height: 1.68; white-space: pre-wrap; }
+.cc pre .p { color: #6C7891; } .cc pre .c { color: #7B96FF; } .cc pre .g { color: #45D98C; } .cc pre .y { color: #F4C84A; } .cc pre .w { color: #fff; }
+.keys { display: grid; grid-template-columns: 250px 1fr; border-top: 1.5px solid var(--ink); }
+.keys div { padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 16px; color: var(--ink-2); line-height: 1.4; }
+.keys div.kc { font-family: var(--mono); font-size: 15px; color: var(--ink); }
+.keys .grp { grid-column: 1 / -1; font-family: var(--sans) !important; font-weight: 600; font-size: 15px !important; color: var(--ink-3) !important; padding-top: 14px; }
+.cc .loop { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.cc .loop span { font-size: 15px; padding: 5px 12px; border-radius: 999px; background: var(--paper-2); color: var(--ink-2); }
+.cc .loop span.g { background: #FFF3D6; color: var(--gate-ink); }
+
+/* instruction layers */
+.layers { display: grid; gap: 12px; margin-top: 28px; }
+.layer { display: grid; grid-template-columns: 300px 1fr 400px; gap: 28px; align-items: start; padding: 16px 22px; border-radius: 12px; background: #fff; box-shadow: 0 1px 0 var(--rule); }
+.layer h3 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+.layer h3 small { display: block; font-size: 14px; font-weight: 400; color: var(--ink-3); font-family: var(--mono); margin-top: 3px; }
+.layer p { font-size: 16.5px; color: var(--ink-2); line-height: 1.5; }
+.layer .ex { font-size: 15px; line-height: 1.5; color: var(--ink); border-left: 3px solid var(--rule); padding-left: 12px; }
+.layer .ex i { font-style: normal; color: var(--ink-3); display: block; font-size: 13.5px; }
+.layer.l1 { border-left: 6px solid var(--ink); } .layer.l2 { border-left: 6px solid var(--tool); } .layer.l3 { border-left: 6px solid var(--res); } .layer.l4 { border-left: 6px solid var(--gate); }
+.layers-foot { margin-top: 18px; font-size: 17px; color: var(--ink-2); }
+
+/* skills / agents / hooks */
+.sah { display: grid; grid-template-columns: repeat(3, 1fr); gap: 34px; margin-top: 30px; }
+.sah > div { border-top: 3px solid var(--ink); padding-top: 14px; }
+.sah .big2 { font-weight: 100; font-size: 64px; line-height: 1; letter-spacing: -0.04em; font-feature-settings: "tnum"; }
+.sah h3 { font-size: 24px; font-weight: 600; margin-top: 6px; letter-spacing: -0.02em; }
+.sah .what { font-size: 16.5px; color: var(--ink-2); margin-top: 8px; line-height: 1.5; }
+.sah ul { list-style: none; margin-top: 14px; display: grid; gap: 7px; }
+.sah li { font-size: 15.5px; line-height: 1.45; color: var(--ink-2); }
+.sah li code { color: var(--ink); background: var(--paper-2); padding: 1px 6px; border-radius: 4px; font-size: 14px; }
+.sah-foot { margin-top: 26px; display: grid; grid-template-columns: 1fr 1fr; gap: 34px; border-top: 1px solid var(--rule); padding-top: 16px; }
+.sah-foot p { font-size: 16.5px; color: var(--ink-2); }
+
+/* dotfiles */
+.dfl { display: grid; grid-template-columns: 520px 120px 1fr; gap: 0; margin-top: 36px; align-items: center; }
+.dfl .repo { background: #fff; border-radius: 14px; padding: 22px 26px; box-shadow: 0 1px 0 var(--rule), 0 20px 50px -28px rgba(20,22,27,.35); }
+.dfl .repo h3 { font-size: 24px; font-weight: 600; }
+.dfl .repo .dtree { margin-top: 10px; font-family: var(--mono); font-size: 14.5px; line-height: 1.75; white-space: pre; color: var(--ink-2); }
+.dfl .repo .dtree b { color: var(--ink); font-weight: 600; }
+.dfl .arr { text-align: center; color: var(--ink-3); font-size: 15px; line-height: 1.4; }
+.dfl .arr b { display: block; font-size: 34px; font-weight: 300; color: var(--ink); }
+.dfl .outs { display: grid; gap: 14px; }
+.dfl .outs div { border-left: 3px solid var(--rule); padding: 4px 0 4px 16px; }
+.dfl .outs b { font-family: var(--mono); font-size: 16px; }
+.dfl .outs p { font-size: 15.5px; color: var(--ink-2); line-height: 1.45; margin-top: 2px; }
+.dfstats { display: flex; gap: 56px; margin-top: 34px; border-top: 1px solid var(--rule); padding-top: 16px; }
+.dfstats div b { display: block; font-weight: 200; font-size: 44px; letter-spacing: -0.03em; font-feature-settings: "tnum"; }
+.dfstats div span { font-size: 15.5px; color: var(--ink-2); }
+
+/* cli + tmux */
+.ct2 { display: grid; grid-template-columns: 560px 1fr; gap: 48px; margin-top: 26px; }
+.clitab { display: grid; grid-template-columns: 150px 1fr; border-top: 1.5px solid var(--ink); }
+.clitab div { padding: 7px 0; border-bottom: 1px solid var(--rule); font-size: 15.5px; color: var(--ink-2); line-height: 1.4; }
+.clitab div:nth-child(odd) { font-family: var(--mono); color: var(--ink); font-size: 15px; }
+.tm { background: var(--win); border-radius: 12px; padding: 14px; color: #C9D1E0; font-family: var(--mono); font-size: 13.5px; }
+.tm .panes { display: grid; grid-template-columns: 1.3fr 1fr; grid-template-rows: 120px 90px; gap: 6px; }
+.tm .pn2 { border: 1px solid #2A3247; border-radius: 6px; padding: 8px 10px; line-height: 1.5; }
+.tm .pn2:first-child { grid-row: 1 / 3; border-color: #7B96FF; }
+.tm .bar2 { margin-top: 8px; display: flex; gap: 6px; font-size: 12.5px; }
+.tm .bar2 span { padding: 2px 8px; border-radius: 4px; background: #1E2433; color: #8B95AB; }
+.tm .bar2 span.cur { background: #313A55; color: #fff; }
+.tmx-lab { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 12px; }
+.tmx-lab div { font-size: 15px; color: var(--ink-2); line-height: 1.45; }
+.tmx-lab b { display: block; color: var(--ink); font-size: 16.5px; }
+.tkeys { display: grid; grid-template-columns: 170px 1fr 170px 1fr; margin-top: 16px; border-top: 1.5px solid var(--ink); }
+.tkeys div { padding: 7px 0; border-bottom: 1px solid var(--rule); font-size: 15px; color: var(--ink-2); }
+.tkeys div:nth-child(odd) { font-family: var(--mono); color: var(--ink); font-size: 14.5px; }
+
+/* model cards */
+.fam { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; margin-top: 24px; }
+.fam h3 { font-size: 20px; font-weight: 600; padding-bottom: 8px; border-bottom: 1.5px solid var(--ink); display: flex; justify-content: space-between; align-items: baseline; }
+.fam h3 span { font-size: 14px; font-weight: 400; color: var(--ink-3); }
+.mc { display: grid; grid-template-columns: 150px 1fr 74px; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--rule); align-items: baseline; }
+.mc .nm { font-size: 21px; font-weight: 600; letter-spacing: -0.02em; }
+.mc .nm small { display: block; font-size: 13.5px; font-weight: 400; color: var(--ink-3); margin-top: 2px; letter-spacing: 0; }
+.mc .gd { font-size: 15.5px; color: var(--ink-2); line-height: 1.45; }
+.mc .gd b { color: var(--ink); font-weight: 600; }
+.mc .sp { font-size: 16px; font-feature-settings: "tnum"; text-align: right; color: var(--ink); }
+.mc .sp small { display: block; font-size: 12.5px; color: var(--ink-3); }
+.fam-foot { margin-top: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 44px; }
+.fam-foot p { font-size: 15.5px; color: var(--ink-2); line-height: 1.55; }
+
+/* effort */
+.eff { margin-top: 34px; display: grid; grid-template-columns: repeat(5, 1fr); position: relative; }
+.eff::before { content: ""; position: absolute; left: 0; right: 0; top: 20px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #D7DCE4, var(--tool)); }
+.eff > div { position: relative; padding-top: 44px; padding-right: 20px; }
+.eff > div::before { content: ""; position: absolute; left: 0; top: 14px; width: 20px; height: 20px; border-radius: 50%; background: var(--paper); border: 2.5px solid var(--ink); }
+.eff > div.me::before { background: var(--ink); }
+.eff h3 { font-size: 26px; font-weight: 600; font-family: var(--mono); letter-spacing: -0.02em; }
+.eff .ew { font-size: 16px; color: var(--ink-2); margin-top: 6px; line-height: 1.5; }
+.eff .eu { font-size: 14.5px; color: var(--ink-3); margin-top: 8px; line-height: 1.45; }
+.eff .eu b { color: var(--ink); font-weight: 600; }
+.eff-trade { display: flex; justify-content: space-between; font-size: 14.5px; color: var(--ink-3); margin-top: 6px; }
+.eff-set { margin-top: 30px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 26px; border-top: 1px solid var(--rule); padding-top: 16px; }
+.eff-set h4 { font-size: 16.5px; font-weight: 600; }
+.eff-set code { display: block; margin-top: 6px; font-size: 14px; background: var(--paper-2); padding: 6px 10px; border-radius: 6px; color: var(--ink); white-space: pre-wrap; }
+.eff-set p { font-size: 14.5px; color: var(--ink-2); margin-top: 6px; line-height: 1.45; }
+.eff-rule { margin-top: 22px; font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+.eff-rule span { font-weight: 400; color: var(--ink-2); font-size: 18px; margin-left: 10px; }
+
+/* parallel */
+.par { display: grid; grid-template-columns: 1fr 360px; gap: 44px; margin-top: 20px; }
+#par-svg, #use-svg { width: 100%; display: block; overflow: visible; }
+#par-svg text, #use-svg text { font-family: var(--sans); }
+.pstats { display: grid; gap: 18px; align-content: start; }
+.pstats div { border-left: 2px solid var(--rule); padding-left: 16px; }
+.pstats b { display: block; font-weight: 200; font-size: 42px; letter-spacing: -0.03em; font-feature-settings: "tnum"; line-height: 1.05; }
+.pstats span { font-size: 15.5px; color: var(--ink-2); line-height: 1.45; display: block; margin-top: 4px; }
+.lg2 { display: flex; gap: 20px; font-size: 14.5px; color: var(--ink-2); margin-top: 4px; }
+.lg2 i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.svtip { position: absolute; pointer-events: none; background: var(--ink); color: #fff; font-size: 14px; padding: 7px 11px; border-radius: 6px; line-height: 1.45; opacity: 0; transition: opacity .12s; z-index: 30; white-space: nowrap; }
+
+/* usage */
+.use { display: grid; grid-template-columns: 330px 1fr; gap: 50px; margin-top: 22px; }
+.hero2 b { display: block; font-weight: 100; font-size: 104px; line-height: .95; letter-spacing: -0.05em; font-feature-settings: "tnum"; }
+.hero2 span { font-size: 17px; color: var(--ink-2); display: block; margin-top: 6px; }
+.hero2 + .hero2 { margin-top: 24px; }
+.mix { margin-top: 26px; }
+.mix .row { display: grid; grid-template-columns: 140px 1fr 64px; gap: 10px; align-items: center; font-size: 14.5px; padding: 3px 0; color: var(--ink-2); }
+.mix .row i { display: block; height: 10px; border-radius: 0 4px 4px 0; }
+.mix .row span:last-child { text-align: right; font-feature-settings: "tnum"; color: var(--ink); }
+.tokmix { display: flex; height: 14px; border-radius: 4px; overflow: hidden; margin-top: 8px; gap: 2px; }
+.tokmix i { display: block; height: 100%; }
+.use-foot { margin-top: 14px; font-size: 14.5px; color: var(--ink-3); line-height: 1.55; }
+
+/* dot + muse */
+.dm { display: grid; grid-template-columns: 1fr 400px; gap: 44px; margin-top: 26px; }
+.dmflow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; align-items: stretch; }
+.dmflow .nd2 { background: #fff; border-radius: 12px; padding: 14px 14px; box-shadow: 0 1px 0 var(--rule); position: relative; margin-right: 26px; }
+.dmflow .nd2:last-child { margin-right: 0; }
+.dmflow .nd2:not(:last-child)::after { content: "→"; position: absolute; right: -22px; top: 50%; transform: translateY(-50%); color: var(--ink-3); font-size: 20px; }
+.dmflow .nd2 .w { font-size: 13px; color: var(--ink-3); }
+.dmflow .nd2 h4 { font-size: 18px; font-weight: 600; margin-top: 2px; }
+.dmflow .nd2 p { font-size: 14px; color: var(--ink-2); line-height: 1.45; margin-top: 6px; }
+.dmflow .nd2.dot2 { border-top: 4px solid #10A37F; } .dmflow .nd2.mac { border-top: 4px solid var(--tool); }
+.dmback { font-size: 14.5px; color: var(--ink-3); margin-top: 8px; text-align: right; }
+.muse { margin-top: 26px; display: grid; grid-template-columns: 200px 1fr; gap: 20px; align-items: center; border: 1.5px dashed var(--ink-3); border-radius: 12px; padding: 16px 20px; }
+.muse h4 { font-size: 20px; font-weight: 600; }
+.muse h4 small { display: block; font-size: 13.5px; font-weight: 400; color: var(--ink-3); }
+.muse p { font-size: 15.5px; color: var(--ink-2); line-height: 1.5; }
+.dmside h3 { font-size: 19px; font-weight: 600; }
+.dmside ul { list-style: none; margin-top: 8px; display: grid; gap: 7px; }
+.dmside li { font-size: 15.5px; color: var(--ink-2); line-height: 1.45; padding-left: 18px; position: relative; }
+.dmside li::before { content: ""; position: absolute; left: 0; top: .55em; width: 8px; height: 8px; border-radius: 50%; background: var(--res); }
+.dmside ul.no li::before { background: transparent; box-shadow: inset 0 0 0 1.5px #D14343; }
+.dmside h3 + ul + h3 { margin-top: 20px; }
+
+/* verification and deployment */
+.vwrap { display: grid; grid-template-columns: 1fr 470px; gap: 52px; margin-top: 28px; align-items: start; }
+.vtab { display: grid; grid-template-columns: 210px 170px 1fr 250px; border-top: 1.5px solid var(--ink); }
+.vtab div { padding: 13px 14px 13px 0; border-bottom: 1px solid var(--rule); font-size: 17px; line-height: 1.5; color: var(--ink-2); }
+.vtab .h { font-weight: 600; color: var(--ink); font-size: 16px; padding-top: 10px; padding-bottom: 10px; }
+.vtab .w { font-weight: 600; color: var(--ink); }
+.vtab code { font-size: 14px; color: var(--ink); }
+.vtab .sk { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--ink); color: #fff; font-size: 12.5px; margin-right: 8px; vertical-align: 1px; font-weight: 500; }
+.vside h3 { font-size: 22px; font-weight: 600; }
+.vside dl { margin-top: 10px; border-top: 1px solid var(--rule); }
+.vside dt { font-size: 17px; font-weight: 600; color: var(--ink); padding-top: 12px; }
+.vside dd { font-size: 16px; line-height: 1.55; color: var(--ink-2); padding: 2px 0 12px; border-bottom: 1px solid var(--rule); margin: 0; }
+.vside .callout-box { margin-top: 22px; }
+
+/* remote access phone */
+.phone.tphone .scr { background: #0F1117; color: #C9D1E0; }
+.phone.tphone .top { border-bottom-color: #1F2330; color: #E9ECF1; }
+.phone.tphone .top small { color: #6C7891; }
+.phone.tphone pre { flex: 1; margin: 0; padding: 16px 16px; font-family: var(--mono); font-size: 13.5px; line-height: 1.7; white-space: pre; overflow: hidden; }
+.phone.tphone pre .p { color: #6C7891; } .phone.tphone pre .c { color: #7B96FF; } .phone.tphone pre .g { color: #45D98C; } .phone.tphone pre .y { color: #F4C84A; }
+.phone.tphone .cur { color: #C9D1E0; animation: blink 1.2s steps(2, start) infinite; }
+.phone.tphone .tstat { display: flex; gap: 4px; padding: 6px 8px; background: #1A1D27; font-family: var(--mono); font-size: 11.5px; color: #8A93A6; }
+.phone.tphone .tstat span { padding: 3px 7px; border-radius: 4px; }
+.phone.tphone .tstat .cur2 { background: #2A2F3D; color: #E9ECF1; }
+.phone.tphone .tstat i { font-style: normal; } .phone.tphone .tstat .g { color: #45D98C; } .phone.tphone .tstat .y { color: #F4C84A; }
+.phone.tphone .keys { display: flex; gap: 5px; padding: 9px 10px 26px; background: #22252E; justify-content: center; }
+.phone.tphone .keys span { font-family: var(--mono); font-size: 11.5px; padding: 6px 7px; border-radius: 6px; background: #3A3F4C; color: #E9ECF1; }
+</style>
+</head>
+<body>
+<div id="viewport"><div id="stage">
+
+<section class="slide dark" id="s-title" data-theme="dark">
+  <canvas data-canvas="title"></canvas>
+  <div class="wrap">
+    <h1>How I use AI agents<br>in research</h1>
+    <p class="lead">Claude Code 기초부터 연구에 쓰는 방식까지</p>
+  </div>
+  <div class="by">Ilsun Yun &nbsp;/&nbsp; Lab group meeting, October 2026</div>
+  <aside class="notes">제가 연구에 AI 에이전트를 쓰는 방식은 분석 하나를 **이슈 하나**로 맡기고 검증까지 끝난 결과를 받는 것입니다.
+이슈는 제가 쓰는 이슈 트래커 Beads(명령어 bd)의 항목 하나를 말합니다.</aside>
+</section>
+
+<section class="slide dark" id="s-field" data-theme="dark">
+  <canvas data-canvas="field"></canvas>
+  <div class="wrap">
+    <h2>780 research tasks<br>closed in 2026</h2>
+    <p class="ko-sub">2026년에 닫은 연구 이슈 (점 하나가 이슈 하나)</p>
+    <div class="month" id="field-month">2026.01</div>
+    <div class="tally">
+      <div><b id="t-res">0</b><span class="dot" style="background:var(--d-res)"></span>연구 저장소 4곳</div>
+      <div class="dim"><b id="t-tool">0</b><span class="dot" style="background:#4A5262"></span>모든 연구가 함께 쓰는 작업 환경</div>
+      <div class="dim"><b id="t-life">0</b><span class="dot" style="background:#4A5262"></span>생활 자동화</div>
+    </div>
+  </div>
+  <div class="foot small">2026년 1월 1일 ~ 10월 7일에 닫힌 이슈. 덩어리 하나가 저장소 하나, 흐린 점은 연구 저장소들이 함께 쓰는 도구와 생활 쪽.</div>
+  <aside class="notes">초록 점 하나가 올해 연구 저장소 네 곳에서 닫은 이슈 하나입니다. 담즙 마이크로바이옴 프로젝트가 가장 크고 prostate, TRACE-ICI, CRC-rokit이 뒤를 잇습니다.
+흐린 점은 함께 쓰는 작업 환경과 생활 자동화인데 처음 몇 달은 **이 환경을 만드는 데** 시간을 썼습니다.</aside>
+</section>
+
+<section class="slide" id="s-agenda" data-theme="light">
+  <h2>Contents</h2>
+  <p class="ko-sub">목차 (부분마다 질문을 받습니다)</p>
+  <div class="agenda" style="grid-template-columns: repeat(4, 1fr)">
+    <div><div class="n">1</div><h3>Basics</h3><div class="ko">처음 쓰는 분을 위한 기초</div>
+      <ul><li>용어</li><li>Claude Code 사용법</li><li>지침 파일 세 층</li><li>스킬, 에이전트, 훅</li><li>CLI와 tmux</li></ul></div>
+    <div><div class="n">2</div><h3>Research</h3><div class="ko">연구 사례와 서버 작업</div>
+      <ul><li>AI에게 맡기는 연구 작업</li><li>사례 1: DEG 표와 volcano plot</li><li>사례 2: 공개 코호트 중복 환자</li><li>랩 서버 작업 방식</li></ul></div>
+    <div><div class="n">3</div><h3>Workflow</h3><div class="ko">작업 방식</div>
+      <ul><li>채팅 AI의 한계</li><li>이슈의 구조와 작업 단계</li><li>Claude와 Codex 모델</li><li>리뷰</li></ul></div>
+    <div><div class="n">4</div><h3>In practice</h3><div class="ko">관제 화면과 하루</div>
+      <ul><li>beads-ui Monitor 탭</li><li>Worker 탭과 대기열</li><li>폰에서 Discord로 답하기</li><li>하루 일과</li><li>처음 시작할 때</li></ul></div>
+  </div>
+  <aside class="notes">네 부분으로 나눴고 **부분마다 질문을 받겠습니다**. 이미 쓰고 계신 분은 기초 부분을 넘겨 들으셔도 됩니다.</aside>
+</section>
+
+<section class="slide dark divider" id="s-part2" data-theme="dark">
+  <div class="wrap"><div class="pn">1</div><div><h2>Basics</h2><p class="ko-sub">처음 쓰는 분을 위한 기초</p>
+    <ul><li>용어</li><li>Claude Code 사용법</li><li>지침 파일 세 층</li><li>스킬, 에이전트, 훅</li><li>CLI와 tmux</li></ul></div></div>
+  <aside class="notes">첫 번째는 **처음 쓰시는 분**을 위한 Claude Code 기초입니다. 이미 쓰고 계신 분은 가볍게 들으셔도 됩니다.</aside>
+</section>
+
+<section class="slide" id="s-gloss" data-theme="light">
+  <h2>Terms used in this talk</h2>
+  <p class="ko-sub">용어 정리</p>
+  <div class="gloss">
+    <div><b>에이전트<em>agent</em></b>파일을 읽고 명령을 실행하며 일을 끝까지 하는 AI. Claude Code, Codex CLI</div>
+    <div><b>세션<em>session</em></b>에이전트와의 대화 하나. 끝나면 대화 내용은 다음 세션에 이어지지 않는다</div>
+    <div><b>컨텍스트<em>context</em></b>모델이 한 번에 볼 수 있는 대화·파일 분량. 차면 요약하고 이어간다</div>
+    <div><b>토큰<em>token</em></b>모델이 읽고 쓰는 글자 조각. 사용량과 비용의 단위</div>
+    <div><b>effort</b>모델이 답하기 전에 생각하는 양. 높을수록 느리고 토큰이 많이 든다</div>
+    <div><b>CLI · 터미널</b>명령어를 입력해 프로그램을 쓰는 창</div>
+    <div><b>tmux</b>터미널 하나를 탭·창으로 나누고, 창을 닫아도 작업을 살려 두는 프로그램</div>
+    <div><b>지침 파일<em>CLAUDE.md, AGENTS.md</em></b>세션을 시작할 때마다 자동으로 읽히는 규칙</div>
+    <div><b>스킬<em>skill</em></b>필요할 때만 불러 읽는 작업 절차서</div>
+    <div><b>훅<em>hook</em></b>도구 실행 전후 같은 시점마다 자동으로 도는 스크립트</div>
+    <div><b>하위 에이전트<em>subagent</em></b>대화를 보지 못하고 지시서만 받아 일하는 별도 세션</div>
+    <div><b>MCP</b>외부 도구나 서비스를 모델에 연결하는 표준 규격</div>
+    <div><b>이슈<em>issue · Beads</em></b>이슈 트래커 Beads의 항목 하나. 분석 하나가 이슈 하나. 명령어는 bd</div>
+    <div><b>spec · plan</b>설계 문서 · 여러 단계로 나눈 실행 계획</div>
+    <div><b>worktree</b>같은 저장소를 여러 폴더에 따로 꺼낸 것. 세션마다 하나씩 써서 서로 안 부딪힌다</div>
+    <div><b>PR · squash merge</b>변경을 main에 넣자는 요청 · 커밋 여러 개를 하나로 합쳐 넣기</div>
+    <div><b>리뷰 게이트 · 영수증</b>다음 단계 전에 받는 리뷰 · 그 결과를 커밋 해시와 함께 남긴 기록</div>
+    <div><b>ADR</b>되돌리기 어려운 결정을 남기는 문서</div>
+    <div><b>Worker</b>beads-ui에서 대기열의 이슈를 자동으로 실행하는 기능</div>
+    <div><b>5시간 · 7일 창</b>구독 사용 한도가 초기화되는 주기</div>
+    <div><b>Tailscale · tailnet</b>내 기기끼리만 보이는 사설 네트워크</div>
+    <div><b>Slurm · sjob</b>랩 서버의 작업 스케줄러 · 내가 쓰는 제출 도구</div>
+    <div><b>Codex</b>OpenAI의 코딩 에이전트. sol, astra는 Codex 모델 이름</div>
+    <div><b>Fable · Opus · Sonnet · Haiku</b>Claude 모델. 왼쪽일수록 상위 모델</div>
+  </div>
+  <aside class="notes">모르는 단어가 나오면 이 장을 떠올려 주세요. **세션**은 대화 하나이고 끝나면 다음 세션이 내용을 기억하지 못합니다. 기록을 지침 파일과 이슈에 남기는 이유입니다.</aside>
+</section>
+
+<section class="slide" id="s-cc" data-theme="light">
+  <h2>Claude Code basics</h2>
+  <p class="ko-sub">Claude Code 기본 사용법</p>
+  <div class="cc">
+    <div>
+<pre><span class="p">~/Documents/GitHub/prostate</span>
+<span class="c">$</span> claude
+<span class="w">&gt;</span> data/processed의 DEG 표와 volcano plot의 유의 개수가 다른 이유를 찾아줘
+
+<span class="g">●</span> Read  workflow/scripts/deseq.R
+<span class="g">●</span> Bash  awk '$6==0' data/processed/deseq/model_B.tsv | wc -l
+<span class="y">?</span> 이 명령을 실행할까요?  <span class="w">1 예</span>  2 이번 세션 동안 허용  3 아니오
+<span class="g">●</span> p=0 유전자 79개가 같은 lfcSE를 공유합니다.
+  op_year를 중심화하지 않은 것이 원인으로 보입니다.
+  수정 범위를 정하려면 spec부터 쓰는 게 좋겠습니다.
+
+<span class="w">&gt;</span> <span class="p">▌</span></pre>
+      <div class="loop"><span>읽기</span><span>계획</span><span>수정</span><span>실행·테스트</span><span class="g">권한 확인</span><span>보고</span></div>
+      <p class="small" style="margin-top:10px">대화 예시. Codex CLI(<code>codex</code>)도 같은 방식이고 AGENTS.md를 읽는다.</p>
+    </div>
+    <div class="keys">
+      <div class="grp">시작과 이어하기</div>
+      <div class="kc">claude</div><div>저장소 폴더에서 시작. 그 폴더의 지침을 읽는다</div>
+      <div class="kc">claude -c</div><div>마지막 대화 이어서</div>
+      <div class="kc">/resume</div><div>예전 대화 골라 이어서</div>
+      <div class="grp">대화 안에서</div>
+      <div class="kc">@파일</div><div>파일 내용을 대화에 넣기</div>
+      <div class="kc">!명령</div><div>셸 명령을 바로 실행하고 결과를 대화에 넣기</div>
+      <div class="kc">Shift+Tab</div><div>권한 모드 전환. plan 모드는 고치지 않고 계획만</div>
+      <div class="kc">Esc · Esc Esc</div><div>멈추기 · 이전 메시지로 되돌리기</div>
+      <div class="kc">/model</div><div>모델 바꾸기</div>
+      <div class="kc">/compact · /clear</div><div>대화 요약해서 계속 · 새로 시작</div>
+      <div class="grp">설정 보기</div>
+      <div class="kc">/init</div><div>저장소를 읽고 CLAUDE.md 초안 만들기</div>
+      <div class="kc">/agents · /hooks · /mcp</div><div>하위 에이전트 · 훅 · 연결된 MCP 확인</div>
+    </div>
+  </div>
+  <aside class="notes">Claude Code는 터미널에서 쓰는 에이전트입니다. 채팅과 달리 **직접 파일을 읽고 명령을 실행하며** 실행 전에는 허용할지 먼저 확인하죠.
+처음에는 저장소 폴더에서 claude로 시작하고 큰 작업은 Shift+Tab으로 plan 모드에 두어 계획부터 보시길 권합니다. Codex CLI도 거의 같고 AGENTS.md를 읽습니다.</aside>
+</section>
+
+<section class="slide" id="s-instr" data-theme="light">
+  <h2>Instruction files</h2>
+  <p class="ko-sub">지침 파일 (적용 범위에 따라 세 층)</p>
+  <div class="layers">
+    <div class="layer l1"><h3>전역 지침<small>~/.claude/CLAUDE.md · 103줄</small></h3><p>모든 저장소, 모든 세션에 적용. 말투, 파일을 고쳐도 되는 조건, 서버 사용 규칙처럼 어디서나 같은 것.</p>
+      <div class="ex"><i>실제 내용 중</i>랩 서버에서는 sudo를 쓰지 않는다. Slurm 잡은 sjob으로 제출하고 Discord 알림을 켠다.</div></div>
+    <div class="layer l2"><h3>프로젝트 지침<small>&lt;저장소&gt;/AGENTS.md · 89–125줄</small></h3><p>그 저장소에만 적용. 데이터 위치, 검증 명령, 하면 안 되는 일. CLAUDE.md가 <code>@AGENTS.md</code>로 같은 파일을 불러서 Claude와 Codex가 같은 규칙을 본다.</p>
+      <div class="ex"><i>prostate AGENTS.md 중</i>wallace는 실행 전용이다. 코드 통로는 Git 하나다.</div></div>
+    <div class="layer l3"><h3>자동 메모리<small>~/.claude/projects/&lt;저장소&gt;/memory/</small></h3><p>에이전트가 작업하다 알게 된 것을 스스로 적어 두고 다음 세션에 읽는다. beads-ui에는 54개.</p>
+      <div class="ex"><i>beads-ui 메모리 중</i>bd update --notes는 덧붙이기가 아니라 덮어쓰기다. 누적은 --append-notes로.</div></div>
+    <div class="layer l4"><h3>스킬<small>필요할 때만 읽는 절차서</small></h3><p>지침에는 길게 쓰지 않고, 긴 절차는 스킬로 빼서 해당 작업을 할 때만 읽게 한다. 다음 장.</p>
+      <div class="ex"><i>예</i>"리뷰 받아줘" → review 스킬을 읽고 그 절차대로 진행</div></div>
+  </div>
+  <p class="layers-foot">지침 파일이 길어지면 덜 지켜진다. 항상 필요한 규칙만 남기고, 같은 실수가 반복되면 그때 규칙을 추가한다.</p>
+  <aside class="notes">에이전트는 세션을 시작할 때 지침 파일부터 읽습니다. 전역 지침에는 랩 서버에서 sudo를 쓰지 않는다 같은 공통 규칙을, 저장소 지침에는 데이터 위치와 테스트 방법을 적습니다.
+저장소 지침은 AGENTS.md에 쓰고 CLAUDE.md에서 불러와서 Claude와 Codex가 같은 규칙을 보죠. 지침이 길어지면 잘 안 지켜져서 긴 절차는 스킬로 뺍니다.
+처음에는 **저장소마다 AGENTS.md 한 장**이면 충분합니다.</aside>
+</section>
+
+<section class="slide" id="s-sah" data-theme="light">
+  <h2>Skills, agents, hooks</h2>
+  <p class="ko-sub">Claude Code 확장: 스킬, 에이전트, 훅</p>
+  <div class="sah">
+    <div><div class="big2">25</div><h3>스킬</h3><p class="what">작업 절차서. 평소에는 이름과 한 줄 설명만 보이고, 해당 작업을 할 때 본문을 읽는다. 내가 <code>/review</code>처럼 직접 부르거나 에이전트가 골라 쓴다.</p>
+      <ul><li><code>workflow</code> 작업 경로와 단계 판단</li><li><code>review</code> 다른 모델에게 리뷰 요청</li><li><code>adr</code> 결정 기록 작성</li><li><code>advise</code> 다른 모델에게 의견 묻기</li><li><code>bd-usage</code> 이슈 트래커(Beads) 사용법</li><li><code>repo-template</code> 연구 저장소 템플릿 적용</li></ul></div>
+    <div><div class="big2">7</div><h3>에이전트</h3><p class="what">하위 에이전트 정의. 지휘 세션이 일을 나눠 맡길 때 쓴다. 대화를 보지 못하므로 지시서에 범위와 검증 방법을 모두 적어 보낸다.</p>
+      <ul><li><code>impl-low · medium · high · xhigh</code> 구현 담당, effort별</li><li><code>advisor · advisor-xhigh</code> 읽기 전용 상담·리뷰</li><li><code>codex-runner</code> Claude 세션에서 Codex를 부르는 중계</li></ul></div>
+    <div><div class="big2">20</div><h3>훅</h3><p class="what">정해진 시점마다 자동으로 도는 스크립트. 꼭 지켜야 하는 규칙은 훅으로 막는다. 11종의 시점에 20개를 걸어 두었다.</p>
+      <ul><li>위험한 명령 차단 (되돌릴 수 없는 삭제, force push)</li><li>구현 승인 전 파일 수정 차단</li><li>세션 상태를 tmux 탭 아이콘과 Discord로 전달</li><li>사용 한도 도달 감지</li><li>세션 시작 시 지난 교훈 불러오기</li></ul></div>
+  </div>
+  <div class="sah-foot">
+    <p><b>플러그인</b> 남이 만든 스킬·훅·명령 묶음. 지금은 상태줄(claude-hud), Discord, 화면 디자인 3개를 켜 두었다.</p>
+    <p><b>MCP</b> 외부 서비스 연결. 같은 저장소의 코드 구조 검색 도구나 Discord 연결이 MCP로 붙는다.</p>
+  </div>
+  <aside class="notes">스킬은 작업 절차서입니다. 평소에는 이름만 보이고 해당 작업을 할 때만 본문을 읽어서 컨텍스트를 아끼죠.
+훅은 정해진 시점마다 도는 스크립트입니다. 지침은 모델이 어길 수 있어서 되돌릴 수 없는 삭제, force push, 승인 전 코드 수정처럼 **꼭 지켜야 하는 규칙은 훅으로 막습니다**.
+처음에는 그림 스타일 맞추기처럼 자주 하는 절차 하나를 스킬로 만들어 보세요.</aside>
+</section>
+
+<section class="slide" id="s-cli" data-theme="light">
+  <h2>CLI and tmux</h2>
+  <p class="ko-sub">자주 쓰는 명령어와 tmux</p>
+  <div class="ct2">
+    <div>
+      <div class="clitab">
+        <div>git · lazygit</div><div>버전 관리. lazygit은 git을 화면으로 보는 도구</div>
+        <div>gh</div><div>GitHub의 PR과 이슈를 터미널에서</div>
+        <div>bd</div><div>이슈 트래커(Beads). <code>bd create</code>, <code>bd ready</code>, <code>bd show</code></div>
+        <div>ssh</div><div>랩 서버 접속. 명령 하나만 보내고 돌아올 수도 있다</div>
+        <div>sjob</div><div>Slurm 잡 제출과 Discord 알림</div>
+        <div>cswap</div><div>Claude 계정 전환</div>
+        <div>codex-auth</div><div>Codex 계정 전환</div>
+        <div>claude · codex</div><div>에이전트 시작</div>
+      </div>
+      <p class="small" style="margin-top:12px">명령을 외울 필요는 없다. 에이전트에게 "PR 상태 보여줘"라고 하면 gh를 대신 실행한다.</p>
+    </div>
+    <div>
+      <div class="tm">
+        <div class="panes">
+          <div class="pn2">claude · prostate<br><span style="color:#6C7891">&gt; spec 리뷰 반영해줘</span><br><span style="color:#45D98C">●</span> Edit docs/…/spec.md</div>
+          <div class="pn2">$ sjob status<br><span style="color:#45D98C">COMPLETED</span></div>
+          <div class="pn2">$ lazygit</div>
+        </div>
+        <div class="bar2"><span>1 beads-ui</span><span class="cur">2 prostate</span><span>3 microbiome_bile</span><span>4 dotfiles</span></div>
+      </div>
+      <div class="tmx-lab">
+        <div><b>세션</b>tmux 전체. 터미널을 닫아도 살아 있고, 다시 붙으면(attach) 그대로다</div>
+        <div><b>창 (탭)</b>아래 줄의 탭. 저장소마다 하나</div>
+        <div><b>pane</b>탭 하나를 나눈 칸. 에이전트 옆에 셸</div>
+      </div>
+      <div class="tkeys">
+        <div>Ctrl+b "  · %</div><div>위아래 · 좌우로 나누기</div>
+        <div>Alt+h/j/k/l</div><div>칸 이동</div>
+        <div>Alt+← →</div><div>탭 이동</div>
+        <div>Ctrl+b g</div><div>lazygit 팝업</div>
+        <div>Ctrl+b s</div><div>탭을 저장소별 정렬</div>
+        <div>Ctrl+b d</div><div>떼어 두기 (detach)</div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">왼쪽 명령은 외울 필요 없이 에이전트에게 말로 시키면 되고 오른쪽 **tmux**는 꼭 써 보세요.
+tmux 안에서 에이전트를 돌리면 터미널 창을 닫아도 계속 일하고 나중에 아이패드로 붙으면 그대로 있습니다. 저장소마다 탭을 하나 두고 에이전트 옆에 셸이나 lazygit을 띄웁니다.</aside>
+</section>
+
+<section class="slide dark divider" id="s-part1" data-theme="dark">
+  <div class="wrap"><div class="pn">2</div><div><h2>Research</h2><p class="ko-sub">연구 사례와 서버 작업</p>
+    <ul><li>AI에게 맡기는 연구 작업</li><li>사례 1: DEG 표와 volcano plot</li><li>사례 2: 공개 코호트 중복 환자</li><li>랩 서버 작업 방식</li></ul></div></div>
+  <aside class="notes">두 번째는 **연구 사례**와 랩 서버 작업 방식입니다.</aside>
+</section>
+
+<section class="slide" id="s-research" data-theme="light">
+  <h2>What AI does in my research</h2>
+  <p class="ko-sub">연구에서 AI에게 맡기는 일 (올해 닫은 이슈 제목에서 발췌)</p>
+  <div class="rtable">
+    <div class="rt-row"><div class="rt-k"><b>데이터 정비와 QC</b><span>Data &amp; QC</span></div>
+      <div class="rt-ex"><code>rokit-7ad</code>공개 코호트 데이터 정비 — GEO 정상조직 제외, CRCSC 임상 재통합, CMS 라벨 병합</div>
+      <div class="rt-ex"><code>PROSTATE-m67</code>STAR 로그 부재 처리 결정: rna_qc가 56개 중 55개에서 멈춘다</div></div>
+    <div class="rt-row"><div class="rt-k"><b>파이프라인과 계산</b><span>Pipelines</span></div>
+      <div class="rt-ex"><code>Analysis-ay0</code>QIIME2 파이프라인 파라미터 자동 최적화 2-pass 구조 도입</div>
+      <div class="rt-ex"><code>PROSTATE-2jr</code>bootstrap optimism 검증 루프 병렬화 — 선언한 8 threads를 실제로 쓴다</div></div>
+    <div class="rt-row"><div class="rt-k"><b>통계 분석</b><span>Statistics</span></div>
+      <div class="rt-ex"><code>rokit-k05</code>코호트별 단계별 Cox 분석 — PDGFRA/PDGFRB Model 1–4 (임상·CMS4·stromal 조정)</div>
+      <div class="rt-ex"><code>PROSTATE-5n2</code>TCGA-PRAD 외부검증 — 조기 BCR 재현, 경로·유전자 방향, signature 계수 고정 성능</div></div>
+    <div class="rt-row"><div class="rt-k"><b>그림과 발표</b><span>Figures &amp; decks</span></div>
+      <div class="rt-ex"><code>Analysis-7gwo</code>Figure 2a 췌담도 히트맵에 병기(Stage) 띠 추가 — 담도암 Figure 3a와 형식 일치</div>
+      <div class="rt-ex"><code>rokit-0y1</code>발표용 그림 추가 — 결과·2차 분석 8장, 데이터·감사 3장, KM 백업</div></div>
+    <div class="rt-row"><div class="rt-k"><b>원고와 리뷰어 대응</b><span>Manuscripts</span></div>
+      <div class="rt-ex"><code>PROSTATE-ht0</code>리비전 응답 묶음 — 제1공저자, bioinformatics 분석</div>
+      <div class="rt-ex"><code>rokit-f3l</code>원고 재구성 — multi-cohort 예후 연구로 재작성, 리뷰어 지적 정정</div></div>
+    <div class="rt-row"><div class="rt-k"><b>검증과 오류 발견</b><span>Checking</span></div>
+      <div class="rt-ex"><code>rokit-ct9</code>ROKIT qPCR ΔCt 부호 반전 검증·수정</div>
+      <div class="rt-ex"><code>TRACE-ICI-tli.6</code>사전 등록한 기준으로 go / no-go 판정 기록</div></div>
+  </div>
+  <aside class="notes">올해 닫은 연구 이슈의 제목을 그대로 가져왔습니다. 데이터 정비부터 원고 리비전, 사전 등록한 기준으로 내리는 go/no-go 판정까지 맡깁니다.
+**무엇을 분석할지와 결과 해석은 제가 하고** 실행과 수정, 재생성을 맡깁니다.</aside>
+</section>
+
+<section class="slide" id="s-storyA" data-theme="light">
+  <h2>Case 1: DEG table vs. volcano plot</h2>
+  <p class="ko-sub">DEG 표와 volcano plot의 유의 유전자 수 불일치 (prostate RNA-seq)</p>
+  <div class="story">
+    <div>
+      <div class="tl">
+        <div class="ev human"><div class="t">발견</div><div class="d">교수님께 보낼 덱을 검수하다가, volcano에는 유의한 점이 0개인데 표에는 27개인 것을 발견</div></div>
+        <div class="ev"><div class="t">역추적</div><div class="d">P1 버그 이슈를 열고 역추적: p=0 유전자 79개가 lfcSE를 15자리까지 똑같이 공유</div></div>
+        <div class="ev"><div class="t">원인 확인</div><div class="d">랩 서버 wallace에서 재현. 중심화하지 않은 batch 공변량(수술 연도)이 dispersion을 붕괴시킨 것을 통제 실험으로 확정</div></div>
+        <div class="ev"><div class="t">수정</div><div class="d">spec → Codex 리뷰가 막는 지적 4건 → 전부 반영 → Sonnet이 구현 → Codex 구현 리뷰 → PR #10, 테스트 474개 통과</div></div>
+        <div class="ev res"><div class="t">재실행</div><div class="d">Slurm 재실행 세 번, 확정값 재산출, 덱 v2.1 발송. 발견부터 여기까지 같은 날 저녁</div></div>
+      </div>
+      <div class="delta">
+        <div><b><s>27 →</s> 5</b><span>보정 후 유의 DEG</span></div>
+        <div><b><s>0 →</s> 681</b><span>GSEA 유의 경로</span></div>
+      </div>
+    </div>
+    <div>
+      <div class="figbox"><img src="{{IMG:volcano}}" alt="보정된 모형의 volcano plot"></div>
+      <div class="figcap">수정 후 volcano plot</div>
+    </div>
+  </div>
+  <aside class="notes">교수님께 보낼 덱을 검수하다가 volcano plot과 표의 유의 유전자 수가 다른 걸 발견했습니다. 역추적해 보니 p값이 0인 유전자들이 **표준오차를 소수점 15자리까지 똑같이** 공유하고 있었고 원인은 평균 2016 근처의 수술 연도를 원 값 그대로 공변량에 넣은 것이었습니다.
+DESeq2는 경고만 내고 진행해서 dispersion 추정이 깨져 있었죠. spec, Codex 리뷰, 구현, Slurm 재실행을 거쳐 **같은 날 저녁**에 수정한 덱을 보냈습니다.</aside>
+</section>
+
+<section class="slide" id="s-storyB" data-theme="light">
+  <h2>Case 2: duplicate patients in public cohorts</h2>
+  <p class="ko-sub">공개 코호트 간 중복 환자 (CRC-rokit 리비전)</p>
+  <div class="story">
+    <div>
+      <div class="tl">
+        <div class="ev human"><div class="t">발견</div><div class="d">한 GEO 시리즈의 상관과 분산이 다른 코호트와 다른 것을 결과 해석 중에 발견 → 데이터·전처리·코드 감사 이슈</div></div>
+        <div class="ev"><div class="t">감사</div><div class="d">감사 단계 구현, wallace에서 Slurm 잡 실행 → 두 GEO 시리즈 사이 <b>중복 환자 117명</b> 발견 (발현 상관 r ≥ 0.99999999)</div></div>
+        <div class="ev"><div class="t">설계·구현</div><div class="d">중복 제외 설계 spec → 리뷰 반영 → 계획 → 코드 PR</div></div>
+        <div class="ev res"><div class="t">재분석</div><div class="d">Cox와 메타분석 재생성. 재발 축 PDGFRB 통합 HR 1.183 (k=8) → 1.212 (k=7)</div></div>
+        <div class="ev res"><div class="t">원고</div><div class="d">원고 보강: 공선성, stage II–III, 추가 예측력. 발표 그림 추가</div></div>
+      </div>
+      <div class="delta">
+        <div><b>117명</b><span>두 공개 코호트에 겹쳐 있던 환자</span></div>
+        <div><b><s>1.183 →</s> 1.212</b><span>PDGFRB 재발 축 통합 HR</span></div>
+      </div>
+    </div>
+    <div>
+      <div class="figbox"><img src="{{IMG:forest}}" alt="PDGFRB 재발 축 forest plot"></div>
+      <div class="figcap">중복 제외 후 forest plot</div>
+    </div>
+  </div>
+  <aside class="notes">리비전 중인 대장암 논문에서 한 데이터셋의 분포가 이상하다는 데서 시작했습니다. 에이전트가 공개 데이터셋 사이의 **원시 발현값 대조**를 제안했고 서로 다른 두 GEO 시리즈에 동시에 들어 있는 환자를 찾았습니다.
+이들을 빼자 통합 hazard ratio가 바뀌었고 그 값이 지금 원고에 들어가 있습니다. 코드 점검으로는 드러나지 않는 문제였죠.
+**미발표 결과**라 랩 밖으로는 공유하지 말아 주세요.</aside>
+</section>
+
+<section class="slide" id="s-servers" data-theme="light">
+  <h2>Lab servers: edit on the Mac, run on the server</h2>
+  <p class="ko-sub">랩 서버 작업 방식: 코드는 git으로, 결과는 rsync로</p>
+  <div class="srv">
+    <div class="seq">
+      <div class="hd" style="grid-column:1/3"><b>Mac Studio</b><span>편집·커밋·이슈</span></div>
+      <div class="hd" style="grid-column:3/5"><b>GitHub</b><span>코드 원본</span></div>
+      <div class="hd" style="grid-column:5/7"><b>wallace</b><span>실행 전용</span></div>
+      <div class="hd" style="grid-column:7/9"><b>Discord</b><span>폰 알림</span></div>
+      <div class="self tool" style="grid-column:1/3;grid-row:2"><span class="sk">1</span>작업 폴더에서 <b>코드 수정·커밋</b></div>
+      <div class="sm" style="grid-column:2/4;grid-row:3"><span class="sk">2</span>PR → 리뷰 → <b>main 머지</b></div>
+      <div class="sm" style="grid-column:2/6;grid-row:4"><span class="sk">3</span><b>ssh wallace</b>로 명령 실행</div>
+      <div class="sm l" style="grid-column:4/6;grid-row:5"><span class="sk">4</span>remote_gate: <b>fetch, ff-only</b></div>
+      <div class="self" style="grid-column:5/7;grid-row:6"><span class="sk">5</span><b>sjob run</b> → Snakemake → 규칙마다 sbatch</div>
+      <div class="sm res" style="grid-column:6/8;grid-row:7"><span class="sk">6</span>완료·실패 알림</div>
+      <div class="sm l res" style="grid-column:2/6;grid-row:8"><span class="sk">7</span><b>data_sync</b>: data/ 아래만 rsync로 가져오기</div>
+      <div class="self res" style="grid-column:1/3;grid-row:9"><span class="sk">8</span>결과 확인 → <b>추적 대상만 커밋</b> → PR</div>
+    </div>
+    <div class="term2">
+<pre><span class="p"># Mac 터미널 (형식 예시)</span>
+<span class="p"># 1–2. PR이 main에 머지된 뒤</span>
+<span class="c">mac$</span> ssh wallace 'cd &lt;checkout&gt; &amp;&amp;
+      python scripts/remote_gate.py'
+  fetch → merge --ff-only origin/main
+  HEAD == origin/main  <span class="g">ok</span>
+<span class="c">mac$</span> ssh wallace 'cd &lt;checkout&gt; &amp;&amp;
+      sjob run --workflow \
+        --name <span class="y">prostate-09h-rerun</span>'
+  head job 2 CPU · 8 GB → rule별 sbatch
+<span class="p">  … Discord ✅ prostate-09h-rerun 10분 27초</span>
+<span class="c">mac$</span> scripts/data_sync data/processed/deseq
+  rsync wallace → data/processed/deseq</pre>
+      <p class="small">잡 이름은 <code>&lt;이슈-id&gt;-&lt;목적&gt;</code>. 알림이 켜져 있는지 먼저 확인하고 제출한다.</p>
+    </div>
+  </div>
+  <aside class="notes">랩 서버에서는 직접 작업하지 않고 **코드는 Mac에서만 고칩니다**. ssh로 명령을 보내면 서버 쪽 remote_gate가 GitHub main을 fast-forward로만 받고 main과 정확히 같지 않으면 멈춥니다. 서버 코드가 늘 main과 같으니 **어떤 결과가 어떤 커밋에서 나왔는지** 항상 알 수 있죠.
+sjob으로 head job 하나를 내면 Snakemake가 규칙마다 Slurm 잡을 내고 끝나면 Discord로 알림이 옵니다. 결과는 rsync로 data/ 아래만 가져옵니다.</aside>
+</section>
+
+<section class="slide dark divider" id="s-part3" data-theme="dark">
+  <div class="wrap"><div class="pn">3</div><div><h2>Workflow</h2><p class="ko-sub">작업 방식</p>
+    <ul><li>채팅 AI의 한계</li><li>이슈의 구조와 작업 단계</li><li>Claude와 Codex 모델</li><li>리뷰</li></ul></div></div>
+  <aside class="notes">세 번째는 **작업 방식**입니다. 앞의 두 사례도 이 방식으로 진행했습니다.</aside>
+</section>
+
+<section class="slide" id="s-problem" data-theme="light">
+  <h2>Limits of chat-based AI</h2>
+  <p class="ko-sub">채팅형 AI의 한계와 대응</p>
+  <div class="pairs">
+    <div class="pair">
+      <div class="q">대화가 끝나면 잊는다<small>어제 무슨 결정을 했는지, 왜 그랬는지</small></div>
+      <div class="arrow">→</div>
+      <div class="a"><b>일마다 기록이 남는 이슈</b>목적, 근거, 결정, 남은 일이 버전 관리되는 DB에 쌓입니다. 다음 세션은 이 기록부터 읽습니다.</div>
+    </div>
+    <div class="pair">
+      <div class="q">작성한 모델이 스스로 검증한다<small>"테스트 통과했습니다"만으로는 확인이 안 된다</small></div>
+      <div class="arrow">→</div>
+      <div class="a"><b>다른 모델의 리뷰와 영수증</b>설계와 구현을 쓴 모델이 아닌 다른 모델(기본은 다른 회사 모델)이 한 번 검토하고, 결과를 커밋 해시와 함께 남깁니다.</div>
+    </div>
+    <div class="pair">
+      <div class="q">한 번에 하나씩만 진행된다<small>사람이 화면 앞에 있어야 진행된다</small></div>
+      <div class="arrow">→</div>
+      <div class="a"><b>Worker: 대기열과 동시 실행</b>여러 저장소의 일을 줄 세워 두면 서버가 순서대로, 혹은 동시에 세션을 띄우고 PR까지 가져옵니다.</div>
+    </div>
+  </div>
+  <aside class="notes">채팅창에 분석을 맡기면 길어질수록 세 가지가 문제입니다. 대화가 끝나면 **왜 그렇게 정했는지**가 사라지고 "테스트 통과"는 작성한 모델의 자기 보고이며 제가 화면을 지키고 있어야 진행되죠.
+이를 막으려고 일마다 남는 기록, 다른 모델의 리뷰, 제가 없어도 도는 대기열을 만들었습니다.</aside>
+</section>
+
+<section class="slide" id="s-anat" data-theme="light">
+  <h2>What an issue contains</h2>
+  <p class="ko-sub">이슈 하나에 담기는 것 (사례 1의 실제 기록, PROSTATE-mpx)</p>
+  <div class="anat">
+    <div class="bead-card">
+      <div class="id">PROSTATE-mpx <span class="chip solid">bug</span><span class="chip">P1</span><span class="chip">spec_backed</span></div>
+      <div class="title">DEG 유의 27개가 퇴행 적합 인공산물 의심 — p=0 유전자 79개가 동일 lfcSE 상수 공유</div>
+      <div class="body">출처: 교수님 공유 덱을 검수하다 발견. 그림에는 유의한 점이 0개인데 집계는 27개라 데이터를 역추적했다. 모형 B에서 p=0인 유전자 79개가 전부 같은 lfcSE 값을 공유한다…</div>
+      <dl class="receipts">
+        <dt>route</dt><dd>spec_backed</dd>
+        <dt>spec_review</dt><dd>self <em>@f4a5197… · 리뷰어 codex</em></dd>
+        <dt>impl_entry</dt><dd>user <em>@f4a5197…</em></dd>
+        <dt>exec_receipt</dt><dd>delegated:sonnet <em>@87d7220…</em></dd>
+        <dt>impl_review</dt><dd>self <em>@fd9cd6d… · 리뷰어 codex</em></dd>
+        <dt>pr_url</dt><dd>prostate/pull/10</dd>
+      </dl>
+      <div class="pin" style="left:-13px;top:28px">1</div>
+      <div class="pin" style="left:-13px;top:80px">2</div>
+      <div class="pin" style="left:-13px;top:250px">3</div>
+    </div>
+    <div class="callouts">
+      <div><span class="n">1</span><p><b>이름과 종류</b>저장소 접두어가 붙은 ID, bug·feature·task, 우선순위, 작업 경로(route).</p></div>
+      <div><span class="n">2</span><p><b>사람이 읽는 본문</b>증거가 있는 파일과 수치를 적어 두어서, 다음 세션이 다시 조사하지 않게 합니다.</p></div>
+      <div><span class="n">3</span><p><b>기계가 읽는 영수증</b>누가(어느 모델이) 어느 커밋에서 검토하고 승인했는지. 영수증이 없으면 다음 단계로 못 넘어갑니다.</p></div>
+    </div>
+  </div>
+  <aside class="notes">사례 1이 실제로 남긴 기록입니다. 본문에 구체적인 수치를 적어 두어서 **다음 세션이 처음부터 다시 조사할 필요가 없죠**.
+맨 아래 영수증에는 spec과 코드를 Codex가 리뷰했고 구현 시작은 제가 승인했다는 기록이 남습니다. 값마다 판단한 커밋의 해시가 붙어서 **리뷰 뒤에 코드가 바뀌면 영수증이 무효**가 됩니다.</aside>
+</section>
+
+<section class="slide" id="s-life" data-theme="light">
+  <h2>Task lifecycle</h2>
+  <p class="ko-sub">작업 단계 (분석과 그림 수정 모두 같은 여덟 단계)</p>
+  <svg id="life-svg" viewBox="0 0 1392 440" aria-label="이슈 하나가 지나가는 여덟 단계"></svg>
+  <div class="life-foot">
+    <div>
+      <h3>경로(route) 3가지</h3>
+      <div class="routes">
+        <div><code>quick_fix</code>범위가 닫힌 작은 수정. 한 세션에서 바로</div>
+        <div><code>spec_backed</code>설계 선택지가 있으면 문서부터</div>
+        <div><code>full_plan</code>검증 가능한 단계가 둘 이상이면 계획까지</div>
+      </div>
+    </div>
+    <div>
+      <h3>AI가 혼자 진행하지 않는 5가지</h3>
+      <div class="stops"><span>되돌릴 수 없는 삭제</span><span>비밀번호와 토큰</span><span>필수 검증 실패</span><span>안전하지 않은 머지</span><span>정본 충돌</span></div>
+    </div>
+  </div>
+  <aside class="notes">분석이든 그림 수정이든 같은 단계를 거칩니다. 노란 점은 제가 직접 답하는 단계, 고리가 있는 점은 다른 모델의 리뷰입니다.
+설계 선택지가 없으면 quick_fix로 바로 가고 있으면 spec부터 쓰죠. 원자료 삭제처럼 **되돌릴 수 없는 일**에서는 AI가 혼자 진행하지 않고 멈춥니다.</aside>
+</section>
+
+<section class="slide" id="s-meet" data-theme="light">
+  <h2>Claude and Codex models</h2>
+  <p class="ko-sub">Claude와 Codex 모델별 특성 (오른쪽 숫자: 최근 30일 사용량의 API 가격 환산)</p>
+  <div class="fam">
+    <div>
+      <h3>Claude <span>Anthropic</span></h3>
+      <div class="mc"><div class="nm">Fable 5.1<small>최상위</small></div><div class="gd">가장 깊은 판단. 주간 한도가 따로 있다. <b>advisor 상담, 설계 판단, 리뷰 선택지.</b> 구현에는 자동으로 배정하지 않는다</div><div class="sp">$3.6k</div></div>
+      <div class="mc"><div class="nm">Opus 5.5<small>주력</small></div><div class="gd">긴 작업을 끝까지 하고 큰 코드베이스를 다룬다. 화면(UI) 작업에 강하다. <b>지휘 세션, 복잡한 구현</b></div><div class="sp">$6.0k<small>Opus 5 포함</small></div></div>
+      <div class="mc"><div class="nm">Sonnet 5.5<small>경량</small></div><div class="gd">빠르고 싸다. <b>범위와 검증이 정해진 구현, 읽기 전용 조사</b></div><div class="sp">$0.5k</div></div>
+      <div class="mc"><div class="nm">Haiku 4.5<small>최소</small></div><div class="gd">가벼운 호출. <b>한도 창을 맞추는 ping</b>에만 쓴다</div><div class="sp">$7</div></div>
+    </div>
+    <div>
+      <h3>Codex <span>OpenAI</span></h3>
+      <div class="mc"><div class="nm">astra<small>상위</small></div><div class="gd">불변식·동시성·알고리즘 추론, 원인 모를 오류 진단, 아주 긴 입력. <b>리뷰 기본값, 어려운 구현</b></div><div class="sp">$3.7k</div></div>
+      <div class="mc"><div class="nm">sol<small>기본</small></div><div class="gd">서버·터미널 자동화, 끝까지 혼자 완료하는 작업. <b>Codex 쪽 지휘와 일반 구현, 조사</b></div><div class="sp">$0.4k</div></div>
+      <div class="mc"><div class="nm">terra · luna<small>경량</small></div><div class="gd">작고 빠른 모델. 자동으로 고르지 않고 <b>직접 지정할 때만</b></div><div class="sp">$29</div></div>
+      <div class="fam-foot" style="grid-template-columns:1fr;margin-top:22px">
+        <p><b>실측</b> 화면 작업은 Claude가 구현할 때 2~3배 싸고 막히는 리뷰 지적도 적었다. 설정 저장소 작업은 astra가 쌌다. Opus 지휘 + Sonnet 구현은 1천 줄당 $4.4, Opus 구현은 $11~17 (표본 적음).</p>
+      </div>
+    </div>
+  </div>
+  <p class="small" style="margin-top:16px">역할 배정은 제공사 문서와 외부 비교를 근거로 정한 가설이고, beads-ui 비교 탭의 기록으로 계속 확인한다. 작업 종류로 고르고, 파일 수나 변경 크기로는 고르지 않는다.</p>
+  <aside class="notes">오른쪽 숫자는 최근 30일 사용량을 API 가격으로 환산한 값입니다. Fable은 주간 한도가 따로 있어서 상담과 설계 판단에만 씁니다. **Opus가 지휘와 복잡한 구현**을 맡고 Sonnet은 범위와 검증이 정해진 구현에 쓰죠.
+Codex는 astra가 원인 진단에 강해서 **리뷰 기본값**으로 두었습니다.
+이 배정은 처음엔 가설이었고 실제 기록으로 확인하는 중입니다. 지금까지는 Opus가 지휘하고 Sonnet이 구현할 때가 Opus가 직접 구현할 때보다 훨씬 쌌지만 아직 표본이 적습니다.</aside>
+</section>
+
+<section class="slide" id="s-review" data-theme="light">
+  <h2>Review</h2>
+  <p class="ko-sub">리뷰 절차 (사례 1, 판정은 APPROVE 또는 REVISE)</p>
+  <div class="gates">
+    <div class="gate-row"><div class="gl">spec 게이트</div>
+      <div class="chain">
+        <div class="nd"><span class="k">초안</span>spec v1</div><div class="ar">→</div>
+        <div class="nd rev"><span class="k">Codex 리뷰</span><b>REVISE</b> · 막는 지적 4건<br>재실행 범위가 실제 DAG와 다름 외</div><div class="ar">→</div>
+        <div class="nd"><span class="k">수정</span>4건 모두 반영한 v2, 수용 검사 키 3개 추가</div><div class="ar">→</div>
+        <div class="nd"><span class="k">확인</span>지휘 모델이 고친 부분만 다시 본다</div><div class="ar">→</div>
+        <div class="nd rcpt"><span class="k">영수증</span><code>spec_review<br>self@f4a5197</code></div>
+      </div></div>
+    <div class="gate-row"><div class="gl">구현 게이트</div>
+      <div class="chain">
+        <div class="nd"><span class="k">구현</span>Sonnet이 쓴 커밋 <code>87d7220</code></div><div class="ar">→</div>
+        <div class="nd rev"><span class="k">Codex sol · xhigh</span><b>REVISE</b> · 사소한 지적 1건<br>막는 지적 0건</div><div class="ar">→</div>
+        <div class="nd"><span class="k">수정</span>커밋 <code>fd9cd6d</code></div><div class="ar">→</div>
+        <div class="nd"><span class="k">확인</span>바뀐 줄만 정확히 다시 본다</div><div class="ar">→</div>
+        <div class="nd rcpt"><span class="k">영수증</span><code>impl_review<br>self@fd9cd6d</code></div>
+      </div></div>
+  </div>
+  <div class="finding">
+    <div class="quote"><small>Codex가 남긴 실제 지적 (구현 게이트, minor)</small>수치 항이 하나도 없는 경로에서는 <code>numeric_centering</code>이 JSON 배열 <code>[]</code>로 써져서, <code>{항: 평균}</code> 객체여야 한다는 약속을 깬다.</div>
+    <div class="rules4">
+      <div><b>판정은 둘뿐</b>APPROVE 또는 REVISE. 지적은 막는 것과 사소한 것으로 나눈다.</div>
+      <div><b>독립 리뷰는 한 번</b>REVISE면 전부 고치고, 지휘 모델이 수정분만 확인한다.</div>
+      <div><b>영수증은 커밋에 묶인다</b>리뷰 뒤 코드가 바뀌면 영수증이 무효가 된다.</div>
+      <div><b>리뷰어는 내가 고른다</b>기본은 Codex. 건너뛰면 "리뷰 없음"으로 기록된다.</div>
+    </div>
+  </div>
+  <aside class="notes">spec 초안에서 Codex가 REVISE와 함께 막는 지적 4건을 냈습니다. 대표적인 게 다시 돌려야 할 하류 분석 목록이 실제 파이프라인과 다르다는 지적이었죠.
+구현 리뷰에서는 결과 파일 형식이 특정 경우에만 깨지는 문제를 찾았는데 **사람이 놓치기 쉬운 종류**입니다.
+판정은 APPROVE와 REVISE 둘뿐이고 독립 리뷰는 **게이트마다 한 번**이라 무한히 주고받지 않습니다. 영수증의 self는 Codex 지적을 반영한 뒤 지휘 모델이 마지막 확인을 했다는 뜻입니다.</aside>
+</section>
+
+<section class="slide dark divider" id="s-part4" data-theme="dark">
+  <div class="wrap"><div class="pn">4</div><div><h2>In practice</h2><p class="ko-sub">관제 화면과 하루</p>
+    <ul><li>beads-ui Monitor 탭</li><li>Worker 탭과 대기열</li><li>폰에서 Discord로 답하기</li><li>하루 일과</li><li>처음 시작할 때</li></ul></div></div>
+  <aside class="notes">마지막은 이 방식을 **매일 어떻게 돌리는지**입니다. 관제 화면은 오픈소스 beads-ui를 포크해 고쳐 쓰고 있습니다.</aside>
+</section>
+
+<section class="slide dark" id="s-monitor" data-theme="dark">
+  <div class="wrap">
+    <h2>beads-ui:<br>Monitor tab</h2>
+    <p class="ko-sub">모든 저장소의 진행 상황</p>
+    <ol>
+      <li><span class="n">1</span><span><b>남은 사용량</b>Claude와 Codex 계정별 5시간, 7일 한도</span></li>
+      <li><span class="n">2</span><span><b>저장소 타일</b>저장소마다 자동화·자동 머지 스위치와 오케·워커·리뷰 모델</span></li>
+      <li><span class="n">3</span><span><b>후보에서 완료까지</b>후보 → 대기 → 실행 중 → PR 대기 → 완료</span></li>
+      <li><span class="n">4</span><span><b>카드 한 장 = 이슈 하나</b>단계 막대, 선행 관계, 오케·워커 모델</span></li>
+    </ol>
+  </div>
+  <div class="shot win"><div class="bar"><i></i><i></i><i></i><span>Mac Studio :3000 / #/monitor</span></div><img src="{{IMG:monitor}}" alt="beads-ui 모니터 화면 캡처"></div>
+  <div class="mark" style="left:1100px;top:100px">1</div>
+  <div class="mark" style="left:546px;top:152px">2</div>
+  <div class="mark" style="left:546px;top:274px">3</div>
+  <div class="mark" style="left:838px;top:640px">4</div>
+  <div class="meta">오픈소스 beads-ui를 포크해 연구용 관제 화면으로 키웠습니다. 4번 카드는 microbiome_bile의 실제 대기 작업입니다.</div>
+  <aside class="notes">아침에 **이 화면부터** 엽니다. 연구 저장소마다 타일이 하나 있고 카드 한 장이 이슈 하나입니다. 지금 보이는 카드는 선행 작업을 기다리는 중이라 사슬 표시가 붙어 있죠.
+일이 끝났는지는 서버가 실제 PR을 확인해서 판단합니다.</aside>
+</section>
+
+<section class="slide dark" id="s-worker" data-theme="dark">
+  <div class="caphead">
+    <div><h2>beads-ui: Worker tab</h2><p class="ko-sub">저장소 하나의 대기열과 실행 상태 (microbiome_bile 실제 화면)</p></div>
+    <div class="capkeys">
+      <div><span class="n">1</span><span><b>자동화와 자동 머지</b>, 동시 실행 수, 직렬 레인 수</span></div>
+      <div><span class="n">2</span><span><b>후보</b>: 단계 막대와 선행 관계 칩</span></div>
+      <div><span class="n">3</span><span><b>대기</b>: 병렬은 빈 칸이 나는 대로, 직렬은 앞 일이 끝나야</span></div>
+      <div><span class="n">4</span><span><b>실행 중</b>: 세션 열기, 일시정지, 폐기, 토큰과 비용</span></div>
+      <div><span class="n">5</span><span><b>PR 대기 → 완료</b>: 검증을 통과하면 머지</span></div>
+    </div>
+  </div>
+  <div class="capwrap"><div class="win"><div class="bar"><i></i><i></i><i></i><span>Mac Studio :3000 / #/worker · microbiome_bile</span></div><div class="cin"><img src="{{IMG:worker}}" alt="beads-ui Worker 탭, microbiome_bile 저장소"></div></div></div>
+  <div class="cmark" style="left:604px;top:254px">1</div>
+  <div class="cmark" style="left:415px;top:508px">2</div>
+  <div class="cmark" style="left:741px;top:468px">3</div>
+  <div class="cmark" style="left:1087px;top:381px">4</div>
+  <div class="cmark" style="left:1394px;top:348px">5</div>
+  <aside class="notes">Worker 탭은 저장소 하나를 자세히 봅니다. 후보를 대기열로 끌어다 놓으면 병렬 영역은 빈 칸이 생기는 대로 출발하고 **직렬 레인은 앞 일이 끝나야** 출발합니다. 메타데이터를 다시 만든 뒤 분석을 돌려야 할 때처럼 순서가 중요한 일에 쓰죠.
+실행 중인 세션은 열어 보거나 멈출 수 있고 토큰과 비용이 실시간으로 보입니다. 끝난 일은 PR 대기로 갔다가 검증을 통과하면 머지됩니다.</aside>
+</section>
+
+<section class="slide" id="s-phone" data-theme="light">
+  <h2>Discord from the phone</h2>
+  <p class="ko-sub">폰의 Discord로 세션에 답하기</p>
+  <div class="phone-wrap">
+    <div>
+      <div class="route-steps">
+        <div><span class="n">1</span><p>세션이 끝나거나 질문하면 Discord 스레드에 카드가 뜬다<small>세션 하나 = 스레드 하나, 훅이 이벤트를 보낸다</small></p></div>
+        <div><span class="n">2</span><p>스레드에 답장하면 그대로 Claude 입력창에 들어간다<small><span class="emo">📨</span> 반응이 붙으면 받았다는 뜻. 선택지 질문은 버튼으로</small></p></div>
+        <div><span class="n">3</span><p>ChatGPT의 dot에게 "이 스레드의 에이전트한테 물어봐"<small>dot은 Discord만 본다. 셸도 파일 경로도 받지 못한다</small></p></div>
+        <div><span class="n">4</span><p>Muse(Meta 앱)로 Mac에 접속하는 방법도 시험 중<small>연결 구조는 다음 장</small></p></div>
+      </div>
+      <p class="small" style="margin-top:16px">오른쪽 폰 화면은 재구성한 예시입니다.</p>
+      <div class="callout-box">dot을 거쳐 들어온 말에는 <code>[dot]</code> 표시가 붙고, 그 말로는 구현 시작을 승인할 수 없습니다. 구현 승인은 내가 직접 쓴 문장으로만.</div>
+    </div>
+    <div class="phone"><div class="scr">
+      <div class="top"># prostate · 덱 정리<small>스레드 · claude-discord-bridge</small></div>
+      <div class="msgs">
+        <div class="msg"><span class="av" style="background:#5865F2">cc</span><div><div class="nm">Claude<small>오후 9:01</small></div><div class="emb"><span class="emo">✅</span> 응답 완료<br>재실행 3건 착지. 조정 DEG 27 → 5, GSEA 681. 덱 v2.1 빌드 완료</div></div></div>
+        <div class="msg"><span class="av" style="background:#3BA55C">나</span><div><div class="nm">나<small>오후 9:02</small></div>교수님께 보낼 수 있게 PDF로도 뽑아줘<br><span class="react"><span class="emo">📨</span> 1</span></div></div>
+        <div class="msg"><span class="av" style="background:#5865F2">cc</span><div><div class="nm">Claude<small>오후 9:02</small></div><div class="emb" style="border-color:#F4C84A">질문: 발표자 노트도 포함할까요?</div><div class="btns"><span class="pri">1 포함</span><span>2 슬라이드만</span></div></div></div>
+        <div class="msg"><span class="av" style="background:#10A37F">dot</span><div><div class="nm">dot<small>오후 9:05</small></div>[dot] 내일 아침 미팅 전에 바뀐 숫자만 세 줄로 요약해 달래요</div></div>
+      </div>
+    </div></div>
+  </div>
+  <aside class="notes">Claude 세션마다 Discord 스레드가 하나씩 생기고 **스레드에 답하면 그 답이 Mac의 세션 입력창에** 들어갑니다. 선택지 질문은 버튼으로 오죠.
+ChatGPT의 dot에게 스레드의 에이전트한테 물어봐 달라고 할 수도 있습니다. dot을 거친 말에는 표시가 붙고 그 말로는 구현 시작을 승인할 수 없습니다. 폰 화면은 재구성한 예시입니다.</aside>
+</section>
+
+<section class="slide" id="s-day" data-theme="light">
+  <h2>A typical day</h2>
+  <p class="ko-sub">평일 하루의 흐름</p>
+  <div class="day" id="day">
+    <div class="axis"></div>
+    <div class="ev2" style="left:0"><div class="hr">07:00</div><span class="pt" style="background:var(--life)"></span><h3>아침 정리</h3><p>dot(ChatGPT)에 등록한 자동화가 미리알림과 Obsidian 볼트의 Inbox를 분류한다</p><div class="who">자동화</div></div>
+    <div class="ev2" style="left:240px"><div class="hr">08:00</div><span class="pt" style="background:var(--tool)"></span><h3>사용 창 맞추기</h3><p>계정마다 한 줄 ping을 보내 5시간 한도 창을 업무 시간에 맞춘다 (08·13·18·23시)</p><div class="who">launchd</div></div>
+    <div class="ev2" style="left:480px"><div class="hr">09:00</div><span class="pt" style="background:var(--gate)"></span><h3>오늘의 연구 고르기</h3><p>beads-ui에서 분석 후보를 대기열로 끌어다 놓고, 막힌 질문에만 답한다</p><div class="who">나</div></div>
+    <div class="ev2" style="left:720px"><div class="hr">낮</div><span class="pt" style="background:var(--tool)"></span><h3>Worker가 돈다</h3><p>여러 연구 저장소에서 세션이 동시에 돌고, 다른 모델의 리뷰를 거쳐 PR로 온다</p><div class="who">에이전트</div></div>
+    <div class="ev2" style="left:960px"><div class="hr">오후</div><span class="pt" style="background:var(--res)"></span><h3>랩 서버 결과</h3><p>Slurm 잡이 끝나면 Discord가 울리고, 표와 그림이 PR로 착지한다</p><div class="who">wallace</div></div>
+    <div class="ev2" style="left:1200px"><div class="hr">밤</div><span class="pt" style="background:var(--life)"></span><h3>이동 중에도</h3><p>폰의 스레드에 답하고, 한도가 풀린 세션은 스스로 이어간다</p><div class="who">폰, 자동 재시도</div></div>
+  </div>
+  <div class="lifeline">
+    <h4>생활 저장소도 같은 이슈 관리로</h4>
+    <div><b>107</b><span>개인 비서 볼트 (Obsidian)</span></div>
+    <div><b>41</b><span>쇼핑 랭킹 수집</span></div>
+    <div><b>32</b><span>기차 좌석 알림 봇</span></div>
+  </div>
+  <aside class="notes">아침 7시에는 dot 자동화가 미리알림과 노트의 Inbox를 정리하는데 10월 4일에 등록해서 아직 길게 써 보지는 않았습니다. 아침에 할 일을 대기열에 올리고 **막고 있는 질문에만** 답하죠.
+낮에는 Worker가 돌고 저녁에는 폰으로 답합니다. 기차 좌석 알림 봇 같은 생활 프로젝트도 같은 방식으로 이슈로 관리합니다.</aside>
+</section>
+
+<section class="slide dark" id="s-end" data-theme="dark">
+  <canvas data-canvas="end"></canvas>
+  <div class="wrap">
+    <h2>Getting started</h2>
+    <p class="ko-sub">처음 시작할 때 권하는 네 가지</p>
+    <div class="startgrid">
+      <div><span class="n">1</span><h3>연구 저장소에 규칙 한 장</h3><p><code>AGENTS.md</code>에 데이터 위치, 검증 명령, 하면 안 되는 일을 적는다.</p></div>
+      <div><span class="n">2</span><h3>분석은 이슈로 관리</h3><p>Beads 설치 후 <code>bd create</code>로 분석을 만들고 <code>bd ready</code>로 다음 일을 고른다.</p></div>
+      <div><span class="n">3</span><h3>다른 모델에게 리뷰를</h3><p>Claude가 썼으면 Codex가, Codex가 썼으면 Claude가 본다.</p></div>
+      <div><span class="n">4</span><h3>결과는 그림으로 확인</h3><p>표의 숫자와 그림이 맞는지 매번 대조한다.</p></div>
+    </div>
+  </div>
+  <div class="closing">Questions<small>연구 템플릿과 설정은 원하시는 분께 공유하겠습니다</small></div>
+  <aside class="notes">제 세팅을 전부 따라 하실 필요는 없고 **이 네 가지부터** 권합니다. 연구 템플릿과 설정은 원하시는 분께 공유하겠습니다. 질문 받겠습니다.</aside>
+</section>
+
+<section class="slide dark divider" id="s-backup" data-theme="dark">
+  <div class="wrap"><div class="pn">+</div><div><h2>Backup</h2><p class="ko-sub">질문이 나오면 꺼내 볼 슬라이드</p>
+    <ul><li>기초: 설정 저장소 dotfiles</li><li>연구: 저장소 템플릿, 파일 위치</li><li>작업 방식: effort, 역할 분담, spec, 구현, git, 검증과 배포, advisor, ADR</li><li>beads-ui: 대기열 시뮬레이션, 병렬 실행, Compare 탭, ADR 탭</li><li>계정과 비용: 여러 계정, 사용 한도, 토큰 사용량</li><li>세팅: Tailscale, Termius, tmux 상태 표시, dot과 Muse</li><li>정리</li></ul></div></div>
+  <aside class="notes">여기부터는 **질문이 나왔을 때** 꺼내 볼 백업 슬라이드입니다.</aside>
+</section>
+
+<section class="slide" id="s-dotfiles" data-theme="light">
+  <h2>Settings repo: dotfiles</h2>
+  <p class="ko-sub">설정 저장소: 지침, 스킬, 훅, 셸 도구를 한곳에서 관리</p>
+  <div class="dfl">
+    <div class="repo"><h3>dotfiles</h3>
+<div class="dtree"><b>src/shared/skills/</b>   스킬 25개 (Claude·Codex 공용)
+<b>src/claude/</b>          지침, 훅, 에이전트, 설정
+<b>src/codex/</b>           Codex 설정과 훅
+<b>src/shell/</b>           tmux, sjob, cswap, launchd
+<b>docs/contracts/</b>      모델 역할표, 작업 단계 규칙
+<b>tests/</b>               설정끼리 어긋나지 않는지 검사
+install.sh</div></div>
+    <div class="arr"><b>→</b>install.sh</div>
+    <div class="outs">
+      <div><b>~/.claude/</b><p>Claude Code가 읽는 설정. 생성물이라 직접 고치지 않는다</p></div>
+      <div><b>~/.codex/</b><p>같은 스킬을 Codex에도 설치. 파일 맨 위에 "직접 수정하지 마세요"</p></div>
+      <div><b>wallace 등 랩 서버</b><p><code>install.sh shell --machine &lt;host&gt;</code>로 sjob 같은 셸 도구만</p></div>
+      <div><b>launchd</b><p>Mac에서 상시 도는 서비스: beads-ui, Discord 연결, 한도 창 맞추기</p></div>
+    </div>
+  </div>
+  <div class="dfstats">
+    <div><b>5,395</b><span>커밋 (2025년 12월 5일부터)</span></div>
+    <div><b>2,042</b><span>닫은 이슈</span></div>
+    <div><b>2</b><span>같은 스킬을 쓰는 런타임 (Claude Code, Codex)</span></div>
+  </div>
+  <aside class="notes">이 설정은 전부 dotfiles라는 git 저장소 하나에 있고 install.sh가 Claude Code와 Codex 양쪽에 설치합니다. 같은 스킬이 양쪽에 깔려서 어느 모델로 작업해도 같은 절차를 따릅니다.
+**설정도 코드처럼** 이슈와 리뷰, PR을 거쳐 바꾸기 때문에 이슈 수가 연구 저장소보다 훨씬 많습니다.</aside>
+</section>
+
+<section class="slide" id="s-rmap" data-theme="light">
+  <h2>Research repo template</h2>
+  <p class="ko-sub">연구 저장소 템플릿 (research-repo-template)</p>
+  <div class="rmap">
+    <div>
+      <div class="rrow"><div class="name">microbiome_bile</div><div class="topic">담즙·분변 16S 마이크로바이옴과 췌담도암 예후<small>QIIME2 파라미터 2-pass 자동 최적화, 논문 재편과 재분석</small></div><div class="cnt">621</div></div>
+      <div class="rrow"><div class="name">prostate</div><div class="topic">전립선암 FFPE RNA-seq, 조기 BCR 후속 연구<small>QC·batch, DESeq2, GSEA, Cox·C-index, TCGA 외부검증</small></div><div class="cnt">70</div></div>
+      <div class="rrow"><div class="name">TRACE-ICI</div><div class="topic">유전자 네트워크 기반 anti-PD1 반응 예측<small>사전 등록한 판정 규칙으로 go / no-go</small></div><div class="cnt">65</div></div>
+      <div class="rrow"><div class="name">CRC-rokit</div><div class="topic">대장암 리비전, PDGFR 예후<small>리뷰어 대응, 코호트별 Cox, 메타분석</small></div><div class="cnt">23</div></div>
+      <p class="small" style="margin-top:12px">오른쪽 숫자는 올해 닫힌 이슈 수</p>
+    </div>
+    <div class="bones">
+      <h3>research-repo-template</h3>
+<div class="tree"><b>AGENTS.md</b>        규칙과 검증 명령
+<b>Snakefile</b>        파이프라인
+src/&lt;pkg&gt;/steps    분석 단계
+src/&lt;pkg&gt;/figures  그림 코드
+data/raw  interim  processed
+outputs/  paper  replies  decks
+          figures  reports  validation</div>
+      <p>copier 템플릿 하나로 시작하고, 규칙이 바뀌면 <code>copier update</code>로 모든 연구 저장소에 전파합니다. 그림 스타일은 저널 프리셋 9종을 담은 <code>general_plot</code>으로 통일합니다.</p>
+    </div>
+  </div>
+  <aside class="notes">연구 저장소 네 곳은 **같은 템플릿**에서 시작합니다. 데이터 폴더 규칙, 결과물 종류, 에이전트에게 데이터 위치와 검증 방법을 알려주는 AGENTS.md 구조가 같아서 어느 저장소에서든 같은 규칙으로 작업합니다.
+템플릿을 고치면 copier update로 모든 프로젝트에 반영되고 그림은 저널 프리셋이 든 공용 패키지로 그립니다.</aside>
+</section>
+
+<section class="slide" id="s-serverdata" data-theme="light">
+  <h2>File locations: Mac, GitHub, server</h2>
+  <p class="ko-sub">파일 위치: 코드, 데이터, 결과, 이슈 기록</p>
+  <div class="wl">
+    <div>
+      <div class="wtab">
+        <div class="h"></div><div class="h">Mac</div><div class="h">GitHub</div><div class="h">wallace</div>
+        <div class="r">코드<small>src/ workflow/ scripts/</small></div><div class="on ed">편집·커밋</div><div class="on">원본</div><div class="on ro">main만 받아 실행</div>
+        <div class="r">원자료<small>data/raw</small></div><div>없음</div><div>없음 (gitignore)</div><div class="on">보관</div>
+        <div class="r">중간·처리 결과<small>data/interim, processed</small></div><div class="on ro">필요한 것만 rsync</div><div>추적 목록에 있는 파일만</div><div class="on">생성</div>
+        <div class="r">참조 DB<small>resources/</small></div><div>없음</div><div>없음</div><div class="on">보관</div>
+        <div class="r">그림·표·보고서<small>outputs/</small></div><div class="on ed">확인 후 커밋</div><div class="on">PR로 착지</div><div class="on">생성</div>
+        <div class="r">이슈 기록<small>bd</small></div><div class="on ed">읽기·쓰기</div><div>없음</div><div>쓰지 않음</div>
+        <div class="r">실행 로그<small>logs/, ~/.sjob</small></div><div>알림으로 요약</div><div>없음</div><div class="on">보관</div>
+      </div>
+      <div class="wkey"><span class="a">쓰는 곳</span><span class="b">있는 곳</span><span class="c">읽기만</span></div>
+    </div>
+    <div class="wrules">
+      <h3>서버 규칙</h3>
+      <ol>
+        <li>서버는 main에 있고 GitHub main과 같은 코드만 실행한다</li>
+        <li>서버에서는 어떤 브랜치도 커밋·push하지 않는다</li>
+        <li>코드를 rsync나 scp로 보내지 않는다. 코드 통로는 git 하나</li>
+        <li>잡 실패는 JobState로 판정한다. 메모리 초과로 죽은 잡도 종료 코드가 0으로 찍힐 수 있다</li>
+      </ol>
+      <div class="dc">
+        <div class="who"><span class="av">sj</span>sjob</div>
+        <div class="emb"><b><span class="emo">✅</span> prostate-09h-rerun</b><br>wallace · 10분 27초</div>
+        <div class="emb bad"><b><span class="emo">❌</span> 예시: 메모리 초과</b><br>로그 마지막 20줄 첨부</div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">원자료와 참조 DB는 서버에만 두고 git에 올리지 않습니다. 결과와 그림은 필요한 것만 Mac으로 가져와 확인한 뒤 커밋하고 어떤 파일을 git에 넣을지는 저장소마다 목록 파일로 정합니다.
+이슈 기록은 Mac에서만 다루고 **서버에서는 bd를 쓰지 않죠**. 메모리 초과로 죽은 잡도 종료 코드 0으로 찍힐 수 있어서 성공 여부는 **Slurm JobState**로 판단합니다.</aside>
+</section>
+
+<section class="slide" id="s-effort" data-theme="light">
+  <h2>Effort: how long the model thinks</h2>
+  <p class="ko-sub">effort 설정 (모델이 답하기 전에 생각하는 양)</p>
+  <div class="eff">
+    <div><h3>low</h3><p class="ew">답이 거의 정해진 일</p><p class="eu">거의 안 쓴다. Fable 지휘 프리셋만 예외</p></div>
+    <div><h3>medium</h3><p class="ew">spec이 바꿀 내용을 정확히 정했고, 확인할 검증 명령이 있다</p><p class="eu"><b>Sonnet 구현</b>, Codex 조사 기본값</p></div>
+    <div><h3>high</h3><p class="ew">정해진 설계 안에서 판단이 남아 있다. 잘못되면 영향이 넓다</p><p class="eu"><b>Codex 구현의 최저값</b>, advisor 상담</p></div>
+    <div class="me"><h3>xhigh</h3><p class="ew">어려운 디버깅. 불변식, 동시성, 알고리즘, 설계 추론</p><p class="eu"><b>내 세션 기본값, 리뷰 기본값</b>, 지휘</p></div>
+    <div><h3>max</h3><p class="ew">더 높일 곳이 없을 때</p><p class="eu">기본값으로는 쓰지 않는다</p></div>
+  </div>
+  <div class="eff-trade"><span>빠르고 싸다</span><span>깊지만 느리고 비싸다</span></div>
+  <p class="eff-rule">effort는 모호함과 위험을 보고 정한다<span>큰 변경이라도 할 일이 명확하면 medium, 작아도 원인을 모르면 xhigh</span></p>
+  <div class="eff-set">
+    <div><h4>Claude Code 기본값</h4><code>~/.claude/settings.json
+"effortLevel": "xhigh"</code></div>
+    <div><h4>Codex 기본값</h4><code>~/.codex/config.toml
+model_reasoning_effort = "xhigh"</code></div>
+    <div><h4>하위 에이전트</h4><code>impl-medium · impl-high
+impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></div>
+    <div><h4>beads-ui 프리셋</h4><code>지휘 opus · xhigh
+구현 sonnet · auto</code><p>auto면 지휘 모델이 작업마다 고른다</p></div>
+  </div>
+  <aside class="notes">effort를 높이면 더 오래 생각하고 정확해지지만 느리고 토큰을 많이 씁니다. 제 기준은 **작업의 모호함과 위험**입니다.
+spec에 고칠 내용이 정확히 있고 확인할 테스트가 있으면 medium, 판단이 남아 있거나 영향이 넓으면 high, 원인을 모르는 디버깅은 xhigh를 쓰고 max는 기본값으로 두지 않습니다.</aside>
+</section>
+
+<section class="slide" id="s-models" data-theme="light">
+  <h2>Model roles</h2>
+  <p class="ko-sub">모델별 역할 분담</p>
+  <div class="models">
+    <div>
+      <div class="mrow"><div class="r"><i style="background:var(--gate)"></i>나</div><div class="m">연구 책임</div><div class="w">무엇을 언제 할지 정하고, 구현 시작과 여러 단계짜리 계획만 직접 승인</div></div>
+      <div class="mrow"><div class="r"><i style="background:var(--tool)"></i>지휘</div><div class="m">Claude Opus<small>Codex 쪽에서 지휘할 때는 sol</small></div><div class="w">계획을 세우고 일을 쪼개 맡긴 뒤, 돌아온 diff와 검증을 직접 다시 돌려 본다</div></div>
+      <div class="mrow"><div class="r"><i style="background:#6F8CF0"></i>구현</div><div class="m">작은 일 Sonnet · Codex sol<small>복잡한 일 Opus · sol, 어려운 일 Opus xhigh · astra</small></div><div class="w">격리된 작업 폴더에서 분석 코드, 파이프라인 규칙, 그림 코드를 쓴다</div></div>
+      <div class="mrow"><div class="r"><i style="background:var(--ink)"></i>리뷰</div><div class="m">Codex astra · xhigh<small>기본값. Opus, Fable, sol로 바꿀 수 있다</small></div><div class="w">spec, 계획, 최종 diff를 각각 한 번씩. 쓴 쪽과 다른 회사 모델이 기본</div></div>
+      <div class="mrow"><div class="r"><i style="background:#9AA6BA"></i>조사</div><div class="m">Claude Sonnet<small>읽기 전용, 한 번에 최대 3갈래</small></div><div class="w">여러 파일과 기록을 훑어 결론만 가져온다. 판단은 지휘 모델이 한다</div></div>
+      <div class="mrow"><div class="r"><i style="background:var(--res)"></i>상담</div><div class="m">advisor · /advise · jev<small>뒤의 상담 장에서 자세히</small></div><div class="w">막혔을 때 더 강한 모델의 두 번째 의견, 그리고 빠른 확률 판정</div></div>
+    </div>
+    <div class="presets">
+      <h3>조합은 프리셋으로 한 번에 고른다</h3>
+      <div class="pcard"><b>오퍼스 오토<span>complex 칩</span></b>지휘 <code>opus · xhigh</code> → 구현 <code>claude · auto</code><br>리뷰 <code>astra · xhigh</code></div>
+      <div class="pcard"><b>오퍼스 → 소넷 (실험)<span>frontend · backend 칩</span></b>지휘 <code>opus · xhigh</code> → 구현 <code>sonnet</code></div>
+      <div class="pcard"><b>소넷 quick fix<span>가벼운 수정</span></b>한 세션에서 <code>sonnet · high</code>가 바로 고친다</div>
+      <div class="pcard"><b>페이블 → 아스트라</b>지휘 <code>fable · low</code> → 구현 <code>codex astra</code></div>
+      <p>저장소마다 프리셋을 적용하고, 특정 이슈에만 다른 모델을 쓰고 싶으면 그 이슈에 핀을 꽂는다. 핀이 프리셋보다 우선.</p>
+    </div>
+  </div>
+  <aside class="notes">저는 무엇을 언제 할지 정하고 **구현 시작과 여러 단계짜리 계획만** 직접 승인합니다. 지휘는 Opus가 하고 일을 쪼개 하위 에이전트에게 맡긴 뒤 돌아온 결과를 다시 돌려 봅니다.
+리뷰 원칙은 **작성한 모델이 자기 결과를 리뷰하지 않는 것**입니다. 시스템이 강제하지는 않고 기본값으로 정해 둔 습관이죠.
+오른쪽 프리셋 선택은 뒤에 나올 비교 탭의 기록을 보고 정했습니다.</aside>
+</section>
+
+<section class="slide" id="s-spec" data-theme="light">
+  <h2>Spec (design document)</h2>
+  <p class="ko-sub">설계 문서 spec (사례 1의 실제 spec)</p>
+  <div class="specwrap">
+    <div class="doc">
+      <div class="fm" style="position:relative"><span class="pin" style="top:-2px">1</span>---<br><b>scope:</b><br>&nbsp;&nbsp;- workflow/scripts/deseq.R<br>&nbsp;&nbsp;- workflow/rules/rna.smk<br>---</div>
+      <div class="h1">deseq.R 수치 공변량 중심화 — 설계 (PROSTATE-mpx)</div>
+      <div class="h2">1. 배경과 확정된 원인</div>
+      <div class="t">batch 공변량 op_year를 비중심화 원값(평균 ≈2016)으로 넣어, 79개 유전자의 dispersion이 하한으로 붕괴 → p = 0. 중심화 하나만 바꾼 대조 적합으로 확인.</div>
+      <div class="h2" style="position:relative"><span class="pin" style="top:-2px">2</span>2. 설계 — 2.3 바꾸지 않는 것</div>
+      <div class="t">판정 기준(BH FDR &lt; 0.05 · |log2FC| ≥ 1), 모형식, 유전자 필터. <mark>바꾸면 변경 원인이 섞인다.</mark></div>
+      <div class="h2" style="position:relative"><span class="pin" style="top:-2px">3</span>3. 검증</div>
+      <div class="t"><code>pytest</code>, <code>snakemake -n</code>으로 하류 DAG 확인. <mark>이 Mac에는 Rscript가 없어 R 구문 검사는 skip으로 기록.</mark></div>
+      <div class="h2" style="position:relative"><span class="pin" style="top:-2px">4</span>4. 후속 이슈 — wallace 재실행·재판정</div>
+      <div class="t">원격 완주는 따로 실패·재개되므로 <code>PROSTATE-09h</code>로 분리. 결함 부재 수용 검사 3개를 미리 정한다.</div>
+      <div class="h2" style="position:relative"><span class="pin" style="top:-2px">5</span>결정 (ADR 후보)</div>
+      <div class="t">없음 — 되돌리기 쉽고, 통상 관행이며, 포기하는 대안이 없다.</div>
+    </div>
+    <div class="callouts tight">
+      <div><span class="n">1</span><p><b>고칠 범위를 먼저 못 박는다</b>scope에 적힌 두 파일 밖은 건드릴 수 없고, 리뷰가 diff가 범위를 벗어났는지 본다.</p></div>
+      <div><span class="n">2</span><p><b>바꾸지 않는 것도 적는다</b>분석계획의 판정 기준은 그대로. 수치 구현만 고친다.</p></div>
+      <div><span class="n">3</span><p><b>검증 방법을 미리 정하고, 못 하는 검증도 적는다</b>R 실행 확인은 랩 서버 재실행으로 넘긴다고 명시.</p></div>
+      <div><span class="n">4</span><p><b>재실행은 따로 떼어 낸다</b>서버 재실행·재판정은 후속 이슈가 맡고, 통과 기준은 여기서 정한다.</p></div>
+      <div><span class="n">5</span><p><b>ADR로 남길 결정인지 판정한다</b>세 조건으로 따져 이번엔 "없음".</p></div>
+      <p class="small">spec은 <code>docs/superpowers/specs/날짜-이름-design.md</code>로 남는다. prostate에만 23개.</p>
+    </div>
+  </div>
+  <aside class="notes">설계 선택지가 있는 일은 코드보다 spec을 먼저 씁니다. 연구로 치면 **methods 절부터 쓰는 셈**입니다.
+고칠 수 있는 파일 범위와 바꾸지 않는 것을 적어서 결과가 바뀐 원인이 섞이지 않게 합니다. 검증 방법도 미리 정하는데 이 Mac에 R이 없어 R 문법 검사를 못 한다는 것까지 적었죠. 랩 서버 재실행은 후속 이슈로 떼어 냈습니다.</aside>
+</section>
+
+<section class="slide" id="s-impl" data-theme="light">
+  <h2>Implementation</h2>
+  <p class="ko-sub">구현 절차 (사례 1)</p>
+  <div class="implwrap">
+    <div class="route-steps">
+      <div><span class="n">1</span><p>구현 시작은 내가 직접 승인<small>dot을 거친 말로는 승인되지 않는다 → <code>impl_entry = user@f4a5197</code></small></p></div>
+      <div><span class="n">2</span><p>승인 뒤 작업 폴더 생성<small><code>.worktrees/PROSTATE-mpx</code>, 출발점은 spec이 올라간 커밋</small></p></div>
+      <div><span class="n">3</span><p>지시서를 Sonnet에게 전달<small>하위 에이전트는 대화를 보지 못해서 범위, 금지 사항, 검증 명령을 모두 적는다 → <code>exec_receipt = delegated:sonnet@87d7220</code></small></p></div>
+      <div><span class="n">4</span><p>지휘 모델이 검증을 다시 실행<small>git status, diff, 테스트를 직접 재현한 뒤 커밋</small></p></div>
+      <div><span class="n">5</span><p>작업 보고서를 이슈에 기록<small>결론, 설계 판단, 바꾼 것, 검증, 남은 위험</small></p></div>
+    </div>
+    <div class="report">
+      <div class="rh"><span class="emo">🤖</span> 작업 보고서 <small>PROSTATE-mpx 댓글</small></div>
+      <div class="rs">결론</div><p>DEG 유의 27개를 만든 원인을 deseq.R의 수치 공변량 중심화로 제거했다. PR #10. 확정값 재산출은 후속 이슈 PROSTATE-09h 몫이다.</p>
+      <div class="rs">바꾼 것</div><p><code>workflow/scripts/deseq.R</code> +40 / −3<br><code>workflow/rules/rna.smk</code> +1</p>
+      <div class="rs">검증</div><p>pytest 474 통과 · 14 skip<br>snakemake -n 119 job, 하류 목록이 spec과 일치<br>R 구문 검사 skip — 이 Mac에 Rscript가 없다<br>diff는 정확히 2파일, spec 범위 그대로</p>
+      <div class="rs">남은 위험</div><p class="risk">새 R 코드는 아직 한 번도 실행되지 않았다. 재산출 결과가 "유의 DEG 0"일 수도 있고, 그렇다면 그게 정직한 결론이다.</p>
+    </div>
+  </div>
+  <aside class="notes">구현 시작은 제 답이 있어야 하고 **폰에서 dot을 거친 말로는 승인되지 않습니다**. 지휘 모델이 Sonnet에게 넘기는 지시서에는 고칠 범위, 하면 안 되는 일, 돌릴 검증 명령을 다 적습니다. 하위 에이전트는 대화를 보지 못하거든요.
+하위 에이전트가 끝났다고 해도 지휘 모델이 diff와 테스트를 다시 돌린 뒤 커밋합니다. 보고서에서는 **"남은 위험" 칸**을 제일 먼저 읽습니다.</aside>
+</section>
+
+<section class="slide" id="s-git" data-theme="light">
+  <h2>Git: worktree, branch, PR</h2>
+  <p class="ko-sub">Git 운영: 이슈 하나에 작업 폴더, 브랜치, PR 하나씩 (사례 1의 실제 커밋)</p>
+  <svg id="git-svg" viewBox="0 0 1392 330" aria-label="PROSTATE-mpx의 브랜치와 머지 흐름"></svg>
+  <div class="gitrules">
+    <div><h3>작업 폴더 = 브랜치 = 이슈 ID</h3><p><code>.worktrees/PROSTATE-mpx</code>. 여러 세션이 동시에 돌아도 서로의 파일을 건드리지 않는다.</p></div>
+    <div><h3>커밋 제목은 한국어 + 이슈 ID</h3><p>PR은 squash로 합쳐서 main에는 이슈 하나가 커밋 하나로 남는다. <code>(PROSTATE-mpx) (#10)</code></p></div>
+    <div><h3>리뷰한 그 커밋만 머지</h3><p><code>gh pr merge --match-head-commit</code>. 머지 직전 저장소 검증 스크립트를 한 번 더 돌린다.</p></div>
+    <div class="no"><h3>훅이 막는 것</h3><p>force push, 작업 폴더 밖 worktree, 리뷰 영수증 없는 구현 시작. 직접 볼 때는 tmux에서 lazygit 팝업.</p></div>
+  </div>
+  <aside class="notes">이슈 하나에 **작업 폴더, 브랜치, PR이 하나씩** 생깁니다. spec이 main에 먼저 들어가고 구현과 리뷰 반영 커밋이 PR로 올라간 뒤 squash로 main에 한 줄로 남죠.
+작업 폴더가 이슈마다 따로라서 세션 여러 개가 동시에 돌아도 서로의 파일을 건드리지 않습니다. 머지는 리뷰를 통과한 바로 그 커밋으로만 합니다.</aside>
+</section>
+
+<section class="slide" id="s-verify" data-theme="light">
+  <h2>Verification and deployment</h2>
+  <p class="ko-sub">검증과 배포 절차 (prostate 저장소 기준)</p>
+  <div class="vwrap">
+    <div class="vtab">
+      <div class="h">언제</div><div class="h">누가</div><div class="h">무엇을 확인</div><div class="h">명령</div>
+      <div class="w"><span class="sk">1</span>코드를 고칠 때마다</div><div>구현 모델</div><div>빠른 테스트. 30초 넘는 테스트는 건너뜀</div><div><code>pytest -m "not slow" -n auto</code></div>
+      <div class="w"><span class="sk">2</span>구현이 끝났을 때</div><div>지휘 모델이 다시 실행</div><div>전체 테스트, 파이프라인에서 다시 돌 단계 목록</div><div><code>pytest -n auto</code><br><code>snakemake -n</code></div>
+      <div class="w"><span class="sk">3</span>구현 리뷰</div><div>다른 모델</div><div>diff 전체. 영수증이 없으면 PR로 넘어가지 않음</div><div><code>impl_review</code></div>
+      <div class="w"><span class="sk">4</span>머지 직전</div><div>Worker</div><div>main에 PR을 합친 임시 폴더에서 2번 검증을 다시 실행</div><div><code>repo-ops/script/verify</code></div>
+      <div class="w"><span class="sk">5</span>머지 직후 (배포)</div><div>Worker</div><div>wallace 코드를 머지 커밋으로 맞춤. 그 폴더에서 내 잡이 돌고 있으면 이번 동기화는 건너뜀. 의존성이 바뀌었으면 <code>uv sync</code></div><div><code>repo-ops/script/deploy</code></div>
+      <div class="w"><span class="sk">6</span>서버 재실행 뒤</div><div>나와 지휘 모델</div><div>JobState 확인, 결과를 받아 그림과 표 대조</div><div><code>sjob</code> · <code>data_sync</code></div>
+    </div>
+    <div class="vside">
+      <h3>결과물 검사</h3>
+      <dl>
+        <dt>그림</dt><dd>그림에 들어간 데이터(plot_data)를 테스트한다. 픽셀 비교는 서체 차이로 깨지고 값이 틀린 그림을 못 잡아서 쓰지 않는다.</dd>
+        <dt>규약 검사기</dt><dd>폴더 구조, 데이터 위치, 그림 규칙을 git에 올라간 파일만 보고 검사한다.</dd>
+        <dt>원자료가 필요한 테스트</dt><dd>원자료가 없는 Mac에서는 자동으로 건너뛰고 서버에서 돈다.</dd>
+        <dt>못 한 검증</dt><dd>이유와 함께 보고서에 적는다. 사례 1은 Mac에 Rscript가 없어 R 구문 검사를 서버 재실행으로 넘겼다.</dd>
+      </dl>
+      <div class="callout-box">이슈는 머지 뒤 배포까지 확인하고 닫는다. 4·5번 스크립트는 머지 전 main에 있던 것을 쓰기 때문에, PR 안에서 고친 검증 명령은 그 PR에 적용되지 않는다.</div>
+    </div>
+  </div>
+  <aside class="notes">구현 모델은 고칠 때마다 빠른 테스트를 돌리고 끝나면 **지휘 모델이 전체 테스트를 직접 다시** 돌립니다. snakemake -n은 계산 없이 다시 돌 단계만 보여 주죠.
+머지 직전에는 main에 PR을 합친 임시 폴더에서 같은 검증을 한 번 더 돌려 리뷰 뒤에 생긴 충돌을 찾아냅니다. 머지 후에는 wallace 코드를 맞추는데 제 잡이 돌고 있으면 이번 동기화는 건너뜁니다.
+이슈는 **배포까지 확인한 뒤** 닫습니다.</aside>
+</section>
+
+<section class="slide" id="s-advisor" data-theme="light">
+  <h2>Advisor, /advise, jev</h2>
+  <p class="ko-sub">리뷰 외에 다른 모델의 의견을 듣는 방법 세 가지</p>
+  <div class="consult">
+    <div class="cs"><div class="b" style="background:var(--res)"></div><h3>advisor</h3><div class="tag">작업 중인 에이전트가 직접 호출</div>
+      <p>지금까지의 대화와 도구 결과 전체를 더 강한 모델이 읽고 조언한다. 방향을 정하기 전 한 번, "끝났다"고 말하기 전 한 번.</p>
+      <div class="ex"><small>이 발표 자료를 고치면서 실제로 받은 지적</small>이슈 기록 장의 영수증 값이 실제 기록과 다르다 (리뷰는 Codex가 했는데 기록된 값은 self)</div></div>
+    <div class="cs"><div class="b" style="background:var(--tool)"></div><h3>/advise</h3><div class="tag">내가 직접 묻는 질문</div>
+      <p>모델과 추론 강도를 골라(sol, astra, Opus, Fable…) 질문 하나에 답을 받는다. 게이트가 아니어서 이슈에 아무 기록도 남기지 않는다.</p>
+      <div class="ex"><small>예시</small>"이 민감도 분석 설계에서 다중검정 보정을 어디까지 묶어야 할까?"</div></div>
+    <div class="cs"><div class="b" style="background:var(--paper-2);box-shadow:inset 0 0 0 2px var(--ink-3)"></div><h3>jev</h3><div class="tag">빠른 확률 분류기</div>
+      <p>정해진 질문 아홉 묶음에 확률만 돌려준다. 조언일 뿐이고, 구현 모델을 고르는 판정만 0.8 이상일 때 따른다.</p>
+      <div class="ex"><small>예시 질문</small>이 일에 설계 문서(spec)가 필요한가?
+        <div class="meter2"><div class="bar"><i style="width:87%"></i></div><span>0.87</span></div></div></div>
+  </div>
+  <div class="ctable">
+    <div class="ch"></div><div class="ch">advisor</div><div class="ch">/advise</div><div class="ch">jev</div><div class="ch">리뷰 게이트 (비교)</div>
+    <div class="rk">누가 부르나</div><div>작업 중인 에이전트</div><div>나</div><div>워크플로가 자동으로</div><div>워크플로가 단계마다</div>
+    <div class="rk">기록</div><div>없음</div><div>없음</div><div>판정 로그만</div><div>이슈의 리뷰 기록과 통계</div>
+    <div class="rk">구속력</div><div>조언</div><div>조언</div><div>조언 (모델 결속만 0.8 이상)</div><div>통과해야 다음 단계</div>
+  </div>
+  <aside class="notes">advisor는 작업 도중에 더 강한 모델이 대화와 결과 전체를 읽고 조언하는 기능입니다. 방향을 정하기 전과 끝났다고 말하기 전에 부르도록 해 두었고 이 발표 자료의 **영수증 값 오류**도 advisor가 잡았습니다.
+/advise는 제가 직접 부르는 두 번째 의견이고 기록은 남지 않죠. jev는 정해진 질문에 확률만 돌려주는 빠른 분류기이고 구현 모델을 고를 때만 0.8 이상이면 따릅니다.</aside>
+</section>
+
+<section class="slide" id="s-adr" data-theme="light">
+  <h2>ADR: decision records</h2>
+  <p class="ko-sub">결정 기록 ADR (Architecture Decision Record)</p>
+  <div class="adrwrap">
+    <div>
+      <div class="cond">
+        <div><span class="n">1</span><span>되돌리기 어려움<small>다시 하려면 재분석이나 원고 재작성이 필요한 결정</small></span></div>
+        <div><span class="n">2</span><span>나중에 이유를 물을 만함<small>몇 달 뒤 "왜 이렇게 했지?"라는 질문이 나올 만한 결정</small></span></div>
+        <div><span class="n">3</span><span>포기한 대안이 있음<small>다른 방법이 있었고, 그 장점을 버리고 고른 결정</small></span></div>
+      </div>
+      <div class="adrflow"><span>spec의 "결정" 절</span><em>→</em><span>같은 PR에서 ADR 파일</span><em>→</em><span>목록은 자동 생성</span><em>→</em><span>바뀌면 고치지 않고 대체</span></div>
+      <div class="adrcount">
+        <div><b>19</b><span>microbiome_bile</span></div>
+        <div><b>10</b><span>CRC-rokit</span></div>
+        <div><b>3</b><span>prostate</span></div>
+      </div>
+      <p class="small" style="margin-top:14px">앞의 prostate spec(PROSTATE-mpx)은 세 조건이 모두 불성립이라 ADR 없이 끝났다.</p>
+    </div>
+    <div class="adrcard">
+      <div class="fm"><b>id:</b> 8   <b>status:</b> accepted   <b>date:</b> 2026-08-25
+<b>bead:</b> Analysis-bksf
+<b>spec:</b> …/2026-08-25-diagnostic-ml-scope-exclusion-design.md</div>
+      <h4>진단 ML은 논문 범위에서 제외하고 재개 좌표와 함께 보류한다</h4>
+      <div class="sec">Context</div>
+      <p>primary가 negative다 — ΔAUC 0.051, 구간 [−0.019, 0.116]이 0을 걸친다. 원고 본문의 ML 수치 인용은 0건. 진단 ML 테스트가 검증 시간의 3분의 2를 차지했다.</p>
+      <div class="sec">Decision</div>
+      <p>폐기가 아니라 보류. 21개 파일을 archive로 옮기되 한 줄도 고치지 않아, 복원이 "제자리로 되돌리기" 한 번으로 끝나게 한다.</p>
+    </div>
+  </div>
+  <aside class="notes">몇 달 뒤 **"이건 왜 이렇게 했지?"**를 묻게 될 결정은 ADR로 남깁니다. 기준은 되돌리기 어려운가, 나중에 이유를 물을 만한가, 포기한 대안이 있는가입니다.
+오른쪽은 진단 머신러닝 분석을 논문에서 빼기로 한 실제 기록입니다. 지우지 않고 보류해서 나중에 그대로 되살릴 수 있죠.
+결정이 바뀌면 원본을 고치지 않고 새 ADR로 대체합니다. 리뷰어에게 답할 때 특히 쓸모가 있습니다.</aside>
+</section>
+
+<section class="slide" id="s-sim" data-theme="light">
+  <div class="sim-head">
+    <div><h2>Queue simulation</h2><p class="ko-sub">대기열 시뮬레이션 (가상의 연구 작업 5개)</p></div>
+    <div class="sim-ctrl"><button class="btn" id="sim-play">재생</button><button class="btn ghost" id="sim-reset">처음으로</button></div>
+  </div>
+  <div class="lanes" id="lanes"></div>
+  <div class="sim-log" id="sim-log">재생을 누르면 Worker가 대기열을 처리합니다. 동시 실행 2칸.</div>
+  <aside class="notes">재생을 누르면 가상의 연구 작업 다섯 개가 대기열을 지나갑니다. 작은 수정은 바로 구현하고 생존분석 재현처럼 설계가 필요한 일은 spec과 리뷰부터 거칩니다.
+**노란 테두리**는 구현 시작 승인을 기다리는 상태이고 사람만 답할 수 있습니다.</aside>
+</section>
+
+<section class="slide" id="s-parallel" data-theme="light">
+  <h2>Running in parallel</h2>
+  <p class="ko-sub">병렬 실행 (10월 6일 점심 무렵 11건 발췌, 그날 전체 32건)</p>
+  <div class="par">
+    <div>
+      <svg id="par-svg" viewBox="0 0 980 520" aria-label="10월 6일 Worker 세션 시간대"></svg>
+      <div class="lg2"><span><i style="background:#2F5BEA"></i>Claude 세션</span><span><i style="background:#14B07F"></i>Codex 세션</span><span><i style="background:var(--ink-3)"></i>동시에 도는 세션 수</span></div>
+    </div>
+    <div class="pstats">
+      <div><b>6개</b><span>동시에 돈 세션 최대 수. 12시 45분 무렵, 저장소 5곳</span></div>
+      <div><b>10.7 → 7.4시간</b><span>그날 전체 32건의 세션 시간을 더하면 10.7시간인데, 실제로 걸린 시간은 7.4시간</span></div>
+      <div><b>1.35배</b><span>최근 30일 평균 (세션 로그가 남은 Worker 실행 306건, 합 136시간, 실제 101시간). 바쁜 날은 2배</span></div>
+      <div><b>17%</b><span>세션 시간 중 밤 0~7시 몫. Worker 세션은 사람 없이 돈다</span></div>
+    </div>
+  </div>
+  <aside class="notes">한 줄이 Worker 세션 하나입니다. 이슈마다 작업 폴더를 따로 두어서 이렇게 동시에 돌아도 서로 부딪치지 않죠.
+최근 30일 평균으로 병렬 효과는 **1.35배** 정도입니다. 생각보다 크지 않은 건 일이 몰리는 시간이 정해져 있어서입니다.
+Worker 세션은 제가 질문에 답할 때 말고는 **혼자 돌고** 세션 시간의 17%가 제가 자는 밤이었습니다.</aside>
+</section>
+
+<section class="slide dark" id="s-compare" data-theme="dark">
+  <h2>beads-ui: Compare tab</h2>
+  <p class="ko-sub">프리셋별 착지율, 문제 세션, 시간, 비용 비교</p>
+  <div class="cmpimg win"><div class="bar"><i></i><i></i><i></i><span>Mac Studio :3000 / #/compare · 최근 30일</span></div><img src="{{IMG:compare}}" alt="beads-ui 비교 탭, 최근 30일 프리셋 비교"></div>
+  <div class="cmpgrid">
+    <div><b class="big">433 · 89%</b><h3>세션 수와 착지율</h3><p>최근 30일 Worker 세션 433건, 판정된 385건 중 343건이 PR 머지나 push로 끝났다.</p></div>
+    <div><b class="big">19분 · $9.5</b><h3>중앙값 시간과 비용</h3><p>정액 구독이라 실제 청구는 아니고, 토큰을 API 가격으로 환산한 값. 평균은 45분, $16.</p></div>
+    <div><b class="big">문제 세션</b><h3>무엇을 문제로 세나</h3><p>실패, 재시도, 막는 리뷰 지적, 사람 개입, 검증 실패, 시간·비용 초과. 이 비율이 낮은 조합을 기본값으로 올린다.</p></div>
+  </div>
+  <aside class="notes">어떤 모델 조합을 쓸지는 **실행 기록**을 보고 정합니다. 비용은 토큰을 API 가격으로 환산한 값이고 실제로는 정액 구독이라 이만큼 청구되지 않죠.
+문제 세션은 실패, 재시도, 막는 리뷰 지적, 사람 개입 같은 일이 하나라도 있었던 세션입니다. 화면·서버 작업에서 Opus 지휘와 Sonnet 구현 조합이 비용은 훨씬 낮고 문제는 늘지 않아서 그 프리셋에 연결했지만 **아직 표본이 적은 실험**입니다.</aside>
+</section>
+
+<section class="slide dark" id="s-adrtab" data-theme="dark">
+  <div class="caphead">
+    <div><h2>beads-ui: ADR tab</h2><p class="ko-sub">저장소별 유효한 결정과 점검 신호</p></div>
+    <div class="capkeys">
+      <div><span class="n">1</span><span><b>저장소 고르기</b>와 검색</span></div>
+      <div><span class="n">2</span><span><b>점검 신호</b>: 후보 미실체화, 낡은 인용</span></div>
+      <div><span class="n">3</span><span><b>제목과 한 줄 요약</b></span></div>
+      <div><span class="n">4</span><span><b>근거 spec</b>과 <b>이슈</b>로 바로 이동</span></div>
+    </div>
+  </div>
+  <div class="capwrap"><div class="win"><div class="bar"><i></i><i></i><i></i><span>Mac Studio :3000 / #/adr · microbiome_bile</span></div><div class="cin"><img src="{{IMG:adr}}" alt="beads-ui ADR 탭, microbiome_bile 결정 목록"></div></div></div>
+  <div class="cmark" style="left:685px;top:246px">1</div>
+  <div class="cmark" style="left:497px;top:286px">2</div>
+  <div class="cmark" style="left:160px;top:560px">3</div>
+  <div class="cmark" style="left:1060px;top:302px">4</div>
+  <aside class="notes">ADR 탭은 저장소별 결정 기록부입니다. 담즙 프로젝트에는 속 단위 통일, 진단 ML 보류 같은 분석 결정이 들어 있죠.
+점검 신호는 결정 후보인데 ADR 파일이 아직 없거나 지침이 낡은 결정을 인용할 때 뜹니다. 리뷰어가 **"왜 이 방법을 썼냐"**고 물으면 여기서 근거 spec과 이슈를 찾습니다.</aside>
+</section>
+
+<section class="slide" id="s-accounts" data-theme="light">
+  <h2>Multiple accounts</h2>
+  <p class="ko-sub">여러 계정 전환 (Claude 2개, Codex 6개)</p>
+  <div class="acct">
+    <div class="um">
+      <h5>Claude · 활성 1 / 전체 2</h5>
+      <div class="ua on"><div class="hd"><span>계정 A <em class="tg act">active</em></span><span class="tg">1분 전</span></div>
+        <div class="wn"><span>5h</span><span class="bar"><i style="width:27%"></i></span><span>27%</span><span class="rs">↻ 2h 32m · 13:00</span></div>
+        <div class="wn"><span>7d</span><span class="bar"><i style="width:17%"></i></span><span>17%</span><span class="rs">↻ 6d 9h · 10월 13일</span></div>
+        <div class="wn"><span>Fable</span><span class="bar"><i style="width:1%"></i></span><span>0%</span><span class="rs">↻ 6d 9h · 10월 13일</span></div></div>
+      <div class="ua"><div class="hd"><span>계정 B</span><span class="sw">전환</span></div>
+        <div class="wn"><span>5h</span><span class="bar"><i style="width:1%"></i></span><span>0%</span><span class="rs">↻ 2h 32m · 13:00</span></div>
+        <div class="wn"><span>7d</span><span class="bar"><i class="bad" style="width:92%"></i></span><span>92%</span><span class="rs">↻ 23h 32m · 10월 8일</span></div>
+        <div class="wn"><span>Fable</span><span class="bar"><i style="width:7%"></i></span><span>7%</span><span class="rs">↻ 23h 32m · 10월 8일</span></div></div>
+      <h5 style="margin-top:14px">Codex · 활성 1 / 전체 6</h5>
+      <div class="ua on"><div class="hd"><span>계정 1 <em class="tg">pro</em> <em class="tg act">active</em></span><span class="tg">6분 전</span></div>
+        <div class="wn"><span>7d</span><span class="bar"><i class="warn" style="width:60%"></i></span><span>60%</span><span class="rs">↻ 2d 22h · 10월 10일</span></div></div>
+      <div class="ua mini"><div class="hd"><span>계정 2 <em class="tg">business</em></span><span class="sw">전환</span></div></div>
+      <div class="ua mini"><div class="hd"><span>계정 3 <em class="tg">pro lite</em></span><span class="sw">전환</span></div><div class="ex">토큰 만료 — codex-auth 재로그인 필요</div></div>
+      <div class="ua mini"><div class="hd"><span>계정 4–6 <em class="tg">business · free · free</em></span><span class="sw">전환</span></div></div>
+    </div>
+    <div class="acmd">
+      <div><h3>Claude는 cswap</h3><p>계정 정보를 macOS 키체인에 두고 바꿔 끼운다. 한 터미널에서만 다른 계정으로 돌리거나, 대화 이력을 계정끼리 공유할 수도 있다.</p>
+<pre><span class="p">$</span> cswap list          <span class="p"># 계정별 5h · 7d 사용량</span>
+<span class="p">$</span> cswap switch --strategy best
+<span class="p">$</span> cswap run 4 --share-history</pre></div>
+      <div><h3>Codex는 codex-auth</h3><p>같은 방식으로 6개 계정을 나열하고 바꾼다.</p>
+<pre><span class="p">$</span> codex-auth list --live
+<span class="p">$</span> codex-auth switch -   <span class="p"># 직전 계정으로</span></pre></div>
+      <div><h3>beads-ui는 같은 명령을 버튼으로</h3><p>위 화면의 [전환]이 cswap / codex-auth를 그대로 부른다. 1분마다 갱신하고, 60%를 넘으면 노랑, 85%를 넘으면 빨강.</p></div>
+    </div>
+  </div>
+  <aside class="notes">계정마다 5시간 창과 7일 창의 사용률, 리셋 시각이 보이고 화면은 이메일을 가리려고 다시 그린 예시입니다.
+Claude 쪽은 cswap이 계정 정보를 macOS 키체인에 두고 바꿔 끼우고 Codex는 codex-auth가 같은 일을 합니다. **계정이 달라도 대화 이력은 공유**하고 beads-ui 버튼은 이 두 명령을 부를 뿐입니다.</aside>
+</section>
+
+<section class="slide" id="s-limits" data-theme="light">
+  <h2>Usage limits</h2>
+  <p class="ko-sub">사용 한도 처리 순서</p>
+  <div class="ltrack">
+    <div class="lst"><span class="pt" style="background:var(--life)"></span><div class="when">매일 08 · 13 · 18 · 23시</div><h3>창 맞추기</h3><p>계정마다 가장 작은 모델(haiku)로 한 줄 ping을 보내 5시간 창을 업무 시간에 맞춘다.</p></div>
+    <div class="lst"><span class="pt" style="background:var(--tool)"></span><div class="when">사용률이 기준을 넘으면</div><h3>미리 전환</h3><p>내가 허용해 둔 계정 중 여유 있는 곳으로, 그 실행에만 바꿔서 같은 세션을 이어간다.</p></div>
+    <div class="lst"><span class="pt" style="background:var(--gate)"></span><div class="when">바꿀 계정이 없으면</div><h3>보류</h3><p>그 계정이나 러너를 서버 전체에서 잠시 빼서, 다른 저장소의 작업도 같은 한도에 걸리지 않게 한다.</p></div>
+    <div class="lst"><span class="pt" style="background:var(--ink)"></span><div class="when">리셋 시각 + 60초</div><h3>확인(프로브)</h3><p>정말 풀렸는지 시험 호출로 확인한다. 장애라면 1분, 2분, 4분… 최대 1시간 간격으로.</p></div>
+    <div class="lst"><span class="pt" style="background:var(--res)"></span><div class="when">풀리는 순간</div><h3>자동 재개</h3><p>멈췄던 세션이 그 자리에서 이어지고, Discord에 회복 알림이 한 번 온다.</p></div>
+  </div>
+  <div class="wstrip"><h4>하루의 5시간 창<br><span class="small">ping 시각에 시작</span></h4>
+    <div><div class="wbar"><i style="left:33.33%;width:20.83%">08–13</i><i style="left:54.17%;width:20.83%">13–18</i><i style="left:75%;width:20.83%">18–23</i><i style="left:95.83%;width:4.17%"></i><i class="off" style="left:0;width:16.67%">23–04 자는 동안</i></div>
+    <div class="wtick"><span style="left:0">0시</span><span style="left:25%">6시</span><span style="left:33.33%">8</span><span style="left:54.17%">13</span><span style="left:75%">18</span><span style="left:95.83%">23</span></div></div></div>
+  <div class="lside">
+    <div><h4>터미널 세션도 같다</h4><p><code>claude-auto-retry</code>가 한도 메시지의 리셋 시각을 읽고, 시간이 되면 "continue"를 보낸다.</p></div>
+    <div><h4>탭에 표시</h4><p>한도에 걸린 tmux 탭에는 주황 <span class="sym">⚠</span>가 붙고, 이어지는 순간 초록 점으로 바뀐다.</p></div>
+    <div><h4>혼자 쓸 때는 cswap auto</h4><p>현재 계정이 90%에 닿으면 남은 양이 가장 많은 계정으로. 60초마다 확인, 5분 쿨다운.</p></div>
+  </div>
+  <aside class="notes">아침 8시부터 하루 네 번 계정마다 가장 작은 모델로 ping을 보내 **5시간 창의 시작 시각을 맞춥니다**. 실행 중에 기준을 넘으면 여유 있는 계정으로 그 실행만 바꿔 같은 세션을 이어갑니다. 바꿀 계정이 없으면 그 계정을 서버 전체에서 잠시 빼죠.
+리셋 1분 뒤 시험 호출로 풀렸는지 확인하고 멈췄던 세션이 그 자리에서 이어집니다. 밤에 한도에 걸려도 **제가 깨어 있을 필요가 없습니다**.</aside>
+</section>
+
+<section class="slide" id="s-tokens" data-theme="light">
+  <h2>Token usage</h2>
+  <p class="ko-sub">토큰 사용량 (9월 7일 ~ 10월 7일, 31일). 비용은 API 가격 환산값이고 실제 지출은 정액 구독</p>
+  <div class="use">
+    <div>
+      <div class="hero2"><b>203억</b><span>토큰. 하루 많을 때 21억</span></div>
+      <div class="hero2"><b>$14.3k</b><span>API 가격 환산. Claude $10.2k, Codex $4.1k</span></div>
+      <div class="mix">
+        <p class="small" style="color:var(--ink-2)">토큰 구성</p>
+        <div class="tokmix"><i style="width:96.8%;background:#9AA6BA"></i><i style="width:1.7%;background:var(--ink)"></i><i style="width:1%;background:var(--gate)"></i><i style="width:.5%;background:var(--res)"></i></div>
+        <p class="small" style="margin-top:6px">캐시 읽기 97% · 캐시 쓰기 1.7% · 새 입력 1.0% · 출력 0.5%</p>
+      </div>
+      <div class="mix">
+        <p class="small" style="color:var(--ink-2)">모델별 (API 환산)</p>
+        <div class="row"><span>Opus 5.5 · 5</span><i style="width:100%;background:#2F5BEA"></i><span>$6.0k</span></div>
+        <div class="row"><span>astra</span><i style="width:62%;background:#14B07F"></i><span>$3.7k</span></div>
+        <div class="row"><span>Fable 5.1</span><i style="width:59%;background:#2F5BEA"></i><span>$3.6k</span></div>
+        <div class="row"><span>Sonnet</span><i style="width:8.5%;background:#2F5BEA"></i><span>$0.5k</span></div>
+        <div class="row"><span>sol</span><i style="width:6.5%;background:#14B07F"></i><span>$0.4k</span></div>
+      </div>
+    </div>
+    <div>
+      <svg id="use-svg" viewBox="0 0 1000 470" aria-label="일별 API 환산 비용, Claude와 Codex"></svg>
+      <div class="lg2"><span><i style="background:#2F5BEA"></i>Claude</span><span><i style="background:#14B07F"></i>Codex</span></div>
+      <p class="use-foot">ccusage로 이 Mac의 세션 기록을 집계. Claude Code는 대화 기록을 30일만 보관해서 그 이전 Claude 사용량은 남아 있지 않다. Codex는 2월부터 남아 있고 누적 328억 토큰, $22.7k. 9월 24~27일은 사용이 없었다.</p>
+    </div>
+  </div>
+  <aside class="notes">토큰의 97%는 캐시 읽기입니다. 긴 지침과 대화를 매번 다시 읽는데 캐시된 부분은 훨씬 싸게 계산되거든요.
+환산 비용은 Claude가 1만, Codex가 4천 달러 정도지만 **실제 지출은 정액 구독료**입니다. Claude Code는 기록을 30일만 보관해서 그 이전 Claude 사용량은 확인할 수 없습니다.</aside>
+</section>
+
+<section class="slide dark" id="s-net" data-theme="dark">
+  <svg id="net-svg" viewBox="0 0 1600 900" aria-label="tailnet으로 묶인 장치와 서비스 지도"></svg>
+  <div class="wrap">
+    <h2>Network:<br>one Mac and Tailscale</h2>
+    <p class="lead" style="font-size:21px">모든 세션과 DB와 화면은 집의 Mac Studio에서 돌고, 폰·아이패드·노트북은 Tailscale 사설망으로 붙습니다. 공용 인터넷에 공개한 것은 dot 중계 주소 하나입니다.</p>
+  </div>
+  <aside class="notes">에이전트 세션, 이슈 DB, 관제 화면, 이 발표 자료까지 **집의 Mac Studio 한 대**에서 돕니다. Tailscale이 제 기기끼리만 보이는 사설망을 만들어 줘서 폰에서도 그대로 열리죠.
+랩 서버는 SSH로 연결하고 백업은 NAS로 갑니다. 공용 인터넷에 공개한 건 **dot의 중계 주소 하나**이고 Discord 봇은 나가는 연결만 씁니다.</aside>
+</section>
+
+<section class="slide" id="s-remote" data-theme="light">
+  <h2>Remote access: Tailscale and Termius</h2>
+  <p class="ko-sub">밖에서 Mac의 세션에 접속하는 방법 (Tailscale 사설망 + Termius SSH)</p>
+  <div class="phone-wrap">
+    <div>
+      <div class="route-steps">
+        <div><span class="n">1</span><p>모든 기기에 Tailscale, 같은 계정으로 로그인<small>기기끼리만 보이는 주소가 생긴다. 지금 붙어 있는 기기: Mac Studio, MacBook Air, iPad Pro, iPhone, NAS, muse</small></p></div>
+        <div><span class="n">2</span><p>Termius에 Mac Studio를 tailnet 주소로 등록<small>접속은 SSH 키로. Mac에 Termius 전용 키를 따로 등록해 두었다</small></p></div>
+        <div><span class="n">3</span><p>접속한 뒤 <code>tmux attach</code><small>Mac에서 돌던 세션이 그대로 나온다. 탭 이동 Alt+f/b, 칸 이동 Alt+h/j/k/l, 칸 확대 Ctrl+b z, 손가락 스크롤</small></p></div>
+        <div><span class="n">4</span><p>화면은 브라우저로<small><code>&lt;tailnet 주소&gt;:3000</code> beads-ui, <code>:9000</code> 미리보기(이 발표 자료). 주소는 <code>ts-ip</code>로 확인</small></p></div>
+        <div><span class="n">5</span><p>공용 인터넷에 공개한 주소는 하나<small>ChatGPT의 dot이 들어오는 중계 주소만 Tailscale Funnel로 열고 OAuth 인증을 붙였다. 나머지는 tailnet 안에서만 보인다</small></p></div>
+      </div>
+      <p class="small" style="margin-top:14px">오른쪽 화면은 재구성한 예시입니다.</p>
+    </div>
+    <div class="phone tphone"><div class="scr">
+      <div class="top">Mac Studio<small>Termius · SSH · tailnet</small></div>
+<pre><span class="p">~ %</span> tmux attach
+<span class="p">╭─</span> <span class="c">Claude Code</span> <span class="p">· prostate</span>
+<span class="p">│</span>
+<span class="p">│</span> <span class="g">✓</span> PROSTATE-09h 재실행 3건 완료
+<span class="p">│</span>   조정 DEG 27 → 5, GSEA 681
+<span class="p">│</span>
+<span class="p">│</span> <span class="y">?</span> 덱 v2.1을 PDF로도 뽑을까요?
+<span class="p">╰─</span>
+<span class="p">&gt;</span> 응, 발표자 노트는 빼고<span class="cur">▌</span></pre>
+      <div class="tstat"><span class="cur2">1 BU <i class="g">●</i></span><span>2 PR <i class="y">?</i></span><span>3 MB <i class="g">●</i></span><span>4 DF <i>✓</i></span></div>
+      <div class="keys"><span>esc</span><span>ctrl</span><span>alt</span><span>tab</span><span>←</span><span>→</span><span>↑</span><span>↓</span></div>
+    </div></div>
+  </div>
+  <aside class="notes">Tailscale을 기기마다 같은 계정으로 깔면 공유기 포트를 열지 않아도 서로 보입니다. 폰과 아이패드에서는 Termius로 Mac에 SSH 접속한 뒤 **tmux attach**를 치면 Mac에서 돌던 세션이 그대로 나옵니다.
+작은 화면에서는 Alt+f, Alt+b로 탭을 옮기고 Ctrl+b z로 칸 하나를 크게 보죠. 공개 주소인 dot 중계에는 OAuth 인증을 붙였고 나머지는 tailnet 밖에서 보이지 않습니다. 오른쪽 화면은 재구성한 예시입니다.</aside>
+</section>
+
+<section class="slide dark" id="s-tmux" data-theme="dark">
+  <h2>tmux status bar</h2>
+  <p class="ko-sub">tmux 상태 표시 (저장소마다 탭 하나, 아이콘으로 에이전트 상태)</p>
+  <div class="tmux">
+    <div class="scr">
+<div class="pane"><span class="p">╭─</span> <span class="c">Claude Code</span> <span class="p">· microbiome_bile · opus</span>
+<span class="p">│</span>
+<span class="p">│</span> <span class="y">?</span> 구현 진입: Analysis-0cy7 을 지금 구현할까요?
+<span class="p">│</span>   지금 구현 / 보류 / Worker 레인에 배치
+<span class="p">│</span>
+<span class="p">│</span> <span class="g sym">✓</span> spec_review  astra@a41c7e2  APPROVE
+<span class="p">│</span> <span class="g sym">✓</span> 선행 이슈 3개 closed
+<span class="p">│</span> <span class="p">·</span> 예상 unit 2개, 구현 sonnet/high
+<span class="p">╰─</span> <span class="p">답을 기다리는 중 …</span>
+
+<span class="p">$</span> </div>
+      <div class="status">
+        <span class="tab">0 files</span>
+        <span class="tab"><span class="ab" style="background:#89B4FA">BU</span>beads-ui <span class="run">●</span></span>
+        <span class="tab cur"><span class="ab" style="background:#A6E3A1">MB</span>microbiome_bile <span style="color:#F4C84A">?</span></span>
+        <span class="tab"><span class="ab" style="background:#F5C2E7">PR</span>prostate <span class="sym" style="color:#45D98C">✓</span></span>
+        <span class="tab"><span class="ab" style="background:#FAB387">DF</span>dotfiles <span class="run">●</span></span>
+        <span class="tab"><span class="ab" style="background:#94E2D5">CR</span>CRC-rokit <span class="sym" style="color:#FAB387">⚠</span></span>
+      </div>
+    </div>
+    <div class="legend-list">
+      <div><span class="ic" style="color:#45D98C">●</span><span><b>깜빡이는 초록</b>에이전트가 일하는 중</span></div>
+      <div><span class="ic" style="color:#F4C84A">?</span><span><b>질문</b>내 답이 있어야 진행</span></div>
+      <div><span class="ic sym" style="color:#45D98C">✓</span><span><b>완료</b>결과를 볼 차례</span></div>
+      <div><span class="ic sym" style="color:#FAB387">⚠</span><span><b>한도 도달</b>리셋 시각에 자동 재시도가 "continue"를 보내 이어감</span></div>
+      <p class="small" style="margin-top:8px">같은 저장소의 작업 폴더(worktree)는 한 묶음으로 정렬됩니다. prefix+g는 lazygit 팝업. 아이패드에서는 Termius로 같은 세션에 붙습니다. 화면은 재구성한 예시.</p>
+    </div>
+  </div>
+  <aside class="notes">탭 이름 옆 아이콘을 훅이 바꿉니다. 초록이 깜빡이면 일하는 중, 물음표는 **제 답을 기다리는 중**, 체크는 끝났다는 뜻입니다.
+탭을 하나씩 열어 볼 필요 없이 상태 줄만 보면 되죠.</aside>
+</section>
+
+<section class="slide" id="s-dotmuse" data-theme="light">
+  <h2>Connecting dot and Muse</h2>
+  <p class="ko-sub">dot과 Muse 연결 구조</p>
+  <div class="dm">
+    <div>
+      <div class="dmflow">
+        <div class="nd2"><div class="w">폰</div><h4>나</h4><p>ChatGPT 앱에 말로 부탁</p></div>
+        <div class="nd2 dot2"><div class="w">ChatGPT</div><h4>dot</h4><p>OAuth로 인증한 연결 도구 4개만 쓴다</p></div>
+        <div class="nd2 mac"><div class="w">Mac</div><h4>discord-relay</h4><p>dot 대신 Discord에 글을 쓰고 읽는다. 봇 토큰은 Mac에만</p></div>
+        <div class="nd2"><div class="w">Discord</div><h4>세션 스레드</h4><p>Claude 세션 하나 = 스레드 하나</p></div>
+        <div class="nd2 mac"><div class="w">Mac · tmux</div><h4>Claude 세션</h4><p>브리지가 글 앞에 <code>[dot]</code>을 붙여 입력창에 넣는다</p></div>
+      </div>
+      <p class="dmback">답은 dot이 같은 스레드를 읽어서 가져온다</p>
+      <div class="muse">
+        <h4>Muse<small>Meta 앱 · 실험 중</small></h4>
+        <p>tailnet에 <code>muse</code> 노드로 붙여 두고, SSH로 Mac에 접속하는 방식을 시험하고 있다. Mac에 muse 전용 SSH 키가 등록돼 있다. 아직 일상적으로 쓰지는 않는다.</p>
+      </div>
+    </div>
+    <div class="dmside">
+      <h3>dot에게 맡기는 일</h3>
+      <ul><li>돌고 있는 세션 목록 보고 요약하기</li><li>특정 세션에 질문 전달하고 답 읽어 오기</li><li>새 세션 시작하기</li><li>매일 아침 7시 Inbox 분류 (Codex 자동화로 등록)</li></ul>
+      <h3>dot이 할 수 없는 일</h3>
+      <ul class="no"><li>셸 실행, 파일 경로·토큰 전달</li><li>구현 시작 승인 (사람이 직접 쓴 문장만 인정)</li><li>계획 승인 창 조작</li><li>같은 스레드에 연속 20번 넘게 쓰기</li></ul>
+      <p class="small" style="margin-top:16px">모든 호출은 감사 기록에 남고, 비밀번호 모양의 글은 가려진다. 끊을 때는 토큰을 폐기하고 외부 공개를 끈다.</p>
+    </div>
+  </div>
+  <aside class="notes">dot에게는 **Discord 읽기와 쓰기 도구 네 개만** 열어 두었습니다. dot이 쓴 글은 브리지가 [dot] 표시를 붙여 Claude 세션에 넣고 답은 dot이 같은 스레드에서 읽어 갑니다.
+dot은 셸을 실행하거나 파일을 볼 수 없죠. Mac을 직접 제어하는 더 넓은 연결도 만들었지만 쓸 일이 적고 승인 알림이 엉뚱한 곳으로 간 일이 있어서 Discord 경로만 남겼습니다.
+Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을 시험하는 중입니다.</aside>
+</section>
+
+<section class="slide" id="s-lessons" data-theme="light">
+  <h2>Lessons</h2>
+  <p class="ko-sub">정리</p>
+  <div class="lessons">
+    <div class="lesson"><h3>작업 기록은 이슈에 남긴다</h3><p>분석은 몇 주에 걸쳐 이어진다. 목적, 근거, 결정, 남은 일이 이슈에 있으면 누가 이어받아도 같은 자리에서 시작한다.</p></div>
+    <div class="lesson"><h3>결과는 그림·원자료와 대조, 리뷰는 다른 모델이</h3><p>리뷰는 작성하지 않은 모델에게 맡긴다. 사례 1과 2의 오류는 그림과 표 대조, 원시 데이터 대조로 찾았다.</p></div>
+    <div class="lesson"><h3>분석 방향과 해석은 직접 정한다</h3><p>무엇을 분석할지와 결과의 해석은 내가 정한다. QC, 재실행, 그림 수정, 표 재생성은 맡긴다.</p></div>
+    <div class="lesson"><h3>환경을 만드는 데 초기 비용이 든다</h3><p>처음 몇 달은 작업 환경을 만드는 데 썼다. 대신 지금은 새 연구 저장소도 템플릿으로 바로 같은 방식을 쓴다.</p></div>
+  </div>
+  <div class="honest">
+    <h4>비용</h4>
+    <p>Claude와 Codex 모두 정액 구독으로 쓴다. Worker 세션 하나는 토큰으로 환산하면 중앙값 약 $9.5 (최근 30일, beads-ui 집계). 결과는 항상 내가 다시 읽는다.</p>
+  </div>
+  <aside class="notes">분석이 몇 주씩 이어져서 작업 기록은 **이슈에** 남깁니다. 결과는 그림과 원자료로 대조하고 리뷰는 다른 모델에게 맡기며 분석 방향과 해석은 제가 정합니다.
+처음 몇 달은 환경을 만드는 데 시간이 많이 들었지만 지금은 **새 연구 저장소도 첫날부터** 같은 방식으로 돌아갑니다.</aside>
+</section>
+
+</div></div>
+<div id="thread"><div class="line"></div></div>
+<div id="counter"></div>
+
+<script>
+(() => {
+  const stage = document.getElementById('stage');
+  const slides = [...document.querySelectorAll('.slide')];
+  const thread = document.getElementById('thread');
+  const counter = document.getElementById('counter');
+  const query = new URLSearchParams(location.search);
+  const ROLE = query.has('presenter') ? 'presenter' : query.has('receiver') ? 'receiver' : 'main';
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let cur = 0;
+
+  function fit() {
+    const s = Math.min(window.innerWidth / 1600, window.innerHeight / 900);
+    stage.style.transform = `scale(${s})`;
+    const w = 1600 * s, h = 900 * s;
+    const ox = (window.innerWidth - w) / 2, oy = (window.innerHeight - h) / 2;
+    thread.style.left = (ox + 104 * s) + 'px';
+    thread.style.right = (ox + 104 * s) + 'px';
+    thread.style.bottom = (oy + 38 * s) + 'px';
+    counter.style.right = (ox + 104 * s) + 'px';
+    counter.style.bottom = (oy + 62 * s) + 'px';
+  }
+  window.addEventListener('resize', fit);
+
+  slides.forEach((sl, i) => {
+    const b = document.createElement('button');
+    b.style.left = (slides.length === 1 ? 0 : (i / (slides.length - 1)) * 100) + '%';
+    b.setAttribute('aria-label', `Go to slide ${i + 1}`);
+    b.addEventListener('click', () => go(i));
+    thread.appendChild(b);
+  });
+  const beads = [...thread.querySelectorAll('button')];
+
+  const enterHooks = {};
+  const leaveHooks = {};
+
+  function go(i, silent) {
+    i = Math.max(0, Math.min(slides.length - 1, i));
+    if (i === cur && slides[i].classList.contains('active')) { return; }
+    const prev = slides[cur];
+    prev.classList.remove('active');
+    const prevKey = prev.dataset.key || prev.id;
+    if (leaveHooks[prevKey]) { leaveHooks[prevKey](); }
+    cur = i;
+    const sl = slides[cur];
+    sl.classList.add('active');
+    const dark = sl.dataset.theme === 'dark';
+    thread.classList.toggle('on-dark', dark);
+    counter.classList.toggle('on-dark', dark);
+    beads.forEach((b, k) => { b.className = k < cur ? 'past' : k === cur ? 'now' : ''; });
+    counter.textContent = `${cur + 1} / ${slides.length}`;
+    if (ROLE === 'main') { history.replaceState(null, '', '#' + (cur + 1)); }
+    const key = sl.dataset.key || sl.id;
+    if (enterHooks[key]) { enterHooks[key](); }
+    window.dispatchEvent(new CustomEvent('deck:go', { detail: { index: cur, silent: !!silent } }));
+  }
+
+  function onKey(e) {
+    if (ROLE !== 'main') { return; }
+    if (e.target.closest && e.target.closest('input, textarea')) { return; }
+    if (e.metaKey || e.ctrlKey || e.altKey) { return; }
+    const k = e.key;
+    if (k === 'ArrowRight' || k === 'PageDown' || k === ' ' || k === 'Enter') { e.preventDefault(); go(cur + 1); }
+    else if (k === 'ArrowLeft' || k === 'PageUp' || k === 'Backspace') { e.preventDefault(); go(cur - 1); }
+    else if (k === 'Home') { go(0); }
+    else if (k === 'End') { go(slides.length - 1); }
+    else if (k === 'n' || k === 'N' || k === 'p' || k === 'P') { openPresenter(); }
+    else if (k === 'f' || k === 'F') { if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(() => {}); } else { document.exitFullscreen(); } }
+  }
+  document.addEventListener('keydown', onKey);
+  let tx = null;
+  document.addEventListener('touchstart', (e) => { if (ROLE !== 'main') { return; } tx = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener('touchend', (e) => { if (tx === null) { return; } const dx = e.changedTouches[0].clientX - tx; if (Math.abs(dx) > 50) { go(cur + (dx < 0 ? 1 : -1)); } tx = null; });
+
+
+  /* ---------- presenter window ---------- */
+  function openPresenter() {
+    window.open(location.pathname + '?presenter#' + (cur + 1), 'dk-presenter', 'width=1360,height=820');
+  }
+
+  /* ---------- canvas helpers ---------- */
+  function setupCanvas(cv) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2) * 1.25;
+    cv.width = 1600 * dpr; cv.height = 900 * dpr;
+    cv.style.width = '1600px'; cv.style.height = '900px';
+    const ctx = cv.getContext('2d');
+    ctx.scale(dpr, dpr);
+    return ctx;
+  }
+  function glassBead(ctx, x, y, r, color, alpha) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    const g = ctx.createRadialGradient(x - r * .35, y - r * .4, r * .08, x, y, r);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(.18, color);
+    g.addColorStop(1, shade(color, -0.55));
+    ctx.shadowColor = color; ctx.shadowBlur = r * 1.6;
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  function shade(hex, p) {
+    const n = parseInt(hex.slice(1), 16);
+    let r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+    const t = p < 0 ? 0 : 255, q = Math.abs(p);
+    r = Math.round((t - r) * q + r); g = Math.round((t - g) * q + g); b = Math.round((t - b) * q + b);
+    return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+  }
+  const C = { t: '#7B96FF', r: '#45D98C', l: '#FF6B9E', g: '#F4C84A' };
+
+  /* ---------- title thread ---------- */
+  function threadScene(cv, opts) {
+    const ctx = setupCanvas(cv);
+    const cols = [C.t, C.t, C.r, C.t, C.l, C.r, C.t, C.g, C.r, C.t, C.l, C.t, C.r, C.t];
+    const N = opts.n;
+    let raf = null, t0 = null;
+    function path(u, t) {
+      const x = -60 + u * 1720;
+      const y = opts.y + Math.sin(u * 5.2 + t * .00025) * opts.amp + Math.sin(u * 13 + 1.3) * opts.amp * .18;
+      return [x, y];
+    }
+    function frame(ts) {
+      if (t0 === null) { t0 = ts; }
+      const t = reduce ? 0 : ts - t0;
+      ctx.clearRect(0, 0, 1600, 900);
+      ctx.beginPath();
+      for (let i = 0; i <= 200; i++) { const [x, y] = path(i / 200, t); if (i) { ctx.lineTo(x, y); } else { ctx.moveTo(x, y); } }
+      ctx.strokeStyle = 'rgba(233,236,241,.22)'; ctx.lineWidth = 1.2; ctx.stroke();
+      for (let k = 0; k < N; k++) {
+        const u = ((k / N) + (t * opts.speed)) % 1;
+        const [x, y] = path(u, t);
+        const r = opts.r * (0.75 + 0.5 * ((k * 7) % 5) / 4);
+        glassBead(ctx, x, y, r, cols[k % cols.length], 0.95);
+      }
+      if (!reduce) { raf = requestAnimationFrame(frame); }
+    }
+    return {
+      start() { if (raf === null) { t0 = null; raf = requestAnimationFrame(frame); } },
+      stop() { if (raf !== null) { cancelAnimationFrame(raf); raf = null; } }
+    };
+  }
+  const titleScene = threadScene(document.querySelector('[data-canvas=title]'), { n: 14, y: 690, amp: 46, r: 15, speed: 0.000012 });
+  enterHooks['s-title'] = () => titleScene.start();
+  leaveHooks['s-title'] = () => titleScene.stop();
+  const endScene = threadScene(document.querySelector('[data-canvas=end]'), { n: 9, y: 262, amp: 18, r: 10, speed: 0.000009 });
+  enterHooks['s-end'] = () => endScene.start();
+  leaveHooks['s-end'] = () => endScene.stop();
+
+  /* ---------- bead field ---------- */
+  const REPOS = [["dotfiles","t",[25,24,148,555,386,29,323,319,179,53]],["beads-ui","t",[0,3,0,68,20,0,125,362,190,50]],["microbiome_bile","r",[0,0,287,22,4,0,79,181,31,17]],["prostate","r",[0,0,0,0,2,0,0,34,22,12]],["TRACE-ICI","r",[0,0,0,0,0,0,46,19,0,0]],["Cortex","l",[0,0,0,0,0,0,27,7,25,0]],["superpowers","t",[0,0,0,42,6,0,0,0,0,0]],["thalamus","l",[0,0,0,0,0,0,20,13,15,0]],["personal","l",[0,0,0,33,0,0,0,1,0,7]],["train_bot","l",[0,6,0,0,0,0,0,12,6,8]],["ops","t",[0,0,0,0,0,0,0,7,17,1]],["CRC-rokit","r",[0,0,0,0,0,0,0,0,15,8]],["themore-modules","l",[1,0,0,0,0,1,0,8,0,0]],["ralphthon","t",[0,0,0,0,8,0,0,0,0,0]],["claude-swap","t",[0,0,0,0,0,0,0,0,0,3]],["design-system","t",[0,0,0,0,0,0,0,1,0,0]],["prostate_cancer","r",[0,0,0,0,1,0,0,0,0,0]]];
+  const POS = {
+    'dotfiles': [1385, 300], 'beads-ui': [1435, 690], 'superpowers': [1255, 615], 'ops': [1262, 690], 'ralphthon': [1285, 745], 'claude-swap': [1300, 772], 'design-system': [1312, 790],
+    'microbiome_bile': [870, 520], 'prostate': [625, 655], 'TRACE-ICI': [650, 365], 'CRC-rokit': [1075, 765], 'prostate_cancer': [735, 790],
+    'Cortex': [1085, 170], 'thalamus': [995, 135], 'personal': [1160, 110], 'train_bot': [1250, 80], 'themore-modules': [920, 105]
+  };
+  const SPD = { r: 6.6, t: 4.0, l: 4.0 };
+  const fieldDots = [];
+  REPOS.forEach(([name, dom, months]) => {
+    const [cx, cy] = POS[name];
+    let i = 0;
+    months.forEach((m, mi) => { for (let k = 0; k < m; k++) {
+      const a = i * 2.39996323, rr = SPD[dom] * Math.sqrt(i + .5);
+      fieldDots.push({ x: cx + Math.cos(a) * rr, y: cy + Math.sin(a) * rr, m: mi, d: dom, j: Math.random() });
+      i++;
+    } });
+    POS[name].push(SPD[dom] * Math.sqrt(i), i);
+  });
+  const fieldCv = document.querySelector('[data-canvas=field]');
+  const fctx = setupCanvas(fieldCv);
+  const monthEl = document.getElementById('field-month');
+  const tally = { t: document.getElementById('t-tool'), r: document.getElementById('t-res'), l: document.getElementById('t-life') };
+  let fraf = null;
+  function drawField(progress) {
+    fctx.clearRect(0, 0, 1600, 900);
+    const counts = { t: 0, r: 0, l: 0 };
+    const mNow = progress * 10;
+    for (const p of fieldDots) {
+      const appear = p.m + p.j * 0.95;
+      if (appear > mNow) { continue; }
+      counts[p.d]++;
+      const age = Math.min(1, (mNow - appear) / 0.6);
+      const lit = p.d === 'r';
+      const col = lit ? C.r : '#4A5262';
+      fctx.globalAlpha = lit ? 0.35 + 0.65 * age : 0.55;
+      fctx.fillStyle = col;
+      fctx.shadowColor = col; fctx.shadowBlur = lit ? (age < 1 ? 12 : 6) : 0;
+      fctx.beginPath(); fctx.arc(p.x, p.y, (lit ? 2.1 : 1.5) + (1 - age) * 1.6, 0, Math.PI * 2); fctx.fill();
+    }
+    fctx.globalAlpha = 1; fctx.shadowBlur = 0;
+    if (progress >= 0.999) {
+      fctx.font = '500 16px ' + getComputedStyle(document.body).fontFamily;
+      REPOS.forEach(([name, dom]) => {
+        const [x, y, r, n] = POS[name];
+        if (dom === 'r' ? n < 5 : n < 400) { return; }
+        fctx.fillStyle = dom === 'r' ? 'rgba(69,217,140,.95)' : 'rgba(94,102,117,.9)';
+        fctx.textAlign = 'center';
+        fctx.fillText(name, x, y - r - 12);
+      });
+    }
+    const mi = Math.min(9, Math.floor(mNow));
+    monthEl.textContent = '2026.' + String(mi + 1).padStart(2, '0');
+    tally.t.textContent = counts.t.toLocaleString('en-US');
+    tally.r.textContent = counts.r.toLocaleString('en-US');
+    tally.l.textContent = counts.l.toLocaleString('en-US');
+  }
+  enterHooks['s-field'] = () => {
+    if (reduce) { drawField(1); return; }
+    const t0 = performance.now(), dur = 6500;
+    const step = (ts) => {
+      const p = Math.min(1, (ts - t0) / dur);
+      drawField(1 - Math.pow(1 - p, 1.6));
+      if (p < 1) { fraf = requestAnimationFrame(step); } else { fraf = null; }
+    };
+    if (fraf) { cancelAnimationFrame(fraf); }
+    fraf = requestAnimationFrame(step);
+  };
+  leaveHooks['s-field'] = () => { if (fraf) { cancelAnimationFrame(fraf); fraf = null; } };
+
+  /* ---------- monthly chart ---------- */
+  (function monthChart() {
+    const svg = document.getElementById('month-chart');
+    const tip = document.getElementById('month-tip');
+    if (!svg) { return; }
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct'];
+    const tot = [0,1,2,3,4,5,6,7,8,9].map(i => REPOS.reduce((a, r) => { a[r[1]] += r[2][i]; return a; }, { t: 0, r: 0, l: 0 }));
+    const W = 1000, H = 470, padL = 52, padB = 34, top = 20;
+    const max = 1000;
+    const bw = 62, gap = (W - padL - bw * 10) / 10;
+    const y = v => H - padB - (v / max) * (H - padB - top);
+    let s = '';
+    [0, 250, 500, 750, 1000].forEach(v => {
+      s += `<line x1="${padL}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="#C9CED6" stroke-width="${v ? 1 : 1.5}" ${v ? 'stroke-dasharray="2 4"' : ''}/>`;
+      s += `<text x="${padL - 12}" y="${y(v) + 5}" text-anchor="end" font-size="14" fill="#8A92A0">${v.toLocaleString('en-US')}</text>`;
+    });
+    const order = [['t', '#2F5BEA', 'Tooling'], ['r', '#14B07F', 'Research'], ['l', '#A8235F', 'Life']];
+    tot.forEach((o, i) => {
+      const x = padL + gap / 2 + i * (bw + gap);
+      let base = 0;
+      const sum = o.t + o.r + o.l;
+      order.forEach(([k, col], oi) => {
+        const v = o[k]; if (!v) { return; }
+        const y0 = y(base), y1 = y(base + v);
+        const h = Math.max(0, y0 - y1 - (base ? 2 : 0));
+        const isTop = order.slice(oi + 1).every(([kk]) => !o[kk]);
+        const r = isTop ? 4 : 0;
+        const yy = y1;
+        s += `<path d="M${x},${yy + h} L${x},${yy + r} Q${x},${yy} ${x + r},${yy} L${x + bw - r},${yy} Q${x + bw},${yy} ${x + bw},${yy + r} L${x + bw},${yy + h} Z" fill="${col}"/>`;
+        base += v;
+      });
+      s += `<text x="${x + bw / 2}" y="${y(sum) - 10}" text-anchor="middle" font-size="16" font-weight="600" fill="#14161B">${sum}</text>`;
+      s += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle" font-size="15" fill="${i === 9 ? '#8A92A0' : '#4A5160'}">${months[i]}${i === 9 ? '*' : ''}</text>`;
+      s += `<rect class="hit" data-i="${i}" x="${x - gap / 2}" y="${top}" width="${bw + gap}" height="${H - padB - top}" fill="transparent"/>`;
+    });
+    svg.innerHTML = s;
+    svg.querySelectorAll('.hit').forEach(r => {
+      r.addEventListener('mouseenter', () => {
+        const i = +r.dataset.i, o = tot[i];
+        tip.innerHTML = `<b>${months[i]} 2026</b><br>Tooling ${o.t} · Research ${o.r} · Life ${o.l}`;
+        const bx = r.getBBox();
+        const scale = svg.getBoundingClientRect().width / 1000;
+        tip.style.left = ((bx.x + bx.width / 2) / 1000 * 100) + '%';
+        tip.style.top = '0px';
+        tip.style.transform = 'translate(-50%, -10px)';
+        tip.style.opacity = 1;
+      });
+      r.addEventListener('mouseleave', () => { tip.style.opacity = 0; });
+    });
+  })();
+
+  /* ---------- lifecycle svg ---------- */
+  (function lifecycle() {
+    const svg = document.getElementById('life-svg');
+    const st = [
+      ['이슈 만들기', ['할 일을 이슈로 쓰고', '경로를 정한다'], 'ai', 'jev가 경로를 조언'],
+      ['설계 문서', ['설계 선택지를', '문서로 정한다'], 'ai', 'spec'],
+      ['spec 리뷰', ['다른 모델이', '한 번 본다'], 'rev', 'APPROVE / REVISE'],
+      ['구현 진입', ['구현 시작을', '내가 승인'], 'human', 'impl_entry'],
+      ['구현', ['격리된 worktree에서', '하위 에이전트가'], 'ai', 'exec_receipt'],
+      ['구현 리뷰', ['통합 diff 전체를', '다른 모델이'], 'rev', 'impl_review'],
+      ['PR과 검증', ['저장소 자체', '검증 스크립트'], 'ai', 'resolved'],
+      ['머지와 배포', ['배포 증거까지', '보고 닫는다'], 'ai', 'closed']
+    ];
+    const W = 1392, y0 = 150, n = st.length;
+    const xs = st.map((_, i) => 60 + i * ((W - 120) / (n - 1)));
+    let s = `<path d="M0,${y0} C200,${y0 - 30} 400,${y0 + 30} 696,${y0} S1192,${y0 - 30} ${W},${y0}" fill="none" stroke="#14161B" stroke-width="1.5"/>`;
+    s += `<defs><radialGradient id="gb" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset=".25" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></radialGradient></defs>`;
+    const yAt = x => { const u = x / W; return y0 + (u < .5 ? -Math.sin(u * 2 * Math.PI) * 13 : -Math.sin((u - .5) * 2 * Math.PI) * 13); };
+    st.forEach(([t, d, kind, tag], i) => {
+      const x = xs[i], y = yAt(x);
+      const fill = kind === 'human' ? '#E8A317' : kind === 'rev' ? '#ECEEF1' : '#2F5BEA';
+      if (kind === 'rev') {
+        s += `<circle cx="${x}" cy="${y}" r="30" fill="none" stroke="#14161B" stroke-width="2.5"/>`;
+        s += `<circle cx="${x}" cy="${y}" r="22" fill="#14161B"/><circle cx="${x}" cy="${y}" r="22" fill="url(#gb)"/>`;
+      } else {
+        s += `<circle cx="${x}" cy="${y}" r="${kind === 'human' ? 26 : 22}" fill="${fill}"/><circle cx="${x}" cy="${y}" r="${kind === 'human' ? 26 : 22}" fill="url(#gb)"/>`;
+      }
+      s += `<text x="${x}" y="${y0 - 56}" text-anchor="middle" font-size="15" fill="#8A92A0">${i + 1}</text>`;
+      s += `<text x="${x}" y="${y0 + 84}" text-anchor="middle" font-size="21" font-weight="600" fill="#14161B">${t}</text>`;
+      d.forEach((ln, li) => { s += `<text x="${x}" y="${y0 + 116 + li * 24}" text-anchor="middle" font-size="16.5" fill="#4A5160">${ln}</text>`; });
+      s += `<text x="${x}" y="${y0 + 184}" text-anchor="middle" font-size="14" fill="${kind === 'human' ? '#9A6800' : '#8A92A0'}" font-family="'Plex Mono', monospace">${tag}</text>`;
+    });
+    const lg = [['#2F5BEA', 'AI가 하는 일', 0], ['#E8A317', '내가 답하는 지점', 1], ['rev', '다른 모델의 리뷰', 2]];
+    lg.forEach(([c, l, i]) => {
+      const x = 2 + i * 220, yy = 18;
+      if (c === 'rev') { s += `<circle cx="${x + 9}" cy="${yy}" r="9" fill="none" stroke="#14161B" stroke-width="2"/><circle cx="${x + 9}" cy="${yy}" r="5.5" fill="#14161B"/>`; }
+      else { s += `<circle cx="${x + 9}" cy="${yy}" r="8" fill="${c}"/>`; }
+      s += `<text x="${x + 26}" y="${yy + 5.5}" font-size="16" fill="#4A5160">${l}</text>`;
+    });
+    svg.innerHTML = s;
+  })();
+
+
+  /* ---------- monitor marks are static ---------- */
+
+  /* ---------- simulation ---------- */
+  const LANES = [['cand', '후보'], ['queue', '대기'], ['run', '실행 중'], ['pr', 'PR 대기'], ['done', '완료']];
+  const SEED = [
+    { id: 'EX-a1', t: 'scRNA-seq QC 리포트를 샘플마다 자동 생성', r: 'quick_fix', m: 'codex · sol' },
+    { id: 'EX-b2', t: '생존분석 Figure 3을 새 코호트로 재현', r: 'spec_backed', m: 'claude · sonnet' },
+    { id: 'EX-c3', t: 'Snakemake 규칙 OOM, 메모리를 실측값으로 선언', r: 'quick_fix', m: 'claude · sonnet' },
+    { id: 'EX-d4', t: '리뷰어 코멘트 2번: 민감도 분석 추가', r: 'spec_backed', m: 'codex · sol' },
+    { id: 'EX-e5', t: '16S 파이프라인 파라미터 2-pass 최적화', r: 'full_plan', m: 'claude · opus' }
+  ];
+  const SCRIPT = [
+    ['move', 'EX-a1', 'queue', 'EX-a1을 대기열로 끌어다 놓는다'],
+    ['move', 'EX-b2', 'queue', 'EX-b2도 대기열로'],
+    ['move', 'EX-c3', 'queue', 'EX-c3도. 동시 실행은 2칸'],
+    ['run', 'EX-a1', 0, 'EX-a1 세션 시작 — quick_fix라 spec 없이 바로 구현'],
+    ['run', 'EX-b2', 0, 'EX-b2 세션 시작 — spec부터 쓴다'],
+    ['step', 'EX-b2', 1, 'EX-b2 spec이 다른 모델의 리뷰를 통과'],
+    ['step', 'EX-a1', 2, 'EX-a1 구현 완료, 서버가 PR을 관측'],
+    ['move', 'EX-a1', 'pr', 'EX-a1은 PR 대기로. 빈 칸에 EX-c3이 들어간다'],
+    ['run', 'EX-c3', 0, ''],
+    ['wait', 'EX-b2', 0, 'EX-b2 구현 시작 승인 대기. 사람만 답할 수 있다'],
+    ['step', 'EX-a1', 4, 'EX-a1 검증 스크립트 통과, 자동 머지'],
+    ['move', 'EX-a1', 'done', 'EX-a1 완료'],
+    ['go', 'EX-b2', 0, '폰에서 구현 시작을 승인했다'],
+    ['step', 'EX-b2', 2, 'EX-b2 구현과 구현 리뷰 통과'],
+    ['step', 'EX-c3', 2, 'EX-c3 구현 완료'],
+    ['move', 'EX-b2', 'pr', 'EX-b2 PR 대기'],
+    ['move', 'EX-c3', 'pr', 'EX-c3 PR 대기'],
+    ['step', 'EX-b2', 4, ''],
+    ['step', 'EX-c3', 4, '둘 다 검증과 머지 통과'],
+    ['move', 'EX-b2', 'done', ''],
+    ['move', 'EX-c3', 'done', '대기열이 비었다. 남은 후보는 다음 아침에']
+  ];
+  let simState, simIdx, simTimer = null;
+  const lanesEl = document.getElementById('lanes');
+  const logEl = document.getElementById('sim-log');
+  const playBtn = document.getElementById('sim-play');
+  function simReset() {
+    simState = SEED.map(c => ({ ...c, lane: 'cand', steps: 0, flag: '' }));
+    simIdx = 0;
+    if (simTimer) { clearInterval(simTimer); simTimer = null; }
+    playBtn.textContent = '재생';
+    logEl.textContent = '재생을 누르면 Worker가 대기열을 처리합니다. 동시 실행 2칸.';
+    renderSim(false);
+  }
+  function cardHTML(c) {
+    const st = [0, 1, 2, 3].map(k => `<i class="${k < c.steps ? (c.steps >= 4 ? 'ok' : 'on') : ''}"></i>`).join('');
+    return `<div class="card ${c.flag}" data-id="${c.id}"><div class="cid">${c.id}<span class="route">${c.r}</span></div><div class="ct">${c.t}</div><div class="steps">${st}</div><div class="meta"><span>워커 ${c.m}</span></div><div class="gate">⚑ 구현 진입 질문 대기</div></div>`;
+  }
+  function renderSim(animate) {
+    const first = {};
+    if (animate) { lanesEl.querySelectorAll('.card').forEach(el => { first[el.dataset.id] = el.getBoundingClientRect(); }); }
+    lanesEl.innerHTML = LANES.map(([k, l]) => {
+      const cs = simState.filter(c => c.lane === k);
+      return `<div class="lane" data-k="${k}"><h4>${l}<span>${cs.length}</span></h4>${cs.map(cardHTML).join('')}</div>`;
+    }).join('');
+    if (animate && !reduce) {
+      const sc = stage.getBoundingClientRect().width / 1600;
+      lanesEl.querySelectorAll('.card').forEach(el => {
+        const f = first[el.dataset.id]; if (!f) { return; }
+        const l = el.getBoundingClientRect();
+        const dx = (f.left - l.left) / sc, dy = (f.top - l.top) / sc;
+        if (!dx && !dy) { return; }
+        el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 520, easing: 'cubic-bezier(.2,.8,.2,1)' });
+      });
+    }
+  }
+  function simStep() {
+    if (simIdx >= SCRIPT.length) { clearInterval(simTimer); simTimer = null; playBtn.textContent = '재생'; return; }
+    const [op, id, arg, msg] = SCRIPT[simIdx++];
+    const c = simState.find(x => x.id === id);
+    if (op === 'move') { c.lane = arg; if (arg !== 'run') { c.flag = ''; } }
+    if (op === 'run') { c.lane = 'run'; c.flag = 'run'; c.steps = c.r === 'quick_fix' ? 1 : 0; }
+    if (op === 'step') { c.steps = Math.max(c.steps, arg); }
+    if (op === 'wait') { c.flag = 'wait'; }
+    if (op === 'go') { c.flag = 'run'; }
+    if (msg) { logEl.textContent = msg; }
+    renderSim(op === 'move' || op === 'run');
+  }
+  if (playBtn) {
+  playBtn.addEventListener('click', () => {
+    if (simTimer) { clearInterval(simTimer); simTimer = null; playBtn.textContent = '재생'; return; }
+    if (simIdx >= SCRIPT.length) { simReset(); }
+    playBtn.textContent = '일시정지';
+    simStep();
+    simTimer = setInterval(simStep, 1500);
+  });
+  document.getElementById('sim-reset').addEventListener('click', simReset);
+  simReset();
+  }
+  leaveHooks['s-sim'] = () => { if (simTimer) { clearInterval(simTimer); simTimer = null; playBtn.textContent = '재생'; } };
+
+
+  /* ---------- git graph ---------- */
+  (function gitGraph() {
+    const svg = document.getElementById('git-svg');
+    if (!svg) { return; }
+    const yM = 238, yB = 104;
+    const mono = "font-family=\"'Plex Mono', monospace\"";
+    let s = `<defs><radialGradient id="gg" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset=".25" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></radialGradient></defs>`;
+    s += `<line x1="0" y1="${yM}" x2="1392" y2="${yM}" stroke="#14161B" stroke-width="2"/>`;
+    s += `<path d="M262,${yM} C330,${yM} 330,${yB} 400,${yB} L880,${yB} C960,${yB} 950,${yM} 1030,${yM}" fill="none" stroke="#2F5BEA" stroke-width="2"/>`;
+    s += `<text x="0" y="${yM - 14}" font-size="15" fill="#8A92A0">main</text>`;
+    s += `<text x="400" y="${yB - 46}" font-size="15" fill="#2F5BEA" ${mono}>.worktrees/PROSTATE-mpx</text>`;
+    s += `<text x="400" y="${yB - 26}" font-size="14" fill="#8A92A0">작업 폴더와 브랜치 이름이 이슈 ID와 같다</text>`;
+    const bead = (x, y, c, r = 13) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}"/><circle cx="${x}" cy="${y}" r="${r}" fill="url(#gg)"/>`;
+    const lab = (x, y, sha, t, anchor = 'middle', col = '#14161B') => `<text x="${x}" y="${y}" text-anchor="${anchor}" font-size="14" fill="#8A92A0" ${mono}>${sha}</text><text x="${x}" y="${y + 22}" text-anchor="${anchor}" font-size="17" font-weight="600" fill="${col}">${t}</text>`;
+    s += bead(90, yM, '#8A92A0') + lab(90, yM + 38, '89f1c25', '이전 작업 (#7)');
+    s += bead(262, yM, '#14161B') + lab(262, yM + 38, 'f4a5197', 'spec 게시');
+    s += bead(520, yB, '#2F5BEA') + lab(520, yB + 36, '87d7220', 'Sonnet 구현');
+    s += `<circle cx="660" cy="${yB}" r="20" fill="none" stroke="#14161B" stroke-width="2"/>`;
+    s += bead(660, yB, '#2F5BEA') + lab(660, yB + 36, 'fd9cd6d', '리뷰 반영');
+    s += `<rect x="790" y="${yB - 20}" width="150" height="40" rx="20" fill="#fff" stroke="#14161B" stroke-width="1.5"/><text x="865" y="${yB + 6}" text-anchor="middle" font-size="16" font-weight="600" fill="#14161B">PR #10</text>`;
+    s += `<text x="865" y="${yB - 32}" text-anchor="middle" font-size="14" fill="#8A92A0">테스트 474 통과 · resolved</text>`;
+    s += `<circle cx="1030" cy="${yM}" r="22" fill="none" stroke="#14B07F" stroke-width="2"/>` + bead(1030, yM, '#14B07F', 15);
+    s += `<text x="1030" y="${yM + 46}" text-anchor="middle" font-size="14" fill="#8A92A0" ${mono}>26608f9 · squash 머지</text>`;
+    s += `<text x="1030" y="${yM + 70}" text-anchor="middle" font-size="16.5" font-weight="600" fill="#14161B">deseq.R 수치 공변량 중심화 — DEG 퇴행 적합 인공산물 제거 (PROSTATE-mpx) (#10)</text>`;
+    s += `<circle cx="1300" cy="${yM}" r="12" fill="#ECEEF1" stroke="#14161B" stroke-width="2" stroke-dasharray="3 3"/>`;
+    s += `<text x="1300" y="${yM - 26}" text-anchor="middle" font-size="15" fill="#4A5160">다음: PROSTATE-09h</text>`;
+    s += `<text x="1300" y="${yM - 48}" text-anchor="middle" font-size="14" fill="#8A92A0">wallace 재실행</text>`;
+    svg.innerHTML = s;
+  })();
+
+  /* ---------- network ---------- */
+  (function net() {
+    const svg = document.getElementById('net-svg');
+    if (!svg) { return; }
+    const hub = [1060, 470];
+    const nodes = [
+      { x: 1060, y: 470, r: 70, t: 'Mac Studio', s: ['beads-ui :3000', '미리보기 :9000', '중앙 이슈 DB', 'Claude · Codex 세션'], c: '#E9ECF1', hub: true },
+      { x: 700, y: 330, r: 16, t: 'iPhone', s: ['Termius, Discord, 브라우저'], c: '#FF6B9E' },
+      { x: 640, y: 470, r: 16, t: 'iPad', s: ['Termius로 tmux'], c: '#FF6B9E' },
+      { x: 700, y: 610, r: 16, t: 'MacBook Air', s: ['같은 세션에 접속'], c: '#FF6B9E' },
+      { x: 800, y: 755, r: 18, t: 'NAS', s: ['DB 백업 14세대'], c: '#7B96FF' },
+      { x: 1350, y: 330, r: 20, t: 'wallace', s: ['Slurm, 연구 파이프라인'], c: '#45D98C', ssh: true },
+      { x: 1390, y: 540, r: 20, t: 'fisher', s: ['GPU 학습'], c: '#45D98C', ssh: true },
+      { x: 1260, y: 175, r: 18, t: 'Discord', s: ['봇 연결', 'Mac에서 나가는 방향만'], c: '#F4C84A', out: true },
+      { x: 1330, y: 735, r: 18, t: 'dot 중계', s: ['Funnel로 이것만 공개', 'OAuth 인증'], c: '#F4C84A', out: true }
+    ];
+    let s = '';
+    s += `<ellipse cx="910" cy="480" rx="390" ry="320" fill="none" stroke="rgba(123,150,255,.28)" stroke-width="1.2" stroke-dasharray="3 6"/>`;
+    s += `<text x="910" y="148" text-anchor="middle" font-size="15" fill="#7B96FF">tailnet (Tailscale 사설망)</text>`;
+    nodes.slice(1).forEach(n => {
+      const dash = n.ssh ? 'stroke-dasharray="6 6"' : n.out ? 'stroke-dasharray="1 5"' : '';
+      s += `<line x1="${hub[0]}" y1="${hub[1]}" x2="${n.x}" y2="${n.y}" stroke="rgba(233,236,241,.28)" stroke-width="1.3" ${dash}/>`;
+    });
+    s += `<defs><radialGradient id="ng" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity=".95"/><stop offset=".3" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".5"/></radialGradient><filter id="glow"><feGaussianBlur stdDeviation="6"/></filter></defs>`;
+    nodes.forEach(n => {
+      s += `<circle cx="${n.x}" cy="${n.y}" r="${n.r}" fill="${n.c}" opacity=".55" filter="url(#glow)"/>`;
+      s += `<circle cx="${n.x}" cy="${n.y}" r="${n.r}" fill="${n.c}"/><circle cx="${n.x}" cy="${n.y}" r="${n.r}" fill="url(#ng)"/>`;
+      if (n.hub) {
+        s += `<text x="${n.x}" y="${n.y + 108}" text-anchor="middle" font-size="24" font-weight="600" fill="#E9ECF1">${n.t}</text>`;
+        n.s.forEach((l, i) => { s += `<text x="${n.x}" y="${n.y + 138 + i * 24}" text-anchor="middle" font-size="16" fill="#A3ABB9">${l}</text>`; });
+      } else {
+        const left = n.x < hub[0];
+        const tx = left ? n.x - n.r - 14 : n.x + n.r + 14;
+        const anchor = left ? 'end' : 'start';
+        s += `<text x="${tx}" y="${n.y - 2}" text-anchor="${anchor}" font-size="19" font-weight="600" fill="#E9ECF1">${n.t}</text>`;
+        n.s.forEach((l, i) => { s += `<text x="${tx}" y="${n.y + 21 + i * 20}" text-anchor="${anchor}" font-size="15" fill="#A3ABB9">${l}</text>`; });
+      }
+    });
+    s += `<g transform="translate(104,770)"><line x1="0" y1="0" x2="34" y2="0" stroke="rgba(233,236,241,.5)" stroke-width="1.3"/><text x="44" y="5" font-size="14" fill="#A3ABB9">tailnet</text><line x1="130" y1="0" x2="164" y2="0" stroke="rgba(233,236,241,.5)" stroke-width="1.3" stroke-dasharray="6 6"/><text x="174" y="5" font-size="14" fill="#A3ABB9">SSH (랩 서버)</text><line x1="300" y1="0" x2="334" y2="0" stroke="rgba(233,236,241,.6)" stroke-width="1.3" stroke-dasharray="1 5"/><text x="344" y="5" font-size="14" fill="#A3ABB9">바깥과 닿는 연결</text></g>`;
+    svg.innerHTML = s;
+  })();
+
+  /* ---------- start ---------- */
+  fit();
+  window.__deck = { go, index: () => cur, slides, stage };
+  if (ROLE === 'main') { window.addEventListener('hashchange', () => { const n = parseInt(location.hash.slice(1), 10); if (n) { go(n - 1); } }); }
+  if (ROLE !== 'presenter') { go(ROLE === 'main' ? Math.max(0, Math.min(slides.length - 1, (parseInt(location.hash.slice(1), 10) || 1) - 1)) : 0, true); }
+})();
+</script>
+<script>
+(() => {
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, parent, text) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) { e.setAttribute(k, attrs[k]); }
+    if (text !== undefined) { e.textContent = text; }
+    if (parent) { parent.appendChild(e); }
+    return e;
+  };
+  const CL = '#2F5BEA', CX = '#14B07F', INK = '#14161B', INK2 = '#4A5160', INK3 = '#8A92A0', RULE = '#C9CED6';
+
+  // ---- parallel swimlane (2026-10-06, Worker attempts)
+  const par = document.getElementById('par-svg');
+  if (par) {
+    const S = [
+      ['dotfiles', 'dotfiles-58ll8', 'claude', '11:49', '12:18'],
+      ['CRC-rokit', 'rokit-0y1', 'claude', '12:00', '12:36'],
+      ['personal', '', 'codex', '12:29', '12:46'],
+      ['dotfiles', 'dotfiles-hg6hv', 'codex', '12:31', '12:41'],
+      ['microbiome_bile', 'Analysis-zwkj', 'codex', '12:34', '12:48'],
+      ['CRC-rokit', 'rokit-viw', 'codex', '12:41', '12:50'],
+      ['microbiome_bile', 'Analysis-e0vp', 'codex', '12:41', '12:52'],
+      ['prostate', 'PROSTATE-vwl', 'codex', '12:41', '12:48'],
+      ['dotfiles', 'dotfiles-lb188', 'claude', '12:45', '13:24'],
+      ['microbiome_bile', 'Analysis-f2ie', 'claude', '13:00', '13:10'],
+      ['microbiome_bile', 'Analysis-vfnz', 'claude', '13:01', '13:51'],
+    ];
+    const m = t => { const [h, mi] = t.split(':').map(Number); return h * 60 + mi; };
+    const T0 = m('11:45'), T1 = m('14:00'), X0 = 230, X1 = 970;
+    const x = t => X0 + (t - T0) / (T1 - T0) * (X1 - X0);
+    const RH = 30, Y0 = 34;
+    const yEnd = Y0 + S.length * RH;
+    for (let t = T0; t <= T1; t += 15) {
+      el('line', { x1: x(t), x2: x(t), y1: Y0 - 8, y2: yEnd, stroke: RULE, 'stroke-width': t % 60 === 0 ? 1.2 : .6 }, par);
+      const lab = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+      el('text', { x: x(t), y: Y0 - 14, 'text-anchor': 'middle', 'font-size': 13, fill: INK3 }, par, lab);
+    }
+    S.forEach((s, i) => {
+      const y = Y0 + i * RH;
+      el('text', { x: 0, y: y + 19, 'font-size': 14.5, fill: INK }, par, s[0]);
+      el('text', { x: X0 - 10, y: y + 19, 'font-size': 12.5, fill: INK3, 'text-anchor': 'end', style: 'font-family:var(--mono)' }, par, s[1]);
+      const r = el('rect', { x: x(m(s[3])), y: y + 6, width: Math.max(3, x(m(s[4])) - x(m(s[3]))), height: RH - 12, rx: 4, fill: s[2] === 'claude' ? CL : CX }, par);
+      el('title', {}, r, `${s[1]} · ${s[2]} · ${s[3]}–${s[4]}`);
+    });
+    // concurrency step line
+    const CY0 = yEnd + 40, CH = 96, MAXC = 6;
+    const yc = c => CY0 + CH - c / MAXC * CH;
+    el('text', { x: 0, y: CY0 + 14, 'font-size': 14.5, fill: INK }, par, '동시 세션 수');
+    for (let c = 0; c <= MAXC; c += 2) {
+      el('line', { x1: X0, x2: X1, y1: yc(c), y2: yc(c), stroke: RULE, 'stroke-width': c === 0 ? 1.2 : .6 }, par);
+      el('text', { x: X0 - 10, y: yc(c) + 4, 'font-size': 12.5, fill: INK3, 'text-anchor': 'end' }, par, String(c));
+    }
+    let d = '', peak = 0, peakT = T0;
+    for (let t = T0; t <= T1; t++) {
+      const c = S.filter(s => m(s[3]) <= t && t < m(s[4])).length;
+      if (c > peak) { peak = c; peakT = t; }
+      d += (t === T0 ? 'M' : 'L') + x(t).toFixed(1) + ' ' + yc(c).toFixed(1) + ' ';
+    }
+    el('path', { d: d + `L${X1} ${yc(0)} L${X0} ${yc(0)} Z`, fill: 'rgba(138,146,160,.18)' }, par);
+    el('path', { d, fill: 'none', stroke: INK2, 'stroke-width': 2, 'stroke-linejoin': 'round' }, par);
+    el('circle', { cx: x(peakT), cy: yc(peak), r: 5, fill: INK, stroke: '#ECEEF1', 'stroke-width': 2 }, par);
+    el('text', { x: x(peakT) + 10, y: yc(peak) - 6, 'font-size': 14, fill: INK, 'font-weight': 600 }, par, `${peak}개 동시`);
+  }
+
+  // ---- daily usage (API-equivalent USD), 2026-09-07 .. 2026-10-07
+  const use = document.getElementById('use-svg');
+  if (use) {
+    const days = ['09-07','09-08','09-09','09-10','09-11','09-12','09-13','09-14','09-15','09-16','09-17','09-18','09-19','09-20','09-21','09-22','09-23','09-24','09-25','09-26','09-27','09-28','09-29','09-30','10-01','10-02','10-03','10-04','10-05','10-06','10-07'];
+    const cl = [28,729,608,474,1,0,0,0,473,338,437,127,0,5,922,949,644,0,0,0,0,21,321,685,803,697,328,122,404,868,167];
+    const cx = [0,395,26,319,151,0,0,181,1201,185,53,19,16,175,322,218,1,0,0,0,0,0,130,42,89,128,54,41,111,291,2];
+    const tok = [24,1312,739,909,166,0,0,154,1687,451,640,227,12,122,1323,1327,850,0,0,0,0,55,642,2052,2146,1777,684,212,799,1652,302];
+    const X0 = 64, X1 = 996, Y0 = 16, Y1 = 410, MAX = 1800;
+    const y = v => Y1 - v / MAX * (Y1 - Y0);
+    for (const v of [0, 500, 1000, 1500]) {
+      el('line', { x1: X0, x2: X1, y1: y(v), y2: y(v), stroke: RULE, 'stroke-width': v === 0 ? 1.2 : .6 }, use);
+      el('text', { x: X0 - 10, y: y(v) + 5, 'text-anchor': 'end', 'font-size': 14, fill: INK3 }, use, v === 0 ? '$0' : `$${v / 1000}k`);
+    }
+    const bw = (X1 - X0) / days.length;
+    days.forEach((dname, i) => {
+      const bx = X0 + i * bw + 4, w = bw - 8;
+      const g = el('g', {}, use);
+      if (cl[i] > 0) { el('rect', { x: bx, y: y(cl[i]), width: w, height: Y1 - y(cl[i]), rx: cx[i] > 0 ? 1 : 4, fill: CL }, g); }
+      if (cx[i] > 0) {
+        const top = y(cl[i] + cx[i]), bot = y(cl[i]) - (cl[i] > 0 ? 2 : 0);
+        el('rect', { x: bx, y: top, width: w, height: Math.max(1, bot - top), rx: 4, fill: CX }, g);
+      }
+      el('rect', { x: bx - 4, y: Y0, width: bw, height: Y1 - Y0, fill: 'transparent' }, g);
+      el('title', {}, g, `${dname}  Claude $${cl[i]} · Codex $${cx[i]} · ${(tok[i] / 10).toFixed(0)}억 토큰`);
+      if (i % 7 === 0) { el('text', { x: bx + w / 2, y: Y1 + 24, 'text-anchor': 'middle', 'font-size': 14, fill: INK3 }, use, dname.replace('-', '/')); }
+    });
+    const pk = 8;
+    el('text', { x: X0 + pk * bw + bw / 2, y: y(cl[pk] + cx[pk]) - 10, 'text-anchor': 'middle', 'font-size': 14, fill: INK, 'font-weight': 600 }, use, '$1.7k');
+    const pk2 = 24;
+    el('text', { x: X0 + pk2 * bw + bw / 2, y: y(cl[pk2] + cx[pk2]) - 10, 'text-anchor': 'middle', 'font-size': 14, fill: INK, 'font-weight': 600 }, use, '21억 토큰');
+  }
+})();
+</script>
+<script>
+/*PRESENTER*/
+</script>
+</body>
+</html>
