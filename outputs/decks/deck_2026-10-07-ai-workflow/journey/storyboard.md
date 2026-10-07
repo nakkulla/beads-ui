@@ -1,7 +1,7 @@
 ---
 status: working-ledger
 deck: journey (custom deck.html, source ../source/deck-journey.src.html)
-bead: UI-nqq2, UI-ympi
+bead: UI-nqq2, UI-ympi, UI-hn9i
 written: 2026-10-08
 ---
 
@@ -10,6 +10,24 @@ written: 2026-10-08
 이 파일은 storyboard 스킬의 동결본이 아니다. 사용자가 "완성 화면부터 만들고 피드백"을 골라 원장을 화면과 함께 만들었다. 화면의 주장마다 출처를 적고, 확인하지 못한 것은 미확인으로 남긴다. 시각은 모두 KST.
 
 2차(UI-ympi): 본편 영어 제목을 내용을 이름 붙인 명사구로 바꾸고(표지 키커 삭제), 본편 한국어 부제·화면 문구·노트를 korean-humanizer 기준으로 다듬었다. 수치·ID·시각과 원문 인용(이슈 제목, SPEC 제목)은 그대로다. 백업 장은 바꾸지 않았다.
+
+3차(UI-hn9i): 발표자 창 피드백 24건을 반영해 본편을 실제 이슈 하나의 여정에서 일반적인 작업 흐름 설명으로 바꿨다. 본편은 39장(3부 + "시간이 되면" 묶음)이다. 화면에는 예시를 남기고 시각·커밋 해시·잡 ID·파일 경로는 뺐으며 노트는 장마다 2~3문장으로 줄였다. 반영한 피드백은 `feedback-applied-20261008-*.json`에 있다.
+
+## 3차에서 바뀐 본편 구성
+
+| 키 | 표시 | 3차 변경 | 출처 |
+| --- | --- | --- | --- |
+| s-life | — | 백업에서 4번으로, 단계 재생 추가 | intro 판 백업 장 |
+| s-git | 모의 | 백업에서 5번으로. 네 이슈(EX-a1~d4)가 병렬·직렬로 main에 합쳐지는 재생 그림으로 다시 그림 | 규칙 칸은 workflow 계약(작업 폴더=브랜치=이슈 ID, squash, base 동기화 뒤 머지) |
+| s-issue | 대화 재구성 · 카드 실제 | 시각·덱 이슈 ID 삭제, 영수증 칸(spec_review·impl_entry·exec_receipt·impl_review) 추가 | s-anat의 영수증 항목 |
+| s-adr | — | 백업에서 s-gates2 뒤로, 결정 절 → 세 조건 판정 → 같은 PR에 ADR → 목록 자동 생성 → 대체 단계 재생 | intro 판 백업 장, workflow ADR 절차 |
+| s-implflow, s-specrev, s-done, s-gates2 | 기록 | 시각·해시·테스트 개수·후속 이슈 ID 삭제, s-done은 일반 기준과 수치 예시 한 줄 | 위 출처 표 그대로 |
+| s-servers, s-serverdata | — | s-server2 자리에 본편으로, s-servers는 단계 재생 | intro 판 백업 장 |
+| s-night, s-fail | 모의 | 실제 기록에서 가상 예시로. 저장소 이름과 시간 구조만 남기고 작업 이름·PR 번호·날짜는 일반화 | 위 출처 표의 기록을 바탕으로 한 예시 |
+| s-parallel, s-meet, s-models, s-effort, s-tokens, s-remote | — | 백업에서 본편으로 | intro 판 백업 장 |
+| s-accounts | 모의 | 백업에서 본편으로. 계정 A 한도 → 보류 → 허용 계정 중 여유 있는 계정 B로 전환 재생, 기다림 모드 설명 | beads-ui `server/worker/queue-store.js` provider_limit_policy·account_switch, `notify.js` 전환 사유 문구 |
+| s-extra, s-instr, s-sah, s-net | — | s-next 앞 "시간이 되면" 묶음 | intro 판 백업 장 |
+| s-journey, s-server2 | 기록 | 본편에서 백업으로 | 위 출처 표 그대로 |
 
 ## 본편 슬라이드별 출처
 
@@ -48,16 +66,15 @@ written: 2026-10-08
 
 1. 덱 s-live에서 탭 전환: `http://<tailnet IP>:3000/#/monitor` (발표 직전 `ts-ip`로 확인).
 2. Worker 탭에서 저장소 하나를 열고 후보·대기(병렬·직렬)·실행 중·PR 대기 레인을 짚는다.
-3. PROSTATE-mpx 상세: 단계 막대와 영수증 커밋, 본문, 작업 보고서 댓글.
+3. 이슈 상세 하나: 단계 막대와 영수증 커밋, 본문, 작업 보고서 댓글.
 4. 설정 → 워커 탭의 프리셋. 보기만 하고 바꾸지 않는다.
 5. 실행 중인 세션이 있으면 열어 질문과 로그를 보여 준다. 없으면 건너뛴다.
-6. 덱으로 돌아와 s-who부터 이어 간다.
+6. 덱으로 돌아와 s-part3부터 이어 간다.
 - 접속 실패 시: s-monitor·s-worker·s-detail·s-settings 캡처로 같은 순서를 설명한다.
-- 계정 이메일이 보이는 패널은 열지 않는다.
 
 ## 조작
 
-- 재생형 장(s-lost, s-issue, s-specrev, s-implflow, s-server2, s-queue2, s-night, s-fail, s-phone): 화면의 [재생]을 누르거나 `S` 키. `.` 키는 한 단계씩.
+- 재생형 장(s-lost, s-life, s-git, s-issue, s-specrev, s-adr, s-implflow, s-servers, s-queue2, s-night, s-fail, s-accounts, s-phone, 백업의 s-server2): 화면의 [재생]을 누르거나 `S` 키. `.` 키는 한 단계씩.
 - 발표자 창(`N`)의 미리보기는 재생형 장을 마지막 상태로 보여 준다.
 
 ## 인계서 §7 발표 전 수용 점검
@@ -65,7 +82,7 @@ written: 2026-10-08
 | 항목 | 상태 | 근거 |
 | --- | --- | --- |
 | 첫 3분 안에 문제와 이유 | 충족 | s-lost, s-problem |
-| 대화→이슈→SPEC→SPEC 리뷰→구현→구현 리뷰→완료 증거가 한 이야기 | 충족 | s-journey → s-done, 모두 PROSTATE-mpx·09h |
+| 대화→이슈→SPEC→SPEC 리뷰→구현→구현 리뷰→완료 증거가 한 이야기 | 충족 | s-life·s-git 개요 → s-issue~s-done, 예시는 PROSTATE-mpx·09h |
 | 두 리뷰 구분, 지어낸 규칙 없음 | 충족 | s-gates2 규칙은 workflow-contract 인용 |
 | 라이브 화면이 데모 첫 장면, 과거·재구성 표시 | 충족 | 모든 장에 표시 라벨, s-live |
 | 같은 이슈의 단계는 ID와 출처 연결 | 충족 | 위 표 |

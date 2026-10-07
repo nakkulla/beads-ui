@@ -1,0 +1,158 @@
+{
+  "version": 2,
+  "slides": {
+    "s6": {
+      "text": "스펙파일 경로를 굳이 안써도 될듯",
+      "title": "Spec (design document)",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:30:00.328558+00:00"
+    },
+    "s7": {
+      "text": "이것도 슬라이드에서는 예시 보여줘도 되지만 설명할때는 제네럴하게",
+      "title": "Spec review",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:31:24.250323+00:00"
+    },
+    "s9": {
+      "text": "여기서도 굳이 시간 표시할 필요 없을듯. 그리고 이렇게 구체적으로 보여주지 않아도 될듯",
+      "title": "Implementation and review",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:33:31.371856+00:00"
+    },
+    "s11": {
+      "text": "여기도 굳이 이렇게 구체적으로 안해도 될듯",
+      "title": "Results and closing the issue",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:34:06.011077+00:00"
+    },
+    "s14": {
+      "text": "이것도 굳이 실제 있었던거를 구체적으로 안해도 될듯 가상의 예시도 괜찮고",
+      "title": "Overnight runs, Oct 1",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:34:47.144089+00:00"
+    },
+    "s15": {
+      "text": "이거도 그렇고",
+      "title": "Job failure and recovery",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:35:03.747738+00:00"
+    },
+    "s16": {
+      "text": "계정이 보이는것도 괜찮은데",
+      "title": "Live: beads-ui",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:35:40.034403+00:00"
+    },
+    "s17": {
+      "text": "아침에 보는게 아니라 그냥 일반적으로 설명하는게 좋을듯. ",
+      "title": "beads-ui:Monitor tab",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:36:04.111576+00:00"
+    },
+    "s31": {
+      "text": "이거는 본문슬라이드 뒤쪽에 넣자 시간되면 말하는거로",
+      "title": "Instruction files",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:38:01.078767+00:00"
+    },
+    "s32": {
+      "text": "이거도",
+      "title": "Skills, agents, hooks",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:38:13.716024+00:00"
+    },
+    "s36": {
+      "text": "이거도 워크플로우를 잘 보여주지 않나? 본 슬라이드에 넣는게 나을듯",
+      "title": "Lab servers: edit on the Mac, run on the server",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:38:53.179905+00:00"
+    },
+    "s37": {
+      "text": "이거도 본 슬라이드에 넣자",
+      "title": "File locations: Mac, GitHub, server",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:39:06.097662+00:00"
+    },
+    "s40": {
+      "text": "이런거는 본슬라이드에 있나",
+      "title": "What an issue contains",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:39:29.554649+00:00"
+    },
+    "s41": {
+      "text": "이거도 앞에 예시대신에 넣는게 나을듯",
+      "title": "Task lifecycle",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:39:48.125047+00:00"
+    },
+    "s42": {
+      "text": "이거도 넣자",
+      "title": "Claude and Codex models",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:39:56.812970+00:00"
+    },
+    "s43": {
+      "text": "이거도",
+      "title": "Model roles",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:40:05.038950+00:00"
+    },
+    "s44": {
+      "text": "이거도",
+      "title": "Effort: how long the model thinks",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:40:12.584424+00:00"
+    },
+    "s47": {
+      "text": "이거도 앞에 예시대신에 넣으면서 이슈하나가 아니라 여러개가 병렬 또는 직렬로 진행되면서 합쳐지는 그림으로 보이는게 나을듯",
+      "title": "Git: worktree, branch, PR",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:40:59.223384+00:00"
+    },
+    "s50": {
+      "text": "이것도 넣는게 낫지 않나? 자동해결이 어떻게 진행되는지 보여주면서",
+      "title": "ADR: decision records",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:41:26.125560+00:00"
+    },
+    "s51": {
+      "text": "이것도 넣는게 나을듯",
+      "title": "Running in parallel",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:41:35.561005+00:00"
+    },
+    "s54": {
+      "text": "이것도 자동전환된다고 보여주는게 나을듯",
+      "title": "Multiple accounts",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:42:01.825206+00:00"
+    },
+    "s56": {
+      "text": "이것도. ",
+      "title": "Token usage",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:42:22.891120+00:00"
+    },
+    "s57": {
+      "text": "이것도 뒤에 넣자",
+      "title": "Network:one Mac and Tailscale",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:42:34.919794+00:00"
+    },
+    "s58": {
+      "text": "이것도 넣고",
+      "title": "Remote access: Tailscale and Termius",
+      "kind": "edit",
+      "updated_at": "2026-10-07T16:42:46.256683+00:00"
+    }
+  },
+  "deck": {
+    "text": "굳이 구체적인 이슈 내용은 없어도 될듯. \n그리고 발표자 노트는 deck 스킬 참고해서 간결하게",
+    "kind": "edit",
+    "updated_at": "2026-10-07T16:30:46.511141+00:00"
+  },
+  "applied": {
+    "bead": "UI-hn9i",
+    "note": "장별 24건과 덱 전체 1건 모두 반영. 키 s<N>은 반영 전(UI-ympi 판) 위치다."
+  }
+}
