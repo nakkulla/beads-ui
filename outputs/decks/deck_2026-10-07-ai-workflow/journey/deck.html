@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-deck-build="a7e525a10166" data-deck-notes="on">
+<html lang="en" data-deck-build="2bee7eedb8d3" data-deck-notes="on">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -454,6 +454,9 @@ b, strong { font-weight: 600; }
 /* ===== git ===== */
 #git-svg { width: 100%; height: 330px; margin-top: 34px; overflow: visible; }
 #git-svg text { font-family: var(--sans); }
+#git-svg [data-off].off { opacity: 0; }
+#git-svg .gres.on rect { animation: gitPulse 1s ease-in-out 2; }
+@keyframes gitPulse { 50% { stroke-width: 5; fill: #FFE7A3; } }
 .gitrules { display: grid; grid-template-columns: repeat(4, 1fr); gap: 26px; margin-top: 30px; }
 .gitrules div { border-top: 2px solid var(--ink); padding-top: 12px; }
 .gitrules h3 { font-size: 19px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.35; }
@@ -1003,7 +1006,7 @@ body.dk-receiver .slide .rv { animation: none !important; }
 .dark .simbar .sstep { color: var(--d-ink-3); }
 .dark .simbar .slog { color: var(--d-ink); }
 body.dk-receiver .simbar .btn, body.dk-receiver .simbar .sstep { display: none; }
-.sim[data-play="static"] .simbar { display: none; }
+.sim[data-play="static"] .simbar, .sim[data-bar="off"] .simbar { display: none; }
 
 .sim path.draw { stroke-dasharray: var(--len, 2000); stroke-dashoffset: var(--len, 2000); transition: stroke-dashoffset 1.2s cubic-bezier(.4,0,.2,1); }
 .sim path.draw.on { stroke-dashoffset: 0; }
@@ -1294,7 +1297,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <aside class="notes">연구 저장소와 AI 세션이 늘면 어디까지 했고 다음에 무엇을 할지가 흩어집니다. 오늘은 일을 **이슈 단위로 기록하고 리뷰를 거쳐 끝내는 방식**을 보여 드리겠습니다.</aside>
 </section>
 
-<section class="slide sim" id="s2" data-key="s-lost" data-play="static" data-theme="light" data-speed="1700">
+<section class="slide sim" id="s2" data-key="s-lost" data-play="auto" data-bar="off" data-theme="light" data-speed="1700">
   <h2>Lost context across sessions</h2>
   <p class="ko-sub">저장소와 세션이 늘면 진행 상황과 다음 할 일을 놓친다</p>
   <div class="prov"><span class="sim">모의</span></div>
@@ -1368,23 +1371,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
 설계 선택이 없는 작은 일은 quick_fix로 바로 가고 선택지가 있으면 spec부터 씁니다.</aside>
 </section>
 
-<section class="slide sim" id="s5" data-key="s-git" data-play="auto" data-theme="light" data-speed="1700">
-  <h2>Git: worktree, branch, PR</h2>
-  <p class="ko-sub">이슈마다 작업 폴더와 브랜치가 따로 있고 병렬이나 직렬로 진행되다 main에 합쳐진다</p>
-  <div class="prov"><span class="sim">모의</span></div>
-  <svg id="git-svg" viewBox="0 0 1392 330" aria-label="네 이슈의 브랜치가 병렬과 직렬로 main에 합쳐지는 흐름"></svg>
-  <div class="gitrules">
-    <div><h3>작업 폴더 = 브랜치 = 이슈 ID</h3><p><code>.worktrees/&lt;이슈 ID&gt;</code>. 여러 세션이 동시에 돌아도 서로의 파일을 건드리지 않는다.</p></div>
-    <div><h3>병렬과 직렬</h3><p>서로 무관한 이슈는 동시에 출발한다. 앞 결과가 필요한 이슈는 앞 이슈가 합쳐진 main에서 출발한다.</p></div>
-    <div><h3>PR 하나 = main 커밋 하나</h3><p>squash로 합쳐서 main에는 이슈 하나가 커밋 하나로 남는다. 커밋 제목은 한국어와 이슈 ID.</p></div>
-    <div><h3>main이 앞서 가면</h3><p>다른 이슈가 먼저 합쳐지면 브랜치에 최신 main을 받아 다시 검증한 뒤 머지한다. 충돌하면 자동 해결 세션이 ADR과 SPEC을 근거로 해소한다.</p></div>
-  </div>
-  <div class="simbar"></div>
-  <aside class="notes">이슈마다 **작업 폴더와 브랜치가 따로** 생겨서 여러 세션이 동시에 돌아도 서로의 파일을 건드리지 않습니다. 서로 무관한 일은 병렬로 가고 앞 결과가 필요한 일은 앞 이슈가 main에 합쳐진 뒤 출발하죠.
-두 이슈가 같은 곳을 고쳐 충돌하면 **자동 해결 세션**이 떠서 ADR과 SPEC을 근거로 해소합니다.</aside>
-</section>
-
-<section class="slide sim" id="s6" data-key="s-issue" data-play="static" data-theme="light" data-speed="1900">
+<section class="slide sim" id="s5" data-key="s-issue" data-play="static" data-theme="light" data-speed="1900">
   <h2>Creating an issue</h2>
   <p class="ko-sub">대화에서 확인한 사실을 이슈에 기록한다</p>
   <div class="prov"><span class="recon">대화는 재구성</span><span class="rec">카드는 실제 기록</span></div>
@@ -1412,7 +1399,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <aside class="notes">대화에서 확인한 사실은 바로 이슈로 남깁니다. 증거를 파일과 수치로 적고 모르는 것과 파급까지 적어서 **다음 세션이 처음부터 다시 조사하지 않게** 합니다.</aside>
 </section>
 
-<section class="slide" id="s7" data-key="s-spec2" data-theme="light">
+<section class="slide" id="s6" data-key="s-spec2" data-theme="light">
   <h2>Spec (design document)</h2>
   <p class="ko-sub">고칠 범위, 바꾸지 않을 것, 판정 기준</p>
   <div class="prov"><span class="rec">실제 SPEC 예시</span></div>
@@ -1441,7 +1428,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
 고칠 범위와 바꾸지 않을 것, 성공을 판정할 기준을 먼저 정해 두면 결과를 원하는 쪽으로 맞추기 어렵습니다.</aside>
 </section>
 
-<section class="slide sim" id="s8" data-key="s-specrev" data-play="auto" data-theme="light" data-speed="1900">
+<section class="slide sim" id="s7" data-key="s-specrev" data-play="auto" data-theme="light" data-speed="1900">
   <h2>Spec review</h2>
   <p class="ko-sub">구현 전에 SPEC을 쓰지 않은 모델이 검토한다</p>
   <div class="prov"><span class="rec">기록 재생</span></div>
@@ -1473,7 +1460,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <aside class="notes">구현하기 전에 SPEC을 **쓰지 않은 다른 모델**의 독립리뷰를 거치게 해서 해당 spec의 견고성을 확인합니다.</aside>
 </section>
 
-<section class="slide" id="s9" data-key="s-gates2" data-theme="light">
+<section class="slide" id="s8" data-key="s-gates2" data-theme="light">
   <h2>Spec review vs. implementation review</h2>
   <p class="ko-sub">두 리뷰가 확인하는 것</p>
   <div class="prov"><span class="rec">예시는 실제 리뷰 기록</span></div>
@@ -1502,7 +1489,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <aside class="notes">리뷰는 두 번이고 묻는 것이 다릅니다. SPEC 리뷰는 **무엇을 할지**가 맞는지, 구현 리뷰는 한 것이 승인된 범위와 계약을 지키는지 봅니다.</aside>
 </section>
 
-<section class="slide sim" id="s10" data-key="s-adr" data-play="auto" data-theme="light" data-speed="1700">
+<section class="slide sim" id="s9" data-key="s-adr" data-play="auto" data-theme="light" data-speed="1700">
   <h2>ADR: decision records</h2>
   <p class="ko-sub">결정 기록 ADR (Architecture Decision Record)</p>
   <div class="adrwrap">
@@ -1535,7 +1522,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <aside class="notes">몇 달 뒤 **"왜 이렇게 했지?"**라고 물을 결정은 ADR로 남깁니다. 에이전트가 세 조건을 판정하고 같은 PR에 ADR 파일을 쓰고 목록이 자동으로 다시 만들어지는 과정이 나옵니다.</aside>
 </section>
 
-<section class="slide sim" id="s11" data-key="s-implflow" data-theme="light" data-speed="1800">
+<section class="slide sim" id="s10" data-key="s-implflow" data-theme="light" data-speed="1800">
   <h2>Implementation and review</h2>
   <p class="ko-sub">하위 에이전트 구현, 구현 리뷰, 머지</p>
   <div class="prov"><span class="rec">기록 재생</span></div>
@@ -1548,6 +1535,22 @@ body.dk-receiver .jr .wire { animation: none !important; }
   </div>
   <div class="simbar"></div>
   <aside class="notes">구현을 승인하면 지휘 세션이 지시서를 써서 하위 에이전트에게 맡깁니다. 하위 에이전트가 끝났다고 해도 **검증은 지휘 세션이 다시 돌리고** 구현 리뷰를 통과한 그 커밋으로만 머지하죠.</aside>
+</section>
+
+<section class="slide sim" id="s11" data-key="s-git" data-play="auto" data-theme="light" data-speed="1700">
+  <h2>Git: worktree, branch, PR</h2>
+  <p class="ko-sub">이슈마다 작업 폴더와 브랜치가 따로 있고 병렬이나 직렬로 진행되다 main에 합쳐진다</p>
+  <div class="prov"><span class="sim">모의</span></div>
+  <svg id="git-svg" viewBox="0 0 1392 330" aria-label="네 이슈의 브랜치가 병렬과 직렬로 main에 합쳐지는 흐름"></svg>
+  <div class="gitrules">
+    <div><h3>작업 폴더 = 브랜치 = 이슈 ID</h3><p><code>.worktrees/&lt;이슈 ID&gt;</code>. 여러 세션이 동시에 돌아도 서로의 파일을 건드리지 않는다.</p></div>
+    <div><h3>병렬과 직렬</h3><p>서로 무관한 이슈는 동시에 출발한다. 앞 결과가 필요한 이슈는 앞 이슈가 합쳐진 main에서 출발한다.</p></div>
+    <div><h3>PR 하나 = main 커밋 하나</h3><p>squash로 합쳐서 main에는 이슈 하나가 커밋 하나로 남는다. 커밋 제목은 한국어와 이슈 ID.</p></div>
+    <div><h3>main이 앞서 가면</h3><p>다른 이슈가 먼저 합쳐지면 브랜치에 최신 main을 받아 다시 검증한 뒤 머지한다. 충돌하면 자동 해결 세션이 ADR과 SPEC을 근거로 해소한다.</p></div>
+  </div>
+  <div class="simbar"></div>
+  <aside class="notes">여기까지는 이슈 하나였습니다. 여러 이슈를 함께 진행하면 이슈마다 **작업 폴더와 브랜치가 따로** 생겨서 여러 세션이 동시에 돌아도 서로의 파일을 건드리지 않습니다. 서로 무관한 일은 병렬로 가고 앞 결과가 필요한 일은 앞 이슈가 main에 합쳐진 뒤 출발하죠.
+두 이슈가 같은 곳을 고쳐 충돌하면 **자동 해결 세션**이 떠서 ADR과 SPEC을 근거로 해소합니다.</aside>
 </section>
 
 <section class="slide sim" id="s12" data-key="s-servers" data-theme="light" data-speed="1600">
@@ -2997,7 +3000,9 @@ Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을
       'EX-a1 PR이 squash로 main에 합쳐진다',
       'EX-c3도 합쳐진다',
       'EX-d4는 EX-c3의 결과가 필요해서 EX-c3이 합쳐진 main에서 출발 (직렬)',
-      'main이 앞서 갔으니 EX-b2는 최신 main을 받아 다시 검증한다',
+      'main이 앞서 가서 EX-b2가 최신 main을 받는데, 같은 곳을 고쳐 충돌이 난다',
+      '자동 해결 세션이 열려 ADR과 SPEC을 근거로 충돌을 해소한다',
+      '해소한 결과를 다시 검증한다',
       'EX-b2 합쳐짐',
       'EX-d4 합쳐짐. main에는 이슈 하나가 커밋 하나로 남는다'
     ],
@@ -3446,8 +3451,8 @@ Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을
     const BR = [
       ['EX-a1', 60, 100, 470, 1, 3, '#2F5BEA', '병렬'],
       ['EX-c3', 130, 160, 700, 1, 4, '#14B07F', '병렬'],
-      ['EX-b2', 200, 330, 1080, 2, 7, '#D9467A', '병렬'],
-      ['EX-d4', 130, 740, 1260, 5, 8, '#7B61FF', '직렬: EX-c3이 합쳐진 main에서 출발']
+      ['EX-b2', 200, 330, 1080, 2, 9, '#D9467A', '병렬'],
+      ['EX-d4', 130, 740, 1260, 5, 10, '#7B61FF', '직렬: EX-c3이 합쳐진 main에서 출발']
     ];
     BR.forEach(([id, y, fx, mx, a, b, c, tag]) => {
       s += `<path class="draw" data-s="${a}" d="M${fx},${yM} C${fx + 50},${yM} ${fx + 50},${y} ${fx + 100},${y} L${mx - 100},${y}" fill="none" stroke="${c}" stroke-width="2.5"/>`;
@@ -3456,7 +3461,10 @@ Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을
       s += `<g data-s="${b}"><circle cx="${mx}" cy="${yM}" r="19" fill="none" stroke="${c}" stroke-width="2"/>${bead(mx, yM, c, 13)}<text x="${mx}" y="${yM + 40}" text-anchor="middle" font-size="14" fill="#8A92A0" ${mono}>squash</text><text x="${mx}" y="${yM + 60}" text-anchor="middle" font-size="15" font-weight="600" fill="#14161B" ${mono}>${id}</text></g>`;
     });
     s += `<path class="draw" data-s="6" d="M850,${yM} C875,${yM} 875,200 900,200" fill="none" stroke="#8A92A0" stroke-width="2"/>`;
-    s += `<g data-s="6"><text x="905" y="182" font-size="14" fill="#4A5160">최신 main 반영 → 다시 검증</text></g>`;
+    s += `<g data-s="6" data-off="7"><text x="905" y="182" font-size="15" font-weight="600" fill="#D93A3A">최신 main 반영 → 충돌</text></g>`;
+    s += `<g data-s="6" data-off="8"><circle cx="900" cy="200" r="13" fill="#E5484D"/><text x="900" y="205" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">✕</text></g>`;
+    s += `<g data-s="8"><circle cx="900" cy="200" r="13" fill="#14B07F"/><path d="M894,200 l4.5,4.5 l8,-9" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+    s += `<g class="gres" data-s="7"><rect x="945" y="146" width="152" height="46" rx="10" fill="#FFF4D6" stroke="#E8A317" stroke-width="2"/><text x="957" y="165" font-size="15" font-weight="700" fill="#3A2A00">자동 해결 세션</text><text x="957" y="183" font-size="13.5" fill="#9A6800">ADR·SPEC 근거로 해소</text></g>`;
     svg.innerHTML = s;
     svg.querySelectorAll('path.draw').forEach(p => { p.style.setProperty('--len', Math.ceil(p.getTotalLength())); });
   })();
