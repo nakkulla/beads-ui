@@ -804,6 +804,155 @@ b, strong { font-weight: 600; }
 .phone.tphone .tstat i { font-style: normal; } .phone.tphone .tstat .g { color: #45D98C; } .phone.tphone .tstat .y { color: #F4C84A; }
 .phone.tphone .keys { display: flex; gap: 5px; padding: 9px 10px 26px; background: #22252E; justify-content: center; }
 .phone.tphone .keys span { font-family: var(--mono); font-size: 11.5px; padding: 6px 7px; border-radius: 6px; background: #3A3F4C; color: #E9ECF1; }
+
+/* glossary, short form */
+#s-gloss .gloss { gap: 0 56px; margin-top: 40px; }
+#s-gloss .gloss div { padding: 18px 0; font-size: 18px; line-height: 1.5; }
+#s-gloss .gloss b { font-size: 22px; margin-bottom: 4px; }
+#s-gloss .gloss b em { font-size: 16px; }
+#s-gloss .gloss-foot { margin-top: 30px; font-size: 17px; color: var(--ink-3); }
+
+/* tmux only */
+#s-cli .ct2 { grid-template-columns: 1fr 640px; gap: 56px; margin-top: 40px; align-items: start; }
+#s-cli .tm { font-size: 16px; padding: 18px; }
+#s-cli .tm .panes { grid-template-rows: 190px 150px; gap: 8px; }
+#s-cli .tm .pn2 { padding: 12px 14px; }
+#s-cli .tm .bar2 { font-size: 14.5px; margin-top: 10px; }
+#s-cli .tmx-lab { grid-template-columns: 1fr; gap: 0; margin-top: 0; border-top: 1.5px solid var(--ink); }
+#s-cli .tmx-lab div { font-size: 17px; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+#s-cli .tmx-lab b { font-size: 19px; }
+#s-cli .tkeys { grid-template-columns: 170px 1fr 170px 1fr; margin-top: 26px; }
+#s-cli .tkeys div { font-size: 16.5px; padding: 8px 0; }
+#s-cli .tkeys div:nth-child(odd) { font-size: 16px; }
+
+/* research table, one example per row */
+#s-research .rtable { margin-top: 30px; }
+#s-research .rt-row { grid-template-columns: 300px 1fr; gap: 40px; padding: 13px 0; align-items: center; }
+#s-research .rt-k b { font-size: 24px; }
+#s-research .rt-k span { font-size: 15px; }
+#s-research .rt-ex { font-size: 21px; }
+#s-research .rt-ex code { font-size: 14.5px; margin-bottom: 4px; }
+
+/* two cases on one slide */
+.cases { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; margin-top: 30px; }
+.case { background: #fff; border-radius: 14px; padding: 24px 28px 22px; box-shadow: 0 1px 0 var(--rule), 0 20px 50px -30px rgba(20,22,27,.35); display: grid; grid-template-columns: 1fr 250px; gap: 0 26px; }
+.case h3 { grid-column: 1 / -1; font-size: 25px; font-weight: 600; letter-spacing: -0.02em; }
+.case h3 small { display: block; font-size: 15px; font-weight: 400; color: var(--ink-3); margin-top: 2px; }
+.case .who-list { margin-top: 16px; display: grid; gap: 0; align-content: start; }
+.case .who-list div { display: grid; grid-template-columns: 76px 1fr; gap: 10px; padding: 11px 0; border-top: 1px solid var(--rule); font-size: 17px; line-height: 1.5; align-items: baseline; }
+.case .who-list span { font-size: 13.5px; font-weight: 600; text-align: center; border-radius: 999px; padding: 2px 0; }
+.case .who-list .me { background: rgba(232,163,23,.18); color: #8A5D00; }
+.case .who-list .ai { background: rgba(47,91,234,.12); color: #2F5BEA; }
+.case .side { margin-top: 16px; }
+.case .side img { width: 100%; display: block; border-radius: 6px; border: 1px solid var(--rule); }
+.case .side .num { margin-top: 16px; }
+.case .side .num b { font-size: 40px; font-weight: 100; letter-spacing: -0.03em; display: block; line-height: 1.05; font-feature-settings: "tnum"; }
+.case .side .num b s { text-decoration: none; color: var(--ink-3); }
+.case .side .num span { font-size: 14.5px; color: var(--ink-2); }
+
+/* beads-ui capture slides */
+#s-detail .wrap, #s-settings .wrap { width: 500px; }
+#s-detail h2, #s-settings h2 { font-size: 48px; }
+#s-detail ol, #s-settings ol { list-style: none; margin-top: 34px; display: grid; gap: 18px; }
+#s-detail li, #s-settings li { font-size: 18px; color: var(--d-ink-2); display: grid; grid-template-columns: 30px 1fr; line-height: 1.5; }
+#s-detail li b, #s-settings li b { color: var(--d-ink); display: block; font-size: 20px; }
+#s-detail li .n, #s-settings li .n { width: 22px; height: 22px; border-radius: 50%; background: var(--d-gate); color: #000; font-size: 13px; font-weight: 600; display: grid; place-items: center; margin-top: 3px; }
+.dshot { position: absolute; top: 50px; overflow: hidden; }
+.dshot .cin { position: relative; overflow: hidden; }
+.dshot .cin img { display: block; width: 100%; }
+.dshot .cin::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 70px; background: linear-gradient(transparent, rgba(0,0,0,.55)); }
+#s-detail .dshot { left: 820px; width: 680px; }
+#s-detail .dshot .cin { height: 700px; }
+#s-settings .dshot { left: 760px; width: 740px; top: 60px; }
+#s-settings .dshot .cin { height: auto; }
+#s-settings .dshot .cin::after { display: none; }
+#s-detail .cmark, #s-settings .cmark { position: absolute; }
+.presetchips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.presetchips span { font-size: 14.5px; padding: 4px 11px; border-radius: 999px; background: rgba(255,255,255,.08); color: var(--d-ink); border: 1px solid rgba(255,255,255,.14); }
+.presetchips span.on { border-color: var(--d-gate); color: var(--d-gate); }
+
+/* AI assistants */
+.assist { display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px; margin-top: 34px; }
+.asst { display: grid; grid-template-rows: auto auto 1fr; gap: 0; }
+.asst .mock { height: 290px; border-radius: 22px; padding: 16px 16px 18px; display: flex; flex-direction: column; gap: 10px; font-size: 15px; line-height: 1.5; box-shadow: 0 30px 60px -34px rgba(20,22,27,.55); }
+.asst .mock .hd { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; padding-bottom: 10px; border-bottom: 1px solid rgba(127,127,127,.25); }
+.asst .mock .hd i { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 13px; color: #fff; font-weight: 600; }
+.asst .mock .hd small { display: block; font-weight: 400; font-size: 12px; opacity: .65; }
+.asst .mock .u { align-self: flex-end; max-width: 82%; padding: 8px 12px; border-radius: 14px 14px 4px 14px; }
+.asst .mock .b { align-self: flex-start; max-width: 88%; padding: 8px 12px; border-radius: 14px 14px 14px 4px; }
+.asst .mock.m-dot { background: #F7F7F8; color: #202123; }
+.asst .mock.m-dot .hd i { background: #10A37F; }
+.asst .mock.m-dot .u { background: #E7E7EC; }
+.asst .mock.m-dot .b { background: #fff; border: 1px solid #E3E3E8; }
+.asst .mock.m-grok { background: #16181C; color: #E7E9EA; }
+.asst .mock.m-grok .hd i { background: #3A3F47; }
+.asst .mock.m-grok .u { background: #2F3336; }
+.asst .mock.m-grok .b { background: #1F2226; border: 1px solid #2F3336; }
+.asst .mock.m-muse { background: #0F1117; color: #C9D1E0; font-family: var(--mono); font-size: 13.5px; }
+.asst .mock.m-muse .hd { font-family: var(--sans, inherit); }
+.asst .mock.m-muse .hd i { background: #6F5BEA; }
+.asst .mock.m-muse .ln { white-space: pre; line-height: 1.7; }
+.asst .mock.m-muse .ln .c { color: #7B96FF; } .asst .mock.m-muse .ln .g { color: #45D98C; } .asst .mock.m-muse .ln .p { color: #6C7891; }
+.asst h3 { font-size: 24px; font-weight: 600; margin-top: 22px; letter-spacing: -0.02em; }
+.asst h3 small { font-size: 15px; font-weight: 400; color: var(--ink-3); margin-left: 8px; }
+.asst p { font-size: 17px; line-height: 1.55; color: var(--ink-2); margin-top: 6px; }
+.asst .tag { justify-self: start; display: inline-block; margin-top: 10px; font-size: 13.5px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--rule); color: var(--ink-3); }
+.asst .tag.exp { border-style: dashed; }
+
+/* dotfiles, simple */
+.dfs { display: grid; grid-template-columns: 560px 200px 1fr; margin-top: 60px; align-items: center; }
+.dfs .repo { background: #fff; border-radius: 16px; padding: 30px 34px; box-shadow: 0 1px 0 var(--rule), 0 24px 60px -30px rgba(20,22,27,.4); border-top: 5px solid var(--tool); }
+.dfs .repo h3 { font-size: 34px; font-weight: 600; letter-spacing: -0.02em; }
+.dfs .repo h3 small { display: block; font-size: 17px; font-weight: 400; color: var(--ink-3); margin-top: 4px; }
+.dfs .repo ul { list-style: none; margin-top: 20px; display: grid; gap: 10px; }
+.dfs .repo li { font-size: 20px; padding-left: 22px; position: relative; }
+.dfs .repo li::before { content: ""; position: absolute; left: 0; top: .5em; width: 9px; height: 9px; border-radius: 50%; background: var(--tool); }
+.dfs .arr { text-align: center; font-size: 17px; color: var(--ink-3); }
+.dfs .arr b { display: block; font-size: 52px; font-weight: 200; color: var(--ink); line-height: 1; }
+.dfs .arr code { font-size: 16px; color: var(--ink); }
+.dfs .outs { display: grid; gap: 18px; }
+.dfs .outs div { background: #fff; border-radius: 12px; padding: 16px 22px; box-shadow: 0 1px 0 var(--rule); }
+.dfs .outs b { font-size: 21px; }
+.dfs .outs p { font-size: 16.5px; color: var(--ink-2); margin-top: 2px; }
+.dfs-foot { margin-top: 56px; font-size: 20px; color: var(--ink-2); border-left: 3px solid var(--tool); padding-left: 18px; line-height: 1.6; }
+
+/* template first, repos as examples */
+.tpl { display: grid; grid-template-columns: 1fr 520px; gap: 64px; margin-top: 34px; }
+.tpl .main { background: #fff; border-radius: 16px; padding: 28px 34px; box-shadow: 0 1px 0 var(--rule), 0 24px 60px -30px rgba(20,22,27,.4); border-top: 5px solid var(--res); }
+.tpl .main h3 { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; font-family: var(--mono); }
+.tpl .main .tree { margin-top: 16px; font-family: var(--mono); font-size: 19px; line-height: 1.8; white-space: pre; color: var(--ink-2); background: none; box-shadow: none; padding: 0; border-radius: 0; }
+.tpl .main .tree b { color: var(--ink); font-weight: 500; }
+.tpl .main p { font-size: 18px; color: var(--ink-2); line-height: 1.6; margin-top: 18px; }
+.tpl .ex h4 { font-size: 19px; font-weight: 600; color: var(--ink-2); }
+.tpl .ex .from { font-size: 15px; color: var(--ink-3); margin-top: 4px; }
+.tpl .ex .chipr { margin-top: 16px; display: grid; gap: 12px; }
+.tpl .ex .chipr div { border-left: 3px solid var(--res); padding: 6px 0 6px 16px; }
+.tpl .ex .chipr b { font-family: var(--mono); font-size: 18px; color: var(--res-ink); }
+.tpl .ex .chipr span { display: block; font-size: 16px; color: var(--ink-2); margin-top: 2px; }
+
+/* file locations as a picture */
+.floc { display: grid; grid-template-columns: 1fr 170px 1fr 170px 1fr; margin-top: 26px; align-items: stretch; }
+.floc .box { background: #fff; border-radius: 16px; padding: 16px 22px 18px; box-shadow: 0 1px 0 var(--rule), 0 24px 60px -32px rgba(20,22,27,.4); }
+.floc .box h3 { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+.floc .box h3 small { display: block; font-size: 15px; font-weight: 400; color: var(--ink-3); margin-top: 2px; }
+.floc .box.mac { border-top: 5px solid var(--tool); } .floc .box.gh { border-top: 5px solid var(--ink); } .floc .box.wal { border-top: 5px solid var(--res); }
+.floc .files { margin-top: 12px; display: grid; gap: 6px; }
+.floc .files div { display: grid; grid-template-columns: 30px 1fr; align-items: center; font-size: 16px; padding: 5px 12px; border-radius: 9px; background: var(--paper); }
+.floc .files div small { display: block; font-size: 13px; color: var(--ink-3); font-family: var(--mono); }
+.floc .files i { width: 18px; height: 22px; border-radius: 3px; position: relative; background: #fff; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.floc .files i::after { content: ""; position: absolute; right: 0; top: 0; width: 6px; height: 6px; background: var(--paper); box-shadow: -1px 1px 0 1.5px var(--ink-3); }
+.floc .files .code i { box-shadow: inset 0 0 0 1.5px var(--tool); } .floc .files .data i { box-shadow: inset 0 0 0 1.5px var(--res); background: rgba(69,180,120,.12); }
+.floc .files .out i { box-shadow: inset 0 0 0 1.5px var(--gate); }
+.floc .link { display: flex; flex-direction: column; justify-content: center; gap: 26px; padding: 0 10px; }
+.floc .link div { text-align: center; font-size: 15px; color: var(--ink-2); line-height: 1.4; }
+.floc .link div b { display: block; font-size: 30px; font-weight: 300; color: var(--ink); line-height: 1; }
+.floc .link div code { font-size: 14px; color: var(--ink); }
+.floc-back { margin: 12px 0 0; display: grid; grid-template-columns: 1fr; }
+.floc-back div { text-align: center; font-size: 17px; color: var(--ink-2); border-top: 2px dashed var(--res); padding-top: 10px; margin: 0 8%; }
+.floc-back div b { color: var(--ink); }
+.floc-rules { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin-top: 16px; }
+.floc-rules div { font-size: 16.5px; color: var(--ink-2); line-height: 1.5; border-top: 1px solid var(--rule); padding-top: 10px; }
+.floc-rules b { color: var(--ink); display: block; font-size: 17.5px; }
 </style>
 </head>
 <body>
@@ -824,7 +973,7 @@ b, strong { font-weight: 600; }
   <canvas data-canvas="field"></canvas>
   <div class="wrap">
     <h2>780 research tasks<br>closed in 2026</h2>
-    <p class="ko-sub">2026년에 닫은 연구 이슈 (점 하나가 이슈 하나)</p>
+    <p class="ko-sub">2026년에 닫은 연구 이슈</p>
     <div class="month" id="field-month">2026.01</div>
     <div class="tally">
       <div><b id="t-res">0</b><span class="dot" style="background:var(--d-res)"></span>연구 저장소 4곳</div>
@@ -839,56 +988,43 @@ b, strong { font-weight: 600; }
 
 <section class="slide" id="s-agenda" data-theme="light">
   <h2>Contents</h2>
-  <p class="ko-sub">목차 (부분마다 질문을 받습니다)</p>
+  <p class="ko-sub">목차</p>
   <div class="agenda" style="grid-template-columns: repeat(4, 1fr)">
     <div><div class="n">1</div><h3>Basics</h3><div class="ko">처음 쓰는 분을 위한 기초</div>
-      <ul><li>용어</li><li>Claude Code 사용법</li><li>지침 파일 세 층</li><li>스킬, 에이전트, 훅</li><li>CLI와 tmux</li></ul></div>
+      <ul><li>용어</li><li>Claude Code 사용법</li><li>지침 파일</li><li>스킬, 에이전트, 훅</li><li>tmux</li></ul></div>
     <div><div class="n">2</div><h3>Research</h3><div class="ko">연구 사례와 서버 작업</div>
-      <ul><li>AI에게 맡기는 연구 작업</li><li>사례 1: DEG 표와 volcano plot</li><li>사례 2: 공개 코호트 중복 환자</li><li>랩 서버 작업 방식</li></ul></div>
+      <ul><li>AI에게 맡기는 연구 작업</li><li>두 사례에서 Claude가 한 일</li><li>랩 서버 작업 방식</li></ul></div>
     <div><div class="n">3</div><h3>Workflow</h3><div class="ko">작업 방식</div>
       <ul><li>채팅 AI의 한계</li><li>이슈의 구조와 작업 단계</li><li>Claude와 Codex 모델</li><li>리뷰</li></ul></div>
     <div><div class="n">4</div><h3>In practice</h3><div class="ko">관제 화면과 하루</div>
-      <ul><li>beads-ui Monitor 탭</li><li>Worker 탭과 대기열</li><li>폰에서 Discord로 답하기</li><li>하루 일과</li><li>처음 시작할 때</li></ul></div>
+      <ul><li>beads-ui Monitor 탭</li><li>Worker 탭과 대기열</li><li>이슈 상세와 설정</li><li>폰에서 Discord로 답하기</li><li>하루 일과</li><li>AI 비서</li></ul></div>
   </div>
   <aside class="notes">네 부분으로 나눴고 **부분마다 질문을 받겠습니다**. 이미 쓰고 계신 분은 기초 부분을 넘겨 들으셔도 됩니다.</aside>
 </section>
 
 <section class="slide dark divider" id="s-part2" data-theme="dark">
   <div class="wrap"><div class="pn">1</div><div><h2>Basics</h2><p class="ko-sub">처음 쓰는 분을 위한 기초</p>
-    <ul><li>용어</li><li>Claude Code 사용법</li><li>지침 파일 세 층</li><li>스킬, 에이전트, 훅</li><li>CLI와 tmux</li></ul></div></div>
+    <ul><li>용어</li><li>Claude Code 사용법</li><li>지침 파일</li><li>스킬, 에이전트, 훅</li><li>tmux</li></ul></div></div>
   <aside class="notes">첫 번째는 **처음 쓰시는 분**을 위한 Claude Code 기초입니다. 이미 쓰고 계신 분은 가볍게 들으셔도 됩니다.</aside>
 </section>
 
 <section class="slide" id="s-gloss" data-theme="light">
   <h2>Terms used in this talk</h2>
-  <p class="ko-sub">용어 정리</p>
+  <p class="ko-sub">자주 나오는 용어</p>
   <div class="gloss">
     <div><b>에이전트<em>agent</em></b>파일을 읽고 명령을 실행하며 일을 끝까지 하는 AI. Claude Code, Codex CLI</div>
     <div><b>세션<em>session</em></b>에이전트와의 대화 하나. 끝나면 대화 내용은 다음 세션에 이어지지 않는다</div>
     <div><b>컨텍스트<em>context</em></b>모델이 한 번에 볼 수 있는 대화·파일 분량. 차면 요약하고 이어간다</div>
     <div><b>토큰<em>token</em></b>모델이 읽고 쓰는 글자 조각. 사용량과 비용의 단위</div>
-    <div><b>effort</b>모델이 답하기 전에 생각하는 양. 높을수록 느리고 토큰이 많이 든다</div>
-    <div><b>CLI · 터미널</b>명령어를 입력해 프로그램을 쓰는 창</div>
-    <div><b>tmux</b>터미널 하나를 탭·창으로 나누고, 창을 닫아도 작업을 살려 두는 프로그램</div>
     <div><b>지침 파일<em>CLAUDE.md, AGENTS.md</em></b>세션을 시작할 때마다 자동으로 읽히는 규칙</div>
     <div><b>스킬<em>skill</em></b>필요할 때만 불러 읽는 작업 절차서</div>
     <div><b>훅<em>hook</em></b>도구 실행 전후 같은 시점마다 자동으로 도는 스크립트</div>
     <div><b>하위 에이전트<em>subagent</em></b>대화를 보지 못하고 지시서만 받아 일하는 별도 세션</div>
-    <div><b>MCP</b>외부 도구나 서비스를 모델에 연결하는 표준 규격</div>
     <div><b>이슈<em>issue · Beads</em></b>이슈 트래커 Beads의 항목 하나. 분석 하나가 이슈 하나. 명령어는 bd</div>
-    <div><b>spec · plan</b>설계 문서 · 여러 단계로 나눈 실행 계획</div>
-    <div><b>worktree</b>같은 저장소를 여러 폴더에 따로 꺼낸 것. 세션마다 하나씩 써서 서로 안 부딪힌다</div>
-    <div><b>PR · squash merge</b>변경을 main에 넣자는 요청 · 커밋 여러 개를 하나로 합쳐 넣기</div>
-    <div><b>리뷰 게이트 · 영수증</b>다음 단계 전에 받는 리뷰 · 그 결과를 커밋 해시와 함께 남긴 기록</div>
-    <div><b>ADR</b>되돌리기 어려운 결정을 남기는 문서</div>
-    <div><b>Worker</b>beads-ui에서 대기열의 이슈를 자동으로 실행하는 기능</div>
-    <div><b>5시간 · 7일 창</b>구독 사용 한도가 초기화되는 주기</div>
-    <div><b>Tailscale · tailnet</b>내 기기끼리만 보이는 사설 네트워크</div>
-    <div><b>Slurm · sjob</b>랩 서버의 작업 스케줄러 · 내가 쓰는 제출 도구</div>
-    <div><b>Codex</b>OpenAI의 코딩 에이전트. sol, astra는 Codex 모델 이름</div>
-    <div><b>Fable · Opus · Sonnet · Haiku</b>Claude 모델. 왼쪽일수록 상위 모델</div>
   </div>
-  <aside class="notes">모르는 단어가 나오면 이 장을 떠올려 주세요. **세션**은 대화 하나이고 끝나면 다음 세션이 내용을 기억하지 못합니다. 기록을 지침 파일과 이슈에 남기는 이유입니다.</aside>
+  <p class="gloss-foot">나머지 용어는 처음 나오는 장에서 설명합니다.</p>
+  <aside class="notes">자주 나올 용어만 먼저 짚겠습니다. **세션**은 대화 하나이고 끝나면 다음 세션이 내용을 기억하지 못합니다. 기록을 지침 파일과 이슈에 남기는 이유입니다.
+나머지 용어는 해당 장에서 그때그때 설명하겠습니다.</aside>
 </section>
 
 <section class="slide" id="s-cc" data-theme="light">
@@ -909,7 +1045,7 @@ b, strong { font-weight: 600; }
 
 <span class="w">&gt;</span> <span class="p">▌</span></pre>
       <div class="loop"><span>읽기</span><span>계획</span><span>수정</span><span>실행·테스트</span><span class="g">권한 확인</span><span>보고</span></div>
-      <p class="small" style="margin-top:10px">대화 예시. Codex CLI(<code>codex</code>)도 같은 방식이고 AGENTS.md를 읽는다.</p>
+      <p class="small" style="margin-top:10px">대화 예시</p>
     </div>
     <div class="keys">
       <div class="grp">시작과 이어하기</div>
@@ -928,13 +1064,12 @@ b, strong { font-weight: 600; }
       <div class="kc">/agents · /hooks · /mcp</div><div>하위 에이전트 · 훅 · 연결된 MCP 확인</div>
     </div>
   </div>
-  <aside class="notes">Claude Code는 터미널에서 쓰는 에이전트입니다. 채팅과 달리 **직접 파일을 읽고 명령을 실행하며** 실행 전에는 허용할지 먼저 확인하죠.
-처음에는 저장소 폴더에서 claude로 시작하고 큰 작업은 Shift+Tab으로 plan 모드에 두어 계획부터 보시길 권합니다. Codex CLI도 거의 같고 AGENTS.md를 읽습니다.</aside>
+  <aside class="notes">Claude Code는 터미널에서 쓰는 에이전트입니다. 채팅과 달리 **직접 파일을 읽고 명령을 실행하며** 실행 전에는 허용할지 먼저 확인하죠.</aside>
 </section>
 
 <section class="slide" id="s-instr" data-theme="light">
   <h2>Instruction files</h2>
-  <p class="ko-sub">지침 파일 (적용 범위에 따라 세 층)</p>
+  <p class="ko-sub">지침 파일</p>
   <div class="layers">
     <div class="layer l1"><h3>전역 지침<small>~/.claude/CLAUDE.md · 103줄</small></h3><p>모든 저장소, 모든 세션에 적용. 말투, 파일을 고쳐도 되는 조건, 서버 사용 규칙처럼 어디서나 같은 것.</p>
       <div class="ex"><i>실제 내용 중</i>랩 서버에서는 sudo를 쓰지 않는다. Slurm 잡은 sjob으로 제출하고 Discord 알림을 켠다.</div></div>
@@ -953,7 +1088,7 @@ b, strong { font-weight: 600; }
 
 <section class="slide" id="s-sah" data-theme="light">
   <h2>Skills, agents, hooks</h2>
-  <p class="ko-sub">Claude Code 확장: 스킬, 에이전트, 훅</p>
+  <p class="ko-sub">Claude Code 확장</p>
   <div class="sah">
     <div><div class="big2">25</div><h3>스킬</h3><p class="what">작업 절차서. 평소에는 이름과 한 줄 설명만 보이고, 해당 작업을 할 때 본문을 읽는다. 내가 <code>/review</code>처럼 직접 부르거나 에이전트가 골라 쓴다.</p>
       <ul><li><code>workflow</code> 작업 경로와 단계 판단</li><li><code>review</code> 다른 모델에게 리뷰 요청</li><li><code>adr</code> 결정 기록 작성</li><li><code>advise</code> 다른 모델에게 의견 묻기</li><li><code>bd-usage</code> 이슈 트래커(Beads) 사용법</li><li><code>repo-template</code> 연구 저장소 템플릿 적용</li></ul></div>
@@ -972,134 +1107,99 @@ b, strong { font-weight: 600; }
 </section>
 
 <section class="slide" id="s-cli" data-theme="light">
-  <h2>CLI and tmux</h2>
-  <p class="ko-sub">자주 쓰는 명령어와 tmux</p>
+  <h2>tmux</h2>
+  <p class="ko-sub">터미널을 닫아도 작업을 살려 두는 프로그램</p>
   <div class="ct2">
-    <div>
-      <div class="clitab">
-        <div>git · lazygit</div><div>버전 관리. lazygit은 git을 화면으로 보는 도구</div>
-        <div>gh</div><div>GitHub의 PR과 이슈를 터미널에서</div>
-        <div>bd</div><div>이슈 트래커(Beads). <code>bd create</code>, <code>bd ready</code>, <code>bd show</code></div>
-        <div>ssh</div><div>랩 서버 접속. 명령 하나만 보내고 돌아올 수도 있다</div>
-        <div>sjob</div><div>Slurm 잡 제출과 Discord 알림</div>
-        <div>cswap</div><div>Claude 계정 전환</div>
-        <div>codex-auth</div><div>Codex 계정 전환</div>
-        <div>claude · codex</div><div>에이전트 시작</div>
-      </div>
-      <p class="small" style="margin-top:12px">명령을 외울 필요는 없다. 에이전트에게 "PR 상태 보여줘"라고 하면 gh를 대신 실행한다.</p>
-    </div>
     <div>
       <div class="tm">
         <div class="panes">
           <div class="pn2">claude · prostate<br><span style="color:#6C7891">&gt; spec 리뷰 반영해줘</span><br><span style="color:#45D98C">●</span> Edit docs/…/spec.md</div>
-          <div class="pn2">$ sjob status<br><span style="color:#45D98C">COMPLETED</span></div>
+          <div class="pn2">$ squeue<br><span style="color:#45D98C">RUNNING</span></div>
           <div class="pn2">$ lazygit</div>
         </div>
         <div class="bar2"><span>1 beads-ui</span><span class="cur">2 prostate</span><span>3 microbiome_bile</span><span>4 dotfiles</span></div>
-      </div>
-      <div class="tmx-lab">
-        <div><b>세션</b>tmux 전체. 터미널을 닫아도 살아 있고, 다시 붙으면(attach) 그대로다</div>
-        <div><b>창 (탭)</b>아래 줄의 탭. 저장소마다 하나</div>
-        <div><b>pane</b>탭 하나를 나눈 칸. 에이전트 옆에 셸</div>
       </div>
       <div class="tkeys">
         <div>Ctrl+b "  · %</div><div>위아래 · 좌우로 나누기</div>
         <div>Alt+h/j/k/l</div><div>칸 이동</div>
         <div>Alt+← →</div><div>탭 이동</div>
-        <div>Ctrl+b g</div><div>lazygit 팝업</div>
-        <div>Ctrl+b s</div><div>탭을 저장소별 정렬</div>
         <div>Ctrl+b d</div><div>떼어 두기 (detach)</div>
       </div>
     </div>
+    <div>
+      <div class="tmx-lab">
+        <div><b>세션</b>tmux 전체. 터미널을 닫아도 살아 있고, 다시 붙으면(attach) 그대로다</div>
+        <div><b>창 (탭)</b>아래 줄의 탭. 저장소마다 하나</div>
+        <div><b>pane</b>탭 하나를 나눈 칸. 에이전트 옆에 셸이나 lazygit</div>
+        <div><b>어디서든 다시 붙기</b>Mac 앞이 아니어도 ssh로 붙으면 같은 화면이 그대로 있다</div>
+      </div>
+    </div>
   </div>
-  <aside class="notes">왼쪽 명령은 외울 필요 없이 에이전트에게 말로 시키면 되고 오른쪽 **tmux**는 꼭 써 보세요.
+  <aside class="notes">**tmux**는 꼭 써 보세요.
 tmux 안에서 에이전트를 돌리면 터미널 창을 닫아도 계속 일하고 나중에 아이패드로 붙으면 그대로 있습니다. 저장소마다 탭을 하나 두고 에이전트 옆에 셸이나 lazygit을 띄웁니다.</aside>
 </section>
 
 <section class="slide dark divider" id="s-part1" data-theme="dark">
   <div class="wrap"><div class="pn">2</div><div><h2>Research</h2><p class="ko-sub">연구 사례와 서버 작업</p>
-    <ul><li>AI에게 맡기는 연구 작업</li><li>사례 1: DEG 표와 volcano plot</li><li>사례 2: 공개 코호트 중복 환자</li><li>랩 서버 작업 방식</li></ul></div></div>
+    <ul><li>AI에게 맡기는 연구 작업</li><li>두 사례에서 Claude가 한 일</li><li>랩 서버 작업 방식</li></ul></div></div>
   <aside class="notes">두 번째는 **연구 사례**와 랩 서버 작업 방식입니다.</aside>
 </section>
 
 <section class="slide" id="s-research" data-theme="light">
   <h2>What AI does in my research</h2>
-  <p class="ko-sub">연구에서 AI에게 맡기는 일 (올해 닫은 이슈 제목에서 발췌)</p>
+  <p class="ko-sub">연구에서 AI에게 맡기는 일</p>
   <div class="rtable">
     <div class="rt-row"><div class="rt-k"><b>데이터 정비와 QC</b><span>Data &amp; QC</span></div>
-      <div class="rt-ex"><code>rokit-7ad</code>공개 코호트 데이터 정비 — GEO 정상조직 제외, CRCSC 임상 재통합, CMS 라벨 병합</div>
-      <div class="rt-ex"><code>PROSTATE-m67</code>STAR 로그 부재 처리 결정: rna_qc가 56개 중 55개에서 멈춘다</div></div>
+      <div class="rt-ex"><code>rokit-7ad</code>공개 코호트 데이터 정비: 정상조직 제외, 임상 정보 재통합</div></div>
     <div class="rt-row"><div class="rt-k"><b>파이프라인과 계산</b><span>Pipelines</span></div>
-      <div class="rt-ex"><code>Analysis-ay0</code>QIIME2 파이프라인 파라미터 자동 최적화 2-pass 구조 도입</div>
-      <div class="rt-ex"><code>PROSTATE-2jr</code>bootstrap optimism 검증 루프 병렬화 — 선언한 8 threads를 실제로 쓴다</div></div>
+      <div class="rt-ex"><code>Analysis-ay0</code>QIIME2 파이프라인 파라미터 자동 최적화</div></div>
     <div class="rt-row"><div class="rt-k"><b>통계 분석</b><span>Statistics</span></div>
-      <div class="rt-ex"><code>rokit-k05</code>코호트별 단계별 Cox 분석 — PDGFRA/PDGFRB Model 1–4 (임상·CMS4·stromal 조정)</div>
-      <div class="rt-ex"><code>PROSTATE-5n2</code>TCGA-PRAD 외부검증 — 조기 BCR 재현, 경로·유전자 방향, signature 계수 고정 성능</div></div>
+      <div class="rt-ex"><code>PROSTATE-5n2</code>TCGA-PRAD 외부검증: 조기 BCR 결과 재현</div></div>
     <div class="rt-row"><div class="rt-k"><b>그림과 발표</b><span>Figures &amp; decks</span></div>
-      <div class="rt-ex"><code>Analysis-7gwo</code>Figure 2a 췌담도 히트맵에 병기(Stage) 띠 추가 — 담도암 Figure 3a와 형식 일치</div>
-      <div class="rt-ex"><code>rokit-0y1</code>발표용 그림 추가 — 결과·2차 분석 8장, 데이터·감사 3장, KM 백업</div></div>
+      <div class="rt-ex"><code>Analysis-7gwo</code>Figure 2a 히트맵에 병기(Stage) 띠 추가</div></div>
     <div class="rt-row"><div class="rt-k"><b>원고와 리뷰어 대응</b><span>Manuscripts</span></div>
-      <div class="rt-ex"><code>PROSTATE-ht0</code>리비전 응답 묶음 — 제1공저자, bioinformatics 분석</div>
-      <div class="rt-ex"><code>rokit-f3l</code>원고 재구성 — multi-cohort 예후 연구로 재작성, 리뷰어 지적 정정</div></div>
+      <div class="rt-ex"><code>PROSTATE-ht0</code>리비전 응답 묶음: bioinformatics 분석</div></div>
     <div class="rt-row"><div class="rt-k"><b>검증과 오류 발견</b><span>Checking</span></div>
-      <div class="rt-ex"><code>rokit-ct9</code>ROKIT qPCR ΔCt 부호 반전 검증·수정</div>
-      <div class="rt-ex"><code>TRACE-ICI-tli.6</code>사전 등록한 기준으로 go / no-go 판정 기록</div></div>
+      <div class="rt-ex"><code>rokit-ct9</code>qPCR ΔCt 부호 반전 검증과 수정</div></div>
   </div>
-  <aside class="notes">올해 닫은 연구 이슈의 제목을 그대로 가져왔습니다. 데이터 정비부터 원고 리비전, 사전 등록한 기준으로 내리는 go/no-go 판정까지 맡깁니다.
+  <aside class="notes">올해 닫은 연구 이슈에서 종류별로 하나씩 골랐습니다. 데이터 정비부터 원고 리비전, 오류 검증까지 맡깁니다.
 **무엇을 분석할지와 결과 해석은 제가 하고** 실행과 수정, 재생성을 맡깁니다.</aside>
 </section>
 
 <section class="slide" id="s-storyA" data-theme="light">
-  <h2>Case 1: DEG table vs. volcano plot</h2>
-  <p class="ko-sub">DEG 표와 volcano plot의 유의 유전자 수 불일치 (prostate RNA-seq)</p>
-  <div class="story">
-    <div>
-      <div class="tl">
-        <div class="ev human"><div class="t">발견</div><div class="d">교수님께 보낼 덱을 검수하다가, volcano에는 유의한 점이 0개인데 표에는 27개인 것을 발견</div></div>
-        <div class="ev"><div class="t">역추적</div><div class="d">P1 버그 이슈를 열고 역추적: p=0 유전자 79개가 lfcSE를 15자리까지 똑같이 공유</div></div>
-        <div class="ev"><div class="t">원인 확인</div><div class="d">랩 서버 wallace에서 재현. 중심화하지 않은 batch 공변량(수술 연도)이 dispersion을 붕괴시킨 것을 통제 실험으로 확정</div></div>
-        <div class="ev"><div class="t">수정</div><div class="d">spec → Codex 리뷰가 막는 지적 4건 → 전부 반영 → Sonnet이 구현 → Codex 구현 리뷰 → PR #10, 테스트 474개 통과</div></div>
-        <div class="ev res"><div class="t">재실행</div><div class="d">Slurm 재실행 세 번, 확정값 재산출, 덱 v2.1 발송. 발견부터 여기까지 같은 날 저녁</div></div>
+  <h2>Two cases: where Claude helped</h2>
+  <p class="ko-sub">두 사례에서 내가 한 일과 Claude가 한 일</p>
+  <div class="cases">
+    <div class="case">
+      <h3>사례 1 · DEG 표와 volcano plot 불일치<small>prostate RNA-seq</small></h3>
+      <div class="who-list">
+        <div><span class="me">나</span>덱을 검수하다 그림은 유의 0개, 표는 27개인 것을 발견</div>
+        <div><span class="ai">Claude</span>원인 역추적. 수술 연도 공변량을 중심화하지 않은 것이 원인임을 랩 서버에서 재현</div>
+        <div><span class="ai">Claude</span>수정 설계와 코드, 다른 모델의 리뷰, Slurm 재실행</div>
+        <div><span class="me">나</span>결과를 해석하고 같은 날 저녁 수정한 덱 발송</div>
       </div>
-      <div class="delta">
-        <div><b><s>27 →</s> 5</b><span>보정 후 유의 DEG</span></div>
-        <div><b><s>0 →</s> 681</b><span>GSEA 유의 경로</span></div>
+      <div class="side">
+        <img src="{{IMG:volcano}}" alt="수정 후 volcano plot">
+        <div class="num"><b><s>27 →</s> 5</b><span>보정 후 유의 DEG</span></div>
       </div>
     </div>
-    <div>
-      <div class="figbox"><img src="{{IMG:volcano}}" alt="보정된 모형의 volcano plot"></div>
-      <div class="figcap">수정 후 volcano plot</div>
+    <div class="case">
+      <h3>사례 2 · 공개 코호트 간 중복 환자<small>CRC-rokit 리비전</small></h3>
+      <div class="who-list">
+        <div><span class="me">나</span>결과 해석 중 한 GEO 시리즈의 분포가 이상한 것을 발견</div>
+        <div><span class="ai">Claude</span>데이터셋 사이 원시 발현값 대조를 제안하고 실행. 두 시리즈에 겹친 환자 117명 발견</div>
+        <div><span class="ai">Claude</span>중복을 뺀 Cox·메타분석 재생성과 원고 보강 초안</div>
+        <div><span class="me">나</span>바뀐 HR을 검토해 원고에 반영</div>
+      </div>
+      <div class="side">
+        <img src="{{IMG:forest}}" alt="중복 제외 후 forest plot">
+        <div class="num"><b><s>1.183 →</s> 1.212</b><span>PDGFRB 통합 HR</span></div>
+      </div>
     </div>
   </div>
-  <aside class="notes">교수님께 보낼 덱을 검수하다가 volcano plot과 표의 유의 유전자 수가 다른 걸 발견했습니다. 역추적해 보니 p값이 0인 유전자들이 **표준오차를 소수점 15자리까지 똑같이** 공유하고 있었고 원인은 평균 2016 근처의 수술 연도를 원 값 그대로 공변량에 넣은 것이었습니다.
-DESeq2는 경고만 내고 진행해서 dispersion 추정이 깨져 있었죠. spec, Codex 리뷰, 구현, Slurm 재실행을 거쳐 **같은 날 저녁**에 수정한 덱을 보냈습니다.</aside>
-</section>
-
-<section class="slide" id="s-storyB" data-theme="light">
-  <h2>Case 2: duplicate patients in public cohorts</h2>
-  <p class="ko-sub">공개 코호트 간 중복 환자 (CRC-rokit 리비전)</p>
-  <div class="story">
-    <div>
-      <div class="tl">
-        <div class="ev human"><div class="t">발견</div><div class="d">한 GEO 시리즈의 상관과 분산이 다른 코호트와 다른 것을 결과 해석 중에 발견 → 데이터·전처리·코드 감사 이슈</div></div>
-        <div class="ev"><div class="t">감사</div><div class="d">감사 단계 구현, wallace에서 Slurm 잡 실행 → 두 GEO 시리즈 사이 <b>중복 환자 117명</b> 발견 (발현 상관 r ≥ 0.99999999)</div></div>
-        <div class="ev"><div class="t">설계·구현</div><div class="d">중복 제외 설계 spec → 리뷰 반영 → 계획 → 코드 PR</div></div>
-        <div class="ev res"><div class="t">재분석</div><div class="d">Cox와 메타분석 재생성. 재발 축 PDGFRB 통합 HR 1.183 (k=8) → 1.212 (k=7)</div></div>
-        <div class="ev res"><div class="t">원고</div><div class="d">원고 보강: 공선성, stage II–III, 추가 예측력. 발표 그림 추가</div></div>
-      </div>
-      <div class="delta">
-        <div><b>117명</b><span>두 공개 코호트에 겹쳐 있던 환자</span></div>
-        <div><b><s>1.183 →</s> 1.212</b><span>PDGFRB 재발 축 통합 HR</span></div>
-      </div>
-    </div>
-    <div>
-      <div class="figbox"><img src="{{IMG:forest}}" alt="PDGFRB 재발 축 forest plot"></div>
-      <div class="figcap">중복 제외 후 forest plot</div>
-    </div>
-  </div>
-  <aside class="notes">리비전 중인 대장암 논문에서 한 데이터셋의 분포가 이상하다는 데서 시작했습니다. 에이전트가 공개 데이터셋 사이의 **원시 발현값 대조**를 제안했고 서로 다른 두 GEO 시리즈에 동시에 들어 있는 환자를 찾았습니다.
-이들을 빼자 통합 hazard ratio가 바뀌었고 그 값이 지금 원고에 들어가 있습니다. 코드 점검으로는 드러나지 않는 문제였죠.
-**미발표 결과**라 랩 밖으로는 공유하지 말아 주세요.</aside>
+  <aside class="notes">두 사례 모두 **이상한 점을 알아챈 건 저**였고 원인 추적, 수정, 재실행은 Claude가 했습니다.
+첫 번째는 교수님께 보낼 덱에서 그림과 표의 유의 유전자 수가 다른 걸 발견한 경우입니다. 수술 연도를 원 값 그대로 공변량에 넣은 게 원인이었고 **같은 날 저녁**에 수정한 덱을 보냈습니다.
+두 번째는 대장암 리비전에서 한 데이터셋의 분포가 이상했던 경우로, Claude가 원시 발현값 대조를 제안해 두 공개 코호트에 겹친 환자를 찾았습니다. **미발표 결과**라 랩 밖으로는 공유하지 말아 주세요.</aside>
 </section>
 
 <section class="slide" id="s-servers" data-theme="light">
@@ -1115,7 +1215,7 @@ DESeq2는 경고만 내고 진행해서 dispersion 추정이 깨져 있었죠. s
       <div class="sm" style="grid-column:2/4;grid-row:3"><span class="sk">2</span>PR → 리뷰 → <b>main 머지</b></div>
       <div class="sm" style="grid-column:2/6;grid-row:4"><span class="sk">3</span><b>ssh wallace</b>로 명령 실행</div>
       <div class="sm l" style="grid-column:4/6;grid-row:5"><span class="sk">4</span>remote_gate: <b>fetch, ff-only</b></div>
-      <div class="self" style="grid-column:5/7;grid-row:6"><span class="sk">5</span><b>sjob run</b> → Snakemake → 규칙마다 sbatch</div>
+      <div class="self" style="grid-column:5/7;grid-row:6"><span class="sk">5</span><b>Slurm</b>에 잡 제출 → Snakemake가 규칙마다 잡</div>
       <div class="sm res" style="grid-column:6/8;grid-row:7"><span class="sk">6</span>완료·실패 알림</div>
       <div class="sm l res" style="grid-column:2/6;grid-row:8"><span class="sk">7</span><b>data_sync</b>: data/ 아래만 rsync로 가져오기</div>
       <div class="self res" style="grid-column:1/3;grid-row:9"><span class="sk">8</span>결과 확인 → <b>추적 대상만 커밋</b> → PR</div>
@@ -1127,10 +1227,11 @@ DESeq2는 경고만 내고 진행해서 dispersion 추정이 깨져 있었죠. s
       python scripts/remote_gate.py'
   fetch → merge --ff-only origin/main
   HEAD == origin/main  <span class="g">ok</span>
+<span class="p"># 3–5. Slurm에 잡 제출 (sjob은 내 제출 도구)</span>
 <span class="c">mac$</span> ssh wallace 'cd &lt;checkout&gt; &amp;&amp;
       sjob run --workflow \
         --name <span class="y">prostate-09h-rerun</span>'
-  head job 2 CPU · 8 GB → rule별 sbatch
+  head job 2 CPU · 8 GB → rule별 Slurm 잡
 <span class="p">  … Discord ✅ prostate-09h-rerun 10분 27초</span>
 <span class="c">mac$</span> scripts/data_sync data/processed/deseq
   rsync wallace → data/processed/deseq</pre>
@@ -1138,7 +1239,7 @@ DESeq2는 경고만 내고 진행해서 dispersion 추정이 깨져 있었죠. s
     </div>
   </div>
   <aside class="notes">랩 서버에서는 직접 작업하지 않고 **코드는 Mac에서만 고칩니다**. ssh로 명령을 보내면 서버 쪽 remote_gate가 GitHub main을 fast-forward로만 받고 main과 정확히 같지 않으면 멈춥니다. 서버 코드가 늘 main과 같으니 **어떤 결과가 어떤 커밋에서 나왔는지** 항상 알 수 있죠.
-sjob으로 head job 하나를 내면 Snakemake가 규칙마다 Slurm 잡을 내고 끝나면 Discord로 알림이 옵니다. 결과는 rsync로 data/ 아래만 가져옵니다.</aside>
+Slurm은 랩 서버의 작업 스케줄러입니다. Slurm에 head job 하나를 내면 Snakemake가 규칙마다 Slurm 잡을 내고 끝나면 Discord로 알림이 옵니다. 결과는 rsync로 data/ 아래만 가져옵니다.</aside>
 </section>
 
 <section class="slide dark divider" id="s-part3" data-theme="dark">
@@ -1173,7 +1274,7 @@ sjob으로 head job 하나를 내면 Snakemake가 규칙마다 Slurm 잡을 내�
 
 <section class="slide" id="s-anat" data-theme="light">
   <h2>What an issue contains</h2>
-  <p class="ko-sub">이슈 하나에 담기는 것 (사례 1의 실제 기록, PROSTATE-mpx)</p>
+  <p class="ko-sub">이슈 하나에 담기는 것</p>
   <div class="anat">
     <div class="bead-card">
       <div class="id">PROSTATE-mpx <span class="chip solid">bug</span><span class="chip">P1</span><span class="chip">spec_backed</span></div>
@@ -1203,7 +1304,7 @@ sjob으로 head job 하나를 내면 Snakemake가 규칙마다 Slurm 잡을 내�
 
 <section class="slide" id="s-life" data-theme="light">
   <h2>Task lifecycle</h2>
-  <p class="ko-sub">작업 단계 (분석과 그림 수정 모두 같은 여덟 단계)</p>
+  <p class="ko-sub">작업 단계</p>
   <svg id="life-svg" viewBox="0 0 1392 440" aria-label="이슈 하나가 지나가는 여덟 단계"></svg>
   <div class="life-foot">
     <div>
@@ -1225,7 +1326,7 @@ sjob으로 head job 하나를 내면 Snakemake가 규칙마다 Slurm 잡을 내�
 
 <section class="slide" id="s-meet" data-theme="light">
   <h2>Claude and Codex models</h2>
-  <p class="ko-sub">Claude와 Codex 모델별 특성 (오른쪽 숫자: 최근 30일 사용량의 API 가격 환산)</p>
+  <p class="ko-sub">Claude와 Codex 모델별 특성</p>
   <div class="fam">
     <div>
       <h3>Claude <span>Anthropic</span></h3>
@@ -1244,7 +1345,7 @@ sjob으로 head job 하나를 내면 Snakemake가 규칙마다 Slurm 잡을 내�
       </div>
     </div>
   </div>
-  <p class="small" style="margin-top:16px">역할 배정은 제공사 문서와 외부 비교를 근거로 정한 가설이고, beads-ui 비교 탭의 기록으로 계속 확인한다. 작업 종류로 고르고, 파일 수나 변경 크기로는 고르지 않는다.</p>
+  <p class="small" style="margin-top:16px">오른쪽 숫자는 최근 30일 사용량을 API 가격으로 환산한 값. 역할 배정은 제공사 문서와 외부 비교를 근거로 정한 가설이고, beads-ui 비교 탭의 기록으로 계속 확인한다. 작업 종류로 고르고, 파일 수나 변경 크기로는 고르지 않는다.</p>
   <aside class="notes">오른쪽 숫자는 최근 30일 사용량을 API 가격으로 환산한 값입니다. Fable은 주간 한도가 따로 있어서 상담과 설계 판단에만 씁니다. **Opus가 지휘와 복잡한 구현**을 맡고 Sonnet은 범위와 검증이 정해진 구현에 쓰죠.
 Codex는 astra가 원인 진단에 강해서 **리뷰 기본값**으로 두었습니다.
 이 배정은 처음엔 가설이었고 실제 기록으로 확인하는 중입니다. 지금까지는 Opus가 지휘하고 Sonnet이 구현할 때가 Opus가 직접 구현할 때보다 훨씬 쌌지만 아직 표본이 적습니다.</aside>
@@ -1252,27 +1353,27 @@ Codex는 astra가 원인 진단에 강해서 **리뷰 기본값**으로 두었�
 
 <section class="slide" id="s-review" data-theme="light">
   <h2>Review</h2>
-  <p class="ko-sub">리뷰 절차 (사례 1, 판정은 APPROVE 또는 REVISE)</p>
+  <p class="ko-sub">리뷰 절차</p>
   <div class="gates">
     <div class="gate-row"><div class="gl">spec 게이트</div>
       <div class="chain">
         <div class="nd"><span class="k">초안</span>spec v1</div><div class="ar">→</div>
-        <div class="nd rev"><span class="k">Codex 리뷰</span><b>REVISE</b> · 막는 지적 4건<br>재실행 범위가 실제 DAG와 다름 외</div><div class="ar">→</div>
-        <div class="nd"><span class="k">수정</span>4건 모두 반영한 v2, 수용 검사 키 3개 추가</div><div class="ar">→</div>
+        <div class="nd rev"><span class="k">다른 모델의 리뷰</span><b>REVISE</b> · 막는 지적 2건<br>다시 돌릴 분석 범위가 빠짐 외</div><div class="ar">→</div>
+        <div class="nd"><span class="k">수정</span>지적을 모두 반영한 v2</div><div class="ar">→</div>
         <div class="nd"><span class="k">확인</span>지휘 모델이 고친 부분만 다시 본다</div><div class="ar">→</div>
-        <div class="nd rcpt"><span class="k">영수증</span><code>spec_review<br>self@f4a5197</code></div>
+        <div class="nd rcpt"><span class="k">영수증</span><code>spec_review<br>self@&lt;커밋&gt;</code></div>
       </div></div>
     <div class="gate-row"><div class="gl">구현 게이트</div>
       <div class="chain">
-        <div class="nd"><span class="k">구현</span>Sonnet이 쓴 커밋 <code>87d7220</code></div><div class="ar">→</div>
-        <div class="nd rev"><span class="k">Codex sol · xhigh</span><b>REVISE</b> · 사소한 지적 1건<br>막는 지적 0건</div><div class="ar">→</div>
-        <div class="nd"><span class="k">수정</span>커밋 <code>fd9cd6d</code></div><div class="ar">→</div>
+        <div class="nd"><span class="k">구현</span>하위 에이전트가 쓴 커밋</div><div class="ar">→</div>
+        <div class="nd rev"><span class="k">다른 모델의 리뷰</span><b>REVISE</b> · 사소한 지적 1건<br>막는 지적 0건</div><div class="ar">→</div>
+        <div class="nd"><span class="k">수정</span>수정 커밋</div><div class="ar">→</div>
         <div class="nd"><span class="k">확인</span>바뀐 줄만 정확히 다시 본다</div><div class="ar">→</div>
-        <div class="nd rcpt"><span class="k">영수증</span><code>impl_review<br>self@fd9cd6d</code></div>
+        <div class="nd rcpt"><span class="k">영수증</span><code>impl_review<br>self@&lt;커밋&gt;</code></div>
       </div></div>
   </div>
   <div class="finding">
-    <div class="quote"><small>Codex가 남긴 실제 지적 (구현 게이트, minor)</small>수치 항이 하나도 없는 경로에서는 <code>numeric_centering</code>이 JSON 배열 <code>[]</code>로 써져서, <code>{항: 평균}</code> 객체여야 한다는 약속을 깬다.</div>
+    <div class="quote"><small>지적 예시 (구현 게이트, minor)</small>결과가 하나도 없는 경우에는 출력 파일이 빈 배열로 써져서, 다음 단계가 기대하는 형식과 달라진다.</div>
     <div class="rules4">
       <div><b>판정은 둘뿐</b>APPROVE 또는 REVISE. 지적은 막는 것과 사소한 것으로 나눈다.</div>
       <div><b>독립 리뷰는 한 번</b>REVISE면 전부 고치고, 지휘 모델이 수정분만 확인한다.</div>
@@ -1280,14 +1381,14 @@ Codex는 astra가 원인 진단에 강해서 **리뷰 기본값**으로 두었�
       <div><b>리뷰어는 내가 고른다</b>기본은 Codex. 건너뛰면 "리뷰 없음"으로 기록된다.</div>
     </div>
   </div>
-  <aside class="notes">spec 초안에서 Codex가 REVISE와 함께 막는 지적 4건을 냈습니다. 대표적인 게 다시 돌려야 할 하류 분석 목록이 실제 파이프라인과 다르다는 지적이었죠.
-구현 리뷰에서는 결과 파일 형식이 특정 경우에만 깨지는 문제를 찾았는데 **사람이 놓치기 쉬운 종류**입니다.
-판정은 APPROVE와 REVISE 둘뿐이고 독립 리뷰는 **게이트마다 한 번**이라 무한히 주고받지 않습니다. 영수증의 self는 Codex 지적을 반영한 뒤 지휘 모델이 마지막 확인을 했다는 뜻입니다.</aside>
+  <aside class="notes">리뷰는 spec과 구현 두 군데에서 받습니다. 쓴 모델이 아닌 다른 모델이 보고 REVISE면 막는 지적과 사소한 지적을 나눠 돌려줍니다.
+예시처럼 결과 파일 형식이 특정 경우에만 깨지는 문제는 **사람이 놓치기 쉬운 종류**입니다.
+판정은 APPROVE와 REVISE 둘뿐이고 독립 리뷰는 **게이트마다 한 번**이라 무한히 주고받지 않습니다. 영수증의 self는 지적을 반영한 뒤 지휘 모델이 마지막 확인을 했다는 뜻입니다.</aside>
 </section>
 
 <section class="slide dark divider" id="s-part4" data-theme="dark">
   <div class="wrap"><div class="pn">4</div><div><h2>In practice</h2><p class="ko-sub">관제 화면과 하루</p>
-    <ul><li>beads-ui Monitor 탭</li><li>Worker 탭과 대기열</li><li>폰에서 Discord로 답하기</li><li>하루 일과</li><li>처음 시작할 때</li></ul></div></div>
+    <ul><li>beads-ui Monitor 탭</li><li>Worker 탭과 대기열</li><li>이슈 상세와 설정</li><li>폰에서 Discord로 답하기</li><li>하루 일과</li><li>AI 비서</li><li>처음 시작할 때</li></ul></div></div>
   <aside class="notes">마지막은 이 방식을 **매일 어떻게 돌리는지**입니다. 관제 화면은 오픈소스 beads-ui를 포크해 고쳐 쓰고 있습니다.</aside>
 </section>
 
@@ -1314,7 +1415,7 @@ Codex는 astra가 원인 진단에 강해서 **리뷰 기본값**으로 두었�
 
 <section class="slide dark" id="s-worker" data-theme="dark">
   <div class="caphead">
-    <div><h2>beads-ui: Worker tab</h2><p class="ko-sub">저장소 하나의 대기열과 실행 상태 (microbiome_bile 실제 화면)</p></div>
+    <div><h2>beads-ui: Worker tab</h2><p class="ko-sub">저장소 하나의 대기열과 실행 상태</p></div>
     <div class="capkeys">
       <div><span class="n">1</span><span><b>자동화와 자동 머지</b>, 동시 실행 수, 직렬 레인 수</span></div>
       <div><span class="n">2</span><span><b>후보</b>: 단계 막대와 선행 관계 칩</span></div>
@@ -1333,6 +1434,51 @@ Codex는 astra가 원인 진단에 강해서 **리뷰 기본값**으로 두었�
 실행 중인 세션은 열어 보거나 멈출 수 있고 토큰과 비용이 실시간으로 보입니다. 끝난 일은 PR 대기로 갔다가 검증을 통과하면 머지됩니다.</aside>
 </section>
 
+<section class="slide dark" id="s-detail" data-theme="dark">
+  <div class="wrap">
+    <h2>beads-ui:<br>issue detail</h2>
+    <p class="ko-sub">이슈 상세 패널</p>
+    <ol>
+      <li><span class="n">1</span><span><b>제목과 칩</b>상태, 경로(route), PR, 구현 방식</span></li>
+      <li><span class="n">2</span><span><b>단계 막대</b>spec 리뷰 → 구현 → 구현 리뷰 → PR. 아래 숫자는 영수증의 커밋</span></li>
+      <li><span class="n">3</span><span><b>이 이슈의 실행 설정</b>지휘·구현 모델. 프리셋을 이 이슈에만 적용할 수 있다</span></li>
+      <li><span class="n">4</span><span><b>실행 계정과 속성</b>어느 계정으로 돌릴지, 상태와 우선순위</span></li>
+      <li><span class="n">5</span><span><b>본문과 댓글</b>증거와 결정, 작업 보고서</span></li>
+    </ol>
+  </div>
+  <div class="dshot win"><div class="bar"><i></i><i></i><i></i><span>Mac Studio :3000 / #/worker?issue=PROSTATE-mpx</span></div><div class="cin"><img src="{{IMG:bdui-detail}}" alt="beads-ui 이슈 상세 패널, PROSTATE-mpx"></div></div>
+  <div class="cmark" style="left:780px;top:144px">1</div>
+  <div class="cmark" style="left:780px;top:180px">2</div>
+  <div class="cmark" style="left:780px;top:259px">3</div>
+  <div class="cmark" style="left:780px;top:372px">4</div>
+  <div class="cmark" style="left:780px;top:608px">5</div>
+  <aside class="notes">카드를 누르면 이슈 상세가 열립니다. 사례 1의 실제 이슈입니다. 위쪽 막대는 리뷰와 구현이 어디까지 왔는지이고 **아래 숫자가 영수증에 남은 커밋**입니다.
+이 이슈만 다른 모델로 돌리고 싶으면 여기서 프리셋을 고르고, 아래에는 본문과 작업 보고서 댓글이 쌓입니다.</aside>
+</section>
+
+<section class="slide dark" id="s-settings" data-theme="dark">
+  <div class="wrap">
+    <h2>beads-ui:<br>settings and presets</h2>
+    <p class="ko-sub">설정 패널과 실행 프리셋</p>
+    <ol>
+      <li><span class="n">1</span><span><b>설정 탭</b>워커, quick fix, 세션, 계정, 표시</span></li>
+      <li><span class="n">2</span><span><b>실행 프리셋</b>모델 조합에 이름을 붙여 저장하고 저장소나 이슈에 적용</span></li>
+      <li><span class="n">3</span><span><b>지휘</b>오케스트레이션 모델과 effort</span></li>
+      <li><span class="n">4</span><span><b>구현</b>위임 대상과 모델. 이슈 핀이 있으면 핀이 우선</span></li>
+      <li><span class="n">5</span><span><b>리뷰 게이트</b>spec, 계획, 구현 리뷰를 맡을 모델</span></li>
+    </ol>
+    <div class="presetchips"><span class="on">오퍼스 오토</span><span class="on">오퍼스 → 소넷 (실험)</span><span>오퍼스 high</span><span>오퍼스 → 아스트라</span><span>오퍼스 → 솔 (실험)</span><span>아스트라 오토</span><span>페이블 → 아스트라</span><span>페이블 → 클로드</span><span>페이블 오퍼스</span><span>페이블 아스트라 페스트</span></div>
+  </div>
+  <div class="dshot win"><div class="bar"><i></i><i></i><i></i><span>Mac Studio :3000 / 설정 · 워커</span></div><div class="cin"><img src="{{IMG:bdui-settings}}" alt="beads-ui 설정 패널, 워커 탭"></div></div>
+  <div class="cmark" style="left:745px;top:134px">1</div>
+  <div class="cmark" style="left:872px;top:163px">2</div>
+  <div class="cmark" style="left:872px;top:216px">3</div>
+  <div class="cmark" style="left:872px;top:361px">4</div>
+  <div class="cmark" style="left:872px;top:506px">5</div>
+  <aside class="notes">설정의 워커 탭입니다. 지휘, 구현, 리뷰 모델을 각각 고를 수 있는데 매번 고르기 번거로워서 **조합에 이름을 붙인 프리셋**으로 씁니다.
+왼쪽 아래가 지금 저장해 둔 프리셋 열 개이고 노란 두 개를 주로 씁니다. 저장소 전체에 적용하고, 특정 이슈만 바꾸고 싶으면 앞 장의 이슈 상세에서 그 이슈에만 적용합니다.</aside>
+</section>
+
 <section class="slide" id="s-phone" data-theme="light">
   <h2>Discord from the phone</h2>
   <p class="ko-sub">폰의 Discord로 세션에 답하기</p>
@@ -1341,11 +1487,9 @@ Codex는 astra가 원인 진단에 강해서 **리뷰 기본값**으로 두었�
       <div class="route-steps">
         <div><span class="n">1</span><p>세션이 끝나거나 질문하면 Discord 스레드에 카드가 뜬다<small>세션 하나 = 스레드 하나, 훅이 이벤트를 보낸다</small></p></div>
         <div><span class="n">2</span><p>스레드에 답장하면 그대로 Claude 입력창에 들어간다<small><span class="emo">📨</span> 반응이 붙으면 받았다는 뜻. 선택지 질문은 버튼으로</small></p></div>
-        <div><span class="n">3</span><p>ChatGPT의 dot에게 "이 스레드의 에이전트한테 물어봐"<small>dot은 Discord만 본다. 셸도 파일 경로도 받지 못한다</small></p></div>
-        <div><span class="n">4</span><p>Muse(Meta 앱)로 Mac에 접속하는 방법도 시험 중<small>연결 구조는 다음 장</small></p></div>
+        <div><span class="n">3</span><p>랩 서버 잡이 끝나면 완료·실패 알림도 Discord로<small>실패하면 로그 마지막 줄이 함께 온다</small></p></div>
       </div>
       <p class="small" style="margin-top:16px">오른쪽 폰 화면은 재구성한 예시입니다.</p>
-      <div class="callout-box">dot을 거쳐 들어온 말에는 <code>[dot]</code> 표시가 붙고, 그 말로는 구현 시작을 승인할 수 없습니다. 구현 승인은 내가 직접 쓴 문장으로만.</div>
     </div>
     <div class="phone"><div class="scr">
       <div class="top"># prostate · 덱 정리<small>스레드 · claude-discord-bridge</small></div>
@@ -1353,12 +1497,11 @@ Codex는 astra가 원인 진단에 강해서 **리뷰 기본값**으로 두었�
         <div class="msg"><span class="av" style="background:#5865F2">cc</span><div><div class="nm">Claude<small>오후 9:01</small></div><div class="emb"><span class="emo">✅</span> 응답 완료<br>재실행 3건 착지. 조정 DEG 27 → 5, GSEA 681. 덱 v2.1 빌드 완료</div></div></div>
         <div class="msg"><span class="av" style="background:#3BA55C">나</span><div><div class="nm">나<small>오후 9:02</small></div>교수님께 보낼 수 있게 PDF로도 뽑아줘<br><span class="react"><span class="emo">📨</span> 1</span></div></div>
         <div class="msg"><span class="av" style="background:#5865F2">cc</span><div><div class="nm">Claude<small>오후 9:02</small></div><div class="emb" style="border-color:#F4C84A">질문: 발표자 노트도 포함할까요?</div><div class="btns"><span class="pri">1 포함</span><span>2 슬라이드만</span></div></div></div>
-        <div class="msg"><span class="av" style="background:#10A37F">dot</span><div><div class="nm">dot<small>오후 9:05</small></div>[dot] 내일 아침 미팅 전에 바뀐 숫자만 세 줄로 요약해 달래요</div></div>
       </div>
     </div></div>
   </div>
   <aside class="notes">Claude 세션마다 Discord 스레드가 하나씩 생기고 **스레드에 답하면 그 답이 Mac의 세션 입력창에** 들어갑니다. 선택지 질문은 버튼으로 오죠.
-ChatGPT의 dot에게 스레드의 에이전트한테 물어봐 달라고 할 수도 있습니다. dot을 거친 말에는 표시가 붙고 그 말로는 구현 시작을 승인할 수 없습니다. 폰 화면은 재구성한 예시입니다.</aside>
+랩 서버 잡이 끝났다는 알림도 같은 곳으로 와서 밖에서도 진행을 따라갈 수 있습니다. 폰 화면은 재구성한 예시입니다.</aside>
 </section>
 
 <section class="slide" id="s-day" data-theme="light">
@@ -1373,14 +1516,53 @@ ChatGPT의 dot에게 스레드의 에이전트한테 물어봐 달라고 할 수
     <div class="ev2" style="left:960px"><div class="hr">오후</div><span class="pt" style="background:var(--res)"></span><h3>랩 서버 결과</h3><p>Slurm 잡이 끝나면 Discord가 울리고, 표와 그림이 PR로 착지한다</p><div class="who">wallace</div></div>
     <div class="ev2" style="left:1200px"><div class="hr">밤</div><span class="pt" style="background:var(--life)"></span><h3>이동 중에도</h3><p>폰의 스레드에 답하고, 한도가 풀린 세션은 스스로 이어간다</p><div class="who">폰, 자동 재시도</div></div>
   </div>
-  <div class="lifeline">
-    <h4>생활 저장소도 같은 이슈 관리로</h4>
-    <div><b>107</b><span>개인 비서 볼트 (Obsidian)</span></div>
-    <div><b>41</b><span>쇼핑 랭킹 수집</span></div>
-    <div><b>32</b><span>기차 좌석 알림 봇</span></div>
-  </div>
   <aside class="notes">아침 7시에는 dot 자동화가 미리알림과 노트의 Inbox를 정리하는데 10월 4일에 등록해서 아직 길게 써 보지는 않았습니다. 아침에 할 일을 대기열에 올리고 **막고 있는 질문에만** 답하죠.
-낮에는 Worker가 돌고 저녁에는 폰으로 답합니다. 기차 좌석 알림 봇 같은 생활 프로젝트도 같은 방식으로 이슈로 관리합니다.</aside>
+낮에는 Worker가 돌고 저녁에는 폰으로 답합니다.</aside>
+</section>
+
+<section class="slide" id="s-assist" data-theme="light">
+  <h2>AI assistants</h2>
+  <p class="ko-sub">폰에서 쓰는 AI 비서 세 가지</p>
+  <div class="assist">
+    <div class="asst">
+      <div class="mock m-dot">
+        <div class="hd"><i>dot</i><div>dot<small>ChatGPT</small></div></div>
+        <div class="u">지금 돌고 있는 세션들 요약해줘</div>
+        <div class="b">3개가 돌고 있어요. prostate는 spec 리뷰 반영 중, microbiome_bile은 Slurm 잡 대기, beads-ui는 PR 검증 중입니다.</div>
+        <div class="u">prostate 세션에 끝나는 시간 물어봐줘</div>
+      </div>
+      <h3>dot<small>ChatGPT</small></h3>
+      <p>Discord 스레드를 통해 Mac의 Claude 세션에 질문을 전하고 답을 읽어 온다. 아침에는 Inbox를 분류한다.</p>
+      <span class="tag">매일 사용</span>
+    </div>
+    <div class="asst">
+      <div class="mock m-grok">
+        <div class="hd"><i>G</i><div>Grok Bot<small>비서실장 · 옵시디언 Bot</small></div></div>
+        <div class="u">이번 주 할 일 정리해줘</div>
+        <div class="b">볼트 기준 마감이 있는 일 4건, Inbox에 분류 안 된 메모 6건이 있어요. 마감 순으로 정리할까요?</div>
+        <div class="u">응, Inbox도 같이</div>
+      </div>
+      <h3>Grok Bot<small>xAI Grok</small></h3>
+      <p>Bot 두 개가 Obsidian 볼트를 맡는다. 비서실장은 할 일 조망과 Inbox 정리, 옵시디언 Bot은 볼트를 근거로 한 질문 답변과 편집.</p>
+      <span class="tag">볼트 비서</span>
+    </div>
+    <div class="asst">
+      <div class="mock m-muse">
+        <div class="hd"><i>M</i><div>Muse<small>Meta 앱 · tailnet</small></div></div>
+        <div class="ln"><span class="c">muse$</span> ssh mac-studio
+<span class="p">connected over tailnet</span>
+<span class="c">mac$</span> tmux attach
+<span class="g">●</span> 1 beads-ui  2 prostate
+<span class="p">  세션 화면이 그대로 열린다</span></div>
+      </div>
+      <h3>Muse<small>Meta</small></h3>
+      <p>tailnet(내 기기끼리만 보이는 사설망)에 붙여 SSH로 Mac에 접속하는 방식을 시험 중이다.</p>
+      <span class="tag exp">시험 중</span>
+    </div>
+  </div>
+  <p class="small" style="margin-top:22px">화면은 재구성한 예시입니다.</p>
+  <aside class="notes">폰에서는 AI 비서 세 가지를 씁니다. **dot**은 ChatGPT에 있는 비서인데 Discord 스레드를 통해 Mac에서 돌고 있는 Claude 세션에 질문을 전하고 답을 읽어 옵니다.
+**Grok Bot**은 Obsidian 볼트를 맡은 비서 두 개로 비서실장이 할 일과 Inbox를, 옵시디언 Bot이 볼트 질문과 편집을 맡고, **Muse**는 Mac에 SSH로 붙는 방식을 시험하는 중입니다. 화면은 재구성한 예시입니다.</aside>
 </section>
 
 <section class="slide dark" id="s-end" data-theme="dark">
@@ -1395,8 +1577,8 @@ ChatGPT의 dot에게 스레드의 에이전트한테 물어봐 달라고 할 수
       <div><span class="n">4</span><h3>결과는 그림으로 확인</h3><p>표의 숫자와 그림이 맞는지 매번 대조한다.</p></div>
     </div>
   </div>
-  <div class="closing">Questions<small>연구 템플릿과 설정은 원하시는 분께 공유하겠습니다</small></div>
-  <aside class="notes">제 세팅을 전부 따라 하실 필요는 없고 **이 네 가지부터** 권합니다. 연구 템플릿과 설정은 원하시는 분께 공유하겠습니다. 질문 받겠습니다.</aside>
+  <div class="closing">Questions</div>
+  <aside class="notes">제 세팅을 전부 따라 하실 필요는 없고 **이 네 가지부터** 권합니다. 질문 받겠습니다.</aside>
 </section>
 
 <section class="slide dark divider" id="s-backup" data-theme="dark">
@@ -1407,54 +1589,45 @@ ChatGPT의 dot에게 스레드의 에이전트한테 물어봐 달라고 할 수
 
 <section class="slide" id="s-dotfiles" data-theme="light">
   <h2>Settings repo: dotfiles</h2>
-  <p class="ko-sub">설정 저장소: 지침, 스킬, 훅, 셸 도구를 한곳에서 관리</p>
-  <div class="dfl">
-    <div class="repo"><h3>dotfiles</h3>
-<div class="dtree"><b>src/shared/skills/</b>   스킬 25개 (Claude·Codex 공용)
-<b>src/claude/</b>          지침, 훅, 에이전트, 설정
-<b>src/codex/</b>           Codex 설정과 훅
-<b>src/shell/</b>           tmux, sjob, cswap, launchd
-<b>docs/contracts/</b>      모델 역할표, 작업 단계 규칙
-<b>tests/</b>               설정끼리 어긋나지 않는지 검사
-install.sh</div></div>
-    <div class="arr"><b>→</b>install.sh</div>
+  <p class="ko-sub">공통 설정을 저장소 하나로 관리</p>
+  <div class="dfs">
+    <div class="repo"><h3>dotfiles<small>공통 설정 저장소 (GitHub)</small></h3>
+      <ul><li>지침 파일</li><li>스킬</li><li>훅과 에이전트</li><li>셸 도구</li></ul></div>
+    <div class="arr"><b>→</b><code>install.sh</code><br>한 번 설치</div>
     <div class="outs">
-      <div><b>~/.claude/</b><p>Claude Code가 읽는 설정. 생성물이라 직접 고치지 않는다</p></div>
-      <div><b>~/.codex/</b><p>같은 스킬을 Codex에도 설치. 파일 맨 위에 "직접 수정하지 마세요"</p></div>
-      <div><b>wallace 등 랩 서버</b><p><code>install.sh shell --machine &lt;host&gt;</code>로 sjob 같은 셸 도구만</p></div>
-      <div><b>launchd</b><p>Mac에서 상시 도는 서비스: beads-ui, Discord 연결, 한도 창 맞추기</p></div>
+      <div><b>Claude Code</b><p>Mac에서 쓰는 설정</p></div>
+      <div><b>Codex</b><p>같은 스킬과 지침</p></div>
+      <div><b>랩 서버</b><p>셸 도구만</p></div>
     </div>
   </div>
-  <div class="dfstats">
-    <div><b>5,395</b><span>커밋 (2025년 12월 5일부터)</span></div>
-    <div><b>2,042</b><span>닫은 이슈</span></div>
-    <div><b>2</b><span>같은 스킬을 쓰는 런타임 (Claude Code, Codex)</span></div>
-  </div>
-  <aside class="notes">이 설정은 전부 dotfiles라는 git 저장소 하나에 있고 install.sh가 Claude Code와 Codex 양쪽에 설치합니다. 같은 스킬이 양쪽에 깔려서 어느 모델로 작업해도 같은 절차를 따릅니다.
-**설정도 코드처럼** 이슈와 리뷰, PR을 거쳐 바꾸기 때문에 이슈 수가 연구 저장소보다 훨씬 많습니다.</aside>
+  <p class="dfs-foot">설정은 이 저장소에서만 고친다. 바꿀 때도 연구 코드처럼 이슈, 리뷰, PR을 거친다.</p>
+  <aside class="notes">지금까지 본 지침, 스킬, 훅은 전부 dotfiles라는 **공통 설정 저장소 하나**에 있습니다. install.sh가 Claude Code와 Codex 양쪽에 설치해서 어느 모델로 작업해도 같은 절차를 따릅니다.
+설정도 코드처럼 이슈와 리뷰, PR을 거쳐 바꿉니다.</aside>
 </section>
 
 <section class="slide" id="s-rmap" data-theme="light">
   <h2>Research repo template</h2>
-  <p class="ko-sub">연구 저장소 템플릿 (research-repo-template)</p>
-  <div class="rmap">
-    <div>
-      <div class="rrow"><div class="name">microbiome_bile</div><div class="topic">담즙·분변 16S 마이크로바이옴과 췌담도암 예후<small>QIIME2 파라미터 2-pass 자동 최적화, 논문 재편과 재분석</small></div><div class="cnt">621</div></div>
-      <div class="rrow"><div class="name">prostate</div><div class="topic">전립선암 FFPE RNA-seq, 조기 BCR 후속 연구<small>QC·batch, DESeq2, GSEA, Cox·C-index, TCGA 외부검증</small></div><div class="cnt">70</div></div>
-      <div class="rrow"><div class="name">TRACE-ICI</div><div class="topic">유전자 네트워크 기반 anti-PD1 반응 예측<small>사전 등록한 판정 규칙으로 go / no-go</small></div><div class="cnt">65</div></div>
-      <div class="rrow"><div class="name">CRC-rokit</div><div class="topic">대장암 리비전, PDGFR 예후<small>리뷰어 대응, 코호트별 Cox, 메타분석</small></div><div class="cnt">23</div></div>
-      <p class="small" style="margin-top:12px">오른쪽 숫자는 올해 닫힌 이슈 수</p>
-    </div>
-    <div class="bones">
+  <p class="ko-sub">연구 저장소 템플릿</p>
+  <div class="tpl">
+    <div class="main">
       <h3>research-repo-template</h3>
-<div class="tree"><b>AGENTS.md</b>        규칙과 검증 명령
-<b>Snakefile</b>        파이프라인
-src/&lt;pkg&gt;/steps    분석 단계
-src/&lt;pkg&gt;/figures  그림 코드
-data/raw  interim  processed
-outputs/  paper  replies  decks
-          figures  reports  validation</div>
-      <p>copier 템플릿 하나로 시작하고, 규칙이 바뀌면 <code>copier update</code>로 모든 연구 저장소에 전파합니다. 그림 스타일은 저널 프리셋 9종을 담은 <code>general_plot</code>으로 통일합니다.</p>
+<div class="tree"><b>AGENTS.md</b>           규칙과 검증 명령
+<b>Snakefile</b>           파이프라인
+src/&lt;pkg&gt;/steps     분석 단계
+src/&lt;pkg&gt;/figures   그림 코드
+data/raw · interim · processed
+outputs/paper · replies · decks · figures</div>
+      <p>새 연구는 이 템플릿 하나로 시작한다. 규칙이 바뀌면 <code>copier update</code>로 모든 연구 저장소에 전파되고, 그림 스타일은 저널 프리셋을 담은 <code>general_plot</code>으로 통일한다.</p>
+    </div>
+    <div class="ex">
+      <h4>이 템플릿에서 시작한 저장소 예시</h4>
+      <p class="from">폴더 구조와 AGENTS.md 형식이 모두 같다</p>
+      <div class="chipr">
+        <div><b>microbiome_bile</b><span>담즙·분변 16S 마이크로바이옴과 췌담도암 예후</span></div>
+        <div><b>prostate</b><span>전립선암 RNA-seq, 조기 BCR 후속 연구</span></div>
+        <div><b>TRACE-ICI</b><span>anti-PD1 반응 예측</span></div>
+        <div><b>CRC-rokit</b><span>대장암 리비전, PDGFR 예후</span></div>
+      </div>
     </div>
   </div>
   <aside class="notes">연구 저장소 네 곳은 **같은 템플릿**에서 시작합니다. 데이터 폴더 규칙, 결과물 종류, 에이전트에게 데이터 위치와 검증 방법을 알려주는 AGENTS.md 구조가 같아서 어느 저장소에서든 같은 규칙으로 작업합니다.
@@ -1463,35 +1636,40 @@ outputs/  paper  replies  decks
 
 <section class="slide" id="s-serverdata" data-theme="light">
   <h2>File locations: Mac, GitHub, server</h2>
-  <p class="ko-sub">파일 위치: 코드, 데이터, 결과, 이슈 기록</p>
-  <div class="wl">
-    <div>
-      <div class="wtab">
-        <div class="h"></div><div class="h">Mac</div><div class="h">GitHub</div><div class="h">wallace</div>
-        <div class="r">코드<small>src/ workflow/ scripts/</small></div><div class="on ed">편집·커밋</div><div class="on">원본</div><div class="on ro">main만 받아 실행</div>
-        <div class="r">원자료<small>data/raw</small></div><div>없음</div><div>없음 (gitignore)</div><div class="on">보관</div>
-        <div class="r">중간·처리 결과<small>data/interim, processed</small></div><div class="on ro">필요한 것만 rsync</div><div>추적 목록에 있는 파일만</div><div class="on">생성</div>
-        <div class="r">참조 DB<small>resources/</small></div><div>없음</div><div>없음</div><div class="on">보관</div>
-        <div class="r">그림·표·보고서<small>outputs/</small></div><div class="on ed">확인 후 커밋</div><div class="on">PR로 착지</div><div class="on">생성</div>
-        <div class="r">이슈 기록<small>bd</small></div><div class="on ed">읽기·쓰기</div><div>없음</div><div>쓰지 않음</div>
-        <div class="r">실행 로그<small>logs/, ~/.sjob</small></div><div>알림으로 요약</div><div>없음</div><div class="on">보관</div>
-      </div>
-      <div class="wkey"><span class="a">쓰는 곳</span><span class="b">있는 곳</span><span class="c">읽기만</span></div>
+  <p class="ko-sub">코드, 데이터, 결과는 각각 어디에</p>
+  <div class="floc">
+    <div class="box mac"><h3>Mac<small>편집하고 확인하는 곳</small></h3>
+      <div class="files">
+        <div class="code"><i></i><span>코드 편집·커밋<small>src/ workflow/</small></span></div>
+        <div class="out"><i></i><span>그림·표 확인 후 커밋<small>outputs/</small></span></div>
+        <div class="data"><i></i><span>필요한 결과만<small>data/processed 일부</small></span></div>
+        <div><i></i><span>이슈 기록<small>bd</small></span></div>
+      </div></div>
+    <div class="link">
+      <div><b>→</b><code>git push</code><br>코드·결과</div>
     </div>
-    <div class="wrules">
-      <h3>서버 규칙</h3>
-      <ol>
-        <li>서버는 main에 있고 GitHub main과 같은 코드만 실행한다</li>
-        <li>서버에서는 어떤 브랜치도 커밋·push하지 않는다</li>
-        <li>코드를 rsync나 scp로 보내지 않는다. 코드 통로는 git 하나</li>
-        <li>잡 실패는 JobState로 판정한다. 메모리 초과로 죽은 잡도 종료 코드가 0으로 찍힐 수 있다</li>
-      </ol>
-      <div class="dc">
-        <div class="who"><span class="av">sj</span>sjob</div>
-        <div class="emb"><b><span class="emo">✅</span> prostate-09h-rerun</b><br>wallace · 10분 27초</div>
-        <div class="emb bad"><b><span class="emo">❌</span> 예시: 메모리 초과</b><br>로그 마지막 20줄 첨부</div>
-      </div>
+    <div class="box gh"><h3>GitHub<small>코드 원본</small></h3>
+      <div class="files">
+        <div class="code"><i></i><span>코드 원본<small>main</small></span></div>
+        <div class="out"><i></i><span>그림·표·보고서<small>PR로 착지</small></span></div>
+      </div></div>
+    <div class="link">
+      <div><b>→</b><code>git pull</code><br>main만 받는다</div>
     </div>
+    <div class="box wal"><h3>wallace<small>실행하고 보관하는 곳</small></h3>
+      <div class="files">
+        <div class="code"><i></i><span>main과 같은 코드<small>커밋·push 안 함</small></span></div>
+        <div class="data"><i></i><span>원자료<small>data/raw</small></span></div>
+        <div class="data"><i></i><span>참조 DB<small>resources/</small></span></div>
+        <div class="data"><i></i><span>중간·처리 결과<small>data/interim, processed</small></span></div>
+        <div><i></i><span>실행 로그<small>logs/</small></span></div>
+      </div></div>
+  </div>
+  <div class="floc-back"><div>← <b>rsync</b>: 필요한 결과만 wallace에서 Mac으로 가져온다 · 잡이 끝나면 Discord 알림</div></div>
+  <div class="floc-rules">
+    <div><b>코드 통로는 git 하나</b>코드를 rsync나 scp로 서버에 보내지 않는다</div>
+    <div><b>큰 데이터는 서버에만</b>원자료와 참조 DB는 git에 올리지 않는다</div>
+    <div><b>성공 여부는 JobState로</b>메모리 초과로 죽은 잡도 종료 코드가 0일 수 있다</div>
   </div>
   <aside class="notes">원자료와 참조 DB는 서버에만 두고 git에 올리지 않습니다. 결과와 그림은 필요한 것만 Mac으로 가져와 확인한 뒤 커밋하고 어떤 파일을 git에 넣을지는 저장소마다 목록 파일로 정합니다.
 이슈 기록은 Mac에서만 다루고 **서버에서는 bd를 쓰지 않죠**. 메모리 초과로 죽은 잡도 종료 코드 0으로 찍힐 수 있어서 성공 여부는 **Slurm JobState**로 판단합니다.</aside>
@@ -1551,7 +1729,7 @@ spec에 고칠 내용이 정확히 있고 확인할 테스트가 있으면 mediu
 
 <section class="slide" id="s-spec" data-theme="light">
   <h2>Spec (design document)</h2>
-  <p class="ko-sub">설계 문서 spec (사례 1의 실제 spec)</p>
+  <p class="ko-sub">설계 문서 spec</p>
   <div class="specwrap">
     <div class="doc">
       <div class="fm" style="position:relative"><span class="pin" style="top:-2px">1</span>---<br><b>scope:</b><br>&nbsp;&nbsp;- workflow/scripts/deseq.R<br>&nbsp;&nbsp;- workflow/rules/rna.smk<br>---</div>
@@ -1582,10 +1760,10 @@ spec에 고칠 내용이 정확히 있고 확인할 테스트가 있으면 mediu
 
 <section class="slide" id="s-impl" data-theme="light">
   <h2>Implementation</h2>
-  <p class="ko-sub">구현 절차 (사례 1)</p>
+  <p class="ko-sub">구현 절차</p>
   <div class="implwrap">
     <div class="route-steps">
-      <div><span class="n">1</span><p>구현 시작은 내가 직접 승인<small>dot을 거친 말로는 승인되지 않는다 → <code>impl_entry = user@f4a5197</code></small></p></div>
+      <div><span class="n">1</span><p>구현 시작은 내가 직접 승인<small><code>impl_entry = user@f4a5197</code></small></p></div>
       <div><span class="n">2</span><p>승인 뒤 작업 폴더 생성<small><code>.worktrees/PROSTATE-mpx</code>, 출발점은 spec이 올라간 커밋</small></p></div>
       <div><span class="n">3</span><p>지시서를 Sonnet에게 전달<small>하위 에이전트는 대화를 보지 못해서 범위, 금지 사항, 검증 명령을 모두 적는다 → <code>exec_receipt = delegated:sonnet@87d7220</code></small></p></div>
       <div><span class="n">4</span><p>지휘 모델이 검증을 다시 실행<small>git status, diff, 테스트를 직접 재현한 뒤 커밋</small></p></div>
@@ -1599,13 +1777,13 @@ spec에 고칠 내용이 정확히 있고 확인할 테스트가 있으면 mediu
       <div class="rs">남은 위험</div><p class="risk">새 R 코드는 아직 한 번도 실행되지 않았다. 재산출 결과가 "유의 DEG 0"일 수도 있고, 그렇다면 그게 정직한 결론이다.</p>
     </div>
   </div>
-  <aside class="notes">구현 시작은 제 답이 있어야 하고 **폰에서 dot을 거친 말로는 승인되지 않습니다**. 지휘 모델이 Sonnet에게 넘기는 지시서에는 고칠 범위, 하면 안 되는 일, 돌릴 검증 명령을 다 적습니다. 하위 에이전트는 대화를 보지 못하거든요.
+  <aside class="notes">구현 시작은 **제 답이 있어야** 하고 지휘 모델이 Sonnet에게 넘기는 지시서에는 고칠 범위, 하면 안 되는 일, 돌릴 검증 명령을 다 적습니다. 하위 에이전트는 대화를 보지 못하거든요.
 하위 에이전트가 끝났다고 해도 지휘 모델이 diff와 테스트를 다시 돌린 뒤 커밋합니다. 보고서에서는 **"남은 위험" 칸**을 제일 먼저 읽습니다.</aside>
 </section>
 
 <section class="slide" id="s-git" data-theme="light">
   <h2>Git: worktree, branch, PR</h2>
-  <p class="ko-sub">Git 운영: 이슈 하나에 작업 폴더, 브랜치, PR 하나씩 (사례 1의 실제 커밋)</p>
+  <p class="ko-sub">Git 운영: 이슈 하나에 작업 폴더, 브랜치, PR 하나씩</p>
   <svg id="git-svg" viewBox="0 0 1392 330" aria-label="PROSTATE-mpx의 브랜치와 머지 흐름"></svg>
   <div class="gitrules">
     <div><h3>작업 폴더 = 브랜치 = 이슈 ID</h3><p><code>.worktrees/PROSTATE-mpx</code>. 여러 세션이 동시에 돌아도 서로의 파일을 건드리지 않는다.</p></div>
@@ -1619,7 +1797,7 @@ spec에 고칠 내용이 정확히 있고 확인할 테스트가 있으면 mediu
 
 <section class="slide" id="s-verify" data-theme="light">
   <h2>Verification and deployment</h2>
-  <p class="ko-sub">검증과 배포 절차 (prostate 저장소 기준)</p>
+  <p class="ko-sub">검증과 배포 절차</p>
   <div class="vwrap">
     <div class="vtab">
       <div class="h">언제</div><div class="h">누가</div><div class="h">무엇을 확인</div><div class="h">명령</div>
@@ -1707,7 +1885,7 @@ spec에 고칠 내용이 정확히 있고 확인할 테스트가 있으면 mediu
 
 <section class="slide" id="s-sim" data-theme="light">
   <div class="sim-head">
-    <div><h2>Queue simulation</h2><p class="ko-sub">대기열 시뮬레이션 (가상의 연구 작업 5개)</p></div>
+    <div><h2>Queue simulation</h2><p class="ko-sub">대기열 시뮬레이션</p></div>
     <div class="sim-ctrl"><button class="btn" id="sim-play">재생</button><button class="btn ghost" id="sim-reset">처음으로</button></div>
   </div>
   <div class="lanes" id="lanes"></div>
@@ -1718,7 +1896,7 @@ spec에 고칠 내용이 정확히 있고 확인할 테스트가 있으면 mediu
 
 <section class="slide" id="s-parallel" data-theme="light">
   <h2>Running in parallel</h2>
-  <p class="ko-sub">병렬 실행 (10월 6일 점심 무렵 11건 발췌, 그날 전체 32건)</p>
+  <p class="ko-sub">병렬 실행 (10월 6일 실제 기록)</p>
   <div class="par">
     <div>
       <svg id="par-svg" viewBox="0 0 980 520" aria-label="10월 6일 Worker 세션 시간대"></svg>
@@ -1770,7 +1948,7 @@ Worker 세션은 제가 질문에 답할 때 말고는 **혼자 돌고** 세션 
 
 <section class="slide" id="s-accounts" data-theme="light">
   <h2>Multiple accounts</h2>
-  <p class="ko-sub">여러 계정 전환 (Claude 2개, Codex 6개)</p>
+  <p class="ko-sub">여러 계정 전환</p>
   <div class="acct">
     <div class="um">
       <h5>Claude · 활성 1 / 전체 2</h5>
@@ -1828,7 +2006,7 @@ Claude 쪽은 cswap이 계정 정보를 macOS 키체인에 두고 바꿔 끼우�
 
 <section class="slide" id="s-tokens" data-theme="light">
   <h2>Token usage</h2>
-  <p class="ko-sub">토큰 사용량 (9월 7일 ~ 10월 7일, 31일). 비용은 API 가격 환산값이고 실제 지출은 정액 구독</p>
+  <p class="ko-sub">토큰 사용량 (최근 31일)</p>
   <div class="use">
     <div>
       <div class="hero2"><b>203억</b><span>토큰. 하루 많을 때 21억</span></div>
@@ -1902,7 +2080,7 @@ Claude 쪽은 cswap이 계정 정보를 macOS 키체인에 두고 바꿔 끼우�
 
 <section class="slide dark" id="s-tmux" data-theme="dark">
   <h2>tmux status bar</h2>
-  <p class="ko-sub">tmux 상태 표시 (저장소마다 탭 하나, 아이콘으로 에이전트 상태)</p>
+  <p class="ko-sub">tmux 상태 표시</p>
   <div class="tmux">
     <div class="scr">
 <div class="pane"><span class="p">╭─</span> <span class="c">Claude Code</span> <span class="p">· microbiome_bile · opus</span>
@@ -2273,9 +2451,12 @@ Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을
     ];
     const W = 1392, y0 = 150, n = st.length;
     const xs = st.map((_, i) => 60 + i * ((W - 120) / (n - 1)));
-    let s = `<path d="M0,${y0} C200,${y0 - 30} 400,${y0 + 30} 696,${y0} S1192,${y0 - 30} ${W},${y0}" fill="none" stroke="#14161B" stroke-width="1.5"/>`;
+    // the beads sit on yAt, so the line is drawn from the same function
+    const yAt = x => y0 - Math.sin((x / W) * 4 * Math.PI) * 13;
+    const pts = [];
+    for (let x = 0; x <= W; x += 8) { pts.push(`${x},${yAt(x).toFixed(2)}`); }
+    let s = `<polyline points="${pts.join(' ')}" fill="none" stroke="#14161B" stroke-width="1.5" stroke-linejoin="round"/>`;
     s += `<defs><radialGradient id="gb" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset=".25" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></radialGradient></defs>`;
-    const yAt = x => { const u = x / W; return y0 + (u < .5 ? -Math.sin(u * 2 * Math.PI) * 13 : -Math.sin((u - .5) * 2 * Math.PI) * 13); };
     st.forEach(([t, d, kind, tag], i) => {
       const x = xs[i], y = yAt(x);
       const fill = kind === 'human' ? '#E8A317' : kind === 'rev' ? '#ECEEF1' : '#2F5BEA';

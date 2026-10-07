@@ -78,7 +78,7 @@ def renumber(m):
     keys.append(m.group(2))
     return f'{m.group(1)}s{len(keys)}" data-key="{m.group(2)}{m.group(3)}{m.group(4)}{m.group(5)}'
 src = SEC_SRC_RE.sub(renumber, src)
-assert len(keys) == len(set(keys)) == 50, len(keys)
+assert len(keys) == len(set(keys)) == 52, len(keys)
 key_set = set(keys)
 src = re.sub(r'#(s-[A-Za-z0-9-]+)(?![A-Za-z0-9-])', lambda m: f'[data-key="{m.group(1)}"]' if m.group(1) in key_set else m.group(0), src)
 

@@ -1,0 +1,108 @@
+{
+  "version": 2,
+  "slides": {
+    "s3": {
+      "text": "(부분마다 질문을 받습니다) 없애는게 나을듯",
+      "title": "Contents",
+      "kind": "edit",
+      "updated_at": "2026-10-07T09:30:57.894037+00:00"
+    },
+    "s5": {
+      "text": "여기서도 모든 용어를 다루지는 말고 그냥 중요한 용어만 다루던가 뒤에 해당 용어를 다룰때 용어에대한 설명을 하는식으로 하는게 나을듯",
+      "title": "Terms used in this talk",
+      "kind": "edit",
+      "updated_at": "2026-10-07T09:27:33.011588+00:00"
+    },
+    "s6": {
+      "text": "처음에는 저장소 폴더에서 claude로 시작하고 큰 작업은 Shift+Tab으로 plan 모드에 두어 계획부터 보시길 권합니다. Codex CLI도 거의 같고 AGENTS.md를 읽습니다. 이런 쓸데없는말 안써도 될듯",
+      "title": "Claude Code basics",
+      "kind": "edit",
+      "updated_at": "2026-10-07T10:49:55.675194+00:00"
+    },
+    "s9": {
+      "text": "왼쪽의 자주쓰는 명령어는 굳이 없어도 될듯",
+      "title": "CLI and tmux",
+      "kind": "edit",
+      "updated_at": "2026-10-07T10:51:43.649352+00:00"
+    },
+    "s11": {
+      "text": "(올해 닫은 이슈 제목에서 발췌) 없어도 되고, 이 표를 좀더 심플하게 만들기. 각 케이스마다 샘플이슈 하나씩해서 좀더 보기좋도록\n",
+      "title": "What AI does in my research",
+      "kind": "edit",
+      "updated_at": "2026-10-07T10:53:44.929824+00:00"
+    },
+    "s12": {
+      "text": "이것도 너무 자세하게 말고 case1,2 를 합쳐서 어떤 부분에서 claude 를 사용했는지 보여주기",
+      "title": "Case 1: DEG table vs. volcano plot",
+      "kind": "edit",
+      "updated_at": "2026-10-07T10:55:03.408766+00:00"
+    },
+    "s14": {
+      "text": "sjob 는 slurm 이라고 하는게 나을듯\n",
+      "title": "Lab servers: edit on the Mac, run on the server",
+      "kind": "edit",
+      "updated_at": "2026-10-07T10:55:59.691108+00:00"
+    },
+    "s18": {
+      "text": "이거 줄이 beads 랑 안맞는데",
+      "title": "Task lifecycle",
+      "kind": "edit",
+      "updated_at": "2026-10-07T10:56:46.125008+00:00"
+    },
+    "s20": {
+      "text": "이거는 사례로 하지말고 일반적인 예시로 두는게 낫지 않나",
+      "title": "Review",
+      "kind": "edit",
+      "updated_at": "2026-10-07T10:57:22.856185+00:00"
+    },
+    "s24": {
+      "text": "3\nChatGPT의 dot에게 \"이 스레드의 에이전트한테 물어봐\"\ndot은 Discord만 본다. 셸도 파일 경로도 받지 못한다\n\n4\nMuse(Meta 앱)로 Mac에 접속하는 방법도 시험 중\n연결 구조는 다음 장 이거는 굳이 여기서 다루지말고, 뒤쪽에 dot, grok bot, muse 같은 ai 비서를 소개하는식으로 하는게 나을듯 적당한 이미지도 넣고. ",
+      "title": "Discord from the phone",
+      "kind": "edit",
+      "updated_at": "2026-10-07T10:59:23.694510+00:00"
+    },
+    "s26": {
+      "text": "연구 템플릿과 설정은 원하시는 분께 공유하겠습니다 이거는 안넣어도 될듯",
+      "title": "Getting started",
+      "kind": "edit",
+      "updated_at": "2026-10-07T10:59:45.059518+00:00"
+    },
+    "s25": {
+      "text": "생활 저장소도 같은 이슈 관리로 이것도 없어도 될듯",
+      "title": "A typical day",
+      "kind": "edit",
+      "updated_at": "2026-10-07T11:00:02.292314+00:00"
+    },
+    "s28": {
+      "text": "이거는 심플하게 dotfiles 라는 공통설정을 레포로 따로 만들어서 세팅들을 관리한다고 보여주는게 나을듯",
+      "title": "Settings repo: dotfiles",
+      "kind": "edit",
+      "updated_at": "2026-10-07T11:01:28.006223+00:00"
+    },
+    "s29": {
+      "text": "이것도 research repo template 을 메인으로 두고, microbiome bile 같은 레포들은 예시로 보여주는게 나을듯",
+      "title": "Research repo template",
+      "kind": "edit",
+      "updated_at": "2026-10-07T11:02:02.377277+00:00"
+    },
+    "s30": {
+      "text": "이거는 좀더 비주얼적으로 보여줄수는 없나",
+      "title": "File locations: Mac, GitHub, server",
+      "kind": "edit",
+      "updated_at": "2026-10-07T11:02:36.735943+00:00"
+    },
+    "s34": {
+      "text": "dot을 거친 말로는 승인되지 않는다 이거는 굳이 안말해도 될듯",
+      "title": "Implementation",
+      "kind": "edit",
+      "updated_at": "2026-10-07T11:03:18.699342+00:00"
+    }
+  },
+  "deck": {
+    "text": "부제목에서 굳이 없어도 되는거는 없애자\n그리고 이슈 상세패널이나 설정 패널같은거, 프리셋 패널같은거 보여줘도 괜찮을듯",
+    "kind": "edit",
+    "updated_at": "2026-10-07T10:57:58.735189+00:00"
+  },
+  "applied_round": "20261007-202858",
+  "note": "slide keys are positions in the 50-slide build before this round"
+}
