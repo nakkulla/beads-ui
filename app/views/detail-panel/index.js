@@ -115,7 +115,7 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * @typedef {Object} DetailPanelOptions
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: (client_id: string) => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<unknown>} [transport]
- * @property {{ get: () => any, set?: (queue: any) => void, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
+ * @property {{ get: () => any, set?: (queue: any, root_dir?: string) => void, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
  * @property {{ get: () => Array<Record<string, any>>|null, subscribe?: (fn: () => void) => () => void }} [pipelineStore] - Current Monitor projection, including external waits.
  * @property {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [execPresetStore]
  * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [modelVisibilityStore] - Server-global
@@ -1492,13 +1492,14 @@ export function createDetailPanel(mount_element, options) {
       const lane_select = /** @type {HTMLSelectElement|null} */ (
         place.parentElement?.querySelector('[data-plan-lane]') || null
       );
+      const root_dir = place.dataset.rootDir || '';
       void placePlanFromPopup({
         transport: transport
           ? (type, payload) => Promise.resolve(transport(type, payload))
           : undefined,
         showToast,
         memory: plan_skips,
-        root_dir: place.dataset.rootDir || '',
+        root_dir,
         plan_path: place.dataset.planPath || '',
         lane: lane_select ? lane_select.value : '',
         revision: () => {
@@ -1507,7 +1508,7 @@ export function createDetailPanel(mount_element, options) {
         },
         adopt: (reply) => {
           if (reply?.queue && queueStore?.set) {
-            queueStore.set(reply.queue);
+            queueStore.set(reply.queue, root_dir);
           }
         }
       }).then(() => doRender());

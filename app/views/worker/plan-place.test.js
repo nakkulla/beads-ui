@@ -227,6 +227,26 @@ describe('placePlanFromPopup (UI-ruwu §3)', () => {
     expect(args.transport).toHaveBeenCalledTimes(2);
   });
 
+  test('retries with the reply revision when its queue is not adopted', async () => {
+    const args = input({
+      transport: vi
+        .fn()
+        .mockResolvedValueOnce({
+          applied: false,
+          conflict: true,
+          queue: { revision: 5 }
+        })
+        .mockResolvedValueOnce({ applied: true, placed: ['A-1'], skipped: [] }),
+      revision: vi.fn().mockReturnValueOnce(4).mockReturnValue(2)
+    });
+
+    await placePlanFromPopup(args);
+
+    expect(
+      args.transport.mock.calls.map((call) => call[1].expected_revision)
+    ).toEqual([4, 5]);
+  });
+
   test('remembers the skipped issues of the reply per repo and plan', async () => {
     const skipped = [{ id: 'A-1', reason: 'worker-ineligible' }];
     const args = input({

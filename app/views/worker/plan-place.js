@@ -199,18 +199,24 @@ export async function placePlanFromPopup(input) {
   }
   memory.pending.add(key);
   try {
-    /** @returns {Promise<any>} */
-    const send = () =>
+    /**
+     * @param {number} expected_revision
+     * @returns {Promise<any>}
+     */
+    const send = (expected_revision) =>
       transport('worker-queue-place-plan', {
         root_dir,
         plan_path,
         lane,
-        expected_revision: input.revision()
+        expected_revision
       });
-    let reply = await send();
+    let reply = await send(input.revision());
     input.adopt(reply);
     if (reply && reply.conflict) {
-      reply = await send();
+      const revision = reply.queue?.revision;
+      reply = await send(
+        typeof revision === 'number' ? revision : input.revision()
+      );
       input.adopt(reply);
     }
     if (reply && Array.isArray(reply.skipped)) {

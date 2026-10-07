@@ -39,7 +39,7 @@ import {
 } from './keyed-patch.js';
 
 /**
- * @returns {{ get: () => WorkerQueueSnapshot|null, setSnapshot: (body: import('./keyed-patch.js').WorkerQueueBody & { seq?: number }) => void, set: (q: WorkerQueueSnapshot|null) => void, applyPatch: (patch: import('./keyed-patch.js').KeyedPatch & { seq: number }) => boolean, clear: () => void, subscribe: (fn: () => void) => () => void }}
+ * @returns {{ get: () => WorkerQueueSnapshot|null, setSnapshot: (body: import('./keyed-patch.js').WorkerQueueBody & { seq?: number }) => void, set: (q: WorkerQueueSnapshot|null, root_dir?: string) => void, applyPatch: (patch: import('./keyed-patch.js').KeyedPatch & { seq: number }) => boolean, clear: () => void, subscribe: (fn: () => void) => () => void }}
  */
 export function createWorkerQueueStore() {
   /** @type {import('./keyed-patch.js').KeyedMap} */
@@ -101,8 +101,14 @@ export function createWorkerQueueStore() {
       last_seq = body.seq ?? 1;
       adopt(next);
     },
-    /** @param {WorkerQueueSnapshot|null} q */
-    set(q) {
+    /**
+     * @param {WorkerQueueSnapshot|null} q
+     * @param {string} [root_dir] - Explicit request target; omitted for session requests.
+     */
+    set(q, root_dir) {
+      if (root_dir && root_dir !== keyed.get('root_dir')) {
+        return;
+      }
       if (q === null || q.revision < keyed.get('queue/revision')) {
         return;
       }

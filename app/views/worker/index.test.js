@@ -18467,8 +18467,10 @@ describe('worker plan 묶음 칩과 일괄 배치 (UI-ruwu §2·§3)', () => {
   function mountPlan(over = {}) {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
+    const workspace = 'workspace' in over ? over.workspace : '/repo/plan';
+    queueStore.setSnapshot({
+      root_dir: workspace || '',
+      queue: queueOf({
         queue: [{ bead_id: 'UI-p2', added_at: 1 }],
         serial_lane_count: 2,
         serial_lanes: [
@@ -18487,14 +18489,13 @@ describe('worker plan 묶음 칩과 일괄 배치 (UI-ruwu §2·§3)', () => {
         bead_plan_groups: { 'UI-p2': PLAN_GROUP, 'UI-p1': PLAN_GROUP },
         ...(over.queue || {})
       })
-    );
+    });
     createWorkerView(mount, {
       issueStores: over.issueStores || createTestIssueStores(),
       queueStore,
       transport: over.transport || vi.fn().mockResolvedValue({}),
       gotoIssue: over.gotoIssue,
-      getWorkspacePath: () =>
-        'workspace' in over ? over.workspace : '/repo/plan'
+      getWorkspacePath: () => workspace
     });
     return { mount, queueStore };
   }
@@ -18787,6 +18788,75 @@ describe('worker plan 묶음 칩과 일괄 배치 (UI-ruwu §2·§3)', () => {
     expect(document.querySelector('.toast')?.textContent).toContain(
       '목록을 다시 읽고'
     );
+  });
+
+  test('ignores a plan placement reply after switching workspaces', async () => {
+    /** @type {(reply: any) => void} */
+    let resolveReply = () => {};
+    const pending = new Promise((resolve) => {
+      resolveReply = resolve;
+    });
+    const transport = vi.fn().mockReturnValue(pending);
+    const { mount, queueStore } = mountPlan({ transport });
+    openPopup(mount);
+    clickPlace(mount);
+    queueStore.setSnapshot({
+      root_dir: '/repo/other',
+      queue: queueOf({ revision: 2 })
+    });
+    const current = queueStore.get();
+
+    resolveReply({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2'],
+      skipped: [],
+      queue: queueOf({
+        revision: 99,
+        queue: [{ bead_id: 'UI-p2', added_at: 1 }]
+      })
+    });
+    await flush();
+
+    expect(queueStore.get()).toBe(current);
+  });
+
+  test('retries a plan conflict for its original workspace after switching', async () => {
+    /** @type {(reply: any) => void} */
+    let resolveReply = () => {};
+    const pending = new Promise((resolve) => {
+      resolveReply = resolve;
+    });
+    const transport = vi
+      .fn()
+      .mockReturnValueOnce(pending)
+      .mockResolvedValueOnce({ applied: true, placed: ['UI-p2'], skipped: [] });
+    const { mount, queueStore } = mountPlan({ transport });
+    openPopup(mount);
+    clickPlace(mount);
+    queueStore.setSnapshot({
+      root_dir: '/repo/other',
+      queue: queueOf({ revision: 2 })
+    });
+    const current = queueStore.get();
+
+    resolveReply({
+      applied: false,
+      conflict: true,
+      queue: queueOf({ revision: 5 })
+    });
+    await flush();
+
+    expect(
+      transport.mock.calls.map((call) => [
+        call[1].root_dir,
+        call[1].expected_revision
+      ])
+    ).toEqual([
+      ['/repo/plan', 1],
+      ['/repo/plan', 5]
+    ]);
+    expect(queueStore.get()).toBe(current);
   });
 
   test('marks a blocker the placement skipped as 세션 필요', async () => {

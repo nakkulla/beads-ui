@@ -849,9 +849,9 @@ export function createWorkerView(mount_element, options = {}) {
     getWorkspaces: () => last_workspaces,
     showToast,
     requestRender: () => doRender(),
-    adoptQueue: (_root_dir, queue) => {
+    adoptQueue: (root_dir, queue) => {
       if (queueStore) {
-        queueStore.set(queue);
+        queueStore.set(queue, root_dir);
       }
     },
     onDragBegin: () => {
@@ -1025,10 +1025,11 @@ export function createWorkerView(mount_element, options = {}) {
    * state even before the fanout push arrives (and in tests without a socket).
    *
    * @param {any} res
+   * @param {string} [root_dir]
    */
-  function adopt(res) {
+  function adopt(res, root_dir) {
     if (res && res.queue && queueStore) {
-      queueStore.set(res.queue);
+      queueStore.set(res.queue, root_dir);
     }
   }
 
@@ -1959,7 +1960,7 @@ export function createWorkerView(mount_element, options = {}) {
       plan_path,
       lane,
       revision: currentRevision,
-      adopt
+      adopt: (reply) => adopt(reply, root_dir)
     });
     doRender();
   }

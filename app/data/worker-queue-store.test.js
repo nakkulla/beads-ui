@@ -115,6 +115,54 @@ describe('data/worker-queue-store', () => {
     expect(accepted).toBe(true);
   });
 
+  test('ignores a queue reply addressed to another workspace', () => {
+    const store = createWorkerQueueStore();
+    store.setSnapshot({
+      root_dir: '/repo',
+      seq: 5,
+      queue: queue({ revision: 3, serial_lanes: [] })
+    });
+    const current = store.get();
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    store.set(
+      queue({
+        revision: 99,
+        serial_lanes: [{ id: 's1', queue: [{ bead_id: 'OTHER-1' }] }]
+      }),
+      '/other'
+    );
+    const after_reply = store.get();
+    const accepted = store.applyPatch({ seq: 6, set: {}, unset: [] });
+
+    expect(after_reply).toBe(current);
+    expect(store.get()).toBe(current);
+    expect(listener).not.toHaveBeenCalled();
+    expect(accepted).toBe(true);
+  });
+
+  test('accepts a queue reply addressed to the subscribed workspace', () => {
+    const store = createWorkerQueueStore();
+    store.setSnapshot({ root_dir: '/repo', queue: queue({ slots: 2 }) });
+    const response = queue({ revision: 2, slots: 3 });
+
+    store.set(response, '/repo');
+
+    expect(store.get()).toEqual(response);
+  });
+
+  test('ignores an addressed queue reply before the workspace is known', () => {
+    const store = createWorkerQueueStore();
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    store.set(queue(), '/repo');
+
+    expect(store.get()).toBeNull();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
   test.each([2, 3, 5])('clears state on nonconsecutive seq %i', (seq) => {
     const store = createWorkerQueueStore();
     store.setSnapshot({ root_dir: '/repo', seq: 3, queue: queue() });
