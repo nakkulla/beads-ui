@@ -36,7 +36,7 @@ Codex의 "Your workspace is out of credits." 실패는 **워크스페이스**(�
 
 - 맨 메시지 `Your workspace is out of credits.`와 개인 한도 `You've hit your usage limit.`은 같은 분기에서 똑같이 `{detail:'usage_limit', scope:'account'}`로 분류된다 — `server/worker/runner/codex-outage.js:31`, `:33`, `:261-267`
 - 429 봉투 경로는 본문의 `credits?` 등 문구로 `usage_limit`/`account`를 낸다 — `server/worker/runner/codex-outage.js:49-50`, `:229-235`
-- 보류 진입은 `outage.detail === 'usage_limit'`으로 target kind를 정하고, 전환 정책이 `switch`이고 계정이 해석되면 전환 후보를 고른다 — `server/worker/scheduler.js:6534-6551`
+- 보류 진입은 `outage.detail === 'usage_limit'`으로 target kind를 정하고, 전환 정책이 `switch`이고 계정이 해석되면 **보류를 저장하기 전에** 전환 후보를 고른다; 저장 뒤 새로 생긴 target이면 그 판정으로 알림을 보내고, 그다음 보류 attempt 전환을 재평가한다 — `server/worker/scheduler.js:6534-6551`, `:6564`, `:6604-6612`, `:6651`
 - 전환 후보 선택은 유효 보류의 `target.account` 문자열 집합만 빼고, 워크스페이스 개념이 없다 — `server/worker/scheduler.js:1934-1965`(`:1946-1955`); `::`로 계정 키를 가르는 코드는 서버에 없다(`grep -rn "'::'" server --include='*.js'`, 테스트 제외)
 - 후보 필터는 `status === 'ok'`도 요구한다(UI-wiwh 착지, 로그인 만료 계정 제외) — `server/worker/scheduler.js:1960`
 - 보류 계정 집합을 계정 문자열로 읽는 곳이 여러 군데다: 전역 `heldAccounts` — `server/worker/provider-holds.js:540-545`; 큐 `heldAccountsOf`·`switchDecision` — `server/worker/queue-store.js:6426-6463`; 보류 attempt 전환 재검증 — `:9349-9376`; 선제 전환의 현재 계정 보류 판정 — `server/worker/scheduler.js:3648-3654`
@@ -51,6 +51,7 @@ Codex의 "Your workspace is out of credits." 실패는 **워크스페이스**(�
 - 실패 라벨은 `provider_outage:usage_limit`을 "계정 사용 한도로 보류"로 그린다 — `app/views/worker/failure-labels.js:113-127`
 - 칩 라벨은 계정을 싣지 않는다(`⏳ 공급자 보류 <HH:MM>`) — `app/views/worker/gate-labels.js:52`; 보류 팝오버 줄은 `app/views/worker/lane-model.js:1643-1725`와 `app/views/worker/lanes.js:2618-2669`(`provider_lines`) 두 곳이 만든다
 - 계정 키의 `::` 뒤쪽은 그 계정 `auth.json`의 `tokens.account_id`(ChatGPT 워크스페이스 id)와 같다 — 2026-10-07 `~/.codex/accounts/*.auth.json` 6개를 대조(값은 출력하지 않고 일치만 확인); `~/.local/state/bdui/codex-homes/` 디렉터리 이름(base64url 키) 5개를 디코딩하면 서로 다른 `user-…` 두 개가 같은 `::3fdb8f9b…`를 공유한다
+- beads-ui는 `auth.json` 내용을 읽지 않고 경로를 `lstat`·심링크로만 다룬다 — `server/worker/codex-account-home.js:252-262`, `:281-339`; 서버 코드에 `account_id` 읽기가 없다(`grep -rn account_id server --include='*.js'`, 테스트 제외 0건)
 - 미확인: 계정 키 형식은 codex-auth의 공개 계약이 아니다 — codex-auth 소스·문서를 찾지 못했고 UI-3v1h 스펙도 키를 불투명 문자열로 둔다
 - 미확인: 429 봉투에 credits 문구가 실린 실제 사례 — 테스트·실측 모두 맨 메시지만 있다
 - 미확인: 크레딧 충전 뒤 프로브가 실제로 통과하는지 — 코드 경로(프로브 성공 = 해제)로만 확인
@@ -105,6 +106,10 @@ Codex의 "Your workspace is out of credits." 실패는 **워크스페이스**(�
   - 선제 전환의 "현재 계정 보류 중" 판정(`applyPreemptSwitch`)
 - 클라이언트 `providerGate`도 같은 규칙으로 예측한다(UI-3v1h: 서버 게이트와 칩
   예측은 같은 규칙).
+- 결정: 보류 **진입 때의 첫 후보 선택**도 이미 있는 target과 함께 **지금 진입하려는
+  target**(워크스페이스 표지 포함)을 같은 범위 판정으로 검사한다. 저장 전에 고르는
+  첫 선택이 진입 예정 target을 모르면, 같은 워크스페이스 계정 B를 고른 뒤 큐가 거절해
+  다른 워크스페이스 계정 C가 있어도 `auto_switch:'none'` 알림이 먼저 나가기 때문이다.
 - 결과: 전환 후보가 같은 워크스페이스뿐이면 후보 없음이 되어 기존
   `auto_switch:'none'`으로 끝난다. 새 상태는 없다.
 
@@ -137,8 +142,9 @@ Codex의 "Your workspace is out of credits." 실패는 **워크스페이스**(�
 ## 5. 수용 기준
 
 1. 같은 워크스페이스 계정 A·B와 다른 워크스페이스 계정 C가 허용 목록에 있을 때, A의
-   워크스페이스 크레딧 소진은 B가 아니라 C로 전환한다. C가 없으면 전환하지 않고
-   `auto_switch:'none'`이다.
+   워크스페이스 크레딧 소진은 B가 아니라 C로 전환한다 — 기존 보류가 없고 B의 사용량이
+   C보다 낮은 첫 진입에서도 처음부터 C를 고르고 `auto_switch:'none'` 알림을 보내지
+   않는다. C가 없으면 전환하지 않고 `auto_switch:'none'`이다.
 2. A가 워크스페이스 소진으로 보류된 동안 B로 가는 새 디스패치는 모든 저장소에서 막히고,
    C로 가는 디스패치는 막히지 않는다.
 3. 개인 한도는 지금처럼 그 계정만 막는다.
@@ -154,7 +160,8 @@ Codex의 "Your workspace is out of credits." 실패는 **워크스페이스**(�
 - `server/worker/provider-holds.test.js`: 키 파싱(정상·`::` 없음·빈 뒤쪽), 범위 판정
   함수, normalizer·투영의 `workspace` 보존과 부재 기본값.
 - `server/worker/scheduler.test.js`: 수용 기준 1·2·5(같은 워크스페이스 후보 제외,
-  게이트, 선제 전환).
+  게이트, 선제 전환), 기존 보류 없는 첫 진입에서 B보다 C를 고르고 잘못된
+  `auto_switch:'none'` 알림이 없음.
 - `server/worker/queue-store.test.js`: `switchDecision`·보류 attempt 전환 재검증.
 - `server/worker/provider-health.test.js`: 재분류 시 `workspace` 유지·해제.
 - `app/views/worker/lane-model.test.js`: 칩 예측이 같은 워크스페이스 계정을 막음.
