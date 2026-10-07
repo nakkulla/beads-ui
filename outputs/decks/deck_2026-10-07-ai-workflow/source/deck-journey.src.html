@@ -997,6 +997,7 @@ body.dk-receiver .slide .rv { animation: none !important; }
 .dark .simbar .sstep { color: var(--d-ink-3); }
 .dark .simbar .slog { color: var(--d-ink); }
 body.dk-receiver .simbar .btn, body.dk-receiver .simbar .sstep { display: none; }
+.sim[data-play="static"] .simbar { display: none; }
 
 .sim path.draw { stroke-dasharray: var(--len, 2000); stroke-dashoffset: var(--len, 2000); transition: stroke-dashoffset 1.2s cubic-bezier(.4,0,.2,1); }
 .sim path.draw.on { stroke-dashoffset: 0; }
@@ -1287,7 +1288,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <aside class="notes">연구 저장소와 AI 세션이 늘면 어디까지 했고 다음에 무엇을 할지가 흩어집니다. 오늘은 일을 **이슈 단위로 기록하고 리뷰를 거쳐 끝내는 방식**을 보여 드리겠습니다.</aside>
 </section>
 
-<section class="slide sim" id="s-lost" data-theme="light" data-speed="1700">
+<section class="slide sim" id="s-lost" data-play="static" data-theme="light" data-speed="1700">
   <h2>Lost context across sessions</h2>
   <p class="ko-sub">저장소와 세션이 늘면 진행 상황과 다음 할 일을 놓친다</p>
   <div class="prov"><span class="sim">모의</span></div>
@@ -1312,7 +1313,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
     </div>
   </div>
   <div class="simbar"></div>
-  <aside class="notes">대화로만 일하면 세션이 끝날 때 **왜 그렇게 정했는지**도 같이 사라집니다. 재생하면 왼쪽 대화는 흐려지고 오른쪽 카드에는 근거와 다음 행동이 남죠.</aside>
+  <aside class="notes">대화로만 일하면 세션이 끝날 때 **왜 그렇게 정했는지**도 같이 사라집니다. 왼쪽 대화는 흐려지고 오른쪽 카드에는 근거와 다음 행동이 남습니다.</aside>
 </section>
 
 <section class="slide" id="s-problem" data-theme="light">
@@ -1338,7 +1339,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <aside class="notes">채팅으로 분석을 맡기면 결정의 이유가 사라지고 검증은 작성한 모델의 자기 보고에 그치며 제가 화면을 지켜야 진행됩니다. 그래서 이슈를 **체계적으로 관리하고 진행을 확인하는 시스템**이 필요했습니다.</aside>
 </section>
 
-<section class="slide sim" id="s-life" data-theme="light" data-speed="1500">
+<section class="slide sim" id="s-life" data-play="static" data-theme="light" data-speed="1500">
   <h2>Task lifecycle</h2>
   <p class="ko-sub">작업 단계</p>
   <svg id="life-svg" viewBox="0 0 1392 360" aria-label="이슈 하나가 지나가는 여덟 단계"></svg>
@@ -1361,7 +1362,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
 설계 선택이 없는 작은 일은 quick_fix로 바로 가고 선택지가 있으면 spec부터 씁니다.</aside>
 </section>
 
-<section class="slide sim" id="s-git" data-theme="light" data-speed="1700">
+<section class="slide sim" id="s-git" data-play="auto" data-theme="light" data-speed="1700">
   <h2>Git: worktree, branch, PR</h2>
   <p class="ko-sub">이슈마다 작업 폴더와 브랜치가 따로 있고 병렬이나 직렬로 진행되다 main에 합쳐진다</p>
   <div class="prov"><span class="sim">모의</span></div>
@@ -1377,7 +1378,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
 두 이슈가 같은 곳을 고쳐 충돌하면 **자동 해결 세션**이 떠서 ADR과 SPEC을 근거로 해소합니다.</aside>
 </section>
 
-<section class="slide sim" id="s-issue" data-theme="light" data-speed="1900">
+<section class="slide sim" id="s-issue" data-play="static" data-theme="light" data-speed="1900">
   <h2>Creating an issue</h2>
   <p class="ko-sub">대화에서 확인한 사실을 이슈에 기록한다</p>
   <div class="prov"><span class="recon">대화는 재구성</span><span class="rec">카드는 실제 기록</span></div>
@@ -1434,7 +1435,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
 고칠 범위와 바꾸지 않을 것, 성공을 판정할 기준을 먼저 정해 두면 결과를 원하는 쪽으로 맞추기 어렵습니다.</aside>
 </section>
 
-<section class="slide sim" id="s-specrev" data-theme="light" data-speed="1900">
+<section class="slide sim" id="s-specrev" data-play="auto" data-theme="light" data-speed="1900">
   <h2>Spec review</h2>
   <p class="ko-sub">구현 전에 SPEC을 쓰지 않은 모델이 검토한다</p>
   <div class="prov"><span class="rec">기록 재생</span></div>
@@ -1495,7 +1496,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <aside class="notes">리뷰는 두 번이고 묻는 것이 다릅니다. SPEC 리뷰는 **무엇을 할지**가 맞는지, 구현 리뷰는 한 것이 승인된 범위와 계약을 지키는지 봅니다.</aside>
 </section>
 
-<section class="slide sim" id="s-adr" data-theme="light" data-speed="1700">
+<section class="slide sim" id="s-adr" data-play="auto" data-theme="light" data-speed="1700">
   <h2>ADR: decision records</h2>
   <p class="ko-sub">결정 기록 ADR (Architecture Decision Record)</p>
   <div class="adrwrap">
@@ -1525,7 +1526,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
     </div>
   </div>
   <div class="simbar"></div>
-  <aside class="notes">몇 달 뒤 **"왜 이렇게 했지?"**라고 물을 결정은 ADR로 남깁니다. 재생하면 에이전트가 세 조건을 판정하고 같은 PR에 ADR 파일을 쓰고 목록이 자동으로 다시 만들어지는 과정이 나옵니다.</aside>
+  <aside class="notes">몇 달 뒤 **"왜 이렇게 했지?"**라고 물을 결정은 ADR로 남깁니다. 에이전트가 세 조건을 판정하고 같은 PR에 ADR 파일을 쓰고 목록이 자동으로 다시 만들어지는 과정이 나옵니다.</aside>
 </section>
 
 <section class="slide sim" id="s-implflow" data-theme="light" data-speed="1800">
@@ -1692,7 +1693,7 @@ body.dk-receiver .jr .wire { animation: none !important; }
 병렬 효과가 **생각보다 작은** 이유는 일이 몰리는 시간이 정해져 있어서입니다.</aside>
 </section>
 
-<section class="slide dark sim" id="s-night" data-theme="dark" data-speed="1500">
+<section class="slide dark sim" id="s-night" data-play="auto" data-theme="dark" data-speed="1500">
   <h2>Overnight runs</h2>
   <p class="ko-sub">밤사이 세 저장소의 일을 Worker가 이어 가는 예시</p>
   <div class="prov"><span class="sim">모의</span></div>
@@ -1834,24 +1835,24 @@ body.dk-receiver .jr .wire { animation: none !important; }
   <aside class="notes">Monitor 탭은 **모든 저장소의 진행 상황**을 한 화면에 모읍니다. 저장소마다 타일이 하나 있고 카드 한 장이 이슈 하나입니다.</aside>
 </section>
 
-<section class="slide sim" id="s-accounts" data-theme="light" data-speed="1800">
+<section class="slide sim" id="s-accounts" data-play="auto" data-theme="light" data-speed="1800">
   <h2>Multiple accounts</h2>
   <p class="ko-sub">사용 한도에 걸리면 여유 있는 계정으로 자동 전환</p>
   <div class="prov"><span class="sim">모의</span></div>
   <div class="acct">
     <div class="um">
       <h5>Claude · 활성 1 / 전체 2</h5>
-      <div class="ua on" id="acA"><div class="hd"><span>계정 A <em class="tg act">active</em></span><span class="tg">1분 전</span></div>
+      <div class="ua on" id="acA"><div class="hd"><span>Max 5x <em class="tg">$100</em> <em class="tg act">active</em></span><span class="tg">1분 전</span></div>
         <div class="wn"><span>5h</span><span class="bar"><i id="acA5" style="width:27%"></i></span><span id="acA5t">27%</span><span class="rs">↻ 2h 32m · 13:00</span></div>
         <div class="wn"><span>7d</span><span class="bar"><i style="width:17%"></i></span><span>17%</span><span class="rs">↻ 6d 9h · 10월 13일</span></div>
         <div class="wn"><span>Fable</span><span class="bar"><i style="width:1%"></i></span><span>0%</span><span class="rs">↻ 6d 9h · 10월 13일</span></div></div>
-      <div class="ua" id="acB"><div class="hd"><span>계정 B</span><span class="sw">전환</span></div>
+      <div class="ua" id="acB"><div class="hd"><span>Team</span><span class="sw">전환</span></div>
         <div class="wn"><span>5h</span><span class="bar"><i style="width:1%"></i></span><span>0%</span><span class="rs">↻ 2h 32m · 13:00</span></div>
         <div class="wn"><span>7d</span><span class="bar"><i style="width:41%"></i></span><span>41%</span><span class="rs">↻ 3d 4h · 10월 11일</span></div>
         <div class="wn"><span>Fable</span><span class="bar"><i style="width:7%"></i></span><span>7%</span><span class="rs">↻ 23h 32m · 10월 8일</span></div></div>
-      <div class="runl" id="acRun" data-s="1"><i></i><span>EX-b2 · 계정 A로 실행 중</span></div>
+      <div class="runl" id="acRun" data-s="1"><i></i><span>EX-b2 · Max 5x 계정으로 실행 중</span></div>
 <h5 style="margin-top:14px">Codex · 활성 1 / 전체 6</h5>
-      <div class="ua on"><div class="hd"><span>계정 1 <em class="tg">pro</em> <em class="tg act">active</em></span><span class="tg">6분 전</span></div>
+      <div class="ua on"><div class="hd"><span>Pro <em class="tg">$200</em> <em class="tg act">active</em></span><span class="tg">6분 전</span></div>
         <div class="wn"><span>7d</span><span class="bar"><i class="warn" style="width:60%"></i></span><span>60%</span><span class="rs">↻ 2d 22h · 10월 10일</span></div></div>
       <div class="ua mini"><div class="hd"><span>계정 2~6 <em class="tg">business · pro lite · free</em></span><span class="sw">전환</span></div></div>
     </div>
@@ -1872,36 +1873,9 @@ body.dk-receiver .jr .wire { animation: none !important; }
 </section>
 
 <section class="slide dark divider" id="s-part3" data-theme="dark">
-  <div class="wrap"><div class="pn">3</div><div><h2>Roles, models, cost, and remote access</h2><p class="ko-sub">사람과 AI의 역할, 모델 고르기, 비용, 원격 접속</p>
-    <ul><li>사람이 정하는 것</li><li>모델과 effort</li><li>비용</li><li>폰과 원격 접속</li></ul></div></div>
-  <aside class="notes">마지막 부분은 **사람이 정하는 것**과 모델 고르기입니다. 비용과 밖에서 접속하는 방법까지 이어집니다.</aside>
-</section>
-
-<section class="slide" id="s-who" data-theme="light">
-  <h2>Human and AI roles</h2>
-  <p class="ko-sub">세 저장소에서 사람이 정한 것과 AI가 한 것</p>
-  <div class="prov"><span class="rec">이슈 기록 기준</span></div>
-  <div class="who3">
-    <div class="whh"><span></span><span>사람</span><span>AI</span></div>
-    <div class="whr rv" style="--i:0">
-      <div class="rp"><b>prostate</b><small>RNA-seq DEG 인공산물</small></div>
-      <div class="hm"><p>덱 검수 중 그림 0개, 표 27개를 발견</p><p>구현 시작 승인, 걸린 수용 검사를 "조항이 과하게 넓다"로 판정</p><p>결과 해석과 덱 재발송</p></div>
-      <div class="ai"><p>원인 역추적과 wallace에서 대조 적합</p><p>SPEC, 구현(하위 에이전트), 두 번의 리뷰 대응</p><p>서버 재실행 3잡과 산출 커밋</p></div>
-    </div>
-    <div class="whr rv" style="--i:1">
-      <div class="rp"><b>microbiome_bile</b><small>두 데이터셋 동등성 판정</small></div>
-      <div class="hm"><p>계획이 낡았을 때 판정 방식을 직접 고름 (B안)</p><p>수정된 계획 재승인</p></div>
-      <div class="ai"><p>wallace 잡 실행과 결과 비교</p><p>판정 규칙에 맞춰 계획을 고치고 다시 게시</p></div>
-    </div>
-    <div class="whr rv" style="--i:2">
-      <div class="rp"><b>CRC-rokit</b><span class="internal">미발표 · 랩 내부</span><small>공개 코호트 간 중복 환자</small></div>
-      <div class="hm"><p>결과 해석 중 한 GEO 시리즈의 분포가 이상한 것을 발견</p><p>바뀐 HR을 검토해 원고에 반영</p></div>
-      <div class="ai"><p>원시 발현값 대조로 두 시리즈에 겹친 환자 117명 확인</p><p>중복 제외 후 Cox·메타분석 재생성. PDGFRB 통합 HR 1.183 → 1.212</p></div>
-    </div>
-  </div>
-  <p class="whfoot rv" style="--i:4">무엇을 분석할지와 결과의 해석은 사람이, 실행·수정·재생성은 AI가 한다.</p>
-  <aside class="notes">세 저장소 모두 **이상한 점을 알아챈 것과 판정은 사람**이 했습니다. AI는 원인을 추적하고 고치고 다시 돌렸죠.
-대장암 결과는 미발표라 랩 밖으로는 공유하지 말아 주세요.</aside>
+  <div class="wrap"><div class="pn">3</div><div><h2>Models and remote access</h2><p class="ko-sub">모델 고르기와 원격 접속</p>
+    <ul><li>Claude와 Codex 모델</li><li>모델 역할과 effort</li><li>폰과 원격 접속</li></ul></div></div>
+  <aside class="notes">마지막 부분은 **모델 고르기**와 밖에서 접속하는 방법입니다.</aside>
 </section>
 
 <section class="slide" id="s-meet" data-theme="light">
@@ -1978,62 +1952,7 @@ impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></di
   <aside class="notes">effort를 높이면 더 오래 생각해서 정확해지지만 느리고 토큰을 많이 씁니다. 제 기준은 변경 크기보다 **작업의 모호함과 위험**입니다.</aside>
 </section>
 
-<section class="slide" id="s-tokens" data-theme="light">
-  <h2>Token usage</h2>
-  <p class="ko-sub">토큰 사용량 (최근 31일)</p>
-  <div class="use">
-    <div>
-      <div class="hero2"><b>203억</b><span>토큰. 하루 많을 때 21억</span></div>
-      <div class="hero2"><b>$14.3k</b><span>API 가격 환산. Claude $10.2k, Codex $4.1k</span></div>
-      <div class="mix">
-        <p class="small" style="color:var(--ink-2)">토큰 구성</p>
-        <div class="tokmix"><i style="width:96.8%;background:#9AA6BA"></i><i style="width:1.7%;background:var(--ink)"></i><i style="width:1%;background:var(--gate)"></i><i style="width:.5%;background:var(--res)"></i></div>
-        <p class="small" style="margin-top:6px">캐시 읽기 97% · 캐시 쓰기 1.7% · 새 입력 1.0% · 출력 0.5%</p>
-      </div>
-      <div class="mix">
-        <p class="small" style="color:var(--ink-2)">모델별 (API 환산)</p>
-        <div class="row"><span>Opus 5.5 · 5</span><i style="width:100%;background:#2F5BEA"></i><span>$6.0k</span></div>
-        <div class="row"><span>astra</span><i style="width:62%;background:#14B07F"></i><span>$3.7k</span></div>
-        <div class="row"><span>Fable 5.1</span><i style="width:59%;background:#2F5BEA"></i><span>$3.6k</span></div>
-        <div class="row"><span>Sonnet</span><i style="width:8.5%;background:#2F5BEA"></i><span>$0.5k</span></div>
-        <div class="row"><span>sol</span><i style="width:6.5%;background:#14B07F"></i><span>$0.4k</span></div>
-      </div>
-    </div>
-    <div>
-      <svg id="use-svg" viewBox="0 0 1000 470" aria-label="일별 API 환산 비용, Claude와 Codex"></svg>
-      <div class="lg2"><span><i style="background:#2F5BEA"></i>Claude</span><span><i style="background:#14B07F"></i>Codex</span></div>
-      <p class="use-foot">ccusage로 이 Mac의 세션 기록을 집계. Claude Code는 대화 기록을 30일만 보관해서 그 이전 Claude 사용량은 남아 있지 않다. Codex는 2월부터 남아 있고 누적 328억 토큰, $22.7k. 9월 24~27일은 사용이 없었다.</p>
-    </div>
-  </div>
-  <aside class="notes">토큰의 대부분은 **캐시 읽기**입니다. 긴 지침과 대화를 매번 다시 읽는데 캐시된 부분은 훨씬 싸게 계산되죠.
-환산 비용은 크지만 실제 지출은 정액 구독료입니다.</aside>
-</section>
-
-<section class="slide" id="s-measure" data-theme="light">
-  <h2>Session and cost metrics</h2>
-  <p class="ko-sub">실행 기록으로 구성을 고른다. 비용은 API 가격 환산값</p>
-  <div class="prov"><span class="cap">beads-ui Compare 탭 · 최근 30일</span></div>
-  <div class="ms">
-    <div class="rv" style="--i:0"><b data-count="433">433</b><h4>Worker 세션</h4><p>최근 30일, 저장소 전체</p></div>
-    <div class="rv" style="--i:1"><b><span data-count="89">89</span><small>%</small></b><h4>착지율</h4><p>판정된 385건 중 343건이 PR 머지·push·무변경 종료로 끝났다</p></div>
-    <div class="rv" style="--i:2"><b><span data-count="19">19</span><small>분 · $9.5</small></b><h4>세션 중앙값</h4><p>시간과 API 가격 환산 비용. 평균은 45분 · $16</p></div>
-    <div class="rv" style="--i:3"><b>$4.4<small> vs $11~17</small></b><h4>1천 줄당 비용</h4><p>Opus 지휘 + Sonnet 구현 vs Opus 직접 구현. 표본이 적다</p></div>
-  </div>
-  <div class="ms2">
-    <div class="rv" style="--i:4">
-      <h3>기록을 보고 바꾼 것</h3>
-      <ul>
-        <li><b>Opus → Sonnet 프리셋</b>을 화면·서버 작업에 연결했다. 비용은 낮고 문제 세션은 늘지 않았다 (실험 중)</li>
-        <li><b>리뷰 기본값은 Codex astra</b>. 원인 진단에 강해서 골랐다</li>
-        <li><b>문제 세션</b>은 실패, 재시도, 막는 리뷰 지적, 사람 개입, 검증 실패, 시간·비용 초과 중 하나라도 있었던 세션. 이 비율이 낮은 조합을 기본값으로 올린다</li>
-      </ul>
-    </div>
-    <div class="note rv" style="--i:5"><b>숫자를 읽는 법</b><br>비용은 토큰을 API 가격으로 환산한 값이다. 실제 지출은 Claude·Codex 정액 구독료다. 최근 31일 203억 토큰은 환산하면 $14.3k.<br><br>사용 한도에 걸리면 내가 허용해 둔 내 계정들 중 여유 있는 쪽으로 그 실행만 넘긴다. 한도를 우회하지 않고 이미 가진 용량을 나눠 쓴다.</div>
-  </div>
-  <aside class="notes">어떤 모델 조합을 쓸지는 **실행 기록**을 보고 정합니다. 착지율은 판정이 끝난 세션만 분모로 셉니다.</aside>
-</section>
-
-<section class="slide sim" id="s-phone" data-theme="light" data-speed="1800">
+<section class="slide sim" id="s-phone" data-play="auto" data-theme="light" data-speed="1800">
   <div class="prov"><span class="recon">재구성</span></div>
   <h2>Discord from the phone</h2>
   <p class="ko-sub">폰의 Discord로 세션에 답하기</p>
@@ -2157,8 +2076,90 @@ impl-xhigh</code><p>에이전트 종류 이름으로 effort를 정한다</p></di
 
 <section class="slide dark divider" id="s-backup" data-theme="dark">
   <div class="wrap"><div class="pn">+</div><div><h2>Backup</h2><p class="ko-sub">질문이 나오면 꺼내 볼 슬라이드</p>
-    <ul><li>시작하기, 정리</li><li>기초: 용어, Claude Code, tmux</li><li>연구: 맡기는 일, 두 사례, 실제 기록(이슈 하나의 여정, 서버 재실행), 템플릿</li><li>작업 방식: 이슈 구조, 리뷰, 구현, 검증, advisor</li><li>beads-ui: Compare 탭, ADR 탭, 사용 한도</li><li>상태줄, dot과 Muse, 하루 일과, AI 비서</li></ul></div></div>
+    <ul><li>사람과 AI의 역할, 토큰 사용량, 세션과 비용 지표</li><li>시작하기, 정리</li><li>기초: 용어, Claude Code, tmux</li><li>연구: 맡기는 일, 두 사례, 실제 기록(이슈 하나의 여정, 서버 재실행), 템플릿</li><li>작업 방식: 이슈 구조, 리뷰, 구현, 검증, advisor</li><li>beads-ui: Compare 탭, ADR 탭, 사용 한도</li><li>상태줄, dot과 Muse, 하루 일과, AI 비서</li></ul></div></div>
   <aside class="notes">여기부터는 **질문이 나왔을 때** 꺼내 볼 백업 슬라이드입니다.</aside>
+</section>
+
+<section class="slide" id="s-who" data-theme="light">
+  <h2>Human and AI roles</h2>
+  <p class="ko-sub">세 저장소에서 사람이 정한 것과 AI가 한 것</p>
+  <div class="prov"><span class="rec">이슈 기록 기준</span></div>
+  <div class="who3">
+    <div class="whh"><span></span><span>사람</span><span>AI</span></div>
+    <div class="whr rv" style="--i:0">
+      <div class="rp"><b>prostate</b><small>RNA-seq DEG 인공산물</small></div>
+      <div class="hm"><p>덱 검수 중 그림 0개, 표 27개를 발견</p><p>구현 시작 승인, 걸린 수용 검사를 "조항이 과하게 넓다"로 판정</p><p>결과 해석과 덱 재발송</p></div>
+      <div class="ai"><p>원인 역추적과 wallace에서 대조 적합</p><p>SPEC, 구현(하위 에이전트), 두 번의 리뷰 대응</p><p>서버 재실행 3잡과 산출 커밋</p></div>
+    </div>
+    <div class="whr rv" style="--i:1">
+      <div class="rp"><b>microbiome_bile</b><small>두 데이터셋 동등성 판정</small></div>
+      <div class="hm"><p>계획이 낡았을 때 판정 방식을 직접 고름 (B안)</p><p>수정된 계획 재승인</p></div>
+      <div class="ai"><p>wallace 잡 실행과 결과 비교</p><p>판정 규칙에 맞춰 계획을 고치고 다시 게시</p></div>
+    </div>
+    <div class="whr rv" style="--i:2">
+      <div class="rp"><b>CRC-rokit</b><span class="internal">미발표 · 랩 내부</span><small>공개 코호트 간 중복 환자</small></div>
+      <div class="hm"><p>결과 해석 중 한 GEO 시리즈의 분포가 이상한 것을 발견</p><p>바뀐 HR을 검토해 원고에 반영</p></div>
+      <div class="ai"><p>원시 발현값 대조로 두 시리즈에 겹친 환자 117명 확인</p><p>중복 제외 후 Cox·메타분석 재생성. PDGFRB 통합 HR 1.183 → 1.212</p></div>
+    </div>
+  </div>
+  <p class="whfoot rv" style="--i:4">무엇을 분석할지와 결과의 해석은 사람이, 실행·수정·재생성은 AI가 한다.</p>
+  <aside class="notes">세 저장소 모두 **이상한 점을 알아챈 것과 판정은 사람**이 했습니다. AI는 원인을 추적하고 고치고 다시 돌렸죠.
+대장암 결과는 미발표라 랩 밖으로는 공유하지 말아 주세요.</aside>
+</section>
+
+<section class="slide" id="s-tokens" data-theme="light">
+  <h2>Token usage</h2>
+  <p class="ko-sub">토큰 사용량 (최근 31일)</p>
+  <div class="use">
+    <div>
+      <div class="hero2"><b>203억</b><span>토큰. 하루 많을 때 21억</span></div>
+      <div class="hero2"><b>$14.3k</b><span>API 가격 환산. Claude $10.2k, Codex $4.1k</span></div>
+      <div class="mix">
+        <p class="small" style="color:var(--ink-2)">토큰 구성</p>
+        <div class="tokmix"><i style="width:96.8%;background:#9AA6BA"></i><i style="width:1.7%;background:var(--ink)"></i><i style="width:1%;background:var(--gate)"></i><i style="width:.5%;background:var(--res)"></i></div>
+        <p class="small" style="margin-top:6px">캐시 읽기 97% · 캐시 쓰기 1.7% · 새 입력 1.0% · 출력 0.5%</p>
+      </div>
+      <div class="mix">
+        <p class="small" style="color:var(--ink-2)">모델별 (API 환산)</p>
+        <div class="row"><span>Opus 5.5 · 5</span><i style="width:100%;background:#2F5BEA"></i><span>$6.0k</span></div>
+        <div class="row"><span>astra</span><i style="width:62%;background:#14B07F"></i><span>$3.7k</span></div>
+        <div class="row"><span>Fable 5.1</span><i style="width:59%;background:#2F5BEA"></i><span>$3.6k</span></div>
+        <div class="row"><span>Sonnet</span><i style="width:8.5%;background:#2F5BEA"></i><span>$0.5k</span></div>
+        <div class="row"><span>sol</span><i style="width:6.5%;background:#14B07F"></i><span>$0.4k</span></div>
+      </div>
+    </div>
+    <div>
+      <svg id="use-svg" viewBox="0 0 1000 470" aria-label="일별 API 환산 비용, Claude와 Codex"></svg>
+      <div class="lg2"><span><i style="background:#2F5BEA"></i>Claude</span><span><i style="background:#14B07F"></i>Codex</span></div>
+      <p class="use-foot">ccusage로 이 Mac의 세션 기록을 집계. Claude Code는 대화 기록을 30일만 보관해서 그 이전 Claude 사용량은 남아 있지 않다. Codex는 2월부터 남아 있고 누적 328억 토큰, $22.7k. 9월 24~27일은 사용이 없었다.</p>
+    </div>
+  </div>
+  <aside class="notes">토큰의 대부분은 **캐시 읽기**입니다. 긴 지침과 대화를 매번 다시 읽는데 캐시된 부분은 훨씬 싸게 계산되죠.
+환산 비용은 크지만 실제 지출은 정액 구독료입니다.</aside>
+</section>
+
+<section class="slide" id="s-measure" data-theme="light">
+  <h2>Session and cost metrics</h2>
+  <p class="ko-sub">실행 기록으로 구성을 고른다. 비용은 API 가격 환산값</p>
+  <div class="prov"><span class="cap">beads-ui Compare 탭 · 최근 30일</span></div>
+  <div class="ms">
+    <div class="rv" style="--i:0"><b data-count="433">433</b><h4>Worker 세션</h4><p>최근 30일, 저장소 전체</p></div>
+    <div class="rv" style="--i:1"><b><span data-count="89">89</span><small>%</small></b><h4>착지율</h4><p>판정된 385건 중 343건이 PR 머지·push·무변경 종료로 끝났다</p></div>
+    <div class="rv" style="--i:2"><b><span data-count="19">19</span><small>분 · $9.5</small></b><h4>세션 중앙값</h4><p>시간과 API 가격 환산 비용. 평균은 45분 · $16</p></div>
+    <div class="rv" style="--i:3"><b>$4.4<small> vs $11~17</small></b><h4>1천 줄당 비용</h4><p>Opus 지휘 + Sonnet 구현 vs Opus 직접 구현. 표본이 적다</p></div>
+  </div>
+  <div class="ms2">
+    <div class="rv" style="--i:4">
+      <h3>기록을 보고 바꾼 것</h3>
+      <ul>
+        <li><b>Opus → Sonnet 프리셋</b>을 화면·서버 작업에 연결했다. 비용은 낮고 문제 세션은 늘지 않았다 (실험 중)</li>
+        <li><b>리뷰 기본값은 Codex astra</b>. 원인 진단에 강해서 골랐다</li>
+        <li><b>문제 세션</b>은 실패, 재시도, 막는 리뷰 지적, 사람 개입, 검증 실패, 시간·비용 초과 중 하나라도 있었던 세션. 이 비율이 낮은 조합을 기본값으로 올린다</li>
+      </ul>
+    </div>
+    <div class="note rv" style="--i:5"><b>숫자를 읽는 법</b><br>비용은 토큰을 API 가격으로 환산한 값이다. 실제 지출은 Claude·Codex 정액 구독료다. 최근 31일 203억 토큰은 환산하면 $14.3k.<br><br>사용 한도에 걸리면 내가 허용해 둔 내 계정들 중 여유 있는 쪽으로 그 실행만 넘긴다. 한도를 우회하지 않고 이미 가진 용량을 나눠 쓴다.</div>
+  </div>
+  <aside class="notes">어떤 모델 조합을 쓸지는 **실행 기록**을 보고 정합니다. 착지율은 판정이 끝난 세션만 분모로 셉니다.</aside>
 </section>
 
 <section class="slide dark" id="s-start" data-theme="dark">
@@ -2815,7 +2816,11 @@ Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을
     if (ROLE === 'main') { history.replaceState(null, '', '#' + (cur + 1)); }
     const key = keyOf(sl);
     if (enterHooks[key]) { enterHooks[key](); }
-    if (sims[key]) { if (ROLE === 'receiver') { sims[key].final(); } else { sims[key].reset(); } }
+    if (sims[key]) {
+      const play = sl.dataset.play;
+      if (ROLE === 'receiver' || play === 'static' || (play === 'auto' && reduce)) { sims[key].final(); }
+      else { sims[key].reset(); if (play === 'auto') { sims[key].toggle(); } }
+    }
     else { runCounts(sl, ROLE === 'receiver' || reduce); }
     window.dispatchEvent(new CustomEvent('deck:go', { detail: { index: cur, silent: !!silent } }));
   }
@@ -2992,10 +2997,10 @@ Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을
     ],
     's-accounts': [
       '재생을 누르면 사용 한도에 걸린 실행이 다른 계정으로 넘어갑니다',
-      '계정 A로 Worker 세션이 실행 중',
-      '계정 A의 5시간 한도가 찼다. 실행 보류',
+      'Max 5x 계정으로 Worker 세션이 실행 중',
+      'Max 5x 계정의 5시간 한도가 찼다. 실행 보류',
       '허용해 둔 계정 중 여유 있는 계정을 찾는다',
-      '계정 B로 전환해 그 실행만 이어 간다',
+      'Team 계정으로 전환해 그 실행만 이어 간다',
       '기다림 모드면 전환하지 않고 리셋 뒤 자동으로 이어 간다'
     ],
     's-phone': [
@@ -3464,11 +3469,11 @@ Muse는 Meta의 앱이고 tailnet에 붙여 SSH로 Mac에 접속하는 방식을
     B.classList.toggle('on', sw);
     B.classList.toggle('pick', k === 3);
     A.querySelector('.tg.act').style.visibility = sw ? 'hidden' : '';
-    B.querySelector('.hd span').innerHTML = sw ? '계정 B <em class="tg act">active</em>' : '계정 B';
+    B.querySelector('.hd span').innerHTML = sw ? 'Team <em class="tg act">active</em>' : 'Team';
     B.querySelector('.sw').style.visibility = sw ? 'hidden' : '';
     runl.classList.toggle('hold', k === 2);
     runl.classList.toggle('pick', k === 3);
-    runl.querySelector('span').textContent = 'EX-b2 · ' + (k >= 4 ? '계정 B로 이어서 실행' : k === 3 ? '허용 계정 중 여유 있는 계정 찾기 → 계정 B' : k === 2 ? '사용 한도 → 보류' : '계정 A로 실행 중');
+    runl.querySelector('span').textContent = 'EX-b2 · ' + (k >= 4 ? 'Team 계정으로 이어서 실행' : k === 3 ? '허용 계정 중 여유 있는 계정 찾기 → Team' : k === 2 ? '사용 한도 → 보류' : 'Max 5x 계정으로 실행 중');
   };
 
   /* ---------- network (backup) ---------- */
