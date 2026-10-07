@@ -66,11 +66,8 @@ if pulled:
     print('pulled presenter note edits into source:', ', '.join(pulled))
 baseline = notes_by_key(src, SEC_SRC_RE, 2, 4)
 
-# presenter layer
-js = (here / 'presenter.js').read_text()
-assert '</script' not in js
-assert src.count('/*PRESENTER*/') == 1
-src = src.replace('/*PRESENTER*/', js)
+# The shared presenter is loaded after the host renderer, never copied into the build.
+assert src.count('<script src="_player/presenter.js"></script>') == 1
 
 # slide ids: the server's feedback and save-notes routes take only s<N>; the name lives on in data-key
 keys = []
