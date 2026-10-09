@@ -43,6 +43,9 @@ Worker 세션이 작업 대상 머신의 인증 문제처럼 사람만 풀 수 �
 - 세션 선언 `provider`만 스트림 증거로 공급자 보류로 바꾼다. 세션 선언 `credential`은 그대로 `waiting`이다 — server/worker/scheduler.js:2603-2628, server/worker/scheduler.test.js:6180-6200
 - Worker 자신의 러너 계정 인증 실패는 공급자 보류(계정 단위)로 가고 복구 대기가 되지 않는다 — docs/adr/UI-3v1h-provider-hold-server-global.md:35, 132-134
 - 진입 블록은 dotfiles `execution-common.md`의 바이트 사본이고, 사유 칸이 `멈춤 recovery:<authority|no_progress>`다. 세 테스트가 다이제스트 `c08b50d0…`와 3179바이트로 고정한다 — server/worker/direction-inquiry.js:66-100, server/worker/direction-inquiry.test.js:21-27, 315-325, server/worker/resolve-session.test.js:20-24, server/worker/external-wait/session-resume.test.js:16-20
+- 진입 블록의 `상황` 칸은 attempt `cause_detail.summary`의 첫 줄(`blocker:` 접두 제거)이다 — server/worker/direction-inquiry.js:200-208, 544-546, 607-612
+- 기동 거절은 `disabled`·`tmux_unavailable`·`already_running`·`runner_alive`·`inquiry_in_flight` 등이고, 전사가 없으면 거절이 아니라 새 세션(`source: 'fresh'`)으로 연다 — server/worker/direction-inquiry.js:368-400, 436, 550-598, 614-650
+- 현행 사유 집합은 핀 투영 `result_line_reasons`에서 `provider`·`credential`·`prerequisite`를 뺀 것과 같다고 테스트가 고정한다 — server/worker/session-stall.test.js:54-62
 - dotfiles 계약은 Worker가 사람 때문에 멈추는 경우를 설계·범위 충돌(`awaiting_user`·`recovery:authority`)과 같은 원인 반복(`recovery:no_progress`)으로 한정한다. 자격 증명 부족은 대기로만 정의하고, 비밀 값은 찾거나 주입하지 않는다 — dotfiles src/shared/skills/flow/workflow/references/execution-common.md:33-37, 67; docs/contracts/workflow-contract.md:78, 186, 188
 - dotfiles 테스트가 진입 블록 다이제스트와 사유 칸 문자열을 고정한다 — dotfiles tests/contracts/test_workflow_contract.py:4840-4860
 - 지금 큐 기록에서 세션 선언 `credential` 대기는 dotfiles-ubf0o의 두 attempt뿐이다. 세션 선언 `provider`는 닫힌 UI-kqta 1건이다 — 각 워크스페이스 `~/.local/state/bdui/*/queue.json` attempts 조회(2026-10-10)
@@ -81,6 +84,11 @@ beads-ui는 착지 커밋의 블록 바이트를 그대로 베끼고 출처 커�
 로그인은 사용자가 하고 대화는 그 결과를 받아 `인계`로 끝난다. 이 스펙은 진입 블록에 새 금지
 문장을 더하지 않는다.
 
+인계 뒤 다시 열린 세션이 할 일(사용자가 갖춘 자격 증명을 한 번 확인해 이어가거나, 아직 안 되면 다시
+`recovery:credential`로 끝냄)은 형제가 dotfiles `### Resume after 인계` 표의 새 행으로 정한다.
+beads-ui는 지금처럼 같은 attempt를 같은 세션으로 재개할 뿐이고, 다시 멈추면 새 attempt에 대해
+`🙋 확인 필요`가 다시 한 번 간다.
+
 ### 3.3 이미 멈춘 기록
 
 결정: 배포 시점에 이미 `waiting`인 `credential` 기록에는 대화를 소급해 띄우지 않는다 — 자동
@@ -90,8 +98,8 @@ beads-ui는 착지 커밋의 블록 바이트를 그대로 베끼고 출처 커�
 
 ## 4. 오류 처리
 
-기동 실패(tmux 없음·러너 프로세스 생존·전사 없음)는 지금 대화 대상과 같은 거절과 알림 문구를
-따른다. 새 오류 경로는 없다.
+기동 거절(스위치 꺼짐·tmux 없음·러너 프로세스 생존·이미 진행 중인 대화)과 전사가 없을 때의 새 세션
+대체(`fresh`)는 지금 대화 대상과 같은 경로와 알림 문구를 따른다. 새 오류 경로는 없다.
 
 ## 5. 수용 기준
 
@@ -128,14 +136,14 @@ beads-ui는 착지 커밋의 블록 바이트를 그대로 베끼고 출처 커�
 
 - 전제: ADR UI-u6ud-2 — 멈춤 종류와 진입 블록은 dotfiles 계약이 정하고 beads-ui는 바이트를 베껴 다이제스트로 고정하므로, 계약을 먼저 바꾼다.
 - 전제: ADR UI-3v1h — Worker 러너 계정 인증 실패는 계정 단위 공급자 보류로 남는다.
-- 세션이 선언한 `recovery:credential` 대기를 `authority`·`no_progress`와 같은 같은-세션 대화 대상으로 둔다. 되돌리기 어렵다: dotfiles 계약 멈춤 종류·진입 블록 바이트·dotfiles 다이제스트 테스트와 beads-ui 술어·진입 블록 사본·세 다이제스트 테스트가 함께 움직여야 한다. 소비자는 계약, 진입 블록, 대화 기동, 대기 판정, 알림이다. 이 소비자 집합은 UI-jbl1과 같고, UI-jbl1의 "대화 대상은 `authority`·`no_progress`"(UI-nuwy 승계 조항 L152-156, L491)와 "`credential`은 공급자 보류 경로"(L285, L499) 조항을 뒤집는다. 나머지 조항은 모두 승계한다. `summary`: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다; 같은 세션 대화를 여는 복구 대기는 세션이 선언한 `authority`·`no_progress`·`credential`이고, 공급자 보류로 바뀌지 않은 `provider`는 대상이 아니다" → ADR, supersede UI-jbl1
+- 세션이 선언한 `recovery:credential` 대기를 `authority`·`no_progress`와 같은 같은-세션 대화 대상으로 둔다. 되돌리기 어렵다: dotfiles 계약 멈춤 종류·진입 블록 바이트·dotfiles 다이제스트 테스트와 beads-ui 술어·진입 블록 사본·세 다이제스트 테스트가 함께 움직여야 한다. 소비자는 계약, 진입 블록, 대화 기동, 대기 판정, 알림이다. 맥락 없이 보면 의외다: UI-jbl1은 `credential`을 공급자 보류 경로로 보냈지만, 세션이 작업 대상 머신의 자격 증명을 선언한 대기는 그 경로에 닿지 않고 사람만 풀 수 있는데 알림 없이 남는다(dotfiles-ubf0o, 5시간). 실제 절충이다: 대안은 (a) `⚠ … 지연` 알림만 보내기 — 계약 변경이 없지만 알림 문법이 대화 대상과 갈리고 사용자가 매번 버튼으로 세션을 연다, (b) 지금처럼 두기 — 무알림 정지가 남는다. 대화가 자동으로 열리는 개입 비용과 두 저장소 동시 변경을 받아들이는 대신 무알림 정지를 없앤다. 이 소비자 집합은 UI-jbl1과 같고, UI-jbl1의 "대화 대상은 `authority`·`no_progress`"(UI-nuwy 승계 조항 L152-156, L491)와 "`credential`은 공급자 보류 경로"(L285, L499) 조항을 뒤집는다. 나머지 조항은 모두 승계한다. `summary`: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다; 같은 세션 대화를 여는 복구 대기는 세션이 선언한 `authority`·`no_progress`·`credential`이고, 공급자 보류로 바뀌지 않은 `provider`는 대상이 아니다" → ADR, supersede UI-jbl1
 - 이미 `waiting`인 `credential` 기록에 대화를 소급해 띄우지 않음 — 되돌리기 쉬움: 기동 시점 규칙을 그대로 두는 것이고 저장 형식이 바뀌지 않는다 → ADR 아님
 
 ## 경계·후속
 
 | 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
-| 형제 | dotfiles | user_request | 다음 소유자가 앞 결과의 수용을 필요로 함 — 멈춤 종류(`recovery:credential` 추가, ADR dotfiles-va3cr supersede)와 진입 블록 사유 칸의 정본을 착지하고 이 Bead가 그 바이트를 베낀다 | 없음 | dotfiles-imy71 |
+| 형제 | dotfiles | user_request | 다음 소유자가 앞 결과의 수용을 필요로 함 — 멈춤 종류(`recovery:credential` 추가, ADR dotfiles/dotfiles-va3cr supersede)와 진입 블록 사유 칸의 정본을 착지하고 이 Bead가 그 바이트를 베낀다 | 없음 | dotfiles-imy71 |
 
 - 결정: 이 Bead의 구현은 형제 착지 뒤에만 시작한다(foreign `blocks`) — 진입 블록 바이트와 멈춤 종류의 정본이 형제다(ADR UI-u6ud-2).
 - 관찰: 세션 선언 `provider` 대기 중 공급자 보류로 바뀌지 않은 것은 자동 재개도 알림도 없이 남는다 — 사용자 결정(2026-10-10)으로 이번 범위 밖이다. 사람 대화가 아니라 시간 뒤 자동 재시도가 맞는 출구인지는 따로 판단해야 하고, 기록상 1건(UI-kqta, 닫힘)이라 지금 Bead를 만들지 않는다.
