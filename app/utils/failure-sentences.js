@@ -126,6 +126,8 @@ export const FAILURE_NEXT_ACTIONS = Object.freeze({
     '실패한 명령과 그 출력을 확인하고 원인을 고치는 것이 먼저입니다.',
   deploy_script_failure:
     '실패한 명령과 그 출력을 확인하고 원인을 고치는 것이 먼저입니다.',
+  script_failed:
+    '자동 재시도를 이미 사용했습니다. 실패 원인을 확인하고 고친 뒤 Worker 설정의 [배포 실행]으로 원격 base tip을 다시 배포하고 성공을 확인하세요.',
   verify_red: '실패한 명령과 그 출력을 확인하고 원인을 고치는 것이 먼저입니다.',
   // 원격을 읽지 못한 실패 — 고칠 코드가 아니라 확인할 연결이다.
   base_fetch_failed: '원격 연결과 관측 상태를 확인하는 것이 먼저입니다.',

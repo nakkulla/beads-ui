@@ -405,6 +405,23 @@ describe('worker failed running tile template', () => {
     expect(text).toContain('아래 [이어하기]로 같은 세션에서');
   });
 
+  test('guides script_failed landing recovery through deployment before cleanup retry', () => {
+    failurePopoverText({
+      cause: 'quickfix_landing_failed:script_failed',
+      landed: true,
+      quickfix_lane: true,
+      quickfix_landing: { reason: 'script_failed' }
+    });
+
+    const next_row = Array.from(
+      document.querySelectorAll('.rtile__failure-kv > div')
+    ).find((row) => row.querySelector('dt')?.textContent === '다음');
+
+    expect(next_row?.querySelector('dd')?.textContent).toMatch(
+      /Worker 설정의 \[배포 실행\][\s\S]*성공[\s\S]*아래 \[정리 재시도\]/
+    );
+  });
+
   test('replaces continuation guidance with the route refusal sentence', () => {
     const sentence =
       '승인된 작업 방식이 quick_fix에서 spec_backed로 바뀌어 이전 세션을 이어갈 수 없습니다. [폐기] 뒤 후보에서 대기열에 다시 배치하면 현재 방식으로 새로 시작됩니다.';
