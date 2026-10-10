@@ -3124,7 +3124,7 @@ describe('RepoOperation coordinator', () => {
     expect(settled.failure?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test('grants the one script retry with no toggle and settles failed after it', async () => {
+  test('preserves failure after retrying a deploy at the same worktree head', async () => {
     const runner = {
       start: vi.fn(() => ({
         ok: true,
@@ -3135,7 +3135,19 @@ describe('RepoOperation coordinator', () => {
       readLaunchMarker: () => null,
       processController: { probe: () => ({ state: 'owned' }) }
     };
-    const { store, coordinator } = coordinatorFor({ runner });
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({ ok: true, head: TARGET, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true })
+      }
+    });
     store.ensureRepoOperation(root, {
       operation_id: 'op-1',
       repo_id: root,
@@ -3173,12 +3185,17 @@ describe('RepoOperation coordinator', () => {
     await coordinator.reconcile(root);
 
     const settled = store.snapshot(root).repo_operations['op-1'];
-    expect(settled.state).toBe('failed');
+    expect(settled).toMatchObject({
+      state: 'failed',
+      exit_code: 2,
+      failure: { code: 'script_failed' },
+      retry: { outcome: 'consumed' }
+    });
     expect(settled.retry?.consumed_key).not.toBeNull();
     expect(runner.start).toHaveBeenCalledTimes(1);
   });
 
-  test('records retry pending before consuming the retry immediately before respawn', async () => {
+  test('respawns a failed deploy at the same worktree head after consuming its retry', async () => {
     /** @type {string[]} */
     const order = [];
     const runner = {
@@ -3194,7 +3211,19 @@ describe('RepoOperation coordinator', () => {
       readLaunchMarker: () => null,
       processController: { probe: () => ({ state: 'owned' }) }
     };
-    const { store, coordinator } = coordinatorFor({ runner });
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({ ok: true, head: TARGET, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true })
+      }
+    });
     store.ensureRepoOperation(root, {
       operation_id: 'op-1',
       repo_id: root,
@@ -3230,6 +3259,7 @@ describe('RepoOperation coordinator', () => {
     await coordinator.reconcile(root);
 
     expect(order).toEqual(['consume', 'spawn']);
+    expect(store.snapshot(root).repo_operations['op-1'].state).toBe('running');
   });
 
   test('retries after restart between retry-pending and consumption', async () => {

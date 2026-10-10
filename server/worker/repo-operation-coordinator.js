@@ -1695,8 +1695,13 @@ export function createRepoOperationCoordinator(deps) {
         // record: the delivery it exists for is provably on disk. A MANUAL run
         // means the opposite — the person asked for this exact tip to be
         // deployed AGAIN — so it aligns and runs instead of settling as
-        // covered/superseded (UI-s582 §3.4).
-        if (target_status === 'ancestor' && plan.manual !== true) {
+        // covered/superseded (UI-s582 §3.4). A retry at the same HEAD must
+        // also run: alignment can precede a script failure (UI-dn7c).
+        if (
+          target_status === 'ancestor' &&
+          plan.manual !== true &&
+          !(plan.retry === true && state.head === plan.target_sha)
+        ) {
           // The record must name the SHA that is actually on disk: the
           // coverage sweep below and `deploymentEvidence` both skip a success
           // without `target_sha`, which left every session-predeployed target
