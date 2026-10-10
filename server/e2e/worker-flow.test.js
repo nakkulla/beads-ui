@@ -987,6 +987,9 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
       },
       worktree: prActionsWorktree(runtime),
       gitRun,
+      runBaseSync: async () => ({
+        stdout: JSON.stringify({ result: 'synced', reason: 'fast_forwarded' })
+      }),
       scheduler: {
         resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),
         dispatchExternalConflict: async () => ({
@@ -1700,6 +1703,9 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
       },
       worktree: prActionsWorktree(runtime),
       gitRun,
+      runBaseSync: async () => ({
+        stdout: JSON.stringify({ result: 'synced', reason: 'fast_forwarded' })
+      }),
       scheduler: {
         resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),
         dispatchExternalConflict: async () => ({
