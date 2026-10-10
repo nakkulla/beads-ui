@@ -88,6 +88,70 @@ function recordCleanupStop() {
   });
 }
 
+/**
+ * Record a failed deploy operation after a failed implementation attempt.
+ *
+ * @param {string} [operation_id]
+ * @param {'repair'|'fatal'} [disposition]
+ */
+function recordDeployFailure(
+  operation_id = 'op-deploy',
+  disposition = 'repair'
+) {
+  const store = getWorkerRuntime().queueStore;
+  store.appendAttempt(WS, {
+    expected_revision: revision(),
+    attempt: {
+      attempt_id: 'a-deploy',
+      bead_id: BEAD,
+      status: 'failed',
+      cause: 'quickfix_landing_failed'
+    }
+  });
+  store.ensureRepoOperation(WS, {
+    operation_id,
+    attempt_id: `${operation_id}:1`,
+    repo_id: WS,
+    kind: 'deploy',
+    subjects: [{ bead_id: BEAD, merged_sha: 'a'.repeat(40) }],
+    effective_base_sha: 'b'.repeat(40),
+    target_base: 'main',
+    target_sha: 'a'.repeat(40),
+    script_mode: '100755',
+    script_blob_sha: 'c'.repeat(40)
+  });
+  store.startRepoOperation(WS, {
+    operation_id,
+    attempt_id: `${operation_id}:1`,
+    process_identity: { pid: 123, pgid: 123, started_at: 1 },
+    log_path: '/tmp/deploy.log'
+  });
+  store.settleRepoOperation(WS, {
+    operation_id,
+    attempt_id: `${operation_id}:1`,
+    exit_code: 2,
+    signal: null,
+    failure: {
+      code: 'script_failed',
+      summary: 'deploy verification failed',
+      fingerprint: 'deploy-failure',
+      detail: '',
+      interrupted: false
+    }
+  });
+  store.recordRepoOperationRecovery(WS, {
+    operation_id,
+    recovery: {
+      classification: 'verification_failure',
+      disposition,
+      reason: null,
+      code_defect: false,
+      prover: null,
+      handoff: null
+    }
+  });
+}
+
 beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-resolve-session-'));
   process.env.XDG_STATE_HOME = tmp_state;
@@ -201,6 +265,86 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
         }
       }
     ]);
+  });
+
+  test('opens the failure conversation for a failed deploy operation', async () => {
+    recordDeployFailure();
+    expect(
+      getWorkerRuntime().queueStore.snapshot(WS).repo_operations['op-deploy']
+    ).toMatchObject({
+      state: 'failed',
+      log_path: '/tmp/deploy.log',
+      recovery: { disposition: 'repair', code_defect: false }
+    });
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(launches).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        attempt: expect.objectContaining({
+          attempt_id: 'a-deploy',
+          status: 'failed'
+        }),
+        failure: {
+          failure_class: '배포 실패',
+          reason: 'script_failed',
+          stage: 'repo_operations',
+          detail: 'deploy verification failed',
+          log_path: '/tmp/deploy.log'
+        }
+      })
+    ]);
+    expect(reply.payload).toMatchObject({
+      launched: true,
+      row: 'failure',
+      failure_class: '배포 실패'
+    });
+  });
+
+  test('refuses a superseded failed deploy operation', async () => {
+    recordDeployFailure();
+    getWorkerRuntime().queueStore.supersedeRepoOperation(WS, {
+      operation_id: 'op-deploy',
+      successor_id: 'op-successor'
+    });
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(reply.payload).toMatchObject({
+      launched: false,
+      reason: 'no_terminal_failure'
+    });
+    expect(launches).toEqual([]);
+  });
+
+  test('refuses a dismissed failed deploy operation', async () => {
+    recordDeployFailure();
+    getWorkerRuntime().queueStore.dismissRepoOperation(WS, {
+      operation_id: 'op-deploy'
+    });
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(reply.payload).toMatchObject({
+      launched: false,
+      reason: 'no_terminal_failure'
+    });
+    expect(launches).toEqual([]);
+  });
+
+  test('skips an earlier failed deploy operation without a recovery row', async () => {
+    recordDeployFailure('op-earlier', 'fatal');
+    recordDeployFailure();
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(reply.payload).toMatchObject({
+      launched: true,
+      row: 'failure',
+      failure_class: '배포 실패'
+    });
+    expect(launches).toHaveLength(1);
   });
 
   test('replies with the forked resume command', async () => {

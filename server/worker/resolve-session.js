@@ -279,6 +279,48 @@ export function resolveFailureContext(queue, bead_id) {
           : null
     };
   }
+  // Match the deploy recovery row in wait-judgment, including a repair
+  // handoff taking precedence over a later failure for the same subject.
+  const deploy = Object.values(queue?.repo_operations || {}).find(
+    (operation) =>
+      operation?.kind === 'deploy' &&
+      operation.state === 'failed' &&
+      operation.recovery &&
+      (operation.recovery.handoff?.handoff_bead_id ||
+        ['wait', 'reconcile'].includes(operation.recovery.disposition) ||
+        (operation.recovery.disposition === 'repair' &&
+          operation.recovery.code_defect !== true)) &&
+      !operation.superseded_by &&
+      !operation.dismissed &&
+      (operation.subjects || []).some(
+        (/** @type {any} */ subject) => subject.bead_id === bead_id
+      )
+  );
+  const recovery = deploy?.recovery;
+  if (
+    recovery &&
+    !recovery.handoff?.handoff_bead_id &&
+    !(queue?.done || []).some(
+      (/** @type {any} */ row) => row.bead_id === bead_id
+    )
+  ) {
+    return {
+      failure_class: COMPLETION_STAGE_CLASSES.repo_operations,
+      reason:
+        typeof deploy.failure?.code === 'string'
+          ? deploy.failure.code
+          : '원인 미상',
+      stage: 'repo_operations',
+      detail:
+        typeof deploy.failure?.summary === 'string'
+          ? deploy.failure.summary
+          : null,
+      log_path:
+        typeof deploy.log_path === 'string' && deploy.log_path.length > 0
+          ? deploy.log_path
+          : null
+    };
+  }
   const cleanup = queue?.cleanup_failed?.[bead_id];
   if (cleanup && typeof cleanup === 'object') {
     return {

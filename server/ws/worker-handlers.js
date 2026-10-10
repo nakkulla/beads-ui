@@ -6961,6 +6961,7 @@ export async function handleWorkerResolveInSession(ws, req) {
       log('external wait read failed for %s/%s: %o', key, p.bead_id, err);
     }
   }
+  // Operation recovery uses the failure context even when its attempt failed.
   const failure = recovery
     ? {
         failure_class: '확인 필요',
