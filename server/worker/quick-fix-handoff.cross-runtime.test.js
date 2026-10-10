@@ -40,7 +40,7 @@ const CASES = JSON.parse(
 
 const DOTFILES_ROOT =
   process.env.DOTFILES_ROOT ||
-  path.join(os.homedir(), 'Documents', 'GitHub', 'dotfiles');
+  path.join(os.homedir(), 'GitHub', 'dotfiles');
 
 const CHECKER = path.join(
   DOTFILES_ROOT,
