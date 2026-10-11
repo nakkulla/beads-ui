@@ -532,7 +532,24 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   link is built from these verified values because the poller records
   `pr_repo_foreign` and never observes such a PR. Both the worker snapshot and
   the monitor pipeline read the SAME `withExternalPrWait` result through
-  `decorateQueue`.
+  `decorateQueue`. A registry row whose Bead carries the enclosed foreign
+  landing pins (`foreign_repo`·`foreign_path`·`foreign_base`) and whose url
+  names the pinned repository (UI-k467) is NOT `foreign`: it carries
+  `foreign_target?: { slug, repo_name }` instead, and this Worker observes,
+  merges and closes it through that target. `foreign` now marks only the
+  pin-less case.
+- A `pr_observations[bead_id]` entry of a pinned foreign PR (Worker-delivered or
+  session-delivered, UI-k467 §3.3) carries
+  `foreign?: { slug, repo_name, base, path, handoff, base_sha, verify_declared }`:
+  the target the PR was read in (`gh --repo <slug>`), and `handoff` —
+  `foreign_deploy_unsupported`, `foreign_conflict_needs_human`,
+  `foreign_pr_base_mismatch` or `null` — the `foreign_handoff` cause this
+  observation turn judged (its `error` is then `foreign_handoff:<cause>`).
+  `verify_declared`/`base_sha` are the fetched `foreign_base` tip's `[verify]`
+  declaration the merge gate is judged by. A post-merge `foreign_handoff` is a
+  `cleanup_failed` record whose `reason` is
+  `foreign_handoff:foreign_deploy_unsupported`. An absent key reads as a
+  workspace PR.
 - `bead_timelines: Record<bead_id, { events: TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean }>`
   (record-timeline-retention §9) is the 실패 팝오버·파킹 타일 material of the
   beads whose card actually shows a failure or a park — an attempt in
@@ -1087,10 +1104,11 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   refuses it with `reason:'shelved'`. Unshelving only drops the record. Reply
   `{ bead_id, applied, conflict, reason?, queue }`; `reason` is `merge_active`
   (the driver holds the item — the `[취소]` rule), `not_pr_wait` (no PR-wait
-  row), `foreign` (a row whose PR is in another repository) or `external` (a
-  durable external row promoted after its merge was observed). Setting the value
-  the row already has replies `applied:false` with no reason. The snapshot
-  carries the map as `merge_shelved`.
+  row), `foreign` (a pin-less row whose PR is in another repository — a pinned
+  foreign PR target is shelvable, UI-k467) or `external` (a durable external row
+  promoted after its merge was observed). Setting the value the row already has
+  replies `applied:false` with no reason. The snapshot carries the map as
+  `merge_shelved`.
 - The `worker-queue-snapshot` carries the queue as `merge_queue`
   (`[{ bead_id, resolution_rounds, resolution?, continuation_action? }]`,
   durable order). The optional `resolution` projection is the exact durable wait

@@ -4429,3 +4429,112 @@ describe('worker/merge-queue — timing settings read at arming time', () => {
     });
   });
 });
+
+describe('worker/merge-queue — foreign_handoff hold (UI-k467 §3.7)', () => {
+  const HEAD = 'a'.repeat(40);
+
+  /**
+   * @param {string} reason
+   */
+  function handoffProbe(reason) {
+    return vi.fn(async () => ({
+      ok: false,
+      kind: /** @type {const} */ ('blocked'),
+      reason,
+      head_sha: HEAD,
+      base_ref: 'main',
+      head_ref: 'UI-1',
+      external: false
+    }));
+  }
+
+  test('holds a foreign handoff item instead of dequeuing it', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: vi.fn(),
+      probeMergeability: handoffProbe(
+        'foreign_handoff:foreign_conflict_needs_human'
+      )
+    });
+
+    await mq.kick();
+
+    const entry = store.snapshot(WS).merge_queue[0];
+    expect(entry.bead_id).toBe('UI-1');
+    expect(entry.hold).toMatchObject({
+      reason: 'foreign_handoff:foreign_conflict_needs_human',
+      head_sha: HEAD
+    });
+  });
+
+  test('dispatches no resolver and merges nothing for a conflict handoff', async () => {
+    const store = seed(['UI-1']);
+    const merge = vi.fn();
+    const dispatchConflict = vi.fn();
+    const mq = driver(store, {
+      merge,
+      dispatchConflict,
+      probeMergeability: handoffProbe(
+        'foreign_handoff:foreign_conflict_needs_human'
+      )
+    });
+
+    await mq.kick();
+
+    expect(dispatchConflict).not.toHaveBeenCalled();
+    expect(merge).not.toHaveBeenCalled();
+  });
+
+  test('writes no auto-merge exclusion for a handoff', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: vi.fn(),
+      probeMergeability: handoffProbe(
+        'foreign_handoff:foreign_pr_base_mismatch'
+      )
+    });
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
+  });
+
+  test('merges the held item once the next turn no longer reports the handoff', async () => {
+    const store = seed(['UI-1']);
+    let handed_off = true;
+    const merge = vi.fn(async () => ({
+      ok: true,
+      action: 'merged',
+      reason: null
+    }));
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () =>
+        handed_off
+          ? {
+              ok: false,
+              kind: 'blocked',
+              reason: 'foreign_handoff:foreign_pr_base_mismatch',
+              head_sha: HEAD,
+              base_ref: 'main',
+              head_ref: 'UI-1',
+              external: false
+            }
+          : {
+              ok: true,
+              kind: 'clean',
+              reason: null,
+              head_sha: HEAD,
+              base_ref: 'main',
+              head_ref: 'UI-1',
+              external: false
+            }
+    });
+    await mq.kick();
+    handed_off = false;
+
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledWith('UI-1');
+  });
+});

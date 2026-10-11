@@ -34,11 +34,15 @@
  *
  * @import { Attempt } from './queue-store.js'
  */
-import os from 'node:os';
 import path from 'node:path';
 import { debug } from '../logging.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
 import { failureTokenSummary } from './failure-class.js';
+import {
+  fetchForeignBase as fetchSharedForeignBase,
+  readForeignPins,
+  resolveForeignRemote as resolveSharedForeignRemote
+} from './foreign-target.js';
 import { resolveRepoOps } from './repo-ops-resolver.js';
 import { branchForBead } from './worktree.js';
 
@@ -520,110 +524,33 @@ export function createQuickfixLanding(deps) {
    * @returns {Promise<{ ok: true, foreign: { repo: string, path: string, base: string }|null }|{ ok: false, reason: QuickfixLandingReason }>}
    */
   async function readForeignLanding(bead_id) {
-    /** @type {Record<'foreign_repo'|'foreign_path'|'foreign_base', string>} */
-    const pins = { foreign_repo: '', foreign_path: '', foreign_base: '' };
-    for (const key of /** @type {const} */ ([
-      'foreign_repo',
-      'foreign_path',
-      'foreign_base'
-    ])) {
-      let value;
-      try {
-        value = await deps.bd.readMetadata(bead_id, key);
-      } catch (err) {
-        log('quick_fix %s readback failed for %s: %o', key, bead_id, err);
-        return { ok: false, reason: 'bd_read_failed' };
-      }
-      pins[key] = typeof value === 'string' ? value.trim() : '';
-    }
-    if (
-      pins.foreign_repo.length === 0 &&
-      pins.foreign_path.length === 0 &&
-      pins.foreign_base.length === 0
-    ) {
-      return { ok: true, foreign: null };
-    }
-    // The URL is compared verbatim against `git remote get-url` later, so the
-    // only shape rule here is non-emptiness.
-    if (pins.foreign_repo.length === 0) {
-      return { ok: false, reason: 'foreign_landing_unpinned:foreign_repo' };
-    }
-    const expanded =
-      pins.foreign_path === '~' || pins.foreign_path.startsWith('~/')
-        ? path.join(os.homedir(), pins.foreign_path.slice(1))
-        : pins.foreign_path;
-    if (expanded.length === 0 || !path.isAbsolute(expanded)) {
-      return { ok: false, reason: 'foreign_landing_unpinned:foreign_path' };
-    }
-    // Git itself judges the branch name (`foo..bar`, `.hidden`, `main.lock`
-    // are all refused); the rig cwd is only a place to run a repo-independent
-    // command from.
-    if (pins.foreign_base.length === 0 || /\s/.test(pins.foreign_base)) {
-      return { ok: false, reason: 'foreign_landing_unpinned:foreign_base' };
-    }
-    try {
-      const checked = await deps.gitRun(
-        ['check-ref-format', `refs/heads/${pins.foreign_base}`],
-        { cwd: repo }
-      );
-      if (checked.code !== 0) {
-        return { ok: false, reason: 'foreign_landing_unpinned:foreign_base' };
-      }
-    } catch (err) {
-      log('quick_fix foreign_base check failed for %s: %o', bead_id, err);
-      return { ok: false, reason: 'foreign_landing_unpinned:foreign_base' };
-    }
-    return {
-      ok: true,
-      foreign: {
-        repo: pins.foreign_repo,
-        path: path.normalize(expanded),
-        base: pins.foreign_base
-      }
-    };
+    return /** @type {Promise<{ ok: true, foreign: { repo: string, path: string, base: string }|null }|{ ok: false, reason: QuickfixLandingReason }>} */ (
+      readForeignPins(
+        {
+          readMetadata: deps.bd.readMetadata,
+          gitRun: deps.gitRun,
+          cwd: repo,
+          log
+        },
+        bead_id
+      )
+    );
   }
 
   /**
    * Bind the pinned foreign checkout: it must be a git checkout, and one of its
    * remotes must carry exactly the pinned URL — that remote, not `origin`, is
-   * what the base is fetched from.
+   * what the base is fetched from. The push delivery keeps its verbatim URL
+   * match (`match: 'exact'`).
    *
    * @param {{ repo: string, path: string, base: string }} foreign
    * @returns {Promise<{ ok: true, remote: string }|{ ok: false, reason: 'foreign_checkout_unavailable' }>}
    */
   async function resolveForeignRemote(foreign) {
-    try {
-      const top = await deps.gitRun(['rev-parse', '--show-toplevel'], {
-        cwd: foreign.path
-      });
-      if (top.code !== 0) {
-        return { ok: false, reason: 'foreign_checkout_unavailable' };
-      }
-      const remotes = await deps.gitRun(['remote'], { cwd: foreign.path });
-      if (remotes.code !== 0) {
-        return { ok: false, reason: 'foreign_checkout_unavailable' };
-      }
-      for (const name of remotes.stdout.split(/\r?\n/)) {
-        const remote = name.trim();
-        if (remote.length === 0) {
-          continue;
-        }
-        const url = await deps.gitRun(['remote', 'get-url', remote], {
-          cwd: foreign.path
-        });
-        if (url.code === 0 && url.stdout.trim() === foreign.repo) {
-          return { ok: true, remote };
-        }
-      }
-      return { ok: false, reason: 'foreign_checkout_unavailable' };
-    } catch (err) {
-      log(
-        'quick_fix foreign checkout unavailable at %s: %o',
-        foreign.path,
-        err
-      );
-      return { ok: false, reason: 'foreign_checkout_unavailable' };
-    }
+    return resolveSharedForeignRemote(foreign, deps.gitRun, {
+      match: 'exact',
+      log
+    });
   }
 
   /**
@@ -636,32 +563,7 @@ export function createQuickfixLanding(deps) {
    * @returns {Promise<{ ok: true, sha: string }|{ ok: false }>}
    */
   async function fetchForeignBase(foreign, remote) {
-    try {
-      const fetched = await deps.gitRun(
-        ['fetch', '--no-tags', remote, foreign.base],
-        { cwd: foreign.path }
-      );
-      if (fetched.code !== 0) {
-        return { ok: false };
-      }
-      // `FETCH_HEAD` is the commit this fetch just brought in; a
-      // remote-tracking ref can lag it under a custom refspec.
-      const rev = await deps.gitRun(['rev-parse', 'FETCH_HEAD'], {
-        cwd: foreign.path
-      });
-      const sha = rev.stdout.trim();
-      if (rev.code !== 0 || !/^[0-9a-f]{40}$/i.test(sha)) {
-        return { ok: false };
-      }
-      return { ok: true, sha };
-    } catch (err) {
-      log(
-        'quick_fix foreign base observation failed for %s: %o',
-        foreign.repo,
-        err
-      );
-      return { ok: false };
-    }
+    return fetchSharedForeignBase(foreign, remote, deps.gitRun);
   }
 
   /**

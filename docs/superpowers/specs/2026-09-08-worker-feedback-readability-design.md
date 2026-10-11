@@ -253,6 +253,16 @@ URL·번호가 있는 행의 PR 링크는 해당 원본값으로 만든다. 같�
 서버 게이트가 권한의 근거다. 직접 링크는 기존 PR 링크의 URL 검증·외부 열기
 방식을 재사용한다.
 
+**정정(UI-k467).** "외부 PR은 관측·머지·정리하지 않는다"는 이제 핀이 없는 외부
+등록 행에만 해당한다. Bead가 `foreign_repo`·`foreign_path`·`foreign_base` 핀을
+갖고 `pr_url`이 그 저장소 소속인 행(enclosed foreign landing의 PR 전달)은
+`foreign`이 아니라 `foreign_target`을 갖고, 이 Worker가 `gh --repo <핀 slug>`로
+관측하고 같은 머지 큐로 머지하며 대상 저장소에서 포함 증명·소유 잔여물 정리·close를
+한다. 그 행의 `↗ <owner/repo>` 설명은 "다른 저장소의 PR입니다. 대상 저장소
+절차로 이 Worker가 머지합니다"이고 `[보관]`이 열린다. 핀 없는 행의 표시·권한은
+위 문단 그대로다. 근거는 `2026-10-11-foreign-pr-worker-merge-design.md`
+§3.3·§3.8이 소유한다.
+
 ## 7. 공유 정본 반영 문구
 
 구현 PR에서 카드 문법 스펙 §5.1 슬롯 표와 관련 설명에 다음 문구를 반영한다. 이번

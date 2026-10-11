@@ -13,6 +13,7 @@ import {
   isImplementationAttempt,
   latestImplementationAttempts
 } from '../../utils/active-attempts.js';
+import { FOREIGN_HANDOFF_SENTENCES } from '../../utils/failure-sentences.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { failureSentence } from './failure-labels.js';
@@ -30,6 +31,39 @@ import { tileResolveFields } from './tile-resolve.js';
  * @import { LaneItem, LaneMergeQueue, LaneModel, LaneQueueGroup } from './lane-model.js'
  * @import { DependencyChips } from './lanes.js'
  */
+
+/**
+ * The `foreign_handoff` cause a reason token names (`foreign_handoff:<cause>`),
+ * or null (UI-k467 §3.7).
+ *
+ * @param {unknown} reason
+ * @returns {string|null}
+ */
+function foreignHandoffCause(reason) {
+  if (typeof reason !== 'string' || !reason.startsWith('foreign_handoff:')) {
+    return null;
+  }
+  const cause = reason.slice('foreign_handoff:'.length);
+  return Object.hasOwn(FOREIGN_HANDOFF_SENTENCES, cause) ? cause : null;
+}
+
+/** The badge a `foreign_handoff` row wears — the contract's notify_label. */
+const FOREIGN_HANDOFF_BADGE = '외부 PR 사람 처리 필요';
+
+/**
+ * Labels of the merge button that get the target repository name
+ * (`머지 ↗ <저장소>`, UI-k467 §3.8). The cleanup retry and the continuation
+ * choice are not merges and keep their own words.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const FOREIGN_LABELLED_MERGE = new Set([
+  '머지',
+  '충돌 해소 후 머지',
+  'base 갱신 후 머지',
+  '리뷰 후 머지',
+  '다시 머지'
+]);
 
 /**
  * A plain-object view of an optional snapshot record; anything else reads as
@@ -571,6 +605,14 @@ export function prStatusBadge(input) {
           live: true
         });
   }
+  // A pinned foreign PR handed to a person (UI-k467 §3.7): the wall is the
+  // row's state, the cause sentence its title, and no click releases it.
+  if (input.foreign_handoff) {
+    return badge(FOREIGN_HANDOFF_BADGE, {
+      title: `${FOREIGN_HANDOFF_SENTENCES[input.foreign_handoff]} — [머지]로 풀리지 않습니다`,
+      alert: true
+    });
+  }
   if (input.merge_step) {
     return input.gate?.tier === 'merged'
       ? badge('머지됨', {
@@ -855,13 +897,16 @@ export function prStatusBadge(input) {
  * `[리뷰 후 머지]` 세션 상태 (UI-d7fy §5.4). 실행 중이면 버튼이 잠기고, 마지막
  * 세션의 종료 사유는 게이트 뱃지 옆 텍스트가 된다. `origin`은 그 세션을 사람이
  * 눌렀는지 큐가 자동으로 띄웠는지다 (UI-qksl §7).
- * @param {{ foreign?: boolean, repo_slug?: string, pr_url?: string, pr_number?: number }} [external_pr]
+ * @param {{ foreign?: boolean, repo_slug?: string, pr_url?: string, pr_number?: number, foreign_target?: { slug: string, repo_name: string }|null }} [external_pr]
  * The four PR facts the external-PR registry owns (UI-kyky §6.1), carried on the
  * synthesized overlay row only. `foreign === true` means the url names ANOTHER
  * repository, which this workspace never observes — so that row's PR link is
  * built from these verified values instead of the (absent) observation, and a
  * same-repo row keeps preferring what the poller observed. `repo_slug` alone
- * never re-decides `foreign`.
+ * never re-decides `foreign`. `foreign_target` is a PINNED foreign PR target
+ * (UI-k467): that row is observed, merged and closed by this Worker, so its
+ * label names the target and its handoff badge stands; the observation's own
+ * `foreign` record wins over the registry's when both exist.
  * @param {boolean} [shelved] - 이 행이 `merge_shelved`에 있는지 (UI-sd12
  * §3.4, 외부 행 포함 UI-8d8y). true면 [머지] 대신 [보관 해제]를 싣고 레인은
  * `보관 N` 묶음에 그린다.
@@ -917,6 +962,24 @@ function prWaitRow(
     foreign_pr && typeof external_pr.pr_number === 'number'
       ? external_pr.pr_number
       : null;
+  // 핀이 있는 외부 PR 대상 (UI-k467 §3.8): 관측이 싣는 대상이 등록부의 것을
+  // 이긴다. 핀 없는 외부 행(`foreign_pr`)과는 서로 배타다.
+  const pinned_foreign =
+    (obs && obs.foreign && typeof obs.foreign.slug === 'string'
+      ? obs.foreign
+      : null) ||
+    (external_pr.foreign_target &&
+    typeof external_pr.foreign_target.slug === 'string'
+      ? external_pr.foreign_target
+      : null);
+  // 사람에게 넘긴 원인 (§3.7): 머지 전 원인은 관측이, 머지 뒤 deploy 원인은
+  // 정리 기록이 싣는다.
+  const foreign_handoff = pinned_foreign
+    ? (typeof obs?.foreign?.handoff === 'string' &&
+      Object.hasOwn(FOREIGN_HANDOFF_SENTENCES, obs.foreign.handoff)
+        ? obs.foreign.handoff
+        : null) || foreignHandoffCause(cleanup_failed?.reason)
+    : null;
   const resolution = resolutionView(
     merge_queue ? merge_queue.resolution : null
   );
@@ -984,6 +1047,8 @@ function prWaitRow(
   // re-adopted or re-run. UI-18a5 §3.2 names this button the row's
   // [워커로 이어가기] and puts [세션에서 이어가기] right in front of it.
   const cleanup_retry =
+    // 외부 PR 사람 처리 필요는 `[워커로 이어가기]`가 없다 (UI-k467 §3.7).
+    foreign_handoff === null &&
     !!cleanup_failed &&
     [
       'repo_operations',
@@ -1015,7 +1080,11 @@ function prWaitRow(
       ? active.queueing
       : null;
   const external_cleanup =
-    external && !!cleanup_failed && !!gate && gate.tier === 'merged';
+    foreign_handoff === null &&
+    external &&
+    !!cleanup_failed &&
+    !!gate &&
+    gate.tier === 'merged';
   // A re-click restores the action surface, but it cannot turn an otherwise
   // terminal/unknown gate into a server continuation (UI-vkk8 §2).
   const reclick_continuable =
@@ -1041,7 +1110,9 @@ function prWaitRow(
   const external_conflict_unresolvable =
     external && conflicting && wt_present === false;
   const discard = discardProjection(discard_operations, bead_id, {
-    external,
+    // 핀이 있는 외부 행은 Worker가 대상 PR과 핀으로 폐기한다 (UI-k467 §3.9) —
+    // `external` 숨김은 핀 없는 외부 행에만 남는다.
+    external: external && !pinned_foreign,
     merge_active: queue_active || merge_step?.step === 'merge',
     merge_queued: queued,
     conflict_active: !!conflict_session,
@@ -1056,6 +1127,9 @@ function prWaitRow(
   const failure_material = {
     cleanup: !!cleanup_failed,
     cleanup_retry: cleanup_retry || external_cleanup,
+    // 외부 PR 사람 처리 필요 행 (UI-k467 §3.7): `tileResolveFields`가 이것을
+    // 먼저 읽어 그 행 종류를 정한다.
+    foreign_handoff,
     completion_phase:
       completion?.phase === 'needs_human' || completion?.phase === 'holding'
         ? completion.phase
@@ -1073,6 +1147,7 @@ function prWaitRow(
     auto_pending,
     continuation_required,
     queueing,
+    foreign_handoff,
     merge_step,
     conflict_badge,
     conflict_live: resolution?.live === true || conflict_session === 'running',
@@ -1103,7 +1178,7 @@ function prWaitRow(
   const receipt_badge_codes = receiptBadgeCodes(
     obs && obs.receipt_check ? obs.receipt_check : null
   );
-  return {
+  const row = {
     id: bead_id,
     title: external ? html`${title}<span class="muted"> · 세션</span>` : title,
     reason:
@@ -1320,6 +1395,47 @@ function prWaitRow(
                                               // is running, so "머지 불가: 관측 대기" would be a lie about why.
                                               '머지됨 — 머지 후 정리 진행 중'
                                             : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+  };
+  return pinned_foreign
+    ? foreignPrRow(row, pinned_foreign, foreign_handoff)
+    : row;
+}
+
+/**
+ * Dress a pinned foreign PR row (UI-k467 §3.8): the target repository rides
+ * slot 1 (`↗ owner/repo`, tooltip saying this Worker merges it) and the merge
+ * button label (`머지 ↗ <저장소>`, truncated, full `owner/repo` in its title). A
+ * `foreign_handoff` row keeps its button but disables it — `[머지]` does not
+ * release that class (§3.7).
+ *
+ * @param {any} row
+ * @param {{ slug: string, repo_name?: string }} target
+ * @param {string|null} handoff
+ * @returns {any}
+ */
+function foreignPrRow(row, target, handoff) {
+  const repo_name =
+    typeof target.repo_name === 'string' && target.repo_name.length > 0
+      ? target.repo_name
+      : target.slug.split('/').at(-1) || target.slug;
+  const base_label =
+    typeof row.merge_label === 'string' ? row.merge_label : '머지';
+  const labelled = FOREIGN_LABELLED_MERGE.has(base_label);
+  return {
+    ...row,
+    foreign_repo: target.slug,
+    foreign_pinned: true,
+    ...(labelled
+      ? {
+          merge_label: `${base_label} ↗ ${repo_name}`,
+          merge_truncate: true
+        }
+      : {}),
+    merge_title:
+      handoff !== null
+        ? `${target.slug} — ${FOREIGN_HANDOFF_SENTENCES[handoff]} [머지]로 풀리지 않습니다`
+        : `${target.slug} — ${row.merge_title}`,
+    ...(handoff !== null ? { merge_enabled: false } : {})
   };
 }
 
@@ -1557,7 +1673,12 @@ export function prWaitRowsOf(input) {
             ? { repo_slug: e.repo_slug }
             : {}),
           ...(typeof e.pr_url === 'string' ? { pr_url: e.pr_url } : {}),
-          ...(typeof e.pr_number === 'number' ? { pr_number: e.pr_number } : {})
+          ...(typeof e.pr_number === 'number'
+            ? { pr_number: e.pr_number }
+            : {}),
+          ...(e.foreign_target && typeof e.foreign_target.slug === 'string'
+            ? { foreign_target: e.foreign_target }
+            : {})
         },
         // 세션이 배달한 외부 행도 보관된다 (UI-8d8y) — 기록이 곧 판정이다.
         Object.hasOwn(merge_shelved, e.bead_id)

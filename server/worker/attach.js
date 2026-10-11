@@ -66,8 +66,12 @@ import {
   foreignBlockerStatusFor,
   prewarmIssuePrefix
 } from './foreign-blocker-status.js';
+import { createForeignHandoffAnnouncer } from './foreign-handoff.js';
 import { readPushLog } from './guard-hook.js';
-import { observedHeadSha } from './merge-candidates.js';
+import {
+  observationVerifyPolicy,
+  observedHeadSha
+} from './merge-candidates.js';
 import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
 import {
@@ -1158,6 +1162,16 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         runtime.titleCache.ensureTitle(workspace_root, bead_id)
     });
 
+  // The `foreign_handoff` announcer (UI-k467 §3.7): the Bead timeline holds the
+  // once-record, so a restart or re-observation of the same wall stays silent.
+  const foreignHandoff = createForeignHandoffAnnouncer({
+    workspace: keyFor(workspace_root),
+    repo,
+    timeline,
+    notify,
+    failureConversation: runtime.failureConversation
+  });
+
   const repoOperationCoordinator = createRepoOperationCoordinator({
     workspace: workspace_root,
     repo,
@@ -1208,7 +1222,12 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // the status pair), so both write through one confirmed argv encoding.
   const verify =
     options.verify ||
-    createVerifier({ gh, bd: createBdMetadata({ cwd: workspace_root }) });
+    createVerifier({
+      gh,
+      // The foreign_base branch-name check of a pinned Bead (UI-k467 §3.2).
+      gitRun,
+      bd: createBdMetadata({ cwd: workspace_root })
+    });
 
   // Custom process seams identify unit-test attachments. Production supplies
   // none of them and therefore always gets verified process-group control.
@@ -1804,6 +1823,13 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     if (fresh === false) {
       return;
     }
+    // The foreign target of EVERY scanned PR Bead (UI-k467 §3.1): the rows
+    // registered below exclude a Bead the Worker owns, but a Worker-delivered
+    // `pr_wait` row is observed through the same pins.
+    runtime.externalPrs.replaceTargets(
+      keyFor(workspace_root),
+      /** @type {import('./bd-metadata.js').ExternalPrScanRow[]} */ (pr_rows)
+    );
     const protected_ids = externalProtectedIds();
     if (protected_ids === null) {
       // Fail-closed: with no protection set the exclusion cannot be decided, and
@@ -1817,7 +1843,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     } else {
       /** @type {string[]} */
       const excluded = [];
-      /** @type {{ bead_id: string, pr_url: string, pr_number: number|null, receipt_key?: string|null, receipt_check?: import('./receipt-check.js').ReceiptCheckResult|null }[]} */
+      /** @type {{ bead_id: string, pr_url: string, pr_number: number|null, receipt_key?: string|null, receipt_check?: import('./receipt-check.js').ReceiptCheckResult|null, foreign_pins?: Record<string, unknown>|null }[]} */
       const rows = [];
       for (const row of /** @type {import('./bd-metadata.js').ExternalPrScanRow[]} */ (
         pr_rows
@@ -1830,6 +1856,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           bead_id: row.bead_id,
           pr_url: row.pr_url,
           pr_number: parsePrNumber(row.pr_url),
+          foreign_pins: row.metadata || null,
           ...(await observedReceiptFor(row))
         });
       }
@@ -1937,7 +1964,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     notify,
     // The workspace's ONE timeline writer, for the line a post-merge cleanup
     // that backed up leftover content leaves (UI-w2ou §3.4).
-    timeline
+    timeline,
+    // The once-recorded `foreign_handoff` push of a pinned foreign PR the
+    // click, the queue or the post-merge tail hands to a person (UI-k467 §3.7).
+    announceForeignHandoff: (input) => foreignHandoff.announce(input)
   });
 
   // The one-shot legacy-state migration (master spec §11). It converts durable
@@ -2008,9 +2038,12 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         ) {
           return null;
         }
-        const policy = effectiveVerifyPolicy(
-          repoOpsDisplayFor(workspace),
-          runtime.queueStore.snapshot(workspace)
+        const policy = observationVerifyPolicy(
+          entry,
+          effectiveVerifyPolicy(
+            repoOpsDisplayFor(workspace),
+            runtime.queueStore.snapshot(workspace)
+          )
         );
         if (
           policy.declaration_state !== 'present' ||
@@ -2362,6 +2395,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       refresh: refreshExternalPrs,
       list: () => runtime.externalPrs.list(keyFor(workspace_root))
     },
+    // The pinned foreign target of every scanned PR Bead (UI-k467 §3.3) and
+    // the once-recorded `foreign_handoff` push (§3.7).
+    foreignTargetOf: (bead_id) =>
+      runtime.externalPrs.targetOf(keyFor(workspace_root), bead_id),
+    announceForeignHandoff: (input) => foreignHandoff.announce(input),
     notifyChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 

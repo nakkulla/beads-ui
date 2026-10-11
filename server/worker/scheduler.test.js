@@ -48,6 +48,7 @@ import {
   RESOLVE_PANE_MARKER
 } from './tmux-launcher.js';
 import { createUsageStore } from './usage-store.js';
+import { createVerifier } from './verify.js';
 import { conversationVerdict } from './wait-judgment.js';
 import * as work_recovery_policy from './work-recovery-policy.js';
 
@@ -31430,6 +31431,273 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
 
       expect(result).toEqual({ ok: false, reason });
       expect(env.store.snapshot(WS).attempts.target.status).toBe(status);
+    });
+  });
+});
+
+describe('enclosed foreign PR delivery reaches pr_wait (UI-k467 §3.2)', () => {
+  const FOREIGN_URL = 'https://github.com/acme/research-repo-template/pull/4';
+  const PINS = {
+    foreign_repo: 'git@github.com:acme/research-repo-template.git',
+    foreign_path: '/targets/research-repo-template',
+    foreign_base: 'main',
+    pr_url: FOREIGN_URL
+  };
+
+  /**
+   * The REAL verifier over a gh that answers only through the pinned slug and
+   * the scheduler fake's own bd — so the verdict the scheduler routes on is the
+   * one `verify.js` produces for a pinned Bead.
+   */
+  function foreignVerify() {
+    /** @type {{ bd: any }} */
+    const holder = { bd: null };
+    const forSlug = vi.fn(() => ({
+      prDetail: vi.fn(async () => ({
+        state: /** @type {const} */ ('ok'),
+        data: {
+          number: 4,
+          url: FOREIGN_URL,
+          state: 'OPEN',
+          mergeable: 'MERGEABLE',
+          merge_state_status: 'CLEAN',
+          head_ref: 'UI-1',
+          base_ref: 'main',
+          head_sha: 'a'.repeat(40)
+        }
+      }))
+    }));
+    const openPrForBranch = vi.fn(async () => ({
+      state: /** @type {const} */ ('empty')
+    }));
+    const verify = {
+      verifyPrSubmitted: vi.fn(
+        async (/** @type {{ repo: string, bead_id: string }} */ input) =>
+          createVerifier({
+            gh: /** @type {any} */ ({
+              openPrForBranch,
+              prDetail: vi.fn(),
+              repoSlug: async () => 'o/r',
+              forSlug
+            }),
+            bd: holder.bd,
+            gitRun: async () => ({ code: 0, stdout: '', stderr: '' }),
+            sleep: async () => {}
+          }).verifyPrSubmitted(input)
+      )
+    };
+    return { verify, holder, forSlug, openPrForBranch };
+  }
+
+  test('moves a successful pinned session into pr_wait without a failure', async () => {
+    const f = foreignVerify();
+    const env = setup({
+      config: { S1: { metadata: { ...PINS } } },
+      slots: 1,
+      verify: f.verify
+    });
+    f.holder.bd = env.bd;
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.pr_wait.map((e) => e.bead_id)).toContain('S1');
+    expect(snap.attempts[attempt_id].status).toBe('done');
+    expect(snap.attempts[attempt_id].cause ?? null).toBe(null);
+    expect(f.forSlug).toHaveBeenCalledWith('acme/research-repo-template');
+    expect(f.openPrForBranch).not.toHaveBeenCalled();
+  });
+
+  test('moves a dead detached pinned attempt into pr_wait on reconcile', async () => {
+    const f = foreignVerify();
+    const env = setup({
+      config: { 'UI-1': { metadata: { ...PINS } } },
+      probePid: () => ({ alive: false, started_at: null }),
+      verify: f.verify
+    });
+    f.holder.bd = env.bd;
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['att-1'].status).toBe('done');
+    expect(snap.pr_wait.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('fails a pinned session whose pr_url names another repository with the contract token', async () => {
+    const f = foreignVerify();
+    const env = setup({
+      config: {
+        S1: {
+          metadata: { ...PINS, pr_url: 'https://github.com/o/r/pull/9' }
+        }
+      },
+      slots: 1,
+      verify: f.verify
+    });
+    f.holder.bd = env.bd;
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.pr_wait).toEqual([]);
+    expect(snap.attempts[attempt_id].cause).toBe(
+      'verify_failed:foreign_pr_repo_mismatch'
+    );
+  });
+});
+
+describe('foreign PR review session dispatch (UI-k467 §3.10)', () => {
+  const TARGET_PATH = '/targets/research-repo-template';
+
+  /**
+   * A git fake whose pinned checkout has one remote bound to the pinned repo.
+   */
+  function targetGit() {
+    return vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'check-ref-format') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
+        return { code: 0, stdout: `${TARGET_PATH}\n`, stderr: '' };
+      }
+      if (args[0] === 'remote' && args.length === 1) {
+        return { code: 0, stdout: 'upstream\n', stderr: '' };
+      }
+      if (args[0] === 'remote' && args[1] === 'get-url') {
+        return {
+          code: 0,
+          stdout: 'git@github.com:acme/research-repo-template.git\n',
+          stderr: ''
+        };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    });
+  }
+
+  /**
+   * @param {{ guardHook?: any }} [options]
+   */
+  function foreignReviewEnv(options = {}) {
+    const env = setup({
+      config: {
+        B1: {
+          metadata: {
+            foreign_repo: 'git@github.com:acme/research-repo-template.git',
+            foreign_path: TARGET_PATH,
+            foreign_base: 'main',
+            pr_url: 'https://github.com/acme/research-repo-template/pull/4'
+          }
+        }
+      },
+      slots: 1,
+      gitRun: targetGit(),
+      ...(options.guardHook ? { guardHook: options.guardHook } : {})
+    });
+    env.store.upsertReviewSessionAttempt(WS, {
+      attempt_id: 'review:1',
+      patch: {
+        bead_id: 'B1',
+        kind: 'review_session',
+        status: 'pending',
+        authority_id: 'authority-1',
+        head_sha: 'a'.repeat(40)
+      }
+    });
+    return env;
+  }
+
+  test('restores a missing review worktree in the target from the bound remote', async () => {
+    const env = foreignReviewEnv();
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.restore.mockImplementation(async () => {
+      env.worktree.exists.mockReturnValue(true);
+      return { ok: true, path: `${TARGET_PATH}/.worktrees/B1` };
+    });
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.worktree.exists).toHaveBeenCalledWith(TARGET_PATH, 'B1');
+    expect(env.worktree.restore).toHaveBeenCalledWith({
+      repo: TARGET_PATH,
+      bead_id: 'B1',
+      head_ref: 'B1',
+      remote: 'upstream'
+    });
+  });
+
+  test('names the target checkout and slug in the review prompt', async () => {
+    const env = foreignReviewEnv();
+
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    const prompt = String(env.runner.spawnedBead('B1').prompt);
+    expect(prompt).toContain(TARGET_PATH);
+    expect(prompt).toContain('--repo acme/research-repo-template');
+  });
+
+  test('installs the push guard for the target checkout and keeps the rig as the workflow root', async () => {
+    const guardHook = {
+      install: vi.fn(() => ({ ok: true })),
+      envFor: vi.fn(() => ({})),
+      remove: vi.fn(() => true)
+    };
+    const env = foreignReviewEnv({ guardHook });
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(guardHook.install).toHaveBeenCalledWith({
+      workspace: WS,
+      attempt_id: 'review:1',
+      repo: TARGET_PATH,
+      target_base: 'main'
+    });
+    expect(env.runner.settingsFor('B1').env).toMatchObject({
+      WORKFLOW_REPO_ROOT: '/repo'
     });
   });
 });

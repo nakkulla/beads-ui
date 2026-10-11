@@ -1,17 +1,30 @@
 ---
-id: UI-9w5l
-title: 버튼으로 풀리는 조치 필요와 대기 사유 무알림
+id: UI-k467
+title: 외부 PR 사람 처리 필요 실패 행과 알림 클래스
 status: accepted
-date: 2026-10-11
-summary: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다; 조치 필요는 beads-ui 버튼으로 해결할 수 있는 대기 사유에만 서고 버튼 이름을 담은 해결 문장을 함께 실으며 선행 대기는 늘 normal이고 대기 사유 판정은 Discord로 알리지 않는다; 살아 있는 대화가 있는 행은 Discord 링크가 없을 때만 [세션에서 이어가기]를 그리고 그 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다"
-supersedes: ["UI-jbl1"]
-spec: docs/superpowers/specs/2026-10-11-action-required-resolvable-by-button-design.md
-bead: UI-9w5l
+date: 2026-10-12
+summary: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 외부 PR 사람 처리 필요, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 외부 PR 사람 처리 필요 행은 [머지]로 풀리지 않고 [세션에서 이어가기]만 출구다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다; 조치 필요는 beads-ui 버튼으로 해결할 수 있는 대기 사유에만 서고 버튼 이름을 담은 해결 문장을 함께 실으며 선행 대기는 늘 normal이고 대기 사유 판정은 Discord로 알리지 않는다; 살아 있는 대화가 있는 행은 Discord 링크가 없을 때만 [세션에서 이어가기]를 그리고 그 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다"
+supersedes: ["UI-9w5l"]
+spec: docs/superpowers/specs/2026-10-11-foreign-pr-worker-merge-design.md
+bead: UI-k467
 ---
 
-# 버튼으로 풀리는 조치 필요와 대기 사유 무알림
+# 외부 PR 사람 처리 필요 실패 행과 알림 클래스
 
 ## Context
+
+이 결정은 `ADR UI-9w5l`(버튼으로 풀리는 조치 필요와 대기 사유 무알림)을 다시 쓴다. 그 ADR과 소비자(`completion-intent.js` 알림 분류, `notify.js` 다음 행동 문구, `tileResolveFields` 행 종류, `pr-wait-row.js` `[머지]` 술어)를 공유하므로 새 주제가 아니다. 바꾸는 조항은 UI-jbl1에서 승계한 닫힌 목록 둘 — 남는 `needs_human` 알림 클래스와 `[세션에서 이어가기]`가 서는 실패 행 — 이고 나머지는 모두 승계한다. 외부 PR의 머지 권한·대상 `[verify]`·`foreign_handoff`·머지 뒤 마감 조항의 정본은 dotfiles `ADR dotfiles/dotfiles-8k8yf`이고 이 ADR은 그 소비자 쪽 결정이다.
+
+UI-k467(2026-10-11): dotfiles-s6vnr은 rig가 없는 research-repo-template의 PR #4로 전달됐고 세션은 `성공 · PR #4`로 끝났다. Worker의 세션 뒤 확인은 기록된 `pr_url`을 작업 공간 origin과만 비교해 `no_pr`로 읽었고, 실패 카드가 직렬 레인을 잡았다.
+
+사용자 결정(2026-10-11): 대상 저장소에 rig나 이슈를 만들지 않는다. 외부 PR도 작업 공간의 `auto_merge`·순차 머지 큐·`[머지]`를 그대로 따르고 외부 전용 스위치는 두지 않는다. 머지 관문은 대상 저장소의 repo-ops 절차로 판정한다. 대상이 `[deploy]`를 선언했거나 충돌 해결이 필요하면 자동으로 진행하지 않고 멈춰 사람에게 넘긴다.
+
+- 전제: ADR UI-u6ud-2 — `failure_classes.foreign_handoff`의 `notify_label`은 손 복사한 레지스트리로 읽는다.
+- 전제: ADR UI-ny0h — 단일 순차 드라이버, `[머지]`는 등록만, `auto_merge` 독립. 외부 PR의 머지 자격 입력은 대상 저장소 안에서 관측한다.
+
+아래는 `ADR UI-9w5l`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
+
+### ADR UI-9w5l의 맥락 (승계)
 
 이 결정은 `ADR UI-jbl1`(실패 대화 자동 기동과 확인 필요 알림 통일)을 다시 쓴다. 그 ADR과 소비자(`tileResolveFields`, `handleWorkerResolveInSession`의 resolve-in-session 경로, 대기 판정 어휘와 `notify.js`)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 둘이고 나머지는 모두 승계한다: (a) UI-u6ud-7 승계 대기 어휘의 "선행이 `blocked`·`deferred`·worker-ineligible이면 `action_required`"는 "선행 대기는 늘 `normal`"이 된다. (b) "살아 있는 대화형 세션이 종류와 상관없이 하나라도 있으면 `[세션에서 이어가기]`가 서지 않는다"에 "Discord 링크가 없으면 서고 클릭은 그 대화 창을 앞으로 부른다"는 예외가 붙는다.
 
@@ -40,6 +53,17 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 ## Decision
 
+**외부 PR 사람 처리 필요(`foreign_handoff`)는 남는 `needs_human` 알림 클래스이자 `[세션에서 이어가기]`가 서는 실패 행이다. 그 행은 `[머지]`로 풀리지 않고 `[워커로 이어가기]`를 그리지 않으며, `[세션에서 이어가기]`만 출구다.**
+
+- 원인은 계약의 세 토큰(충돌, base 불일치, 대상 `[deploy]`·`post-merge.d` 선언)이다. 알림 라벨은 dotfiles 계약 `failure_classes.foreign_handoff.notify_label`의 바이트 사본 「외부 PR 사람 처리 필요」이고, 알림 제목은 다른 실패 종단과 같은 `🙋 확인 필요 · <클래스>`다. 진입할 때 한 번 보낸다.
+- 상태는 `resolved`로 남는다. 카드 배지는 「외부 PR 사람 처리 필요」이고 원인 문장은 title에 둔다. `[머지]`는 비활성이고 `needs_human`의 `[머지]` 면제 경로가 이 분류를 풀지 못한다.
+- `tileResolveFields`는 이 행을 자기 행 종류로 판정하고 머지 게이트 보류의 세션 제목을 물려받지 않는다. 대화의 첫 입력은 분류·원인·Bead·`foreign_path`와 대상 저장소의 `pr-finish` Foreign-pinned Bead 절차다.
+- 충돌 원인은 PR head가 바뀌면, base 원인은 PR base나 핀이 고쳐지면 다음 관측 턴에 다시 판정해 클릭 없이 풀린다. deploy 원인은 세션에서만 풀린다.
+
+아래는 `ADR UI-9w5l`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-k467)`로 표시했다.
+
+### ADR UI-9w5l에서 승계하는 조항
+
 **조치 필요(`action_required`)는 beads-ui 버튼으로 해결할 수 있는 대기 사유에만 서고, 버튼 이름을 담은 해결 문장을 함께 싣는다. 선행 대기는 늘 `normal`이고 대기 사유 판정은 Discord로 알리지 않는다. 살아 있는 대화가 있는 행은 Discord 링크가 없을 때만 `[세션에서 이어가기]`를 그리고, 그 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다.**
 
 조치 필요의 불변식
@@ -62,7 +86,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 ### ADR UI-jbl1에서 승계하는 조항
 
-**실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 연다. 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일하고 「🚨 사람 필요」를 없앤다. 수동 배포 실패는 「저장소 작업」 서랍의 `[세션에서 이어가기]`와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다.**
+**실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 외부 PR 사람 처리 필요(변경, UI-k467), 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 연다. 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일하고 「🚨 사람 필요」를 없앤다. 수동 배포 실패는 「저장소 작업」 서랍의 `[세션에서 이어가기]`와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다.**
 
 실패 자동 대화
 
@@ -120,7 +144,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 대상 행과 두 버튼
 
-- `[세션에서 이어가기]`가 설 수 있는 행은 확인 필요(파킹·복구 대기), 실패(머지 전 검증 보류·`needs_human` 종단·`cleanup_failed`·실패한 폐기·실패한 수동 배포 저장소 작업(변경, UI-jbl1)), 외부 작업 완료(세션 소유 외부 대기의 `completing` 행) 셋이다. 그 행(Bead 또는 저장소 작업, 변경 UI-jbl1)의 살아 있는 대화형 세션이 종류와 상관없이 하나라도 있으면 서지 않는다. (변경, UI-9w5l) 다만 그 대화에 Discord 링크가 없으면 서고, 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다. 바로 실행 미해결(settle을 넘긴 takeover 마커가 있는 hold/detached 외부 대기) 행에도 서고, 서버 행 순서는 복구 대기 → 바로 실행 미해결 → 외부 작업 완료 → 실패·파킹이다.
+- `[세션에서 이어가기]`가 설 수 있는 행은 확인 필요(파킹·복구 대기), 실패(머지 전 검증 보류·`needs_human` 종단·`cleanup_failed`·실패한 폐기·실패한 수동 배포 저장소 작업(변경, UI-jbl1)·외부 PR 사람 처리 필요(`foreign_handoff`, 변경 UI-k467)), 외부 작업 완료(세션 소유 외부 대기의 `completing` 행) 셋이다. 그 행(Bead 또는 저장소 작업, 변경 UI-jbl1)의 살아 있는 대화형 세션이 종류와 상관없이 하나라도 있으면 서지 않는다. (변경, UI-9w5l) 다만 그 대화에 Discord 링크가 없으면 서고, 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다. 바로 실행 미해결(settle을 넘긴 takeover 마커가 있는 hold/detached 외부 대기) 행에도 서고, 서버 행 순서는 복구 대기 → 바로 실행 미해결 → 외부 작업 완료 → 실패·파킹이다.
 - 클릭 op는 하나이고 서버가 행 상태로 런처를 고른다: 확인 필요 → 문의 런처, 외부 작업 완료 → 외부 재개 런처, 실패 → 해결 런처. 내부 종류(`inquiry`·`resolve`·`external_resume`), pane 마커 셋, 창 이름, fork·같은 세션 재개 방식, 자동 기동 게이트는 그대로다.
 - `[워커로 이어가기]`는 기존 op의 이름을 맞춘 것이다: 확인 필요는 대화 인계, 외부 작업 완료는 Worker attempt fork 재개, 실패의 머지 후 정리는 정리 재시도, 실패의 폐기는 폐기 재시도. 머지 전 검증 보류와 `needs_human` 머지 게이트 행에는 그리지 않는다 — 그 행에서 Worker가 잇는 조작은 `[머지]`다.
 - 짝의 유무와 자리는 `tileResolveFields` 하나가 정하고 PR 대기 행과 저장소 작업 타임라인도 그 판정을 그린다. 짝은 모든 카드에서 슬롯 6이다(카드 문법 스펙 §5.1 정정(UI-18a5)). `인수` 동안은 짝 둘만 숨기고 행의 나머지 조작은 그대로다.
@@ -730,17 +754,26 @@ verify 보류
 - `verify_cmd_spawn_error`·`verify_cmd_timeout`(환경 증거가 있는 경우)은 `auto_resolution`(`class:'retry'`)으로 정해진 지연(현재 5분) 뒤 한 번 재평가하고, 다시 같은 코드면 같은 `verify_hold`에 사유 코드를 싣고 배지만 `검증 명령 실패 — 환경 확인`이다.
 - terminal `needs_human('verify_red')`와 그 systemic 판정은 없다.
 - 알림 이력의 단위는 head다. 타임라인 `merge_step hold:<head_sha>`, Bead 댓글 `## 🤖 완료 보류 기록`, Discord 「머지 보류」가 head당 한 번이고 재관측·재시작은 침묵이다. `[머지]` 재클릭은 무해하다.
-- PR 대기 행의 `[세션에서 이어가기]` 재료는 넷(머지 후 정리 실패·needs_human·폐기 실패·holding)이고, 그 유무는 카드와 같은 `tileResolveFields`가 정한다. 첫 입력은 dotfiles 진입 블록(실패 대화 사유)이며 보류형 의미 — 수정 push가 보류를 푼다 — 는 유지한다. 투영은 `phase === 'holding'`일 때만 `hold`를 싣고 같은 head의 terminal 증거가 우선한다. 알림 라벨은 dotfiles 계약의 바이트 복사다.
+- PR 대기 행의 `[세션에서 이어가기]` 재료는 다섯(머지 후 정리 실패·needs_human·폐기 실패·holding·`foreign_handoff`(변경, UI-k467))이고, 그 유무는 카드와 같은 `tileResolveFields`가 정한다. 첫 입력은 dotfiles 진입 블록(실패 대화 사유)이며 보류형 의미 — 수정 push가 보류를 푼다 — 는 유지한다. 투영은 `phase === 'holding'`일 때만 `hold`를 싣고 같은 head의 terminal 증거가 우선한다. 알림 라벨은 dotfiles 계약의 바이트 복사다.
 
 머지 후 정리와 자동 인계
 
 - `failCleanup`은 「정리 중단」 알림을 보내지 않는다(첫 실패, 관측형 자동 재실행 소진, `[워커로 이어가기]` 재실패 모두). 정리 실패는 Bead 카드의 `cleanup_failed` 행·timeline·Bead 댓글에만 남는다.
-- 남는 `needs_human` 알림 클래스는 머지 게이트 보류(위조 3종), 배포 실패(사다리 소진 뒤 terminal), post-merge 잡 실패, 수동 배포 실패, 폐기 실패다. (변경, UI-jbl1) 그 알림 제목은 `🙋 확인 필요 · <클래스>`이고, 공용 스위치가 켜져 있으면 실패당 한 번 해결 세션을 분리 창에 자동으로 연다.
+- 남는 `needs_human` 알림 클래스는 머지 게이트 보류(위조 3종), 배포 실패(사다리 소진 뒤 terminal), post-merge 잡 실패, 수동 배포 실패, 폐기 실패, 외부 PR 사람 처리 필요(`foreign_handoff`, 변경 UI-k467)다. (변경, UI-jbl1) 그 알림 제목은 `🙋 확인 필요 · <클래스>`이고, 공용 스위치가 켜져 있으면 실패당 한 번 해결 세션을 분리 창에 자동으로 연다.
 - 완료 정리의 `expected_head`는 머지 op의 head(`merge_head_sha`)이고, 읽을 수 없는 오래된 intent는 관측 head → subject head 순으로 폴백한다.
 - 머지 후 결함의 자동 인계는 원시 operation 보존과 복구 분류, 소유 코드 결함의 단일 자동 증명(`deterministic_owned_script_failure`), operation 원장이 소유하는 단일 예약과 재채택, 일반 workflow 입구인 수정 Bead(`type:bug`·quick_fix handoff 네 절·`quick_fix_review=worker@<digest>`·parallel 배치)로 한다. 수정 PR 생성만으로 원래 작업을 완료시키지 않는다.
-- post-merge 잡 원장·`replaces` 승계·CAS 확정을 둔다. 실패 행의 출구는 `[워커로 이어가기]`(정리 재시도·폐기 재시도, 옛 `[정리 재시도]`·폐기 실패 `[재시도]`), `[머지]` 재클릭, `[세션에서 이어가기]`(실패 대화), `[폐기 포기]`다. `[워커로 이어가기]`는 사람 클릭이나 같은 행 실패 대화의 `인계`로 실행되고, 그 인계는 사용자 답의 권한(결과 미상 머지 후 잡 재실행 포함)으로 많아야 한 번 실행한다. 자동 인계는 폐기나 사람 결정을 대신하지 않는다.
+- post-merge 잡 원장·`replaces` 승계·CAS 확정을 둔다. 실패 행의 출구는 `[워커로 이어가기]`(정리 재시도·폐기 재시도, 옛 `[정리 재시도]`·폐기 실패 `[재시도]`), `[머지]` 재클릭, `[세션에서 이어가기]`(실패 대화), `[폐기 포기]`다. (변경, UI-k467) 외부 PR 사람 처리 필요 행의 출구는 `[세션에서 이어가기]` 하나다. `[워커로 이어가기]`는 사람 클릭이나 같은 행 실패 대화의 `인계`로 실행되고, 그 인계는 사용자 답의 권한(결과 미상 머지 후 잡 재실행 포함)으로 많아야 한 번 실행한다. 자동 인계는 폐기나 사람 결정을 대신하지 않는다.
 
 ## Consequences
+
+- 되돌리기 어렵다: `completion-intent.js` 분류·알림 맵, `notify.js` 다음 행동 문구, `tile-resolve.js` 행 종류, `pr-wait-row.js` `[머지]` 술어, `failure-sentences.js`, dotfiles `failure_classes.foreign_handoff.notify_label` 복사본이 함께 움직인다.
+- 맥락 없이는 놀랍다: 같은 PR 대기의 `needs_human` 행인데 머지 게이트 보류와 달리 `[머지]`가 출구가 아니다.
+- 얻는 것: 대상의 deploy lock·post-merge 원장을 소유하지 않는 rig Worker가 대상 저장소의 배포·충돌을 건드리지 않는다.
+- 감수하는 것: 대상 저장소의 배포·충돌을 rig Worker가 자동 처리하는 편의를 잃는다. 그 경우는 사람이 대화로 처리한다.
+- 대안과 기각 사유: 해소 attempt로 충돌을 자동 해결 — 대상 저장소의 쓰기 소유가 rig Worker에 없다. `[머지]`로 풀기 — 계약이 사람에게 넘기라고 정한 경우를 클릭 하나로 우회한다.
+- `ADR UI-9w5l`의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
+
+### ADR UI-9w5l의 결과 (승계)
 
 - 되돌리기 어렵다: wait-judgment 생산자, `notify.js`, `tileResolveFields`, resolve-in-session 핸들러, 팝업·상세 렌더러, 모니터, 범례, protocol `WaitReason`·`VerdictCode`가 함께 움직인다.
 - 맥락 없이는 놀랍다: 새 대기 사유를 더하는 사람은 "사람이 봐야 함"을 `action_required`로 올리고 알림을 기대하기 쉽다. 이 저장소에서 `action_required`는 "beads-ui 버튼으로 풀 수 있다"는 뜻이고, 버튼 없는 기다림은 `normal`이다.

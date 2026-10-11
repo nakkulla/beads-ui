@@ -660,3 +660,45 @@ describe('repoOperationResolveFields (UI-jbl1 §3.3)', () => {
     expect(fields.resolve_enabled).toBe(false);
   });
 });
+
+describe('tileResolveFields — foreign_handoff row (UI-k467 §3.7)', () => {
+  const FOREIGN_HANDOFF = {
+    failure_material: {
+      cleanup: true,
+      cleanup_retry: false,
+      completion_phase: null,
+      foreign_handoff: 'foreign_deploy_unsupported'
+    }
+  };
+
+  test('stands [세션에서 이어가기] on a foreign handoff row', () => {
+    const item = { id: 'UI-1', ...FOREIGN_HANDOFF };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_action).toBe(true);
+  });
+
+  test('draws no [워커로 이어가기] pair on a foreign handoff row', () => {
+    const item = { id: 'UI-1', ...FOREIGN_HANDOFF };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.handoff_action).toBeUndefined();
+    expect(fields.pair_anchor).toBeUndefined();
+  });
+
+  test('titles the session apart from the merge-gate row', () => {
+    const handoff = tileResolveFields(
+      { id: 'UI-1', ...FOREIGN_HANDOFF },
+      false
+    );
+    const merge_gate = tileResolveFields(
+      { id: 'UI-1', ...MATERIALS.merge_gate },
+      false
+    );
+
+    expect(handoff.resolve_title).not.toBe(merge_gate.resolve_title);
+    expect(handoff.resolve_title).toContain('[머지]로 풀리지 않습니다');
+  });
+});

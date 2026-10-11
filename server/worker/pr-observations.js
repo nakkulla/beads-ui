@@ -46,6 +46,22 @@ import path from 'node:path';
  */
 
 /**
+ * What a pinned foreign PR's observation adds (UI-k467 §3.3): the target the
+ * PR was read in, and the `foreign_handoff` cause this turn judged, if any.
+ *
+ * @typedef {Object} ForeignObservation
+ * @property {string} slug - `owner/repo` (gh's `--repo` spelling).
+ * @property {string} repo_name - The repository name alone.
+ * @property {string} base - `foreign_base`.
+ * @property {string} path - `foreign_path`.
+ * @property {string|null} handoff - The `foreign_handoff` cause, or null.
+ * @property {string|null} base_sha - The fetched `foreign_base` tip this turn
+ * judged against, when it got that far.
+ * @property {boolean|null} verify_declared - Whether that tip declares
+ * `[verify]`; null when not judged.
+ */
+
+/**
  * One bead's observation record.
  *
  * @typedef {Object} PrObservationEntry
@@ -58,6 +74,8 @@ import path from 'node:path';
  * @property {ReviewReceiptObservation|null} review_receipt - Workflow review
  * state from the same poll pass, bound to the observed head SHA.
  * @property {VerifyObservation|null} verify - Last local verification result.
+ * @property {ForeignObservation|null} [foreign] - The pinned foreign target
+ * this bead's PR was observed through (UI-k467), or absent.
  */
 
 /**
@@ -157,7 +175,7 @@ export function createPrObservationStore(options = {}) {
      *
      * @param {string} workspace
      * @param {string} bead_id
-     * @param {{ error?: string|null, pr?: PrDetail|null, review_receipt?: ReviewReceiptObservation|null }} input
+     * @param {{ error?: string|null, pr?: PrDetail|null, review_receipt?: ReviewReceiptObservation|null, foreign?: ForeignObservation|null }} input
      * @returns {PrObservationEntry}
      */
     record(workspace, bead_id, input) {
@@ -174,7 +192,8 @@ export function createPrObservationStore(options = {}) {
         error: input.error ?? null,
         pr: input.pr ?? null,
         review_receipt: input.review_receipt ?? null,
-        verify: prior ? prior.verify : null
+        verify: prior ? prior.verify : null,
+        ...(input.foreign ? { foreign: input.foreign } : {})
       };
       lane.set(bead_id, next);
       return next;
@@ -199,7 +218,8 @@ export function createPrObservationStore(options = {}) {
         error: prior ? prior.error : null,
         pr: prior ? prior.pr : null,
         review_receipt: prior ? prior.review_receipt : null,
-        verify
+        verify,
+        ...(prior?.foreign ? { foreign: prior.foreign } : {})
       });
     },
 

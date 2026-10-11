@@ -627,6 +627,26 @@ function renderCardVariants() {
       handoff_action: true
     },
     {
+      // 핀이 있는 외부 PR 행의 긴 대상 저장소 라벨 (UI-k467 §3.8).
+      id: 'PR-3',
+      title: 'foreign pr row',
+      lane: 'pr_wait',
+      done: false,
+      draggable: false,
+      merge_action: true,
+      merge_enabled: true,
+      merge_truncate: true,
+      merge_label:
+        '머지 ↗ research-repo-template-with-a-rather-long-repository-name',
+      merge_title:
+        'acme/research-repo-template-with-a-rather-long-repository-name',
+      foreign_repo:
+        'acme/research-repo-template-with-a-rather-long-repository-name',
+      foreign_pinned: true,
+      shelve_action: 'shelve',
+      shelve_enabled: true
+    },
+    {
       id: 'PR-2',
       title: 'merging row',
       lane: 'pr_wait',
@@ -757,6 +777,21 @@ describe('Worker tab controls use parts (§3.4 check 3)', () => {
 
     expect(controls.length).toBeGreaterThan(15);
     expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws a long foreign merge label on the truncating button part', () => {
+    const mount = renderCardVariants();
+
+    const button = mount.querySelector(
+      '.worker-mini[data-bead-id="PR-3"] .worker-mini__merge'
+    );
+
+    expect(Array.from(button?.classList || [])).toEqual(
+      expect.arrayContaining(['op-btn', 'op-btn--truncate'])
+    );
+    expect(button?.querySelector(':scope > span')?.textContent).toContain(
+      'research-repo-template-with-a-rather-long-repository-name'
+    );
   });
 
   test('draws the arrowless lane sort and filter selects on the bare select variant', () => {

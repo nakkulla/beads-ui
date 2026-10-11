@@ -121,6 +121,23 @@ function row(id, patch = {}) {
 }
 
 /**
+ * The enclosed foreign landing pins of a Bead whose PR lives in another
+ * repository (UI-k467).
+ *
+ * @param {number} number
+ * @returns {Record<string, string>}
+ */
+function foreignPins(number) {
+  return {
+    route: 'quick_fix',
+    foreign_repo: 'git@github.com:acme/research-repo-template.git',
+    foreign_path: '/targets/research-repo-template',
+    foreign_base: 'main',
+    pr_url: `https://github.com/acme/research-repo-template/pull/${number}`
+  };
+}
+
+/**
  * The raw repository: every `bd list --all` row. 한 고정 자료가 여러 사례를
  * 함께 덮는다 — 사례 이름은 각 줄 위에 적는다.
  *
@@ -187,6 +204,11 @@ function rawIssues() {
     row('W-1', { status: 'resolved' }),
     row('W-2', { status: 'resolved' }),
     row('W-3', { status: 'resolved' }),
+    // PR 대기 — 핀이 있는 외부 PR 대상(UI-k467): 머지 가능 행과 사람 처리 행.
+    row('W-4', { status: 'resolved', metadata: foreignPins(41) }),
+    row('W-5', { status: 'resolved', metadata: foreignPins(42) }),
+    // PR 대기 — 세션이 등록한 핀 있는 외부 PR 행(Worker attempt 없음).
+    row('W-6', { status: 'resolved', metadata: foreignPins(43) }),
     // Worker 완료 행과, Worker 밖에서 닫힌 이슈.
     row('D-1', { status: 'closed', closed_at: iso(NOW - HOUR) }),
     row('X-1', {
@@ -315,7 +337,9 @@ function rawQueue() {
     pr_wait: [
       { bead_id: 'W-1', added_at: NOW - 4 * HOUR },
       { bead_id: 'W-2', added_at: NOW - 3 * HOUR },
-      { bead_id: 'W-3', added_at: NOW - 2 * HOUR }
+      { bead_id: 'W-3', added_at: NOW - 2 * HOUR },
+      { bead_id: 'W-4', added_at: NOW - 2 * HOUR + 1 },
+      { bead_id: 'W-5', added_at: NOW - 2 * HOUR + 2 }
     ],
     done: [{ bead_id: 'D-1', added_at: NOW - HOUR }],
     merge_queue: [],
@@ -500,6 +524,54 @@ function seedPrObservations() {
   });
   observations.record(WS, 'W-3', {
     pr: pr(13, { mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })
+  });
+  const foreign = {
+    slug: 'acme/research-repo-template',
+    repo_name: 'research-repo-template',
+    base: 'main',
+    path: '/targets/research-repo-template',
+    handoff: null,
+    base_sha: 'f'.repeat(40),
+    verify_declared: false
+  };
+  observations.record(WS, 'W-4', {
+    pr: pr(41, {
+      url: 'https://github.com/acme/research-repo-template/pull/41'
+    }),
+    review_receipt: {
+      state: 'current',
+      head_sha: String(41).repeat(40).slice(0, 40)
+    },
+    foreign
+  });
+  observations.record(WS, 'W-5', {
+    error: 'foreign_handoff:foreign_pr_base_mismatch',
+    pr: pr(42, {
+      url: 'https://github.com/acme/research-repo-template/pull/42',
+      base_ref: 'develop'
+    }),
+    foreign: { ...foreign, handoff: 'foreign_pr_base_mismatch' }
+  });
+  const w6_url = 'https://github.com/acme/research-repo-template/pull/43';
+  getWorkerRuntime().externalPrs.replace(
+    WS,
+    [
+      {
+        bead_id: 'W-6',
+        pr_url: w6_url,
+        pr_number: 43,
+        foreign_pins: foreignPins(43)
+      }
+    ],
+    { origin_slug: 'example/repo' }
+  );
+  observations.record(WS, 'W-6', {
+    pr: pr(43, { url: w6_url }),
+    review_receipt: {
+      state: 'current',
+      head_sha: String(43).repeat(40).slice(0, 40)
+    },
+    foreign
   });
 }
 
@@ -817,7 +889,10 @@ const SHARED_BEADS = [
   'S-1',
   'W-1',
   'W-2',
-  'W-3'
+  'W-3',
+  'W-4',
+  'W-5',
+  'W-6'
 ];
 
 describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () => {
@@ -842,6 +917,49 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
     expect(partsByBead(monitor_cards, SHARED_BEADS)).toEqual(
       partsByBead(worker_cards, SHARED_BEADS)
     );
+  });
+
+  test('labels the pinned foreign PR merge button with the target name on both tabs', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    const labels = [worker, monitor].map((mount) =>
+      (
+        cardsByBead(mount).get('W-4')?.querySelector('.worker-mini__merge')
+          ?.textContent || ''
+      )
+        .replace(/\s+/g, ' ')
+        .trim()
+    );
+
+    expect(labels).toEqual([
+      '머지 ↗ research-repo-template',
+      '머지 ↗ research-repo-template'
+    ]);
+  });
+
+  test('draws [폐기] on the pinned session-registered external row on both tabs', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    const labels = [worker, monitor].map((mount) =>
+      (
+        cardsByBead(mount).get('W-6')?.querySelector('.worker-mini__discard')
+          ?.textContent || ''
+      ).trim()
+    );
+
+    expect(labels).toEqual(['폐기', '폐기']);
+  });
+
+  test('draws the foreign handoff badge on both tabs', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    const texts = [worker, monitor].map(
+      (mount) => cardsByBead(mount).get('W-5')?.textContent || ''
+    );
+
+    for (const text of texts) {
+      expect(text).toContain('외부 PR 사람 처리 필요');
+    }
   });
 
   test('draws the capacity lines and the run-now button on the external wait card', async () => {
