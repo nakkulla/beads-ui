@@ -182,6 +182,10 @@ base `d14c7927af82881ab6db3a4ae7a35cb446cfb8b6` 기준.
     재료(`interactive_sessions`·`discord_url`)를 아는 공유 함수 한 곳이다.
 - 버튼: `discord_url`이 없을 때만 `tileResolveFields`가 live 대화 가드를 풀어
   `[세션에서 이어가기]`를 그린다. 그 밖의 가드(인계·인수 결과 보유 중 숨김)는 그대로다.
+- 서버 투영: wait-judgment는 live 대화의 `action_required` 사유(예: `turn_state`
+  question/limit, conversation `answer`)에도 `worker-resolve-in-session` op를 싣는다.
+  그래서 §3.1 불변식이 서버에서 성립한다. 그릴지는 위 버튼 규칙이 정한다. `↗ Discord`
+  링크는 클라이언트 재료라서 서버 불변식의 해결 op로 세지 않는다.
 - 클릭: 서버 `handleWorkerResolveInSession`은 행 판정보다 먼저 그 Bead의 live 대화
   레코드를 찾는다. 찾으면 그 레코드 종류의 pane 마커와 키로 `focusRunning(placement:'user')`만
   부르고 `already_running`으로 답한다. 새 세션을 띄우지 않고, 레코드·대기 상태를 바꾸지
