@@ -22,6 +22,26 @@ import { isCleanupResolutionFailure } from './resolution-ladder.js';
 import { getWorkerRuntime } from './runtime.js';
 
 /**
+ * The `[verify]` policy one observation is gated by. A pinned foreign PR's
+ * policy is the fetched `foreign_base` tip's declaration its observation
+ * recorded (UI-k467 §3.5), never the workspace's.
+ *
+ * @param {any} record - One observation entry, or null.
+ * @param {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null, error?: string }} verify_policy
+ * @returns {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null, error?: string }}
+ */
+export function observationVerifyPolicy(record, verify_policy) {
+  const foreign = record && record.foreign ? record.foreign : null;
+  if (!foreign) {
+    return verify_policy;
+  }
+  return {
+    declaration_state: foreign.verify_declared === true ? 'present' : 'absent',
+    base_sha: typeof foreign.base_sha === 'string' ? foreign.base_sha : null
+  };
+}
+
+/**
  * Whether a bead has a conflict-resolution session of its own in flight
  * (running or paused). The lane row's [머지] is quiet in exactly that state
  * (UI-dxgz §1), so bulk queuing must not take it either — there is nothing to
@@ -232,7 +252,7 @@ export function mergeQueueCandidates(workspace_key, queue, verify_policy) {
     const gate = evaluateMergeGate(record, {
       review_receipt_state: observedReviewReceiptState(record),
       verify_receipt_state: repoOpsVerifyReceiptState(
-        verify_policy,
+        observationVerifyPolicy(record, verify_policy),
         record?.verify || null
       ),
       // This is a SYNCHRONOUS scan of cached observations, so it has no
@@ -243,8 +263,11 @@ export function mergeQueueCandidates(workspace_key, queue, verify_policy) {
     });
     const conflicting = gate.base_badge === '충돌';
     const merged_tier = gate.tier === 'merged';
+    // A pinned foreign PR has no completion repair lane (UI-k467): its
+    // handoff and verify failures go to a person, never to a repair intake.
     const repairable =
       !external &&
+      !record?.foreign &&
       ((gate.tier === 'verify' && gate.gate_badge === '검증 실패') ||
         (merged_tier && isCleanupResolutionFailure(cleanup_failed[bead_id])));
     // An EXTERNAL conflict vetoes even a green gate, exactly as the row does

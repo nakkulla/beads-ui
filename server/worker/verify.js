@@ -49,12 +49,17 @@
  *
  * @import { GhResult, PrObservation, PrDetail } from './gh.js'
  */
+import {
+  parsePrUrlStrict,
+  readForeignPins,
+  sameRepository
+} from './foreign-target.js';
 import { branchForBead } from './worktree.js';
 
 /**
  * @typedef {Object} VerifyResult
  * @property {boolean} ok - An open PR was observed AND bd carries the record.
- * @property {'ok'|'no_pr'|'gh_observation_failed'|'bd_record_failed'|'bd_read_failed'} reason
+ * @property {'ok'|'no_pr'|'gh_observation_failed'|'bd_record_failed'|'bd_read_failed'|'foreign_pr_repo_mismatch'|'foreign_landing_unpinned:foreign_repo'|'foreign_landing_unpinned:foreign_path'|'foreign_landing_unpinned:foreign_base'} reason
  * `no_pr` = successful observation, no PR that proves completion. It is a
  * FACT, not a verdict (2026-08-28 worker-failure-tiers spec §3.1-§3.3): the
  * retired `pr_missing` verdict called every such ending a failure, and the
@@ -64,7 +69,10 @@ import { branchForBead } from './worktree.js';
  * (retried). `bd_record_failed` = PR observed, but the worker's
  * `pr_url`/`resolved` back-fill did not stick. `bd_read_failed` = the fallback's
  * bd query itself failed, which is NOT downgraded to `no_pr` for the same
- * reason a gh outage is not.
+ * reason a gh outage is not. `foreign_pr_repo_mismatch` and
+ * `foreign_landing_unpinned:<key>` are the enclosed foreign landing's own
+ * failure tokens (2026-10-11 foreign-pr-worker-merge spec §3.2): a pinned Bead
+ * whose `pr_url` names another repository, or whose pins are partial.
  * @property {string|null} pr_url - Observed PR URL (null unless observed).
  * @property {number|null} pr_number - Observed PR number (null unless observed).
  * @property {string|null} gh_reason - The gh adapter's own failure reason,
@@ -90,72 +98,16 @@ const DEFAULT_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 1000;
 
 /**
- * Parse `metadata.pr_url` STRICTLY — verify's own parser, deliberately not the
- * board's `parsePrNumber` (`workflow-enrich.js`). That one is a display helper:
- * it accepts `/issues/<n>`, a bare `#<n>` and any trailing number, and it never
- * looks at which repository the URL points to. Feeding it a fallback that grants
- * completion would let a stale link to another repo's issue resolve to some
- * unrelated PR number in THIS repo and certify the attempt as done.
- *
- * Accepted shape is exactly `https://<host>/<owner>/<repo>/pull/<n>`; the slug
- * is spelled the way {@link import('./gh.js')} spells `--repo` (bare
- * `owner/repo` on github.com, `host/owner/repo` elsewhere) so the caller can
- * compare the two directly.
- *
- * @param {string} raw
- * @returns {{ slug: string, number: number }|null} null when the URL is not a
- * pull-request URL of that exact shape.
- */
-function parsePrUrlStrict(raw) {
-  if (typeof raw !== 'string' || raw.length === 0) {
-    return null;
-  }
-  /** @type {URL} */
-  let parsed;
-  try {
-    parsed = new URL(raw.trim());
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== 'https:') {
-    return null;
-  }
-  // A query string or fragment is not part of a canonical PR url; refusing them
-  // keeps `pr.url` equality (the third check) an exact string comparison.
-  if (parsed.search.length > 0 || parsed.hash.length > 0) {
-    return null;
-  }
-  const segments = parsed.pathname.split('/').filter((s) => s.length > 0);
-  if (segments.length !== 4 || segments[2] !== 'pull') {
-    return null;
-  }
-  const [owner, repo, , number_raw] = segments;
-  if (!/^[0-9]+$/.test(number_raw)) {
-    return null;
-  }
-  const number = Number(number_raw);
-  if (!Number.isSafeInteger(number) || number <= 0) {
-    return null;
-  }
-  const host = parsed.hostname;
-  return {
-    slug:
-      host.toLowerCase() === 'github.com'
-        ? `${owner}/${repo}`
-        : `${host}/${owner}/${repo}`,
-    number
-  };
-}
-
-/**
  * Create the observation verifier.
  *
  * @param {{
  *   gh: {
  *     openPrForBranch: (repo_dir: string, branch: string) => Promise<GhResult<PrObservation>>,
  *     prDetail: (repo_dir: string, number: number) => Promise<GhResult<PrDetail>>,
- *     repoSlug: (repo_dir: string) => Promise<string|null>
+ *     repoSlug: (repo_dir: string) => Promise<string|null>,
+ *     forSlug?: (slug: string) => { prDetail: (repo_dir: string, number: number) => Promise<GhResult<PrDetail>> }
  *   },
+ *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   bd: {
  *     setMetadata: (bead_id: string, key: string, value: string) => Promise<void>,
  *     readMetadata: (bead_id: string, key: string) => Promise<string|null>,
@@ -353,10 +305,28 @@ export function createVerifier(deps) {
     if (slug.toLowerCase() !== parsed.slug.toLowerCase()) {
       return noPr(bead_id, missing);
     }
+    return admitRecorded(bead_id, recorded, missing, () =>
+      deps.gh.prDetail(repo, parsed.number)
+    );
+  }
+
+  /**
+   * Admit the recorded PR once its repository is proven: read it, require the
+   * url to echo back and the state to be OPEN or MERGED, then back-fill bd.
+   * Shared by the workspace fallback and the foreign target, so the two can
+   * never disagree about what makes a recorded PR completion evidence.
+   *
+   * @param {string} bead_id
+   * @param {string} recorded
+   * @param {VerifyResult} missing
+   * @param {() => Promise<GhResult<PrDetail>>} read
+   * @returns {Promise<VerifyResult>}
+   */
+  async function admitRecorded(bead_id, recorded, missing, read) {
     /** @type {GhResult<PrDetail>} */
     let detail;
     try {
-      detail = await deps.gh.prDetail(repo, parsed.number);
+      detail = await read();
     } catch {
       detail = { state: 'error', reason: 'gh_spawn_failed' };
     }
@@ -399,12 +369,100 @@ export function createVerifier(deps) {
     };
   }
 
+  /**
+   * The enclosed foreign landing's PR delivery (2026-10-11
+   * foreign-pr-worker-merge spec §3.2). A pinned Bead lands entirely in the
+   * target — the contract forbids a mixed rig+target landing — so the rig
+   * branch search is skipped and the recorded `pr_url` alone decides: it must
+   * name `foreign_repo`, and it is read with `gh --repo <pinned slug>`, never
+   * through the rig checkout's origin.
+   *
+   * @param {string} repo
+   * @param {string} bead_id
+   * @param {{ repo: string, path: string, base: string }} foreign
+   * @returns {Promise<VerifyResult>}
+   */
+  async function verifyForeign(repo, bead_id, foreign) {
+    /** @type {VerifyResult} */
+    const missing = {
+      ok: false,
+      reason: 'no_pr',
+      pr_url: null,
+      pr_number: null,
+      gh_reason: null,
+      pr_state: null,
+      already_finished: false
+    };
+    /** @type {string|null} */
+    let recorded;
+    try {
+      recorded = await deps.bd.readMetadata(bead_id, 'pr_url');
+    } catch {
+      return { ...missing, reason: 'bd_read_failed' };
+    }
+    if (recorded === null) {
+      return noPr(bead_id, missing);
+    }
+    const parsed = parsePrUrlStrict(recorded);
+    if (parsed === null) {
+      return noPr(bead_id, missing);
+    }
+    if (!sameRepository(recorded, foreign.repo)) {
+      return { ...missing, reason: 'foreign_pr_repo_mismatch' };
+    }
+    const forSlug = deps.gh.forSlug;
+    if (typeof forSlug !== 'function') {
+      return {
+        ...missing,
+        reason: 'gh_observation_failed',
+        gh_reason: 'foreign_slug_unsupported'
+      };
+    }
+    return admitRecorded(bead_id, recorded, missing, () =>
+      forSlug(parsed.slug).prDetail(repo, parsed.number)
+    );
+  }
+
+  /**
+   * Read the Bead's foreign pins. Without an injected git the branch-name
+   * check is skipped; the shape judgment still applies.
+   *
+   * @param {string} repo
+   * @param {string} bead_id
+   */
+  async function readPins(repo, bead_id) {
+    return readForeignPins(
+      {
+        readMetadata: deps.bd.readMetadata,
+        gitRun:
+          deps.gitRun || (async () => ({ code: 0, stdout: '', stderr: '' })),
+        cwd: repo
+      },
+      bead_id
+    );
+  }
+
   return {
     /**
      * @param {{ repo: string, bead_id: string }} input
      * @returns {Promise<VerifyResult>}
      */
     async verifyPrSubmitted(input) {
+      const pins = await readPins(input.repo, input.bead_id);
+      if (!pins.ok) {
+        return {
+          ok: false,
+          reason: /** @type {VerifyResult['reason']} */ (pins.reason),
+          pr_url: null,
+          pr_number: null,
+          gh_reason: null,
+          pr_state: null,
+          already_finished: false
+        };
+      }
+      if (pins.foreign !== null) {
+        return verifyForeign(input.repo, input.bead_id, pins.foreign);
+      }
       const observation = await observe(
         input.repo,
         branchForBead(input.bead_id)

@@ -651,6 +651,17 @@ Slurm 잡이면, 잡 줄 바로 뒤에 용량 줄이 최대 두 줄 선다 —
 쓰며, 용량 재료가 없는 줄과 여러 잡의 카드 용량 줄은 계속 생략한다. 근거는
 `2026-10-06-slurm-wait-capacity-and-local-takeover-design.md` §3.1·§3.4·§3.6 정정이다.
 
+**정정(UI-k467).** 핀이 있는 외부 PR 행(enclosed foreign landing의 PR 전달)은
+이 Worker가 머지한다. 슬롯 6 `머지`/`취소`의 머지 버튼은 새 요소가 아니라 라벨
+변경이다 — 기존 라벨 뒤에 ` ↗ <저장소 이름>`을 붙이고(`머지 ↗ <저장소>`,
+`리뷰 후 머지 ↗ <저장소>`), 전체 `owner/repo`는 title에 둔다. `.op-btn`은
+줄바꿈하지 않으므로 이 버튼은 말줄임 변형(`.op-btn--truncate`)으로 최대 폭에서
+자른다. 슬롯 1 상태 뱃지에는 「외부 PR 사람 처리 필요」가 더해진다(원인 문장은
+title, `[머지]` 비활성, 출구는 `[세션에서 이어가기]` 하나). 슬롯 1의
+`↗ owner/repo` 표시 자리는 그대로이고, 핀이 있는 행의 tooltip만 "다른 저장소의
+PR입니다. 대상 저장소 절차로 이 Worker가 머지합니다"로 바뀐다. 근거는
+`2026-10-11-foreign-pr-worker-merge-design.md` §3.7·§3.8이 소유한다.
+
 ### 5.2 `AGENTS.md`에 남길 규칙
 
 - 워커·모니터 카드(`candidateCard` · `miniRow` · `runningTile`)의 줄 순서는 §2

@@ -13,6 +13,7 @@ import {
   COMPLETION_RETRY_DELAYS_MS,
   COMPLETION_RETRY_POLICY,
   NEEDS_HUMAN_FAMILIES,
+  NEEDS_HUMAN_NOTIFY_CLASSES,
   classifyCompletionFailure,
   completionFailureComment,
   completionFailureSummary,
@@ -21,7 +22,8 @@ import {
   createCompletionIntentCoordinator,
   decideCompletionAction,
   foldNeedsHumanReason,
-  migrateStoredNeedsHumanReason
+  migrateStoredNeedsHumanReason,
+  needsHumanNextAction
 } from './completion-intent.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
@@ -4275,5 +4277,25 @@ describe('머지 기록 실패의 원인 필드 (UI-jxs3 §6.1)', () => {
     expect(settled.terminal_reason?.evidence).toContain(
       'prepareCompletionOp conflict=true'
     );
+  });
+});
+
+describe('worker/completion-intent foreign_handoff class (UI-k467 §3.7)', () => {
+  test('labels the foreign_handoff stage with the contract notify_label', () => {
+    const label = NEEDS_HUMAN_NOTIFY_CLASSES.foreign_handoff;
+
+    expect(label).toBe('외부 PR 사람 처리 필요');
+  });
+
+  test('names only the session continuation as the foreign_handoff exit', () => {
+    const next = needsHumanNextAction('foreign_handoff');
+
+    expect(next).toBe('[세션에서 이어가기]');
+  });
+
+  test('keeps the merge-gate exits apart from the foreign handoff ones', () => {
+    const next = needsHumanNextAction('merge_gate');
+
+    expect(next).toBe('[머지] 재클릭 또는 [세션에서 이어가기]');
   });
 });

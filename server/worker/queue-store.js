@@ -556,7 +556,7 @@
  * whether the exit already settled it.
  *
  * @typedef {Object} ConversationHandoffTarget
- * @property {'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'} kind
+ * @property {'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'} kind
  * @property {string} identity
  */
 /**
@@ -3383,7 +3383,8 @@ function normalizeConversation(raw) {
       target_raw.kind === 'discard' ||
       target_raw.kind === 'verify_hold' ||
       target_raw.kind === 'merge_gate' ||
-      target_raw.kind === 'repo_operation') &&
+      target_raw.kind === 'repo_operation' ||
+      target_raw.kind === 'foreign_handoff') &&
     typeof target_raw.identity === 'string'
       ? { kind: target_raw.kind, identity: target_raw.identity }
       : null;

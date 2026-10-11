@@ -1952,6 +1952,11 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {string} [merge_label] - Text of the [머지] button; absent renders
  * 머지. A conflicting gate dispatches a resolution session instead of merging,
  * so its button says so (UI-dxgz §2).
+ * @property {boolean} [merge_truncate] - The label names a foreign target
+ * repository (`머지 ↗ <저장소>`, UI-k467 §3.8) and is drawn on the truncating
+ * part variant; its full `owner/repo` is in `merge_title`.
+ * @property {boolean} [foreign_pinned] - The `foreign_repo` mark is a pinned
+ * foreign PR target this Worker merges (UI-k467 §3.8), not an unobserved one.
  * @property {boolean} [cancel_action] - Render [취소] INSTEAD of [머지]
  * (UI-5v7d §4): the row is already waiting its turn in the merge queue, so the
  * only thing left to click is giving that turn up.
@@ -3763,10 +3768,14 @@ export function miniRow(item, options = {}) {
   // 외부 저장소 PR 대상 표시 (UI-kyky §6.2). 자리는 슬롯 1의 PR 링크 바로
   // 옆이다 — 이 워크스페이스의 머지·정리 대상이 아니라는 사실이 행동을 바꾸므로
   // 좌표 칩 줄로 보내지 않고, 조작 버튼 사이에도 넣지 않는다.
+  // 핀이 있는 외부 PR 행은 같은 표시에 다른 사실을 말한다 (UI-k467 §3.8):
+  // 대상 저장소 절차로 이 Worker가 머지한다.
   const foreign_repo_el = item.foreign_repo
     ? html`<span
         class="worker-mini__foreign-pr"
-        title="다른 저장소의 PR입니다. 이 워크스페이스에서는 상태를 관측·머지·정리하지 않습니다."
+        title=${item.foreign_pinned === true
+          ? '다른 저장소의 PR입니다. 대상 저장소 절차로 이 Worker가 머지합니다'
+          : '다른 저장소의 PR입니다. 이 워크스페이스에서는 상태를 관측·머지·정리하지 않습니다.'}
         >↗ ${item.foreign_repo}</span
       >`
     : '';
@@ -3839,16 +3848,28 @@ export function miniRow(item, options = {}) {
           : ''}</span
       >`
     : '';
+  // 외부 PR 행의 [머지]는 대상 저장소 이름을 라벨에 싣는다 (UI-k467 §3.8).
+  // `.op-btn`은 줄바꿈하지 않으므로 그 라벨은 말줄임 변형으로 자른다.
   const merge_el = item.merge_action
-    ? html`<button
-        type="button"
-        class="op-btn worker-mini__merge"
-        data-bead-id=${item.id}
-        ?disabled=${item.merge_enabled === false}
-        title=${item.merge_title || ''}
-      >
-        ${item.merge_label || '머지'}
-      </button>`
+    ? item.merge_truncate === true
+      ? html`<button
+          type="button"
+          class="op-btn op-btn--truncate worker-mini__merge"
+          data-bead-id=${item.id}
+          ?disabled=${item.merge_enabled === false}
+          title=${item.merge_title || ''}
+        >
+          <span>${item.merge_label || '머지'}</span>
+        </button>`
+      : html`<button
+          type="button"
+          class="op-btn worker-mini__merge"
+          data-bead-id=${item.id}
+          ?disabled=${item.merge_enabled === false}
+          title=${item.merge_title || ''}
+        >
+          ${item.merge_label || '머지'}
+        </button>`
     : '';
   // [취소] takes [머지]'s place while the row waits its turn (UI-5v7d §4). It
   // is drawn quiet like [폐기]: giving up a place in line is cheap and

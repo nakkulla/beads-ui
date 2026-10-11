@@ -10,6 +10,11 @@ import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { discardOperationActive } from './discard-phase.js';
+import {
+  bindForeignTarget,
+  cleanupForeignResidue,
+  foreignTargetFromMetadata
+} from './foreign-target.js';
 import { resolvePrRef } from './pr-poller.js';
 import { archiveDiscardSource } from './recovery-archive.js';
 import { createRevertBuilder } from './revert-builder.js';
@@ -356,10 +361,34 @@ export function createDiscardCoordinator(deps, options = {}) {
       typeof record.repo === 'string' && record.repo.length > 0
         ? record.repo
         : deps.repo;
+    // The Bead is read FIRST: its pins decide which repository the PR is read
+    // in (UI-k467 §3.9), and the same read is the parent authority snapshot.
+    /** @type {Record<string, any>} */
+    let parent_issue;
+    try {
+      parent_issue = await deps.bd.readIssue(bead_id);
+    } catch {
+      return { ok: false, reason: 'phase_child_snapshot_failed' };
+    }
+    const parent_md =
+      parent_issue &&
+      parent_issue.metadata &&
+      typeof parent_issue.metadata === 'object'
+        ? parent_issue.metadata
+        : {};
+    const judged = foreignTargetFromMetadata(parent_md, parent_md.pr_url);
+    if (judged.state === 'invalid') {
+      return { ok: false, reason: judged.reason };
+    }
+    const foreign_target = judged.state === 'ok' ? judged.target : null;
+    const gh =
+      foreign_target && typeof deps.gh.forSlug === 'function'
+        ? deps.gh.forSlug(foreign_target.slug)
+        : deps.gh;
     const ref = resolvePrRef(queue, bead_id);
     let pr = null;
     if (ref) {
-      const observed = await deps.gh.prDetail(repo, ref.number);
+      const observed = await gh.prDetail(repo, ref.number);
       if (observed.state !== 'ok') {
         return {
           ok: false,
@@ -367,6 +396,11 @@ export function createDiscardCoordinator(deps, options = {}) {
         };
       }
       pr = observed.data;
+    }
+    // A merged foreign PR is never reverted here (spec §3.9, §6): refused
+    // before anything changes, for a person to revert in the target.
+    if (foreign_target && pr?.state === 'MERGED') {
+      return { ok: false, reason: 'foreign_merged_discard_unsupported' };
     }
     const topology = await deps.worktree.observeOwnedByBead({
       repo,
@@ -436,11 +470,9 @@ export function createDiscardCoordinator(deps, options = {}) {
     if (remote.sha !== null && remote.sha !== source_head) {
       return { ok: false, reason: 'source_remote_ref_mismatch' };
     }
-    let parent_issue;
     /** @type {Record<string, any>[]} */
     let phase_children;
     try {
-      parent_issue = await deps.bd.readIssue(bead_id);
       const listed_children = await deps.bd.listChildren(bead_id);
       if (!Array.isArray(listed_children)) {
         return { ok: false, reason: 'phase_child_snapshot_failed' };
@@ -522,6 +554,9 @@ export function createDiscardCoordinator(deps, options = {}) {
         remote_branch_sha: remote.sha,
         ...(topology.present ? {} : { preexisting_absent: true }),
         pr,
+        // The pinned foreign PR target (UI-k467 §3.9): the close and the
+        // owned residue cleanup run there.
+        ...(foreign_target ? { foreign_target } : {}),
         bead_status:
           typeof parent_issue.status === 'string' ? parent_issue.status : null,
         bead_pr_url:
@@ -694,10 +729,14 @@ export function createDiscardCoordinator(deps, options = {}) {
     if (!Number.isFinite(number)) {
       return advance(operation, 'pr_closed', { mode: 'unmerged' });
     }
-    let observed = await deps.gh.prDetail(
-      operation.source_snapshot.repo,
-      number
-    );
+    // A pinned foreign PR is read and closed with `--repo <pinned slug>`
+    // (UI-k467 §3.9), and a merge observed here is refused, never reverted.
+    const foreign_target = operation.source_snapshot.foreign_target || null;
+    const gh =
+      foreign_target && typeof deps.gh.forSlug === 'function'
+        ? deps.gh.forSlug(foreign_target.slug)
+        : deps.gh;
+    let observed = await gh.prDetail(operation.source_snapshot.repo, number);
     if (observed.state !== 'ok') {
       return fail(
         operation,
@@ -705,17 +744,17 @@ export function createDiscardCoordinator(deps, options = {}) {
       );
     }
     if (observed.data.state === 'MERGED') {
+      if (foreign_target) {
+        return fail(operation, 'foreign_merged_discard_unsupported');
+      }
       return advance(operation, 'merged_revert', {
         mode: 'merged_revert',
         original_pr: observed.data
       });
     }
     if (observed.data.state === 'OPEN') {
-      const closed = await deps.gh.closePr(
-        operation.source_snapshot.repo,
-        number
-      );
-      observed = await deps.gh.prDetail(operation.source_snapshot.repo, number);
+      const closed = await gh.closePr(operation.source_snapshot.repo, number);
+      observed = await gh.prDetail(operation.source_snapshot.repo, number);
       if (observed.state !== 'ok') {
         return fail(
           operation,
@@ -723,6 +762,9 @@ export function createDiscardCoordinator(deps, options = {}) {
         );
       }
       if (observed.data.state === 'MERGED') {
+        if (foreign_target) {
+          return fail(operation, 'foreign_merged_discard_unsupported');
+        }
         return advance(operation, 'merged_revert', {
           mode: 'merged_revert',
           original_pr: observed.data
@@ -1938,6 +1980,45 @@ export function createDiscardCoordinator(deps, options = {}) {
   }
 
   /**
+   * The owned residue a discarded foreign PR leaves in its target (UI-k467
+   * §3.9 → §3.6 step 4): the target worktree, local branch and remote head
+   * branch at the PR head the discard pinned. Dirty or unknown state is kept;
+   * a failure is a warning that never blocks the reset.
+   *
+   * @param {any} operation
+   */
+  async function cleanupForeignTargetResidue(operation) {
+    const target = operation.source_snapshot?.foreign_target || null;
+    if (!target) {
+      return;
+    }
+    try {
+      const bound = await bindForeignTarget(target, deps.gitRun);
+      if (!bound.ok) {
+        log('foreign residue kept for %s: %s', operation.bead_id, bound.reason);
+        return;
+      }
+      const pr = operation.source_snapshot.pr || null;
+      const result = await cleanupForeignResidue({
+        target: bound.target,
+        bead_id: operation.bead_id,
+        head_sha: typeof pr?.head_sha === 'string' ? pr.head_sha : null,
+        head_ref: typeof pr?.head_ref === 'string' ? pr.head_ref : null,
+        gitRun: deps.gitRun
+      });
+      if (result.kept.length > 0) {
+        log(
+          'foreign residue kept for %s: %s',
+          operation.bead_id,
+          result.kept.join(', ')
+        );
+      }
+    } catch (err) {
+      log('foreign residue cleanup failed for %s: %o', operation.bead_id, err);
+    }
+  }
+
+  /**
    * @param {string} operation_id
    */
   async function driveOperation(operation_id) {
@@ -2251,8 +2332,10 @@ export function createDiscardCoordinator(deps, options = {}) {
         local_ref_removed: removeRemoteRef,
         remote_ref_removed: (operation) =>
           deletePhaseChildren(operation, 'phase_children_deleted'),
-        phase_children_deleted: (operation) =>
-          resetParent(operation, 'parent_reset')
+        phase_children_deleted: async (operation) => {
+          await cleanupForeignTargetResidue(operation);
+          return resetParent(operation, 'parent_reset');
+        }
       };
       if (operation.phase === 'parent_reset') {
         const completed = deps.store.completeDiscardOperation(deps.workspace, {

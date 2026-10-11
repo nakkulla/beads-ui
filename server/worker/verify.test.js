@@ -445,7 +445,7 @@ describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
     expect(v.reason).toBe('no_pr');
   });
 
-  test('refuses a pr_url pointing at another repository', async () => {
+  test('refuses a pr_url pointing at another repository when the bead has no foreign pins', async () => {
     const { verifier, prDetail } = makeFallback({
       recorded: 'https://github.com/other/repo/pull/7'
     });
@@ -593,5 +593,124 @@ describe('worker/verify — no_pr readback (UI-5ym8)', () => {
     expect(
       readMetadata.mock.calls.some((call) => call[1] === 'awaiting_user')
     ).toBe(false);
+  });
+});
+
+const FOREIGN_PR_URL = 'https://github.com/acme/research-repo-template/pull/4';
+const FOREIGN_PINS = {
+  foreign_repo: 'git@github.com:acme/research-repo-template.git',
+  foreign_path: '/tmp/example/research-repo-template',
+  foreign_base: 'main'
+};
+
+/**
+ * A verifier for a Bead pinned to a foreign target. The branch query and the
+ * workspace `prDetail` are spies that must stay unused; the slug-bound adapter
+ * answers the foreign read.
+ *
+ * @param {{ pins?: Record<string, string>, recorded?: string|null, detail?: any }} [opts]
+ */
+function makeForeign(opts = {}) {
+  const bd = makeBd();
+  Object.assign(bd.metadata, opts.pins ?? FOREIGN_PINS);
+  if (opts.recorded !== null) {
+    bd.metadata.pr_url = opts.recorded ?? FOREIGN_PR_URL;
+  }
+  const openPrForBranch = vi.fn(async () => ({
+    state: /** @type {const} */ ('empty')
+  }));
+  const prDetail = vi.fn(async () => detailOf('OPEN'));
+  const foreignDetail = vi.fn(async () =>
+    opts.detail === undefined
+      ? detailOf('OPEN', { number: 4, url: FOREIGN_PR_URL })
+      : opts.detail
+  );
+  const forSlug = vi.fn(() => ({ prDetail: foreignDetail }));
+  const verifier = createVerifier({
+    gh: {
+      openPrForBranch,
+      repoSlug: async () => 'o/r',
+      prDetail,
+      forSlug
+    },
+    bd,
+    gitRun: async () => ({ code: 0, stdout: '', stderr: '' }),
+    sleep: async () => {}
+  });
+  return { verifier, bd, openPrForBranch, prDetail, forSlug, foreignDetail };
+}
+
+describe('worker/verify — enclosed foreign PR delivery (UI-k467)', () => {
+  test('accepts an OPEN PR recorded in the pinned target repository', async () => {
+    const { verifier, bd } = makeForeign();
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v).toMatchObject({
+      ok: true,
+      reason: 'ok',
+      pr_url: FOREIGN_PR_URL,
+      pr_number: 4,
+      pr_state: 'OPEN'
+    });
+    expect(bd.status.value).toBe('resolved');
+  });
+
+  test('reads the foreign PR through the pinned slug, never the workspace origin', async () => {
+    const { verifier, forSlug, foreignDetail, prDetail } = makeForeign();
+
+    await verifier.verifyPrSubmitted(INPUT);
+
+    expect(forSlug).toHaveBeenCalledWith('acme/research-repo-template');
+    expect(foreignDetail).toHaveBeenCalledWith('/repo', 4);
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('skips the rig branch search for a pinned bead', async () => {
+    const { verifier, openPrForBranch } = makeForeign();
+
+    await verifier.verifyPrSubmitted(INPUT);
+
+    expect(openPrForBranch).not.toHaveBeenCalled();
+  });
+
+  test('fails with foreign_pr_repo_mismatch when pr_url names another repository', async () => {
+    const { verifier, foreignDetail } = makeForeign({
+      recorded: 'https://github.com/o/r/pull/9'
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('foreign_pr_repo_mismatch');
+    expect(foreignDetail).not.toHaveBeenCalled();
+  });
+
+  test('fails naming the missing pin when the pins are partial', async () => {
+    const { verifier, openPrForBranch } = makeForeign({
+      pins: {
+        foreign_repo: FOREIGN_PINS.foreign_repo,
+        foreign_base: 'main'
+      }
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('foreign_landing_unpinned:foreign_path');
+    expect(openPrForBranch).not.toHaveBeenCalled();
+  });
+
+  test('compares the target repository case-insensitively and without .git', async () => {
+    const { verifier } = makeForeign({
+      pins: {
+        ...FOREIGN_PINS,
+        foreign_repo: 'https://GitHub.com/ACME/Research-Repo-Template.git'
+      }
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.ok).toBe(true);
   });
 });

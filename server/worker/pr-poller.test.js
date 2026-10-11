@@ -1482,3 +1482,301 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     expect(observations.get('/ws', 'UI-ext')?.error).toBe('pr_ref_unknown');
   });
 });
+
+describe('pr-poller — pinned foreign PR target (UI-k467 §3.3)', () => {
+  const TARGET_PATH = '/targets/research-repo-template';
+  const FOREIGN_URL = 'https://github.com/acme/research-repo-template/pull/4';
+  const TIP = 'f'.repeat(40);
+  const TREE = '9'.repeat(40);
+
+  /**
+   * @param {Partial<import('./foreign-target.js').ForeignPrTarget>} [over]
+   */
+  function targetOf(over = {}) {
+    return {
+      repo_url: 'git@github.com:acme/research-repo-template.git',
+      path: TARGET_PATH,
+      base: 'main',
+      slug: 'acme/research-repo-template',
+      repo_name: 'research-repo-template',
+      ...over
+    };
+  }
+
+  /**
+   * A git fake for the pinned checkout: one remote bound to the pinned
+   * repository, a fetched base tip, and a candidate tree.
+   *
+   * @param {{ post_merge_jobs?: boolean }} [opts]
+   */
+  function targetGit(opts = {}) {
+    return vi.fn(async (/** @type {string[]} */ args) => {
+      const ok = (/** @type {string} */ stdout = '') => ({
+        code: 0,
+        stdout,
+        stderr: ''
+      });
+      if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
+        return ok(`${TARGET_PATH}\n`);
+      }
+      if (args[0] === 'remote' && args.length === 1) {
+        return ok('upstream\n');
+      }
+      if (args[0] === 'remote' && args[1] === 'get-url') {
+        return ok('git@github.com:acme/research-repo-template.git\n');
+      }
+      if (args[0] === 'rev-parse') {
+        return ok(`${TIP}\n`);
+      }
+      if (args[0] === 'merge-tree') {
+        return ok(`${TREE}\n`);
+      }
+      if (args[0] === 'ls-tree') {
+        return ok(
+          opts.post_merge_jobs ? 'repo-ops/post-merge.d/10-sync\n' : ''
+        );
+      }
+      return ok();
+    });
+  }
+
+  /**
+   * @param {{ judgment?: () => any, detail?: Partial<import('./gh.js').PrDetail>, deploy?: boolean, verify?: boolean, post_merge_jobs?: boolean, repoOperations?: any, external?: any, queue?: any }} [input]
+   */
+  function makeForeignPoller(input = {}) {
+    const queue = input.queue ?? queueOf({ pr_url: FOREIGN_URL, pr_number: 4 });
+    const prDetail = vi.fn(async () => ({ state: 'ok', data: detailOf() }));
+    const foreignDetail = vi.fn(async () => ({
+      state: 'ok',
+      data: detailOf({ number: 4, url: FOREIGN_URL, ...input.detail })
+    }));
+    const forSlug = vi.fn(() => ({ prDetail: foreignDetail }));
+    const observations = createPrObservationStore();
+    const announce = vi.fn();
+    const gitRun = targetGit({ post_merge_jobs: input.post_merge_jobs });
+    const resolveRepoOps = vi.fn(async () => ({
+      base: 'main',
+      verify: input.verify ? { script: 'repo-ops/script/verify' } : null,
+      deploy: input.deploy ? { script: 'repo-ops/script/deploy' } : null,
+      config_blob_sha: input.deploy || input.verify ? 'c'.repeat(40) : null
+    }));
+    const poller = createPrPoller({
+      workspace: '/ws',
+      repo: '/repo',
+      store: {
+        snapshot: () => queue,
+        reconcileExternalPrWait: vi.fn(() => ({ ok: true }))
+      },
+      gh: /** @type {any} */ ({ prDetail, forSlug }),
+      observations,
+      readIssue: async () => ({ metadata: { route: 'quick_fix' } }),
+      gitRun,
+      getSubscriberCount: () => 1,
+      resolveBase: /** @type {any} */ (
+        async () => ({ ok: true, base: 'main', base_oid: BASE_SHA })
+      ),
+      repoOperations: input.repoOperations,
+      external: input.external,
+      foreignTargetOf:
+        input.judgment ?? (() => ({ state: 'ok', target: targetOf() })),
+      announceForeignHandoff: announce,
+      resolveRepoOps,
+      intervalSeconds: 0,
+      sleep: async () => {},
+      now: () => 5000
+    });
+    return {
+      poller,
+      prDetail,
+      forSlug,
+      foreignDetail,
+      observations,
+      announce,
+      gitRun
+    };
+  }
+
+  test('reads a Worker-delivered pinned row through the pinned slug', async () => {
+    const { poller, forSlug, foreignDetail, prDetail } = makeForeignPoller();
+
+    await poller.tick();
+
+    expect(forSlug).toHaveBeenCalledWith('acme/research-repo-template');
+    expect(foreignDetail).toHaveBeenCalledWith('/repo', 4);
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('records the target on a clean observation', async () => {
+    const { poller, observations } = makeForeignPoller();
+
+    await poller.tick();
+
+    const entry = observations.get('/ws', 'UI-1');
+    expect(entry?.error).toBe(null);
+    expect(entry?.foreign).toMatchObject({
+      slug: 'acme/research-repo-template',
+      repo_name: 'research-repo-template',
+      handoff: null,
+      base_sha: TIP
+    });
+  });
+
+  test('keeps pr_repo_foreign for a pin-less external row of another repository', async () => {
+    const external = externalOf([{ bead_id: 'UI-ext', pr_number: 1 }]);
+    const rows = external.list();
+    external.list = () => rows.map((row) => ({ ...row, foreign: true }));
+    const { poller, foreignDetail, prDetail, observations } = makeForeignPoller(
+      {
+        queue: queueOf({ pr_wait: [] }),
+        external,
+        judgment: () => ({ state: 'none' })
+      }
+    );
+
+    await poller.tick();
+
+    expect(foreignDetail).not.toHaveBeenCalled();
+    expect(prDetail).not.toHaveBeenCalled();
+    expect(observations.get('/ws', 'UI-ext')?.error).toBe('pr_repo_foreign');
+  });
+
+  test('hands a PR whose base is not foreign_base to a person', async () => {
+    const { poller, observations, announce } = makeForeignPoller({
+      detail: { base_ref: 'develop' }
+    });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-1')?.error).toBe(
+      'foreign_handoff:foreign_pr_base_mismatch'
+    );
+    expect(announce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bead_id: 'UI-1',
+        cause: 'foreign_pr_base_mismatch',
+        foreign_path: TARGET_PATH
+      })
+    );
+  });
+
+  test('releases a base mismatch on the next turn once the scan pin matches the PR base', async () => {
+    let pinned_base = 'main';
+    const { poller, observations } = makeForeignPoller({
+      detail: { base_ref: 'develop' },
+      judgment: () => ({
+        state: 'ok',
+        target: targetOf({ base: pinned_base })
+      })
+    });
+    await poller.tick();
+    pinned_base = 'develop';
+
+    await poller.tick();
+
+    const entry = observations.get('/ws', 'UI-1');
+    expect(entry?.error).toBe(null);
+    expect(entry?.foreign?.handoff).toBe(null);
+  });
+
+  test('hands a conflicting PR to a person instead of reporting a conflict', async () => {
+    const { poller, observations } = makeForeignPoller({
+      detail: { mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' }
+    });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-1')?.foreign?.handoff).toBe(
+      'foreign_conflict_needs_human'
+    );
+  });
+
+  test('hands a PR off when the fetched base tip declares [deploy]', async () => {
+    const { poller, observations } = makeForeignPoller({ deploy: true });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-1')?.error).toBe(
+      'foreign_handoff:foreign_deploy_unsupported'
+    );
+  });
+
+  test('hands a PR off when its candidate tree carries post-merge.d files', async () => {
+    const { poller, observations } = makeForeignPoller({
+      post_merge_jobs: true
+    });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-1')?.foreign?.handoff).toBe(
+      'foreign_deploy_unsupported'
+    );
+  });
+
+  test('runs the target [verify] in the pinned checkout bound to head and base tip', async () => {
+    const operations = repoOperations();
+    const { poller } = makeForeignPoller({
+      verify: true,
+      repoOperations: operations
+    });
+
+    await poller.tick();
+
+    expect(operations.ensureVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo: TARGET_PATH,
+        origin: 'upstream',
+        target_base: 'main',
+        base_sha: TIP,
+        head_sha: SHA,
+        foreign: expect.objectContaining({
+          slug: 'acme/research-repo-template'
+        })
+      })
+    );
+  });
+
+  test('records the pin token as the refusal when the detection fails', async () => {
+    const { poller, observations, foreignDetail } = makeForeignPoller({
+      judgment: () => ({ state: 'invalid', reason: 'foreign_pr_repo_mismatch' })
+    });
+
+    await poller.tick();
+
+    expect(foreignDetail).not.toHaveBeenCalled();
+    expect(observations.get('/ws', 'UI-1')?.error).toBe(
+      'foreign_pr_repo_mismatch'
+    );
+  });
+});
+
+describe('pr-poller — unscanned foreign PR guard (UI-k467 §4-3)', () => {
+  test('never reads an unscanned row whose PR names another repository', async () => {
+    const prDetail = vi.fn(async () => ({ state: 'ok', data: detailOf() }));
+    const observations = createPrObservationStore();
+    const poller = createPrPoller({
+      workspace: '/ws',
+      repo: '/repo',
+      store: /** @type {any} */ ({
+        snapshot: () =>
+          queueOf({
+            pr_url: 'https://github.com/acme/target/pull/4',
+            pr_number: 4
+          })
+      }),
+      gh: /** @type {any} */ ({ prDetail, repoSlug: async () => 'o/r' }),
+      observations,
+      getSubscriberCount: () => 1,
+      foreignTargetOf: () => null,
+      intervalSeconds: 0,
+      sleep: async () => {},
+      now: () => 5000
+    });
+
+    await poller.tick();
+
+    expect(prDetail).not.toHaveBeenCalled();
+    expect(observations.get('/ws', 'UI-1')?.error).toBe(
+      'foreign_target_unscanned'
+    );
+  });
+});

@@ -17,6 +17,7 @@
  * instead of jumping every scan.
  */
 import path from 'node:path';
+import { foreignTargetFromMetadata } from './foreign-target.js';
 
 /**
  * One external PR row.
@@ -43,6 +44,24 @@ import path from 'node:path';
  * different PR that happens to share the number — and a MERGED reading of that
  * PR closed a bead whose own PR was still open. A foreign row stays visible
  * but yields no PR reference: nothing observes, merges, or cleans it up here.
+ * A row whose Bead carries the enclosed foreign landing pins and whose url
+ * names the pinned repository is NOT `foreign`: it has a `foreign_target`
+ * instead, and the Worker observes, merges and closes it through that target
+ * (UI-k467 §3.1). `foreign` now marks only the pin-less case.
+ * @property {import('./foreign-target.js').ForeignPrTarget|null} [foreign_target]
+ * - The pinned PR target the scan's pins and `pr_url` prove, or null.
+ * @property {string|null} [foreign_error] - The contract token a pinned row's
+ * detection failed with (`foreign_pr_repo_mismatch`,
+ * `foreign_landing_unpinned:<key>`), or null.
+ */
+
+/**
+ * The scan's judgment of one Bead's foreign PR target — kept for EVERY scanned
+ * Bead, Worker-delivered `pr_wait` rows included, because the registry rows
+ * above exclude a Bead the Worker owns while its observation still needs the
+ * target (UI-k467 §3.1).
+ *
+ * @typedef {{ state: 'none' }|{ state: 'invalid', reason: string }|{ state: 'ok', target: import('./foreign-target.js').ForeignPrTarget }} ForeignTargetJudgment
  */
 
 /**
@@ -74,6 +93,8 @@ export function createExternalPrStore(options = {}) {
 
   /** @type {Map<string, Map<string, ExternalPrRow>>} */
   const by_workspace = new Map();
+  /** @type {Map<string, Map<string, ForeignTargetJudgment>>} */
+  const targets_by_workspace = new Map();
 
   /**
    * Workspace keys are RESOLVED, exactly like the queue store's and the
@@ -111,8 +132,11 @@ export function createExternalPrStore(options = {}) {
      * (null) no row is judged foreign — the PR read itself fails closed then,
      * because `gh --repo` cannot be derived either.
      *
+     * A row may carry `foreign_pins` — the scan's metadata slice — so the
+     * pinned target is judged with the url in the same pass.
+     *
      * @param {string} workspace
-     * @param {{ bead_id: string, pr_url: string, pr_number: number|null, receipt_key?: string|null, receipt_check?: import('./receipt-check.js').ReceiptCheckResult|null }[]} rows
+     * @param {{ bead_id: string, pr_url: string, pr_number: number|null, receipt_key?: string|null, receipt_check?: import('./receipt-check.js').ReceiptCheckResult|null, foreign_pins?: Record<string, unknown>|null }[]} rows
      * @param {{ origin_slug?: string|null }} [options]
      * @returns {ExternalPrRow[]}
      */
@@ -133,14 +157,25 @@ export function createExternalPrStore(options = {}) {
         }
         const prior = lane.get(row.bead_id);
         const repo_slug = prRepoSlugFromUrl(row.pr_url);
+        const judged = foreignTargetFromMetadata(
+          row.foreign_pins || null,
+          row.pr_url
+        );
         next.set(row.bead_id, {
           bead_id: row.bead_id,
           pr_url: typeof row.pr_url === 'string' ? row.pr_url : '',
           repo_slug,
           foreign:
+            judged.state !== 'ok' &&
             origin_slug !== null &&
             repo_slug !== null &&
             repo_slug.toLowerCase() !== origin_slug,
+          // Present only on a pinned row, so a pin-less row keeps its exact
+          // shape (UI-k467 §4-11).
+          ...(judged.state === 'ok' ? { foreign_target: judged.target } : {}),
+          ...(judged.state === 'invalid'
+            ? { foreign_error: judged.reason }
+            : {}),
           pr_number:
             typeof row.pr_number === 'number' && Number.isFinite(row.pr_number)
               ? row.pr_number
@@ -208,10 +243,49 @@ export function createExternalPrStore(options = {}) {
     },
 
     /**
+     * Replace a workspace's foreign target judgments from one whole scan —
+     * every `resolved` Bead with a `pr_url`, Worker-owned ones included.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, pr_url: string, metadata?: Record<string, unknown>|null }[]} scan_rows
+     */
+    replaceTargets(workspace, scan_rows) {
+      /** @type {Map<string, ForeignTargetJudgment>} */
+      const next = new Map();
+      for (const row of Array.isArray(scan_rows) ? scan_rows : []) {
+        if (!row || typeof row.bead_id !== 'string' || !row.bead_id) {
+          continue;
+        }
+        next.set(
+          row.bead_id,
+          foreignTargetFromMetadata(row.metadata || null, row.pr_url)
+        );
+      }
+      targets_by_workspace.set(path.resolve(String(workspace || '')), next);
+    },
+
+    /**
+     * One Bead's foreign target judgment from the last scan, or null when the
+     * scan did not carry it (not `resolved`, no `pr_url`, or never scanned).
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {ForeignTargetJudgment|null}
+     */
+    targetOf(workspace, bead_id) {
+      return (
+        targets_by_workspace
+          .get(path.resolve(String(workspace || '')))
+          ?.get(bead_id) || null
+      );
+    },
+
+    /**
      * Drop everything (server restart semantics; test hook).
      */
     clear() {
       by_workspace.clear();
+      targets_by_workspace.clear();
     }
   };
 }

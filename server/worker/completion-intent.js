@@ -19,6 +19,10 @@ import { timingLadder } from '../timing-settings.js';
 import { scriptSummary } from './failure-class.js';
 import { commentHeading, logRow, summaryRow } from './failure-comment.js';
 import {
+  FOREIGN_HANDOFF_NEXT_ACTION,
+  FOREIGN_HANDOFF_NOTIFY_LABEL
+} from './foreign-handoff.js';
+import {
   RESOLUTION_ROUND_CAP,
   resolutionWaitSettingMs
 } from './merge-queue.js';
@@ -836,15 +840,38 @@ function operationIdFromLogPath(log_path) {
  *
  * @type {Readonly<Record<string, string>>}
  */
-const NEEDS_HUMAN_NOTIFY_CLASSES = Object.freeze({
+export const NEEDS_HUMAN_NOTIFY_CLASSES = Object.freeze({
   post_merge_jobs: 'post-merge 잡 실패',
   repo_operations: '배포 실패',
   deploy: '배포 실패',
   deployment_request: '배포 실패',
   // Copied byte-for-byte from the contract's `failure_classes.receipt_hold`
   // notify_label (spec §5.2, D5).
-  merge_gate: '머지 게이트 보류'
+  merge_gate: '머지 게이트 보류',
+  // Copied byte-for-byte from the contract's
+  // `failure_classes.foreign_handoff.notify_label` (UI-k467 §3.7).
+  foreign_handoff: FOREIGN_HANDOFF_NOTIFY_LABEL
 });
+
+/**
+ * The `다음:` line of a `needs_human` push for one stage token: the exits the
+ * row really has. A merge-gate hold has the `[머지]` waiver; a foreign handoff
+ * has only `[세션에서 이어가기]` — `[머지]` does not release it and there is no
+ * `[워커로 이어가기]` (UI-k467 §3.7); the post-merge classes have both
+ * continuations.
+ *
+ * @param {string} token
+ * @returns {string}
+ */
+export function needsHumanNextAction(token) {
+  if (token === 'merge_gate') {
+    return '[머지] 재클릭 또는 [세션에서 이어가기]';
+  }
+  if (token === 'foreign_handoff') {
+    return FOREIGN_HANDOFF_NEXT_ACTION;
+  }
+  return '[세션에서 이어가기] 또는 [워커로 이어가기]';
+}
 
 // Copied byte-for-byte from dotfiles docs/contracts/workflow-state.yaml
 // `failure_classes.pre_merge_hold.notify_label` (pre-merge verify hold §6.2).
@@ -1645,10 +1672,7 @@ export function createCompletionActionDriver(deps) {
         // The cleanup retry (`[워커로 이어가기]`, UI-18a5 §3.2) is a
         // post-merge cleanup button that does not exist yet at the merge
         // gate, so that class names the two exits it really has (spec §5.2).
-        next_action:
-          token === 'merge_gate'
-            ? '[머지] 재클릭 또는 [세션에서 이어가기]'
-            : '[세션에서 이어가기] 또는 [워커로 이어가기]',
+        next_action: needsHumanNextAction(token),
         conversation,
         pr_url: intent?.subject?.pr_url ?? null,
         repo: deps.repo ?? null

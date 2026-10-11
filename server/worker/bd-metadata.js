@@ -21,6 +21,7 @@
  */
 import { requireBdJsonCapabilityForWorkspace } from '../bd-effect-gate.js';
 import { runBd, runBdJsonProjected } from '../bd.js';
+import { FOREIGN_PIN_KEYS } from './foreign-target.js';
 import { RECEIPT_METADATA_KEYS } from './receipt-check.js';
 
 /**
@@ -35,8 +36,10 @@ import { RECEIPT_METADATA_KEYS } from './receipt-check.js';
  * @typedef {Object} ExternalPrScanRow
  * @property {string} bead_id
  * @property {string} pr_url
- * @property {Record<string, string>} metadata - Only the present receipt keys;
- * an absent key is OMITTED rather than carried as null.
+ * @property {Record<string, string>} metadata - Only the present receipt keys
+ * and enclosed foreign landing pins (`foreign_repo`·`foreign_path`·
+ * `foreign_base`, UI-k467 §3.1); an absent key is OMITTED rather than carried
+ * as null.
  */
 
 /**
@@ -828,7 +831,9 @@ function scanRows(rows) {
 }
 
 /**
- * The receipt-relevant slice of one bead's metadata (UI-17mj §2.2).
+ * The receipt-relevant slice of one bead's metadata (UI-17mj §2.2), plus the
+ * three foreign pins every PR observation re-derives its target from (UI-k467
+ * §3.1) — riding the one scan instead of a `bd show` per row.
  *
  * Absent keys are omitted, not nulled: the scan's cache key already encodes
  * absence, and `checkReceipts` reads "the key is missing" off the absence of
@@ -844,7 +849,7 @@ function receiptMetadataOf(metadata) {
     return projected;
   }
   const source = /** @type {Record<string, unknown>} */ (metadata);
-  for (const key of RECEIPT_METADATA_KEYS) {
+  for (const key of [...RECEIPT_METADATA_KEYS, ...FOREIGN_PIN_KEYS]) {
     const value = source[key];
     if (typeof value === 'string') {
       projected[key] = value;

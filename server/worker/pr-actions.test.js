@@ -6237,3 +6237,595 @@ describe('post-merge cleanup — completed worktree backup (UI-w2ou §3.4)', () 
     ]);
   });
 });
+
+describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
+  const TARGET_PATH = '/targets/research-repo-template';
+  const FOREIGN_URL = 'https://github.com/acme/research-repo-template/pull/304';
+  const SLUG = 'acme/research-repo-template';
+  const HEAD = 'e'.repeat(40);
+  const TIP = 'f'.repeat(40);
+  const MERGE = '7'.repeat(40);
+  const PARENT = '6'.repeat(40);
+  const TREE = '9'.repeat(40);
+
+  /**
+   * @param {Partial<import('./gh.js').PrDetail>} [over]
+   */
+  function foreignPr(over = {}) {
+    return prOf({
+      url: FOREIGN_URL,
+      head_sha: HEAD,
+      ...over
+    });
+  }
+
+  /**
+   * A harness whose bd carries the three pins, whose gh answers ONLY through
+   * the pinned slug, and whose git models the bound target checkout.
+   *
+   * @param {{ pr?: Partial<import('./gh.js').PrDetail>, after?: Partial<import('./gh.js').PrDetail>, policy?: (sha: string) => any, containment?: number, post_merge_jobs?: boolean, remote_head?: string|null, verify_receipt?: any, tips?: string[] }} [opts]
+   */
+  function makeForeign(opts = {}) {
+    const store = seedStore();
+    // The Worker's own verify recorded the TARGET PR on the attempt.
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        verify_result: /** @type {any} */ ({
+          ok: true,
+          pr_url: FOREIGN_URL,
+          pr_number: 304
+        })
+      }
+    });
+    const observations = createPrObservationStore();
+    /** @type {string[]} */
+    const calls = [];
+    /** @type {Record<string, string>} */
+    const metadata = {
+      route: 'quick_fix',
+      pr_url: FOREIGN_URL,
+      foreign_repo: 'git@github.com:acme/research-repo-template.git',
+      foreign_path: TARGET_PATH,
+      foreign_base: 'main'
+    };
+    let status = 'resolved';
+    let merged = false;
+    let tip_reads = 0;
+    const foreign = {
+      prDetail: vi.fn(async () => ({
+        state: 'ok',
+        data: merged
+          ? foreignPr({
+              state: 'MERGED',
+              merged_sha: MERGE,
+              merge_sha: MERGE,
+              ...opts.after
+            })
+          : foreignPr(opts.pr)
+      })),
+      mergeSquash: vi.fn(async () => {
+        merged = true;
+        return { state: 'ok', data: true };
+      }),
+      updateBranch: vi.fn(async () => ({ state: 'ok', data: 'b'.repeat(40) })),
+      closePr: vi.fn(async () => ({ state: 'ok', data: true }))
+    };
+    const gh = {
+      prDetail: vi.fn(async () => ({
+        state: 'error',
+        reason: 'workspace_read'
+      })),
+      mergeSquash: vi.fn(async () => ({ state: 'error', reason: 'workspace' })),
+      updateBranch: vi.fn(async () => ({
+        state: 'error',
+        reason: 'workspace'
+      })),
+      closePr: vi.fn(async () => ({ state: 'error', reason: 'workspace' })),
+      forSlug: vi.fn(() => foreign)
+    };
+    const bd = {
+      setStatus: vi.fn(async (/** @type {string} */ _id, s) => {
+        status = s;
+      }),
+      readStatus: vi.fn(async () => status),
+      unsetMetadata: vi.fn(async () => {}),
+      readMetadata: vi.fn(
+        async (/** @type {string} */ _id, /** @type {string} */ key) =>
+          metadata[key] ?? null
+      ),
+      readIssue: vi.fn(async (/** @type {string} */ id) => ({
+        id,
+        status,
+        spec_id: null,
+        metadata
+      }))
+    };
+    const gitRun = vi.fn(async (/** @type {string[]} */ args, options) => {
+      calls.push(`git:${options?.cwd}:${args.join(' ')}`);
+      const ok = (/** @type {string} */ stdout = '') => ({
+        code: 0,
+        stdout,
+        stderr: ''
+      });
+      if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
+        return ok(`${TARGET_PATH}\n`);
+      }
+      if (args[0] === 'remote' && args.length === 1) {
+        return ok('upstream\n');
+      }
+      if (args[0] === 'remote' && args[1] === 'get-url') {
+        return ok('git@github.com:acme/research-repo-template.git\n');
+      }
+      if (args[0] === 'rev-parse' && String(args[1]).endsWith('^1')) {
+        return ok(`${PARENT}\n`);
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      if (
+        args[0] === 'rev-parse' &&
+        String(args[1]).startsWith('refs/remotes/') &&
+        Array.isArray(opts.tips)
+      ) {
+        const tip = opts.tips[Math.min(tip_reads, opts.tips.length - 1)];
+        tip_reads += 1;
+        return ok(`${tip}\n`);
+      }
+      if (args[0] === 'rev-parse') {
+        return ok(`${TIP}\n`);
+      }
+      if (args[0] === 'merge-tree') {
+        return ok(`${TREE}\n`);
+      }
+      if (args[0] === 'ls-tree') {
+        return ok(
+          opts.post_merge_jobs ? 'repo-ops/post-merge.d/10-sync\n' : ''
+        );
+      }
+      if (args[0] === 'merge-base') {
+        return { code: opts.containment ?? 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'ls-remote') {
+        return ok(
+          opts.remote_head === null
+            ? ''
+            : `${opts.remote_head ?? HEAD}\trefs/heads/${BEAD}\n`
+        );
+      }
+      return ok();
+    });
+    const scheduler = {
+      reconcileInteractiveSessions: vi.fn(async () => {}),
+      resolveConflict: vi.fn(async () => ({ ok: true, attempt_id: 'r1' })),
+      dispatchExternalConflict: vi.fn(async () => ({
+        ok: true,
+        attempt_id: 'x1'
+      })),
+      tick: vi.fn(async () => {})
+    };
+    const repoOperations = {
+      ensureVerify: vi.fn(async () => ({
+        ok: true,
+        operation_id: 'verify-op',
+        timeout_ms: 1000
+      })),
+      waitForTerminal: vi.fn(async () => opts.verify_receipt ?? null),
+      verifyReceipt: vi.fn(() => opts.verify_receipt ?? null),
+      hasConfig: vi.fn(async () => ({ ok: true, present: false })),
+      ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
+      waitForDeployTerminal: vi.fn(),
+      findExactDeployOperation: vi.fn(async () => null),
+      deploymentEvidence: vi.fn(),
+      sweepForeignCandidates: vi.fn(async () => [])
+    };
+    const worktree = {
+      pathFor: (/** @type {string} */ repo, /** @type {string} */ name) =>
+        `${repo}/.worktrees/${name}`,
+      remove: vi.fn(),
+      removeByBranch: vi.fn(),
+      removeCompleted: vi.fn(),
+      removeIfDiscardable: vi.fn(async () => ({
+        ok: true,
+        removed: true,
+        reason: null
+      })),
+      withTopologyLock: vi.fn(
+        async (/** @type {string} */ _repo, /** @type {any} */ fn) => fn()
+      )
+    };
+    const announce = vi.fn();
+    const actions = createPrActions({
+      workspace: WS,
+      repo: REPO,
+      store,
+      gh,
+      observations,
+      bd,
+      worktree: /** @type {any} */ (worktree),
+      gitRun,
+      scheduler,
+      resolveBase: async () => {
+        throw new Error('workspace base resolution must not run');
+      },
+      repoOperations: /** @type {any} */ (repoOperations),
+      requeryDelayMs: 0,
+      sleep: async () => {},
+      announceForeignHandoff: announce,
+      resolveRepoOps: async (/** @type {{ sha: string }} */ input) =>
+        opts.policy
+          ? opts.policy(input.sha)
+          : { base: 'main', verify: null, deploy: null, config_blob_sha: null }
+    });
+    return {
+      actions,
+      store,
+      gh,
+      foreign,
+      bd,
+      calls,
+      scheduler,
+      repoOperations,
+      worktree,
+      announce,
+      observations,
+      status: () => status
+    };
+  }
+
+  test('blocks a conflicting PR as foreign_conflict_needs_human', async () => {
+    const h = makeForeign({
+      pr: { mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' }
+    });
+
+    const probe = await h.actions.probeMergeability(BEAD);
+
+    expect(probe).toMatchObject({
+      ok: false,
+      kind: 'blocked',
+      reason: 'foreign_handoff:foreign_conflict_needs_human',
+      head_sha: HEAD
+    });
+  });
+
+  test('never dispatches a resolver for a conflicting foreign PR', async () => {
+    const h = makeForeign({
+      pr: { mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' }
+    });
+
+    const clicked = await h.actions.merge(BEAD);
+    const dispatched = await h.actions.dispatchConflict(BEAD, {
+      head_sha: HEAD,
+      base_ref: 'main'
+    });
+
+    expect(clicked.reason).toBe('foreign_handoff:foreign_conflict_needs_human');
+    expect(dispatched.action).toBe('refused');
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+    expect(h.scheduler.dispatchExternalConflict).not.toHaveBeenCalled();
+    expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses a PR whose base is not foreign_base without retargeting', async () => {
+    const h = makeForeign({ pr: { base_ref: 'develop' } });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.reason).toBe('foreign_handoff:foreign_pr_base_mismatch');
+    expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses a PR whose fetched base tip declares [deploy] before merging', async () => {
+    const h = makeForeign({
+      policy: () => ({
+        base: 'main',
+        verify: null,
+        deploy: { script: 'repo-ops/script/deploy' },
+        config_blob_sha: 'c'.repeat(40)
+      })
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.reason).toBe('foreign_handoff:foreign_deploy_unsupported');
+    expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('announces the handoff it refused with', async () => {
+    const h = makeForeign({ pr: { base_ref: 'develop' } });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.announce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bead_id: BEAD,
+        cause: 'foreign_pr_base_mismatch',
+        foreign_path: TARGET_PATH
+      })
+    );
+  });
+
+  test('keeps a manual [머지] authority from releasing a handoff', async () => {
+    const h = makeForeign({
+      pr: { mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' }
+    });
+    h.store.enqueueMergeManual(WS, {
+      expected_revision: h.store.snapshot(WS).revision,
+      entries: [
+        { bead_id: BEAD, head_sha: HEAD, target_base: 'main', external: false }
+      ]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.reason).toBe('foreign_handoff:foreign_conflict_needs_human');
+    expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('merges through the pinned slug pinned to the gated head', async () => {
+    const h = makeForeign();
+
+    await h.actions.merge(BEAD);
+
+    expect(h.gh.forSlug).toHaveBeenCalledWith(SLUG);
+    expect(h.foreign.mergeSquash).toHaveBeenCalledWith(REPO, 304, HEAD);
+  });
+
+  test('never reads or changes the workspace PR of the same number', async () => {
+    const h = makeForeign();
+
+    await h.actions.merge(BEAD);
+
+    expect(h.gh.prDetail).not.toHaveBeenCalled();
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('closes the bead after proving the merge in the target base', async () => {
+    const h = makeForeign();
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.calls).toContain(
+      `git:${TARGET_PATH}:merge-base --is-ancestor ${MERGE} ${TIP}`
+    );
+    expect(h.status()).toBe('closed');
+    expect(h.store.snapshot(WS).pr_wait).toEqual([]);
+  });
+
+  test('closes a PR merged directly on GitHub through the same tail', async () => {
+    const h = makeForeign({
+      pr: { state: 'MERGED', merged_sha: MERGE, merge_sha: MERGE }
+    });
+
+    const r = await h.actions.cleanupObservedMerge(BEAD, MERGE, {
+      pr_url: FOREIGN_URL
+    });
+
+    expect(r.ok).toBe(true);
+    expect(h.status()).toBe('closed');
+  });
+
+  test('keeps the bead resolved when the target base does not contain the merge', async () => {
+    const h = makeForeign({
+      pr: { state: 'MERGED', merged_sha: MERGE, merge_sha: MERGE },
+      containment: 1
+    });
+
+    const r = await h.actions.cleanupObservedMerge(BEAD, MERGE, {
+      pr_url: FOREIGN_URL
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      step: 'base_containment',
+      reason: 'deployment_target_not_covering_merge'
+    });
+    expect(h.status()).toBe('resolved');
+  });
+
+  test('hands a merge whose first parent declares [deploy] to a person', async () => {
+    const h = makeForeign({
+      pr: { state: 'MERGED', merged_sha: MERGE, merge_sha: MERGE },
+      policy: (sha) =>
+        sha === PARENT
+          ? {
+              base: 'main',
+              verify: null,
+              deploy: { script: 'repo-ops/script/deploy' },
+              config_blob_sha: 'c'.repeat(40)
+            }
+          : { base: 'main', verify: null, deploy: null, config_blob_sha: null }
+    });
+
+    const r = await h.actions.cleanupObservedMerge(BEAD, MERGE, {
+      pr_url: FOREIGN_URL
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      step: 'repo_operations',
+      reason: 'foreign_handoff:foreign_deploy_unsupported'
+    });
+    expect(h.status()).toBe('resolved');
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]?.reason).toBe(
+      'foreign_handoff:foreign_deploy_unsupported'
+    );
+  });
+
+  test('records the post-merge handoff before announcing it', async () => {
+    const h = makeForeign({
+      pr: { state: 'MERGED', merged_sha: MERGE, merge_sha: MERGE },
+      policy: (sha) =>
+        sha === PARENT
+          ? {
+              base: 'main',
+              verify: null,
+              deploy: { script: 'repo-ops/script/deploy' },
+              config_blob_sha: 'c'.repeat(40)
+            }
+          : { base: 'main', verify: null, deploy: null, config_blob_sha: null }
+    });
+    /** @type {Array<string|null>} */
+    const seen = [];
+    h.announce.mockImplementation(() => {
+      seen.push(h.store.snapshot(WS).cleanup_failed[BEAD]?.reason ?? null);
+    });
+
+    await h.actions.cleanupObservedMerge(BEAD, MERGE, { pr_url: FOREIGN_URL });
+
+    expect(seen).toEqual(['foreign_handoff:foreign_deploy_unsupported']);
+  });
+
+  test('runs the first-parent [verify] bound to PR head and first parent before closing', async () => {
+    const h = makeForeign({
+      pr: { state: 'MERGED', merged_sha: MERGE, merge_sha: MERGE },
+      policy: (sha) => ({
+        base: 'main',
+        verify: sha === PARENT ? { script: 'repo-ops/script/verify' } : null,
+        deploy: null,
+        config_blob_sha: 'c'.repeat(40)
+      }),
+      verify_receipt: { state: 'succeeded', ok: true, head_sha: HEAD }
+    });
+    h.observations.record(WS, BEAD, {
+      error: null,
+      pr: /** @type {any} */ (foreignPr({ state: 'MERGED', merge_sha: MERGE }))
+    });
+
+    await h.actions.cleanupObservedMerge(BEAD, MERGE, { pr_url: FOREIGN_URL });
+
+    expect(h.repoOperations.ensureVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo: TARGET_PATH,
+        origin: 'upstream',
+        base_sha: PARENT,
+        head_sha: HEAD,
+        final_sha: MERGE
+      })
+    );
+    expect(h.status()).toBe('closed');
+  });
+
+  test('removes only the owned remote head branch that still points at the head', async () => {
+    const h = makeForeign({
+      pr: { state: 'MERGED', merged_sha: MERGE, merge_sha: MERGE }
+    });
+    h.observations.record(WS, BEAD, {
+      error: null,
+      pr: /** @type {any} */ (foreignPr({ state: 'MERGED', merge_sha: MERGE }))
+    });
+
+    await h.actions.cleanupObservedMerge(BEAD, MERGE, { pr_url: FOREIGN_URL });
+
+    expect(h.calls).toContain(
+      `git:${TARGET_PATH}:push upstream --delete ${BEAD}`
+    );
+    expect(h.calls.some((call) => call.includes('push origin'))).toBe(false);
+  });
+
+  test('keeps a remote head branch that moved past the pinned head and still closes', async () => {
+    const h = makeForeign({
+      pr: { state: 'MERGED', merged_sha: MERGE, merge_sha: MERGE },
+      remote_head: '5'.repeat(40)
+    });
+    h.observations.record(WS, BEAD, {
+      error: null,
+      pr: /** @type {any} */ (foreignPr({ state: 'MERGED', merge_sha: MERGE }))
+    });
+
+    await h.actions.cleanupObservedMerge(BEAD, MERGE, { pr_url: FOREIGN_URL });
+
+    expect(h.calls.some((call) => call.includes('--delete'))).toBe(false);
+    expect(h.status()).toBe('closed');
+  });
+
+  test('never runs the target post-merge jobs', async () => {
+    const h = makeForeign({
+      pr: { state: 'MERGED', merged_sha: MERGE, merge_sha: MERGE }
+    });
+
+    await h.actions.cleanupObservedMerge(BEAD, MERGE, { pr_url: FOREIGN_URL });
+
+    expect(
+      h.calls.filter((call) => call.includes('repo-ops/post-merge.d/'))
+    ).toEqual([
+      `git:${TARGET_PATH}:ls-tree -r --name-only ${MERGE} -- repo-ops/post-merge.d/`
+    ]);
+  });
+
+  test('runs the target [verify] in the pinned checkout bound to head and base tip', async () => {
+    const receipt = {
+      state: 'succeeded',
+      ok: true,
+      reason: 'ok',
+      head_sha: HEAD,
+      effective_base_sha: TIP,
+      candidate_tree_sha: TREE,
+      script_object_type: 'blob',
+      script_mode: '100755',
+      script_blob_sha: '4'.repeat(40)
+    };
+    const h = makeForeign({
+      policy: () => ({
+        base: 'main',
+        verify: { script: 'repo-ops/script/verify' },
+        deploy: null,
+        config_blob_sha: 'c'.repeat(40)
+      }),
+      verify_receipt: receipt
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(h.repoOperations.ensureVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo: TARGET_PATH,
+        origin: 'upstream',
+        target_base: 'main',
+        base_sha: TIP,
+        head_sha: HEAD,
+        foreign: expect.objectContaining({ slug: SLUG })
+      })
+    );
+    expect(r.action).toBe('merged');
+  });
+
+  test('refuses the merge when the base tip moved after the verify', async () => {
+    const h = makeForeign({
+      policy: () => ({
+        base: 'main',
+        verify: { script: 'repo-ops/script/verify' },
+        deploy: null,
+        config_blob_sha: 'c'.repeat(40)
+      }),
+      verify_receipt: {
+        state: 'succeeded',
+        ok: true,
+        reason: 'ok',
+        head_sha: HEAD,
+        effective_base_sha: TIP,
+        candidate_tree_sha: TREE,
+        script_object_type: 'blob',
+        script_mode: '100755',
+        script_blob_sha: '4'.repeat(40)
+      },
+      tips: [TIP, '8'.repeat(40)]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.reason).toBe('verify_candidate_stale');
+    expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('aligns a behind base through the pinned slug', async () => {
+    const h = makeForeign();
+
+    const r = await h.actions.updateBase(BEAD);
+
+    expect(r.ok).toBe(true);
+    expect(h.foreign.updateBranch).toHaveBeenCalledWith(REPO, 304);
+    expect(h.gh.updateBranch).not.toHaveBeenCalled();
+  });
+});

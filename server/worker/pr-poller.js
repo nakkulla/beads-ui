@@ -35,9 +35,16 @@ import { createPoller } from '../poller.js';
 import { onTimingSettingsChanged, timingSeconds } from '../timing-settings.js';
 import { discardOperationActive } from './discard-phase.js';
 import { failureTokenSummary } from './failure-class.js';
+import { foreignHandoffReason } from './foreign-handoff.js';
+import {
+  bindForeignTarget,
+  judgeForeignPreMerge,
+  repositorySlugOf
+} from './foreign-target.js';
 import { createAncestryProbe, reviewReceiptState } from './merge-gate.js';
 import { onQueueChanged } from './queue-events.js';
 import { COMPLETION_VERIFY_SUPPRESSED_PHASES } from './queue-store.js';
+import { resolveRepoOps as defaultResolveRepoOps } from './repo-ops-resolver.js';
 
 const log = debug('worker:pr-poller');
 
@@ -124,8 +131,10 @@ function retiredPrNumbers(queue, bead_id) {
  *
  * An external row marked `foreign` (its url names another repository,
  * UI-lpg1) resolves to NOTHING: the number would be read against this
- * workspace's origin as a different PR. Attempt and durable rows are this
- * worker's own PRs and never carry the mark.
+ * workspace's origin as a different PR. A row whose Bead pins that repository
+ * as its enclosed foreign landing target is not marked (UI-k467 §3.1): its
+ * number is read through the pinned slug, never the workspace origin, so the
+ * reference stands. Attempt and durable rows never carry the mark.
  *
  * @param {Queue} queue
  * @param {string} bead_id
@@ -201,7 +210,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
  *   workspace: string,
  *   repo: string,
  *   store: { snapshot: (workspace: string) => Queue, reconcileExternalPrWait?: (workspace: string, input: { bead_id: string, pr_url: string, head_ref: string }) => { ok: boolean }, promoteMergedExternal?: (workspace: string, input: any) => { ok: boolean }, recordCleanupFailure?: (workspace: string, input: any) => unknown },
- *   gh: { prDetail: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').PrDetail>> },
+ *   gh: { prDetail: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').PrDetail>>, repoSlug?: (repo_dir: string) => Promise<string|null> },
  *   observations: ReturnType<typeof import('./pr-observations.js').createPrObservationStore>,
  *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
@@ -216,6 +225,9 @@ export function resolvePrRef(queue, bead_id, external = null) {
  *     list: () => import('./external-pr.js').ExternalPrRow[]
  *   },
  *   notifyChanged?: (workspace: string) => void,
+ *   foreignTargetOf?: (bead_id: string) => import('./external-pr.js').ForeignTargetJudgment|null,
+ *   announceForeignHandoff?: (input: { bead_id: string, cause: string, identity: string, pr_url?: string|null, foreign_path?: string|null }) => unknown,
+ *   resolveRepoOps?: (input: { repo: string, sha: string, gitRun: any }) => Promise<any>,
  *   intervalSeconds?: number,
  *   requeryDelayMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
@@ -243,6 +255,7 @@ export function createPrPoller(deps) {
 
   const activity = deps.activity || null;
   const external = deps.external || null;
+  const resolveRepoOps = deps.resolveRepoOps || defaultResolveRepoOps;
 
   /**
    * Whether anything still NEEDS this workspace observed (UI-yk55 §4.4).
@@ -333,6 +346,36 @@ export function createPrPoller(deps) {
    * @returns {Promise<{ verify: Promise<void>|null }>}
    */
   async function observeBead(queue, bead_id, external_row = null) {
+    // The pinned foreign target (UI-k467 §3.3), re-derived from the scan's
+    // pins on every turn. A Worker-delivered row is not in the registry
+    // overlay, so its judgment comes from the scan-wide map.
+    const judged =
+      typeof deps.foreignTargetOf === 'function'
+        ? deps.foreignTargetOf(bead_id)
+        : null;
+    if (judged && judged.state === 'ok') {
+      return observeForeign(queue, bead_id, external_row, judged.target);
+    }
+    if (judged && judged.state === 'invalid') {
+      // Pinned, but the detection does not hold: the contract token is the
+      // refusal, re-judged every turn, and nothing reads the PR by number.
+      deps.observations.record(workspace, bead_id, { error: judged.reason });
+      return { verify: null };
+    }
+    if (
+      judged === null &&
+      typeof deps.foreignTargetOf === 'function' &&
+      (await refUrlNamesAnotherRepo(queue, bead_id, external_row))
+    ) {
+      // No scan has judged this Bead yet (a failed first scan after a
+      // restart), and its recorded PR is not this workspace's: reading its
+      // number here would observe a different PR (UI-k467 §4-3). The next
+      // scan supplies the target.
+      deps.observations.record(workspace, bead_id, {
+        error: 'foreign_target_unscanned'
+      });
+      return { verify: null };
+    }
     if (external_row !== null && external_row.foreign === true) {
       // The url names another repository (UI-lpg1): reading its number here
       // would observe a different PR. Recorded as its own state so the lane
@@ -523,6 +566,299 @@ export function createPrPoller(deps) {
   }
 
   /**
+   * Whether the PR a row's records point at names a repository other than this
+   * workspace's origin. An unresolvable origin or url answers false — the
+   * ordinary read then fails closed on its own.
+   *
+   * @param {Queue} queue
+   * @param {string} bead_id
+   * @param {import('./external-pr.js').ExternalPrRow|null} external_row
+   * @returns {Promise<boolean>}
+   */
+  async function refUrlNamesAnotherRepo(queue, bead_id, external_row) {
+    const repoSlug = /** @type {any} */ (deps.gh).repoSlug;
+    if (typeof repoSlug !== 'function') {
+      return false;
+    }
+    const url_slug = repositorySlugOf(
+      resolvePrRef(queue, bead_id, external_row)?.url
+    );
+    if (url_slug === null) {
+      return false;
+    }
+    /** @type {string|null} */
+    let origin = null;
+    try {
+      origin = await repoSlug.call(deps.gh, repo);
+    } catch {
+      origin = null;
+    }
+    return (
+      typeof origin === 'string' &&
+      origin.toLowerCase() !== url_slug.toLowerCase()
+    );
+  }
+
+  /**
+   * Observe one pinned foreign PR (UI-k467 §3.3–§3.5, §3.7): the PR is read
+   * with `gh --repo <pinned slug>`, the review receipt's ancestry is judged in
+   * `foreign_path` against the bound remote, and an OPEN PR is judged for the
+   * three `foreign_handoff` causes before its target `[verify]` runs. A cause
+   * is re-judged on every turn, so a fix releases it without a click.
+   *
+   * @param {Queue} queue
+   * @param {string} bead_id
+   * @param {import('./external-pr.js').ExternalPrRow|null} external_row
+   * @param {import('./foreign-target.js').ForeignPrTarget} target
+   * @returns {Promise<{ verify: Promise<void>|null }>}
+   */
+  async function observeForeign(queue, bead_id, external_row, target) {
+    const ref = resolvePrRef(queue, bead_id, external_row);
+    if (!ref) {
+      deps.observations.record(workspace, bead_id, {
+        error: 'pr_ref_unknown'
+      });
+      return { verify: null };
+    }
+    const foreign_gh =
+      typeof (/** @type {any} */ (deps.gh).forSlug) === 'function'
+        ? /** @type {any} */ (deps.gh).forSlug(target.slug)
+        : null;
+    if (!foreign_gh) {
+      deps.observations.record(workspace, bead_id, {
+        error: 'foreign_slug_unsupported'
+      });
+      return { verify: null };
+    }
+    /** @type {import('./gh.js').GhResult<import('./gh.js').PrDetail>} */
+    let detail;
+    try {
+      detail = await foreign_gh.prDetail(repo, ref.number);
+    } catch {
+      detail = { state: 'error', reason: 'gh_spawn_failed' };
+    }
+    if (
+      detail.state === 'ok' &&
+      detail.data.state === 'OPEN' &&
+      detail.data.mergeable === 'UNKNOWN'
+    ) {
+      await sleep(requery_delay_ms);
+      try {
+        const again = await foreign_gh.prDetail(repo, ref.number);
+        if (again.state === 'ok') {
+          detail = again;
+        }
+      } catch {
+        // Keep the first (UNKNOWN) reading; the next pass tries again.
+      }
+    }
+    /** @type {import('./pr-observations.js').ForeignObservation} */
+    const foreign = {
+      slug: target.slug,
+      repo_name: target.repo_name,
+      base: target.base,
+      path: target.path,
+      handoff: null,
+      base_sha: null,
+      verify_declared: null
+    };
+    if (detail.state !== 'ok') {
+      deps.observations.record(workspace, bead_id, {
+        error: detail.state === 'error' ? detail.reason : 'gh_empty',
+        foreign
+      });
+      return { verify: null };
+    }
+    const pr = detail.data;
+    const active_discard = Object.values(queue.discard_operations || {}).some(
+      (operation) =>
+        /** @type {any} */ (operation).bead_id === bead_id &&
+        discardOperationActive(/** @type {any} */ (operation))
+    );
+    if (active_discard) {
+      deps.observations.record(workspace, bead_id, {
+        error: null,
+        pr,
+        foreign
+      });
+      return {
+        verify:
+          typeof deps.onDiscardObservation === 'function'
+            ? observeDiscard(bead_id)
+            : null
+      };
+    }
+    if (pr.state !== 'OPEN') {
+      deps.observations.record(workspace, bead_id, {
+        error: null,
+        pr,
+        foreign
+      });
+      if (
+        pr.state === 'MERGED' &&
+        !queue.cleanup_failed?.[bead_id] &&
+        typeof deps.onMerged === 'function'
+      ) {
+        const merge_sha = pr.merge_sha || pr.merged_sha;
+        if (typeof merge_sha !== 'string') {
+          deps.observations.record(workspace, bead_id, {
+            error: 'merge_sha_unobserved',
+            pr,
+            foreign
+          });
+          return { verify: null };
+        }
+        return {
+          verify: cleanupMerged(bead_id, merge_sha, {
+            head_ref: pr.head_ref || null,
+            pr_url: pr.url || null,
+            external: external_row !== null
+          })
+        };
+      }
+      return { verify: null };
+    }
+    if (
+      external_row !== null &&
+      typeof deps.store.reconcileExternalPrWait === 'function'
+    ) {
+      try {
+        deps.store.reconcileExternalPrWait(workspace, {
+          bead_id,
+          pr_url: pr.url || ref.url,
+          head_ref: pr.head_ref || ''
+        });
+      } catch (err) {
+        log('external PR-wait reconcile failed for %s: %o', bead_id, err);
+      }
+    }
+    const git = deps.gitRun;
+    if (typeof git !== 'function') {
+      deps.observations.record(workspace, bead_id, {
+        error: 'foreign_checkout_unavailable',
+        pr,
+        foreign
+      });
+      return { verify: null };
+    }
+    const bound = await bindForeignTarget(target, git);
+    if (!bound.ok) {
+      deps.observations.record(workspace, bead_id, {
+        error: bound.reason,
+        pr,
+        foreign
+      });
+      return { verify: null };
+    }
+    /** @type {import('./merge-gate.js').CurrentState} */
+    let review_receipt_state = 'undetermined';
+    if (typeof deps.readIssue === 'function') {
+      try {
+        const issue = await deps.readIssue(bead_id);
+        review_receipt_state = await reviewReceiptState(
+          issue,
+          pr.head_sha,
+          createAncestryProbe({
+            gitRun: git,
+            repo: bound.target.path,
+            remote: bound.target.remote
+          })
+        );
+      } catch {
+        review_receipt_state = 'undetermined';
+      }
+    }
+    const review_receipt = {
+      state: review_receipt_state,
+      head_sha: pr.head_sha
+    };
+    const judgment = await judgeForeignPreMerge({
+      target: bound.target,
+      pr,
+      gitRun: git,
+      resolveRepoOps
+    });
+    if (!judgment.ok) {
+      deps.observations.record(workspace, bead_id, {
+        error: judgment.reason,
+        pr,
+        review_receipt,
+        foreign
+      });
+      return { verify: null };
+    }
+    foreign.base_sha = judgment.base_sha;
+    if (judgment.handoff !== null) {
+      foreign.handoff = judgment.handoff;
+      deps.observations.record(workspace, bead_id, {
+        error: foreignHandoffReason(judgment.handoff),
+        pr,
+        review_receipt,
+        foreign
+      });
+      announceHandoff(bead_id, judgment.handoff, pr, target, judgment.base_sha);
+      return { verify: null };
+    }
+    foreign.verify_declared = judgment.verify_script_path !== null;
+    deps.observations.record(workspace, bead_id, {
+      error: null,
+      pr,
+      review_receipt,
+      foreign
+    });
+    if (
+      !repo_operations ||
+      judgment.verify_script_path === null ||
+      judgment.base_sha === null ||
+      verifySuppressed(queue, bead_id)
+    ) {
+      return { verify: null };
+    }
+    return {
+      verify: startVerify(bead_id, ref.number, pr.head_sha, {
+        target_base: target.base,
+        base_sha: judgment.base_sha,
+        script_path: judgment.verify_script_path,
+        target: bound.target
+      })
+    };
+  }
+
+  /**
+   * Announce one `foreign_handoff` once per cause and identity (spec §3.7).
+   * The announcer owns the once-record; this only names the identity the
+   * cause was judged on.
+   *
+   * @param {string} bead_id
+   * @param {string} cause
+   * @param {import('./gh.js').PrDetail} pr
+   * @param {import('./foreign-target.js').ForeignPrTarget} target
+   * @param {string|null} base_sha
+   */
+  function announceHandoff(bead_id, cause, pr, target, base_sha) {
+    if (typeof deps.announceForeignHandoff !== 'function') {
+      return;
+    }
+    const identity =
+      cause === 'foreign_pr_base_mismatch'
+        ? `${pr.base_ref || ''}->${target.base}`
+        : cause === 'foreign_conflict_needs_human'
+          ? String(pr.head_sha || '')
+          : `${base_sha || ''}:${pr.head_sha || ''}`;
+    try {
+      deps.announceForeignHandoff({
+        bead_id,
+        cause,
+        identity,
+        pr_url: pr.url || null,
+        foreign_path: target.path
+      });
+    } catch (err) {
+      log('foreign handoff announce failed for %s: %o', bead_id, err);
+    }
+  }
+
+  /**
    * Whether this row's completion intent forbids a pre-merge verify run
    * (UI-hk74 §8). A row that cannot merge under any observation still draws a
    * fresh verify every time the base moves, which is where the five wasted runs
@@ -652,7 +988,9 @@ export function createPrPoller(deps) {
    * @param {string} bead_id
    * @param {number} pr_number
    * @param {string} head_sha
-   * @param {{ target_base: string, base_sha: string, script_path: string }} policy
+   * @param {{ target_base: string, base_sha: string, script_path: string, target?: import('./foreign-target.js').BoundForeignTarget }} policy
+   * - `target` is the bound foreign checkout of a pinned PR: the candidate is
+   * built there, under its common git dir (UI-k467 §3.5).
    * @returns {Promise<void>}
    */
   async function startVerify(bead_id, pr_number, head_sha, policy) {
@@ -669,14 +1007,23 @@ export function createPrPoller(deps) {
     markActivity('beginVerifying', bead_id);
     try {
       const ensured = await repo_operations.ensureVerify({
-        repo,
-        origin: 'origin',
+        repo: policy.target ? policy.target.path : repo,
+        origin: policy.target ? policy.target.remote : 'origin',
         target_base: policy.target_base,
         base_sha: policy.base_sha,
         head_sha,
         bead_id,
         pr_number,
-        script_path: policy.script_path
+        script_path: policy.script_path,
+        ...(policy.target
+          ? {
+              foreign: {
+                slug: policy.target.slug,
+                path: policy.target.path,
+                remote: policy.target.remote
+              }
+            }
+          : {})
       });
       if (!ensured.ok || typeof ensured.operation_id !== 'string') {
         return;

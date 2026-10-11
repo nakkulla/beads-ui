@@ -1172,3 +1172,58 @@ describe('worker/gh — repoSlug (UI-b8n8)', () => {
     expect(run).not.toHaveBeenCalled();
   });
 });
+
+describe('worker/gh — explicit slug entry (UI-k467)', () => {
+  test('passes the pinned slug as --repo for a PR read', async () => {
+    const run = makeRun({ stdout: JSON.stringify({}) });
+    const git_run = makeGitRun();
+
+    await makeGh(run, git_run)
+      .forSlug('acme/research-repo-template')
+      .prDetail('/rig', 4);
+
+    expect(run).toHaveBeenCalledWith(
+      [
+        'pr',
+        'view',
+        '4',
+        '--json',
+        'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,mergeCommit',
+        '--repo',
+        'acme/research-repo-template'
+      ],
+      { cwd: '/rig' }
+    );
+  });
+
+  test('merges through the pinned slug with the head pin', async () => {
+    const run = makeRun();
+
+    await makeGh(run)
+      .forSlug('acme/research-repo-template')
+      .mergeSquash('/rig', 4, 'b'.repeat(40));
+
+    expect(run).toHaveBeenCalledWith(
+      [
+        'pr',
+        'merge',
+        '4',
+        '--squash',
+        '--match-head-commit',
+        'b'.repeat(40),
+        '--repo',
+        'acme/research-repo-template'
+      ],
+      { cwd: '/rig' }
+    );
+  });
+
+  test('never resolves the checkout origin for a pinned slug', async () => {
+    const run = makeRun();
+    const git_run = makeGitRun();
+
+    await makeGh(run, git_run).forSlug('acme/repo').closePr('/rig', 4);
+
+    expect(git_run).not.toHaveBeenCalled();
+  });
+});

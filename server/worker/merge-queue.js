@@ -41,6 +41,7 @@
  */
 import { timingSeconds } from '../timing-settings.js';
 import { failureTokenSummary } from './failure-class.js';
+import { foreignHandoffCauseOf } from './foreign-handoff.js';
 import { cleanupRetryParked } from './resolution-ladder.js';
 
 /**
@@ -939,6 +940,22 @@ export function createMergeQueue(deps) {
     writeHold(bead_id, reason, head_sha);
     log('merge queue: %s held (%s)', bead_id, reason);
     await judgeAutoReviewDispatch(bead_id, reason, head_sha, head_ref);
+  }
+
+  /**
+   * Put one item on a `foreign_handoff` hold (UI-k467 §3.7). Like a review
+   * hold it keeps its slot and is re-judged on the next drain — a push to the
+   * PR head or a pin/PR-base fix releases it without a click — but it never
+   * spends a review lineage, and nothing here dispatches a resolver for it.
+   *
+   * @param {string} bead_id
+   * @param {string} reason
+   * @param {string|null|undefined} head_sha
+   */
+  function holdForeignHandoff(bead_id, reason, head_sha) {
+    held_this_pass.add(bead_id);
+    writeHold(bead_id, reason, head_sha, null);
+    log('merge queue: %s held (%s)', bead_id, reason);
   }
 
   /**
@@ -2223,6 +2240,13 @@ export function createMergeQueue(deps) {
           result.head_sha,
           result.head_ref ?? null
         );
+        return;
+      }
+      if (
+        action === 'refused' &&
+        foreignHandoffCauseOf(result.reason) !== null
+      ) {
+        holdForeignHandoff(bead_id, String(result.reason), result.head_sha);
         return;
       }
       releaseHold(bead_id);

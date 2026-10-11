@@ -909,10 +909,17 @@ export function createWorktreeManager(deps) {
      * `worktree_restore_failed` is a better answer than quietly clearing
      * bookkeeping this function does not own.
      *
-     * @param {{ repo: string, bead_id: string, head_ref: string }} input
+     * `remote` names the remote the head ref lives on — `origin` unless a
+     * pinned foreign target bound another one (UI-k467 §3.10).
+     *
+     * @param {{ repo: string, bead_id: string, head_ref: string, remote?: string }} input
      * @returns {Promise<{ ok: true, path: string }|{ ok: false, reason: string }>}
      */
     async restore(input) {
+      const remote_name =
+        typeof input.remote === 'string' && input.remote.length > 0
+          ? input.remote
+          : 'origin';
       const release = await locks.topologyLock(input.repo);
       try {
         const branch = branchForBead(input.bead_id);
@@ -946,14 +953,17 @@ export function createWorktreeManager(deps) {
           };
         }
         const fetched = await run(
-          ['fetch', '--no-tags', 'origin', input.head_ref],
+          ['fetch', '--no-tags', remote_name, input.head_ref],
           { cwd: input.repo }
         );
         const remote =
           fetched.code === 0
-            ? await run(['rev-parse', '--verify', `origin/${input.head_ref}`], {
-                cwd: input.repo
-              })
+            ? await run(
+                ['rev-parse', '--verify', `${remote_name}/${input.head_ref}`],
+                {
+                  cwd: input.repo
+                }
+              )
             : null;
         if (!remote || remote.code !== 0) {
           return {
@@ -984,7 +994,7 @@ export function createWorktreeManager(deps) {
                 '-b',
                 input.head_ref,
                 wt,
-                `origin/${input.head_ref}`
+                `${remote_name}/${input.head_ref}`
               ],
               { cwd: input.repo }
             );

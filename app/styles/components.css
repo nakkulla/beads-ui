@@ -81,6 +81,20 @@
   box-shadow: var(--ring-selected);
 }
 
+/* 말줄임 변형 (UI-k467): `.op-btn`은 줄바꿈하지 않으므로, 대상 저장소 이름이
+   붙는 긴 라벨(`머지 ↗ <저장소>`)은 최대 폭에서 자르고 말줄임을 그린다. 라벨은
+   안쪽 `<span>` 하나이고, 전체 이름은 버튼 title이 갖는다. */
+:is(button, summary):where(.op-btn--truncate) {
+  max-width: min(var(--w-op-btn-truncate), 100%);
+}
+
+:where(.op-btn--truncate) > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 테두리 warn (`⏸ 자동 머지`). */
 :is(button, summary):where(.op-btn--warn) {
   border-color: var(--accent-warn);

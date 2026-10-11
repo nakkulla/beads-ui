@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5754,5 +5755,280 @@ describe('manual deploy failure conversation (UI-jbl1 §3.1)', () => {
 
     expect(fx.launchForRepoOperation).not.toHaveBeenCalled();
     expect(fx.sent).toEqual([]);
+  });
+});
+
+describe('foreign verify candidate location (UI-k467 §3.5)', () => {
+  const FIXED_ENV = {
+    GIT_AUTHOR_NAME: 't',
+    GIT_AUTHOR_EMAIL: 't@example.com',
+    GIT_COMMITTER_NAME: 't',
+    GIT_COMMITTER_EMAIL: 't@example.com',
+    GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z',
+    GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z'
+  };
+
+  /**
+   * @param {string} cwd
+   * @param {string[]} args
+   */
+  function git(cwd, args) {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, ...FIXED_ENV }
+    }).trim();
+  }
+
+  /** @type {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} */
+  async function realGit(args, options) {
+    try {
+      const stdout = execFileSync('git', args, {
+        cwd: options.cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ...FIXED_ENV }
+      });
+      return { code: 0, stdout, stderr: '' };
+    } catch (err) {
+      const error = /** @type {any} */ (err);
+      return {
+        code: typeof error.status === 'number' ? error.status : 1,
+        stdout: String(error.stdout || ''),
+        stderr: String(error.stderr || '')
+      };
+    }
+  }
+
+  /**
+   * A checkout whose base declares `[verify]`, pushed to a bare remote, with
+   * a PR head commit on `UI-1`. Fixed dates make two such repos byte-equal.
+   *
+   * @param {string} dir
+   * @param {string} remote_name
+   */
+  function makeRepo(dir, remote_name) {
+    const remote = `${dir}.remote.git`;
+    git(root, ['init', '-q', '--bare', '-b', 'main', remote]);
+    git(root, ['init', '-q', '-b', 'main', dir]);
+    fs.mkdirSync(path.join(dir, 'repo-ops', 'script'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'repo-ops', 'config.toml'), VERIFY_CONFIG);
+    fs.writeFileSync(
+      path.join(dir, 'repo-ops', 'script', 'verify'),
+      '#!/bin/sh\nexit 0\n',
+      { mode: 0o755 }
+    );
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'base']);
+    git(dir, ['remote', 'add', remote_name, remote]);
+    git(dir, ['push', '-q', remote_name, 'main']);
+    git(dir, ['fetch', '-q', remote_name]);
+    const base_sha = git(dir, ['rev-parse', 'HEAD']);
+    git(dir, ['checkout', '-q', '-b', 'UI-1']);
+    fs.writeFileSync(path.join(dir, 'b.txt'), 'b\n');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'work']);
+    const head_sha = git(dir, ['rev-parse', 'HEAD']);
+    git(dir, ['checkout', '-q', 'main']);
+    return { base_sha, head_sha };
+  }
+
+  /**
+   * @param {string} repo
+   * @param {{ readMarker?: (workspace: string, operation_id: string) => any }} [options]
+   */
+  function realCoordinator(repo, options = {}) {
+    const store = createQueueStore({
+      filePathFor: (workspace) => path.join(workspace, 'queue.json')
+    });
+    const coordinator = createRepoOperationCoordinator({
+      workspace: root,
+      repo,
+      store,
+      locks: createLockManager(),
+      gitRun: realGit,
+      runner: /** @type {never} */ ({
+        start: () => ({
+          ok: true,
+          process_identity: { pid: 1, pgid: 1, started_at: 1 },
+          log_path: path.join(root, 'operation.log'),
+          marker_path: path.join(root, 'operation.marker.json')
+        }),
+        readMarker: (
+          /** @type {string} */ workspace,
+          /** @type {string} */ operation_id
+        ) => options.readMarker?.(workspace, operation_id) ?? null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }),
+      transition: /** @type {never} */ ({
+        materialize: async () => ({
+          ok: true,
+          path: path.join(root, 'script')
+        }),
+        reclaim: () => {}
+      })
+    });
+    return { store, coordinator };
+  }
+
+  /**
+   * @param {string} target
+   * @param {{ base_sha: string, head_sha: string }} shas
+   */
+  function foreignCandidate(target, shas) {
+    return {
+      repo: target,
+      origin: 'upstream',
+      target_base: 'main',
+      base_sha: shas.base_sha,
+      head_sha: shas.head_sha,
+      bead_id: 'UI-1',
+      pr_number: 4,
+      script_path: 'repo-ops/script/verify',
+      foreign: { slug: 'acme/target', path: target, remote: 'upstream' }
+    };
+  }
+
+  test('creates the candidate under the target common git dir, named by the operation id', async () => {
+    const workspace_repo = path.join(root, 'workspace');
+    const target = path.join(root, 'target');
+    makeRepo(workspace_repo, 'origin');
+    const shas = makeRepo(target, 'upstream');
+    const { store, coordinator } = realCoordinator(workspace_repo);
+
+    const result = await coordinator.ensureVerify(
+      foreignCandidate(target, shas)
+    );
+
+    expect(result.ok).toBe(true);
+    const operation = /** @type {any} */ (
+      store.snapshot(root).repo_operations[String(result.operation_id)]
+    );
+    expect(operation.deploy_worktree).toBe(
+      path.join(target, '.git', 'bdui-verify', String(result.operation_id))
+    );
+    expect(fs.existsSync(operation.deploy_worktree)).toBe(true);
+    expect(git(target, ['worktree', 'list', '--porcelain'])).toContain(
+      `worktree ${fs.realpathSync(operation.deploy_worktree)}`
+    );
+  });
+
+  test('keeps the workspace candidate in the temporary directory', async () => {
+    const workspace_repo = path.join(root, 'workspace');
+    const shas = makeRepo(workspace_repo, 'origin');
+    const { store, coordinator } = realCoordinator(workspace_repo);
+
+    const result = await coordinator.ensureVerify({
+      repo: workspace_repo,
+      origin: 'origin',
+      target_base: 'main',
+      base_sha: shas.base_sha,
+      head_sha: shas.head_sha,
+      bead_id: 'UI-1',
+      pr_number: 4,
+      script_path: 'repo-ops/script/verify'
+    });
+
+    expect(result.ok).toBe(true);
+    const operation = /** @type {any} */ (
+      store.snapshot(root).repo_operations[String(result.operation_id)]
+    );
+    expect(path.dirname(operation.deploy_worktree)).toBe(os.tmpdir());
+    fs.rmSync(operation.deploy_worktree, { recursive: true, force: true });
+  });
+
+  test('gives a foreign candidate a different operation id than an identical workspace one', async () => {
+    const workspace_repo = path.join(root, 'workspace');
+    const target = path.join(root, 'target');
+    const workspace_shas = makeRepo(workspace_repo, 'origin');
+    const shas = makeRepo(target, 'upstream');
+    const { store, coordinator } = realCoordinator(workspace_repo);
+
+    const local = await coordinator.ensureVerify({
+      repo: workspace_repo,
+      origin: 'origin',
+      target_base: 'main',
+      base_sha: workspace_shas.base_sha,
+      head_sha: workspace_shas.head_sha,
+      bead_id: 'UI-1',
+      pr_number: 4,
+      script_path: 'repo-ops/script/verify'
+    });
+    const foreign = await coordinator.ensureVerify(
+      foreignCandidate(target, shas)
+    );
+
+    const operations = /** @type {any} */ (
+      store.snapshot(root).repo_operations
+    );
+    expect(workspace_shas).toEqual(shas);
+    expect(operations[String(local.operation_id)].target_tree).toBe(
+      operations[String(foreign.operation_id)].target_tree
+    );
+    expect(foreign.operation_id).not.toBe(local.operation_id);
+    fs.rmSync(operations[String(local.operation_id)].deploy_worktree, {
+      recursive: true,
+      force: true
+    });
+  });
+
+  test('removes the candidate when its run settles', async () => {
+    const workspace_repo = path.join(root, 'workspace');
+    const target = path.join(root, 'target');
+    makeRepo(workspace_repo, 'origin');
+    const shas = makeRepo(target, 'upstream');
+    /** @type {string|null} */
+    let settled_id = null;
+    const { store, coordinator } = realCoordinator(workspace_repo, {
+      readMarker: (_workspace, operation_id) =>
+        operation_id === settled_id
+          ? { exit_code: 0, signal: null, started_at: 1, finished_at: 2 }
+          : null
+    });
+    const result = await coordinator.ensureVerify(
+      foreignCandidate(target, shas)
+    );
+    settled_id = String(result.operation_id);
+    const candidate = String(
+      store.snapshot(root).repo_operations[settled_id].deploy_worktree
+    );
+
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).repo_operations[settled_id].state).toBe(
+      'succeeded'
+    );
+    expect(fs.existsSync(candidate)).toBe(false);
+    expect(git(target, ['worktree', 'list', '--porcelain'])).not.toContain(
+      'bdui-verify'
+    );
+  });
+
+  test('sweeps only orphaned worktrees under bdui-verify on recovery', async () => {
+    const workspace_repo = path.join(root, 'workspace');
+    const target = path.join(root, 'target');
+    makeRepo(workspace_repo, 'origin');
+    const shas = makeRepo(target, 'upstream');
+    const { store, coordinator } = realCoordinator(workspace_repo);
+    const live = await coordinator.ensureVerify(foreignCandidate(target, shas));
+    const live_path = String(
+      store.snapshot(root).repo_operations[String(live.operation_id)]
+        .deploy_worktree
+    );
+    const stray = path.join(target, '.git', 'bdui-verify', 'stray');
+    git(target, ['worktree', 'add', '-q', '--detach', stray, shas.base_sha]);
+    const owned = path.join(target, '.worktrees', 'UI-9');
+    git(target, ['worktree', 'add', '-q', '-b', 'UI-9', owned, shas.base_sha]);
+
+    const removed = await coordinator.sweepForeignCandidates({ path: target });
+
+    expect(removed).toEqual([stray]);
+    expect(fs.existsSync(stray)).toBe(false);
+    expect(fs.existsSync(live_path)).toBe(true);
+    expect(fs.existsSync(owned)).toBe(true);
+    const listed = git(target, ['worktree', 'list', '--porcelain']);
+    expect(listed).not.toContain('bdui-verify/stray');
+    expect(listed).toContain(`worktree ${fs.realpathSync(owned)}`);
   });
 });

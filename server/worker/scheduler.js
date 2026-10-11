@@ -109,6 +109,7 @@ import {
   prefixOfBeadId,
   queryForeignBlockerStatus
 } from './foreign-blocker-status.js';
+import { bindForeignTarget, readForeignTarget } from './foreign-target.js';
 import * as default_guard_hook from './guard-hook.js';
 import {
   activeAccountOf,
@@ -142,6 +143,7 @@ import {
   failureHandoffTarget,
   repoOperationIdOf
 } from './resolve-session.js';
+import { foreignReviewPromptSection } from './review-session.js';
 import {
   acquireClaudeLaunch,
   liftDelegation,
@@ -768,7 +770,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * `readyBeadIds` is optional for the same compatibility reason. Without the
  * workspace-wide ready reader, waiting return scans fail quiet and ordinary
  * scheduler behavior stays unchanged.
- * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, observeOwnedByBead?: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>, installDependencies?: (i: { path: string }) => Promise<string>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, withTopologyLock?: <T>(repo: string, fn: () => Promise<T>) => Promise<T>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
+ * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, observeOwnedByBead?: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>, installDependencies?: (i: { path: string }) => Promise<string>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, withTopologyLock?: <T>(repo: string, fn: () => Promise<T>) => Promise<T>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string, remote?: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
@@ -1374,14 +1376,15 @@ const FAILURE_HANDOFF_ACTIONS = Object.freeze({
 /**
  * The `<행 종류>` word of the `대화 인계 · <행 종류> · <결과 줄>` timeline line.
  *
- * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation', string>>}
+ * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff', string>>}
  */
 const FAILURE_HANDOFF_ROWS = Object.freeze({
   cleanup: '실패 — 머지 후 정리',
   discard: '실패 — 폐기',
   verify_hold: '실패 — 머지 전 검증 보류',
   merge_gate: '실패 — 머지 게이트',
-  repo_operation: '실패 — 수동 배포'
+  repo_operation: '실패 — 수동 배포',
+  foreign_handoff: '실패 — 외부 PR 사람 처리 필요'
 });
 
 /**
@@ -10169,14 +10172,16 @@ export function createScheduler(deps) {
       refuseConversationHandoff(workspace, record, '이미 정산됨');
       return { done: true };
     }
-    if (target.kind === 'merge_gate') {
+    if (target.kind === 'merge_gate' || target.kind === 'foreign_handoff') {
       // `receipt_hold`: only a person's `[머지]` waives it — the handoff runs
-      // nothing and ends like `보류` (UI-18a5 §3.4 결정).
+      // nothing and ends like `보류` (UI-18a5 §3.4 결정). A `foreign_handoff`
+      // has no Worker exit at all: the target's own `pr-finish` owns it
+      // (UI-k467 §3.7).
       appendTimeline({
         bead_id,
         kind: 'interactive_session',
         seq: `${record.kind}:${record.launched_at}:handoff`,
-        summary: `대화 인계 · ${FAILURE_HANDOFF_ROWS.merge_gate} · ${handoff.line} · 실행 없음`
+        summary: `대화 인계 · ${FAILURE_HANDOFF_ROWS[target.kind]} · ${handoff.line} · 실행 없음`
       });
       return { done: true };
     }
@@ -15161,8 +15166,10 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {string|null} head_ref
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
+   * @param {string|null} [remote] - The remote the head ref lives on, when a
+   * pinned foreign target bound one other than `origin` (UI-k467 §3.10).
    */
-  async function restoreWorktree(repo, bead_id, head_ref) {
+  async function restoreWorktree(repo, bead_id, head_ref, remote = null) {
     if (
       typeof head_ref !== 'string' ||
       head_ref.length === 0 ||
@@ -15173,7 +15180,12 @@ export function createScheduler(deps) {
     /** @type {{ ok: boolean, reason?: string }} */
     let restored = { ok: false, reason: 'worktree_restore_failed' };
     try {
-      restored = await deps.worktree.restore({ repo, bead_id, head_ref });
+      restored = await deps.worktree.restore({
+        repo,
+        bead_id,
+        head_ref,
+        ...(remote ? { remote } : {})
+      });
     } catch (err) {
       log('worktree restore threw for %s: %o', bead_id, err);
     }
@@ -16913,6 +16925,44 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Re-read a review session Bead's foreign pins (UI-k467 §3.10) and bind the
+   * pinned checkout. A pin-less Bead answers `{ ok: true, target: null }`.
+   *
+   * @param {string} bead_id
+   * @param {string} repo
+   * @returns {Promise<{ ok: true, target: import('./foreign-target.js').BoundForeignTarget|null }|{ ok: false, reason: string }>}
+   */
+  async function reviewForeignTarget(bead_id, repo) {
+    if (typeof deps.bd.readMetadata !== 'function') {
+      return { ok: true, target: null };
+    }
+    const judged = await readForeignTarget(
+      {
+        readMetadata: (id, key) => deps.bd.readMetadata(id, key),
+        gitRun:
+          deps.gitRun ||
+          (async () => ({ code: 1, stdout: '', stderr: 'git unavailable' })),
+        cwd: repo,
+        log
+      },
+      bead_id
+    );
+    if (judged.state === 'none') {
+      return { ok: true, target: null };
+    }
+    if (judged.state === 'invalid') {
+      return { ok: false, reason: judged.reason };
+    }
+    if (typeof deps.gitRun !== 'function') {
+      return { ok: false, reason: 'foreign_checkout_unavailable' };
+    }
+    const bound = await bindForeignTarget(judged.target, deps.gitRun);
+    return bound.ok
+      ? { ok: true, target: bound.target }
+      : { ok: false, reason: bound.reason };
+  }
+
+  /**
    * Launch the `[리뷰 후 머지]` session for an attempt the click already
    * registered (UI-d7fy §5.2).
    *
@@ -16977,8 +17027,18 @@ export function createScheduler(deps) {
       return refuseLaunch('bd_snapshot_failed');
     }
     const repo = snap.repo;
-    const base =
-      typeof attempt.target_base === 'string' && attempt.target_base.length > 0
+    // A pinned foreign PR's review works in the TARGET's `.worktrees/<bead>`
+    // (UI-k467 §3.10): the PR head lives there, never in a rig worktree.
+    const foreign = await reviewForeignTarget(bead_id, repo);
+    if (!foreign.ok) {
+      return refuseLaunch(foreign.reason);
+    }
+    const target = foreign.target;
+    const wt_repo = target ? target.path : repo;
+    const base = target
+      ? target.base
+      : typeof attempt.target_base === 'string' &&
+          attempt.target_base.length > 0
         ? attempt.target_base
         : typeof snap.target_base === 'string' && snap.target_base.length > 0
           ? snap.target_base
@@ -16997,13 +17057,14 @@ export function createScheduler(deps) {
     }
     const wt_present =
       typeof deps.worktree.exists === 'function'
-        ? deps.worktree.exists(repo, bead_id)
+        ? deps.worktree.exists(wt_repo, bead_id)
         : true;
     if (!wt_present) {
       const restored = await restoreWorktree(
-        repo,
+        wt_repo,
         bead_id,
-        input.head_ref ?? null
+        input.head_ref ?? null,
+        target ? target.remote : null
       );
       if (!restored.ok) {
         removeGuardHook(workspace, attempt_id);
@@ -17125,11 +17186,16 @@ export function createScheduler(deps) {
       stamped_keys: [],
       wt_path:
         typeof deps.worktree.pathFor === 'function'
-          ? deps.worktree.pathFor(repo, bead_id)
-          : repo,
+          ? deps.worktree.pathFor(wt_repo, bead_id)
+          : wt_repo,
       launch_kind: 'review',
       resume_session_id,
-      spawnBead: { id: bead_id, prompt: input.prompt }
+      spawnBead: {
+        id: bead_id,
+        prompt: target
+          ? `${input.prompt}\n\n${foreignReviewPromptSection(target)}`
+          : input.prompt
+      }
     });
     if (!launched.ok) {
       // `launchSession`'s own spawn-abort cleanup already released it; this is

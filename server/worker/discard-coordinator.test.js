@@ -46,7 +46,7 @@ afterEach(() => {
 });
 
 /**
- * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any, notify?: any, failureConversation?: any, makeOperationId?: () => string }} [options]
+ * @param {{ foreign?: boolean, prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any, notify?: any, failureConversation?: any, makeOperationId?: () => string }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore({ now: () => 100 });
@@ -138,6 +138,33 @@ function setup(options = {}) {
           : { state: 'ok', data: true };
     })
   };
+  if (options.foreign) {
+    // A pinned foreign PR (UI-k467 §3.9): the pins name the repository the
+    // recorded PR url belongs to.
+    Object.assign(parent_issue.metadata, {
+      foreign_repo: 'git@github.com:acme/repo.git',
+      foreign_path: '/targets/repo',
+      foreign_base: 'main'
+    });
+    Object.assign(gh, {
+      forSlug: vi.fn((/** @type {string} */ slug) => ({
+        prDetail: async (
+          /** @type {string} */ repo,
+          /** @type {number} */ n
+        ) => {
+          calls.push(`gh:slug:${slug}`);
+          return /** @type {any} */ (gh.prDetail)(repo, n);
+        },
+        closePr: async (
+          /** @type {string} */ repo,
+          /** @type {number} */ n
+        ) => {
+          calls.push(`gh:slug:${slug}`);
+          return /** @type {any} */ (gh.closePr)(repo, n);
+        }
+      }))
+    });
+  }
   const bd = {
     readStatus: vi.fn(async () => {
       calls.push(`bd:status-read:${bead_status}`);
@@ -3157,5 +3184,63 @@ describe('worker discard coordinator abandonment', () => {
 
     expect(result.operation_id).toBe('discard-next');
     expect(result.reused).not.toBe(true);
+  });
+});
+
+describe('foreign PR discard (UI-k467 §3.9)', () => {
+  test('closes an OPEN foreign PR through the pinned slug and reopens the bead', async () => {
+    const env = setup({ foreign: true });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result.ok).toBe(true);
+    expect(/** @type {any} */ (env.gh).forSlug).toHaveBeenCalledWith(
+      'acme/repo'
+    );
+    expect(env.calls).toContain('gh:close');
+    expect(env.bd.updateFields).toHaveBeenCalledWith(
+      'UI-1',
+      expect.objectContaining({ status: 'open' })
+    );
+  });
+
+  test('reads every foreign PR state through the pinned slug', async () => {
+    const env = setup({ foreign: true });
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    const gh_calls = env.calls.filter((call) => call.startsWith('gh:'));
+    const unrouted = gh_calls.filter(
+      (call, i) =>
+        !call.startsWith('gh:slug:') && gh_calls[i - 1] !== 'gh:slug:acme/repo'
+    );
+    expect(unrouted).toEqual([]);
+  });
+
+  test('refuses a MERGED foreign PR before changing anything', async () => {
+    const env = setup({ foreign: true, prState: 'MERGED' });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'foreign_merged_discard_unsupported'
+    });
+    expect(env.store.snapshot(workspace).discard_operations).toEqual({});
+    expect(env.calls).not.toContain('gh:close');
+    expect(env.bd.updateFields).not.toHaveBeenCalled();
+    expect(env.bd.setStatus).not.toHaveBeenCalled();
   });
 });

@@ -93,6 +93,7 @@ import {
   onForeignBlockerResolved,
   ownerRootsForBlockerIds
 } from '../worker/foreign-blocker-status.js';
+import { observationVerifyPolicy } from '../worker/merge-candidates.js';
 import {
   evaluateMergeGate,
   observedReviewReceiptState
@@ -834,7 +835,7 @@ export function withExternalPrWait(workspace_key, queue) {
   );
   /** @type {Set<string>} */
   const emitted = new Set();
-  /** @type {Array<{ bead_id: string, added_at: number|null, external: true, wt_present: boolean, foreign?: boolean, repo_slug?: string, pr_url?: string, pr_number?: number }>} */
+  /** @type {Array<{ bead_id: string, added_at: number|null, external: true, wt_present: boolean, foreign?: boolean, repo_slug?: string, pr_url?: string, pr_number?: number, foreign_target?: { slug: string, repo_name: string } }>} */
   const overlay = [];
   for (const row of rows) {
     if (durable.has(row.bead_id) || emitted.has(row.bead_id)) {
@@ -862,6 +863,16 @@ export function withExternalPrWait(workspace_key, queue) {
         : {}),
       ...(typeof row.pr_number === 'number' && Number.isFinite(row.pr_number)
         ? { pr_number: row.pr_number }
+        : {}),
+      // A pinned foreign PR target (UI-k467 §3.8): the card names the target
+      // repository before the first observation does.
+      ...(row.foreign_target
+        ? {
+            foreign_target: {
+              slug: row.foreign_target.slug,
+              repo_name: row.foreign_target.repo_name
+            }
+          }
         : {})
     });
   }
@@ -1043,10 +1054,13 @@ function prObservationsFor(workspace_key, queue, verify_policy) {
       verify: record ? record.verify : null,
       error: record ? record.error : null,
       observed_at: record ? record.observed_at : null,
+      // The pinned foreign target this PR was observed through (UI-k467):
+      // the card's `머지 ↗ <repo>` label and handoff badge read it.
+      ...(record && record.foreign ? { foreign: record.foreign } : {}),
       gate: evaluateMergeGate(record, {
         review_receipt_state: observedReviewReceiptState(record),
         verify_receipt_state: repoOpsVerifyReceiptState(
-          verify_policy,
+          observationVerifyPolicy(record, verify_policy),
           record?.verify || null
         ),
         // A pure read of cached observations creates no authority (UI-bu6d §4):
@@ -7022,7 +7036,12 @@ export async function handleWorkerResolveInSession(ws, req) {
         }
       : completing
         ? null
-        : resolveFailureContext(current, p.bead_id);
+        : resolveFailureContext(
+            current,
+            p.bead_id,
+            getWorkerRuntime().prObservations.get(key, p.bead_id)?.foreign ??
+              null
+          );
   // A handoff reservation of any kind is an operation in progress for this
   // Bead (UI-18a5 §3.4): only the pass that settles it may end it.
   const refusal =

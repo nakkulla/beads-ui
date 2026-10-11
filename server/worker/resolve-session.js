@@ -42,6 +42,11 @@ import {
   fillConversationEntry
 } from './direction-inquiry.js';
 import { discardOperationActive } from './discard-phase.js';
+import {
+  FOREIGN_HANDOFF_NOTIFY_LABEL,
+  foreignHandoffCauseOf,
+  foreignHandoffReason
+} from './foreign-handoff.js';
 import { holdsHandoffReservation } from './queue-store.js';
 import { qualifyInteractiveForkSource } from './session-ref.js';
 import {
@@ -223,7 +228,38 @@ export function repoOperationFailureContext(queue, operation_id) {
  * worktree.
  * @property {{ job_id: string, ssh_host: string, requested_at: string|null }} [takeover] -
  * An unresolved `▶ 바로 실행` row's held Slurm job (UI-9w5l §3.4).
+ * @property {string|null} [bead_id] - A `foreign_handoff` row's Bead.
+ * @property {string|null} [foreign_path] - A `foreign_handoff` row's pinned
+ * target checkout (UI-k467 §3.7); the conversation's first input names it and
+ * the target's own `pr-finish` procedure.
  */
+
+/**
+ * The failure context of a `foreign_handoff` row.
+ *
+ * @param {string} bead_id
+ * @param {string} cause
+ * @param {string} stage
+ * @param {{ path?: string|null, slug?: string|null }|null} foreign
+ * @returns {ResolveFailureContext}
+ */
+function foreignHandoffContext(bead_id, cause, stage, foreign) {
+  const foreign_path =
+    typeof foreign?.path === 'string' && foreign.path.length > 0
+      ? foreign.path
+      : null;
+  return {
+    failure_class: FOREIGN_HANDOFF_NOTIFY_LABEL,
+    reason: foreignHandoffReason(cause),
+    stage,
+    detail:
+      typeof foreign?.slug === 'string' && foreign.slug.length > 0
+        ? `대상 저장소 ${foreign.slug}`
+        : null,
+    bead_id,
+    foreign_path
+  };
+}
 
 /**
  * The terminal failure a 실패 row's `[세션에서 이어가기]` click is about, read
@@ -238,12 +274,37 @@ export function repoOperationFailureContext(queue, operation_id) {
  *
  * @param {any} queue - Queue snapshot.
  * @param {string} bead_id
+ * @param {{ handoff?: string|null, path?: string|null, slug?: string|null }|null} [foreign] - The
+ * row's pinned foreign PR observation (UI-k467 §3.7). A pre-merge
+ * `foreign_handoff` lives only there: it is re-judged every turn, so the queue
+ * snapshot holds no record of it.
  * @returns {ResolveFailureContext|null}
  */
-export function resolveFailureContext(queue, bead_id) {
+export function resolveFailureContext(queue, bead_id, foreign = null) {
   const operation_id = repoOperationIdOf(bead_id);
   if (operation_id !== null) {
     return repoOperationFailureContext(queue, operation_id);
+  }
+  // A post-merge foreign stop is a cleanup record whose reason is the class
+  // token; a pre-merge one is the observation's cause.
+  const foreign_cleanup_cause = foreignHandoffCauseOf(
+    queue?.cleanup_failed?.[bead_id]?.reason
+  );
+  if (foreign_cleanup_cause !== null) {
+    return foreignHandoffContext(
+      bead_id,
+      foreign_cleanup_cause,
+      'repo_operations',
+      foreign
+    );
+  }
+  if (typeof foreign?.handoff === 'string' && foreign.handoff.length > 0) {
+    return foreignHandoffContext(
+      bead_id,
+      foreign.handoff,
+      'foreign_handoff',
+      foreign
+    );
   }
   const intent = queue?.completion_intents?.[bead_id];
   if (intent?.phase === 'holding' && intent.hold) {
@@ -418,7 +479,29 @@ export function buildFailureEntry(input) {
     checkout: input.checkout
   });
   const takeover = input.failure.takeover;
-  return takeover ? `${entry}\n\n${takeoverCleanupRules(takeover)}` : entry;
+  if (takeover) {
+    return `${entry}\n\n${takeoverCleanupRules(takeover)}`;
+  }
+  return input.failure.failure_class === FOREIGN_HANDOFF_NOTIFY_LABEL
+    ? `${entry}\n\n${foreignHandoffRules(input.failure)}`
+    : entry;
+}
+
+/**
+ * The instruction a `foreign_handoff` conversation starts with (UI-k467
+ * §3.7): the class, the cause, the Bead and `foreign_path`, and the target's
+ * own `pr-finish` Foreign-pinned Bead procedure. The rig Worker owns neither
+ * the target's deploy lock nor its post-merge ledger, so the work is done in
+ * the target and nothing here hands it back to the Worker.
+ *
+ * @param {ResolveFailureContext} failure
+ * @returns {string}
+ */
+export function foreignHandoffRules(failure) {
+  return [
+    `분류 ${FOREIGN_HANDOFF_NOTIFY_LABEL} · 원인 ${failure.reason} · Bead ${failure.bead_id || '(미상)'} · foreign_path ${failure.foreign_path || '(미상)'}`,
+    '대상 저장소에서 `pr-finish` Foreign-pinned Bead 절차로 처리한다. [머지]로는 풀리지 않고, Worker로 넘기는 인계는 없다.'
+  ].join('\n');
 }
 
 /**
@@ -461,7 +544,7 @@ export function takeoverCleanupRules(takeover) {
  *
  * @param {any} queue - Queue snapshot.
  * @param {string} bead_id - The row key: a Bead id, or `repo-op:<id>`.
- * @returns {{ kind: 'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation', identity: string }|null}
+ * @returns {{ kind: 'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff', identity: string }|null}
  */
 export function failureHandoffTarget(queue, bead_id) {
   const operation_id = repoOperationIdOf(bead_id);
@@ -483,6 +566,18 @@ export function failureHandoffTarget(queue, bead_id) {
     return {
       kind: 'verify_hold',
       identity: `verify_hold:${intent.hold.head_sha || intent.subject?.head_sha || ''}:${entry?.authority?.id || 'none'}`
+    };
+  }
+  if (
+    cleanup &&
+    typeof cleanup === 'object' &&
+    foreignHandoffCauseOf(cleanup.reason) !== null
+  ) {
+    // A foreign handoff has no Worker exit (UI-k467 §3.7): `인계` runs
+    // nothing, exactly like the merge-gate hold.
+    return {
+      kind: 'foreign_handoff',
+      identity: `foreign_handoff:${cleanup.reason}:${cleanup.at}`
     };
   }
   if (cleanup && typeof cleanup === 'object') {
@@ -999,6 +1094,7 @@ function newConversation(failure) {
  * @param {{
  *   resolveSession: Pick<ReturnType<typeof createResolveSession>, 'resolve'|'resolveRepoOperation'>,
  *   snapshot: (workspace: string) => any,
+ *   foreignOf?: (workspace: string, bead_id: string) => any,
  *   getConfig: () => any,
  *   autoLaunchEnabled?: (config_enabled: boolean) => boolean,
  *   log?: (...args: any[]) => void
@@ -1112,7 +1208,14 @@ export function createFailureConversationLauncher(deps) {
       if (gate) {
         return gate;
       }
-      const failure = resolveFailureContext(queue, input.bead_id);
+      /** @type {any} */
+      let foreign = null;
+      try {
+        foreign = deps.foreignOf?.(input.workspace, input.bead_id) ?? null;
+      } catch (err) {
+        log('foreign observation read failed for %s: %o', input.bead_id, err);
+      }
+      const failure = resolveFailureContext(queue, input.bead_id, foreign);
       if (!failure) {
         return notLaunched('no_terminal_failure');
       }

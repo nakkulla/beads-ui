@@ -298,6 +298,9 @@ export function createWorkerRuntime() {
   const failureConversation = createFailureConversationLauncher({
     resolveSession,
     snapshot: (workspace) => queueStore.snapshot(workspace),
+    // A pre-merge `foreign_handoff` lives only on the PR observation (UI-k467).
+    foreignOf: (workspace, bead_id) =>
+      prObservations.get(workspace, bead_id)?.foreign ?? null,
     getConfig
   });
   // Shared session-log broker: the scheduler's `attach` persists the raw stream

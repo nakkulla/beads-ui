@@ -155,7 +155,7 @@ function handoffAction(item) {
  * The row kinds a `[세션에서 이어가기]` stands on (UI-18a5 §3.1), told apart
  * so the tooltip can say what this row's `인계` will do.
  *
- * @typedef {'stop'|'cleanup'|'verify_hold'|'merge_gate'|'discard'|'external'|'takeover'} ContinueRow
+ * @typedef {'stop'|'cleanup'|'verify_hold'|'merge_gate'|'discard'|'external'|'takeover'|'foreign_handoff'} ContinueRow
  */
 
 /**
@@ -177,7 +177,12 @@ const SESSION_TITLES = Object.freeze({
   external:
     '보존 세션을 같은 워크트리에서 대화로 다시 엽니다 — 인계하면 Worker가 그 세션에서 attempt를 시작합니다',
   takeover:
-    '해결 세션을 열어 서버의 바로 실행 기록을 확인·정리합니다 — 정리되면 다음 관측에서 대기가 풀립니다'
+    '해결 세션을 열어 서버의 바로 실행 기록을 확인·정리합니다 — 정리되면 다음 관측에서 대기가 풀립니다',
+  // 외부 PR 사람 처리 필요 (UI-k467 §3.7): 출구는 이 세션 하나다. `merge_gate`
+  // 제목(사람의 [머지]만 풀린다)을 물려받지 않는다 — 이 행은 [머지]로 풀리지
+  // 않는다.
+  foreign_handoff:
+    '대화 세션을 엽니다 — 외부 PR 사람 처리 필요는 [머지]로 풀리지 않습니다. 대상 저장소에서 `pr-finish` Foreign-pinned Bead 절차로 처리합니다'
 });
 
 /** The tooltip while the click only focuses a live conversation's window. */
@@ -195,6 +200,9 @@ const FOCUS_TITLE =
  */
 function failureRow(item) {
   const material = item.failure_material || null;
+  if (typeof material?.foreign_handoff === 'string') {
+    return 'foreign_handoff';
+  }
   if (material?.completion_phase === 'holding') {
     return 'verify_hold';
   }

@@ -158,6 +158,24 @@ export function reviewSessionPrompt(input) {
 }
 
 /**
+ * The section a pinned foreign PR's review prompt adds (UI-k467 §3.10): the
+ * target checkout and slug the session works in. The contract allows it two
+ * writes there — a push to the PR head and the `impl_review` receipt.
+ *
+ * @param {{ path: string, slug: string, base: string }} target
+ * @returns {string}
+ */
+export function foreignReviewPromptSection(target) {
+  return [
+    '대상 저장소 (enclosed foreign landing, PR 전달):',
+    `- 대상 체크아웃: ${target.path} (작업 워크트리 ${target.path}/.worktrees/<bead-id>)`,
+    `- 대상 저장소: ${target.slug} — gh 호출은 \`--repo ${target.slug}\``,
+    `- 대상 base: ${target.base}`,
+    '- 쓰기는 PR head 브랜치 push와 `impl_review` 영수증뿐이다. rig 워크트리는 쓰지 않는다.'
+  ].join('\n');
+}
+
+/**
  * Turn a `reviewReceiptState` verdict into the gate reason the row displays.
  *
  * @param {string} state

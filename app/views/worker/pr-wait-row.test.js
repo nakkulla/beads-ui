@@ -475,3 +475,206 @@ describe('shared PR 대기 projection — 폐기 실패 짝 (UI-18a5 §3.4)', ()
     expect(labels).not.toContain('워커로 이어가기');
   });
 });
+
+describe('pinned foreign PR rows (UI-k467 §3.8)', () => {
+  const TARGET = {
+    slug: 'acme/research-repo-template',
+    repo_name: 'research-repo-template',
+    base: 'main',
+    path: '/targets/research-repo-template',
+    handoff: null,
+    base_sha: 'f'.repeat(40),
+    verify_declared: false
+  };
+  const ELIGIBLE = {
+    enabled: true,
+    tier: 'eligible',
+    gate_badge: '머지 가능',
+    base_badge: '최신',
+    reason: null
+  };
+
+  /**
+   * A Worker-delivered pinned row with an observation of its target.
+   *
+   * @param {Record<string, any>} [obs]
+   * @returns {any}
+   */
+  function pinnedRow(obs = {}) {
+    return rowsOf(
+      workspace({
+        pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+        pr_observations: {
+          'A-1': {
+            pr: {
+              number: 4,
+              url: 'https://github.com/acme/research-repo-template/pull/4'
+            },
+            foreign: TARGET,
+            gate: ELIGIBLE,
+            ...obs
+          }
+        }
+      })
+    )[0];
+  }
+
+  /**
+   * @param {string} cause
+   * @returns {any}
+   */
+  function handoffRow(cause) {
+    return pinnedRow({
+      error: `foreign_handoff:${cause}`,
+      foreign: { ...TARGET, handoff: cause },
+      gate: {
+        enabled: false,
+        tier: 'undecidable',
+        gate_badge: '관측 오류',
+        base_badge: '',
+        reason: `foreign_handoff:${cause}`
+      }
+    });
+  }
+
+  test('labels the merge button with the target repository name', () => {
+    const row = pinnedRow();
+
+    expect(row.merge_label).toBe('머지 ↗ research-repo-template');
+  });
+
+  test('puts the full owner/repo in the merge title', () => {
+    const row = pinnedRow();
+
+    expect(row.merge_title.startsWith('acme/research-repo-template')).toBe(
+      true
+    );
+  });
+
+  test('draws the labelled button on the truncating part variant', () => {
+    const row = pinnedRow();
+
+    expect(row.merge_truncate).toBe(true);
+  });
+
+  test('labels a review-held row 리뷰 후 머지 with the target name', () => {
+    const row = pinnedRow({
+      gate: {
+        enabled: false,
+        tier: 'review',
+        gate_badge: '리뷰 확인 필요',
+        base_badge: '최신',
+        reason: 'review_receipt_missing'
+      }
+    });
+
+    expect(row.merge_label).toBe('리뷰 후 머지 ↗ research-repo-template');
+  });
+
+  test('marks the slot 1 repository as one this Worker merges', () => {
+    const row = pinnedRow();
+
+    expect([row.foreign_repo, row.foreign_pinned]).toEqual([
+      'acme/research-repo-template',
+      true
+    ]);
+  });
+
+  test('opens [보관] on a pinned row', () => {
+    const row = pinnedRow();
+
+    expect(row.shelve_action).toBe('shelve');
+  });
+
+  test('wears the 외부 PR 사람 처리 필요 badge on a handoff row', () => {
+    const row = handoffRow('foreign_conflict_needs_human');
+
+    expect(badgeText(row)).toBe('외부 PR 사람 처리 필요');
+  });
+
+  test('keeps [머지] disabled on a handoff row', () => {
+    const row = handoffRow('foreign_pr_base_mismatch');
+
+    expect(row.merge_enabled).toBe(false);
+    expect(row.merge_title).toContain('[머지]로 풀리지 않습니다');
+  });
+
+  test('keeps [보관] on a handoff row', () => {
+    const row = handoffRow('foreign_pr_base_mismatch');
+
+    expect(row.shelve_action).toBe('shelve');
+  });
+
+  test('offers [세션에서 이어가기] and no [워커로 이어가기] on a handoff row', () => {
+    const row = handoffRow('foreign_deploy_unsupported');
+
+    expect(row.resolve_action).toBe(true);
+    expect(row.handoff_action).toBeUndefined();
+    expect(row.merge_label).not.toBe('워커로 이어가기');
+  });
+
+  test('titles the handoff session with the no-[머지] exit', () => {
+    const row = handoffRow('foreign_conflict_needs_human');
+
+    expect(row.resolve_title).toContain('[머지]로 풀리지 않습니다');
+  });
+
+  test('hands a post-merge deploy stop to a person without a cleanup retry', () => {
+    const row = rowsOf(
+      workspace({
+        pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+        cleanup_failed: {
+          'A-1': {
+            step: 'repo_operations',
+            reason: 'foreign_handoff:foreign_deploy_unsupported'
+          }
+        },
+        pr_observations: {
+          'A-1': {
+            pr: { number: 4, url: 'https://github.com/acme/x/pull/4' },
+            foreign: TARGET,
+            gate: {
+              enabled: false,
+              tier: 'merged',
+              gate_badge: '머지됨',
+              base_badge: '머지됨',
+              reason: null
+            }
+          }
+        }
+      })
+    )[0];
+
+    expect(badgeText(row)).toBe('외부 PR 사람 처리 필요');
+    expect(row.merge_label).not.toBe('워커로 이어가기');
+    expect(row.resolve_action).toBe(true);
+  });
+
+  test('keeps the pin-less foreign row exactly as before', () => {
+    const row = foreignRow(FOREIGN_ENTRY);
+
+    expect([row.foreign_pinned, row.merge_truncate, row.shelve_action]).toEqual(
+      [undefined, undefined, null]
+    );
+  });
+
+  test('labels a pinned external row from the registry before any observation', () => {
+    const row = rowsOf(
+      workspace({
+        pr_wait: [
+          {
+            bead_id: 'A-1',
+            added_at: 1,
+            external: true,
+            foreign_target: {
+              slug: 'acme/research-repo-template',
+              repo_name: 'research-repo-template'
+            }
+          }
+        ]
+      })
+    )[0];
+
+    expect(row.foreign_repo).toBe('acme/research-repo-template');
+  });
+});

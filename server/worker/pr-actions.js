@@ -50,12 +50,23 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import { FOREIGN_HANDOFF_SENTENCES } from '../../app/utils/failure-sentences.js';
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { workflowScriptDir } from './attempt-facts.js';
 import { discardOperationActive } from './discard-phase.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import { failureTokenSummary, scriptSummary } from './failure-class.js';
+import { foreignHandoffReason } from './foreign-handoff.js';
+import {
+  bindForeignTarget,
+  cleanupForeignResidue,
+  fetchForeignBaseTip,
+  judgeForeignPostMerge,
+  judgeForeignPreMerge,
+  judgeForeignTargetMetadata,
+  readForeignTarget
+} from './foreign-target.js';
 import {
   createAncestryProbe,
   evaluateMergeGate,
@@ -68,6 +79,7 @@ import {
   receiptGateState,
   receiptLineageForAttempt
 } from './receipt-check.js';
+import { resolveRepoOps as defaultResolveRepoOps } from './repo-ops-resolver.js';
 import { cleanupFailureRetryClass } from './resolution-ladder.js';
 import { branchForBead } from './worktree.js';
 
@@ -374,6 +386,7 @@ function authoritativeMergeSha(pr) {
  *     removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean, backup?: { path: string, manifest_sha256: string, file_count: number }|null }>,
  *     pathFor: (repo: string, bead_id: string) => string,
  *     exists?: (repo: string, bead_id: string) => boolean,
+ *     removeIfDiscardable?: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
@@ -389,10 +402,14 @@ function authoritativeMergeSha(pr) {
  *   requeryDelayMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
  *   now?: () => number,
- *   timeline?: { append: (input: any) => unknown }
+ *   timeline?: { append: (input: any) => unknown },
+ *   announceForeignHandoff?: (input: { bead_id: string, cause: string, identity: string, pr_url?: string|null, foreign_path?: string|null }) => unknown,
+ *   resolveRepoOps?: (input: { repo: string, sha: string, gitRun: any }) => Promise<any>
  * }} deps
  * `timeline` is the workspace's bead-history writer; without it a cleanup
  * that backed up leftover content records nothing and behaves identically.
+ * `announceForeignHandoff` pushes a `foreign_handoff` once (UI-k467 §3.7);
+ * `resolveRepoOps` reads a pinned foreign target's declaration (tests inject).
  */
 export function createPrActions(deps) {
   const workspace = deps.workspace;
@@ -425,6 +442,106 @@ export function createPrActions(deps) {
         exit: null
       }));
   const repo_operations = deps.repoOperations || null;
+  const resolveRepoOps = deps.resolveRepoOps || defaultResolveRepoOps;
+
+  /**
+   * The gh adapter one PR is read and changed through: a pinned foreign PR
+   * goes through its pinned slug, never the workspace origin (UI-k467 §3.1).
+   *
+   * @param {import('./foreign-target.js').ForeignPrTarget|null} target
+   * @returns {any}
+   */
+  function ghFor(target) {
+    return target && typeof deps.gh.forSlug === 'function'
+      ? deps.gh.forSlug(target.slug)
+      : deps.gh;
+  }
+
+  /**
+   * Re-read this Bead's foreign pins at the start of a state-changing action
+   * (UI-k467 §3.1): a pin a person just corrected decides this action. A
+   * `pr_url` the caller already read in the same instant is reused.
+   *
+   * @param {string} bead_id
+   * @param {string|null} [pr_url]
+   * @param {Record<string, any>|null} [metadata] - The Bead's metadata from a
+   * read this action already made at the same instant (an external row's
+   * lane-membership `bd show`); judged without a second read.
+   * @returns {Promise<{ state: 'none' }|{ state: 'invalid', reason: string }|{ state: 'ok', target: import('./foreign-target.js').ForeignPrTarget }>}
+   */
+  async function foreignTargetFor(bead_id, pr_url = null, metadata = null) {
+    if (metadata) {
+      return judgeForeignTargetMetadata(
+        { gitRun: deps.gitRun, cwd: repo, log },
+        metadata,
+        bead_id,
+        pr_url
+      );
+    }
+    if (typeof deps.bd.readMetadata !== 'function') {
+      return { state: 'none' };
+    }
+    return readForeignTarget(
+      {
+        readMetadata: deps.bd.readMetadata,
+        // One `bd show` serves the three pins and `pr_url` together.
+        ...(typeof deps.bd.readIssue === 'function'
+          ? { readIssue: deps.bd.readIssue }
+          : {}),
+        gitRun: deps.gitRun,
+        cwd: repo,
+        log
+      },
+      bead_id,
+      pr_url
+    );
+  }
+
+  /**
+   * The observation's `foreign` field for one target (the card's label and
+   * handoff badge read it).
+   *
+   * @param {import('./foreign-target.js').ForeignPrTarget} target
+   * @param {{ handoff?: string|null, base_sha?: string|null, verify_declared?: boolean|null }} [extra]
+   * @returns {import('./pr-observations.js').ForeignObservation}
+   */
+  function foreignObservation(target, extra = {}) {
+    return {
+      slug: target.slug,
+      repo_name: target.repo_name,
+      base: target.base,
+      path: target.path,
+      handoff: extra.handoff ?? null,
+      base_sha: extra.base_sha ?? null,
+      verify_declared: extra.verify_declared ?? null
+    };
+  }
+
+  /**
+   * Push one `foreign_handoff` (the announcer owns the once-record).
+   *
+   * @param {string} bead_id
+   * @param {string} cause
+   * @param {string} identity
+   * @param {import('./foreign-target.js').ForeignPrTarget} target
+   * @param {string|null} pr_url
+   */
+  function announceHandoff(bead_id, cause, identity, target, pr_url) {
+    if (typeof deps.announceForeignHandoff !== 'function') {
+      return;
+    }
+    try {
+      deps.announceForeignHandoff({
+        bead_id,
+        cause,
+        identity,
+        pr_url,
+        foreign_path: target.path
+      });
+    } catch (err) {
+      log('foreign handoff announce failed for %s: %o', bead_id, err);
+    }
+  }
 
   /**
    * Beads with an action in flight. A merge and its cleanup can take minutes
@@ -581,7 +698,7 @@ export function createPrActions(deps) {
    *
    * @param {Queue} q
    * @param {string} bead_id
-   * @returns {Promise<{ ok: true, external: false }|{ ok: true, external: true, pr_url: string }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true, external: false }|{ ok: true, external: true, pr_url: string, metadata: Record<string, any> }|{ ok: false, reason: string }>}
    */
   async function laneMembership(q, bead_id) {
     if (inPrWait(q, bead_id)) {
@@ -622,7 +739,12 @@ export function createPrActions(deps) {
     if (typeof pr_url !== 'string' || pr_url.length === 0) {
       return { ok: false, reason: 'pr_url_missing' };
     }
-    return { ok: true, external: true, pr_url };
+    return {
+      ok: true,
+      external: true,
+      pr_url,
+      metadata: /** @type {Record<string, any>} */ (md)
+    };
   }
 
   /**
@@ -821,9 +943,16 @@ export function createPrActions(deps) {
    * @param {Record<string, any>|null} metadata
    * @param {string} bead_id
    * @param {string} head_sha
+   * @param {import('./merge-gate.js').AncestryProbe} [probe] - A pinned
+   * foreign PR's head is judged in its target checkout (UI-k467 §3.3).
    * @returns {Promise<import('./merge-gate.js').ReceiptGateState>}
    */
-  async function receiptGateStateOf(metadata, bead_id, head_sha) {
+  async function receiptGateStateOf(
+    metadata,
+    bead_id,
+    head_sha,
+    probe = probeAncestry
+  ) {
     if (!metadata) {
       return { state: 'probe_error', codes: [], details: [] };
     }
@@ -836,7 +965,7 @@ export function createPrActions(deps) {
           lineage: receiptLineageForAttempt(attempt),
           defaults: receiptDefaultsFrom(loadExecutionDefaults()),
           head: head_sha,
-          probeAncestry
+          probeAncestry: probe
         })
       );
     } catch (err) {
@@ -863,9 +992,10 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string} head_sha
+   * @param {import('./merge-gate.js').AncestryProbe} [probe]
    * @returns {Promise<{ review_receipt_state: import('./merge-gate.js').CurrentState, receipt_state: import('./merge-gate.js').ReceiptGateState, authority_unreadable: boolean }>}
    */
-  async function readGateAuthority(bead_id, head_sha) {
+  async function readGateAuthority(bead_id, head_sha, probe = probeAncestry) {
     if (typeof deps.bd.readIssue !== 'function') {
       return {
         review_receipt_state: 'invalid',
@@ -891,14 +1021,15 @@ export function createPrActions(deps) {
       !Array.isArray(issue.metadata)
         ? issue.metadata
         : null;
-    const receipt_state = await receiptGateStateOf(metadata, bead_id, head_sha);
+    const receipt_state = await receiptGateStateOf(
+      metadata,
+      bead_id,
+      head_sha,
+      probe
+    );
     return {
       authority_unreadable: false,
-      review_receipt_state: await reviewReceiptState(
-        issue,
-        head_sha,
-        probeAncestry
-      ),
+      review_receipt_state: await reviewReceiptState(issue, head_sha, probe),
       receipt_state:
         receipt_state.state !== 'ok' &&
         manualMergeAuthorityCovers(bead_id, head_sha)
@@ -945,13 +1076,17 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {number} number
+   * @param {import('./foreign-target.js').ForeignPrTarget|null} [target] - A
+   * pinned foreign PR is read through its slug (UI-k467 §3.1).
    * @returns {Promise<{ pr: PrDetail }|{ error: string }>}
    */
-  async function observeNow(bead_id, number) {
+  async function observeNow(bead_id, number, target = null) {
+    const gh = ghFor(target);
+    const foreign = target ? { foreign: foreignObservation(target) } : {};
     /** @type {any} */
     let detail;
     try {
-      detail = await deps.gh.prDetail(repo, number);
+      detail = await gh.prDetail(repo, number);
     } catch {
       detail = { state: 'error', reason: 'gh_spawn_failed' };
     }
@@ -962,7 +1097,7 @@ export function createPrActions(deps) {
     ) {
       await sleep(requery_delay_ms);
       try {
-        const again = await deps.gh.prDetail(repo, number);
+        const again = await gh.prDetail(repo, number);
         if (again.state === 'ok') {
           detail = again;
         }
@@ -972,17 +1107,225 @@ export function createPrActions(deps) {
     }
     if (detail.state !== 'ok') {
       const error = detail.state === 'error' ? detail.reason : 'gh_empty';
-      deps.observations.record(workspace, bead_id, { error });
+      deps.observations.record(workspace, bead_id, { error, ...foreign });
       return { error };
     }
     const pr = /** @type {PrDetail} */ (detail.data);
-    if (pr.state !== 'OPEN') {
-      // A terminal PR is classified by its state alone.
-      deps.observations.record(workspace, bead_id, { error: null, pr });
-      return { pr };
-    }
-    deps.observations.record(workspace, bead_id, { error: null, pr });
+    // A terminal PR is classified by its state alone.
+    deps.observations.record(workspace, bead_id, {
+      error: null,
+      pr,
+      ...foreign
+    });
     return { pr };
+  }
+
+  /**
+   * The click-time gate of a pinned foreign PR (UI-k467 §3.4–§3.5): the
+   * checkout is bound, the three `foreign_handoff` causes are judged ahead of
+   * every other branch (so neither the queue driver, `dispatchConflict` nor a
+   * click ever reaches a resolver), and the target `[verify]` runs from the
+   * fetched `foreign_base` tip's declaration, bound to (PR head, base tip).
+   *
+   * A handoff is an `error` the caller refuses with; the manual-merge waiver
+   * reads `receipt_state` only, so a click cannot lift it.
+   *
+   * @param {string} bead_id
+   * @param {number} number
+   * @param {import('./foreign-target.js').ForeignPrTarget} target
+   * @returns {Promise<any>}
+   */
+  async function foreignGateNow(bead_id, number, target) {
+    const observed = await observeNow(bead_id, number, target);
+    if ('error' in observed) {
+      return observed;
+    }
+    const pr = observed.pr;
+    if (pr.state !== 'OPEN') {
+      return {
+        pr,
+        verdict: evaluateMergeGate(deps.observations.get(workspace, bead_id), {
+          review_receipt_state: 'current',
+          verify_receipt_state: { declaration_state: 'absent', receipt: null }
+        }),
+        target
+      };
+    }
+    if (!repo_operations) {
+      return { error: 'repo_operations_unavailable' };
+    }
+    const bound = await bindForeignTarget(target, deps.gitRun);
+    if (!bound.ok) {
+      deps.observations.record(workspace, bead_id, {
+        error: bound.reason,
+        pr,
+        foreign: foreignObservation(target)
+      });
+      return { error: bound.reason };
+    }
+    const probe = createAncestryProbe({
+      gitRun: deps.gitRun,
+      repo: bound.target.path,
+      remote: bound.target.remote
+    });
+    const { review_receipt_state, receipt_state, authority_unreadable } =
+      await readGateAuthority(bead_id, pr.head_sha, probe);
+    const review_receipt = {
+      state: review_receipt_state,
+      head_sha: pr.head_sha
+    };
+    const judgment = await judgeForeignPreMerge({
+      target: bound.target,
+      pr,
+      gitRun: deps.gitRun,
+      resolveRepoOps
+    });
+    if (!judgment.ok) {
+      deps.observations.record(workspace, bead_id, {
+        error: judgment.reason,
+        pr,
+        review_receipt,
+        foreign: foreignObservation(target)
+      });
+      return { error: judgment.reason };
+    }
+    if (judgment.handoff !== null) {
+      const reason = foreignHandoffReason(judgment.handoff);
+      deps.observations.record(workspace, bead_id, {
+        error: reason,
+        pr,
+        review_receipt,
+        foreign: foreignObservation(target, {
+          handoff: judgment.handoff,
+          base_sha: judgment.base_sha
+        })
+      });
+      announceHandoff(
+        bead_id,
+        judgment.handoff,
+        judgment.handoff === 'foreign_pr_base_mismatch'
+          ? `${pr.base_ref || ''}->${target.base}`
+          : judgment.handoff === 'foreign_conflict_needs_human'
+            ? String(pr.head_sha || '')
+            : `${judgment.base_sha || ''}:${pr.head_sha || ''}`,
+        target,
+        pr.url || null
+      );
+      return {
+        error: reason,
+        pr,
+        handoff: judgment.handoff
+      };
+    }
+    const foreign = foreignObservation(target, {
+      base_sha: judgment.base_sha,
+      verify_declared: judgment.verify_script_path !== null
+    });
+    deps.observations.record(workspace, bead_id, {
+      error: null,
+      pr,
+      review_receipt,
+      foreign
+    });
+    const base_sha = /** @type {string} */ (judgment.base_sha);
+    const common = {
+      pr,
+      target_base: target.base,
+      base_sha,
+      repo_operations: true,
+      authority_unreadable,
+      receipt_state,
+      target: bound.target
+    };
+    const preliminary = evaluateMergeGate(
+      deps.observations.get(workspace, bead_id),
+      {
+        review_receipt_state,
+        receipt_state,
+        verify_receipt_state: { declaration_state: 'absent', receipt: null }
+      }
+    );
+    if (!preliminary.enabled || judgment.verify_script_path === null) {
+      return {
+        ...common,
+        verdict: preliminary,
+        verify_operation_id: null,
+        verify_attempted: false
+      };
+    }
+    const ensured = await repo_operations.ensureVerify({
+      repo: bound.target.path,
+      origin: bound.target.remote,
+      target_base: target.base,
+      base_sha,
+      head_sha: pr.head_sha,
+      bead_id,
+      pr_number: number,
+      script_path: judgment.verify_script_path,
+      foreign: {
+        slug: bound.target.slug,
+        path: bound.target.path,
+        remote: bound.target.remote
+      }
+    });
+    if (ensured.inert) {
+      return {
+        ...common,
+        verdict: preliminary,
+        verify_operation_id: null,
+        verify_attempted: false
+      };
+    }
+    if (!ensured.ok || typeof ensured.operation_id !== 'string') {
+      return {
+        ...common,
+        verdict: evaluateMergeGate(deps.observations.get(workspace, bead_id), {
+          review_receipt_state,
+          receipt_state,
+          verify_receipt_state: {
+            declaration_state: 'invalid',
+            receipt: null,
+            error: ensured.code ?? 'operation_id_missing'
+          }
+        }),
+        verify_operation_id: null,
+        verify_attempted: true
+      };
+    }
+    const receipt =
+      (await repo_operations.waitForTerminal(ensured.operation_id, {
+        head_sha: pr.head_sha,
+        timeout_ms: ensured.timeout_ms
+      })) || repo_operations.verifyReceipt(ensured.operation_id, pr.head_sha);
+    if (receipt?.state === 'succeeded' || receipt?.state === 'failed') {
+      deps.observations.recordVerify(workspace, bead_id, receipt);
+    }
+    return {
+      ...common,
+      verdict: evaluateMergeGate(deps.observations.get(workspace, bead_id), {
+        review_receipt_state,
+        receipt_state,
+        verify_receipt_state: {
+          declaration_state: 'present',
+          receipt:
+            receipt?.state === 'succeeded' || receipt?.state === 'failed'
+              ? receipt
+              : null,
+          expected_key: receipt
+            ? {
+                effective_base_sha: receipt.effective_base_sha,
+                head_sha: receipt.head_sha,
+                candidate_tree_sha: receipt.candidate_tree_sha,
+                script_object_type: receipt.script_object_type,
+                script_mode: receipt.script_mode,
+                script_blob_sha: receipt.script_blob_sha
+              }
+            : null
+        }
+      }),
+      verify_operation_id: ensured.operation_id,
+      verify_attempted: true
+    };
   }
 
   /**
@@ -1187,6 +1530,18 @@ export function createPrActions(deps) {
     }
     if (member.external === true) {
       return { ok: false, reason: 'external_completion_unsupported' };
+    }
+    // The completion saga's repair lane is the workspace's own (UI-k467): a
+    // pinned foreign PR is merged and closed by the ordinary queue path only.
+    const foreign = await foreignTargetFor(bead_id);
+    if (foreign.state !== 'none') {
+      return {
+        ok: false,
+        reason:
+          foreign.state === 'invalid'
+            ? foreign.reason
+            : 'foreign_completion_unsupported'
+      };
     }
     const ref = resolvePrRef(q, bead_id, null);
     if (!ref || typeof ref.number !== 'number') {
@@ -1724,9 +2079,10 @@ export function createPrActions(deps) {
    * @param {Queue} q
    * @param {string} bead_id
    * @param {{ merge_sha?: string|null }} refs
+   * @param {import('./foreign-target.js').ForeignPrTarget|null} [target]
    * @returns {Promise<string|null>}
    */
-  async function cleanupMergeSha(q, bead_id, refs) {
+  async function cleanupMergeSha(q, bead_id, refs, target = null) {
     const candidates = [
       refs.merge_sha,
       q.completion_intents?.[bead_id]?.subject?.merged_sha,
@@ -1746,7 +2102,7 @@ export function createPrActions(deps) {
       return null;
     }
     try {
-      const detail = await deps.gh.prDetail(repo, ref.number);
+      const detail = await ghFor(target).prDetail(repo, ref.number);
       return detail.state === 'ok' && detail.data.state === 'MERGED'
         ? authoritativeMergeSha(detail.data)
         : null;
@@ -2257,12 +2613,16 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {boolean} [resume_failure]
    * @param {boolean} [job_retry_authorized]
+   * @param {{ state: 'none' }|{ state: 'invalid', reason: string }|{ state: 'ok', target: import('./foreign-target.js').ForeignPrTarget }|null} [foreign_judged]
+   * - The foreign target judgment the calling action already re-read at its
+   * entry (UI-k467 §3.1); null makes this closure, as a resume entry, re-read.
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
   async function closeCoveredRow(
     bead_id,
     resume_failure = false,
-    job_retry_authorized = false
+    job_retry_authorized = false,
+    foreign_judged = null
   ) {
     const q = deps.store.snapshot(workspace);
     const row = q.pr_wait.find(
@@ -2309,6 +2669,34 @@ export function createPrActions(deps) {
       resume_step === null ? 0 : CLOSURE_STEPS.indexOf(resume_step);
     /** @param {string} step */
     const runsFrom = (step) => CLOSURE_STEPS.indexOf(step) >= resume_index;
+    // A pinned foreign PR (UI-k467 §3.6): its post-merge jobs belong to the
+    // target and are never run here, and its branch cleanup is the owned
+    // residue only. Re-read because this is also the restart/[정리] entry.
+    const foreign =
+      foreign_judged ?? (await foreignTargetFor(bead_id, row.pr_url || null));
+    if (foreign.state === 'ok') {
+      if (runsFrom('branch_cleanup')) {
+        deps.store.setCleanupCursor?.(workspace, {
+          bead_id,
+          cursor: 'branch_cleanup'
+        });
+        markStep(bead_id, 'branch_cleanup');
+        const facts = await cleanupFacts(bead_id, foreign);
+        await cleanupForeignResidueOf(bead_id, foreign.target, {
+          head_sha: facts.head_sha,
+          head_ref: row.head_ref || facts.head_ref
+        });
+      }
+      return closeAndSettle(bead_id, row);
+    }
+    if (foreign.state === 'invalid') {
+      return failCleanup(
+        bead_id,
+        resume_step || CLOSURE_STEPS[0],
+        foreign.reason,
+        null
+      );
+    }
     if (runsFrom('post_merge_jobs')) {
       deps.store.setCleanupCursor?.(workspace, {
         bead_id,
@@ -2361,6 +2749,17 @@ export function createPrActions(deps) {
         );
       }
     }
+    return closeAndSettle(bead_id, row);
+  }
+
+  /**
+   * The `parent_close` step and the lane settlement every closure ends with.
+   *
+   * @param {string} bead_id
+   * @param {any} row - The `pr_wait` row being closed.
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
+   */
+  async function closeAndSettle(bead_id, row) {
     deps.store.setCleanupCursor?.(workspace, {
       bead_id,
       cursor: 'parent_close'
@@ -2418,6 +2817,15 @@ export function createPrActions(deps) {
         reason: 'discard_in_progress',
         base_sync: null
       };
+    }
+    // A pinned foreign PR closes through its target (UI-k467 §3.6) — Worker
+    // merge and GitHub direct merge alike reach here.
+    const foreign = await foreignTargetFor(bead_id, refs.pr_url || null);
+    if (foreign.state === 'invalid') {
+      return failCleanup(bead_id, 'base_containment', foreign.reason, null);
+    }
+    if (foreign.state === 'ok') {
+      return runForeignCleanup(bead_id, foreign.target, refs);
     }
     // The EXPECTED base, never the observed one (§5): this is the branch that
     // gets synced, verified and deployed, so deriving it from the PR's own
@@ -2705,11 +3113,330 @@ export function createPrActions(deps) {
             };
           }
         }
-        return { ...(await closeCoveredRow(bead_id)), base_sync };
+        return {
+          ...(await closeCoveredRow(bead_id, false, false, foreign)),
+          base_sync
+        };
       }
       // A base that declares no `repo-ops/config.toml` has nothing to verify
       // and nothing to deploy, so the cursor moves straight on to closure.
-      return { ...(await closeCoveredRow(bead_id)), base_sync };
+      return {
+        ...(await closeCoveredRow(bead_id, false, false, foreign)),
+        base_sync
+      };
+    }
+  }
+
+  /**
+   * The post-merge closure of a pinned foreign PR (UI-k467 §3.6), on the same
+   * cursor and failure records as the workspace merge tail:
+   *
+   *   1. `base_containment` — re-fetch `foreign_base` from the bound remote in
+   *      `foreign_path` and prove the merge SHA is the tip or its ancestor.
+   *   2. `repo_operations` — re-judge from the merge SHA's FIRST parent and the
+   *      merge SHA's tree: `[deploy]`/`post-merge.d` is
+   *      `foreign_handoff(foreign_deploy_unsupported)` (bead stays resolved); a
+   *      first-parent `[verify]` needs a Worker result bound to (PR head, first
+   *      parent), run now when absent.
+   *   3. `post_merge_jobs` is never run for a foreign target.
+   *   4–5. owned residue cleanup and the close, in {@link closeCoveredRow}.
+   *
+   * @param {string} bead_id
+   * @param {import('./foreign-target.js').ForeignPrTarget} target
+   * @param {{ head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, verify_operation_id?: string|null, verified_head_sha?: string }} refs
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
+   */
+  async function runForeignCleanup(bead_id, target, refs) {
+    let q = deps.store.snapshot(workspace);
+    const pr_url =
+      refs.pr_url ||
+      resolvePrRef(
+        q,
+        bead_id,
+        external ? external.get(workspace, bead_id) : null
+      )?.url ||
+      null;
+    let durable = inPrWait(q, bead_id);
+    if (!durable && external?.get(workspace, bead_id)) {
+      const merge_sha = await cleanupMergeSha(q, bead_id, refs, target);
+      if (merge_sha === null) {
+        return {
+          ok: false,
+          step: 'base_containment',
+          reason: 'merge_sha_unobserved',
+          base_sync: null
+        };
+      }
+      const promoted = deps.store.promoteMergedExternal(workspace, {
+        bead_id,
+        merge_sha,
+        head_ref:
+          refs.head_ref ||
+          deps.observations.get(workspace, bead_id)?.pr?.head_ref ||
+          null,
+        pr_url
+      });
+      q = deps.store.snapshot(workspace);
+      durable = inPrWait(q, bead_id);
+      if (!promoted.ok && !durable) {
+        return {
+          ok: false,
+          step: 'repo_operations',
+          reason: 'external_deployment_promote_failed',
+          base_sync: null
+        };
+      }
+    }
+    if (!durable) {
+      return failCleanup(
+        bead_id,
+        'repo_operations',
+        'repo_operations_unavailable',
+        null
+      );
+    }
+    const merge_sha = await cleanupMergeSha(q, bead_id, refs, target);
+    if (merge_sha === null) {
+      return failCleanup(
+        bead_id,
+        'base_containment',
+        'merge_sha_unobserved',
+        null
+      );
+    }
+    deps.store.setCleanupCursor?.(workspace, {
+      bead_id,
+      cursor: 'base_containment',
+      merge_sha,
+      head_ref:
+        refs.head_ref ||
+        deps.observations.get(workspace, bead_id)?.pr?.head_ref ||
+        null,
+      pr_url
+    });
+    markStep(bead_id, 'base_containment');
+    const bound = await bindForeignTarget(target, deps.gitRun);
+    if (!bound.ok) {
+      return failCleanup(bead_id, 'base_containment', bound.reason, null);
+    }
+    const tip = await fetchForeignBaseTip(bound.target, deps.gitRun);
+    if (!tip.ok) {
+      return failCleanup(
+        bead_id,
+        'base_containment',
+        'base_fetch_failed',
+        null
+      );
+    }
+    const covers = await deps.gitRun(
+      ['merge-base', '--is-ancestor', merge_sha, tip.sha],
+      { cwd: bound.target.path }
+    );
+    if (covers.code === 1) {
+      return failCleanup(
+        bead_id,
+        'base_containment',
+        'deployment_target_not_covering_merge',
+        null
+      );
+    }
+    if (covers.code !== 0) {
+      return failCleanup(
+        bead_id,
+        'base_containment',
+        'deployment_candidate_ancestry_check_failed',
+        null
+      );
+    }
+    deps.store.setCleanupCursor?.(workspace, {
+      bead_id,
+      cursor: 'repo_operations'
+    });
+    markStep(bead_id, 'repo_operations');
+    const judged = await judgeForeignPostMerge({
+      target: bound.target,
+      merge_sha,
+      gitRun: deps.gitRun,
+      resolveRepoOps
+    });
+    if (!judged.ok) {
+      return failCleanup(bead_id, 'repo_operations', judged.reason, null);
+    }
+    if (judged.handoff !== null) {
+      // Recorded FIRST: the announcement's failure conversation reads the
+      // stop back from `cleanup_failed`.
+      const stopped = await failCleanup(
+        bead_id,
+        'repo_operations',
+        foreignHandoffReason(judged.handoff),
+        null,
+        undefined,
+        // The PR-flow sentence, told apart from the quick_fix push landing's
+        // one by class (UI-k467 §3.7).
+        FOREIGN_HANDOFF_SENTENCES[judged.handoff]
+      );
+      announceHandoff(bead_id, judged.handoff, merge_sha, target, pr_url);
+      return stopped;
+    }
+    if (judged.verify_script_path !== null) {
+      if (!repo_operations) {
+        return failCleanup(
+          bead_id,
+          'repo_operations',
+          'repo_operations_unavailable',
+          null
+        );
+      }
+      const verified_head_sha =
+        refs.verified_head_sha ||
+        deps.observations.get(workspace, bead_id)?.pr?.head_sha ||
+        q.completion_intents?.[bead_id]?.merge_head_sha;
+      if (
+        typeof verified_head_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(verified_head_sha)
+      ) {
+        return failCleanup(
+          bead_id,
+          'repo_operations',
+          'verify_head_sha_unobserved',
+          null
+        );
+      }
+      const verified = await repo_operations.ensureVerify({
+        repo: bound.target.path,
+        origin: bound.target.remote,
+        target_base: target.base,
+        base_sha: judged.first_parent,
+        head_sha: verified_head_sha,
+        final_sha: merge_sha,
+        bead_id,
+        pr_number: parsePrNumber(pr_url || '') || 0,
+        script_path: judged.verify_script_path,
+        receipt_operation_id: refs.verify_operation_id || null,
+        foreign: {
+          slug: bound.target.slug,
+          path: bound.target.path,
+          remote: bound.target.remote
+        }
+      });
+      if (!verified.ok) {
+        return failCleanup(
+          bead_id,
+          'repo_operations',
+          verified.code || 'verify_failed',
+          null
+        );
+      }
+      if (!verified.inert && typeof verified.operation_id === 'string') {
+        const receipt =
+          (await repo_operations.waitForTerminal(verified.operation_id, {
+            head_sha: verified_head_sha,
+            timeout_ms: verified.timeout_ms
+          })) ||
+          repo_operations.verifyReceipt(
+            verified.operation_id,
+            verified_head_sha
+          );
+        if (!receipt || receipt.state !== 'succeeded') {
+          return failCleanup(
+            bead_id,
+            'repo_operations',
+            receipt?.reason || 'verify_failed',
+            null,
+            undefined,
+            undefined,
+            undefined,
+            receipt?.log_path
+          );
+        }
+      }
+    }
+    return closeCoveredRow(bead_id, false, false, {
+      state: 'ok',
+      target
+    });
+  }
+
+  /**
+   * Remove a pinned foreign PR's owned residue (UI-k467 §3.6 step 4): the
+   * target worktree/branch/remote head at the pinned head, the Worker's verify
+   * candidates, and the rig attempt worktree and branch. Dirty or unknown
+   * state is kept, and every failure is a warning that never blocks the close.
+   *
+   * @param {string} bead_id
+   * @param {import('./foreign-target.js').ForeignPrTarget} target
+   * @param {{ head_sha: string|null, head_ref: string|null }} facts
+   */
+  async function cleanupForeignResidueOf(bead_id, target, facts) {
+    /** @type {string[]} */
+    const kept = [];
+    const bound = await bindForeignTarget(target, deps.gitRun);
+    if (bound.ok) {
+      try {
+        const result = await cleanupForeignResidue({
+          target: bound.target,
+          bead_id,
+          head_sha: facts.head_sha,
+          head_ref: facts.head_ref,
+          gitRun: deps.gitRun,
+          withLock: (fn) => deps.worktree.withTopologyLock(target.path, fn)
+        });
+        kept.push(...result.kept);
+      } catch (err) {
+        log('foreign residue cleanup threw for %s: %o', bead_id, err);
+        kept.push('target_residue');
+      }
+      try {
+        await /** @type {any} */ (repo_operations)?.sweepForeignCandidates?.({
+          path: bound.target.path
+        });
+      } catch (err) {
+        log('foreign verify candidate sweep failed for %s: %o', bead_id, err);
+        kept.push('verify_candidates');
+      }
+    } else {
+      kept.push(`target:${bound.reason}`);
+    }
+    // The rig attempt worktree: the session worked in the target, so the rig
+    // one holds nothing but the dispatch base — removed only when nothing in it
+    // would be lost.
+    const attempt = receiptAttemptFor(bead_id);
+    const base =
+      typeof attempt?.base_oid === 'string' && attempt.base_oid.length > 0
+        ? attempt.base_oid
+        : typeof attempt?.target_base === 'string'
+          ? attempt.target_base
+          : null;
+    if (
+      base !== null &&
+      typeof deps.worktree.removeIfDiscardable === 'function'
+    ) {
+      try {
+        const rig = await deps.worktree.removeIfDiscardable({
+          repo,
+          bead_id,
+          base
+        });
+        if (!rig?.ok) {
+          kept.push(`rig_worktree:${rig?.reason || 'kept'}`);
+        }
+      } catch (err) {
+        log('rig attempt worktree cleanup failed for %s: %o', bead_id, err);
+        kept.push('rig_worktree');
+      }
+    }
+    if (kept.length > 0) {
+      log('foreign residue kept for %s: %s', bead_id, kept.join(', '));
+      try {
+        deps.timeline?.append({
+          bead_id,
+          kind: 'merge_step',
+          seq: `branch_cleanup:foreign_residue_kept:${kept.join('|').slice(0, 120)}`,
+          summary: `정리 — 대상 저장소 잔여물 일부를 남김 (${kept.join(', ')})`
+        });
+      } catch (err) {
+        log('foreign residue timeline record failed for %s: %o', bead_id, err);
+      }
     }
   }
 
@@ -2900,23 +3627,48 @@ export function createPrActions(deps) {
         external: is_external
       };
     }
-    const observed = await gateNow(bead_id, ref.number);
-    if ('error' in observed) {
+    const foreign = await foreignTargetFor(
+      bead_id,
+      is_external ? member.pr_url : null,
+      member.external === true ? member.metadata : null
+    );
+    if (foreign.state === 'invalid') {
       return {
         ok: false,
         kind: 'blocked',
-        reason: observed.error,
+        reason: foreign.reason,
         head_sha: null,
         base_ref: null,
         external: is_external
       };
     }
-    const base_ok = await baseGate(q, bead_id, observed.pr.base_ref);
+    const target = foreign.state === 'ok' ? foreign.target : null;
+    /** @type {any} */
+    const observed = target
+      ? await foreignGateNow(bead_id, ref.number, target)
+      : await gateNow(bead_id, ref.number);
+    if ('error' in observed) {
+      // A foreign handoff still names the head and base it was judged on, so
+      // a queue hold binds that identity (UI-k467 §3.7).
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: observed.error,
+        head_sha: observed.pr?.head_sha ?? null,
+        base_ref: observed.pr?.base_ref || null,
+        external: is_external
+      };
+    }
+    // A pinned foreign PR's base was judged against `foreign_base` above
+    // (`foreign_pr_base_mismatch`); the workspace declaration never applies.
+    const base_ok = target
+      ? { ok: /** @type {const} */ (true) }
+      : await baseGate(q, bead_id, observed.pr.base_ref);
     if (!base_ok.ok) {
       return {
         ok: false,
         kind: 'blocked',
-        reason: base_ok.reason,
+        reason: /** @type {any} */ (base_ok).reason,
         head_sha: observed.pr.head_sha,
         base_ref: observed.pr.base_ref || null,
         external: is_external
@@ -2994,7 +3746,16 @@ export function createPrActions(deps) {
         reason: 'pr_ref_unknown'
       };
     }
-    const observed = await observeNow(bead_id, ref.number);
+    const foreign = await foreignTargetFor(
+      bead_id,
+      member.external === true ? member.pr_url : null,
+      member.external === true ? member.metadata : null
+    );
+    if (foreign.state === 'invalid') {
+      return { ok: /** @type {const} */ (false), reason: foreign.reason };
+    }
+    const target = foreign.state === 'ok' ? foreign.target : null;
+    const observed = await observeNow(bead_id, ref.number, target);
     if ('error' in observed) {
       return { ok: /** @type {const} */ (false), reason: observed.error };
     }
@@ -3005,7 +3766,24 @@ export function createPrActions(deps) {
         reason: 'pr_identity_unreadable'
       };
     }
-    const { review_receipt_state } = await readGateAuthority(bead_id, head_sha);
+    /** @type {import('./merge-gate.js').AncestryProbe} */
+    let probe = probeAncestry;
+    if (target) {
+      const bound = await bindForeignTarget(target, deps.gitRun);
+      if (!bound.ok) {
+        return { ok: /** @type {const} */ (false), reason: bound.reason };
+      }
+      probe = createAncestryProbe({
+        gitRun: deps.gitRun,
+        repo: bound.target.path,
+        remote: bound.target.remote
+      });
+    }
+    const { review_receipt_state } = await readGateAuthority(
+      bead_id,
+      head_sha,
+      probe
+    );
     return {
       ok: /** @type {const} */ (true),
       head_sha,
@@ -3055,16 +3833,36 @@ export function createPrActions(deps) {
       if (!ref) {
         return refuse('pr_ref_unknown');
       }
+      // A pinned foreign PR (UI-k467 §3.4) is gated, merged and closed in its
+      // target; the pins are re-read here because this click changes state.
+      const foreign = await foreignTargetFor(
+        bead_id,
+        is_external ? member.pr_url : null,
+        member.external === true ? member.metadata : null
+      );
+      if (foreign.state === 'invalid') {
+        return refuse(foreign.reason);
+      }
+      const target = foreign.state === 'ok' ? foreign.target : null;
 
-      const first = await gateNow(bead_id, ref.number);
+      /** @type {any} */
+      const first = target
+        ? await foreignGateNow(bead_id, ref.number, target)
+        : await gateNow(bead_id, ref.number);
       if ('error' in first) {
-        return refuse(first.error);
+        return {
+          ...refuse(first.error),
+          ...(first.pr ? { head_sha: first.pr.head_sha } : {})
+        };
       }
       // Base comparison BEFORE every branch below (§5) — fail-closed, external
-      // PRs included, no auto-retarget.
-      const base_ok = await baseGate(q, bead_id, first.pr.base_ref);
+      // PRs included, no auto-retarget. A foreign PR's base was compared with
+      // `foreign_base` inside its gate.
+      const base_ok = target
+        ? { ok: /** @type {const} */ (true) }
+        : await baseGate(q, bead_id, first.pr.base_ref);
       if (!base_ok.ok) {
-        return refuse(base_ok.reason);
+        return refuse(/** @type {any} */ (base_ok).reason);
       }
       const refs = {
         base_ref: first.pr.base_ref || null,
@@ -3073,7 +3871,8 @@ export function createPrActions(deps) {
         // The url the click itself resolved (UI-9rrk). For an external row the
         // registry may be one scan stale, so the notification must name the PR
         // this click actually merged, not the previous one.
-        pr_url: ref.url || null
+        pr_url: ref.url || null,
+        ...(target ? { target_base: target.base } : {})
       };
       // A merge that already happened (here or on github.com) runs the same
       // cleanup rather than a second merge. For an EXTERNAL row this is the
@@ -3157,7 +3956,8 @@ export function createPrActions(deps) {
         {
           base_sha: first.base_sha,
           repo_operations: first.repo_operations === true,
-          verify_operation_id: first.verify_operation_id || null
+          verify_operation_id: first.verify_operation_id || null,
+          target: first.target || null
         }
       );
     } finally {
@@ -3188,7 +3988,10 @@ export function createPrActions(deps) {
    * @param {string} head_sha
    * @param {'merged'|'updated_and_merged'} action
    * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null }} [refs]
-   * @param {{ base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null }} [verification]
+   * @param {{ base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, target?: import('./foreign-target.js').BoundForeignTarget|null }} [verification]
+   * - `target` is a pinned foreign PR's bound checkout: the merge goes through
+   * `gh pr merge --repo <pinned slug>` and the candidate freshness re-check
+   * re-fetches `foreign_base` there (UI-k467 §3.4).
    * - The gate-time base/head branch names and the click-resolved PR url,
    * forwarded to the cleanup (UI-7agi §3, UI-9rrk).
    * @returns {Promise<MergeClickResult>}
@@ -3204,12 +4007,18 @@ export function createPrActions(deps) {
     if (discardActive(deps.store.snapshot(workspace), bead_id)) {
       return refuse('discard_in_progress');
     }
+    const target = verification.target || null;
+    const gh = ghFor(target);
     /** @type {any} */
     let merged;
     if (verification.repo_operations) {
       const [fresh_pr, fresh_base] = await Promise.all([
-        deps.gh.prDetail(repo, number),
-        deps.resolveBase?.({ force: true })
+        gh.prDetail(repo, number),
+        target
+          ? fetchForeignBaseTip(target, deps.gitRun).then((tip) =>
+              tip.ok ? { ok: true, base_oid: tip.sha } : { ok: false }
+            )
+          : deps.resolveBase?.({ force: true })
       ]);
       if (
         fresh_pr?.state !== 'ok' ||
@@ -3233,7 +4042,7 @@ export function createPrActions(deps) {
     try {
       // Pinned to the head the gate approved — GitHub refuses the merge if the
       // branch moved since, so an unverified commit can never land (§5/§6).
-      merged = await deps.gh.mergeSquash(repo, number, head_sha);
+      merged = await gh.mergeSquash(repo, number, head_sha);
     } catch {
       merged = { state: 'error', reason: 'gh_spawn_failed' };
     }
@@ -3249,7 +4058,7 @@ export function createPrActions(deps) {
     /** @type {any} */
     let after;
     try {
-      after = await deps.gh.prDetail(repo, number);
+      after = await gh.prDetail(repo, number);
     } catch {
       after = { state: 'error', reason: 'gh_spawn_failed' };
     }
@@ -3564,17 +4373,25 @@ export function createPrActions(deps) {
    * its remote containment.
    *
    * @param {string} bead_id
+   * @param {{ state: 'none' }|{ state: 'invalid', reason: string }|{ state: 'ok', target: import('./foreign-target.js').ForeignPrTarget }|null} [foreign_judged]
+   * - A judgment the caller already holds; null re-reads the pins.
    * @returns {Promise<{ base: string|null, base_reason: string|null, merge_sha: string|null, head_sha: string|null, head_ref: string|null, pr_url: string|null }>}
    */
-  async function cleanupFacts(bead_id) {
+  async function cleanupFacts(bead_id, foreign_judged = null) {
     const q = deps.store.snapshot(workspace);
     const row =
       q.pr_wait.find((/** @type {any} */ entry) => entry.bead_id === bead_id) ||
       null;
     const expected = await expectedBaseFor(q, bead_id);
-    const merge_sha = await cleanupMergeSha(q, bead_id, {
-      merge_sha: row ? row.merge_sha : null
-    });
+    const foreign =
+      foreign_judged ??
+      (await foreignTargetFor(bead_id, row ? row.pr_url : null));
+    const merge_sha = await cleanupMergeSha(
+      q,
+      bead_id,
+      { merge_sha: row ? row.merge_sha : null },
+      foreign.state === 'ok' ? foreign.target : null
+    );
     const observed = deps.observations.get(workspace, bead_id);
     return {
       base: expected.ok ? expected.base : null,
@@ -3882,13 +4699,14 @@ export function createPrActions(deps) {
    * anyway.
    *
    * @param {number} number
+   * @param {import('./foreign-target.js').ForeignPrTarget|null} [target]
    * @returns {Promise<{ pr_state: string }|{ error: string }>}
    */
-  async function readPrState(number) {
+  async function readPrState(number, target = null) {
     /** @type {any} */
     let detail;
     try {
-      detail = await deps.gh.prDetail(repo, number);
+      detail = await ghFor(target).prDetail(repo, number);
     } catch {
       detail = { state: 'error', reason: 'gh_spawn_failed' };
     }
@@ -3929,7 +4747,18 @@ export function createPrActions(deps) {
     if (!ref) {
       return { state: null, error: 'pr_ref_unknown' };
     }
-    const observed = await readPrState(ref.number);
+    const foreign = await foreignTargetFor(
+      bead_id,
+      member.external === true ? member.pr_url : null,
+      member.external === true ? member.metadata : null
+    );
+    if (foreign.state === 'invalid') {
+      return { state: null, error: foreign.reason };
+    }
+    const observed = await readPrState(
+      ref.number,
+      foreign.state === 'ok' ? foreign.target : null
+    );
     if ('error' in observed) {
       return { state: null, error: observed.error };
     }
@@ -3946,21 +4775,27 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {number} number
+   * @param {import('./foreign-target.js').ForeignPrTarget|null} [target]
    * @returns {Promise<{ ok: boolean, reason: string|null }>}
    */
-  async function discardTransition(bead_id, number) {
-    const observed = await readPrState(number);
+  async function discardTransition(bead_id, number, target = null) {
+    const observed = await readPrState(number, target);
     if ('error' in observed) {
       return { ok: false, reason: `pr_state_unknown:${observed.error}` };
     }
     if (observed.pr_state === 'MERGED') {
-      return { ok: false, reason: 'pr_already_merged' };
+      return {
+        ok: false,
+        reason: target
+          ? 'foreign_merged_discard_unsupported'
+          : 'pr_already_merged'
+      };
     }
     if (observed.pr_state === 'OPEN') {
       /** @type {any} */
       let closed;
       try {
-        closed = await deps.gh.closePr(repo, number);
+        closed = await ghFor(target).closePr(repo, number);
       } catch {
         closed = { state: 'error', reason: 'gh_spawn_failed' };
       }
@@ -4025,10 +4860,22 @@ export function createPrActions(deps) {
     if (!ref) {
       return { ok: false, reason: 'pr_ref_unknown', result_head_sha: null };
     }
+    // `base_behind` alignment of a pinned foreign PR runs `gh … --repo
+    // <pinned slug>` under the same conditions (UI-k467 §3.4).
+    const foreign = await foreignTargetFor(
+      bead_id,
+      member.external === true ? member.pr_url : null,
+      member.external === true ? member.metadata : null
+    );
+    if (foreign.state === 'invalid') {
+      return { ok: false, reason: foreign.reason, result_head_sha: null };
+    }
     /** @type {any} */
     let updated;
     try {
-      updated = await deps.gh.updateBranch(repo, ref.number);
+      updated = await ghFor(
+        foreign.state === 'ok' ? foreign.target : null
+      ).updateBranch(repo, ref.number);
     } catch (err) {
       log('base update failed for %s: %o', bead_id, err);
       return {

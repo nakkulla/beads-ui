@@ -75,12 +75,56 @@ export const FAILURE_SENTENCES = Object.freeze({
     '핀된 대상 저장소 체크아웃이 없거나 foreign_repo와 같은 URL의 remote가 없습니다.',
   foreign_deploy_unsupported:
     '대상 저장소가 [deploy]를 선언해 Worker가 배포 증거를 만들 수 없습니다. 세션이 배포와 마감을 소유합니다.',
+  // UI-k467: enclosed foreign landing의 PR 전달. 핀은 있는데 pr_url이 핀된
+  // 저장소 소속이 아니거나, 머지된 외부 PR을 폐기하려 했다.
+  foreign_pr_repo_mismatch:
+    'foreign_repo 핀이 있는데 기록된 pr_url이 그 저장소의 PR이 아닙니다.',
+  foreign_merged_discard_unsupported:
+    '이미 머지된 외부 저장소 PR은 Worker가 되돌리지 않습니다.',
+  // 계약 failure_classes.foreign_handoff의 분류 문장. 원인별 문장은 아래
+  // FOREIGN_HANDOFF_SENTENCES가 따로 갖는다 — quick_fix push 착지의
+  // foreign_deploy_unsupported 문장과 분류로 구분한다.
+  foreign_handoff: '외부 저장소 PR을 사람에게 넘겼습니다.',
   // 레거시 — UI-8w4t 이전에 저장된 saga만 이 토큰을 이름한다. 지금은 로드 시
   // `internal_record_failed:migration:repair_lane_retired`로 접히므로 마지막
   // 구간이 이 문장을 이긴다. 남겨 두는 이유는 접기 이전에 쓰인 기록을 읽는
   // 화면이 여전히 raw 토큰을 만나기 때문이다.
   repair_lane_retired: '자동 수리 레인이 은퇴해 사람 처리로 넘어왔습니다.'
 });
+
+/**
+ * `foreign_handoff` cause → the PR-flow sentence (UI-k467 §3.7). Read by the
+ * class token `foreign_handoff:<cause>`, never by the bare cause: the bare
+ * `foreign_deploy_unsupported` is the quick_fix push landing's sentence above,
+ * and the two are told apart by class.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const FOREIGN_HANDOFF_SENTENCES = Object.freeze({
+  foreign_deploy_unsupported:
+    '대상 저장소가 [deploy]를 선언했거나 repo-ops/post-merge.d 파일이 있어 Worker가 머지·마감하지 않습니다. 대상 저장소에서 사람이 처리합니다.',
+  foreign_conflict_needs_human:
+    '외부 PR이 base와 충돌합니다. Worker는 해소 세션을 띄우지 않습니다 — PR head에 수정을 push하면 다음 관측에서 풀립니다.',
+  foreign_pr_base_mismatch:
+    '외부 PR의 base가 foreign_base 핀과 다릅니다. PR base나 핀을 고치면 다음 관측에서 풀립니다.'
+});
+
+/**
+ * The PR-flow sentence of a `foreign_handoff:<cause>` token, or null for any
+ * other token.
+ *
+ * @param {unknown} code
+ * @returns {string|null}
+ */
+export function foreignHandoffSentence(code) {
+  if (typeof code !== 'string' || !code.startsWith('foreign_handoff:')) {
+    return null;
+  }
+  const cause = code.slice('foreign_handoff:'.length);
+  return Object.hasOwn(FOREIGN_HANDOFF_SENTENCES, cause)
+    ? FOREIGN_HANDOFF_SENTENCES[cause]
+    : null;
+}
 
 /** Recovery reason → what is awaited and what releases the wait. */
 /** @type {Readonly<Record<string, string>>} */
@@ -157,6 +201,11 @@ export const FAILURE_NEXT_ACTIONS = Object.freeze({
     '외부 대상 저장소의 핀 설정을 확인하거나, 원 세션에서 배포·마감을 확인하세요.',
   foreign_deploy_unsupported:
     '외부 대상 저장소의 핀 설정을 확인하거나, 원 세션에서 배포·마감을 확인하세요.',
+  foreign_pr_repo_mismatch:
+    'pr_url과 foreign_repo 핀이 같은 저장소를 가리키는지 확인하세요.',
+  foreign_merged_discard_unsupported: '대상 저장소에서 사람이 되돌리세요.',
+  foreign_handoff:
+    '[세션에서 이어가기]로 대상 저장소의 `pr-finish` Foreign-pinned Bead 절차를 진행하세요.',
   // 세부를 아직 모르는 종단. 남아 있는 원인·기록이 유일한 재료다.
   interrupted_without_terminal_exit:
     '남아 있는 원인과 실행 기록을 먼저 확인하세요.',

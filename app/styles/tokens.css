@@ -164,6 +164,9 @@
   --r-chip: var(--r-9);
   --px-control: 10px;
   --gap-control: var(--sp-6);
+  /* 말줄임 버튼(`.op-btn--truncate`)의 최대 폭 — 긴 라벨이 카드 폭을 넘지
+     않게 자르는 자리(UI-k467 `머지 ↗ <저장소>`). */
+  --w-op-btn-truncate: 16em;
 
   /* --- glows / accent shadows (flat design; no elevation shadows) --- */
   --glow-current: 0 0 8px currentColor;
