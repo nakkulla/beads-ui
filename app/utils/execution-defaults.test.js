@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import EXECUTION_DEFAULTS from '../../generated/contracts/execution-defaults.json' with { type: 'json' };
+import { resolveCatalog } from '../../server/worker/runner-catalog.js';
 import {
   buildOptionView,
   resolveExecutionSettings,
@@ -104,7 +105,8 @@ describe('resolveExecutionSettings', () => {
         supported: true,
         schema_version: EXECUTION_DEFAULTS.schema_version,
         session: EXECUTION_DEFAULTS
-      }
+      },
+      runner_catalog: resolveCatalog({ warn: () => {} })
     });
 
     expect(rows.spec_review_model).toMatchObject({
@@ -122,20 +124,65 @@ describe('resolveExecutionSettings', () => {
     });
   });
 
-  test('resolves the codex reviewer alias through the pinned model catalog', () => {
+  test('resolves the codex reviewer alias through the runtime catalog', () => {
     const rows = resolveExecutionSettings({
       pin: { spec_review_model: 'codex' },
       execution_defaults: {
         supported: true,
         schema_version: EXECUTION_DEFAULTS.schema_version,
         session: EXECUTION_DEFAULTS
-      }
+      },
+      runner_catalog: resolveCatalog({ warn: () => {} })
     });
 
     expect(rows.spec_review_model).toMatchObject({
       value: 'codex',
-      display: '6-sol',
-      full_value: 'gpt-6-sol'
+      display: '6.1-sol',
+      full_value: 'gpt-6.1-sol'
+    });
+  });
+
+  test('offers runtime catalog codex names, not the pin resolver keys, as tokens', () => {
+    const execution_defaults = {
+      supported: true,
+      schema_version: EXECUTION_DEFAULTS.schema_version,
+      session: EXECUTION_DEFAULTS
+    };
+    const runner_catalog = resolveCatalog({ warn: () => {} });
+
+    const families = resolveExecutionSettings({
+      global: { impl_runtime: 'codex', impl_model: 'families' },
+      execution_defaults,
+      runner_catalog
+    });
+    const sol = resolveExecutionSettings({
+      global: { impl_runtime: 'codex', impl_model: 'sol' },
+      execution_defaults,
+      runner_catalog
+    });
+
+    expect(families.impl_model.resolution).toBe('incompatible');
+    expect(sol.impl_model).toMatchObject({
+      display: '6.1-sol',
+      full_value: 'gpt-6.1-sol'
+    });
+  });
+
+  test('accepts the agent-type effort posture the pin names', () => {
+    const rows = resolveExecutionSettings({
+      global: { impl_runtime: 'claude', impl_effort: 'auto' },
+      execution_defaults: {
+        supported: true,
+        schema_version: EXECUTION_DEFAULTS.schema_version,
+        session: EXECUTION_DEFAULTS
+      },
+      runner_catalog: resolveCatalog({ warn: () => {} }),
+      transport: 'claude-native-agent'
+    });
+
+    expect(rows.impl_effort).toMatchObject({
+      display: 'auto (실행 시 결정)',
+      resolution: 'dynamic'
     });
   });
 
@@ -752,6 +799,39 @@ describe('buildOptionView', () => {
       label: 'astra (비호환)',
       full_value: 'astra'
     });
+  });
+
+  test('labels a stored Codex pinned model the list dropped as running the default', () => {
+    const runner_catalog = resolveCatalog({ warn: () => {} });
+
+    const view = buildOptionView({
+      key: 'orchestration_model',
+      choices: ['opus', 'sol'],
+      layer: 'global',
+      global: { orchestration_model: 'sol-6' },
+      execution_defaults: PROJECTION,
+      runner_catalog
+    });
+
+    expect(view.options[0]).toMatchObject({
+      value: 'sol-6',
+      label: 'sol-6 (목록에 없음 — 기본값으로 실행)'
+    });
+  });
+
+  test('keeps the plain label for a stored model outside the Codex grammar', () => {
+    const runner_catalog = resolveCatalog({ warn: () => {} });
+
+    const view = buildOptionView({
+      key: 'orchestration_model',
+      choices: ['opus', 'sol'],
+      layer: 'global',
+      global: { orchestration_model: 'opus-4.5' },
+      execution_defaults: PROJECTION,
+      runner_catalog
+    });
+
+    expect(view.options[0].label).not.toContain('목록에 없음');
   });
 
   test('keeps a stored value the choice list omits', () => {

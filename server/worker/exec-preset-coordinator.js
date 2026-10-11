@@ -26,6 +26,16 @@ import {
 import { resolveExecSettings } from './policy.js';
 import { discoverQueueStates } from './queue-state-discovery.js';
 import { APPLIED_PRESET_FIELDS } from './queue-store.js';
+import { modelRunner } from './runner-catalog.js';
+import { runtimeCatalog } from './runner/index.js';
+
+/**
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function identity(value) {
+  return value;
+}
 
 const RESEED_MIGRATION_VERSION = 1;
 const PRESET_PROFILE_MIGRATION_VERSION = 1;
@@ -303,13 +313,24 @@ export function createExecPresetCoordinator(options) {
   function resolveForDispatch(workspace, bead_snapshot) {
     const queue = queueStore.snapshot(workspace);
     const quick_fix = bead_snapshot?.route === 'quick_fix';
+    const catalog = runtimeCatalog();
+    // The queue keeps an unlisted Codex pinned model verbatim (UI-gpac §3.3);
+    // dispatch reads it as absent, so the launch falls back to the default
+    // instead of either running an unknown model or stopping.
+    /** @param {unknown} value */
+    const usable = (value) =>
+      typeof value === 'string' && modelRunner(catalog, value) !== null
+        ? value
+        : null;
     /** @type {Record<string, string>} */
     const settings = {};
     for (const key of ORCHESTRATION_KEYS) {
       const queue_values = /** @type {Record<string, unknown>} */ (queue);
+      const read = key === 'orchestration_model' ? usable : identity;
       const value = quick_fix
-        ? (queue_values[QUICK_FIX_LANE_MAP[key]] ?? queue_values[key])
-        : queue_values[key];
+        ? (read(queue_values[QUICK_FIX_LANE_MAP[key]]) ??
+          read(queue_values[key]))
+        : read(queue_values[key]);
       if (typeof value === 'string') {
         settings[key] = value;
       }

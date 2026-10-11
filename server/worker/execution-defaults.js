@@ -102,27 +102,52 @@ function provenanceMatches(provenance, bytes, digest) {
 function sessionFacts(artifact) {
   const session = { ...artifact };
   delete session.schema_version;
+  return session;
+}
+
+/**
+ * The session facts with the default implementation model's id attached. The
+ * id comes from the runtime catalog (Codex aliases resolve from the CLI list),
+ * then from a pinned alias -> id map when an older pin carries one, else the
+ * token itself. Computed per call because the catalog changes with the list.
+ *
+ * @param {Record<string, any>} session
+ * @param {import('./runner-catalog.js').ResolvedCatalog|null|undefined} runner_catalog
+ * @returns {Record<string, any>}
+ */
+function withDefaultModelId(session, runner_catalog) {
   const defaults = session.implementation?.default;
-  const model_catalog = session.implementation?.model_catalog;
   if (
-    isRecord(defaults) &&
-    typeof defaults.runtime === 'string' &&
-    typeof defaults.model === 'string' &&
-    isRecord(model_catalog)
+    !isRecord(defaults) ||
+    typeof defaults.runtime !== 'string' ||
+    typeof defaults.model !== 'string'
   ) {
-    const runtime_models = model_catalog[defaults.runtime];
-    const model_id = isRecord(runtime_models)
+    return session;
+  }
+  const catalog_runtime = runner_catalog?.model_index?.[defaults.model];
+  const catalog_id =
+    typeof catalog_runtime === 'string'
+      ? runner_catalog?.runners?.[catalog_runtime]?.models?.[defaults.model]?.id
+      : null;
+  const runtime_models =
+    session.implementation?.model_catalog?.[defaults.runtime];
+  const pinned_id =
+    isRecord(runtime_models) && !Array.isArray(runtime_models.families)
       ? runtime_models[defaults.model]
       : null;
-    session.implementation = {
+  const model_id =
+    typeof catalog_id === 'string'
+      ? catalog_id
+      : typeof pinned_id === 'string'
+        ? pinned_id
+        : defaults.model;
+  return {
+    ...session,
+    implementation: {
       ...session.implementation,
-      default: {
-        ...defaults,
-        model_id: typeof model_id === 'string' ? model_id : defaults.model
-      }
-    };
-  }
-  return session;
+      default: { ...defaults, model_id }
+    }
+  };
 }
 
 /**
@@ -195,6 +220,7 @@ export function projectExecutionDefaults(runner_catalog, deps = {}) {
       : null;
   return {
     ...loaded,
+    session: withDefaultModelId(loaded.session, runner_catalog),
     orchestration: {
       runtime: typeof runtime === 'string' ? runtime : null,
       model: ORCHESTRATION_MODEL_FALLBACK,

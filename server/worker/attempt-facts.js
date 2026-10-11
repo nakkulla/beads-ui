@@ -214,16 +214,19 @@ export function resolveSelectorInputs(bead_values, kv_values) {
 
 /**
  * The reviewer token this attempt's implementation review would default to,
- * plus the model/effort the PINNED copy pairs with it.
+ * plus the model/effort the PINNED copy pairs with it. The preset's model
+ * alias resolves to its id through the runtime catalog (Codex aliases follow
+ * the CLI model list, UI-gpac §3.4); without a catalog the alias stands.
  *
  * A token the pinned table does not name yields null: the card would otherwise
  * assert a model nothing selected. So does an unloadable pin.
  *
  * @param {{ bead?: unknown, kv?: unknown }} token_layers
  * @param {{ supported?: boolean, digest?: string|null, session?: Record<string, any>|null }|null|undefined} defaults
+ * @param {Record<string, any>|null} [catalog]
  * @returns {{ token: string, model: string, effort: string, digest: string|null }|null}
  */
-export function resolveReviewerPreset(token_layers, defaults) {
+export function resolveReviewerPreset(token_layers, defaults, catalog = null) {
   if (!defaults || defaults.supported !== true || !defaults.session) {
     return null;
   }
@@ -255,7 +258,7 @@ export function resolveReviewerPreset(token_layers, defaults) {
   }
   return {
     token,
-    model: catalogModelId(entry.model, null, defaults.session, null),
+    model: catalogModelId(entry.model, null, defaults.session, catalog),
     effort: entry.effort,
     digest: typeof defaults.digest === 'string' ? defaults.digest : null
   };
@@ -501,7 +504,7 @@ export function shellQuote(value) {
  *   bead_values: Record<string, unknown>|null,
  *   kv_values: Record<string, unknown>|null
  * }} input
- * @param {{ fs?: any, homeDir: string, resolveDotfilesRoot?: (runner?: string) => Promise<string|null>, loadDefaults?: () => any }} deps
+ * @param {{ fs?: any, homeDir: string, resolveDotfilesRoot?: (runner?: string) => Promise<string|null>, loadDefaults?: () => any, loadCatalog?: () => Record<string, any> }} deps
  * @returns {Promise<AttemptFacts>}
  */
 export async function buildAttemptFacts(input, deps) {
@@ -545,6 +548,15 @@ export async function buildAttemptFacts(input, deps) {
       defaults = null;
     }
   }
+  /** @type {Record<string, any>|null} */
+  let catalog = null;
+  if (typeof deps.loadCatalog === 'function') {
+    try {
+      catalog = deps.loadCatalog();
+    } catch {
+      catalog = null;
+    }
+  }
   const base =
     typeof input.base.sha === 'string' &&
     input.base.sha.length > 0 &&
@@ -568,7 +580,8 @@ export async function buildAttemptFacts(input, deps) {
         bead: input.bead_values?.impl_review_model,
         kv: input.kv_values?.impl_review_model
       },
-      defaults
+      defaults,
+      catalog
     ),
     bead_status: input.bead_status,
     claimed_by_worker: input.claimed_by_worker === true,

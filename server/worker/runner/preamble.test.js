@@ -943,7 +943,7 @@ describe('runner/preamble attempt facts card (spec D1)', () => {
     }).system_prompt;
 
     expect(out).toContain(
-      '- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers·implementation.model_catalog, digest=abc123)'
+      '- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers·런타임 카탈로그, digest=abc123)'
     );
   });
 

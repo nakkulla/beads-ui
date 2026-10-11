@@ -1222,6 +1222,8 @@ import {
   normalizeRetryState,
   reduceRetryState
 } from './queue-hold.js';
+import { CODEX_FAMILIES, isCodexPinnedName } from './runner-catalog.js';
+import { runtimeCatalog } from './runner/index.js';
 import { attemptRecordPath, queueFilePath } from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
@@ -5123,14 +5125,22 @@ function normalizeQueue(raw) {
   // derived and the catalog is a config-file input. A stored value the current
   // catalog no longer offers drops to null, exactly as the old `exec_defaults`
   // map did, so dispatch falls back rather than launching an unknown model.
-  const orchestration_enums = execSettingEnums();
+  // The one exception is a Codex pinned model name (`sol-6`): the Codex CLI
+  // list may drop it for a while, so the raw value survives the read and only
+  // dispatch skips it (UI-gpac §3.3, `resolveForDispatch`).
+  const catalog = runtimeCatalog();
+  const orchestration_enums = execSettingEnums(catalog);
+  const codex_families = catalog.codex_list?.families ?? CODEX_FAMILIES;
   for (const key of [...ORCHESTRATION_KEYS, ...QUICK_FIX_ORCHESTRATION_KEYS]) {
     const value = raw[key];
     const enum_key = QUICK_FIX_ORCHESTRATION_KEYS.includes(key)
       ? key.slice('quick_fix_'.length)
       : key;
     q[key] =
-      typeof value === 'string' && orchestration_enums[enum_key].includes(value)
+      typeof value === 'string' &&
+      (orchestration_enums[enum_key].includes(value) ||
+        (enum_key === 'orchestration_model' &&
+          isCodexPinnedName(value, codex_families)))
         ? value
         : null;
   }

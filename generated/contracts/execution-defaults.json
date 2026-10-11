@@ -61,16 +61,13 @@
         "haiku"
       ],
       "codex": {
-        "astra": "gpt-6-astra",
-        "sol": "gpt-6-sol",
-        "terra": "gpt-5.6-terra",
-        "luna": "gpt-6-luna"
-      }
-    },
-    "model_catalog_fallback": {
-      "codex": {
-        "sol": "gpt-5.6-sol",
-        "luna": "gpt-5.6-luna"
+        "families": [
+          "astra",
+          "sol",
+          "terra",
+          "luna"
+        ],
+        "resolve": "codex_cli_latest_v2"
       }
     },
     "exact_model_default_effort": {
@@ -79,9 +76,9 @@
     },
     "effort_by_transport": {
       "claude-native-agent": {
-        "auto": "native-fixed-posture",
-        "explicit": "unsupported",
-        "receipt": "default"
+        "auto": "agent-type",
+        "explicit": "agent-type",
+        "receipt": "actual-effort"
       },
       "implement-claude": {
         "auto": "claude-runner-model-default",

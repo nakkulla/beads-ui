@@ -455,7 +455,11 @@ export function createSettingsDialog(mount_element, options) {
       if (!model_section) {
         model_section = createModelVisibilitySection(model_host, {
           transport,
-          modelVisibilityStore: options.modelVisibilityStore
+          modelVisibilityStore: options.modelVisibilityStore,
+          runnerCatalog: () =>
+            (options.monitorRows?.() || []).find(
+              (row) => row && row.runner_catalog
+            )?.runner_catalog ?? null
         });
       }
       model_section.render();

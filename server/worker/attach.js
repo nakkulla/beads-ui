@@ -110,7 +110,7 @@ import {
   isReviewAfterMergeReason
 } from './review-session.js';
 import { createReviseDisposition } from './revise-disposition.js';
-import { createRunner, runtimeCatalog } from './runner/index.js';
+import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
 import { createSessionMonitors } from './session-monitor.js';
@@ -2563,7 +2563,6 @@ function sharedProviderHealth(runtime, seed) {
     health = createProviderHealth({
       store: runtime.queueStore,
       accountCatalog: seed.accountCatalog,
-      catalog: runtimeCatalog(),
       resolveCswapPath,
       spawnImpl: seed.spawn_impl
     });
