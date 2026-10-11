@@ -4152,7 +4152,7 @@ export function miniRow(item, options = {}) {
  * Consumer-card slots shared by candidates, queue rows and running tiles.
  * 좌표(`ssh`·job·`log`)는 상세 패널 잡 표의 것이다 (UI-l48z §4.2).
  *
- * @param {{external_wait?: import('../../protocol.js').ExternalWaitObservation, wait_reasons?: import('../../protocol.js').WaitReason[], labels?: string[], session_preferred?: boolean}} item
+ * @param {{external_wait?: import('../../protocol.js').ExternalWaitObservation, wait_reasons?: import('../../protocol.js').WaitReason[], labels?: string[], session_preferred?: boolean, interactive_sessions?: import('./lane-model.js').InteractiveSessionView[]}} item
  * @param {number} [now]
  */
 export function externalWaitCardParts(item, now = Date.now()) {
@@ -4163,6 +4163,8 @@ export function externalWaitCardParts(item, now = Date.now()) {
   return waitReasonLines(reason, {
     now,
     external_wait: record,
+    // A live conversation's 해결 line wins on this card too (UI-9w5l §3.5).
+    interactive_sessions: item.interactive_sessions,
     session_preferred:
       item.session_preferred === true ||
       (Array.isArray(item.labels) && item.labels.includes('session-preferred'))

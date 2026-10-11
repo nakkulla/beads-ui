@@ -9069,6 +9069,35 @@ describe('해결 줄 (UI-9w5l §3.3)', () => {
     ).toBe('해결 — 상세 패널의 [대기 해제]로 어긋난 대기를 정리한다');
   });
 
+  test('prefers the live conversation resolution on an external wait card', () => {
+    const parts = externalWaitCardParts(
+      /** @type {any} */ ({
+        id: 'A-1',
+        wait_reasons: [
+          waitReason({
+            kind: 'external_job',
+            verdict: 'action_required',
+            verdict_reason: {
+              code: 'takeover_unresolved',
+              message: '바로 실행 결과 확인 필요'
+            },
+            resolution: '[세션에서 이어가기]로 해결 세션을 연다'
+          })
+        ],
+        interactive_sessions: [
+          interactiveView({
+            kind: 'resolve',
+            discord_url: 'https://discord.com/channels/1/2'
+          })
+        ]
+      })
+    );
+
+    render(html`${parts.badge}`, mount);
+
+    expect(popupLines()[0]).toBe('해결 — ↗ Discord에서 대화를 이어간다');
+  });
+
   test('moves the auto-resume refusal sentence into the resolution line', () => {
     const hold = {
       kind: /** @type {const} */ ('outage'),
