@@ -26,6 +26,7 @@ import {
   createSettingsDialog
 } from './views/settings-dialog/index.js';
 import { createUsageMeter } from './views/usage-meter.js';
+import { openDeferDialog } from './views/worker/defer-dialog.js';
 import { openTakeoverDialog } from './views/worker/external-wait-takeover-dialog.js';
 import { createWorkerView } from './views/worker/index.js';
 import { candidateCard, miniRow, queueRowOps } from './views/worker/lanes.js';
@@ -647,6 +648,19 @@ function renderCardVariants() {
       shelve_enabled: true
     },
     {
+      // 보관 행의 `⏸ 보류로 전환` (UI-0d9i §3.1).
+      id: 'PR-4',
+      title: 'shelved row',
+      lane: 'pr_wait',
+      done: false,
+      draggable: false,
+      shelved: true,
+      shelve_action: 'unshelve',
+      shelve_enabled: true,
+      defer_action: true,
+      defer_enabled: true
+    },
+    {
       id: 'PR-2',
       title: 'merging row',
       lane: 'pr_wait',
@@ -735,6 +749,19 @@ function renderCardVariants() {
             }
           }
         })
+      ),
+      // 「보류 N」 카드의 `↺ 되살리기` (UI-0d9i §3.5).
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'DF-1',
+          title: 'deferred',
+          draggable: false,
+          queue_placeable: false,
+          lane: 'candidate',
+          reason: ''
+        }),
+        null,
+        { variant: 'deferred', revive: true }
       )
     ],
     mount
@@ -2209,6 +2236,61 @@ describe('dialogs use parts (§3.4 check 3)', () => {
 
     expect(document.querySelectorAll('.takeover-dialog').length).toBe(0);
     expect(missing).toEqual([]);
+  });
+
+  test.each(
+    /** @type {const} */ ([
+      [
+        'defer',
+        {
+          ok: true,
+          dependents: [{ id: 'UI-2', title: '후행', status: 'open' }]
+        }
+      ],
+      [
+        'revive',
+        {
+          ok: true,
+          target: 'resolved',
+          pr_state: 'OPEN',
+          restorable: [{ id: 'UI-2', title: '후행', status: 'open' }],
+          shelved: true
+        }
+      ]
+    ])
+  )(
+    'draws every %s dialog control with a part (UI-0d9i)',
+    async (mode, preview) => {
+      const pending = openDeferDialog(
+        { mode, bead_id: 'UI-1' },
+        { transport: async () => preview }
+      );
+      await vi.waitFor(() =>
+        expect(document.querySelector('.defer-dialog__loading')).toBeNull()
+      );
+
+      const missing = controlsWithoutPart(document.body);
+      /** @type {HTMLButtonElement} */ (
+        document.querySelector('.defer-dialog__cancel')
+      ).click();
+      await pending;
+
+      expect(document.querySelectorAll('.defer-dialog').length).toBe(0);
+      expect(missing).toEqual([]);
+    }
+  );
+
+  test('wraps the long text of the defer dialog instead of widening it (UI-0d9i)', () => {
+    const rules = [
+      '.defer-dialog__edge',
+      '.defer-dialog__guide',
+      '.defer-dialog__error',
+      '.detail-kv__defer-note'
+    ].map((selector) => declarationsFor(selector));
+
+    expect(
+      rules.every((rule) => rule.includes('overflow-wrap: anywhere'))
+    ).toBe(true);
   });
 
   test('draws the blocked summary dialog items with a part', () => {

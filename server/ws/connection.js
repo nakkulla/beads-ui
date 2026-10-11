@@ -705,7 +705,7 @@ export async function handleMessage(ws, data) {
       handleWorkerMergeQueueRemove(ws, req);
       return;
     case 'worker-merge-shelve':
-      handleWorkerMergeShelve(ws, req);
+      await handleWorkerMergeShelve(ws, req);
       return;
     case 'worker-bead-defer-preview':
       await handleWorkerBeadDeferPreview(ws, req);

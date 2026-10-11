@@ -136,6 +136,8 @@ scope:
 | `retry_wait` 타일 foot | `↻ 지금 재시도` | `op-btn rtile__hold-retry` | UI-01wh — 환경 보류가 서 있을 때만; `폐기`가 있으면 그 뒤 |
 | 실행 타일 헤더 (Worker·Monitor) | `✕` (Worker에서 내리기) | `op-btn op-btn--icon op-btn--ghost rtile__withdraw` | 2026-10-01 stall-reconcile D7 — 실행 중·일시정지·공급자 보류·재시도 대기·실패·외부 작업 타일에만; 슬롯 1 조작 맨 끝; 대기 행 `✕`와 같은 부품·변형, 툴팁·`aria-label` `Worker에서 내리기 — 작업은 보존` |
 | `retry_wait` 타일 foot (Worker·Monitor) | `지금 재시도` | `op-btn rtile__retry-now` | 2026-10-01 stall-reconcile D9 — 모든 `retry_wait` 타일; `폐기` 앞. 위 행의 큐 전체 조작(UI-a5l2가 은퇴)과 달리 그 Bead의 예약만 당긴다 |
+| 보관 행 foot (Worker·Monitor) | `⏸ 보류로 전환` | `op-btn worker-mini__defer` | UI-0d9i — 「보관 N」 행에만, `보관 해제` 바로 뒤; 머지 관측·정리 행에는 서지 않는다. 클릭은 공유 확인 대화상자(`defer-dialog.js`)를 연다 |
+| 보류 카드 foot (Worker) | `↺ 되살리기` | `op-btn worker-card__revive` | UI-0d9i — 「보류 N」 카드에만; 같은 `variant:'deferred'` 카드를 쓰는 「자동 점검」 선반에는 서지 않는다. 같은 대화상자의 되살리기 모드 |
 
 같은 묶음의 이웃 — 실행 타일의 `⏸`·`▤ 세션`·`폐기`·`세션에서 해결`, 행·foot의
 `머지`·`취소`·`폐기` — 는 **높이만** 맞춘다: 묶음 컨테이너(`.rtile__hd-actions`,

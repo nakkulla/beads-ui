@@ -209,6 +209,21 @@ function rawIssues() {
     row('W-5', { status: 'resolved', metadata: foreignPins(42) }),
     // PR 대기 — 세션이 등록한 핀 있는 외부 PR 행(Worker attempt 없음).
     row('W-6', { status: 'resolved', metadata: foreignPins(43) }),
+    // PR 대기 — 보관된 행(UI-0d9i: `⏸ 보류로 전환`)과, 보관된 채 보류된 행.
+    row('W-7', {
+      status: 'resolved',
+      metadata: {
+        route: 'quick_fix',
+        pr_url: 'https://github.com/example/repo/pull/17'
+      }
+    }),
+    row('W-8', {
+      status: 'deferred',
+      metadata: {
+        route: 'quick_fix',
+        pr_url: 'https://github.com/example/repo/pull/18'
+      }
+    }),
     // Worker 완료 행과, Worker 밖에서 닫힌 이슈.
     row('D-1', { status: 'closed', closed_at: iso(NOW - HOUR) }),
     row('X-1', {
@@ -339,8 +354,14 @@ function rawQueue() {
       { bead_id: 'W-2', added_at: NOW - 3 * HOUR },
       { bead_id: 'W-3', added_at: NOW - 2 * HOUR },
       { bead_id: 'W-4', added_at: NOW - 2 * HOUR + 1 },
-      { bead_id: 'W-5', added_at: NOW - 2 * HOUR + 2 }
+      { bead_id: 'W-5', added_at: NOW - 2 * HOUR + 2 },
+      { bead_id: 'W-7', added_at: NOW - 2 * HOUR + 3 },
+      { bead_id: 'W-8', added_at: NOW - 2 * HOUR + 4 }
     ],
+    merge_shelved: {
+      'W-7': { at: NOW - HOUR },
+      'W-8': { at: NOW - HOUR }
+    },
     done: [{ bead_id: 'D-1', added_at: NOW - HOUR }],
     merge_queue: [],
     cleanup_failed: {
@@ -552,6 +573,12 @@ function seedPrObservations() {
     }),
     foreign: { ...foreign, handoff: 'foreign_pr_base_mismatch' }
   });
+  // The scan's statuses (UI-0d9i §3.4): W-8 reads `deferred`, so the PR 대기
+  // projection hides its row on both tabs.
+  getWorkerRuntime().externalPrs.replaceStatuses(
+    WS,
+    Object.fromEntries(rawIssues().map((issue) => [issue.id, issue.status]))
+  );
   const w6_url = 'https://github.com/acme/research-repo-template/pull/43';
   getWorkerRuntime().externalPrs.replace(
     WS,
@@ -892,7 +919,8 @@ const SHARED_BEADS = [
   'W-3',
   'W-4',
   'W-5',
-  'W-6'
+  'W-6',
+  'W-7'
 ];
 
 describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () => {
@@ -1107,5 +1135,42 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
       worker.querySelector('.worker-deferred [data-bead-id="F-1"]')
     ).not.toBeNull();
     expect(monitor.querySelector('[data-bead-id="F-1"]')).toBeNull();
+  });
+
+  test('draws ⏸ 보류로 전환 on the shelved row on both tabs (UI-0d9i §3.1)', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    const holders = [worker, monitor].map((mount) =>
+      Array.from(mount.querySelectorAll('.worker-mini__defer')).map((button) =>
+        button.closest('[data-bead-id]')?.getAttribute('data-bead-id')
+      )
+    );
+
+    expect(holders).toEqual([['W-7'], ['W-7']]);
+  });
+
+  test('hides a deferred PR 대기 row on both tabs and shelves it only on Worker (UI-0d9i §3.4)', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    expect(
+      [worker, monitor].map(
+        (mount) =>
+          mount.querySelectorAll('.worker-mini[data-bead-id="W-8"]').length
+      )
+    ).toEqual([0, 0]);
+    expect(
+      worker.querySelector('.worker-deferred [data-bead-id="W-8"]')
+    ).not.toBeNull();
+  });
+
+  test('draws ↺ 되살리기 only on the Worker deferred shelf, an intended difference (§9)', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    expect(
+      worker.querySelector(
+        '.worker-deferred [data-bead-id="F-1"] .worker-card__revive'
+      )
+    ).not.toBeNull();
+    expect(monitor.querySelector('.worker-card__revive')).toBeNull();
   });
 });

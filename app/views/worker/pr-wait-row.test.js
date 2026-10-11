@@ -716,3 +716,66 @@ describe('pinned foreign PR rows (UI-k467 §3.8)', () => {
     expect(row.discard_action).toBe(false);
   });
 });
+
+describe('⏸ 보류로 전환 on PR 대기 rows (UI-0d9i §3.1)', () => {
+  /**
+   * @param {Record<string, any>} [entry]
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function shelvedRow(entry = {}, patch = {}) {
+    return rowsOf(
+      workspace({
+        pr_wait: [{ bead_id: 'A-1', added_at: 1, ...entry }],
+        merge_shelved: { 'A-1': { at: 1 } },
+        ...patch
+      })
+    )[0];
+  }
+
+  test('stands on a shelved row', () => {
+    const row = shelvedRow();
+
+    expect([row.shelve_action, row.defer_action]).toEqual(['unshelve', true]);
+  });
+
+  test('stays off a row that is not shelved', () => {
+    const row = rowsOf(
+      workspace({ pr_wait: [{ bead_id: 'A-1', added_at: 1 }] })
+    )[0];
+
+    expect(row.defer_action).toBe(false);
+  });
+
+  test('stays off a shelved row whose merge was observed', () => {
+    const row = shelvedRow({ merge_sha: 'c'.repeat(40) });
+
+    expect(row.defer_action).toBe(false);
+  });
+
+  test('stays off a shelved row whose cleanup stopped', () => {
+    const row = shelvedRow(
+      {},
+      {
+        cleanup_failed: { 'A-1': { step: 'branch_cleanup', reason: 'boom' } }
+      }
+    );
+
+    expect(row.defer_action).toBe(false);
+  });
+
+  test('draws the button on the op-btn part right after [보관 해제]', () => {
+    const host = document.createElement('div');
+
+    render(miniRow(shelvedRow()), host);
+
+    const actions = Array.from(
+      host.querySelectorAll('.worker-mini__actions > button')
+    ).map((button) => button.className);
+    const shelve = actions.indexOf('op-btn worker-mini__shelve');
+    expect(actions[shelve + 1]).toBe('op-btn worker-mini__defer');
+    expect(host.querySelector('.worker-mini__defer')?.textContent?.trim()).toBe(
+      '⏸ 보류로 전환'
+    );
+  });
+});

@@ -74,6 +74,12 @@ describe('ws mutation handlers', () => {
       mJson.mockResolvedValueOnce(
         projectedResponse(null, {
           code: 0,
+          stdoutJson: { id: 'UI-7', status: 'open' }
+        })
+      );
+      mJson.mockResolvedValueOnce(
+        projectedResponse(null, {
+          code: 0,
           stdoutJson: { id: 'UI-7', status: 'in_progress' }
         })
       );
@@ -113,6 +119,12 @@ describe('ws mutation handlers', () => {
     mJson.mockResolvedValueOnce(
       projectedResponse(null, {
         code: 0,
+        stdoutJson: { id: 'UI-7', status: 'open' }
+      })
+    );
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
         stdoutJson: { id: 'UI-7', status: 'in_progress' }
       })
     );
@@ -135,6 +147,12 @@ describe('ws mutation handlers', () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
     const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-8', status: 'in_progress' }
+      })
+    );
     mJson.mockResolvedValueOnce(
       projectedResponse(null, {
         code: 0,
@@ -162,10 +180,29 @@ describe('ws mutation handlers', () => {
     ]);
   });
 
-  test('update-status accepts deferred', async () => {
+  test('update-status refuses a move into deferred with use_defer_dialog', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const ws = makeStubSocket();
+    const req = {
+      id: 'r1-deferred',
+      type: 'update-status',
+      payload: { id: 'UI-9', status: 'deferred' }
+    };
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(JSON.stringify(req))
+    );
+
+    const obj = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(obj.ok).toBe(false);
+    expect(obj.error.code).toBe('use_defer_dialog');
+    expect(mRun).not.toHaveBeenCalled();
+  });
+
+  test('update-status refuses a move out of deferred with use_defer_dialog', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
     const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
-    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
     mJson.mockResolvedValueOnce(
       projectedResponse(null, {
         code: 0,
@@ -174,23 +211,45 @@ describe('ws mutation handlers', () => {
     );
     const ws = makeStubSocket();
     const req = {
-      id: 'r1-deferred',
+      id: 'r1-undefer',
       type: 'update-status',
-      payload: { id: 'UI-9', status: 'deferred' }
+      payload: { id: 'UI-9', status: 'open' }
     };
+
     await handleMessage(
       /** @type {any} */ (ws),
       Buffer.from(JSON.stringify(req))
     );
+
     const obj = JSON.parse(ws.sent[ws.sent.length - 1]);
-    expect(obj.ok).toBe(true);
-    expect(obj.payload.status).toBe('deferred');
-    expect(mRun.mock.calls[0][0]).toEqual([
-      'update',
-      'UI-9',
-      '--status',
-      'deferred'
-    ]);
+    expect(obj.ok).toBe(false);
+    expect(obj.error.code).toBe('use_defer_dialog');
+    expect(mRun).not.toHaveBeenCalled();
+  });
+
+  test('update-status writes nothing when the current status cannot be read', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
+    mJson.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'bd_exit_error', message: 'boom' }
+    });
+    const ws = makeStubSocket();
+    const req = {
+      id: 'r1-unreadable',
+      type: 'update-status',
+      payload: { id: 'UI-9', status: 'open' }
+    };
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(JSON.stringify(req))
+    );
+
+    const obj = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(obj.ok).toBe(false);
+    expect(obj.error.code).toBe('bd_error');
+    expect(mRun).not.toHaveBeenCalled();
   });
 
   test('update-status invalid payload yields bad_request', async () => {

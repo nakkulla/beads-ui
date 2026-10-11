@@ -3098,6 +3098,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
   test('unshelves a row and keeps it out of the queue', async () => {
     parkInPrWait('UI-1');
     registerDriver();
+    getWorkerRuntime().externalPrs.noteStatus('', 'UI-1', 'resolved');
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     const store = getWorkerRuntime().queueStore;

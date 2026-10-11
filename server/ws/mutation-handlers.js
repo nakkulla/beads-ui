@@ -33,6 +33,9 @@ const UPDATE_STATUS_ALLOWED = new Set([
   'closed'
 ]);
 
+/** The `use_defer_dialog` refusal text (UI-0d9i §3.6). */
+const USE_DEFER_DIALOG = '보류 전환·되살리기는 Worker 탭에서';
+
 /**
  * Resolve an optional dependency-mutation root. Explicit roots must be both
  * registered and visible; absence preserves the connection-workspace path
@@ -648,6 +651,32 @@ export async function handleUpdateStatus(ws, req) {
           "payload requires { id: string, status: 'open'|'in_progress'|'deferred'|'resolved'|'closed' }"
         )
       )
+    );
+    return;
+  }
+  // `deferred` is entered and left only through the Worker tab's dialogs
+  // (UI-0d9i §3.6), which carry the contract's reason, dependent edges and
+  // origin check. The current status is read first so a deferred issue cannot
+  // be moved out of it here either; an unreadable one writes nothing.
+  if (status === 'deferred') {
+    ws.send(
+      JSON.stringify(makeError(req, 'use_defer_dialog', USE_DEFER_DIALOG))
+    );
+    return;
+  }
+  const current = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    { expected_id: id }
+  );
+  if (current.ok !== true) {
+    ws.send(JSON.stringify(makeError(req, 'bd_error', current.error.message)));
+    return;
+  }
+  if (current.data?.status === 'deferred') {
+    ws.send(
+      JSON.stringify(makeError(req, 'use_defer_dialog', USE_DEFER_DIALOG))
     );
     return;
   }

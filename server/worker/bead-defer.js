@@ -18,7 +18,10 @@
  * it twice.
  */
 import { stderrTail } from '../bd.js';
-import { foreignTargetFromMetadata, parsePrUrlStrict } from './foreign-target.js';
+import {
+  foreignTargetFromMetadata,
+  parsePrUrlStrict
+} from './foreign-target.js';
 
 /** The notes line prefix a cut edge leaves behind (workflow contract). */
 export const DEFERRED_UNBLOCKED_PREFIX = 'deferred-unblocked:';
@@ -222,7 +225,11 @@ export async function previewDefer(bd, bead_id) {
   }
   const listed = await bd.dependents(bead_id);
   if (!listed.ok) {
-    return { ok: false, reason: 'bd_read_failed', message: readMessage(listed) };
+    return {
+      ok: false,
+      reason: 'bd_read_failed',
+      message: readMessage(listed)
+    };
   }
   return {
     ok: true,
@@ -413,7 +420,7 @@ export async function revivalTargetOf(issue, readPrState) {
   let number;
   if (judged.state === 'ok') {
     slug = judged.target.slug;
-    number = judged.target.pr_number;
+    number = judged.target.pr_number ?? null;
   } else {
     const parsed = parsePrUrlStrict(pr_url);
     if (parsed === null) {

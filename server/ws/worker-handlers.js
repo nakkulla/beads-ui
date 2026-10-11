@@ -45,12 +45,6 @@ import { listAccounts as listClaudeAccounts } from '../routes/claude-usage.js';
 import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
 import { createAccountCatalog } from '../worker/account-catalog.js';
 import {
-  applyDefer,
-  applyRevive,
-  previewDefer,
-  previewRevive
-} from '../worker/bead-defer.js';
-import {
   abandonWorkerDiscard,
   conversationHandoffWorker,
   discardWorkerBead,
@@ -81,6 +75,12 @@ import {
   workerWorktreeExists,
   workerWorktreePath
 } from '../worker/attach.js';
+import {
+  applyDefer,
+  applyRevive,
+  previewDefer,
+  previewRevive
+} from '../worker/bead-defer.js';
 import { implActorOf } from '../worker/compare-projection.js';
 import {
   COMPLETION_PHASES,
@@ -6415,13 +6415,15 @@ export function handleWorkerMergeQueueRemove(ws, req) {
  * is vouched for here. A foreign-repository row is refused with `foreign` —
  * nothing in this workspace merges it — and a bead with no PR 대기 row with
  * `not_pr_wait`. [보관 해제] of a Bead bd reads `deferred` is refused with
- * `deferred`, and while a [보류로 전환] runs with `defer_active` (UI-0d9i
- * §3.3).
+ * `deferred`, while a [보류로 전환] runs with `defer_active`, and when the
+ * status cannot be read at all with `bead_status_unreadable` (UI-0d9i §3.3):
+ * a deferred Bead's shelf record is the one thing keeping its PR out of the
+ * merge queue, so the unknown side refuses.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleWorkerMergeShelve(ws, req) {
+export async function handleWorkerMergeShelve(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   if (
     typeof p.bead_id !== 'string' ||
@@ -6463,6 +6465,8 @@ export function handleWorkerMergeShelve(ws, req) {
     );
   };
   let overlay = false;
+  /** @type {null|(() => void)} */
+  let release = null;
   if (p.on === true) {
     const overlaid = withExternalPrWait(
       key,
@@ -6486,21 +6490,42 @@ export function handleWorkerMergeShelve(ws, req) {
     // While a Bead is deferred its shelf record is the one thing keeping the
     // PR out of the merge queue (UI-0d9i §3.3); [되살리기] lifts it instead.
     // A defer still running is refused alike — it re-checks the shelf.
-    if (getWorkerRuntime().locks.isLocked(beadDeferLockKey(key, p.bead_id))) {
+    const lock_key = beadDeferLockKey(key, p.bead_id);
+    if (getWorkerRuntime().locks.isLocked(lock_key)) {
       refuse('defer_active');
       return;
     }
-    if (beadStatusOf(key, p.bead_id) === 'deferred') {
-      refuse('deferred');
+    // Held through the write, so a defer that starts meanwhile re-checks the
+    // shelf only after this unshelve settled — never between check and write.
+    release = await getWorkerRuntime().locks.acquire(lock_key);
+    /** @type {string|null} */
+    let status;
+    try {
+      status = await unshelveStatusOf(ws, key, p.bead_id);
+    } catch (err) {
+      release();
+      throw err;
+    }
+    if (status === null || status === 'deferred') {
+      release();
+      refuse(status === null ? 'bead_status_unreadable' : 'deferred');
       return;
     }
   }
-  const result = queueStore().setMergeShelved(key, {
-    expected_revision: revisionOf(p),
-    bead_id: p.bead_id,
-    on: p.on,
-    overlay
-  });
+  /** @type {any} */
+  let result;
+  try {
+    result = queueStore().setMergeShelved(key, {
+      expected_revision: revisionOf(p),
+      bead_id: p.bead_id,
+      on: p.on,
+      overlay
+    });
+  } finally {
+    if (release) {
+      release();
+    }
+  }
   if (result.ok) {
     recordUserAction(
       key,
@@ -6559,6 +6584,29 @@ function beadStatusOf(key, bead_id) {
 }
 
 /**
+ * The status [보관 해제] judges (UI-0d9i §3.3): the last scan's or readback's
+ * when there is one, else one `bd show` — at boot nothing has scanned yet. Null
+ * when neither can say.
+ *
+ * @param {WebSocket} ws
+ * @param {string} key
+ * @param {string} bead_id
+ * @returns {Promise<string|null>}
+ */
+async function unshelveStatusOf(ws, key, bead_id) {
+  const cached = beadStatusOf(key, bead_id);
+  if (cached !== null) {
+    return cached;
+  }
+  const shown = await beadDeferBd(ws, key).show(bead_id);
+  if (!shown.ok || typeof shown.data?.status !== 'string') {
+    return null;
+  }
+  noteBeadStatus(key, bead_id, shown.data.status);
+  return shown.data.status;
+}
+
+/**
  * Remember a status a write's readback confirmed, so the PR 대기 projection
  * follows the defer or revival before the next scan.
  *
@@ -6605,8 +6653,7 @@ function beadDeferBd(ws, key) {
     }
   };
   return {
-    show: (bead_id) =>
-      read('show', ['show', bead_id, '--json'], bead_id),
+    show: (bead_id) => read('show', ['show', bead_id, '--json'], bead_id),
     dependents: (bead_id) =>
       read('dep', [
         'dep',

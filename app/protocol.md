@@ -111,7 +111,12 @@ timestamps.
 
 ## Issue mutations
 
-- `update-status` payload: `{ id, status }`
+- `update-status` payload: `{ id, status }`. A move into `deferred`, or out of
+  an issue bd currently reads `deferred`, is refused with error code
+  `use_defer_dialog` and writes nothing — those transitions go through
+  `worker-bead-defer`/`worker-bead-revive` (UI-0d9i). The current status is read
+  before the write; when it cannot be read the reply is `bd_error` and nothing
+  is written.
 - `update-priority` payload: `{ id, priority: 0|1|2|3|4 }`
 - `update-assignee` payload: `{ id, assignee }`
 - `edit-text` payload:
@@ -1108,7 +1113,61 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   foreign PR target is shelvable, UI-k467) or `external` (a durable external row
   promoted after its merge was observed). Setting the value the row already has
   replies `applied:false` with no reason. The snapshot carries the map as
-  `merge_shelved`.
+  `merge_shelved`. `[보관 해제]` (`on: false`) also refuses with `deferred` (bd
+  reads the bead `deferred` — `worker-bead-revive` lifts its shelf instead),
+  `defer_active` (a `worker-bead-defer`/`worker-bead-revive` of that bead is
+  running) or `bead_status_unreadable` (no scan has read the status yet and
+  `bd show` failed); the shelf record is what keeps a deferred bead's PR out of
+  the merge queue (UI-0d9i).
+- `[보류로 전환]`/`[되살리기]` (UI-0d9i) — the workflow contract's `deferred`
+  transitions. All four take an optional `root_dir` like every other
+  multi-repository op (the Monitor tab sends the row's repository) and carry no
+  `expected_revision`; one bead's defer and revive are serialized with each
+  other and with its `[보관 해제]`.
+  - `worker-bead-defer-preview` payload `{ bead_id }`. Reply
+    `{ bead_id, ok: true, status, pr_url, dependents: [{ id, title, status }] }`
+    — the open same-repository `blocks` dependents
+    (`bd dep list <id> --direction up --type blocks --json`) — or
+    `{ bead_id, ok: false, reason, message?, status? }` with `reason`
+    `not_resolved_with_pr` (the origin is not `resolved` with a `pr_url`),
+    `already_deferred`, `bd_read_failed`, or a queue refusal below.
+  - `worker-bead-defer` payload `{ bead_id, reason, remove_edges: string[] }`
+    (`reason` non-empty, passed to `bd defer <id> --reason`). The origin and the
+    queue are re-checked right before the write: the shelf record must still be
+    there (`not_shelved`), and no merge-queue item, running merge
+    (`merge_active`), observed merge, completion intent past gating or cleanup
+    record (`merge_observed`) may stand. Then `bd defer` and a `bd show`
+    readback; then per chosen dependent `bd dep remove <dependent> <id>`,
+    `bd update <id> --append-notes 'deferred-unblocked: <dependent>'` and a
+    `bd dep list <dependent> --json` readback. Reply
+    `{ bead_id, applied, outcome, reason, message?, status?, write_applied?, retry_safe?, edges, failed_edges: [{ id, step, message? }], queue }`.
+    `outcome` is `applied`; `partial` (the bead is deferred but the listed edges
+    failed and keep blocking); `refused` (nothing written, `reason` as above);
+    `failed` (the `bd defer` write failed — nothing changed,
+    `reason: 'bd_write_failed'` or `bd_read_failed`); or `unknown` (the write
+    succeeded but the readback failed or disagreed — `reason`
+    `readback_failed`/`readback_mismatch`, `retry_safe: false`, shown as
+    `적용 여부 확인 불가` and never retried). The PR-wait row, its cleanup state
+    and its shelf record stay; the wire projection (`decorateQueue`) hides a
+    PR-wait row whose bead the last scan or readback read `deferred` (an unknown
+    status hides nothing), and an observed outside merge of that PR runs no
+    cleanup while the bead is deferred.
+  - `worker-bead-revive-preview` payload `{ bead_id }`. Reply
+    `{ bead_id, ok: true, target: 'resolved'|'open', pr_state, pr_url, restorable: [{ id, title, status }], shelved }`
+    — `resolved` while the PR `pr_url` names is OPEN or MERGED, `open` when it
+    is CLOSED or there is no `pr_url`; a pinned foreign PR is read from its
+    pinned target. `restorable` lists the open dependents of the bead's
+    `deferred-unblocked:` notes lines. Refusals: `not_deferred`,
+    `bd_read_failed`, `pr_lookup_failed` (no target).
+  - `worker-bead-revive` payload `{ bead_id, restore_edges: string[] }`. The
+    target is judged again (`pr_lookup_failed` writes nothing), written with
+    `bd update <id> --status resolved` or `bd undefer <id>` and read back; then
+    per chosen dependent `bd dep add <dependent> <id> --type blocks` with a
+    `bd dep list <dependent> --json` readback; then the shelf record is lifted.
+    Reply as `worker-bead-defer` plus `target`, `pr_state` and `shelf_cleared`
+    (`true`, `false` when the lift failed — the revival still succeeded and
+    `[보관 해제]` remains — or `null` when there was no record). Nothing is
+    re-queued.
 - The `worker-queue-snapshot` carries the queue as `merge_queue`
   (`[{ bead_id, resolution_rounds, resolution?, continuation_action? }]`,
   durable order). The optional `resolution` projection is the exact durable wait

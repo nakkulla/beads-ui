@@ -2446,6 +2446,64 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
     expect(r).toMatchObject({ ok: false, reason: 'merged_cleanup_failed' });
     expect(h.calls).toEqual([]);
   });
+
+  test('runs no cleanup step while the bead is deferred (UI-0d9i §3.4)', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const h = makeActions({ details: [prOf({ state: 'MERGED', merge_sha })] });
+    h.bd.readStatus.mockImplementation(async (/** @type {string} */ id) => {
+      h.calls.push(`bd:readStatus:${id}`);
+      return 'deferred';
+    });
+
+    const r = await h.actions.cleanupObservedMerge(BEAD, merge_sha);
+
+    expect(r).toMatchObject({ ok: false, reason: 'bead_deferred' });
+    expect(h.calls).toEqual([`bd:readStatus:${BEAD}`]);
+    expect(
+      h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+    expect(h.store.snapshot(WS).cleanup_failed?.[BEAD]).toBeUndefined();
+  });
+
+  test('skips this observation when the bead status cannot be read (UI-0d9i §3.4)', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const h = makeActions({
+      details: [prOf({ state: 'MERGED', merge_sha })],
+      bdFail: (/** @type {string} */ op) => op === 'readStatus'
+    });
+
+    const r = await h.actions.cleanupObservedMerge(BEAD, merge_sha);
+
+    expect(r).toMatchObject({ ok: false, reason: 'bead_status_unreadable' });
+    expect(h.calls).toEqual([`bd:readStatus:${BEAD}`]);
+    expect(
+      h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('completes the cleanup on the observation after the revival (UI-0d9i §3.4)', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const h = makeActions({ details: [prOf({ state: 'MERGED', merge_sha })] });
+    let status = 'deferred';
+    const closed = vi.fn();
+    h.bd.readStatus.mockImplementation(async () => status);
+    h.bd.setStatus.mockImplementation(
+      async (/** @type {string} */ _id, /** @type {string} */ s) => {
+        status = s;
+        closed(s);
+      }
+    );
+    await h.actions.cleanupObservedMerge(BEAD, merge_sha);
+    status = 'resolved';
+
+    const r = await h.actions.cleanupObservedMerge(BEAD, merge_sha);
+
+    expect(r.ok).toBe(true);
+    expect(closed).toHaveBeenCalledWith('closed');
+    expect(
+      h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
 });
 
 describe('post-merge cleanup — retiring the external row (UI-wwby §1)', () => {
@@ -6606,6 +6664,23 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
 
     expect(r.ok).toBe(true);
     expect(h.status()).toBe('closed');
+  });
+
+  test('runs no cleanup of a PR merged on GitHub while the bead is deferred (UI-0d9i §3.4)', async () => {
+    const h = makeForeign({
+      pr: { state: 'MERGED', merged_sha: MERGE, merge_sha: MERGE }
+    });
+    await h.bd.setStatus(BEAD, 'deferred');
+
+    const r = await h.actions.cleanupObservedMerge(BEAD, MERGE, {
+      pr_url: FOREIGN_URL
+    });
+
+    expect(r).toMatchObject({ ok: false, reason: 'bead_deferred' });
+    expect(h.status()).toBe('deferred');
+    expect(
+      h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
   });
 
   test('keeps the bead resolved when the target base does not contain the merge', async () => {

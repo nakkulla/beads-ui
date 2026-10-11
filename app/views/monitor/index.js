@@ -50,6 +50,7 @@ import {
   fieldFiltersTemplate,
   labelOptionsOf
 } from '../worker/candidate-tools.js';
+import { openDeferDialog } from '../worker/defer-dialog.js';
 import {
   resolveLaunchText,
   runExternalWaitAction,
@@ -1366,6 +1367,32 @@ export function createMonitorView(mount_element, options) {
     const toast = shelveReplyToast(res, bead_id, on);
     if (toast) {
       showToast(toast.text, toast.type, 2800);
+    }
+  }
+
+  /**
+   * `⏸ 보류로 전환` on a shelved PR 대기 row (UI-0d9i §3.1) — Worker 탭과 같은
+   * 대화상자·같은 op이고, 행의 레포를 `root_dir`로 싣는다. 회신의 큐는 그
+   * 레포의 채택 스냅숏이 된다.
+   *
+   * @param {string} bead_id
+   * @param {string} root_dir
+   */
+  async function openDeferFlow(bead_id, root_dir) {
+    if (!transport || !bead_id || !root_dir) {
+      return;
+    }
+    const send = transport;
+    const result = await openDeferDialog(
+      { mode: 'defer', bead_id },
+      {
+        transport: (type, payload) => send(type, { ...payload, root_dir }),
+        toast: (text, type) => showToast(text, type, 3600)
+      }
+    );
+    if (result.res && result.res.queue) {
+      exec_adopted.set(root_dir, result.res.queue);
+      doRender();
     }
   }
 
@@ -3176,6 +3203,10 @@ export function createMonitorView(mount_element, options) {
         root_dir,
         revision
       );
+      return;
+    }
+    if (cls.contains('worker-mini__defer')) {
+      void openDeferFlow(bead_id, root_dir);
       return;
     }
     if (cls.contains('worker-mini__discard-abandon')) {
