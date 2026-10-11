@@ -3966,6 +3966,37 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     expect(q.quick_fix_orchestration_model).toBe('luna-6');
   });
 
+  test('accepts a write restating the stored unlisted Codex pinned model', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ orchestration_model: 'sol-6' })
+    );
+    const store = createQueueStore();
+
+    const result = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sol-6', orchestration_effort: 'high' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(createQueueStore().snapshot(WS)).toMatchObject({
+      orchestration_model: 'sol-6',
+      orchestration_effort: 'high'
+    });
+  });
+
+  test('rejects a write naming a new unlisted Codex pinned model', () => {
+    const store = createQueueStore();
+
+    const result = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sol-6' }
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
   test('drops a stored unknown model outside the Codex pinned grammar', () => {
     fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
     fs.writeFileSync(

@@ -10924,6 +10924,9 @@ export function createQueueStore(options = {}) {
           return false;
         }
         const enums = execSettingEnums();
+        const stored = /** @type {Record<string, unknown>} */ (
+          /** @type {unknown} */ (next)
+        );
         /** @type {Record<string, string|null>} */
         const normalized = {};
         for (const [key, value] of Object.entries(values)) {
@@ -10940,7 +10943,13 @@ export function createQueueStore(options = {}) {
           const enum_key = QUICK_FIX_ORCHESTRATION_KEYS.includes(key)
             ? key.slice('quick_fix_'.length)
             : key;
-          if (typeof value !== 'string' || !enums[enum_key].includes(value)) {
+          // Restating the stored value is accepted even when the catalog no
+          // longer lists it: a read keeps an unlisted Codex pinned model
+          // verbatim (UI-gpac §3.3), and a bulk form sends back what it read.
+          if (
+            typeof value !== 'string' ||
+            (!enums[enum_key].includes(value) && stored[key] !== value)
+          ) {
             return false;
           }
           normalized[key] = value;
@@ -10948,15 +10957,12 @@ export function createQueueStore(options = {}) {
         if (Object.keys(normalized).length === 0) {
           return false;
         }
-        const target = /** @type {Record<string, unknown>} */ (
-          /** @type {unknown} */ (next)
-        );
         for (const [key, value] of Object.entries(normalized)) {
-          target[key] = value;
+          stored[key] = value;
         }
         for (const field of Object.values(APPLIED_PRESET_FIELDS)) {
           if (Object.hasOwn(input, field)) {
-            target[field] = normalizeAppliedExecPreset(
+            stored[field] = normalizeAppliedExecPreset(
               /** @type {Record<string, unknown>} */ (input)[field]
             );
           }
