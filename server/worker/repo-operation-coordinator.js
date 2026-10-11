@@ -26,7 +26,7 @@ import {
   repairHandoffDescription
 } from './operation-recovery.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
-import { stripBoundaryLines } from './repo-operation-log.js';
+import { lastAttemptOutput } from './repo-operation-log.js';
 import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
@@ -241,16 +241,18 @@ export function createRepoOperationCoordinator(deps) {
 
   /**
    * The success-path `log_digest`. Same input as {@link logEvidence}'s digest —
-   * the script's bytes without the runner's boundary lines (UI-i8cy §5.2) — so
-   * the one record field means one thing whichever way the run settled.
+   * the LAST attempt's script bytes, without the runner's boundary lines
+   * (UI-ff7r §3.1) — so the one record field means one thing whichever way the
+   * run settled.
    *
    * @param {string} file
+   * @param {number} [started_at] - The settled run's marker `started_at`.
    */
-  function fileSha256(file) {
+  function fileSha256(file, started_at) {
     try {
       return crypto
         .createHash('sha256')
-        .update(stripBoundaryLines(fs.readFileSync(file)))
+        .update(lastAttemptOutput(fs.readFileSync(file), started_at).bytes)
         .digest('hex');
     } catch {
       return null;
@@ -270,24 +272,34 @@ export function createRepoOperationCoordinator(deps) {
    * that line outside any tail. Scanning from the front is also what makes the
    * "last non-empty line" fallback mean what it says.
    *
-   * Both are computed over the SCRIPT'S bytes only: the runner's attempt
-   * boundary lines are stripped first (UI-i8cy §5.2), so the same output yields
-   * the same digest and summary it did before those lines existed, and an end
-   * line never takes the "last non-empty line" fallback.
+   * Both are computed over the SCRIPT'S bytes of the LAST attempt only
+   * (UI-ff7r §3.1): the runner's attempt boundary lines are stripped and so are
+   * the preamble and earlier attempts, so a retry's evidence is its own output,
+   * and an end line never takes the "last non-empty line" fallback. A log with
+   * no boundary lines is digested whole, as before those lines existed.
+   *
+   * `confirmed` says that slice is the run being settled (its start line matches
+   * `started_at`); the values are computed either way, only the reproduction
+   * proof reads the flag.
    *
    * @param {string} file
-   * @returns {{ digest: string|null, summary: string|null }}
+   * @param {number} [started_at] - The settled run's marker `started_at`.
+   * @returns {{ digest: string|null, summary: string|null, confirmed: boolean }}
    */
-  function logEvidence(file) {
-    /** @type {Buffer} */
-    let raw;
+  function logEvidence(file, started_at) {
+    /** @type {{ bytes: Buffer, confirmed: boolean }} */
+    let last;
     try {
-      raw = stripBoundaryLines(fs.readFileSync(file));
+      last = lastAttemptOutput(fs.readFileSync(file), started_at);
     } catch {
-      return { digest: null, summary: null };
+      return { digest: null, summary: null, confirmed: false };
     }
-    const digest = crypto.createHash('sha256').update(raw).digest('hex');
-    return { digest, summary: scriptSummary(raw.toString('utf8')) };
+    const digest = crypto.createHash('sha256').update(last.bytes).digest('hex');
+    return {
+      digest,
+      summary: scriptSummary(last.bytes.toString('utf8')),
+      confirmed: last.confirmed
+    };
   }
 
   /**
@@ -767,14 +779,14 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} workspace
    * @param {any} operation
    * @param {string} operation_id
-   * @param {{ code: string, detail?: string, interrupted?: boolean, exit_code?: number|null, signal?: string|null, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} failure
+   * @param {{ code: string, detail?: string, interrupted?: boolean, exit_code?: number|null, signal?: string|null, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, started_at?: number }} failure
    */
   async function settleFailure(workspace, operation, operation_id, failure) {
     const current =
       deps.store.snapshot(workspace).repo_operations[operation_id] || operation;
     const evidence = current.log_path
-      ? logEvidence(current.log_path)
-      : { digest: null, summary: null };
+      ? logEvidence(current.log_path, failure.started_at)
+      : { digest: null, summary: null, confirmed: false };
     const log_digest = evidence.digest;
     const failure_record = {
       code: failure.code,
@@ -787,6 +799,7 @@ export function createRepoOperationCoordinator(deps) {
       detail: failure.detail ?? '',
       interrupted: failure.interrupted === true,
       ...(evidence.summary === null ? {} : { summary: evidence.summary }),
+      ...(evidence.confirmed ? { evidence_confirmed: true } : {}),
       ...(failure.fetch_failure === 'timeout' ||
       failure.fetch_failure === 'nonzero'
         ? { fetch_failure: failure.fetch_failure }
@@ -1230,12 +1243,13 @@ export function createRepoOperationCoordinator(deps) {
               ? 'verify_candidate_mismatch'
               : deploy_code,
           exit_code: marker.exit_code,
-          signal: marker.signal
+          signal: marker.signal,
+          started_at: marker.started_at
         });
         return;
       }
       const log_digest = operation.log_path
-        ? fileSha256(operation.log_path)
+        ? fileSha256(operation.log_path, marker.started_at)
         : null;
       deps.store.settleRepoOperation(workspace, {
         operation_id,
@@ -1264,7 +1278,8 @@ export function createRepoOperationCoordinator(deps) {
       {
         code: marker.exit_code === 124 ? 'timeout' : 'script_failed',
         exit_code: marker.exit_code,
-        signal: marker.signal
+        signal: marker.signal,
+        started_at: marker.started_at
       }
     );
     if (operation.kind === 'verify' && disposition !== 'retry_pending') {

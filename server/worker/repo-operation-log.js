@@ -188,6 +188,50 @@ export function stripBoundaryLines(buffer) {
   );
 }
 
+/**
+ * The script output of the LAST attempt (UI-ff7r §3.1): the bytes after the last
+ * start line up to the file end, without boundary lines and `sep` newlines. The
+ * preamble and earlier attempts are left out, so an automatic retry's evidence
+ * is that retry's own output rather than everything the log accumulated. A last
+ * attempt with no end line runs to the file end. A log with no start line
+ * yields {@link stripBoundaryLines}'s bytes.
+ *
+ * `confirmed` says the slice is the run being settled: the last start line's `at`
+ * equals `started_at`. Without a start line, or when a start line write failed
+ * and the last slice is an earlier attempt, it is false.
+ *
+ * @param {Buffer} buffer
+ * @param {number|null|undefined} started_at - The settled run's marker value.
+ * @returns {{ bytes: Buffer, confirmed: boolean }}
+ */
+export function lastAttemptOutput(buffer, started_at) {
+  const boundaries = scanBoundaryLines(buffer);
+  let last_start = null;
+  for (const boundary of boundaries) {
+    if (boundary.event === 'start') {
+      last_start = boundary;
+    }
+  }
+  if (!last_start) {
+    return { bytes: stripBoundaryLines(buffer), confirmed: false };
+  }
+  const floor = last_start.end;
+  /** @type {Buffer[]} */
+  const parts = [];
+  for (const [from, to] of outputRanges(buffer, boundaries)) {
+    const low = Math.max(from, floor);
+    if (low < to) {
+      parts.push(buffer.subarray(low, to));
+    }
+  }
+  return {
+    bytes: Buffer.concat(parts),
+    confirmed:
+      typeof started_at === 'number' &&
+      finiteOrNull(last_start.payload.at) === started_at
+  };
+}
+
 const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
 // CSI sequences (colors, cursor moves), OSC sequences (titles, hyperlinks), and

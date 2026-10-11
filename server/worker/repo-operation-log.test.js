@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   formatBoundaryLine,
+  lastAttemptOutput,
   parseRepoOperationLog,
   scanBoundaryLines,
   stripAnsi,
@@ -134,6 +135,94 @@ describe('stripBoundaryLines', () => {
 
     expect(stripped.equals(legacy)).toBe(true);
   });
+});
+
+describe('lastAttemptOutput', () => {
+  test('returns the stripped bytes, unconfirmed, for a log without a start line', () => {
+    const legacy = Buffer.from('##repo-ops## plain text\nlegacy log\n');
+
+    const last = lastAttemptOutput(legacy, 1);
+
+    expect(last.bytes.equals(stripBoundaryLines(legacy))).toBe(true);
+    expect(last.confirmed).toBe(false);
+  });
+
+  test('leaves the preamble out of a single attempt', () => {
+    const logged = Buffer.from(
+      `before the run\n${start(10)}script out\n${end(11, { exit_code: 1 })}`
+    );
+
+    const last = lastAttemptOutput(logged, 10);
+
+    expect(last.bytes.toString('utf8')).toBe('script out\n');
+    expect(last.confirmed).toBe(true);
+  });
+
+  test('returns only the last of two attempts', () => {
+    const logged = Buffer.from(
+      `${start(10)}first out\n${end(11, { exit_code: 1 })}` +
+        `${start(20)}second out\n${end(21, { exit_code: 1 })}`
+    );
+
+    const last = lastAttemptOutput(logged, 20);
+
+    expect(last.bytes.toString('utf8')).toBe('second out\n');
+  });
+
+  test('takes back the separator newline written before an end line', () => {
+    const output = Buffer.from('no trailing newline');
+    const logged = Buffer.concat([
+      Buffer.from(`${start(10)}earlier\n${end(11)}${start(20)}`),
+      output,
+      Buffer.from(end(21, { sep: true }))
+    ]);
+
+    const last = lastAttemptOutput(logged, 20);
+
+    expect(last.bytes.equals(output)).toBe(true);
+  });
+
+  test('runs a last attempt without an end line to the file end', () => {
+    const logged = Buffer.from(
+      `${start(10)}first\n${end(11)}${start(20)}killed mid-run\n`
+    );
+
+    const last = lastAttemptOutput(logged, 20);
+
+    expect(last.bytes.toString('utf8')).toBe('killed mid-run\n');
+    expect(last.confirmed).toBe(true);
+  });
+
+  test('returns empty bytes for a last attempt that printed nothing', () => {
+    const logged = Buffer.from(
+      `${start(10)}first\n${end(11)}${start(20)}${end(21)}`
+    );
+
+    const last = lastAttemptOutput(logged, 20);
+
+    expect(last.bytes.length).toBe(0);
+    expect(last.confirmed).toBe(true);
+  });
+
+  test('stays unconfirmed when the last start line names another run', () => {
+    const logged = Buffer.from(`${start(10)}out\n${end(11)}`);
+
+    const last = lastAttemptOutput(logged, 20);
+
+    expect(last.bytes.toString('utf8')).toBe('out\n');
+    expect(last.confirmed).toBe(false);
+  });
+
+  test.each([undefined, null])(
+    'stays unconfirmed when the settled run has no started_at (%s)',
+    (started_at) => {
+      const logged = Buffer.from(`${start(10)}out\n${end(11)}`);
+
+      const last = lastAttemptOutput(logged, started_at);
+
+      expect(last.confirmed).toBe(false);
+    }
+  );
 });
 
 describe('parseRepoOperationLog', () => {

@@ -49,6 +49,8 @@ export function classifyOperationRecovery({
     typeof failure.fingerprint === 'string' &&
     failure.fingerprint.length > 0 &&
     retry.first_failure?.fingerprint === failure.fingerprint &&
+    retry.first_failure.evidence_confirmed === true &&
+    failure.evidence_confirmed === true &&
     scriptIdentity(operation) !== null &&
     typeof operation.target_sha === 'string' &&
     /^[0-9a-f]{40}$/.test(operation.target_sha) &&
@@ -73,7 +75,9 @@ export function classifyOperationRecovery({
     failure.code === 'script_failed' &&
     (retry?.outcome === 'not_applicable' ||
       (retry?.first_failure &&
-        retry.first_failure.fingerprint !== failure.fingerprint))
+        (retry.first_failure.fingerprint !== failure.fingerprint ||
+          retry.first_failure.evidence_confirmed !== true ||
+          failure.evidence_confirmed !== true)))
   ) {
     key = 'verification_failure';
   } else if (failure.code === 'credential_missing') {
