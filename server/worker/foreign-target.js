@@ -75,6 +75,10 @@ const SHA40_RE = /^[0-9a-f]{40}$/i;
  * @property {string} slug - gh's `--repo` spelling (`owner/repo` on
  * github.com, `host/owner/repo` elsewhere).
  * @property {string} repo_name - The repository name alone, for labels.
+ * @property {number|null} [pr_number] - The PR number parsed from the SAME
+ * `pr_url` the detection judged, so the slug and the number can never come
+ * from two different records; null when that url is not a PR url.
+ * @property {string|null} [pr_url] - That `pr_url`.
  */
 
 /**
@@ -295,6 +299,7 @@ export function foreignPrTargetOf(foreign, pr_url) {
   if (!sameRepository(foreign.repo, pr_url)) {
     return { ok: false, reason: 'foreign_pr_repo_mismatch' };
   }
+  const parsed = parsePrUrlStrict(pr_url);
   return {
     ok: true,
     target: {
@@ -302,9 +307,52 @@ export function foreignPrTargetOf(foreign, pr_url) {
       path: foreign.path,
       base: foreign.base,
       slug,
-      repo_name: slug.split('/').at(-1) || slug
+      repo_name: slug.split('/').at(-1) || slug,
+      pr_number: parsed === null ? null : parsed.number,
+      pr_url: parsed === null ? null : String(pr_url).trim()
     }
   };
+}
+
+/**
+ * The PR number a state-reading or state-changing call on a pinned foreign PR
+ * uses: the target's own, parsed from the one `pr_url` the detection judged.
+ * The Worker's durable reference (an attempt's recorded PR, a `pr_wait` row's
+ * url) must name the SAME PR; when it does not — the pins and `pr_url` moved
+ * from `A#4` to `B#8` while an attempt still records `#4` — the call is
+ * refused before any gh call, since pairing one record's slug with another's
+ * number reads or changes a different PR (UI-k467 §4-3).
+ *
+ * A missing durable reference is no disagreement: an attempt-less row's only
+ * record IS the Bead's `pr_url`.
+ *
+ * @param {ForeignPrTarget} target
+ * @param {{ number: number, url?: string|null }|null} ref
+ * @returns {{ ok: true, number: number }|{ ok: false, reason: string }}
+ */
+export function foreignPrRefOf(target, ref) {
+  const number = target.pr_number;
+  if (typeof number !== 'number' || !Number.isSafeInteger(number)) {
+    return { ok: false, reason: 'pr_ref_unknown' };
+  }
+  if (ref === null) {
+    return { ok: true, number };
+  }
+  if (ref.number !== number) {
+    return { ok: false, reason: 'foreign_pr_ref_mismatch' };
+  }
+  const url = typeof ref.url === 'string' ? ref.url.trim() : '';
+  if (url.length > 0) {
+    const parsed = parsePrUrlStrict(url);
+    if (
+      parsed === null ||
+      parsed.number !== number ||
+      parsed.slug.toLowerCase() !== target.slug.toLowerCase()
+    ) {
+      return { ok: false, reason: 'foreign_pr_ref_mismatch' };
+    }
+  }
+  return { ok: true, number };
 }
 
 /**
@@ -695,6 +743,58 @@ export function foreignCandidateCommonDir(candidate_path) {
 }
 
 /**
+ * The owner marker sits NEXT TO a candidate (`<candidate>.owner.json`), never
+ * inside it, so the candidate tree the verify script sees stays exactly the
+ * squash tree. Several rig workspaces can verify the same target, so the
+ * shared `bdui-verify/` holds candidates of more than one Worker.
+ */
+export const FOREIGN_CANDIDATE_OWNER_SUFFIX = '.owner.json';
+
+/**
+ * @param {string} candidate_path
+ * @returns {string}
+ */
+export function foreignCandidateOwnerPath(candidate_path) {
+  return `${candidate_path}${FOREIGN_CANDIDATE_OWNER_SUFFIX}`;
+}
+
+/**
+ * Record which workspace created a candidate (written before the worktree
+ * exists, so a crash never leaves an unowned candidate of this Worker).
+ *
+ * @param {Pick<typeof import('node:fs'), 'writeFileSync'>} fs_impl
+ * @param {string} candidate_path
+ * @param {string} workspace
+ */
+export function writeForeignCandidateOwner(fs_impl, candidate_path, workspace) {
+  fs_impl.writeFileSync(
+    foreignCandidateOwnerPath(candidate_path),
+    `${JSON.stringify({ workspace })}\n`
+  );
+}
+
+/**
+ * The workspace a candidate's marker names; null when the marker is absent or
+ * unreadable — an unknown owner, which a sweep must leave alone.
+ *
+ * @param {Pick<typeof import('node:fs'), 'readFileSync'>} fs_impl
+ * @param {string} candidate_path
+ * @returns {string|null}
+ */
+export function readForeignCandidateOwner(fs_impl, candidate_path) {
+  try {
+    const parsed = JSON.parse(
+      String(fs_impl.readFileSync(foreignCandidateOwnerPath(candidate_path)))
+    );
+    return parsed && typeof parsed.workspace === 'string'
+      ? parsed.workspace
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The owned residue a foreign PR leaves in its target
  * (`delivery.pr.residue_cleanup.owned`, minus the rig half the caller owns):
  * the target `.worktrees/<bead-id>` and local `<bead-id>` branch, and the
@@ -783,7 +883,16 @@ export async function cleanupForeignResidue(input) {
       kept.push(`remote:${head_ref}`);
     } else if (line.length > 0) {
       if (line.split(/\s+/)[0].toLowerCase() === head) {
-        const pushed = await run(['push', target.remote, '--delete', head_ref]);
+        // The lease makes the delete atomic with the head check: a commit
+        // pushed after `ls-remote` makes the remote refuse, and the branch is
+        // kept (spec §3.6-4 "only while it still points at the pinned head").
+        const pushed = await run([
+          'push',
+          `--force-with-lease=refs/heads/${head_ref}:${head}`,
+          target.remote,
+          '--delete',
+          head_ref
+        ]);
         (pushed.code === 0 ? removed : kept).push(`remote:${head_ref}`);
       } else {
         kept.push(`remote:${head_ref}`);

@@ -17052,7 +17052,19 @@ export function createScheduler(deps) {
     // after the base resolution that supplies its subject and before the first
     // state change (worktree, attempt record) — every early return below
     // removes it again.
-    if (!installGuardHook({ workspace, attempt_id, repo, target_base: base })) {
+    //
+    // A pinned foreign PR's session pushes from the TARGET checkout, so the
+    // hook judges (and records) the target's common git dir and protects
+    // `foreign_base` there (UI-k467 §3.10); a rig-bound hook would pass those
+    // pushes unrecorded. Beads lookup (`WORKFLOW_REPO_ROOT`) stays on the rig.
+    if (
+      !installGuardHook({
+        workspace,
+        attempt_id,
+        repo: wt_repo,
+        target_base: base
+      })
+    ) {
       return refuseLaunch('guard_hook_install_failed');
     }
     const wt_present =

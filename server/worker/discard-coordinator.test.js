@@ -46,34 +46,36 @@ afterEach(() => {
 });
 
 /**
- * @param {{ foreign?: boolean, prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any, notify?: any, failureConversation?: any, makeOperationId?: () => string }} [options]
+ * @param {{ foreign?: boolean, foreignRepo?: string, foreignPrUrl?: string, attemptless?: boolean, externalRow?: any, prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any, notify?: any, failureConversation?: any, makeOperationId?: () => string }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore({ now: () => 100 });
-  store.appendAttempt(workspace, {
-    expected_revision: 0,
-    attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
-  });
-  store.updateAttempt(workspace, {
-    attempt_id: 'att-1',
-    patch: {
-      status: 'failed',
-      repo: '/repo',
-      target_base: 'main',
-      base_oid: 'base-sha',
-      head_oid: options.attemptHeadSha || HEAD_SHA,
-      session_id: 'sid-1',
-      verify_result: {
-        pr_number: 304,
-        pr_url: 'https://github.com/acme/repo/pull/304'
+  if (!options.attemptless) {
+    store.appendAttempt(workspace, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    store.updateAttempt(workspace, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'base-sha',
+        head_oid: options.attemptHeadSha || HEAD_SHA,
+        session_id: 'sid-1',
+        verify_result: {
+          pr_number: 304,
+          pr_url: 'https://github.com/acme/repo/pull/304'
+        }
       }
-    }
-  });
-  store.moveToPrWait(workspace, {
-    bead_id: 'UI-1',
-    attempt_id: 'att-1',
-    patch: { status: 'done', finished_at: 90 }
-  });
+    });
+    store.moveToPrWait(workspace, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      patch: { status: 'done', finished_at: 90 }
+    });
+  }
   /** @type {string[]} */
   const calls = [];
   let pr_state = options.prState || 'OPEN';
@@ -142,9 +144,10 @@ function setup(options = {}) {
     // A pinned foreign PR (UI-k467 §3.9): the pins name the repository the
     // recorded PR url belongs to.
     Object.assign(parent_issue.metadata, {
-      foreign_repo: 'git@github.com:acme/repo.git',
+      foreign_repo: options.foreignRepo || 'git@github.com:acme/repo.git',
       foreign_path: '/targets/repo',
-      foreign_base: 'main'
+      foreign_base: 'main',
+      ...(options.foreignPrUrl ? { pr_url: options.foreignPrUrl } : {})
     });
     Object.assign(gh, {
       forSlug: vi.fn((/** @type {string} */ slug) => ({
@@ -387,7 +390,15 @@ function setup(options = {}) {
     rollbackVerify: options.rollbackVerify || vi.fn(async () => ({ ok: true })),
     makeOperationId: options.makeOperationId || (() => 'discard-1'),
     now: () => 300,
-    notifyChanged
+    notifyChanged,
+    ...(options.externalRow
+      ? {
+          external: {
+            get: (/** @type {string} */ _ws, /** @type {string} */ id) =>
+              id === 'UI-1' ? options.externalRow : null
+          }
+        }
+      : {})
   });
   return {
     store,
@@ -3242,5 +3253,99 @@ describe('foreign PR discard (UI-k467 §3.9)', () => {
     expect(env.calls).not.toContain('gh:close');
     expect(env.bd.updateFields).not.toHaveBeenCalled();
     expect(env.bd.setStatus).not.toHaveBeenCalled();
+  });
+
+  test('refuses before any gh call when the pinned pr_url names another PR than the attempt', async () => {
+    const env = setup({
+      foreign: true,
+      foreignRepo: 'git@github.com:other/b.git',
+      foreignPrUrl: 'https://github.com/other/b/pull/8'
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'foreign_pr_ref_mismatch'
+    });
+    expect(env.calls.filter((call) => call.startsWith('gh:'))).toEqual([]);
+    expect(env.store.snapshot(workspace).discard_operations).toEqual({});
+  });
+
+  test('closes the OPEN PR of an attempt-less pinned external row and reopens the bead', async () => {
+    const env = setup({
+      foreign: true,
+      attemptless: true,
+      externalRow: {
+        bead_id: 'UI-1',
+        pr_url: 'https://github.com/acme/repo/pull/304',
+        pr_number: 304
+      }
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.calls).toContain('gh:close');
+    expect(env.gh.closePr).toHaveBeenCalledTimes(1);
+    expect(env.calls[env.calls.indexOf('gh:close') - 1]).toBe(
+      'gh:slug:acme/repo'
+    );
+    expect(env.bd.updateFields).toHaveBeenCalledWith(
+      'UI-1',
+      expect.objectContaining({ status: 'open' })
+    );
+    expect(env.archive.create).not.toHaveBeenCalled();
+    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
+  });
+
+  test('refuses an attempt-less pinned external row whose PR is MERGED before any write', async () => {
+    const env = setup({
+      foreign: true,
+      attemptless: true,
+      prState: 'MERGED',
+      externalRow: {
+        bead_id: 'UI-1',
+        pr_url: 'https://github.com/acme/repo/pull/304',
+        pr_number: 304
+      }
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'foreign_merged_discard_unsupported'
+    });
+    expect(env.store.snapshot(workspace).discard_operations).toEqual({});
+    expect(env.bd.updateFields).not.toHaveBeenCalled();
+  });
+
+  test('keeps refusing an attempt-less row without pins', async () => {
+    const env = setup({
+      attemptless: true,
+      externalRow: {
+        bead_id: 'UI-1',
+        pr_url: 'https://github.com/acme/repo/pull/304',
+        pr_number: 304
+      }
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'attempt_not_found' });
   });
 });

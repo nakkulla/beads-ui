@@ -116,7 +116,9 @@ describe('foreign-target — pin judgment', () => {
         path: PINS.foreign_path,
         base: 'main',
         slug: 'acme/research-repo-template',
-        repo_name: 'research-repo-template'
+        repo_name: 'research-repo-template',
+        pr_number: 4,
+        pr_url: PR_URL
       }
     });
   });
@@ -330,5 +332,43 @@ describe('foreign-target — owned residue cleanup', () => {
     expect(
       git(t.repo, ['ls-remote', '--heads', 'upstream', 'UI-9']).length
     ).toBeGreaterThan(0);
+  });
+
+  test('keeps a remote head branch pushed between the head check and the delete', async () => {
+    const t = makeTargetRepo();
+    const other = path.join(path.dirname(t.repo), 'other');
+    git(path.dirname(t.repo), ['clone', '-b', 'UI-9', t.remote, other]);
+    fs.writeFileSync(path.join(other, 'late.txt'), 'late\n');
+    git(other, ['add', '.']);
+    git(other, ['commit', '-m', 'late']);
+    const late_head = git(other, ['rev-parse', 'HEAD']);
+    /** @type {typeof realGit} */
+    const racingGit = async (args, options) => {
+      const result = await realGit(args, options);
+      if (args[0] === 'ls-remote') {
+        git(other, ['push', 'origin', 'UI-9']);
+      }
+      return result;
+    };
+
+    const result = await cleanupForeignResidue({
+      target: {
+        repo_url: 'git@github.com:acme/repo.git',
+        path: t.repo,
+        base: 'main',
+        slug: 'acme/repo',
+        repo_name: 'repo',
+        remote: 'upstream'
+      },
+      bead_id: 'UI-9',
+      head_sha: t.head,
+      head_ref: 'UI-9',
+      gitRun: racingGit
+    });
+
+    expect(result.kept).toContain('remote:UI-9');
+    expect(
+      git(t.repo, ['ls-remote', '--heads', 'upstream', 'UI-9']).split(/\s+/)[0]
+    ).toBe(late_head);
   });
 });

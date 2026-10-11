@@ -13,7 +13,9 @@ import { discardOperationActive } from './discard-phase.js';
 import {
   bindForeignTarget,
   cleanupForeignResidue,
-  foreignTargetFromMetadata
+  foreignPrRefOf,
+  foreignTargetFromMetadata,
+  parsePrUrlStrict
 } from './foreign-target.js';
 import { resolvePrRef } from './pr-poller.js';
 import { archiveDiscardSource } from './recovery-archive.js';
@@ -316,7 +318,12 @@ export function createDiscardCoordinator(deps, options = {}) {
         )
       : attempts.at(-1);
     if (!attempt) {
-      return { ok: false, reason: 'attempt_not_found' };
+      // A session-registered row behind a pinned foreign PR has no Worker
+      // attempt at all; its discard is built from the target PR and the pins
+      // (UI-k467 §3.9). Every other attempt-less request stays refused.
+      return attempt_id
+        ? { ok: false, reason: 'attempt_not_found' }
+        : captureAttemptlessForeign(queue, bead_id);
     }
     const record = /** @type {any} */ (attempt);
     if (!DISCARDABLE_ATTEMPT_STATUSES.has(record.status)) {
@@ -386,9 +393,20 @@ export function createDiscardCoordinator(deps, options = {}) {
         ? deps.gh.forSlug(foreign_target.slug)
         : deps.gh;
     const ref = resolvePrRef(queue, bead_id);
+    /** @type {number|null} */
+    let pr_number = ref ? ref.number : null;
+    if (foreign_target) {
+      // The slug and the number come from ONE parse of the pinned `pr_url`;
+      // an attempt recording another PR is refused before any gh call.
+      const agreed = foreignPrRefOf(foreign_target, ref);
+      if (!agreed.ok) {
+        return { ok: false, reason: agreed.reason };
+      }
+      pr_number = agreed.number;
+    }
     let pr = null;
-    if (ref) {
-      const observed = await gh.prDetail(repo, ref.number);
+    if (pr_number !== null) {
+      const observed = await gh.prDetail(repo, pr_number);
       if (observed.state !== 'ok') {
         return {
           ok: false,
@@ -470,8 +488,159 @@ export function createDiscardCoordinator(deps, options = {}) {
     if (remote.sha !== null && remote.sha !== source_head) {
       return { ok: false, reason: 'source_remote_ref_mismatch' };
     }
-    /** @type {Record<string, any>[]} */
-    let phase_children;
+    const children = await snapshotPhaseChildren(bead_id);
+    if (!children.ok) {
+      return children;
+    }
+    const phase_children = children.phase_children;
+    const parent_metadata =
+      parent_issue.metadata && typeof parent_issue.metadata === 'object'
+        ? parent_issue.metadata
+        : {};
+    const parent_authority = parentAuthoritySnapshot(parent_issue);
+    return {
+      ok: true,
+      attempt: { ...record, process_identity },
+      source_snapshot: {
+        repo,
+        workspace: deps.workspace,
+        worktree: topology.path,
+        branch,
+        target_base: record.target_base,
+        base_oid: record.base_oid,
+        source_head,
+        attempt_status: record.status,
+        attempt_head: record.head_oid,
+        session_id: record.session_id,
+        process_identity,
+        local_branch_sha: local.sha,
+        remote_branch_sha: remote.sha,
+        ...(topology.present ? {} : { preexisting_absent: true }),
+        pr,
+        // The pinned foreign PR target (UI-k467 §3.9): the close and the
+        // owned residue cleanup run there.
+        ...(foreign_target ? { foreign_target } : {}),
+        bead_status:
+          typeof parent_issue.status === 'string' ? parent_issue.status : null,
+        bead_pr_url:
+          typeof parent_metadata.pr_url === 'string'
+            ? parent_metadata.pr_url
+            : null,
+        phase_children,
+        parent_authority,
+        membership: membershipOf(queue, bead_id)
+      }
+    };
+  }
+
+  /**
+   * The discard source of a session-registered row behind a pinned foreign PR
+   * (UI-k467 §3.9): no Worker attempt, no rig worktree, no session log — only
+   * the target PR, read by the number of the same `pr_url` its slug came from,
+   * and the Bead's parent authority. A MERGED PR is refused here, before any
+   * write. Anything that is not such a row keeps `attempt_not_found`.
+   *
+   * @param {any} queue
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: true, attempt: null, source_snapshot: Record<string, unknown> }|{ ok: false, reason: string }>}
+   */
+  async function captureAttemptlessForeign(queue, bead_id) {
+    const row = deps.external?.get(deps.workspace, bead_id) || null;
+    if (!row) {
+      return { ok: false, reason: 'attempt_not_found' };
+    }
+    /** @type {Record<string, any>} */
+    let parent_issue;
+    try {
+      parent_issue = await deps.bd.readIssue(bead_id);
+    } catch {
+      return { ok: false, reason: 'phase_child_snapshot_failed' };
+    }
+    const parent_metadata =
+      parent_issue &&
+      parent_issue.metadata &&
+      typeof parent_issue.metadata === 'object'
+        ? parent_issue.metadata
+        : {};
+    const judged = foreignTargetFromMetadata(
+      parent_metadata,
+      parent_metadata.pr_url
+    );
+    if (judged.state === 'none') {
+      return { ok: false, reason: 'attempt_not_found' };
+    }
+    if (judged.state === 'invalid') {
+      return { ok: false, reason: judged.reason };
+    }
+    const foreign_target = judged.target;
+    const row_url = typeof row.pr_url === 'string' ? row.pr_url : '';
+    const row_parsed = parsePrUrlStrict(row_url);
+    const row_number =
+      typeof row.pr_number === 'number'
+        ? row.pr_number
+        : row_parsed === null
+          ? null
+          : row_parsed.number;
+    const agreed = foreignPrRefOf(
+      foreign_target,
+      row_number === null ? null : { number: row_number, url: row_url }
+    );
+    if (!agreed.ok) {
+      return { ok: false, reason: agreed.reason };
+    }
+    if (typeof deps.gh.forSlug !== 'function') {
+      return { ok: false, reason: 'foreign_slug_unsupported' };
+    }
+    const observed = await deps.gh
+      .forSlug(foreign_target.slug)
+      .prDetail(deps.repo, agreed.number);
+    if (observed.state !== 'ok') {
+      return {
+        ok: false,
+        reason: `pr_state_unknown:${observed.reason || 'gh_empty'}`
+      };
+    }
+    const pr = observed.data;
+    if (pr?.state === 'MERGED') {
+      return { ok: false, reason: 'foreign_merged_discard_unsupported' };
+    }
+    const children = await snapshotPhaseChildren(bead_id);
+    if (!children.ok) {
+      return children;
+    }
+    return {
+      ok: true,
+      attempt: null,
+      source_snapshot: {
+        repo: deps.repo,
+        workspace: deps.workspace,
+        worktree: null,
+        branch: null,
+        // No rig residue exists to archive or remove: the phases skip the
+        // archive and the three rig-ref removals for this source.
+        attemptless_foreign: true,
+        pr,
+        foreign_target,
+        bead_status:
+          typeof parent_issue.status === 'string' ? parent_issue.status : null,
+        bead_pr_url:
+          typeof parent_metadata.pr_url === 'string'
+            ? parent_metadata.pr_url
+            : null,
+        phase_children: children.phase_children,
+        parent_authority: parentAuthoritySnapshot(parent_issue),
+        membership: membershipOf(queue, bead_id)
+      }
+    };
+  }
+
+  /**
+   * The phase-child snapshot a discard deletes and then proves gone.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: true, phase_children: Record<string, any>[] }|{ ok: false, reason: string }>}
+   */
+  async function snapshotPhaseChildren(bead_id) {
     try {
       const listed_children = await deps.bd.listChildren(bead_id);
       if (!Array.isArray(listed_children)) {
@@ -511,12 +680,24 @@ export function createDiscardCoordinator(deps, options = {}) {
         }
         children.push(child);
       }
-      phase_children = children.sort((left, right) =>
-        left.id.localeCompare(right.id)
-      );
+      return {
+        ok: true,
+        phase_children: children.sort((left, right) =>
+          left.id.localeCompare(right.id)
+        )
+      };
     } catch {
       return { ok: false, reason: 'phase_child_snapshot_failed' };
     }
+  }
+
+  /**
+   * The parent authority keys `resetParent` proves unchanged.
+   *
+   * @param {Record<string, any>} parent_issue
+   * @returns {Record<string, { present: boolean, value?: unknown }>}
+   */
+  function parentAuthoritySnapshot(parent_issue) {
     const parent_metadata =
       parent_issue.metadata && typeof parent_issue.metadata === 'object'
         ? parent_issue.metadata
@@ -535,49 +716,25 @@ export function createDiscardCoordinator(deps, options = {}) {
         ? { present: true, value: source[key] }
         : { present: false };
     }
+    return parent_authority;
+  }
+
+  /**
+   * @param {any} queue
+   * @param {string} bead_id
+   */
+  function membershipOf(queue, bead_id) {
     return {
-      ok: true,
-      attempt: { ...record, process_identity },
-      source_snapshot: {
-        repo,
-        workspace: deps.workspace,
-        worktree: topology.path,
-        branch,
-        target_base: record.target_base,
-        base_oid: record.base_oid,
-        source_head,
-        attempt_status: record.status,
-        attempt_head: record.head_oid,
-        session_id: record.session_id,
-        process_identity,
-        local_branch_sha: local.sha,
-        remote_branch_sha: remote.sha,
-        ...(topology.present ? {} : { preexisting_absent: true }),
-        pr,
-        // The pinned foreign PR target (UI-k467 §3.9): the close and the
-        // owned residue cleanup run there.
-        ...(foreign_target ? { foreign_target } : {}),
-        bead_status:
-          typeof parent_issue.status === 'string' ? parent_issue.status : null,
-        bead_pr_url:
-          typeof parent_metadata.pr_url === 'string'
-            ? parent_metadata.pr_url
-            : null,
-        phase_children,
-        parent_authority,
-        membership: {
-          queue: queue.queue.some(
-            (/** @type {any} */ entry) => entry.bead_id === bead_id
-          ),
-          pr_wait: queue.pr_wait.some(
-            (/** @type {any} */ entry) => entry.bead_id === bead_id
-          ),
-          cleanup_failed: Object.hasOwn(queue.cleanup_failed, bead_id),
-          merge_queue: queue.merge_queue.some(
-            (/** @type {any} */ entry) => entry.bead_id === bead_id
-          )
-        }
-      }
+      queue: queue.queue.some(
+        (/** @type {any} */ entry) => entry.bead_id === bead_id
+      ),
+      pr_wait: queue.pr_wait.some(
+        (/** @type {any} */ entry) => entry.bead_id === bead_id
+      ),
+      cleanup_failed: Object.hasOwn(queue.cleanup_failed, bead_id),
+      merge_queue: queue.merge_queue.some(
+        (/** @type {any} */ entry) => entry.bead_id === bead_id
+      )
     };
   }
 
@@ -2237,6 +2394,17 @@ export function createDiscardCoordinator(deps, options = {}) {
         }
         continue;
       }
+      if (
+        operation.phase === 'requested' &&
+        operation.source_snapshot.attemptless_foreign === true
+      ) {
+        // Nothing of the rig to archive and no runner to stop (UI-k467 §3.9):
+        // the first effect is the target PR's close.
+        if (!advance(operation, 'runner_terminated')) {
+          return fail(operation, 'runner_phase_persist_failed');
+        }
+        continue;
+      }
       if (operation.phase === 'requested') {
         const result = await archive(operation);
         if (!result.ok) {
@@ -2327,7 +2495,15 @@ export function createDiscardCoordinator(deps, options = {}) {
       }
       /** @type {Record<string, (operation: any) => Promise<any>>} */
       const handlers = {
-        pr_closed: removeWorktree,
+        // An attempt-less pinned foreign source has no rig worktree or branch;
+        // its owned residue lives in the target and is removed just before
+        // the parent reset (UI-k467 §3.9 → §3.6 step 4).
+        pr_closed: async (operation) =>
+          operation.source_snapshot.attemptless_foreign === true
+            ? advance(operation, 'remote_ref_removed', {
+                receipts: { rig_residue_absent: { at: now() } }
+              })
+            : removeWorktree(operation),
         worktree_removed: removeLocalRef,
         local_ref_removed: removeRemoteRef,
         remote_ref_removed: (operation) =>
@@ -2555,8 +2731,12 @@ export function createDiscardCoordinator(deps, options = {}) {
     if (deps.actionInFlight?.(input.bead_id)) {
       return { ok: false, conflict: false, reason: 'action_in_flight' };
     }
+    // An attempt-less pinned foreign source (UI-k467 §3.9) has no attempt to
+    // settle, fence or terminate.
+    const source_attempt = captured.attempt;
     if (
-      deps.scheduler.canDiscardAttempt?.(captured.attempt.attempt_id) === false
+      source_attempt !== null &&
+      deps.scheduler.canDiscardAttempt?.(source_attempt.attempt_id) === false
     ) {
       return { ok: false, conflict: false, reason: 'attempt_settling' };
     }
@@ -2566,8 +2746,9 @@ export function createDiscardCoordinator(deps, options = {}) {
       operation: {
         operation_id,
         bead_id: input.bead_id,
-        attempt_id: captured.attempt.attempt_id,
-        process_identity: captured.attempt.process_identity,
+        attempt_id: source_attempt === null ? null : source_attempt.attempt_id,
+        process_identity:
+          source_attempt === null ? null : source_attempt.process_identity,
         source_snapshot: captured.source_snapshot
       }
     });
@@ -2594,8 +2775,9 @@ export function createDiscardCoordinator(deps, options = {}) {
       };
     }
     if (
-      typeof captured.attempt.attempt_id === 'string' &&
-      !deps.scheduler.fenceDiscardAttempt?.(captured.attempt.attempt_id)
+      source_attempt !== null &&
+      typeof source_attempt.attempt_id === 'string' &&
+      !deps.scheduler.fenceDiscardAttempt?.(source_attempt.attempt_id)
     ) {
       const settled = deps.store.failDiscardOperation(deps.workspace, {
         operation_id,

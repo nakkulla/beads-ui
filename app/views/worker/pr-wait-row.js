@@ -1110,7 +1110,9 @@ function prWaitRow(
   const external_conflict_unresolvable =
     external && conflicting && wt_present === false;
   const discard = discardProjection(discard_operations, bead_id, {
-    external,
+    // 핀이 있는 외부 행은 Worker가 대상 PR과 핀으로 폐기한다 (UI-k467 §3.9) —
+    // `external` 숨김은 핀 없는 외부 행에만 남는다.
+    external: external && !pinned_foreign,
     merge_active: queue_active || merge_step?.step === 'merge',
     merge_queued: queued,
     conflict_active: !!conflict_session,

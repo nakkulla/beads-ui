@@ -677,4 +677,42 @@ describe('pinned foreign PR rows (UI-k467 §3.8)', () => {
 
     expect(row.foreign_repo).toBe('acme/research-repo-template');
   });
+
+  test('offers [폐기] on a pinned session-registered external row', () => {
+    const row = rowsOf(
+      workspace({
+        pr_wait: [
+          {
+            bead_id: 'A-1',
+            added_at: 1,
+            external: true,
+            pr_url: 'https://github.com/acme/research-repo-template/pull/4',
+            pr_number: 4,
+            foreign_target: {
+              slug: 'acme/research-repo-template',
+              repo_name: 'research-repo-template'
+            }
+          }
+        ],
+        pr_observations: {
+          'A-1': {
+            pr: {
+              number: 4,
+              url: 'https://github.com/acme/research-repo-template/pull/4'
+            },
+            foreign: TARGET,
+            gate: ELIGIBLE
+          }
+        }
+      })
+    )[0];
+
+    expect([row.discard_action, row.discard_enabled]).toEqual([true, true]);
+  });
+
+  test('keeps [폐기] hidden on a pin-less external row', () => {
+    const row = foreignRow(FOREIGN_ENTRY);
+
+    expect(row.discard_action).toBe(false);
+  });
 });

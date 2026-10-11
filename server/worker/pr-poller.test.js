@@ -1499,6 +1499,8 @@ describe('pr-poller — pinned foreign PR target (UI-k467 §3.3)', () => {
       base: 'main',
       slug: 'acme/research-repo-template',
       repo_name: 'research-repo-template',
+      pr_number: 4,
+      pr_url: FOREIGN_URL,
       ...over
     };
   }
@@ -1604,6 +1606,31 @@ describe('pr-poller — pinned foreign PR target (UI-k467 §3.3)', () => {
     expect(forSlug).toHaveBeenCalledWith('acme/research-repo-template');
     expect(foreignDetail).toHaveBeenCalledWith('/repo', 4);
     expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('refuses before any gh call when the pins moved to another PR than the attempt records', async () => {
+    const { poller, foreignDetail, prDetail, observations } = makeForeignPoller(
+      {
+        judgment: () => ({
+          state: 'ok',
+          target: targetOf({
+            repo_url: 'git@github.com:acme/other.git',
+            slug: 'acme/other',
+            repo_name: 'other',
+            pr_number: 8,
+            pr_url: 'https://github.com/acme/other/pull/8'
+          })
+        })
+      }
+    );
+
+    await poller.tick();
+
+    expect(foreignDetail).not.toHaveBeenCalled();
+    expect(prDetail).not.toHaveBeenCalled();
+    expect(observations.get('/ws', 'UI-1')?.error).toBe(
+      'foreign_pr_ref_mismatch'
+    );
   });
 
   test('records the target on a clean observation', async () => {

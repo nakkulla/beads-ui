@@ -25,6 +25,7 @@ import {
   createCompletionActionDriver,
   decideCompletionAction
 } from './completion-intent.js';
+import { createMergeQueue } from './merge-queue.js';
 import { CLEANUP_STEPS, createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
@@ -6263,7 +6264,7 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
    * A harness whose bd carries the three pins, whose gh answers ONLY through
    * the pinned slug, and whose git models the bound target checkout.
    *
-   * @param {{ pr?: Partial<import('./gh.js').PrDetail>, after?: Partial<import('./gh.js').PrDetail>, policy?: (sha: string) => any, containment?: number, post_merge_jobs?: boolean, remote_head?: string|null, verify_receipt?: any, tips?: string[] }} [opts]
+   * @param {{ pr?: Partial<import('./gh.js').PrDetail>, after?: Partial<import('./gh.js').PrDetail>, policy?: (sha: string) => any, containment?: number, post_merge_jobs?: boolean, remote_head?: string|null, verify_receipt?: any, tips?: string[], metadata?: Record<string, string> }} [opts]
    */
   function makeForeign(opts = {}) {
     const store = seedStore();
@@ -6287,7 +6288,8 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
       pr_url: FOREIGN_URL,
       foreign_repo: 'git@github.com:acme/research-repo-template.git',
       foreign_path: TARGET_PATH,
-      foreign_base: 'main'
+      foreign_base: 'main',
+      ...opts.metadata
     };
     let status = 'resolved';
     let merged = false;
@@ -6719,7 +6721,7 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
     await h.actions.cleanupObservedMerge(BEAD, MERGE, { pr_url: FOREIGN_URL });
 
     expect(h.calls).toContain(
-      `git:${TARGET_PATH}:push upstream --delete ${BEAD}`
+      `git:${TARGET_PATH}:push --force-with-lease=refs/heads/${BEAD}:${HEAD} upstream --delete ${BEAD}`
     );
     expect(h.calls.some((call) => call.includes('push origin'))).toBe(false);
   });
@@ -6816,6 +6818,192 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
     const r = await h.actions.merge(BEAD);
 
     expect(r.reason).toBe('verify_candidate_stale');
+    expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Enrol the foreign row the way the auto-merge enroller does with the
+   * global switch on: a completion-owned queue entry.
+   *
+   * @param {ReturnType<typeof makeForeign>} h
+   */
+  function enrolAuto(h) {
+    h.store.toggleAutoMerge(WS, {
+      expected_revision: h.store.snapshot(WS).revision,
+      on: true
+    });
+    h.store.enqueueMergeAuto(WS, {
+      entries: [
+        {
+          bead_id: BEAD,
+          external: false,
+          head_sha: HEAD,
+          completion: {
+            source_attempt_id: 'a1',
+            target_base: 'main',
+            subject: {
+              role: 'root',
+              bead_id: BEAD,
+              pr_url: FOREIGN_URL,
+              head_sha: HEAD,
+              base_sha: 'b'.repeat(40),
+              merged_sha: null
+            }
+          }
+        }
+      ],
+      present_ids: [BEAD]
+    });
+  }
+
+  /**
+   * Run the completion driver's own decisions until the intent leaves
+   * `gating` (or nothing more is decided).
+   *
+   * @param {ReturnType<typeof makeForeign>} h
+   * @param {ReturnType<typeof createCompletionActionDriver>} driver
+   */
+  async function driveCompletion(h, driver) {
+    for (let round = 0; round < 5; round++) {
+      const intent = h.store.snapshot(WS).completion_intents[BEAD];
+      if (!intent || intent.phase !== 'gating') {
+        return;
+      }
+      const fact = await driver.observe(BEAD, intent);
+      const action = decideCompletionAction({
+        auto_merge: true,
+        intent,
+        fact,
+        now: 0
+      });
+      if (!action) {
+        return;
+      }
+      await driver.onAction(BEAD, action, intent);
+    }
+  }
+
+  test('gates a pinned foreign PR for the completion saga against foreign_base', async () => {
+    const h = makeForeign();
+
+    const gated = await h.actions.completionGate(BEAD);
+
+    expect(gated).toMatchObject({
+      ok: true,
+      target_base: 'main',
+      base_sha: TIP,
+      subject: { pr_url: FOREIGN_URL, head_sha: HEAD, base_sha: TIP }
+    });
+  });
+
+  test('merges an auto-enrolled pinned foreign PR through the queue with the pinned slug', async () => {
+    const h = makeForeign();
+    enrolAuto(h);
+    const driver = createCompletionActionDriver({
+      workspace: WS,
+      store: h.store,
+      prActions: h.actions
+    });
+    await driveCompletion(h, driver);
+    const mq = createMergeQueue({
+      workspace: WS,
+      store: h.store,
+      merge: (/** @type {string} */ id) => h.actions.merge(id),
+      probeMergeability: (/** @type {string} */ id) =>
+        h.actions.probeMergeability(id),
+      observePr: (/** @type {string} */ id) => h.actions.prState(id),
+      headSha: () => HEAD,
+      onCompletionResult: (root, subject, result) =>
+        driver.onMergeResult(root, subject, result)
+    });
+
+    await mq.kick();
+
+    expect(h.gh.forSlug).toHaveBeenCalledWith(SLUG);
+    expect(h.foreign.mergeSquash).toHaveBeenCalledWith(REPO, 304, HEAD);
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+    expect(h.status()).toBe('closed');
+    expect(h.store.snapshot(WS).completion_intents[BEAD]?.phase).not.toBe(
+      'needs_human'
+    );
+  });
+
+  test('holds a pinned foreign PR whose target [verify] failed as pre_merge_hold', async () => {
+    const h = makeForeign({
+      policy: () => ({
+        base: 'main',
+        verify: { script: 'repo-ops/script/verify' },
+        deploy: null,
+        config_blob_sha: 'c'.repeat(40)
+      }),
+      verify_receipt: {
+        state: 'failed',
+        ok: false,
+        reason: 'verify_cmd_failed',
+        head_sha: HEAD,
+        effective_base_sha: TIP,
+        candidate_tree_sha: TREE,
+        script_object_type: 'blob',
+        script_mode: '100755',
+        script_blob_sha: '4'.repeat(40),
+        output_tail: 'boom'
+      }
+    });
+    enrolAuto(h);
+    const driver = createCompletionActionDriver({
+      workspace: WS,
+      store: h.store,
+      prActions: h.actions
+    });
+
+    await driveCompletion(h, driver);
+
+    const intent = h.store.snapshot(WS).completion_intents[BEAD];
+    expect(intent.phase).toBe('holding');
+    expect(intent.hold).toMatchObject({
+      class: 'pre_merge_hold',
+      cause: 'verify_failure',
+      head_sha: HEAD,
+      base_sha: TIP
+    });
+    expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('stops an auto-enrolled saga on a foreign handoff without merging', async () => {
+    const h = makeForeign({ pr: { base_ref: 'develop' } });
+    enrolAuto(h);
+    const driver = createCompletionActionDriver({
+      workspace: WS,
+      store: h.store,
+      prActions: h.actions
+    });
+
+    await driveCompletion(h, driver);
+
+    const after = h.store.snapshot(WS);
+    const intent = /** @type {any} */ (after.completion_intents[BEAD]);
+    expect(intent.phase).toBe('needs_human');
+    expect(intent.terminal_reason.reason).toContain(
+      'foreign_handoff:foreign_pr_base_mismatch'
+    );
+    expect(after.merge_queue).toEqual([]);
+    expect(h.announce).toHaveBeenCalledTimes(1);
+    expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses a merge before any gh call when the pins moved to another PR than the attempt records', async () => {
+    const h = makeForeign({
+      metadata: {
+        foreign_repo: 'git@github.com:acme/other.git',
+        pr_url: 'https://github.com/acme/other/pull/8'
+      }
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.reason).toBe('foreign_pr_ref_mismatch');
+    expect(h.gh.forSlug).not.toHaveBeenCalled();
+    expect(h.gh.prDetail).not.toHaveBeenCalled();
     expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
   });
 

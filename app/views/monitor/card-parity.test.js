@@ -207,6 +207,8 @@ function rawIssues() {
     // PR 대기 — 핀이 있는 외부 PR 대상(UI-k467): 머지 가능 행과 사람 처리 행.
     row('W-4', { status: 'resolved', metadata: foreignPins(41) }),
     row('W-5', { status: 'resolved', metadata: foreignPins(42) }),
+    // PR 대기 — 세션이 등록한 핀 있는 외부 PR 행(Worker attempt 없음).
+    row('W-6', { status: 'resolved', metadata: foreignPins(43) }),
     // Worker 완료 행과, Worker 밖에서 닫힌 이슈.
     row('D-1', { status: 'closed', closed_at: iso(NOW - HOUR) }),
     row('X-1', {
@@ -550,6 +552,27 @@ function seedPrObservations() {
     }),
     foreign: { ...foreign, handoff: 'foreign_pr_base_mismatch' }
   });
+  const w6_url = 'https://github.com/acme/research-repo-template/pull/43';
+  getWorkerRuntime().externalPrs.replace(
+    WS,
+    [
+      {
+        bead_id: 'W-6',
+        pr_url: w6_url,
+        pr_number: 43,
+        foreign_pins: foreignPins(43)
+      }
+    ],
+    { origin_slug: 'example/repo' }
+  );
+  observations.record(WS, 'W-6', {
+    pr: pr(43, { url: w6_url }),
+    review_receipt: {
+      state: 'current',
+      head_sha: String(43).repeat(40).slice(0, 40)
+    },
+    foreign
+  });
 }
 
 /**
@@ -868,7 +891,8 @@ const SHARED_BEADS = [
   'W-2',
   'W-3',
   'W-4',
-  'W-5'
+  'W-5',
+  'W-6'
 ];
 
 describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () => {
@@ -911,6 +935,19 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
       '머지 ↗ research-repo-template',
       '머지 ↗ research-repo-template'
     ]);
+  });
+
+  test('draws [폐기] on the pinned session-registered external row on both tabs', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    const labels = [worker, monitor].map((mount) =>
+      (
+        cardsByBead(mount).get('W-6')?.querySelector('.worker-mini__discard')
+          ?.textContent || ''
+      ).trim()
+    );
+
+    expect(labels).toEqual(['폐기', '폐기']);
   });
 
   test('draws the foreign handoff badge on both tabs', async () => {

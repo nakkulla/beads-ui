@@ -14,8 +14,12 @@ import { debug } from '../logging.js';
 import { acquireDeployLock } from './deploy-lock.js';
 import { scriptSummary } from './failure-class.js';
 import {
+  FOREIGN_CANDIDATE_OWNER_SUFFIX,
   foreignCandidateCommonDir,
-  foreignCandidateRoot
+  foreignCandidateOwnerPath,
+  foreignCandidateRoot,
+  readForeignCandidateOwner,
+  writeForeignCandidateOwner
 } from './foreign-target.js';
 import {
   classifyOperationRecovery,
@@ -106,7 +110,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, notify?: { needsHuman: (input: any) => Promise<void> }|null, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string, owner?: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, notify?: { needsHuman: (input: any) => Promise<void> }|null, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -206,9 +210,11 @@ export function createRepoOperationCoordinator(deps) {
 
   /**
    * A foreign target's verify id names the TARGET repository (UI-k467 §3.5),
-   * so it can never coincide with a workspace operation.
+   * so it can never coincide with a workspace operation, and its PR head: the
+   * result is bound to (PR head, base tip), so a head that moved with the same
+   * tree (an amend) is a new verification, never an append to the old one.
    *
-   * @param {{ effective_base_sha: string, target_base: string, target_tree: string, script_object_type: string, script_mode: string, script_blob_sha: string, foreign_repo?: string|null }} input
+   * @param {{ effective_base_sha: string, target_base: string, target_tree: string, script_object_type: string, script_mode: string, script_blob_sha: string, foreign_repo?: string|null, foreign_head_sha?: string|null }} input
    */
   function verifyOperationId(input) {
     return crypto
@@ -217,6 +223,9 @@ export function createRepoOperationCoordinator(deps) {
         JSON.stringify({
           repo: deps.repo,
           ...(input.foreign_repo ? { foreign_repo: input.foreign_repo } : {}),
+          ...(input.foreign_head_sha
+            ? { foreign_head_sha: input.foreign_head_sha.toLowerCase() }
+            : {}),
           kind: 'verify',
           target_base: input.target_base,
           effective_base_sha: input.effective_base_sha,
@@ -1393,7 +1402,9 @@ export function createRepoOperationCoordinator(deps) {
       head_sha: candidate.head_sha,
       pr_number: candidate.pr_number,
       final_sha: candidate.final_sha,
-      ...(candidate_root !== null ? { candidate_root } : {})
+      ...(candidate_root !== null
+        ? { candidate_root, owner: deps.workspace }
+        : {})
     });
     if (
       !materialized.ok ||
@@ -1422,7 +1433,8 @@ export function createRepoOperationCoordinator(deps) {
       script_object_type: declaration.object_type,
       script_mode: declaration.mode,
       script_blob_sha: declaration.blob_sha,
-      foreign_repo: foreign ? foreign.slug : null
+      foreign_repo: foreign ? foreign.slug : null,
+      foreign_head_sha: foreign ? candidate.head_sha : null
     });
     const existing_before =
       deps.store.snapshot(deps.workspace).repo_operations[operation_id] || null;
@@ -1435,7 +1447,8 @@ export function createRepoOperationCoordinator(deps) {
           ? await verify_checkout.relocate({
               repo: op_repo,
               from: materialized.path,
-              to: path.join(candidate_root, operation_id)
+              to: path.join(candidate_root, operation_id),
+              owner: deps.workspace
             })
           : { ok: false };
       if (!placed.ok) {
@@ -3048,11 +3061,16 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
-   * Remove every Worker-owned verify candidate under a foreign target's
+   * Remove this workspace's verify candidates under a foreign target's
    * `<common git dir>/bdui-verify/` that no live operation stands on — the
    * restart recovery of a crash between materialize and prerecord, and the
    * post-merge residue sweep (UI-k467 §3.5–§3.6). Only directories directly
    * under that root are touched; nothing else in the target is.
+   *
+   * The directory is shared by every rig workspace verifying this target, and
+   * only this workspace's records prove an operation finished, so a candidate
+   * whose owner marker names another workspace — or names none — is left
+   * alone.
    *
    * @param {string} target_repo
    * @returns {Promise<string[]>} The candidate paths removed.
@@ -3069,15 +3087,15 @@ export function createRepoOperationCoordinator(deps) {
     } catch {
       return [];
     }
+    // Every state but a terminal one may still stand on its candidate.
     const live = new Set(
       Object.values(deps.store.snapshot(deps.workspace).repo_operations || {})
         .filter(
           (/** @type {any} */ operation) =>
             operation &&
             operation.kind === 'verify' &&
-            (operation.state === 'queued' ||
-              operation.state === 'running' ||
-              operation.state === 'retry_pending') &&
+            operation.state !== 'succeeded' &&
+            operation.state !== 'failed' &&
             typeof operation.deploy_worktree === 'string'
         )
         .map((/** @type {any} */ operation) =>
@@ -3087,7 +3105,25 @@ export function createRepoOperationCoordinator(deps) {
     /** @type {string[]} */
     const removed = [];
     for (const name of names) {
+      if (name.endsWith(FOREIGN_CANDIDATE_OWNER_SUFFIX)) {
+        const orphan = path.join(
+          root,
+          name.slice(0, -FOREIGN_CANDIDATE_OWNER_SUFFIX.length)
+        );
+        // A marker whose candidate is already gone (a cleanup interrupted
+        // between the two removals) is dropped by its owner only.
+        if (
+          !fs.existsSync(orphan) &&
+          readForeignCandidateOwner(fs, orphan) === deps.workspace
+        ) {
+          fs.rmSync(foreignCandidateOwnerPath(orphan), { force: true });
+        }
+        continue;
+      }
       const candidate = path.join(root, name);
+      if (readForeignCandidateOwner(fs, candidate) !== deps.workspace) {
+        continue;
+      }
       if (live.has(path.resolve(candidate))) {
         continue;
       }
@@ -3725,16 +3761,24 @@ function createVerifyCheckout(deps) {
     /**
      * `candidate_root` places the detached candidate under a foreign target's
      * `<common git dir>/bdui-verify/` instead of `os.tmpdir()` (UI-k467 §3.5);
-     * a workspace candidate keeps the temporary directory.
+     * a workspace candidate keeps the temporary directory. `owner` is the
+     * workspace whose marker is written next to a foreign candidate before
+     * its worktree exists.
      *
-     * @param {{ repo: string, origin: string, target_base: string, base_sha: string, head_sha: string, pr_number: number, final_sha?: string, candidate_root?: string }} input
+     * @param {{ repo: string, origin: string, target_base: string, base_sha: string, head_sha: string, pr_number: number, final_sha?: string, candidate_root?: string, owner?: string }} input
      */
     async materialize(input) {
       /** @param {string} prefix */
       const makeCheckoutPath = (prefix) => {
         if (typeof input.candidate_root === 'string') {
           deps.fs.mkdirSync(input.candidate_root, { recursive: true });
-          return deps.fs.mkdtempSync(path.join(input.candidate_root, prefix));
+          const made = deps.fs.mkdtempSync(
+            path.join(input.candidate_root, prefix)
+          );
+          if (typeof input.owner === 'string') {
+            writeForeignCandidateOwner(deps.fs, made, input.owner);
+          }
+          return made;
         }
         return deps.fs.mkdtempSync(
           path.join(os.tmpdir(), `bdui-verify-${prefix}`)
@@ -3801,6 +3845,9 @@ function createVerifyCheckout(deps) {
       );
       if (added.code !== 0) {
         deps.fs.rmSync(checkout_path, { recursive: true, force: true });
+        deps.fs.rmSync(foreignCandidateOwnerPath(checkout_path), {
+          force: true
+        });
         return { ok: false, code: 'verify_candidate_materialize_failed' };
       }
       const merged = await deps.gitRun(
@@ -3837,20 +3884,29 @@ function createVerifyCheckout(deps) {
      * Move a materialized candidate to its final place (a foreign target's
      * `bdui-verify/<operation-id>`).
      *
-     * @param {{ repo: string, from: string, to: string }} input
+     * The owner marker moves with it: written at the destination before the
+     * move, dropped at the source after it.
+     *
+     * @param {{ repo: string, from: string, to: string, owner?: string }} input
      * @returns {Promise<{ ok: true, path: string }|{ ok: false }>}
      */
     async relocate(input) {
       if (deps.fs.existsSync(input.to)) {
         await this.cleanup({ repo: input.repo, path: input.to });
       }
+      if (typeof input.owner === 'string') {
+        writeForeignCandidateOwner(deps.fs, input.to, input.owner);
+      }
       const moved = await deps.gitRun(
         ['worktree', 'move', input.from, input.to],
         { cwd: input.repo }
       );
-      return moved.code === 0
-        ? { ok: true, path: input.to }
-        : { ok: /** @type {const} */ (false) };
+      if (moved.code !== 0) {
+        deps.fs.rmSync(foreignCandidateOwnerPath(input.to), { force: true });
+        return { ok: /** @type {const} */ (false) };
+      }
+      deps.fs.rmSync(foreignCandidateOwnerPath(input.from), { force: true });
+      return { ok: true, path: input.to };
     },
 
     /**
@@ -3872,6 +3928,7 @@ function createVerifyCheckout(deps) {
           { cwd: common }
         );
         deps.fs.rmSync(input.path, { recursive: true, force: true });
+        deps.fs.rmSync(foreignCandidateOwnerPath(input.path), { force: true });
         await deps.gitRun(['--git-dir', common, 'worktree', 'prune'], {
           cwd: common
         });

@@ -62,6 +62,7 @@ import {
   bindForeignTarget,
   cleanupForeignResidue,
   fetchForeignBaseTip,
+  foreignPrRefOf,
   judgeForeignPostMerge,
   judgeForeignPreMerge,
   judgeForeignTargetMetadata,
@@ -495,6 +496,25 @@ export function createPrActions(deps) {
       bead_id,
       pr_url
     );
+  }
+
+  /**
+   * The PR number one action reads or changes. A pinned foreign PR's number
+   * comes from the same `pr_url` parse as its slug and must agree with the
+   * Worker's durable reference, else the action is refused before any gh call
+   * (UI-k467 §4-3); a workspace PR keeps the durable reference's number.
+   *
+   * @param {import('./foreign-target.js').ForeignPrTarget|null} target
+   * @param {{ number: number, url?: string|null }|null} ref
+   * @returns {{ ok: true, number: number }|{ ok: false, reason: string }}
+   */
+  function prNumberFor(target, ref) {
+    if (target) {
+      return foreignPrRefOf(target, ref);
+    }
+    return ref
+      ? { ok: true, number: ref.number }
+      : { ok: false, reason: 'pr_ref_unknown' };
   }
 
   /**
@@ -1514,39 +1534,29 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Re-run the authoritative merge gate and expose only the SHA-bound evidence
-   * the completion coordinator needs. This path never updates a branch, merges
-   * a PR, or starts cleanup.
+   * Whether a gated PR that reads MERGED names its merge commit.
    *
-   * @param {string} bead_id
-   * @param {'root'} [role]
-   * @returns {Promise<any>}
+   * @param {any} pr
+   * @returns {boolean}
    */
-  async function completionGate(bead_id, role = 'root') {
-    const q = deps.store.snapshot(workspace);
-    const member = await laneMembership(q, bead_id);
-    if (!member.ok) {
-      return { ok: false, reason: member.reason };
-    }
-    if (member.external === true) {
-      return { ok: false, reason: 'external_completion_unsupported' };
-    }
-    // The completion saga's repair lane is the workspace's own (UI-k467): a
-    // pinned foreign PR is merged and closed by the ordinary queue path only.
-    const foreign = await foreignTargetFor(bead_id);
-    if (foreign.state !== 'none') {
-      return {
-        ok: false,
-        reason:
-          foreign.state === 'invalid'
-            ? foreign.reason
-            : 'foreign_completion_unsupported'
-      };
-    }
-    const ref = resolvePrRef(q, bead_id, null);
-    if (!ref || typeof ref.number !== 'number') {
-      return { ok: false, reason: 'pr_ref_unknown' };
-    }
+  function mergedShaObserved(pr) {
+    return (
+      pr.state !== 'MERGED' ||
+      (typeof pr.merged_sha === 'string' &&
+        /^[0-9a-f]{40}$/i.test(pr.merged_sha))
+    );
+  }
+
+  /**
+   * The completion gate's authority for a workspace PR: the declared base,
+   * resolved and pinned, and the ordinary gate.
+   *
+   * @param {Queue} q
+   * @param {string} bead_id
+   * @param {number} number
+   * @returns {Promise<{ ok: true, gated: any, authority: { target_base: string, base_sha: string } }|{ ok: false, reason: string }>}
+   */
+  async function workspaceCompletionAuthority(q, bead_id, number) {
     if (typeof deps.resolveBase !== 'function') {
       return { ok: false, reason: 'base_unresolved:no_resolver' };
     }
@@ -1572,7 +1582,7 @@ export function createPrActions(deps) {
     if (typeof pinned.base_oid !== 'string' || pinned.base_oid.length === 0) {
       return { ok: false, reason: 'base_sha_unobserved' };
     }
-    const gated = await gateNow(bead_id, ref.number, pinned);
+    const gated = await gateNow(bead_id, number, pinned);
     if ('error' in gated) {
       return { ok: false, reason: gated.error };
     }
@@ -1580,15 +1590,9 @@ export function createPrActions(deps) {
     if (!base_ok.ok) {
       return { ok: false, reason: base_ok.reason };
     }
-    if (
-      gated.pr.state === 'MERGED' &&
-      (typeof gated.pr.merged_sha !== 'string' ||
-        !/^[0-9a-f]{40}$/i.test(gated.pr.merged_sha))
-    ) {
+    if (!mergedShaObserved(gated.pr)) {
       return { ok: false, reason: 'merge_sha_unobserved' };
     }
-    const entry = deps.observations.get(workspace, bead_id);
-    const verify = entry?.verify;
     const authority =
       gated.pr.state === 'OPEN'
         ? { target_base: gated.target_base, base_sha: gated.base_sha }
@@ -1600,6 +1604,102 @@ export function createPrActions(deps) {
     ) {
       return { ok: false, reason: 'base_authority_unobserved' };
     }
+    return {
+      ok: true,
+      gated,
+      authority: {
+        target_base: authority.target_base,
+        base_sha: authority.base_sha
+      }
+    };
+  }
+
+  /**
+   * The completion gate's authority for a pinned foreign PR (UI-k467 §3.4):
+   * `foreign_base` is the expected base, and its tip is the one fetched from
+   * the bound remote — by the foreign gate for an OPEN PR, by a fresh fetch
+   * otherwise. The number comes from the same `pr_url` parse as the slug.
+   *
+   * @param {string} bead_id
+   * @param {import('./foreign-target.js').ForeignPrTarget} target
+   * @param {{ number: number, url?: string|null }} ref
+   * @returns {Promise<{ ok: true, gated: any, authority: { target_base: string, base_sha: string } }|{ ok: false, reason: string }>}
+   */
+  async function foreignCompletionAuthority(bead_id, target, ref) {
+    const pinned = prNumberFor(target, ref);
+    if (!pinned.ok) {
+      return { ok: false, reason: pinned.reason };
+    }
+    const gated = await foreignGateNow(bead_id, pinned.number, target);
+    if ('error' in gated) {
+      return { ok: false, reason: gated.error };
+    }
+    if (!mergedShaObserved(gated.pr)) {
+      return { ok: false, reason: 'merge_sha_unobserved' };
+    }
+    /** @type {string|null} */
+    let base_sha =
+      gated.pr.state === 'OPEN' && typeof gated.base_sha === 'string'
+        ? gated.base_sha
+        : null;
+    if (gated.pr.state !== 'OPEN') {
+      const bound = await bindForeignTarget(target, deps.gitRun);
+      if (!bound.ok) {
+        return { ok: false, reason: bound.reason };
+      }
+      const tip = await fetchForeignBaseTip(bound.target, deps.gitRun);
+      base_sha = tip.ok ? tip.sha : null;
+    }
+    if (base_sha === null || base_sha.length === 0) {
+      return { ok: false, reason: 'base_authority_unobserved' };
+    }
+    return {
+      ok: true,
+      gated,
+      authority: { target_base: target.base, base_sha }
+    };
+  }
+
+  /**
+   * Re-run the authoritative merge gate and expose only the SHA-bound evidence
+   * the completion coordinator needs. This path never updates a branch, merges
+   * a PR, or starts cleanup.
+   *
+   * @param {string} bead_id
+   * @param {'root'} [role]
+   * @returns {Promise<any>}
+   */
+  async function completionGate(bead_id, role = 'root') {
+    const q = deps.store.snapshot(workspace);
+    const member = await laneMembership(q, bead_id);
+    if (!member.ok) {
+      return { ok: false, reason: member.reason };
+    }
+    if (member.external === true) {
+      return { ok: false, reason: 'external_completion_unsupported' };
+    }
+    // A pinned foreign PR runs the SAME saga with its target as the authority
+    // (UI-k467 §3.4): the foreign gate (detection, bound checkout, the three
+    // `foreign_handoff` causes, target `[verify]`) replaces the workspace base
+    // resolution, so a verify failure lands as the same `pre_merge_hold`.
+    const foreign = await foreignTargetFor(bead_id);
+    if (foreign.state === 'invalid') {
+      return { ok: false, reason: foreign.reason };
+    }
+    const ref = resolvePrRef(q, bead_id, null);
+    if (!ref || typeof ref.number !== 'number') {
+      return { ok: false, reason: 'pr_ref_unknown' };
+    }
+    const judged =
+      foreign.state === 'ok'
+        ? await foreignCompletionAuthority(bead_id, foreign.target, ref)
+        : await workspaceCompletionAuthority(q, bead_id, ref.number);
+    if (!judged.ok) {
+      return { ok: false, reason: judged.reason };
+    }
+    const { gated, authority } = judged;
+    const entry = deps.observations.get(workspace, bead_id);
+    const verify = entry?.verify;
     return {
       ok: true,
       // §10: the automatic metadata watch must be able to tell a refusal from
@@ -2098,11 +2198,12 @@ export function createPrActions(deps) {
       bead_id,
       external ? external.get(workspace, bead_id) : null
     );
-    if (!ref) {
+    const pinned = prNumberFor(target, ref);
+    if (!pinned.ok) {
       return null;
     }
     try {
-      const detail = await ghFor(target).prDetail(repo, ref.number);
+      const detail = await ghFor(target).prDetail(repo, pinned.number);
       return detail.state === 'ok' && detail.data.state === 'MERGED'
         ? authoritativeMergeSha(detail.data)
         : null;
@@ -3643,10 +3744,21 @@ export function createPrActions(deps) {
       };
     }
     const target = foreign.state === 'ok' ? foreign.target : null;
+    const pinned = prNumberFor(target, ref);
+    if (!pinned.ok) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: pinned.reason,
+        head_sha: null,
+        base_ref: null,
+        external: is_external
+      };
+    }
     /** @type {any} */
     const observed = target
-      ? await foreignGateNow(bead_id, ref.number, target)
-      : await gateNow(bead_id, ref.number);
+      ? await foreignGateNow(bead_id, pinned.number, target)
+      : await gateNow(bead_id, pinned.number);
     if ('error' in observed) {
       // A foreign handoff still names the head and base it was judged on, so
       // a queue hold binds that identity (UI-k467 §3.7).
@@ -3755,7 +3867,11 @@ export function createPrActions(deps) {
       return { ok: /** @type {const} */ (false), reason: foreign.reason };
     }
     const target = foreign.state === 'ok' ? foreign.target : null;
-    const observed = await observeNow(bead_id, ref.number, target);
+    const pinned = prNumberFor(target, ref);
+    if (!pinned.ok) {
+      return { ok: /** @type {const} */ (false), reason: pinned.reason };
+    }
+    const observed = await observeNow(bead_id, pinned.number, target);
     if ('error' in observed) {
       return { ok: /** @type {const} */ (false), reason: observed.error };
     }
@@ -3844,11 +3960,15 @@ export function createPrActions(deps) {
         return refuse(foreign.reason);
       }
       const target = foreign.state === 'ok' ? foreign.target : null;
+      const pinned = prNumberFor(target, ref);
+      if (!pinned.ok) {
+        return refuse(pinned.reason);
+      }
 
       /** @type {any} */
       const first = target
-        ? await foreignGateNow(bead_id, ref.number, target)
-        : await gateNow(bead_id, ref.number);
+        ? await foreignGateNow(bead_id, pinned.number, target)
+        : await gateNow(bead_id, pinned.number);
       if ('error' in first) {
         return {
           ...refuse(first.error),
@@ -3871,7 +3991,7 @@ export function createPrActions(deps) {
         // The url the click itself resolved (UI-9rrk). For an external row the
         // registry may be one scan stale, so the notification must name the PR
         // this click actually merged, not the previous one.
-        pr_url: ref.url || null,
+        pr_url: (target ? target.pr_url : ref.url) || null,
         ...(target ? { target_base: target.base } : {})
       };
       // A merge that already happened (here or on github.com) runs the same
@@ -3949,7 +4069,7 @@ export function createPrActions(deps) {
       // issued.
       return await doMerge(
         bead_id,
-        ref.number,
+        pinned.number,
         first.pr.head_sha,
         'merged',
         refs,
@@ -4755,10 +4875,12 @@ export function createPrActions(deps) {
     if (foreign.state === 'invalid') {
       return { state: null, error: foreign.reason };
     }
-    const observed = await readPrState(
-      ref.number,
-      foreign.state === 'ok' ? foreign.target : null
-    );
+    const target = foreign.state === 'ok' ? foreign.target : null;
+    const pinned = prNumberFor(target, ref);
+    if (!pinned.ok) {
+      return { state: null, error: pinned.reason };
+    }
+    const observed = await readPrState(pinned.number, target);
     if ('error' in observed) {
       return { state: null, error: observed.error };
     }
@@ -4870,12 +4992,15 @@ export function createPrActions(deps) {
     if (foreign.state === 'invalid') {
       return { ok: false, reason: foreign.reason, result_head_sha: null };
     }
+    const target = foreign.state === 'ok' ? foreign.target : null;
+    const pinned = prNumberFor(target, ref);
+    if (!pinned.ok) {
+      return { ok: false, reason: pinned.reason, result_head_sha: null };
+    }
     /** @type {any} */
     let updated;
     try {
-      updated = await ghFor(
-        foreign.state === 'ok' ? foreign.target : null
-      ).updateBranch(repo, ref.number);
+      updated = await ghFor(target).updateBranch(repo, pinned.number);
     } catch (err) {
       log('base update failed for %s: %o', bead_id, err);
       return {

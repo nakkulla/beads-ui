@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from './bead-timeline.js';
+import { writeForeignCandidateOwner } from './foreign-target.js';
 import { createLockManager } from './locks.js';
 import { createNotifier } from './notify.js';
 import { repairHandoffDescription } from './operation-recovery.js';
@@ -5835,14 +5836,14 @@ describe('foreign verify candidate location (UI-k467 §3.5)', () => {
 
   /**
    * @param {string} repo
-   * @param {{ readMarker?: (workspace: string, operation_id: string) => any }} [options]
+   * @param {{ readMarker?: (workspace: string, operation_id: string) => any, workspace?: string }} [options]
    */
   function realCoordinator(repo, options = {}) {
     const store = createQueueStore({
       filePathFor: (workspace) => path.join(workspace, 'queue.json')
     });
     const coordinator = createRepoOperationCoordinator({
-      workspace: root,
+      workspace: options.workspace ?? root,
       repo,
       store,
       locks: createLockManager(),
@@ -6018,6 +6019,7 @@ describe('foreign verify candidate location (UI-k467 §3.5)', () => {
     );
     const stray = path.join(target, '.git', 'bdui-verify', 'stray');
     git(target, ['worktree', 'add', '-q', '--detach', stray, shas.base_sha]);
+    writeForeignCandidateOwner(fs, stray, root);
     const owned = path.join(target, '.worktrees', 'UI-9');
     git(target, ['worktree', 'add', '-q', '-b', 'UI-9', owned, shas.base_sha]);
 
@@ -6025,10 +6027,87 @@ describe('foreign verify candidate location (UI-k467 §3.5)', () => {
 
     expect(removed).toEqual([stray]);
     expect(fs.existsSync(stray)).toBe(false);
+    expect(fs.existsSync(`${stray}.owner.json`)).toBe(false);
     expect(fs.existsSync(live_path)).toBe(true);
     expect(fs.existsSync(owned)).toBe(true);
     const listed = git(target, ['worktree', 'list', '--porcelain']);
     expect(listed).not.toContain('bdui-verify/stray');
     expect(listed).toContain(`worktree ${fs.realpathSync(owned)}`);
+  });
+
+  test('leaves the live candidate of another workspace verifying the same target', async () => {
+    const workspace_repo = path.join(root, 'workspace');
+    const other_repo = path.join(root, 'other-workspace');
+    const other_workspace = path.join(root, 'other-state');
+    fs.mkdirSync(other_workspace);
+    const target = path.join(root, 'target');
+    makeRepo(workspace_repo, 'origin');
+    makeRepo(other_repo, 'origin');
+    const shas = makeRepo(target, 'upstream');
+    const mine = realCoordinator(workspace_repo);
+    const other = realCoordinator(other_repo, { workspace: other_workspace });
+    const theirs = await other.coordinator.ensureVerify(
+      foreignCandidate(target, shas)
+    );
+    const their_path = String(
+      other.store.snapshot(other_workspace).repo_operations[
+        String(theirs.operation_id)
+      ].deploy_worktree
+    );
+
+    const removed = await mine.coordinator.sweepForeignCandidates({
+      path: target
+    });
+
+    expect(removed).toEqual([]);
+    expect(fs.existsSync(their_path)).toBe(true);
+    expect(git(target, ['worktree', 'list', '--porcelain'])).toContain(
+      `worktree ${fs.realpathSync(their_path)}`
+    );
+  });
+
+  test('leaves a candidate without an owner marker', async () => {
+    const workspace_repo = path.join(root, 'workspace');
+    const target = path.join(root, 'target');
+    makeRepo(workspace_repo, 'origin');
+    const shas = makeRepo(target, 'upstream');
+    const { coordinator } = realCoordinator(workspace_repo);
+    const unknown = path.join(target, '.git', 'bdui-verify', 'unknown');
+    git(target, ['worktree', 'add', '-q', '--detach', unknown, shas.base_sha]);
+
+    const removed = await coordinator.sweepForeignCandidates({ path: target });
+
+    expect(removed).toEqual([]);
+    expect(fs.existsSync(unknown)).toBe(true);
+  });
+
+  test('starts a new verification when the PR head moves with the same tree', async () => {
+    const workspace_repo = path.join(root, 'workspace');
+    const target = path.join(root, 'target');
+    makeRepo(workspace_repo, 'origin');
+    const shas = makeRepo(target, 'upstream');
+    const { store, coordinator } = realCoordinator(workspace_repo);
+    const first = await coordinator.ensureVerify(
+      foreignCandidate(target, shas)
+    );
+    git(target, ['checkout', '-q', 'UI-1']);
+    git(target, ['commit', '-q', '--amend', '-m', 'work, reworded']);
+    const amended = git(target, ['rev-parse', 'HEAD']);
+    git(target, ['checkout', '-q', 'main']);
+
+    const second = await coordinator.ensureVerify(
+      foreignCandidate(target, { base_sha: shas.base_sha, head_sha: amended })
+    );
+
+    const operations = /** @type {any} */ (
+      store.snapshot(root).repo_operations
+    );
+    expect(operations[String(second.operation_id)].target_tree).toBe(
+      operations[String(first.operation_id)].target_tree
+    );
+    expect(second.operation_id).not.toBe(first.operation_id);
+    expect(operations[String(first.operation_id)].verify_head_shas).toEqual([
+      shas.head_sha
+    ]);
   });
 });

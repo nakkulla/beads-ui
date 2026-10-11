@@ -31599,7 +31599,10 @@ describe('foreign PR review session dispatch (UI-k467 §3.10)', () => {
     });
   }
 
-  function foreignReviewEnv() {
+  /**
+   * @param {{ guardHook?: any }} [options]
+   */
+  function foreignReviewEnv(options = {}) {
     const env = setup({
       config: {
         B1: {
@@ -31612,7 +31615,8 @@ describe('foreign PR review session dispatch (UI-k467 §3.10)', () => {
         }
       },
       slots: 1,
-      gitRun: targetGit()
+      gitRun: targetGit(),
+      ...(options.guardHook ? { guardHook: options.guardHook } : {})
     });
     env.store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review:1',
@@ -31667,5 +31671,33 @@ describe('foreign PR review session dispatch (UI-k467 §3.10)', () => {
     const prompt = String(env.runner.spawnedBead('B1').prompt);
     expect(prompt).toContain(TARGET_PATH);
     expect(prompt).toContain('--repo acme/research-repo-template');
+  });
+
+  test('installs the push guard for the target checkout and keeps the rig as the workflow root', async () => {
+    const guardHook = {
+      install: vi.fn(() => ({ ok: true })),
+      envFor: vi.fn(() => ({})),
+      remove: vi.fn(() => true)
+    };
+    const env = foreignReviewEnv({ guardHook });
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(guardHook.install).toHaveBeenCalledWith({
+      workspace: WS,
+      attempt_id: 'review:1',
+      repo: TARGET_PATH,
+      target_base: 'main'
+    });
+    expect(env.runner.settingsFor('B1').env).toMatchObject({
+      WORKFLOW_REPO_ROOT: '/repo'
+    });
   });
 });

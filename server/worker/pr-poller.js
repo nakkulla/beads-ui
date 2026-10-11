@@ -38,6 +38,7 @@ import { failureTokenSummary } from './failure-class.js';
 import { foreignHandoffReason } from './foreign-handoff.js';
 import {
   bindForeignTarget,
+  foreignPrRefOf,
   judgeForeignPreMerge,
   repositorySlugOf
 } from './foreign-target.js';
@@ -620,6 +621,14 @@ export function createPrPoller(deps) {
       });
       return { verify: null };
     }
+    // The slug and the number come from ONE parse of the pinned `pr_url`; a
+    // durable reference naming another PR is refused before any gh call.
+    const agreed = foreignPrRefOf(target, ref);
+    if (!agreed.ok) {
+      deps.observations.record(workspace, bead_id, { error: agreed.reason });
+      return { verify: null };
+    }
+    const number = agreed.number;
     const foreign_gh =
       typeof (/** @type {any} */ (deps.gh).forSlug) === 'function'
         ? /** @type {any} */ (deps.gh).forSlug(target.slug)
@@ -633,7 +642,7 @@ export function createPrPoller(deps) {
     /** @type {import('./gh.js').GhResult<import('./gh.js').PrDetail>} */
     let detail;
     try {
-      detail = await foreign_gh.prDetail(repo, ref.number);
+      detail = await foreign_gh.prDetail(repo, number);
     } catch {
       detail = { state: 'error', reason: 'gh_spawn_failed' };
     }
@@ -644,7 +653,7 @@ export function createPrPoller(deps) {
     ) {
       await sleep(requery_delay_ms);
       try {
-        const again = await foreign_gh.prDetail(repo, ref.number);
+        const again = await foreign_gh.prDetail(repo, number);
         if (again.state === 'ok') {
           detail = again;
         }
@@ -815,7 +824,7 @@ export function createPrPoller(deps) {
       return { verify: null };
     }
     return {
-      verify: startVerify(bead_id, ref.number, pr.head_sha, {
+      verify: startVerify(bead_id, number, pr.head_sha, {
         target_base: target.base,
         base_sha: judgment.base_sha,
         script_path: judgment.verify_script_path,
