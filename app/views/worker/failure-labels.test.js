@@ -529,19 +529,78 @@ describe('retryOutcomeText (UI-s582 §2 재시도 결과)', () => {
     );
   });
 
-  test('reports a consumed retry that hit the same failure', () => {
-    expect(
-      retryOutcomeText(
-        card({
-          retry: {
-            status: 'consumed',
-            first_fingerprint: 'f'.repeat(64),
-            blocked_reason: null,
-            absorbed: null
-          }
-        })
-      )
-    ).toBe('자동 재시도 1회 — 같은 실패');
+  test('reports a consumed retry that reproduced the same confirmed failure', () => {
+    const failure = {
+      code: 'script_failed',
+      fingerprint: 'f'.repeat(64),
+      detail: '',
+      interrupted: false,
+      evidence_confirmed: true
+    };
+
+    const text = retryOutcomeText(
+      card({
+        failure,
+        retry: {
+          status: 'consumed',
+          first_fingerprint: 'f'.repeat(64),
+          first_failure: failure,
+          blocked_reason: null,
+          absorbed: null
+        }
+      })
+    );
+
+    expect(text).toBe('자동 재시도 1회 — 같은 실패');
+  });
+
+  test('says a reproduction is unconfirmed when the first failure lacks the flag', () => {
+    const failure = {
+      code: 'script_failed',
+      fingerprint: 'f'.repeat(64),
+      detail: '',
+      interrupted: false,
+      evidence_confirmed: true
+    };
+
+    const text = retryOutcomeText(
+      card({
+        failure,
+        retry: {
+          status: 'consumed',
+          first_fingerprint: 'f'.repeat(64),
+          first_failure: { ...failure, evidence_confirmed: undefined },
+          blocked_reason: null,
+          absorbed: null
+        }
+      })
+    );
+
+    expect(text).toBe('자동 재시도 1회 — 재현 확인 불가');
+  });
+
+  test('says a reproduction is unconfirmed when the second failure lacks the flag', () => {
+    const first_failure = {
+      code: 'script_failed',
+      fingerprint: 'f'.repeat(64),
+      detail: '',
+      interrupted: false,
+      evidence_confirmed: true
+    };
+
+    const text = retryOutcomeText(
+      card({
+        retry: {
+          status: 'consumed',
+          first_fingerprint: 'f'.repeat(64),
+          first_failure,
+          blocked_reason: null,
+          absorbed: null
+        }
+      })
+    );
+
+    expect(text).toBe('자동 재시도 1회 — 재현 확인 불가');
   });
 
   test('reports a consumed retry that hit a different failure', () => {

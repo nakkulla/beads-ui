@@ -26,9 +26,13 @@ function operation(patch = {}) {
     failure: {
       code: 'script_failed',
       fingerprint: 'same',
-      summary: 'npm ERR! Test failed'
+      summary: 'npm ERR! Test failed',
+      evidence_confirmed: true
     },
-    retry: { outcome: 'consumed', first_failure: { fingerprint: 'same' } },
+    retry: {
+      outcome: 'consumed',
+      first_failure: { fingerprint: 'same', evidence_confirmed: true }
+    },
     ...patch
   };
 }
@@ -56,6 +60,34 @@ describe('operation recovery classification', () => {
         disposition: 'repair',
         reason: null,
         code_defect: true
+      });
+    }
+  );
+
+  test.each([
+    ['the current failure', false, true],
+    ['the first failure', true, false],
+    ['both failures', false, false]
+  ])(
+    'keeps equal fingerprints a verification failure when %s is unconfirmed',
+    (_name, first_confirmed, current_confirmed) => {
+      const base = operation();
+
+      const result = classify({
+        failure: { ...base.failure, evidence_confirmed: current_confirmed },
+        retry: {
+          ...base.retry,
+          first_failure: {
+            ...base.retry.first_failure,
+            evidence_confirmed: first_confirmed
+          }
+        }
+      });
+
+      expect(result).toMatchObject({
+        classification: 'verification_failure',
+        code_defect: false,
+        handoff_key: null
       });
     }
   );

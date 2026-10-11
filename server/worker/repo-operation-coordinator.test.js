@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,7 +12,11 @@ import { repairHandoffDescription } from './operation-recovery.js';
 import { __resetQueueEventsForTest, onQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
-import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
+import {
+  createRepoOperationCoordinator,
+  failureFingerprint
+} from './repo-operation-coordinator.js';
+import { formatBoundaryLine } from './repo-operation-log.js';
 import {
   __resetRepoOpsDisplayForTest,
   repoOpsDisplayFor
@@ -271,6 +276,7 @@ describe('repo operation after-ladder recovery', () => {
       summary: 'npm ERR! Test failed',
       detail: 'original',
       interrupted: false,
+      evidence_confirmed: true,
       ...patch
     };
     store.deferRepoOperationRetry(root, {
@@ -492,20 +498,92 @@ describe('repo operation after-ladder recovery', () => {
     }
   );
 
-  test('hands a reproduced script failure to one ordinary repair Bead', async () => {
-    const repairHandoff = adapter();
-    const runner = {
-      start: vi.fn(() => ({
-        ok: true,
-        process_identity: { pid: 2, pgid: 2, started_at: 2 },
-        log_path: path.join(root, 'operation.log')
-      })),
-      readMarker: () => ({ exit_code: 2, signal: null }),
+  const FIRST_AT = 100;
+  const SECOND_AT = 200;
+
+  /**
+   * One attempt as the runner child writes it: start line, script output, end
+   * line. The output must end with a newline.
+   *
+   * @param {number} at
+   * @param {string} output
+   * @param {number} [exit_code]
+   */
+  function framedAttempt(at, output, exit_code = 2) {
+    return (
+      formatBoundaryLine({ event: 'start', attempt_id: 'op-1:1', at }, false) +
+      output +
+      formatBoundaryLine(
+        {
+          event: 'end',
+          attempt_id: 'op-1:1',
+          at: at + 1,
+          exit_code,
+          signal: null,
+          timed_out: false
+        },
+        false
+      )
+    );
+  }
+
+  /**
+   * A runner that behaves like the child across an automatic retry: the first
+   * attempt is already in the log, and launching the retry appends the second
+   * attempt's text and swaps in the second run's terminal marker.
+   *
+   * @param {{ first_output: string, second_text: string, second_marker: { exit_code: number, started_at: number } }} input
+   */
+  function retryRunner({ first_output, second_text, second_marker }) {
+    const log_path = path.join(root, 'operation.log');
+    fs.writeFileSync(log_path, framedAttempt(FIRST_AT, first_output));
+    /** @type {{ exit_code: number, signal: null, started_at: number, finished_at: number }} */
+    let marker = {
+      exit_code: 2,
+      signal: null,
+      started_at: FIRST_AT,
+      finished_at: FIRST_AT + 1
+    };
+    return {
+      start: vi.fn(() => {
+        fs.appendFileSync(log_path, second_text);
+        marker = {
+          signal: null,
+          finished_at: second_marker.started_at + 1,
+          ...second_marker
+        };
+        return {
+          ok: true,
+          process_identity: { pid: 2, pgid: 2, started_at: 2 },
+          log_path
+        };
+      }),
+      readMarker: () => marker,
       readLaunchMarker: () => null,
       processController: { probe: () => ({ state: 'owned' }) }
     };
+  }
+
+  /**
+   * Settle the first attempt, launch the retry, settle the second, then let the
+   * recovery pass run.
+   *
+   * @param {{ coordinator: any }} harness
+   */
+  async function runThroughRetry({ coordinator }) {
+    for (let pass = 0; pass < 4; pass += 1) {
+      await coordinator.reconcile(root);
+    }
+  }
+
+  test('hands a reproduced script failure to one ordinary repair Bead', async () => {
+    const repairHandoff = adapter();
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: same failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
     const { coordinator, store } = coordinatorFor({ runner, repairHandoff });
-    fs.writeFileSync(path.join(root, 'operation.log'), 'Error: same failure\n');
     seedRunning(store);
 
     await coordinator.reconcile(root);
@@ -536,6 +614,162 @@ describe('repo operation after-ladder recovery', () => {
         handoff: { state: 'bead_recorded', handoff_bead_id: 'UI-repair' }
       }
     });
+  });
+
+  test('matches the two fingerprints from each attempt output alone', async () => {
+    const repairHandoff = adapter();
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: same failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({ runner, repairHandoff });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const operation = harness.store.snapshot(root).repo_operations['op-1'];
+    expect(operation.failure?.fingerprint).toBe(
+      operation.retry?.first_fingerprint
+    );
+    expect(operation.failure).toMatchObject({ evidence_confirmed: true });
+    expect(operation.retry?.first_failure).toMatchObject({
+      evidence_confirmed: true
+    });
+  });
+
+  test('keeps different second-attempt output out of the repair handoff', async () => {
+    const repairHandoff = adapter();
+    const runner = retryRunner({
+      first_output: 'Error: first failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: another failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({ runner, repairHandoff });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const operation = harness.store.snapshot(root).repo_operations['op-1'];
+    expect(operation.failure?.fingerprint).not.toBe(
+      operation.retry?.first_fingerprint
+    );
+    expect(operation.recovery).toMatchObject({
+      classification: 'verification_failure'
+    });
+    expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+  });
+
+  test('summarizes the second attempt, not the first one', async () => {
+    const runner = retryRunner({
+      first_output: 'Error: first run only\n',
+      second_text: framedAttempt(
+        SECOND_AT,
+        'warming up\nError: second run only\n'
+      ),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({ runner, repairHandoff: adapter() });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    expect(
+      harness.store.snapshot(root).repo_operations['op-1'].failure?.summary
+    ).toBe('Error: second run only');
+  });
+
+  test('digests only the second output when the retry succeeds', async () => {
+    const runner = retryRunner({
+      first_output: 'Error: flaky\n',
+      second_text: framedAttempt(SECOND_AT, 'recovered\n', 0),
+      second_marker: { exit_code: 0, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({ runner, repairHandoff: adapter() });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const operation = harness.store.snapshot(root).repo_operations['op-1'];
+    expect(operation.state).toBe('succeeded');
+    expect(operation.retry?.outcome).toBe('absorbed');
+    expect(operation.log_digest).toBe(
+      crypto.createHash('sha256').update('recovered\n').digest('hex')
+    );
+  });
+
+  test('refuses a handoff when the second start line is missing and the retry prints nothing', async () => {
+    const repairHandoff = adapter();
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: '',
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({ runner, repairHandoff });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const operation = harness.store.snapshot(root).repo_operations['op-1'];
+    expect(operation.failure?.fingerprint).toBe(
+      operation.retry?.first_fingerprint
+    );
+    expect(operation.failure).not.toHaveProperty('evidence_confirmed');
+    expect(operation.recovery).toMatchObject({
+      classification: 'verification_failure'
+    });
+    expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+  });
+
+  test('refuses a handoff when the marker started_at differs from the last start line', async () => {
+    const repairHandoff = adapter();
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: same failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT + 50 }
+    });
+    const harness = coordinatorFor({ runner, repairHandoff });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const operation = harness.store.snapshot(root).repo_operations['op-1'];
+    expect(operation.failure).not.toHaveProperty('evidence_confirmed');
+    expect(operation.recovery).toMatchObject({
+      classification: 'verification_failure'
+    });
+    expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+  });
+
+  test('refuses a handoff when the first failure carries no confirmation flag', async () => {
+    const repairHandoff = adapter();
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: same failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({ runner, repairHandoff });
+    const defer = harness.store.deferRepoOperationRetry.bind(harness.store);
+    vi.spyOn(harness.store, 'deferRepoOperationRetry').mockImplementation(
+      (workspace, input) => {
+        const legacy = { ...input.failure };
+        delete legacy.evidence_confirmed;
+        return defer(workspace, { ...input, failure: legacy });
+      }
+    );
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const operation = harness.store.snapshot(root).repo_operations['op-1'];
+    expect(operation.failure).toMatchObject({ evidence_confirmed: true });
+    expect(operation.retry?.first_failure).not.toHaveProperty(
+      'evidence_confirmed'
+    );
+    expect(operation.recovery).toMatchObject({
+      classification: 'verification_failure'
+    });
+    expect(repairHandoff.createIssue).not.toHaveBeenCalled();
   });
 
   test('retries a persisted reservation after a failed creation and restart', async () => {
@@ -2897,6 +3131,81 @@ describe('RepoOperation coordinator', () => {
     const operation = store.snapshot(root).repo_operations[operation_id];
     expect(operation.state).not.toBe('failed');
     expect(operation.failure).toBeNull();
+  });
+
+  test('confirms the evidence of a reopened bootstrap run that shares the old log', async () => {
+    const log_path = path.join(root, 'operation.log');
+    const boundary = (
+      /** @type {'start'|'end'} */ event,
+      /** @type {number} */ at,
+      /** @type {Record<string, unknown>} */ extra = {}
+    ) =>
+      formatBoundaryLine({ event, attempt_id: 'earlier', at, ...extra }, false);
+    fs.writeFileSync(
+      log_path,
+      `${boundary('start', 100)}Error: old run\n${boundary('end', 101, { exit_code: 1 })}`
+    );
+    /** @type {{ exit_code: number, signal: null, started_at: number, finished_at: number }|null} */
+    let marker = null;
+    const { store, coordinator } = coordinatorFor({
+      runner: {
+        start: vi.fn(() => {
+          fs.appendFileSync(
+            log_path,
+            `${boundary('start', 300)}Error: new run\n${boundary('end', 301, { exit_code: 2 })}`
+          );
+          marker = {
+            exit_code: 2,
+            signal: null,
+            started_at: 300,
+            finished_at: 301
+          };
+          return {
+            ok: true,
+            process_identity: { pid: 3, pgid: 3, started_at: 3 },
+            log_path
+          };
+        }),
+        readMarker: () => marker,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    spoolRequest(validRequest());
+    await coordinator.reconcile(root);
+    const [operation_id] = Object.keys(store.snapshot(root).repo_operations);
+    store.settleRepoOperation(root, {
+      operation_id,
+      attempt_id: store.snapshot(root).repo_operations[operation_id].attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'old',
+        detail: '',
+        interrupted: false
+      }
+    });
+    marker = null;
+
+    spoolRequest(validRequest({ request_id: 'req-2' }));
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+
+    const operation = store.snapshot(root).repo_operations[operation_id];
+    const settled = operation.retry?.first_failure ?? operation.failure;
+    expect(settled).toMatchObject({ evidence_confirmed: true });
+    expect(settled?.fingerprint).toBe(
+      failureFingerprint({
+        code: 'script_failed',
+        exit_code: 2,
+        signal: null,
+        log_digest: crypto
+          .createHash('sha256')
+          .update('Error: new run\n')
+          .digest('hex')
+      })
+    );
   });
 
   test('settles a running operation from its terminal marker with digest evidence', async () => {

@@ -2894,6 +2894,9 @@ function projectRepoOperations(operations, interactive_sessions = {}) {
             fingerprint: failure.fingerprint,
             detail: sanitizeOutput(failure.detail),
             interrupted: failure.interrupted === true,
+            ...(failure.evidence_confirmed === true
+              ? { evidence_confirmed: true }
+              : {}),
             ...(failure.fetch_failure
               ? { fetch_failure: failure.fetch_failure }
               : {}),
@@ -2925,7 +2928,10 @@ function projectRepoOperations(operations, interactive_sessions = {}) {
               code: raw.retry.first_failure.code,
               fingerprint: raw.retry.first_failure.fingerprint,
               detail: sanitizeOutput(raw.retry.first_failure.detail),
-              interrupted: raw.retry.first_failure.interrupted === true
+              interrupted: raw.retry.first_failure.interrupted === true,
+              ...(raw.retry.first_failure.evidence_confirmed === true
+                ? { evidence_confirmed: true }
+                : {})
             }
           : null,
         blocked_reason: raw.retry?.blocked_reason || null,

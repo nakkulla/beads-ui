@@ -6341,6 +6341,55 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     });
   });
 
+  test('drops the confirmation flag from a consumed retry settled without a marker', () => {
+    const store = createQueueStore();
+    store.ensureRepoOperation(WS, {
+      operation_id: 'deploy-vanished',
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'c'.repeat(40)
+    });
+    const attempt_id =
+      store.snapshot(WS).repo_operations['deploy-vanished'].attempt_id;
+    store.startRepoOperation(WS, {
+      operation_id: 'deploy-vanished',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: '/tmp/deploy-vanished.log',
+      target_sha: 'd'.repeat(40)
+    });
+    store.deferRepoOperationRetry(WS, {
+      operation_id: 'deploy-vanished',
+      attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false,
+        evidence_confirmed: true
+      }
+    });
+    store.consumeRepoOperationRetry(WS, {
+      operation_id: 'deploy-vanished',
+      attempt_id,
+      consumed_key: ['script', 'blob', 'failure']
+    });
+
+    store.settleConsumedRepoOperationRetry(WS, {
+      operation_id: 'deploy-vanished'
+    });
+
+    const operation = store.snapshot(WS).repo_operations['deploy-vanished'];
+    expect(operation.retry?.first_failure?.evidence_confirmed).toBe(true);
+    expect(operation.failure?.evidence_confirmed).toBeUndefined();
+  });
+
   test('normalizes a persisted repairing operation to failed on load', () => {
     const store = createQueueStore();
     store.ensureRepoOperation(WS, {

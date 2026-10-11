@@ -477,7 +477,13 @@ export function retryOutcomeText(operation) {
       return '';
     }
     if (first === operation.failure?.fingerprint) {
-      return '자동 재시도 1회 — 같은 실패';
+      // Equal digests prove a reproduction only when both were computed from
+      // their own attempt's output (UI-ff7r §3.2); the server's local_code_defect
+      // judgment reads the same flags.
+      return retry.first_failure?.evidence_confirmed === true &&
+        operation.failure?.evidence_confirmed === true
+        ? '자동 재시도 1회 — 같은 실패'
+        : '자동 재시도 1회 — 재현 확인 불가';
     }
     const cause = failureText(retry.first_failure?.code);
     return cause

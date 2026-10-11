@@ -556,12 +556,22 @@ describe('operation card 종료 원인 · 재시도 결과 (UI-s582 §2)', () =>
   });
 
   test('renders a consumed retry that hit the same failure', () => {
+    const failure = {
+      code: 'script_failed',
+      fingerprint: 'f'.repeat(64),
+      detail: '',
+      interrupted: false,
+      evidence_confirmed: true
+    };
+
     expect(
       whyLines(
         projected({
+          failure,
           retry: {
             status: 'consumed',
             first_fingerprint: 'f'.repeat(64),
+            first_failure: failure,
             blocked_reason: null,
             absorbed: null
           }

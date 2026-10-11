@@ -893,7 +893,7 @@
  * @property {string|null} log_digest
  * @property {number|null} exit_code
  * @property {string|null} signal
- * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean, summary?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }|null} failure
+ * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean, summary?: string, evidence_confirmed?: boolean, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }|null} failure
  * `summary` is the one line the failing script printed (2026-08-28
  * worker-record-timeline spec §6 row 2), extracted once by the coordinator;
  * absent when the run left no readable output.
@@ -4114,6 +4114,7 @@ function normalizeRepoOperationFailure(value) {
     ...(typeof value.summary === 'string' && value.summary.length > 0
       ? { summary: value.summary }
       : {}),
+    ...(value.evidence_confirmed === true ? { evidence_confirmed: true } : {}),
     ...(value.fetch_failure === 'timeout' || value.fetch_failure === 'nonzero'
       ? { fetch_failure: value.fetch_failure }
       : {}),
@@ -7998,6 +7999,9 @@ export function createQueueStore(options = {}) {
         }
         operation.state = 'failed';
         operation.failure = { ...retry.first_failure };
+        // The copy stands in for a retry whose own output was never settled, so
+        // it is not confirmed evidence of that retry (UI-ff7r §3.2).
+        delete operation.failure.evidence_confirmed;
         operation.finished_at = now();
         operation.process_identity = null;
         if (input.conversation_target === true) {
