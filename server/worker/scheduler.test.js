@@ -1823,7 +1823,7 @@ describe('scheduler work recovery waits', () => {
     }
   );
 
-  test.each(['authority', 'no_progress', 'prerequisite'])(
+  test.each(['authority', 'no_progress', 'credential', 'prerequisite'])(
     'launches an inquiry immediately after recording %s recovery',
     async (reason) => {
       const onParkedAttempt = vi.fn(async () => ({

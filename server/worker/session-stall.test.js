@@ -7,7 +7,7 @@ import {
 import { loadWorkRecoveryPolicy } from './work-recovery-policy.js';
 
 describe('session stall recovery', () => {
-  test.each(['authority', 'no_progress'])(
+  test.each(['authority', 'no_progress', 'credential'])(
     'identifies a current %s stall',
     (reason) => {
       const recovery = { reason, classification: 'session_recovery_wait' };
@@ -47,8 +47,8 @@ describe('session stall recovery', () => {
     expect(isSessionStalledRecovery(recovery, ['UI-blocker'])).toBe(false);
   });
 
-  test.each(['provider', 'credential'])('excludes %s recovery', (reason) => {
-    expect(isSessionStalledRecovery({ reason }, [])).toBe(false);
+  test('excludes provider recovery', () => {
+    expect(isSessionStalledRecovery({ reason: 'provider' }, [])).toBe(false);
   });
 
   test('matches the pinned result-line reasons that need a person', () => {
@@ -56,7 +56,7 @@ describe('session stall recovery', () => {
 
     const expected = pinned.filter(
       (/** @type {string} */ reason) =>
-        !['provider', 'credential', 'prerequisite'].includes(reason)
+        !['provider', 'prerequisite'].includes(reason)
     );
 
     expect([...CONVERSATION_RECOVERY_REASONS].sort()).toEqual(expected.sort());
@@ -78,6 +78,14 @@ describe('conversation stop label', () => {
     });
 
     expect(label).toBe('recovery:no_progress');
+  });
+
+  test('labels a credential recovery by its reason', () => {
+    const label = conversationStopLabel({
+      recovery: { reason: 'credential' }
+    });
+
+    expect(label).toBe('recovery:credential');
   });
 
   test('marks a legacy recovery as an old record', () => {

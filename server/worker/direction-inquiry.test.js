@@ -17,14 +17,14 @@ import {
 /**
  * Digest of the fenced `text` block under `## Worker 세션 대화` in dotfiles
  * `src/shared/skills/flow/workflow/references/execution-common.md` at commit
- * `9e04a76d966994048d2e2e948b277adbce141db1` (dotfiles-ids1k, UI-jbl1 §3.5),
- * taken over the block's inner content WITHOUT a trailing newline (3179
+ * `3b7a309fc5e01601325323e889b0f7e103b7a4d0` (dotfiles-imy71, UI-c74x §3.2),
+ * taken over the block's inner content WITHOUT a trailing newline (3190
  * bytes). The two repositories are deliberately NOT compared at runtime: the
  * Worker `[verify]` checkout has no dotfiles path, so a cross-repo read would
  * be a test that never runs.
  */
 const ENTRY_BLOCK_DIGEST =
-  'c08b50d08a5f1eddd32934db725972f9ade06e6a9de8bc5a9816660bbba0ea53';
+  '0cd2a434c66408d0bfb7a0bcbf34639846d51add5fd7cc158b810c53a8b929bf';
 
 const BEAD = 'UI-7uid';
 const AWAITING = 'spec_review_stale:revise';
@@ -322,7 +322,7 @@ describe('direction-inquiry entry block', () => {
   test('carries no trailing newline', () => {
     const bytes = Buffer.byteLength(CONVERSATION_ENTRY_BLOCK, 'utf8');
 
-    expect(bytes).toBe(3179);
+    expect(bytes).toBe(3190);
     expect(CONVERSATION_ENTRY_BLOCK.endsWith('\n')).toBe(false);
   });
 
@@ -918,6 +918,19 @@ describe('direction-inquiry click', () => {
     const outcome = await inquiry.launchForClick(parkedInput());
 
     expect(outcome.session).toBe('launched');
+  });
+
+  test('opens a credential recovery under its own reason', async () => {
+    const tmux = makeTmux({
+      panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
+    });
+    const { inquiry } = makeInquiry({ tmux });
+
+    await inquiry.launchForClick(
+      recoveryInput({ recovery: { reason: 'credential' } })
+    );
+
+    expect(tmux.wrapper()).toContain('- 대화 사유: 멈춤 recovery:credential\n');
   });
 
   test('opens a clicked non-target recovery under its own reason', async () => {
