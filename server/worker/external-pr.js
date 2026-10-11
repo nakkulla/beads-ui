@@ -324,6 +324,20 @@ export function createExternalPrStore(options = {}) {
     },
 
     /**
+     * Forget one Bead's status when a write landed but its readback could not
+     * confirm it, so a reader asks bd again instead of trusting the stale
+     * value until the next scan.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     */
+    forgetStatus(workspace, bead_id) {
+      statuses_by_workspace
+        .get(path.resolve(String(workspace || '')))
+        ?.delete(bead_id);
+    },
+
+    /**
      * One Bead's last known status, or null when no scan or readback read it.
      *
      * @param {string} workspace

@@ -613,6 +613,27 @@ describe('[보관 해제] of a deferred bead (UI-0d9i §3.3)', () => {
     expect(reply.payload).toMatchObject({ applied: false, reason: 'deferred' });
   });
 
+  test('asks bd again after a defer whose readback failed', async () => {
+    deferFixture();
+    getWorkerRuntime().externalPrs.replaceStatuses('', { 'UI-1': 'resolved' });
+    bd.fail_show_after_write = true;
+    const sock = fakeSocket();
+    await call(sock, 'worker-bead-defer', {
+      bead_id: 'UI-1',
+      reason: '나중에',
+      remove_edges: []
+    });
+    bd.fail_show_after_write = false;
+
+    const reply = await call(sock, 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: false,
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    expect(reply.payload).toMatchObject({ applied: false, reason: 'deferred' });
+  });
+
   test('refuses the unshelve when the status cannot be read', async () => {
     deferFixture();
     bd.fail_show = true;

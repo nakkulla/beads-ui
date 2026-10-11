@@ -6623,6 +6623,20 @@ function noteBeadStatus(key, bead_id, status) {
 }
 
 /**
+ * Forget a status an unconfirmed write may have changed (see {@link noteBeadStatus}).
+ *
+ * @param {string} key
+ * @param {string} bead_id
+ */
+function forgetBeadStatus(key, bead_id) {
+  try {
+    getWorkerRuntime().externalPrs.forgetStatus(key, bead_id);
+  } catch (err) {
+    log('bead status forget failed for %s: %o', bead_id, err);
+  }
+}
+
+/**
  * The bd door the defer/revive transitions use for one target workspace: every
  * write goes through {@link runBdInWorkspace} (the workspace effect gate) and
  * every read is a projected bd JSON read in the same root.
@@ -6910,6 +6924,10 @@ export async function handleWorkerBeadDefer(ws, req) {
     if (result.outcome === 'applied' || result.outcome === 'partial') {
       noteBeadStatus(key, p.bead_id, 'deferred');
       recordUserAction(key, p.bead_id, 'bead_defer', '[보류로 전환] 클릭');
+    } else if (result.outcome === 'unknown') {
+      // The write landed but its readback did not confirm it: drop the
+      // pre-write status so [보관 해제] asks bd instead of passing on it.
+      forgetBeadStatus(key, p.bead_id);
     }
   } finally {
     release();
