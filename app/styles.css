@@ -5009,6 +5009,15 @@ summary.repo-ops-log-viewer__attempt-head {
   max-height: var(--lane-max-h);
 }
 
+/* 터치 기기는 상한을 푼다 (UI-n2n5): 스크롤바가 숨어 레인 안쪽의 카드가 없는
+   것처럼 보이고, 손가락이 닿은 자리에 따라 문서와 레인 중 스크롤 대상이
+   바뀐다. 문서 스크롤 하나만 남긴다. */
+@media (any-pointer: coarse) {
+  .worker-lanes > .worker-pane {
+    max-height: none;
+  }
+}
+
 .worker-pane {
   display: flex;
   flex: 1;
@@ -5991,6 +6000,27 @@ summary.repo-ops-log-viewer__attempt-head {
 .worker-sort:hover {
   border-color: var(--border-chip);
   color: var(--text-primary);
+}
+
+/* 후보 정렬의 `정렬` 라벨 (UI-n2n5) — select 대신 이 묶음이 헤더 오른쪽에
+   선다. 터치 기기에는 hover가 없으므로 select 테두리를 늘 보여 준다. */
+.worker-sort-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-left: auto;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.worker-sort-field > .worker-sort {
+  margin-left: 0;
+}
+
+@media (any-pointer: coarse) {
+  .worker-sort-field > .worker-sort {
+    border-color: var(--border-chip);
+  }
 }
 
 /* 정렬 체인 편집 줄 (UI-d13v §4.4) — 헤더 select 바로 아래 한 줄. 크기 체계는

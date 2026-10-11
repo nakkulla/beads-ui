@@ -165,29 +165,36 @@ export function fieldFiltersTemplate({
  * turned out to be — an edit that happens to land on a preset must not yank the
  * row shut under the cursor (§4.3 still stores it as that preset).
  *
+ * The always-visible `정렬` label (UI-n2n5) is what reads as a sort control: a
+ * bare preset name like `spec 우선` does not, least of all on touch screens
+ * that never show the hover border.
+ *
  * @param {{ sort: CandidateSortState, chain_open: boolean, extra_class?: string }} input
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateSortSelectTemplate({ sort, chain_open, extra_class }) {
   const current = chain_open ? 'custom' : presetIdOf(sort) || 'custom';
-  return html`<select
-    class="ui-select ui-select--bare worker-sort${extra_class
-      ? ` ${extra_class}`
-      : ''}"
-    aria-label="후보 정렬"
-    title="후보 정렬"
-    .value=${current}
-  >
-    ${CANDIDATE_SORT_PRESETS.map(
-      (o) =>
-        html`<option value=${o.id} ?selected=${current === o.id}>
-          ${o.label}
-        </option>`
-    )}
-    <option value="custom" ?selected=${current === 'custom'}>
-      사용자 지정…
-    </option>
-  </select>`;
+  return html`<label class="worker-sort-field">
+    <span class="worker-sort-field__label">정렬</span>
+    <select
+      class="ui-select ui-select--bare worker-sort${extra_class
+        ? ` ${extra_class}`
+        : ''}"
+      aria-label="후보 정렬"
+      title="후보 정렬"
+      .value=${current}
+    >
+      ${CANDIDATE_SORT_PRESETS.map(
+        (o) =>
+          html`<option value=${o.id} ?selected=${current === o.id}>
+            ${o.label}
+          </option>`
+      )}
+      <option value="custom" ?selected=${current === 'custom'}>
+        사용자 지정…
+      </option>
+    </select>
+  </label>`;
 }
 
 /**

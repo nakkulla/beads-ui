@@ -135,6 +135,11 @@ beads-ui의 지금 색·글꼴은 그대로 두고, 조작(버튼·입력·선�
 - 라벨 글자 옆에 선택 하나가 서는 필터(비교 탭 `기간`·`저장소`·`route`·`정렬`)는
   select가 부품(`.ui-select`)을 받고 라벨은 배치 역할로 남는다 — 상자를 그리지
   않던 라벨을 `.ui-field` 상자로 바꾸지 않는다.
+- 후보 레인 머리의 정렬 select는 글자형(`.ui-select--bare worker-sort`)이지만 늘
+  보이는 `정렬` 라벨과 함께 `label.worker-sort-field`에 담긴다(Worker·Monitor가
+  `candidateSortSelectTemplate` 하나를 쓴다). 프리셋 이름(`spec 우선`)만으로는
+  정렬 조작으로 읽히지 않기 때문이다. hover가 없는 터치
+  기기(`any-pointer: coarse`)에서는 select 테두리를 늘 그린다.
 - 글자 몇 자 폭으로 고정된 입력(비교 탭 문제 기준의 `5ch` 숫자 칸)은 부품 여백이
   전역 입력 여백보다 넓어진 만큼 역할 규칙이 폭을 넓혀 값이 서는 자리를 지킨다
   (`calc(5ch + 2 * (var(--px-control) - var(--space-3)))`).

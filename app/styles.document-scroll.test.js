@@ -76,6 +76,15 @@ describe('document scroll layout', () => {
     expect(lane).toMatch(/max-height:\s*var\(--lane-max-h\)/);
   });
 
+  test('releases the lane cap on touch devices', () => {
+    const coarse = ruleBody(
+      RULES,
+      /@media \(any-pointer: coarse\)\s*{\s*\.worker-lanes > \.worker-pane\s*{([^}]*)}/
+    );
+
+    expect(coarse).toMatch(/max-height:\s*none/);
+  });
+
   test('keeps the lane body scrollable inside that cap', () => {
     const lane_body = ruleBody(
       RULES,
