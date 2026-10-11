@@ -98,6 +98,25 @@ const STATUS_OPTIONS = [
   'closed'
 ];
 
+/**
+ * The status select's guidance on a deferred issue (UI-0d9i §3.6): `deferred`
+ * is entered and left only through the Worker tab dialogs.
+ */
+export const DEFER_STATUS_NOTE = '보류 전환·되살리기는 Worker 탭에서';
+
+/**
+ * The status choices one issue offers: `deferred` stands only as the current
+ * value of a deferred issue, never as a target (UI-0d9i §3.6).
+ *
+ * @param {string} status
+ * @returns {string[]}
+ */
+export function statusOptionsFor(status) {
+  return status === 'deferred'
+    ? STATUS_OPTIONS
+    : STATUS_OPTIONS.filter((s) => s !== 'deferred');
+}
+
 /** Allowed priority values (handleUpdatePriority accepts a number 0..4). */
 const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
 
@@ -3230,21 +3249,30 @@ export function createDetailPanel(mount_element, options) {
    * @param {number | ''} priority_val
    */
   function propsTemplate(status, priority_val) {
+    const deferred = status === 'deferred';
+    const status_select = html`<select
+      class="ui-select ui-select--bare detail-kv__v detail-kv__v--sel"
+      aria-label="status"
+      data-edit="status"
+      ?disabled=${deferred}
+      @change=${onStatusChange}
+    >
+      ${statusOptionsFor(status).map(
+        (s) => html`<option value=${s} ?selected=${s === status}>${s}</option>`
+      )}
+    </select>`;
     return html`
       <div class="detail-section-label">속성 (수정 가능)</div>
       <div class="detail-kv">
         <span class="detail-kv__k">status</span>
-        <select
-          class="ui-select ui-select--bare detail-kv__v detail-kv__v--sel"
-          aria-label="status"
-          data-edit="status"
-          @change=${onStatusChange}
-        >
-          ${STATUS_OPTIONS.map(
-            (s) =>
-              html`<option value=${s} ?selected=${s === status}>${s}</option>`
-          )}
-        </select>
+        ${deferred
+          ? html`<span class="detail-kv__vgroup"
+              >${status_select}<span
+                class="detail-kv__note detail-kv__defer-note"
+                >${DEFER_STATUS_NOTE}</span
+              ></span
+            >`
+          : status_select}
       </div>
       <div class="detail-kv">
         <span class="detail-kv__k">priority</span>

@@ -115,6 +115,10 @@ import {
   handleWorkerAttemptStop,
   handleWorkerAttemptWithdraw,
   handleWorkerAutomationToggle,
+  handleWorkerBeadDefer,
+  handleWorkerBeadDeferPreview,
+  handleWorkerBeadRevive,
+  handleWorkerBeadRevivePreview,
   handleWorkerCleanupRetry,
   handleWorkerConversationHandoff,
   handleWorkerDiscard,
@@ -701,7 +705,19 @@ export async function handleMessage(ws, data) {
       handleWorkerMergeQueueRemove(ws, req);
       return;
     case 'worker-merge-shelve':
-      handleWorkerMergeShelve(ws, req);
+      await handleWorkerMergeShelve(ws, req);
+      return;
+    case 'worker-bead-defer-preview':
+      await handleWorkerBeadDeferPreview(ws, req);
+      return;
+    case 'worker-bead-defer':
+      await handleWorkerBeadDefer(ws, req);
+      return;
+    case 'worker-bead-revive-preview':
+      await handleWorkerBeadRevivePreview(ws, req);
+      return;
+    case 'worker-bead-revive':
+      await handleWorkerBeadRevive(ws, req);
       return;
     case 'worker-discard':
       await handleWorkerDiscard(ws, req);

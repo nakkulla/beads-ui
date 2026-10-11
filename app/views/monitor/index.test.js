@@ -5641,6 +5641,34 @@ describe('views/monitor PR 대기 보관 (UI-sd12 §3.4)', () => {
     });
   });
 
+  test('draws ⏸ 보류로 전환 only on the shelved row (UI-0d9i §3.1)', () => {
+    const { mount, view } = setupShelf();
+
+    view.load();
+
+    expect(
+      Array.from(mount.querySelectorAll('.worker-mini__defer')).map((button) =>
+        button.closest('.worker-mini')?.getAttribute('data-bead-id')
+      )
+    ).toEqual(['A-2']);
+  });
+
+  test('⏸ 보류로 전환 asks for the preview in the row repo (UI-0d9i §3.3)', async () => {
+    const { mount, view, sent } = setupShelf();
+    view.load();
+
+    click(mount, '.worker-mini[data-bead-id="A-2"] .worker-mini__defer');
+    await vi.waitFor(() =>
+      expect(document.querySelector('.defer-dialog')).not.toBeNull()
+    );
+
+    expect(sent[0]).toEqual({
+      type: 'worker-bead-defer-preview',
+      payload: { bead_id: 'A-2', root_dir: WS_A }
+    });
+    document.querySelector('.defer-dialog')?.remove();
+  });
+
   test('toasts the merge_active refusal', async () => {
     const { mount, view } = setupShelf({}, async () => ({
       applied: false,

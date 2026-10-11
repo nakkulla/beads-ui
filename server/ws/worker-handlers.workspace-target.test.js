@@ -36,6 +36,16 @@ vi.mock('../workspace-snapshot-runtime.js', async (importOriginal) => {
   };
 });
 
+// The defer/revive ops read bd through this seam (UI-0d9i); it passes through
+// to the real reader unless a test answers it.
+vi.mock('../bd.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    runBdJsonProjected: vi.fn(actual.runBdJsonProjected)
+  };
+});
+
 vi.mock('../registry-watcher.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
   return {
@@ -91,6 +101,7 @@ vi.mock('../worker/attach.js', () => {
   };
 });
 
+const { runBdJsonProjected } = await import('../bd.js');
 const { setConnWorkspace } = await import('./context.js');
 const { getWorkerRuntime } = await import('../worker/runtime.js');
 const handlers = await import('./worker-handlers.js');
@@ -355,6 +366,65 @@ describe('worker-queue-place-plan target repo (UI-ruwu §3)', () => {
     expect(store.snapshot(WS_CONN).serial_lanes[0].entries).toEqual([]);
     expect(store.snapshot(WS_TARGET).serial_lanes[0].entries).toEqual([]);
     expect(store.snapshot(WS_FORBIDDEN).serial_lanes[0].entries).toEqual([]);
+  });
+});
+
+describe.each([
+  {
+    action: 'worker-bead-defer-preview',
+    run: handlers.handleWorkerBeadDeferPreview,
+    payload: { bead_id: 'UI-1' }
+  },
+  {
+    action: 'worker-bead-defer',
+    run: handlers.handleWorkerBeadDefer,
+    payload: { bead_id: 'UI-1', reason: '나중에', remove_edges: [] }
+  },
+  {
+    action: 'worker-bead-revive-preview',
+    run: handlers.handleWorkerBeadRevivePreview,
+    payload: { bead_id: 'UI-1' }
+  },
+  {
+    action: 'worker-bead-revive',
+    run: handlers.handleWorkerBeadRevive,
+    payload: { bead_id: 'UI-1', restore_edges: [] }
+  }
+])('$action workspace targeting (UI-0d9i §3.3)', (row) => {
+  beforeEach(() => {
+    // An `open` bead: every op reads it once and refuses before any write.
+    vi.mocked(runBdJsonProjected).mockReset();
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        protocol: { format: 'bare', schema_version: null },
+        data: { id: 'UI-1', status: 'open', metadata: {} }
+      })
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(runBdJsonProjected).mockReset();
+  });
+
+  test('reads bd in the workspace named by root_dir', async () => {
+    await dispatch(row, { ...row.payload, root_dir: WS_TARGET });
+
+    const cwds = vi
+      .mocked(runBdJsonProjected)
+      .mock.calls.map((call) => /** @type {any} */ (call[2])?.cwd);
+    expect(cwds.length).toBeGreaterThan(0);
+    expect(new Set(cwds)).toEqual(new Set([WS_TARGET]));
+  });
+
+  test('reads no bd when root_dir is outside the workspace list', async () => {
+    const { replies } = await dispatch(row, {
+      ...row.payload,
+      root_dir: WS_FORBIDDEN
+    });
+
+    expect(replies[0].error.code).toBe('bad_request');
+    expect(vi.mocked(runBdJsonProjected)).not.toHaveBeenCalled();
   });
 });
 

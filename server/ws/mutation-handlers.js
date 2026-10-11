@@ -5,6 +5,7 @@
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
+import { beadDeferLockKey } from '../worker/bead-defer.js';
 import {
   ACCOUNT_KEYS,
   AUTO_LITERAL,
@@ -32,6 +33,9 @@ const UPDATE_STATUS_ALLOWED = new Set([
   'resolved',
   'closed'
 ]);
+
+/** The `use_defer_dialog` refusal text (UI-0d9i §3.6). */
+const USE_DEFER_DIALOG = '보류 전환·되살리기는 Worker 탭에서';
 
 /**
  * Resolve an optional dependency-mutation root. Explicit roots must be both
@@ -648,6 +652,57 @@ export async function handleUpdateStatus(ws, req) {
           "payload requires { id: string, status: 'open'|'in_progress'|'deferred'|'resolved'|'closed' }"
         )
       )
+    );
+    return;
+  }
+  // `deferred` is entered and left only through the Worker tab's dialogs
+  // (UI-0d9i §3.6), which carry the contract's reason, dependent edges and
+  // origin check. The current status is read first so a deferred issue cannot
+  // be moved out of it here either; an unreadable one writes nothing.
+  if (status === 'deferred') {
+    ws.send(
+      JSON.stringify(makeError(req, 'use_defer_dialog', USE_DEFER_DIALOG))
+    );
+    return;
+  }
+  // The read, the write and the readback hold the Bead's defer lock — the
+  // one a [보류로 전환] holds through its `bd defer` — so a late status change
+  // cannot read the pre-defer status and then overwrite a just-landed
+  // `deferred` (UI-0d9i §3.6). The key is this connection's workspace, the
+  // same one a Worker op without `root_dir` names.
+  const release = await getWorkerRuntime().locks.acquire(
+    beadDeferLockKey(targetWorkspaceOf(ws, {}) ?? '', id)
+  );
+  try {
+    await updateStatusHeld(ws, req, id, status);
+  } finally {
+    release();
+  }
+}
+
+/**
+ * The read, write and readback of {@link handleUpdateStatus}, run with the
+ * Bead's defer lock held.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {string} id
+ * @param {string} status
+ */
+async function updateStatusHeld(ws, req, id, status) {
+  const current = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    { expected_id: id }
+  );
+  if (current.ok !== true) {
+    ws.send(JSON.stringify(makeError(req, 'bd_error', current.error.message)));
+    return;
+  }
+  if (current.data?.status === 'deferred') {
+    ws.send(
+      JSON.stringify(makeError(req, 'use_defer_dialog', USE_DEFER_DIALOG))
     );
     return;
   }

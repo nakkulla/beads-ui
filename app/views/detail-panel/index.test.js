@@ -1479,6 +1479,44 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('leaves deferred out of the status choices of an issue that is not deferred (UI-0d9i §3.6)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      baseIssue,
+      vi.fn().mockResolvedValue(baseIssue)
+    );
+
+    const options = Array.from(
+      mount.querySelectorAll('select[data-edit="status"] option')
+    ).map((option) => /** @type {HTMLOptionElement} */ (option).value);
+
+    expect(options).not.toContain('deferred');
+    expect(options).toContain('resolved');
+    panel.destroy();
+  });
+
+  test('disables the status select of a deferred issue and points at the Worker tab (UI-0d9i §3.6)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const deferred = { ...baseIssue, status: 'deferred' };
+    const { panel } = seedPanel(
+      mount,
+      deferred,
+      vi.fn().mockResolvedValue(deferred)
+    );
+
+    const sel = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-edit="status"]')
+    );
+
+    expect(sel.disabled).toBe(true);
+    expect(sel.value).toBe('deferred');
+    expect(
+      mount.querySelector('.detail-kv__defer-note')?.textContent?.trim()
+    ).toBe('보류 전환·되살리기는 Worker 탭에서');
+    panel.destroy();
+  });
+
   test('priority select change sends update-priority with a number', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi.fn().mockResolvedValue(baseIssue);

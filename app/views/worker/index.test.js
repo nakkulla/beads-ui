@@ -17866,6 +17866,44 @@ describe('Worker inspection shelf (UI-81vb)', () => {
     next.view.destroy();
   });
 
+  test('draws ↺ 되살리기 on deferred shelf cards and not on inspection cards (UI-0d9i §3.5)', () => {
+    const { mount, view } = mountHygiene([hygiene]);
+
+    expect(
+      mount.querySelectorAll('.worker-deferred .worker-card__revive').length
+    ).toBe(1);
+    expect(mount.querySelector('.worker-hygiene .worker-card__revive')).toBe(
+      null
+    );
+    view.destroy();
+  });
+
+  test('opens the revive dialog with its preview from ↺ 되살리기 (UI-0d9i §3.5)', async () => {
+    const transport = vi.fn(async () => ({
+      bead_id: 'DF-1',
+      ok: true,
+      target: 'open',
+      pr_state: null,
+      pr_url: null,
+      restorable: [],
+      shelved: false
+    }));
+    const { mount, view } = mountHygiene([], { transport });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-deferred .worker-card__revive')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.defer-dialog')).not.toBeNull()
+    );
+
+    expect(transport).toHaveBeenCalledWith('worker-bead-revive-preview', {
+      bead_id: 'DF-1'
+    });
+    document.querySelector('.defer-dialog')?.remove();
+    view.destroy();
+  });
+
   test('keeps filtered inspection labels available for selection', () => {
     presetCandidateFilter({ labels: ['alpha'] });
     const { mount, view } = mountHygiene([

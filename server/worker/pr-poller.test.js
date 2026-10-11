@@ -1352,6 +1352,47 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     expect(store.recordCleanupFailure).not.toHaveBeenCalled();
   });
 
+  test.each(['bead_deferred', 'bead_status_unreadable'])(
+    'records no cleanup failure for a %s skip (UI-0d9i §3.4)',
+    async (reason) => {
+      const onMerged = vi.fn(async () => ({ ok: false, reason }));
+      const { poller, store } = makePoller({
+        detail: {
+          state: 'ok',
+          data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+        },
+        onMerged
+      });
+
+      await poller.tick();
+
+      expect(onMerged).toHaveBeenCalledOnce();
+      expect(store.recordCleanupFailure).not.toHaveBeenCalled();
+    }
+  );
+
+  test('hands the MERGED row to the cleanup again on the next pass after a deferred skip', async () => {
+    let status = 'deferred';
+    const onMerged = vi.fn(async () =>
+      status === 'deferred'
+        ? { ok: false, reason: 'bead_deferred' }
+        : { ok: true }
+    );
+    const { poller } = makePoller({
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
+      onMerged
+    });
+    await poller.tick();
+    status = 'resolved';
+
+    await poller.tick();
+
+    expect(onMerged).toHaveBeenCalledTimes(2);
+  });
+
   test('records other false cleanup outcomes as durable failures', async () => {
     const onMerged = vi.fn(async () => ({
       ok: false,

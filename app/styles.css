@@ -8702,6 +8702,87 @@ button.detail-session__leg:focus-visible {
   justify-content: flex-end;
 }
 
+/* `⏸ 보류로 전환`·`↺ 되살리기` 확인 창 (UI-0d9i §3.2·§3.5). 프레임·제목·버튼 줄은
+   `.op-dialog`·`.op-btn`이 정한다. 여기 남는 것은 사유 칸, 간선 목록, 안내·오류
+   줄의 색과 배치뿐이다 — 긴 ID·제목은 좁은 폭에서 줄을 바꾼다. */
+.defer-dialog__reason {
+  display: grid;
+  gap: var(--sp-4);
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+}
+
+.defer-dialog__reason-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(var(--h-control) * 3);
+  resize: vertical;
+}
+
+.defer-dialog__target,
+.defer-dialog__none,
+.defer-dialog__note,
+.defer-dialog__loading {
+  margin: var(--sp-10) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+}
+
+.defer-dialog__edges {
+  margin: var(--sp-10) 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.defer-dialog__edge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-6);
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.defer-dialog__edge-id {
+  font-family: var(--font-mono, monospace);
+}
+
+.defer-dialog__edge-title {
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.defer-dialog__guide {
+  margin: var(--sp-10) 0 0;
+  padding: 0 0 0 var(--sp-16);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.defer-dialog__error {
+  margin: var(--sp-10) 0 0;
+  color: var(--accent-danger);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.defer-dialog__actions {
+  justify-content: flex-end;
+}
+
+/* 보류 이슈의 status 안내 (UI-0d9i §3.6): 한글 문장이라 좁은 폭에서 줄을 바꾼다. */
+.detail-kv__defer-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: inherit;
+  overflow-wrap: anywhere;
+}
+
 /* ============================================================================
    통합 설정 다이얼로그 (spec §D) — 좌측 레일이 소유권 경계다: 세션 = 모든
    세션의 전역 기본값(bd kv), Worker = 이 워크스페이스의 오케스트레이션 값,

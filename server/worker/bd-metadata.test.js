@@ -694,6 +694,34 @@ describe('worker/bd-metadata scanBeads (UI-7agi §1, UI-m6bg)', () => {
     ]);
   });
 
+  test('returns a deferred bead carrying a pr_url as a deferred PR row only (UI-0d9i §3.4)', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [
+        ...ROWS,
+        {
+          id: 'UI-5',
+          status: 'deferred',
+          metadata: { pr_url: 'https://github.com/o/r/pull/13' }
+        },
+        { id: 'UI-6', status: 'deferred', metadata: {} }
+      ]
+    }));
+
+    const { pr_rows, deferred_pr_rows } = await createBdMetadata({
+      runJson
+    }).scanBeads();
+
+    expect(deferred_pr_rows).toEqual([
+      {
+        bead_id: 'UI-5',
+        pr_url: 'https://github.com/o/r/pull/13',
+        metadata: {}
+      }
+    ]);
+    expect(pr_rows.map((row) => row.bead_id)).toEqual(['UI-1']);
+  });
+
   test('projects every receipt metadata key onto the scanned row', async () => {
     const metadata = Object.fromEntries([
       ['pr_url', 'https://github.com/o/r/pull/7'],

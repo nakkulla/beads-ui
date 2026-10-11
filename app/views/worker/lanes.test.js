@@ -4440,6 +4440,50 @@ describe('worker templates are unchanged without the monitor options', () => {
     expect(card).not.toContain('↴ 대기로');
   });
 
+  test('draws ↺ 되살리기 on the op-btn part when the shelf asks for it (UI-0d9i §3.5)', () => {
+    const host = document.createElement('div');
+
+    render(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-d3',
+          title: '보류 카드',
+          lane: 'candidate',
+          draggable: false,
+          queue_placeable: false,
+          reason: ''
+        }),
+        null,
+        { variant: 'deferred', revive: true }
+      ),
+      host
+    );
+
+    const button = host.querySelector(
+      '.worker-card__foot .worker-card__revive'
+    );
+    expect(button?.className).toBe('op-btn worker-card__revive');
+    expect(button?.textContent?.trim()).toBe('↺ 되살리기');
+  });
+
+  test('draws no ↺ 되살리기 on a deferred-variant card without the option', () => {
+    const card = shape(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-d4',
+          title: '점검 카드',
+          lane: 'candidate',
+          draggable: false,
+          queue_placeable: false
+        }),
+        null,
+        { variant: 'deferred' }
+      )
+    );
+
+    expect(card).not.toContain('worker-card__revive');
+  });
+
   test('omits the readiness chip from a deferred-variant card', () => {
     const card = shape(
       candidateCard(
@@ -6414,6 +6458,31 @@ describe('shelveReplyToast (UI-sd12 §3.4)', () => {
     expect(
       shelveReplyToast({ applied: false, conflict: false }, 'UI-1', true)
     ).toBeNull();
+  });
+
+  test('points a refused unshelve of a deferred bead at 되살리기 (UI-0d9i §3.3)', () => {
+    const toast = shelveReplyToast(
+      { applied: false, conflict: false, reason: 'deferred' },
+      'UI-1',
+      false
+    );
+
+    expect(toast).toEqual({
+      text: 'UI-1는 보류 중이라 보관을 풀 수 없습니다 — 「보류 N」에서 되살리면 함께 풀립니다',
+      type: 'error'
+    });
+  });
+
+  test('names the unshelve when a running merge refuses it (UI-0d9i §3.3)', () => {
+    const toast = shelveReplyToast(
+      { applied: false, conflict: false, reason: 'merge_active' },
+      'UI-1',
+      false
+    );
+
+    expect(toast?.text).toBe(
+      '머지 큐가 이 PR을 처리 중이라 지금은 보관을 풀 수 없습니다 — 처리가 끝나거나 차례를 넘긴 뒤 다시 누르세요'
+    );
   });
 });
 

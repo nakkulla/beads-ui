@@ -50,6 +50,19 @@ import { resolveRepoOps as defaultResolveRepoOps } from './repo-ops-resolver.js'
 const log = debug('worker:pr-poller');
 
 /**
+ * Cleanup refusals that only skip THIS observation — the next pass observes
+ * again, so none of them is recorded as a cleanup failure. `bead_deferred` and
+ * `bead_status_unreadable` are the deferred-Bead pause (UI-0d9i §3.4).
+ *
+ * @type {ReadonlySet<string|null|undefined>}
+ */
+const CLEANUP_SKIP_REASONS = new Set([
+  'action_in_flight',
+  'bead_deferred',
+  'bead_status_unreadable'
+]);
+
+/**
  * Poll cadence. Spec §4 fixes the band at 30–60 s; 45 s sits in the middle —
  * it halves the query volume of a 30 s cadence while keeping worst-case badge
  * staleness inside the spec ceiling, and with two `gh` calls per open PR per
@@ -941,9 +954,11 @@ export function createPrPoller(deps) {
         merge_sha,
         refs
       );
+      // A deferred Bead's skipped observation is no failure (UI-0d9i §3.4): a
+      // `cleanup_failed` record would keep the cleanup off it after revival.
       if (
         result?.ok === false &&
-        result.reason !== 'action_in_flight' &&
+        !CLEANUP_SKIP_REASONS.has(result.reason) &&
         !deps.store.snapshot(workspace).cleanup_failed?.[bead_id]
       ) {
         const reason = result.reason || 'cleanup_observer_failed';

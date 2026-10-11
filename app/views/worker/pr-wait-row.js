@@ -1261,6 +1261,18 @@ function prWaitRow(
               progress_input.merge_sha.length > 0)
           ? null
           : 'shelve',
+    // [⏸ 보류로 전환] (UI-0d9i §3.1): only on a shelved row, and only where
+    // [보관] itself would stand — not once the merge is observed or cleaning.
+    defer_action:
+      shelved &&
+      !foreign_pr &&
+      gate?.tier !== 'merged' &&
+      !cleanup_failed &&
+      !(
+        typeof progress_input.merge_sha === 'string' &&
+        progress_input.merge_sha.length > 0
+      ),
+    defer_enabled: merge_step?.active !== true,
     // Only a step still running locks the button: a stopped cleanup is a
     // step object too, and [보관 해제] is that row's way back to its retry.
     shelve_enabled: merge_step?.active !== true,

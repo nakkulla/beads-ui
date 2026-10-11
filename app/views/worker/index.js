@@ -66,6 +66,7 @@ import {
   fieldFiltersTemplate,
   labelOptionsOf
 } from './candidate-tools.js';
+import { openDeferDialog } from './defer-dialog.js';
 import {
   resolveLaunchText,
   runExternalWaitAction,
@@ -1510,6 +1511,31 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Open the `⏸ 보류로 전환` or `↺ 되살리기` dialog (UI-0d9i §3.2·§3.5). The
+   * dialog owns the preview, the confirm and the toasts; the reply's queue is
+   * adopted here like every other worker op's.
+   *
+   * @param {string} bead_id
+   * @param {'defer'|'revive'} mode
+   */
+  async function openDeferFlow(bead_id, mode) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    const send = transport;
+    const result = await openDeferDialog(
+      { mode, bead_id },
+      {
+        transport: (type, payload) => send(type, payload),
+        toast: (text, type) => showToast(text, type, 3600)
+      }
+    );
+    if (result.res) {
+      adopt(result.res);
+    }
+  }
+
+  /**
    * Empty the queue ([일괄 머지 중단]): drop every WAITING item, while the
    * active one runs to completion — its merge already reached GitHub.
    */
@@ -2101,6 +2127,9 @@ export function createWorkerView(mount_element, options = {}) {
         ${rows.map((row) =>
           candidateCard(row, null, {
             variant: 'deferred',
+            // `↺ 되살리기`는 「보류 N」 카드에만 선다 — 「자동 점검」 카드는 보류가
+            // 아니다 (UI-0d9i §3.5).
+            revive: kind === 'deferred',
             onOpenDoc: openDoc
               ? (/** @type {Event} */ _ev, /** @type {any} */ doc) =>
                   openDoc(doc)
@@ -3472,6 +3501,18 @@ export function createWorkerView(mount_element, options = {}) {
     if (target?.closest?.('.worker-shelved__summary')) {
       shelved_open = !shelved_open;
       saveOpenFlag(SHELVED_OPEN_KEY, shelved_open);
+      return;
+    }
+    // `⏸ 보류로 전환`(보관 행)·`↺ 되살리기`(보류 카드) (UI-0d9i §3.1·§3.5): 카드
+    // 클릭(상세 열기)보다 먼저 버튼이 클릭을 가진다.
+    const defer_btn = /** @type {HTMLButtonElement|null} */ (
+      target?.closest?.('.worker-mini__defer, .worker-card__revive')
+    );
+    if (defer_btn) {
+      void openDeferFlow(
+        defer_btn.dataset.beadId || '',
+        defer_btn.classList.contains('worker-card__revive') ? 'revive' : 'defer'
+      );
       return;
     }
     const external_open = target.closest('[data-external-open]');

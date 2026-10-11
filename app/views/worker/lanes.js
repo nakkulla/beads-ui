@@ -1971,6 +1971,11 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {boolean} [shelve_enabled] - Whether [보관]/[보관 해제] may be
  * clicked; false while a merge step runs on the row.
  * @property {string} [shelve_title] - Tooltip for [보관]/[보관 해제].
+ * @property {boolean} [defer_action] - Render `⏸ 보류로 전환` right after
+ * [보관 해제] (UI-0d9i §3.1): shelved rows only, never once the merge is
+ * observed or cleaning.
+ * @property {boolean} [defer_enabled] - Whether `⏸ 보류로 전환` may be
+ * clicked; false while a merge step runs on the row.
  * @property {boolean} [revise_action] - Render the REVISE-disposition actions
  * (`queue` rows parked at `spec_review_stale:revise`, UI-hs11 §3.5).
  * @property {boolean} [revise_enabled] - Whether the two disposition buttons
@@ -3898,6 +3903,18 @@ export function miniRow(item, options = {}) {
         ${item.shelve_action === 'shelve' ? '보관' : '보관 해제'}
       </button>`
     : '';
+  // `⏸ 보류로 전환` (UI-0d9i §3.1): slot 6, right after [보관 해제].
+  const defer_el = item.defer_action
+    ? html`<button
+        type="button"
+        class="op-btn worker-mini__defer"
+        data-bead-id=${item.id}
+        ?disabled=${item.defer_enabled === false}
+        title=${DEFER_BUTTON_TITLE}
+      >
+        ⏸ 보류로 전환
+      </button>`
+    : '';
   const discard = item.discard;
   const discard_el =
     discard?.action || item.discard_action
@@ -4080,6 +4097,7 @@ export function miniRow(item, options = {}) {
     item.merge_action ||
     item.cancel_action ||
     item.shelve_action ||
+    item.defer_action ||
     item.resolve_action ||
     item.handoff_action ||
     item.discard_action ||
@@ -4160,7 +4178,7 @@ export function miniRow(item, options = {}) {
                     'external'
                   )}${external_foot_el}${session_before(
                     'merge'
-                  )}${merge_el}${cancel_el}${shelve_el}${discard_actions_el}${revise_els}</span
+                  )}${merge_el}${cancel_el}${shelve_el}${defer_el}${discard_actions_el}${revise_els}</span
                 >
                 ${discardReceiptTemplate(item)}
               </div>`
@@ -4898,14 +4916,17 @@ export { AWAITING_USER_REASON_PREFIX } from '../../utils/awaiting-user-reason.js
  * 같은 슬롯 표를 쓰되 (1) foot의 `[↴ 대기로]`와 place 메뉴를 그리지 않고,
  * (2) 슬롯 4a 준비도 칩을 그리지 않으며 — 자격을 묻지 않는 선반이다 —,
  * (3) route tint 대신 `worker-card--deferred` 하나를 준다.
+ * `options.revive`는 「보류 N」 선반만 넘긴다 (UI-0d9i §3.5): 같은 변형을 쓰는
+ * 「자동 점검」 선반 카드에는 foot의 `↺ 되살리기`가 서지 않는다.
  *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
- * @param {{ onOpenDoc?: import('../stepper.js').OpenDocHandler, variant?: 'deferred', chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [options]
+ * @param {{ onOpenDoc?: import('../stepper.js').OpenDocHandler, variant?: 'deferred', revive?: boolean, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {
   const is_deferred = options.variant === 'deferred';
+  const revive = is_deferred && options.revive === true;
   // Observation-only rows (UI-8881) are refused here as well as by the
   // projection, so the card cannot become placeable through a caller that
   // forgot the conjunction.
@@ -5089,7 +5110,8 @@ export function candidateCard(item, place_menu = null, options = {}) {
     ${is_deferred
       ? // 보류 변형에도 외부 대기 조작은 foot이다 (UI-l48z §4.3): 보류가 관찰을
         // 멈추지 않으므로 확인·중단·재개 출구가 카드에서 사라지면 안 된다.
-        item.reason || external.badge
+        // `↺ 되살리기`는 그 뒤 슬롯 6이다 (UI-0d9i §3.5).
+        item.reason || external.badge || revive
         ? html`<div
             class="worker-card__foot${item.reason
               ? ''
@@ -5099,6 +5121,15 @@ export function candidateCard(item, place_menu = null, options = {}) {
               ? html`<span class="worker-card__reason">${item.reason}</span>`
               : ''}${external.badge
               ? html`${external_session_el}${external.actions}`
+              : ''}${revive
+              ? html`<button
+                  type="button"
+                  class="op-btn worker-card__revive"
+                  data-bead-id=${item.id}
+                  title=${REVIVE_BUTTON_TITLE}
+                >
+                  ↺ 되살리기
+                </button>`
               : ''}
           </div>`
         : ''
@@ -5552,12 +5583,36 @@ export function shelveReplyToast(res, bead_id, on) {
   }
   if (res.reason === 'merge_active') {
     return {
-      text: '머지 큐가 이 PR을 처리 중이라 지금은 보관할 수 없습니다 — 처리가 끝나거나 차례를 넘긴 뒤 다시 누르세요',
+      text: `머지 큐가 이 PR을 처리 중이라 지금은 ${on ? '보관할' : '보관을 풀'} 수 없습니다 — 처리가 끝나거나 차례를 넘긴 뒤 다시 누르세요`,
+      type: 'error'
+    };
+  }
+  // 보류된 Bead의 보관은 되살리기가 푼다 (UI-0d9i §3.3).
+  if (res.reason === 'deferred') {
+    return {
+      text: `${bead_id}는 보류 중이라 보관을 풀 수 없습니다 — 「보류 N」에서 되살리면 함께 풀립니다`,
+      type: 'error'
+    };
+  }
+  if (res.reason === 'defer_active') {
+    return {
+      text: `${bead_id} 보류 전환·되살리기가 진행 중입니다 — 끝난 뒤 다시 누르세요`,
       type: 'error'
     };
   }
   if (typeof res.reason === 'string' && res.reason.length > 0) {
-    return { text: `보관하지 못했습니다: ${res.reason}`, type: 'error' };
+    return {
+      text: `${on ? '보관' : '보관 해제'}하지 못했습니다: ${res.reason}`,
+      type: 'error'
+    };
   }
   return null;
 }
+
+/** Tooltip of `⏸ 보류로 전환` (UI-0d9i §3.1). */
+export const DEFER_BUTTON_TITLE =
+  '이 이슈를 deferred(더 이상 고려하지 않음)로 바꿉니다 — PR·브랜치·worktree는 그대로 두고 「보류 N」에서 되살릴 수 있습니다';
+
+/** Tooltip of `↺ 되살리기` (UI-0d9i §3.5). */
+export const REVIVE_BUTTON_TITLE =
+  '보류를 풉니다 — PR이 열려 있거나 머지됐으면 resolved, 아니면 open으로 돌아갑니다';

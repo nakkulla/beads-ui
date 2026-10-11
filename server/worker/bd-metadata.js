@@ -70,7 +70,7 @@ import { RECEIPT_METADATA_KEYS } from './receipt-check.js';
  *   listDeps: (bead_id: string) => Promise<Record<string, any>[]>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
  *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
- *   scanBeads: () => Promise<{ pr_rows: ExternalPrScanRow[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>
+ *   scanBeads: () => Promise<{ pr_rows: ExternalPrScanRow[], deferred_pr_rows?: ExternalPrScanRow[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>
  * }}
  */
 export function createBdMetadata(deps = {}) {
@@ -697,6 +697,10 @@ export function createBdMetadata(deps = {}) {
      *   - `pr_rows` — every bead a normal session already delivered a PR for:
      *     `resolved` with a `metadata.pr_url` (UI-7agi §1). The source of the
      *     external PR registry.
+     *   - `deferred_pr_rows` — the same row shape for every `deferred` bead
+     *     still carrying a `metadata.pr_url` (UI-0d9i §3.4). Not registry
+     *     material: only the foreign-target table reads them, so a deferred
+     *     pinned foreign PR stays observed while it is hidden from the lane.
      *   - `statuses` — every row's `id → status`, unfiltered. The queue sweep
      *     (UI-m6bg) needs an authoritative status per queued bead, and riding
      *     the response this call already makes is what satisfies its "no extra
@@ -714,7 +718,7 @@ export function createBdMetadata(deps = {}) {
      * silently empty the lane every time bd is unavailable. The sweep depends on
      * the same throw — an unread status must move nothing.
      *
-     * @returns {Promise<{ pr_rows: ExternalPrScanRow[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>}
+     * @returns {Promise<{ pr_rows: ExternalPrScanRow[], deferred_pr_rows?: ExternalPrScanRow[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>}
      */
     async scanBeads() {
       if (requestSnapshot) {
@@ -792,11 +796,13 @@ export function createdIdOf(stdout) {
  * whole-workspace generation.
  *
  * @param {unknown[]} rows
- * @returns {{ pr_rows: ExternalPrScanRow[], statuses: Record<string, string> }}
+ * @returns {{ pr_rows: ExternalPrScanRow[], deferred_pr_rows: ExternalPrScanRow[], statuses: Record<string, string> }}
  */
 function scanRows(rows) {
   /** @type {ExternalPrScanRow[]} */
   const pr_rows = [];
+  /** @type {ExternalPrScanRow[]} */
+  const deferred_pr_rows = [];
   /** @type {Record<string, string>} */
   const statuses = {};
   for (const raw of rows) {
@@ -810,7 +816,7 @@ function scanRows(rows) {
     if (typeof row.status === 'string' && row.status.length > 0) {
       statuses[row.id] = row.status;
     }
-    if (row.status !== 'resolved') {
+    if (row.status !== 'resolved' && row.status !== 'deferred') {
       continue;
     }
     const md = row.metadata;
@@ -821,13 +827,13 @@ function scanRows(rows) {
     if (typeof pr_url !== 'string' || pr_url.length === 0) {
       continue;
     }
-    pr_rows.push({
+    (row.status === 'resolved' ? pr_rows : deferred_pr_rows).push({
       bead_id: row.id,
       pr_url,
       metadata: receiptMetadataOf(md)
     });
   }
-  return { pr_rows, statuses };
+  return { pr_rows, deferred_pr_rows, statuses };
 }
 
 /**

@@ -43,6 +43,35 @@ vi.mock('./workspace-snapshot-runtime.js', () => ({
   __setWorkspaceSnapshotCoordinatorFactoryForTest: () => {}
 }));
 
+// [보관 해제] reads the bead's status with a fresh `bd show` (UI-0d9i §3.3).
+// A test names the statuses it answers; every other bd read passes through.
+const bd_show_seam = vi.hoisted(() => ({
+  /** @type {Record<string, string>} */
+  statuses: {}
+}));
+vi.mock('./bd.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    /**
+     * @param {string} family
+     * @param {string[]} args
+     * @param {any} [options]
+     */
+    runBdJsonProjected: async (family, args, options) => {
+      if (args[0] === 'show' && Object.hasOwn(bd_show_seam.statuses, args[1])) {
+        return {
+          ok: true,
+          protocol: { format: 'bare', schema_version: null },
+          data: { id: args[1], status: bd_show_seam.statuses[args[1]] }
+        };
+      }
+      return actual.runBdJsonProjected(family, args, options);
+    }
+  };
+});
+
 /** @type {string} */
 let tmp_state;
 
@@ -120,6 +149,7 @@ function queueSnapshotPayloads(sock) {
 }
 
 beforeEach(() => {
+  bd_show_seam.statuses = {};
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-wsq-'));
   process.env.XDG_STATE_HOME = tmp_state;
   __resetRegistriesForTest();
@@ -3098,6 +3128,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
   test('unshelves a row and keeps it out of the queue', async () => {
     parkInPrWait('UI-1');
     registerDriver();
+    bd_show_seam.statuses = { 'UI-1': 'resolved' };
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     const store = getWorkerRuntime().queueStore;
