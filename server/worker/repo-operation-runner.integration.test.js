@@ -82,7 +82,7 @@ describe('RepoOperation runner', () => {
     const script = path.join(root, 'script.js');
     fs.writeFileSync(
       script,
-      '#!/usr/bin/env node\nsetTimeout(() => { console.log(JSON.stringify(process.env)); console.error("stderr"); }, 100);\n'
+      `#!${process.execPath}\nsetTimeout(() => { console.log(JSON.stringify(process.env)); console.error("stderr"); }, 100);\n`
     );
     fs.chmodSync(script, 0o755);
     const runner = createRepoOperationRunner({
