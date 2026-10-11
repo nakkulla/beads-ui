@@ -1830,6 +1830,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       keyFor(workspace_root),
       /** @type {import('./bd-metadata.js').ExternalPrScanRow[]} */ (pr_rows)
     );
+    // The same generation's statuses are the PR 대기 projection's material
+    // (UI-0d9i §3.4): a row whose Bead reads `deferred` is hidden on the wire.
+    runtime.externalPrs.replaceStatuses(keyFor(workspace_root), statuses);
     const protected_ids = externalProtectedIds();
     if (protected_ids === null) {
       // Fail-closed: with no protection set the exclusion cannot be decided, and

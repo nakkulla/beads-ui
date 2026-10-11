@@ -95,6 +95,8 @@ export function createExternalPrStore(options = {}) {
   const by_workspace = new Map();
   /** @type {Map<string, Map<string, ForeignTargetJudgment>>} */
   const targets_by_workspace = new Map();
+  /** @type {Map<string, Map<string, string>>} */
+  const statuses_by_workspace = new Map();
 
   /**
    * Workspace keys are RESOLVED, exactly like the queue store's and the
@@ -281,11 +283,68 @@ export function createExternalPrStore(options = {}) {
     },
 
     /**
+     * Replace a workspace's bead statuses from one whole scan (UI-0d9i §3.4).
+     * The PR 대기 projection hides a row whose Bead reads `deferred` here; the
+     * same `bd list` generation the closed sweep reads is the only writer
+     * besides {@link noteStatus}, so no second bd call feeds the projection.
+     *
+     * @param {string} workspace
+     * @param {Record<string, string>} statuses - Bead id to bd status.
+     */
+    replaceStatuses(workspace, statuses) {
+      /** @type {Map<string, string>} */
+      const next = new Map();
+      for (const [bead_id, status] of Object.entries(statuses || {})) {
+        if (typeof status === 'string' && status.length > 0) {
+          next.set(bead_id, status);
+        }
+      }
+      statuses_by_workspace.set(path.resolve(String(workspace || '')), next);
+    },
+
+    /**
+     * Record one Bead's status a write's readback just confirmed, so the
+     * projection follows a defer or revive before the next scan does.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @param {string} status
+     */
+    noteStatus(workspace, bead_id, status) {
+      if (typeof status !== 'string' || status.length === 0) {
+        return;
+      }
+      const key = path.resolve(String(workspace || ''));
+      let lane = statuses_by_workspace.get(key);
+      if (!lane) {
+        lane = new Map();
+        statuses_by_workspace.set(key, lane);
+      }
+      lane.set(bead_id, status);
+    },
+
+    /**
+     * One Bead's last known status, or null when no scan or readback read it.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {string|null}
+     */
+    statusOf(workspace, bead_id) {
+      return (
+        statuses_by_workspace
+          .get(path.resolve(String(workspace || '')))
+          ?.get(bead_id) || null
+      );
+    },
+
+    /**
      * Drop everything (server restart semantics; test hook).
      */
     clear() {
       by_workspace.clear();
       targets_by_workspace.clear();
+      statuses_by_workspace.clear();
     }
   };
 }

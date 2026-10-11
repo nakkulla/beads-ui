@@ -4479,6 +4479,21 @@ export function createPrActions(deps) {
     }
     in_flight.add(bead_id);
     try {
+      // A deferred Bead is "no longer considered" (UI-0d9i §3.4): an outside
+      // merge observed meanwhile runs none of the cleanup's side effects. The
+      // status is re-read right before the first one, and an unreadable status
+      // skips this observation too — the next one reads it again.
+      /** @type {string|null} */
+      let status = null;
+      try {
+        status = await deps.bd.readStatus(bead_id);
+      } catch (err) {
+        log('bd status read before cleanup failed for %s: %o', bead_id, err);
+        return { ok: false, step: null, reason: 'bead_status_unreadable' };
+      }
+      if (status === 'deferred') {
+        return { ok: false, step: null, reason: 'bead_deferred' };
+      }
       return await runCleanup(bead_id, { ...refs, merge_sha });
     } finally {
       in_flight.delete(bead_id);

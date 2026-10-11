@@ -45,6 +45,12 @@ import { listAccounts as listClaudeAccounts } from '../routes/claude-usage.js';
 import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
 import { createAccountCatalog } from '../worker/account-catalog.js';
 import {
+  applyDefer,
+  applyRevive,
+  previewDefer,
+  previewRevive
+} from '../worker/bead-defer.js';
+import {
   abandonWorkerDiscard,
   conversationHandoffWorker,
   discardWorkerBead,
@@ -174,6 +180,7 @@ import {
   getConnWorkspace,
   kvGetJsonAtRoot,
   log,
+  runBdInWorkspace,
   runBdJsonProjectedInWorkspace
 } from './context.js';
 import { laneBeadIds, sessionExcludedBeadIds } from './lane-membership.js';
@@ -906,6 +913,35 @@ export function withExternalPrWait(workspace_key, queue) {
     return queue;
   }
   return { ...queue, pr_wait: [...lane, ...overlay] };
+}
+
+/**
+ * Hide the PR 대기 rows whose Bead bd reads `deferred` (UI-0d9i §3.4). The row,
+ * its cleanup state and its shelf record all stay in the queue — only the wire
+ * leaves it out, so a revival brings the same row back. The status is the last
+ * scan's (or a defer/revive readback's); an unknown status hides nothing
+ * (fail-quiet).
+ *
+ * @param {string} workspace_key
+ * @param {any[]} rows
+ * @returns {any[]}
+ */
+function withoutDeferredPrWait(workspace_key, rows) {
+  /** @type {(bead_id: string) => string|null} */
+  let statusOf;
+  try {
+    const store = getWorkerRuntime().externalPrs;
+    if (typeof store?.statusOf !== 'function') {
+      return rows;
+    }
+    statusOf = (bead_id) => store.statusOf(workspace_key, bead_id);
+  } catch {
+    return rows;
+  }
+  const kept = rows.filter(
+    (row) => !(row && statusOf(row.bead_id) === 'deferred')
+  );
+  return kept.length === rows.length ? rows : kept;
 }
 
 /**
@@ -3345,7 +3381,10 @@ export function decorateQueue(workspace_key, raw_queue) {
     ...public_queue,
     provider_hold: publicProviderHolds(overlaid.provider_hold),
     queue: Array.isArray(overlaid.queue) ? overlaid.queue : [],
-    pr_wait: Array.isArray(overlaid.pr_wait) ? overlaid.pr_wait : [],
+    pr_wait: withoutDeferredPrWait(
+      workspace_key,
+      Array.isArray(overlaid.pr_wait) ? overlaid.pr_wait : []
+    ),
     done: Array.isArray(public_queue.done) ? public_queue.done : [],
     completion_status
   };
@@ -6375,7 +6414,9 @@ export function handleWorkerMergeQueueRemove(ws, req) {
  * (UI-8d8y): it is a registry overlay the store cannot see, so its membership
  * is vouched for here. A foreign-repository row is refused with `foreign` —
  * nothing in this workspace merges it — and a bead with no PR 대기 row with
- * `not_pr_wait`.
+ * `not_pr_wait`. [보관 해제] of a Bead bd reads `deferred` is refused with
+ * `deferred`, and while a [보류로 전환] runs with `defer_active` (UI-0d9i
+ * §3.3).
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -6441,6 +6482,18 @@ export function handleWorkerMergeShelve(ws, req) {
       return;
     }
     overlay = !!row && row.external === true;
+  } else {
+    // While a Bead is deferred its shelf record is the one thing keeping the
+    // PR out of the merge queue (UI-0d9i §3.3); [되살리기] lifts it instead.
+    // A defer still running is refused alike — it re-checks the shelf.
+    if (getWorkerRuntime().locks.isLocked(beadDeferLockKey(key, p.bead_id))) {
+      refuse('defer_active');
+      return;
+    }
+    if (beadStatusOf(key, p.bead_id) === 'deferred') {
+      refuse('deferred');
+      return;
+    }
   }
   const result = queueStore().setMergeShelved(key, {
     expected_revision: revisionOf(p),
@@ -6470,6 +6523,520 @@ export function handleWorkerMergeShelve(ws, req) {
   if (result.ok) {
     fanout(key, /** @type {any} */ (result.queue));
     stopCancelledReviewSessions(key, result.cancelled_attempt_ids);
+  }
+}
+
+/**
+ * The lock key serializing one Bead's [보류로 전환] and [되살리기] (UI-0d9i
+ * §3.3). [보관 해제] is refused while it is held, so the shelf a defer
+ * re-checked cannot leave before its `bd defer` write.
+ *
+ * @param {string} key
+ * @param {string} bead_id
+ * @returns {string}
+ */
+function beadDeferLockKey(key, bead_id) {
+  return `bead-defer:${key}::${bead_id}`;
+}
+
+/**
+ * One Bead's last known bd status — the last scan's, or a defer/revive
+ * readback's — or null when nothing read it (UI-0d9i §3.4).
+ *
+ * @param {string} key
+ * @param {string} bead_id
+ * @returns {string|null}
+ */
+function beadStatusOf(key, bead_id) {
+  try {
+    const store = getWorkerRuntime().externalPrs;
+    return typeof store?.statusOf === 'function'
+      ? store.statusOf(key, bead_id)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remember a status a write's readback confirmed, so the PR 대기 projection
+ * follows the defer or revival before the next scan.
+ *
+ * @param {string} key
+ * @param {string} bead_id
+ * @param {string} status
+ */
+function noteBeadStatus(key, bead_id, status) {
+  try {
+    getWorkerRuntime().externalPrs.noteStatus(key, bead_id, status);
+  } catch (err) {
+    log('bead status note failed for %s: %o', bead_id, err);
+  }
+}
+
+/**
+ * The bd door the defer/revive transitions use for one target workspace: every
+ * write goes through {@link runBdInWorkspace} (the workspace effect gate) and
+ * every read is a projected bd JSON read in the same root.
+ *
+ * @param {WebSocket} ws
+ * @param {string} key - Target workspace root; empty means the connection's.
+ * @returns {import('../worker/bead-defer.js').BeadDeferBd}
+ */
+function beadDeferBd(ws, key) {
+  const cwd = key ? { cwd: key } : {};
+  /**
+   * @param {string} family
+   * @param {string[]} args
+   * @param {string} [expected_id]
+   * @returns {Promise<any>}
+   */
+  const read = async (family, args, expected_id) => {
+    try {
+      return await runBdJsonProjectedInWorkspace(ws, family, args, {
+        ...cwd,
+        ...(expected_id ? { expected_id } : {})
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: { code: 'bd_spawn_failed', message: String(err) }
+      };
+    }
+  };
+  return {
+    show: (bead_id) =>
+      read('show', ['show', bead_id, '--json'], bead_id),
+    dependents: (bead_id) =>
+      read('dep', [
+        'dep',
+        'list',
+        bead_id,
+        '--direction',
+        'up',
+        '--type',
+        'blocks',
+        '--json'
+      ]),
+    deps: (bead_id) => read('dep', ['dep', 'list', bead_id, '--json']),
+    listByIds: (ids) =>
+      read('list', [
+        'list',
+        '--id',
+        ids.join(','),
+        '--all',
+        '--limit',
+        '0',
+        '--json'
+      ]),
+    run: async (args) => {
+      try {
+        return await runBdInWorkspace(ws, args, key ? { cwd: key } : undefined);
+      } catch (err) {
+        return { code: 1, stdout: '', stderr: String(err) };
+      }
+    }
+  };
+}
+
+/**
+ * Read one PR's state from the repository its url names (UI-0d9i §3.3): the
+ * process-wide gh adapter bound to that slug, spawned in the target workspace.
+ *
+ * @param {string} key
+ * @returns {import('../worker/bead-defer.js').ReadPrState}
+ */
+function revivalPrReader(key) {
+  return async (slug, number) => {
+    const gh = /** @type {any} */ (getWorkerRuntime().gh);
+    if (!gh || typeof gh.forSlug !== 'function') {
+      return { ok: false, reason: 'gh_unavailable' };
+    }
+    /** @type {any} */
+    let detail;
+    try {
+      detail = await gh.forSlug(slug).prDetail(key || process.cwd(), number);
+    } catch {
+      return { ok: false, reason: 'gh_spawn_failed' };
+    }
+    if (!detail || detail.state !== 'ok') {
+      return {
+        ok: false,
+        reason: (detail && detail.reason) || 'gh_empty'
+      };
+    }
+    return { ok: true, state: String(detail.data?.state || '') };
+  };
+}
+
+/**
+ * Why a shelved PR 대기 row may not be deferred right now (UI-0d9i §3.3): its
+ * shelf record must still be there, and no merge may hold, have reached, or be
+ * cleaning up after its PR — the same rows [보관] does not stand on.
+ * SYNCHRONOUS on purpose: it is asked right before the `bd defer` write.
+ *
+ * @param {string} key
+ * @param {string} bead_id
+ * @returns {string|null}
+ */
+function deferQueueRefusal(key, bead_id) {
+  const q = /** @type {any} */ (queueStore().snapshot(key));
+  if (!q.merge_shelved || !Object.hasOwn(q.merge_shelved, bead_id)) {
+    return 'not_shelved';
+  }
+  /** @type {any} */
+  let state = null;
+  try {
+    state = workerMergeQueueState(key);
+  } catch {
+    state = null;
+  }
+  /** @type {boolean} */
+  let effect = false;
+  try {
+    effect = workerMergeEffectInFlight(key, bead_id) === true;
+  } catch {
+    effect = false;
+  }
+  const merge_queue = Array.isArray(q.merge_queue) ? q.merge_queue : [];
+  if (
+    effect ||
+    (state && state.active === bead_id) ||
+    merge_queue.some((/** @type {any} */ e) => e && e.bead_id === bead_id)
+  ) {
+    return 'merge_active';
+  }
+  const phase = q.completion_intents?.[bead_id]?.phase;
+  const row = (Array.isArray(q.pr_wait) ? q.pr_wait : []).find(
+    (/** @type {any} */ e) => e && e.bead_id === bead_id
+  );
+  /** @type {any} */
+  let observed = null;
+  try {
+    observed = getWorkerRuntime().prObservations.get(key, bead_id);
+  } catch {
+    observed = null;
+  }
+  if (
+    q.cleanup_failed?.[bead_id] ||
+    phase === 'merging' ||
+    phase === 'cleaning' ||
+    phase === 'completed' ||
+    (row &&
+      (row.external === true ||
+        (typeof row.merge_sha === 'string' && row.merge_sha.length > 0))) ||
+    observed?.pr?.state === 'MERGED'
+  ) {
+    return 'merge_observed';
+  }
+  return null;
+}
+
+/**
+ * Validate the shared `{ bead_id }` part of the four defer/revive payloads.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @returns {{ p: any, key: string }|null}
+ */
+function beadDeferRequest(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return null;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return null;
+  }
+  return { p, key };
+}
+
+/**
+ * A string array payload field, or null when the field is malformed.
+ *
+ * @param {unknown} raw
+ * @returns {string[]|null}
+ */
+function stringListOf(raw) {
+  if (raw === undefined || raw === null) {
+    return [];
+  }
+  if (
+    !Array.isArray(raw) ||
+    raw.some((id) => typeof id !== 'string' || id.length === 0)
+  ) {
+    return null;
+  }
+  return /** @type {string[]} */ (raw);
+}
+
+/**
+ * Handle `worker-bead-defer-preview`. Payload: `{ bead_id, root_dir? }`.
+ * Reply: `{ bead_id, ok, reason?, message?, status?, pr_url?, dependents? }`.
+ *
+ * The [보류로 전환] dialog's material (UI-0d9i §3.2): the Bead must be
+ * `resolved` with a `pr_url` and still shelved, and the open same-rig
+ * `blocks` dependents are listed for the 「끊기」 choices.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerBeadDeferPreview(ws, req) {
+  const parsed = beadDeferRequest(ws, req);
+  if (parsed === null) {
+    return;
+  }
+  const { p, key } = parsed;
+  const preview = await previewDefer(beadDeferBd(ws, key), p.bead_id);
+  const shelf_refusal = preview.ok ? deferQueueRefusal(key, p.bead_id) : null;
+  ws.send(
+    JSON.stringify(
+      makeOk(
+        req,
+        shelf_refusal === null
+          ? { bead_id: p.bead_id, ...preview }
+          : { bead_id: p.bead_id, ok: false, reason: shelf_refusal }
+      )
+    )
+  );
+}
+
+/**
+ * Handle `worker-bead-defer`. Payload:
+ * `{ bead_id, reason, remove_edges[], root_dir? }`. Reply:
+ * `{ bead_id, applied, outcome, reason, message?, status?, write_applied?,
+ * retry_safe?, edges, failed_edges, queue }`.
+ *
+ * [보류로 전환] (UI-0d9i §3.3), serialized per Bead with [되살리기] and
+ * refusing [보관 해제] meanwhile. The queue facts are re-checked right before
+ * the write; a refusal names why (`not_shelved`, `merge_active`,
+ * `merge_observed`, `already_deferred`, `not_resolved_with_pr`). A failed
+ * `bd defer` changed nothing (`failed`); a write whose readback failed is
+ * `unknown` and is never replayed. The PR 대기 row, its cleanup state and its
+ * shelf record stay; only the wire hides the row while bd reads `deferred`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerBeadDefer(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const remove_edges = stringListOf(p.remove_edges);
+  if (
+    typeof p.bead_id !== 'string' ||
+    p.bead_id.length === 0 ||
+    typeof p.reason !== 'string' ||
+    p.reason.trim().length === 0 ||
+    remove_edges === null
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id: string, reason: non-empty string, remove_edges?: string[] }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const release = await getWorkerRuntime().locks.acquire(
+    beadDeferLockKey(key, p.bead_id)
+  );
+  /** @type {import('../worker/bead-defer.js').TransitionResult} */
+  let result;
+  try {
+    result = await applyDefer(beadDeferBd(ws, key), {
+      bead_id: p.bead_id,
+      reason: p.reason.trim(),
+      remove_edges,
+      queueRefusal: () => deferQueueRefusal(key, p.bead_id)
+    });
+    if (result.outcome === 'applied' || result.outcome === 'partial') {
+      noteBeadStatus(key, p.bead_id, 'deferred');
+      recordUserAction(key, p.bead_id, 'bead_defer', '[보류로 전환] 클릭');
+    }
+  } finally {
+    release();
+  }
+  const queue = decorateQueue(
+    key,
+    /** @type {any} */ (queueStore().snapshot(key))
+  );
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        applied: result.outcome === 'applied' || result.outcome === 'partial',
+        ...result,
+        queue
+      })
+    )
+  );
+  if (result.write_applied === true) {
+    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+  }
+}
+
+/**
+ * Handle `worker-bead-revive-preview`. Payload: `{ bead_id, root_dir? }`.
+ * Reply: `{ bead_id, ok, reason?, message?, target?, pr_state?, pr_url?,
+ * restorable?, shelved? }`.
+ *
+ * The [되살리기] dialog's material (UI-0d9i §3.5): the target the PR state
+ * decides, the open dependents the defer cut, and whether a shelf record will
+ * be lifted. A PR that cannot be read is an error with no target.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerBeadRevivePreview(ws, req) {
+  const parsed = beadDeferRequest(ws, req);
+  if (parsed === null) {
+    return;
+  }
+  const { p, key } = parsed;
+  const preview = await previewRevive(
+    beadDeferBd(ws, key),
+    p.bead_id,
+    revivalPrReader(key)
+  );
+  const shelved = Object.hasOwn(
+    /** @type {any} */ (queueStore().snapshot(key)).merge_shelved || {},
+    p.bead_id
+  );
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        ...preview,
+        ...(preview.ok ? { shelved } : {})
+      })
+    )
+  );
+}
+
+/**
+ * Lift a revived Bead's shelf record (UI-0d9i §3.5). Not a click, so it takes
+ * the store's current revision, and one conflict is retried against the fresh
+ * one. Returns null when there was no record.
+ *
+ * @param {string} key
+ * @param {string} bead_id
+ * @returns {boolean|null}
+ */
+function liftRevivedShelf(key, bead_id) {
+  for (let i = 0; i < 2; i += 1) {
+    const q = /** @type {any} */ (queueStore().snapshot(key));
+    if (!q.merge_shelved || !Object.hasOwn(q.merge_shelved, bead_id)) {
+      return i === 0 ? null : true;
+    }
+    try {
+      const result = queueStore().setMergeShelved(key, {
+        expected_revision: q.revision,
+        bead_id,
+        on: false
+      });
+      if (result.ok) {
+        return true;
+      }
+      if (!result.conflict) {
+        return false;
+      }
+    } catch (err) {
+      log('shelf lift after revive failed for %s: %o', bead_id, err);
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Handle `worker-bead-revive`. Payload:
+ * `{ bead_id, restore_edges[], root_dir? }`. Reply:
+ * `{ bead_id, applied, outcome, reason, message?, status?, target?,
+ * pr_state?, write_applied?, retry_safe?, edges, failed_edges,
+ * shelf_cleared, queue }`.
+ *
+ * [되살리기] (UI-0d9i §3.5): the target is judged again (`resolved` while the
+ * PR is open or merged, else `open`; nothing is written when the PR cannot be
+ * read), written with `bd update --status resolved` or `bd undefer` and read
+ * back, the chosen edges are restored and read back, and the shelf record is
+ * lifted so the row returns to PR 대기. A failed lift still reports the
+ * revival (`shelf_cleared: false`, [보관 해제] stays). Nothing is re-queued.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerBeadRevive(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const restore_edges = stringListOf(p.restore_edges);
+  if (
+    typeof p.bead_id !== 'string' ||
+    p.bead_id.length === 0 ||
+    restore_edges === null
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id: string, restore_edges?: string[] }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const release = await getWorkerRuntime().locks.acquire(
+    beadDeferLockKey(key, p.bead_id)
+  );
+  /** @type {import('../worker/bead-defer.js').TransitionResult} */
+  let result;
+  /** @type {boolean|null} */
+  let shelf_cleared = null;
+  try {
+    result = await applyRevive(beadDeferBd(ws, key), {
+      bead_id: p.bead_id,
+      restore_edges,
+      readPrState: revivalPrReader(key)
+    });
+    if (result.outcome === 'applied' || result.outcome === 'partial') {
+      noteBeadStatus(key, p.bead_id, String(result.status));
+      shelf_cleared = liftRevivedShelf(key, p.bead_id);
+      recordUserAction(key, p.bead_id, 'bead_revive', '[되살리기] 클릭');
+    }
+  } finally {
+    release();
+  }
+  const queue = decorateQueue(
+    key,
+    /** @type {any} */ (queueStore().snapshot(key))
+  );
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        applied: result.outcome === 'applied' || result.outcome === 'partial',
+        ...result,
+        shelf_cleared,
+        queue
+      })
+    )
+  );
+  if (result.write_applied === true) {
+    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
   }
 }
 
