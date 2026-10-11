@@ -13,6 +13,7 @@ scope:
   - server/worker/repo-operation-coordinator.js
   - server/worker/discard-coordinator.js
   - server/worker/completion-intent.js
+  - server/worker/notify.js
   - server/worker/review-session.js
   - server/worker/scheduler.js
   - server/worker/queue-store.js
@@ -23,6 +24,7 @@ scope:
   - app/views/worker/lanes.js
   - app/views/worker/tile-resolve.js
   - app/utils/failure-sentences.js
+  - app/styles/
   - app/views/monitor/
   - app/protocol.md
 ---
@@ -31,7 +33,7 @@ scope:
 
 Bead: UI-k467 · route: spec_backed · 작성 2026-10-11 · pinned base
 `04f6231eca7db4b94937158fce495914b5c44b81` · 계약: dotfiles-8k8yf(ADR
-dotfiles-8k8yf, dotfiles PR #581 `a2c6a418`)
+dotfiles/dotfiles-8k8yf, dotfiles PR #581 `a2c6a418`)
 
 ## 1. 목표
 
@@ -62,7 +64,11 @@ dotfiles-8k8yf, dotfiles PR #581 `a2c6a418`)
 - gh 호출은 `repo_dir`의 origin push URL에서 `--repo` slug를 만든다. 명시 slug 입구는 없다 — `server/worker/gh.js:170`, `:604`, `:922`, `:961`, `:1039`
 - quick_fix push 착지는 이미 foreign 핀 세 개를 읽고 검증하며, 대상 체크아웃에서 `foreign_repo`와 URL이 정확히 같은 remote를 찾는다 — `server/worker/quickfix-landing.js:522`, `:594`
 - PR 감시는 foreign으로 표시된 외부 등록 행을 gh 호출 없이 `pr_repo_foreign`으로 멈춘다 — `server/worker/pr-poller.js:341`; foreign 판정 — `server/worker/external-pr.js:110`
-- 외부 등록 행 스캔은 metadata 중 영수증 키만 싣는다(foreign 핀 없음) — `server/worker/bd-metadata.js:824`, `:840`
+- 전체 목록 스캔은 `pr_url`이 있는 모든 `resolved` Bead를 한 번에 읽지만 metadata는 영수증 키만 싣는다(foreign 핀 없음) — `server/worker/bd-metadata.js:692`, `:810`, `:824`, `:840`
+- `[verify]` 후보 워크트리는 지금 `os.tmpdir()` 아래에 만든다 — `server/worker/repo-operation-coordinator.js:3644`
+- `.op-btn`은 줄바꿈하지 않는다 — `app/styles/components.css:46`
+- 모니터는 Worker와 같은 PR 대기 행 투영을 쓴다 — `app/views/monitor/index.js:2318`
+- ADR UI-jbl1은 남는 `needs_human` 알림 클래스와 `[세션에서 이어가기]`가 서는 실패 행을 닫힌 목록으로 적는다 — `docs/adr/UI-jbl1-failure-conversation-auto-launch.md:91`, `:93`, `:706`
 - `resolvePrRef`는 attempt·durable 행을 "이 Worker의 PR"로 가정한다. 외부 PR 번호가 그대로 작업 공간 저장소에서 읽힌다 — `server/worker/pr-poller.js:135`; `pr-actions.js`·`discard-coordinator.js`의 호출부도 같다 — `server/worker/discard-coordinator.js:297`
 - `[verify]` 후보 검증은 코디네이터의 `deps.repo`와 `origin`에 묶여 있다 — `server/worker/repo-operation-coordinator.js:1274`
 - 리뷰 ancestry 프로브는 `{repo, remote}`를 받는다 — `server/worker/merge-gate.js:153`
@@ -94,11 +100,13 @@ dotfiles-8k8yf, dotfiles PR #581 `a2c6a418`)
 - 결정: 외부 대상에 대한 gh 호출은 모두 핀에서 만든 slug를 `--repo`로 넘긴다.
   체크아웃의 `origin`에서 slug를 유도하지 않는다. 대상 체크아웃에서 `foreign_repo`와
   일치하는 remote가 `origin`이 아닐 수 있기 때문이다.
-- 결정: 수락할 때 대상 정보(slug, 경로, base, remote 이름)를 durable `pr_wait` 행에
-  스냅샷으로 둔다. 관측(감시·표시)은 이 스냅샷을 쓴다. 상태를 바꾸는 조작(머지, 머지 뒤
-  마감, 폐기, 리뷰 dispatch)은 시작할 때 핀을 다시 읽고 스냅샷을 갱신한다
-  (대안: 매 감시마다 핀 판독; 이유: `bd show`가 last-touched를 써서 watchDb를 울린다.
-  사람이 핀을 고친 뒤 다음 조작에서 바로 반영된다).
+- 결정: 관측(감시·표시·보류 재판정)은 전체 목록 스캔이 싣는 핀으로 대상을 매번 다시
+  만든다. 스캔은 `pr_url`이 있는 모든 `resolved` Bead를 이미 한 번에 읽으므로 Worker가
+  전달한 `pr_wait` Bead도 덮는다. 스캔의 metadata 조각에 foreign 핀 세 키를 더한다.
+  상태를 바꾸는 조작(머지, 머지 뒤 마감, 폐기, 리뷰 dispatch)은 시작할 때 그 Bead의 핀을
+  `readMetadata`로 한 번 더 읽는다(대안: 수락 때 행에 대상 스냅샷 저장; 이유: 사람이
+  `foreign_base` 핀만 고쳐도 클릭 없이 다음 스캔 턴에 보류가 다시 판정돼야 하고, 행마다
+  `bd show`를 따로 부르지 않는다).
 - 실패 토큰은 계약 것을 그대로 쓴다. `foreign_landing_unpinned:<key>`,
   `foreign_checkout_unavailable`, `foreign_pr_repo_mismatch`이다.
 
@@ -112,15 +120,13 @@ dotfiles-8k8yf, dotfiles PR #581 `a2c6a418`)
   핀이 일부만 있으면 `foreign_landing_unpinned:<key>`로 실패한다. 둘 다 `unknown`이
   아니라 그 토큰이 실패 원인으로 보인다.
 - 핀이 없는 Bead는 지금과 같다.
-- 성공하면 지금처럼 `pr_wait`로 옮기고 레인을 점유한다. 3.1의 대상 스냅샷도 함께
-  기록한다.
+- 성공하면 지금처럼 `pr_wait`로 옮기고 레인을 점유한다.
 
 ### 3.3 PR 관측
 
-- 대상 스냅샷이 있는 행(Worker가 전달한 `pr_wait`)과 핀이 있는 외부 등록 행(세션이
-  전달한 PR)은 `gh pr view --repo <대상>`으로 관측한다. 리뷰 영수증 ancestry는
-  `foreign_path`와 대상 remote로 판정한다. 외부 등록 행의 detection은 전체 목록 스캔의
-  metadata 조각에 foreign 핀 세 키를 더해 판정한다. 행마다 `bd show`를 따로 부르지 않는다.
+- detection이 성립한 행(Worker가 전달한 `pr_wait`, 세션이 전달한 외부 등록 행)은
+  `gh pr view --repo <대상>`으로 관측한다. 리뷰 영수증 ancestry는 `foreign_path`와 대상
+  remote로 판정한다.
 - 핀이 없는 외부 등록 행은 지금처럼 `pr_repo_foreign`·`외부 저장소 PR`로 남는다.
 - MERGED로 관측되면 3.6의 마감으로 간다.
 
@@ -147,9 +153,13 @@ dotfiles-8k8yf, dotfiles PR #581 `a2c6a418`)
 ### 3.5 대상 `[verify]`
 
 - 정책은 fetch한 `foreign_base` tip의 선언을 쓴다. 선언이 없으면 관문도 없다.
-- 후보는 `foreign_path`의 git에 등록된 Worker 소유 임시 detached 워크트리다. fetch한
-  base tip 위에 PR head를 합친다. 기존 후보 생성 방식에 repo와 remote를 매개변수로
-  넘긴다.
+- 결정: 후보는 대상의 common git dir 아래 Worker 소유 디렉터리
+  `<git -C foreign_path rev-parse --git-common-dir>/bdui-verify/<operation-id>`에 만드는
+  detached 워크트리다(대안: 지금처럼 `os.tmpdir()`; 이유: 계약 `verify.worktree`가 대상
+  common git dir 아래를 요구한다). fetch한 base tip 위에 PR head를 합친다. 기존 후보
+  생성·정리 함수에 repo, remote, 후보 상위 디렉터리를 매개변수로 넘기고, 작업 공간 후보는
+  지금 위치 그대로 둔다. 정리와 재시작 복구는 이 디렉터리 아래 Worker가 만든 워크트리만
+  지운다(`worktree remove --force` 후 `worktree prune`).
 - 결과는 (PR head, base tip)과 기존 스크립트 identity에 묶인다. 하나라도 바뀌면
   다시 돌린다. 세션의 `verify_receipt`는 입력이 아니다.
 - operation id에 대상 저장소 identity를 넣어 작업 공간 operation과 겹치지 않게 한다.
@@ -190,7 +200,8 @@ dotfiles-8k8yf, dotfiles PR #581 `a2c6a418`)
   `foreign_path`, 그리고 "대상 저장소에서 `pr-finish` Foreign-pinned Bead 절차로
   처리"를 싣는다. `[워커로 이어가기]`는 두지 않는다.
 - 자동으로 풀리는 경우도 있다. conflict 원인은 PR head가 바뀌면, base 원인은 PR base나
-  핀이 고쳐지면 다음 턴에 다시 판정해 풀린다. deploy 원인은 세션에서만 풀린다.
+  핀이 고쳐지면 다음 관측 턴에 다시 판정해 풀린다(3.1의 스캔 핀 재판정, 클릭 불필요).
+  deploy 원인은 세션에서만 풀린다.
 
 ### 3.8 카드와 버튼
 
@@ -231,10 +242,11 @@ prompt에 대상 경로와 slug를 싣는다. 세션이 쓰는 것은 계약대�
 4. `auto_merge`가 켜져 있으면 외부 PR은 같은 큐에서 머지되고, 대상 remote의 `foreign_base`에 머지 SHA 포함을 증명한 뒤 close된다.
 5. GitHub 직접 머지도 같은 마감으로 close된다.
 6. 대상 `[verify]`는 (PR head, base tip)에 묶이고, 하나라도 바뀌면 다시 돈다.
-7. 충돌, base 불일치, `[deploy]`·`post-merge.d` 선언은 `foreign_handoff`가 되고 해소 attempt가 생기지 않는다. 「외부 PR 사람 처리 필요」 알림이 한 번 간다. `[머지]`로 풀리지 않는다.
-8. 외부 행 머지 버튼 라벨은 `… ↗ <저장소 이름>`이고, Worker와 모니터 카드가 같다.
-9. 외부 행 `[폐기]`는 OPEN PR을 대상 저장소에서 닫고 Bead를 open으로 되돌린다. MERGED면 아무것도 바꾸지 않고 거절한다.
-10. 핀이 없는 외부 등록 행과 quick_fix push 착지의 동작은 바뀌지 않는다.
+7. 충돌, base 불일치, `[deploy]`·`post-merge.d` 선언은 `foreign_handoff`가 되고 해소 attempt가 생기지 않는다. 「외부 PR 사람 처리 필요」 알림이 한 번 간다. `[머지]`로 풀리지 않는다. base 불일치는 핀이나 PR base를 고치면 클릭 없이 다음 관측 턴에 풀린다.
+8. 대상 `[verify]` 후보는 대상 common git dir 아래 `bdui-verify/`에 생기고 끝나면 지워진다.
+9. 외부 행 머지 버튼 라벨은 `… ↗ <저장소 이름>`이고, Worker와 모니터 카드가 같다.
+10. 외부 행 `[폐기]`는 OPEN PR을 대상 저장소에서 닫고 Bead를 open으로 되돌린다. MERGED면 아무것도 바꾸지 않고 거절한다.
+11. 핀이 없는 외부 등록 행과 quick_fix push 착지의 동작은 바뀌지 않는다.
 
 ## 5. Test scope
 
@@ -243,13 +255,14 @@ prompt에 대상 경로와 slug를 싣는다. 세션이 쓰는 것은 계약대�
 - `server/worker/gh.test.js`: 명시 slug 입구가 `--repo <slug>`를 넘긴다.
 - `server/worker/pr-poller.test.js`: 핀 있는 행 관측, 핀 없는 행 `pr_repo_foreign` 유지.
 - `server/worker/merge-queue.test.js`·`pr-actions.test.js`: 충돌, base 불일치, deploy 선언이 handoff로 가고 해소 attempt 없음. 대상 verify 정책과 결속. `--repo` 머지. `[머지]` 클릭이 handoff를 풀지 못함. 머지 뒤 포함 증명, 첫 부모 재판정, 소유 잔여물만 정리, close.
-- `server/worker/repo-operation-coordinator.test.js`: 대상 repo·remote 후보, operation id 분리.
+- `server/worker/pr-poller.test.js`(또는 머지 큐 테스트): `foreign_pr_base_mismatch` 보류 행에서 스캔 핀의 `foreign_base`만 PR base와 같게 바꾸면 클릭 없이 다음 관측 턴에 보류가 풀린다.
+- `server/worker/repo-operation-coordinator.test.js`: 대상 후보가 `<대상 common git dir>/bdui-verify/<operation-id>`에 생기고 정리·재시작 복구가 그 아래만 지운다. 작업 공간 후보 위치는 그대로다. operation id가 분리된다.
 - `server/worker/discard-coordinator.test.js`: OPEN 외부 PR 닫기, MERGED 거절 시 무변경.
 - `server/worker/completion-intent.test.js`: `foreign_handoff` 분류와 알림 라벨.
 - `server/worker/scheduler.test.js`: 외부 성공이 `pr_wait`로 가는지(두 호출부).
-- `app/views/worker/pr-wait-row.test.js`·`tile-resolve` 테스트: 라벨, handoff 배지, `[머지]` 비활성, `[보관]`, `[세션에서 이어가기]` 행 종류.
-- `app/views/monitor/card-parity.test.js`: 외부 행 fixture 추가.
-- `app/styles.design-system.test.js`: 긴 외부 라벨 변형.
+- `app/views/worker/pr-wait-row.test.js`·`tile-resolve` 테스트: 핀 있는 외부 행의 `merge_label`이 `머지 ↗ research-repo-template`(리뷰 보류면 `리뷰 후 머지 ↗ research-repo-template`)이고 title이 `owner/repo`다. `foreign_handoff` 행은 배지 「외부 PR 사람 처리 필요」, `merge_enabled === false`, `[보관]` 있음, `[세션에서 이어가기]` 있음·`[워커로 이어가기]` 없음, 세션 제목이 `merge_gate` 것과 다르다. 핀 없는 외부 행은 지금 기대값 그대로다.
+- 회귀 확인(변경 전에도 통과할 수 있음): `app/views/monitor/card-parity.test.js`에 핀 있는 외부 행과 `foreign_handoff` 행 fixture를 더해 두 탭이 같은 부품을 그리는지 본다. `app/styles.design-system.test.js` 변형 렌더에 긴 외부 라벨을 더해 부품 클래스를 확인한다.
+- 레이아웃 실측(테스트 파일 아님, 구현 검증 단계): Playwright로 공유 서버의 `#/worker`·`#/monitor`를 390px·1280px로 열고 `routeWebSocket`으로 긴 외부 라벨 행과 handoff 행을 주입한다. 버튼 오른쪽 끝이 카드 오른쪽 끝을 넘지 않고, 말줄임이 적용(`scrollWidth > clientWidth`)되는지 측정한다.
 
 ## 6. 경계·비목표
 
@@ -266,8 +279,14 @@ prompt에 대상 경로와 slug를 싣는다. 세션이 쓰는 것은 계약대�
 - 전제: ADR dotfiles/dotfiles-8k8yf — 외부 PR의 머지 권한·대상 `[verify]`·`foreign_handoff`·머지 뒤 마감 조항을 그대로 소비한다.
 - 전제: ADR UI-u6ud-2 — beads-ui는 계약 소비자다. `failure_classes.foreign_handoff`는 손 복사한 레지스트리로 읽는다.
 - 전제: ADR UI-ny0h — 단일 순차 드라이버, `[머지]`는 등록만, `auto_merge` 독립. 머지 자격 입력은 "저장소 안 관측"이며, 외부 PR은 대상 저장소 안에서 관측한다.
-- 전제: ADR UI-jbl1 — 슬롯 표, 새 요소는 스펙 먼저, 알림 제목 `🙋 확인 필요 · <클래스>`, `[세션에서 이어가기]` 유무는 `tileResolveFields`가 정한다.
-- 외부 PR을 Worker가 머지·마감한다 — 결정 자체는 ADR dotfiles-8k8yf가 기록했고 이 스펙은 소비 구현이다 → ADR 아님
+- 전제: ADR UI-jbl1 — 슬롯 표, 새 요소는 스펙 먼저, 알림 제목 `🙋 확인 필요 · <클래스>`, `[세션에서 이어가기]` 유무는 `tileResolveFields`가 정한다(알림 클래스·실패 행 목록 조항은 아래 후보가 supersede한다).
+- `foreign_handoff`를 남는 `needs_human` 알림 클래스와 `[세션에서 이어가기]` 실패 행에 더하고, 그 행은 `[머지]`로 풀리지 않으며 `[워커로 이어가기]`를 그리지 않는다.
+  - 되돌리기 어려움: `completion-intent.js` 분류·알림 맵, `notify.js` 다음 행동 문구, `tile-resolve.js` 행 종류, `pr-wait-row.js` `[머지]` 술어, `failure-sentences.js`, dotfiles `failure_classes.foreign_handoff.notify_label` 복사본이 함께 움직인다.
+  - 맥락 없이 놀라움: 같은 PR 대기의 `needs_human` 행인데 머지 게이트 보류와 달리 `[머지]`가 출구가 아니다.
+  - 실제 트레이드오프: 대상 저장소 배포·충돌을 rig Worker가 자동 처리하는 편의와, 대상의 deploy lock·post-merge 원장을 소유하지 않는 Worker가 손대지 않는 안전 사이의 선택이다.
+  - 통합 판정: UI-jbl1과 소비자 집합이 같다(알림 클래스·실패 행 출구). 그 목록 조항만 바꾸고 나머지는 승계한다.
+  - `summary`: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 외부 PR 사람 처리 필요, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일한다; 외부 PR 사람 처리 필요 행은 [머지]로 풀리지 않고 [세션에서 이어가기]만 출구다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다" → ADR, supersede UI-jbl1
+- 외부 PR을 Worker가 머지·마감한다 — 결정 자체는 ADR dotfiles/dotfiles-8k8yf가 기록했고 이 스펙은 소비 구현이다 → ADR 아님
 - 외부 PR 대기 행도 직렬 레인을 점유한다 — 되돌리기 쉬움(점유 판정 한 곳) → ADR 아님
 - 외부 PR `[폐기]`는 머지 전만 지원한다 — 되돌리기 쉬움(폐기 코디네이터 한 곳) → ADR 아님
-- 대상 정보를 행 스냅샷과 조작 시 핀 재판독으로 다룬다 — 구현 구조(기본 제외 목록) → ADR 아님
+- 대상 정보를 스캔 핀과 조작 시 핀 재판독으로 다룬다 — 구현 구조(기본 제외 목록) → ADR 아님
