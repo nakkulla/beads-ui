@@ -220,8 +220,8 @@ function failureRow(item) {
  *     미해결 or 외부 작업 완료 row, unless a live conversation of the Bead
  *     (any kind) already answers it through its Discord link, or a decided
  *     outcome (handoff reservation, takeover) holds the row. A live
- *     conversation without a link keeps the button, whose click focuses that
- *     conversation's window (UI-9w5l §3.5).
+ *     conversation without a link draws the button, row or not, and its click
+ *     focuses that conversation's window (UI-9w5l §3.5).
  *   - `handoff_*`: the 확인 필요 row's `[워커로 이어가기]`, server-projected.
  *     The 실패 rows' and the 외부 작업 완료 row's `[워커로 이어가기]` are
  *     their own buttons (cleanup retry, discard retry, external fork); this
@@ -314,15 +314,13 @@ export function tileResolveFields(
     pair.merge_action = false;
   }
   // A live conversation answers the click by focusing its window (UI-9w5l
-  // §3.5); the button stands for that only when no Discord link already does.
-  if (
-    row === null ||
-    held ||
-    hasDiscordConversation(item.interactive_sessions)
-  ) {
+  // §3.5); the button stands for that only when no Discord link already does,
+  // and it stands with or without a row — a resumed external wait has none.
+  const discord = hasDiscordConversation(item.interactive_sessions);
+  const focus = !discord && hasLiveConversation(item.interactive_sessions);
+  if ((row === null && !focus) || held || discord) {
     return { ...handoff_fields, ...pair };
   }
-  const focus = hasLiveConversation(item.interactive_sessions);
   const refusal =
     typeof item.conversation_refusal === 'string' &&
     item.conversation_refusal.length > 0
@@ -339,7 +337,7 @@ export function tileResolveFields(
             (row === 'external' || row === 'takeover') &&
             typeof external?.title === 'string'
               ? external.title
-              : SESSION_TITLES[row]
+              : SESSION_TITLES[/** @type {ContinueRow} */ (row)]
           }`,
     ...handoff_fields,
     ...pair
@@ -353,10 +351,12 @@ const REPO_OPERATION_SESSION_TITLE =
 /**
  * The `[세션에서 이어가기]` decision of one 저장소 작업 drawer row (UI-jbl1
  * §3.3): the failed manual deploy the server marked `resolve.terminal_failure`
- * draws the button unless the row's own conversation is live or holds a
- * decided outcome — the same two judgments a lane card reads above. A live
- * conversation is returned as `conversation` so the row shows where it is
- * instead of the button.
+ * draws the button unless the row's own conversation answers it through its
+ * Discord link or holds a decided outcome — the same judgments a lane card
+ * reads above. A live conversation without a link keeps the button, whose
+ * click focuses that conversation's window (UI-9w5l §3.5). A live
+ * conversation is also returned as `conversation` so the row shows where it
+ * is.
  *
  * @param {any} operation - A projected repo-operation card.
  * @param {boolean} [resolve_pending]
@@ -370,22 +370,19 @@ export function repoOperationResolveFields(operation, resolve_pending = false) {
   const views = Array.isArray(material.interactive_sessions)
     ? material.interactive_sessions
     : [];
-  if (hasLiveConversation(views)) {
-    return {
-      conversation: views.find(
-        (/** @type {any} */ view) =>
-          !!view && view.state === 'live' && !view.closing
-      )
-    };
-  }
-  if (holdsConversationOutcome(views)) {
-    return {};
+  const live = liveConversations(views)[0];
+  const conversation_fields = live ? { conversation: live } : {};
+  if (hasDiscordConversation(views) || holdsConversationOutcome(views)) {
+    return conversation_fields;
   }
   return {
     resolve_action: true,
     resolve_enabled: !resolve_pending,
     resolve_title: resolve_pending
       ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
-      : REPO_OPERATION_SESSION_TITLE
+      : live
+        ? FOCUS_TITLE
+        : REPO_OPERATION_SESSION_TITLE,
+    ...conversation_fields
   };
 }

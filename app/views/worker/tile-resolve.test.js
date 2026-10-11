@@ -110,6 +110,43 @@ describe('tileResolveFields', () => {
     }
   );
 
+  test.each(/** @type {const} */ (['inquiry', 'resolve', 'external_resume']))(
+    'shows the focus button for a live conversation on a card with no row (%s)',
+    (kind) => {
+      const item = {
+        id: 'UI-1',
+        run_state: 'waiting',
+        wait_reasons: [],
+        interactive_sessions: [session(kind, { discord_url: null })]
+      };
+
+      const fields = tileResolveFields(item, false);
+
+      expect(fields).toMatchObject({
+        resolve_action: true,
+        resolve_enabled: true,
+        resolve_title:
+          '열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다'
+      });
+    }
+  );
+
+  test.each(/** @type {const} */ (['inquiry', 'resolve', 'external_resume']))(
+    'hides the button for a linked live conversation on a card with no row (%s)',
+    (kind) => {
+      const item = {
+        id: 'UI-1',
+        run_state: 'waiting',
+        wait_reasons: [],
+        interactive_sessions: [session(kind, { discord_url: DISCORD_URL })]
+      };
+
+      const fields = tileResolveFields(item, false);
+
+      expect(fields.resolve_action).toBeUndefined();
+    }
+  );
+
   test('keeps the button hidden while a decided outcome holds a live conversation without a link', () => {
     const item = {
       id: 'UI-1',
@@ -571,14 +608,36 @@ describe('repoOperationResolveFields (UI-jbl1 §3.3)', () => {
     expect(fields).toEqual({});
   });
 
-  test('shows the live conversation instead of the button', () => {
-    const live = session('resolve', { tmux_window: 'resolve-repo-op-op-1' });
+  test('shows a linked live conversation instead of the button', () => {
+    const live = session('resolve', {
+      tmux_window: 'resolve-repo-op-op-1',
+      discord_url: DISCORD_URL
+    });
 
     const fields = repoOperationResolveFields(
       card({ interactive_sessions: [live] })
     );
 
     expect(fields).toEqual({ conversation: live });
+  });
+
+  test('draws the focus button beside a live conversation without a link', () => {
+    const live = session('resolve', {
+      tmux_window: 'resolve-repo-op-op-1',
+      discord_url: null
+    });
+
+    const fields = repoOperationResolveFields(
+      card({ interactive_sessions: [live] })
+    );
+
+    expect(fields).toEqual({
+      resolve_action: true,
+      resolve_enabled: true,
+      resolve_title:
+        '열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다',
+      conversation: live
+    });
   });
 
   test('hides the button while a decided outcome holds the row', () => {

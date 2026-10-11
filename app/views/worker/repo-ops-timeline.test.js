@@ -1261,31 +1261,51 @@ describe('수동 배포 실패 행의 [세션에서 이어가기] (UI-jbl1 §3.3
     ).toBe(true);
   });
 
-  test('shows the live conversation window instead of the button', () => {
+  /**
+   * A failed manual deploy whose row conversation is live.
+   *
+   * @param {string|null} discord_url
+   */
+  function liveConversationFailure(discord_url) {
+    return manualFailure({
+      resolve: {
+        terminal_failure: true,
+        interactive_sessions: [
+          {
+            key: 'repo-op:op-1:resolve',
+            kind: 'resolve',
+            provider: 'claude',
+            session_id: 'sid',
+            mode: 'fresh',
+            source: 'fresh',
+            tmux_session: 'bdui-inquiry',
+            tmux_window: 'resolve-repo-op-op-1',
+            state: 'live',
+            closing: false,
+            discord_url
+          }
+        ]
+      }
+    });
+  }
+
+  test('shows the linked live conversation window instead of the button', () => {
     const mount = drawn(
-      manualFailure({
-        resolve: {
-          terminal_failure: true,
-          interactive_sessions: [
-            {
-              key: 'repo-op:op-1:resolve',
-              kind: 'resolve',
-              provider: 'claude',
-              session_id: 'sid',
-              mode: 'fresh',
-              source: 'fresh',
-              tmux_session: 'bdui-inquiry',
-              tmux_window: 'resolve-repo-op-op-1',
-              state: 'live',
-              closing: false,
-              discord_url: null
-            }
-          ]
-        }
-      })
+      liveConversationFailure('https://discord.com/channels/1/2')
     );
 
     expect(mount.querySelector('.worker-repo-op__resolve')).toBeNull();
+    expect(
+      mount.querySelector('.interactive-session-badge')?.textContent
+    ).toContain('bdui-inquiry:resolve-repo-op-op-1');
+  });
+
+  test('draws the focus button beside a live conversation without a link (UI-9w5l §3.5)', () => {
+    const mount = drawn(liveConversationFailure(null));
+
+    expect(
+      mount.querySelector('.worker-repo-op__resolve')?.getAttribute('title')
+    ).toBe('열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다');
     expect(
       mount.querySelector('.interactive-session-badge')?.textContent
     ).toContain('bdui-inquiry:resolve-repo-op-op-1');

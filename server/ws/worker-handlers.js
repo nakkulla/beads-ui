@@ -7197,7 +7197,8 @@ const CONVERSATION_PANE_MARKERS = Object.freeze({
  * path. Nothing is written.
  *
  * @param {any} queue - The queue snapshot the click was validated against.
- * @param {string} bead_id
+ * @param {string} bead_id - A Bead id, or a repo-operation row key
+ * (`repo-op:<operation_id>`) whose records are keyed the same way.
  * @returns {Promise<{ placement?: string|null, tmux_session?: string|null, tmux_window?: string|null }|null>}
  */
 async function focusLiveConversation(queue, bead_id) {
@@ -7293,6 +7294,29 @@ async function resolveRepoOperationInSession(ws, req, p) {
         fallback_reason: null,
         command: null,
         bridge_active: false
+      },
+      current
+    );
+    return;
+  }
+  // The row's live conversation answers the click the way a Bead's does
+  // (UI-9w5l §3.5): its window comes forward, nothing launches or changes.
+  const live_window = await focusLiveConversation(current, row_key);
+  if (live_window !== null) {
+    reply(
+      {
+        launched: false,
+        conflict: false,
+        session: 'already_running',
+        reason: null,
+        mode: null,
+        fallback_reason: null,
+        command: null,
+        bridge_active: false,
+        placement: live_window.placement ?? null,
+        tmux_session: live_window.tmux_session ?? null,
+        tmux_window: live_window.tmux_window ?? null,
+        row: 'conversation'
       },
       current
     );
