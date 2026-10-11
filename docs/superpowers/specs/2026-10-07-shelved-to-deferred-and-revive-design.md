@@ -24,9 +24,9 @@ scope:
 
 # 「보관 N」에서 [보류로 전환], 「보류 N」에서 [되살리기] (UI-0d9i)
 
-Bead: UI-0d9i. 선행: dotfiles-mae0i(보류 상태 계약, 착지 `7d0902fcd`), dotfiles-49rio(배치 철회 범위 정정, §3.7). 기준 base:
-beads-ui `996e28ad36f1a4d7b64625fefabd6000350a354c`, dotfiles origin/main
-`f301fd04ff31433cbf500ea196cb45730284fdc4`.
+Bead: UI-0d9i. 선행: dotfiles-mae0i(보류 상태 계약, 착지 `7d0902fcd`), dotfiles-49rio(배치 철회 범위 정정, 착지 `0065af02c`, §3.7). 기준 base:
+beads-ui `58b0110396638080129d5f72bde352645c36aa8d`, dotfiles origin/main
+`8d6ef6018`.
 
 ## 1. 목표
 
@@ -44,28 +44,28 @@ PR 행에 [보류로 전환]을 두어, 확인 한 번으로 이슈를 계약대
 ## 2. 검증된 전제
 
 **계약(dotfiles origin/main)**
-- `deferred`는 사용자 지시(대화형 요청 또는 beads-ui 버튼)만 쓴다; 출발은 `open` 또는 `pr_url` 있는 `resolved`; `bd defer <id> --reason '<사유>'`(`--until` 없음) 뒤 readback — `docs/contracts/workflow-contract.md:208`, `docs/contracts/workflow-state.yaml` `lifecycle.transitions.defer`
-- 쓰기 전 같은 rig `blocks` 후행을 `bd dep list <id> --direction up --type blocks --json`으로 나열하고 간선마다 「끊기」를 기본 선택, 확인 한 번이 목록 전체의 답이며 다른 rig 후행은 확인하지 못했다고 알린다; 끊은 간선마다 notes에 `deferred-unblocked: <후행 ID>`를 덧붙인다 — `workflow-contract.md:208`
+- `deferred`는 사용자 지시(대화형 요청 또는 beads-ui 버튼)만 쓴다; 출발은 `open` 또는 `pr_url` 있는 `resolved`; `bd defer <id> --reason '<사유>'`(`--until` 없음) 뒤 readback — `docs/contracts/workflow-contract.md:211`, `docs/contracts/workflow-state.yaml` `lifecycle.transitions.defer`
+- 쓰기 전 같은 rig `blocks` 후행을 `bd dep list <id> --direction up --type blocks --json`으로 나열하고 간선마다 「끊기」를 기본 선택, 확인 한 번이 목록 전체의 답이며 다른 rig 후행은 확인하지 못했다고 알린다; 끊은 간선마다 notes에 `deferred-unblocked: <후행 ID>`를 덧붙인다 — `workflow-contract.md:211`
 - PR·브랜치·worktree·metadata·notes·영수증은 보존한다 — 같은 곳, `workflow-state.yaml` `defer.preserves`
-- 되살리기도 사용자 지시만; `pr_url`의 PR이 열려 있거나 머지됐으면 `resolved`, 아니면 `open`(`bd undefer`); PR 조회 실패는 쓰지 않고 오류; `deferred-unblocked:` 간선 복원은 제안만 하고 자동 복원하지 않는다 — `workflow-contract.md:208`, `workflow-state.yaml` `lifecycle.transitions.revive`
-- [보관](`merge_shelved`)은 `deferred`와 자동 연동하지 않는다 — `workflow-contract.md:208` 마지막 문장
-- 쓰기 전에 notes의 `lane_placed:` 배치를 `### Withdraw a placement`로 철회하고, 그 절차는 `POST /api/worker/queue/remove` 뒤 대상이 대기 레인과 `pr_wait`에 없음을 확인한다 — `workflow-contract.md:208`, dotfiles `src/shared/skills/flow/workflow/references/execution-worker-lane.md` `### Withdraw a placement` 2–3단계
+- 되살리기도 사용자 지시만; `pr_url`의 PR이 열려 있거나 머지됐으면 `resolved`, 아니면 `open`(`bd undefer`); PR 조회 실패는 쓰지 않고 오류; `deferred-unblocked:` 간선 복원은 제안만 하고 자동 복원하지 않는다 — `workflow-contract.md:211`, `workflow-state.yaml` `lifecycle.transitions.revive`
+- [보관](`merge_shelved`)은 `deferred`와 자동 연동하지 않는다 — `workflow-contract.md:211` 마지막 문장
+- `lane_placed:` 배치 철회(`### Withdraw a placement`)는 `open` 출발에만 한다; `pr_url` 있는 `resolved` 출발은 `POST /api/worker/queue/remove`를 부르지 않고 `pr_wait` 자리와 `merge_shelved` 기록을 보존한다 — `workflow-contract.md:211`, `workflow-state.yaml` `lifecycle.transitions.defer` `lane_withdrawal: open_origin_only_pr_wait_seat_preserved`(dotfiles-49rio, `0065af02c`)
 
 **beads-ui 현재 동작**
-- 보관 기록은 `merge_shelved: { bead_id: { at } }`이고, 보관된 Bead는 머지 대기열에 들어가지 않는다 — `server/worker/queue-store.js:717`, `:2514-2516`, `:5716-5724`
-- 보관·해제 조작은 `handleWorkerMergeShelve`가 bd를 부르지 않고 큐만 쓴다 — `server/ws/worker-handlers.js:6363`
-- 큐 제거(`store.remove`)는 `removeFromLanes`로 대기 레인·`pr_wait` 자리와 보관 기록을 함께 지운다 — `server/worker/queue-store.js:5602-5620`, `:8725-8752`
-- PR 관측은 저장된 `pr_wait`를 계속 순회하고, PR이 MERGED면 완료 정리(`cleanupMerged`)로 넘긴다 — `server/worker/pr-poller.js:404-426`, `:735-739`; 완료 정리는 브랜치·worktree를 정리하고 Bead를 `closed`로 쓴 뒤 완료로 옮기며 `deferred`를 따로 보지 않는다 — `server/worker/pr-actions.js:1485-1487`, `:2345-2386`
-- 세션이 전달한 바깥 PR 레지스트리는 `bd list` 행 중 `resolved`+`pr_url`만 다시 읽어 교체한다 — `server/worker/bd-metadata.js:794-827`(`scanRows`), `server/worker/attach.js:1887-1891`
-- Bead 단위 잠금이 있다 — `server/worker/locks.js:79`
-- 보관 기록은 Bead가 `closed`이고 PR 대기 행이 없을 때만 sweep이 지운다; sweep은 Bead 상태(`statuses`)를 읽는다 — `server/worker/scheduler.js:4986-4999`
-- 대기 레인의 `deferred` Bead는 sweep이 이미 물린다 — `server/worker/scheduler.js:4950-4985`(`statuses[bead_id] !== 'deferred'`); PR 대기·완료는 순회하지 않는다 — ADR UI-jbl1(대기 레인 퇴장 조항)
-- 「보관 N」 묶음은 `shelvedSectionTemplate`이 그리고 Worker·Monitor 두 탭이 같은 행 투영(`pr-wait-row.js`)을 쓴다 — `app/views/worker/lanes.js:5451`, `app/views/worker/index.js:2755-2760`, `app/views/monitor/index.js:1956-1960`, `app/views/worker/pr-wait-row.js:1160-1195`, `:1460`
-- 「보류 N」은 Worker 탭에만 있고(후보 pane 아래 `<details class="worker-deferred">`), 보류 카드는 `candidateCard`의 `variant:'deferred'`이며 foot에 되살리기 조작이 없다 — `app/views/worker/index.js:2060-2090`, `app/views/worker/lanes.js:4836-4930`, `:5028-5046`
+- 보관 기록은 `merge_shelved: { bead_id: { at } }`이고, 보관된 Bead는 머지 대기열에 들어가지 않는다 — `server/worker/queue-store.js:717`, `:2515`, `:5712-5728`
+- 보관·해제 조작은 `handleWorkerMergeShelve`가 bd를 부르지 않고 큐만 쓴다 — `server/ws/worker-handlers.js:6383`; 핀 없는 외부 저장소 행만 `foreign`으로 거절하고, 핀 있는 외부 PR 행(UI-k467)은 보관된다 — `:6435`, `app/views/worker/pr-wait-row.js:1254`
+- 큐 제거(`store.remove`)는 `removeFromLanes`로 대기 레인·`pr_wait` 자리와 보관 기록을 함께 지운다 — `server/worker/queue-store.js:5605-5620`, `:8726-8752`
+- PR 관측은 저장된 `pr_wait`를 계속 순회하고, PR이 MERGED면 로컬 PR(`server/worker/pr-poller.js:446-465`)과 핀 있는 외부 PR(`:704-721`) 모두 `cleanupMerged`(`:903`)로 넘기며, 그것이 `onMerged` → `prActions.cleanupObservedMerge`를 부른다 — `server/worker/attach.js:2388`, `server/worker/pr-actions.js:4462`; 완료 정리(`runCleanup` `:2912`, 외부 PR `runForeignCleanup` `:3250`)는 브랜치·worktree를 정리하고 Bead를 `closed`로 쓴 뒤 완료로 옮기며 `deferred`를 따로 보지 않는다
+- 세션이 전달한 바깥 PR 레지스트리는 `bd list` 행 중 `resolved`+`pr_url`만 다시 읽어 교체한다 — `server/worker/bd-metadata.js:797-830`(`scanRows`), `server/worker/attach.js:1819-1849`
+- Bead 단위 잠금이 있다 — `server/worker/locks.js:78`
+- 보관 기록은 Bead가 `closed`이고 PR 대기 행이 없을 때만 sweep이 지운다; sweep은 Bead 상태(`statuses`)를 읽는다 — `server/worker/scheduler.js:4990-5003`
+- 대기 레인의 `deferred` Bead는 sweep이 이미 물린다 — `server/worker/scheduler.js:4963-4988`(`statuses[bead_id] !== 'deferred'`); PR 대기·완료는 순회하지 않는다 — ADR UI-k467(UI-jbl1 승계 조항의 레인 퇴장)
+- 「보관 N」 묶음은 `shelvedSectionTemplate`이 그리고 Worker·Monitor 두 탭이 같은 행 투영(`pr-wait-row.js`)을 쓴다 — `app/views/worker/lanes.js:5512`, `app/views/worker/index.js:2778-2783`, `app/views/monitor/index.js:1957-1960`, `app/views/worker/pr-wait-row.js:1238-1270`, `:1502`
+- 「보류 N」은 Worker 탭에만 있고(후보 pane 아래 `<details class="worker-deferred">`), 보류 카드는 `candidateCard`의 `variant:'deferred'`이며 foot에 되살리기 조작이 없다 — `app/views/worker/index.js:2056-2081`, `app/views/worker/lanes.js:4897-4910`, `:5089`; 그 `<details>`를 그리는 `shelfSectionTemplate`은 「자동 점검」 선반(UI-81vb)도 같은 `variant:'deferred'` 카드로 그린다 — `app/views/worker/index.js:2084-2112`
 - 모니터에 보류 선반이 없는 것은 의도된 차이다 — `docs/superpowers/specs/2026-10-02-monitor-worker-parity-design.md:177`
-- 이슈 상세의 상태 선택은 `update-status`로 `deferred`를 사유·후행 안내 없이 바로 쓴다 — `app/views/detail-panel/index.js:92-97`, `server/ws/mutation-handlers.js:28-34`, `:635-703`
+- 이슈 상세의 상태 선택은 `update-status`로 `deferred`를 사유·후행 안내 없이 바로 쓴다 — `app/views/detail-panel/index.js:92-97`, `server/ws/mutation-handlers.js:28-34`, `:634-703`
 - `bd defer`·`bd undefer`·`bd dep list --direction up --type blocks`를 부르는 서버 경로는 없다 — `grep -rn "'defer'\|'undefer'\|'--direction'" server --include='*.js'` 0건(테스트 제외)
-- PR 상태 조회 `prDetail`이 있다 — `server/worker/gh.js:604`
+- PR 상태 조회 `prDetail`이 있다 — `server/worker/gh.js:615`; 핀 있는 외부 PR은 대상 해석(`server/worker/foreign-target.js` `readForeignTarget`)을 거쳐 대상 slug로 읽는다 — `server/worker/pr-poller.js:604-660`
 - 카드 foot 슬롯 6에 새 버튼을 달려면 슬롯 표를 먼저 갱신한다 — `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md:262`, `AGENTS.md` 워커·모니터 카드 배치 문법; 버튼은 `.op-btn` 부품으로만 그린다 — `docs/superpowers/specs/2026-09-02-worker-operation-surface-unify-design.md:125-145`, `docs/design-system.md`
 
 ## 3. 설계
@@ -121,7 +121,9 @@ PR 행에 [보류로 전환]을 두어, 확인 한 번으로 이슈를 계약대
 - **revive-preview** `{bead_id}`: 상태가 `deferred`인지 확인하고, notes의
   `deferred-unblocked:` 후행 중 닫히지 않은 것을 돌려준다. `pr_url`이 있으면 PR
   상태를 조회해 되살릴 목표(`resolved`/`open`)를 함께 돌려준다. PR 조회가 실패하면
-  목표 없이 오류를 돌려준다.
+  목표 없이 오류를 돌려준다. PR은 `pr_url`이 가리키는 저장소에서 읽는다 — 핀 있는
+  외부 PR Bead(UI-k467)는 PR 관측과 같은 대상 해석으로 대상 slug에서 읽고, 대상을
+  해석하지 못하면 PR 조회 실패와 같다.
 - **revive** `{bead_id, restore_edges[]}`: 목표를 다시 판정해 `bd update --status
   resolved` 또는 `bd undefer` → readback. PR 조회 실패면 쓰지 않는다. 그다음
   `restore_edges`마다 `blocks` 간선을 다시 걸고 `bd dep list <후행> --json`으로
@@ -143,7 +145,8 @@ PR 행에 [보류로 전환]을 두어, 확인 한 번으로 이슈를 계약대
 - 결정: 보류 중에는 그 PR 대기 행의 **완료 처리를 멈춘다**. PR 관측은 계속하지만, PR이
   바깥에서 MERGED가 돼도 완료 정리의 첫 부작용(브랜치·worktree 정리, `closed` 쓰기,
   완료 이동) 직전에 Bead 상태를 다시 읽어 `deferred`면 이번 관측에서 아무것도 하지
-  않는다. 상태 읽기가 실패해도 이번 관측은 건너뛴다(다음 관측에 다시 본다).
+  않는다. 이 확인은 로컬 PR과 핀 있는 외부 PR(UI-k467)의 두 MERGED 관측 경로가 함께
+  지나는 자리(`cleanupMerged`→`cleanupObservedMerge`)에 둔다. 상태 읽기가 실패해도 이번 관측은 건너뛴다(다음 관측에 다시 본다).
   되살리면 Bead는 `resolved`(PR 머지됨)가 되고, 다음 관측이 기존 완료 경로를 그대로
   탄다. 보류는 사용자가 "고려하지 않음"으로 둔 상태라 그 동안 자동으로 닫지 않는다.
 
@@ -151,7 +154,9 @@ PR 행에 [보류로 전환]을 두어, 확인 한 번으로 이슈를 계약대
 
 - 결정: 「보류 N」의 보류 카드 foot(슬롯 6)에 `.op-btn` `↺ 되살리기`. Worker 탭에만
   있다(모니터에는 보류 선반이 없다 — 의도된 차이, 사용자 결정 2026-10-07).
-  PR 대기에서 온 이슈뿐 아니라 「보류 N」의 모든 이슈에 선다.
+  PR 대기에서 온 이슈뿐 아니라 「보류 N」의 모든 이슈에 선다. 같은 `variant:'deferred'`
+  카드를 쓰는 「자동 점검」 선반(UI-81vb)의 카드에는 서지 않는다 — 그 이슈는 보류가
+  아니다.
 - 확인 대화상자(§3.2와 같은 모듈의 되살리기 모드): 되살릴 목표
   (`resolved — PR 열림` / `resolved — PR 머지됨` / `open`), 복원할 간선 목록(기본
   선택, 닫힌 후행 제외), 보관 기록이 있으면 `보관도 해제되어 PR 대기로 돌아갑니다`.
@@ -159,8 +164,8 @@ PR 행에 [보류로 전환]을 두어, 확인 한 번으로 이슈를 계약대
 - 결정: 되살리기가 성공하면 그 Bead의 보관 기록도 지운다(사용자 결정 2026-10-07).
   PR은 보관 전처럼 일반 PR 대기 행이 되고, 머지는 기존 자동 머지 스위치 규칙을
   따른다. 보관 기록 삭제가 실패해도 되살리기는 성공으로 보고하고 [보관 해제]가 남는다.
-- 되살린 이슈를 대기열에 자동으로 다시 넣지 않는다(ADR UI-jbl1: 다시 `open`이 돼도
-  자동 재배치 없음).
+- 되살린 이슈를 대기열에 자동으로 다시 넣지 않는다(ADR UI-k467의 UI-jbl1 승계 조항:
+  다시 `open`이 돼도 자동 재배치 없음).
 
 ### 3.6 이슈 상세의 상태 선택
 
@@ -177,8 +182,8 @@ PR 행에 [보류로 전환]을 두어, 확인 한 번으로 이슈를 계약대
   PR 대기 자리와 보관 기록까지 지운다. 이것은 §3.4의 보존 결정(사용자 결정
   2026-10-07)과 충돌한다. 사용자 결정(2026-10-07)으로 계약을 고친다: `pr_url` 있는
   `resolved` 출발은 큐 제거를 부르지 않고 PR 대기 자리를 보존하며, 철회는 `open`
-  출발에만 적용한다. 이 정정은 dotfiles quick_fix Bead dotfiles-49rio가 하고,
-  UI-0d9i는 그 Bead에 `blocks`로 묶여 구현 진입 전에 착지를 기다린다.
+  출발에만 적용한다. 이 정정은 dotfiles quick_fix Bead dotfiles-49rio가 했고
+  `0065af02c`로 착지했다(§2 계약 전제).
 - 정정 뒤 이 버튼(출발이 `resolved`+`pr_url`뿐)은 배치 철회를 하지 않는다. 대기 레인
   자리가 남아 있으면 기존 sweep이 보류를 보고 물린다.
 
@@ -241,7 +246,7 @@ PR 행에 [보류로 전환]을 두어, 확인 한 번으로 이슈를 계약대
 ## 결정 (ADR 후보)
 
 - 전제: ADR UI-u6ud-2 — `deferred` 계약을 런타임에 읽지 않고 출발 상태·되살리기 목표 규칙을 코드에 복제하며, 계약 쪽 변경은 계약에서 먼저 바꾼다.
-- 전제: ADR UI-jbl1 — 대기 레인의 `deferred` 퇴장과 "다시 `open`이 돼도 자동 재배치 없음"을 그대로 따른다.
+- 전제: ADR UI-k467(UI-jbl1 승계 조항 포함) — 대기 레인의 `deferred` 퇴장과 "다시 `open`이 돼도 자동 재배치 없음"을 그대로 따른다.
 - 보관 행 [보류로 전환]·보류 카드 [되살리기] 버튼과 대화상자 — UI 레이아웃·표시 형식(기본 제외 목록) → ADR 아님
 - 보류 중 PR 대기 행 보존·숨김과 되살릴 때 보관 기록 삭제 — 되돌리기 쉬움: 투영 필터 하나와 되살리기 op의 한 단계이고 저장 형식이 바뀌지 않는다 → ADR 아님
 - 상세 상태 선택의 `deferred` 전이 차단 — 되돌리기 쉬움: 허용 집합과 선택 목록 두 곳 → ADR 아님
@@ -249,4 +254,5 @@ PR 행에 [보류로 전환]을 두어, 확인 한 번으로 이슈를 계약대
 
 ## 경계·후속
 
-- 크로스 리포 unit: dotfiles — `deferred` 전환의 `lane_placed:` 철회를 `open` 출발로 한정하고 `resolved`+`pr_url`의 PR 대기 자리를 보존하도록 계약·상태 정의·세션 절차를 정정; quick_fix Bead dotfiles-49rio(UI-0d9i가 `blocks`로 기다림)
+- 크로스 리포 unit: dotfiles — `deferred` 전환의 `lane_placed:` 철회를 `open` 출발로 한정하고 `resolved`+`pr_url`의 PR 대기 자리를 보존하도록 계약·상태 정의·세션 절차를 정정; quick_fix Bead dotfiles-49rio(closed, 착지 `0065af02c`)
+- 관찰(재검토 2026-10-12): 앵커 뒤 UI-9w5l·UI-k467이 착지해 UI-jbl1 ADR의 후계가 UI-k467이 됐고, 레인 퇴장·자동 재배치 없음 조항은 승계됐다. UI-k467이 핀 있는 외부 PR 행에 `[보관]`을 열어 그 행에도 [보류로 전환]이 서므로, 되살리기의 PR 조회와 보류 중 완료 정지는 외부 PR 경로도 덮는다(§3.3, §3.4). UI-81vb가 「자동 점검」 선반을 같은 보류 카드 변형으로 그려 [되살리기]를 「보류 N」으로 한정한다(§3.5).
