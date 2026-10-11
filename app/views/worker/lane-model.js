@@ -516,6 +516,7 @@ const DONE_KIND_LABELS = {
  *   recent_complete?: boolean,
  *   issue_type?: string,
  *   deferred?: boolean,
+ *   hygiene_kind?: string,
  *   filter_match?: boolean
  * }} LaneItem
  */
@@ -627,6 +628,9 @@ const DONE_KIND_LABELS = {
  * 같은 우선순위·타입·라벨 필터·검색을 받고 그 숨김 개수에 들되 준비도·route
  * 필터에는 들어가지 않고, 정렬은 어댑터가 정한 `updated_at` 내림차순 그대로다. 모니터 스냅샷에는 재료가
  * 없으므로 빈 배열이다 (fail-quiet).
+ * @property {LaneItem[]} hygiene_all - Inspection rows before field filters.
+ * @property {LaneItem[]} hygiene - Worker-only inspection shelf; excluded from
+ * candidate counts, sorting and hidden counts.
  * @property {MonitorRunnableSection[]} runnable_sections - `updated_flat`에서는
  * 빈 배열이다 (섹션 자체를 만들지 않는다).
  * @property {boolean} runnable_flat
@@ -2975,7 +2979,7 @@ function chipPinsOf(entry) {
  *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_chain?: import('./candidate-sort.js').CandidateSortState, group_by_repo?: boolean, groups?: 'nonempty'|'all' }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_chain?: import('./candidate-sort.js').CandidateSortState, group_by_repo?: boolean, groups?: 'nonempty'|'all', hygiene_shelf?: boolean }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -4320,6 +4324,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...(exec_chips ? { exec_chips } : {}),
         ...(chip_pins ? { chip_metadata: chip_pins } : {}),
         ...(complex_reason.length > 0 ? { complex_reason } : {}),
+        ...(typeof entry.hygiene_kind === 'string' &&
+        entry.hygiene_kind.trim().length > 0
+          ? { hygiene_kind: entry.hygiene_kind.trim() }
+          : {}),
         blocked: entry.blocked === true,
         ...(Array.isArray(entry.blocked_by)
           ? {
@@ -4887,6 +4895,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     },
     deferred,
     deferred_all: deferred.slice(),
+    hygiene: [],
+    hygiene_all: [],
     runnable_sections: [],
     runnable_flat: candidate_flat,
     queue,
@@ -5141,6 +5151,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 전 레포 사실에서 나와야 한다.
   // 필터가 감춘 카드도 의존 상대로는 살아 있다 (UI-j92s §6.1) — 후보 모집단은
   // 필터 이전 목록에서 나온다.
+  if (options?.hygiene_shelf === true) {
+    // Split after shared card enrichment, before any candidate filter or sort.
+    model.hygiene_all = model.runnable.filter((item) => item.hygiene_kind);
+    model.runnable = model.runnable.filter((item) => !item.hygiene_kind);
+  }
   model.runnable_all = model.runnable.slice();
   let visible = model.runnable;
   /** @param {LaneItem} item */
@@ -5299,6 +5314,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const diff = timeOf(b.updated_at) - timeOf(a.updated_at);
     return diff !== 0 ? diff : a.id.localeCompare(b.id);
   };
+  model.hygiene = model.hygiene_all.filter(fieldFiltersPass).sort(byUpdated);
   /**
    * @param {LaneItem} a
    * @param {LaneItem} b

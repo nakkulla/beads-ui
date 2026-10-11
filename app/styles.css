@@ -5664,6 +5664,7 @@ summary.repo-ops-log-viewer__attempt-head {
    펼쳐도 후보 레인의 일부로 읽히도록 카드와 같은 간격을 쓴다. PR 대기 레인의
    `보관 N` 묶음 (UI-sd12 §3.4)도 같은 레인 본문 맨 위라 같은 모양을 쓴다. */
 .worker-deferred,
+.worker-hygiene,
 .worker-shelved {
   margin-bottom: var(--sp-6);
   border-bottom: 1px solid var(--border-panel);
@@ -5671,6 +5672,7 @@ summary.repo-ops-log-viewer__attempt-head {
 }
 
 .worker-deferred__summary,
+.worker-hygiene__summary,
 .worker-shelved__summary {
   color: var(--text-dim);
   cursor: pointer;
@@ -5678,6 +5680,7 @@ summary.repo-ops-log-viewer__attempt-head {
 }
 
 .worker-deferred__body,
+.worker-hygiene__body,
 .worker-shelved__body {
   display: flex;
   flex-direction: column;

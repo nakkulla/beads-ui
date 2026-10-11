@@ -4,8 +4,7 @@ import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 
 const DOTFILES_ROOT =
-  process.env.DOTFILES_ROOT ||
-  path.join(os.homedir(), 'GitHub', 'dotfiles');
+  process.env.DOTFILES_ROOT || path.join(os.homedir(), 'GitHub', 'dotfiles');
 const REFERENCES = path.join(
   DOTFILES_ROOT,
   'src/shared/skills/flow/workflow/references'

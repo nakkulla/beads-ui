@@ -395,6 +395,84 @@ function runnable(id, patch = {}) {
   return { bead_id: id, title: `title ${id}`, ...patch };
 }
 
+describe('Worker inspection shelf (UI-81vb)', () => {
+  const input = workspace({
+    runnable: [
+      runnable('A-1'),
+      runnable('A-2', {
+        hygiene_kind: 'future_kind',
+        updated_at: 1,
+        blocked: true,
+        issue_type: 'task',
+        priority: 3,
+        labels: ['hygiene']
+      }),
+      runnable('A-3', { hygiene_kind: 'jev_bind', updated_at: 2 })
+    ]
+  });
+
+  test('separates hygiene from the ordinary candidate population', () => {
+    const lanes = buildLanes([input], null, { hygiene_shelf: true });
+
+    expect(lanes.runnable_all.map((item) => item.id)).toEqual(['A-1']);
+    expect(lanes.hygiene.map((item) => item.id)).toEqual(['A-3', 'A-2']);
+  });
+
+  test('preserves Monitor candidates without a shelf option', () => {
+    const lanes = buildLanes([input]);
+
+    expect(lanes.runnable).toHaveLength(3);
+    expect(lanes.hygiene).toEqual([]);
+  });
+
+  test.each([{ priorities: [1] }, { type: 'bug' }, { labels: ['other'] }])(
+    'filters the shelf without counting it as hidden: %j',
+    (filter) => {
+      const lanes = buildLanes([input], null, {
+        hygiene_shelf: true,
+        candidate_filter: {
+          show_blocked: true,
+          readiness: 'all',
+          routes: [],
+          ...filter
+        }
+      });
+
+      expect(lanes.hygiene.map((item) => item.id)).not.toContain('A-2');
+      expect(lanes.hygiene_all).toHaveLength(2);
+      expect(lanes.runnable_hidden.priority).toBe(0);
+      expect(lanes.runnable_hidden.type).toBe(0);
+      // A-1 has a known empty label set; only it contributes to this count.
+      expect(lanes.runnable_hidden.label).toBe('labels' in filter ? 1 : 0);
+    }
+  );
+
+  test('keeps the shelf visible through readiness, route and blocked filters', () => {
+    const lanes = buildLanes([input], null, {
+      hygiene_shelf: true,
+      candidate_filter: {
+        show_blocked: false,
+        readiness: 'not_ready',
+        routes: ['quick_fix']
+      }
+    });
+
+    expect(lanes.hygiene).toHaveLength(2);
+    expect(lanes.runnable_hidden.blocked).toBe(0);
+  });
+
+  test('leaves an already queued hygiene bead in its queue', () => {
+    const lanes = buildLanes(
+      [{ ...input, queue: [{ bead_id: 'A-2' }] }],
+      null,
+      { hygiene_shelf: true }
+    );
+
+    expect(lanes.queue.map((item) => item.id)).toContain('A-2');
+    expect(lanes.hygiene_all.map((item) => item.id)).not.toContain('A-2');
+  });
+});
+
 /**
  * @param {Record<string, any>} [patch]
  * @returns {any}

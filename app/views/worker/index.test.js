@@ -17757,6 +17757,164 @@ describe('views/worker 숨김과 lifecycle (UI-hhn9 §6)', () => {
   });
 });
 
+describe('Worker inspection shelf (UI-81vb)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any[]} [issues]
+   * @param {Record<string, any>} [view_options]
+   */
+  function mountHygiene(issues = [], view_options = {}) {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', issues);
+    seed(stores, 'tab:worker:deferred', [
+      { id: 'DF-1', title: '보류', status: 'deferred' }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn(),
+      ...view_options
+    });
+    return { mount, stores, view };
+  }
+
+  const hygiene = {
+    id: 'HY-1',
+    title: '자동 점검',
+    status: 'open',
+    priority: 0,
+    labels: ['hygiene'],
+    metadata: { hygiene_kind: 'future_kind' }
+  };
+
+  test('draws a collapsed inspection shelf immediately after the deferred shelf', () => {
+    const { mount, view } = mountHygiene([hygiene]);
+    const shelf = /** @type {HTMLDetailsElement} */ (
+      mount.querySelector('.worker-hygiene')
+    );
+
+    expect(shelf.open).toBe(false);
+    expect(shelf.querySelector('summary')?.textContent?.trim()).toBe('점검 1');
+    expect(shelf.previousElementSibling?.className).toBe('worker-deferred');
+    expect(shelf.querySelector('.worker-card--deferred')).not.toBeNull();
+    expect(shelf.querySelector('.worker-card__place')).toBeNull();
+    view.destroy();
+  });
+
+  test('omits the inspection shelf for rows without a marker', () => {
+    const { mount, view } = mountHygiene([{ ...hygiene, metadata: {} }]);
+
+    expect(mount.querySelector('.worker-hygiene')).toBeNull();
+    expect(mount.querySelector('[data-bead-id="HY-1"]')).not.toBeNull();
+    view.destroy();
+  });
+
+  test('preserves predecessor chips on inspection cards', () => {
+    const { mount, stores, view } = mountHygiene();
+
+    seed(stores, 'tab:worker:blocked', [
+      {
+        ...hygiene,
+        blocked_info: { external: false, reason: null, blockers: ['HY-2'] }
+      }
+    ]);
+
+    expect(
+      mount.querySelector('.worker-hygiene .worker-dep--pred')?.textContent
+    ).toContain('⛓ HY-2');
+    view.destroy();
+  });
+
+  test('opens the predecessor from an inspection card', () => {
+    const gotoIssue = vi.fn();
+    const { mount, stores, view } = mountHygiene([], { gotoIssue });
+    seed(stores, 'tab:worker:blocked', [
+      {
+        ...hygiene,
+        blocked_info: { external: false, reason: null, blockers: ['HY-2'] }
+      }
+    ]);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-hygiene .worker-dep__open')
+    ).click();
+
+    expect(gotoIssue.mock.calls).toEqual([['HY-2']]);
+    view.destroy();
+  });
+
+  test('preserves the inspection open preference independently of deferred', () => {
+    const { mount, view } = mountHygiene([hygiene]);
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-hygiene__summary')
+    ).click();
+    view.destroy();
+
+    const next = mountHygiene([hygiene]);
+
+    expect(
+      next.mount.querySelector('.worker-hygiene')?.hasAttribute('open')
+    ).toBe(true);
+    expect(
+      next.mount.querySelector('.worker-deferred')?.hasAttribute('open')
+    ).toBe(false);
+    next.view.destroy();
+  });
+
+  test('keeps filtered inspection labels available for selection', () => {
+    presetCandidateFilter({ labels: ['alpha'] });
+    const { mount, view } = mountHygiene([
+      { ...hygiene, labels: ['alpha'] },
+      { ...hygiene, id: 'HY-2', labels: ['beta'] }
+    ]);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-filter__labels-btn')
+    ).click();
+    const labels = Array.from(
+      mount.querySelectorAll('.worker-filter__label-check')
+    ).map((el) => /** @type {HTMLElement} */ (el).dataset.label);
+
+    expect(labels).toEqual(expect.arrayContaining(['alpha', 'beta']));
+    expect(
+      mount.querySelector('.worker-hygiene__summary')?.textContent?.trim()
+    ).toBe('점검 1');
+    view.destroy();
+  });
+
+  test('excludes inspection dependencies before sorting ordinary candidates', () => {
+    window.localStorage.setItem(
+      'bdui.worker.candidate_sort',
+      JSON.stringify({ chain: [{ key: 'priority', dir: 'asc' }] })
+    );
+    const { mount, view } = mountHygiene([
+      hygiene,
+      {
+        id: 'A-1',
+        title: '후행',
+        status: 'open',
+        priority: 3,
+        dependencies: [
+          { issue_id: 'A-1', depends_on_id: 'HY-1', type: 'blocks' }
+        ]
+      },
+      { id: 'A-2', title: '먼저', status: 'open', priority: 1 }
+    ]);
+
+    const ids = Array.from(
+      mount.querySelectorAll('.worker-card:not(.worker-card--deferred)')
+    ).map((el) => /** @type {HTMLElement} */ (el).dataset.beadId);
+
+    expect(ids).toEqual(['A-2', 'A-1']);
+    view.destroy();
+  });
+});
+
 describe('보류 선반·새 이슈·필터 줄 (UI-p7s2 §3·§4·§6)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';

@@ -1470,6 +1470,41 @@ describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
   });
 });
 
+describe('runnable cache hygiene projection (UI-81vb)', () => {
+  test.each(['instruction_budget', 'jev_bind', 'future_kind'])(
+    'projects the display marker %s without changing admission',
+    async (kind) => {
+      const cache = createRunnableCache({
+        requestSnapshot: fakeSnapshot({
+          [WS_A]: [row({ metadata: { hygiene_kind: ` ${kind} ` } })]
+        }),
+        enrichWorkflow: () => null
+      });
+
+      const out = await warm(cache, WS_A);
+
+      expect(out[0]).toMatchObject({ hygiene_kind: kind, admitted: true });
+      expect(out[0].exec_pins).not.toHaveProperty('hygiene_kind');
+    }
+  );
+
+  test.each([undefined, null, '', '  ', 1, true])(
+    'omits an invalid hygiene marker %s',
+    async (kind) => {
+      const cache = createRunnableCache({
+        requestSnapshot: fakeSnapshot({
+          [WS_A]: [row({ metadata: { hygiene_kind: kind } })]
+        }),
+        enrichWorkflow: () => null
+      });
+
+      const out = await warm(cache, WS_A);
+
+      expect(out[0]).not.toHaveProperty('hygiene_kind');
+    }
+  );
+});
+
 describe('runnable cache 복잡 판정 projection (UI-7nhi §2)', () => {
   test('projects the joined signals when label and reason agree', async () => {
     const cache = createRunnableCache({

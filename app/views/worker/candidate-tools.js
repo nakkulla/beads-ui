@@ -34,6 +34,7 @@ export function labelOptionsOf(model, selected) {
   for (const item of [
     ...model.runnable_all,
     ...model.deferred_all,
+    ...model.hygiene_all,
     ...model.queue,
     ...model.running,
     ...model.pr_wait,

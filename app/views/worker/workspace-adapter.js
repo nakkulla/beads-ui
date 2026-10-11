@@ -367,10 +367,22 @@ export function createWorkspaceAdapter(options = {}) {
     // 끌어온다 (UI-d13v §4.1, UI-8ham, UI-q1y7 §2). 둘 다 `applyCandidateSort`
     // 안에서 끝나므로 `buildLanes`는 `candidate_sort: 'as_given'`으로 이 순서를
     // 그대로 받는다.
-    const sorted = applyCandidateSort(
-      merged,
-      normalizeCandidateSort(candidate_sort)
-    );
+    /** @type {Map<string, string>} */
+    const hygiene_kinds = new Map();
+    for (const it of merged) {
+      const kind = objectOf(it.metadata).hygiene_kind;
+      if (typeof kind === 'string' && kind.trim().length > 0) {
+        hygiene_kinds.set(it.id, kind.trim());
+      }
+    }
+    // Shelf rows must not pull ordinary candidates through dependency sorting.
+    const sorted = [
+      ...applyCandidateSort(
+        merged.filter((it) => !hygiene_kinds.has(it.id)),
+        normalizeCandidateSort(candidate_sort)
+      ),
+      ...merged.filter((it) => hygiene_kinds.has(it.id))
+    ];
     /** @type {Record<string, any>} */
     const bead_scope = objectOf(q.bead_scope);
     return sorted.map((/** @type {any} */ it) => {
@@ -431,6 +443,9 @@ export function createWorkspaceAdapter(options = {}) {
             ? it.worker_created_from_root_dir
             : undefined,
         exec_pins: execPinsOf(objectOf(it.metadata)),
+        ...(hygiene_kinds.has(it.id)
+          ? { hygiene_kind: hygiene_kinds.get(it.id) }
+          : {}),
         // 복잡 판정은 `bead_overlay`의 라벨·metadata가 싣는다 (§4.1, UI-7nhi §3)
         // — 후보는 언제나 구독 집합 안이므로 그쪽이 더 온전한 원천이다.
         // 겹침 판정의 선언 scope (UI-qm12 §5.2). 후보 bead의 scope도 서버가 같은

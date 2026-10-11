@@ -295,6 +295,17 @@ Candidate placement facts are `route`, `spec_state`, `has_description`,
 as Ready/Blocked lists, and `plan_group` (above) is attached from the same
 snapshot. These fields do not change admission or scheduling.
 
+Runnable rows additionally carry `hygiene_kind` when `metadata.hygiene_kind` is
+a non-empty string after trimming; unknown kind names are preserved. This
+display-only marker never changes admission or scheduling. The Worker tab's
+Ready/Blocked adapter projects the same field directly from each issue. In
+Worker, marked candidates appear in the initially collapsed `점검 N` shelf after
+the deferred shelf, using the same subdued cards. They are excluded before
+ordinary candidate sorting, filtering and hidden-count calculation. The shelf
+accepts priority/type/label filters and retains its full label option set; its
+own order is latest-updated first. Monitor keeps its existing candidate display
+and does not draw this shelf.
+
 The `session-preferred` label is ADVISORY and, unlike `worker-ineligible`, never
 removes a row from the runnable verdict — `qualify()` in
 `server/worker/runnable-cache.js` reads it only for display. It is valid only

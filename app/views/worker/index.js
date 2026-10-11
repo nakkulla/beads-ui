@@ -247,6 +247,7 @@ const CANDIDATE_FILTER_DEFAULT = {
  * @type {string}
  */
 const DEFERRED_OPEN_KEY = 'bdui.worker.deferred-open';
+const HYGIENE_OPEN_KEY = 'bdui.worker.hygiene-open';
 
 /**
  * PR 대기 레인 아래 `보관 N` 묶음의 열림 상태 저장 키 (UI-sd12 §3.4). `보류 N`과
@@ -598,6 +599,7 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {boolean}
    */
   let deferred_open = loadOpenFlag(DEFERRED_OPEN_KEY);
+  let hygiene_open = loadOpenFlag(HYGIENE_OPEN_KEY);
   /**
    * `보관 N` 묶음의 열림 상태 (UI-sd12 §3.4), 뷰 생성 시 복원된다.
    *
@@ -1838,6 +1840,7 @@ export function createWorkerView(mount_element, options = {}) {
       // 감춘 수는 조작별로 센다 (UI-ki09): 두 필터에 모두 걸린 후보는 어느
       // 배지에도 들어가지 않는다 — 한쪽만 풀어도 나타나지 않기 때문이다.
       candidate_sort: 'as_given',
+      hygiene_shelf: true,
       groups: 'all'
     });
     return current_lanes;
@@ -2070,13 +2073,31 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {import('lit-html').TemplateResult|undefined}
    */
   function deferredSectionTemplate(m) {
-    const rows = deferredRows(m);
+    return shelfSectionTemplate(
+      deferredRows(m),
+      'deferred',
+      '보류',
+      deferred_open
+    );
+  }
+
+  /**
+   * Draw a shelf with the shared subdued candidate variant.
+   *
+   * @param {any[]} rows
+   * @param {'deferred'|'hygiene'} kind
+   * @param {string} label
+   * @param {boolean} open
+   */
+  function shelfSectionTemplate(rows, kind, label, open) {
     if (rows.length === 0) {
       return undefined;
     }
-    return html`<details class="worker-deferred" ?open=${deferred_open}>
-      <summary class="worker-deferred__summary">보류 ${rows.length}</summary>
-      <div class="worker-deferred__body">
+    return html`<details class=${`worker-${kind}`} ?open=${open}>
+      <summary class=${`worker-${kind}__summary`}>
+        ${label} ${rows.length}
+      </summary>
+      <div class=${`worker-${kind}__body`}>
         ${rows.map((row) =>
           candidateCard(row, null, {
             variant: 'deferred',
@@ -2258,7 +2279,7 @@ export function createWorkerView(mount_element, options = {}) {
     // 계산하는 값이고, 빈 배열도 "없다"이지 "모른다"가 아니다.
     /** @type {Map<string, string[]>} */
     const blockers_by_bead = new Map();
-    for (const item of [...m.running, ...m.runnable]) {
+    for (const item of [...m.running, ...m.runnable, ...m.hygiene]) {
       if (Array.isArray(item.blocked_by) && item.blocked_by.length > 0) {
         blockers_by_bead.set(item.id, item.blocked_by);
       }
@@ -2776,7 +2797,12 @@ export function createWorkerView(mount_element, options = {}) {
         ? candidateSortChainTemplate(candidate_sort)
         : undefined,
       controls: candidateControlsTemplate(m),
-      shelf: deferredSectionTemplate(m),
+      shelf: html`${deferredSectionTemplate(m)}${shelfSectionTemplate(
+        m.hygiene.map((item) => candidateOf(item)),
+        'hygiene',
+        '점검',
+        hygiene_open
+      )}`,
       collapsible: true,
       collapsed: collapse.isCollapsed('candidate'),
       place_menu: currentPlaceMenu(candidates),
@@ -3435,6 +3461,11 @@ export function createWorkerView(mount_element, options = {}) {
     if (target?.closest?.('.worker-deferred__summary')) {
       deferred_open = !deferred_open;
       saveOpenFlag(DEFERRED_OPEN_KEY, deferred_open);
+      return;
+    }
+    if (target?.closest?.('.worker-hygiene__summary')) {
+      hygiene_open = !hygiene_open;
+      saveOpenFlag(HYGIENE_OPEN_KEY, hygiene_open);
       return;
     }
     // `보관 N` 묶음도 같은 규칙이다 (UI-sd12 §3.4).

@@ -177,6 +177,8 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * enum — fail-quiet, like `spec_after_blocker`. Kept apart from `exec_pins`: a
  * pin is what the worker applies, a judgement is display only, and the worker
  * never reads this field.
+ * @property {string} [hygiene_kind] - Non-empty metadata marker for the Worker
+ * inspection shelf. Display only; unknown kinds are preserved.
  */
 
 /**
@@ -437,6 +439,8 @@ function qualify(row, blocked_by, context) {
   // 있는가"를 묻는 소비자가 그것을 읽으면 안 된다.
   const published = evidence.evidence === 'published';
   const complex_reason = complexReason(row.labels, meta);
+  const hygiene_kind =
+    typeof meta.hygiene_kind === 'string' ? meta.hygiene_kind.trim() : '';
   /** @type {RunnableItem} */
   const item = {
     bead_id,
@@ -480,7 +484,8 @@ function qualify(row, blocked_by, context) {
     updated_at: stampOf(row.updated_at),
     workflow: null,
     exec_pins: execPinsOf(meta),
-    ...(complex_reason ? { complex_reason } : {})
+    ...(complex_reason ? { complex_reason } : {}),
+    ...(hygiene_kind ? { hygiene_kind } : {})
   };
   if (scope_spec_id.length === 0) {
     item.description_scope = parseDescriptionScope(row.description);
