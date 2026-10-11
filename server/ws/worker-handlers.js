@@ -152,9 +152,15 @@ import {
 } from '../worker/session-ref.js';
 import { readDeclaredBase } from '../worker/target-base.js';
 import {
+  EXTERNAL_RESUME_PANE_MARKER,
+  INQUIRY_PANE_MARKER,
+  RESOLVE_PANE_MARKER
+} from '../worker/tmux-launcher.js';
+import {
   normalizeUsageLegs,
   readAttemptUsageReceipts
 } from '../worker/usage-receipts.js';
+import { unresolvedTakeoverJob } from '../worker/wait-judgment.js';
 import { branchForBead } from '../worker/worktree.js';
 import {
   WORKSPACE_ACCOUNTS_KV_KEY,
@@ -6930,6 +6936,34 @@ export async function handleWorkerResolveInSession(ws, req) {
     );
     return;
   }
+  // A live conversation of any kind already answers this click (UI-9w5l
+  // §3.5): bring its own window forward and launch nothing. No record or wait
+  // state changes, so the reply carries the same queue and nothing fans out.
+  // A record whose window is gone falls through to the row choice below.
+  const live_window = await focusLiveConversation(current, p.bead_id);
+  if (live_window !== null) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          launched: false,
+          conflict: false,
+          session: 'already_running',
+          reason: null,
+          mode: null,
+          fallback_reason: null,
+          command: null,
+          bridge_active: false,
+          placement: live_window.placement ?? null,
+          tmux_session: live_window.tmux_session ?? null,
+          tmux_window: live_window.tmux_window ?? null,
+          row: 'conversation',
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
   // The click's own precondition, re-read server-side: the button is only drawn
   // on a failure row, but a row can settle between render and click and a
   // session that cannot state what it is for is worse than a refusal.
@@ -6947,6 +6981,10 @@ export async function handleWorkerResolveInSession(ws, req) {
   // `wait-judgment` projects the click on.
   /** @type {any} */
   let completing = null;
+  // 바로 실행 미해결 (UI-9w5l §3.4): a hold/detached row whose takeover marker
+  // outlived the settle window, read by the same predicate the judgment uses.
+  /** @type {Record<string, any>|undefined} */
+  let takeover_job;
   if (!recovery) {
     try {
       const found = getWorkerRuntime().externalWaitStore?.findByBead(
@@ -6957,6 +6995,7 @@ export async function handleWorkerResolveInSession(ws, req) {
         found?.stage === 'completing' && found.owner.kind === 'session'
           ? found
           : null;
+      takeover_job = unresolvedTakeoverJob(found, Date.now());
     } catch (err) {
       log('external wait read failed for %s/%s: %o', key, p.bead_id, err);
     }
@@ -6969,9 +7008,21 @@ export async function handleWorkerResolveInSession(ws, req) {
         stage: null,
         detail: null
       }
-    : completing
-      ? null
-      : resolveFailureContext(current, p.bead_id);
+    : takeover_job
+      ? {
+          failure_class: '확인 필요',
+          reason: 'takeover_unresolved',
+          stage: null,
+          detail: takeoverDetail(takeover_job),
+          takeover: {
+            job_id: String(takeover_job.job_id),
+            ssh_host: String(takeover_job.ssh_host),
+            requested_at: takeover_job.takeover?.requested_at ?? null
+          }
+        }
+      : completing
+        ? null
+        : resolveFailureContext(current, p.bead_id);
   // A handoff reservation of any kind is an operation in progress for this
   // Bead (UI-18a5 §3.4): only the pass that settles it may end it.
   const refusal =
@@ -7001,12 +7052,18 @@ export async function handleWorkerResolveInSession(ws, req) {
   }
   /** @type {any} */
   let result;
-  /** @type {'stop'|'failure'|'external'} */
-  const row = completing
-    ? 'external'
-    : failure?.failure_class === '파킹' || recovery
-      ? 'stop'
-      : 'failure';
+  // Row order mirrors `tileResolveFields`: recovery, takeover, 외부 작업
+  // 완료, then a failure or the park.
+  /** @type {'stop'|'failure'|'external'|'takeover'} */
+  const row = recovery
+    ? 'stop'
+    : takeover_job
+      ? 'takeover'
+      : completing
+        ? 'external'
+        : failure?.failure_class === '파킹'
+          ? 'stop'
+          : 'failure';
   try {
     if (row === 'external') {
       const resumed = /** @type {any} */ (
@@ -7123,6 +7180,73 @@ export async function handleWorkerResolveInSession(ws, req) {
 }
 
 /**
+ * The pane marker of each interactive conversation kind (UI-9w5l §3.5).
+ *
+ * @type {Readonly<Record<'inquiry'|'resolve'|'external_resume', string>>}
+ */
+const CONVERSATION_PANE_MARKERS = Object.freeze({
+  inquiry: INQUIRY_PANE_MARKER,
+  resolve: RESOLVE_PANE_MARKER,
+  external_resume: EXTERNAL_RESUME_PANE_MARKER
+});
+
+/**
+ * Focus the window of the Bead's live conversation, whatever its kind, the
+ * way a click focuses one (`placement: 'user'`). Null when no live record
+ * has a live window or tmux cannot be read — the click then takes the row
+ * path. Nothing is written.
+ *
+ * @param {any} queue - The queue snapshot the click was validated against.
+ * @param {string} bead_id - A Bead id, or a repo-operation row key
+ * (`repo-op:<operation_id>`) whose records are keyed the same way.
+ * @returns {Promise<{ placement?: string|null, tmux_session?: string|null, tmux_window?: string|null }|null>}
+ */
+async function focusLiveConversation(queue, bead_id) {
+  for (const [kind, marker] of Object.entries(CONVERSATION_PANE_MARKERS)) {
+    const record = queue.interactive_sessions?.[`${bead_id}:${kind}`];
+    if (
+      !record ||
+      record.state !== 'live' ||
+      typeof record.settled_at === 'number'
+    ) {
+      continue;
+    }
+    try {
+      const focused = await getWorkerRuntime().interactiveLauncher.focusRunning(
+        {
+          marker,
+          key: bead_id,
+          tmux_session: record.tmux_session,
+          window_name: record.tmux_window,
+          placement: 'user'
+        }
+      );
+      if (focused.ok && focused.outcome?.session === 'already_running') {
+        return focused.outcome;
+      }
+    } catch (err) {
+      log('conversation focus failed for %s/%s: %o', bead_id, kind, err);
+    }
+  }
+  return null;
+}
+
+/**
+ * The `진단` of an unresolved takeover's resolve session: the job, its ssh
+ * host and the request time (UI-9w5l §3.4).
+ *
+ * @param {Record<string, any>} job
+ * @returns {string}
+ */
+function takeoverDetail(job) {
+  return [
+    `Slurm job ${job.job_id}`,
+    `ssh ${job.ssh_host}`,
+    `바로 실행 요청 ${job.takeover?.requested_at ?? '미상'}`
+  ].join(' · ');
+}
+
+/**
  * The `worker-resolve-in-session` branch of a repo-operation row (UI-jbl1
  * §3.3): `{ operation_id, expected_revision }` opens the Bead-less manual
  * deploy failure conversation. Nothing here reads a Bead — the row has none —
@@ -7170,6 +7294,29 @@ async function resolveRepoOperationInSession(ws, req, p) {
         fallback_reason: null,
         command: null,
         bridge_active: false
+      },
+      current
+    );
+    return;
+  }
+  // The row's live conversation answers the click the way a Bead's does
+  // (UI-9w5l §3.5): its window comes forward, nothing launches or changes.
+  const live_window = await focusLiveConversation(current, row_key);
+  if (live_window !== null) {
+    reply(
+      {
+        launched: false,
+        conflict: false,
+        session: 'already_running',
+        reason: null,
+        mode: null,
+        fallback_reason: null,
+        command: null,
+        bridge_active: false,
+        placement: live_window.placement ?? null,
+        tmux_session: live_window.tmux_session ?? null,
+        tmux_window: live_window.tmux_window ?? null,
+        row: 'conversation'
       },
       current
     );

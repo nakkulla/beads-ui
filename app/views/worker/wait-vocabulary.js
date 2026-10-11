@@ -63,7 +63,8 @@ export const WAIT_VERDICTS = Object.freeze([
   Object.freeze({
     verdict: /** @type {WaitVerdict} */ ('action_required'),
     glyph: '⛔',
-    meaning: '스스로 풀리지 않는다 · 사람의 조치가 필요하다',
+    meaning:
+      "스스로 풀리지 않는다 · 카드의 버튼으로 해결한다 — 판정 근거의 '해결' 줄을 따른다",
     shape: '⛔ <라벨> · 조치 필요'
   })
 ]);
@@ -79,8 +80,7 @@ export const WAIT_KINDS = Object.freeze(
       glyph: '⛓',
       label: '선행 대기',
       when: '같은 저장소 또는 다른 저장소의 선행 이슈가 열려 있음',
-      release:
-        '선행이 닫히면 자동 복귀 · blocked·deferred·worker-ineligible 선행은 사람 조치 필요',
+      release: '선행이 닫히면 자동 복귀',
       action: '',
       elapsed_word: '',
       next_word: ''

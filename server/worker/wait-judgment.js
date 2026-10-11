@@ -3,7 +3,6 @@ import {
   latestImplementationAttempts
 } from '../../app/utils/active-attempts.js';
 import { RECOVERY_WAIT_SENTENCES } from '../../app/utils/failure-sentences.js';
-import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import {
   effectiveObservation,
   jobIntervalSeconds
@@ -26,7 +25,7 @@ export const WAIT_THRESHOLDS = Object.freeze({
 
 /**
  * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'provider_hold'|'awaiting_user'|'retry_wait'|'recovery'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_stalled'|'retry_stalled'|'decision'|'resume_failed'|'wait_key_missing'|'wait_record_missing'|'takeover_unresolved'} VerdictCode
+ * @typedef {'check_overdue'|'settle_overdue'|'observe_failing'|'service_down'|'monitor_stopped'|'reset_passed'|'probe_stalled'|'retry_stalled'|'decision'|'resume_failed'|'wait_key_missing'|'wait_record_missing'|'takeover_unresolved'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
@@ -40,6 +39,8 @@ export const WAIT_THRESHOLDS = Object.freeze({
  * @property {number} [resets_at]
  * @property {'normal'|'overdue'|'action_required'} verdict
  * @property {VerdictReason} [verdict_reason]
+ * @property {string} [resolution] - An `action_required` reason's sentence
+ * naming the button that resolves it and where it stands (UI-9w5l §3.1).
  * @property {Array<{ id: string, rig?: string, status?: string, kind: 'gate'|'issue' }>} targets
  * @property {WaitAction[]} actions
  * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan
@@ -69,6 +70,79 @@ const STOP_OBSERVING_CONFIRM =
 const RELEASE_CONFIRM =
   '이어가지 않고 대기 키를 지웁니다. 잡은 그대로이고 이 대기의 표시는 카드와 상세에서 사라집니다. 계속할까요?';
 
+/**
+ * The `resolution` sentence of each `action_required` producer (UI-9w5l
+ * §3.2). Each names the button that resolves the reason and, for a
+ * detail-only button, says so.
+ */
+const RESOLUTIONS = Object.freeze({
+  session: '[세션에서 이어가기]로 같은 세션과 대화해 답한다',
+  live_answer:
+    '열린 대화에서 답한다 — Discord 스레드, 또는 [세션에서 이어가기]로 맥의 tmux 창을 앞으로 부른다',
+  takeover:
+    '[세션에서 이어가기]로 해결 세션을 열어 서버의 바로 실행 기록을 확인·정리한다 — 정리되면 다음 관측에서 대기가 풀린다',
+  resume_failed: '[새 세션으로] 또는 [워커로 이어가기]로 다시 이어간다',
+  resume_failed_session:
+    '[세션에서 이어가기], [새 세션으로] 또는 [워커로 이어가기]로 다시 이어간다',
+  running_stop: '[관찰 중단]으로 어긋난 대기를 정리한다',
+  completing_release: '상세 패널의 [대기 해제]로 어긋난 대기를 정리한다',
+  orphan_key: '[관찰 중단]으로 남은 대기 키를 지운다'
+});
+
+/** The release of an unresolved takeover: the observation clears it. */
+const TAKEOVER_RELEASE =
+  '서버의 바로 실행 기록이 정리되면 다음 관측에서 대기가 풀린다';
+
+const TAKEOVER_SESSION_TITLE =
+  '해결 세션을 열어 서버의 바로 실행 기록을 확인·정리합니다 — 정리되면 다음 관측에서 대기가 풀립니다';
+
+const LIVE_ANSWER_SESSION_TITLE =
+  '열린 대화 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다';
+
+/**
+ * A row's slurm job whose takeover marker outlived the settle window
+ * (UI-qbgj §3.4), or undefined. The wait judgment and the
+ * `[세션에서 이어가기]` routing share this one reading. An unparseable request
+ * time counts as settled, as in recovery.
+ *
+ * @param {{ stage?: unknown, jobs?: unknown }|null|undefined} row
+ * @param {number} now
+ * @returns {Record<string, any>|undefined}
+ */
+export function unresolvedTakeoverJob(row, now) {
+  if (!row || !['hold', 'detached'].includes(/** @type {any} */ (row.stage))) {
+    return undefined;
+  }
+  const jobs = Array.isArray(row.jobs) ? row.jobs : [];
+  return jobs.find(
+    (job) =>
+      job?.adapter === 'slurm' &&
+      !!job.takeover &&
+      !(now - Date.parse(job.takeover.requested_at) < TAKEOVER_SETTLE_MS)
+  );
+}
+
+/**
+ * The resolution of an external row's final `action_required` code.
+ *
+ * @param {Record<string, any>} row
+ * @param {VerdictCode} code
+ * @returns {string}
+ */
+function externalResolution(row, code) {
+  if (code === 'takeover_unresolved') {
+    return RESOLUTIONS.takeover;
+  }
+  if (code === 'resume_failed') {
+    return row.owner_kind === 'session'
+      ? RESOLUTIONS.resume_failed_session
+      : RESOLUTIONS.resume_failed;
+  }
+  return row.stage === 'completing'
+    ? RESOLUTIONS.completing_release
+    : RESOLUTIONS.running_stop;
+}
+
 /** @type {Record<VerdictCode, string>} */
 const VERDICT_MESSAGES = {
   resume_failed: '재개 실패',
@@ -76,11 +150,9 @@ const VERDICT_MESSAGES = {
   wait_record_missing: '대기 레코드 없음',
   check_overdue: '다음 확인 시각에서 한 주기가 지나도 관측이 갱신되지 않음',
   settle_overdue: '종료 확인 후 두 주기가 지나도 대기가 해제되지 않음',
-  job_failed: '작업이 실패로 끝나 복구 판단이 필요함',
   observe_failing: '자동 확인이 연속 3회 이상 실패함',
   service_down: '자동 확인 서비스가 등록되지 않았거나 설치된 명령과 다름',
   monitor_stopped: '외부 작업 감시가 중단됨',
-  blocker_needs_human: '열린 선행에 사람의 조치가 필요함',
   reset_passed: '한도 리셋 후 5분이 지나도 보류가 유지됨',
   probe_stalled: '다음 프로브 시각에서 5분이 지나도 갱신되지 않음',
   retry_stalled: '재시도 시각에서 5분이 지나도 실행되지 않음',
@@ -295,6 +367,7 @@ function judgeStalledSession(result, queue, bead_id, attempt) {
   const live = unsettled && inquiry.state === 'live' && !conversation?.result;
   if (!live) {
     judge(result, 'action_required', 'decision');
+    result.resolution = RESOLUTIONS.session;
     const refusal = line(attempt?.cause_detail?.conversation?.refusal);
     if (refusal) {
       result.verdict_reason = {
@@ -324,6 +397,7 @@ function judgeStalledSession(result, queue, bead_id, attempt) {
         code: 'decision',
         message: INQUIRY_WAITING_MESSAGE
       };
+      liveAnswerAction(result, attempt_id);
     }
     discardAction(result, attempt_id);
     return;
@@ -334,9 +408,29 @@ function judgeStalledSession(result, queue, bead_id, attempt) {
       code: 'decision',
       message: CONVERSATION_WAITING_MESSAGE
     };
+    liveAnswerAction(result, attempt_id);
     handoffAction(result, attempt_id);
   }
   discardAction(result, attempt_id);
+}
+
+/**
+ * The `[세션에서 이어가기]` of a live conversation waiting for the person's
+ * answer (UI-9w5l §3.5): the server focuses that conversation's own window
+ * instead of launching, so the reason carries a resolving op even though the
+ * card draws it only without a Discord link.
+ *
+ * @param {WaitReason} result
+ * @param {string|undefined} attempt_id
+ */
+function liveAnswerAction(result, attempt_id) {
+  result.resolution = RESOLUTIONS.live_answer;
+  result.actions.push({
+    op: SESSION_CONTINUE_OP,
+    label: '[세션에서 이어가기]',
+    title: LIVE_ANSWER_SESSION_TITLE,
+    payload: { ...result.subject, ...(attempt_id ? { attempt_id } : {}) }
+  });
 }
 
 /**
@@ -591,21 +685,25 @@ export function judgeWaitReasons(input) {
     }
     // A marker that outlives the settle window means recovery found a state
     // that needs a person or could not read the outcome (UI-qbgj §3.4).
-    const unresolved = ['hold', 'detached'].includes(row.stage)
-      ? jobs.find(
-          (job) =>
-            job.adapter === 'slurm' &&
-            !!job.takeover &&
-            // An unparseable request time counts as settled, as in recovery.
-            !(now - Date.parse(job.takeover.requested_at) < TAKEOVER_SETTLE_MS)
-        )
-      : undefined;
+    const unresolved = unresolvedTakeoverJob(row, now);
     if (unresolved) {
       judge(result, 'action_required', 'takeover_unresolved');
       result.verdict_reason = {
         code: 'takeover_unresolved',
         message: `${VERDICT_MESSAGES.takeover_unresolved}(sjob takeover ${line(unresolved.job_id)} --result)`
       };
+      // The held job does not resume by itself, so the resume release would
+      // be false here (UI-9w5l §3.3); the observation clears the marker.
+      result.release = TAKEOVER_RELEASE;
+      // The resolve session reads and cleans the server's takeover record
+      // (UI-9w5l §3.4); the server routes this click to the takeover row.
+      result.actions.push({
+        op: SESSION_CONTINUE_OP,
+        label: '[세션에서 이어가기]',
+        title: TAKEOVER_SESSION_TITLE,
+        placement: 'card',
+        payload: { root_dir, bead_id: row.bead_id, wait_id: row.wait_id }
+      });
     }
     if (row.stage === 'completing' && row.resume?.error) {
       judge(result, 'action_required', 'resume_failed');
@@ -625,6 +723,11 @@ export function judgeWaitReasons(input) {
       } else if (facts[row.bead_id].external_wait !== row.wait_id) {
         judge(result, 'action_required', 'wait_record_missing');
       }
+    }
+    // Several judgments can stack on one row; the last one owns the verdict,
+    // so the resolution follows that final code.
+    if (result.verdict === 'action_required' && result.verdict_reason) {
+      result.resolution = externalResolution(row, result.verdict_reason.code);
     }
     wait_reasons.push(result);
   }
@@ -649,6 +752,7 @@ export function judgeWaitReasons(input) {
       '관찰 중단으로 대기 키를 해제한다'
     );
     judge(result, 'action_required', 'wait_record_missing');
+    result.resolution = RESOLUTIONS.orphan_key;
     result.actions.push({
       op: 'external_wait_stop',
       label: '[관찰 중단]',
@@ -761,19 +865,14 @@ export function judgeWaitReasons(input) {
       const rig = line(
         foreign_fact?.rig || blocker.rig || (is_foreign ? blocker_rig : '')
       );
+      // 선행 대기는 선행의 상태·라벨과 무관하게 normal이다 (UI-9w5l §3.2):
+      // beads-ui 버튼으로 풀 수 없는 기다림이라 action_required가 아니다.
       result.targets.push({
         id,
         kind: 'issue',
         ...(rig ? { rig } : {}),
         ...(status ? { status } : {})
       });
-      if (
-        open &&
-        (['blocked', 'deferred'].includes(status) ||
-          isWorkerIneligible(current.labels || []))
-      ) {
-        judge(result, 'action_required', 'blocker_needs_human');
-      }
     }
     wait_reasons.push(...groups.values());
     if (attempt?.status === 'parked' && !attempt.parked_resumed_at) {
@@ -875,6 +974,7 @@ export function judgeWaitReasons(input) {
         );
         addClocks(result, { since: operation.finished_at });
         judge(result, 'action_required', 'decision');
+        result.resolution = RESOLUTIONS.session;
         sessionActions(result);
         wait_reasons.push(result);
       }

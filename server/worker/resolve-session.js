@@ -221,6 +221,8 @@ export function repoOperationFailureContext(queue, operation_id) {
  * @property {string|null} [target_sha] - A repo-operation row's target.
  * @property {string|null} [deploy_worktree] - A repo-operation row's deploy
  * worktree.
+ * @property {{ job_id: string, ssh_host: string, requested_at: string|null }} [takeover] -
+ * An unresolved `▶ 바로 실행` row's held Slurm job (UI-9w5l §3.4).
  */
 
 /**
@@ -409,12 +411,34 @@ export function failureSituation(failure) {
  * @returns {string}
  */
 export function buildFailureEntry(input) {
-  return fillConversationEntry({
+  const entry = fillConversationEntry({
     reason: failureConversationReason(input.failure),
     situation: failureSituation(input.failure),
     worktree: input.worktree,
     checkout: input.checkout
   });
+  const takeover = input.failure.takeover;
+  return takeover ? `${entry}\n\n${takeoverCleanupRules(takeover)}` : entry;
+}
+
+/**
+ * The cleanup rules an unresolved takeover's resolve session follows
+ * (UI-9w5l §3.4): the dotfiles external-wait contract's holding cleanup, said
+ * as three dispositions. The observation, not this session, clears the wait.
+ *
+ * @param {{ job_id: string, ssh_host: string }} takeover
+ * @returns {string}
+ */
+export function takeoverCleanupRules(takeover) {
+  const job = takeover.job_id;
+  return [
+    `바로 실행 미해결 정리 규칙 (Slurm ${job} · ${takeover.ssh_host}):`,
+    `1. 먼저 ${takeover.ssh_host}에서 \`sjob takeover ${job} --result\`로 기록을 읽고, 기록·로컬 registry·로그에서 PID 증거를 찾는다.`,
+    `2. 실행 전 실패가 확정된 경우(PID 증거가 없고 프로세스 부재가 확인됨)에만 \`scontrol release ${job}\`로 hold를 풀고 기록을 지운다. 원래 Slurm 잡이 대기열로 돌아가고 관측이 unheld no_takeover를 읽어 대기를 푼다.`,
+    '3. PID 증거가 있으면(실행 중이든 이미 끝났든) release·취소·재실행을 하지 않는다. 실행 결과와 남은 정리를 확인하고, sjob 공개 인터페이스로 끝낼 수 없는 정리는 이 대화에서 사용자에게 증거와 선택지를 보이고 답을 받아 처리한다.',
+    '4. 실행 여부를 판정할 수 없으면 아무것도 바꾸지 않고, 이 대화에서 사용자에게 증거를 보이고 묻는다.',
+    '원격 기록이 started 또는 unheld no_takeover가 되면 다음 관측에서 대기가 풀린다 — 인계는 필요 없다.'
+  ].join('\n');
 }
 
 /**

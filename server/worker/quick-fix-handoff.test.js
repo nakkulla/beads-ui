@@ -110,7 +110,7 @@ describe('loadQuickFixHandoff', () => {
     expect(first).toMatchObject({
       supported: true,
       schema_version: 1,
-      source_commit: '4e95609d3324fa518623c6a78166e40b5d16b00e'
+      source_commit: '406c9f6d0a0572d21a836227b340fc96bbcae7de'
     });
     expect(first.rules?.quick_fix_handoff.receipt.key).toBe('quick_fix_review');
     expect(second).toBe(first);

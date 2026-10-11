@@ -2356,6 +2356,28 @@ export function createDetailPanel(mount_element, options) {
     );
   }
 
+  /**
+   * Live-conversation material of the current bead for the 해결 line (UI-9w5l
+   * 3.5); an absent record map reads as none (fail-quiet).
+   *
+   * @returns {Array<Record<string, any>>}
+   */
+  function currentConversations() {
+    const records = queueStore?.get()?.interactive_sessions ?? {};
+    return Object.values(records)
+      .filter((record) => record?.bead_id === current_id)
+      .map((record) => ({
+        kind: record.kind,
+        state: record.state,
+        discord_url: record.discord_url ?? null,
+        closing:
+          record.state === 'exiting' ||
+          (record.settled_at !== null && record.settled_at !== undefined),
+        tmux_session: record.tmux_session,
+        tmux_window: record.tmux_window
+      }));
+  }
+
   /** @type {Set<string>} */
   const external_pending = new Set();
   /**
@@ -2548,7 +2570,8 @@ export function createDetailPanel(mount_element, options) {
     const lines = waitReasonLines(reason, {
       surface: 'detail',
       external_wait: record,
-      session_preferred: labels.includes('session-preferred')
+      session_preferred: labels.includes('session-preferred'),
+      interactive_sessions: /** @type {any} */ (currentConversations())
     });
     return html`<section class="detail-external-wait">
       <div class="detail-section-label">외부 작업</div>

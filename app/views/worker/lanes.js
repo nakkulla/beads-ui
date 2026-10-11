@@ -40,6 +40,7 @@ import { chipPopoverTemplate } from '../chip-popover.js';
 import { stepperTemplate } from '../stepper.js';
 import { timeSpan } from '../time-text.js';
 import {
+  autoResumeRefusalBadge,
   autoResumeText,
   autoSwitchText,
   providerClock,
@@ -50,6 +51,7 @@ import { queueGraceMs, routeChipValue } from './lane-model.js';
 import { logPathTemplate } from './log-path.js';
 import { placementTitle } from './placement.js';
 import { planDefaultLane } from './plan-place.js';
+import { waitResolutionLine } from './tile-resolve.js';
 import {
   SUMMARY_CHIPS,
   WAIT_KINDS,
@@ -2450,6 +2452,7 @@ function waitPopoverTemplate(title, lines, anchor_id) {
  * @property {'action_required'|null} [verdict] - The `data-verdict` of that
  * reason-less badge, so a `⛔` text keeps the action colour.
  * @property {string} [release] - The popup's release line for that badge.
+ * Its 해결 line comes from the same `hold` (`autoResumeRefusalBadge`).
  * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
  * - The card's interactive sessions; a live inquiry adds one popup line.
  * @property {number} [now]
@@ -2501,7 +2504,12 @@ export function waitStatusBadge(material) {
   if (material.reason) {
     const forced_row = waitKindRow(material.reason);
     return forced_row
-      ? waitBadgeTemplate(forced_row, material.reason, [], null, now)
+      ? waitBadgeTemplate(forced_row, material.reason, [], null, now, {
+          resolution: waitResolutionLine(
+            material.reason,
+            material.interactive_sessions
+          )
+        })
       : '';
   }
   const held_row_id = heldRowId(material);
@@ -2526,6 +2534,16 @@ export function waitStatusBadge(material) {
   if (!badge_row) {
     return '';
   }
+  // 사유 없는 `⛔` 배지는 자동 재개 거부뿐이다 (stall-reconcile D5): 그 해결
+  // 문장은 같은 보류 재료에서 읽는다 (UI-9w5l §3.2).
+  const refusal =
+    !reason && material.verdict === 'action_required'
+      ? autoResumeRefusalBadge(
+          /** @type {import('./running-grid.js').HoldTile|null} */ (
+            material.hold || null
+          )
+        )
+      : null;
   return waitBadgeTemplate(
     badge_row,
     reason,
@@ -2535,6 +2553,11 @@ export function waitStatusBadge(material) {
     {
       label: material.label,
       inquiry: liveInquiryView(material.interactive_sessions),
+      resolution: reason
+        ? waitResolutionLine(reason, material.interactive_sessions)
+        : refusal?.resolution
+          ? `해결 — ${refusal.resolution}`
+          : '',
       ...(material.text ? { text: material.text } : {}),
       ...(material.verdict ? { verdict: material.verdict } : {}),
       ...(material.release ? { release: material.release } : {})
@@ -2556,9 +2579,6 @@ function externalGuidanceLines(reason) {
   return [
     reason.verdict === 'overdue'
       ? '[지금 확인]으로 관측기를 지금 실행하거나 관측기 상태를 점검하세요'
-      : '',
-    reason.verdict_reason?.code === 'job_failed'
-      ? '원래 이슈가 재개되면 복구 판단이 필요합니다'
       : ''
   ].filter(Boolean);
 }
@@ -2573,7 +2593,8 @@ function externalGuidanceLines(reason) {
  * bead-scope reasons this card carries, one popup line each.
  * @param {Record<string, any>|null} hold - `HoldTile` for provider holds.
  * @param {number} now
- * @param {{ label?: string, release?: string, text?: string, verdict?: 'action_required'|null, inquiry?: import('./lane-model.js').InteractiveSessionView|null }} [overrides]
+ * @param {{ label?: string, release?: string, text?: string, verdict?: 'action_required'|null, inquiry?: import('./lane-model.js').InteractiveSessionView|null, resolution?: string }} [overrides] - The
+ * `resolution` is the finished `해결 — …` line, drawn first (UI-9w5l §3.3).
  * @returns {import('lit-html').TemplateResult|''}
  */
 function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
@@ -2648,8 +2669,10 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
   const inquiry_line = inquiry
     ? `대화 세션 ${inquiry.tmux_session}:${inquiry.tmux_window}${inquiry_tail ? ` · ${inquiry_tail}` : ''}`
     : '';
+  const resolution_line = overrides.resolution || '';
   const lines = reason
     ? [
+        resolution_line,
         reason.verdict === 'normal' ? '' : reason.verdict_reason?.message || '',
         inquiry_line,
         reason.release || row.release,
@@ -2666,7 +2689,11 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
           ? [`다른 사유 ${other_lines.length}`, ...other_lines]
           : [])
       ].filter(Boolean)
-    : [overrides.release || row.release, ...provider_lines].filter(Boolean);
+    : [
+        resolution_line,
+        overrides.release || row.release,
+        ...provider_lines
+      ].filter(Boolean);
   return html`<details class="wait-verdict" @click=${stopWaitClick}>
     <summary
       class="worker-mini__badge"
@@ -2770,7 +2797,13 @@ export function waitReasonLines(reason, options = {}) {
   // 외부 작업 카드는 `release`를 슬롯 3에 그리지 않고 이 팝업에만 싣는다
   // (UI-a119 §3.4 · UI-8gem): 상세 패널은 종전처럼 본문에 그대로 둔다.
   const card_external = external && surface === 'card';
+  // 해결 줄 (UI-9w5l §3.3): 팝업 첫 줄이고 상세 본문에서는 release 앞이다.
+  const resolution_line = waitResolutionLine(
+    reason,
+    options.interactive_sessions || options.item?.interactive_sessions
+  );
   const evidence = [
+    resolution_line,
     reason.verdict_reason?.message,
     card_external ? reason.release : '',
     since ? `대기 시작 ${since}` : '',
@@ -2895,6 +2928,11 @@ export function waitReasonLines(reason, options = {}) {
                         now_ms
                       )}`
                     : reason.headline}
+                </div>`
+              : ''}
+            ${external && resolution_line
+              ? html`<div class="wait-reason__resolution">
+                  ${resolution_line}
                 </div>`
               : ''}
             ${external && reason.release
@@ -4114,7 +4152,7 @@ export function miniRow(item, options = {}) {
  * Consumer-card slots shared by candidates, queue rows and running tiles.
  * 좌표(`ssh`·job·`log`)는 상세 패널 잡 표의 것이다 (UI-l48z §4.2).
  *
- * @param {{external_wait?: import('../../protocol.js').ExternalWaitObservation, wait_reasons?: import('../../protocol.js').WaitReason[], labels?: string[], session_preferred?: boolean}} item
+ * @param {{external_wait?: import('../../protocol.js').ExternalWaitObservation, wait_reasons?: import('../../protocol.js').WaitReason[], labels?: string[], session_preferred?: boolean, interactive_sessions?: import('./lane-model.js').InteractiveSessionView[]}} item
  * @param {number} [now]
  */
 export function externalWaitCardParts(item, now = Date.now()) {
@@ -4125,6 +4163,8 @@ export function externalWaitCardParts(item, now = Date.now()) {
   return waitReasonLines(reason, {
     now,
     external_wait: record,
+    // A live conversation's 해결 line wins on this card too (UI-9w5l §3.5).
+    interactive_sessions: item.interactive_sessions,
     session_preferred:
       item.session_preferred === true ||
       (Array.isArray(item.labels) && item.labels.includes('session-preferred'))

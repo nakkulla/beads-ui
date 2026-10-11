@@ -25,6 +25,13 @@ vi.mock('../registry-watcher.js', async (importOriginal) => {
 });
 
 const { setConnWorkspace } = await import('./context.js');
+const { TAKEOVER_SETTLE_MS } =
+  await import('../worker/external-wait/takeover.js');
+const {
+  EXTERNAL_RESUME_PANE_MARKER,
+  INQUIRY_PANE_MARKER,
+  RESOLVE_PANE_MARKER
+} = await import('../worker/tmux-launcher.js');
 const { getWorkerRuntime } = await import('../worker/runtime.js');
 const handlers = await import('./worker-handlers.js');
 
@@ -545,6 +552,67 @@ describe('worker-resolve-in-session picks the launcher by row (UI-18a5 §3.2)', 
     });
   });
 
+  test('opens a resolve session for an unresolved takeover', async () => {
+    const requested_at = new Date(
+      Date.now() - TAKEOVER_SETTLE_MS - 60_000
+    ).toISOString();
+    completing = {
+      wait_id: 'w-0123456789ab',
+      bead_id: BEAD,
+      stage: 'hold',
+      owner: { kind: 'worker', attempt_id: 'a-jw27' },
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '249043',
+          state: 'PENDING',
+          takeover: { state: 'unknown', requested_at, cpus: 16, mem_gb: 64 }
+        }
+      ]
+    };
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(launches).toHaveLength(1);
+    expect(launches[0].failure).toMatchObject({
+      failure_class: '확인 필요',
+      reason: 'takeover_unresolved'
+    });
+    expect(launches[0].failure.detail).toContain('249043');
+    expect(launches[0].failure.detail).toContain('wallace');
+    expect(launches[0].failure.detail).toContain(requested_at);
+    expect(session_resumes).toEqual([]);
+    expect(reply.payload).toMatchObject({ row: 'takeover', launched: true });
+  });
+
+  test('keeps a takeover marker inside the settle window off the takeover row', async () => {
+    completing = {
+      wait_id: 'w-0123456789ab',
+      bead_id: BEAD,
+      stage: 'hold',
+      owner: { kind: 'worker', attempt_id: 'a-jw27' },
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '249043',
+          takeover: {
+            state: 'pending',
+            requested_at: new Date().toISOString(),
+            cpus: 16,
+            mem_gb: 64
+          }
+        }
+      ]
+    };
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(launches).toEqual([]);
+    expect(reply.payload.reason).toBe('no_terminal_failure');
+  });
+
   test('refuses a click while a handoff reservation holds the Bead', async () => {
     recordCleanupStop();
     getWorkerRuntime().queueStore.recordInteractiveSession(WS, {
@@ -574,6 +642,262 @@ describe('worker-resolve-in-session picks the launcher by row (UI-18a5 §3.2)', 
       reason: 'handoff_pending'
     });
     expect(launches).toEqual([]);
+  });
+});
+
+describe('worker-resolve-in-session focuses a live conversation (UI-9w5l §3.5)', () => {
+  /** @type {any} */
+  let original_launcher;
+  /** @type {any} */
+  let original_inquiry;
+  /** @type {any} */
+  let original_external_wait;
+  /** @type {any[]} */
+  let focuses;
+  /** @type {any} */
+  let focus_outcome;
+  /** @type {any[]} */
+  let inquiry_launches;
+  /** @type {any[]} */
+  let session_resumes;
+
+  beforeEach(() => {
+    const runtime = getWorkerRuntime();
+    original_launcher = runtime.interactiveLauncher;
+    original_inquiry = runtime.directionInquiry;
+    original_external_wait = runtime.externalWait;
+    focuses = [];
+    inquiry_launches = [];
+    session_resumes = [];
+    focus_outcome = null;
+    runtime.interactiveLauncher = /** @type {any} */ ({
+      ...original_launcher,
+      readBridgeThreads: () => new Map(),
+      /** @param {any} input */
+      focusRunning: async (input) => {
+        focuses.push(input);
+        return { ok: true, outcome: focus_outcome };
+      }
+    });
+    runtime.directionInquiry = /** @type {any} */ ({
+      /** @param {any} input */
+      launchForClick: async (input) => {
+        inquiry_launches.push(input);
+        return { launched: true, session: 'launched', mode: 'resume' };
+      }
+    });
+    runtime.externalWait = /** @type {any} */ ({
+      ...original_external_wait,
+      /** @param {any[]} args */
+      resume: async (...args) => {
+        session_resumes.push(args);
+        return { ok: true, session: 'launched' };
+      }
+    });
+  });
+
+  afterEach(() => {
+    const runtime = getWorkerRuntime();
+    runtime.interactiveLauncher = original_launcher;
+    runtime.directionInquiry = original_inquiry;
+    runtime.externalWait = original_external_wait;
+  });
+
+  /**
+   * @param {'inquiry'|'resolve'|'external_resume'} kind
+   */
+  function recordLiveConversation(kind) {
+    getWorkerRuntime().queueStore.recordInteractiveSession(WS, {
+      bead_id: BEAD,
+      kind,
+      provider: 'claude',
+      pane_id: '%7',
+      tmux_session: 'dev',
+      tmux_window: `${kind}-${BEAD}`,
+      launched_at: 10,
+      state: 'live',
+      turn_state: 'question'
+    });
+  }
+
+  test.each([
+    ['inquiry', INQUIRY_PANE_MARKER],
+    ['resolve', RESOLVE_PANE_MARKER],
+    ['external_resume', EXTERNAL_RESUME_PANE_MARKER]
+  ])(
+    'focuses the live window of each conversation kind without launching (%s)',
+    async (kind, marker) => {
+      recordCleanupStop();
+      recordLiveConversation(
+        /** @type {'inquiry'|'resolve'|'external_resume'} */ (kind)
+      );
+      focus_outcome = {
+        session: 'already_running',
+        placement: 'user',
+        tmux_session: 'dev',
+        tmux_window: `${kind}-${BEAD}`,
+        pane_id: '%7'
+      };
+      const before = structuredClone(
+        getWorkerRuntime().queueStore.snapshot(WS).interactive_sessions
+      );
+      const revision_before = revision();
+
+      const reply = await click({
+        bead_id: BEAD,
+        expected_revision: revision_before
+      });
+
+      expect(focuses).toEqual([
+        {
+          marker,
+          key: BEAD,
+          tmux_session: 'dev',
+          window_name: `${kind}-${BEAD}`,
+          placement: 'user'
+        }
+      ]);
+      expect(reply.payload).toMatchObject({
+        launched: false,
+        session: 'already_running',
+        tmux_window: `${kind}-${BEAD}`
+      });
+      expect([launches, inquiry_launches, session_resumes]).toEqual([
+        [],
+        [],
+        []
+      ]);
+      expect(
+        getWorkerRuntime().queueStore.snapshot(WS).interactive_sessions
+      ).toEqual(before);
+      expect(revision()).toBe(revision_before);
+    }
+  );
+
+  test('falls back to the row launcher when the live record has no window', async () => {
+    recordCleanupStop();
+    recordLiveConversation('resolve');
+    focus_outcome = null;
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(focuses).toHaveLength(1);
+    expect(launches).toHaveLength(1);
+    expect(reply.payload.row).toBe('failure');
+  });
+
+  test.each(['inquiry', 'resolve', 'external_resume'])(
+    'focuses the live window of a Bead with no failure row (%s)',
+    async (kind) => {
+      recordLiveConversation(
+        /** @type {'inquiry'|'resolve'|'external_resume'} */ (kind)
+      );
+      focus_outcome = {
+        session: 'already_running',
+        placement: 'user',
+        tmux_session: 'dev',
+        tmux_window: `${kind}-${BEAD}`
+      };
+      const before = structuredClone(
+        getWorkerRuntime().queueStore.snapshot(WS).interactive_sessions
+      );
+      const revision_before = revision();
+
+      const reply = await click({
+        bead_id: BEAD,
+        expected_revision: revision_before
+      });
+
+      expect(focuses).toHaveLength(1);
+      expect(reply.payload).toMatchObject({
+        launched: false,
+        session: 'already_running',
+        row: 'conversation'
+      });
+      expect([launches, inquiry_launches, session_resumes]).toEqual([
+        [],
+        [],
+        []
+      ]);
+      expect(
+        getWorkerRuntime().queueStore.snapshot(WS).interactive_sessions
+      ).toEqual(before);
+      expect(revision()).toBe(revision_before);
+    }
+  );
+
+  /**
+   * Record a live conversation on the failed manual deploy row.
+   */
+  function recordLiveRepoOperationConversation() {
+    getWorkerRuntime().queueStore.recordInteractiveSession(WS, {
+      bead_id: 'repo-op:op-manual',
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%5',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-repo-op-op-manual',
+      launched_at: 10,
+      state: 'live',
+      settled_at: null
+    });
+  }
+
+  test('focuses the live repo-operation conversation without launching', async () => {
+    recordManualDeployFailure();
+    recordLiveRepoOperationConversation();
+    focus_outcome = {
+      session: 'already_running',
+      placement: 'user',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-repo-op-op-manual'
+    };
+    const before = structuredClone(
+      getWorkerRuntime().queueStore.snapshot(WS).interactive_sessions
+    );
+    const revision_before = revision();
+
+    const reply = await click({
+      operation_id: 'op-manual',
+      expected_revision: revision_before
+    });
+
+    expect(focuses).toEqual([
+      {
+        marker: RESOLVE_PANE_MARKER,
+        key: 'repo-op:op-manual',
+        tmux_session: 'bdui-inquiry',
+        window_name: 'resolve-repo-op-op-manual',
+        placement: 'user'
+      }
+    ]);
+    expect(reply.payload).toMatchObject({
+      operation_id: 'op-manual',
+      launched: false,
+      session: 'already_running',
+      row: 'conversation',
+      tmux_window: 'resolve-repo-op-op-manual'
+    });
+    expect(repo_launches).toEqual([]);
+    expect(
+      getWorkerRuntime().queueStore.snapshot(WS).interactive_sessions
+    ).toEqual(before);
+    expect(revision()).toBe(revision_before);
+  });
+
+  test('falls back to the repo-operation launcher when the live record has no window', async () => {
+    recordManualDeployFailure();
+    recordLiveRepoOperationConversation();
+    focus_outcome = null;
+
+    const reply = await click({
+      operation_id: 'op-manual',
+      expected_revision: revision()
+    });
+
+    expect(focuses).toHaveLength(1);
+    expect(repo_launches).toHaveLength(1);
+    expect(reply.payload.row).toBe('failure');
   });
 });
 

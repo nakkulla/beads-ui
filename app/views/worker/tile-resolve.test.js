@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import {
   hasLiveConversation,
+  liveConversationResolution,
   repoOperationResolveFields,
   tileResolveFields
 } from './tile-resolve.js';
+
+const DISCORD_URL = 'https://discord.com/channels/1/2';
 
 /**
  * @param {'inquiry'|'resolve'|'external_resume'} kind
@@ -78,10 +81,10 @@ describe('tileResolveFields', () => {
       'resolve',
       'external_resume'
     ])) {
-      test(`hides the session action for ${name} beside a live ${kind} session`, () => {
+      test(`hides the continue button when a discord link exists (${name}, live ${kind})`, () => {
         const item = {
           id: 'UI-1',
-          interactive_sessions: [session(kind)],
+          interactive_sessions: [session(kind, { discord_url: DISCORD_URL })],
           ...material
         };
 
@@ -91,6 +94,75 @@ describe('tileResolveFields', () => {
       });
     }
   }
+
+  test.each(/** @type {const} */ (['inquiry', 'resolve', 'external_resume']))(
+    'shows the continue button for a live conversation without a discord link (%s)',
+    (kind) => {
+      const item = {
+        id: 'UI-1',
+        ...MATERIALS.recovery_row,
+        interactive_sessions: [session(kind, { discord_url: null })]
+      };
+
+      const fields = tileResolveFields(item, false);
+
+      expect(fields.resolve_action).toBe(true);
+    }
+  );
+
+  test.each(/** @type {const} */ (['inquiry', 'resolve', 'external_resume']))(
+    'shows the focus button for a live conversation on a card with no row (%s)',
+    (kind) => {
+      const item = {
+        id: 'UI-1',
+        run_state: 'waiting',
+        wait_reasons: [],
+        interactive_sessions: [session(kind, { discord_url: null })]
+      };
+
+      const fields = tileResolveFields(item, false);
+
+      expect(fields).toMatchObject({
+        resolve_action: true,
+        resolve_enabled: true,
+        resolve_title:
+          '열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다'
+      });
+    }
+  );
+
+  test.each(/** @type {const} */ (['inquiry', 'resolve', 'external_resume']))(
+    'hides the button for a linked live conversation on a card with no row (%s)',
+    (kind) => {
+      const item = {
+        id: 'UI-1',
+        run_state: 'waiting',
+        wait_reasons: [],
+        interactive_sessions: [session(kind, { discord_url: DISCORD_URL })]
+      };
+
+      const fields = tileResolveFields(item, false);
+
+      expect(fields.resolve_action).toBeUndefined();
+    }
+  );
+
+  test('keeps the button hidden while a decided outcome holds a live conversation without a link', () => {
+    const item = {
+      id: 'UI-1',
+      ...MATERIALS.recovery_row,
+      interactive_sessions: [
+        session('inquiry', {
+          discord_url: null,
+          conversation: { handoff: { reserved_at: 1 }, result: null }
+        })
+      ]
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_action).toBeUndefined();
+  });
 
   test('counts a closing session as not live', () => {
     const item = {
@@ -240,6 +312,87 @@ describe('tileResolveFields', () => {
   });
 });
 
+describe('tileResolveFields takeover row (UI-9w5l §3.4)', () => {
+  /** The server's unresolved-takeover projection (`wait-judgment`). */
+  const TAKEOVER_REASON = {
+    kind: 'external_job',
+    verdict: 'action_required',
+    verdict_reason: {
+      code: 'takeover_unresolved',
+      message: '바로 실행 결과 확인 필요'
+    },
+    actions: [
+      { op: 'external_wait_check', label: '[지금 확인]', payload: {} },
+      {
+        op: 'worker-resolve-in-session',
+        label: '[세션에서 이어가기]',
+        title: '서버가 정한 바로 실행 정리 설명',
+        placement: 'card',
+        payload: { root_dir: '/r', bead_id: 'UI-1', wait_id: 'w-0123456789ab' }
+      },
+      { op: 'external_wait_stop', label: '[관찰 중단]', payload: {} }
+    ]
+  };
+
+  test('shows it for an unresolved takeover', () => {
+    const item = {
+      id: 'UI-1',
+      wait_reasons: [TAKEOVER_REASON],
+      interactive_sessions: []
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields).toMatchObject({
+      resolve_action: true,
+      resolve_title: '서버가 정한 바로 실행 정리 설명',
+      pair_anchor: 'external'
+    });
+  });
+
+  test('ranks a recovery wait ahead of the takeover row', () => {
+    const item = {
+      id: 'UI-1',
+      wait_reasons: [{ kind: 'recovery' }, TAKEOVER_REASON],
+      interactive_sessions: []
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_title).toBe(
+      '멈춘 세션을 같은 세션 그대로 대화로 다시 엽니다 — 인계하면 Worker가 이어갑니다'
+    );
+  });
+});
+
+describe('liveConversationResolution (UI-9w5l §3.5)', () => {
+  test('points at Discord when the live conversation has a link', () => {
+    const line = liveConversationResolution([
+      session('resolve', { discord_url: DISCORD_URL })
+    ]);
+
+    expect(line).toBe('↗ Discord에서 대화를 이어간다');
+  });
+
+  test('points at the tmux window when the bridge left no link', () => {
+    const line = liveConversationResolution([
+      session('external_resume', { discord_url: null })
+    ]);
+
+    expect(line).toBe(
+      '[세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
+    );
+  });
+
+  test('returns nothing without a live conversation', () => {
+    const line = liveConversationResolution([
+      session('inquiry', { closing: true, discord_url: DISCORD_URL })
+    ]);
+
+    expect(line).toBe('');
+  });
+});
+
 describe('tileResolveFields pair anchor (UI-18a5 §3.2)', () => {
   test.each([
     ['cleanup_failed', 'merge'],
@@ -378,7 +531,7 @@ describe('tileResolveFields conversation handoff', () => {
       id: 'UI-1',
       run_state: 'parked',
       wait_reasons: [handoffReason({ kind: 'awaiting_user' })],
-      interactive_sessions: [session('inquiry')]
+      interactive_sessions: [session('inquiry', { discord_url: DISCORD_URL })]
     };
 
     const fields = tileResolveFields(item, false, false);
@@ -455,14 +608,36 @@ describe('repoOperationResolveFields (UI-jbl1 §3.3)', () => {
     expect(fields).toEqual({});
   });
 
-  test('shows the live conversation instead of the button', () => {
-    const live = session('resolve', { tmux_window: 'resolve-repo-op-op-1' });
+  test('shows a linked live conversation instead of the button', () => {
+    const live = session('resolve', {
+      tmux_window: 'resolve-repo-op-op-1',
+      discord_url: DISCORD_URL
+    });
 
     const fields = repoOperationResolveFields(
       card({ interactive_sessions: [live] })
     );
 
     expect(fields).toEqual({ conversation: live });
+  });
+
+  test('draws the focus button beside a live conversation without a link', () => {
+    const live = session('resolve', {
+      tmux_window: 'resolve-repo-op-op-1',
+      discord_url: null
+    });
+
+    const fields = repoOperationResolveFields(
+      card({ interactive_sessions: [live] })
+    );
+
+    expect(fields).toEqual({
+      resolve_action: true,
+      resolve_enabled: true,
+      resolve_title:
+        '열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다',
+      conversation: live
+    });
   });
 
   test('hides the button while a decided outcome holds the row', () => {

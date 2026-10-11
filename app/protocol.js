@@ -93,7 +93,7 @@
  * Server-owned display judgment; consumers never recompute verdicts.
  *
  * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'provider_hold'|'awaiting_user'|'retry_wait'|'recovery'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_stalled'|'retry_stalled'|'decision'|'resume_failed'|'wait_key_missing'|'wait_record_missing'|'takeover_unresolved'} VerdictCode
+ * @typedef {'check_overdue'|'settle_overdue'|'observe_failing'|'service_down'|'monitor_stopped'|'reset_passed'|'probe_stalled'|'retry_stalled'|'decision'|'resume_failed'|'wait_key_missing'|'wait_record_missing'|'takeover_unresolved'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
@@ -107,6 +107,8 @@
  * @property {number} [resets_at]
  * @property {'normal'|'overdue'|'action_required'} verdict
  * @property {VerdictReason} [verdict_reason]
+ * @property {string} [resolution] - An `action_required` reason's sentence
+ * naming the button that resolves it and where it stands (UI-9w5l §3.1).
  * @property {Array<{ id: string, rig?: string, status?: string, kind: 'gate'|'issue' }>} targets
  * @property {Array<{ op: string, label: string, title?: string, placement?: 'card'|'detail', confirm?: string, payload: Record<string, any> }>} actions
  * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan

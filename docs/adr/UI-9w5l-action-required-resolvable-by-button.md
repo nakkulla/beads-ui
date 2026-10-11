@@ -1,17 +1,27 @@
 ---
-id: UI-jbl1
-title: 실패 대화 자동 기동과 확인 필요 알림 통일
+id: UI-9w5l
+title: 버튼으로 풀리는 조치 필요와 대기 사유 무알림
 status: accepted
-date: 2026-10-07
-summary: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다"
-supersedes: ["UI-qbgj", "UI-18a5-2", "UI-18a5-3"]
-spec: docs/superpowers/specs/2026-10-06-failure-conversation-auto-launch-design.md
-bead: UI-jbl1
+date: 2026-10-11
+summary: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다; 조치 필요는 beads-ui 버튼으로 해결할 수 있는 대기 사유에만 서고 버튼 이름을 담은 해결 문장을 함께 실으며 선행 대기는 늘 normal이고 대기 사유 판정은 Discord로 알리지 않는다; 살아 있는 대화가 있는 행은 Discord 링크가 없을 때만 [세션에서 이어가기]를 그리고 그 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다"
+supersedes: ["UI-jbl1"]
+spec: docs/superpowers/specs/2026-10-11-action-required-resolvable-by-button-design.md
+bead: UI-9w5l
 ---
 
-# 실패 대화 자동 기동과 확인 필요 알림 통일
+# 버튼으로 풀리는 조치 필요와 대기 사유 무알림
 
 ## Context
+
+이 결정은 `ADR UI-jbl1`(실패 대화 자동 기동과 확인 필요 알림 통일)을 다시 쓴다. 그 ADR과 소비자(`tileResolveFields`, `handleWorkerResolveInSession`의 resolve-in-session 경로, 대기 판정 어휘와 `notify.js`)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 둘이고 나머지는 모두 승계한다: (a) UI-u6ud-7 승계 대기 어휘의 "선행이 `blocked`·`deferred`·worker-ineligible이면 `action_required`"는 "선행 대기는 늘 `normal`"이 된다. (b) "살아 있는 대화형 세션이 종류와 상관없이 하나라도 있으면 `[세션에서 이어가기]`가 서지 않는다"에 "Discord 링크가 없으면 서고 클릭은 그 대화 창을 앞으로 부른다"는 예외가 붙는다.
+
+UI-9w5l(2026-10-11): dotfiles-8k8yf가 일부러 세션 작업 dotfiles-kb9oi(worker-ineligible, `in_progress`) 뒤에 걸려 있었는데 카드가 `⛔ 선행 대기 · 조치 필요`로 뜨고 Discord에 `⚠ dotfiles-8k8yf 지연 · 열린 선행에 사람의 조치가 필요함`이 왔다. 카드에는 누를 버튼이 없었다. 조사해 보니 `takeover_unresolved`·live 대화의 답 대기도 beads-ui 안에서 풀 버튼이 없었다.
+
+사용자 결정(2026-10-11): 선행 대기의 조치 필요 승격과 그 알림을 없앤다. 모든 조치 필요는 beads-ui 버튼으로 해결되어야 하고 배지가 해결 방법을 설명한다. `takeover_unresolved`는 해결 세션 버튼으로 연다(sjob 새 명령 아님). 대기 사유 알림은 `action_required`·`overdue` 모두 끈다. 대화 세션이 답을 기다리는데 Discord 링크가 없으면 tmux 창을 앞으로 부르는 `[세션에서 이어가기]`를 보인다(beads-ui 안 답 입력칸은 만들지 않는다).
+
+아래는 `ADR UI-jbl1`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
+
+### ADR UI-jbl1의 맥락 (승계)
 
 이 결정은 `ADR UI-qbgj`(대화형 세션 이어가기 짝과 외부 작업 바로 실행)·`ADR UI-18a5-2`(대화형 레코드 원천과 정산 세 종류)·`ADR UI-18a5-3`(머지 게이트 보류와 실패 행 출구)를 다시 쓴다. 세 ADR과 소비자(`notify.js` 알림 제목, 대화 레코드 키를 읽는 reconcile·투영·UI, 실패 행 출구, 진입 블록 사본과 다이제스트)를 공유하므로 새 주제가 아니다. 대화와 수리의 경계, 공용 스위치, 진입 블록의 읽기 전용 진단, Bead 없는 저장소 작업 실패 대화의 정본은 dotfiles `ADR dotfiles/dotfiles-ids1k`(실패 대화 세션 자동 기동 계약)이고 이 ADR은 그 소비자 쪽 결정이다.
 
@@ -29,6 +39,28 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 아래 승계 조항의 맥락은 `docs/adr/history/`의 세 원본에 있다.
 
 ## Decision
+
+**조치 필요(`action_required`)는 beads-ui 버튼으로 해결할 수 있는 대기 사유에만 서고, 버튼 이름을 담은 해결 문장을 함께 싣는다. 선행 대기는 늘 `normal`이고 대기 사유 판정은 Discord로 알리지 않는다. 살아 있는 대화가 있는 행은 Discord 링크가 없을 때만 `[세션에서 이어가기]`를 그리고, 그 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다.**
+
+조치 필요의 불변식
+
+- `action_required` 사유는 해결 op 하나 이상과 해결 문장 `resolution`을 함께 싣는다. `폐기`와 같은 상태를 다시 읽기만 하는 `[지금 확인]`은 해결 op로 세지 않는다. 둘 중 하나라도 만들 수 없는 상태는 `action_required`가 아니다. 이 불변식은 wait-judgment 단위 테스트가 모든 생산 분기를 돌며 강제한다.
+- 선행 대기는 선행의 상태·라벨과 무관하게 `normal`이다. 생산자가 없던 `job_failed`와 함께 `blocker_needs_human` 판정 코드는 없다.
+- `takeover_unresolved`(바로 실행 미해결)는 `[세션에서 이어가기]`로 해결 세션을 연다. 세션은 dotfiles external-wait 계약의 holding 정리 규칙을 따르고, 대기는 다음 관측이 원격 기록을 읽어 푼다. 버튼은 원격 상태를 직접 바꾸지 않는다.
+- 해결 문장은 대기 판정 근거 팝업의 첫 줄 `해결 — …`과 상세 패널 대기 본문(release 앞)에 그린다. 카드 위 새 칩·라벨·줄 슬롯은 없다. 살아 있는 대화가 있으면 그 대화 문장(Discord 링크가 있으면 Discord, 없으면 tmux 창)이 사유의 문장보다 앞선다. Worker 탭과 모니터는 같은 공유 함수로 그린다.
+
+살아 있는 대화와 `[세션에서 이어가기]`
+
+- 살아 있는 대화(종류 무관)에 Discord 링크가 있으면 버튼을 숨기고, 없으면 `tileResolveFields`가 버튼을 그린다. 인계·인수 결과 보유 중 숨김 같은 다른 가드는 그대로다.
+- 클릭은 행 판정보다 먼저 그 Bead의 살아 있는 대화 레코드를 찾아 그 종류의 pane 마커로 창을 앞으로 부르고 `already_running`으로 답한다. 새 세션을 띄우지 않고 레코드·대기 상태를 바꾸지 않는다. 살아 있는 창이 없으면 지금의 행 판정으로 내려간다.
+
+알림
+
+- 대기 사유 판정(`action_required`·`overdue`)은 Discord를 보내지 않는다. 외부 작업 완료, 대화 대상 푸시(`🙋 확인 필요`·`❓ 답 대기`), 실패 종단 `🙋 확인 필요 · <클래스>`, 공급자 보류 진입·회복 알림은 그대로다. 외부 작업 완료와 redispatch의 억제 키는 보존한다.
+
+아래는 `ADR UI-jbl1`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-9w5l)`로 표시했다.
+
+### ADR UI-jbl1에서 승계하는 조항
 
 **실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 연다. 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일하고 「🚨 사람 필요」를 없앤다. 수동 배포 실패는 「저장소 작업」 서랍의 `[세션에서 이어가기]`와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다.**
 
@@ -88,7 +120,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 대상 행과 두 버튼
 
-- `[세션에서 이어가기]`가 설 수 있는 행은 확인 필요(파킹·복구 대기), 실패(머지 전 검증 보류·`needs_human` 종단·`cleanup_failed`·실패한 폐기·실패한 수동 배포 저장소 작업(변경, UI-jbl1)), 외부 작업 완료(세션 소유 외부 대기의 `completing` 행) 셋이다. 그 행(Bead 또는 저장소 작업, 변경 UI-jbl1)의 살아 있는 대화형 세션이 종류와 상관없이 하나라도 있으면 서지 않는다.
+- `[세션에서 이어가기]`가 설 수 있는 행은 확인 필요(파킹·복구 대기), 실패(머지 전 검증 보류·`needs_human` 종단·`cleanup_failed`·실패한 폐기·실패한 수동 배포 저장소 작업(변경, UI-jbl1)), 외부 작업 완료(세션 소유 외부 대기의 `completing` 행) 셋이다. 그 행(Bead 또는 저장소 작업, 변경 UI-jbl1)의 살아 있는 대화형 세션이 종류와 상관없이 하나라도 있으면 서지 않는다. (변경, UI-9w5l) 다만 그 대화에 Discord 링크가 없으면 서고, 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다. 바로 실행 미해결(settle을 넘긴 takeover 마커가 있는 hold/detached 외부 대기) 행에도 서고, 서버 행 순서는 복구 대기 → 바로 실행 미해결 → 외부 작업 완료 → 실패·파킹이다.
 - 클릭 op는 하나이고 서버가 행 상태로 런처를 고른다: 확인 필요 → 문의 런처, 외부 작업 완료 → 외부 재개 런처, 실패 → 해결 런처. 내부 종류(`inquiry`·`resolve`·`external_resume`), pane 마커 셋, 창 이름, fork·같은 세션 재개 방식, 자동 기동 게이트는 그대로다.
 - `[워커로 이어가기]`는 기존 op의 이름을 맞춘 것이다: 확인 필요는 대화 인계, 외부 작업 완료는 Worker attempt fork 재개, 실패의 머지 후 정리는 정리 재시도, 실패의 폐기는 폐기 재시도. 머지 전 검증 보류와 `needs_human` 머지 게이트 행에는 그리지 않는다 — 그 행에서 Worker가 잇는 조작은 `[머지]`다.
 - 짝의 유무와 자리는 `tileResolveFields` 하나가 정하고 PR 대기 행과 저장소 작업 타임라인도 그 판정을 그린다. 짝은 모든 카드에서 슬롯 6이다(카드 문법 스펙 §5.1 정정(UI-18a5)). `인수` 동안은 짝 둘만 숨기고 행의 나머지 조작은 그대로다.
@@ -188,7 +220,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
   | 살아 있는 대화 없음 | `action_required` · `decision` | `[세션에서 해결]` · (`결과 줄 없이 창이 사라진` 경우) `[워커로 이어가기]` · `폐기` |
   | `running` | `normal` (대화 중) | `폐기` |
   | 기동 뒤 assistant 메시지 없음(`idle`·`null`) | `normal` (기동 중) | `폐기` |
-  | `question`·`limit`, 또는 결과 줄이 아닌 메시지를 처리한 `idle` | `action_required` (답 대기) | `[워커로 이어가기]` · `폐기` |
+  | `question`·`limit`, 또는 결과 줄이 아닌 메시지를 처리한 `idle` | `action_required` (답 대기) | `[세션에서 이어가기]`(Discord 링크가 없을 때, 창 포커스 — 변경, UI-9w5l) · `[워커로 이어가기]` · `폐기` |
   | 인계 예약·사람 인수 | `normal` | `폐기` |
 
 - 결과 줄 없이 창이 사라지면 레코드를 지우고 attempt에 `pane_gone`을 남겨 확인 필요로 되돌린다.
@@ -242,7 +274,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
 | `🙋 사람 인수` | `인수` 관측 | 레코드당 1회 |
 
 - `🙋 확인 필요`는 이 대상의 `⏸️ 파킹`과 `⚠ … 지연 · 세션이 멈춤`을 대체한다 —
-  `notifyWaitReasons`는 `awaiting_user` 행과 대화 대상 복구 행을 보내지 않는다. 대화가 시작되면
+  `notifyWaitReasons`는 `awaiting_user` 행과 대화 대상 복구 행을 보내지 않는다(변경, UI-9w5l: 대기 사유 판정은 어떤 행도 보내지 않는다). 대화가 시작되면
   확인 필요는 소비된 채로 두고 같은 멈춤의 재알림은 `❓`가 맡는다. 보류·대화 중(`running`)은 알림이
   없고 `✅`·`📬`·`❌`는 그대로다.
 
@@ -424,8 +456,8 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
 대기 어휘
 
 - Worker는 사람 결정이 필요한 곳에서만 멈춘다.
-- 대기 어휘는 넷이다: `선행 대기 ⛓`(`prerequisite`·`prerequisite_foreign`; 선행이
-  `blocked`·`deferred`·worker-ineligible이면 `action_required`), `공급자 보류 ⏳`
+- 대기 어휘는 넷이다: `선행 대기 ⛓`(`prerequisite`·`prerequisite_foreign`; 선행의
+  상태·라벨과 무관하게 늘 `normal` — 변경, UI-9w5l), `공급자 보류 ⏳`
   (`provider_hold`), `재시도 대기 ↻`(`retry_wait`; 예약 + `grace_ms` 경과면 `overdue`),
   `확인 필요 ⏸`(`awaiting_user`와 `recovery`; verdict는 위 결정의 대화 레코드 표가 정한다 —
   UI-nuwy가 뒤집음: 살아 있는 대화의 턴 종료는 답 대기 `action_required`, 대화 중·기동 중만
@@ -495,7 +527,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
   띄운다(UI-nuwy가 뒤집음: fork 문의 세션과 `recovery` 프롬프트 대신 진입 블록 하나).
 - 복구 대기 카드 조작은 `[세션에서 해결]`(살아 있는 문의·해결 세션이 없을 때)·
   `[워커로 이어가기]`(위 결정의 조건)·`폐기`이고 `↻ 이어하기`는 없다. 알림은 위 결정의 네
-  종류이고 `waitActionRequired`의 `⚠ … 지연`은 이 대상에 보내지 않는다(UI-nuwy가 뒤집음).
+  종류이고 `waitActionRequired`의 `⚠ … 지연`은 이 대상에 보내지 않는다(UI-nuwy가 뒤집음; 변경, UI-9w5l: `⚠ … 지연` 알림 자체가 없다).
   `provider`·`credential`은 공급자 보류 경로, `blocks` 목록이 있는 `prerequisite`는 선행
   대기다.
 
@@ -709,6 +741,15 @@ verify 보류
 - post-merge 잡 원장·`replaces` 승계·CAS 확정을 둔다. 실패 행의 출구는 `[워커로 이어가기]`(정리 재시도·폐기 재시도, 옛 `[정리 재시도]`·폐기 실패 `[재시도]`), `[머지]` 재클릭, `[세션에서 이어가기]`(실패 대화), `[폐기 포기]`다. `[워커로 이어가기]`는 사람 클릭이나 같은 행 실패 대화의 `인계`로 실행되고, 그 인계는 사용자 답의 권한(결과 미상 머지 후 잡 재실행 포함)으로 많아야 한 번 실행한다. 자동 인계는 폐기나 사람 결정을 대신하지 않는다.
 
 ## Consequences
+
+- 되돌리기 어렵다: wait-judgment 생산자, `notify.js`, `tileResolveFields`, resolve-in-session 핸들러, 팝업·상세 렌더러, 모니터, 범례, protocol `WaitReason`·`VerdictCode`가 함께 움직인다.
+- 맥락 없이는 놀랍다: 새 대기 사유를 더하는 사람은 "사람이 봐야 함"을 `action_required`로 올리고 알림을 기대하기 쉽다. 이 저장소에서 `action_required`는 "beads-ui 버튼으로 풀 수 있다"는 뜻이고, 버튼 없는 기다림은 `normal`이다.
+- 얻는 것: 조치 필요 배지마다 누를 버튼과 해결 문장이 있다. 헛경보와 할 수 없는 조치 표시가 사라진다.
+- 감수하는 것: 대기 사유 Discord 알림을 잃는다. 지연·조치 필요는 beads-ui 화면에서 확인한다.
+- 대안과 기각 사유: 선행 대기 알림만 끄기 — 다른 버튼 없는 조치 필요가 남는다. sjob에 holding 해제 명령 추가 — dotfiles 계약 변경이 필요하고 해결 세션이 operator recovery로 같은 일을 한다. beads-ui 안 답 입력칸 — 사용자가 범위 밖으로 정했다.
+- `ADR UI-jbl1`의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
+
+### ADR UI-jbl1의 결과 (승계)
 
 - 되돌리기 어렵다: 알림 제목을 읽는 사람의 Discord 필터와 습관, 대화 레코드 키를 읽는 reconcile·투영·UI(`queue-store.js`·`scheduler.js`·`worker-handlers.js`·`repo-ops-timeline.js`·`tile-resolve.js`), 종단 자리(`completion-intent.js`·`discard-coordinator.js`·`repo-operation-coordinator.js`), `notify.js`, 서버 전역 `conversation-settings.js`와 전역 탭 섹션, 진입 블록 사본과 다이제스트가 함께 움직인다.
 - 맥락 없이는 놀랍다: 나흘 전 결정(UI-18a5, 자동 기동은 멈춤에만)과 ADR 0005의 자동 수리 폐기를 뒤집는 것처럼 보인다. 자동 대화는 첫 답 전 읽기 전용 진단과 질문만 한다.

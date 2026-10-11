@@ -59,9 +59,9 @@
       "user_decision_reserved": {
         "scan": "all_body_lines_trimmed",
         "line_regex": [
-          "사용자[^\\n]{0,12}?(결정|승인|확인|답)[^\\n]{0,24}?(필요|미정|전에는|정한다|정할|기다리|받은 뒤|받기 전|없으면)",
-          "(결정|승인|확인)[^\\n]{0,8}?1회[^\\n]{0,8}?필요",
-          "(?i)(user|human)[^\\n]{0,12}?(decision|approval|confirmation)[^\\n]{0,24}?(required|pending|needed|before|await)"
+          "^(?!(?:-[ \\t]+)?결정[ \\t]+—)[^\\n]*사용자[^\\n]{0,12}?(결정|승인|확인|답)[^\\n]{0,24}?(필요|미정|전에는|정한다|정할|기다리|받은 뒤|받기 전|없으면)",
+          "^(?!(?:-[ \\t]+)?결정[ \\t]+—)[^\\n]*(결정|승인|확인)[^\\n]{0,8}?1회[^\\n]{0,8}?필요",
+          "(?i)^(?!(?:-[ \\t]+)?결정[ \\t]+—)[^\\n]*(user|human)[^\\n]{0,12}?(decision|approval|confirmation)[^\\n]{0,24}?(required|pending|needed|before|await)"
         ],
         "missing_token": "user_decision_reserved:L<n>",
         "details_key": "user_decision_reserved",

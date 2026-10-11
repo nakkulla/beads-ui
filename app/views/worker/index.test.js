@@ -18402,7 +18402,9 @@ describe('resolve action while an interactive session lives (UI-ri8n)', () => {
         tmux_window: bead_id,
         state: 'live',
         settled_at: null,
-        launched_at: 1
+        launched_at: 1,
+        // A bridged conversation answers the click itself (UI-9w5l §3.5).
+        discord_url: 'https://discord.com/channels/1/2'
       }
     };
   }
