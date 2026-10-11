@@ -252,7 +252,7 @@ describe('worker/usage-pricing priceUsage', () => {
         input_tokens: 1_000_000,
         cache_read_input_tokens: 500_000
       },
-      'gpt-6-sol',
+      'gpt-6.1-sol',
       catalog
     );
 
@@ -305,10 +305,10 @@ describe('worker/usage-pricing modelPrice across sol generations', () => {
     expect(price).toMatchObject({ input: 2.5, output: 10 });
   });
 
-  test('prices a gpt-6-sol record with the sol price', () => {
+  test('prices a gpt-6.1-sol record with the sol price', () => {
     const catalog = twoSolCatalog();
 
-    const price = modelPrice(catalog, 'gpt-6-sol');
+    const price = modelPrice(catalog, 'gpt-6.1-sol');
 
     expect(price).toMatchObject({ input: 5, output: 20 });
   });
@@ -344,5 +344,75 @@ describe('worker/usage-pricing modelPrice across luna generations', () => {
     const price = modelPrice(catalog, 'gpt-6-luna');
 
     expect(price).toMatchObject({ input: 1, output: 4 });
+  });
+});
+
+describe('worker/usage-pricing modelPrice lookup order (UI-gpac §3.5)', () => {
+  const LISTED = {
+    aliases: { sol: 'gpt-6.1-sol', astra: 'gpt-6-astra' },
+    pinned: {
+      'sol-6.1': 'gpt-6.1-sol',
+      'sol-6': 'gpt-6-sol',
+      'astra-6': 'gpt-6-astra'
+    }
+  };
+
+  /**
+   * @param {Record<string, unknown>} models
+   */
+  function listedCatalog(models) {
+    return resolveCatalog({
+      codex_names: LISTED,
+      overrides: { codex: { models } },
+      warn: () => {}
+    });
+  }
+
+  test('prefers the price written on the name itself', () => {
+    const catalog = listedCatalog({
+      sol: { price: { input: 9 } },
+      'sol-6.1': { price: { input: 5 } }
+    });
+
+    const price = modelPrice(catalog, 'sol');
+
+    expect(price).toEqual({ input: 9 });
+  });
+
+  test('prices an alias with the price of the pinned name it resolves to', () => {
+    const catalog = listedCatalog({
+      'sol-6': { price: { input: 3 } },
+      'sol-6.1': { price: { input: 5 } }
+    });
+
+    const price = modelPrice(catalog, 'sol');
+
+    expect(price).toEqual({ input: 5 });
+  });
+
+  test('prices alias usage with the pinned name price', () => {
+    const catalog = listedCatalog({ 'sol-6.1': { price: { input: 5 } } });
+
+    const price = priceUsage({ input_tokens: 1_000_000 }, 'sol', catalog);
+
+    expect(price).toEqual({ usd: 5, basis: 'computed' });
+  });
+
+  test('skips a price-less alias when looking a model id up', () => {
+    const catalog = listedCatalog({ 'astra-6': { price: { input: 4 } } });
+
+    const price = modelPrice(catalog, 'gpt-6-astra');
+
+    expect(price).toEqual({ input: 4 });
+  });
+
+  test('falls back to any priced entry sharing the alias id', () => {
+    const catalog = listedCatalog({
+      'my-sol': { id: 'gpt-6.1-sol', price: { input: 7 } }
+    });
+
+    const price = modelPrice(catalog, 'sol');
+
+    expect(price).toEqual({ input: 7 });
   });
 });

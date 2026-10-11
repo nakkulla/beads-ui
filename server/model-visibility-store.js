@@ -9,9 +9,15 @@
  * name the current catalog does not know is ignored); writes are strict and
  * write nothing when rejected (ADR UI-u6ud-11).
  *
+ * Codex pinned names (`<family>-<version>`) are hidden when they FIRST appear
+ * in the Codex CLI list (UI-gpac §3.6): `seen_models` remembers every pinned
+ * name already observed, so a name the user turned on is never hidden again.
+ *
  * @typedef {Object} ModelVisibilityState
  * @property {number} revision
  * @property {string[]} disabled_models
+ * @property {string[]} [seen_models] - Codex pinned names already observed;
+ * absent in a file written before UI-gpac.
  */
 /**
  * @typedef {'conflict'|'invalid_disabled_models'|'unknown_model'|'runner_all_disabled'} ModelVisibilityErrorCode
@@ -72,10 +78,18 @@ function parseState(raw) {
   ) {
     return null;
   }
-  return {
+  /** @type {ModelVisibilityState} */
+  const state = {
     revision: raw.revision,
     disabled_models: [.../** @type {string[]} */ (raw.disabled_models)]
   };
+  if (
+    Array.isArray(raw.seen_models) &&
+    raw.seen_models.every((name) => typeof name === 'string')
+  ) {
+    state.seen_models = [.../** @type {string[]} */ (raw.seen_models)];
+  }
+  return state;
 }
 
 /**
@@ -112,6 +126,8 @@ export function createModelVisibilityStore(options = {}) {
 
   /** @type {ModelVisibilityState | null} */
   let cache = null;
+  /** Whether {@link cache} came from an existing state file. */
+  let from_file = false;
 
   /**
    * @returns {ModelVisibilityState}
@@ -133,6 +149,7 @@ export function createModelVisibilityStore(options = {}) {
       }
     }
     if (text === null) {
+      from_file = false;
       cache = defaultState();
       return cache;
     }
@@ -149,6 +166,7 @@ export function createModelVisibilityStore(options = {}) {
       );
       parsed = defaultState();
     }
+    from_file = true;
     cache = parsed;
     return cache;
   }
@@ -214,11 +232,69 @@ export function createModelVisibilityStore(options = {}) {
           return { ok: false, code: 'runner_all_disabled', snapshot };
         }
       }
+      // A hidden name briefly absent from the catalog is not in the client's
+      // list; dropping it here would show it again when it comes back.
+      const kept_absent = current.disabled_models.filter(
+        (name) =>
+          !Object.hasOwn(catalog.model_index, name) &&
+          !disabled_models.includes(name)
+      );
       /** @type {ModelVisibilityState} */
-      const next = { revision: current.revision + 1, disabled_models };
+      const next = {
+        revision: current.revision + 1,
+        disabled_models: [...disabled_models, ...kept_absent]
+      };
+      if (current.seen_models) {
+        next.seen_models = current.seen_models.slice();
+      }
       persist(next);
+      from_file = true;
       cache = next;
       return { ok: true, snapshot: project(next, catalog) };
+    },
+
+    /**
+     * Hide the Codex pinned names that appear for the first time.
+     *
+     * `pinned_names` are the pinned names of the current CLI list. A name not
+     * yet in `seen_models` is added to the disabled list, and every listed name
+     * becomes seen. Without a state file every listed name is new; a file
+     * written before `seen_models` existed starts from `legacy_names` (the
+     * names the catalog had before the CLI list), so a name the user already
+     * enabled stays enabled. A persist failure keeps the change in memory.
+     *
+     * @param {ReadonlyArray<string>} pinned_names
+     * @param {ReadonlyArray<string>} legacy_names
+     * @returns {boolean} Whether the state changed.
+     */
+    observeCodexPinnedNames(pinned_names, legacy_names) {
+      const current = ensureLoaded();
+      /** @type {string[]} */
+      const seen = current.seen_models
+        ? current.seen_models.slice()
+        : from_file
+          ? [...legacy_names]
+          : [];
+      const fresh = pinned_names.filter((name) => !seen.includes(name));
+      if (current.seen_models && fresh.length === 0) {
+        return false;
+      }
+      /** @type {ModelVisibilityState} */
+      const next = {
+        revision: current.revision + 1,
+        disabled_models: [...new Set([...current.disabled_models, ...fresh])],
+        seen_models: [...new Set([...seen, ...pinned_names])]
+      };
+      try {
+        persist(next);
+        from_file = true;
+      } catch (err) {
+        warn(
+          `model-visibility: ${filePath()} 쓰기 실패(${String(err)}): 메모리에만 반영합니다.`
+        );
+      }
+      cache = next;
+      return true;
     },
 
     /**

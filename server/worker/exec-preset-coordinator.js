@@ -26,6 +26,16 @@ import {
 import { resolveExecSettings } from './policy.js';
 import { discoverQueueStates } from './queue-state-discovery.js';
 import { APPLIED_PRESET_FIELDS } from './queue-store.js';
+import { modelRunner } from './runner-catalog.js';
+import { runtimeCatalog } from './runner/index.js';
+
+/**
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function identity(value) {
+  return value;
+}
 
 const RESEED_MIGRATION_VERSION = 1;
 const PRESET_PROFILE_MIGRATION_VERSION = 1;
@@ -303,13 +313,40 @@ export function createExecPresetCoordinator(options) {
   function resolveForDispatch(workspace, bead_snapshot) {
     const queue = queueStore.snapshot(workspace);
     const quick_fix = bead_snapshot?.route === 'quick_fix';
+    const catalog = runtimeCatalog();
+    // The queue keeps an unlisted Codex pinned model verbatim (UI-gpac §3.3);
+    // dispatch reads it as absent, so the launch falls back to the default
+    // instead of either running an unknown model or stopping.
+    /** @param {unknown} value */
+    const usable = (value) =>
+      typeof value === 'string' && modelRunner(catalog, value) !== null
+        ? value
+        : null;
+    const queue_values = /** @type {Record<string, unknown>} */ (queue);
+    // A dropped model takes its own layer's effort and speed with it: they
+    // were chosen for that model and may be illegal for the fallback.
+    /** @param {string} model_key */
+    const layerDropped = (model_key) =>
+      typeof queue_values[model_key] === 'string' &&
+      usable(queue_values[model_key]) === null;
+    const general_dropped = layerDropped('orchestration_model');
+    const quick_fix_dropped = layerDropped(
+      QUICK_FIX_LANE_MAP.orchestration_model
+    );
     /** @type {Record<string, string>} */
     const settings = {};
     for (const key of ORCHESTRATION_KEYS) {
-      const queue_values = /** @type {Record<string, unknown>} */ (queue);
+      const is_model = key === 'orchestration_model';
+      const read = is_model ? usable : identity;
+      const general_value =
+        !is_model && general_dropped ? null : read(queue_values[key]);
+      const quick_fix_value =
+        !is_model && quick_fix_dropped
+          ? null
+          : read(queue_values[QUICK_FIX_LANE_MAP[key]]);
       const value = quick_fix
-        ? (queue_values[QUICK_FIX_LANE_MAP[key]] ?? queue_values[key])
-        : queue_values[key];
+        ? (quick_fix_value ?? general_value)
+        : general_value;
       if (typeof value === 'string') {
         settings[key] = value;
       }

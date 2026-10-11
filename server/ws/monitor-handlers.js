@@ -1560,6 +1560,14 @@ export function notifyMonitorRegistryChanged() {
 }
 
 /**
+ * Runner-catalog trigger (UI-gpac §3.3): every workspace row carries the
+ * resolved `runner_catalog`, so a Codex model list swap pushes one snapshot.
+ */
+export function notifyMonitorCatalogChanged() {
+  schedulePush();
+}
+
+/**
  * Visibility-toggle trigger: the visible set IS the monitor's scope, and a repo
  * that just became visible has never been polled.
  */

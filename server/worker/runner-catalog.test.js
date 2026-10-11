@@ -2,9 +2,13 @@ import { describe, expect, test, vi } from 'vitest';
 import pin from '../../generated/contracts/execution-defaults.json' with { type: 'json' };
 import {
   ACTIVE_RUNNERS,
+  CODEX_FAMILY_TEMPLATES,
+  CODEX_SEED_NAMES,
   builtinCatalog,
   catalogOrchestrationEfforts,
   catalogSpeedTiers,
+  codexPinnedNameForId,
+  isCodexPinnedName,
   modelEfforts,
   modelOrchestrationEfforts,
   modelRunner,
@@ -13,14 +17,22 @@ import {
 } from './runner-catalog.js';
 
 describe('worker/runner-catalog parity with the pinned execution defaults', () => {
-  test('matches every pinned codex alias id in the builtin table', () => {
-    const codex_models = builtinCatalog().codex.models;
+  test('carries a builtin family template for every pinned codex family', () => {
+    const families = pin.implementation.model_catalog.codex.families;
 
-    const pairs = Object.entries(pin.implementation.model_catalog.codex);
+    const templates = Object.keys(CODEX_FAMILY_TEMPLATES);
 
-    for (const [alias, id] of pairs) {
-      expect(codex_models[alias]?.id, alias).toBe(id);
+    for (const family of families) {
+      expect(templates, family).toContain(family);
     }
+  });
+
+  test('seeds exactly one alias per pinned codex family', () => {
+    const families = pin.implementation.model_catalog.codex.families;
+
+    const aliases = Object.keys(CODEX_SEED_NAMES.aliases);
+
+    expect([...aliases].sort()).toEqual([...families].sort());
   });
 
   test('carries every pinned claude alias in the builtin table', () => {
@@ -57,20 +69,168 @@ describe('worker/runner-catalog parity with the pinned execution defaults', () =
     );
     expect(pinned.speed_tiers).toEqual(codex_models.sol.speed_tiers);
   });
+});
 
-  test('carries every pinned codex fallback id in exactly one builtin entry', () => {
-    const codex_models = builtinCatalog().codex.models;
-
-    const fallback_ids = Object.values(
-      pin.implementation.model_catalog_fallback.codex
-    );
-
-    for (const id of fallback_ids) {
-      const owners = Object.keys(codex_models).filter(
-        (alias) => codex_models[alias].id === id
-      );
-      expect(owners, id).toHaveLength(1);
+describe('worker/runner-catalog codex names from the CLI list', () => {
+  const LISTED = {
+    aliases: {
+      astra: 'gpt-6-astra',
+      sol: 'gpt-6.1-sol',
+      terra: 'gpt-5.6-terra',
+      luna: 'gpt-6-luna'
+    },
+    pinned: {
+      'astra-6': 'gpt-6-astra',
+      'luna-6': 'gpt-6-luna',
+      'sol-5.6': 'gpt-5.6-sol',
+      'sol-6': 'gpt-6-sol',
+      'sol-6.1': 'gpt-6.1-sol',
+      'terra-5.6': 'gpt-5.6-terra'
     }
+  };
+
+  test('gives every pinned name its family template', () => {
+    const { runners } = resolveCatalog({ codex_names: LISTED, warn: () => {} });
+
+    const models = runners.codex.models;
+
+    for (const name of Object.keys(LISTED.pinned)) {
+      const family = name.split('-')[0];
+      expect(models[name].efforts, name).toEqual(models[family].efforts);
+      expect(models[name].orchestration_efforts, name).toEqual(
+        models[family].orchestration_efforts
+      );
+      expect(models[name].speed_tiers, name).toEqual(
+        models[family].speed_tiers
+      );
+    }
+  });
+
+  test('indexes every listed alias and pinned name to codex', () => {
+    const { model_index } = resolveCatalog({
+      codex_names: LISTED,
+      warn: () => {}
+    });
+
+    const names = [
+      ...Object.keys(LISTED.aliases),
+      ...Object.keys(LISTED.pinned)
+    ];
+
+    for (const name of names) {
+      expect(model_index[name], name).toBe('codex');
+    }
+  });
+
+  test('keeps a config-defined codex name the list does not carry', () => {
+    const overrides = {
+      codex: { models: { 'luna-5.6': { id: 'gpt-5.6-luna' } } }
+    };
+
+    const { runners, model_index } = resolveCatalog({
+      codex_names: LISTED,
+      overrides,
+      warn: () => {}
+    });
+
+    expect(runners.codex.models['luna-5.6'].id).toBe('gpt-5.6-luna');
+    expect(model_index['luna-5.6']).toBe('codex');
+  });
+
+  test('merges a config price onto a listed pinned name', () => {
+    const overrides = {
+      codex: { models: { 'sol-6.1': { price: { input: 2 } } } }
+    };
+
+    const { runners } = resolveCatalog({
+      codex_names: LISTED,
+      overrides,
+      warn: () => {}
+    });
+
+    expect(runners.codex.models['sol-6.1']).toMatchObject({
+      id: 'gpt-6.1-sol',
+      price: { input: 2 },
+      efforts: runners.codex.models.sol.efforts
+    });
+  });
+
+  test('ignores a price-only config entry for an unlisted codex pinned name', () => {
+    /** @type {string[]} */
+    const warnings = [];
+    const overrides = {
+      codex: { models: { 'sol-7': { price: { input: 2 } } } }
+    };
+
+    const { runners, model_index } = resolveCatalog({
+      codex_names: LISTED,
+      overrides,
+      warn: (message) => warnings.push(message)
+    });
+
+    expect(runners.codex.models['sol-7']).toBeUndefined();
+    expect(model_index['sol-7']).toBeUndefined();
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('keeps a price-only config entry outside the codex pinned grammar', () => {
+    const overrides = {
+      codex: { models: { 'house-model': { price: { input: 2 } } } }
+    };
+
+    const { runners, model_index } = resolveCatalog({
+      codex_names: LISTED,
+      overrides,
+      warn: () => {}
+    });
+
+    expect(runners.codex.models['house-model']).toMatchObject({
+      id: 'house-model',
+      price: { input: 2 }
+    });
+    expect(model_index['house-model']).toBe('codex');
+  });
+
+  test('lets a listed codex name win over a colliding config name', () => {
+    /** @type {string[]} */
+    const warnings = [];
+    const overrides = { claude: { models: { 'sol-6': { id: 'x' } } } };
+
+    const { model_index } = resolveCatalog({
+      codex_names: LISTED,
+      overrides,
+      warn: (message) => warnings.push(message)
+    });
+
+    expect(model_index['sol-6']).toBe('codex');
+    expect(warnings).toHaveLength(1);
+  });
+});
+
+describe('worker/runner-catalog codex name grammar', () => {
+  test.each([
+    ['sol-6.1', true],
+    ['luna-6', true],
+    ['sol', false],
+    ['opus-4.8', false],
+    ['sol-', false],
+    ['nova-6', false]
+  ])('judges %s as a pinned name: %s', (name, expected) => {
+    const judged = isCodexPinnedName(name);
+
+    expect(judged).toBe(expected);
+  });
+
+  test('spells the pinned name of a codex slug', () => {
+    const name = codexPinnedNameForId('gpt-6.1-sol');
+
+    expect(name).toBe('sol-6.1');
+  });
+
+  test('returns null for an id outside the slug grammar', () => {
+    const name = codexPinnedNameForId('claude-opus-4-8');
+
+    expect(name).toBeNull();
   });
 });
 
@@ -124,7 +284,7 @@ describe('worker/runner-catalog builtin defaults', () => {
 
     expect(runners.codex.command).toBe('codex');
     expect(runners.codex.models.astra.id).toBe('gpt-6-astra');
-    expect(runners.codex.models.sol.id).toBe('gpt-6-sol');
+    expect(runners.codex.models.sol.id).toBe('gpt-6.1-sol');
     expect(runners.codex.models.terra.id).toBe('gpt-5.6-terra');
     expect(runners.codex.models.luna.id).toBe('gpt-6-luna');
     expect(runners.codex.models['luna-5.6'].id).toBe('gpt-5.6-luna');
@@ -443,7 +603,7 @@ describe('worker/runner-catalog fail-quiet validation', () => {
     });
 
     expect(runners.codex.models.astra.id).toBe('gpt-6-astra');
-    expect(runners.codex.models.sol.id).toBe('gpt-6-sol');
+    expect(runners.codex.models.sol.id).toBe('gpt-6.1-sol');
     expect(warn).toHaveBeenCalledTimes(1);
   });
 

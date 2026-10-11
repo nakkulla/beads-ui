@@ -3,6 +3,10 @@
  * that can spawn it, the CLI id it expands to, and the effort vocabulary it
  * accepts (worker-multi-provider-runner §B).
  *
+ * The codex model names are injected as a name table (`codex_names`) built
+ * from the Codex CLI model list by `codex-model-list.js`; this module stays a
+ * pure function of its inputs so the browser bundle can import it.
+ *
  * Two layers: a builtin default so a zero-config install works, and the
  * `[runner.<name>]` sections of `~/.config/bdui/config.toml` deep-merged on top
  * so a new model is a config edit rather than a release. The config layer is
@@ -52,8 +56,15 @@
  *   default_model?: string
  * }} RunnerCatalogEntry
  * @typedef {{
+ *   source: 'seed'|'list',
+ *   read_at: number|null,
+ *   codex_version: string|null,
+ *   families: string[]
+ * }} CodexListStatus
+ * @typedef {{
  *   runners: Record<string, RunnerCatalogEntry>,
- *   model_index: Record<string, string>
+ *   model_index: Record<string, string>,
+ *   codex_list?: CodexListStatus
  * }} ResolvedCatalog
  */
 
@@ -68,8 +79,9 @@ export const ACTIVE_RUNNERS = ['claude', 'codex'];
 
 /**
  * Builtin catalog. Values are measured against the installed CLIs, not copied
- * from provider docs: the codex per-model effort lists are curated (the API
- * enum is wider) and `luna`'s `max` is verified as actually supported.
+ * from provider docs. The codex runner carries no model of its own here: its
+ * names come from the Codex CLI model list (`codex-model-list.js`), each one
+ * inheriting its family template below.
  *
  * @type {Record<string, RunnerCatalogEntry>}
  */
@@ -89,76 +101,177 @@ const BUILTIN = {
   },
   codex: {
     command: 'codex',
-    models: {
-      astra: {
-        id: 'gpt-6-astra',
-        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-        orchestration_efforts: [
-          'low',
-          'medium',
-          'high',
-          'xhigh',
-          'max',
-          'ultra'
-        ],
-        speed_tiers: ['default', 'fast']
-      },
-      sol: {
-        id: 'gpt-6-sol',
-        efforts: ['low', 'medium', 'high', 'xhigh'],
-        orchestration_efforts: [
-          'low',
-          'medium',
-          'high',
-          'xhigh',
-          'max',
-          'ultra'
-        ],
-        speed_tiers: ['default', 'fast']
-      },
-      'sol-5.6': {
-        id: 'gpt-5.6-sol',
-        efforts: ['low', 'medium', 'high', 'xhigh'],
-        orchestration_efforts: [
-          'low',
-          'medium',
-          'high',
-          'xhigh',
-          'max',
-          'ultra'
-        ],
-        speed_tiers: ['default', 'fast']
-      },
-      terra: {
-        id: 'gpt-5.6-terra',
-        efforts: ['low', 'medium', 'high', 'xhigh'],
-        orchestration_efforts: [
-          'low',
-          'medium',
-          'high',
-          'xhigh',
-          'max',
-          'ultra'
-        ],
-        speed_tiers: ['default', 'fast']
-      },
-      luna: {
-        id: 'gpt-6-luna',
-        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-        orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-        speed_tiers: ['default', 'fast']
-      },
-      'luna-5.6': {
-        id: 'gpt-5.6-luna',
-        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-        orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-        speed_tiers: ['default', 'fast']
-      }
-    },
+    models: {},
     // Per-model `efforts` win over this runner-wide list.
     efforts: ['minimal', 'low', 'medium', 'high', 'xhigh']
   }
 };
+
+/**
+ * @typedef {{
+ *   efforts: string[],
+ *   orchestration_efforts: string[],
+ *   speed_tiers: string[]
+ * }} CodexFamilyTemplate
+ * @typedef {{
+ *   aliases: Record<string, string>,
+ *   pinned: Record<string, string>
+ * }} CodexNameTable
+ */
+
+/**
+ * Capabilities per Codex family. An alias and every pinned version of the
+ * family inherit the same template: the per-model effort lists are curated
+ * (the API enum is wider) and `luna`'s `max` is verified as actually supported.
+ *
+ * @type {Readonly<Record<string, CodexFamilyTemplate>>}
+ */
+export const CODEX_FAMILY_TEMPLATES = Object.freeze({
+  astra: {
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    speed_tiers: ['default', 'fast']
+  },
+  sol: {
+    efforts: ['low', 'medium', 'high', 'xhigh'],
+    orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    speed_tiers: ['default', 'fast']
+  },
+  terra: {
+    efforts: ['low', 'medium', 'high', 'xhigh'],
+    orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    speed_tiers: ['default', 'fast']
+  },
+  luna: {
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    speed_tiers: ['default', 'fast']
+  }
+});
+
+/**
+ * Families with a builtin template, in alias order.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const CODEX_FAMILIES = Object.freeze(
+  Object.keys(CODEX_FAMILY_TEMPLATES)
+);
+
+/**
+ * The Codex names used until the CLI list has been read once: the alias table
+ * the pin carried before it moved to CLI resolution (with `sol` at its current
+ * `gpt-6.1-sol`) plus the version-pinned names the builtin table already had.
+ *
+ * @type {Readonly<CodexNameTable>}
+ */
+export const CODEX_SEED_NAMES = Object.freeze({
+  aliases: Object.freeze({
+    astra: 'gpt-6-astra',
+    sol: 'gpt-6.1-sol',
+    terra: 'gpt-5.6-terra',
+    luna: 'gpt-6-luna'
+  }),
+  pinned: Object.freeze({
+    'sol-5.6': 'gpt-5.6-sol',
+    'luna-5.6': 'gpt-5.6-luna'
+  })
+});
+
+const CODEX_NAME_RE = /^([a-z]+)(?:-([0-9]+(?:\.[0-9]+)*))?$/;
+const CODEX_SLUG_RE = /^gpt-([0-9]+(?:\.[0-9]+)*)-([a-z]+)$/;
+
+/**
+ * The family a Codex alias or pinned name belongs to, or null when the name is
+ * outside the `<family>` / `<family>-<version>` grammar for `families`.
+ *
+ * @param {unknown} name
+ * @param {ReadonlyArray<string>} [families]
+ * @returns {string|null}
+ */
+export function codexNameFamily(name, families = CODEX_FAMILIES) {
+  if (typeof name !== 'string') {
+    return null;
+  }
+  const match = CODEX_NAME_RE.exec(name);
+  return match && families.includes(match[1]) ? match[1] : null;
+}
+
+/**
+ * Whether `name` is a version-pinned Codex name (`<family>-<version>`).
+ *
+ * @param {unknown} name
+ * @param {ReadonlyArray<string>} [families]
+ * @returns {boolean}
+ */
+export function isCodexPinnedName(name, families = CODEX_FAMILIES) {
+  if (codexNameFamily(name, families) === null) {
+    return false;
+  }
+  return /** @type {string} */ (name).includes('-');
+}
+
+/**
+ * The pinned name a Codex model id spells (`gpt-6.1-sol` -> `sol-6.1`), or
+ * null when the id is not a `gpt-<version>-<family>` slug.
+ *
+ * @param {unknown} model_id
+ * @returns {string|null}
+ */
+export function codexPinnedNameForId(model_id) {
+  if (typeof model_id !== 'string') {
+    return null;
+  }
+  const match = CODEX_SLUG_RE.exec(model_id);
+  return match ? `${match[2]}-${match[1]}` : null;
+}
+
+/**
+ * Codex catalog models for one name table: aliases first, then pinned names,
+ * each carrying a copy of its family template.
+ *
+ * @param {CodexNameTable} names
+ * @returns {Record<string, CatalogModel>}
+ */
+function codexModels(names) {
+  /** @type {Record<string, CatalogModel>} */
+  const models = {};
+  for (const [name, id] of [
+    ...Object.entries(names.aliases),
+    ...Object.entries(names.pinned)
+  ]) {
+    const match = CODEX_NAME_RE.exec(name);
+    const family = match ? match[1] : null;
+    const template =
+      family !== null && Object.hasOwn(CODEX_FAMILY_TEMPLATES, family)
+        ? CODEX_FAMILY_TEMPLATES[family]
+        : null;
+    /** @type {CatalogModel} */
+    const model = { id };
+    if (template) {
+      model.efforts = template.efforts.slice();
+      model.orchestration_efforts = template.orchestration_efforts.slice();
+      model.speed_tiers = template.speed_tiers.slice();
+    }
+    models[name] = model;
+  }
+  return models;
+}
+
+/**
+ * Fresh copy of the builtin runner table with the codex names filled in.
+ *
+ * @param {string} runner_name
+ * @param {CodexNameTable} codex_names
+ * @returns {RunnerCatalogEntry}
+ */
+function builtinEntry(runner_name, codex_names) {
+  const entry = copyEntry(BUILTIN[runner_name]);
+  if (runner_name === 'codex') {
+    entry.models = codexModels(codex_names);
+  }
+  return entry;
+}
 
 /**
  * @param {unknown} value
@@ -254,15 +367,17 @@ function copyEntry(entry) {
 }
 
 /**
- * Fresh deep copy of the builtin catalog — callers may mutate it freely.
+ * Fresh deep copy of the builtin catalog — callers may mutate it freely. The
+ * codex runner is filled from `codex_names` (the seed table by default).
  *
+ * @param {CodexNameTable} [codex_names]
  * @returns {Record<string, RunnerCatalogEntry>}
  */
-export function builtinCatalog() {
+export function builtinCatalog(codex_names = CODEX_SEED_NAMES) {
   /** @type {Record<string, RunnerCatalogEntry>} */
   const out = {};
-  for (const [name, entry] of Object.entries(BUILTIN)) {
-    out[name] = copyEntry(entry);
+  for (const name of Object.keys(BUILTIN)) {
+    out[name] = builtinEntry(name, codex_names);
   }
   return out;
 }
@@ -334,6 +449,19 @@ function mergeModels(entry, runner_name, section, warn) {
     const existing = hasOwn(entry.models, model_name)
       ? entry.models[model_name]
       : null;
+    // A pinned name the Codex list no longer carries has no CLI id; without
+    // an explicit `id` the entry would launch the name itself as a model id.
+    if (
+      runner_name === 'codex' &&
+      existing === null &&
+      isCodexPinnedName(model_name) &&
+      !isNonEmptyString(raw_model.id)
+    ) {
+      warn(
+        `config.toml [runner.${runner_name}.models.${model_name}] 무시: Codex 모델 목록에 없는 고정 이름이고 id가 없습니다.`
+      );
+      continue;
+    }
     /** @type {CatalogModel} */
     const merged = existing
       ? /** @type {CatalogModel} */ ({
@@ -442,27 +570,31 @@ function mergeRunnerSection(runners, runner_name, section, warn) {
 
 /**
  * Build the model → runner index, enforcing global model-name uniqueness.
- * Builtin names are registered first so they always win; a config-added name
- * that collides is dropped from its runner. Both passes walk `active` in order,
- * so the result does not depend on config declaration order.
+ * Builtin names (including the codex names generated from the CLI list) are
+ * registered first so they always win; a config-added name that collides is
+ * dropped from its runner. Both passes walk `active` in order, so the result
+ * does not depend on config declaration order.
  *
  * @param {Record<string, RunnerCatalogEntry>} runners
  * @param {ReadonlyArray<string>} active
+ * @param {Record<string, Set<string>>} builtin_names
  * @param {(message: string) => void} warn
  * @returns {Record<string, string>}
  */
-function buildModelIndex(runners, active, warn) {
+function buildModelIndex(runners, active, builtin_names, warn) {
   /** @type {Record<string, string>} */
   const model_index = {};
 
   for (const runner_name of active) {
     const entry = hasOwn(runners, runner_name) ? runners[runner_name] : null;
-    const builtin = hasOwn(BUILTIN, runner_name) ? BUILTIN[runner_name] : null;
+    const builtin = hasOwn(builtin_names, runner_name)
+      ? builtin_names[runner_name]
+      : null;
     if (!entry || !builtin) {
       continue;
     }
     for (const model_name of Object.keys(entry.models)) {
-      if (hasOwn(builtin.models, model_name)) {
+      if (builtin.has(model_name)) {
         model_index[model_name] = runner_name;
       }
     }
@@ -473,9 +605,11 @@ function buildModelIndex(runners, active, warn) {
     if (!entry) {
       continue;
     }
-    const builtin = hasOwn(BUILTIN, runner_name) ? BUILTIN[runner_name] : null;
+    const builtin = hasOwn(builtin_names, runner_name)
+      ? builtin_names[runner_name]
+      : null;
     for (const model_name of Object.keys(entry.models)) {
-      if (builtin && hasOwn(builtin.models, model_name)) {
+      if (builtin && builtin.has(model_name)) {
         continue;
       }
       if (hasOwn(model_index, model_name)) {
@@ -499,6 +633,7 @@ function buildModelIndex(runners, active, warn) {
  * @param {{
  *   overrides?: unknown,
  *   active?: ReadonlyArray<string>,
+ *   codex_names?: CodexNameTable,
  *   warn?: (message: string) => void
  * }} [options]
  * @returns {ResolvedCatalog}
@@ -506,12 +641,18 @@ function buildModelIndex(runners, active, warn) {
 export function resolveCatalog(options = {}) {
   const active = options.active ?? ACTIVE_RUNNERS;
   const warn = options.warn ?? console.warn;
+  const codex_names = options.codex_names ?? CODEX_SEED_NAMES;
 
   /** @type {Record<string, RunnerCatalogEntry>} */
   const runners = {};
+  /** @type {Record<string, Set<string>>} */
+  const builtin_names = {};
   for (const runner_name of active) {
     if (hasOwn(BUILTIN, runner_name)) {
-      runners[runner_name] = copyEntry(BUILTIN[runner_name]);
+      runners[runner_name] = builtinEntry(runner_name, codex_names);
+      builtin_names[runner_name] = new Set(
+        Object.keys(runners[runner_name].models)
+      );
     }
   }
 
@@ -536,7 +677,10 @@ export function resolveCatalog(options = {}) {
     }
   }
 
-  return { runners, model_index: buildModelIndex(runners, active, warn) };
+  return {
+    runners,
+    model_index: buildModelIndex(runners, active, builtin_names, warn)
+  };
 }
 
 /**

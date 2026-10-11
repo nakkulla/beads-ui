@@ -13,6 +13,7 @@ import {
   shellQuote,
   workflowScriptDir
 } from './attempt-facts.js';
+import { resolveCatalog } from './runner-catalog.js';
 import { applyPreamble } from './runner/preamble.js';
 
 const HOME = '/home/tester';
@@ -243,6 +244,30 @@ describe('worker/attempt-facts reviewer preset (spec D1)', () => {
     const preset = resolveReviewerPreset({}, defaults);
 
     expect(preset?.model).toBe('nova');
+  });
+
+  test('resolves an aliased reviewer model through the runtime catalog', () => {
+    const defaults = {
+      supported: true,
+      digest: null,
+      session: {
+        review: {
+          default: 'codex',
+          reviewers: { codex: { model: 'sol', effort: 'xhigh' } }
+        },
+        implementation: {
+          model_catalog: {
+            claude: ['opus'],
+            codex: { families: ['sol'], resolve: 'codex_cli_latest_v2' }
+          }
+        }
+      }
+    };
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const preset = resolveReviewerPreset({}, defaults, catalog);
+
+    expect(preset?.model).toBe('gpt-6.1-sol');
   });
 });
 

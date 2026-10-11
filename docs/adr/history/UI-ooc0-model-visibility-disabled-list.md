@@ -1,7 +1,8 @@
 ---
 id: UI-ooc0
 title: 모델 활성은 서버 전역 꺼 둔 모델 목록으로 선택지만 거른다
-status: accepted
+status: superseded
+superseded_by: UI-gpac-2
 date: 2026-09-29
 summary: "모델 활성은 서버 전역 꺼 둔 모델 목록이 선택지 표시에서만 빼는 것이며 카탈로그·저장 값·디스패치 검증·단가는 그대로 둔다; 저장된 값이 꺼 둔 모델이면 (비활성)으로 남기고 러너마다 하나 이상 켜 둔다"
 spec: docs/superpowers/specs/2026-09-29-enabled-models-selector-filter-design.md

@@ -1,0 +1,375 @@
+[
+  {
+    "name": "measured list (codex-cli 0.162.0, 2026-10-12)",
+    "models": [
+      {
+        "slug": "gpt-6.1-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-astra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-luna",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-reserve",
+        "visibility": "hide",
+        "multi_agent_version": "v1"
+      },
+      {
+        "slug": "gpt-5.6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.6-terra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.6-luna",
+        "visibility": "list",
+        "multi_agent_version": "v1"
+      },
+      {
+        "slug": "gpt-5.5",
+        "visibility": "hide",
+        "multi_agent_version": null
+      },
+      {
+        "slug": "codex-auto-review",
+        "visibility": "hide",
+        "multi_agent_version": "v1"
+      }
+    ],
+    "expect": {
+      "aliases": {
+        "astra": "gpt-6-astra",
+        "sol": "gpt-6.1-sol",
+        "terra": "gpt-5.6-terra",
+        "luna": "gpt-6-luna"
+      },
+      "pinned": {
+        "astra-6": "gpt-6-astra",
+        "luna-6": "gpt-6-luna",
+        "sol-5.6": "gpt-5.6-sol",
+        "sol-6": "gpt-6-sol",
+        "sol-6.1": "gpt-6.1-sol",
+        "terra-5.6": "gpt-5.6-terra"
+      },
+      "errors": {}
+    }
+  },
+  {
+    "name": "tie between 6 and 6.0",
+    "models": [
+      {
+        "slug": "gpt-6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6.0-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-astra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.6-terra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-luna",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      }
+    ],
+    "expect": {
+      "aliases": {
+        "astra": "gpt-6-astra",
+        "terra": "gpt-5.6-terra",
+        "luna": "gpt-6-luna"
+      },
+      "pinned": {
+        "astra-6": "gpt-6-astra",
+        "luna-6": "gpt-6-luna",
+        "sol-6": "gpt-6-sol",
+        "sol-6.0": "gpt-6.0-sol",
+        "terra-5.6": "gpt-5.6-terra"
+      },
+      "errors": {
+        "sol": "codex_models_ambiguous:sol"
+      }
+    }
+  },
+  {
+    "name": "duplicated slug",
+    "models": [
+      {
+        "slug": "gpt-6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-astra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.6-terra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-luna",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      }
+    ],
+    "expect": {
+      "aliases": {
+        "astra": "gpt-6-astra",
+        "terra": "gpt-5.6-terra",
+        "luna": "gpt-6-luna"
+      },
+      "pinned": {
+        "astra-6": "gpt-6-astra",
+        "luna-6": "gpt-6-luna",
+        "sol-5.6": "gpt-5.6-sol",
+        "terra-5.6": "gpt-5.6-terra"
+      },
+      "errors": {
+        "sol": "codex_models_ambiguous:gpt-6-sol",
+        "sol-6": "codex_models_ambiguous:gpt-6-sol"
+      }
+    }
+  },
+  {
+    "name": "duplicate of an ineligible entry",
+    "models": [
+      {
+        "slug": "gpt-6-astra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-astra",
+        "visibility": "hide",
+        "multi_agent_version": "v1"
+      },
+      {
+        "slug": "gpt-5.6-astra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.6-terra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-luna",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      }
+    ],
+    "expect": {
+      "aliases": {
+        "sol": "gpt-6-sol",
+        "terra": "gpt-5.6-terra",
+        "luna": "gpt-6-luna"
+      },
+      "pinned": {
+        "astra-5.6": "gpt-5.6-astra",
+        "luna-6": "gpt-6-luna",
+        "sol-6": "gpt-6-sol",
+        "terra-5.6": "gpt-5.6-terra"
+      },
+      "errors": {
+        "astra": "codex_models_ambiguous:gpt-6-astra",
+        "astra-6": "codex_models_ambiguous:gpt-6-astra"
+      }
+    }
+  },
+  {
+    "name": "v1 and hide excluded",
+    "models": [
+      {
+        "slug": "gpt-7-luna",
+        "visibility": "hide",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-luna",
+        "visibility": "list",
+        "multi_agent_version": "v1"
+      },
+      {
+        "slug": "gpt-5.6-luna",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6.5-sol",
+        "visibility": null,
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-astra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.6-terra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      }
+    ],
+    "expect": {
+      "aliases": {
+        "astra": "gpt-6-astra",
+        "sol": "gpt-6-sol",
+        "terra": "gpt-5.6-terra",
+        "luna": "gpt-5.6-luna"
+      },
+      "pinned": {
+        "astra-6": "gpt-6-astra",
+        "luna-5.6": "gpt-5.6-luna",
+        "sol-6": "gpt-6-sol",
+        "terra-5.6": "gpt-5.6-terra"
+      },
+      "errors": {}
+    }
+  },
+  {
+    "name": "numeric version order",
+    "models": [
+      {
+        "slug": "gpt-5.10-terra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.9-terra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6.0-astra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.99-astra",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-luna",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      }
+    ],
+    "expect": {
+      "aliases": {
+        "astra": "gpt-6.0-astra",
+        "sol": "gpt-6-sol",
+        "terra": "gpt-5.10-terra",
+        "luna": "gpt-6-luna"
+      },
+      "pinned": {
+        "astra-5.99": "gpt-5.99-astra",
+        "astra-6.0": "gpt-6.0-astra",
+        "luna-6": "gpt-6-luna",
+        "sol-6": "gpt-6-sol",
+        "terra-5.10": "gpt-5.10-terra",
+        "terra-5.9": "gpt-5.9-terra"
+      },
+      "errors": {}
+    }
+  },
+  {
+    "name": "missing family and foreign slugs",
+    "models": [
+      {
+        "slug": "gpt-6-sol",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-6-nova",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "slug": "gpt-5.5",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      },
+      {
+        "visibility": "list"
+      },
+      "junk",
+      {
+        "slug": "gpt-6-luna",
+        "visibility": "list",
+        "multi_agent_version": "v2"
+      }
+    ],
+    "expect": {
+      "aliases": {
+        "sol": "gpt-6-sol",
+        "luna": "gpt-6-luna"
+      },
+      "pinned": {
+        "luna-6": "gpt-6-luna",
+        "sol-6": "gpt-6-sol"
+      },
+      "errors": {
+        "astra": "codex_family_unavailable:astra",
+        "terra": "codex_family_unavailable:terra"
+      }
+    }
+  }
+]

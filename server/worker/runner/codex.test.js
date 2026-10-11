@@ -55,7 +55,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
       'exec',
       '--json',
       '-m',
-      'gpt-6-sol'
+      'gpt-6.1-sol'
     ]);
   });
 
@@ -117,7 +117,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
       'thread-1',
       '--json',
       '-m',
-      'gpt-6-sol'
+      'gpt-6.1-sol'
     ]);
     expect(
       built.args.filter((arg) => arg === 'service_tier="fast"')
@@ -139,7 +139,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
       'thread-1',
       '--json',
       '-m',
-      'gpt-6-sol'
+      'gpt-6.1-sol'
     ]);
   });
 

@@ -7,6 +7,7 @@ import {
   loadExecutionDefaults,
   projectExecutionDefaults
 } from './execution-defaults.js';
+import { resolveCatalog } from './runner-catalog.js';
 
 const ARTIFACT = {
   schema_version: 1,
@@ -154,6 +155,28 @@ describe('projectExecutionDefaults', () => {
     });
     expect(projection.session?.implementation.default.model_id).toBe(
       'gpt-5.6-sol'
+    );
+  });
+
+  test('resolves the default model id through the runtime catalog for the resolver pin', () => {
+    const artifact = {
+      ...ARTIFACT,
+      implementation: {
+        ...ARTIFACT.implementation,
+        model_catalog: {
+          claude: ['opus'],
+          codex: { families: ['sol'], resolve: 'codex_cli_latest_v2' }
+        }
+      }
+    };
+
+    const projection = projectExecutionDefaults(
+      resolveCatalog({ warn: () => {} }),
+      { fs: fixtureFs(artifact) }
+    );
+
+    expect(projection.session?.implementation.default.model_id).toBe(
+      'gpt-6.1-sol'
     );
   });
 });

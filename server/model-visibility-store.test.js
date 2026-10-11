@@ -122,3 +122,166 @@ describe('model visibility store', () => {
     expect(snapshot).toEqual({ revision: 4, disabled_models: ['terra'] });
   });
 });
+
+describe('model visibility store codex pinned names (UI-gpac §3.6)', () => {
+  const LISTED = {
+    aliases: {
+      astra: 'gpt-6-astra',
+      sol: 'gpt-6.1-sol',
+      terra: 'gpt-5.6-terra',
+      luna: 'gpt-6-luna'
+    },
+    pinned: {
+      'astra-6': 'gpt-6-astra',
+      'luna-6': 'gpt-6-luna',
+      'sol-5.6': 'gpt-5.6-sol',
+      'sol-6': 'gpt-6-sol',
+      'sol-6.1': 'gpt-6.1-sol',
+      'terra-5.6': 'gpt-5.6-terra'
+    }
+  };
+  const LISTED_CATALOG = resolveCatalog({
+    codex_names: LISTED,
+    warn: () => {}
+  });
+  const PINNED = Object.keys(LISTED.pinned);
+  /** Names of the catalog before the CLI list: the seed table. */
+  const LEGACY = Object.keys(CATALOG.model_index);
+
+  test('hides every listed pinned name when no state file exists', () => {
+    const store = makeStore();
+
+    store.observeCodexPinnedNames(PINNED, LEGACY);
+
+    expect(store.snapshot(LISTED_CATALOG).disabled_models.sort()).toEqual(
+      [
+        'opus-4.8',
+        'opus-4.6',
+        'terra',
+        'astra-6',
+        'luna-6',
+        'sol-5.6',
+        'sol-6',
+        'sol-6.1',
+        'terra-5.6'
+      ].sort()
+    );
+  });
+
+  test('keeps a pinned name the user enabled across list refreshes', () => {
+    const store = makeStore();
+    store.observeCodexPinnedNames(PINNED, LEGACY);
+    const current = store.snapshot(LISTED_CATALOG);
+    store.set(
+      {
+        expected_revision: current.revision,
+        disabled_models: current.disabled_models.filter(
+          (name) => name !== 'sol-6.1'
+        )
+      },
+      LISTED_CATALOG
+    );
+
+    store.observeCodexPinnedNames([...PINNED, 'sol-6.2'], LEGACY);
+
+    const disabled = store.snapshot(
+      resolveCatalog({
+        codex_names: {
+          aliases: LISTED.aliases,
+          pinned: { ...LISTED.pinned, 'sol-6.2': 'gpt-6.2-sol' }
+        },
+        warn: () => {}
+      })
+    ).disabled_models;
+    expect(disabled).not.toContain('sol-6.1');
+    expect(disabled).toContain('sol-6.2');
+  });
+
+  test('migrates an older state file so already-enabled names stay enabled', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ revision: 3, disabled_models: ['terra'] })
+    );
+    const store = makeStore();
+
+    store.observeCodexPinnedNames(PINNED, LEGACY);
+
+    expect(store.snapshot(LISTED_CATALOG)).toEqual({
+      revision: 4,
+      disabled_models: [
+        'terra',
+        'astra-6',
+        'luna-6',
+        'sol-6',
+        'sol-6.1',
+        'terra-5.6'
+      ]
+    });
+  });
+
+  test('changes nothing when the list shows no new pinned name', () => {
+    const store = makeStore();
+    store.observeCodexPinnedNames(PINNED, LEGACY);
+
+    const changed = store.observeCodexPinnedNames(PINNED, LEGACY);
+
+    expect(changed).toBe(false);
+  });
+
+  test('keeps the seen names through a write', () => {
+    const store = makeStore();
+    store.observeCodexPinnedNames(PINNED, LEGACY);
+    const current = store.snapshot(LISTED_CATALOG);
+
+    store.set(
+      {
+        expected_revision: current.revision,
+        disabled_models: current.disabled_models
+      },
+      LISTED_CATALOG
+    );
+
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(saved.seen_models).toEqual(expect.arrayContaining(PINNED));
+  });
+
+  test('keeps a name the user enabled before the first list arrived', () => {
+    const store = makeStore();
+    const current = store.snapshot(CATALOG);
+    store.set(
+      {
+        expected_revision: current.revision,
+        disabled_models: current.disabled_models.filter(
+          (name) => name !== 'sol-5.6'
+        )
+      },
+      CATALOG
+    );
+
+    store.observeCodexPinnedNames(PINNED, LEGACY);
+
+    expect(store.snapshot(LISTED_CATALOG).disabled_models).not.toContain(
+      'sol-5.6'
+    );
+  });
+
+  test('keeps a hidden name the catalog briefly lacks through a write', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        revision: 1,
+        disabled_models: ['terra', 'sol-6.1'],
+        seen_models: PINNED
+      })
+    );
+    const store = makeStore();
+
+    store.set({ expected_revision: 1, disabled_models: ['opus-4.8'] }, CATALOG);
+
+    expect(store.snapshot(CATALOG).disabled_models).toEqual(['opus-4.8']);
+    expect(store.snapshot(LISTED_CATALOG).disabled_models).toEqual([
+      'opus-4.8',
+      'sol-6.1'
+    ]);
+  });
+});

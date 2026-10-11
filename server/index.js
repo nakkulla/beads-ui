@@ -10,6 +10,8 @@ import { publishRuntimeIdentity } from './runtime-startup.js';
 import { onTimingSettingsChanged, timingSeconds } from './timing-settings.js';
 import { watchDb } from './watcher.js';
 import { initWorkerRuntime } from './worker/attach.js';
+import { codexModelList } from './worker/codex-model-list.js';
+import { resolveCatalog } from './worker/runner-catalog.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 import {
   discoverWorkspaces,
@@ -17,10 +19,16 @@ import {
 } from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
 import { broadcastImplPresets } from './ws/exec-preset-handlers.js';
+import { observeCodexModelList } from './ws/model-visibility-handlers.js';
 import {
+  notifyMonitorCatalogChanged,
   notifyMonitorRegistryChanged,
   pollDemandFor
 } from './ws/monitor-handlers.js';
+import {
+  fanout as fanoutWorkerQueue,
+  workerQueueSubscribedWorkspaces
+} from './ws/worker-handlers.js';
 
 if (process.argv.includes('--debug') || process.argv.includes('-d')) {
   enableAllDebug();
@@ -88,6 +96,45 @@ if (
     });
   }
 }
+
+// Codex model names come from the Codex CLI list (UI-gpac §3.1). The last good
+// list is adopted synchronously here, before anything resolves the runtime
+// catalog, so a restart does not flap seed -> list; the CLI is then read
+// asynchronously now and hourly.
+const codex_model_list = codexModelList();
+codex_model_list.loadPersisted();
+// The names the catalog had before the CLI list (seed + config.toml), which an
+// older model-visibility file without `seen_models` has already seen (§3.6).
+const legacy_model_names = Object.keys(
+  resolveCatalog({ overrides: config.runner_overrides, warn: () => {} })
+    .model_index
+);
+observeCodexModelList({
+  pinned_names: codex_model_list.listedPinnedNames(),
+  legacy_names: legacy_model_names
+});
+codex_model_list.onChange(() => {
+  observeCodexModelList({
+    pinned_names: codex_model_list.listedPinnedNames(),
+    legacy_names: legacy_model_names
+  });
+  notifyMonitorCatalogChanged();
+  for (const workspace of workerQueueSubscribedWorkspaces()) {
+    try {
+      fanoutWorkerQueue(
+        workspace,
+        getWorkerRuntime().queueStore.snapshot(workspace)
+      );
+    } catch (err) {
+      log(
+        'codex model list: worker queue push failed for %s: %o',
+        workspace,
+        err
+      );
+    }
+  }
+});
+codex_model_list.start();
 
 const watch_root = startup_workspace_root || config.root_dir;
 const db_watcher = watchDb(watch_root, () => {

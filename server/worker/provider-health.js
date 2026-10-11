@@ -287,7 +287,9 @@ export function createProviderHealth(deps) {
     deps.spawnImpl ||
     ((command, args, options) => spawn(command, args, options));
   const resolveCswapPath = deps.resolveCswapPath || defaultResolveCswapPath;
-  const catalog = deps.catalog || runtimeCatalog();
+  // Read per use: the runtime catalog is swapped when the Codex model list
+  // changes (UI-gpac §3.3), so a captured copy would probe stale model ids.
+  const catalogNow = () => deps.catalog || runtimeCatalog();
   const setTimeoutImpl = deps.setTimeoutImpl || setTimeout;
   const clearTimeoutImpl = deps.clearTimeoutImpl || clearTimeout;
   const holds = deps.holds || deps.store.providerHolds;
@@ -488,7 +490,7 @@ export function createProviderHealth(deps) {
    * @returns {Promise<{ command: string, args: string[], env: Record<string, string> }|null>}
    */
   async function probeArgv(runner, target) {
-    const entry = catalog.runners[runner];
+    const entry = catalogNow().runners[runner];
     const model = entry?.models?.[target.model];
     if (!entry || !model || typeof model.id !== 'string') {
       return null;
@@ -591,7 +593,9 @@ export function createProviderHealth(deps) {
       setTimeoutImpl,
       clearTimeoutImpl
     ).finally(release);
-    const classifier = adapterSpec(runner, { catalog }).classifyProviderOutage;
+    const classifier = adapterSpec(runner, {
+      catalog: catalogNow()
+    }).classifyProviderOutage;
     if (runner === 'codex') {
       const decoded = decodeCodexProbe(result.stdout);
       if (decoded.completed && !decoded.failed && !decoded.malformed) {

@@ -3950,6 +3950,69 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
       expect(attempt.exec_preset).toBeNull();
     }
   );
+  test('keeps a stored Codex pinned model the catalog no longer lists', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        orchestration_model: 'sol-6',
+        quick_fix_orchestration_model: 'luna-6'
+      })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.orchestration_model).toBe('sol-6');
+    expect(q.quick_fix_orchestration_model).toBe('luna-6');
+  });
+
+  test('accepts a write restating the stored unlisted Codex pinned model', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ orchestration_model: 'sol-6' })
+    );
+    const store = createQueueStore();
+
+    const result = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sol-6', orchestration_effort: 'high' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(createQueueStore().snapshot(WS)).toMatchObject({
+      orchestration_model: 'sol-6',
+      orchestration_effort: 'high'
+    });
+  });
+
+  test('rejects a write naming a new unlisted Codex pinned model', () => {
+    const store = createQueueStore();
+
+    const result = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sol-6' }
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  test('drops a stored unknown model outside the Codex pinned grammar', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        orchestration_model: 'gone-model',
+        quick_fix_orchestration_model: 'opus-4.5'
+      })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.orchestration_model).toBe(null);
+    expect(q.quick_fix_orchestration_model).toBe(null);
+  });
+
   test('starts a fresh queue with no orchestration default and no legacy preset fields', () => {
     const store = createQueueStore();
 

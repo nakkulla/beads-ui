@@ -102,6 +102,25 @@ function fanout(snapshot) {
 }
 
 /**
+ * Catalog-change hook (UI-gpac §3.6): hide the Codex pinned names that the
+ * list shows for the first time, then push the snapshot — the catalog's model
+ * set changed either way. `pinned_names` is null while no CLI list was read.
+ *
+ * @param {{ pinned_names: ReadonlyArray<string>|null, legacy_names: ReadonlyArray<string> }} input
+ */
+export function observeCodexModelList(input) {
+  const catalog = runtimeCatalog();
+  if (input.pinned_names) {
+    try {
+      store().observeCodexPinnedNames(input.pinned_names, input.legacy_names);
+    } catch (err) {
+      log('model-visibility observe failed: %o', err);
+    }
+  }
+  fanout(wireSnapshot(store().snapshot(catalog), catalog));
+}
+
+/**
  * Detach a connection from the subscriber registry (close hook).
  *
  * @param {WebSocket} ws

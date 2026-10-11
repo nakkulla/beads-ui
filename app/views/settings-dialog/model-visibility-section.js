@@ -13,6 +13,7 @@
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { errorText } from '../../utils/error-text.js';
+import { formatTimestampLocal } from '../../utils/relative-time.js';
 
 /** The info line under the group title. */
 export const MODEL_VISIBILITY_INTRO =
@@ -57,6 +58,25 @@ const RUNNER_LABELS = /** @type {Record<string, string>} */ ({
 });
 
 /**
+ * The small note under the Codex group saying which Codex model list the names
+ * came from (UI-gpac §3.7). Empty when the catalog carries no list status (an
+ * older server, or no catalog at all).
+ *
+ * @param {Record<string, any>|null|undefined} runner_catalog
+ * @returns {string}
+ */
+export function codexModelListNote(runner_catalog) {
+  const status = runner_catalog?.codex_list;
+  if (!status || typeof status !== 'object') {
+    return '';
+  }
+  if (status.source === 'list' && typeof status.read_at === 'number') {
+    return `모델 목록: ${formatTimestampLocal(status.read_at)} 기준`;
+  }
+  return '모델 목록을 읽지 못해 기본 표를 씁니다';
+}
+
+/**
  * The disabled list after flipping one model's enabled state.
  *
  * @param {ReadonlyArray<string>} disabled_models
@@ -75,7 +95,8 @@ function toggledList(disabled_models, model, enabled) {
  * @param {HTMLElement} host
  * @param {{
  *   transport: (type: any, payload?: unknown) => Promise<any>,
- *   modelVisibilityStore?: { get: () => ModelVisibilityState|null, set?: (state: ModelVisibilityState|null) => void, subscribe?: (fn: () => void) => () => void }
+ *   modelVisibilityStore?: { get: () => ModelVisibilityState|null, set?: (state: ModelVisibilityState|null) => void, subscribe?: (fn: () => void) => () => void },
+ *   runnerCatalog?: () => Record<string, any>|null
  * }} options
  * @returns {{ render: () => void, destroy: () => void }}
  */
@@ -177,6 +198,10 @@ export function createModelVisibilitySection(host, options) {
     const enabled_count = models.filter(
       (model) => !disabled_models.includes(model.name)
     ).length;
+    const list_note =
+      runner === 'codex'
+        ? codexModelListNote(options.runnerCatalog?.() ?? null)
+        : '';
     return html`<div
       class="settings-dialog__model-runner"
       data-runner=${runner}
@@ -208,6 +233,11 @@ export function createModelVisibilitySection(host, options) {
           </label>`;
         })}
       </div>
+      ${list_note
+        ? html`<p class="settings-dialog__hint" data-codex-model-list>
+            ${list_note}
+          </p>`
+        : ''}
     </div>`;
   }
 

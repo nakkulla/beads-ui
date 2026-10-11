@@ -25,6 +25,7 @@
  * @import { ResolvedCatalog, RunnerCatalogEntry } from '../runner-catalog.js'
  */
 import { getConfig } from '../../config.js';
+import { codexModelList } from '../codex-model-list.js';
 import { ACTIVE_RUNNERS, resolveCatalog } from '../runner-catalog.js';
 import { claudeSpec, spawnClaude } from './claude.js';
 import { codexSpec, spawnCodex } from './codex.js';
@@ -34,23 +35,32 @@ export const RUNNERS = ACTIVE_RUNNERS;
 
 /** @type {ResolvedCatalog|null} */
 let cached_catalog = null;
+/** The Codex name-table revision {@link cached_catalog} was built from. */
+let cached_codex_revision = -1;
 
 /**
- * The process-wide resolved catalog (builtin defaults + `[runner]` overrides).
+ * The process-wide resolved catalog (builtin defaults + Codex CLI list names +
+ * `[runner]` overrides).
  *
  * Exported since UI-jrb3: the exec-setting enums and the WS snapshot decoration
  * need the SAME resolution the dispatch path uses, and a second `resolveCatalog`
  * call would both repeat its warnings and let a mid-flight config edit hand the
- * UI a vocabulary the launcher does not share.
+ * UI a vocabulary the launcher does not share. The cache is swapped when the
+ * Codex model list changes (UI-gpac §3.3), and `codex_list` carries where the
+ * Codex names came from.
  *
  * @returns {ResolvedCatalog}
  */
 export function runtimeCatalog() {
-  if (!cached_catalog) {
+  const list = codexModelList();
+  if (!cached_catalog || cached_codex_revision !== list.revision()) {
+    cached_codex_revision = list.revision();
     cached_catalog = resolveCatalog({
-      overrides: getConfig().runner_overrides
+      overrides: getConfig().runner_overrides,
+      codex_names: list.names()
     });
   }
+  cached_catalog.codex_list = list.status();
   return cached_catalog;
 }
 
@@ -62,6 +72,7 @@ export function runtimeCatalog() {
  */
 export function __resetRuntimeCatalogForTest() {
   cached_catalog = null;
+  cached_codex_revision = -1;
 }
 
 /**

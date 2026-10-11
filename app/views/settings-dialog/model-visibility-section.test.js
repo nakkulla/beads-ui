@@ -123,3 +123,64 @@ describe('model visibility section (UI-ooc0 §5)', () => {
     expect(error).toContain(code);
   });
 });
+
+describe('model visibility section codex list note (UI-gpac §3.7)', () => {
+  /**
+   * @param {Record<string, any>|null} runner_catalog
+   */
+  function mountWithCatalog(runner_catalog) {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const state = {
+      ...structuredClone(SNAPSHOT),
+      runners: {
+        ...SNAPSHOT.runners,
+        codex: [{ name: 'sol', id: 'gpt-6.1-sol' }]
+      }
+    };
+    const section = createModelVisibilitySection(host, {
+      transport: vi.fn(async () => ({})),
+      modelVisibilityStore: { get: () => state },
+      runnerCatalog: () => runner_catalog
+    });
+    section.render();
+    return host;
+  }
+
+  test('names the read time of the codex model list', () => {
+    const read_at = new Date(2026, 9, 12, 9, 30).getTime();
+
+    const host = mountWithCatalog({
+      codex_list: { source: 'list', read_at, codex_version: 'x', families: [] }
+    });
+
+    const note = host.querySelector(
+      '[data-runner="codex"] [data-codex-model-list]'
+    );
+    expect(note?.textContent?.trim()).toBe('모델 목록: 2026-10-12 09:30 기준');
+  });
+
+  test('says the seed table is in use when no list was ever read', () => {
+    const host = mountWithCatalog({
+      codex_list: {
+        source: 'seed',
+        read_at: null,
+        codex_version: null,
+        families: []
+      }
+    });
+
+    const note = host.querySelector('[data-codex-model-list]');
+    expect(note?.textContent?.trim()).toBe(
+      '모델 목록을 읽지 못해 기본 표를 씁니다'
+    );
+  });
+
+  test('omits the note when the catalog carries no list status', () => {
+    const host = mountWithCatalog(null);
+
+    const note = host.querySelector('[data-codex-model-list]');
+
+    expect(note).toBeNull();
+  });
+});

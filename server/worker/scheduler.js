@@ -5334,7 +5334,8 @@ export function createScheduler(deps) {
         {
           homeDir: deps.homeDir || os.homedir(),
           resolveDotfilesRoot: deps.resolveDotfilesRoot,
-          loadDefaults: loadExecutionDefaults
+          loadDefaults: loadExecutionDefaults,
+          loadCatalog: runtimeCatalog
         }
       );
     } catch (err) {

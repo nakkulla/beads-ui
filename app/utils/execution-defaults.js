@@ -1,3 +1,5 @@
+import { isCodexPinnedName } from '../../server/worker/runner-catalog.js';
+
 /**
  * @typedef {'pin'|'global'|'base'} ExecutionSource
  * @typedef {'explicit'|'default'|'dynamic'|'not_applicable'|'unavailable'|'incompatible'} ExecutionResolution
@@ -95,6 +97,7 @@ const REVIEW_SPEED_PAIRS = {
 };
 
 const KNOWN_TRANSPORT_EFFORTS = new Set([
+  'agent-type',
   'native-fixed-posture',
   'unsupported',
   'claude-runner-model-default',
@@ -167,6 +170,20 @@ function layeredValue(key, pin, global_values, base) {
 }
 
 /**
+ * A pinned runtime catalog's alias -> id map, or null when the pin carries none.
+ * The resolver shape (`{ families, resolve }`) names families, not ids: those
+ * resolve through the runtime catalog instead.
+ *
+ * @param {unknown} runtime_models
+ * @returns {Record<string, any>|null}
+ */
+function pinnedIdMap(runtime_models) {
+  return isRecord(runtime_models) && !Array.isArray(runtime_models.families)
+    ? runtime_models
+    : null;
+}
+
+/**
  * @param {string} token
  * @param {string|null} runtime
  * @param {Record<string, any>|null} session
@@ -174,8 +191,9 @@ function layeredValue(key, pin, global_values, base) {
  */
 export function catalogModelId(token, runtime, session, runner_catalog) {
   const models = session?.implementation?.model_catalog;
-  if (runtime && isRecord(models?.[runtime])) {
-    const mapped = usableString(models[runtime][token]);
+  const runtime_map = runtime ? pinnedIdMap(models?.[runtime]) : null;
+  if (runtime_map) {
+    const mapped = usableString(runtime_map[token]);
     if (mapped !== null) {
       return mapped;
     }
@@ -189,8 +207,9 @@ export function catalogModelId(token, runtime, session, runner_catalog) {
   }
   if (!runtime && isRecord(models)) {
     for (const runtime_models of Object.values(models)) {
-      if (isRecord(runtime_models)) {
-        const mapped = usableString(runtime_models[token]);
+      const id_map = pinnedIdMap(runtime_models);
+      if (id_map) {
+        const mapped = usableString(id_map[token]);
         if (mapped !== null) {
           return mapped;
         }
@@ -254,10 +273,11 @@ function explicitResult(value, source, model = false) {
  */
 function runtimeModelTokens(runtime, session, runner_catalog) {
   const projected = session?.implementation?.model_catalog?.[runtime];
+  const projected_map = pinnedIdMap(projected);
   /** @type {string[]} */
   const tokens = [];
-  if (isRecord(projected)) {
-    tokens.push(...Object.keys(projected));
+  if (projected_map) {
+    tokens.push(...Object.keys(projected_map));
   } else if (Array.isArray(projected)) {
     tokens.push(...projected.filter((token) => typeof token === 'string'));
   }
@@ -1066,6 +1086,37 @@ export function unsetOptionLabel(unset, with_source) {
   return `기본값 사용 — ${body} (${layer})`;
 }
 
+/** Keys whose unlisted Codex pinned value the queue keeps verbatim. */
+const ORCHESTRATION_MODEL_KEYS = [
+  'orchestration_model',
+  'quick_fix_orchestration_model'
+];
+
+/**
+ * Whether a stored orchestration model is a Codex pinned name the current
+ * catalog no longer lists. The queue keeps such a value verbatim and dispatch
+ * runs the default instead (UI-gpac §3.3); a null catalog decides nothing.
+ *
+ * @param {string} key
+ * @param {string} value
+ * @param {Record<string, any>|null|undefined} runner_catalog
+ * @returns {boolean}
+ */
+function isUnlistedCodexModel(key, value, runner_catalog) {
+  if (
+    !ORCHESTRATION_MODEL_KEYS.includes(key) ||
+    !isRecord(runner_catalog) ||
+    !isRecord(runner_catalog.model_index) ||
+    Object.hasOwn(runner_catalog.model_index, value)
+  ) {
+    return false;
+  }
+  const families = runner_catalog.codex_list?.families;
+  return Array.isArray(families)
+    ? isCodexPinnedName(value, families)
+    : isCodexPinnedName(value);
+}
+
 /**
  * Option labels for one select, without touching its stored contract tokens.
  *
@@ -1161,6 +1212,12 @@ export function buildOptionView(input) {
         row.resolution !== 'incompatible'
       ) {
         option_label = `${option_label} (비활성)`;
+      }
+      if (
+        choice === stored &&
+        isUnlistedCodexModel(input.key, choice, input.runner_catalog)
+      ) {
+        option_label = `${choice} (목록에 없음 — 기본값으로 실행)`;
       }
       return { value: choice, label: option_label, full_value: row.full_value };
     })

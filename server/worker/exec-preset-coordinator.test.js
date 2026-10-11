@@ -752,6 +752,85 @@ describe('exec-preset-coordinator resolveForDispatch', () => {
     expect(resolved.exec.orchestration_model).toBe('sol');
   });
 
+  test('dispatches the default for a stored Codex pinned model the catalog dropped', () => {
+    const fixture = createFixture({
+      queue: { revision: 1, orchestration_model: 'sol-6' }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {})
+    );
+
+    expect(fixture.queueStore.snapshot(WORKSPACE).orchestration_model).toBe(
+      'sol-6'
+    );
+    expect(resolved.settings).toEqual({});
+    expect(resolved.exec.orchestration_model).toBe('opus');
+    expect(resolved.exec.invalid_reason).toBeUndefined();
+  });
+
+  test('falls back to the general model when the quick_fix model is unlisted', () => {
+    const fixture = createFixture({
+      queue: {
+        revision: 1,
+        orchestration_model: 'sonnet',
+        quick_fix_orchestration_model: 'sol-6'
+      }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, { route: 'quick_fix' })
+    );
+
+    expect(resolved.exec.orchestration_model).toBe('sonnet');
+  });
+
+  test('drops the effort and speed stored with a dropped Codex pinned model', () => {
+    const fixture = createFixture({
+      queue: {
+        revision: 1,
+        orchestration_model: 'sol-6',
+        orchestration_effort: 'max',
+        orchestration_speed: 'fast'
+      }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {})
+    );
+
+    expect(fixture.queueStore.snapshot(WORKSPACE)).toMatchObject({
+      orchestration_effort: 'max',
+      orchestration_speed: 'fast'
+    });
+    expect(resolved.settings).toEqual({});
+    expect(resolved.exec.orchestration_model).toBe('opus');
+    expect(resolved.exec.invalid_reason).toBeUndefined();
+  });
+
+  test('uses the general effort and speed when the quick_fix pinned model is dropped', () => {
+    const fixture = createFixture({
+      queue: {
+        revision: 1,
+        orchestration_model: 'sonnet',
+        orchestration_effort: 'high',
+        quick_fix_orchestration_model: 'sol-6',
+        quick_fix_orchestration_effort: 'max',
+        quick_fix_orchestration_speed: 'fast'
+      }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, { route: 'quick_fix' })
+    );
+
+    expect(resolved.settings).toEqual({
+      orchestration_model: 'sonnet',
+      orchestration_effort: 'high'
+    });
+    expect(resolved.exec.invalid_reason).toBeUndefined();
+  });
+
   test('falls through to general orchestration values for an empty quick_fix profile', () => {
     const fixture = createFixture();
     fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {

@@ -11,9 +11,9 @@
  * attempts too. There is no builtin default price — a unit price is an external
  * fact that goes stale, so an unknown model is `none` rather than a guess.
  *
- * @import { ResolvedCatalog, ModelPrice } from './runner-catalog.js'
+ * @import { ResolvedCatalog, ModelPrice, RunnerCatalogEntry } from './runner-catalog.js'
  */
-import { modelRunner } from './runner-catalog.js';
+import { codexPinnedNameForId, modelRunner } from './runner-catalog.js';
 
 /**
  * @typedef {'reported'|'computed'|'estimated'|'none'} PriceBasis
@@ -62,9 +62,58 @@ function isFiniteNumber(value) {
 }
 
 /**
- * The `price` table of `model`, matched by catalog name first and by CLI `id`
- * second. An attempt records whichever string its dispatcher used, so both
- * spellings have to resolve to the same table.
+ * The priced catalog entry named `name`, or null.
+ *
+ * @param {ReadonlyArray<RunnerCatalogEntry>} entries
+ * @param {string|null} name
+ * @returns {ModelPrice|null}
+ */
+function pricedByName(entries, name) {
+  if (name === null) {
+    return null;
+  }
+  for (const entry of entries) {
+    const candidate = Object.hasOwn(entry.models, name)
+      ? entry.models[name]
+      : null;
+    if (isPlainObject(candidate) && isPlainObject(candidate.price)) {
+      return /** @type {ModelPrice} */ (candidate.price);
+    }
+  }
+  return null;
+}
+
+/**
+ * The first priced catalog entry whose CLI `id` is `id`, or null.
+ *
+ * @param {ReadonlyArray<RunnerCatalogEntry>} entries
+ * @param {string} id
+ * @returns {ModelPrice|null}
+ */
+function pricedById(entries, id) {
+  for (const entry of entries) {
+    for (const candidate of Object.values(entry.models)) {
+      if (
+        isPlainObject(candidate) &&
+        candidate.id === id &&
+        isPlainObject(candidate.price)
+      ) {
+        return /** @type {ModelPrice} */ (candidate.price);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The `price` table of `model`, a catalog name or a CLI `id` — an attempt
+ * records whichever string its dispatcher used (UI-gpac §3.5):
+ *
+ * 1. the price written on that name;
+ * 2. for a Codex alias, the price of the pinned name it resolves to
+ *    (`sol` -> `gpt-6.1-sol` -> `sol-6.1`);
+ * 3. among entries with the same `id`, one that has a price — so an id lookup
+ *    no longer stops at a price-less alias that happens to come first.
  *
  * @param {ResolvedCatalog|null|undefined} catalog
  * @param {unknown} model
@@ -82,24 +131,24 @@ export function modelPrice(catalog, model) {
   const entries = Object.values(catalog.runners).filter((entry) =>
     isPlainObject(entry?.models)
   );
+  const own = pricedByName(entries, model);
+  if (own) {
+    return own;
+  }
+  /** @type {string} */
+  let id = model;
   for (const entry of entries) {
-    const by_name = entry.models[model];
-    if (isPlainObject(by_name)) {
-      return isPlainObject(by_name.price)
-        ? /** @type {ModelPrice} */ (by_name.price)
-        : null;
+    const by_name = Object.hasOwn(entry.models, model)
+      ? entry.models[model]
+      : null;
+    if (isPlainObject(by_name) && typeof by_name.id === 'string') {
+      id = by_name.id;
+      break;
     }
   }
-  for (const entry of entries) {
-    for (const candidate of Object.values(entry.models)) {
-      if (isPlainObject(candidate) && candidate.id === model) {
-        return isPlainObject(candidate.price)
-          ? /** @type {ModelPrice} */ (candidate.price)
-          : null;
-      }
-    }
-  }
-  return null;
+  return (
+    pricedByName(entries, codexPinnedNameForId(id)) ?? pricedById(entries, id)
+  );
 }
 
 /**
