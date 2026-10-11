@@ -66,7 +66,7 @@ base `d14c7927af82881ab6db3a4ae7a35cb446cfb8b6` 기준.
   보존한다 — dotfiles docs/contracts/external-wait.md:133-142; dotfiles src/shell/bin/sjob:1219-1225, :1259-1314
 - 관측은 `no_takeover`이면서 Slurm 잡이 held·cancelled인 상태도 미해결로 둔다 — dotfiles docs/contracts/external-wait.md:123-124
 - 대화형 세션 레코드는 `<bead_id>:<kind>` 키이고 종류는 `inquiry`·`resolve`·
-  `external_resume`이며, 종류마다 pane 마커가 다르다 — app/protocol.md:458; server/worker/tmux-launcher.js:44, :52, :60
+  `external_resume`이며, 종류마다 pane 마커가 다르다 — app/protocol.md:469; server/worker/tmux-launcher.js:44, :52, :60
 - `launchForClick`의 창 포커스는 문의(`inquiry`) 마커만 찾는다. `external_resume`은
   기동 뒤 대기 행이 `completing`을 벗어난다 — server/worker/direction-inquiry.js:790; server/worker/external-wait/session-resume.js:326
 - ADR UI-jbl1은 "살아 있는 대화형 세션이 종류와 상관없이 하나라도 있으면
@@ -299,8 +299,8 @@ base `d14c7927af82881ab6db3a4ae7a35cb446cfb8b6` 기준.
   "선행이 `blocked`·`deferred`·worker-ineligible이면 `action_required`"(L427-428)를
   "선행 대기는 늘 normal"로 바꾼다. (b) "살아 있는 대화형 세션이 종류와 상관없이 하나라도
   있으면 서지 않는다"(L91)에 "Discord 링크가 없으면 서고 클릭은 그 창 포커스"를
-  예외로 더한다. 나머지 조항은 모두 승계한다. UI-c74x가 먼저 착지해 UI-jbl1의 후계
-  ADR이 생기면 supersede 대상을 그 후계 id로 바꾸고 그 summary 조항을 승계한다(인용
+  예외로 더한다. 나머지 조항은 모두 승계한다. UI-c74x나 UI-k467이 먼저 착지해 UI-jbl1의
+  후계 ADR이 생기면 supersede 대상을 그 후계 id로 바꾸고 그 summary 조항을 승계한다(인용
   갱신은 correction). `summary`: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다; 조치 필요는 beads-ui 버튼으로 해결할 수 있는 대기 사유에만 서고 버튼 이름을 담은 해결 문장을 함께 실으며 선행 대기는 늘 normal이고 대기 사유 판정은 Discord로 알리지 않는다; 살아 있는 대화가 있는 행은 Discord 링크가 없을 때만 [세션에서 이어가기]를 그리고 그 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다" → ADR, supersede UI-jbl1
 - `takeover_unresolved`를 해결 세션으로 연다 — 실행 수단 선택이고 같은 저장소 안에서
   되돌릴 수 있다(조건 1 실패) → ADR 아님
