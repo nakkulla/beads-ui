@@ -7999,6 +7999,9 @@ export function createQueueStore(options = {}) {
         }
         operation.state = 'failed';
         operation.failure = { ...retry.first_failure };
+        // The copy stands in for a retry whose own output was never settled, so
+        // it is not confirmed evidence of that retry (UI-ff7r §3.2).
+        delete operation.failure.evidence_confirmed;
         operation.finished_at = now();
         operation.process_identity = null;
         if (input.conversation_target === true) {
