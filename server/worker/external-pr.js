@@ -246,7 +246,8 @@ export function createExternalPrStore(options = {}) {
 
     /**
      * Replace a workspace's foreign target judgments from one whole scan —
-     * every `resolved` Bead with a `pr_url`, Worker-owned ones included.
+     * every `resolved` or `deferred` Bead with a `pr_url`, Worker-owned ones
+     * included (a deferred PR stays observed, UI-0d9i §3.4).
      *
      * @param {string} workspace
      * @param {{ bead_id: string, pr_url: string, metadata?: Record<string, unknown>|null }[]} scan_rows
@@ -268,7 +269,8 @@ export function createExternalPrStore(options = {}) {
 
     /**
      * One Bead's foreign target judgment from the last scan, or null when the
-     * scan did not carry it (not `resolved`, no `pr_url`, or never scanned).
+     * scan did not carry it (neither `resolved` nor `deferred`, no `pr_url`,
+     * or never scanned).
      *
      * @param {string} workspace
      * @param {string} bead_id
@@ -321,20 +323,6 @@ export function createExternalPrStore(options = {}) {
         statuses_by_workspace.set(key, lane);
       }
       lane.set(bead_id, status);
-    },
-
-    /**
-     * Forget one Bead's status when a write landed but its readback could not
-     * confirm it, so a reader asks bd again instead of trusting the stale
-     * value until the next scan.
-     *
-     * @param {string} workspace
-     * @param {string} bead_id
-     */
-    forgetStatus(workspace, bead_id) {
-      statuses_by_workspace
-        .get(path.resolve(String(workspace || '')))
-        ?.delete(bead_id);
     },
 
     /**

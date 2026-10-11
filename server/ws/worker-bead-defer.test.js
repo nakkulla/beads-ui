@@ -39,6 +39,7 @@ const { runBd, runBdJsonProjected } = await import('../bd.js');
 const { __registerWorkerAttachmentForTest, __resetWorkerAttachmentsForTest } =
   await import('../worker/attach.js');
 const { getWorkerRuntime } = await import('../worker/runtime.js');
+const { beadDeferLockKey } = await import('../worker/bead-defer.js');
 const {
   __resetRegistriesForTest,
   __resetWorkerQueueForTest,
@@ -564,6 +565,43 @@ describe('worker-bead-defer (UI-0d9i §3.3)', () => {
     expect(bd.writes).toEqual([]);
   });
 
+  test('refuses a defer that waited behind a running completion cleanup', async () => {
+    deferFixture();
+    let cleaning = true;
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        prActions: { isInFlight: () => cleaning },
+        mergeQueue: { state: () => ({ active: null, failures: {} }) }
+      })
+    );
+    const release = await getWorkerRuntime().locks.acquire(
+      beadDeferLockKey('', 'UI-1')
+    );
+    const pending = call(fakeSocket(), 'worker-bead-defer', {
+      bead_id: 'UI-1',
+      reason: '나중에',
+      remove_edges: []
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const reads_while_held = vi.mocked(runBdJsonProjected).mock.calls.length;
+    getWorkerRuntime().prObservations.record('', 'UI-1', {
+      error: null,
+      pr: /** @type {any} */ ({ number: 7, url: PR_URL, state: 'MERGED' })
+    });
+    cleaning = false;
+    release();
+
+    const reply = await pending;
+
+    expect(reads_while_held).toBe(0);
+    expect(reply.payload).toMatchObject({
+      outcome: 'refused',
+      reason: 'merge_observed'
+    });
+    expect(bd.writes).toEqual([]);
+  });
+
   test('rejects an empty reason as a bad request', async () => {
     deferFixture();
 
@@ -632,6 +670,65 @@ describe('[보관 해제] of a deferred bead (UI-0d9i §3.3)', () => {
     });
 
     expect(reply.payload).toMatchObject({ applied: false, reason: 'deferred' });
+  });
+
+  test('refuses the unshelve of a bead bd reads deferred despite a cached resolved status', async () => {
+    deferFixture();
+    getWorkerRuntime().externalPrs.replaceStatuses('', { 'UI-1': 'resolved' });
+    /** @type {FakeIssue} */ (bd.issues.get('UI-1')).status = 'deferred';
+
+    const reply = await call(fakeSocket(), 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: false,
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    expect(reply.payload).toMatchObject({ applied: false, reason: 'deferred' });
+    expect(
+      Object.keys(getWorkerRuntime().queueStore.snapshot('').merge_shelved)
+    ).toEqual(['UI-1']);
+  });
+
+  test('stores the status the unshelve read in the projection cache', async () => {
+    deferFixture();
+    getWorkerRuntime().externalPrs.replaceStatuses('', { 'UI-1': 'resolved' });
+    /** @type {FakeIssue} */ (bd.issues.get('UI-1')).status = 'deferred';
+
+    await call(fakeSocket(), 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: false,
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    expect(getWorkerRuntime().externalPrs.statusOf('', 'UI-1')).toBe(
+      'deferred'
+    );
+  });
+
+  test('refuses the unshelve with merge_active while a completion cleanup holds the bead', async () => {
+    deferFixture();
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        prActions: { isInFlight: () => true },
+        mergeQueue: { state: () => ({ active: null, failures: {} }) }
+      })
+    );
+    const release = await getWorkerRuntime().locks.acquire(
+      beadDeferLockKey(process.cwd(), 'UI-1')
+    );
+
+    const reply = await call(fakeSocket(), 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: false,
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+    release();
+
+    expect(reply.payload).toMatchObject({
+      applied: false,
+      reason: 'merge_active'
+    });
   });
 
   test('refuses the unshelve when the status cannot be read', async () => {
@@ -834,6 +931,47 @@ describe('worker-bead-revive (UI-0d9i §3.3, §3.5)', () => {
     expect(reply.payload.failed_edges).toEqual([
       { id: 'UI-2', step: 'readback', message: 'edge missing' }
     ]);
+  });
+
+  test('skips a chosen dependent that closed after the preview', async () => {
+    reviveFixture();
+    gh_state.prs.set('o/r#7', 'OPEN');
+    /** @type {FakeIssue} */ (bd.issues.get('UI-2')).status = 'closed';
+
+    const reply = await call(fakeSocket(), 'worker-bead-revive', {
+      bead_id: 'UI-1',
+      restore_edges: ['UI-2']
+    });
+
+    expect(reply.payload).toMatchObject({
+      outcome: 'applied',
+      edges: [],
+      failed_edges: [],
+      skipped_edges: ['UI-2']
+    });
+    expect(bd.writes).toEqual([['update', 'UI-1', '--status', 'resolved']]);
+  });
+
+  test('restores no edge when the dependents status read fails', async () => {
+    reviveFixture();
+    gh_state.prs.set('o/r#7', 'OPEN');
+    vi.mocked(runBdJsonProjected).mockImplementation(
+      /** @type {any} */ (
+        async (/** @type {string} */ _family, /** @type {string[]} */ args) =>
+          args[0] === 'list' ? bdFailure('list failed') : fakeRead(args)
+      )
+    );
+
+    const reply = await call(fakeSocket(), 'worker-bead-revive', {
+      bead_id: 'UI-1',
+      restore_edges: ['UI-2']
+    });
+
+    expect(reply.payload).toMatchObject({ applied: true, outcome: 'partial' });
+    expect(reply.payload.failed_edges).toEqual([
+      { id: 'UI-2', step: 'status_read', message: 'list failed' }
+    ]);
+    expect(bd.writes).toEqual([['update', 'UI-1', '--status', 'resolved']]);
   });
 
   test('refuses a bead that is not deferred', async () => {

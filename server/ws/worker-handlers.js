@@ -78,6 +78,7 @@ import {
 import {
   applyDefer,
   applyRevive,
+  beadDeferLockKey,
   previewDefer,
   previewRevive
 } from '../worker/bead-defer.js';
@@ -6414,8 +6415,9 @@ export function handleWorkerMergeQueueRemove(ws, req) {
  * (UI-8d8y): it is a registry overlay the store cannot see, so its membership
  * is vouched for here. A foreign-repository row is refused with `foreign` —
  * nothing in this workspace merges it — and a bead with no PR 대기 row with
- * `not_pr_wait`. [보관 해제] of a Bead bd reads `deferred` is refused with
- * `deferred`, while a [보류로 전환] runs with `defer_active`, and when the
+ * `not_pr_wait`. [보관 해제] of a Bead a fresh `bd show` reads `deferred` is
+ * refused with `deferred`, while a [보류로 전환] runs with `defer_active`,
+ * while a completion cleanup holds the Bead with `merge_active`, and when the
  * status cannot be read at all with `bead_status_unreadable` (UI-0d9i §3.3):
  * a deferred Bead's shelf record is the one thing keeping its PR out of the
  * merge queue, so the unknown side refuses.
@@ -6489,10 +6491,15 @@ export async function handleWorkerMergeShelve(ws, req) {
   } else {
     // While a Bead is deferred its shelf record is the one thing keeping the
     // PR out of the merge queue (UI-0d9i §3.3); [되살리기] lifts it instead.
-    // A defer still running is refused alike — it re-checks the shelf.
+    // A defer still running is refused alike — it re-checks the shelf — and
+    // so is a completion cleanup holding the same lock (`merge_active`).
     const lock_key = beadDeferLockKey(key, p.bead_id);
     if (getWorkerRuntime().locks.isLocked(lock_key)) {
-      refuse('defer_active');
+      refuse(
+        workerMergeEffectInFlight(key, p.bead_id)
+          ? 'merge_active'
+          : 'defer_active'
+      );
       return;
     }
     // Held through the write, so a defer that starts meanwhile re-checks the
@@ -6552,41 +6559,11 @@ export async function handleWorkerMergeShelve(ws, req) {
 }
 
 /**
- * The lock key serializing one Bead's [보류로 전환] and [되살리기] (UI-0d9i
- * §3.3). [보관 해제] is refused while it is held, so the shelf a defer
- * re-checked cannot leave before its `bd defer` write.
- *
- * @param {string} key
- * @param {string} bead_id
- * @returns {string}
- */
-function beadDeferLockKey(key, bead_id) {
-  return `bead-defer:${key}::${bead_id}`;
-}
-
-/**
- * One Bead's last known bd status — the last scan's, or a defer/revive
- * readback's — or null when nothing read it (UI-0d9i §3.4).
- *
- * @param {string} key
- * @param {string} bead_id
- * @returns {string|null}
- */
-function beadStatusOf(key, bead_id) {
-  try {
-    const store = getWorkerRuntime().externalPrs;
-    return typeof store?.statusOf === 'function'
-      ? store.statusOf(key, bead_id)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The status [보관 해제] judges (UI-0d9i §3.3): the last scan's or readback's
- * when there is one, else one `bd show` — at boot nothing has scanned yet. Null
- * when neither can say.
+ * The status [보관 해제] judges (UI-0d9i §3.3): always one fresh `bd show`
+ * under the Bead's lock, never the scan cache — a Bead another session
+ * deferred, or a stale scan overwriting a fresher readback, must not lift the
+ * shelf that keeps its PR out of auto-merge. The read refreshes the cache.
+ * Null when bd cannot say.
  *
  * @param {WebSocket} ws
  * @param {string} key
@@ -6594,10 +6571,6 @@ function beadStatusOf(key, bead_id) {
  * @returns {Promise<string|null>}
  */
 async function unshelveStatusOf(ws, key, bead_id) {
-  const cached = beadStatusOf(key, bead_id);
-  if (cached !== null) {
-    return cached;
-  }
   const shown = await beadDeferBd(ws, key).show(bead_id);
   if (!shown.ok || typeof shown.data?.status !== 'string') {
     return null;
@@ -6619,20 +6592,6 @@ function noteBeadStatus(key, bead_id, status) {
     getWorkerRuntime().externalPrs.noteStatus(key, bead_id, status);
   } catch (err) {
     log('bead status note failed for %s: %o', bead_id, err);
-  }
-}
-
-/**
- * Forget a status an unconfirmed write may have changed (see {@link noteBeadStatus}).
- *
- * @param {string} key
- * @param {string} bead_id
- */
-function forgetBeadStatus(key, bead_id) {
-  try {
-    getWorkerRuntime().externalPrs.forgetStatus(key, bead_id);
-  } catch (err) {
-    log('bead status forget failed for %s: %o', bead_id, err);
   }
 }
 
@@ -6924,10 +6883,6 @@ export async function handleWorkerBeadDefer(ws, req) {
     if (result.outcome === 'applied' || result.outcome === 'partial') {
       noteBeadStatus(key, p.bead_id, 'deferred');
       recordUserAction(key, p.bead_id, 'bead_defer', '[보류로 전환] 클릭');
-    } else if (result.outcome === 'unknown') {
-      // The write landed but its readback did not confirm it: drop the
-      // pre-write status so [보관 해제] asks bd instead of passing on it.
-      forgetBeadStatus(key, p.bead_id);
     }
   } finally {
     release();

@@ -105,6 +105,52 @@ export function reviveTargetText(target, pr_state) {
 }
 
 /**
+ * What a partial defer's failed edges mean, by the step each failed at
+ * (§3.3): an edge never removed still blocks, an edge removed without its
+ * confirmed `deferred-unblocked:` notes line is cut but unrecorded, and an
+ * edge whose removal readback failed is unconfirmed. Classes with no edge are
+ * left out; an unknown step reads as still blocking (the safe default).
+ *
+ * @param {unknown} failed_edges
+ * @returns {string[]}
+ */
+export function deferEdgeFailureTexts(failed_edges) {
+  /** @type {{ blocking: string[], unrecorded: string[], unconfirmed: string[] }} */
+  const groups = { blocking: [], unrecorded: [], unconfirmed: [] };
+  for (const edge of Array.isArray(failed_edges) ? failed_edges : []) {
+    const id = edge && typeof edge.id === 'string' ? edge.id : '';
+    if (!id) {
+      continue;
+    }
+    if (edge.step === 'note' || edge.step === 'note_readback') {
+      groups.unrecorded.push(id);
+    } else if (edge.step === 'readback') {
+      groups.unconfirmed.push(id);
+    } else {
+      groups.blocking.push(id);
+    }
+  }
+  /** @type {string[]} */
+  const out = [];
+  if (groups.blocking.length > 0) {
+    out.push(
+      `간선 처리 실패: ${groups.blocking.join(', ')} (그 간선은 계속 막습니다)`
+    );
+  }
+  if (groups.unrecorded.length > 0) {
+    out.push(
+      `간선은 끊었지만 notes 기록 줄이 없거나 확인되지 않음: ${groups.unrecorded.join(', ')} (되살리기 목록에 오르지 않을 수 있습니다)`
+    );
+  }
+  if (groups.unconfirmed.length > 0) {
+    out.push(
+      `간선 제거를 확인하지 못함: ${groups.unconfirmed.join(', ')} (bd에서 끊겼는지 확인하세요)`
+    );
+  }
+  return out;
+}
+
+/**
  * The toast one write reply becomes. Null when the dialog stays open and says
  * it there instead.
  *
@@ -134,7 +180,7 @@ export function deferResultToast(res, material) {
   if (material.mode === 'defer') {
     return failed.length > 0
       ? {
-          text: `${id} 보류 — 간선 처리 실패: ${failed.join(', ')} (그 간선은 계속 막습니다)`,
+          text: `${id} 보류 — ${deferEdgeFailureTexts(res.failed_edges).join(' · ')}`,
           type: 'error'
         }
       : {
@@ -147,13 +193,22 @@ export function deferResultToast(res, material) {
     res.shelf_cleared === false
       ? ' · 보관 해제는 실패했습니다 — [보관 해제]를 누르세요'
       : '';
+  const skipped = Array.isArray(res.skipped_edges)
+    ? res.skipped_edges.filter(
+        (/** @type {unknown} */ edge) => typeof edge === 'string' && edge
+      )
+    : [];
+  const skipped_text =
+    skipped.length > 0
+      ? ` · 닫힌 후행이라 복원하지 않음: ${skipped.join(', ')}`
+      : '';
   return failed.length > 0
     ? {
-        text: `${id} 되살림(${target}) — 간선 복원 실패: ${failed.join(', ')}${shelf}`,
+        text: `${id} 되살림(${target}) — 간선 복원 실패: ${failed.join(', ')}${skipped_text}${shelf}`,
         type: 'error'
       }
     : {
-        text: `${id} 되살림(${target})${shelf}`,
+        text: `${id} 되살림(${target})${skipped_text}${shelf}`,
         type: shelf ? 'error' : 'success'
       };
 }

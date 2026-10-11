@@ -21,10 +21,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createActivityStore } from './activity-store.js';
 import { workflowScriptDir } from './attempt-facts.js';
+import { beadDeferLockKey } from './bead-defer.js';
 import {
   createCompletionActionDriver,
   decideCompletionAction
 } from './completion-intent.js';
+import { createLockManager } from './locks.js';
 import { createMergeQueue } from './merge-queue.js';
 import { CLEANUP_STEPS, createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
@@ -167,6 +169,7 @@ function seedStore(options = {}) {
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   repoOperations?: any,
+ *   locks?: { acquire: (key: string) => Promise<() => void> },
  *   noNotify?: boolean,
  *   timeline?: { append: (input: any) => unknown }
  * }} [options]
@@ -595,7 +598,8 @@ function makeActions(options = {}) {
     // `noNotify` builds the actions with no notifier at all — the shape every
     // pre-UI-9rrk construction site still has.
     notify: options.noNotify === true ? undefined : notify,
-    timeline: options.timeline
+    timeline: options.timeline,
+    locks: options.locks
   });
 
   return {
@@ -2503,6 +2507,73 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
     expect(
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
+  });
+});
+
+describe('post-merge cleanup under the bead defer lock (UI-0d9i §3.4)', () => {
+  test('waits for a held defer lock before reading the bead status', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const locks = createLockManager();
+    const h = makeActions({
+      details: [prOf({ state: 'MERGED', merge_sha })],
+      locks
+    });
+    const release = await locks.acquire(beadDeferLockKey(WS, BEAD));
+
+    const pending = h.actions.cleanupObservedMerge(BEAD, merge_sha);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.bd.readStatus).not.toHaveBeenCalled();
+    release();
+    await pending;
+  });
+
+  test('skips the cleanup when the defer it waited for landed deferred', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const locks = createLockManager();
+    const h = makeActions({
+      details: [prOf({ state: 'MERGED', merge_sha })],
+      locks
+    });
+    let status = 'resolved';
+    h.bd.readStatus.mockImplementation(async (/** @type {string} */ id) => {
+      h.calls.push(`bd:readStatus:${id}`);
+      return status;
+    });
+    const release = await locks.acquire(beadDeferLockKey(WS, BEAD));
+    const pending = h.actions.cleanupObservedMerge(BEAD, merge_sha);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    status = 'deferred';
+    release();
+
+    const r = await pending;
+
+    expect(r).toMatchObject({ ok: false, reason: 'bead_deferred' });
+    expect(h.calls).toEqual([`bd:readStatus:${BEAD}`]);
+    expect(
+      h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('holds the defer lock until the cleanup settles', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const locks = createLockManager();
+    const h = makeActions({
+      details: [prOf({ state: 'MERGED', merge_sha })],
+      locks
+    });
+    /** @type {boolean[]} */
+    const held_at_close = [];
+    h.bd.setStatus.mockImplementation(async () => {
+      held_at_close.push(locks.isLocked(beadDeferLockKey(WS, BEAD)));
+    });
+
+    const r = await h.actions.cleanupObservedMerge(BEAD, merge_sha);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(r.ok).toBe(true);
+    expect(held_at_close).toEqual([true]);
+    expect(locks.isLocked(beadDeferLockKey(WS, BEAD))).toBe(false);
   });
 });
 

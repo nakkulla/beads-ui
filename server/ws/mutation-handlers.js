@@ -5,6 +5,7 @@
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
+import { beadDeferLockKey } from '../worker/bead-defer.js';
 import {
   ACCOUNT_KEYS,
   AUTO_LITERAL,
@@ -664,6 +665,31 @@ export async function handleUpdateStatus(ws, req) {
     );
     return;
   }
+  // The read, the write and the readback hold the Bead's defer lock — the
+  // one a [보류로 전환] holds through its `bd defer` — so a late status change
+  // cannot read the pre-defer status and then overwrite a just-landed
+  // `deferred` (UI-0d9i §3.6). The key is this connection's workspace, the
+  // same one a Worker op without `root_dir` names.
+  const release = await getWorkerRuntime().locks.acquire(
+    beadDeferLockKey(targetWorkspaceOf(ws, {}) ?? '', id)
+  );
+  try {
+    await updateStatusHeld(ws, req, id, status);
+  } finally {
+    release();
+  }
+}
+
+/**
+ * The read, write and readback of {@link handleUpdateStatus}, run with the
+ * Bead's defer lock held.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {string} id
+ * @param {string} status
+ */
+async function updateStatusHeld(ws, req, id, status) {
   const current = await runBdJsonProjectedInWorkspace(
     ws,
     'show',

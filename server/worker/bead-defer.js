@@ -17,6 +17,7 @@
  * back is `unknown`, never a no-change failure, because retrying it could apply
  * it twice.
  */
+import path from 'node:path';
 import { stderrTail } from '../bd.js';
 import {
   foreignTargetFromMetadata,
@@ -25,6 +26,22 @@ import {
 
 /** The notes line prefix a cut edge leaves behind (workflow contract). */
 export const DEFERRED_UNBLOCKED_PREFIX = 'deferred-unblocked:';
+
+/**
+ * The one per-Bead lock key that serializes a Bead's [보류로 전환], [되살리기],
+ * [보관 해제], `update-status` and post-merge completion cleanup (UI-0d9i
+ * §3.3, §3.4). The workspace is resolved here so a connection's empty key, a
+ * Monitor `root_dir` and the attachment's resolved root all name the same
+ * lock. It is the OUTERMOST lock: holders may take the repo/topology locks
+ * inside it, never the other way around.
+ *
+ * @param {string} workspace
+ * @param {string} bead_id
+ * @returns {string}
+ */
+export function beadDeferLockKey(workspace, bead_id) {
+  return `bead-defer:${path.resolve(String(workspace || ''))}::${bead_id}`;
+}
 
 /**
  * @typedef {{ ok: true, data: any } | { ok: false, error: { code?: string, message?: string } }} BdRead
@@ -45,7 +62,7 @@ export const DEFERRED_UNBLOCKED_PREFIX = 'deferred-unblocked:';
 /**
  * @typedef {Object} EdgeFailure
  * @property {string} id - The dependent Bead.
- * @property {'not_dependent'|'not_unblocked'|'remove'|'note'|'add'|'readback'|'note_readback'} step
+ * @property {'not_dependent'|'not_unblocked'|'remove'|'note'|'add'|'readback'|'note_readback'|'status_read'} step
  * @property {string} [message]
  */
 
@@ -61,6 +78,8 @@ export const DEFERRED_UNBLOCKED_PREFIX = 'deferred-unblocked:';
  * @property {boolean} [retry_safe]
  * @property {string[]} edges - Edges cut (defer) or restored (revive).
  * @property {EdgeFailure[]} failed_edges
+ * @property {string[]} [skipped_edges] - Revive only: chosen dependents that
+ * read `closed` right before the restore, so no edge was put back on them.
  * @property {'resolved'|'open'} [target]
  * @property {string|null} [pr_state]
  */
@@ -582,9 +601,45 @@ export async function applyRevive(bd, input) {
     };
   }
   const cut = new Set(deferredUnblockedIds(shown.data.notes));
-  for (const dependent of idsOf(input.restore_edges)) {
+  const chosen = idsOf(input.restore_edges);
+  /** @type {string[]} */
+  const skipped_edges = [];
+  // A dependent closed since the preview gets no edge back (the contract skips
+  // closed dependents). Its status is read right before the restore; when it
+  // cannot be read no edge is restored at all — a blocks edge on a closed
+  // Bead is the one outcome this check exists to prevent.
+  /** @type {Map<string, string>|null} */
+  let statuses = null;
+  const to_check = chosen.filter((id) => cut.has(id));
+  if (to_check.length > 0) {
+    const listed = await bd.listByIds(to_check);
+    if (listed.ok && Array.isArray(listed.data)) {
+      statuses = new Map();
+      for (const row of listed.data) {
+        if (row && typeof row.id === 'string') {
+          statuses.set(
+            row.id,
+            typeof row.status === 'string' ? row.status : ''
+          );
+        }
+      }
+    } else {
+      const message = listed.ok ? 'non-array payload' : readMessage(listed);
+      for (const dependent of to_check) {
+        failed_edges.push({ id: dependent, step: 'status_read', message });
+      }
+    }
+  }
+  for (const dependent of chosen) {
     if (!cut.has(dependent)) {
       failed_edges.push({ id: dependent, step: 'not_unblocked' });
+      continue;
+    }
+    if (statuses === null) {
+      continue;
+    }
+    if (statuses.get(dependent) === 'closed') {
+      skipped_edges.push(dependent);
       continue;
     }
     const added = await bd.run([
@@ -622,6 +677,7 @@ export async function applyRevive(bd, input) {
     target,
     pr_state: judged.pr_state,
     edges,
-    failed_edges
+    failed_edges,
+    skipped_edges
   };
 }

@@ -2,7 +2,10 @@ import { createServer } from 'node:http';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { projectedResponse } from './__fixtures__/bd-json/projected.js';
 import { runBd, runBdJsonProjected } from './bd.js';
+import { beadDeferLockKey } from './worker/bead-defer.js';
+import { getWorkerRuntime } from './worker/runtime.js';
 import { attachWsServer, handleMessage } from './ws.js';
+import { targetWorkspaceOf } from './ws/workspace-target.js';
 
 // The workspace effect gate has its own tests; these state an open gate rather
 // than probing the live bd binary.
@@ -249,6 +252,45 @@ describe('ws mutation handlers', () => {
     const obj = JSON.parse(ws.sent[ws.sent.length - 1]);
     expect(obj.ok).toBe(false);
     expect(obj.error.code).toBe('bd_error');
+    expect(mRun).not.toHaveBeenCalled();
+  });
+
+  test('update-status reads the current status only after the bead defer lock is released', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
+    mJson.mockResolvedValue(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-9', status: 'deferred' }
+      })
+    );
+    const ws = makeStubSocket();
+    const release = await getWorkerRuntime().locks.acquire(
+      beadDeferLockKey(
+        targetWorkspaceOf(/** @type {any} */ (ws), {}) ?? '',
+        'UI-9'
+      )
+    );
+    const pending = handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(
+        JSON.stringify({
+          id: 'r1-locked',
+          type: 'update-status',
+          payload: { id: 'UI-9', status: 'open' }
+        })
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const reads_while_held = mJson.mock.calls.length;
+    release();
+
+    await pending;
+
+    expect(reads_while_held).toBe(0);
+    expect(JSON.parse(ws.sent[ws.sent.length - 1]).error.code).toBe(
+      'use_defer_dialog'
+    );
     expect(mRun).not.toHaveBeenCalled();
   });
 

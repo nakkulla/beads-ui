@@ -54,6 +54,7 @@ import { FOREIGN_HANDOFF_SENTENCES } from '../../app/utils/failure-sentences.js'
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { workflowScriptDir } from './attempt-facts.js';
+import { beadDeferLockKey } from './bead-defer.js';
 import { discardOperationActive } from './discard-phase.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import { failureTokenSummary, scriptSummary } from './failure-class.js';
@@ -405,10 +406,13 @@ function authoritativeMergeSha(pr) {
  *   now?: () => number,
  *   timeline?: { append: (input: any) => unknown },
  *   announceForeignHandoff?: (input: { bead_id: string, cause: string, identity: string, pr_url?: string|null, foreign_path?: string|null }) => unknown,
- *   resolveRepoOps?: (input: { repo: string, sha: string, gitRun: any }) => Promise<any>
+ *   resolveRepoOps?: (input: { repo: string, sha: string, gitRun: any }) => Promise<any>,
+ *   locks?: { acquire: (key: string) => Promise<() => void> }
  * }} deps
  * `timeline` is the workspace's bead-history writer; without it a cleanup
  * that backed up leftover content records nothing and behaves identically.
+ * `locks` is the worker runtime's lock manager: the observed-merge cleanup
+ * holds the Bead's defer lock (UI-0d9i §3.4); without it nothing is held.
  * `announceForeignHandoff` pushes a `foreign_handoff` once (UI-k467 §3.7);
  * `resolveRepoOps` reads a pinned foreign target's declaration (tests inject).
  */
@@ -4463,20 +4467,50 @@ export function createPrActions(deps) {
     if (in_flight.has(bead_id)) {
       return { ok: false, step: null, reason: 'action_in_flight' };
     }
-    const q = deps.store.snapshot(workspace);
-    if (discardActive(q, bead_id)) {
-      return { ok: false, step: null, reason: 'discard_in_progress' };
+    // The Bead's defer lock is held from the status re-read through the whole
+    // cleanup (UI-0d9i §3.4): a [보류로 전환] that is past its queue re-check
+    // finishes its `bd defer` first and this cleanup then reads `deferred`; a
+    // defer arriving meanwhile waits and its re-check refuses. It is taken
+    // BEFORE `in_flight`, so a defer holding it never mistakes a cleanup that
+    // is only waiting for a running merge, and the guards below are judged
+    // after the wait.
+    const release = deps.locks
+      ? await deps.locks.acquire(beadDeferLockKey(workspace, bead_id))
+      : () => {};
+    try {
+      if (in_flight.has(bead_id)) {
+        return { ok: false, step: null, reason: 'action_in_flight' };
+      }
+      const q = deps.store.snapshot(workspace);
+      if (discardActive(q, bead_id)) {
+        return { ok: false, step: null, reason: 'discard_in_progress' };
+      }
+      const external_resume =
+        !inPrWait(q, bead_id) &&
+        !!external?.get(workspace, bead_id) &&
+        !!repo_operations;
+      if (!inPrWait(q, bead_id) && !external_resume) {
+        return { ok: false, step: null, reason: 'not_in_pr_wait' };
+      }
+      if (q.cleanup_failed?.[bead_id]) {
+        return { ok: false, step: null, reason: 'merged_cleanup_failed' };
+      }
+      return await cleanupObservedMergeHeld(bead_id, merge_sha, refs);
+    } finally {
+      release();
     }
-    const external_resume =
-      !inPrWait(q, bead_id) &&
-      !!external?.get(workspace, bead_id) &&
-      !!repo_operations;
-    if (!inPrWait(q, bead_id) && !external_resume) {
-      return { ok: false, step: null, reason: 'not_in_pr_wait' };
-    }
-    if (q.cleanup_failed?.[bead_id]) {
-      return { ok: false, step: null, reason: 'merged_cleanup_failed' };
-    }
+  }
+
+  /**
+   * The part of {@link cleanupObservedMerge} that runs with the Bead's defer
+   * lock held and its guards passed.
+   *
+   * @param {string} bead_id
+   * @param {string|null} merge_sha
+   * @param {{ head_ref?: string|null, pr_url?: string|null }} refs
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function cleanupObservedMergeHeld(bead_id, merge_sha, refs) {
     in_flight.add(bead_id);
     try {
       // A deferred Bead is "no longer considered" (UI-0d9i §3.4): an outside

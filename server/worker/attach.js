@@ -1816,7 +1816,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       return;
     }
     const generation = ++external_scan_generation;
-    const { pr_rows, statuses, fresh } = await bd.scanBeads();
+    const { pr_rows, deferred_pr_rows, statuses, fresh } = await bd.scanBeads();
     if (generation !== external_scan_generation) {
       return;
     }
@@ -1825,11 +1825,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     }
     // The foreign target of EVERY scanned PR Bead (UI-k467 §3.1): the rows
     // registered below exclude a Bead the Worker owns, but a Worker-delivered
-    // `pr_wait` row is observed through the same pins.
-    runtime.externalPrs.replaceTargets(
-      keyFor(workspace_root),
-      /** @type {import('./bd-metadata.js').ExternalPrScanRow[]} */ (pr_rows)
-    );
+    // `pr_wait` row is observed through the same pins. A deferred PR Bead
+    // keeps its target too — its PR stays observed while the row is hidden
+    // (UI-0d9i §3.4) — but never enters the registry below.
+    runtime.externalPrs.replaceTargets(keyFor(workspace_root), [
+      .../** @type {import('./bd-metadata.js').ExternalPrScanRow[]} */ (
+        pr_rows
+      ),
+      ...(Array.isArray(deferred_pr_rows) ? deferred_pr_rows : [])
+    ]);
     // The same generation's statuses are the PR 대기 projection's material
     // (UI-0d9i §3.4): a row whose Bead reads `deferred` is hidden on the wire.
     runtime.externalPrs.replaceStatuses(keyFor(workspace_root), statuses);
@@ -1940,6 +1944,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     observations: runtime.prObservations,
     activity: runtime.activityStore,
     bd,
+    // The SAME lock manager the WS defer/revive handlers hold the Bead's defer
+    // lock in, so an observed-merge cleanup and a [보류로 전환] serialize
+    // (UI-0d9i §3.4).
+    locks: runtime.locks,
     // The external row lookup the relaxed `pr_wait` guard stands on (UI-7agi §4).
     external: {
       get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>

@@ -4383,6 +4383,47 @@ describe('worker/attach closed-queue sweep trigger (UI-m6bg)', () => {
     ]);
   });
 
+  test('keeps the foreign target of a deferred pinned PR bead after a scan (UI-0d9i §3.4)', async () => {
+    const runtime = createWorkerRuntime();
+    const pins = {
+      foreign_repo: 'git@github.com:acme/research-repo-template.git',
+      foreign_path: '/tmp/example/research-repo-template',
+      foreign_base: 'main'
+    };
+    const pr_url = 'https://github.com/acme/research-repo-template/pull/4';
+    const att = attachWithScan(runtime, async () => ({
+      pr_rows: [],
+      deferred_pr_rows: [{ bead_id: 'D1', pr_url, metadata: pins }],
+      statuses: { D1: 'deferred' }
+    }));
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.externalPrs.targetOf(WS, 'D1')).toMatchObject({
+      state: 'ok',
+      target: { slug: 'acme/research-repo-template' }
+    });
+  });
+
+  test('leaves a deferred PR bead out of the external registry (UI-0d9i §3.4)', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachWithScan(runtime, async () => ({
+      pr_rows: [],
+      deferred_pr_rows: [
+        {
+          bead_id: 'D1',
+          pr_url: 'https://github.com/o/r/pull/4',
+          metadata: {}
+        }
+      ],
+      statuses: { D1: 'deferred' }
+    }));
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.externalPrs.get(WS, 'D1')).toBeNull();
+  });
+
   test('a failed scan mutates nothing', async () => {
     const runtime = createWorkerRuntime();
     const att = attachWithScan(runtime, async () => {

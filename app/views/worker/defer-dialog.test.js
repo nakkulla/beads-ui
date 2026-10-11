@@ -294,6 +294,86 @@ describe('deferResultToast (UI-0d9i §4)', () => {
     });
   });
 
+  test('says a not_dependent edge keeps blocking', () => {
+    const toast = deferResultToast(
+      {
+        outcome: 'partial',
+        failed_edges: [{ id: 'UI-5', step: 'not_dependent' }]
+      },
+      { mode: 'defer', bead_id: 'UI-1' }
+    );
+
+    expect(toast?.text).toBe(
+      'UI-1 보류 — 간선 처리 실패: UI-5 (그 간선은 계속 막습니다)'
+    );
+  });
+
+  test('says a note failure cut the edge but left its notes line missing', () => {
+    const toast = deferResultToast(
+      {
+        outcome: 'partial',
+        failed_edges: [
+          { id: 'UI-3', step: 'note' },
+          { id: 'UI-4', step: 'note_readback' }
+        ]
+      },
+      { mode: 'defer', bead_id: 'UI-1' }
+    );
+
+    expect(toast?.text).toBe(
+      'UI-1 보류 — 간선은 끊었지만 notes 기록 줄이 없거나 확인되지 않음: UI-3, UI-4 (되살리기 목록에 오르지 않을 수 있습니다)'
+    );
+  });
+
+  test('says a readback failure could not confirm the removal', () => {
+    const toast = deferResultToast(
+      {
+        outcome: 'partial',
+        failed_edges: [{ id: 'UI-3', step: 'readback' }]
+      },
+      { mode: 'defer', bead_id: 'UI-1' }
+    );
+
+    expect(toast?.text).toBe(
+      'UI-1 보류 — 간선 제거를 확인하지 못함: UI-3 (bd에서 끊겼는지 확인하세요)'
+    );
+  });
+
+  test('joins the phrasing of mixed edge failures in one toast', () => {
+    const toast = deferResultToast(
+      {
+        outcome: 'partial',
+        failed_edges: [
+          { id: 'UI-3', step: 'remove' },
+          { id: 'UI-4', step: 'readback' }
+        ]
+      },
+      { mode: 'defer', bead_id: 'UI-1' }
+    );
+
+    expect(toast?.text).toBe(
+      'UI-1 보류 — 간선 처리 실패: UI-3 (그 간선은 계속 막습니다) · 간선 제거를 확인하지 못함: UI-4 (bd에서 끊겼는지 확인하세요)'
+    );
+  });
+
+  test('names the dependents a revival skipped because they closed', () => {
+    const toast = deferResultToast(
+      {
+        outcome: 'applied',
+        target: 'open',
+        failed_edges: [],
+        skipped_edges: ['UI-2'],
+        shelf_cleared: true
+      },
+      { mode: 'revive', bead_id: 'UI-1' }
+    );
+
+    expect(toast).toEqual({
+      text: 'UI-1 되살림(open) · 닫힌 후행이라 복원하지 않음: UI-2',
+      type: 'success'
+    });
+  });
+
   test('keeps a revival successful when only the shelf lift failed', () => {
     const toast = deferResultToast(
       {
