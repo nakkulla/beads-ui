@@ -6472,6 +6472,18 @@ describe('shelveReplyToast (UI-sd12 §3.4)', () => {
       type: 'error'
     });
   });
+
+  test('names the unshelve when a running merge refuses it (UI-0d9i §3.3)', () => {
+    const toast = shelveReplyToast(
+      { applied: false, conflict: false, reason: 'merge_active' },
+      'UI-1',
+      false
+    );
+
+    expect(toast?.text).toBe(
+      '머지 큐가 이 PR을 처리 중이라 지금은 보관을 풀 수 없습니다 — 처리가 끝나거나 차례를 넘긴 뒤 다시 누르세요'
+    );
+  });
 });
 
 describe('복잡 chip on the worker lane surfaces (UI-7nhi §3)', () => {

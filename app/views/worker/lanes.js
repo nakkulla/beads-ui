@@ -5583,7 +5583,7 @@ export function shelveReplyToast(res, bead_id, on) {
   }
   if (res.reason === 'merge_active') {
     return {
-      text: '머지 큐가 이 PR을 처리 중이라 지금은 보관할 수 없습니다 — 처리가 끝나거나 차례를 넘긴 뒤 다시 누르세요',
+      text: `머지 큐가 이 PR을 처리 중이라 지금은 ${on ? '보관할' : '보관을 풀'} 수 없습니다 — 처리가 끝나거나 차례를 넘긴 뒤 다시 누르세요`,
       type: 'error'
     };
   }
