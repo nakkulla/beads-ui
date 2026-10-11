@@ -60,7 +60,7 @@ CLI 목록에서 만들어진다:
 - Codex 실행은 카탈로그에 없는 이름을 그대로 `-m`으로 넘긴다 — `server/worker/runner/codex.js:126-134`
 - 단가는 이름으로 찾고, 없으면 같은 ID의 **첫** 항목에서 찾는다 — `server/worker/usage-pricing.js:73-103`; 사용자 `~/.config/bdui/config.toml`에는 `sol`·`astra`·`terra`·`luna`·`luna-5.6`의 `.price` 절이 있고 고정 이름 절은 없다(2026-10-07 `grep -n price`)
 - 모델 활성은 서버 전역 꺼 둔 목록이고 기본값은 `opus-4.8`·`opus-4.6`·`sol-5.6`·`terra`·`luna-5.6`이다 — `server/model-visibility-store.js:33-42`; 카탈로그에 없는 이름은 투영에서 빠지고 다음 쓰기에서 사라진다 — `:87-90`
-- 저장된 실행 설정의 모델 검증은 카탈로그에서 만든 허용값이고, 카탈로그에 없는 저장값은 읽을 때 `null`이 되어 디스패치가 기본값으로 대신한다(알 수 없는 모델을 띄우지 않으려는 의도) — `server/worker/queue-store.js:5121-5134`
+- 저장된 실행 설정의 모델 검증은 카탈로그에서 만든 허용값이고, 카탈로그에 없는 저장값은 읽을 때 `null`이 되어 디스패치가 기본값으로 대신한다(알 수 없는 모델을 띄우지 않으려는 의도) — `server/worker/queue-store.js:5122-5135`
 - 모델 활성 상태 파일은 `revision`과 `disabled_models`만 담는다 — `server/model-visibility-store.js:13-14`, `:55`, `:67-70`; ADR UI-ooc0는 "저장은 꺼 둔 모델 목록이라 새로 추가되는 모델은 자동으로 보인다"고 정한다 — `docs/adr/UI-ooc0-model-visibility-disabled-list.md:41`
 - 설정 화면 선택지는 서버가 장식한 `runner_catalog` 스냅샷에서 온다 — `server/ws/monitor-handlers.js:970-982`, `app/views/settings-dialog/`
 - 계정별 `CODEX_HOME` 미러는 `models_cache.json`·`config.toml`을 `~/.codex`로 심링크한다 — `server/worker/codex-account-home.js` `prepareCodexAccountHome`(2026-10-07 `ls -la ~/.local/state/bdui/codex-homes/*/`)
