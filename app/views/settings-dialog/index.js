@@ -124,7 +124,7 @@ const TAB_COPY = {
  * @param {{
  *   transport: (type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>,
  *   policyStore: { get: () => DisplayPolicy|null, set: (p: DisplayPolicy|null) => void, subscribe?: (fn: () => void) => () => void },
- *   queueStore?: { get: () => any, set?: (queue: any) => void },
+ *   queueStore?: { get: () => any, set?: (queue: any) => void, subscribe?: (fn: () => void) => () => void },
  *   implPresetStore?: { get: () => any, subscribe?: (fn: () => void) => () => void },
  *   modelVisibilityStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   timingSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
@@ -275,6 +275,24 @@ export function createSettingsDialog(mount_element, options) {
   /** This window's title: the repo's own name in `scope: 'repo'` (§7). */
   function repoTitle() {
     return `${repoName()} 실행 설정`;
+  }
+
+  /**
+   * The runner catalog behind the `전역` tab's model-list note: a monitor
+   * row's, else the connected workspace's worker queue snapshot, whose channel
+   * stays subscribed while the dialog is open.
+   *
+   * @returns {Record<string, any>|null}
+   */
+  function globalRunnerCatalog() {
+    const row = (options.monitorRows?.() || []).find(
+      (entry) => entry && entry.runner_catalog
+    );
+    if (row) {
+      return row.runner_catalog;
+    }
+    const queue = options.queueStore?.get() ?? null;
+    return queue && queue.runner_catalog ? queue.runner_catalog : null;
   }
 
   /** @type {ReturnType<typeof createRepoPane>|null} */
@@ -456,10 +474,7 @@ export function createSettingsDialog(mount_element, options) {
         model_section = createModelVisibilitySection(model_host, {
           transport,
           modelVisibilityStore: options.modelVisibilityStore,
-          runnerCatalog: () =>
-            (options.monitorRows?.() || []).find(
-              (row) => row && row.runner_catalog
-            )?.runner_catalog ?? null
+          runnerCatalog: globalRunnerCatalog
         });
       }
       model_section.render();
@@ -793,6 +808,20 @@ export function createSettingsDialog(mount_element, options) {
       if (is_open && scope === 'repo' && active_tab === 'repo') {
         repo_pane?.render();
       }
+      if (is_open) {
+        model_section?.render();
+      }
+    });
+  }
+
+  // The `전역` tab's model-list note falls back to the queue snapshot's catalog.
+  /** @type {null | (() => void)} */
+  let unsubscribe_queue = null;
+  if (options.queueStore?.subscribe) {
+    unsubscribe_queue = options.queueStore.subscribe(() => {
+      if (is_open) {
+        model_section?.render();
+      }
     });
   }
 
@@ -890,6 +919,10 @@ export function createSettingsDialog(mount_element, options) {
       if (unsubscribe_rows) {
         unsubscribe_rows();
         unsubscribe_rows = null;
+      }
+      if (unsubscribe_queue) {
+        unsubscribe_queue();
+        unsubscribe_queue = null;
       }
       execution_pane?.destroy();
       execution_pane = null;

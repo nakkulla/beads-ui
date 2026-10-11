@@ -127,6 +127,15 @@ function mount(options = {}) {
     quick_fix_orchestration_effort: null,
     quick_fix_orchestration_speed: null
   };
+  /** @type {Set<() => void>} */
+  const queue_listeners = new Set();
+  /** @param {any} queue */
+  const pushQueue = (queue) => {
+    queue_state = queue;
+    for (const listener of queue_listeners) {
+      listener();
+    }
+  };
   const dialog = createSettingsDialog(root, {
     transport,
     policyStore: policy_store,
@@ -134,6 +143,12 @@ function mount(options = {}) {
       get: () => queue_state,
       set: (queue) => {
         queue_state = queue;
+      },
+      subscribe: (fn) => {
+        queue_listeners.add(fn);
+        return () => {
+          queue_listeners.delete(fn);
+        };
       }
     },
     implPresetStore: {
@@ -157,7 +172,7 @@ function mount(options = {}) {
     monitorPipeline: () => options.monitorPipeline || [],
     onOpenRepoOps: options.onOpenRepoOps
   });
-  return { root, dialog, transport, notify, policy_store };
+  return { root, dialog, transport, notify, policy_store, pushQueue };
 }
 
 /** Let the dialog's `open()` load finish. */
@@ -721,6 +736,45 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
       root.querySelector('[data-key="auto_launch"] .settings-timing__default')
         ?.textContent
     ).toBe('config.toml 켜짐');
+    dialog.destroy();
+  });
+
+  test('reads the codex model-list note from the worker queue without monitor rows', async () => {
+    const { root, dialog } = mount({
+      modelVisibility: MODEL_VISIBILITY,
+      queue: {
+        revision: 3,
+        runner_catalog: { ...CATALOG, codex_list: { source: 'seed' } }
+      }
+    });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+
+    expect(
+      root.querySelector('[data-codex-model-list]')?.textContent?.trim()
+    ).toBe('모델 목록을 읽지 못해 기본 표를 씁니다');
+    dialog.destroy();
+  });
+
+  test('redraws the codex model-list note when the worker queue changes', async () => {
+    const { root, dialog, pushQueue } = mount({
+      modelVisibility: MODEL_VISIBILITY,
+      queue: { revision: 3, runner_catalog: CATALOG }
+    });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+    await openGlobalTab(root);
+    const before = root.querySelector('[data-codex-model-list]');
+
+    pushQueue({
+      revision: 4,
+      runner_catalog: { ...CATALOG, codex_list: { source: 'seed' } }
+    });
+
+    expect(before).toBeNull();
+    expect(root.querySelector('[data-codex-model-list]')).not.toBeNull();
     dialog.destroy();
   });
 

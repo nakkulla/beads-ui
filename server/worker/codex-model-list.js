@@ -35,7 +35,7 @@ export const CODEX_MODEL_LIST_REFRESH_MS = 60 * 60 * 1000;
 
 /**
  * @typedef {{ slug: string, visibility: unknown, multi_agent_version: unknown }} CodexListModel
- * @typedef {{ read_at: number, codex_version: string|null, models: CodexListModel[] }} CodexListRecord
+ * @typedef {{ read_at: number, codex_version: string|null, models: CodexListModel[], aliases?: Record<string, string> }} CodexListRecord
  * @typedef {{ aliases: Record<string, string>, pinned: Record<string, string>, errors: Record<string, string> }} CodexResolvedTable
  * @typedef {(file: string, args: string[], options: { timeout: number, env: NodeJS.ProcessEnv, maxBuffer: number }) => Promise<{ stdout: string }>} CodexExecFile
  */
@@ -259,12 +259,25 @@ function parseRecord(raw) {
   if (!models) {
     return null;
   }
-  return {
+  /** @type {CodexListRecord} */
+  const parsed = {
     read_at: raw.read_at,
     codex_version:
       typeof raw.codex_version === 'string' ? raw.codex_version : null,
     models
   };
+  // Older files carry no alias table; they load with the seed as fallback.
+  if (isRecord(raw.aliases)) {
+    /** @type {Record<string, string>} */
+    const aliases = {};
+    for (const [family, id] of Object.entries(raw.aliases)) {
+      if (typeof id === 'string' && id.length > 0) {
+        aliases[family] = id;
+      }
+    }
+    parsed.aliases = aliases;
+  }
+  return parsed;
 }
 
 /** @type {CodexExecFile} */
@@ -330,9 +343,11 @@ export function createCodexModelList(options = {}) {
    * left out.
    *
    * @param {CodexListRecord} next_record
+   * @param {Record<string, string>} [previous_aliases] - Previous resolutions
+   * that take precedence over the in-memory table.
    * @returns {boolean} Whether the name table changed.
    */
-  function apply(next_record) {
+  function apply(next_record, previous_aliases = {}) {
     const list_families = families();
     const table = codexNameTable(next_record.models, list_families);
     /** @type {Record<string, string>} */
@@ -342,11 +357,13 @@ export function createCodexModelList(options = {}) {
         aliases[family] = table.aliases[family];
         continue;
       }
-      const previous = Object.hasOwn(names.aliases, family)
-        ? names.aliases[family]
-        : Object.hasOwn(CODEX_SEED_NAMES.aliases, family)
-          ? CODEX_SEED_NAMES.aliases[family]
-          : null;
+      const previous = Object.hasOwn(previous_aliases, family)
+        ? previous_aliases[family]
+        : Object.hasOwn(names.aliases, family)
+          ? names.aliases[family]
+          : Object.hasOwn(CODEX_SEED_NAMES.aliases, family)
+            ? CODEX_SEED_NAMES.aliases[family]
+            : null;
       warn(
         `codex-model-list: ${table.errors[family]} — ${family} 별칭은 ${previous ?? '없음'}으로 유지합니다.`
       );
@@ -434,14 +451,16 @@ export function createCodexModelList(options = {}) {
       codex_version: await readVersion(),
       models
     };
+    const changed = apply(next_record);
+    // The effective aliases go with the list so a restart keeps a resolution
+    // this list could not make on its own.
     try {
-      persist(next_record);
+      persist({ ...next_record, aliases: { ...names.aliases } });
     } catch (err) {
       warn(
         `codex-model-list: ${filePath()} 쓰기 실패(${String(err)}) — 메모리 목록만 갱신합니다.`
       );
     }
-    const changed = apply(next_record);
     if (changed) {
       emit();
     }
@@ -530,7 +549,7 @@ export function createCodexModelList(options = {}) {
         warn(`codex-model-list: ${filePath()} 무시: 형식이 잘못되었습니다.`);
         return false;
       }
-      return apply(parsed);
+      return apply(parsed, parsed.aliases);
     },
 
     /**

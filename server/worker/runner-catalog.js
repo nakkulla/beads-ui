@@ -449,6 +449,19 @@ function mergeModels(entry, runner_name, section, warn) {
     const existing = hasOwn(entry.models, model_name)
       ? entry.models[model_name]
       : null;
+    // A pinned name the Codex list no longer carries has no CLI id; without
+    // an explicit `id` the entry would launch the name itself as a model id.
+    if (
+      runner_name === 'codex' &&
+      existing === null &&
+      isCodexPinnedName(model_name) &&
+      !isNonEmptyString(raw_model.id)
+    ) {
+      warn(
+        `config.toml [runner.${runner_name}.models.${model_name}] 무시: Codex 모델 목록에 없는 고정 이름이고 id가 없습니다.`
+      );
+      continue;
+    }
     /** @type {CatalogModel} */
     const merged = existing
       ? /** @type {CatalogModel} */ ({

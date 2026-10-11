@@ -155,6 +155,42 @@ describe('worker/runner-catalog codex names from the CLI list', () => {
     });
   });
 
+  test('ignores a price-only config entry for an unlisted codex pinned name', () => {
+    /** @type {string[]} */
+    const warnings = [];
+    const overrides = {
+      codex: { models: { 'sol-7': { price: { input: 2 } } } }
+    };
+
+    const { runners, model_index } = resolveCatalog({
+      codex_names: LISTED,
+      overrides,
+      warn: (message) => warnings.push(message)
+    });
+
+    expect(runners.codex.models['sol-7']).toBeUndefined();
+    expect(model_index['sol-7']).toBeUndefined();
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('keeps a price-only config entry outside the codex pinned grammar', () => {
+    const overrides = {
+      codex: { models: { 'house-model': { price: { input: 2 } } } }
+    };
+
+    const { runners, model_index } = resolveCatalog({
+      codex_names: LISTED,
+      overrides,
+      warn: () => {}
+    });
+
+    expect(runners.codex.models['house-model']).toMatchObject({
+      id: 'house-model',
+      price: { input: 2 }
+    });
+    expect(model_index['house-model']).toBe('codex');
+  });
+
   test('lets a listed codex name win over a colliding config name', () => {
     /** @type {string[]} */
     const warnings = [];

@@ -244,4 +244,44 @@ describe('model visibility store codex pinned names (UI-gpac §3.6)', () => {
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
     expect(saved.seen_models).toEqual(expect.arrayContaining(PINNED));
   });
+
+  test('keeps a name the user enabled before the first list arrived', () => {
+    const store = makeStore();
+    const current = store.snapshot(CATALOG);
+    store.set(
+      {
+        expected_revision: current.revision,
+        disabled_models: current.disabled_models.filter(
+          (name) => name !== 'sol-5.6'
+        )
+      },
+      CATALOG
+    );
+
+    store.observeCodexPinnedNames(PINNED, LEGACY);
+
+    expect(store.snapshot(LISTED_CATALOG).disabled_models).not.toContain(
+      'sol-5.6'
+    );
+  });
+
+  test('keeps a hidden name the catalog briefly lacks through a write', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        revision: 1,
+        disabled_models: ['terra', 'sol-6.1'],
+        seen_models: PINNED
+      })
+    );
+    const store = makeStore();
+
+    store.set({ expected_revision: 1, disabled_models: ['opus-4.8'] }, CATALOG);
+
+    expect(store.snapshot(CATALOG).disabled_models).toEqual(['opus-4.8']);
+    expect(store.snapshot(LISTED_CATALOG).disabled_models).toEqual([
+      'opus-4.8',
+      'sol-6.1'
+    ]);
+  });
 });

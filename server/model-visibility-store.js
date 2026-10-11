@@ -232,12 +232,23 @@ export function createModelVisibilityStore(options = {}) {
           return { ok: false, code: 'runner_all_disabled', snapshot };
         }
       }
+      // A hidden name briefly absent from the catalog is not in the client's
+      // list; dropping it here would show it again when it comes back.
+      const kept_absent = current.disabled_models.filter(
+        (name) =>
+          !Object.hasOwn(catalog.model_index, name) &&
+          !disabled_models.includes(name)
+      );
       /** @type {ModelVisibilityState} */
-      const next = { revision: current.revision + 1, disabled_models };
+      const next = {
+        revision: current.revision + 1,
+        disabled_models: [...disabled_models, ...kept_absent]
+      };
       if (current.seen_models) {
         next.seen_models = current.seen_models.slice();
       }
       persist(next);
+      from_file = true;
       cache = next;
       return { ok: true, snapshot: project(next, catalog) };
     },

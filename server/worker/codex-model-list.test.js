@@ -237,6 +237,41 @@ describe('codex model list reader', () => {
     ).toBe(true);
   });
 
+  test('restores the last good alias from the state file after an ambiguous list', async () => {
+    const good = [
+      model('gpt-6.2-sol'),
+      model('gpt-6-astra'),
+      model('gpt-5.6-terra'),
+      model('gpt-6-luna')
+    ];
+    const writer = makeList([good, listCase('tie').models]);
+    await writer.refresh();
+    await writer.refresh();
+    const reader = makeList([]);
+
+    reader.loadPersisted();
+
+    expect(writer.names().aliases.sol).toBe('gpt-6.2-sol');
+    expect(reader.names().aliases.sol).toBe('gpt-6.2-sol');
+  });
+
+  test('loads a state file written without an alias table', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        read_at: 1,
+        codex_version: null,
+        models: listCase('tie').models
+      })
+    );
+    const list = makeList([]);
+
+    list.loadPersisted();
+
+    expect(list.status().source).toBe('list');
+    expect(list.names().aliases.sol).toBe(CODEX_SEED_NAMES.aliases.sol);
+  });
+
   test('falls back to the seed alias for a family the first list lacks', async () => {
     const list = makeList([listCase('missing family').models]);
 
