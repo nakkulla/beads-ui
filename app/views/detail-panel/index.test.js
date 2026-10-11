@@ -147,6 +147,68 @@ function renderExternalDetail(options = {}) {
 }
 
 /**
+ * Render the external-wait detail with an action_required reason and an
+ * optional live conversation record (ASCII token: false for no record).
+ *
+ * @param {Record<string, any>|null} conversation
+ * @returns {HTMLElement}
+ */
+function renderResolutionDetail(conversation) {
+  const record = externalWait();
+  const { mount } = renderExternalDetail({
+    pipelineStore: {
+      get: () => [
+        {
+          root_dir: '/repo',
+          external_waits: [record],
+          wait_reasons: [
+            {
+              kind: 'external_job',
+              subject: { root_dir: '/repo', bead_id: 'A-1' },
+              headline: 'wallace 작업 42 · RUNNING',
+              verdict: 'action_required',
+              resolution: '사유 자체의 해결 문장',
+              targets: [],
+              actions: []
+            }
+          ]
+        }
+      ]
+    },
+    queueStore: {
+      get: () => ({
+        interactive_sessions: conversation ? { 'A-1:stop': conversation } : {}
+      })
+    }
+  });
+  return mount;
+}
+
+test('renders the live conversation resolution in the detail body', () => {
+  const mount = renderResolutionDetail({
+    bead_id: 'A-1',
+    kind: 'stop',
+    state: 'live',
+    settled_at: null,
+    tmux_session: 's',
+    tmux_window: 'w'
+  });
+
+  const text = mount.querySelector('.detail-external-wait')?.textContent;
+
+  expect(text).toContain('[세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러');
+  expect(text).not.toContain('사유 자체의 해결 문장');
+});
+
+test('falls back to the reason resolution without a live conversation', () => {
+  const mount = renderResolutionDetail(null);
+
+  const text = mount.querySelector('.detail-external-wait')?.textContent;
+
+  expect(text).toContain('해결 — 사유 자체의 해결 문장');
+});
+
+/**
  * A pending Slurm job with capacity material (UI-qbgj §3.1).
  *
  * @param {Record<string, any>} [patch]
