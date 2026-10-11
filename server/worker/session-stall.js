@@ -3,10 +3,11 @@
  * and the stop label the conversation entry block and notifications print.
  *
  * Current targets are a string `awaiting_user` park (routed by the caller) and
- * a recovery wait whose reason is `authority` or `no_progress`. Waits recorded
- * under the retired schema-1 reasons stay targets read-compatibly so a Bead
- * waiting at deploy time is not abandoned: `verification`, `reconcile`, a
- * session-declared `unclassified`, and a `prerequisite` with no blockers.
+ * a recovery wait whose reason is `authority`, `no_progress` or `credential`.
+ * Waits recorded under the retired schema-1 reasons stay targets
+ * read-compatibly so a Bead waiting at deploy time is not abandoned:
+ * `verification`, `reconcile`, a session-declared `unclassified`, and a
+ * `prerequisite` with no blockers.
  */
 
 /**
@@ -16,7 +17,8 @@
  */
 export const CONVERSATION_RECOVERY_REASONS = new Set([
   'authority',
-  'no_progress'
+  'no_progress',
+  'credential'
 ]);
 
 /**

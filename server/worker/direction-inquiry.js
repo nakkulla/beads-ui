@@ -66,7 +66,7 @@ const ABSENT = '(없음)';
  * The first input of every Worker session conversation — 멈춤, 실패 and
  * 외부 작업 완료 alike (UI-18a5 §3.3) — quoted verbatim from dotfiles
  * `src/shared/skills/flow/workflow/references/execution-common.md`
- * (`## Worker 세션 대화`, commit `9e04a76d966994048d2e2e948b277adbce141db1`),
+ * (`## Worker 세션 대화`, commit `3b7a309fc5e01601325323e889b0f7e103b7a4d0`),
  * with no trailing newline. This is the TEMPLATE: beads-ui fills only the
  * conversation reason, the situation, and the two paths; `<원문>`,
  * `<결정 한 줄>` and `<한 줄>` belong to the session. beads-ui adds no
@@ -76,7 +76,7 @@ const ABSENT = '(없음)';
  */
 export const CONVERSATION_ENTRY_BLOCK = [
   '이 세션은 Worker 작업이 <대화 사유>에 이르러 지금 사용자와 대화하도록 다시 열렸다. 사용자는 이 tmux 창이나 Discord 스레드에서 답한다.',
-  '- 대화 사유: <멈춤 awaiting_user=<값> | 멈춤 recovery:<authority|no_progress> | 멈춤 recovery:<옛 사유> (옛 기록) | 실패 <클래스> · <원인 코드> | 외부 작업 완료 <wait_id>>',
+  '- 대화 사유: <멈춤 awaiting_user=<값> | 멈춤 recovery:<authority|no_progress|credential> | 멈춤 recovery:<옛 사유> (옛 기록) | 실패 <클래스> · <원인 코드> | 외부 작업 완료 <wait_id>>',
   '- 상황: <세션이 남긴 문장 | 실패 진단 | 외부 작업 완료 블록>',
   '- 구현 워크트리: <path>',
   '- target_base 체크아웃: <path>',
@@ -97,7 +97,7 @@ export const CONVERSATION_ENTRY_BLOCK = [
 
 /** The server-owned slots; every other `<…>` belongs to the session. */
 const SLOT_REASON_LINE =
-  '- 대화 사유: <멈춤 awaiting_user=<값> | 멈춤 recovery:<authority|no_progress> | 멈춤 recovery:<옛 사유> (옛 기록) | 실패 <클래스> · <원인 코드> | 외부 작업 완료 <wait_id>>';
+  '- 대화 사유: <멈춤 awaiting_user=<값> | 멈춤 recovery:<authority|no_progress|credential> | 멈춤 recovery:<옛 사유> (옛 기록) | 실패 <클래스> · <원인 코드> | 외부 작업 완료 <wait_id>>';
 const SLOT_REASON = '<대화 사유>';
 const SLOT_SITUATION_LINE =
   '- 상황: <세션이 남긴 문장 | 실패 진단 | 외부 작업 완료 블록>';

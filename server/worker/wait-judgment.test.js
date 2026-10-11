@@ -751,17 +751,33 @@ describe('recovery wait judgment', () => {
     expect(result.map((row) => row.kind)).toEqual(['prerequisite']);
   });
 
-  test.each(['provider', 'credential'])(
-    'keeps historic %s recovery out of overdue judgment',
-    (token) => {
-      const result = run({
-        queue: queue({ attempts: { a: recoveryAttempt(token) } }),
-        now: NOW + 24 * 60 * MINUTE
-      }).wait_reasons[0];
+  test('keeps historic provider recovery out of overdue judgment', () => {
+    const result = run({
+      queue: queue({ attempts: { a: recoveryAttempt('provider') } }),
+      now: NOW + 24 * 60 * MINUTE
+    }).wait_reasons[0];
 
-      expect(result.verdict).toBe('normal');
-    }
-  );
+    expect(result.verdict).toBe('normal');
+  });
+
+  test('requires a session conversation for credential recovery', () => {
+    const material = queue({ attempts: { a: recoveryAttempt('credential') } });
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result).toMatchObject({
+      kind: 'recovery',
+      verdict: 'action_required',
+      verdict_reason: { code: 'decision' },
+      resolution: '[세션에서 이어가기]로 같은 세션과 대화해 답한다'
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({
+        op: 'worker-resolve-in-session',
+        label: '[세션에서 이어가기]'
+      })
+    );
+  });
 
   test.each(['future_reason', 'constructor'])(
     'keeps unknown recovery reason %s raw',
