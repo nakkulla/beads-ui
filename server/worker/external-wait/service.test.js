@@ -1215,3 +1215,23 @@ describe('takeover (UI-qbgj §3.4)', () => {
     expect(run).not.toHaveBeenCalled();
   });
 });
+
+// UI-9w5l §5 unverified premise: `wait_key_missing` offers `[관찰 중단]`
+// (detached) and `[대기 해제]` (completing) as its resolving op, so stop must
+// clear a running record whose Bead lost its key. The runtime unset reads the
+// key back and accepts an already-absent key.
+test.each(/** @type {const} */ (['detached', 'completing']))(
+  'clears a keyless running record with stop at %s',
+  async (stage) => {
+    const record = store.insert(WORKSPACE, { ...input(), stage });
+    bd.unsetExternalWait.mockImplementationOnce(async () => {});
+
+    const result = await service.stop(WORKSPACE, record.wait_id);
+
+    expect(result).toMatchObject({ wait_id: record.wait_id, stage: 'stopped' });
+    expect(store.get(WORKSPACE, record.wait_id)).toMatchObject({
+      stage: 'stopped',
+      last_error: null
+    });
+  }
+);

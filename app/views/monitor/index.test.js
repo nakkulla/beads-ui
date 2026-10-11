@@ -5385,7 +5385,9 @@ describe('views/monitor resolve action while an inquiry lives (UI-ri8n)', () => 
         tmux_window: bead_id,
         state: 'live',
         settled_at: null,
-        launched_at: NOW - 1000
+        launched_at: NOW - 1000,
+        // A bridged conversation answers the click itself (UI-9w5l §3.5).
+        discord_url: 'https://discord.com/channels/1/2'
       }
     };
   }
@@ -5447,6 +5449,29 @@ describe('views/monitor resolve action while an inquiry lives (UI-ri8n)', () => 
     const button = mount.querySelector('.rtile__resolve');
 
     expect(button !== null).toBe(drawn);
+  });
+
+  test('draws the running-tile button beside a live inquiry without a discord link', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          ...WAITING,
+          wait_reasons: [recoveryReason('A-1')],
+          interactive_sessions: {
+            'A-1:inquiry': {
+              ...liveInquiry('A-1')['A-1:inquiry'],
+              discord_url: null
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+    view.load();
+
+    const button = mount.querySelector('.rtile__resolve');
+
+    expect(button).not.toBeNull();
   });
 
   test.each([

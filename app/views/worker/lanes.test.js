@@ -5,7 +5,10 @@ import {
   formatTimestampLocal
 } from '../../utils/relative-time.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
-import { providerHoldBadgeText } from './gate-labels.js';
+import {
+  autoResumeRefusalBadge,
+  providerHoldBadgeText
+} from './gate-labels.js';
 import { bindQueueGraceSource } from './lane-model.js';
 import {
   JUDGEMENT_CHIP_KEYS,
@@ -8910,5 +8913,188 @@ describe('external sub-job summary in slot three (UI-q15q §3.5)', () => {
     expect(
       card.querySelector('.external-spawned__counts')?.textContent
     ).toContain('하위 잡 2개');
+  });
+});
+
+describe('해결 줄 (UI-9w5l §3.3)', () => {
+  const RESOLUTION = '[세션에서 이어가기]로 같은 세션과 대화해 답한다';
+
+  /** @returns {string[]} */
+  function popupLines() {
+    return Array.from(mount.querySelectorAll('.chip-popover__lines > li')).map(
+      (li) => li.textContent?.trim() || ''
+    );
+  }
+
+  test('renders the resolution line first for an action_required reason', () => {
+    render(
+      waitStatusBadge({
+        wait_reasons: [
+          waitReason({
+            kind: 'recovery',
+            verdict: 'action_required',
+            verdict_reason: {
+              code: 'decision',
+              message: '사용자의 답변이 필요함'
+            },
+            resolution: RESOLUTION
+          })
+        ]
+      }),
+      mount
+    );
+
+    expect(popupLines().slice(0, 2)).toEqual([
+      `해결 — ${RESOLUTION}`,
+      '사용자의 답변이 필요함'
+    ]);
+  });
+
+  test('renders the resolution line first on an external reason popup', () => {
+    const lines = waitReasonLines(
+      waitReason({
+        kind: 'external_job',
+        verdict: 'action_required',
+        verdict_reason: { code: 'wait_key_missing', message: '키 없음' },
+        resolution: '[관찰 중단]으로 어긋난 대기를 정리한다'
+      })
+    );
+
+    render(html`${lines.badge}`, mount);
+
+    expect(popupLines()[0]).toBe(
+      '해결 — [관찰 중단]으로 어긋난 대기를 정리한다'
+    );
+  });
+
+  test('prefers the live conversation resolution over the reason resolution', () => {
+    render(
+      waitStatusBadge({
+        wait_reasons: [
+          waitReason({
+            kind: 'recovery',
+            verdict: 'action_required',
+            verdict_reason: { code: 'decision', message: '답 대기' },
+            resolution: RESOLUTION
+          })
+        ],
+        interactive_sessions: [
+          interactiveView({ kind: 'resolve', discord_url: null })
+        ]
+      }),
+      mount
+    );
+
+    expect(popupLines()[0]).toBe(
+      '해결 — [세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
+    );
+  });
+
+  test('points the resolution line at Discord when the conversation has a link', () => {
+    render(
+      waitStatusBadge({
+        wait_reasons: [
+          waitReason({
+            kind: 'recovery',
+            verdict: 'action_required',
+            resolution: RESOLUTION
+          })
+        ],
+        interactive_sessions: [
+          interactiveView({ discord_url: 'https://discord.com/channels/1/2' })
+        ]
+      }),
+      mount
+    );
+
+    expect(popupLines()[0]).toBe('해결 — ↗ Discord에서 대화를 이어간다');
+  });
+
+  test('draws no resolution line for a reason without one', () => {
+    render(
+      waitStatusBadge({
+        wait_reasons: [
+          waitReason({
+            kind: 'recovery',
+            verdict: 'action_required',
+            verdict_reason: {
+              code: 'decision',
+              message: '사용자의 답변이 필요함'
+            }
+          })
+        ]
+      }),
+      mount
+    );
+
+    expect(popupLines().some((line) => line.startsWith('해결 —'))).toBe(false);
+  });
+
+  test('draws no resolution line for a normal reason', () => {
+    render(
+      waitStatusBadge({
+        wait_reasons: [waitReason({ resolution: RESOLUTION })]
+      }),
+      mount
+    );
+
+    expect(popupLines().some((line) => line.startsWith('해결 —'))).toBe(false);
+  });
+
+  test('puts the resolution line before the release in the detail body', () => {
+    const lines = waitReasonLines(
+      waitReason({
+        kind: 'external_job',
+        verdict: 'action_required',
+        verdict_reason: { code: 'wait_key_missing', message: '키 없음' },
+        release: '재개 중',
+        resolution: '상세 패널의 [대기 해제]로 어긋난 대기를 정리한다'
+      }),
+      { surface: 'detail' }
+    );
+
+    render(html`${lines.body}`, mount);
+
+    expect(
+      Array.from(mount.querySelectorAll('.wait-reason__lines > div')).map(
+        (div) => div.className.trim()
+      )
+    ).toEqual([
+      'wait-reason__headline',
+      'wait-reason__resolution',
+      'wait-reason__release'
+    ]);
+    expect(
+      mount.querySelector('.wait-reason__resolution')?.textContent?.trim()
+    ).toBe('해결 — 상세 패널의 [대기 해제]로 어긋난 대기를 정리한다');
+  });
+
+  test('moves the auto-resume refusal sentence into the resolution line', () => {
+    const hold = {
+      kind: /** @type {const} */ ('outage'),
+      detail: 'overloaded_529',
+      auto_resume_refusal: {
+        kind: /** @type {const} */ ('permanent'),
+        next_at: null,
+        reason: 'worktree_missing'
+      }
+    };
+    const badge = autoResumeRefusalBadge(hold);
+
+    render(
+      waitStatusBadge({
+        held_kind: 'provider_hold',
+        hold,
+        text: badge?.text,
+        verdict: badge?.verdict,
+        release: badge?.release
+      }),
+      mount
+    );
+
+    expect(popupLines()[0]).toBe(
+      '해결 — ↻ 이어하기로 직접 재개하거나 ✕로 내린다'
+    );
+    expect(popupLines()[1]).toBe('자동 재개를 다시 시도하지 않음');
   });
 });

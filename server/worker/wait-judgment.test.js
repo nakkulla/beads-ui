@@ -427,9 +427,12 @@ describe('recovery wait judgment', () => {
           code: 'decision',
           message:
             '대화 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답'
-        },
-        actions: DISCARD_ONLY
+        }
       });
+      expect(result.actions.map((/** @type {any} */ a) => a.op)).toEqual([
+        'worker-resolve-in-session',
+        'worker-discard'
+      ]);
     }
   );
 
@@ -547,6 +550,7 @@ describe('recovery wait judgment', () => {
       }
     });
     expect(ops(result)).toEqual([
+      'worker-resolve-in-session',
       'worker-conversation-handoff',
       'worker-discard'
     ]);
@@ -560,7 +564,7 @@ describe('recovery wait judgment', () => {
       const result = run({ queue: material }).wait_reasons[0];
 
       expect(result.verdict).toBe('action_required');
-      expect(result.actions[0]).toMatchObject({
+      expect(result.actions[1]).toMatchObject({
         op: 'worker-conversation-handoff',
         label: '[워커로 이어가기]',
         payload: { root_dir: ROOT, bead_id: 'UI-consumer', attempt_id: 'a' }
@@ -1358,21 +1362,43 @@ describe('wait judgment prerequisites', () => {
   });
 
   test.each([
-    { status: 'blocked' },
-    { status: 'deferred' },
-    { status: 'open', labels: ['worker-ineligible'] }
-  ])('requires action for an open blocker with facts %j', (blocker) => {
-    const result = run({
-      queue: serial,
-      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] },
-      blocker_facts: { 'UI-blocker': blocker }
-    });
+    [
+      'local blocked',
+      { blocker_facts: { 'UI-blocker': { status: 'blocked' } } }
+    ],
+    [
+      'local deferred',
+      { blocker_facts: { 'UI-blocker': { status: 'deferred' } } }
+    ],
+    [
+      'local worker-ineligible',
+      {
+        blocker_facts: {
+          'UI-blocker': { status: 'in_progress', labels: ['worker-ineligible'] }
+        }
+      }
+    ],
+    [
+      'foreign deferred readback',
+      {
+        bead_blocked_by: { 'UI-consumer': ['OTHER-a'] },
+        foreign_readback: { 'OTHER-a': { rig: 'OTHER', status: 'deferred' } }
+      }
+    ]
+  ])(
+    'keeps a prerequisite wait normal for blocked, deferred and worker-ineligible blockers (%s)',
+    (_label, facts) => {
+      const result = run({
+        queue: serial,
+        bead_blocked_by: { 'UI-consumer': ['UI-blocker'] },
+        ...facts
+      }).wait_reasons[0];
 
-    expect(result.wait_reasons[0]).toMatchObject({
-      verdict: 'action_required',
-      verdict_reason: { code: 'blocker_needs_human' }
-    });
-  });
+      expect(result.kind).toMatch(/^prerequisite/);
+      expect(result.verdict).toBe('normal');
+      expect(result.verdict_reason).toBeUndefined();
+    }
+  );
 
   test('keeps an unknown foreign blocker unjudged despite a frozen blocked status', () => {
     const attempt = waiting({
@@ -1390,18 +1416,6 @@ describe('wait judgment prerequisites', () => {
       headline: '',
       release: '다른 저장소 선행이 닫히면 자동 복귀'
     });
-  });
-
-  test('uses a foreign readback for an action verdict', () => {
-    const result = run({
-      queue: serial,
-      bead_blocked_by: { 'UI-consumer': ['OTHER-a'] },
-      foreign_readback: { 'OTHER-a': { rig: 'OTHER', status: 'deferred' } }
-    });
-
-    expect(result.wait_reasons[0].verdict_reason?.code).toBe(
-      'blocker_needs_human'
-    );
   });
 
   test('omits a legacy base movement wait reason', () => {
@@ -1738,7 +1752,6 @@ describe('wait-judge runtime', () => {
         snapshot: () => queue(),
         claimWaitNotifications: () => []
       }),
-      notifier: /** @type {any} */ ({}),
       listRecords: () => [record],
       requestSnapshot: /** @type {any} */ (
         async () => ({ ok: true, snapshot: {} })
@@ -1771,7 +1784,6 @@ describe('wait-judge runtime', () => {
         snapshot: () => queue(),
         claimWaitNotifications: () => []
       }),
-      notifier: /** @type {any} */ ({}),
       requestSnapshot: /** @type {any} */ (
         async () => ({ ok: true, snapshot: {} })
       ),
@@ -2265,6 +2277,50 @@ describe('wait judgment takeover (UI-qbgj §3.4)', () => {
     }
   );
 
+  /** @param {string} stage */
+  function unresolvedTakeover(stage) {
+    return judged({
+      stage,
+      jobs: [
+        pendingJob({
+          takeover: {
+            state: 'unknown',
+            requested_at: new Date(NOW - TAKEOVER_SETTLE_MS).toISOString(),
+            cpus: 16,
+            mem_gb: 64
+          }
+        })
+      ]
+    });
+  }
+
+  test.each(['hold', 'detached'])(
+    'projects the session continue op on an unresolved takeover at %s',
+    (stage) => {
+      const result = unresolvedTakeover(stage);
+
+      expect(result.actions).toContainEqual(
+        expect.objectContaining({
+          op: 'worker-resolve-in-session',
+          label: '[세션에서 이어가기]',
+          placement: 'card',
+          payload: {
+            root_dir: ROOT,
+            bead_id: 'UI-consumer',
+            wait_id: 'w-0123456789ab'
+          }
+        })
+      );
+    }
+  );
+
+  test('replaces the resume release on an unresolved takeover', () => {
+    const result = unresolvedTakeover('hold');
+
+    expect(result.release).not.toBe('완료되면 같은 세션을 이어간다');
+    expect(result.resolution).toContain('[세션에서 이어가기]');
+  });
+
   test('names a local run by its sjob id in the headline', () => {
     const result = judged({
       jobs: [
@@ -2289,5 +2345,215 @@ describe('wait judgment takeover (UI-qbgj §3.4)', () => {
     });
 
     expect(result.headline).toBe('wallace 작업 L003 · RUNNING · 경과 3h12m');
+  });
+});
+
+describe('action_required invariant (UI-9w5l §3.1)', () => {
+  const KEY = { 'UI-consumer': { external_wait: 'w-0123456789ab' } };
+  const SETTLED_TAKEOVER = {
+    state: 'unknown',
+    requested_at: new Date(NOW - TAKEOVER_SETTLE_MS).toISOString(),
+    cpus: 16,
+    mem_gb: 64
+  };
+  const PENDING_SLURM = {
+    adapter: 'slurm',
+    ssh_host: 'wallace',
+    job_id: '249043',
+    submitted_at: new Date(NOW - 192 * MINUTE).toISOString(),
+    log_path: '/logs/job.log',
+    state: 'PENDING',
+    terminal: null,
+    takeover: SETTLED_TAKEOVER
+  };
+
+  /** @param {string} reason */
+  function stalled(reason) {
+    return waiting({
+      cause: 'session_ended_unresolved',
+      cause_detail: {
+        recovery: {
+          classification: 'session_recovery_wait',
+          disposition: 'wait',
+          reason,
+          policy_schema: 1
+        }
+      }
+    });
+  }
+
+  /** @param {Record<string, any>} record */
+  function liveInquiry(record) {
+    return {
+      'UI-consumer:inquiry': {
+        bead_id: 'UI-consumer',
+        kind: 'inquiry',
+        state: 'live',
+        settled_at: null,
+        ...record
+      }
+    };
+  }
+
+  /** @type {Array<[string, Record<string, any>]>} */
+  const PRODUCERS = [
+    [
+      'stalled recovery without a live conversation',
+      { queue: queue({ attempts: { a: stalled('authority') } }) }
+    ],
+    [
+      'stalled recovery with a legacy inquiry at question',
+      {
+        queue: queue({
+          attempts: { a: stalled('verification') },
+          interactive_sessions: liveInquiry({ turn_state: 'question' })
+        })
+      }
+    ],
+    [
+      'stalled recovery with a conversation waiting for the answer',
+      {
+        queue: queue({
+          attempts: { a: stalled('authority') },
+          interactive_sessions: liveInquiry({
+            turn_state: 'limit',
+            conversation: {
+              stop: 'recovery:authority',
+              processed_message_at: null,
+              result: null,
+              handoff: null
+            }
+          })
+        })
+      }
+    ],
+    [
+      'parked decision without a live conversation',
+      {
+        queue: queue({
+          attempts: {
+            a: waiting({
+              status: 'parked',
+              cause_detail: { awaiting_user: '방향 확인' }
+            })
+          }
+        })
+      }
+    ],
+    [
+      'operation recovery decision',
+      {
+        queue: queue({
+          repo_operations: {
+            op: {
+              state: 'failed',
+              subjects: [{ bead_id: 'UI-consumer' }],
+              finished_at: NOW - MINUTE,
+              failure: { code: 'script_failed' },
+              recovery: { disposition: 'wait', reason: 'unclassified' }
+            }
+          }
+        })
+      }
+    ],
+    [
+      'unresolved takeover at hold',
+      {
+        external_waits: [external({ jobs: [PENDING_SLURM] })],
+        blocker_facts: KEY
+      }
+    ],
+    [
+      'unresolved takeover on a detached record without its key',
+      {
+        external_waits: [external({ stage: 'detached', jobs: [PENDING_SLURM] })]
+      }
+    ],
+    [
+      'worker-owned failed resume',
+      {
+        external_waits: [
+          external({
+            stage: 'completing',
+            resume: { mode: 'fork', error: 'spawn_failed' }
+          })
+        ],
+        blocker_facts: KEY
+      }
+    ],
+    [
+      'session-owned failed resume',
+      {
+        external_waits: [
+          external({
+            owner_kind: 'session',
+            stage: 'completing',
+            resume: { mode: 'session', error: 'tmux_unavailable' }
+          })
+        ],
+        blocker_facts: KEY
+      }
+    ],
+    [
+      'detached record without its key',
+      { external_waits: [external({ stage: 'detached' })] }
+    ],
+    [
+      'completing record without its key',
+      {
+        external_waits: [
+          external({ stage: 'completing', owner_kind: 'session' })
+        ]
+      }
+    ],
+    [
+      'detached record whose key names another wait',
+      {
+        external_waits: [external({ stage: 'detached' })],
+        blocker_facts: { 'UI-consumer': { external_wait: 'w-ffffffffffff' } }
+      }
+    ],
+    ['leftover key without a record', { blocker_facts: KEY }]
+  ];
+
+  test.each(PRODUCERS)(
+    'pairs every action_required reason with a resolving op and a resolution (%s)',
+    (_label, input) => {
+      const required = run(input).wait_reasons.filter(
+        (reason) => reason.verdict === 'action_required'
+      );
+
+      expect(required.length).toBeGreaterThan(0);
+      for (const reason of required) {
+        expect(reason.resolution).toEqual(expect.any(String));
+        expect(reason.resolution?.trim()).not.toBe('');
+        expect(
+          reason.actions.some(
+            (action) =>
+              !['worker-discard', 'external_wait_check'].includes(action.op)
+          )
+        ).toBe(true);
+      }
+    }
+  );
+
+  test('points a completing record without its key at the detail release', () => {
+    const result = run({
+      external_waits: [external({ stage: 'completing', owner_kind: 'worker' })]
+    }).wait_reasons[0];
+
+    expect(result.verdict_reason?.code).toBe('wait_key_missing');
+    expect(result.resolution).toContain('상세');
+    expect(result.resolution).toContain('[대기 해제]');
+  });
+
+  test('leaves the resolution off a normal reason', () => {
+    const result = run({
+      external_waits: [external()],
+      blocker_facts: KEY
+    }).wait_reasons[0];
+
+    expect(result.verdict).toBe('normal');
+    expect(result).not.toHaveProperty('resolution');
   });
 });

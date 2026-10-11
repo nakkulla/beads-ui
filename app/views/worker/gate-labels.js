@@ -95,7 +95,9 @@ export function autoResumeText(value) {
  * so the current badge stays (fail-quiet).
  *
  * @param {HoldTile|null|undefined} hold
- * @returns {{ text: string, verdict: 'action_required'|null, release: string, next_at: number|null }|null}
+ * @returns {{ text: string, verdict: 'action_required'|null, release: string, resolution?: string, next_at: number|null }|null} -
+ * `resolution` names the buttons that resolve an `action_required` refusal
+ * (UI-9w5l §3.2); the popup draws it as its first `해결 —` line.
  */
 export function autoResumeRefusalBadge(hold) {
   const refusal = hold ? hold.auto_resume_refusal : undefined;
@@ -116,8 +118,8 @@ export function autoResumeRefusalBadge(hold) {
       .filter((part) => part.length > 0)
       .join(' '),
     verdict: 'action_required',
-    release:
-      '자동 재개를 다시 시도하지 않음 — ↻ 이어하기로 직접 재개하거나 ✕로 내린다',
+    release: '자동 재개를 다시 시도하지 않음',
+    resolution: '↻ 이어하기로 직접 재개하거나 ✕로 내린다',
     next_at: null
   };
 }

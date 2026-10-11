@@ -103,15 +103,6 @@ describe('wait notification suppression', () => {
     return { input, store, spawn, recordTimelineEvent, timeline };
   }
 
-  test('sends a repeated reason key only once', async () => {
-    const { input, spawn } = fixture();
-
-    await notifyWaitReasons(input);
-    await notifyWaitReasons({ ...input, now: 2000 });
-
-    expect(spawn.calls).toHaveLength(1);
-  });
-
   test('preserves redispatch suppression while refreshing wait judgments', async () => {
     const { input, store } = fixture();
     const key = 'UI-a:redispatch:provider_gate';
@@ -121,6 +112,123 @@ describe('wait notification suppression', () => {
     await notifyWaitReasons({ ...input, wait_reasons: [], now: 2000 });
 
     expect(store.snapshot('/repo').wait_notified).toEqual({ [key]: 500 });
+  });
+
+  /**
+   * One wait-reason set per verdict path the old `⚠ … 지연` push covered.
+   *
+   * @param {ReturnType<typeof fixture>} context
+   * @param {string} path_name
+   */
+  function verdictReasons(context, path_name) {
+    if (path_name === 'action_required') {
+      return context.input.wait_reasons;
+    }
+    if (path_name === 'overdue') {
+      return judgeWaitReasons({
+        root_dir: '/repo',
+        now: 1000,
+        queue: {},
+        external_waits: [
+          {
+            wait_id: 'w-0123456789ab',
+            root_dir: '/repo',
+            bead_id: 'UI-a',
+            owner_kind: 'worker',
+            stage: 'hold',
+            error_count: 3,
+            last_error: 'ssh failed',
+            next_observation_at: new Date(2000).toISOString(),
+            jobs: []
+          }
+        ]
+      }).wait_reasons;
+    }
+    // A fork inquiry launched before UI-nuwy kept its delay push until now.
+    context.store.appendAttempt('/repo', {
+      expected_revision: context.store.snapshot('/repo').revision,
+      attempt: {
+        attempt_id: 'recovery',
+        bead_id: 'UI-a',
+        status: 'waiting',
+        finished_at: 1000,
+        cause_detail: {
+          recovery: {
+            reason: 'verification',
+            classification: 'session_recovery_wait'
+          },
+          inquiry: { session: 'launched', mode: 'fork', session_id: 'abc' }
+        }
+      }
+    });
+    context.store.recordInteractiveSession('/repo', {
+      bead_id: 'UI-a',
+      kind: 'inquiry',
+      provider: 'codex',
+      pane_id: '%1',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-a',
+      launched_at: 1000,
+      state: 'live',
+      mode: 'fork',
+      turn_state: 'question'
+    });
+    return judgeWaitReasons({
+      root_dir: '/repo',
+      queue: context.store.snapshot('/repo'),
+      now: 1000
+    }).wait_reasons;
+  }
+
+  test.each(['action_required', 'overdue', 'legacy fork inquiry'])(
+    'sends no notification for any wait reason verdict (%s)',
+    async (path_name) => {
+      const context = fixture();
+      const wait_reasons = verdictReasons(context, path_name);
+
+      await notifyWaitReasons({ ...context.input, wait_reasons });
+
+      expect(wait_reasons.some((reason) => reason.verdict !== 'normal')).toBe(
+        true
+      );
+      expect(context.spawn.calls).toHaveLength(0);
+      expect(context.store.snapshot('/repo').wait_notified).toEqual({});
+      expect(context.recordTimelineEvent).not.toHaveBeenCalled();
+    }
+  );
+
+  test('keeps external wait completion events and redispatch keys', async () => {
+    const { input, store, spawn, recordTimelineEvent } = fixture();
+    const redispatch = 'UI-a:redispatch:provider_gate';
+    const legacy_reason = JSON.stringify(['UI-a', 'recovery', 'decision']);
+    store.claimWaitNotifications('/repo', [redispatch, legacy_reason], 500);
+    await notifyExternalWaitCompleted({
+      workspace: '/repo',
+      repo: '/repo',
+      record: /** @type {any} */ ({
+        wait_id: 'w-0123456789ab',
+        bead_id: 'UI-a',
+        jobs: [{ adapter: 'process', pid: 1234, state: 'COMPLETED' }]
+      }),
+      store,
+      notifier: makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl }),
+      now: 600
+    });
+
+    await notifyWaitReasons(input);
+
+    expect(store.snapshot('/repo').wait_notified).toEqual({
+      [redispatch]: 500,
+      'external_wait:w-0123456789ab:complete': 600
+    });
+    expect(spawn.calls).toHaveLength(1);
+    expect(recordTimelineEvent).toHaveBeenCalledExactlyOnceWith(
+      '/repo',
+      expect.objectContaining({
+        kind: 'wait_notified',
+        seq: 'external_wait:w-0123456789ab:complete'
+      })
+    );
   });
 
   test('sends no park or delay push for a parked decision', async () => {
@@ -205,93 +313,6 @@ describe('wait notification suppression', () => {
       expect(spawn.calls).toHaveLength(0);
     }
   );
-
-  /**
-   * A fork inquiry launched before UI-nuwy: no `conversation`, still live.
-   *
-   * @param {ReturnType<typeof fixture>['store']} store
-   */
-  function recordLegacyInquiry(store) {
-    store.recordInteractiveSession('/repo', {
-      bead_id: 'UI-a',
-      kind: 'inquiry',
-      provider: 'codex',
-      pane_id: '%1',
-      tmux_session: 'bdui-inquiry',
-      tmux_window: 'UI-a',
-      launched_at: 1000,
-      state: 'live',
-      mode: 'fork',
-      turn_state: 'question'
-    });
-  }
-
-  test('keeps the old delay push and inquiry line for a live legacy fork inquiry', async () => {
-    const { input, store, spawn } = fixture();
-    store.appendAttempt('/repo', {
-      expected_revision: store.snapshot('/repo').revision,
-      attempt: {
-        attempt_id: 'recovery',
-        bead_id: 'UI-a',
-        status: 'waiting',
-        finished_at: 1000,
-        cause_detail: {
-          recovery: {
-            reason: 'verification',
-            classification: 'session_recovery_wait'
-          },
-          inquiry: {
-            session: 'launched',
-            mode: 'fork',
-            session_id: 'abcdef1234'
-          }
-        }
-      }
-    });
-    recordLegacyInquiry(store);
-
-    await notifyWaitReasons({
-      ...input,
-      wait_reasons: judgeWaitReasons({
-        root_dir: '/repo',
-        queue: store.snapshot('/repo'),
-        now: 1000
-      }).wait_reasons
-    });
-
-    expect(spawn.calls).toHaveLength(1);
-    expect(messageOf(spawn.last())).toContain('세션이 멈춤');
-    expect(messageOf(spawn.last())).toContain(
-      '\n질의 세션: launched · fork abcdef12'
-    );
-  });
-
-  test('keeps the park delay push while a live legacy fork inquiry asks', async () => {
-    const { input, store, spawn } = fixture();
-    store.appendAttempt('/repo', {
-      expected_revision: store.snapshot('/repo').revision,
-      attempt: {
-        attempt_id: 'parked',
-        bead_id: 'UI-a',
-        status: 'parked',
-        finished_at: 1000,
-        cause_detail: { awaiting_user: '다음 방향 확인' }
-      }
-    });
-    recordLegacyInquiry(store);
-
-    await notifyWaitReasons({
-      ...input,
-      wait_reasons: judgeWaitReasons({
-        root_dir: '/repo',
-        queue: store.snapshot('/repo'),
-        now: 1000
-      }).wait_reasons
-    });
-
-    expect(spawn.calls).toHaveLength(1);
-    expect(messageOf(spawn.last())).toContain('⚠ repo UI-a 지연');
-  });
 
   test('notifies external completion once across overdue scans and reload', async () => {
     const { input, store, spawn, recordTimelineEvent } = fixture();
@@ -455,124 +476,6 @@ describe('wait notification suppression', () => {
     expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(0);
     expect(spawn.calls).toHaveLength(0);
   });
-
-  test('sends a recurring reason again after disappearance', async () => {
-    const { input, spawn } = fixture();
-
-    await notifyWaitReasons(input);
-    await notifyWaitReasons({ ...input, wait_reasons: [], now: 2000 });
-    await notifyWaitReasons({ ...input, now: 3000 });
-
-    expect(spawn.calls).toHaveLength(2);
-  });
-
-  test('records suppression silently when notifications are disabled', async () => {
-    const { input, spawn, store, recordTimelineEvent } = fixture(false);
-
-    await notifyWaitReasons(input);
-
-    expect(spawn.calls).toEqual([]);
-    expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(1);
-    expect(recordTimelineEvent).not.toHaveBeenCalled();
-  });
-
-  test('keeps suppression keys across a store reload', async () => {
-    const { input, spawn } = fixture();
-    await notifyWaitReasons(input);
-
-    await notifyWaitReasons({ ...input, store: createQueueStore(), now: 2000 });
-
-    expect(spawn.calls).toHaveLength(1);
-  });
-
-  test('does not rewrite unchanged suppression state', async () => {
-    const { input, store } = fixture();
-    await notifyWaitReasons(input);
-    const revision = store.snapshot('/repo').revision;
-
-    await notifyWaitReasons({ ...input, now: 2000 });
-
-    expect(store.snapshot('/repo').revision).toBe(revision);
-  });
-
-  test('requests a bead timeline event only for an emitted notification', async () => {
-    const { input, recordTimelineEvent } = fixture();
-
-    await notifyWaitReasons(input);
-
-    expect(recordTimelineEvent).toHaveBeenCalledWith(
-      '/repo',
-      expect.objectContaining({
-        kind: 'wait_notified',
-        bead_id: 'UI-a',
-        at: 1000,
-        detail: 'recovery:decision'
-      })
-    );
-  });
-
-  test('persists the emitted wait notification through timeline validation', async () => {
-    const { input, timeline } = fixture();
-    const append = vi.spyOn(timeline, 'append');
-
-    await notifyWaitReasons(input);
-
-    expect(append).toHaveReturnedWith({
-      ok: true,
-      event: expect.objectContaining({
-        kind: 'wait_notified',
-        bead_id: 'UI-a',
-        at: 1000,
-        detail: 'recovery:decision'
-      })
-    });
-  });
-
-  test('leaves the timeline untouched when the notifier returns false', async () => {
-    const { input, timeline } = fixture(false);
-    const send = vi.spyOn(input.notifier, 'waitActionRequired');
-    const append = vi.spyOn(timeline, 'append');
-
-    await notifyWaitReasons(input);
-
-    expect(await send.mock.results[0].value).toBe(false);
-    expect(append).not.toHaveBeenCalled();
-  });
-
-  test('does not send a resolution notification', async () => {
-    const { input, spawn } = fixture();
-    await notifyWaitReasons(input);
-
-    await notifyWaitReasons({
-      ...input,
-      wait_reasons: input.wait_reasons.map((reason) => ({
-        ...reason,
-        verdict: 'normal'
-      }))
-    });
-
-    expect(spawn.calls).toHaveLength(1);
-  });
-
-  test.each(/** @type {const} */ (['waitOverdue', 'waitActionRequired']))(
-    'sends %s as one line and one argv argument',
-    async (method) => {
-      const spawn = makeFakeSpawn();
-      const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
-
-      await notifier[method]({
-        bead_id: 'UI-a',
-        kind: 'awaiting_user',
-        headline: '세션이 멈춤\n방향 확인',
-        verdict_reason: { code: 'decision', message: '사용자 답변 필요' },
-        repo: '/repos/example'
-      });
-
-      expect(spawn.last().args).toEqual([
-        '⚠ example UI-a 지연 · 세션이 멈춤 방향 확인 · 사용자 답변 필요'
-      ]);
-    }
-  );
 });
 
 /** The message is the last argument, and the only one after the argv. */

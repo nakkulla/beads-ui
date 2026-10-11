@@ -202,14 +202,15 @@ PENDING). It never affects completion or judgment. While a `▶ 바로 실행` i
 flight or its outcome is unknown, the Slurm job also carries
 `takeover: {state: 'pending'|'unknown', requested_at, cpus, mem_gb}`; a marker
 still present `TAKEOVER_SETTLE_MS` (5 minutes) after `requested_at` is judged
-`takeover_unresolved`. A taken-over job is replaced in place by
-`adapter: 'sjob_local'` carrying `ssh_host`, `local_id`, `pid`, `cpus`,
-`mem_gb`, `takeover_from: {job_id, at, cancel_failed}` and the last Slurm `name`
-and `spawned` (display only). Expected results contain path, existence, size and
-mtime; log and artifact contents are never projected. Cards attach live records
-(`hold`, `detached`, `completing`) to their consumer Bead. Missing
-metadata/records remain action-required wait reasons. Older servers omit the
-array.
+`takeover_unresolved`, whose reason carries a card `worker-resolve-in-session`
+op that opens the takeover resolve session (UI-9w5l §3.4). A taken-over job is
+replaced in place by `adapter: 'sjob_local'` carrying `ssh_host`, `local_id`,
+`pid`, `cpus`, `mem_gb`, `takeover_from: {job_id, at, cancel_failed}` and the
+last Slurm `name` and `spawned` (display only). Expected results contain path,
+existence, size and mtime; log and artifact contents are never projected. Cards
+attach live records (`hold`, `detached`, `completing`) to their consumer Bead.
+Missing metadata/records remain action-required wait reasons. Older servers omit
+the array.
 
 The corresponding `workspaces_state[]` row carries `external_wait_count` (live
 records) and `external_wait_attention_count` (live records whose
@@ -491,11 +492,19 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
 - `worker-resolve-in-session` is the one `[세션에서 이어가기]` click (UI-18a5
   §3.2): the server picks the launcher from the row — a park or recovery wait
   opens the same-session conversation, a session-owned `completing` external
-  wait the session resume, any other failure row the failure conversation. The
-  response adds `row: 'stop'|'failure'|'external'`; an `external` reply carries
-  `mode: 'session'` and `owner_tmux`, and its `command` is the resume command
-  the client copies on `owner_alive`/`owner_unverified`. A Bead whose
-  conversation still holds a handoff reservation of any kind is refused
+  wait the session resume, a hold/detached external wait whose takeover marker
+  outlived `TAKEOVER_SETTLE_MS` the failure conversation with
+  `failure_class: '확인 필요'` and `reason: 'takeover_unresolved'` (UI-9w5l
+  §3.4), any other failure row the failure conversation. Before choosing a row,
+  a live `interactive_sessions` record of the Bead (any kind) whose window is
+  alive is focused with that kind's pane marker and the reply is
+  `session: 'already_running'`, `row: 'conversation'` — nothing launches and no
+  record or wait state changes (UI-9w5l §3.5); a record without a live window
+  falls through to the row choice. The response adds
+  `row: 'stop'|'failure'|'external'|'takeover'|'conversation'`; an `external`
+  reply carries `mode: 'session'` and `owner_tmux`, and its `command` is the
+  resume command the client copies on `owner_alive`/`owner_unverified`. A Bead
+  whose conversation still holds a handoff reservation of any kind is refused
   `handoff_pending`.
 - `interactive_sessions` records of every kind (`resolve`, `inquiry`,
   `external_resume`) launched since UI-18a5 carry `conversation`
@@ -683,10 +692,11 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   The shared predicate selects `authority`, `verification`, `no_progress`,
   `reconcile`, session-declared `unclassified` (classification
   `session_recovery_wait`), and `prerequisite` with an empty blocks list. The
-  attempt's `cause_detail.inquiry` stores the launch outcome. The existing
-  `waitActionRequired` notification uses the `(bead, recovery, decision)` key
-  and appends `질의 세션: launched · fork <sid8>` or
-  `질의 세션: not_launched · <reason>`; inquiry failure permits a click retry.
+  attempt's `cause_detail.inquiry` stores the launch outcome; inquiry failure
+  permits a click retry. Wait-reason verdicts send no Discord notification
+  (UI-9w5l §3.6): `action_required` and `overdue` are read on the card, and the
+  judge only retires `wait_notified` keys an earlier wait-reason push left,
+  keeping the `external_wait:*` completion and `<bead>:redispatch:*` keys.
   Recovery subjects appear in
 
   blocked summaries, with `action_required` subjects counted once in
@@ -909,22 +919,31 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   is DROPPED rather than projected partially.
 - `wait_reasons[]` carries `kind`, `subject: { bead_id, root_dir }`, `headline`,
   `release`, optional timestamps, `verdict`, optional
-  `verdict_reason: { code, message }`, `targets`, `actions`, and `notify_plan`.
-  Kinds are `prerequisite`, `prerequisite_foreign`, `provider_hold`,
-  `retry_wait`, `awaiting_user`, `recovery`, and `external_job`. The first six
-  fold into four client labels: 선행 대기, 공급자 보류, 재시도 대기, 세션이
-  멈춤; external work keeps its own row. Verdicts remain `normal`, `overdue`,
-  and `action_required`. Only provider holds, scheduled retries, and external
-  jobs can be overdue. Recovery waits identified by `isSessionStalledRecovery`
-  always use `action_required/decision`, with the first `cause_detail.summary`
-  line after `blocker:` as the headline (fallback: recovery release sentence or
-  reason token). Their only actions are `worker-resolve-in-session` and
-  `worker-discard`, matching parked sessions. Remaining verdict codes are
-  `blocker_needs_human`, `reset_passed`, `probe_stalled`, `retry_stalled`,
+  `verdict_reason: { code, message }`, optional `resolution`, `targets`,
+  `actions`, and `notify_plan`. Every `action_required` reason carries at least
+  one resolving op (not `worker-discard`, not a re-read such as
+  `external_wait_check`) and `resolution: string`, a sentence naming that button
+  and whether it stands on the card or only in the detail panel (UI-9w5l §3.1);
+  a state no button resolves is never `action_required`. The card draws it as
+  the first `해결 — …` line of the 대기 판정 근거 popup and before `release` in
+  the detail body; a live conversation's line (Discord link, else the tmux
+  window) takes precedence. A missing `resolution` draws no line. Kinds are
+  `prerequisite`, `prerequisite_foreign`, `provider_hold`, `retry_wait`,
+  `awaiting_user`, `recovery`, and `external_job`. The first six fold into four
+  client labels: 선행 대기, 공급자 보류, 재시도 대기, 세션이 멈춤; external work
+  keeps its own row. Verdicts remain `normal`, `overdue`, and `action_required`.
+  Only provider holds, scheduled retries, and external jobs can be overdue.
+  Recovery waits identified by `isSessionStalledRecovery` always use
+  `action_required/decision`, with the first `cause_detail.summary` line after
+  `blocker:` as the headline (fallback: recovery release sentence or reason
+  token). Their only actions are `worker-resolve-in-session` and
+  `worker-discard`, matching parked sessions. Prerequisite waits are always
+  `normal`, whatever the blocker's status or labels (UI-9w5l §3.2). Remaining
+  verdict codes are `reset_passed`, `probe_stalled`, `retry_stalled`,
   `decision`, plus external-job codes `check_overdue`, `settle_overdue`,
-  `job_failed`, `observe_failing`, `service_down`, `monitor_stopped`,
-  `resume_failed`, `wait_key_missing`, and `wait_record_missing`. The retry
-  grace is five minutes; recovery never emits `settle_overdue`.
+  `observe_failing`, `service_down`, `monitor_stopped`, `resume_failed`,
+  `wait_key_missing`, `wait_record_missing`, and `takeover_unresolved`. The
+  retry grace is five minutes; recovery never emits `settle_overdue`.
 - `completion_status[bead_id].hold.reason` preserves verification failures:
   `verify_cmd_spawn_error` and `verify_cmd_timeout` display 검증 명령 실패 —
   환경 확인; ordinary verification failures display 검증 실패 — 수정 push 대기.

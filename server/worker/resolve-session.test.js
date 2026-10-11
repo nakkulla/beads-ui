@@ -482,6 +482,33 @@ describe('failure conversation entry block (UI-18a5 §3.3)', () => {
     expect(entry.endsWith('중첩 헤드리스 세션 기동.')).toBe(true);
     expect(entry).not.toContain('[정리 재시도]');
   });
+
+  test('states the three takeover dispositions for an unresolved takeover', () => {
+    const entry = buildFailureEntry({
+      failure: {
+        failure_class: '확인 필요',
+        reason: 'takeover_unresolved',
+        stage: null,
+        detail:
+          'Slurm job 249043 · ssh wallace · 바로 실행 요청 2026-10-11T00:00:00Z',
+        takeover: {
+          job_id: '249043',
+          ssh_host: 'wallace',
+          requested_at: '2026-10-11T00:00:00Z'
+        }
+      },
+      worktree: null,
+      checkout: REPO
+    });
+
+    expect(entry).toContain(
+      '- 대화 사유: 실패 확인 필요 · takeover_unresolved\n'
+    );
+    expect(entry).toContain('sjob takeover 249043 --result');
+    expect(entry).toContain('scontrol release 249043');
+    expect(entry).toContain('PID 증거가 있으면');
+    expect(entry).toContain('판정할 수 없으면');
+  });
 });
 
 describe('failureHandoffTarget (UI-18a5 §3.4)', () => {

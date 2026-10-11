@@ -220,7 +220,7 @@ function recordWriteState(records) {
 /**
  * Viewer-independent wait-judge lifecycle and memory-only observation clocks.
  *
- * @param {{ workspace: string, repo: string, store: Pick<ReturnType<import('./queue-store.js').createQueueStore>, 'snapshot'|'claimWaitNotifications'|'recordTimelineEvent'>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'>, listRecords?: (workspace: string) => Array<import('./external-wait/store.js').WaitRecord & { key_write_pending?: boolean }>, requestSnapshot?: typeof requestWorkspaceSnapshot, readFacts: (queue: any, workspace: WaitWorkspace) => Promise<{ bead_blocked_by?: Record<string, string[]>, blocker_facts?: Record<string, any>, foreign_readback?: Record<string, any>, account_catalog?: Record<string, any> }>, now?: () => number, onChanged?: (workspace: string) => void, subscribe?: typeof onQueueChanged }} deps
+ * @param {{ workspace: string, repo: string, store: Pick<ReturnType<import('./queue-store.js').createQueueStore>, 'snapshot'|'claimWaitNotifications'|'recordTimelineEvent'>, listRecords?: (workspace: string) => Array<import('./external-wait/store.js').WaitRecord & { key_write_pending?: boolean }>, requestSnapshot?: typeof requestWorkspaceSnapshot, readFacts: (queue: any, workspace: WaitWorkspace) => Promise<{ bead_blocked_by?: Record<string, string[]>, blocker_facts?: Record<string, any>, foreign_readback?: Record<string, any>, account_catalog?: Record<string, any> }>, now?: () => number, onChanged?: (workspace: string) => void, subscribe?: typeof onQueueChanged }} deps
  */
 export function createWaitJudge(deps) {
   const now = deps.now || Date.now;
@@ -299,13 +299,12 @@ export function createWaitJudge(deps) {
       });
       observed_at = result.observed_at;
       state = { wait_reasons: result.wait_reasons, external_waits };
+      // Wait-reason verdicts send nothing (UI-9w5l §3.6); this only retires
+      // suppression keys a past wait-reason push left behind.
       await notifyWaitReasons({
         workspace: deps.workspace,
-        repo: deps.repo,
-        wait_reasons: state.wait_reasons,
         now: now(),
-        store: deps.store,
-        notifier: deps.notifier
+        store: deps.store
       });
       if (epoch === run_epoch) {
         onChanged(deps.workspace);
@@ -2370,7 +2369,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     workspace: keyFor(workspace_root),
     repo,
     store: runtime.queueStore,
-    notifier: notify,
     listRecords: runtime.externalWait.listRecords,
     readFacts: async (queue, workspace) => {
       const ids = [

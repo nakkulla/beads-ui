@@ -1159,6 +1159,8 @@ describe('정리 멈춤 행의 짝 판정 (UI-18a5 §3.2)', () => {
               state: 'live',
               settled_at: null,
               launched_at: 1,
+              // A bridged conversation answers the click (UI-9w5l §3.5).
+              discord_url: 'https://discord.com/channels/1/2',
               conversation
             }
           }
