@@ -76,6 +76,12 @@ function confirmFailureTitle(failure_class) {
     : `${SENDER} 🙋 확인 필요`;
 }
 
+/**
+ * The headline of a session-owned human-needed row (UI-gske §3.3): the one
+ * `🙋 확인 필요` transition, with the row kind as its suffix.
+ */
+const SESSION_INQUIRY_TITLE = `${SENDER} 🙋 확인 필요 · base-sync 사람 필요`;
+
 /** The body line of a failure push whose conversation did not open. */
 const FAILURE_CONVERSATION_FALLBACK = '대화를 열지 못함 — [세션에서 이어가기]';
 
@@ -174,6 +180,17 @@ const TITLE_MAX = 60;
  * @property {string} bead_id
  * @property {string|null} [excerpt]
  * @property {string|null} [tmux_window]
+ */
+
+/**
+ * The `🙋 확인 필요 · base-sync 사람 필요` push of a new session-owned row
+ * (UI-gske §3.3): sent once, when the row is made.
+ *
+ * @typedef {Object} SessionInquiryCreatedInput
+ * @property {string} repo - The workspace root the row belongs to.
+ * @property {string} ref_tail - The set-aside ref's tail.
+ * @property {string} summary - The question's first line.
+ * @property {string|null} [link] - The registered session's Discord thread.
  */
 
 /**
@@ -376,7 +393,8 @@ function failureConversationLine(conversation) {
  *   providerLivePreempt: (input: { bead_id: string, runner: string, from: string, to: string, window: string, pct: number, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
  *   hold: (input: NeedsHumanInput) => Promise<void>,
- *   externalWaitCompleted: (input: { bead_id: string, headline: string, repo: string, session?: { label: string, resume_command: string }|null }) => Promise<boolean>
+ *   externalWaitCompleted: (input: { bead_id: string, headline: string, repo: string, session?: { label: string, resume_command: string }|null }) => Promise<boolean>,
+ *   sessionInquiryCreated: (input: SessionInquiryCreatedInput) => Promise<boolean>
  * }}
  */
 export function createNotifier(deps) {
@@ -1049,6 +1067,28 @@ export function createNotifier(deps) {
     // burst.
     async needsHuman(input) {
       await sendFailure(input, 'needs_human');
+    },
+    sessionInquiryCreated(input) {
+      return sendConversation('sessionInquiryCreated', async () => {
+        const lines = [`${SESSION_INQUIRY_TITLE}`];
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        const ref_tail = text(input.ref_tail);
+        if (ref_tail) {
+          lines.push(`보관: ${ref_tail}`);
+        }
+        const summary = firstLine(input.summary);
+        if (summary) {
+          lines.push(`질문: ${summary}`);
+        }
+        const link = text(input.link);
+        if (link) {
+          lines.push(link);
+        }
+        return lines;
+      });
     },
     async hold(input) {
       await sendFailure(input, 'hold');

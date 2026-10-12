@@ -9196,3 +9196,90 @@ describe('해결 줄 (UI-9w5l §3.3)', () => {
     expect(popupLines()[1]).toBe('자동 재개를 다시 시도하지 않음');
   });
 });
+
+describe('session-inquiry entries (UI-gske §3.4)', () => {
+  /** @type {HTMLElement} */
+  let host;
+
+  beforeEach(() => {
+    host = document.createElement('div');
+    document.body.append(host);
+  });
+
+  afterEach(() => {
+    host.remove();
+  });
+
+  /**
+   * @param {Record<string, any>} [patch]
+   */
+  function inquiryReason(patch = {}) {
+    return waitReason({
+      kind: 'awaiting_user',
+      subject: {
+        bead_id: 'session-inquiry:si-0123456789ab',
+        root_dir: '/repo'
+      },
+      headline: '사람 필요 · 보관 main/sync-1',
+      subject_label: '보관 main/sync-1',
+      targets: [],
+      ...patch
+    });
+  }
+
+  test('counts an open row as unresolved on the 저장소 작업 strip', () => {
+    const model = repoOpsStripModel(
+      [],
+      [],
+      [
+        { id: 'si-0123456789ab', state: 'waiting' },
+        { id: 'si-0123456789ac', state: 'held' },
+        { id: 'si-0123456789ad', state: 'closed' }
+      ]
+    );
+
+    expect(model?.unresolved).toBe(2);
+    expect(model?.badge.label).toBe('해결 필요 2');
+  });
+
+  test('names the entry by its ref instead of the row key', () => {
+    render(
+      blockedSummaryTemplate([
+        { root_dir: '/repo', name: 'repo', wait_reasons: [inquiryReason()] }
+      ]),
+      host
+    );
+
+    const text = host.querySelector('.wait-summary__item')?.textContent || '';
+    expect(text).toContain('보관 main/sync-1');
+    expect(text).not.toContain('session-inquiry:');
+  });
+
+  test('opens the drawer at the row instead of scrolling to a card', () => {
+    const open_inquiry = vi.fn();
+    const reveal = vi.fn();
+    render(
+      blockedSummaryTemplate(
+        [{ root_dir: '/repo', name: 'repo', wait_reasons: [inquiryReason()] }],
+        reveal,
+        open_inquiry
+      ),
+      host
+    );
+
+    /** @type {HTMLElement} */ (
+      host.querySelector('.wait-summary__item')
+    ).click();
+
+    expect(open_inquiry).toHaveBeenCalledWith('/repo', 'si-0123456789ab');
+    expect(reveal).not.toHaveBeenCalled();
+  });
+
+  test('groups the entry under 확인 필요', () => {
+    const summary = blockedSummary([
+      { root_dir: '/repo', wait_reasons: [inquiryReason()] }
+    ]);
+
+    expect(summary.groups.map((group) => group.label)).toEqual(['확인 필요']);
+  });
+});

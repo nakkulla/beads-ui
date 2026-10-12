@@ -286,19 +286,26 @@ export function formatClock(at) {
  * anything — and nothing here ever forces an expansion.
  *
  * 해결 필요 counts unresolved failures only: a `failed` row a human already
- * acknowledged (§4.6-2 `dismissed`) is out, and a stopped cleanup is in.
+ * acknowledged (§4.6-2 `dismissed`) is out, and a stopped cleanup is in, and
+ * so is an open session-inquiry row (UI-gske §3.4).
  *
- * Returns null when this workspace has neither operations nor a stopped
- * cleanup — there is no state there worth a strip.
+ * Returns null when this workspace has neither operations, a stopped cleanup
+ * nor a session-inquiry row — there is no state there worth a strip.
  *
  * @param {any} operations - Projected `repo_operations` cards.
  * @param {any} cleanup_failures - Projected `cleanup_failed` entries.
+ * @param {any} [session_inquiries] - Projected session-inquiry rows.
  * @returns {{ deploy: { sha: string, at: number|null, elapsed_ms: number|null }|null, unresolved: number, badge: { tone: 'act'|'quiet', label: string } }|null}
  */
-export function repoOpsStripModel(operations, cleanup_failures) {
+export function repoOpsStripModel(
+  operations,
+  cleanup_failures,
+  session_inquiries = []
+) {
   const cards = Array.isArray(operations) ? operations : [];
   const cleanup = Array.isArray(cleanup_failures) ? cleanup_failures : [];
-  if (cards.length === 0 && cleanup.length === 0) {
+  const inquiries = Array.isArray(session_inquiries) ? session_inquiries : [];
+  if (cards.length === 0 && cleanup.length === 0 && inquiries.length === 0) {
     return null;
   }
   /** @type {any|null} */
@@ -323,7 +330,12 @@ export function repoOpsStripModel(operations, cleanup_failures) {
     cards.filter(
       (/** @type {any} */ card) =>
         card.state === 'failed' && !card.dismissed && !card.superseded_by
-    ).length + cleanup.length;
+    ).length +
+    cleanup.length +
+    inquiries.filter(
+      (/** @type {any} */ row) =>
+        row && (row.state === 'waiting' || row.state === 'held')
+    ).length;
   return {
     deploy: latest
       ? {
@@ -350,10 +362,19 @@ export function repoOpsStripModel(operations, cleanup_failures) {
  *
  * @param {any} operations
  * @param {any} cleanup_failures
+ * @param {any} [session_inquiries]
  * @returns {import('lit-html').TemplateResult|string}
  */
-export function repoOpsStripTemplate(operations, cleanup_failures) {
-  const model = repoOpsStripModel(operations, cleanup_failures);
+export function repoOpsStripTemplate(
+  operations,
+  cleanup_failures,
+  session_inquiries = []
+) {
+  const model = repoOpsStripModel(
+    operations,
+    cleanup_failures,
+    session_inquiries
+  );
   if (!model) {
     return '';
   }
@@ -1784,11 +1805,13 @@ export function interactiveSessionBadgesTemplate(views, options) {
     // 종류 이름은 `대화 세션` 하나다 (UI-18a5 §3.5): 무엇에서 열렸는지와
     // fork·같은 세션·새 세션·복구 구분은 title에만 둔다.
     const row_word =
-      view.kind === 'resolve'
-        ? '실패'
-        : view.kind === 'external_resume'
-          ? '외부 작업 완료'
-          : '확인 필요';
+      typeof view.key === 'string' && view.key.startsWith('session-inquiry:')
+        ? '사람 필요'
+        : view.kind === 'resolve'
+          ? '실패'
+          : view.kind === 'external_resume'
+            ? '외부 작업 완료'
+            : '확인 필요';
     const title = [
       row_word,
       resumed
@@ -3296,6 +3319,42 @@ function scrollToWaitCard(event, root_dir, bead_id, reason, reveal) {
   setTimeout(() => card.classList.remove('wait-reason--highlight'), 2000);
 }
 
+/** The row-key prefix of a session-inquiry subject (UI-gske §3.3). */
+const SESSION_INQUIRY_SUBJECT_PREFIX = 'session-inquiry:';
+
+/**
+ * The session-inquiry row id a wait subject names, or null for a Bead.
+ *
+ * @param {unknown} subject_id
+ * @returns {string|null}
+ */
+export function sessionInquiryIdOfSubject(subject_id) {
+  return typeof subject_id === 'string' &&
+    subject_id.startsWith(SESSION_INQUIRY_SUBJECT_PREFIX) &&
+    subject_id.length > SESSION_INQUIRY_SUBJECT_PREFIX.length
+    ? subject_id.slice(SESSION_INQUIRY_SUBJECT_PREFIX.length)
+    : null;
+}
+
+/**
+ * Close the summary and open the row's repository drawer at the row
+ * (UI-gske §3.4). Without an opener the click only closes the summary.
+ *
+ * @param {Event} event
+ * @param {string} root_dir
+ * @param {string} inquiry_id
+ * @param {((root_dir: string, inquiry_id: string) => void)|undefined} open_inquiry
+ */
+function openWaitInquiry(event, root_dir, inquiry_id, open_inquiry) {
+  event.stopPropagation();
+  closeWaitSummary(
+    waitSummaryDialogOf(/** @type {Element} */ (event.currentTarget))
+  );
+  if (open_inquiry) {
+    open_inquiry(root_dir, inquiry_id);
+  }
+}
+
 /**
  * One 요약 팝오버 항목 줄의 사유 문장 (§4.2). `headline`이 있으면 그것이고, 선행
  * 대기처럼 비어 있으면 그 사유의 이슈 target으로 조립한다 — 첫 ID 하나와, 둘
@@ -3322,10 +3381,15 @@ function waitSummaryItemLine(reason) {
  * Shared Worker/Monitor summary and its grouped navigation popup. The chip is
  * drawn on the shared `.ui-chip` size in both tabs (UI-kqta §3.3, UI-k5s2).
  *
+ * A Bead-less session-inquiry entry (UI-gske §3.4) names itself by its
+ * `subject_label` and opens its repository's 저장소 작업 drawer at the row
+ * through `open_inquiry` instead of scrolling to a card it does not have.
+ *
  * @param {Parameters<typeof blockedSummary>[0]} workspaces
  * @param {(root_dir: string, bead_id: string) => void} [reveal]
+ * @param {(root_dir: string, inquiry_id: string) => void} [open_inquiry]
  */
-export function blockedSummaryTemplate(workspaces, reveal) {
+export function blockedSummaryTemplate(workspaces, reveal, open_inquiry) {
   const summary = blockedSummary(workspaces);
   if (summary.count === 0) {
     return '';
@@ -3363,15 +3427,25 @@ export function blockedSummaryTemplate(workspaces, reveal) {
                       type="button"
                       class="op-btn wait-summary__item"
                       @click=${(/** @type {Event} */ event) =>
-                        scrollToWaitCard(
-                          event,
-                          entry.root_dir,
-                          entry.id,
-                          reason,
-                          reveal
-                        )}
+                        sessionInquiryIdOfSubject(entry.id) !== null
+                          ? openWaitInquiry(
+                              event,
+                              entry.root_dir,
+                              /** @type {string} */ (
+                                sessionInquiryIdOfSubject(entry.id)
+                              ),
+                              open_inquiry
+                            )
+                          : scrollToWaitCard(
+                              event,
+                              entry.root_dir,
+                              entry.id,
+                              reason,
+                              reveal
+                            )}
                     >
-                      ${waitVerdictLabel(reason)} ${entry.name} ${entry.id} —
+                      ${waitVerdictLabel(reason)} ${entry.name}
+                      ${reason.subject_label || entry.id} —
                       ${waitSummaryItemLine(reason)}
                     </button>`
                 )
@@ -3414,6 +3488,8 @@ function summaryChipPrefix(id) {
  * @param {string} options.range_short - The chip form (`7일`).
  * @param {Parameters<typeof blockedSummary>[0]} options.workspaces
  * @param {(root_dir: string, bead_id: string) => void} [options.reveal]
+ * @param {(root_dir: string, inquiry_id: string) => void} [options.openInquiry] - Opens
+ * a session-inquiry entry's 저장소 작업 drawer at the row.
  * @param {number} [options.session] - 세션 N, drawn only above zero.
  * @returns {import('lit-html').TemplateResult}
  */
@@ -3432,7 +3508,8 @@ export function summaryChipsTemplate(options) {
       >${short} ${done_prefix} <b>${options.done}</b></span
     >${blockedSummaryTemplate(
       options.workspaces,
-      options.reveal
+      options.reveal,
+      options.openInquiry
     )}${typeof options.session === 'number' && options.session > 0
       ? html`<span class="ui-chip worker-kpi__chip worker-kpi__chip--session"
           >세션 <b>${options.session}</b></span

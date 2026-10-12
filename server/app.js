@@ -23,6 +23,8 @@ import {
   externalWaitRegisterHandler,
   externalWaitResumeHandler,
   externalWaitStopHandler,
+  sessionInquiryRegisterHandler,
+  sessionInquiryStateHandler,
   workerQueueGetHandler,
   workerQueuePlaceHandler,
   workerQueueRemoveHandler
@@ -176,6 +178,9 @@ export function createApp(config) {
   app.post('/api/worker/external-wait/:id/check', externalWaitCheckHandler);
   app.post('/api/worker/external-wait/:id/stop', externalWaitStopHandler);
   app.post('/api/worker/external-wait/:id/resume', externalWaitResumeHandler);
+  // The base-sync resolution session's human-needed row (UI-gske §3.1).
+  app.post('/api/worker/session-inquiry', sessionInquiryRegisterHandler);
+  app.post('/api/worker/session-inquiry/:id/state', sessionInquiryStateHandler);
 
   // Switch the active account of one provider from the usage card.
   app.post('/api/claude-account/switch', claudeAccountSwitchHandler);

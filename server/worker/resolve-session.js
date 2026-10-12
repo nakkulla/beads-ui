@@ -49,6 +49,7 @@ import {
   foreignHandoffReason
 } from './foreign-handoff.js';
 import { holdsHandoffReservation } from './queue-store.js';
+import { sessionInquiryIdOf } from './session-inquiry/contract.js';
 import { qualifyInteractiveForkSource } from './session-ref.js';
 import {
   RESOLVE_PANE_MARKER,
@@ -142,6 +143,21 @@ export const MANUAL_DEPLOY_FAILURE_CLASS = '수동 배포 실패';
  */
 export function repoOperationRowKey(operation_id) {
   return `${REPO_OPERATION_ROW_PREFIX}${operation_id}`;
+}
+
+/**
+ * Whether a conversation row key names a Bead-less row — a repo operation
+ * (`repo-op:`) or a session-inquiry row (`session-inquiry:`) — whose record
+ * settles by its window alone, never by a Bead status (UI-jbl1 §3.3,
+ * UI-gske §3.2).
+ *
+ * @param {unknown} row_key
+ * @returns {boolean}
+ */
+export function isBeadlessRowKey(row_key) {
+  return (
+    repoOperationIdOf(row_key) !== null || sessionInquiryIdOf(row_key) !== null
+  );
 }
 
 /**
@@ -1189,6 +1205,15 @@ export function createFailureConversationLauncher(deps) {
   }
 
   return {
+    /**
+     * Whether the shared conversation switch is on now — the one reading the
+     * automatic launches below gate on, also read by the session-inquiry
+     * automatic resume (UI-gske §3.2).
+     *
+     * @returns {boolean}
+     */
+    autoLaunchEnabled: enabled,
+
     /**
      * One Bead row's terminal failure: a deploy or post-merge job failure,
      * a merge-gate hold, or a discard failure.

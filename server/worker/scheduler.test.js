@@ -4521,6 +4521,92 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
   });
 });
 
+describe('session-inquiry conversation record (UI-gske §3.2)', () => {
+  const ROW = 'session-inquiry:si-0123456789ab';
+  const KEY = `${ROW}:external_resume`;
+
+  /**
+   * One resumed session-inquiry window: a `--resume` record without a
+   * conversation, under the external-resume marker, keyed by the row.
+   */
+  function inquiryEnv() {
+    const real = makeQueueStore({ now: () => 1000 });
+    real.recordInteractiveSession(WS, {
+      bead_id: ROW,
+      kind: 'external_resume',
+      provider: 'claude',
+      pane_id: '%8',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'inquiry-01234567',
+      cwd: WS,
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'resume',
+      source: 'session_ref',
+      session_id: '11111111-1111-4111-8111-111111111111',
+      session_id_source: 'launch'
+    });
+    const panes = {
+      rows: [
+        {
+          key: ROW,
+          pane: '%8',
+          dead: '0',
+          session: 'bdui-inquiry',
+          window: 'inquiry-01234567',
+          cwd: WS,
+          agent_runtime: 'claude',
+          agent_running: '',
+          agent_attention: ''
+        }
+      ]
+    };
+    const launcher = {
+      listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
+        ok: true,
+        rows: marker === EXTERNAL_RESUME_PANE_MARKER ? panes.rows : []
+      })),
+      readPaneOption: vi.fn(async () => ({ ok: true, value: null })),
+      capturePaneTail: vi.fn(async () => ({ ok: true, line: '❯ ' })),
+      sendExit: vi.fn(async () => ({ ok: true })),
+      killWindow: vi.fn(async () => ({ ok: true }))
+    };
+    const env = setup({
+      config: {},
+      store: real,
+      timeline: { append: vi.fn() },
+      now: () => 1000,
+      resolveSessionFile: () => ({
+        locality: 'local',
+        file: null,
+        last_event_at: null
+      }),
+      ...{ interactiveLauncher: launcher }
+    });
+    const readStatus = vi.spyOn(env.bd, 'readStatus');
+    return { ...env, real, panes, readStatus };
+  }
+
+  test('reads no Bead status for a session-inquiry record', async () => {
+    const env = inquiryEnv();
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.readStatus).not.toHaveBeenCalledWith(ROW);
+    expect(env.real.snapshot(WS).interactive_sessions[KEY]?.state).toBe('live');
+  });
+
+  test('ends the record when its window is gone', async () => {
+    const env = inquiryEnv();
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.real.snapshot(WS).interactive_sessions[KEY]).toBeUndefined();
+  });
+});
+
 describe('scheduler route change refusal', () => {
   /**
    * @param {Record<string, any>} [options]

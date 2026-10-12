@@ -585,6 +585,9 @@ const DONE_KIND_LABELS = {
  * §3). 선언을 읽지 못했거나 구서버면 `null`이다 (fail-quiet).
  * @property {Array<Record<string, any>>} repo_operations - 서버가 이미 투영한
  * 저장소 작업 카드 (master spec §10). 그대로 지나간다.
+ * @property {Array<Record<string, any>>} session_inquiries - 세션 소유 사람
+ * 필요 행 (UI-gske §3.4). 서버 투영을 그대로 나르고, 「저장소 작업」 서랍과 띠
+ * 건수가 읽는다. 키가 없는 구서버 스냅샷은 빈 배열이다 (fail-quiet).
  */
 
 /**
@@ -3059,6 +3062,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const declared_base_by_root = new Map();
   /** @type {Map<string, Array<Record<string, any>>>} */
   const repo_operations_by_root = new Map();
+  /** @type {Map<string, Array<Record<string, any>>>} */
+  const session_inquiries_by_root = new Map();
   // Board live store가 아는 이슈 필드 (§4.1): `${root_dir}\0${bead_id}` → 항목.
   /** @type {Map<string, Record<string, any>>} */
   const overlay_by_key = new Map();
@@ -3199,6 +3204,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
       ? workspace.repo_operations
       : [];
     repo_operations_by_root.set(root_dir, repo_operations);
+    session_inquiries_by_root.set(
+      root_dir,
+      Object.values(objectOf(/** @type {any} */ (workspace).session_inquiries))
+    );
     // 워크스페이스가 선언한 base (UI-j6wa §3). 서버 데코레이션이라 구버전
     // 서버에서는 아예 없고, 선언을 읽지 못하면 null로 온다 — 둘 다 fail-quiet.
     const declared_base =
@@ -4853,6 +4862,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       cleanup_failures: cleanup_failures_by_root.get(source.root_dir) || [],
       declared_base: declared_base_by_root.get(source.root_dir) ?? null,
       repo_operations: repo_operations_by_root.get(source.root_dir) || [],
+      session_inquiries: session_inquiries_by_root.get(source.root_dir) || [],
       root_dir: source.root_dir,
       name: source.name || source.root_dir,
       auto_advance: source.auto_advance === true,

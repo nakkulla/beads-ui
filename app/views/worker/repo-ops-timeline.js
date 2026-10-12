@@ -32,7 +32,10 @@ import {
 // (UI-8w4t §4) so both surfaces offer the same affordance and the same toast.
 import { logPathTemplate } from './log-path.js';
 import { cleanupStepLabel, cleanupStepperView } from './merge-steps.js';
-import { repoOperationResolveFields } from './tile-resolve.js';
+import {
+  repoOperationResolveFields,
+  sessionInquiryResolveFields
+} from './tile-resolve.js';
 
 /**
  * How many events the drawer shows. The rail is a "what just happened" surface,
@@ -142,19 +145,22 @@ export function operationLabel(operation) {
 }
 
 /**
- * Merge the two projections into one newest-first event list (§4.2/§5). A row
+ * Merge the projections into one newest-first event list (§4.2/§5). A row
  * with no usable time sorts to the END — the oldest side — rather than claiming
- * the top of the rail it cannot prove it belongs on.
+ * the top of the rail it cannot prove it belongs on. A session-inquiry row
+ * (UI-gske §3.4) stands at its last change.
  *
  * @param {any} operations - Projected `repo_operations` cards.
  * @param {any} cleanup_failures - Projected `cleanup_failed` entries.
  * @param {number} [limit]
+ * @param {any} [session_inquiries] - Projected session-inquiry rows.
  * @returns {any[]}
  */
 export function timelineEvents(
   operations,
   cleanup_failures,
-  limit = TIMELINE_LIMIT
+  limit = TIMELINE_LIMIT,
+  session_inquiries = []
 ) {
   /** @type {any[]} */
   const events = [];
@@ -185,6 +191,22 @@ export function timelineEvents(
       cleanup: entry
     });
   }
+  for (const row of Array.isArray(session_inquiries) ? session_inquiries : []) {
+    if (!row || typeof row !== 'object' || typeof row.id !== 'string') {
+      continue;
+    }
+    events.push({
+      type: 'session_inquiry',
+      id: row.id,
+      at:
+        typeof row.updated_at === 'number'
+          ? row.updated_at
+          : typeof row.created_at === 'number'
+            ? row.created_at
+            : null,
+      inquiry: row
+    });
+  }
   events.sort((left, right) => {
     if (left.at === null && right.at === null) {
       return String(left.id || '').localeCompare(String(right.id || ''));
@@ -211,6 +233,9 @@ function isUnresolved(event) {
   if (event.type === 'cleanup') {
     return true;
   }
+  if (event.type === 'session_inquiry') {
+    return isOpenInquiryRow(event.inquiry);
+  }
   const operation = event.operation;
   return (
     UNRESOLVED_STATES.has(operation.state) &&
@@ -229,17 +254,71 @@ function isUnresolved(event) {
  *
  * @param {any} operations - Projected `repo_operations` cards.
  * @param {any} cleanup_failures - Projected `cleanup_failed` entries.
- * @param {{ expanded?: boolean }} [options]
+ * @param {{ expanded?: boolean, session_inquiries?: any }} [options]
  * @returns {{ visible: any[], hidden: number }}
  */
 export function timelineView(operations, cleanup_failures, options = {}) {
-  const all = timelineEvents(operations, cleanup_failures, Infinity);
+  const all = timelineEvents(
+    operations,
+    cleanup_failures,
+    Infinity,
+    options.session_inquiries
+  );
   const limit = options.expanded === true ? TIMELINE_LIMIT : RECENT_LIMIT;
   const recent = new Set(all.slice(0, limit));
   const visible = all.filter(
     (event) => recent.has(event) || isUnresolved(event)
   );
   return { visible, hidden: all.length - visible.length };
+}
+
+/**
+ * Whether a session-inquiry row still asks a person (`waiting`·`held`).
+ *
+ * @param {any} row
+ * @returns {boolean}
+ */
+function isOpenInquiryRow(row) {
+  return !!row && (row.state === 'waiting' || row.state === 'held');
+}
+
+/**
+ * The state words of a session-inquiry row (UI-gske §3.4).
+ *
+ * @type {Record<string, string>}
+ */
+const INQUIRY_STATE_WORDS = {
+  waiting: '답 대기',
+  held: '보류',
+  closed: '닫힘'
+};
+
+/**
+ * The registered session's liveness words (UI-gske §3.4). An unobserved row
+ * says nothing about it (fail-quiet).
+ *
+ * @type {Record<string, string>}
+ */
+const INQUIRY_LIVENESS_WORDS = {
+  alive: '살아 있음',
+  dead: '종료됨',
+  unverified: '확인 불가'
+};
+
+/**
+ * The last part of a set-aside ref, as the row names it.
+ *
+ * @param {unknown} ref
+ * @returns {string}
+ */
+function inquiryRefTail(ref) {
+  if (typeof ref !== 'string') {
+    return '';
+  }
+  const bare = ref.startsWith('refs/set-aside/')
+    ? ref.slice('refs/set-aside/'.length)
+    : ref;
+  return bare.length > 24 ? `…${bare.slice(bare.length - 24)}` : bare;
 }
 
 /**
@@ -251,6 +330,9 @@ export function timelineView(operations, cleanup_failures, options = {}) {
 function toneOf(event) {
   if (event.type === 'cleanup') {
     return 'warn';
+  }
+  if (event.type === 'session_inquiry') {
+    return isOpenInquiryRow(event.inquiry) ? 'warn' : 'ok';
   }
   const state = event.operation.state;
   if (state === 'succeeded') {
@@ -271,6 +353,9 @@ function toneOf(event) {
 function stateWordOf(event) {
   if (event.type === 'cleanup') {
     return '멈춤';
+  }
+  if (event.type === 'session_inquiry') {
+    return INQUIRY_STATE_WORDS[event.inquiry.state] || event.inquiry.state;
   }
   switch (event.operation.state) {
     case 'succeeded':
@@ -663,6 +748,122 @@ function cleanupEventTemplate(event, repo = '') {
 }
 
 /**
+ * One session-owned human-needed row (UI-gske §3.4): the question, its
+ * bundles and related Beads, where the registered session stands, its
+ * Discord thread, and `[세션에서 이어가기]` — whether that stands is
+ * `tile-resolve.js`'s decision. A closed row stays as history without a
+ * button. The click is not the drawer's own; both tabs delegate it.
+ *
+ * @param {any} event
+ * @returns {TemplateResult}
+ */
+function sessionInquiryEventTemplate(event) {
+  const row = event.inquiry;
+  const open = isOpenInquiryRow(row);
+  const resolve = sessionInquiryResolveFields(row);
+  const bundles = Array.isArray(row.bundles) ? row.bundles : [];
+  const related = Array.isArray(row.related_beads) ? row.related_beads : [];
+  const liveness = row.liveness?.state
+    ? INQUIRY_LIVENESS_WORDS[row.liveness.state] || ''
+    : '';
+  const sid = typeof row.session_id === 'string' ? row.session_id : '';
+  return html`<li
+    class="worker-ev"
+    data-inquiry-id=${row.id}
+    data-state=${row.state}
+  >
+    <span
+      class="worker-ev__t"
+      title=${event.at ? formatTimestampLocal(event.at) : ''}
+      >${formatClock(event.at) || '—'}</span
+    >
+    <span class="worker-ev__node" aria-hidden="true"
+      ><span class="worker-ev__dot worker-ev__dot--${toneOf(event)}"></span
+    ></span>
+    <div class="worker-ev__body">
+      <div class="worker-ev__line1">
+        <span class="worker-ev__what"
+          >🙋 사람 필요 · 보관 ref ${inquiryRefTail(row.ref)}</span
+        >
+        <span class="worker-ev__st worker-ev__st--${toneOf(event)}"
+          >${stateWordOf(event)}</span
+        >
+      </div>
+      ${row.summary
+        ? html`<p class="worker-ev__explain worker-ev__explain--warn">
+            <span class="worker-ev__cause">${row.summary}</span>
+          </p>`
+        : ''}
+      ${bundles.length > 0
+        ? html`<ul class="worker-ev__bundles">
+            ${bundles.map(
+              (/** @type {any} */ bundle) =>
+                html`<li>
+                  ${bundle.title} — ${bundle.reason} (경로
+                  ${Array.isArray(bundle.paths) ? bundle.paths.length : 0}개)
+                </li>`
+            )}
+          </ul>`
+        : ''}
+      ${related.length > 0
+        ? html`<p class="worker-ev__why">
+            <span class="worker-ev__why-line"
+              >관련 Bead ${related.join(' · ')}</span
+            >
+          </p>`
+        : ''}
+      ${open
+        ? html`<p class="worker-ev__why">
+            <span class="worker-ev__why-line"
+              >${stateWordOf(event)} · 세션
+              ${sid.slice(0, 8)}${liveness ? ` (${liveness})` : ''}</span
+            >
+          </p>`
+        : ''}
+      ${open && (resolve.resolve_action === true || resolve.conversation)
+        ? html`<div class="worker-ev__acts">
+            ${resolve.resolve_action === true
+              ? html`<button
+                  type="button"
+                  class="op-btn worker-ev__btn worker-session-inquiry__resolve"
+                  data-inquiry-id=${row.id}
+                  ?disabled=${resolve.resolve_enabled === false}
+                  title=${resolve.resolve_title || ''}
+                >
+                  세션에서 이어가기
+                </button>`
+              : ''}
+            ${resolve.conversation
+              ? interactiveSessionBadgesTemplate(
+                  // No transcript button here: the row has no Bead to open
+                  // its session log under.
+                  [{ ...resolve.conversation, session_id: null }],
+                  { bead_id: '' }
+                )
+              : ''}
+          </div>`
+        : ''}
+      ${row.discord_url
+        ? html`<a
+            class="interactive-session-discord"
+            href=${row.discord_url}
+            target="_blank"
+            rel="noopener"
+            >↗ Discord</a
+          >`
+        : ''}
+      ${detailsTemplate([
+        { term: 'ref', value: row.ref || '' },
+        { term: '세션', value: sid },
+        { term: 'cwd', value: row.cwd || '' },
+        { term: '닫힌 이유', value: row.closed_reason || '' },
+        { term: '메모', value: row.note || '' }
+      ])}
+    </div>
+  </li>`;
+}
+
+/**
  * The drawer body.
  *
  * @param {{ events: any[], repo: string, hidden?: number, expanded?: boolean, repo_ops?: any }} model
@@ -691,7 +892,9 @@ export function repoOpsTimelineTemplate(model) {
           ${model.events.map((event) =>
             event.type === 'cleanup'
               ? cleanupEventTemplate(event, model.repo)
-              : operationEventTemplate(event, model.repo_ops, model.repo)
+              : event.type === 'session_inquiry'
+                ? sessionInquiryEventTemplate(event)
+                : operationEventTemplate(event, model.repo_ops, model.repo)
           )}
         </ul>`}
     ${hidden > 0 || expanded
@@ -717,7 +920,7 @@ export function repoOpsTimelineTemplate(model) {
  * @param {{ onClose?: () => void }} [options]
  */
 export function createRepoOpsDrawer(mount_element, options = {}) {
-  /** @type {{ operations: any, cleanup_failures: any, repo: string, repo_ops: any, expanded: boolean }|null} */
+  /** @type {{ operations: any, cleanup_failures: any, session_inquiries: any, repo: string, repo_ops: any, expanded: boolean }|null} */
   let model = null;
 
   function doRender() {
@@ -726,7 +929,8 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
       return;
     }
     const view = timelineView(model.operations, model.cleanup_failures, {
-      expanded: model.expanded
+      expanded: model.expanded,
+      session_inquiries: model.session_inquiries
     });
     render(
       repoOpsTimelineTemplate({
@@ -753,12 +957,13 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
   });
 
   /**
-   * @param {{ operations: any, cleanup_failures: any, repo?: string, repo_ops?: any }} input
+   * @param {{ operations: any, cleanup_failures: any, session_inquiries?: any, repo?: string, repo_ops?: any }} input
    */
   function open(input) {
     model = {
       operations: input.operations,
       cleanup_failures: input.cleanup_failures,
+      session_inquiries: input.session_inquiries || [],
       repo: input.repo || '',
       repo_ops: input.repo_ops || null,
       expanded: false
@@ -777,9 +982,35 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
     }
   }
 
+  /**
+   * Scroll one session-inquiry row of the open drawer into view and mark it
+   * for a moment (UI-gske §3.4) — the 막힘 칩 entry's destination. A row the
+   * drawer does not show changes nothing.
+   *
+   * @param {string} inquiry_id
+   */
+  function reveal(inquiry_id) {
+    const item = Array.from(
+      mount_element.querySelectorAll('[data-inquiry-id]')
+    ).find(
+      (element) =>
+        element.matches('li') &&
+        element.getAttribute('data-inquiry-id') === inquiry_id
+    );
+    if (!(item instanceof HTMLElement)) {
+      return;
+    }
+    if (typeof item.scrollIntoView === 'function') {
+      item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    item.classList.add('wait-reason--highlight');
+    setTimeout(() => item.classList.remove('wait-reason--highlight'), 2000);
+  }
+
   return {
     open,
     close,
+    reveal,
     /** @returns {boolean} */
     isOpen: () => model !== null,
     /**
@@ -787,7 +1018,7 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
      * state is the READER's, not the snapshot's: a queue push must never
      * collapse a timeline someone just opened.
      *
-     * @param {{ operations: any, cleanup_failures: any, repo?: string, repo_ops?: any }} input
+     * @param {{ operations: any, cleanup_failures: any, session_inquiries?: any, repo?: string, repo_ops?: any }} input
      */
     refresh(input) {
       if (!model) {
@@ -796,6 +1027,7 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
       model = {
         operations: input.operations,
         cleanup_failures: input.cleanup_failures,
+        session_inquiries: input.session_inquiries || [],
         repo: input.repo || '',
         repo_ops: input.repo_ops || null,
         expanded: model.expanded

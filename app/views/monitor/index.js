@@ -732,21 +732,22 @@ export function createMonitorView(mount_element, options) {
    * nothing for it (fail-quiet).
    *
    * @param {string} root_dir
-   * @returns {{ operations: any, cleanup_failures: any }|null}
+   * @returns {{ operations: any, cleanup_failures: any, session_inquiries: any }|null}
    */
   function repoOpsMaterial(root_dir) {
     const group = lanes.groups_by_root.get(root_dir);
     return group
       ? {
           operations: group.repo_operations,
-          cleanup_failures: group.cleanup_failures
+          cleanup_failures: group.cleanup_failures,
+          session_inquiries: group.session_inquiries
         }
       : null;
   }
 
   /**
    * @param {string} root_dir
-   * @returns {{ operations: any, cleanup_failures: any, repo: string, repo_ops: any }}
+   * @returns {{ operations: any, cleanup_failures: any, session_inquiries: any, repo: string, repo_ops: any }}
    */
   function repoOpsDrawerInput(root_dir) {
     const material = repoOpsMaterial(root_dir);
@@ -756,6 +757,7 @@ export function createMonitorView(mount_element, options) {
     return {
       operations: material ? material.operations : [],
       cleanup_failures: material ? material.cleanup_failures : [],
+      session_inquiries: material ? material.session_inquiries : [],
       repo: root_dir,
       repo_ops
     };
@@ -779,6 +781,18 @@ export function createMonitorView(mount_element, options) {
     drawer_overlay_el.hidden = false;
     repo_ops_drawer.open(repoOpsDrawerInput(root_dir));
     doRender();
+  }
+
+  /**
+   * A 막힘 칩 session-inquiry entry's destination (UI-gske §3.4): that
+   * repository's 저장소 작업 drawer, scrolled to the row.
+   *
+   * @param {string} root_dir
+   * @param {string} inquiry_id
+   */
+  function openInquiryInDrawer(root_dir, inquiry_id) {
+    openRepoOpsDrawer(root_dir);
+    repo_ops_drawer.reveal(inquiry_id);
   }
 
   /** Show the shared overlay for the transcript drawer (never both at once). */
@@ -1149,6 +1163,14 @@ export function createMonitorView(mount_element, options) {
         showToast(toast.text, toast.variant, 4000);
       } else if (res?.session === 'already_running') {
         showToast(String(sessionWindowText(res)), 'info');
+      } else if (
+        res?.launched !== true &&
+        typeof res?.message === 'string' &&
+        res.message.length > 0
+      ) {
+        // A session-inquiry click that opened nothing on purpose (UI-gske
+        // §3.3) — the Worker tab's `resolveSessionToast` sentence.
+        showToast(res.message, 'info');
       } else if (res?.launched !== true) {
         showToast(`세션 기동 실패: ${res?.reason || 'unknown'}`, 'error');
       } else {
@@ -1294,6 +1316,21 @@ export function createMonitorView(mount_element, options) {
         root_dir,
         revisionOf(root_dir),
         { operation_id }
+      );
+      return;
+    }
+    // A session-inquiry row's `[세션에서 이어가기]` (UI-gske §3.3), keyed by
+    // the row id instead of a Bead.
+    const inquiry_resolve = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-session-inquiry__resolve')
+    );
+    if (inquiry_resolve?.dataset.inquiryId) {
+      const inquiry_id = inquiry_resolve.dataset.inquiryId;
+      void resolveInSession(
+        `session-inquiry:${inquiry_id}`,
+        root_dir,
+        revisionOf(root_dir),
+        { inquiry_id }
       );
       return;
     }
@@ -2554,6 +2591,7 @@ export function createMonitorView(mount_element, options) {
       settingsRoot: () => options.repoSettingsRoot?.() ?? null,
       repoOps: repoOpsMaterial,
       openRepoOps: openRepoOpsDrawer,
+      openInquiry: openInquiryInDrawer,
       onFocusChange: (root_dir) => {
         focus_root = root_dir;
         applyFocusClasses();

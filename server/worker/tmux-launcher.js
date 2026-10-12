@@ -652,6 +652,29 @@ export function createTmuxLauncher(deps = {}) {
   }
 
   /**
+   * Bring forward the window a Claude session registry `tmux` value names
+   * (`<session>:@<window>.%<pane>`), for a session this server did not launch
+   * and so holds no marker for (UI-gske §3.3). Only the `%<pane>` id is used.
+   *
+   * @param {unknown} location
+   * @returns {Promise<{ ok: true, tmux_session: string, tmux_window: string }|{ ok: false, error: string }>}
+   */
+  async function focusRegistryPane(location) {
+    const match =
+      typeof location === 'string'
+        ? /^([^:]+):([^.]+)\.(%\d+)$/.exec(location)
+        : null;
+    if (!match) {
+      return { ok: false, error: 'unknown_location' };
+    }
+    const selected = await runChecked(['select-window', '-t', match[3]]);
+    if (!selected.ok) {
+      return { ok: false, error: selected.error };
+    }
+    return { ok: true, tmux_session: match[1], tmux_window: match[2] };
+  }
+
+  /**
    * The live window of one marker/key pair, focused the way {@link launch}
    * focuses it, for a caller that must answer a click before building one.
    *
@@ -862,6 +885,7 @@ export function createTmuxLauncher(deps = {}) {
     readBridgeThreads,
     launch,
     focusRunning,
+    focusRegistryPane,
     bridgeActive
   };
 }

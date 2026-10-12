@@ -26,6 +26,7 @@
  * @import { BeadSnapshot } from './scheduler.js'
  */
 import { execFileSync, spawn } from 'node:child_process';
+import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -60,6 +61,7 @@ import {
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { discardOperationActive } from './discard-phase.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
+import { createOwnerLiveness } from './external-wait/session-resume.js';
 import {
   applyForeignBlockerCleanup,
   cachedIssuePrefixFor,
@@ -113,6 +115,7 @@ import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
+import { createSessionInquiryRuntime } from './session-inquiry/service.js';
 import { createSessionMonitors } from './session-monitor.js';
 import { baseUnresolvedReason, resolveTargetBase } from './target-base.js';
 import { replayUsage } from './usage-replay.js';
@@ -907,7 +910,8 @@ export function defaultProbePid(pid) {
  *   getSubscriberCount?: () => number,
  *   runJson?: typeof runBdJsonProjected,
  *   kvGet?: (workspace: string, key: string) => ReturnType<typeof kvGetJson>,
- *   watchBeads?: (root_dir: string, onChange: () => void) => { close: () => void }
+ *   watchBeads?: (root_dir: string, onChange: () => void) => { close: () => void },
+ *   sessionInquiry?: ReturnType<typeof createSessionInquiryRuntime>
  * }} [options]
  */
 export function createWorkerAttachment(workspace_root, options = {}) {
@@ -1618,19 +1622,50 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       );
     }
   });
+  // The session-owned human-needed rows of this workspace (UI-gske §3.2):
+  // observed on the conversation pass below, resumed with the same session id.
+  const sessionInquiry =
+    options.sessionInquiry ||
+    createSessionInquiryRuntime({
+      workspace: keyFor(workspace_root),
+      store: runtime.queueStore,
+      launcher: runtime.interactiveLauncher,
+      ownerLiveness: createOwnerLiveness({
+        fs: nodeFs,
+        run: (argv, run_options) =>
+          runShell(argv[0], argv.slice(1), run_options),
+        sessionsDir: path.join(os.homedir(), '.claude', 'sessions'),
+        log
+      }),
+      autoLaunchEnabled: () =>
+        runtime.failureConversation?.autoLaunchEnabled?.() === true,
+      tmuxSession: () => interactiveTmuxSessionName(getConfig, log),
+      run: (argv, run_options) => runShell(argv[0], argv.slice(1), run_options),
+      notifyChanged: (ws_key) => emitQueueChanged(ws_key),
+      notify,
+      discordUrlOf: (session_id) =>
+        runtime.interactiveLauncher?.readBridgeThreads?.()?.get(session_id)
+          ?.url || null
+    });
+
   // The interactive-session pass (UI-6pif §3.4) on its own 30 s cadence, with
   // the same subscriber-less gate: a settled bead's window must close whether
-  // or not anyone is watching the Worker tab.
+  // or not anyone is watching the Worker tab. The session-inquiry rows ride
+  // the same tick but not the same pass: a failed tmux listing ends that pass
+  // early, and the ref observation must not stop with it.
   const interactive_reconciler = createPoller({
     intervalSeconds: INTERACTIVE_RECONCILE_INTERVAL_SECONDS,
     getClientCount: () => 1,
     onTick: () => {
       const ws_key = keyFor(workspace_root);
-      Promise.resolve(scheduler.reconcileInteractiveSessions(ws_key)).catch(
-        (err) => {
+      Promise.resolve(scheduler.reconcileInteractiveSessions(ws_key))
+        .catch((err) => {
           log('interactive reconcile pass failed for %s: %o', ws_key, err);
-        }
-      );
+        })
+        .then(() => sessionInquiry.reconcile())
+        .catch((err) => {
+          log('session-inquiry reconcile pass failed for %s: %o', ws_key, err);
+        });
     }
   });
 
@@ -2493,6 +2528,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     waitJudge,
     reconciler,
     interactiveReconciler: interactive_reconciler,
+    sessionInquiry,
     prPoller,
     prActions,
     discardCoordinator,
@@ -3970,6 +4006,50 @@ export function workerMergeQueueState(workspace_root) {
     return null;
   }
   return att.mergeQueue.state();
+}
+
+/**
+ * Whether a Worker attachment runs for this workspace. A session-inquiry row
+ * of an unattached workspace is stored only (UI-gske §4): no display, push or
+ * resume.
+ *
+ * @param {string} workspace_root
+ * @returns {boolean}
+ */
+export function workerAttached(workspace_root) {
+  return ATTACHMENTS.has(keyFor(workspace_root));
+}
+
+/**
+ * Send a new session-inquiry row's once-only push through the attachment's
+ * notifier. Inert without an attachment.
+ *
+ * @param {string} workspace_root
+ * @param {import('./session-inquiry/contract.js').SessionInquiry} row
+ * @returns {Promise<void>}
+ */
+export async function announceWorkerSessionInquiry(workspace_root, row) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att?.sessionInquiry) {
+    return;
+  }
+  await att.sessionInquiry.announce(row);
+}
+
+/**
+ * The `[세션에서 이어가기]` of a session-inquiry row (UI-gske §3.3), or null
+ * without an attachment to run it.
+ *
+ * @param {string} workspace_root
+ * @param {string} inquiry_id
+ * @returns {Promise<import('./session-inquiry/service.js').InquiryResumeOutcome|null>}
+ */
+export async function clickWorkerSessionInquiry(workspace_root, inquiry_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att?.sessionInquiry) {
+    return null;
+  }
+  return att.sessionInquiry.click(inquiry_id);
 }
 
 /**

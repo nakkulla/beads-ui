@@ -1354,3 +1354,144 @@ describe('수동 배포 실패 행의 [세션에서 이어가기] (UI-jbl1 §3.3
     expect(drawer.isOpen()).toBe(true);
   });
 });
+
+describe('session-inquiry drawer row (UI-gske §3.4)', () => {
+  /**
+   * @param {Record<string, any>} [patch]
+   */
+  function inquiry(patch = {}) {
+    return {
+      id: 'si-0123456789ab',
+      repo: '/repo',
+      ref: 'refs/set-aside/main/sync-1',
+      session_id: '11111111-2222-4333-8444-555555555555',
+      cwd: '/repo',
+      summary: '보관한 묶음을 다시 적용할까요?',
+      bundles: [
+        { title: '설정 변경', paths: ['a.js', 'b.js'], reason: '충돌' }
+      ],
+      related_beads: ['UI-a', 'UI-b'],
+      state: 'waiting',
+      created_at: 400,
+      updated_at: 500,
+      liveness: { state: 'dead', at: 450, tmux: null },
+      closed_reason: null,
+      note: null,
+      discord_url: 'https://discord.com/channels/1/2',
+      interactive_sessions: [],
+      ...patch
+    };
+  }
+
+  /**
+   * @param {any[]} inquiries
+   * @returns {HTMLElement}
+   */
+  function drawRows(inquiries) {
+    const mount = document.createElement('div');
+    const drawer = createRepoOpsDrawer(mount);
+    drawer.open({
+      operations: [],
+      cleanup_failures: [],
+      session_inquiries: inquiries,
+      repo: '/repo'
+    });
+    return mount;
+  }
+
+  test('draws the title, question, bundles, related beads and status line', () => {
+    const mount = drawRows([inquiry()]);
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('li[data-inquiry-id="si-0123456789ab"]')
+    );
+    const text = (row.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('🙋 사람 필요 · 보관 ref main/sync-1');
+    expect(text).toContain('보관한 묶음을 다시 적용할까요?');
+    expect(text).toContain('설정 변경 — 충돌 (경로 2개)');
+    expect(text).toContain('관련 Bead UI-a · UI-b');
+    expect(text).toContain('답 대기 · 세션 11111111 (종료됨)');
+  });
+
+  test('draws the Discord link and the resume button as an op-btn', () => {
+    const mount = drawRows([inquiry()]);
+
+    const button = mount.querySelector('.worker-session-inquiry__resolve');
+    expect(button?.classList.contains('op-btn')).toBe(true);
+    expect(button?.getAttribute('data-inquiry-id')).toBe('si-0123456789ab');
+    expect(
+      mount.querySelector('.interactive-session-discord')?.getAttribute('href')
+    ).toBe('https://discord.com/channels/1/2');
+  });
+
+  test('keeps a closed row as history without a button', () => {
+    const mount = drawRows([
+      inquiry({ state: 'closed', closed_reason: 'ref_absent' })
+    ]);
+
+    const row = mount.querySelector('li[data-inquiry-id]');
+    expect(row?.textContent).toContain('닫힘');
+    expect(mount.querySelector('.worker-session-inquiry__resolve')).toBeNull();
+  });
+
+  test('draws the live conversation badge instead of the button when it has a Discord thread', () => {
+    const mount = drawRows([
+      inquiry({
+        interactive_sessions: [
+          {
+            key: 'session-inquiry:si-0123456789ab:external_resume',
+            kind: 'external_resume',
+            provider: 'claude',
+            session_id: '11111111-2222-4333-8444-555555555555',
+            mode: 'resume',
+            source: 'session_ref',
+            tmux_session: 'bdui-inquiry',
+            tmux_window: 'inquiry-01234567',
+            state: 'live',
+            settled_at: null,
+            closing: false,
+            discord_url: 'https://discord.com/channels/1/3'
+          }
+        ]
+      })
+    ]);
+
+    expect(mount.querySelector('.worker-session-inquiry__resolve')).toBeNull();
+    expect(
+      mount.querySelector('.interactive-session-badge')?.getAttribute('title')
+    ).toContain('사람 필요');
+  });
+
+  test('keeps an open row visible however old it is', () => {
+    const many = Array.from({ length: 8 }, (_unused, index) =>
+      operation({ operation_id: `op-${index}`, finished_at: 1000 + index })
+    );
+
+    const view = timelineView(many, [], {
+      session_inquiries: [inquiry({ updated_at: 1, created_at: 1 })]
+    });
+
+    expect(view.visible.some((event) => event.type === 'session_inquiry')).toBe(
+      true
+    );
+  });
+
+  test('highlights the revealed row', () => {
+    const mount = document.createElement('div');
+    const drawer = createRepoOpsDrawer(mount);
+    drawer.open({
+      operations: [],
+      cleanup_failures: [],
+      session_inquiries: [inquiry()],
+      repo: '/repo'
+    });
+
+    drawer.reveal('si-0123456789ab');
+
+    expect(
+      mount
+        .querySelector('li[data-inquiry-id="si-0123456789ab"]')
+        ?.classList.contains('wait-reason--highlight')
+    ).toBe(true);
+  });
+});

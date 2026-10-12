@@ -282,6 +282,36 @@ function waiting(overrides = {}) {
   };
 }
 
+/**
+ * One stored session-inquiry row (UI-gske §3.1) whose registered session the
+ * last pass judged dead.
+ *
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
+ */
+function inquiryRow(patch = {}) {
+  return {
+    id: 'si-0123456789ab',
+    repo: '/repo',
+    ref: 'refs/set-aside/main/2026-10-13-base-sync',
+    session_id: '11111111-1111-4111-8111-111111111111',
+    runner: 'claude',
+    cwd: '/repo',
+    summary: '보관한 묶음을 다시 적용할까요?',
+    bundles: [],
+    related_beads: [],
+    state: 'waiting',
+    created_at: NOW - 10 * MINUTE,
+    updated_at: NOW - 10 * MINUTE,
+    notified_at: NOW - 10 * MINUTE,
+    auto_resume_consumed: [],
+    liveness: { state: 'dead', at: NOW - MINUTE, tmux: null },
+    closed_reason: null,
+    note: null,
+    ...patch
+  };
+}
+
 /** @param {Record<string, any>} [overrides] */
 function run(overrides = {}) {
   return judgeWaitReasons({
@@ -2529,7 +2559,15 @@ describe('action_required invariant (UI-9w5l §3.1)', () => {
         blocker_facts: { 'UI-consumer': { external_wait: 'w-ffffffffffff' } }
       }
     ],
-    ['leftover key without a record', { blocker_facts: KEY }]
+    ['leftover key without a record', { blocker_facts: KEY }],
+    [
+      'session-inquiry row whose registered session died',
+      {
+        queue: queue({
+          session_inquiries: { 'si-0123456789ab': inquiryRow() }
+        })
+      }
+    ]
   ];
 
   test.each(PRODUCERS)(
@@ -2571,5 +2609,87 @@ describe('action_required invariant (UI-9w5l §3.1)', () => {
 
     expect(result.verdict).toBe('normal');
     expect(result).not.toHaveProperty('resolution');
+  });
+});
+
+describe('session-inquiry rows (UI-gske §3.3)', () => {
+  /**
+   * @param {Record<string, any>} [patch]
+   * @param {Record<string, any>} [interactive_sessions]
+   */
+  function judgeRow(patch = {}, interactive_sessions = {}) {
+    return run({
+      queue: queue({
+        session_inquiries: { 'si-0123456789ab': inquiryRow(patch) },
+        interactive_sessions
+      })
+    }).wait_reasons;
+  }
+
+  test('raises one awaiting_user reason keyed by the row key', () => {
+    const reasons = judgeRow();
+
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toMatchObject({
+      kind: 'awaiting_user',
+      subject: { root_dir: ROOT, bead_id: 'session-inquiry:si-0123456789ab' },
+      headline: '사람 필요 · 보관 …ain/2026-10-13-base-sync',
+      release: '해소 세션에서 답하면 그 세션이 착지·폐기·보류를 끝낸다',
+      subject_label: '보관 …ain/2026-10-13-base-sync'
+    });
+  });
+
+  test('requires action on a dead waiting row without a conversation', () => {
+    const [reason] = judgeRow();
+
+    expect(reason.verdict).toBe('action_required');
+    expect(reason.verdict_reason?.code).toBe('decision');
+    expect(reason.actions).toEqual([
+      {
+        op: 'worker-resolve-in-session',
+        label: '[세션에서 이어가기]',
+        payload: { inquiry_id: 'si-0123456789ab' }
+      }
+    ]);
+  });
+
+  test.each([
+    [
+      'a live registered session',
+      { liveness: { state: 'alive', at: NOW, tmux: null } }
+    ],
+    [
+      'an unverified registered session',
+      { liveness: { state: 'unverified', at: NOW, tmux: null } }
+    ],
+    ['an unobserved registered session', { liveness: null }],
+    ['a held row', { state: 'held' }]
+  ])('keeps %s normal', (_label, patch) => {
+    const [reason] = judgeRow(patch);
+
+    expect(reason.verdict).toBe('normal');
+    expect(reason.actions).toEqual([]);
+  });
+
+  test('keeps a dead row with a live conversation normal', () => {
+    const [reason] = judgeRow(
+      {},
+      {
+        'session-inquiry:si-0123456789ab:external_resume': {
+          bead_id: 'session-inquiry:si-0123456789ab',
+          kind: 'external_resume',
+          state: 'live',
+          settled_at: null
+        }
+      }
+    );
+
+    expect(reason.verdict).toBe('normal');
+  });
+
+  test('raises nothing for a closed row', () => {
+    const reasons = judgeRow({ state: 'closed', closed_reason: 'ref_absent' });
+
+    expect(reasons).toEqual([]);
   });
 });
