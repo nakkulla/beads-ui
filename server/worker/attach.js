@@ -55,6 +55,7 @@ import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import {
+  createCleanupInterruptionAnnouncer,
   createCompletionActionDriver,
   createCompletionIntentCoordinator
 } from './completion-intent.js';
@@ -1176,6 +1177,20 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     failureConversation: runtime.failureConversation
   });
 
+  // The `정리 중단` announcer (UI-gske §3.5): a cleanup stop no completion
+  // intent drives is pushed and opened once, marked on its own record.
+  const cleanupInterruption = createCleanupInterruptionAnnouncer({
+    workspace: keyFor(workspace_root),
+    repo,
+    store: runtime.queueStore,
+    notify,
+    failureConversation: runtime.failureConversation,
+    prUrlOf: (bead_id) =>
+      runtime.prObservations.get(keyFor(workspace_root), bead_id)?.pr?.url ??
+      null,
+    log
+  });
+
   const repoOperationCoordinator = createRepoOperationCoordinator({
     workspace: workspace_root,
     repo,
@@ -2013,7 +2028,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     timeline,
     // The once-recorded `foreign_handoff` push of a pinned foreign PR the
     // click, the queue or the post-merge tail hands to a person (UI-k467 §3.7).
-    announceForeignHandoff: (input) => foreignHandoff.announce(input)
+    announceForeignHandoff: (input) => foreignHandoff.announce(input),
+    announceCleanupInterruption: (bead_id) =>
+      cleanupInterruption.announce(bead_id)
   });
 
   // The one-shot legacy-state migration (master spec §11). It converts durable

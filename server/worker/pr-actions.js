@@ -406,6 +406,7 @@ function authoritativeMergeSha(pr) {
  *   now?: () => number,
  *   timeline?: { append: (input: any) => unknown },
  *   announceForeignHandoff?: (input: { bead_id: string, cause: string, identity: string, pr_url?: string|null, foreign_path?: string|null }) => unknown,
+ *   announceCleanupInterruption?: (bead_id: string) => unknown,
  *   resolveRepoOps?: (input: { repo: string, sha: string, gitRun: any }) => Promise<any>,
  *   locks?: { acquire: (key: string) => Promise<() => void> }
  * }} deps
@@ -414,6 +415,8 @@ function authoritativeMergeSha(pr) {
  * `locks` is the worker runtime's lock manager: the observed-merge cleanup
  * holds the Bead's defer lock (UI-0d9i §3.4); without it nothing is held.
  * `announceForeignHandoff` pushes a `foreign_handoff` once (UI-k467 §3.7);
+ * `announceCleanupInterruption` pushes and opens a cleanup stop no completion
+ * intent drives once per record (UI-gske §3.5);
  * `resolveRepoOps` reads a pinned foreign target's declaration (tests inject).
  */
 export function createPrActions(deps) {
@@ -3716,7 +3719,7 @@ export function createPrActions(deps) {
             (deps.now || Date.now)() + [60_000, 300_000, 900_000][retry_count];
         }
       }
-      deps.store.recordCleanupFailure(workspace, {
+      const recorded = deps.store.recordCleanupFailure(workspace, {
         bead_id,
         step,
         reason,
@@ -3728,6 +3731,18 @@ export function createPrActions(deps) {
         ...failure_evidence,
         ...cleanup_retry
       });
+      if (
+        recorded.ok === true &&
+        typeof deps.announceCleanupInterruption === 'function'
+      ) {
+        // The announcer decides whether a completion intent still drives
+        // this cleanup; a foreign handoff stop is announced by its caller.
+        try {
+          deps.announceCleanupInterruption(bead_id);
+        } catch (err) {
+          log('cleanup interruption announce failed for %s: %o', bead_id, err);
+        }
+      }
     }
     notifyChanged(workspace);
     return { ok: false, step, reason, base_sync };

@@ -17,6 +17,7 @@ import {
   classifyCompletionFailure,
   completionFailureComment,
   completionFailureSummary,
+  createCleanupInterruptionAnnouncer,
   createCompletionActionDriver,
   createCompletionFailureKey,
   createCompletionIntentCoordinator,
@@ -728,6 +729,176 @@ function terminalizeResolutionTimeout(store) {
     }
   });
 }
+
+describe('verify-failure hold conversation (UI-gske §3.5)', () => {
+  /** A failure-conversation fake that records each automatic launch. */
+  function makeConversation() {
+    return { launchForBead: vi.fn(async () => ({ session: 'launched' })) };
+  }
+
+  /** Let the fire-and-forget launch run to its end. */
+  async function settleLaunches() {
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  /**
+   * @param {string} head
+   */
+  function heldAt(head) {
+    return holdGate({
+      subject: { ...intent().subject, head_sha: head.repeat(40) }
+    });
+  }
+
+  test('opens the conversation once after the hold push of a new head', async () => {
+    const conversation = makeConversation();
+    const { store, driver, hold } = holdHarness({
+      failureConversation: conversation,
+      repo: '/Users/me/GitHub/beads-ui'
+    });
+
+    await driveOnce(store, driver);
+    await settleLaunches();
+
+    expect(hold).toHaveBeenCalledTimes(1);
+    expect(conversation.launchForBead).toHaveBeenCalledExactlyOnceWith({
+      workspace: DRIVER_WS,
+      repo: '/Users/me/GitHub/beads-ui',
+      bead_id: 'UI-root'
+    });
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root'].hold_launches
+    ).toEqual([
+      { pr_url: 'https://github.com/o/r/pull/1', head_sha: 'a'.repeat(40) }
+    ]);
+  });
+
+  test('opens nothing when the same head is held again', async () => {
+    const conversation = makeConversation();
+    const { store, driver } = holdHarness({
+      failureConversation: conversation
+    });
+    await driveOnce(store, driver);
+
+    await driveOnce(store, driver);
+    await settleLaunches();
+
+    expect(conversation.launchForBead).toHaveBeenCalledTimes(1);
+  });
+
+  test('opens nothing for a held head after a store and driver restart', async () => {
+    const { store, driver } = holdHarness({
+      failureConversation: makeConversation()
+    });
+    await driveOnce(store, driver);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-hold-launch-'));
+    tmp_dirs.push(dir);
+    const file = path.join(dir, 'queue.json');
+    fs.writeFileSync(file, JSON.stringify(store.snapshot(DRIVER_WS)));
+    const restarted_store = createQueueStore({ filePathFor: () => file });
+    const conversation = makeConversation();
+    const restarted = actionDriver(restarted_store, {
+      prActions: { completionGate: async () => holdGate() },
+      bd: { comment: vi.fn(commentSpy()) },
+      notify: {
+        hold: vi.fn(async () => {}),
+        needsHuman: vi.fn(async () => {})
+      },
+      failureConversation: conversation
+    });
+
+    const { action } = await driveOnce(restarted_store, restarted);
+    await settleLaunches();
+
+    expect(action?.kind).toBe('hold');
+    expect(conversation.launchForBead).not.toHaveBeenCalled();
+  });
+
+  test('keeps the launched pairs through a store restart', async () => {
+    const { store, driver } = holdHarness({
+      failureConversation: makeConversation()
+    });
+    await driveOnce(store, driver);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-hold-launch-'));
+    tmp_dirs.push(dir);
+    const file = path.join(dir, 'queue.json');
+    fs.writeFileSync(file, JSON.stringify(store.snapshot(DRIVER_WS)));
+
+    const restarted_store = createQueueStore({ filePathFor: () => file });
+
+    expect(
+      restarted_store.snapshot(DRIVER_WS).completion_intents['UI-root']
+        .hold_launches
+    ).toEqual([
+      { pr_url: 'https://github.com/o/r/pull/1', head_sha: 'a'.repeat(40) }
+    ]);
+  });
+
+  test('opens nothing for a head that comes back after another head (A→B→A)', async () => {
+    const conversation = makeConversation();
+    const { store, driver, hold, completionGate } = holdHarness({
+      failureConversation: conversation
+    });
+    await driveOnce(store, driver);
+    for (const head of ['c', 'a']) {
+      completionGate.mockResolvedValue(heldAt(head));
+      await driveOnce(store, driver);
+      await driveOnce(store, driver);
+    }
+    await settleLaunches();
+
+    expect(hold).toHaveBeenCalledTimes(3);
+    expect(conversation.launchForBead).toHaveBeenCalledTimes(2);
+    expect(
+      store
+        .snapshot(DRIVER_WS)
+        .completion_intents[
+          'UI-root'
+        ].hold_launches?.map((item) => item.head_sha)
+    ).toEqual(['a'.repeat(40), 'c'.repeat(40)]);
+  });
+
+  test('opens nothing for a conflicting head', async () => {
+    const conversation = makeConversation();
+    const { store, driver } = holdHarness({
+      failureConversation: conversation,
+      prActions: {
+        completionGate: vi.fn(async () =>
+          redGate({
+            verdict: { enabled: false, tier: 'base', base_badge: '충돌' }
+          })
+        )
+      }
+    });
+
+    const { fact } = await driveOnce(store, driver);
+    await settleLaunches();
+
+    expect(fact.state).toBe('conflict');
+    expect(conversation.launchForBead).not.toHaveBeenCalled();
+  });
+
+  test('launches no session while the shared switch is off', async () => {
+    const resolve = vi.fn();
+    const { store, driver, hold } = holdHarness({
+      failureConversation: createFailureConversationLauncher({
+        resolveSession: /** @type {any} */ ({ resolve }),
+        snapshot: () => ({}),
+        getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
+        autoLaunchEnabled: () => false,
+        log: () => {}
+      })
+    });
+
+    await driveOnce(store, driver);
+    await settleLaunches();
+
+    expect(hold).toHaveBeenCalledTimes(1);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+});
 
 describe('worker/completion-intent decisions', () => {
   test('creates the same SHA-bound key from equivalent bounded evidence', () => {
@@ -3913,11 +4084,37 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
     ]);
   });
 
-  test('sends nothing for a stage outside the two owned classes', async () => {
+  test.each([
+    'base_containment',
+    'branch_cleanup',
+    'parent_close',
+    'post_merge_cleanup'
+  ])('announces a %s terminal as 정리 중단 (UI-gske §3.5)', async (step) => {
     const notify = makeNotify();
 
-    await terminalizeCleanupStep('branch_cleanup', { notify });
+    await terminalizeCleanupStep(step, { notify });
 
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-root',
+        failure_class: '정리 중단',
+        reason: 'cleanup_failed:script_failed',
+        next_action: '[세션에서 이어가기] 또는 [정리 재시도]'
+      })
+    ]);
+  });
+
+  test('sends nothing for a stage outside the closed class list', async () => {
+    const notify = makeNotify();
+
+    const driven = await terminalizeCleanupStep('base_sync', { notify });
+
+    expect(
+      driven.store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { failure_key: { stage: 'base_sync' } }
+    });
     expect(notify.sent).toEqual([]);
   });
 
@@ -4032,6 +4229,85 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
     await settleAnnouncements();
 
     expect(restarted.launchForBead).not.toHaveBeenCalled();
+    expect(notify.sent).toEqual([]);
+  });
+
+  test('opens a cleanup-stage terminal conversation once with its 정리 중단 push (UI-gske §3.5)', async () => {
+    const notify = makeNotify();
+    const conversation = makeConversation();
+
+    await terminalizeCleanupStep('branch_cleanup', {
+      notify,
+      failureConversation: conversation
+    });
+    await settleAnnouncements();
+
+    expect(conversation.launchForBead).toHaveBeenCalledExactlyOnceWith({
+      workspace: DRIVER_WS,
+      repo: '/Users/me/GitHub/beads-ui',
+      bead_id: 'UI-root'
+    });
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        failure_class: '정리 중단',
+        conversation: expect.objectContaining({ session: 'launched' })
+      })
+    ]);
+  });
+
+  test('reopens nothing when a re-click re-settles a cleanup-stage terminal', async () => {
+    const notify = makeNotify();
+    const conversation = makeConversation();
+    const driven = await terminalizeCleanupStep('branch_cleanup', {
+      notify,
+      failureConversation: conversation
+    });
+
+    driven.store.enqueueMergeManual(DRIVER_WS, {
+      expected_revision: driven.store.snapshot(DRIVER_WS).revision,
+      entries: [
+        { bead_id: 'UI-root', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+    await driven.settleOnce();
+    await settleAnnouncements();
+
+    expect(conversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(notify.sent).toHaveLength(1);
+  });
+
+  test('reopens nothing for a cleanup-stage terminal after a store restart', async () => {
+    const driven = await terminalizeCleanupStep('branch_cleanup', {
+      notify: makeNotify(),
+      failureConversation: makeConversation()
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-cleanup-restart-'));
+    tmp_dirs.push(dir);
+    const file = path.join(dir, 'queue.json');
+    fs.writeFileSync(file, JSON.stringify(driven.store.snapshot(DRIVER_WS)));
+    const restarted_store = createQueueStore({ filePathFor: () => file });
+    const conversation = makeConversation();
+    const notify = makeNotify();
+    const driver = actionDriver(restarted_store, {
+      notify,
+      failureConversation: conversation
+    });
+
+    const current =
+      restarted_store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (action) {
+      await driver.onAction('UI-root', action, current);
+    }
+    await settleAnnouncements();
+
+    expect(current.phase).toBe('needs_human');
+    expect(conversation.launchForBead).not.toHaveBeenCalled();
     expect(notify.sent).toEqual([]);
   });
 
@@ -4468,5 +4744,261 @@ describe('worker/completion-intent foreign_handoff class (UI-k467 §3.7)', () =>
     const next = needsHumanNextAction('merge_gate');
 
     expect(next).toBe('[머지] 재클릭 또는 [세션에서 이어가기]');
+  });
+});
+
+describe('정리 중단 announcer (UI-gske §3.5)', () => {
+  /**
+   * A store holding one `pr_wait` Bead with no completion intent.
+   *
+   * @param {string} [file]
+   */
+  function undrivenStore(file) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-interruption-'));
+    tmp_dirs.push(dir);
+    const store = createQueueStore({
+      filePathFor: () => file ?? path.join(dir, 'queue.json')
+    });
+    if (file) {
+      return store;
+    }
+    store.appendAttempt(DRIVER_WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'att-root',
+        bead_id: 'UI-root',
+        repo: DRIVER_WS,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude'
+      }
+    });
+    store.moveToPrWait(DRIVER_WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'att-root',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    return store;
+  }
+
+  /**
+   * @param {ReturnType<typeof undrivenStore>} store
+   * @param {string} reason
+   */
+  function recordBranchStop(store, reason) {
+    store.recordCleanupFailure(DRIVER_WS, {
+      bead_id: 'UI-root',
+      step: 'branch_cleanup',
+      reason,
+      summary: 'branch -D failed',
+      retryable: true,
+      retry_count: 0,
+      next_retry_at: 61_000
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {{ failureConversation?: any }} [overrides]
+   */
+  function announcerOver(store, overrides = {}) {
+    /** @type {any[]} */
+    const sent = [];
+    const conversation = {
+      launchForBead: vi.fn(async () => ({ session: 'launched' }))
+    };
+    const announcer = createCleanupInterruptionAnnouncer({
+      workspace: DRIVER_WS,
+      repo: '/Users/me/GitHub/beads-ui',
+      store,
+      notify: {
+        needsHuman: vi.fn(async (/** @type {any} */ input) => {
+          sent.push(input);
+        })
+      },
+      failureConversation: conversation,
+      prUrlOf: () => 'https://github.com/o/r/pull/1',
+      ...overrides
+    });
+    return { announcer, sent, conversation };
+  }
+
+  /** Let the fire-and-forget launch-then-notify chain run to its end. */
+  async function settleAnnouncements() {
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  test('announces an undriven stop with a scheduled retry once as 정리 중단', async () => {
+    const store = undrivenStore();
+    recordBranchStop(store, 'local_branch_delete_failed');
+    const { announcer, sent, conversation } = announcerOver(store);
+
+    const claimed = announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(claimed).toBe(true);
+    expect(conversation.launchForBead).toHaveBeenCalledExactlyOnceWith({
+      workspace: DRIVER_WS,
+      repo: '/Users/me/GitHub/beads-ui',
+      bead_id: 'UI-root'
+    });
+    expect(sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-root',
+        failure_class: '정리 중단',
+        reason: 'local_branch_delete_failed',
+        reason_detail: 'branch -D failed',
+        next_action: '[세션에서 이어가기] 또는 [정리 재시도]',
+        conversation: { session: 'launched' },
+        pr_url: 'https://github.com/o/r/pull/1',
+        repo: '/Users/me/GitHub/beads-ui'
+      })
+    ]);
+  });
+
+  test('marks the record before the conversation launches', async () => {
+    const store = undrivenStore();
+    recordBranchStop(store, 'local_branch_delete_failed');
+    /** @type {unknown} */
+    let mark_at_launch;
+    const { announcer } = announcerOver(store, {
+      failureConversation: {
+        launchForBead: vi.fn(async () => {
+          mark_at_launch =
+            store.snapshot(DRIVER_WS).cleanup_failed['UI-root']
+              .interruption_notified_at;
+          return { session: 'launched' };
+        })
+      }
+    });
+
+    announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(typeof mark_at_launch).toBe('number');
+  });
+
+  test('sends nothing when the same record is observed again', async () => {
+    const store = undrivenStore();
+    recordBranchStop(store, 'local_branch_delete_failed');
+    const { announcer, sent, conversation } = announcerOver(store);
+    announcer.announce('UI-root');
+
+    const again = announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(again).toBe(false);
+    expect(conversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(1);
+  });
+
+  test('sends nothing for an announced record after a store restart', async () => {
+    const store = undrivenStore();
+    recordBranchStop(store, 'local_branch_delete_failed');
+    announcerOver(store).announcer.announce('UI-root');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-interruption-'));
+    tmp_dirs.push(dir);
+    const file = path.join(dir, 'queue.json');
+    fs.writeFileSync(file, JSON.stringify(store.snapshot(DRIVER_WS)));
+    const restarted_store = undrivenStore(file);
+    const { announcer, sent, conversation } = announcerOver(restarted_store);
+
+    const claimed = announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(claimed).toBe(false);
+    expect(conversation.launchForBead).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
+  test('announces the next record of the same step as a new failure', async () => {
+    const store = undrivenStore();
+    recordBranchStop(store, 'local_branch_delete_failed');
+    const { announcer, sent } = announcerOver(store);
+    announcer.announce('UI-root');
+    recordBranchStop(store, 'local_branch_delete_failed');
+
+    const claimed = announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(claimed).toBe(true);
+    expect(sent).toHaveLength(2);
+  });
+
+  test('leaves a stop a completion intent drives to the completion terminal', async () => {
+    const store = seededCompletionStore();
+    recordBranchStop(store, 'local_branch_delete_failed');
+    const { announcer, sent, conversation } = announcerOver(store);
+
+    const claimed = announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(claimed).toBe(false);
+    expect(conversation.launchForBead).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+    expect(
+      store.snapshot(DRIVER_WS).cleanup_failed['UI-root']
+    ).not.toHaveProperty('interruption_notified_at');
+  });
+
+  test('announces a stop whose intent auto-merge OFF no longer drives', async () => {
+    const store = seededCompletionStore();
+    store.toggleAutoMerge(DRIVER_WS, {
+      expected_revision: store.snapshot(DRIVER_WS).revision,
+      on: false
+    });
+    recordBranchStop(store, 'local_branch_delete_failed');
+    const { announcer, sent } = announcerOver(store);
+
+    announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(sent).toEqual([
+      expect.objectContaining({ failure_class: '정리 중단' })
+    ]);
+  });
+
+  test('leaves an external-PR handoff stop to its own announcer', async () => {
+    const store = undrivenStore();
+    recordBranchStop(store, 'foreign_handoff:foreign_deploy_unsupported');
+    const { announcer, sent, conversation } = announcerOver(store);
+
+    const claimed = announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(claimed).toBe(false);
+    expect(conversation.launchForBead).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
+  test('sends the push without a session while the shared switch is off', async () => {
+    const store = undrivenStore();
+    recordBranchStop(store, 'local_branch_delete_failed');
+    const resolve = vi.fn();
+    const { announcer, sent } = announcerOver(store, {
+      failureConversation: createFailureConversationLauncher({
+        resolveSession: /** @type {any} */ ({ resolve }),
+        snapshot: () => ({}),
+        getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
+        autoLaunchEnabled: () => false,
+        log: () => {}
+      })
+    });
+
+    announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(sent).toEqual([
+      expect.objectContaining({
+        failure_class: '정리 중단',
+        conversation: expect.objectContaining({
+          session: 'not_launched',
+          reason: 'disabled'
+        })
+      })
+    ]);
   });
 });

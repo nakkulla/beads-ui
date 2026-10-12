@@ -300,6 +300,29 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
     expect(context?.failure_class).toBe('post-merge 잡 실패');
   });
 
+  test.each([
+    'base_containment',
+    'branch_cleanup',
+    'parent_close',
+    'post_merge_cleanup'
+  ])(
+    'names a %s completion terminal 정리 중단 like its push (UI-gske §3.5)',
+    (stage) => {
+      const queue = {
+        completion_intents: {
+          [BEAD]: {
+            phase: 'needs_human',
+            terminal_reason: { reason: 'cleanup_failed:x', stage }
+          }
+        }
+      };
+
+      const context = resolveFailureContext(queue, BEAD);
+
+      expect(context?.failure_class).toBe('정리 중단');
+    }
+  );
+
   test('reads a stopped cleanup as 정리 중단', () => {
     const queue = {
       cleanup_failed: {

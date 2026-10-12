@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createActivityStore } from './activity-store.js';
 import { workflowScriptDir } from './attempt-facts.js';
 import { beadDeferLockKey } from './bead-defer.js';
+import { createCleanupInterruptionAnnouncer } from './completion-intent.js';
 import {
   createCompletionActionDriver,
   decideCompletionAction
@@ -172,6 +173,7 @@ function seedStore(options = {}) {
  *   repoOperations?: any,
  *   locks?: { acquire: (key: string) => Promise<() => void> },
  *   noNotify?: boolean,
+ *   failureConversation?: { launchForBead: (input: any) => Promise<any> },
  *   timeline?: { append: (input: any) => unknown }
  * }} [options]
  */
@@ -526,6 +528,15 @@ function makeActions(options = {}) {
     };
   });
 
+  // The production `정리 중단` announcer over the same notifier (UI-gske §3.5).
+  const cleanup_interruption = createCleanupInterruptionAnnouncer({
+    workspace: WS,
+    repo: options.repo || REPO,
+    store,
+    notify,
+    failureConversation: options.failureConversation ?? null
+  });
+
   const actions = createPrActions({
     workspace: WS,
     // Distinct from `workspace` only where a test needs to prove which of the two
@@ -599,6 +610,10 @@ function makeActions(options = {}) {
     // `noNotify` builds the actions with no notifier at all — the shape every
     // pre-UI-9rrk construction site still has.
     notify: options.noNotify === true ? undefined : notify,
+    announceCleanupInterruption:
+      options.noNotify === true
+        ? undefined
+        : (bead_id) => cleanup_interruption.announce(bead_id),
     timeline: options.timeline,
     locks: options.locks
   });
@@ -626,6 +641,13 @@ function makeActions(options = {}) {
     merge_notices,
     human_notices
   };
+}
+
+/** Let a fire-and-forget launch-then-notify chain run to its end. */
+async function settleAnnouncements() {
+  for (let i = 0; i < 5; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 /** One declared verify command for post-merge verification tests. */
@@ -3558,9 +3580,9 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
 
   // UI-jw27 §6 acceptance 6: `decideCompletionAction` answers null for an
   // intent already in `needs_human`, so a retry that fails at the SAME ladder
-  // step is never terminalized again. The record write announces there, or the
-  // user's own retry failure reaches nobody.
-  test('keeps the deploy step again once the intent is already terminal off Discord', async () => {
+  // step is never terminalized again. The record write announces there
+  // (UI-gske §3.5), or the user's own retry failure reaches nobody.
+  test('announces the deploy step again as 정리 중단 once the intent is already terminal', async () => {
     const operations = coordinatorFor(null);
     operations.findExactDeployOperation.mockResolvedValue({
       operation_id: 'deploy-2',
@@ -3574,13 +3596,20 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
     );
 
     await env.actions.resumeRepoOperations();
+    await settleAnnouncements();
 
-    expect(env.human_notices).toEqual([]);
+    expect(env.human_notices).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        failure_class: '정리 중단',
+        reason: 'repo_operation_timeout_unresolved'
+      })
+    ]);
   });
 
-  // UI-jw27 §6-1: the deploy step rides the `script_retry` ladder, so its
-  // cleanup record is mid-ladder and `terminalize` owns the one push.
-  test('announces nothing when the cleanup record is the deploy step', async () => {
+  // UI-gske §3.5: with no completion intent nothing runs the `script_retry`
+  // ladder, so the record of the deploy step is itself the terminal.
+  test('announces the deploy step record as 정리 중단 without a completion intent', async () => {
     const operations = coordinatorFor(null);
     operations.findExactDeployOperation.mockResolvedValue({
       operation_id: 'deploy-1',
@@ -3590,11 +3619,14 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
     seedResumableRow(env.store);
 
     await env.actions.resumeRepoOperations();
+    await settleAnnouncements();
 
     expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'repo_operations'
     });
-    expect(env.human_notices).toEqual([]);
+    expect(env.human_notices).toEqual([
+      expect.objectContaining({ failure_class: '정리 중단' })
+    ]);
   });
 });
 
@@ -6016,9 +6048,9 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
     });
   });
 
-  // UI-jw27 §6-1: same ladder, same owner — the job step announces nothing
-  // here either.
-  test('announces nothing when the cleanup record is the job step', async () => {
+  // UI-gske §3.5: same rule — with no completion intent the job step's record
+  // is the terminal.
+  test('announces the job step record as 정리 중단 without a completion intent', async () => {
     const { coordinator } = jobCoordinator();
     const env = makeActions({
       ...ON_BASE,
@@ -6028,16 +6060,24 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
     });
 
     await env.actions.merge(BEAD);
+    await settleAnnouncements();
 
     expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'post_merge_jobs'
     });
-    expect(env.human_notices).toEqual([]);
+    expect(env.human_notices).toEqual([
+      expect.objectContaining({
+        failure_class: '정리 중단',
+        reason: 'post_merge_jobs_unreadable'
+      })
+    ]);
   });
 });
 
-describe('cleanup stop notification (UI-jw27 §2)', () => {
-  test('keeps a base containment stop with its cause and PR off Discord', async () => {
+describe('cleanup stop notification (UI-jw27 §2, UI-gske §3.5)', () => {
+  // With no completion intent nothing runs a scheduled cleanup retry, so each
+  // recorded stop is announced once as 정리 중단 (UI-gske §3.5).
+  test('announces a base containment stop with its cause and PR as 정리 중단', async () => {
     const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
     h.store.recordCleanupFailure(WS, {
       bead_id: BEAD,
@@ -6048,24 +6088,37 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
     });
 
     await h.actions.merge(BEAD);
+    await settleAnnouncements();
 
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'base_containment',
       retry_count: 3
     });
-    expect(h.human_notices).toEqual([]);
+    expect(h.human_notices).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        failure_class: '정리 중단',
+        reason: 'base_fetch_failed',
+        next_action: '[세션에서 이어가기] 또는 [정리 재시도]',
+        repo: REPO
+      })
+    ]);
   });
 
-  test('announces nothing while a base containment retry is scheduled', async () => {
+  test('announces a base containment stop once even while its retry is scheduled', async () => {
     const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
 
     await h.actions.merge(BEAD);
+    await settleAnnouncements();
 
-    expect(h.human_notices).toEqual([]);
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       retry_count: 0,
-      next_retry_at: 61_000
+      next_retry_at: 61_000,
+      interruption_notified_at: expect.any(Number)
     });
+    expect(h.human_notices).toEqual([
+      expect.objectContaining({ failure_class: '정리 중단' })
+    ]);
   });
 
   test('sends nothing when the store refuses the failure record', async () => {
@@ -6077,11 +6130,12 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
     });
 
     await h.actions.merge(BEAD);
+    await settleAnnouncements();
 
     expect(h.human_notices).toEqual([]);
   });
 
-  test('keeps a branch cleanup stop off Discord', async () => {
+  test('announces a branch cleanup stop a [정리 재시도] click recorded again', async () => {
     const h = makeActions({
       removeByBranchResult: {
         ok: false,
@@ -6098,17 +6152,25 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
       retryable: true,
       retry_count: 2
     });
+    await settleAnnouncements();
+    h.human_notices.length = 0;
 
     await h.actions.retryCleanup(BEAD);
+    await settleAnnouncements();
 
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'branch_cleanup',
       retry_count: 3
     });
-    expect(h.human_notices).toEqual([]);
+    expect(h.human_notices).toEqual([
+      expect.objectContaining({
+        failure_class: '정리 중단',
+        reason: 'local_branch_delete_failed'
+      })
+    ]);
   });
 
-  test('announces nothing while a branch cleanup retry is scheduled', async () => {
+  test('announces a branch cleanup stop once even while its retry is scheduled', async () => {
     const h = makeActions({
       removeByBranchResult: {
         ok: false,
@@ -6118,26 +6180,87 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
     });
 
     await h.actions.merge(BEAD);
+    await settleAnnouncements();
 
-    expect(h.human_notices).toEqual([]);
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       retry_count: 0,
       next_retry_at: 61_000
     });
+    expect(h.human_notices).toEqual([
+      expect.objectContaining({ failure_class: '정리 중단' })
+    ]);
   });
 
-  test('keeps a parent close stop off Discord', async () => {
+  test('announces a parent close stop as 정리 중단', async () => {
     const h = makeActions();
     h.bd.readStatus.mockImplementation(async () => {
       throw new Error('bd down');
     });
 
     await h.actions.merge(BEAD);
+    await settleAnnouncements();
 
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'parent_close'
     });
-    expect(h.human_notices).toEqual([]);
+    expect(h.human_notices).toEqual([
+      expect.objectContaining({ failure_class: '정리 중단' })
+    ]);
+  });
+
+  test('opens the 정리 중단 conversation once before its push', async () => {
+    const launchForBead = vi.fn(async () => ({ session: 'launched' }));
+    const h = makeActions({
+      gitFail: (args) => args[0] === 'fetch',
+      failureConversation: { launchForBead }
+    });
+
+    await h.actions.merge(BEAD);
+    await settleAnnouncements();
+
+    expect(launchForBead).toHaveBeenCalledExactlyOnceWith({
+      workspace: WS,
+      repo: REPO,
+      bead_id: BEAD
+    });
+    expect(h.human_notices).toEqual([
+      expect.objectContaining({ conversation: { session: 'launched' } })
+    ]);
+  });
+
+  test('sends nothing again when the merged row is observed again', async () => {
+    const launchForBead = vi.fn(async () => ({ session: 'launched' }));
+    const h = makeActions({
+      gitFail: (args) => args[0] === 'fetch',
+      failureConversation: { launchForBead }
+    });
+    await h.actions.merge(BEAD);
+    await settleAnnouncements();
+
+    const again = await h.actions.cleanupObservedMerge(BEAD, 'c'.repeat(40));
+    await settleAnnouncements();
+
+    expect(again).toMatchObject({ ok: false, reason: 'merged_cleanup_failed' });
+    expect(launchForBead).toHaveBeenCalledTimes(1);
+    expect(h.human_notices).toHaveLength(1);
+  });
+
+  test('sends nothing for a recorded stop after a server restart', async () => {
+    const first = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+    await first.actions.merge(BEAD);
+    await settleAnnouncements();
+    const launchForBead = vi.fn(async () => ({ session: 'launched' }));
+    const restarted = makeActions({
+      store: first.store,
+      gitFail: (args) => args[0] === 'fetch',
+      failureConversation: { launchForBead }
+    });
+
+    await restarted.actions.resumeRepoOperations();
+    await settleAnnouncements();
+
+    expect(launchForBead).not.toHaveBeenCalled();
+    expect(restarted.human_notices).toEqual([]);
   });
 
   test('completes the merge normally when the notifier throws', async () => {

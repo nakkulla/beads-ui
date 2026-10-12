@@ -37,7 +37,10 @@ import {
   getConversationSettings
 } from '../conversation-settings.js';
 import { debug } from '../logging.js';
-import { PRE_MERGE_HOLD_NOTIFY_LABEL } from './completion-intent.js';
+import {
+  CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  PRE_MERGE_HOLD_NOTIFY_LABEL
+} from './completion-intent.js';
 import {
   failureConversationReason,
   fillConversationEntry
@@ -116,7 +119,12 @@ const COMPLETION_STAGE_CLASSES = Object.freeze({
   post_merge_jobs: 'post-merge 잡 실패',
   repo_operations: '배포 실패',
   deploy: '배포 실패',
-  deployment_request: '배포 실패'
+  deployment_request: '배포 실패',
+  // The cleanup stages (`post_merge_environment`, UI-gske §3.5).
+  base_containment: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  branch_cleanup: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  parent_close: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  post_merge_cleanup: CLEANUP_INTERRUPTION_NOTIFY_LABEL
 });
 
 /** The class a `needs_human` terminal gets when its stage names none. */
@@ -404,7 +412,7 @@ export function resolveFailureContext(queue, bead_id, foreign = null) {
   const cleanup = queue?.cleanup_failed?.[bead_id];
   if (cleanup && typeof cleanup === 'object') {
     return {
-      failure_class: '정리 중단',
+      failure_class: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
       reason: typeof cleanup.reason === 'string' ? cleanup.reason : '원인 미상',
       stage: typeof cleanup.step === 'string' ? cleanup.step : null,
       detail: typeof cleanup.detail === 'string' ? cleanup.detail : null,
@@ -1215,8 +1223,9 @@ export function createFailureConversationLauncher(deps) {
     autoLaunchEnabled: enabled,
 
     /**
-     * One Bead row's terminal failure: a deploy or post-merge job failure,
-     * a merge-gate hold, or a discard failure.
+     * One Bead row's terminal failure: a deploy, post-merge job or cleanup
+     * failure, a cleanup stop no completion intent drives, a merge-gate hold,
+     * a pre-merge verify-failure hold, or a discard failure.
      *
      * @param {{ workspace: string, repo?: string|null, bead_id: string }} input
      * @returns {Promise<AutoLaunchOutcome>}

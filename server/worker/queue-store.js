@@ -672,7 +672,7 @@
  * `stale:true` marks the ONE non-blocking record (UI-dlim §3.4): the bead was
  * ADMITTED with a stale spec_review receipt, so the badge must not read as a
  * refusal. Every record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean }, interruption_notified_at?: number }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and transient observations retain their retry budget across a
@@ -689,6 +689,10 @@
  * none. `log_path` is the absolute path to that command's FULL preserved output
  * (UI-0x54), which the capped `output_tail` cannot hold; absent when the run
  * wrote no complete log file, and overwritten by a cleanup retry's own run.
+ * `interruption_notified_at` is the once-mark of the `정리 중단` push and
+ * conversation of a record no completion intent drives (UI-gske §3.5): written
+ * on THIS record before anything is sent, absent until then, and never carried
+ * to the next record, whose own recorded time is a new failure identity.
  * Both live HERE rather than
  * in bd metadata because the bd contract surface is owned by dotfiles
  * (`docs/contracts/workflow.md`) and beads-ui only consumes it; this is
@@ -1172,6 +1176,11 @@
  * @property {CompletionOperation|null} active_op
  * @property {string} [merge_head_sha] - The head pinned immediately before the merge effect.
  * @property {CompletionHold|null} hold
+ * @property {Array<{ pr_url: string|null, head_sha: string }>} [hold_launches] -
+ * The (PR, held head) pairs a verify-failure hold already opened its automatic
+ * conversation for (UI-gske §3.5). Kept apart from `hold`, which a subject
+ * change clears, so a head that comes back (A→B→A) or a restart never opens a
+ * second one; absent until the first launch.
  * @property {CompletionTerminal|null} terminal_reason
  * @property {CompletionAutoResolution|null} auto_resolution
  * @property {CompletionAutoResolution|null} paused_resolution - The resolution
@@ -1689,6 +1698,7 @@ function applyCompletionPhase(intent, phase) {
 function invalidCompletionIntent(root_bead_id, value) {
   const raw = isRecord(value) ? value : {};
   const raw_subject = isRecord(raw.subject) ? raw.subject : {};
+  const hold_launches = normalizeCompletionHoldLaunches(raw.hold_launches);
   return {
     target_base: typeof raw.target_base === 'string' ? raw.target_base : '',
     phase: 'needs_human',
@@ -1705,6 +1715,7 @@ function invalidCompletionIntent(root_bead_id, value) {
     auto_resolution: null,
     paused_resolution: null,
     hold: null,
+    ...(hold_launches.length > 0 ? { hold_launches } : {}),
     terminal_reason: {
       reason: 'intent_state_invalid',
       stage: 'state',
@@ -1750,6 +1761,7 @@ function normalizeCompletionIntent(root_bead_id, value) {
     phase === 'paused'
       ? normalizeCompletionAutoResolution(value.paused_resolution)
       : null;
+  const hold_launches = normalizeCompletionHoldLaunches(value.hold_launches);
   if (
     typeof value.target_base !== 'string' ||
     value.target_base.length === 0 ||
@@ -1778,9 +1790,31 @@ function normalizeCompletionIntent(root_bead_id, value) {
     auto_resolution,
     paused_resolution,
     hold: normalizeCompletionHold(value.hold),
+    ...(hold_launches.length > 0 ? { hold_launches } : {}),
     terminal_reason
   };
   return resumed_terminal ? { ...normalized, resumed_terminal } : normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Array<{ pr_url: string|null, head_sha: string }>}
+ */
+function normalizeCompletionHoldLaunches(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  /** @type {Array<{ pr_url: string|null, head_sha: string }>} */
+  const launches = [];
+  for (const item of value) {
+    if (isRecord(item) && typeof item.head_sha === 'string') {
+      launches.push({
+        pr_url: typeof item.pr_url === 'string' ? item.pr_url : null,
+        head_sha: item.head_sha
+      });
+    }
+  }
+  return launches;
 }
 
 /**
@@ -5371,6 +5405,13 @@ function normalizeQueue(raw) {
           Number(value.elapsed_ms) >= 0
         ) {
           q.cleanup_failed[bead_id].elapsed_ms = Number(value.elapsed_ms);
+        }
+        if (
+          typeof value.interruption_notified_at === 'number' &&
+          Number.isFinite(value.interruption_notified_at)
+        ) {
+          q.cleanup_failed[bead_id].interruption_notified_at =
+            value.interruption_notified_at;
         }
         if (
           isRecord(value.diagnosis) &&
@@ -11056,6 +11097,32 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Claim the `정리 중단` announcement of ONE cleanup stop (UI-gske §3.5)
+     * before it is sent. The record's own `at` is the failure identity, so a
+     * claim for a record that was replaced since — or one already claimed — is
+     * refused and the caller sends nothing.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, at: number }} input
+     * @returns {QueueOpResult}
+     */
+    markCleanupInterruptionNotified(workspace, input) {
+      const { bead_id, at } = input;
+      return applyUnconditional(workspace, (next) => {
+        const record = next.cleanup_failed[bead_id];
+        if (
+          !record ||
+          record.at !== at ||
+          typeof record.interruption_notified_at === 'number'
+        ) {
+          return false;
+        }
+        record.interruption_notified_at = now();
+        return true;
+      });
+    },
+
+    /**
      * Store general or quick_fix orchestration defaults as VALUES under the queue CAS
      * (spec §C.5). This replaces both the preset reference and the per-key
      * `exec_defaults` map: the worker launcher is the only consumer of these
@@ -12907,6 +12974,36 @@ export function createQueueStore(options = {}) {
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id
         );
+        return true;
+      });
+    },
+
+    /**
+     * Claim the automatic conversation of one verify-failure hold (UI-gske
+     * §3.5) before it launches. One claim per (PR, held head): a pair already
+     * on the intent is refused, so the caller launches nothing.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, pr_url: string|null, head_sha: string }} input
+     * @returns {QueueOpResult}
+     */
+    claimCompletionHoldLaunch(workspace, input) {
+      const { root_bead_id, pr_url, head_sha } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        if (!intent || typeof head_sha !== 'string' || head_sha.length === 0) {
+          return false;
+        }
+        const pr = typeof pr_url === 'string' ? pr_url : null;
+        const launches = intent.hold_launches || [];
+        if (
+          launches.some(
+            (item) => item.pr_url === pr && item.head_sha === head_sha
+          )
+        ) {
+          return false;
+        }
+        intent.hold_launches = [...launches, { pr_url: pr, head_sha }];
         return true;
       });
     },
