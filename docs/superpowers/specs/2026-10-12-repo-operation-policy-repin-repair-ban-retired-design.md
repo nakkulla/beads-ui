@@ -62,9 +62,9 @@ beads-ui의 동작은 바뀌지 않는다. beads-ui에는 자동 수리 세션�
   `server/ws/worker-handlers.js:7542-7543`
 - dotfiles 현행 ADR은 실패 대화 동작 불변, F2 경계 유지, 근거만 "정의된 자동 수리 세션 없음"으로 바뀜을 적는다 —
   dotfiles `docs/adr/dotfiles-md59z-cleanup-retry-reentry-label.md:108-120`
-- beads-ui 현행 ADR UI-c74x의 "ADR 0005는 그대로다. 자동으로 연 실패 대화는 수리 dispatch가 아니다" 문장은
-  beads-ui 자신의 무인 수리 레인 폐기와 첫 답 전 무변경 경계를 말하며, 둘 다 여전히 참이다 —
-  `docs/adr/UI-c74x-credential-wait-conversation.md:63`, `:822`
+- beads-ui 현행 ADR UI-btsr(UI-c74x를 대체하며 이 조항을 그대로 승계)의 "ADR 0005는 그대로다. 자동으로 연 실패
+  대화는 수리 dispatch가 아니다" 문장은 beads-ui 자신의 무인 수리 레인 폐기와 첫 답 전 무변경 경계를 말하며, 둘 다
+  여전히 참이다 — `docs/adr/UI-btsr-cleanup-retry-reruns-repo-operation.md:73`, `:855`
 
 ## 3. 설계
 
@@ -131,7 +131,7 @@ beads-ui의 동작은 바뀌지 않는다. beads-ui에는 자동 수리 세션�
   않는다.
 - 전제: ADR dotfiles/dotfiles-md59z — 자동 수리 세션은 승인된 spec이 정의한 종류만 열리고, 실패 대화 클래스는 그런
   세션을 정의하지 않으며, 첫 답 전 읽기 전용 경계는 유지된다.
-- 전제: ADR UI-c74x — 자동 실패 대화는 수리 dispatch가 아니라는 조항을 그대로 따른다. 그 조항은 여전히 참이라
-  supersede하지 않는다(사용자 결정 2026-10-12).
+- 전제: ADR UI-btsr — 자동 실패 대화는 수리 dispatch가 아니라는 조항(UI-c74x에서 승계)을 그대로 따른다. 그 조항은
+  여전히 참이라 supersede하지 않는다(사용자 결정 2026-10-12).
 - 정책 사본을 dotfiles 새 바이트로 재고정하고 테스트·라벨·주석을 맞춘다 — 되돌리기 쉽다(사본 교체와 고정값 갱신,
   계약 정본은 dotfiles 소유) → ADR 아님
