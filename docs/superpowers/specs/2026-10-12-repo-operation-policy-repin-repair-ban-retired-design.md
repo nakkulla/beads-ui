@@ -49,6 +49,11 @@ beads-ui의 동작은 바뀌지 않는다. beads-ui에는 자동 수리 세션�
 - 설정 화면은 정책이 보낸 `never_automatic` 토큰을 그대로 나열하고, 라벨표에 없는 토큰은 원문으로 그린다 —
   `app/views/worker/repo-ops-settings.js:467-478`(`:474`), `:523-527`, 테스트
   `app/views/worker/repo-operations.test.js:665-682`
+- 설정 화면 요약 개수(`자동 N · 금지 M`)는 받은 정책 목록의 길이로 계산된다 —
+  `app/views/worker/repo-ops-settings.js:503-507`
+- 로더는 schema 4·정책 형태·provenance가 모두 맞을 때만 `supported: true`를 내고, `supported`가 아니면
+  `script_retry` 접근이 꺼져 자동 재시도가 멈춘다 — `server/worker/repo-operation-policy.js:146-168`,
+  `server/worker/resolution-ladder.js:293-301`, `server/worker/repo-operation-coordinator.js:811-819`
 - 고정값을 단언하는 테스트: `server/worker/repo-operation-policy.test.js:16-20`(커밋·blob·bytes·digest 상수, bytes
   2809), `:170-182`(목록 길이 `never_automatic: 8`), `:195-202`(`repair_session_dispatch` 포함 단언);
   `server/worker/repo-operation-protocol.test.js:263-274`(길이 8), `:276-284`(커밋 리터럴);
