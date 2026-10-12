@@ -6440,7 +6440,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect(
       drawer.querySelector('.worker-cleanup__resume')?.textContent?.trim()
-    ).toBe('워커로 이어가기');
+    ).toBe('정리 재시도');
   });
 
   test('mentions retry only when durable cleanup evidence consumed it', () => {
@@ -6629,7 +6629,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect([btn.disabled, btn.textContent?.trim()]).toEqual([
       false,
-      '워커로 이어가기'
+      '정리 재시도'
     ]);
   });
 
@@ -6650,7 +6650,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect([btn.disabled, btn.textContent?.trim()]).toEqual([
       false,
-      '워커로 이어가기'
+      '정리 재시도'
     ]);
   });
 
@@ -7016,7 +7016,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect([
       mount.querySelector('.worker-mini__merge')?.textContent?.trim(),
       mount.querySelector('.worker-mini__timeline')
-    ]).toEqual(['워커로 이어가기', null]);
+    ]).toEqual(['정리 재시도', null]);
   });
 
   test('resumes the cleanup from that button', async () => {
@@ -9206,7 +9206,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     expect(row.textContent?.replace(/\s+/g, '')).toContain('검증실패3/6');
     expect(row.querySelector('.merge-step--failed')).not.toBeNull();
     expect(row.querySelector('.worker-mini__merge')?.textContent?.trim()).toBe(
-      '워커로 이어가기'
+      '정리 재시도'
     );
   });
 
@@ -9265,7 +9265,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     );
 
     expect(merge.title).toBe(
-      '머지 완료 — 검증 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 Worker가 검증을 다시 돌린 뒤 저장소 작업부터 정리를 잇습니다'
+      '머지 완료 — 검증 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 Worker가 검증을 새로 한 번 돌린 뒤 저장소 작업부터 정리를 잇습니다'
     );
   });
 
@@ -11260,7 +11260,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-mini__merge')
     );
-    expect(btn.textContent?.trim()).toBe('워커로 이어가기');
+    expect(btn.textContent?.trim()).toBe('정리 재시도');
     expect(btn.disabled).toBe(false);
   });
 
@@ -18588,10 +18588,7 @@ describe('resolve action while an interactive session lives (UI-ri8n)', () => {
       mount.querySelectorAll('.worker-mini__foot .worker-mini__actions button')
     ).map((button) => button.textContent?.trim());
 
-    expect(labels.slice(0, 2)).toEqual([
-      '세션에서 이어가기',
-      '워커로 이어가기'
-    ]);
+    expect(labels.slice(0, 2)).toEqual(['세션에서 이어가기', '정리 재시도']);
   });
 
   test('tones the already_running reply as info', () => {

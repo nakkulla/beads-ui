@@ -185,7 +185,11 @@ export function createRepoOperationCoordinator(deps) {
    * added only for a manual run, so every automatic identity is byte-identical
    * to what it hashed before.
    *
-   * @param {{ effective_base_sha: string, target_base: string, target_sha: string, script_mode: string, script_blob_sha: string, manual_run_id?: number|null }} input
+   * A person's cleanup retry hashes `retry_of` — the failed record it re-runs
+   * (UI-btsr §3.2) — on the same rule: added only when present, so every id
+   * without it stays byte-identical.
+   *
+   * @param {{ effective_base_sha: string, target_base: string, target_sha: string, script_mode: string, script_blob_sha: string, manual_run_id?: number|null, retry_of?: string|null }} input
    */
   function operationId(input) {
     return crypto
@@ -201,6 +205,9 @@ export function createRepoOperationCoordinator(deps) {
           script_blob_sha: input.script_blob_sha,
           ...(Number.isInteger(input.manual_run_id)
             ? { manual_run_id: input.manual_run_id }
+            : {}),
+          ...(typeof input.retry_of === 'string' && input.retry_of.length > 0
+            ? { retry_of: input.retry_of }
             : {})
         })
       )
@@ -214,7 +221,10 @@ export function createRepoOperationCoordinator(deps) {
    * result is bound to (PR head, base tip), so a head that moved with the same
    * tree (an amend) is a new verification, never an append to the old one.
    *
-   * @param {{ effective_base_sha: string, target_base: string, target_tree: string, script_object_type: string, script_mode: string, script_blob_sha: string, foreign_repo?: string|null, foreign_head_sha?: string|null }} input
+   * A cleanup retry's successor adds `retry_of` exactly as
+   * {@link operationId} does (UI-btsr §3.2).
+   *
+   * @param {{ effective_base_sha: string, target_base: string, target_tree: string, script_object_type: string, script_mode: string, script_blob_sha: string, foreign_repo?: string|null, foreign_head_sha?: string|null, retry_of?: string|null }} input
    */
   function verifyOperationId(input) {
     return crypto
@@ -232,11 +242,87 @@ export function createRepoOperationCoordinator(deps) {
           target_tree: input.target_tree,
           script_object_type: input.script_object_type,
           script_mode: input.script_mode,
-          script_blob_sha: input.script_blob_sha
+          script_blob_sha: input.script_blob_sha,
+          ...(typeof input.retry_of === 'string' && input.retry_of.length > 0
+            ? { retry_of: input.retry_of }
+            : {})
         })
       )
       .digest('hex')
       .slice(0, 24);
+  }
+
+  /**
+   * The record that re-runs `operation_id` on a person's cleanup retry, if one
+   * was recorded (UI-btsr §3.2). One is recorded per failed tip under the
+   * repo-operation lock; should two ever exist, the earliest wins so every
+   * reader agrees.
+   *
+   * @param {Record<string, any>} operations
+   * @param {string} operation_id
+   * @returns {string|null}
+   */
+  function retrySuccessorOf(operations, operation_id) {
+    /** @type {string|null} */
+    let found_id = null;
+    /** @type {any} */
+    let found = null;
+    for (const [candidate_id, candidate] of Object.entries(operations)) {
+      if (candidate?.retry_of !== operation_id) {
+        continue;
+      }
+      const earlier =
+        found === null ||
+        candidate.requested_at < found.requested_at ||
+        (candidate.requested_at === found.requested_at &&
+          candidate_id.localeCompare(String(found_id)) < 0);
+      if (earlier) {
+        found_id = candidate_id;
+        found = candidate;
+      }
+    }
+    return found_id;
+  }
+
+  /**
+   * Follow `retry_of` successors to the end of the chain (UI-btsr §3.2). A
+   * terminal record never reopens — a retry records a successor naming it —
+   * so the CURRENT state of one identity is the chain's tip. A record without
+   * a successor is its own tip, which leaves every chain-free read unchanged.
+   *
+   * @param {Record<string, any>} operations
+   * @param {string} operation_id
+   * @returns {string}
+   */
+  function retryTipOf(operations, operation_id) {
+    const seen = new Set([operation_id]);
+    let tip = operation_id;
+    while (true) {
+      const successor = retrySuccessorOf(operations, tip);
+      if (successor === null || seen.has(successor) || !operations[successor]) {
+        return tip;
+      }
+      seen.add(successor);
+      tip = successor;
+    }
+  }
+
+  /**
+   * Where a subject's exact lookup starts: the newest record that is itself a
+   * retry successor when the subject has one — the run a person's retry last
+   * recorded — otherwise the oldest record, as before (UI-btsr §3.3).
+   *
+   * @param {[string, any][]} candidates - Sorted oldest first.
+   * @returns {string}
+   */
+  function lookupStartOf(candidates) {
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const [candidate_id, candidate] = candidates[index];
+      if (typeof candidate.retry_of === 'string') {
+        return candidate_id;
+      }
+    }
+    return candidates[0][0];
   }
 
   /**
@@ -1441,7 +1527,7 @@ export function createRepoOperationCoordinator(deps) {
       });
       return { ok: true, inert: true, opted_out: true };
     }
-    const operation_id = verifyOperationId({
+    const verify_identity = {
       effective_base_sha: candidate.base_sha,
       target_base: candidate.target_base,
       target_tree: materialized.tree_sha,
@@ -1450,7 +1536,34 @@ export function createRepoOperationCoordinator(deps) {
       script_blob_sha: declaration.blob_sha,
       foreign_repo: foreign ? foreign.slug : null,
       foreign_head_sha: foreign ? candidate.head_sha : null
-    });
+    };
+    let operation_id = verifyOperationId(verify_identity);
+    // The post-merge cleanup's own verify (UI-btsr §3.2): its identity is
+    // pinned by the merge SHA, so a failed record would be adopted forever.
+    // Its current state is the end of the retry chain, and only a person's
+    // retry records a successor for a failed tip. The pre-merge gate and a
+    // foreign target keep adopting exactly as before.
+    /** @type {string|null} */
+    let retry_of = null;
+    if (!foreign && candidate.retry_chain === true) {
+      const operations =
+        deps.store.snapshot(deps.workspace).repo_operations || {};
+      if (operations[operation_id]?.state === 'failed') {
+        const tip_id = retryTipOf(operations, operation_id);
+        if (
+          operations[tip_id].state === 'failed' &&
+          candidate.retry_authorized === true
+        ) {
+          retry_of = tip_id;
+          operation_id = verifyOperationId({
+            ...verify_identity,
+            retry_of: tip_id
+          });
+        } else {
+          operation_id = tip_id;
+        }
+      }
+    }
     const existing_before =
       deps.store.snapshot(deps.workspace).repo_operations[operation_id] || null;
     if (foreign && candidate_root !== null && !existing_before) {
@@ -1496,7 +1609,8 @@ export function createRepoOperationCoordinator(deps) {
       script_object_type: declaration.object_type,
       script_path: declaration.script,
       script_mode: declaration.mode,
-      script_blob_sha: declaration.blob_sha
+      script_blob_sha: declaration.blob_sha,
+      ...(retry_of !== null ? { retry_of } : {})
     });
     if (!prerecord.ok) {
       await verify_checkout.cleanup({
@@ -1546,6 +1660,9 @@ export function createRepoOperationCoordinator(deps) {
         path: materialized.path
       });
       return { ok: true, operation_id, adopted: true };
+    }
+    if (retry_of !== null) {
+      recordRetrySuccessor(retry_of, operation_id, candidate.on_retry_recorded);
     }
     const script = await transition.materialize({
       workspace: deps.workspace,
@@ -1600,6 +1717,32 @@ export function createRepoOperationCoordinator(deps) {
     return running.ok
       ? { ok: true, operation_id, timeout_ms: declaration.timeout_ms }
       : { ok: false, code: 'repo_operation_start_record_failed', operation_id };
+  }
+
+  /**
+   * Mark the failed tip a person's cleanup retry replaced, then tell the
+   * caller — synchronously, before anything launches — that the successor is
+   * durable (UI-btsr §3.3). The caller drops the row's stop record there, so a
+   * restart from this point on (beads-ui deploys itself by restarting) finds
+   * an in-progress row that boot resume continues, never a stale stop that
+   * hides a run already under way.
+   *
+   * The drawer and the card read a superseded failure as no longer the
+   * current one; a tip a covering success already superseded keeps that link,
+   * and the chain is still followed by `retry_of`.
+   *
+   * @param {string} retry_of
+   * @param {string} successor_id
+   * @param {unknown} onRecorded
+   */
+  function recordRetrySuccessor(retry_of, successor_id, onRecorded) {
+    deps.store.supersedeRepoOperation(deps.workspace, {
+      operation_id: retry_of,
+      successor_id
+    });
+    if (typeof onRecorded === 'function') {
+      onRecorded();
+    }
   }
 
   /**
@@ -1690,7 +1833,7 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} workspace
    * @param {string} operation_id
    * @param {any} operation
-   * @param {{ declaration: any, target_sha: string, retry?: boolean, manual?: boolean }} plan
+   * @param {{ declaration: any, target_sha: string, retry?: boolean, manual?: boolean, retry_successor?: boolean }} plan
    */
   async function alignRecordedDeploy(workspace, operation_id, operation, plan) {
     const acquired = await deployLock({
@@ -1792,10 +1935,14 @@ export function createRepoOperationCoordinator(deps) {
         // means the opposite — the person asked for this exact tip to be
         // deployed AGAIN — so it aligns and runs instead of settling as
         // covered/superseded (UI-s582 §3.4). A retry at the same HEAD must
-        // also run: alignment can precede a script failure (UI-dn7c).
+        // also run: alignment can precede a script failure (UI-dn7c). A
+        // person's cleanup retry successor sits in the manual run's slot for
+        // the same reason (UI-btsr §3.2): it exists to run the script that
+        // failed after this very alignment.
         if (
           target_status === 'ancestor' &&
           plan.manual !== true &&
+          plan.retry_successor !== true &&
           !(plan.retry === true && state.head === plan.target_sha)
         ) {
           // The record must name the SHA that is actually on disk: the
@@ -1872,7 +2019,7 @@ export function createRepoOperationCoordinator(deps) {
    *
    * @param {string} workspace
    * @param {string} operation_id
-   * @param {{ declaration: any, classification: string, target_sha: string, retry?: boolean, manual?: boolean }} plan
+   * @param {{ declaration: any, classification: string, target_sha: string, retry?: boolean, manual?: boolean, retry_successor?: boolean }} plan
    */
   async function launchRecorded(workspace, operation_id, plan) {
     const operation =
@@ -2060,18 +2207,23 @@ export function createRepoOperationCoordinator(deps) {
       return { ok: true, inert: true, opted_out: true };
     }
     const effective_base_sha = previous_sha || target_sha;
-    const operation_id = operationId({
+    const identity = {
       effective_base_sha,
       target_base: subject.target_base,
       target_sha,
       script_mode: declaration.mode,
-      script_blob_sha: declaration.blob_sha,
+      script_blob_sha: declaration.blob_sha
+    };
+    let operation_id = operationId({
+      ...identity,
       ...(manual && Number.isInteger(subject.manual_run_id)
         ? { manual_run_id: subject.manual_run_id }
         : {})
     });
     const existing =
       deps.store.snapshot(workspace).repo_operations[operation_id];
+    /** @type {string|null} */
+    let retry_of = null;
     // A fresh approved bootstrap request reopens a failed record — including
     // one whose own bootstrap run failed. The approval is the authority, and
     // re-requesting it is the only remediation entry a bootstrap operation has.
@@ -2087,6 +2239,22 @@ export function createRepoOperationCoordinator(deps) {
       });
       if (!attached.ok) {
         return { ok: false, code: 'repo_operation_bootstrap_attach_failed' };
+      }
+    } else if (existing && existing.state === 'failed' && !manual) {
+      // A failed automatic identity is never reopened (UI-btsr §3.2): its
+      // current state is the end of its retry chain. A person's cleanup retry
+      // records one successor for a failed tip; every other caller adopts the
+      // tip, failure included, exactly as it adopted the record before.
+      const operations = deps.store.snapshot(workspace).repo_operations;
+      const tip_id = retryTipOf(operations, operation_id);
+      if (
+        operations[tip_id].state === 'failed' &&
+        subject.retry_authorized === true
+      ) {
+        retry_of = tip_id;
+        operation_id = operationId({ ...identity, retry_of: tip_id });
+      } else {
+        operation_id = tip_id;
       }
     }
     const prerecord = deps.store.ensureRepoOperation(workspace, {
@@ -2112,6 +2280,10 @@ export function createRepoOperationCoordinator(deps) {
               : {})
           }
         : {}),
+      // A successor pins the tip the retry fetched for the same reason: the
+      // id it hashes names that target, so a run that waited behind another
+      // operation must not launch at whatever the remote has moved to.
+      ...(retry_of !== null ? { retry_of, target_sha } : {}),
       bootstrap_provenance: subject.bootstrap_provenance || null
     });
     if (!prerecord.ok)
@@ -2124,6 +2296,11 @@ export function createRepoOperationCoordinator(deps) {
         adopted: true,
         timeout_ms: declaration.timeout_ms
       };
+    if (retry_of !== null) {
+      recordRetrySuccessor(retry_of, operation_id, subject.on_retry_recorded);
+    }
+    const retry_successor =
+      typeof operations[operation_id].retry_of === 'string';
     // Durable per-repo serialization: while another operation runs, the queued
     // record waits for a later reconcile instead of racing the worktree.
     if (runningOperationFor(operations, operation_id)) {
@@ -2138,7 +2315,8 @@ export function createRepoOperationCoordinator(deps) {
       declaration,
       classification: policy.classification,
       target_sha,
-      ...(manual ? { manual: true } : {})
+      ...(manual ? { manual: true } : {}),
+      ...(retry_successor ? { retry_successor: true } : {})
     });
     return launched.ok
       ? { ...launched, timeout_ms: declaration.timeout_ms }
@@ -2854,21 +3032,31 @@ export function createRepoOperationCoordinator(deps) {
     // become a deploy of whatever landed since. The pinned SHA is authority in
     // both cases; its absence fails closed rather than falling back to a fresh
     // bind.
+    // A cleanup retry successor (UI-btsr §3.2) keeps the tip its retry pinned
+    // and, like a manual run, runs even where the worktree HEAD already holds
+    // it; one recorded without a pin binds like any automatic record.
+    const retry_successor = typeof operation.retry_of === 'string';
+    const pinned_target =
+      typeof operation.target_sha === 'string' && operation.target_sha
+        ? operation.target_sha
+        : null;
     /** @type {{ ok: boolean, code?: string, target_sha?: string }} */
     const bound =
       retry || manual
-        ? typeof operation.target_sha === 'string' && operation.target_sha
-          ? { ok: true, target_sha: operation.target_sha }
+        ? pinned_target !== null
+          ? { ok: true, target_sha: pinned_target }
           : {
               ok: false,
               code: retry
                 ? 'repo_ops_retry_target_missing'
                 : 'manual_target_missing'
             }
-        : await deploy_worktree.bindTarget({
-            repo: deps.repo,
-            base: operation.target_base
-          });
+        : retry_successor && pinned_target !== null
+          ? { ok: true, target_sha: pinned_target }
+          : await deploy_worktree.bindTarget({
+              repo: deps.repo,
+              base: operation.target_base
+            });
     if (!bound.ok || typeof bound.target_sha !== 'string') {
       if (retry) {
         await settleConsumedRetry(workspace, {
@@ -2919,7 +3107,8 @@ export function createRepoOperationCoordinator(deps) {
       classification: policy.classification,
       target_sha: bound.target_sha,
       retry,
-      ...(manual ? { manual: true } : {})
+      ...(manual ? { manual: true } : {}),
+      ...(retry_successor ? { retry_successor: true } : {})
     });
   }
 
@@ -3007,10 +3196,29 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * The record a result read stands for: the end of the retry chain the given
+   * id starts (UI-btsr §3.3), so a wait handed a failure a person's retry
+   * already replaced reads the run in flight. Identity for every record
+   * without a successor — the pre-merge gate, a foreign target, and every
+   * automatic record nobody retried.
+   *
    * @param {string} operation_id
+   * @returns {string}
+   */
+  function currentTipOf(operation_id) {
+    return retryTipOf(
+      deps.store.snapshot(deps.workspace).repo_operations || {},
+      operation_id
+    );
+  }
+
+  /**
+   * @param {string} requested_id - Resolved to its retry chain's tip; the
+   * receipt names the record it actually read.
    * @param {string} head_sha
    */
-  function verifyReceipt(operation_id, head_sha) {
+  function verifyReceipt(requested_id, head_sha) {
+    const operation_id = currentTipOf(requested_id);
     const operation = observe(operation_id);
     const bound_head_sha =
       typeof head_sha === 'string' && /^[0-9a-f]{40}$/i.test(head_sha)
@@ -3063,7 +3271,7 @@ export function createRepoOperationCoordinator(deps) {
     const poll_ms = options.poll_ms ?? 100;
     while (Date.now() <= deadline) {
       await reconcile(deps.workspace);
-      const operation = observe(operation_id);
+      const operation = observe(currentTipOf(operation_id));
       if (
         operation &&
         (operation.state === 'succeeded' || operation.state === 'failed')
@@ -3242,7 +3450,11 @@ export function createRepoOperationCoordinator(deps) {
     if (candidates.length === 0) {
       return null;
     }
-    const [operation_id, operation] = candidates[0];
+    // The chain's tip, never a failure a person's retry already replaced
+    // (UI-btsr §3.3): a boot resume must wait on the run in flight.
+    const operations = deps.store.snapshot(deps.workspace).repo_operations;
+    const operation_id = retryTipOf(operations, lookupStartOf(candidates));
+    const operation = operations[operation_id];
     const resolved = await resolveRepoOps({
       repo: deps.repo,
       sha: operation.effective_base_sha,
@@ -3264,10 +3476,85 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
-   * @param {string} operation_id
+   * The post-merge cleanup's verify record for one merged subject, at the end
+   * of its retry chain (UI-btsr §3.3). The cleanup verify binds the merge SHA
+   * as its subject SHA — the pre-merge gate binds the PR head — so the subject
+   * alone tells the two apart. Its stored `verify_head_sha` is the PR head a
+   * retry or a restart re-reads when the observation cache has none, and
+   * `timeout_ms` is that run's declared timeout, read from its effective base
+   * the way {@link findExactDeployOperation} reads a deploy's — null when the
+   * declaration there no longer names the recorded script.
+   *
+   * @param {{ target_base: string, bead_id: string, merged_sha: string }} subject
+   * @returns {Promise<{ operation_id: string, head_sha: string|null, state: string, timeout_ms: number|null }|null>}
+   */
+  async function findCleanupVerifyOperation(subject) {
+    if (
+      typeof subject.target_base !== 'string' ||
+      typeof subject.bead_id !== 'string' ||
+      typeof subject.merged_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(subject.merged_sha)
+    ) {
+      return null;
+    }
+    const merged_sha = subject.merged_sha.toLowerCase();
+    const operations = deps.store.snapshot(deps.workspace).repo_operations;
+    const candidates = Object.entries(operations)
+      .filter(
+        ([, operation]) =>
+          operation.repo_id === deps.repo &&
+          operation.kind === 'verify' &&
+          operation.target_base === subject.target_base &&
+          operation.subjects.some(
+            (entry) =>
+              entry.bead_id === subject.bead_id &&
+              entry.merged_sha === merged_sha
+          )
+      )
+      .sort(([left_id, left], [right_id, right]) => {
+        const requested_delta = left.requested_at - right.requested_at;
+        return requested_delta !== 0
+          ? requested_delta
+          : left_id.localeCompare(right_id);
+      });
+    if (candidates.length === 0) {
+      return null;
+    }
+    const operation_id = retryTipOf(operations, lookupStartOf(candidates));
+    const operation = operations[operation_id];
+    const resolved = await resolveRepoOps({
+      repo: deps.repo,
+      sha: operation.effective_base_sha,
+      gitRun: deps.gitRun
+    });
+    const declaration = resolved.ok === false ? null : resolved.verify;
+    const timeout_ms =
+      declaration &&
+      declaration.script === operation.script_path &&
+      declaration.mode === operation.script_mode &&
+      declaration.blob_sha === operation.script_blob_sha &&
+      Number.isInteger(declaration.timeout_ms) &&
+      declaration.timeout_ms > 0
+        ? declaration.timeout_ms
+        : null;
+    return {
+      operation_id,
+      head_sha:
+        typeof operation.verify_head_sha === 'string'
+          ? operation.verify_head_sha
+          : null,
+      state: operation.state,
+      timeout_ms
+    };
+  }
+
+  /**
+   * @param {string} requested_id - Resolved to its retry chain's tip
+   * (UI-btsr §3.3); the evidence names the record it actually read.
    * @param {{ target_base: string, merged_sha: string }} subject
    */
-  async function deploymentEvidence(operation_id, subject) {
+  async function deploymentEvidence(requested_id, subject) {
+    const operation_id = currentTipOf(requested_id);
     const operation = observe(operation_id);
     if (!operation) {
       return { state: 'failed', code: 'repo_operation_missing' };
@@ -3755,6 +4042,7 @@ export function createRepoOperationCoordinator(deps) {
     waitForTerminal,
     hasConfig,
     findExactDeployOperation,
+    findCleanupVerifyOperation,
     deploymentEvidence,
     waitForDeployTerminal,
     prepareJob,

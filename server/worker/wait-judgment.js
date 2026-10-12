@@ -948,7 +948,7 @@ export function judgeWaitReasons(input) {
           bead_id,
           root_dir,
           `수정 작업 대기 · ${handoff_bead_id} · 원인 ${line(operation.failure?.code)}`,
-          '수정 Bead의 PR·배포 뒤 [워커로 이어가기]'
+          '수정 Bead의 PR·배포 뒤 [정리 재시도]'
         );
         result.targets.push({ id: handoff_bead_id, kind: 'issue' });
         addClocks(result, { since: handoff.recorded_at });

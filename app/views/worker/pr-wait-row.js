@@ -596,7 +596,7 @@ export function prStatusBadge(input) {
   // and it never claims a merge step: the queue place is not taken yet.
   if (input.queueing) {
     return input.queueing === 'cleanup'
-      ? badge('워커로 이어가기 요청 중', {
+      ? badge('정리 재시도 요청 중', {
           title: '서버 응답을 기다리는 중입니다',
           live: true
         })
@@ -843,7 +843,7 @@ export function prStatusBadge(input) {
  * explanation. [폐기] is visually subordinate: a misclick there discards a PR.
  * It is withheld entirely on a merged tile — a landed merge cannot be discarded
  * (discard spec §2), and there the cleanup retry — the row's
- * [워커로 이어가기] — is the button.
+ * [정리 재시도] — is the button.
  *
  * The gate shown here is ADVISORY. The click re-queries `gh` server-side and
  * decides again, so a badge that went stale between render and click cannot
@@ -867,7 +867,7 @@ export function prStatusBadge(input) {
  * normal session delivered, with no worker attempt behind it (UI-7agi §5).
  * Two affordances change: [폐기] disappears (the server's discard needs the
  * durable lane membership an external row does not have), and a MERGED row
- * becomes a cleanup-retry [워커로 이어가기] button because nothing auto-cleans it. 충돌 해소 is NOT one
+ * becomes a cleanup-retry [정리 재시도] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
  * @param {{ position: number, active: boolean, failure: string|null, waiting?: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, hold?: any, authority?: any, review_dispatch?: any }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
@@ -1044,10 +1044,11 @@ function prWaitRow(
   // wanted the AI-repair ladder there; UI-s582 removed that ladder).
   // A `post_merge_jobs` stall is the same click again (UI-i60a §4): the resume
   // re-runs the cleanup, whose ledger reconcile decides whether the job is
-  // re-adopted or re-run. UI-18a5 §3.2 names this button the row's
-  // [워커로 이어가기] and puts [세션에서 이어가기] right in front of it.
+  // re-adopted or re-run. UI-18a5 §3.2 puts [세션에서 이어가기] right in
+  // front of this button, and UI-btsr §3.5 names it [정리 재시도]: a stopped
+  // verify or deploy runs once more as a new run before the cleanup goes on.
   const cleanup_retry =
-    // 외부 PR 사람 처리 필요는 `[워커로 이어가기]`가 없다 (UI-k467 §3.7).
+    // 외부 PR 사람 처리 필요는 `[정리 재시도]`가 없다 (UI-k467 §3.7).
     foreign_handoff === null &&
     !!cleanup_failed &&
     [
@@ -1344,12 +1345,13 @@ function prWaitRow(
     // 해소만 하고 멈추는 것처럼 읽히던 라벨을 실제 동작에 맞춘다 (UI-yk55 §1):
     // 이 클릭이 띄우는 세션은 완료 후 자동으로 재머지된다 — 툴팁이 이미 그렇게
     // 말하고 있었고, 라벨만 어긋나 있었다.
-    // 정리 실패 행의 주 버튼은 그 행의 `[워커로 이어가기]`다 (UI-18a5 §3.2):
-    // 무엇부터 다시 도는지(배포·검증·실패 단계)는 툴팁이 말한다.
+    // 정리 실패 행의 주 버튼은 그 행의 `[정리 재시도]`다 (UI-18a5 §3.2 자리,
+    // UI-btsr §3.5 이름): 무엇부터 다시 도는지(배포·검증·실패 단계)는 툴팁이
+    // 말한다.
     merge_label: continuation_required
       ? '이어하기 선택'
       : cleanup_retry || external_cleanup
-        ? '워커로 이어가기'
+        ? '정리 재시도'
         : conflicting && !merge_step && !cleanup_retry
           ? '충돌 해소 후 머지'
           : gate?.reason === 'base_behind'
@@ -1368,7 +1370,7 @@ function prWaitRow(
         : queueing
           ? '요청을 보내는 중 — 서버 응답을 기다립니다'
           : stalled_script
-            ? `머지 완료 — ${stalled_script === 'deploy' ? '배포' : '검증'} 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 Worker가 ${stalled_script === 'deploy' ? '배포를' : '검증을'} 다시 돌린 뒤 저장소 작업부터 정리를 잇습니다`
+            ? `머지 완료 — ${stalled_script === 'deploy' ? '배포' : '검증'} 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 Worker가 ${stalled_script === 'deploy' ? '배포를' : '검증을'} 새로 한 번 돌린 뒤 저장소 작업부터 정리를 잇습니다`
             : merge_step
               ? `머지 진행 중 — ${merge_step.label}`
               : external_cleanup

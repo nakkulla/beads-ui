@@ -46,7 +46,7 @@ describe('operation recovery wait reasons', () => {
       expect.objectContaining({
         kind: 'recovery',
         headline: '수정 작업 대기 · UI-repair · 원인 script_failed',
-        release: '수정 Bead의 PR·배포 뒤 [워커로 이어가기]',
+        release: '수정 Bead의 PR·배포 뒤 [정리 재시도]',
         targets: [{ id: 'UI-repair', kind: 'issue' }],
         since: NOW - 30_000,
         verdict: 'normal',

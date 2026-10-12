@@ -1079,7 +1079,7 @@ describe('post_merge_jobs 정리 멈춤 행 (UI-i60a §1)', () => {
 
     const button = row.querySelector('.worker-cleanup__resume');
 
-    expect(button?.textContent?.trim()).toBe('워커로 이어가기');
+    expect(button?.textContent?.trim()).toBe('정리 재시도');
   });
 
   test('names the resume step in the worker-continuation tooltip', () => {
@@ -1111,7 +1111,7 @@ describe('post_merge_jobs 정리 멈춤 행 (UI-i60a §1)', () => {
       row.querySelectorAll('.worker-ev__acts button')
     ).map((button) => button.textContent?.trim());
 
-    expect(buttons).toEqual(['세션에서 이어가기', '워커로 이어가기']);
+    expect(buttons).toEqual(['세션에서 이어가기', '정리 재시도']);
   });
 
   test('keeps the raw job reason inspectable in 세부', () => {
@@ -1200,7 +1200,7 @@ describe('정리 멈춤 행의 짝 판정 (UI-18a5 §3.2)', () => {
       button.textContent?.trim()
     );
 
-    expect(buttons).toEqual(['워커로 이어가기']);
+    expect(buttons).toEqual(['정리 재시도']);
   });
 
   test('hides both halves after the conversation took over', () => {

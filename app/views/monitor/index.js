@@ -652,7 +652,7 @@ export function createMonitorView(mount_element, options) {
   const resolve_pending = new Set();
   /** [머지] 클릭이 응답을 기다리는 행. @type {Set<string>} */
   const merge_pending = new Set();
-  /** 정리 실패 행의 [워커로 이어가기] 클릭이 응답을 기다리는 행. @type {Set<string>} */
+  /** 정리 실패 행의 [정리 재시도] 클릭이 응답을 기다리는 행. @type {Set<string>} */
   const cleanup_pending = new Set();
   /** @type {Set<string>} */
   const handoff_pending = new Set();
@@ -1195,7 +1195,7 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Retry the stopped post-merge cleanup of one PR 대기 row — its [워커로 이어가기]
+   * Retry the stopped post-merge cleanup of one PR 대기 row — its [정리 재시도]
    * (UI-f2sy §4), the Worker tab's `retryCleanup` against the row's own repository. A
    * conflict is adopted but never retried automatically: another explicit
    * click against the fresh snapshot is the authorization boundary.
@@ -1220,7 +1220,7 @@ export function createMonitorView(mount_element, options) {
         false
       );
       if (res && !res.retried && !res.conflict && res.reason) {
-        showToast(`워커로 이어가기 거부: ${res.reason}`, 'error', 2400);
+        showToast(`정리 재시도 거부: ${res.reason}`, 'error', 2400);
       }
     } finally {
       cleanup_pending.delete(key);
@@ -3179,7 +3179,7 @@ export function createMonitorView(mount_element, options) {
     }
     if (cls.contains('worker-mini__merge')) {
       // Worker 탭과 같은 분기 (UI-f2sy §4): 정리가 멈춘 행의 같은 버튼은
-      // 그 행의 [워커로 이어가기](정리 재시도)다 — 머지 큐에 넣는 클릭이 아니다.
+      // 그 행의 [정리 재시도]다 — 머지 큐에 넣는 클릭이 아니다.
       if (queueOf(root_dir).cleanup_failed?.[bead_id]) {
         void retryCleanup(bead_id, root_dir, revision);
       } else {

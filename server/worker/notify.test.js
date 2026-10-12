@@ -1391,7 +1391,7 @@ describe('worker/notify needs_human transition', () => {
       failure_class: '배포 실패',
       reason: 'cleanup_failed:script_failed',
       reason_detail: 'deploy exited 2',
-      next_action: '[세션에서 이어가기] 또는 [워커로 이어가기]',
+      next_action: '[세션에서 이어가기] 또는 [정리 재시도]',
       pr_url: 'https://github.com/o/r/pull/7',
       repo: '/Users/me/GitHub/beads-ui'
     });
@@ -1401,7 +1401,7 @@ describe('worker/notify needs_human transition', () => {
         '🤖 🙋 확인 필요 · 배포 실패 — UI-1 워커 알림',
         '클래스: 배포 실패',
         '사유: cleanup_failed:script_failed — deploy exited 2',
-        '다음: [세션에서 이어가기] 또는 [워커로 이어가기]',
+        '다음: [세션에서 이어가기] 또는 [정리 재시도]',
         '대화를 열지 못함 — [세션에서 이어가기]',
         'https://github.com/o/r/pull/7',
         '리포: beads-ui'

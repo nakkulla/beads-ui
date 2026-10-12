@@ -567,8 +567,8 @@ function operationEventTemplate(event, repo_ops, repo = '') {
  *
  * Both exits live in the SAME action group as the card's pair (UI-jw27 §3·§4,
  * UI-18a5 §3.2): `[세션에서 이어가기]` opens the failure conversation that works
- * out why it stopped, and `[워커로 이어가기]` is the cleanup retry — its
- * tooltip names the step it resumes from. Whether each stands is the card's
+ * out why it stopped, and `[정리 재시도]` is the cleanup retry (UI-btsr §3.5)
+ * — its tooltip names the step it resumes from. Whether each stands is the card's
  * own decision, `tileResolveFields`, carried on the entry as `pair` by the
  * lane model: a live conversation drops the session half, a taken-over or
  * handed-off one both halves. An entry without that decision draws no session
@@ -642,7 +642,7 @@ function cleanupEventTemplate(event, repo = '') {
                     ? `Worker가 정리를 ${step_label} 단계부터 다시 돌립니다`
                     : 'Worker가 정리를 멈춘 단계부터 다시 돌립니다'}
                 >
-                  워커로 이어가기
+                  정리 재시도
                 </button>`
               : ''}
           </div>`

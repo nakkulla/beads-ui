@@ -1257,7 +1257,7 @@ export function createWorkerView(mount_element, options = {}) {
       );
       adopt(res);
       if (res && !res.retried && !res.conflict && res.reason) {
-        showToast(`워커로 이어가기 거부: ${res.reason}`, 'error', 2400);
+        showToast(`정리 재시도 거부: ${res.reason}`, 'error', 2400);
       }
     } finally {
       cleanup_pending.delete(bead_id);
@@ -3683,9 +3683,9 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
-    // 타임라인의 [워커로 이어가기]는 PR 대기 카드의 정리 실패 [워커로
-    // 이어가기]와 같은 mutation이다 — 서버가 멈춘 단계부터 재개하는 기존
-    // semantics 그대로다 (§4.4).
+    // 타임라인의 [정리 재시도]는 PR 대기 카드의 정리 실패 [정리 재시도]와
+    // 같은 mutation이다 — 서버가 멈춘 단계부터 재개하는 기존 semantics
+    // 그대로다 (§4.4).
     const cleanupResume = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-cleanup__resume')
     );
