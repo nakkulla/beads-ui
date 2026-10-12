@@ -98,13 +98,12 @@ const POLICY = {
   manual_human_fix: 'absent',
   never_automatic: [
     'bounded_single_script_retry_exceeded',
-    'repair_session_dispatch',
     'baseline_failure_ignore',
     'config_or_script_deletion_to_bypass_gate',
+    'agent_self_report_as_success',
     'credential_entry',
     'destructive_action',
-    'history_rewrite',
-    'agent_self_report_as_success'
+    'history_rewrite'
   ]
 };
 
@@ -659,7 +658,7 @@ describe('저장소 작업 자동 처리 기준 (UI-s582 §1)', () => {
       dialog.querySelectorAll(
         '[data-policy="never-automatic"] .worker-repo-ops__policy-list li'
       )
-    ).toHaveLength(8);
+    ).toHaveLength(7);
   });
 
   test('renders an unknown contract token verbatim rather than dropping it', () => {
@@ -703,7 +702,7 @@ describe('저장소 작업 자동 처리 기준 (UI-s582 §1)', () => {
         .querySelector('.worker-repo-ops__policy-count')
         ?.textContent?.replace(/\s+/g, ' ')
         .trim()
-    ).toBe('자동 7 · 금지 8');
+    ).toBe('자동 7 · 금지 7');
   });
 
   test('omits the policy lists when the backend sent none', () => {

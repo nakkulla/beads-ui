@@ -7539,8 +7539,8 @@ export async function handleWorkerCleanupRetry(ws, req) {
  * conversation, 외부 작업 완료 (a session-owned `completing` wait) → the
  * session resume, 실패 → the failure conversation forked off the bead's
  * recorded session. The CLICK is the only trigger — nothing here is reachable
- * from an automatic path, and ADR 0005's ban on automatic repair dispatch is
- * untouched.
+ * from an automatic path, and the contract defines no automatic repair
+ * session for the failure-conversation class (dotfiles-md59z).
  *
  * Same skeleton as {@link handleWorkerCleanupRetry}: the queue revision is
  * checked BEFORE anything is looked up, so a stale click has no action-side

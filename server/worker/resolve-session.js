@@ -3,10 +3,11 @@
  * (UI-jw27 §4, UI-18a5 §3.2).
  *
  * A terminal failure the Worker cannot retry away lands the bead on
- * `needs_human`, and ADR 0005 forbids dispatching an automatic repair session
- * for it. What this module starts is NOT that: it is the interactive session a
- * person would otherwise open by hand in a terminal, started by their own
- * CLICK, marked so the external `claude-discord-bridge` relays it. Its first
+ * `needs_human`. The dotfiles contract defines no automatic repair session for
+ * the failure-conversation class (dotfiles-md59z). What this module starts is
+ * NOT one: it is the interactive session a person would otherwise open by
+ * hand in a terminal, started by their own CLICK, marked so the external
+ * `claude-discord-bridge` relays it. Its first
  * input is the dotfiles entry block (`direction-inquiry.js`), and its record
  * carries a `conversation` so the reconcile pass observes its result line like
  * every other Worker session conversation (UI-18a5 §3.4).
@@ -1078,9 +1079,10 @@ function newConversation(failure) {
  * terminal failure by the coordinator that wrote it, in the detached
  * conversation session (`placement: 'inquiry'`).
  *
- * It is not repair dispatch (ADR 0005 stays): the session it opens does
- * read-only diagnosis and asks before anything changes (dotfiles
- * `Worker 세션 대화`). Three gates stand before the launch:
+ * It is not repair dispatch: until the first user answer the session it opens
+ * only diagnoses read-only and asks (dotfiles `Worker 세션 대화`), and the
+ * dotfiles contract defines no automatic repair session for this class
+ * (dotfiles-md59z). Three gates stand before the launch:
  *
  *   - the shared switch (`conversation-settings.js` stored value, else
  *     config.toml `[worker.direction_inquiry] enabled`) — off means the
