@@ -5,7 +5,7 @@
  *
  * The rules come from the dotfiles workflow contract (`lifecycle.transitions`
  * `defer` / `revive`), which beads-ui consumes and does not define (ADR
- * UI-u6ud-2): a defer starts only from `resolved` with a `pr_url` here, writes
+ * UI-u6ud-2): a defer starts from `open` or `resolved` with a `pr_url`, writes
  * `bd defer <id> --reason`, then cuts the chosen same-rig `blocks` edges, each
  * leaving a `deferred-unblocked: <dependent>` notes line; a revival goes back to
  * `resolved` while the PR is open or merged and to `open` otherwise, never
@@ -69,7 +69,8 @@ export function beadDeferLockKey(workspace, bead_id) {
 /**
  * @typedef {Object} TransitionResult
  * @property {'applied'|'partial'|'refused'|'failed'|'unknown'} outcome -
- * `failed` changed nothing; `unknown` wrote but could not confirm it;
+ * `failed` wrote no status (an earlier queue withdrawal may remain);
+ * `unknown` wrote but could not confirm it;
  * `partial` confirmed the status but some edges failed.
  * @property {string|null} reason
  * @property {string} [message]
@@ -127,19 +128,18 @@ export function prUrlOf(issue) {
 }
 
 /**
- * Why a Bead is not where [보류로 전환] may start — the button stands only on
- * a shelved PR 대기 row, so `resolved` with a `pr_url` is its one origin.
+ * Why a Bead is not an allowed `deferred` origin (UI-ror1).
  *
  * @param {any} issue
- * @returns {'already_deferred'|'not_resolved_with_pr'|null}
+ * @returns {'already_deferred'|'invalid_defer_origin'|null}
  */
 export function deferOriginRefusal(issue) {
   const status = issue && typeof issue.status === 'string' ? issue.status : '';
   if (status === 'deferred') {
     return 'already_deferred';
   }
-  if (status !== 'resolved' || prUrlOf(issue) === null) {
-    return 'not_resolved_with_pr';
+  if (status !== 'open' && (status !== 'resolved' || prUrlOf(issue) === null)) {
+    return 'invalid_defer_origin';
   }
   return null;
 }
@@ -259,12 +259,12 @@ export async function previewDefer(bd, bead_id) {
 }
 
 /**
- * Defer one Bead and cut the chosen edges (§3.3 defer). `queueRefusal` is
- * asked right before the `bd defer` write, after every bd read, so the queue
- * facts it judges are the ones the write follows.
+ * Defer one Bead and cut the chosen edges (§3.3 defer). `prepareQueue` checks
+ * current queue facts and withdraws an open origin's placement immediately
+ * before the `bd defer` write, after every bd read.
  *
  * @param {BeadDeferBd} bd
- * @param {{ bead_id: string, reason: string, remove_edges: string[], queueRefusal: () => (string|null) }} input
+ * @param {{ bead_id: string, reason: string, remove_edges: string[], prepareQueue: (status: string) => (string|null) }} input
  * @returns {Promise<TransitionResult>}
  */
 export async function applyDefer(bd, input) {
@@ -308,7 +308,7 @@ export async function applyDefer(bd, input) {
   const open_dependents = new Set(
     openDependentsOf(listed.data).map((entry) => entry.id)
   );
-  const queue_refusal = input.queueRefusal();
+  const queue_refusal = input.prepareQueue(shown.data.status);
   if (queue_refusal !== null) {
     return { outcome: 'refused', reason: queue_refusal, edges, failed_edges };
   }

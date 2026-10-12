@@ -1479,11 +1479,17 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
-  test('leaves deferred out of the status choices of an issue that is not deferred (UI-0d9i §3.6)', () => {
+  test.each([
+    ['open', undefined, true],
+    ['resolved', 'https://github.com/o/r/pull/7', true],
+    ['resolved', undefined, false],
+    ['in_progress', 'https://github.com/o/r/pull/7', false],
+    ['closed', undefined, false]
+  ])('offers deferred from %s with PR %s: %s', (status, pr_url, allowed) => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seedPanel(
       mount,
-      baseIssue,
+      { ...baseIssue, status, metadata: { pr_url } },
       vi.fn().mockResolvedValue(baseIssue)
     );
 
@@ -1491,7 +1497,7 @@ describe('views/detail-panel', () => {
       mount.querySelectorAll('select[data-edit="status"] option')
     ).map((option) => /** @type {HTMLOptionElement} */ (option).value);
 
-    expect(options).not.toContain('deferred');
+    expect(options.includes('deferred')).toBe(allowed);
     expect(options).toContain('resolved');
     panel.destroy();
   });
@@ -1513,7 +1519,91 @@ describe('views/detail-panel', () => {
     expect(sel.value).toBe('deferred');
     expect(
       mount.querySelector('.detail-kv__defer-note')?.textContent?.trim()
-    ).toBe('보류 전환·되살리기는 Worker 탭에서');
+    ).toBe('되살리기는 Worker 탭에서');
+    panel.destroy();
+  });
+
+  test('defers an open issue through the dedicated op without an empty confirmation', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const transport = vi.fn(async (type) => {
+      if (type === 'worker-bead-defer-preview') {
+        return { ok: true, status: 'open', dependents: [] };
+      }
+      if (type === 'worker-bead-defer') {
+        return { outcome: 'applied', status: 'deferred' };
+      }
+      return baseIssue;
+    });
+    const { panel } = seedPanel(
+      mount,
+      { ...baseIssue, status: 'open' },
+      transport
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-edit="status"]')
+    );
+
+    select.value = 'deferred';
+    select.dispatchEvent(new Event('change'));
+    await vi.waitFor(() =>
+      expect(
+        /** @type {HTMLSelectElement} */ (
+          mount.querySelector('[data-edit="status"]')
+        ).value
+      ).toBe('deferred')
+    );
+
+    expect(transport).toHaveBeenCalledWith('worker-bead-defer', {
+      bead_id: 'UI-1',
+      source: 'detail',
+      remove_edges: []
+    });
+    expect(
+      transport.mock.calls.some(([type]) => type === 'update-status')
+    ).toBe(false);
+    expect(document.querySelector('.defer-dialog')).toBeNull();
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-edit="status"]')
+      ).disabled
+    ).toBe(true);
+    panel.destroy();
+  });
+
+  test('restores the original status when the edge confirmation is cancelled', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const transport = vi.fn(async (type) =>
+      type === 'worker-bead-defer-preview'
+        ? {
+            ok: true,
+            status: 'open',
+            dependents: [{ id: 'UI-2', title: '후행' }]
+          }
+        : baseIssue
+    );
+    const { panel } = seedPanel(
+      mount,
+      { ...baseIssue, status: 'open' },
+      transport
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-edit="status"]')
+    );
+
+    select.value = 'deferred';
+    select.dispatchEvent(new Event('change'));
+    await vi.waitFor(() =>
+      expect(document.querySelector('.defer-dialog__cancel')).not.toBeNull()
+    );
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.defer-dialog__cancel')
+    ).click();
+    await vi.waitFor(() => expect(select.disabled).toBe(false));
+
+    expect(select.value).toBe('open');
+    expect(
+      transport.mock.calls.some(([type]) => type === 'worker-bead-defer')
+    ).toBe(false);
     panel.destroy();
   });
 

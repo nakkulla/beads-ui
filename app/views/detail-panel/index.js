@@ -31,6 +31,7 @@ import {
   ORCHESTRATION_KEYS,
   QUICK_FIX_ORCHESTRATION_KEYS
 } from '../settings-dialog/session-model.js';
+import { openDeferDialog } from '../worker/defer-dialog.js';
 import { runExternalWaitAction } from '../worker/external-wait-action.js';
 import {
   externalJobNotesTemplate,
@@ -99,20 +100,23 @@ const STATUS_OPTIONS = [
 ];
 
 /**
- * The status select's guidance on a deferred issue (UI-0d9i §3.6): `deferred`
- * is entered and left only through the Worker tab dialogs.
+ * The status select's guidance on a `deferred` issue (UI-ror1).
  */
-export const DEFER_STATUS_NOTE = '보류 전환·되살리기는 Worker 탭에서';
+export const DEFER_STATUS_NOTE = '되살리기는 Worker 탭에서';
 
 /**
- * The status choices one issue offers: `deferred` stands only as the current
- * value of a deferred issue, never as a target (UI-0d9i §3.6).
+ * Offer `deferred` only at its current value or an allowed origin (UI-ror1).
  *
  * @param {string} status
+ * @param {unknown} [pr_url]
  * @returns {string[]}
  */
-export function statusOptionsFor(status) {
-  return status === 'deferred'
+export function statusOptionsFor(status, pr_url) {
+  return status === 'deferred' ||
+    status === 'open' ||
+    (status === 'resolved' &&
+      typeof pr_url === 'string' &&
+      pr_url.trim().length > 0)
     ? STATUS_OPTIONS
     : STATUS_OPTIONS.filter((s) => s !== 'deferred');
 }
@@ -180,6 +184,7 @@ export function createDetailPanel(mount_element, options) {
   let current_id = null;
   /** @type {any} */
   let current = null;
+  let defer_pending = false;
   /** @type {Record<string, string>} */
   let exec_local = {};
   let selected_preset_id = '';
@@ -1940,7 +1945,47 @@ export function createDetailPanel(mount_element, options) {
    * @param {Event} ev
    */
   function onStatusChange(ev) {
-    const status = /** @type {HTMLSelectElement} */ (ev.target).value;
+    const select = /** @type {HTMLSelectElement} */ (ev.target);
+    const status = select.value;
+    if (status === 'deferred') {
+      select.value = current?.status || '';
+      if (!transport || !current_id || defer_pending) {
+        return;
+      }
+      const bead_id = current_id;
+      const root_dir = options.getWorkspacePath?.() || '';
+      defer_pending = true;
+      doRender();
+      void openDeferDialog(
+        { mode: 'defer', bead_id, source: 'detail' },
+        {
+          transport: (type, payload) =>
+            transport(type, {
+              ...payload,
+              ...(root_dir ? { root_dir } : {})
+            }),
+          toast: showToast
+        }
+      )
+        .then((result) => {
+          if (result.res?.queue && queueStore?.set) {
+            queueStore.set(result.res.queue, root_dir || undefined);
+          }
+          if (
+            current_id === bead_id &&
+            current &&
+            result.ok &&
+            (options.getWorkspacePath?.() || '') === root_dir
+          ) {
+            current = { ...current, status: 'deferred' };
+          }
+        })
+        .finally(() => {
+          defer_pending = false;
+          doRender();
+        });
+      return;
+    }
     void sendMutation(
       'update-status',
       { id: current_id, status },
@@ -3247,17 +3292,18 @@ export function createDetailPanel(mount_element, options) {
   /**
    * @param {string} status
    * @param {number | ''} priority_val
+   * @param {unknown} pr_url
    */
-  function propsTemplate(status, priority_val) {
+  function propsTemplate(status, priority_val, pr_url) {
     const deferred = status === 'deferred';
     const status_select = html`<select
       class="ui-select ui-select--bare detail-kv__v detail-kv__v--sel"
       aria-label="status"
       data-edit="status"
-      ?disabled=${deferred}
+      ?disabled=${deferred || defer_pending}
       @change=${onStatusChange}
     >
-      ${statusOptionsFor(status).map(
+      ${statusOptionsFor(status, pr_url).map(
         (s) => html`<option value=${s} ?selected=${s === status}>${s}</option>`
       )}
     </select>`;
@@ -3558,8 +3604,8 @@ export function createDetailPanel(mount_element, options) {
               ) => fireAndForgetExec(onExecChange(key, value))
             }
           })}
-          ${propsTemplate(status, priority_val)} ${timesTemplate(data)}
-          ${descTemplate(description)}
+          ${propsTemplate(status, priority_val, data.metadata?.pr_url)}
+          ${timesTemplate(data)} ${descTemplate(description)}
           ${commentsTemplate(comments, comment_handlers, {
             expanded: comments_expanded,
             draft: comment_draft,

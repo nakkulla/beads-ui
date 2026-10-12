@@ -1133,15 +1133,24 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
     — the open same-repository `blocks` dependents
     (`bd dep list <id> --direction up --type blocks --json`) — or
     `{ bead_id, ok: false, reason, message?, status? }` with `reason`
-    `not_resolved_with_pr` (the origin is not `resolved` with a `pr_url`),
-    `already_deferred`, `bd_read_failed`, or a queue refusal below.
-  - `worker-bead-defer` payload `{ bead_id, reason, remove_edges: string[] }`
-    (`reason` non-empty, passed to `bd defer <id> --reason`). The origin and the
-    queue are re-checked right before the write: the shelf record must still be
-    there (`not_shelved`), and no merge-queue item, running merge
-    (`merge_active`), observed merge, completion intent past gating or cleanup
-    record (`merge_observed`) may stand. Then `bd defer` and a `bd show`
-    readback; then per chosen dependent `bd dep remove <dependent> <id>`,
+    `invalid_defer_origin` (the origin is neither `open` nor `resolved` with a
+    `pr_url`), `already_deferred`, `bd_read_failed`, or a queue refusal below.
+  - `worker-bead-defer` payload
+    `{ bead_id, reason?: string, source?: 'detail'|'shelved', remove_edges?: string[] }`.
+    A supplied nonblank `reason` goes to `bd defer <id> --reason`; otherwise the
+    server uses `이슈 상세에서 사용자가 보류로 지정` for `source: 'detail'` and
+    `보관 행에서 사용자가 보류로 전환` for the default `shelved` source. The
+    detail panel and both tabs use the same preview and write ops: with no
+    dependents they write immediately, otherwise one dialog confirms the
+    preselected edge removals without a reason field. The origin and queue are
+    re-checked immediately before the write. An `open` origin refuses a live
+    attempt (`attempt_active`), then withdraws its waiting placement before
+    writing (`queue_withdraw_failed` refuses the status write). For a `resolved`
+    origin the shelf record must still be there (`not_shelved`), and no
+    merge-queue item, running merge (`merge_active`), observed merge, completion
+    intent past gating or cleanup record (`merge_observed`) may stand. Then
+    `bd defer` and a `bd show` readback; then per chosen dependent
+    `bd dep remove <dependent> <id>`,
     `bd update <id> --append-notes 'deferred-unblocked: <dependent>'` and a
     `bd dep list <dependent> --json` readback, and one closing `bd show`
     confirms the notes lines. Reply
@@ -1151,7 +1160,8 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
     `note`/`note_readback`: the edge was cut but its notes line is missing or
     unconfirmed; `readback`: the removal could not be confirmed); `refused`
     (nothing written, `reason` as above); `failed` (the `bd defer` write failed
-    — nothing changed, `reason: 'bd_write_failed'` or `bd_read_failed`); or
+    — the status was not written, `reason: 'bd_write_failed'` or
+    `bd_read_failed`; an open origin's earlier queue withdrawal remains); or
     `unknown` (the write succeeded but the readback failed or disagreed —
     `reason` `readback_failed`/`readback_mismatch`, `retry_safe: false`, shown
     as `적용 여부 확인 불가` and never retried). The PR-wait row, its cleanup

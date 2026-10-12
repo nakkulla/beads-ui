@@ -37,12 +37,14 @@ describe('deferredUnblockedIds (UI-0d9i §3.3)', () => {
 
 describe('deferOriginRefusal (UI-0d9i §3.3, §4)', () => {
   test.each([
-    [{ status: 'open', metadata: { pr_url: PR_URL } }, 'not_resolved_with_pr'],
+    [{ status: 'open', metadata: { pr_url: PR_URL } }, null],
+    [{ status: 'open' }, null],
     [
       { status: 'in_progress', metadata: { pr_url: PR_URL } },
-      'not_resolved_with_pr'
+      'invalid_defer_origin'
     ],
-    [{ status: 'resolved', metadata: {} }, 'not_resolved_with_pr'],
+    [{ status: 'resolved', metadata: {} }, 'invalid_defer_origin'],
+    [{ status: 'closed' }, 'invalid_defer_origin'],
     [{ status: 'deferred', metadata: { pr_url: PR_URL } }, 'already_deferred'],
     [{ status: 'resolved', metadata: { pr_url: PR_URL } }, null]
   ])('judges %o as %s', (issue, expected) => {

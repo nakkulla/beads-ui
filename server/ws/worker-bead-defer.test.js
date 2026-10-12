@@ -39,7 +39,8 @@ const { runBd, runBdJsonProjected } = await import('../bd.js');
 const { __registerWorkerAttachmentForTest, __resetWorkerAttachmentsForTest } =
   await import('../worker/attach.js');
 const { getWorkerRuntime } = await import('../worker/runtime.js');
-const { beadDeferLockKey } = await import('../worker/bead-defer.js');
+const bead_defer = await import('../worker/bead-defer.js');
+const { beadDeferLockKey } = bead_defer;
 const {
   __resetRegistriesForTest,
   __resetWorkerQueueForTest,
@@ -358,9 +359,8 @@ describe('worker-bead-defer-preview (UI-0d9i §3.3)', () => {
   });
 
   test.each([
-    ['open', {}, 'not_resolved_with_pr'],
-    ['in_progress', {}, 'not_resolved_with_pr'],
-    ['resolved', {}, 'not_resolved_with_pr'],
+    ['in_progress', {}, 'invalid_defer_origin'],
+    ['resolved', {}, 'invalid_defer_origin'],
     ['deferred', { pr_url: PR_URL }, 'already_deferred']
   ])('refuses a %s origin with reason %s', async (status, metadata, reason) => {
     issue('UI-1', { status, metadata });
@@ -384,6 +384,121 @@ describe('worker-bead-defer-preview (UI-0d9i §3.3)', () => {
 });
 
 describe('worker-bead-defer (UI-0d9i §3.3)', () => {
+  test.each(['parallel', 's1'])(
+    'withdraws an open issue from %s before deferring it',
+    async (lane) => {
+      issue('UI-1');
+      const store = getWorkerRuntime().queueStore;
+      expect(
+        store.place('', {
+          expected_revision: store.snapshot('').revision,
+          bead_id: 'UI-1',
+          lane
+        }).ok
+      ).toBe(true);
+      const seatsAtWrite = vi.fn();
+      vi.mocked(runBd).mockImplementation(async (args) => {
+        const q = store.snapshot('');
+        seatsAtWrite([
+          ...q.queue,
+          ...q.serial_lanes.flatMap((entry) => entry.entries)
+        ]);
+        return fakeWrite(args);
+      });
+
+      const reply = await call(fakeSocket(), 'worker-bead-defer', {
+        bead_id: 'UI-1',
+        source: 'detail',
+        remove_edges: []
+      });
+
+      expect(reply.payload).toMatchObject({
+        applied: true,
+        status: 'deferred'
+      });
+      expect(seatsAtWrite).toHaveBeenCalledWith([]);
+      expect(bd.writes).toEqual([
+        ['defer', 'UI-1', '--reason=이슈 상세에서 사용자가 보류로 지정']
+      ]);
+    }
+  );
+
+  test('previews an open issue without requiring a shelf record', async () => {
+    issue('UI-1');
+
+    const reply = await call(fakeSocket(), 'worker-bead-defer-preview', {
+      bead_id: 'UI-1'
+    });
+
+    expect(reply.payload).toMatchObject({
+      ok: true,
+      status: 'open',
+      dependents: []
+    });
+    expect(bd.writes).toEqual([]);
+  });
+
+  test.each(['running', 'pending', 'paused'])(
+    'refuses an open issue with a %s attempt before removing its seat',
+    async (status) => {
+      issue('UI-1');
+      const store = getWorkerRuntime().queueStore;
+      store.place('', {
+        expected_revision: store.snapshot('').revision,
+        bead_id: 'UI-1'
+      });
+      store.appendAttempt('', {
+        expected_revision: store.snapshot('').revision,
+        attempt: { attempt_id: 'active', bead_id: 'UI-1', status }
+      });
+
+      const reply = await call(fakeSocket(), 'worker-bead-defer', {
+        bead_id: 'UI-1',
+        source: 'detail'
+      });
+
+      expect(reply.payload).toMatchObject({
+        outcome: 'refused',
+        reason: 'attempt_active'
+      });
+      expect(store.snapshot('').queue.map((entry) => entry.bead_id)).toEqual([
+        'UI-1'
+      ]);
+      expect(bd.writes).toEqual([]);
+    }
+  );
+
+  test.each([undefined, '', '  '])(
+    'fills an absent or blank shelf reason (%s)',
+    async (reason) => {
+      deferFixture();
+
+      await call(fakeSocket(), 'worker-bead-defer', {
+        bead_id: 'UI-1',
+        reason
+      });
+
+      expect(bd.writes).toEqual([
+        ['defer', 'UI-1', '--reason=보관 행에서 사용자가 보류로 전환']
+      ]);
+    }
+  );
+
+  test('refuses an in_progress origin on the write path', async () => {
+    issue('UI-1', { status: 'in_progress' });
+
+    const reply = await call(fakeSocket(), 'worker-bead-defer', {
+      bead_id: 'UI-1',
+      source: 'detail'
+    });
+
+    expect(reply.payload).toMatchObject({
+      outcome: 'refused',
+      reason: 'invalid_defer_origin'
+    });
+    expect(bd.writes).toEqual([]);
+  });
+
   test('defers first, then cuts each chosen edge and notes it', async () => {
     deferFixture();
 
@@ -567,6 +682,7 @@ describe('worker-bead-defer (UI-0d9i §3.3)', () => {
 
   test('refuses a defer that waited behind a running completion cleanup', async () => {
     deferFixture();
+    const applyDefer = vi.spyOn(bead_defer, 'applyDefer');
     let cleaning = true;
     __registerWorkerAttachmentForTest(
       process.cwd(),
@@ -584,7 +700,7 @@ describe('worker-bead-defer (UI-0d9i §3.3)', () => {
       remove_edges: []
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const reads_while_held = vi.mocked(runBdJsonProjected).mock.calls.length;
+    const transitions_while_held = applyDefer.mock.calls.length;
     getWorkerRuntime().prObservations.record('', 'UI-1', {
       error: null,
       pr: /** @type {any} */ ({ number: 7, url: PR_URL, state: 'MERGED' })
@@ -594,7 +710,8 @@ describe('worker-bead-defer (UI-0d9i §3.3)', () => {
 
     const reply = await pending;
 
-    expect(reads_while_held).toBe(0);
+    expect(transitions_while_held).toBe(0);
+    expect(applyDefer).toHaveBeenCalledTimes(1);
     expect(reply.payload).toMatchObject({
       outcome: 'refused',
       reason: 'merge_observed'
@@ -602,12 +719,12 @@ describe('worker-bead-defer (UI-0d9i §3.3)', () => {
     expect(bd.writes).toEqual([]);
   });
 
-  test('rejects an empty reason as a bad request', async () => {
+  test('rejects a non-string reason as a bad request', async () => {
     deferFixture();
 
     const reply = await call(fakeSocket(), 'worker-bead-defer', {
       bead_id: 'UI-1',
-      reason: '  ',
+      reason: 42,
       remove_edges: []
     });
 

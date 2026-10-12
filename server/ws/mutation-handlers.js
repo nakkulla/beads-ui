@@ -35,7 +35,8 @@ const UPDATE_STATUS_ALLOWED = new Set([
 ]);
 
 /** The `use_defer_dialog` refusal text (UI-0d9i §3.6). */
-const USE_DEFER_DIALOG = '보류 전환·되살리기는 Worker 탭에서';
+const USE_DEFER_DIALOG =
+  '보류는 이슈 상세 또는 보관 행에서, 되살리기는 Worker 탭에서';
 
 /**
  * Resolve an optional dependency-mutation root. Explicit roots must be both
@@ -655,7 +656,7 @@ export async function handleUpdateStatus(ws, req) {
     );
     return;
   }
-  // `deferred` is entered and left only through the Worker tab's dialogs
+  // `deferred` is entered and left only through the dedicated defer/revive ops
   // (UI-0d9i §3.6), which carry the contract's reason, dependent edges and
   // origin check. The current status is read first so a deferred issue cannot
   // be moved out of it here either; an unreadable one writes nothing.

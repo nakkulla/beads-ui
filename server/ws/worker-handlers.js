@@ -119,6 +119,7 @@ import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
   COMPLETION_RETRY_MAX,
   MANUAL_MERGE_CONTINUATION,
+  TERMINAL_ATTEMPT_STATUSES,
   beadHoldsHandoffReservation,
   orderLaneByBlocks
 } from '../worker/queue-store.js';
@@ -6696,17 +6697,27 @@ function revivalPrReader(key) {
 }
 
 /**
- * Why a shelved PR 대기 row may not be deferred right now (UI-0d9i §3.3): its
- * shelf record must still be there, and no merge may hold, have reached, or be
- * cleaning up after its PR — the same rows [보관] does not stand on.
+ * Why the queue refuses a defer now (UI-ror1): an open origin has no active
+ * attempt; a resolved origin stays shelved and outside merge/cleanup effects.
  * SYNCHRONOUS on purpose: it is asked right before the `bd defer` write.
  *
  * @param {string} key
  * @param {string} bead_id
+ * @param {string} status
  * @returns {string|null}
  */
-function deferQueueRefusal(key, bead_id) {
+function deferQueueRefusal(key, bead_id, status) {
   const q = /** @type {any} */ (queueStore().snapshot(key));
+  if (status === 'open') {
+    return Object.values(q.attempts).some(
+      (/** @type {any} */ attempt) =>
+        attempt.bead_id === bead_id &&
+        !TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status)) &&
+        !isWithdrawnAttempt(attempt)
+    )
+      ? 'attempt_active'
+      : null;
+  }
   if (!q.merge_shelved || !Object.hasOwn(q.merge_shelved, bead_id)) {
     return 'not_shelved';
   }
@@ -6759,6 +6770,35 @@ function deferQueueRefusal(key, bead_id) {
 }
 
 /**
+ * Withdraw an `open` origin before bd writes; resolved PR seats stay intact.
+ * The refusal check and removal are synchronous against the same revision.
+ *
+ * @param {string} key
+ * @param {string} bead_id
+ * @param {string} status
+ * @returns {string|null}
+ */
+function prepareDeferQueue(key, bead_id, status) {
+  const refusal = deferQueueRefusal(key, bead_id, status);
+  if (refusal !== null || status !== 'open') {
+    return refusal;
+  }
+  const q = queueStore().snapshot(key);
+  const placed = [
+    ...q.queue,
+    ...q.serial_lanes.flatMap((lane) => lane.entries)
+  ].some((entry) => entry.bead_id === bead_id);
+  if (!placed) {
+    return null;
+  }
+  const removed = removeBeadFromQueue(key, {
+    bead_id,
+    expected_revision: q.revision
+  });
+  return removed.ok ? null : 'queue_withdraw_failed';
+}
+
+/**
  * Validate the shared `{ bead_id }` part of the four defer/revive payloads.
  *
  * @param {WebSocket} ws
@@ -6806,7 +6846,7 @@ function stringListOf(raw) {
  * Reply: `{ bead_id, ok, reason?, message?, status?, pr_url?, dependents? }`.
  *
  * The [보류로 전환] dialog's material (UI-0d9i §3.2): the Bead must be
- * `resolved` with a `pr_url` and still shelved, and the open same-rig
+ * `open` or `resolved` with a `pr_url` and still shelved, and the open same-rig
  * `blocks` dependents are listed for the 「끊기」 choices.
  *
  * @param {WebSocket} ws
@@ -6819,7 +6859,9 @@ export async function handleWorkerBeadDeferPreview(ws, req) {
   }
   const { p, key } = parsed;
   const preview = await previewDefer(beadDeferBd(ws, key), p.bead_id);
-  const shelf_refusal = preview.ok ? deferQueueRefusal(key, p.bead_id) : null;
+  const shelf_refusal = preview.ok
+    ? deferQueueRefusal(key, p.bead_id, preview.status)
+    : null;
   ws.send(
     JSON.stringify(
       makeOk(
@@ -6834,15 +6876,15 @@ export async function handleWorkerBeadDeferPreview(ws, req) {
 
 /**
  * Handle `worker-bead-defer`. Payload:
- * `{ bead_id, reason, remove_edges[], root_dir? }`. Reply:
+ * `{ bead_id, reason?, source?: 'detail'|'shelved', remove_edges[], root_dir? }`. Reply:
  * `{ bead_id, applied, outcome, reason, message?, status?, write_applied?,
  * retry_safe?, edges, failed_edges, queue }`.
  *
  * [보류로 전환] (UI-0d9i §3.3), serialized per Bead with [되살리기] and
  * refusing [보관 해제] meanwhile. The queue facts are re-checked right before
  * the write; a refusal names why (`not_shelved`, `merge_active`,
- * `merge_observed`, `already_deferred`, `not_resolved_with_pr`). A failed
- * `bd defer` changed nothing (`failed`); a write whose readback failed is
+ * `merge_observed`, `already_deferred`, `invalid_defer_origin`, `attempt_active`). A failed
+ * `bd defer` leaves the status unchanged (`failed`); a write whose readback failed is
  * `unknown` and is never replayed. The PR 대기 row, its cleanup state and its
  * shelf record stay; only the wire hides the row while bd reads `deferred`.
  *
@@ -6855,8 +6897,10 @@ export async function handleWorkerBeadDefer(ws, req) {
   if (
     typeof p.bead_id !== 'string' ||
     p.bead_id.length === 0 ||
-    typeof p.reason !== 'string' ||
-    p.reason.trim().length === 0 ||
+    (p.reason !== undefined && typeof p.reason !== 'string') ||
+    (p.source !== undefined &&
+      p.source !== 'detail' &&
+      p.source !== 'shelved') ||
     remove_edges === null
   ) {
     ws.send(
@@ -6864,7 +6908,7 @@ export async function handleWorkerBeadDefer(ws, req) {
         makeError(
           req,
           'bad_request',
-          'payload requires { bead_id: string, reason: non-empty string, remove_edges?: string[] }'
+          "payload requires { bead_id: string, reason?: string, source?: 'detail'|'shelved', remove_edges?: string[] }"
         )
       )
     );
@@ -6882,13 +6926,22 @@ export async function handleWorkerBeadDefer(ws, req) {
   try {
     result = await applyDefer(beadDeferBd(ws, key), {
       bead_id: p.bead_id,
-      reason: p.reason.trim(),
+      reason:
+        (p.reason || '').trim() ||
+        (p.source === 'detail'
+          ? '이슈 상세에서 사용자가 보류로 지정'
+          : '보관 행에서 사용자가 보류로 전환'),
       remove_edges,
-      queueRefusal: () => deferQueueRefusal(key, p.bead_id)
+      prepareQueue: (status) => prepareDeferQueue(key, p.bead_id, status)
     });
     if (result.outcome === 'applied' || result.outcome === 'partial') {
       noteBeadStatus(key, p.bead_id, 'deferred');
-      recordUserAction(key, p.bead_id, 'bead_defer', '[보류로 전환] 클릭');
+      recordUserAction(
+        key,
+        p.bead_id,
+        'bead_defer',
+        p.source === 'detail' ? '이슈 상세에서 보류 지정' : '[보류로 전환] 클릭'
+      );
     }
   } finally {
     release();

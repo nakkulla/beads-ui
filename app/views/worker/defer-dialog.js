@@ -1,11 +1,12 @@
 /**
  * The `⏸ 보류로 전환` and `↺ 되살리기` confirm dialog (UI-0d9i §3.2, §3.5). One
- * module, two modes, shared by the Worker tab and the Monitor tab — the caller
+ * module, two modes, shared by the detail panel, Worker and Monitor — the caller
  * hands over a transport already bound to the target repository (`root_dir` on
  * the Monitor tab), so both surfaces send the same ops.
  *
  * The dialog asks the server for its material when it opens
- * (`worker-bead-defer-preview` / `worker-bead-revive-preview`) and never
+ * (`worker-bead-defer-preview` / `worker-bead-revive-preview`). Defer with no
+ * dependents writes immediately without showing a dialog. The client never
  * re-judges the contract itself: a preview refusal or a failed request shows
  * its reason and turns the confirm button off. The confirm click sends the
  * write op once; nothing retries on its own — a write whose readback failed
@@ -41,11 +42,13 @@ const REASON_TEXT = Object.freeze({
   merge_active: '머지 큐가 이 PR을 처리 중입니다',
   merge_observed: '머지가 관측됐거나 정리 중인 PR입니다',
   already_deferred: '이미 보류된 이슈입니다',
-  not_resolved_with_pr: 'PR이 있는 resolved 이슈만 보류로 전환합니다',
+  invalid_defer_origin: 'open 또는 PR이 있는 resolved 이슈만 보류로 전환합니다',
+  attempt_active: '실행 중인 작업이 있어 보류로 전환하지 않았습니다',
+  queue_withdraw_failed: '대기열에서 빼지 못해 보류로 전환하지 않았습니다',
   not_deferred: '보류된 이슈가 아닙니다',
   pr_lookup_failed: 'PR 상태를 읽지 못해 아무것도 쓰지 않았습니다',
   bd_read_failed: 'bd를 읽지 못해 아무것도 쓰지 않았습니다',
-  bd_write_failed: 'bd 쓰기가 실패해 아무것도 바뀌지 않았습니다',
+  bd_write_failed: '이슈 상태를 쓰지 못했습니다',
   readback_failed: UNKNOWN_OUTCOME_TEXT,
   readback_mismatch: UNKNOWN_OUTCOME_TEXT
 });
@@ -54,6 +57,7 @@ const REASON_TEXT = Object.freeze({
  * @typedef {Object} DeferDialogMaterial
  * @property {'defer'|'revive'} mode
  * @property {string} bead_id
+ * @property {'detail'|'shelved'} [source] - Defer action's origin for the default reason.
  */
 
 /**
@@ -259,13 +263,12 @@ export function openDeferDialog(material, deps) {
   let confirmable = false;
   let busy = false;
   let sent = false;
-  let reason_text = '';
+  let finished = false;
   /** @type {Set<string>} */
   const unchecked = new Set();
   const dialog = doc.createElement('dialog');
   dialog.className = 'op-dialog defer-dialog';
   dialog.setAttribute('aria-label', defer_mode ? '보류로 전환' : '되살리기');
-  doc.body.append(dialog);
 
   return new Promise((resolve) => {
     /**
@@ -273,6 +276,10 @@ export function openDeferDialog(material, deps) {
      * @param {any} [res]
      */
     const finish = (ok, res) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
       if (typeof dialog.close === 'function' && dialog.open) {
         dialog.close();
       }
@@ -288,6 +295,9 @@ export function openDeferDialog(material, deps) {
             : 'worker-bead-revive-preview',
           { bead_id: material.bead_id }
         );
+        if (finished) {
+          return;
+        }
         if (!res || res.ok !== true) {
           error = deferReasonText(res?.reason, res?.message);
           deps.toast?.(`${material.bead_id}: ${error}`, 'error');
@@ -296,18 +306,25 @@ export function openDeferDialog(material, deps) {
           confirmable = true;
         }
       } catch (err) {
+        if (finished) {
+          return;
+        }
         error = errorText(err) || '미리보기 요청이 실패했습니다';
       }
       loading = false;
-      draw();
+      if (
+        defer_mode &&
+        confirmable &&
+        edgeRowsOf(preview, material.mode).length === 0
+      ) {
+        await onConfirm();
+      } else {
+        draw();
+      }
     };
 
     const onConfirm = async () => {
-      if (busy || !confirmable) {
-        return;
-      }
-      const reason = reason_text.trim();
-      if (defer_mode && reason.length === 0) {
+      if (finished || busy || !confirmable) {
         return;
       }
       const chosen = edgeRowsOf(preview, material.mode)
@@ -323,7 +340,11 @@ export function openDeferDialog(material, deps) {
         res = await deps.transport(
           defer_mode ? 'worker-bead-defer' : 'worker-bead-revive',
           defer_mode
-            ? { bead_id: material.bead_id, reason, remove_edges: chosen }
+            ? {
+                bead_id: material.bead_id,
+                source: material.source || 'shelved',
+                remove_edges: chosen
+              }
             : { bead_id: material.bead_id, restore_edges: chosen }
         );
       } catch (err) {
@@ -369,12 +390,11 @@ export function openDeferDialog(material, deps) {
     };
 
     function draw() {
+      if (finished) {
+        return;
+      }
       const rows = edgeRowsOf(preview, material.mode);
-      const ready =
-        confirmable &&
-        !busy &&
-        !loading &&
-        (!defer_mode || reason_text.trim().length > 0);
+      const ready = confirmable && !busy && !loading;
       const title = defer_mode
         ? `${material.bead_id} 보류로 전환 — 더 이상 고려하지 않음`
         : `${material.bead_id} 되살리기`;
@@ -383,22 +403,6 @@ export function openDeferDialog(material, deps) {
         html`<h2>${title}</h2>
           ${loading
             ? html`<p class="defer-dialog__loading">불러오는 중…</p>`
-            : ''}
-          ${defer_mode
-            ? html`<label class="defer-dialog__reason">
-                사유
-                <textarea
-                  class="defer-dialog__reason-input"
-                  required
-                  .value=${live(reason_text)}
-                  ?disabled=${busy}
-                  @input=${(/** @type {Event} */ ev) => {
-                    reason_text = /** @type {HTMLTextAreaElement} */ (ev.target)
-                      .value;
-                    draw();
-                  }}
-                ></textarea>
-              </label>`
             : ''}
           ${!defer_mode && preview
             ? html`<p class="defer-dialog__target">
@@ -469,9 +473,6 @@ export function openDeferDialog(material, deps) {
               type="button"
               class="op-btn op-btn--primary defer-dialog__confirm"
               ?disabled=${!ready}
-              title=${defer_mode && confirmable && !reason_text.trim()
-                ? '사유를 적어야 보류로 전환할 수 있습니다'
-                : ''}
               @click=${onConfirm}
             >
               ${confirm_label}
@@ -479,6 +480,14 @@ export function openDeferDialog(material, deps) {
           </div>`,
         dialog
       );
+      if (!dialog.isConnected && (!defer_mode || (!loading && !busy))) {
+        doc.body.append(dialog);
+        if (typeof dialog.showModal === 'function') {
+          dialog.showModal();
+        } else {
+          dialog.setAttribute('open', '');
+        }
+      }
     }
 
     dialog.addEventListener('cancel', (event) => {
@@ -488,11 +497,6 @@ export function openDeferDialog(material, deps) {
       }
     });
     draw();
-    if (typeof dialog.showModal === 'function') {
-      dialog.showModal();
-    } else {
-      dialog.setAttribute('open', '');
-    }
     void loadPreview();
   });
 }

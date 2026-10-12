@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   DEFER_GUIDANCE,
-  NO_DEPENDENTS_TEXT,
   SHELF_LIFT_TEXT,
   UNKNOWN_OUTCOME_TEXT,
   deferResultToast,
@@ -25,15 +24,6 @@ function confirmButton() {
 /** @returns {HTMLInputElement[]} */
 function edgeBoxes() {
   return Array.from(dialog().querySelectorAll('input[type=checkbox]'));
-}
-
-/** @param {string} text */
-function typeReason(text) {
-  const area = /** @type {HTMLTextAreaElement} */ (
-    dialog().querySelector('.defer-dialog__reason-input')
-  );
-  area.value = text;
-  area.dispatchEvent(new Event('input'));
 }
 
 /**
@@ -112,36 +102,41 @@ describe('openDeferDialog — defer mode (UI-0d9i §3.2)', () => {
     );
   });
 
-  test('says no same-repository dependent waits when the list is empty', async () => {
-    await open(transportOf({ ...DEFER_PREVIEW, dependents: [] }));
+  test('defers without mounting a dialog when no dependent waits', async () => {
+    const transport = transportOf({ ...DEFER_PREVIEW, dependents: [] });
 
-    expect(dialog().querySelector('.defer-dialog__none')?.textContent).toBe(
-      NO_DEPENDENTS_TEXT
+    const result = await openDeferDialog(
+      { mode: 'defer', bead_id: 'UI-1', source: 'detail' },
+      { transport }
     );
-    expect(edgeBoxes()).toEqual([]);
+
+    expect(dialog()).toBeNull();
+    expect(transport).toHaveBeenLastCalledWith('worker-bead-defer', {
+      bead_id: 'UI-1',
+      source: 'detail',
+      remove_edges: []
+    });
+    expect(result).toMatchObject({ sent: true, ok: true });
   });
 
-  test('keeps the confirm off until a reason is typed', async () => {
+  test('enables confirmation without a reason field', async () => {
     await open(transportOf(DEFER_PREVIEW));
-    const before = confirmButton().disabled;
 
-    typeReason('나중에');
-
-    expect([before, confirmButton().disabled]).toEqual([true, false]);
+    expect(confirmButton().disabled).toBe(false);
+    expect(dialog().querySelector('textarea')).toBeNull();
   });
 
-  test('sends the reason and only the edges left checked', async () => {
+  test('sends only the edges left checked without asking for a reason', async () => {
     const transport = transportOf(DEFER_PREVIEW);
     const { pending } = await open(transport);
     edgeBoxes()[1].click();
-    typeReason('  나중에 ');
 
     confirmButton().click();
     const result = await pending;
 
     expect(transport).toHaveBeenLastCalledWith('worker-bead-defer', {
       bead_id: 'UI-1',
-      reason: '나중에',
+      source: 'shelved',
       remove_edges: ['UI-2']
     });
     expect(result.ok).toBe(true);
@@ -163,7 +158,6 @@ describe('openDeferDialog — defer mode (UI-0d9i §3.2)', () => {
     await vi.waitFor(() =>
       expect(dialog().querySelector('.defer-dialog__error')).not.toBeNull()
     );
-    typeReason('나중에');
 
     expect(
       dialog().querySelector('.defer-dialog__error')?.textContent
@@ -187,7 +181,6 @@ describe('openDeferDialog — defer mode (UI-0d9i §3.2)', () => {
     await vi.waitFor(() =>
       expect(dialog().querySelector('.defer-dialog__error')).not.toBeNull()
     );
-    typeReason('나중에');
 
     expect(confirmButton().disabled).toBe(true);
   });
@@ -201,7 +194,6 @@ describe('openDeferDialog — defer mode (UI-0d9i §3.2)', () => {
       retry_safe: false
     });
     await open(transport);
-    typeReason('나중에');
 
     confirmButton().click();
     await vi.waitFor(() =>
@@ -226,6 +218,32 @@ describe('openDeferDialog — revive mode (UI-0d9i §3.5)', () => {
     restorable: [{ id: 'UI-2', title: '후행 둘', status: 'open' }],
     shelved: true
   };
+
+  test('ignores a late revive preview after cancellation', async () => {
+    /** @type {(value: any) => void} */
+    let replyPreview = () => {};
+    const preview = new Promise((resolve) => {
+      replyPreview = resolve;
+    });
+    const transport = vi.fn(() => preview);
+    const pending = openDeferDialog(
+      { mode: 'revive', bead_id: 'UI-1' },
+      { transport }
+    );
+    const stale_confirm = confirmButton();
+
+    dialog()
+      .querySelector('.defer-dialog__cancel')
+      ?.dispatchEvent(new MouseEvent('click'));
+    const result = await pending;
+    replyPreview(REVIVE_PREVIEW);
+    await Promise.resolve();
+    stale_confirm.dispatchEvent(new MouseEvent('click'));
+
+    expect(result).toEqual({ sent: false, ok: false });
+    expect(dialog()).toBeNull();
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
 
   test('names the target, the shelf lift and the default-selected edges', async () => {
     await open(transportOf(REVIVE_PREVIEW), 'revive');
