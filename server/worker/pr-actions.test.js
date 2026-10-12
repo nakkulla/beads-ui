@@ -7264,7 +7264,7 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
    * (`origin/main`) and the deploy worktree HEAD both sit at `BASE_SHA` once
    * the first run aligned it.
    *
-   * @param {{ store: any, config: string, world: ReturnType<typeof processWorld>, repo?: string }} input
+   * @param {{ store: any, config: string, world: ReturnType<typeof processWorld>, repo?: string, gitResult?: (args: string[]) => number|null }} input
    */
   function cleanupRig(input) {
     /** @type {any} */
@@ -7272,6 +7272,11 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
     let clock = 0;
     const repo = input.repo ?? REPO;
     const world = input.world;
+    const materialize = vi.fn(async () => ({
+      ok: true,
+      path: tmp_state,
+      tree_sha: '7'.repeat(40)
+    }));
     const coordinator = createRepoOperationCoordinator({
       workspace: WS,
       repo,
@@ -7312,11 +7317,7 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
         async () => ({ ok: true, release: async () => {} })
       ),
       verifyCheckout: /** @type {never} */ ({
-        materialize: async () => ({
-          ok: true,
-          path: tmp_state,
-          tree_sha: '7'.repeat(40)
-        }),
+        materialize,
         verify: async () => ({ ok: true }),
         cleanup: async () => {}
       }),
@@ -7336,12 +7337,13 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
       gitStdout: declaring(input.config),
       // The previous deploy's target does not contain the merge.
       gitResult: (args) =>
-        args[0] === 'merge-base' && args[2] === MERGED && args[3] === PREVIOUS
+        input.gitResult?.(args) ??
+        (args[0] === 'merge-base' && args[2] === MERGED && args[3] === PREVIOUS
           ? 1
-          : null
+          : null)
     });
     git = env.gitRun;
-    return { env, coordinator };
+    return { env, coordinator, materialize };
   }
 
   /**
@@ -7388,6 +7390,62 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
       bead_id: BEAD,
       cleanup_cursor: 'repo_operations'
     });
+  });
+
+  test('drops the stop record before the retry deploy run is spawned', async () => {
+    const { world, store, rig } = await deployFailedRow();
+    /** @type {unknown} */
+    let stop_at_spawn = 'not spawned';
+    world.start.mockImplementation(() => {
+      stop_at_spawn = store.snapshot(WS).cleanup_failed[BEAD] ?? null;
+      return {
+        ok: true,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(tmp_state, 'operation.log')
+      };
+    });
+
+    await rig.env.actions.retryCleanup(BEAD);
+
+    expect(stop_at_spawn).toBeNull();
+  });
+
+  test('drops the stop record before the retry verify run is spawned', async () => {
+    const world = processWorld();
+    const store = seedStore({
+      cleanup_failed: {
+        [BEAD]: { step: 'repo_operations', reason: 'script_failed' }
+      }
+    });
+    const rig = cleanupRig({
+      store,
+      config: VERIFY_ONLY,
+      world,
+      repo: tmp_state
+    });
+    rig.env.observations.record(WS, BEAD, {
+      error: null,
+      pr: prOf({ state: 'MERGED', merged_sha: MERGED, head_sha: PR_HEAD })
+    });
+    world.start.mockReturnValueOnce(
+      /** @type {any} */ ({ ok: false, code: 'repo_operation_spawn_failed' })
+    );
+    await rig.env.actions.retryCleanup(BEAD);
+    /** @type {unknown} */
+    let stop_at_spawn = 'not spawned';
+    world.start.mockImplementation(() => {
+      stop_at_spawn = store.snapshot(WS).cleanup_failed[BEAD] ?? null;
+      return {
+        ok: true,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(tmp_state, 'operation.log')
+      };
+    });
+    world.marker.current = { exit_code: 0, signal: null };
+
+    await rig.env.actions.retryCleanup(BEAD);
+
+    expect(stop_at_spawn).toBeNull();
   });
 
   test('waits on the running retry after a restart instead of recording the old failure', async () => {
@@ -7449,7 +7507,7 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
     );
   });
 
-  test('continues a running verify retry after a restart with its stored PR head and reaches deploy', async () => {
+  test('waits on a running verify retry after a restart and then goes on to the deploy step', async () => {
     const world = processWorld();
     const store = seedStore({
       cleanup_failed: {
@@ -7471,7 +7529,7 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
     );
     await first.env.actions.retryCleanup(BEAD);
     // The retry recorded its verify run and the server died before it ended.
-    await first.coordinator.ensureVerify({
+    const retry = await first.coordinator.ensureVerify({
       repo: tmp_state,
       origin: 'origin',
       target_base: 'main',
@@ -7482,15 +7540,23 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
       pr_number: 304,
       script_path: 'repo-ops/script/verify',
       retry_chain: true,
-      retry_authorized: true
+      retry_authorized: true,
+      on_retry_recorded: () => store.clearCleanupFailure(WS, BEAD)
     });
-    store.clearCleanupFailure(WS, BEAD);
     const restarted_store = createQueueStore();
     const restarted = cleanupRig({
       store: restarted_store,
       config: VERIFY_ONLY,
       world,
-      repo: tmp_state
+      repo: tmp_state,
+      // The base fetch is down for as long as that verify has not settled:
+      // replaying the cleanup in front of it would stop the row.
+      gitResult: (args) =>
+        args[0] === 'fetch' &&
+        restarted_store.snapshot(WS).repo_operations[String(retry.operation_id)]
+          ?.state !== 'succeeded'
+          ? 1
+          : null
     });
     world.marker.current = { exit_code: 0, signal: null };
 
@@ -7501,6 +7567,7 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
     expect(queue.done).toContainEqual(
       expect.objectContaining({ bead_id: BEAD })
     );
+    expect(restarted.materialize).not.toHaveBeenCalled();
     expect(world.start).toHaveBeenCalledTimes(2);
   });
 

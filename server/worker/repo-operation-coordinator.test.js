@@ -6467,7 +6467,7 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
    * to, the way the shared worktree does: after the first run aligned the
    * target, HEAD already holds it.
    *
-   * @param {{ repo?: string }} [options]
+   * @param {{ repo?: string, sleep?: (ms: number) => Promise<void> }} [options]
    */
   function retryHarness(options = {}) {
     const deploy = { head: /** @type {string|null} */ (null) };
@@ -6534,7 +6534,8 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
         remote_ref: 'refs/remotes/origin/main',
         base_oid: TARGET,
         local_only: false
-      })
+      }),
+      sleep: options.sleep
     });
     store.ensureRepoOperation(root, {
       operation_id: 'previous-deploy',
@@ -6842,7 +6843,54 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
     expect(found).toEqual({
       operation_id: retried.operation_id,
       head_sha: HEAD,
-      state: 'running'
+      state: 'running',
+      timeout_ms: 600_000
+    });
+  });
+
+  test('waits on the running successor when handed the failed deploy it replaced', async () => {
+    let release = () => {};
+    const harness = retryHarness({
+      sleep: async () => {
+        release();
+      }
+    });
+    release = () => {
+      harness.marker.current = { exit_code: 0, signal: null };
+    };
+    const failed_id = await seedFailedDeploy(harness);
+    const retried = await harness.coordinator.ensureDeploy({
+      ...DEPLOY_SUBJECT,
+      retry_authorized: true
+    });
+
+    const evidence = await harness.coordinator.waitForDeployTerminal(
+      failed_id,
+      { target_base: 'main', merged_sha: HEAD, timeout_ms: 1000 }
+    );
+
+    expect(evidence).toMatchObject({
+      state: 'succeeded',
+      operation_id: retried.operation_id
+    });
+  });
+
+  test('waits on the running verify successor when handed the failed verify it replaced', async () => {
+    const harness = retryHarness();
+    const failed_id = await seedFailedVerify(harness);
+    const retried = await harness.coordinator.ensureVerify(
+      cleanupVerifyCandidate({ retry_authorized: true })
+    );
+    harness.marker.current = { exit_code: 0, signal: null };
+
+    const receipt = await harness.coordinator.waitForTerminal(failed_id, {
+      head_sha: HEAD,
+      timeout_ms: 1000
+    });
+
+    expect(receipt).toMatchObject({
+      operation_id: retried.operation_id,
+      state: 'succeeded'
     });
   });
 });

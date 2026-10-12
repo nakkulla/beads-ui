@@ -1662,13 +1662,7 @@ export function createRepoOperationCoordinator(deps) {
       return { ok: true, operation_id, adopted: true };
     }
     if (retry_of !== null) {
-      // The drawer and the card read a superseded failure as no longer the
-      // current one; a tip a covering success already superseded keeps that
-      // link, and the chain is still followed by `retry_of`.
-      deps.store.supersedeRepoOperation(deps.workspace, {
-        operation_id: retry_of,
-        successor_id: operation_id
-      });
+      recordRetrySuccessor(retry_of, operation_id, candidate.on_retry_recorded);
     }
     const script = await transition.materialize({
       workspace: deps.workspace,
@@ -1721,13 +1715,34 @@ export function createRepoOperationCoordinator(deps) {
       deploy_worktree: materialized.path
     });
     return running.ok
-      ? {
-          ok: true,
-          operation_id,
-          timeout_ms: declaration.timeout_ms,
-          ...(retry_of !== null ? { retry_of } : {})
-        }
+      ? { ok: true, operation_id, timeout_ms: declaration.timeout_ms }
       : { ok: false, code: 'repo_operation_start_record_failed', operation_id };
+  }
+
+  /**
+   * Mark the failed tip a person's cleanup retry replaced, then tell the
+   * caller — synchronously, before anything launches — that the successor is
+   * durable (UI-btsr §3.3). The caller drops the row's stop record there, so a
+   * restart from this point on (beads-ui deploys itself by restarting) finds
+   * an in-progress row that boot resume continues, never a stale stop that
+   * hides a run already under way.
+   *
+   * The drawer and the card read a superseded failure as no longer the
+   * current one; a tip a covering success already superseded keeps that link,
+   * and the chain is still followed by `retry_of`.
+   *
+   * @param {string} retry_of
+   * @param {string} successor_id
+   * @param {unknown} onRecorded
+   */
+  function recordRetrySuccessor(retry_of, successor_id, onRecorded) {
+    deps.store.supersedeRepoOperation(deps.workspace, {
+      operation_id: retry_of,
+      successor_id
+    });
+    if (typeof onRecorded === 'function') {
+      onRecorded();
+    }
   }
 
   /**
@@ -2282,13 +2297,7 @@ export function createRepoOperationCoordinator(deps) {
         timeout_ms: declaration.timeout_ms
       };
     if (retry_of !== null) {
-      // The drawer and the card read a superseded failure as no longer the
-      // current one; a tip a covering success already superseded keeps that
-      // link, and the chain is still followed by `retry_of`.
-      deps.store.supersedeRepoOperation(workspace, {
-        operation_id: retry_of,
-        successor_id: operation_id
-      });
+      recordRetrySuccessor(retry_of, operation_id, subject.on_retry_recorded);
     }
     const retry_successor =
       typeof operations[operation_id].retry_of === 'string';
@@ -2299,8 +2308,7 @@ export function createRepoOperationCoordinator(deps) {
         ok: true,
         operation_id,
         queued: true,
-        timeout_ms: declaration.timeout_ms,
-        ...(retry_of !== null ? { retry_of } : {})
+        timeout_ms: declaration.timeout_ms
       };
     }
     const launched = await launchRecorded(workspace, operation_id, {
@@ -2311,11 +2319,7 @@ export function createRepoOperationCoordinator(deps) {
       ...(retry_successor ? { retry_successor: true } : {})
     });
     return launched.ok
-      ? {
-          ...launched,
-          timeout_ms: declaration.timeout_ms,
-          ...(retry_of !== null ? { retry_of } : {})
-        }
+      ? { ...launched, timeout_ms: declaration.timeout_ms }
       : launched;
   }
 
@@ -3192,10 +3196,29 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * The record a result read stands for: the end of the retry chain the given
+   * id starts (UI-btsr §3.3), so a wait handed a failure a person's retry
+   * already replaced reads the run in flight. Identity for every record
+   * without a successor — the pre-merge gate, a foreign target, and every
+   * automatic record nobody retried.
+   *
    * @param {string} operation_id
+   * @returns {string}
+   */
+  function currentTipOf(operation_id) {
+    return retryTipOf(
+      deps.store.snapshot(deps.workspace).repo_operations || {},
+      operation_id
+    );
+  }
+
+  /**
+   * @param {string} requested_id - Resolved to its retry chain's tip; the
+   * receipt names the record it actually read.
    * @param {string} head_sha
    */
-  function verifyReceipt(operation_id, head_sha) {
+  function verifyReceipt(requested_id, head_sha) {
+    const operation_id = currentTipOf(requested_id);
     const operation = observe(operation_id);
     const bound_head_sha =
       typeof head_sha === 'string' && /^[0-9a-f]{40}$/i.test(head_sha)
@@ -3248,7 +3271,7 @@ export function createRepoOperationCoordinator(deps) {
     const poll_ms = options.poll_ms ?? 100;
     while (Date.now() <= deadline) {
       await reconcile(deps.workspace);
-      const operation = observe(operation_id);
+      const operation = observe(currentTipOf(operation_id));
       if (
         operation &&
         (operation.state === 'succeeded' || operation.state === 'failed')
@@ -3457,12 +3480,15 @@ export function createRepoOperationCoordinator(deps) {
    * of its retry chain (UI-btsr §3.3). The cleanup verify binds the merge SHA
    * as its subject SHA — the pre-merge gate binds the PR head — so the subject
    * alone tells the two apart. Its stored `verify_head_sha` is the PR head a
-   * retry or a restart re-reads when the observation cache has none.
+   * retry or a restart re-reads when the observation cache has none, and
+   * `timeout_ms` is that run's declared timeout, read from its effective base
+   * the way {@link findExactDeployOperation} reads a deploy's — null when the
+   * declaration there no longer names the recorded script.
    *
    * @param {{ target_base: string, bead_id: string, merged_sha: string }} subject
-   * @returns {{ operation_id: string, head_sha: string|null, state: string }|null}
+   * @returns {Promise<{ operation_id: string, head_sha: string|null, state: string, timeout_ms: number|null }|null>}
    */
-  function findCleanupVerifyOperation(subject) {
+  async function findCleanupVerifyOperation(subject) {
     if (
       typeof subject.target_base !== 'string' ||
       typeof subject.bead_id !== 'string' ||
@@ -3496,21 +3522,39 @@ export function createRepoOperationCoordinator(deps) {
     }
     const operation_id = retryTipOf(operations, lookupStartOf(candidates));
     const operation = operations[operation_id];
+    const resolved = await resolveRepoOps({
+      repo: deps.repo,
+      sha: operation.effective_base_sha,
+      gitRun: deps.gitRun
+    });
+    const declaration = resolved.ok === false ? null : resolved.verify;
+    const timeout_ms =
+      declaration &&
+      declaration.script === operation.script_path &&
+      declaration.mode === operation.script_mode &&
+      declaration.blob_sha === operation.script_blob_sha &&
+      Number.isInteger(declaration.timeout_ms) &&
+      declaration.timeout_ms > 0
+        ? declaration.timeout_ms
+        : null;
     return {
       operation_id,
       head_sha:
         typeof operation.verify_head_sha === 'string'
           ? operation.verify_head_sha
           : null,
-      state: operation.state
+      state: operation.state,
+      timeout_ms
     };
   }
 
   /**
-   * @param {string} operation_id
+   * @param {string} requested_id - Resolved to its retry chain's tip
+   * (UI-btsr §3.3); the evidence names the record it actually read.
    * @param {{ target_base: string, merged_sha: string }} subject
    */
-  async function deploymentEvidence(operation_id, subject) {
+  async function deploymentEvidence(requested_id, subject) {
+    const operation_id = currentTipOf(requested_id);
     const operation = observe(operation_id);
     if (!operation) {
       return { state: 'failed', code: 'repo_operation_missing' };
