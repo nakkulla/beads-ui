@@ -8953,12 +8953,14 @@ button.detail-session__leg:focus-visible {
 /* 관측 배지 (UI-e1ta §3): 행이 지금 무엇을 읽었는지만 말한다 — 조작이 아니다.
    값이 서지 않은 두 상태(갈림·미확인)만 색을 쓴다. */
 .settings-dialog__obs {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--text-dim);
   font-size: var(--fs-chip);
   letter-spacing: 0;
   text-transform: none;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .settings-dialog__obs--mixed,
