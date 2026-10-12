@@ -20,8 +20,11 @@ import { scriptSummary } from './failure-class.js';
 import { commentHeading, logRow, summaryRow } from './failure-comment.js';
 import {
   FOREIGN_HANDOFF_NEXT_ACTION,
-  FOREIGN_HANDOFF_NOTIFY_LABEL
+  FOREIGN_HANDOFF_NOTIFY_LABEL,
+  foreignHandoffCauseWithin,
+  foreignHandoffReason
 } from './foreign-handoff.js';
+import { FOREIGN_HANDOFF_CLASS } from './foreign-target.js';
 import {
   RESOLUTION_ROUND_CAP,
   resolutionWaitSettingMs
@@ -52,7 +55,7 @@ const CONFLICT_RESOLUTION_FAILURES = new Set([
 ]);
 
 /**
- * The only five causes a completion saga is allowed to stop a human with
+ * The only seven causes a completion saga is allowed to stop a human with
  * (UI-5ym8 §7). The kernel used to name 25 terminal tokens, none of which ever
  * fired, and roughly ten of which said the same thing — "a durable write did
  * not land" — in ten different words. A surface cannot build a sentence, a hold
@@ -71,7 +74,10 @@ export const NEEDS_HUMAN_FAMILIES = Object.freeze([
   // family rather than a detail of `internal_record_failed` because the record
   // landed fine — what failed is the backing the contract demands — and the
   // sibling contract's `causes` list names this token.
-  'receipt_unresolvable'
+  'receipt_unresolvable',
+  // A foreign PR the Worker hands to a person (UI-gsba §3.1). The notification
+  // owner is the foreign-handoff announcer, not this saga.
+  FOREIGN_HANDOFF_CLASS
 ]);
 
 /**
@@ -122,7 +128,16 @@ export function foldNeedsHumanReason(raw) {
   if (text.length === 0) {
     return 'internal_record_failed:reason_missing';
   }
-  if (NEEDS_HUMAN_FAMILIES.includes(text.split(':', 1)[0])) {
+  // Before the family passthrough: a `foreign_handoff:` head only counts as the
+  // family when its tail is one of the contract's causes, and the same token
+  // behind another family prefix (`cleanup_failed:foreign_handoff:<cause>`)
+  // folds to the handoff, not to the prefix.
+  const handoff_cause = foreignHandoffCauseWithin(text);
+  if (handoff_cause !== null) {
+    return foreignHandoffReason(handoff_cause);
+  }
+  const head = text.split(':', 1)[0];
+  if (head !== FOREIGN_HANDOFF_CLASS && NEEDS_HUMAN_FAMILIES.includes(head)) {
     return text;
   }
   if (CLEANUP_FAILURE_TOKENS.has(text)) {
@@ -1647,6 +1662,10 @@ export function createCompletionActionDriver(deps) {
    */
   function announceNeedsHuman(root_bead_id, intent, terminal, summary) {
     if (!failure_notify && !failure_conversation) {
+      return;
+    }
+    // The foreign-handoff announcer owns this class's one push (UI-gsba §3.2).
+    if (String(terminal.reason).split(':', 1)[0] === FOREIGN_HANDOFF_CLASS) {
       return;
     }
     const token = terminal.failure_key?.stage || terminal.stage;

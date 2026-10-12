@@ -1214,6 +1214,7 @@ import {
   execSettingEnums,
   normalizeAppliesTo
 } from './exec-enums.js';
+import { foreignHandoffRearmCause } from './foreign-handoff.js';
 import { orderLaneByBlocks } from './lane-order.js';
 import {
   createProviderHoldStore,
@@ -12936,7 +12937,7 @@ export function createQueueStore(options = {}) {
      * every other scheduler/driver write).
      *
      * @param {string} workspace
-     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, target_base?: string, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
+     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, target_base?: string, foreign_rearm?: boolean, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
      * @returns {QueueOpResult}
      */
     enqueueMergeAuto(workspace, input) {
@@ -12979,6 +12980,26 @@ export function createQueueStore(options = {}) {
               if (!enqueueMember(next, bead_id, false)) {
                 continue;
               }
+              // A foreign handoff the latest observation no longer carries is
+              // revived like the manual `[머지]` path does (UI-gsba §3.3).
+              const terminal = existing_intent.terminal_reason;
+              const revived =
+                existing_intent.phase === 'needs_human' &&
+                entry.foreign_rearm === true &&
+                terminal !== null &&
+                foreignHandoffRearmCause(terminal.reason) !== null;
+              if (revived && terminal !== null) {
+                existing_intent.resumed_terminal = {
+                  ...terminal,
+                  resumed_at: now()
+                };
+                existing_intent.phase =
+                  existing_intent.subject.merged_sha === null
+                    ? 'gating'
+                    : 'cleaning';
+                existing_intent.terminal_reason = null;
+                changed += 1;
+              }
               if (
                 existing_intent.phase === 'needs_human' ||
                 existing_intent.phase === 'completed' ||
@@ -13003,7 +13024,13 @@ export function createQueueStore(options = {}) {
                   bead_id,
                   resolution_rounds: 0,
                   rebase_rounds: 0,
-                  resolution: null
+                  resolution: null,
+                  ...(revived
+                    ? automaticAuthorityFields(
+                        entry.head_sha,
+                        entry.completion.target_base
+                      )
+                    : {})
                 });
                 changed += 1;
               }

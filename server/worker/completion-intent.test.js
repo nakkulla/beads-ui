@@ -25,6 +25,7 @@ import {
   migrateStoredNeedsHumanReason,
   needsHumanNextAction
 } from './completion-intent.js';
+import { createForeignHandoffAnnouncer } from './foreign-handoff.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createQueueStore } from './queue-store.js';
@@ -3285,14 +3286,15 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
 });
 
 describe('worker/completion-intent needs_human 5종 접기 (UI-5ym8 §7)', () => {
-  test('names exactly the six families', () => {
+  test('names exactly the seven families', () => {
     expect(NEEDS_HUMAN_FAMILIES).toEqual([
       'verify_red',
       'cleanup_failed',
       'retry_exhausted',
       'conflict_unresolved',
       'internal_record_failed',
-      'receipt_unresolvable'
+      'receipt_unresolvable',
+      'foreign_handoff'
     ]);
   });
 
@@ -3379,9 +3381,53 @@ describe('worker/completion-intent needs_human 5종 접기 (UI-5ym8 §7)', () =>
   });
 
   test.each(
-    NEEDS_HUMAN_FAMILIES.flatMap((family) => [family, `${family}:detail:more`])
+    NEEDS_HUMAN_FAMILIES.flatMap((family) =>
+      family === 'foreign_handoff'
+        ? [`${family}:foreign_conflict_needs_human`]
+        : [family, `${family}:detail:more`]
+    )
   )('returns the already-folded %s unchanged', (folded) => {
     expect(foldNeedsHumanReason(folded)).toBe(folded);
+  });
+
+  test.each([
+    'foreign_deploy_unsupported',
+    'foreign_conflict_needs_human',
+    'foreign_pr_base_mismatch'
+  ])('folds a bare foreign_handoff:%s to itself', (cause) => {
+    expect(foldNeedsHumanReason(`foreign_handoff:${cause}`)).toBe(
+      `foreign_handoff:${cause}`
+    );
+  });
+
+  test.each([
+    'foreign_deploy_unsupported',
+    'foreign_conflict_needs_human',
+    'foreign_pr_base_mismatch'
+  ])('folds cleanup_failed:foreign_handoff:%s into the handoff', (cause) => {
+    expect(
+      foldNeedsHumanReason(`cleanup_failed:foreign_handoff:${cause}`)
+    ).toBe(`foreign_handoff:${cause}`);
+  });
+
+  test('folds the legacy internal_record_failed:foreign_handoff form into the handoff', () => {
+    expect(
+      foldNeedsHumanReason(
+        'internal_record_failed:foreign_handoff:foreign_conflict_needs_human'
+      )
+    ).toBe('foreign_handoff:foreign_conflict_needs_human');
+  });
+
+  test('folds a foreign_handoff with an unknown tail as an internal record failure', () => {
+    expect(foldNeedsHumanReason('foreign_handoff:mystery')).toBe(
+      'internal_record_failed:foreign_handoff:mystery'
+    );
+  });
+
+  test('keeps an unknown-tail fold stable on a second pass', () => {
+    const once = foldNeedsHumanReason('foreign_handoff:mystery');
+
+    expect(foldNeedsHumanReason(once)).toBe(once);
   });
 
   test('folds a second time to the same value', () => {
@@ -3723,13 +3769,18 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
    *
    * @param {string} step
    * @param {{ notify?: any, failureConversation?: any }} [overrides]
+   * @param {string} [cleanup_reason] - The reason the cleanup record carries.
    */
-  async function terminalizeCleanupStep(step, overrides = {}) {
+  async function terminalizeCleanupStep(
+    step,
+    overrides = {},
+    cleanup_reason = 'script_failed'
+  ) {
     const store = seededCompletionStore();
     store.recordCleanupFailure(DRIVER_WS, {
       bead_id: 'UI-root',
       step,
-      reason: 'script_failed',
+      reason: cleanup_reason,
       output_tail: 'deploy exited 2',
       log_path: '/state/repo-operation-logs/op-9.log'
     });
@@ -3793,6 +3844,58 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
         next_action: '[세션에서 이어가기] 또는 [정리 재시도]',
         pr_url: 'https://github.com/o/r/pull/1',
         repo: '/Users/me/GitHub/beads-ui'
+      })
+    ]);
+  });
+
+  test('terminalizes a post-merge deploy handoff as foreign_handoff without a completion push', async () => {
+    const notify = makeNotify();
+    const launchForBead = vi.fn(async () => null);
+
+    const driven = await terminalizeCleanupStep(
+      'repo_operations',
+      { notify, failureConversation: { launchForBead } },
+      'foreign_handoff:foreign_deploy_unsupported'
+    );
+
+    expect(
+      driven.store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: {
+        reason: 'foreign_handoff:foreign_deploy_unsupported'
+      }
+    });
+    expect(notify.sent).toEqual([]);
+    expect(launchForBead).not.toHaveBeenCalled();
+  });
+
+  test('sends the announcer push as the only needs_human push for a post-merge deploy handoff', async () => {
+    const notify = makeNotify();
+    const announcer = createForeignHandoffAnnouncer({
+      workspace: DRIVER_WS,
+      repo: null,
+      notify
+    });
+    announcer.announce({
+      bead_id: 'UI-root',
+      cause: 'foreign_deploy_unsupported',
+      identity: 'c'.repeat(40)
+    });
+
+    await terminalizeCleanupStep(
+      'repo_operations',
+      { notify },
+      'foreign_handoff:foreign_deploy_unsupported'
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-root',
+        failure_class: '외부 PR 사람 처리 필요',
+        reason: 'foreign_handoff:foreign_deploy_unsupported',
+        next_action: '[세션에서 이어가기]'
       })
     ]);
   });
@@ -4275,6 +4378,76 @@ describe('머지 기록 실패의 원인 필드 (UI-jxs3 §6.1)', () => {
     expect(settled.terminal_reason?.evidence).toContain(
       'prepareCompletionOp conflict=true'
     );
+  });
+});
+
+describe('worker/completion-intent pre-merge foreign_handoff gate (UI-gsba §3.2)', () => {
+  /**
+   * Settle one gate refusal that names a foreign handoff cause.
+   *
+   * @param {string} reason
+   */
+  async function settleForeignGate(reason) {
+    const store = seededCompletionStore();
+    const notify = {
+      sent: /** @type {any[]} */ ([]),
+      needsHuman: vi.fn(async (/** @type {any} */ input) => {
+        notify.sent.push(input);
+      })
+    };
+    const launchForBead = vi.fn(async () => null);
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      notify,
+      failureConversation: { launchForBead },
+      prActions: { completionGate: vi.fn(async () => ({ ok: false, reason })) }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('foreign gate action missing');
+    }
+    await driver.onAction('UI-root', action, current);
+    await driver.commentsIdle();
+
+    return {
+      notify,
+      launchForBead,
+      intent: store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    };
+  }
+
+  test('terminalizes a gate foreign_handoff refusal under that reason', async () => {
+    const settled = await settleForeignGate(
+      'foreign_handoff:foreign_pr_base_mismatch'
+    );
+
+    expect(settled.intent.phase).toBe('needs_human');
+    expect(settled.intent.terminal_reason?.reason).toBe(
+      'foreign_handoff:foreign_pr_base_mismatch'
+    );
+  });
+
+  test('sends no needs_human push for a gate foreign_handoff refusal', async () => {
+    const settled = await settleForeignGate(
+      'foreign_handoff:foreign_pr_base_mismatch'
+    );
+
+    expect(settled.notify.sent).toEqual([]);
+  });
+
+  test('launches no failure conversation for a gate foreign_handoff refusal', async () => {
+    const settled = await settleForeignGate(
+      'foreign_handoff:foreign_conflict_needs_human'
+    );
+
+    expect(settled.launchForBead).not.toHaveBeenCalled();
   });
 });
 
