@@ -851,7 +851,7 @@ verify 보류
 머지 후 정리와 자동 인계
 
 - (변경, UI-gske) 완료 의도가 정리를 몰고 있지 않을 때 기록된 `cleanup_failed`는 기록마다 「🙋 확인 필요 · 정리 중단」 알림과 실패 대화 자동 기동을 한 번 한다(식별 (Bead, step, 기록 시각), 표시를 먼저 쓴다). 완료 의도가 정리를 몰면 완료 종단이 유일한 원천이고, 외부 PR 사람 처리 필요(`foreign_handoff`)의 정리 실패는 그 알림·대화만 낸다. 정리 실패는 계속 Bead 카드의 `cleanup_failed` 행·timeline·Bead 댓글에도 남는다.
-- 남는 `needs_human` 알림 클래스는 머지 게이트 보류(위조 3종), 배포 실패(사다리 소진 뒤 terminal), post-merge 잡 실패, 수동 배포 실패, 폐기 실패, 외부 PR 사람 처리 필요(`foreign_handoff`, 변경 UI-k467)다. (변경, UI-jbl1) 그 알림 제목은 `🙋 확인 필요 · <클래스>`이고, 공용 스위치가 켜져 있으면 실패당 한 번 해결 세션을 분리 창에 자동으로 연다.
+- 남는 `needs_human` 알림 클래스는 머지 게이트 보류(위조 3종), 배포 실패(사다리 소진 뒤 terminal), post-merge 잡 실패, 수동 배포 실패, 폐기 실패, 외부 PR 사람 처리 필요(`foreign_handoff`, 변경 UI-k467), 정리 중단(정리 단계 완료 종단과 완료 의도 없는 `cleanup_failed`, 변경 UI-gske)이다. (변경, UI-jbl1) 그 알림 제목은 `🙋 확인 필요 · <클래스>`이고, 공용 스위치가 켜져 있으면 실패당 한 번 해결 세션을 분리 창에 자동으로 연다.
 - 완료 정리의 `expected_head`는 머지 op의 head(`merge_head_sha`)이고, 읽을 수 없는 오래된 intent는 관측 head → subject head 순으로 폴백한다.
 - 머지 후 결함의 자동 인계는 원시 operation 보존과 복구 분류, 소유 코드 결함의 단일 자동 증명(`deterministic_owned_script_failure`), operation 원장이 소유하는 단일 예약과 재채택, 일반 workflow 입구인 수정 Bead(`type:bug`·quick_fix handoff 네 절·`quick_fix_review=worker@<digest>`·parallel 배치)로 한다. 수정 PR 생성만으로 원래 작업을 완료시키지 않는다.
 - post-merge 잡 원장·`replaces` 승계·CAS 확정을 둔다. 실패 행의 출구는 `[정리 재시도]`(머지 후 정리, 변경 UI-btsr), `[워커로 이어가기]`(폐기 재시도, 옛 폐기 실패 `[재시도]`), `[머지]` 재클릭, `[세션에서 이어가기]`(실패 대화), `[폐기 포기]`다. (변경, UI-k467) 외부 PR 사람 처리 필요 행의 출구는 `[세션에서 이어가기]` 하나다. `[정리 재시도]`와 `[워커로 이어가기]`는 사람 클릭이나 같은 행 실패 대화의 `인계`로 실행되고, 그 인계는 사용자 답의 권한(결과 미상 머지 후 잡 재실행 포함)으로 많아야 한 번 실행한다. 자동 인계는 폐기나 사람 결정을 대신하지 않는다.
