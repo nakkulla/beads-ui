@@ -369,3 +369,22 @@ describe('POST /api/worker/session-inquiry/:id/state', () => {
     expect(result.body).toMatchObject({ ok: false, error: 'bad_request' });
   });
 });
+
+describe('session-inquiry body parse errors', () => {
+  test('answers a malformed JSON body with a JSON 400', async () => {
+    const init = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"repo":'
+    };
+
+    const response = await fetch(
+      `${base_url}/api/worker/session-inquiry`,
+      init
+    );
+    const body = JSON.parse(await response.text());
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({ ok: false, error: 'bad_request' });
+  });
+});

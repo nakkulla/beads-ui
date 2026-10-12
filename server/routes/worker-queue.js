@@ -7,7 +7,7 @@
  * `place` — and nothing else: which lane suits a bead stays a session judgement
  * (ADR 0009), never a server one.
  *
- * @import { Request, Response } from 'express'
+ * @import { NextFunction, Request, Response } from 'express'
  * @import { Queue } from '../worker/queue-store.js'
  */
 import path from 'node:path';
@@ -491,4 +491,31 @@ export function sessionInquiryStateHandler(req, res) {
   } catch {
     res.status(500).json({ ok: false, error: 'internal_error' });
   }
+}
+
+/**
+ * Error middleware for the session-inquiry routes (UI-gske §3.1): a body
+ * `express.json` rejects never reaches the handlers, and Express would answer
+ * it in HTML, which the CLI reads as an unreachable Worker.
+ *
+ * @param {unknown} err
+ * @param {Request} _req
+ * @param {Response} res
+ * @param {NextFunction} next
+ */
+export function sessionInquiryErrorHandler(err, _req, res, next) {
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  const status = /** @type {{ status?: unknown }} */ (err)?.status;
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    res.status(status).json({
+      ok: false,
+      error: 'bad_request',
+      message: 'request body is not valid JSON'
+    });
+    return;
+  }
+  res.status(500).json({ ok: false, error: 'internal_error' });
 }
