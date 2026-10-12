@@ -10,7 +10,7 @@ scope:
 # 완료 처리 중 생긴 외부 PR 사람 처리 필요를 자기 분류로 기록하고, 원인이 풀리면 자동 머지가 다시 건다
 
 Bead: UI-gsba · route: spec_backed · 작성 2026-10-12 · pinned base
-`d70992e92424598170ea5cd33fab93eac1cedb38` · 출처: UI-k467(구현 리뷰 r1 지적 1 수리 중 잔여)
+`1dfafe5d64e1494ed9a0f2ce81c78828e222a691` · 출처: UI-k467(구현 리뷰 r1 지적 1 수리 중 잔여)
 
 ## 1. 목표
 
@@ -21,7 +21,7 @@ Bead: UI-gsba · route: spec_backed · 작성 2026-10-12 · pinned base
   사람이 고쳐서 원인이 사라지면, 다음 자동 등록 턴이 클릭 없이 머지를 다시 건다
   (UI-k467 스펙 §4-7 「클릭 없이 다음 관측 턴에 풀린다」를 등록 뒤 경합에서도 충족).
 - 머지 뒤 `foreign_deploy_unsupported`로 멈춘 경우에도 알림은 「외부 PR 사람 처리 필요」
-  한 번뿐이다. 「배포 실패」 알림과 `[워커로 이어가기]` 안내가 함께 나가지 않는다.
+  한 번뿐이다. 「배포 실패」 알림과 `[정리 재시도]` 안내가 함께 나가지 않는다.
 
 사용자 결정(2026-10-12, 이 세션):
 - 종단 후 자동 재등록 방식으로 한다. 보류로 큐 자리를 유지하는 방식(대안)은 순차
@@ -34,21 +34,21 @@ Bead: UI-gsba · route: spec_backed · 작성 2026-10-12 · pinned base
 - 머지 전 외부 관문은 원인을 `foreign_handoff:<원인>` 사유로 돌려준다 — server/worker/pr-actions.js:1217, 1636-1639
 - 관문 거절은 `undecidable` 사실이 되고, 완료 처리는 그 사유 그대로 비종단 `needs_human`을 낸다 — server/worker/completion-intent.js:1900-1906, 554-558
 - 종료 사유 접기는 family 목록 첫 토큰으로 판정하고, 목록에 없는 사유는 `internal_record_failed:`로 접는다. 목록은 6종이고 `foreign_handoff`는 없다 — server/worker/completion-intent.js:64-75, 120-147
-- family 목록은 UI-5ym8 스펙 §7이 정한 닫힌 목록이고 테스트가 정확히 고정한다. 목록을 기록한 ADR은 없다(0040은 history) — docs/superpowers/specs/2026-08-28-worker-failure-tiers-queue-hold-design.md:219-234, server/worker/completion-intent.test.js:3289-3299, `grep -l 5ym8 docs/adr/*.md` 결과 없음
-- 종단 기록은 `phase=needs_human`으로 바꾸고 머지 큐에서 행을 뺀다. `pr_wait` 행은 남는다 — server/worker/queue-store.js:12783-12800
-- 자동 등록은 기존 intent가 `needs_human`이면 건너뛴다 — server/worker/queue-store.js:12968-12979
-- `[머지]` 수동 등록은 `needs_human` intent를 `resumed_terminal` 기록, `gating`(머지 전)·`cleaning`(머지 뒤) 단계, `terminal_reason=null`로 되살리고 `auto_merge_skips`를 지운다 — server/worker/queue-store.js:11714-11726, 11737-11738
+- family 목록은 UI-5ym8 스펙 §7이 정한 닫힌 목록이고 테스트가 정확히 고정한다. 목록을 기록한 ADR은 없다(0040은 history) — docs/superpowers/specs/2026-08-28-worker-failure-tiers-queue-hold-design.md:219-234, server/worker/completion-intent.test.js:3287-3297, `grep -l 5ym8 docs/adr/*.md` 결과 없음
+- 종단 기록은 `phase=needs_human`으로 바꾸고 머지 큐에서 행을 뺀다. `pr_wait` 행은 남는다 — server/worker/queue-store.js:12792-12809
+- 자동 등록은 기존 intent가 `needs_human`이면 건너뛴다 — server/worker/queue-store.js:12977-12988
+- `[머지]` 수동 등록은 `needs_human` intent를 `resumed_terminal` 기록, `gating`(머지 전)·`cleaning`(머지 뒤) 단계, `terminal_reason=null`로 되살리고 `auto_merge_skips`를 지운다 — server/worker/queue-store.js:11723-11735, 11746-11747
 - 자동 등록 후보 판정은 `foreign_handoff`를 보지 않는다. 충돌인 비외부 행은 관문이 닫혀도 후보이고, base 불일치는 관문이 열려 있으면 후보다 — server/worker/merge-candidates.js:218, 264, 279-285, server/worker/merge-gate.js:352
 - PR 관측은 매 턴 `foreign.handoff`를 비우고 다시 판정한다 — server/worker/pr-poller.js:683, 813-821
 - 자동 머지가 꺼진 순차 드라이버는 같은 원인을 큐 자리를 지키는 보류로 다루고 다음 드레인에서 다시 판정한다 — server/worker/merge-queue.js:946-961, 2246-2250
 - 카드의 「외부 PR 사람 처리 필요」 배지·원인 문장은 PR 관측의 `foreign.handoff`나 정리 기록 `cleanup_failed.reason`에서 온다. 완료 처리 종료 사유에서 오지 않는다 — app/views/worker/pr-wait-row.js:977-982
-- 외부 PR 행의 `[머지]`는 관측이나 정리 기록에 원인이 있으면 비활성이고, PR 관측은 머지 뒤 정리 기록을 지우지 않는다 — app/views/worker/pr-wait-row.js:1446-1450, server/worker/pr-poller.js:713-741
+- 외부 PR 행의 `[머지]`는 관측이나 정리 기록에 원인이 있으면 비활성이고, PR 관측은 머지 뒤 정리 기록을 지우지 않는다 — app/views/worker/pr-wait-row.js:1448-1452, server/worker/pr-poller.js:713-741
 - 해결 대화의 실패 맥락은 머지 뒤 원인을 정리 기록에서 먼저 읽고, 완료 로그 경로는 종료 사유의 `log_path`·정리 기록·관측만 읽는다(사유 문자열을 해석하지 않는다) — server/worker/resolve-session.js:283-300, server/worker/completion-log-path.js:99-124
 - 외부 PR 완료 관문은 호출마다 PR을 새로 관측하고, 관문 통과 시 완료 처리가 관측한 subject를 기록한다 — server/worker/pr-actions.js:1162-1166, 1632-1639, server/worker/completion-intent.js:2481-2497
 - 완료 처리 알림 클래스 맵의 `foreign_handoff` 항목은 완료 처리 안에서 그 stage로 종료 기록을 만드는 곳이 없다(종료 stage는 관문 거절의 `coordinator`, 정리 실패의 `repo_operations`) — server/worker/completion-intent.js:853, 870, 2645-2686
 - 외부 PR 알림 담당(announcer)은 (원인, identity)마다 타임라인 기록을 한 번 남기고 해결 대화 기동과 「외부 PR 사람 처리 필요」 푸시를 보낸다 — server/worker/foreign-handoff.js:86-140
-- 머지 뒤 deploy 원인은 `cleanup_failed`에 `foreign_handoff:foreign_deploy_unsupported`로 기록된 뒤 announcer가 알린다 — server/worker/pr-actions.js:3368-3384
-- 완료 처리의 `needs_human` 푸시는 종료 기록의 stage로 클래스를 고른다. 머지 전 경로의 stage `coordinator`는 클래스 맵에 없어 푸시가 없고, 머지 뒤 경로의 stage `repo_operations`는 「배포 실패」와 `[워커로 이어가기]` 안내로 나간다. 그래서 머지 뒤에는 푸시가 두 번 간다 — server/worker/completion-intent.js:843-854, 1648-1680
+- 머지 뒤 deploy 원인은 `cleanup_failed`에 `foreign_handoff:foreign_deploy_unsupported`로 기록된 뒤 announcer가 알린다 — server/worker/pr-actions.js:3415-3431
+- 완료 처리의 `needs_human` 푸시는 종료 기록의 stage로 클래스를 고른다. 머지 전 경로의 stage `coordinator`는 클래스 맵에 없어 푸시가 없고, 머지 뒤 경로의 stage `repo_operations`는 「배포 실패」와 `[정리 재시도]` 안내로 나간다. 그래서 머지 뒤에는 푸시가 두 번 간다 — server/worker/completion-intent.js:843-854, 1648-1680
 - 계약은 `foreign_handoff`의 출구를 원인별로 정한다. 충돌은 PR head 푸시로, base 불일치는 PR base나 핀 수정으로 다음 턴에 풀리고, deploy는 세션에서만 풀린다. `[머지]`는 풀지 못한다 — dotfiles docs/contracts/workflow-state.yaml:850-861
 
 ## 3. 설계
@@ -122,7 +122,7 @@ Bead: UI-gsba · route: spec_backed · 작성 2026-10-12 · pinned base
 5. 이 스펙 이전에 저장된 `internal_record_failed:foreign_handoff:<원인>` intent도 2·3대로
    처리된다.
 6. 머지 뒤 deploy 원인은 「외부 PR 사람 처리 필요」 푸시 한 번만 나가고, 「배포 실패」
-   푸시와 `[워커로 이어가기]` 안내가 없다.
+   푸시와 `[정리 재시도]` 안내가 없다.
 7. 자동 머지가 꺼진 경로(순차 드라이버 보류)와 카드 표시는 바뀌지 않는다.
 
 ## 5. Test scope
@@ -158,7 +158,7 @@ Bead: UI-gsba · route: spec_backed · 작성 2026-10-12 · pinned base
 
 ## 결정 (ADR 후보)
 
-- 전제: ADR UI-c74x — 외부 PR 사람 처리 필요 행은 `[머지]`로 풀리지 않고 사람의 출구는
+- 전제: ADR UI-btsr(UI-c74x 승계) — 외부 PR 사람 처리 필요 행은 `[머지]`로 풀리지 않고 사람의 출구는
   `[세션에서 이어가기]`다. 원인이 사라져 자동으로 다시 거는 것은 계약의 `clears_next_turn`
   출구이고 사람의 조작이 아니므로 이 조항과 충돌하지 않는다. 알림은 「🙋 확인 필요 · 외부
   PR 사람 처리 필요」 하나로 둔다.
