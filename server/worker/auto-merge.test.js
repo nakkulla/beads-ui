@@ -841,3 +841,196 @@ describe('worker/auto-merge — 보관 (UI-sd12 §3.3)', () => {
     ).toEqual(['UI-shelf']);
   });
 });
+
+describe('worker/auto-merge — 외부 PR 사람 처리 필요 재등록 (UI-gsba §3.3)', () => {
+  const REASON = 'foreign_handoff:foreign_conflict_needs_human';
+
+  /** A PR observation whose foreign target carries the given handoff. */
+  function observe(
+    /** @type {{ error?: string|null, handoff?: string|null, pr?: boolean }} */ input = {}
+  ) {
+    getWorkerRuntime().prObservations.record(WS, 'UI-1', {
+      error: input.error ?? null,
+      pr:
+        input.pr === false
+          ? null
+          : {
+              number: 1,
+              url: 'https://github.com/o/r/pull/1',
+              state: 'OPEN',
+              mergeable: 'MERGEABLE',
+              merge_state_status: 'CLEAN',
+              head_ref: 'UI-1',
+              head_sha: HEAD,
+              base_ref: 'main'
+            },
+      foreign: {
+        slug: 'o/r',
+        repo_name: 'r',
+        base: 'main',
+        path: '/repo/r',
+        handoff: input.handoff ?? null,
+        base_sha: null,
+        verify_declared: null
+      }
+    });
+  }
+
+  /**
+   * A root whose completion intent stopped with `reason`, and an enroller that
+   * reads the real observation cache unless `foreignCleared` is injected.
+   *
+   * @param {string} reason
+   * @param {((bead_id: string) => boolean)} [foreignCleared]
+   */
+  function terminalWorkspace(reason, foreignCleared) {
+    getWorkerRuntime().prObservations.prune(WS, []);
+    const store = park(createQueueStore(), ['UI-1']);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      source_attempt_id: 'att-UI-1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-1',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: HEAD,
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      terminal: {
+        reason,
+        stage: 'coordinator',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 99
+      }
+    });
+    const auto = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyState: () => verifyPolicy('present'),
+      headSha: () => HEAD,
+      baseRef: () => 'main',
+      lane: () => [{ bead_id: 'UI-1', external: false }],
+      candidates: () => [{ bead_id: 'UI-1', external: false }],
+      completionSeed: () => ({
+        source_attempt_id: 'att-UI-1',
+        target_base: 'main',
+        subject: {
+          role: 'root',
+          bead_id: 'UI-1',
+          pr_url: 'https://github.com/o/r/pull/1',
+          head_sha: HEAD,
+          base_sha: 'b'.repeat(40),
+          merged_sha: null
+        }
+      }),
+      ...(foreignCleared ? { foreignCleared } : {})
+    });
+    return { store, auto };
+  }
+
+  test('revives a handoff intent whose latest observation carries no cause', () => {
+    const { store, auto } = terminalWorkspace(REASON);
+    observe();
+
+    auto.enroll();
+
+    const queue = store.snapshot(WS);
+    expect(queue.completion_intents['UI-1']).toMatchObject({
+      phase: 'gating',
+      terminal_reason: null,
+      resumed_terminal: { reason: REASON }
+    });
+    expect(queue.merge_queue.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+      'UI-1'
+    ]);
+  });
+
+  test('keeps a handoff intent terminal while the observation still carries the cause', () => {
+    const { store, auto } = terminalWorkspace(REASON);
+    observe({
+      error: REASON,
+      handoff: 'foreign_conflict_needs_human'
+    });
+
+    auto.enroll();
+
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('keeps a handoff intent terminal when the observation recorded an error', () => {
+    const { store, auto } = terminalWorkspace(REASON);
+    observe({ error: 'gh_empty', pr: false });
+
+    auto.enroll();
+
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('keeps a handoff intent terminal when nothing was observed', () => {
+    const { store, auto } = terminalWorkspace(REASON);
+
+    auto.enroll();
+
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('keeps a handoff intent terminal when the injected check answers false', () => {
+    const { store, auto } = terminalWorkspace(REASON, () => false);
+    observe();
+
+    auto.enroll();
+
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('revives a handoff intent when the injected check answers true', () => {
+    const { store, auto } = terminalWorkspace(REASON, () => true);
+
+    auto.enroll();
+
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe('gating');
+  });
+
+  test('keeps a deploy handoff intent terminal although the observation is clear', () => {
+    const { store, auto } = terminalWorkspace(
+      'foreign_handoff:foreign_deploy_unsupported'
+    );
+    observe();
+
+    auto.enroll();
+
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('keeps a verify_red intent terminal although the observation is clear', () => {
+    const { store, auto } = terminalWorkspace('verify_red');
+    observe();
+
+    auto.enroll();
+
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'needs_human'
+    );
+  });
+});

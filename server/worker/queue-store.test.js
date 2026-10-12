@@ -16253,3 +16253,190 @@ describe('worker/queue-store manual deploy conversation mark (UI-jbl1 §3.1)', (
     });
   });
 });
+
+describe('worker/queue-store — 외부 PR 사람 처리 필요 자동 재등록 (UI-gsba)', () => {
+  const HEAD = 'a'.repeat(40);
+
+  /**
+   * A merged-or-not root whose completion intent ended in a needs_human
+   * terminal with the given reason, under an `auto_merge` queue.
+   *
+   * @param {string} reason
+   * @param {{ merged_sha?: string|null, stage?: string }} [opts]
+   */
+  function terminalStore(reason, opts = {}) {
+    const store = createQueueStore({ now: () => 123 });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'att-UI-1',
+        bead_id: 'UI-1',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-UI-1',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      source_attempt_id: 'att-UI-1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-1',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: HEAD,
+        base_sha: 'b'.repeat(40),
+        merged_sha: opts.merged_sha ?? null
+      }
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      terminal: {
+        reason,
+        stage: opts.stage ?? 'coordinator',
+        failure_key: null,
+        evidence: 'foreign pr wall',
+        log_path: null,
+        at: 99
+      }
+    });
+    return store;
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {boolean} foreign_rearm
+   */
+  function enrollCompletion(store, foreign_rearm) {
+    return store.enqueueMergeAuto(WS, {
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: HEAD,
+          ...(foreign_rearm ? { foreign_rearm: true } : {}),
+          completion: {
+            source_attempt_id: 'att-UI-1',
+            target_base: 'main',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-1',
+              pr_url: 'https://github.com/o/r/pull/1',
+              head_sha: HEAD,
+              base_sha: 'b'.repeat(40),
+              merged_sha: null
+            }
+          }
+        }
+      ]
+    });
+  }
+
+  test.each([
+    'foreign_handoff:foreign_conflict_needs_human',
+    'foreign_handoff:foreign_pr_base_mismatch',
+    'internal_record_failed:foreign_handoff:foreign_conflict_needs_human',
+    'internal_record_failed:foreign_handoff:foreign_pr_base_mismatch'
+  ])('revives a %s intent at gating like the manual click', (reason) => {
+    const store = terminalStore(reason);
+
+    const result = enrollCompletion(store, true);
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.completion_intents['UI-1']).toMatchObject({
+      phase: 'gating',
+      terminal_reason: null,
+      resumed_terminal: {
+        reason,
+        stage: 'coordinator',
+        evidence: 'foreign pr wall',
+        at: 99,
+        resumed_at: 123
+      }
+    });
+  });
+
+  test('puts a revived intent into the merge queue with an automatic authority', () => {
+    const store = terminalStore('foreign_handoff:foreign_conflict_needs_human');
+
+    const result = enrollCompletion(store, true);
+
+    expect(result.queue.merge_queue).toHaveLength(1);
+    expect(result.queue.merge_queue[0]).toMatchObject({
+      bead_id: 'UI-1',
+      authority: {
+        source: 'automatic',
+        requested_head_sha: HEAD,
+        target_base: 'main'
+      }
+    });
+  });
+
+  test('deletes the auto-merge skip of a revived intent', () => {
+    const store = terminalStore('foreign_handoff:foreign_pr_base_mismatch');
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'refused'
+    });
+
+    const result = enrollCompletion(store, true);
+
+    expect(result.queue.auto_merge_skips).toEqual({});
+  });
+
+  test('revives a merged foreign_handoff intent at cleaning', () => {
+    const store = terminalStore(
+      'foreign_handoff:foreign_conflict_needs_human',
+      {
+        merged_sha: 'c'.repeat(40)
+      }
+    );
+
+    const result = enrollCompletion(store, true);
+
+    expect(result.queue.completion_intents['UI-1'].phase).toBe('cleaning');
+  });
+
+  test('keeps a foreign_handoff intent terminal when the observation still carries the cause', () => {
+    const store = terminalStore('foreign_handoff:foreign_conflict_needs_human');
+
+    const result = enrollCompletion(store, false);
+
+    expect(result.queue.completion_intents['UI-1']).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: {
+        reason: 'foreign_handoff:foreign_conflict_needs_human'
+      }
+    });
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test.each([
+    'foreign_handoff:foreign_deploy_unsupported',
+    'internal_record_failed:foreign_handoff:foreign_deploy_unsupported'
+  ])('keeps a %s intent terminal even when the cause cleared', (reason) => {
+    const store = terminalStore(reason);
+
+    const result = enrollCompletion(store, true);
+
+    expect(result.queue.completion_intents['UI-1'].phase).toBe('needs_human');
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('keeps a verify_red intent terminal even when the cause cleared', () => {
+    const store = terminalStore('verify_red');
+
+    const result = enrollCompletion(store, true);
+
+    expect(result.queue.completion_intents['UI-1'].phase).toBe('needs_human');
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+});

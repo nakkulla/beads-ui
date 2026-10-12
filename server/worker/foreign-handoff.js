@@ -59,6 +59,80 @@ export function foreignHandoffCauseOf(reason) {
 }
 
 /**
+ * The causes a person clears by fixing the PR (a push to its head, a PR-base or
+ * pin fix), so the next observation turn drops them. `foreign_deploy_unsupported`
+ * is absent on purpose: it is released only from a session.
+ *
+ * @type {readonly string[]}
+ */
+export const FOREIGN_HANDOFF_REARM_CAUSES = Object.freeze([
+  'foreign_conflict_needs_human',
+  'foreign_pr_base_mismatch'
+]);
+
+/**
+ * The cause a reason names anywhere as its `foreign_handoff:<cause>` tail — the
+ * bare token, or behind a family prefix such as `cleanup_failed:` — or null.
+ * Only the contract's three causes count; any other tail is not a handoff.
+ *
+ * @param {unknown} reason
+ * @returns {string|null}
+ */
+export function foreignHandoffCauseWithin(reason) {
+  if (typeof reason !== 'string') {
+    return null;
+  }
+  for (const cause of FOREIGN_HANDOFF_CAUSES) {
+    const token = foreignHandoffReason(cause);
+    if (reason === token || reason.endsWith(`:${token}`)) {
+      return cause;
+    }
+  }
+  return null;
+}
+
+/**
+ * The re-armable cause of a completion terminal reason, or null. Accepts the
+ * folded `foreign_handoff:<cause>` and the form stored before that family
+ * existed, `internal_record_failed:foreign_handoff:<cause>`.
+ *
+ * @param {unknown} reason
+ * @returns {string|null}
+ */
+export function foreignHandoffRearmCause(reason) {
+  if (typeof reason !== 'string') {
+    return null;
+  }
+  const cause = foreignHandoffCauseWithin(reason);
+  if (cause === null || !FOREIGN_HANDOFF_REARM_CAUSES.includes(cause)) {
+    return null;
+  }
+  const token = foreignHandoffReason(cause);
+  return reason === token || reason === `internal_record_failed:${token}`
+    ? cause
+    : null;
+}
+
+/**
+ * Whether a PR observation proves the foreign handoff is gone: the entry is
+ * readable, has no error, carries a PR and a foreign target, and the target's
+ * handoff is empty. Anything less fails closed.
+ *
+ * @param {any} observation
+ * @returns {boolean}
+ */
+export function foreignHandoffCleared(observation) {
+  return Boolean(
+    observation &&
+    !observation.error &&
+    observation.pr &&
+    observation.foreign &&
+    typeof observation.foreign === 'object' &&
+    observation.foreign.handoff === null
+  );
+}
+
+/**
  * Build the announcer for one workspace.
  *
  * @param {{

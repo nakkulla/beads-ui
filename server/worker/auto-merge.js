@@ -33,6 +33,7 @@
  *
  * @import { Queue } from './queue-store.js'
  */
+import { foreignHandoffCleared } from './foreign-handoff.js';
 import {
   completionIntentSeed,
   mergeQueueCandidates,
@@ -40,6 +41,7 @@ import {
   observedHeadSha,
   overlaidPrWait
 } from './merge-candidates.js';
+import { getWorkerRuntime } from './runtime.js';
 
 /**
  * Build a workspace's auto-merge enroller.
@@ -53,6 +55,7 @@ import {
  *   candidates?: (workspace: string, queue: Record<string, unknown>, verify_policy: { declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }) => Array<{ bead_id: string, external: boolean, repairable?: boolean }>,
  *   lane?: (workspace: string, queue: Record<string, unknown>) => Array<{ bead_id: string, external: boolean }>,
  *   completionSeed?: (workspace: string, queue: Record<string, unknown>, bead_id: string) => { source_attempt_id: string, target_base: string, subject: any }|null,
+ *   foreignCleared?: (bead_id: string) => boolean,
  *   notifyChanged?: (workspace: string) => void,
  *   kick?: () => unknown,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
@@ -73,6 +76,19 @@ export function createAutoMerge(deps) {
   const candidates = deps.candidates || mergeQueueCandidates;
   const lane = deps.lane || overlaidPrWait;
   const completionSeed = deps.completionSeed || completionIntentSeed;
+  // Whether the row's latest observation proves its foreign handoff is gone
+  // (UI-gsba §3.3); any unreadable observation answers false (fail closed).
+  const foreignCleared =
+    deps.foreignCleared ||
+    ((/** @type {string} */ bead_id) => {
+      try {
+        return foreignHandoffCleared(
+          getWorkerRuntime().prObservations.get(workspace, bead_id)
+        );
+      } catch {
+        return false;
+      }
+    });
 
   let stopped = false;
   /** Guards §4.3's recursion: the enroll below emits the event it listens to. */
@@ -137,7 +153,7 @@ export function createAutoMerge(deps) {
         error: err instanceof Error ? err.message : String(err)
       };
     }
-    /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, target_base?: string, completion?: { source_attempt_id: string, target_base: string, subject: any } }>} */
+    /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, target_base?: string, foreign_rearm?: boolean, completion?: { source_attempt_id: string, target_base: string, subject: any } }>} */
     const entries = [];
     for (const c of candidates(workspace, overlaid, verify_policy)) {
       const head_sha = headSha(c.bead_id);
@@ -152,7 +168,12 @@ export function createAutoMerge(deps) {
         if (!completion) {
           continue;
         }
-        entries.push({ ...c, head_sha, completion });
+        entries.push({
+          ...c,
+          head_sha,
+          completion,
+          ...(foreignCleared(c.bead_id) ? { foreign_rearm: true } : {})
+        });
         continue;
       }
       const target_base = baseRef(c.bead_id);
