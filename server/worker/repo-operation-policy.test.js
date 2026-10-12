@@ -13,11 +13,11 @@ import {
  * copy without re-pinning here (or re-pinning without the approved artifact)
  * fails the contract, which is the whole point of the pin.
  */
-const APPROVED_SOURCE_COMMIT = '5cc243221bcf5af59c0831989ebf646f56878e06';
-const APPROVED_BLOB = 'c9fa99fd73437aeb09f1b5dd370ad843de907d51';
-const APPROVED_BYTES = 2809;
+const APPROVED_SOURCE_COMMIT = '7ba0ed991639188b1f1d647819bcec3f4acbf50e';
+const APPROVED_BLOB = 'ce032fff7f50a9a0eb5c1403b327712003d644ab';
+const APPROVED_BYTES = 2778;
 const APPROVED_DIGEST =
-  'eb3b6d9feb6c0bde432da6c251e48e5eadda6d970b894236908759fdb3142aab';
+  '323f6256278c4280a5cb7d2c4dec8037cd71f43cf83629ad85baf6ad4aefd479';
 
 /**
  * @param {number} schema_version
@@ -177,7 +177,7 @@ describe('pinned repo-operation policy contract', () => {
     }).toEqual({
       worker_automatic: 7,
       resolution_ladder: ['script_retry'],
-      never_automatic: 8
+      never_automatic: 7
     });
   });
 
@@ -192,10 +192,15 @@ describe('pinned repo-operation policy contract', () => {
     );
   });
 
-  test('keeps repair-session dispatch in the never-automatic enum', () => {
+  test('drops repair-session dispatch from the never-automatic enum', () => {
     const projected = projectRepoOperationPolicy();
 
-    expect(projected.never_automatic).toContain('repair_session_dispatch');
+    expect(projected.never_automatic).not.toContain('repair_session_dispatch');
+  });
+
+  test('keeps the bounded retry ceiling in the never-automatic enum', () => {
+    const projected = projectRepoOperationPolicy();
+
     expect(projected.never_automatic).toContain(
       'bounded_single_script_retry_exceeded'
     );

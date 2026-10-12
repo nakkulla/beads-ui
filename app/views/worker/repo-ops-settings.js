@@ -448,7 +448,6 @@ export function createRepoOpsSettings(options) {
     descendant_success_covers_ancestor_rows: '최신 SHA 성공이 이전 행 커버',
     owned_verify_candidate_cleanup: '검증 임시 체크아웃 정리',
     bounded_single_script_retry_exceeded: '단일 스크립트 재시도 한도 초과',
-    repair_session_dispatch: '실패 해결 세션 자동 실행',
     baseline_failure_ignore: '기존 실패 무시',
     config_or_script_deletion_to_bypass_gate:
       '설정·스크립트 삭제로 게이트 우회',

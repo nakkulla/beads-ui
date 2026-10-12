@@ -72,7 +72,6 @@
   "manual_human_fix": "absent",
   "never_automatic": [
     "bounded_single_script_retry_exceeded",
-    "repair_session_dispatch",
     "baseline_failure_ignore",
     "config_or_script_deletion_to_bypass_gate",
     "agent_self_report_as_success",
