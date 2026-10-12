@@ -1,28 +1,8 @@
 /**
- * The tmux launch primitives beads-ui uses to start an INTERACTIVE `claude`
- * window a person can then reach through the external `claude-discord-bridge`
- * (UI-jw27 §4).
- *
- * This is the generalization of what `direction-inquiry.js` (UI-7uid) proved
- * out: pane-marker duplicate guard, `claude` resolution off the Worker's own
- * PATH, `tmux new-window` under a wrapper that writes the marker BEFORE it
- * execs, and a read-only bridge heartbeat judgment. Two callers now share it —
- * the direction-inquiry trigger and the `[세션에서 해결]` click — so every
- * property below is stated once instead of drifting between them.
- *
- * Three properties are load-bearing and belong to this module, not its callers:
- *
- *   - FAIL-CLOSED ON TMUX. A tmux that cannot be reached means liveness cannot
- *     be judged, and a duplicate nobody could rule out is worse than no
- *     session: the launch is skipped with `tmux_unavailable`.
- *   - THE MARKER PRECEDES THE EXEC. `set-option` and `exec` are joined by `&&`,
- *     so a marker that cannot be written never reaches the exec and the pane
- *     closes. That ordering is what makes "a live pane carrying this key" an
- *     exact test for "a session of this kind is running".
- *   - THE MARKER NAMES THE KIND. Each caller passes its OWN marker option name.
- *     Sharing one marker between two kinds of session would make each kind's
- *     duplicate guard swallow the other's pane: a Bead parked for a direction
- *     inquiry could never also get a resolution session, and vice versa.
+ * Interactive windows use the installed session-hub CLI for opening, marker
+ * lookup and liveness. The hub starts a missing tmux server and writes each
+ * caller's marker before executing its runner. beads-ui retains conversation
+ * arguments, placement policy, bridge observation and reconciliation controls.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -79,7 +59,7 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
 
 /**
  * Where a window opens (UI-a119 §3.1). `user` is a person's click: the most
- * recently attached user tmux session, as that session's current window.
+ * recently attached user tmux session with an attached client, as its current window.
  * `inquiry` is the configured inquiry session, in the background — every
  * automatic launch, and the click's fallback when no user session qualifies.
  *
@@ -105,37 +85,6 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  * @property {string} [runner] - Which executable (default `claude`).
  * @property {LaunchPlacement} [placement] - Default `inquiry`.
  */
-
-/**
- * The user session a click opens its window in (UI-a119 §3.1): among the
- * `list-sessions` rows whose `session_last_attached` is set, the largest value,
- * ties broken by the lexicographically first name. The inquiry session is never
- * a candidate. Whether a client is attached right now is deliberately not read —
- * a detached session still shows the window once someone attaches.
- *
- * @param {string} stdout - `#{session_last_attached}:#{session_name}` lines.
- * @param {string} inquiry_session
- * @returns {string|null}
- */
-export function pickUserSession(stdout, inquiry_session) {
-  /** @type {{ name: string, at: number }|null} */
-  let best = null;
-  for (const line of stdout.split('\n')) {
-    const colon = line.indexOf(':');
-    if (colon <= 0) {
-      continue;
-    }
-    const at = Number(line.slice(0, colon));
-    const name = line.slice(colon + 1);
-    if (!Number.isFinite(at) || name.length === 0 || name === inquiry_session) {
-      continue;
-    }
-    if (best === null || at > best.at || (at === best.at && name < best.name)) {
-      best = { name, at };
-    }
-  }
-  return best === null ? null : best.name;
-}
 
 /**
  * The pane listing format for one marker. Its three trailing fields are the
@@ -344,6 +293,7 @@ function defaultLaunchFlags(runner) {
 /**
  * @typedef {Object} TmuxLauncherDeps
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
+ * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runSessionHub]
  * @property {() => string|null} [resolveClaude] - Legacy claude-only seam; it
  * still answers for a claude launch when `resolveRunner` is absent.
  * @property {(runner: string) => string|null} [resolveRunner]
@@ -387,6 +337,10 @@ export function createTmuxLauncher(deps = {}) {
     deps.statFile || ((/** @type {string} */ p) => fs.statSync(p));
   const runTmux =
     deps.runTmux || ((/** @type {string[]} */ args) => runShell('tmux', args));
+  const runSessionHub =
+    deps.runSessionHub ||
+    ((/** @type {string[]} */ args) =>
+      runShell(path.join(os.homedir(), 'bin', 'session-hub'), args));
   const launchFlags = deps.launchFlags || defaultLaunchFlags;
   const bridge_state_dir =
     deps.bridgeStateDir ||
@@ -621,34 +575,80 @@ export function createTmuxLauncher(deps = {}) {
   }
 
   /**
-   * The `already_running` outcome for a live pane of this marker/key, or null
-   * when none is alive. A click (`placement: 'user'`) also makes that window its
-   * own session's current window; the window is never moved to another
-   * session, and a failed `select-window` is logged without changing the
-   * outcome (UI-a119 §3.1).
+   * Decode the hub's single JSON result, including refusals on nonzero exits.
    *
-   * @param {PaneRow[]} rows
-   * @param {Pick<LaunchInput, 'key'|'tmux_session'|'window_name'|'placement'>} input
-   * @returns {Promise<LaunchOutcome|null>}
+   * @param {string[]} args
+   * @returns {Promise<{ ok: true, value: Record<string, any> }|{ ok: false, error: string }>}
    */
-  async function adoptLive(rows, input) {
-    const row = rows.find((r) => r.key === input.key && r.dead === '0');
-    if (!row) {
-      return null;
-    }
-    if (input.placement === 'user') {
-      const selected = await runChecked(['select-window', '-t', row.pane]);
-      if (!selected.ok) {
-        log('tmux select-window failed for %s: %s', input.key, selected.error);
+  async function hubChecked(args) {
+    try {
+      const result = await runSessionHub(args);
+      /** @type {any} */
+      let value;
+      try {
+        value = JSON.parse(result.stdout);
+      } catch {
+        return {
+          ok: false,
+          error: 'launch_failed:session_hub_invalid_response'
+        };
       }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return {
+          ok: false,
+          error: 'launch_failed:session_hub_invalid_response'
+        };
+      }
+      if (value.ok === false && typeof value.code === 'string') {
+        const error =
+          value.code === 'tmux_unavailable'
+            ? 'tmux_unavailable'
+            : value.code === 'start_failed'
+              ? 'launch_failed:exited'
+              : `launch_failed:${value.code}`;
+        return { ok: false, error };
+      }
+      if (result.code !== 0 || value.ok !== true) {
+        return {
+          ok: false,
+          error: 'launch_failed:session_hub_invalid_response'
+        };
+      }
+      return { ok: true, value };
+    } catch (err) {
+      log('session-hub %s failed: %o', args[0], err);
+      return { ok: false, error: 'launch_failed:session_hub_unavailable' };
     }
-    return {
-      session: 'already_running',
-      placement: row.session === input.tmux_session ? 'inquiry' : 'user',
-      tmux_session: row.session,
-      tmux_window: input.window_name,
-      pane_id: row.pane
-    };
+  }
+
+  /**
+   * Validate the location shared by the hub's open and found results.
+   *
+   * @param {Record<string, any>} value
+   * @returns {boolean}
+   */
+  function hasHubLocation(value) {
+    return (
+      typeof value.pane === 'string' &&
+      /^%\d+$/.test(value.pane) &&
+      typeof value.tmux_session === 'string' &&
+      value.tmux_session.length > 0 &&
+      typeof value.window === 'string' &&
+      value.window.length > 0
+    );
+  }
+
+  /**
+   * A failed focus does not change the hub's evidence that a window is alive.
+   *
+   * @param {string} pane
+   * @param {string} key
+   */
+  async function focusPane(pane, key) {
+    const selected = await runChecked(['select-window', '-t', pane]);
+    if (!selected.ok) {
+      log('tmux select-window failed for %s: %s', key, selected.error);
+    }
   }
 
   /**
@@ -659,42 +659,46 @@ export function createTmuxLauncher(deps = {}) {
    * @returns {Promise<{ ok: true, outcome: LaunchOutcome|null }|{ ok: false, error: string }>}
    */
   async function focusRunning(input) {
-    const listed = await listPanes(input.marker);
-    if (!listed.ok) {
-      return listed;
-    }
-    return { ok: true, outcome: await adoptLive(listed.rows, input) };
-  }
-
-  /**
-   * The session a `user` placement opens in, or null when none qualifies or
-   * `list-sessions` fails — both fall back to the inquiry session.
-   *
-   * @param {string} inquiry_session
-   * @returns {Promise<string|null>}
-   */
-  async function userSession(inquiry_session) {
-    const listed = await runChecked([
-      'list-sessions',
-      '-F',
-      '#{session_last_attached}:#{session_name}'
+    const found = await hubChecked([
+      'find',
+      '--marker-option',
+      input.marker,
+      '--marker-value',
+      input.key
     ]);
-    if (!listed.ok) {
-      log('tmux list-sessions failed: %s', listed.error);
-      return null;
+    if (!found.ok) {
+      return found;
     }
-    return pickUserSession(listed.stdout, inquiry_session);
+    const value = found.value;
+    if (value.found === false) {
+      return { ok: true, outcome: null };
+    }
+    if (value.found !== true || !hasHubLocation(value)) {
+      return { ok: false, error: 'launch_failed:session_hub_invalid_response' };
+    }
+    if (input.placement === 'user') {
+      await focusPane(value.pane, input.key);
+    }
+    return {
+      ok: true,
+      outcome: {
+        session: 'already_running',
+        placement:
+          value.tmux_session === input.tmux_session ? 'inquiry' : 'user',
+        tmux_session: value.tmux_session,
+        // The hub returns an @N window id; callers retain the displayed name.
+        tmux_window: input.window_name,
+        pane_id: value.pane
+      }
+    };
   }
 
   /**
    * Start one marked interactive window, unless one is already alive for this
    * marker/key pair.
    *
-   * The window is confirmed by re-reading the pane list: a pane that is already
-   * gone means the marker write failed or the CLI exited at once, and both are
-   * the same fact — there is no session. A pane that is alive but not yet
-   * marked is a LAUNCH: the wrapper writes the marker before it execs, so the
-   * mark is in flight, and the pane could not be running the CLI without it.
+   * The hub owns the cross-process marker lock and starts a missing server.
+   * Its alive result keeps an unobservable pane distinct from an exited runner.
    *
    * @param {LaunchInput} input
    * @returns {Promise<LaunchOutcome>}
@@ -721,14 +725,12 @@ export function createTmuxLauncher(deps = {}) {
    * @returns {Promise<LaunchOutcome>}
    */
   async function launchLocked(input) {
-    const listed = await listPanes(input.marker);
-    if (!listed.ok) {
-      log('tmux list failed for %s: %s', input.key, listed.error);
-      return { session: 'not_launched', reason: 'tmux_unavailable' };
+    const found = await focusRunning(input);
+    if (!found.ok) {
+      return { session: 'not_launched', reason: found.error };
     }
-    const live = await adoptLive(listed.rows, input);
-    if (live !== null) {
-      return live;
+    if (found.outcome !== null) {
+      return found.outcome;
     }
     // An unknown runner is refused by its OWN name rather than run as claude
     // (§4.2): substituting a provider would start a session on a transcript and
@@ -757,97 +759,78 @@ export function createTmuxLauncher(deps = {}) {
         };
       }
     }
-    const user_session =
-      input.placement === 'user' ? await userSession(input.tmux_session) : null;
-    /** @type {LaunchPlacement} */
-    const placement = user_session === null ? 'inquiry' : 'user';
-    const target_session = user_session ?? input.tmux_session;
+    const opened = await hubChecked([
+      'open',
+      '--cwd',
+      input.cwd,
+      '--window-name',
+      input.window_name,
+      '--marker-option',
+      input.marker,
+      '--marker-value',
+      input.key,
+      ...(input.placement === 'user'
+        ? [
+            '--attached',
+            '--exclude-session',
+            input.tmux_session,
+            '--fallback-session',
+            input.tmux_session
+          ]
+        : ['--session', input.tmux_session]),
+      ...(codex_home === null ? [] : ['--env', `CODEX_HOME=${codex_home}`]),
+      '--',
+      executable,
+      ...withLaunchFlags(runner, input.commandArgs, launchFlags(runner))
+    ]);
+    if (!opened.ok) {
+      return { session: 'not_launched', reason: opened.error };
+    }
+    const value = opened.value;
     if (
-      placement === 'inquiry' &&
-      !listed.rows.some((row) => row.session === input.tmux_session)
+      !hasHubLocation(value) ||
+      (value.status !== 'launched' && value.status !== 'exists')
     ) {
-      /** @type {{ code: number }} */
-      let created;
-      try {
-        created = await runTmux([
-          'new-session',
-          '-d',
-          '-s',
-          input.tmux_session
-        ]);
-      } catch (err) {
-        log('tmux new-session threw for %s: %o', input.key, err);
-        return { session: 'not_launched', reason: 'tmux_unavailable' };
-      }
-      if (!created || created.code !== 0) {
-        // Another trigger may have created the session between our read and
-        // this call: two launches landing together both see it missing and only
-        // one `new-session` can win. The session existing is the whole
-        // requirement, whoever made it, so re-read before calling this a
-        // failure.
-        const recheck = await listPanes(input.marker);
-        if (
-          !recheck.ok ||
-          !recheck.rows.some((row) => row.session === input.tmux_session)
-        ) {
-          return {
-            session: 'not_launched',
-            reason: 'launch_failed:new_session'
-          };
-        }
-      }
+      return {
+        session: 'not_launched',
+        reason: 'launch_failed:session_hub_invalid_response'
+      };
     }
-    const wrapper = markerWrapper({
-      marker: input.marker,
-      key: input.key,
-      argv: [
-        executable,
-        ...withLaunchFlags(runner, input.commandArgs, launchFlags(runner))
-      ]
-    });
-    /** @type {{ code: number, stdout: string }} */
-    let opened;
-    try {
-      // Without `-d` the new window becomes the user session's current window;
-      // the client is never switched to another session (UI-a119 §3.1).
-      opened = await runTmux([
-        'new-window',
-        ...(placement === 'user' ? [] : ['-d']),
-        '-P',
-        '-F',
-        '#{pane_id}',
-        '-t',
-        target_session,
-        '-n',
-        input.window_name,
-        '-c',
-        input.cwd,
-        ...(codex_home === null ? [] : ['-e', `CODEX_HOME=${codex_home}`]),
-        '--',
-        wrapper
-      ]);
-    } catch (err) {
-      log('tmux new-window threw for %s: %o', input.key, err);
-      return { session: 'not_launched', reason: 'tmux_unavailable' };
-    }
-    const pane_id = (opened?.stdout || '').trim();
-    if (!opened || opened.code !== 0 || pane_id.length === 0) {
-      return { session: 'not_launched', reason: 'launch_failed:new_window' };
-    }
-    const confirmed = await listPanes(input.marker);
+    const confirmed = await hubChecked([
+      'alive',
+      '--pane',
+      value.pane,
+      '--marker-option',
+      input.marker,
+      '--marker-value',
+      input.key
+    ]);
     if (!confirmed.ok) {
-      return { session: 'not_launched', reason: 'tmux_unavailable' };
+      return { session: 'not_launched', reason: confirmed.error };
     }
-    const row = confirmed.rows.find((r) => r.pane === pane_id);
-    if (!row || row.dead !== '0') {
+    if (confirmed.value.alive === 'dead') {
       return { session: 'not_launched', reason: 'launch_failed:exited' };
     }
+    if (confirmed.value.alive !== 'alive') {
+      return { session: 'not_launched', reason: 'tmux_unavailable' };
+    }
+    /** @type {LaunchPlacement} */
+    const placement =
+      value.tmux_session === input.tmux_session ? 'inquiry' : 'user';
+    // Focus only after the hub reports placement: --focus on open would also
+    // select a fallback inquiry window, which must stay in the background.
+    if (
+      input.placement === 'user' &&
+      (placement === 'user' || value.status === 'exists')
+    ) {
+      await focusPane(value.pane, input.key);
+    }
     return {
-      session: 'launched',
+      session: value.status === 'exists' ? 'already_running' : 'launched',
       placement,
-      tmux_session: target_session,
+      tmux_session: value.tmux_session,
       tmux_window: input.window_name,
-      pane_id
+      pane_id: value.pane
     };
   }
 

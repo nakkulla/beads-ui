@@ -4,17 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { hubReply } from '../../test/session-hub.js';
 import { __resetConversationSettingsForTest } from '../conversation-settings.js';
 import { __resetRuntimeCatalogForTest } from './runner/index.js';
 import {
-  EXTERNAL_RESUME_PANE_MARKER,
   INQUIRY_PANE_MARKER,
   RESOLVE_PANE_MARKER,
   createTmuxLauncher,
   defaultResolveRunner,
   markerWrapper,
   paneFormatExtended,
-  pickUserSession,
   withLaunchFlags
 } from './tmux-launcher.js';
 
@@ -70,432 +69,6 @@ describe('tmux-launcher C-locale pane listing', () => {
       });
     }
   );
-
-  test.each([
-    INQUIRY_PANE_MARKER,
-    RESOLVE_PANE_MARKER,
-    EXTERNAL_RESUME_PANE_MARKER
-  ])(
-    'recognizes a live %s pane without launching a duplicate',
-    async (marker) => {
-      const launcher = createTmuxLauncher({
-        runTmux: async (args) => ({
-          code: 0,
-          stdout: renderPanes(args[3], [
-            {
-              session_name: 'bdui-inquiry',
-              pane_id: '%1',
-              pane_dead: '0',
-              [marker]: 'foreign:UI-gcf6'
-            }
-          ]),
-          stderr: ''
-        }),
-        resolveRunner: () => null
-      });
-
-      const result = await launcher.launch({
-        marker,
-        key: 'foreign:UI-gcf6',
-        tmux_session: 'bdui-inquiry',
-        window_name: 'test',
-        cwd: '/tmp',
-        commandArgs: []
-      });
-
-      expect(result).toEqual({
-        session: 'already_running',
-        placement: 'inquiry',
-        tmux_session: 'bdui-inquiry',
-        tmux_window: 'test',
-        pane_id: '%1'
-      });
-    }
-  );
-
-  test('names the external resume kind with its own marker', () => {
-    const markers = [
-      INQUIRY_PANE_MARKER,
-      RESOLVE_PANE_MARKER,
-      EXTERNAL_RESUME_PANE_MARKER
-    ];
-
-    const distinct = new Set(markers);
-
-    expect(EXTERNAL_RESUME_PANE_MARKER).toBe('@bdui_external_resume_bead');
-    expect(distinct.size).toBe(3);
-  });
-
-  test('ignores a live resolve pane when guarding an external resume launch', async () => {
-    /** @type {string[]} */
-    const calls = [];
-    const launcher = createTmuxLauncher({
-      resolveRunner: () => '/usr/bin/true',
-      runTmux: async (args) => {
-        calls.push(args[0]);
-        if (args[0] === 'list-panes') {
-          return {
-            code: 0,
-            stdout: renderPanes(args[3], [
-              {
-                session_name: 'bdui-inquiry',
-                pane_id: '%1',
-                pane_dead: '0',
-                [RESOLVE_PANE_MARKER]: 'UI-gcf6'
-              }
-            ]),
-            stderr: ''
-          };
-        }
-        return { code: 0, stdout: '%2\n', stderr: '' };
-      }
-    });
-
-    await launcher.launch({
-      marker: EXTERNAL_RESUME_PANE_MARKER,
-      key: 'UI-gcf6',
-      tmux_session: 'bdui-inquiry',
-      window_name: 'UI-gcf6',
-      cwd: '/tmp',
-      commandArgs: []
-    });
-
-    expect(calls).toContain('new-window');
-  });
-
-  test('opens a window in the existing session under the C locale', async () => {
-    /** @type {Record<string, string>[]} */
-    const panes = [
-      { session_name: 'bdui-inquiry', pane_id: '%1', pane_dead: '0' }
-    ];
-    /** @type {string[]} */
-    const calls = [];
-    const launcher = createTmuxLauncher({
-      resolveRunner: () => '/usr/bin/true',
-      runTmux: async (args) => {
-        calls.push(args[0]);
-        if (args[0] === 'list-panes') {
-          return { code: 0, stdout: renderPanes(args[3], panes), stderr: '' };
-        }
-        if (args[0] === 'new-window') {
-          panes.push({
-            session_name: 'bdui-inquiry',
-            pane_id: '%2',
-            pane_dead: '0',
-            [INQUIRY_PANE_MARKER]: 'UI-gcf6'
-          });
-          return { code: 0, stdout: '%2\n', stderr: '' };
-        }
-        return { code: 1, stdout: '', stderr: 'duplicate session' };
-      }
-    });
-
-    const result = await launcher.launch({
-      marker: INQUIRY_PANE_MARKER,
-      key: 'UI-gcf6',
-      tmux_session: 'bdui-inquiry',
-      window_name: 'test',
-      cwd: '/tmp',
-      commandArgs: []
-    });
-
-    expect(result).toEqual({
-      session: 'launched',
-      placement: 'inquiry',
-      tmux_session: 'bdui-inquiry',
-      tmux_window: 'test',
-      pane_id: '%2'
-    });
-    expect(calls).toEqual(['list-panes', 'new-window', 'list-panes']);
-  });
-});
-
-describe('pickUserSession (UI-a119 §3.1)', () => {
-  test('picks the most recently attached session', () => {
-    const stdout = '100:work\n300:dev\n200:notes\n';
-
-    const picked = pickUserSession(stdout, 'bdui-inquiry');
-
-    expect(picked).toBe('dev');
-  });
-
-  test('skips a session that was never attached', () => {
-    const stdout = ':claude-retry-1\n100:work\n';
-
-    const picked = pickUserSession(stdout, 'bdui-inquiry');
-
-    expect(picked).toBe('work');
-  });
-
-  test('excludes the configured inquiry session', () => {
-    const stdout = '900:bdui-inquiry\n100:work\n';
-
-    const picked = pickUserSession(stdout, 'bdui-inquiry');
-
-    expect(picked).toBe('work');
-  });
-
-  test('breaks a last-attached tie by the first name', () => {
-    const stdout = '500:zeta\n500:alpha\n';
-
-    const picked = pickUserSession(stdout, 'bdui-inquiry');
-
-    expect(picked).toBe('alpha');
-  });
-
-  test('finds no candidate when only unattached sessions exist', () => {
-    const stdout = ':bdui-inquiry\n:claude-retry-1\n';
-
-    const picked = pickUserSession(stdout, 'bdui-inquiry');
-
-    expect(picked).toBeNull();
-  });
-});
-
-/**
- * A fake tmux for placement tests: `list-sessions` answers `sessions` (or
- * fails when it is null), and an opened window joins the pane listing.
- *
- * @param {{ sessions?: string|null, panes?: Record<string, string>[], select_code?: number }} [script]
- */
-function placementTmux(script = {}) {
-  /** @type {Record<string, string>[]} */
-  const panes = [...(script.panes ?? [])];
-  /** @type {string[][]} */
-  const calls = [];
-  const runTmux = async (/** @type {string[]} */ args) => {
-    calls.push(args);
-    if (args[0] === 'list-panes') {
-      return { code: 0, stdout: renderPanes(args[3], panes), stderr: '' };
-    }
-    if (args[0] === 'list-sessions') {
-      return script.sessions === null
-        ? { code: 1, stdout: '', stderr: 'no server running' }
-        : { code: 0, stdout: script.sessions ?? '', stderr: '' };
-    }
-    if (args[0] === 'select-window') {
-      return {
-        code: script.select_code ?? 0,
-        stdout: '',
-        stderr: script.select_code ? "can't find window" : ''
-      };
-    }
-    if (args[0] === 'new-window') {
-      const target = args[args.indexOf('-t') + 1];
-      panes.push({
-        session_name: target,
-        pane_id: '%7',
-        pane_dead: '0',
-        [INQUIRY_PANE_MARKER]: 'UI-a119'
-      });
-      return { code: 0, stdout: '%7\n', stderr: '' };
-    }
-    return { code: 0, stdout: '', stderr: '' };
-  };
-  const launcher = createTmuxLauncher({
-    runTmux,
-    resolveRunner: () => '/usr/bin/true',
-    log: () => {}
-  });
-  /** @param {'user'|'inquiry'} [placement] */
-  const launch = (placement) =>
-    launcher.launch({
-      marker: INQUIRY_PANE_MARKER,
-      key: 'UI-a119',
-      tmux_session: 'bdui-inquiry',
-      window_name: 'UI-a119',
-      cwd: '/tmp',
-      commandArgs: [],
-      ...(placement ? { placement } : {})
-    });
-  return {
-    calls,
-    launcher,
-    launch,
-    newWindow: () => calls.find((call) => call[0] === 'new-window') ?? []
-  };
-}
-
-describe('tmux-launcher user placement (UI-a119 §3.1)', () => {
-  test('opens a click window in the most recently attached user session', async () => {
-    const tmux = placementTmux({
-      sessions: ':bdui-inquiry\n100:work\n300:dev\n',
-      panes: [{ session_name: 'bdui-inquiry', pane_id: '%1', pane_dead: '0' }]
-    });
-
-    const result = await tmux.launch('user');
-
-    expect(result).toEqual({
-      session: 'launched',
-      placement: 'user',
-      tmux_session: 'dev',
-      tmux_window: 'UI-a119',
-      pane_id: '%7'
-    });
-    expect(tmux.newWindow()[tmux.newWindow().indexOf('-t') + 1]).toBe('dev');
-  });
-
-  test('makes the user window current by omitting -d', async () => {
-    const tmux = placementTmux({ sessions: '300:dev\n' });
-
-    await tmux.launch('user');
-
-    expect(tmux.newWindow()).not.toContain('-d');
-  });
-
-  test('never creates or switches a session for a user window', async () => {
-    const tmux = placementTmux({ sessions: '300:dev\n' });
-
-    await tmux.launch('user');
-
-    expect(tmux.calls.map((call) => call[0])).toEqual([
-      'list-panes',
-      'list-sessions',
-      'new-window',
-      'list-panes'
-    ]);
-  });
-
-  test.each([
-    ['no attached user session', ':bdui-inquiry\n:claude-retry-1\n'],
-    ['a failed session listing', null]
-  ])(
-    'falls back to the inquiry session in the background on %s',
-    async (_case, sessions) => {
-      const tmux = placementTmux({
-        sessions,
-        panes: [{ session_name: 'bdui-inquiry', pane_id: '%1', pane_dead: '0' }]
-      });
-
-      const result = await tmux.launch('user');
-
-      expect(result).toMatchObject({
-        session: 'launched',
-        placement: 'inquiry',
-        tmux_session: 'bdui-inquiry'
-      });
-      expect(tmux.newWindow()).toContain('-d');
-      expect(tmux.newWindow()[tmux.newWindow().indexOf('-t') + 1]).toBe(
-        'bdui-inquiry'
-      );
-    }
-  );
-
-  test('keeps an automatic launch off the session listing', async () => {
-    const tmux = placementTmux({
-      sessions: '300:dev\n',
-      panes: [{ session_name: 'bdui-inquiry', pane_id: '%1', pane_dead: '0' }]
-    });
-
-    const result = await tmux.launch();
-
-    expect(result).toMatchObject({
-      placement: 'inquiry',
-      tmux_session: 'bdui-inquiry'
-    });
-    expect(tmux.calls.map((call) => call[0])).not.toContain('list-sessions');
-    expect(tmux.newWindow()).toContain('-d');
-  });
-
-  test('selects the live window a click points at instead of opening one', async () => {
-    const tmux = placementTmux({
-      sessions: '300:dev\n',
-      panes: [
-        {
-          session_name: 'dev',
-          pane_id: '%4',
-          pane_dead: '0',
-          [INQUIRY_PANE_MARKER]: 'UI-a119'
-        }
-      ]
-    });
-
-    const result = await tmux.launch('user');
-
-    expect(result).toEqual({
-      session: 'already_running',
-      placement: 'user',
-      tmux_session: 'dev',
-      tmux_window: 'UI-a119',
-      pane_id: '%4'
-    });
-    expect(tmux.calls).toEqual([
-      ['list-panes', '-a', '-F', expect.any(String)],
-      ['select-window', '-t', '%4']
-    ]);
-  });
-
-  test('keeps the already-running reply when select-window fails', async () => {
-    const tmux = placementTmux({
-      select_code: 1,
-      panes: [
-        {
-          session_name: 'dev',
-          pane_id: '%4',
-          pane_dead: '0',
-          [INQUIRY_PANE_MARKER]: 'UI-a119'
-        }
-      ]
-    });
-
-    const result = await tmux.launch('user');
-
-    expect(result).toMatchObject({
-      session: 'already_running',
-      tmux_session: 'dev',
-      pane_id: '%4'
-    });
-  });
-
-  test('leaves the active window alone for an automatic duplicate', async () => {
-    const tmux = placementTmux({
-      panes: [
-        {
-          session_name: 'bdui-inquiry',
-          pane_id: '%4',
-          pane_dead: '0',
-          [INQUIRY_PANE_MARKER]: 'UI-a119'
-        }
-      ]
-    });
-
-    await tmux.launch();
-
-    expect(tmux.calls.map((call) => call[0])).toEqual(['list-panes']);
-  });
-
-  test('focuses a live window for a caller answering a click', async () => {
-    const tmux = placementTmux({
-      panes: [
-        {
-          session_name: 'bdui-inquiry',
-          pane_id: '%4',
-          pane_dead: '0',
-          [INQUIRY_PANE_MARKER]: 'UI-a119'
-        }
-      ]
-    });
-
-    const focused = await tmux.launcher.focusRunning({
-      marker: INQUIRY_PANE_MARKER,
-      key: 'UI-a119',
-      tmux_session: 'bdui-inquiry',
-      window_name: 'UI-a119',
-      placement: 'user'
-    });
-
-    expect(focused).toEqual({
-      ok: true,
-      outcome: {
-        session: 'already_running',
-        placement: 'inquiry',
-        tmux_session: 'bdui-inquiry',
-        tmux_window: 'UI-a119',
-        pane_id: '%4'
-      }
-    });
-    expect(tmux.calls.at(-1)).toEqual(['select-window', '-t', '%4']);
-  });
 });
 
 /** @type {string[]} */
@@ -860,20 +433,22 @@ afterEach(() => {
  */
 function codexLaunch(cwd, runner = 'codex') {
   const config_path = path.join(codex_home, 'config.toml');
-  let opened = false;
-  const runTmux = vi.fn(async (/** @type {string[]} */ args) => {
-    if (args[0] === 'new-window') {
-      opened = true;
-      return { code: 0, stdout: '%9\n', stderr: '' };
+  const runSessionHub = vi.fn(async (/** @type {string[]} */ args) => {
+    if (args[0] === 'find') {
+      return hubReply({ found: false });
     }
-    return {
-      code: 0,
-      stdout: opened ? 'bdui-inquiry:%9:0:UI-ohhr\n' : 'bdui-inquiry:%1:0:\n',
-      stderr: ''
-    };
+    if (args[0] === 'alive') {
+      return hubReply({ alive: 'alive' });
+    }
+    return hubReply({
+      status: 'launched',
+      tmux_session: 'bdui-inquiry',
+      window: 'UI-ohhr',
+      pane: '%9'
+    });
   });
   const launcher = createTmuxLauncher({
-    runTmux,
+    runSessionHub,
     resolveRunner: () => '/usr/bin/true'
   });
   const launch = () =>
@@ -886,7 +461,7 @@ function codexLaunch(cwd, runner = 'codex') {
       commandArgs: [],
       runner
     });
-  return { config_path, runTmux, launch };
+  return { config_path, runSessionHub, launch };
 }
 
 describe('tmux-launcher pane targeting', () => {
@@ -927,11 +502,11 @@ describe('tmux-launcher pane targeting', () => {
 
 describe('tmux-launcher Codex project trust', () => {
   test.each(['missing', 'existing'])(
-    'passes the absolute config home to tmux for a %s project entry',
+    'passes the absolute config home to the hub for a %s project entry',
     async (entry) => {
       codex_home = path.join(test_dir, 'codex home');
       vi.stubEnv('CODEX_HOME', path.relative(process.cwd(), codex_home));
-      const { launch, config_path, runTmux } = codexLaunch(test_dir);
+      const { launch, config_path, runSessionHub } = codexLaunch(test_dir);
       if (entry === 'existing') {
         fs.mkdirSync(codex_home);
         fs.writeFileSync(
@@ -944,9 +519,9 @@ describe('tmux-launcher Codex project trust', () => {
 
       expect(result.session).toBe('launched');
       const args =
-        runTmux.mock.calls.find(([call]) => call[0] === 'new-window')?.[0] ||
+        runSessionHub.mock.calls.find(([call]) => call[0] === 'open')?.[0] ||
         [];
-      expect(args[args.indexOf('-e') + 1]).toBe(`CODEX_HOME=${codex_home}`);
+      expect(args[args.indexOf('--env') + 1]).toBe(`CODEX_HOME=${codex_home}`);
       expect(parseToml(fs.readFileSync(config_path, 'utf8'))).toEqual({
         projects: { [test_dir]: { trust_level: 'trusted' } }
       });
@@ -954,23 +529,20 @@ describe('tmux-launcher Codex project trust', () => {
   );
 
   test('creates a private config for a non-Git launch directory', async () => {
-    const { launch, config_path, runTmux } = codexLaunch(test_dir);
-    runTmux.mockImplementationOnce(async () => ({
-      code: 0,
-      stdout: 'bdui-inquiry:%1:0:\n',
-      stderr: ''
-    }));
-    runTmux.mockImplementationOnce(async () => {
+    const { launch, config_path, runSessionHub } = codexLaunch(test_dir);
+    runSessionHub.mockResolvedValueOnce(hubReply({ found: false }));
+    runSessionHub.mockImplementationOnce(async () => {
       expect(parseToml(fs.readFileSync(config_path, 'utf8'))).toEqual({
         projects: { [test_dir]: { trust_level: 'trusted' } }
       });
-      return { code: 0, stdout: '%9\n', stderr: '' };
+      return hubReply({
+        status: 'launched',
+        tmux_session: 'bdui-inquiry',
+        window: 'UI-ohhr',
+        pane: '%9'
+      });
     });
-    runTmux.mockImplementationOnce(async () => ({
-      code: 0,
-      stdout: 'bdui-inquiry:%9:0:UI-ohhr\n',
-      stderr: ''
-    }));
+    runSessionHub.mockResolvedValueOnce(hubReply({ alive: 'alive' }));
 
     const result = await launch();
 
@@ -1092,7 +664,7 @@ describe('tmux-launcher Codex project trust', () => {
   });
 
   test('refuses to open a window when the config cannot be extended', async () => {
-    const { launch, config_path, runTmux } = codexLaunch(test_dir);
+    const { launch, config_path, runSessionHub } = codexLaunch(test_dir);
     fs.mkdirSync(codex_home);
     fs.writeFileSync(config_path, 'broken = [');
 
@@ -1102,7 +674,7 @@ describe('tmux-launcher Codex project trust', () => {
       session: 'not_launched',
       reason: 'launch_failed:codex_trust_setup'
     });
-    expect(runTmux.mock.calls.map(([args]) => args[0])).toEqual(['list-panes']);
+    expect(runSessionHub.mock.calls.map(([args]) => args[0])).toEqual(['find']);
     expect(fs.readFileSync(config_path, 'utf8')).toBe('broken = [');
   });
 });
@@ -1203,24 +775,21 @@ describe('tmux-launcher conversation flags (UI-jbl1 §3.4)', () => {
       );
       /** @type {string[][]} */
       const calls = [];
-      let opened = false;
       const launcher = createTmuxLauncher({
-        runTmux: async (args) => {
+        runSessionHub: async (args) => {
           calls.push(args);
-          if (args[0] === 'list-panes') {
-            return {
-              code: 0,
-              stdout: opened
-                ? `bdui-inquiry:%7:0:UI-jbl1\n`
-                : 'bdui-inquiry:%1:0:\n',
-              stderr: ''
-            };
+          if (args[0] === 'find') {
+            return hubReply({ found: false });
           }
-          if (args[0] === 'new-window') {
-            opened = true;
-            return { code: 0, stdout: '%7\n', stderr: '' };
+          if (args[0] === 'alive') {
+            return hubReply({ alive: 'alive' });
           }
-          return { code: 0, stdout: '', stderr: '' };
+          return hubReply({
+            status: 'launched',
+            tmux_session: 'bdui-inquiry',
+            window: 'resolve-UI-jbl1',
+            pane: '%7'
+          });
         },
         resolveRunner: () => '/usr/bin/claude',
         log: () => {}
@@ -1237,11 +806,17 @@ describe('tmux-launcher conversation flags (UI-jbl1 §3.4)', () => {
         placement: 'inquiry'
       });
 
-      const wrapper =
-        calls.find((call) => call[0] === 'new-window')?.at(-1) ?? '';
-      expect(wrapper).toContain(
-        "exec '/usr/bin/claude' '--model' 'sonnet' '--effort' 'high' '--session-id' 'sid' 'prompt'"
-      );
+      const opened = calls.find((call) => call[0] === 'open') ?? [];
+      expect(opened.slice(opened.indexOf('--') + 1)).toEqual([
+        '/usr/bin/claude',
+        '--model',
+        'sonnet',
+        '--effort',
+        'high',
+        '--session-id',
+        'sid',
+        'prompt'
+      ]);
     });
   });
 });

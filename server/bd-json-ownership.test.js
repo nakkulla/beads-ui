@@ -120,7 +120,8 @@ function filesMatching(pattern) {
 
 /**
  * Production files that reach the bd CLI: the bd module itself plus everything
- * importing from it.
+ * importing protocol helpers from it. A runShell-only import executes other
+ * CLIs too and does not make their JSON part of the bd protocol.
  *
  * Scoping the guards to this set keeps them from flagging code that parses a
  * different tool's stdout — `server/routes/*-usage.js` read `codex`/`claude`
@@ -130,8 +131,26 @@ function filesMatching(pattern) {
  */
 function bdConsumerFiles() {
   return filesMatching(/from '(\.{1,2}\/)+bd\.js'/)
+    .filter((file) =>
+      importsBdProtocol(readFileSync(path.join(REPO_ROOT, file), 'utf8'))
+    )
     .concat('server/bd.js')
     .sort();
+}
+
+/**
+ * Exclude imports of only the generic subprocess helper, preserving mixed,
+ * namespace and separate protocol imports in the ownership inventory.
+ *
+ * @param {string} source
+ * @returns {boolean}
+ */
+function importsBdProtocol(source) {
+  const protocol_source = source.replace(
+    /import\s*\{\s*runShell(?:\s+as\s+\w+)?\s*,?\s*\}\s*from '(\.{1,2}\/)+bd\.js'/g,
+    ''
+  );
+  return /from '(\.{1,2}\/)+bd\.js'/.test(protocol_source);
 }
 
 /**
@@ -147,6 +166,22 @@ function bdConsumersMatching(pattern) {
 }
 
 describe('bd JSON ownership', () => {
+  test.each([
+    ["import { runShell } from '../bd.js';", false],
+    ["import { runShell as execute, } from '../bd.js';", false],
+    ["import { runBdJsonProjected } from '../bd.js';", true],
+    ["import { runShell, runBdJsonProjected } from '../bd.js';", true],
+    ["import * as bd from '../bd.js';", true],
+    [
+      "import { runShell } from '../bd.js';\nimport { runBd } from '../bd.js';",
+      true
+    ]
+  ])('classifies protocol ownership for %s', (source, expected) => {
+    const result = importsBdProtocol(String(source));
+
+    expect(result).toBe(expected);
+  });
+
   test('includes the NUL-containing worker file in the inventory', () => {
     expect(productionFiles()).toContain('server/worker/revise-parked.js');
   });

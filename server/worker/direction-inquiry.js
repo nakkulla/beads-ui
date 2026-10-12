@@ -258,6 +258,7 @@ export function inquiryWrapper(input) {
  * @property {{ readIssue: (workspace: string, bead_id: string) => Promise<any> }} bd
  * @property {{ conversationConfirm?: (input: any) => Promise<unknown>|unknown }} notifier
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
+ * @property {import('./tmux-launcher.js').TmuxLauncherDeps['runSessionHub']} [runSessionHub]
  * @property {() => string|null} [resolveClaude]
  * @property {(runner: string) => string|null} [resolveRunner]
  * @property {(workspace: string, issue: any) => 'claude'|'codex'|null} [currentRunner]
@@ -291,6 +292,7 @@ export function createDirectionInquiry(deps) {
     deps.existsSync || ((/** @type {string} */ p) => fs.existsSync(p));
   const launcher = createTmuxLauncher({
     ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
+    ...(deps.runSessionHub ? { runSessionHub: deps.runSessionHub } : {}),
     ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
     ...(deps.resolveRunner ? { resolveRunner: deps.resolveRunner } : {}),
     ...(deps.statFile ? { statFile: deps.statFile } : {}),

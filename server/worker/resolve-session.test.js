@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { hubCommand, hubReply } from '../../test/session-hub.js';
 import { conversationLaunchFlags } from '../conversation-settings.js';
 import { CONVERSATION_ENTRY_BLOCK } from './direction-inquiry.js';
 import {
@@ -40,17 +41,13 @@ afterEach(() => {
 });
 
 /**
- * A marker-aware fake tmux. A pane row carries the marker it was written with,
- * and a listing only reports that pane's key when the `-F` format asks for the
- * SAME marker — which is what makes "the two session kinds do not share a
- * duplicate guard" testable at all.
+ * Hub JSON fixture that distinguishes the callers' marker namespaces.
  *
- * @param {{ panes?: Array<{ session?: string, pane?: string, marker?: string, key?: string, dead?: string }>, new_window?: { code: number, stdout?: string }, sessions?: string }} [script]
+ * @param {{ panes?: Array<{ session?: string, pane?: string, marker?: string, key?: string, dead?: string }>, attached_session?: string, open_error?: string }} [script]
  */
-function makeTmux(script = {}) {
+function makeHub(script = {}) {
   /** @type {string[][]} */
   const calls = [];
-  /** @type {Array<{ session: string, pane: string, marker: string, key: string, dead: string }>} */
   const panes = (script.panes ?? []).map((row) => ({
     session: row.session ?? 'bdui-inquiry',
     pane: row.pane ?? '%1',
@@ -58,51 +55,56 @@ function makeTmux(script = {}) {
     key: row.key ?? '',
     dead: row.dead ?? '0'
   }));
-  /**
-   * @param {string[]} args
-   */
+  /** @param {string[]} args */
   const runTmux = async (args) => {
     calls.push(args);
-    if (args[0] === 'list-panes') {
-      const format = args[args.indexOf('-F') + 1];
-      const body = panes
-        .map((row) =>
-          [
-            row.session,
-            row.pane,
-            row.dead,
-            format.includes(`#{${row.marker}}`) ? row.key : ''
-          ].join(':')
-        )
-        .join('\n');
-      return {
-        code: 0,
-        stdout: body.length > 0 ? `${body}\n` : '',
-        stderr: ''
-      };
-    }
-    if (args[0] === 'new-session') {
-      return { code: 0, stdout: '', stderr: '' };
-    }
-    if (args[0] === 'new-window') {
-      const opened = { code: 0, stdout: '%9\n', ...(script.new_window ?? {}) };
-      if (opened.code === 0) {
-        panes.push({
-          session: 'bdui-inquiry',
-          pane: '%9',
-          marker: '@bdui_resolve_bead',
-          key: BEAD,
-          dead: '0'
-        });
-      }
-      return { ...opened, stderr: '' };
-    }
-    if (args[0] === 'list-sessions' && script.sessions !== undefined) {
-      return { code: 0, stdout: script.sessions, stderr: '' };
-    }
-    return { code: 1, stdout: '', stderr: 'unknown command' };
+    return { code: 0, stdout: '', stderr: '' };
   };
-  return { calls, runTmux, names: () => calls.map((c) => c[0]) };
+  /** @param {string[]} args */
+  const runSessionHub = async (args) => {
+    calls.push(args);
+    const marker = args[args.indexOf('--marker-option') + 1];
+    const key = args[args.indexOf('--marker-value') + 1];
+    if (args[0] === 'find') {
+      const row = panes.find(
+        (row) => row.marker === marker && row.key === key && row.dead === '0'
+      );
+      return hubReply(
+        row
+          ? {
+              found: true,
+              tmux_session: row.session,
+              pane: row.pane,
+              window: `resolve-${BEAD}`
+            }
+          : { found: false }
+      );
+    }
+    if (args[0] === 'alive') {
+      return hubReply({ alive: 'alive' });
+    }
+    if (script.open_error) {
+      return hubReply({ code: script.open_error }, 2);
+    }
+    const attached = args.includes('--attached')
+      ? script.attached_session
+      : undefined;
+    const session =
+      attached ??
+      args[
+        args.indexOf(
+          args.includes('--attached') ? '--fallback-session' : '--session'
+        ) + 1
+      ];
+    panes.push({ session, pane: '%9', marker, key, dead: '0' });
+    return hubReply({
+      status: 'launched',
+      tmux_session: session,
+      pane: '%9',
+      window: args[args.indexOf('--window-name') + 1]
+    });
+  };
+  return { calls, runTmux, runSessionHub, names: () => calls.map((c) => c[0]) };
 }
 
 const CODEX_ROLLOUT = `rollout-2026-09-08T00-00-00-${SESSION_ID}.jsonl`;
@@ -171,13 +173,13 @@ const FLAG_CATALOG = {
 };
 
 /**
- * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
+ * @param {{ tmux?: ReturnType<typeof makeHub>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
  */
 function makeLauncher(input = {}) {
   // Each test states the settings it is about; the default keeps every
   // provider and adds no model/effort flag (UI-jbl1 §3.4 "따름").
   const settings = { ...INHERIT_SETTINGS, ...(input.settings ?? {}) };
-  const tmux = input.tmux ?? makeTmux();
+  const tmux = input.tmux ?? makeHub();
   const resolver = createResolveSession({
     getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
     existsSync: input.existsSync ?? (() => false),
@@ -187,6 +189,7 @@ function makeLauncher(input = {}) {
         (async () => ({ id: BEAD, metadata: input.metadata ?? {} }))
     },
     runTmux: tmux.runTmux,
+    runSessionHub: tmux.runSessionHub,
     resolveClaude: () => '/usr/local/bin/claude',
     resolveRunner:
       input.resolveRunner ??
@@ -607,7 +610,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       attempt: { attempt_id: 'a1', runner: 'claude', session_id: SESSION_ID }
     });
 
-    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.at(-1);
+    const wrapper = hubCommand(tmux.calls);
     const launch_id = wrapper?.match(/'--session-id' '([^']+)'/)?.[1];
     expect(launch_id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -664,7 +667,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       failure: FAILURE
     });
 
-    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.at(-1);
+    const wrapper = hubCommand(tmux.calls);
     expect(wrapper).toContain(
       `'${buildFailureEntry({
         failure: FAILURE,
@@ -694,9 +697,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       forked_from: null,
       attempt_id: null
     });
-    expect(
-      tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
-    ).toContain(
+    expect(hubCommand(tmux.calls)).toContain(
       `exec '/usr/local/bin/claude' '--session-id' '${record.session_id}'`
     );
   });
@@ -724,9 +725,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
         session_id_source: null,
         mode: fork ? 'fork' : 'fresh'
       });
-      const wrapper = tmux.calls
-        .find((call) => call[0] === 'new-window')
-        ?.at(-1);
+      const wrapper = hubCommand(tmux.calls);
       expect(wrapper).not.toContain('--session-id');
       expect(wrapper).toContain(
         fork
@@ -740,7 +739,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     const recordInteractiveSession = vi.fn();
     const { resolver } = makeLauncher({
       store: { recordInteractiveSession },
-      tmux: makeTmux({ panes: [{ key: BEAD, marker: '@bdui_resolve_bead' }] })
+      tmux: makeHub({ panes: [{ key: BEAD, marker: '@bdui_resolve_bead' }] })
     });
 
     const outcome = await resolver.resolve({
@@ -757,7 +756,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     const recordInteractiveSession = vi.fn();
     const { resolver } = makeLauncher({
       store: { recordInteractiveSession },
-      tmux: makeTmux({ new_window: { code: 1 } })
+      tmux: makeHub({ open_error: 'start_failed' })
     });
 
     const outcome = await resolver.resolve({
@@ -800,9 +799,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       failure: FAILURE
     });
 
-    const wrapper = (tmux.calls.find((c) => c[0] === 'new-window') || []).at(
-      -1
-    );
+    const wrapper = hubCommand(tmux.calls);
     expect([outcome.launched, outcome.mode, outcome.fallback_reason]).toEqual([
       true,
       'fork',
@@ -830,7 +827,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     );
   });
 
-  test('writes the resolve marker before it execs claude', async () => {
+  test('passes the resolve marker and unchanged runner argv to the hub', async () => {
     const { tmux, resolver } = makeLauncher({
       metadata: { session_ref: `claude:${SESSION_ID}@${HOST}` }
     });
@@ -842,12 +839,10 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       failure: FAILURE
     });
 
-    const wrapper = (tmux.calls.find((c) => c[0] === 'new-window') || []).at(
-      -1
-    );
+    const wrapper = hubCommand(tmux.calls);
     const launch_id = wrapper?.match(/'--session-id' '([^']+)'/)?.[1];
     expect(wrapper).toBe(
-      `tmux set-option -p -t "$TMUX_PANE" @bdui_resolve_bead '${BEAD}' && exec ` +
+      'exec ' +
         `'/usr/local/bin/claude' '--resume' '${SESSION_ID}' '--fork-session' '--session-id' '${launch_id}' ` +
         `'${buildFailureEntry({
           failure: FAILURE,
@@ -855,6 +850,18 @@ describe('createResolveSession (UI-jw27 §4)', () => {
           checkout: REPO
         })}'`
     );
+    const opened = tmux.calls.find((call) => call[0] === 'open') ?? [];
+    expect(
+      opened.slice(
+        opened.indexOf('--marker-option'),
+        opened.indexOf('--marker-value') + 2
+      )
+    ).toEqual([
+      '--marker-option',
+      '@bdui_resolve_bead',
+      '--marker-value',
+      BEAD
+    ]);
   });
 
   test('falls back to a fresh session when no session_ref exists', async () => {
@@ -867,9 +874,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       failure: FAILURE
     });
 
-    const wrapper = (tmux.calls.find((c) => c[0] === 'new-window') || []).at(
-      -1
-    );
+    const wrapper = hubCommand(tmux.calls);
     expect([outcome.launched, outcome.mode, outcome.fallback_reason]).toEqual([
       true,
       'fresh',
@@ -1002,7 +1007,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       failure: FAILURE
     });
 
-    const wrapper = tmux.calls.find((c) => c[0] === 'new-window')?.at(-1) ?? '';
+    const wrapper = hubCommand(tmux.calls);
     expect(wrapper).toContain(
       `exec '/usr/local/bin/codex' 'fork' '${SESSION_ID}'`
     );
@@ -1020,7 +1025,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       failure: FAILURE
     });
 
-    const wrapper = tmux.calls.find((c) => c[0] === 'new-window')?.at(-1) ?? '';
+    const wrapper = hubCommand(tmux.calls);
     expect(wrapper).toContain(
       `exec '/usr/local/bin/claude' '--resume' '${SESSION_ID}' '--fork-session'`
     );
@@ -1063,7 +1068,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
 
   test('opens no second window while one resolution session is alive', async () => {
     const { tmux, resolver } = makeLauncher({
-      tmux: makeTmux({
+      tmux: makeHub({
         panes: [
           { pane: '%3', marker: '@bdui_resolve_bead', key: BEAD, dead: '0' }
         ]
@@ -1078,12 +1083,12 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     });
 
     expect(outcome.session).toBe('already_running');
-    expect(tmux.names()).toEqual(['list-panes', 'select-window']);
+    expect(tmux.names()).toEqual(['find', 'select-window']);
   });
 
   test('opens the resolution window in the most recently attached user session', async () => {
     const { tmux, resolver } = makeLauncher({
-      tmux: makeTmux({ sessions: ':bdui-inquiry\n120:work\n300:dev\n' })
+      tmux: makeHub({ attached_session: 'dev' })
     });
 
     const outcome = await resolver.resolve({
@@ -1093,9 +1098,10 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       failure: FAILURE
     });
 
-    const args = tmux.calls.find((call) => call[0] === 'new-window') || [];
-    expect(args[args.indexOf('-t') + 1]).toBe('dev');
-    expect(args).not.toContain('-d');
+    const args = tmux.calls.find((call) => call[0] === 'open') || [];
+    expect(args).toContain('--attached');
+    expect(tmux.calls).toContainEqual(['select-window', '-t', '%9']);
+    expect(args).not.toContain('--focus');
     expect(outcome).toMatchObject({
       launched: true,
       placement: 'user',
@@ -1106,7 +1112,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
 
   test('reports where the live resolution window a click points at is', async () => {
     const { resolver } = makeLauncher({
-      tmux: makeTmux({
+      tmux: makeHub({
         panes: [
           {
             session: 'dev',
@@ -1153,7 +1159,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     ]);
 
     expect(
-      tmux.names().filter((/** @type {string} */ name) => name === 'new-window')
+      tmux.names().filter((/** @type {string} */ name) => name === 'open')
     ).toHaveLength(1);
     expect([first.session, second.session].sort()).toEqual([
       'already_running',
@@ -1163,7 +1169,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
 
   test('is not blocked by this bead direction-inquiry pane', async () => {
     const { tmux, resolver } = makeLauncher({
-      tmux: makeTmux({
+      tmux: makeHub({
         panes: [
           { pane: '%3', marker: '@bdui_inquiry_bead', key: BEAD, dead: '0' }
         ]
@@ -1179,16 +1185,16 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     });
 
     expect(outcome.launched).toBe(true);
-    expect(tmux.names()).toContain('new-window');
+    expect(tmux.names()).toContain('open');
   });
 
   test('reports a tmux it could not reach without launching', async () => {
     const tmux = {
       calls: /** @type {string[][]} */ ([]),
       /** @param {string[]} args */
-      runTmux: async (args) => {
+      runSessionHub: async (args) => {
         tmux.calls.push(args);
-        return { code: 1, stdout: '', stderr: 'no server running' };
+        return hubReply({ code: 'tmux_unavailable' }, 3);
       },
       names: () => tmux.calls.map((c) => c[0])
     };
@@ -1209,13 +1215,13 @@ describe('createResolveSession (UI-jw27 §4)', () => {
 });
 
 /**
- * The wrapper the launch handed `tmux new-window`.
+ * The runner argv the launch handed to session-hub.
  *
- * @param {ReturnType<typeof makeTmux>} tmux
+ * @param {ReturnType<typeof makeHub>} tmux
  * @returns {string}
  */
 function launchedWrapper(tmux) {
-  return tmux.calls.find((call) => call[0] === 'new-window')?.at(-1) ?? '';
+  return hubCommand(tmux.calls);
 }
 
 describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
@@ -1311,7 +1317,7 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
   test('opens the automatic placement in the detached inquiry session', async () => {
     const { resolver, tmux } = makeLauncher({
       metadata: {},
-      tmux: makeTmux({ sessions: '100:work\n' })
+      tmux: makeHub({ attached_session: 'dev' })
     });
 
     const outcome = await resolver.resolve({
@@ -1322,9 +1328,10 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
       placement: 'inquiry'
     });
 
-    const new_window = tmux.calls.find((call) => call[0] === 'new-window');
+    const new_window = tmux.calls.find((call) => call[0] === 'open');
     expect(outcome.placement).toBe('inquiry');
-    expect(new_window).toContain('-d');
+    expect(new_window).toContain('--session');
+    expect(new_window).not.toContain('--focus');
     expect(tmux.names()).not.toContain('list-sessions');
   });
 });
@@ -1416,16 +1423,15 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       failure
     });
 
-    const new_window =
-      tmux.calls.find((call) => call[0] === 'new-window') ?? [];
+    const new_window = tmux.calls.find((call) => call[0] === 'open') ?? [];
     expect(readIssue).not.toHaveBeenCalled();
     expect(outcome).toMatchObject({ launched: true, mode: 'fresh' });
-    expect(new_window[new_window.indexOf('-c') + 1]).toBe(REPO);
-    expect(new_window[new_window.indexOf('-n') + 1]).toBe(
+    expect(new_window[new_window.indexOf('--cwd') + 1]).toBe(REPO);
+    expect(new_window[new_window.indexOf('--window-name') + 1]).toBe(
       'resolve-repo-op-op-1'
     );
-    expect(launchedWrapper(tmux)).toContain('@bdui_resolve_bead');
-    expect(launchedWrapper(tmux)).toContain("'repo-op:op-1'");
+    expect(new_window).toContain('@bdui_resolve_bead');
+    expect(new_window).toContain('repo-op:op-1');
     expect(launchedWrapper(tmux)).toContain('- 구현 워크트리: (없음)');
     expect(launchedWrapper(tmux)).toContain(
       '- 대화 사유: 실패 수동 배포 실패 · script_failed'

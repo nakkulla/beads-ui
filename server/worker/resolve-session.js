@@ -637,6 +637,7 @@ export function failedDiscardOperation(queue, bead_id) {
  * @property {() => any} getConfig - Runtime config accessor (server/config.js).
  * @property {{ readIssue: (workspace: string, bead_id: string) => Promise<any> }} bd
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
+ * @property {import('./tmux-launcher.js').TmuxLauncherDeps['runSessionHub']} [runSessionHub]
  * @property {() => string|null} [resolveClaude]
  * @property {(runner: string) => string|null} [resolveRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
@@ -718,6 +719,7 @@ export function createResolveSession(deps) {
     deps.existsSync || ((/** @type {string} */ p) => fs.existsSync(p));
   const launcher = createTmuxLauncher({
     ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
+    ...(deps.runSessionHub ? { runSessionHub: deps.runSessionHub } : {}),
     ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
     ...(deps.resolveRunner ? { resolveRunner: deps.resolveRunner } : {}),
     ...(deps.statFile ? { statFile: deps.statFile } : {}),

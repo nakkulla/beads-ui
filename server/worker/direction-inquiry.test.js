@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { hubCommand, hubReply } from '../../test/session-hub.js';
 import {
   CONVERSATION_ENTRY_BLOCK,
   createDirectionInquiry,
@@ -41,90 +42,110 @@ afterEach(() => {
 });
 
 /**
- * A fake tmux runner. Records every argv and answers from a scripted table
- * keyed by the tmux command; the two `list-panes` reads (liveness, then marker
- * confirmation) can be scripted independently.
- *
- * `panes_seq` replaces the two-stage pair when a case needs more than two
- * reads — the click path probes the marker itself before the launcher's own
- * liveness read. The last entry repeats for any further `list-panes`.
+ * Script hub observations independently from tmux focus and startup inspection.
  *
  * @param {{
  *   panes?: string[][],
  *   panes_after?: string[][],
  *   panes_seq?: string[][][],
  *   list_code?: number,
- *   new_session?: { code: number, stdout?: string, stderr?: string },
- *   new_window?: { code: number, stdout?: string, stderr?: string },
- *   sessions?: string,
+ *   open_error?: string,
+ *   attached_session?: string,
  *   throw_on?: string
  * }} [script]
  */
-function makeTmux(script = {}) {
+function makeHub(script = {}) {
   /** @type {string[][]} */
   const calls = [];
   let listed = 0;
-  /**
-   * @param {string[][]} rows
-   * @returns {string}
-   */
-  const render = (rows) =>
-    rows
-      .map(([session, pane, key, dead]) => [session, pane, dead, key].join(':'))
-      .join('\n') + (rows.length > 0 ? '\n' : '');
-  /**
-   * @param {string[]} args
-   */
+  function readRows() {
+    listed += 1;
+    const sequence = script.panes_seq;
+    return sequence
+      ? (sequence[Math.min(listed, sequence.length) - 1] ?? [])
+      : listed === 1
+        ? (script.panes ?? [])
+        : (script.panes_after ?? []);
+  }
+  /** @param {string[]} args */
   const runTmux = async (args) => {
     calls.push(args);
-    if (script.throw_on && args[0] === script.throw_on) {
-      throw new Error(`tmux ${args[0]} exploded`);
-    }
     if (args[0] === 'list-panes') {
-      listed += 1;
-      if (typeof script.list_code === 'number' && script.list_code !== 0) {
+      if (script.list_code) {
         return {
           code: script.list_code,
           stdout: '',
-          stderr: 'no server running'
+          stderr: 'socket unreadable'
         };
       }
-      const sequence = script.panes_seq;
-      const rows = sequence
-        ? (sequence[Math.min(listed, sequence.length) - 1] ?? [])
-        : listed === 1
-          ? (script.panes ?? [])
-          : (script.panes_after ?? []);
-      return { code: 0, stdout: render(rows), stderr: '' };
-    }
-    if (args[0] === 'new-session') {
-      return { code: 0, stdout: '', stderr: '', ...(script.new_session ?? {}) };
-    }
-    if (args[0] === 'new-window') {
       return {
         code: 0,
-        stdout: '%9\n',
         stderr: '',
-        ...(script.new_window ?? {})
+        stdout: readRows()
+          .map(([session, pane, key, dead]) =>
+            [session, pane, dead, key].join(':')
+          )
+          .join('\n')
       };
     }
-    if (args[0] === 'list-sessions' && script.sessions !== undefined) {
-      return { code: 0, stdout: script.sessions, stderr: '' };
-    }
-    if (args[0] === 'select-window') {
-      return { code: 0, stdout: '', stderr: '' };
-    }
-    return { code: 1, stdout: '', stderr: 'unknown command' };
+    return { code: 0, stdout: '', stderr: '' };
   };
-  /** @returns {string} */
-  const wrapper = () =>
-    calls.find((call) => call[0] === 'new-window')?.at(-1) ?? '';
-  return { calls, runTmux, names: () => calls.map((c) => c[0]), wrapper };
+  /** @param {string[]} args */
+  const runSessionHub = async (args) => {
+    calls.push(args);
+    if (args[0] === script.throw_on) {
+      throw new Error('session-hub unavailable');
+    }
+    if (script.list_code) {
+      return hubReply({ code: 'tmux_unavailable' }, 3);
+    }
+    const key = args[args.indexOf('--marker-value') + 1];
+    if (args[0] === 'find') {
+      const row = readRows().find((row) => row[2] === key && row[3] === '0');
+      return hubReply(
+        row
+          ? { found: true, tmux_session: row[0], pane: row[1], window: BEAD }
+          : { found: false }
+      );
+    }
+    if (args[0] === 'alive') {
+      const pane = args[args.indexOf('--pane') + 1];
+      const row = readRows().find(
+        (row) => row[1] === pane && row[2] === key && row[3] === '0'
+      );
+      return hubReply({ alive: row ? 'alive' : 'dead' });
+    }
+    if (script.open_error) {
+      return hubReply({ code: script.open_error }, 2);
+    }
+    const attached = args.includes('--attached')
+      ? script.attached_session
+      : undefined;
+    return hubReply({
+      status: 'launched',
+      pane: '%9',
+      window: args[args.indexOf('--window-name') + 1],
+      tmux_session:
+        attached ??
+        args[
+          args.indexOf(
+            args.includes('--attached') ? '--fallback-session' : '--session'
+          ) + 1
+        ]
+    });
+  };
+  return {
+    calls,
+    runTmux,
+    runSessionHub,
+    names: () => calls.map((c) => c[0]),
+    wrapper: () => hubCommand(calls)
+  };
 }
 
-/** A tmux script whose launch confirms the new pane. */
-function launchingTmux() {
-  return makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] });
+/** A hub script whose launch confirms the new pane. */
+function launchingHub() {
+  return makeHub({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] });
 }
 
 const NOTES = [
@@ -219,7 +240,7 @@ const INHERIT_SETTINGS = {
  * Build a launcher with fake tmux/bd runners and an enabled config.
  *
  * @param {{
- *   tmux?: ReturnType<typeof makeTmux>,
+ *   tmux?: ReturnType<typeof makeHub>,
  *   enabled?: boolean,
  *   readIssue?: any,
  *   statFile?: any,
@@ -239,7 +260,7 @@ const INHERIT_SETTINGS = {
  * }} [over]
  */
 function makeInquiry(over = {}) {
-  const tmux = over.tmux || makeTmux();
+  const tmux = over.tmux || makeHub();
   const resolveClaude =
     over.resolveClaude || (() => '/opt/homebrew/bin/claude');
   const conversationConfirm = vi.fn(async () => true);
@@ -253,6 +274,7 @@ function makeInquiry(over = {}) {
     bd: { readIssue: over.readIssue || (async () => issue()) },
     notifier: { conversationConfirm },
     runTmux: tmux.runTmux,
+    runSessionHub: tmux.runSessionHub,
     resolveClaude,
     resolveRunner:
       over.resolveRunner ||
@@ -430,7 +452,7 @@ describe('direction-inquiry sentences', () => {
 
 describe('direction-inquiry same-session launch', () => {
   test('resumes the Codex attempt session without a fork', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const recordInteractiveSession = vi.fn();
     const { inquiry } = makeInquiry({
       tmux,
@@ -453,7 +475,7 @@ describe('direction-inquiry same-session launch', () => {
   });
 
   test('resumes the Claude attempt session without a new session id', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({
       tmux,
       readAttempt: async () =>
@@ -471,17 +493,17 @@ describe('direction-inquiry same-session launch', () => {
   });
 
   test('opens the conversation in the attempt worktree', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(recoveryInput());
 
-    const args = tmux.calls.find((call) => call[0] === 'new-window') || [];
-    expect(args[args.indexOf('-c') + 1]).toBe(WORKTREE);
+    const args = tmux.calls.find((call) => call[0] === 'open') || [];
+    expect(args[args.indexOf('--cwd') + 1]).toBe(WORKTREE);
   });
 
   test('sends only the filled entry block as the first input', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(recoveryInput());
@@ -499,7 +521,7 @@ describe('direction-inquiry same-session launch', () => {
   test('records a resume conversation with its stop label', async () => {
     const recordInteractiveSession = vi.fn();
     const { inquiry } = makeInquiry({
-      tmux: launchingTmux(),
+      tmux: launchingHub(),
       store: { recordInteractiveSession }
     });
 
@@ -535,7 +557,7 @@ describe('direction-inquiry same-session launch', () => {
   });
 
   test('fills the park sentence from the notes', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(parkedInput());
@@ -546,7 +568,7 @@ describe('direction-inquiry same-session launch', () => {
   });
 
   test('fills the recovery sentence from the attempt summary', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({
       tmux,
       readAttempt: async () =>
@@ -559,7 +581,7 @@ describe('direction-inquiry same-session launch', () => {
   });
 
   test('labels a legacy recovery stop as an old record', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(
@@ -586,7 +608,7 @@ describe('direction-inquiry fresh fallback', () => {
     async (reason, record, provider) => {
       const recordInteractiveSession = vi.fn();
       const { inquiry } = makeInquiry({
-        tmux: launchingTmux(),
+        tmux: launchingHub(),
         readAttempt: async () => record,
         store: { recordInteractiveSession }
       });
@@ -603,7 +625,7 @@ describe('direction-inquiry fresh fallback', () => {
   );
 
   test('opens a fresh session in the checkout when the worktree is gone', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const recordInteractiveSession = vi.fn();
     const { inquiry } = makeInquiry({
       tmux,
@@ -621,7 +643,7 @@ describe('direction-inquiry fresh fallback', () => {
   });
 
   test('passes only the block to a fresh Codex session', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({
       tmux,
       readAttempt: async () => attempt({ session_id: null })
@@ -635,7 +657,7 @@ describe('direction-inquiry fresh fallback', () => {
   });
 
   test('gives a fresh Claude session its own id', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const recordInteractiveSession = vi.fn();
     const { inquiry } = makeInquiry({
       tmux,
@@ -656,7 +678,7 @@ describe('direction-inquiry fresh fallback', () => {
   test('opens a fresh fallback on the configured runtime', async () => {
     const recordInteractiveSession = vi.fn();
     const { inquiry } = makeInquiry({
-      tmux: launchingTmux(),
+      tmux: launchingHub(),
       readAttempt: async () => attempt({ session_id: null }),
       conversationSettings: () => ({
         ...INHERIT_SETTINGS,
@@ -676,7 +698,7 @@ describe('direction-inquiry fresh fallback', () => {
   test('keeps the attempt runtime for its own session over the setting', async () => {
     const recordInteractiveSession = vi.fn();
     const { inquiry } = makeInquiry({
-      tmux: launchingTmux(),
+      tmux: launchingHub(),
       conversationSettings: () => ({
         ...INHERIT_SETTINGS,
         fresh_runtime: 'claude'
@@ -696,7 +718,7 @@ describe('direction-inquiry fresh fallback', () => {
     const currentRunner = vi.fn(() => /** @type {const} */ ('codex'));
     const recordInteractiveSession = vi.fn();
     const { inquiry } = makeInquiry({
-      tmux: launchingTmux(),
+      tmux: launchingHub(),
       readAttempt: async () => attempt({ runner: null }),
       currentRunner,
       store: { recordInteractiveSession }
@@ -712,7 +734,7 @@ describe('direction-inquiry runner liveness', () => {
   const identity = { pid: 42, pgid: 42, started_at: 5000 };
 
   test('refuses while the attempt runner is still alive', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({
       tmux,
       readAttempt: async () => attempt({ process_identity: identity }),
@@ -728,7 +750,7 @@ describe('direction-inquiry runner liveness', () => {
       session: 'not_launched',
       reason: 'runner_alive'
     });
-    expect(tmux.names()).not.toContain('new-window');
+    expect(tmux.names()).not.toContain('open');
   });
 
   test('refuses when the runner cannot be observed', async () => {
@@ -745,7 +767,7 @@ describe('direction-inquiry runner liveness', () => {
 
   test('launches once the runner process is gone', async () => {
     const { inquiry } = makeInquiry({
-      tmux: launchingTmux(),
+      tmux: launchingHub(),
       readAttempt: async () => attempt({ process_identity: identity }),
       observeProcess: () => ({ ok: false, reason: 'process_gone' })
     });
@@ -757,7 +779,7 @@ describe('direction-inquiry runner liveness', () => {
 
   test('launches when the pid was recycled by another process', async () => {
     const { inquiry } = makeInquiry({
-      tmux: launchingTmux(),
+      tmux: launchingHub(),
       readAttempt: async () => attempt({ process_identity: identity }),
       observeProcess: () => ({
         ok: true,
@@ -773,7 +795,7 @@ describe('direction-inquiry runner liveness', () => {
 
 describe('direction-inquiry handoff reservation', () => {
   test('refuses a click while the bead holds a handoff reservation', async () => {
-    const tmux = makeTmux({
+    const tmux = makeHub({
       panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
     });
     const recordInteractiveSession = vi.fn();
@@ -791,12 +813,12 @@ describe('direction-inquiry handoff reservation', () => {
       reason: 'handoff_pending'
     });
     expect(handoffPending).toHaveBeenCalledWith('/ws', BEAD);
-    expect(tmux.names()).not.toContain('new-window');
+    expect(tmux.names()).not.toContain('open');
     expect(recordInteractiveSession).not.toHaveBeenCalled();
   });
 
   test('refuses an automatic launch while the bead holds a handoff reservation', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({ tmux, handoffPending: () => true });
 
     const outcome = await inquiry.onParkedAttempt(recoveryInput());
@@ -805,12 +827,12 @@ describe('direction-inquiry handoff reservation', () => {
       session: 'not_launched',
       reason: 'handoff_pending'
     });
-    expect(tmux.names()).not.toContain('new-window');
+    expect(tmux.names()).not.toContain('open');
   });
 
   test('launches once no handoff reservation is pending', async () => {
     const { inquiry } = makeInquiry({
-      tmux: launchingTmux(),
+      tmux: launchingHub(),
       handoffPending: () => false
     });
 
@@ -823,7 +845,7 @@ describe('direction-inquiry handoff reservation', () => {
 describe('direction-inquiry confirm notification', () => {
   test('announces a launched automatic conversation', async () => {
     const { inquiry, conversationConfirm } = makeInquiry({
-      tmux: launchingTmux(),
+      tmux: launchingHub(),
       readAttempt: async () =>
         attempt({ cause_detail: { summary: 'blocker: 범위 밖' } })
     });
@@ -858,7 +880,7 @@ describe('direction-inquiry confirm notification', () => {
   });
 
   test('reads the stored shared switch over a disabled config', async () => {
-    const tmux = launchingTmux();
+    const tmux = launchingHub();
     const { inquiry } = makeInquiry({
       tmux,
       enabled: false,
@@ -883,7 +905,7 @@ describe('direction-inquiry confirm notification', () => {
 
   test('stays silent when the caller already spent the notification', async () => {
     const { inquiry, conversationConfirm } = makeInquiry({
-      tmux: launchingTmux()
+      tmux: launchingHub()
     });
 
     await inquiry.onParkedAttempt(parkedInput({ confirm: false }));
@@ -893,7 +915,7 @@ describe('direction-inquiry confirm notification', () => {
 
   test('sends nothing for a click', async () => {
     const { inquiry, conversationConfirm } = makeInquiry({
-      tmux: makeTmux({
+      tmux: makeHub({
         panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
       })
     });
@@ -906,7 +928,7 @@ describe('direction-inquiry confirm notification', () => {
 
 describe('direction-inquiry click', () => {
   test('launches from a click while automatic launch is disabled', async () => {
-    const tmux = makeTmux({
+    const tmux = makeHub({
       panes_seq: [
         [['bdui-inquiry', '%1', '', '0']],
         [['bdui-inquiry', '%1', '', '0']],
@@ -921,7 +943,7 @@ describe('direction-inquiry click', () => {
   });
 
   test('opens a credential recovery under its own reason', async () => {
-    const tmux = makeTmux({
+    const tmux = makeHub({
       panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
     });
     const { inquiry } = makeInquiry({ tmux });
@@ -934,7 +956,7 @@ describe('direction-inquiry click', () => {
   });
 
   test('opens a clicked non-target recovery under its own reason', async () => {
-    const tmux = makeTmux({
+    const tmux = makeHub({
       panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
     });
     const { inquiry } = makeInquiry({ tmux });
@@ -947,7 +969,7 @@ describe('direction-inquiry click', () => {
   });
 
   test('points a click at the live conversation pane it observed', async () => {
-    const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
+    const tmux = makeHub({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
     const readIssue = vi.fn(async () => issue());
     const { inquiry } = makeInquiry({ tmux, readIssue });
 
@@ -962,17 +984,18 @@ describe('direction-inquiry click', () => {
   });
 
   test('opens a clicked conversation as the user session current window', async () => {
-    const tmux = makeTmux({
-      sessions: ':bdui-inquiry\n300:dev\n',
+    const tmux = makeHub({
+      attached_session: 'dev',
       panes_seq: [[], [], [['dev', '%9', BEAD, '0']]]
     });
     const { inquiry } = makeInquiry({ tmux });
 
     const outcome = await inquiry.launchForClick(parkedInput());
 
-    const args = tmux.calls.find((call) => call[0] === 'new-window') || [];
-    expect(args[args.indexOf('-t') + 1]).toBe('dev');
-    expect(args).not.toContain('-d');
+    const args = tmux.calls.find((call) => call[0] === 'open') || [];
+    expect(args).toContain('--attached');
+    expect(tmux.calls).toContainEqual(['select-window', '-t', '%9']);
+    expect(args).not.toContain('--focus');
     expect(outcome).toMatchObject({
       session: 'launched',
       placement: 'user',
@@ -982,8 +1005,8 @@ describe('direction-inquiry click', () => {
   });
 
   test('keeps the automatic conversation in the inquiry session background', async () => {
-    const tmux = makeTmux({
-      sessions: '300:dev\n',
+    const tmux = makeHub({
+      attached_session: 'dev',
       panes: [['bdui-inquiry', '%1', '', '0']],
       panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
     });
@@ -991,9 +1014,9 @@ describe('direction-inquiry click', () => {
 
     const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    const args = tmux.calls.find((call) => call[0] === 'new-window') || [];
-    expect(args[args.indexOf('-t') + 1]).toBe('bdui-inquiry');
-    expect(args).toContain('-d');
+    const args = tmux.calls.find((call) => call[0] === 'open') || [];
+    expect(args[args.indexOf('--session') + 1]).toBe('bdui-inquiry');
+    expect(args).not.toContain('--focus');
     expect(tmux.names()).not.toContain('list-sessions');
     expect(outcome).toMatchObject({
       placement: 'inquiry',
@@ -1002,7 +1025,7 @@ describe('direction-inquiry click', () => {
   });
 
   test('makes the live conversation window current on a click', async () => {
-    const tmux = makeTmux({ panes: [['dev', '%1', BEAD, '0']] });
+    const tmux = makeHub({ panes: [['dev', '%1', BEAD, '0']] });
     const { inquiry } = makeInquiry({ tmux });
 
     const outcome = await inquiry.launchForClick(parkedInput());
@@ -1016,7 +1039,7 @@ describe('direction-inquiry click', () => {
   });
 
   test('refuses a click when the pane marker cannot be read', async () => {
-    const tmux = makeTmux({ list_code: 1 });
+    const tmux = makeHub({ list_code: 1 });
     const { inquiry } = makeInquiry({ tmux });
 
     const outcome = await inquiry.launchForClick(parkedInput());
@@ -1032,7 +1055,7 @@ describe('direction-inquiry click', () => {
     const gate = new Promise((resolve) => {
       release = () => resolve(undefined);
     });
-    const tmux = makeTmux({
+    const tmux = makeHub({
       panes_seq: [
         [['bdui-inquiry', '%1', '', '0']],
         [['bdui-inquiry', '%1', '', '0']],
@@ -1069,9 +1092,9 @@ describe('direction-inquiry click', () => {
   });
 });
 
-describe('direction-inquiry tmux lifecycle', () => {
-  test('lists, creates the session, opens the window, then confirms the marker', async () => {
-    const tmux = makeTmux({
+describe('direction-inquiry session-hub lifecycle', () => {
+  test('finds, opens and confirms the marked window through the hub', async () => {
+    const tmux = makeHub({
       panes: [['dev', '%1', '', '0']],
       panes_after: [
         ['dev', '%1', '', '0'],
@@ -1082,17 +1105,12 @@ describe('direction-inquiry tmux lifecycle', () => {
 
     const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    expect(tmux.names()).toEqual([
-      'list-panes',
-      'new-session',
-      'new-window',
-      'list-panes'
-    ]);
+    expect(tmux.names()).toEqual(['find', 'open', 'alive']);
     expect(outcome?.session).toBe('launched');
   });
 
-  test('skips new-session when the conversation session already exists', async () => {
-    const tmux = makeTmux({
+  test('uses the same hub path when the inquiry session already exists', async () => {
+    const tmux = makeHub({
       panes: [['bdui-inquiry', '%1', 'UI-other', '0']],
       panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
     });
@@ -1100,24 +1118,24 @@ describe('direction-inquiry tmux lifecycle', () => {
 
     await inquiry.onParkedAttempt(parkedInput());
 
-    expect(tmux.names()).toEqual(['list-panes', 'new-window', 'list-panes']);
+    expect(tmux.names()).toEqual(['find', 'open', 'alive']);
   });
 
-  test('reports launch_failed:new_session when the session is still absent', async () => {
-    const tmux = makeTmux({
+  test('reports the hub start failure', async () => {
+    const tmux = makeHub({
       panes: [['dev', '%1', '', '0']],
       panes_after: [['dev', '%1', '', '0']],
-      new_session: { code: 1, stderr: 'no server running' }
+      open_error: 'start_failed'
     });
     const { inquiry } = makeInquiry({ tmux });
 
     const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    expect(outcome?.reason).toBe('launch_failed:new_session');
+    expect(outcome?.reason).toBe('launch_failed:exited');
   });
 
   test('reports launch_failed:exited when the new pane is already gone', async () => {
-    const tmux = makeTmux({
+    const tmux = makeHub({
       panes: [['bdui-inquiry', '%1', '', '0']],
       panes_after: [['bdui-inquiry', '%1', '', '0']]
     });
@@ -1145,7 +1163,7 @@ describe('direction-inquiry tmux lifecycle', () => {
 
   test('keeps the launched outcome when the store rejects a record', async () => {
     const { inquiry } = makeInquiry({
-      tmux: launchingTmux(),
+      tmux: launchingHub(),
       store: {
         recordInteractiveSession: () => {
           throw new Error('unavailable');
@@ -1161,19 +1179,19 @@ describe('direction-inquiry tmux lifecycle', () => {
 
 describe('direction-inquiry liveness', () => {
   test('does not relaunch while a live pane carries the same bead', async () => {
-    const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
+    const tmux = makeHub({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
     const { inquiry, conversationConfirm } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(parkedInput());
 
-    expect(tmux.names()).toEqual(['list-panes']);
+    expect(tmux.names()).toEqual(['find']);
     expect(conversationConfirm).toHaveBeenCalledWith(
       expect.objectContaining({ session: 'already_running' })
     );
   });
 
   test('treats a dead pane as no live session and launches', async () => {
-    const tmux = makeTmux({
+    const tmux = makeHub({
       panes: [['bdui-inquiry', '%1', BEAD, '1']],
       panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
     });
@@ -1181,26 +1199,26 @@ describe('direction-inquiry liveness', () => {
 
     await inquiry.onParkedAttempt(parkedInput());
 
-    expect(tmux.names()).toContain('new-window');
+    expect(tmux.names()).toContain('open');
   });
 
   test('refuses to launch when tmux cannot be reached', async () => {
-    const tmux = makeTmux({ list_code: 1 });
+    const tmux = makeHub({ list_code: 1 });
     const { inquiry } = makeInquiry({ tmux });
 
     const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    expect(tmux.names()).toEqual(['list-panes']);
+    expect(tmux.names()).toEqual(['find']);
     expect(outcome?.reason).toBe('tmux_unavailable');
   });
 
-  test('refuses to launch when the tmux runner throws', async () => {
-    const tmux = makeTmux({ throw_on: 'list-panes' });
+  test('refuses to launch when the hub runner throws', async () => {
+    const tmux = makeHub({ throw_on: 'find' });
     const { inquiry } = makeInquiry({ tmux });
 
     const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    expect(outcome?.reason).toBe('tmux_unavailable');
+    expect(outcome?.reason).toBe('launch_failed:session_hub_unavailable');
   });
 });
 
@@ -1228,7 +1246,7 @@ describe('direction-inquiry refusals', () => {
   });
 
   test('refuses launch_failed:codex_not_found when codex is off PATH', async () => {
-    const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', '', '0']] });
+    const tmux = makeHub({ panes: [['bdui-inquiry', '%1', '', '0']] });
     const { inquiry } = makeInquiry({ tmux, resolveRunner: () => null });
 
     const outcome = await inquiry.onParkedAttempt(parkedInput());
@@ -1239,7 +1257,7 @@ describe('direction-inquiry refusals', () => {
 
 describe('direction-inquiry bridge observation', () => {
   test('reports the bridge active on a fresh heartbeat', async () => {
-    const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
+    const tmux = makeHub({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
     const { inquiry } = makeInquiry({
       tmux,
       statFile: () => ({ mtimeMs: 90_000 }),
@@ -1252,7 +1270,7 @@ describe('direction-inquiry bridge observation', () => {
   });
 
   test('reports the bridge inactive when the heartbeat cannot be read', async () => {
-    const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
+    const tmux = makeHub({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
     const { inquiry } = makeInquiry({
       tmux,
       statFile: () => {
@@ -1268,7 +1286,7 @@ describe('direction-inquiry bridge observation', () => {
 
 describe('direction-inquiry concurrency', () => {
   test('serializes concurrent calls for the same bead to one launch', async () => {
-    const tmux = makeTmux({
+    const tmux = makeHub({
       panes: [['bdui-inquiry', '%1', '', '0']],
       panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
     });
@@ -1279,7 +1297,7 @@ describe('direction-inquiry concurrency', () => {
       inquiry.onParkedAttempt(parkedInput())
     ]);
 
-    expect(tmux.names().filter((n) => n === 'new-window')).toHaveLength(1);
+    expect(tmux.names().filter((n) => n === 'open')).toHaveLength(1);
     expect(conversationConfirm).toHaveBeenCalledTimes(1);
   });
 });
@@ -1341,13 +1359,14 @@ describe('direction-inquiry no-throw contract', () => {
 
 describe('direction-inquiry probeTmux', () => {
   test('logs the reachable pane count when enabled', async () => {
-    const tmux = makeTmux({ panes: [['dev', '%1', '', '0']] });
+    const tmux = makeHub({ panes: [['dev', '%1', '', '0']] });
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
     const inquiry = createDirectionInquiry({
       getConfig: () => ({ worker_direction_inquiry: { enabled: true } }),
       bd: { readIssue: async () => issue() },
       notifier: {},
       runTmux: tmux.runTmux,
+      runSessionHub: tmux.runSessionHub,
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
       now: () => 0,
@@ -1364,12 +1383,13 @@ describe('direction-inquiry probeTmux', () => {
   });
 
   test('touches nothing when the feature is off', async () => {
-    const tmux = makeTmux();
+    const tmux = makeHub();
     const inquiry = createDirectionInquiry({
       getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
       bd: { readIssue: async () => issue() },
       notifier: {},
       runTmux: tmux.runTmux,
+      runSessionHub: tmux.runSessionHub,
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
       now: () => 0,
