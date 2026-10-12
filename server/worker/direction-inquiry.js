@@ -66,7 +66,7 @@ const ABSENT = '(없음)';
  * The first input of every Worker session conversation — 멈춤, 실패 and
  * 외부 작업 완료 alike (UI-18a5 §3.3) — quoted verbatim from dotfiles
  * `src/shared/skills/flow/workflow/references/execution-common.md`
- * (`## Worker 세션 대화`, commit `3b7a309fc5e01601325323e889b0f7e103b7a4d0`),
+ * (`## Worker 세션 대화`, commit `eff1c2f8fab51c8523d4b2c477bbba80d4e3e1a8`),
  * with no trailing newline. This is the TEMPLATE: beads-ui fills only the
  * conversation reason, the situation, and the two paths; `<원문>`,
  * `<결정 한 줄>` and `<한 줄>` belong to the session. beads-ui adds no
@@ -82,7 +82,7 @@ export const CONVERSATION_ENTRY_BLOCK = [
   '- target_base 체크아웃: <path>',
   '',
   '절차',
-  '1. 무엇이 막혔거나 끝났고 사용자가 무엇을 정해야 하는지 한 문단으로 요약하고, 선택지와 권고를 붙여 묻는다. 질문 도구가 있으면 쓰고, 없으면 산문으로 묻고 턴을 끝낸다. 턴이 끝나면 사용자 차례다.',
+  '1. 무엇이 막혔거나 끝났고 사용자가 무엇을 정해야 하는지 한 문단으로 요약하고, 선택지와 권고를 붙여 한 번만 묻는다. 답을 기다리는 질문 도구가 있으면 그것으로 묻고, 없으면 산문으로 묻고 턴을 끝낸다. 답을 기다리지 않는 비동기 질문 도구는 쓰지 않고, 도구로 물은 질문을 산문으로 다시 묻지 않는다. 턴이 끝나면 사용자 차례다.',
   '   - 실패 대화이면 묻기 전에 원인을 읽기 전용으로 진단한다. 허용: 기록된 로그·실패 기록·Bead·git 상태 읽기, 원격 호스트의 읽기 조회(예: 서비스 `status`, 로그 `tail`, `ps`). 금지: 파일·서비스·Worker 큐·Bead·원격 상태를 바꾸는 명령, 실패 단계 재실행·재시도, 잠금 획득. 쓰기는 세션 임시 디렉터리 안에서만 한다.',
   '   - 실패 대화의 요약에는 관찰한 사실, 원인 추정과 확신 정도, 선택지와 권고를 붙여 묻는다.',
   '2. 답이 결정을 주면 notes에 `대화 결정: <대화 사유> — 사용자 답: <원문>` 한 줄을 남긴다. Bead 없는 저장소 작업 행이면 이 줄을 건너뛰고 결정은 결과 줄에만 남긴다. 결정을 확인하는 데 필요한 읽기·진단·워크트리 안 로컬 수정·로컬 검증은 이 대화에서 해도 된다.',
