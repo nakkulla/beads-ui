@@ -78,9 +78,6 @@ const ROWS_LOADING = '저장소 목록을 불러오는 중입니다';
 const HOLD = '__bulk_hold__';
 /** What that option is called, by the observation that put it there. */
 const HOLD_LABEL = { mixed: '갈림 — 유지', pending: '미확인 — 유지' };
-/** The one-line contract every tab carries under `적용 대상` (§3.2). */
-const APPLY_BANNER =
-  '화면에 값이 선 행은 손대지 않아도 그대로 쓰입니다 — 갈림·미확인으로 남은 행만 저장소별 현재 값을 유지합니다.';
 /**
  * Hint next to one tab's preset select (§4.1). The count is that tab's own row
  * count — a preset fills the tab it was chosen on and nothing else (§6.2).
@@ -1549,6 +1546,12 @@ export function createBulkPane(host, options) {
     const disabled = running !== null;
     const mode_observation = observeLimitField(runner, 'mode');
     const mode_hold = holdOf(`${runner}.mode`, mode_observation);
+    // A settled `기다림` never switches, so the allow set and the threshold have
+    // nothing to drive; a split or unread mode stays live because some
+    // repositories may still switch.
+    const switch_off = mode_hold === null && form.mode === 'wait';
+    const switch_locked = disabled || switch_off;
+    const switch_dim = switch_off ? ' settings-dialog__row--off' : '';
     const accounts_observation = observeLimitAccounts(runner);
     const accounts_hold = holdOf(`${runner}.accounts`, accounts_observation);
     const preempt_observation = observeLimitField(runner, 'preempt');
@@ -1642,7 +1645,7 @@ export function createBulkPane(host, options) {
           ${badgeTemplate(`${runner}.mode`, mode_observation)}
         </span>
       </div>
-      <div class="settings-dialog__row">
+      <div class=${`settings-dialog__row${switch_dim}`}>
         <span class="settings-dialog__row-label">전환 허용 계정</span>
         <span class="settings-dialog__controls settings-dialog__bulk-accounts">
           ${(provider?.accounts || []).map(
@@ -1655,7 +1658,7 @@ export function createBulkPane(host, options) {
                   .checked=${live(
                     accounts_hold === null && form.accounts.includes(row.key)
                   )}
-                  ?disabled=${disabled}
+                  ?disabled=${switch_locked}
                   @change=${(/** @type {Event} */ ev) =>
                     toggleAccount(
                       row.key,
@@ -1673,7 +1676,7 @@ export function createBulkPane(host, options) {
                   data-bulk-limit-account=${key}
                   data-runner=${runner}
                   .checked=${live(true)}
-                  ?disabled=${disabled}
+                  ?disabled=${switch_locked}
                   @change=${(/** @type {Event} */ ev) =>
                     toggleAccount(
                       key,
@@ -1693,7 +1696,7 @@ export function createBulkPane(host, options) {
                 type="button"
                 class="op-btn"
                 data-bulk-limit-accounts-release=${runner}
-                ?disabled=${disabled}
+                ?disabled=${switch_locked}
                 @click=${() => {
                   edited.delete(`${runner}.accounts`);
                   doRender();
@@ -1705,14 +1708,14 @@ export function createBulkPane(host, options) {
           ${badgeTemplate(`${runner}.accounts`, accounts_observation)}
         </span>
       </div>
-      <div class="settings-dialog__row">
+      <div class=${`settings-dialog__row${switch_dim}`}>
         <span class="settings-dialog__row-label">선제 전환</span>
         <span class="settings-dialog__controls">
           <select
             class="ui-select ui-select--bare"
             aria-label=${`${label} 선제 전환`}
             data-bulk-preempt=${runner}
-            ?disabled=${disabled}
+            ?disabled=${switch_locked}
             @change=${(/** @type {Event} */ ev) => {
               const next = String(
                 /** @type {HTMLSelectElement} */ (ev.target).value
@@ -1754,7 +1757,7 @@ export function createBulkPane(host, options) {
             aria-label=${`${label} 선제 전환 기준(%)`}
             data-bulk-preempt-pct=${runner}
             .value=${live(form.pct_text)}
-            ?disabled=${disabled ||
+            ?disabled=${switch_locked ||
             preempt_hold !== null ||
             form.preempt !== 'pct'}
             @input=${(/** @type {Event} */ ev) => {
@@ -1844,9 +1847,7 @@ export function createBulkPane(host, options) {
     observeForms();
     render(
       html`<div class="settings-dialog__bulk" data-bulk-section=${section}>
-        ${targetsTemplate()}
-        <p class="settings-dialog__banner" data-bulk-banner>${APPLY_BANNER}</p>
-        ${sectionTemplate()} ${resultsTemplate()}
+        ${targetsTemplate()} ${sectionTemplate()} ${resultsTemplate()}
       </div>`,
       host
     );

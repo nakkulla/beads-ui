@@ -272,7 +272,7 @@ afterEach(() => {
 });
 
 describe('createBulkPane targets (UI-nu43 §3.2)', () => {
-  test('selects the repositories whose automation is on', () => {
+  test('selects every visible repository whatever its automation state', () => {
     const { host, pane } = setup({
       rows: [
         row(),
@@ -283,7 +283,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
     pane.render('worker');
 
     expect(el(host, `[data-bulk-repo="${WS_A}"]`).checked).toBe(true);
-    expect(el(host, `[data-bulk-repo="${WS_B}"]`).checked).toBe(false);
+    expect(el(host, `[data-bulk-repo="${WS_B}"]`).checked).toBe(true);
   });
 
   test('restores the default selection on a fresh mount', () => {
@@ -354,29 +354,18 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
     expect(el(host, `[data-bulk-repo="${WS_A}"]`).checked).toBe(true);
   });
 
-  test('warns on both tabs that the visible values are the ones written', () => {
+  test('draws no apply banner under the targets', () => {
     const { host, pane } = setup();
-    pane.render('worker');
-    const worker_banner = el(host, '[data-bulk-banner]').textContent.trim();
 
     pane.render('account');
 
-    expect(worker_banner).toBe(
-      '화면에 값이 선 행은 손대지 않아도 그대로 쓰입니다 — 갈림·미확인으로 남은 행만 저장소별 현재 값을 유지합니다.'
-    );
-    expect(el(host, '[data-bulk-banner]').textContent.trim()).toBe(
-      worker_banner
-    );
+    expect(host.querySelector('.settings-dialog__banner')).toBe(null);
   });
 
   test('takes every visible repository from the 전체 box', () => {
-    const { host, pane } = setup({
-      rows: [
-        row(),
-        row({ root_dir: WS_B, name: 'repo-b', auto_advance: false })
-      ]
-    });
+    const { host, pane } = setup();
     pane.render('worker');
+    tick(host, '[data-bulk-all]', false);
 
     tick(host, '[data-bulk-all]', true);
 
@@ -414,11 +403,10 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
   });
 
   test('leaves 전체 unchecked while no repository is selected', () => {
-    const { host, pane } = setup({
-      rows: [row({ auto_advance: false })]
-    });
-
+    const { host, pane } = setup({ rows: [row()] });
     pane.render('worker');
+
+    tick(host, `[data-bulk-repo="${WS_A}"]`, false);
 
     expect(el(host, '[data-bulk-all]').checked).toBe(false);
     expect(el(host, '[data-bulk-all]').indeterminate).toBe(false);
@@ -923,6 +911,71 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
 
   test('keeps the allow account boxes editable', async () => {
     const { host, pane } = setup();
+
+    pane.render('account');
+    await settle();
+
+    expect(
+      el(
+        host,
+        '[data-runner="claude"][data-bulk-limit-account="a@example.com"]'
+      ).disabled
+    ).toBe(false);
+  });
+
+  test('locks the allow accounts and the preemptive switch on 기다림', async () => {
+    const { host, pane } = setup();
+    pane.render('account');
+    await settle();
+
+    click(
+      host,
+      '[data-bulk-limit-mode-runner="claude"] [data-bulk-limit-mode="wait"]'
+    );
+
+    expect(
+      el(
+        host,
+        '[data-runner="claude"][data-bulk-limit-account="a@example.com"]'
+      ).disabled
+    ).toBe(true);
+    expect(el(host, '[data-bulk-preempt="claude"]').disabled).toBe(true);
+  });
+
+  test('dims the allow and preemptive rows on 기다림', async () => {
+    const { host, pane } = setup();
+    pane.render('account');
+    await settle();
+
+    click(
+      host,
+      '[data-bulk-limit-mode-runner="claude"] [data-bulk-limit-mode="wait"]'
+    );
+
+    const rows = el(host, '[data-bulk-limit="claude"]').querySelectorAll(
+      '.settings-dialog__row'
+    );
+    expect(
+      Array.from(rows, (node) =>
+        /** @type {Element} */ (node).classList.contains(
+          'settings-dialog__row--off'
+        )
+      )
+    ).toEqual([false, true, true]);
+  });
+
+  test('keeps the allow accounts live while the mode is split', async () => {
+    const { host, pane } = setup({
+      rows: [
+        row({
+          provider_limit_policy: {
+            claude: { mode: 'wait', accounts: [], preempt_pct: null },
+            codex: { mode: 'switch', accounts: [], preempt_pct: null }
+          }
+        }),
+        row({ root_dir: WS_B, name: 'repo-b' })
+      ]
+    });
 
     pane.render('account');
     await settle();

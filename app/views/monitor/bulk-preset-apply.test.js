@@ -73,7 +73,7 @@ function formValues(kv = {}) {
 }
 
 describe('defaultSelectedRoots', () => {
-  test('selects only rows with auto_advance true', () => {
+  test('selects every row whatever its automation state', () => {
     const rows = [
       row({ root_dir: '/repo/a', auto_advance: true }),
       row({ root_dir: '/repo/b', auto_advance: false })
@@ -81,18 +81,7 @@ describe('defaultSelectedRoots', () => {
 
     const selected = defaultSelectedRoots(rows);
 
-    expect(selected).toEqual(['/repo/a']);
-  });
-
-  test('keeps a row with automation off in the caller rows array', () => {
-    const rows = [
-      row({ root_dir: '/repo/a', auto_advance: true }),
-      row({ root_dir: '/repo/b', auto_advance: false })
-    ];
-
-    defaultSelectedRoots(rows);
-
-    expect(rows).toHaveLength(2);
+    expect(selected).toEqual(['/repo/a', '/repo/b']);
   });
 });
 

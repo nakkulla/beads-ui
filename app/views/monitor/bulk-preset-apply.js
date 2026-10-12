@@ -110,15 +110,15 @@ function isSelected(selected_roots, root_dir) {
 }
 
 /**
- * Initial selection — 절을 처음 열 때 고르는 것은 `auto_advance`가 켜진
- * 저장소다 (§3.1). 자동화가 꺼진 저장소는 목록에 남되 선택되지 않는다.
+ * Initial selection — 절을 처음 열 때 보이는 저장소 전체를 고른다
+ * (UI-5z8j). `auto_advance`는 초기 선택을 가르지 않는다.
  *
  * @param {Array<Record<string, any>>} rows
  * @returns {string[]}
  */
 export function defaultSelectedRoots(rows) {
   return (Array.isArray(rows) ? rows : [])
-    .filter((row) => isRecord(row) && row.auto_advance === true)
+    .filter((row) => isRecord(row))
     .map((row) => String(row.root_dir));
 }
 
