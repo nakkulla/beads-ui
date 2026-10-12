@@ -6,6 +6,9 @@ scope:
   - server/ws/connection.js
   - server/workspace-discovery.js
   - server/registry-watcher.js
+  - server/health.js
+  - server/worker/runtime.js
+  - server/ws/worker-handlers.js
   - app/index.html
   - app/main.js
   - app/styles/
@@ -34,6 +37,8 @@ scope:
 - 상태를 바꾸는 POST 경로는 워커 큐·외부 대기·계정 전환·작업 공간 등록이다 — `server/app.js:171-190`
 - 작업 공간은 설정의 `default_workspace`·`workspaces`·`scan_roots`, `POST /api/register-workspace`, `~/.beads/registry.json` 감시에서 모인다 — `server/config.js:83-84`, `server/app.js:190`, `server/index.js:172`
 - 서버는 시작할 때마다 워커 런타임을 띄운다 — `server/index.js:243`
+- 워커 런타임은 처음 필요할 때 만들어지는 프로세스 단일 객체이고, 만들어지면 외부 대기 관찰자도 시작한다. `/healthz`의 워커 상태와 `subscribe-worker-queue`가 이것을 부른다 — `server/worker/runtime.js:158`, `:483`, `server/health.js:90`
+- 보드 구독 응답은 계정 목록(`account_catalog`: 이메일·별칭)을 싣는다 — `server/ws/worker-handlers.js:303`, `:350`, `:3487`, `:4608`
 - Origin 검사는 같은 Origin을 허용하고 추가 허용은 `BDUI_ALLOWED_ORIGINS`로 받는다 — `server/ws/connection.js:197-215`, launchd plist 환경 변수
 
 ## 3. 설계
@@ -72,7 +77,13 @@ scope:
 - 작업 공간 고정: `default_workspace` 하나만 쓴다. `workspaces`, `scan_roots`, registry 감시,
   `register-workspace`를 무시한다. `set-workspace`는 그 작업 공간일 때만 받는다. `default_workspace`가
   없거나 `.beads`가 없으면 서버가 시작하지 않는다.
-- 워커 런타임을 띄우지 않는다. 스케줄러, 큐, 에이전트 실행이 없다.
+- 결정: 보기 전용 모드에서는 워커 런타임이 한 번도 만들어지지 않는다. 시작 때 초기화하지 않을 뿐 아니라,
+  허용된 요청이 런타임을 부르는 경로도 막는다. `/healthz`의 워커 상태는 런타임 없이 만든 고정값
+  (`viewer_mode: true`, 실행 중인 시도 없음)으로 답한다. `subscribe-worker-queue`는 런타임 없이 고정 작업
+  공간의 이슈 스냅샷만으로 만든 보드 응답을 보낸다. 이 응답에는 시도·배치·대기 항목이 비어 있고 계정 필드가
+  없다. 보드는 이 응답과 이슈 구독만으로 카드를 그린다. 스케줄러, 큐, 외부 대기 관찰자, 에이전트 실행이 없다.
+- 결정: 보기 전용 응답에는 계정 정보가 실리지 않는다. 보드 응답의 `account_catalog`와 계정 식별 필드(이메일,
+  별칭, 계정 홈), 사용량은 처음 응답과 이후 갱신 모두에서 빠진다.
 
 ## 4. 검증
 
@@ -82,7 +93,10 @@ scope:
 - HTTP: 보기 전용 모드에서 모든 POST와 금지 GET이 403이고, 허용 GET은 200이다.
 - 작업 공간: 보기 전용 모드에서 `list-workspaces`가 고정 작업 공간 하나만 돌려준다. registry 파일이나
   `scan_roots`가 있어도 같다.
-- 워커: 보기 전용 모드에서 워커 런타임 초기화가 호출되지 않는다.
+- 워커: 보기 전용 모드에서 허용된 메시지 종류를 모두 한 번씩 보내고 `/healthz`를 부른 뒤에도 워커 런타임
+  단일 객체가 만들어지지 않았고 외부 대기 관찰자가 시작되지 않았다.
+- 계정: 로컬 계정 목록이 채워진 상태에서 보기 전용 모드의 보드 구독 처음 응답과 이후 갱신에 `account_catalog`와
+  계정 식별 필드가 없다.
 - 화면: `display_name`·`notice`·`viewer_mode`를 켠 인스턴스에서 보드·상세·ADR이 `read_only` 오류 없이
   그려진다(e2e). 1440×900 캡처로 이름과 띠를 확인한다.
 - `npm test`, `npm run lint`, 타입 검사 통과.
@@ -99,6 +113,9 @@ scope:
     HTTP 라우터, 작업 공간 탐색, researchline 공개 데모 배치다. 새 메시지를 더할 때마다 허용 목록 판단이 따라와야 한다.
   - 코드만 봐서는 알 수 없음: 기존 설계는 "인증 없음, tailnet 격리로 충분"이다(`server/ws/connection.js:242`).
     인터넷에 노출되는 인스턴스를 허용 목록으로만 연다는 경계는 기록이 없으면 다음 기능 추가 때 깨진다.
+  - 실제 절충: 금지 목록은 지금 손이 덜 가지만, 새 조작 메시지가 생길 때마다 빠뜨리면 공개 인스턴스에서 바로 조작이
+    열린다. 허용 목록은 새 읽기 기능마다 허용 여부를 판단하고 목록을 고쳐야 하는 비용을 진다. 공개 노출에서는
+    빠뜨림의 결과가 조작 가능이냐 화면 일부 빈칸이냐로 갈리므로 비용을 감수한다.
   - 새 주제: 가장 가까운 현재 ADR은 UI-u6ud(데이터 계층)이다. 그것은 읽기 경로만 다루고 노출 경계는 다루지 않는다.
   - `summary`: "보기 전용 모드(viewer_mode)는 서버가 WebSocket·HTTP 허용 목록, 작업 공간 하나 고정, 워커 미기동으로 강제하며 허용 목록에 없는 메시지 종류는 기본으로 거부된다; 화면 쪽 숨김은 편의일 뿐이다" → ADR
 - 제품 이름과 안내 띠를 설정 값으로 둔다 — 되돌리기 쉬운 표시 설정이다 → ADR 아님
