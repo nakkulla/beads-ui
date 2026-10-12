@@ -287,6 +287,25 @@ function foreignHandoffContext(bead_id, cause, stage, foreign) {
 }
 
 /**
+ * The `정리 중단` failure context of one `cleanup_failed` record.
+ *
+ * @param {any} cleanup
+ * @returns {ResolveFailureContext}
+ */
+function cleanupFailureContext(cleanup) {
+  return {
+    failure_class: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+    reason: typeof cleanup.reason === 'string' ? cleanup.reason : '원인 미상',
+    stage: typeof cleanup.step === 'string' ? cleanup.step : null,
+    detail: typeof cleanup.detail === 'string' ? cleanup.detail : null,
+    log_path:
+      typeof cleanup.log_path === 'string' && cleanup.log_path.length > 0
+        ? cleanup.log_path
+        : null
+  };
+}
+
+/**
  * The terminal failure a 실패 row's `[세션에서 이어가기]` click is about, read
  * off the queue snapshot the click was validated against.
  *
@@ -411,16 +430,7 @@ export function resolveFailureContext(queue, bead_id, foreign = null) {
   }
   const cleanup = queue?.cleanup_failed?.[bead_id];
   if (cleanup && typeof cleanup === 'object') {
-    return {
-      failure_class: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
-      reason: typeof cleanup.reason === 'string' ? cleanup.reason : '원인 미상',
-      stage: typeof cleanup.step === 'string' ? cleanup.step : null,
-      detail: typeof cleanup.detail === 'string' ? cleanup.detail : null,
-      log_path:
-        typeof cleanup.log_path === 'string' && cleanup.log_path.length > 0
-          ? cleanup.log_path
-          : null
-    };
+    return cleanupFailureContext(cleanup);
   }
   const discard = failedDiscardOperation(queue, bead_id);
   if (discard) {
@@ -1227,7 +1237,13 @@ export function createFailureConversationLauncher(deps) {
      * failure, a cleanup stop no completion intent drives, a merge-gate hold,
      * a pre-merge verify-failure hold, or a discard failure.
      *
-     * @param {{ workspace: string, repo?: string|null, bead_id: string }} input
+     * `cleanup_at` names the `cleanup_failed` record a `정리 중단` launch is
+     * for: while that record is still the Bead's current one, the
+     * conversation opens on it rather than on an older completion terminal
+     * the default selection reads first. A record replaced since falls back
+     * to the default selection.
+     *
+     * @param {{ workspace: string, repo?: string|null, bead_id: string, cleanup_at?: number }} input
      * @returns {Promise<AutoLaunchOutcome>}
      */
     async launchForBead(input) {
@@ -1253,7 +1269,14 @@ export function createFailureConversationLauncher(deps) {
       } catch (err) {
         log('foreign observation read failed for %s: %o', input.bead_id, err);
       }
-      const failure = resolveFailureContext(queue, input.bead_id, foreign);
+      const cleanup = queue?.cleanup_failed?.[input.bead_id];
+      const failure =
+        typeof input.cleanup_at === 'number' &&
+        cleanup &&
+        typeof cleanup === 'object' &&
+        cleanup.at === input.cleanup_at
+          ? cleanupFailureContext(cleanup)
+          : resolveFailureContext(queue, input.bead_id, foreign);
       if (!failure) {
         return notLaunched('no_terminal_failure');
       }

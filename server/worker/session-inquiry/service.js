@@ -192,7 +192,9 @@ export function createSessionInquiryRuntime(deps) {
       cwd: row.cwd,
       commandArgs: ['--resume', row.session_id, sessionInquiryFirstInput(row)],
       runner: 'claude',
-      placement
+      placement,
+      // The resumed session keeps its own model and effort (UI-gske §3.2).
+      conversation_flags: false
     });
     if (outcome.session === 'launched') {
       const at = now();
@@ -271,6 +273,11 @@ export function createSessionInquiryRuntime(deps) {
    */
   async function reconcileRow(row) {
     const ref = await probeRef(row);
+    // An observation error proves nothing: this pass changes nothing and the
+    // next one looks again (UI-gske §3.2).
+    if (ref === 'unknown') {
+      return;
+    }
     if (ref === 'absent') {
       const moved = deps.store.transitionSessionInquiry(
         deps.workspace,
@@ -399,6 +406,15 @@ export function createSessionInquiryRuntime(deps) {
       }
       const command = `claude --resume ${row.session_id}`;
       const liveness = await deps.ownerLiveness('claude', row.session_id);
+      // The liveness verdict is about the session id checked; a row closed or
+      // re-registered meanwhile is not the row this verdict may act on.
+      const latest = rowOf(id);
+      if (!latest || !isOpenInquiry(latest)) {
+        return answer('inquiry_closed', null);
+      }
+      if (latest.session_id !== row.session_id) {
+        return answer('session_replaced', null);
+      }
       recordLiveness(row, liveness);
       if (liveness.state === 'alive') {
         if (liveness.owner_tmux) {
@@ -429,7 +445,7 @@ export function createSessionInquiryRuntime(deps) {
           command
         });
       }
-      return resume(row, 'user');
+      return resume(latest, 'user');
     },
 
     /**

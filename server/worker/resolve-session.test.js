@@ -1608,4 +1608,84 @@ describe('automatic failure conversation (UI-jbl1 §3.1)', () => {
 
     expect(outcome).toMatchObject({ session: 'not_launched', reason: 'error' });
   });
+
+  describe('a 정리 중단 launch after an earlier terminal (UI-gske §3.5)', () => {
+    /** A needs_human terminal plus a newer cleanup stop at another step. */
+    function terminalThenCleanupQueue() {
+      return {
+        completion_intents: {
+          [BEAD]: {
+            phase: 'needs_human',
+            terminal_reason: {
+              reason: 'deploy_script_failure',
+              stage: 'repo_operations'
+            }
+          }
+        },
+        cleanup_failed: {
+          [BEAD]: {
+            step: 'branch_cleanup',
+            reason: 'local_branch_delete_failed',
+            at: 5,
+            detail: null
+          }
+        },
+        interactive_sessions: {},
+        attempts: {}
+      };
+    }
+
+    test('opens on the named cleanup record over the earlier terminal', async () => {
+      const { auto, resolve } = makeAuto({ queue: terminalThenCleanupQueue() });
+
+      await auto.launchForBead({
+        workspace: REPO,
+        repo: REPO,
+        bead_id: BEAD,
+        cleanup_at: 5
+      });
+
+      expect(resolve).toHaveBeenCalledWith(
+        expect.objectContaining({
+          failure: expect.objectContaining({
+            failure_class: '정리 중단',
+            stage: 'branch_cleanup',
+            reason: 'local_branch_delete_failed'
+          })
+        })
+      );
+    });
+
+    test('opens on the earlier terminal when no cleanup record is named', async () => {
+      const { auto, resolve } = makeAuto({ queue: terminalThenCleanupQueue() });
+
+      await auto.launchForBead({ workspace: REPO, repo: REPO, bead_id: BEAD });
+
+      expect(resolve).toHaveBeenCalledWith(
+        expect.objectContaining({
+          failure: expect.objectContaining({
+            failure_class: '배포 실패',
+            reason: 'deploy_script_failure'
+          })
+        })
+      );
+    });
+
+    test('falls back to the default selection when the named record was replaced', async () => {
+      const { auto, resolve } = makeAuto({ queue: terminalThenCleanupQueue() });
+
+      await auto.launchForBead({
+        workspace: REPO,
+        repo: REPO,
+        bead_id: BEAD,
+        cleanup_at: 4
+      });
+
+      expect(resolve).toHaveBeenCalledWith(
+        expect.objectContaining({
+          failure: expect.objectContaining({ failure_class: '배포 실패' })
+        })
+      );
+    });
+  });
 });

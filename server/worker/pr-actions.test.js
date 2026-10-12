@@ -6221,7 +6221,8 @@ describe('cleanup stop notification (UI-jw27 §2, UI-gske §3.5)', () => {
     expect(launchForBead).toHaveBeenCalledExactlyOnceWith({
       workspace: WS,
       repo: REPO,
-      bead_id: BEAD
+      bead_id: BEAD,
+      cleanup_at: h.store.snapshot(WS).cleanup_failed[BEAD].at
     });
     expect(h.human_notices).toEqual([
       expect.objectContaining({ conversation: { session: 'launched' } })

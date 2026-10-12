@@ -25,8 +25,9 @@ const LOCATION = {
  * Replace the CLI boundary, leaving launcher argument construction intact.
  *
  * @param {Record<string, any>} [script]
+ * @param {string[]} [flags] - The conversation settings' model/effort flags.
  */
-function makeHub(script = {}) {
+function makeHub(script = {}, flags = []) {
   const runSessionHub = vi.fn(async (/** @type {string[]} */ args) => {
     if (args[0] === 'find') {
       return hubReply(script.find ?? { found: false });
@@ -45,11 +46,53 @@ function makeHub(script = {}) {
     runSessionHub,
     runTmux,
     resolveRunner: () => '/bin/claude',
-    launchFlags: () => [],
+    launchFlags: () => flags,
     log: () => {}
   });
   return { launcher, runSessionHub, runTmux };
 }
+
+/**
+ * The argv after `--` of the hub `open` call.
+ *
+ * @param {import('vitest').Mock} runSessionHub
+ * @returns {string[]}
+ */
+function openedCommand(runSessionHub) {
+  const open = runSessionHub.mock.calls
+    .map(([args]) => /** @type {string[]} */ (args))
+    .find((args) => args[0] === 'open');
+  if (!open) {
+    throw new Error('open call missing');
+  }
+  return open.slice(open.indexOf('--') + 1);
+}
+
+describe('conversation model/effort flags', () => {
+  test('puts the conversation flags before the resume arguments', async () => {
+    const { launcher, runSessionHub } = makeHub({}, ['--model', 'opus']);
+
+    await launcher.launch(INPUT);
+
+    expect(openedCommand(runSessionHub)).toEqual([
+      '/bin/claude',
+      '--model',
+      'opus',
+      ...INPUT.commandArgs
+    ]);
+  });
+
+  test('leaves the conversation flags out when the launch declines them', async () => {
+    const { launcher, runSessionHub } = makeHub({}, ['--model', 'opus']);
+
+    await launcher.launch({ ...INPUT, conversation_flags: false });
+
+    expect(openedCommand(runSessionHub)).toEqual([
+      '/bin/claude',
+      ...INPUT.commandArgs
+    ]);
+  });
+});
 
 describe('session-hub interactive launch', () => {
   test('starts through the hub when no server or marked window exists', async () => {

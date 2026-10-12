@@ -923,6 +923,32 @@ function completionDrivesCleanup(queue, bead_id) {
 }
 
 /**
+ * Whether a completion terminal settles on the very `cleanup_failed` record the
+ * `정리 중단` announcer already pushed and opened: same Bead, same step, same
+ * recorded `at`, carrying `interruption_notified_at`. That record was announced
+ * while no completion intent drove it (auto-merge off); a terminal that later
+ * adopts it is the same failure identity and announces nothing again.
+ *
+ * @param {any} queue
+ * @param {string} bead_id
+ * @param {unknown} evidence - The raw cleanup record the terminal settled on.
+ * @returns {boolean}
+ */
+function cleanupStopAlreadyAnnounced(queue, bead_id, evidence) {
+  const record = queue?.cleanup_failed?.[bead_id];
+  if (
+    !record ||
+    typeof record.interruption_notified_at !== 'number' ||
+    evidence === null ||
+    typeof evidence !== 'object'
+  ) {
+    return false;
+  }
+  const settled_on = /** @type {any} */ (evidence);
+  return settled_on.at === record.at && settled_on.step === record.step;
+}
+
+/**
  * Build the `정리 중단` announcer (UI-gske §3.5, contract
  * `cleanup_interruption`): a `cleanup_failed` record no completion intent
  * drives is terminal the moment it is recorded, even with a `next_retry_at`,
@@ -940,7 +966,7 @@ function completionDrivesCleanup(queue, bead_id) {
  *   repo?: string|null,
  *   store: { snapshot: (workspace: string) => any, markCleanupInterruptionNotified: (workspace: string, input: { bead_id: string, at: number }) => { ok: boolean } },
  *   notify?: { needsHuman: (input: any) => Promise<void> }|null,
- *   failureConversation?: { launchForBead: (input: { workspace: string, repo: string|null, bead_id: string }) => Promise<any> }|null,
+ *   failureConversation?: { launchForBead: (input: { workspace: string, repo: string|null, bead_id: string, cleanup_at?: number }) => Promise<any> }|null,
  *   prUrlOf?: (bead_id: string) => string|null,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -988,11 +1014,14 @@ export function createCleanupInterruptionAnnouncer(deps) {
         log('cleanup interruption pr read failed for %s: %o', bead_id, err);
       }
       const run = async () => {
+        // The conversation opens on THIS record, not on an older completion
+        // terminal of the same Bead the default selection would pick first.
         const conversation = failure_conversation
           ? await failure_conversation.launchForBead({
               workspace: deps.workspace,
               repo: deps.repo ?? null,
-              bead_id
+              bead_id,
+              cleanup_at: record.at
             })
           : null;
         await failure_notify?.needsHuman({
@@ -1766,7 +1795,11 @@ export function createCompletionActionDriver(deps) {
       // THIS pass is what first made the terminal durable. A re-observation of
       // the same wall finds its earlier `comment_at` and is therefore silent,
       // which is what keeps a restart from replaying the whole board as pushes.
-      announceNeedsHuman(root_bead_id, intent, terminal, summary);
+      // A cleanup record the `정리 중단` announcer already claimed is the same
+      // failure identity: its push and conversation were already sent.
+      if (!cleanupStopAlreadyAnnounced(queue, root_bead_id, evidence)) {
+        announceNeedsHuman(root_bead_id, intent, terminal, summary);
+      }
     }
   }
 

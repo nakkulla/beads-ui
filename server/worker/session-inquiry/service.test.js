@@ -7,8 +7,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { hubReply } from '../../../test/session-hub.js';
 import { createQueueStore } from '../queue-store.js';
-import { EXTERNAL_RESUME_PANE_MARKER } from '../tmux-launcher.js';
+import {
+  EXTERNAL_RESUME_PANE_MARKER,
+  createTmuxLauncher
+} from '../tmux-launcher.js';
 import { REOPENED_LINE, sessionInquiryRowKey } from './contract.js';
 import {
   OWNER_ALIVE_MESSAGE,
@@ -72,10 +76,10 @@ function register(store, patch = {}) {
  * A runtime over `store` with every outside seam faked.
  *
  * @param {ReturnType<typeof createQueueStore>} store
- * @param {{ ref_code?: number, liveness?: import('../external-wait/session-resume.js').OwnerLiveness, switch_on?: boolean, launch?: any, focus?: any }} [options]
+ * @param {{ ref_code?: number, liveness?: import('../external-wait/session-resume.js').OwnerLiveness, duringLiveness?: () => void, switch_on?: boolean, launch?: any, focus?: any, launcher?: any }} [options]
  */
 function runtimeFor(store, options = {}) {
-  const launcher = {
+  const launcher = options.launcher || {
     launch: vi.fn(
       options.launch ||
         (async () => ({
@@ -97,9 +101,10 @@ function runtimeFor(store, options = {}) {
     bridgeActive: vi.fn(() => false)
   };
   const run = vi.fn(async () => ({ code: options.ref_code ?? 0 }));
-  const ownerLiveness = vi.fn(
-    async () => options.liveness || { state: 'dead', owner_tmux: null }
-  );
+  const ownerLiveness = vi.fn(async () => {
+    options.duringLiveness?.();
+    return options.liveness || { state: 'dead', owner_tmux: null };
+  });
   const notifyChanged = vi.fn();
   const runtime = createSessionInquiryRuntime({
     workspace: WS,
@@ -168,6 +173,22 @@ describe('session-inquiry reconcile: ref observation', () => {
       });
     }
   );
+
+  test('ends the pass without a liveness write or a resume when show-ref fails', async () => {
+    const store = createQueueStore();
+    const id = register(store);
+    const revision = store.snapshot(WS).revision;
+    const { runtime, launcher, ownerLiveness } = runtimeFor(store, {
+      ref_code: 128
+    });
+
+    await runtime.reconcile();
+
+    expect(ownerLiveness).not.toHaveBeenCalled();
+    expect(launcher.launch).not.toHaveBeenCalled();
+    expect(rowOf(store, id).auto_resume_consumed).toEqual([]);
+    expect(store.snapshot(WS).revision).toBe(revision);
+  });
 
   test('keeps a live conversation window when the ref disappears', async () => {
     const store = createQueueStore();
@@ -492,6 +513,81 @@ describe('session-inquiry click', () => {
 
     expect(launcher.launch).not.toHaveBeenCalled();
     expect(result.reason).toBe('inquiry_closed');
+  });
+
+  test('refuses a row closed while its liveness was checked', async () => {
+    const store = createQueueStore();
+    const id = register(store);
+    const { runtime, launcher } = runtimeFor(store, {
+      duringLiveness: () =>
+        store.transitionSessionInquiry(WS, id, { state: 'closed', at: NOW })
+    });
+
+    const result = await runtime.click(id);
+
+    expect(launcher.launch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      session: 'not_launched',
+      reason: 'inquiry_closed'
+    });
+  });
+
+  test('refuses a row whose session was replaced while its liveness was checked', async () => {
+    const store = createQueueStore();
+    const id = register(store);
+    const { runtime, launcher } = runtimeFor(store, {
+      duringLiveness: () => register(store, { session_id: SID_B })
+    });
+
+    const result = await runtime.click(id);
+
+    expect(rowOf(store, id).session_id).toBe(SID_B);
+    expect(launcher.launch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      session: 'not_launched',
+      reason: 'session_replaced'
+    });
+  });
+});
+
+describe('session-inquiry resume launch flags', () => {
+  test('resumes without the conversation model and effort flags', async () => {
+    const store = createQueueStore();
+    register(store);
+    const runSessionHub = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'find') {
+        return hubReply({ found: false });
+      }
+      if (args[0] === 'alive') {
+        return hubReply({ alive: 'alive' });
+      }
+      return hubReply({
+        status: 'launched',
+        tmux_session: 'bdui-inquiry',
+        window: '@9',
+        pane: '%9'
+      });
+    });
+    const launcher = createTmuxLauncher({
+      runSessionHub,
+      runTmux: vi.fn(async () => ({ code: 0, stdout: '', stderr: '' })),
+      resolveRunner: () => '/bin/claude',
+      launchFlags: () => ['--model', 'opus', '--effort', 'high'],
+      log: () => {}
+    });
+    const { runtime } = runtimeFor(store, { launcher });
+
+    await runtime.reconcile();
+
+    const open = runSessionHub.mock.calls
+      .map(([args]) => args)
+      .find((args) => args[0] === 'open');
+    expect(open?.slice(open.indexOf('--') + 1)).toEqual([
+      '/bin/claude',
+      '--resume',
+      SID_A,
+      expect.any(String)
+    ]);
   });
 });
 

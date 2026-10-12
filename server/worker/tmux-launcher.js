@@ -84,6 +84,9 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  * executable.
  * @property {string} [runner] - Which executable (default `claude`).
  * @property {LaunchPlacement} [placement] - Default `inquiry`.
+ * @property {boolean} [conversation_flags] - Default true; `false` launches
+ * without the conversation settings' model/effort flags, for a resume whose
+ * session keeps its own.
  */
 
 /**
@@ -804,7 +807,11 @@ export function createTmuxLauncher(deps = {}) {
       ...(codex_home === null ? [] : ['--env', `CODEX_HOME=${codex_home}`]),
       '--',
       executable,
-      ...withLaunchFlags(runner, input.commandArgs, launchFlags(runner))
+      ...withLaunchFlags(
+        runner,
+        input.commandArgs,
+        input.conversation_flags === false ? [] : launchFlags(runner)
+      )
     ]);
     if (!opened.ok) {
       return { session: 'not_launched', reason: opened.error };

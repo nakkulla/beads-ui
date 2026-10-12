@@ -3941,11 +3941,14 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
    * @param {string} step
    * @param {{ notify?: any, failureConversation?: any }} [overrides]
    * @param {string} [cleanup_reason] - The reason the cleanup record carries.
+   * @param {(store: ReturnType<typeof seededCompletionStore>) => void} [beforeDrive] - Runs
+   * on the recorded store before the driver first sees it.
    */
   async function terminalizeCleanupStep(
     step,
     overrides = {},
-    cleanup_reason = 'script_failed'
+    cleanup_reason = 'script_failed',
+    beforeDrive = () => {}
   ) {
     const store = seededCompletionStore();
     store.recordCleanupFailure(DRIVER_WS, {
@@ -3955,6 +3958,7 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
       output_tail: 'deploy exited 2',
       log_path: '/state/repo-operation-logs/op-9.log'
     });
+    beforeDrive(store);
     const merged_subject = {
       ...intent().subject,
       base_sha: 'c'.repeat(40),
@@ -4102,6 +4106,43 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
         next_action: '[세션에서 이어가기] 또는 [정리 재시도]'
       })
     ]);
+  });
+
+  test('sends no second 정리 중단 when the terminal adopts the record announced under auto-merge OFF', async () => {
+    const notify = makeNotify();
+    const launchForBead = vi.fn(async () => ({ session: 'launched' }));
+    /** @type {unknown} */
+    let announced_at = null;
+
+    const driven = await terminalizeCleanupStep(
+      'branch_cleanup',
+      { notify, failureConversation: { launchForBead } },
+      'script_failed',
+      (store) => {
+        store.toggleAutoMerge(DRIVER_WS, {
+          expected_revision: store.snapshot(DRIVER_WS).revision,
+          on: false
+        });
+        createCleanupInterruptionAnnouncer({
+          workspace: DRIVER_WS,
+          store,
+          notify,
+          failureConversation: { launchForBead }
+        }).announce('UI-root');
+        announced_at = store.snapshot(DRIVER_WS).cleanup_failed['UI-root'].at;
+        store.toggleAutoMerge(DRIVER_WS, {
+          expected_revision: store.snapshot(DRIVER_WS).revision,
+          on: true
+        });
+      }
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const queue = driven.store.snapshot(DRIVER_WS);
+    expect(queue.cleanup_failed['UI-root'].at).toBe(announced_at);
+    expect(queue.completion_intents['UI-root'].phase).toBe('needs_human');
+    expect(notify.sent).toHaveLength(1);
+    expect(launchForBead).toHaveBeenCalledTimes(1);
   });
 
   test('sends nothing for a stage outside the closed class list', async () => {
@@ -4842,7 +4883,8 @@ describe('정리 중단 announcer (UI-gske §3.5)', () => {
     expect(conversation.launchForBead).toHaveBeenCalledExactlyOnceWith({
       workspace: DRIVER_WS,
       repo: '/Users/me/GitHub/beads-ui',
-      bead_id: 'UI-root'
+      bead_id: 'UI-root',
+      cleanup_at: store.snapshot(DRIVER_WS).cleanup_failed['UI-root'].at
     });
     expect(sent).toEqual([
       expect.objectContaining({
@@ -4958,6 +5000,38 @@ describe('정리 중단 announcer (UI-gske §3.5)', () => {
     expect(sent).toEqual([
       expect.objectContaining({ failure_class: '정리 중단' })
     ]);
+  });
+
+  test('opens the conversation on a newer stop than the needs_human terminal', async () => {
+    const store = seededCompletionStore();
+    terminalizeResolutionTimeout(store);
+    recordBranchStop(store, 'local_branch_delete_failed');
+    const resolve = vi.fn(async () => ({ session: 'launched' }));
+    const { announcer } = announcerOver(store, {
+      failureConversation: createFailureConversationLauncher({
+        resolveSession: /** @type {any} */ ({ resolve }),
+        snapshot: (workspace) => store.snapshot(workspace),
+        getConfig: () => ({ worker_direction_inquiry: { enabled: true } }),
+        autoLaunchEnabled: () => true,
+        log: () => {}
+      })
+    });
+
+    announcer.announce('UI-root');
+    await settleAnnouncements();
+
+    expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
+      'needs_human'
+    );
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        failure: expect.objectContaining({
+          failure_class: '정리 중단',
+          stage: 'branch_cleanup',
+          reason: 'local_branch_delete_failed'
+        })
+      })
+    );
   });
 
   test('leaves an external-PR handoff stop to its own announcer', async () => {
