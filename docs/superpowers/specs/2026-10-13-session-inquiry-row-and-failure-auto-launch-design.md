@@ -20,7 +20,7 @@ scope:
 
 # 세션 소유 사람 필요 행과 클릭 전용 실패 대화 세 종류의 자동 기동
 
-Bead: UI-gske · route spec_backed · 2026-10-13 · 선행: dotfiles-it5mv(PR #595, 94af821c2)
+Bead: UI-gske · route spec_backed · 2026-10-13 · 선행: dotfiles-it5mv(PR #595, 94af821c2), dotfiles-hraaf
 
 ## 1. 목표
 
@@ -63,7 +63,14 @@ beads-ui 현재 코드:
 - 자동 기동 스위치는 `conversation-settings.js`의 `auto_launch` 하나다. 설정 창 문구가 자동 기동 종류를 나열한다 — server/conversation-settings.js:68, app/views/settings-dialog/conversation-section.js:48-50
 - 실패 대화 자동 기동 대상은 `NEEDS_HUMAN_NOTIFY_CLASSES` 닫힌 목록이다. 완료 종단의 단계 토큰이 목록 밖이면 알림도 기동도 없다. 정리 단계 종단의 토큰은 `cleanup_failed.step` 또는 `post_merge_cleanup`이다 — server/worker/completion-intent.js:858-869, :1663-1690, :2020-2032
 - 머지 전 검증 보류는 `first_hold`(새 head) 안에서만 `⏸️ 머지 보류` 알림을 보내고 대화는 띄우지 않는다. 같은 head는 다시 보류해도 부작용이 없다 — server/worker/completion-intent.js:2392-2457
-- 완료 의도가 없는 정리 실패는 `cleanup_failed` 기록만 남기고 알림이 없다. 일시 실패(`branch_cleanup`·`base_containment`)는 최대 3회 `next_retry_at`으로 다시 시도한다 — server/worker/pr-actions.js:3700-3730
+- 정리 실패는 `cleanup_failed`에 기록되고, 일시 실패(`branch_cleanup`·`base_containment`)는 `next_retry_at`을 함께 적는다 — server/worker/pr-actions.js:3700-3730
+- 그 재시도를 실행하는 주체는 완료 의도의 `cleaning` 단계뿐이다. 일반 관측 경로는 `cleanup_failed`가 있는 Bead의 정리를 다시 돌리지 않는다. 그래서 완료 의도가 없는 정리 실패에는 자동 단계가 남지 않는다 — server/worker/completion-intent.js:578-596, server/worker/pr-poller.js:918, server/worker/pr-actions.js:4563
+- 외부 PR 사람 처리 필요(`foreign_handoff`)의 정리 실패는 `runForeignCleanup`이 `cleanup_failed`를 쓴 직후 자기 알림·대화(`announceHandoff`)를 낸다. 클릭 세션의 실패 맥락도 이 분류를 정리 중단보다 먼저 고른다 — server/worker/pr-actions.js:3417-3430, server/worker/resolve-session.js:289-300
+- 완료 의도의 `subject` head가 바뀌면 `hold`가 지워진다. 그래서 head가 A→B→A로 돌아오면 `first_hold`가 다시 참이 된다 — server/worker/queue-store.js:12590-12595
+- 대화 정산은 `repo-op:` 행 키의 레코드를 Bead 상태로 정산하지 않는다 — server/worker/scheduler.js:10768-10772
+- 공개 큐는 대화 레코드마다 bridge `threads.json`에서 `session_id`로 찾은 `discord_url`을 붙인다 — server/ws/worker-handlers.js:3318-3326
+- `repo_operations` 기록을 지우는 코드는 없다 — `grep -rn 'delete next.repo_operations' server`(테스트 제외) 결과 없음
+- Worker 대화 진입 블록 사본은 origin/main d72dad9e("대화 진입 블록을 질문 중복 방지 정본에 맞춘다")에서 dotfiles 정본과 맞춰졌다 — `git show --stat d72dad9e`
 - 정책 사본 네 개(`generated/contracts/*.json`)는 dotfiles origin/main과 sha256이 같다. #595는 그 파일을 바꾸지 않았다 — `shasum -a 256` 대조(이 세션), `gh pr view 595 --json files`
 - 미확인: 서버 시작 뒤 `/api/register-workspace`로 추가된 작업 공간에 Worker attachment가 생기는지 — 조사 범위 밖이라 확인하지 못했다. 3.1이 fail-quiet로 다룬다.
 
@@ -83,8 +90,8 @@ beads-ui 현재 코드:
   - `bundles` 항목의 `title`·`reason`이 비었거나 `paths`가 문자열 배열이 아닌 것
 - 모든 4xx·5xx 본문은 JSON이다. 그래야 CLI가 요청 오류(exit 1)와 연결 불가(exit 3)를 구분한다.
 - 같은 (`repo`, `ref`)의 열린 행(`waiting`·`held`)이 있으면 필드를 갱신하고 `created:false`를 돌려준다. `session_id`가 바뀌면 상태를 `waiting`으로 되돌린다. 열린 행이 없으면 닫힌 행이 있어도 새 행을 만든다.
-- 상태 전이는 계약의 허용 전이만 받는다. 같은 상태로의 요청은 200 무변경이다. 그 밖의 전이는 409 `{ok:false, error:"invalid_transition"}`(CLI exit 1)다. `note`는 행의 마지막 메모로 남긴다.
-- 기록 필드: 요청 필드, `id`, `state`, `created_at`, `updated_at`, `notified_at`, `auto_resume`({session_id, at}|null), `liveness`({state, at, tmux}|null), `closed_reason`. 닫힌 행은 지우지 않는다. 지금의 `repo_operations`처럼 보존 기한을 두지 않는다.
+- 상태 전이는 계약의 허용 전이만 받는다. 허용 전이표 밖의 요청(같은 상태로의 요청, 금지 전이)의 응답은 선행 dotfiles-hraaf가 `session_inquiry.state`에 고정하는 값을 따른다. 그 Bead가 정하는 값은 같은 상태 200 무변경, 금지 전이 409 `{ok:false, error:"invalid_transition"}`(CLI exit 1)이다. 구현은 착지한 계약 키를 인용한다. 키 이름이나 값이 다르게 착지하면 착지한 값을 따른다. `note`는 행의 마지막 메모로 남긴다.
+- 기록 필드: 요청 필드, `id`, `state`, `created_at`, `updated_at`, `notified_at`, `auto_resume_consumed`(자동 재개에 쓴 session id 목록), `liveness`({state, at, tmux}|null), `closed_reason`. 닫힌 행은 지우지 않는다. 지금의 `repo_operations`처럼 보존 기한을 두지 않는다.
 
 ### 3.2 정산: 생존·ref 관측과 자동 재개
 
@@ -97,9 +104,9 @@ beads-ui 현재 코드:
    - `liveness.state`가 `dead`다. `unverified`는 사망으로 보지 않는다.
    - 스위치가 켜져 있다.
    - 행 키에 live 대화 레코드가 없다.
-   - `auto_resume.session_id`가 등록 `session_id`와 다르다.
+   - 등록 `session_id`가 `auto_resume_consumed`에 없다.
 
-   결정: 재개 표시(`auto_resume`)를 기동보다 먼저 기록한다. 재시작이나 기동 실패가 두 번째 자동 재개로 이어지지 않게 하기 위해서다. 기동이 실패하면 로그만 남고 버튼이 남는다.
+   결정: 소비한 session id는 목록에 쌓고 지우지 않는다. 마지막 값 하나만 두면 세션이 A→B→A로 바뀔 때 A의 소비 이력을 잊기 때문이다. 결정: 재개 표시를 기동보다 먼저 기록한다. 재시작이나 기동 실패가 두 번째 자동 재개로 이어지지 않게 하기 위해서다. 기동이 실패하면 로그만 남고 버튼이 남는다.
 - 재개 기동은 다음과 같다.
   - 명령: `claude --resume <session_id> <첫 입력>`. fork나 새 session id는 쓰지 않는다.
   - 위치: 등록 `cwd`의 분리 창. 창 이름 예: `inquiry-<id8>`.
@@ -113,13 +120,13 @@ beads-ui 현재 코드:
 - **알림.** 행이 처음 만들어질 때(`created:true`) `🙋 확인 필요 · base-sync 사람 필요` 알림을 한 번 보낸다. 본문은 저장소 이름, ref 끝부분, `summary`, 링크다. `notified_at`을 보내기 전에 기록하므로 재시작해도 다시 보내지 않는다. 같은 행의 `session_id` 교체도 새 알림을 만들지 않는다. 스위치와 무관하다(멈춤 `🙋`와 같다).
 - **대기 판정.** 열린 행 하나가 확인 필요 사유 하나를 낸다.
   - 사유의 형태: `kind:"awaiting_user"`, `subject:{root_dir, bead_id:"session-inquiry:<id>"}`, headline `사람 필요 · 보관 <ref 끝 24자>`, release `해소 세션에서 답하면 그 세션이 착지·폐기·보류를 끝낸다`.
-  - `waiting`이고, 등록 세션이 살아 있지 않고, live 대화도 없으면 `action_required`(`decision`)다. 해결 op `worker-resolve-in-session`(payload `{inquiry_id}`)과 해결 문장을 함께 싣는다(ADR UI-btsr가 승계한 UI-9w5l 불변식).
-  - 그 밖(세션이 살아 있음, live 대화 있음, `held`)은 `normal`이다.
+  - `waiting`이고, `liveness.state`가 `dead`이고, live 대화도 없으면 `action_required`(`decision`)다. 해결 op `worker-resolve-in-session`(payload `{inquiry_id}`)과 해결 문장을 함께 싣는다(ADR UI-btsr가 승계한 UI-9w5l 불변식).
+  - 그 밖(세션이 살아 있음, 생존 `unverified`·미관측, live 대화 있음, `held`)은 `normal`이다.
 - **클릭.** 판정은 다음 순서다. 행이 `closed`면 버튼이 없다.
   1. 행 키에 live 대화가 있으면 그 창을 앞으로 부른다(기존 규칙).
   2. 등록 세션이 살아 있으면 새로 띄우지 않는다. tmux 위치를 알면 그 창을 앞으로 부르고, 모르면 "등록 세션이 살아 있습니다 — 그 세션(Discord 스레드)에서 답하세요"로 답한다.
   3. 생존이 `unverified`면 거부하고 사유를 알린다. 같은 session id를 두 프로세스가 잇는 것을 막기 위해서다.
-  4. `dead`면 3.2와 같은 재개를 연다(`waiting`·`held` 모두). 클릭은 `auto_resume`을 쓰지 않는다.
+  4. `dead`면 3.2와 같은 재개를 연다(`waiting`·`held` 모두). 클릭은 `auto_resume_consumed`를 쓰지 않는다.
 - **Discord 링크.** 등록 `session_id`로 bridge `threads.json`의 스레드를 찾아 행에 붙인다(대화 레코드의 `discord_url`과 같은 방식).
 
 ### 3.4 화면: 「저장소 작업」 서랍과 막힘 칩
@@ -145,11 +152,12 @@ beads-ui 현재 코드:
   - 결정: 이 토큰들을 알림·기동 대상 목록에 클래스 `정리 중단`으로 더한다. 클릭 세션의 클래스 표도 같은 이름을 쓴다. 그래야 알림과 대화가 같은 이름을 말한다.
   - 횟수 보장은 기존 완료 종단의 1회 규칙(종단당 댓글·알림 1회)을 그대로 쓴다.
 - **정리 중단.** 완료 의도 없이 기록된 `cleanup_failed`다(auto_merge 꺼짐, 손 머지 뒤 정리).
-  - 결정: 예약된 재시도(`next_retry_at`)가 없는 기록, 즉 비일시 실패이거나 재시도 3회 소진을 종단으로 본다. 그 기록마다 `🙋 확인 필요 · 정리 중단` 알림과 기동을 한 번 한다.
+  - 결정: 완료 의도가 그 Bead의 정리를 몰고 있지 않으면 기록되는 순간이 종단이다. `next_retry_at`이 적혀 있어도 그것을 실행할 주체가 없기 때문이다(전제 참조). 그 기록마다 `🙋 확인 필요 · 정리 중단` 알림과 기동을 한 번 한다.
   - 식별자는 (Bead, step, 기록 시각)이다. 1회 표시는 그 `cleanup_failed` 기록에 보내기 전에 쓴다.
-  - 완료 의도가 그 Bead의 정리를 몰고 있으면 완료 종단이 유일한 원천이고, 여기서는 아무것도 하지 않는다.
+  - 완료 의도가 그 Bead의 정리를 몰고 있으면 완료 종단(위 `post_merge_environment`나 기존 대상)이 유일한 원천이고, 여기서는 아무것도 하지 않는다.
+  - 결정: 기록 사유가 외부 PR 사람 처리 필요 분류이면 여기서는 아무것도 하지 않는다. 그 실패는 `announceHandoff`가 이미 알리고 연다. 그래서 알림·대화가 한 번이고, 클래스도 하나다.
 - **머지 전 검증 실패 보류.** 보류 분기의 `first_hold` 안에서, 원인이 검증 실패일 때만 `⏸️ 머지 보류` 알림을 보낸 직후 연다.
-  - 식별자는 (PR URL, 보류 head SHA)다. 지속되는 `hold.head_sha`가 같은 head의 재관측·재시작을 막는다.
+  - 식별자는 (PR URL, 보류 head SHA)다. 결정: 자동 기동에 쓴 (PR URL, head SHA)를 그 Bead의 완료 의도에 `hold`와 따로 쌓고, `subject`가 바뀌어도 지우지 않는다. `hold`는 head가 바뀌면 지워지므로, head가 A→B→A로 돌아왔을 때 A로 다시 여는 것을 이 목록이 막는다. 같은 head의 재관측·재시작도 이 목록으로 막는다.
   - 머지 충돌·리뷰 stale 보류는 바꾸지 않는다.
   - 결정: `⏸️ 머지 보류` 알림 문구는 바꾸지 않는다 — 대화는 bridge 스레드가 따로 알린다(notify.test.js:1489 고정 유지).
 - 외부 작업 완료는 클릭 전용으로 남는다.
@@ -163,7 +171,7 @@ beads-ui 현재 코드:
 | attachment 없는 작업 공간 | 저장만 한다. 표시·알림·재개는 없다 |
 | ref 관측 git 오류 | 무변경. 다음 패스에 다시 본다 |
 | 생존 `unverified` | 자동 재개를 하지 않고 클릭도 거부한다. 행은 `normal`이다 |
-| 재개 기동 실패 | 로그만 남는다. `auto_resume`이 이미 기록돼 자동 재시도는 없고 버튼이 남는다 |
+| 재개 기동 실패 | 로그만 남는다. `auto_resume_consumed`에 이미 기록돼 자동 재시도는 없고 버튼이 남는다 |
 | 세션이 다른 호스트에서 돌았음 | 로컬 레지스트리에 항목이 없어 dead로 보고 `--resume`이 실패한다. 위 행과 같다. 원격 보관 ref는 계약 비목표다 |
 | live 대화가 있는 동안 ref가 사라짐 | 행만 `closed`로 바꾼다. 대화는 그대로 둔다 |
 
@@ -171,16 +179,16 @@ beads-ui 현재 코드:
 
 - 라우트·서비스:
   - register의 400 사유별, 200 `created:true|false`, `session_id` 교체 시 `waiting` 복귀, 닫힌 행 뒤 새 행
-  - state의 허용 전이, 같은 상태 200 무변경, 금지 전이 409, 모르는 id 404, 다른 작업 공간의 id 찾기
+  - state의 허용 전이, 모르는 id 404, 다른 작업 공간의 id 찾기, 같은 상태·금지 전이는 dotfiles-hraaf가 착지시킨 계약 값대로
   - 모든 4xx 본문이 JSON
 - 정산:
   - ref 부재 → `closed(ref_absent)`, git 오류 → 무변경
   - 생존 변화 때만 `liveness` 기록
   - 자동 재개 조건 다섯 가지 각각의 거부
-  - (id, session_id)당 1회, 재시작 뒤 재기동 없음
+  - (id, session_id)당 1회, 재시작 뒤 재기동 없음, 세션이 A→B→A로 바뀌어도 A로 다시 자동 재개하지 않음
   - 재개 argv가 `--resume <sid>`이고 fork가 없으며, cwd가 등록 `cwd`이고, 첫 입력에 입장문이 없음
 - 알림: 생성 시 1회, 재등록·교체·재시작 시 없음.
-- 대기 판정: `action_required` 분기가 op와 해결 문장을 싣는다(기존 불변식 테스트에 분기를 더한다). 살아 있음·`held`는 `normal`이다.
+- 대기 판정: `action_required` 분기가 op와 해결 문장을 싣는다(기존 불변식 테스트에 분기를 더한다). 살아 있음·`unverified`·`held`는 `normal`이다.
 - 클릭: live 대화 → 앞으로, 세션 살아 있음 → 기동 없음, `unverified` → 거부, `dead` → 재개, `closed` → 버튼 없음.
 - 화면:
   - 서랍 항목 렌더와 띠 건수
@@ -188,14 +196,17 @@ beads-ui 현재 코드:
   - Worker 탭·모니터 카드 동일성 테스트에 행 포함
 - 세 실패 종류:
   - 정리 단계 토큰의 종단이 알림과 기동을 1회 함, 재클릭·재시작 시 없음(기존 `branch_cleanup` "sends nothing" 테스트는 뒤집힘)
-  - 완료 의도 없는 `cleanup_failed`의 종단 판정(재시도 예약 중엔 없음, 소진 뒤 1회)
-  - 검증 보류 새 head 1회, 같은 head 재보류 시 없음, 충돌 보류 시 없음
+  - 완료 의도 없는 `cleanup_failed`가 `next_retry_at`이 있어도 기록 시 알림·기동 1회, 같은 기록의 재관측·재시작 시 없음, 완료 의도가 정리를 몰 때는 없음
+  - 외부 PR 사람 처리 필요 정리 실패는 기존 알림·대화 1회뿐(정리 중단 알림 없음)
+  - 검증 보류 새 head 1회, 같은 head 재보류·재시작 시 없음, head A→B→A 복귀 시 A로 다시 열지 않음, 충돌 보류 시 없음
   - 스위치 꺼짐이면 기동 없음
 - 설정 창 문구 테스트.
 
 ## 6. 경계·후속
 
-없음. dotfiles 쪽(형제 dotfiles-it5mv)은 착지했다. 이 spec은 계약의 소비자 쪽 전부다.
+dotfiles 쪽 선행(dotfiles-it5mv)은 착지했다.
+
+- 크로스 리포 unit: dotfiles — `session_inquiry.state`에 같은 상태 요청(200 무변경)과 허용 밖 전이(409 `invalid_transition`)의 응답을 고정하고 체커·테스트를 옮기는 quick_fix Bead dotfiles-hraaf. UI-gske 구현 진입 전 선행(`blocks`)이다. dotfiles Worker 병렬 레인에 배치되어 있다.
 
 비목표:
 - 외부 작업 완료 흐름
