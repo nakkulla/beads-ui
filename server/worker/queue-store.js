@@ -899,6 +899,9 @@
  * absent when the run left no readable output.
  * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, first_failed_at: number|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
  * @property {string|null} superseded_by
+ * @property {string} [retry_of] - The failed record this one re-runs on a
+ * person's cleanup retry (UI-btsr §3.2), and part of its operation id. Absent
+ * on every other record, so their ids and shapes stay as they were.
  * @property {RepoOperationRecovery} [recovery]
  * @property {'automatic'|'manual'} source - Who asked for this operation. Every
  * record the Worker creates by itself is `automatic`; `manual` is the 배포 실행
@@ -4449,6 +4452,9 @@ function normalizeRepoOperation(value) {
     ...(recovery ? { recovery } : {}),
     superseded_by:
       typeof value.superseded_by === 'string' ? value.superseded_by : null,
+    ...(typeof value.retry_of === 'string' && value.retry_of.length > 0
+      ? { retry_of: value.retry_of }
+      : {}),
     ...(isRecord(value.failure_notice) &&
     typeof value.failure_notice.target_at === 'number' &&
     Number.isFinite(value.failure_notice.target_at)
@@ -7717,7 +7723,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, retry_of?: string, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -7844,6 +7850,9 @@ export function createQueueStore(options = {}) {
           failure: null,
           retry: null,
           superseded_by: null,
+          ...(typeof input.retry_of === 'string' && input.retry_of.length > 0
+            ? { retry_of: input.retry_of }
+            : {}),
           source: input.source === 'manual' ? 'manual' : 'automatic',
           manual_run_id:
             input.source === 'manual' && Number.isInteger(input.manual_run_id)

@@ -857,8 +857,8 @@ export const NEEDS_HUMAN_NOTIFY_CLASSES = Object.freeze({
  * The `다음:` line of a `needs_human` push for one stage token: the exits the
  * row really has. A merge-gate hold has the `[머지]` waiver; a foreign handoff
  * has only `[세션에서 이어가기]` — `[머지]` does not release it and there is no
- * `[워커로 이어가기]` (UI-k467 §3.7); the post-merge classes have both
- * continuations.
+ * `[정리 재시도]` (UI-k467 §3.7); the post-merge classes have both exits, the
+ * conversation and the cleanup retry (UI-btsr §3.5).
  *
  * @param {string} token
  * @returns {string}
@@ -870,7 +870,7 @@ export function needsHumanNextAction(token) {
   if (token === 'foreign_handoff') {
     return FOREIGN_HANDOFF_NEXT_ACTION;
   }
-  return '[세션에서 이어가기] 또는 [워커로 이어가기]';
+  return '[세션에서 이어가기] 또는 [정리 재시도]';
 }
 
 // Copied byte-for-byte from dotfiles docs/contracts/workflow-state.yaml
@@ -1032,9 +1032,9 @@ export function completionFailureComment(
   const handoff_bead_id = recovery?.handoff?.handoff_bead_id;
   const recovery_reason = recovery?.reason || recovery?.disposition;
   const next = handoff_bead_id
-    ? `- 다음: 수정 Bead ${handoff_bead_id}의 PR·배포 뒤 [워커로 이어가기] · 원본 실패 기록은 보존됨`
+    ? `- 다음: 수정 Bead ${handoff_bead_id}의 PR·배포 뒤 [정리 재시도] · 원본 실패 기록은 보존됨`
     : recovery
-      ? `- 다음: ${RECOVERY_WAIT_SENTENCES[recovery_reason] || recovery_reason} — 조건 확인 뒤 [워커로 이어가기]`
+      ? `- 다음: ${RECOVERY_WAIT_SENTENCES[recovery_reason] || recovery_reason} — 조건 확인 뒤 [정리 재시도]`
       : '- 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead';
   // 헤딩·요약·로그 세 행은 `failure-comment.js`가 소유한다
   // (record-timeline-retention §9): 세션 실패·파킹 댓글이 같은 형식을 써야
@@ -1669,7 +1669,7 @@ export function createCompletionActionDriver(deps) {
         failure_class,
         reason: terminal.reason,
         reason_detail: summary,
-        // The cleanup retry (`[워커로 이어가기]`, UI-18a5 §3.2) is a
+        // The cleanup retry (`[정리 재시도]`, UI-btsr §3.5) is a
         // post-merge cleanup button that does not exist yet at the merge
         // gate, so that class names the two exits it really has (spec §5.2).
         next_action: needsHumanNextAction(token),

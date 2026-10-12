@@ -7512,7 +7512,7 @@ export async function handleWorkerCleanupRetry(ws, req) {
     log('worker cleanup retry failed for %s/%s: %o', key, p.bead_id, err);
     result = { ok: false, reason: 'error' };
   }
-  recordUserAction(key, p.bead_id, 'cleanup_retry', '[워커로 이어가기] 클릭');
+  recordUserAction(key, p.bead_id, 'cleanup_retry', '[정리 재시도] 클릭');
   const latest = /** @type {any} */ (queueStore().snapshot(key));
   ws.send(
     JSON.stringify(

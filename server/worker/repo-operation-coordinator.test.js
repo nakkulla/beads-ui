@@ -6420,3 +6420,429 @@ describe('foreign verify candidate location (UI-k467 §3.5)', () => {
     ]);
   });
 });
+
+describe('cleanup retry successor (UI-btsr §3.2)', () => {
+  const DEPLOY_SUBJECT = {
+    target_base: 'main',
+    target_sha: TARGET,
+    subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
+  };
+
+  /**
+   * Every SHA declares the same `[deploy]` and `[verify]`, so the previous
+   * success base and the target read one policy and the identity inputs stay
+   * pinned across calls. `rev-parse` answers "absent" so a first attempt binds
+   * through the deploy worktree fake, which pins the target to `TARGET`. The
+   * previous success (`APPROVED`) contains nothing newer, so it never covers
+   * the failure under test.
+   *
+   * @param {string[]} args
+   */
+  async function retryGit(args) {
+    if (args[0] === 'merge-base' && args[1] === '--is-ancestor') {
+      const covered = args[3] !== APPROVED || args[2] === APPROVED;
+      return { code: covered ? 0 : 1, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'show') {
+      return { code: 0, stdout: `${CONFIG}\n${VERIFY_CONFIG}`, stderr: '' };
+    }
+    if (args[0] === 'ls-tree') {
+      const requested = args.at(-1);
+      const entry =
+        requested === 'repo-ops/config.toml'
+          ? `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`
+          : requested === 'repo-ops/script/verify'
+            ? `100755 blob ${'5'.repeat(40)}\trepo-ops/script/verify`
+            : `100755 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`;
+      return { code: 0, stdout: entry, stderr: '' };
+    }
+    if (args[0] === 'rev-parse') {
+      return { code: 1, stdout: '', stderr: '' };
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  }
+
+  /**
+   * One coordinator whose deploy worktree HEAD moves to whatever it aligns
+   * to, the way the shared worktree does: after the first run aligned the
+   * target, HEAD already holds it.
+   *
+   * @param {{ repo?: string }} [options]
+   */
+  function retryHarness(options = {}) {
+    const deploy = { head: /** @type {string|null} */ (null) };
+    /** @type {{ current: { exit_code: number, signal: null }|null }} */
+    const marker = { current: null };
+    const start = vi.fn(() => ({
+      ok: true,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log')
+    }));
+    const store = createQueueStore({
+      filePathFor: (workspace) => path.join(workspace, 'queue.json')
+    });
+    const repo = options.repo ?? root;
+    const coordinator = createRepoOperationCoordinator({
+      workspace: root,
+      repo,
+      store,
+      locks: createLockManager(),
+      gitRun: retryGit,
+      runner: /** @type {never} */ ({
+        start,
+        readMarker: () => marker.current,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }),
+      transition: /** @type {never} */ ({
+        materialize: async () => ({
+          ok: true,
+          path: path.join(root, 'script')
+        }),
+        reclaim: () => {}
+      }),
+      deployWorktree: /** @type {never} */ ({
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({ ok: true, head: deploy.head, clean: true }),
+        ensureAligned: async (/** @type {any} */ input) => {
+          deploy.head = input.target_sha;
+          return {
+            ok: true,
+            path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+            target_sha: input.target_sha
+          };
+        },
+        verifyCovered: async () => ({ ok: true })
+      }),
+      deployLock: /** @type {never} */ (
+        async () => ({ ok: true, release: async () => {} })
+      ),
+      verifyCheckout: /** @type {never} */ ({
+        materialize: vi.fn(async () => ({
+          ok: true,
+          path: root,
+          tree_sha: TREE
+        })),
+        verify: vi.fn(async () => ({ ok: true })),
+        cleanup: vi.fn(async () => {})
+      }),
+      resolveBase: async () => ({
+        ok: true,
+        base: 'main',
+        declared: true,
+        remote: 'origin',
+        remote_ref: 'refs/remotes/origin/main',
+        base_oid: TARGET,
+        local_only: false
+      })
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'previous-deploy',
+      repo_id: repo,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-0', merged_sha: APPROVED }],
+      effective_base_sha: APPROVED,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const previous = store.snapshot(root).repo_operations['previous-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'previous-deploy',
+      attempt_id: previous.attempt_id,
+      process_identity: { pid: 9, pgid: 9, started_at: 1 },
+      log_path: path.join(root, 'previous.log'),
+      target_sha: APPROVED
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'previous-deploy',
+      attempt_id: previous.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    return { store, coordinator, start, deploy, marker };
+  }
+
+  /**
+   * Fail the automatic deploy once after its alignment, which leaves the
+   * deploy worktree HEAD at the target — the 2026-10-12 shape.
+   *
+   * @param {ReturnType<typeof retryHarness>} harness
+   * @returns {Promise<string>}
+   */
+  async function seedFailedDeploy(harness) {
+    harness.start.mockReturnValueOnce(
+      /** @type {any} */ ({ ok: false, code: 'repo_operation_spawn_failed' })
+    );
+    const failed = await harness.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+    return String(failed.operation_id);
+  }
+
+  /** @param {object} [overrides] */
+  function cleanupVerifyCandidate(overrides = {}) {
+    return verifyCandidate({
+      final_sha: FINAL,
+      retry_chain: true,
+      ...overrides
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof retryHarness>} harness
+   * @returns {Promise<string>}
+   */
+  async function seedFailedVerify(harness) {
+    harness.start.mockReturnValueOnce(
+      /** @type {any} */ ({ ok: false, code: 'repo_operation_spawn_failed' })
+    );
+    const failed = await harness.coordinator.ensureVerify(
+      cleanupVerifyCandidate()
+    );
+    return String(failed.operation_id);
+  }
+
+  test('keeps automatic, manual and verify ids byte-identical without retry_of', async () => {
+    const harness = retryHarness({ repo: '/' });
+
+    const manual_run = await harness.coordinator.runManualDeploy();
+    const automatic_run =
+      await harness.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+    const verify_run = await harness.coordinator.ensureVerify(
+      verifyCandidate({ repo: '/', final_sha: FINAL })
+    );
+
+    expect([
+      automatic_run.operation_id,
+      manual_run.ok ? manual_run.operation_id : manual_run.reason,
+      verify_run.operation_id
+    ]).toEqual([
+      '52fd14ec4390e9cef3662973',
+      '25b46f3a47547496ab707714',
+      '3cdc3960d65a4bcda696c481'
+    ]);
+  });
+
+  test('records one successor continuing the failed tip when the retry is authorized', async () => {
+    const harness = retryHarness();
+    const failed_id = await seedFailedDeploy(harness);
+
+    const retried = await harness.coordinator.ensureDeploy({
+      ...DEPLOY_SUBJECT,
+      retry_authorized: true
+    });
+
+    const operations = harness.store.snapshot(root).repo_operations;
+    expect(retried.operation_id).not.toBe(failed_id);
+    expect(operations[String(retried.operation_id)].retry_of).toBe(failed_id);
+    expect(operations[failed_id].superseded_by).toBe(retried.operation_id);
+  });
+
+  test('runs the successor script although the deploy worktree HEAD already holds the target', async () => {
+    const harness = retryHarness();
+    await seedFailedDeploy(harness);
+
+    const retried = await harness.coordinator.ensureDeploy({
+      ...DEPLOY_SUBJECT,
+      retry_authorized: true
+    });
+
+    expect(harness.deploy.head).toBe(TARGET);
+    expect(harness.start).toHaveBeenCalledTimes(2);
+    expect(
+      harness.store.snapshot(root).repo_operations[String(retried.operation_id)]
+        .state
+    ).toBe('running');
+  });
+
+  test('adopts the running successor on a second authorized request', async () => {
+    const harness = retryHarness();
+    await seedFailedDeploy(harness);
+    const first = await harness.coordinator.ensureDeploy({
+      ...DEPLOY_SUBJECT,
+      retry_authorized: true
+    });
+
+    const second = await harness.coordinator.ensureDeploy({
+      ...DEPLOY_SUBJECT,
+      retry_authorized: true
+    });
+
+    expect(second).toMatchObject({
+      operation_id: first.operation_id,
+      adopted: true
+    });
+    expect(harness.start).toHaveBeenCalledTimes(2);
+  });
+
+  test('gives the successor its own script_retry step', async () => {
+    const harness = retryHarness();
+    await seedFailedDeploy(harness);
+    const retried = await harness.coordinator.ensureDeploy({
+      ...DEPLOY_SUBJECT,
+      retry_authorized: true
+    });
+    harness.marker.current = { exit_code: 2, signal: null };
+    await harness.coordinator.reconcile(root);
+    harness.marker.current = null;
+
+    await harness.coordinator.reconcile(root);
+
+    const successor =
+      harness.store.snapshot(root).repo_operations[
+        String(retried.operation_id)
+      ];
+    expect(successor.state).toBe('running');
+    expect(successor.retry?.consumed_key).not.toBeNull();
+    expect(harness.start).toHaveBeenCalledTimes(3);
+  });
+
+  test('runs a queued successor at a HEAD holding the target once the blocker settles', async () => {
+    const harness = retryHarness();
+    await seedFailedDeploy(harness);
+    harness.store.ensureRepoOperation(root, {
+      operation_id: 'blocker',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-blocker', merged_sha: APPROVED }],
+      effective_base_sha: APPROVED,
+      target_base: 'other',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const blocker = harness.store.snapshot(root).repo_operations.blocker;
+    harness.store.startRepoOperation(root, {
+      operation_id: 'blocker',
+      attempt_id: blocker.attempt_id,
+      process_identity: { pid: 3, pgid: 3, started_at: 1 },
+      log_path: path.join(root, 'blocker.log'),
+      target_sha: APPROVED
+    });
+    const queued = await harness.coordinator.ensureDeploy({
+      ...DEPLOY_SUBJECT,
+      retry_authorized: true
+    });
+    harness.store.settleRepoOperation(root, {
+      operation_id: 'blocker',
+      attempt_id: blocker.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    await harness.coordinator.reconcile(root);
+
+    expect(
+      harness.store.snapshot(root).repo_operations[String(queued.operation_id)]
+        .state
+    ).toBe('running');
+    expect(harness.start).toHaveBeenCalledTimes(2);
+  });
+
+  test('adopts the failed tip without a new record when the request carries no authority', async () => {
+    const harness = retryHarness();
+    const failed_id = await seedFailedDeploy(harness);
+
+    const adopted = await harness.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+
+    expect(adopted).toMatchObject({ operation_id: failed_id, adopted: true });
+    expect(harness.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('finds the running successor as the exact deploy of the subject', async () => {
+    let requested_at = 0;
+    const { store, coordinator } = coordinatorFor({
+      storeNow: () => requested_at,
+      gitRun: gitForBootstrap({ config: `${CONFIG}\ntimeout_ms = 4321` })
+    });
+    for (const [operation_id, retry_of] of [
+      ['origin-failed', undefined],
+      ['retry-1', 'origin-failed']
+    ]) {
+      requested_at += 1;
+      store.ensureRepoOperation(root, {
+        operation_id: String(operation_id),
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+        effective_base_sha: TARGET,
+        target_base: 'main',
+        script_path: 'repo-ops/script/deploy',
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40),
+        ...(retry_of ? { retry_of } : {})
+      });
+    }
+    const origin = store.snapshot(root).repo_operations['origin-failed'];
+    store.settleRepoOperation(root, {
+      operation_id: 'origin-failed',
+      attempt_id: origin.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    const retry = store.snapshot(root).repo_operations['retry-1'];
+    store.startRepoOperation(root, {
+      operation_id: 'retry-1',
+      attempt_id: retry.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 2 },
+      log_path: path.join(root, 'retry.log'),
+      target_sha: TARGET
+    });
+
+    const found = await coordinator.findExactDeployOperation({
+      target_base: 'main',
+      bead_id: 'UI-1',
+      merged_sha: HEAD
+    });
+
+    expect(found).toEqual({ operation_id: 'retry-1', timeout_ms: 4321 });
+  });
+
+  test('records one verify successor with the stored PR head for an authorized cleanup retry', async () => {
+    const harness = retryHarness();
+    const failed_id = await seedFailedVerify(harness);
+
+    const retried = await harness.coordinator.ensureVerify(
+      cleanupVerifyCandidate({ retry_authorized: true })
+    );
+
+    const operations = harness.store.snapshot(root).repo_operations;
+    expect(operations[String(retried.operation_id)]).toMatchObject({
+      retry_of: failed_id,
+      verify_head_sha: HEAD,
+      state: 'running'
+    });
+    expect(operations[failed_id].superseded_by).toBe(retried.operation_id);
+    expect(harness.start).toHaveBeenCalledTimes(2);
+  });
+
+  test('adopts a failed cleanup verify without authority', async () => {
+    const harness = retryHarness();
+    const failed_id = await seedFailedVerify(harness);
+
+    const adopted = await harness.coordinator.ensureVerify(
+      cleanupVerifyCandidate()
+    );
+
+    expect(adopted).toMatchObject({ operation_id: failed_id, adopted: true });
+    expect(harness.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('finds the cleanup verify chain tip with its stored PR head', async () => {
+    const harness = retryHarness();
+    await seedFailedVerify(harness);
+    const retried = await harness.coordinator.ensureVerify(
+      cleanupVerifyCandidate({ retry_authorized: true })
+    );
+
+    const found = await harness.coordinator.findCleanupVerifyOperation({
+      target_base: 'main',
+      bead_id: 'UI-1',
+      merged_sha: FINAL
+    });
+
+    expect(found).toEqual({
+      operation_id: retried.operation_id,
+      head_sha: HEAD,
+      state: 'running'
+    });
+  });
+});

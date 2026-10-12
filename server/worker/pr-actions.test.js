@@ -32,6 +32,7 @@ import { CLEANUP_STEPS, createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
 import { createQueueStore } from './queue-store.js';
+import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { queueFilePath } from './state-paths.js';
 
 const WS = '/tmp/example-workspace/project-p5';
@@ -7161,5 +7162,394 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
     expect(r.ok).toBe(true);
     expect(h.foreign.updateBranch).toHaveBeenCalledWith(REPO, 304);
     expect(h.gh.updateBranch).not.toHaveBeenCalled();
+  });
+});
+
+describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)', () => {
+  const MERGED = 'c'.repeat(40);
+  const PREVIOUS = 'e'.repeat(40);
+  const PR_HEAD = '9'.repeat(40);
+  const DEPLOY_ONLY =
+    '[deploy]\nscript = "repo-ops/script/deploy"\ntimeout_ms = 1000';
+  const VERIFY_ONLY = '[verify]\nscript = "repo-ops/script/verify"';
+
+  /**
+   * The one repo-ops declaration every SHA of this repository carries, read
+   * by the real coordinator through the harness git.
+   *
+   * @param {string} config
+   * @returns {(args: string[]) => string|undefined}
+   */
+  function declaring(config) {
+    return (args) => {
+      if (
+        args[0] === 'show' &&
+        String(args[1]).endsWith(':repo-ops/config.toml')
+      ) {
+        return config;
+      }
+      if (args[0] !== 'ls-tree') {
+        return undefined;
+      }
+      const requested = args.at(-1);
+      if (requested === 'repo-ops/config.toml') {
+        return `100644 blob ${'4'.repeat(40)}\trepo-ops/config.toml`;
+      }
+      if (requested === 'repo-ops/script/deploy') {
+        return `100755 blob ${'5'.repeat(40)}\trepo-ops/script/deploy`;
+      }
+      if (requested === 'repo-ops/script/verify') {
+        return `100755 blob ${'6'.repeat(40)}\trepo-ops/script/verify`;
+      }
+      return undefined;
+    };
+  }
+
+  /**
+   * The previous successful deploy, so the automatic run reads its policy
+   * from a declared base. Its target does not contain the merge: only a new
+   * run can deliver it.
+   *
+   * @param {any} store
+   * @param {string} repo
+   */
+  function seedPreviousDeploy(store, repo) {
+    store.ensureRepoOperation(WS, {
+      operation_id: 'previous-deploy',
+      repo_id: repo,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-0', merged_sha: PREVIOUS }],
+      effective_base_sha: PREVIOUS,
+      target_base: 'main',
+      script_path: 'repo-ops/script/deploy',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const seeded = store.snapshot(WS).repo_operations['previous-deploy'];
+    store.startRepoOperation(WS, {
+      operation_id: 'previous-deploy',
+      attempt_id: seeded.attempt_id,
+      process_identity: { pid: 9, pgid: 9, started_at: 1 },
+      log_path: path.join(tmp_state, 'previous.log'),
+      target_sha: PREVIOUS
+    });
+    store.settleRepoOperation(WS, {
+      operation_id: 'previous-deploy',
+      attempt_id: seeded.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+  }
+
+  /**
+   * The runner, marker and deploy worktree HEAD shared across a restart: the
+   * script and the shared worktree outlive the Worker process.
+   */
+  function processWorld() {
+    return {
+      start: vi.fn(() => ({
+        ok: true,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(tmp_state, 'operation.log')
+      })),
+      /** @type {{ current: { exit_code: number, signal: null }|null }} */
+      marker: { current: null },
+      deploy: { head: /** @type {string|null} */ (null) }
+    };
+  }
+
+  /**
+   * The cleanup actions over a REAL coordinator and queue store, so the
+   * retry's identity, chain and launch are the production code. The base tip
+   * (`origin/main`) and the deploy worktree HEAD both sit at `BASE_SHA` once
+   * the first run aligned it.
+   *
+   * @param {{ store: any, config: string, world: ReturnType<typeof processWorld>, repo?: string }} input
+   */
+  function cleanupRig(input) {
+    /** @type {any} */
+    let git = null;
+    let clock = 0;
+    const repo = input.repo ?? REPO;
+    const world = input.world;
+    const coordinator = createRepoOperationCoordinator({
+      workspace: WS,
+      repo,
+      store: input.store,
+      locks: createLockManager(),
+      gitRun: (args, options) => git(args, options),
+      runner: /** @type {never} */ ({
+        start: world.start,
+        readMarker: () => world.marker.current,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }),
+      transition: /** @type {never} */ ({
+        materialize: async () => ({
+          ok: true,
+          path: path.join(tmp_state, 'script')
+        }),
+        reclaim: () => {}
+      }),
+      deployWorktree: /** @type {never} */ ({
+        bindTarget: async () => ({ ok: true, target_sha: BASE_SHA }),
+        readState: async () => ({
+          ok: true,
+          head: world.deploy.head,
+          clean: true
+        }),
+        ensureAligned: async (/** @type {any} */ aligned) => {
+          world.deploy.head = aligned.target_sha;
+          return {
+            ok: true,
+            path: path.join(tmp_state, 'deploy'),
+            target_sha: aligned.target_sha
+          };
+        },
+        verifyCovered: async () => ({ ok: true })
+      }),
+      deployLock: /** @type {never} */ (
+        async () => ({ ok: true, release: async () => {} })
+      ),
+      verifyCheckout: /** @type {never} */ ({
+        materialize: async () => ({
+          ok: true,
+          path: tmp_state,
+          tree_sha: '7'.repeat(40)
+        }),
+        verify: async () => ({ ok: true }),
+        cleanup: async () => {}
+      }),
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      }
+    });
+    const env = makeActions({
+      ...ON_BASE,
+      store: input.store,
+      repo,
+      repoOperations: coordinator,
+      details: [
+        prOf({ state: 'MERGED', merged_sha: MERGED, head_sha: PR_HEAD })
+      ],
+      gitStdout: declaring(input.config),
+      // The previous deploy's target does not contain the merge.
+      gitResult: (args) =>
+        args[0] === 'merge-base' && args[2] === MERGED && args[3] === PREVIOUS
+          ? 1
+          : null
+    });
+    git = env.gitRun;
+    return { env, coordinator };
+  }
+
+  /**
+   * A row whose cleanup stopped at a deploy that failed after its alignment
+   * left the deploy worktree HEAD at the target.
+   */
+  async function deployFailedRow() {
+    const world = processWorld();
+    const store = seedStore({
+      cleanup_failed: {
+        [BEAD]: { step: 'repo_operations', reason: 'script_failed' }
+      }
+    });
+    seedPreviousDeploy(store, REPO);
+    const rig = cleanupRig({ store, config: DEPLOY_ONLY, world });
+    world.start.mockReturnValueOnce(
+      /** @type {any} */ ({ ok: false, code: 'repo_operation_spawn_failed' })
+    );
+    await rig.env.actions.retryCleanup(BEAD);
+    return { world, store, rig };
+  }
+
+  test('reruns the failed deploy once on a human retry and closes the bead', async () => {
+    const { world, store, rig } = await deployFailedRow();
+    world.marker.current = { exit_code: 0, signal: null };
+
+    const result = await rig.env.actions.retryCleanup(BEAD);
+
+    expect(result).toMatchObject({ ok: true, step: null });
+    expect(world.start).toHaveBeenCalledTimes(2);
+    expect(store.snapshot(WS).done).toContainEqual(
+      expect.objectContaining({ bead_id: BEAD })
+    );
+  });
+
+  test('clears the cleanup failure and keeps the cursor at repo_operations once the retry is prerecorded', async () => {
+    const { store, rig } = await deployFailedRow();
+
+    await rig.env.actions.retryCleanup(BEAD);
+
+    const queue = store.snapshot(WS);
+    expect(queue.cleanup_failed[BEAD]).toBeUndefined();
+    expect(queue.pr_wait[0]).toMatchObject({
+      bead_id: BEAD,
+      cleanup_cursor: 'repo_operations'
+    });
+  });
+
+  test('waits on the running retry after a restart instead of recording the old failure', async () => {
+    const { world, rig } = await deployFailedRow();
+    await rig.env.actions.retryCleanup(BEAD);
+    const restarted_store = createQueueStore();
+    const restarted = cleanupRig({
+      store: restarted_store,
+      config: DEPLOY_ONLY,
+      world
+    });
+    world.marker.current = { exit_code: 0, signal: null };
+
+    await restarted.env.actions.resumeRepoOperations();
+
+    const queue = restarted_store.snapshot(WS);
+    expect(queue.cleanup_failed[BEAD]).toBeUndefined();
+    expect(queue.done).toContainEqual(
+      expect.objectContaining({ bead_id: BEAD })
+    );
+  });
+
+  test('reruns a failed post-merge verify with its stored PR head after a restart and closes the bead', async () => {
+    const world = processWorld();
+    const store = seedStore({
+      cleanup_failed: {
+        [BEAD]: { step: 'repo_operations', reason: 'script_failed' }
+      }
+    });
+    const first = cleanupRig({
+      store,
+      config: VERIFY_ONLY,
+      world,
+      repo: tmp_state
+    });
+    first.env.observations.record(WS, BEAD, {
+      error: null,
+      pr: prOf({ state: 'MERGED', merged_sha: MERGED, head_sha: PR_HEAD })
+    });
+    world.start.mockReturnValueOnce(
+      /** @type {any} */ ({ ok: false, code: 'repo_operation_spawn_failed' })
+    );
+    await first.env.actions.retryCleanup(BEAD);
+    const restarted_store = createQueueStore();
+    const restarted = cleanupRig({
+      store: restarted_store,
+      config: VERIFY_ONLY,
+      world,
+      repo: tmp_state
+    });
+    world.marker.current = { exit_code: 0, signal: null };
+
+    const result = await restarted.env.actions.retryCleanup(BEAD);
+
+    expect(result).toMatchObject({ ok: true, step: null });
+    expect(world.start).toHaveBeenCalledTimes(2);
+    expect(restarted_store.snapshot(WS).done).toContainEqual(
+      expect.objectContaining({ bead_id: BEAD })
+    );
+  });
+
+  test('continues a running verify retry after a restart with its stored PR head and reaches deploy', async () => {
+    const world = processWorld();
+    const store = seedStore({
+      cleanup_failed: {
+        [BEAD]: { step: 'repo_operations', reason: 'script_failed' }
+      }
+    });
+    const first = cleanupRig({
+      store,
+      config: VERIFY_ONLY,
+      world,
+      repo: tmp_state
+    });
+    first.env.observations.record(WS, BEAD, {
+      error: null,
+      pr: prOf({ state: 'MERGED', merged_sha: MERGED, head_sha: PR_HEAD })
+    });
+    world.start.mockReturnValueOnce(
+      /** @type {any} */ ({ ok: false, code: 'repo_operation_spawn_failed' })
+    );
+    await first.env.actions.retryCleanup(BEAD);
+    // The retry recorded its verify run and the server died before it ended.
+    await first.coordinator.ensureVerify({
+      repo: tmp_state,
+      origin: 'origin',
+      target_base: 'main',
+      base_sha: 'a'.repeat(40),
+      head_sha: PR_HEAD,
+      final_sha: MERGED,
+      bead_id: BEAD,
+      pr_number: 304,
+      script_path: 'repo-ops/script/verify',
+      retry_chain: true,
+      retry_authorized: true
+    });
+    store.clearCleanupFailure(WS, BEAD);
+    const restarted_store = createQueueStore();
+    const restarted = cleanupRig({
+      store: restarted_store,
+      config: VERIFY_ONLY,
+      world,
+      repo: tmp_state
+    });
+    world.marker.current = { exit_code: 0, signal: null };
+
+    await restarted.env.actions.resumeRepoOperations();
+
+    const queue = restarted_store.snapshot(WS);
+    expect(queue.cleanup_failed[BEAD]).toBeUndefined();
+    expect(queue.done).toContainEqual(
+      expect.objectContaining({ bead_id: BEAD })
+    );
+    expect(world.start).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    ['boot resume', 'resume'],
+    ['the first cleanup run', 'merge']
+  ])('passes no retry authority from %s', async (_name, entry) => {
+    const operations = {
+      hasConfig: vi.fn(async () => ({
+        ok: true,
+        present: true,
+        verify_script_path: null
+      })),
+      ensureVerify: vi.fn(async () => ({ ok: true, inert: true })),
+      ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
+      waitForTerminal: vi.fn(),
+      waitForDeployTerminal: vi.fn(async () => ({ state: 'succeeded' })),
+      verifyReceipt: vi.fn(),
+      findExactDeployOperation: vi.fn(async () => null),
+      deploymentEvidence: vi.fn(async () => ({ state: 'succeeded' }))
+    };
+    const env = makeActions({
+      ...ON_BASE,
+      repoOperations: operations,
+      details: [prOf({ head_sha: 'a'.repeat(40) })]
+    });
+    if (entry === 'resume') {
+      env.store.setCleanupCursor(WS, {
+        bead_id: BEAD,
+        cursor: 'base_containment',
+        merge_sha: MERGED,
+        head_ref: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304'
+      });
+      env.store.setCleanupCursor(WS, {
+        bead_id: BEAD,
+        cursor: 'repo_operations'
+      });
+    }
+
+    if (entry === 'resume') {
+      await env.actions.resumeRepoOperations();
+    } else {
+      await env.actions.merge(BEAD);
+    }
+
+    expect(operations.ensureDeploy).toHaveBeenCalledOnce();
+    expect(operations.ensureDeploy.mock.calls[0]).not.toContainEqual(
+      expect.objectContaining({ retry_authorized: true })
+    );
   });
 });

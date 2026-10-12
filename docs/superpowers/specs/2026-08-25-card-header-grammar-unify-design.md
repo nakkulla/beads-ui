@@ -631,6 +631,14 @@ dotfiles 계약이 full_plan Phase 자식과 이월을 폐지해, 두 칩이 읽
 아니라 그대로다. 근거는 `2026-10-02-session-worker-continue-pair-design.md`
 §3.2·§3.5가 소유한다.
 
+**정정(UI-btsr).** 머지된 행에서 정리가 멈춘 카드(`cleanup_retry`·
+`external_cleanup`)의 짝은 `[세션에서 이어가기]` · `[정리 재시도]`다. 자리·유무와
+`pair_anchor`는 정정(UI-18a5) 그대로이고 이름만 바뀐다 — 그 행의 Worker 출구는
+멈춘 저장소 작업(배포·검증)을 한 번 다시 실행하고 정리를 잇는 클릭이므로 이름이
+그 일을 말한다. 확인 필요의 대화 인계, 폐기 실패의 재시도, 외부 작업 완료의 fork
+재개는 `[워커로 이어가기]` 그대로다. 근거는
+`2026-10-12-cleanup-retry-reruns-failed-repo-operation-design.md` §3.5가 소유한다.
+
 **정정(UI-qbgj).** 외부 작업 슬롯 3에서 등록 잡이 1건이고 그 잡이 `PENDING`
 Slurm 잡이면, 잡 줄 바로 뒤에 용량 줄이 최대 두 줄 선다 —
 `대기 사유 <표시어> · 앞 <n>건 · Slurm 예상 <MM/DD HH:mm>`과

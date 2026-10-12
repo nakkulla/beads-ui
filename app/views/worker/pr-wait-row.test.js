@@ -156,10 +156,38 @@ describe('shared PR 대기 projection — 정리 멈춤 (UI-jw27 §3)', () => {
     pr_observations: { 'A-1': MERGED_GATE }
   });
 
-  test('names the stopped-cleanup action 워커로 이어가기', () => {
+  test('names the stopped-cleanup action 정리 재시도', () => {
     const [row] = rowsOf(stopped);
 
-    expect(row.merge_label).toBe('워커로 이어가기');
+    expect(row.merge_label).toBe('정리 재시도');
+  });
+
+  test('names the external stopped-cleanup action 정리 재시도', () => {
+    const [row] = rowsOf(
+      workspace({
+        pr_wait: [{ bead_id: 'A-1', added_at: 1, external: true }],
+        cleanup_failed: {
+          'A-1': { step: 'base_containment', reason: 'boom', at: 42 }
+        },
+        pr_observations: { 'A-1': MERGED_GATE }
+      })
+    );
+
+    expect(row.merge_label).toBe('정리 재시도');
+  });
+
+  test('draws [세션에서 이어가기] right before the [정리 재시도] button', () => {
+    const [row] = rowsOf(stopped);
+    const host = document.createElement('div');
+
+    render(miniRow(row), host);
+
+    const names = Array.from(host.querySelectorAll('button')).map(
+      (button) =>
+        button.getAttribute('aria-label') || button.textContent?.trim()
+    );
+    expect(names.indexOf('정리 재시도')).toBeGreaterThan(0);
+    expect(names[names.indexOf('정리 재시도') - 1]).toBe('세션에서 이어가기');
   });
 
   test('moves the resume step into the worker-continuation tooltip', () => {
@@ -190,12 +218,12 @@ describe('shared PR 대기 projection — 정리 멈춤 (UI-jw27 §3)', () => {
     expect(row.resolve_enabled).toBe(false);
   });
 
-  test('draws the 워커로 이어가기 요청 중 window of a pending cleanup click', () => {
+  test('draws the 정리 재시도 요청 중 window of a pending cleanup click', () => {
     const [row] = rowsOf(stopped, {
       isPending: (kind) => kind === 'cleanup'
     });
 
-    expect(badgeText(row)).toBe('워커로 이어가기 요청 중');
+    expect(badgeText(row)).toBe('정리 재시도 요청 중');
   });
 });
 

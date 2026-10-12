@@ -4088,6 +4088,83 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     expect(record(env)).toBeUndefined();
   });
 
+  /**
+   * A deploy-step stop (UI-btsr §3.4): the same cleanup kind, keyed by the
+   * `repo_operations` step and the failure's own time.
+   *
+   * @param {ReturnType<typeof failureEnv>} env
+   * @param {Record<string, any>} [handoff]
+   */
+  function deployStepHandoff(env, handoff = {}) {
+    env.real.clearCleanupFailure(WS, BEAD);
+    env.real.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'repo_operations',
+      reason: 'script_failed'
+    });
+    const cleanup = env.real.snapshot(WS).cleanup_failed[BEAD];
+    return {
+      stop: '실패 정리 중단 · script_failed',
+      processed_message_at: 900,
+      result: { kind: 'handoff', line: '인계 · 배포 다시', at: 950 },
+      handoff: {
+        line: '인계 · 배포 다시',
+        source: 'result_line',
+        message_at: 900,
+        reserved_at: 950,
+        target: {
+          kind: 'cleanup',
+          identity: `cleanup:repo_operations:${cleanup.at}`
+        },
+        started_at: null,
+        ...handoff
+      }
+    };
+  }
+
+  test('hands a deploy-step failure to the cleanup retry exactly once', async () => {
+    const env = failureEnv();
+    env.exits.retryCleanup.mockImplementation(
+      /** @type {any} */ (
+        async () => {
+          env.real.clearCleanupFailure(WS, BEAD);
+          env.setTime(1500);
+          env.real.recordCleanupFailure(WS, {
+            bead_id: BEAD,
+            step: 'repo_operations',
+            reason: 'script_failed'
+          });
+          return { ok: false, reason: 'script_failed' };
+        }
+      )
+    );
+    openFailureConversation(env, { conversation: deployStepHandoff(env) });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryCleanup).toHaveBeenCalledExactlyOnceWith(WS, BEAD);
+    expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('never reruns a deploy-step handoff a restart left after the retry cleared the failure', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, {
+      conversation: deployStepHandoff(env, { started_at: 960 })
+    });
+    env.real.clearCleanupFailure(WS, BEAD);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+    expect(record(env)).toBeUndefined();
+  });
+
   test('writes the start before the exit is called', async () => {
     const env = failureEnv();
     /** @type {any} */

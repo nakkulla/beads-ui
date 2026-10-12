@@ -965,6 +965,19 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
     ]);
   });
 
+  test('names the stopped-cleanup button 정리 재시도 on both tabs', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    const labels = [worker, monitor].map((mount) =>
+      (
+        cardsByBead(mount).get('W-2')?.querySelector('.worker-mini__merge')
+          ?.textContent || ''
+      ).trim()
+    );
+
+    expect(labels).toEqual(['정리 재시도', '정리 재시도']);
+  });
+
   test('draws [폐기] on the pinned session-registered external row on both tabs', async () => {
     const { worker, monitor } = await drawBothTabs();
 

@@ -3158,7 +3158,7 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
     );
 
     expect(comment).toContain(
-      '- 다음: 수정 Bead UI-repair의 PR·배포 뒤 [워커로 이어가기] · 원본 실패 기록은 보존됨'
+      '- 다음: 수정 Bead UI-repair의 PR·배포 뒤 [정리 재시도] · 원본 실패 기록은 보존됨'
     );
     expect(comment).toContain('- 복구: repair:repair');
   });
@@ -3186,9 +3186,7 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
       { op_id: 'op', reason: 'cleanup_failed' }
     );
 
-    expect(comment).toContain(
-      `- 다음: ${label} — 조건 확인 뒤 [워커로 이어가기]`
-    );
+    expect(comment).toContain(`- 다음: ${label} — 조건 확인 뒤 [정리 재시도]`);
     expect(comment).toContain(`- 복구: wait:${reason}`);
   });
 
@@ -3792,7 +3790,7 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
         failure_class: '배포 실패',
         reason: 'cleanup_failed:script_failed',
         reason_detail: 'deploy exited 2',
-        next_action: '[세션에서 이어가기] 또는 [워커로 이어가기]',
+        next_action: '[세션에서 이어가기] 또는 [정리 재시도]',
         pr_url: 'https://github.com/o/r/pull/1',
         repo: '/Users/me/GitHub/beads-ui'
       })

@@ -398,7 +398,7 @@ function authoritativeMergeSha(pr) {
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
- *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>, verifyReceipt: (operation_id: string, head_sha: string) => any, hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>, findExactDeployOperation: (subject: any) => Promise<any>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any>, prepareJob?: (input: any) => Promise<any>, launchJob?: (input: { operation_id: string }) => Promise<any>, reconcileJob?: (operation_id: string) => Promise<any>, waitForJobTerminal?: (operation_id: string, input?: any) => Promise<any> },
+ *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>, verifyReceipt: (operation_id: string, head_sha: string) => any, hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>, findExactDeployOperation: (subject: any) => Promise<any>, findCleanupVerifyOperation?: (subject: { target_base: string, bead_id: string, merged_sha: string }) => { operation_id: string, head_sha: string|null, state: string }|null, deploymentEvidence: (operation_id: string, subject: any) => Promise<any>, prepareJob?: (input: any) => Promise<any>, launchJob?: (input: { operation_id: string }) => Promise<any>, reconcileJob?: (operation_id: string) => Promise<any>, waitForJobTerminal?: (operation_id: string, input?: any) => Promise<any> },
  *   notifyChanged?: (workspace: string) => void,
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>, needsHuman?: (input: any) => Promise<void> },
  *   requeryDelayMs?: number,
@@ -2911,9 +2911,14 @@ export function createPrActions(deps) {
    * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, target_base?: string|null, verify_operation_id?: string|null, verified_base_sha?: string, verified_head_sha?: string }} [refs]
    * - What the click-time gate observed on GitHub (UI-7agi §3). Load-bearing
    * for an external PR, which has no attempt to read a target base from.
+   * @param {{ retry_authorized?: boolean }} [authority] - A person's cleanup
+   * retry of a `repo_operations` stop (UI-btsr §3.1). Only
+   * {@link retryCleanupLocked} passes it; it lets that step's verify and
+   * deploy record one new run of a failed operation instead of adopting it.
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
-  async function runCleanup(bead_id, refs = {}) {
+  async function runCleanup(bead_id, refs = {}, authority = {}) {
+    const retry_authorized = authority.retry_authorized === true;
     let q = deps.store.snapshot(workspace);
     if (discardActive(q, bead_id)) {
       return {
@@ -3106,12 +3111,20 @@ export function createPrActions(deps) {
           );
         }
         // Spec §7.2/§8: a base declaring no [verify] must create no verify
-        // stage and no verify-shaped failure. The head SHA lives only in the
-        // non-persistent observation cache, so it is demanded after — never
-        // before — the effective base says verify actually runs.
+        // stage and no verify-shaped failure. The head SHA is demanded after —
+        // never before — the effective base says verify actually runs. A
+        // cleanup verify that already ran stored the PR head it verified
+        // (UI-btsr §3.3): a retry and a restart read that, since the
+        // observation cache is not persistent; a first run has no such record
+        // and reads the cache as before.
         if (typeof verify_policy.verify_script_path === 'string') {
           const verified_head_sha =
             refs.verified_head_sha ||
+            repo_operations.findCleanupVerifyOperation?.({
+              target_base,
+              bead_id,
+              merged_sha: merge_sha
+            })?.head_sha ||
             deps.observations.get(workspace, bead_id)?.pr?.head_sha;
           if (
             typeof verified_head_sha !== 'string' ||
@@ -3134,7 +3147,9 @@ export function createPrActions(deps) {
             bead_id,
             pr_number: parsePrNumber(pr_url || '') || 0,
             script_path: verify_policy.verify_script_path,
-            receipt_operation_id: refs.verify_operation_id || null
+            receipt_operation_id: refs.verify_operation_id || null,
+            retry_chain: true,
+            ...(retry_authorized ? { retry_authorized: true } : {})
           });
           if (!verified.ok) {
             return failCleanup(
@@ -3143,6 +3158,9 @@ export function createPrActions(deps) {
               verified.code || 'verify_failed',
               base_sync
             );
+          }
+          if (typeof verified.retry_of === 'string') {
+            resumeRetriedRow(bead_id);
           }
           if (!verified.inert && typeof verified.operation_id === 'string') {
             const receipt =
@@ -3171,7 +3189,8 @@ export function createPrActions(deps) {
         const deployed = await repo_operations.ensureDeploy({
           target_base,
           target_sha: synced.sha,
-          subjects: [{ bead_id, merged_sha: merge_sha }]
+          subjects: [{ bead_id, merged_sha: merge_sha }],
+          ...(retry_authorized ? { retry_authorized: true } : {})
         });
         if (!deployed.ok) {
           return failCleanup(
@@ -3185,6 +3204,9 @@ export function createPrActions(deps) {
             undefined,
             repoOpsFailureEvidence(deployed)
           );
+        }
+        if (typeof deployed.retry_of === 'string') {
+          resumeRetriedRow(bead_id);
         }
         if (!deployed.inert && typeof deployed.operation_id === 'string') {
           const evidence = await repo_operations.waitForDeployTerminal(
@@ -3684,6 +3706,25 @@ export function createPrActions(deps) {
     }
     notifyChanged(workspace);
     return { ok: false, step, reason, base_sync };
+  }
+
+  /**
+   * A person's cleanup retry just recorded one new run of the failed repo
+   * operation (UI-btsr §3.3). The row is in progress again, not stopped: its
+   * stop record goes so the card shows the run and a boot resume can pick the
+   * row up if the server restarts mid-run (beads-ui deploys itself by
+   * restarting), and the cursor stays on `repo_operations`. A failure of the
+   * new run records a new stop with its own time through {@link failCleanup}.
+   *
+   * @param {string} bead_id
+   */
+  function resumeRetriedRow(bead_id) {
+    deps.store.clearCleanupFailure(workspace, bead_id);
+    deps.store.setCleanupCursor?.(workspace, {
+      bead_id,
+      cursor: 'repo_operations'
+    });
+    notifyChanged(workspace);
   }
 
   // -------------------------------------------------------------------------
@@ -4745,7 +4786,13 @@ export function createPrActions(deps) {
       // entry that may re-run an outcome-unknown post-merge job (§3).
       return await closeCoveredRow(bead_id, true, true);
     }
-    return await runCleanup(bead_id, refs);
+    // The same boundary for a stopped repo operation (UI-btsr §3.1): the
+    // failed verify or deploy runs once more as a new record instead of being
+    // adopted again. Boot resume, the coordinator replay and the first run
+    // reach `runCleanup` without it.
+    return await runCleanup(bead_id, refs, {
+      retry_authorized: cleanup_failure.step === 'repo_operations'
+    });
   }
 
   /**
