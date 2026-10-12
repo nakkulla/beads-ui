@@ -606,6 +606,9 @@
  * @property {Record<string, ConversationRefusal>} conversation_refusals - The
  * last refused conversation handoff of a failure or 외부 작업 완료 row, keyed
  * by bead (UI-18a5 §3.4).
+ * @property {Record<string, import('./session-inquiry/contract.js').SessionInquiry>} session_inquiries -
+ * Bead-less session-owned human-needed rows, keyed by row id (UI-gske §3.1).
+ * Closed rows stay; nothing deletes them.
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
  * Cold load resets this OFF; only a verified terminal self-deploy may restore
@@ -669,7 +672,7 @@
  * `stale:true` marks the ONE non-blocking record (UI-dlim §3.4): the bead was
  * ADMITTED with a stale spec_review receipt, so the badge must not read as a
  * refusal. Every record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean }, interruption_notified_at?: number }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and transient observations retain their retry budget across a
@@ -686,6 +689,10 @@
  * none. `log_path` is the absolute path to that command's FULL preserved output
  * (UI-0x54), which the capped `output_tail` cannot hold; absent when the run
  * wrote no complete log file, and overwritten by a cleanup retry's own run.
+ * `interruption_notified_at` is the once-mark of the `정리 중단` push and
+ * conversation of a record no completion intent drives (UI-gske §3.5): written
+ * on THIS record before anything is sent, absent until then, and never carried
+ * to the next record, whose own recorded time is a new failure identity.
  * Both live HERE rather than
  * in bd metadata because the bd contract surface is owned by dotfiles
  * (`docs/contracts/workflow.md`) and beads-ui only consumes it; this is
@@ -1169,6 +1176,11 @@
  * @property {CompletionOperation|null} active_op
  * @property {string} [merge_head_sha] - The head pinned immediately before the merge effect.
  * @property {CompletionHold|null} hold
+ * @property {Array<{ pr_url: string|null, head_sha: string }>} [hold_launches] -
+ * The (PR, held head) pairs a verify-failure hold already opened its automatic
+ * conversation for (UI-gske §3.5). Kept apart from `hold`, which a subject
+ * change clears, so a head that comes back (A→B→A) or a restart never opens a
+ * second one; absent until the first launch.
  * @property {CompletionTerminal|null} terminal_reason
  * @property {CompletionAutoResolution|null} auto_resolution
  * @property {CompletionAutoResolution|null} paused_resolution - The resolution
@@ -1228,6 +1240,11 @@ import {
 } from './queue-hold.js';
 import { CODEX_FAMILIES, isCodexPinnedName } from './runner-catalog.js';
 import { runtimeCatalog } from './runner/index.js';
+import {
+  INQUIRY_TRANSITIONS,
+  isOpenInquiry,
+  normalizeSessionInquiries
+} from './session-inquiry/contract.js';
 import { attemptRecordPath, queueFilePath } from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
@@ -1681,6 +1698,7 @@ function applyCompletionPhase(intent, phase) {
 function invalidCompletionIntent(root_bead_id, value) {
   const raw = isRecord(value) ? value : {};
   const raw_subject = isRecord(raw.subject) ? raw.subject : {};
+  const hold_launches = normalizeCompletionHoldLaunches(raw.hold_launches);
   return {
     target_base: typeof raw.target_base === 'string' ? raw.target_base : '',
     phase: 'needs_human',
@@ -1697,6 +1715,7 @@ function invalidCompletionIntent(root_bead_id, value) {
     auto_resolution: null,
     paused_resolution: null,
     hold: null,
+    ...(hold_launches.length > 0 ? { hold_launches } : {}),
     terminal_reason: {
       reason: 'intent_state_invalid',
       stage: 'state',
@@ -1742,6 +1761,7 @@ function normalizeCompletionIntent(root_bead_id, value) {
     phase === 'paused'
       ? normalizeCompletionAutoResolution(value.paused_resolution)
       : null;
+  const hold_launches = normalizeCompletionHoldLaunches(value.hold_launches);
   if (
     typeof value.target_base !== 'string' ||
     value.target_base.length === 0 ||
@@ -1770,9 +1790,31 @@ function normalizeCompletionIntent(root_bead_id, value) {
     auto_resolution,
     paused_resolution,
     hold: normalizeCompletionHold(value.hold),
+    ...(hold_launches.length > 0 ? { hold_launches } : {}),
     terminal_reason
   };
   return resumed_terminal ? { ...normalized, resumed_terminal } : normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Array<{ pr_url: string|null, head_sha: string }>}
+ */
+function normalizeCompletionHoldLaunches(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  /** @type {Array<{ pr_url: string|null, head_sha: string }>} */
+  const launches = [];
+  for (const item of value) {
+    if (isRecord(item) && typeof item.head_sha === 'string') {
+      launches.push({
+        pr_url: typeof item.pr_url === 'string' ? item.pr_url : null,
+        head_sha: item.head_sha
+      });
+    }
+  }
+  return launches;
 }
 
 /**
@@ -2374,6 +2416,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'discard_operations',
   'interactive_sessions',
   'conversation_refusals',
+  'session_inquiries',
   'merge_policy',
   'drift_policy',
   'worker_runner',
@@ -2442,6 +2485,7 @@ function emptyQueue() {
     discard_operations: {},
     interactive_sessions: {},
     conversation_refusals: {},
+    session_inquiries: {},
     repo_ops_opt_out: { verify: false, deploy: false },
     repo_operations: {},
     post_merge_jobs: {},
@@ -5363,6 +5407,13 @@ function normalizeQueue(raw) {
           q.cleanup_failed[bead_id].elapsed_ms = Number(value.elapsed_ms);
         }
         if (
+          typeof value.interruption_notified_at === 'number' &&
+          Number.isFinite(value.interruption_notified_at)
+        ) {
+          q.cleanup_failed[bead_id].interruption_notified_at =
+            value.interruption_notified_at;
+        }
+        if (
           isRecord(value.diagnosis) &&
           typeof value.diagnosis.verdict === 'string' &&
           typeof value.diagnosis.attempt_id === 'string' &&
@@ -5404,6 +5455,7 @@ function normalizeQueue(raw) {
   q.conversation_refusals = normalizeConversationRefusals(
     raw.conversation_refusals
   );
+  q.session_inquiries = normalizeSessionInquiries(raw.session_inquiries);
   // 부재·비객체·비불리언은 모두 '실행'으로 읽는다: opt-out은 사용자가 명시적으로
   // 켠 설정이며, 읽을 수 없는 값이 게이트를 건너뛰게 만들어서는 안 된다.
   q.repo_ops_opt_out = {
@@ -7169,6 +7221,138 @@ export function createQueueStore(options = {}) {
         }
         delete next.conversation_refusals[bead_id];
         return true;
+      });
+    },
+
+    /**
+     * Register or refresh one session-owned human-needed row (UI-gske §3.1):
+     * an open row of the same (repo, ref) takes the new fields and no new row
+     * is made; a changed `session_id` resets it to `waiting`. Without an open
+     * row a new one is made even when a closed one exists. `notify` stamps
+     * `notified_at` on a NEW row in the same write, before anything is sent.
+     *
+     * @param {string} workspace
+     * @param {import('./session-inquiry/contract.js').InquiryRequest} request
+     * @param {{ at: number, makeId: () => string, notify: boolean }} options
+     * @returns {{ ok: boolean, created: boolean, changed: boolean, row: import('./session-inquiry/contract.js').SessionInquiry|null }}
+     */
+    upsertSessionInquiry(workspace, request, options) {
+      /** @type {{ created: boolean, changed: boolean, row: import('./session-inquiry/contract.js').SessionInquiry|null }} */
+      const outcome = { created: false, changed: false, row: null };
+      const result = applyUnconditional(workspace, (next) => {
+        next.session_inquiries ||= {};
+        const open = Object.values(next.session_inquiries).find(
+          (row) =>
+            isOpenInquiry(row) &&
+            row.repo === request.repo &&
+            row.ref === request.ref
+        );
+        if (open) {
+          const before = JSON.stringify(open);
+          const session_changed = open.session_id !== request.session_id;
+          Object.assign(open, {
+            session_id: request.session_id,
+            runner: request.runner,
+            cwd: request.cwd,
+            summary: request.summary,
+            bundles: request.bundles,
+            related_beads: request.related_beads
+          });
+          if (session_changed) {
+            open.state = 'waiting';
+            open.liveness = null;
+          }
+          outcome.row = open;
+          if (JSON.stringify(open) === before) {
+            return false;
+          }
+          open.updated_at = options.at;
+          outcome.changed = true;
+          return true;
+        }
+        let id = options.makeId();
+        while (Object.hasOwn(next.session_inquiries, id)) {
+          id = options.makeId();
+        }
+        next.session_inquiries[id] = {
+          id,
+          ...request,
+          state: 'waiting',
+          created_at: options.at,
+          updated_at: options.at,
+          notified_at: options.notify ? options.at : null,
+          auto_resume_consumed: [],
+          liveness: null,
+          closed_reason: null,
+          note: null
+        };
+        outcome.row = next.session_inquiries[id];
+        outcome.created = true;
+        outcome.changed = true;
+        return true;
+      });
+      return {
+        ok: result.ok || outcome.row !== null,
+        ...outcome,
+        row: outcome.row ? clone(outcome.row) : null
+      };
+    },
+
+    /**
+     * Move one row by the contract's transition table. The same state is a
+     * no-op and a transition outside the table changes nothing; the caller
+     * answers both (dotfiles workflow-state.yaml session_inquiry).
+     *
+     * @param {string} workspace
+     * @param {string} id
+     * @param {{ state: string, note?: string|null, closed_reason?: string|null, at: number }} input
+     * @returns {{ outcome: 'unknown'|'same'|'invalid'|'moved', row: import('./session-inquiry/contract.js').SessionInquiry|null }}
+     */
+    transitionSessionInquiry(workspace, id, input) {
+      /** @type {{ outcome: 'unknown'|'same'|'invalid'|'moved', row: import('./session-inquiry/contract.js').SessionInquiry|null }} */
+      const out = { outcome: 'unknown', row: null };
+      applyUnconditional(workspace, (next) => {
+        const row = next.session_inquiries?.[id];
+        if (!row) {
+          return false;
+        }
+        out.row = clone(row);
+        if (row.state === input.state) {
+          out.outcome = 'same';
+          return false;
+        }
+        if (!(INQUIRY_TRANSITIONS[row.state] || []).includes(input.state)) {
+          out.outcome = 'invalid';
+          return false;
+        }
+        row.state = /** @type {any} */ (input.state);
+        row.updated_at = input.at;
+        if (input.note !== undefined && input.note !== null) {
+          row.note = input.note;
+        }
+        if (input.state === 'closed') {
+          row.closed_reason = input.closed_reason ?? null;
+        }
+        out.outcome = 'moved';
+        out.row = clone(row);
+        return true;
+      });
+      return out;
+    },
+
+    /**
+     * Patch one row's observation fields in place. `mutate` returns false
+     * when nothing changed, so an unchanged observation bumps no revision.
+     *
+     * @param {string} workspace
+     * @param {string} id
+     * @param {(row: import('./session-inquiry/contract.js').SessionInquiry) => boolean} mutate
+     * @returns {QueueOpResult}
+     */
+    patchSessionInquiry(workspace, id, mutate) {
+      return applyUnconditional(workspace, (next) => {
+        const row = next.session_inquiries?.[id];
+        return row ? mutate(row) : false;
       });
     },
 
@@ -10913,6 +11097,32 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Claim the `정리 중단` announcement of ONE cleanup stop (UI-gske §3.5)
+     * before it is sent. The record's own `at` is the failure identity, so a
+     * claim for a record that was replaced since — or one already claimed — is
+     * refused and the caller sends nothing.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, at: number }} input
+     * @returns {QueueOpResult}
+     */
+    markCleanupInterruptionNotified(workspace, input) {
+      const { bead_id, at } = input;
+      return applyUnconditional(workspace, (next) => {
+        const record = next.cleanup_failed[bead_id];
+        if (
+          !record ||
+          record.at !== at ||
+          typeof record.interruption_notified_at === 'number'
+        ) {
+          return false;
+        }
+        record.interruption_notified_at = now();
+        return true;
+      });
+    },
+
+    /**
      * Store general or quick_fix orchestration defaults as VALUES under the queue CAS
      * (spec §C.5). This replaces both the preset reference and the per-key
      * `exec_defaults` map: the worker launcher is the only consumer of these
@@ -12764,6 +12974,36 @@ export function createQueueStore(options = {}) {
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id
         );
+        return true;
+      });
+    },
+
+    /**
+     * Claim the automatic conversation of one verify-failure hold (UI-gske
+     * §3.5) before it launches. One claim per (PR, held head): a pair already
+     * on the intent is refused, so the caller launches nothing.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, pr_url: string|null, head_sha: string }} input
+     * @returns {QueueOpResult}
+     */
+    claimCompletionHoldLaunch(workspace, input) {
+      const { root_bead_id, pr_url, head_sha } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        if (!intent || typeof head_sha !== 'string' || head_sha.length === 0) {
+          return false;
+        }
+        const pr = typeof pr_url === 'string' ? pr_url : null;
+        const launches = intent.hold_launches || [];
+        if (
+          launches.some(
+            (item) => item.pr_url === pr && item.head_sha === head_sha
+          )
+        ) {
+          return false;
+        }
+        intent.hold_launches = [...launches, { pr_url: pr, head_sha }];
         return true;
       });
     },

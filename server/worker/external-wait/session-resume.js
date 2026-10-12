@@ -119,29 +119,23 @@ function isRecord(value) {
 }
 
 /**
- * Build the session resume launcher.
+ * Build the liveness probe of an arbitrary Claude session id: whether it still
+ * runs somewhere, from the Claude Code session registry and an exact
+ * `procStart` match (UI-r6xq §4.3-2). An id with no registry entry is `dead`;
+ * an entry that cannot be read or probed is `unverified`. Shared with the
+ * session-inquiry rows (UI-gske §3.2), which judge a registered session id the
+ * same way.
  *
- * @param {SessionResumeDeps} deps
+ * @param {{ fs: Pick<typeof nodeFs, 'readdirSync'|'readFileSync'>, run: Run, sessionsDir: string, log: (...args: any[]) => void }} deps
+ * @returns {(provider: 'claude'|'codex', session_id: string) => Promise<OwnerLiveness>}
  */
-export function createExternalWaitSessionResume(deps) {
-  const fs = deps.fs || nodeFs;
-  const now = deps.now || (() => Date.now());
-  const log = deps.log || default_log;
-  /** @type {Run} */
-  const run =
-    deps.run || ((argv, options) => runShell(argv[0], argv.slice(1), options));
-  const sessions_dir =
-    deps.sessionsDir || path.join(os.homedir(), '.claude', 'sessions');
-
-  /**
-   * Whether the original session still runs somewhere, from the Claude Code
-   * session registry and an exact `procStart` match (UI-r6xq §4.3-2).
-   *
-   * @param {'claude'|'codex'} provider
-   * @param {string} session_id
-   * @returns {Promise<OwnerLiveness>}
-   */
-  async function ownerLiveness(provider, session_id) {
+export function createOwnerLiveness({
+  fs,
+  run,
+  sessionsDir: sessions_dir,
+  log
+}) {
+  return async function ownerLiveness(provider, session_id) {
     const unverified = {
       state: /** @type {const} */ ('unverified'),
       owner_tmux: null
@@ -237,7 +231,30 @@ export function createExternalWaitSessionResume(deps) {
       }
     }
     return { state: 'dead', owner_tmux: null };
-  }
+  };
+}
+
+/**
+ * Build the session resume launcher.
+ *
+ * @param {SessionResumeDeps} deps
+ */
+export function createExternalWaitSessionResume(deps) {
+  const fs = deps.fs || nodeFs;
+  const now = deps.now || (() => Date.now());
+  const log = deps.log || default_log;
+  /** @type {Run} */
+  const run =
+    deps.run || ((argv, options) => runShell(argv[0], argv.slice(1), options));
+  const sessions_dir =
+    deps.sessionsDir || path.join(os.homedir(), '.claude', 'sessions');
+
+  const ownerLiveness = createOwnerLiveness({
+    fs,
+    run,
+    sessionsDir: sessions_dir,
+    log
+  });
 
   /**
    * Write the failure record and keep the key (UI-r6xq §4.2).

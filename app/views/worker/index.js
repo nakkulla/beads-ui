@@ -201,7 +201,8 @@ const EMPTY_QUEUE_GROUP = {
   token_total: null,
   cleanup_failures: [],
   declared_base: null,
-  repo_operations: []
+  repo_operations: [],
+  session_inquiries: []
 };
 
 /**
@@ -460,6 +461,15 @@ export function resolveSessionToast(res) {
   if (res.session === 'already_running') {
     return String(sessionWindowText(res));
   }
+  // A session-inquiry click that opened nothing on purpose says why in one
+  // sentence (UI-gske §3.3): the registered session is alive, or unverified.
+  if (
+    res.launched !== true &&
+    typeof res.message === 'string' &&
+    res.message.length > 0
+  ) {
+    return res.message;
+  }
   if (res.launched !== true) {
     return `세션 기동 실패: ${res.reason || 'unknown'}`;
   }
@@ -475,7 +485,13 @@ export function resolveSessionToast(res) {
  * @returns {'success'|'error'|'info'}
  */
 export function resolveSessionTone(res) {
-  if (res && res.session === 'already_running') {
+  if (
+    res &&
+    (res.session === 'already_running' ||
+      (res.launched !== true &&
+        typeof res.message === 'string' &&
+        res.message.length > 0))
+  ) {
     return 'info';
   }
   return res && res.launched === true ? 'success' : 'error';
@@ -2377,7 +2393,9 @@ export function createWorkerView(mount_element, options = {}) {
       reveal: (root_dir, bead_id) => {
         expandWaitSubject(m, collapse, root_dir, bead_id);
         doRender();
-      }
+      },
+      openInquiry: (root_dir, inquiry_id) =>
+        openInquiryInDrawer(root_dir, inquiry_id)
     });
     // 이 워크스페이스가 어디로 머지되는가 (UI-j6wa §3). 상시 표시 — base는 PR을
     // 여는 순간 되돌리기 어려운 선택이라, 예외가 생겼을 때만 나타나는 표시로는
@@ -2433,7 +2451,8 @@ export function createWorkerView(mount_element, options = {}) {
     // 해결 필요 배지가 부르고, 클릭이 그 자리로 데려간다.
     const repo_operations = repoOpsStripTemplate(
       group.repo_operations,
-      group.cleanup_failures
+      group.cleanup_failures,
+      group.session_inquiries
     );
     if (is_mobile) {
       // sticky 리본 (UI-58y2 §모바일 1)에는 두 자동화 토글과 세 카운트만 둔다.
@@ -3290,7 +3309,7 @@ export function createWorkerView(mount_element, options = {}) {
    * never of an operation card, so the 타임아웃 line can only name a number if
    * the drawer receives it (UI-s582 §2).
    *
-   * @returns {{ operations: any, cleanup_failures: any, repo: string, repo_ops: any }}
+   * @returns {{ operations: any, cleanup_failures: any, session_inquiries: any, repo: string, repo_ops: any }}
    */
   function repoOpsDrawerInput() {
     const group = groupOf(laneModel());
@@ -3305,6 +3324,7 @@ export function createWorkerView(mount_element, options = {}) {
     return {
       operations: group.repo_operations,
       cleanup_failures: group.cleanup_failures,
+      session_inquiries: group.session_inquiries,
       repo: (getWorkspacePath && getWorkspacePath()) || '',
       repo_ops
     };
@@ -3322,6 +3342,24 @@ export function createWorkerView(mount_element, options = {}) {
     drawer_overlay_el.hidden = false;
     repo_ops_drawer.open(repoOpsDrawerInput());
     doRender();
+  }
+
+  /**
+   * A 막힘 칩 session-inquiry entry's destination (UI-gske §3.4): this
+   * workspace's 저장소 작업 drawer, scrolled to the row. The drawer belongs to
+   * the connected workspace, so an entry of another repository only closes
+   * the summary.
+   *
+   * @param {string} root_dir
+   * @param {string} inquiry_id
+   */
+  function openInquiryInDrawer(root_dir, inquiry_id) {
+    const workspace = (getWorkspacePath && getWorkspacePath()) || '';
+    if (!workspace || root_dir !== workspace) {
+      return;
+    }
+    openRepoOpsDrawer();
+    repo_ops_drawer.reveal(inquiry_id);
   }
 
   /**
@@ -3680,6 +3718,18 @@ export function createWorkerView(mount_element, options = {}) {
       const operation_id = repoOpResolve.dataset.operationId;
       if (operation_id) {
         void resolveInSession(`repo-op:${operation_id}`, { operation_id });
+      }
+      return;
+    }
+    // A session-inquiry row's `[세션에서 이어가기]` (UI-gske §3.3): the same
+    // mutation as a card's, keyed by the row id instead of a Bead.
+    const inquiryResolve = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-session-inquiry__resolve')
+    );
+    if (inquiryResolve) {
+      const inquiry_id = inquiryResolve.dataset.inquiryId;
+      if (inquiry_id) {
+        void resolveInSession(`session-inquiry:${inquiry_id}`, { inquiry_id });
       }
       return;
     }

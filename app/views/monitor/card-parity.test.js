@@ -26,7 +26,11 @@ vi.mock('../../../server/bd.js', async (importOriginal) => {
 vi.mock('../../../server/worker/attach.js', async (importOriginal) => {
   /** @type {any} */
   const actual = await importOriginal();
-  return { ...actual, workerWaitState: vi.fn(actual.workerWaitState) };
+  return {
+    ...actual,
+    workerWaitState: vi.fn(actual.workerWaitState),
+    workerAttached: vi.fn(actual.workerAttached)
+  };
 });
 
 // 서버 모듈은 모듈 수준에서 `new URL(..., import.meta.url)`을 쓰므로, jsdom 환경의
@@ -51,7 +55,8 @@ const { runBdJsonProjected } = await import('../../../server/bd.js');
 const { fetchListForSubscription } =
   await import('../../../server/list-adapters.js');
 const { makeAttempt } = await import('../../../server/worker/queue-store.js');
-const { workerWaitState } = await import('../../../server/worker/attach.js');
+const { workerAttached, workerWaitState } =
+  await import('../../../server/worker/attach.js');
 const { judgeWaitReasons } =
   await import('../../../server/worker/wait-judgment.js');
 const { getWorkerRuntime, __resetWorkerRuntimeForTest: resetWorkerRuntime } =
@@ -511,8 +516,12 @@ function seedExternalWait(raw_queue, takeover_blocker) {
     );
     return /** @type {any} */ ({
       external_waits,
+      // 세션 소유 사람 필요 행(UI-gske §3.3)의 사유도 서버 판정 그대로 싣는다 —
+      // 행이 없는 고정 자료에서는 아무것도 더하지 않는다.
       wait_reasons: judged.wait_reasons.filter(
-        (/** @type {any} */ reason) => reason.kind === 'external_job'
+        (/** @type {any} */ reason) =>
+          reason.kind === 'external_job' ||
+          String(reason.subject.bead_id).startsWith('session-inquiry:')
       )
     });
   });
@@ -1185,5 +1194,124 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
       )
     ).not.toBeNull();
     expect(monitor.querySelector('.worker-card__revive')).toBeNull();
+  });
+});
+
+describe('session-inquiry row parity between the Worker and Monitor tabs (UI-gske §3.4)', () => {
+  const ID = 'si-0123456789ab';
+
+  /** @returns {Record<string, any>} */
+  function inquiryPatch() {
+    return {
+      session_inquiries: {
+        [ID]: {
+          id: ID,
+          repo: WS,
+          ref: 'refs/set-aside/main/sync-1',
+          session_id: '11111111-2222-4333-8444-555555555555',
+          runner: 'claude',
+          cwd: WS,
+          summary: '보관한 묶음을 다시 적용할까요?',
+          bundles: [{ title: '설정 변경', paths: ['a.js'], reason: '충돌' }],
+          related_beads: ['C-1'],
+          state: 'waiting',
+          created_at: NOW - HOUR,
+          updated_at: NOW - HOUR,
+          notified_at: NOW - HOUR,
+          auto_resume_consumed: [],
+          liveness: { state: 'dead', at: NOW - 60 * 1000, tmux: null },
+          closed_reason: null,
+          note: null
+        }
+      }
+    };
+  }
+
+  /**
+   * Open the 저장소 작업 drawer of the fixture repository on both tabs: the
+   * Worker strip and the Monitor `⚠ N` badge.
+   *
+   * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
+   */
+  async function openBothDrawers() {
+    vi.mocked(workerAttached).mockReturnValue(true);
+    const mounts = await drawBothTabs(undefined, inquiryPatch());
+    /** @type {HTMLElement} */ (
+      mounts.worker.querySelector('.worker-repo-strip')
+    ).click();
+    /** @type {HTMLElement} */ (
+      mounts.monitor.querySelector('[data-act="repo-ops"]')
+    ).click();
+    return mounts;
+  }
+
+  afterEach(() => {
+    vi.mocked(workerAttached).mockImplementation(() => false);
+  });
+
+  test('draws the same drawer row on both tabs', async () => {
+    const { worker, monitor } = await openBothDrawers();
+
+    const rows = [worker, monitor].map((mount) =>
+      mount.querySelector(`li[data-inquiry-id="${ID}"]`)
+    );
+
+    expect(rows[0]).not.toBeNull();
+    expect(partsOf(/** @type {HTMLElement} */ (rows[1]))).toEqual(
+      partsOf(/** @type {HTMLElement} */ (rows[0]))
+    );
+    expect(
+      rows[0]?.querySelector('.worker-session-inquiry__resolve')?.textContent
+    ).toContain('세션에서 이어가기');
+  });
+
+  test('counts the open row in the same unresolved number on both tabs', async () => {
+    vi.mocked(workerAttached).mockReturnValue(true);
+    const { worker, monitor } = await drawBothTabs(undefined, inquiryPatch());
+
+    const worker_count = (
+      worker.querySelector('.worker-repo-strip__badge')?.textContent || ''
+    ).replace(/\D+/g, '');
+    const monitor_count = (
+      monitor.querySelector('[data-act="repo-ops"]')?.textContent || ''
+    ).replace(/\D+/g, '');
+
+    expect(worker_count).toBe('2');
+    expect(monitor_count).toBe(worker_count);
+  });
+
+  test('opens the drawer at the row from the 막힘 chip entry on both tabs', async () => {
+    vi.mocked(workerAttached).mockReturnValue(true);
+    const { worker, monitor } = await drawBothTabs(undefined, inquiryPatch());
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+
+    for (const mount of [worker, monitor]) {
+      const entry = Array.from(
+        mount.querySelectorAll('.wait-summary__item')
+      ).find((item) => (item.textContent || '').includes('보관 main/sync-1'));
+      /** @type {HTMLElement} */ (entry).click();
+    }
+
+    for (const mount of [worker, monitor]) {
+      expect(
+        mount
+          .querySelector(`li[data-inquiry-id="${ID}"]`)
+          ?.classList.contains('wait-reason--highlight')
+      ).toBe(true);
+    }
+  });
+
+  test('names the 막힘 chip entry by its ref on both tabs', async () => {
+    vi.mocked(workerAttached).mockReturnValue(true);
+    const { worker, monitor } = await drawBothTabs(undefined, inquiryPatch());
+
+    const entries = [worker, monitor].map((mount) =>
+      Array.from(mount.querySelectorAll('.wait-summary__item'))
+        .map((item) => (item.textContent || '').replace(/\s+/g, ' ').trim())
+        .filter((text) => text.includes('보관 main/sync-1'))
+    );
+
+    expect(entries[0]).toHaveLength(1);
+    expect(entries[1]).toEqual(entries[0]);
   });
 });

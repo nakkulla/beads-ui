@@ -394,3 +394,44 @@ export function repoOperationResolveFields(operation, resolve_pending = false) {
     ...conversation_fields
   };
 }
+
+/** What a session-inquiry row's `[세션에서 이어가기]` opens (UI-gske §3.3). */
+const SESSION_INQUIRY_TITLE =
+  '답을 기다리던 해소 세션을 같은 세션(--resume)으로 등록 cwd에서 다시 엽니다 — 등록 세션이 살아 있으면 새로 띄우지 않습니다';
+
+/**
+ * The `[세션에서 이어가기]` decision of one session-inquiry drawer row
+ * (UI-gske §3.3, §3.4): a closed row draws nothing; an open row draws the
+ * button unless its one conversation already reaches the person through its
+ * Discord link — the repo-operation row's judgment. A live conversation
+ * without a link keeps the button, whose click focuses that window, and is
+ * returned as `conversation` so the row shows where it is. There is no
+ * `[워커로 이어가기]` on this row (contract `worker_handoff_action: none`).
+ *
+ * @param {any} row - A projected session-inquiry row.
+ * @param {boolean} [resolve_pending]
+ * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string, conversation?: any }}
+ */
+export function sessionInquiryResolveFields(row, resolve_pending = false) {
+  if (!row || (row.state !== 'waiting' && row.state !== 'held')) {
+    return {};
+  }
+  const views = Array.isArray(row.interactive_sessions)
+    ? row.interactive_sessions
+    : [];
+  const live = liveConversations(views)[0];
+  const conversation_fields = live ? { conversation: live } : {};
+  if (hasDiscordConversation(views)) {
+    return conversation_fields;
+  }
+  return {
+    resolve_action: true,
+    resolve_enabled: !resolve_pending,
+    resolve_title: resolve_pending
+      ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
+      : live
+        ? FOCUS_TITLE
+        : SESSION_INQUIRY_TITLE,
+    ...conversation_fields
+  };
+}

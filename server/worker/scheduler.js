@@ -141,6 +141,7 @@ import {
 import {
   failedDiscardOperation,
   failureHandoffTarget,
+  isBeadlessRowKey,
   repoOperationIdOf
 } from './resolve-session.js';
 import { foreignReviewPromptSection } from './review-session.js';
@@ -10765,15 +10766,16 @@ export function createScheduler(deps) {
         return {};
       }
     }
-    // A repo-operation row has no Bead (UI-jbl1 §3.3): its record settles by
-    // its result line and its window's end alone, never by a Bead status.
+    // A repo-operation or session-inquiry row has no Bead (UI-jbl1 §3.3,
+    // UI-gske §3.2): its record settles by its result line and its window's
+    // end alone, never by a Bead status.
     const unsettled_beads = new Set(
       Object.entries(records)
         .filter(
           ([key, record]) =>
             record.settled_at === null &&
             isCurrent(key, record) &&
-            repoOperationIdOf(record.bead_id) === null
+            !isBeadlessRowKey(record.bead_id)
         )
         .map(([, record]) => record.bead_id)
     );

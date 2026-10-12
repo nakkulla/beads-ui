@@ -11,6 +11,12 @@ import {
   TAKEOVER_SETTLE_MS,
   takeoverTarget
 } from './external-wait/takeover.js';
+import {
+  hasInquiryConversation,
+  isOpenInquiry,
+  refTail,
+  sessionInquiryRowKey
+} from './session-inquiry/contract.js';
 import { isSessionStalledRecovery } from './session-stall.js';
 
 /** All display/notification thresholds live here (UI-n99w §5.2). */
@@ -41,6 +47,8 @@ export const WAIT_THRESHOLDS = Object.freeze({
  * @property {VerdictReason} [verdict_reason]
  * @property {string} [resolution] - An `action_required` reason's sentence
  * naming the button that resolves it and where it stands (UI-9w5l §3.1).
+ * @property {string} [subject_label] - What a summary list shows in place of
+ * a Bead-less subject's row key (`보관 <ref 끝부분>`, UI-gske §3.4).
  * @property {Array<{ id: string, rig?: string, status?: string, kind: 'gate'|'issue' }>} targets
  * @property {WaitAction[]} actions
  * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan
@@ -86,8 +94,14 @@ const RESOLUTIONS = Object.freeze({
     '[세션에서 이어가기], [새 세션으로] 또는 [워커로 이어가기]로 다시 이어간다',
   running_stop: '[관찰 중단]으로 어긋난 대기를 정리한다',
   completing_release: '상세 패널의 [대기 해제]로 어긋난 대기를 정리한다',
-  orphan_key: '[관찰 중단]으로 남은 대기 키를 지운다'
+  orphan_key: '[관찰 중단]으로 남은 대기 키를 지운다',
+  session_inquiry:
+    '[세션에서 이어가기]로 답을 기다리던 해소 세션을 같은 세션으로 다시 열어 답한다'
 });
+
+/** The release of a session-owned human-needed row (UI-gske §3.3). */
+const SESSION_INQUIRY_RELEASE =
+  '해소 세션에서 답하면 그 세션이 착지·폐기·보류를 끝낸다';
 
 /** The release of an unresolved takeover: the observation clears it. */
 const TAKEOVER_RELEASE =
@@ -1050,6 +1064,38 @@ export function judgeWaitReasons(input) {
         wait_reasons.push(result);
       }
     }
+  }
+  // 세션 소유 사람 필요 행 (UI-gske §3.3): 열린 행 하나가 확인 필요 사유 하나를
+  // 낸다. 등록 세션이 죽었고 그 행의 대화도 없는 `waiting`만 조치 필요다 —
+  // 살아 있거나 확인 불가거나 대화가 열려 있거나 `held`면 답할 자리가 이미 있다.
+  for (const row of Object.values(queue.session_inquiries || {})) {
+    if (!isOpenInquiry(row)) {
+      continue;
+    }
+    const tail = refTail(row.ref);
+    const result = reason(
+      'awaiting_user',
+      sessionInquiryRowKey(row.id),
+      root_dir,
+      `사람 필요 · 보관 ${tail}`,
+      SESSION_INQUIRY_RELEASE
+    );
+    result.subject_label = `보관 ${tail}`;
+    addClocks(result, { since: row.created_at });
+    if (
+      row.state === 'waiting' &&
+      row.liveness?.state === 'dead' &&
+      !hasInquiryConversation(queue, row.id)
+    ) {
+      judge(result, 'action_required', 'decision');
+      result.resolution = RESOLUTIONS.session_inquiry;
+      result.actions.push({
+        op: SESSION_CONTINUE_OP,
+        label: '[세션에서 이어가기]',
+        payload: { inquiry_id: row.id }
+      });
+    }
+    wait_reasons.push(result);
   }
   // 자동 진행 꺼짐(`queue.auto_advance === false`)은 사유를 내지 않는다
   // (UI-3pu9 §3): 저장소 자동화 토글이 이미 말하는 사실이고, 읽는 화면이 없다.

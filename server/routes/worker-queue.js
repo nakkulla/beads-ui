@@ -7,16 +7,27 @@
  * `place` — and nothing else: which lane suits a bead stays a session judgement
  * (ADR 0009), never a server one.
  *
- * @import { Request, Response } from 'express'
+ * @import { NextFunction, Request, Response } from 'express'
  * @import { Queue } from '../worker/queue-store.js'
  */
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
+import {
+  announceWorkerSessionInquiry,
+  workerAttached
+} from '../worker/attach.js';
 import { WAIT_ID_RE } from '../worker/external-wait/contract.js';
+import { emitQueueChanged } from '../worker/queue-events.js';
 import { placeBeadInQueue } from '../worker/queue-place.js';
 import { removeBeadFromQueue } from '../worker/queue-remove.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
+import {
+  INQUIRY_ID_RE,
+  INQUIRY_STATES,
+  makeInquiryId,
+  validateInquiryRequest
+} from '../worker/session-inquiry/contract.js';
 
 /**
  * Resolve a request-supplied `root_dir` to a workspace key.
@@ -346,3 +357,165 @@ export const externalWaitGetHandler = externalWaitHandler('get');
 export const externalWaitCheckHandler = externalWaitHandler('check');
 export const externalWaitStopHandler = externalWaitHandler('stop');
 export const externalWaitResumeHandler = externalWaitHandler('resume');
+
+/**
+ * POST /api/worker/session-inquiry (UI-gske §3.1, dotfiles workflow-state.yaml
+ * session_inquiry `register`).
+ *
+ * The base-sync set-aside resolution session registers its human-needed row by
+ * (repo, ref). `repo` is matched to a registered workspace by the same rule as
+ * every other route here. An unattached workspace stores the row and nothing
+ * else (UI-gske §4); an attached one sends the once-only push after
+ * `notified_at` is written. Every non-200 body is JSON, because the CLI reads
+ * a non-JSON 4xx as an unreachable Worker.
+ *
+ * @param {Request} req
+ * @param {Response} res
+ */
+export async function sessionInquiryRegisterHandler(req, res) {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const checked = validateInquiryRequest(req.body);
+    if (!checked.ok) {
+      res
+        .status(400)
+        .json({ ok: false, error: 'bad_request', message: checked.message });
+      return;
+    }
+    const workspace = workspaceKeyOf(checked.value.repo);
+    if (workspace === null) {
+      res.status(400).json({
+        ok: false,
+        error: 'bad_request',
+        message: 'repo is not a registered workspace'
+      });
+      return;
+    }
+    const attached = workerAttached(workspace);
+    const result = getWorkerRuntime().queueStore.upsertSessionInquiry(
+      workspace,
+      { ...checked.value, repo: workspace },
+      { at: Date.now(), makeId: makeInquiryId, notify: attached }
+    );
+    const row = result.row;
+    if (!row) {
+      res.status(500).json({ ok: false, error: 'internal_error' });
+      return;
+    }
+    if (result.changed) {
+      emitQueueChanged(workspace);
+    }
+    if (result.created && attached) {
+      await announceWorkerSessionInquiry(workspace, row);
+    }
+    res
+      .status(200)
+      .json({ id: row.id, state: row.state, created: result.created });
+  } catch {
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+}
+
+/**
+ * POST /api/worker/session-inquiry/:id/state (UI-gske §3.1, dotfiles
+ * workflow-state.yaml session_inquiry `state`).
+ *
+ * The body carries no `repo`, so the id is looked up across every registered
+ * workspace's queue. A malformed body is a 400; the contract's own answers are
+ * 404 for an unknown id, 200 for an applied or same-state request and 409 for
+ * a transition outside the table.
+ *
+ * @param {Request} req
+ * @param {Response} res
+ */
+export function sessionInquiryStateHandler(req, res) {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const body = /** @type {any} */ (req.body || {});
+    const id = req.params.id;
+    if (
+      !INQUIRY_STATES.includes(body.state) ||
+      (body.note !== undefined &&
+        body.note !== null &&
+        typeof body.note !== 'string')
+    ) {
+      res.status(400).json({
+        ok: false,
+        error: 'bad_request',
+        message: `state must be one of ${INQUIRY_STATES.join(', ')}`
+      });
+      return;
+    }
+    const store = getWorkerRuntime().queueStore;
+    /** @type {string|null} */
+    let workspace = null;
+    if (typeof id === 'string' && INQUIRY_ID_RE.test(id)) {
+      for (const entry of getAvailableWorkspaces()) {
+        const key = path.resolve(entry.path);
+        if (Object.hasOwn(store.snapshot(key).session_inquiries || {}, id)) {
+          workspace = key;
+          break;
+        }
+      }
+    }
+    if (workspace === null) {
+      res.status(404).json({ ok: false, error: 'unknown_id' });
+      return;
+    }
+    const moved = store.transitionSessionInquiry(workspace, id, {
+      state: body.state,
+      note: typeof body.note === 'string' ? body.note : null,
+      at: Date.now()
+    });
+    // dotfiles workflow-state.yaml session_inquiry: `same_state: no_op_200`
+    // is checked before the transition table (closed -> closed included), and
+    // `invalid_transition: reject_409_without_state_change`.
+    if (moved.outcome === 'same') {
+      res.status(200).json({ id, state: body.state });
+      return;
+    }
+    if (moved.outcome === 'invalid') {
+      res.status(409).json({
+        ok: false,
+        error: 'invalid_transition',
+        message: `${moved.row?.state ?? '?'} -> ${body.state} is not an allowed transition`
+      });
+      return;
+    }
+    if (moved.outcome !== 'moved') {
+      res.status(404).json({ ok: false, error: 'unknown_id' });
+      return;
+    }
+    emitQueueChanged(workspace);
+    res.status(200).json({ id, state: body.state });
+  } catch {
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+}
+
+/**
+ * Error middleware for the session-inquiry routes (UI-gske §3.1): a body
+ * `express.json` rejects never reaches the handlers, and Express would answer
+ * it in HTML, which the CLI reads as an unreachable Worker.
+ *
+ * @param {unknown} err
+ * @param {Request} _req
+ * @param {Response} res
+ * @param {NextFunction} next
+ */
+export function sessionInquiryErrorHandler(err, _req, res, next) {
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  const status = /** @type {{ status?: unknown }} */ (err)?.status;
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    res.status(status).json({
+      ok: false,
+      error: 'bad_request',
+      message: 'request body is not valid JSON'
+    });
+    return;
+  }
+  res.status(500).json({ ok: false, error: 'internal_error' });
+}

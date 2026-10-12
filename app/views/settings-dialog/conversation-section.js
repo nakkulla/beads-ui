@@ -47,7 +47,7 @@ export const CONVERSATION_ROWS = [
   {
     key: 'auto_launch',
     label: '대화 자동 기동',
-    note: '멈춤과 실패에 함께 쓰는 스위치입니다. 켜 두면 사람 판단 멈춤과 종단 실패(배포·post-merge 잡 실패, 머지 게이트 보류, 폐기 실패, 수동 배포 실패)에서 대화 세션을 분리 창에 한 번 띄웁니다. 실패 대화는 답을 받기 전에는 읽기 전용 진단만 합니다. 저장값이 없으면 config.toml [worker.direction_inquiry] enabled를 따릅니다.'
+    note: '멈춤과 실패에 함께 쓰는 스위치입니다. 켜 두면 사람 판단 멈춤과 종단 실패(배포·post-merge 잡 실패, 정리 중단, 머지 게이트 보류, 머지 전 검증 실패, 폐기 실패, 수동 배포 실패)에서 대화 세션을 분리 창에 한 번 띄우고, 답을 기다리던 해소 세션이 종료되면 그 세션을 한 번 다시 엽니다(해소 세션 재개). 실패 대화는 답을 받기 전에는 읽기 전용 진단만 합니다. 저장값이 없으면 config.toml [worker.direction_inquiry] enabled를 따릅니다.'
   },
   {
     key: 'fresh_runtime',

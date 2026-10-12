@@ -21,6 +21,7 @@ import { commentHeading, logRow, summaryRow } from './failure-comment.js';
 import {
   FOREIGN_HANDOFF_NEXT_ACTION,
   FOREIGN_HANDOFF_NOTIFY_LABEL,
+  foreignHandoffCauseOf,
   foreignHandoffCauseWithin,
   foreignHandoffReason
 } from './foreign-handoff.js';
@@ -847,11 +848,19 @@ function operationIdFromLogPath(log_path) {
 }
 
 /**
+ * The class word of a stopped post-merge cleanup (UI-gske §3.5): the completion
+ * terminal of a cleanup stage (`post_merge_environment`) and a cleanup stop no
+ * completion intent drives (`cleanup_interruption`) say the same word in the
+ * push and in the conversation's first input.
+ */
+export const CLEANUP_INTERRUPTION_NOTIFY_LABEL = '정리 중단';
+
+/**
  * Stage token → the `클래스:` word of the `needs_human` push (UI-jw27 §2). A
  * CLOSED map on purpose: this call site owns the announcement of exactly the
- * two classes the spec's §2 table gives it, and a stage that is in neither
- * sends NOTHING. A quietly misfiled class reads as a fact about the failure
- * and is worse than the card the operator already has.
+ * classes listed here, and a stage outside it sends NOTHING. A quietly
+ * misfiled class reads as a fact about the failure and is worse than the card
+ * the operator already has.
  *
  * @type {Readonly<Record<string, string>>}
  */
@@ -860,6 +869,11 @@ export const NEEDS_HUMAN_NOTIFY_CLASSES = Object.freeze({
   repo_operations: '배포 실패',
   deploy: '배포 실패',
   deployment_request: '배포 실패',
+  // The cleanup stages (`post_merge_environment`, UI-gske §3.5).
+  base_containment: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  branch_cleanup: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  parent_close: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  post_merge_cleanup: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
   // Copied byte-for-byte from the contract's `failure_classes.receipt_hold`
   // notify_label (spec §5.2, D5).
   merge_gate: '머지 게이트 보류',
@@ -886,6 +900,148 @@ export function needsHumanNextAction(token) {
     return FOREIGN_HANDOFF_NEXT_ACTION;
   }
   return '[세션에서 이어가기] 또는 [정리 재시도]';
+}
+
+/**
+ * Whether a completion intent drives this Bead's cleanup — i.e. whether a
+ * cleanup stop recorded now still reaches the completion terminal, the one
+ * announcement source for such a Bead. An intent stopped at `needs_human` or
+ * `completed`, or paused because auto-merge is off, runs no further cleanup.
+ *
+ * @param {any} queue
+ * @param {string} bead_id
+ * @returns {boolean}
+ */
+function completionDrivesCleanup(queue, bead_id) {
+  const intent = queue.completion_intents[bead_id];
+  return (
+    queue.auto_merge === true &&
+    Boolean(intent) &&
+    intent.phase !== 'needs_human' &&
+    intent.phase !== 'completed'
+  );
+}
+
+/**
+ * Whether a completion terminal settles on the very `cleanup_failed` record the
+ * `정리 중단` announcer already pushed and opened: same Bead, same step, same
+ * recorded `at`, carrying `interruption_notified_at`. That record was announced
+ * while no completion intent drove it (auto-merge off); a terminal that later
+ * adopts it is the same failure identity and announces nothing again.
+ *
+ * @param {any} queue
+ * @param {string} bead_id
+ * @param {unknown} evidence - The raw cleanup record the terminal settled on.
+ * @returns {boolean}
+ */
+function cleanupStopAlreadyAnnounced(queue, bead_id, evidence) {
+  const record = queue?.cleanup_failed?.[bead_id];
+  if (
+    !record ||
+    typeof record.interruption_notified_at !== 'number' ||
+    evidence === null ||
+    typeof evidence !== 'object'
+  ) {
+    return false;
+  }
+  const settled_on = /** @type {any} */ (evidence);
+  return settled_on.at === record.at && settled_on.step === record.step;
+}
+
+/**
+ * Build the `정리 중단` announcer (UI-gske §3.5, contract
+ * `cleanup_interruption`): a `cleanup_failed` record no completion intent
+ * drives is terminal the moment it is recorded, even with a `next_retry_at`,
+ * because nothing would run that retry. Each such record gets one
+ * `🙋 확인 필요 · 정리 중단` push and, under the shared switch, one failure
+ * conversation. The record's recorded time is its identity and the once-mark
+ * is written on the record before anything is sent, so a re-observation or a
+ * restart sends nothing.
+ *
+ * A record of the external-PR handoff class is left to its own announcer
+ * (`announceHandoff`), which already pushes and opens it once.
+ *
+ * @param {{
+ *   workspace: string,
+ *   repo?: string|null,
+ *   store: { snapshot: (workspace: string) => any, markCleanupInterruptionNotified: (workspace: string, input: { bead_id: string, at: number }) => { ok: boolean } },
+ *   notify?: { needsHuman: (input: any) => Promise<void> }|null,
+ *   failureConversation?: { launchForBead: (input: { workspace: string, repo: string|null, bead_id: string, cleanup_at?: number }) => Promise<any> }|null,
+ *   prUrlOf?: (bead_id: string) => string|null,
+ *   log?: (...args: any[]) => void
+ * }} deps
+ */
+export function createCleanupInterruptionAnnouncer(deps) {
+  const log = deps.log || (() => {});
+  const failure_notify = deps.notify || null;
+  const failure_conversation = deps.failureConversation || null;
+
+  return {
+    /**
+     * Announce the Bead's current cleanup stop if it is an undriven one not
+     * announced yet. Returns whether THIS call claimed it.
+     *
+     * @param {string} bead_id
+     * @returns {boolean}
+     */
+    announce(bead_id) {
+      if (!failure_notify && !failure_conversation) {
+        return false;
+      }
+      const queue = deps.store.snapshot(deps.workspace);
+      const record = queue.cleanup_failed[bead_id];
+      if (
+        !record ||
+        typeof record.interruption_notified_at === 'number' ||
+        foreignHandoffCauseOf(record.reason) !== null ||
+        completionDrivesCleanup(queue, bead_id)
+      ) {
+        return false;
+      }
+      if (
+        !deps.store.markCleanupInterruptionNotified(deps.workspace, {
+          bead_id,
+          at: record.at
+        }).ok
+      ) {
+        return false;
+      }
+      /** @type {string|null} */
+      let pr_url = null;
+      try {
+        pr_url = deps.prUrlOf?.(bead_id) ?? null;
+      } catch (err) {
+        log('cleanup interruption pr read failed for %s: %o', bead_id, err);
+      }
+      const run = async () => {
+        // The conversation opens on THIS record, not on an older completion
+        // terminal of the same Bead the default selection would pick first.
+        const conversation = failure_conversation
+          ? await failure_conversation.launchForBead({
+              workspace: deps.workspace,
+              repo: deps.repo ?? null,
+              bead_id,
+              cleanup_at: record.at
+            })
+          : null;
+        await failure_notify?.needsHuman({
+          bead_id,
+          failure_class: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+          reason: record.reason,
+          reason_detail:
+            typeof record.summary === 'string' ? record.summary : null,
+          next_action: needsHumanNextAction(record.step),
+          conversation,
+          pr_url,
+          repo: deps.repo ?? null
+        });
+      };
+      run().catch((err) => {
+        log('cleanup interruption notify failed for %s: %o', bead_id, err);
+      });
+      return true;
+    }
+  };
 }
 
 // Copied byte-for-byte from dotfiles docs/contracts/workflow-state.yaml
@@ -1639,17 +1795,21 @@ export function createCompletionActionDriver(deps) {
       // THIS pass is what first made the terminal durable. A re-observation of
       // the same wall finds its earlier `comment_at` and is therefore silent,
       // which is what keeps a restart from replaying the whole board as pushes.
-      announceNeedsHuman(root_bead_id, intent, terminal, summary);
+      // A cleanup record the `정리 중단` announcer already claimed is the same
+      // failure identity: its push and conversation were already sent.
+      if (!cleanupStopAlreadyAnnounced(queue, root_bead_id, evidence)) {
+        announceNeedsHuman(root_bead_id, intent, terminal, summary);
+      }
     }
   }
 
   /**
    * Push one `needs_human` terminal (UI-jw27 §2) and, under the shared
    * switch, open its failure conversation first (UI-jbl1 §3.1). This call
-   * site SOLELY owns the deploy, post-merge-job and merge-gate classes: the
-   * same failure also writes a `cleanup_failed` record on the way here, and
-   * announcing there too would mean an early push mid-ladder and a second one
-   * at the wall. The caller's once-guard (`comment_at`) is already durable, so
+   * site SOLELY owns the deploy, post-merge-job, cleanup-stage and merge-gate
+   * classes: the same failure also writes a `cleanup_failed` record on the
+   * way here, and announcing there too would mean an early push mid-ladder
+   * and a second one at the wall. The caller's once-guard (`comment_at`) is already durable, so
    * a restart or re-observation reaches neither the launch nor the push.
    *
    * Fire-and-forget and guarded: the launch and the notifier are no-throw by
@@ -1699,6 +1859,44 @@ export function createCompletionActionDriver(deps) {
     };
     run().catch((err) => {
       log('needs_human notify failed for %s: %o', root_bead_id, err);
+    });
+  }
+
+  /**
+   * Open a verify-failure hold's conversation once per (PR, held head) under
+   * the shared switch (UI-gske §3.5), right after its `⏸️ 머지 보류` push. The
+   * claim is durable on the intent BEFORE the launch and survives the subject
+   * change that clears `hold`, so a head that comes back, a re-observation and
+   * a restart all find it and launch nothing.
+   *
+   * Fire-and-forget and guarded like {@link announceNeedsHuman}.
+   *
+   * @param {string} root_bead_id
+   * @param {string|null} pr_url
+   * @param {string} head_sha
+   */
+  function launchHoldConversation(root_bead_id, pr_url, head_sha) {
+    if (!failure_conversation) {
+      return;
+    }
+    const claimed = deps.store.claimCompletionHoldLaunch(deps.workspace, {
+      root_bead_id,
+      pr_url,
+      head_sha
+    });
+    if (!claimed.ok) {
+      return;
+    }
+    notify();
+    const run = async () => {
+      await failure_conversation.launchForBead({
+        workspace: deps.workspace,
+        repo: deps.repo ?? null,
+        bead_id: root_bead_id
+      });
+    };
+    run().catch((err) => {
+      log('hold conversation launch failed for %s: %o', root_bead_id, err);
     });
   }
 
@@ -2452,6 +2650,13 @@ export function createCompletionActionDriver(deps) {
         } catch (err) {
           log('hold notify failed for %s: %o', root_bead_id, err);
         }
+      }
+      if (hold.cause === 'verify_failure') {
+        launchHoldConversation(
+          root_bead_id,
+          current.subject.pr_url ?? null,
+          head_sha
+        );
       }
       return;
     }

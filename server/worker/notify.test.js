@@ -1686,3 +1686,35 @@ describe('worker/notify provider transitions', () => {
     expect(messageOf(spawn.last())).toContain('다음: 수동 재개 필요');
   });
 });
+
+describe('session-inquiry creation push (UI-gske §3.3)', () => {
+  test('sends the base-sync headline with the repo, ref tail, question and link', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.sessionInquiryCreated({
+      repo: '/Users/me/GitHub/beads-ui',
+      ref_tail: 'main/sync-1',
+      summary: '보관한 묶음을 다시 적용할까요?',
+      link: 'https://discord.com/channels/1/2'
+    });
+
+    expect(spawn.last().args).toEqual([
+      '🤖 🙋 확인 필요 · base-sync 사람 필요\n리포: beads-ui\n보관: main/sync-1\n질문: 보관한 묶음을 다시 적용할까요?\nhttps://discord.com/channels/1/2'
+    ]);
+  });
+
+  test('leaves the link line out when the session has no thread', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.sessionInquiryCreated({
+      repo: '/Users/me/GitHub/beads-ui',
+      ref_tail: 'main/sync-1',
+      summary: '질문',
+      link: null
+    });
+
+    expect(spawn.last().args[0].split('\n')).toHaveLength(4);
+  });
+});

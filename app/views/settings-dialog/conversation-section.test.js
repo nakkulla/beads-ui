@@ -175,6 +175,19 @@ describe('conversation section load (UI-jbl1 §3.4)', () => {
     ]);
   });
 
+  test('names the three newly automatic kinds in the switch note (UI-gske §3.5)', async () => {
+    const { host } = mountSection(serving(snapshotOf()));
+
+    await settle();
+
+    const note =
+      rowOf(host, 'auto_launch').querySelector('.settings-dialog__hint-block')
+        ?.textContent ?? '';
+    expect(note).toContain('정리 중단');
+    expect(note).toContain('머지 전 검증 실패');
+    expect(note).toContain('해소 세션 재개');
+  });
+
   test('shows the stored values in the controls', async () => {
     const { host } = mountSection(
       serving(

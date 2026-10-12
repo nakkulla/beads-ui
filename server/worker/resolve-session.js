@@ -37,7 +37,10 @@ import {
   getConversationSettings
 } from '../conversation-settings.js';
 import { debug } from '../logging.js';
-import { PRE_MERGE_HOLD_NOTIFY_LABEL } from './completion-intent.js';
+import {
+  CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  PRE_MERGE_HOLD_NOTIFY_LABEL
+} from './completion-intent.js';
 import {
   failureConversationReason,
   fillConversationEntry
@@ -49,6 +52,7 @@ import {
   foreignHandoffReason
 } from './foreign-handoff.js';
 import { holdsHandoffReservation } from './queue-store.js';
+import { sessionInquiryIdOf } from './session-inquiry/contract.js';
 import { qualifyInteractiveForkSource } from './session-ref.js';
 import {
   RESOLVE_PANE_MARKER,
@@ -115,7 +119,12 @@ const COMPLETION_STAGE_CLASSES = Object.freeze({
   post_merge_jobs: 'post-merge 잡 실패',
   repo_operations: '배포 실패',
   deploy: '배포 실패',
-  deployment_request: '배포 실패'
+  deployment_request: '배포 실패',
+  // The cleanup stages (`post_merge_environment`, UI-gske §3.5).
+  base_containment: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  branch_cleanup: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  parent_close: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+  post_merge_cleanup: CLEANUP_INTERRUPTION_NOTIFY_LABEL
 });
 
 /** The class a `needs_human` terminal gets when its stage names none. */
@@ -142,6 +151,21 @@ export const MANUAL_DEPLOY_FAILURE_CLASS = '수동 배포 실패';
  */
 export function repoOperationRowKey(operation_id) {
   return `${REPO_OPERATION_ROW_PREFIX}${operation_id}`;
+}
+
+/**
+ * Whether a conversation row key names a Bead-less row — a repo operation
+ * (`repo-op:`) or a session-inquiry row (`session-inquiry:`) — whose record
+ * settles by its window alone, never by a Bead status (UI-jbl1 §3.3,
+ * UI-gske §3.2).
+ *
+ * @param {unknown} row_key
+ * @returns {boolean}
+ */
+export function isBeadlessRowKey(row_key) {
+  return (
+    repoOperationIdOf(row_key) !== null || sessionInquiryIdOf(row_key) !== null
+  );
 }
 
 /**
@@ -259,6 +283,25 @@ function foreignHandoffContext(bead_id, cause, stage, foreign) {
         : null,
     bead_id,
     foreign_path
+  };
+}
+
+/**
+ * The `정리 중단` failure context of one `cleanup_failed` record.
+ *
+ * @param {any} cleanup
+ * @returns {ResolveFailureContext}
+ */
+function cleanupFailureContext(cleanup) {
+  return {
+    failure_class: CLEANUP_INTERRUPTION_NOTIFY_LABEL,
+    reason: typeof cleanup.reason === 'string' ? cleanup.reason : '원인 미상',
+    stage: typeof cleanup.step === 'string' ? cleanup.step : null,
+    detail: typeof cleanup.detail === 'string' ? cleanup.detail : null,
+    log_path:
+      typeof cleanup.log_path === 'string' && cleanup.log_path.length > 0
+        ? cleanup.log_path
+        : null
   };
 }
 
@@ -387,16 +430,7 @@ export function resolveFailureContext(queue, bead_id, foreign = null) {
   }
   const cleanup = queue?.cleanup_failed?.[bead_id];
   if (cleanup && typeof cleanup === 'object') {
-    return {
-      failure_class: '정리 중단',
-      reason: typeof cleanup.reason === 'string' ? cleanup.reason : '원인 미상',
-      stage: typeof cleanup.step === 'string' ? cleanup.step : null,
-      detail: typeof cleanup.detail === 'string' ? cleanup.detail : null,
-      log_path:
-        typeof cleanup.log_path === 'string' && cleanup.log_path.length > 0
-          ? cleanup.log_path
-          : null
-    };
+    return cleanupFailureContext(cleanup);
   }
   const discard = failedDiscardOperation(queue, bead_id);
   if (discard) {
@@ -1190,10 +1224,26 @@ export function createFailureConversationLauncher(deps) {
 
   return {
     /**
-     * One Bead row's terminal failure: a deploy or post-merge job failure,
-     * a merge-gate hold, or a discard failure.
+     * Whether the shared conversation switch is on now — the one reading the
+     * automatic launches below gate on, also read by the session-inquiry
+     * automatic resume (UI-gske §3.2).
      *
-     * @param {{ workspace: string, repo?: string|null, bead_id: string }} input
+     * @returns {boolean}
+     */
+    autoLaunchEnabled: enabled,
+
+    /**
+     * One Bead row's terminal failure: a deploy, post-merge job or cleanup
+     * failure, a cleanup stop no completion intent drives, a merge-gate hold,
+     * a pre-merge verify-failure hold, or a discard failure.
+     *
+     * `cleanup_at` names the `cleanup_failed` record a `정리 중단` launch is
+     * for: while that record is still the Bead's current one, the
+     * conversation opens on it rather than on an older completion terminal
+     * the default selection reads first. A record replaced since falls back
+     * to the default selection.
+     *
+     * @param {{ workspace: string, repo?: string|null, bead_id: string, cleanup_at?: number }} input
      * @returns {Promise<AutoLaunchOutcome>}
      */
     async launchForBead(input) {
@@ -1219,7 +1269,14 @@ export function createFailureConversationLauncher(deps) {
       } catch (err) {
         log('foreign observation read failed for %s: %o', input.bead_id, err);
       }
-      const failure = resolveFailureContext(queue, input.bead_id, foreign);
+      const cleanup = queue?.cleanup_failed?.[input.bead_id];
+      const failure =
+        typeof input.cleanup_at === 'number' &&
+        cleanup &&
+        typeof cleanup === 'object' &&
+        cleanup.at === input.cleanup_at
+          ? cleanupFailureContext(cleanup)
+          : resolveFailureContext(queue, input.bead_id, foreign);
       if (!failure) {
         return notLaunched('no_terminal_failure');
       }

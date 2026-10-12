@@ -168,11 +168,14 @@ export function deckExecChips(row) {
  * 행 소멸이 함께 쓴다.
  * @property {() => string|null} [settingsRoot] - 지금 창이 묶인 root_dir, 또는
  * null.
- * @property {(root_dir: string) => { operations: any, cleanup_failures: any }|null} [repoOps] -
+ * @property {(root_dir: string) => { operations: any, cleanup_failures: any, session_inquiries?: any }|null} [repoOps] -
  * 그 저장소 파이프라인 항목의 저장소 작업 재료. 항목이 없으면 null이고 그 타일은
  * `⚠ N`을 그리지 않는다 (UI-f2sy §7).
  * @property {(root_dir: string) => void} [openRepoOps] - 그 저장소의 타임라인
  * drawer를 여는 경로 (`⚠ N` 클릭).
+ * @property {(root_dir: string, inquiry_id: string) => void} [openInquiry] -
+ * 막힘 칩의 session-inquiry 항목이 그 저장소 서랍을 그 행에서 여는 경로
+ * (UI-gske §3.4).
  */
 
 /**
@@ -464,7 +467,8 @@ export function createRepoDeck(mount_element, options) {
     }
     const model = repoOpsStripModel(
       material.operations,
-      material.cleanup_failures
+      material.cleanup_failures,
+      material.session_inquiries
     );
     if (!model || model.unresolved <= 0) {
       return '';
@@ -563,6 +567,7 @@ export function createRepoDeck(mount_element, options) {
           ...(options.revealWaitSubject
             ? { reveal: options.revealWaitSubject }
             : {}),
+          ...(options.openInquiry ? { openInquiry: options.openInquiry } : {}),
           session: sum('session_active')
         })}
       </div>

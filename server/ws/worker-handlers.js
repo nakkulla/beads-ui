@@ -46,6 +46,7 @@ import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
 import { createAccountCatalog } from '../worker/account-catalog.js';
 import {
   abandonWorkerDiscard,
+  clickWorkerSessionInquiry,
   conversationHandoffWorker,
   discardWorkerBead,
   dismissWorkerRepoOperation,
@@ -67,6 +68,7 @@ import {
   stopWorkerReviewSessionProcess,
   tickWorkerQueue,
   withdrawWorkerAttempt,
+  workerAttached,
   workerMergeEffectInFlight,
   workerMergeQueueState,
   workerRepoId,
@@ -147,6 +149,10 @@ import { createTailReader } from '../worker/runner/tail-reader.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { activeLaneLineages, requestStartNow } from '../worker/scheduler.js';
 import { scopeCache } from '../worker/scope-cache.js';
+import {
+  isOpenInquiry,
+  sessionInquiryRowKey
+} from '../worker/session-inquiry/contract.js';
 import {
   beadOfTransferredAttempt,
   resolveSessionLogRead
@@ -2968,6 +2974,78 @@ function projectRepoOperations(operations, interactive_sessions = {}) {
 }
 
 /**
+ * Whether an attachment runs for the workspace; a throwing registry is false.
+ *
+ * @param {string} workspace_key
+ * @returns {boolean}
+ */
+function workerAttachedOrFalse(workspace_key) {
+  try {
+    return workerAttached(workspace_key);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The public session-inquiry rows (UI-gske §3.3, §3.4): each row as stored,
+ * minus the server's resume bookkeeping, plus its registered session's
+ * Discord thread (found by session id like a conversation record's) and the
+ * row's conversation records as lane-card views.
+ *
+ * @param {unknown} raw
+ * @param {Record<string, any>} interactive_sessions - Already decorated.
+ * @param {Map<string, { url: string|null }>|null|undefined} threads
+ * @returns {Record<string, Record<string, any>>}
+ */
+function projectSessionInquiries(raw, interactive_sessions, threads) {
+  /** @type {Record<string, Record<string, any>>} */
+  const out = {};
+  if (!raw || typeof raw !== 'object') {
+    return out;
+  }
+  for (const [id, row] of Object.entries(
+    /** @type {Record<string, any>} */ (raw)
+  )) {
+    if (!row || typeof row !== 'object') {
+      continue;
+    }
+    const row_key = sessionInquiryRowKey(id);
+    /** @type {Record<string, any>} */
+    const shown = { ...row };
+    delete shown.auto_resume_consumed;
+    out[id] = {
+      ...shown,
+      discord_url: threads?.get(row.session_id)?.url || null,
+      interactive_sessions: Object.entries(interactive_sessions || {})
+        .filter(([, record]) => record?.bead_id === row_key)
+        .map(([key, record]) => ({
+          key,
+          kind: record.kind,
+          provider: record.provider,
+          session_id: record.session_id ?? null,
+          mode: record.mode ?? null,
+          source: record.source ?? null,
+          fallback_reason: record.fallback_reason ?? null,
+          attempt_id: record.attempt_id ?? null,
+          tmux_session: record.tmux_session,
+          tmux_window: record.tmux_window,
+          state: record.state,
+          settled_at: record.settled_at ?? null,
+          launched_at: record.launched_at,
+          discord_url: record.discord_url ?? null,
+          turn_state: record.turn_state ?? null,
+          turn_state_since: record.turn_state_since ?? null,
+          last_message: record.last_message ?? null,
+          conversation: record.conversation ?? null,
+          closing: record.state === 'exiting' || record.settled_at != null
+        }))
+    };
+  }
+  return out;
+}
+
+/**
  * One repo-operation card's `[세션에서 이어가기]` material (UI-jbl1 §3.3): a
  * terminal failure flag (a failed manual deploy no successor or person has
  * answered), and the row's conversation records as lane-card views.
@@ -3381,6 +3459,15 @@ export function decorateQueue(workspace_key, raw_queue) {
   );
   public_queue.repo_operation_policy = projectRepoOperationPolicy();
   public_queue.cleanup_failed = overlaid.cleanup_failed || {};
+  // Session-owned human-needed rows (UI-gske §3.1): an unattached workspace
+  // stores them only, so its snapshot carries none.
+  public_queue.session_inquiries = projectSessionInquiries(
+    workerAttachedOrFalse(workspace_key)
+      ? /** @type {any} */ (overlaid).session_inquiries
+      : {},
+    public_queue.interactive_sessions,
+    threads
+  );
   public_queue.discard_operations = publicDiscardOperations(
     overlaid.discard_operations
   );
@@ -7564,6 +7651,14 @@ export async function handleWorkerResolveInSession(ws, req) {
     await resolveRepoOperationInSession(ws, req, p);
     return;
   }
+  if (
+    typeof p.inquiry_id === 'string' &&
+    p.inquiry_id.trim().length > 0 &&
+    p.bead_id === undefined
+  ) {
+    await resolveSessionInquiryInSession(ws, req, p);
+    return;
+  }
   if (typeof p.bead_id !== 'string' || p.bead_id.trim().length === 0) {
     ws.send(
       JSON.stringify(
@@ -8041,6 +8136,141 @@ async function resolveRepoOperationInSession(ws, req, p) {
       mode: result.mode || null,
       source: result.source || null,
       fallback_reason: result.fallback_reason || null,
+      command: result.command || null,
+      bridge_active: result.bridge_active === true,
+      session_id: result.session_id || null,
+      runner: result.runner || null,
+      placement: result.placement || null,
+      tmux_session: result.tmux_session || null,
+      tmux_window: result.tmux_window || null
+    },
+    latest
+  );
+  fanout(key, latest);
+}
+
+/**
+ * The `worker-resolve-in-session` branch of a session-inquiry row (UI-gske
+ * §3.3): `{ inquiry_id, expected_revision }` reopens the row's registered
+ * session. Same skeleton as the repo-operation branch — the revision is
+ * checked first and the row's live conversation window answers before
+ * anything else — then the attachment judges the registered session: alive
+ * is brought forward or named, unverified is refused, dead is resumed with
+ * `--resume`. A closed row draws no button and is refused here too.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {any} p
+ */
+async function resolveSessionInquiryInSession(ws, req, p) {
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const inquiry_id = String(p.inquiry_id);
+  const row_key = sessionInquiryRowKey(inquiry_id);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  /**
+   * @param {Record<string, unknown>} body
+   * @param {any} queue
+   */
+  const reply = (body, queue) =>
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: null,
+          inquiry_id,
+          row: 'session_inquiry',
+          fallback_reason: null,
+          ...body,
+          queue: decorateQueue(key, queue)
+        })
+      )
+    );
+  /**
+   * @param {string} reason
+   * @param {any} queue
+   */
+  const refuse = (reason, queue) =>
+    reply(
+      {
+        launched: false,
+        conflict: false,
+        session: 'not_launched',
+        reason,
+        mode: null,
+        command: null,
+        bridge_active: false
+      },
+      queue
+    );
+  if (revisionOf(p) !== current.revision) {
+    reply(
+      {
+        launched: false,
+        conflict: true,
+        session: null,
+        reason: null,
+        mode: null,
+        command: null,
+        bridge_active: false
+      },
+      current
+    );
+    return;
+  }
+  if (!isOpenInquiry(current.session_inquiries?.[inquiry_id])) {
+    refuse(
+      current.session_inquiries?.[inquiry_id]
+        ? 'inquiry_closed'
+        : 'unknown_inquiry',
+      current
+    );
+    return;
+  }
+  // The row's one conversation answers the click (UI-9w5l §3.5): its window
+  // comes forward, nothing launches or changes.
+  const live_window = await focusLiveConversation(current, row_key);
+  if (live_window !== null) {
+    reply(
+      {
+        launched: false,
+        conflict: false,
+        session: 'already_running',
+        reason: null,
+        mode: null,
+        command: null,
+        bridge_active: false,
+        placement: live_window.placement ?? null,
+        tmux_session: live_window.tmux_session ?? null,
+        tmux_window: live_window.tmux_window ?? null,
+        row: 'conversation'
+      },
+      current
+    );
+    return;
+  }
+  /** @type {any} */
+  let result;
+  try {
+    result = await clickWorkerSessionInquiry(key, inquiry_id);
+  } catch (err) {
+    log('session-inquiry resume failed for %s/%s: %o', key, row_key, err);
+    result = { launched: false, session: 'not_launched', reason: 'error' };
+  }
+  if (result === null) {
+    refuse('no_attachment', current);
+    return;
+  }
+  const latest = /** @type {any} */ (queueStore().snapshot(key));
+  reply(
+    {
+      launched: result.launched === true,
+      conflict: false,
+      session: result.session || null,
+      reason: result.reason || null,
+      message: result.message || null,
+      mode: result.mode || null,
       command: result.command || null,
       bridge_active: result.bridge_active === true,
       session_id: result.session_id || null,

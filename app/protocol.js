@@ -109,6 +109,8 @@
  * @property {VerdictReason} [verdict_reason]
  * @property {string} [resolution] - An `action_required` reason's sentence
  * naming the button that resolves it and where it stands (UI-9w5l §3.1).
+ * @property {string} [subject_label] - What a summary list shows in place of
+ * a Bead-less subject's row key (`보관 <ref 끝부분>`, UI-gske §3.4).
  * @property {Array<{ id: string, rig?: string, status?: string, kind: 'gate'|'issue' }>} targets
  * @property {Array<{ op: string, label: string, title?: string, placement?: 'card'|'detail', confirm?: string, payload: Record<string, any> }>} actions
  * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan
