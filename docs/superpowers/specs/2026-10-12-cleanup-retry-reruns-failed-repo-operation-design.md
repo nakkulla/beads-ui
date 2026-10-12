@@ -17,7 +17,7 @@ scope:
 
 # 정리 재시도는 멈춘 저장소 작업을 한 번 다시 실행한다 — 배포·검증 재실행과 `[정리 재시도]` 이름
 
-Bead: UI-btsr · 출처: dotfiles-3hflz(PR nakkulla/dotfiles#586) 머지 후 배포 실패
+Bead: UI-btsr · 선행 형제: dotfiles `dotfiles-md59z`(버튼 이름 계약) · 출처: dotfiles-3hflz(PR nakkulla/dotfiles#586) 머지 후 배포 실패
 
 ## 1. 목표
 
@@ -57,8 +57,11 @@ Bead: UI-btsr · 출처: dotfiles-3hflz(PR nakkulla/dotfiles#586) 머지 후 배
 - 같은 클릭을 가리키는 다른 문구 — `app/views/worker/pr-wait-row.js:599`, `app/views/worker/pr-wait-progress.js:13`, `app/views/worker/repo-ops-timeline.js:570`, `server/worker/completion-intent.js:873`, `:1035-1037`, `server/worker/operation-recovery.js:150`, `app/utils/failure-sentences.js:41`, `server/ws/worker-handlers.js:7462`, `app/views/monitor/index.js:1223`, `app/views/worker/index.js:1260`
 - 현행 ADR UI-c74x는 정리 실패 행의 Worker 출구를 `[워커로 이어가기]`로 부르고, 실행 타일 `↻ 정리 재시도`는 그대로 둔다 — `docs/adr/UI-c74x-credential-wait-conversation.md:174`, `:194`, `:790`
 - 카드 문법 정본의 짝 정정(UI-18a5) — `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md:618-631`
-- 배포 러너는 실행 출처(수동/Bead)를 스크립트에 넘기지 않는다 — `server/worker/repo-operation-runner.js:58-62`(프로토콜 env는 target·base·root 셋뿐)
-- dotfiles 볼트 점검의 재실행 안내 `[배포 실행]` — dotfiles `scripts/check-beads-ui-vault-access.py:43`, `src/shell/lib/dotfiles_install/reconciler.py:214`, `scripts/mac-canonical/RUNBOOK.md:336`
+- 자동 배포 기록은 배포 작업 트리 HEAD가 이미 대상을 담고 있으면 스크립트 없이 성공(covered/superseded)으로 정산한다. 예외는 수동 실행과 같은 HEAD의 `script_retry`뿐이다 — `server/worker/repo-operation-coordinator.js:1695`, `:1785-1823`
+- 검증 기록은 검증한 PR head를 `verify_head_sha`로 저장한다 — `server/worker/repo-operation-coordinator.js:1494`
+- 정리 경로 검증은 PR head를 호출 인자나 비영속 관측 캐시에서만 얻고, 없으면 `verify_head_sha_unobserved`로 멈춘다 — `server/worker/pr-actions.js:3111-3124`
+- 관측형 자동 재시도 예산(`retry_count`)은 `base_containment`·`branch_cleanup` 실패에만 있다 — `server/worker/pr-actions.js:3656-3669`
+- 버튼 이름의 정본은 dotfiles 계약 `needs_human_reentry.actions.cleanup_retry.label`이고, 그 검사기는 `[정리 재시도]`를 은퇴 라벨로 금지한다 — dotfiles `docs/contracts/workflow-state.yaml:876`, `src/shared/skills/flow/workflow/scripts/check-workflow-contract.py:2673`(`7aafbe2c`)
 - 지금 쓸 수 있는 우회로다. 「저장소 작업」 `[배포 실행]`이 성공한 뒤 정리를 재시도하면 위 덮음 판정으로 풀린다. 다만 두 번 눌러야 하고 화면에 드러나지 않는다 — 위 `:3270-3328` 인용에서 유도함
 
 ## 3. 설계
@@ -80,15 +83,17 @@ Bead: UI-btsr · 출처: dotfiles-3hflz(PR nakkulla/dotfiles#586) 머지 후 배
 - 새 기록을 만들 때 대체된 실패 기록에 기존 대체 표시(`superseded_by`)를 쓴다. 서랍과 진행 표시는 그것을 현재 실패로 읽지 않는다.
 - 나머지 입력은 자동 실행 그대로다. 대상은 `runCleanup`이 막 fetch한 base tip이고, 배포 정책·스크립트는 마지막 성공 배포의 base에서 읽는다. 스크립트 자체가 고장이면 수정 커밋이 착지한 뒤 「저장소 작업」 `[배포 실행]`(tip 정책)이 길이다.
 - 새 기록은 `retry === null`로 시작하므로 `script_retry` 한 단계를 새로 갖는다. "한 번 재실행"은 그 사다리를 포함한 한 실행이다.
-- 이 버그가 드러나는 조건은 머지 뒤 base tip이 움직이지 않은 경우다. tip이 움직였으면 대상이 달라 지금도 새 식별자가 나온다. 체인은 그 경우에도 같은 규칙으로 동작한다.
+- 재시도 후계(`retry_of`가 있는 배포 기록)는 배포 작업 트리 HEAD가 이미 대상에 있거나 그보다 앞서 있어도 스크립트를 실제로 실행한다. 자동 기록의 "이미 반영됨" 정산을 받지 않는다. 수동 실행과 같은 자리의 예외이고, 정렬 뒤 스크립트가 실패한 이번 사고가 바로 이 경우다. 큐에서 기다린 뒤의 실행과 재시작 뒤의 재정렬도 기록의 `retry_of`로 같은 판정을 한다.
+- 배포에서 이 버그가 드러나는 조건은 머지 뒤 base tip이 움직이지 않은 경우다. tip이 움직였으면 대상이 달라 지금도 새 식별자가 나온다. 정리 경로 검증의 식별 입력(effective base, 검증 대상 tree, 스크립트)은 머지 SHA로 고정되므로, 실패한 검증은 늘 다시 채택된다. 체인은 두 경우 모두 같은 규칙으로 동작한다.
 - 검증은 정리 경로의 호출에만 적용한다. 머지 전 게이트 검증과 외부 대상 검증의 식별·채택은 바꾸지 않는다.
 
 ### 3.3 진행 표시와 재시작
 
 - 새 기록이 사전기록되면 그 Bead의 정리 실패 기록을 지우고 커서를 `repo_operations`에 둔다. 카드는 실패가 아니라 진행 중으로 보인다. beads-ui 자기 배포처럼 실행 중에 서버가 재시작돼도 부팅 재개가 행을 이어받는다.
 - 부팅 재개의 정확 조회와 결과 대기는 3.2 체인의 tip을 읽는다. 대체된 옛 실패를 읽고 실행 중인 재시도를 실패로 적지 않는다.
+- 검증 재시도의 PR head는 관측 캐시가 아니라 실패한 검증 기록에 저장된 `verify_head_sha`에서 읽는다. 부팅 재개는 `repo_operations` 커서 행의 정확한 배포 기록이 없으면, 같은 주체의 정리 경로 검증 체인 tip을 찾는다. 그 기록의 `verify_head_sha`로 결과를 기다린 뒤 배포로 간다. 관측 캐시가 빈 재시작 직후에도 `verify_head_sha_unobserved`로 멈추지 않는다.
 - 재실패는 새 실패다. `failCleanup`이 새 시각으로 정리 실패를 쓰고, 다음 사람 재시도는 그 tip을 잇는 새 기록을 만든다. 실패 대화의 자동 기동·알림은 기존 "실패당 한 번" 규칙을 따른다.
-- 정리 실패 기록을 지우면 관측형 자동 재시도 예산도 새로 시작한다. 사람 클릭은 새 권한이다.
+- 정리 실패 기록을 지워도 관측형 자동 재시도 예산과는 무관하다. 그 예산은 `base_containment`·`branch_cleanup` 실패에만 있다.
 
 ### 3.4 실패 대화 인계
 
@@ -115,42 +120,43 @@ Bead: UI-btsr · 출처: dotfiles-3hflz(PR nakkulla/dotfiles#586) 머지 후 배
   - 실행 타일 `↻ 정리 재시도`(이미 같은 낱말)
 - 카드 문법 정본(`2026-08-25-card-header-grammar-unify-design.md`)에 `정정(UI-btsr)` 단락을 더해, 정리 실패 행의 짝 이름이 `[세션에서 이어가기]` · `[정리 재시도]`임을 기록한다.
 
-### 3.6 dotfiles 볼트 점검 문구 (enclosed foreign unit)
+### 3.6 이름의 정본: dotfiles 형제
 
-결정 — 재실행 안내는 `[정리 재시도](수동 배포면 [배포 실행])`로 쓴다 (대안: 버튼 이름 없는 "배포 다시 실행"; 이유: 배포 러너가 실행 출처를 스크립트에 넘기지 않아 스크립트는 어느 입구에서 돌았는지 모른다 — 두 입구를 다 적되 Bead 카드 쪽을 앞에).
-
-- 대상: `scripts/check-beads-ui-vault-access.py`의 `RERUN`, `src/shell/lib/dotfiles_install/reconciler.py`의 대체 문구, `scripts/mac-canonical/RUNBOOK.md` §8.3 4단계, 그리고 문구를 고정한 테스트 `tests/check_beads_ui_vault_access_test.py`·`tests/install_bundle_profile_test.py`·`tests/repo_ops_deploy_adapter_test.py`다.
-- 알림 200자 상한(`NOTICE_LIMIT`)을 지킨다.
+- `[정리 재시도]`라는 이름은 dotfiles 계약이 정한다(ADR UI-u6ud-2). 계약 라벨, 계약 본문, 인계 표, 검사기 은퇴 목록, 계약 테스트, ADR dotfiles/dotfiles-imy71 대체는 형제 Bead dotfiles-md59z가 소유한다(스펙 dotfiles `docs/superpowers/specs/2026-10-12-cleanup-retry-label-rename-design.md`). 볼트 점검 안내를 `[정리 재시도](수동 배포면 [배포 실행])`로 고치는 일도 그 형제가 맡는다.
+- 결정: 이 Bead의 구현은 형제가 닫힌 뒤에만 시작한다(foreign `blocks`) — 버튼 이름의 정본이 형제이고, 이 Bead는 그 이름을 소비한다.
 
 ## 4. Test scope
 
-새 동작(변경 전에는 실패해야 하는 경계). 모두 base tip을 고정한다 — tip이 움직이면 수정 없이도 통과한다.
+새 동작(변경 전에는 실패해야 하는 경계). 배포 테스트는 base tip과 배포 작업 트리 HEAD를 대상 SHA에 고정한다 — tip이 움직이면 수정 없이도 통과하고, HEAD가 뒤에 있으면 "이미 반영됨" 경로를 건너뛴다. 검증 테스트는 effective base·대상 tree·스크립트를 고정한다.
 
 - `server/worker/pr-actions.test.js`:
   - 배포 실패로 멈춘 행에 사람 재시도를 하면 새 배포 기록이 하나 생기고 스크립트가 한 번 실행된다. 성공하면 post-merge 잡·브랜치 정리·닫기까지 이어진다.
   - 머지 후 검증 실패로 멈춘 행에도 같은 동작을 한다.
   - 재시도가 새 기록을 사전기록하면 정리 실패 기록이 지워지고 커서가 `repo_operations`다.
   - 재시도 실행 중에 재시작하면 부팅 재개가 tip(실행 중인 재시도)을 기다린다. 옛 실패로 다시 실패를 적지 않는다.
+  - 관측 캐시가 빈 상태(재시작 직후)에서 검증 재시도를 이으면, 저장된 `verify_head_sha`로 기다린 뒤 배포로 간다.
 - `server/worker/repo-operation-coordinator.test.js`:
   - 권한이 있고 tip이 실패이면 `retry_of`로 이어진 새 기록 하나를 만들고, 옛 기록에 `superseded_by`를 쓴다.
+  - 배포 작업 트리 HEAD를 대상 SHA에 고정한 상태에서도 재시도 후계는 스크립트를 실제로 한 번 실행한다(러너 spawn 확인). "이미 반영됨"으로 정산하지 않는다.
   - 같은 실패에 두 번째 요청이 오면 그 새 기록을 채택한다(실행은 하나).
-  - 권한이 없으면 실패를 채택한다.
   - 새 기록은 `script_retry` 한 단계를 갖는다.
 - `server/worker/scheduler.test.js`: cleanup 종류 실패 대화의 인계가 배포 단계 실패에서 새 배포를 한 번 실행한다. `started_at` 뒤 재시작해도 다시 실행하지 않는다.
 - `app/views/worker/pr-wait-row.test.js`·`app/views/worker/repo-ops-timeline.test.js`: 정리 실패 행(`cleanup_retry`·`external_cleanup`)의 라벨·`aria-label`이 `정리 재시도`이고 `[세션에서 이어가기]`가 그 앞에 선다. 요청 중 배지 문구도 확인한다.
-- 모니터·Worker 카드 동일성 테스트: 정리 실패 카드의 두 탭 버튼이 같다.
+- `app/views/monitor/card-parity.test.js`: 두 탭의 정리 실패 카드 버튼 이름이 `정리 재시도`라는 기대를 더한다(같음 자체는 기존 검사).
 - `server/worker/completion-intent.test.js`·`server/worker/notify.test.js`: post-merge 클래스 `다음:` 문장이 `[정리 재시도]`를 쓴다.
-- dotfiles 테스트 3개: 새 안내 문구와 200자 상한.
 
 보존(현행 유지 확인):
 
 - 자동 배포·검증·수동 배포 식별자의 해시가 바이트 그대로다(`retry_of`가 없을 때).
-- 부팅 재개, `resumeCompletionCleanup`, 관측형 자동 재시도, 첫 정리 실행은 실패 기록을 채택하고 다시 실행하지 않는다.
+- 부팅 재개, `resumeCompletionCleanup`, 관측형 자동 재시도, 첫 정리 실행은 실패 기록을 채택하고 다시 실행하지 않는다(권한 없는 채택은 현행 동작).
+- 두 탭의 정리 실패 카드 버튼은 같다(기존 `card-parity.test.js`).
 - 확인 필요·폐기 실패·외부 작업 완료의 `[워커로 이어가기]`와 실행 타일 `↻ 정리 재시도`는 그대로다.
 
 ## 5. 경계·후속
 
-- **enclosed foreign unit: dotfiles** — 3.6의 문구·RUNBOOK·테스트 정정. 같은 Bead 안에서 dotfiles 기본 브랜치에 착지하고 분리 Bead를 만들지 않는다. beads-ui 쪽 이름 변경과 같은 배포 묶음으로 끝낸다.
+| 종류(형제\|발견) | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
+| --- | --- | --- | --- | --- | --- |
+| 형제 | dotfiles | user_request | 다른 저장소이자 다음 소유자가 앞 결과의 수용을 필요로 함 — 버튼 이름의 정본(계약 라벨·검사기·ADR dotfiles/dotfiles-imy71 대체)과 볼트 점검 안내가 그 Bead이고 이 Bead가 그 이름을 소비한다 | 없음 | dotfiles-md59z |
 
 비목표:
 
@@ -163,6 +169,7 @@ Bead: UI-btsr · 출처: dotfiles-3hflz(PR nakkulla/dotfiles#586) 머지 후 배
 ## 6. 결정 (ADR 후보)
 
 - 전제: ADR UI-u6ud-5 — 배포 실행 소유, 상시 `script_retry` 한 단계, 수동 `[배포 실행]`을 그대로 쓴다. 사람 재시도는 사다리를 바꾸지 않고, 새 실행이 사다리를 새로 갖는다.
+- 전제: ADR dotfiles/dotfiles-imy71 — 실패 대화 인계 조항의 이름을 형제 dotfiles-md59z가 대체하고, 이 Bead는 그 결과를 소비한다.
 - 전제: ADR UI-c74x — 실패 대화 자동 기동, `인계`는 그 행의 Worker 출구를 사람 권한으로 많아야 한 번 실행한다는 조항을 따른다. 아래 후보가 그 ADR의 정리 실패 행 이름 조항을 바꾼다.
 - 머지 후 정리가 멈춘 행의 Worker 출구 이름은 `[정리 재시도]`다. 사람 재시도(클릭·인계)는 저장소 작업 단계의 실패한 배포·검증을 `retry_of`로 이은 새 실행으로 한 번 다시 돌리고, 끝난 기록은 다시 열지 않는다.
   - 되돌리기 어렵다. 함께 움직이는 소비자:
@@ -170,7 +177,7 @@ Bead: UI-btsr · 출처: dotfiles-3hflz(PR nakkulla/dotfiles#586) 머지 후 배
     - 체인을 읽는 정확 조회·부팅 재개·결과 대기
     - `pr-actions.js` 정리 재시도 권한
     - 두 탭의 공유 카드 렌더러와 동일성 테스트
-    - 알림·댓글 `다음:` 문장, 카드 문법 정본, dotfiles 안내 문구
+    - 알림·댓글 `다음:` 문장, 카드 문법 정본, dotfiles 계약 라벨(형제 dotfiles-md59z)
   - 맥락 없이 보면 놀랍다. 같은 날 Accepted인 UI-c74x가 이 행을 `[워커로 이어가기]`로 불렀다(짝 문법). 또 "종단 기록은 다시 열지 않는다"와 "사람이 누르면 다시 돈다"는 함께 읽혀야 한다.
   - 실제 절충이다. 대안은 둘이었다:
     - 수동 배포로 대신 실행: 이전 base 정책 규칙과 Bead 주체를 잃는다.
@@ -180,4 +187,4 @@ Bead: UI-btsr · 출처: dotfiles-3hflz(PR nakkulla/dotfiles#586) 머지 후 배
     - 뒤집는 조항은 정리 실패 행 출구 이름 하나다(`:174`, `:194`, `:790`의 "실패의 머지 후 정리는 정리 재시도 = `[워커로 이어가기]`").
     - 나머지 조항은 모두 승계한다.
   - `summary`: "실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 외부 PR 사람 처리 필요, 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 열고, 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일해 「🚨 사람 필요」를 없앤다; 외부 PR 사람 처리 필요 행은 [머지]로 풀리지 않고 [세션에서 이어가기]만 출구다; 수동 배포 실패는 「저장소 작업」 서랍의 [세션에서 이어가기]와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다; 머지 후 정리가 멈춘 행의 Worker 출구는 [정리 재시도]이고 사람 재시도(클릭·인계)는 저장소 작업 단계의 실패한 배포·검증을 retry_of로 이은 새 실행으로 한 번 다시 돌리며 끝난 기록은 다시 열지 않는다; 조치 필요는 beads-ui 버튼으로 해결할 수 있는 대기 사유에만 서고 버튼 이름을 담은 해결 문장을 함께 실으며 선행 대기는 늘 normal이고 대기 사유 판정은 Discord로 알리지 않는다; 살아 있는 대화가 있는 행은 Discord 링크가 없을 때만 [세션에서 이어가기]를 그리고 그 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다; 같은 세션 대화를 여는 복구 대기는 세션이 선언한 `authority`·`no_progress`·`credential`이고, 공급자 보류로 바뀌지 않은 `provider`는 대상이 아니다" → ADR, supersede UI-c74x
-- dotfiles 볼트 점검 안내를 `[정리 재시도](수동 배포면 [배포 실행])`로 바꾼다 — 되돌리기 쉬움(문자열 상수 하나와 그 테스트) → ADR 아님
+- 재시도 후계는 배포 작업 트리 HEAD가 대상에 있어도 스크립트를 실행한다 — 위 결정의 "한 번 다시 돌린다"를 지키는 실행 조건이고 같은 소비자 집합이라 별도 ADR 이유가 없다(기본 제외: 같은 결정의 구현 세부) → ADR 아님
