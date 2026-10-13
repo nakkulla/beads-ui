@@ -1672,7 +1672,7 @@ describe('worker/notify provider transitions', () => {
     expect(messageOf(spawn.last())).toContain('사용량: 5h 90%');
   });
 
-  test('points a disarmed provider hold at manual resume', async () => {
+  test('explains a disarmed provider hold as two resumes without progress', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
@@ -1682,8 +1682,22 @@ describe('worker/notify provider transitions', () => {
       reason: 'auto_resume_cap'
     });
 
-    expect(messageOf(spawn.last())).toContain('사유: auto_resume_cap');
-    expect(messageOf(spawn.last())).toContain('다음: 수동 재개 필요');
+    expect(messageOf(spawn.last())).toContain(
+      '사유: 진척 없는 자동 재개 2회 연속(커밋 없음)'
+    );
+  });
+
+  test('points a disarmed provider hold at the manual resume button', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerAutoResumeDisarmed({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      reason: 'auto_resume_cap'
+    });
+
+    expect(messageOf(spawn.last())).toContain('다음: ↻ 이어하기로 수동 재개');
   });
 });
 

@@ -160,6 +160,39 @@ function seedHold(store, kind, account, patch = {}) {
 }
 
 /**
+ * Make a seeded held attempt the second automatic resume in a row that moved
+ * no commit (UI-87gn §3.2): it and a prior record of the same bead are both
+ * `provider_outage` resumes without a stop tip.
+ *
+ * @param {any} store
+ * @param {string} attempt_id
+ */
+function capWithoutProgress(store, attempt_id) {
+  const prior_id = `${attempt_id}-prior`;
+  store.appendAttempt(WS, {
+    expected_revision: store.snapshot(WS).revision,
+    attempt: { attempt_id: prior_id, bead_id: `B${attempt_id.slice(4)}` }
+  });
+  store.updateAttempt(WS, {
+    attempt_id: prior_id,
+    patch: {
+      runner: 'claude',
+      status: 'superseded',
+      auto_resume_kind: 'provider_outage',
+      head_oid: 'a'.repeat(40)
+    }
+  });
+  store.updateAttempt(WS, {
+    attempt_id,
+    patch: {
+      auto_resume_kind: 'provider_outage',
+      resumed_from: prior_id,
+      head_oid: 'a'.repeat(40)
+    }
+  });
+}
+
+/**
  * Build the controller with deterministic catalog, timers, and collaborators.
  *
  * @param {ReturnType<typeof createQueueStore>} store
@@ -729,7 +762,7 @@ describe('provider health probe', () => {
     env.health.stop(WS);
   });
 
-  test('retains the lineage auto resume cap notification after a successful probe', async () => {
+  test('retains the no-progress auto resume cap notification after a successful probe', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const env = setup(
@@ -738,10 +771,7 @@ describe('provider health probe', () => {
       makeSpawn({ is_error: false, result: 'ok' }, 0)
     );
     seedHold(store, 'usage_limit', 'held@example.com', { resets_at: NOW });
-    store.updateAttempt(WS, {
-      attempt_id: 'att-1',
-      patch: { auto_resume_kind: 'provider_outage' }
-    });
+    capWithoutProgress(store, 'att-1');
     await env.health.start(WS);
 
     timers.fireNext();
@@ -752,6 +782,102 @@ describe('provider health probe', () => {
     );
     expect(store.snapshot(WS).auto_resume_pending).toEqual([]);
     expect(store.snapshot(WS).provider_hold).toEqual({});
+  });
+
+  test('reports a recovered release with only a disarmed attempt as a plain release', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0),
+      { timeline }
+    );
+    seedHold(store, 'usage_limit', 'held@example.com', { resets_at: NOW });
+    capWithoutProgress(store, 'att-1');
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect([
+      timeline.readTimeline('B1').map((entry) => [entry.kind, entry.summary]),
+      env.notify.providerRecovered.mock.calls.length,
+      env.notify.providerAutoResumeDisarmed.mock.calls.length
+    ]).toEqual([
+      [
+        [
+          'provider_hold_released',
+          'claude 보류 해제 · 자동 재개 안 함 — 진척 없는 자동 재개 2회 연속'
+        ]
+      ],
+      0,
+      1
+    ]);
+  });
+
+  test('sends one recovery notification for a release mixing a receipt and a disarm', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0),
+      { timeline }
+    );
+    seedHold(store, 'usage_limit', 'held@example.com', { resets_at: NOW });
+    capWithoutProgress(store, 'att-1');
+    seedHold(store, 'usage_limit', 'held@example.com', {
+      resets_at: NOW,
+      attempt_id: 'att-2'
+    });
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect([
+      env.notify.providerRecovered.mock.calls.length,
+      timeline.readTimeline('B2').map((entry) => entry.kind),
+      timeline.readTimeline('B1').map((entry) => entry.kind)
+    ]).toEqual([1, ['provider_recovered'], ['provider_hold_released']]);
+  });
+
+  test('records only plain releases for an account-absent receipt and disarm', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const list = vi.fn(async () => ({ ok: true, accounts: [] }));
+    const env = setup(store, timers, makeHangingSpawn(), {
+      accountCatalog: { listClaude: list },
+      timeline
+    });
+    seedHold(store, 'outage', 'deleted');
+    capWithoutProgress(store, 'att-1');
+    seedHold(store, 'outage', 'deleted', { attempt_id: 'att-2' });
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect([
+      timeline.readTimeline('B1').map((entry) => [entry.kind, entry.summary]),
+      timeline.readTimeline('B2').map((entry) => [entry.kind, entry.summary]),
+      env.notify.providerRecovered.mock.calls.length,
+      env.notify.providerAutoResumeDisarmed.mock.calls.length
+    ]).toEqual([
+      [
+        [
+          'provider_hold_released',
+          'claude 보류 해제 · account_absent · 자동 재개 안 함 — 진척 없는 자동 재개 2회 연속'
+        ]
+      ],
+      [['provider_hold_released', 'claude 보류 해제 · account_absent']],
+      0,
+      0
+    ]);
   });
 
   test('uses the catalog model and held Claude account route', async () => {

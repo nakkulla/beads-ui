@@ -15,6 +15,7 @@ import {
   validTime
 } from './lane-model.js';
 import { candidateCard, setChipPresetContext } from './lanes.js';
+import { runningTile, runningTileInput } from './running-grid.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 const WS_A = '/tmp/example/repo-a';
@@ -2546,13 +2547,21 @@ describe('monitor 공급자 보류 attempt 투영', () => {
     expect(map.get('A-1')?.hold?.live_preempt_skipped_at).toBe(4000);
   });
 
-  test('keeps the manual-action verdict after the recovered target is removed', () => {
+  // UI-87gn §3.5: 렌더러는 계보로 상한을 다시 판정하지 않는다.
+  test('derives no disarmed verdict from the resume lineage alone', () => {
     const attempts = providerAttempt();
+    attempts.t0 = {
+      attempt_id: 't0',
+      bead_id: 'A-0',
+      status: 'superseded',
+      auto_resume_kind: 'provider_outage'
+    };
     attempts.t1.auto_resume_kind = 'provider_outage';
+    attempts.t1.resumed_from = 't0';
 
     const map = activeByBead(attempts, new Map());
 
-    expect(map.get('A-1')?.hold?.auto_resume).toBe('disarmed');
+    expect(map.get('A-1')?.hold?.auto_resume).toBe(undefined);
   });
 
   test('carries workspace hold material into the running lane', () => {
@@ -2652,6 +2661,101 @@ describe('공급자 보류 타일의 자동 재개 거절 재료 (stall-reconcil
     const map = activeByBead(attempts, new Map());
 
     expect(map.get('A-1')?.hold?.auto_resume_refusal).toBe(undefined);
+  });
+});
+
+// 진척 없는 반복으로 멈춘 attempt (UI-87gn §3.5): 같은 러너에 다른 러너 전체
+// 보류가 남아 있어도 이 attempt는 자동으로 재개되지 않으므로 조치 필요다.
+describe('no-progress cap refusal under another runner-wide hold (UI-87gn)', () => {
+  /** @returns {Record<string, any>} */
+  function cappedAttempts() {
+    return {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        status: 'paused',
+        cause: 'provider_outage:usage_limit',
+        cause_detail: { resets_at: new Date(2026, 9, 14, 0, 30).getTime() },
+        runner: 'claude',
+        auto_resume_kind: 'provider_outage',
+        auto_resume_refused: 'no_progress',
+        auto_resume_refusal: {
+          at: 1000,
+          count: 1,
+          kind: 'permanent',
+          next_at: null
+        }
+      }
+    };
+  }
+
+  const OTHER_RUNNER_HOLD = {
+    claude: {
+      since: 1000,
+      generation: 2,
+      targets: [
+        {
+          kind: 'outage',
+          model: 'opus',
+          account: null,
+          detail: 'overloaded_529',
+          attempt_ids: ['other'],
+          rearm_count: 0
+        }
+      ]
+    }
+  };
+
+  /**
+   * @returns {HTMLElement}
+   */
+  function renderCappedTile() {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: cappedAttempts(),
+          provider_hold: OTHER_RUNNER_HOLD
+        })
+      ],
+      [state()]
+    );
+    const host = document.createElement('div');
+    render(runningTile(runningTileInput(lanes.running[0]), 5000), host);
+    return host;
+  }
+
+  test('keeps the no-progress refusal through another runner-wide hold', () => {
+    const map = activeByBead(cappedAttempts(), new Map(), {
+      provider_hold: OTHER_RUNNER_HOLD
+    });
+
+    expect(map.get('A-1')?.hold?.auto_resume_refusal).toEqual({
+      kind: 'permanent',
+      next_at: null,
+      reason: 'no_progress'
+    });
+  });
+
+  test('draws the action-required badge on the card', () => {
+    const host = renderCappedTile();
+
+    const summary = /** @type {HTMLElement} */ (
+      host.querySelector('.rtile__hd .wait-verdict summary')
+    );
+    expect([
+      summary.textContent?.trim(),
+      summary.getAttribute('data-verdict')
+    ]).toEqual([
+      '⛔ 조치 필요 · 자동 재개 안 함 · 진척 없는 반복',
+      'action_required'
+    ]);
+  });
+
+  test('draws no past reset-time hold chip on the card', () => {
+    const host = renderCappedTile();
+
+    const header = host.querySelector('.rtile__hd')?.textContent || '';
+    expect(header).not.toContain('⏳ 공급자 보류');
   });
 });
 

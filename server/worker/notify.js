@@ -999,8 +999,8 @@ export function createNotifier(deps) {
         const lines = [
           headline(TITLE.provider_disarmed, input.bead_id, bead_title),
           `공급자: ${input.runner}`,
-          `사유: ${input.reason}`,
-          '다음: 수동 재개 필요'
+          '사유: 진척 없는 자동 재개 2회 연속(커밋 없음)',
+          '다음: ↻ 이어하기로 수동 재개'
         ];
         const repo = repoLabel(input.repo);
         if (repo) {

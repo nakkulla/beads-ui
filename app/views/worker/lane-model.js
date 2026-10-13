@@ -1329,38 +1329,16 @@ function accountAliasOf(account, account_catalog) {
 }
 
 /**
- * Whether this resume lineage already spent its one provider auto-resume.
- *
- * @param {any} attempt
- * @param {Record<string, any>} attempts
- * @returns {boolean}
- */
-function providerAutoResumeCapped(attempt, attempts) {
-  let current = attempt;
-  /** @type {Set<string>} */
-  const seen = new Set();
-  while (current && !seen.has(current.attempt_id)) {
-    seen.add(current.attempt_id);
-    if (current.auto_resume_kind === 'provider_outage') {
-      return true;
-    }
-    current =
-      typeof current.resumed_from === 'string'
-        ? attempts[current.resumed_from]
-        : null;
-  }
-  return false;
-}
-
-/**
  * Read where this hold stands with automatic recovery. A pending receipt wins
  * because it is the live intent; a recorded refusal beats the cap because it
- * says what actually happened to the one auto-resume this lineage had.
+ * says what actually happened to the attempt's automatic resume. `disarmed`
+ * comes only from what the server wrote — the renderer never re-judges the
+ * cap from the lineage (UI-87gn §3.5).
  *
  * @param {any} attempt
  * @param {any} target
  * @param {string} last_error
- * @param {{ auto_resume_pending?: any[], attempts: Record<string, any> }} input
+ * @param {{ auto_resume_pending?: any[] }} input
  * @returns {'pending'|'disarmed'|`refused:${string}`|null}
  */
 function providerAutoResumeState(attempt, target, last_error, input) {
@@ -1379,8 +1357,7 @@ function providerAutoResumeState(attempt, target, last_error, input) {
     return `refused:${refused}`;
   }
   return last_error.startsWith('auto_resume_disarmed:') ||
-    target?.auto_switch === 'cap' ||
-    providerAutoResumeCapped(attempt, input.attempts)
+    target?.auto_switch === 'cap'
     ? 'disarmed'
     : null;
 }
@@ -1451,8 +1428,7 @@ function providerHoldProjection(attempt, input) {
   const last_error =
     typeof target?.last_error === 'string' ? target.last_error : '';
   const auto_resume = providerAutoResumeState(attempt, target, last_error, {
-    auto_resume_pending: input.auto_resume_pending,
-    attempts: input.attempts
+    auto_resume_pending: input.auto_resume_pending
   });
   const resets_at =
     typeof target?.resets_at === 'number'
@@ -1480,7 +1456,13 @@ function providerHoldProjection(attempt, input) {
         (/** @type {any} */ candidate) =>
           candidate && providerTargetScope(candidate) !== 'account'
       ));
-  const auto_resume_refusal = runner_held ? null : autoResumeRefusalOf(attempt);
+  // A `no_progress` refusal is the cap, not a launch a probe could still
+  // release (UI-87gn §3.5): another runner-wide hold does not resume this
+  // attempt, so its action-required badge shows through `runner_held`.
+  const auto_resume_refusal =
+    runner_held && attempt.auto_resume_refused !== 'no_progress'
+      ? null
+      : autoResumeRefusalOf(attempt);
   return {
     kind:
       target?.kind === 'usage_limit' || detail === 'usage_limit'

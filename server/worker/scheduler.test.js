@@ -7547,6 +7547,81 @@ describe('scheduler provider hold and recovery', () => {
     expect(consume).not.toHaveBeenCalled();
   });
 
+  // 멈춘 시점의 브랜치 끝 (UI-87gn §3.1): 자동 재개 상한이 읽는 진척 재료다.
+  describe('stop branch tip (UI-87gn)', () => {
+    const STOP_TIP = 'c'.repeat(40);
+    const USAGE_LIMIT = {
+      account: 'old',
+      outage: {
+        detail: 'usage_limit',
+        message: 'limit',
+        scope: /** @type {const} */ ('account'),
+        resets_at: null
+      }
+    };
+
+    /**
+     * A git runner whose Bead branch read answers `tip`, or fails when null.
+     *
+     * @param {string|null} tip
+     */
+    function branchGit(tip) {
+      return vi.fn(async (/** @type {string[]} */ args) => {
+        if (args[0] === 'rev-parse' && args[1] === 'refs/heads/B1' && tip) {
+          return { code: 0, stdout: `${tip}\n`, stderr: '' };
+        }
+        return { code: 128, stdout: '', stderr: 'unknown revision' };
+      });
+    }
+
+    test('puts the branch tip in the provider hold patch', async () => {
+      const env = setup({ config: { B1: {} }, gitRun: branchGit(STOP_TIP) });
+      seedProviderAttempt(env.store, 'held', 'B1');
+
+      await env.scheduler.holdAttempt(WS, 'held', 'B1', null, USAGE_LIMIT);
+
+      expect(env.store.snapshot(WS).attempts.held).toMatchObject({
+        status: 'paused',
+        cause: 'provider_outage:usage_limit',
+        stop_head_oid: STOP_TIP
+      });
+    });
+
+    test('leaves the hold stop tip absent when the branch read fails', async () => {
+      const env = setup({ config: { B1: {} }, gitRun: branchGit(null) });
+      seedProviderAttempt(env.store, 'held', 'B1');
+
+      await env.scheduler.holdAttempt(WS, 'held', 'B1', null, USAGE_LIMIT);
+
+      const held = env.store.snapshot(WS).attempts.held;
+      expect(held.status).toBe('paused');
+      expect(held).not.toHaveProperty('stop_head_oid');
+    });
+
+    test('puts the branch tip beside the live preempt cause detail', async () => {
+      const env = await livePreemptEnv({ gitRun: branchGit(STOP_TIP) });
+
+      await env.scheduler.livePreemptPass(WS);
+
+      expect(env.store.snapshot(WS).attempts[env.attempt_id]).toMatchObject({
+        status: 'paused',
+        cause: 'account_preempt:5h',
+        cause_detail: { kind: 'account_preempt', to: 'cool@example.com' },
+        stop_head_oid: STOP_TIP
+      });
+    });
+
+    test('leaves the live preempt stop tip absent when the branch read fails', async () => {
+      const env = await livePreemptEnv({ gitRun: branchGit(null) });
+
+      await env.scheduler.livePreemptPass(WS);
+
+      const paused = env.store.snapshot(WS).attempts[env.attempt_id];
+      expect(paused.cause).toBe('account_preempt:5h');
+      expect(paused).not.toHaveProperty('stop_head_oid');
+    });
+  });
+
   test.each(['auto', 'prior_attempt'])(
     'consumes a switch receipt once with concurrent consumers and continuation %s',
     async (continuation_choice) => {

@@ -46,6 +46,10 @@
  * @property {string} bead_id - Bead this attempt runs.
  * @property {string|null} base_oid - Git base OID snapshotted at dispatch.
  * @property {string|null} head_oid - Git head OID at dispatch.
+ * @property {string} [stop_head_oid] - The Bead branch tip read when this
+ * attempt stopped on a provider hold or a live account preempt (UI-87gn §3.1).
+ * Against `head_oid` it is the attempt's progress evidence; absent when the
+ * read failed and on every stop recorded before the field existed.
  * @property {number|null} started_at - Epoch ms the session started.
  * @property {number|null} pid - OS process id of the runner.
  * @property {{ pid: number, pgid: number, started_at: number }|null} process_identity -
@@ -114,8 +118,8 @@
  * @property {string|null} cause - Failure cause shown by the decision tile.
  * @property {'provider_outage'|'account_switch'|null} auto_resume_kind - Marks
  * how an attempt was continued after a provider hold: `provider_outage` is the
- * one capped automatic reset resume, `account_switch` is a limit switch child
- * and does not consume that cap.
+ * automatic reset resume the no-progress cap counts, `account_switch` is a
+ * limit switch child and does not consume that cap.
  * @property {string|null} resume_refused - Diagnostic from a refused continuation.
  * @property {string|null} auto_resume_refused - Why the recovery resume was
  * turned away (`worktree_missing` and the like). Kept on the attempt because
@@ -3777,6 +3781,10 @@ export function makeAttempt(fields) {
     bead_id: fields.bead_id,
     base_oid: fields.base_oid ?? null,
     head_oid: fields.head_oid ?? null,
+    ...(typeof fields.stop_head_oid === 'string' &&
+    fields.stop_head_oid.length > 0
+      ? { stop_head_oid: fields.stop_head_oid }
+      : {}),
     started_at: fields.started_at ?? null,
     pid: fields.pid ?? null,
     process_identity: normalizeProcessIdentity(fields.process_identity),
@@ -5112,23 +5120,72 @@ function normalizeAutoResumePending(value) {
 }
 
 /**
- * Report whether one attempt lineage already consumed its provider auto-resume.
+ * Consecutive automatic `provider_outage` resumes that moved no commit before a
+ * release stops resuming the attempt (UI-87gn §3.2). A server constant on
+ * purpose: it is the loop guard, not a tuning knob.
+ */
+const PROVIDER_AUTO_RESUME_NO_PROGRESS_CAP = 2;
+
+/**
+ * Whether one attempt moved its Bead branch (UI-87gn §3.1): the tip read at
+ * its stop is a string, its starting `head_oid` is a string, and they differ.
+ * A missing or null side is no progress — an unproven commit never counts.
+ *
+ * @param {Attempt} attempt
+ * @returns {boolean}
+ */
+function attemptProgressed(attempt) {
+  return (
+    typeof attempt.stop_head_oid === 'string' &&
+    typeof attempt.head_oid === 'string' &&
+    attempt.stop_head_oid !== attempt.head_oid
+  );
+}
+
+/**
+ * Count the automatic resumes in a row that made no progress, walking from the
+ * released attempt itself up `resumed_from` (UI-87gn §3.2). A progressed
+ * attempt of any kind ends the run, a no-progress `provider_outage` resume adds
+ * one, a no-progress `account_switch` resume passes without counting (a switch
+ * does not consume the cap), and every other attempt — the first dispatch, a
+ * person's resume — ends it.
  *
  * @param {Record<string, Attempt>} attempts
  * @param {Attempt} attempt
+ * @returns {number}
  */
-function providerAutoResumeCapped(attempts, attempt) {
+export function providerNoProgressResumeCount(attempts, attempt) {
+  let count = 0;
   /** @type {Attempt|null} */
   let cursor = attempt;
   const seen = new Set();
   while (cursor && !seen.has(cursor.attempt_id)) {
     seen.add(cursor.attempt_id);
+    if (attemptProgressed(cursor)) {
+      break;
+    }
     if (cursor.auto_resume_kind === 'provider_outage') {
-      return true;
+      count += 1;
+    } else if (cursor.auto_resume_kind !== 'account_switch') {
+      break;
     }
     cursor = cursor.resumed_from ? attempts[cursor.resumed_from] || null : null;
   }
-  return false;
+  return count;
+}
+
+/**
+ * Whether a released attempt reached the no-progress auto-resume cap.
+ *
+ * @param {Record<string, Attempt>} attempts
+ * @param {Attempt} attempt
+ * @returns {boolean}
+ */
+function providerAutoResumeCapped(attempts, attempt) {
+  return (
+    providerNoProgressResumeCount(attempts, attempt) >=
+    PROVIDER_AUTO_RESUME_NO_PROGRESS_CAP
+  );
 }
 
 /**
@@ -9638,8 +9695,10 @@ export function createQueueStore(options = {}) {
      * whose global target no longer exists is a released hold. Each one is
      * judged by the rule a per-repository release used — paused,
      * `provider_outage:*`, undismissed, not yet resumed, no discard running —
-     * and either disarmed at the auto-resume cap or given a `provider_outage`
-     * receipt. The receipt and the membership's removal are one queue write,
+     * and either disarmed at the no-progress auto-resume cap — listed only in
+     * `disarmed_attempt_ids`, its `no_progress` refusal written in the same
+     * write (UI-87gn §3.3) — or given a `provider_outage` receipt and listed in
+     * `recovered_attempt_ids`. The receipt and the membership's removal are one queue write,
      * so a membership is never gone before its receipt is durable; that is
      * what lets attachment `start()` call this same function and reproduce a
      * release a restart interrupted.
@@ -9704,11 +9763,24 @@ export function createQueueStore(options = {}) {
           ) {
             continue;
           }
-          recovered_attempt_ids.push(attempt_id);
           if (providerAutoResumeCapped(next.attempts, attempt)) {
+            // The refusal rides the membership's removal (UI-87gn §3.3), so a
+            // capped attempt is never released without its card's reason, and
+            // `permanent` keeps the overdue sweep from retrying it.
+            next.attempts[attempt_id] = makeAttempt({
+              ...attempt,
+              auto_resume_refused: 'no_progress',
+              auto_resume_refusal: {
+                at: now(),
+                count: 1,
+                kind: 'permanent',
+                next_at: null
+              }
+            });
             disarmed_attempt_ids.push(attempt_id);
             continue;
           }
+          recovered_attempt_ids.push(attempt_id);
           const roster = listed[member.runner];
           const receipt = {
             attempt_id,
@@ -9980,8 +10052,8 @@ export function createQueueStore(options = {}) {
      * standing hold owns (a live hold is the prober's to release — but with
      * server-global holds another account's limit, maybe from another
      * workspace, is not one this attempt waits on, UI-3v1h §5.4), no receipt
-     * pending, no discard in flight, and the lineage's one automatic resume
-     * still unspent.
+     * pending, no discard in flight, and the no-progress auto-resume cap not
+     * reached (UI-87gn §3.2).
      *
      * The generation stays above every hold and receipt this workspace knows;
      * a later re-hold makes the attempt a live member again, which is what
