@@ -6555,6 +6555,9 @@ export function createScheduler(deps) {
             policy.accounts
           )
         : null;
+    // The branch tip at the stop is the progress evidence the auto-resume cap
+    // reads against `head_oid` (UI-87gn §3.1); a failed read leaves it absent.
+    const stop_oid = await branchTip(attempt.repo, bead_id);
     const current = deps.store.snapshot(workspace);
     const held_attempt = current.attempts[attempt_id];
     if (
@@ -6578,6 +6581,7 @@ export function createScheduler(deps) {
           resets_at: outage.resets_at
         },
         finished_at: now(),
+        ...(stop_oid === null ? {} : { stop_head_oid: stop_oid }),
         ...usagePatch(workspace, attempt_id)
       },
       runner: attempt.runner,
@@ -18859,10 +18863,20 @@ export function createScheduler(deps) {
       claimed.delete(entry.bead_id);
     }
     deps.sessionMonitors?.stop(workspace, attempt_id);
+    // A live preempt is the other provider stop the auto-resume cap reads
+    // (UI-87gn §3.1): its branch tip rides the pause patch, beside — never
+    // inside — the switch's `cause_detail`.
+    const stop_oid =
+      attempt.control?.intent?.reason === 'account_preempt'
+        ? await branchTip(attempt.repo, attempt.bead_id)
+        : null;
     const completed = deps.store.completeAttemptControl(workspace, {
       attempt_id,
       finished_at: now(),
-      patch: usagePatch(workspace, attempt_id)
+      patch: {
+        ...usagePatch(workspace, attempt_id),
+        ...(stop_oid === null ? {} : { stop_head_oid: stop_oid })
+      }
     });
     if (!completed.ok) {
       return { ok: false, reason: 'control_persist_failed' };

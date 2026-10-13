@@ -191,6 +191,31 @@ describe('auto-resume refusal badge (stall-reconcile D5)', () => {
     ]);
   });
 
+  // UI-87gn §3.5: 같은 슬롯·같은 판정·같은 해결 안내, 문구만 다르다.
+  test('words the no-progress cap as an action that stopped a loop', () => {
+    const badge = autoResumeRefusalBadge({
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      auto_resume_refusal: {
+        kind: 'permanent',
+        next_at: null,
+        reason: 'no_progress'
+      }
+    });
+
+    expect([
+      badge?.text,
+      badge?.verdict,
+      badge?.release,
+      badge?.resolution
+    ]).toEqual([
+      '⛔ 조치 필요 · 자동 재개 안 함 · 진척 없는 반복',
+      'action_required',
+      '자동 재개를 다시 시도하지 않음',
+      '↻ 이어하기로 직접 재개하거나 ✕로 내린다'
+    ]);
+  });
+
   test('words a closed refusal as the same action', () => {
     const badge = autoResumeRefusalBadge({
       kind: 'outage',

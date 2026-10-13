@@ -15,6 +15,7 @@ import {
   createQueueStore,
   makeAttempt,
   orderLaneByBlocks,
+  providerNoProgressResumeCount,
   transferableAttempts
 } from './queue-store.js';
 import { activeLaneLineages } from './scheduler.js';
@@ -1742,23 +1743,163 @@ describe('worker/queue-store provider hold', () => {
     expect(recovered.queue.admission['UI-other']).toBeDefined();
   });
 
-  test('disarms a lineage that already consumed automatic recovery', () => {
+  /**
+   * Seed the earlier record of a resume chain (UI-87gn §3.2): a settled
+   * attempt the held one can name in `resumed_from`.
+   *
+   * @param {any} queue_store
+   * @param {string} attempt_id
+   * @param {Partial<import('./queue-store.js').Attempt>} patch
+   * @param {string} [bead_id] - The held attempt's bead (its own id).
+   */
+  function seedPriorAttempt(queue_store, attempt_id, patch, bead_id = 'att-1') {
+    queue_store.appendAttempt(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id }
+    });
+    queue_store.updateAttempt(WS, {
+      attempt_id,
+      patch: { runner: 'claude', status: 'superseded', ...patch }
+    });
+  }
+
+  const RELEASED_KEY = {
+    runner: 'claude',
+    kind: /** @type {const} */ ('outage'),
+    model: 'opus',
+    account: 'held@example.com'
+  };
+
+  test('disarms the second automatic resume in a row without progress', () => {
     const store = createQueueStore();
+    seedPriorAttempt(store, 'att-0', { auto_resume_kind: 'provider_outage' });
     seedProviderAttempt(store, 'att-1', {
-      auto_resume_kind: 'provider_outage'
+      auto_resume_kind: 'provider_outage',
+      resumed_from: 'att-0'
     });
     holdProviderAttempt(store, 'att-1');
 
-    const recovered = releaseTarget(store, {
-      runner: 'claude',
-      kind: 'outage',
-      model: 'opus',
-      account: 'held@example.com'
-    });
+    const recovered = releaseTarget(store, RELEASED_KEY);
 
     expect(recovered.disarmed_attempt_ids).toEqual(['att-1']);
     expect(recovered.queue.auto_resume_pending).toEqual([]);
     expect(recovered.queue.attempts['att-1'].status).toBe('paused');
+  });
+
+  test('leaves a disarmed attempt out of the recovered list', () => {
+    const store = createQueueStore();
+    seedPriorAttempt(store, 'att-0', { auto_resume_kind: 'provider_outage' });
+    seedProviderAttempt(store, 'att-1', {
+      auto_resume_kind: 'provider_outage',
+      resumed_from: 'att-0'
+    });
+    holdProviderAttempt(store, 'att-1');
+
+    const recovered = releaseTarget(store, RELEASED_KEY);
+
+    expect(recovered.recovered_attempt_ids).toEqual([]);
+  });
+
+  test('writes the permanent no-progress refusal in the settlement write', () => {
+    const store = createQueueStore({ now: () => 4242 });
+    seedPriorAttempt(store, 'att-0', { auto_resume_kind: 'provider_outage' });
+    seedProviderAttempt(store, 'att-1', {
+      auto_resume_kind: 'provider_outage',
+      resumed_from: 'att-0'
+    });
+    holdProviderAttempt(store, 'att-1');
+    const revision = store.snapshot(WS).revision;
+
+    const recovered = releaseTarget(store, RELEASED_KEY);
+
+    expect(recovered.queue.revision).toBe(revision + 1);
+    expect(recovered.queue.attempts['att-1']).toMatchObject({
+      auto_resume_refused: 'no_progress',
+      auto_resume_refusal: {
+        at: 4242,
+        count: 1,
+        kind: 'permanent',
+        next_at: null
+      }
+    });
+  });
+
+  test('gives one automatic resume without progress its receipt', () => {
+    const store = createQueueStore();
+    seedPriorAttempt(store, 'att-0', {});
+    seedProviderAttempt(store, 'att-1', {
+      auto_resume_kind: 'provider_outage',
+      resumed_from: 'att-0'
+    });
+    const held = holdProviderAttempt(store, 'att-1');
+
+    const recovered = releaseTarget(store, RELEASED_KEY);
+
+    expect([
+      recovered.recovered_attempt_ids,
+      recovered.disarmed_attempt_ids,
+      recovered.queue.auto_resume_pending
+    ]).toEqual([
+      ['att-1'],
+      [],
+      [
+        {
+          attempt_id: 'att-1',
+          generation: held.generation,
+          account: 'held@example.com',
+          kind: 'provider_outage'
+        }
+      ]
+    ]);
+  });
+
+  // RL-ao9 재현 (UI-87gn §1 성공 기준): 자동 재개된 B가 커밋을 쌓고 다시 보류되면
+  // B의 해제 때 B의 영수증이 생긴다.
+  test('gives a re-held automatic resume that committed its receipt', () => {
+    const store = createQueueStore();
+    seedPriorAttempt(
+      store,
+      'att-a',
+      {
+        status: 'paused',
+        cause: 'provider_outage:usage_limit',
+        head_oid: '1'.repeat(40)
+      },
+      'att-b'
+    );
+    seedProviderAttempt(store, 'att-b', {
+      auto_resume_kind: 'provider_outage',
+      resumed_from: 'att-a',
+      head_oid: '5'.repeat(40)
+    });
+    store.holdProviderAttempt(WS, {
+      attempt_id: 'att-b',
+      patch: {
+        status: 'paused',
+        cause: 'provider_outage:usage_limit',
+        stop_head_oid: 'd'.repeat(40)
+      },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'held@example.com',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+
+    const recovered = releaseTarget(store, {
+      ...RELEASED_KEY,
+      kind: 'usage_limit'
+    });
+
+    expect(
+      recovered.queue.auto_resume_pending.map((entry) => entry.attempt_id)
+    ).toEqual(['att-b']);
   });
 
   // 뒤집힌 단언 (UI-3v1h §5.4): 새 generation은 폐기 근거가 아니다.
@@ -1800,6 +1941,163 @@ describe('worker/queue-store provider hold', () => {
 
     expect(discarded.discarded_attempt_ids).toEqual(['att-1']);
     expect(discarded.queue.auto_resume_pending).toEqual([]);
+  });
+});
+
+// 상한 판정 표 (UI-87gn §3.2·§5): 해제되는 attempt에서 `resumed_from`을 거슬러
+// 올라가며 커밋 없는 `provider_outage` 자동 재개만 센다. 2 이상이면 상한이다.
+describe('no-progress auto-resume count (UI-87gn)', () => {
+  const OID_A = 'a'.repeat(40);
+  const OID_B = 'b'.repeat(40);
+
+  /**
+   * Build a resume chain oldest first; each record resumes the one before it.
+   *
+   * @param {Array<Record<string, unknown>>} records
+   */
+  function chain(records) {
+    /** @type {Record<string, import('./queue-store.js').Attempt>} */
+    const attempts = {};
+    let released = makeAttempt({ attempt_id: 'none', bead_id: 'B1' });
+    for (const [index, record] of records.entries()) {
+      released = makeAttempt({
+        ...record,
+        attempt_id: `att-${index}`,
+        bead_id: 'B1',
+        resumed_from: index > 0 ? `att-${index - 1}` : null
+      });
+      attempts[released.attempt_id] = released;
+    }
+    return { attempts, released };
+  }
+
+  test.each([
+    [
+      'stops at an automatic resume that committed',
+      [
+        {},
+        {
+          auto_resume_kind: 'provider_outage',
+          head_oid: OID_A,
+          stop_head_oid: OID_B
+        }
+      ],
+      0
+    ],
+    [
+      'counts one automatic resume without progress',
+      [{}, { auto_resume_kind: 'provider_outage', head_oid: OID_A }],
+      1
+    ],
+    [
+      'counts two automatic resumes in a row without progress',
+      [
+        {},
+        { auto_resume_kind: 'provider_outage', head_oid: OID_A },
+        {
+          auto_resume_kind: 'provider_outage',
+          head_oid: OID_A,
+          stop_head_oid: OID_A
+        }
+      ],
+      2
+    ],
+    [
+      'starts over after a person resumed in between',
+      [
+        {},
+        { auto_resume_kind: 'provider_outage' },
+        {},
+        { auto_resume_kind: 'provider_outage' }
+      ],
+      1
+    ],
+    [
+      'passes a no-progress account switch without counting it',
+      [
+        {},
+        { auto_resume_kind: 'provider_outage' },
+        { auto_resume_kind: 'account_switch' },
+        { auto_resume_kind: 'provider_outage' }
+      ],
+      2
+    ],
+    [
+      'treats a null start head or a missing stop tip as no progress',
+      [
+        {},
+        { auto_resume_kind: 'provider_outage', stop_head_oid: OID_B },
+        { auto_resume_kind: 'provider_outage', head_oid: OID_A }
+      ],
+      2
+    ],
+    [
+      'stops at a committed resume preempted before an account switch',
+      [
+        {},
+        {
+          auto_resume_kind: 'provider_outage',
+          head_oid: OID_A,
+          stop_head_oid: OID_B
+        },
+        {
+          auto_resume_kind: 'account_switch',
+          head_oid: OID_B,
+          stop_head_oid: OID_B
+        },
+        { auto_resume_kind: 'provider_outage', head_oid: OID_B }
+      ],
+      1
+    ]
+  ])('%s', (_name, records, expected) => {
+    const { attempts, released } = chain(records);
+
+    const count = providerNoProgressResumeCount(attempts, released);
+
+    expect(count).toBe(expected);
+  });
+
+  test('ends the walk at a resume cycle', () => {
+    const attempts = {
+      x: makeAttempt({
+        attempt_id: 'x',
+        bead_id: 'B1',
+        auto_resume_kind: 'provider_outage',
+        resumed_from: 'y'
+      }),
+      y: makeAttempt({
+        attempt_id: 'y',
+        bead_id: 'B1',
+        auto_resume_kind: 'provider_outage',
+        resumed_from: 'x'
+      })
+    };
+
+    const count = providerNoProgressResumeCount(attempts, attempts.x);
+
+    expect(count).toBe(2);
+  });
+
+  test('keeps the stop tip through normalization and a cold load', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-1', bead_id: 'B1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { stop_head_oid: OID_B }
+    });
+
+    const loaded = createQueueStore().load(WS).attempts['att-1'];
+
+    expect(loaded.stop_head_oid).toBe(OID_B);
+  });
+
+  test('leaves the stop tip off an attempt that never recorded one', () => {
+    const attempt = makeAttempt({ attempt_id: 'a1', bead_id: 'B1' });
+
+    expect(attempt).not.toHaveProperty('stop_head_oid');
   });
 });
 

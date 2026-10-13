@@ -114,9 +114,14 @@ export function autoResumeRefusalBadge(hold) {
     };
   }
   return {
-    text: ['⛔ 조치 필요 · 자동 재개 거부', refusal.reason]
-      .filter((part) => part.length > 0)
-      .join(' '),
+    // The no-progress cap is the one refusal that is not a refused launch
+    // (UI-87gn §3.5): the server stopped a loop, so the badge says so.
+    text:
+      refusal.reason === 'no_progress'
+        ? '⛔ 조치 필요 · 자동 재개 안 함 · 진척 없는 반복'
+        : ['⛔ 조치 필요 · 자동 재개 거부', refusal.reason]
+            .filter((part) => part.length > 0)
+            .join(' '),
     verdict: 'action_required',
     release: '자동 재개를 다시 시도하지 않음',
     resolution: '↻ 이어하기로 직접 재개하거나 ✕로 내린다',

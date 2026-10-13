@@ -41,6 +41,16 @@ const WAIT_REASONS = new Set([
 ]);
 
 /**
+ * Reasons that are `permanent` by meaning, not by falling through the table:
+ * `no_progress` is the provider auto-resume cap (UI-87gn §3.3) — two automatic
+ * resumes in a row that moved no commit — and retrying it is exactly the loop
+ * the cap stops.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const PERMANENT_REASONS = new Set(['no_progress']);
+
+/**
  * The admission badges D4 clears on the workspace's next successful bd read:
  * the `transient` reasons an admission check records.
  *
@@ -76,6 +86,9 @@ export const AUTO_RESUME_RETRY_DELAYS_MS = Object.freeze([
  */
 export function continuationRefusalClass(reason) {
   if (typeof reason !== 'string' || reason.length === 0) {
+    return 'permanent';
+  }
+  if (PERMANENT_REASONS.has(reason)) {
     return 'permanent';
   }
   if (reason === 'not_ready:closed') {

@@ -39,6 +39,9 @@ const OUTAGE_BACKOFF_MS = Object.freeze([
   60_000, 120_000, 240_000, 480_000, 900_000, 3_600_000
 ]);
 const log = debug('beads-ui:provider-health');
+// The release history of an attempt the no-progress cap disarmed (UI-87gn §3.4).
+const NO_PROGRESS_RELEASE_SUFFIX =
+  ' · 자동 재개 안 함 — 진척 없는 자동 재개 2회 연속';
 
 /**
  * @typedef {import('./queue-store.js').ProviderTarget} ProviderTarget
@@ -864,6 +867,11 @@ export function createProviderHealth(deps) {
    * standing for the next probe; a workspace whose settlement fails retries
    * it by itself ({@link scheduleSettleRetry}).
    *
+   * Only a receipted attempt is a recovery (UI-87gn §3.4): one the no-progress
+   * cap disarmed gets `provider_hold_released` history and its disarm
+   * notification instead, and a release that receipted nothing sends no
+   * recovery notification.
+   *
    * A release because the account left the catalog is not a recovery: as
    * before, it writes `provider_hold_released` history for each attempt and
    * sends no recovery or disarm notification.
@@ -908,11 +916,21 @@ export function createProviderHealth(deps) {
     let first = null;
     for (const { workspace, settled } of settlements) {
       const hooks = hooksFor(workspace);
+      // Receipted and disarmed are disjoint (UI-87gn §3.4): a disarmed attempt
+      // is not resumed, so its release is history, never a recovery.
       const recovered_ids = settled.recovered_attempt_ids || [];
+      const disarmed_ids = settled.disarmed_attempt_ids || [];
       if (reason === 'recovered') {
-        for (const attempt_id of settled.disarmed_attempt_ids || []) {
+        for (const attempt_id of disarmed_ids) {
           const attempt = settled.queue.attempts[attempt_id];
           if (attempt) {
+            hooks.timeline?.append({
+              bead_id: attempt.bead_id,
+              attempt_id,
+              kind: 'provider_hold_released',
+              seq: generation,
+              summary: `${runner} 보류 해제${NO_PROGRESS_RELEASE_SUFFIX}`
+            });
             void hooks.notify?.providerAutoResumeDisarmed?.({
               bead_id: attempt.bead_id,
               runner,
@@ -922,7 +940,7 @@ export function createProviderHealth(deps) {
           }
         }
       } else {
-        for (const attempt_id of recovered_ids) {
+        for (const attempt_id of [...recovered_ids, ...disarmed_ids]) {
           const attempt = settled.queue.attempts[attempt_id];
           if (attempt) {
             hooks.timeline?.append({
@@ -930,7 +948,11 @@ export function createProviderHealth(deps) {
               attempt_id,
               kind: 'provider_hold_released',
               seq: generation,
-              summary: `${runner} 보류 해제 · account_absent`
+              summary: `${runner} 보류 해제 · account_absent${
+                disarmed_ids.includes(attempt_id)
+                  ? NO_PROGRESS_RELEASE_SUFFIX
+                  : ''
+              }`
             });
           }
         }
@@ -939,29 +961,34 @@ export function createProviderHealth(deps) {
       resumed_beads.push(...(outcome?.resumed_beads || []));
       refusals.push(...(outcome?.refusals || []));
       await reevaluateSwitches(workspace);
-      const recovered_attempt = recovered_ids[0]
-        ? settled.queue.attempts[recovered_ids[0]]
-        : null;
-      if (!recovered_attempt || reason !== 'recovered') {
+      if (reason !== 'recovered') {
         continue;
       }
-      // The receipt's account is what the resume actually launches on.
-      const recovered_account =
-        (settled.pending || []).find(
-          (
-            /** @type {{ attempt_id: string, account: string|null }} */ receipt
-          ) => receipt.attempt_id === recovered_attempt.attempt_id
-        )?.account ?? live_target.account;
-      hooks.timeline?.append({
-        bead_id: recovered_attempt.bead_id,
-        attempt_id: recovered_attempt.attempt_id,
-        kind: 'provider_recovered',
-        seq: generation,
-        summary: `${runner} 공급자 회복`,
-        ...(recovered_account ? { account: recovered_account } : {})
-      });
-      if (!first) {
-        first = { workspace, bead_id: recovered_attempt.bead_id };
+      // Every receipted attempt records its recovery (UI-87gn §3.4); the
+      // notification below stays one per release.
+      for (const attempt_id of recovered_ids) {
+        const recovered_attempt = settled.queue.attempts[attempt_id];
+        if (!recovered_attempt) {
+          continue;
+        }
+        // The receipt's account is what the resume actually launches on.
+        const recovered_account =
+          (settled.pending || []).find(
+            (
+              /** @type {{ attempt_id: string, account: string|null }} */ receipt
+            ) => receipt.attempt_id === attempt_id
+          )?.account ?? live_target.account;
+        hooks.timeline?.append({
+          bead_id: recovered_attempt.bead_id,
+          attempt_id,
+          kind: 'provider_recovered',
+          seq: generation,
+          summary: `${runner} 공급자 회복`,
+          ...(recovered_account ? { account: recovered_account } : {})
+        });
+        if (!first) {
+          first = { workspace, bead_id: recovered_attempt.bead_id };
+        }
       }
     }
     if (first) {
