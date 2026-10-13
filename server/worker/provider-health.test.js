@@ -845,6 +845,33 @@ describe('provider health probe', () => {
     ]).toEqual([1, ['provider_recovered'], ['provider_hold_released']]);
   });
 
+  test('records a recovery for every receipted attempt in one workspace', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0),
+      { timeline }
+    );
+    seedHold(store, 'usage_limit', 'held@example.com', { resets_at: NOW });
+    seedHold(store, 'usage_limit', 'held@example.com', {
+      resets_at: NOW,
+      attempt_id: 'att-2'
+    });
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect([
+      timeline.readTimeline('B1').map((entry) => entry.kind),
+      timeline.readTimeline('B2').map((entry) => entry.kind),
+      env.notify.providerRecovered.mock.calls.length
+    ]).toEqual([['provider_recovered'], ['provider_recovered'], 1]);
+  });
+
   test('records only plain releases for an account-absent receipt and disarm', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();

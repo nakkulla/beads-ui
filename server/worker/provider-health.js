@@ -961,29 +961,34 @@ export function createProviderHealth(deps) {
       resumed_beads.push(...(outcome?.resumed_beads || []));
       refusals.push(...(outcome?.refusals || []));
       await reevaluateSwitches(workspace);
-      const recovered_attempt = recovered_ids[0]
-        ? settled.queue.attempts[recovered_ids[0]]
-        : null;
-      if (!recovered_attempt || reason !== 'recovered') {
+      if (reason !== 'recovered') {
         continue;
       }
-      // The receipt's account is what the resume actually launches on.
-      const recovered_account =
-        (settled.pending || []).find(
-          (
-            /** @type {{ attempt_id: string, account: string|null }} */ receipt
-          ) => receipt.attempt_id === recovered_attempt.attempt_id
-        )?.account ?? live_target.account;
-      hooks.timeline?.append({
-        bead_id: recovered_attempt.bead_id,
-        attempt_id: recovered_attempt.attempt_id,
-        kind: 'provider_recovered',
-        seq: generation,
-        summary: `${runner} 공급자 회복`,
-        ...(recovered_account ? { account: recovered_account } : {})
-      });
-      if (!first) {
-        first = { workspace, bead_id: recovered_attempt.bead_id };
+      // Every receipted attempt records its recovery (UI-87gn §3.4); the
+      // notification below stays one per release.
+      for (const attempt_id of recovered_ids) {
+        const recovered_attempt = settled.queue.attempts[attempt_id];
+        if (!recovered_attempt) {
+          continue;
+        }
+        // The receipt's account is what the resume actually launches on.
+        const recovered_account =
+          (settled.pending || []).find(
+            (
+              /** @type {{ attempt_id: string, account: string|null }} */ receipt
+            ) => receipt.attempt_id === attempt_id
+          )?.account ?? live_target.account;
+        hooks.timeline?.append({
+          bead_id: recovered_attempt.bead_id,
+          attempt_id,
+          kind: 'provider_recovered',
+          seq: generation,
+          summary: `${runner} 공급자 회복`,
+          ...(recovered_account ? { account: recovered_account } : {})
+        });
+        if (!first) {
+          first = { workspace, bead_id: recovered_attempt.bead_id };
+        }
       }
     }
     if (first) {
