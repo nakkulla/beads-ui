@@ -4153,9 +4153,10 @@ describe('monitor 바인딩 칩 클릭 (UI-wg68 §5.3)', () => {
 
   /**
    * @param {any} [store_state]
+   * @param {string} [route]
    * @returns {ReturnType<typeof setup>}
    */
-  function boundSetup(store_state) {
+  function boundSetup(store_state, route = 'spec_backed') {
     return setup({
       execPresetStore: {
         get: () =>
@@ -4175,7 +4176,7 @@ describe('monitor 바인딩 칩 클릭 (UI-wg68 §5.3)', () => {
             {
               bead_id: 'A-1',
               title: '복잡 후보',
-              route: 'spec_backed',
+              route,
               complex_reason: 'invariant_reasoning'
             }
           ]
@@ -4184,6 +4185,42 @@ describe('monitor 바인딩 칩 클릭 (UI-wg68 §5.3)', () => {
       workspaces_state: [state()]
     });
   }
+
+  test('draws a quick_fix issue chip bound by the quick fix map', () => {
+    const { mount, view } = boundSetup(
+      {
+        revision: 4,
+        presets: [PRESET, { ...PRESET, id: 'q1', applies_to: 'quick_fix' }],
+        chip_bindings: { complex: null, frontend: null, backend: null },
+        quick_fix_chip_bindings: {
+          complex: 'q1',
+          frontend: null,
+          backend: null
+        }
+      },
+      'quick_fix'
+    );
+
+    view.load();
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="A-1"] .judgement-chip--bound'
+      )
+    ).not.toBeNull();
+  });
+
+  test('keeps the popup chip on a quick_fix issue bound only in the general map', () => {
+    const { mount, view } = boundSetup(undefined, 'quick_fix');
+
+    view.load();
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="A-1"] .judgement-chip--bound'
+      )
+    ).toBeNull();
+  });
 
   test('sends chip-preset-toggle with the row repo', () => {
     const { mount, view, sent } = boundSetup();

@@ -2434,6 +2434,7 @@ export function createMonitorView(mount_element, options) {
         : [];
     return {
       bindings: state.chip_bindings,
+      quick_fix_bindings: state.quick_fix_chip_bindings,
       presets: Array.isArray(state.presets) ? state.presets : [],
       revision: state.revision,
       catalogOf: (root_dir) =>

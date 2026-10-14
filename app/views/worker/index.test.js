@@ -15059,9 +15059,11 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
    * The same candidate under a server-global binding on the `복잡` chip.
    *
    * @param {any} transport
+   * @param {Record<string, any>} [metadata]
+   * @param {Record<string, any>} [state]
    * @returns {HTMLElement}
    */
-  function mountBound(transport) {
+  function mountBound(transport, metadata = {}, state = {}) {
     return mountJudgement(
       /** @type {any} */ ({
         transport,
@@ -15074,16 +15076,55 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
                 name: '오퍼스 → 클로드',
                 applies_to: 'general',
                 settings: { impl_runtime: 'claude' }
+              },
+              {
+                id: 'q1',
+                name: '빠른 수정',
+                applies_to: 'quick_fix',
+                settings: { impl_runtime: 'claude' }
               }
             ],
-            chip_bindings: { complex: 'p1', frontend: null, backend: null }
+            chip_bindings: { complex: 'p1', frontend: null, backend: null },
+            ...state
           }),
           set: () => {},
           subscribe: () => () => {}
         }
-      })
+      }),
+      metadata
     );
   }
+
+  test('draws a quick_fix issue chip bound by the quick fix map', () => {
+    const mount = mountBound(
+      vi.fn(),
+      { route: 'quick_fix' },
+      {
+        chip_bindings: { complex: null, frontend: null, backend: null },
+        quick_fix_chip_bindings: {
+          complex: 'q1',
+          frontend: null,
+          backend: null
+        }
+      }
+    );
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="REC-1"] .judgement-chip--bound'
+      )
+    ).not.toBeNull();
+  });
+
+  test('keeps the popup chip on a quick_fix issue bound only in the general map', () => {
+    const mount = mountBound(vi.fn(), { route: 'quick_fix' });
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="REC-1"] .judgement-chip--bound'
+      )
+    ).toBeNull();
+  });
 
   test('sends chip-preset-toggle from a bound chip instead of the popup', () => {
     const transport = vi.fn().mockResolvedValue({ applied: 'applied' });

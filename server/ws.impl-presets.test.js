@@ -95,7 +95,12 @@ describe('ws impl-preset channel', () => {
         id: 'exec:presets',
         revision: 0,
         presets: [],
-        chip_bindings: { complex: null, frontend: null, backend: null }
+        chip_bindings: { complex: null, frontend: null, backend: null },
+        quick_fix_chip_bindings: {
+          complex: null,
+          frontend: null,
+          backend: null
+        }
       }
     ]);
   });

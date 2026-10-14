@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createExecPresetStore } from './exec-preset-store.js';
 
-/** The three chip bindings a file with no `chip_bindings` field loads as. */
+/** The three chip bindings a file with no binding field loads as, per map. */
 const UNBOUND_CHIPS = { complex: null, frontend: null, backend: null };
 
 /** @type {string} */
@@ -37,6 +37,7 @@ describe('exec-preset-store defaults', () => {
         revision: 0,
         presets: [],
         chip_bindings: UNBOUND_CHIPS,
+        quick_fix_chip_bindings: UNBOUND_CHIPS,
         read_failed: true
       });
       expect(second).toEqual(first);
@@ -57,6 +58,7 @@ describe('exec-preset-store defaults', () => {
       revision: 0,
       presets: [],
       chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS,
       read_failed: true
     });
     expect(store.snapshot()).toEqual(snapshot);
@@ -78,7 +80,8 @@ describe('exec-preset-store defaults', () => {
     expect(JSON.parse(fs.readFileSync(file_path, 'utf8'))).toEqual({
       revision: 1,
       presets: result.presets,
-      chip_bindings: UNBOUND_CHIPS
+      chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS
     });
   });
 
@@ -103,7 +106,8 @@ describe('exec-preset-store defaults', () => {
     expect(snapshot).toEqual({
       revision: 0,
       presets: [],
-      chip_bindings: UNBOUND_CHIPS
+      chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS
     });
   });
 
@@ -134,6 +138,7 @@ describe('exec-preset-store defaults', () => {
     expect(snapshot).toEqual({
       revision: 3,
       chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS,
       presets: [
         {
           id: 'preset-1',
@@ -247,6 +252,7 @@ describe('exec-preset-store defaults', () => {
         }
       ],
       chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS,
       reseed_migration: { version: 1 }
     });
     expect(restarted.snapshot()).toEqual(durable);
@@ -420,12 +426,14 @@ describe('exec-preset-store CRUD', () => {
           origin: { kind: 'user' }
         }
       ],
-      chip_bindings: UNBOUND_CHIPS
+      chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS
     });
     expect(createExecPresetStore({ filePath: file_path }).snapshot()).toEqual({
       revision: 1,
       presets: result.presets,
-      chip_bindings: UNBOUND_CHIPS
+      chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS
     });
   });
 
@@ -476,7 +484,8 @@ describe('exec-preset-store CRUD', () => {
     ).toEqual({
       revision: 3,
       presets: result.presets,
-      chip_bindings: UNBOUND_CHIPS
+      chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS
     });
   });
 
@@ -529,7 +538,8 @@ describe('exec-preset-store CRUD', () => {
           origin: { kind: 'user' }
         }
       ],
-      chip_bindings: UNBOUND_CHIPS
+      chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS
     });
     expect(fs.readFileSync(file_path, 'utf8')).toBe(before);
   });
@@ -908,6 +918,7 @@ describe('exec-preset-store profile migration', () => {
       revision: 5,
       presets: result.presets,
       chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS,
       preset_profile_migration: { version: 1 }
     });
   });
@@ -1273,5 +1284,203 @@ describe('exec-preset-store chip bindings', () => {
       frontend: null,
       backend: 'preset-2'
     });
+  });
+});
+
+describe('exec-preset-store quick fix chip bindings (UI-rd2m)', () => {
+  /**
+   * A store holding one general (`general-1`) and one quick_fix
+   * (`quick-1`) preset at revision 2.
+   *
+   * @returns {ReturnType<typeof createExecPresetStore>}
+   */
+  function storeWithBothProfiles() {
+    const ids = ['general-1', 'quick-1'];
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json'),
+      randomUUID: () => String(ids.shift()),
+      settingEnums: () => ({})
+    });
+    store.create({ expected_revision: 0, name: '일반', settings: {} });
+    store.create({
+      expected_revision: 1,
+      name: '빠른 수정',
+      settings: {},
+      applies_to: 'quick_fix'
+    });
+    return store;
+  }
+
+  test('reads a file without the field as three unbound chips', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({ revision: 2, presets: [], chip_bindings: {} })
+    );
+
+    const snapshot = createExecPresetStore({ filePath: file_path }).snapshot();
+
+    expect(snapshot.quick_fix_chip_bindings).toEqual(UNBOUND_CHIPS);
+  });
+
+  test('drops a chip key outside the vocabulary on load', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 2,
+        presets: [],
+        quick_fix_chip_bindings: { complex: 'quick-1', 세션: 'quick-1' }
+      })
+    );
+
+    const snapshot = createExecPresetStore({ filePath: file_path }).snapshot();
+
+    expect(snapshot.quick_fix_chip_bindings).toEqual({
+      complex: 'quick-1',
+      frontend: null,
+      backend: null
+    });
+  });
+
+  test('writes only the quick fix map for applies_to quick_fix', () => {
+    const store = storeWithBothProfiles();
+
+    const result = /** @type {any} */ (
+      store.bindChip({
+        expected_revision: 2,
+        chip: 'complex',
+        preset_id: 'quick-1',
+        applies_to: 'quick_fix'
+      })
+    );
+
+    expect(result.applied).toBe(true);
+    expect(result.quick_fix_chip_bindings.complex).toBe('quick-1');
+    expect(result.chip_bindings).toEqual(UNBOUND_CHIPS);
+  });
+
+  test('writes only the general map when applies_to is absent', () => {
+    const store = storeWithBothProfiles();
+
+    const result = /** @type {any} */ (
+      store.bindChip({
+        expected_revision: 2,
+        chip: 'complex',
+        preset_id: 'general-1'
+      })
+    );
+
+    expect(result.chip_bindings.complex).toBe('general-1');
+    expect(result.quick_fix_chip_bindings).toEqual(UNBOUND_CHIPS);
+  });
+
+  test('refuses a general preset in the quick fix map', () => {
+    const store = storeWithBothProfiles();
+
+    const result = /** @type {any} */ (
+      store.bindChip({
+        expected_revision: 2,
+        chip: 'complex',
+        preset_id: 'general-1',
+        applies_to: 'quick_fix'
+      })
+    );
+
+    expect(result).toMatchObject({ applied: false, reason: 'invalid' });
+  });
+
+  test('refuses a quick fix preset in the general map', () => {
+    const store = storeWithBothProfiles();
+
+    const result = /** @type {any} */ (
+      store.bindChip({
+        expected_revision: 2,
+        chip: 'complex',
+        preset_id: 'quick-1',
+        applies_to: 'general'
+      })
+    );
+
+    expect(result).toMatchObject({ applied: false, reason: 'invalid' });
+  });
+
+  test('unbinds the quick fix map with a null preset id', () => {
+    const store = storeWithBothProfiles();
+    store.bindChip({
+      expected_revision: 2,
+      chip: 'backend',
+      preset_id: 'quick-1',
+      applies_to: 'quick_fix'
+    });
+
+    store.bindChip({
+      expected_revision: 3,
+      chip: 'backend',
+      preset_id: null,
+      applies_to: 'quick_fix'
+    });
+
+    expect(store.snapshot().quick_fix_chip_bindings.backend).toBe(null);
+  });
+
+  test('persists the quick fix map and reloads it', () => {
+    const store = storeWithBothProfiles();
+    store.bindChip({
+      expected_revision: 2,
+      chip: 'frontend',
+      preset_id: 'quick-1',
+      applies_to: 'quick_fix'
+    });
+
+    const reloaded = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json')
+    }).snapshot();
+
+    expect(reloaded.quick_fix_chip_bindings.frontend).toBe('quick-1');
+  });
+
+  test('nulls the binding onto a quick fix preset the delete removes', () => {
+    const store = storeWithBothProfiles();
+    store.bindChip({
+      expected_revision: 2,
+      chip: 'complex',
+      preset_id: 'quick-1',
+      applies_to: 'quick_fix'
+    });
+    store.bindChip({
+      expected_revision: 3,
+      chip: 'complex',
+      preset_id: 'general-1'
+    });
+
+    const result = /** @type {any} */ (
+      store.delete({ expected_revision: 4, id: 'quick-1' })
+    );
+
+    expect(result.quick_fix_chip_bindings).toEqual(UNBOUND_CHIPS);
+    expect(result.chip_bindings.complex).toBe('general-1');
+  });
+
+  test('carries both maps on a stale revision rejection', () => {
+    const store = storeWithBothProfiles();
+    store.bindChip({
+      expected_revision: 2,
+      chip: 'complex',
+      preset_id: 'quick-1',
+      applies_to: 'quick_fix'
+    });
+
+    const result = /** @type {any} */ (
+      store.bindChip({
+        expected_revision: 0,
+        chip: 'complex',
+        preset_id: 'quick-1',
+        applies_to: 'quick_fix'
+      })
+    );
+
+    expect(result).toMatchObject({ applied: false, conflict: true });
+    expect(result.quick_fix_chip_bindings.complex).toBe('quick-1');
   });
 });

@@ -4754,14 +4754,14 @@ function planPopoverContent(item, plan_context) {
 
 /**
  * The last guidance line of a chip that still opens a 팝업 (UI-wg68 §5.2).
- * quick fix 이슈에서는 바인딩이 있어도 칩 클릭이 없으므로 다른 문장을 읽는다.
+ * quick fix 이슈는 quick fix 프리셋을 매는 곳을 읽는다 (UI-rd2m).
  *
  * @param {MiniItem} item
  * @returns {string}
  */
 function chipBindingGuidance(item) {
   return routeOf(item) === 'quick_fix'
-    ? 'quick fix 이슈에는 칩 적용이 없습니다 — 적용은 이슈 상세의 quick fix 프리셋에서'
+    ? 'quick fix 프리셋을 칩에 매려면 모니터 탭 ⚙ → 칩'
     : '칩에 프리셋을 매려면 모니터 탭 ⚙ → 칩';
 }
 

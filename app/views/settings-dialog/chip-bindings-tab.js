@@ -1,6 +1,7 @@
 /**
- * The bulk window's `칩` tab: which `general` preset each judgement chip applies
- * when it is clicked (UI-wg68 §6).
+ * The bulk window's `칩` tab: which preset each judgement chip applies when it
+ * is clicked, one `general` and one `quick_fix` preset per chip (UI-wg68 §6,
+ * UI-rd2m §4.2).
  *
  * The bindings are SERVER-GLOBAL, so this tab reads and writes exactly one
  * material — the `impl-presets-snapshot` — and is the only tab in this dialog
@@ -16,7 +17,17 @@ import { CHIP_BINDING_KEYS, normalizeAppliesTo } from './session-model.js';
 
 /** The one-line header every row reads under. */
 export const CHIP_TAB_INTRO =
-  '칩을 클릭하면 여기 맨 프리셋이 그 이슈에 적용됩니다. 다시 클릭하면 클릭 전 설정으로 돌아갑니다. quick fix 이슈에는 적용되지 않습니다.';
+  '칩을 클릭하면 이슈 route에 맞는 쪽 프리셋이 그 이슈에 적용됩니다 — quick fix 이슈는 quick fix 열, 그 밖은 일반 열. 다시 클릭하면 클릭 전 설정으로 돌아갑니다.';
+
+/**
+ * The two profile columns, in display order.
+ *
+ * @type {ReadonlyArray<{ profile: 'general'|'quick_fix', label: string }>}
+ */
+const PROFILE_COLUMNS = [
+  { profile: 'general', label: '일반' },
+  { profile: 'quick_fix', label: 'quick fix' }
+];
 
 /** The `없음` option value — an unbind, not a preset id. */
 const UNBOUND = '';
@@ -40,7 +51,7 @@ export function createChipBindingsTab(host, options) {
     unsubscribe = options.implPresetStore.subscribe(() => doRender());
   }
 
-  /** @returns {{ revision: number, presets: any[], chip_bindings: Record<string, string|null> }|null} */
+  /** @returns {{ revision: number, presets: any[], chip_bindings: Record<string, string|null>, quick_fix_chip_bindings: Record<string, string|null> }|null} */
   function snapshot() {
     const state = options.implPresetStore?.get();
     if (!state || typeof state.revision !== 'number') {
@@ -49,20 +60,21 @@ export function createChipBindingsTab(host, options) {
     return {
       revision: state.revision,
       presets: Array.isArray(state.presets) ? state.presets : [],
-      chip_bindings: state.chip_bindings || {}
+      chip_bindings: state.chip_bindings || {},
+      quick_fix_chip_bindings: state.quick_fix_chip_bindings || {}
     };
   }
 
   /**
-   * The bindable presets — `general` only, because a chip click refuses a
-   * `route=quick_fix` issue outright (§0), so a quick fix preset could never
-   * apply from here.
+   * The bindable presets of one profile column — a preset of the other
+   * profile could never be applied by that column's issues.
    *
+   * @param {'general'|'quick_fix'} profile
    * @returns {any[]}
    */
-  function generalPresets() {
+  function presetsOf(profile) {
     return (snapshot()?.presets || []).filter(
-      (preset) => preset && normalizeAppliesTo(preset.applies_to) === 'general'
+      (preset) => preset && normalizeAppliesTo(preset.applies_to) === profile
     );
   }
 
@@ -70,10 +82,11 @@ export function createChipBindingsTab(host, options) {
    * Send one binding change and adopt whatever the server answers with.
    *
    * @param {string} chip
+   * @param {'general'|'quick_fix'} profile
    * @param {string} value
    * @returns {Promise<void>}
    */
-  async function onChange(chip, value) {
+  async function onChange(chip, profile, value) {
     const state = snapshot();
     if (!state || busy.has(chip)) {
       return;
@@ -85,7 +98,8 @@ export function createChipBindingsTab(host, options) {
       const res = await options.transport('impl-preset-bind', {
         expected_revision: state.revision,
         chip,
-        preset_id: value === UNBOUND ? null : value
+        preset_id: value === UNBOUND ? null : value,
+        applies_to: profile
       });
       if (
         res &&
@@ -95,7 +109,8 @@ export function createChipBindingsTab(host, options) {
         options.implPresetStore.set({
           revision: res.revision,
           presets: res.presets,
-          chip_bindings: res.chip_bindings
+          chip_bindings: res.chip_bindings,
+          quick_fix_chip_bindings: res.quick_fix_chip_bindings
         });
       }
       if (res && res.conflict === true) {
@@ -111,6 +126,48 @@ export function createChipBindingsTab(host, options) {
   }
 
   /**
+   * One profile column's select of a chip row.
+   *
+   * @param {string} chip
+   * @param {'general'|'quick_fix'} profile
+   * @returns {TemplateResult}
+   */
+  function selectTemplate(chip, profile) {
+    const state = snapshot();
+    const bindings =
+      state &&
+      (profile === 'quick_fix'
+        ? state.quick_fix_chip_bindings
+        : state.chip_bindings);
+    const bound = bindings ? bindings[chip] || UNBOUND : UNBOUND;
+    return html`<select
+      class="ui-select settings-chips__select"
+      data-chip=${chip}
+      data-profile=${profile}
+      ?disabled=${state === null || busy.has(chip)}
+      .value=${bound}
+      @change=${(/** @type {Event} */ ev) =>
+        void onChange(
+          chip,
+          profile,
+          /** @type {HTMLSelectElement} */ (ev.target).value
+        )}
+    >
+      <option value=${UNBOUND} ?selected=${bound === UNBOUND}>없음</option>
+      ${presetsOf(profile).map(
+        (preset) =>
+          html`<option
+            value=${preset.id}
+            ?selected=${preset.id === bound}
+            ?disabled=${preset.compatible === false}
+          >
+            ${preset.name}
+          </option>`
+      )}
+    </select>`;
+  }
+
+  /**
    * One chip's row. Disabled until the snapshot arrives — a select that cannot
    * name the current binding must not invite a change.
    *
@@ -118,33 +175,22 @@ export function createChipBindingsTab(host, options) {
    * @returns {TemplateResult}
    */
   function rowTemplate(chip) {
-    const state = snapshot();
-    const bound = state ? state.chip_bindings[chip] || UNBOUND : UNBOUND;
     return html`<div class="settings-chips__row" data-chip=${chip}>
       <span class="settings-chips__label">${chipDisplayName(chip)}</span>
-      <select
-        class="ui-select settings-chips__select"
-        data-chip=${chip}
-        ?disabled=${state === null || busy.has(chip)}
-        .value=${bound}
-        @change=${(/** @type {Event} */ ev) =>
-          void onChange(
-            chip,
-            /** @type {HTMLSelectElement} */ (ev.target).value
-          )}
-      >
-        <option value=${UNBOUND} ?selected=${bound === UNBOUND}>없음</option>
-        ${generalPresets().map(
-          (preset) =>
-            html`<option
-              value=${preset.id}
-              ?selected=${preset.id === bound}
-              ?disabled=${preset.compatible === false}
-            >
-              ${preset.name}
-            </option>`
-        )}
-      </select>
+      ${PROFILE_COLUMNS.map(({ profile }) => selectTemplate(chip, profile))}
+    </div>`;
+  }
+
+  /** @returns {TemplateResult} */
+  function headerTemplate() {
+    return html`<div class="settings-chips__row settings-chips__head">
+      <span class="settings-chips__label"></span>
+      ${PROFILE_COLUMNS.map(
+        ({ profile, label }) =>
+          html`<span class="settings-chips__col" data-profile=${profile}
+            >${label}</span
+          >`
+      )}
     </div>`;
   }
 
@@ -152,6 +198,7 @@ export function createChipBindingsTab(host, options) {
     render(
       html`<div class="settings-chips">
         <p class="settings-chips__intro">${CHIP_TAB_INTRO}</p>
+        ${headerTemplate()}
         ${CHIP_BINDING_KEYS.map((chip) => rowTemplate(chip))}
         ${error ? html`<p class="settings-chips__error">${error}</p>` : ''}
       </div>`,

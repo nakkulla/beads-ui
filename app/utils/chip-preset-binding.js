@@ -1,15 +1,18 @@
 /**
  * What ONE judgement chip does on ONE issue: nothing (it is a 사유 팝업), or an
  * `chip-preset-toggle` that applies the bound preset / restores the pre-click
- * pins (UI-wg68 §5.1·§5.2).
+ * pins (UI-wg68 §5.1·§5.2). The binding comes from the map of the issue's own
+ * route profile: `quick_fix_bindings` for `route=quick_fix`, `bindings` else
+ * (UI-rd2m).
  *
  * Every surface — 후보 카드, 대기·완료 행, 실행 타일, 이슈 상세 헤더 — asks this
- * one function, so a chip never reads two ways. Three different facts share the
- * same silent answer (`null`): no binding, an unarrived preset snapshot, and a
- * `route=quick_fix` issue. All three mean "draw the popup chip you drew before".
+ * one function, so a chip never reads two ways. Two different facts share the
+ * same silent answer (`null`): no binding for the issue's profile and an
+ * unarrived preset snapshot. Both mean "draw the popup chip you drew before".
  *
  * @typedef {Object} ChipPresetContext
  * @property {Record<string, string|null>|null|undefined} [bindings] - `chip_bindings` of the snapshot.
+ * @property {Record<string, string|null>|null|undefined} [quick_fix_bindings] - `quick_fix_chip_bindings` of the snapshot.
  * @property {Array<Record<string, any>>|null|undefined} [presets] - The snapshot's presets.
  * @property {number} [revision] - The snapshot revision, the CAS value of a click.
  * @property {(root_dir: string) => any} [catalogOf] - That repo's runner catalog, for the deviation judgement.
@@ -34,6 +37,18 @@ import {
 import { errorText } from './error-text.js';
 
 /**
+ * The binding map of the issue's route profile, the same split the server uses
+ * for `chip-preset-toggle`.
+ *
+ * @param {ChipPresetContext} ctx
+ * @param {string|null|undefined} route
+ * @returns {Record<string, string|null>|null|undefined}
+ */
+function bindingsOfRoute(ctx, route) {
+  return route === 'quick_fix' ? ctx.quick_fix_bindings : ctx.bindings;
+}
+
+/**
  * Whether one chip's click writes the issue instead of opening the 사유 팝업.
  *
  * @param {string} chip - The `data-chip-key` value.
@@ -55,11 +70,7 @@ export function chipPresetBinding(
   if (!ctx || !CHIP_BINDING_KEYS.includes(chip)) {
     return null;
   }
-  // 칩 클릭은 quick_fix 이슈에서 동작하지 않는다 (§0, ADR UI-wg68).
-  if (route === 'quick_fix') {
-    return null;
-  }
-  const bindings = ctx.bindings;
+  const bindings = bindingsOfRoute(ctx, route);
   const preset_id =
     bindings && typeof bindings === 'object'
       ? /** @type {any} */ (bindings)[chip]
@@ -158,6 +169,29 @@ export function chipDisplayName(chip) {
 }
 
 /**
+ * The preset name a chip click applied, found in the map of the answered
+ * issue's route profile; the bound id stands in when the list lost the preset.
+ *
+ * @param {Record<string, any>|null|undefined} state - The preset store state.
+ * @param {Record<string, any>|null|undefined} issue - The `issue` of the reply.
+ * @param {string} chip
+ * @returns {string}
+ */
+function appliedPresetName(state, issue, chip) {
+  const route = issue && issue.metadata ? issue.metadata.route : null;
+  const map =
+    state &&
+    (route === 'quick_fix'
+      ? state.quick_fix_chip_bindings
+      : state.chip_bindings);
+  const bound_id = (map || {})[chip] || '';
+  const preset = ((state && state.presets) || []).find(
+    (/** @type {any} */ entry) => entry && entry.id === bound_id
+  );
+  return preset && preset.name ? preset.name : bound_id;
+}
+
+/**
  * The ONE click path behind a bound judgement chip, shared by 워커·모니터·이슈
  * 상세 so the same click never means two things (§5.3).
  *
@@ -220,10 +254,6 @@ export function createChipPresetToggle(options) {
       if (in_flight.has(key)) {
         return;
       }
-      const bound_id = (state.chip_bindings || {})[chip] || '';
-      const preset = (state.presets || []).find(
-        (/** @type {any} */ entry) => entry && entry.id === bound_id
-      );
       in_flight.add(key);
       options.onChange?.();
       try {
@@ -237,11 +267,12 @@ export function createChipPresetToggle(options) {
           options.store.set({
             revision: res.revision,
             presets: res.presets,
-            chip_bindings: res.chip_bindings
+            chip_bindings: res.chip_bindings,
+            quick_fix_chip_bindings: res.quick_fix_chip_bindings
           });
           say('프리셋 목록이 바뀌었습니다 — 다시 누르세요', 'error');
         } else if (res && res.applied === 'applied') {
-          const name = preset && preset.name ? preset.name : bound_id;
+          const name = appliedPresetName(options.store.get(), res.issue, chip);
           say(`${chipDisplayName(chip)} → ${name} 적용`, 'success');
         } else if (res && res.applied === 'restored') {
           say('클릭 전 설정으로 복원', 'success');

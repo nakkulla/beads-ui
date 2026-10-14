@@ -21,7 +21,8 @@ describe('client exec-preset store', () => {
     expect(store.get()).toEqual({
       revision: 2,
       presets: [{ id: 'p2', name: '둘째', settings: {} }],
-      chip_bindings: { complex: null, frontend: null, backend: null }
+      chip_bindings: { complex: null, frontend: null, backend: null },
+      quick_fix_chip_bindings: { complex: null, frontend: null, backend: null }
     });
     expect(listener).toHaveBeenCalledTimes(2);
   });
@@ -52,7 +53,8 @@ describe('client exec-preset store', () => {
 
     expect(store.get()).toEqual({
       ...snapshot,
-      chip_bindings: { complex: null, frontend: null, backend: null }
+      chip_bindings: { complex: null, frontend: null, backend: null },
+      quick_fix_chip_bindings: { complex: null, frontend: null, backend: null }
     });
   });
 
@@ -71,6 +73,56 @@ describe('client exec-preset store', () => {
 
     expect(store.get()?.chip_bindings).toEqual({
       complex: 'p1',
+      frontend: null,
+      backend: null
+    });
+  });
+
+  test('narrows quick fix chip bindings to the chip vocabulary', () => {
+    const store = createExecPresetStore();
+
+    store.set({
+      revision: 3,
+      presets: [],
+      quick_fix_chip_bindings: /** @type {any} */ ({
+        complex: 'q1',
+        backend: '',
+        nonsense: 'q9'
+      })
+    });
+
+    expect(store.get()?.quick_fix_chip_bindings).toEqual({
+      complex: 'q1',
+      frontend: null,
+      backend: null
+    });
+  });
+
+  test('keeps the last quick fix bindings when a reply omits them', () => {
+    const store = createExecPresetStore();
+    store.set({
+      revision: 3,
+      presets: [],
+      chip_bindings: { complex: 'p1', frontend: null, backend: null },
+      quick_fix_chip_bindings: { complex: 'q1', frontend: null, backend: null }
+    });
+
+    store.set({
+      revision: 4,
+      presets: [],
+      chip_bindings: { complex: 'p1', frontend: null, backend: null }
+    });
+
+    expect(store.get()?.quick_fix_chip_bindings?.complex).toBe('q1');
+  });
+
+  test('reads every quick fix chip as unbound before any snapshot carried them', () => {
+    const store = createExecPresetStore();
+
+    store.set({ revision: 1, presets: [] });
+
+    expect(store.get()?.quick_fix_chip_bindings).toEqual({
+      complex: null,
       frontend: null,
       backend: null
     });

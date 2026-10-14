@@ -157,7 +157,7 @@ function clientIdOf(req) {
 /**
  * @param {WebSocket} ws
  * @param {string} client_id
- * @param {{ revision: number, presets: unknown[], chip_bindings?: Record<string, string|null> }} snapshot
+ * @param {{ revision: number, presets: unknown[], chip_bindings?: Record<string, string|null>, quick_fix_chip_bindings?: Record<string, string|null> }} snapshot
  */
 function emitSnapshot(ws, client_id, snapshot) {
   try {
@@ -171,7 +171,9 @@ function emitSnapshot(ws, client_id, snapshot) {
           id: client_id,
           revision: snapshot.revision,
           presets: snapshot.presets,
-          chip_bindings: snapshot.chip_bindings ?? emptyChipBindings()
+          chip_bindings: snapshot.chip_bindings ?? emptyChipBindings(),
+          quick_fix_chip_bindings:
+            snapshot.quick_fix_chip_bindings ?? emptyChipBindings()
         }
       })
     );
@@ -181,7 +183,7 @@ function emitSnapshot(ws, client_id, snapshot) {
 }
 
 /**
- * @param {{ revision: number, presets: unknown[], chip_bindings?: Record<string, string|null> }} snapshot
+ * @param {{ revision: number, presets: unknown[], chip_bindings?: Record<string, string|null>, quick_fix_chip_bindings?: Record<string, string|null> }} snapshot
  */
 function fanout(snapshot) {
   for (const subscriber of SUBSCRIBERS) {
@@ -260,7 +262,8 @@ function handleMutation(ws, req, operation) {
       fanout({
         revision: result.revision,
         presets: result.presets,
-        chip_bindings: result.chip_bindings
+        chip_bindings: result.chip_bindings,
+        quick_fix_chip_bindings: result.quick_fix_chip_bindings
       });
     }
   } catch (err) {
@@ -863,20 +866,22 @@ export async function handleApplyImplPresetGlobal(ws, req) {
 }
 
 /**
- * Hang one judgement chip on one general preset, or unbind it (design §3.2).
- * The binding rides the preset list's own CAS revision, so a delete and the
- * unbinding it forces can never be observed apart.
+ * Hang one judgement chip on one preset of the `applies_to` profile (absent
+ * means general), or unbind it (design §3.2). The binding rides the preset
+ * list's own CAS revision, so a delete and the unbinding it forces can never be
+ * observed apart.
  *
  * @param {WebSocket} ws - Socket.
  * @param {RequestEnvelope} req - Request.
  */
 export function handleImplPresetBind(ws, req) {
-  const { expected_revision, chip, preset_id } = /** @type {any} */ (
-    req.payload || {}
-  );
+  const { expected_revision, chip, preset_id, applies_to } =
+    /** @type {any} */ (req.payload || {});
   const bound_id = preset_id === undefined ? null : preset_id;
+  const profile = applies_to === undefined ? 'general' : applies_to;
   if (
     !CHIP_BINDING_KEYS.includes(chip) ||
+    (profile !== 'general' && profile !== 'quick_fix') ||
     !Number.isInteger(expected_revision) ||
     expected_revision < 0 ||
     !(
@@ -889,7 +894,7 @@ export function handleImplPresetBind(ws, req) {
         makeError(
           req,
           'bad_request',
-          'payload requires { expected_revision, chip, preset_id }'
+          'payload requires { expected_revision, chip, preset_id, applies_to? }'
         )
       )
     );
@@ -911,15 +916,13 @@ export function handleImplPresetBind(ws, req) {
       );
       return;
     }
-    // A quick_fix preset could never be applied by a chip, because a chip
-    // click refuses a `route=quick_fix` issue outright (design §0, §4.1).
-    if (normalizeAppliesTo(preset.applies_to) !== 'general') {
+    if (normalizeAppliesTo(preset.applies_to) !== profile) {
       ws.send(
         JSON.stringify(
           makeError(
             req,
             'preset_route_mismatch',
-            'Only a general implementation preset may be bound to a chip'
+            `Only a ${profile} implementation preset may be bound to this chip column`
           )
         )
       );
@@ -930,14 +933,16 @@ export function handleImplPresetBind(ws, req) {
     const result = coordinator().bindChip({
       expected_revision,
       chip,
-      preset_id: bound_id
+      preset_id: bound_id,
+      applies_to: profile
     });
     ws.send(JSON.stringify(makeOk(req, result)));
     if (result.applied) {
       fanout({
         revision: result.revision,
         presets: result.presets,
-        chip_bindings: result.chip_bindings
+        chip_bindings: result.chip_bindings,
+        quick_fix_chip_bindings: result.quick_fix_chip_bindings
       });
     }
   } catch (err) {
@@ -1023,21 +1028,9 @@ async function runChipPresetToggle(ws, req, input) {
           conflict: true,
           revision: snapshot.revision,
           presets: snapshot.presets,
-          chip_bindings: snapshot.chip_bindings
+          chip_bindings: snapshot.chip_bindings,
+          quick_fix_chip_bindings: snapshot.quick_fix_chip_bindings
         })
-      )
-    );
-    return;
-  }
-  const preset_id = snapshot.chip_bindings[chip];
-  if (!preset_id) {
-    ws.send(
-      JSON.stringify(
-        makeError(
-          req,
-          'chip_unbound',
-          'No implementation preset is bound to this chip'
-        )
       )
     );
     return;
@@ -1075,15 +1068,20 @@ async function runChipPresetToggle(ws, req, input) {
       : {}
   );
   const route = metadata.route;
-  if (route === 'quick_fix') {
-    // Nothing is written: a chip never owns a quick_fix issue's pins, and its
-    // own profile's preset is applied from the issue detail editor instead.
+  // The issue's profile picks the binding map; it matches the family
+  // `presetSettingsForIssue` replaces keys for (design §3.3).
+  const bindings =
+    route === 'quick_fix'
+      ? snapshot.quick_fix_chip_bindings
+      : snapshot.chip_bindings;
+  const preset_id = bindings[chip];
+  if (!preset_id) {
     ws.send(
       JSON.stringify(
         makeError(
           req,
-          'preset_route_mismatch',
-          'A chip preset does not apply to a quick_fix issue'
+          'chip_unbound',
+          'No implementation preset is bound to this chip'
         )
       )
     );

@@ -13,6 +13,13 @@ const PRESET = {
   settings: { impl_runtime: 'claude' }
 };
 
+const QUICK_FIX_PRESET = {
+  id: 'q1',
+  name: '빠른 수정',
+  applies_to: 'quick_fix',
+  settings: { impl_runtime: 'claude' }
+};
+
 /**
  * @param {Record<string, any>} [overrides]
  * @returns {import('./chip-preset-binding.js').ChipPresetContext}
@@ -20,7 +27,8 @@ const PRESET = {
 function ctx(overrides = {}) {
   return {
     bindings: { complex: 'p1', frontend: null, backend: null },
-    presets: [PRESET],
+    quick_fix_bindings: { complex: null, frontend: 'q1', backend: null },
+    presets: [PRESET, QUICK_FIX_PRESET],
     revision: 7,
     ...overrides
   };
@@ -97,8 +105,61 @@ describe('chipPresetBinding (UI-wg68 §5.1)', () => {
     expect(binding?.title_suffix).toBe(' · 클릭: 오퍼스 → 클로드 적용');
   });
 
-  test('refuses a binding on a quick fix issue', () => {
+  test('refuses a quick fix issue chip bound only in the general map', () => {
     const binding = chipPresetBinding('complex', {}, 'quick_fix', ctx());
+
+    expect(binding).toBeNull();
+  });
+
+  test('reads the quick fix map for a quick fix issue', () => {
+    const binding = chipPresetBinding('frontend', {}, 'quick_fix', ctx());
+
+    expect(binding?.preset_id).toBe('q1');
+  });
+
+  test('ignores the quick fix map for a general issue', () => {
+    const binding = chipPresetBinding('frontend', {}, 'spec_backed', ctx());
+
+    expect(binding).toBeNull();
+  });
+
+  test('reads the general map for an issue with no route', () => {
+    const binding = chipPresetBinding('complex', {}, undefined, ctx());
+
+    expect(binding?.preset_id).toBe('p1');
+  });
+
+  test('reads a quick fix chip whose preset stands on the issue as applied', () => {
+    const metadata = {
+      chip_preset_source: 'frontend',
+      applied_exec_preset: 'q1',
+      impl_runtime: 'claude'
+    };
+
+    const binding = chipPresetBinding('frontend', metadata, 'quick_fix', ctx());
+
+    expect(binding?.state).toBe('applied');
+  });
+
+  test('offers a restore click on a quick fix issue the chip owns', () => {
+    const metadata = {
+      chip_preset_source: 'frontend',
+      applied_exec_preset: 'q1',
+      impl_runtime: 'claude'
+    };
+
+    const binding = chipPresetBinding('frontend', metadata, 'quick_fix', ctx());
+
+    expect(binding?.action).toBe('restore');
+  });
+
+  test('refuses a quick fix chip while the context carries no quick fix map', () => {
+    const binding = chipPresetBinding(
+      'frontend',
+      {},
+      'quick_fix',
+      ctx({ quick_fix_bindings: undefined })
+    );
 
     expect(binding).toBeNull();
   });
@@ -260,6 +321,43 @@ describe('createChipPresetToggle (UI-wg68 §5.3)', () => {
     );
   });
 
+  test('names the quick fix preset of a quick_fix issue in the toast', async () => {
+    const { toggler, toast, store } = harness({
+      applied: 'applied',
+      issue: { id: 'UI-1', metadata: { route: 'quick_fix' } }
+    });
+    store.set({
+      revision: 7,
+      presets: [PRESET, QUICK_FIX_PRESET],
+      chip_bindings: { complex: 'p1', frontend: null, backend: null },
+      quick_fix_chip_bindings: { complex: 'q1', frontend: null, backend: null }
+    });
+
+    await toggler.toggle('UI-1', 'complex');
+
+    expect(toast).toHaveBeenCalledWith('복잡 → 빠른 수정 적용', 'success');
+  });
+
+  test('names the general preset of a general issue in the toast', async () => {
+    const { toggler, toast, store } = harness({
+      applied: 'applied',
+      issue: { id: 'UI-1', metadata: { route: 'spec_backed' } }
+    });
+    store.set({
+      revision: 7,
+      presets: [PRESET, QUICK_FIX_PRESET],
+      chip_bindings: { complex: 'p1', frontend: null, backend: null },
+      quick_fix_chip_bindings: { complex: 'q1', frontend: null, backend: null }
+    });
+
+    await toggler.toggle('UI-1', 'complex');
+
+    expect(toast).toHaveBeenCalledWith(
+      '복잡 → 오퍼스 → 클로드 적용',
+      'success'
+    );
+  });
+
   test('says the restore happened without naming a preset', async () => {
     const { toggler, toast } = harness({ applied: 'restored' });
 
@@ -280,6 +378,21 @@ describe('createChipPresetToggle (UI-wg68 §5.3)', () => {
     await toggler.toggle('UI-1', 'complex');
 
     expect(store.get().revision).toBe(9);
+  });
+
+  test('adopts both maps from a conflict answer', async () => {
+    const { toggler, store } = harness({
+      applied: false,
+      conflict: true,
+      revision: 9,
+      presets: [],
+      chip_bindings: { complex: null, frontend: null, backend: null },
+      quick_fix_chip_bindings: { complex: 'q1', frontend: null, backend: null }
+    });
+
+    await toggler.toggle('UI-1', 'complex');
+
+    expect(store.get().quick_fix_chip_bindings.complex).toBe('q1');
   });
 
   test('asks for a second click after a conflict', async () => {

@@ -1762,7 +1762,7 @@ describe('chip preset bindings (design §3.2)', () => {
     expect(sent[1].payload.chip_bindings.complex).toBe(preset_id);
   });
 
-  test('refuses a quick_fix preset with preset_route_mismatch', async () => {
+  test('refuses a quick_fix preset in the general map with preset_route_mismatch', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(
       ws,
@@ -1778,6 +1778,107 @@ describe('chip preset bindings (design §3.2)', () => {
     });
 
     expect(sent[sent.length - 1].error.code).toBe('preset_route_mismatch');
+  });
+
+  test('binds a quick_fix preset into the quick fix map and fans both maps', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_runtime: 'claude' },
+      'quick_fix'
+    );
+    handleSubscribeImplPresets(ws, {
+      id: 'sub',
+      type: 'subscribe-impl-presets',
+      payload: { id: 'exec:presets' }
+    });
+    sent.length = 0;
+
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: {
+        expected_revision: 1,
+        chip: 'complex',
+        preset_id,
+        applies_to: 'quick_fix'
+      }
+    });
+
+    expect(sent[0].payload.quick_fix_chip_bindings.complex).toBe(preset_id);
+    expect(sent[0].payload.chip_bindings.complex).toBe(null);
+    expect(sent[1].payload.quick_fix_chip_bindings.complex).toBe(preset_id);
+  });
+
+  test('refuses a general preset in the quick fix map with preset_route_mismatch', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
+
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: {
+        expected_revision: 1,
+        chip: 'complex',
+        preset_id,
+        applies_to: 'quick_fix'
+      }
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('preset_route_mismatch');
+  });
+
+  test('refuses an applies_to outside the vocabulary with bad_request', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
+
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: {
+        expected_revision: 1,
+        chip: 'complex',
+        preset_id,
+        applies_to: 'both'
+      }
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('bad_request');
+  });
+
+  test('unbinds the quick fix map with a null preset id', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_runtime: 'claude' },
+      'quick_fix'
+    );
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: {
+        expected_revision: 1,
+        chip: 'frontend',
+        preset_id,
+        applies_to: 'quick_fix'
+      }
+    });
+    sent.length = 0;
+
+    handleImplPresetBind(ws, {
+      id: 'unbind',
+      type: 'impl-preset-bind',
+      payload: {
+        expected_revision: 2,
+        chip: 'frontend',
+        preset_id: null,
+        applies_to: 'quick_fix'
+      }
+    });
+
+    expect(sent[0].payload.quick_fix_chip_bindings.frontend).toBe(null);
   });
 
   test('refuses a chip outside the vocabulary', async () => {
@@ -1811,6 +1912,35 @@ describe('chip preset bindings (design §3.2)', () => {
 
     expect(sent[0].payload.chip_bindings.backend).toBe(null);
   });
+
+  test('unbinds a quick fix chip whose preset is deleted', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_runtime: 'claude' },
+      'quick_fix'
+    );
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: {
+        expected_revision: 1,
+        chip: 'backend',
+        preset_id,
+        applies_to: 'quick_fix'
+      }
+    });
+    sent.length = 0;
+
+    handleImplPresetDelete(ws, {
+      id: 'del',
+      type: 'impl-preset-delete',
+      payload: { expected_revision: 2, id: preset_id }
+    });
+
+    expect(sent[0].payload.quick_fix_chip_bindings.backend).toBe(null);
+  });
 });
 
 describe('chip-preset-toggle (design §4)', () => {
@@ -1819,17 +1949,27 @@ describe('chip-preset-toggle (design §4)', () => {
    * metadata object, so a second toggle reads the first one's write.
    *
    * @param {Record<string, string>} metadata
+   * @param {'general'|'quick_fix'} profile - Which profile's preset is bound.
    */
-  function boundFixture(metadata = {}) {
+  function boundFixture(metadata = {}, profile = 'general') {
     const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent, {
-      impl_runtime: 'codex',
-      impl_model: 'sol'
-    });
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      profile === 'quick_fix'
+        ? { impl_runtime: 'claude', impl_effort: 'high' }
+        : { impl_runtime: 'codex', impl_model: 'sol' },
+      profile
+    );
     handleImplPresetBind(ws, {
       id: 'bind',
       type: 'impl-preset-bind',
-      payload: { expected_revision: 1, chip: 'complex', preset_id }
+      payload: {
+        expected_revision: 1,
+        chip: 'complex',
+        preset_id,
+        applies_to: profile
+      }
     });
     /** @type {Record<string, string>} */
     const state = { ...metadata };
@@ -1944,13 +2084,74 @@ describe('chip-preset-toggle (design §4)', () => {
     expect(runBdInWorkspace).not.toHaveBeenCalled();
   });
 
-  test('writes nothing for a quick_fix issue', async () => {
+  test('writes nothing for a quick_fix issue whose quick fix map is unbound', async () => {
     const { ws, sent } = boundFixture({ route: 'quick_fix' });
 
     await handleChipPresetToggle(ws, toggleReq({}));
 
-    expect(sent[sent.length - 1].error.code).toBe('preset_route_mismatch');
+    expect(sent[sent.length - 1].error.code).toBe('chip_unbound');
     expect(runBdInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('writes nothing for a general issue whose general map is unbound', async () => {
+    const { ws, sent } = boundFixture({ impl_effort: 'low' }, 'quick_fix');
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    expect(sent[sent.length - 1].error.code).toBe('chip_unbound');
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('applies the quick fix binding to a quick_fix issue', async () => {
+    const { ws, sent, preset_id, state } = boundFixture(
+      { route: 'quick_fix', impl_effort: 'low', impl_runtime: 'codex' },
+      'quick_fix'
+    );
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    expect(sent[sent.length - 1].payload).toMatchObject({
+      applied: 'applied',
+      conflict: false
+    });
+    expect(state.applied_exec_preset).toBe(preset_id);
+    expect(state.chip_preset_source).toBe('complex');
+    expect(state.impl_effort).toBe('high');
+    expect(state.impl_runtime).toBe('claude');
+  });
+
+  test('restores a quick_fix issue on a second click of the same chip', async () => {
+    const { ws, sent, state } = boundFixture(
+      { route: 'quick_fix', impl_effort: 'low' },
+      'quick_fix'
+    );
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    expect(sent[sent.length - 1].payload).toMatchObject({
+      applied: 'restored'
+    });
+    expect(state).toEqual({ route: 'quick_fix', impl_effort: 'low' });
+  });
+
+  test('reads the general binding for an issue with no route', async () => {
+    const { ws, sent, preset_id, state } = boundFixture({});
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    expect(sent[sent.length - 1].payload.applied).toBe('applied');
+    expect(state.applied_exec_preset).toBe(preset_id);
+  });
+
+  test('carries both maps on a stale preset revision conflict', async () => {
+    const { ws, sent } = boundFixture({}, 'quick_fix');
+
+    await handleChipPresetToggle(ws, toggleReq({ expected_revision: 1 }));
+
+    expect(
+      sent[sent.length - 1].payload.quick_fix_chip_bindings.complex
+    ).not.toBe(null);
   });
 
   test('answers a stale preset revision with a conflict', async () => {
