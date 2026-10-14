@@ -1,12 +1,13 @@
 ---
 id: UI-u6ud-10
 title: 실행 프리셋과 판정 칩
-status: accepted
+status: superseded
 date: 2026-09-23
 summary: "실행 프리셋은 applies_to 계열별 id 하나가 정체성이고 읽을 때 계열 키 집합을 대칭 비교하며 dispatchPreset과 카드 비교는 분리한다; 판정 칩 복잡·frontend·backend 클릭은 서버 전역 바인딩의 general 프리셋을 그 이슈에 적용하고 재클릭은 첫 클릭 전 핀으로 되돌리며 quick_fix 이슈는 거부한다; 칩 바인딩 편집은 모니터 일괄 창의 서버 전역 탭에만 있고 저장소 하나를 편집하는 창에는 섞지 않는다"
 supersedes: ["UI-wg68", "UI-wg68-2"]
 spec: docs/superpowers/specs/2026-09-23-adr-cleanup-history-dir-reader-and-consolidation-design.md
 bead: UI-u6ud
+superseded_by: UI-rd2m
 ---
 
 # 실행 프리셋과 판정 칩
