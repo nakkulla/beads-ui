@@ -358,7 +358,9 @@ function resolvePresetForApply(ws, req, preset_id, expected_revision) {
       applied: false,
       conflict: true,
       revision: snapshot.revision,
-      presets: snapshot.presets
+      presets: snapshot.presets,
+      chip_bindings: snapshot.chip_bindings,
+      quick_fix_chip_bindings: snapshot.quick_fix_chip_bindings
     };
     ws.send(JSON.stringify(makeOk(req, response)));
     return { ok: false };

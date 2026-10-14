@@ -272,7 +272,7 @@ export function createChipPresetToggle(options) {
           });
           say('프리셋 목록이 바뀌었습니다 — 다시 누르세요', 'error');
         } else if (res && res.applied === 'applied') {
-          const name = appliedPresetName(options.store.get(), res.issue, chip);
+          const name = appliedPresetName(state, res.issue, chip);
           say(`${chipDisplayName(chip)} → ${name} 적용`, 'success');
         } else if (res && res.applied === 'restored') {
           say('클릭 전 설정으로 복원', 'success');

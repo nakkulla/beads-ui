@@ -2154,6 +2154,43 @@ describe('chip-preset-toggle (design §4)', () => {
     ).not.toBe(null);
   });
 
+  test('carries both maps when the revision moves while the issue is read', async () => {
+    const { ws, sent } = boundFixture({ route: 'quick_fix' }, 'quick_fix');
+    const read_issue = runBdJsonProjectedInWorkspace.getMockImplementation();
+    runBdJsonProjectedInWorkspace.mockImplementationOnce(
+      async (/** @type {any[]} */ ...args) => {
+        handleImplPresetCreate(ws, {
+          id: 'concurrent',
+          type: 'impl-preset-create',
+          payload: {
+            expected_revision: 2,
+            name: '동시 생성',
+            settings: { impl_runtime: 'codex' },
+            applies_to: 'general'
+          }
+        });
+        return read_issue?.(...args);
+      }
+    );
+    sent.length = 0;
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    const payload = sent[sent.length - 1].payload;
+    expect(payload).toMatchObject({
+      applied: false,
+      conflict: true,
+      revision: 3
+    });
+    expect(payload.quick_fix_chip_bindings.complex).not.toBe(null);
+    expect(payload.chip_bindings).toEqual({
+      complex: null,
+      frontend: null,
+      backend: null
+    });
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+  });
+
   test('answers a stale preset revision with a conflict', async () => {
     const { ws, sent } = boundFixture();
 

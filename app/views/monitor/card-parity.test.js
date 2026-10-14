@@ -684,8 +684,9 @@ function createIssueStores() {
  *
  * @param {HTMLElement} mount
  * @param {Record<string, any>} queue_snapshot
+ * @param {any} [execPresetStore]
  */
-async function mountWorker(mount, queue_snapshot) {
+async function mountWorker(mount, queue_snapshot, execPresetStore) {
   const stores = createIssueStores();
   const subscriptions = [
     ['tab:worker:ready', { type: 'ready-issues' }],
@@ -724,7 +725,8 @@ async function mountWorker(mount, queue_snapshot) {
     transport: vi.fn(async (/** @type {string} */ type) =>
       type === 'get-session-defaults' ? { values: {}, warnings: [] } : null
     ),
-    getWorkspacePath: () => WS
+    getWorkspacePath: () => WS,
+    ...(execPresetStore ? { execPresetStore } : {})
   });
   teardown.push(() => view.destroy());
   view.load();
@@ -737,8 +739,9 @@ async function mountWorker(mount, queue_snapshot) {
  *
  * @param {HTMLElement} mount
  * @param {Record<string, any>} raw_queue
+ * @param {any} [execPresetStore]
  */
-function mountMonitor(mount, raw_queue) {
+function mountMonitor(mount, raw_queue, execPresetStore) {
   const seams = {
     listWorkspaces: () => [{ path: WS }],
     listHidden: () => [],
@@ -760,7 +763,8 @@ function mountMonitor(mount, raw_queue) {
     pipelineStore,
     getWorkspacePath: () => WS,
     switchWorkspace: () => Promise.resolve(null),
-    now: () => NOW
+    now: () => NOW,
+    ...(execPresetStore ? { execPresetStore } : {})
   });
   teardown.push(() => view.clear());
   view.load();
@@ -772,9 +776,15 @@ function mountMonitor(mount, raw_queue) {
  * @param {import('../../protocol.js').CapacityView['takeover_blocker']} [takeover_blocker]
  * @param {Record<string, any>} [queue_patch] - Top-level fields laid over the
  * raw queue record.
+ * @param {any} [execPresetStore] - The preset snapshot both tabs read their
+ * chip bindings from.
  * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
  */
-async function drawBothTabs(takeover_blocker, queue_patch = {}) {
+async function drawBothTabs(
+  takeover_blocker,
+  queue_patch = {},
+  execPresetStore
+) {
   stubBd();
   seedPrObservations();
   await warmServerCaches();
@@ -784,8 +794,8 @@ async function drawBothTabs(takeover_blocker, queue_patch = {}) {
   const worker = document.createElement('div');
   const monitor = document.createElement('div');
   document.body.append(worker, monitor);
-  await mountWorker(worker, queue_snapshot);
-  mountMonitor(monitor, raw_queue);
+  await mountWorker(worker, queue_snapshot, execPresetStore);
+  mountMonitor(monitor, raw_queue, execPresetStore);
   return { worker, monitor };
 }
 
@@ -951,6 +961,44 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
     const worker_cards = cardsByBead(worker);
     const monitor_cards = cardsByBead(monitor);
 
+    expect(partsByBead(monitor_cards, SHARED_BEADS)).toEqual(
+      partsByBead(worker_cards, SHARED_BEADS)
+    );
+  });
+
+  test('draws the same bound chip on a quick_fix issue from the quick fix bindings', async () => {
+    const preset_store = {
+      get: () => ({
+        revision: 4,
+        presets: [
+          {
+            id: 'q1',
+            name: '빠른 수정',
+            applies_to: 'quick_fix',
+            settings: { impl_runtime: 'claude' }
+          }
+        ],
+        chip_bindings: { complex: null, frontend: null, backend: null },
+        quick_fix_chip_bindings: {
+          complex: 'q1',
+          frontend: null,
+          backend: null
+        }
+      }),
+      set: () => {},
+      subscribe: () => () => {}
+    };
+    const { worker, monitor } = await drawBothTabs(undefined, {}, preset_store);
+
+    const worker_cards = cardsByBead(worker);
+    const monitor_cards = cardsByBead(monitor);
+
+    expect(
+      monitor_cards.get('Q-1')?.querySelector('.judgement-chip--bound')
+    ).toBeInstanceOf(HTMLElement);
+    expect(
+      worker_cards.get('Q-1')?.querySelector('.judgement-chip--bound')
+    ).toBeInstanceOf(HTMLElement);
     expect(partsByBead(monitor_cards, SHARED_BEADS)).toEqual(
       partsByBead(worker_cards, SHARED_BEADS)
     );

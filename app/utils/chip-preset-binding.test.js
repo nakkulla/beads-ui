@@ -358,6 +358,32 @@ describe('createChipPresetToggle (UI-wg68 §5.3)', () => {
     );
   });
 
+  test('names the preset bound when the click went out, not a later rebind', async () => {
+    const { toggler, toast, store, transport } = harness({
+      applied: 'applied',
+      issue: { id: 'UI-1', metadata: { route: 'spec_backed' } }
+    });
+    const other = { ...PRESET, id: 'p2', name: '다른 프리셋' };
+    transport.mockImplementation(async () => {
+      store.set({
+        revision: 8,
+        presets: [PRESET, other],
+        chip_bindings: { complex: 'p2', frontend: null, backend: null }
+      });
+      return {
+        applied: 'applied',
+        issue: { metadata: { route: 'spec_backed' } }
+      };
+    });
+
+    await toggler.toggle('UI-1', 'complex');
+
+    expect(toast).toHaveBeenCalledWith(
+      '복잡 → 오퍼스 → 클로드 적용',
+      'success'
+    );
+  });
+
   test('says the restore happened without naming a preset', async () => {
     const { toggler, toast } = harness({ applied: 'restored' });
 
