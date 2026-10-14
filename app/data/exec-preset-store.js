@@ -19,14 +19,15 @@
  * @property {number} revision
  * @property {ExecPreset[]} presets
  * @property {Record<string, string|null>} [chip_bindings]
+ * @property {Record<string, string|null>} [quick_fix_chip_bindings]
  */
 import { CHIP_BINDING_KEYS } from '../views/settings-dialog/session-model.js';
 
 /**
- * The snapshot's `chip_bindings`, narrowed to the chip vocabulary. An absent
- * field — an older server, or a snapshot adopted from a mutation reply that
- * omits it — reads as every chip unbound, so no chip claims a preset it cannot
- * name (fail-quiet).
+ * The snapshot's `chip_bindings` (or `quick_fix_chip_bindings`), narrowed to
+ * the chip vocabulary. An absent field — an older server, or a snapshot
+ * adopted from a mutation reply that omits it — reads as every chip unbound, so
+ * no chip claims a preset it cannot name (fail-quiet).
  *
  * @param {unknown} value
  * @returns {Record<string, string|null>}
@@ -75,8 +76,16 @@ export function createExecPresetStore() {
         next_state && next_state.chip_bindings === undefined && state
           ? state.chip_bindings
           : next_state && next_state.chip_bindings;
+      const carried_quick_fix =
+        next_state && next_state.quick_fix_chip_bindings === undefined && state
+          ? state.quick_fix_chip_bindings
+          : next_state && next_state.quick_fix_chip_bindings;
       state = next_state
-        ? { ...next_state, chip_bindings: normalizeChipBindings(carried) }
+        ? {
+            ...next_state,
+            chip_bindings: normalizeChipBindings(carried),
+            quick_fix_chip_bindings: normalizeChipBindings(carried_quick_fix)
+          }
         : null;
       emit();
     },

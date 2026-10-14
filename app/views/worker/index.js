@@ -3047,6 +3047,7 @@ export function createWorkerView(mount_element, options = {}) {
     const catalog = /** @type {any} */ (group)?.runner_catalog || null;
     return {
       bindings: state.chip_bindings,
+      quick_fix_bindings: state.quick_fix_chip_bindings,
       presets: Array.isArray(state.presets) ? state.presets : [],
       revision: state.revision,
       catalogOf: () => catalog,

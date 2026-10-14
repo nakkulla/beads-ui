@@ -1519,37 +1519,45 @@ provider from it — only an exact `impl_model` token names one.
   pushes one `impl-presets-snapshot`; unsubscribing replies
   `{ id, unsubscribed }`.
 - `impl-presets-snapshot` payload:
-  `{ type, id, revision, presets, chip_bindings }` — total state, not a patch,
-  pushed after every applied mutation as well as on subscribe. `revision` is the
-  CAS value every mutation sends back as `expected_revision`. A preset carrying
-  a key outside its own profile's vocabulary is omitted from `presets` entirely.
+  `{ type, id, revision, presets, chip_bindings, quick_fix_chip_bindings }` —
+  total state, not a patch, pushed after every applied mutation as well as on
+  subscribe. `revision` is the CAS value every mutation sends back as
+  `expected_revision`. A preset carrying a key outside its own profile's
+  vocabulary is omitted from `presets` entirely.
 - `impl-preset-delete` payload: `{ expected_revision, id }`. Deleting a preset
-  also nulls every `chip_bindings` entry pointing at it, inside the SAME
-  mutation, so no binding can outlive its target.
-- `impl-preset-bind` payload: `{ expected_revision, chip, preset_id }` — `chip`
-  is one of `complex`, `frontend`, `backend`; `preset_id` names a preset
-  currently in the snapshot or is `null` to unbind. Bindings are server-global
-  and live in the preset file under the same revision CAS. A `preset_id` whose
-  preset has `applies_to: 'quick_fix'` is `preset_route_mismatch` — a chip click
-  never runs on a `route=quick_fix` issue, so such a binding could never apply.
-  An unknown `chip` is `bad_request` and an unknown `preset_id` is
+  also nulls every `chip_bindings` and `quick_fix_chip_bindings` entry pointing
+  at it, inside the SAME mutation, so no binding can outlive its target.
+- `impl-preset-bind` payload:
+  `{ expected_revision, chip, preset_id, applies_to? }` — `chip` is one of
+  `complex`, `frontend`, `backend`; `preset_id` names a preset currently in the
+  snapshot or is `null` to unbind. `applies_to` (`general` when absent, or
+  `quick_fix`) picks the map written: `chip_bindings` or
+  `quick_fix_chip_bindings`, two independent maps of the same shape. Bindings
+  are server-global and live in the preset file under the same revision CAS. A
+  `preset_id` whose preset has a different `applies_to` than the request is
+  `preset_route_mismatch`. An unknown `chip` or an `applies_to` outside the
+  vocabulary is `bad_request` and an unknown `preset_id` is
   `impl_preset_missing`. Success is
-  `{ applied: true, conflict: false, revision, presets, chip_bindings }`; a CAS
-  failure is the same shape with `applied: false, conflict: true`.
-  `chip_bindings` projects a binding as `null` whenever its target is not in the
-  snapshot's `presets`.
+  `{ applied: true, conflict: false, revision, presets, chip_bindings, quick_fix_chip_bindings }`;
+  a CAS failure is the same shape with `applied: false, conflict: true`. Both
+  maps project a binding as `null` whenever its target is not in the snapshot's
+  `presets`.
 - `chip-preset-toggle` payload: `{ id, chip, expected_revision, root_dir? }`.
-  The server reads `chip_bindings[chip]`, reads the issue, and decides:
-  - no binding → `chip_unbound`, nothing written;
-  - `metadata.route === 'quick_fix'` → `preset_route_mismatch`, nothing written;
-  - `chip_preset_source === chip` AND `applied_exec_preset` equals the bound id
+  The server reads the issue, picks the binding map by its profile
+  (`metadata.route === 'quick_fix'` reads `quick_fix_chip_bindings`, every other
+  route — a missing route included — reads `chip_bindings`), and decides:
+  - no binding in that map → `chip_unbound`, nothing written;
+  - `chip_preset_source === chip` AND `applied_exec_preset` equals that bound id
     → RESTORE;
   - otherwise → APPLY.
 
-  An apply is exactly one `apply-impl-preset` write (the general 17 pin keys
-  plus `applied_exec_preset`) with `chip_preset_source=<chip>` in the same argv,
-  plus `chip_preset_restore=<json>` WHEN THAT KEY IS ABSENT — the JSON object of
-  the pin keys the issue carried plus its `applied_exec_preset`. The last click
+  A CAS failure answers
+  `{ applied: false, conflict: true, revision, presets, chip_bindings, quick_fix_chip_bindings }`.
+  An apply is exactly one `apply-impl-preset` write (the issue profile's pin
+  keys — the general 17 or the quick_fix 8 — plus `applied_exec_preset`) with
+  `chip_preset_source=<chip>` in the same argv, plus
+  `chip_preset_restore=<json>` WHEN THAT KEY IS ABSENT — the JSON object of the
+  pin keys the issue carried plus its `applied_exec_preset`. The last click
   wins, but the restore point is always the state before the FIRST click. A
   restore is one write that sets the stored keys, unsets every other pin key and
   `applied_exec_preset`, and unsets both chip keys; an absent or unparsable

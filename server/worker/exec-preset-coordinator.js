@@ -157,14 +157,20 @@ export function createExecPresetCoordinator(options) {
     const visible_ids = new Set(visible_presets.map((preset) => preset.id));
     /** @type {Record<string, string|null>} */
     const chip_bindings = {};
+    /** @type {Record<string, string|null>} */
+    const quick_fix_chip_bindings = {};
     for (const chip of CHIP_BINDING_KEYS) {
       const bound = state.chip_bindings?.[chip] ?? null;
       chip_bindings[chip] = bound && visible_ids.has(bound) ? bound : null;
+      const quick_bound = state.quick_fix_chip_bindings?.[chip] ?? null;
+      quick_fix_chip_bindings[chip] =
+        quick_bound && visible_ids.has(quick_bound) ? quick_bound : null;
     }
     return {
       revision: state.revision,
       ...(state.read_failed ? { read_failed: true } : {}),
       chip_bindings,
+      quick_fix_chip_bindings,
       presets: visible_presets.map((preset) => {
         const coherence = validateImplPresetSettings(preset.settings, {
           applies_to: preset.applies_to
@@ -187,7 +193,8 @@ export function createExecPresetCoordinator(options) {
       ...result,
       revision: current.revision,
       presets: current.presets,
-      chip_bindings: current.chip_bindings
+      chip_bindings: current.chip_bindings,
+      quick_fix_chip_bindings: current.quick_fix_chip_bindings
     };
   }
 
@@ -821,7 +828,7 @@ export function createExecPresetCoordinator(options) {
       return annotated(presetStore.update(input));
     },
     delete: deletePreset,
-    /** @param {{ expected_revision: number, chip: string, preset_id: string|null }} input */
+    /** @param {{ expected_revision: number, chip: string, preset_id: string|null, applies_to?: string }} input */
     bindChip(input) {
       return annotated(presetStore.bindChip(input));
     },

@@ -1447,6 +1447,98 @@ describe('exec-preset-coordinator chip bindings (design §3, §7)', () => {
     expect(result.chip_bindings.backend).toBe(null);
     expect(fixture.presetStore.snapshot().chip_bindings.backend).toBe(null);
   });
+
+  test('reads three unbound quick fix chips from a file with no field', () => {
+    const fixture = createFixture({
+      preset: { revision: 1, presets: [] }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.quick_fix_chip_bindings).toEqual({
+      complex: null,
+      frontend: null,
+      backend: null
+    });
+  });
+
+  test('projects a quick fix binding onto a hidden legacy preset as unbound', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'legacy-q',
+            name: '옛 quick fix',
+            applies_to: 'quick_fix',
+            settings: { quick_fix_impl_runtime: 'codex' },
+            origin: { kind: 'user' }
+          }
+        ],
+        quick_fix_chip_bindings: {
+          complex: 'legacy-q',
+          frontend: null,
+          backend: null
+        }
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.quick_fix_chip_bindings.complex).toBe(null);
+    expect(fixture.presetStore.snapshot().quick_fix_chip_bindings.complex).toBe(
+      'legacy-q'
+    );
+  });
+
+  test('binds a quick fix preset and reports it in the annotated result', () => {
+    const fixture = createFixture();
+    fixture.coordinator.create({
+      expected_revision: 0,
+      name: 'quick fix',
+      applies_to: /** @type {'quick_fix'} */ ('quick_fix'),
+      settings: { impl_runtime: 'claude' }
+    });
+    const quick_fix_id = fixture.coordinator.snapshot().presets[0].id;
+
+    const result = /** @type {any} */ (
+      fixture.coordinator.bindChip({
+        expected_revision: 1,
+        chip: 'complex',
+        preset_id: quick_fix_id,
+        applies_to: 'quick_fix'
+      })
+    );
+
+    expect(result.quick_fix_chip_bindings.complex).toBe(quick_fix_id);
+    expect(result.chip_bindings.complex).toBe(null);
+  });
+
+  test('carries both maps on a stale revision rejection', () => {
+    const fixture = createFixture();
+    fixture.coordinator.create({
+      expected_revision: 0,
+      name: 'quick fix',
+      applies_to: /** @type {'quick_fix'} */ ('quick_fix'),
+      settings: { impl_runtime: 'claude' }
+    });
+
+    const result = /** @type {any} */ (
+      fixture.coordinator.bindChip({
+        expected_revision: 0,
+        chip: 'complex',
+        preset_id: null,
+        applies_to: 'quick_fix'
+      })
+    );
+
+    expect(result.conflict).toBe(true);
+    expect(result.quick_fix_chip_bindings).toEqual({
+      complex: null,
+      frontend: null,
+      backend: null
+    });
+  });
 });
 
 describe('exec-preset-coordinator dispatch preset identity (design §7)', () => {

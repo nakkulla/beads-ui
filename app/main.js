@@ -361,7 +361,8 @@ export function bootstrap(root_element) {
         exec_preset_store.set({
           revision: snapshot.revision,
           presets: snapshot.presets,
-          chip_bindings: snapshot.chip_bindings
+          chip_bindings: snapshot.chip_bindings,
+          quick_fix_chip_bindings: snapshot.quick_fix_chip_bindings
         });
       }
     });

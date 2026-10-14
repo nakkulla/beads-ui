@@ -182,7 +182,8 @@ button.interactive-session-badge {
   cursor: progress;
 }
 
-/* `칩` 탭의 행 (UI-wg68 §6): 라벨 하나와 select 하나짜리 줄이다. */
+/* `칩` 탭의 행 (UI-wg68 §6, UI-rd2m): 라벨 하나와 일반·quick fix select 둘이다.
+   머리글 칸과 select가 같은 폭을 나눠 열이 맞는다. */
 .settings-chips__row {
   display: flex;
   align-items: center;
@@ -191,6 +192,11 @@ button.interactive-session-badge {
 }
 .settings-chips__label {
   min-width: 6rem;
+}
+.settings-chips__col,
+.settings-chips__select {
+  flex: 1 1 0;
+  min-width: 0;
 }
 .settings-chips__error {
   color: var(--chip-alert, inherit);

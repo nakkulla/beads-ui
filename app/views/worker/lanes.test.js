@@ -8839,7 +8839,7 @@ describe('바인딩된 판정 칩 (UI-wg68 §5)', () => {
     expect(JUDGEMENT_CHIP_KEYS).toContain('backend');
   });
 
-  test('reads a quick fix issue popup with its own guidance line', () => {
+  test('reads a quick fix issue popup with the quick fix binding guidance', () => {
     const content = judgementPopoverContent(
       /** @type {any} */ ({
         id: 'UI-b1',
@@ -8850,7 +8850,7 @@ describe('바인딩된 판정 칩 (UI-wg68 §5)', () => {
     );
 
     expect(content?.lines.at(-1)).toBe(
-      'quick fix 이슈에는 칩 적용이 없습니다 — 적용은 이슈 상세의 quick fix 프리셋에서'
+      'quick fix 프리셋을 칩에 매려면 모니터 탭 ⚙ → 칩'
     );
   });
 });
