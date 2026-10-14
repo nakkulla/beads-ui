@@ -1297,8 +1297,8 @@ export function setChipPresetContext(ctx) {
 /**
  * One 판정 칩 — 바인딩이 있으면 프리셋을 적용·복원하는 버튼, 없으면 지금까지의
  * 사유 팝업 버튼 (UI-wg68 §5.2). 두 모양이 한 함수에 있는 이유는 같은 칩이
- * 이슈마다 다른 의미를 갖기 때문이다: `route=quick_fix` 이슈나 바인딩 없는 칩은
- * 언제나 팝업이다.
+ * 이슈마다 다른 의미를 갖기 때문이다: 이슈 route 계열(`route=quick_fix`면
+ * quick fix 맵)에 바인딩이 없는 칩은 언제나 팝업이다 (UI-rd2m).
  *
  * @param {{ chip_key: string, label: string, title: string, extra_class: string, open: boolean, item: MiniItem|null, ctx: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} input
  * @returns {import('lit-html').TemplateResult}
@@ -1342,8 +1342,8 @@ function judgementChipTemplate(input) {
 }
 
 /**
- * The route this row observed, the only material deciding whether a chip click
- * is refused as a quick fix issue (§5.2). Candidate rows carry `route`; overlay
+ * The route this row observed, the only material deciding which binding map a
+ * chip click reads (UI-rd2m §4.1). Candidate rows carry `route`; overlay
  * rows carry it inside `workflow` (false when neither is known).
  *
  * @param {MiniItem} item
