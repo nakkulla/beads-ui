@@ -547,6 +547,7 @@ export function judgeWaitReasons(input) {
     (row) =>
       row.root_dir === root_dir &&
       row.bead_id &&
+      facts[row.bead_id]?.status !== 'closed' &&
       ['hold', 'detached', 'completing'].includes(row.stage)
   );
   for (const row of live_rows) {
@@ -752,6 +753,7 @@ export function judgeWaitReasons(input) {
   );
   for (const [bead_id, fact] of Object.entries(facts)) {
     if (
+      fact.status === 'closed' ||
       !Object.hasOwn(fact, 'external_wait') ||
       live_rows.some((row) => row.bead_id === bead_id) ||
       key_write_pending.has(bead_id)

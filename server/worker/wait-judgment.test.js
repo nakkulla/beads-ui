@@ -869,6 +869,36 @@ describe('recovery wait judgment', () => {
 });
 
 describe('wait judgment external work', () => {
+  test('omits a closed Bead with a key but no record', () => {
+    const result = run({
+      blocker_facts: {
+        'UI-consumer': {
+          status: 'closed',
+          external_wait: 'w-0123456789ab'
+        }
+      }
+    });
+
+    expect(result.wait_reasons).toEqual([]);
+  });
+
+  test.each(['hold', 'detached', 'completing'])(
+    'omits a closed Bead with a live record at %s',
+    (stage) => {
+      const result = run({
+        external_waits: [external({ stage })],
+        blocker_facts: {
+          'UI-consumer': {
+            status: 'closed',
+            external_wait: 'w-0123456789ab'
+          }
+        }
+      });
+
+      expect(result.wait_reasons).toEqual([]);
+    }
+  );
+
   test('projects the consumer headline without dependency targets', () => {
     const result = run({ external_waits: [external()] }).wait_reasons[0];
 
@@ -1199,14 +1229,19 @@ describe('wait judgment external work', () => {
     });
   });
 
-  test('fails closed when the metadata key has no record', () => {
+  test('requires action for an open Bead when the metadata key has no record', () => {
     const result = run({
-      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+      blocker_facts: {
+        'UI-consumer': { status: 'open', external_wait: 'w-0123456789ab' }
+      }
     }).wait_reasons[0];
 
     expect(result).toMatchObject({
       verdict: 'action_required',
-      verdict_reason: { message: '대기 레코드 없음' }
+      verdict_reason: {
+        code: 'wait_record_missing',
+        message: '대기 레코드 없음'
+      }
     });
     expect(result.actions[0].op).toBe('external_wait_stop');
   });
