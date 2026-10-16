@@ -1,0 +1,220 @@
+---
+scope:
+  - server/worker/admission.js
+  - server/worker/attach.js
+  - server/worker/queue-place.js
+  - server/worker/scheduler.js
+  - server/worker/queue-store.js
+  - server/worker/runnable-cache.js
+  - server/worker/tmux-launcher.js
+  - server/worker/runner/preamble.js
+  - server/worker/notify.js
+  - server/ws/worker-handlers.js
+  - app/utils/worker-eligibility.js
+  - app/utils/session-preferred.js
+  - app/views/worker/
+  - app/views/monitor/
+  - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
+  - docs/superpowers/specs/2026-08-28-chip-grammar-unify-design.md
+---
+
+# UI-lbm5 — Worker 대기열 세션 레인
+
+## 1. 배경과 목표
+
+beads-ui는 session-hub로 대화형 Claude 세션을 열 수 있다. 그런데 `worker-ineligible` Bead는 아직 대기열에 오를 수 없다. 후보 레인에 관찰 전용으로 남고, 끌어 놓기가 막혀 있으며, 서버 admission도 거절한다. 그래서 사용자는 세션을 직접 열고 구현 시작 질문부터 답해야 한다.
+
+목표는 대기열 한 곳에서 세 가지를 하는 것이다.
+
+- Worker로 못 돌리는 일도 대기열에 순서대로 올린다.
+- 차례가 오면 beads-ui가 대화형 세션을 연다.
+- 사람이 필요할 때만 사용자가 그 창에 들어간다.
+
+이 실행 방식을 **세션 레인 실행**이라 부른다. 대기열의 레인(병렬·직렬 s1..s5)은 그대로 두고, 레인 안의 각 행이 headless Worker로 돌지 세션으로 돌지만 다르다.
+
+## 2. 사용자 결정 (2026-10-16)
+
+1. 대기열에 올린 행동 자체가 구현 승인이다. 열린 세션은 구현 시작 질문을 다시 묻지 않는다.
+2. 세션은 Worker처럼 fast_track으로 돈다. 절차 질문(구현 시작·리뷰어 선택) 없이 진행하고, 이슈에 원래 남은 사람 판단 지점에서만 멈춘다.
+3. 세션 레인 실행은 Worker 동시 실행 칸(`slots`)을 공유한다.
+4. 대상은 두 종류다.
+   - `worker-ineligible`은 항상 세션 레인으로 간다.
+   - `session-preferred`는 기본이 Worker다. `세션 권장` 칩을 누르면 세션 레인으로 바뀐다.
+5. 세션의 런타임·모델·effort는 이슈의 실행 프리셋을 따른다. Worker 디스패치와 같은 해석이다.
+
+## 3. 검증된 전제
+
+- admission이 라벨 하나로 거절한다 — server/worker/admission.js:174-176
+- 스케줄러도 따로 거절한다:
+  - `checkAdmission` — server/worker/scheduler.js:5151-5153
+  - 디스패치 재확인 — server/worker/scheduler.js:11308-11311
+  - 스캔 건너뜀 — server/worker/scheduler.js:18499-18506
+- 후보 카드의 배치 불가 판정은 `placementFromFacts`가 하고, `lane-model`이 `queue_placeable`로 접는다 — app/views/worker/placement.js:162-175, 268; app/views/worker/lane-model.js:4203-4263
+- 카드가 끌기와 배치를 이중으로 막는다 — app/views/worker/lanes.js:5010-5020
+- `worker-ineligible` 칩과 `세션 권장` 칩은 슬롯 1에서 서로 배타다 — app/views/worker/lanes.js:5125-5143
+- 서버 투영이 ineligible이면 `session_preferred_reason`을 비운다 — server/worker/runnable-cache.js:412-460
+- Worker 디스패치는 `fast_track`과 `workflow_mode_source=worker`를 쓰고 다시 읽는다 — server/worker/scheduler.js:4142-4175
+- receipt 기준선은 `impl_entry`·`plan_approval`의 이동과 `workflow_mode_source → user`만 위조로 본다 — server/worker/receipt-check.js:900-932
+- 대화형 창 기동 API는 `launch({marker, key, cwd, commandArgs, runner, placement})`다. 실패해도 throw하지 않는다 — server/worker/tmux-launcher.js:61-90, 732-837
+- 창 마커는 세 개다:
+  - 기동기 쪽 — server/worker/tmux-launcher.js:24-40
+  - ws 쪽 — server/ws/worker-handlers.js:7947
+  - 대화 레코드 kind 합집합 — server/worker/queue-store.js:508, 3546
+- 30초 대화 정산은 마커 pane을 나열해 생존·`turn_state`·마지막 메시지를 갱신한다 — server/worker/scheduler.js:1392-1400, 10387
+- 종단 결과 줄 파서 — server/worker/runner/session.js:98
+- headless 세션의 디스패치 맥락은 블록 단위 preamble이다. 순서는 무인 전제 → 시도 사실 → fast_track → 종점 → PR base → 가드 계약 → fix-now → 프로세스 수명이다. 과제 문장은 `defaultTaskPrompt`이고, claude에는 `--append-system-prompt`로 전달된다 — server/worker/runner/preamble.js:457-520, server/worker/runner/claude.js:842-877
+- quick_fix의 Worker-dispatched 세션은 공급된 워크트리와 committed candidate 경로를 쓴다 — dotfiles src/shared/skills/flow/workflow/references/execution-quick-fix.md:61
+- 칩 클릭으로 이슈 metadata를 바꾸는 선례는 `chip-preset-toggle`이다. (워크스페이스, 이슈)별로 직렬화하고, 재클릭하면 복원한다 — docs/adr/UI-rd2m-exec-presets-and-chips-by-route.md "판정 칩"
+- dotfiles의 Attempt continuation 판정: 대기열 `attempts[]`에 그 Bead 행이 하나라도 있는 세션은 fast_track을 이어받는다. 그 세션은 구현 시작 질문을 하지 않고 승인 키도 쓰지 않는다 — dotfiles src/shared/skills/flow/workflow/references/execution-dispatch.md:211-250
+- 허브는 열리는 창에서 `BDUI_ATTEMPT_ID`·`CLAUDE_HOOK_SUPPRESS`를 벗긴다. 그래서 세션 레인 세션은 unattended runner로 분류되지 않는다 — dotfiles src/shell/lib/session_hub/env.py:57
+- 미확인: 허브 claude 창의 권한 확인 대화상자가 `@agent_attention=question`으로 드러나는지 — 구현 중 실측한다. 드러나지 않으면 §4.4의 답 대기 판정이 그 경우를 놓치므로 관찰 줄로 남긴다.
+
+## 4. 설계
+
+### 4.1 실행 방식 판정
+
+이슈의 **실행 방식**은 디스패치 때 스냅샷 하나로 정한다.
+
+- `worker-ineligible` 라벨이 있으면 → `session`
+- 유효한 `session-preferred`(라벨과 enum 사유)가 있고 metadata `exec_lane=session`이면 → `session`
+- 그 밖 → `worker`
+
+`exec_lane`은 beads-ui가 쓰는 키다(`applied_exec_preset`와 같은 지위). 라벨 없이 남은 `exec_lane`은 무시한다(fail-quiet). 판정 함수는 하나다. 예: `app/utils/worker-eligibility.js` `execLaneOf(labels, metadata)`. 서버 투영·카드·스케줄러가 모두 이 함수를 쓴다.
+
+### 4.2 대기열 진입
+
+- `worker-ineligible`은 더 이상 admission 거절 사유가 아니다. 다만 같은 이슈가 세션 레인 실행을 받으려면 나머지 admission(route·본문·스펙·receipt·base 등)은 Worker와 똑같이 통과해야 한다.
+- 결정 — admission은 라벨 검사만 지우고 나머지 조건은 바꾸지 않는다 (대안: 세션 레인 전용으로 완화한 admission; 이유: 세션도 Worker attempt의 receipt 기준선과 마감 경로를 그대로 타므로 진입 조건이 같아야 한다).
+- 세 곳의 거절을 같은 변경으로 지운다: `validateAdmission`, 비연결 워크스페이스 분기(`checkUnattachedWorkerAdmission`), 스케줄러 세 곳(§3).
+- 후보 카드의 끌기와 `[대기로 ↴]`가 열린다.
+
+### 4.3 디스패치
+
+스캔·슬롯·직렬 레인 머리·`auto_advance`·공급자 보류 가드·base 재해석·가드 훅·워크트리 생성·`claimBeadForDispatch`·`stampWorkerWorkflowMode`까지는 Worker 디스패치와 같은 경로다. 실행 방식이 `session`이면 `launchSession`(headless spawn) 대신 세션 레인 기동으로 갈린다.
+
+- 기동: `tmux-launcher.launch`를 다음 값으로 부른다.
+  - marker: 새 `@bdui_session_lane_bead`
+  - key: Bead ID
+  - window_name: Bead ID
+  - cwd: Bead 워크트리
+  - placement: `inquiry`(백그라운드 세션)
+  - runner·model·effort: 디스패치 설정값(프리셋)을 쓴다. `conversation_flags`는 끄고, 프리셋의 플래그를 직접 넘긴다.
+- claude는 `--session-id <uuid>`로 세션 ID를 미리 정해 attempt에 적는다. codex는 관측될 때 채우고, 그 전에는 `null`이다.
+- 디스패치 맥락: headless와 같은 `applyPreamble` 블록 중 다음만 싣는다.
+  - 싣는 것: 시도 사실·fast_track·종점(PR 제출 또는 quick_fix 레인)·PR base·fix-now
+  - 빼는 것: 무인 전제(`UNATTENDED_PREAMBLE`)·가드 계약·프로세스 수명
+  - 대신 넣는 것: 세션 레인 블록(`세션 레인:`으로 시작). 사람이 창에 들어와 답할 수 있고, 남은 사람 판단은 대화로 묻고 턴을 끝낸다는 내용이다.
+  - 전달 경로: claude는 `--append-system-prompt`로, codex는 첫 입력 앞에 붙여 보낸다.
+  - 이 맥락이 quick_fix 세션에게 Worker-dispatched 경로(공급된 워크트리·committed candidate·Worker 착지)를 알린다.
+- 첫 입력: `defaultTaskPrompt(bead_id)`(`Bead <id> 작업을 계약 네이티브 흐름으로 완료하라.`).
+  - 결정 — 첫 입력은 headless와 같은 과제 문장이고, Worker 세션 대화 진입 블록 접두 `이 세션은 `으로 시작하지 않는다 (대안: dotfiles 진입 블록 바이트 복제; 이유: 세션 정체는 continuation 판정(대기열 attempts 탐색)과 디스패치 맥락이 정하고, 진입 블록 접두는 가드가 읽기 전용 대화로 분류하기 때문이다).
+- 결정 — 세션 레인은 Worker 계정 선택·선제 전환을 쓰지 않고, 허브의 기본 로그인 환경으로 연다. 디스패치 전 공급자 보류 가드는 러너 단위 보류만 적용하고, 계정 단위 보류는 적용하지 않는다 (대안: Worker 계정 env를 창에 주입; 이유: 사람이 들어가 답하는 창이고, 허브가 Worker 표지를 벗기는 것이 계약이며, 이 창은 Worker 계정을 쓰지 않으므로 계정 보류와 무관하다).
+- attempt 기록: 기존 `Attempt`에 `exec: 'session'`과 `interactive: { pane_id, tmux_session, tmux_window }`를 더한다. 상태 어휘는 늘리지 않는다(`running` → `done`/`failed`/…).
+- 기동 실패(`not_launched`): attempt를 `failed`(cause `session_launch_failed:<reason>`)로 닫는다. 그러면 Worker가 쓴 claim은 기존 `settleStaleWorkerClaims`가 푼다.
+
+### 4.4 관찰
+
+- 생존: 세션 레인 attempt의 생존은 pid가 아니라 마커 pane이다. 30초 대화 정산이 `@bdui_session_lane_bead` pane을 함께 나열해 `turn_state`·`turn_state_since`·마지막 메시지 발췌를 attempt에 갱신한다.
+- 다음 판정은 `exec: 'session'` attempt에 대해 프로세스 대신 정산이 기록한 pane 생존을 읽는다. 어느 하나라도 pid로 보면 살아 있는 세션의 claim이 풀리거나 슬롯이 비므로, 각각 테스트를 둔다.
+  - 슬롯 점유 `occupiedBeadIds` — server/worker/scheduler.js:16760
+  - 낡은 claim 해제 `settleStaleWorkerClaims` — server/worker/scheduler.js:11189
+  - 고아 판정(`orphaned` 전이) — server/worker/scheduler.js:8660
+  - 정산 울타리 `settledAttemptFence`
+- 답 대기: 다음 둘 중 하나면 답 대기다.
+  - `turn_state === 'question'`
+  - `turn_state === 'idle'`이고 마지막 assistant 메시지 첫 줄이 종단 결과 줄이 아님
+- 알림: 답 대기에 들어갈 때마다 한 번 `🙋 확인 필요 · 세션 답 대기`를 보낸다. 발췌와 `tmux <session>:<window>`를 싣고, Discord 스레드가 있으면 그 링크를 싣는다. 같은 대기 안에서는 다시 보내지 않는다.
+- 기동 때 한 번 `▶ 세션 레인 시작 · tmux <session>:<window>`를 보낸다.
+- 살아 있는 세션 레인 attempt는 방향 문의·실패 대화 자동 기동의 대상이 아니다. 이미 사람이 들어갈 창이 있기 때문이다.
+
+### 4.5 종료와 결과
+
+- 종단 결과 줄: 마지막 assistant 메시지 첫 줄이 종단 결과 줄(`성공 ·`·`파킹 ·`·`실패 ·`·`환경 ·`·`대기 ·`)이면, `terminalResultOf`로 만든 verdict를 headless와 같은 `onSessionDone` 분기에 넣는다. 성공이면 PR 확인 → PR 대기 또는 완료로, 그 밖이면 실패·보류·대기로 간다. 그 뒤 창은 기존 대화 종료 규칙(유휴 확인 뒤 `/exit`, 유예 뒤 kill)으로 닫는다. 한 메시지는 한 번만 처리한다.
+- 창 소멸: 종단 결과 줄 없이 pane이 사라지면 attempt를 `failed`(cause `session_exited`)로 닫는다.
+  - 실패 행에는 `[세션에서 이어가기]`가 선다. attempt 세션을 resume하고, 세션 ID가 없으면 기존 fresh 경로를 탄다.
+  - `session_exited`는 자동 기동하지 않는다. 결정 — 클릭 전용 (대안: 공용 스위치 아래 자동 재개; 이유: 창을 닫은 것은 사람의 행동이다).
+- `[워커로 이어가기]`: `worker-ineligible`이면 서지 않는다. 그 판정은 `tileResolveFields` 하나가 한다.
+- 사용자 조작: 실행 중 타일의 `✕ Worker에서 내리기`·`폐기`는 창에 `/exit`를 보내고 유예 뒤 kill한다. 나머지 처분은 Worker attempt와 같다.
+- 서버 재시작: `running`인 세션 레인 attempt는 마커 pane이 살아 있으면 다시 채택하고, 없으면 `session_exited`로 처리한다.
+
+### 4.6 카드
+
+새 요소의 슬롯은 카드 헤더 문법 스펙 §5.1 표에 이 Bead가 행을 더해 정한다.
+
+| 요소 | 슬롯 | 렌더러 |
+| --- | --- | --- |
+| `세션` exec 칩 (`오케`/`워커` exec 칩과 같은 칩 어휘) | 5b 실행 사실 | 대기 카드·실행 중 타일·PR 대기·완료 |
+| `[세션에서 이어가기]` 창 부르기(`.op-btn`) | 1 조작 | 실행 중 세션 레인 타일 |
+| 대화 상태 `대화 중 <경과>`·`답 대기`와 발췌 | 3 진행 | 실행 중 세션 레인 타일 (기존 대화 렌더 재사용) |
+
+- 창 부르기는 기존 `focusLiveConversation`과 같은 동작이다(`placement: 'user'`의 `select-window`). Discord 링크가 있으면 `↗ Discord`가 함께 선다.
+- `worker-ineligible` 칩 툴팁: `워커 대신 세션 레인으로 실행된다 — 대기열에 올리면 구현 승인`.
+- 카드 재료는 `buildLanes`와 `app/views/worker/` 공유 함수에서 만든다. 모니터도 같은 칩·줄·버튼을 갖는다.
+  - 결정 — 모니터의 후보·대기 행도 `worker_ineligible`·`session_preferred_reason`·실행 방식 사실을 싣는다. 모니터-Worker 동일성 스펙 §9 의도된 차이에 행을 더하지 않는다 (대안: 모니터에서는 칩을 생략하고 §9에 행 추가; 이유: 모니터에서도 세션 레인 카드를 올리고 불러야 하며, 칩 문법 스펙 :261의 "재료 없음"은 재료를 실으면 사라지는 사유다).
+  - 칩 문법 스펙 :261·:397의 모니터 생략 문장은 이 Bead가 함께 고친다.
+
+### 4.7 `세션 권장` 칩 클릭
+
+- 클릭은 서버 op `chip-session-toggle { id, root_dir? }`다. 그 이슈의 `exec_lane`을 `session` ↔ 해제로 바꾸고 다시 읽는다. (워크스페이스, 이슈)별 promise 체인으로 요청 순서대로 직렬화한다(UI-rd2m 선례).
+- 칩 모양:
+  - 해제 상태는 `세션 권장`이다.
+  - 설정 상태는 `세션 실행`(`aria-pressed=true`)이다.
+  - 툴팁은 사유 한 줄과 `누르면 세션 레인 ↔ Worker 전환`이다.
+- 사유 팝업(현행 클릭 동작)은 툴팁으로 옮긴다. 실행 중 attempt에는 영향이 없고, 다음 디스패치부터 적용된다.
+
+## 5. 오류 처리
+
+- 모든 tmux·허브 실패는 attempt 실패나 정산 건너뜀으로 끝난다. 스케줄러 pass를 깨지 않는다.
+- 마커 나열이 실패한 정산 pass는 그 pass의 세션 레인 판정을 통째로 건너뛴다. 기존 정산과 같은 fail-closed다.
+- `exec_lane` 쓰기가 실패하거나 다시 읽은 값이 다르면 토스트로 알리고 칩 상태를 되돌리지 않는다. 다음 스냅샷이 진실이다.
+
+## 6. 수용 기준과 테스트
+
+1. `worker-ineligible` 이슈가 admission을 통과하고, 대기열에 놓이고, 디스패치되면 세션 레인으로 기동된다. 서버 세 곳과 클라이언트 배치 판정에 각각 테스트를 둔다.
+2. 디스패치는 같은 슬롯을 차지한다. `slots=1`에서 세션 레인이 살아 있으면 다음 Worker 행은 대기한다.
+3. 기동 argv: marker, key, cwd(워크트리), placement `inquiry`, 프리셋 runner·model·effort, `--session-id`, `--append-system-prompt`, 첫 입력 문장. 첫 입력이 `이 세션은 `으로 시작하지 않는다.
+   - system prompt에 시도 사실·fast_track·종점·PR base·fix-now·세션 레인 블록이 있다.
+   - 무인 전제·가드 계약·프로세스 수명 블록은 없다.
+   - quick_fix면 종점이 quick_fix 레인 지시다.
+   - 생존 판정 네 곳이 `exec: 'session'` attempt를 pane 생존으로 판정한다.
+4. 디스패치가 `workflow_mode=fast_track`·`workflow_mode_source=worker`를 쓰고 다시 읽는다.
+5. 답 대기 판정 두 갈래와 대기당 알림 한 번.
+6. 종단 결과 줄(성공·실패)이 headless와 같은 `onSessionDone` 분기로 간다. 결과 줄 없는 pane 소멸은 `session_exited`이고 자동 기동하지 않는다.
+7. 재시작 재채택: pane이 살아 있으면 `running` 유지, 없으면 `session_exited`.
+8. `chip-session-toggle` 설정·해제·직렬화와, 라벨이 없을 때 `exec_lane` 무시.
+9. 카드 동일성 테스트: 같은 세션 레인 Bead가 Worker 탭과 모니터에서 같은 칩·줄·버튼을 갖는다.
+10. 렌더 확인: 후보·대기·실행 중 카드를 390px 폭으로 캡처해 넘침이 없음을 본다.
+
+## 7. 비목표
+
+- dotfiles 계약 문구(대기열 등록 = 구현 승인, `worker-ineligible`의 새 뜻)는 형제 Bead가 정한다. 이 Bead는 소비자 구현만 한다.
+- 세션 레인 전용 동시 실행 한도는 두지 않는다(사용자 결정 3).
+- beads-ui 안에서 답을 입력하는 칸은 만들지 않는다(ADR UI-gske 승계). 답은 tmux 창이나 Discord에서 한다.
+- `worker-ineligible` 이슈를 headless Worker로 돌리는 경로는 만들지 않는다.
+
+## 8. 경계·후속
+
+| 종류(형제\|발견) | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
+| --- | --- | --- | --- | --- | --- |
+| 형제 | dotfiles | awaited_by_consumer | 다른 저장소 — 대기열 등록을 구현 승인으로 보는 세션 레인 계약의 정본 | 없음 | dotfiles-5qgws |
+
+## 9. 결정 (ADR 후보)
+
+- 전제: ADR UI-u6ud-2 — 세션 레인의 뜻과 권한은 dotfiles 계약이 정하고, beads-ui는 그 계약의 소비자로 구현한다.
+- 전제: ADR UI-gske — 대화형 창 기동·정산·종료 규칙과 공용 자동 기동 스위치를 승계한다.
+- 전제: ADR UI-rd2m — 칩 클릭이 이슈 metadata를 쓰는 직렬화 규칙을 따른다.
+- 전제: ADR UI-ny0h — 세션 레인의 PR도 단일 순차 머지 큐와 머지 자격을 그대로 탄다.
+- 전제: ADR dotfiles/dotfiles-fixnj — 대화형 창은 session-hub로 열고, 허브가 Worker 표지 env를 벗긴다.
+- Worker 대기열 행의 실행 방식에 세션 레인을 더한다.
+  - `worker-ineligible`은 항상 세션 레인이고, `session-preferred`는 `exec_lane=session`일 때만 세션 레인이다.
+  - 세션 레인은 Worker attempt로 기록되어 같은 슬롯·직렬 레인·마감 경로를 쓴다.
+  - 생존은 마커 pane으로 보고, 종단 결과 줄은 headless와 같은 판정에 넣는다.
+  - 되돌림 어려움: 충족. admission·스케줄러·attempt 모양·카드 슬롯·dotfiles continuation 판정이 함께 움직인다.
+  - 의외: 충족. "worker-ineligible인데 Worker 대기열에서 돈다"는 설명 없이는 모순으로 읽힌다.
+  - 대안: 충족. 별도 세션 큐, 세션 전용 한도, headless 허용을 검토했다.
+  - 새 주제: 인접 ADR은 UI-gske다.
+    - 이 결정의 소비자: admission·스케줄러 디스패치와 생존 판정·attempt 모양·preamble·후보와 대기 카드.
+    - UI-gske의 소비자: `resolve-session.js` 자동 기동기, `completion-intent.js`, `wait-judgment.js`, `session-inquiry/`, 설정 창 스위치.
+    - 겹치는 곳은 마커 표와 30초 정산 pass에 행 하나를 더하는 것뿐이고, UI-gske의 조항은 하나도 바꾸지 않는다.
+  - `summary`: "worker-ineligible과 exec_lane=session인 session-preferred 이슈는 Worker 대기열에서 세션 레인으로 실행된다 — 같은 admission·슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처) session-hub 대화형 창으로 열리며, 생존은 마커 pane, 결과는 종단 결과 줄로 headless와 같은 판정을 탄다; 결과 줄 없는 창 소멸은 클릭 전용 session_exited 실패다" → ADR
+- `session-preferred` 칩 클릭은 `exec_lane`을 토글한다 — 칩 문법의 한 행 변경이고, 위 ADR의 같은 소비자 안에 있다 → ADR 아님
