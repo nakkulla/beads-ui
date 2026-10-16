@@ -506,4 +506,18 @@ describe('placeable candidate', () => {
 
     expect(placeable).toBe(true);
   });
+
+  test('places a worker-ineligible row like any other', () => {
+    const facts = {
+      route: 'quick_fix',
+      spec_state: 'none',
+      has_description: true,
+      awaiting_user: false,
+      worker_ineligible: true
+    };
+
+    const placeable = isPlaceableCandidate(facts);
+
+    expect(placeable).toBe(true);
+  });
 });

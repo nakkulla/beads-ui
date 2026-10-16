@@ -287,6 +287,58 @@ describe('decorateQueue placement fields (UI-izba §4.5)', () => {
     expect(out.placement_status).toEqual({});
   });
 
+  test('compares a candidate with an unshelved PR 대기 entry', () => {
+    installService();
+    seedSnapshot(['UI-1', 'UI-2']);
+    mockCandidates([candidateRow('UI-1')]);
+    const queue = { ...queueWith([]), pr_wait: [{ bead_id: 'UI-2' }] };
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.placement_status['UI-1']).toMatchObject({
+      state: 'pending',
+      total: 1
+    });
+  });
+
+  test('leaves a shelved PR 대기 entry out of the comparison', () => {
+    installService();
+    seedSnapshot(['UI-1', 'UI-2']);
+    mockCandidates([candidateRow('UI-1')]);
+    const queue = {
+      ...queueWith([]),
+      pr_wait: [{ bead_id: 'UI-2' }],
+      merge_shelved: { 'UI-2': { at: 1 } }
+    };
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.placement_relations).toEqual({});
+    expect(out.placement_status).toEqual({
+      'UI-1': { state: 'no_counterpart' }
+    });
+  });
+
+  test('judges a worker-ineligible candidate like any other', () => {
+    installService();
+    seedSnapshot(['UI-1', 'UI-2']);
+    mockCandidates([candidateRow('UI-1', { worker_ineligible: true })]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, queueWith(['UI-2'])));
+
+    expect(out.placement_status['UI-1']).toMatchObject({ state: 'pending' });
+  });
+
+  test('counts each pair once in the workspace progress', () => {
+    installService([['UI-1', 'UI-2']]);
+    seedSnapshot(['UI-1', 'UI-2', 'UI-3']);
+    mockCandidates([candidateRow('UI-1'), candidateRow('UI-2')]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, queueWith(['UI-3'])));
+
+    expect(out.placement_progress).toEqual({ done: 1, total: 3 });
+  });
+
   test('carries no issue text on the wire', () => {
     installService([['UI-1', 'UI-2']]);
     seedSnapshot(['UI-1', 'UI-2']);

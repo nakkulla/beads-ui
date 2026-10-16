@@ -5772,13 +5772,56 @@ summary.repo-ops-log-viewer__attempt-head {
   margin-left: auto;
 }
 
-/* 대기 열 머리의 `[전체 배치안]`·`[↻ 다시 판정]`·판정 시각. */
+/* 대기 열 머리의 `[전체 배치안]`·진행 막대·`[↻ 다시 판정]`·판정 시각. 좁은
+   폭에서는 머리줄 안에서 줄을 바꿔 열 밖으로 넘치지 않는다. */
 .worker-plan-controls {
   display: inline-flex;
-  flex: none;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: var(--sp-3);
+  min-width: 0;
   text-transform: none;
+}
+
+/* jev 판정 진행: 사용량 막대(`.usage-meter__track`/`__fill`)와 같은 모양을
+   `--progress`로 채운다. 그 클래스를 빌리지 않는 것은 좁은 화면에서 사용량
+   막대만 접는 규칙이 이 막대까지 숨기지 않게 하려는 것이다. */
+.worker-plan__progress {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.worker-plan__progress-track {
+  width: 52px;
+  height: var(--sp-6);
+  overflow: hidden;
+  border-radius: var(--r-10);
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+
+.worker-plan__progress-fill {
+  display: block;
+  width: var(--progress);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--stage-plan-dim);
+}
+
+/* 근거 칸: 요약 한 줄로 접고 누르면 관계 줄을 편다. 경고 줄은 접힘 밖이다. */
+.worker-plan__reasons > summary {
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.worker-plan__warn {
+  color: var(--accent-warn);
 }
 
 /* 전체 배치안 표: 대기 열 아래. 좁은 폭에서는 표만 가로로 민다. */

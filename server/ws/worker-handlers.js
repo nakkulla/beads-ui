@@ -1977,9 +1977,24 @@ function placementFor(workspace_key, queue, bead_scope, bead_blocked_by) {
       }
     }
     const candidate_set = new Set(candidates);
-    const members = [...new Set(laneMemberIds(queue, true))].filter(
-      (id) => !candidate_set.has(id)
-    );
+    // A shelved PR 대기 entry (`merge_shelved`) frees its lane, so it is no
+    // comparison partner; `laneMemberIds` keeps it for the chips and the
+    // PR 대기 row.
+    const shelved =
+      queue.merge_shelved && typeof queue.merge_shelved === 'object'
+        ? queue.merge_shelved
+        : {};
+    const pr_wait_ids = (
+      Array.isArray(queue.pr_wait) ? /** @type {any[]} */ (queue.pr_wait) : []
+    )
+      .map((entry) => entry && entry.bead_id)
+      .filter(
+        (id) =>
+          typeof id === 'string' && id.length > 0 && !Object.hasOwn(shelved, id)
+      );
+    const members = [
+      ...new Set([...laneMemberIds(queue, false), ...pr_wait_ids])
+    ].filter((id) => !candidate_set.has(id));
     for (const id of members) {
       if (Array.isArray(bead_blocked_by[id])) {
         blocked_by[id] = bead_blocked_by[id];
@@ -3795,13 +3810,15 @@ export function decorateQueue(workspace_key, raw_queue) {
     // valid group, which the client reads as "no plan chip" (fail-quiet).
     ...(bead_plan_groups ? { bead_plan_groups } : {}),
     // Placement recommendation material (UI-izba §4.5): pair relations in
-    // small-id orientation and each placeable 후보's state. Non-persisted;
-    // both keys are absent when no placement service is installed, which the
-    // client reads as "draw no [추천 배치]" (fail-quiet).
+    // small-id orientation, each placeable 후보's state and the workspace's
+    // distinct-pair jev progress. Non-persisted; the keys are absent when no
+    // placement service is installed, which the client reads as "draw no
+    // [추천 배치]" (fail-quiet).
     ...(placement
       ? {
           placement_relations: placement.placement_relations,
-          placement_status: placement.placement_status
+          placement_status: placement.placement_status,
+          placement_progress: placement.placement_progress
         }
       : {}),
     // `⏏ 내려옴` material by bead (2026-10-01 stall-reconcile D8); absent when

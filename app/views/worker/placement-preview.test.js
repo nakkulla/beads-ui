@@ -512,7 +512,7 @@ describe('[적용]', () => {
 });
 
 describe('전체 배치안', () => {
-  test('starts a row with a warning unchecked', () => {
+  test('starts every ready row checked, a row with a warning included', () => {
     const { mount } = mountView(
       vi.fn(),
       queueOf({
@@ -533,7 +533,7 @@ describe('전체 배치안', () => {
       ])
     ).toEqual([
       ['RD-1', true],
-      ['RD-3', false]
+      ['RD-3', true]
     ]);
   });
 
@@ -744,8 +744,22 @@ describe('workspace switch', () => {
   });
 });
 
+/**
+ * Uncheck one full-plan row the way a reader does.
+ *
+ * @param {HTMLElement} mount
+ * @param {string} id
+ */
+function uncheck(mount, id) {
+  const box = /** @type {HTMLInputElement} */ (
+    mount.querySelector(`.worker-plan__include[data-bead-id="${id}"]`)
+  );
+  box.checked = false;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 describe('전체 배치안 explanations', () => {
-  test('keeps the warning of a row it leaves unchecked', () => {
+  test('keeps the warning of a row the reader unchecks', () => {
     const { mount } = mountView(
       vi.fn(),
       queueOf({
@@ -756,15 +770,16 @@ describe('전체 배치안 explanations', () => {
         ])
       })
     );
-
     click(mount.querySelector('.worker-plan__open'));
+
+    uncheck(mount, 'RD-3');
 
     expect(
       mount.querySelector('.worker-plan__row[data-bead-id="RD-3"]')?.textContent
     ).toContain('P-1(병렬)과 동시에 돌 수 있음');
   });
 
-  test('draws no dotted card for a row it leaves unchecked', () => {
+  test('folds the relation lines under a closed summary with the warning outside', () => {
     const { mount } = mountView(
       vi.fn(),
       queueOf({
@@ -778,10 +793,69 @@ describe('전체 배치안 explanations', () => {
 
     click(mount.querySelector('.worker-plan__open'));
 
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-plan__row[data-bead-id="RD-3"]')
+    );
+    const fold = /** @type {HTMLDetailsElement} */ (
+      row.querySelector('details.worker-plan__reasons')
+    );
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector('summary')?.textContent?.trim()).toBe(
+      '근거 2 · 부딪힘 1 · 독립 1'
+    );
+    expect(fold.textContent).toContain('P-1 — 부딪힘');
+    expect(fold.querySelector('.worker-plan__warn')).toBeNull();
+    expect(row.querySelector('.worker-plan__warn')?.textContent).toContain(
+      'P-1(병렬)과 동시에 돌 수 있음'
+    );
+  });
+
+  test('draws no dotted card for a row the reader unchecks', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'S2-1', 'x_first'),
+          rel('RD-1', 'RD-3', 'independent'),
+          rel('RD-3', 'P-1', 'conflict')
+        ])
+      })
+    );
+    click(mount.querySelector('.worker-plan__open'));
+
+    uncheck(mount, 'RD-3');
+
     expect(
       Array.from(mount.querySelectorAll('.worker-card--preview')).map((card) =>
         card.getAttribute('data-preview-id')
       )
     ).toEqual(['RD-1']);
+  });
+});
+
+describe('jev progress bar', () => {
+  test('draws the bar and the count while pairs are still judged', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({ placement_progress: { done: 34, total: 130 } })
+    );
+
+    const bar = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-plan__progress')
+    );
+
+    expect(bar.textContent?.trim()).toBe('jev 판정 34/130');
+    expect(bar.getAttribute('style')).toContain('--progress: 26%');
+  });
+
+  test('draws no bar once every pair is settled', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({ placement_progress: { done: 130, total: 130 } })
+    );
+
+    const bar = mount.querySelector('.worker-plan__progress');
+
+    expect(bar).toBeNull();
   });
 });

@@ -493,6 +493,70 @@ export function outsideLineText(line) {
 }
 
 /**
+ * The folded 근거 summary of a full-plan row — "근거 6 · 부딪힘 5 · 독립 1": the
+ * relation line count, then each nonzero kind. Outside lines count as 부딪힘.
+ *
+ * @param {Pick<PlannedPlacement, 'reasons'|'references'|'outside'>} placement
+ * @returns {string}
+ */
+export function reasonSummaryText(placement) {
+  const kinds = { conflict: 0, order: 0, independent: 0 };
+  for (const line of placement.reasons) {
+    if (line.relation === 'conflict') {
+      kinds.conflict += 1;
+    } else if (line.relation === 'independent') {
+      kinds.independent += 1;
+    } else {
+      kinds.order += 1;
+    }
+  }
+  kinds.conflict += placement.outside.length;
+  const parts = [
+    `근거 ${
+      placement.reasons.length +
+      placement.references.length +
+      placement.outside.length
+    }`,
+    ...(kinds.conflict > 0 ? [`부딪힘 ${kinds.conflict}`] : []),
+    ...(kinds.order > 0 ? [`선후 ${kinds.order}`] : []),
+    ...(kinds.independent > 0 ? [`독립 ${kinds.independent}`] : []),
+    ...(placement.references.length > 0
+      ? [`참고 ${placement.references.length}`]
+      : [])
+  ];
+  return parts.join(' · ');
+}
+
+/**
+ * The 근거 cell of a full-plan row (UI-7y8h): relation lines folded under a
+ * `<details>` summary, warning lines outside it so they stay visible. A row
+ * without relation lines draws no fold.
+ *
+ * @param {PlannedPlacement} placement
+ * @returns {import('lit-html').TemplateResult}
+ */
+function reasonCellTemplate(placement) {
+  const lines = [
+    ...placement.reasons.map((line) => relationLineText(line)),
+    ...placement.references.map((line) => relationLineText(line, true)),
+    ...placement.outside.map((line) => outsideLineText(line))
+  ];
+  return html`${lines.length > 0
+    ? html`<details class="worker-plan__reasons">
+        <summary>${reasonSummaryText(placement)}</summary>
+        ${lines.map(
+          (text) => html`<div class="worker-plan__line">${text}</div>`
+        )}
+      </details>`
+    : ''}${placement.warnings.map(
+    (warning) =>
+      html`<div class="worker-plan__line worker-plan__warn">
+        ${placementWarningText(warning)}
+      </div>`
+  )}`;
+}
+
+/**
  * @param {number|null} at
  * @returns {import('lit-html').TemplateResult|string}
  */
@@ -734,11 +798,12 @@ export function createPlacementPreview(options) {
   }
 
   /**
-   * The full plan on a snapshot: defaults come from the plan of every ready
-   * candidate, the reader's checks override them, and the plan itself is
-   * computed with the checked set only. `base` is the plan of every ready
-   * candidate: an unchecked row still shows its reasons and warnings from it,
-   * so the reader sees why it starts out unchecked.
+   * The full plan on a snapshot: every ready candidate starts checked —
+   * warnings and low-confidence rows included, since the table shows them and
+   * a person presses `[전체 적용]` — the reader's checks override that, and the
+   * plan itself is computed with the checked set only. `base` is the plan of
+   * every ready candidate: an unchecked row still shows its reasons and
+   * warnings from it.
    *
    * @param {any} queue
    * @returns {{ plan: PlacementPlan, base: PlacementPlan, ready: string[], checked: Set<string> }}
@@ -747,13 +812,7 @@ export function createPlacementPreview(options) {
     const ready = readyIds(queue);
     const base = planOn(queue, ready);
     const checked = new Set(
-      ready.filter((id) => {
-        if (checks.has(id)) {
-          return checks.get(id) === true;
-        }
-        const item = base.by_id[id];
-        return !!item && item.warnings.length === 0 && !item.only_unknown;
-      })
+      ready.filter((id) => !checks.has(id) || checks.get(id) === true)
     );
     return { plan: planOn(queue, [...checked]), base, ready, checked };
   }
@@ -927,6 +986,11 @@ export function createPlacementPreview(options) {
         return '';
       }
       const any_ready = readyIds(queue).length > 0;
+      const progress = objectOf(queue.placement_progress);
+      const judging =
+        typeof progress.done === 'number' &&
+        typeof progress.total === 'number' &&
+        progress.done < progress.total;
       let latest = null;
       for (const raw of Object.values(queue.placement_relations || {})) {
         const at = /** @type {any} */ (raw)?.judged_at;
@@ -946,6 +1010,25 @@ export function createPlacementPreview(options) {
         >
           전체 배치안
         </button>
+        ${judging
+          ? html`<span
+              class="worker-plan__progress"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax=${String(progress.total)}
+              aria-valuenow=${String(progress.done)}
+              style=${`--progress: ${Math.floor(
+                (progress.done / progress.total) * 100
+              )}%`}
+            >
+              <span class="worker-plan__progress-track" aria-hidden="true">
+                <span class="worker-plan__progress-fill"></span>
+              </span>
+              <span class="worker-plan__progress-text"
+                >jev 판정 ${progress.done}/${progress.total}</span
+              >
+            </span>`
+          : ''}
         <button
           type="button"
           class="op-btn worker-plan__rejudge"
@@ -1021,23 +1104,7 @@ export function createPlacementPreview(options) {
                 </td>
                 <td>
                   ${explained
-                    ? [
-                        ...explained.reasons.map((line) =>
-                          relationLineText(line)
-                        ),
-                        ...explained.references.map((line) =>
-                          relationLineText(line, true)
-                        ),
-                        ...explained.outside.map((line) =>
-                          outsideLineText(line)
-                        ),
-                        ...explained.warnings.map((warning) =>
-                          placementWarningText(warning)
-                        )
-                      ].map(
-                        (text) =>
-                          html`<div class="worker-plan__line">${text}</div>`
-                      )
+                    ? reasonCellTemplate(explained)
                     : ready
                       ? ''
                       : recommendButtonState(status[id]).title}

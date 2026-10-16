@@ -391,6 +391,18 @@ describe('computePlacement lane rules', () => {
       { code: 'uncovered', other: 'R-1', other_lane: 'parallel' }
     ]);
   });
+
+  test('skips a shelved pr_wait entry as an occupant', () => {
+    const queue = queueOf({
+      pr_wait: [{ bead_id: 'R-1' }],
+      merge_shelved: { 'R-1': { at: 1 } }
+    });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'R-1', 'conflict')] });
+
+    expect(result.by_id['C-1'].warnings).toEqual([]);
+    expect(result.by_id['C-1'].reasons).toEqual([]);
+  });
 });
 
 describe('computePlacement relations', () => {

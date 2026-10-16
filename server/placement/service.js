@@ -40,8 +40,9 @@ const ROUTES = new Set(WORKFLOW_ROUTES);
 /**
  * Whether a 후보 row can be placed into a lane — the same facts and the same
  * reading as the browser's `placementFromFacts` (`app/views/worker/
- * placement.js`): a known route, not worker-ineligible, not awaiting the user,
- * and a description (quick_fix) or a published spec (otherwise). A legacy row
+ * placement.js`): a known route, not awaiting the user, and a description
+ * (quick_fix) or a published spec (otherwise). `worker_ineligible` does not
+ * exclude (UI-lbm5 §4.2: such a Bead runs in the session lane). A legacy row
  * without the fact bundle keeps that function's permissive fallback.
  *
  * @param {Record<string, unknown>} row
@@ -52,15 +53,13 @@ export function isPlaceableCandidate(row) {
     Object.hasOwn(row, 'route') &&
     Object.hasOwn(row, 'spec_state') &&
     Object.hasOwn(row, 'has_description') &&
-    Object.hasOwn(row, 'awaiting_user') &&
-    Object.hasOwn(row, 'worker_ineligible');
+    Object.hasOwn(row, 'awaiting_user');
   if (!has_facts) {
-    return row.worker_ineligible !== true;
+    return true;
   }
   const route = typeof row.route === 'string' ? row.route : '';
   return (
     ROUTES.has(route) &&
-    row.worker_ineligible !== true &&
     row.awaiting_user !== true &&
     (route === 'quick_fix'
       ? row.has_description === true
@@ -485,7 +484,8 @@ export function createPlacementService(options) {
       }
       return {
         placement_relations: out.relations,
-        placement_status: out.status
+        placement_status: out.status,
+        placement_progress: out.progress
       };
     },
 

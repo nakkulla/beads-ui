@@ -98,7 +98,8 @@ import { orderLaneByBlocks } from './lane-order.js';
 /**
  * @typedef {Object} PlacementInput
  * @property {any} queue - `worker-queue` snapshot (revision, queue,
- * serial_lanes, serial_lane_count, lane_states, pr_wait, attempts).
+ * serial_lanes, serial_lane_count, lane_states, pr_wait, merge_shelved,
+ * attempts).
  * @property {Record<string, PlacementRelation>|null|undefined} relations -
  * `placement_relations`.
  * @property {string[]} display_order - Candidate ids in the lane's sort order.
@@ -329,11 +330,13 @@ export function computePlacement(input) {
       done_at_by_bead.set(entry.bead_id, entry.added_at);
     }
   }
-  // The server's member set (`laneMemberIds`): the 실행중 winners of
-  // `activeAttemptStates` and `pr_wait`. One without a serial lane occupancy
-  // stands in the parallel lane.
+  // The server's comparison set (`placementFor`): the 실행중 winners of
+  // `activeAttemptStates` and the `pr_wait` entries not shelved — a shelved
+  // entry (`merge_shelved`) holds no lane, so it constrains nothing. One
+  // without a serial lane occupancy stands in the parallel lane.
+  const shelved = objectOf(queue.merge_shelved);
   for (const id of [
-    ...idsOf(queue.pr_wait),
+    ...idsOf(queue.pr_wait).filter((id) => !Object.hasOwn(shelved, id)),
     ...activeBeadIds(objectOf(queue.attempts), done_at_by_bead)
   ]) {
     if (!occupant_lane.has(id)) {

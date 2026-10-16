@@ -48,6 +48,8 @@ import { orientPair, placementPairKey } from './wire.js';
  * @property {Record<string, PlacementStatus>} status
  * @property {Array<{ a: string, b: string }>} jev_pairs - Every pair that needs
  * jev and has both materials, answered or not, in small-id orientation.
+ * @property {import('./wire.js').PlacementProgress} progress - Distinct pairs
+ * that need jev, each counted once however many candidates share it.
  */
 
 /**
@@ -117,6 +119,8 @@ export function placementRelations(input) {
   const status = {};
   /** @type {Map<string, { a: string, b: string }>} */
   const jev_pairs = new Map();
+  /** @type {Map<string, boolean>} Pair key → settled (answered or failed). */
+  const progress = new Map();
   const candidate_set = new Set(input.candidates);
   const counterparts = [
     ...input.candidates,
@@ -148,12 +152,14 @@ export function placementRelations(input) {
       const digest_b = input.digests[b];
       if (typeof digest_a !== 'string' || typeof digest_b !== 'string') {
         material_missing = true;
+        progress.set(key, false);
         continue;
       }
       jev_pairs.set(key, { a, b });
       const judgment = input.judgmentFor(a, b, digest_a, digest_b);
       if (judgment && judgment.kind === 'answer') {
         done += 1;
+        progress.set(key, true);
         relations[key] = {
           a,
           b,
@@ -174,6 +180,7 @@ export function placementRelations(input) {
           : input.key_state === 'missing'
             ? 'key_missing'
             : null;
+      progress.set(key, reason !== null);
       if (reason === null) {
         judging = true;
       } else if (first_failure === null || key < first_failure.key) {
@@ -239,5 +246,13 @@ export function placementRelations(input) {
     };
   }
 
-  return { relations, status, jev_pairs: [...jev_pairs.values()] };
+  return {
+    relations,
+    status,
+    jev_pairs: [...jev_pairs.values()],
+    progress: {
+      done: [...progress.values()].filter(Boolean).length,
+      total: progress.size
+    }
+  };
 }

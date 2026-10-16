@@ -78,7 +78,18 @@
  */
 
 /**
- * The two worker-queue snapshot fields. Both are absent on a server without the
+ * The workspace's jev judgment progress: `total` counts the distinct pairs that
+ * need jev (a pair two candidates share counts once), `done` those already
+ * settled — answered, failed or waiting on a missing key. `done < total` means
+ * some pair is still being judged or waits on its material.
+ *
+ * @typedef {Object} PlacementProgress
+ * @property {number} done
+ * @property {number} total
+ */
+
+/**
+ * The worker-queue snapshot fields. All are absent on a server without the
  * feature (or with it uninstalled), which the browser reads as "draw no
  * [추천 배치]". A placeable candidate with no `placement_status` entry is 모름
  * and draws no [추천 배치] either.
@@ -88,6 +99,7 @@
  * {@link placementPairKey}.
  * @property {Record<string, PlacementStatus>} placement_status - Keyed by
  * candidate bead id.
+ * @property {PlacementProgress} placement_progress
  */
 
 /** @type {number} A jev answer is adopted at this confidence or above. */
