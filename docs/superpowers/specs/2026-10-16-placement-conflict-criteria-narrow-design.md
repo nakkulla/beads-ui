@@ -23,21 +23,21 @@ Worker 대기열 배치 추천(UI-izba)이 병렬 배치를 거의 내지 않고
 
 ## 2. 검증된 전제
 
-- 고정 조건은 blocks 다음으로 선언 scope 겹침을 `conflict`·`basis: 'scope'`로 정하고, 같은 spec·plan 출처면 건너뛴다 — `server/placement/relations.js:82`, `server/placement/relations.js:87`, `server/placement/relations.js:96`
-- 고정 조건이 정한 쌍은 jev에 묻지 않는다(`total`에 세지 않음) — `server/placement/relations.js:141`
+- 고정 조건은 blocks 다음으로 선언 scope 겹침을 `conflict`·`basis: 'scope'`로 정하고, 같은 spec·plan 출처면 건너뛴다 — `server/placement/relations.js:84`, `server/placement/relations.js:89`, `server/placement/relations.js:98`
+- 고정 조건이 정한 쌍은 jev에 묻지 않는다(`total`에 세지 않음) — `server/placement/relations.js:145`
 - scope 겹침은 경로 접두 비교다 — `app/utils/scope-overlap.js:32`
 - jev 질문의 `independent` 기준은 "파일·공유 상태·계약·배포 대상 중 어느 것도 바꾸지 않는다", `conflict`는 "같은 파일 영역 … 을 바꿔 동시에 하면 부딪힌다"이다 — `server/placement/question.js:53`, `server/placement/question.js:59`
 - 질문 버전은 질문 정의의 digest라, 문구를 바꾸면 캐시된 모든 쌍을 다시 묻는다 — `server/placement/question.js:72`
 - 쌍 캐시 키는 두 id·두 재료 digest·질문 버전·모델이다 — `server/placement/pair-cache.js:52`
 - jev가 읽는 이슈 재료는 id·제목·type·route·본문이고, spec이 있으면 spec의 scope와 절이다 — `server/placement/material.js:60`, `server/placement/material.js:63`
-- 쌍 state 텍스트는 두 재료를 이어 붙인 것이다 — `server/placement/material.js:87`, `server/placement/service.js:338`
+- 쌍 state 텍스트는 두 재료를 이어 붙인 것이다 — `server/placement/material.js:87`, `server/placement/service.js:337`
 - wire의 `overlap`은 `basis: 'scope'`에만 실린다 — `server/placement/wire.js:46`
 - 화면 근거 줄은 `basis: 'scope'`를 `고정(scope 겹침: …)`으로 쓴다 — `app/views/worker/placement.js:418`
-- 자리 계산은 관계 종류(`conflict`·`c_first`·`x_first`)를 출처와 무관하게 묶음·레인 선택·삽입 위치에 쓰고, `basis`로 갈리는 곳은 레인 안 blocks 정렬(`edgesAmong`)뿐이다 — `app/utils/placement/compute.js:419`, `app/utils/placement/compute.js:493`
-- 후보 상태는 jev 대상 쌍이 0이면 `fixed_only`다 — `server/placement/relations.js:183`
-- 모니터 경로는 같은 투영을 `observe: false`로 불러 캐시만 읽고 jev 호출을 잡지 않는다 — `server/ws/worker-handlers.js:2019`, `server/placement/service.js:454`
+- 자리 계산은 관계 종류(`conflict`·`c_first`·`x_first`)를 출처와 무관하게 묶음·레인 선택·삽입 위치에 쓰고, `basis`로 갈리는 곳은 레인 안 blocks 정렬(`edgesAmong`)뿐이다 — `app/utils/placement/compute.js:422`, `app/utils/placement/compute.js:496`
+- 후보 상태는 jev 대상 쌍이 0이면 `fixed_only`다 — `server/placement/relations.js:190`
+- 모니터 경로는 같은 투영을 `observe: false`로 불러 캐시만 읽고 jev 호출을 잡지 않는다 — `server/ws/worker-handlers.js:2034`, `server/placement/service.js:453`
 - `⧉` 칩은 같은 spec·plan 출처 쌍을 겹침으로 보지 않는다 — `app/views/worker/queue-overlaps.js:85`, `app/views/worker/lane-model.js:2760`
-- 이슈 재료 메모는 같은 행·같은 spec 값이면 이전 재료를 그대로 돌려준다 — `server/placement/service.js:391`
+- 이슈 재료 메모는 같은 행·같은 spec 값이면 이전 재료를 그대로 돌려준다 — `server/placement/service.js:390`
 - 이슈 재료 텍스트는 직렬화한 앞 `ISSUE_MATERIAL_CAP`(12,000)자이고 digest는 그 텍스트의 해시이며, 쌍 state는 `STATE_CAP`(24,000)자로 자른다 — `server/placement/material.js:69`, `server/placement/material.js:88`
 - 머지 충돌은 충돌 해소 세션(`resolveConflict`, `resolution_rounds`)이 다룬다 — `server/worker/scheduler.js:16087`, `server/worker/queue-store.js:730`
 - quick_fix의 선언 scope는 본문 `## scope` 절에서 읽는다 — `server/worker/title-cache.js:167`
@@ -95,7 +95,8 @@ Worker 대기열 배치 추천(UI-izba)이 병렬 배치를 거의 내지 않고
 
 - jev를 못 쓰는 경우(키 없음·실패·판정 중)는 지금 상태 규칙 그대로다. 예전에는 고정으로 정해지던 쌍도
   이제 jev를 기다리므로 `fixed_only`였던 후보가 `pending`·`unavailable`이 될 수 있다. 수동 배치는 늘
-  그대로 쓸 수 있다.
+  그대로 쓸 수 있다. 같은 이유로 그 쌍은 진행 막대(`placement_progress`, UI-7y8h)의 `total`에도 든다 —
+  고정 관계가 아닌 쌍만 세는 지금 규칙 그대로라 따로 바꿀 것은 없다.
 - 모니터 탭은 같은 투영의 캐시만 읽으므로 따로 바꿀 것이 없다(parity §9 행 변화 없음).
 
 ## 4. 수용 기준
