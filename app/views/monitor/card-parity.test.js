@@ -143,12 +143,28 @@ function foreignPins(number) {
 }
 
 /**
+ * Rows one describe block lays over the shared repository, reset per test.
+ *
+ * @type {Array<Record<string, any>>}
+ */
+let extra_rows = [];
+
+/**
  * The raw repository: every `bd list --all` row. 한 고정 자료가 여러 사례를
  * 함께 덮는다 — 사례 이름은 각 줄 위에 적는다.
  *
  * @returns {Array<Record<string, any>>}
  */
 function rawIssues() {
+  return [...baseIssues(), ...extra_rows];
+}
+
+/**
+ * The shared rows every parity case draws.
+ *
+ * @returns {Array<Record<string, any>>}
+ */
+function baseIssues() {
   return [
     // 우선순위·타입·discovered-from이 있는 후보.
     row('C-1', {
@@ -823,6 +839,7 @@ beforeEach(() => {
   tmp_root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-card-parity-'));
   WS = path.join(tmp_root, 'repo-a');
   fs.mkdirSync(WS, { recursive: true });
+  extra_rows = [];
   process.env.XDG_STATE_HOME = path.join(tmp_root, 'state');
   process.env.BDUI_CONFIG_PATH = path.join(tmp_root, 'absent', 'config.toml');
   window.localStorage.clear();
@@ -1428,5 +1445,155 @@ describe('session-inquiry row parity between the Worker and Monitor tabs (UI-gsk
 
     expect(entries[0]).toHaveLength(1);
     expect(entries[1]).toEqual(entries[0]);
+  });
+});
+
+describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 §4.6)', () => {
+  /** 세션 레인의 네 모양: 후보 둘(ineligible·세션 실행 선택), 대기 하나, 실행 중 하나. */
+  const LANE_BEADS = ['L-1', 'L-2', 'L-3', 'L-4'];
+
+  /**
+   * Draw both tabs with the four session-lane beads laid over the fixture.
+   *
+   * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
+   */
+  async function drawSessionLane() {
+    extra_rows = [
+      row('L-1', { labels: ['worker-ineligible'] }),
+      row('L-2', {
+        labels: ['session-preferred'],
+        metadata: {
+          route: 'quick_fix',
+          session_preferred_reason: 'external_roundtrip',
+          exec_lane: 'session'
+        }
+      }),
+      row('L-3', { labels: ['worker-ineligible'] }),
+      row('L-4', { status: 'in_progress', labels: ['worker-ineligible'] })
+    ];
+    const raw = rawQueue();
+    return drawBothTabs(undefined, {
+      queue: [...raw.queue, { bead_id: 'L-3', added_at: NOW - HOUR }],
+      attempts: {
+        ...raw.attempts,
+        'att-l4': makeAttempt({
+          attempt_id: 'att-l4',
+          bead_id: 'L-4',
+          status: 'running',
+          started_at: NOW - 20 * 60 * 1000,
+          session_id: '22222222-3333-4444-8555-666666666666',
+          runner: 'claude',
+          exec: 'session',
+          interactive: {
+            pane_id: '%7',
+            tmux_session: 'bdui-inquiry',
+            tmux_window: 'L-4'
+          }
+        })
+      },
+      interactive_sessions: {
+        'L-4:session_lane': {
+          bead_id: 'L-4',
+          kind: 'session_lane',
+          provider: 'claude',
+          pane_id: '%7',
+          tmux_session: 'bdui-inquiry',
+          tmux_window: 'L-4',
+          launched_at: NOW - 20 * 60 * 1000,
+          state: 'live',
+          settled_at: null,
+          session_id: '22222222-3333-4444-8555-666666666666',
+          attempt_id: 'att-l4',
+          turn_state: 'idle',
+          turn_state_since: NOW - 5 * 60 * 1000,
+          last_message: {
+            text: '어느 쪽으로 갈까요?',
+            at: NOW - 5 * 60 * 1000
+          },
+          conversation: {
+            processed_message_at: NOW - 5 * 60 * 1000,
+            result: null
+          }
+        }
+      }
+    });
+  }
+
+  test('draws the same chips, badges and buttons on every session-lane card', async () => {
+    const { worker, monitor } = await drawSessionLane();
+
+    const worker_cards = cardsByBead(worker);
+    const monitor_cards = cardsByBead(monitor);
+
+    expect(partsByBead(monitor_cards, LANE_BEADS)).toEqual(
+      partsByBead(worker_cards, LANE_BEADS)
+    );
+  });
+
+  test('draws the ineligible and 세션 실행 chips on both candidate cards', async () => {
+    const { worker, monitor } = await drawSessionLane();
+
+    const texts = [worker, monitor].map((mount) => {
+      const cards = cardsByBead(mount);
+      return [
+        cards.get('L-1')?.textContent || '',
+        cards.get('L-2')?.querySelector('[aria-pressed="true"]')?.textContent ||
+          ''
+      ].map((text) => text.replace(/\s+/g, ' ').trim());
+    });
+
+    for (const [l1, l2] of texts) {
+      expect(l1).toContain('worker-ineligible');
+      expect(l2).toContain('세션 실행');
+    }
+  });
+
+  test('draws the 세션 exec chip on the waiting and running cards of both tabs', async () => {
+    const { worker, monitor } = await drawSessionLane();
+
+    const chips = [worker, monitor].map((mount) =>
+      ['L-3', 'L-4'].map((id) =>
+        Array.from(
+          cardsByBead(mount).get(id)?.querySelectorAll('[class*="chip"]') || []
+        ).some((chip) => (chip.textContent || '').trim() === '세션')
+      )
+    );
+
+    expect(chips).toEqual([
+      [true, true],
+      [true, true]
+    ]);
+  });
+
+  test('stands [세션에서 이어가기] on the running session-lane tile of both tabs', async () => {
+    const { worker, monitor } = await drawSessionLane();
+
+    const labels = [worker, monitor].map((mount) =>
+      Array.from(
+        cardsByBead(mount).get('L-4')?.querySelectorAll('button') || []
+      )
+        .map((button) => (button.textContent || '').trim())
+        .filter((text) => text.includes('세션에서 이어가기'))
+    );
+
+    expect(labels[0]).toHaveLength(1);
+    expect(labels[1]).toEqual(labels[0]);
+  });
+
+  test('draws the same conversation-state line on the running tile of both tabs', async () => {
+    const { worker, monitor } = await drawSessionLane();
+
+    const lines = [worker, monitor].map((mount) =>
+      (
+        cardsByBead(mount)
+          .get('L-4')
+          ?.querySelector('.rtile__activity--session-lane')?.textContent || ''
+      )
+        .replace(/\s+/g, ' ')
+        .trim()
+    );
+
+    expect(lines[0]).toContain('답 대기 · 어느 쪽으로 갈까요?');
+    expect(lines[1]).toBe(lines[0]);
   });
 });

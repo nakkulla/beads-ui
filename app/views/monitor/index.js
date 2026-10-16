@@ -114,6 +114,7 @@ import {
   runningTile,
   runningTileInput
 } from '../worker/running-grid.js';
+import { createSessionToggle } from '../worker/session-toggle.js';
 import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
@@ -2408,6 +2409,15 @@ export function createMonitorView(mount_element, options) {
    * 바인딩된 판정 칩의 클릭 (UI-wg68 §5.3). 모니터의 카드는 연결 저장소가 아닐
    * 수 있으므로 `root_dir`을 언제나 싣는다.
    */
+  /** The `세션 권장` chip click (UI-lbm5 §4.7), shared with the Worker tab. */
+  const session_toggle = createSessionToggle({
+    transport: (/** @type {any} */ type, /** @type {any} */ payload) =>
+      transport ? transport(type, payload) : Promise.resolve(null),
+    onChange: () => doRender(),
+    toast: (/** @type {string} */ message, /** @type {any} */ kind) =>
+      showToast(message, kind, 2600)
+  });
+
   const chip_preset_toggle = createChipPresetToggle({
     transport: (/** @type {any} */ type, /** @type {any} */ payload) =>
       transport ? transport(type, payload) : Promise.resolve(null),
@@ -3020,6 +3030,15 @@ export function createMonitorView(mount_element, options) {
       // `↩ from` 칩 (Worker `onClick`과 같은 의미): 출처 bead는 이 행과 같은
       // 저장소에 있으므로 행의 저장소를 거쳐 연다.
       openRow(button.getAttribute('data-from-id') || '', root_dir || '');
+      return;
+    }
+    if (cls.contains('session-lane-toggle')) {
+      // `세션 권장` 칩 클릭 = `exec_lane` 전환 (UI-lbm5 §4.7). 모니터 카드는
+      // 연결 저장소가 아닐 수 있으므로 행의 `root_dir`을 싣는다.
+      void session_toggle.toggle(
+        button.getAttribute('data-bead-id') || bead_id,
+        button.getAttribute('data-root-dir') || root_dir || ''
+      );
       return;
     }
     if (cls.contains('judgement-chip--bound')) {

@@ -209,6 +209,11 @@
  * values from the 15-key dispatch contract, kept independently from the worker
  * stamp subset so relaunch decisions can prove their exact current or explicit
  * prior provenance. Null on legacy attempts.
+ * @property {'session'} [exec] - Present only on a SESSION-LANE attempt
+ * (UI-lbm5 §4.3): the queue row ran as an interactive session-hub window
+ * instead of a headless spawn. Absent means the ordinary Worker run.
+ * @property {SessionLaneWindow} [interactive] - The session-lane window and its
+ * liveness observation; present only with `exec: 'session'`.
  * @property {string|null} resumed_from - Prior attempt_id this attempt resumes
  * (manual session resume, spec §1); null for a first-launch attempt. The
  * `already_resumed` guard scans attempts for a child carrying this so a failed
@@ -503,9 +508,27 @@
  * @property {ProviderGateAdmission} [gate]
  */
 /**
+ * The tmux window a session-lane attempt runs in (UI-lbm5 §4.3-§4.4).
+ * `gone_at` is written only by a SUCCESSFUL pane listing that lacked it — the one fact
+ * `isDeadAttempt` reads for this attempt. Absent `gone_at` (never observed, or
+ * every listing failed) reads as alive.
+ *
+ * @typedef {Object} SessionLaneWindow
+ * @property {string|null} pane_id
+ * @property {string|null} tmux_session
+ * @property {string|null} tmux_window
+ * @property {number|null} [gone_at]
+ * @property {'running'|'question'|'limit'|'idle'|null} [turn_state]
+ * @property {number|null} [turn_state_since]
+ * @property {string|null} [last_message_excerpt]
+ * @property {number|null} [processed_message_at]
+ * @property {boolean} [awaiting_answer] - The window waits for the person: a
+ * question prompt, or an idle turn whose last message is no result line.
+ */
+/**
  * @typedef {Object} InteractiveSession
  * @property {string} bead_id
- * @property {'resolve'|'inquiry'|'external_resume'} kind
+ * @property {'resolve'|'inquiry'|'external_resume'|'session_lane'} kind
  * @property {'claude'|'codex'} provider
  * @property {string|null} session_id
  * @property {'launch'|'pane_option'|null} session_id_source
@@ -3543,7 +3566,7 @@ function normalizeInteractiveSessions(raw) {
       !['bead_id', 'pane_id', 'tmux_session', 'tmux_window'].every(
         (key) => typeof value[key] === 'string' && value[key].trim().length > 0
       ) ||
-      !['resolve', 'inquiry', 'external_resume'].includes(
+      !['resolve', 'inquiry', 'external_resume', 'session_lane'].includes(
         /** @type {string} */ (value.kind)
       ) ||
       (value.provider !== 'claude' && value.provider !== 'codex') ||
@@ -3767,6 +3790,47 @@ function normalizeWithdrawal(value) {
 }
 
 /**
+ * Normalize a session-lane attempt's window record (UI-lbm5 §4.3). A record
+ * that is not an object is dropped; each field keeps only its own type.
+ *
+ * @param {unknown} value
+ * @returns {SessionLaneWindow|null}
+ */
+function normalizeSessionLaneWindow(value) {
+  if (!isRecord(value)) {
+    return null;
+  }
+  /** @param {string} key */
+  const text = (key) =>
+    typeof value[key] === 'string' && value[key].length > 0
+      ? /** @type {string} */ (value[key])
+      : null;
+  /** @param {string} key */
+  const time = (key) =>
+    typeof value[key] === 'number' && Number.isFinite(value[key])
+      ? /** @type {number} */ (value[key])
+      : null;
+  const turn_state =
+    value.turn_state === 'running' ||
+    value.turn_state === 'question' ||
+    value.turn_state === 'limit' ||
+    value.turn_state === 'idle'
+      ? value.turn_state
+      : null;
+  return {
+    pane_id: text('pane_id'),
+    tmux_session: text('tmux_session'),
+    tmux_window: text('tmux_window'),
+    gone_at: time('gone_at'),
+    turn_state,
+    turn_state_since: time('turn_state_since'),
+    last_message_excerpt: text('last_message_excerpt'),
+    processed_message_at: time('processed_message_at'),
+    awaiting_answer: value.awaiting_answer === true
+  };
+}
+
+/**
  * Fill an attempt container over its default (all-null) shape.
  *
  * @param {Partial<Attempt> & { attempt_id: string, bead_id: string }} fields
@@ -3777,9 +3841,15 @@ export function makeAttempt(fields) {
     fields.auto_resume_refusal
   );
   const withdrawn = normalizeWithdrawal(fields.withdrawn);
+  const session_lane = fields.exec === 'session';
+  const interactive = session_lane
+    ? normalizeSessionLaneWindow(fields.interactive)
+    : null;
   return {
     attempt_id: fields.attempt_id,
     bead_id: fields.bead_id,
+    ...(session_lane ? { exec: /** @type {const} */ ('session') } : {}),
+    ...(interactive ? { interactive } : {}),
     base_oid: fields.base_oid ?? null,
     head_oid: fields.head_oid ?? null,
     ...(typeof fields.stop_head_oid === 'string' &&

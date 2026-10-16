@@ -30,7 +30,8 @@ const { TAKEOVER_SETTLE_MS } =
 const {
   EXTERNAL_RESUME_PANE_MARKER,
   INQUIRY_PANE_MARKER,
-  RESOLVE_PANE_MARKER
+  RESOLVE_PANE_MARKER,
+  SESSION_LANE_PANE_MARKER
 } = await import('../worker/tmux-launcher.js');
 const { getWorkerRuntime } = await import('../worker/runtime.js');
 const handlers = await import('./worker-handlers.js');
@@ -704,7 +705,7 @@ describe('worker-resolve-in-session focuses a live conversation (UI-9w5l §3.5)'
   });
 
   /**
-   * @param {'inquiry'|'resolve'|'external_resume'} kind
+   * @param {'inquiry'|'resolve'|'external_resume'|'session_lane'} kind
    */
   function recordLiveConversation(kind) {
     getWorkerRuntime().queueStore.recordInteractiveSession(WS, {
@@ -723,13 +724,16 @@ describe('worker-resolve-in-session focuses a live conversation (UI-9w5l §3.5)'
   test.each([
     ['inquiry', INQUIRY_PANE_MARKER],
     ['resolve', RESOLVE_PANE_MARKER],
-    ['external_resume', EXTERNAL_RESUME_PANE_MARKER]
+    ['external_resume', EXTERNAL_RESUME_PANE_MARKER],
+    ['session_lane', SESSION_LANE_PANE_MARKER]
   ])(
     'focuses the live window of each conversation kind without launching (%s)',
     async (kind, marker) => {
       recordCleanupStop();
       recordLiveConversation(
-        /** @type {'inquiry'|'resolve'|'external_resume'} */ (kind)
+        /** @type {'inquiry'|'resolve'|'external_resume'|'session_lane'} */ (
+          kind
+        )
       );
       focus_outcome = {
         session: 'already_running',

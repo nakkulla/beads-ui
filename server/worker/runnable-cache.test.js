@@ -454,6 +454,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         session_preferred_reason: '',
         spec_after_blocker: false,
         worker_ineligible: false,
+        exec_lane: 'worker',
         spec_id: 'docs/specs/thing.md',
         published: true,
         scope_spec_id: 'docs/specs/thing.md',
@@ -534,7 +535,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     });
   });
 
-  test('keeps a worker-ineligible row only in the expanded view', async () => {
+  test('admits a worker-ineligible row as a session-lane candidate', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ labels: ['worker-ineligible', 'frontend'] })]
@@ -543,15 +544,41 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
     const expanded = await warmExpanded(cache, WS_A);
 
-    expect(cache.runnableFor(WS_A)).toEqual([]);
+    expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-1'
+    ]);
     expect(expanded[0]).toMatchObject({
-      admitted: false,
+      admitted: true,
       worker_ineligible: true,
+      exec_lane: 'session',
       labels: ['worker-ineligible', 'frontend']
     });
   });
 
-  test('keeps the default view equal to the legacy admitted population', async () => {
+  test('projects the session lane for a chosen session-preferred row', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          row({
+            labels: ['session-preferred'],
+            metadata: {
+              session_preferred_reason: 'external_roundtrip',
+              exec_lane: 'session'
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({
+      exec_lane: 'session',
+      session_preferred_reason: 'external_roundtrip'
+    });
+  });
+
+  test('keeps the default view equal to the admitted population', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({
         [WS_A]: [
@@ -570,7 +597,8 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     const expanded = await warmExpanded(cache, WS_A);
 
     expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
-      'UI-ready'
+      'UI-ready',
+      'UI-ineligible'
     ]);
     expect(expanded.map((item) => item.bead_id)).toEqual([
       'UI-ready',
@@ -753,7 +781,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     expect(out[0].spec_id).toBe('docs/specs/native.md');
   });
 
-  test('excludes a worker-ineligible bead from runnable candidates', async () => {
+  test('lists a worker-ineligible bead among runnable candidates', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ labels: ['worker-ineligible', 'frontend'] })]
@@ -762,22 +790,20 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
     const out = await warm(cache, WS_A);
 
-    expect(out).toEqual([]);
+    expect(out.map((item) => item.bead_id)).toEqual(['UI-1']);
   });
 
-  test('restores a runnable bead after the label is removed and cache refreshes', async () => {
+  test('moves a bead back to the worker lane after the label is removed and cache refreshes', async () => {
     let labels = ['worker-ineligible'];
     const requestSnapshot = vi.fn(async () => snapshotOk([row({ labels })]));
     const cache = createRunnableCache({ requestSnapshot });
-    expect(await warm(cache, WS_A)).toEqual([]);
+    expect((await warm(cache, WS_A))[0].exec_lane).toBe('session');
 
     labels = [];
     cache.invalidate(WS_A);
     await warm(cache, WS_A);
 
-    expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
-      'UI-1'
-    ]);
+    expect(cache.runnableFor(WS_A)[0].exec_lane).toBe('worker');
   });
 
   test('carries non-policy labels into the projection', async () => {

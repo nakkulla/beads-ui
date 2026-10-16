@@ -34,6 +34,7 @@ import { complexReason } from '../../app/utils/complex-judgement.js';
 import { sessionPreferredReason } from '../../app/utils/session-preferred.js';
 import { specAfterBlockerActive } from '../../app/utils/spec-after-blocker.js';
 import {
+  execLaneOf,
   isWorkerIneligible,
   workerLabels
 } from '../../app/utils/worker-eligibility.js';
@@ -121,6 +122,8 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * @property {import('../list-adapters.js').ReleaseInfo} [release_info]
  * @property {import('../list-adapters.js').DependentsInfo} [dependents_info]
  * @property {boolean} worker_ineligible
+ * @property {'worker'|'session'} exec_lane - How the row would run (UI-lbm5
+ * §4.1), by the shared `execLaneOf` predicate.
  * @property {string} spec_id - The native-first resolved spec path. ADMISSION
  * semantics: a quick_fix row carries `''` even when a spec resolves, because a
  * quick_fix is admitted without one. NEVER read this to choose a scope source —
@@ -414,9 +417,10 @@ function qualify(row, blocked_by, context) {
   const release_info = releaseInfoFor(bead_id, context);
   const dependents_info = dependentsInfoFor(bead_id, context);
   const plan_group = planGroupIndexFor(context.snapshot).get(bead_id);
+  // `worker-ineligible` no longer keeps a row out (UI-lbm5 §4.2): it is
+  // admitted and runs in the session lane.
   const admitted =
     RUNNABLE_ROUTES.has(route) &&
-    !worker_ineligible &&
     (is_quick_fix ? has_description : spec_state === 'published');
   const normalized_spec_review =
     typeof meta.spec_review === 'string' ? meta.spec_review.trim() : '';
@@ -458,6 +462,7 @@ function qualify(row, blocked_by, context) {
     ...(release_info ? { release_info } : {}),
     ...(dependents_info ? { dependents_info } : {}),
     worker_ineligible,
+    exec_lane: execLaneOf(row.labels, meta),
     spec_id,
     published,
     scope_spec_id,

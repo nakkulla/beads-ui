@@ -2751,14 +2751,14 @@ describe('candidate card', () => {
   });
 });
 
-describe('worker-ineligible candidate card (UI-8881)', () => {
-  const INELIGIBLE_TITLE =
-    'worker-ineligible label로 워커에서 실행할 수 없습니다';
+describe('worker-ineligible candidate card (UI-8881, UI-lbm5)', () => {
+  const SESSION_LANE_PLACE_TITLE =
+    '대기 큐 맨 뒤에 추가 — 세션 레인으로 실행된다';
 
-  test('marks the card with the ineligible modifier and chip', () => {
+  test('marks the card with the ineligible chip only', () => {
     const card = renderCandidate({ draggable: false, worker_ineligible: true });
 
-    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
+    expect(card.classList.contains('worker-card--ineligible')).toBe(false);
     expect(
       card.querySelector('.worker-card__ineligible')?.textContent?.trim()
     ).toBe('worker-ineligible');
@@ -2770,6 +2770,18 @@ describe('worker-ineligible candidate card (UI-8881)', () => {
     const chip = card.querySelector('.worker-card__ineligible');
 
     expect(chip?.classList.contains('ctl-chip--label')).toBe(true);
+  });
+
+  test('tells the session lane meaning in the chip tooltip', () => {
+    const card = renderCandidate({ draggable: false, worker_ineligible: true });
+
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__ineligible')
+    );
+
+    expect(chip.title).toBe(
+      '워커 대신 세션 레인으로 실행된다 — 대기열에 올리면 구현 승인'
+    );
   });
 
   test('places the chip at the end of the left group, after the id', () => {
@@ -2791,56 +2803,40 @@ describe('worker-ineligible candidate card (UI-8881)', () => {
     expect(head.querySelector('.ctl-chip--route')).toBeNull();
   });
 
-  test('suppresses the grip and refuses the drag affordance', () => {
+  test('keeps the drag affordance of a draggable row', () => {
     const card = renderCandidate({ worker_ineligible: true });
 
-    expect(card.getAttribute('draggable')).toBe('false');
-    expect(card.querySelector('.worker-card__grip')).toBeNull();
+    expect(card.getAttribute('draggable')).toBe('true');
+    expect(card.querySelector('.worker-card__grip')).not.toBeNull();
   });
 
-  test('disables the queue button with the worker-ineligible tooltip', () => {
+  test('enables the queue button with the session lane sentence', () => {
     const card = renderCandidate({ draggable: false, worker_ineligible: true });
     const place = /** @type {HTMLButtonElement} */ (
       card.querySelector('.worker-card__place')
     );
 
-    expect(place.disabled).toBe(true);
-    expect(place.title).toBe(INELIGIBLE_TITLE);
+    expect(place.disabled).toBe(false);
+    expect(place.title).toBe(SESSION_LANE_PLACE_TITLE);
   });
 
-  test('prefers the worker-ineligible tooltip over missing_description', () => {
+  test('keeps the missing_description refusal on an unplaceable row', () => {
     const card = renderCandidate({
       draggable: false,
+      queue_placeable: false,
       worker_ineligible: true,
+      missing_description: true,
       reason: 'missing_description'
     });
     const place = /** @type {HTMLButtonElement} */ (
       card.querySelector('.worker-card__place')
     );
 
-    expect(place.title).toBe(INELIGIBLE_TITLE);
-    expect(card.querySelector('.worker-card__reason')?.textContent).toBe(
-      'missing_description'
-    );
+    expect(place.disabled).toBe(true);
+    expect(place.title).toBe('description이 없어 대기 큐에 넣을 수 없습니다');
   });
 
-  test('prefers the worker-ineligible tooltip over the spec-missing branch', () => {
-    const card = renderCandidate({
-      draggable: false,
-      worker_ineligible: true,
-      reason: 'spec 없음'
-    });
-    const place = /** @type {HTMLButtonElement} */ (
-      card.querySelector('.worker-card__place')
-    );
-
-    expect(place.title).toBe(INELIGIBLE_TITLE);
-    expect(card.querySelector('.worker-card__reason')?.textContent).toBe(
-      'spec 없음'
-    );
-  });
-
-  test('keeps the lane menu closed for an ineligible candidate', () => {
+  test('opens the lane menu for an ineligible candidate', () => {
     const card = renderCandidate(
       { worker_ineligible: true },
       {
@@ -2849,8 +2845,7 @@ describe('worker-ineligible candidate card (UI-8881)', () => {
       }
     );
 
-    expect(card.querySelector('.worker-card__place-menu')).toBeNull();
-    expect(card.querySelector('.worker-card__place')).not.toBeNull();
+    expect(card.querySelector('.worker-card__place-menu')).not.toBeNull();
   });
 
   test('keeps the id and title elements a click can still reach', () => {
@@ -2888,7 +2883,39 @@ describe('session-preferred candidate card (UI-49mc)', () => {
     );
 
     expect(chip.textContent?.trim()).toBe('세션 권장');
-    expect(chip.title).toBe(EXTERNAL_ROUNDTRIP_TITLE);
+    expect(chip.title).toBe(
+      `${EXTERNAL_ROUNDTRIP_TITLE}\n누르면 세션 레인 ↔ Worker 전환`
+    );
+  });
+
+  test('draws the set state as 세션 실행 with aria-pressed', () => {
+    const card = renderCandidate({
+      session_preferred: true,
+      session_preferred_reason: 'external_roundtrip',
+      exec_lane: 'session'
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__session-preferred')
+    );
+
+    expect(chip.textContent?.trim()).toBe('세션 실행');
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  test('draws the unset state unpressed', () => {
+    const card = renderCandidate({
+      session_preferred: true,
+      session_preferred_reason: 'external_roundtrip',
+      exec_lane: 'worker'
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__session-preferred')
+    );
+
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+    expect(chip.classList.contains('session-lane-toggle')).toBe(true);
   });
 
   test('draws the contract tooltip for each added enum reason', () => {
@@ -2909,7 +2936,9 @@ describe('session-preferred candidate card (UI-49mc)', () => {
       ).title;
     });
 
-    expect(titles).toEqual(reasons.map(([, title]) => title));
+    expect(titles).toEqual(
+      reasons.map(([, title]) => `${title}\n누르면 세션 레인 ↔ Worker 전환`)
+    );
   });
 
   test('omits the chip for a candidate without a valid attachment', () => {
@@ -4796,11 +4825,11 @@ describe('작업 종류 카드 색 (UI-kyky §3.1)', () => {
     expect(card.classList.contains('worker-card--route-bg')).toBe(true);
   });
 
-  test('leaves a worker-ineligible candidate on its own background', () => {
+  test('tints a worker-ineligible candidate like any placeable card', () => {
     const card = renderCandidate({ worker_ineligible: true });
 
-    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
-    expect(card.classList.contains('worker-card--route-bg')).toBe(false);
+    expect(card.classList.contains('worker-card--ineligible')).toBe(false);
+    expect(card.classList.contains('worker-card--route-bg')).toBe(true);
   });
 });
 
@@ -6223,7 +6252,7 @@ describe('후보 카드 배치 자격 (UI-d13v §6)', () => {
     expect(card.querySelector('.worker-card__place-menu')).not.toBeNull();
   });
 
-  test('refuses both the button and the menu for an ineligible candidate', () => {
+  test('opens the lane menu for an ineligible candidate', () => {
     const card = renderCandidate(
       {
         draggable: false,
@@ -6233,12 +6262,7 @@ describe('후보 카드 배치 자격 (UI-d13v §6)', () => {
       { bead_id: 'UI-qf', lanes: [{ id: 'parallel', label: '병렬', count: 3 }] }
     );
 
-    expect(card.querySelector('.worker-card__place-menu')).toBeNull();
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        card.querySelector('.worker-card__place')
-      ).disabled
-    ).toBe(true);
+    expect(card.querySelector('.worker-card__place-menu')).not.toBeNull();
   });
 
   test('refuses the button when the projection withholds queue_placeable', () => {
@@ -6596,7 +6620,7 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
     expect(chip.dataset.chipKey).toBe('ineligible');
   });
 
-  test('makes the 세션 권장 chip a judgement button', () => {
+  test('makes the 세션 권장 chip a toggle button without a popup key', () => {
     const card = renderCandidate({
       session_preferred: true,
       session_preferred_reason: 'external_roundtrip'
@@ -6606,7 +6630,8 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
     );
 
     expect(chip.tagName).toBe('BUTTON');
-    expect(chip.dataset.chipKey).toBe('session_preferred');
+    expect(chip.dataset.chipKey).toBeUndefined();
+    expect(chip.dataset.beadId).toBe('UI-qf');
   });
 
   test('makes the 리뷰 chip a judgement button', () => {
@@ -6630,7 +6655,7 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
         .querySelector('.worker-card__session-preferred')
         ?.getAttribute('title')
     ).toBe(
-      '진행 중 사용자 피드백 없이는 품질이 낮음 — 문안·설계 세부·방향 선택'
+      '진행 중 사용자 피드백 없이는 품질이 낮음 — 문안·설계 세부·방향 선택\n누르면 세션 레인 ↔ Worker 전환'
     );
   });
 
@@ -6711,8 +6736,9 @@ describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
     );
 
     expect(content).toEqual({
-      title: '워커 실행 대상이 아니다',
+      title: '세션 레인으로 실행된다',
       lines: [
+        '워커 대신 세션 레인으로 실행된다 — 대기열에 올리면 구현 승인',
         'worker-ineligible 라벨이 붙어 있다 — 라벨은 이슈 상세의 라벨 절에서 뗀다'
       ]
     });
@@ -7654,15 +7680,15 @@ describe('준비 필요 판정 칩과 흐림 (UI-ff10 §6)', () => {
     ).toHaveLength(1);
   });
 
-  test('leaves the root undimmed for a worker-ineligible card', () => {
+  test('dims an unplaceable worker-ineligible card like any other', () => {
     const card = renderCandidate({
       ...BASE,
       queue_placeable: false,
       worker_ineligible: true
     });
 
-    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
-    expect(card.classList.contains('worker-card--blocked')).toBe(false);
+    expect(card.classList.contains('worker-card--ineligible')).toBe(false);
+    expect(card.classList.contains('worker-card--blocked')).toBe(true);
   });
 
   test('leaves a ready unblocked card undimmed', () => {

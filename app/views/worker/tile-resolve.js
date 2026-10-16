@@ -1,3 +1,5 @@
+import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
+
 /** The `[워커로 이어가기]` op the server projects for a conversation stop. */
 export const CONVERSATION_HANDOFF_OP = 'worker-conversation-handoff';
 
@@ -185,6 +187,25 @@ const SESSION_TITLES = Object.freeze({
     '대화 세션을 엽니다 — 외부 PR 사람 처리 필요는 [머지]로 풀리지 않습니다. 대상 저장소에서 `pr-finish` Foreign-pinned Bead 절차로 처리합니다'
 });
 
+/**
+ * The tooltip of a running session-lane tile's `[세션에서 이어가기]` (UI-lbm5
+ * §4.6): the click brings the session-lane window forward.
+ */
+const SESSION_LANE_FOCUS_TITLE =
+  '세션 레인 창(tmux)을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다';
+
+/**
+ * Whether the card's session-lane window is live.
+ *
+ * @param {any[]|null|undefined} interactive_sessions
+ * @returns {boolean}
+ */
+function hasLiveSessionLane(interactive_sessions) {
+  return liveConversations(interactive_sessions).some(
+    (view) => view.kind === 'session_lane'
+  );
+}
+
 /** The tooltip while the click only focuses a live conversation's window. */
 const FOCUS_TITLE =
   '열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다';
@@ -255,7 +276,30 @@ export function tileResolveFields(
   if (!item || !item.id) {
     return {};
   }
-  const handoff = handoffAction(item);
+  // A SESSION-LANE attempt (UI-lbm5 §4.5-§4.6). While it runs, its own window
+  // is the session: the button brings it forward, with or without a Discord
+  // link beside it. A window the person closed without a result line
+  // (`session_exited`) is click-only — `↻ 이어하기` reopens it — so neither
+  // half of the pair stands.
+  if (item.exec === 'session') {
+    if (item.run_state === 'running') {
+      return hasLiveSessionLane(item.interactive_sessions)
+        ? {
+            resolve_action: true,
+            resolve_enabled: !resolve_pending,
+            resolve_title: resolve_pending
+              ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
+              : SESSION_LANE_FOCUS_TITLE
+          }
+        : {};
+    }
+    if (item.failure?.cause === 'session_exited') {
+      return {};
+    }
+  }
+  // A `worker-ineligible` Bead never continues headless (UI-lbm5 §4.5): its
+  // failure rows carry no `[워커로 이어가기]`.
+  const handoff = isWorkerIneligible(item.labels) ? null : handoffAction(item);
   const handoff_fields = handoff
     ? {
         handoff_action: true,

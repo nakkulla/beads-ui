@@ -359,6 +359,33 @@ describe('interactive session persistence', () => {
     });
   });
 
+  test('loads a session-lane window record (UI-lbm5 §4.4)', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        interactive_sessions: {
+          any: record({
+            kind: 'session_lane',
+            mode: 'fresh',
+            source: 'attempt',
+            attempt_id: 'att-lane',
+            session_id: 'lane-session',
+            session_id_source: 'launch'
+          })
+        }
+      })
+    );
+
+    const sessions = createQueueStore().load(WS).interactive_sessions;
+
+    expect(sessions['B1:session_lane']).toMatchObject({
+      kind: 'session_lane',
+      attempt_id: 'att-lane',
+      session_id: 'lane-session'
+    });
+  });
+
   test.each([
     { bead_id: '' },
     { kind: 'unknown' },
@@ -16874,5 +16901,73 @@ describe('worker/queue-store — 외부 PR 사람 처리 필요 자동 재등록
 
     expect(result.queue.completion_intents['UI-1'].phase).toBe('needs_human');
     expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+});
+
+describe('session-lane attempt shape (UI-lbm5 §4.3)', () => {
+  const WINDOW = {
+    pane_id: '%7',
+    tmux_session: 'bdui-inquiry',
+    tmux_window: 'B1',
+    gone_at: null,
+    turn_state: 'idle',
+    awaiting_answer: true
+  };
+
+  test('keeps the session exec and its window on an attempt', () => {
+    const attempt = makeAttempt({
+      attempt_id: 'att-lane',
+      bead_id: 'B1',
+      exec: 'session',
+      interactive: /** @type {any} */ (WINDOW)
+    });
+
+    expect(attempt).toMatchObject({
+      exec: 'session',
+      interactive: {
+        pane_id: '%7',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'B1',
+        gone_at: null,
+        turn_state: 'idle',
+        awaiting_answer: true
+      }
+    });
+  });
+
+  test('drops a window from an attempt without the session exec', () => {
+    const attempt = makeAttempt({
+      attempt_id: 'att-headless',
+      bead_id: 'B1',
+      interactive: /** @type {any} */ (WINDOW)
+    });
+
+    expect(attempt).not.toHaveProperty('exec');
+    expect(attempt).not.toHaveProperty('interactive');
+  });
+
+  test('keeps the session exec and its window through a cold load', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          'att-lane': {
+            attempt_id: 'att-lane',
+            bead_id: 'B1',
+            status: 'running',
+            exec: 'session',
+            interactive: WINDOW
+          }
+        }
+      })
+    );
+
+    const attempt = createQueueStore().load(WS).attempts['att-lane'];
+
+    expect(attempt).toMatchObject({
+      exec: 'session',
+      interactive: { pane_id: '%7', tmux_window: 'B1', gone_at: null }
+    });
   });
 });

@@ -134,7 +134,7 @@ function artifactContent(scope) {
 }
 
 describe('worker/admission fail-closed validator', () => {
-  test('rejects worker-ineligible before environment and git probes', async () => {
+  test('admits a worker-ineligible bead through the remaining checks', async () => {
     const gitRun = makeGitRun();
     const ghAvailable = vi.fn(async () => true);
 
@@ -146,9 +146,9 @@ describe('worker/admission fail-closed validator', () => {
       bead: makeBead({ labels: ['worker-ineligible'] })
     });
 
-    expect(r).toEqual({ ok: false, reason: 'worker_ineligible' });
-    expect(ghAvailable).not.toHaveBeenCalled();
-    expect(gitRun).not.toHaveBeenCalled();
+    expect(r).toEqual({ ok: true });
+    expect(ghAvailable).toHaveBeenCalled();
+    expect(gitRun).toHaveBeenCalled();
   });
 
   test('rejects an awaiting_user bead before environment and git probes', async () => {
@@ -319,7 +319,7 @@ describe('worker/admission fail-closed validator', () => {
     expect(result).toEqual({ ok: false, reason: 'external_wait' });
   });
 
-  test('keeps the ineligible refusal for a conversation return', async () => {
+  test('admits a worker-ineligible conversation return', async () => {
     const result = await validateAdmission({
       gitRun: makeGitRun(),
       repo: '/repo',
@@ -331,7 +331,7 @@ describe('worker/admission fail-closed validator', () => {
       allow_conversation_return: true
     });
 
-    expect(result).toEqual({ ok: false, reason: 'worker_ineligible' });
+    expect(result).toEqual({ ok: true });
   });
 
   test('keeps the environment refusal for a conversation return', async () => {
@@ -356,7 +356,7 @@ describe('worker/admission fail-closed validator', () => {
     expect(r).toEqual({ ok: true });
   });
 
-  test('refuses a worker-ineligible bead before the awaiting_user check', async () => {
+  test('refuses a worker-ineligible bead on its awaiting_user key', async () => {
     const r = await validateAdmission({
       gitRun: makeGitRun(),
       repo: '/repo',
@@ -367,7 +367,7 @@ describe('worker/admission fail-closed validator', () => {
       }
     });
 
-    expect(r).toEqual({ ok: false, reason: 'worker_ineligible' });
+    expect(r).toEqual({ ok: false, reason: 'awaiting_user' });
   });
 
   test('passes a fresh spec_backed bead with a reviewer receipt', async () => {
@@ -452,7 +452,7 @@ describe('worker/admission fail-closed validator', () => {
     expect(r).toEqual({ ok: false, reason: 'missing_description' });
   });
 
-  test('refuses a worker-ineligible quick_fix bead before the description check', async () => {
+  test('refuses a worker-ineligible quick_fix bead by its missing description', async () => {
     const gitRun = makeGitRun();
     const ghAvailable = vi.fn(async () => true);
 
@@ -464,8 +464,7 @@ describe('worker/admission fail-closed validator', () => {
       bead: makeBead({ route: 'quick_fix', labels: ['worker-ineligible'] })
     });
 
-    expect(r).toEqual({ ok: false, reason: 'worker_ineligible' });
-    expect(ghAvailable).not.toHaveBeenCalled();
+    expect(r).toEqual({ ok: false, reason: 'missing_description' });
   });
 
   test('refuses a quick_fix bead when gh is unavailable', async () => {

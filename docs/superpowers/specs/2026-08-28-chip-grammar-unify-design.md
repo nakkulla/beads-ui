@@ -248,8 +248,8 @@ type="button" class="ctl-chip … judgement-chip" data-chip-key="<kind>" aria-ex
 | 칩 | `data-chip-key` | 팝업 제목 | 팝업 본문 |
 | --- | --- | --- | --- |
 | `복잡` | `rec` | 복잡한 작업으로 판정됨 | 사유 목록(§4.6) · `상태: 미적용/적용됨/추천과 다름` · 안내 `적용은 이슈 상세의 실행 설정 편집기에서` |
-| `세션 권장` | `session_preferred` | 워커로 돌릴 수 있지만 세션이 낫다 | `SESSION_PREFERRED_TOOLTIP[reason]` 한 줄 |
-| `worker-ineligible` | `ineligible` | 워커 실행 대상이 아니다 | `worker-ineligible 라벨이 붙어 있다 — 라벨은 이슈 상세의 라벨 절에서 뗀다` |
+| `세션 권장` 정정(UI-lbm5) | — (팝업 없음) | — | 클릭은 사유 팝업이 아니라 `chip-session-toggle`(이슈 `exec_lane` `session` ↔ 해제)이다. 해제 상태 라벨 `세션 권장`, 설정 상태 `세션 실행`(`aria-pressed=true`). 툴팁은 `SESSION_PREFERRED_TOOLTIP[reason]` 한 줄과 `누르면 세션 레인 ↔ Worker 전환` |
+| `worker-ineligible` | `ineligible` | 세션 레인으로 실행된다 정정(UI-lbm5) | `워커 대신 세션 레인으로 실행된다 — 대기열에 올리면 구현 승인` · `worker-ineligible 라벨이 붙어 있다 — 라벨은 이슈 상세의 라벨 절에서 뗀다` |
 | `리뷰 ✓` / `리뷰 stale` | `qfr` | 현행 상태 문장 | `missing[]` 목록(없으면 `빠진 항목 없음`) |
 | `영수증 · <code>` 정정(UI-h6t1) | `receipt` | 실행 영수증 회계 잔여 — 머지는 진행 | 코드별 한 줄(`RECEIPT_BADGE_TEXT`; 어휘 밖 코드는 코드 문자열 그대로) · 안내 `자동 머지 판정에는 영향이 없다 — 정정은 bd update --set-metadata exec_receipt=… 로` |
 | `plan <slug> <i>/<n>` 정정(UI-ruwu) | `plan` | `plan <slug>` | 묶음 이슈 한 줄씩(ID · anchor · 상태 · `⛓ <선행>`, 현재 이슈 강조) · 끝 줄 `[plan 전체를 레인에 배치]`(직렬 레인 선택 포함) |
@@ -258,8 +258,9 @@ type="button" class="ctl-chip … judgement-chip" data-chip-key="<kind>" aria-ex
 - 팝업은 한 번에 하나다. 같은 칩을 다시 누르면 닫히고, 다른 칩을 누르면 바뀐다. 바깥
   클릭·Esc로 닫힌다. 카드가 재렌더돼도 열림 상태는 `bead_id + chip_key`로 유지된다.
 - `title` 툴팁은 유지한다 — 마우스 사용자는 팝업 없이도 읽는다.
-- Monitor는 `복잡`·`리뷰` 칩만 그린다(`세션 권장`·`worker-ineligible`은 Worker 후보
-  투영에만 있다, UI-49mc §3). 그 두 칩의 팝업은 두 탭에서 같다.
+- 정정(UI-lbm5). Monitor도 후보·대기 행에 `worker_ineligible`·`session_preferred_reason`·
+  실행 방식 사실을 싣고 `세션 권장`·`worker-ineligible`을 Worker 탭과 같게 그린다. 판정
+  칩의 팝업과 `세션 권장`의 전환 클릭은 두 탭에서 같다.
 - `복잡`의 `data-state`(unapplied/applied/diverged) 시각 상태는 유지한다. 상태가 무엇이든
   클릭은 팝업이다.
 - **정정(UI-h6t1).** `영수증` 칩이 다섯 번째 판정 칩으로 들어온다. 그리는 표면은 PR
@@ -394,8 +395,9 @@ bead_dependents: Record<bead_id, { ids: string[], root_dirs?: Record<string, str
   `⏸ REVISE 파킹`, exec/usage/route 칩 — 바꾸지 않는다.
 - 계약 표면(라벨 어휘·metadata 키·`status`)은 그대로다. `rec_*`·`session_preferred_reason`
   은 읽기만 한다.
-- Monitor 실행가능 카드에 `세션 권장`·`worker-ineligible`을 새로 그리지 않는다(재료가
-  runnable 행에 없다). 관찰로 남긴다.
+- 정정(UI-lbm5). Monitor 실행가능 카드도 `세션 권장`·`worker-ineligible`을 그린다 —
+  runnable 행이 그 재료와 실행 방식을 싣는다
+  (`2026-10-16-worker-queue-session-lane-design.md` §4.6).
 - 겹침을 직렬 레인에 넣는 조작은 기존 드래그·`[대기로 ↴]` 배치 메뉴로 한다 — 대체
   조작을 새로 만들지 않는다.
 - 상세 `의존성` 절의 편집(추가 입력·`✕`)은 바꾸지 않는다.

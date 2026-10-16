@@ -37,6 +37,11 @@ import {
   latestImplementationAttempts
 } from '../../app/utils/active-attempts.js';
 import { scopeSourceOf } from '../../app/utils/scope-overlap.js';
+import { sessionPreferredReason } from '../../app/utils/session-preferred.js';
+import {
+  EXEC_LANE_KEY,
+  EXEC_LANE_SESSION
+} from '../../app/utils/worker-eligibility.js';
 import {
   createDecorationContext,
   openDependentsWithOwners,
@@ -175,7 +180,8 @@ import { readDeclaredBase } from '../worker/target-base.js';
 import {
   EXTERNAL_RESUME_PANE_MARKER,
   INQUIRY_PANE_MARKER,
-  RESOLVE_PANE_MARKER
+  RESOLVE_PANE_MARKER,
+  SESSION_LANE_PANE_MARKER
 } from '../worker/tmux-launcher.js';
 import {
   normalizeUsageLegs,
@@ -199,6 +205,7 @@ import {
 } from './context.js';
 import { laneBeadIds, sessionExcludedBeadIds } from './lane-membership.js';
 import { pushKeyed } from './push-patch.js';
+import { triggerMutationRefreshOnce } from './refresh.js';
 import { trimQueueProjection } from './snapshot-retention.js';
 import { targetWorkspaceOf } from './workspace-target.js';
 
@@ -8134,14 +8141,17 @@ export async function handleWorkerResolveInSession(ws, req) {
 }
 
 /**
- * The pane marker of each interactive conversation kind (UI-9w5l §3.5).
+ * The pane marker of each interactive conversation kind (UI-9w5l §3.5). The
+ * session-lane window (UI-lbm5 §4.6) answers the same click: its
+ * `[세션에서 이어가기]` brings the running window forward.
  *
- * @type {Readonly<Record<'inquiry'|'resolve'|'external_resume', string>>}
+ * @type {Readonly<Record<'inquiry'|'resolve'|'external_resume'|'session_lane', string>>}
  */
 const CONVERSATION_PANE_MARKERS = Object.freeze({
   inquiry: INQUIRY_PANE_MARKER,
   resolve: RESOLVE_PANE_MARKER,
-  external_resume: EXTERNAL_RESUME_PANE_MARKER
+  external_resume: EXTERNAL_RESUME_PANE_MARKER,
+  session_lane: SESSION_LANE_PANE_MARKER
 });
 
 /**
@@ -8565,6 +8575,169 @@ export async function handleWorkerConversationHandoff(ws, req) {
     )
   );
   fanout(key, latest);
+}
+
+/**
+ * The in-flight `chip-session-toggle` per (workspace, issue): a second click
+ * waits for the first to finish (UI-lbm5 §4.7, the ADR UI-rd2m rule).
+ *
+ * @type {Map<string, Promise<void>>}
+ */
+const session_toggle_chains = new Map();
+
+/**
+ * The `세션 권장` chip click (UI-lbm5 §4.7): `{ id, root_dir? }` toggles that
+ * issue's `exec_lane` metadata between `session` and unset, then reads it
+ * back. Clicks on one issue are applied in request order. A write failure or
+ * a readback that does not echo the intended value answers an error — the
+ * client toasts it and the next snapshot is the truth. An issue without a
+ * valid `session-preferred` attachment is refused: the key would be ignored.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleChipSessionToggle(ws, req) {
+  const { id } = /** @type {any} */ (req.payload || {});
+  if (typeof id !== 'string' || id.length === 0) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bad_request', 'payload requires { id }'))
+    );
+    return;
+  }
+  const workspace_key = targetWorkspaceOf(ws, req.payload);
+  if (workspace_key === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload.root_dir must be an absolute path in the available workspace list'
+        )
+      )
+    );
+    return;
+  }
+  const chain_key = `${workspace_key}\u0000${id}`;
+  const previous = session_toggle_chains.get(chain_key) || Promise.resolve();
+  const current = previous.then(() =>
+    runChipSessionToggle(ws, req, id, workspace_key).catch((err) => {
+      log('chip session toggle failed: %o', err);
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'bd_update_failed',
+            err instanceof Error ? err.message : String(err)
+          )
+        )
+      );
+    })
+  );
+  session_toggle_chains.set(chain_key, current);
+  await current;
+  if (session_toggle_chains.get(chain_key) === current) {
+    session_toggle_chains.delete(chain_key);
+  }
+}
+
+/**
+ * Run ONE `exec_lane` transition: read the issue, flip the key, write one
+ * `bd update`, read it back.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {string} id
+ * @param {string} workspace_key
+ */
+async function runChipSessionToggle(ws, req, id, workspace_key) {
+  const cwd = workspace_key;
+  const current = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    { expected_id: id, cwd }
+  );
+  if (current.ok !== true) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bd_read_failed', current.error.message))
+    );
+    return;
+  }
+  const issue = /** @type {any} */ (current.data) || {};
+  const metadata =
+    issue.metadata && typeof issue.metadata === 'object' ? issue.metadata : {};
+  if (sessionPreferredReason(issue.labels, metadata) === '') {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'not_session_preferred',
+          'The issue carries no valid session-preferred attachment'
+        )
+      )
+    );
+    return;
+  }
+  const to_session = metadata[EXEC_LANE_KEY] !== EXEC_LANE_SESSION;
+  const updated = await runBdInWorkspace(
+    ws,
+    to_session
+      ? [
+          'update',
+          id,
+          '--set-metadata',
+          `${EXEC_LANE_KEY}=${EXEC_LANE_SESSION}`
+        ]
+      : ['update', id, '--unset-metadata', EXEC_LANE_KEY],
+    { cwd }
+  );
+  if (updated.code !== 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bd_update_failed', updated.stderr || 'bd update failed')
+      )
+    );
+    return;
+  }
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    { expected_id: id, cwd }
+  );
+  triggerMutationRefreshOnce(ws);
+  if (shown.ok !== true) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bd_readback_failed', shown.error.message))
+    );
+    return;
+  }
+  const read_metadata = /** @type {any} */ (shown.data)?.metadata || {};
+  const exec_lane =
+    read_metadata[EXEC_LANE_KEY] === EXEC_LANE_SESSION
+      ? EXEC_LANE_SESSION
+      : null;
+  if ((exec_lane === EXEC_LANE_SESSION) !== to_session) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'readback_mismatch',
+          `exec_lane readback is ${exec_lane ?? 'unset'}`
+        )
+      )
+    );
+    return;
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        id,
+        exec_lane,
+        issue: shown.data
+      })
+    )
+  );
 }
 
 /**

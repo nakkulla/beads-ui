@@ -179,9 +179,10 @@ function locationOf(bead_id, queue) {
 export function placementFromFacts(facts, location) {
   const route_ok = ROUTES.has(facts.route);
   const is_quick_fix = facts.route === 'quick_fix';
+  // `worker-ineligible` no longer blocks placement (UI-lbm5 §4.2): such a Bead
+  // runs in the session lane, and the flag stays a display fact only.
   const eligible =
     route_ok &&
-    !facts.worker_ineligible &&
     !facts.awaiting_user &&
     (is_quick_fix ? facts.has_description : facts.spec === 'published');
   return {
@@ -277,13 +278,12 @@ export function placementTitle(placement) {
     }
   }
   if (placement.placeable) {
-    return '대기 큐 맨 뒤에 추가';
+    return placement.worker_ineligible
+      ? '대기 큐 맨 뒤에 추가 — 세션 레인으로 실행된다'
+      : '대기 큐 맨 뒤에 추가';
   }
   if (placement.route_ok === false) {
     return 'route가 정해지지 않아 대기 큐에 넣을 수 없습니다';
-  }
-  if (placement.worker_ineligible) {
-    return 'worker-ineligible label로 워커에서 실행할 수 없습니다';
   }
   if (placement.awaiting_user) {
     return '사용자 리뷰를 기다리는 중이라 대기 큐에 넣을 수 없습니다';

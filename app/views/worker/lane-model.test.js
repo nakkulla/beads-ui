@@ -5657,7 +5657,7 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
     ]).toEqual([false, true]);
   });
 
-  test('refuses placement for a worker-ineligible observation row', () => {
+  test('places a worker-ineligible observation row (UI-lbm5 §4.2)', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -5676,7 +5676,7 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
       [state()]
     );
 
-    expect(lanes.runnable[0].queue_placeable).toBe(false);
+    expect(lanes.runnable[0].queue_placeable).toBe(true);
   });
 
   test('refuses placement for an ineligible observation row', () => {
@@ -8694,5 +8694,139 @@ describe('plan 묶음 장식 (UI-ruwu §2)', () => {
     );
 
     expect(by_root).toEqual({ [WS_A]: 'landing', [WS_B]: undefined });
+  });
+});
+
+describe('session-lane facts (UI-lbm5 §4.6)', () => {
+  test('marks a running session-lane tile and withholds its pause', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 1,
+              session_id: 'sid-1',
+              exec: 'session'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0]).toMatchObject({
+      exec: 'session',
+      can_pause: false
+    });
+  });
+
+  test('keeps the pause of an ordinary running tile', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 1,
+              session_id: 'sid-1'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].exec).toBeUndefined();
+    expect(lanes.running[0].can_pause).toBe(true);
+  });
+
+  test('judges a waiting worker-ineligible row into the session lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: {
+            'A-2': { labels: ['worker-ineligible'], metadata: {} }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0]).toMatchObject({
+      exec: 'session',
+      worker_ineligible: true
+    });
+  });
+
+  test('carries the session-preferred reason of a waiting row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: {
+            'A-2': {
+              labels: ['session-preferred'],
+              metadata: { session_preferred_reason: 'user_feedback_loop' }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0]).toMatchObject({
+      session_preferred: true,
+      session_preferred_reason: 'user_feedback_loop'
+    });
+    expect(lanes.queue[0].exec).toBeUndefined();
+  });
+
+  test('marks PR-wait and done rows of a session-lane attempt', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-3' }],
+          done: [{ bead_id: 'A-4', added_at: 5 }],
+          attempts: {
+            p1: {
+              attempt_id: 'p1',
+              bead_id: 'A-3',
+              status: 'done',
+              exec: 'session'
+            },
+            d1: {
+              attempt_id: 'd1',
+              bead_id: 'A-4',
+              status: 'done',
+              finished_at: 4,
+              exec: 'session'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].exec).toBe('session');
+    expect(lanes.done[0].exec).toBe('session');
+  });
+
+  test('carries the exec lane of a candidate row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-5', { exec_lane: 'session' })]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].exec_lane).toBe('session');
   });
 });

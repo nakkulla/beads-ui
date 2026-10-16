@@ -4963,3 +4963,114 @@ describe('shared running tile input (UI-yvhx)', () => {
     ]);
   });
 });
+
+describe('session-lane running tile (UI-lbm5 §4.6)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, any>} [view_patch]
+   * @param {Record<string, any>} [item_patch]
+   */
+  function renderLaneTile(view_patch = {}, item_patch = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = {
+      key: 'UI-t1:session_lane',
+      kind: 'session_lane',
+      provider: 'claude',
+      session_id: 'sid',
+      mode: 'fresh',
+      source: 'attempt',
+      attempt_id: 'a1',
+      fallback_reason: null,
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-t1',
+      state: 'live',
+      settled_at: null,
+      launched_at: 1000,
+      discord_url: null,
+      closing: false,
+      turn_state: 'idle',
+      turn_state_since: 2000,
+      last_message: { text: '어느 쪽으로 갈까요?', at: 2000 },
+      conversation: { processed_message_at: 2000, result: null },
+      ...view_patch
+    };
+    const tile = runningTileInput({
+      id: 'UI-t1',
+      attempt_id: 'a1',
+      title: '세션 레인',
+      run_state: 'running',
+      exec: 'session',
+      runner: 'claude',
+      model: 'opus',
+      started_at: 1000,
+      can_pause: false,
+      interactive_sessions: [view],
+      ...item_patch
+    });
+    render(runningTile(tile, 5000), mount);
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('puts [세션에서 이어가기] in slot 1 instead of the session drawer and pause', () => {
+    const tile = renderLaneTile();
+
+    const actions = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__hd-actions')
+    );
+    expect(actions.querySelector('.rtile__resolve')?.textContent?.trim()).toBe(
+      '세션에서 이어가기'
+    );
+    expect(tile.querySelector('.rtile__pause')).toBeNull();
+    expect(tile.querySelector('.rtile__session')).toBeNull();
+    expect(tile.querySelector('.rtile__foot .rtile__resolve')).toBeNull();
+  });
+
+  test('stands ↗ Discord beside the button when the window is bridged', () => {
+    const tile = renderLaneTile({ discord_url: 'https://discord.com/x' });
+
+    const actions = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__hd-actions')
+    );
+    expect(actions.querySelector('.rtile__resolve')).not.toBeNull();
+    expect(
+      actions
+        .querySelector('.interactive-session-discord')
+        ?.getAttribute('href')
+    ).toBe('https://discord.com/x');
+  });
+
+  test('draws the answer wait and the last answer in slot 3', () => {
+    const tile = renderLaneTile();
+
+    expect(
+      tile.querySelector('.rtile__activity--session-lane')?.textContent
+    ).toContain('답 대기 · 어느 쪽으로 갈까요?');
+  });
+
+  test('draws the running turn as 대화 중 with its elapsed', () => {
+    const tile = renderLaneTile({ turn_state: 'running' });
+
+    expect(
+      tile.querySelector('.rtile__activity--session-lane')?.textContent
+    ).toContain('대화 중');
+  });
+
+  test('draws the 세션 exec chip in the slot-5b run line', () => {
+    const tile = renderLaneTile();
+
+    expect(
+      tile
+        .querySelector('.worker-chips--run .exec-chip--session')
+        ?.textContent?.trim()
+    ).toBe('세션');
+  });
+
+  test('keeps the session-lane window out of the header badges', () => {
+    const tile = renderLaneTile();
+
+    expect(tile.querySelector('.interactive-session-badge')).toBeNull();
+  });
+});
