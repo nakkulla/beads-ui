@@ -4,6 +4,7 @@ import { printServerUrl } from './cli/daemon.js';
 import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import { debug, enableAllDebug } from './logging.js';
+import { installPlacementService } from './placement/service.js';
 import { createPoller } from './poller.js';
 import { registerWorkspace, watchRegistry } from './registry-watcher.js';
 import { publishRuntimeIdentity } from './runtime-startup.js';
@@ -135,6 +136,12 @@ codex_model_list.onChange(() => {
   }
 });
 codex_model_list.start();
+
+// Worker queue placement judgment (UI-izba §4.2): the jev pair cache is read
+// from the state directory here, so a restart asks no pair again. Installed
+// only by the server process — a test that decorates a queue never reaches
+// jev or the key.
+installPlacementService();
 
 const watch_root = startup_workspace_root || config.root_dir;
 const db_watcher = watchDb(watch_root, () => {

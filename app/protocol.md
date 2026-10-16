@@ -651,6 +651,35 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   older server omits it too. Both the worker-queue and monitor-pipeline channels
   carry it, because both assemble their snapshot through `decorateQueue`.
 
+- `placement_relations: Record<pair_key, PlacementRelation>` and
+  `placement_status: Record<bead_id, PlacementStatus>` (UI-izba §4.5) are the
+  Worker queue placement recommendation material. Types and the key function
+  live in `server/placement/wire.js` (import-free, browser-safe). A pair key is
+  `<a>|<b>` with `a < b` by UTF-16 code unit (`placementPairKey`), and every
+  relation is read in that small-id orientation:
+  `{ a, b, relation: 'independent'|'a_first'|'b_first'|'conflict'|'unknown', source: 'fixed'|'jev', basis?: 'blocks'|'scope', overlap?: string[], in_lane?: true, confidence: number|null, jev_choice: 'independent'|'a_first'|'b_first'|'conflict'|null, judged_at: number|null }`.
+  A `fixed` relation comes from a direct `blocks` edge (`basis: 'blocks'`, the
+  blocker first; a blocks cycle is `conflict`) or a declared-scope overlap
+  (`basis: 'scope'`, `relation: 'conflict'`, the colliding prefixes in
+  `overlap`); jev is never asked about such a pair. A `jev` relation is the
+  cached answer: `relation` is `jev_choice` at `confidence` ≥ 0.8 and `unknown`
+  below it. `in_lane: true` marks the `blocks` edges between members of one
+  serial lane, shipped so the client can apply the store's lane ordering to a
+  preview. The pairs covered are each placeable 후보 against the other placeable
+  후보, the waiting entries (parallel and serial) and the lane-occupying beads
+  (실행중 ∪ `pr_wait`). `placement_status` has one entry per placeable 후보:
+  `{ state, reason?, done?, total? }` with `state` one of `ready` (every pair
+  that needs jev has an answer, any confidence), `pending` (`reason` `judging`
+  or `material_missing`), `unavailable` (`reason` `key_missing`,
+  `http_<status>`, `timeout`, `connection_failed` or `schema_mismatch`),
+  `fixed_only` (every pair fixed) or `no_counterpart`; `done`/`total` count the
+  jev pairs whenever there is at least one. Non-persisted, never carries issue
+  text or the jev key. Both keys are absent when the server runs no placement
+  judgment (older server, or none installed); a placeable 후보 without a
+  `placement_status` entry is 모름. Only a workspace with a worker-queue
+  subscriber schedules jev calls; the monitor channel carries the same keys from
+  the same cache.
+
 - `session_active[]` (UI-0a2m) is the SAME per-repo bucket the monitor
   aggregation ships (UI-yrzu §4.1, row shape and semantics above): beads an
   interactive session holds `in_progress`, minus this snapshot's `queue` ∪
@@ -845,6 +874,12 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   is `snapshot_unavailable`, `plan_group_not_found`, `no_eligible`, `rejected`
   or the store's refusal such as `member_present`. A stale `expected_revision`
   is `conflict: true` with no write.
+- `worker-placement-rejudge` payload: `{ root_dir? }` (UI-izba §4.4
+  `↻ 다시 판정`) — drops the cached jev answers and remembered failures that
+  name one of that workspace's current placeable 후보 and queues those pairs
+  again at once; the next snapshot reads them `pending`. `root_dir` is validated
+  like every Worker mutation. Reply: `{ cleared }` (cached answers dropped). A
+  server without placement judgment answers the error `placement_unavailable`.
 - `worker-queue-reorder` payload:
   `{ bead_id, lane?: 'parallel' | 's1'..'s5', to_index, expected_revision }` —
   reorders within one lane; cross-lane moves go through `worker-queue-place`.

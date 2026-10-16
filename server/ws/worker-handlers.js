@@ -41,6 +41,10 @@ import {
   openDependentsWithOwners,
   planGroupIndexFor
 } from '../list-adapters.js';
+import {
+  isPlaceableCandidate,
+  placementService
+} from '../placement/service.js';
 import { listAccounts as listClaudeAccounts } from '../routes/claude-usage.js';
 import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
 import { createAccountCatalog } from '../worker/account-catalog.js';
@@ -1888,6 +1892,126 @@ function scopeCacheHandle() {
 }
 
 /**
+ * Placement services whose fill callback is already wired to the fanout.
+ *
+ * @type {WeakSet<object>}
+ */
+const PLACEMENT_FILL_WIRED = new WeakSet();
+
+/**
+ * The installed placement service (UI-izba §4.5), with its fill fanout wired
+ * exactly once — the same delivery path the scope cache's `onFilled` uses.
+ * Null when none is installed, which the decoration reads as "ship neither
+ * field" (the older-server shape).
+ *
+ * @returns {ReturnType<typeof placementService>}
+ */
+function placementServiceHandle() {
+  const service = placementService();
+  if (!service) {
+    return null;
+  }
+  if (!PLACEMENT_FILL_WIRED.has(service)) {
+    PLACEMENT_FILL_WIRED.add(service);
+    service.onFilled((workspace) => {
+      try {
+        fanout(workspace, queueStore().snapshot(workspace));
+      } catch (err) {
+        log('placement fill fanout failed for %s: %o', workspace, err);
+      }
+    });
+  }
+  return service;
+}
+
+/**
+ * `placement_relations` and `placement_status` (UI-izba §4.5): the pair
+ * relations between each placeable 후보 and the other placeable 후보 plus the
+ * waiting and lane-occupying beads, from the facts this decoration already
+ * holds — the cleaned `bead_blocked_by` and the 후보 rows' own `blocked_by`
+ * for `blocks`, `bead_scope` for the declared-scope overlap, the serial lanes'
+ * `laneBlocksEdges` for the in-lane edges — plus the cached jev answers.
+ *
+ * Only a workspace a Worker tab is subscribed to schedules jev calls; the
+ * monitor channel, which assembles through this same function, reads the cache
+ * and never asks (사용자 결정 6: the preview is Worker-tab only).
+ *
+ * Fail-quiet: null (both keys omitted) when no service is installed or the
+ * projection throws.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @param {Record<string, { scope: string[], artifacts: string[] }|null>} bead_scope
+ * @param {Record<string, string[]>} bead_blocked_by
+ * @returns {import('../placement/wire.js').PlacementWire|null}
+ */
+function placementFor(workspace_key, queue, bead_scope, bead_blocked_by) {
+  const service = placementServiceHandle();
+  if (!service) {
+    return null;
+  }
+  try {
+    /** @type {string[]} */
+    const candidates = [];
+    /** @type {Record<string, string[]>} */
+    const blocked_by = {};
+    for (const row of runnableRows(workspace_key, queue)) {
+      const bead_id = typeof row.bead_id === 'string' ? row.bead_id : '';
+      if (bead_id.length === 0 || !isPlaceableCandidate(row)) {
+        continue;
+      }
+      candidates.push(bead_id);
+      if (Array.isArray(row.blocked_by)) {
+        blocked_by[bead_id] = row.blocked_by.filter(
+          (/** @type {unknown} */ id) => typeof id === 'string'
+        );
+      }
+    }
+    const candidate_set = new Set(candidates);
+    const members = [...new Set(laneMemberIds(queue, true))].filter(
+      (id) => !candidate_set.has(id)
+    );
+    for (const id of members) {
+      if (Array.isArray(bead_blocked_by[id])) {
+        blocked_by[id] = bead_blocked_by[id];
+      }
+    }
+    /** @type {Record<string, string[]>} */
+    const scopes = {};
+    for (const [bead_id, entry] of Object.entries(bead_scope)) {
+      if (entry && Array.isArray(entry.scope)) {
+        scopes[bead_id] = entry.scope;
+      }
+    }
+    /** @type {{ blocker: string, blockee: string }[]} */
+    const lane_edges = [];
+    for (const lane of Array.isArray(queue.serial_lanes)
+      ? /** @type {any[]} */ (queue.serial_lanes)
+      : []) {
+      if (lane && typeof lane.id === 'string') {
+        lane_edges.push(...laneBlocksEdges(workspace_key, queue, lane.id, []));
+      }
+    }
+    const snapshot = peekWorkspaceSnapshot(workspace_key);
+    return service.project(
+      workspace_key,
+      {
+        candidates,
+        members,
+        blocked_by,
+        scopes,
+        lane_edges,
+        rows: snapshot ? snapshot.id_index : null
+      },
+      { observe: (SUBSCRIBERS.get(workspace_key)?.size || 0) > 0 }
+    );
+  } catch (err) {
+    log('placement projection failed for %s: %o', workspace_key, err);
+    return null;
+  }
+}
+
+/**
  * The declared scope of every bead the WAITING, RUNNING, PR 대기, 후보 and
  * SESSION lanes render (UI-qm12 §4.3, widened to 후보 by UI-f3ma and to
  * `pr_wait` + `session_active` by UI-anna §3.1) — the same set
@@ -3560,6 +3684,12 @@ export function decorateQueue(workspace_key, raw_queue) {
     );
   }
   const bead_scope = beadScopeFor(workspace_key, queue);
+  const placement = placementFor(
+    workspace_key,
+    queue,
+    bead_scope,
+    bead_blocked_by
+  );
   const bead_dependents = beadDependentsFor(workspace_key, queue);
   const bead_plan_groups = beadPlanGroupsFor(workspace_key, queue);
   const withdrawn_beads = withdrawnBeadsFor(workspace_key, overlaid.attempts);
@@ -3651,6 +3781,16 @@ export function decorateQueue(workspace_key, raw_queue) {
     // generation. Non-persisted; the key is absent when no target belongs to a
     // valid group, which the client reads as "no plan chip" (fail-quiet).
     ...(bead_plan_groups ? { bead_plan_groups } : {}),
+    // Placement recommendation material (UI-izba §4.5): pair relations in
+    // small-id orientation and each placeable 후보's state. Non-persisted;
+    // both keys are absent when no placement service is installed, which the
+    // client reads as "draw no [추천 배치]" (fail-quiet).
+    ...(placement
+      ? {
+          placement_relations: placement.placement_relations,
+          placement_status: placement.placement_status
+        }
+      : {}),
     // `⏏ 내려옴` material by bead (2026-10-01 stall-reconcile D8); absent when
     // no bead's latest implementation attempt was withdrawn.
     ...(withdrawn_beads ? { withdrawn_beads } : {}),
@@ -4893,6 +5033,39 @@ export async function handleWorkerQueuePlacePlan(ws, req) {
       })
     )
   );
+}
+
+/**
+ * Handle `worker-placement-rejudge` (UI-izba §4.4 `↻ 다시 판정`). Payload:
+ * `{ root_dir? }`. Drops the cached jev answers and remembered failures naming
+ * one of that workspace's current placeable 후보, queues those pairs again at
+ * once, and fans the snapshot out so their states read `pending`. Reply:
+ * `{ cleared }` — how many cached answers were dropped. A server without an
+ * installed placement service replies `placement_unavailable`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerPlacementRejudge(ws, req) {
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const service = placementServiceHandle();
+  if (!service) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'placement_unavailable',
+          'placement judgment is not running on this server'
+        )
+      )
+    );
+    return;
+  }
+  const outcome = await service.rejudge(key);
+  ws.send(JSON.stringify(makeOk(req, { cleared: outcome.cleared })));
 }
 
 /**
