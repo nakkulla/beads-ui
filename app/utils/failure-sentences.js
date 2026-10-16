@@ -85,6 +85,33 @@ export const FAILURE_SENTENCES = Object.freeze({
   // FOREIGN_HANDOFF_SENTENCES가 따로 갖는다 — quick_fix push 착지의
   // foreign_deploy_unsupported 문장과 분류로 구분한다.
   foreign_handoff: '외부 저장소 PR을 사람에게 넘겼습니다.',
+  // quick_fix push 착지 (`server/worker/quickfix-landing.js`
+  // `QuickfixLandingReason`). 여기 없는 착지 토큰은 카드에 짧은 라벨 "착지
+  // 실패"만 남기므로 표와 typedef의 일치를 테스트가 지킨다. 몇 토큰은 PR 완료
+  // 흐름도 쓰므로 문장은 두 흐름 모두에서 참이어야 한다.
+  premature_close:
+    'Worker가 착지를 확인하기 전에 Bead가 닫혔고, 닫힌 사유가 refuted·no-delta가 아닙니다.',
+  invalid_impl_review:
+    'Bead가 resolved인데 push한 head에 묶인 impl_review 영수증이 없거나 형식이 틀립니다.',
+  head_mismatch: 'impl_review 영수증의 SHA가 착지할 head와 맞지 않습니다.',
+  push_not_contained: '리뷰된 head가 원격 base 브랜치에 들어 있지 않습니다.',
+  containment_unobservable:
+    '리뷰된 head가 원격 base 브랜치에 들어 있는지 확인하지 못했습니다.',
+  repo_ops_config_invalid:
+    'repo-ops/config.toml 선언을 읽지 못했거나 형식이 틀립니다.',
+  repo_operation_failed: '배포·검증 같은 저장소 작업이 실패했습니다.',
+  repo_operation_pending: '머지 후 저장소 작업이 아직 끝나지 않았습니다.',
+  worktree_remove_failed: '작업 워크트리를 지우지 못했습니다.',
+  local_branch_delete_failed: '작업 로컬 브랜치를 지우지 못했습니다.',
+  bd_close_failed: 'Bead를 닫지 못했습니다.',
+  bd_read_failed: 'Bead 상태를 읽지 못했습니다.',
+  bd_record_failed: 'Bead 기록을 쓰거나 다시 읽어 확인하지 못했습니다.',
+  delivery_unproven:
+    'Bead가 resolved가 아니어서 push 기록과 리뷰 영수증으로 착지를 증명하려 했지만 증명하지 못했습니다.',
+  push_log_absent: '이 실행이 base 브랜치로 push한 기록이 없습니다.',
+  impl_review_missing: 'impl_review 영수증이 없습니다.',
+  impl_review_sha_mismatch:
+    'impl_review 영수증의 SHA가 push한 head와 다릅니다.',
   // 레거시 — UI-8w4t 이전에 저장된 saga만 이 토큰을 이름한다. 지금은 로드 시
   // `internal_record_failed:migration:repair_lane_retired`로 접히므로 마지막
   // 구간이 이 문장을 이긴다. 남겨 두는 이유는 접기 이전에 쓰인 기록을 읽는
@@ -206,6 +233,37 @@ export const FAILURE_NEXT_ACTIONS = Object.freeze({
   foreign_merged_discard_unsupported: '대상 저장소에서 사람이 되돌리세요.',
   foreign_handoff:
     '[세션에서 이어가기]로 대상 저장소의 `pr-finish` Foreign-pinned Bead 절차를 진행하세요.',
+  // quick_fix push 착지. 세션이 남긴 증거(영수증·push·close)가 어긋난 경우와
+  // 착지 후 절차의 한 단계가 실패한 경우로 나뉜다. 버튼 안내는 렌더러가
+  // 재개 종류에 맞춰 덧붙인다.
+  premature_close:
+    '세션 보고서와 Bead의 close 사유를 확인하세요 — 변경 없이 끝난 작업이면 사유가 `no-delta: …`나 `refuted: …`여야 합니다.',
+  invalid_impl_review:
+    '세션 보고서를 확인하세요 — 저장소 변경 없이 끝난 작업(no-delta·refuted)이면 세션이 resolved 대신 그 사유로 직접 닫아야 하고, 변경을 push했다면 push한 head에 impl_review 영수증이 있어야 합니다.',
+  head_mismatch:
+    'push한 head와 impl_review 영수증의 SHA를 세션에서 확인하세요.',
+  push_not_contained:
+    'push가 원격 base에 실제로 들어갔는지 세션에서 확인하세요.',
+  containment_unobservable: '원격 연결과 관측 상태를 확인하는 것이 먼저입니다.',
+  repo_ops_config_invalid:
+    '대상 base의 repo-ops/config.toml 선언을 확인하는 것이 먼저입니다.',
+  repo_operation_failed:
+    '실패한 명령과 그 출력을 확인하고 원인을 고치는 것이 먼저입니다.',
+  repo_operation_pending: '진행 중인 저장소 작업이 끝나기를 기다리세요.',
+  worktree_remove_failed:
+    '워크트리에 남은 파일과 잠금 상태를 확인하는 것이 먼저입니다.',
+  local_branch_delete_failed: '로컬 브랜치 상태를 확인하는 것이 먼저입니다.',
+  bd_close_failed: 'Beads 데이터베이스 연결과 Bead 상태를 확인하세요.',
+  bd_read_failed: 'Beads 데이터베이스 연결과 Bead 상태를 확인하세요.',
+  bd_record_failed: 'Beads 데이터베이스 연결과 Bead 상태를 확인하세요.',
+  delivery_unproven:
+    '세션이 base로 push했는지와 push한 head에 impl_review 영수증이 있는지 확인하세요.',
+  push_log_absent:
+    '세션이 base로 push했는지와 push한 head에 impl_review 영수증이 있는지 확인하세요.',
+  impl_review_missing:
+    '세션이 base로 push했는지와 push한 head에 impl_review 영수증이 있는지 확인하세요.',
+  impl_review_sha_mismatch:
+    '세션이 base로 push했는지와 push한 head에 impl_review 영수증이 있는지 확인하세요.',
   // 세부를 아직 모르는 종단. 남아 있는 원인·기록이 유일한 재료다.
   interrupted_without_terminal_exit:
     '남아 있는 원인과 실행 기록을 먼저 확인하세요.',
