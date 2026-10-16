@@ -11,7 +11,10 @@ import { createSessionRefTranscript } from './session-ref-transcript.js';
 
 export const PROGRESS_TAIL_BYTES = 64 * 1024;
 export const PROGRESS_MESSAGE_MAX_CHARS = 160;
-/** The `❓ 답 대기` excerpt budget in code points (UI-nuwy §3.3). */
+/**
+ * The display excerpt budget of a conversation's last message in code points
+ * (UI-nuwy §3.3, UI-5chz).
+ */
 export const PROGRESS_EXCERPT_MAX_CHARS = 400;
 
 /**

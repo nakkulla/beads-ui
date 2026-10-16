@@ -1104,25 +1104,6 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
     );
   });
 
-  test('sends the answer-wait push with the excerpt and the window', async () => {
-    const spawn = makeFakeSpawn();
-    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
-
-    await notifier.conversationAnswer({
-      bead_id: 'UI-1',
-      excerpt: 'A와 B 중 어느 쪽으로 갈까요? 권고는 A입니다.',
-      tmux_window: 'UI-1'
-    });
-
-    expect(messageOf(spawn.last())).toBe(
-      [
-        '❓ 답 대기 — UI-1',
-        'A와 B 중 어느 쪽으로 갈까요? 권고는 A입니다.',
-        '답: Discord 스레드 · tmux UI-1'
-      ].join('\n')
-    );
-  });
-
   test('sends the takeover push', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
@@ -1191,12 +1172,11 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
 
     const sent = await Promise.all([
       notifier.conversationConfirm({ bead_id: 'UI-1' }),
-      notifier.conversationAnswer({ bead_id: 'UI-1' }),
       notifier.conversationTakeover({ bead_id: 'UI-1' }),
       notifier.conversationResumed({ bead_id: 'UI-1' })
     ]);
 
-    expect(sent).toEqual([false, false, false, false]);
+    expect(sent).toEqual([false, false, false]);
     expect(spawn.calls).toHaveLength(0);
   });
 
@@ -1207,7 +1187,7 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
       }
     });
 
-    const sent = await notifier.conversationAnswer({ bead_id: 'UI-1' });
+    const sent = await notifier.conversationTakeover({ bead_id: 'UI-1' });
 
     expect(sent).toBe(false);
   });

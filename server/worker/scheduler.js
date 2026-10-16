@@ -871,7 +871,6 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   attemptFailed: (i: any) => void,
  *   attemptParked?: (i: any) => void,
  *   awaitingUser?: (i: any) => void,
- *   conversationAnswer?: (i: any) => void,
  *   conversationTakeover?: (i: any) => void,
  *   conversationResumed?: (i: any) => void,
  *   providerHoldEntered?: (i: any) => void,
@@ -1827,7 +1826,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationAnswer'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerLivePreempt'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerLivePreempt'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -10697,12 +10696,6 @@ export function createScheduler(deps) {
         await closeConversationWindow(workspace, key, record);
       } else if (parsed?.kind === 'takeover') {
         notifyLifecycle('conversationTakeover', { bead_id: record.bead_id });
-      } else {
-        notifyLifecycle('conversationAnswer', {
-          bead_id: record.bead_id,
-          excerpt: next.message_excerpt,
-          tmux_window: record.tmux_window
-        });
       }
     }
     /**

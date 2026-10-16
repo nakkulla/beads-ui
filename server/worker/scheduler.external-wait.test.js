@@ -1615,7 +1615,6 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
       attemptStarted: vi.fn(),
       attemptFailed: vi.fn(),
       prWaitEntered: vi.fn(),
-      conversationAnswer: vi.fn(),
       conversationTakeover: vi.fn()
     };
     const env = fixture({
@@ -1705,7 +1704,7 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
     }
   };
 
-  test('sends one answer wait per new non-result message', async () => {
+  test('records each new non-result message without a push', async () => {
     const env = conversationFixture();
     say(env, '결과 파일을 다시 볼까요?');
     await env.scheduler.reconcileInteractiveSessions(WS);
@@ -1714,7 +1713,11 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
     say(env, '그럼 재실행할까요?', 960);
     await env.scheduler.reconcileInteractiveSessions(WS);
 
-    expect(env.notify.conversationAnswer).toHaveBeenCalledTimes(2);
+    expect(conversationOf(env).conversation).toMatchObject({
+      processed_message_at: 960,
+      message_excerpt: '그럼 재실행할까요?'
+    });
+    expect(env.notify.conversationTakeover).not.toHaveBeenCalled();
   });
 
   test('returns a held conversation to its completion row', async () => {
