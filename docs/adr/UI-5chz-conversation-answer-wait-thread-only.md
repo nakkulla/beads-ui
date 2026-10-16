@@ -1,17 +1,30 @@
 ---
-id: UI-gske
-title: 세션 소유 사람 필요 행과 실패 대화 자동 기동
+id: UI-5chz
+title: 대화 세션 답 대기는 세션 스레드로만 알림
 status: accepted
-date: 2026-10-13
-summary: "base-sync 보관 해소 세션이 등록한 Bead 없는 사람 필요 행((repo, ref), queue.session_inquiries)은 「저장소 작업」 서랍과 확인 필요 칩에 뜨고 생성 시 🙋 확인 필요를 한 번 보내며, waiting 행의 등록 세션이 죽고 공용 스위치가 켜지면 등록 cwd에서 같은 session id를 --resume으로 (id, session_id)당 한 번 다시 열고(held는 클릭만), 보관 ref가 사라지면 beads-ui가 닫는다; 정리 단계 완료 종단·완료 의도 없는 정리 중단·머지 전 검증 실패 보류(보류 진입, (PR, head)당)도 공용 스위치 아래 실패당 한 번 자동으로 열리고 정리 실패는 「🙋 확인 필요 · 정리 중단」으로 알린다; 외부 작업 완료는 클릭 전용으로 남는다"
-supersedes: ["UI-btsr"]
-spec: docs/superpowers/specs/2026-10-13-session-inquiry-row-and-failure-auto-launch-design.md
-bead: UI-gske
+date: 2026-10-16
+summary: "대화 세션(문의·해결·외부 재개)과 세션 레인의 답 대기는 beads-ui가 Discord로 보내지 않고 dotfiles 브리지의 세션 스레드로만 알린다 — 메시지 처리·verdict action_required·배지·[세션에서 이어가기]는 그대로이고 대화 알림은 🙋 확인 필요·↪ Worker가 이어감·🙋 사람 인수 셋이다; UI-gske의 나머지 조항은 그대로다"
+supersedes: ["UI-gske"]
+spec: docs/superpowers/specs/2026-10-16-conversation-answer-wait-thread-only-design.md
+bead: UI-5chz
 ---
 
-# 세션 소유 사람 필요 행과 실패 대화 자동 기동
+# 대화 세션 답 대기는 세션 스레드로만 알림
 
 ## Context
+
+이 결정은 `ADR UI-gske`를 다시 쓴다. 그 ADR과 소비자(`notify.js` 대화 알림 집합, `scheduler.js` reconcile의 메시지 처리 뒤 알림)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 UI-gske가 UI-nuwy에서 승계한 둘이다: "대화 알림은 `🙋 확인 필요`·`❓ 답 대기`·`↪ Worker가 이어감`·`🙋 사람 인수` 넷"과 "같은 멈춤의 재알림은 `❓`가 맡는다". 나머지 조항은 모두 승계한다.
+
+- UI-gske: 대화 알림 넷 조항과 `❓` 재알림 조항 변경, 나머지 유지.
+- 전제: ADR UI-u6ud-2 — 세션 스레드를 만드는 브리지와 훅 직접 전송은 dotfiles가 소유하고, beads-ui는 스레드 목록을 읽기만 한다.
+
+UI-5chz(2026-10-16): Worker 대화 세션(Cortex-ppg 충돌 해소 대화)이 턴을 끝낼 때마다 같은 내용이 두 곳에 왔다. dotfiles Discord 브리지는 세션 스레드 `🙋 Worker 대화 · <id>`에 질문 카드와 턴 종료를 올리고, beads-ui 서버는 같은 마지막 메시지 발췌를 `#beads-worker` 채널에 `❓ 답 대기 — <id>`로 다시 보냈다. 브리지에 spool하지 못하면 dotfiles 훅이 `discord` 명령으로 질문·턴 종료를 직접 보낸다.
+
+사용자 결정(2026-10-16): 질문은 세션 스레드에만 뜨면 된다. 채널 푸시를 없앤다. 같은 원칙을 아직 구현 전인 UI-lbm5(세션 레인)의 답 대기에도 적용한다.
+
+아래는 `ADR UI-gske`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
+
+### ADR UI-gske의 맥락 (승계)
 
 이 결정은 `ADR UI-btsr`를 다시 쓴다. 그 ADR과 소비자(`resolve-session.js` 실패 대화 자동 기동기, `completion-intent.js` 알림 대상 `NEEDS_HUMAN_NOTIFY_CLASSES`, `wait-judgment.js` 조치 필요 불변식, 「저장소 작업」 서랍의 Bead 없는 행 대화, 설정 창 스위치 문구)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 둘이다: "정리 중단은 알리지 않는다"와 "머지 전 검증 보류·정리 중단·외부 작업 완료는 자동 기동하지 않는다". 나머지 조항은 모두 승계한다.
 
@@ -88,6 +101,21 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 ## Decision
 
+**대화 세션(문의·해결·외부 재개)의 답 대기는 beads-ui가 Discord 채널로 보내지 않는다. 같은 멈춤의 재알림은 dotfiles 브리지의 세션 스레드가 맡고, 대화 알림은 `🙋 확인 필요`·`↪ Worker가 이어감`·`🙋 사람 인수` 셋이다. 세션 레인의 답 대기도 같은 원칙이다.**
+
+- reconcile이 결과 줄이 아닌 새 assistant 메시지를 처리해도 Discord 푸시를 보내지 않는다. 처리 식별자 `processed_message_at`, 발췌 `message_excerpt` 기록과 verdict 재판정은 그대로다. `message_excerpt`는 공개 프로토콜 필드로 남아 표시용 발췌가 된다.
+- 결과 줄 `인계 ·`·`인수 ·`·`보류 ·`의 처리와 그 알림(`🙋 사람 인수`, 인계 뒤 `↪ Worker가 이어감`)은 그대로다.
+- notifier는 답 대기 푸시 경로를 갖지 않는다.
+- verdict 표, 배지 꼬리 `답 대기`, `[세션에서 이어가기]`(Discord 링크가 없을 때), `[워커로 이어가기]`, 해결 문장은 바꾸지 않는다.
+- `🙋 확인 필요`는 처음 멈출 때 채널로 한 번 알리는 신호로 남는다. 스레드가 아직 없을 수 있기 때문이다.
+- 브리지가 꺼져 있으면 재알림은 dotfiles 훅의 직접 `discord` 전송에 달려 있다. 그 경로의 소유자는 dotfiles다.
+
+대안과 기각 사유: 스레드가 없는 세션에만 채널 푸시 — 브리지가 돌고 있으면 대화 세션마다 스레드가 생겨 거의 쓰이지 않는데, 스레드 목록에 기대는 서버 배선만 는다. 스레드 없는 세션은 카드 배지와 `[세션에서 이어가기]`로 드러난다(사용자, 2026-10-16 이 대안 대신 같은 원칙 적용 선택). 현행 유지 — 사용자가 중복을 결함으로 보고했다.
+
+아래는 `ADR UI-gske`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-5chz)`로 표시했다.
+
+### ADR UI-gske에서 승계하는 조항
+
 **base-sync 보관 해소 세션이 등록한 Bead 없는 사람 필요 행을 받아 「저장소 작업」 서랍과 확인 필요 칩에 올리고, 같은 세션을 `--resume`으로 잇고, 보관 ref가 사라지면 닫는다. 정리 단계 완료 종단·완료 의도 없는 정리 중단·머지 전 검증 실패 보류를 공용 스위치 아래 실패당 한 번 자동으로 열고, 정리 실패도 「🙋 확인 필요 · 정리 중단」으로 알린다.**
 
 세션 소유 사람 필요 행
@@ -135,7 +163,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 **세션이 선언한 복구 대기 중 `authority`·`no_progress`·`credential`은 같은 세션 대화 대상이다. 공급자 보류로 바뀌지 않은 세션 선언 `provider`는 대상이 아니다.**
 
-- 술어는 `session-stall.js`의 `isSessionStalledRecovery`와 현행 사유 집합 `CONVERSATION_RECOVERY_REASONS` 하나다. `credential`을 넣으면 `waiting` 기록 직후 대화 기동(공용 자동 기동 스위치·tmux·Bead당 1개 게이트), 스위치와 무관한 attempt당 한 번의 `🙋 확인 필요`, 살아 있는 대화가 없을 때의 `action_required`(`decision`)와 `[세션에서 이어가기]` 해결 문장, 대화 알림 네 종류, 멈춤 표기 `recovery:credential`이 함께 따라온다. 경로마다 따로 판정을 두지 않는다.
+- 술어는 `session-stall.js`의 `isSessionStalledRecovery`와 현행 사유 집합 `CONVERSATION_RECOVERY_REASONS` 하나다. `credential`을 넣으면 `waiting` 기록 직후 대화 기동(공용 자동 기동 스위치·tmux·Bead당 1개 게이트), 스위치와 무관한 attempt당 한 번의 `🙋 확인 필요`, 살아 있는 대화가 없을 때의 `action_required`(`decision`)와 `[세션에서 이어가기]` 해결 문장, 대화 알림 네 종류(변경, UI-5chz: `❓ 답 대기`가 빠진 세 종류), 멈춤 표기 `recovery:credential`이 함께 따라온다. 경로마다 따로 판정을 두지 않는다.
 - 진입 블록 사유 칸은 dotfiles 정본의 바이트 사본 `멈춤 recovery:<authority|no_progress|credential>`이고, 사본은 다이제스트 테스트로 고정한다. 현행 사유 집합은 핀 투영 `result_line_reasons`에서 `provider`·`prerequisite`를 뺀 것과 같다고 테스트가 고정한다.
 - 대화 세션은 비밀 값을 대신 찾거나 넣지 않는다. 로그인은 사용자가 하고 대화는 그 결과를 받아 `인계`로 끝난다(계약 Hard stops의 자격 증명 조항).
 - Worker 자신의 러너 계정 인증 실패는 `ADR UI-3v1h`의 계정 단위 공급자 보류 그대로다. 그 경로는 복구 대기가 되지 않으므로 이 집합과 겹치지 않는다.
@@ -172,7 +200,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 알림
 
-- 대기 사유 판정(`action_required`·`overdue`)은 Discord를 보내지 않는다. 외부 작업 완료, 대화 대상 푸시(`🙋 확인 필요`·`❓ 답 대기`), 실패 종단 `🙋 확인 필요 · <클래스>`, 공급자 보류 진입·회복 알림은 그대로다. 외부 작업 완료와 redispatch의 억제 키는 보존한다.
+- 대기 사유 판정(`action_required`·`overdue`)은 Discord를 보내지 않는다. 외부 작업 완료, 대화 대상 푸시(`🙋 확인 필요`·`❓ 답 대기` — 변경, UI-5chz: `❓ 답 대기`는 보내지 않는다), 실패 종단 `🙋 확인 필요 · <클래스>`, 공급자 보류 진입·회복 알림은 그대로다. 외부 작업 완료와 redispatch의 억제 키는 보존한다.
 
 아래는 `ADR UI-jbl1`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-9w5l)`로 표시했다.
 
@@ -244,7 +272,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 첫 입력과 관측
 
 - 세 런처 모두 dotfiles 진입 블록(`execution-common.md` `## Worker 세션 대화`)의 바이트 사본을 첫 입력으로 쓰고 블록이 정한 슬롯만 채운다. 사본의 sha256은 테스트로 고정한다.
-- 세 런처 모두 레코드에 `conversation`을 쓰고 결과 줄 관측·답 대기 판정·`❓ 답 대기`·`🙋 사람 인수`가 종류와 상관없이 같은 규칙으로 돈다. (변경, UI-jbl1) `🙋 확인 필요`는 멈춤 자동 기동과 실패 종단 알림(`🙋 확인 필요 · <클래스>`)에 보낸다. `🚨 사람 필요` 제목은 없다. `⏸️ 머지 보류`, 외부 작업의 `✅ 외부 작업 완료`는 그대로다.
+- 세 런처 모두 레코드에 `conversation`을 쓰고 결과 줄 관측·답 대기 판정·`❓ 답 대기`·`🙋 사람 인수`가 종류와 상관없이 같은 규칙으로 돈다. (변경, UI-5chz) `❓ 답 대기` 푸시는 없다. (변경, UI-jbl1) `🙋 확인 필요`는 멈춤 자동 기동과 실패 종단 알림(`🙋 확인 필요 · <클래스>`)에 보낸다. `🚨 사람 필요` 제목은 없다. `⏸️ 머지 보류`, 외부 작업의 `✅ 외부 작업 완료`는 그대로다.
 
 끝맺음
 
@@ -294,6 +322,8 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 종료는 답 대기(`action_required`)이고, 첫 줄 `인계 ·`를 관측하면 창 소멸을 확인한 뒤 같은
 attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`면 관찰만, `보류 ·`면 대기로 남는다.
 알림은 `🙋 확인 필요`·`❓ 답 대기`·`↪ Worker가 이어감`·`🙋 사람 인수` 넷이다.**
+
+(변경, UI-5chz) 알림은 `🙋 확인 필요`·`↪ Worker가 이어감`·`🙋 사람 인수` 셋이다. 답 대기는 세션 Discord 스레드로만 알린다.
 
 대화 대상
 
@@ -385,13 +415,13 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
 | 종류 | 언제 | 억제 |
 | --- | --- | --- |
 | `🙋 확인 필요` | 대화 대상 멈춤 기록 직후 자동 기동 시도 뒤 1회(이유 `설계 충돌 · <값>`·`범위 충돌`·`같은 원인 반복`·`옛 기록 · …`, 대화 위치 또는 열지 못한 사유) | attempt `cause_detail.confirm_notified_at` — 보내기 전에 기록 |
-| `❓ 답 대기` | 결과 줄이 아닌 새 assistant 메시지를 처리할 때마다(발췌 포함) | 레코드의 처리 식별자 `(bead, launched_at, message_at)` |
+| `❓ 답 대기` (변경, UI-5chz) | 보내지 않는다 — 메시지 처리와 발췌 기록은 그대로다 | — |
 | `↪ Worker가 이어감` | `conversation_return` launch 성공(`결정:`·`실행:` 줄) | launch당 1회 |
 | `🙋 사람 인수` | `인수` 관측 | 레코드당 1회 |
 
 - `🙋 확인 필요`는 이 대상의 `⏸️ 파킹`과 `⚠ … 지연 · 세션이 멈춤`을 대체한다 —
   `notifyWaitReasons`는 `awaiting_user` 행과 대화 대상 복구 행을 보내지 않는다(변경, UI-9w5l: 대기 사유 판정은 어떤 행도 보내지 않는다). 대화가 시작되면
-  확인 필요는 소비된 채로 두고 같은 멈춤의 재알림은 `❓`가 맡는다. 보류·대화 중(`running`)은 알림이
+  확인 필요는 소비된 채로 두고 같은 멈춤의 재알림은 `❓`가 맡는다 (변경, UI-5chz: 세션 Discord 스레드가 맡는다). 보류·대화 중(`running`)은 알림이
   없고 `✅`·`📬`·`❌`는 그대로다.
 
 카드 표면
@@ -858,6 +888,15 @@ verify 보류
 
 ## Consequences
 
+- 되돌리기 어렵다: `notify.js` 대화 알림 집합, `scheduler.js` reconcile의 메시지 처리 뒤 알림, 재알림을 맡는 쪽(dotfiles 브리지와 훅 직접 전송)에 대한 의존이 함께 움직인다. 진행 중인 UI-lbm5의 세션 레인 알림 설계도 따라 바뀐다.
+- 맥락 없이는 놀랍다: 사람이 답해야 하는 상태인데 `#beads-worker` 채널에는 아무 알림이 없다. 첫 멈춤의 `🙋 확인 필요`만 채널로 나간다.
+- 얻는 것: 같은 턴 종료가 두 곳에 오는 중복이 사라지고, 답할 곳(스레드)에서만 알림을 받는다.
+- 감수하는 것: 채널만 보는 사람은 대화가 이어지는 동안의 답 대기를 모른다. 브리지가 꺼지면 재알림은 훅 직접 전송에 달려 있다.
+- UI-lbm5와 이 ADR은 모두 `ADR UI-gske`를 supersede한다. 나중에 착지하는 쪽이 먼저 착지한 쪽의 ADR을 승계하고 supersede 대상을 그 ADR로 고친다.
+- `ADR UI-gske`의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
+
+### ADR UI-gske의 결과 (승계)
+
 - 되돌리기 어렵다: 새 HTTP 입력과 dotfiles `session-inquiry` CLI, `queue.session_inquiries` 저장 형태, 대기 판정 사유, 서랍·칩 화면과 Worker·모니터 동일성 테스트, 대화 레코드 행 키와 정산, `NEEDS_HUMAN_NOTIFY_CLASSES`와 클릭 세션 클래스 표, 보류 분기 기동, 완료 의도의 `hold_launches`·`cleanup_failed`의 1회 표시, 설정 창 문구가 함께 움직인다.
 - 맥락 없이는 놀랍다: beads-ui가 자기가 띄우지 않은 외부 세션을 같은 id로 다시 연다. 조용하던 정리 실패가 알림과 대화를 만든다.
 - 얻는 것: 사람이 필요한 해소 세션과 자동 단계가 남지 않은 실패가 확인 필요 칩과 알림에 뜨고, 스위치가 켜져 있으면 답할 자리가 저절로 열린다.
@@ -943,7 +982,7 @@ verify 보류
 
 - 되돌리기 어렵다: `direction-inquiry.js` 기동(같은 세션 명령·진입 블록 사본), `scheduler.js`
   reconcile의 메시지 처리·인계 이어가기와 `resume()`의 `conversation_return` 예외, `admission.js`의
-  `allow_conversation_return`, `wait-judgment.js` 대화 verdict 표와 actions, `notify.js` 네 종류와
+  `allow_conversation_return`, `wait-judgment.js` 대화 verdict 표와 actions, `notify.js` 네 종류(변경, UI-5chz: 세 종류)와
   억제, `tile-resolve.js`의 두 버튼 술어, `session-stall.js` 술어, 핀 투영 schema 2가 함께 움직인다.
 - 맥락 없이는 놀랍다: 파킹된 attempt가 `awaiting_user`를 단 채 재개되고, 그런데도 사람 `↻`는
   없다. 재개는 대화의 `인계`(또는 `[워커로 이어가기]`) 뒤 창 소멸을 확인한 한 경로뿐이다.
