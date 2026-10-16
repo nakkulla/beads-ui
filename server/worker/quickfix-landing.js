@@ -71,6 +71,50 @@ const LANDING_STEP_LABELS = Object.freeze({
 });
 
 /**
+ * The durable cursors bound to the head they recorded (UI-1eag §3.1): a
+ * resume at one of them uses that head, and a receipt that moved since stops
+ * on `head_mismatch`.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const HEAD_BOUND_CURSORS = Object.freeze(
+  new Set(['post_merge_jobs', 'branch_cleanup', 'parent_close'])
+);
+
+/**
+ * The head-bound durable cursor a resumed settlement pass started from,
+ * with the 40-hex head it is bound to.
+ *
+ * @typedef {{ cursor: 'post_merge_jobs'|'branch_cleanup'|'parent_close', head_sha: string }} BoundPosition
+ */
+
+/**
+ * The cursor and head one landing record stores.
+ *
+ * A pass that resumes a head-bound cursor re-checks the earlier steps on the
+ * stored head. Every record it writes at a step that is not itself head-bound
+ * — a precondition failure, the evidence resolve, `head_mismatch`, a base or
+ * deploy re-check and its failure — keeps the bound cursor and head, so no
+ * stop on the way frees the next resume to adopt a receipt head that moved.
+ * A record at a head-bound step stores that step as before: in a bound pass
+ * its head is the bound head, so the binding holds, and a job failure on a
+ * `branch_cleanup`-bound row still reaches the `post_merge_jobs` cursor that
+ * the person's `job_retry` is gated on. The step that actually ran always
+ * names the timeline line and the returned failure.
+ *
+ * @param {'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
+ * @param {string|null} head_sha
+ * @param {BoundPosition|null} bound
+ * @returns {{ cursor: 'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null }}
+ */
+function storedPosition(step, head_sha, bound) {
+  if (bound === null || (step !== null && HEAD_BOUND_CURSORS.has(step))) {
+    return { cursor: step, head_sha };
+  }
+  return { cursor: bound.cursor, head_sha: bound.head_sha };
+}
+
+/**
  * Which of the contract's two no-change close kinds this `close_reason`
  * declares. `null` for anything else — a non-string, a prefix the contract
  * does not name, or a multi-line reason.
@@ -355,13 +399,15 @@ export function createQuickfixLanding(deps) {
    * @param {'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'} cursor
    * @param {string} head_sha
    * @param {LandingExtra} [extra]
+   * @param {BoundPosition|null} [bound] - The head-bound cursor this pass
+   * resumed from; see {@link storedPosition}.
    */
-  function markStep(attempt_id, cursor, head_sha, extra = null) {
+  function markStep(attempt_id, cursor, head_sha, extra = null, bound = null) {
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
         quickfix_landing: landingRecord(
-          { cursor, head_sha, reason: null },
+          { ...storedPosition(cursor, head_sha, bound), reason: null },
           extra
         )
       }
@@ -376,15 +422,24 @@ export function createQuickfixLanding(deps) {
    * @param {'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
    * @param {string|null} head_sha
    * @param {LandingExtra} [extra]
+   * @param {BoundPosition|null} [bound] - The head-bound cursor this pass
+   * resumed from; see {@link storedPosition}.
    * @returns {{ ok: false, reason: string, step: string|null, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt } }}
    */
-  function fail(attempt_id, reason, step, head_sha, extra = null) {
+  function fail(
+    attempt_id,
+    reason,
+    step,
+    head_sha,
+    extra = null,
+    bound = null
+  ) {
     // Existing needs_human/attemptFailed lanes own failure notifications.
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
         quickfix_landing: landingRecord(
-          { cursor: step, head_sha, reason },
+          { ...storedPosition(step, head_sha, bound), reason },
           extra
         )
       }
@@ -1024,12 +1079,10 @@ export function createQuickfixLanding(deps) {
     const { attempt_id, bead_id, target_base } = input;
     const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
     const durable_landing = snapshot.attempts?.[attempt_id]?.quickfix_landing;
-    const durable_cursor =
-      durable_landing?.cursor === 'post_merge_jobs' ||
-      durable_landing?.cursor === 'branch_cleanup' ||
-      durable_landing?.cursor === 'parent_close'
-        ? durable_landing.cursor
-        : null;
+    /** @type {BoundPosition['cursor']|null} */
+    const durable_cursor = HEAD_BOUND_CURSORS.has(durable_landing?.cursor)
+      ? durable_landing.cursor
+      : null;
     const job_retry =
       input.job_retry === true &&
       durable_cursor === 'post_merge_jobs' &&
@@ -1038,6 +1091,17 @@ export function createQuickfixLanding(deps) {
     const durable_head_sha =
       typeof durable_landing?.head_sha === 'string'
         ? durable_landing.head_sha
+        : null;
+    // The binding outlives this pass whatever it stops on: every record below
+    // at a step that is not itself head-bound stores this cursor and head
+    // (see storedPosition). A bound cursor without a well-formed head is not a
+    // binding; it stops on `head_mismatch` as before.
+    /** @type {BoundPosition|null} */
+    const bound =
+      durable_cursor !== null &&
+      durable_head_sha !== null &&
+      /^[0-9a-f]{40}$/i.test(durable_head_sha)
+        ? { cursor: durable_cursor, head_sha: durable_head_sha }
         : null;
     // Fields every later landing record must carry, read at each write — a
     // step that rewrites `quickfix_landing` whole would otherwise erase them.
@@ -1062,7 +1126,14 @@ export function createQuickfixLanding(deps) {
       log('quick_fix status readback failed for %s: %o', bead_id, err);
       // An unreadable bead says nothing about the landing; naming the read is
       // what lets the classifier treat it as the environment failure it is.
-      return fail(attempt_id, 'bd_read_failed', null, null, landing_extra);
+      return fail(
+        attempt_id,
+        'bd_read_failed',
+        null,
+        null,
+        landing_extra,
+        bound
+      );
     }
     const status = typeof issue.status === 'string' ? issue.status : null;
     if (
@@ -1095,7 +1166,14 @@ export function createQuickfixLanding(deps) {
     if (status === 'closed') {
       const no_change_kind = noChangeCloseKind(issue.close_reason);
       if (no_change_kind === null) {
-        return fail(attempt_id, 'premature_close', null, null, landing_extra);
+        return fail(
+          attempt_id,
+          'premature_close',
+          null,
+          null,
+          landing_extra,
+          bound
+        );
       }
       return settleNoChangeClose(
         attempt_id,
@@ -1115,7 +1193,14 @@ export function createQuickfixLanding(deps) {
       // standing in for.
       const proven = await proveDelivery({ attempt_id, bead_id, target_base });
       if (!proven.ok) {
-        return fail(attempt_id, proven.reason, null, null, landing_extra);
+        return fail(
+          attempt_id,
+          proven.reason,
+          null,
+          null,
+          landing_extra,
+          bound
+        );
       }
       receipt_head_sha = proven.receipt_sha;
       landing_extra = {
@@ -1126,7 +1211,10 @@ export function createQuickfixLanding(deps) {
         attempt_id,
         patch: {
           quickfix_landing: landingRecord(
-            { cursor: null, head_sha: receipt_head_sha, reason: null },
+            {
+              ...storedPosition(null, receipt_head_sha, bound),
+              reason: null
+            },
             landing_extra
           )
         }
@@ -1148,7 +1236,8 @@ export function createQuickfixLanding(deps) {
             : 'invalid_impl_review',
           null,
           null,
-          landing_extra
+          landing_extra,
+          bound
         );
       }
       receipt_head_sha = receipt.sha;
@@ -1160,7 +1249,14 @@ export function createQuickfixLanding(deps) {
       !/^[0-9a-f]{40}$/i.test(head_sha) ||
       (durable_cursor && receipt_head_sha !== head_sha)
     ) {
-      return fail(attempt_id, 'head_mismatch', null, head_sha, landing_extra);
+      return fail(
+        attempt_id,
+        'head_mismatch',
+        null,
+        head_sha,
+        landing_extra,
+        bound
+      );
     }
 
     // The landed head is the receipt-bound SHA, not the owned worktree's HEAD:
@@ -1168,7 +1264,7 @@ export function createQuickfixLanding(deps) {
     // that worktree, so its HEAD stays at the dispatch base (UI-fiei). The
     // proof that the reviewed bytes landed is base containment below.
 
-    markStep(attempt_id, 'base_containment', head_sha, landing_extra);
+    markStep(attempt_id, 'base_containment', head_sha, landing_extra, bound);
     const foreign_read = await readForeignLanding(bead_id);
     if (!foreign_read.ok) {
       return fail(
@@ -1176,7 +1272,8 @@ export function createQuickfixLanding(deps) {
         foreign_read.reason,
         'base_containment',
         head_sha,
-        landing_extra
+        landing_extra,
+        bound
       );
     }
     const foreign = foreign_read.foreign;
@@ -1191,7 +1288,8 @@ export function createQuickfixLanding(deps) {
         'containment_unobservable',
         'base_containment',
         head_sha,
-        landing_extra
+        landing_extra,
+        bound
       );
     }
     /** @type {string} */
@@ -1206,7 +1304,8 @@ export function createQuickfixLanding(deps) {
           remote.reason,
           'base_containment',
           head_sha,
-          landing_extra
+          landing_extra,
+          bound
         );
       }
       const foreign_fetched = await fetchForeignBase(foreign, remote.remote);
@@ -1216,7 +1315,8 @@ export function createQuickfixLanding(deps) {
           'containment_unobservable',
           'base_containment',
           head_sha,
-          landing_extra
+          landing_extra,
+          bound
         );
       }
       containment_cwd = foreign.path;
@@ -1235,7 +1335,8 @@ export function createQuickfixLanding(deps) {
         'containment_unobservable',
         'base_containment',
         head_sha,
-        landing_extra
+        landing_extra,
+        bound
       );
     }
     if (containment.code === 1) {
@@ -1244,7 +1345,8 @@ export function createQuickfixLanding(deps) {
         'push_not_contained',
         'base_containment',
         head_sha,
-        landing_extra
+        landing_extra,
+        bound
       );
     }
     if (containment.code !== 0) {
@@ -1253,12 +1355,13 @@ export function createQuickfixLanding(deps) {
         'containment_unobservable',
         'base_containment',
         head_sha,
-        landing_extra
+        landing_extra,
+        bound
       );
     }
 
     if (foreign) {
-      markStep(attempt_id, 'repo_operations', head_sha, landing_extra);
+      markStep(attempt_id, 'repo_operations', head_sha, landing_extra, bound);
       const declared = await foreignDeclaresDeploy(foreign, head_sha);
       if (!declared.ok) {
         return fail(
@@ -1266,7 +1369,8 @@ export function createQuickfixLanding(deps) {
           'repo_ops_config_invalid',
           'repo_operations',
           head_sha,
-          landing_extra
+          landing_extra,
+          bound
         );
       }
       if (declared.declared) {
@@ -1275,11 +1379,12 @@ export function createQuickfixLanding(deps) {
           'foreign_deploy_unsupported',
           'repo_operations',
           head_sha,
-          landing_extra
+          landing_extra,
+          bound
         );
       }
     } else if (repo_operations) {
-      markStep(attempt_id, 'repo_operations', head_sha, landing_extra);
+      markStep(attempt_id, 'repo_operations', head_sha, landing_extra, bound);
       let config;
       try {
         config = await repo_operations.hasConfig(head_sha, {
@@ -1292,7 +1397,8 @@ export function createQuickfixLanding(deps) {
           'repo_ops_config_invalid',
           'repo_operations',
           head_sha,
-          landing_extra
+          landing_extra,
+          bound
         );
       }
       if (!config.ok) {
@@ -1301,7 +1407,8 @@ export function createQuickfixLanding(deps) {
           config.code || 'repo_ops_config_invalid',
           'repo_operations',
           head_sha,
-          landing_extra
+          landing_extra,
+          bound
         );
       }
       if (config.present) {
@@ -1323,7 +1430,8 @@ export function createQuickfixLanding(deps) {
             'repo_operation_failed',
             'repo_operations',
             head_sha,
-            landing_extra
+            landing_extra,
+            bound
           );
         }
         if (!deployed.ok) {
@@ -1332,7 +1440,8 @@ export function createQuickfixLanding(deps) {
             deployed.code || 'repo_operation_failed',
             'repo_operations',
             head_sha,
-            landing_extra
+            landing_extra,
+            bound
           );
         }
         if (!deployed.inert && typeof deployed.operation_id === 'string') {
@@ -1353,7 +1462,8 @@ export function createQuickfixLanding(deps) {
               'repo_operation_failed',
               'repo_operations',
               head_sha,
-              landing_extra
+              landing_extra,
+              bound
             );
           }
           if (evidence?.state === 'failed') {
@@ -1362,7 +1472,8 @@ export function createQuickfixLanding(deps) {
               evidence.code || 'repo_operation_failed',
               'repo_operations',
               head_sha,
-              landing_extra
+              landing_extra,
+              bound
             );
           }
           if (evidence?.state !== 'succeeded') {
@@ -1371,7 +1482,8 @@ export function createQuickfixLanding(deps) {
               evidence?.code || 'repo_operation_pending',
               'repo_operations',
               head_sha,
-              landing_extra
+              landing_extra,
+              bound
             );
           }
         }
@@ -1381,7 +1493,7 @@ export function createQuickfixLanding(deps) {
     // A foreign landing never runs jobs: the rig Worker owns neither the
     // target's deploy worktree nor its ledger (UI-1eag §3.1, UI-k467 §3.6).
     if (!foreign) {
-      markStep(attempt_id, 'post_merge_jobs', head_sha, landing_extra);
+      markStep(attempt_id, 'post_merge_jobs', head_sha, landing_extra, bound);
       // The job step's merge SHA is the receipt-bound landed head — the same
       // SHA the deploy above was asked for. It is never written to the row.
       const jobs = await post_merge_jobs.run({
@@ -1395,7 +1507,14 @@ export function createQuickfixLanding(deps) {
         // The landing record has no log field; a failing run's log stays on
         // its own repo operation record.
         onFailure: (reason) =>
-          fail(attempt_id, reason, 'post_merge_jobs', head_sha, landing_extra),
+          fail(
+            attempt_id,
+            reason,
+            'post_merge_jobs',
+            head_sha,
+            landing_extra,
+            bound
+          ),
         // A live run this pass must not duplicate stops exactly like a
         // non-terminal deploy does.
         onPending: () =>
@@ -1404,7 +1523,8 @@ export function createQuickfixLanding(deps) {
             'repo_operation_pending',
             'post_merge_jobs',
             head_sha,
-            landing_extra
+            landing_extra,
+            bound
           )
       });
       if (jobs !== null) {
@@ -1412,7 +1532,7 @@ export function createQuickfixLanding(deps) {
       }
     }
 
-    markStep(attempt_id, 'branch_cleanup', head_sha, landing_extra);
+    markStep(attempt_id, 'branch_cleanup', head_sha, landing_extra, bound);
     const cleaned = await cleanupBranch(bead_id, fetched.sha);
     recordCleanupBackup(attempt_id, cleaned);
     if (!cleaned.ok) {
@@ -1423,7 +1543,8 @@ export function createQuickfixLanding(deps) {
         head_sha,
         cleaned.detail
           ? { ...(landing_extra || {}), cleanup_detail: cleaned.detail }
-          : landing_extra
+          : landing_extra,
+        bound
       );
     }
     if (cleaned.backup) {
@@ -1433,7 +1554,7 @@ export function createQuickfixLanding(deps) {
       };
     }
 
-    markStep(attempt_id, 'parent_close', head_sha, landing_extra);
+    markStep(attempt_id, 'parent_close', head_sha, landing_extra, bound);
     const closed = await closeBead(bead_id);
     if (!closed.ok) {
       if (closed.wrote) {
@@ -1444,7 +1565,8 @@ export function createQuickfixLanding(deps) {
         'bd_close_failed',
         'parent_close',
         head_sha,
-        landing_extra
+        landing_extra,
+        bound
       );
     }
 

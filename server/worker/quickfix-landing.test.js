@@ -1326,6 +1326,80 @@ test('rejects receipt mismatch against durable branch cleanup head', async () =>
   });
 });
 
+test('keeps the branch_cleanup cursor and stored head when a resume fails its base fetch', async () => {
+  const { landing, store } = makeLanding({
+    fetchCode: 1,
+    landingProgress: {
+      cursor: 'branch_cleanup',
+      head_sha: HEAD_SHA,
+      reason: 'local_branch_delete_failed'
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'containment_unobservable',
+    step: 'base_containment'
+  });
+  expect(store.updateAttempt).toHaveBeenLastCalledWith(WORKSPACE, {
+    attempt_id: ATTEMPT,
+    patch: {
+      quickfix_landing: {
+        cursor: 'branch_cleanup',
+        head_sha: HEAD_SHA,
+        reason: 'containment_unobservable'
+      }
+    }
+  });
+});
+
+test('keeps the branch_cleanup cursor and stored head on the evidence resolve of a resume', async () => {
+  const { landing, store } = makeLanding({
+    status: 'in_progress',
+    landingProgress: {
+      cursor: 'branch_cleanup',
+      head_sha: HEAD_SHA,
+      reason: 'local_branch_delete_failed'
+    }
+  });
+
+  await settle(landing);
+
+  expect(store.updateAttempt.mock.calls[0]?.[1].patch.quickfix_landing).toEqual(
+    {
+      cursor: 'branch_cleanup',
+      head_sha: HEAD_SHA,
+      reason: null,
+      resolved_by: 'worker:evidence'
+    }
+  );
+});
+
+test('keeps the branch_cleanup cursor and stored head on a head_mismatch stop', async () => {
+  const { landing, store } = makeLanding({
+    landingProgress: {
+      cursor: 'branch_cleanup',
+      head_sha: 'b'.repeat(40),
+      reason: 'local_branch_delete_failed'
+    }
+  });
+
+  await settle(landing);
+
+  expect(store.updateAttempt).toHaveBeenLastCalledWith(WORKSPACE, {
+    attempt_id: ATTEMPT,
+    patch: {
+      quickfix_landing: {
+        cursor: 'branch_cleanup',
+        head_sha: 'b'.repeat(40),
+        reason: 'head_mismatch'
+      }
+    }
+  });
+});
+
 test('moves successful attempt to done', async () => {
   const { landing, store } = makeLanding();
 
@@ -1833,7 +1907,13 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
         repo_id: REPO
       });
     }
-    const world = { cleanup_ok: true };
+    // What a later settlement pass sees changes between passes: the base
+    // fetch and the receipt are read here, at each call.
+    const world = {
+      cleanup_ok: true,
+      fetch_ok: true,
+      receipt: options.receipt ?? `reviewer@${HEAD_SHA}`
+    };
     /** @type {string[]} */
     const calls = [];
     let bead_status = 'resolved';
@@ -1844,7 +1924,10 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
       .join('');
     const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
       calls.push(`git:${args.join(' ')}`);
-      if (args[0] === 'fetch' || args[0] === 'merge-base') {
+      if (args[0] === 'fetch') {
+        return { code: world.fetch_ok ? 0 : 1, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'merge-base') {
         return { code: 0, stdout: '', stderr: '' };
       }
       if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
@@ -1868,9 +1951,7 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
         bead_status = status;
       }),
       readMetadata: vi.fn(async (/** @type {string} */ _id, key) =>
-        key === 'impl_review'
-          ? (options.receipt ?? `reviewer@${HEAD_SHA}`)
-          : null
+        key === 'impl_review' ? world.receipt : null
       )
     };
     const worktree = {
@@ -2188,6 +2269,138 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
     expect(result).toEqual({ ok: false, reason: 'head_mismatch', step: null });
     expect(calls.some((call) => call.startsWith('git:ls-tree'))).toBe(false);
     expect(repoOperations.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('keeps the post_merge_jobs cursor and stored head when a resume fails its base fetch', async () => {
+    const { landing, store, world } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      terminal: { state: 'failed', code: 'script_failed' }
+    });
+    await settleJobs(landing);
+    world.fetch_ok = false;
+
+    const result = await settleJobs(landing);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'containment_unobservable',
+      step: 'base_containment'
+    });
+    expect(
+      store.snapshot(WORKSPACE).attempts[ATTEMPT].quickfix_landing
+    ).toEqual({
+      cursor: 'post_merge_jobs',
+      head_sha: HEAD_SHA,
+      reason: 'containment_unobservable'
+    });
+  });
+
+  test('stops on head_mismatch before listing jobs when the receipt moves after a failed base fetch', async () => {
+    const { landing, store, calls, world, repoOperations } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      terminal: { state: 'failed', code: 'script_failed' }
+    });
+    await settleJobs(landing);
+    world.fetch_ok = false;
+    await settleJobs(landing);
+    world.fetch_ok = true;
+    world.receipt = `reviewer@${MOVED_HEAD}`;
+    calls.length = 0;
+    repoOperations.prepareJob.mockClear();
+
+    const result = await settleJobs(landing, true);
+
+    expect(result).toEqual({ ok: false, reason: 'head_mismatch', step: null });
+    expect(calls.some((call) => call.startsWith('git:ls-tree'))).toBe(false);
+    expect(repoOperations.prepareJob).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(WORKSPACE).attempts[ATTEMPT].quickfix_landing
+    ).toEqual({
+      cursor: 'post_merge_jobs',
+      head_sha: HEAD_SHA,
+      reason: 'head_mismatch'
+    });
+  });
+
+  test('stops on head_mismatch again on every later resume while the receipt stays moved', async () => {
+    const { landing, calls, world, repoOperations } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      landing: {
+        cursor: 'post_merge_jobs',
+        head_sha: HEAD_SHA,
+        reason: 'script_failed'
+      }
+    });
+    world.receipt = `reviewer@${MOVED_HEAD}`;
+    await settleJobs(landing);
+
+    const result = await settleJobs(landing);
+
+    expect(result).toEqual({ ok: false, reason: 'head_mismatch', step: null });
+    expect(calls.some((call) => call.startsWith('git:ls-tree'))).toBe(false);
+    expect(repoOperations.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('records a job stop of a branch_cleanup-bound resume at the post_merge_jobs cursor', async () => {
+    const { landing, store } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      landing: {
+        cursor: 'branch_cleanup',
+        head_sha: HEAD_SHA,
+        reason: 'worktree_remove_failed'
+      },
+      prior: true,
+      reconcile: { state: 'failed', started: true, operation_id: 'job-prior' }
+    });
+
+    await settleJobs(landing);
+
+    expect(
+      store.snapshot(WORKSPACE).attempts[ATTEMPT].quickfix_landing
+    ).toEqual({
+      cursor: 'post_merge_jobs',
+      head_sha: HEAD_SHA,
+      reason: `post_merge_job_outcome_unknown:${JOB_KEY}`
+    });
+  });
+
+  test('reruns the job under the person authority after a branch_cleanup-bound resume stopped on it', async () => {
+    const { landing, repoOperations } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      landing: {
+        cursor: 'branch_cleanup',
+        head_sha: HEAD_SHA,
+        reason: 'worktree_remove_failed'
+      },
+      prior: true,
+      reconcile: { state: 'failed', started: true, operation_id: 'job-prior' }
+    });
+    await settleJobs(landing);
+
+    const result = await settleJobs(landing, true);
+
+    expect(result).toEqual({ ok: true });
+    expect(repoOperations.prepareJob).toHaveBeenCalledOnce();
+  });
+
+  test('names the re-checked step on the timeline of a resumed post_merge_jobs landing', async () => {
+    const timeline = timelineRecorder();
+    const { landing } = makeLanding({
+      timeline,
+      fetchCode: 1,
+      landingProgress: {
+        cursor: 'post_merge_jobs',
+        head_sha: HEAD_SHA,
+        reason: 'script_failed'
+      }
+    });
+
+    await settle(landing);
+
+    expect(timeline.events.at(-1)).toMatchObject({
+      kind: 'landing_step',
+      seq: 'base_containment:failed'
+    });
   });
 
   test('runs no job on a foreign landing', async () => {
