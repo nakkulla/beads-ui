@@ -53,6 +53,25 @@ export const UNATTENDED_PREAMBLE = [
 ].join('\n');
 
 /**
+ * The session-lane block (UI-lbm5 §4.3). A Worker queue row that runs as an
+ * interactive session-hub window is NOT unattended: a person can enter the
+ * window (tmux or the Discord bridge) and answer. So this block replaces
+ * {@link UNATTENDED_PREAMBLE}, and the guard contract and process-lifetime
+ * paragraphs — both properties of the headless print-mode process — are not
+ * composed in. Its first line starts with `세션 레인:` so the block is
+ * recognizable by its prefix.
+ *
+ * @type {string}
+ */
+export const SESSION_LANE_PREAMBLE = [
+  '세션 레인: 이 세션은 Worker 대기열이 차례가 되어 연 대화형 세션이다. 사용자가 이 Bead를 대기열에 올린 것이 구현 승인이므로 구현 시작 질문을 다시 묻지 않는다.',
+  '',
+  '- 사람은 이 창(tmux 또는 Discord 브리지)에 들어와 답할 수 있다. 절차 질문(구현 시작·리뷰어 선택) 없이 fast_track으로 진행하고, 이슈에 원래 남은 사람 판단 지점에서만 대화로 묻고 턴을 끝내라.',
+  '- 사용자만 쓰는 Bead metadata 키 — `impl_dispatch`, `impl_entry`, `plan_approval`, `workflow_mode_source=user` — 는 이 세션이 쓰지 않는다. Worker가 시도 시작 시 스냅샷한 값이 바뀌면 머지 게이트가 영수증 위조로 fail-closed한다.',
+  '- 작업을 마치면 아래 종점 절의 결과 줄을 마지막 메시지의 첫 줄로 쓰고 턴을 끝내라. Worker가 그 줄을 읽어 결과를 판정하고 창을 닫는다.'
+].join('\n');
+
+/**
  * How a CLAUDE session holds its process while delegated work runs
  * (codex-orchestration-parity §3.2, reduced to one sentence by
  * harness-reduction spec D1).
@@ -498,8 +517,13 @@ export function defaultTaskPrompt(bead_id) {
  * after them is a rule about how to act on them, and the lifetime paragraph is
  * last because it is the one thing that matters only at the very end of a turn.
  *
+ * `session_lane: true` is the Worker queue's interactive session (UI-lbm5
+ * §4.3): {@link SESSION_LANE_PREAMBLE} replaces the unattended block, and the
+ * guard contract and process-lifetime paragraphs are left out. Every other
+ * block keeps its place.
+ *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ runtime?: 'claude'|'codex', fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, work_recovery_ready?: boolean, target_base?: string|null, attempt_facts?: import('../attempt-facts.js').AttemptFacts|null }} [options]
+ * @param {{ runtime?: 'claude'|'codex', fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, work_recovery_ready?: boolean, target_base?: string|null, attempt_facts?: import('../attempt-facts.js').AttemptFacts|null, session_lane?: boolean }} [options]
  * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
@@ -522,7 +546,8 @@ export function applyPreamble(base_prompt, options = {}) {
   const pr_submit = options.pr_submit !== false;
   const disposition = options.disposition === true;
   const quickfix_lane = !disposition && options.quickfix_lane === true;
-  const parts = [UNATTENDED_PREAMBLE];
+  const session_lane = options.session_lane === true;
+  const parts = [session_lane ? SESSION_LANE_PREAMBLE : UNATTENDED_PREAMBLE];
   if (options.attempt_facts) {
     parts.push(attemptFactsDirective(options.attempt_facts));
   }
@@ -549,9 +574,13 @@ export function applyPreamble(base_prompt, options = {}) {
       parts.push(prBaseDirective(target_base));
     }
   }
-  parts.push(guardContractDirective({ disposition, quickfix_lane }));
+  if (!session_lane) {
+    parts.push(guardContractDirective({ disposition, quickfix_lane }));
+  }
   parts.push(FIX_NOW_DIRECTIVE);
-  parts.push(lifetime);
+  if (!session_lane) {
+    parts.push(lifetime);
+  }
   return {
     system_prompt: parts.join('\n\n'),
     task_prompt: String(base_prompt ?? '')

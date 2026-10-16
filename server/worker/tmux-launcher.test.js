@@ -10,6 +10,7 @@ import { __resetRuntimeCatalogForTest } from './runner/index.js';
 import {
   INQUIRY_PANE_MARKER,
   RESOLVE_PANE_MARKER,
+  SESSION_LANE_PANE_MARKER,
   createTmuxLauncher,
   defaultResolveRunner,
   markerWrapper,
@@ -833,5 +834,148 @@ describe('tmux-launcher conversation flags (UI-jbl1 §3.4)', () => {
         'prompt'
       ]);
     });
+  });
+});
+
+describe('tmux-launcher session-lane launch input (UI-lbm5 §4.3)', () => {
+  /**
+   * A hub that records its calls and opens every window.
+   *
+   * @returns {{ calls: string[][], runSessionHub: (args: string[]) => Promise<any> }}
+   */
+  function recordingHub() {
+    /** @type {string[][]} */
+    const calls = [];
+    return {
+      calls,
+      runSessionHub: async (args) => {
+        calls.push(args);
+        if (args[0] === 'find') {
+          return hubReply({ found: false });
+        }
+        if (args[0] === 'alive') {
+          return hubReply({ alive: 'alive' });
+        }
+        return hubReply({
+          status: 'launched',
+          tmux_session: 'bdui-inquiry',
+          window: 'UI-lbm5',
+          pane: '%7'
+        });
+      }
+    };
+  }
+
+  test('names the session-lane window marker apart from the other kinds', () => {
+    const markers = [INQUIRY_PANE_MARKER, RESOLVE_PANE_MARKER];
+
+    const distinct = !markers.includes(SESSION_LANE_PANE_MARKER);
+
+    expect(SESSION_LANE_PANE_MARKER).toBe('@bdui_session_lane_bead');
+    expect(distinct).toBe(true);
+  });
+
+  test('passes every extra env pair to session-hub open', async () => {
+    const hub = recordingHub();
+    const launcher = createTmuxLauncher({
+      runSessionHub: hub.runSessionHub,
+      resolveRunner: () => '/usr/bin/claude',
+      launchFlags: () => [],
+      log: () => {}
+    });
+
+    await launcher.launch({
+      marker: SESSION_LANE_PANE_MARKER,
+      key: 'UI-lbm5',
+      tmux_session: 'bdui-inquiry',
+      window_name: 'UI-lbm5',
+      cwd: '/tmp',
+      commandArgs: ['prompt'],
+      runner: 'claude',
+      conversation_flags: false,
+      env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath' }
+    });
+
+    const opened = hub.calls.find((call) => call[0] === 'open') ?? [];
+    const head = opened.slice(0, opened.indexOf('--'));
+    expect(head).toEqual(
+      expect.arrayContaining([
+        '--marker-option',
+        SESSION_LANE_PANE_MARKER,
+        '--env',
+        'GIT_CONFIG_COUNT=1',
+        'GIT_CONFIG_KEY_0=core.hooksPath'
+      ])
+    );
+  });
+
+  test('runs claude through the account wrapper with its flag after claude', async () => {
+    const hub = recordingHub();
+    const launcher = createTmuxLauncher({
+      runSessionHub: hub.runSessionHub,
+      resolveRunner: () => '/usr/bin/claude',
+      launchFlags: () => [],
+      log: () => {}
+    });
+
+    await launcher.launch({
+      marker: SESSION_LANE_PANE_MARKER,
+      key: 'UI-lbm5',
+      tmux_session: 'bdui-inquiry',
+      window_name: 'UI-lbm5',
+      cwd: '/tmp',
+      commandArgs: ['--session-id', 'sid', 'prompt'],
+      runner: 'claude',
+      conversation_flags: false,
+      wrapper: {
+        executable: '/usr/local/bin/cswap',
+        args: ['run', 'me@example.com', '--share-history', '--']
+      }
+    });
+
+    const opened = hub.calls.find((call) => call[0] === 'open') ?? [];
+    expect(opened.slice(opened.indexOf('--') + 1)).toEqual([
+      '/usr/local/bin/cswap',
+      'run',
+      'me@example.com',
+      '--share-history',
+      '--',
+      '/usr/bin/claude',
+      '--allow-dangerously-skip-permissions',
+      '--session-id',
+      'sid',
+      'prompt'
+    ]);
+  });
+
+  test('writes the codex trust into the account CODEX_HOME it launches under', async () => {
+    const account_home = path.join(test_dir, 'account-home');
+    const hub = recordingHub();
+    const launcher = createTmuxLauncher({
+      runSessionHub: hub.runSessionHub,
+      resolveRunner: () => '/usr/bin/true',
+      launchFlags: () => [],
+      log: () => {}
+    });
+
+    await launcher.launch({
+      marker: SESSION_LANE_PANE_MARKER,
+      key: 'UI-lbm5',
+      tmux_session: 'bdui-inquiry',
+      window_name: 'UI-lbm5',
+      cwd: test_dir,
+      commandArgs: ['prompt'],
+      runner: 'codex',
+      conversation_flags: false,
+      env: { CODEX_HOME: account_home }
+    });
+
+    const opened = hub.calls.find((call) => call[0] === 'open') ?? [];
+    expect(opened.filter((word) => word.startsWith('CODEX_HOME='))).toEqual([
+      `CODEX_HOME=${account_home}`
+    ]);
+    expect(
+      parseToml(fs.readFileSync(path.join(account_home, 'config.toml'), 'utf8'))
+    ).toEqual({ projects: { [test_dir]: { trust_level: 'trusted' } } });
   });
 });

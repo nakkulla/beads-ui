@@ -847,7 +847,7 @@ describe('views/worker', () => {
   // UI-8881 seam 1: the 08-10 enforcement spec dropped these rows entirely; the
   // candidate lane now SHOWS them as observation-only cards instead. Server
   // admission/dispatch stays the execution boundary.
-  test('renders a worker-ineligible issue as an observation-only candidate', () => {
+  test('renders a worker-ineligible issue as a placeable session-lane candidate', () => {
     // One snapshot, not a second `seed()` on the same store: `applyPush`
     // discards a snapshot whose revision is not newer, so layering would leave
     // the bead out of the feed entirely and prove nothing.
@@ -881,8 +881,8 @@ describe('views/worker', () => {
       mount.querySelector('.worker-card[data-bead-id="NO-WORKER"]')
     );
     expect(card).not.toBeNull();
-    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
-    expect(placeButton(mount, 'NO-WORKER').disabled).toBe(true);
+    expect(card.querySelector('.worker-card__ineligible')).not.toBeNull();
+    expect(placeButton(mount, 'NO-WORKER').disabled).toBe(false);
     expect(placeButton(mount, 'RD-1').disabled).toBe(false);
   });
 
@@ -8676,8 +8676,8 @@ describe('worker-ineligible candidates (UI-8881)', () => {
     const inel = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-card[data-bead-id="INEL"]')
     );
-    expect(inel.classList.contains('worker-card--ineligible')).toBe(true);
-    expect(inel.getAttribute('draggable')).toBe('false');
+    expect(inel.querySelector('.worker-card__ineligible')).not.toBeNull();
+    expect(placeButton(mount, 'INEL').disabled).toBe(false);
   });
 
   test('copies the id and opens the detail from an ineligible card', async () => {
@@ -8752,7 +8752,7 @@ describe('worker-ineligible candidates (UI-8881)', () => {
     ).not.toBeNull();
   });
 
-  test('puts an ineligible candidate in the preparation segment', () => {
+  test('puts a placeable ineligible candidate in the ready segment', () => {
     presetCandidateFilter({ readiness: 'not_ready' });
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
@@ -8762,7 +8762,7 @@ describe('worker-ineligible candidates (UI-8881)', () => {
       transport: vi.fn()
     });
 
-    expect(candidateOrder(mount)).toEqual(['INEL', 'MID']);
+    expect(candidateOrder(mount)).toEqual(['MID']);
 
     document.body.innerHTML = '<div id="m2"></div>';
     const mount2 = /** @type {HTMLElement} */ (document.getElementById('m2'));
@@ -8773,7 +8773,7 @@ describe('worker-ineligible candidates (UI-8881)', () => {
       transport: vi.fn()
     });
 
-    expect(candidateOrder(mount2)).toEqual(['OK']);
+    expect(candidateOrder(mount2)).toEqual(['INEL', 'OK']);
   });
 
   test('sorts an ineligible row with the shared candidate comparators', () => {
@@ -8921,7 +8921,6 @@ describe('session-preferred candidates (UI-49mc)', () => {
       labels: ['worker-ineligible', 'session-preferred']
     });
 
-    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
     expect(card.querySelector('.worker-card__ineligible')).not.toBeNull();
     expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
   });

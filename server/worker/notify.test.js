@@ -483,6 +483,25 @@ const messageOf = (/** @type {{ args: string[] }} */ call) =>
   call.args[call.args.length - 1];
 
 describe('worker/notify argv assembly', () => {
+  test('names where a session-lane window opened on the start push', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.attemptStarted({
+      bead_id: 'UI-1',
+      title: '세션 레인',
+      runner: 'claude',
+      model: 'opus',
+      repo: '/r/proj',
+      kind: 'dispatch',
+      session_lane: { tmux_session: 'bdui-inquiry', tmux_window: 'UI-1' }
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      '🤖 🚀 시작 — UI-1 세션 레인\n▶ 세션 레인 시작 · tmux bdui-inquiry:UI-1\n리포: proj\n실행: claude opus'
+    );
+  });
+
   test('sends the start event with the transition, bead, repo and exec', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });

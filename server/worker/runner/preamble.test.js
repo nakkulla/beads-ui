@@ -1003,3 +1003,62 @@ describe('runner/preamble attempt facts card (spec D1)', () => {
     expect(out).toContain(REVIEW_PREAMBLE);
   });
 });
+
+describe('runner/preamble session lane (UI-lbm5 §4.3)', () => {
+  test('opens with the session-lane block instead of the unattended one', () => {
+    const { system_prompt } = applyPreamble('작업', {
+      session_lane: true,
+      fast_track: true
+    });
+
+    expect(system_prompt.startsWith('세션 레인:')).toBe(true);
+    expect(system_prompt).not.toContain(UNATTENDED_PREAMBLE);
+  });
+
+  test('keeps the facts, fast_track, end, PR base and fix-now blocks', () => {
+    const { system_prompt } = applyPreamble('작업', {
+      session_lane: true,
+      fast_track: true,
+      target_base: 'main',
+      attempt_facts: facts()
+    });
+
+    expect(system_prompt).toContain('## 시도 사실');
+    expect(system_prompt).toContain(FAST_TRACK_DIRECTIVE);
+    expect(system_prompt).toContain('## 종점');
+    expect(system_prompt).toContain(prBaseDirective('main'));
+    expect(system_prompt).toContain(FIX_NOW_DIRECTIVE);
+  });
+
+  test('drops the guard contract and the process-lifetime blocks', () => {
+    const { system_prompt } = applyPreamble('작업', {
+      session_lane: true,
+      fast_track: true,
+      runtime: 'codex'
+    });
+
+    expect(system_prompt).not.toContain('## 가드 계약');
+    expect(system_prompt).not.toContain(CLAUDE_LIFETIME_DIRECTIVE);
+    expect(system_prompt).not.toContain(CODEX_LIFETIME_DIRECTIVE);
+  });
+
+  test('ends a quick_fix session lane with the quick_fix lane directive', () => {
+    const { system_prompt } = applyPreamble('작업', {
+      session_lane: true,
+      fast_track: true,
+      quickfix_lane: true,
+      pr_submit: false
+    });
+
+    expect(system_prompt).toContain(QUICKFIX_LANE_DIRECTIVE);
+    expect(system_prompt).not.toContain(PR_SUBMIT_DIRECTIVE);
+  });
+
+  test('keeps the task prompt on its own channel', () => {
+    const { task_prompt } = applyPreamble('Bead X 작업', {
+      session_lane: true
+    });
+
+    expect(task_prompt).toBe('Bead X 작업');
+  });
+});

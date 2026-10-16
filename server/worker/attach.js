@@ -30,7 +30,7 @@ import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  isWorkerIneligible,
+  execLaneOf,
   workerLabels
 } from '../../app/utils/worker-eligibility.js';
 import { kvGetJson, runBdJsonProjected, runShell } from '../bd.js';
@@ -752,6 +752,9 @@ export function createLiveBd(config) {
           typeof md.applied_exec_preset === 'string'
             ? md.applied_exec_preset
             : null,
+        // How the dispatch runs (UI-lbm5 §4.1), judged by the one shared
+        // predicate from the same observation as the labels it reads.
+        exec_lane: execLaneOf(workerLabels(issue.labels), md),
         ...awaiting_user_entry,
         ...(Object.hasOwn(md, 'external_wait')
           ? { external_wait: md.external_wait }
@@ -2801,6 +2804,11 @@ function recoverRunningAttempts(att, key) {
       if (kind !== 'implementation' && kind !== 'review_session') {
         continue;
       }
+      // A session-lane attempt has no session log or process of its own to
+      // reattach (UI-lbm5 §4.5): the interactive pass re-adopts its pane.
+      if (a.exec === 'session') {
+        continue;
+      }
       if (att.scheduler.isRunning(a.bead_id)) {
         continue;
       }
@@ -3436,9 +3444,11 @@ export async function reevaluateWorkerProviderSwitches(workspace_root) {
 }
 
 /**
- * Read the one execution-policy label needed when a workspace has no live
- * scheduler attachment. This keeps direct queue mutations fail-closed without
+ * Confirm the Bead is readable when a workspace has no live scheduler
+ * attachment. This keeps direct queue mutations fail-closed without
  * constructing runners, git probes, or timers for an inactive workspace.
+ * `worker-ineligible` is no longer refused here (UI-lbm5 §4.2): such a Bead
+ * runs in the session lane once dispatched.
  *
  * @param {string} workspace_root
  * @param {string} bead_id
@@ -3452,10 +3462,7 @@ async function checkUnattachedWorkerAdmission(workspace_root, bead_id) {
   if (!shown || shown.ok !== true) {
     return { ok: false, reason: 'bd_snapshot_failed' };
   }
-  const issue = shown.data;
-  return isWorkerIneligible(/** @type {any} */ (issue).labels)
-    ? { ok: false, reason: 'worker_ineligible' }
-    : { ok: true };
+  return { ok: true };
 }
 
 /** @type {typeof checkUnattachedWorkerAdmission} */
@@ -3464,7 +3471,7 @@ let unattachedAdmissionCheck = checkUnattachedWorkerAdmission;
 /**
  * Pre-check auto-run admission for a queue placement. A live attachment owns
  * the full route/spec/git admission. Without one, an authoritative `bd show`
- * still enforces the interactive-only label before queue mutation.
+ * still has to read the Bead before queue mutation.
  *
  * @param {string} workspace_root
  * @param {string} bead_id

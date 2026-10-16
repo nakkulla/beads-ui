@@ -990,10 +990,9 @@ function readinessJudgement(item) {
   if (item.route_ok === false) {
     label = '라우팅 필요';
   }
-  if (
-    label.length === 0 &&
-    (item.worker_ineligible === true || item.awaiting_user === true)
-  ) {
+  // `worker-ineligible` is no placement refusal any more (UI-lbm5 §4.2), so
+  // only a parked row lets its own chip speak instead.
+  if (label.length === 0 && item.awaiting_user === true) {
     return null;
   }
   if (label.length === 0 && item.missing_description === true) {
@@ -1830,84 +1829,175 @@ export function interactiveProgressLineTemplate(views, now = Date.now()) {
  */
 export function interactiveSessionBadgesTemplate(views, options) {
   const now = options.now ?? Date.now();
-  return (views || []).map((view) => {
-    const { word, timed } = interactiveTurnWord(view);
-    const elapsed = timed ? turnElapsed(view, now) : '';
-    // 턴 경과는 `[data-ts]` 글자라 ticker가 렌더 없이 고친다 (UI-yu2o).
-    const tail = elapsed
+  // A session-lane window speaks through its tile's own slots (UI-lbm5 §4.6):
+  // the `[세션에서 이어가기]` operation and the slot-3 conversation line.
+  return (views || [])
+    .filter((view) => view.kind !== 'session_lane')
+    .map((view) => {
+      const { word, timed } = interactiveTurnWord(view);
+      const elapsed = timed ? turnElapsed(view, now) : '';
+      // 턴 경과는 `[data-ts]` 글자라 ticker가 렌더 없이 고친다 (UI-yu2o).
+      const tail = elapsed
+        ? timeSpan(view.turn_state_since, 'dur', now, { pre: `${word} ` })
+        : word;
+      // A same-session conversation reopens the attempt's own session, so it is
+      // neither a fork nor a new session (UI-nuwy §3.2).
+      const mode =
+        view.mode === 'fork'
+          ? 'fork'
+          : view.source === 'recovered'
+            ? '복구'
+            : view.mode === 'resume'
+              ? '같은 세션'
+              : '새 세션';
+      const origin =
+        mode === 'fork'
+          ? view.source === 'attempt'
+            ? `fork · attempt ${(view.attempt_id || '').slice(0, 8)}`
+            : 'fork · session_ref'
+          : mode === '복구'
+            ? '복구'
+            : mode === '같은 세션'
+              ? `같은 세션 · attempt ${(view.attempt_id || '').slice(0, 8)}`
+              : `새 세션 · ${view.fallback_reason || ''}`;
+      // 외부 대기 완료 재개는 fork·새 세션이 아니라 같은 세션 `--resume`이다 (UI-r6xq §4.3).
+      const resumed = view.kind === 'external_resume';
+      const place =
+        view.tmux_session && view.tmux_window
+          ? `${view.tmux_session}:${view.tmux_window}`
+          : '';
+      // 종류 이름은 `대화 세션` 하나다 (UI-18a5 §3.5): 무엇에서 열렸는지와
+      // fork·같은 세션·새 세션·복구 구분은 title에만 둔다.
+      const row_word =
+        typeof view.key === 'string' && view.key.startsWith('session-inquiry:')
+          ? '사람 필요'
+          : view.kind === 'resolve'
+            ? '실패'
+            : view.kind === 'external_resume'
+              ? '외부 작업 완료'
+              : '확인 필요';
+      const title = [
+        row_word,
+        resumed
+          ? `resume · ${view.source === 'recovered' ? '복구' : 'session_ref'}`
+          : origin,
+        place
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      // 창 자리는 라벨이 말한다 (UI-a119 §3.3).
+      const head = ['▤ 대화 세션', place].filter(Boolean).join(' · ');
+      const label = tail ? html`${head} · ${tail}` : head;
+      return html`${view.session_id
+        ? html`<button
+            type="button"
+            class="ui-chip interactive-session-badge"
+            data-session-provider=${view.provider}
+            data-session-id=${view.session_id}
+            data-bead-id=${options.bead_id}
+            title=${title}
+          >
+            ${label}
+          </button>`
+        : html`<span class="ui-chip interactive-session-badge" title=${title}
+            >${label}</span
+          >`}${view.discord_url
+        ? html`<a
+            class="interactive-session-discord"
+            href=${view.discord_url}
+            target="_blank"
+            rel="noopener"
+            >↗ Discord</a
+          >`
+        : ''}`;
+    });
+}
+
+/**
+ * The live session-lane window of a card (UI-lbm5 §4.6), or `null`.
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @returns {import('./lane-model.js').InteractiveSessionView|null}
+ */
+export function liveSessionLaneView(views) {
+  return (
+    (views || []).find(
+      (view) =>
+        view.kind === 'session_lane' && view.state === 'live' && !view.closing
+    ) || null
+  );
+}
+
+/**
+ * The slot-3 conversation line of a running session-lane tile (UI-lbm5
+ * §4.6), drawn by the same turn words a same-session conversation uses:
+ * `대화 중 <경과>` or `답 대기`, then the last answer. No live window draws
+ * nothing (fail-quiet).
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @param {number} [now]
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function sessionLaneProgressTemplate(views, now = Date.now()) {
+  const view = liveSessionLaneView(views);
+  if (!view) {
+    return '';
+  }
+  const { word, timed } = interactiveTurnWord(view);
+  const tail =
+    timed && turnElapsed(view, now)
       ? timeSpan(view.turn_state_since, 'dur', now, { pre: `${word} ` })
       : word;
-    // A same-session conversation reopens the attempt's own session, so it is
-    // neither a fork nor a new session (UI-nuwy §3.2).
-    const mode =
-      view.mode === 'fork'
-        ? 'fork'
-        : view.source === 'recovered'
-          ? '복구'
-          : view.mode === 'resume'
-            ? '같은 세션'
-            : '새 세션';
-    const origin =
-      mode === 'fork'
-        ? view.source === 'attempt'
-          ? `fork · attempt ${(view.attempt_id || '').slice(0, 8)}`
-          : 'fork · session_ref'
-        : mode === '복구'
-          ? '복구'
-          : mode === '같은 세션'
-            ? `같은 세션 · attempt ${(view.attempt_id || '').slice(0, 8)}`
-            : `새 세션 · ${view.fallback_reason || ''}`;
-    // 외부 대기 완료 재개는 fork·새 세션이 아니라 같은 세션 `--resume`이다 (UI-r6xq §4.3).
-    const resumed = view.kind === 'external_resume';
-    const place =
-      view.tmux_session && view.tmux_window
-        ? `${view.tmux_session}:${view.tmux_window}`
-        : '';
-    // 종류 이름은 `대화 세션` 하나다 (UI-18a5 §3.5): 무엇에서 열렸는지와
-    // fork·같은 세션·새 세션·복구 구분은 title에만 둔다.
-    const row_word =
-      typeof view.key === 'string' && view.key.startsWith('session-inquiry:')
-        ? '사람 필요'
-        : view.kind === 'resolve'
-          ? '실패'
-          : view.kind === 'external_resume'
-            ? '외부 작업 완료'
-            : '확인 필요';
-    const title = [
-      row_word,
-      resumed
-        ? `resume · ${view.source === 'recovered' ? '복구' : 'session_ref'}`
-        : origin,
-      place
-    ]
-      .filter(Boolean)
-      .join(' · ');
-    // 창 자리는 라벨이 말한다 (UI-a119 §3.3).
-    const head = ['▤ 대화 세션', place].filter(Boolean).join(' · ');
-    const label = tail ? html`${head} · ${tail}` : head;
-    return html`${view.session_id
-      ? html`<button
-          type="button"
-          class="ui-chip interactive-session-badge"
-          data-session-provider=${view.provider}
-          data-session-id=${view.session_id}
-          data-bead-id=${options.bead_id}
-          title=${title}
-        >
-          ${label}
-        </button>`
-      : html`<span class="ui-chip interactive-session-badge" title=${title}
-          >${label}</span
-        >`}${view.discord_url
-      ? html`<a
-          class="interactive-session-discord"
-          href=${view.discord_url}
-          target="_blank"
-          rel="noopener"
-          >↗ Discord</a
-        >`
-      : ''}`;
-  });
+  const message = view.last_message?.text || '';
+  if (!tail && !message) {
+    return '';
+  }
+  return html`<div
+    class="rtile__activity rtile__activity--session rtile__activity--session-lane"
+  >
+    <span class="rtile__activity-text"
+      >▤ ${tail}${tail && message ? ' · ' : ''}${message}</span
+    >
+  </div>`;
+}
+
+/**
+ * The `↗ Discord` link of a running session-lane window, beside its
+ * `[세션에서 이어가기]` (UI-lbm5 §4.6). Without a bridged thread it is empty.
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function sessionLaneDiscordTemplate(views) {
+  const url = liveSessionLaneView(views)?.discord_url;
+  return typeof url === 'string' && url.length > 0
+    ? html`<a
+        class="interactive-session-discord"
+        href=${url}
+        target="_blank"
+        rel="noopener"
+        >↗ Discord</a
+      >`
+    : '';
+}
+
+/**
+ * The `세션` exec chip (UI-lbm5 §4.6, slot 5b): the row runs — or, still
+ * waiting, will run — as a session-lane window. Same chip vocabulary as the
+ * `오케`/`워커` exec chips; a row without the fact draws nothing.
+ *
+ * @param {{ exec?: string }|null|undefined} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function sessionLaneChipTemplate(item) {
+  if (!item || item.exec !== 'session') {
+    return '';
+  }
+  return html`<span
+    class="exec-chip exec-chip--session"
+    title="세션 레인 — Worker 대기열이 여는 대화형 세션 창에서 실행된다"
+    ><span class="exec-chip__k">세션</span></span
+  >`;
 }
 
 /**
@@ -2165,6 +2255,11 @@ export function interactiveSessionClosingTemplate(views) {
  * 순번과 큐 위치가 어긋나므로 이 레인들은 숨기지 않는다.
  * @property {string} [issue_type] - bd `issue_type` (타입 필터의 재료).
  * @property {boolean} [deferred] - 보류 선반의 행 (UI-p7s2 §3).
+ * @property {'session'} [exec] - 이 행이 세션 레인으로 실행되거나(실행 중·PR
+ * 대기·완료: attempt 기록) 실행될(대기: `execLaneOf` 판정) 행이다 (UI-lbm5
+ * §4.6). 슬롯 5b `세션` exec 칩의 유일한 재료이고, 아니면 필드도 없다.
+ * @property {'worker'|'session'} [exec_lane] - 후보 카드의 실행 방식 판정
+ * (UI-lbm5 §4.7). `세션 권장` 칩의 눌림 상태(`세션 실행`)를 정한다.
  */
 
 /**
@@ -2187,7 +2282,12 @@ function doneThreeLineRow(item) {
   const done_at_label = formatRelativeTime(item.done_at);
   const route_el = routeChipTemplate(item.workflow);
   const from_el = creationSourceChipsTemplate(item, { include_from: false });
-  const exec_el = execChipsTemplate(item.exec_chips);
+  const exec_el = html`${sessionLaneChipTemplate(item)}${execChipsTemplate(
+    item.exec_chips
+  )}`;
+  const has_exec_el =
+    item.exec === 'session' ||
+    !!(item.exec_chips?.orchestration || item.exec_chips?.worker);
   // plan 묶음 칩은 슬롯 5a 좌표다 (UI-ruwu §2): route 앞, 팝업은 그 줄 아래.
   const plan_open = chipOpen(item, 'plan');
   const plan_el = planChipTemplate(item, plan_open);
@@ -2237,7 +2337,7 @@ function doneThreeLineRow(item) {
               : ''}
           </div>`
         : ''}
-      ${exec_el || provider_badges.length > 0 || usage_label
+      ${has_exec_el || provider_badges.length > 0 || usage_label
         ? html`<div class="worker-chips worker-chips--run">
             ${exec_el}${provider_badges.length > 0
               ? provider_badges.map(
@@ -4120,6 +4220,9 @@ export function miniRow(item, options = {}) {
         pin: item.exec_chips_pinned === true
       })
     : '';
+  // The `세션` exec chip leads slot 5b on waiting, PR-wait and done rows
+  // alike (UI-lbm5 §4.6).
+  const session_chip_el = sessionLaneChipTemplate(item);
   // Slot 5a coordinates and 5b execution facts each fail quiet (UI-us7l).
   const complex_el = complexChipTemplate(
     item.complex_reason,
@@ -4159,6 +4262,7 @@ export function miniRow(item, options = {}) {
         </div>`
       : '';
   const run_el =
+    session_chip_el ||
     has_exec_chips ||
     complex_el ||
     area_el ||
@@ -4166,7 +4270,7 @@ export function miniRow(item, options = {}) {
     usage_el ||
     log_path_el
       ? html`<div class="worker-chips worker-chips--run">
-          ${exec_chips_el}${complex_el}${area_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open ||
+          ${session_chip_el}${exec_chips_el}${complex_el}${area_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open ||
           plan_open ||
           withdrawn_open
             ? ''
@@ -4238,9 +4342,9 @@ export function miniRow(item, options = {}) {
           </div>
           <div class="worker-mini__row2">${title_el}</div>
           <div class="worker-mini__row3">
-            ${coords_el}${exec_chips_el || usage_el
+            ${coords_el}${session_chip_el || exec_chips_el || usage_el
               ? html`<div class="worker-chips worker-chips--run">
-                  ${exec_chips_el}${usage_el}
+                  ${session_chip_el}${exec_chips_el}${usage_el}
                 </div>`
               : ''}${done_at_label
               ? html`<span
@@ -4842,8 +4946,9 @@ export function judgementPopoverContent(item, chip_key, plan_context) {
       return null;
     }
     return {
-      title: '워커 실행 대상이 아니다',
+      title: '세션 레인으로 실행된다',
       lines: [
+        WORKER_INELIGIBLE_TOOLTIP,
         'worker-ineligible 라벨이 붙어 있다 — 라벨은 이슈 상세의 라벨 절에서 뗀다'
       ]
     };
@@ -5001,6 +5106,16 @@ function chipOpen(item, chip_key) {
 export { AWAITING_USER_REASON_PREFIX } from '../../utils/awaiting-user-reason.js';
 
 /**
+ * The `worker-ineligible` chip's tooltip (UI-lbm5 §4.6): the label no longer
+ * keeps the Bead off the queue, it sends it to the session lane.
+ */
+export const WORKER_INELIGIBLE_TOOLTIP =
+  '워커 대신 세션 레인으로 실행된다 — 대기열에 올리면 구현 승인';
+
+/** The click hint the `세션 권장` chip's tooltip ends with (UI-lbm5 §4.7). */
+export const SESSION_TOGGLE_HINT = '누르면 세션 레인 ↔ Worker 전환';
+
+/**
  * One candidate `.worker-card` (spec §2, mockup 변형 B). Richer than
  * {@link miniRow}: a route chip + the Board's route-driven stepper. It keeps
  * miniRow's row contract (`draggable` / `data-bead-id` / `data-lane`), but the
@@ -5037,16 +5152,14 @@ export function candidateCard(item, place_menu = null, options = {}) {
   // projection, so the card cannot become placeable through a caller that
   // forgot the conjunction.
   const worker_ineligible = item.worker_ineligible === true;
-  const draggable =
-    !is_deferred && item.draggable && !item.done && !worker_ineligible;
+  // `worker-ineligible` no longer blocks drag or placement (UI-lbm5 §4.2): the
+  // row runs in the session lane once it is dispatched.
+  const draggable = !is_deferred && item.draggable && !item.done;
   // 배치 자격은 드래그와 갈라졌다 (UI-d13v §6): 후보 카드는 드래그 소스가 아니게
   // 됐지만 대기 적재는 남으므로, 그 자격을 `draggable`에서 읽으면 주 경로가 통째로
   // 사라진다. 메뉴 열림과 `[대기로 ↴]`는 둘 다 이 값 하나를 읽는다.
   const queue_placeable =
-    !is_deferred &&
-    item.queue_placeable === true &&
-    !item.done &&
-    !worker_ineligible;
+    !is_deferred && item.queue_placeable === true && !item.done;
   const menu_open =
     queue_placeable && place_menu && place_menu.bead_id === item.id;
   const recommend = !is_deferred ? options.recommend || null : null;
@@ -5056,6 +5169,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const session_preferred = item.session_preferred === true;
   const session_preferred_tooltip =
     SESSION_PREFERRED_TOOLTIP[item.session_preferred_reason || ''] || '';
+  // The chip's click toggles `exec_lane` (UI-lbm5 §4.7); the reason the old
+  // popup said moves into the tooltip.
+  const session_lane_set = item.exec_lane === 'session';
   const workflow = item.workflow;
   // 판정은 구조화 필드만 읽는다 (§4). `reason`은 표시 문자열이므로 그것을 되읽어
   // 판정을 세우면 문구가 바뀌는 순간 툴팁과 판정 칩이 조용히 어긋난다.
@@ -5111,22 +5227,15 @@ export function candidateCard(item, place_menu = null, options = {}) {
   // 말하고 stepper에만 opacity를 걸므로, 여기서 root opacity를 겹쳐 걸면 그
   // stepper가 0.65 × 0.65로 두 번 흐려진다.
   const blocked_or_not_ready =
-    !is_deferred &&
-    !worker_ineligible &&
-    (item.blocked === true || item.queue_placeable === false);
+    !is_deferred && (item.blocked === true || item.queue_placeable === false);
   // 작업 종류 배경 (UI-kyky §3.1). `worker-ineligible` 카드는 이미 자기 배경으로
   // "지금은 못 간다"를 말하므로 중립이 아니고, 보류 카드는 tint 없이
   // `worker-card--deferred` 하나로 선반임을 말한다 (§3.2).
-  const route_tone = routeCardTone(
-    workflow,
-    !worker_ineligible && !is_deferred
-  );
+  const route_tone = routeCardTone(workflow, !is_deferred);
   return html`<div
     class="worker-card${draggable
       ? ''
-      : ' worker-card--static'}${worker_ineligible
-      ? ' worker-card--ineligible'
-      : ''}${blocked_or_not_ready
+      : ' worker-card--static'}${blocked_or_not_ready
       ? ' worker-card--blocked'
       : ''}${route_tone.tinted ? ' worker-card--route-bg' : ''}${is_deferred
       ? ' worker-card--deferred'
@@ -5158,21 +5267,22 @@ export function candidateCard(item, place_menu = null, options = {}) {
             class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__ineligible"
             data-chip-key="ineligible"
             aria-expanded=${chipOpen(item, 'ineligible') ? 'true' : 'false'}
-            title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
+            title=${WORKER_INELIGIBLE_TOOLTIP}
           >
             worker-ineligible
           </button>`
         : session_preferred
           ? html`<button
               type="button"
-              class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__session-preferred"
-              data-chip-key="session_preferred"
-              aria-expanded=${chipOpen(item, 'session_preferred')
-                ? 'true'
-                : 'false'}
-              title=${session_preferred_tooltip}
+              class="ui-chip ctl-chip ctl-chip--label worker-card__session-preferred session-lane-toggle"
+              data-bead-id=${item.id}
+              data-root-dir=${ifDefined(item.root_dir)}
+              aria-pressed=${session_lane_set ? 'true' : 'false'}
+              title=${[session_preferred_tooltip, SESSION_TOGGLE_HINT]
+                .filter(Boolean)
+                .join('\n')}
             >
-              세션 권장
+              ${session_lane_set ? '세션 실행' : '세션 권장'}
             </button>`
           : ''}${complexChipTemplate(
         item.complex_reason,

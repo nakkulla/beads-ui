@@ -4443,14 +4443,14 @@ describe('views/detail-panel [↴ 대기로] (UI-6g3t §6)', () => {
     panel.destroy();
   });
 
-  test('disables the button for a worker-ineligible bead with its reason', () => {
+  test('enables the button for a worker-ineligible bead with the session lane sentence', () => {
     const { mount, panel } = placePanel({ labels: ['worker-ineligible'] });
 
     const button = placeButton(mount);
 
-    expect(button?.disabled).toBe(true);
+    expect(button?.disabled).toBe(false);
     expect(button?.getAttribute('title')).toBe(
-      'worker-ineligible label로 워커에서 실행할 수 없습니다'
+      '대기 큐 맨 뒤에 추가 — 세션 레인으로 실행된다'
     );
     panel.destroy();
   });

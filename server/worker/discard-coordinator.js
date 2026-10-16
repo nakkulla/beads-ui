@@ -356,8 +356,12 @@ export function createDiscardCoordinator(deps, options = {}) {
               started_at: record.started_at
             }
           : null;
+    // A session-lane attempt (UI-lbm5 §4.5) has no process this server
+    // spawned: its identity is its marker pane, and `finalizeDiscardAttempt`
+    // closes that window and confirms it gone before the attempt settles.
     if (
       process_identity === null &&
+      record.exec !== 'session' &&
       (record.status === 'running' ||
         record.control?.phase === 'requested' ||
         record.control?.phase === 'signaled')

@@ -46,7 +46,7 @@
  * @import { WorktreeObservation, WorktreeSummary } from './worktree.js'
  * @import { WaitRecord } from './external-wait/store.js'
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -58,7 +58,7 @@ import {
 import { laneMismatchOf, laneOfRoute } from '../../app/utils/quickfix-lane.js';
 import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { createTranscriptReducer } from '../../app/utils/transcript-lines.js';
-import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
+import { execLaneOf } from '../../app/utils/worker-eligibility.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
@@ -152,8 +152,17 @@ import {
 } from './runner/claude.js';
 import { monitorGuardEvents } from './runner/guard-events.js';
 import { RUNNERS, adapterSpec, runtimeCatalog } from './runner/index.js';
-import { defaultTaskPrompt } from './runner/preamble.js';
+import { applyPreamble, defaultTaskPrompt } from './runner/preamble.js';
 import { terminalResultOf } from './runner/session.js';
+import {
+  SESSION_LANE_KIND,
+  SESSION_LANE_STOP,
+  sessionLaneAwaitsAnswer,
+  sessionLaneCommandArgs,
+  sessionLaneEnv,
+  sessionLanePaneAlive,
+  sessionLaneVerdict
+} from './session-lane.js';
 import { stderrPathOf } from './session-log.js';
 import {
   resolveSessionFile as defaultResolveSessionFile,
@@ -170,7 +179,8 @@ import {
 import {
   EXTERNAL_RESUME_PANE_MARKER,
   INQUIRY_PANE_MARKER,
-  RESOLVE_PANE_MARKER
+  RESOLVE_PANE_MARKER,
+  SESSION_LANE_PANE_MARKER
 } from './tmux-launcher.js';
 import * as default_usage_receipts from './usage-receipts.js';
 import * as default_work_recovery_policy from './work-recovery-policy.js';
@@ -668,6 +678,9 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {string} [impl_dispatch] - impl_dispatch, under the same
  * display-only rule. It is a user-write-only key the session may not write, and
  * the card states its value so a session stops looking for it.
+ * @property {'worker'|'session'} [exec_lane] - How this Bead's dispatch runs
+ * (UI-lbm5 §4.1), judged by the shared `execLaneOf` from the same issue
+ * observation; `session` launches an interactive session-lane window.
  * @property {string|null} [applied_exec_preset] - The preset id this issue's
  * pins came from, or null. Read by `dispatchPreset` so an attempt is recorded
  * under the preset the ISSUE carried rather than the workspace record.
@@ -816,6 +829,9 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
  * @property {{ existsSync: (path: string) => boolean }} [fs]
+ * @property {(ms: number) => Promise<void>} [sleep] - The wait between pane
+ * listings while a session-lane window closes (UI-lbm5 §4.5); a test passes
+ * an immediate one.
  * @property {() => string} [interactiveTmuxSession] - The configured inquiry
  * tmux session (resolve-session `interactiveTmuxSessionName`): a click-started
  * window falls back to it when no user session qualifies (UI-a119 §3.1); the
@@ -1343,7 +1359,8 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
 const INTERACTIVE_KIND_LABELS = {
   resolve: '대화',
   inquiry: '대화',
-  external_resume: '대화'
+  external_resume: '대화',
+  session_lane: '세션 레인'
 };
 
 /**
@@ -1386,6 +1403,29 @@ const FAILURE_HANDOFF_ROWS = Object.freeze({
   repo_operation: '실패 — 수동 배포',
   foreign_handoff: '실패 — 외부 PR 사람 처리 필요'
 });
+
+/**
+ * The exec lane of a dispatch-time Bead snapshot (UI-lbm5 §4.1). The live
+ * snapshot carries the shared predicate's answer; a snapshot without the field
+ * is judged from its labels by the same predicate, so a `worker-ineligible`
+ * Bead can never fall back to a headless run.
+ *
+ * @param {BeadSnapshot|null|undefined} snap
+ * @returns {'worker'|'session'}
+ */
+export function execLaneOfSnapshot(snap) {
+  return snap?.exec_lane === 'session' ||
+    execLaneOf(snap?.labels, null) === 'session'
+    ? 'session'
+    : 'worker';
+}
+
+/**
+ * How long a session-lane close waits after `/exit` before it kills the
+ * window, and how often it re-lists the panes meanwhile (UI-lbm5 §4.5).
+ */
+const SESSION_LANE_CLOSE_GRACE_MS = 10_000;
+const SESSION_LANE_CLOSE_STEP_MS = 1_000;
 
 /**
  * The turn stage a live interactive pane's hook options describe (UI-ri8n
@@ -1457,6 +1497,12 @@ export function createScheduler(deps) {
   const now = deps.now || (() => Date.now());
   const fs = deps.fs || nodeFs;
   const guardHook = deps.guardHook || default_guard_hook;
+  const interactiveTmuxSession =
+    deps.interactiveTmuxSession || (() => DEFAULT_INQUIRY_TMUX_SESSION);
+  const sleep =
+    deps.sleep ||
+    ((/** @type {number} */ ms) =>
+      new Promise((resolve) => setTimeout(resolve, ms)));
   const usage_receipts = deps.usageReceipts || default_usage_receipts;
   const work_recovery_policy =
     deps.workRecoveryPolicy || default_work_recovery_policy;
@@ -3708,6 +3754,7 @@ export function createScheduler(deps) {
       if (
         current_attempt.status !== 'running' ||
         current_attempt.kind === 'review_session' ||
+        current_attempt.exec === 'session' ||
         current_attempt.control ||
         live_preempt_in_flight.has(attempt_id) ||
         (runner !== 'claude' && runner !== 'codex')
@@ -5147,9 +5194,6 @@ export function createScheduler(deps) {
    * @returns {Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha?: string, delta_shas?: string[], changed_paths?: string[], plan?: { receipt_sha: string, delta_shas: string[], changed_paths: string[] } } }>}
    */
   async function checkAdmission(snap, base, options = {}) {
-    if (isWorkerIneligible(snap.labels)) {
-      return { ok: false, reason: 'worker_ineligible' };
-    }
     if (!deps.admission) {
       return { ok: true };
     }
@@ -5749,6 +5793,14 @@ export function createScheduler(deps) {
         return;
       }
       if (dispositionKindOf(workspace, attempt_id)) {
+        return;
+      }
+      // A session-lane attempt that settled while its window is still open
+      // already has the window a person enters (UI-lbm5 §4.4): no inquiry.
+      if (
+        attempt.exec === 'session' &&
+        liveSessionLaneWindow(workspace, bead_id)
+      ) {
         return;
       }
       // `🙋 확인 필요` goes out once per stopped attempt (UI-nuwy §3.7). The
@@ -8607,10 +8659,21 @@ export function createScheduler(deps) {
    * has exactly that shape. {@link reconcile}'s `running`/`settling`/`claimed`
    * fences are what guarantee that, so this must not be called on its own.
    *
+   * A SESSION-LANE attempt (UI-lbm5 §4.4) has no process this server spawned:
+   * its liveness is its marker pane. It reads as dead only once a SUCCESSFUL
+   * tmux listing lacked the pane (`interactive.gone_at`, written by the
+   * interactive pass); never observed, or every listing failed, reads as
+   * alive, so its claim and slot are kept. The same answer then serves every
+   * caller — the reconcile candidates, `occupiedBeadIds` and resume
+   * eligibility — and the boot recovery that rides `reconcile`.
+   *
    * @param {any} attempt
    * @returns {boolean}
    */
   function isDeadAttempt(attempt) {
+    if (attempt?.exec === 'session') {
+      return typeof attempt.interactive?.gone_at === 'number';
+    }
     const probePid = deps.probePid;
     if (typeof probePid !== 'function') {
       return false;
@@ -8653,7 +8716,11 @@ export function createScheduler(deps) {
     ) {
       return false;
     }
-    return attempt.pid == null || isDeadAttempt(attempt);
+    // A session-lane attempt never has a pid (UI-lbm5 §4.4): only its pane
+    // observation can call it dead.
+    return attempt.exec === 'session'
+      ? isDeadAttempt(attempt)
+      : attempt.pid == null || isDeadAttempt(attempt);
   }
 
   /**
@@ -8750,6 +8817,160 @@ export function createScheduler(deps) {
         attempt.bead_id,
         handback_parent_id
       );
+    }
+  }
+
+  /**
+   * Settle a session-lane attempt whose window a successful tmux pass found
+   * gone (UI-lbm5 §4.5). A terminal result line its transcript still holds
+   * settles through the result-line path; WITHOUT one it is `failed` with
+   * cause `session_exited`. The person closed the window, so nothing continues on
+   * its own — no automatic resume, no resolve session; `↻ 이어하기` is the one
+   * way back. A session that pushed its base before the window closed is
+   * judged by that landing first, exactly as `onSessionDone` does.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   */
+  async function disposeDeadSessionLane(workspace, attempt_id, attempt) {
+    // The window is gone, but its transcript is not: a terminal result line
+    // written before the person closed it — after the last live observation —
+    // is still the session's answer (§4.5), and only its absence is
+    // `session_exited`.
+    const verdict = goneSessionLaneVerdict(attempt);
+    if (verdict !== null) {
+      await settleSessionLaneVerdict(workspace, attempt_id, attempt, verdict);
+      return;
+    }
+    settling.add(attempt_id);
+    try {
+      const landed = await settleBaseDrift(workspace, attempt_id);
+      await failAttempt(
+        workspace,
+        attempt_id,
+        attempt.bead_id,
+        attempt.workflow_mode_prior ?? null,
+        landed ? 'base_landing_detected' : 'session_exited',
+        landed
+          ? { reason: 'base_landing_detected', command: null }
+          : { summary: '세션 레인 창이 결과 줄 없이 닫힘' }
+      );
+    } catch (err) {
+      log('session lane disposal failed for %s: %o', attempt_id, err);
+    } finally {
+      settling.delete(attempt_id);
+      removeGuardHook(workspace, attempt_id);
+    }
+    notifyChanged(workspace);
+    await tick(workspace);
+  }
+
+  /**
+   * The terminal verdict a GONE session-lane window left in its transcript,
+   * or null (UI-lbm5 §4.5): the last assistant message, read where the launch
+   * wrote it, counts only when it came after the attempt started and after
+   * the last message the live observation processed, and opens with a
+   * terminal result line. An unreadable transcript is no result.
+   *
+   * @param {any} attempt
+   * @returns {import('./runner/session.js').RunnerVerdict|null}
+   */
+  function goneSessionLaneVerdict(attempt) {
+    const session_id =
+      typeof attempt.session_id === 'string' ? attempt.session_id : null;
+    if (
+      session_id === null ||
+      (attempt.runner !== 'claude' && attempt.runner !== 'codex')
+    ) {
+      return null;
+    }
+    const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
+    const reader =
+      deps.readLastAssistantMessage || defaultReadLastAssistantMessage;
+    const sessions_root = sessionLaneSessionsRoot(attempt);
+    try {
+      const location = resolver(
+        {
+          provider: attempt.runner,
+          session_id,
+          host: os.hostname(),
+          index: 0
+        },
+        {
+          home_dir: deps.homeDir,
+          hostname: os.hostname(),
+          ...(sessions_root ? { sessions_root } : {})
+        }
+      );
+      if (location.locality !== 'local' || location.file === null) {
+        return null;
+      }
+      const message = reader({ provider: attempt.runner, file: location.file });
+      const message_at = message?.at ?? location.last_event_at ?? null;
+      const processed_at = attempt.interactive?.processed_message_at ?? null;
+      if (
+        message === null ||
+        message_at === null ||
+        (typeof attempt.started_at === 'number' &&
+          message_at <= attempt.started_at) ||
+        (processed_at !== null && message_at <= processed_at)
+      ) {
+        return null;
+      }
+      return sessionLaneVerdict(message);
+    } catch (err) {
+      log(
+        'session lane transcript read failed for %s: %o',
+        attempt.bead_id,
+        err
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Feed a session-lane terminal verdict into the SAME `onSessionDone` branch
+   * a headless verdict takes, then report the completion settlement (UI-lbm5
+   * §4.5). A settlement that throws marks the attempt's settlement failed;
+   * nothing escapes.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   * @param {import('./runner/session.js').RunnerVerdict} verdict
+   */
+  async function settleSessionLaneVerdict(
+    workspace,
+    attempt_id,
+    attempt,
+    verdict
+  ) {
+    appendTimeline({
+      bead_id: attempt.bead_id,
+      attempt_id,
+      kind: 'interactive_session',
+      seq: `${SESSION_LANE_KIND}:${attempt_id}:result`,
+      summary: `세션 레인 결과 · ${verdict.summary ?? ''}`.trim()
+    });
+    try {
+      await onSessionDone(
+        workspace,
+        attempt_id,
+        attempt.bead_id,
+        /** @type {BeadSnapshot} */ (
+          /** @type {any} */ ({
+            repo: attempt.repo ?? '',
+            target_base: attempt.target_base ?? ''
+          })
+        ),
+        attempt.workflow_mode_prior ?? null,
+        verdict
+      );
+      await reportCompletionSettlement(workspace, attempt_id, verdict);
+    } catch (err) {
+      log('session lane settlement failed for %s: %o', attempt_id, err);
+      markSettlementFailed(workspace, attempt_id);
     }
   }
 
@@ -9565,6 +9786,8 @@ export function createScheduler(deps) {
         // every one of them as `pr_missing` — a review lineage opens no PR.
         if (current.kind === 'review_session') {
           await disposeDeadReviewSession(workspace, d.attempt_id, current);
+        } else if (current.exec === 'session') {
+          await disposeDeadSessionLane(workspace, d.attempt_id, current);
         } else {
           await disposeDeadAttempt(workspace, d.attempt_id, current);
         }
@@ -9641,6 +9864,233 @@ export function createScheduler(deps) {
     return withInteractiveLock(workspace, () =>
       reconcileInteractivePass(workspace)
     );
+  }
+
+  /**
+   * A fresh session-lane conversation state: the record shape the card's
+   * conversation renderer reads (`대화 중` / `답 대기`), with no message
+   * processed yet (UI-lbm5 §4.6).
+   *
+   * @returns {import('./queue-store.js').ConversationState}
+   */
+  function newSessionLaneConversation() {
+    return {
+      stop: SESSION_LANE_STOP,
+      wait_id: null,
+      processed_message_at: null,
+      message_excerpt: null,
+      result: null,
+      handoff: null,
+      takeover_notified_at: null
+    };
+  }
+
+  /**
+   * The running session-lane attempt of a Bead, or null.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {any|null}
+   */
+  function runningSessionLaneAttempt(workspace, bead_id) {
+    for (const attempt of Object.values(
+      deps.store.snapshot(workspace).attempts || {}
+    )) {
+      const a = /** @type {any} */ (attempt);
+      if (
+        a &&
+        a.bead_id === bead_id &&
+        a.exec === 'session' &&
+        a.status === 'running'
+      ) {
+        return a;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether a Bead's session-lane window is still the place a person answers
+   * (UI-lbm5 §4.4): an unsettled session-lane record. Such an attempt is no
+   * target of the automatic direction inquiry.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {boolean}
+   */
+  function liveSessionLaneWindow(workspace, bead_id) {
+    const record =
+      deps.store.snapshot(workspace).interactive_sessions?.[
+        `${bead_id}:${SESSION_LANE_KIND}`
+      ];
+    return !!record && record.settled_at === null;
+  }
+
+  /**
+   * The sessions directory a session-lane window's transcript is written to:
+   * a codex window opened with an account runs under that account's
+   * `CODEX_HOME`, so the root is the one {@link codexSessionsRoot} derives for
+   * it, never the default home. Null (the resolver's own default) for claude.
+   *
+   * @param {{ runner?: string|null, codex_account?: string|null }|null|undefined} attempt
+   * @returns {string|null}
+   */
+  function sessionLaneSessionsRoot(attempt) {
+    return attempt?.runner === 'codex'
+      ? codexSessionsRoot({
+          codex_account: attempt.codex_account ?? null,
+          ...(deps.homeDir ? { home_dir: deps.homeDir } : {})
+        })
+      : null;
+  }
+
+  /**
+   * Whether a session-lane attempt is one a pane listing may judge now: a
+   * running window no launch (its Bead claimed) or settlement is working on,
+   * not already recorded gone.
+   *
+   * @param {string} attempt_id
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function sessionLaneJudgeable(attempt_id, attempt) {
+    return (
+      !!attempt &&
+      attempt.exec === 'session' &&
+      attempt.status === 'running' &&
+      !claimed.has(attempt.bead_id) &&
+      !settling.has(attempt_id) &&
+      typeof attempt.interactive?.gone_at !== 'number'
+    );
+  }
+
+  /**
+   * The session-lane attempts a pane listing about to START may judge, keyed
+   * by attempt id with the pane id each one had then (UI-lbm5 §4.4). Only
+   * these are judged against the listing's rows: a window launched or
+   * re-paned while the listing was in flight is absent from rows that
+   * predate it, and that absence proves nothing.
+   *
+   * @param {string} workspace
+   * @returns {Map<string, string|null>}
+   */
+  function sessionLaneObservationTargets(workspace) {
+    /** @type {Map<string, string|null>} */
+    const targets = new Map();
+    for (const [attempt_id, attempt] of Object.entries(
+      deps.store.snapshot(workspace).attempts || {}
+    )) {
+      const a = /** @type {any} */ (attempt);
+      if (sessionLaneJudgeable(attempt_id, a)) {
+        targets.set(attempt_id, a.interactive?.pane_id ?? null);
+      }
+    }
+    return targets;
+  }
+
+  /**
+   * Record what ONE successful session-lane marker listing says about the
+   * running session-lane attempts captured before it started (UI-lbm5 §4.4):
+   * a missing pane writes `interactive.gone_at`, the one fact
+   * {@link isDeadAttempt} reads. An attempt that left the capture — a launch
+   * that finished, a pane id that changed, a settlement that began while the
+   * listing ran — is skipped until the next observation.
+   *
+   * @param {string} workspace
+   * @param {Array<{ pane: string, key: string, dead: string }>} rows
+   * @param {Map<string, string|null>} targets - From
+   * {@link sessionLaneObservationTargets}, taken before the listing.
+   */
+  function observeSessionLaneAttempts(workspace, rows, targets) {
+    const at = now();
+    let changed = false;
+    for (const [attempt_id, attempt] of Object.entries(
+      deps.store.snapshot(workspace).attempts || {}
+    )) {
+      const a = /** @type {any} */ (attempt);
+      if (
+        !targets.has(attempt_id) ||
+        !sessionLaneJudgeable(attempt_id, a) ||
+        (a.interactive?.pane_id ?? null) !== targets.get(attempt_id) ||
+        sessionLanePaneAlive(rows, a)
+      ) {
+        continue;
+      }
+      const result = deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          interactive: {
+            pane_id: null,
+            tmux_session: null,
+            tmux_window: null,
+            ...(a.interactive || {}),
+            gone_at: at
+          }
+        }
+      });
+      changed = changed || result?.ok === true;
+    }
+    if (changed) {
+      notifyChanged(workspace);
+    }
+  }
+
+  /**
+   * Mirror a live session-lane window's turn facts onto its attempt (UI-lbm5
+   * §4.4): turn state and since, the last message excerpt and the processed
+   * message identity, plus a codex session id first seen on the pane. Written
+   * only when something changed.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {import('./queue-store.js').InteractiveSession} record
+   */
+  function mirrorSessionLaneTurn(workspace, attempt_id, record) {
+    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (!attempt || attempt.exec !== 'session') {
+      return;
+    }
+    /** @type {Record<string, any>} */
+    const current = attempt.interactive || {};
+    const next = {
+      turn_state: record.turn_state ?? null,
+      turn_state_since: record.turn_state_since ?? null,
+      last_message_excerpt:
+        record.last_message?.excerpt ?? record.last_message?.text ?? null,
+      processed_message_at: record.conversation?.processed_message_at ?? null,
+      // The answer wait (§4.4) as a recorded fact: the card shows it, and
+      // nothing is pushed for it.
+      awaiting_answer: sessionLaneAwaitsAnswer(
+        record.turn_state,
+        record.last_message
+      )
+    };
+    const session_patch =
+      (attempt.session_id ?? null) === null &&
+      typeof record.session_id === 'string'
+        ? { session_id: record.session_id }
+        : {};
+    if (
+      Object.keys(session_patch).length === 0 &&
+      Object.entries(next).every(
+        ([name, value]) => (current[name] ?? null) === value
+      )
+    ) {
+      return;
+    }
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        interactive: {
+          pane_id: null,
+          tmux_session: null,
+          tmux_window: null,
+          ...current,
+          ...next
+        },
+        ...session_patch
+      }
+    });
   }
 
   /** The result-line stand-in the `[워커로 이어가기]` click carries (§3.6). */
@@ -10401,28 +10851,48 @@ export function createScheduler(deps) {
       /** @type {Record<string, import('./queue-store.js').InteractiveSession>} */ (
         deps.store.snapshot(workspace).interactive_sessions || {}
       );
-    const [resolve_panes, inquiry_panes, external_resume_panes] =
-      await Promise.all([
-        launcher.listPanesExtended(RESOLVE_PANE_MARKER),
-        launcher.listPanesExtended(INQUIRY_PANE_MARKER),
-        launcher.listPanesExtended(EXTERNAL_RESUME_PANE_MARKER)
-      ]);
+    const session_lane_targets = sessionLaneObservationTargets(workspace);
+    const [
+      resolve_panes,
+      inquiry_panes,
+      external_resume_panes,
+      session_lane_panes
+    ] = await Promise.all([
+      launcher.listPanesExtended(RESOLVE_PANE_MARKER),
+      launcher.listPanesExtended(INQUIRY_PANE_MARKER),
+      launcher.listPanesExtended(EXTERNAL_RESUME_PANE_MARKER),
+      launcher.listPanesExtended(SESSION_LANE_PANE_MARKER)
+    ]);
     // A partial tmux observation cannot prove either absence or safe recovery.
-    if (!resolve_panes.ok || !inquiry_panes.ok || !external_resume_panes.ok) {
+    // That includes the session-lane liveness below (UI-lbm5 §5): a pass whose
+    // marker listing failed judges no session-lane attempt at all.
+    if (
+      !resolve_panes.ok ||
+      !inquiry_panes.ok ||
+      !external_resume_panes.ok ||
+      !session_lane_panes.ok
+    ) {
       log(
-        'interactive pane observation failed for %s: %o %o %o',
+        'interactive pane observation failed for %s: %o %o %o %o',
         workspace,
         resolve_panes,
         inquiry_panes,
-        external_resume_panes
+        external_resume_panes,
+        session_lane_panes
       );
       return;
     }
     const panes = {
       resolve: resolve_panes.rows,
       inquiry: inquiry_panes.rows,
-      external_resume: external_resume_panes.rows
+      external_resume: external_resume_panes.rows,
+      session_lane: session_lane_panes.rows
     };
+    observeSessionLaneAttempts(
+      workspace,
+      panes.session_lane,
+      session_lane_targets
+    );
     /**
      * A launch may replace the same key while tmux I/O is in flight.
      *
@@ -10707,6 +11177,85 @@ export function createScheduler(deps) {
       }
     }
     /**
+     * Process the newest assistant message of a live SESSION-LANE window
+     * exactly once (UI-lbm5 §4.4-§4.5). The turn facts are mirrored onto the
+     * attempt; a message whose first line is a terminal result line feeds the
+     * SAME `onSessionDone` branch a headless verdict takes, after which the
+     * record is settled so the ordinary idle → `/exit` → kill ladder closes
+     * the window. Any other message is an answer wait: the card shows it, and
+     * nothing is pushed to Discord — the session's own thread speaks for it
+     * (UI-5chz).
+     *
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession} record
+     */
+    async function processSessionLaneMessage(key, record) {
+      const attempt_id = record.attempt_id;
+      const attempt = attempt_id
+        ? deps.store.snapshot(workspace).attempts?.[attempt_id]
+        : null;
+      if (
+        !attempt_id ||
+        !attempt ||
+        attempt.exec !== 'session' ||
+        attempt.status !== 'running'
+      ) {
+        // The attempt already ended elsewhere (a withdrawal, a discard, a
+        // settlement): the window is only closed now.
+        patchInteractiveRecord(workspace, key, record, {
+          settled_at: now(),
+          settled_by: 'done'
+        });
+        return;
+      }
+      mirrorSessionLaneTurn(workspace, attempt_id, record);
+      const conversation = record.conversation;
+      if (
+        !conversation ||
+        record.turn_state === 'running' ||
+        !record.last_message ||
+        settling.has(attempt_id)
+      ) {
+        return;
+      }
+      const message = record.last_message;
+      const message_at = message.at ?? message.event_at ?? null;
+      if (
+        message_at === null ||
+        message_at <= record.launched_at ||
+        (conversation.processed_message_at !== null &&
+          message_at <= conversation.processed_message_at)
+      ) {
+        return;
+      }
+      const processed = {
+        conversation: {
+          ...conversation,
+          processed_message_at: message_at,
+          message_excerpt: message.excerpt ?? message.text
+        }
+      };
+      const verdict = sessionLaneVerdict(message);
+      if (verdict === null) {
+        // An answer wait acts on nothing: its identity lands at once.
+        if (patchInteractiveRecord(workspace, key, record, processed)) {
+          mirrorSessionLaneTurn(workspace, attempt_id, record);
+        }
+        return;
+      }
+      // A result line's identity lands only WITH the settlement's end. A
+      // restart mid-settlement finds the attempt still `running` and the line
+      // unprocessed, so the unfinished settlement runs again; once the
+      // terminal write landed, the not-running branch above settles the
+      // record instead — the line is never fed twice.
+      await settleSessionLaneVerdict(workspace, attempt_id, attempt, verdict);
+      patchInteractiveRecord(workspace, key, record, {
+        ...processed,
+        settled_at: now(),
+        settled_by: 'done'
+      });
+    }
+    /**
      * Patch for the last assistant line when the transcript moved since the
      * last read; empty otherwise, and a read failure keeps the previous value
      * (UI-ri8n §4). The caller folds it into the pass's single record write.
@@ -10720,6 +11269,14 @@ export function createScheduler(deps) {
       const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
       const reader =
         deps.readLastAssistantMessage || defaultReadLastAssistantMessage;
+      // A session-lane window reads its transcript where its launch wrote it:
+      // under the attempt's account `CODEX_HOME` for codex (UI-lbm5 §4.3).
+      const sessions_root =
+        record.kind === SESSION_LANE_KIND && record.attempt_id
+          ? sessionLaneSessionsRoot(
+              deps.store.snapshot(workspace).attempts?.[record.attempt_id]
+            )
+          : null;
       try {
         const location = resolver(
           {
@@ -10728,7 +11285,11 @@ export function createScheduler(deps) {
             host: os.hostname(),
             index: 0
           },
-          { home_dir: deps.homeDir, hostname: os.hostname() }
+          {
+            home_dir: deps.homeDir,
+            hostname: os.hostname(),
+            ...(sessions_root ? { sessions_root } : {})
+          }
         );
         if (
           location.locality !== 'local' ||
@@ -10864,6 +11425,17 @@ export function createScheduler(deps) {
           pane.dead === '0'
       );
       if (!pane_row) {
+        // A session-lane window's end is its ATTEMPT's business (UI-lbm5
+        // §4.5): the liveness observation above settles the attempt, and the
+        // record only goes. No conversation handoff applies to it.
+        if (record.kind === SESSION_LANE_KIND) {
+          ended(
+            key,
+            record,
+            record.state === 'exiting' ? 'exit_sent' : 'pane_gone'
+          );
+          continue;
+        }
         // The pass-start copy predates a settlement written earlier in this
         // same pass (the bd `closed` read above). A settled record is only
         // removed: its handoff reservation must not resume a closed Bead.
@@ -10934,7 +11506,9 @@ export function createScheduler(deps) {
         continue;
       }
       if (record.settled_at === null) {
-        if (isOpenConversation(record)) {
+        if (record.kind === SESSION_LANE_KIND) {
+          await processSessionLaneMessage(key, record);
+        } else if (isOpenConversation(record)) {
           await processConversationMessage(key, record);
         }
         continue;
@@ -11002,7 +11576,8 @@ export function createScheduler(deps) {
     for (const kind of /** @type {const} */ ([
       'resolve',
       'inquiry',
-      'external_resume'
+      'external_resume',
+      'session_lane'
     ])) {
       for (const pane of panes[kind]) {
         const key = `${pane.key}:${kind}`;
@@ -11024,6 +11599,15 @@ export function createScheduler(deps) {
         ) {
           continue;
         }
+        // A session-lane window is re-adopted only for the running attempt
+        // it belongs to (UI-lbm5 §4.5 서버 재시작); a stray one is left alone.
+        const lane_attempt =
+          kind === SESSION_LANE_KIND
+            ? runningSessionLaneAttempt(workspace, pane.key)
+            : null;
+        if (kind === SESSION_LANE_KIND && lane_attempt === null) {
+          continue;
+        }
         const result = deps.store.recordInteractiveSession(workspace, {
           bead_id: pane.key,
           kind,
@@ -11034,7 +11618,14 @@ export function createScheduler(deps) {
           cwd: pane.cwd,
           launched_at: now(),
           state: 'live',
-          source: 'recovered'
+          source: 'recovered',
+          ...(lane_attempt
+            ? {
+                attempt_id: lane_attempt.attempt_id,
+                session_id: lane_attempt.session_id ?? null,
+                conversation: newSessionLaneConversation()
+              }
+            : {})
         });
         if (result.ok) {
           notifyChanged(workspace);
@@ -11304,11 +11895,6 @@ export function createScheduler(deps) {
         } else {
           await recordNotReady(workspace, bead_id, snap);
         }
-        return;
-      }
-      if (isWorkerIneligible(snap.labels)) {
-        reservation?.release();
-        refuseDispatch(workspace, bead_id, 'worker_ineligible');
         return;
       }
       // The bead's lane is re-read HERE, at dispatch: a drag between scan and
@@ -11757,12 +12343,7 @@ export function createScheduler(deps) {
         return;
       }
       const final_head = serialHeadOf(deps.store.snapshot(workspace), bead_id);
-      if (
-        !final_head.ok ||
-        !final_snap.ready ||
-        final_snap.blocked ||
-        isWorkerIneligible(final_snap.labels)
-      ) {
+      if (!final_head.ok || !final_snap.ready || final_snap.blocked) {
         await abortPreparedLaunch(
           final_head.ok ? 'serial_lane_not_head' : final_head.reason
         );
@@ -11779,6 +12360,10 @@ export function createScheduler(deps) {
       }
       reservation = final_launch.lease;
       serial_lane_id = final_head.lane_id;
+      // The exec lane is a dispatch-time SNAPSHOT (UI-lbm5 §4.1), taken off the
+      // same final read the launch stands on; a later chip click applies from
+      // the next dispatch.
+      const session_lane = execLaneOfSnapshot(final_snap) === 'session';
 
       // DURABLE pre-record before the FIRST metadata write. It carries the whole
       // effective 15-key snapshot and exact cleanup provenance.
@@ -11786,6 +12371,7 @@ export function createScheduler(deps) {
         !prerecordAttempt(workspace, {
           attempt_id,
           bead_id,
+          ...(session_lane ? { exec: /** @type {const} */ ('session') } : {}),
           repo: snap.repo,
           target_base: snap.target_base,
           base_oid: wt.base_oid,
@@ -11952,6 +12538,7 @@ export function createScheduler(deps) {
         base_oid: wt.base_oid,
         runner_name,
         attempt_facts,
+        session_lane,
         model: exec.orchestration_model ?? null,
         effort: exec.orchestration_effort ?? null,
         speed: exec.orchestration_speed ?? 'default',
@@ -12330,6 +12917,248 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The SESSION-LANE launch (UI-lbm5 §4.3): everything up to here — scan,
+   * slot, serial head, provider gate, base, guard hook, worktree, claim and the
+   * `fast_track`/`worker` stamp — ran the ordinary dispatch path; only the
+   * launch differs. The Bead opens as an interactive session-hub window under
+   * the attempt's preset, account, guard-hook env and dispatch context, minus
+   * every Worker marker. Nothing throws out: a failed launch settles the
+   * attempt `failed` with `session_launch_failed:<reason>` through the same
+   * refusal cleanup a headless spawn abort uses.
+   *
+   * @param {any} input - The {@link launchSession} input.
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function launchSessionLane(input) {
+    const {
+      workspace,
+      attempt_id,
+      bead_id,
+      repo,
+      target_base,
+      base_oid,
+      runner_name,
+      model,
+      effort,
+      speed,
+      accounts = { claude: null, codex: null },
+      account_sources = { claude: null, codex: null },
+      wt_path,
+      spawnBead
+    } = input;
+    if (
+      input.verify_worktree === true &&
+      wt_path.length > 0 &&
+      wt_path !== repo &&
+      !fs.existsSync(wt_path)
+    ) {
+      return { ok: false, reason: 'worktree_missing' };
+    }
+    const launcher = deps.interactiveLauncher;
+    /**
+     * @param {string} reason
+     */
+    const refuse = async (reason) => {
+      const cause = `session_launch_failed:${reason}`;
+      await finalizeLaunchRefusal(input, cause, false);
+      return { ok: false, reason: cause };
+    };
+    if (!launcher) {
+      return refuse('launcher_unavailable');
+    }
+    if (runner_name !== 'claude' && runner_name !== 'codex') {
+      return refuse(`${runner_name}_unsupported`);
+    }
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { claude_account: null, codex_account: null }
+    });
+    const account_settings = await resolveLaunchAccounts(accounts, runner_name);
+    if (!account_settings.ok) {
+      await finalizeLaunchRefusal(
+        input,
+        account_settings.reason,
+        false,
+        launchAccountRefusalDetail(account_settings, accounts, account_sources)
+      );
+      return { ok: false, reason: account_settings.reason };
+    }
+    const recovery_env =
+      work_recovery_policy.workRecoveryReady() && !input.disposition
+        ? work_recovery_policy.workRecoveryReadinessEnv()
+        : null;
+    const env = sessionLaneEnv({
+      repo,
+      bead_id,
+      recovery_env,
+      guard_env: guardHook.envFor({ workspace, attempt_id }),
+      account_env: account_settings.env ?? null
+    });
+    const resume_session_id =
+      typeof input.resume_session_id === 'string' &&
+      input.resume_session_id.length > 0
+        ? input.resume_session_id
+        : null;
+    // claude's session id is chosen HERE and recorded on the attempt, so the
+    // transcript is readable from the first pass; codex names its own and the
+    // pane option fills it once observed (§4.3).
+    const session_id =
+      resume_session_id ?? (runner_name === 'claude' ? randomUUID() : null);
+    const { system_prompt, task_prompt } = applyPreamble(
+      spawnBead && typeof spawnBead.prompt === 'string'
+        ? spawnBead.prompt
+        : defaultTaskPrompt(bead_id),
+      {
+        runtime: runner_name,
+        session_lane: true,
+        fast_track: true,
+        pr_submit: input.quickfix_lane !== true,
+        quickfix_lane: input.quickfix_lane === true,
+        work_recovery_ready: recovery_env !== null,
+        target_base: typeof target_base === 'string' ? target_base : null,
+        attempt_facts: input.attempt_facts ?? null
+      }
+    );
+    /** @type {any} */
+    let catalog = null;
+    try {
+      catalog = runtimeCatalog();
+    } catch (err) {
+      log('runtime catalog unreadable for %s: %o', attempt_id, err);
+    }
+    const command_args = sessionLaneCommandArgs({
+      runner: runner_name,
+      model: model ?? null,
+      effort: effort ?? null,
+      session_id,
+      resume_session_id,
+      system_prompt,
+      task_prompt,
+      catalog
+    });
+    const start_oid = await branchTip(repo, bead_id);
+    const started_at = now();
+    /** @type {import('./tmux-launcher.js').LaunchOutcome} */
+    let outcome;
+    try {
+      outcome = await launcher.launch({
+        marker: SESSION_LANE_PANE_MARKER,
+        key: bead_id,
+        tmux_session: interactiveTmuxSession(),
+        window_name: bead_id,
+        cwd: wt_path,
+        commandArgs: command_args,
+        runner: runner_name,
+        placement: 'inquiry',
+        conversation_flags: false,
+        env,
+        ...(runner_name === 'claude' &&
+        typeof account_settings.claude_account === 'string' &&
+        typeof account_settings.cswap_path === 'string'
+          ? {
+              wrapper: {
+                executable: account_settings.cswap_path,
+                args: [
+                  'run',
+                  account_settings.claude_account,
+                  '--share-history',
+                  '--'
+                ]
+              }
+            }
+          : {})
+      });
+    } catch (err) {
+      log('session lane launch threw for %s: %o', attempt_id, err);
+      outcome = { session: 'not_launched', reason: 'launch_failed:threw' };
+    }
+    if (outcome.session !== 'launched') {
+      return refuse(
+        outcome.session === 'not_launched' ? outcome.reason : 'already_running'
+      );
+    }
+    const window = {
+      pane_id: outcome.pane_id,
+      tmux_session: outcome.tmux_session,
+      tmux_window: outcome.tmux_window
+    };
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        exec: 'session',
+        interactive: { ...window, gone_at: null },
+        ...(start_oid === null ? {} : { head_oid: start_oid }),
+        started_at,
+        pid: null,
+        process_identity: null,
+        runner: runner_name,
+        model: model ?? null,
+        effort: effort ?? null,
+        speed: speed ?? 'default',
+        session_id,
+        claude_account: account_settings.claude_account,
+        codex_account: account_settings.codex_account,
+        account_sources,
+        ...(input.preempt ? { account_switched_from: input.preempt.from } : {}),
+        system_prompt,
+        task_prompt
+      }
+    });
+    deps.store.recordInteractiveSession(workspace, {
+      bead_id,
+      kind: SESSION_LANE_KIND,
+      provider: runner_name,
+      session_id,
+      session_id_source: session_id === null ? null : 'launch',
+      mode: resume_session_id === null ? 'fresh' : 'resume',
+      source: 'attempt',
+      attempt_id,
+      ...window,
+      cwd: wt_path,
+      launched_at: started_at,
+      state: 'live',
+      conversation: newSessionLaneConversation()
+    });
+    log(
+      'attempt %s session lane opened: %s %s:%s',
+      attempt_id,
+      runner_name,
+      window.tmux_session,
+      window.tmux_window
+    );
+    if (input.auto_resume_origin !== 'live_preempt') {
+      notifyLifecycle('attemptStarted', {
+        bead_id,
+        title: input.title ?? null,
+        runner: runner_name,
+        model,
+        effort,
+        speed,
+        repo,
+        kind: input.launch_kind ?? 'dispatch',
+        session_lane: {
+          tmux_session: window.tmux_session,
+          tmux_window: window.tmux_window
+        }
+      });
+    }
+    appendTimeline({
+      bead_id,
+      attempt_id,
+      kind: 'dispatched',
+      seq: input.launch_kind ?? 'dispatch',
+      summary: `${dispatchSummary(runner_name, model, effort, base_oid)} · 세션 레인 ${window.tmux_session}:${window.tmux_window}`
+    });
+    deps.store.clearAdmission(workspace, bead_id);
+    // The slot is held from here by the durable `running` attempt and its
+    // pane (§4.4), not by the in-process claim: `reconcile` and
+    // `occupiedBeadIds` judge an unclaimed attempt only.
+    claimed.delete(bead_id);
+    notifyChanged(workspace);
+    return { ok: true };
+  }
+
+  /**
    * Shared launch tail for a first dispatch AND a manual resume: spawn the
    * runner, fill the spawn-time snapshot, attach the session log, wire
    * session_id capture + the done handler. On a spawn throw it cleans up exactly
@@ -12370,8 +13199,11 @@ export function createScheduler(deps) {
    *   verify_worktree?: boolean,
    *   disposition?: string|null,
    *   quickfix_lane?: boolean,
+   *   session_lane?: boolean,
    *   attempt_facts?: import('./attempt-facts.js').AttemptFacts|null
    * }} input
+   * `session_lane` sends the launch to {@link launchSessionLane} (UI-lbm5
+   * §4.3): the same input, opened as an interactive window.
    * `attempt_facts` is the dispatch-time facts card (spec D1). Only the
    * ordinary dispatch collects one; every relaunch path leaves it absent, and
    * the preamble then emits no `## 시도 사실` block rather than a card of `없음`.
@@ -12381,6 +13213,9 @@ export function createScheduler(deps) {
    * a session is running when none is.
    */
   async function launchSession(input) {
+    if (input.session_lane === true) {
+      return launchSessionLane(input);
+    }
     const {
       workspace,
       attempt_id,
@@ -16377,6 +17212,13 @@ export function createScheduler(deps) {
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
     const quickfix_lane = laneOfRoute(bead_snapshot.route) === 'quick_fix';
+    // A continuation runs the lane the CURRENT Bead snapshot names (UI-lbm5
+    // §4.5): a session-lane `↻ 이어하기` opens a new session-lane attempt, and a
+    // `worker-ineligible` Bead is never relaunched headless. A REVISE
+    // disposition repairs the spec, not the implementation, and keeps its own
+    // headless shape.
+    const session_lane =
+      !options.disposition && execLaneOfSnapshot(bead_snapshot) === 'session';
     const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
       lineage_id: serialLineageId(prior) || bead_id,
@@ -16426,6 +17268,7 @@ export function createScheduler(deps) {
     const relaunch_attempt = {
       attempt_id: new_attempt_id,
       bead_id,
+      ...(session_lane ? { exec: /** @type {const} */ ('session') } : {}),
       repo,
       target_base,
       base_oid: prior.base_oid ?? null,
@@ -16702,7 +17545,8 @@ export function createScheduler(deps) {
       resume_session_id,
       ...(options.fork_session === true ? { fork_session: true } : {}),
       disposition: options.disposition ?? null,
-      quickfix_lane
+      quickfix_lane,
+      session_lane
     };
     if (baseMovedLineage(workspace, prior)) {
       if (
@@ -18513,17 +19357,8 @@ export function createScheduler(deps) {
         continue;
       }
       if (!snap.ready || snap.blocked) {
-        if (
-          isWorkerIneligible(snap.labels) ||
-          Object.hasOwn(snap, 'awaiting_user')
-        ) {
-          recordSkipReason(
-            workspace,
-            entry.bead_id,
-            Object.hasOwn(snap, 'awaiting_user')
-              ? 'awaiting_user'
-              : 'worker_ineligible'
-          );
+        if (Object.hasOwn(snap, 'awaiting_user')) {
+          recordSkipReason(workspace, entry.bead_id, 'awaiting_user');
           stopSerialLane();
           continue;
         }
@@ -18687,6 +19522,12 @@ export function createScheduler(deps) {
     const require_durable = options?.require_durable === true;
     const snapshot = deps.store.snapshot(workspace);
     const attempt = snapshot.attempts?.[attempt_id];
+    // A session-lane window has no pause (UI-lbm5 §4.5 결정): it already
+    // waits when nobody answers, and stopping its process would freeze the
+    // window a person is using.
+    if (attempt?.exec === 'session') {
+      return { ok: false, reason: 'pause_unsupported' };
+    }
     if (
       discardActive(snapshot, {
         attempt_id,
@@ -18950,6 +19791,9 @@ export function createScheduler(deps) {
     if (!attempt || attempt.status !== 'running') {
       return { ok: false, reason: 'not_running' };
     }
+    if (attempt.exec === 'session') {
+      return { ok: false, reason: 'pause_unsupported' };
+    }
     if (
       typeof attempt.session_id !== 'string' ||
       attempt.session_id.length === 0
@@ -19088,7 +19932,15 @@ export function createScheduler(deps) {
     if (
       Object.values(q.interactive_sessions || {}).some(
         (/** @type {any} */ record) =>
-          record?.bead_id === attempt.bead_id && record.settled_at === null
+          record?.bead_id === attempt.bead_id &&
+          record.settled_at === null &&
+          // The attempt's OWN session-lane window is what ✕ closes (UI-lbm5
+          // §4.5), not a conversation that holds the Bead.
+          !(
+            record.kind === SESSION_LANE_KIND &&
+            attempt.exec === 'session' &&
+            record.attempt_id === attempt.attempt_id
+          )
       )
     ) {
       return 'interactive_session_active';
@@ -19251,6 +20103,199 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Close a running session-lane window and confirm it gone (UI-lbm5 §4.5):
+   * claude is sent `/exit`, codex is killed; panes are re-listed until the
+   * window is gone, and a window still open after the grace is killed. Only a
+   * SUCCESSFUL listing without the pane counts as gone — that answer is
+   * recorded on the attempt (`interactive.gone_at`) and the window's record
+   * goes. Any other answer leaves the attempt running with its slot.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
+   */
+  async function closeSessionLaneWindow(workspace, attempt) {
+    const launcher = deps.interactiveLauncher;
+    if (!launcher) {
+      return { ok: false, reason: 'session_lane_launcher_unavailable' };
+    }
+    const key = `${attempt.bead_id}:${SESSION_LANE_KIND}`;
+    const record =
+      deps.store.snapshot(workspace).interactive_sessions?.[key] ?? null;
+    const pane_id = attempt.interactive?.pane_id ?? record?.pane_id ?? null;
+    const tmux_session =
+      attempt.interactive?.tmux_session ?? record?.tmux_session ?? null;
+    const tmux_window =
+      attempt.interactive?.tmux_window ?? record?.tmux_window ?? null;
+    /** @returns {Promise<boolean|null>} null when tmux could not be read */
+    const observe = async () => {
+      try {
+        const listed = await launcher.listPanesExtended(
+          SESSION_LANE_PANE_MARKER
+        );
+        return listed.ok ? sessionLanePaneAlive(listed.rows, attempt) : null;
+      } catch {
+        return null;
+      }
+    };
+    const kill = async () => {
+      if (typeof tmux_session === 'string' && typeof tmux_window === 'string') {
+        try {
+          await launcher.killWindow(tmux_session, tmux_window);
+        } catch (err) {
+          log('session lane kill failed for %s: %o', attempt.bead_id, err);
+        }
+      }
+    };
+    let alive = await observe();
+    if (alive === true) {
+      if (attempt.runner === 'codex' || typeof pane_id !== 'string') {
+        await kill();
+      } else {
+        try {
+          await launcher.sendExit(pane_id);
+        } catch (err) {
+          log('session lane exit failed for %s: %o', attempt.bead_id, err);
+        }
+      }
+      let waited = 0;
+      alive = await observe();
+      while (alive !== false && waited < SESSION_LANE_CLOSE_GRACE_MS) {
+        await sleep(SESSION_LANE_CLOSE_STEP_MS);
+        waited += SESSION_LANE_CLOSE_STEP_MS;
+        alive = await observe();
+      }
+      if (alive !== false) {
+        await kill();
+        alive = await observe();
+      }
+    }
+    if (alive !== false) {
+      return {
+        ok: false,
+        reason:
+          alive === null
+            ? 'session_lane_unobservable'
+            : 'session_lane_still_open'
+      };
+    }
+    const current =
+      deps.store.snapshot(workspace).attempts?.[attempt.attempt_id];
+    deps.store.updateAttempt(workspace, {
+      attempt_id: attempt.attempt_id,
+      patch: {
+        interactive: {
+          pane_id,
+          tmux_session,
+          tmux_window,
+          ...(current?.interactive || {}),
+          gone_at: now()
+        }
+      }
+    });
+    if (record && deps.store.removeInteractiveSession(workspace, key).ok) {
+      appendTimeline({
+        bead_id: attempt.bead_id,
+        kind: 'interactive_session',
+        seq: `${SESSION_LANE_KIND}:${record.launched_at}:ended`,
+        summary: `${INTERACTIVE_KIND_LABELS.session_lane} 세션 종료 · closed`
+      });
+    }
+    return { ok: true };
+  }
+
+  /**
+   * The ✕ withdrawal of a running session-lane attempt (UI-lbm5 §4.5): the
+   * window is closed and confirmed gone FIRST, and only then are the slot and
+   * the claim given back — the rest is the ordinary withdrawal.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function withdrawSessionLane(workspace, attempt) {
+    const attempt_id = attempt.attempt_id;
+    settling.add(attempt_id);
+    try {
+      const closed = await closeSessionLaneWindow(workspace, attempt);
+      if (!closed.ok) {
+        notifyChanged(workspace);
+        return closed;
+      }
+      const at = now();
+      const result = deps.store.withdrawAttempt(workspace, {
+        attempt_id,
+        from_status: 'running',
+        at,
+        patch: { finished_at: at }
+      });
+      await revertStamps(workspace, attempt_id, {
+        bead_id: attempt.bead_id,
+        prior: attempt.workflow_mode_prior ?? null
+      });
+      if (!result.ok) {
+        notifyChanged(workspace);
+        return {
+          ok: false,
+          reason: result.reason || 'withdraw_persist_failed'
+        };
+      }
+      await releaseBeadClaim(attempt.bead_id, { workspace, attempt_id });
+    } finally {
+      settling.delete(attempt_id);
+    }
+    removeGuardHook(workspace, attempt_id);
+    armRetryTimer(workspace);
+    notifyChanged(workspace);
+    await tick(workspace);
+    return { ok: true };
+  }
+
+  /**
+   * The ■ stop of a running session-lane attempt (UI-lbm5 §4.5): close and
+   * confirm the window gone, then the same terminal `stopped` write, stamp
+   * revert, claim release and residue cleanup a live stop runs.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @returns {Promise<boolean>}
+   */
+  async function stopSessionLane(workspace, attempt) {
+    const attempt_id = attempt.attempt_id;
+    settling.add(attempt_id);
+    try {
+      const closed = await closeSessionLaneWindow(workspace, attempt);
+      if (!closed.ok) {
+        log('session lane stop refused for %s: %s', attempt_id, closed.reason);
+        notifyChanged(workspace);
+        return false;
+      }
+      const base = attemptBase(workspace, attempt_id);
+      deps.store.discardAttempt(workspace, {
+        attempt_id,
+        bead_id: attempt.bead_id,
+        patch: { status: 'stopped', cause: null, finished_at: now() }
+      });
+      await revertStamps(workspace, attempt_id, {
+        bead_id: attempt.bead_id,
+        prior: attempt.workflow_mode_prior ?? null
+      });
+      await releaseBeadClaim(attempt.bead_id, { workspace, attempt_id });
+      removeGuardHook(workspace, attempt_id);
+      await cleanupStopResidue(
+        typeof attempt.repo === 'string' ? attempt.repo : '',
+        attempt.bead_id,
+        base
+      );
+    } finally {
+      settling.delete(attempt_id);
+    }
+    notifyChanged(workspace);
+    await tick(workspace);
+    return true;
+  }
+
+  /**
    * Withdraw one implementation attempt with ✕ (Worker에서 내리기, 2026-10-01
    * stall-reconcile D7) while KEEPING its work. In one durable request the
    * live runner (if any) is ended, every automatic continuation of the
@@ -19289,6 +20334,9 @@ export function createScheduler(deps) {
     const refusal = withdrawRefusal(q, attempt);
     if (refusal !== null) {
       return { ok: false, reason: refusal };
+    }
+    if (attempt.status === 'running' && attempt.exec === 'session') {
+      return withdrawSessionLane(workspace, attempt);
     }
     if (attempt.status === 'running') {
       return withdrawRunning(workspace, attempt);
@@ -19502,6 +20550,15 @@ export function createScheduler(deps) {
       }
       return { ok: false, reason: 'attempt_not_found' };
     }
+    // A running session-lane window is closed first, and the discard goes on
+    // only once a tmux listing confirms it gone (UI-lbm5 §4.5): until then the
+    // attempt stays `running` and keeps its slot.
+    if (attempt.exec === 'session' && attempt.status === 'running') {
+      const closed = await closeSessionLaneWindow(workspace, attempt);
+      if (!closed.ok) {
+        return { ok: false, reason: closed.reason };
+      }
+    }
     const entry = running.get(attempt_id);
     if (entry) {
       stopped.add(attempt_id);
@@ -19628,6 +20685,10 @@ export function createScheduler(deps) {
       notifyChanged(workspace);
       await tick(workspace);
       return true;
+    }
+    const lane_attempt = initial.attempts?.[attempt_id];
+    if (lane_attempt?.exec === 'session' && lane_attempt.status === 'running') {
+      return stopSessionLane(workspace, lane_attempt);
     }
     return disposePausedRecord(workspace, attempt_id, { cause: null });
   }

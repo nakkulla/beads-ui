@@ -1580,6 +1580,37 @@ describe('automatic failure conversation (UI-jbl1 §3.1)', () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  test('opens no failure conversation beside a live session-lane window (UI-lbm5 §4.4)', async () => {
+    const { auto, resolve } = makeAuto({
+      queue: {
+        completion_intents: {},
+        interactive_sessions: {
+          [`${BEAD}:session_lane`]: {
+            bead_id: BEAD,
+            kind: 'session_lane',
+            state: 'live',
+            settled_at: null,
+            tmux_session: 'bdui-inquiry',
+            tmux_window: BEAD,
+            conversation: { processed_message_at: null, result: null }
+          }
+        }
+      }
+    });
+
+    const outcome = await auto.launchForBead({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD
+    });
+
+    expect(outcome).toMatchObject({
+      session: 'already_running',
+      tmux_window: BEAD
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   test('launches a repo-operation row fresh in the inquiry placement', async () => {
     const { auto, resolveRepoOperation } = makeAuto();
 

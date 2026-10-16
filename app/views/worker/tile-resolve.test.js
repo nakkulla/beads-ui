@@ -702,3 +702,96 @@ describe('tileResolveFields — foreign_handoff row (UI-k467 §3.7)', () => {
     expect(handoff.resolve_title).toContain('[머지]로 풀리지 않습니다');
   });
 });
+
+describe('tileResolveFields session lane (UI-lbm5 §4.5-§4.6)', () => {
+  test('stands the focus button on a running session-lane tile', () => {
+    const fields = tileResolveFields({
+      id: 'UI-1',
+      exec: 'session',
+      run_state: 'running',
+      interactive_sessions: [session(/** @type {any} */ ('session_lane'))]
+    });
+
+    expect(fields).toEqual({
+      resolve_action: true,
+      resolve_enabled: true,
+      resolve_title:
+        '세션 레인 창(tmux)을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다'
+    });
+  });
+
+  test('keeps the focus button beside a Discord link', () => {
+    const fields = tileResolveFields({
+      id: 'UI-1',
+      exec: 'session',
+      run_state: 'running',
+      interactive_sessions: [
+        session(/** @type {any} */ ('session_lane'), {
+          discord_url: DISCORD_URL
+        })
+      ]
+    });
+
+    expect(fields.resolve_action).toBe(true);
+  });
+
+  test('draws nothing on a running session-lane tile whose window is closing', () => {
+    const fields = tileResolveFields({
+      id: 'UI-1',
+      exec: 'session',
+      run_state: 'running',
+      interactive_sessions: [
+        session(/** @type {any} */ ('session_lane'), { closing: true })
+      ]
+    });
+
+    expect(fields).toEqual({});
+  });
+
+  test('stands neither half of the pair on a session_exited row', () => {
+    const fields = tileResolveFields({
+      id: 'UI-1',
+      exec: 'session',
+      run_state: 'failed',
+      failure: { cause: 'session_exited' },
+      wait_reasons: [
+        {
+          kind: 'recovery',
+          actions: [
+            {
+              op: 'worker-conversation-handoff',
+              payload: { attempt_id: 'a1' }
+            }
+          ]
+        }
+      ],
+      interactive_sessions: []
+    });
+
+    expect(fields).toEqual({});
+  });
+
+  test('stands no [워커로 이어가기] on a worker-ineligible row', () => {
+    const fields = tileResolveFields({
+      id: 'UI-1',
+      run_state: 'waiting',
+      labels: ['worker-ineligible'],
+      wait: { recovery: { kind: 'x' } },
+      wait_reasons: [
+        {
+          kind: 'recovery',
+          actions: [
+            {
+              op: 'worker-conversation-handoff',
+              payload: { attempt_id: 'a1' }
+            }
+          ]
+        }
+      ],
+      interactive_sessions: []
+    });
+
+    expect(fields.handoff_action).toBeUndefined();
+    expect(fields.resolve_action).toBe(true);
+  });
+});

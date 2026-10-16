@@ -45,6 +45,7 @@ import {
   scopeSourceOf,
   sharesScopeSource
 } from '../../utils/scope-overlap.js';
+import { sessionPreferredReason } from '../../utils/session-preferred.js';
 import {
   SUM_FIELDS,
   formatUsageTotalWithCost,
@@ -53,6 +54,10 @@ import {
   providerUsageBadges,
   sumAttemptUsage
 } from '../../utils/token-usage.js';
+import {
+  execLaneOf,
+  isWorkerIneligible
+} from '../../utils/worker-eligibility.js';
 import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import {
   blockerLocationLabel,
@@ -437,7 +442,7 @@ const DONE_KIND_LABELS = {
 /**
  * @typedef {Object} InteractiveSessionView
  * @property {string} key
- * @property {'resolve'|'inquiry'|'external_resume'} kind
+ * @property {'resolve'|'inquiry'|'external_resume'|'session_lane'} kind
  * @property {'claude'|'codex'} provider
  * @property {string|null} session_id
  * @property {'fork'|'fresh'|'resume'|null} mode
@@ -828,7 +833,9 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       ...liveAttemptFields(a, attempts, run_state, input.runner_catalog),
       started_at,
       ...(failure ? { failure } : {}),
-      can_pause: run_state === 'running' && has_session,
+      // A session-lane attempt has no pause (UI-lbm5 §4.5): its tile draws
+      // neither `⏸` nor `▶`.
+      can_pause: run_state === 'running' && has_session && a.exec !== 'session',
       can_resume: resume_eligible
     });
   }
@@ -929,6 +936,8 @@ function liveAttemptFields(a, attempts, run_state, runner_catalog = null) {
         ? a.continuation_mode
         : null,
     status: typeof a.status === 'string' ? a.status : null,
+    // 세션 레인 attempt (UI-lbm5 §4.6): 칩·조작·진행 줄이 이 사실 하나를 읽는다.
+    ...(a.exec === 'session' ? { exec: /** @type {const} */ ('session') } : {}),
     ...(run_state === 'running' &&
     attempts[a.resumed_from]?.cause_detail?.recovery
       ? { status_label: '복구 중' }
@@ -3667,6 +3676,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...laneOriginFields(attempt),
         attempt_id: live.attempt_id,
         run_state: live.run_state,
+        ...(live.exec === 'session' ? { exec: 'session' } : {}),
         status: live.status || undefined,
         ...(live.status_label ? { status_label: live.status_label } : {}),
         // 실행중 타일의 route 칩 재료 (UI-yrzu §7.2). 그 버드의 항목이 아직
@@ -3918,6 +3928,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...base(bead_id),
         lane: 'pr_wait',
         ...prWaitLaneOriginFields(entry, last_impl_by_bead),
+        ...(last_impl_by_bead.get(bead_id)?.exec === 'session'
+          ? { exec: 'session' }
+          : {}),
         ...decoratedBlockedBy(bead_id),
         // 대기 행과 같은 route 칩 재료 (UI-yrzu §5·§7.2).
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null)
@@ -4259,7 +4272,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const worker_ineligible = placement
         ? placement.worker_ineligible
         : entry.worker_ineligible === true;
-      const queue_placeable = eligible && !worker_ineligible;
+      // `worker-ineligible` places like any other row (UI-lbm5 §4.2): the
+      // flag only says the row will run in the session lane.
+      const queue_placeable = eligible;
       const placement_chip_facts = placement
         ? {
             route_ok: placement.route_ok,
@@ -4307,6 +4322,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
               session_preferred: true,
               session_preferred_reason: entry.session_preferred_reason
             }
+          : {}),
+        // 실행 방식 판정 (UI-lbm5 §4.1): 어댑터·서버 투영이 공유 술어로 낸 값을
+        // 옮기기만 한다 — `세션 권장` 칩의 눌림 상태가 이것을 읽는다.
+        ...(entry.exec_lane === 'session' || entry.exec_lane === 'worker'
+          ? { exec_lane: entry.exec_lane }
           : {}),
         // 선행이 실행뿐 아니라 설계까지 막는다는 예외 라벨 (UI-svh6 §4.2).
         // 판정은 어댑터가 이미 접었으므로 레인은 값만 옮긴다 — 재료를 싣지 않는
@@ -4402,6 +4422,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         // 아래 오버레이 루프가 그것을 이 자리에 채운다.
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         ...(done_exec_chips ? { exec_chips: done_exec_chips } : {}),
+        ...(terminal?.exec === 'session' ? { exec: 'session' } : {}),
         // 완료 3줄 행 (§8): 레포 배지가 붙으면 2줄 변형에서 제목이 먼저 잘린다.
         done_layout: 'three_line',
         usage: sumAttemptUsage(attempts, bead_id, runner_catalog),
@@ -4628,6 +4649,21 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // 가장 넓다. 없는 행은 아래 `exec_pins` 폴백이 받는다.
       item.chip_metadata = metadata;
       if (item.lane.startsWith('s') || item.lane === 'queue') {
+        // 대기 행의 실행 방식 사실 (UI-lbm5 §4.6): 후보 카드와 같은 공유 술어로
+        // 판정해 두 탭의 대기 카드가 같은 `세션` 칩을 그린다. 판정 재료는
+        // 오버레이의 라벨·metadata다.
+        if (isWorkerIneligible(bead_labels)) {
+          item.worker_ineligible = true;
+        } else {
+          const reason = sessionPreferredReason(bead_labels, metadata);
+          if (reason) {
+            item.session_preferred = true;
+            item.session_preferred_reason = reason;
+          }
+        }
+        if (execLaneOf(bead_labels, metadata) === 'session') {
+          item.exec = 'session';
+        }
         const chips = execChipsFor(
           objectOf(state_by_root.get(item.root_dir)),
           metadata,

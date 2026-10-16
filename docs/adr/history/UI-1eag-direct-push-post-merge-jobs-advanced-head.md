@@ -1,7 +1,8 @@
 ---
 id: UI-1eag
 title: 직접 push 착지의 머지 후 잡과 앞선 배포 HEAD 해석
-status: accepted
+status: superseded
+superseded_by: UI-lbm5
 date: 2026-10-16
 summary: "Worker 직접 push 착지도 영수증 결속 착지 head에서 repo_operations와 branch_cleanup 사이의 같은 머지 후 잡 단계를 지나고, 공유 배포 워크트리 HEAD가 행의 머지 SHA를 엄격히 앞서며 base에 포함되면 행은 자기 잡 이름을 그 HEAD 트리에서 해석해 같은 blob 또는 그 키를 대체 선언한 수정본을 기존 예약·승계로 HEAD에서 실행하고 그 밖은 target_moved로 멈춘다 — 되감기 금지·정확한 target·키당 1회와 UI-5chz의 나머지 조항은 그대로다"
 supersedes: ["UI-5chz"]

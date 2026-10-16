@@ -52,6 +52,9 @@ import {
   priorityBadgeTemplate,
   routeCardTone,
   routeChipTemplate,
+  sessionLaneChipTemplate,
+  sessionLaneDiscordTemplate,
+  sessionLaneProgressTemplate,
   timesMeta,
   waitReasonLines,
   waitStatusBadge
@@ -74,6 +77,9 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {boolean} [filter_match] - 우선순위·타입·라벨 필터와의 일치
  * (UI-p7s2 §6). `false`인 타일만 `is-dimmed`로 흐려진다 — 타일을 숨기면 슬롯
  * 점유가 보이지 않는다.
+ * @property {'session'} [exec] - 세션 레인 attempt의 타일 (UI-lbm5 §4.6):
+ * 실행 중이면 슬롯 1 조작이 `⏸`/`▤ 세션` 대신 `[세션에서 이어가기]`이고, 슬롯
+ * 3이 대화 상태 줄이며, 슬롯 5b에 `세션` exec 칩이 선다.
  * @property {'session'} [kind] - 세션이 `in_progress`로 잡은 이슈의 타일
  * (UI-yrzu §6). attempt가 없으므로 운영 버튼·세션 드로어·위임 칩이 없고,
  * 경과는 bead의 `started_at`에서 온다. 생략(=Worker attempt 타일)이 기본이다.
@@ -1154,6 +1160,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     (tile.exec_chips.orchestration || tile.exec_chips.worker)
       ? tile.exec_chips
       : null;
+  // A running session-lane tile (UI-lbm5 §4.6): its window is the session, so
+  // slot 1 brings that window forward instead of `▤ 세션`/`⏸`, and slot 3 is
+  // its conversation state. There is no pause for it (§4.5).
+  const session_lane_running =
+    !session && tile.exec === 'session' && !failed && !held && !paused;
+  const session_lane_chip = session ? '' : sessionLaneChipTemplate(tile);
   const lineage = formatContinuationLineage(tile);
   const usage_options = {
     scope: { has_native_usage, has_included_native_usage },
@@ -1263,6 +1275,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     source_chips ||
     session_ref_chip ||
     session_receipt_chip ||
+    session_lane_chip ||
     exec_chips ||
     complex_chip ||
     area_chips ||
@@ -1275,13 +1288,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
               </div>`
             : ''}${session_ref_chip ||
           session_receipt_chip ||
+          session_lane_chip ||
           exec_chips ||
           complex_chip ||
           area_chips ||
           provider_badges.length > 0 ||
           usage_label
             ? html`<div class="worker-chips worker-chips--run">
-                ${session_ref_chip}${session_receipt_chip}${session
+                ${session_ref_chip}${session_receipt_chip}${session_lane_chip}${session
                   ? ''
                   : execChipsTemplate(exec_chips)}${complex_chip}${area_chips}
                 ${provider_badges.length > 0
@@ -1451,8 +1465,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const anchor = tile.pair_anchor ?? null;
   const session_at_discard = anchor === 'discard' && discard_button !== '';
   const session_at_external = anchor === 'external' && external_foot !== '';
+  // A running session-lane tile carries its `[세션에서 이어가기]` in slot 1.
   const loose_session =
-    session_at_discard || session_at_external ? '' : resolve_only;
+    session_at_discard || session_at_external || session_lane_running
+      ? ''
+      : resolve_only;
   const resolve_button =
     loose_session || handoff_button
       ? html`${loose_session}${handoff_button}`
@@ -1569,49 +1586,53 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             : ''}
         ${session || held
           ? ''
-          : failed
-            ? html`<button
-                  type="button"
-                  class="op-btn rtile__resume"
-                  data-resume-kind=${resume_kind}
-                  ?disabled=${failure?.resume_eligible === false}
-                  title=${failure?.resume_eligible === false
-                    ? failure.resume_reason || `${resume_label} 불가`
-                    : resume_title}
-                  aria-label=${resume_label}
-                >
-                  ↻ ${resume_label}
-                </button>
-                ${discard_slot1}`
-            : html`<button
-                  type="button"
-                  class="op-btn rtile__session"
-                  title="라이브 세션 열기"
-                  aria-label="라이브 세션 열기"
-                >
-                  ▤ 세션
-                </button>
-                ${paused
-                  ? html`<button
-                      type="button"
-                      class="op-btn rtile__resume"
-                      title="같은 세션으로 이어서 재개 — 바로 재개하거나 지시를 입력할 수 있음"
-                      aria-label="재개"
-                    >
-                      ▶ 재개
-                    </button>`
-                  : html`<button
-                      type="button"
-                      class="op-btn rtile__pause"
-                      ?disabled=${tile.can_pause === false}
-                      title=${tile.can_pause === false
-                        ? '세션 ID 기록 전 — 일시정지 불가'
-                        : '일시정지 (같은 세션으로 재개 가능)'}
-                      aria-label="일시정지"
-                    >
-                      ⏸
-                    </button>`}
-                ${discard_slot1}`}${withdraw_button}
+          : session_lane_running
+            ? html`${resolve_only}${sessionLaneDiscordTemplate(
+                tile.interactive_sessions
+              )}${discard_slot1}`
+            : failed
+              ? html`<button
+                    type="button"
+                    class="op-btn rtile__resume"
+                    data-resume-kind=${resume_kind}
+                    ?disabled=${failure?.resume_eligible === false}
+                    title=${failure?.resume_eligible === false
+                      ? failure.resume_reason || `${resume_label} 불가`
+                      : resume_title}
+                    aria-label=${resume_label}
+                  >
+                    ↻ ${resume_label}
+                  </button>
+                  ${discard_slot1}`
+              : html`<button
+                    type="button"
+                    class="op-btn rtile__session"
+                    title="라이브 세션 열기"
+                    aria-label="라이브 세션 열기"
+                  >
+                    ▤ 세션
+                  </button>
+                  ${paused
+                    ? html`<button
+                        type="button"
+                        class="op-btn rtile__resume"
+                        title="같은 세션으로 이어서 재개 — 바로 재개하거나 지시를 입력할 수 있음"
+                        aria-label="재개"
+                      >
+                        ▶ 재개
+                      </button>`
+                    : html`<button
+                        type="button"
+                        class="op-btn rtile__pause"
+                        ?disabled=${tile.can_pause === false}
+                        title=${tile.can_pause === false
+                          ? '세션 ID 기록 전 — 일시정지 불가'
+                          : '일시정지 (같은 세션으로 재개 가능)'}
+                        aria-label="일시정지"
+                      >
+                        ⏸
+                      </button>`}
+                  ${discard_slot1}`}${withdraw_button}
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
@@ -1656,7 +1677,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           )
         : failed
           ? ''
-          : html`${monitor_body}
+          : html`${monitor_body}${session_lane_running
+                ? sessionLaneProgressTemplate(tile.interactive_sessions, now)
+                : ''}
               ${landing
                 ? html`<div class="rtile__landing">
                     <span

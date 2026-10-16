@@ -18,6 +18,7 @@ import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { parseReport } from '../../utils/report-marker.js';
 import { sessionPreferredReason } from '../../utils/session-preferred.js';
 import { specAfterBlockerActive } from '../../utils/spec-after-blocker.js';
+import { execLaneOf } from '../../utils/worker-eligibility.js';
 import {
   APPLIED_EXEC_PRESET_KEY,
   BEAD_PIN_KEYS,
@@ -463,6 +464,16 @@ export function createWorkspaceAdapter(options = {}) {
           : {}),
         worker_ineligible,
         session_preferred_reason,
+        // 실행 방식 (UI-lbm5 §4.1): 서버 스케줄러와 같은 공유 술어다. 라벨을
+        // 모르는 부분 페이로드는 판정하지 않는다 (fail-quiet).
+        ...(Object.hasOwn(it, 'labels')
+          ? {
+              exec_lane: execLaneOf(
+                /** @type {any} */ (it).labels,
+                /** @type {any} */ (it).metadata
+              )
+            }
+          : {}),
         // 예외 라벨 `spec-after-blocker` (UI-svh6 §4.2). 계약이 이 라벨을
         // `effective_only_while: dependency_unsatisfied`로 두므로 판정은 라벨과
         // 지금의 blocker를 함께 읽는다 — 자격에는 들어가지 않는다.

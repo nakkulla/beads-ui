@@ -1791,6 +1791,43 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     expect(env.archive.create).not.toHaveBeenCalled();
   });
 
+  test('discards a running session-lane attempt through its window instead of a pid', async () => {
+    const processController = {
+      probe: vi.fn(() => ({ state: 'owned' })),
+      signal: vi.fn(() => ({ ok: true, state: 'owned' })),
+      terminate: vi.fn(async () => ({ ok: true, state: 'gone' }))
+    };
+    const env = setup({ processController });
+    env.store.updateAttempt(workspace, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'running',
+        exec: 'session',
+        interactive: { pane_id: '%7', tmux_session: 's', tmux_window: 'UI-1' },
+        pid: null,
+        process_identity: null
+      }
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-1']
+    ).toMatchObject({ process_identity: null });
+    expect(env.scheduler.finalizeDiscardAttempt).toHaveBeenCalledWith(
+      workspace,
+      'att-1',
+      'UI-1',
+      'running'
+    );
+    expect(processController.signal).not.toHaveBeenCalled();
+  });
+
   test('accepts a branch GitHub auto-deleted after PR close', async () => {
     const env = setup({ remoteAutoDeleteOnClose: true });
 

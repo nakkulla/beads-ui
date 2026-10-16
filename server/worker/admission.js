@@ -54,7 +54,6 @@
  * from a bad revision by exit code (both 128), so the base is verified first;
  * after that, a non-zero spec cat-file means the spec is missing at that base.
  */
-import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { parseArtifactScope, parseNameOnlyLog } from './artifact-scope.js';
 import { EXTERNAL_WAIT_KEY } from './external-wait/contract.js';
 import { WORKFLOW_ROUTES } from './routes.js';
@@ -171,9 +170,8 @@ export async function validateAdmission(input) {
   const reported_base =
     typeof base_label === 'string' && base_label.length > 0 ? base_label : base;
 
-  if (isWorkerIneligible(bead && bead.labels)) {
-    return { ok: false, reason: 'worker_ineligible' };
-  }
+  // `worker-ineligible` is no longer a refusal (UI-lbm5 §4.2): such a Bead
+  // runs in the session lane, and every check below still applies to it.
 
   // 계약상 `awaiting_user` 키의 존재 자체가 "사용자 결정 산출물이 아직 없다"이고,
   // 키 제거는 그 산출물을 쓰는 같은 `bd update`에서만 일어난다. 그래서 값 형식은

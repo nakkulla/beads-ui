@@ -40,6 +40,15 @@ export const RESOLVE_PANE_MARKER = '@bdui_resolve_bead';
 export const EXTERNAL_RESUME_PANE_MARKER = '@bdui_external_resume_bead';
 
 /**
+ * The pane option a Worker queue SESSION-LANE window carries (UI-lbm5 §4.3):
+ * the queued Bead runs as this interactive window instead of a headless spawn,
+ * and the reconcile pass judges the attempt's liveness by this pane.
+ *
+ * @type {string}
+ */
+export const SESSION_LANE_PANE_MARKER = '@bdui_session_lane_bead';
+
+/**
  * How fresh the bridge heartbeat must be to read as active. Read-only
  * observation: a stale beat is reported, never a reason to skip a launch — the
  * session then waits for the user in tmux.
@@ -87,6 +96,13 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  * @property {boolean} [conversation_flags] - Default true; `false` launches
  * without the conversation settings' model/effort flags, for a resume whose
  * session keeps its own.
+ * @property {Record<string, string>} [env] - Extra variables the window
+ * starts with, passed as `session-hub open --env K=V` (UI-lbm5 §4.3). A
+ * `CODEX_HOME` here is also the home the codex project trust is written to.
+ * @property {{ executable: string, args: string[] }} [wrapper] - Run the
+ * runner THROUGH this executable (the claude account's `cswap run <account>
+ * --share-history --`): the argv becomes wrapper, its args, the runner
+ * executable, then the runner's own arguments.
  */
 
 /**
@@ -217,9 +233,11 @@ export function defaultResolveClaude() {
  * overriding an explicit trust choice. Worktrees share the common Git root.
  *
  * @param {string} cwd
+ * @param {string|null} [home] - The account `CODEX_HOME` the window will run
+ * under, when the launch names one; the trust must land in THAT config.
  * @returns {Promise<string>} Absolute config home for the new window's environment.
  */
-async function ensureCodexProjectTrust(cwd) {
+async function ensureCodexProjectTrust(cwd, home = null) {
   const common = await runShell(
     'git',
     ['rev-parse', '--path-format=absolute', '--git-common-dir'],
@@ -230,7 +248,7 @@ async function ensureCodexProjectTrust(cwd) {
       ? path.dirname(common.stdout.trim())
       : path.resolve(cwd);
   const codex_home = path.resolve(
-    process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
+    home || process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
   );
   const config_path = path.join(codex_home, 'config.toml');
   let contents = '';
@@ -772,11 +790,18 @@ export function createTmuxLauncher(deps = {}) {
         reason: `launch_failed:${runner}_not_found`
       };
     }
+    const extra_env = input.env || {};
     /** @type {string|null} */
     let codex_home = null;
     if (runner === 'codex') {
       try {
-        codex_home = await ensureCodexProjectTrust(input.cwd);
+        codex_home = await ensureCodexProjectTrust(
+          input.cwd,
+          typeof extra_env.CODEX_HOME === 'string' &&
+            extra_env.CODEX_HOME.length > 0
+            ? extra_env.CODEX_HOME
+            : null
+        );
       } catch {
         log('codex project trust setup failed for %s', input.key);
         return {
@@ -804,8 +829,14 @@ export function createTmuxLauncher(deps = {}) {
             input.tmux_session
           ]
         : ['--session', input.tmux_session]),
+      ...Object.entries(extra_env)
+        .filter(([name]) => name !== 'CODEX_HOME' || codex_home === null)
+        .flatMap(([name, value]) => ['--env', `${name}=${value}`]),
       ...(codex_home === null ? [] : ['--env', `CODEX_HOME=${codex_home}`]),
       '--',
+      ...(input.wrapper
+        ? [input.wrapper.executable, ...input.wrapper.args]
+        : []),
       executable,
       ...(runner === 'claude' ? ['--allow-dangerously-skip-permissions'] : []),
       ...withLaunchFlags(

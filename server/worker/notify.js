@@ -82,6 +82,9 @@ function confirmFailureTitle(failure_class) {
  */
 const SESSION_INQUIRY_TITLE = `${SENDER} 🙋 확인 필요 · base-sync 사람 필요`;
 
+/** The session-lane start line (UI-lbm5 §4.4). */
+const SESSION_LANE_STARTED = '▶ 세션 레인 시작';
+
 /** The body line of a failure push whose conversation did not open. */
 const FAILURE_CONVERSATION_FALLBACK = '대화를 열지 못함 — [세션에서 이어가기]';
 
@@ -367,7 +370,7 @@ function failureConversationLine(conversation) {
  *
  * @param {NotifierDeps} deps
  * @returns {{
- *   attemptStarted: (input: { bead_id: string, title?: string|null, runner?: string|null, model?: string|null, effort?: string|null, speed?: string|null, repo?: string|null, kind?: string|null, decision?: string|null }) => Promise<void>,
+ *   attemptStarted: (input: { bead_id: string, title?: string|null, runner?: string|null, model?: string|null, effort?: string|null, speed?: string|null, repo?: string|null, kind?: string|null, decision?: string|null, session_lane?: { tmux_session?: string|null, tmux_window?: string|null }|null }) => Promise<void>,
  *   conversationConfirm: (input: ConversationConfirmInput) => Promise<boolean>,
  *   conversationTakeover: (input: { bead_id: string }) => Promise<boolean>,
  *   conversationResumed: (input: { bead_id: string, title?: string|null, decision?: string|null, action?: string|null, repo?: string|null }) => Promise<boolean>,
@@ -725,6 +728,20 @@ export function createNotifier(deps) {
           text(input.title) ?? (await lookupTitle(input.bead_id));
         const kind = String(input.kind ?? '');
         const lines = [headline(startedTitle(kind), input.bead_id, bead_title)];
+        // The session-lane variant (UI-lbm5 §4.4): the one line that says
+        // where the window opened, sent once at launch. Its later answer
+        // waits are never pushed from here.
+        const lane = input.session_lane;
+        if (lane) {
+          const place = [text(lane.tmux_session), text(lane.tmux_window)]
+            .filter(Boolean)
+            .join(':');
+          lines.push(
+            place
+              ? `${SESSION_LANE_STARTED} · tmux ${place}`
+              : SESSION_LANE_STARTED
+          );
+        }
         const repo = repoLabel(input.repo);
         // `<runner> <model> / <effort> / <speed>`: the runner leads because a model name
         // alone no longer says which CLI ran (`sol` is codex, `opus` claude),

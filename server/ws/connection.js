@@ -100,6 +100,7 @@ import {
 } from './timing-settings-handlers.js';
 import {
   detachWorkerQueue,
+  handleChipSessionToggle,
   handleGetAttemptPrompt,
   handleGetBeadPrompt,
   handleGetBeadTimeline,
@@ -609,6 +610,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'chip-preset-toggle':
       await handleChipPresetToggle(ws, req);
+      return;
+    case 'chip-session-toggle':
+      await handleChipSessionToggle(ws, req);
       return;
     case 'apply-impl-preset':
       await handleApplyImplPreset(ws, req);

@@ -141,6 +141,7 @@ import {
   runningGridTemplate,
   runningTileInput
 } from './running-grid.js';
+import { createSessionToggle } from './session-toggle.js';
 import { tileResolveFields } from './tile-resolve.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
@@ -3104,6 +3105,15 @@ export function createWorkerView(mount_element, options = {}) {
    * 바인딩된 판정 칩의 클릭 하나 (UI-wg68 §5.3). 서버가 적용과 복원을 고르므로
    * 여기서는 CAS revision과 `root_dir`만 싣는다.
    */
+  /** The `세션 권장` chip click (UI-lbm5 §4.7), shared with the monitor. */
+  const session_toggle = createSessionToggle({
+    transport: (/** @type {any} */ type, /** @type {any} */ payload) =>
+      transport ? transport(type, payload) : Promise.resolve(null),
+    onChange: () => doRender(),
+    toast: (/** @type {string} */ message, /** @type {any} */ kind) =>
+      showToast(message, kind, 2600)
+  });
+
   const chip_preset_toggle = createChipPresetToggle({
     transport: (/** @type {any} */ type, /** @type {any} */ payload) =>
       transport ? transport(type, payload) : Promise.resolve(null),
@@ -3710,6 +3720,18 @@ export function createWorkerView(mount_element, options = {}) {
       openBlocker(
         source_chip.getAttribute('data-source-id') || '',
         source_chip.getAttribute('data-root-dir') || ''
+      );
+      return;
+    }
+    // `세션 권장` 칩 클릭 = `exec_lane` 전환 (UI-lbm5 §4.7): 사유 팝업이 아니라
+    // 서버 op이고, 카드 클릭(상세 열기)보다 먼저 잡고 멈춘다.
+    const session_chip = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.session-lane-toggle')
+    );
+    if (session_chip) {
+      void session_toggle.toggle(
+        session_chip.getAttribute('data-bead-id') || '',
+        session_chip.getAttribute('data-root-dir') || ''
       );
       return;
     }

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { execLaneOf } from '../../app/utils/worker-eligibility.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import {
   __resetTimingSettingsForTest,
@@ -13,11 +14,16 @@ import {
 import { createBeadTimeline } from './bead-timeline.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
-import { install as guardHookInstall } from './guard-hook.js';
+import {
+  install as guardHookInstall,
+  pushLogPath,
+  readPushLog
+} from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
 import { createProviderHealth } from './provider-health.js';
 import { RETRY_DELAYS_MS } from './queue-hold.js';
 import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
+import { createQuickfixLanding } from './quickfix-landing.js';
 import * as operationPolicy from './repo-operation-policy.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
@@ -38,6 +44,7 @@ import {
   beadSessionLogPath,
   beadSessionStderrPath,
   codexAttemptHomeDir,
+  codexSessionsRoot,
   delegationMonitorDir,
   guardHookDir,
   usageReceiptInboxDir
@@ -45,7 +52,8 @@ import {
 import {
   EXTERNAL_RESUME_PANE_MARKER,
   INQUIRY_PANE_MARKER,
-  RESOLVE_PANE_MARKER
+  RESOLVE_PANE_MARKER,
+  SESSION_LANE_PANE_MARKER
 } from './tmux-launcher.js';
 import { createUsageStore } from './usage-store.js';
 import { createVerifier } from './verify.js';
@@ -1496,6 +1504,14 @@ function makeFakeBd(config) {
           c.workerIneligibleAt === nth
             ? ['worker-ineligible']
             : (c.labels ?? []),
+        // The live snapshot's shared judgment (UI-lbm5 §4.1), from the same
+        // labels and metadata this fake reports.
+        exec_lane: execLaneOf(
+          c.workerIneligibleAt === nth
+            ? ['worker-ineligible']
+            : (c.labels ?? []),
+          c.metadata ?? {}
+        ),
         spec_review: c.spec_review,
         plan_path: c.plan_path,
         plan_approval: c.plan_approval,
@@ -1786,7 +1802,9 @@ function setup(opts) {
     timeline: opts.timeline,
     now: opts.now || (() => 1000),
     publishActivity: opts.publishActivity,
-    waitingRescan: opts.waitingRescan
+    waitingRescan: opts.waitingRescan,
+    sleep: /** @type {any} */ (opts).sleep,
+    interactiveTmuxSession: /** @type {any} */ (opts).interactiveTmuxSession
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
   // constructor dep, so a test sets it exactly the way the UI does.
@@ -8497,57 +8515,6 @@ function seedExecDefaults(store, defaults) {
 }
 
 describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
-  test('keeps an ineligible queue head and dispatches the next eligible bead', async () => {
-    const env = setup({
-      config: {
-        S1: { labels: ['worker-ineligible'] },
-        S2: {}
-      },
-      slots: 1
-    });
-    seedQueue(env.store, ['S1', 'S2']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['S2']);
-    expect(env.store.snapshot(WS).queue.map((entry) => entry.bead_id)).toEqual([
-      'S1',
-      'S2'
-    ]);
-    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
-      'worker_ineligible'
-    );
-  });
-
-  test('blocks a label added between scan and dispatch before worktree mutation', async () => {
-    const env = setup({
-      config: { S1: { workerIneligibleAt: 2 } },
-      slots: 1
-    });
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual([]);
-    expect(env.worktree.add).not.toHaveBeenCalled();
-    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
-      'worker_ineligible'
-    );
-  });
-
-  test('dispatches and clears the refusal after the label is removed', async () => {
-    const bead = { labels: ['worker-ineligible'] };
-    const env = setup({ config: { S1: bead }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-
-    bead.labels = [];
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['S1']);
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
-  });
-
   test('ignores durable PR waits when slot holding is off', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedPrWait(env.store, 'P1');
@@ -12382,22 +12349,6 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.runner.settingsFor('B1')).toMatchObject({
       claude_account: 'pinned@example.com'
     });
-  });
-
-  test('refuses resume when the current bead is worker-ineligible', async () => {
-    const env = setup({
-      config: { B1: { labels: ['worker-ineligible'] } },
-      slots: 1
-    });
-    seedAttempt(env.store, 'r1', resumablePrior());
-
-    const result = await env.scheduler.resume(WS, 'r1');
-
-    expect(result).toEqual({ ok: false, reason: 'worker_ineligible' });
-    expect(env.runner.spawnOrder).toEqual([]);
-    expect(env.store.snapshot(WS).admission.B1.reason).toBe(
-      'worker_ineligible'
-    );
   });
 
   test('refuses resume when the current Bead snapshot cannot be read', async () => {
@@ -30911,8 +30862,14 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
     });
 
     test('fails the attempt and ends the ladder when the retry is refused for good', async () => {
-      const env = await retryWaitEnv();
-      env.config.B1.labels = ['worker-ineligible'];
+      const gate = { refuse: false };
+      const env = await retryWaitEnv({
+        admission: {
+          validate: async () =>
+            gate.refuse ? { ok: false, reason: 'invalid_route' } : { ok: true }
+        }
+      });
+      gate.refuse = true;
 
       await runDue(env);
 
@@ -30920,7 +30877,7 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
       expect(queue.lineages).toEqual([]);
       expect(queue.attempts[env.attempt_id]).toMatchObject({
         status: 'failed',
-        cause_detail: { retry_refused: 'worker_ineligible' }
+        cause_detail: { retry_refused: 'invalid_route' }
       });
     });
 
@@ -32075,5 +32032,1328 @@ describe('foreign PR review session dispatch (UI-k467 §3.10)', () => {
     expect(env.runner.settingsFor('B1').env).toMatchObject({
       WORKFLOW_REPO_ROOT: '/repo'
     });
+  });
+});
+
+describe('session lane (UI-lbm5)', () => {
+  /**
+   * A workspace whose session-hub launcher and tmux listing are fakes: a
+   * launch adds a live marker pane, `/exit` and kill take it away again.
+   *
+   * @param {{ config?: Record<string, any>, slots?: number, extra?: Record<string, any> }} [input]
+   */
+  function laneEnv(input = {}) {
+    const clock = { at: 1000 };
+    /** @type {{ ok: boolean, rows: any[] }} */
+    const panes = { ok: true, rows: [] };
+    /** @type {{ value: any }} */
+    const message = { value: null };
+    /** @type {Array<[string, any]>} */
+    const pushes = [];
+    const launcher = {
+      launch: vi.fn(async (/** @type {any} */ launch_input) => {
+        panes.rows.push({
+          key: launch_input.key,
+          pane: '%7',
+          dead: '0',
+          session: 'bdui-inquiry',
+          window: launch_input.window_name,
+          cwd: launch_input.cwd,
+          agent_runtime: launch_input.runner,
+          agent_running: '1',
+          agent_attention: ''
+        });
+        return {
+          session: 'launched',
+          placement: 'inquiry',
+          tmux_session: 'bdui-inquiry',
+          tmux_window: launch_input.window_name,
+          pane_id: '%7'
+        };
+      }),
+      listPanesExtended: vi.fn(async (/** @type {string} */ marker) =>
+        marker === SESSION_LANE_PANE_MARKER
+          ? panes.ok
+            ? { ok: true, rows: panes.rows }
+            : { ok: false, error: 'no server running' }
+          : { ok: true, rows: [] }
+      ),
+      readPaneOption: vi.fn(async () => ({ ok: true, value: null })),
+      capturePaneTail: vi.fn(async () => ({ ok: true, line: '❯ ' })),
+      sendExit: vi.fn(async () => {
+        panes.rows = [];
+        return { ok: true };
+      }),
+      killWindow: vi.fn(async () => {
+        panes.rows = [];
+        return { ok: true };
+      })
+    };
+    const notify = new Proxy(
+      {},
+      {
+        get: (_target, key) => (/** @type {any} */ payload) => {
+          pushes.push([String(key), payload]);
+          return Promise.resolve();
+        }
+      }
+    );
+    const env = setup({
+      config: input.config || {
+        S1: { labels: ['worker-ineligible'] },
+        S2: {}
+      },
+      slots: input.slots ?? 1,
+      now: () => clock.at,
+      notify,
+      resolveSessionFile: () => ({
+        locality: 'local',
+        file: '/transcript',
+        last_event_at: clock.at
+      }),
+      ...{
+        interactiveLauncher: launcher,
+        readLastAssistantMessage: () => message.value,
+        sleep: async () => {},
+        interactiveTmuxSession: () => 'bdui-inquiry'
+      },
+      ...(input.extra || {})
+    });
+    return {
+      ...env,
+      clock,
+      panes,
+      message,
+      pushes,
+      launcher,
+      /** @param {string} bead_id */
+      laneAttempt(bead_id) {
+        return /** @type {any} */ (
+          Object.values(env.store.snapshot(WS).attempts).find(
+            (a) => a.bead_id === bead_id
+          )
+        );
+      },
+      /** @param {string} bead_id */
+      laneRecord(bead_id) {
+        return env.store.snapshot(WS).interactive_sessions[
+          `${bead_id}:session_lane`
+        ];
+      },
+      /** The first launch's input. */
+      launchInput() {
+        return /** @type {any} */ (launcher.launch.mock.calls[0][0]);
+      }
+    };
+  }
+
+  describe('dispatch', () => {
+    test('launches a worker-ineligible queue row as a session-lane window', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(env.launchInput()).toMatchObject({
+        marker: SESSION_LANE_PANE_MARKER,
+        key: 'S1',
+        window_name: 'S1',
+        cwd: '/wt/S1',
+        placement: 'inquiry',
+        runner: 'claude',
+        conversation_flags: false,
+        tmux_session: 'bdui-inquiry'
+      });
+      expect(env.laneAttempt('S1')).toMatchObject({
+        status: 'running',
+        exec: 'session',
+        pid: null,
+        interactive: {
+          pane_id: '%7',
+          tmux_session: 'bdui-inquiry',
+          tmux_window: 'S1'
+        }
+      });
+    });
+
+    test('launches a chosen session-preferred row as a session lane', async () => {
+      const env = laneEnv({
+        config: {
+          S1: {
+            labels: ['session-preferred'],
+            metadata: {
+              session_preferred_reason: 'external_roundtrip',
+              exec_lane: 'session'
+            }
+          }
+        }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launcher.launch).toHaveBeenCalledOnce();
+      expect(env.runner.spawnOrder).toEqual([]);
+    });
+
+    test('keeps a session-preferred row without exec_lane on the headless Worker', async () => {
+      const env = laneEnv({
+        config: {
+          S1: {
+            labels: ['session-preferred'],
+            metadata: { session_preferred_reason: 'external_roundtrip' }
+          }
+        }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launcher.launch).not.toHaveBeenCalled();
+      expect(env.runner.spawnOrder).toEqual(['S1']);
+    });
+
+    test('ignores a stray exec_lane without the session-preferred label', async () => {
+      const env = laneEnv({
+        config: { S1: { metadata: { exec_lane: 'session' } } }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launcher.launch).not.toHaveBeenCalled();
+      expect(env.runner.spawnOrder).toEqual(['S1']);
+    });
+
+    test('launches the session lane for a label added between scan and dispatch', async () => {
+      /** @type {Record<string, any>} */
+      const bead = { labels: [] };
+      bead.onSnapshot = (/** @type {number} */ nth) => {
+        if (nth >= 2) {
+          bead.labels = ['worker-ineligible'];
+        }
+      };
+      const env = laneEnv({ config: { S1: bead } });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(env.launcher.launch).toHaveBeenCalledOnce();
+    });
+
+    test('passes the preset model and effort with a pre-chosen session id', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const args = env.launchInput().commandArgs;
+      const session_id = env.laneAttempt('S1').session_id;
+      expect(typeof session_id).toBe('string');
+      expect(args.slice(0, 2)).toEqual(['--session-id', session_id]);
+      expect(args).toEqual(
+        expect.arrayContaining(['--model', '--effort', 'high'])
+      );
+      expect(args[args.indexOf('--model') + 1]).toMatch(/opus/);
+      expect(args).toContain('--append-system-prompt');
+    });
+
+    test('sends the headless task sentence as the first input', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const args = env.launchInput().commandArgs;
+      expect(args.at(-1)).toBe(
+        'Bead S1 작업을 계약 네이티브 흐름으로 완료하라.'
+      );
+      expect(args.at(-1).startsWith('이 세션은 ')).toBe(false);
+    });
+
+    test('composes the session-lane context on the system prompt channel', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const args = env.launchInput().commandArgs;
+      const system_prompt = args[args.indexOf('--append-system-prompt') + 1];
+      expect(system_prompt.startsWith('세션 레인:')).toBe(true);
+      for (const block of [
+        '## fast_track',
+        '## 종점',
+        '## PR base',
+        '## fix-now'
+      ]) {
+        expect(system_prompt).toContain(block);
+      }
+      for (const block of [
+        '## 무인 모드',
+        '## 가드 계약',
+        '## 프로세스 수명'
+      ]) {
+        expect(system_prompt).not.toContain(block);
+      }
+      expect(env.laneAttempt('S1').system_prompt).toBe(system_prompt);
+    });
+
+    test('names the quick_fix lane as the end of a quick_fix session lane', async () => {
+      const env = laneEnv({
+        config: {
+          S1: {
+            labels: ['worker-ineligible'],
+            route: 'quick_fix',
+            description: '고칠 것'
+          }
+        }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const args = env.launchInput().commandArgs;
+      const system_prompt = args[args.indexOf('--append-system-prompt') + 1];
+      expect(system_prompt).toContain('Worker가 dispatch한 quick_fix 레인');
+      expect(system_prompt).not.toContain('## PR base');
+    });
+
+    test('stamps fast_track with the worker source and reads both back', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.bd.calls).toEqual(
+        expect.arrayContaining([
+          {
+            method: 'setMetadata',
+            bead_id: 'S1',
+            key: 'workflow_mode',
+            value: 'fast_track'
+          },
+          {
+            method: 'setMetadata',
+            bead_id: 'S1',
+            key: 'workflow_mode_source',
+            value: 'worker'
+          }
+        ])
+      );
+      expect(env.laneAttempt('S1').status).toBe('running');
+    });
+
+    test('opens the window with the attempt guard-hook env and no Worker marker', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const launch_env = env.launchInput().env;
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+      const n = Number(launch_env.GIT_CONFIG_COUNT) - 1;
+      expect(launch_env[`GIT_CONFIG_KEY_${n}`]).toBe('core.hooksPath');
+      expect(launch_env[`GIT_CONFIG_VALUE_${n}`]).toBe(
+        guardHookDir(WS, attempt_id)
+      );
+      for (const marker of [
+        'BDUI_ATTEMPT_ID',
+        'CLAUDE_HOOK_SUPPRESS',
+        'CODEX_SILENT',
+        'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS'
+      ]) {
+        expect(launch_env).not.toHaveProperty(marker);
+      }
+    });
+
+    test('installs the record-mode push hook for a quick_fix session lane', async () => {
+      const env = laneEnv({
+        config: {
+          S1: {
+            labels: ['worker-ineligible'],
+            route: 'quick_fix',
+            description: '고칠 것'
+          }
+        }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+      const hook = fs.readFileSync(
+        path.join(guardHookDir(WS, attempt_id), 'pre-push'),
+        'utf8'
+      );
+      expect(hook).toContain('record');
+    });
+
+    test('points the quick_fix session-lane hook at the push log the landing reads', async () => {
+      const env = laneEnv({
+        config: {
+          S1: {
+            labels: ['worker-ineligible'],
+            route: 'quick_fix',
+            description: '고칠 것'
+          }
+        }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+      const hook = fs.readFileSync(
+        path.join(guardHookDir(WS, attempt_id), 'pre-push'),
+        'utf8'
+      );
+      expect(hook).toContain(`guard_push_log='${pushLogPath(WS, attempt_id)}'`);
+    });
+
+    test('wraps a pinned claude account in cswap run', async () => {
+      const env = laneEnv({
+        config: {
+          S1: {
+            labels: ['worker-ineligible'],
+            claude_account: 'me@example.com'
+          }
+        },
+        extra: {
+          accountCatalog: {
+            resolveClaude: async () => ({ ok: true }),
+            resolveCodex: async () => ({ ok: true })
+          },
+          resolveCswapPath: () => '/usr/local/bin/cswap'
+        }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launchInput().wrapper).toEqual({
+        executable: '/usr/local/bin/cswap',
+        args: ['run', 'me@example.com', '--share-history', '--']
+      });
+      expect(env.laneAttempt('S1').claude_account).toBe('me@example.com');
+    });
+
+    test('fails the attempt with session_launch_failed when the window does not open', async () => {
+      const env = laneEnv();
+      env.launcher.launch.mockResolvedValueOnce(
+        /** @type {any} */ ({
+          session: 'not_launched',
+          reason: 'tmux_unavailable'
+        })
+      );
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.laneAttempt('S1')).toMatchObject({
+        status: 'failed',
+        cause: 'session_launch_failed:tmux_unavailable'
+      });
+    });
+
+    test('sends the session-lane start line once at launch', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const starts = env.pushes.filter(([event]) => event === 'attemptStarted');
+      expect(starts).toHaveLength(1);
+      expect(starts[0][1].session_lane).toEqual({
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'S1'
+      });
+    });
+
+    test('holds the only slot while the session lane runs', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1', 'S2']);
+      await env.scheduler.tick(WS);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launcher.launch).toHaveBeenCalledOnce();
+      expect(env.runner.spawnOrder).toEqual([]);
+    });
+  });
+
+  describe('liveness', () => {
+    test('keeps a live session-lane attempt without a pid running across reconcile', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      expect(env.laneAttempt('S1').status).toBe('running');
+    });
+
+    test('settles the attempt as session_exited once a successful pass misses its pane', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.panes.rows = [];
+
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      expect(env.laneAttempt('S1')).toMatchObject({
+        status: 'failed',
+        cause: 'session_exited'
+      });
+      expect(env.launcher.launch).toHaveBeenCalledOnce();
+    });
+
+    test('keeps the claim and the slot while the tmux listing fails', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1', 'S2']);
+      await env.scheduler.tick(WS);
+      env.panes.ok = false;
+      env.panes.rows = [];
+
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.tick(WS);
+
+      expect(env.laneAttempt('S1').status).toBe('running');
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(
+        env.bd.calls.filter(
+          (call) => call.method === 'setStatus' && call.value === 'open'
+        )
+      ).toEqual([]);
+    });
+
+    test('frees the slot for the next row once the pane is confirmed gone', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1', 'S2']);
+      await env.scheduler.tick(WS);
+      env.panes.rows = [];
+
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      expect(env.runner.spawnOrder).toEqual(['S2']);
+    });
+
+    test('does not retire a live session-lane cleanup diagnosis', async () => {
+      const env = laneEnv({ config: {} });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'diag',
+          bead_id: 'D1',
+          status: 'running',
+          exec: 'session',
+          interactive: { pane_id: '%9', tmux_session: 's', tmux_window: 'D1' },
+          cleanup_diagnosis: true,
+          pid: null
+        }
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.store.snapshot(WS).attempts.diag.status).toBe('running');
+    });
+
+    test('retires a session-lane cleanup diagnosis whose pane is gone', async () => {
+      const env = laneEnv({ config: {} });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'diag',
+          bead_id: 'D1',
+          status: 'running',
+          exec: 'session',
+          interactive: {
+            pane_id: '%9',
+            tmux_session: 's',
+            tmux_window: 'D1',
+            gone_at: 900
+          },
+          cleanup_diagnosis: true,
+          pid: null
+        }
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.store.snapshot(WS).attempts.diag.status).toBe('orphaned');
+    });
+
+    test('re-adopts a running session lane after a restart while its pane lives', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const restarted = createScheduler(
+        /** @type {any} */ ({
+          store: env.store,
+          bd: env.bd,
+          worktree: env.worktree,
+          verify: env.verify,
+          sessionLog: { attach: vi.fn() },
+          makeRunner: env.runner.factory,
+          interactiveLauncher: env.launcher,
+          execPresetCoordinator: { resolveForDispatch: () => ({ ok: false }) },
+          readLastAssistantMessage: () => null,
+          resolveSessionFile: () => ({
+            locality: 'missing',
+            file: null,
+            last_event_at: null
+          }),
+          now: () => env.clock.at
+        })
+      );
+
+      await restarted.reconcile(WS);
+      await restarted.reconcile(WS);
+
+      expect(env.laneAttempt('S1').status).toBe('running');
+      expect(env.laneRecord('S1')).toMatchObject({ state: 'live' });
+    });
+
+    test('settles a re-adopted session lane as session_exited when its pane is gone after a restart', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.panes.rows = [];
+      const restarted = createScheduler(
+        /** @type {any} */ ({
+          store: env.store,
+          bd: env.bd,
+          worktree: env.worktree,
+          verify: env.verify,
+          sessionLog: { attach: vi.fn() },
+          makeRunner: env.runner.factory,
+          interactiveLauncher: env.launcher,
+          execPresetCoordinator: { resolveForDispatch: () => ({ ok: false }) },
+          readLastAssistantMessage: () => null,
+          resolveSessionFile: () => ({
+            locality: 'missing',
+            file: null,
+            last_event_at: null
+          }),
+          now: () => env.clock.at
+        })
+      );
+
+      await restarted.reconcile(WS);
+      await restarted.reconcile(WS);
+
+      expect(env.laneAttempt('S1')).toMatchObject({
+        status: 'failed',
+        cause: 'session_exited'
+      });
+    });
+
+    test('skips a session lane launched while the pane listing was in flight', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      let launched = false;
+      env.launcher.listPanesExtended.mockImplementation(
+        async (/** @type {string} */ marker) => {
+          if (marker !== SESSION_LANE_PANE_MARKER) {
+            return { ok: true, rows: [] };
+          }
+          const stale = [...env.panes.rows];
+          if (!launched) {
+            launched = true;
+            await env.scheduler.tick(WS);
+          }
+          return { ok: true, rows: stale };
+        }
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneAttempt('S1').status).toBe('running');
+      expect(env.laneAttempt('S1').interactive.gone_at ?? null).toBeNull();
+    });
+
+    test('settles a result line written before the window closed through the result path', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.clock.at = 2000;
+      env.message.value = {
+        text: '성공 · PR #1',
+        first_line: '성공 · PR #1',
+        excerpt: '성공 · PR #1',
+        at: 1500
+      };
+      env.panes.rows = [];
+
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      expect(env.verify.verifyPrSubmitted).toHaveBeenCalledOnce();
+      expect(env.laneAttempt('S1').status).toBe('done');
+    });
+
+    test('settles a closed window whose last message is no result line as session_exited', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.clock.at = 2000;
+      env.message.value = {
+        text: '어느 쪽으로 갈까요?',
+        first_line: '어느 쪽으로 갈까요?',
+        excerpt: '어느 쪽으로 갈까요?',
+        at: 1500
+      };
+      env.panes.rows = [];
+
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      expect(env.laneAttempt('S1')).toMatchObject({
+        status: 'failed',
+        cause: 'session_exited'
+      });
+    });
+
+    /**
+     * Seed a withdrawn (`paused`) session-lane cleanup diagnosis — the one
+     * status of such an attempt `resume` judges by its cleanup-diagnosis
+     * branch rather than refusing as `not_failed`.
+     *
+     * @param {ReturnType<typeof laneEnv>} env
+     * @param {number|null} gone_at
+     */
+    function seedPausedDiagnosis(env, gone_at) {
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'diag',
+          bead_id: 'D1',
+          status: 'paused',
+          exec: 'session',
+          interactive: {
+            pane_id: '%9',
+            tmux_session: 's',
+            tmux_window: 'D1',
+            gone_at
+          },
+          cleanup_diagnosis: true,
+          pid: null
+        }
+      });
+    }
+
+    test('keeps a live session-lane cleanup diagnosis through resume', async () => {
+      const env = laneEnv({ config: {} });
+      seedPausedDiagnosis(env, null);
+
+      const result = await env.scheduler.resume(WS, 'diag');
+
+      expect(result).toEqual({
+        ok: false,
+        reason: 'legacy_cleanup_diagnosis_retired'
+      });
+      expect(env.store.snapshot(WS).attempts.diag.status).toBe('paused');
+    });
+
+    test('retires a confirmed-gone session-lane cleanup diagnosis through resume', async () => {
+      const env = laneEnv({ config: {} });
+      seedPausedDiagnosis(env, 900);
+
+      await env.scheduler.resume(WS, 'diag');
+
+      expect(env.store.snapshot(WS).attempts.diag).toMatchObject({
+        status: 'orphaned',
+        cause: 'legacy_cleanup_diagnosis_retired'
+      });
+    });
+  });
+
+  describe('answer wait and result', () => {
+    /**
+     * Dispatch S1 and settle its window into one observed message.
+     *
+     * @param {{ text: string, running?: string, attention?: string }} input
+     * @param {Parameters<typeof laneEnv>[0]} [lane_input]
+     */
+    async function observed(input, lane_input) {
+      const env = laneEnv(lane_input);
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.clock.at = 2000;
+      Object.assign(env.panes.rows[0], {
+        agent_running: input.running ?? '',
+        agent_attention: input.attention ?? ''
+      });
+      env.message.value = {
+        text: input.text.split('\n')[0],
+        first_line: input.text.split('\n')[0],
+        excerpt: input.text,
+        at: 1500
+      };
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      return env;
+    }
+
+    test('marks an idle turn with a non-result message as an answer wait', async () => {
+      const env = await observed({ text: '어느 쪽으로 갈까요?' });
+
+      expect(env.laneAttempt('S1')).toMatchObject({
+        status: 'running',
+        interactive: { turn_state: 'idle', awaiting_answer: true }
+      });
+    });
+
+    test('marks a question prompt as an answer wait', async () => {
+      const env = await observed({
+        text: '권한을 허용할까요?',
+        attention: 'question'
+      });
+
+      expect(env.laneAttempt('S1').interactive).toMatchObject({
+        turn_state: 'question',
+        awaiting_answer: true
+      });
+    });
+
+    test('pushes nothing to Discord for an answer wait', async () => {
+      const env = await observed({ text: '어느 쪽으로 갈까요?' });
+
+      expect(env.pushes.map(([event]) => event)).toEqual(['attemptStarted']);
+    });
+
+    test('pushes nothing to Discord for a question prompt', async () => {
+      const env = await observed({
+        text: '권한을 허용할까요?',
+        attention: 'question'
+      });
+
+      expect(env.pushes.map(([event]) => event)).toEqual(['attemptStarted']);
+    });
+
+    test('hands a quick_fix success line to the landing settlement of its attempt', async () => {
+      const settle = vi.fn(async () => ({ ok: true }));
+      const env = await observed(
+        { text: '성공 · base에 착지' },
+        {
+          config: {
+            S1: {
+              labels: ['worker-ineligible'],
+              route: 'quick_fix',
+              description: '고칠 것'
+            }
+          },
+          extra: { quickfixLanding: { settle } }
+        }
+      );
+
+      expect(settle).toHaveBeenCalledWith({
+        attempt_id: env.laneAttempt('S1').attempt_id,
+        bead_id: 'S1',
+        target_base: 'main'
+      });
+      expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    });
+
+    test('opens no direction inquiry for a park while the window is open', async () => {
+      const onParkedAttempt = vi.fn(async () => ({ session: 'launched' }));
+      const verify = {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: false,
+          reason: 'no_pr',
+          pr_url: null,
+          bead_status: 'in_progress',
+          awaiting_user: 'spec_review_stale:revise'
+        }))
+      };
+      const env = await observed(
+        { text: '파킹 · 사용자 판단이 필요하다' },
+        { extra: { verify, directionInquiry: { onParkedAttempt } } }
+      );
+      await flush();
+
+      expect(env.laneAttempt('S1').status).toBe('parked');
+      expect(onParkedAttempt).not.toHaveBeenCalled();
+    });
+
+    test('feeds a success result line into the headless settlement', async () => {
+      const env = await observed({ text: '성공 · PR #1\n상세' });
+
+      expect(env.verify.verifyPrSubmitted).toHaveBeenCalledOnce();
+      expect(env.laneAttempt('S1').status).toBe('done');
+      expect(
+        env.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+      ).toEqual(['S1']);
+    });
+
+    test('feeds a failure result line into the headless failure branch', async () => {
+      const env = await observed({ text: '실패 · 테스트가 깨졌다' });
+
+      const attempt = env.laneAttempt('S1');
+      expect(attempt.cause).toBe('session_failed:reported_failure');
+      expect(['failed', 'retry_wait']).toContain(attempt.status);
+      expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    });
+
+    test('processes one result message only once', async () => {
+      const env = await observed({ text: '성공 · PR #1' });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.verify.verifyPrSubmitted).toHaveBeenCalledOnce();
+    });
+
+    test('closes the window by the conversation close rule after a result', async () => {
+      const env = await observed({ text: '성공 · PR #1' });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.launcher.sendExit).toHaveBeenCalledWith('%7');
+    });
+
+    test('resumes a result-line settlement a restart interrupted', async () => {
+      const stuck = {
+        verifyPrSubmitted: vi.fn(() => new Promise(() => {}))
+      };
+      const env = await observedWithoutWaiting(
+        { text: '성공 · PR #1' },
+        { extra: { verify: stuck } }
+      );
+      await vi.waitFor(() =>
+        expect(stuck.verifyPrSubmitted).toHaveBeenCalledOnce()
+      );
+      const verify = {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: true,
+          reason: 'ok',
+          pr_url: 'https://github.com/o/r/pull/1'
+        }))
+      };
+      const restarted = createScheduler(
+        /** @type {any} */ ({
+          store: env.store,
+          bd: env.bd,
+          worktree: env.worktree,
+          verify,
+          sessionLog: { attach: vi.fn() },
+          makeRunner: env.runner.factory,
+          interactiveLauncher: env.launcher,
+          execPresetCoordinator: { resolveForDispatch: () => ({ ok: false }) },
+          readLastAssistantMessage: () => env.message.value,
+          resolveSessionFile: () => ({
+            locality: 'local',
+            file: '/transcript',
+            last_event_at: env.clock.at
+          }),
+          fs: { existsSync: () => true },
+          now: () => env.clock.at
+        })
+      );
+
+      await restarted.reconcileInteractiveSessions(WS);
+
+      expect(verify.verifyPrSubmitted).toHaveBeenCalledOnce();
+      expect(env.laneAttempt('S1').status).toBe('done');
+    });
+
+    /**
+     * Dispatch S1 and start, without awaiting, the pass that observes one
+     * message: a settlement it reaches may hang without blocking the test.
+     *
+     * @param {{ text: string }} input
+     * @param {Parameters<typeof laneEnv>[0]} [lane_input]
+     */
+    async function observedWithoutWaiting(input, lane_input) {
+      const env = laneEnv(lane_input);
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.clock.at = 2000;
+      Object.assign(env.panes.rows[0], {
+        agent_running: '',
+        agent_attention: ''
+      });
+      env.message.value = {
+        text: input.text,
+        first_line: input.text,
+        excerpt: input.text,
+        at: 1500
+      };
+      void env.scheduler.reconcileInteractiveSessions(WS);
+      return env;
+    }
+
+    test('reads a codex session-lane transcript under its account sessions root', async () => {
+      const resolveSessionFile = vi.fn(() => ({
+        locality: 'missing',
+        file: null,
+        last_event_at: null
+      }));
+      const env = laneEnv({ config: {}, extra: { resolveSessionFile } });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'cx',
+          bead_id: 'C1',
+          status: 'running',
+          exec: 'session',
+          runner: 'codex',
+          codex_account: 'acct@example.com',
+          session_id: '0199a000-0000-7000-8000-000000000001',
+          started_at: 1000,
+          interactive: { pane_id: '%8', tmux_session: 's', tmux_window: 'C1' },
+          pid: null
+        }
+      });
+      env.store.recordInteractiveSession(WS, {
+        bead_id: 'C1',
+        kind: 'session_lane',
+        provider: 'codex',
+        session_id: '0199a000-0000-7000-8000-000000000001',
+        session_id_source: 'pane_option',
+        mode: 'fresh',
+        source: 'attempt',
+        attempt_id: 'cx',
+        pane_id: '%8',
+        tmux_session: 's',
+        tmux_window: 'C1',
+        cwd: '/wt/C1',
+        launched_at: 1000,
+        state: 'live',
+        conversation: {
+          stop: '세션 레인',
+          wait_id: null,
+          processed_message_at: null,
+          message_excerpt: null,
+          result: null,
+          handoff: null,
+          takeover_notified_at: null
+        }
+      });
+      env.panes.rows.push({
+        key: 'C1',
+        pane: '%8',
+        dead: '0',
+        session: 's',
+        window: 'C1',
+        cwd: '/wt/C1',
+        agent_runtime: 'codex',
+        agent_running: '1',
+        agent_attention: ''
+      });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(resolveSessionFile).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'codex' }),
+        expect.objectContaining({
+          sessions_root: codexSessionsRoot({
+            codex_account: 'acct@example.com'
+          })
+        })
+      );
+    });
+  });
+
+  describe('controls', () => {
+    test('refuses to pause a session-lane attempt', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+
+      const result = await env.scheduler.pause(
+        WS,
+        env.laneAttempt('S1').attempt_id
+      );
+
+      expect(result).toEqual({ ok: false, reason: 'pause_unsupported' });
+    });
+
+    test('reopens a session_exited attempt as a new session lane with --resume', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const first = env.laneAttempt('S1');
+      env.panes.rows = [];
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      const result = await env.scheduler.resume(WS, first.attempt_id, {
+        continuation: 'prior_session'
+      });
+
+      expect(result.ok).toBe(true);
+      const child = env.store.snapshot(WS).attempts[String(result.attempt_id)];
+      expect(child).toMatchObject({
+        exec: 'session',
+        resumed_from: first.attempt_id,
+        status: 'running'
+      });
+      const args = env.launcher.launch.mock.calls[1][0].commandArgs;
+      expect(args.slice(0, 2)).toEqual(['--resume', first.session_id]);
+      expect(env.launcher.launch.mock.calls[1][0].cwd).toBe('/wt/S1');
+    });
+
+    test('reopens a session_exited attempt with the preset and the session-lane context', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const first = env.laneAttempt('S1');
+      env.panes.rows = [];
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      await env.scheduler.resume(WS, first.attempt_id, {
+        continuation: 'prior_session'
+      });
+
+      const reopened = /** @type {any} */ (
+        env.launcher.launch.mock.calls[1][0]
+      );
+      const args = reopened.commandArgs;
+      expect(reopened).toMatchObject({
+        marker: SESSION_LANE_PANE_MARKER,
+        placement: 'inquiry',
+        runner: first.runner
+      });
+      expect(args[args.indexOf('--model') + 1]).toBe(first.model);
+      expect(
+        args[args.indexOf('--append-system-prompt') + 1].startsWith(
+          '세션 레인:'
+        )
+      ).toBe(true);
+    });
+
+    test('keeps the slot until a ✕ withdrawal confirms the window gone', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+      env.launcher.sendExit.mockImplementation(async () => ({ ok: true }));
+      env.launcher.killWindow.mockImplementation(async () => ({ ok: true }));
+
+      const refused = await env.scheduler.withdraw(WS, attempt_id);
+
+      expect(refused).toEqual({
+        ok: false,
+        reason: 'session_lane_still_open'
+      });
+      expect(env.laneAttempt('S1').status).toBe('running');
+    });
+
+    test('withdraws a session-lane attempt after /exit closes its window', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+
+      const result = await env.scheduler.withdraw(WS, attempt_id);
+
+      expect(result).toEqual({ ok: true });
+      expect(env.launcher.sendExit).toHaveBeenCalledWith('%7');
+      expect(env.store.snapshot(WS).attempts[attempt_id]).toMatchObject({
+        status: 'paused',
+        withdrawn: expect.any(Object)
+      });
+    });
+
+    test('discards a session-lane attempt only after its window is gone', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+
+      const result = await env.scheduler.finalizeDiscardAttempt(WS, attempt_id);
+
+      expect(result).toEqual({ ok: true });
+      expect(env.launcher.sendExit).toHaveBeenCalledOnce();
+      expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe(
+        'discarded'
+      );
+    });
+
+    test('refuses the discard while tmux cannot confirm the window gone', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+      env.panes.ok = false;
+
+      const result = await env.scheduler.finalizeDiscardAttempt(WS, attempt_id);
+
+      expect(result).toEqual({
+        ok: false,
+        reason: 'session_lane_unobservable'
+      });
+      expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe(
+        'running'
+      );
+    });
+
+    test('stops a session-lane attempt after its window is gone', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+
+      const stopped = await env.scheduler.stop(WS, attempt_id);
+
+      expect(stopped).toBe(true);
+      expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe(
+        'stopped'
+      );
+    });
+  });
+
+  describe('quick_fix push proof (§6a)', () => {
+    /** @type {Record<string, string|undefined>} */
+    let saved_git_config = {};
+    /** @type {string} */
+    let git_tmp;
+
+    beforeEach(() => {
+      // The launch env extends an inherited `GIT_CONFIG_COUNT`, and the push
+      // below must run this attempt's hook alone: the ambient git config keys
+      // are cleared for the test and restored after it.
+      saved_git_config = {};
+      for (const name of Object.keys(process.env)) {
+        if (name.startsWith('GIT_CONFIG_')) {
+          saved_git_config[name] = process.env[name];
+          delete process.env[name];
+        }
+      }
+      git_tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-lane-push-'));
+    });
+
+    afterEach(() => {
+      for (const [name, value] of Object.entries(saved_git_config)) {
+        process.env[name] = value;
+      }
+      fs.rmSync(git_tmp, { recursive: true, force: true });
+    });
+
+    /**
+     * The child env every git call here runs under: no global or system
+     * config, plus the given layer.
+     *
+     * @param {Record<string, string>} [layer]
+     * @returns {Record<string, string|undefined>}
+     */
+    function gitEnv(layer = {}) {
+      return {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_SYSTEM: '/dev/null',
+        ...layer
+      };
+    }
+
+    /**
+     * Run git and return its stdout; a failing command fails the test.
+     *
+     * @param {string[]} args
+     * @param {string} cwd
+     * @param {Record<string, string>} [layer]
+     * @returns {string}
+     */
+    function git(args, cwd, layer) {
+      const result = spawnSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        env: gitEnv(layer)
+      });
+      if (result.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
+      }
+      return String(result.stdout);
+    }
+
+    /**
+     * @param {string} cwd
+     */
+    function identify(cwd) {
+      git(['config', 'user.email', 'test@example.com'], cwd);
+      git(['config', 'user.name', 'Test'], cwd);
+      git(['config', 'commit.gpgsign', 'false'], cwd);
+    }
+
+    /**
+     * @param {string} cwd
+     * @param {string} name
+     */
+    function commit(cwd, name) {
+      fs.writeFileSync(path.join(cwd, `${name}.txt`), `${name}\n`);
+      git(['add', `${name}.txt`], cwd);
+      git(['commit', '-q', '-m', name], cwd);
+    }
+
+    /**
+     * A local checkout with a bare `origin` whose `main` it tracks.
+     *
+     * @returns {string}
+     */
+    function checkoutWithRemote() {
+      const seed = path.join(git_tmp, 'seed');
+      fs.mkdirSync(seed);
+      git(['init', '-q', '-b', 'main'], seed);
+      identify(seed);
+      commit(seed, 'first');
+      const origin = path.join(git_tmp, 'origin.git');
+      git(['clone', '-q', '--bare', seed, origin], git_tmp);
+      const repo = path.join(git_tmp, 'repo');
+      git(['clone', '-q', origin, repo], git_tmp);
+      identify(repo);
+      return repo;
+    }
+
+    test('proves the delivery of a base push made under the session-lane env', async () => {
+      const repo = checkoutWithRemote();
+      const env = laneEnv({
+        config: {
+          S1: {
+            labels: ['worker-ineligible'],
+            route: 'quick_fix',
+            description: '고칠 것',
+            repo
+          }
+        }
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+      commit(repo, 'fix');
+      const pushed = git(['rev-parse', 'HEAD'], repo).trim();
+      git(['push', '-q', 'origin', 'HEAD:main'], repo, env.launchInput().env);
+      const bd = {
+        readIssue: vi.fn(async () => ({ status: 'in_progress' })),
+        readMetadata: vi.fn(async () => `reviewer@${pushed}`),
+        setStatus: vi.fn(async () => {}),
+        readStatus: vi.fn(async () => 'resolved')
+      };
+      const landing = createQuickfixLanding(
+        /** @type {any} */ ({
+          workspace: WS,
+          repo,
+          store: env.store,
+          bd,
+          gitRun: async () => ({ code: 1, stdout: '', stderr: '' }),
+          worktree: {},
+          repoOperations: null,
+          readPushLog: (/** @type {{ attempt_id: string }} */ input) =>
+            readPushLog({ workspace: WS, ...input }),
+          now: () => 1234
+        })
+      );
+
+      await landing.settle({ attempt_id, bead_id: 'S1', target_base: 'main' });
+
+      expect(bd.setStatus).toHaveBeenCalledWith('S1', 'resolved');
+      expect(
+        env.store.snapshot(WS).attempts[attempt_id].quickfix_landing
+      ).toMatchObject({ resolved_by: 'worker:evidence' });
+    }, 30_000);
   });
 });
