@@ -86,12 +86,11 @@ const SESSION_INQUIRY_TITLE = `${SENDER} 🙋 확인 필요 · base-sync 사람 
 const FAILURE_CONVERSATION_FALLBACK = '대화를 열지 못함 — [세션에서 이어가기]';
 
 /**
- * The four conversation-stage first lines (UI-nuwy §3.7). The spec fixes these
- * words, so they carry no sender mark.
+ * The three conversation-stage first lines (UI-nuwy §3.7, UI-5chz). The spec
+ * fixes these words, so they carry no sender mark.
  */
 const CONVERSATION_TITLE = {
   confirm: '🙋 확인 필요',
-  answer: '❓ 답 대기',
   resumed: '↪ Worker가 이어감',
   takeover: '🙋 사람 인수'
 };
@@ -171,15 +170,6 @@ const TITLE_MAX = 60;
  * @property {string|null} [tmux_session]
  * @property {string|null} [tmux_window]
  * @property {string|null} [repo]
- */
-
-/**
- * The `❓ 답 대기` push: one per processed non-result-line message.
- *
- * @typedef {Object} ConversationAnswerInput
- * @property {string} bead_id
- * @property {string|null} [excerpt]
- * @property {string|null} [tmux_window]
  */
 
 /**
@@ -379,7 +369,6 @@ function failureConversationLine(conversation) {
  * @returns {{
  *   attemptStarted: (input: { bead_id: string, title?: string|null, runner?: string|null, model?: string|null, effort?: string|null, speed?: string|null, repo?: string|null, kind?: string|null, decision?: string|null }) => Promise<void>,
  *   conversationConfirm: (input: ConversationConfirmInput) => Promise<boolean>,
- *   conversationAnswer: (input: ConversationAnswerInput) => Promise<boolean>,
  *   conversationTakeover: (input: { bead_id: string }) => Promise<boolean>,
  *   conversationResumed: (input: { bead_id: string, title?: string|null, decision?: string|null, action?: string|null, repo?: string|null }) => Promise<boolean>,
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
@@ -664,19 +653,6 @@ export function createNotifier(deps) {
         if (repo) {
           lines.push(`리포: ${repo}`);
         }
-        return lines;
-      });
-    },
-    conversationAnswer(input) {
-      return sendConversation('conversationAnswer', async () => {
-        const lines = [`${CONVERSATION_TITLE.answer} — ${input.bead_id}`];
-        const excerpt = text(input.excerpt);
-        if (excerpt) {
-          lines.push(excerpt);
-        }
-        lines.push(
-          `답: Discord 스레드 · tmux ${text(input.tmux_window) ?? input.bead_id}`
-        );
         return lines;
       });
     },

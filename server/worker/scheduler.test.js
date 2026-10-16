@@ -2659,7 +2659,6 @@ describe('same-session conversation return (UI-nuwy)', () => {
       attemptStarted: vi.fn(),
       attemptFailed: vi.fn(),
       prWaitEntered: vi.fn(),
-      conversationAnswer: vi.fn(),
       conversationTakeover: vi.fn()
     };
     /** @type {Record<string, any>} */
@@ -2928,7 +2927,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
     });
   });
 
-  test('sends one answer wait per new non-result message', async () => {
+  test('records each new non-result message without a push', async () => {
     const env = conversationEnv();
     const prior = await stopForConversation(env);
     openConversation(env, prior);
@@ -2939,16 +2938,11 @@ describe('same-session conversation return (UI-nuwy)', () => {
     say(env, '그럼 C는 어떤가요?', 960);
     await env.scheduler.reconcileInteractiveSessions(WS);
 
-    expect(env.notify.conversationAnswer).toHaveBeenCalledTimes(2);
-    expect(env.notify.conversationAnswer).toHaveBeenLastCalledWith({
-      bead_id: 'S1',
-      excerpt: '그럼 C는 어떤가요?',
-      tmux_window: 'S1'
-    });
     expect(record(env).conversation).toMatchObject({
       processed_message_at: 960,
       message_excerpt: '그럼 C는 어떤가요?'
     });
+    expect(env.notify.conversationTakeover).not.toHaveBeenCalled();
   });
 
   describe('unreadable conversation answers', () => {
@@ -2985,12 +2979,11 @@ describe('same-session conversation return (UI-nuwy)', () => {
           event_at: 950
         });
         expect(conversationVerdict(record(env))).toBe('answer');
-        expect(record(env).conversation.processed_message_at).toBe(950);
-        expect(env.notify.conversationAnswer).toHaveBeenCalledExactlyOnceWith({
-          bead_id: 'S1',
-          excerpt: WARNING,
-          tmux_window: 'S1'
+        expect(record(env).conversation).toMatchObject({
+          processed_message_at: 950,
+          message_excerpt: WARNING
         });
+        expect(env.notify.conversationTakeover).not.toHaveBeenCalled();
         expect(env.launcher.sendExit).not.toHaveBeenCalled();
         expect(env.launcher.killWindow).not.toHaveBeenCalled();
       }
@@ -3017,7 +3010,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
         await env.scheduler.reconcileInteractiveSessions(WS);
 
         expect(record(env).last_message).toBeNull();
-        expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+        expect(record(env).conversation.processed_message_at).toBeNull();
       }
     );
 
@@ -3031,7 +3024,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
 
       expect(record(env).last_message).toBeNull();
       expect(conversationVerdict(record(env))).toBe('working');
-      expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+      expect(record(env).conversation.processed_message_at).toBeNull();
     });
 
     test('restarts the grace period when the transcript changes', async () => {
@@ -3046,7 +3039,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
       await env.scheduler.reconcileInteractiveSessions(WS);
 
       expect(record(env).last_message).toBeNull();
-      expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+      expect(record(env).conversation.processed_message_at).toBeNull();
     });
 
     test('warns when only a pre-launch answer remains readable', async () => {
@@ -3060,7 +3053,10 @@ describe('same-session conversation return (UI-nuwy)', () => {
       await env.scheduler.reconcileInteractiveSessions(WS);
 
       expect(record(env).last_message.text).toBe(WARNING);
-      expect(env.notify.conversationAnswer).toHaveBeenCalledOnce();
+      expect(record(env).conversation).toMatchObject({
+        processed_message_at: 950,
+        message_excerpt: WARNING
+      });
     });
 
     test.each([900, null])(
@@ -3077,11 +3073,8 @@ describe('same-session conversation return (UI-nuwy)', () => {
         await env.scheduler.reconcileInteractiveSessions(WS);
 
         expect(record(env).last_message.text).toBe('읽힌 답변');
-        expect(env.notify.conversationAnswer).toHaveBeenCalledExactlyOnceWith({
-          bead_id: 'S1',
-          excerpt: '읽힌 답변',
-          tmux_window: 'S1'
-        });
+        expect(record(env).conversation.message_excerpt).toBe('읽힌 답변');
+        expect(record(env).conversation.processed_message_at).not.toBeNull();
       }
     );
 
@@ -3098,7 +3091,6 @@ describe('same-session conversation return (UI-nuwy)', () => {
 
       expect(record(env).last_message.text).toBe('인계 · 계속 진행');
       expect(record(env).conversation.result.kind).toBe('handoff');
-      expect(env.notify.conversationAnswer).toHaveBeenCalledOnce();
       expect(env.launcher.sendExit).toHaveBeenCalledOnce();
     });
   });
@@ -3112,7 +3104,6 @@ describe('same-session conversation return (UI-nuwy)', () => {
 
     await env.scheduler.reconcileInteractiveSessions(WS);
 
-    expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
     expect(record(env).conversation.processed_message_at).toBeNull();
   });
 
@@ -3163,7 +3154,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
     expect(env.launcher.sendExit).toHaveBeenCalledOnce();
     expect(current.status).toBe('waiting');
     expect(current.cause_detail.conversation.ended_by).toBe('hold');
-    expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+    expect(env.notify.conversationTakeover).not.toHaveBeenCalled();
     expect(children(env, prior.attempt_id)).toHaveLength(0);
     expect(record(env)).toBeUndefined();
   });
@@ -3713,7 +3704,6 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       attemptStarted: vi.fn(),
       attemptFailed: vi.fn(),
       prWaitEntered: vi.fn(),
-      conversationAnswer: vi.fn(),
       conversationTakeover: vi.fn(),
       conversationResumed: vi.fn()
     };
@@ -3837,7 +3827,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     expect(env.exits.retryCleanup).not.toHaveBeenCalled();
   });
 
-  test('sends one answer wait per new non-result message', async () => {
+  test('records each new non-result message without a push', async () => {
     const env = failureEnv();
     openFailureConversation(env);
     say(env, '배포 스크립트를 고칠까요?');
@@ -3847,12 +3837,12 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     say(env, '그럼 로그를 먼저 볼까요?', 960);
     await env.scheduler.reconcileInteractiveSessions(WS);
 
-    expect(env.notify.conversationAnswer).toHaveBeenCalledTimes(2);
-    expect(env.notify.conversationAnswer).toHaveBeenLastCalledWith({
-      bead_id: BEAD,
-      excerpt: '그럼 로그를 먼저 볼까요?',
-      tmux_window: `resolve-${BEAD}`
+    expect(record(env)?.conversation).toMatchObject({
+      processed_message_at: 960,
+      message_excerpt: '그럼 로그를 먼저 볼까요?'
     });
+    expect(env.notify.conversationTakeover).not.toHaveBeenCalled();
+    expect(env.notify.conversationResumed).not.toHaveBeenCalled();
   });
 
   test('sends the takeover push once and runs no exit', async () => {
@@ -4280,7 +4270,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
 
     expect(env.launcher.sendExit).not.toHaveBeenCalled();
     expect(env.exits.retryCleanup).not.toHaveBeenCalled();
-    expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+    expect(env.notify.conversationTakeover).not.toHaveBeenCalled();
     expect(env.timeline.append).toHaveBeenCalledWith(
       expect.objectContaining({ summary: '대화 세션 종료 · pane_gone' })
     );
@@ -4370,7 +4360,6 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       attemptStarted: vi.fn(),
       attemptFailed: vi.fn(),
       prWaitEntered: vi.fn(),
-      conversationAnswer: vi.fn(),
       conversationTakeover: vi.fn(),
       conversationResumed: vi.fn()
     };
