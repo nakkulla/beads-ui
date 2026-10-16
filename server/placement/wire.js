@@ -27,23 +27,23 @@
 /**
  * One pair relation of `placement_relations`.
  *
- * - `source: 'fixed'` — decided by a machine-known condition; `basis` names it
- *   (`blocks`: a direct `blocks` edge, `scope`: the declared scopes overlap,
- *   with the colliding prefixes in `overlap`). `confidence`, `jev_choice` and
+ * - `source: 'fixed'` — decided by the one machine-known condition, a direct
+ *   `blocks` edge; `basis` names it (`blocks`). `confidence`, `jev_choice` and
  *   `judged_at` are null. `in_lane: true` marks a `blocks` edge between two
  *   members of one serial lane, shipped so the browser can apply the store's
  *   ordering rule to a preview.
  * - `source: 'jev'` — jev's cached answer. `relation` is `jev_choice` when
  *   `confidence` ≥ 0.8, otherwise `unknown`; `judged_at` is the answer's
- *   epoch-ms time.
+ *   epoch-ms time. `overlap` lists the declared-scope prefixes the two issues
+ *   meet on; it is question material and never decides the relation.
  *
  * @typedef {Object} PlacementRelation
  * @property {string} a - The smaller id.
  * @property {string} b - The larger id.
  * @property {PlacementRelationKind} relation
  * @property {'fixed'|'jev'} source
- * @property {'blocks'|'scope'} [basis] - Fixed relations only.
- * @property {string[]} [overlap] - `basis: 'scope'` only.
+ * @property {'blocks'} [basis] - Fixed relations only.
+ * @property {string[]} [overlap] - jev relations whose declared scopes overlap.
  * @property {true} [in_lane] - In-lane `blocks` edges only.
  * @property {number|null} confidence
  * @property {PlacementJevChoice|null} jev_choice

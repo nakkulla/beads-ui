@@ -73,7 +73,6 @@ export function isPlaceableCandidate(row) {
  * @property {string[]} members - Waiting entries and lane-occupying lineages.
  * @property {Record<string, string[]>} blocked_by
  * @property {Record<string, string[]>} scopes
- * @property {Record<string, import('../../app/utils/scope-overlap.js').ScopeSource>} [sources]
  * @property {{ blocker: string, blockee: string }[]} lane_edges
  * @property {Map<string, Record<string, unknown>>|null} rows - The workspace
  * snapshot's `id_index`, or null when there is no snapshot yet.
@@ -83,7 +82,7 @@ export function isPlaceableCandidate(row) {
  * @typedef {Object} WorkspaceState
  * @property {string[]} candidates
  * @property {Map<string, IssueMaterial>} materials
- * @property {Array<{ a: string, b: string }>} pairs
+ * @property {Array<{ a: string, b: string, overlap?: string[] }>} pairs
  * @property {string} signature
  */
 
@@ -95,6 +94,7 @@ export function isPlaceableCandidate(row) {
  * @property {string} b
  * @property {IssueMaterial} material_a
  * @property {IssueMaterial} material_b
+ * @property {string[]} overlap
  */
 
 /**
@@ -121,7 +121,7 @@ export function createPlacementService(options) {
    * Material memo by workspace and id: a row object and a spec value that did
    * not change since the last projection reuse the same text and digest.
    *
-   * @type {Map<string, Map<string, { row: unknown, spec: unknown, material: IssueMaterial|null }>>}
+   * @type {Map<string, Map<string, { row: unknown, spec: unknown, scope_key: string, material: IssueMaterial|null }>>}
    */
   const memo = new Map();
   /** @type {Map<string, { reason: string, at: number }>} */
@@ -244,7 +244,7 @@ export function createPlacementService(options) {
     const jobs = [];
     /** @type {number|null} */
     let next_retry = null;
-    for (const { a, b } of state.pairs) {
+    for (const { a, b, overlap } of state.pairs) {
       const material_a = state.materials.get(a);
       const material_b = state.materials.get(b);
       if (!material_a || !material_b) {
@@ -266,7 +266,15 @@ export function createPlacementService(options) {
       ) {
         continue;
       }
-      jobs.push({ workspace, key, a, b, material_a, material_b });
+      jobs.push({
+        workspace,
+        key,
+        a,
+        b,
+        material_a,
+        material_b,
+        overlap: overlap || []
+      });
     }
     scheduleRecheck(workspace, next_retry);
     if (jobs.length === 0) {
@@ -334,7 +342,13 @@ export function createPlacementService(options) {
     let result;
     try {
       result = await client.judge(
-        pairState(job.a, job.material_a.text, job.b, job.material_b.text)
+        pairState(
+          job.a,
+          job.material_a.text,
+          job.b,
+          job.material_b.text,
+          job.overlap
+        )
       );
     } catch {
       result = { ok: false, reason: 'connection_failed' };
@@ -375,9 +389,11 @@ export function createPlacementService(options) {
    * @param {string} workspace
    * @param {string} id
    * @param {Record<string, unknown>|undefined} row
+   * @param {string[]|undefined} scope - The declared scope the placement
+   * judgment reads for this bead.
    * @returns {IssueMaterial|null}
    */
-  function materialOf(workspace, id, row) {
+  function materialOf(workspace, id, row, scope) {
     const spec_path = row ? resolveSpecId(row).path : '';
     const spec = spec_path ? specSections.peek(workspace, spec_path) : null;
     const spec_ref = spec && spec.state === 'hit' ? spec.value : spec?.state;
@@ -386,12 +402,18 @@ export function createPlacementService(options) {
       by_id = new Map();
       memo.set(workspace, by_id);
     }
+    const scope_key = Array.isArray(scope) ? JSON.stringify(scope) : '';
     const cached = by_id.get(id);
-    if (cached && cached.row === row && cached.spec === spec_ref) {
+    if (
+      cached &&
+      cached.row === row &&
+      cached.spec === spec_ref &&
+      cached.scope_key === scope_key
+    ) {
       return cached.material;
     }
-    const material = issueMaterial(row, spec_path, spec);
-    by_id.set(id, { row, spec: spec_ref, material });
+    const material = issueMaterial(row, spec_path, spec, scope);
+    by_id.set(id, { row, spec: spec_ref, scope_key, material });
     return material;
   }
 
@@ -413,7 +435,12 @@ export function createPlacementService(options) {
       const digests = {};
       const ids = new Set([...input.candidates, ...input.members]);
       for (const id of ids) {
-        const material = materialOf(workspace, id, input.rows?.get(id));
+        const material = materialOf(
+          workspace,
+          id,
+          input.rows?.get(id),
+          input.scopes[id]
+        );
         digests[id] = material ? material.digest : null;
         if (material) {
           materials.set(id, material);
@@ -432,7 +459,6 @@ export function createPlacementService(options) {
         members: input.members,
         blocked_by: input.blocked_by,
         scopes: input.scopes,
-        sources: input.sources,
         lane_edges: input.lane_edges,
         digests,
         key_state: client.keys.state(),

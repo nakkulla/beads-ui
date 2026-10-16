@@ -35,12 +35,17 @@ import { ISSUE_MATERIAL_CAP, STATE_CAP } from './question.js';
  * issue from its body alone; the spec cache retries a failed read and its
  * fill fanout brings the material in once a read succeeds.
  *
+ * The declared scope is serialized ahead of the body, so the material cap never
+ * cuts it and its digest follows the scope; an issue whose scope is unknown
+ * has no such field.
+ *
  * @param {Record<string, unknown>|undefined} row
  * @param {string} spec_path
  * @param {SpecPart} spec
+ * @param {string[]} [scope] - The declared scope the overlap is computed from.
  * @returns {IssueMaterial|null}
  */
-export function issueMaterial(row, spec_path, spec) {
+export function issueMaterial(row, spec_path, spec, scope) {
   if (!row || typeof row.description !== 'string') {
     return null;
   }
@@ -56,9 +61,12 @@ export function issueMaterial(row, spec_path, spec) {
     id: String(row.id ?? ''),
     title: typeof row.title === 'string' ? row.title : '',
     type: typeof row.issue_type === 'string' ? row.issue_type : '',
-    route: typeof metadata.route === 'string' ? metadata.route : '',
-    description: row.description
+    route: typeof metadata.route === 'string' ? metadata.route : ''
   };
+  if (Array.isArray(scope) && scope.length > 0) {
+    material.declared_scope = scope;
+  }
+  material.description = row.description;
   if (spec && spec.state === 'hit') {
     material.spec = {
       path: spec_path,
@@ -76,14 +84,21 @@ export function issueMaterial(row, spec_path, spec) {
 /**
  * The state text of one pair in small-id orientation, capped at the whole-state
  * limit. jev accepts text state, so a cut need not keep JSON syntax (the same
- * reading the workflow judge relies on).
+ * reading the workflow judge relies on). A declared-scope overlap goes first as
+ * one line the cap never cuts; the two materials share what budget is left.
  *
  * @param {string} a
  * @param {string} text_a
  * @param {string} b
  * @param {string} text_b
+ * @param {string[]} [overlap] - Prefixes the two declared scopes meet on.
  * @returns {string}
  */
-export function pairState(a, text_a, b, text_b) {
-  return `A (${a}):\n${text_a}\n\nB (${b}):\n${text_b}`.slice(0, STATE_CAP);
+export function pairState(a, text_a, b, text_b, overlap = []) {
+  const head =
+    overlap.length > 0
+      ? `Declared scopes overlap on: ${overlap.join(', ')}\n`
+      : '';
+  const body = `A (${a}):\n${text_a}\n\nB (${b}):\n${text_b}`;
+  return head + body.slice(0, Math.max(0, STATE_CAP - head.length));
 }

@@ -250,6 +250,79 @@ describe('placement schedule', () => {
     );
   });
 
+  test('rebuilds the material when only the declared scope changes', async () => {
+    const { service, fetch } = serviceWith();
+    const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
+    service.project(
+      WS,
+      input(['UI-1'], ['UI-2'], rows, { scopes: { 'UI-1': ['app/'] } }),
+      OBSERVE
+    );
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+    await service.idle();
+    fetch.mockClear();
+
+    service.project(
+      WS,
+      input(['UI-1'], ['UI-2'], rows, { scopes: { 'UI-1': ['server/'] } }),
+      OBSERVE
+    );
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+    await service.idle();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(/** @type {any} */ (fetch.mock.calls[0])[1].body)).toContain(
+      'server/'
+    );
+  });
+
+  test('re-asks only the pairs of an issue whose scope filled in late', async () => {
+    const { service, fetch } = serviceWith();
+    const rows = rowMap({
+      'UI-1': row('UI-1'),
+      'UI-2': row('UI-2'),
+      'UI-3': row('UI-3')
+    });
+    service.project(WS, input(['UI-1'], ['UI-2', 'UI-3'], rows), OBSERVE);
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+    await service.idle();
+    fetch.mockClear();
+
+    service.project(
+      WS,
+      input(['UI-1'], ['UI-2', 'UI-3'], rows, {
+        scopes: { 'UI-3': ['app/'] }
+      }),
+      OBSERVE
+    );
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+    await service.idle();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(/** @type {any} */ (fetch.mock.calls[0])[1].body)).toContain(
+      'UI-3'
+    );
+  });
+
+  test('sends the overlap line with the pair state', async () => {
+    const { service, fetch } = serviceWith();
+    const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
+    service.project(
+      WS,
+      input(['UI-1'], ['UI-2'], rows, {
+        scopes: { 'UI-1': ['tests'], 'UI-2': ['tests/a.test.js'] }
+      }),
+      OBSERVE
+    );
+
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+    await service.idle();
+
+    expect(String(/** @type {any} */ (fetch.mock.calls[0])[1].body)).toContain(
+      'Declared scopes overlap on: tests/a.test.js'
+    );
+  });
+
   test('asks nothing when the queue changes but the material does not', async () => {
     const { service, fetch } = serviceWith();
     const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });

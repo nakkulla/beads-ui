@@ -408,23 +408,21 @@ export function placementPositionText(placement) {
 }
 
 /**
- * Source tail of a reason line: `고정(blocks)`·`고정(scope 겹침: a)`·`jev 0.92`.
+ * Source tail of a reason line: `고정(blocks)` or `jev 0.92`, plus the declared
+ * scope overlap jev read, ` (겹침: tests, app/styles.css)`.
  *
  * @param {RelationLine} line
  * @returns {string}
  */
 function sourceText(line) {
   if (line.source === 'fixed') {
-    if (line.basis === 'scope') {
-      return `고정(scope 겹침${
-        line.overlap && line.overlap.length > 0
-          ? `: ${line.overlap.join(', ')}`
-          : ''
-      })`;
-    }
     return 'blocks' === line.basis ? '고정(blocks)' : '고정';
   }
-  return `jev ${typeof line.confidence === 'number' ? line.confidence.toFixed(2) : '—'}`;
+  const overlap =
+    line.overlap && line.overlap.length > 0
+      ? ` (겹침: ${line.overlap.join(', ')})`
+      : '';
+  return `jev ${typeof line.confidence === 'number' ? line.confidence.toFixed(2) : '—'}${overlap}`;
 }
 
 /**

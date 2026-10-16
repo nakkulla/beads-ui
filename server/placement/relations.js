@@ -3,17 +3,14 @@
  * §4.5) — a pure projection of facts the decoration already holds plus the
  * cached jev answers. No I/O, no clock: the caller passes everything in.
  *
- * Fixed conditions come first. A direct `blocks` edge orders the pair and a
- * declared-scope overlap makes it `conflict`; either way jev is never asked
- * about that pair. Every other pair takes jev's cached answer.
+ * The one fixed condition is a direct `blocks` edge, which orders the pair; jev
+ * is never asked about that pair. Every other pair takes jev's cached answer,
+ * and a declared-scope overlap rides along as question material only (UI-i7k9):
+ * it never decides a relation.
  *
  * @import { PlacementRelation, PlacementStatus, PlacementJevChoice } from './wire.js'
- * @import { ScopeSource } from '../../app/utils/scope-overlap.js'
  */
-import {
-  overlapPrefixes,
-  sharesScopeSource
-} from '../../app/utils/scope-overlap.js';
+import { overlapPrefixes } from '../../app/utils/scope-overlap.js';
 import { ADOPT_CONFIDENCE } from './question.js';
 import { orientPair, placementPairKey } from './wire.js';
 
@@ -31,9 +28,6 @@ import { orientPair, placementPairKey } from './wire.js';
  * @property {Record<string, string[]>} blocked_by - Direct blocker ids by bead.
  * @property {Record<string, string[]>} scopes - Declared scope by bead; a bead
  * whose scope is unknown has no entry.
- * @property {Record<string, ScopeSource>} [sources] - Where each declared
- * scope was read from; two beads of one spec or plan never overlap, exactly as
- * the `⧉` chip reads it.
  * @property {{ blocker: string, blockee: string }[]} lane_edges - `blocks`
  * edges between members of one serial lane.
  * @property {Record<string, string|null>} digests - Material digest by bead;
@@ -46,14 +40,16 @@ import { orientPair, placementPairKey } from './wire.js';
  * @typedef {Object} RelationsOutput
  * @property {Record<string, PlacementRelation>} relations
  * @property {Record<string, PlacementStatus>} status
- * @property {Array<{ a: string, b: string }>} jev_pairs - Every pair that needs
- * jev and has both materials, answered or not, in small-id orientation.
+ * @property {Array<{ a: string, b: string, overlap?: string[] }>} jev_pairs -
+ * Every pair that needs jev and has both materials, answered or not, in
+ * small-id orientation; `overlap` is the declared-scope prefixes the two meet
+ * on, present only when they do.
  * @property {import('./wire.js').PlacementProgress} progress - Distinct pairs
  * that need jev, each counted once however many candidates share it.
  */
 
 /**
- * The fixed relation of a pair, or null when no fixed condition holds.
+ * The fixed relation of a pair, or null when no direct `blocks` edge holds.
  *
  * @param {string} a
  * @param {string} b
@@ -81,29 +77,24 @@ function fixedRelation(a, b, input) {
       judged_at: null
     };
   }
+  return null;
+}
+
+/**
+ * The declared-scope prefixes two beads meet on, or an empty list when either
+ * scope is unknown.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @param {RelationsInput} input
+ * @returns {string[]}
+ */
+function scopeOverlap(a, b, input) {
   const scope_a = input.scopes[a];
   const scope_b = input.scopes[b];
-  const source_a = input.sources?.[a];
-  const source_b = input.sources?.[b];
-  const same_source =
-    !!source_a && !!source_b && sharesScopeSource(source_a, source_b);
-  if (Array.isArray(scope_a) && Array.isArray(scope_b) && !same_source) {
-    const overlap = overlapPrefixes(scope_a, scope_b);
-    if (overlap.length > 0) {
-      return {
-        a,
-        b,
-        relation: 'conflict',
-        source: 'fixed',
-        basis: 'scope',
-        overlap,
-        confidence: null,
-        jev_choice: null,
-        judged_at: null
-      };
-    }
-  }
-  return null;
+  return Array.isArray(scope_a) && Array.isArray(scope_b)
+    ? overlapPrefixes(scope_a, scope_b)
+    : [];
 }
 
 /**
@@ -117,7 +108,7 @@ export function placementRelations(input) {
   const relations = {};
   /** @type {Record<string, PlacementStatus>} */
   const status = {};
-  /** @type {Map<string, { a: string, b: string }>} */
+  /** @type {Map<string, { a: string, b: string, overlap?: string[] }>} */
   const jev_pairs = new Map();
   /** @type {Map<string, boolean>} Pair key → settled (answered or failed). */
   const progress = new Map();
@@ -155,7 +146,8 @@ export function placementRelations(input) {
         progress.set(key, false);
         continue;
       }
-      jev_pairs.set(key, { a, b });
+      const overlap = scopeOverlap(a, b, input);
+      jev_pairs.set(key, overlap.length > 0 ? { a, b, overlap } : { a, b });
       const judgment = input.judgmentFor(a, b, digest_a, digest_b);
       if (judgment && judgment.kind === 'answer') {
         done += 1;
@@ -168,6 +160,7 @@ export function placementRelations(input) {
               ? judgment.choice
               : 'unknown',
           source: 'jev',
+          ...(overlap.length > 0 ? { overlap } : {}),
           confidence: judgment.confidence,
           jev_choice: judgment.choice,
           judged_at: judgment.judged_at
