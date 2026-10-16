@@ -137,7 +137,7 @@ beads-ui는 session-hub로 대화형 Claude 세션을 열 수 있다. 그런데 
 - 답 대기: 다음 둘 중 하나면 답 대기다.
   - `turn_state === 'question'`
   - `turn_state === 'idle'`이고 마지막 assistant 메시지 첫 줄이 종단 결과 줄이 아님
-- 알림: 답 대기에 들어갈 때마다 한 번 `🙋 확인 필요 · 세션 답 대기`를 보낸다. 발췌와 `tmux <session>:<window>`를 싣고, Discord 스레드가 있으면 그 링크를 싣는다. 같은 대기 안에서는 다시 보내지 않는다.
+- 알림: 답 대기는 beads-ui가 Discord로 보내지 않는다. 세션의 Discord 스레드(dotfiles 브리지)가 알린다. 카드는 답 대기와 발췌를 보인다(UI-5chz, 사용자 결정 2026-10-16).
 - 기동 때 한 번 `▶ 세션 레인 시작 · tmux <session>:<window>`를 보낸다.
 - 살아 있는 세션 레인 attempt는 방향 문의·실패 대화 자동 기동의 대상이 아니다. 이미 사람이 들어갈 창이 있기 때문이다.
 
@@ -197,7 +197,7 @@ beads-ui는 session-hub로 대화형 Claude 세션을 열 수 있다. 그런데 
    - quick_fix면 종점이 quick_fix 레인 지시다.
    - 생존 판정 네 곳이 `exec: 'session'` attempt를 pane 생존으로 판정한다.
 4. 디스패치가 `workflow_mode=fast_track`·`workflow_mode_source=worker`를 쓰고 다시 읽는다.
-5. 답 대기 판정 두 갈래와 대기당 알림 한 번.
+5. 답 대기 판정 두 갈래. 답 대기에 들어가도 Discord 푸시는 나가지 않는다.
 6. 종단 결과 줄(성공·실패)이 headless와 같은 `onSessionDone` 분기로 간다. 결과 줄 없는 pane 소멸은 `session_exited`이고 자동 기동하지 않는다.
    - `↻ 이어하기`는 세션 레인 attempt를 다시 연다. 이때 `--resume`, 같은 슬롯 계산, 프리셋, 맥락을 그대로 쓴다.
    - 일시정지는 `pause_unsupported`로 거절된다.
