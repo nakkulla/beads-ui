@@ -34,6 +34,7 @@ import {
   handleWorkerAttemptResume,
   handleWorkerAttemptRetryNow,
   handleWorkerAttemptWithdraw,
+  handleWorkerDiscard,
   handleWorkerQueueSetOrchestrationDefaults,
   handleWorkerResolveInSession,
   onWorkerSnapshotRefresh
@@ -1080,6 +1081,40 @@ describe('decorateQueue persisted blocker owners (UI-yue8 §6.2)', () => {
 });
 
 describe('✕ withdrawal and [지금 재시도] ops (2026-10-01 stall-reconcile)', () => {
+  test('records a discard refusal before any operation exists', async () => {
+    const socket = /** @type {any} */ ({ send: vi.fn() });
+    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+    const store = getWorkerRuntime().queueStore;
+    const timeline = vi.spyOn(store, 'recordTimelineEvent');
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        discardCoordinator: {
+          discard: async () => ({ ok: false, reason: 'attempt_settling' })
+        }
+      })
+    );
+
+    await handleWorkerDiscard(socket, {
+      id: 'discard-withdrawn',
+      type: 'worker-discard',
+      payload: { bead_id: 'UI-9', attempt_id: 'w1', expected_revision: 0 }
+    });
+
+    expect(replyOf(socket).payload).toMatchObject({
+      accepted: false,
+      operation_id: null,
+      reason: 'attempt_settling'
+    });
+    expect(timeline).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({
+        bead_id: 'UI-9',
+        kind: 'user_action',
+        summary: '[폐기] 클릭 · 거부: attempt_settling'
+      })
+    );
+  });
   /**
    * @param {Record<string, any>} scheduler
    */
@@ -1242,6 +1277,24 @@ describe('✕ withdrawal and [지금 재시도] ops (2026-10-01 stall-reconcile)
             status: 'running',
             started_at: 20,
             resumed_from: 'w1'
+          }
+        })
+      )
+    );
+
+    expect(Object.hasOwn(out, 'withdrawn_beads')).toBe(false);
+  });
+
+  test('drops the withdrawn chip after the preserved attempt is discarded', () => {
+    const out = /** @type {any} */ (
+      decorateQueue(
+        WS,
+        withdrawnQueue({
+          w1: {
+            attempt_id: 'w1',
+            bead_id: 'UI-9',
+            status: 'discarded',
+            withdrawn: { at: 9, from_status: 'running', from_cause: null }
           }
         })
       )

@@ -727,6 +727,64 @@ export function discardReceiptTemplate(item) {
 }
 
 /**
+ * Shared discard button for candidate cards and lane rows.
+ *
+ * @param {MiniItem} item
+ */
+function discardButtonTemplate(item) {
+  const discard = item.discard;
+  return discard?.action || item.discard_action
+    ? html`<button
+        type="button"
+        class="op-btn worker-mini__discard"
+        data-bead-id=${item.id}
+        data-attempt-id=${discard?.attempt_id || ''}
+        data-operation-id=${discard?.operation?.operation_id || ''}
+        data-discard-mode=${discard?.confirmation || 'unmerged'}
+        ?disabled=${discard ? !discard.enabled : item.discard_enabled === false}
+        title=${discard
+          ? discard.title
+          : item.discard_enabled === false
+            ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
+            : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요'}
+      >
+        ${discard?.label || '폐기'}
+      </button>`
+    : '';
+}
+
+/**
+ * Keep the session/retry pair and requested-phase exit identical on every row.
+ *
+ * @param {MiniItem} item
+ * @param {import('lit-html').TemplateResult|''} [resolve_el]
+ */
+function discardActionsTemplate(item, resolve_el = '') {
+  const discard = item.discard;
+  const discard_el = discardButtonTemplate(item);
+  const session_el =
+    item.resolve_action && item.pair_anchor === 'discard'
+      ? resolveSessionButton(item, 'worker-mini__resolve')
+      : '';
+  const abandon_el = discard?.abandon.action
+    ? html`<button
+        type="button"
+        class="op-btn worker-mini__discard-abandon"
+        data-bead-id=${item.id}
+        data-operation-id=${discard.operation.operation_id}
+        data-operation-kind=${discard.operation.kind || ''}
+        data-last-error=${discard.error || ''}
+        title=${discard.abandon.title}
+      >
+        ${discard.abandon.label}
+      </button>`
+    : '';
+  return discard?.abandon.action
+    ? html`${session_el}${discard_el}${abandon_el}${resolve_el}`
+    : html`${resolve_el}${session_el}${discard_el}`;
+}
+
+/**
  * The 오케/워커 execution-settings chips (worker-card-exec-chips §4).
  *
  * The prefix label lives here rather than in the formatter: the formatter owns
@@ -3992,41 +4050,6 @@ export function miniRow(item, options = {}) {
         ⏸ 보류로 전환
       </button>`
     : '';
-  const discard = item.discard;
-  const discard_el =
-    discard?.action || item.discard_action
-      ? html`<button
-          type="button"
-          class="op-btn worker-mini__discard"
-          data-bead-id=${item.id}
-          data-attempt-id=${discard?.attempt_id || ''}
-          data-operation-id=${discard?.operation?.operation_id || ''}
-          data-discard-mode=${discard?.confirmation || 'unmerged'}
-          ?disabled=${discard
-            ? !discard.enabled
-            : item.discard_enabled === false}
-          title=${discard
-            ? discard.title
-            : item.discard_enabled === false
-              ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
-              : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요'}
-        >
-          ${discard?.label || '폐기'}
-        </button>`
-      : '';
-  const abandon_el = discard?.abandon.action
-    ? html`<button
-        type="button"
-        class="op-btn worker-mini__discard-abandon"
-        data-bead-id=${item.id}
-        data-operation-id=${discard.operation.operation_id}
-        data-operation-kind=${discard.operation.kind || ''}
-        data-last-error=${discard.error || ''}
-        title=${discard.abandon.title}
-      >
-        ${discard.abandon.label}
-      </button>`
-    : '';
   // 세션·워커 이어가기 짝 (UI-18a5 §3.2): `[세션에서 이어가기]` ·
   // `[워커로 이어가기]` 순서로 붙어 선다. 어느 버튼이 이 행의 `[워커로
   // 이어가기]`인지(`pair_anchor`)는 `tileResolveFields` 하나가 정하고, 여기는
@@ -4056,11 +4079,8 @@ export function miniRow(item, options = {}) {
   const resolve_el = html`${anchor === null || anchor === 'handoff'
     ? resolve_only
     : ''}${handoff_el}`;
-  // requested 실패의 [폐기 포기]는 짝 뒤에 선다 (discard-abandon §3.1): 더
-  // 약한 복구가 먼저 읽힌다.
-  const discard_actions_el = discard?.abandon.action
-    ? html`${session_before('discard')}${discard_el}${abandon_el}${resolve_el}`
-    : html`${resolve_el}${session_before('discard')}${discard_el}`;
+  const discard = item.discard;
+  const discard_actions_el = discardActionsTemplate(item, resolve_el);
   // 파킹 처분 두 버튼 (UI-hs11 §3.5). 대기 레인 행에만 붙고, 머지/폐기와 같은
   // 클릭 위임·CAS 재시도 계약을 쓴다. findings 상세는 카드 클릭 → 이슈 상세
   // (notes 섹션, UI-yp64 §4)로 가고 여기서는 툴팁 요약만 싣는다.
@@ -4178,6 +4198,7 @@ export function miniRow(item, options = {}) {
     item.resolve_action ||
     item.handoff_action ||
     item.discard_action ||
+    discard?.action ||
     discard?.operation ||
     item.revise_action
   );
@@ -5260,7 +5281,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
                       })}
                     >
                       ↴ 대기로
-                    </button>`}`}
+                    </button>`}`}${discardActionsTemplate(
+            item
+          )}${discardReceiptTemplate(item)}
         </div>`}
     ${external.times}${timesMeta(item)}
   </div>`;

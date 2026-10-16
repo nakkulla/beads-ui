@@ -84,6 +84,7 @@ import {
   normalizePriorityFilter,
   normalizeRouteFilter,
   normalizeTypeFilter,
+  occupantRowInput,
   toggleLabelFilter,
   togglePriorityFilter,
   toggleRouteFilter
@@ -2044,15 +2045,11 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {Array<{ id: string, index: number, raw_length: number, ghosts: any[], items: any[], occupied: boolean, badge: string, cycle: boolean }>}
    */
   function serialLanes(m) {
-    return groupOf(m).sublanes.serial.map((lane) => {
-      const ghosts = lane.occupants.map((occupant) => ({
-        id: occupant.id,
-        title: occupant.title,
-        draggable: false,
-        lane: lane.id,
-        ghost: true,
-        badges: [occupant.badge]
-      }));
+    const group = groupOf(m);
+    return group.sublanes.serial.map((lane) => {
+      const ghosts = lane.occupants.map((occupant) =>
+        occupantRowInput(occupant, lane.id, group)
+      );
       return {
         id: lane.id,
         index: lane.index + 1,

@@ -69,6 +69,7 @@ import {
   normalizePriorityFilter,
   normalizeRouteFilter,
   normalizeTypeFilter,
+  occupantRowInput,
   toggleLabelFilter,
   togglePriorityFilter,
   toggleRouteFilter
@@ -1833,20 +1834,23 @@ export function createMonitorView(mount_element, options) {
    * 투명하다 — 점유자는 서버 레인 entries의 구성원이 아니다.
    *
    * @param {MonitorOccupant} occupant
+   * @param {MonitorSerialSublane} lane
+   * @param {LaneQueueGroup} group
    * @returns {import('lit-html').TemplateResult}
    */
-  function occupantRow(occupant) {
+  function occupantRow(occupant, lane, group) {
+    const item = occupantRowInput(occupant, lane.id, group);
     return html`<div
       class="mon2-item mon2-item--ghost"
       data-bead-id=${occupant.id}
     >
       ${miniRow({
-        id: occupant.id,
-        title: occupant.title,
-        lane: 'running',
-        draggable: false,
-        ghost: true,
-        badges: [occupant.badge]
+        ...item,
+        ...tileResolveFields(
+          item,
+          resolve_pending.has(pendingKey(item.root_dir, item.id)),
+          handoff_pending.has(item.id)
+        )
       })}
     </div>`;
   }
@@ -1870,7 +1874,7 @@ export function createMonitorView(mount_element, options) {
       pane_id: '',
       title: `${group.name} · ${SERIAL_LANE_LABEL} ${lane.index + 1}`,
       rows: [
-        ...occupants.map((occupant) => occupantRow(occupant)),
+        ...occupants.map((occupant) => occupantRow(occupant, lane, group)),
         ...lane.items.map((item, index) => serialRow(lane, item, index))
       ],
       count: lane.items.length,
@@ -2472,6 +2476,18 @@ export function createMonitorView(mount_element, options) {
       // 주장하지 않는다 — 위치는 PR 대기 행이 답한다.
       if (!item.non_occupying && !item_by_bead.has(item.id)) {
         item_by_bead.set(item.id, item);
+      }
+    }
+    for (const group of lanes.queue_groups) {
+      for (const lane of group.sublanes.serial) {
+        for (const occupant of lane.occupants) {
+          if (!item_by_bead.has(occupant.id)) {
+            item_by_bead.set(
+              occupant.id,
+              occupantRowInput(occupant, lane.id, group)
+            );
+          }
+        }
       }
     }
     render(monitorTemplate(now), console_el);

@@ -3687,6 +3687,138 @@ describe('views/worker', () => {
   });
 
   // `⏏ 내려옴` (D8): 큐 투영의 `withdrawn_beads`가 후보 카드의 칩과 팝업이 된다.
+  test.each(['candidate', 'occupant'])(
+    'discards a withdrawn attempt from its %s row',
+    async (surface) => {
+      vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+      const transport = vi.fn().mockResolvedValue({
+        accepted: false,
+        reason: 'attempt_settling'
+      });
+      const mount = mountAttemptTiles(
+        {
+          revision: 7,
+          withdrawn_beads: { 'RD-1': { attempt_id: 'w1', at: 1 } },
+          ...(surface === 'occupant'
+            ? {
+                serial_lanes: [{ id: 's1', entries: [{ bead_id: 'RD-1' }] }],
+                lane_states: { s1: { occupied_by: ['RD-1'] } }
+              }
+            : {})
+        },
+        transport
+      );
+      const row = mount.querySelector(
+        `${surface === 'candidate' ? '.worker-card' : '.worker-mini--ghost'}[data-bead-id="RD-1"]`
+      );
+      const discard = row?.querySelector('.worker-mini__discard');
+
+      expect(discard).not.toBeNull();
+      discard?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+
+      expect(transport).toHaveBeenCalledWith('worker-discard', {
+        bead_id: 'RD-1',
+        attempt_id: 'w1',
+        expected_revision: 7
+      });
+      expect(document.body.textContent).toContain(
+        '폐기 실패: attempt_settling'
+      );
+    }
+  );
+
+  test.each(['candidate', 'occupant'])(
+    'retries a failed discard from its %s row after attempt finalization',
+    async (surface) => {
+      vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+      const transport = vi.fn().mockResolvedValue({ accepted: true });
+      const mount = mountAttemptTiles(
+        {
+          revision: 7,
+          attempts: {
+            w1: { attempt_id: 'w1', bead_id: 'RD-1', status: 'discarded' }
+          },
+          discard_operations: {
+            op1: {
+              operation_id: 'op1',
+              bead_id: 'RD-1',
+              attempt_id: 'w1',
+              phase: 'pr_closed',
+              last_error: 'worktree_remove_failed:locked',
+              backup: { path: '/state/op1' }
+            }
+          },
+          ...(surface === 'occupant'
+            ? {
+                serial_lanes: [{ id: 's1', entries: [{ bead_id: 'RD-1' }] }],
+                lane_states: { s1: { occupied_by: ['RD-1'] } }
+              }
+            : {})
+        },
+        transport
+      );
+      const row = mount.querySelector(
+        `${surface === 'candidate' ? '.worker-card' : '.worker-mini--ghost'}[data-bead-id="RD-1"]`
+      );
+      const retry = row?.querySelector('.worker-mini__discard');
+
+      expect(retry?.textContent?.trim()).toBe('워커로 이어가기');
+      expect(row?.textContent).toContain('worktree_remove_failed:locked');
+      expect(row?.textContent).toContain('/state/op1');
+      retry?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+
+      expect(transport).toHaveBeenCalledWith('worker-discard', {
+        bead_id: 'RD-1',
+        attempt_id: 'w1',
+        operation_id: 'op1',
+        expected_revision: 7
+      });
+    }
+  );
+
+  test.each(['resolve', 'discard-abandon'])(
+    'handles %s from a withdrawn candidate after backup failure',
+    async (action) => {
+      vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+      const transport = vi.fn().mockResolvedValue({ accepted: true });
+      const mount = mountAttemptTiles(
+        {
+          revision: 7,
+          withdrawn_beads: { 'RD-1': { attempt_id: 'w1', at: 1 } },
+          discard_operations: {
+            op1: {
+              operation_id: 'op1',
+              bead_id: 'RD-1',
+              attempt_id: 'w1',
+              phase: 'requested',
+              last_error: 'archive_failed'
+            }
+          }
+        },
+        transport
+      );
+      const foot = mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] .worker-card__foot'
+      );
+      const button = foot?.querySelector(`.worker-mini__${action}`);
+
+      expect(button).not.toBeNull();
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+
+      expect(transport).toHaveBeenCalledWith(
+        action === 'resolve'
+          ? 'worker-resolve-in-session'
+          : 'worker-discard-abandon',
+        action === 'resolve'
+          ? { bead_id: 'RD-1', expected_revision: 7 }
+          : { bead_id: 'RD-1', operation_id: 'op1', expected_revision: 7 }
+      );
+    }
+  );
+
   test('opens the withdrawn popup from the candidate card chip', async () => {
     const at = Date.now();
     const mount = mountAttemptTiles({

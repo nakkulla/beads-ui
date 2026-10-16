@@ -943,6 +943,39 @@ const SHARED_BEADS = [
 ];
 
 describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () => {
+  test('offers the same discard on a withdrawn candidate in both tabs', async () => {
+    const { worker, monitor } = await drawBothTabs(undefined, {
+      attempts: {
+        ...rawQueue().attempts,
+        withdrawn: makeAttempt({
+          attempt_id: 'withdrawn',
+          bead_id: 'C-1',
+          status: 'paused',
+          withdrawn: {
+            at: NOW - HOUR,
+            from_status: 'running',
+            from_cause: null
+          }
+        })
+      }
+    });
+    const worker_card = /** @type {HTMLElement} */ (
+      cardsByBead(worker).get('C-1')
+    );
+    const monitor_card = /** @type {HTMLElement} */ (
+      cardsByBead(monitor).get('C-1')
+    );
+
+    expect(partsOf(monitor_card)).toEqual(partsOf(worker_card));
+    for (const card of [worker_card, monitor_card]) {
+      expect(
+        card
+          .querySelector('.worker-card__foot .worker-mini__discard')
+          ?.getAttribute('data-attempt-id')
+      ).toBe('withdrawn');
+    }
+  });
+
   test('stands every lane bead of the fixture on both tabs', async () => {
     const { worker, monitor } = await drawBothTabs();
 

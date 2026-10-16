@@ -7277,15 +7277,21 @@ export async function handleWorkerDiscard(ws, req) {
     log('worker-discard failed for %s/%s: %o', key, p.bead_id, err);
     result = { ok: false, reason: 'error' };
   }
+  const failure = result.ok === false ? result.reason || 'unknown' : null;
+  if (failure) {
+    log('worker-discard refused for %s/%s: %s', key, p.bead_id, failure);
+  }
+  const action_label =
+    retried &&
+    typeof retried.last_error === 'string' &&
+    retried.kind !== 'stale_work_backup_fresh'
+      ? '[워커로 이어가기] 클릭'
+      : '[폐기] 클릭';
   recordUserAction(
     key,
     p.bead_id,
     'discard',
-    retried &&
-      typeof retried.last_error === 'string' &&
-      retried.kind !== 'stale_work_backup_fresh'
-      ? '[워커로 이어가기] 클릭'
-      : '[폐기] 클릭'
+    failure ? `${action_label} · 거부: ${failure}` : action_label
   );
   const queue = /** @type {any} */ (queueStore().snapshot(key));
   const accepted = typeof result.operation_id === 'string';

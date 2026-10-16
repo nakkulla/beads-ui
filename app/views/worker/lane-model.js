@@ -534,10 +534,35 @@ const DONE_KIND_LABELS = {
  * @property {string} id
  * @property {string} title
  * @property {string} badge
+ * @property {ReturnType<typeof discardProjection>} [discard]
  * @property {boolean} [filter_match] - 우선순위·타입·라벨 필터와의 일치
  * (UI-p7s2 §6). 점유 ghost 행도 직렬 레인의 항목이므로 다른 레인 항목과 같은
  * 판정을 받는다.
  */
+
+/**
+ * Shared serial occupancy row, including its mutation workspace and revision.
+ *
+ * @param {MonitorOccupant} occupant
+ * @param {MonitorSerialSublane['id']} lane
+ * @param {Pick<LaneQueueGroup, 'root_dir'|'revision'>} group
+ * @returns {LaneItem}
+ */
+export function occupantRowInput(occupant, lane, group) {
+  return {
+    id: occupant.id,
+    title: occupant.title,
+    lane,
+    root_dir: group.root_dir,
+    workspace_name: '',
+    expected_revision: group.revision,
+    draggable: false,
+    ghost: true,
+    badges: [occupant.badge],
+    alert: false,
+    ...(occupant.discard ? { discard: occupant.discard } : {})
+  };
+}
 
 /**
  * @typedef {Object} MonitorSerialSublane
@@ -2011,6 +2036,20 @@ function withdrawnFields(withdrawn_beads, bead_id) {
       has_session: entry.has_session === true
     }
   };
+}
+
+/**
+ * Keep an active discard reachable after the withdrawn attempt is finalized.
+ *
+ * @param {Record<string, any>} withdrawn_beads
+ * @param {Record<string, any>} operations
+ * @param {string} bead_id
+ * @returns {Pick<LaneItem, 'discard'>}
+ */
+function withdrawnDiscardFields(withdrawn_beads, operations, bead_id) {
+  const attempt_id = withdrawn_beads[bead_id]?.attempt_id;
+  const discard = discardProjection(operations, bead_id, { attempt_id });
+  return discard.attempt_id || discard.operation ? { discard } : {};
 }
 
 /**
@@ -4014,7 +4053,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
       return {
         id: bead_id,
         title: live ? live.title : base(bead_id).title,
-        badge
+        badge,
+        ...withdrawnDiscardFields(withdrawn_beads, discard_operations, bead_id)
       };
     };
 
@@ -4288,6 +4328,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : {}),
         ...withdrawnFields(withdrawn_beads, bead_id),
         reason: reason_parts.join(' · '),
+        ...withdrawnDiscardFields(withdrawn_beads, discard_operations, bead_id),
         ...(admission[bead_id]?.stale === true
           ? { rereview_required: true }
           : {}),

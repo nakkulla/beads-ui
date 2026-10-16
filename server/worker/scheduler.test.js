@@ -16062,6 +16062,33 @@ describe('scheduler claim release on close-less termination', () => {
     expect(env.bd.statuses.S1).toBe('open');
   });
 
+  test('releases a withdrawn attempt occupancy when discard finalizes it', async () => {
+    const env = setup({ config: { S1: {} } });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        bead_id: 'S1',
+        attempt_id: 'att-withdrawn',
+        status: 'paused',
+        cause: 'withdrawn',
+        serial_lane_id: 's1',
+        withdrawn: { at: 3, from_status: 'running', from_cause: null }
+      }
+    });
+
+    const result = await env.scheduler.finalizeDiscardAttempt(
+      WS,
+      'att-withdrawn',
+      'S1'
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(env.store.snapshot(WS).attempts['att-withdrawn'].status).toBe(
+      'discarded'
+    );
+    expect(activeLaneLineages(env.store.snapshot(WS)).has('s1')).toBe(false);
+  });
+
   test('makes a failed bead dispatchable again once its tile is dismissed', async () => {
     const env = setup({
       config: { S1: { ready_follows_status: true } },

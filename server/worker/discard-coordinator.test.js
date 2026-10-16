@@ -1596,6 +1596,92 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     expect(env.gh.closePr).not.toHaveBeenCalled();
   });
 
+  test.each(['requested', 'terminated'])(
+    'reports the settling refusal during withdrawal control %s',
+    async (phase) => {
+      const env = setup({ schedulerCanDiscard: false });
+      env.store.updateAttempt(workspace, {
+        attempt_id: 'att-1',
+        patch: {
+          status: 'paused',
+          process_identity: { pid: 42, pgid: 42, started_at: 1 },
+          control: {
+            kind: 'pause',
+            phase: /** @type {'requested'|'terminated'} */ (phase),
+            requested_at: 2,
+            last_error: null,
+            intent: {
+              reason: 'withdraw',
+              from_status: 'running',
+              from_cause: null
+            }
+          }
+        }
+      });
+
+      const result = await env.coordinator.discard({
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        expected_revision: env.store.snapshot(workspace).revision
+      });
+
+      expect(result).toMatchObject({ ok: false, reason: 'attempt_settling' });
+      expect(env.store.snapshot(workspace).discard_operations).toEqual({});
+      expect(env.archive.create).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(['parallel', 's1'])(
+    'backs up a withdrawn attempt and removes its %s queue entry',
+    async (lane) => {
+      const env = setup();
+      env.store.updateAttempt(workspace, {
+        attempt_id: 'att-1',
+        patch: {
+          status: 'paused',
+          cause: 'withdrawn',
+          verify_result: null,
+          withdrawn: { at: 3, from_status: 'running', from_cause: null },
+          control: {
+            kind: 'pause',
+            phase: 'done',
+            requested_at: 2,
+            last_error: null,
+            intent: {
+              reason: 'withdraw',
+              from_status: 'running',
+              from_cause: null
+            }
+          }
+        }
+      });
+      env.store.place(workspace, {
+        expected_revision: env.store.snapshot(workspace).revision,
+        bead_id: 'UI-1',
+        lane
+      });
+
+      const result = await env.coordinator.discard({
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        expected_revision: env.store.snapshot(workspace).revision
+      });
+
+      const queue = env.store.snapshot(workspace);
+      expect(result).toMatchObject({ ok: true });
+      expect(env.calls.indexOf('archive')).toBeLessThan(
+        env.calls.indexOf('worktree:remove')
+      );
+      expect(queue.queue).toEqual([]);
+      expect(
+        queue.serial_lanes.every((entry) => entry.entries.length === 0)
+      ).toBe(true);
+      expect(queue.discard_operations['discard-1'].phase).toBe('done');
+      expect((await env.bd.readIssue('UI-1')).status).toBe('open');
+      expect(env.gh.closePr).not.toHaveBeenCalled();
+    }
+  );
+
   test('refuses a normal external PR row without a worker attempt', async () => {
     const env = setup();
     const store = createQueueStore({ now: () => 100 });

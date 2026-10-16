@@ -6244,6 +6244,159 @@ describe('monitor 내리기·지금 재시도·내려옴 (stall-reconcile D7~D9)
       )?.textContent?.trim()
     ).toBe('⏏ 내려옴');
   });
+
+  test.each(['candidate', 'occupant'])(
+    'discards a withdrawn attempt from its %s row',
+    async (surface) => {
+      const { mount, view, sent } = setup({
+        workspaces: [
+          workspace({
+            revision: 7,
+            runnable: [{ bead_id: 'A-9', title: '내린 작업' }],
+            withdrawn_beads: { 'A-9': { attempt_id: 'w1', at: 1 } },
+            ...(surface === 'occupant'
+              ? {
+                  serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-9' }] }],
+                  lane_states: { s1: { occupied_by: ['A-9'] } }
+                }
+              : {})
+          })
+        ],
+        workspaces_state: [state({ revision: 7 })],
+        transport: async () => ({ accepted: false, reason: 'attempt_settling' })
+      });
+      view.load();
+      const row = el(
+        mount,
+        `${surface === 'candidate' ? '.worker-card' : '.worker-mini--ghost'}[data-bead-id="A-9"]`
+      );
+      const discard = row.querySelector('.worker-mini__discard');
+
+      expect(discard).not.toBeNull();
+      discard?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flushMicrotasks();
+
+      expect(sent).toContainEqual({
+        type: 'worker-discard',
+        payload: {
+          bead_id: 'A-9',
+          attempt_id: 'w1',
+          expected_revision: 7,
+          root_dir: WS_A
+        }
+      });
+      expect(document.body.textContent).toContain(
+        '폐기 실패: attempt_settling'
+      );
+    }
+  );
+});
+
+describe('views/monitor withdrawn discard recovery', () => {
+  test.each(['candidate', 'occupant'])(
+    'retries a failed discard from its %s row after attempt finalization',
+    async (surface) => {
+      const { mount, view, sent } = setup({
+        workspaces: [
+          workspace({
+            revision: 7,
+            runnable: [{ bead_id: 'A-9', title: '내린 작업' }],
+            attempts: {
+              w1: { attempt_id: 'w1', bead_id: 'A-9', status: 'discarded' }
+            },
+            discard_operations: {
+              op1: {
+                operation_id: 'op1',
+                bead_id: 'A-9',
+                attempt_id: 'w1',
+                phase: 'pr_closed',
+                last_error: 'worktree_remove_failed:locked',
+                backup: { path: '/state/op1' }
+              }
+            },
+            ...(surface === 'occupant'
+              ? {
+                  serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-9' }] }],
+                  lane_states: { s1: { occupied_by: ['A-9'] } }
+                }
+              : {})
+          })
+        ],
+        workspaces_state: [state({ revision: 7 })]
+      });
+      view.load();
+      const row = el(
+        mount,
+        `${surface === 'candidate' ? '.worker-card' : '.worker-mini--ghost'}[data-bead-id="A-9"]`
+      );
+      const retry = row.querySelector('.worker-mini__discard');
+
+      expect(retry?.textContent?.trim()).toBe('워커로 이어가기');
+      expect(row.textContent).toContain('worktree_remove_failed:locked');
+      expect(row.textContent).toContain('/state/op1');
+      retry?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flushMicrotasks();
+
+      expect(sent).toContainEqual({
+        type: 'worker-discard',
+        payload: {
+          bead_id: 'A-9',
+          attempt_id: 'w1',
+          operation_id: 'op1',
+          expected_revision: 7,
+          root_dir: WS_A
+        }
+      });
+    }
+  );
+
+  test.each(['resolve', 'discard-abandon'])(
+    'handles %s from a withdrawn candidate after backup failure',
+    async (action) => {
+      const { mount, view, sent } = setup({
+        workspaces: [
+          workspace({
+            revision: 7,
+            runnable: [{ bead_id: 'A-9', title: '내린 작업' }],
+            withdrawn_beads: { 'A-9': { attempt_id: 'w1', at: 1 } },
+            discard_operations: {
+              op1: {
+                operation_id: 'op1',
+                bead_id: 'A-9',
+                attempt_id: 'w1',
+                phase: 'requested',
+                last_error: 'archive_failed'
+              }
+            }
+          })
+        ],
+        workspaces_state: [state({ revision: 7 })]
+      });
+      view.load();
+      const foot = el(
+        mount,
+        '.worker-card[data-bead-id="A-9"] .worker-card__foot'
+      );
+      const button = foot.querySelector(`.worker-mini__${action}`);
+
+      expect(button).not.toBeNull();
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flushMicrotasks();
+
+      expect(sent).toContainEqual({
+        type:
+          action === 'resolve'
+            ? 'worker-resolve-in-session'
+            : 'worker-discard-abandon',
+        payload: {
+          bead_id: 'A-9',
+          ...(action === 'discard-abandon' ? { operation_id: 'op1' } : {}),
+          expected_revision: 7,
+          root_dir: WS_A
+        }
+      });
+    }
+  );
 });
 
 describe('views/monitor PR 대기 줄 공유 투영 (UI-f2sy §4·§5)', () => {
