@@ -515,6 +515,19 @@ describe('runner/preamble Worker-dispatched quick_fix lane', () => {
     );
   });
 
+  test('carves the contract no-change close out of the Worker-owned close', () => {
+    const directive = QUICKFIX_LANE_DIRECTIVE;
+
+    expect(directive).toContain('예외 — 계약의 no-change close');
+    expect(directive).toContain(
+      '`bd close <id> --reason "<refuted|no-delta>: <한 줄>"`'
+    );
+    expect(directive).toContain('push·`resolved` 없이');
+    expect(directive).toContain(
+      '구현 게이트 1회는 돌려 completion report에만 기록하고 `impl_review` metadata는 쓰지 않음'
+    );
+  });
+
   test('permits base push while keeping hook bypass and gh merge kills', () => {
     const out = applyPreamble('구현하라', {
       quickfix_lane: true

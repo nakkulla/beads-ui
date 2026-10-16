@@ -280,7 +280,11 @@ export const PR_SUBMIT_DIRECTIVE = [
 /**
  * The terminal directive for a Worker-dispatched quick_fix lane. It opens no
  * PR and hands deployment, close, and cleanup back to the Worker after the
- * reviewed base push is recorded as `resolved`.
+ * reviewed base push is recorded as `resolved`. The one carve-out is the
+ * contract's no-change close (`refuted`/`no-delta`): there is no pushed head to
+ * bind a receipt to, so the session closes the bead itself and the Worker only
+ * removes residue — a session that stops at `resolved` instead fails landing
+ * on the missing `impl_review`.
  *
  * @type {string}
  */
@@ -292,6 +296,7 @@ export const QUICKFIX_LANE_DIRECTIVE = [
   '- 종점은 구현 → 계약에 따른 implementation review 게이트 1회 → base ref 직접 push → push containment 확인 → completion report → bead `resolved` 기록 후 종료다.',
   '- 리뷰 선택은 정본 계약을 따른다. `skipped@`는 진행 권한이며 실제 리뷰 증거가 아니다. `impl_review` 영수증은 실제로 push한 head SHA에 결속되어야 한다. push 후 head가 바뀌었으면 계약의 follow-up 규칙대로 영수증을 새 SHA로 갱신하라.',
   '- 배포 실행·배포 증거·bead `closed`·worktree/브랜치 정리는 Worker가 소유한다. 수행하지 마라. worktree와 브랜치를 보존한 채 `resolved`에서 멈춰라.',
+  '- 예외 — 계약의 no-change close(`workflow-state.yaml no_change_close`): 실행한 재현이 근본 원인 가설을 반박했거나(`refuted`, 구현 게이트 없음), 승인된 검증 bundle이 추적 트리를 pinned base 그대로 둔 채 통과했으면(`no-delta`, 구현 게이트 1회는 돌려 completion report에만 기록하고 `impl_review` metadata는 쓰지 않음) push·`resolved` 없이 세션이 직접 `bd close <id> --reason "<refuted|no-delta>: <한 줄>"`로 닫고 `bd show <id> --json`으로 `closed`와 그 `close_reason`을 확인하라. 이때도 worktree와 브랜치는 보존한다 — Worker는 잔여물만 정리한다. 이 경우 `resolved`에서 멈추면 영수증이 없어 착지가 실패한다.',
   '- 이 레인의 canonical 문구는 dotfiles `docs/contracts/workflow-contract.md`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.',
   '',
   RESULT_LINE_GRAMMAR

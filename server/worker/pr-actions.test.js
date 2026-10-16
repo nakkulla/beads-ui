@@ -2279,16 +2279,18 @@ describe('post-merge cleanup — what step 1 did to the LOCAL checkout', () => {
     });
   });
 
-  test('records no cleanup summary for a step whose token maps to no sentence', async () => {
+  test('records the token sentence as summary for a step that printed nothing', async () => {
     const h = makeActions({
       bdFail: (/** @type {string} */ method) => method === 'setStatus'
     });
 
     await h.actions.merge(BEAD);
 
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).not.toHaveProperty(
-      'summary'
-    );
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'parent_close',
+      reason: 'bd_close_failed',
+      summary: 'Bead를 닫지 못했습니다.'
+    });
   });
 
   test('still stops when the base cannot be fetched at all', async () => {

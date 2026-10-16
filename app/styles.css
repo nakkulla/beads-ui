@@ -3726,6 +3726,9 @@ summary.repo-ops-log-viewer__attempt-head {
   flex-direction: column;
   gap: var(--sp-6);
   width: min(360px, calc(100vw - var(--sp-16)));
+  /* The lane body scrolls on overflow-x, so a popover wider than its tile is
+     clipped at the lane edge; the tile is the containing block. */
+  max-width: 100%;
   max-height: 360px;
   overflow-y: auto;
   padding: var(--sp-8);

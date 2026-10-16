@@ -46,34 +46,34 @@ beads-ui는 session-hub로 대화형 Claude 세션을 열 수 있다. 그런데 
 
 - admission이 라벨 하나로 거절한다 — server/worker/admission.js:174-176
 - 스케줄러도 따로 거절한다:
-  - `checkAdmission` — server/worker/scheduler.js:5151-5153
-  - 디스패치 재확인 — server/worker/scheduler.js:11308-11311
-  - 스캔 건너뜀 — server/worker/scheduler.js:18499-18506
-- 후보 카드의 배치 불가 판정은 `placementFromFacts`가 하고, `lane-model`이 `queue_placeable`로 접는다 — app/views/worker/placement.js:162-175, 268; app/views/worker/lane-model.js:4203-4263
-- 카드가 끌기와 배치를 이중으로 막는다 — app/views/worker/lanes.js:5010-5020
-- `worker-ineligible` 칩과 `세션 권장` 칩은 슬롯 1에서 서로 배타다 — app/views/worker/lanes.js:5125-5143
+  - `checkAdmission` — server/worker/scheduler.js:5150-5152
+  - 디스패치 재확인 — server/worker/scheduler.js:11309-11312
+  - 스캔 건너뜀 — server/worker/scheduler.js:18518-18525
+- 후보 카드의 배치 불가 판정은 `placementFromFacts`가 하고, `lane-model`이 `queue_placeable`로 접는다 — app/views/worker/placement.js:162-175, 268; app/views/worker/lane-model.js:4243-4303
+- 카드가 끌기와 배치를 이중으로 막는다 — app/views/worker/lanes.js:5034-5044
+- `worker-ineligible` 칩과 `세션 권장` 칩은 슬롯 1에서 서로 배타다 — app/views/worker/lanes.js:5149-5167
 - 서버 투영이 ineligible이면 `session_preferred_reason`을 비운다 — server/worker/runnable-cache.js:412-460
-- Worker 디스패치는 `fast_track`과 `workflow_mode_source=worker`를 쓰고 다시 읽는다 — server/worker/scheduler.js:4142-4175
+- Worker 디스패치는 `fast_track`과 `workflow_mode_source=worker`를 쓰고 다시 읽는다 — server/worker/scheduler.js:4141-4174
 - receipt 기준선은 `impl_entry`·`plan_approval`·`impl_dispatch`의 이동과 `workflow_mode_source → user`를 위조로 본다 — server/worker/receipt-check.js:900-932
 - 비연결 워크스페이스의 대기열 진입은 라벨 하나로 거절한다 — server/worker/attach.js:3432-3443
-- 살아 있는 대화 창을 앞으로 부르는 동작은 `focusLiveConversation`이다 — server/ws/worker-handlers.js:7964 이하
+- 살아 있는 대화 창을 앞으로 부르는 동작은 `focusLiveConversation`이다 — server/ws/worker-handlers.js:7970 이하
 - 판정 칩의 현행 클릭은 사유 팝업이다 — docs/superpowers/specs/2026-08-28-chip-grammar-unify-design.md:248-262
-- headless 디스패치는 `settings.env`에 가드 훅 3키(`GIT_CONFIG_COUNT`·`GIT_CONFIG_KEY_n`·`GIT_CONFIG_VALUE_n`=core.hooksPath)와 work recovery 준비 env를 더한다 — server/worker/scheduler.js:12495-12508, server/worker/guard-hook.js:509-519
-- quick_fix 착지 증명은 attempt 훅 디렉터리의 push 기록을 요구한다. 기록이 없으면 `delivery_unproven:push_log_absent`다 — server/worker/quickfix-landing.js:432-446
-- claude 계정은 `cswap run <account> --share-history -- claude …` 래퍼로, codex 계정은 `CODEX_HOME` 미러로 적용한다. headless는 Worker 표지 `CLAUDE_HOOK_SUPPRESS=1`도 env에 싣는다 — server/worker/runner/claude.js:895-925, server/worker/scheduler.js:3944-4028
-- 생존 판정은 `isDeadAttempt`(pid와 시작 시각) 하나다. 이 판정을 `reconcile`의 정산 후보 선별(:9519), `occupiedBeadIds`(:16774), 재개 자격(:8649)이 쓴다 — server/worker/scheduler.js:8606-8625
-- 일시정지는 프로세스 식별이 없으면 `identity_unknown`으로 실패한다 — server/worker/scheduler.js:18766-18773
-- 수동 재개 `↻ 이어하기`는 실패·일시정지·고아 attempt를 기존 워크트리에서 새 attempt(`resumed_from`)로 띄운다. 현재 Bead 프리셋으로 설정을 다시 풀고, 러너가 같으면 공급자 세션을 resume한다 — server/worker/scheduler.js:14061-14121
+- headless 디스패치는 `settings.env`에 가드 훅 3키(`GIT_CONFIG_COUNT`·`GIT_CONFIG_KEY_n`·`GIT_CONFIG_VALUE_n`=core.hooksPath)와 work recovery 준비 env를 더한다 — server/worker/scheduler.js:12496-12509, server/worker/guard-hook.js:509-519
+- quick_fix 착지 증명은 attempt 훅 디렉터리의 push 기록을 요구한다. 기록이 없으면 `delivery_unproven:push_log_absent`다 — server/worker/quickfix-landing.js:506-520
+- claude 계정은 `cswap run <account> --share-history -- claude …` 래퍼로, codex 계정은 `CODEX_HOME` 미러로 적용한다. headless는 Worker 표지 `CLAUDE_HOOK_SUPPRESS=1`도 env에 싣는다 — server/worker/runner/claude.js:895-925, server/worker/scheduler.js:3943-4027
+- 생존 판정은 `isDeadAttempt`(pid와 시작 시각) 하나다. 이 판정을 `reconcile`의 정산 후보 선별(:9526), `occupiedBeadIds`(:16793), 재개 자격(:8656)이 쓴다 — server/worker/scheduler.js:8613-8632
+- 일시정지는 프로세스 식별이 없으면 `identity_unknown`으로 실패한다 — server/worker/scheduler.js:18785-18792
+- 수동 재개 `↻ 이어하기`는 실패·일시정지·고아 attempt를 기존 워크트리에서 새 attempt(`resumed_from`)로 띄운다. 현재 Bead 프리셋으로 설정을 다시 풀고, 러너가 같으면 공급자 세션을 resume한다 — server/worker/scheduler.js:14062-14125
 - 해결 세션은 fork 또는 공용 대화 설정의 fresh로 열리고 슬롯을 차지하지 않는다 — server/worker/resolve-session.js:900-958
-- ADR UI-gske의 "생존 소유" 조항: 생존(pid probe)·슬롯 점유는 scheduler(`reconcile`·`occupiedBeadIds`)가 소유하고, beads-ui가 띄운 대화형 세션은 슬롯을 점유하지 않는다 — docs/adr/UI-gske-session-inquiry-row-and-failure-auto-launch.md:793-805
-- 대화형 창 기동 API는 `launch({marker, key, cwd, commandArgs, runner, placement})`다. 실패해도 throw하지 않는다 — server/worker/tmux-launcher.js:61-90, 732-837
+- ADR UI-1eag(UI-gske·UI-5chz 승계)의 "생존 소유" 조항: 생존(pid probe)·슬롯 점유는 scheduler(`reconcile`·`occupiedBeadIds`)가 소유하고, beads-ui가 띄운 대화형 세션은 슬롯을 점유하지 않는다 — docs/adr/UI-1eag-direct-push-post-merge-jobs-advanced-head.md:859-871
+- 대화형 창 기동 API는 `launch({marker, key, cwd, commandArgs, runner, placement})`다. 실패해도 throw하지 않는다. claude 러너에는 `--allow-dangerously-skip-permissions`를 늘 붙인다 — server/worker/tmux-launcher.js:61-90, 732-838, 810
 - 창 마커는 세 개다:
   - 기동기 쪽 — server/worker/tmux-launcher.js:24-40
-  - ws 쪽 — server/ws/worker-handlers.js:7947
+  - ws 쪽 — server/ws/worker-handlers.js:7953
   - 대화 레코드 kind 합집합 — server/worker/queue-store.js:508, 3546
-- 30초 대화 정산은 마커 pane을 나열해 생존·`turn_state`·마지막 메시지를 갱신한다 — server/worker/scheduler.js:1392-1400, 10387
+- 30초 대화 정산은 마커 pane을 나열해 생존·`turn_state`·마지막 메시지를 갱신한다 — server/worker/scheduler.js:1391-1399, 10394
 - 종단 결과 줄 파서 — server/worker/runner/session.js:98
-- headless 세션의 디스패치 맥락은 블록 단위 preamble이다. 순서는 무인 전제 → 시도 사실 → fast_track → 종점 → PR base → 가드 계약 → fix-now → 프로세스 수명이다. 과제 문장은 `defaultTaskPrompt`이고, claude에는 `--append-system-prompt`로 전달된다 — server/worker/runner/preamble.js:457-520, server/worker/runner/claude.js:842-877
+- headless 세션의 디스패치 맥락은 블록 단위 preamble이다. 순서는 무인 전제 → 시도 사실 → fast_track → 종점 → PR base → 가드 계약 → fix-now → 프로세스 수명이다. 과제 문장은 `defaultTaskPrompt`이고, claude에는 `--append-system-prompt`로 전달된다 — server/worker/runner/preamble.js:462-525, server/worker/runner/claude.js:842-877
 - quick_fix의 Worker-dispatched 세션은 공급된 워크트리와 committed candidate 경로를 쓴다 — dotfiles src/shared/skills/flow/workflow/references/execution-quick-fix.md:61
 - 칩 클릭으로 이슈 metadata를 바꾸는 선례는 `chip-preset-toggle`이다. (워크스페이스, 이슈)별로 직렬화하고, 재클릭하면 복원한다 — docs/adr/UI-rd2m-exec-presets-and-chips-by-route.md "판정 칩"
 - dotfiles의 Attempt continuation 판정: 대기열 `attempts[]`에 그 Bead 행이 하나라도 있는 세션은 fast_track을 이어받는다. 그 세션은 구현 시작 질문을 하지 않고 승인 키도 쓰지 않는다 — dotfiles src/shared/skills/flow/workflow/references/execution-dispatch.md:211-250
@@ -132,7 +132,7 @@ beads-ui는 session-hub로 대화형 Claude 세션을 열 수 있다. 그런데 
 - 생존 판정 `isDeadAttempt`는 `exec: 'session'` attempt에 대해 pid 대신 pane 관측을 읽는다.
   - 죽음은 "tmux 관측이 성공한 pass에서 그 마커 pane이 없음"일 때만이다.
   - tmux 관측 실패나 아직 관측 전이면 살아 있음으로 본다. 그러면 claim과 슬롯이 유지된다.
-  - 이 한 곳을 바꾸면 세 사용처가 같은 판정을 쓴다: `reconcile`의 정산 후보(:9519), `occupiedBeadIds`(:16774), 재개 자격(:8649). 부팅 복구도 같은 `reconcile`을 탄다.
+  - 이 한 곳을 바꾸면 세 사용처가 같은 판정을 쓴다: `reconcile`의 정산 후보(:9526), `occupiedBeadIds`(:16793), 재개 자격(:8656). 부팅 복구도 같은 `reconcile`을 탄다.
 - 테스트: 세 사용처마다 하나씩 둔다. 여기에 더해 pid 없는 살아 있는 세션 레인 attempt가 정산되지 않는 경우와, tmux 관측이 실패해도 claim과 슬롯이 유지되는 경우를 확인한다.
 - 답 대기: 다음 둘 중 하나면 답 대기다.
   - `turn_state === 'question'`
@@ -212,7 +212,7 @@ beads-ui는 session-hub로 대화형 Claude 세션을 열 수 있다. 그런데 
 
 - dotfiles 계약 문구(대기열 등록 = 구현 승인, `worker-ineligible`의 새 뜻)는 형제 Bead가 정한다. 이 Bead는 소비자 구현만 한다.
 - 세션 레인 전용 동시 실행 한도는 두지 않는다(사용자 결정 3).
-- beads-ui 안에서 답을 입력하는 칸은 만들지 않는다(ADR UI-gske 승계). 답은 tmux 창이나 Discord에서 한다.
+- beads-ui 안에서 답을 입력하는 칸은 만들지 않는다(ADR UI-1eag 승계, UI-gske에서 이어짐). 답은 tmux 창이나 Discord에서 한다.
 - `worker-ineligible` 이슈를 headless Worker로 돌리는 경로는 만들지 않는다.
 
 ## 8. 경계·후속
@@ -235,9 +235,9 @@ beads-ui는 session-hub로 대화형 Claude 세션을 열 수 있다. 그런데 
   - 되돌림 어려움: 충족. 함께 움직이는 것: admission 세 곳, 스케줄러 디스패치와 `isDeadAttempt`, 일시정지 거절, tmux 기동기의 계정 래퍼·env 전달, attempt 모양, 카드 슬롯, dotfiles continuation 판정.
   - 의외: 충족. "worker-ineligible인데 Worker 대기열에서 돈다"는 설명 없이는 모순으로 읽힌다.
   - 대안: 충족. 별도 세션 큐, 세션 전용 한도, headless 허용을 검토했다.
-  - 소비자 공유: UI-gske의 "생존 소유" 조항(`reconcile`·`occupiedBeadIds`·`isDeadAttempt`가 pid로 생존을 소유하고 대화형 세션은 슬롯을 점유하지 않는다)을 바꾼다.
+  - 소비자 공유: 현행 ADR UI-1eag가 UI-5chz를 거쳐 승계한 UI-gske의 "생존 소유" 조항(`reconcile`·`occupiedBeadIds`·`isDeadAttempt`가 pid로 생존을 소유하고 대화형 세션은 슬롯을 점유하지 않는다)을 바꾼다.
     - 세션 레인 attempt는 pane으로 생존을 판정하고 슬롯을 점유하는 대화형 세션이다.
-    - 그래서 UI-gske를 잇는다. UI-gske의 나머지 조항(세션 소유 사람 필요 행, 실패 대화 자동 기동, 문의·해결·외부 재개 레코드)은 그대로다.
+    - 그래서 UI-1eag를 잇는다. UI-1eag의 나머지 조항(직접 push 착지의 머지 후 잡, UI-5chz의 답 대기 스레드 전용 알림, UI-gske의 세션 소유 사람 필요 행·실패 대화 자동 기동·문의·해결·외부 재개 레코드 등)은 그대로다. 세션 레인의 답 대기를 Discord로 보내지 않는 §4.4는 UI-5chz 조항을 따른 것이다.
     - 계정·공급자 보류는 headless와 같게 두므로 UI-3v1h는 바뀌지 않는다.
-  - `summary`: "worker-ineligible과 exec_lane=session인 session-preferred 이슈는 Worker 대기열에서 세션 레인으로 실행된다 — 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처) headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열리며, 생존은 isDeadAttempt가 마커 pane 관측으로 판정하고(관측 실패는 생존) 결과는 종단 결과 줄로 headless와 같은 판정을 탄다; 결과 줄 없는 창 소멸은 클릭 전용 session_exited 실패이고 재개는 세션 레인 attempt의 ↻ 이어하기이며 일시정지는 없다 — UI-gske의 나머지 조항은 그대로다" → ADR, supersede UI-gske
+  - `summary`: "worker-ineligible과 exec_lane=session인 session-preferred 이슈는 Worker 대기열에서 세션 레인으로 실행된다 — 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처) headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열리며, 생존은 isDeadAttempt가 마커 pane 관측으로 판정하고(관측 실패는 생존) 결과는 종단 결과 줄로 headless와 같은 판정을 탄다; 결과 줄 없는 창 소멸은 클릭 전용 session_exited 실패이고 재개는 세션 레인 attempt의 ↻ 이어하기이며 일시정지는 없다 — UI-1eag의 나머지 조항은 그대로다" → ADR, supersede UI-1eag
 - `session-preferred` 칩 클릭은 `exec_lane`을 토글한다 — 칩 문법의 한 행 변경이고, 위 ADR의 같은 소비자 안에 있다 → ADR 아님

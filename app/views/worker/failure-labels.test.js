@@ -70,6 +70,15 @@ describe('failureCategory', () => {
     );
   });
 
+  test('explains a quick-fix landing receipt failure beyond its category', () => {
+    const code = 'quickfix_landing_failed:invalid_impl_review';
+
+    const sentence = failureSentence(code);
+
+    expect(sentence).toContain('impl_review 영수증');
+    expect(sentence).not.toBe(failureCategory(code));
+  });
+
   test('maps session exit tokens to 세션 실패', () => {
     expect(failureCategory('runner_exit')).toBe('세션 실패');
     expect(failureCategory('session_transport_failed')).toBe('세션 실패');

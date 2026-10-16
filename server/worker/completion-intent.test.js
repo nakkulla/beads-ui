@@ -3442,8 +3442,10 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
   });
 
   test('explains a folded cause with its family sentence', () => {
-    expect(commentLines({ reason: 'cleanup_failed:bd_read_failed' })[2]).toBe(
-      '- 원인: cleanup_failed:bd_read_failed — 머지 후 정리가 끝나지 못했습니다.'
+    expect(
+      commentLines({ reason: 'cleanup_failed:remote_branch_delete_failed' })[2]
+    ).toBe(
+      '- 원인: cleanup_failed:remote_branch_delete_failed — 머지 후 정리가 끝나지 못했습니다.'
     );
   });
 
