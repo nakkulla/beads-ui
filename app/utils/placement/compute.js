@@ -592,7 +592,6 @@ export function computePlacement(input) {
       let index = entries.length;
       if (lane !== 'parallel') {
         let lower = 0;
-        let has_lower = false;
         let upper = entries.length;
         let has_upper = false;
         /**
@@ -625,14 +624,16 @@ export function computePlacement(input) {
             has_upper = true;
           } else {
             lower = Math.max(lower, at + 1);
-            has_lower = true;
           }
         }
+        // The LATEST index the bounds allow: right before the first `c_first`
+        // item, else the lane tail. Never jumping ahead of unrelated waiting
+        // entries is what keeps an empty-K bundle appended in bundle order
+        // (§4.6) and what lets `[전체 적용]` recompute the remaining candidates
+        // on each reply and land on the table's places.
         if (has_upper && lower > upper) {
           warnings.push({ code: 'order_unsatisfiable' });
           index = entries.length;
-        } else if (has_lower) {
-          index = lower;
         } else if (has_upper) {
           index = upper;
         }

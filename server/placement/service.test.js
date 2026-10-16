@@ -285,6 +285,33 @@ describe('placement schedule', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  test('asks a later-failed pair again when its own window ends', async () => {
+    const fetch = vi.fn(async () => ({
+      ok: false,
+      status: 502,
+      json: async () => ({})
+    }));
+    const { service } = serviceWith({ fetch });
+    const rows = rowMap({
+      'UI-1': row('UI-1'),
+      'UI-2': row('UI-2'),
+      'UI-3': row('UI-3')
+    });
+    service.project(WS, input(['UI-1'], ['UI-2'], rows), OBSERVE);
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+    await service.idle();
+    await vi.advanceTimersByTimeAsync(60_000);
+    service.project(WS, input(['UI-1'], ['UI-2', 'UI-3'], rows), OBSERVE);
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+    await service.idle();
+
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MS);
+    await service.idle();
+
+    // Two first asks, the first pair's retry, then the second pair's retry.
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
   test('reports a failed pair as unavailable with its reason', async () => {
     const fetch = vi.fn(async () => ({
       ok: false,

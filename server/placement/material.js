@@ -29,9 +29,11 @@ import { ISSUE_MATERIAL_CAP, STATE_CAP } from './question.js';
 
 /**
  * The material of one issue, or null when it is not there yet: no snapshot
- * row, a row without a string `description`, or a spec not read yet. A spec
- * that cannot be read at the base (`failed`) does not hold the issue back —
- * the material says so and jev judges from the issue alone.
+ * row, a row without a string `description`, or a named spec that is not read
+ * — not read yet (`miss`) or not readable at the base (`failed`). §4.2 keeps a
+ * pair with missing material `pending`, so jev never judges a spec-backed
+ * issue from its body alone; the spec cache retries a failed read and its
+ * fill fanout brings the material in once a read succeeds.
  *
  * @param {Record<string, unknown>|undefined} row
  * @param {string} spec_path
@@ -42,7 +44,7 @@ export function issueMaterial(row, spec_path, spec) {
   if (!row || typeof row.description !== 'string') {
     return null;
   }
-  if (spec && spec.state === 'miss') {
+  if (spec && spec.state !== 'hit') {
     return null;
   }
   const metadata =
@@ -63,8 +65,6 @@ export function issueMaterial(row, spec_path, spec) {
       scope: spec.value.scope,
       sections: spec.value.sections
     };
-  } else if (spec && spec.state === 'failed') {
-    material.spec = { path: spec_path, unreadable: true };
   }
   const text = JSON.stringify(material).slice(0, ISSUE_MATERIAL_CAP);
   return {

@@ -134,6 +134,26 @@ describe('fixed relations', () => {
       in_lane: true
     });
   });
+
+  test('ships an in-lane blocks cycle as conflict so both edges survive', () => {
+    const facts = input({
+      candidates: [],
+      members: ['UI-5', 'UI-6'],
+      lane_edges: [
+        { blocker: 'UI-6', blockee: 'UI-5' },
+        { blocker: 'UI-5', blockee: 'UI-6' }
+      ]
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-5|UI-6']).toMatchObject({
+      relation: 'conflict',
+      source: 'fixed',
+      basis: 'blocks',
+      in_lane: true
+    });
+  });
 });
 
 describe('jev relations', () => {

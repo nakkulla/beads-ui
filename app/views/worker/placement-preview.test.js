@@ -166,6 +166,51 @@ function mountView(transport, queue = queueOf()) {
 }
 
 /**
+ * A fixed `blocks` relation from the candidate's side.
+ *
+ * @param {string} c
+ * @param {string} x
+ * @param {'c_first'|'x_first'} kind
+ * @returns {[string, any]}
+ */
+function blocks(c, x, kind) {
+  const [a, b] = c < x ? [c, x] : [x, c];
+  const c_first = kind === 'c_first';
+  return [
+    placementPairKey(a, b),
+    {
+      a,
+      b,
+      relation: (c === a) === c_first ? 'a_first' : 'b_first',
+      source: 'fixed',
+      basis: 'blocks',
+      confidence: null,
+      jev_choice: null,
+      judged_at: null
+    }
+  ];
+}
+
+/**
+ * The ids a lane body draws, dotted cards included, in drawing order.
+ *
+ * @param {HTMLElement} mount
+ * @param {string} lane
+ * @returns {string[]}
+ */
+function laneOrder(mount, lane) {
+  const body = mount.querySelector(
+    `#worker-pane-lane-${lane} .worker-wait__rows`
+  );
+  return Array.from(body ? body.children : []).map(
+    (row) =>
+      row.getAttribute('data-preview-id') ||
+      row.getAttribute('data-bead-id') ||
+      ''
+  );
+}
+
+/**
  * @param {HTMLElement} mount
  * @param {string} id
  * @returns {HTMLButtonElement|null}
@@ -268,7 +313,7 @@ describe('recommendation box', () => {
 
     expect(
       mount.querySelector('.worker-recommend__pos')?.textContent?.trim()
-    ).toBe('직렬 2 · #2 — S2-1 뒤');
+    ).toBe('직렬 2 · #3 — S2-2 뒤');
     expect(transport).not.toHaveBeenCalled();
   });
 
@@ -312,7 +357,7 @@ describe('recommendation box', () => {
     ).toEqual(['RD-3']);
   });
 
-  test('draws the dotted card in the waiting lane right after its predecessor', () => {
+  test('draws the dotted card in the waiting lane at its final place', () => {
     const { mount } = mountView(vi.fn());
 
     click(recommendButton(mount, 'RD-1'));
@@ -327,7 +372,7 @@ describe('recommendation box', () => {
         row.getAttribute('data-bead-id') ||
         ''
     );
-    expect(rows).toEqual(['S2-1', 'RD-1', 'S2-2']);
+    expect(rows).toEqual(['S2-1', 'S2-2', 'RD-1']);
   });
 
   test('recomputes the box on a new snapshot', () => {
@@ -384,7 +429,7 @@ describe('[적용]', () => {
     expect(transport.mock.calls).toEqual([
       [
         'worker-queue-place',
-        { bead_id: 'RD-1', lane: 's2', index: 1, expected_revision: 5 }
+        { bead_id: 'RD-1', lane: 's2', index: 2, expected_revision: 5 }
       ]
     ]);
   });
@@ -409,8 +454,8 @@ describe('[적용]', () => {
     await flush();
 
     expect(transport.mock.calls.map((call) => call[1])).toEqual([
-      { bead_id: 'RD-1', lane: 's2', index: 1, expected_revision: 5 },
-      { bead_id: 'RD-1', lane: 's2', index: 1, expected_revision: 8 }
+      { bead_id: 'RD-1', lane: 's2', index: 2, expected_revision: 5 },
+      { bead_id: 'RD-1', lane: 's2', index: 2, expected_revision: 8 }
     ]);
   });
 
@@ -422,16 +467,12 @@ describe('[적용]', () => {
         {
           id: 's2',
           entries: [
-            { bead_id: 'S2-0', added_at: 0 },
             { bead_id: 'S2-1', added_at: 1 },
-            { bead_id: 'S2-2', added_at: 2 }
+            { bead_id: 'S2-2', added_at: 2 },
+            { bead_id: 'S2-3', added_at: 3 }
           ]
         }
-      ],
-      placement_relations: Object.fromEntries([
-        rel('RD-1', 'S2-1', 'x_first'),
-        rel('RD-1', 'S2-2', 'x_first')
-      ])
+      ]
     });
     const transport = vi
       .fn()
@@ -448,7 +489,7 @@ describe('[적용]', () => {
     ).toBe('자리가 바뀌었습니다');
     expect(
       mount.querySelector('.worker-recommend__pos')?.textContent?.trim()
-    ).toBe('직렬 2 · #4 — S2-2 뒤');
+    ).toBe('직렬 2 · #4 — S2-3 뒤');
   });
 
   test('stops after a second conflict', async () => {
@@ -545,8 +586,8 @@ describe('전체 배치안', () => {
           id: 's2',
           entries: [
             { bead_id: 'S2-1', added_at: 1 },
-            { bead_id: 'RD-1', added_at: 3 },
-            { bead_id: 'S2-2', added_at: 2 }
+            { bead_id: 'S2-2', added_at: 2 },
+            { bead_id: 'RD-1', added_at: 3 }
           ]
         }
       ],
@@ -571,7 +612,7 @@ describe('전체 배치안', () => {
     await flush();
 
     expect(transport.mock.calls.map((call) => call[1])).toEqual([
-      { bead_id: 'RD-1', lane: 's2', index: 1, expected_revision: 5 },
+      { bead_id: 'RD-1', lane: 's2', index: 2, expected_revision: 5 },
       { bead_id: 'RD-3', lane: 'parallel', index: 1, expected_revision: 6 }
     ]);
   });
@@ -600,5 +641,147 @@ describe('전체 배치안', () => {
     expect(
       mount.querySelector('.worker-plan__notice')?.textContent?.trim()
     ).toBe('1건 넣음 — RD-3에서 멈춤: 자리가 바뀌었습니다');
+  });
+});
+
+describe('preview lanes', () => {
+  test('draws the dotted cards of a bundle in the single empty serial lane', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        queue: [],
+        serial_lane_count: 1,
+        serial_lanes: [{ id: 's1', entries: [] }],
+        lane_states: {},
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'RD-3', 'conflict')
+        ])
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(laneOrder(mount, 's1')).toEqual(['RD-1', 'RD-3']);
+  });
+
+  test('keeps an empty serial lane with dotted cards from reading as empty', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        queue: [],
+        serial_lanes: [
+          { id: 's1', entries: [] },
+          { id: 's2', entries: [] }
+        ],
+        lane_states: {},
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'RD-3', 'conflict')
+        ])
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    const lane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s1')
+    ).closest('.worker-wait__lane');
+    expect(lane?.classList.contains('worker-wait__lane--empty')).toBe(false);
+  });
+
+  test('draws a lane the blocks correction reorders in its final order', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_relations: Object.fromEntries([
+          blocks('RD-1', 'S2-1', 'c_first'),
+          blocks('RD-1', 'S2-2', 'x_first')
+        ])
+      })
+    );
+
+    click(recommendButton(mount, 'RD-1'));
+
+    expect(laneOrder(mount, 's2')).toEqual(['S2-2', 'RD-1', 'S2-1']);
+  });
+});
+
+describe('workspace switch', () => {
+  test('adopts an apply reply only for the workspace it was sent to', async () => {
+    /** @type {(value: any) => void} */
+    let answer = () => {};
+    const transport = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    let workspace = '/repo-a';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.setSnapshot({ root_dir: '/repo-a', queue: queueOf() });
+    createWorkerView(mount, {
+      issueStores: issueStores([readyIssue('RD-1', 1), readyIssue('RD-3', 2)]),
+      queueStore,
+      transport,
+      getWorkspacePath: () => workspace
+    });
+    click(recommendButton(mount, 'RD-1'));
+    click(mount.querySelector('.worker-recommend__apply'));
+    workspace = '/repo-b';
+    queueStore.setSnapshot({
+      root_dir: '/repo-b',
+      queue: queueOf({ revision: 2, placement_status: {} })
+    });
+
+    answer({
+      applied: true,
+      conflict: false,
+      queue: queueOf({ revision: 99 })
+    });
+    await flush();
+
+    expect(queueStore.get()?.revision).toBe(2);
+  });
+});
+
+describe('전체 배치안 explanations', () => {
+  test('keeps the warning of a row it leaves unchecked', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'S2-1', 'x_first'),
+          rel('RD-1', 'RD-3', 'independent'),
+          rel('RD-3', 'P-1', 'conflict')
+        ])
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(
+      mount.querySelector('.worker-plan__row[data-bead-id="RD-3"]')?.textContent
+    ).toContain('P-1(병렬)과 동시에 돌 수 있음');
+  });
+
+  test('draws no dotted card for a row it leaves unchecked', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'S2-1', 'x_first'),
+          rel('RD-1', 'RD-3', 'independent'),
+          rel('RD-3', 'P-1', 'conflict')
+        ])
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(
+      Array.from(mount.querySelectorAll('.worker-card--preview')).map((card) =>
+        card.getAttribute('data-preview-id')
+      )
+    ).toEqual(['RD-1']);
   });
 });

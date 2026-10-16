@@ -51,6 +51,12 @@ describe('issue material', () => {
     expect(material).toBeNull();
   });
 
+  test('is missing while the named spec cannot be read', () => {
+    const material = issueMaterial(row(), SPEC, { state: 'failed' });
+
+    expect(material).toBeNull();
+  });
+
   test('changes its digest when the description changes', () => {
     const before = issueMaterial(row(), '', null);
 

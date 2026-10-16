@@ -243,6 +243,8 @@ export function createPlacementService(options) {
     }
     /** @type {Job[]} */
     const jobs = [];
+    /** @type {number|null} */
+    let next_retry = null;
     for (const { a, b } of state.pairs) {
       const material_a = state.materials.get(a);
       const material_b = state.materials.get(b);
@@ -250,15 +252,24 @@ export function createPlacementService(options) {
         continue;
       }
       const key = pairCacheKey(a, b, material_a.digest, material_b.digest);
+      const failure = activeFailure(key);
+      if (failure !== null) {
+        // A pair still inside its backoff window is asked again when the
+        // window ends; without this, only the earliest failure's timer ever
+        // fires and the later ones wait for an input change.
+        const at = failure.at + FAILURE_BACKOFF_MS;
+        next_retry = next_retry === null ? at : Math.min(next_retry, at);
+        continue;
+      }
       if (
         outstanding.has(key) ||
-        activeFailure(key) !== null ||
         pairCache.get(a, b, material_a.digest, material_b.digest) !== null
       ) {
         continue;
       }
       jobs.push({ workspace, key, a, b, material_a, material_b });
     }
+    scheduleRecheck(workspace, next_retry);
     if (jobs.length === 0) {
       return;
     }

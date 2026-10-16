@@ -586,9 +586,11 @@ export function previewCardTemplate(placement, title) {
 }
 
 /**
- * Lay the dotted cards of one lane among its drawn rows. Each preview goes
- * right after the nearest drawn row that precedes it in the plan's final lane
- * order, or first when none does.
+ * Lay the dotted cards of one lane among its drawn rows. A lane the plan puts
+ * a candidate in is drawn in the plan's final lane order (`plan.layout`, the
+ * order after the store's blocks correction), so the preview shows the lane as
+ * `[적용]` will leave it; drawn rows the layout does not name keep their place
+ * at the end. A lane without a dotted card is drawn as it is.
  *
  * @param {Array<{ id: string, template: import('lit-html').TemplateResult }>} rows
  * @param {PlacementLane} lane
@@ -605,33 +607,38 @@ export function interleavePreview(rows, lane, plan, titleOf) {
   if (!plan || previews.size === 0) {
     return rows.map((row) => row.template);
   }
-  const drawn = new Set(rows.map((row) => row.id));
-  /** @type {Map<string|null, PlannedPlacement[]>} */
-  const after = new Map();
-  /** @type {string|null} */
-  let last = null;
+  const by_id = new Map(rows.map((row) => [row.id, row]));
+  /** @type {Set<string>} */
+  const placed = new Set();
+  /** @type {import('lit-html').TemplateResult[]} */
+  const out = [];
   for (const id of plan.layout[lane] || []) {
     const preview = previews.get(id);
+    const row = by_id.get(id);
     if (preview) {
-      const list = after.get(last) || [];
-      list.push(preview);
-      after.set(last, list);
-    } else if (drawn.has(id)) {
-      last = id;
+      out.push(previewCardTemplate(preview, titleOf(id)));
+    } else if (row && !placed.has(id)) {
+      placed.add(id);
+      out.push(row.template);
     }
   }
-  /**
-   * @param {string|null} key
-   * @returns {import('lit-html').TemplateResult[]}
-   */
-  const cardsAfter = (key) =>
-    (after.get(key) || []).map((item) =>
-      previewCardTemplate(item, titleOf(item.id))
-    );
-  return [
-    ...cardsAfter(null),
-    ...rows.flatMap((row) => [row.template, ...cardsAfter(row.id)])
-  ];
+  for (const row of rows) {
+    if (!placed.has(row.id)) {
+      out.push(row.template);
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether the plan draws a dotted card in this lane.
+ *
+ * @param {PlacementPlan|null} plan
+ * @param {PlacementLane} lane
+ * @returns {boolean}
+ */
+export function planTargetsLane(plan, lane) {
+  return !!plan && plan.order.some((item) => item.lane === lane);
 }
 
 /**
@@ -653,7 +660,9 @@ export function interleavePreview(rows, lane, plan, titleOf) {
  * @property {() => Array<{ id: string, title?: string }>} candidates - The
  * candidate lane in its sort order.
  * @property {() => void} requestRender
- * @property {(queue: any) => void} adopt
+ * @property {(queue: any, root_dir: string) => void} adopt - Adopt a reply's
+ * queue for the workspace the send went to (captured at send time, so a reply
+ * that lands after a workspace switch cannot overwrite the new workspace).
  * @property {(message: string, kind?: 'error'|'success'|'info'|'warning', ms?: number) => void} showToast
  */
 
@@ -727,10 +736,12 @@ export function createPlacementPreview(options) {
   /**
    * The full plan on a snapshot: defaults come from the plan of every ready
    * candidate, the reader's checks override them, and the plan itself is
-   * computed with the checked set only.
+   * computed with the checked set only. `base` is the plan of every ready
+   * candidate: an unchecked row still shows its reasons and warnings from it,
+   * so the reader sees why it starts out unchecked.
    *
    * @param {any} queue
-   * @returns {{ plan: PlacementPlan, ready: string[], checked: Set<string> }}
+   * @returns {{ plan: PlacementPlan, base: PlacementPlan, ready: string[], checked: Set<string> }}
    */
   function fullPlanOn(queue) {
     const ready = readyIds(queue);
@@ -744,7 +755,7 @@ export function createPlacementPreview(options) {
         return !!item && item.warnings.length === 0 && !item.only_unknown;
       })
     );
-    return { plan: planOn(queue, [...checked]), ready, checked };
+    return { plan: planOn(queue, [...checked]), base, ready, checked };
   }
 
   /**
@@ -788,13 +799,14 @@ export function createPlacementPreview(options) {
     busy = true;
     box_notice = null;
     requestRender();
+    const root_dir = rootDir();
     const result = await sendPlacement({
       transport,
-      root_dir: rootDir(),
+      root_dir,
       placement,
       revision: plan.revision,
       recompute: (next) => planOn(next, [id]),
-      adopt
+      adopt: (next) => adopt(next, root_dir)
     });
     busy = false;
     if (result.status === 'applied') {
@@ -819,13 +831,14 @@ export function createPlacementPreview(options) {
     busy = true;
     plan_notice = null;
     requestRender();
+    const root_dir = rootDir();
     const result = await sendPlacementBatch({
       transport,
-      root_dir: rootDir(),
+      root_dir,
       shown,
       queue,
       recompute: planOn,
-      adopt,
+      adopt: (next) => adopt(next, root_dir),
       snapshot: getQueue
     });
     busy = false;
@@ -959,7 +972,7 @@ export function createPlacementPreview(options) {
       if (!full_open || !status) {
         return '';
       }
-      const { plan, checked } = fullPlanOn(getQueue());
+      const { plan, base, checked } = fullPlanOn(getQueue());
       const rows = Object.keys(status).sort((a, b) => {
         const order = displayOrder();
         const ra = order.indexOf(a);
@@ -984,6 +997,10 @@ export function createPlacementPreview(options) {
             ${rows.map((id) => {
               const ready = status[id]?.state === 'ready';
               const item = plan.by_id[id];
+              // An unchecked ready row keeps the reasons and warnings of the
+              // all-ready plan, so the reader sees why it was left out; only
+              // checked rows get a number, a dotted card and a send.
+              const explained = item || (ready ? base.by_id[id] : undefined);
               return html`<tr
                 class="worker-plan__row${ready
                   ? ''
@@ -1003,14 +1020,18 @@ export function createPlacementPreview(options) {
                       : '포함 안 함'}
                 </td>
                 <td>
-                  ${item
+                  ${explained
                     ? [
-                        ...item.reasons.map((line) => relationLineText(line)),
-                        ...item.references.map((line) =>
+                        ...explained.reasons.map((line) =>
+                          relationLineText(line)
+                        ),
+                        ...explained.references.map((line) =>
                           relationLineText(line, true)
                         ),
-                        ...item.outside.map((line) => outsideLineText(line)),
-                        ...item.warnings.map((warning) =>
+                        ...explained.outside.map((line) =>
+                          outsideLineText(line)
+                        ),
+                        ...explained.warnings.map((warning) =>
                           placementWarningText(warning)
                         )
                       ].map(

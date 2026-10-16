@@ -112,7 +112,11 @@ import {
   tokenChipTemplate,
   waitBody
 } from './lanes.js';
-import { createPlacementPreview, placeMenuLanes } from './placement.js';
+import {
+  createPlacementPreview,
+  placeMenuLanes,
+  planTargetsLane
+} from './placement.js';
 import {
   createPlanSkipMemory,
   placePlanFromPopup,
@@ -889,7 +893,7 @@ export function createWorkerView(mount_element, options = {}) {
     rootDir: () => rootDir(),
     candidates: () => current_lanes.runnable,
     requestRender: () => doRender(),
-    adopt: (queue) => adopt({ queue }, rootDir() || undefined),
+    adopt: (queue, root_dir) => adopt({ queue }, root_dir || undefined),
     showToast
   });
 
@@ -2078,6 +2082,44 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The 직렬 레인 view model plus every serial lane the open placement preview
+   * puts a candidate in (UI-izba §4.7). The lane model leaves an empty lane out
+   * (a single configured lane, or one past the configured count), and the
+   * dotted card of a bundle placed there would otherwise have nowhere to
+   * stand.
+   *
+   * @param {LaneModel} m
+   * @param {import('../../utils/placement/compute.js').PlacementPlan|null} plan
+   * @returns {ReturnType<typeof serialLanes>}
+   */
+  function previewSerialLanes(m, plan) {
+    const lanes = serialLanes(m);
+    if (!plan) {
+      return lanes;
+    }
+    const shown = new Set(lanes.map((lane) => lane.id));
+    for (const item of plan.order) {
+      if (item.lane === 'parallel' || shown.has(item.lane)) {
+        continue;
+      }
+      shown.add(item.lane);
+      lanes.push({
+        id: item.lane,
+        index: Number(item.lane.slice(1)),
+        raw_length: (plan.layout[item.lane] || []).filter(
+          (id) => !plan.by_id[id]
+        ).length,
+        ghosts: [],
+        items: [],
+        occupied: false,
+        badge: '대기',
+        cycle: false
+      });
+    }
+    return lanes.sort((a, b) => a.index - b.index);
+  }
+
+  /**
    * The candidate cards of this render, in the sort chain's order.
    *
    * @param {LaneModel} m
@@ -2763,7 +2805,7 @@ export function createWorkerView(mount_element, options = {}) {
         drop: { drop: 'parallel', root_dir }
       },
       serial: {
-        lanes: serialLanes(m).map((lane) => ({
+        lanes: previewSerialLanes(m, preview_plan).map((lane) => ({
           id: lane.id,
           title: `${SERIAL_LANE_LABEL} ${lane.index}`,
           rows: [
@@ -2801,7 +2843,16 @@ export function createWorkerView(mount_element, options = {}) {
           // 점유 ghost 행도 행 목록의 구성원이므로 건수와 빈 판정을 한 재료로
           // 읽는다 — 점유 중인 레인은 비어 있지 않다.
           count: lane.ghosts.length + lane.items.length,
-          empty: lane.ghosts.length + lane.items.length === 0,
+          // 점선 카드가 서는 레인은 비어 보이지 않아야 한다 — 빈 레인 접기 규칙
+          // (390px)이 미리보기를 감춘다. 건수는 실제 구성원만 센다.
+          empty:
+            lane.ghosts.length + lane.items.length === 0 &&
+            !planTargetsLane(
+              preview_plan,
+              /** @type {import('../../utils/placement/compute.js').PlacementLane} */ (
+                lane.id
+              )
+            ),
           badge: lane.badge,
           held: lane.occupied,
           cycle: lane.cycle,

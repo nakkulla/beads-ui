@@ -210,18 +210,26 @@ export function placementRelations(input) {
     const [a, b] = orientPair(edge.blocker, edge.blockee);
     const key = placementPairKey(a, b);
     const existing = relations[key];
+    const direction = edge.blocker === a ? 'a_first' : 'b_first';
     if (
       existing &&
       existing.source === 'fixed' &&
       existing.basis === 'blocks'
     ) {
       existing.in_lane = true;
+      // Edges both ways are a blocks cycle. Keeping only one direction would
+      // let the browser's ordering correct a lane the store leaves alone (a
+      // cycle disables the correction), so the pair says `conflict`, which the
+      // browser reads back as both edges.
+      if (existing.relation !== direction) {
+        existing.relation = 'conflict';
+      }
       continue;
     }
     relations[key] = {
       a,
       b,
-      relation: edge.blocker === a ? 'a_first' : 'b_first',
+      relation: direction,
       source: 'fixed',
       basis: 'blocks',
       in_lane: true,

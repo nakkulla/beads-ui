@@ -157,6 +157,51 @@ describe('computePlacement bundles', () => {
     });
   });
 
+  test('appends a bundle with an empty K at the lane tail in bundle order', () => {
+    const result = plan({
+      chosen: ['C-1', 'C-2', 'C-3'],
+      pairs: [
+        rel('C-1', 'C-2', 'conflict'),
+        rel('C-1', 'C-3', 'conflict'),
+        rel('C-2', 'C-3', 'independent')
+      ]
+    });
+
+    expect(result.layout.s1).toEqual(['C-1', 'C-2', 'C-3']);
+    expect(result.order.map((item) => [item.id, item.before])).toEqual([
+      ['C-1', null],
+      ['C-2', 'C-1'],
+      ['C-3', 'C-2']
+    ]);
+  });
+
+  test('gives the remaining candidates the same places once the first is in', () => {
+    const pairs = [
+      rel('C-1', 'C-2', 'conflict'),
+      rel('C-1', 'C-3', 'conflict'),
+      rel('C-2', 'C-3', 'independent')
+    ];
+    const after_first = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['C-1']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({
+      queue: after_first,
+      chosen: ['C-2', 'C-3'],
+      pairs
+    });
+
+    expect(
+      result.order.map((item) => [item.id, item.lane, item.before])
+    ).toEqual([
+      ['C-2', 's1', 'C-1'],
+      ['C-3', 's1', 'C-2']
+    ]);
+  });
+
   test('recounts the serial lanes before placing the next bundle', () => {
     const result = plan({
       chosen: ['C-1', 'C-2', 'C-3', 'C-4'],
@@ -174,7 +219,7 @@ describe('computePlacement bundles', () => {
 });
 
 describe('computePlacement lane rules', () => {
-  test('places the candidate after its x_first item when K stands in one serial lane', () => {
+  test('places the candidate at the lane tail after its x_first item when K stands in one serial lane', () => {
     const queue = queueOf({
       serial_lanes: [
         { id: 's1', entries: [] },
@@ -186,9 +231,9 @@ describe('computePlacement lane rules', () => {
 
     expect(result.by_id['C-1']).toMatchObject({
       lane: 's2',
-      index: 1,
-      final_index: 1,
-      before: 'S-1'
+      index: 2,
+      final_index: 2,
+      before: 'S-2'
     });
   });
 
@@ -265,7 +310,7 @@ describe('computePlacement lane rules', () => {
   test('warns blocks_reordered when the blocks correction moves past a constraint', () => {
     const queue = queueOf({
       serial_lanes: [
-        { id: 's1', entries: entries(['S-1', 'S-2']) },
+        { id: 's1', entries: entries(['S-1', 'S-2', 'S-3']) },
         { id: 's2', entries: [] }
       ]
     });
@@ -274,8 +319,9 @@ describe('computePlacement lane rules', () => {
       queue,
       pairs: [
         rel('C-1', 'S-1', 'conflict'),
-        // An in-lane edge the lane order does not satisfy yet: S-2 blocks S-1.
-        rel('S-2', 'S-1', 'c_first', {
+        rel('C-1', 'S-3', 'c_first'),
+        // An in-lane edge the lane order does not satisfy yet: S-3 blocks S-1.
+        rel('S-3', 'S-1', 'c_first', {
           source: 'fixed',
           basis: 'blocks',
           in_lane: true
@@ -284,9 +330,9 @@ describe('computePlacement lane rules', () => {
     });
 
     expect(result.by_id['C-1']).toMatchObject({
-      index: 1,
-      final_index: 0,
-      before: null
+      index: 2,
+      final_index: 1,
+      before: 'S-2'
     });
     expect(result.by_id['C-1'].warnings).toEqual([
       { code: 'blocks_reordered' }
@@ -307,9 +353,33 @@ describe('computePlacement lane rules', () => {
 
     expect(result.by_id['C-1']).toMatchObject({
       lane: 's2',
-      index: 0,
-      before: null
+      index: 1,
+      before: 'S-1'
     });
+  });
+
+  test('keeps a lane whose in-lane blocks edges form a cycle in its order', () => {
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-2', 'S-1']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({
+      queue,
+      pairs: [
+        rel('C-1', 'S-1', 'conflict'),
+        // The server ships a two-way in-lane blocks pair as `conflict`.
+        rel('S-1', 'S-2', 'conflict', {
+          source: 'fixed',
+          basis: 'blocks',
+          in_lane: true
+        })
+      ]
+    });
+
+    expect(result.layout.s1).toEqual(['S-2', 'S-1', 'C-1']);
   });
 
   test('reads an occupant without a serial lane as standing in the parallel lane', () => {
