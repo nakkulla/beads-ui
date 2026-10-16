@@ -17,7 +17,8 @@ import { ISSUE_MATERIAL_CAP, STATE_CAP } from './question.js';
 /**
  * @typedef {Object} IssueMaterial
  * @property {string} text - The capped material text jev reads.
- * @property {string} digest - sha256 of `text`, first 16 hex digits.
+ * @property {string} digest - sha256 of `text` and, when known, the whole
+ * declared scope, first 16 hex digits.
  */
 
 /**
@@ -35,9 +36,10 @@ import { ISSUE_MATERIAL_CAP, STATE_CAP } from './question.js';
  * issue from its body alone; the spec cache retries a failed read and its
  * fill fanout brings the material in once a read succeeds.
  *
- * The declared scope is serialized ahead of the body, so the material cap never
- * cuts it and its digest follows the scope; an issue whose scope is unknown
- * has no such field.
+ * The declared scope is serialized ahead of the body and the digest also hashes
+ * it whole, so a scope change past the material cap still changes the digest; a
+ * known empty scope serializes as `[]` and an issue whose scope is unknown has
+ * no such field.
  *
  * @param {Record<string, unknown>|undefined} row
  * @param {string} spec_path
@@ -63,7 +65,7 @@ export function issueMaterial(row, spec_path, spec, scope) {
     type: typeof row.issue_type === 'string' ? row.issue_type : '',
     route: typeof metadata.route === 'string' ? metadata.route : ''
   };
-  if (Array.isArray(scope) && scope.length > 0) {
+  if (Array.isArray(scope)) {
     material.declared_scope = scope;
   }
   material.description = row.description;
@@ -75,10 +77,11 @@ export function issueMaterial(row, spec_path, spec, scope) {
     };
   }
   const text = JSON.stringify(material).slice(0, ISSUE_MATERIAL_CAP);
-  return {
-    text,
-    digest: crypto.createHash('sha256').update(text).digest('hex').slice(0, 16)
-  };
+  const hash = crypto.createHash('sha256').update(text);
+  if (Array.isArray(scope)) {
+    hash.update(`\n${JSON.stringify(scope)}`);
+  }
+  return { text, digest: hash.digest('hex').slice(0, 16) };
 }
 
 /**

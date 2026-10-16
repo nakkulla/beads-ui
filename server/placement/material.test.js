@@ -110,6 +110,27 @@ describe('issue material', () => {
     expect(after?.digest).not.toBe(before?.digest);
   });
 
+  test('changes the digest when a scope path past the material cap changes', () => {
+    const head = Array.from({ length: 2000 }, (_, i) => `dir-${i}/`);
+    const before = issueMaterial(row(), '', null, [...head, 'tail-a/']);
+
+    const after = issueMaterial(row(), '', null, [...head, 'tail-b/']);
+
+    expect(after?.text).toBe(before?.text);
+    expect(after?.digest).not.toBe(before?.digest);
+  });
+
+  test('changes the digest when an unknown scope fills in as empty', () => {
+    const before = issueMaterial(row(), '', null, undefined);
+
+    const after = issueMaterial(row(), '', null, []);
+
+    expect(JSON.parse(/** @type {any} */ (after).text).declared_scope).toEqual(
+      []
+    );
+    expect(after?.digest).not.toBe(before?.digest);
+  });
+
   test('has no declared scope field when the scope is unknown', () => {
     const material = issueMaterial(row(), '', null, undefined);
 
