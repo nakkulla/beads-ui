@@ -157,6 +157,35 @@ describe('worker provider limit policy handler', () => {
       })
     );
   });
+
+  test('reevaluates held switches once after a policy write', async () => {
+    const caller = fakeSocket();
+    setConnWorkspace(caller, { root_dir: WS, db_path: '/tmp/db' });
+    const reevaluateProviderSwitches = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({ scheduler: { reevaluateProviderSwitches } })
+    );
+    const revision = getWorkerRuntime().queueStore.snapshot(WS).revision;
+
+    handleWorkerProviderLimitPolicySet(
+      caller,
+      /** @type {any} */ ({
+        id: 'policy-reevaluate',
+        type: 'worker-provider-limit-policy-set',
+        payload: {
+          runner: 'claude',
+          patch: { mode: 'switch' },
+          expected_revision: revision
+        }
+      })
+    );
+    await vi.waitFor(() => {
+      expect(reevaluateProviderSwitches).toHaveBeenCalled();
+    });
+
+    expect(reevaluateProviderSwitches.mock.calls).toEqual([[WS]]);
+  });
 });
 
 describe('worker provider queue projection', () => {
