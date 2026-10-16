@@ -90,6 +90,18 @@
  * candidate bead id.
  */
 
+/** @type {number} A jev answer is adopted at this confidence or above. */
+export const ADOPT_CONFIDENCE = 0.8;
+
+/**
+ * An unadopted non-`independent` first choice at this confidence or above is
+ * shown as a 참고 line (never used for placement). The browser applies it; the
+ * value rides here so both sides read one number.
+ *
+ * @type {number}
+ */
+export const REFERENCE_CONFIDENCE = 0.5;
+
 /** @type {string} Separator of a pair key; never part of a bead id. */
 export const PAIR_KEY_SEPARATOR = '|';
 

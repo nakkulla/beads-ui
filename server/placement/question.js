@@ -75,17 +75,10 @@ export const PLACEMENT_QUESTION_VERSION = crypto
   .digest('hex')
   .slice(0, 12);
 
-/** @type {number} A jev answer is adopted at this confidence or above. */
-export const ADOPT_CONFIDENCE = 0.8;
-
-/**
- * An unadopted non-`independent` first choice at this confidence or above is
- * shown as a 참고 line (never used for placement). The browser applies it; the
- * value rides here so both sides read one number.
- *
- * @type {number}
- */
-export const REFERENCE_CONFIDENCE = 0.5;
+// The two confidence thresholds live in the import-free `wire.js`, because the
+// browser's placement computation reads the 참고 threshold and this module's
+// `node:crypto` import cannot enter the bundle.
+export { ADOPT_CONFIDENCE, REFERENCE_CONFIDENCE } from './wire.js';
 
 /** @type {number} Per-issue material cap in characters. */
 export const ISSUE_MATERIAL_CAP = 12_000;

@@ -112,7 +112,7 @@ import {
   tokenChipTemplate,
   waitBody
 } from './lanes.js';
-import { placeMenuLanes } from './placement.js';
+import { createPlacementPreview, placeMenuLanes } from './placement.js';
 import {
   createPlanSkipMemory,
   placePlanFromPopup,
@@ -877,6 +877,20 @@ export function createWorkerView(mount_element, options = {}) {
     onDragBegin: () => {
       place_menu_bead_id = null;
     }
+  });
+
+  /**
+   * 배치 추천 미리보기 (UI-izba §4.7): 열린 근거 상자·전체 배치안과 그 전송. 매
+   * 렌더가 지금 스냅샷과 후보 정렬로 자리를 다시 계산한다.
+   */
+  const placement_preview = createPlacementPreview({
+    transport,
+    getQueue: () => currentQueue(),
+    rootDir: () => rootDir(),
+    candidates: () => current_lanes.runnable,
+    requestRender: () => doRender(),
+    adopt: (queue) => adopt({ queue }, rootDir() || undefined),
+    showToast
   });
 
   /** @type {string|null} Currently open attempt (for the tile ring). */
@@ -2715,10 +2729,22 @@ export function createWorkerView(mount_element, options = {}) {
     const parallel_rows = waitingRows(m);
     const root_dir = rootDir();
     const group = groupOf(m);
+    // 추천 자리의 점선 카드는 행 사이의 덧그림이다 (UI-izba §4.7) — 드래그 좌표
+    // (`data-row-index`)를 갖지 않으므로 드롭 인덱스를 밀지 않는다.
+    const preview_plan = placement_preview.activePlan();
     return waitBody({
       parallel: {
-        rows: parallel_rows.map((/** @type {any} */ it, index) =>
-          dragRow(it, { kind: 'parallel', root_dir, row_index: index })
+        rows: placement_preview.laneRows(
+          parallel_rows.map((/** @type {any} */ it, index) => ({
+            id: it.id,
+            template: dragRow(it, {
+              kind: 'parallel',
+              root_dir,
+              row_index: index
+            })
+          })),
+          'parallel',
+          preview_plan
         ),
         count: parallel_rows.length,
         slots:
@@ -2756,13 +2782,20 @@ export function createWorkerView(mount_element, options = {}) {
                 { actions: queueRowOps(it) }
               )
             ),
-            ...lane.items.map((/** @type {any} */ it, index) =>
-              dragRow(it, {
-                kind: 'repo-serial',
-                root_dir,
-                row_index: index,
-                lane_id: lane.id
-              })
+            ...placement_preview.laneRows(
+              lane.items.map((/** @type {any} */ it, index) => ({
+                id: it.id,
+                template: dragRow(it, {
+                  kind: 'repo-serial',
+                  root_dir,
+                  row_index: index,
+                  lane_id: lane.id
+                })
+              })),
+              /** @type {import('../../utils/placement/compute.js').PlacementLane} */ (
+                lane.id
+              ),
+              preview_plan
             )
           ],
           // 점유 ghost 행도 행 목록의 구성원이므로 건수와 빈 판정을 한 재료로
@@ -2851,6 +2884,8 @@ export function createWorkerView(mount_element, options = {}) {
       collapsible: true,
       collapsed: collapse.isCollapsed('candidate'),
       place_menu: currentPlaceMenu(candidates),
+      // `[추천 배치]`는 Worker 탭만 단다 (UI-izba 사용자 결정 6).
+      recommend: (/** @type {any} */ it) => placement_preview.cardSlot(it),
       // Worker candidates always belong to the selected workspace, so the
       // viewer keeps its default workspace.
       onOpenDoc: openDoc
@@ -2896,7 +2931,8 @@ export function createWorkerView(mount_element, options = {}) {
             collapsible: true,
             collapsed: collapse.isCollapsed('queue'),
             preview: stripPreview(waiting),
-            body: waitBodyTemplate(m)
+            header_control: placement_preview.headerControls(),
+            body: html`${waitBodyTemplate(m)}${placement_preview.planTemplate()}`
           })}
           ${candidate_pane} ${done_pane}
         </div>
@@ -2916,7 +2952,8 @@ export function createWorkerView(mount_element, options = {}) {
           count: waiting.length,
           collapsible: true,
           collapsed: collapse.isCollapsed('queue'),
-          body: waitBodyTemplate(m)
+          header_control: placement_preview.headerControls(),
+          body: html`${waitBodyTemplate(m)}${placement_preview.planTemplate()}`
         })}
         ${paneTemplate({
           id: 'worker-pane-running',
@@ -3161,6 +3198,9 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onChange(ev) {
     const event_target = /** @type {HTMLElement} */ (ev.target);
+    if (placement_preview.handleChange(event_target)) {
+      return;
+    }
     if (provider_resume_draft) {
       const next = providerResumeDraftChange(
         provider_resume_draft,
@@ -3809,6 +3849,11 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
+    // 배치 추천 미리보기의 조작 (UI-izba §4.7). 근거 상자·표 안의 클릭도 여기서
+    // 끝난다 — 카드의 상세 열기로 흘러가지 않는다.
+    if (placement_preview.handleClick(target)) {
+      return;
+    }
     const place_lane = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-card__place-lane')
     );
@@ -4318,6 +4363,7 @@ export function createWorkerView(mount_element, options = {}) {
     if (ev.key !== 'Escape') {
       return;
     }
+    placement_preview.handleEscape();
     if (open_failure_detail === null && provider_resume_draft === null) {
       return;
     }
