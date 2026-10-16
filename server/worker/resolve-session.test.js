@@ -721,7 +721,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       attempt_id: null
     });
     expect(hubCommand(tmux.calls)).toContain(
-      `exec '/usr/local/bin/claude' '--session-id' '${record.session_id}'`
+      `exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--session-id' '${record.session_id}'`
     );
   });
 
@@ -850,7 +850,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     );
   });
 
-  test('passes the resolve marker and unchanged runner argv to the hub', async () => {
+  test('passes the resolve marker and permission-enabled runner argv to the hub', async () => {
     const { tmux, resolver } = makeLauncher({
       metadata: { session_ref: `claude:${SESSION_ID}@${HOST}` }
     });
@@ -866,7 +866,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     const launch_id = wrapper?.match(/'--session-id' '([^']+)'/)?.[1];
     expect(wrapper).toBe(
       'exec ' +
-        `'/usr/local/bin/claude' '--resume' '${SESSION_ID}' '--fork-session' '--session-id' '${launch_id}' ` +
+        `'/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--resume' '${SESSION_ID}' '--fork-session' '--session-id' '${launch_id}' ` +
         `'${buildFailureEntry({
           failure: FAILURE,
           worktree: null,
@@ -1050,7 +1050,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
 
     const wrapper = hubCommand(tmux.calls);
     expect(wrapper).toContain(
-      `exec '/usr/local/bin/claude' '--resume' '${SESSION_ID}' '--fork-session'`
+      `exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--resume' '${SESSION_ID}' '--fork-session'`
     );
   });
 
@@ -1268,7 +1268,7 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
 
     expect([outcome.mode, outcome.runner]).toEqual(['fresh', 'claude']);
     expect(launchedWrapper(tmux)).toContain(
-      "exec '/usr/local/bin/claude' '--model' 'sonnet' '--effort' 'high' '--session-id'"
+      "exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--model' 'sonnet' '--effort' 'high' '--session-id'"
     );
   });
 
@@ -1332,7 +1332,9 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
     });
 
     const wrapper = launchedWrapper(tmux);
-    expect(wrapper).toContain(`exec '/usr/local/bin/claude' '--resume'`);
+    expect(wrapper).toContain(
+      `exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--resume'`
+    );
     expect(wrapper).not.toContain('--model');
     expect(wrapper).not.toContain('--effort');
   });

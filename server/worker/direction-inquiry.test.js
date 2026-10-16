@@ -485,7 +485,7 @@ describe('direction-inquiry same-session launch', () => {
     const outcome = await inquiry.onParkedAttempt(recoveryInput());
 
     expect(tmux.wrapper()).toContain(
-      "exec '/opt/homebrew/bin/claude' '--resume' 'claude-sid' '이 세션은"
+      "exec '/opt/homebrew/bin/claude' '--allow-dangerously-skip-permissions' '--resume' 'claude-sid' '이 세션은"
     );
     expect(tmux.wrapper()).not.toContain('--fork-session');
     expect(tmux.wrapper()).not.toContain('--session-id');

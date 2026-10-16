@@ -807,6 +807,7 @@ export function createTmuxLauncher(deps = {}) {
       ...(codex_home === null ? [] : ['--env', `CODEX_HOME=${codex_home}`]),
       '--',
       executable,
+      ...(runner === 'claude' ? ['--allow-dangerously-skip-permissions'] : []),
       ...withLaunchFlags(
         runner,
         input.commandArgs,

@@ -76,19 +76,21 @@ describe('conversation model/effort flags', () => {
 
     expect(openedCommand(runSessionHub)).toEqual([
       '/bin/claude',
+      '--allow-dangerously-skip-permissions',
       '--model',
       'opus',
       ...INPUT.commandArgs
     ]);
   });
 
-  test('leaves the conversation flags out when the launch declines them', async () => {
+  test('keeps permission switching available when the launch declines conversation flags', async () => {
     const { launcher, runSessionHub } = makeHub({}, ['--model', 'opus']);
 
     await launcher.launch({ ...INPUT, conversation_flags: false });
 
     expect(openedCommand(runSessionHub)).toEqual([
       '/bin/claude',
+      '--allow-dangerously-skip-permissions',
       ...INPUT.commandArgs
     ]);
   });
@@ -129,6 +131,7 @@ describe('session-hub interactive launch', () => {
       INPUT.tmux_session,
       '--',
       '/bin/claude',
+      '--allow-dangerously-skip-permissions',
       ...INPUT.commandArgs
     ]);
     expect(runSessionHub.mock.calls[2][0]).toEqual([
@@ -204,6 +207,7 @@ describe('session-hub interactive launch', () => {
       'bdui-inquiry',
       '--',
       '/bin/claude',
+      '--allow-dangerously-skip-permissions',
       ...INPUT.commandArgs
     ]);
     expect(runTmux).toHaveBeenCalledExactlyOnceWith([
