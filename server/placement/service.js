@@ -74,6 +74,7 @@ export function isPlaceableCandidate(row) {
  * @property {string[]} members - Waiting entries and lane-occupying lineages.
  * @property {Record<string, string[]>} blocked_by
  * @property {Record<string, string[]>} scopes
+ * @property {Record<string, import('../../app/utils/scope-overlap.js').ScopeSource>} [sources]
  * @property {{ blocker: string, blockee: string }[]} lane_edges
  * @property {Map<string, Record<string, unknown>>|null} rows - The workspace
  * snapshot's `id_index`, or null when there is no snapshot yet.
@@ -421,6 +422,7 @@ export function createPlacementService(options) {
         members: input.members,
         blocked_by: input.blocked_by,
         scopes: input.scopes,
+        sources: input.sources,
         lane_edges: input.lane_edges,
         digests,
         key_state: client.keys.state(),

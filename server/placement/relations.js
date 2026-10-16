@@ -8,8 +8,12 @@
  * about that pair. Every other pair takes jev's cached answer.
  *
  * @import { PlacementRelation, PlacementStatus, PlacementJevChoice } from './wire.js'
+ * @import { ScopeSource } from '../../app/utils/scope-overlap.js'
  */
-import { overlapPrefixes } from '../../app/utils/scope-overlap.js';
+import {
+  overlapPrefixes,
+  sharesScopeSource
+} from '../../app/utils/scope-overlap.js';
 import { ADOPT_CONFIDENCE } from './question.js';
 import { orientPair, placementPairKey } from './wire.js';
 
@@ -27,6 +31,9 @@ import { orientPair, placementPairKey } from './wire.js';
  * @property {Record<string, string[]>} blocked_by - Direct blocker ids by bead.
  * @property {Record<string, string[]>} scopes - Declared scope by bead; a bead
  * whose scope is unknown has no entry.
+ * @property {Record<string, ScopeSource>} [sources] - Where each declared
+ * scope was read from; two beads of one spec or plan never overlap, exactly as
+ * the `⧉` chip reads it.
  * @property {{ blocker: string, blockee: string }[]} lane_edges - `blocks`
  * edges between members of one serial lane.
  * @property {Record<string, string|null>} digests - Material digest by bead;
@@ -74,7 +81,11 @@ function fixedRelation(a, b, input) {
   }
   const scope_a = input.scopes[a];
   const scope_b = input.scopes[b];
-  if (Array.isArray(scope_a) && Array.isArray(scope_b)) {
+  const source_a = input.sources?.[a];
+  const source_b = input.sources?.[b];
+  const same_source =
+    !!source_a && !!source_b && sharesScopeSource(source_a, source_b);
+  if (Array.isArray(scope_a) && Array.isArray(scope_b) && !same_source) {
     const overlap = overlapPrefixes(scope_a, scope_b);
     if (overlap.length > 0) {
       return {

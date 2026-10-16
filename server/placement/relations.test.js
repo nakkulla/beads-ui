@@ -86,6 +86,22 @@ describe('fixed relations', () => {
     });
   });
 
+  test('leaves two beads of one spec to jev like the overlap chip does', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['server/worker/'], 'UI-2': ['server/worker/a.js'] },
+      sources: {
+        'UI-1': { spec_path: 'docs/s.md', plan_path: '' },
+        'UI-2': { spec_path: 'docs/s.md', plan_path: '' }
+      }
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toBeUndefined();
+    expect(out.jev_pairs).toEqual([{ a: 'UI-1', b: 'UI-2' }]);
+  });
+
   test('keeps a fixed pair away from jev even with a cached answer', () => {
     const judgmentFor = vi.fn(() => answered('independent', 0.99));
     const facts = input({

@@ -36,6 +36,7 @@ import {
   isWithdrawnAttempt,
   latestImplementationAttempts
 } from '../../app/utils/active-attempts.js';
+import { scopeSourceOf } from '../../app/utils/scope-overlap.js';
 import {
   createDecorationContext,
   openDependentsWithOwners,
@@ -1978,9 +1979,12 @@ function placementFor(workspace_key, queue, bead_scope, bead_blocked_by) {
     }
     /** @type {Record<string, string[]>} */
     const scopes = {};
+    /** @type {Record<string, ReturnType<typeof scopeSourceOf>>} */
+    const sources = {};
     for (const [bead_id, entry] of Object.entries(bead_scope)) {
       if (entry && Array.isArray(entry.scope)) {
         scopes[bead_id] = entry.scope;
+        sources[bead_id] = scopeSourceOf(entry.artifacts);
       }
     }
     /** @type {{ blocker: string, blockee: string }[]} */
@@ -2000,6 +2004,7 @@ function placementFor(workspace_key, queue, bead_scope, bead_blocked_by) {
         members,
         blocked_by,
         scopes,
+        sources,
         lane_edges,
         rows: snapshot ? snapshot.id_index : null
       },
