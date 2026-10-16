@@ -388,3 +388,104 @@ export function presetDeviation(bead_metadata, preset, route, runner_catalog) {
   }
   return { count: entries.length, entries };
 }
+
+/**
+ * Keys the preview lists first: what model runs and how hard it thinks.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+const PREVIEW_LEAD_KEYS = [
+  'impl_model',
+  'impl_effort',
+  'orchestration_model',
+  'orchestration_effort',
+  'spec_review_model',
+  'spec_review_effort',
+  'plan_review_model',
+  'plan_review_effort',
+  'impl_review_model',
+  'impl_review_effort'
+];
+
+/**
+ * The `현재 → 적용 후` preview of applying one preset to this issue, compared on
+ * EFFECTIVE values rather than pins: a key the apply unsets falls back to the
+ * workspace or harness layer, and only the resolved value says what will run.
+ *
+ * The virtual after-state mirrors the apply: every key of the issue's profile
+ * is removed and the preset expectation is laid on top; all other metadata,
+ * `route` included, stays. A key whose layer moves but whose resolved value
+ * (`full_value`, else `value`) stays is not a change.
+ *
+ * Returns null while the expectation is undecidable (no runner catalog yet),
+ * the same fail-quiet rule {@link presetDeviation} follows. An empty `rows`
+ * means the apply changes nothing.
+ *
+ * @param {Record<string, unknown>|null|undefined} bead_metadata
+ * @param {{ applies_to?: unknown, settings?: Record<string, any>|null }|null|undefined} preset
+ * @param {string|null|undefined} route
+ * @param {Record<string, unknown>|null|undefined} workspace_values
+ * @param {Record<string, any>|null|undefined} execution_defaults
+ * @param {Record<string, any>|null|undefined} runner_catalog
+ * @param {string|null} [controller_runtime]
+ * @returns {{ rows: Array<{ key: string, before: string, after: string }> }|null}
+ */
+export function presetPreviewRows(
+  bead_metadata,
+  preset,
+  route,
+  workspace_values,
+  execution_defaults,
+  runner_catalog,
+  controller_runtime = null
+) {
+  if (runtimeExpectationPending(preset, runner_catalog)) {
+    return null;
+  }
+  const profile_keys = presetKeysFor(route);
+  /** @type {Record<string, unknown>} */
+  const after_metadata = { ...(bead_metadata || {}) };
+  for (const key of profile_keys) {
+    delete after_metadata[key];
+  }
+  Object.assign(
+    after_metadata,
+    presetExpectationForIssue(preset, runner_catalog)
+  );
+  const ordered_keys = [
+    ...PREVIEW_LEAD_KEYS.filter((key) => profile_keys.includes(key)),
+    ...profile_keys.filter((key) => !PREVIEW_LEAD_KEYS.includes(key))
+  ];
+  const before_rows = effectiveRows(
+    ordered_keys,
+    bead_metadata,
+    workspace_values,
+    execution_defaults,
+    runner_catalog,
+    controller_runtime
+  );
+  const after_rows = effectiveRows(
+    ordered_keys,
+    after_metadata,
+    workspace_values,
+    execution_defaults,
+    runner_catalog,
+    controller_runtime
+  );
+  /** @type {Array<{ key: string, before: string, after: string }>} */
+  const rows = [];
+  before_rows.forEach((before, index) => {
+    const after = after_rows[index];
+    // Two aliases of one model resolve to the same `full_value`: no change.
+    if (
+      (before.full_value ?? before.value) !== (after.full_value ?? after.value)
+    ) {
+      rows.push({
+        key: before.key,
+        before: before.display,
+        after: after.display
+      });
+    }
+  });
+  return { rows };
+}

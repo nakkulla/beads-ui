@@ -49,7 +49,8 @@ import {
   SOURCE_LABELS,
   effectiveRows,
   layerSummary,
-  presetDeviation
+  presetDeviation,
+  presetPreviewRows
 } from './effective-settings.js';
 
 /**
@@ -468,6 +469,11 @@ export function effectiveSettingsCardTemplate(model, handlers) {
           이 이슈에 적용
         </button>
       </span>
+      ${presetPreviewTemplate(
+        model,
+        presets,
+        typeof route === 'string' ? route : null
+      )}
     </summary>
     ${model.expanded
       ? html`<div class="detail-effective__body">
@@ -618,6 +624,67 @@ export function summaryLine(effective, options = {}) {
     : ''}${mode.length > 0
     ? html`<span class="detail-effective__mode">${mode}</span>`
     : ''}`;
+}
+
+/**
+ * The `현재 → 적용 후` preview under the preset dropdown — what the selected
+ * preset would change, before any write. Nothing is drawn without a selection
+ * or while the comparison is undecidable (fail-quiet); clicks inside neither
+ * toggle the `<summary>` nor reach its handler.
+ *
+ * @param {any} model
+ * @param {any[]} presets
+ * @param {string|null|undefined} route
+ * @returns {TemplateResult|''}
+ */
+function presetPreviewTemplate(model, presets, route) {
+  const preset = presets.find(
+    (/** @type {any} */ entry) => entry && entry.id === model.preset_id
+  );
+  if (!preset) {
+    return '';
+  }
+  const preview = presetPreviewRows(
+    model.metadata,
+    preset,
+    route,
+    model.workspace_values,
+    model.execution_defaults,
+    model.catalog,
+    model.controller_runtime || null
+  );
+  if (preview === null) {
+    return '';
+  }
+  return html`<div
+    class="detail-effective__preview"
+    data-preset-preview
+    @click=${(/** @type {Event} */ event) => {
+      // Inside `<summary>`, a click would toggle the card by default.
+      event.preventDefault();
+      event.stopPropagation();
+    }}
+  >
+    ${preview.rows.length === 0
+      ? html`<div class="detail-effective__preview-head">변경 없음</div>`
+      : preview.rows.map(
+          (row) =>
+            html`<div
+              class="detail-effective__preview-row"
+              data-preview-key=${row.key}
+            >
+              <span class="detail-effective__preview-label"
+                >${SETTING_LABELS[row.key] || row.key}</span
+              >
+              <span class="detail-effective__preview-value">${row.before}</span>
+              <span class="detail-effective__preview-arrow">→</span>
+              <span
+                class="detail-effective__preview-value detail-effective__preview-after"
+                >${row.after}</span
+              >
+            </div>`
+        )}
+  </div>`;
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   layerSummary,
   presetDeviation,
   presetExpectationForIssue,
+  presetPreviewRows,
   resolveLayer
 } from './effective-settings.js';
 
@@ -512,5 +513,139 @@ describe('presetDeviation', () => {
     expect(deviation?.entries).toEqual([
       { key: 'impl_review_model', actual: 'fable', expected: null }
     ]);
+  });
+});
+
+describe('presetPreviewRows', () => {
+  test('lists the model and effort changes before any other key', () => {
+    const preview = presetPreviewRows(
+      { impl_dispatch: 'delegated' },
+      {
+        applies_to: 'general',
+        settings: {
+          impl_dispatch: 'delegated',
+          impl_runtime: 'claude',
+          impl_model: 'opus',
+          impl_effort: 'high'
+        }
+      },
+      'spec_backed',
+      {},
+      PROJECTION,
+      RUNNER_CATALOG
+    );
+
+    expect(preview?.rows.map((row) => row.key)).toEqual([
+      'impl_model',
+      'impl_effort',
+      'impl_runtime'
+    ]);
+  });
+
+  test('returns no rows when the preset matches the effective values', () => {
+    const preview = presetPreviewRows(
+      { orchestration_model: 'fable' },
+      { applies_to: 'general', settings: { orchestration_model: 'fable' } },
+      'spec_backed',
+      {},
+      PROJECTION,
+      RUNNER_CATALOG
+    );
+
+    expect(preview).toEqual({ rows: [] });
+  });
+
+  test('shows the workspace value a key falls back to once its pin is unset', () => {
+    const preview = presetPreviewRows(
+      { impl_effort: 'high' },
+      { applies_to: 'general', settings: {} },
+      'spec_backed',
+      { impl_effort: 'low' },
+      PROJECTION,
+      RUNNER_CATALOG
+    );
+
+    expect(preview?.rows).toEqual([
+      { key: 'impl_effort', before: 'high', after: 'low' }
+    ]);
+  });
+
+  test('ignores a key whose layer moves while its value stays', () => {
+    const preview = presetPreviewRows(
+      { impl_effort: 'high' },
+      { applies_to: 'general', settings: {} },
+      'spec_backed',
+      { impl_effort: 'high' },
+      PROJECTION,
+      RUNNER_CATALOG
+    );
+
+    expect(preview).toEqual({ rows: [] });
+  });
+
+  test('leaves a review pin out of a quick_fix issue preview', () => {
+    const preview = presetPreviewRows(
+      { route: 'quick_fix', impl_review_model: 'fable' },
+      { applies_to: 'quick_fix', settings: {} },
+      'quick_fix',
+      {},
+      PROJECTION,
+      RUNNER_CATALOG
+    );
+
+    expect(preview).toEqual({ rows: [] });
+  });
+
+  test('treats two aliases of one model as no change', () => {
+    const projection = {
+      ...PROJECTION,
+      session: {
+        ...PROJECTION.session,
+        implementation: {
+          ...PROJECTION.session.implementation,
+          model_catalog: {
+            codex: { sol: 'gpt-5.6-sol', 'sol-5.6': 'gpt-5.6-sol' }
+          }
+        }
+      }
+    };
+    const catalog = {
+      runners: {
+        codex: {
+          command: 'codex',
+          models: {
+            sol: { id: 'gpt-5.6-sol' },
+            'sol-5.6': { id: 'gpt-5.6-sol' }
+          }
+        }
+      }
+    };
+
+    const preview = presetPreviewRows(
+      { impl_runtime: 'codex', impl_model: 'sol' },
+      {
+        applies_to: 'general',
+        settings: { impl_runtime: 'codex', impl_model: 'sol-5.6' }
+      },
+      'spec_backed',
+      {},
+      projection,
+      catalog
+    );
+
+    expect(preview).toEqual({ rows: [] });
+  });
+
+  test('withholds the preview until the runner catalog can derive the runtime', () => {
+    const preview = presetPreviewRows(
+      { route: 'quick_fix' },
+      { applies_to: 'quick_fix', settings: { impl_model: 'sol' } },
+      'quick_fix',
+      {},
+      PROJECTION,
+      null
+    );
+
+    expect(preview).toBe(null);
   });
 });

@@ -910,3 +910,122 @@ describe('detail header 바인딩 칩 (UI-wg68 §5)', () => {
     expect(keys).toEqual(['complex', 'frontend']);
   });
 });
+
+describe('effective-settings preset preview (UI-1lee)', () => {
+  const PREVIEW_PRESET = {
+    id: 'p1',
+    name: '클로드 구현',
+    compatible: true,
+    applies_to: 'general',
+    settings: {
+      impl_dispatch: 'delegated',
+      impl_runtime: 'claude',
+      impl_model: 'opus',
+      impl_effort: 'high'
+    }
+  };
+
+  test('draws no preview while no preset is selected', () => {
+    const mount = renderResolvedCard({ presets: [PREVIEW_PRESET] });
+
+    expect(mount.querySelector('[data-preset-preview]')).toBe(null);
+  });
+
+  test('draws the model and effort change of the selected preset on the collapsed card', () => {
+    const mount = renderResolvedCard({
+      presets: [PREVIEW_PRESET],
+      preset_id: 'p1'
+    });
+
+    const keys = Array.from(
+      mount.querySelectorAll('[data-preview-key]'),
+      (row) => row.getAttribute('data-preview-key')
+    );
+
+    expect(
+      mount.querySelector('.detail-effective__head [data-preset-preview]')
+    ).not.toBe(null);
+    expect(keys.slice(0, 2)).toEqual(['impl_model', 'impl_effort']);
+  });
+
+  test('says 변경 없음 when the selected preset changes nothing', () => {
+    const mount = renderResolvedCard({
+      metadata: {
+        impl_dispatch: 'delegated',
+        impl_runtime: 'claude',
+        impl_model: 'opus',
+        impl_effort: 'high'
+      },
+      presets: [PREVIEW_PRESET],
+      preset_id: 'p1'
+    });
+
+    expect(
+      mount.querySelector('[data-preset-preview]')?.textContent?.trim()
+    ).toBe('변경 없음');
+  });
+
+  test('selecting a preset reports the choice without applying it', () => {
+    const onPresetSelect = vi.fn();
+    const onPresetApply = vi.fn();
+    const mount = renderCard(
+      {
+        catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        presets: [PREVIEW_PRESET]
+      },
+      { onPresetSelect, onPresetApply }
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-impl-preset-select]')
+    );
+
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(onPresetSelect).toHaveBeenCalledWith('p1');
+    expect(onPresetApply).not.toHaveBeenCalled();
+  });
+
+  test('keeps a click inside the preview from toggling the card', () => {
+    const onToggle = vi.fn();
+    const mount = renderCard(
+      {
+        catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        expanded: false,
+        presets: [PREVIEW_PRESET],
+        preset_id: 'p1'
+      },
+      { onToggle }
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('[data-preset-preview]')
+    ).click();
+
+    expect(onToggle).not.toHaveBeenCalled();
+    expect(
+      /** @type {HTMLDetailsElement} */ (
+        mount.querySelector('details.detail-effective')
+      ).open
+    ).toBe(false);
+  });
+
+  test('lists a review model change ahead of a speed change', () => {
+    const mount = renderResolvedCard({
+      metadata: { orchestration_speed: 'fast', impl_review_model: 'fable' },
+      presets: [{ ...PREVIEW_PRESET, settings: {} }],
+      preset_id: 'p1'
+    });
+
+    const keys = Array.from(
+      mount.querySelectorAll('[data-preview-key]'),
+      (row) => row.getAttribute('data-preview-key')
+    );
+
+    expect(keys.indexOf('impl_review_model')).toBeLessThan(
+      keys.indexOf('orchestration_speed')
+    );
+  });
+});

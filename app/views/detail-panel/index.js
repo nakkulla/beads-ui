@@ -1369,6 +1369,7 @@ export function createDetailPanel(mount_element, options) {
         for (const key of EXEC_KEYS) {
           delete exec_local[key];
         }
+        selected_preset_id = '';
         showToast('실행 프리셋을 적용했습니다.', 'success', 4000);
         return;
       }
