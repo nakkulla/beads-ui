@@ -1,17 +1,28 @@
 ---
-id: UI-5chz
-title: 대화 세션 답 대기는 세션 스레드로만 알림
+id: UI-1eag
+title: 직접 push 착지의 머지 후 잡과 앞선 배포 HEAD 해석
 status: accepted
 date: 2026-10-16
-summary: "대화 세션(문의·해결·외부 재개)과 세션 레인의 답 대기는 beads-ui가 Discord로 보내지 않고 dotfiles 브리지의 세션 스레드로만 알린다 — 메시지 처리·verdict action_required·배지·[세션에서 이어가기]는 그대로이고 대화 알림은 🙋 확인 필요·↪ Worker가 이어감·🙋 사람 인수 셋이다; UI-gske의 나머지 조항은 그대로다"
-supersedes: ["UI-gske"]
-spec: docs/superpowers/specs/2026-10-16-conversation-answer-wait-thread-only-design.md
-bead: UI-5chz
+summary: "Worker 직접 push 착지도 영수증 결속 착지 head에서 repo_operations와 branch_cleanup 사이의 같은 머지 후 잡 단계를 지나고, 공유 배포 워크트리 HEAD가 행의 머지 SHA를 엄격히 앞서며 base에 포함되면 행은 자기 잡 이름을 그 HEAD 트리에서 해석해 같은 blob 또는 그 키를 대체 선언한 수정본을 기존 예약·승계로 HEAD에서 실행하고 그 밖은 target_moved로 멈춘다 — 되감기 금지·정확한 target·키당 1회와 UI-5chz의 나머지 조항은 그대로다"
+supersedes: ["UI-5chz"]
+spec: docs/superpowers/specs/2026-10-16-direct-push-post-merge-jobs-and-moved-target-design.md
+bead: UI-1eag
 ---
 
-# 대화 세션 답 대기는 세션 스레드로만 알림
+# 직접 push 착지의 머지 후 잡과 앞선 배포 HEAD 해석
 
 ## Context
+
+이 결정은 `ADR UI-5chz`를 다시 쓴다. 그 ADR이 승계한 post-merge 잡 원장·`replaces` 승계·CAS 확정과 머지 후 결함 인계 조항이 이 결정과 소비자(`pr-actions.js` 정리, `queue-store.js` 원장, `repo-operation-coordinator.js` 잡 정렬)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 없다. 이 결정은 승계 조항에 실행 위치 규칙 둘을 더한다.
+
+- 전제: ADR UI-u6ud-2 — 실행 위치 규칙은 dotfiles 정본 조항(`workflow-contract.md` 일회성 잡 문단, `workflow-state.yaml repo_operations.post_merge_jobs`, dotfiles-nsvwk)이 정하고, 이 저장소는 그 소비 구현이다.
+- 전제: ADR UI-u6ud-5 — 잡은 배포와 같은 durable operation 봉투·잠금·워크트리를 쓴다.
+
+UI-1eag(2026-10-16): dotfiles-gqsok(PR #607)의 정리가 `post_merge_job_target_moved:dotfiles-79429-retire-discord.py@32aa369e…`에서 멈춰 직렬 레인과 뒤의 다섯 건을 막았다. 원인은 두 결함이 겹친 것이다. 첫째, Worker quick_fix 직접 push 착지 정산에는 머지 후 잡 단계가 없어 그 착지가 커밋한 잡을 다음 PR 행이 떠안았다. 머지 후 결함의 자동 인계가 quick_fix 수리 Bead로 가므로 수리본(`repo-ops-replaces` 선언 포함)도 이 경로로 착지했고 실행될 행이 없었다. 둘째, 원래 행 재시도는 자기 머지 SHA 트리에서 잡을 찾아 그 SHA로 정렬하는데, 공유 배포 워크트리는 수리 착지 배포로 이미 앞서 있었고 되감기 금지 때문에 매번 거부됐다.
+
+아래는 `ADR UI-5chz`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
+
+### ADR UI-5chz의 맥락 (승계)
 
 이 결정은 `ADR UI-gske`를 다시 쓴다. 그 ADR과 소비자(`notify.js` 대화 알림 집합, `scheduler.js` reconcile의 메시지 처리 뒤 알림)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 UI-gske가 UI-nuwy에서 승계한 둘이다: "대화 알림은 `🙋 확인 필요`·`❓ 답 대기`·`↪ Worker가 이어감`·`🙋 사람 인수` 넷"과 "같은 멈춤의 재알림은 `❓`가 맡는다". 나머지 조항은 모두 승계한다.
 
@@ -100,6 +111,32 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 아래 승계 조항의 맥락은 `docs/adr/history/`의 세 원본에 있다.
 
 ## Decision
+
+**Worker 직접 push 착지도 영수증에 결속된 착지 head에서 `repo_operations`와 `branch_cleanup` 사이의 같은 머지 후 잡 단계를 지난다. 공유 배포 워크트리 HEAD가 행의 머지 SHA를 엄격히 앞서고 base에 포함되면, 행은 자기 잡 이름을 그 HEAD 트리에서 해석해 같은 blob 또는 그 키를 대체 선언한 수정본을 기존 예약·승계로 HEAD에서 실행하고, 그 밖은 `post_merge_job_target_moved`로 멈춘다.**
+
+직접 push 착지의 잡 단계
+
+- Worker quick_fix 착지 정산은 `base_containment → repo_operations → post_merge_jobs → branch_cleanup → parent_close`다. 잡 단계의 머지 SHA는 영수증에 결속된 착지 head(배포 단계와 같은 SHA)이고 행에 `merge_sha`를 새로 쓰지 않는다.
+- 잡 판정·실행은 PR 정리와 같은 공유 러너 하나다. 두 정산은 머지 SHA·권한·결과 콜백만 넘긴다.
+- 실패는 PR 행과 같은 사유 토큰으로 `post_merge_jobs` 단계에 기록하고, 진행 중은 배포 단계와 같은 `repo_operation_pending`이다. 정산 재실행은 멱등이다.
+- 결과 미상 잡 재실행 권한(`job_retry`)은 사람 조작에서만 온다. 재시도 사다리·공급자 자동 재개·부팅 재개는 권한을 싣지 않는다.
+- 커서 `post_merge_jobs`는 `branch_cleanup`·`parent_close`와 같이 durable head에 결속된다. 영수증 head가 다르면 잡 실행 전에 `head_mismatch`로 멈춘다.
+- 외부(foreign) 착지는 잡을 실행하지 않는다. 세션 소유 quick_fix 착지(Worker 행 없음)는 잡을 돌리지 않고 뒤 행에 맡긴다.
+
+앞선 배포 HEAD에서의 잡 해석
+
+- 원장 판정이 해석보다 먼저다. 해석은 실행이 필요할 때만 하고, H가 없거나 머지 SHA와 같거나 그 조상이면 지금처럼 머지 SHA로 정렬해 실행한다.
+- H가 머지 SHA의 엄격한 후손이고 새로 받은 target base에 포함되면, 머지 SHA 트리의 각 잡 이름을 H 트리에서 해석한다. 같은 blob이면 그 키를 H에서, 첫 32줄 선언이 정확히 그 키를 대체하는 수정본이면 그 수정본 키를 H에서 기존 예약·승계 경로로 실행한다. 그 밖(H에 없음, 선언 없는 다른 blob, 다른 키 선언, 일반 파일 아님)과 무관한 H, base 밖 H는 `post_merge_job_target_moved:<머지 SHA의 키>`로 멈춘다.
+- H는 판정용 관측이고 권위는 잠금 안 실행 직전 정렬이다. prepare 거부는 기록이 없어 다음 판정이 새 H로 다시 해석하고, launch 거부는 `started` 없는 `failed`라 같은 키가 기존 실행 전 실패 규칙으로 다시 기록된다.
+- 예약된 수정본이 실패하면 원래 행은 `started` 없는 실패는 자동으로, `started` 있는 실패는 사람 권한이 있을 때만 같은 수정본 키를 새 H에서 다시 실행하고, 수정본 intent와 이전 키의 `repair` 참조를 기존 같은 수정본 재시도 CAS 하나로 함께 교체한다. 새 H의 그 이름이 예약된 수정본 blob이 아니거나 권한이 없으면 `post_merge_job_repair_failed`다.
+- 떠안은 잡의 소유는 새 원장 필드 없이 키를 먼저 claim한 행의 operation이다. 첫 claim은 키가 없을 때만 성공한다.
+- 지키는 불변식: 공유 배포 워크트리 되감기 없음, 정확한 target, 후손 커버를 실행 증거로 쓰지 않음, 키당 1회, 예약 뒤 옛 blob 미실행, 실패 operation·로그 보존. `merge_sha: null`로 끝난 `done` 행은 다시 열지 않는다(마이그레이션 없음).
+
+대안과 기각 사유: 옛 SHA로 되감기 — 옛 트리 배포가 부수효과로 생긴다. `done` 행 일괄 재정산 — 착지 SHA가 행에 없고 닫힌 Bead에 실패를 둘 곳이 없다. 직접 push 잡 단계만 고치기 — 이미 멈춘 원래 행이 풀리지 않는다(사용자, 2026-10-16). quick_fix 전용 잡 러너 복제 — 원장·예약·승계·재채택 규칙이 두 벌이면 어긋난다.
+
+아래는 `ADR UI-5chz`의 Decision 승계분이다. 이 결정과 어긋나는 조항은 없다.
+
+### ADR UI-5chz에서 승계하는 조항
 
 **대화 세션(문의·해결·외부 재개)의 답 대기는 beads-ui가 Discord 채널로 보내지 않는다. 같은 멈춤의 재알림은 dotfiles 브리지의 세션 스레드가 맡고, 대화 알림은 `🙋 확인 필요`·`↪ Worker가 이어감`·`🙋 사람 인수` 셋이다. 세션 레인의 답 대기도 같은 원칙이다.**
 
@@ -887,6 +924,14 @@ verify 보류
 - post-merge 잡 원장·`replaces` 승계·CAS 확정을 둔다. 실패 행의 출구는 `[정리 재시도]`(머지 후 정리, 변경 UI-btsr), `[워커로 이어가기]`(폐기 재시도, 옛 폐기 실패 `[재시도]`), `[머지]` 재클릭, `[세션에서 이어가기]`(실패 대화), `[폐기 포기]`다. (변경, UI-k467) 외부 PR 사람 처리 필요 행의 출구는 `[세션에서 이어가기]` 하나다. `[정리 재시도]`와 `[워커로 이어가기]`는 사람 클릭이나 같은 행 실패 대화의 `인계`로 실행되고, 그 인계는 사용자 답의 권한(결과 미상 머지 후 잡 재실행 포함)으로 많아야 한 번 실행한다. 자동 인계는 폐기나 사람 결정을 대신하지 않는다.
 
 ## Consequences
+
+- 되돌리기 어렵다: durable `quickfix_landing.cursor` 어휘(`queue-store.js`), PR·quick_fix 두 정산의 공유 러너(`post-merge-job.js`, `pr-actions.js`, `quickfix-landing.js`), 코디네이터 잡 target 판정(`repo-operation-coordinator.js` `eligibleJobHead`), 사람 재개 권한 배선(`attach.js`·`scheduler.js`), dotfiles 정본 조항과 체커가 함께 움직인다.
+- 맥락 없이는 놀랍다: 원래 행이 자기 머지 SHA가 아닌 트리에서 잡을 실행하고, 다른 Bead가 착지시킨 수정본도 실행한다.
+- 얻는 것: 머지 후 잡을 가진 quick_fix를 직접 push해도 그 행이 잡을 돌리고, 수리 착지 뒤 원래 행 재시도 한 번으로 승계와 남은 잡이 끝난다.
+- 감수하는 것: 세션 소유 quick_fix 착지의 잡은 여전히 뒤 Worker 행이 처리한다. quick_fix 행에는 실패 대화 `인계` 출구가 없어 `job_retry`는 사람의 재개 클릭에서만 온다.
+- `ADR UI-5chz`의 조항은 전부 승계했고 폐기한 조항은 없다.
+
+### ADR UI-5chz의 결과 (승계)
 
 - 되돌리기 어렵다: `notify.js` 대화 알림 집합, `scheduler.js` reconcile의 메시지 처리 뒤 알림, 재알림을 맡는 쪽(dotfiles 브리지와 훅 직접 전송)에 대한 의존이 함께 움직인다. 진행 중인 UI-lbm5의 세션 레인 알림 설계도 따라 바뀐다.
 - 맥락 없이는 놀랍다: 사람이 답해야 하는 상태인데 `#beads-worker` 채널에는 아무 알림이 없다. 첫 멈춤의 `🙋 확인 필요`만 채널로 나간다.
