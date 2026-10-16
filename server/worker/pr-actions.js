@@ -74,6 +74,7 @@ import {
   evaluateMergeGate,
   reviewReceiptState
 } from './merge-gate.js';
+import { createPostMergeJobRunner } from './post-merge-job.js';
 import { resolvePrRef } from './pr-poller.js';
 import {
   checkReceipts,
@@ -136,131 +137,6 @@ export const CLEANUP_STEPS = [
 const CLOSURE_STEPS = CLEANUP_STEPS.slice(
   CLEANUP_STEPS.indexOf('post_merge_jobs')
 );
-
-/**
- * Where the post-merge job files live in the merged tree (UI-i60a §2). The
- * directory's EXISTENCE is the activation — `repo-ops/config.toml` has no key
- * for it — so an absent directory is a no-op, not a misconfiguration.
- */
-const POST_MERGE_JOB_DIR = 'repo-ops/post-merge.d';
-
-/**
- * @typedef {Object} PostMergeJobEntry
- * @property {string} name - The job file's basename, which is also its
- * execution-order key (run-parts convention).
- * @property {string} mode - Git's six-digit entry mode.
- * @property {string} type - Git's object type for the entry.
- * @property {string} object_sha
- * @property {string} key - The ledger key `<filename>@<blob sha>`. Content
- * addressed, so editing the file yields a new key and exactly one new run.
- * @property {{ key: string, operation_id?: string }|null} [replaces]
- */
-
-/**
- * Read one `git ls-tree -z` listing of the job directory into filename order.
- *
- * Returns null — never a partial list — when a record cannot be parsed: a
- * listing this build cannot read in full is not evidence about which jobs are
- * pending, and skipping the unreadable part would silently drop a job.
- *
- * @param {string} stdout
- * @returns {PostMergeJobEntry[]|null}
- */
-function parsePostMergeJobEntries(stdout) {
-  /** @type {PostMergeJobEntry[]} */
-  const entries = [];
-  for (const record of String(stdout ?? '').split('\0')) {
-    if (record.length === 0) {
-      continue;
-    }
-    const match = /^(\d{6}) ([a-z]+) ([0-9a-f]{40})\t(.+)$/.exec(record);
-    if (!match) {
-      return null;
-    }
-    const file_path = match[4];
-    const name = file_path.slice(file_path.lastIndexOf('/') + 1);
-    if (name.length === 0) {
-      return null;
-    }
-    entries.push({
-      name,
-      mode: match[1],
-      type: match[2],
-      object_sha: match[3],
-      key: `${name}@${match[3]}`
-    });
-  }
-  // Byte order, not locale order: run-parts runs the C-locale sort, and a
-  // locale-aware comparison would reorder the same directory per machine.
-  entries.sort((left, right) =>
-    left.name < right.name ? -1 : left.name > right.name ? 1 : 0
-  );
-  return entries;
-}
-
-/**
- * @param {PostMergeJobEntry} entry
- * @param {string} source
- * @returns {{ ok: true, replaces: { key: string }|null }|{ ok: false, reason: string }}
- */
-function parsePostMergeJobReplacement(entry, source) {
-  const candidates = String(source)
-    .split(/\r?\n/)
-    .slice(0, 32)
-    .filter((line) => line.includes('repo-ops-replaces'));
-  if (candidates.length === 0) {
-    return { ok: true, replaces: null };
-  }
-  const match =
-    candidates.length === 1
-      ? /^# repo-ops-replaces: ([^@]+)@([0-9a-f]{40})$/.exec(candidates[0])
-      : null;
-  if (
-    !match ||
-    match[1] !== entry.name ||
-    match[1].includes('/') ||
-    match[1].includes('\\') ||
-    match[2] === entry.object_sha
-  ) {
-    return {
-      ok: false,
-      reason: `post_merge_job_replacement_invalid:${entry.name}`
-    };
-  }
-  return { ok: true, replaces: { key: `${match[1]}@${match[2]}` } };
-}
-
-/**
- * @param {string} key
- * @param {any} operation
- * @param {string} repo_id
- * @param {boolean} [success]
- */
-function postMergeJobOperationMatches(
-  key,
-  operation,
-  repo_id,
-  success = false
-) {
-  const match = /^([^/@\\]+)@([0-9a-f]{40})$/.exec(key);
-  return (
-    match !== null &&
-    operation?.repo_id === repo_id &&
-    operation.kind === 'job' &&
-    operation.script_path === `${POST_MERGE_JOB_DIR}/${match[1]}` &&
-    operation.script_blob_sha === match[2] &&
-    (operation.script_mode === '100644' ||
-      operation.script_mode === '100755') &&
-    /^[0-9a-f]{40}$/.test(operation.target_sha) &&
-    (!success ||
-      (operation.state === 'succeeded' &&
-        operation.exit_code === 0 &&
-        operation.signal === null &&
-        operation.failure === null &&
-        typeof operation.started_at === 'number' &&
-        typeof operation.finished_at === 'number'))
-  );
-}
 
 /**
  * What step 1 did to the LOCAL checkout. The installed workflow helper owns
@@ -398,7 +274,7 @@ function authoritativeMergeSha(pr) {
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
- *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>, verifyReceipt: (operation_id: string, head_sha: string) => any, hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>, findExactDeployOperation: (subject: any) => Promise<any>, findCleanupVerifyOperation?: (subject: { target_base: string, bead_id: string, merged_sha: string }) => Promise<{ operation_id: string, head_sha: string|null, state: string, timeout_ms: number|null }|null>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any>, prepareJob?: (input: any) => Promise<any>, launchJob?: (input: { operation_id: string }) => Promise<any>, reconcileJob?: (operation_id: string) => Promise<any>, waitForJobTerminal?: (operation_id: string, input?: any) => Promise<any> },
+ *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>, verifyReceipt: (operation_id: string, head_sha: string) => any, hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>, findExactDeployOperation: (subject: any) => Promise<any>, findCleanupVerifyOperation?: (subject: { target_base: string, bead_id: string, merged_sha: string }) => Promise<{ operation_id: string, head_sha: string|null, state: string, timeout_ms: number|null }|null>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any>, eligibleJobHead?: (input: { target_base: string, merge_sha: string }) => Promise<string|null>, prepareJob?: (input: any) => Promise<any>, launchJob?: (input: { operation_id: string }) => Promise<any>, reconcileJob?: (operation_id: string) => Promise<any>, waitForJobTerminal?: (operation_id: string, input?: any) => Promise<any> },
  *   notifyChanged?: (workspace: string) => void,
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>, needsHuman?: (input: any) => Promise<void> },
  *   requeryDelayMs?: number,
@@ -451,6 +327,16 @@ export function createPrActions(deps) {
       }));
   const repo_operations = deps.repoOperations || null;
   const resolveRepoOps = deps.resolveRepoOps || defaultResolveRepoOps;
+  // The `post_merge_jobs` step is the shared runner every landing settlement
+  // uses (UI-1eag §3.1); this module only supplies the PR row's merge SHA,
+  // its retry authority and its failure record.
+  const post_merge_jobs = createPostMergeJobRunner({
+    workspace,
+    repo,
+    store: deps.store,
+    gitRun: deps.gitRun,
+    repoOperations: repo_operations
+  });
 
   /**
    * The gh adapter one PR is read and changed through: a pinned foreign PR
@@ -2222,7 +2108,9 @@ export function createPrActions(deps) {
   /**
    * The `post_merge_jobs` step (UI-i60a §1–§3): apply every job file the merged
    * tree carries that this workspace has not applied yet, exactly once per file
-   * content, before the row is allowed to close.
+   * content, before the row is allowed to close. The judgment and execution are
+   * the shared runner's (`post-merge-job.js`, UI-1eag §3.1); this row supplies
+   * its merge SHA, its retry authority and its failure record.
    *
    * Returns null when the step is done and closure may continue; anything else
    * is the cleanup result that stops it — a failure record, or a pending wait
@@ -2248,464 +2136,32 @@ export function createPrActions(deps) {
         base_sync
       );
     }
-    const listed = await deps.gitRun(
-      ['ls-tree', '-z', merge_sha, '--', `${POST_MERGE_JOB_DIR}/`],
-      { cwd: repo }
-    );
-    // An absent directory IS a successful empty listing; a failed probe is not,
-    // and must never fail open into "this merge had no jobs".
-    if (listed.code !== 0) {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        'post_merge_jobs_unreadable',
-        base_sync
-      );
-    }
-    const entries = parsePostMergeJobEntries(listed.stdout);
-    if (entries === null) {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        'post_merge_jobs_unreadable',
-        base_sync
-      );
-    }
-    if (entries.length === 0) {
-      return null;
-    }
-    // The WHOLE directory is judged before anything runs: an entry this build
-    // cannot execute stops the step instead of being skipped past, and doing it
-    // up front means no job has run yet when it does.
-    for (const entry of entries) {
-      if (
-        entry.type !== 'blob' ||
-        (entry.mode !== '100644' && entry.mode !== '100755')
-      ) {
-        return await failCleanup(
-          bead_id,
-          'post_merge_jobs',
-          `post_merge_job_invalid:${entry.name}`,
-          base_sync
-        );
-      }
-      const source = await deps.gitRun(['cat-file', 'blob', entry.object_sha], {
-        cwd: repo
-      });
-      if (source.code !== 0) {
-        return await failCleanup(
-          bead_id,
-          'post_merge_jobs',
-          `post_merge_job_unreadable:${entry.name}`,
-          base_sync
-        );
-      }
-      const declaration = parsePostMergeJobReplacement(entry, source.stdout);
-      if (!declaration.ok) {
-        return await failCleanup(
-          bead_id,
-          'post_merge_jobs',
-          declaration.reason,
-          base_sync
-        );
-      }
-      entry.replaces = declaration.replaces;
-    }
-    /** @type {any} */
-    const operations = repo_operations;
-    if (
-      !operations ||
-      typeof operations.prepareJob !== 'function' ||
-      typeof operations.launchJob !== 'function' ||
-      typeof operations.reconcileJob !== 'function' ||
-      typeof operations.waitForJobTerminal !== 'function'
-    ) {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        'repo_operations_unavailable',
-        base_sync
-      );
-    }
-    const expected = await expectedBaseFor(
-      deps.store.snapshot(workspace),
-      bead_id
-    );
-    if (!expected.ok) {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        expected.reason,
-        base_sync
-      );
-    }
-    for (const entry of entries) {
-      const outcome = await runOnePostMergeJob(bead_id, entry, {
-        operations,
-        merge_sha,
-        target_base: expected.base,
-        base_sync,
-        job_retry: options.job_retry === true
-      });
-      if (outcome !== null) {
-        return outcome;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Settle one ledger key as applied and prove the write landed. The readback
-   * is the point: `applied` is what suppresses every future run of this file,
-   * so a write nobody confirmed would be a claim the ledger does not make.
-   *
-   * @param {string} bead_id
-   * @param {PostMergeJobEntry} entry
-   * @param {string} operation_id
-   * @param {{ base_sync: BaseSyncOutcome|null }} ctx
-   */
-  async function settlePostMergeJobApplied(bead_id, entry, operation_id, ctx) {
-    deps.store.applyPostMergeJob?.(workspace, {
-      key: entry.key,
-      operation_id,
-      ...(entry.replaces?.operation_id ? { replaces: entry.replaces } : {})
-    });
-    const snapshot = deps.store.snapshot(workspace);
-    const applied = snapshot.post_merge_jobs?.[entry.key] || null;
-    const predecessor = entry.replaces?.operation_id
-      ? snapshot.post_merge_jobs?.[entry.replaces.key] || null
-      : null;
-    if (
-      applied?.state !== 'applied' ||
-      (predecessor &&
-        (predecessor.state !== 'superseded' ||
-          predecessor.repair?.key !== entry.key ||
-          predecessor.repair.operation_id !== operation_id))
-    ) {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        `post_merge_job_ledger_write_failed:${entry.key}`,
-        ctx.base_sync
-      );
-    }
-    return null;
-  }
-
-  /**
-   * One job file's whole judgement: skip, re-adopt, wait, terminate, or run.
-   *
-   * @param {string} bead_id
-   * @param {PostMergeJobEntry} entry
-   * @param {{ operations: any, merge_sha: string, target_base: string, base_sync: BaseSyncOutcome|null, job_retry: boolean }} ctx
-   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }|null>}
-   */
-  async function runOnePostMergeJob(bead_id, entry, ctx) {
-    const operations = ctx.operations;
-    const snapshot = deps.store.snapshot(workspace);
-    const ledger = snapshot.post_merge_jobs?.[entry.key] || null;
-    const predecessor = entry.replaces
-      ? snapshot.post_merge_jobs?.[entry.replaces.key] || null
-      : null;
-    /** @type {string|null} */
-    let supersedes = null;
-    if (ledger?.state === 'superseded') {
-      const successor = snapshot.post_merge_jobs?.[ledger.repair?.key] || null;
-      const operation = snapshot.repo_operations?.[ledger.operation_id] || null;
-      const successor_operation =
-        snapshot.repo_operations?.[ledger.repair?.operation_id];
-      if (
-        successor?.state === 'applied' &&
-        successor.operation_id === ledger.repair?.operation_id &&
-        successor.replaces?.key === entry.key &&
-        successor.replaces?.operation_id === ledger.operation_id &&
-        operation?.superseded_by === ledger.repair?.operation_id &&
-        postMergeJobOperationMatches(
-          ledger.repair.key,
-          successor_operation,
-          repo,
-          true
-        )
-      ) {
-        return null;
-      }
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        `post_merge_job_succession_invalid:${entry.key}`,
-        ctx.base_sync
-      );
-    }
-    if (ledger?.repair) {
-      let judged;
-      try {
-        judged = await operations.reconcileJob(ledger.repair.operation_id);
-      } catch {
-        judged = { state: 'probe_error', code: 'probe_error' };
-      }
-      if (judged.state === 'succeeded') {
-        const successor = snapshot.post_merge_jobs?.[ledger.repair.key] || null;
-        if (!successor) {
-          return await failCleanup(
-            bead_id,
-            'post_merge_jobs',
-            `post_merge_job_succession_invalid:${entry.key}`,
-            ctx.base_sync
-          );
-        }
-        return await settlePostMergeJobApplied(
-          bead_id,
-          {
-            ...entry,
-            key: ledger.repair.key,
-            replaces: { key: entry.key, operation_id: ledger.operation_id }
-          },
-          ledger.repair.operation_id,
-          ctx
-        );
-      }
-      if (judged.state === 'running') {
-        return {
-          ok: true,
-          pending: true,
-          step: 'post_merge_jobs',
-          reason: null,
-          base_sync: ctx.base_sync
-        };
-      }
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        `post_merge_job_repair_failed:${ledger.repair.key}:${judged.code || 'unknown'}`,
-        ctx.base_sync,
-        undefined,
-        undefined,
-        undefined,
-        judged.log_path
-      );
-    }
-    let repair = null;
-    if (entry.replaces && predecessor?.state === 'intent') {
-      const predecessor_operation =
-        snapshot.repo_operations?.[predecessor.operation_id];
-      if (
-        predecessor.repo_id !== repo ||
-        !predecessor_operation ||
-        !postMergeJobOperationMatches(
-          entry.replaces.key,
-          predecessor_operation,
-          repo
-        )
-      ) {
-        return await failCleanup(
-          bead_id,
-          'post_merge_jobs',
-          `post_merge_job_replacement_ineligible:${entry.key}`,
-          ctx.base_sync
-        );
-      }
-      let judged;
-      try {
-        judged = await operations.reconcileJob(predecessor.operation_id);
-      } catch {
-        judged = { state: 'probe_error', code: 'probe_error' };
-      }
-      if (judged.state === 'succeeded') {
-        deps.store.applyPostMergeJob?.(workspace, {
-          key: entry.replaces.key,
-          operation_id: predecessor.operation_id
-        });
-      } else if (judged.state === 'running' || judged.state === 'unknown') {
-        return await failCleanup(
-          bead_id,
-          'post_merge_jobs',
-          `post_merge_job_replacement_ineligible:${entry.key}`,
-          ctx.base_sync
-        );
-      } else if (judged.state === 'failed') {
-        repair = {
-          key: entry.replaces.key,
-          operation_id: predecessor.operation_id
-        };
-        entry.replaces = { ...repair };
-      } else {
-        return await failCleanup(
-          bead_id,
-          'post_merge_jobs',
-          `post_merge_job_replacement_ineligible:${entry.key}`,
-          ctx.base_sync
-        );
-      }
-    }
-    if (ledger) {
-      if (ledger.state === 'applied') {
-        return null;
-      }
-      // A terminal RepoOperation never reopens, so the record the intent names
-      // is reconciled FIRST and its own evidence decides (§3 branches ①②③).
-      let judged;
-      try {
-        judged = await operations.reconcileJob(ledger.operation_id);
-      } catch {
-        judged = { state: 'unknown', operation_id: ledger.operation_id };
-      }
-      if (judged.state === 'succeeded') {
-        return await settlePostMergeJobApplied(
-          bead_id,
-          entry,
-          ledger.operation_id,
-          ctx
-        );
-      }
-      if (judged.state === 'running') {
-        // Branch ①: an execution is still alive. Waiting is not a failure —
-        // it is the same pending result a non-terminal deploy produces.
-        return {
-          ok: true,
-          pending: true,
-          step: 'post_merge_jobs',
-          reason: null,
-          base_sync: ctx.base_sync
-        };
-      }
-      const never_started =
-        judged.state === 'failed' && judged.started !== true;
-      // A record that failed before any spawn is not an unknown outcome: the
-      // script demonstrably never ran, so the key is still pending and needs no
-      // human authority to re-record. §2 promises exactly this exit for a
-      // refused re-alignment, whose operation is terminally failed while the
-      // job itself never started.
-      if (!ctx.job_retry && !never_started) {
-        // The effect of an interrupted run is unknown, and guessing either way
-        // is worse than stopping: re-running risks a second application, and
-        // writing `applied` risks recording one that never happened.
-        return await failCleanup(
-          bead_id,
-          'post_merge_jobs',
-          `post_merge_job_outcome_unknown:${entry.key}`,
-          ctx.base_sync,
-          undefined,
-          undefined,
-          undefined,
-          judged.log_path
-        );
-      }
-      // Branch ③ (and the never-started case above): re-record rather than
-      // reopen, because a terminal RepoOperation never returns to `queued`.
-      supersedes = ledger.operation_id;
-    }
-    const prepared = await operations.prepareJob({
-      target_base: ctx.target_base,
-      target_sha: ctx.merge_sha,
+    return post_merge_jobs.run({
       bead_id,
-      script_path: `${POST_MERGE_JOB_DIR}/${entry.name}`,
-      script_mode: entry.mode,
-      script_blob_sha: entry.object_sha
+      merge_sha,
+      job_retry: options.job_retry === true,
+      resolveTargetBase: () =>
+        expectedBaseFor(deps.store.snapshot(workspace), bead_id),
+      onFailure: (reason, evidence) =>
+        failCleanup(
+          bead_id,
+          'post_merge_jobs',
+          reason,
+          base_sync,
+          undefined,
+          undefined,
+          undefined,
+          evidence.log_path
+        ),
+      onPending: () =>
+        /** @type {{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }} */ ({
+          ok: true,
+          pending: true,
+          step: 'post_merge_jobs',
+          reason: null,
+          base_sync
+        })
     });
-    if (prepared.ok !== true || typeof prepared.operation_id !== 'string') {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        postMergeJobFailureReason(prepared.code, entry),
-        ctx.base_sync
-      );
-    }
-    // One mutation carries the whole swap: the CAS on the old pointer, the new
-    // intent, and the audit lineage that records which run replaced which. Kept
-    // apart, an interruption between them could leave a lineage pointing at an
-    // operation this ledger never adopted.
-    const claimed = deps.store.recordPostMergeJobIntent?.(workspace, {
-      key: entry.key,
-      operation_id: prepared.operation_id,
-      repo_id: repo,
-      ...(repair === null ? {} : { replaces: repair }),
-      ...(supersedes === null ? {} : { expect_operation_id: supersedes }),
-      ...(supersedes === null || supersedes === prepared.operation_id
-        ? {}
-        : { supersede_operation_id: supersedes })
-    });
-    const intent =
-      deps.store.snapshot(workspace).post_merge_jobs?.[entry.key] || null;
-    if (
-      claimed?.ok !== true ||
-      intent?.state !== 'intent' ||
-      intent.operation_id !== prepared.operation_id
-    ) {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        `post_merge_job_ledger_write_failed:${entry.key}`,
-        ctx.base_sync
-      );
-    }
-    const launched = await operations.launchJob({
-      operation_id: prepared.operation_id
-    });
-    if (launched.ok !== true) {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        postMergeJobFailureReason(launched.code, entry),
-        ctx.base_sync
-      );
-    }
-    const evidence = await operations.waitForJobTerminal(
-      prepared.operation_id,
-      { timeout_ms: prepared.timeout_ms }
-    );
-    if (evidence.state === 'succeeded') {
-      return await settlePostMergeJobApplied(
-        bead_id,
-        entry,
-        prepared.operation_id,
-        ctx
-      );
-    }
-    if (evidence.state === 'failed') {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        evidence.code || 'post_merge_job_failed',
-        ctx.base_sync,
-        undefined,
-        undefined,
-        undefined,
-        evidence.log_path
-      );
-    }
-    if (evidence.state === 'unknown') {
-      return await failCleanup(
-        bead_id,
-        'post_merge_jobs',
-        `post_merge_job_outcome_unknown:${entry.key}`,
-        ctx.base_sync
-      );
-    }
-    return {
-      ok: true,
-      pending: true,
-      step: 'post_merge_jobs',
-      reason: null,
-      base_sync: ctx.base_sync
-    };
-  }
-
-  /**
-   * Name a coordinator refusal as a cleanup reason. The moved-target refusal
-   * carries the ledger key, because that key — not the bead — is what a later
-   * merge or a retry re-judges.
-   *
-   * @param {unknown} code
-   * @param {PostMergeJobEntry} entry
-   * @returns {string}
-   */
-  function postMergeJobFailureReason(code, entry) {
-    if (code === 'post_merge_job_target_moved') {
-      return `post_merge_job_target_moved:${entry.key}`;
-    }
-    return typeof code === 'string' && code.length > 0
-      ? code
-      : 'post_merge_job_failed';
   }
 
   /**
