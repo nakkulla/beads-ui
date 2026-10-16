@@ -52,7 +52,11 @@ pinned base: beads-ui `origin/main` 03d9ca42(인용 파일은 8de2aa19와 같음
 - 잡 목록은 행의 머지 SHA 트리에서 읽고 디렉터리 전체를 실행 전에 판정한다 — server/worker/pr-actions.js:2236-2313
 - 실행 target은 언제나 행의 머지 SHA다 — server/worker/pr-actions.js:2597-2604
 - 배포 워크트리 HEAD가 target과 다르면 HEAD가 target의 엄격한 조상일 때만 정렬하고, 나머지는 `post_merge_job_target_moved`로 거부한다 — server/worker/repo-operation-coordinator.js:2458-2472, :2487-2493
-- 정렬 거부는 기록 전이라 원장이 그대로 남고, 실행 전 실패(`started` 없음)는 사람 권한 없이 다시 기록된다 — server/worker/repo-operation-coordinator.js:2503-2509, :2560-2566, server/worker/pr-actions.js:2571-2595
+- prepare 단계의 정렬 거부는 기록 전이라 원장이 그대로 남는다 — server/worker/repo-operation-coordinator.js:2503-2509, :2560-2566
+- launch 단계의 정렬 거부는 intent(수정본이면 이전 키의 `repair` 예약까지) 기록 뒤에 일어나며 operation을 `started` 없는 `failed`로 끝낸다 — server/worker/repo-operation-coordinator.js:2632-2684, server/worker/pr-actions.js:2617-2651
+- 같은 키의 실행 전 실패는 사람 권한 없이 다시 기록되지만, `repair` 예약이 가리키는 수정본이 실패하면 원래 행은 항상 `post_merge_job_repair_failed`로 멈춘다 — server/worker/pr-actions.js:2571-2595, :2439-2486
+- quick_fix 착지 정산의 durable 커서 결속(저장된 head 사용·영수증 head 대조)은 `branch_cleanup`·`parent_close`에만 적용된다 — server/worker/quickfix-landing.js:997-1006, :1121-1129
+- 세션 소유 quick_fix는 세션이 배포 증거(`run-repo-ops-deploy.py`)와 close를 소유하고 잡 단계가 없다 — dotfiles docs/contracts/workflow-contract.md:30, src/shared/skills/flow/workflow/references/execution-quick-fix.md:193-196
 - 수정본 entry(`replaces`)는 이전 intent를 조정해 실패면 예약하고, 성공이면 `superseded`로 확정하며, 원래 행은 유효한 `superseded`를 충족으로 본다 — server/worker/pr-actions.js:2412-2438, :2488-2539, :2367-2393
 - 새 키의 첫 claim은 키가 없을 때만 성공한다(동시 두 행 중복 실행 방지) — server/worker/queue-store.js:8762-8781
 - 결과 미상 잡 재실행 권한은 사람 재시도에서만 온다(PR 행) — server/worker/pr-actions.js:2715-2721, :2814-2821
@@ -80,6 +84,8 @@ pinned base: beads-ui `origin/main` 03d9ca42(인용 파일은 8de2aa19와 같음
   온다. 재시도 사다리·공급자 자동 재개·부팅 재개는 권한을 싣지 않는다. PR 행의 `retryCleanupLocked`와 같은 경계다.
 - 정산 재실행은 멱등이다. 앞 단계(포함 확인·배포)는 다시 지나도 같은 결과이고, 잡은 원장이 1회성을 지킨다.
   durable 커서 어휘·이름표·`quickFixLanded`에 `post_merge_jobs`를 더한다.
+- 커서가 `post_merge_jobs`이면 `branch_cleanup`·`parent_close`와 같이 durable head에 결속된다. 재개는 저장된
+  head를 M으로 쓰고, 새로 읽은 영수증 head가 다르면 잡을 실행하기 전에 `head_mismatch`로 멈춘다.
 - 외부(foreign) 착지는 바꾸지 않는다. rig Worker는 대상 저장소의 원장을 소유하지 않는다.
 
 ### 3.2 앞선 배포 트리에서의 잡 해석 — (b)
@@ -100,8 +106,16 @@ pinned base: beads-ui `origin/main` 03d9ca42(인용 파일은 8de2aa19와 같음
 - 실행 권한은 target만 바뀌고 규칙은 그대로다. 같은 blob 재실행은 지금의 재시도 규칙을 따른다(결과 미상은 사람
   권한, 실행 전 실패는 자동). 수정본 실행은 지금처럼 이전 operation의 실패 종료만 확인해 예약한다.
 - H는 판정용 관측이다. 권위는 실행 직전 정렬이다. target H의 정렬은 이동이 없고, 정확한 HEAD 확인과 spawn은 잠금
-  안에서 지금처럼 한다. prepare와 launch 사이에 H가 움직이면 launch가 `target_moved`로 거부한다. 그 기록은 실행 전
-  실패라 다음 판정이 새 H로 다시 해석한다.
+  안에서 지금처럼 한다. H가 움직이면 거부 시점에 따라 이렇게 된다.
+  - prepare에서 거부되면 기록이 없으므로 다음 판정이 새 H로 다시 해석한다.
+  - launch에서 거부되면 intent 기록 뒤라 operation이 `started` 없는 `failed`로 끝난다. 같은 키면 기존 실행 전
+    실패 규칙으로 새 H에서 다시 기록한다.
+- 예약된 수정본의 실패는 원래 행에서 이렇게 다룬다(M 키에 `repair`가 있을 때).
+  - 수정본 operation이 `started` 없는 `failed`면 사람 권한 없이, `started` 있는 `failed`면 사람 권한(`job_retry`)이
+    있을 때만 다음을 한다. 같은 수정본 키를 새 H에서 다시 해석해 실행한다. 이때 수정본 intent의 operation과 이전 키의
+    `repair` 참조를 기존 같은 수정본 재시도 CAS 하나로 함께 교체한다.
+  - 새 H의 그 이름이 예약된 수정본 blob이 아니거나 권한이 없으면 지금처럼 `post_merge_job_repair_failed`로 멈춘다.
+  - 수정본이 진행 중이면 pending이고, 성공이면 지금처럼 승계를 확정한다.
 - 지키는 불변식: 되감기 없음, 정확한 target, 후손 커버를 실행 증거로 쓰지 않음(실제로 실행한다), 키당 1회, 예약 뒤
   옛 blob 미실행, 실패 operation·로그 보존.
 - 안전 근거: 실행 입력은 H 자신의 착지가 잡 단계를 돌렸을 때와 같다(같은 SHA, 같은 blob). 늦은 행이 앞선 트리에서
@@ -123,8 +137,11 @@ pinned base: beads-ui `origin/main` 03d9ca42(인용 파일은 8de2aa19와 같음
      CAS 뒤 H에서 실행하고, 성공하면 옛 키는 `superseded`, 새 키는 `applied`가 된다.
   2. `ptx3h@6d045412`는 키가 없고 H에서 같은 blob이므로 H에서 실행해 `applied`가 된다.
   3. 정리는 `branch_cleanup → parent_close`로 이어져 레인이 풀린다.
-- 이 재시도는 사용자가 이미 정한 조치(결함 수정 뒤 gqsok 재시도)다. 이 Bead의 배포를 확인한 세션이 보내고 결과를
-  readback한다.
+- 이 재시도는 이 Bead의 완료 조건이 아니다. gqsok 행이 가진 기존 출구(`[정리 재시도]`, 사람 클릭 또는 그 행 실패
+  대화의 `인계`)이고, 사용자가 이미 정한 조치다. 이 Bead는 위 흐름을 §5의 재현 회귀로 증명하고, 배포를 확인한 뒤 두
+  곳에 인계를 남긴다. 하나는 완료 보고서의 남은 것 줄이고, 다른 하나는 dotfiles-gqsok notes의 한 줄(`--append-notes`,
+  readback)이다. 두 줄 모두 배포 SHA, 기대하는 세 키 상태, 행 close를 적는다. 이 세션이 그때 살아 있으면 그 재시도와
+  readback을 이어서 해도 된다. 다만 그 결과는 gqsok의 증거이고 이 Bead의 close를 막지 않는다.
 
 ## 4. 경계·결정
 
@@ -146,8 +163,15 @@ pinned base: beads-ui `origin/main` 03d9ca42(인용 파일은 8de2aa19와 같음
 - 앞선 트리 해석:
   - H=M, H가 M의 조상, H가 M의 후손에서 같은 blob, 수정본 대체, H에 없음, 선언 없는 다른 blob, 다른 키 선언,
     H가 M과 무관, H가 base 밖인 경우를 각각 검증한다.
-  - prepare·launch 사이에 H가 움직이면 실행 전 실패 뒤 재해석된다.
-  - 거부된 경우에는 spawn이 0회이고 원장이 변하지 않는다.
+  - prepare에서 거부되면 원장이 변하지 않고 spawn이 0회다.
+  - launch에서 거부되면 같은 키는 새 H로 다시 기록돼 실행된다.
+  - 예약된 수정본이 launch에서 거부되면 다음 판정이 새 H에서 수정본 intent와 `repair` 참조를 함께 교체해
+    실행한다. 그 사이 옛 blob spawn은 0회다.
+  - `started` 있는 수정본 실패는 사람 권한이 없으면 `post_merge_job_repair_failed`이고, 권한이 있으면 같은 수정본을
+    다시 실행한다.
+  - 나머지 거부(무관한 H, base 밖, 해석 불가)는 spawn 0회이고 원장이 변하지 않는다.
+- quick_fix 착지 재개: 커서 `post_merge_jobs`에서 재시작하면 저장된 head를 M으로 쓰고, 영수증 head가 다르면 잡
+  실행 전에 `head_mismatch`로 멈춘다.
 - 재현 회귀(실측 형태): K1 `intent` + 실패한 `started` operation(target M), H 트리의 `79429@604204c3`·
   `ptx3h@6d045412`, M 트리의 `79429@32aa369e`·`ptx3h@6d045412`, 세 착지 행 `merge_sha: null`. 사람 재시도 한 번으로
   다음을 확인한다.
@@ -157,8 +181,8 @@ pinned base: beads-ui `origin/main` 03d9ca42(인용 파일은 8de2aa19와 같음
 - 관련 WS·retention·Worker 흐름 테스트를 포함한다.
 - Pre-Handoff Validation: 새 워크트리 Node engine 확인과 `npm ci`, `npm run tsc`, `npm run lint`, 변경 파일
   Prettier, `npx vitest run --reporter=dot`(120초).
-- 완료는 공유 서비스 배포 SHA·프로세스 경로·포트·HTTP 응답 확인과 §3.4 gqsok 재시도 결과 readback(원장 세 키,
-  gqsok 행 close)까지다.
+- 완료는 공유 서비스 배포 SHA·프로세스 경로·포트·HTTP 응답 확인과 §3.4 인계 두 줄(완료 보고서 남은 것 줄,
+  dotfiles-gqsok notes readback)까지다. gqsok 재시도 결과는 이 Bead의 완료 조건이 아니다.
 
 ## 6. 구현 unit 후보
 
@@ -172,6 +196,8 @@ pinned base: beads-ui `origin/main` 03d9ca42(인용 파일은 8de2aa19와 같음
   dotfiles Worker 병렬 레인에 배치되어 있다. (1) Worker 직접 push 착지의 머지 SHA는 영수증에 결속된 착지 head이고, 그 정산은 같은 단계를 지난다.
   (2) 배포 워크트리 HEAD가 행의 머지 SHA를 엄격히 앞서고 base에 포함되면, 행은 자기 잡 이름을 그 HEAD 트리에서
   해석한다. 같은 blob은 그대로, 그 키를 대체 선언한 수정본은 기존 예약·승계로 HEAD에서 실행하고, 그 밖은 멈춘다.
+  이미 예약된 수정본의 재실행은 기존 같은 수정본 재시도(두 참조 원자적 교체)의 범위이며, 원래 행도 이 재실행을
+  일으킬 수 있다.
   `runner.source`와 `corrective_succession.original_cleanup`의 기계 어휘도 함께 갱신한다. UI-1eag 구현 진입 전
   선행(`blocks`)이다.
 - 관찰: 세션 소유 quick_fix 착지는 잡을 돌리지 않는다 — 정본의 러너 소유자가 Worker 정리 커서라서 결함이 아니고,
