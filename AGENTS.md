@@ -85,7 +85,7 @@
 ## Post-Merge Runtime Validation
 
 - 머지는 완료가 아니다: 이 저장소는 공유 서비스 배포까지 마쳐야 완료다. 배포
-  선언은 핀된 base SHA의 `repo-ops/config.toml` `[deploy]`(ADR UI-u6ud-5)이고,
+  선언은 핀된 base SHA의 `repo-ops/config.toml` `[deploy]`(ADR UI-izba)이고,
   Worker가 추적하는 Bead PR 머지는 관측 후 Worker가 배포·정리한다. 실패
   사다리·자동 처리 범위의 정본은 dotfiles이며 이 저장소는 핀 사본
   `generated/contracts/repo-operation-policy.json`만 읽는다.
