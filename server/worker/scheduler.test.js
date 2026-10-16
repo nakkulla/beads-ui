@@ -14,11 +14,16 @@ import {
 import { createBeadTimeline } from './bead-timeline.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
-import { install as guardHookInstall, pushLogPath } from './guard-hook.js';
+import {
+  install as guardHookInstall,
+  pushLogPath,
+  readPushLog
+} from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
 import { createProviderHealth } from './provider-health.js';
 import { RETRY_DELAYS_MS } from './queue-hold.js';
 import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
+import { createQuickfixLanding } from './quickfix-landing.js';
 import * as operationPolicy from './repo-operation-policy.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
@@ -39,6 +44,7 @@ import {
   beadSessionLogPath,
   beadSessionStderrPath,
   codexAttemptHomeDir,
+  codexSessionsRoot,
   delegationMonitorDir,
   guardHookDir,
   usageReceiptInboxDir
@@ -32646,6 +32652,125 @@ describe('session lane (UI-lbm5)', () => {
         cause: 'session_exited'
       });
     });
+
+    test('skips a session lane launched while the pane listing was in flight', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      let launched = false;
+      env.launcher.listPanesExtended.mockImplementation(
+        async (/** @type {string} */ marker) => {
+          if (marker !== SESSION_LANE_PANE_MARKER) {
+            return { ok: true, rows: [] };
+          }
+          const stale = [...env.panes.rows];
+          if (!launched) {
+            launched = true;
+            await env.scheduler.tick(WS);
+          }
+          return { ok: true, rows: stale };
+        }
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneAttempt('S1').status).toBe('running');
+      expect(env.laneAttempt('S1').interactive.gone_at ?? null).toBeNull();
+    });
+
+    test('settles a result line written before the window closed through the result path', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.clock.at = 2000;
+      env.message.value = {
+        text: '성공 · PR #1',
+        first_line: '성공 · PR #1',
+        excerpt: '성공 · PR #1',
+        at: 1500
+      };
+      env.panes.rows = [];
+
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      expect(env.verify.verifyPrSubmitted).toHaveBeenCalledOnce();
+      expect(env.laneAttempt('S1').status).toBe('done');
+    });
+
+    test('settles a closed window whose last message is no result line as session_exited', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.clock.at = 2000;
+      env.message.value = {
+        text: '어느 쪽으로 갈까요?',
+        first_line: '어느 쪽으로 갈까요?',
+        excerpt: '어느 쪽으로 갈까요?',
+        at: 1500
+      };
+      env.panes.rows = [];
+
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      expect(env.laneAttempt('S1')).toMatchObject({
+        status: 'failed',
+        cause: 'session_exited'
+      });
+    });
+
+    /**
+     * Seed a withdrawn (`paused`) session-lane cleanup diagnosis — the one
+     * status of such an attempt `resume` judges by its cleanup-diagnosis
+     * branch rather than refusing as `not_failed`.
+     *
+     * @param {ReturnType<typeof laneEnv>} env
+     * @param {number|null} gone_at
+     */
+    function seedPausedDiagnosis(env, gone_at) {
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'diag',
+          bead_id: 'D1',
+          status: 'paused',
+          exec: 'session',
+          interactive: {
+            pane_id: '%9',
+            tmux_session: 's',
+            tmux_window: 'D1',
+            gone_at
+          },
+          cleanup_diagnosis: true,
+          pid: null
+        }
+      });
+    }
+
+    test('keeps a live session-lane cleanup diagnosis through resume', async () => {
+      const env = laneEnv({ config: {} });
+      seedPausedDiagnosis(env, null);
+
+      const result = await env.scheduler.resume(WS, 'diag');
+
+      expect(result).toEqual({
+        ok: false,
+        reason: 'legacy_cleanup_diagnosis_retired'
+      });
+      expect(env.store.snapshot(WS).attempts.diag.status).toBe('paused');
+    });
+
+    test('retires a confirmed-gone session-lane cleanup diagnosis through resume', async () => {
+      const env = laneEnv({ config: {} });
+      seedPausedDiagnosis(env, 900);
+
+      await env.scheduler.resume(WS, 'diag');
+
+      expect(env.store.snapshot(WS).attempts.diag).toMatchObject({
+        status: 'orphaned',
+        cause: 'legacy_cleanup_diagnosis_retired'
+      });
+    });
   });
 
   describe('answer wait and result', () => {
@@ -32788,6 +32913,148 @@ describe('session lane (UI-lbm5)', () => {
       await env.scheduler.reconcileInteractiveSessions(WS);
 
       expect(env.launcher.sendExit).toHaveBeenCalledWith('%7');
+    });
+
+    test('resumes a result-line settlement a restart interrupted', async () => {
+      const stuck = {
+        verifyPrSubmitted: vi.fn(() => new Promise(() => {}))
+      };
+      const env = await observedWithoutWaiting(
+        { text: '성공 · PR #1' },
+        { extra: { verify: stuck } }
+      );
+      await vi.waitFor(() =>
+        expect(stuck.verifyPrSubmitted).toHaveBeenCalledOnce()
+      );
+      const verify = {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: true,
+          reason: 'ok',
+          pr_url: 'https://github.com/o/r/pull/1'
+        }))
+      };
+      const restarted = createScheduler(
+        /** @type {any} */ ({
+          store: env.store,
+          bd: env.bd,
+          worktree: env.worktree,
+          verify,
+          sessionLog: { attach: vi.fn() },
+          makeRunner: env.runner.factory,
+          interactiveLauncher: env.launcher,
+          execPresetCoordinator: { resolveForDispatch: () => ({ ok: false }) },
+          readLastAssistantMessage: () => env.message.value,
+          resolveSessionFile: () => ({
+            locality: 'local',
+            file: '/transcript',
+            last_event_at: env.clock.at
+          }),
+          fs: { existsSync: () => true },
+          now: () => env.clock.at
+        })
+      );
+
+      await restarted.reconcileInteractiveSessions(WS);
+
+      expect(verify.verifyPrSubmitted).toHaveBeenCalledOnce();
+      expect(env.laneAttempt('S1').status).toBe('done');
+    });
+
+    /**
+     * Dispatch S1 and start, without awaiting, the pass that observes one
+     * message: a settlement it reaches may hang without blocking the test.
+     *
+     * @param {{ text: string }} input
+     * @param {Parameters<typeof laneEnv>[0]} [lane_input]
+     */
+    async function observedWithoutWaiting(input, lane_input) {
+      const env = laneEnv(lane_input);
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.clock.at = 2000;
+      Object.assign(env.panes.rows[0], {
+        agent_running: '',
+        agent_attention: ''
+      });
+      env.message.value = {
+        text: input.text,
+        first_line: input.text,
+        excerpt: input.text,
+        at: 1500
+      };
+      void env.scheduler.reconcileInteractiveSessions(WS);
+      return env;
+    }
+
+    test('reads a codex session-lane transcript under its account sessions root', async () => {
+      const resolveSessionFile = vi.fn(() => ({
+        locality: 'missing',
+        file: null,
+        last_event_at: null
+      }));
+      const env = laneEnv({ config: {}, extra: { resolveSessionFile } });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'cx',
+          bead_id: 'C1',
+          status: 'running',
+          exec: 'session',
+          runner: 'codex',
+          codex_account: 'acct@example.com',
+          session_id: '0199a000-0000-7000-8000-000000000001',
+          started_at: 1000,
+          interactive: { pane_id: '%8', tmux_session: 's', tmux_window: 'C1' },
+          pid: null
+        }
+      });
+      env.store.recordInteractiveSession(WS, {
+        bead_id: 'C1',
+        kind: 'session_lane',
+        provider: 'codex',
+        session_id: '0199a000-0000-7000-8000-000000000001',
+        session_id_source: 'pane_option',
+        mode: 'fresh',
+        source: 'attempt',
+        attempt_id: 'cx',
+        pane_id: '%8',
+        tmux_session: 's',
+        tmux_window: 'C1',
+        cwd: '/wt/C1',
+        launched_at: 1000,
+        state: 'live',
+        conversation: {
+          stop: '세션 레인',
+          wait_id: null,
+          processed_message_at: null,
+          message_excerpt: null,
+          result: null,
+          handoff: null,
+          takeover_notified_at: null
+        }
+      });
+      env.panes.rows.push({
+        key: 'C1',
+        pane: '%8',
+        dead: '0',
+        session: 's',
+        window: 'C1',
+        cwd: '/wt/C1',
+        agent_runtime: 'codex',
+        agent_running: '1',
+        agent_attention: ''
+      });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(resolveSessionFile).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'codex' }),
+        expect.objectContaining({
+          sessions_root: codexSessionsRoot({
+            codex_account: 'acct@example.com'
+          })
+        })
+      );
     });
   });
 
@@ -32939,5 +33206,154 @@ describe('session lane (UI-lbm5)', () => {
         'stopped'
       );
     });
+  });
+
+  describe('quick_fix push proof (§6a)', () => {
+    /** @type {Record<string, string|undefined>} */
+    let saved_git_config = {};
+    /** @type {string} */
+    let git_tmp;
+
+    beforeEach(() => {
+      // The launch env extends an inherited `GIT_CONFIG_COUNT`, and the push
+      // below must run this attempt's hook alone: the ambient git config keys
+      // are cleared for the test and restored after it.
+      saved_git_config = {};
+      for (const name of Object.keys(process.env)) {
+        if (name.startsWith('GIT_CONFIG_')) {
+          saved_git_config[name] = process.env[name];
+          delete process.env[name];
+        }
+      }
+      git_tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-lane-push-'));
+    });
+
+    afterEach(() => {
+      for (const [name, value] of Object.entries(saved_git_config)) {
+        process.env[name] = value;
+      }
+      fs.rmSync(git_tmp, { recursive: true, force: true });
+    });
+
+    /**
+     * The child env every git call here runs under: no global or system
+     * config, plus the given layer.
+     *
+     * @param {Record<string, string>} [layer]
+     * @returns {Record<string, string|undefined>}
+     */
+    function gitEnv(layer = {}) {
+      return {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_SYSTEM: '/dev/null',
+        ...layer
+      };
+    }
+
+    /**
+     * Run git and return its stdout; a failing command fails the test.
+     *
+     * @param {string[]} args
+     * @param {string} cwd
+     * @param {Record<string, string>} [layer]
+     * @returns {string}
+     */
+    function git(args, cwd, layer) {
+      const result = spawnSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        env: gitEnv(layer)
+      });
+      if (result.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
+      }
+      return String(result.stdout);
+    }
+
+    /**
+     * @param {string} cwd
+     */
+    function identify(cwd) {
+      git(['config', 'user.email', 'test@example.com'], cwd);
+      git(['config', 'user.name', 'Test'], cwd);
+      git(['config', 'commit.gpgsign', 'false'], cwd);
+    }
+
+    /**
+     * @param {string} cwd
+     * @param {string} name
+     */
+    function commit(cwd, name) {
+      fs.writeFileSync(path.join(cwd, `${name}.txt`), `${name}\n`);
+      git(['add', `${name}.txt`], cwd);
+      git(['commit', '-q', '-m', name], cwd);
+    }
+
+    /**
+     * A local checkout with a bare `origin` whose `main` it tracks.
+     *
+     * @returns {string}
+     */
+    function checkoutWithRemote() {
+      const seed = path.join(git_tmp, 'seed');
+      fs.mkdirSync(seed);
+      git(['init', '-q', '-b', 'main'], seed);
+      identify(seed);
+      commit(seed, 'first');
+      const origin = path.join(git_tmp, 'origin.git');
+      git(['clone', '-q', '--bare', seed, origin], git_tmp);
+      const repo = path.join(git_tmp, 'repo');
+      git(['clone', '-q', origin, repo], git_tmp);
+      identify(repo);
+      return repo;
+    }
+
+    test('proves the delivery of a base push made under the session-lane env', async () => {
+      const repo = checkoutWithRemote();
+      const env = laneEnv({
+        config: {
+          S1: {
+            labels: ['worker-ineligible'],
+            route: 'quick_fix',
+            description: '고칠 것',
+            repo
+          }
+        }
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+      commit(repo, 'fix');
+      const pushed = git(['rev-parse', 'HEAD'], repo).trim();
+      git(['push', '-q', 'origin', 'HEAD:main'], repo, env.launchInput().env);
+      const bd = {
+        readIssue: vi.fn(async () => ({ status: 'in_progress' })),
+        readMetadata: vi.fn(async () => `reviewer@${pushed}`),
+        setStatus: vi.fn(async () => {}),
+        readStatus: vi.fn(async () => 'resolved')
+      };
+      const landing = createQuickfixLanding(
+        /** @type {any} */ ({
+          workspace: WS,
+          repo,
+          store: env.store,
+          bd,
+          gitRun: async () => ({ code: 1, stdout: '', stderr: '' }),
+          worktree: {},
+          repoOperations: null,
+          readPushLog: (/** @type {{ attempt_id: string }} */ input) =>
+            readPushLog({ workspace: WS, ...input }),
+          now: () => 1234
+        })
+      );
+
+      await landing.settle({ attempt_id, bead_id: 'S1', target_base: 'main' });
+
+      expect(bd.setStatus).toHaveBeenCalledWith('S1', 'resolved');
+      expect(
+        env.store.snapshot(WS).attempts[attempt_id].quickfix_landing
+      ).toMatchObject({ resolved_by: 'worker:evidence' });
+    }, 30_000);
   });
 });

@@ -8822,8 +8822,9 @@ export function createScheduler(deps) {
 
   /**
    * Settle a session-lane attempt whose window a successful tmux pass found
-   * gone WITHOUT a terminal result line (UI-lbm5 §4.5): `failed` with cause
-   * `session_exited`. The person closed the window, so nothing continues on
+   * gone (UI-lbm5 §4.5). A terminal result line its transcript still holds
+   * settles through the result-line path; WITHOUT one it is `failed` with
+   * cause `session_exited`. The person closed the window, so nothing continues on
    * its own — no automatic resume, no resolve session; `↻ 이어하기` is the one
    * way back. A session that pushed its base before the window closed is
    * judged by that landing first, exactly as `onSessionDone` does.
@@ -8833,6 +8834,15 @@ export function createScheduler(deps) {
    * @param {any} attempt
    */
   async function disposeDeadSessionLane(workspace, attempt_id, attempt) {
+    // The window is gone, but its transcript is not: a terminal result line
+    // written before the person closed it — after the last live observation —
+    // is still the session's answer (§4.5), and only its absence is
+    // `session_exited`.
+    const verdict = goneSessionLaneVerdict(attempt);
+    if (verdict !== null) {
+      await settleSessionLaneVerdict(workspace, attempt_id, attempt, verdict);
+      return;
+    }
     settling.add(attempt_id);
     try {
       const landed = await settleBaseDrift(workspace, attempt_id);
@@ -8854,6 +8864,114 @@ export function createScheduler(deps) {
     }
     notifyChanged(workspace);
     await tick(workspace);
+  }
+
+  /**
+   * The terminal verdict a GONE session-lane window left in its transcript,
+   * or null (UI-lbm5 §4.5): the last assistant message, read where the launch
+   * wrote it, counts only when it came after the attempt started and after
+   * the last message the live observation processed, and opens with a
+   * terminal result line. An unreadable transcript is no result.
+   *
+   * @param {any} attempt
+   * @returns {import('./runner/session.js').RunnerVerdict|null}
+   */
+  function goneSessionLaneVerdict(attempt) {
+    const session_id =
+      typeof attempt.session_id === 'string' ? attempt.session_id : null;
+    if (
+      session_id === null ||
+      (attempt.runner !== 'claude' && attempt.runner !== 'codex')
+    ) {
+      return null;
+    }
+    const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
+    const reader =
+      deps.readLastAssistantMessage || defaultReadLastAssistantMessage;
+    const sessions_root = sessionLaneSessionsRoot(attempt);
+    try {
+      const location = resolver(
+        {
+          provider: attempt.runner,
+          session_id,
+          host: os.hostname(),
+          index: 0
+        },
+        {
+          home_dir: deps.homeDir,
+          hostname: os.hostname(),
+          ...(sessions_root ? { sessions_root } : {})
+        }
+      );
+      if (location.locality !== 'local' || location.file === null) {
+        return null;
+      }
+      const message = reader({ provider: attempt.runner, file: location.file });
+      const message_at = message?.at ?? location.last_event_at ?? null;
+      const processed_at = attempt.interactive?.processed_message_at ?? null;
+      if (
+        message === null ||
+        message_at === null ||
+        (typeof attempt.started_at === 'number' &&
+          message_at <= attempt.started_at) ||
+        (processed_at !== null && message_at <= processed_at)
+      ) {
+        return null;
+      }
+      return sessionLaneVerdict(message);
+    } catch (err) {
+      log(
+        'session lane transcript read failed for %s: %o',
+        attempt.bead_id,
+        err
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Feed a session-lane terminal verdict into the SAME `onSessionDone` branch
+   * a headless verdict takes, then report the completion settlement (UI-lbm5
+   * §4.5). A settlement that throws marks the attempt's settlement failed;
+   * nothing escapes.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   * @param {import('./runner/session.js').RunnerVerdict} verdict
+   */
+  async function settleSessionLaneVerdict(
+    workspace,
+    attempt_id,
+    attempt,
+    verdict
+  ) {
+    appendTimeline({
+      bead_id: attempt.bead_id,
+      attempt_id,
+      kind: 'interactive_session',
+      seq: `${SESSION_LANE_KIND}:${attempt_id}:result`,
+      summary: `세션 레인 결과 · ${verdict.summary ?? ''}`.trim()
+    });
+    try {
+      await onSessionDone(
+        workspace,
+        attempt_id,
+        attempt.bead_id,
+        /** @type {BeadSnapshot} */ (
+          /** @type {any} */ ({
+            repo: attempt.repo ?? '',
+            target_base: attempt.target_base ?? ''
+          })
+        ),
+        attempt.workflow_mode_prior ?? null,
+        verdict
+      );
+      await reportCompletionSettlement(workspace, attempt_id, verdict);
+    } catch (err) {
+      log('session lane settlement failed for %s: %o', attempt_id, err);
+      markSettlementFailed(workspace, attempt_id);
+    }
   }
 
   /**
@@ -9809,16 +9927,81 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Record what ONE successful session-lane marker listing says about every
-   * running session-lane attempt (UI-lbm5 §4.4): a missing pane writes
-   * `interactive.gone_at`, the one fact {@link isDeadAttempt} reads. A launch
-   * still in flight (its Bead claimed) or a settlement under way is skipped —
-   * its window is not recorded yet, or its outcome is already being decided.
+   * The sessions directory a session-lane window's transcript is written to:
+   * a codex window opened with an account runs under that account's
+   * `CODEX_HOME`, so the root is the one {@link codexSessionsRoot} derives for
+   * it, never the default home. Null (the resolver's own default) for claude.
+   *
+   * @param {{ runner?: string|null, codex_account?: string|null }|null|undefined} attempt
+   * @returns {string|null}
+   */
+  function sessionLaneSessionsRoot(attempt) {
+    return attempt?.runner === 'codex'
+      ? codexSessionsRoot({
+          codex_account: attempt.codex_account ?? null,
+          ...(deps.homeDir ? { home_dir: deps.homeDir } : {})
+        })
+      : null;
+  }
+
+  /**
+   * Whether a session-lane attempt is one a pane listing may judge now: a
+   * running window no launch (its Bead claimed) or settlement is working on,
+   * not already recorded gone.
+   *
+   * @param {string} attempt_id
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function sessionLaneJudgeable(attempt_id, attempt) {
+    return (
+      !!attempt &&
+      attempt.exec === 'session' &&
+      attempt.status === 'running' &&
+      !claimed.has(attempt.bead_id) &&
+      !settling.has(attempt_id) &&
+      typeof attempt.interactive?.gone_at !== 'number'
+    );
+  }
+
+  /**
+   * The session-lane attempts a pane listing about to START may judge, keyed
+   * by attempt id with the pane id each one had then (UI-lbm5 §4.4). Only
+   * these are judged against the listing's rows: a window launched or
+   * re-paned while the listing was in flight is absent from rows that
+   * predate it, and that absence proves nothing.
+   *
+   * @param {string} workspace
+   * @returns {Map<string, string|null>}
+   */
+  function sessionLaneObservationTargets(workspace) {
+    /** @type {Map<string, string|null>} */
+    const targets = new Map();
+    for (const [attempt_id, attempt] of Object.entries(
+      deps.store.snapshot(workspace).attempts || {}
+    )) {
+      const a = /** @type {any} */ (attempt);
+      if (sessionLaneJudgeable(attempt_id, a)) {
+        targets.set(attempt_id, a.interactive?.pane_id ?? null);
+      }
+    }
+    return targets;
+  }
+
+  /**
+   * Record what ONE successful session-lane marker listing says about the
+   * running session-lane attempts captured before it started (UI-lbm5 §4.4):
+   * a missing pane writes `interactive.gone_at`, the one fact
+   * {@link isDeadAttempt} reads. An attempt that left the capture — a launch
+   * that finished, a pane id that changed, a settlement that began while the
+   * listing ran — is skipped until the next observation.
    *
    * @param {string} workspace
    * @param {Array<{ pane: string, key: string, dead: string }>} rows
+   * @param {Map<string, string|null>} targets - From
+   * {@link sessionLaneObservationTargets}, taken before the listing.
    */
-  function observeSessionLaneAttempts(workspace, rows) {
+  function observeSessionLaneAttempts(workspace, rows, targets) {
     const at = now();
     let changed = false;
     for (const [attempt_id, attempt] of Object.entries(
@@ -9826,12 +10009,9 @@ export function createScheduler(deps) {
     )) {
       const a = /** @type {any} */ (attempt);
       if (
-        !a ||
-        a.exec !== 'session' ||
-        a.status !== 'running' ||
-        claimed.has(a.bead_id) ||
-        settling.has(attempt_id) ||
-        typeof a.interactive?.gone_at === 'number' ||
+        !targets.has(attempt_id) ||
+        !sessionLaneJudgeable(attempt_id, a) ||
+        (a.interactive?.pane_id ?? null) !== targets.get(attempt_id) ||
         sessionLanePaneAlive(rows, a)
       ) {
         continue;
@@ -10671,6 +10851,7 @@ export function createScheduler(deps) {
       /** @type {Record<string, import('./queue-store.js').InteractiveSession>} */ (
         deps.store.snapshot(workspace).interactive_sessions || {}
       );
+    const session_lane_targets = sessionLaneObservationTargets(workspace);
     const [
       resolve_panes,
       inquiry_panes,
@@ -10707,7 +10888,11 @@ export function createScheduler(deps) {
       external_resume: external_resume_panes.rows,
       session_lane: session_lane_panes.rows
     };
-    observeSessionLaneAttempts(workspace, panes.session_lane);
+    observeSessionLaneAttempts(
+      workspace,
+      panes.session_lane,
+      session_lane_targets
+    );
     /**
      * A launch may replace the same key while tmux I/O is in flight.
      *
@@ -11043,51 +11228,29 @@ export function createScheduler(deps) {
       ) {
         return;
       }
-      // The message identity lands BEFORE anything acts on it, so a restart
-      // mid-settlement never feeds the same line twice.
-      if (
-        !patchInteractiveRecord(workspace, key, record, {
-          conversation: {
-            ...conversation,
-            processed_message_at: message_at,
-            message_excerpt: message.excerpt ?? message.text
-          }
-        })
-      ) {
-        return;
-      }
-      mirrorSessionLaneTurn(workspace, attempt_id, record);
+      const processed = {
+        conversation: {
+          ...conversation,
+          processed_message_at: message_at,
+          message_excerpt: message.excerpt ?? message.text
+        }
+      };
       const verdict = sessionLaneVerdict(message);
       if (verdict === null) {
+        // An answer wait acts on nothing: its identity lands at once.
+        if (patchInteractiveRecord(workspace, key, record, processed)) {
+          mirrorSessionLaneTurn(workspace, attempt_id, record);
+        }
         return;
       }
-      appendTimeline({
-        bead_id: record.bead_id,
-        attempt_id,
-        kind: 'interactive_session',
-        seq: `${record.kind}:${record.launched_at}:result`,
-        summary: `세션 레인 결과 · ${verdict.summary ?? ''}`.trim()
-      });
-      try {
-        await onSessionDone(
-          workspace,
-          attempt_id,
-          record.bead_id,
-          /** @type {BeadSnapshot} */ (
-            /** @type {any} */ ({
-              repo: attempt.repo ?? '',
-              target_base: attempt.target_base ?? ''
-            })
-          ),
-          attempt.workflow_mode_prior ?? null,
-          verdict
-        );
-        await reportCompletionSettlement(workspace, attempt_id, verdict);
-      } catch (err) {
-        log('session lane settlement failed for %s: %o', attempt_id, err);
-        markSettlementFailed(workspace, attempt_id);
-      }
+      // A result line's identity lands only WITH the settlement's end. A
+      // restart mid-settlement finds the attempt still `running` and the line
+      // unprocessed, so the unfinished settlement runs again; once the
+      // terminal write landed, the not-running branch above settles the
+      // record instead — the line is never fed twice.
+      await settleSessionLaneVerdict(workspace, attempt_id, attempt, verdict);
       patchInteractiveRecord(workspace, key, record, {
+        ...processed,
         settled_at: now(),
         settled_by: 'done'
       });
@@ -11106,6 +11269,14 @@ export function createScheduler(deps) {
       const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
       const reader =
         deps.readLastAssistantMessage || defaultReadLastAssistantMessage;
+      // A session-lane window reads its transcript where its launch wrote it:
+      // under the attempt's account `CODEX_HOME` for codex (UI-lbm5 §4.3).
+      const sessions_root =
+        record.kind === SESSION_LANE_KIND && record.attempt_id
+          ? sessionLaneSessionsRoot(
+              deps.store.snapshot(workspace).attempts?.[record.attempt_id]
+            )
+          : null;
       try {
         const location = resolver(
           {
@@ -11114,7 +11285,11 @@ export function createScheduler(deps) {
             host: os.hostname(),
             index: 0
           },
-          { home_dir: deps.homeDir, hostname: os.hostname() }
+          {
+            home_dir: deps.homeDir,
+            hostname: os.hostname(),
+            ...(sessions_root ? { sessions_root } : {})
+          }
         );
         if (
           location.locality !== 'local' ||
