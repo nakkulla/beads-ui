@@ -870,6 +870,10 @@ afterEach(() => {
  * has none (`2026-09-02-worker-operation-surface-unify-design.md`: "Worker 탭에
  * `↑↓` nudge를 추가하지 않는다").
  *
+ * `[추천 배치]` (`worker-card__recommend`) is left out as §9 lists it: the
+ * Worker tab places by its repository's queue and the Monitor keeps the manual
+ * `[↴ 대기로]` menu only (UI-izba).
+ *
  * Nothing else is normalized: both tabs run on the same frozen clock, so the
  * relative-time text compares as drawn.
  *
@@ -894,7 +898,8 @@ function partsOf(card) {
     }
     if (
       el.classList.contains('worker-mini__rowops-up') ||
-      el.classList.contains('worker-mini__rowops-down')
+      el.classList.contains('worker-mini__rowops-down') ||
+      el.classList.contains('worker-card__recommend')
     ) {
       continue;
     }
@@ -1275,6 +1280,35 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
       )
     ).not.toBeNull();
     expect(monitor.querySelector('.worker-card__revive')).toBeNull();
+  });
+});
+
+describe('placement recommendation parity (UI-izba §4.7)', () => {
+  /** @returns {Record<string, any>} */
+  function placementPatch() {
+    return {
+      placement_status: { 'C-1': { state: 'ready', done: 1, total: 1 } },
+      placement_relations: {}
+    };
+  }
+
+  test('draws [추천 배치] on the Worker candidate card only, an intended difference (§9)', async () => {
+    const { worker, monitor } = await drawBothTabs(undefined, placementPatch());
+
+    expect(
+      worker.querySelector(
+        '.worker-card[data-bead-id="C-1"] .worker-card__recommend'
+      )
+    ).not.toBeNull();
+    expect(monitor.querySelector('.worker-card__recommend')).toBeNull();
+  });
+
+  test('keeps every other chip, badge and button the same with placement material', async () => {
+    const { worker, monitor } = await drawBothTabs(undefined, placementPatch());
+
+    expect(partsByBead(cardsByBead(monitor), SHARED_BEADS)).toEqual(
+      partsByBead(cardsByBead(worker), SHARED_BEADS)
+    );
   });
 });
 

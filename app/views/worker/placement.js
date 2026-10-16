@@ -10,10 +10,27 @@
  * admission 자체는 서버(`checkWorkerQueueAdmission`)가 그대로 소유한다 (§6.4).
  * 이 모듈이 정하는 것은 버튼을 활성으로 그릴지와 그 title 문장뿐이다.
  *
+ * 같은 모듈이 Worker 탭의 배치 추천 미리보기(UI-izba §4.7)도 소유한다: `[추천 배치]`의
+ * 켜짐·title, 근거 상자, 점선 카드, 전체 배치안 표와 그 전송이다. 자리 계산 자체는
+ * `app/utils/placement/compute.js`의 순수 함수다.
+ *
  * @import { PlaceMenuEntry } from './lanes.js'
+ * @import { PlacementStatus } from '../../../server/placement/wire.js'
+ * @import { PlacementLane, PlacementPlan, PlacementWarning, PlannedPlacement, RelationLine } from '../../utils/placement/compute.js'
  */
+import { html } from 'lit-html';
 import { resolveSpecEvidence } from '../../../server/spec-id.js';
 import { WORKFLOW_ROUTES } from '../../../server/worker/routes.js';
+import {
+  placementSendNotice,
+  sendPlacement,
+  sendPlacementBatch
+} from '../../utils/placement/apply.js';
+import { computePlacement } from '../../utils/placement/compute.js';
+import {
+  formatClockLocal,
+  formatTimestampLocal
+} from '../../utils/relative-time.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { runningLaneBeadIds } from './lane-model.js';
 
@@ -338,4 +355,843 @@ export function placeMenuLanes(queue) {
  */
 export function placeLaneLabel(lane) {
   return /^s[1-5]$/.test(lane) ? `직렬 ${lane.slice(1)}` : '병렬';
+}
+
+/**
+ * `[추천 배치]`의 켜짐과 title (UI-izba §4.7). `ready`일 때만 켜진다 — 고정 조건만의
+ * 기본안은 보여 주지 않는다 (사용자 결정 10).
+ *
+ * @param {PlacementStatus} status
+ * @returns {{ enabled: boolean, title: string }}
+ */
+export function recommendButtonState(status) {
+  switch (status.state) {
+    case 'ready':
+      return {
+        enabled: true,
+        title: '고정 조건과 jev 판정으로 계산한 자리를 대기 열에 미리 보입니다'
+      };
+    case 'pending':
+      return {
+        enabled: false,
+        title:
+          typeof status.total === 'number' && status.total > 0
+            ? `jev 판정 중 (${status.total}쌍 중 ${status.done ?? 0}쌍 완료)`
+            : 'jev 판정 중'
+      };
+    case 'unavailable':
+      return {
+        enabled: false,
+        title: status.reason === 'key_missing' ? 'jev 키 없음' : 'jev 응답 없음'
+      };
+    case 'fixed_only':
+      return {
+        enabled: false,
+        title: '고정 조건만 있음 — ⧉ 칩과 레인 순서로 이미 보임'
+      };
+    default:
+      return { enabled: false, title: '비교할 이슈 없음' };
+  }
+}
+
+/**
+ * Position line — "직렬 2 · #2 — UI-a7f2 뒤". 번호는 그 레인 대기 항목 안의 최종
+ * 순번이다 (blocks 정렬 뒤).
+ *
+ * @param {Pick<PlannedPlacement, 'lane'|'final_index'|'before'>} placement
+ * @returns {string}
+ */
+export function placementPositionText(placement) {
+  return `${placeLaneLabel(placement.lane)} · #${placement.final_index + 1} — ${
+    placement.before === null ? '맨 앞' : `${placement.before} 뒤`
+  }`;
+}
+
+/**
+ * Source tail of a reason line: `고정(blocks)`·`고정(scope 겹침: a)`·`jev 0.92`.
+ *
+ * @param {RelationLine} line
+ * @returns {string}
+ */
+function sourceText(line) {
+  if (line.source === 'fixed') {
+    if (line.basis === 'scope') {
+      return `고정(scope 겹침${
+        line.overlap && line.overlap.length > 0
+          ? `: ${line.overlap.join(', ')}`
+          : ''
+      })`;
+    }
+    return 'blocks' === line.basis ? '고정(blocks)' : '고정';
+  }
+  return `jev ${typeof line.confidence === 'number' ? line.confidence.toFixed(2) : '—'}`;
+}
+
+/**
+ * @param {string} other
+ * @param {string|null} kind
+ * @returns {string}
+ */
+function relationWords(other, kind) {
+  switch (kind) {
+    case 'c_first':
+      return `${other}보다 먼저`;
+    case 'x_first':
+      return `${other} 다음`;
+    case 'conflict':
+      return `${other} — 부딪힘`;
+    case 'independent':
+      return `${other} — 독립`;
+    default:
+      return `${other} — 관계 모름`;
+  }
+}
+
+/**
+ * One reason line. `참고` 줄(배치에 쓰지 않는 저확신 jev 답)은 jev의 첫 choice를
+ * 말한다.
+ *
+ * @param {RelationLine} line
+ * @param {boolean} [reference]
+ * @returns {string}
+ */
+export function relationLineText(line, reference = false) {
+  return reference
+    ? `참고: ${relationWords(line.other, line.jev_choice)} · ${sourceText(line)}`
+    : `${relationWords(line.other, line.relation)} · ${sourceText(line)}`;
+}
+
+/**
+ * One warning line of the box and the table.
+ *
+ * @param {PlacementWarning} warning
+ * @returns {string}
+ */
+export function placementWarningText(warning) {
+  switch (warning.code) {
+    case 'order_cycle':
+      return '⚠ 묶음 안 선후가 순환합니다 — 표시 순서대로 둡니다';
+    case 'order_unsatisfiable':
+      return '⚠ 이 레인 안의 선후 조건을 함께 만족할 수 없어 맨 뒤에 둡니다';
+    case 'blocks_reordered':
+      return '⚠ blocks 정렬이 자리를 옮겨 선후 조건이 어긋납니다';
+    default:
+      return `⚠ ${warning.other}(${placeLaneLabel(
+        warning.other_lane || 'parallel'
+      )})과 동시에 돌 수 있음 — 상대를 직렬 레인으로 옮기면 피할 수 있음`;
+  }
+}
+
+/**
+ * The line for a constraint with a candidate outside the chosen set (§4.6).
+ *
+ * @param {RelationLine} line
+ * @returns {string}
+ */
+export function outsideLineText(line) {
+  return `${line.other}(후보)와 부딪힘 — 함께 넣으려면 전체 배치안`;
+}
+
+/**
+ * @param {number|null} at
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+function judgedAtTemplate(at) {
+  if (typeof at !== 'number') {
+    return '';
+  }
+  return html`<span
+    class="worker-recommend__time"
+    title=${`jev 판정 ${formatTimestampLocal(at)}`}
+    >판정 ${formatClockLocal(at)}</span
+  >`;
+}
+
+/**
+ * The 근거 상자 under a candidate foot (§4.7): position line, reason lines,
+ * warnings, `[적용]`, ✕ and the judged-at time.
+ *
+ * @param {PlannedPlacement} placement
+ * @param {{ busy: boolean, notice: string|null }} state
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function recommendBoxTemplate(placement, state) {
+  return html`<div class="worker-recommend" data-bead-id=${placement.id}>
+    <div class="worker-recommend__pos">${placementPositionText(placement)}</div>
+    ${placement.reasons.map(
+      (line) =>
+        html`<div class="worker-recommend__line">
+          ${relationLineText(line)}
+        </div>`
+    )}${placement.references.map(
+      (line) =>
+        html`<div class="worker-recommend__line worker-recommend__line--ref">
+          ${relationLineText(line, true)}
+        </div>`
+    )}${placement.outside.map(
+      (line) =>
+        html`<div class="worker-recommend__line">${outsideLineText(line)}</div>`
+    )}${placement.warnings.map(
+      (warning) =>
+        html`<div class="worker-recommend__warn">
+          ${placementWarningText(warning)}
+        </div>`
+    )}${state.notice
+      ? html`<div class="worker-recommend__notice">${state.notice}</div>`
+      : ''}
+    <div class="worker-recommend__actions">
+      <button
+        type="button"
+        class="op-btn op-btn--primary worker-recommend__apply"
+        data-bead-id=${placement.id}
+        ?disabled=${state.busy}
+        title="이 자리에 넣습니다"
+      >
+        적용
+      </button>
+      ${judgedAtTemplate(placement.judged_at)}
+      <button
+        type="button"
+        class="op-btn op-btn--ghost op-btn--icon worker-recommend__close"
+        data-bead-id=${placement.id}
+        title="미리보기 닫기"
+        aria-label="미리보기 닫기"
+      >
+        ✕
+      </button>
+    </div>
+  </div>`;
+}
+
+/**
+ * One dotted preview card (§4.7): number, id, title. An overlay, not a lane
+ * member — no `data-bead-id`, no drag coordinates.
+ *
+ * @param {PlannedPlacement} placement
+ * @param {string} title
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function previewCardTemplate(placement, title) {
+  return html`<div
+    class="worker-card worker-card--static worker-card--preview"
+    data-preview-id=${placement.id}
+    aria-label=${`추천 자리 ${placement.number}: ${placement.id}`}
+  >
+    <div class="worker-card__head">
+      <span class="worker-card__preview-no">#${placement.number}</span>
+      <span class="worker-card__preview-id">${placement.id}</span>
+    </div>
+    ${title ? html`<div class="worker-card__title">${title}</div>` : ''}
+  </div>`;
+}
+
+/**
+ * Lay the dotted cards of one lane among its drawn rows. A lane the plan puts
+ * a candidate in is drawn in the plan's final lane order (`plan.layout`, the
+ * order after the store's blocks correction), so the preview shows the lane as
+ * `[적용]` will leave it; drawn rows the layout does not name keep their place
+ * at the end. A lane without a dotted card is drawn as it is.
+ *
+ * @param {Array<{ id: string, template: import('lit-html').TemplateResult }>} rows
+ * @param {PlacementLane} lane
+ * @param {PlacementPlan|null} plan
+ * @param {(id: string) => string} titleOf
+ * @returns {import('lit-html').TemplateResult[]}
+ */
+export function interleavePreview(rows, lane, plan, titleOf) {
+  const previews = new Map(
+    (plan ? plan.order : [])
+      .filter((item) => item.lane === lane)
+      .map((item) => [item.id, item])
+  );
+  if (!plan || previews.size === 0) {
+    return rows.map((row) => row.template);
+  }
+  const by_id = new Map(rows.map((row) => [row.id, row]));
+  /** @type {Set<string>} */
+  const placed = new Set();
+  /** @type {import('lit-html').TemplateResult[]} */
+  const out = [];
+  for (const id of plan.layout[lane] || []) {
+    const preview = previews.get(id);
+    const row = by_id.get(id);
+    if (preview) {
+      out.push(previewCardTemplate(preview, titleOf(id)));
+    } else if (row && !placed.has(id)) {
+      placed.add(id);
+      out.push(row.template);
+    }
+  }
+  for (const row of rows) {
+    if (!placed.has(row.id)) {
+      out.push(row.template);
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether the plan draws a dotted card in this lane.
+ *
+ * @param {PlacementPlan|null} plan
+ * @param {PlacementLane} lane
+ * @returns {boolean}
+ */
+export function planTargetsLane(plan, lane) {
+  return !!plan && plan.order.some((item) => item.lane === lane);
+}
+
+/**
+ * The slot material a Worker candidate card draws `[추천 배치]` from. Only the
+ * Worker tab hands it to `candidateCard` (사용자 결정 6).
+ *
+ * @typedef {Object} RecommendSlot
+ * @property {boolean} enabled
+ * @property {string} title
+ * @property {boolean} open
+ * @property {import('lit-html').TemplateResult|string} box
+ */
+
+/**
+ * @typedef {Object} PlacementPreviewOptions
+ * @property {((type: string, payload?: unknown) => Promise<any>)|undefined} transport
+ * @property {() => any} getQueue - The current `worker-queue` snapshot.
+ * @property {() => string} rootDir
+ * @property {() => Array<{ id: string, title?: string }>} candidates - The
+ * candidate lane in its sort order.
+ * @property {() => void} requestRender
+ * @property {(queue: any, root_dir: string) => void} adopt - Adopt a reply's
+ * queue for the workspace the send went to (captured at send time, so a reply
+ * that lands after a workspace switch cannot overwrite the new workspace).
+ * @property {(message: string, kind?: 'error'|'success'|'info'|'warning', ms?: number) => void} showToast
+ */
+
+/**
+ * The Worker tab's placement preview (UI-izba §4.7): the open box, the full
+ * plan, their sends and the controls that drive them. Every render recomputes
+ * from the current snapshot; nothing here is stored across reloads.
+ *
+ * @param {PlacementPreviewOptions} options
+ */
+export function createPlacementPreview(options) {
+  const { transport, getQueue, rootDir, candidates, requestRender, adopt } =
+    options;
+  /** @type {string|null} */
+  let open_id = null;
+  let full_open = false;
+  /** @type {Map<string, boolean>} */
+  const checks = new Map();
+  /** @type {{ id: string, text: string }|null} */
+  let box_notice = null;
+  /** @type {string|null} */
+  let plan_notice = null;
+  let busy = false;
+
+  /** @returns {Record<string, PlacementStatus>|null} */
+  function statusMap() {
+    const status = getQueue()?.placement_status;
+    return status && typeof status === 'object' ? status : null;
+  }
+
+  /** @returns {string[]} */
+  function displayOrder() {
+    return candidates().map((item) => item.id);
+  }
+
+  /**
+   * @param {string} id
+   * @returns {string}
+   */
+  function titleOf(id) {
+    const row = candidates().find((item) => item.id === id);
+    return row && typeof row.title === 'string' ? row.title : '';
+  }
+
+  /**
+   * @param {any} queue
+   * @param {string[]} chosen
+   * @returns {PlacementPlan}
+   */
+  function planOn(queue, chosen) {
+    return computePlacement({
+      queue,
+      relations: queue?.placement_relations,
+      display_order: displayOrder(),
+      chosen
+    });
+  }
+
+  /**
+   * @param {any} queue
+   * @returns {string[]}
+   */
+  function readyIds(queue) {
+    const status = queue?.placement_status;
+    if (!status || typeof status !== 'object') {
+      return [];
+    }
+    return Object.keys(status).filter((id) => status[id]?.state === 'ready');
+  }
+
+  /**
+   * The full plan on a snapshot: defaults come from the plan of every ready
+   * candidate, the reader's checks override them, and the plan itself is
+   * computed with the checked set only. `base` is the plan of every ready
+   * candidate: an unchecked row still shows its reasons and warnings from it,
+   * so the reader sees why it starts out unchecked.
+   *
+   * @param {any} queue
+   * @returns {{ plan: PlacementPlan, base: PlacementPlan, ready: string[], checked: Set<string> }}
+   */
+  function fullPlanOn(queue) {
+    const ready = readyIds(queue);
+    const base = planOn(queue, ready);
+    const checked = new Set(
+      ready.filter((id) => {
+        if (checks.has(id)) {
+          return checks.get(id) === true;
+        }
+        const item = base.by_id[id];
+        return !!item && item.warnings.length === 0 && !item.only_unknown;
+      })
+    );
+    return { plan: planOn(queue, [...checked]), base, ready, checked };
+  }
+
+  /**
+   * The open single preview, or null when its candidate is no longer ready.
+   *
+   * @returns {PlannedPlacement|null}
+   */
+  function openPlacement() {
+    if (open_id === null || statusMap()?.[open_id]?.state !== 'ready') {
+      return null;
+    }
+    return planOn(getQueue(), [open_id]).by_id[open_id] || null;
+  }
+
+  /**
+   * The plan whose dotted cards the waiting lanes draw now.
+   *
+   * @returns {PlacementPlan|null}
+   */
+  function activePlan() {
+    if (!statusMap()) {
+      return null;
+    }
+    if (full_open) {
+      return fullPlanOn(getQueue()).plan;
+    }
+    if (openPlacement()) {
+      return planOn(getQueue(), [/** @type {string} */ (open_id)]);
+    }
+    return null;
+  }
+
+  /** @param {string} id */
+  async function applyOne(id) {
+    const queue = getQueue();
+    const plan = planOn(queue, [id]);
+    const placement = plan.by_id[id];
+    if (!transport || !placement || busy) {
+      return;
+    }
+    busy = true;
+    box_notice = null;
+    requestRender();
+    const root_dir = rootDir();
+    const result = await sendPlacement({
+      transport,
+      root_dir,
+      placement,
+      revision: plan.revision,
+      recompute: (next) => planOn(next, [id]),
+      adopt: (next) => adopt(next, root_dir)
+    });
+    busy = false;
+    if (result.status === 'applied') {
+      open_id = null;
+    } else if (result.status === 'moved') {
+      box_notice = { id, text: '자리가 바뀌었습니다' };
+    } else {
+      const notice = placementSendNotice(result);
+      if (notice) {
+        options.showToast(notice, 'error');
+      }
+    }
+    requestRender();
+  }
+
+  async function applyAll() {
+    const queue = getQueue();
+    const shown = fullPlanOn(queue).plan.order;
+    if (!transport || shown.length === 0 || busy) {
+      return;
+    }
+    busy = true;
+    plan_notice = null;
+    requestRender();
+    const root_dir = rootDir();
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir,
+      shown,
+      queue,
+      recompute: planOn,
+      adopt: (next) => adopt(next, root_dir),
+      snapshot: getQueue
+    });
+    busy = false;
+    if (result.stopped === null) {
+      full_open = false;
+      checks.clear();
+      options.showToast(`${result.placed.length}건을 넣었습니다`, 'success');
+    } else {
+      const why =
+        result.stopped.cause === 'moved'
+          ? '자리가 바뀌었습니다'
+          : placementSendNotice(result.stopped.result) || '';
+      plan_notice = `${result.placed.length}건 넣음 — ${result.stopped.id}에서 멈춤: ${why}`;
+    }
+    requestRender();
+  }
+
+  async function rejudge() {
+    if (!transport) {
+      return;
+    }
+    const root_dir = rootDir();
+    try {
+      await transport('worker-placement-rejudge', root_dir ? { root_dir } : {});
+      options.showToast('jev 판정을 다시 요청했습니다', 'info', 2000);
+    } catch (error) {
+      const message =
+        error && typeof error === 'object' && 'message' in error
+          ? String(/** @type {any} */ (error).message)
+          : String(error);
+      options.showToast(`다시 판정하지 못했습니다: ${message}`, 'error');
+    }
+  }
+
+  return {
+    /**
+     * `[추천 배치]` material of one candidate card, or null when the snapshot
+     * carries no placement judgment (older server) or the candidate has no
+     * status entry (fail-quiet).
+     *
+     * @param {{ id: string }} item
+     * @returns {RecommendSlot|null}
+     */
+    cardSlot(item) {
+      const status = statusMap()?.[item.id];
+      if (!status || typeof status !== 'object') {
+        return null;
+      }
+      const state = recommendButtonState(status);
+      const placement =
+        !full_open && open_id === item.id ? openPlacement() : null;
+      return {
+        enabled: state.enabled,
+        title: state.title,
+        open: placement !== null,
+        box: placement
+          ? recommendBoxTemplate(placement, {
+              busy,
+              notice:
+                box_notice && box_notice.id === item.id ? box_notice.text : null
+            })
+          : ''
+      };
+    },
+    /**
+     * The drawn rows of one waiting lane with this render's dotted cards.
+     *
+     * @param {Array<{ id: string, template: import('lit-html').TemplateResult }>} rows
+     * @param {PlacementLane} lane
+     * @param {PlacementPlan|null} plan
+     * @returns {import('lit-html').TemplateResult[]}
+     */
+    laneRows(rows, lane, plan) {
+      return interleavePreview(rows, lane, plan, titleOf);
+    },
+    activePlan,
+    /**
+     * Waiting column header controls (§4.7): `[전체 배치안]`·`[↻ 다시 판정]` and
+     * the latest judged-at time. Nothing without placement material.
+     *
+     * @returns {import('lit-html').TemplateResult|string}
+     */
+    headerControls() {
+      const queue = getQueue();
+      if (!statusMap()) {
+        return '';
+      }
+      const any_ready = readyIds(queue).length > 0;
+      let latest = null;
+      for (const raw of Object.values(queue.placement_relations || {})) {
+        const at = /** @type {any} */ (raw)?.judged_at;
+        if (typeof at === 'number' && (latest === null || at > latest)) {
+          latest = at;
+        }
+      }
+      return html`<span class="worker-plan-controls">
+        <button
+          type="button"
+          class="op-btn worker-plan__open${full_open ? ' is-active' : ''}"
+          aria-pressed=${full_open ? 'true' : 'false'}
+          ?disabled=${!any_ready}
+          title=${any_ready
+            ? 'jev 판정이 끝난 후보 전부의 배치안을 봅니다'
+            : 'jev 판정이 끝난 후보가 없습니다'}
+        >
+          전체 배치안
+        </button>
+        <button
+          type="button"
+          class="op-btn worker-plan__rejudge"
+          title="이 저장소 후보의 jev 쌍 판정을 지우고 다시 받습니다"
+        >
+          ↻ 다시 판정
+        </button>
+        ${typeof latest === 'number'
+          ? html`<span
+              class="worker-plan__time"
+              title=${`마지막 jev 판정 ${formatTimestampLocal(latest)}`}
+              >판정 ${formatClockLocal(latest)}</span
+            >`
+          : ''}
+      </span>`;
+    },
+    /**
+     * The full plan table below the waiting column, or nothing while closed.
+     *
+     * @returns {import('lit-html').TemplateResult|string}
+     */
+    planTemplate() {
+      const status = statusMap();
+      if (!full_open || !status) {
+        return '';
+      }
+      const { plan, base, checked } = fullPlanOn(getQueue());
+      const rows = Object.keys(status).sort((a, b) => {
+        const order = displayOrder();
+        const ra = order.indexOf(a);
+        const rb = order.indexOf(b);
+        if (ra !== rb) {
+          return (ra < 0 ? Infinity : ra) - (rb < 0 ? Infinity : rb);
+        }
+        return a < b ? -1 : 1;
+      });
+      return html`<section class="worker-plan">
+        <table class="worker-plan__table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>후보</th>
+              <th>배치안</th>
+              <th>근거</th>
+              <th>포함</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((id) => {
+              const ready = status[id]?.state === 'ready';
+              const item = plan.by_id[id];
+              // An unchecked ready row keeps the reasons and warnings of the
+              // all-ready plan, so the reader sees why it was left out; only
+              // checked rows get a number, a dotted card and a send.
+              const explained = item || (ready ? base.by_id[id] : undefined);
+              return html`<tr
+                class="worker-plan__row${ready
+                  ? ''
+                  : ' worker-plan__row--pending'}"
+                data-bead-id=${id}
+              >
+                <td>${item ? item.number : ''}</td>
+                <td>
+                  <span class="worker-plan__id">${id}</span>
+                  ${titleOf(id)}
+                </td>
+                <td>
+                  ${!ready
+                    ? '판정 전'
+                    : item
+                      ? placementPositionText(item)
+                      : '포함 안 함'}
+                </td>
+                <td>
+                  ${explained
+                    ? [
+                        ...explained.reasons.map((line) =>
+                          relationLineText(line)
+                        ),
+                        ...explained.references.map((line) =>
+                          relationLineText(line, true)
+                        ),
+                        ...explained.outside.map((line) =>
+                          outsideLineText(line)
+                        ),
+                        ...explained.warnings.map((warning) =>
+                          placementWarningText(warning)
+                        )
+                      ].map(
+                        (text) =>
+                          html`<div class="worker-plan__line">${text}</div>`
+                      )
+                    : ready
+                      ? ''
+                      : recommendButtonState(status[id]).title}
+                </td>
+                <td>
+                  <input
+                    type="checkbox"
+                    class="worker-plan__include"
+                    data-bead-id=${id}
+                    aria-label=${`${id} 포함`}
+                    .checked=${checked.has(id)}
+                    ?disabled=${!ready || busy}
+                  />
+                </td>
+              </tr>`;
+            })}
+          </tbody>
+        </table>
+        ${plan_notice
+          ? html`<div class="worker-plan__notice">${plan_notice}</div>`
+          : ''}
+        <div class="worker-plan__actions">
+          <button
+            type="button"
+            class="op-btn op-btn--primary worker-plan__apply"
+            ?disabled=${plan.order.length === 0 || busy}
+            title="체크한 후보를 번호 순서대로 하나씩 넣습니다"
+          >
+            전체 적용 (${plan.order.length})
+          </button>
+          <button
+            type="button"
+            class="op-btn op-btn--ghost op-btn--icon worker-plan__close"
+            title="전체 배치안 닫기"
+            aria-label="전체 배치안 닫기"
+          >
+            ✕
+          </button>
+        </div>
+      </section>`;
+    },
+    /**
+     * Handle a click inside the Worker tab. True when this module took it.
+     *
+     * @param {HTMLElement|null} target
+     * @returns {boolean}
+     */
+    handleClick(target) {
+      if (!target || typeof target.closest !== 'function') {
+        return false;
+      }
+      const recommend = /** @type {HTMLButtonElement|null} */ (
+        target.closest('.worker-card__recommend')
+      );
+      if (recommend) {
+        const id = recommend.dataset.beadId || '';
+        if (id && !recommend.disabled) {
+          open_id = open_id === id ? null : id;
+          full_open = false;
+          box_notice = null;
+          requestRender();
+        }
+        return true;
+      }
+      const apply = /** @type {HTMLButtonElement|null} */ (
+        target.closest('.worker-recommend__apply')
+      );
+      if (apply) {
+        const id = apply.dataset.beadId || '';
+        if (id && !apply.disabled) {
+          void applyOne(id);
+        }
+        return true;
+      }
+      if (target.closest('.worker-recommend__close')) {
+        open_id = null;
+        box_notice = null;
+        requestRender();
+        return true;
+      }
+      const open_plan = /** @type {HTMLButtonElement|null} */ (
+        target.closest('.worker-plan__open')
+      );
+      if (open_plan) {
+        if (!open_plan.disabled) {
+          full_open = !full_open;
+          open_id = null;
+          checks.clear();
+          plan_notice = null;
+          requestRender();
+        }
+        return true;
+      }
+      if (target.closest('.worker-plan__close')) {
+        full_open = false;
+        plan_notice = null;
+        requestRender();
+        return true;
+      }
+      const apply_all = /** @type {HTMLButtonElement|null} */ (
+        target.closest('.worker-plan__apply')
+      );
+      if (apply_all) {
+        if (!apply_all.disabled) {
+          void applyAll();
+        }
+        return true;
+      }
+      if (target.closest('.worker-plan__rejudge')) {
+        void rejudge();
+        return true;
+      }
+      // The box and the table are not the card: a click inside them must not
+      // fall through to the card's open-detail default.
+      return !!target.closest('.worker-recommend, .worker-plan');
+    },
+    /**
+     * Handle a change event (the full plan's include checkboxes).
+     *
+     * @param {HTMLElement|null} target
+     * @returns {boolean}
+     */
+    handleChange(target) {
+      const box = /** @type {HTMLInputElement|null} */ (
+        target && typeof target.closest === 'function'
+          ? target.closest('.worker-plan__include')
+          : null
+      );
+      if (!box) {
+        return false;
+      }
+      const id = box.dataset.beadId || '';
+      if (id) {
+        checks.set(id, box.checked);
+        plan_notice = null;
+        requestRender();
+      }
+      return true;
+    },
+    /**
+     * Esc closes the open box and the full plan. True when something closed.
+     *
+     * @returns {boolean}
+     */
+    handleEscape() {
+      if (open_id === null && !full_open) {
+        return false;
+      }
+      open_id = null;
+      full_open = false;
+      box_notice = null;
+      plan_notice = null;
+      requestRender();
+      return true;
+    }
+  };
 }

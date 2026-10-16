@@ -86,6 +86,8 @@
     "app/utils/execution-defaults.js",
     "app/utils/plan-group.js",
     "app/utils/compare-problem-criteria.js",
+    "app/utils/scope-overlap.js",
+    "app/utils/placement/lane-order.js",
     "app/views/worker/blocker-ids.js",
     "app/data/closed-range.js",
     "app/data/keyed-patch.js",

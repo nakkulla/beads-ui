@@ -5699,6 +5699,123 @@ summary.repo-ops-log-viewer__attempt-head {
   opacity: 0.7;
 }
 
+/* 배치 추천 미리보기 (UI-izba §4.7). 점선 카드는 레인 구성원이 아니라 덧그림이라
+   같은 카드 상자에 점선 테두리만 바꾸고, 누르거나 끌 것이 없다는 것을 커서로도
+   말한다. */
+.worker-card--preview {
+  border-style: dotted;
+  border-color: var(--stage-plan-on);
+  background: transparent;
+  cursor: default;
+}
+
+.worker-card__preview-no {
+  color: var(--stage-plan-on);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+}
+
+.worker-card__preview-id {
+  color: var(--text-id-mono);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+}
+
+/* 근거 상자: 카드 foot 바로 아래. 조작은 `.op-btn` 부품이 크기를 정한다. */
+.worker-recommend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px dotted var(--stage-plan-dim);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+  cursor: default;
+}
+
+.worker-recommend__pos {
+  color: var(--text-title);
+  font-weight: 600;
+}
+
+.worker-recommend__line--ref {
+  color: var(--text-dim);
+}
+
+.worker-recommend__warn,
+.worker-recommend__notice,
+.worker-plan__notice {
+  color: var(--accent-warn);
+}
+
+.worker-recommend__actions,
+.worker-plan__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.worker-recommend__time,
+.worker-plan__time {
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+}
+
+.worker-recommend__close,
+.worker-plan__close {
+  margin-left: auto;
+}
+
+/* 대기 열 머리의 `[전체 배치안]`·`[↻ 다시 판정]`·판정 시각. */
+.worker-plan-controls {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-3);
+  text-transform: none;
+}
+
+/* 전체 배치안 표: 대기 열 아래. 좁은 폭에서는 표만 가로로 민다. */
+.worker-plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-4) 0;
+  overflow-x: auto;
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+.worker-plan__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.worker-plan__table th,
+.worker-plan__table td {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-panel);
+  text-align: left;
+  vertical-align: top;
+}
+
+.worker-plan__row--pending {
+  color: var(--text-dim);
+}
+
+.worker-plan__id {
+  margin-right: var(--sp-2);
+  color: var(--text-id-mono);
+  font-family: var(--font-mono);
+}
+
 .worker-pane__empty {
   padding: var(--sp-8);
   color: var(--text-dim);

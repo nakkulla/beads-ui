@@ -1,7 +1,8 @@
 ---
 id: UI-u6ud-5
 title: 배포 실행과 프런트엔드 빌드
-status: accepted
+status: superseded
+superseded_by: "UI-izba"
 date: 2026-09-23
 summary: "배포는 Worker의 저장소 지식 없는 durable operation 실행이고 저장소별 적용·확인은 핀된 base의 repo-ops [deploy] 스크립트가 소유한다; 자동 해소 사다리는 script_retry 한 단계 상시이고 수동 [배포 실행] 버튼이 있으며 병렬성 분석·reconciler·release 디렉터리는 없다; 프런트엔드 번들은 tracked가 아니고 배포·verify·prepack이 빌드하며 정적 모드 서버는 번들 부재 시 안내 종료하고 자동 빌드하지 않는다"
 supersedes: [10, 9, 51]

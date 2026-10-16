@@ -130,6 +130,7 @@ import {
   handleWorkerMergeQueueAddAll,
   handleWorkerMergeQueueRemove,
   handleWorkerMergeShelve,
+  handleWorkerPlacementRejudge,
   handleWorkerPrDiscard,
   handleWorkerProviderLimitPolicySet,
   handleWorkerProviderProbeNow,
@@ -620,6 +621,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-place-plan':
       await handleWorkerQueuePlacePlan(ws, req);
+      return;
+    case 'worker-placement-rejudge':
+      await handleWorkerPlacementRejudge(ws, req);
       return;
     case 'worker-queue-reorder':
       handleWorkerQueueReorder(ws, req);

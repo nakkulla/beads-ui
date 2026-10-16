@@ -5020,9 +5020,14 @@ export { AWAITING_USER_REASON_PREFIX } from '../../utils/awaiting-user-reason.js
  * `options.revive`는 「보류 N」 선반만 넘긴다 (UI-0d9i §3.5): 같은 변형을 쓰는
  * 「자동 점검」 선반 카드에는 foot의 `↺ 되살리기`가 서지 않는다.
  *
+ * `options.recommend`는 Worker 탭만 넘긴다 (UI-izba §4.7, 사용자 결정 6): 슬롯 6
+ * `[↴ 대기로]` 바로 앞의 `[추천 배치]`와 foot 아래 근거 상자다. 렌더러는 두 탭이
+ * 공유하므로 이 명시 옵션이 Worker 전용 게이트다 — 모니터와 이슈 상세는 넘기지
+ * 않아 버튼이 서지 않는다. 값이 없으면(구서버·상태 없는 후보) 그리지 않는다.
+ *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
- * @param {{ onOpenDoc?: import('../stepper.js').OpenDocHandler, variant?: 'deferred', revive?: boolean, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [options]
+ * @param {{ onOpenDoc?: import('../stepper.js').OpenDocHandler, variant?: 'deferred', revive?: boolean, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null, recommend?: import('./placement.js').RecommendSlot|null }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {
@@ -5044,6 +5049,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
     !worker_ineligible;
   const menu_open =
     queue_placeable && place_menu && place_menu.bead_id === item.id;
+  const recommend = !is_deferred ? options.recommend || null : null;
   // 계약상 `worker-ineligible`과 상호배타이므로 머리줄의 같은 자리 하나를 나눠
   // 쓴다 (UI-49mc §4.1). 우선순위는 투영이 이미 접었고, 이 라벨은 drag·적재·음영
   // 어디에도 입력되지 않는다.
@@ -5268,8 +5274,22 @@ export function candidateCard(item, place_menu = null, options = {}) {
                 : html` <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 후보 레인에서 대기로 가는
                  유일한 경로다 (UI-d13v §6). queue_placeable 하나가 준비도
                  세그먼트와 같은 자격을 말하며, blocked 자체는 막지 않는다.
-                 포인터 종류로 감추지 않는다: 드래그라는 대체 경로가 없다. -->
-                    <button
+                 포인터 종류로 감추지 않는다: 드래그라는 대체 경로가 없다.
+                 [추천 배치]는 그 바로 앞이다 (UI-izba §4.7). -->
+                    ${recommend
+                      ? html`<button
+                          type="button"
+                          class="op-btn worker-card__recommend${recommend.open
+                            ? ' is-active'
+                            : ''}"
+                          data-bead-id=${item.id}
+                          aria-expanded=${recommend.open ? 'true' : 'false'}
+                          ?disabled=${!recommend.enabled || !queue_placeable}
+                          title=${recommend.title}
+                        >
+                          추천 배치
+                        </button>`
+                      : ''}<button
                       type="button"
                       class="op-btn op-btn--primary worker-card__place"
                       data-bead-id=${item.id}
@@ -5287,7 +5307,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
                     </button>`}`}${discardActionsTemplate(
             item
           )}${discardReceiptTemplate(item)}
-        </div>`}
+        </div>`}${recommend && recommend.open ? recommend.box : ''}
     ${external.times}${timesMeta(item)}
   </div>`;
 }
@@ -5319,7 +5339,10 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * 헤더 토글은 두 탭 모두 공용 버튼 부품 `.op-btn`으로 그린다 (UI-kqta §3.3,
  * UI-k5s2).
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, shelf?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler }} pane
+ * `recommend` is the Worker tab's `[추천 배치]` material per candidate (UI-izba
+ * §4.7); a pane without it draws candidate cards exactly as before.
+ *
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, shelf?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler, recommend?: (item: MiniItem) => import('./placement.js').RecommendSlot|null }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -5377,7 +5400,10 @@ export function paneTemplate(pane) {
                 : pane.items.map((it) =>
                     pane.lane === 'candidate'
                       ? candidateCard(it, pane.place_menu, {
-                          onOpenDoc: pane.onOpenDoc
+                          onOpenDoc: pane.onOpenDoc,
+                          ...(pane.recommend
+                            ? { recommend: pane.recommend(it) }
+                            : {})
                         })
                       : miniRow(it)
                   )}
