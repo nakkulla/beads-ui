@@ -80,6 +80,64 @@ describe('issue material', () => {
 
     expect(state.length).toBe(STATE_CAP);
   });
+
+  test('keeps the overlap line in a pair state over the cap', () => {
+    const text = 'y'.repeat(ISSUE_MATERIAL_CAP);
+
+    const state = pairState('UI-1', text, 'UI-2', text, [
+      'tests',
+      'app/styles.css'
+    ]);
+
+    expect(
+      state.startsWith('Declared scopes overlap on: tests, app/styles.css\n')
+    ).toBe(true);
+    expect(state.length).toBe(STATE_CAP);
+  });
+
+  test('leaves the overlap line out when the scopes do not overlap', () => {
+    const state = pairState('UI-1', 'x', 'UI-2', 'y', []);
+
+    expect(state).toBe('A (UI-1):\nx\n\nB (UI-2):\ny');
+  });
+
+  test('changes the digest when the declared scope changes under a long description', () => {
+    const long = 'x'.repeat(ISSUE_MATERIAL_CAP * 2);
+    const before = issueMaterial(row({ description: long }), '', null, ['a/']);
+
+    const after = issueMaterial(row({ description: long }), '', null, ['b/']);
+
+    expect(after?.digest).not.toBe(before?.digest);
+  });
+
+  test('changes the digest when a scope path past the material cap changes', () => {
+    const head = Array.from({ length: 2000 }, (_, i) => `dir-${i}/`);
+    const before = issueMaterial(row(), '', null, [...head, 'tail-a/']);
+
+    const after = issueMaterial(row(), '', null, [...head, 'tail-b/']);
+
+    expect(after?.text).toBe(before?.text);
+    expect(after?.digest).not.toBe(before?.digest);
+  });
+
+  test('changes the digest when an unknown scope fills in as empty', () => {
+    const before = issueMaterial(row(), '', null, undefined);
+
+    const after = issueMaterial(row(), '', null, []);
+
+    expect(JSON.parse(/** @type {any} */ (after).text).declared_scope).toEqual(
+      []
+    );
+    expect(after?.digest).not.toBe(before?.digest);
+  });
+
+  test('has no declared scope field when the scope is unknown', () => {
+    const material = issueMaterial(row(), '', null, undefined);
+
+    expect(JSON.parse(/** @type {any} */ (material).text)).not.toHaveProperty(
+      'declared_scope'
+    );
+  });
 });
 
 describe('spec sections', () => {

@@ -1,7 +1,8 @@
 ---
 id: UI-izba
 title: jev 쌍 판정 대기열 배치 추천과 배포·빌드
-status: accepted
+status: superseded
+superseded_by: UI-i7k9
 date: 2026-10-16
 summary: "Worker 대기열 배치 추천은 서버가 jev 쌍 판정(두 이슈 재료 digest로 캐시)과 고정 조건(blocks·scope 겹침)으로 쌍 관계를 만들고 화면이 현재 큐·후보 순서로 자리를 계산해 Worker 탭 후보 카드의 별도 [추천 배치] 버튼을 누를 때 점선 미리보기로 보이고([↴ 대기로] 수동 메뉴는 그대로) 레인에는 사람의 [적용]·[전체 적용]만 쓴다; 큐 변화는 jev를 부르지 않고 추천은 blocks 의존을 쓰지 않으며 질문 정의는 beads-ui 서버에 둔다; UI-u6ud-5의 나머지 조항(배포·빌드)은 그대로다"
 supersedes: ["UI-u6ud-5"]

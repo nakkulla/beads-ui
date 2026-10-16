@@ -75,9 +75,10 @@ function readyIssue(id, created_at) {
  * @param {string} x
  * @param {string} kind
  * @param {number} [confidence]
+ * @param {string[]} [overlap]
  * @returns {[string, any]}
  */
-function rel(c, x, kind, confidence = 0.9) {
+function rel(c, x, kind, confidence = 0.9, overlap = []) {
   const [a, b] = c < x ? [c, x] : [x, c];
   const wire =
     kind === 'c_first'
@@ -96,6 +97,7 @@ function rel(c, x, kind, confidence = 0.9) {
       b,
       relation: confidence >= 0.8 ? wire : 'unknown',
       source: 'jev',
+      ...(overlap.length > 0 ? { overlap } : {}),
       confidence,
       jev_choice: wire,
       judged_at: Date.UTC(2026, 9, 16, 3, 4)
@@ -830,6 +832,31 @@ describe('전체 배치안 explanations', () => {
         card.getAttribute('data-preview-id')
       )
     ).toEqual(['RD-1']);
+  });
+});
+
+describe('reason line overlap', () => {
+  test('appends the overlap to a jev reason line', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'S2-1', 'x_first'),
+          rel('RD-1', 'RD-3', 'independent', 0.93, ['tests', 'app/styles.css']),
+          rel('RD-3', 'P-1', 'independent')
+        ])
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-plan__row[data-bead-id="RD-1"]')
+    );
+    expect(row.textContent).toContain(
+      'RD-3 — 독립 · jev 0.93 (겹침: tests, app/styles.css)'
+    );
+    expect(row.textContent).not.toContain('고정(scope');
   });
 });
 

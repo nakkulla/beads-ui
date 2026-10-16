@@ -70,7 +70,7 @@ describe('fixed relations', () => {
     expect(out.relations['UI-a|UI-b'].relation).toBe('b_first');
   });
 
-  test('marks overlapping declared scopes as a conflict with the prefixes', () => {
+  test('relates a scope-only overlap through jev', () => {
     const facts = input({
       candidates: ['UI-1', 'UI-2'],
       scopes: { 'UI-1': ['server/worker/'], 'UI-2': ['server/worker/a.js'] }
@@ -78,28 +78,60 @@ describe('fixed relations', () => {
 
     const out = placementRelations(facts);
 
-    expect(out.relations['UI-1|UI-2']).toMatchObject({
-      relation: 'conflict',
-      source: 'fixed',
-      basis: 'scope',
-      overlap: ['server/worker/a.js']
-    });
+    expect(out.relations['UI-1|UI-2']).toBeUndefined();
+    expect(out.jev_pairs).toEqual([
+      { a: 'UI-1', b: 'UI-2', overlap: ['server/worker/a.js'] }
+    ]);
+    expect(out.progress).toEqual({ done: 0, total: 1 });
   });
 
-  test('leaves two beads of one spec to jev like the overlap chip does', () => {
+  test('keeps a blocks pair fixed and unasked', () => {
+    const judgmentFor = vi.fn(() => answered('independent', 0.99));
     const facts = input({
       candidates: ['UI-1', 'UI-2'],
+      blocked_by: { 'UI-2': ['UI-1'] },
       scopes: { 'UI-1': ['server/worker/'], 'UI-2': ['server/worker/a.js'] },
-      sources: {
-        'UI-1': { spec_path: 'docs/s.md', plan_path: '' },
-        'UI-2': { spec_path: 'docs/s.md', plan_path: '' }
-      }
+      judgmentFor
     });
 
     const out = placementRelations(facts);
 
-    expect(out.relations['UI-1|UI-2']).toBeUndefined();
-    expect(out.jev_pairs).toEqual([{ a: 'UI-1', b: 'UI-2' }]);
+    expect(out.relations['UI-1|UI-2']).toMatchObject({
+      relation: 'a_first',
+      source: 'fixed',
+      basis: 'blocks'
+    });
+    expect(out.relations['UI-1|UI-2'].overlap).toBeUndefined();
+    expect(out.jev_pairs).toEqual([]);
+    expect(judgmentFor).not.toHaveBeenCalled();
+  });
+
+  test('ships the overlap on a jev relation', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['tests'], 'UI-2': ['tests/a.test.js', 'app/'] },
+      judgmentFor: () => answered('independent', 0.93)
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toMatchObject({
+      relation: 'independent',
+      source: 'jev',
+      overlap: ['tests/a.test.js']
+    });
+  });
+
+  test('leaves the overlap off a jev relation without one', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['app/'], 'UI-2': ['server/'] },
+      judgmentFor: () => answered('independent', 0.93)
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2'].overlap).toBeUndefined();
   });
 
   test('keeps a fixed pair away from jev even with a cached answer', () => {
@@ -281,11 +313,11 @@ describe('candidate states', () => {
     });
   });
 
-  test('reads fixed_only when fixed conditions decide every pair', () => {
+  test('reads fixed_only when blocks edges decide every pair', () => {
     const facts = input({
       candidates: ['UI-1'],
       members: ['UI-2'],
-      scopes: { 'UI-1': ['app/'], 'UI-2': ['app/x.js'] }
+      blocked_by: { 'UI-1': ['UI-2'] }
     });
 
     const out = placementRelations(facts);

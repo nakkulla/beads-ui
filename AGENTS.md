@@ -32,7 +32,7 @@
 `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md`(§2 줄
 순서, §5.1 슬롯 표), `2026-08-28-chip-grammar-unify-design.md`(칩 클릭 의미),
 `2026-09-02-worker-operation-surface-unify-design.md`(§3.2 `.op-btn`). 슬롯이
-없는 새 라벨·칩·버튼은 스펙을 먼저 갱신해 슬롯을 정한 뒤 단다(ADR UI-lbm5).
+없는 새 라벨·칩·버튼은 스펙을 먼저 갱신해 슬롯을 정한 뒤 단다(ADR UI-i7k9).
 재료가 없는 줄은 그리지 않는다(fail-quiet).
 `[세션에서 해결]`·`[워커로 이어가기]`의 유무는 `tileResolveFields` 하나가 정한다
 — 렌더러는 다시 판정하지 않는다.
@@ -85,7 +85,7 @@
 ## Post-Merge Runtime Validation
 
 - 머지는 완료가 아니다: 이 저장소는 공유 서비스 배포까지 마쳐야 완료다. 배포
-  선언은 핀된 base SHA의 `repo-ops/config.toml` `[deploy]`(ADR UI-izba)이고,
+  선언은 핀된 base SHA의 `repo-ops/config.toml` `[deploy]`(ADR UI-i7k9)이고,
   Worker가 추적하는 Bead PR 머지는 관측 후 Worker가 배포·정리한다. 실패
   사다리·자동 처리 범위의 정본은 dotfiles이며 이 저장소는 핀 사본
   `generated/contracts/repo-operation-policy.json`만 읽는다.

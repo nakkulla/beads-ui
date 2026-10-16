@@ -1,7 +1,8 @@
 ---
 id: UI-lbm5
 title: Worker 대기열 세션 레인
-status: accepted
+status: superseded
+superseded_by: UI-i7k9
 date: 2026-10-16
 summary: "worker-ineligible과 exec_lane=session인 session-preferred 이슈는 Worker 대기열에서 세션 레인으로 실행된다 — 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처) headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열리며, 생존은 isDeadAttempt가 마커 pane 관측으로 판정하고(관측 실패는 생존) 결과는 종단 결과 줄로 headless와 같은 판정을 탄다; 결과 줄 없는 창 소멸은 클릭 전용 session_exited 실패이고 재개는 세션 레인 attempt의 ↻ 이어하기이며 일시정지는 없다 — UI-1eag의 나머지 조항은 그대로다"
 supersedes: ["UI-1eag"]
