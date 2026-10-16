@@ -676,9 +676,9 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   jev pairs whenever there is at least one. Non-persisted, never carries issue
   text or the jev key. Both keys are absent when the server runs no placement
   judgment (older server, or none installed); a placeable 후보 without a
-  `placement_status` entry is 모름. Only a workspace with a worker-queue
-  subscriber schedules jev calls; the monitor channel carries the same keys from
-  the same cache.
+  `placement_status` entry is 모름 and draws no `[추천 배치]`. Only a workspace
+  with a worker-queue subscriber schedules jev calls; the monitor channel
+  carries the same keys from the same cache.
 
 - `session_active[]` (UI-0a2m) is the SAME per-repo bucket the monitor
   aggregation ships (UI-yrzu §4.1, row shape and semantics above): beads an

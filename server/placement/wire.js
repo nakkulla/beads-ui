@@ -81,7 +81,7 @@
  * The two worker-queue snapshot fields. Both are absent on a server without the
  * feature (or with it uninstalled), which the browser reads as "draw no
  * [추천 배치]". A placeable candidate with no `placement_status` entry is 모름
- * and is drawn disabled.
+ * and draws no [추천 배치] either.
  *
  * @typedef {Object} PlacementWire
  * @property {Record<string, PlacementRelation>} placement_relations - Keyed by
