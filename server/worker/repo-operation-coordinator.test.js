@@ -5642,6 +5642,210 @@ describe('post-merge job operations (UI-i60a §2)', () => {
       store.snapshot(root).repo_operations[second.operation_id]
     ).toMatchObject({ kind: 'job', state: 'queued' });
   });
+
+  test('aligns a job at the observed advanced HEAD without moving the worktree', async () => {
+    const worktree = worktreeAt({ head: ADVANCED_HEAD });
+    const { store, coordinator } = coordinatorFor({ deployWorktree: worktree });
+
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(
+      jobRequest({ target_sha: ADVANCED_HEAD })
+    );
+
+    expect(worktree.ensureAligned).toHaveBeenCalledWith(
+      expect.objectContaining({ target_sha: ADVANCED_HEAD })
+    );
+    expect(
+      store.snapshot(root).repo_operations[prepared.operation_id]
+    ).toMatchObject({
+      target_sha: ADVANCED_HEAD,
+      subjects: [{ bead_id: 'UI-1', merged_sha: ADVANCED_HEAD }]
+    });
+  });
+});
+
+describe('post-merge job deploy HEAD observation (UI-1eag §3.2)', () => {
+  const FORK = '9'.repeat(40);
+
+  /**
+   * A deploy worktree at `head` whose fresh base fetch answers `tip`.
+   *
+   * @param {{ head?: string|null, tip?: string, readable?: boolean }} [state]
+   */
+  function deployAt(state = {}) {
+    return {
+      bindTarget: vi.fn(async () => ({
+        ok: true,
+        target_sha: state.tip ?? FINAL
+      })),
+      readState: vi.fn(async () =>
+        state.readable === false
+          ? { ok: false, head: null, clean: false }
+          : { ok: true, head: state.head ?? null, clean: true }
+      ),
+      ensureAligned: vi.fn(),
+      verifyAligned: vi.fn(),
+      verifyCovered: vi.fn()
+    };
+  }
+
+  /**
+   * @param {ReturnType<typeof deployAt>} worktree
+   * @param {Record<string, boolean|'error'>} [pairs]
+   */
+  function observerFor(worktree, pairs = {}) {
+    return coordinatorFor({
+      gitRun: gitWithAncestry(pairs),
+      deployWorktree: worktree
+    }).coordinator;
+  }
+
+  test('keeps the merged commit when no deploy worktree exists yet', async () => {
+    const coordinator = observerFor(deployAt({ head: null }));
+
+    const head = await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(head).toBeNull();
+  });
+
+  test('keeps the merged commit when the deploy HEAD is the merged commit', async () => {
+    const coordinator = observerFor(deployAt({ head: TARGET }));
+
+    const head = await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(head).toBeNull();
+  });
+
+  test('keeps the merged commit when the deploy HEAD is its ancestor', async () => {
+    const coordinator = observerFor(deployAt({ head: BASE }), {
+      [`${TARGET}->${BASE}`]: false,
+      [`${BASE}->${TARGET}`]: true
+    });
+
+    const head = await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(head).toBeNull();
+  });
+
+  test('answers a strictly descending deploy HEAD the fetched base contains', async () => {
+    const coordinator = observerFor(deployAt({ head: ADVANCED_HEAD }), {
+      [`${TARGET}->${ADVANCED_HEAD}`]: true,
+      [`${ADVANCED_HEAD}->${FINAL}`]: true
+    });
+
+    const head = await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(head).toBe(ADVANCED_HEAD);
+  });
+
+  test('answers a descending deploy HEAD that is the fetched base tip itself', async () => {
+    const coordinator = observerFor(
+      deployAt({ head: ADVANCED_HEAD, tip: ADVANCED_HEAD }),
+      { [`${TARGET}->${ADVANCED_HEAD}`]: true }
+    );
+
+    const head = await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(head).toBe(ADVANCED_HEAD);
+  });
+
+  test('fetches the target base the job names before answering', async () => {
+    const worktree = deployAt({ head: ADVANCED_HEAD });
+    const coordinator = observerFor(worktree, {
+      [`${TARGET}->${ADVANCED_HEAD}`]: true
+    });
+
+    await coordinator.eligibleJobHead({
+      target_base: 'release',
+      merge_sha: TARGET
+    });
+
+    expect(worktree.bindTarget).toHaveBeenCalledWith({
+      repo: root,
+      base: 'release'
+    });
+  });
+
+  test('keeps the merged commit when the deploy HEAD is unrelated to it', async () => {
+    const coordinator = observerFor(deployAt({ head: HEAD }), {
+      [`${TARGET}->${HEAD}`]: false,
+      [`${HEAD}->${TARGET}`]: false
+    });
+
+    const head = await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(head).toBeNull();
+  });
+
+  test('keeps the merged commit when the fetched base does not contain the deploy HEAD', async () => {
+    const coordinator = observerFor(deployAt({ head: FORK }), {
+      [`${TARGET}->${FORK}`]: true,
+      [`${FORK}->${FINAL}`]: false
+    });
+
+    const head = await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(head).toBeNull();
+  });
+
+  test('keeps the merged commit when the ancestry probe cannot decide', async () => {
+    const coordinator = observerFor(deployAt({ head: ADVANCED_HEAD }), {
+      [`${TARGET}->${ADVANCED_HEAD}`]: 'error'
+    });
+
+    const head = await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(head).toBeNull();
+  });
+
+  test('keeps the merged commit when the deploy worktree is unreadable', async () => {
+    const coordinator = observerFor(deployAt({ readable: false }));
+
+    const head = await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(head).toBeNull();
+  });
+
+  test('moves no worktree while observing the deploy HEAD', async () => {
+    const worktree = deployAt({ head: ADVANCED_HEAD });
+    const coordinator = observerFor(worktree, {
+      [`${TARGET}->${ADVANCED_HEAD}`]: true
+    });
+
+    await coordinator.eligibleJobHead({
+      target_base: 'main',
+      merge_sha: TARGET
+    });
+
+    expect(worktree.ensureAligned).not.toHaveBeenCalled();
+  });
 });
 
 describe('automatic run failures stay unannounced here (UI-jw27 §2)', () => {

@@ -2501,6 +2501,82 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * The deploy worktree HEAD a post-merge job landed at `merge_sha` resolves
+   * its name in (UI-1eag §3.2), or null to keep the landed commit as the target.
+   *
+   * Only a HEAD that strictly descends from the landed commit AND is contained
+   * in the freshly fetched target base qualifies. Every other relation — no
+   * worktree yet, the landed commit itself, an older HEAD, an unrelated one, a
+   * HEAD the base does not hold, or a probe that cannot decide — answers null,
+   * which leaves {@link alignJobWorktree} to align forward or refuse exactly as
+   * it did before. The answer is an observation for judgment only: the exact
+   * HEAD read inside the deploy lock at prepare and at launch stays the
+   * authority, so a HEAD that moves after this read is refused there, and
+   * nothing here ever moves the worktree.
+   *
+   * @param {{ target_base: string, merge_sha: string }} input
+   * @returns {Promise<string|null>}
+   */
+  async function eligibleJobHead(input) {
+    if (
+      typeof deploy_worktree.readState !== 'function' ||
+      typeof deploy_worktree.bindTarget !== 'function' ||
+      typeof input.target_base !== 'string' ||
+      input.target_base.length === 0 ||
+      typeof input.merge_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(input.merge_sha)
+    ) {
+      return null;
+    }
+    const merge_sha = input.merge_sha.toLowerCase();
+    /** @type {any} */
+    let state;
+    try {
+      state = await deploy_worktree.readState({ repo: deps.repo });
+    } catch {
+      return null;
+    }
+    if (
+      !state ||
+      state.ok !== true ||
+      typeof state.head !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(state.head)
+    ) {
+      return null;
+    }
+    const head = state.head.toLowerCase();
+    if (
+      head === merge_sha ||
+      (await ancestryStatus(merge_sha, head)) !== 'ancestor'
+    ) {
+      return null;
+    }
+    /** @type {any} */
+    let bound;
+    try {
+      bound = await deploy_worktree.bindTarget({
+        repo: deps.repo,
+        base: input.target_base
+      });
+    } catch {
+      return null;
+    }
+    if (
+      !bound ||
+      bound.ok !== true ||
+      typeof bound.target_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(bound.target_sha)
+    ) {
+      return null;
+    }
+    const tip = bound.target_sha.toLowerCase();
+    if (tip !== head && (await ancestryStatus(head, tip)) !== 'ancestor') {
+      return null;
+    }
+    return head;
+  }
+
+  /**
    * Phase 1 of a job run: prove the target is runnable and write the durable
    * record, WITHOUT spawning. The caller writes the ledger `intent` naming the
    * returned operation before calling {@link launchJob}, which is what makes a
@@ -4045,6 +4121,7 @@ export function createRepoOperationCoordinator(deps) {
     findCleanupVerifyOperation,
     deploymentEvidence,
     waitForDeployTerminal,
+    eligibleJobHead,
     prepareJob,
     launchJob,
     reconcileJob,

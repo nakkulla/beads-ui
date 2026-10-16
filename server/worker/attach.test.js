@@ -1821,8 +1821,23 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(resume).toHaveBeenCalledWith(
       path.resolve(WS),
       'att-9',
-      continuation
+      expect.objectContaining(continuation)
     );
+  });
+
+  test('marks the resume click as the person authority to re-run a post-merge job', async () => {
+    const resume = vi.fn(async () => ({ ok: true, attempt_id: 'att-9' }));
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({ scheduler: { resume } })
+    );
+
+    await resumeWorkerAttempt(WS, 'att-9', { continuation: 'auto' });
+
+    expect(resume).toHaveBeenCalledWith(path.resolve(WS), 'att-9', {
+      continuation: 'auto',
+      job_retry_authorized: true
+    });
   });
 
   test('startWorkerRepoOperationDeployRun delegates to the coordinator', async () => {

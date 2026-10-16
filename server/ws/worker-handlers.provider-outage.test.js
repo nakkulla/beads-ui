@@ -730,7 +730,8 @@ describe('worker attempt resume override handler', () => {
         model: 'opus-4.8',
         effort: 'xhigh',
         claude_account: 'next@example.com'
-      }
+      },
+      job_retry_authorized: true
     });
     expect(sent(socket)[0].payload).toMatchObject({
       resumed: true,
@@ -773,7 +774,8 @@ describe('worker attempt resume override handler', () => {
         runner: 'codex',
         model: 'sol',
         codex_account: 'acct-2'
-      }
+      },
+      job_retry_authorized: true
     });
   });
 });

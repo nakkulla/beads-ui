@@ -599,7 +599,18 @@ describe('worker e2e — full success flow', () => {
 });
 
 describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => {
-  test('enqueue → dispatch → resolved 관측 → landing → done', async () => {
+  /** The one post-merge job file a job-bearing landing commits. */
+  const E2E_JOB_PATH = 'repo-ops/post-merge.d/10-e2e';
+
+  /**
+   * Run one Worker-dispatched quick_fix from enqueue to `done` over a REAL
+   * base push and the real scheduler, queue store and landing settlement.
+   * With `job`, the landed commit also carries one `repo-ops/post-merge.d/`
+   * file and the coordinator fake gains its job lane (UI-1eag §3.1).
+   *
+   * @param {{ job?: boolean }} [options]
+   */
+  async function landQuickfix(options = {}) {
     const bead_id = 'QF-e2e';
     const runtime = createWorkerRuntime();
     const bd = makeFakeBd({
@@ -620,6 +631,12 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
     let pr_wait_events = 0;
     let config_checks = 0;
     let deploy_calls = 0;
+    /** @type {any[]} */
+    const prepared_jobs = [];
+    /** @type {string|null} */
+    let job_blob = null;
+    /** @type {string[]} */
+    const landing_steps = [];
 
     const worktree = {
       add: async (/** @type {{ bead_id: string, base: string }} */ input) => {
@@ -643,6 +660,11 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
           throw new Error(`worktree add failed: ${added.stderr}`);
         }
         fs.writeFileSync(path.join(worktree_path, 'quickfix.txt'), 'landed\n');
+        if (options.job) {
+          const job_file = path.join(worktree_path, E2E_JOB_PATH);
+          fs.mkdirSync(path.dirname(job_file), { recursive: true });
+          fs.writeFileSync(job_file, '#!/bin/sh\necho e2e\n', { mode: 0o755 });
+        }
         const staged = await gitRun(['add', '.'], { cwd: worktree_path });
         const committed = await gitRun(
           ['commit', '-q', '-m', 'quick_fix e2e'],
@@ -670,6 +692,13 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
           );
         }
         reviewed_sha = head.stdout.trim();
+        if (options.job) {
+          const blob = await gitRun(
+            ['rev-parse', `${reviewed_sha}:${E2E_JOB_PATH}`],
+            { cwd: worktree_path }
+          );
+          job_blob = blob.stdout.trim();
+        }
         await bd.setMetadata(bead_id, 'impl_review', `codex@${reviewed_sha}`);
         await bd.setStatus(bead_id, 'resolved');
         return {
@@ -776,7 +805,42 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
         waitForDeployTerminal: async () => ({
           state: 'failed',
           code: 'unexpected'
-        })
+        }),
+        // The job lane the shared runner drives (UI-1eag §3.1). A landing
+        // whose tree has no job directory never reaches it.
+        ...(options.job
+          ? {
+              eligibleJobHead: async () => null,
+              prepareJob: async (/** @type {any} */ input) => {
+                prepared_jobs.push(input);
+                return {
+                  ok: true,
+                  operation_id: `e2e-job-${prepared_jobs.length}`,
+                  timeout_ms: 1000
+                };
+              },
+              launchJob: async (/** @type {any} */ input) => ({
+                ok: true,
+                operation_id: input.operation_id
+              }),
+              reconcileJob: async (/** @type {string} */ operation_id) => ({
+                state: 'unknown',
+                operation_id
+              }),
+              waitForJobTerminal: async (
+                /** @type {string} */ operation_id
+              ) => ({
+                state: 'succeeded',
+                operation_id
+              })
+            }
+          : {})
+      },
+      timeline: {
+        append: (/** @type {any} */ input) => {
+          landing_steps.push(input.seq);
+          return { ok: true };
+        }
       }
     });
     const scheduler = createScheduler({
@@ -887,29 +951,97 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
       cwd: repo_dir
     });
     const bead_snapshot = /** @type {any} */ (await bd.snapshotBead(bead_id));
+    const done_row = snap.done.find((entry) => entry.bead_id === bead_id);
 
-    expect(reviewed_sha).toMatch(/^[0-9a-f]{40}$/);
-    expect(origin_head.stdout.trim()).toBe(reviewed_sha);
-    expect(attempt.quickfix_landing).toEqual({
+    return {
+      bead_id,
+      bd,
+      snap,
+      attempt,
+      done_row,
+      reviewed_sha,
+      origin_head: origin_head.stdout.trim(),
+      branch_code: branch.code,
+      worktree_path,
+      worktrees: worktrees.stdout,
+      bead_snapshot,
+      verify_pr_calls,
+      pr_wait_events,
+      config_checks,
+      deploy_calls,
+      prepared_jobs,
+      job_blob,
+      landing_steps
+    };
+  }
+
+  test('enqueue → dispatch → resolved 관측 → landing → done', async () => {
+    const landed = await landQuickfix();
+
+    expect(landed.reviewed_sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(landed.origin_head).toBe(landed.reviewed_sha);
+    expect(landed.attempt.quickfix_landing).toEqual({
       cursor: 'parent_close',
-      head_sha: reviewed_sha,
+      head_sha: landed.reviewed_sha,
       reason: null
     });
-    expect(attempt.status).toBe('done');
-    expect(bd.statuses[bead_id]).toBe('closed');
-    expect(await bd.readMetadata(bead_id, 'impl_review')).toBe(
-      `codex@${reviewed_sha}`
+    expect(landed.attempt.status).toBe('done');
+    expect(landed.bd.statuses[landed.bead_id]).toBe('closed');
+    expect(await landed.bd.readMetadata(landed.bead_id, 'impl_review')).toBe(
+      `codex@${landed.reviewed_sha}`
     );
-    expect(bead_snapshot.spec_id).toBeUndefined();
-    expect(bead_snapshot.spec_review).toBeUndefined();
-    expect(verify_pr_calls).toBe(0);
-    expect(pr_wait_events).toBe(0);
-    expect(snap.pr_wait).toEqual([]);
-    expect(config_checks).toBe(1);
-    expect(deploy_calls).toBe(0);
-    expect(branch.code).not.toBe(0);
-    expect(fs.existsSync(worktree_path)).toBe(false);
-    expect(worktrees.stdout).not.toContain(worktree_path);
+    expect(landed.bead_snapshot.spec_id).toBeUndefined();
+    expect(landed.bead_snapshot.spec_review).toBeUndefined();
+    expect(landed.verify_pr_calls).toBe(0);
+    expect(landed.pr_wait_events).toBe(0);
+    expect(landed.snap.pr_wait).toEqual([]);
+    expect(landed.config_checks).toBe(1);
+    expect(landed.deploy_calls).toBe(0);
+    expect(landed.branch_code).not.toBe(0);
+    expect(fs.existsSync(landed.worktree_path)).toBe(false);
+    expect(landed.worktrees).not.toContain(landed.worktree_path);
+  });
+
+  test('passes the five landing steps when the landed tree has no job directory (UI-1eag)', async () => {
+    const landed = await landQuickfix();
+
+    expect(landed.landing_steps).toEqual([
+      'base_containment',
+      'repo_operations',
+      'post_merge_jobs',
+      'branch_cleanup',
+      'parent_close'
+    ]);
+  });
+
+  test('applies the landed post-merge job once at the reviewed head before close (UI-1eag)', async () => {
+    const landed = await landQuickfix({ job: true });
+
+    expect(landed.prepared_jobs).toEqual([
+      expect.objectContaining({
+        target_base: 'main',
+        target_sha: landed.reviewed_sha,
+        bead_id: landed.bead_id,
+        script_path: E2E_JOB_PATH,
+        script_blob_sha: landed.job_blob
+      })
+    ]);
+    expect(
+      landed.snap.post_merge_jobs[`10-e2e@${landed.job_blob}`]
+    ).toMatchObject({ state: 'applied', operation_id: 'e2e-job-1' });
+    expect(landed.attempt.quickfix_landing).toEqual({
+      cursor: 'parent_close',
+      head_sha: landed.reviewed_sha,
+      reason: null
+    });
+    expect(landed.bd.statuses[landed.bead_id]).toBe('closed');
+  });
+
+  test('records no merge sha on a job landing done row (UI-1eag)', async () => {
+    const landed = await landQuickfix({ job: true });
+
+    expect(landed.attempt.merge_sha).toBeNull();
+    expect(landed.done_row?.merge_sha).toBeNull();
   });
 });
 

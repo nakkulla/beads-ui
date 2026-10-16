@@ -18638,7 +18638,7 @@ describe('scheduler already-finished verify verdict (UI-b8n8 §접근 B)', () =>
 describe('scheduler quick_fix landing settlement', () => {
   /**
    * @param {any} store
-   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|null} cursor
+   * @param {'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|null} cursor
    * @param {string} reason
    */
   function seedQuickfixCleanupFailure(store, cursor, reason) {
@@ -19050,6 +19050,104 @@ describe('scheduler quick_fix landing settlement', () => {
     expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([
       'quickfix-cleanup'
     ]);
+  });
+
+  describe('post-merge job retry authority (UI-1eag §3.1)', () => {
+    const JOB_REASON = `post_merge_job_outcome_unknown:10-reindex@${'1'.repeat(40)}`;
+
+    /**
+     * A failed landing stopped at `post_merge_jobs`, whose settlement the
+     * resume re-runs without a session.
+     */
+    function jobFailureEnv() {
+      const settle = vi.fn(async () => ({ ok: true }));
+      const env = setup({
+        config: { S1: { route: 'quick_fix' } },
+        quickfixLanding: { settle }
+      });
+      env.worktree.exists.mockReturnValue(false);
+      seedQuickfixCleanupFailure(env.store, 'post_merge_jobs', JOB_REASON);
+      return { env, settle };
+    }
+
+    test('carries the person authority into a settlement resume the click marks', async () => {
+      const { env, settle } = jobFailureEnv();
+
+      await env.scheduler.resume(WS, 'quickfix-cleanup', {
+        job_retry_authorized: true
+      });
+
+      expect(settle).toHaveBeenCalledExactlyOnceWith({
+        attempt_id: 'quickfix-cleanup',
+        bead_id: 'S1',
+        target_base: 'release',
+        job_retry: true
+      });
+    });
+
+    test('settles without the authority when the resume carries no click marker', async () => {
+      const { env, settle } = jobFailureEnv();
+
+      await env.scheduler.resume(WS, 'quickfix-cleanup');
+
+      expect(settle).toHaveBeenCalledExactlyOnceWith({
+        attempt_id: 'quickfix-cleanup',
+        bead_id: 'S1',
+        target_base: 'release'
+      });
+    });
+
+    test.each([
+      [
+        'retry ladder',
+        {
+          continuation: 'prior_attempt',
+          provider_auto_resume: true,
+          retry: {
+            cause: 'quickfix_landing_failed:bd_read_failed',
+            attempts: 1,
+            max: 3,
+            next_at: null,
+            origin_attempt_id: 'quickfix-cleanup'
+          },
+          preclaimed: true
+        }
+      ],
+      [
+        'provider auto resume',
+        {
+          continuation: 'auto',
+          provider_auto_resume: true,
+          provider_receipt_resume: true,
+          auto_resume_kind: 'provider_outage'
+        }
+      ],
+      ['stale residue', { preclaimed: true }],
+      [
+        'transcript fallback',
+        {
+          continuation: 'fresh_current',
+          resume_fallback: { reason: 'transcript_missing', session_id: 's-1' }
+        }
+      ]
+    ])(
+      'withholds the authority from a %s resume even when marked',
+      async (_label, markers) => {
+        const { env, settle } = jobFailureEnv();
+
+        await env.scheduler.resume(
+          WS,
+          'quickfix-cleanup',
+          /** @type {any} */ ({ ...markers, job_retry_authorized: true })
+        );
+
+        expect(settle).toHaveBeenCalledExactlyOnceWith({
+          attempt_id: 'quickfix-cleanup',
+          bead_id: 'S1',
+          target_base: 'release'
+        });
+      }
+    );
   });
 });
 
@@ -19700,6 +19798,30 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     });
     expect(env.store.snapshot(WS).pr_wait).toEqual([]);
     expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
+  });
+
+  test('settles a detached landing interrupted at post_merge_jobs without the job retry authority', async () => {
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      quickfixLanding: { settle }
+    });
+    seedDetachedAttempt(env.store, {
+      quickfix_lane: true,
+      target_base: 'release',
+      quickfix_landing: {
+        cursor: 'post_merge_jobs',
+        head_sha: 'a'.repeat(40),
+        reason: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(settle).toHaveBeenCalledExactlyOnceWith({
+      attempt_id: 'att-1',
+      bead_id: 'UI-1',
+      target_base: 'release'
+    });
   });
 
   test('does not halt the queue when it recovers a normal completion', async () => {

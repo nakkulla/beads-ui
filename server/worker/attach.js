@@ -3690,6 +3690,11 @@ export async function retryWorkerBeadNow(workspace_root, bead_id) {
  * is registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one —
  * ws-handler tests and inactive workspaces stay hermetic.
  *
+ * This is the person's `worker-attempt-resume` click and nothing else, so it
+ * is where `job_retry_authorized` is set (UI-1eag §3.1) — the quick_fix
+ * mirror of the PR row's `retryCleanupLocked`, whose callers are clicks too.
+ * Every automatic resume calls the scheduler directly and never crosses here.
+ *
  * @param {string} workspace_root
  * @param {string} attempt_id
  * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string } }} [continuation]
@@ -3704,7 +3709,10 @@ export async function resumeWorkerAttempt(
   if (!att) {
     return { ok: false, reason: 'no_attachment' };
   }
-  return att.scheduler.resume(keyFor(workspace_root), attempt_id, continuation);
+  return att.scheduler.resume(keyFor(workspace_root), attempt_id, {
+    ...continuation,
+    job_retry_authorized: true
+  });
 }
 
 /**

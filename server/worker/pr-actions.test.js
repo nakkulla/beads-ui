@@ -4926,6 +4926,8 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
     let seq = 0;
     const coordinator = {
       hasConfig: vi.fn(async () => ({ ok: true, present: false })),
+      // No advanced deploy HEAD: every job keeps the merged commit as target.
+      eligibleJobHead: vi.fn(async () => null),
       prepareJob: vi.fn(async (/** @type {any} */ input) => {
         prepared.push(input.script_path);
         seq += 1;
@@ -6071,6 +6073,300 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
         reason: 'post_merge_jobs_unreadable'
       })
     ]);
+  });
+});
+
+describe('post-merge cleanup — a landed row finishes its jobs at the deployed HEAD (UI-1eag §5)', () => {
+  // The 2026-10-16 dotfiles-gqsok shape: the row merged at MERGED, whose
+  // Discord job failed there; a later landing deployed DEPLOYED, which carries
+  // the Discord revision and the same oracle job.
+  const MERGED = '6a59ee4'.padEnd(40, '0');
+  const DEPLOYED = 'c50e34c'.padEnd(40, '0');
+  const DISCORD = 'dotfiles-79429-retire-discord.py';
+  const ORACLE = 'dotfiles-ptx3h-retire-oracle.py';
+  const DISCORD_OLD = '32aa369e'.padEnd(40, '0');
+  const DISCORD_FIX = '604204c3'.padEnd(40, '0');
+  const ORACLE_BLOB = '6d045412'.padEnd(40, '0');
+  const KEY_DISCORD_OLD = `${DISCORD}@${DISCORD_OLD}`;
+  const KEY_DISCORD_FIX = `${DISCORD}@${DISCORD_FIX}`;
+  const KEY_ORACLE = `${ORACLE}@${ORACLE_BLOB}`;
+  const OLD_OPERATION = 'f07f5e1f';
+  const OLD_LOG = '/tmp/f07f5e1f.log';
+  const LANDED_ROWS = ['dotfiles-ptx3h', 'dotfiles-79429', 'dotfiles-41zm2'];
+
+  /** @type {Record<string, { name: string, sha: string }[]>} */
+  const TREES = {
+    [MERGED]: [
+      { name: DISCORD, sha: DISCORD_OLD },
+      { name: ORACLE, sha: ORACLE_BLOB }
+    ],
+    [DEPLOYED]: [
+      { name: DISCORD, sha: DISCORD_FIX },
+      { name: ORACLE, sha: ORACLE_BLOB }
+    ]
+  };
+
+  /** @type {Record<string, string>} */
+  const SOURCES = {
+    [DISCORD_FIX]: `#!/usr/bin/env python3\n# repo-ops-replaces: ${KEY_DISCORD_OLD}\nprint("retire")\n`
+  };
+
+  /**
+   * @param {string[]} args
+   * @returns {string|undefined}
+   */
+  function repositoryReads(args) {
+    if (args[0] === 'ls-tree' && args[1] === '-z') {
+      return (TREES[args[2]] ?? [])
+        .map(
+          (entry) =>
+            `100755 blob ${entry.sha}\trepo-ops/post-merge.d/${entry.name}\0`
+        )
+        .join('');
+    }
+    if (args[0] === 'ls-tree' && args.at(-1) === 'repo-ops/config.toml') {
+      return '';
+    }
+    if (args[0] === 'cat-file' && args[1] === 'blob') {
+      return SOURCES[args[2]] ?? '#!/bin/sh\n';
+    }
+    return undefined;
+  }
+
+  /**
+   * DEPLOYED descends from MERGED; no repository declaration exists.
+   *
+   * @param {string[]} args
+   * @returns {number|null}
+   */
+  function repositoryCodes(args) {
+    if (args[0] === 'show') {
+      return 128;
+    }
+    if (
+      args[0] === 'merge-base' &&
+      args[1] === '--is-ancestor' &&
+      args[2] === DEPLOYED &&
+      args[3] === MERGED
+    ) {
+      return 1;
+    }
+    return null;
+  }
+
+  /** The row stopped at its job step with the Discord key's run failed. */
+  function storeAtMovedTarget() {
+    const store = seedStore();
+    store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'base_containment',
+      merge_sha: MERGED
+    });
+    store.ensureRepoOperation(WS, {
+      operation_id: OLD_OPERATION,
+      repo_id: REPO,
+      kind: 'job',
+      subjects: [{ bead_id: BEAD, merged_sha: MERGED }],
+      effective_base_sha: MERGED,
+      target_base: 'main',
+      target_sha: MERGED,
+      script_path: `repo-ops/post-merge.d/${DISCORD}`,
+      script_mode: '100755',
+      script_blob_sha: DISCORD_OLD
+    });
+    const old = store.snapshot(WS).repo_operations[OLD_OPERATION];
+    store.startRepoOperation(WS, {
+      operation_id: OLD_OPERATION,
+      attempt_id: old.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: OLD_LOG
+    });
+    store.settleRepoOperation(WS, {
+      operation_id: OLD_OPERATION,
+      attempt_id: old.attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_DISCORD_OLD,
+      operation_id: OLD_OPERATION,
+      repo_id: REPO
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_jobs',
+      reason: `post_merge_job_target_moved:${KEY_DISCORD_OLD}`
+    });
+    for (const bead_id of LANDED_ROWS) {
+      store.moveToDone(WS, { bead_id });
+    }
+    return store;
+  }
+
+  /** One human [정리 재시도] of that row over a real coordinator. */
+  async function retriedRow() {
+    const store = storeAtMovedTarget();
+    const world = {
+      head: DEPLOYED,
+      /** @type {{ blob: string, target_sha: string }[]} */
+      spawns: [],
+      /** @type {Map<string, { exit_code: number, signal: null }>} */
+      markers: new Map()
+    };
+    /** @type {any} */
+    let git = null;
+    let clock = 0;
+    const coordinator = createRepoOperationCoordinator({
+      workspace: WS,
+      repo: REPO,
+      store,
+      locks: createLockManager(),
+      gitRun: (args, options) => git(args, options),
+      runner: /** @type {never} */ ({
+        start: vi.fn(async (/** @type {any} */ input) => {
+          world.spawns.push({
+            blob: store.snapshot(WS).repo_operations[input.operation_id]
+              .script_blob_sha,
+            target_sha: input.target_sha
+          });
+          world.markers.set(input.operation_id, {
+            exit_code: 0,
+            signal: null
+          });
+          return {
+            ok: true,
+            process_identity: { pid: 2, pgid: 2, started_at: 2 },
+            log_path: path.join(tmp_state, `${input.operation_id}.log`)
+          };
+        }),
+        readMarker: (
+          /** @type {string} */ _workspace,
+          /** @type {string} */ operation_id
+        ) => world.markers.get(operation_id) ?? null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }),
+      transition: /** @type {never} */ ({
+        materialize: async () => ({
+          ok: true,
+          path: path.join(tmp_state, 'script')
+        }),
+        reclaim: () => {}
+      }),
+      deployWorktree: /** @type {never} */ ({
+        bindTarget: async () => ({ ok: true, target_sha: DEPLOYED }),
+        readState: async () => ({ ok: true, head: world.head, clean: true }),
+        ensureAligned: async (/** @type {any} */ aligned) => {
+          world.head = aligned.target_sha;
+          return {
+            ok: true,
+            path: path.join(tmp_state, 'deploy'),
+            target_sha: aligned.target_sha
+          };
+        },
+        verifyAligned: async (/** @type {any} */ aligned) => ({
+          ok: world.head === aligned.target_sha
+        }),
+        verifyCovered: async () => ({ ok: true })
+      }),
+      deployLock: /** @type {never} */ (
+        async () => ({ ok: true, release: async () => {} })
+      ),
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      }
+    });
+    const env = makeActions({
+      ...ON_BASE,
+      store,
+      repoOperations: coordinator,
+      gitStdout: repositoryReads,
+      gitResult: repositoryCodes
+    });
+    git = env.gitRun;
+    const result = await env.actions.retryCleanup(BEAD);
+    return { store, world, env, result };
+  }
+
+  test('supersedes the failed Discord key through its revision on one human retry', async () => {
+    const { store } = await retriedRow();
+
+    const ledger = store.snapshot(WS).post_merge_jobs;
+    expect(ledger[KEY_DISCORD_OLD]).toMatchObject({
+      state: 'superseded',
+      operation_id: OLD_OPERATION,
+      repair: {
+        key: KEY_DISCORD_FIX,
+        operation_id: ledger[KEY_DISCORD_FIX].operation_id
+      }
+    });
+  });
+
+  test('applies the Discord revision and the oracle job on the same retry', async () => {
+    const { store } = await retriedRow();
+
+    const ledger = store.snapshot(WS).post_merge_jobs;
+    expect({
+      revision: ledger[KEY_DISCORD_FIX]?.state,
+      oracle: ledger[KEY_ORACLE]?.state
+    }).toEqual({ revision: 'applied', oracle: 'applied' });
+  });
+
+  test('runs the revision and the oracle job at the deployed HEAD in name order', async () => {
+    const { world } = await retriedRow();
+
+    expect(world.spawns).toEqual([
+      { blob: DISCORD_FIX, target_sha: DEPLOYED },
+      { blob: ORACLE_BLOB, target_sha: DEPLOYED }
+    ]);
+  });
+
+  test('never spawns the superseded Discord blob', async () => {
+    const { world } = await retriedRow();
+
+    expect(world.spawns.filter((spawn) => spawn.blob === DISCORD_OLD)).toEqual(
+      []
+    );
+  });
+
+  test('keeps the old failed operation evidence as it was', async () => {
+    const { store } = await retriedRow();
+
+    expect(store.snapshot(WS).repo_operations[OLD_OPERATION]).toMatchObject({
+      state: 'failed',
+      exit_code: 1,
+      log_path: OLD_LOG,
+      target_sha: MERGED,
+      failure: { code: 'script_failed' }
+    });
+  });
+
+  test('carries the cleanup past the job step to the close', async () => {
+    const { store, env, result } = await retriedRow();
+
+    expect(result).toMatchObject({ ok: true, step: null, reason: null });
+    expect(env.calls).toContain(`bd:setStatus:${BEAD}:closed`);
+    expect(store.snapshot(WS).pr_wait).toEqual([]);
+  });
+
+  test('leaves the landed done rows without a merge sha', async () => {
+    const { store } = await retriedRow();
+
+    expect(
+      store
+        .snapshot(WS)
+        .done.filter((/** @type {any} */ entry) =>
+          LANDED_ROWS.includes(entry.bead_id)
+        )
+        .map((/** @type {any} */ entry) => entry.merge_sha)
+    ).toEqual([null, null, null]);
   });
 });
 

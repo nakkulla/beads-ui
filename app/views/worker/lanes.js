@@ -671,9 +671,12 @@ export function quickFixLanded(attempt) {
   if (!landing || typeof landing !== 'object') {
     return false;
   }
-  return ['repo_operations', 'branch_cleanup', 'parent_close'].includes(
-    landing.cursor
-  );
+  return [
+    'repo_operations',
+    'post_merge_jobs',
+    'branch_cleanup',
+    'parent_close'
+  ].includes(landing.cursor);
 }
 
 /**
