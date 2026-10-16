@@ -281,7 +281,7 @@
  * not re-discover an empty `node_modules` with an `npm ls` round trip. Null
  * when the attempt adopted an existing worktree and nothing was installed.
  * @property {ExecPresetRecord|null} [exec_preset] - Observed dispatch preset, independent of workflow receipts.
- * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_backup?: { path: string, manifest_sha256: string, file_count: number }, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: { path: string, manifest_sha256: string, file_count: number } } }|null} quickfix_landing -
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_backup?: { path: string, manifest_sha256: string, file_count: number }, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: { path: string, manifest_sha256: string, file_count: number } } }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
  * contract no-change close (`refuted:`·`no-delta:`) settled without a delta
@@ -3632,6 +3632,7 @@ function normalizeInteractiveSessions(raw) {
 const QUICKFIX_LANDING_CURSORS = new Set([
   'base_containment',
   'repo_operations',
+  'post_merge_jobs',
   'branch_cleanup',
   'parent_close',
   'no_change_close'

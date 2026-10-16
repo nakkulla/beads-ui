@@ -35,6 +35,7 @@ import {
   nowPanel,
   paneTemplate,
   queueRowOps,
+  quickFixLanded,
   quickFixReviewChipTemplate,
   repoOpsStripModel,
   reviewSessionRowState,
@@ -9281,5 +9282,38 @@ describe('session-inquiry entries (UI-gske §3.4)', () => {
     ]);
 
     expect(summary.groups.map((group) => group.label)).toEqual(['확인 필요']);
+  });
+});
+
+describe('quickFixLanded (UI-1eag §3.1)', () => {
+  test.each([
+    'repo_operations',
+    'post_merge_jobs',
+    'branch_cleanup',
+    'parent_close'
+  ])('reads a quick_fix attempt at the %s cursor as landed', (cursor) => {
+    const attempt = {
+      quickfix_lane: true,
+      quickfix_landing: { cursor, head_sha: 'a'.repeat(40), reason: null }
+    };
+
+    const landed = quickFixLanded(attempt);
+
+    expect(landed).toBe(true);
+  });
+
+  test('reads a quick_fix attempt still at base containment as not landed', () => {
+    const attempt = {
+      quickfix_lane: true,
+      quickfix_landing: {
+        cursor: 'base_containment',
+        head_sha: 'a'.repeat(40),
+        reason: null
+      }
+    };
+
+    const landed = quickFixLanded(attempt);
+
+    expect(landed).toBe(false);
   });
 });

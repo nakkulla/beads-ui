@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from './bead-timeline.js';
 import { createQueueStore } from './queue-store.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
@@ -256,6 +256,10 @@ function makeLanding(options = {}) {
     if (args[0] === 'merge-base') {
       return { code: options.containmentCode ?? 0, stdout: '', stderr: '' };
     }
+    if (args[0] === 'ls-tree' && args[1] === '-z') {
+      // The landed tree carries no `repo-ops/post-merge.d/`: an empty listing.
+      return { code: 0, stdout: '', stderr: '' };
+    }
     if (args[0] === 'branch') {
       return {
         code: options.branchDeleteCode ?? 0,
@@ -392,6 +396,7 @@ test('records each landing step it reaches on the bead timeline', async () => {
   expect(timeline.events.map((event) => event.seq)).toEqual([
     'base_containment',
     'repo_operations',
+    'post_merge_jobs',
     'branch_cleanup',
     'parent_close'
   ]);
@@ -429,6 +434,7 @@ test('reads one event back when a restart replays the same landing', async () =>
   expect(timeline.readTimeline(BEAD).map((event) => event.event_id)).toEqual([
     `landing_step:${ATTEMPT}:base_containment`,
     `landing_step:${ATTEMPT}:repo_operations`,
+    `landing_step:${ATTEMPT}:post_merge_jobs`,
     `landing_step:${ATTEMPT}:branch_cleanup`,
     `landing_step:${ATTEMPT}:parent_close`
   ]);
@@ -1764,4 +1770,448 @@ test('preserves quickfix fields through queue normalization', () => {
 
   expect(attempt.quickfix_lane).toBe(true);
   expect(attempt.quickfix_landing).toEqual(progress);
+});
+
+describe('post_merge_jobs step (UI-1eag §3.1)', () => {
+  const JOB_NAME = '10-reindex';
+  const JOB_BLOB = '1'.repeat(40);
+  const JOB_KEY = `${JOB_NAME}@${JOB_BLOB}`;
+  const MOVED_HEAD = 'c'.repeat(40);
+
+  /**
+   * Build one landing over a REAL queue store, so the job ledger's first
+   * claim, its retry swap and its `applied` write are production code. Git,
+   * Beads, the worktree and the coordinator's job lane are fakes; the landed
+   * tree carries `options.jobs` under `repo-ops/post-merge.d/`.
+   *
+   * @param {{
+   *   jobs?: Array<{ name: string, sha: string }>,
+   *   landing?: { cursor: string, head_sha: string|null, reason: string|null },
+   *   receipt?: string,
+   *   prior?: boolean,
+   *   reconcile?: any,
+   *   terminal?: any,
+   *   jobLane?: boolean
+   * }} [options]
+   */
+  function makeJobLanding(options = {}) {
+    const state_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-qfl-jobs-'));
+    temp_dirs.push(state_dir);
+    process.env.XDG_STATE_HOME = state_dir;
+    const store = createQueueStore({
+      filePathFor: () => path.join(state_dir, 'queue.json')
+    });
+    store.appendAttempt(WORKSPACE, {
+      expected_revision: store.snapshot(WORKSPACE).revision,
+      attempt: {
+        attempt_id: ATTEMPT,
+        bead_id: BEAD,
+        quickfix_lane: true,
+        ...(options.landing
+          ? { quickfix_landing: /** @type {any} */ (options.landing) }
+          : {})
+      }
+    });
+    if (options.prior) {
+      // An earlier run of this key whose outcome nobody recorded: the intent
+      // names a real operation, so a retry's supersede lineage has a target.
+      store.ensureRepoOperation(WORKSPACE, {
+        operation_id: 'job-prior',
+        repo_id: REPO,
+        kind: 'job',
+        subjects: [{ bead_id: BEAD, merged_sha: HEAD_SHA }],
+        effective_base_sha: HEAD_SHA,
+        target_base: 'main',
+        target_sha: HEAD_SHA,
+        script_path: `repo-ops/post-merge.d/${JOB_NAME}`,
+        script_mode: '100755',
+        script_blob_sha: JOB_BLOB
+      });
+      store.recordPostMergeJobIntent(WORKSPACE, {
+        key: JOB_KEY,
+        operation_id: 'job-prior',
+        repo_id: REPO
+      });
+    }
+    const world = { cleanup_ok: true };
+    /** @type {string[]} */
+    const calls = [];
+    let bead_status = 'resolved';
+    const listing = (options.jobs ?? [])
+      .map(
+        (job) => `100755 blob ${job.sha}\trepo-ops/post-merge.d/${job.name}\0`
+      )
+      .join('');
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      calls.push(`git:${args.join(' ')}`);
+      if (args[0] === 'fetch' || args[0] === 'merge-base') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
+        return { code: 0, stdout: `${FETCHED_SHA}\n`, stderr: '' };
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'ls-tree' && args[1] === '-z') {
+        return { code: 0, stdout: listing, stderr: '' };
+      }
+      if (args[0] === 'cat-file' && args[1] === 'blob') {
+        return { code: 0, stdout: '#!/bin/sh\necho reindex\n', stderr: '' };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    });
+    const bd = {
+      readIssue: vi.fn(async () => ({ status: bead_status })),
+      readStatus: vi.fn(async () => bead_status),
+      setStatus: vi.fn(async (/** @type {string} */ _id, status) => {
+        bead_status = status;
+      }),
+      readMetadata: vi.fn(async (/** @type {string} */ _id, key) =>
+        key === 'impl_review'
+          ? (options.receipt ?? `reviewer@${HEAD_SHA}`)
+          : null
+      )
+    };
+    const worktree = {
+      pathFor: vi.fn(() => `${REPO}/.worktrees/${BEAD}`),
+      removeIfDiscardable: vi.fn(async () => ({
+        ok: true,
+        removed: true,
+        reason: null
+      })),
+      removeCompleted: vi.fn(async () =>
+        world.cleanup_ok
+          ? { ok: true, removed: true, reason: null }
+          : { ok: false, removed: false, reason: 'unique' }
+      ),
+      withTopologyLock: vi.fn(
+        async (/** @type {string} */ _repo, /** @type {() => any} */ fn) => fn()
+      )
+    };
+    let seq = 0;
+    /** @type {Record<string, any>} */
+    const repoOperations = {
+      hasConfig: vi.fn(async () => ({ ok: true, present: false })),
+      ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
+      waitForDeployTerminal: vi.fn(async () => ({ state: 'succeeded' })),
+      ...(options.jobLane === false
+        ? {}
+        : {
+            // No advanced deploy HEAD: the landed head is the job target.
+            eligibleJobHead: vi.fn(async () => null),
+            prepareJob: vi.fn(async () => {
+              seq += 1;
+              return { ok: true, operation_id: `job-${seq}`, timeout_ms: 1000 };
+            }),
+            launchJob: vi.fn(async (/** @type {any} */ input) => ({
+              ok: true,
+              operation_id: input.operation_id
+            })),
+            reconcileJob: vi.fn(
+              async (/** @type {string} */ operation_id) =>
+                options.reconcile ?? { state: 'unknown', operation_id }
+            ),
+            waitForJobTerminal: vi.fn(
+              async (/** @type {string} */ operation_id) =>
+                options.terminal ?? { state: 'succeeded', operation_id }
+            )
+          })
+    };
+    const landing = createQuickfixLanding({
+      workspace: WORKSPACE,
+      repo: REPO,
+      store,
+      bd,
+      gitRun,
+      worktree,
+      repoOperations: /** @type {any} */ (repoOperations),
+      readPushLog: () => ({ ok: true, entries: [] }),
+      now: () => 1234
+    });
+    return { landing, store, calls, world, worktree, repoOperations };
+  }
+
+  /**
+   * @param {ReturnType<typeof createQuickfixLanding>} landing
+   * @param {boolean} [job_retry]
+   */
+  function settleJobs(landing, job_retry = false) {
+    return landing.settle({
+      attempt_id: ATTEMPT,
+      bead_id: BEAD,
+      target_base: 'main',
+      ...(job_retry ? { job_retry: true } : {})
+    });
+  }
+
+  test('reads the job directory at the receipt-bound landing head', async () => {
+    const { landing, calls } = makeLanding();
+
+    await settle(landing);
+
+    expect(calls).toContain(
+      `git:ls-tree -z ${HEAD_SHA} -- repo-ops/post-merge.d/`
+    );
+  });
+
+  test('lands with no job lane when the landed tree has no job directory', async () => {
+    const { landing } = makeLanding();
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('applies a pending job at the receipt-bound landing head', async () => {
+    const { landing, repoOperations } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }]
+    });
+
+    await settleJobs(landing);
+
+    expect(repoOperations.prepareJob).toHaveBeenCalledExactlyOnceWith({
+      target_base: 'main',
+      target_sha: HEAD_SHA,
+      bead_id: BEAD,
+      script_path: `repo-ops/post-merge.d/${JOB_NAME}`,
+      script_mode: '100755',
+      script_blob_sha: JOB_BLOB
+    });
+  });
+
+  test('records the applied job key in the ledger', async () => {
+    const { landing, store } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }]
+    });
+
+    const result = await settleJobs(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(store.snapshot(WORKSPACE).post_merge_jobs[JOB_KEY]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('writes no merge sha on the landed attempt or its done row', async () => {
+    const { landing, store } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }]
+    });
+
+    await settleJobs(landing);
+
+    const snapshot = store.snapshot(WORKSPACE);
+    expect(snapshot.attempts[ATTEMPT].merge_sha).toBeNull();
+    expect(
+      snapshot.done.find((entry) => entry.bead_id === BEAD)?.merge_sha
+    ).toBeNull();
+  });
+
+  test('records a failed job at the post_merge_jobs step with the runner token', async () => {
+    const { landing, store } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      terminal: {
+        state: 'failed',
+        code: 'script_failed',
+        log_path: '/tmp/job-1.log'
+      }
+    });
+
+    const result = await settleJobs(landing);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'script_failed',
+      step: 'post_merge_jobs'
+    });
+    expect(
+      store.snapshot(WORKSPACE).attempts[ATTEMPT].quickfix_landing
+    ).toEqual({
+      cursor: 'post_merge_jobs',
+      head_sha: HEAD_SHA,
+      reason: 'script_failed'
+    });
+  });
+
+  test('stops before branch cleanup when a job fails', async () => {
+    const { landing, worktree } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      terminal: { state: 'failed', code: 'script_failed' }
+    });
+
+    await settleJobs(landing);
+
+    expect(worktree.removeCompleted).not.toHaveBeenCalled();
+  });
+
+  test('reports a live job run with the deploy pending token', async () => {
+    const { landing } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      terminal: { state: 'running' }
+    });
+
+    const result = await settleJobs(landing);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'repo_operation_pending',
+      step: 'post_merge_jobs'
+    });
+  });
+
+  test('stops a job landing whose coordinator has no job lane', async () => {
+    const { landing } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      jobLane: false
+    });
+
+    const result = await settleJobs(landing);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'repo_operations_unavailable',
+      step: 'post_merge_jobs'
+    });
+  });
+
+  test('passes an applied job without running it again on a settlement re-run', async () => {
+    const { landing, world, repoOperations } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }]
+    });
+    world.cleanup_ok = false;
+    await settleJobs(landing);
+    world.cleanup_ok = true;
+
+    const result = await settleJobs(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(repoOperations.prepareJob).toHaveBeenCalledOnce();
+  });
+
+  test('stops an outcome-unknown job without the person authority', async () => {
+    const { landing, repoOperations } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      landing: {
+        cursor: 'post_merge_jobs',
+        head_sha: HEAD_SHA,
+        reason: `post_merge_job_outcome_unknown:${JOB_KEY}`
+      },
+      prior: true,
+      reconcile: { state: 'failed', started: true, operation_id: 'job-prior' }
+    });
+
+    const result = await settleJobs(landing);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: `post_merge_job_outcome_unknown:${JOB_KEY}`,
+      step: 'post_merge_jobs'
+    });
+    expect(repoOperations.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('reruns an outcome-unknown job under the person authority at the post_merge_jobs cursor', async () => {
+    const { landing, store, repoOperations } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      landing: {
+        cursor: 'post_merge_jobs',
+        head_sha: HEAD_SHA,
+        reason: `post_merge_job_outcome_unknown:${JOB_KEY}`
+      },
+      prior: true,
+      reconcile: { state: 'failed', started: true, operation_id: 'job-prior' }
+    });
+
+    const result = await settleJobs(landing, true);
+
+    expect(result).toEqual({ ok: true });
+    expect(repoOperations.prepareJob).toHaveBeenCalledOnce();
+    expect(store.snapshot(WORKSPACE).post_merge_jobs[JOB_KEY]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('ignores the person authority when the landing resumes an earlier step', async () => {
+    const { landing, repoOperations } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      landing: {
+        cursor: 'repo_operations',
+        head_sha: HEAD_SHA,
+        reason: 'deploy_script_failed'
+      },
+      prior: true,
+      reconcile: { state: 'failed', started: true, operation_id: 'job-prior' }
+    });
+
+    const result = await settleJobs(landing, true);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: `post_merge_job_outcome_unknown:${JOB_KEY}`,
+      step: 'post_merge_jobs'
+    });
+    expect(repoOperations.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('runs the jobs of the stored head when a landing resumes at post_merge_jobs', async () => {
+    const { landing, calls } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      landing: {
+        cursor: 'post_merge_jobs',
+        head_sha: HEAD_SHA,
+        reason: 'repo_operation_pending'
+      }
+    });
+
+    await settleJobs(landing);
+
+    expect(calls).toContain(
+      `git:ls-tree -z ${HEAD_SHA} -- repo-ops/post-merge.d/`
+    );
+  });
+
+  test('stops on head_mismatch before any job runs when the receipt moved off the stored head', async () => {
+    const { landing, calls, repoOperations } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      landing: {
+        cursor: 'post_merge_jobs',
+        head_sha: HEAD_SHA,
+        reason: 'repo_operation_pending'
+      },
+      receipt: `reviewer@${MOVED_HEAD}`
+    });
+
+    const result = await settleJobs(landing, true);
+
+    expect(result).toEqual({ ok: false, reason: 'head_mismatch', step: null });
+    expect(calls.some((call) => call.startsWith('git:ls-tree'))).toBe(false);
+    expect(repoOperations.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('runs no job on a foreign landing', async () => {
+    const { landing, calls } = makeLanding({ foreign: { pins: FOREIGN_PINS } });
+
+    await settle(landing);
+
+    expect(calls.some((call) => call.startsWith('git:ls-tree'))).toBe(false);
+  });
+
+  test('records no job step on a foreign landing timeline', async () => {
+    const timeline = timelineRecorder();
+    const { landing } = makeLanding({
+      foreign: { pins: FOREIGN_PINS },
+      timeline
+    });
+
+    await settle(landing);
+
+    expect(timeline.events.map((event) => event.seq)).toEqual([
+      'base_containment',
+      'repo_operations',
+      'branch_cleanup',
+      'parent_close'
+    ]);
+  });
 });

@@ -43,6 +43,7 @@ import {
   readForeignPins,
   resolveForeignRemote as resolveSharedForeignRemote
 } from './foreign-target.js';
+import { createPostMergeJobRunner } from './post-merge-job.js';
 import { resolveRepoOps } from './repo-ops-resolver.js';
 import { branchForBead } from './worktree.js';
 
@@ -63,6 +64,7 @@ const NO_CHANGE_CLOSE_REASON_RE = /^(?:refuted|no-delta): \S/;
 const LANDING_STEP_LABELS = Object.freeze({
   base_containment: 'base 포함 확인',
   repo_operations: '배포 실행',
+  post_merge_jobs: '머지 후 잡',
   branch_cleanup: '브랜치 정리',
   parent_close: 'bead close',
   no_change_close: '무변경 close'
@@ -164,7 +166,9 @@ function cleanupBackupReceipt(value) {
  *   store: {
  *     updateAttempt: (workspace: string, input: { attempt_id: string, patch: Partial<Attempt> }) => unknown,
  *     moveToDone: (workspace: string, input: { bead_id: string, attempt_id: string, patch: Partial<Attempt> }) => unknown,
- *     snapshot: (workspace: string) => unknown
+ *     snapshot: (workspace: string) => unknown,
+ *     recordPostMergeJobIntent?: (workspace: string, input: any) => unknown,
+ *     applyPostMergeJob?: (workspace: string, input: any) => unknown
  *   },
  *   bd: {
  *     readIssue: (bead_id: string) => Promise<Record<string, any>>,
@@ -184,7 +188,12 @@ function cleanupBackupReceipt(value) {
  *     ensureDeploy: (subject: any) => Promise<any>,
  *     waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>,
  *     findExactDeployOperation?: (subject: any) => Promise<any>,
- *     deploymentEvidence?: (operation_id: string, subject: any) => Promise<any>
+ *     deploymentEvidence?: (operation_id: string, subject: any) => Promise<any>,
+ *     eligibleJobHead?: (input: { target_base: string, merge_sha: string }) => Promise<string|null>,
+ *     prepareJob?: (input: any) => Promise<any>,
+ *     launchJob?: (input: { operation_id: string }) => Promise<any>,
+ *     reconcileJob?: (operation_id: string) => Promise<any>,
+ *     waitForJobTerminal?: (operation_id: string, input?: any) => Promise<any>
  *   }|null,
  *   readPushLog?: (input: { attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string },
  *   timeline?: { append: (input: any) => unknown },
@@ -203,6 +212,16 @@ export function createQuickfixLanding(deps) {
   const notifier = deps.notifier || null;
   const notifyChanged = deps.notifyChanged || (() => {});
   const now = deps.now || (() => Date.now());
+  // The `post_merge_jobs` step is the SAME runner the PR cleanup uses
+  // (UI-1eag §3.1): this landing only hands it the receipt-bound head, the
+  // person's retry authority and its own failure record.
+  const post_merge_jobs = createPostMergeJobRunner({
+    workspace,
+    repo,
+    store: deps.store,
+    gitRun: deps.gitRun,
+    repoOperations: repo_operations
+  });
 
   /**
    * Announce only a newly durable terminal success. The notifier is no-throw by
@@ -228,7 +247,7 @@ export function createQuickfixLanding(deps) {
    * Worker's own evidence-based resolve (§5.3) — must ride along with each
    * later write or the next one erases it.
    *
-   * @param {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null }} record
+   * @param {{ cursor: 'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null }} record
    * @param {LandingExtra} extra
    * @returns {Attempt['quickfix_landing']}
    */
@@ -253,7 +272,7 @@ export function createQuickfixLanding(deps) {
    * end a settlement that broke no invariant.
    *
    * @param {string} attempt_id
-   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
+   * @param {'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
    * @param {string|null} reason - The failure token, or null for a step reached.
    */
   function recordLandingStep(attempt_id, step, reason) {
@@ -333,7 +352,7 @@ export function createQuickfixLanding(deps) {
 
   /**
    * @param {string} attempt_id
-   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'} cursor
+   * @param {'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'} cursor
    * @param {string} head_sha
    * @param {LandingExtra} [extra]
    */
@@ -354,7 +373,7 @@ export function createQuickfixLanding(deps) {
   /**
    * @param {string} attempt_id
    * @param {QuickfixLandingReason|string} reason
-   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
+   * @param {'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
    * @param {string|null} head_sha
    * @param {LandingExtra} [extra]
    * @returns {{ ok: false, reason: string, step: string|null, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt } }}
@@ -988,7 +1007,17 @@ export function createQuickfixLanding(deps) {
    * bind to the cursor's exact reviewed SHA. Only an unrecorded close is a
    * `premature_close`.
    *
-   * @param {{ attempt_id: string, bead_id: string, target_base: string }} input
+   * `post_merge_jobs` joins that binding (UI-1eag §3.1): the step's merge SHA
+   * is the landed head, so a resume runs the jobs of the head the cursor
+   * recorded, and a receipt that moved since stops on `head_mismatch` before
+   * any job runs.
+   *
+   * `job_retry` is a person's authority to re-run an outcome-unknown job. It
+   * is honoured only when this settlement resumes a failure recorded at the
+   * `post_merge_jobs` step — the same boundary the PR cleanup draws with
+   * `resume_step === 'post_merge_jobs'`; every other pass ignores it.
+   *
+   * @param {{ attempt_id: string, bead_id: string, target_base: string, job_retry?: boolean }} input
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step: string|null }>}
    */
   async function settle(input) {
@@ -996,10 +1025,16 @@ export function createQuickfixLanding(deps) {
     const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
     const durable_landing = snapshot.attempts?.[attempt_id]?.quickfix_landing;
     const durable_cursor =
+      durable_landing?.cursor === 'post_merge_jobs' ||
       durable_landing?.cursor === 'branch_cleanup' ||
       durable_landing?.cursor === 'parent_close'
         ? durable_landing.cursor
         : null;
+    const job_retry =
+      input.job_retry === true &&
+      durable_cursor === 'post_merge_jobs' &&
+      typeof durable_landing?.reason === 'string' &&
+      durable_landing.reason.length > 0;
     const durable_head_sha =
       typeof durable_landing?.head_sha === 'string'
         ? durable_landing.head_sha
@@ -1340,6 +1375,40 @@ export function createQuickfixLanding(deps) {
             );
           }
         }
+      }
+    }
+
+    // A foreign landing never runs jobs: the rig Worker owns neither the
+    // target's deploy worktree nor its ledger (UI-1eag §3.1, UI-k467 §3.6).
+    if (!foreign) {
+      markStep(attempt_id, 'post_merge_jobs', head_sha, landing_extra);
+      // The job step's merge SHA is the receipt-bound landed head — the same
+      // SHA the deploy above was asked for. It is never written to the row.
+      const jobs = await post_merge_jobs.run({
+        bead_id,
+        merge_sha: head_sha,
+        job_retry,
+        resolveTargetBase: async () => ({
+          ok: /** @type {const} */ (true),
+          base: target_base
+        }),
+        // The landing record has no log field; a failing run's log stays on
+        // its own repo operation record.
+        onFailure: (reason) =>
+          fail(attempt_id, reason, 'post_merge_jobs', head_sha, landing_extra),
+        // A live run this pass must not duplicate stops exactly like a
+        // non-terminal deploy does.
+        onPending: () =>
+          fail(
+            attempt_id,
+            'repo_operation_pending',
+            'post_merge_jobs',
+            head_sha,
+            landing_extra
+          )
+      });
+      if (jobs !== null) {
+        return jobs;
       }
     }
 

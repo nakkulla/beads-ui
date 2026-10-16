@@ -794,7 +794,9 @@ describe('ws worker-queue channel', () => {
     expect(resume).toHaveBeenCalledWith(process.cwd(), 'att-1', {
       continuation: 'fresh_current',
       decision_token,
-      instructions: '실패 로그부터 확인'
+      instructions: '실패 로그부터 확인',
+      // The click is the person's authority (UI-1eag §3.1).
+      job_retry_authorized: true
     });
     expect(replyFor(sock, 'r1').payload.new_attempt_id).toBe('att-2');
   });

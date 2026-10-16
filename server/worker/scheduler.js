@@ -775,7 +775,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
- * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<{ ok: boolean, reason?: string, step?: string|null, detail?: any }>, observeFailureFacts?: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<Record<string, unknown>> }} [quickfixLanding]
+ * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string, job_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, step?: string|null, detail?: any }>, observeFailureFacts?: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<Record<string, unknown>> }} [quickfixLanding]
  * Worker-dispatched quick_fix landing settlement (design §6). An attachment
  * without this dep fails the landing attempt closed; it never falls back to PR
  * observation.
@@ -1424,7 +1424,7 @@ export function interactiveTurnState(running, attention) {
  *   sweepStalledContinuations: (workspace: string) => { rearmed: string[], restored: string[] },
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, job_retry_authorized?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
  *   reevaluateProviderSwitches: (workspace: string, catalog_accounts?: import('./account-catalog.js').Account[]) => Promise<void>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
@@ -8111,12 +8111,18 @@ export function createScheduler(deps) {
    * Settle a successful quick_fix session without entering PR observation or
    * `pr_wait`. The landing dep owns `moveToDone` on success.
    *
+   * `options.job_retry` is a person's authority to re-run an outcome-unknown
+   * post-merge job (UI-1eag §3.1). Only the human resume in {@link resume}
+   * passes it; the first landing, boot reconcile, the retry ladder and every
+   * automatic resume reach this function without it.
+   *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} bead_id
    * @param {string|null} prior
    * @param {string} target_base
    * @param {boolean} repo_known
+   * @param {{ job_retry?: boolean }} [options]
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step?: string|null, detail?: any }>}
    */
   async function settleQuickfixLanding(
@@ -8125,7 +8131,8 @@ export function createScheduler(deps) {
     bead_id,
     prior,
     target_base,
-    repo_known
+    repo_known,
+    options = {}
   ) {
     try {
       await revertWorkflowMode(
@@ -8200,7 +8207,8 @@ export function createScheduler(deps) {
       result = await deps.quickfixLanding.settle({
         attempt_id,
         bead_id,
-        target_base
+        target_base,
+        ...(options.job_retry === true ? { job_retry: true } : {})
       });
     } catch (err) {
       log('quick_fix landing threw for %s: %o', attempt_id, err);
@@ -14069,11 +14077,14 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean }} [continuation]
    * `conversation_return` is the UI-nuwy §3.4 handoff: it alone admits a
    * `parked` prior, skips only admission's `awaiting_user` presence refusal,
    * and puts the `## 대화 결과` block at the head of the resume prompt.
    * Provider receipts can continue that handoff through its unchanged park.
+   * `job_retry_authorized` marks the person's `worker-attempt-resume` click
+   * (UI-1eag §3.1): only that attachment boundary sets it, and it is read only
+   * by a quick_fix settlement resume, never by a session resume.
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -14223,6 +14234,20 @@ export function createScheduler(deps) {
       if (settling.has(attempt_id)) {
         return { ok: false, reason: 'bead_running' };
       }
+      // The PR row's `retryCleanupLocked` boundary (UI-1eag §3.1): only the
+      // person's click carries the authority to re-run an outcome-unknown
+      // post-merge job, and the landing itself narrows it to a resume of the
+      // `post_merge_jobs` step. A continuation that also carries an automatic
+      // marker is never that click, whatever else it says.
+      const job_retry =
+        continuation.job_retry_authorized === true &&
+        !continuation.retry &&
+        continuation.provider_auto_resume !== true &&
+        continuation.provider_receipt_resume !== true &&
+        continuation.preclaimed !== true &&
+        continuation.auto_resume_kind === undefined &&
+        continuation.resume_fallback === undefined &&
+        conversation_return === null;
       claimed.add(bead_id);
       settling.add(attempt_id);
       try {
@@ -14232,7 +14257,8 @@ export function createScheduler(deps) {
           bead_id,
           prior.workflow_mode_prior ?? null,
           prior.target_base || 'main',
-          repo.length > 0
+          repo.length > 0,
+          job_retry ? { job_retry: true } : {}
         );
         return result.ok
           ? { ok: true, attempt_id }

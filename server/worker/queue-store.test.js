@@ -12381,6 +12381,32 @@ describe('queue store retired experiment fields', () => {
     expect(loaded.attempts.cur.quickfix_landing?.cursor).toBe('parent_close');
   });
 
+  test('keeps a post_merge_jobs landing cursor through a save and reload (UI-1eag)', () => {
+    const store = createQueueStore();
+    store.load(WS);
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'jobs',
+        bead_id: 'UI-3',
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor: 'post_merge_jobs',
+          head_sha: 'c'.repeat(40),
+          reason: 'post_merge_job_failed'
+        }
+      }
+    });
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.attempts.jobs.quickfix_landing).toEqual({
+      cursor: 'post_merge_jobs',
+      head_sha: 'c'.repeat(40),
+      reason: 'post_merge_job_failed'
+    });
+  });
+
   test('saves the queue without the retired bench keys', () => {
     writeLegacyQueue();
     const store = createQueueStore();
