@@ -8978,6 +8978,33 @@ export function createQueueStore(options = {}) {
               'preempt_pct' in patch ? patch.preempt_pct : current.preempt_pct
           })
         };
+        // The switch verdict a hold recorded at entry is the policy's verdict,
+        // so a held attempt follows the policy the user saves while it waits.
+        // A null verdict is no usage-limit decision (an outage, or a target
+        // whose switched members already left) and stays null.
+        const verdict = /** @type {'disabled'|'unconfigured'|'none'} */ (
+          switchDecision(next, input.runner, null)
+        );
+        const target_ids = new Set(
+          Object.values(next.provider_hold_members)
+            .filter(
+              (member) =>
+                member.runner === input.runner && member.auto_switch !== null
+            )
+            .map((member) => member.target_id)
+        );
+        for (const target_id of target_ids) {
+          bindMemberSwitch(next, target_id, verdict);
+        }
+        for (const target of next.provider_hold[input.runner]?.targets ?? []) {
+          if (target.kind === 'usage_limit' && target.auto_switch) {
+            target.auto_switch = verdict;
+            if (verdict !== 'none') {
+              target.switch_ready_at = null;
+              target.switch_ready_account = null;
+            }
+          }
+        }
         return true;
       });
     },

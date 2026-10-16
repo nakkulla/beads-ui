@@ -1229,6 +1229,118 @@ describe('worker/queue-store provider hold', () => {
     expect(result.queue.auto_resume_pending).toEqual([]);
   });
 
+  /**
+   * Hold one seeded attempt on a usage-limit target under the current policy.
+   *
+   * @param {ReturnType<typeof createQueueStore>} queue_store
+   * @param {string} attempt_id
+   * @param {string|null} account
+   */
+  function holdUsageLimit(queue_store, attempt_id, account) {
+    seedProviderAttempt(queue_store, attempt_id);
+    return queue_store.holdProviderAttempt(WS, {
+      attempt_id,
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account,
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: { candidate_account: null }
+    });
+  }
+
+  test('rebinds held members to none when the runner leaves wait mode', () => {
+    const store = createQueueStore();
+    store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'wait', accounts: ['new@example.com'] }
+    });
+    holdUsageLimit(store, 'att-wait', 'old@example.com');
+
+    const result = store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'switch' }
+    });
+
+    expect(result.queue.provider_hold_members['att-wait'].auto_switch).toBe(
+      'none'
+    );
+    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
+      'none'
+    );
+  });
+
+  test('rebinds held members to disabled when the runner enters wait mode', () => {
+    const store = createQueueStore();
+    allowSwitchAccounts(store, ['new@example.com']);
+    holdUsageLimit(store, 'att-switch', 'old@example.com');
+
+    const result = store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'wait' }
+    });
+
+    expect(result.queue.provider_hold_members['att-switch'].auto_switch).toBe(
+      'disabled'
+    );
+  });
+
+  test('rebinds unconfigured members when only the allowed accounts change', () => {
+    const store = createQueueStore();
+    holdUsageLimit(store, 'att-empty', 'old@example.com');
+
+    const result = store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { accounts: ['new@example.com'] }
+    });
+
+    expect(result.queue.provider_hold_members['att-empty'].auto_switch).toBe(
+      'none'
+    );
+  });
+
+  test('rebinds an account-unresolved usage target with the new policy', () => {
+    const store = createQueueStore();
+    holdUsageLimit(store, 'att-unresolved', null);
+
+    const result = store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'wait' }
+    });
+
+    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
+      'disabled'
+    );
+  });
+
+  test('leaves outage members without a switch verdict on a policy change', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-outage');
+    holdProviderAttempt(store, 'att-outage');
+
+    const result = store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'wait' }
+    });
+
+    expect(result.queue.provider_hold_members['att-outage'].auto_switch).toBe(
+      null
+    );
+  });
+
   test('rejects a candidate dropped from the allowed set after selection', () => {
     const store = createQueueStore();
     seedProviderAttempt(store, 'att-toggle-race');

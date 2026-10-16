@@ -3421,6 +3421,21 @@ export async function tickWorkerQueue(workspace_root) {
 }
 
 /**
+ * Reconsider held usage-limit attempts after the workspace's switch policy
+ * changed, so a policy saved while they wait applies to them now. No-op
+ * without an attachment.
+ *
+ * @param {string} workspace_root
+ */
+export async function reevaluateWorkerProviderSwitches(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return;
+  }
+  await att.scheduler.reevaluateProviderSwitches(keyFor(workspace_root));
+}
+
+/**
  * Read the one execution-policy label needed when a workspace has no live
  * scheduler attachment. This keeps direct queue mutations fail-closed without
  * constructing runners, git probes, or timers for an inactive workspace.

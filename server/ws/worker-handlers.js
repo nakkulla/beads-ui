@@ -57,6 +57,7 @@ import {
   pauseWorkerAttempt,
   probeProviderNow,
   readBeadTimeline,
+  reevaluateWorkerProviderSwitches,
   refreshWorkerExternalPrs,
   refreshWorkerWaitReasons,
   resumeWorkerAttempt,
@@ -5158,6 +5159,15 @@ export function handleWorkerProviderLimitPolicySet(ws, req) {
     patch
   });
   replyMutation(ws, req, key, result);
+  if (result.ok) {
+    Promise.resolve(reevaluateWorkerProviderSwitches(key)).catch((err) => {
+      log(
+        'provider switch reevaluation after policy failed for %s: %o',
+        key,
+        err
+      );
+    });
+  }
 }
 
 /**
