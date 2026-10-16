@@ -43,7 +43,7 @@ base `a4058fbb7899622c7173a4f6df16065b3d81f93e` (beads-ui `origin/main`), dotfil
 - 레인 안 blocks 엣지는 `laneBlocksEdges`가 모은다 — `server/ws/worker-handlers.js:1401`
 - 후보·레인 구성원의 선언 scope는 `beadScopeFor`가 `bead_scope`로 wire에 싣고, 겹침은 경로 마디 경계로 판정한다 — `server/ws/worker-handlers.js:1911`, `app/utils/scope-overlap.js:29`
 - 캐시가 채워지면 fanout하는 선례는 `scope-cache`의 `onFilled`다 — `server/worker/scope-cache.js:346`, `server/ws/worker-handlers.js:1879`
-- `[↴ 대기로]`는 후보 카드 foot(슬롯 6) 하나뿐이고 클릭은 `placeMenuLanes`로 레인 메뉴를 연다 — `app/views/worker/lanes.js:5271`, `app/views/worker/index.js:3839`, `app/views/worker/placement.js:291`, `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md:262`
+- `[↴ 대기로]`는 후보 카드 foot(슬롯 6) 하나뿐이고 클릭은 `placeMenuLanes`로 레인 메뉴를 연다 — `app/views/worker/lanes.js:5274`, `app/views/worker/index.js:3839`, `app/views/worker/placement.js:291`, `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md:262`
 - 설치된 dotfiles checkout 루트는 서버가 이미 찾는다 — `server/worker/attempt-facts.js:102`, `server/worker/attempt-facts.js:133`
 - jev는 질문을 요청에 실어 보내는 범용 API다: `POST https://api.typesafe.ai/v1/systemone`, 모델 `jev-1.13.0`, 시간 제한 5초, 응답은 choice별 `probabilities` — dotfiles `src/shared/skills/flow/workflow/resources/judge-questions.yaml:4-6`, dotfiles `src/shared/skills/flow/workflow/scripts/workflow-judge.py:334-359`
 - 질문 정의를 소비자 쪽에 두고 jev를 직접 부르는 선례(덱 서버), 키는 `TYPESAFE_API_KEY` → `secrets-get typesafe/api-key` 순서 — dotfiles `docs/adr/dotfiles-hkski-deck-question-edit-unticked.md:65`, dotfiles `docs/agents/secrets.md:47`
@@ -176,7 +176,7 @@ base `a4058fbb7899622c7173a4f6df16065b3d81f93e` (beads-ui `origin/main`), dotfil
 - **버튼**: 배치 가능한 후보 카드 foot(슬롯 6)에서 `[↴ 대기로]` 앞에 `[추천 배치]`(`.op-btn`)를 둔다.
   `[↴ 대기로]`와 그 수동 레인 메뉴는 바꾸지 않는다. 슬롯 6에 버튼이 하나 늘므로 카드 문법 정본
   (`2026-08-25-card-header-grammar-unify-design.md` §5.1 슬롯 표의 6 액션 foot 행)을 먼저 고친다(ADR
-  UI-5chz의 "슬롯 표에 없는 요소는 스펙을 먼저 갱신한 뒤 단다").
+  UI-1eag(UI-5chz 승계)의 "슬롯 표에 없는 요소는 스펙을 먼저 갱신한 뒤 단다").
 - **켜짐 조건**: 상태가 `ready`일 때만 켜진다. 그 밖이면 꺼진 채(disabled) 그리고 title로 이유("jev
   판정 중 (3쌍 중 1쌍 완료)"·"jev 키 없음"·"jev 응답 없음"·"고정 조건만 있음 — ⧉ 칩과 레인 순서로 이미
   보임"·"비교할 이슈 없음")를 보인다.
@@ -257,9 +257,9 @@ base `a4058fbb7899622c7173a4f6df16065b3d81f93e` (beads-ui `origin/main`), dotfil
 ## 8. 결정 (ADR 후보)
 
 - 전제: ADR UI-u6ud-2 — beads-ui는 dotfiles 계약 파일을 런타임에 읽지 않고 필요한 값을 코드 registry로 두며 동등성은 cross-runtime 테스트로 본다.
-- 전제: ADR UI-5chz — 카드 렌더러는 두 탭이 공유하고 슬롯 표에 없는 요소는 카드 문법 스펙을 먼저 갱신한 뒤 단다(§4.7이 이 방식으로 슬롯 6에 버튼을 더한다).
+- 전제: ADR UI-1eag(UI-5chz 승계) — 카드 렌더러는 두 탭이 공유하고 슬롯 표에 없는 요소는 카드 문법 스펙을 먼저 갱신한 뒤 단다(§4.7이 이 방식으로 슬롯 6에 버튼을 더한다).
 - 전제: ADR dotfiles/dotfiles-hkski — jev를 직접 부르는 소비자는 질문 정의를 자기 쪽에 두고 모델·엔드포인트·시간 제한은 workflow 판정 값을 쓰며 키는 `TYPESAFE_API_KEY` → `secrets-get` 순서다.
-- Worker 대기열 배치 추천을 서버의 jev 쌍 판정 캐시·고정 조건과 화면의 자리 계산으로 만들어 미리보기로만 보여 주고, 레인에는 사람이 `[적용]`·`[전체 적용]`을 누를 때만 쓴다. (1) 되돌리기 어려움: worker-queue wire 필드 `placement_relations`·`placement_status`, 화면의 자리 계산 모듈, 카드 슬롯 6의 `[추천 배치]`, 저장된 쌍 캐시, jev 키 소비가 함께 움직이고 UI-u6ud-5의 "병렬성 분석 기능은 없다" 조항을 뒤집는다. 통합 검토: UI-5chz는 카드 조립·슬롯 규칙을 소유하고 이 결정은 그 규칙을 따를 뿐 뒤집는 조항이 없으며(슬롯 표 선갱신), 배치 계산·jev 쌍 캐시·wire 필드는 UI-5chz의 소비자가 아니라 supersede 대상이 아니다. (2) 맥락 없이 의외: 비슷한 기능을 ADR 0009로 지운 뒤 다시 들인다. 실제 제거 이유는 신뢰가 아니라 느림·실시간 불가였다(사용자 증언, 0009 본문 기록과 다름). (3) 실제 트레이드오프: 자동 호출 비용과 이슈 본문의 외부 전송 대 사람이 매번 배치하는 부담. `summary`: "Worker 대기열 배치 추천은 서버가 jev 쌍 판정(두 이슈 재료 digest로 캐시)과 고정 조건(blocks·scope 겹침)으로 쌍 관계를 만들고 화면이 현재 큐·후보 순서로 자리를 계산해 Worker 탭 후보 카드의 별도 [추천 배치] 버튼을 누를 때 점선 미리보기로 보이고([↴ 대기로] 수동 메뉴는 그대로) 레인에는 사람의 [적용]·[전체 적용]만 쓴다; 큐 변화는 jev를 부르지 않고 추천은 blocks 의존을 쓰지 않으며 질문 정의는 beads-ui 서버에 둔다; UI-u6ud-5의 나머지 조항(배포·빌드)은 그대로다" → ADR, supersede UI-u6ud-5
+- Worker 대기열 배치 추천을 서버의 jev 쌍 판정 캐시·고정 조건과 화면의 자리 계산으로 만들어 미리보기로만 보여 주고, 레인에는 사람이 `[적용]`·`[전체 적용]`을 누를 때만 쓴다. (1) 되돌리기 어려움: worker-queue wire 필드 `placement_relations`·`placement_status`, 화면의 자리 계산 모듈, 카드 슬롯 6의 `[추천 배치]`, 저장된 쌍 캐시, jev 키 소비가 함께 움직이고 UI-u6ud-5의 "병렬성 분석 기능은 없다" 조항을 뒤집는다. 통합 검토: UI-1eag(UI-5chz 승계)는 카드 조립·슬롯 규칙을 소유하고 이 결정은 그 규칙을 따를 뿐 뒤집는 조항이 없으며(슬롯 표 선갱신), 배치 계산·jev 쌍 캐시·wire 필드는 UI-1eag의 소비자가 아니라 supersede 대상이 아니다. (2) 맥락 없이 의외: 비슷한 기능을 ADR 0009로 지운 뒤 다시 들인다. 실제 제거 이유는 신뢰가 아니라 느림·실시간 불가였다(사용자 증언, 0009 본문 기록과 다름). (3) 실제 트레이드오프: 자동 호출 비용과 이슈 본문의 외부 전송 대 사람이 매번 배치하는 부담. `summary`: "Worker 대기열 배치 추천은 서버가 jev 쌍 판정(두 이슈 재료 digest로 캐시)과 고정 조건(blocks·scope 겹침)으로 쌍 관계를 만들고 화면이 현재 큐·후보 순서로 자리를 계산해 Worker 탭 후보 카드의 별도 [추천 배치] 버튼을 누를 때 점선 미리보기로 보이고([↴ 대기로] 수동 메뉴는 그대로) 레인에는 사람의 [적용]·[전체 적용]만 쓴다; 큐 변화는 jev를 부르지 않고 추천은 blocks 의존을 쓰지 않으며 질문 정의는 beads-ui 서버에 둔다; UI-u6ud-5의 나머지 조항(배포·빌드)은 그대로다" → ADR, supersede UI-u6ud-5
 - 확신도 기준 0.8·묶음 3초·실패 10분·동시 2개는 서버 상수다 — 되돌리기 쉬움 → ADR 아님
 - 모니터 탭에는 미리보기를 달지 않는다 — 기본 제외(parity §9 표가 정본으로 기록) → ADR 아님
 - 새 서버 모듈을 `server/placement/` 아래에 둔다 — 내부 구조 → ADR 아님
