@@ -30,6 +30,7 @@ import {
   workerQueuePlaceHandler,
   workerQueueRemoveHandler
 } from './routes/worker-queue.js';
+import { workerIncidentsHandler } from './worker/incidents.js';
 
 /**
  * Bootstrap config handed to the client in the served HTML. Label visibility is
@@ -171,6 +172,7 @@ export function createApp(config) {
   // Read the Worker waiting lanes, and place a bead into one, from a session
   // that has no browser (UI-1gpj §3).
   app.get('/api/worker/queue', workerQueueGetHandler);
+  app.get('/api/worker/incidents', workerIncidentsHandler);
   app.post('/api/worker/queue/place', workerQueuePlaceHandler);
   app.post('/api/worker/queue/remove', workerQueueRemoveHandler);
   app.post('/api/worker/external-wait', externalWaitRegisterHandler);
