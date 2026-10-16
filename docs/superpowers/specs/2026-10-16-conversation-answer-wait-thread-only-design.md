@@ -29,6 +29,7 @@ scope:
 - notifier의 `conversationAnswer`가 `❓ 답 대기` 세 줄을 만든다 — server/worker/notify.js:94, server/worker/notify.js:670-681
 - 대화 알림 네 종류(`🙋 확인 필요`·`❓ 답 대기`·`↪ Worker가 이어감`·`🙋 사람 인수`)와 "같은 멈춤의 재알림은 `❓`가 맡는다"는 현행 ADR UI-gske가 UI-nuwy에서 승계한 조항이다 — docs/adr/UI-gske-session-inquiry-row-and-failure-auto-launch.md:175, :247, :293-296, :384-396
 - dotfiles 브리지는 세 대화 레코드 종류(문의·해결·외부 재개)의 pane 마커를 읽어 세션 스레드 이름을 `🙋 Worker 대화 · <id>`로 단다. 그 스레드에 질문·턴 종료 이벤트가 올라간다 — dotfiles src/claude/scripts/discord-bridge/bridge.py:692-700, :533
+- 브리지에 spool하지 못하면 훅이 `discord` 명령으로 질문·턴 종료를 직접 보낸다 — dotfiles(1540954a) src/claude/hooks/stop-hook.sh:390-395, :435-439, src/codex/hooks/codex-notifier-service.py:2378-2379
 - 서버는 브리지 스레드 목록으로 레코드에 `discord_url`을 붙인다. 카드는 링크가 없을 때만 `[세션에서 이어가기]`(창 포커스)를 세운다 — server/worker/attach.js:1661-1663, server/ws/worker-handlers.js:3402, app/views/worker/tile-resolve.js:37-45
 - 답 대기 verdict의 해결 문장은 `답 대기 — Discord 스레드 또는 tmux 창에서 답`이다 — server/worker/wait-judgment.js:328
 - `message_excerpt`는 공개 프로토콜 필드다. UI-lbm5는 세션 레인 타일에 답 대기 발췌를 그릴 예정이다 — app/protocol.md:518, docs/superpowers/specs/2026-10-16-worker-queue-session-lane-design.md:167
@@ -61,8 +62,9 @@ scope:
 
 ### 3.4 UI-lbm5와의 관계
 
-- 결정: 세션 레인의 답 대기도 Discord 채널로 보내지 않는다. UI-lbm5 §4.4의 `🙋 확인 필요 · 세션 답 대기` 줄은 UI-lbm5가 자기 스펙에서 지운다.
-  - 이 결정은 UI-lbm5 notes에 `rereview: intent_conflict — UI-5chz: 세션 레인 답 대기 채널 알림 제거` 한 줄로 남긴다. 스펙 정정과 재리뷰는 UI-lbm5 쪽 일이다.
+- 결정: 세션 레인의 답 대기도 Discord 채널로 보내지 않는다.
+  - UI-lbm5 스펙의 §4.4 알림 줄과 수용 기준 5는 이 스펙과 같은 커밋 흐름에서 정정·게시했다(`🙋 확인 필요 · 세션 답 대기` 삭제, 답 대기에서 Discord 푸시 없음). 그래서 두 스펙은 같은 원칙을 말한다.
+  - UI-lbm5 notes에 `rereview: intent_conflict — UI-5chz: 세션 레인 답 대기 채널 알림 제거(스펙 정정 게시됨)` 한 줄을 남긴다. 정정된 스펙의 재리뷰는 UI-lbm5의 staleness 재리뷰가 맡는다.
 - 두 스펙 모두 ADR UI-gske를 supersede한다. 나중에 착지하는 쪽이 먼저 착지한 쪽의 ADR을 승계하고, supersede 대상을 그 ADR로 고친다(staleness 정정). 순서는 정하지 않는다.
 
 ## 4. 수용 기준
@@ -71,7 +73,7 @@ scope:
 2. 결과 줄 처리와 `🙋 확인 필요`·`↪ Worker가 이어감`·`🙋 사람 인수`는 현행 문구·억제 키 그대로 나간다.
 3. notifier가 답 대기 푸시를 만드는 경로를 더 이상 갖지 않는다.
 4. 카드의 `답 대기` 배지와 `[세션에서 이어가기]` 술어 결과가 변경 전과 같다.
-5. UI-lbm5 notes에 3.4의 `rereview:` 줄이 readback된다.
+5. base의 UI-lbm5 스펙에 답 대기 Discord 알림 조항이 없고, UI-lbm5 notes에 3.4의 `rereview:` 줄이 readback된다.
 
 ## 5. Test scope
 
