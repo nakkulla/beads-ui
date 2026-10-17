@@ -147,9 +147,29 @@ export function sessionLaneVerdict(message) {
 }
 
 /**
- * Whether a live session-lane window waits for the person (UI-lbm5 §4.4): a
- * question prompt, or an idle turn whose last assistant message does not open
- * with a terminal result line.
+ * Whether a terminal result line asks for a person's answer, so a live
+ * session-lane window keeps its window, claim and slot instead of settling
+ * (UI-mcth §4.1): the `parked`, `failure`, `environment` and `recovery_wait`
+ * kinds. Every other kind, and no result line at all, is false.
+ *
+ * @param {{ kind?: string|null }|null|undefined} terminal_result
+ * @returns {boolean}
+ */
+export function sessionLaneHoldsWindow(terminal_result) {
+  const kind = terminal_result?.kind;
+  return (
+    kind === 'parked' ||
+    kind === 'failure' ||
+    kind === 'environment' ||
+    kind === 'recovery_wait'
+  );
+}
+
+/**
+ * Whether a live session-lane window waits for the person (UI-lbm5 §4.4,
+ * UI-mcth §4.2): a question prompt, or an idle turn whose last assistant
+ * message is not a settling result line — either no result line, or one of
+ * the kinds {@link sessionLaneHoldsWindow} keeps the window for.
  *
  * @param {'running'|'question'|'limit'|'idle'|null|undefined} turn_state
  * @param {{ first_line?: string|null, text?: string|null }|null|undefined} last_message
@@ -162,7 +182,8 @@ export function sessionLaneAwaitsAnswer(turn_state, last_message) {
   if (turn_state !== 'idle' || !last_message) {
     return false;
   }
-  return sessionLaneVerdict(last_message) === null;
+  const verdict = sessionLaneVerdict(last_message);
+  return verdict === null || sessionLaneHoldsWindow(verdict.terminal_result);
 }
 
 /**

@@ -3,8 +3,8 @@ id: UI-lsr4
 title: jev 배치 추천·직렬 레인 증설과 Worker 대기열 세션 레인
 status: accepted
 date: 2026-10-17
-summary: "Worker 대기열 배치 추천은 서버가 jev 쌍 판정(두 이슈 재료 digest로 캐시, 선언 scope 겹침은 질문 재료로 싣는다)과 고정 조건(blocks, 두 이슈가 같은 파일을 선언한 겹침)으로 쌍 관계를 만들고, jev의 충돌은 같은 파일·공유 상태·계약 조항·배포 대상을 함께 고치는 쌍에 내며 폴더만 겹치는 쌍은 jev가 0.9 이상 독립이라 할 때만 병렬로 두고, 화면이 현재 큐·후보 순서로 자리를 계산해 Worker 탭 후보 카드의 별도 [추천 배치] 버튼을 누를 때 점선 미리보기로 보이고([↴ 대기로] 수동 메뉴는 그대로) 레인에는 사람의 [적용]·[전체 적용]만 쓰며, 기존 직렬 레인이 모두 차 있으면 새 직렬 레인(상한 5)을 추천해 적용 때 레인 수를 먼저 늘린다; 큐 변화는 jev를 부르지 않고 추천은 blocks 의존을 쓰지 않으며 질문 정의는 beads-ui 서버에 둔다; 배포·빌드 조항은 UI-u6ud-5에서 승계한 그대로다; worker-ineligible과 exec_lane=session인 session-preferred 이슈는 Worker 대기열에서 세션 레인으로 실행된다 — 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처) headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열리며, 생존은 isDeadAttempt가 마커 pane 관측으로 판정하고(관측 실패는 생존) 결과는 종단 결과 줄로 headless와 같은 판정을 탄다; 결과 줄 없는 창 소멸은 클릭 전용 session_exited 실패이고 재개는 세션 레인 attempt의 ↻ 이어하기이며 일시정지는 없다; UI-lbm5가 UI-1eag에서 승계한 나머지 조항은 그대로다"
-supersedes: ["UI-i7k9"]
+summary: "Worker 대기열 배치 추천은 서버가 jev 쌍 판정(두 이슈 재료 digest로 캐시, 선언 scope 겹침은 질문 재료로 싣는다)과 고정 조건(blocks, 두 이슈가 같은 파일을 선언한 겹침)으로 쌍 관계를 만들고, jev의 충돌은 같은 파일·공유 상태·계약 조항·배포 대상을 함께 고치는 쌍에 내며 폴더만 겹치는 쌍은 jev가 0.9 이상 독립이라 할 때만 병렬로 두고, 화면이 현재 큐·후보 순서로 자리를 계산해 Worker 탭 후보 카드의 별도 [추천 배치] 버튼을 누를 때 점선 미리보기로 보이고([↴ 대기로] 수동 메뉴는 그대로) 레인에는 사람의 [적용]·[전체 적용]만 쓰며, 기존 직렬 레인이 모두 차 있으면 새 직렬 레인(상한 5)을 추천해 적용 때 레인 수를 먼저 늘린다; 큐 변화는 jev를 부르지 않고 추천은 blocks 의존을 쓰지 않으며 질문 정의는 beads-ui 서버에 둔다; 배포·빌드 조항은 UI-u6ud-5에서 승계한 그대로다; worker-ineligible과 exec_lane=session인 session-preferred 이슈는 Worker 대기열에서 세션 레인으로 실행된다 — 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처) headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열리며, 생존은 isDeadAttempt가 마커 pane 관측으로 판정하고(관측 실패는 생존) 결과는 종단 결과 줄로 판정하되 성공과 Worker 자동 대기(blocks·external·base_moved)만 headless와 같은 판정을 타고 창을 닫으며, 사람 답이 필요한 줄(파킹·실패·환경·recovery 대기)은 정산 없이 창·claim·슬롯을 유지한 답 대기로 남고 그 상태에서 창이 사라지면 그 줄로 정산한다; 결과 줄 없는 창 소멸은 클릭 전용 session_exited 실패이고 재개는 세션 레인 attempt의 ↻ 이어하기이며 일시정지는 없다; UI-lbm5가 UI-1eag에서 승계한 나머지 조항은 그대로다"
+supersedes: ["UI-mcth"]
 spec: docs/superpowers/specs/2026-10-17-placement-file-overlap-serial-lanes-design.md
 bead: UI-lsr4
 ---
@@ -13,11 +13,21 @@ bead: UI-lsr4
 
 ## Context
 
-이 결정은 `ADR UI-i7k9`를 다시 쓴다. 그 ADR의 "고정 조건은 직접 blocks 하나" 조항과 "jev의 충돌은 해소 세션으로도 풀기 어려운 겹침에만" 조항이 이 결정과 소비자(`server/placement/relations.js`·`question.js`·`wire.js`, `app/utils/placement/compute.js`·`apply.js`, `app/views/worker/placement.js`)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 그 둘이고, 직렬 레인 증설과 고정 관계만 있는 후보의 추천을 신설한다. 나머지 조항은 그대로 승계한다.
+이 결정은 `ADR UI-mcth`를 다시 쓴다. 그 ADR이 UI-i7k9에서 승계한 "고정 조건은 직접 blocks 하나" 조항과 "jev의 충돌은 해소 세션으로도 풀기 어려운 겹침에만" 조항이 이 결정과 소비자(`server/placement/relations.js`·`question.js`·`wire.js`, `app/utils/placement/compute.js`·`apply.js`, `app/views/worker/placement.js`)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 그 둘이고, 직렬 레인 증설과 고정 관계만 있는 후보의 추천을 신설한다. 나머지 조항은 그대로 승계한다.
 
 UI-lsr4(2026-10-17): UI-i7k9 배포 뒤 `[전체 배치안]`이 거의 모든 후보를 병렬로 냈다. 새 질문 버전으로 판정한 72쌍 중 71쌍이 `independent`였고 선후 답은 없었다. 병렬 행의 `— X 뒤` 문구는 순서 의존으로 읽혔다. 사용자 판단(2026-10-17): 직렬은 기다리는 시간만 잃지만 충돌 해소 세션은 세션 하나와 재작성 위험을 쓰므로, 같은 파일을 고치는 쌍은 직렬이 기본이어야 한다. 다만 `tests` 같은 폴더 하나가 겹친다고 모든 쌍을 한 레인에 몰던 UI-izba 규칙으로 돌아가지는 않는다. 또 자리 계산은 서로 무관한 직렬 묶음을 이미 차 있는 기존 레인, 곧 남의 줄 뒤에 세웠다.
 
-아래는 `ADR UI-i7k9`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
+아래는 `ADR UI-mcth`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
+
+이 결정은 `ADR UI-i7k9`를 다시 쓴다. 이 결정과 UI-i7k9는 소비자(`server/worker/scheduler.js`의 세션 레인 메시지 처리와 창 소멸 정산)가 같으므로 새 주제가 아니다. 뒤집는 조항은 세션 레인의 "결과는 종단 결과 줄로 headless와 같은 판정을 탄다" 하나이고, 나머지 조항은 그대로 승계한다.
+
+- 전제: ADR UI-u6ud-2 — 종단 결과 줄 어휘와 세션 레인 세션의 계약은 dotfiles가 정본이다. beads-ui는 그 줄을 읽어 창 처리만 정한다.
+
+UI-mcth(2026-10-17): Cortex-cv5(`worker-ineligible`) 세션 레인 attempt의 Codex 세션이 승인 스펙의 사람 확인 지점에서 대화로 묻지 않고 `대기 · recovery:authority` 결과 줄을 썼다. beads-ui는 그 줄을 headless와 같은 판정에 넣어 `failAttempt(session_recovery_wait)`로 정리했고 5초 뒤 hub 창을 kill했다. 질문은 Bead 댓글에만 남고 사용자는 답할 창을 잃었다. 세션 레인의 존재 이유는 "사람이 필요할 때 그 창에 들어가 답한다"인데 사람 답이 필요한 결과 줄에서 창을 닫으면 그 목적이 깨진다. 사용자 결정(2026-10-17): 세션 레인 attempt는 착지 전까지 hub 창을 유지하고 답을 기다리는 동안에도 슬롯을 점유한다. 창을 유지하는 결과 줄은 사람 답이 필요한 것만이고, Worker가 스스로 재개하는 대기(blocks·external·base_moved)는 지금처럼 정리한다.
+
+아래는 UI-i7k9의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
+
+### ADR UI-i7k9의 맥락 (승계)
 
 이 결정은 `ADR UI-izba`와 `ADR UI-lbm5`를 하나로 통합해 다시 쓴다. 두 ADR은 `app/views/worker/placement.js`를 함께 다스린다 — UI-izba는 배치 추천 미리보기를, UI-lbm5는 후보 사실·자격 판정(세션 레인 후보)을. 이 결정이 바꾸는 배치 판정도 같은 소비자를 지나므로 새 주제가 아니다.
 
@@ -150,7 +160,15 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 ## Decision
 
-**두 이슈가 같은 파일을 선언한 쌍은 고정 부딪힘이고, 폴더만 겹치는 쌍은 jev가 높은 확신으로 독립이라 할 때만 병렬이다. jev의 `conflict`는 같은 파일·공유 상태·계약 조항·배포 대상을 함께 고치는 쌍에 낸다. 기존 직렬 레인이 모두 차 있으면 새 직렬 레인을 추천하고, 적용 때 레인 수를 먼저 늘린다.** 그 밖의 조항은 `ADR UI-i7k9`에서 그대로 승계한다. 이 결정이 바꾼 조항은 `(변경, UI-lsr4)`, 새 조항은 `(신설, UI-lsr4)`로 표시했다. 그 밖의 `(변경, …)`·`(신설, …)` 표시는 그 조항이 생긴 이력이다.
+**두 이슈가 같은 파일을 선언한 쌍은 고정 부딪힘이고, 폴더만 겹치는 쌍은 jev가 높은 확신으로 독립이라 할 때만 병렬이다. jev의 `conflict`는 같은 파일·공유 상태·계약 조항·배포 대상을 함께 고치는 쌍에 낸다. 기존 직렬 레인이 모두 차 있으면 새 직렬 레인을 추천하고, 적용 때 레인 수를 먼저 늘린다.** 그 밖의 조항은 `ADR UI-mcth`에서 그대로 승계한다. 이 결정이 바꾼 조항은 `(변경, UI-lsr4)`, 새 조항은 `(신설, UI-lsr4)`로 표시했다. 그 밖의 `(변경, …)`·`(신설, …)` 표시는 그 조항이 생긴 이력이다.
+
+아래는 UI-mcth의 Decision 승계분이다.
+
+**세션 레인은 사람 답이 필요한 종단 결과 줄(파킹·실패·환경·recovery 대기)에서 attempt를 정산하지 않는다. 창·claim·슬롯을 유지한 채 답 대기로 두고, 성공과 Worker 자동 대기(blocks·external·base_moved)만 headless와 같은 판정으로 정산해 창을 닫는다. 보류 중 창이 사라지면 그 보류 줄로 정산한다.** 그 밖의 조항은 UI-i7k9에서 그대로 승계한다. UI-mcth가 바꾼 조항은 `(변경, UI-mcth)`로 표시했다.
+
+아래는 UI-i7k9의 Decision 승계분이다.
+
+**배치 추천의 고정 조건은 직접 blocks 하나이고, 선언 scope 겹침은 jev 질문의 재료로만 싣는다. jev의 `conflict`는 해소 세션으로도 풀기 어려운 겹침에만 낸다.** 그 밖의 조항은 두 원본에서 그대로 승계한다. 바뀐 조항은 `(변경, UI-i7k9)`, 새 조항은 `(신설, UI-i7k9)`로 표시했다.
 
 ### ADR UI-izba에서 승계하는 조항
 
@@ -182,7 +200,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 ### ADR UI-lbm5에서 승계하는 조항
 
-**`worker-ineligible`과 `exec_lane=session`인 `session-preferred` 이슈는 Worker 대기열에서 세션 레인으로 실행된다. 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처), headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열린다. 생존은 `isDeadAttempt`가 마커 pane 관측으로 판정하고(관측 실패는 생존), 결과는 종단 결과 줄로 headless와 같은 판정을 탄다. 결과 줄 없는 창 소멸은 클릭 전용 `session_exited` 실패이고, 재개는 세션 레인 attempt의 `↻ 이어하기`이며, 일시정지는 없다.**
+**`worker-ineligible`과 `exec_lane=session`인 `session-preferred` 이슈는 Worker 대기열에서 세션 레인으로 실행된다. 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처), headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열린다. 생존은 `isDeadAttempt`가 마커 pane 관측으로 판정하고(관측 실패는 생존), 결과는 종단 결과 줄로 판정하되 성공과 Worker 자동 대기(blocks·external·base_moved)만 headless와 같은 판정을 타고 창을 닫으며, 사람 답이 필요한 줄(파킹·실패·환경·recovery 대기)은 정산 없이 창·claim·슬롯을 유지한 답 대기로 남고 그 상태에서 창이 사라지면 그 줄로 정산한다(변경, UI-mcth). 결과 줄 없는 창 소멸은 클릭 전용 `session_exited` 실패이고, 재개는 세션 레인 attempt의 `↻ 이어하기`이며, 일시정지는 없다.**
 
 실행 방식과 진입
 
@@ -200,11 +218,14 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 관찰과 종료
 
 - (변경, UI-gske 생존 소유) 세션 레인 attempt의 생존은 pid가 아니라 마커 pane이다. 죽음은 tmux 관측이 성공한 pass에서 그 pane이 없을 때만이고, 관측 실패나 관측 전은 생존이다. 관측은 목록 조회를 시작하기 전에 판정 대상을 고정하고 그 사이 기동되거나 pane이 바뀐 attempt는 다음 관측에 맡긴다. `reconcile`·`occupiedBeadIds`·재개 자격이 같은 `isDeadAttempt`로 판정한다.
-- 대화 정산 틱이 세션 레인 마커 pane의 `turn_state`·발췌를 attempt에 갱신한다. 답 대기는 `question` 또는 결과 줄이 아닌 마지막 메시지의 `idle`이고, beads-ui는 그것을 Discord로 보내지 않는다(UI-5chz 조항). 살아 있는 세션 레인 attempt는 방향 문의·실패 대화 자동 기동의 대상이 아니다.
-- 마지막 assistant 메시지 첫 줄이 종단 결과 줄이면 그 verdict를 headless와 같은 `onSessionDone` 분기에 넣는다. 결과 줄의 처리 기록은 정산이 끝날 때 함께 남겨 재시작이 미완료 정산을 이어가고, 한 메시지는 한 번만 정산한다. 창이 사라질 때도 transcript의 새 결과 줄을 먼저 읽는다.
+- (변경, UI-mcth) 대화 정산 틱이 세션 레인 마커 pane의 `turn_state`·발췌를 attempt에 갱신한다. 답 대기는 `question`, 또는 마지막 메시지가 결과 줄이 아니거나 보류 갈래 결과 줄(파킹·실패·환경·recovery 대기)인 `idle`이고, beads-ui는 그것을 Discord로 보내지 않는다(UI-5chz 조항). 살아 있는 세션 레인 attempt는 방향 문의·실패 대화 자동 기동의 대상이 아니다.
+- (변경, UI-mcth) 종단 결과 줄은 두 갈래다. 판정 함수는 `session-lane.js`의 `sessionLaneHoldsWindow` 하나다. 정산 갈래(`success`·`waiting_blocks`·`waiting_external`·`base_moved`)는 그 verdict를 headless와 같은 `onSessionDone` 분기에 넣는다. 정산 갈래 결과 줄의 처리 기록은 정산이 끝날 때 함께 남겨 재시작이 미완료 정산을 이어가고, 한 메시지는 한 번만 정산한다. 보류 갈래(`parked`·`failure`·`environment`·`recovery_wait`)는 결과 줄이 아닌 메시지처럼 처리 표지와 발췌만 남기고 attempt 상태를 바꾸지 않으며, 기록을 닫지 않으므로 창도 닫지 않는다. 타임라인에는 메시지마다 `세션 레인 결과 · <결과 줄> — 창 유지` 한 줄을 남기고 Discord로는 보내지 않는다. 사람이 답한 뒤의 새 메시지는 처음처럼 다시 판정한다.
+- (변경, UI-mcth) 창이 사라질 때는 transcript의 새 결과 줄을 먼저 읽는다. 새 메시지가 없고 마지막으로 처리한 메시지가 보류 갈래 결과 줄이면 그 줄로 `onSessionDone` 정산을 탄다. 기존 정산 우선순위(base 착지 감지 → `base_landing_detected`, 공급자 장애 → 보류)는 그대로다.
 - 결과 줄 없이 창이 사라지면 `session_exited` 실패이고 자동 재개·해결 세션은 없다. `↻ 이어하기`가 같은 워크트리·슬롯·프리셋·맥락으로 새 세션 레인 attempt를 연다(세션 ID가 있으면 resume).
 - 일시정지는 없다(`pause_unsupported`). `✕ Worker에서 내리기`·폐기는 창에 `/exit`를 보내고 유예 뒤 kill하며, 창 소멸을 관측한 뒤에만 슬롯과 claim을 돌려준다. 서버 재시작은 살아 있는 pane을 다시 채택한다.
 - 카드 재료는 Worker 탭과 모니터가 같은 공유 함수에서 만든다. 새 요소의 슬롯은 카드 헤더 문법 스펙 표가 정한다.
+
+대안과 기각 사유(UI-mcth): 성공 외 전부 보류 — blocks·external·base_moved는 Worker가 자동으로 재개하는 대기인데 창과 슬롯을 잡고 있으면 재개가 일어나지 않고, 선행 Bead가 같은 대기열 뒤에 있으면 서로 기다리다 멈춘다. recovery 대기만 보류 — 파킹·실패·환경도 사람 답이 필요하다. 세션 레인 env에서 `BDUI_WORK_RECOVERY_SCHEMA` 빼기 — 계약상 대화형 세션은 이 값 없이도 recovery 줄을 쓸 수 있어 막지 못하고 headless 동등성도 깨진다. 보류 중 창 소멸을 `session_exited`로 — 세션이 밝힌 원인(recovery 사유·실패 문장)이 카드와 실패 분류에서 사라진다.
 
 대안과 기각 사유: 별도 세션 큐 — 순서·직렬 레인·슬롯을 두 벌로 관리하게 된다. 세션 레인 전용 동시 실행 한도 — 사용자가 슬롯 공유를 택했다(2026-10-16). `worker-ineligible`의 headless 허용 — 라벨의 뜻(사람 판단이 필요)을 지운다. 허브 기본 로그인과 훅 없는 창 — 계정 보류(UI-3v1h)와 push 가드·quick_fix 착지 증명이 깨진다. 세션 레인 전용으로 완화한 admission — 같은 receipt 기준선과 마감 경로를 타므로 진입 조건이 같아야 한다. pane 기준 일시정지 — 대화형 창은 답하지 않으면 이미 멈춰 있고 프로세스 정지는 사람이 쓰는 창을 얼린다.
 
@@ -1030,7 +1051,15 @@ verify 보류
 - 얻는 것: 같은 파일을 고치는 쌍이 충돌 해소 세션 없이 직렬로 끝나고, 서로 무관한 직렬 묶음이 남의 줄 뒤에 서지 않는다.
 - 감수하는 것: 같은 파일 쌍의 직렬 대기 시간, 폴더 겹침 쌍의 보수적 직렬화, 늘어난 레인 수(자동으로 줄지 않는다). 파일·폴더 판정이 작업 트리 stat에 기대므로, 두 이슈가 같은 폴더를 `/` 없이 적었는데 그 폴더가 아직 없으면 고정 부딪힘이 된다. 숨은 레인 점유자와 제약을 가진 후보는 레인 수를 늘린 뒤 자리가 달라질 수 있고, 이때 적용은 넣지 않고 멈춘다.
 - 기각한 대안: 폴더 겹침도 고정 직렬(UI-izba 규칙) — 폴더 하나로 모든 쌍이 한 레인에 몰린다. 같은 파일도 jev에 맡기기 — 72쌍 중 71쌍이 독립으로 나와 해소 세션 비용을 그대로 진다. 스케줄러가 실행 시점에 부딪힘 상대를 기다리기 — UI-i7k9에서 비채택한 그대로다. 빈 레인 자동 축소 — 지금 동작을 바꾸지 않는다.
-- 폐기: UI-i7k9의 "고정 조건은 직접 blocks 하나이고 선언 scope 겹침은 어떤 경우에도 고정 관계를 만들지 않는다"와 "jev의 `conflict`는 해소 세션으로도 풀기 어려운 겹침에만 내고 같은 파일 겹침은 `independent`, 겹침만으로 `conflict`를 고르지 않는다" — 위 `(변경, UI-lsr4)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
+- 폐기: UI-mcth가 UI-i7k9에서 승계한 "고정 조건은 직접 blocks 하나이고 선언 scope 겹침은 어떤 경우에도 고정 관계를 만들지 않는다"와 "jev의 `conflict`는 해소 세션으로도 풀기 어려운 겹침에만 내고 같은 파일 겹침은 `independent`, 겹침만으로 `conflict`를 고르지 않는다" — 위 `(변경, UI-lsr4)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
+
+### ADR UI-mcth의 결과 (승계)
+
+- 되돌리기 어렵다: `scheduler.js`의 세션 레인 메시지 처리(`processSessionLaneMessage`)와 창 소멸 정산(`goneSessionLaneVerdict`), `session-lane.js`의 보류 갈래·답 대기 판정, 카드의 답 대기 렌더(`app/views/worker/lanes.js`), 세션 레인 결과 줄을 쓰는 dotfiles 계약 쪽 기대가 함께 움직인다.
+- 맥락 없이는 놀랍다: "세션 레인 결과는 headless와 같은 판정"을 읽은 사람은 실패·recovery 줄 뒤에도 attempt가 `running`이고 창이 남는 것을 예상하지 못한다.
+- 얻는 것: 사람 답이 필요한 결과 줄이 나와도 사람이 그 창에서 답하고 세션이 이어 간다.
+- 감수하는 것: 답을 기다리는 동안 세션 레인이 Worker 슬롯을 계속 점유하므로 다음 행이 기다린다(사용자 결정 2026-10-17).
+- 폐기: UI-i7k9의 "결과는 종단 결과 줄로 headless와 같은 판정을 탄다" — 위 `(변경, UI-mcth)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
 
 ### ADR UI-i7k9의 결과 (승계)
 
