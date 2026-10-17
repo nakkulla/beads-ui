@@ -1096,8 +1096,8 @@ export function createPlacementPreview(options) {
           aria-pressed=${full_open ? 'true' : 'false'}
           ?disabled=${!any_ready}
           title=${any_ready
-            ? 'jev 판정이 끝난 후보 전부의 배치안을 봅니다'
-            : 'jev 판정이 끝난 후보가 없습니다'}
+            ? '추천할 수 있는 후보(jev 판정 완료·고정 조건만) 전부의 배치안을 봅니다'
+            : '추천할 수 있는 후보가 없습니다'}
         >
           전체 배치안
         </button>
