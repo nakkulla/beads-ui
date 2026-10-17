@@ -3,6 +3,7 @@ import {
   sessionLaneAwaitsAnswer,
   sessionLaneCommandArgs,
   sessionLaneEnv,
+  sessionLaneHoldsWindow,
   sessionLanePaneAlive,
   sessionLaneVerdict
 } from './session-lane.js';
@@ -124,6 +125,26 @@ describe('sessionLaneVerdict (UI-lbm5 §4.5)', () => {
   });
 });
 
+describe('sessionLaneHoldsWindow (UI-mcth §4.1)', () => {
+  test.each(['parked', 'failure', 'environment', 'recovery_wait'])(
+    'holds the window for a %s result',
+    (kind) => {
+      expect(sessionLaneHoldsWindow({ kind })).toBe(true);
+    }
+  );
+
+  test.each(['success', 'waiting_blocks', 'waiting_external', 'base_moved'])(
+    'settles a %s result',
+    (kind) => {
+      expect(sessionLaneHoldsWindow({ kind })).toBe(false);
+    }
+  );
+
+  test('settles no result line at all', () => {
+    expect(sessionLaneHoldsWindow(null)).toBe(false);
+  });
+});
+
 describe('sessionLaneAwaitsAnswer (UI-lbm5 §4.4)', () => {
   test('waits on a question prompt', () => {
     expect(sessionLaneAwaitsAnswer('question', null)).toBe(true);
@@ -135,10 +156,19 @@ describe('sessionLaneAwaitsAnswer (UI-lbm5 §4.4)', () => {
     ).toBe(true);
   });
 
-  test('does not wait on an idle turn that ended with a result line', () => {
-    expect(sessionLaneAwaitsAnswer('idle', { first_line: '실패 · 원인' })).toBe(
-      false
-    );
+  test('does not wait on an idle turn that ended with a settling result line', () => {
+    expect(
+      sessionLaneAwaitsAnswer('idle', { first_line: '성공 · PR #1' })
+    ).toBe(false);
+  });
+
+  test.each([
+    '파킹 · 판단',
+    '실패 · 원인',
+    '환경 · 도구',
+    '대기 · recovery:authority'
+  ])('waits on an idle turn that ended with the hold line %s', (first_line) => {
+    expect(sessionLaneAwaitsAnswer('idle', { first_line })).toBe(true);
   });
 
   test('does not wait while the turn runs', () => {
