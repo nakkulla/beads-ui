@@ -2582,6 +2582,409 @@ describe('worker/queue-store server-global provider holds (UI-3v1h)', () => {
   });
 });
 
+describe('worker/queue-store wait-mode account follow (UI-np4t)', () => {
+  /**
+   * Add one running claude attempt.
+   *
+   * @param {any} store
+   * @param {string} attempt_id
+   * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+   */
+  function seedAttempt(store, attempt_id, patch = {}) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id: `B-${attempt_id}` }
+    });
+    store.updateAttempt(WS, {
+      attempt_id,
+      patch: { runner: 'claude', model: 'opus', status: 'running', ...patch }
+    });
+  }
+
+  /**
+   * Hold one attempt on an account's usage limit, recording the policy
+   * verdict the scheduler's usage-limit entry records.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {string} attempt_id
+   * @param {string} account
+   */
+  function holdOn(store, attempt_id, account) {
+    store.holdProviderAttempt(WS, {
+      attempt_id,
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account,
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: { candidate_account: null }
+    });
+    const found = store.providerHolds.findBy({
+      runner: 'claude',
+      kind: 'usage_limit',
+      model: 'opus',
+      account
+    });
+    if (!found) {
+      throw new Error('usage hold setup failed');
+    }
+    return { target_id: found.target.target_id, generation: found.generation };
+  }
+
+  /**
+   * @param {any} store
+   * @param {'wait'|'switch'} mode
+   */
+  function setMode(store, mode) {
+    store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode }
+    });
+  }
+
+  /**
+   * Release one account's target and settle this workspace.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {string} target_id
+   */
+  function release(store, target_id) {
+    store.providerHolds.remove(target_id);
+    return store.settleProviderMembers(WS, { runners: ['claude'] });
+  }
+
+  /**
+   * Make an attempt the second no-progress provider resume in a row, the
+   * no-progress auto-resume cap (UI-87gn §3.2).
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {string} attempt_id
+   */
+  function seedCapped(store, attempt_id) {
+    seedAttempt(store, `${attempt_id}-prior`, {
+      status: 'superseded',
+      auto_resume_kind: 'provider_outage'
+    });
+    seedAttempt(store, attempt_id, {
+      auto_resume_kind: 'provider_outage',
+      resumed_from: `${attempt_id}-prior`
+    });
+  }
+
+  test('lists only wait-mode usage-limit members to follow', () => {
+    const store = createQueueStore();
+    seedAttempt(store, 'a1');
+    holdOn(store, 'a1', 'hanmail@example.com');
+
+    const switching = store.waitFollowMembers(WS);
+    setMode(store, 'wait');
+    const waiting = store.waitFollowMembers(WS);
+
+    expect(switching).toEqual([]);
+    expect(waiting).toEqual([
+      expect.objectContaining({
+        attempt_id: 'a1',
+        bead_id: 'B-a1',
+        runner: 'claude',
+        account: 'hanmail@example.com'
+      })
+    ]);
+  });
+
+  test('follow moves a wait-mode member to the resolved account target', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedAttempt(store, 'a1');
+    seedAttempt(store, 'b1');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+    const unist = holdOn(store, 'b1', 'unist@example.com');
+
+    const result = store.followHeldProviderAttempts(WS, {
+      runner: 'claude',
+      members: [
+        {
+          attempt_id: 'a1',
+          target_id: hanmail.target_id,
+          account: 'hanmail@example.com',
+          to_target_id: unist.target_id
+        }
+      ]
+    });
+
+    expect(result.moved).toEqual(['a1']);
+    expect(result.queue.provider_hold_members.a1).toEqual({
+      runner: 'claude',
+      target_id: unist.target_id,
+      account: 'unist@example.com',
+      auto_switch: 'disabled',
+      switch_ready_at: null,
+      switch_ready_account: null
+    });
+    expect(result.queue.auto_resume_pending).toEqual([]);
+    expect(store.providerHolds.has(hanmail.target_id)).toBe(true);
+  });
+
+  test('follow releases a wait-mode member with an account_switch receipt in one mutation', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedAttempt(store, 'a1');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.followHeldProviderAttempts(WS, {
+      runner: 'claude',
+      members: [
+        {
+          attempt_id: 'a1',
+          target_id: hanmail.target_id,
+          account: 'hanmail@example.com',
+          to_target_id: null
+        }
+      ]
+    });
+
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.provider_hold_members).toEqual({});
+    expect(result.queue.auto_resume_pending).toEqual([
+      {
+        attempt_id: 'a1',
+        generation: hanmail.generation,
+        account: null,
+        kind: 'account_switch',
+        switched_from: 'hanmail@example.com',
+        origin: 'wait_follow',
+        held_account: 'hanmail@example.com'
+      }
+    ]);
+    expect(store.providerHolds.has(hanmail.target_id)).toBe(true);
+  });
+
+  test('follow refuses when the policy turned to switch', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedAttempt(store, 'a1');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+    setMode(store, 'switch');
+    const before = store.snapshot(WS);
+
+    const result = store.followHeldProviderAttempts(WS, {
+      runner: 'claude',
+      members: [
+        {
+          attempt_id: 'a1',
+          target_id: hanmail.target_id,
+          account: 'hanmail@example.com',
+          to_target_id: null
+        }
+      ]
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('follow refuses a move onto a target that left the global store', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedAttempt(store, 'a1');
+    seedAttempt(store, 'b1');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+    const unist = holdOn(store, 'b1', 'unist@example.com');
+    store.providerHolds.remove(unist.target_id);
+
+    const result = store.followHeldProviderAttempts(WS, {
+      runner: 'claude',
+      members: [
+        {
+          attempt_id: 'a1',
+          target_id: hanmail.target_id,
+          account: 'hanmail@example.com',
+          to_target_id: unist.target_id
+        }
+      ]
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).provider_hold_members.a1.target_id).toBe(
+      hanmail.target_id
+    );
+  });
+
+  test('wait-mode release writes a marked null-account receipt without judging the cap', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedCapped(store, 'a1');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+
+    const settled = release(store, hanmail.target_id);
+
+    expect(settled.disarmed_attempt_ids).toEqual([]);
+    expect(settled.recovered_attempt_ids).toEqual(['a1']);
+    expect(settled.queue.auto_resume_pending).toEqual([
+      {
+        attempt_id: 'a1',
+        generation: expect.any(Number),
+        account: null,
+        kind: 'provider_outage',
+        origin: 'wait_release',
+        held_account: 'hanmail@example.com'
+      }
+    ]);
+    expect(settled.queue.attempts.a1.auto_resume_refused).toBeNull();
+  });
+
+  test('switch-mode release receipt keeps the member account and its cap check', () => {
+    const store = createQueueStore();
+    seedCapped(store, 'a1');
+    seedAttempt(store, 'a2');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+    holdOn(store, 'a2', 'hanmail@example.com');
+
+    const settled = release(store, hanmail.target_id);
+
+    expect(settled.disarmed_attempt_ids).toEqual(['a1']);
+    expect(settled.queue.auto_resume_pending).toEqual([
+      {
+        attempt_id: 'a2',
+        generation: expect.any(Number),
+        account: 'hanmail@example.com',
+        kind: 'provider_outage'
+      }
+    ]);
+  });
+
+  test('marked receipt keeps origin and held_account across reload', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedAttempt(store, 'a1');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+    store.followHeldProviderAttempts(WS, {
+      runner: 'claude',
+      members: [
+        {
+          attempt_id: 'a1',
+          target_id: hanmail.target_id,
+          account: 'hanmail@example.com',
+          to_target_id: null
+        }
+      ]
+    });
+    const written = store.snapshot(WS).auto_resume_pending;
+
+    const reloaded = createQueueStore().snapshot(WS).auto_resume_pending;
+
+    expect(reloaded).toEqual(written);
+    expect(reloaded[0]).toMatchObject({
+      origin: 'wait_follow',
+      held_account: 'hanmail@example.com'
+    });
+  });
+
+  test('drops a wait marker that names no held account on reload', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        auto_resume_pending: [
+          {
+            attempt_id: 'a1',
+            generation: 2,
+            account: null,
+            kind: 'provider_outage',
+            origin: 'wait_release'
+          }
+        ]
+      })
+    );
+
+    const loaded = createQueueStore().snapshot(WS).auto_resume_pending;
+
+    expect(loaded).toEqual([
+      {
+        attempt_id: 'a1',
+        generation: 2,
+        account: null,
+        kind: 'provider_outage'
+      }
+    ]);
+  });
+
+  test('consume-time rebind deletes the receipt and creates the membership in one mutation', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedAttempt(store, 'a1');
+    seedAttempt(store, 'b1');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+    const unist = holdOn(store, 'b1', 'unist@example.com');
+    const settled = release(store, hanmail.target_id);
+    const receipt = settled.queue.auto_resume_pending[0];
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.rebindWaitReceipt(WS, {
+      attempt_id: 'a1',
+      generation: receipt.generation,
+      target_id: unist.target_id
+    });
+
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.auto_resume_pending).toEqual([]);
+    expect(result.queue.provider_hold_members.a1).toMatchObject({
+      target_id: unist.target_id,
+      account: 'unist@example.com',
+      auto_switch: 'disabled'
+    });
+  });
+
+  test('consume-time rebind writes nothing when the receipt generation moved', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedAttempt(store, 'a1');
+    seedAttempt(store, 'b1');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+    const unist = holdOn(store, 'b1', 'unist@example.com');
+    const settled = release(store, hanmail.target_id);
+    const receipt = settled.queue.auto_resume_pending[0];
+    const before = store.snapshot(WS);
+
+    const result = store.rebindWaitReceipt(WS, {
+      attempt_id: 'a1',
+      generation: receipt.generation + 1,
+      target_id: unist.target_id
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('consume-time cap disarms a capped wait receipt in one write', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedCapped(store, 'a1');
+    const hanmail = holdOn(store, 'a1', 'hanmail@example.com');
+    const settled = release(store, hanmail.target_id);
+    const receipt = settled.queue.auto_resume_pending[0];
+
+    const result = store.disarmCappedWaitReceipt(WS, {
+      attempt_id: 'a1',
+      generation: receipt.generation
+    });
+
+    expect(result.queue.auto_resume_pending).toEqual([]);
+    expect(result.queue.attempts.a1).toMatchObject({
+      auto_resume_refused: 'no_progress',
+      auto_resume_refusal: { kind: 'permanent', next_at: null }
+    });
+  });
+});
+
 afterEach(() => {
   delete process.env.XDG_STATE_HOME;
   try {

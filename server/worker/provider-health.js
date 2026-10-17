@@ -39,8 +39,11 @@ const OUTAGE_BACKOFF_MS = Object.freeze([
   60_000, 120_000, 240_000, 480_000, 900_000, 3_600_000
 ]);
 const log = debug('beads-ui:provider-health');
+// The periodic catalog read while a wait-follow member exists (UI-np4t
+// §4.4-3); with the 30 s Claude cache an external switch shows within ~90 s.
+const FOLLOW_READ_MS = 60_000;
 // The release history of an attempt the no-progress cap disarmed (UI-87gn §3.4).
-const NO_PROGRESS_RELEASE_SUFFIX =
+export const NO_PROGRESS_RELEASE_SUFFIX =
   ' · 자동 재개 안 함 — 진척 없는 자동 재개 2회 연속';
 
 /**
@@ -307,6 +310,17 @@ export function createProviderHealth(deps) {
   const catalog_hints = new Map();
   /** @type {(() => void)|null} */
   let unsubscribe_catalog = null;
+  /** @type {(() => void)|null} */
+  let unsubscribe_codex_catalog = null;
+  // The active login each runner's catalog read last reported (UI-np4t
+  // §4.4-2). A runner's first observation only records it: attachment start
+  // already ran the follow pass against the login it read itself.
+  /** @type {Map<string, string|null>} */
+  const observed_logins = new Map();
+  // The periodic catalog read (UI-np4t §4.4-3); armed only while an attached
+  // workspace has a wait-follow member.
+  /** @type {any} */
+  let follow_timer = null;
   // The one predicate the timer path, `sync()` and the manual `↻ 지금 프로브`
   // share: a target whose probe is running now is neither re-armed nor fired a
   // second time. The timer callback drops its key BEFORE the probe starts, so
@@ -381,13 +395,41 @@ export function createProviderHealth(deps) {
   }
 
   /**
+   * Record one observed active login and say whether it moved since the
+   * runner's previous observation. A read that reports no login state
+   * (`undefined`) records nothing.
+   *
+   * @param {string} runner
+   * @param {string|null|undefined} active_key
+   * @returns {boolean}
+   */
+  function loginChanged(runner, active_key) {
+    if (active_key === undefined) {
+      return false;
+    }
+    const seen = observed_logins.has(runner);
+    const previous = observed_logins.get(runner);
+    // Recorded before any pass starts: the pass's own catalog reads come
+    // back through this observer and must read as unchanged.
+    observed_logins.set(runner, active_key);
+    return seen && previous !== active_key;
+  }
+
+  /**
    * Advance usage probes from catalog evidence; only the probe releases a hold.
+   * A changed active login asks every attached workspace for a full pass,
+   * which runs the wait-mode follow pass (UI-np4t §4.4-2); an unchanged one
+   * keeps the catalog-only switch reevaluation.
    *
    * @param {Account[]} accounts
+   * @param {string|null} [active_key]
    */
-  function refreshUsageTargets(accounts) {
+  function refreshUsageTargets(accounts, active_key) {
+    const changed = loginChanged('claude', active_key);
     for (const workspace of active_workspaces) {
-      void reevaluateSwitches(workspace, accounts);
+      void (changed
+        ? reevaluateSwitches(workspace)
+        : reevaluateSwitches(workspace, accounts));
     }
     if (active_workspaces.size === 0) {
       return;
@@ -469,6 +511,22 @@ export function createProviderHealth(deps) {
     }
   }
 
+  /**
+   * Follow a changed Codex active login (UI-np4t §4.4-2): Codex has no usage
+   * probe hint to advance, so only the login matters.
+   *
+   * @param {Account[]} _accounts
+   * @param {string|null} [active_key]
+   */
+  function refreshCodexLogin(_accounts, active_key) {
+    if (!loginChanged('codex', active_key)) {
+      return;
+    }
+    for (const workspace of active_workspaces) {
+      void reevaluateSwitches(workspace);
+    }
+  }
+
   /** Subscribe only while a workspace is attached. */
   function observeCatalog() {
     if (
@@ -478,6 +536,110 @@ export function createProviderHealth(deps) {
       unsubscribe_catalog =
         deps.accountCatalog.subscribeClaude(refreshUsageTargets);
     }
+    if (
+      !unsubscribe_codex_catalog &&
+      typeof deps.accountCatalog.subscribeCodex === 'function'
+    ) {
+      unsubscribe_codex_catalog =
+        deps.accountCatalog.subscribeCodex(refreshCodexLogin);
+    }
+  }
+
+  /**
+   * The runners one workspace has a wait-follow member of; empty when its
+   * memberships cannot be read.
+   *
+   * @param {string} workspace
+   * @returns {Set<string>}
+   */
+  function followRunnersOf(workspace) {
+    /** @type {Set<string>} */
+    const runners = new Set();
+    if (typeof deps.store.waitFollowMembers !== 'function') {
+      return runners;
+    }
+    try {
+      for (const member of deps.store.waitFollowMembers(workspace)) {
+        runners.add(member.runner);
+      }
+    } catch (err) {
+      log('wait-follow members unreadable for %s: %o', workspace, err);
+    }
+    return runners;
+  }
+
+  /**
+   * The runners some attached workspace has a wait-follow member of.
+   *
+   * @returns {Set<string>}
+   */
+  function followRunners() {
+    /** @type {Set<string>} */
+    const runners = new Set();
+    for (const workspace of active_workspaces) {
+      for (const runner of followRunnersOf(workspace)) {
+        runners.add(runner);
+      }
+    }
+    return runners;
+  }
+
+  /**
+   * Arm the periodic catalog read while any attached workspace has a
+   * wait-follow member, and drop it once none has (UI-np4t §4.4-3).
+   */
+  function syncFollowRead() {
+    if (active_workspaces.size === 0 || followRunners().size === 0) {
+      if (follow_timer) {
+        clearTimeoutImpl(follow_timer);
+        follow_timer = null;
+      }
+      return;
+    }
+    if (follow_timer) {
+      return;
+    }
+    follow_timer = setTimeoutImpl(() => {
+      follow_timer = null;
+      void readFollowCatalogs();
+    }, FOLLOW_READ_MS);
+    follow_timer?.unref?.();
+  }
+
+  /**
+   * One periodic read of each followed runner's account list, through the
+   * catalog's own cache, then a full pass — the follow pass included — for
+   * every attached workspace with a wait-follow member. The observers above
+   * still follow a changed active login at once; the pass here does not
+   * depend on seeing a change, since a login switched before the first
+   * observation, or a pass whose reads failed, leaves no further change to
+   * observe. The Codex list keeps its long cache — this read never
+   * invalidates it.
+   */
+  async function readFollowCatalogs() {
+    for (const runner of followRunners()) {
+      try {
+        if (
+          runner === 'claude' &&
+          typeof deps.accountCatalog.listClaude === 'function'
+        ) {
+          await deps.accountCatalog.listClaude();
+        } else if (
+          runner === 'codex' &&
+          typeof deps.accountCatalog.listCodex === 'function'
+        ) {
+          await deps.accountCatalog.listCodex();
+        }
+      } catch (err) {
+        log('periodic %s catalog read failed: %o', runner, err);
+      }
+    }
+    for (const workspace of [...active_workspaces]) {
+      if (followRunnersOf(workspace).size > 0) {
+        void reevaluateSwitches(workspace);
+      }
+    }
+    syncFollowRead();
   }
 
   /**
@@ -876,6 +1038,11 @@ export function createProviderHealth(deps) {
    * before, it writes `provider_hold_released` history for each attempt and
    * sends no recovery or disarm notification.
    *
+   * A wait receipt's outcome is known only after its consumption (UI-np4t
+   * §4.3): a rebind is no recovery, a consume-time cap is a disarmed release,
+   * a changed-account resume already recorded its switch recovery, and a
+   * deferred judgment is recorded by the consumption that later settles it.
+   *
    * @param {string} runner
    * @param {number} generation
    * @param {number} since
@@ -958,17 +1125,58 @@ export function createProviderHealth(deps) {
         }
       }
       const outcome = await hooks.onPending?.(workspace);
-      resumed_beads.push(...(outcome?.resumed_beads || []));
+      // A wait receipt whose consumption rebound to another held account is
+      // no recovery, one disarmed at consumption is a capped release, one
+      // that resumed on a changed account recorded its own switch recovery,
+      // and one whose judgment was deferred records its outcome when a later
+      // consumption settles it (UI-np4t §4.3): none of them enters this
+      // release's recovery record.
+      const consume_disarmed = new Set(outcome?.disarmed_attempt_ids || []);
+      const not_recovered = new Set([
+        ...(outcome?.rebound_attempt_ids || []),
+        ...(outcome?.switched_attempt_ids || []),
+        ...(outcome?.deferred_attempt_ids || []),
+        ...consume_disarmed
+      ]);
+      const not_recovered_beads = new Set(
+        [...not_recovered]
+          .map((attempt_id) => settled.queue.attempts[attempt_id]?.bead_id)
+          .filter((bead_id) => typeof bead_id === 'string')
+      );
+      resumed_beads.push(
+        ...(outcome?.resumed_beads || []).filter(
+          (/** @type {string} */ bead_id) => !not_recovered_beads.has(bead_id)
+        )
+      );
       refusals.push(...(outcome?.refusals || []));
       await reevaluateSwitches(workspace);
       if (reason !== 'recovered') {
         continue;
       }
+      for (const attempt_id of recovered_ids) {
+        const attempt = settled.queue.attempts[attempt_id];
+        if (!attempt || !consume_disarmed.has(attempt_id)) {
+          continue;
+        }
+        hooks.timeline?.append({
+          bead_id: attempt.bead_id,
+          attempt_id,
+          kind: 'provider_hold_released',
+          seq: generation,
+          summary: `${runner} 보류 해제${NO_PROGRESS_RELEASE_SUFFIX}`
+        });
+        void hooks.notify?.providerAutoResumeDisarmed?.({
+          bead_id: attempt.bead_id,
+          runner,
+          reason: 'auto_resume_cap',
+          repo: hooks.repo
+        });
+      }
       // Every receipted attempt records its recovery (UI-87gn §3.4); the
       // notification below stays one per release.
       for (const attempt_id of recovered_ids) {
         const recovered_attempt = settled.queue.attempts[attempt_id];
-        if (!recovered_attempt) {
+        if (!recovered_attempt || not_recovered.has(attempt_id)) {
           continue;
         }
         // The receipt's account is what the resume actually launches on.
@@ -1269,6 +1477,7 @@ export function createProviderHealth(deps) {
     for (const target_workspace of targets) {
       syncSwitches(target_workspace);
     }
+    syncFollowRead();
   }
 
   return {
@@ -1338,6 +1547,12 @@ export function createProviderHealth(deps) {
         unsubscribe_catalog();
         unsubscribe_catalog = null;
       }
+      if (unsubscribe_codex_catalog) {
+        unsubscribe_codex_catalog();
+        unsubscribe_codex_catalog = null;
+      }
+      observed_logins.clear();
+      syncFollowRead();
       for (const entry of timers.values()) {
         clearTimeoutImpl(entry.timer);
       }

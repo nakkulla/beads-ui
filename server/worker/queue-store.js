@@ -856,13 +856,21 @@
  * @property {ProviderTarget[]} targets
  */
 /**
+ * @typedef {'live_preempt'|'wait_follow'|'wait_release'} AutoResumeOrigin
+ */
+/**
  * @typedef {Object} AutoResumePending
  * @property {string} attempt_id
  * @property {number} generation
  * @property {string|null} account
  * @property {'provider_outage'|'account_switch'} kind
- * @property {'live_preempt'} [origin]
+ * @property {AutoResumeOrigin} [origin] - `wait_follow`/`wait_release` mark a
+ * wait-mode receipt (UI-np4t §4.3): its consumption resolves the account and
+ * the dispatch gate first, so the marker and `held_account` must survive a
+ * reload.
  * @property {string} [switched_from]
+ * @property {string} [held_account] - The account a marked wait receipt's
+ * attempt was waiting on.
  */
 /**
  * @typedef {Object} RepoOperationMigrationResult
@@ -5173,6 +5181,12 @@ function normalizeAutoResumePending(value) {
     if (
       !pending.some((candidate) => candidate.attempt_id === entry.attempt_id)
     ) {
+      // A wait marker without the account it waited on cannot be judged at
+      // consumption, so it degrades to an unmarked receipt (UI-np4t §4.3).
+      const wait_marked =
+        (entry.origin === 'wait_follow' || entry.origin === 'wait_release') &&
+        typeof entry.held_account === 'string' &&
+        entry.held_account.length > 0;
       pending.push({
         attempt_id: entry.attempt_id,
         generation: Number(entry.generation),
@@ -5180,7 +5194,14 @@ function normalizeAutoResumePending(value) {
         kind: entry.kind,
         ...(entry.origin === 'live_preempt'
           ? { origin: /** @type {const} */ ('live_preempt') }
-          : {}),
+          : wait_marked
+            ? {
+                origin: /** @type {'wait_follow'|'wait_release'} */ (
+                  entry.origin
+                ),
+                held_account: /** @type {string} */ (entry.held_account)
+              }
+            : {}),
         ...(typeof entry.switched_from === 'string'
           ? { switched_from: entry.switched_from }
           : {})
@@ -6664,6 +6685,92 @@ export function createQueueStore(options = {}) {
       return 'none';
     }
     return 'switch';
+  }
+
+  /**
+   * Whether one attempt is a still-paused usage-limit leaf its hold may move
+   * on (the `switchHeldProviderAttempts` rule, UI-np4t §4.1): paused on
+   * `provider_outage:usage_limit`, neither withdrawn nor dismissed, no resumed
+   * child, no discard running, and no receipt pending unless `receipt_ok`
+   * says the caller's own receipt is the one.
+   *
+   * @param {Queue} next
+   * @param {string} attempt_id
+   * @param {boolean} [receipt_ok]
+   * @returns {boolean}
+   */
+  function heldLimitLeaf(next, attempt_id, receipt_ok = false) {
+    const attempt = next.attempts[attempt_id];
+    return Boolean(
+      attempt &&
+      attempt.status === 'paused' &&
+      attempt.cause === 'provider_outage:usage_limit' &&
+      !attempt.withdrawn &&
+      typeof attempt.dismissed_at !== 'number' &&
+      (receipt_ok ||
+        !next.auto_resume_pending.some(
+          (entry) => entry.attempt_id === attempt_id
+        )) &&
+      !Object.values(next.attempts).some(
+        (candidate) => candidate.resumed_from === attempt_id
+      ) &&
+      !Object.values(next.discard_operations).some(
+        (operation) =>
+          operation.attempt_id === attempt_id &&
+          discardOperationActive(operation)
+      )
+    );
+  }
+
+  /**
+   * Whether this workspace waits out a usage limit on `runner` (policy
+   * `wait`, UI-np4t §4.1).
+   *
+   * @param {Queue} next
+   * @param {string} runner
+   * @returns {boolean}
+   */
+  function waitPolicyOf(next, runner) {
+    return (
+      (runner === 'claude' || runner === 'codex') &&
+      next.provider_limit_policy?.[runner]?.mode === 'wait'
+    );
+  }
+
+  /**
+   * Whether one membership is a wait-follow member by everything the
+   * workspace itself records (UI-np4t §4.1): the policy waits, the membership
+   * names its account, and the attempt is a held usage-limit leaf. The bound
+   * target's kind lives in the global store and is the caller's to read.
+   *
+   * @param {Queue} next
+   * @param {string} attempt_id
+   * @param {import('./provider-holds.js').ProviderHoldMember} member
+   * @returns {boolean}
+   */
+  function waitMemberOf(next, attempt_id, member) {
+    return (
+      waitPolicyOf(next, member.runner) &&
+      typeof member.account === 'string' &&
+      heldLimitLeaf(next, attempt_id)
+    );
+  }
+
+  /**
+   * The pending receipt a consume-time wait judgment addresses: same attempt
+   * and generation, still carrying a wait marker. -1 when it moved.
+   *
+   * @param {Queue} next
+   * @param {{ attempt_id: string, generation: number }} input
+   * @returns {number}
+   */
+  function waitReceiptIndex(next, input) {
+    return next.auto_resume_pending.findIndex(
+      (entry) =>
+        entry.attempt_id === input.attempt_id &&
+        entry.generation === input.generation &&
+        (entry.origin === 'wait_follow' || entry.origin === 'wait_release')
+    );
   }
 
   /**
@@ -9750,25 +9857,7 @@ export function createQueueStore(options = {}) {
         }
         let queued = false;
         for (const [attempt_id, member] of members) {
-          const attempt = next.attempts[attempt_id];
-          if (
-            !attempt ||
-            attempt.status !== 'paused' ||
-            attempt.cause !== 'provider_outage:usage_limit' ||
-            attempt.withdrawn ||
-            typeof attempt.dismissed_at === 'number' ||
-            next.auto_resume_pending.some(
-              (entry) => entry.attempt_id === attempt_id
-            ) ||
-            Object.values(next.attempts).some(
-              (candidate) => candidate.resumed_from === attempt_id
-            ) ||
-            Object.values(next.discard_operations).some(
-              (operation) =>
-                operation.attempt_id === attempt_id &&
-                discardOperationActive(operation)
-            )
-          ) {
+          if (!heldLimitLeaf(next, attempt_id)) {
             continue;
           }
           next.auto_resume_pending.push({
@@ -9789,6 +9878,234 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * This workspace's wait-follow members (UI-np4t §4.1): the runner's policy
+     * waits, the bound global target is an account-scoped `usage_limit`, and
+     * the attempt is a held usage-limit leaf. Read-only.
+     *
+     * @param {string} workspace
+     * @returns {Array<{ attempt_id: string, bead_id: string, runner: string, target_id: string, account: string, model: string }>}
+     */
+    waitFollowMembers(workspace) {
+      const q = ensureLoaded(workspace);
+      /** @type {Array<{ attempt_id: string, bead_id: string, runner: string, target_id: string, account: string, model: string }>} */
+      const members = [];
+      for (const [attempt_id, member] of Object.entries(
+        q.provider_hold_members
+      )) {
+        if (!waitMemberOf(q, attempt_id, member)) {
+          continue;
+        }
+        const located = provider_holds.find(member.target_id);
+        if (
+          !located ||
+          located.runner !== member.runner ||
+          located.target.kind !== 'usage_limit' ||
+          typeof located.target.account !== 'string'
+        ) {
+          continue;
+        }
+        members.push({
+          attempt_id,
+          bead_id: q.attempts[attempt_id].bead_id,
+          runner: member.runner,
+          target_id: member.target_id,
+          account: /** @type {string} */ (member.account),
+          model: located.target.model
+        });
+      }
+      return members;
+    },
+
+    /**
+     * Whether a wait receipt's attempt is still the held usage-limit leaf the
+     * consume-time judgment (UI-np4t §4.3) is for: the attempt rule with its
+     * own receipt allowed, and no live membership. Any other attempt takes the
+     * ordinary receipt path, whose resume refuses it. Read-only.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @returns {boolean}
+     */
+    waitReceiptJudgeable(workspace, attempt_id) {
+      const q = ensureLoaded(workspace);
+      return (
+        heldLimitLeaf(q, attempt_id, true) &&
+        !Object.hasOwn(q.provider_hold_members, attempt_id)
+      );
+    },
+
+    /**
+     * Apply one follow pass's verdicts (UI-np4t §4.2 steps 3·4). Each verdict
+     * names the membership it was judged on — its target and account — and
+     * is re-read here with the runner policy (`wait`) and the attempt rule; a
+     * moved verdict also re-reads that its target still stands. A move rebinds
+     * the membership onto the resolved account's `usage_limit` target with
+     * this workspace's switch verdict; a release removes the membership and
+     * pushes the follow receipt in the same write, so the resume right is
+     * never on neither.
+     *
+     * @param {string} workspace
+     * @param {{ runner: string, members: Array<{ attempt_id: string, target_id: string, account: string, to_target_id: string|null }> }} input
+     * @returns {QueueOpResult & { moved: string[], released: string[] }}
+     */
+    followHeldProviderAttempts(workspace, input) {
+      /** @type {string[]} */
+      const moved = [];
+      /** @type {string[]} */
+      const released = [];
+      const result = applyUnconditional(workspace, (next) => {
+        if (!waitPolicyOf(next, input.runner)) {
+          return false;
+        }
+        const verdict = /** @type {'disabled'|'unconfigured'|'none'} */ (
+          switchDecision(next, input.runner, null)
+        );
+        for (const decision of input.members) {
+          const member = next.provider_hold_members[decision.attempt_id];
+          if (
+            !member ||
+            member.runner !== input.runner ||
+            member.target_id !== decision.target_id ||
+            member.account !== decision.account ||
+            !waitMemberOf(next, decision.attempt_id, member)
+          ) {
+            continue;
+          }
+          const source = provider_holds.find(member.target_id);
+          if (
+            !source ||
+            source.runner !== input.runner ||
+            source.target.kind !== 'usage_limit' ||
+            typeof source.target.account !== 'string'
+          ) {
+            continue;
+          }
+          if (decision.to_target_id === null) {
+            next.auto_resume_pending.push({
+              attempt_id: decision.attempt_id,
+              generation: source.generation,
+              account: null,
+              kind: 'account_switch',
+              switched_from: decision.account,
+              origin: 'wait_follow',
+              held_account: decision.account
+            });
+            delete next.provider_hold_members[decision.attempt_id];
+            released.push(decision.attempt_id);
+            continue;
+          }
+          const to = provider_holds.find(decision.to_target_id);
+          if (
+            !to ||
+            to.runner !== input.runner ||
+            to.target.kind !== 'usage_limit' ||
+            typeof to.target.account !== 'string' ||
+            to.target.account === decision.account
+          ) {
+            continue;
+          }
+          next.provider_hold_members[decision.attempt_id] = {
+            runner: input.runner,
+            target_id: to.target.target_id,
+            account: to.target.account,
+            auto_switch: verdict,
+            switch_ready_at: null,
+            switch_ready_account: null
+          };
+          moved.push(decision.attempt_id);
+        }
+        return moved.length + released.length > 0;
+      });
+      return {
+        ...result,
+        moved: result.ok ? moved : [],
+        released: result.ok ? released : []
+      };
+    },
+
+    /**
+     * Consume-time rebind of a wait receipt (UI-np4t §4.3 step 1): the
+     * resolved account is held by a `usage_limit` target, so instead of a
+     * launch the receipt is deleted and a membership on that target created
+     * in one write. The receipt (same attempt and generation, still marked),
+     * the target's global presence, and the attempt rule are re-read; on any
+     * mismatch nothing is written and the receipt stays, so the resume right
+     * survives as either the receipt or the membership.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, generation: number, target_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    rebindWaitReceipt(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const index = waitReceiptIndex(next, input);
+        const attempt = next.attempts[input.attempt_id];
+        const located = provider_holds.find(input.target_id);
+        if (
+          index < 0 ||
+          !attempt ||
+          !located ||
+          located.runner !== attempt.runner ||
+          located.target.kind !== 'usage_limit' ||
+          typeof located.target.account !== 'string' ||
+          Object.hasOwn(next.provider_hold_members, input.attempt_id) ||
+          !heldLimitLeaf(next, input.attempt_id, true)
+        ) {
+          return false;
+        }
+        next.auto_resume_pending.splice(index, 1);
+        next.provider_hold_members[input.attempt_id] = {
+          runner: located.runner,
+          target_id: located.target.target_id,
+          account: located.target.account,
+          auto_switch: /** @type {'disabled'|'unconfigured'|'none'} */ (
+            switchDecision(next, located.runner, null)
+          ),
+          switch_ready_at: null,
+          switch_ready_account: null
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Consume-time no-progress cap of a wait receipt resuming on the account
+     * it waited on (UI-np4t §4.3 step 3): at the cap the receipt is deleted
+     * and the same `no_progress` permanent refusal a settlement-time cap
+     * writes lands in one write. Below the cap — or when the receipt moved —
+     * nothing is written.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, generation: number }} input
+     * @returns {QueueOpResult}
+     */
+    disarmCappedWaitReceipt(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const index = waitReceiptIndex(next, input);
+        const attempt = next.attempts[input.attempt_id];
+        if (
+          index < 0 ||
+          !attempt ||
+          !providerAutoResumeCapped(next.attempts, attempt)
+        ) {
+          return false;
+        }
+        next.auto_resume_pending.splice(index, 1);
+        next.attempts[input.attempt_id] = makeAttempt({
+          ...attempt,
+          auto_resume_refused: 'no_progress',
+          auto_resume_refusal: {
+            at: now(),
+            count: 1,
+            kind: 'permanent',
+            next_at: null
+          }
+        });
+        return true;
+      });
+    },
+
+    /**
      * Membership settlement (UI-3v1h §5.4): every membership of this workspace
      * whose global target no longer exists is a released hold. Each one is
      * judged by the rule a per-repository release used — paused,
@@ -9800,6 +10117,11 @@ export function createQueueStore(options = {}) {
      * so a membership is never gone before its receipt is durable; that is
      * what lets attachment `start()` call this same function and reproduce a
      * release a restart interrupted.
+     *
+     * A wait-follow member (UI-np4t §4.3) is not judged against the cap here:
+     * it gets a `wait_release` receipt with no account, marked with the
+     * account it waited on, and its consumption resolves the account and
+     * judges the cap. Every other member keeps the rules below.
      *
      * The resume account is the membership's own: an attempt record need not
      * name the held account. `listed` is the account catalog keyed by runner;
@@ -9859,6 +10181,25 @@ export function createQueueStore(options = {}) {
                 discardOperationActive(operation)
             )
           ) {
+            continue;
+          }
+          if (waitMemberOf(next, attempt_id, member)) {
+            // A wait-follow member's resume account is the one ordinary
+            // resolution picks at consumption, which this settlement cannot
+            // know; the cap, which a changed account does not spend, is judged
+            // there too (UI-np4t §4.3).
+            recovered_attempt_ids.push(attempt_id);
+            /** @type {AutoResumePending} */
+            const marked = {
+              attempt_id,
+              generation,
+              account: null,
+              kind: 'provider_outage',
+              origin: 'wait_release',
+              held_account: /** @type {string} */ (member.account)
+            };
+            next.auto_resume_pending.push(marked);
+            pending.push(marked);
             continue;
           }
           if (providerAutoResumeCapped(next.attempts, attempt)) {

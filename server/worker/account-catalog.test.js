@@ -175,4 +175,59 @@ describe('worker/account-catalog', () => {
       reason: 'codex_account_list_unavailable'
     });
   });
+
+  test('hands Claude observers the rows and the active key', async () => {
+    const account = { key: 'a@example.com', email: 'a@example.com' };
+    const catalog = catalogWith(
+      { ok: true, accounts: [account], active_key: account.key },
+      { ok: true, accounts: [], active_key: null }
+    );
+    const observer = vi.fn();
+    catalog.subscribeClaude(observer);
+
+    await catalog.listClaude();
+
+    expect(observer).toHaveBeenCalledExactlyOnceWith([account], account.key);
+  });
+
+  test('hands Codex observers the rows and the active key', async () => {
+    const account = { key: 'acct-1', email: 'codex@example.com' };
+    const catalog = catalogWith(
+      { ok: true, accounts: [], active_key: null },
+      { ok: true, accounts: [account], active_key: 'acct-1' }
+    );
+    const observer = vi.fn();
+    catalog.subscribeCodex(observer);
+
+    await catalog.listCodex();
+
+    expect(observer).toHaveBeenCalledExactlyOnceWith([account], 'acct-1');
+  });
+
+  test('stops telling an unsubscribed Codex observer', async () => {
+    const catalog = catalogWith(
+      { ok: true, accounts: [], active_key: null },
+      { ok: true, accounts: [], active_key: 'acct-1' }
+    );
+    const observer = vi.fn();
+    const unsubscribe = catalog.subscribeCodex(observer);
+    unsubscribe();
+
+    await catalog.listCodex();
+
+    expect(observer).not.toHaveBeenCalled();
+  });
+
+  test('tells no Codex observer about an unavailable list', async () => {
+    const catalog = catalogWith(
+      { ok: true, accounts: [], active_key: null },
+      { ok: false, error: 'offline' }
+    );
+    const observer = vi.fn();
+    catalog.subscribeCodex(observer);
+
+    await catalog.listCodex();
+
+    expect(observer).not.toHaveBeenCalled();
+  });
 });

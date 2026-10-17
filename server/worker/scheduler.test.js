@@ -8405,6 +8405,599 @@ describe('scheduler provider hold and recovery', () => {
       ]);
     });
   });
+
+  describe('wait-mode account follow (UI-np4t)', () => {
+    const HANMAIL = 'hanmail@example.com';
+    const UNIST = 'unist@example.com';
+
+    /**
+     * Hold one attempt on an account's usage limit the way the scheduler's
+     * usage-limit entry does, policy verdict included.
+     *
+     * @param {any} store
+     * @param {string} attempt_id
+     * @param {string} account
+     * @param {'claude'|'codex'} [runner]
+     */
+    function holdOn(store, attempt_id, account, runner = 'claude') {
+      store.holdProviderAttempt(WS, {
+        attempt_id,
+        patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+        runner,
+        target: {
+          kind: 'usage_limit',
+          model: runner === 'claude' ? 'opus' : 'sol',
+          account,
+          detail: 'usage_limit',
+          last_error: 'limit',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        },
+        auto_switch: { candidate_account: null }
+      });
+    }
+
+    /**
+     * A wait-mode workspace whose `held` attempt of B1 waits on an account's
+     * usage limit. `login` is the active login each catalog read reports.
+     *
+     * @param {{ runner?: 'claude'|'codex', bead?: Record<string, any>, kvGet?: any, attempt?: Record<string, any>, held_on?: string, active?: string|null, mode?: 'wait'|'switch' }} [options]
+     */
+    function waitEnv(options = {}) {
+      const runner = options.runner ?? 'claude';
+      const model = runner === 'claude' ? 'opus' : 'sol';
+      const held_on = options.held_on ?? HANMAIL;
+      /** @type {{ active: string|null }} */
+      const login = {
+        active: options.active === undefined ? held_on : options.active
+      };
+      const clock = { now: 1000 };
+      const notify = {
+        providerRecovered: vi.fn(),
+        providerAutoResumeDisarmed: vi.fn()
+      };
+      const timeline = { append: vi.fn() };
+      const deps = accountDeps();
+      const activeClaude = vi.fn(async () =>
+        login.active === null
+          ? { ok: false, reason: 'claude_account_list_unavailable' }
+          : {
+              ok: true,
+              account: {
+                key: login.active,
+                email: login.active,
+                status: 'ok',
+                windows: []
+              }
+            }
+      );
+      const listCodex = vi.fn(async () =>
+        login.active === null
+          ? { ok: false, reason: 'codex_account_list_unavailable' }
+          : { ok: true, accounts: [], active_key: login.active }
+      );
+      const env = setup({
+        config: {
+          B1: { ...(runner === 'codex' ? { model } : {}), ...options.bead }
+        },
+        slots: 1,
+        notify,
+        timeline,
+        kvGet: options.kvGet,
+        now: () => clock.now,
+        ...deps,
+        accountCatalog: { ...deps.accountCatalog, activeClaude, listCodex }
+      });
+      env.store.setProviderLimitPolicy(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        runner,
+        patch: { mode: options.mode ?? 'wait' }
+      });
+      seedProviderAttempt(env.store, 'held', 'B1', {
+        runner,
+        model,
+        effort: 'high',
+        speed: 'default',
+        session_id: 'sid-held',
+        base_oid: 'base-B1',
+        target_base: 'main',
+        exec_values: { ...resumableExecValues(), orchestration_model: model },
+        ...options.attempt
+      });
+      holdOn(env.store, 'held', held_on, runner);
+      return {
+        ...env,
+        login,
+        clock,
+        notify,
+        timeline,
+        activeClaude,
+        listCodex,
+        runner_name: runner,
+        model
+      };
+    }
+
+    /**
+     * Hold another, dismissed attempt on `account`, so that account's own
+     * usage-limit target stands without a second member to follow.
+     *
+     * @param {ReturnType<typeof waitEnv>} env
+     * @param {string} account
+     */
+    function holdElsewhere(env, account) {
+      seedProviderAttempt(env.store, 'other', 'O1', {
+        runner: env.runner_name,
+        model: env.model,
+        dismissed_at: 1000
+      });
+      holdOn(env.store, 'other', account, env.runner_name);
+    }
+
+    /**
+     * Make `held` the second no-progress provider resume in a row.
+     *
+     * @param {ReturnType<typeof waitEnv>} env
+     */
+    function capHeld(env) {
+      seedProviderAttempt(env.store, 'held-prior', 'B1', {
+        status: 'superseded',
+        auto_resume_kind: 'provider_outage'
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'held',
+        patch: {
+          auto_resume_kind: 'provider_outage',
+          resumed_from: 'held-prior'
+        }
+      });
+    }
+
+    /**
+     * Release the target an account's usage limit set, settling this
+     * workspace.
+     *
+     * @param {ReturnType<typeof waitEnv>} env
+     * @param {string} account
+     * @param {Record<string, string[]|null>} [listed]
+     */
+    function releaseOn(env, account, listed = {}) {
+      return recoverTarget(
+        env.store,
+        WS,
+        {
+          runner: env.runner_name,
+          kind: 'usage_limit',
+          model: env.model,
+          account
+        },
+        listed
+      );
+    }
+
+    /**
+     * @param {ReturnType<typeof waitEnv>} env
+     */
+    function childOfHeld(env) {
+      return Object.values(env.store.snapshot(WS).attempts).find(
+        (attempt) => attempt.resumed_from === 'held'
+      );
+    }
+
+    /**
+     * The timeline events of one kind the scheduler appended.
+     *
+     * @param {ReturnType<typeof waitEnv>} env
+     * @param {string} kind
+     */
+    function timelineOf(env, kind) {
+      return env.timeline.append.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.kind === kind);
+    }
+
+    /**
+     * Release `held`'s target while its account cannot be resolved, so the
+     * consumption defers the wait receipt, then let the retry interval pass
+     * with `active` as the login.
+     *
+     * @param {ReturnType<typeof waitEnv>} env
+     * @param {string} active
+     */
+    async function deferThenResolve(env, active) {
+      releaseOn(env, HANMAIL);
+      env.login.active = null;
+      await env.scheduler.consumeProviderAutoResume(WS);
+      env.login.active = active;
+      env.clock.now += 60_000;
+    }
+
+    test.each([
+      {
+        layer: 'pin',
+        bead: { claude_account: 'pin@example.com' },
+        expected: 'pin@example.com'
+      },
+      { layer: 'workspace default', bead: {}, expected: 'default@example.com' },
+      { layer: 'active login', bead: {}, expected: UNIST, no_default: true }
+    ])(
+      'follow pass resolves pin before workspace default before active login: $layer',
+      async ({ bead, expected, no_default }) => {
+        const env = waitEnv({
+          bead,
+          active: UNIST,
+          kvGet: no_default
+            ? undefined
+            : vi.fn(async () => ({
+                ok: true,
+                value: { schema: 1, claude_account: 'default@example.com' }
+              }))
+        });
+
+        await env.scheduler.reevaluateProviderSwitches(WS);
+
+        expect(env.notify.providerRecovered).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            bead_id: 'B1',
+            switched_from: HANMAIL,
+            switched_to: expected
+          })
+        );
+      }
+    );
+
+    test('follow resume records the ordinary account source', async () => {
+      const env = waitEnv({ active: UNIST });
+
+      await env.scheduler.reevaluateProviderSwitches(WS);
+
+      const child = childOfHeld(env);
+      expect(child).toMatchObject({
+        claude_account: null,
+        account_sources: { claude: null, codex: null },
+        auto_resume_kind: 'account_switch'
+      });
+      expect(child?.account_switched_from ?? null).toBeNull();
+      expect(env.store.snapshot(WS).provider_hold_members).toEqual({});
+    });
+
+    test('follow pass skips a member whose catalog read failed', async () => {
+      const env = waitEnv({ active: null });
+      const before = env.store.snapshot(WS).provider_hold_members;
+
+      await env.scheduler.reevaluateProviderSwitches(WS);
+
+      const queue = env.store.snapshot(WS);
+      expect(queue.provider_hold_members).toEqual(before);
+      expect(queue.auto_resume_pending).toEqual([]);
+      expect(childOfHeld(env)).toBeUndefined();
+    });
+
+    test('follow pass keeps a pinned attempt waiting on its pinned account', async () => {
+      const env = waitEnv({ bead: { claude_account: HANMAIL }, active: UNIST });
+      const before = env.store.snapshot(WS).provider_hold_members;
+
+      await env.scheduler.reevaluateProviderSwitches(WS);
+
+      expect(env.store.snapshot(WS).provider_hold_members).toEqual(before);
+      expect(childOfHeld(env)).toBeUndefined();
+    });
+
+    test('follow pass leaves a switch-mode hold alone when the login changes', async () => {
+      const env = waitEnv({ mode: 'switch', active: UNIST });
+      const before = env.store.snapshot(WS).provider_hold_members;
+
+      await env.scheduler.reevaluateProviderSwitches(WS);
+
+      expect(env.store.snapshot(WS).provider_hold_members).toEqual(before);
+      expect(env.activeClaude).not.toHaveBeenCalled();
+      expect(childOfHeld(env)).toBeUndefined();
+    });
+
+    test('follow pass moves a member onto the held active account and resumes only at its release', async () => {
+      const env = waitEnv({ active: UNIST });
+      holdElsewhere(env, UNIST);
+      await env.scheduler.reevaluateProviderSwitches(WS);
+      const moved = env.store
+        .snapshot(WS)
+        .provider_hold.claude.targets.find((target) =>
+          target.attempt_ids.includes('held')
+        );
+      releaseOn(env, HANMAIL);
+      await env.scheduler.consumeProviderAutoResume(WS);
+      const after_hanmail = childOfHeld(env);
+
+      releaseOn(env, UNIST);
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(moved?.account).toBe(UNIST);
+      expect(after_hanmail).toBeUndefined();
+      expect(childOfHeld(env)).toMatchObject({
+        auto_resume_kind: 'provider_outage'
+      });
+    });
+
+    test('consuming a wait receipt rebinds instead of launching onto a held account', async () => {
+      const env = waitEnv({ active: HANMAIL });
+      holdElsewhere(env, UNIST);
+      releaseOn(env, HANMAIL);
+      env.login.active = UNIST;
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      const queue = env.store.snapshot(WS);
+      expect(outcome.rebound_attempt_ids).toEqual(['held']);
+      expect(queue.auto_resume_pending).toEqual([]);
+      expect(queue.provider_hold_members.held).toMatchObject({
+        account: UNIST
+      });
+      expect(childOfHeld(env)).toBeUndefined();
+      expect(env.runner.spawnOrder).toEqual([]);
+    });
+
+    test('consuming a wait release receipt on a changed account skips the no-progress cap', async () => {
+      const env = waitEnv({ active: HANMAIL });
+      capHeld(env);
+      releaseOn(env, HANMAIL);
+      env.login.active = UNIST;
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(outcome.switched_attempt_ids).toEqual(['held']);
+      expect(childOfHeld(env)).toMatchObject({
+        auto_resume_kind: 'account_switch'
+      });
+      expect(env.store.snapshot(WS).attempts.held.auto_resume_refused).toBe(
+        null
+      );
+    });
+
+    test('consuming a wait release receipt on the same account applies the no-progress cap', async () => {
+      const env = waitEnv({ active: HANMAIL });
+      capHeld(env);
+      releaseOn(env, HANMAIL);
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      const queue = env.store.snapshot(WS);
+      expect(outcome.disarmed_attempt_ids).toEqual(['held']);
+      expect(queue.attempts.held).toMatchObject({
+        auto_resume_refused: 'no_progress',
+        auto_resume_refusal: { kind: 'permanent', next_at: null }
+      });
+      expect(queue.auto_resume_pending).toEqual([]);
+      expect(childOfHeld(env)).toBeUndefined();
+    });
+
+    test('consuming a wait receipt whose account is unresolved keeps the receipt', async () => {
+      const env = waitEnv();
+      releaseOn(env, HANMAIL);
+      env.login.active = null;
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(env.store.snapshot(WS).auto_resume_pending).toEqual([
+        expect.objectContaining({
+          attempt_id: 'held',
+          origin: 'wait_release',
+          held_account: HANMAIL
+        })
+      ]);
+      expect(childOfHeld(env)).toBeUndefined();
+    });
+
+    test('judges an unresolved wait receipt again only after the retry interval', async () => {
+      const env = waitEnv();
+      releaseOn(env, HANMAIL);
+      env.login.active = null;
+      await env.scheduler.consumeProviderAutoResume(WS);
+      env.login.active = UNIST;
+      await env.scheduler.consumeProviderAutoResume(WS);
+      const early = childOfHeld(env);
+      env.clock.now += 60_000;
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(early).toBeUndefined();
+      expect(childOfHeld(env)).toMatchObject({
+        auto_resume_kind: 'account_switch'
+      });
+    });
+
+    test('wait receipt re-resolves the account under a prior_attempt lock', async () => {
+      const env = waitEnv({
+        bead: { claude_account: UNIST },
+        attempt: {
+          claude_account: HANMAIL,
+          continuation_choice: 'prior_attempt'
+        }
+      });
+      releaseOn(env, HANMAIL);
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(childOfHeld(env)).toMatchObject({
+        continuation_choice: 'prior_attempt',
+        claude_account: UNIST,
+        account_sources: { claude: 'bead' }
+      });
+    });
+
+    test('unmarked null receipt keeps the prior_attempt lock behavior', async () => {
+      const env = waitEnv({
+        mode: 'switch',
+        bead: { claude_account: UNIST },
+        attempt: {
+          claude_account: HANMAIL,
+          continuation_choice: 'prior_attempt'
+        }
+      });
+      releaseOn(env, HANMAIL, { claude: [UNIST] });
+      expect(env.store.snapshot(WS).auto_resume_pending).toEqual([
+        expect.not.objectContaining({ origin: expect.anything() })
+      ]);
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(childOfHeld(env)).toMatchObject({
+        continuation_choice: 'prior_attempt',
+        claude_account: HANMAIL
+      });
+    });
+
+    test('wait receipt resumes a prior_attempt lock child that recorded no account', async () => {
+      const env = waitEnv({
+        attempt: { continuation_choice: 'prior_attempt' }
+      });
+      releaseOn(env, HANMAIL);
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(outcome.refusals).toEqual([]);
+      expect(childOfHeld(env)).toMatchObject({
+        continuation_choice: 'prior_attempt',
+        claude_account: null,
+        auto_resume_kind: 'provider_outage'
+      });
+    });
+
+    test('unmarked receipt still refuses a prior_attempt lock child that recorded no account', async () => {
+      const env = waitEnv({
+        mode: 'switch',
+        attempt: { continuation_choice: 'prior_attempt' }
+      });
+      releaseOn(env, HANMAIL, { claude: [UNIST] });
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(outcome.refusals).toEqual(['B1:prior_session_unavailable']);
+      expect(childOfHeld(env)).toBeUndefined();
+    });
+
+    test('reports a wait receipt whose judgment it deferred', async () => {
+      const env = waitEnv();
+      releaseOn(env, HANMAIL);
+      env.login.active = null;
+      const unresolved = await env.scheduler.consumeProviderAutoResume(WS);
+      env.login.active = HANMAIL;
+
+      const within_interval = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(unresolved.deferred_attempt_ids).toEqual(['held']);
+      expect(within_interval.deferred_attempt_ids).toEqual(['held']);
+      expect(childOfHeld(env)).toBeUndefined();
+    });
+
+    test('records a deferred wait receipt that settles on the same account as one recovery', async () => {
+      const env = waitEnv();
+      await deferThenResolve(env, HANMAIL);
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(childOfHeld(env)).toMatchObject({
+        auto_resume_kind: 'provider_outage'
+      });
+      expect(timelineOf(env, 'provider_recovered')).toEqual([
+        expect.objectContaining({
+          bead_id: 'B1',
+          attempt_id: 'held',
+          summary: 'claude 공급자 회복',
+          account: HANMAIL
+        })
+      ]);
+      expect(env.notify.providerRecovered).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          bead_id: 'B1',
+          runner: 'claude',
+          resumed_beads: ['B1'],
+          refusal: null
+        })
+      );
+      expect(
+        env.notify.providerRecovered.mock.calls[0][0].switched_from
+      ).toBeUndefined();
+    });
+
+    test('records a deferred wait receipt that meets the cap as one capped release', async () => {
+      const env = waitEnv();
+      capHeld(env);
+      await deferThenResolve(env, HANMAIL);
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(outcome.disarmed_attempt_ids).toEqual(['held']);
+      expect(timelineOf(env, 'provider_hold_released')).toEqual([
+        expect.objectContaining({
+          bead_id: 'B1',
+          attempt_id: 'held',
+          summary:
+            'claude 보류 해제 · 자동 재개 안 함 — 진척 없는 자동 재개 2회 연속'
+        })
+      ]);
+      expect(
+        env.notify.providerAutoResumeDisarmed
+      ).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          bead_id: 'B1',
+          runner: 'claude',
+          reason: 'auto_resume_cap'
+        })
+      );
+      expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+    });
+
+    test('records nothing for a deferred wait receipt that settles in a rebind', async () => {
+      const env = waitEnv();
+      holdElsewhere(env, UNIST);
+      await deferThenResolve(env, UNIST);
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(outcome.rebound_attempt_ids).toEqual(['held']);
+      expect(timelineOf(env, 'provider_recovered')).toEqual([]);
+      expect(timelineOf(env, 'provider_hold_released')).toEqual([]);
+      expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+      expect(env.notify.providerAutoResumeDisarmed).not.toHaveBeenCalled();
+    });
+
+    test('leaves the recovery record of a same-account wait resume judged at once to its release', async () => {
+      const env = waitEnv();
+      releaseOn(env, HANMAIL);
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(childOfHeld(env)).toMatchObject({
+        auto_resume_kind: 'provider_outage'
+      });
+      expect(timelineOf(env, 'provider_recovered')).toEqual([]);
+      expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+    });
+
+    test('codex follow pass uses active_key', async () => {
+      const env = waitEnv({
+        runner: 'codex',
+        held_on: 'codex-hot',
+        active: 'codex-cool'
+      });
+
+      await env.scheduler.reevaluateProviderSwitches(WS);
+
+      expect(env.listCodex).toHaveBeenCalled();
+      expect(env.notify.providerRecovered).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          runner: 'codex',
+          switched_from: 'codex-hot',
+          switched_to: 'codex-cool'
+        })
+      );
+      expect(childOfHeld(env)).toMatchObject({
+        auto_resume_kind: 'account_switch',
+        account_sources: { claude: null, codex: null }
+      });
+    });
+  });
 });
 
 /**
@@ -30383,7 +30976,14 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
 
       const result = await env.scheduler.consumeProviderAutoResume(WS);
 
-      expect(result).toEqual({ resumed_beads: ['B1'], refusals: [] });
+      expect(result).toEqual({
+        resumed_beads: ['B1'],
+        refusals: [],
+        rebound_attempt_ids: [],
+        disarmed_attempt_ids: [],
+        switched_attempt_ids: [],
+        deferred_attempt_ids: []
+      });
       expect(childOf(env, 'returned')).toMatchObject({
         status: 'running',
         auto_resume_kind: 'account_switch',
@@ -30437,7 +31037,14 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
 
         const result = await env.scheduler.consumeProviderAutoResume(WS);
 
-        expect(result).toEqual({ resumed_beads: ['B1'], refusals: [] });
+        expect(result).toEqual({
+          resumed_beads: ['B1'],
+          refusals: [],
+          rebound_attempt_ids: [],
+          disarmed_attempt_ids: [],
+          switched_attempt_ids: [],
+          deferred_attempt_ids: []
+        });
         expect(childOf(env, 'switched')).toMatchObject({ status: 'running' });
       }
     );
@@ -30462,7 +31069,14 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
 
       const result = await env.scheduler.consumeProviderAutoResume(WS);
 
-      expect(result).toEqual({ resumed_beads: ['B1'], refusals: [] });
+      expect(result).toEqual({
+        resumed_beads: ['B1'],
+        refusals: [],
+        rebound_attempt_ids: [],
+        disarmed_attempt_ids: [],
+        switched_attempt_ids: [],
+        deferred_attempt_ids: []
+      });
       expect(childOf(env, 'returned')).toMatchObject({
         status: 'running',
         account_sources: { claude: 'live_switch' }
@@ -30562,7 +31176,14 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
       const result = await env.scheduler.consumeProviderAutoResume(WS);
 
       expect(swept.rearmed).toEqual(['returned']);
-      expect(result).toEqual({ resumed_beads: ['B1'], refusals: [] });
+      expect(result).toEqual({
+        resumed_beads: ['B1'],
+        refusals: [],
+        rebound_attempt_ids: [],
+        disarmed_attempt_ids: [],
+        switched_attempt_ids: [],
+        deferred_attempt_ids: []
+      });
     });
 
     test('never re-arms a changed park again after its one conversation retry', async () => {

@@ -121,6 +121,7 @@ import {
   readLastAssistantMessage as defaultReadLastAssistantMessage,
   parseConversationResult
 } from './interactive-progress.js';
+import { NO_PROGRESS_RELEASE_SUFFIX } from './provider-health.js';
 import { providerTargetScope } from './provider-holds.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
@@ -229,6 +230,11 @@ function startNowLifetimeMs() {
 }
 /** @type {Set<string>} */
 const resume_in_flight = new Set();
+// A wait receipt whose account could not be resolved is judged again at most
+// once a minute (UI-np4t §4.3): every catalog observation consumes receipts,
+// and a judgment's own `bd show` wakes the bd watcher that leads to the next
+// observation, so an unthrottled retry would feed itself.
+const WAIT_RESOLVE_RETRY_MS = 60_000;
 const AUTO_SWITCH_5H_MAX_PCT = 80;
 const AUTO_SWITCH_7D_MAX_PCT = 90;
 const RESUME_HANDOFF_MAX_CHARS = 4_000;
@@ -892,6 +898,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   conversationResumed?: (i: any) => void,
  *   providerHoldEntered?: (i: any) => void,
  *   providerRecovered?: (i: any) => void,
+ *   providerAutoResumeDisarmed?: (i: any) => void,
  *   providerLivePreempt?: (i: any) => void,
  *   prWaitEntered: (i: any) => void
  * }} [notify]
@@ -1450,6 +1457,19 @@ export function interactiveTurnState(running, attention) {
 }
 
 /**
+ * What one receipt consumption did (UI-np4t §4.3): beyond the resumed beads
+ * and refusals, the wait receipts that rebound to a held account's target
+ * instead of launching, the ones the no-progress cap disarmed at
+ * consumption, the ones that resumed on a changed account and already
+ * recorded their switch-shaped recovery, and the ones whose judgment this
+ * consumption deferred — an unresolved account, or a retry interval not yet
+ * passed — which record their outcome once a later consumption settles it.
+ * A hold release leaves all four out of its own recovery record.
+ *
+ * @typedef {{ resumed_beads: string[], refusals: string[], rebound_attempt_ids: string[], disarmed_attempt_ids: string[], switched_attempt_ids: string[], deferred_attempt_ids: string[] }} ProviderAutoResumeOutcome
+ */
+
+/**
  * Build the auto-advance state machine over the queue store.
  *
  * @param {SchedulerDeps} deps
@@ -1465,8 +1485,8 @@ export function interactiveTurnState(running, attention) {
  *   sweepStalledContinuations: (workspace: string) => { rearmed: string[], restored: string[] },
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, job_retry_authorized?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
- *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, job_retry_authorized?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   consumeProviderAutoResume: (workspace: string) => Promise<ProviderAutoResumeOutcome>,
  *   reevaluateProviderSwitches: (workspace: string, catalog_accounts?: import('./account-catalog.js').Account[]) => Promise<void>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
  *   preemptRunningAttempt: (workspace: string, attempt_id: string, switch_to: { from: string, to: string, window: string, pct: number }) => Promise<{ ok: boolean, reason?: string }>,
@@ -1474,7 +1494,7 @@ export function interactiveTurnState(running, attention) {
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1523,8 +1543,14 @@ export function createScheduler(deps) {
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
   /** @type {Set<string>} */
   const external_wait_resumes = new Set();
-  /** @type {Map<string, { promise: Promise<void>, rerun: boolean, refresh_catalog: boolean, all_runners: boolean, catalog_accounts: import('./account-catalog.js').Account[]|null, catalog_signature: string|null }>} */
+  /** @type {Map<string, { promise: Promise<void>, rerun: boolean, refresh_catalog: boolean, all_runners: boolean, follow: boolean, catalog_accounts: import('./account-catalog.js').Account[]|null, catalog_signature: string|null }>} */
   const provider_switch_passes = new Map();
+  // When each workspace's wait receipt last failed to resolve its account,
+  // and the one retry timer per workspace that judges it again (UI-np4t §4.3).
+  /** @type {Map<string, Map<string, number>>} */
+  const wait_unresolved_at = new Map();
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const wait_retry_timers = new Map();
   /** @type {ReturnType<typeof createExternalWaitSessionResume>|null} */
   let external_wait_session_resume = null;
 
@@ -1873,7 +1899,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerLivePreempt'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerAutoResumeDisarmed'|'providerLivePreempt'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -2126,6 +2152,13 @@ export function createScheduler(deps) {
    * Reconsider exhausted allow lists after recovery, reset, or catalog evidence.
    * Catalog reads themselves notify observers, so one workspace shares a pass.
    *
+   * A request without a catalog — a recovery, a timer, a policy save, a hold
+   * entry, attachment start, an account switch, an observed change of the
+   * active login — also runs the wait-mode follow pass (UI-np4t §4.2). A
+   * plain catalog observation does not: the follow pass reads every wait
+   * member's Bead, and a read on every catalog observation would turn the
+   * catalog into a `bd show` poll.
+   *
    * @param {string} workspace
    * @param {import('./account-catalog.js').Account[]} [catalog_accounts] - An observed Claude catalog; absence requests a fresh read after recovery or a timer.
    */
@@ -2143,6 +2176,7 @@ export function createScheduler(deps) {
         running.rerun = true;
         running.refresh_catalog = true;
         running.all_runners = true;
+        running.follow = true;
       }
       return running.promise;
     }
@@ -2151,6 +2185,7 @@ export function createScheduler(deps) {
       rerun: false,
       refresh_catalog: !catalog_accounts,
       all_runners: !catalog_accounts,
+      follow: !catalog_accounts,
       catalog_accounts: catalog_accounts || null,
       catalog_signature: catalog_accounts
         ? JSON.stringify(catalog_accounts)
@@ -2164,6 +2199,8 @@ export function createScheduler(deps) {
             state.catalog_accounts = null;
             state.refresh_catalog = false;
           }
+          const follow = state.follow;
+          state.follow = false;
           const snapshot = deps.store.snapshot(workspace);
           for (const [runner, hold] of Object.entries(snapshot.provider_hold)) {
             if (!state.all_runners && runner !== 'claude') {
@@ -2259,6 +2296,13 @@ export function createScheduler(deps) {
               }
             }
           }
+          if (follow) {
+            try {
+              await followHeldProviderAccounts(workspace);
+            } catch (err) {
+              log('wait-mode follow pass failed for %s: %o', workspace, err);
+            }
+          }
           await consumeProviderAutoResume(workspace);
         } while (state.rerun);
         deps.providerHealth?.sync(workspace);
@@ -2268,6 +2312,205 @@ export function createScheduler(deps) {
     });
     provider_switch_passes.set(workspace, state);
     await state.promise;
+  }
+
+  /**
+   * The active login of one runner, read the way the dispatch gate reads it:
+   * Claude's active row email, Codex's catalog `active_key`. Null when it
+   * cannot be read.
+   *
+   * @param {string} runner
+   * @returns {Promise<string|null>}
+   */
+  async function readActiveLogin(runner) {
+    try {
+      if (runner === 'claude') {
+        if (typeof deps.accountCatalog?.activeClaude !== 'function') {
+          return null;
+        }
+        const active = await deps.accountCatalog.activeClaude();
+        return active.ok && typeof active.account?.email === 'string'
+          ? active.account.email
+          : null;
+      }
+      if (runner === 'codex') {
+        if (typeof deps.accountCatalog?.listCodex !== 'function') {
+          return null;
+        }
+        const listed = await deps.accountCatalog.listCodex();
+        return listed?.ok && typeof listed.active_key === 'string'
+          ? listed.active_key
+          : null;
+      }
+    } catch {
+      // An unreadable catalog resolves nothing (UI-np4t §4.5).
+    }
+    return null;
+  }
+
+  /**
+   * The account a fresh dispatch of this Bead would launch `runner` on now
+   * (UI-np4t §4.2 step 1): the Bead pin, the repository default, then the
+   * active login. Null — the caller leaves the attempt as it is — when any
+   * layer this resolution needs cannot be read. `reads` carries the layer
+   * and login reads one pass shares.
+   *
+   * @param {string} workspace
+   * @param {string} runner
+   * @param {string} bead_id
+   * @param {{ layer?: Promise<import('../workspace-accounts.js').WorkspaceAccountsLayer>, logins?: Map<string, Promise<string|null>> }} reads
+   * @returns {Promise<string|null>}
+   */
+  async function resolveWaitAccount(workspace, runner, bead_id, reads) {
+    if (runner !== 'claude' && runner !== 'codex') {
+      return null;
+    }
+    const key = runner === 'claude' ? 'claude_account' : 'codex_account';
+    /** @type {BeadSnapshot} */
+    let bead_snapshot;
+    try {
+      bead_snapshot = await deps.bd.snapshotBead(bead_id);
+    } catch {
+      return null;
+    }
+    // The same pin acceptance as `effectiveAccount`, read before the default
+    // layer so an unusable layer does not hide a pin.
+    if (typeof bead_snapshot[key] === 'string') {
+      return bead_snapshot[key];
+    }
+    reads.layer ||= readWorkspaceAccountsLayer(workspace);
+    const layer = await reads.layer;
+    if (layer.state === 'unusable') {
+      return null;
+    }
+    const account = effectiveAccount(undefined, layer.values[key]);
+    if (account.value !== null) {
+      return account.value;
+    }
+    reads.logins ||= new Map();
+    let login = reads.logins.get(runner);
+    if (!login) {
+      login = readActiveLogin(runner);
+      reads.logins.set(runner, login);
+    }
+    return login;
+  }
+
+  /**
+   * The dispatch gate on one resolved account (UI-np4t §4.2), through the
+   * very predicate a fresh dispatch uses: `free` when it would launch,
+   * `limit` with that account's own `usage_limit` target when that is what
+   * holds it, `other` for every other hold — a runner-scoped outage, a
+   * credential outage, an unresolved target. Of several `usage_limit`
+   * targets naming the account, the attempt's own model wins, else the
+   * latest reset.
+   *
+   * @param {string} workspace
+   * @param {string} runner
+   * @param {string} account
+   * @param {string} model
+   * @returns {Promise<{ verdict: 'free' }|{ verdict: 'limit', target_id: string }|{ verdict: 'other' }>}
+   */
+  async function waitAccountGate(workspace, runner, account, model) {
+    const gate = await providerDispatchHeld(workspace, runner, {
+      claude: runner === 'claude' ? account : null,
+      codex: runner === 'codex' ? account : null
+    });
+    if (!gate.held) {
+      return { verdict: 'free' };
+    }
+    if (
+      gate.kind !== 'usage_limit' ||
+      gate.unresolved ||
+      gate.account !== account
+    ) {
+      return { verdict: 'other' };
+    }
+    /** @type {Array<{ target_id?: string, kind: string, model: string, account: string|null, resets_at: number|null }>} */
+    const targets = (
+      deps.store.snapshot(workspace).provider_hold?.[runner]?.targets || []
+    ).filter(
+      (/** @type {any} */ target) =>
+        target.kind === 'usage_limit' &&
+        target.account === account &&
+        typeof target.target_id === 'string'
+    );
+    const reset = (/** @type {{ resets_at: number|null }} */ target) =>
+      typeof target.resets_at === 'number' ? target.resets_at : -1;
+    const chosen =
+      targets.find((target) => target.model === model) ||
+      [...targets].sort((left, right) => reset(right) - reset(left))[0];
+    return chosen
+      ? {
+          verdict: 'limit',
+          target_id: /** @type {string} */ (chosen.target_id)
+        }
+      : { verdict: 'other' };
+  }
+
+  /**
+   * The wait-mode follow pass of one workspace (UI-np4t §4.2): every wait
+   * member's attempt waits on the account a fresh dispatch would use now.
+   * Another account held by its own usage limit moves the membership there;
+   * an account the gate would let launch releases it with a follow receipt;
+   * any other hold, an unchanged account, or an unreadable layer leaves the
+   * member as it is. The store re-reads every verdict in one write.
+   *
+   * @param {string} workspace
+   * @returns {Promise<boolean>} Whether any verdict was written.
+   */
+  async function followHeldProviderAccounts(workspace) {
+    if (typeof deps.store.waitFollowMembers !== 'function') {
+      return false;
+    }
+    const members = deps.store.waitFollowMembers(workspace);
+    if (members.length === 0) {
+      return false;
+    }
+    /** @type {{ layer?: Promise<import('../workspace-accounts.js').WorkspaceAccountsLayer>, logins?: Map<string, Promise<string|null>> }} */
+    const reads = {};
+    /** @type {Map<string, Array<{ attempt_id: string, target_id: string, account: string, to_target_id: string|null }>>} */
+    const verdicts = new Map();
+    for (const member of members) {
+      const resolved = await resolveWaitAccount(
+        workspace,
+        member.runner,
+        member.bead_id,
+        reads
+      );
+      if (resolved === null || resolved === member.account) {
+        continue;
+      }
+      const gate = await waitAccountGate(
+        workspace,
+        member.runner,
+        resolved,
+        member.model
+      );
+      if (gate.verdict === 'other') {
+        continue;
+      }
+      const list = verdicts.get(member.runner) || [];
+      list.push({
+        attempt_id: member.attempt_id,
+        target_id: member.target_id,
+        account: member.account,
+        to_target_id: gate.verdict === 'limit' ? gate.target_id : null
+      });
+      verdicts.set(member.runner, list);
+    }
+    let written = false;
+    for (const [runner, list] of verdicts) {
+      const result = deps.store.followHeldProviderAttempts(workspace, {
+        runner,
+        members: list
+      });
+      written = written || result.ok;
+    }
+    if (written) {
+      notifyChanged(workspace);
+    }
+    return written;
   }
 
   /**
@@ -13214,7 +13457,7 @@ export function createScheduler(deps) {
    *   accounts: { claude: string|null, codex: string|null },
    *   account_sources?: AccountSources,
    *   preempt?: { from: string, to: string, window: string, pct: number, held?: boolean },
-   *   auto_resume_origin?: 'live_preempt',
+   *   auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin,
    *   prior_wf: string|null,
    *   stamped_keys: string[],
    *   wt_path: string,
@@ -14940,7 +15183,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean }} [continuation]
    * `conversation_return` is the UI-nuwy §3.4 handoff: it alone admits a
    * `parked` prior, skips only admission's `awaiting_user` presence refusal,
    * and puts the `## 대화 결과` block at the head of the resume prompt.
@@ -15542,10 +15785,86 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Consume recovery receipts only after their target-removal write is durable.
+   * Judge one wait receipt before it launches (UI-np4t §4.3): resolve the
+   * account a fresh dispatch would use and read the dispatch gate on it.
+   * `unresolved` keeps the receipt for the next consumption, `rebind` names
+   * the `usage_limit` target holding that account, and `changed`/`same`
+   * compare it with the account the attempt waited on — every other hold
+   * resumes as before.
    *
    * @param {string} workspace
-   * @returns {Promise<{ resumed_beads: string[], refusals: string[] }>}
+   * @param {any} prior
+   * @param {import('./queue-store.js').AutoResumePending} pending
+   * @param {{ layer?: Promise<import('../workspace-accounts.js').WorkspaceAccountsLayer>, logins?: Map<string, Promise<string|null>> }} reads
+   * @returns {Promise<{ verdict: 'unresolved' }|{ verdict: 'rebind', target_id: string }|{ verdict: 'changed'|'same', account: string }>}
+   */
+  async function judgeWaitReceipt(workspace, prior, pending, reads) {
+    const account = await resolveWaitAccount(
+      workspace,
+      prior.runner,
+      prior.bead_id,
+      reads
+    );
+    if (account === null) {
+      return { verdict: 'unresolved' };
+    }
+    const gate = await waitAccountGate(
+      workspace,
+      prior.runner,
+      account,
+      prior.model ?? ''
+    );
+    if (gate.verdict === 'limit') {
+      return { verdict: 'rebind', target_id: gate.target_id };
+    }
+    return {
+      verdict: account === pending.held_account ? 'same' : 'changed',
+      account
+    };
+  }
+
+  /**
+   * Judge this workspace's unresolved wait receipts again once the retry
+   * interval has passed: they are no hold member, so nothing else may come
+   * back to them.
+   *
+   * @param {string} workspace
+   */
+  function armWaitResolveRetry(workspace) {
+    if (wait_retry_timers.has(workspace)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      wait_retry_timers.delete(workspace);
+      consumeProviderAutoResume(workspace).catch((err) => {
+        log('wait receipt retry failed for %s: %o', workspace, err);
+      });
+    }, WAIT_RESOLVE_RETRY_MS);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    wait_retry_timers.set(workspace, timer);
+  }
+
+  /**
+   * Consume recovery receipts only after their target-removal write is durable.
+   *
+   * A wait receipt (`wait_follow`/`wait_release`, UI-np4t §4.3) of a still
+   * held usage-limit leaf is judged first ({@link judgeWaitReceipt}): an
+   * unresolved account leaves it — judged again after a retry interval — a
+   * held account rebinds the attempt to that account's target instead of
+   * launching, a changed account resumes as an `account_switch` that spends
+   * no cap and records a switch-shaped recovery, and the same account meets
+   * the no-progress cap before a `provider_outage` resume.
+   *
+   * A deferred judgment is reported back so a hold release leaves it out of
+   * its recovery record; the consumption that later settles it on the same
+   * account records the release-shaped recovery or capped release itself.
+   * The deferral marks live in memory only, so a restart in between loses
+   * that one record.
+   *
+   * @param {string} workspace
+   * @returns {Promise<ProviderAutoResumeOutcome>}
    */
   async function consumeProviderAutoResume(workspace) {
     const snapshot = deps.store.snapshot(workspace);
@@ -15553,6 +15872,16 @@ export function createScheduler(deps) {
     const resumed_beads = [];
     /** @type {string[]} */
     const refusals = [];
+    /** @type {string[]} */
+    const rebound_attempt_ids = [];
+    /** @type {string[]} */
+    const disarmed_attempt_ids = [];
+    /** @type {string[]} */
+    const switched_attempt_ids = [];
+    /** @type {string[]} */
+    const deferred_attempt_ids = [];
+    /** @type {{ layer?: Promise<import('../workspace-accounts.js').WorkspaceAccountsLayer>, logins?: Map<string, Promise<string|null>> }} */
+    const wait_reads = {};
     let consumed = false;
     for (const pending of snapshot.auto_resume_pending || []) {
       const current = deps.store.snapshot(workspace);
@@ -15579,21 +15908,107 @@ export function createScheduler(deps) {
         const source_target = hold?.targets?.find((/** @type {any} */ target) =>
           target.attempt_ids.includes(pending.attempt_id)
         );
+        const judgeable =
+          prior &&
+          (pending.origin === 'wait_follow' ||
+            pending.origin === 'wait_release') &&
+          typeof pending.held_account === 'string' &&
+          typeof deps.store.waitReceiptJudgeable === 'function' &&
+          deps.store.waitReceiptJudgeable(workspace, pending.attempt_id);
+        const unresolved = wait_unresolved_at.get(workspace);
+        const unresolved_at = unresolved?.get(pending.attempt_id);
+        if (
+          judgeable &&
+          typeof unresolved_at === 'number' &&
+          now() - unresolved_at < WAIT_RESOLVE_RETRY_MS
+        ) {
+          deferred_attempt_ids.push(pending.attempt_id);
+          armWaitResolveRetry(workspace);
+          continue;
+        }
+        const wait = judgeable
+          ? await judgeWaitReceipt(workspace, prior, pending, wait_reads)
+          : null;
+        if (wait?.verdict === 'unresolved') {
+          const marks = unresolved || new Map();
+          marks.set(pending.attempt_id, now());
+          wait_unresolved_at.set(workspace, marks);
+          deferred_attempt_ids.push(pending.attempt_id);
+          armWaitResolveRetry(workspace);
+          continue;
+        }
+        // An earlier consumption deferred this judgment and kept it out of
+        // its release's recovery record, so a same-account outcome is
+        // recorded here instead (UI-np4t §4.3). Its mark is old enough to
+        // judge again at once and goes in the sweep below with its receipt,
+        // so a receipt a refused rebind write or a settling Bead keeps stays
+        // deferred until it is settled.
+        const settles_deferred =
+          wait?.verdict === 'same' && typeof unresolved_at === 'number';
+        if (wait?.verdict === 'rebind') {
+          if (
+            deps.store.rebindWaitReceipt(workspace, {
+              attempt_id: pending.attempt_id,
+              generation: pending.generation,
+              target_id: wait.target_id
+            }).ok
+          ) {
+            rebound_attempt_ids.push(pending.attempt_id);
+            consumed = true;
+          }
+          continue;
+        }
+        if (
+          wait?.verdict === 'same' &&
+          deps.store.disarmCappedWaitReceipt(workspace, {
+            attempt_id: pending.attempt_id,
+            generation: pending.generation
+          }).ok
+        ) {
+          disarmed_attempt_ids.push(pending.attempt_id);
+          consumed = true;
+          if (settles_deferred) {
+            const runner = prior.runner || 'claude';
+            appendTimeline({
+              bead_id: prior.bead_id,
+              attempt_id: pending.attempt_id,
+              kind: 'provider_hold_released',
+              seq: pending.generation,
+              summary: `${runner} 보류 해제${NO_PROGRESS_RELEASE_SUFFIX}`
+            });
+            notifyLifecycle('providerAutoResumeDisarmed', {
+              bead_id: prior.bead_id,
+              runner,
+              reason: 'auto_resume_cap',
+              repo: prior.repo
+            });
+          }
+          continue;
+        }
         const switched_from =
-          pending.kind === 'account_switch'
-            ? pending.switched_from ||
-              source_target?.account ||
-              activeAccountOf(prior) ||
-              null
-            : prior?.account_switched_from || null;
+          wait?.verdict === 'changed'
+            ? /** @type {string} */ (pending.held_account)
+            : wait === null && pending.kind === 'account_switch'
+              ? pending.switched_from ||
+                source_target?.account ||
+                activeAccountOf(prior) ||
+                null
+              : prior?.account_switched_from || null;
         /** @type {'provider_outage'|'account_switch'} */
-        const resume_kind =
-          pending.kind === 'account_switch'
+        const resume_kind = wait
+          ? wait.verdict === 'changed'
+            ? 'account_switch'
+            : 'provider_outage'
+          : pending.kind === 'account_switch'
             ? 'account_switch'
             : 'provider_outage';
         const account_override_key =
           prior?.runner === 'codex' ? 'codex_account' : 'claude_account';
         const locked = prior?.continuation_choice === 'prior_attempt';
+        // A changed-account wait resume keeps the ordinary account provenance
+        // (UI-np4t §4.3), so it does not hand its source over as a switch.
+        const resume_switched_from =
+          wait?.verdict === 'changed' ? null : switched_from;
         const options = {
           continuation: /** @type {'auto'|'prior_attempt'} */ (
             locked ? 'prior_attempt' : 'auto'
@@ -15602,12 +16017,17 @@ export function createScheduler(deps) {
           provider_receipt_resume: true,
           resolve_provider_account: pending.account === null,
           auto_resume_kind: resume_kind,
-          auto_resume_origin: pending.origin,
+          auto_resume_origin:
+            wait || pending.origin === 'live_preempt'
+              ? pending.origin
+              : undefined,
           ...(pending.account !== null &&
           (!locked || resume_kind === 'account_switch')
             ? { exec_override: { [account_override_key]: pending.account } }
             : {}),
-          ...(switched_from ? { account_switched_from: switched_from } : {})
+          ...(resume_switched_from
+            ? { account_switched_from: resume_switched_from }
+            : {})
         };
         /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
         let result;
@@ -15670,6 +16090,55 @@ export function createScheduler(deps) {
               pct: intent.pct,
               repo: prior.repo
             });
+          } else if (wait?.verdict === 'changed') {
+            // Recorded once here, from the account it waited on to the one it
+            // actually launched on; the hold release leaves it out of its own
+            // recovery record (UI-np4t §4.3).
+            const child = result.attempt_id
+              ? deps.store.snapshot(workspace).attempts[result.attempt_id]
+              : null;
+            const launched = activeAccountOf(child) ?? wait.account;
+            switched_attempt_ids.push(pending.attempt_id);
+            appendTimeline(
+              /** @type {any} */ ({
+                bead_id: prior.bead_id,
+                attempt_id: result.attempt_id || prior.attempt_id,
+                kind: 'provider_recovered',
+                seq: pending.generation,
+                summary: `${prior.runner || 'claude'} 계정 전환 회복`,
+                account: launched
+              })
+            );
+            notifyLifecycle('providerRecovered', {
+              bead_id: prior.bead_id,
+              runner: prior.runner || 'claude',
+              duration_ms: Math.max(0, now() - (hold?.since || now())),
+              resumed_beads: [prior.bead_id],
+              refusal: null,
+              switched_from,
+              switched_to: launched,
+              repo: prior.repo
+            });
+          } else if (settles_deferred) {
+            // The release-shaped recovery the deferring release left out.
+            const runner = prior.runner || 'claude';
+            const recovered_account = pending.account ?? pending.held_account;
+            appendTimeline({
+              bead_id: prior.bead_id,
+              attempt_id: pending.attempt_id,
+              kind: 'provider_recovered',
+              seq: pending.generation,
+              summary: `${runner} 공급자 회복`,
+              ...(recovered_account ? { account: recovered_account } : {})
+            });
+            notifyLifecycle('providerRecovered', {
+              bead_id: prior.bead_id,
+              runner,
+              duration_ms: Math.max(0, now() - (hold?.since || now())),
+              resumed_beads: [prior.bead_id],
+              refusal: null,
+              repo: prior.repo
+            });
           } else if (
             pending.kind === 'account_switch' &&
             pending.account !== null &&
@@ -15721,10 +16190,35 @@ export function createScheduler(deps) {
         resume_in_flight.delete(pending.attempt_id);
       }
     }
+    const marks = wait_unresolved_at.get(workspace);
+    if (marks) {
+      const left = new Set(
+        deps.store
+          .snapshot(workspace)
+          .auto_resume_pending.map(
+            (/** @type {{ attempt_id: string }} */ entry) => entry.attempt_id
+          )
+      );
+      for (const attempt_id of [...marks.keys()]) {
+        if (!left.has(attempt_id)) {
+          marks.delete(attempt_id);
+        }
+      }
+      if (marks.size === 0) {
+        wait_unresolved_at.delete(workspace);
+      }
+    }
     if (consumed) {
       notifyChanged(workspace);
     }
-    return { resumed_beads, refusals };
+    return {
+      resumed_beads,
+      refusals,
+      rebound_attempt_ids,
+      disarmed_attempt_ids,
+      switched_attempt_ids,
+      deferred_attempt_ids
+    };
   }
 
   /**
@@ -15895,10 +16389,15 @@ export function createScheduler(deps) {
    * The codex account has no catalog to resolve against, so its recorded id is
    * carried as-is; the runner check is what proves the provider itself.
    *
+   * `account_free` checks the runner alone, for a launch whose account is
+   * resolved afresh rather than taken from the record (a wait receipt,
+   * UI-np4t §4.3).
+   *
    * @param {any} prior
+   * @param {{ account_free?: boolean }} [options]
    * @returns {Promise<boolean>}
    */
-  async function priorExecutionUsable(prior) {
+  async function priorExecutionUsable(prior, options = {}) {
     const runner = typeof prior.runner === 'string' ? prior.runner : '';
     try {
       if (!runtimeCatalog().runners[runner]) {
@@ -15906,6 +16405,9 @@ export function createScheduler(deps) {
       }
     } catch {
       return false;
+    }
+    if (options.account_free === true) {
+      return true;
     }
     const account = activeAccountOf(prior);
     if (account === null) {
@@ -16644,6 +17146,13 @@ export function createScheduler(deps) {
     const prior_attempt_choice = options.continuation === 'prior_attempt';
     const account_switch =
       provider_auto_resume && options.auto_resume_kind === 'account_switch';
+    // A wait receipt follows the ordinary account even under a
+    // `prior_attempt` lock: the lock yields its account as it does to an
+    // account switch, and keeps the rest of the recorded tuple (UI-np4t §4.3).
+    const wait_receipt =
+      provider_auto_resume &&
+      (options.auto_resume_origin === 'wait_follow' ||
+        options.auto_resume_origin === 'wait_release');
     const account_only_override =
       options.exec_override &&
       Object.keys(options.exec_override).every(
@@ -16662,13 +17171,22 @@ export function createScheduler(deps) {
         prior.status === 'paused' &&
         prior.control?.kind === 'pause' &&
         prior.control.phase === 'done';
+      // A wait receipt launches on the account resolved below, never on the
+      // recorded one, so only the recorded account goes unchecked: a lock
+      // child that launched on the active login records none (UI-np4t §4.3).
+      // `account_missing` is the record's last check, so the session and
+      // tuple checks before it still hold.
+      const record_usable =
+        record.eligible || (wait_receipt && record.code === 'account_missing');
       // A provider auto-resume of a `prior_attempt` child continues the SAME
       // choice from whatever resumable state the outage left it in (§5.3); a
       // user restart is only ever the exit of a completed durable pause.
-      if (!record.eligible || (!provider_auto_resume && !pause_settled)) {
+      if (!record_usable || (!provider_auto_resume && !pause_settled)) {
         return { ok: false, reason: 'prior_session_unavailable' };
       }
-      if (!(await priorExecutionUsable(prior))) {
+      if (
+        !(await priorExecutionUsable(prior, { account_free: wait_receipt }))
+      ) {
         return { ok: false, reason: 'prior_session_unavailable' };
       }
     }
@@ -16722,7 +17240,7 @@ export function createScheduler(deps) {
     if (
       provider_auto_resume &&
       options.resolve_provider_account === true &&
-      !prior_attempt_choice
+      (!prior_attempt_choice || wait_receipt)
     ) {
       const workspace_accounts = await readWorkspaceAccountsLayer(workspace);
       if (workspace_accounts.state === 'unusable') {
@@ -16753,7 +17271,11 @@ export function createScheduler(deps) {
       return override_result;
     }
     const resolved = override_result.resolved;
-    if (account_switch && typeof options.account_switched_from === 'string') {
+    if (
+      account_switch &&
+      !wait_receipt &&
+      typeof options.account_switched_from === 'string'
+    ) {
       // The switched runner's OWN key, so a codex switch no longer rewrites the
       // claude provenance (spec §3.2).
       resolved.account_sources = {
@@ -17754,7 +18276,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
