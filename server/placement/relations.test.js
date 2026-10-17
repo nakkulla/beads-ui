@@ -333,3 +333,176 @@ describe('candidate states', () => {
     expect(out.status['UI-1']).toEqual({ state: 'no_counterpart' });
   });
 });
+
+describe('declared-scope overlap (UI-lsr4)', () => {
+  test('fixes a same-file pair as a conflict without asking jev', () => {
+    const judgmentFor = vi.fn(() => answered('independent', 0.99));
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: {
+        'UI-1': ['app/a.js', 'app/b.js', 'docs/'],
+        'UI-2': ['app/b.js', 'app/a.js']
+      },
+      judgmentFor
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toEqual({
+      a: 'UI-1',
+      b: 'UI-2',
+      relation: 'conflict',
+      source: 'fixed',
+      basis: 'file',
+      overlap: ['app/a.js', 'app/b.js'],
+      confidence: null,
+      jev_choice: null,
+      judged_at: null
+    });
+    expect(out.jev_pairs).toEqual([]);
+    expect(out.progress).toEqual({ done: 0, total: 0 });
+    expect(out.status['UI-1']).toEqual({ state: 'fixed_only' });
+    expect(judgmentFor).not.toHaveBeenCalled();
+  });
+
+  test('keeps a blocks edge ahead of a shared file', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      blocked_by: { 'UI-2': ['UI-1'] },
+      scopes: { 'UI-1': ['app/a.js'], 'UI-2': ['app/a.js'] }
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toMatchObject({
+      relation: 'a_first',
+      source: 'fixed',
+      basis: 'blocks'
+    });
+  });
+
+  test('asks jev about a directory-only overlap', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['tests'], 'UI-2': ['tests'] },
+      isDirectory: (item) => item === 'tests'
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toBeUndefined();
+    expect(out.jev_pairs).toEqual([
+      { a: 'UI-1', b: 'UI-2', overlap: ['tests'] }
+    ]);
+    expect(out.progress).toEqual({ done: 0, total: 1 });
+  });
+
+  test('turns a low-confidence independent on an overlapping pair into a conflict', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['tests/'], 'UI-2': ['tests/a.test.js'] },
+      judgmentFor: () => answered('independent', 0.85)
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toEqual({
+      a: 'UI-1',
+      b: 'UI-2',
+      relation: 'conflict',
+      source: 'jev',
+      overlap: ['tests/a.test.js'],
+      overlap_guard: true,
+      confidence: 0.85,
+      jev_choice: 'independent',
+      judged_at: 1_700
+    });
+  });
+
+  test('adopts a 0.95 independent on an overlapping pair', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['tests/'], 'UI-2': ['tests/a.test.js'] },
+      judgmentFor: () => answered('independent', 0.95)
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2'].relation).toBe('independent');
+    expect(out.relations['UI-1|UI-2'].overlap_guard).toBeUndefined();
+  });
+
+  test('guards an overlapping pair whose order answer falls below 0.8', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['tests/'], 'UI-2': ['tests/a.test.js'] },
+      judgmentFor: () => answered('a_first', 0.6)
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toMatchObject({
+      relation: 'conflict',
+      overlap_guard: true,
+      jev_choice: 'a_first'
+    });
+  });
+
+  test('adopts a 0.8 order answer on an overlapping pair', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['tests/'], 'UI-2': ['tests/a.test.js'] },
+      judgmentFor: () => answered('b_first', 0.8)
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2'].relation).toBe('b_first');
+    expect(out.relations['UI-1|UI-2'].overlap_guard).toBeUndefined();
+  });
+
+  test('adopts a 0.85 independent on a disjoint pair', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['app/'], 'UI-2': ['server/'] },
+      judgmentFor: () => answered('independent', 0.85)
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2'].relation).toBe('independent');
+  });
+
+  test('keeps a low-confidence answer on a disjoint pair unknown', () => {
+    const facts = input({
+      candidates: ['UI-1', 'UI-2'],
+      scopes: { 'UI-1': ['app/'], 'UI-2': ['server/'] },
+      judgmentFor: () => answered('independent', 0.7)
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toMatchObject({
+      relation: 'unknown',
+      jev_choice: 'independent'
+    });
+    expect(out.relations['UI-1|UI-2'].overlap_guard).toBeUndefined();
+  });
+
+  test('keeps an overlapping pair pending until jev answers', () => {
+    const facts = input({
+      candidates: ['UI-1'],
+      members: ['UI-2'],
+      scopes: { 'UI-1': ['tests/'], 'UI-2': ['tests/a.test.js'] }
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.status['UI-1']).toEqual({
+      state: 'pending',
+      reason: 'judging',
+      done: 0,
+      total: 1
+    });
+  });
+});

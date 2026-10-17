@@ -44,12 +44,22 @@ import { orderLaneByBlocks } from './lane-order.js';
  * @property {PlacementLane|null} other_lane - Where a member stands.
  * @property {CandidateRelationKind} relation
  * @property {'fixed'|'jev'} source
- * @property {'blocks'|'scope'} [basis]
+ * @property {'blocks'|'file'} [basis]
  * @property {string[]} [overlap]
+ * @property {true} [overlap_guard] - A conflict an overlapping pair's
+ * short jev answer decided (UI-lsr4 §3.2).
  * @property {number|null} confidence
  * @property {CandidateRelationKind|null} jev_choice - jev's first choice,
  * candidate-oriented.
  * @property {number|null} judged_at
+ */
+
+/**
+ * Every pair the candidate was compared on, by kind (UI-lsr4 §3.4): `total`
+ * counts them all; a constraint with an unplaced candidate counts as
+ * `conflict`.
+ *
+ * @typedef {{ total: number, conflict: number, order: number, independent: number, unknown: number }} PairCounts
  */
 
 /**
@@ -79,6 +89,7 @@ import { orderLaneByBlocks } from './lane-order.js';
  * above. Never used for placement.
  * @property {RelationLine[]} outside - Constraint relations with candidates
  * this plan does not place (the "함께 넣으려면 전체 배치안" line).
+ * @property {PairCounts} pair_counts
  * @property {PlacementWarning[]} warnings
  * @property {boolean} only_unknown - Every relation of the candidate is a jev
  * answer below the adoption confidence.
@@ -93,6 +104,10 @@ import { orderLaneByBlocks } from './lane-order.js';
  * @property {Record<string, PlannedPlacement>} by_id
  * @property {Partial<Record<PlacementLane, string[]>>} layout - Every lane's
  * waiting entries after the whole plan went in, candidates included.
+ * @property {number} configured_lane_count - The serial lanes the snapshot
+ * has.
+ * @property {number} lane_count - The serial lanes the plan needs: its highest
+ * lane number or the configured count, whichever is larger (UI-lsr4 §3.3).
  */
 
 /**
@@ -182,6 +197,7 @@ function relationBetween(relations, c, x) {
     source: raw.source === 'fixed' ? 'fixed' : 'jev',
     ...(raw.basis ? { basis: raw.basis } : {}),
     ...(Array.isArray(raw.overlap) ? { overlap: raw.overlap } : {}),
+    ...(raw.overlap_guard === true ? { overlap_guard: true } : {}),
     confidence: typeof raw.confidence === 'number' ? raw.confidence : null,
     jev_choice: orient(raw.jev_choice, c_is_a),
     judged_at: typeof raw.judged_at === 'number' ? raw.judged_at : null
@@ -223,6 +239,48 @@ function serialLanesOf(queue) {
     }
   }
   return lanes;
+}
+
+/**
+ * The number of a serial lane id, 0 for the parallel lane.
+ *
+ * @param {PlacementLane} lane
+ * @returns {number}
+ */
+export function serialLaneNumber(lane) {
+  return lane === 'parallel' ? 0 : Number(lane.slice(1));
+}
+
+/**
+ * Count every compared pair of a candidate by kind.
+ *
+ * @param {RelationLine[]} lines
+ * @returns {PairCounts}
+ */
+function pairCountsOf(lines) {
+  /** @type {PairCounts} */
+  const counts = {
+    total: lines.length,
+    conflict: 0,
+    order: 0,
+    independent: 0,
+    unknown: 0
+  };
+  for (const line of lines) {
+    if (
+      line.relation === 'conflict' ||
+      (line.side === 'outside' && CONSTRAINTS.has(line.relation))
+    ) {
+      counts.conflict += 1;
+    } else if (line.relation === 'c_first' || line.relation === 'x_first') {
+      counts.order += 1;
+    } else if (line.relation === 'independent') {
+      counts.independent += 1;
+    } else {
+      counts.unknown += 1;
+    }
+  }
+  return counts;
 }
 
 /**
@@ -318,6 +376,23 @@ export function computePlacement(input) {
         occupant_lane.set(id, lane.id);
       }
     }
+  }
+  // Occupants of lanes beyond the configured count (`hidden` lane states) weigh
+  // only on which new lane opens; everything else reads them where it reads
+  // any other running bead.
+  /** @type {Map<PlacementLane, number>} */
+  const hidden_load = new Map();
+  for (const id of SERIAL_IDS) {
+    const state = objectOf(lane_states[id]);
+    if (state.hidden !== true || serial.some((lane) => lane.id === id)) {
+      continue;
+    }
+    const occupied = Array.isArray(state.occupied_by) ? state.occupied_by : [];
+    hidden_load.set(
+      id,
+      occupied.filter((/** @type {unknown} */ x) => typeof x === 'string')
+        .length
+    );
   }
   /** @type {Map<string, number>} */
   const done_at_by_bead = new Map();
@@ -462,19 +537,30 @@ export function computePlacement(input) {
     return ids.size;
   };
 
-  /** @returns {PlacementLane} */
+  /**
+   * The least loaded of all five serial lanes, lowest number first on a tie
+   * (UI-lsr4 §3.3): an empty configured lane before a new one, a new one
+   * before a busy configured one. A lane beyond the configured count has no
+   * waiting entries of its own, only hidden occupants and this plan's own
+   * candidates. A snapshot without serial lanes keeps the parallel lane.
+   *
+   * @returns {PlacementLane}
+   */
   const emptiestSerial = () => {
-    /** @type {PlacementLane|null} */
-    let best = null;
+    if (serial.length === 0) {
+      return 'parallel';
+    }
+    /** @type {PlacementLane} */
+    let best = 'parallel';
     let best_load = Number.POSITIVE_INFINITY;
-    for (const lane of serial) {
-      const load = loadOf(lane.id);
+    for (const id of SERIAL_IDS) {
+      const load = loadOf(id) + (hidden_load.get(id) || 0);
       if (load < best_load) {
-        best = lane.id;
+        best = id;
         best_load = load;
       }
     }
-    return best ?? 'parallel';
+    return best;
   };
 
   /**
@@ -709,6 +795,7 @@ export function computePlacement(input) {
         outside: lines.filter(
           (line) => line.side === 'outside' && CONSTRAINTS.has(line.relation)
         ),
+        pair_counts: pairCountsOf(lines),
         warnings,
         only_unknown:
           lines.length > 0 &&
@@ -722,7 +809,12 @@ export function computePlacement(input) {
     revision: typeof queue.revision === 'number' ? queue.revision : 0,
     order,
     by_id: Object.fromEntries(order.map((item) => [item.id, item])),
-    layout: Object.fromEntries(lanes)
+    layout: Object.fromEntries(lanes),
+    configured_lane_count: serial.length,
+    lane_count: Math.max(
+      serial.length,
+      ...order.map((item) => serialLaneNumber(item.lane))
+    )
   };
 }
 

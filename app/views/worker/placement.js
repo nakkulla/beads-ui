@@ -19,6 +19,10 @@
  * @import { PlacementLane, PlacementPlan, PlacementWarning, PlannedPlacement, RelationLine } from '../../utils/placement/compute.js'
  */
 import { html } from 'lit-html';
+import {
+  ADOPT_CONFIDENCE,
+  OVERLAP_INDEPENDENT_CONFIDENCE
+} from '../../../server/placement/wire.js';
 import { resolveSpecEvidence } from '../../../server/spec-id.js';
 import { WORKFLOW_ROUTES } from '../../../server/worker/routes.js';
 import {
@@ -26,7 +30,10 @@ import {
   sendPlacement,
   sendPlacementBatch
 } from '../../utils/placement/apply.js';
-import { computePlacement } from '../../utils/placement/compute.js';
+import {
+  computePlacement,
+  serialLaneNumber
+} from '../../utils/placement/compute.js';
 import {
   formatClockLocal,
   formatTimestampLocal
@@ -358,8 +365,19 @@ export function placeLaneLabel(lane) {
 }
 
 /**
- * `[추천 배치]`의 켜짐과 title (UI-izba §4.7). `ready`일 때만 켜진다 — 고정 조건만의
- * 기본안은 보여 주지 않는다 (사용자 결정 10).
+ * Whether a candidate state can be recommended: `ready`, and `fixed_only`
+ * since a shared file became a fixed condition (UI-lsr4 §3.1).
+ *
+ * @param {string|undefined} state
+ * @returns {boolean}
+ */
+export function isRecommendableState(state) {
+  return state === 'ready' || state === 'fixed_only';
+}
+
+/**
+ * `[추천 배치]`의 켜짐과 title (UI-izba §4.7). `ready`와 `fixed_only`일 때 켜진다
+ * (UI-lsr4 §3.1).
  *
  * @param {PlacementStatus} status
  * @returns {{ enabled: boolean, title: string }}
@@ -370,6 +388,11 @@ export function recommendButtonState(status) {
       return {
         enabled: true,
         title: '고정 조건과 jev 판정으로 계산한 자리를 대기 열에 미리 보입니다'
+      };
+    case 'fixed_only':
+      return {
+        enabled: true,
+        title: '고정 조건으로 계산한 자리를 대기 열에 미리 보입니다'
       };
     case 'pending':
       return {
@@ -384,45 +407,87 @@ export function recommendButtonState(status) {
         enabled: false,
         title: status.reason === 'key_missing' ? 'jev 키 없음' : 'jev 응답 없음'
       };
-    case 'fixed_only':
-      return {
-        enabled: false,
-        title: '고정 조건만 있음 — ⧉ 칩과 레인 순서로 이미 보임'
-      };
     default:
       return { enabled: false, title: '비교할 이슈 없음' };
   }
 }
 
 /**
- * Position line — "직렬 2 · #2 — UI-a7f2 뒤". 번호는 그 레인 대기 항목 안의 최종
- * 순번이다 (blocks 정렬 뒤).
+ * Position line — "직렬 2 · #2 — UI-a7f2 뒤", or "병렬 · 대기 #2". 번호는 그 레인
+ * 대기 항목 안의 최종 순번이다 (blocks 정렬 뒤). `— X 뒤`·`맨 앞`은 앞 항목이 끝나야
+ * 시작하는 직렬 레인에서만 붙인다 (UI-lsr4 §3.4). 설정 수 밖 레인은 `(새 레인)`이다.
  *
  * @param {Pick<PlannedPlacement, 'lane'|'final_index'|'before'>} placement
+ * @param {number} [configured_lane_count] - Omitted, no lane reads as new.
  * @returns {string}
  */
-export function placementPositionText(placement) {
-  return `${placeLaneLabel(placement.lane)} · #${placement.final_index + 1} — ${
-    placement.before === null ? '맨 앞' : `${placement.before} 뒤`
-  }`;
+export function placementPositionText(placement, configured_lane_count) {
+  if (placement.lane === 'parallel') {
+    return `병렬 · 대기 #${placement.final_index + 1}`;
+  }
+  const is_new =
+    typeof configured_lane_count === 'number' &&
+    serialLaneNumber(placement.lane) > configured_lane_count;
+  return `${placeLaneLabel(placement.lane)}${is_new ? '(새 레인)' : ''} · #${
+    placement.final_index + 1
+  } — ${placement.before === null ? '맨 앞' : `${placement.before} 뒤`}`;
 }
 
 /**
- * Source tail of a reason line: `고정(blocks)` or `jev 0.92`, plus the declared
- * scope overlap jev read, ` (겹침: tests, app/styles.css)`.
+ * The lane-growth notice of a plan that needs more serial lanes (UI-lsr4
+ * §3.3), or null.
+ *
+ * @param {Pick<PlacementPlan, 'configured_lane_count'|'lane_count'>} plan
+ * @returns {string|null}
+ */
+export function laneGrowthText(plan) {
+  return plan.lane_count > plan.configured_lane_count
+    ? `적용하면 직렬 레인을 ${plan.configured_lane_count}개에서 ${plan.lane_count}개로 늘립니다`
+    : null;
+}
+
+/** @type {Record<string, string>} */
+const JEV_CHOICE_WORDS = {
+  independent: '독립',
+  c_first: '선후',
+  x_first: '선후',
+  conflict: '부딪힘'
+};
+
+/**
+ * Source tail of a reason line: `고정(blocks)`, `고정(같은 파일: a.js)` or
+ * `jev 0.92`, plus the declared scope overlap jev read,
+ * ` (겹침: tests, app/styles.css)`. A conflict the overlap guard decided says
+ * which threshold the answer missed: `jev 독립 0.85 < 0.9 (겹침: tests)`.
  *
  * @param {RelationLine} line
  * @returns {string}
  */
 function sourceText(line) {
   if (line.source === 'fixed') {
-    return 'blocks' === line.basis ? '고정(blocks)' : '고정';
+    if (line.basis === 'blocks') {
+      return '고정(blocks)';
+    }
+    if (line.basis === 'file' && line.overlap && line.overlap.length > 0) {
+      return `고정(같은 파일: ${line.overlap.join(', ')})`;
+    }
+    return '고정';
   }
   const overlap =
     line.overlap && line.overlap.length > 0
       ? ` (겹침: ${line.overlap.join(', ')})`
       : '';
-  return `jev ${typeof line.confidence === 'number' ? line.confidence.toFixed(2) : '—'}${overlap}`;
+  const confidence =
+    typeof line.confidence === 'number' ? line.confidence.toFixed(2) : '—';
+  if (line.overlap_guard === true) {
+    const threshold =
+      line.jev_choice === 'independent'
+        ? OVERLAP_INDEPENDENT_CONFIDENCE
+        : ADOPT_CONFIDENCE;
+    const word = JEV_CHOICE_WORDS[line.jev_choice || ''] || '모름';
+    return `jev ${word} ${confidence} < ${threshold}${overlap}`;
+  }
+  return `jev ${confidence}${overlap}`;
 }
 
 /**
@@ -491,38 +556,38 @@ export function outsideLineText(line) {
 }
 
 /**
- * The folded 근거 summary of a full-plan row — "근거 6 · 부딪힘 5 · 독립 1": the
- * relation line count, then each nonzero kind. Outside lines count as 부딪힘.
+ * The folded 근거 summary of a full-plan row — "판정 6쌍 · 부딪힘 2 · 선후 1 ·
+ * 독립 2 · 모름 1": every pair the candidate was compared on, then each nonzero
+ * kind (UI-lsr4 §3.4). Outside constraints count as 부딪힘.
  *
- * @param {Pick<PlannedPlacement, 'reasons'|'references'|'outside'>} placement
+ * @param {Pick<PlannedPlacement, 'pair_counts'>} placement
  * @returns {string}
  */
 export function reasonSummaryText(placement) {
-  const kinds = { conflict: 0, order: 0, independent: 0 };
-  for (const line of placement.reasons) {
-    if (line.relation === 'conflict') {
-      kinds.conflict += 1;
-    } else if (line.relation === 'independent') {
-      kinds.independent += 1;
-    } else {
-      kinds.order += 1;
-    }
-  }
-  kinds.conflict += placement.outside.length;
+  const counts = placement.pair_counts;
   const parts = [
-    `근거 ${
-      placement.reasons.length +
-      placement.references.length +
-      placement.outside.length
-    }`,
-    ...(kinds.conflict > 0 ? [`부딪힘 ${kinds.conflict}`] : []),
-    ...(kinds.order > 0 ? [`선후 ${kinds.order}`] : []),
-    ...(kinds.independent > 0 ? [`독립 ${kinds.independent}`] : []),
-    ...(placement.references.length > 0
-      ? [`참고 ${placement.references.length}`]
-      : [])
+    `판정 ${counts.total}쌍`,
+    ...(counts.conflict > 0 ? [`부딪힘 ${counts.conflict}`] : []),
+    ...(counts.order > 0 ? [`선후 ${counts.order}`] : []),
+    ...(counts.independent > 0 ? [`독립 ${counts.independent}`] : []),
+    ...(counts.unknown > 0 ? [`모름 ${counts.unknown}`] : [])
   ];
   return parts.join(' · ');
+}
+
+/**
+ * The "그 밖 독립 4쌍" line: the independent pairs the folded lines do not
+ * show, or null when there are none.
+ *
+ * @param {Pick<PlannedPlacement, 'pair_counts'|'reasons'>} placement
+ * @returns {string|null}
+ */
+export function otherIndependentText(placement) {
+  const shown = placement.reasons.filter(
+    (line) => line.relation === 'independent'
+  ).length;
+  const rest = placement.pair_counts.independent - shown;
+  return rest > 0 ? `그 밖 독립 ${rest}쌍` : null;
 }
 
 /**
@@ -534,8 +599,10 @@ export function reasonSummaryText(placement) {
  * @returns {import('lit-html').TemplateResult}
  */
 function reasonCellTemplate(placement) {
+  const other_independent = otherIndependentText(placement);
   const lines = [
     ...placement.reasons.map((line) => relationLineText(line)),
+    ...(other_independent ? [other_independent] : []),
     ...placement.references.map((line) => relationLineText(line, true)),
     ...placement.outside.map((line) => outsideLineText(line))
   ];
@@ -571,15 +638,19 @@ function judgedAtTemplate(at) {
 
 /**
  * The 근거 상자 under a candidate foot (§4.7): position line, reason lines,
- * warnings, `[적용]`, ✕ and the judged-at time.
+ * warnings, `[적용]`, ✕ and the judged-at time. With the plan's lane counts,
+ * a place in a new serial lane says so and adds the lane-growth notice.
  *
  * @param {PlannedPlacement} placement
- * @param {{ busy: boolean, notice: string|null }} state
+ * @param {{ busy: boolean, notice: string|null, lanes?: Pick<PlacementPlan, 'configured_lane_count'|'lane_count'> }} state
  * @returns {import('lit-html').TemplateResult}
  */
 export function recommendBoxTemplate(placement, state) {
+  const growth = state.lanes ? laneGrowthText(state.lanes) : null;
   return html`<div class="worker-recommend" data-bead-id=${placement.id}>
-    <div class="worker-recommend__pos">${placementPositionText(placement)}</div>
+    <div class="worker-recommend__pos">
+      ${placementPositionText(placement, state.lanes?.configured_lane_count)}
+    </div>
     ${placement.reasons.map(
       (line) =>
         html`<div class="worker-recommend__line">
@@ -598,7 +669,9 @@ export function recommendBoxTemplate(placement, state) {
         html`<div class="worker-recommend__warn">
           ${placementWarningText(warning)}
         </div>`
-    )}${state.notice
+    )}${growth
+      ? html`<div class="worker-recommend__notice">${growth}</div>`
+      : ''}${state.notice
       ? html`<div class="worker-recommend__notice">${state.notice}</div>`
       : ''}
     <div class="worker-recommend__actions">
@@ -784,6 +857,8 @@ export function createPlacementPreview(options) {
   }
 
   /**
+   * The recommendable candidates: `ready` and `fixed_only` (UI-lsr4 §3.1).
+   *
    * @param {any} queue
    * @returns {string[]}
    */
@@ -792,16 +867,18 @@ export function createPlacementPreview(options) {
     if (!status || typeof status !== 'object') {
       return [];
     }
-    return Object.keys(status).filter((id) => status[id]?.state === 'ready');
+    return Object.keys(status).filter((id) =>
+      isRecommendableState(status[id]?.state)
+    );
   }
 
   /**
-   * The full plan on a snapshot: every ready candidate starts checked —
-   * warnings and low-confidence rows included, since the table shows them and
-   * a person presses `[전체 적용]` — the reader's checks override that, and the
-   * plan itself is computed with the checked set only. `base` is the plan of
-   * every ready candidate: an unchecked row still shows its reasons and
-   * warnings from it.
+   * The full plan on a snapshot: every recommendable candidate starts checked
+   * — warnings and low-confidence rows included, since the table shows them
+   * and a person presses `[전체 적용]` — the reader's checks override that, and
+   * the plan itself is computed with the checked set only. `base` is the plan
+   * of every recommendable candidate: an unchecked row still shows its reasons
+   * and warnings from it.
    *
    * @param {any} queue
    * @returns {{ plan: PlacementPlan, base: PlacementPlan, ready: string[], checked: Set<string> }}
@@ -816,19 +893,26 @@ export function createPlacementPreview(options) {
   }
 
   /**
-   * The open single preview, or null when its candidate is no longer ready.
+   * The plan of the open single preview, or null when its candidate is no
+   * longer recommendable.
    *
-   * @returns {PlannedPlacement|null}
+   * @returns {PlacementPlan|null}
    */
-  function openPlacement() {
-    if (open_id === null || statusMap()?.[open_id]?.state !== 'ready') {
+  function openPlan() {
+    if (
+      open_id === null ||
+      !isRecommendableState(statusMap()?.[open_id]?.state)
+    ) {
       return null;
     }
-    return planOn(getQueue(), [open_id]).by_id[open_id] || null;
+    const plan = planOn(getQueue(), [open_id]);
+    return plan.by_id[open_id] ? plan : null;
   }
 
   /**
-   * The plan whose dotted cards the waiting lanes draw now.
+   * The plan whose dotted cards the waiting lanes draw now. A place in a lane
+   * beyond the configured count draws no dotted card: that lane does not
+   * exist until `[적용]` grows the count (UI-lsr4 §3.3).
    *
    * @returns {PlacementPlan|null}
    */
@@ -836,13 +920,16 @@ export function createPlacementPreview(options) {
     if (!statusMap()) {
       return null;
     }
-    if (full_open) {
-      return fullPlanOn(getQueue()).plan;
+    const plan = full_open ? fullPlanOn(getQueue()).plan : openPlan();
+    if (!plan) {
+      return null;
     }
-    if (openPlacement()) {
-      return planOn(getQueue(), [/** @type {string} */ (open_id)]);
-    }
-    return null;
+    return {
+      ...plan,
+      order: plan.order.filter(
+        (item) => serialLaneNumber(item.lane) <= plan.configured_lane_count
+      )
+    };
   }
 
   /** @param {string} id */
@@ -862,6 +949,8 @@ export function createPlacementPreview(options) {
       root_dir,
       placement,
       revision: plan.revision,
+      configured_lane_count: plan.configured_lane_count,
+      lane_count: plan.lane_count,
       recompute: (next) => planOn(next, [id]),
       adopt: (next) => adopt(next, root_dir)
     });
@@ -945,19 +1034,23 @@ export function createPlacementPreview(options) {
         return null;
       }
       const state = recommendButtonState(status);
-      const placement =
-        !full_open && open_id === item.id ? openPlacement() : null;
+      const plan = !full_open && open_id === item.id ? openPlan() : null;
+      const placement = plan ? plan.by_id[item.id] : null;
       return {
         enabled: state.enabled,
         title: state.title,
-        open: placement !== null,
-        box: placement
-          ? recommendBoxTemplate(placement, {
-              busy,
-              notice:
-                box_notice && box_notice.id === item.id ? box_notice.text : null
-            })
-          : ''
+        open: !!placement,
+        box:
+          plan && placement
+            ? recommendBoxTemplate(placement, {
+                busy,
+                notice:
+                  box_notice && box_notice.id === item.id
+                    ? box_notice.text
+                    : null,
+                lanes: plan
+              })
+            : ''
       };
     },
     /**
@@ -1076,7 +1169,7 @@ export function createPlacementPreview(options) {
           </thead>
           <tbody>
             ${rows.map((id) => {
-              const ready = status[id]?.state === 'ready';
+              const ready = isRecommendableState(status[id]?.state);
               const item = plan.by_id[id];
               // An unchecked ready row keeps the reasons and warnings of the
               // all-ready plan, so the reader sees why it was left out; only
@@ -1097,7 +1190,7 @@ export function createPlacementPreview(options) {
                   ${!ready
                     ? '판정 전'
                     : item
-                      ? placementPositionText(item)
+                      ? placementPositionText(item, plan.configured_lane_count)
                       : '포함 안 함'}
                 </td>
                 <td>
@@ -1121,6 +1214,11 @@ export function createPlacementPreview(options) {
             })}
           </tbody>
         </table>
+        ${laneGrowthText(plan)
+          ? html`<div class="worker-plan__notice worker-plan__growth">
+              ${laneGrowthText(plan)}
+            </div>`
+          : ''}
         ${plan_notice
           ? html`<div class="worker-plan__notice">${plan_notice}</div>`
           : ''}

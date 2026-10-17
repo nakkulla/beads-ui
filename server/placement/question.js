@@ -48,16 +48,16 @@ export const PLACEMENT_QUESTIONS = Object.freeze({
   [PLACEMENT_QUESTION]: Object.freeze({
     type: 'choice',
     instructions:
-      "Issues A and B (A has the smaller id) will be implemented by separate workers and merged separately; a merge conflict is resolved afterwards by a conflict-resolution session. The state may begin with a line naming the paths their declared scopes overlap on; that line is evidence, never a verdict by itself. Does either issue depend on the other's result, or would the two collide so badly that resolving the merge would mean redoing one of them?",
+      'Issues A and B (A has the smaller id) will be implemented by separate workers and merged separately. The state may begin with a line naming the paths their declared scopes overlap on; that line is material about where the two may touch. A folder on that line only says both work somewhere under it, which by itself does not mean they change the same file. How must their implementation and landing be ordered?',
     criteria: Object.freeze({
       independent:
-        "Neither issue relies on the other's result, so implementing and merging both at the same time is fine. Touching the same file is still independent when a conflict-resolution session can usually settle it: different functions, added items, added configuration lines.",
+        "Implementing and merging both at the same time changes neither one's premises, and the two do not both change the same file, shared state, contract clause or deployment surface.",
       a_first:
         "B builds on A's result, or B would have to be redone if A landed later.",
       b_first:
         "A builds on B's result, or A would have to be redone if B landed later.",
       conflict:
-        "Neither relies on the other's result, but both change the same function, the same contract clause or the same data format in different ways, so doing them at the same time would force a conflict-resolution session to redo one side. Do not choose this only because the declared scopes overlap."
+        "Neither relies on the other's result, but both change the same file, shared state, contract clause or deployment surface, so doing them at the same time collides."
     })
   })
 });
@@ -75,10 +75,14 @@ export const PLACEMENT_QUESTION_VERSION = crypto
   .digest('hex')
   .slice(0, 12);
 
-// The two confidence thresholds live in the import-free `wire.js`, because the
+// The confidence thresholds live in the import-free `wire.js`, because the
 // browser's placement computation reads the 참고 threshold and this module's
 // `node:crypto` import cannot enter the bundle.
-export { ADOPT_CONFIDENCE, REFERENCE_CONFIDENCE } from './wire.js';
+export {
+  ADOPT_CONFIDENCE,
+  OVERLAP_INDEPENDENT_CONFIDENCE,
+  REFERENCE_CONFIDENCE
+} from './wire.js';
 
 /** @type {number} Per-issue material cap in characters. */
 export const ISSUE_MATERIAL_CAP = 12_000;

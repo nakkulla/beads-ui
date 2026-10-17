@@ -16,6 +16,7 @@
  * @import { PlacementWire } from './wire.js'
  * @import { IssueMaterial } from './material.js'
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { debug } from '../logging.js';
 import { resolveSpecId } from '../spec-id.js';
@@ -65,6 +66,38 @@ export function isPlaceableCandidate(row) {
       ? row.has_description === true
       : row.spec_state === 'published')
   );
+}
+
+/**
+ * A folder test of declared scope items against one repository root (UI-lsr4
+ * §3.1): an item ending in `/` is a folder; any other is a folder only when it
+ * is an existing directory under the root. A file, a path not there yet and a
+ * failed stat all read as a file. Answers are kept for the returned function's
+ * life — one projection.
+ *
+ * @param {string} root - The repository root (the workspace key).
+ * @returns {(item: string) => boolean}
+ */
+export function scopeDirectoryTest(root) {
+  /** @type {Map<string, boolean>} */
+  const known = new Map();
+  return (item) => {
+    if (item.endsWith('/')) {
+      return true;
+    }
+    const cached = known.get(item);
+    if (cached !== undefined) {
+      return cached;
+    }
+    let is_directory = false;
+    try {
+      is_directory = fs.statSync(path.join(root, item)).isDirectory();
+    } catch {
+      is_directory = false;
+    }
+    known.set(item, is_directory);
+    return is_directory;
+  };
 }
 
 /**
@@ -462,6 +495,7 @@ export function createPlacementService(options) {
         lane_edges: input.lane_edges,
         digests,
         key_state: client.keys.state(),
+        isDirectory: scopeDirectoryTest(workspace),
         judgmentFor: (a, b, digest_a, digest_b) => {
           const entry = pairCache.get(a, b, digest_a, digest_b);
           if (entry) {

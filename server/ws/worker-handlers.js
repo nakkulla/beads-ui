@@ -1649,6 +1649,10 @@ function extraBlockerIds(queue) {
 }
 
 /**
+ * @typedef {{ occupied_by: string[], order: string[], corrections: { bead_id: string, after: string }[], cycle: boolean }|{ hidden: true, occupied_by: string[] }} LaneState
+ */
+
+/**
  * Per-serial-lane derived display state (UI-04vo §3/§5): current occupancy
  * lineages, the lane's order, and which positions `blocks` DETERMINES.
  *
@@ -1660,12 +1664,18 @@ function extraBlockerIds(queue) {
  * the blocked-by cache; never persisted, so it cannot go stale relative to
  * what it was derived from.
  *
+ * A lane beyond the configured count can still be occupied — shrinking the
+ * count returns waiting entries only, and occupancy lives on attempts. Such a
+ * lane ships as `{ hidden: true, occupied_by }` (UI-lsr4 §3.3) so the
+ * placement recommendation does not open a new lane on top of it; every lane
+ * drawing and the `[↴ 대기로]` menu read configured lanes only.
+ *
  * @param {Record<string, any>} raw_queue - Normalized queue (pre-projection).
  * @param {Record<string, string[]>} blocked_by_map
- * @returns {Record<string, { occupied_by: string[], order: string[], corrections: { bead_id: string, after: string }[], cycle: boolean }>}
+ * @returns {Record<string, LaneState>}
  */
 function laneStatesFor(raw_queue, blocked_by_map) {
-  /** @type {Record<string, { occupied_by: string[], order: string[], corrections: { bead_id: string, after: string }[], cycle: boolean }>} */
+  /** @type {Record<string, LaneState>} */
   const out = {};
   const occupancy = activeLaneLineages(raw_queue);
   const lanes = Array.isArray(raw_queue.serial_lanes)
@@ -1715,6 +1725,11 @@ function laneStatesFor(raw_queue, blocked_by_map) {
       corrections,
       cycle: topo.cycle
     };
+  }
+  for (const [lane_id, lineages] of occupancy) {
+    if (!Object.hasOwn(out, lane_id) && lineages.size > 0) {
+      out[lane_id] = { hidden: true, occupied_by: [...lineages] };
+    }
   }
   return out;
 }
