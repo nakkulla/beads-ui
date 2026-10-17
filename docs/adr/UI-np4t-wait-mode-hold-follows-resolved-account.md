@@ -1,17 +1,30 @@
 ---
-id: UI-3v1h
-title: 공급자 보류의 서버 전역 원본과 Worker 가드
+id: UI-np4t
+title: 공급자 보류의 서버 전역 원본·기다림 모드 계정 추종과 Worker 가드
 status: accepted
-date: 2026-10-07
-summary: "공급자 보류의 원본은 서버 전역 하나이고 usage_limit·인증 실패는 계정, 그 밖의 outage는 러너 단위로 모든 저장소의 디스패치와 전환 후보를 막는다; 계정 미해석 target만 저장소에 남고, 저장소는 보류 attempt를 target_id·계정 멤버십으로 가리키며, 해제는 전역 한 번 뒤 각 저장소가 자기 멤버십을 정산한다 — UI-a5l2의 가드·공급자 조항은 그대로 승계한다"
-supersedes: ["UI-a5l2"]
-spec: docs/superpowers/specs/2026-10-06-provider-hold-global-design.md
-bead: UI-3v1h
+date: 2026-10-17
+summary: "기다림 모드의 계정 범위 usage_limit 보류 attempt는 지금의 일반 해석 계정(Bead 핀 > 저장소 기본 > 활성 로그인)을 기다린다 — 그 계정이 보류 중이면 멤버십을 그 target으로 옮기고 아니면 멤버십 제거와 같은 쓰기의 계정 없는 상한 미소비 receipt로 재개하며, 해제 정산은 기다림 대상 멤버에 상한 판정 없이 표지 있는 계정 없는 receipt를 쓰고 소비가 해석 계정·디스패치 게이트로 재결속·계정 변경 재개(상한 미소비)·같은 계정 재개(기존 상한)를 가른다; 활성 계정 변경은 bdui 전환·카탈로그 관찰·대상 멤버가 있는 동안의 60초 주기 읽기로 감지하고, 자동 전환 모드의 재개 계정은 멤버십의 계정이다 — UI-3v1h의 나머지 조항과 승계 조항은 그대로다"
+supersedes: ["UI-3v1h"]
+spec: docs/superpowers/specs/2026-10-17-wait-mode-hold-follows-active-account-design.md
+bead: UI-np4t
 ---
 
-# 공급자 보류의 서버 전역 원본과 Worker 가드
+# 공급자 보류의 서버 전역 원본·기다림 모드 계정 추종과 Worker 가드
 
 ## Context
+
+사용자 결정(2026-10-16): Claude 한도 대응 `기다림`은 "자동으로 다른 계정을 고르지 않는다"는
+뜻이다. 그런데 ADR UI-3v1h는 해제 정산의 재개 계정을 멤버십의 계정, 곧 한도에 걸렸던 계정으로
+정했다. 그래서 hanmail이 한도에 걸린 뒤 사용자가 활성 계정을 unist로 바꿔도, 보류 attempt는
+hanmail 리셋까지 기다렸다가 hanmail로 재개되고 카드도 그 리셋 시각을 보였다. 사용자
+결정(2026-10-17): 재개 계정의 기준은 지금 새로 디스패치하면 쓸 계정(Bead 핀 > 저장소 기본 >
+활성 로그인)이고, "여유"의 기준은 새 디스패치와 같은 게이트이며, 활성 계정 변경은 bdui 전환
+경로·카탈로그 관찰·대상 멤버가 있는 동안의 주기 읽기로 감지한다
+(`docs/superpowers/specs/2026-10-17-wait-mode-hold-follows-active-account-design.md`).
+
+이 결정은 UI-3v1h의 재개 계정 조항 하나를 뒤집고 소비자 집합(queue-store 정산, scheduler
+receipt 소비·재평가, provider-health 해제 경로)이 같다. 그래서 이 ADR이 UI-3v1h를 대체하고
+그 조항 전부를 아래에 다시 적는다. 아래는 UI-3v1h의 Context다.
 
 공급자 보류(`provider_hold`)는 저장소마다 자기 `queue.json`에만 있었다. 디스패치 게이트,
 프로브, 진입·회복 알림, 대기 행 칩, 전환 후보 제외가 모두 그 저장소 안에서만 동작했다.
@@ -43,9 +56,10 @@ provider-health 프로브, attach wait-judge 입력, `decorateQueue` 투영, 모
   `(runner, kind, model, account)` 재진입은 병합되고 `target_id`를 유지한다. 프로브의
   재분류(강등·승격)도 `target_id`를 바꾸지 않는다. generation은 전역 단조 카운터다.
 - **저장소 멤버십.** 각 큐는 `provider_hold_members`에 보류 attempt가 기다리는
-  `target_id`, 진입 때의 계정, 저장소 정책이 정한 전환 상태를 담는다. 계정을 함께
-  영속하는 이유는 attempt 레코드에 보류된 계정이 없을 수 있고, target이 지워진 뒤에도
-  정산이 재개 계정을 정해야 하기 때문이다.
+  `target_id`, 그 attempt가 지금 기다리는 계정(진입 때는 target의 계정, 기다림 모드에서
+  추종으로 옮겨 가면 옮겨 간 target의 계정), 저장소 정책이 정한 전환 상태를 담는다. 계정을
+  함께 영속하는 이유는 attempt 레코드에 보류된 계정이 없을 수 있고, target이 지워진 뒤에도
+  정산이 재개 계정이나 기다리던 계정을 알아야 하기 때문이다.
 - **보류 범위.** `usage_limit` target은 그 계정, 계정이 있는 `credential` outage는 그
   계정, 그 밖의 outage는 러너 전체를 막는다. 서버 게이트와 클라이언트 칩 예측은 같은
   규칙을 쓴다. 계정 미해석 `usage_limit` target은 전역으로 올리지 않고 그 저장소 큐에
@@ -61,7 +75,8 @@ provider-health 프로브, attach wait-judge 입력, `decorateQueue` 투영, 모
   하나를 무장한다. 해제는 전역 target을 한 번 지우고, attach된 모든 저장소가 자기
   멤버십을 같은 규칙으로 정산한 뒤(자격 검사, 자동 재개 상한이면 disarm, 아니면
   `provider_outage` receipt), 재개 자격이 생긴 attempt가 하나라도 있으면 회복 알림을 한
-  번 보낸다. 재개 계정은 멤버십의 계정이다. 같은 정산이 attachment 시작 때도 돌아,
+  번 보낸다. 자동 전환 모드와 기다림 대상 밖 멤버의 재개 계정은 멤버십의 계정이다(기다림
+  대상 멤버는 아래 조항). 같은 정산이 attachment 시작 때도 돌아,
   해제와 정산 사이의 재시작에도 receipt가 생긴다. 계정 전환 재개의 회복 알림은 전환된
   attempt마다 한 번이다.
 - **stale receipt.** `provider_outage` receipt는 그 attempt에 살아 있는 멤버십(가리키는
@@ -74,6 +89,49 @@ provider-health 프로브, attach wait-judge 입력, `decorateQueue` 투영, 모
 - **이관.** 저장소별 `provider_hold`의 계정 있는 target과 outage target은 시작 때 멱등하게
   전역으로 옮기고 그 `attempt_ids`를 멤버십으로 바꾼다. 전역 파일을 읽지 못하면 옆에
   보존하고 빈 보류로 시작한다.
+
+### 기다림 모드의 계정 추종 (UI-np4t)
+
+**기다림 모드에서 계정 범위 `usage_limit` 보류 attempt는 지금의 일반 해석 계정(Bead 핀 >
+저장소 기본 > 활성 로그인)을 기다린다. 판정은 새 디스패치와 같은 게이트이고 카탈로그
+사용률은 보지 않는다.**
+
+- **대상 멤버.** 러너 정책이 `wait`이고, 묶인 target이 계정 범위 `usage_limit`이며, attempt가
+  `switchHeldProviderAttempts`와 같은 조건(일시정지된 `provider_outage:usage_limit`, 철회·
+  dismiss·진행 중 폐기·receipt 대기·재개 자식 없음)을 만족하는 멤버십이다. 출처로 가르지
+  않는다 — 핀·기본값 attempt는 그 값이 그대로면 해석 계정이 같아 아무 일도 없다. 러너 범위
+  outage·`credential` outage·계정 미해석 target은 대상이 아니다.
+- **추종 패스.** 해석 계정이 멤버의 계정과 다르고 그 계정의 `usage_limit` target에 막히면
+  멤버십을 그 target으로 옮긴다(카드는 그 계정과 리셋 시각을 보인다). 막히지 않으면
+  멤버십 제거와 계정 없는 `account_switch` receipt push를 한 쓰기에서 한다. 그 밖의 막힘이나
+  읽기 실패(카탈로그·저장소 기본 layer·bd)는 그대로 둔다(fail-quiet). 쓰기는 정책·대상
+  조건·옮겨 갈 target의 전역 존재를 그 안에서 다시 읽는다. 원래 target은 프로브가 풀 때까지
+  선다.
+- **기다림 receipt.** 추종 receipt(`origin: wait_follow`)와 해제 receipt(`origin:
+  wait_release`)는 영속 표지와 기다리던 계정(`held_account`)을 지니고 큐 재적재 뒤에도
+  보존된다. 해제 정산은 기다림 대상 멤버에 상한을 판정하지 않고 계정 없는 표지 receipt만
+  쓴다. 표지 없는 receipt(목록에서 사라진 계정, `credential` outage)는 이전 규칙 그대로다.
+- **소비 시점 판정.** 기다림 receipt를 소비하면 먼저 해석 계정과 디스패치 게이트를 본다.
+  해석 실패면 receipt를 남겨 다시 본다. 해석 계정이 `usage_limit` target에 막히면 launch하지
+  않고 receipt 삭제와 그 target 멤버십 생성을 한 쓰기에서 한다(receipt의 attempt·generation,
+  target 존재, attempt 조건을 다시 읽고 어긋나면 아무것도 쓰지 않는다). 해석 계정이
+  기다리던 계정과 다르면 `account_switch` 재개로 진척 없는 재개 상한을 쓰지 않고, 같으면
+  기존 상한을 여기서 적용한다. 그 밖의 막힘은 이전처럼 재개를 시도한다.
+- **잠금과 출처.** 기다림 receipt의 launch 계정은 일반 해석이 정한다. `prior_attempt` 잠금은
+  계정 전환과 같이 계정만 양보하고 나머지 tuple과 세션 검증은 지킨다. 재개 attempt의
+  `account_sources`는 일반 해석 출처를 적는다.
+- **회복 기록.** 재결속으로 끝난 소비는 회복이 아니다. 계정이 바뀐 재개는 계정 전환 회복
+  모양으로 attempt마다 한 번, 같은 계정 재개는 공급자 회복 모양으로 기록·알린다. 판정을
+  미룬 receipt는 해제의 회복 기록에서 빠지고 나중 소비가 확정할 때 기록된다.
+- **감지.** bdui 계정 전환 성공(캐시 무효화 뒤), Claude·Codex 카탈로그 관찰자의 활성 키
+  변경, 대상 멤버가 있는 동안의 주기 읽기(기본 60초, 각 러너의 기존 사용량 캐시를 지나며
+  Codex 캐시는 무효화하지 않음)가 저장소별 직렬 재평가 패스를 부르고, 그 패스가 추종을
+  돈다. 자격 파일은 감시하지 않는다.
+- 자동 전환 모드의 동작(전환 후보·`switch_ready_*`·선제 전환)과 실행 중 attempt는 활성 계정
+  변경에 반응하지 않는다.
+
+기각한 대안(UI-np4t): 출처(`account_sources`)로 따를 attempt 가르기, 카탈로그 사용률
+(100% 또는 80/90) 기준, `switch_ready_*` 재사용으로 시각만 보이기, 자격 파일 감시.
 
 ### ADR UI-a5l2에서 승계하는 조항
 
@@ -150,6 +208,14 @@ pause 자격 검사와 `prior_attempt` tuple 승계 — 는 그대로다. 이 �
 
 ## Consequences
 
+- 되돌리기 어렵다(UI-np4t): 멤버십 계정의 의미(진입 때 계정 → 지금 기다리는 계정)와
+  receipt 계정 규칙이 함께 바뀐다. 되돌리려면 queue-store 정산·추종 mutation, scheduler
+  재평가·receipt 소비·재개 출처 기록, provider-health 관찰·주기 타이머, 계정 전환 라우트를
+  함께 되돌리고 표지 있는 receipt를 처리해야 한다.
+- 맥락 없이는 놀랍다(UI-np4t): 기다림 모드인데 한도에 걸린 계정이 아닌 다른 계정으로
+  재개되고, 카드의 보류 계정과 리셋 시각이 진입 뒤에 바뀐다.
+- 트레이드오프(UI-np4t): 사용률을 보지 않아 소진된 활성 계정에 헛실행 1회가 생길 수 있다.
+  대신 새 디스패치와 같은 규칙 하나로 끝나고 새 표시 필드가 없다.
 - 되돌리기 어렵다: 이관이 큐의 target을 전역 파일로 옮긴다. 되돌리려면 queue-store
   진입·해제·정리, scheduler 게이트·전환·선제 전환, provider-health 타이머 키·프로브 소유,
   attach wait-judge 입력, `decorateQueue` 투영, 모니터 조립을 함께 되돌리고 전역 파일의
