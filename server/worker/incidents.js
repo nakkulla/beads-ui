@@ -165,7 +165,15 @@ function incidentFields(event, attempt) {
       env_group: null
     };
   }
-  const cause = typeof attempt?.cause === 'string' ? attempt.cause : 'unknown';
+  const withdrawn_cause = attempt?.withdrawn?.from_cause;
+  const cause =
+    attempt?.cause === 'withdrawn' &&
+    typeof withdrawn_cause === 'string' &&
+    withdrawn_cause.length > 0
+      ? withdrawn_cause
+      : typeof attempt?.cause === 'string'
+        ? attempt.cause
+        : 'unknown';
   const cause_head = cause.split(':').slice(0, 2).join(':');
   const env_pattern = attempt?.cause_detail?.env_pattern;
   if (typeof env_pattern === 'string' || env_pattern === null) {

@@ -174,27 +174,174 @@ test('groups two cause segments across workspaces and keeps distinct bead identi
   });
 });
 
-test('uses guard reason codes and separates event kinds', async () => {
-  attempt(roots[0], 'UI-a', 'first', { cause: 'hook_bypass_blocked' });
-  event(roots[0], 'UI-a', 'first');
-  event(roots[0], 'UI-a', 'first', {
-    kind: 'guard_denied',
-    reason: 'hook_bypass_blocked',
-    seq: 'hook-1'
-  });
-  event(roots[0], 'UI-a', 'first', {
-    kind: 'guard_warning',
-    reason: 'hook_bypass_blocked',
-    seq: 'hook-2'
-  });
+test.each([
+  'quickfix_landing_failed:invalid_impl_review:missing',
+  'verify_failed:tests:exit_1',
+  'bd_unreachable',
+  'unknown'
+])(
+  'preserves the cause and fingerprint of %s after withdrawal',
+  async (cause) => {
+    const record = attempt(roots[0], 'UI-a', 'first', { cause });
+    event(roots[0], 'UI-a', 'first');
+    const before = await collect();
+
+    writeJson(queueFilePath(roots[0]), {
+      attempts: {
+        first: {
+          ...record,
+          status: 'paused',
+          cause: 'withdrawn',
+          withdrawn: {
+            at: START + 2000,
+            from_status: 'failed',
+            from_cause: cause
+          }
+        }
+      }
+    });
+    const after = await collect();
+
+    expect(after.fingerprints).toEqual(before.fingerprints);
+    expect(after.fingerprints[0].cause_head).toBe(
+      cause.split(':').slice(0, 2).join(':')
+    );
+  }
+);
+
+test('separates withdrawn failures by their original causes', async () => {
+  for (const [index, from_cause] of [
+    'quickfix_landing_failed:invalid_impl_review:missing',
+    'verify_failed:tests:exit_1'
+  ].entries()) {
+    attempt(roots[index], 'UI-a', String(index), {
+      status: 'paused',
+      cause: 'withdrawn',
+      withdrawn: { at: START + 2000, from_status: 'failed', from_cause }
+    });
+    event(roots[index], 'UI-a', String(index));
+  }
 
   const { fingerprints } = await collect();
 
-  expect(fingerprints.map((row) => [row.kind, row.cause_head]).sort()).toEqual([
-    ['attempt_failed', 'hook_bypass_blocked'],
-    ['guard_denied', 'hook_bypass_blocked']
-  ]);
+  expect(fingerprints.map((row) => [row.cause_head, row.count]).sort()).toEqual(
+    [
+      ['quickfix_landing_failed:invalid_impl_review', 1],
+      ['verify_failed:tests', 1]
+    ]
+  );
 });
+
+test.each([
+  undefined,
+  null,
+  {},
+  { from_cause: null },
+  { from_cause: '' },
+  { from_cause: 7 }
+])(
+  'keeps the withdrawn cause when its original cause is unavailable in %j',
+  async (withdrawn) => {
+    attempt(roots[0], 'UI-a', 'first', {
+      cause: 'withdrawn',
+      status: 'paused',
+      withdrawn
+    });
+    event(roots[0], 'UI-a', 'first');
+
+    const { fingerprints } = await collect();
+
+    expect(fingerprints[0]).toMatchObject({
+      cause_head: 'withdrawn',
+      fp: createHash('sha256')
+        .update('attempt_failed|withdrawn|')
+        .digest('hex')
+        .slice(0, 12)
+    });
+  }
+);
+
+test('ignores withdrawal history when the current cause is not withdrawn', async () => {
+  attempt(roots[0], 'UI-a', 'first', {
+    withdrawn: {
+      at: START,
+      from_status: 'failed',
+      from_cause: 'bd_unreachable'
+    }
+  });
+  event(roots[0], 'UI-a', 'first');
+
+  const { fingerprints } = await collect();
+
+  expect(fingerprints[0]).toMatchObject({
+    cause_head: 'verify_failed:tests',
+    tier: 'individual',
+    env_group: null
+  });
+});
+
+test.each(['runtime', null])(
+  'preserves the recorded environment group %j after withdrawal',
+  async (env_pattern) => {
+    attempt(roots[0], 'UI-a', 'first', {
+      status: 'paused',
+      cause: 'withdrawn',
+      cause_detail: { env_pattern, summary: 'ECONNRESET' },
+      withdrawn: {
+        at: START + 2000,
+        from_status: 'failed',
+        from_cause: 'verify_failed:tests:exit_1'
+      }
+    });
+    event(roots[0], 'UI-a', 'first');
+
+    const { fingerprints } = await collect();
+
+    expect(fingerprints[0]).toMatchObject({
+      cause_head: 'verify_failed:tests',
+      tier: 'env',
+      env_group: env_pattern
+    });
+  }
+);
+
+test.each([false, true])(
+  'uses guard reason codes and separates event kinds with withdrawal %s',
+  async (withdrawn) => {
+    attempt(roots[0], 'UI-a', 'first', { cause: 'hook_bypass_blocked' });
+    if (withdrawn) {
+      attempt(roots[0], 'UI-a', 'first', {
+        cause: 'withdrawn',
+        status: 'paused',
+        withdrawn: {
+          at: START + 2000,
+          from_status: 'failed',
+          from_cause: 'hook_bypass_blocked'
+        }
+      });
+    }
+    event(roots[0], 'UI-a', 'first');
+    event(roots[0], 'UI-a', 'first', {
+      kind: 'guard_denied',
+      reason: 'hook_bypass_blocked',
+      seq: 'hook-1'
+    });
+    event(roots[0], 'UI-a', 'first', {
+      kind: 'guard_warning',
+      reason: 'hook_bypass_blocked',
+      seq: 'hook-2'
+    });
+
+    const { fingerprints } = await collect();
+
+    expect(
+      fingerprints.map((row) => [row.kind, row.cause_head]).sort()
+    ).toEqual([
+      ['attempt_failed', 'hook_bypass_blocked'],
+      ['guard_denied', 'hook_bypass_blocked']
+    ]);
+  }
+);
 
 test('separates environment groups for the same cause', async () => {
   for (const [index, summary] of [
