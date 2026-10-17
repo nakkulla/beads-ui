@@ -46,6 +46,41 @@ const PROVIDERS = {
 const in_flight_providers = new Set();
 
 /**
+ * Who hears that a switch landed (UI-np4t §4.4-1). The worker attachment
+ * subscribes here rather than this route importing the whole worker graph.
+ *
+ * @type {Set<(provider: SwitchProvider) => void|Promise<void>>}
+ */
+const switch_listeners = new Set();
+
+/**
+ * Hear every successful account switch, after its usage cache was dropped.
+ *
+ * @param {(provider: SwitchProvider) => void|Promise<void>} listener
+ * @returns {() => void}
+ */
+export function subscribeAccountSwitched(listener) {
+  switch_listeners.add(listener);
+  return () => {
+    switch_listeners.delete(listener);
+  };
+}
+
+/**
+ * Tell every listener that `provider` switched, without waiting for any of
+ * them: the response must not wait on a worker pass.
+ *
+ * @param {SwitchProvider} provider
+ */
+export function notifyAccountSwitched(provider) {
+  for (const listener of [...switch_listeners]) {
+    void Promise.resolve()
+      .then(() => listener(provider))
+      .catch(() => {});
+  }
+}
+
+/**
  * Create the launchd-safe switch process runner for one provider.
  *
  * @param {{ provider: SwitchProvider, spawn_process?: SpawnProcess, home_dir?: string }} options
@@ -268,7 +303,8 @@ async function inUseBeads(provider, account_number) {
 /**
  * Create the account switch handler for one provider. The usage cache is
  * invalidated on every successful run, including `already-active`, so the
- * follow-up refresh cannot be served from a pre-switch snapshot.
+ * follow-up refresh cannot be served from a pre-switch snapshot; then the
+ * switch listeners hear of it (UI-np4t §4.4-1).
  *
  * @param {{ provider: SwitchProvider, runSwitch?: (account_number: number) => Promise<SwitchResult>, invalidateUsageCache: (expected_number?: number) => void }} options
  * @returns {RequestHandler}
@@ -339,6 +375,7 @@ export function createAccountSwitchHandler(options) {
       } else {
         invalidateUsageCache();
       }
+      notifyAccountSwitched(provider);
       res.status(200).json(normalizeSwitchOutput(parsed));
     } catch {
       res.status(200).json({ ok: false, error: 'switch_failed' });

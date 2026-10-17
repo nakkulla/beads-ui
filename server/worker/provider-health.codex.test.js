@@ -4,6 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  __resetCacheForTest as __resetCodexUsageCacheForTest,
+  listAccounts as listCodexAccounts
+} from '../routes/codex-usage.js';
+import { createAccountCatalog } from './account-catalog.js';
 import { OUTAGE_BACKOFF_MS, createProviderHealth } from './provider-health.js';
 import { createQueueStore } from './queue-store.js';
 
@@ -385,6 +390,81 @@ describe('codex hold lifecycle', () => {
 
     expect(env.store.snapshot(WS).provider_hold.codex).toBeUndefined();
     expect(onPending).toHaveBeenCalled();
+  });
+
+  test('periodic codex read does not invalidate the codex usage cache', async () => {
+    __resetCodexUsageCacheForTest();
+    let clock = NOW;
+    const timers = makeTimers();
+    const runCodexAuth = vi.fn(async () => ({
+      code: 0,
+      stdout: JSON.stringify({
+        schema_version: 1,
+        command: 'list',
+        accounts: []
+      }),
+      stderr: ''
+    }));
+    const accountCatalog = createAccountCatalog({
+      listClaude: async () => ({ ok: true, active_key: null, accounts: [] }),
+      listCodex: () => listCodexAccounts({ runCodexAuth, now: () => clock })
+    });
+    const env = setup(makeSpawn('', 0), {
+      accountCatalog,
+      onSwitchReady: vi.fn(async () => {}),
+      now: () => clock,
+      setTimeoutImpl: timers.setTimeoutImpl,
+      clearTimeoutImpl: timers.clearTimeoutImpl
+    });
+    env.store.setProviderLimitPolicy(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      runner: 'codex',
+      patch: { mode: 'wait' }
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { runner: 'codex', model: 'sol', status: 'running' }
+    });
+    env.store.holdProviderAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'codex',
+      target: {
+        kind: 'usage_limit',
+        model: 'sol',
+        account: 'codex-hot',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+    env.health.sync(WS);
+    /** @type {number[]} */
+    const fired = [];
+
+    for (const step of [0, 60_000]) {
+      clock += step;
+      const timer = timers.entries.find(
+        (entry) => entry.delay === 60_000 && !entry.fired && !entry.cleared
+      );
+      if (timer) {
+        timer.fired = true;
+        timer.fn();
+        fired.push(timer.delay);
+      }
+      await flush();
+    }
+
+    expect(fired).toEqual([60_000, 60_000]);
+    expect(runCodexAuth).toHaveBeenCalledTimes(1);
+    env.health.stop(WS);
+    __resetCodexUsageCacheForTest();
   });
 
   test('keeps the hold when the probe output cannot be decoded', async () => {

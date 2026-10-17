@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   __resetSwitchStateForTest,
   createAccountSwitchHandler,
-  createAccountSwitchRunner
+  createAccountSwitchRunner,
+  subscribeAccountSwitched
 } from './account-switch.js';
 
 /**
@@ -234,6 +235,40 @@ describe('successful switches', () => {
     expect(invalidateUsageCache).toHaveBeenCalledTimes(1);
     expect(invalidateUsageCache).toHaveBeenCalledWith(2);
   });
+
+  test('tells switch listeners after the usage cache was dropped', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const runSwitch = vi.fn().mockResolvedValue(switchResult());
+    const listener = vi.fn(() => {
+      order.push('listener');
+    });
+    const unsubscribe = subscribeAccountSwitched(listener);
+
+    try {
+      await requestSwitch(runSwitch, { number: 2 }, () => {
+        order.push('invalidate');
+      });
+    } finally {
+      unsubscribe();
+    }
+
+    expect(listener).toHaveBeenCalledExactlyOnceWith('claude');
+    expect(order).toEqual(['invalidate', 'listener']);
+  });
+
+  test('answers without waiting for a switch listener', async () => {
+    const runSwitch = vi.fn().mockResolvedValue(switchResult());
+    const unsubscribe = subscribeAccountSwitched(() => new Promise(() => {}));
+
+    try {
+      const response = await requestSwitch(runSwitch, { number: 2 });
+
+      expect(response.body).toMatchObject({ ok: true });
+    } finally {
+      unsubscribe();
+    }
+  });
 });
 
 describe('failed switches', () => {
@@ -291,6 +326,20 @@ describe('failed switches', () => {
     await requestSwitch(runSwitch, { number: 2 }, invalidateUsageCache);
 
     expect(invalidateUsageCache).not.toHaveBeenCalled();
+  });
+
+  test('tells no switch listener about a failed switch', async () => {
+    const runSwitch = vi.fn().mockResolvedValue(switchResult({ code: 1 }));
+    const listener = vi.fn();
+    const unsubscribe = subscribeAccountSwitched(listener);
+
+    try {
+      await requestSwitch(runSwitch, { number: 2 });
+    } finally {
+      unsubscribe();
+    }
+
+    expect(listener).not.toHaveBeenCalled();
   });
 });
 

@@ -9,6 +9,7 @@ import {
   normalizeBdIssueList,
   normalizeBdReadyRows
 } from '../bd-json.js';
+import { notifyAccountSwitched } from '../routes/account-switch.js';
 import {
   RECONCILE_INTERVAL_SECONDS,
   __registerWorkerAttachmentForTest,
@@ -1797,6 +1798,28 @@ describe('worker/attach construction + live loop (F1)', () => {
 
   test('stopWorkerAttempt returns false when no attachment is registered', async () => {
     expect(await stopWorkerAttempt(WS, 'att-9')).toBe(false);
+  });
+
+  test('account switch route triggers a follow pass on every attached workspace', async () => {
+    const other = path.join(tmp_state, 'other-workspace');
+    const first = vi.fn(async () => {});
+    const second = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({ scheduler: { reevaluateProviderSwitches: first } })
+    );
+    __registerWorkerAttachmentForTest(
+      other,
+      /** @type {any} */ ({
+        scheduler: { reevaluateProviderSwitches: second }
+      })
+    );
+
+    notifyAccountSwitched('codex');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(first).toHaveBeenCalledExactlyOnceWith(path.resolve(WS));
+    expect(second).toHaveBeenCalledExactlyOnceWith(path.resolve(other));
   });
 
   test('passes execution overrides through the resume attachment boundary', async () => {

@@ -37,6 +37,7 @@ import { kvGetJson, runBdJsonProjected, runShell } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { subscribeAccountSwitched } from '../routes/account-switch.js';
 import {
   listAccounts as listClaudeAccounts,
   resolveCswapPath
@@ -3442,6 +3443,28 @@ export async function reevaluateWorkerProviderSwitches(workspace_root) {
   }
   await att.scheduler.reevaluateProviderSwitches(keyFor(workspace_root));
 }
+
+/**
+ * Run every attached workspace's full provider pass — the wait-mode follow
+ * pass with it — after the active login of a runner changed through bdui's
+ * own switch (UI-np4t §4.4-1). Each workspace runs on its own; one failing
+ * pass never stops the others.
+ *
+ * @returns {Promise<void>}
+ */
+export async function followWorkerActiveAccounts() {
+  await Promise.all(
+    [...ATTACHMENTS].map(([key, att]) =>
+      Promise.resolve()
+        .then(() => att.scheduler.reevaluateProviderSwitches(key))
+        .catch((err) => {
+          log('account switch follow pass failed for %s: %o', key, err);
+        })
+    )
+  );
+}
+
+subscribeAccountSwitched(() => followWorkerActiveAccounts());
 
 /**
  * Confirm the Bead is readable when a workspace has no live scheduler

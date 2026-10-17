@@ -413,6 +413,211 @@ describe('none-held account switch reevaluation', () => {
   });
 });
 
+describe('wait-mode account follow triggers (UI-np4t)', () => {
+  /**
+   * Hold `att-1` on an account's usage limit in a workspace that waits.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function seedWaitHold(store) {
+    store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'wait' }
+    });
+    return seedHold(store, 'usage_limit', 'held@example.com');
+  }
+
+  /**
+   * The active 60 s follow-read timers.
+   *
+   * @param {ReturnType<typeof makeTimers>} timers
+   */
+  function followTimers(timers) {
+    return timers.entries.filter(
+      (entry) => entry.delay === 60_000 && !entry.fired && !entry.cleared
+    );
+  }
+
+  test('active key change in an observed catalog triggers a follow pass', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedWaitHold(store);
+    let active_key = 'held@example.com';
+    const accountCatalog = createAccountCatalog({
+      listClaude: async () => ({ ok: true, active_key, accounts: [] }),
+      listCodex: async () => ({ ok: true, active_key: null, accounts: [] })
+    });
+    const onSwitchReady = vi.fn(async () => {});
+    const { health } = setup(store, makeTimers(), makeSpawn({}, 0), {
+      onSwitchReady,
+      accountCatalog
+    });
+    health.sync(WS);
+    await accountCatalog.listClaude();
+    await flush();
+    onSwitchReady.mockClear();
+    active_key = 'unist@example.com';
+
+    await accountCatalog.listClaude();
+    await flush();
+
+    expect(onSwitchReady).toHaveBeenCalledExactlyOnceWith(WS);
+    health.stop(WS);
+  });
+
+  test('codex catalog read follows only a changed active login', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    let active_key = 'codex-hot';
+    const accountCatalog = createAccountCatalog({
+      listClaude: async () => ({ ok: true, active_key: null, accounts: [] }),
+      listCodex: async () => ({ ok: true, active_key, accounts: [] })
+    });
+    const onSwitchReady = vi.fn(async () => {});
+    const { health } = setup(store, makeTimers(), makeSpawn({}, 0), {
+      onSwitchReady,
+      accountCatalog
+    });
+    health.sync(WS);
+    await accountCatalog.listCodex();
+    await accountCatalog.listCodex();
+    const unchanged = onSwitchReady.mock.calls.length;
+    active_key = 'codex-cool';
+
+    await accountCatalog.listCodex();
+    await flush();
+
+    expect(unchanged).toBe(0);
+    expect(onSwitchReady).toHaveBeenCalledExactlyOnceWith(WS);
+    health.stop(WS);
+  });
+
+  test('periodic catalog read runs only while a follow member exists', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedWaitHold(store);
+    const timers = makeTimers();
+    const listClaude = vi.fn(async () => ({
+      ok: /** @type {const} */ (true),
+      active_key: 'held@example.com',
+      accounts: []
+    }));
+    const accountCatalog = createAccountCatalog({
+      listClaude,
+      listCodex: async () => ({ ok: true, active_key: null, accounts: [] })
+    });
+    const { health } = setup(store, timers, makeSpawn({}, 0), {
+      onSwitchReady: vi.fn(async () => {}),
+      accountCatalog
+    });
+    health.sync(WS);
+    const armed = followTimers(timers);
+    armed[0].fired = true;
+    armed[0].fn();
+    await flush();
+    const reads_while_waiting = listClaude.mock.calls.length;
+    store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { dismissed_at: NOW }
+    });
+    const rearmed = followTimers(timers);
+
+    rearmed[0].fired = true;
+    rearmed[0].fn();
+    await flush();
+
+    expect(armed).toHaveLength(1);
+    expect(reads_while_waiting).toBe(1);
+    expect(listClaude).toHaveBeenCalledTimes(1);
+    expect(followTimers(timers)).toEqual([]);
+    health.stop(WS);
+  });
+
+  test('arms no periodic catalog read for a switch-mode hold', () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedHold(store, 'usage_limit', 'held@example.com');
+    const timers = makeTimers();
+    const { health } = setup(store, timers, makeSpawn({}, 0));
+
+    health.sync(WS);
+
+    expect(followTimers(timers)).toEqual([]);
+    health.stop(WS);
+  });
+
+  test('release that ends in a rebind sends no recovery notification', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedWaitHold(store);
+    const timers = makeTimers();
+    const timeline = { append: vi.fn() };
+    const onPending = vi.fn(async () => ({
+      resumed_beads: [],
+      refusals: [],
+      rebound_attempt_ids: ['att-1'],
+      disarmed_attempt_ids: [],
+      switched_attempt_ids: []
+    }));
+    const env = setup(store, timers, makeSpawn({ is_error: false }, 0), {
+      onPending,
+      timeline
+    });
+    await env.health.start(WS);
+    const probe = timers.entries.find(
+      (entry) => !entry.fired && !entry.cleared && entry.delay !== 60_000
+    );
+
+    /** @type {NonNullable<typeof probe>} */ (probe).fired = true;
+    /** @type {NonNullable<typeof probe>} */ (probe).fn();
+    await flush();
+
+    expect(store.snapshot(WS).provider_hold).toEqual({});
+    expect(onPending).toHaveBeenCalled();
+    expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+    expect(timeline.append).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'provider_recovered' })
+    );
+    env.health.stop(WS);
+  });
+
+  test('release whose wait receipt meets the cap at consumption records a disarmed release', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedWaitHold(store);
+    const timers = makeTimers();
+    const timeline = { append: vi.fn() };
+    const onPending = vi.fn(async () => ({
+      resumed_beads: [],
+      refusals: [],
+      rebound_attempt_ids: [],
+      disarmed_attempt_ids: ['att-1'],
+      switched_attempt_ids: []
+    }));
+    const env = setup(store, timers, makeSpawn({ is_error: false }, 0), {
+      onPending,
+      timeline
+    });
+    await env.health.start(WS);
+    const probe = timers.entries.find(
+      (entry) => !entry.fired && !entry.cleared && entry.delay !== 60_000
+    );
+
+    /** @type {NonNullable<typeof probe>} */ (probe).fired = true;
+    /** @type {NonNullable<typeof probe>} */ (probe).fn();
+    await flush();
+
+    expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+    expect(
+      env.notify.providerAutoResumeDisarmed
+    ).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ bead_id: 'B1', reason: 'auto_resume_cap' })
+    );
+    expect(timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt_id: 'att-1',
+        kind: 'provider_hold_released'
+      })
+    );
+    env.health.stop(WS);
+  });
+});
+
 describe('catalog-driven usage probes', () => {
   /**
    * Exercise the same catalog read used by the existing hold-evaluation tick.

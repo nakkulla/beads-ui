@@ -1,6 +1,7 @@
 /**
  * @typedef {{ key: string, number?: number, email: string, status?: string, windows?: Array<{ key?: string, pct: number, resetsAt: string|null }> }} Account
  * @typedef {{ ok: true, accounts: Account[], active_key: string|null }|{ ok: false, error: string }} AccountList
+ * @typedef {(accounts: Account[], active_key: string|null) => void} CatalogObserver
  */
 
 /**
@@ -9,17 +10,31 @@
  * @param {{ listClaude: () => Promise<AccountList>, listCodex: () => Promise<AccountList> }} deps
  */
 export function createAccountCatalog({ listClaude, listCodex }) {
-  /** @type {Set<(accounts: Account[]) => void>} */
+  /** @type {Set<CatalogObserver>} */
   const claude_observers = new Set();
+  /** @type {Set<CatalogObserver>} */
+  const codex_observers = new Set();
   return {
     /**
      * Observe existing hold-evaluation reads without adding a polling loop.
+     * Each read hands over its rows and its active login key.
      *
-     * @param {(accounts: Account[]) => void} listener
+     * @param {CatalogObserver} listener
      */
     subscribeClaude(listener) {
       claude_observers.add(listener);
       return () => claude_observers.delete(listener);
+    },
+
+    /**
+     * Observe Codex list reads the same way, so a changed Codex active login
+     * is seen by the reads that already happen (UI-np4t §4.4-2).
+     *
+     * @param {CatalogObserver} listener
+     */
+    subscribeCodex(listener) {
+      codex_observers.add(listener);
+      return () => codex_observers.delete(listener);
     },
 
     /**
@@ -33,7 +48,7 @@ export function createAccountCatalog({ listClaude, listCodex }) {
         return { ok: false, reason: 'claude_account_list_unavailable' };
       }
       for (const listener of claude_observers) {
-        listener(listed.accounts);
+        listener(listed.accounts, listed.active_key);
       }
       return {
         ok: true,
@@ -53,6 +68,9 @@ export function createAccountCatalog({ listClaude, listCodex }) {
       const listed = await listCodex();
       if (!listed.ok) {
         return { ok: false, reason: 'codex_account_list_unavailable' };
+      }
+      for (const listener of codex_observers) {
+        listener(listed.accounts, listed.active_key);
       }
       return {
         ok: true,
