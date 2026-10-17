@@ -606,7 +606,7 @@ function reasonCellTemplate(placement) {
     ...placement.references.map((line) => relationLineText(line, true)),
     ...placement.outside.map((line) => outsideLineText(line))
   ];
-  return html`${lines.length > 0
+  return html`${placement.pair_counts.total > 0 || lines.length > 0
     ? html`<details class="worker-plan__reasons">
         <summary>${reasonSummaryText(placement)}</summary>
         ${lines.map(

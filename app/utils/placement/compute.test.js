@@ -683,8 +683,8 @@ describe('computePlacement chosen set', () => {
       pairs
     });
 
-    expect(both.by_id['C-2'].lane).toBe('s1');
-    expect(alone.by_id['C-2'].lane).toBe('parallel');
+    expect(both.by_id['C-2'].before).toBe('C-1');
+    expect(alone.by_id['C-2'].before).toBeNull();
   });
 
   test('shows a constraint with an unchosen candidate only as an outside line', () => {
@@ -694,10 +694,46 @@ describe('computePlacement chosen set', () => {
       pairs: [rel('C-1', 'C-2', 'conflict')]
     });
 
-    expect(result.by_id['C-1'].lane).toBe('parallel');
+    expect(result.by_id['C-1'].reasons).toEqual([]);
     expect(result.by_id['C-1'].outside.map((line) => line.other)).toEqual([
       'C-2'
     ]);
+  });
+
+  test('puts a single candidate with an unplaced same-file partner in a serial lane', () => {
+    const pairs = [
+      rel('C-1', 'C-2', 'conflict', { source: 'fixed', basis: 'file' })
+    ];
+
+    const result = plan({ chosen: ['C-1'], candidates: ['C-1', 'C-2'], pairs });
+
+    expect(result.by_id['C-1']).toMatchObject({ lane: 's1', before: null });
+  });
+
+  test('sends the same-file partner after the first once it is queued', () => {
+    const pairs = [
+      rel('C-1', 'C-2', 'conflict', { source: 'fixed', basis: 'file' })
+    ];
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['C-1']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({ queue, chosen: ['C-2'], candidates: ['C-2'], pairs });
+
+    expect(result.by_id['C-2']).toMatchObject({ lane: 's1', before: 'C-1' });
+  });
+
+  test('keeps a lone candidate without an outside constraint parallel', () => {
+    const result = plan({
+      chosen: ['C-1'],
+      candidates: ['C-1', 'C-2'],
+      pairs: [rel('C-1', 'C-2', 'independent')]
+    });
+
+    expect(result.by_id['C-1'].lane).toBe('parallel');
   });
 
   test('keeps the revision the plan was computed on', () => {

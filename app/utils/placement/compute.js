@@ -647,10 +647,20 @@ export function computePlacement(input) {
         }
       }
     }
+    // A lone member constrained against a candidate this plan leaves out
+    // still needs a serial lane: that partner, recommended later, follows it
+    // there through K instead of joining it in the parallel lane.
+    const needs_serial =
+      members.length > 1 ||
+      members.some((c) =>
+        /** @type {RelationLine[]} */ (lines_by_candidate.get(c)).some(
+          (line) => line.side === 'outside' && CONSTRAINTS.has(line.relation)
+        )
+      );
     /** @type {PlacementLane} */
     let lane;
     if (k_items.length === 0) {
-      lane = members.length === 1 ? 'parallel' : emptiestSerial();
+      lane = needs_serial ? emptiestSerial() : 'parallel';
     } else {
       const k_lanes = new Set(k_items.map((item) => item.lane));
       const [only] = [...k_lanes];
@@ -669,7 +679,7 @@ export function computePlacement(input) {
             best_cover = cover;
           }
         }
-        lane = best ?? (members.length === 1 ? 'parallel' : emptiestSerial());
+        lane = best ?? (needs_serial ? emptiestSerial() : 'parallel');
       }
     }
 
