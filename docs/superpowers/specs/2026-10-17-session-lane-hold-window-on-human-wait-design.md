@@ -37,9 +37,11 @@ scope:
   사다리가 창을 닫는다 — server/worker/scheduler.js:11192, :11238-11256
 - 결과 줄이 아닌 메시지는 처리 표지(`processed_message_at`)만 남기는 답 대기다 —
   server/worker/scheduler.js:11239-11245
-- `onSessionDone`은 `recovery_wait`·`failure`·`environment` 결과를 `failAttempt`로 닫는다
-  (원인은 각각 `session_recovery_wait`·`session_failed:reported_failure`·
-  `session_hard_stop:environment`) — server/worker/scheduler.js:9213-9244
+- `onSessionDone`은 먼저 `settleBaseDrift`로 base 착지를 확인해 있으면
+  `base_landing_detected`로 닫는다. 그다음 `recovery_wait`·`failure`·`environment`
+  결과를 공급자 장애면 보류로, 아니면 `failAttempt`로 닫는다(원인은 각각
+  `session_recovery_wait`·`session_failed:reported_failure`·
+  `session_hard_stop:environment`) — server/worker/scheduler.js:7051-7063, :7187-7228
 - 종단 결과 줄 종류는 `success`·`parked`·`failure`·`environment`·`waiting_blocks`·
   `waiting_external`·`recovery_wait`·`base_moved` 여덟 가지다 —
   server/worker/runner/session.js:98-140
@@ -123,7 +125,8 @@ scope:
 
 - 마지막으로 처리한 메시지가 보류 줄인 상태에서 pane이 사라지면, 그 보류 줄로
   정산한다. 즉 headless와 같은 `onSessionDone` 판정을 타며, `session_exited`로
-  처리하지 않는다.
+  처리하지 않는다. 기존 정산 우선순위는 그대로다: base 착지가 감지되면
+  `base_landing_detected`, 공급자 장애면 보류가 결과 줄보다 먼저다.
 - 결정 — 창이 사라지면 세션이 남긴 보류 줄이 결과다 (대안: `session_exited`; 이유:
   세션이 스스로 밝힌 원인(recovery 사유·실패 문장)이 카드와 실패 분류에 남아야 다음
   조치를 고를 수 있다. 처리 표지 때문에 지금의 `goneSessionLaneVerdict`는 그 줄을
@@ -155,8 +158,8 @@ scope:
 - 보류 중 attempt는 `occupiedBeadIds`에 들어간다.
 - `sessionLaneAwaitsAnswer`: `idle`이고 마지막 메시지가 보류 줄이면 true, 정산 줄이면
   false.
-- 보류 줄 뒤에 pane이 사라지면 그 보류 줄의 원인으로 `failAttempt`하고,
-  `session_exited`가 아니다.
+- base 착지가 없고 공급자 장애가 아닐 때, 보류 줄 뒤에 pane이 사라지면 그 보류 줄의
+  원인으로 `failAttempt`하고, `session_exited`가 아니다.
 - 서버 재시작 뒤 같은 보류 줄은 다시 처리하지 않는다.
 - 타임라인의 `창 유지` 줄은 같은 메시지에 대해 한 번만 남는다.
 
