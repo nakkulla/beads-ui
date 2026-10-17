@@ -43,7 +43,7 @@ const log = debug('beads-ui:provider-health');
 // §4.4-3); with the 30 s Claude cache an external switch shows within ~90 s.
 const FOLLOW_READ_MS = 60_000;
 // The release history of an attempt the no-progress cap disarmed (UI-87gn §3.4).
-const NO_PROGRESS_RELEASE_SUFFIX =
+export const NO_PROGRESS_RELEASE_SUFFIX =
   ' · 자동 재개 안 함 — 진척 없는 자동 재개 2회 연속';
 
 /**
@@ -546,6 +546,29 @@ export function createProviderHealth(deps) {
   }
 
   /**
+   * The runners one workspace has a wait-follow member of; empty when its
+   * memberships cannot be read.
+   *
+   * @param {string} workspace
+   * @returns {Set<string>}
+   */
+  function followRunnersOf(workspace) {
+    /** @type {Set<string>} */
+    const runners = new Set();
+    if (typeof deps.store.waitFollowMembers !== 'function') {
+      return runners;
+    }
+    try {
+      for (const member of deps.store.waitFollowMembers(workspace)) {
+        runners.add(member.runner);
+      }
+    } catch (err) {
+      log('wait-follow members unreadable for %s: %o', workspace, err);
+    }
+    return runners;
+  }
+
+  /**
    * The runners some attached workspace has a wait-follow member of.
    *
    * @returns {Set<string>}
@@ -553,16 +576,9 @@ export function createProviderHealth(deps) {
   function followRunners() {
     /** @type {Set<string>} */
     const runners = new Set();
-    if (typeof deps.store.waitFollowMembers !== 'function') {
-      return runners;
-    }
     for (const workspace of active_workspaces) {
-      try {
-        for (const member of deps.store.waitFollowMembers(workspace)) {
-          runners.add(member.runner);
-        }
-      } catch (err) {
-        log('wait-follow members unreadable for %s: %o', workspace, err);
+      for (const runner of followRunnersOf(workspace)) {
+        runners.add(runner);
       }
     }
     return runners;
@@ -592,9 +608,13 @@ export function createProviderHealth(deps) {
 
   /**
    * One periodic read of each followed runner's account list, through the
-   * catalog's own cache: it changes nothing by itself, but rings the
-   * observers above, which follow a changed active login. The Codex list
-   * keeps its long cache — this read never invalidates it.
+   * catalog's own cache, then a full pass — the follow pass included — for
+   * every attached workspace with a wait-follow member. The observers above
+   * still follow a changed active login at once; the pass here does not
+   * depend on seeing a change, since a login switched before the first
+   * observation, or a pass whose reads failed, leaves no further change to
+   * observe. The Codex list keeps its long cache — this read never
+   * invalidates it.
    */
   async function readFollowCatalogs() {
     for (const runner of followRunners()) {
@@ -612,6 +632,11 @@ export function createProviderHealth(deps) {
         }
       } catch (err) {
         log('periodic %s catalog read failed: %o', runner, err);
+      }
+    }
+    for (const workspace of [...active_workspaces]) {
+      if (followRunnersOf(workspace).size > 0) {
+        void reevaluateSwitches(workspace);
       }
     }
     syncFollowRead();
@@ -1015,7 +1040,8 @@ export function createProviderHealth(deps) {
    *
    * A wait receipt's outcome is known only after its consumption (UI-np4t
    * §4.3): a rebind is no recovery, a consume-time cap is a disarmed release,
-   * and a changed-account resume already recorded its switch recovery.
+   * a changed-account resume already recorded its switch recovery, and a
+   * deferred judgment is recorded by the consumption that later settles it.
    *
    * @param {string} runner
    * @param {number} generation
@@ -1100,13 +1126,16 @@ export function createProviderHealth(deps) {
       }
       const outcome = await hooks.onPending?.(workspace);
       // A wait receipt whose consumption rebound to another held account is
-      // no recovery, one disarmed at consumption is a capped release, and one
-      // that resumed on a changed account recorded its own switch recovery
-      // (UI-np4t §4.3): none of them enters this release's recovery record.
+      // no recovery, one disarmed at consumption is a capped release, one
+      // that resumed on a changed account recorded its own switch recovery,
+      // and one whose judgment was deferred records its outcome when a later
+      // consumption settles it (UI-np4t §4.3): none of them enters this
+      // release's recovery record.
       const consume_disarmed = new Set(outcome?.disarmed_attempt_ids || []);
       const not_recovered = new Set([
         ...(outcome?.rebound_attempt_ids || []),
         ...(outcome?.switched_attempt_ids || []),
+        ...(outcome?.deferred_attempt_ids || []),
         ...consume_disarmed
       ]);
       const not_recovered_beads = new Set(

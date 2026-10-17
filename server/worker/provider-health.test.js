@@ -553,7 +553,8 @@ describe('wait-mode account follow triggers (UI-np4t)', () => {
       refusals: [],
       rebound_attempt_ids: ['att-1'],
       disarmed_attempt_ids: [],
-      switched_attempt_ids: []
+      switched_attempt_ids: [],
+      deferred_attempt_ids: []
     }));
     const env = setup(store, timers, makeSpawn({ is_error: false }, 0), {
       onPending,
@@ -587,7 +588,8 @@ describe('wait-mode account follow triggers (UI-np4t)', () => {
       refusals: [],
       rebound_attempt_ids: [],
       disarmed_attempt_ids: ['att-1'],
-      switched_attempt_ids: []
+      switched_attempt_ids: [],
+      deferred_attempt_ids: []
     }));
     const env = setup(store, timers, makeSpawn({ is_error: false }, 0), {
       onPending,
@@ -615,6 +617,103 @@ describe('wait-mode account follow triggers (UI-np4t)', () => {
       })
     );
     env.health.stop(WS);
+  });
+
+  test('release whose wait receipt judgment was deferred records no recovery', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedWaitHold(store);
+    const timers = makeTimers();
+    const timeline = { append: vi.fn() };
+    const onPending = vi.fn(async () => ({
+      resumed_beads: [],
+      refusals: [],
+      rebound_attempt_ids: [],
+      disarmed_attempt_ids: [],
+      switched_attempt_ids: [],
+      deferred_attempt_ids: ['att-1']
+    }));
+    const env = setup(store, timers, makeSpawn({ is_error: false }, 0), {
+      onPending,
+      timeline
+    });
+    await env.health.start(WS);
+    const probe = timers.entries.find(
+      (entry) => !entry.fired && !entry.cleared && entry.delay !== 60_000
+    );
+
+    /** @type {NonNullable<typeof probe>} */ (probe).fired = true;
+    /** @type {NonNullable<typeof probe>} */ (probe).fn();
+    await flush();
+
+    expect(store.snapshot(WS).provider_hold).toEqual({});
+    expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+    expect(env.notify.providerAutoResumeDisarmed).not.toHaveBeenCalled();
+    expect(timeline.append).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'provider_recovered' })
+    );
+    env.health.stop(WS);
+  });
+
+  test('periodic catalog read runs a follow pass on a login switched before the first observation', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedWaitHold(store);
+    const timers = makeTimers();
+    const accountCatalog = createAccountCatalog({
+      listClaude: async () => ({
+        ok: true,
+        active_key: 'unist@example.com',
+        accounts: []
+      }),
+      listCodex: async () => ({ ok: true, active_key: null, accounts: [] })
+    });
+    const onSwitchReady = vi.fn(async () => {});
+    const { health } = setup(store, timers, makeSpawn({}, 0), {
+      onSwitchReady,
+      accountCatalog
+    });
+    health.sync(WS);
+    const [timer] = followTimers(timers);
+
+    timer.fired = true;
+    timer.fn();
+    await flush();
+
+    expect(onSwitchReady.mock.calls).toContainEqual([WS]);
+    health.stop(WS);
+  });
+
+  test('periodic catalog read runs the follow pass again after a failed one', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedWaitHold(store);
+    const timers = makeTimers();
+    let active_key = 'held@example.com';
+    const accountCatalog = createAccountCatalog({
+      listClaude: async () => ({ ok: true, active_key, accounts: [] }),
+      listCodex: async () => ({ ok: true, active_key: null, accounts: [] })
+    });
+    const onSwitchReady = vi.fn(async () => {});
+    const { health } = setup(store, timers, makeSpawn({}, 0), {
+      onSwitchReady,
+      accountCatalog
+    });
+    health.sync(WS);
+    await accountCatalog.listClaude();
+    await flush();
+    active_key = 'unist@example.com';
+    onSwitchReady.mockRejectedValue(new Error('bd show failed'));
+    const [failed] = followTimers(timers);
+    failed.fired = true;
+    failed.fn();
+    await flush();
+    onSwitchReady.mockReset();
+    const [next] = followTimers(timers);
+
+    next.fired = true;
+    next.fn();
+    await flush();
+
+    expect(onSwitchReady.mock.calls).toContainEqual([WS]);
+    health.stop(WS);
   });
 });
 

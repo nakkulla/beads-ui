@@ -8453,7 +8453,10 @@ describe('scheduler provider hold and recovery', () => {
         active: options.active === undefined ? held_on : options.active
       };
       const clock = { now: 1000 };
-      const notify = { providerRecovered: vi.fn() };
+      const notify = {
+        providerRecovered: vi.fn(),
+        providerAutoResumeDisarmed: vi.fn()
+      };
       const timeline = { append: vi.fn() };
       const deps = accountDeps();
       const activeClaude = vi.fn(async () =>
@@ -8580,6 +8583,34 @@ describe('scheduler provider hold and recovery', () => {
       return Object.values(env.store.snapshot(WS).attempts).find(
         (attempt) => attempt.resumed_from === 'held'
       );
+    }
+
+    /**
+     * The timeline events of one kind the scheduler appended.
+     *
+     * @param {ReturnType<typeof waitEnv>} env
+     * @param {string} kind
+     */
+    function timelineOf(env, kind) {
+      return env.timeline.append.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.kind === kind);
+    }
+
+    /**
+     * Release `held`'s target while its account cannot be resolved, so the
+     * consumption defers the wait receipt, then let the retry interval pass
+     * with `active` as the login.
+     *
+     * @param {ReturnType<typeof waitEnv>} env
+     * @param {string} active
+     */
+    async function deferThenResolve(env, active) {
+      releaseOn(env, HANMAIL);
+      env.login.active = null;
+      await env.scheduler.consumeProviderAutoResume(WS);
+      env.login.active = active;
+      env.clock.now += 60_000;
     }
 
     test.each([
@@ -8813,6 +8844,135 @@ describe('scheduler provider hold and recovery', () => {
         continuation_choice: 'prior_attempt',
         claude_account: HANMAIL
       });
+    });
+
+    test('wait receipt resumes a prior_attempt lock child that recorded no account', async () => {
+      const env = waitEnv({
+        attempt: { continuation_choice: 'prior_attempt' }
+      });
+      releaseOn(env, HANMAIL);
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(outcome.refusals).toEqual([]);
+      expect(childOfHeld(env)).toMatchObject({
+        continuation_choice: 'prior_attempt',
+        claude_account: null,
+        auto_resume_kind: 'provider_outage'
+      });
+    });
+
+    test('unmarked receipt still refuses a prior_attempt lock child that recorded no account', async () => {
+      const env = waitEnv({
+        mode: 'switch',
+        attempt: { continuation_choice: 'prior_attempt' }
+      });
+      releaseOn(env, HANMAIL, { claude: [UNIST] });
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(outcome.refusals).toEqual(['B1:prior_session_unavailable']);
+      expect(childOfHeld(env)).toBeUndefined();
+    });
+
+    test('reports a wait receipt whose judgment it deferred', async () => {
+      const env = waitEnv();
+      releaseOn(env, HANMAIL);
+      env.login.active = null;
+      const unresolved = await env.scheduler.consumeProviderAutoResume(WS);
+      env.login.active = HANMAIL;
+
+      const within_interval = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(unresolved.deferred_attempt_ids).toEqual(['held']);
+      expect(within_interval.deferred_attempt_ids).toEqual(['held']);
+      expect(childOfHeld(env)).toBeUndefined();
+    });
+
+    test('records a deferred wait receipt that settles on the same account as one recovery', async () => {
+      const env = waitEnv();
+      await deferThenResolve(env, HANMAIL);
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(childOfHeld(env)).toMatchObject({
+        auto_resume_kind: 'provider_outage'
+      });
+      expect(timelineOf(env, 'provider_recovered')).toEqual([
+        expect.objectContaining({
+          bead_id: 'B1',
+          attempt_id: 'held',
+          summary: 'claude 공급자 회복',
+          account: HANMAIL
+        })
+      ]);
+      expect(env.notify.providerRecovered).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          bead_id: 'B1',
+          runner: 'claude',
+          resumed_beads: ['B1'],
+          refusal: null
+        })
+      );
+      expect(
+        env.notify.providerRecovered.mock.calls[0][0].switched_from
+      ).toBeUndefined();
+    });
+
+    test('records a deferred wait receipt that meets the cap as one capped release', async () => {
+      const env = waitEnv();
+      capHeld(env);
+      await deferThenResolve(env, HANMAIL);
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(outcome.disarmed_attempt_ids).toEqual(['held']);
+      expect(timelineOf(env, 'provider_hold_released')).toEqual([
+        expect.objectContaining({
+          bead_id: 'B1',
+          attempt_id: 'held',
+          summary:
+            'claude 보류 해제 · 자동 재개 안 함 — 진척 없는 자동 재개 2회 연속'
+        })
+      ]);
+      expect(
+        env.notify.providerAutoResumeDisarmed
+      ).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          bead_id: 'B1',
+          runner: 'claude',
+          reason: 'auto_resume_cap'
+        })
+      );
+      expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+    });
+
+    test('records nothing for a deferred wait receipt that settles in a rebind', async () => {
+      const env = waitEnv();
+      holdElsewhere(env, UNIST);
+      await deferThenResolve(env, UNIST);
+
+      const outcome = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(outcome.rebound_attempt_ids).toEqual(['held']);
+      expect(timelineOf(env, 'provider_recovered')).toEqual([]);
+      expect(timelineOf(env, 'provider_hold_released')).toEqual([]);
+      expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+      expect(env.notify.providerAutoResumeDisarmed).not.toHaveBeenCalled();
+    });
+
+    test('leaves the recovery record of a same-account wait resume judged at once to its release', async () => {
+      const env = waitEnv();
+      releaseOn(env, HANMAIL);
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(childOfHeld(env)).toMatchObject({
+        auto_resume_kind: 'provider_outage'
+      });
+      expect(timelineOf(env, 'provider_recovered')).toEqual([]);
+      expect(env.notify.providerRecovered).not.toHaveBeenCalled();
     });
 
     test('codex follow pass uses active_key', async () => {
@@ -30821,7 +30981,8 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
         refusals: [],
         rebound_attempt_ids: [],
         disarmed_attempt_ids: [],
-        switched_attempt_ids: []
+        switched_attempt_ids: [],
+        deferred_attempt_ids: []
       });
       expect(childOf(env, 'returned')).toMatchObject({
         status: 'running',
@@ -30881,7 +31042,8 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
           refusals: [],
           rebound_attempt_ids: [],
           disarmed_attempt_ids: [],
-          switched_attempt_ids: []
+          switched_attempt_ids: [],
+          deferred_attempt_ids: []
         });
         expect(childOf(env, 'switched')).toMatchObject({ status: 'running' });
       }
@@ -30912,7 +31074,8 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
         refusals: [],
         rebound_attempt_ids: [],
         disarmed_attempt_ids: [],
-        switched_attempt_ids: []
+        switched_attempt_ids: [],
+        deferred_attempt_ids: []
       });
       expect(childOf(env, 'returned')).toMatchObject({
         status: 'running',
@@ -31018,7 +31181,8 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
         refusals: [],
         rebound_attempt_ids: [],
         disarmed_attempt_ids: [],
-        switched_attempt_ids: []
+        switched_attempt_ids: [],
+        deferred_attempt_ids: []
       });
     });
 

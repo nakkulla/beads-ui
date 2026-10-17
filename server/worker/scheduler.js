@@ -121,6 +121,7 @@ import {
   readLastAssistantMessage as defaultReadLastAssistantMessage,
   parseConversationResult
 } from './interactive-progress.js';
+import { NO_PROGRESS_RELEASE_SUFFIX } from './provider-health.js';
 import { providerTargetScope } from './provider-holds.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
@@ -897,6 +898,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   conversationResumed?: (i: any) => void,
  *   providerHoldEntered?: (i: any) => void,
  *   providerRecovered?: (i: any) => void,
+ *   providerAutoResumeDisarmed?: (i: any) => void,
  *   providerLivePreempt?: (i: any) => void,
  *   prWaitEntered: (i: any) => void
  * }} [notify]
@@ -1458,11 +1460,13 @@ export function interactiveTurnState(running, attention) {
  * What one receipt consumption did (UI-np4t §4.3): beyond the resumed beads
  * and refusals, the wait receipts that rebound to a held account's target
  * instead of launching, the ones the no-progress cap disarmed at
- * consumption, and the ones that resumed on a changed account and already
- * recorded their switch-shaped recovery. A hold release leaves all three out
- * of its own recovery record.
+ * consumption, the ones that resumed on a changed account and already
+ * recorded their switch-shaped recovery, and the ones whose judgment this
+ * consumption deferred — an unresolved account, or a retry interval not yet
+ * passed — which record their outcome once a later consumption settles it.
+ * A hold release leaves all four out of its own recovery record.
  *
- * @typedef {{ resumed_beads: string[], refusals: string[], rebound_attempt_ids: string[], disarmed_attempt_ids: string[], switched_attempt_ids: string[] }} ProviderAutoResumeOutcome
+ * @typedef {{ resumed_beads: string[], refusals: string[], rebound_attempt_ids: string[], disarmed_attempt_ids: string[], switched_attempt_ids: string[], deferred_attempt_ids: string[] }} ProviderAutoResumeOutcome
  */
 
 /**
@@ -1895,7 +1899,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerLivePreempt'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerAutoResumeDisarmed'|'providerLivePreempt'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -15853,6 +15857,12 @@ export function createScheduler(deps) {
    * no cap and records a switch-shaped recovery, and the same account meets
    * the no-progress cap before a `provider_outage` resume.
    *
+   * A deferred judgment is reported back so a hold release leaves it out of
+   * its recovery record; the consumption that later settles it on the same
+   * account records the release-shaped recovery or capped release itself.
+   * The deferral marks live in memory only, so a restart in between loses
+   * that one record.
+   *
    * @param {string} workspace
    * @returns {Promise<ProviderAutoResumeOutcome>}
    */
@@ -15868,6 +15878,8 @@ export function createScheduler(deps) {
     const disarmed_attempt_ids = [];
     /** @type {string[]} */
     const switched_attempt_ids = [];
+    /** @type {string[]} */
+    const deferred_attempt_ids = [];
     /** @type {{ layer?: Promise<import('../workspace-accounts.js').WorkspaceAccountsLayer>, logins?: Map<string, Promise<string|null>> }} */
     const wait_reads = {};
     let consumed = false;
@@ -15910,6 +15922,7 @@ export function createScheduler(deps) {
           typeof unresolved_at === 'number' &&
           now() - unresolved_at < WAIT_RESOLVE_RETRY_MS
         ) {
+          deferred_attempt_ids.push(pending.attempt_id);
           armWaitResolveRetry(workspace);
           continue;
         }
@@ -15920,10 +15933,18 @@ export function createScheduler(deps) {
           const marks = unresolved || new Map();
           marks.set(pending.attempt_id, now());
           wait_unresolved_at.set(workspace, marks);
+          deferred_attempt_ids.push(pending.attempt_id);
           armWaitResolveRetry(workspace);
           continue;
         }
-        unresolved?.delete(pending.attempt_id);
+        // An earlier consumption deferred this judgment and kept it out of
+        // its release's recovery record, so a same-account outcome is
+        // recorded here instead (UI-np4t §4.3). Its mark is old enough to
+        // judge again at once and goes in the sweep below with its receipt,
+        // so a receipt a refused rebind write or a settling Bead keeps stays
+        // deferred until it is settled.
+        const settles_deferred =
+          wait?.verdict === 'same' && typeof unresolved_at === 'number';
         if (wait?.verdict === 'rebind') {
           if (
             deps.store.rebindWaitReceipt(workspace, {
@@ -15946,6 +15967,22 @@ export function createScheduler(deps) {
         ) {
           disarmed_attempt_ids.push(pending.attempt_id);
           consumed = true;
+          if (settles_deferred) {
+            const runner = prior.runner || 'claude';
+            appendTimeline({
+              bead_id: prior.bead_id,
+              attempt_id: pending.attempt_id,
+              kind: 'provider_hold_released',
+              seq: pending.generation,
+              summary: `${runner} 보류 해제${NO_PROGRESS_RELEASE_SUFFIX}`
+            });
+            notifyLifecycle('providerAutoResumeDisarmed', {
+              bead_id: prior.bead_id,
+              runner,
+              reason: 'auto_resume_cap',
+              repo: prior.repo
+            });
+          }
           continue;
         }
         const switched_from =
@@ -16082,6 +16119,26 @@ export function createScheduler(deps) {
               switched_to: launched,
               repo: prior.repo
             });
+          } else if (settles_deferred) {
+            // The release-shaped recovery the deferring release left out.
+            const runner = prior.runner || 'claude';
+            const recovered_account = pending.account ?? pending.held_account;
+            appendTimeline({
+              bead_id: prior.bead_id,
+              attempt_id: pending.attempt_id,
+              kind: 'provider_recovered',
+              seq: pending.generation,
+              summary: `${runner} 공급자 회복`,
+              ...(recovered_account ? { account: recovered_account } : {})
+            });
+            notifyLifecycle('providerRecovered', {
+              bead_id: prior.bead_id,
+              runner,
+              duration_ms: Math.max(0, now() - (hold?.since || now())),
+              resumed_beads: [prior.bead_id],
+              refusal: null,
+              repo: prior.repo
+            });
           } else if (
             pending.kind === 'account_switch' &&
             pending.account !== null &&
@@ -16159,7 +16216,8 @@ export function createScheduler(deps) {
       refusals,
       rebound_attempt_ids,
       disarmed_attempt_ids,
-      switched_attempt_ids
+      switched_attempt_ids,
+      deferred_attempt_ids
     };
   }
 
@@ -16331,10 +16389,15 @@ export function createScheduler(deps) {
    * The codex account has no catalog to resolve against, so its recorded id is
    * carried as-is; the runner check is what proves the provider itself.
    *
+   * `account_free` checks the runner alone, for a launch whose account is
+   * resolved afresh rather than taken from the record (a wait receipt,
+   * UI-np4t §4.3).
+   *
    * @param {any} prior
+   * @param {{ account_free?: boolean }} [options]
    * @returns {Promise<boolean>}
    */
-  async function priorExecutionUsable(prior) {
+  async function priorExecutionUsable(prior, options = {}) {
     const runner = typeof prior.runner === 'string' ? prior.runner : '';
     try {
       if (!runtimeCatalog().runners[runner]) {
@@ -16342,6 +16405,9 @@ export function createScheduler(deps) {
       }
     } catch {
       return false;
+    }
+    if (options.account_free === true) {
+      return true;
     }
     const account = activeAccountOf(prior);
     if (account === null) {
@@ -17080,6 +17146,13 @@ export function createScheduler(deps) {
     const prior_attempt_choice = options.continuation === 'prior_attempt';
     const account_switch =
       provider_auto_resume && options.auto_resume_kind === 'account_switch';
+    // A wait receipt follows the ordinary account even under a
+    // `prior_attempt` lock: the lock yields its account as it does to an
+    // account switch, and keeps the rest of the recorded tuple (UI-np4t §4.3).
+    const wait_receipt =
+      provider_auto_resume &&
+      (options.auto_resume_origin === 'wait_follow' ||
+        options.auto_resume_origin === 'wait_release');
     const account_only_override =
       options.exec_override &&
       Object.keys(options.exec_override).every(
@@ -17098,13 +17171,22 @@ export function createScheduler(deps) {
         prior.status === 'paused' &&
         prior.control?.kind === 'pause' &&
         prior.control.phase === 'done';
+      // A wait receipt launches on the account resolved below, never on the
+      // recorded one, so only the recorded account goes unchecked: a lock
+      // child that launched on the active login records none (UI-np4t §4.3).
+      // `account_missing` is the record's last check, so the session and
+      // tuple checks before it still hold.
+      const record_usable =
+        record.eligible || (wait_receipt && record.code === 'account_missing');
       // A provider auto-resume of a `prior_attempt` child continues the SAME
       // choice from whatever resumable state the outage left it in (§5.3); a
       // user restart is only ever the exit of a completed durable pause.
-      if (!record.eligible || (!provider_auto_resume && !pause_settled)) {
+      if (!record_usable || (!provider_auto_resume && !pause_settled)) {
         return { ok: false, reason: 'prior_session_unavailable' };
       }
-      if (!(await priorExecutionUsable(prior))) {
+      if (
+        !(await priorExecutionUsable(prior, { account_free: wait_receipt }))
+      ) {
         return { ok: false, reason: 'prior_session_unavailable' };
       }
     }
@@ -17155,13 +17237,6 @@ export function createScheduler(deps) {
     if (base_resolved.exec.invalid_reason) {
       return { ok: false, reason: base_resolved.exec.invalid_reason };
     }
-    // A wait receipt follows the ordinary account even under a
-    // `prior_attempt` lock: the lock yields its account as it does to an
-    // account switch, and keeps the rest of the recorded tuple (UI-np4t §4.3).
-    const wait_receipt =
-      provider_auto_resume &&
-      (options.auto_resume_origin === 'wait_follow' ||
-        options.auto_resume_origin === 'wait_release');
     if (
       provider_auto_resume &&
       options.resolve_provider_account === true &&
