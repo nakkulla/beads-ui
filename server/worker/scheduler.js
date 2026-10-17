@@ -160,6 +160,7 @@ import {
   sessionLaneAwaitsAnswer,
   sessionLaneCommandArgs,
   sessionLaneEnv,
+  sessionLaneHoldsWindow,
   sessionLanePaneAlive,
   sessionLaneVerdict
 } from './session-lane.js';
@@ -8837,7 +8838,8 @@ export function createScheduler(deps) {
     // The window is gone, but its transcript is not: a terminal result line
     // written before the person closed it — after the last live observation —
     // is still the session's answer (§4.5), and only its absence is
-    // `session_exited`.
+    // `session_exited`. So is a hold line the live observation already
+    // processed (UI-mcth §4.4): it settles here, through `onSessionDone`.
     const verdict = goneSessionLaneVerdict(attempt);
     if (verdict !== null) {
       await settleSessionLaneVerdict(workspace, attempt_id, attempt, verdict);
@@ -8871,7 +8873,10 @@ export function createScheduler(deps) {
    * or null (UI-lbm5 §4.5): the last assistant message, read where the launch
    * wrote it, counts only when it came after the attempt started and after
    * the last message the live observation processed, and opens with a
-   * terminal result line. An unreadable transcript is no result.
+   * terminal result line. The one exception is the message the live
+   * observation processed itself when it is a result line that kept the
+   * window open (UI-mcth §4.4): it is the session's answer to the closing
+   * window. An unreadable transcript is no result.
    *
    * @param {any} attempt
    * @returns {import('./runner/session.js').RunnerVerdict|null}
@@ -8914,11 +8919,19 @@ export function createScheduler(deps) {
         message_at === null ||
         (typeof attempt.started_at === 'number' &&
           message_at <= attempt.started_at) ||
-        (processed_at !== null && message_at <= processed_at)
+        (processed_at !== null && message_at < processed_at)
       ) {
         return null;
       }
-      return sessionLaneVerdict(message);
+      const verdict = sessionLaneVerdict(message);
+      if (
+        processed_at !== null &&
+        message_at === processed_at &&
+        !(verdict !== null && sessionLaneHoldsWindow(verdict.terminal_result))
+      ) {
+        return null;
+      }
+      return verdict;
     } catch (err) {
       log(
         'session lane transcript read failed for %s: %o',
@@ -11178,13 +11191,15 @@ export function createScheduler(deps) {
     }
     /**
      * Process the newest assistant message of a live SESSION-LANE window
-     * exactly once (UI-lbm5 §4.4-§4.5). The turn facts are mirrored onto the
-     * attempt; a message whose first line is a terminal result line feeds the
+     * exactly once (UI-lbm5 §4.4-§4.5, UI-mcth §4.2). The turn facts are
+     * mirrored onto the attempt; a message whose first line is a settling
+     * terminal result line (success, blocks, external, base_moved) feeds the
      * SAME `onSessionDone` branch a headless verdict takes, after which the
      * record is settled so the ordinary idle → `/exit` → kill ladder closes
-     * the window. Any other message is an answer wait: the card shows it, and
-     * nothing is pushed to Discord — the session's own thread speaks for it
-     * (UI-5chz).
+     * the window. Any other message is an answer wait, including a result line
+     * that needs a person (parked, failure, environment, recovery_wait): the
+     * attempt, window, claim and slot stay, the card shows it, and nothing is
+     * pushed to Discord — the session's own thread speaks for it (UI-5chz).
      *
      * @param {string} key
      * @param {import('./queue-store.js').InteractiveSession} record
@@ -11236,10 +11251,23 @@ export function createScheduler(deps) {
         }
       };
       const verdict = sessionLaneVerdict(message);
-      if (verdict === null) {
-        // An answer wait acts on nothing: its identity lands at once.
+      if (verdict === null || sessionLaneHoldsWindow(verdict.terminal_result)) {
+        // An answer wait acts on nothing: its identity lands at once. A result
+        // line that needs a person's answer is the same wait, and only the
+        // timeline notes that the window stays (UI-mcth §4.2); the seq carries
+        // the message time, so the same message is noted once and a later hold
+        // line is a new line.
         if (patchInteractiveRecord(workspace, key, record, processed)) {
           mirrorSessionLaneTurn(workspace, attempt_id, record);
+          if (verdict !== null) {
+            appendTimeline({
+              bead_id: attempt.bead_id,
+              attempt_id,
+              kind: 'interactive_session',
+              seq: `${SESSION_LANE_KIND}:${attempt_id}:hold:${message_at}`,
+              summary: `세션 레인 결과 · ${verdict.summary ?? ''} — 창 유지`
+            });
+          }
         }
         return;
       }

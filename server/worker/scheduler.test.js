@@ -32876,7 +32876,7 @@ describe('session lane (UI-lbm5)', () => {
       );
       await flush();
 
-      expect(env.laneAttempt('S1').status).toBe('parked');
+      expect(env.laneAttempt('S1').status).toBe('running');
       expect(onParkedAttempt).not.toHaveBeenCalled();
     });
 
@@ -32890,13 +32890,252 @@ describe('session lane (UI-lbm5)', () => {
       ).toEqual(['S1']);
     });
 
-    test('feeds a failure result line into the headless failure branch', async () => {
+    test('keeps a failure result line as an answer wait without a failure cause', async () => {
       const env = await observed({ text: '실패 · 테스트가 깨졌다' });
 
       const attempt = env.laneAttempt('S1');
-      expect(attempt.cause).toBe('session_failed:reported_failure');
-      expect(['failed', 'retry_wait']).toContain(attempt.status);
+      expect(attempt.status).toBe('running');
+      expect(attempt.cause ?? null).toBeNull();
       expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    });
+
+    describe('hold lines keep the window (UI-mcth)', () => {
+      const hold_lines = [
+        ['파킹', '파킹 · 사용자 판단이 필요하다'],
+        ['실패', '실패 · 테스트가 깨졌다'],
+        ['환경', '환경 · 도구가 없다'],
+        ['recovery 대기', '대기 · recovery:authority']
+      ];
+      const sha_a = 'a'.repeat(40);
+      const sha_b = 'b'.repeat(40);
+      const settle_lines = [
+        ['blocks 대기', '대기 · blocks:X1', 'done'],
+        ['external 대기', '대기 · external:w-0123456789ab', 'failed'],
+        ['base_moved 대기', `대기 · base_moved:${sha_a}:${sha_b}`, 'done']
+      ];
+
+      test.each(hold_lines)(
+        'keeps the %s line running and its record unsettled',
+        async (_name, text) => {
+          const env = await observed({ text });
+
+          expect(env.laneAttempt('S1').status).toBe('running');
+          expect(env.laneRecord('S1').settled_at ?? null).toBeNull();
+          expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+        }
+      );
+
+      test.each(hold_lines)(
+        'records the processed message time of the %s line',
+        async (_name, text) => {
+          const env = await observed({ text });
+
+          expect(env.laneRecord('S1').conversation?.processed_message_at).toBe(
+            1500
+          );
+        }
+      );
+
+      test.each(settle_lines)(
+        'settles the %s line and closes its record',
+        async (_name, text, status) => {
+          const env = await observed({ text });
+
+          expect(env.laneRecord('S1').settled_at ?? null).not.toBeNull();
+          expect(env.laneAttempt('S1').status).toBe(status);
+        }
+      );
+
+      test('marks a hold line as an answer wait on the attempt', async () => {
+        const env = await observed({ text: '실패 · 테스트가 깨졌다' });
+
+        expect(env.laneAttempt('S1').interactive).toMatchObject({
+          turn_state: 'idle',
+          awaiting_answer: true
+        });
+      });
+
+      test('pushes nothing to Discord for a hold line', async () => {
+        const env = await observed({ text: '환경 · 도구가 없다' });
+
+        expect(env.pushes.map(([event]) => event)).toEqual(['attemptStarted']);
+      });
+
+      test('does not close the window after a hold line', async () => {
+        const env = await observed({ text: '파킹 · 사용자 판단이 필요하다' });
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+
+        expect(env.launcher.sendExit).not.toHaveBeenCalled();
+        expect(env.launcher.killWindow).not.toHaveBeenCalled();
+      });
+
+      test('holds the only slot while a hold line waits for the answer', async () => {
+        const env = laneEnv();
+        seedQueue(env.store, ['S1', 'S2']);
+        await env.scheduler.tick(WS);
+        env.clock.at = 2000;
+        Object.assign(env.panes.rows[0], {
+          agent_running: '',
+          agent_attention: ''
+        });
+        env.message.value = {
+          text: '대기 · recovery:authority',
+          first_line: '대기 · recovery:authority',
+          excerpt: '대기 · recovery:authority',
+          at: 1500
+        };
+        await env.scheduler.reconcileInteractiveSessions(WS);
+
+        await env.scheduler.tick(WS);
+
+        expect(env.laneAttempt('S1').status).toBe('running');
+        expect(env.launcher.launch).toHaveBeenCalledOnce();
+        expect(env.runner.spawnOrder).toEqual([]);
+      });
+
+      test('settles a success line that follows a hold line and closes the window', async () => {
+        const env = await observed({ text: '실패 · 테스트가 깨졌다' });
+        env.clock.at = 3000;
+        env.message.value = {
+          text: '성공 · PR #1',
+          first_line: '성공 · PR #1',
+          excerpt: '성공 · PR #1',
+          at: 2500
+        };
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        await env.scheduler.reconcileInteractiveSessions(WS);
+
+        expect(env.verify.verifyPrSubmitted).toHaveBeenCalledOnce();
+        expect(env.laneAttempt('S1').status).toBe('done');
+        expect(env.launcher.sendExit).toHaveBeenCalledWith('%7');
+      });
+
+      test('keeps the window for a second hold line after the first', async () => {
+        const env = await observed({ text: '실패 · 테스트가 깨졌다' });
+        env.clock.at = 3000;
+        env.message.value = {
+          text: '파킹 · 사용자 판단이 필요하다',
+          first_line: '파킹 · 사용자 판단이 필요하다',
+          excerpt: '파킹 · 사용자 판단이 필요하다',
+          at: 2500
+        };
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+
+        expect(env.laneAttempt('S1').status).toBe('running');
+        expect(env.laneRecord('S1').conversation?.processed_message_at).toBe(
+          2500
+        );
+      });
+
+      test('settles a closed window with the cause of its hold line', async () => {
+        const env = await observed({ text: '대기 · recovery:authority' });
+        env.panes.rows = [];
+
+        await env.scheduler.reconcile(WS);
+        await env.scheduler.reconcile(WS);
+
+        const attempt = env.laneAttempt('S1');
+        expect(attempt.cause).toBe('session_recovery_wait');
+        expect(attempt.cause).not.toBe('session_exited');
+      });
+
+      test('settles a closed window with the failure cause of its hold line', async () => {
+        const env = await observed({ text: '실패 · 테스트가 깨졌다' });
+        env.panes.rows = [];
+
+        await env.scheduler.reconcile(WS);
+        await env.scheduler.reconcile(WS);
+
+        expect(env.laneAttempt('S1').cause).toBe(
+          'session_failed:reported_failure'
+        );
+      });
+
+      test('settles a closed window as session_exited when a non-result message follows the hold line', async () => {
+        const env = await observed({ text: '실패 · 테스트가 깨졌다' });
+        env.clock.at = 3000;
+        env.message.value = {
+          text: '어느 쪽으로 갈까요?',
+          first_line: '어느 쪽으로 갈까요?',
+          excerpt: '어느 쪽으로 갈까요?',
+          at: 2500
+        };
+        env.panes.rows = [];
+
+        await env.scheduler.reconcile(WS);
+        await env.scheduler.reconcile(WS);
+
+        expect(env.laneAttempt('S1')).toMatchObject({
+          status: 'failed',
+          cause: 'session_exited'
+        });
+      });
+
+      test('notes a hold line on the timeline once for the same message', async () => {
+        const timeline = { append: vi.fn() };
+        const env = await observed(
+          { text: '대기 · recovery:authority' },
+          { extra: { timeline } }
+        );
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        await env.scheduler.reconcileInteractiveSessions(WS);
+
+        const held = timeline.append.mock.calls.filter(([entry]) =>
+          String(entry.seq).includes(':hold:')
+        );
+        expect(held).toHaveLength(1);
+        expect(held[0][0]).toMatchObject({
+          bead_id: 'S1',
+          kind: 'interactive_session',
+          seq: `session_lane:${env.laneAttempt('S1').attempt_id}:hold:1500`,
+          summary: '세션 레인 결과 · 대기 · recovery:authority — 창 유지'
+        });
+      });
+
+      test('does not reprocess the same hold line after a restart', async () => {
+        const timeline = { append: vi.fn() };
+        const verify = {
+          verifyPrSubmitted: vi.fn(async () => ({ ok: true, reason: 'ok' }))
+        };
+        const env = await observed(
+          { text: '실패 · 테스트가 깨졌다' },
+          { extra: { timeline } }
+        );
+        const restarted = createScheduler(
+          /** @type {any} */ ({
+            store: env.store,
+            bd: env.bd,
+            worktree: env.worktree,
+            verify,
+            timeline,
+            sessionLog: { attach: vi.fn() },
+            makeRunner: env.runner.factory,
+            interactiveLauncher: env.launcher,
+            execPresetCoordinator: {
+              resolveForDispatch: () => ({ ok: false })
+            },
+            readLastAssistantMessage: () => env.message.value,
+            resolveSessionFile: () => ({
+              locality: 'local',
+              file: '/transcript',
+              last_event_at: env.clock.at
+            }),
+            fs: { existsSync: () => true },
+            now: () => env.clock.at
+          })
+        );
+        const before = timeline.append.mock.calls.length;
+
+        await restarted.reconcileInteractiveSessions(WS);
+
+        expect(timeline.append.mock.calls.length).toBe(before);
+        expect(env.laneAttempt('S1').status).toBe('running');
+        expect(verify.verifyPrSubmitted).not.toHaveBeenCalled();
+      });
     });
 
     test('processes one result message only once', async () => {
