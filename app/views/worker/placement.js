@@ -959,6 +959,8 @@ export function createPlacementPreview(options) {
       open_id = null;
     } else if (result.status === 'moved') {
       box_notice = { id, text: '자리가 바뀌었습니다' };
+    } else if (result.status === 'contended') {
+      box_notice = { id, text: placementSendNotice(result) || '' };
     } else {
       const notice = placementSendNotice(result);
       if (notice) {

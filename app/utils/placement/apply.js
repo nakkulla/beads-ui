@@ -12,6 +12,8 @@
  */
 import { samePlace, serialLaneNumber } from './compute.js';
 
+const MAX_CONFLICT_RETRIES = 5;
+
 /**
  * @typedef {(type: string, payload?: unknown) => Promise<any>} PlacementTransport
  */
@@ -20,16 +22,18 @@ import { samePlace, serialLaneNumber } from './compute.js';
  * The outcome of one recommended send.
  *
  * - `applied`: the store took it.
- * - `moved`: the recomputed place differs, or a second conflict came back;
+ * - `moved`: the recomputed place differs;
  *   nothing more was sent. `placement` is the newest computed place (null when
  *   the candidate is no longer placeable on the new snapshot).
+ * - `contended`: the place stayed unchanged but the conflict retry limit was
+ *   exhausted; the queue is the last conflict snapshot.
  * - `refused`: the store or admission refused it; `reason` is the admission
  *   reason when there is one.
  * - `grow_refused`: the place needs more serial lanes and the store refused
  *   to add them (UI-lsr4 §3.3); nothing was placed.
  * - `error`: the transport threw.
  *
- * @typedef {{ status: 'applied', queue: any }|{ status: 'moved', placement: PlannedPlacement|null, queue: any }|{ status: 'refused', reason: string|null }|{ status: 'grow_refused' }|{ status: 'error', message: string }} PlacementSendResult
+ * @typedef {{ status: 'applied', queue: any }|{ status: 'moved', placement: PlannedPlacement|null, queue: any }|{ status: 'contended', queue: any }|{ status: 'refused', reason: string|null }|{ status: 'grow_refused' }|{ status: 'error', message: string }} PlacementSendResult
  */
 
 /**
@@ -75,6 +79,9 @@ export function placePayload(placement, revision, root_dir) {
  * @returns {string|null}
  */
 export function placementSendNotice(result) {
+  if (result.status === 'contended') {
+    return '큐가 계속 바뀌어 멈췄습니다';
+  }
   if (result.status === 'refused') {
     return result.reason
       ? `큐 적재 거부: ${result.reason}`
@@ -92,9 +99,10 @@ export function placementSendNotice(result) {
 /**
  * Grow the serial lane count to the plan's `lane_count` before a place beyond
  * the configured lanes (UI-lsr4 §3.3). A conflict recomputes on the reply's
- * snapshot and resends once only when the same count is still needed and the
- * shown place is unchanged. After the store grew, the place is recomputed on
- * the reply's snapshot and goes on only when it is still the shown place.
+ * snapshot and retries up to five times only when the same count is still
+ * needed and the shown place is unchanged. After the store grew, the place is
+ * recomputed on the reply's snapshot and goes on only when it is still the
+ * shown place.
  *
  * @param {Object} input
  * @param {PlacementTransport} input.transport
@@ -110,7 +118,7 @@ async function growSerialLanes(input) {
   const { transport, root_dir, placement, recompute, adopt, lane_count } =
     input;
   let revision = input.revision;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let retries = 0; retries <= MAX_CONFLICT_RETRIES; retries += 1) {
     /** @type {any} */
     let response;
     try {
@@ -145,7 +153,6 @@ async function growSerialLanes(input) {
       return { status: 'grow_refused' };
     }
     if (
-      attempt === 1 ||
       !next_plan ||
       !next ||
       !samePlace(placement, next) ||
@@ -153,16 +160,19 @@ async function growSerialLanes(input) {
     ) {
       return { status: 'moved', placement: next, queue: next_queue };
     }
+    if (retries === MAX_CONFLICT_RETRIES) {
+      return { status: 'contended', queue: next_queue };
+    }
     revision =
       typeof next_queue.revision === 'number' ? next_queue.revision : revision;
   }
-  return { status: 'moved', placement, queue: null };
+  return { status: 'contended', queue: null };
 }
 
 /**
  * Send one computed place with the §4.7 CAS rule: on a conflict, recompute on
- * the reply's snapshot and resend once with its revision only when the final
- * place is unchanged; otherwise, or on a second conflict, send nothing more.
+ * the reply's snapshot and retry up to five times with its revision only when
+ * the final place is unchanged; otherwise, or at the retry limit, stop.
  * A place beyond `configured_lane_count` first grows the serial lanes to
  * `lane_count` (UI-lsr4 §3.3); without the two counts no growth is checked.
  *
@@ -202,7 +212,7 @@ export async function sendPlacement(input) {
     placement = grown.placement;
     revision = grown.revision;
   }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let retries = 0; retries <= MAX_CONFLICT_RETRIES; retries += 1) {
     /** @type {any} */
     let response;
     try {
@@ -232,20 +242,23 @@ export async function sendPlacement(input) {
     const next = next_queue
       ? recompute(next_queue).by_id[placement.id] || null
       : null;
-    if (attempt === 1 || !next || !samePlace(placement, next)) {
+    if (!next || !samePlace(placement, next)) {
       return { status: 'moved', placement: next, queue: next_queue };
+    }
+    if (retries === MAX_CONFLICT_RETRIES) {
+      return { status: 'contended', queue: next_queue };
     }
     placement = next;
     revision =
       typeof next_queue.revision === 'number' ? next_queue.revision : revision;
   }
-  return { status: 'moved', placement, queue: null };
+  return { status: 'contended', queue: null };
 }
 
 /**
  * The outcome of `[전체 적용 (n)]`.
  *
- * @typedef {{ placed: string[], stopped: null|{ id: string, cause: 'moved'|'refused'|'grow_refused'|'error', result: PlacementSendResult } }} PlacementBatchResult
+ * @typedef {{ placed: string[], stopped: null|{ id: string, cause: 'moved'|'contended'|'refused'|'grow_refused'|'error', result: PlacementSendResult } }} PlacementBatchResult
  */
 
 /**
@@ -254,8 +267,8 @@ export async function sendPlacement(input) {
  * previous reply's — and the send goes out only when the candidate's place
  * equals the one the table shows, with that snapshot's revision. A place
  * beyond the configured serial lanes first grows them to the recomputed plan's
- * `lane_count`. A different place, a refusal or a second conflict stops the
- * batch.
+ * `lane_count`. A different place, a refusal or the conflict retry limit stops
+ * the batch.
  *
  * @param {Object} input
  * @param {PlacementTransport} input.transport

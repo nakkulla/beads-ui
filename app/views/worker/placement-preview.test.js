@@ -504,7 +504,7 @@ describe('[적용]', () => {
     ).toBe('직렬 2 · #4 — S2-3 뒤');
   });
 
-  test('stops after a second conflict', async () => {
+  test('distinguishes exhausted conflicts from a changed place', async () => {
     const transport = vi.fn().mockResolvedValue({
       applied: false,
       conflict: true,
@@ -516,10 +516,10 @@ describe('[적용]', () => {
     click(mount.querySelector('.worker-recommend__apply'));
     await flush();
 
-    expect(transport).toHaveBeenCalledTimes(2);
+    expect(transport).toHaveBeenCalledTimes(6);
     expect(
       mount.querySelector('.worker-recommend__notice')?.textContent?.trim()
-    ).toBe('자리가 바뀌었습니다');
+    ).toBe('큐가 계속 바뀌어 멈췄습니다');
   });
 });
 
@@ -589,7 +589,7 @@ describe('전체 배치안', () => {
     expect(mount.querySelectorAll('.worker-card--preview')).toHaveLength(1);
   });
 
-  test('sends the checked rows one at a time in apply order', async () => {
+  test('continues checked rows after repeated conflicts keep the place unchanged', async () => {
     const after_first = queueOf({
       revision: 6,
       serial_lanes: [
@@ -613,9 +613,17 @@ describe('전체 배치안', () => {
         queue: after_first
       })
       .mockResolvedValueOnce({
+        conflict: true,
+        queue: { ...after_first, revision: 7 }
+      })
+      .mockResolvedValueOnce({
+        conflict: true,
+        queue: { ...after_first, revision: 8 }
+      })
+      .mockResolvedValueOnce({
         applied: true,
         conflict: false,
-        queue: queueOf({ revision: 7, placement_status: {} })
+        queue: queueOf({ revision: 9, placement_status: {} })
       });
     const { mount } = mountView(transport);
     click(mount.querySelector('.worker-plan__open'));
@@ -625,8 +633,43 @@ describe('전체 배치안', () => {
 
     expect(transport.mock.calls.map((call) => call[1])).toEqual([
       { bead_id: 'RD-1', lane: 's2', index: 2, expected_revision: 5 },
-      { bead_id: 'RD-3', lane: 'parallel', index: 1, expected_revision: 6 }
+      { bead_id: 'RD-3', lane: 'parallel', index: 1, expected_revision: 6 },
+      { bead_id: 'RD-3', lane: 'parallel', index: 1, expected_revision: 7 },
+      { bead_id: 'RD-3', lane: 'parallel', index: 1, expected_revision: 8 }
     ]);
+  });
+
+  test('reports the placed count and contention when the next row exhausts retries', async () => {
+    const after_first = queueOf({
+      revision: 6,
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'S1-1', added_at: 1 }] },
+        {
+          id: 's2',
+          entries: [
+            { bead_id: 'S2-1', added_at: 1 },
+            { bead_id: 'S2-2', added_at: 2 },
+            { bead_id: 'RD-1', added_at: 3 }
+          ]
+        }
+      ],
+      placement_status: { 'RD-3': { state: 'ready', done: 2, total: 2 } }
+    });
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ applied: true, queue: after_first })
+      .mockResolvedValue({ conflict: true, queue: after_first });
+    const { mount } = mountView(transport);
+    click(mount.querySelector('.worker-plan__open'));
+
+    click(mount.querySelector('.worker-plan__apply'));
+    await vi.waitFor(() => {
+      expect(
+        mount.querySelector('.worker-plan__notice')?.textContent?.trim()
+      ).toBe('1건 넣음 — RD-3에서 멈춤: 큐가 계속 바뀌어 멈췄습니다');
+    });
+
+    expect(transport).toHaveBeenCalledTimes(7);
   });
 
   test('stops and says how many went in when a place differs', async () => {

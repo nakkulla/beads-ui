@@ -40,10 +40,16 @@ vi.mock('../ws/worker-handlers.js', () => ({
   }
 }));
 
-const { __setUnattachedAdmissionCheckForTest } = await import('./attach.js');
+const {
+  __registerWorkerAttachmentForTest,
+  __resetWorkerAttachmentsForTest,
+  __setUnattachedAdmissionCheckForTest
+} = await import('./attach.js');
 const { __resetWorkerRuntimeForTest, getWorkerRuntime } =
   await import('./runtime.js');
 const { placeBeadInQueue } = await import('./queue-place.js');
+const { createScheduler } = await import('./scheduler.js');
+const { __setTimingOverridesForTest } = await import('../timing-settings.js');
 
 const WS = '/tmp/example/queue-place-repo';
 
@@ -60,6 +66,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetWorkerAttachmentsForTest();
+  __setTimingOverridesForTest({});
+  vi.useRealTimers();
   __resetWorkerRuntimeForTest();
   __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
   delete process.env.XDG_STATE_HOME;
@@ -181,6 +190,39 @@ test('reports the seat an explicit index produced', async () => {
     'UI-b',
     'UI-a'
   ]);
+});
+
+test('returns a stale revision when the placement tick records grace without moving the seat', async () => {
+  vi.useFakeTimers();
+  __setTimingOverridesForTest({ queue_grace_seconds: 20 });
+  const store = getWorkerRuntime().queueStore;
+  store.setAutoAdvance(WS, true);
+  const scheduler = createScheduler(
+    /** @type {any} */ ({
+      store,
+      usageReceipts: {},
+      publishActivity: () => {}
+    })
+  );
+  __registerWorkerAttachmentForTest(WS, /** @type {any} */ ({ scheduler }));
+
+  const outcome = await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    lane: 's1',
+    expected_revision: snapshot().revision
+  });
+  const latest = snapshot();
+  const next = await placeBeadInQueue(WS, {
+    bead_id: 'UI-b',
+    lane: 's1',
+    expected_revision: outcome.queue.revision
+  });
+
+  expect(outcome.applied).toBe(true);
+  expect(latest.revision).toBeGreaterThan(outcome.queue.revision);
+  expect(latest.admission['UI-a']).toMatchObject({ reason: 'grace_period' });
+  expect(latest.serial_lanes).toEqual(outcome.queue.serial_lanes);
+  expect(next).toMatchObject({ applied: false, conflict: true });
 });
 
 test('clears a prior refusal when the placement is admitted', async () => {
