@@ -1,6 +1,10 @@
 /** @vitest-environment node */
 import { describe, expect, test, vi } from 'vitest';
-import { sendPlacement, sendPlacementBatch } from './apply.js';
+import {
+  placementSendNotice,
+  sendPlacement,
+  sendPlacementBatch
+} from './apply.js';
 
 /**
  * @param {string} id
@@ -19,6 +23,13 @@ function placed(id, over = {}) {
     reasons: [],
     references: [],
     outside: [],
+    pair_counts: {
+      total: 0,
+      conflict: 0,
+      order: 0,
+      independent: 0,
+      unknown: 0
+    },
     warnings: [],
     only_unknown: false,
     judged_at: null,
@@ -27,7 +38,8 @@ function placed(id, over = {}) {
 }
 
 /**
- * A recompute stub: every snapshot names the place each candidate gets on it.
+ * A recompute stub: every snapshot names the place each candidate gets on it
+ * and, optionally, its configured and needed serial lane counts (default 2).
  *
  * @param {any} queue
  * @returns {import('./compute.js').PlacementPlan}
@@ -38,7 +50,9 @@ function planFromQueue(queue) {
     revision: queue.revision,
     order: Object.values(by_id),
     by_id,
-    layout: {}
+    layout: {},
+    configured_lane_count: queue.configured_lane_count ?? 2,
+    lane_count: queue.lane_count ?? 2
   };
 }
 
@@ -106,13 +120,11 @@ describe('sendPlacement', () => {
       revision: 9,
       places: { 'C-1': placed('C-1', { before: 'S-9' }) }
     };
-    const transport = vi
-      .fn()
-      .mockResolvedValue({
-        applied: false,
-        conflict: true,
-        queue: moved_queue
-      });
+    const transport = vi.fn().mockResolvedValue({
+      applied: false,
+      conflict: true,
+      queue: moved_queue
+    });
 
     const result = await sendPlacement({
       transport,
@@ -172,13 +184,11 @@ describe('sendPlacement', () => {
   test('adopts the queue every reply carries', async () => {
     const adopt = vi.fn();
     const reply_queue = { revision: 5 };
-    const transport = vi
-      .fn()
-      .mockResolvedValue({
-        applied: true,
-        conflict: false,
-        queue: reply_queue
-      });
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      queue: reply_queue
+    });
 
     await sendPlacement({
       transport,
@@ -238,13 +248,11 @@ describe('sendPlacementBatch', () => {
       revision: 4,
       places: { 'C-2': placed('C-2', { before: 'X-1' }) }
     };
-    const transport = vi
-      .fn()
-      .mockResolvedValue({
-        applied: true,
-        conflict: false,
-        queue: after_first
-      });
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      queue: after_first
+    });
 
     const result = await sendPlacementBatch({
       transport,
@@ -283,5 +291,183 @@ describe('sendPlacementBatch', () => {
 
     expect(result.placed).toEqual([]);
     expect(result.stopped).toMatchObject({ id: 'C-1', cause: 'refused' });
+  });
+});
+
+describe('serial lane growth (UI-lsr4 §3.3)', () => {
+  test('grows the serial lane count before the first place', async () => {
+    const first = placed('C-1', { lane: 's3', before: null, index: 0 });
+    const start = {
+      revision: 3,
+      configured_lane_count: 2,
+      lane_count: 3,
+      places: { 'C-1': first }
+    };
+    const grown = {
+      revision: 4,
+      configured_lane_count: 3,
+      lane_count: 3,
+      places: { 'C-1': first }
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ applied: true, conflict: false, queue: grown })
+      .mockResolvedValueOnce({ applied: true, conflict: false, queue: {} });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '/repo',
+      shown: [first],
+      queue: start,
+      recompute: planFromQueue,
+      adopt: () => {},
+      snapshot: () => ({})
+    });
+
+    expect(result).toEqual({ placed: ['C-1'], stopped: null });
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-queue-set-serial-lane-count',
+        { count: 3, root_dir: '/repo', expected_revision: 3 }
+      ],
+      [
+        'worker-queue-place',
+        {
+          bead_id: 'C-1',
+          lane: 's3',
+          index: 0,
+          root_dir: '/repo',
+          expected_revision: 4
+        }
+      ]
+    ]);
+  });
+
+  test('stops without a place when growing is refused', async () => {
+    const first = placed('C-1', { lane: 's3', before: null, index: 0 });
+    const start = {
+      revision: 3,
+      configured_lane_count: 2,
+      lane_count: 3,
+      places: { 'C-1': first }
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValue({ applied: false, conflict: false, queue: start });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown: [first],
+      queue: start,
+      recompute: planFromQueue,
+      adopt: () => {},
+      snapshot: () => ({})
+    });
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(result.placed).toEqual([]);
+    expect(result.stopped).toMatchObject({ id: 'C-1', cause: 'grow_refused' });
+    expect(
+      placementSendNotice(/** @type {any} */ (result.stopped).result)
+    ).toBe('직렬 레인을 늘리지 못했습니다');
+  });
+
+  test('stops a single apply when the place moved after growing', async () => {
+    const shown = placed('C-1', { lane: 's3', before: null, index: 0 });
+    const grown = {
+      revision: 4,
+      configured_lane_count: 3,
+      lane_count: 3,
+      places: { 'C-1': placed('C-1', { lane: 's3', before: 'X-9' }) }
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValue({ applied: true, conflict: false, queue: grown });
+
+    const result = await sendPlacement({
+      transport,
+      root_dir: '',
+      placement: shown,
+      revision: 3,
+      configured_lane_count: 2,
+      lane_count: 3,
+      recompute: planFromQueue,
+      adopt: () => {}
+    });
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: 'moved',
+      placement: { before: 'X-9' }
+    });
+  });
+
+  test('resends the growth once after a conflict that still needs the same count', async () => {
+    const shown = placed('C-1', { lane: 's3', before: null, index: 0 });
+    const raced = {
+      revision: 5,
+      configured_lane_count: 2,
+      lane_count: 3,
+      places: { 'C-1': shown }
+    };
+    const grown = {
+      revision: 6,
+      configured_lane_count: 3,
+      lane_count: 3,
+      places: { 'C-1': shown }
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ applied: false, conflict: true, queue: raced })
+      .mockResolvedValueOnce({ applied: true, conflict: false, queue: grown })
+      .mockResolvedValueOnce({ applied: true, conflict: false, queue: {} });
+
+    const result = await sendPlacement({
+      transport,
+      root_dir: '',
+      placement: shown,
+      revision: 3,
+      configured_lane_count: 2,
+      lane_count: 3,
+      recompute: planFromQueue,
+      adopt: () => {}
+    });
+
+    expect(result.status).toBe('applied');
+    expect(
+      transport.mock.calls.map((call) => [call[0], call[1].expected_revision])
+    ).toEqual([
+      ['worker-queue-set-serial-lane-count', 3],
+      ['worker-queue-set-serial-lane-count', 5],
+      ['worker-queue-place', 6]
+    ]);
+  });
+
+  test('stops as moved when a growth conflict changes the needed count', async () => {
+    const shown = placed('C-1', { lane: 's3', before: null, index: 0 });
+    const raced = {
+      revision: 5,
+      configured_lane_count: 2,
+      lane_count: 4,
+      places: { 'C-1': shown }
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValue({ applied: false, conflict: true, queue: raced });
+
+    const result = await sendPlacement({
+      transport,
+      root_dir: '',
+      placement: shown,
+      revision: 3,
+      configured_lane_count: 2,
+      lane_count: 3,
+      recompute: planFromQueue,
+      adopt: () => {}
+    });
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('moved');
   });
 });

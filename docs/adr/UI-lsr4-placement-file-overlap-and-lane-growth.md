@@ -1,17 +1,23 @@
 ---
-id: UI-mcth
-title: jev 배치 추천과 Worker 대기열 세션 레인
+id: UI-lsr4
+title: jev 배치 추천·직렬 레인 증설과 Worker 대기열 세션 레인
 status: accepted
 date: 2026-10-17
-summary: "Worker 대기열 배치 추천은 서버가 jev 쌍 판정(두 이슈 재료 digest로 캐시, 선언 scope 겹침은 질문 재료로만 싣는다)과 고정 조건(blocks)으로 쌍 관계를 만들고, jev의 충돌은 해소 세션으로도 풀기 어려운 겹침에만 내며, 화면이 현재 큐·후보 순서로 자리를 계산해 Worker 탭 후보 카드의 별도 [추천 배치] 버튼을 누를 때 점선 미리보기로 보이고([↴ 대기로] 수동 메뉴는 그대로) 레인에는 사람의 [적용]·[전체 적용]만 쓴다; 큐 변화는 jev를 부르지 않고 추천은 blocks 의존을 쓰지 않으며 질문 정의는 beads-ui 서버에 둔다; 배포·빌드 조항은 UI-u6ud-5에서 승계한 그대로다; worker-ineligible과 exec_lane=session인 session-preferred 이슈는 Worker 대기열에서 세션 레인으로 실행된다 — 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처) headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열리며, 생존은 isDeadAttempt가 마커 pane 관측으로 판정하고(관측 실패는 생존) 결과는 종단 결과 줄로 판정하되 성공과 Worker 자동 대기(blocks·external·base_moved)만 headless와 같은 판정을 타고 창을 닫으며, 사람 답이 필요한 줄(파킹·실패·환경·recovery 대기)은 정산 없이 창·claim·슬롯을 유지한 답 대기로 남고 그 상태에서 창이 사라지면 그 줄로 정산한다; 결과 줄 없는 창 소멸은 클릭 전용 session_exited 실패이고 재개는 세션 레인 attempt의 ↻ 이어하기이며 일시정지는 없다; UI-lbm5가 UI-1eag에서 승계한 나머지 조항은 그대로다"
-supersedes: ["UI-i7k9"]
-spec: docs/superpowers/specs/2026-10-17-session-lane-hold-window-on-human-wait-design.md
-bead: UI-mcth
+summary: "Worker 대기열 배치 추천은 서버가 jev 쌍 판정(두 이슈 재료 digest로 캐시, 선언 scope 겹침은 질문 재료로 싣는다)과 고정 조건(blocks, 두 이슈가 같은 파일을 선언한 겹침)으로 쌍 관계를 만들고, jev의 충돌은 같은 파일·공유 상태·계약 조항·배포 대상을 함께 고치는 쌍에 내며 폴더만 겹치는 쌍은 jev가 0.9 이상 독립이라 할 때만 병렬로 두고, 화면이 현재 큐·후보 순서로 자리를 계산해 Worker 탭 후보 카드의 별도 [추천 배치] 버튼을 누를 때 점선 미리보기로 보이고([↴ 대기로] 수동 메뉴는 그대로) 레인에는 사람의 [적용]·[전체 적용]만 쓰며, 기존 직렬 레인이 모두 차 있으면 새 직렬 레인(상한 5)을 추천해 적용 때 레인 수를 먼저 늘린다; 큐 변화는 jev를 부르지 않고 추천은 blocks 의존을 쓰지 않으며 질문 정의는 beads-ui 서버에 둔다; 배포·빌드 조항은 UI-u6ud-5에서 승계한 그대로다; worker-ineligible과 exec_lane=session인 session-preferred 이슈는 Worker 대기열에서 세션 레인으로 실행된다 — 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처) headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열리며, 생존은 isDeadAttempt가 마커 pane 관측으로 판정하고(관측 실패는 생존) 결과는 종단 결과 줄로 판정하되 성공과 Worker 자동 대기(blocks·external·base_moved)만 headless와 같은 판정을 타고 창을 닫으며, 사람 답이 필요한 줄(파킹·실패·환경·recovery 대기)은 정산 없이 창·claim·슬롯을 유지한 답 대기로 남고 그 상태에서 창이 사라지면 그 줄로 정산한다; 결과 줄 없는 창 소멸은 클릭 전용 session_exited 실패이고 재개는 세션 레인 attempt의 ↻ 이어하기이며 일시정지는 없다; UI-lbm5가 UI-1eag에서 승계한 나머지 조항은 그대로다"
+supersedes: ["UI-mcth"]
+spec: docs/superpowers/specs/2026-10-17-placement-file-overlap-serial-lanes-design.md
+bead: UI-lsr4
 ---
 
-# jev 배치 추천과 Worker 대기열 세션 레인
+# jev 배치 추천·직렬 레인 증설과 Worker 대기열 세션 레인
 
 ## Context
+
+이 결정은 `ADR UI-mcth`를 다시 쓴다. 그 ADR이 UI-i7k9에서 승계한 "고정 조건은 직접 blocks 하나" 조항과 "jev의 충돌은 해소 세션으로도 풀기 어려운 겹침에만" 조항이 이 결정과 소비자(`server/placement/relations.js`·`question.js`·`wire.js`, `app/utils/placement/compute.js`·`apply.js`, `app/views/worker/placement.js`)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 그 둘이고, 직렬 레인 증설과 고정 관계만 있는 후보의 추천을 신설한다. 나머지 조항은 그대로 승계한다.
+
+UI-lsr4(2026-10-17): UI-i7k9 배포 뒤 `[전체 배치안]`이 거의 모든 후보를 병렬로 냈다. 새 질문 버전으로 판정한 72쌍 중 71쌍이 `independent`였고 선후 답은 없었다. 병렬 행의 `— X 뒤` 문구는 순서 의존으로 읽혔다. 사용자 판단(2026-10-17): 직렬은 기다리는 시간만 잃지만 충돌 해소 세션은 세션 하나와 재작성 위험을 쓰므로, 같은 파일을 고치는 쌍은 직렬이 기본이어야 한다. 다만 `tests` 같은 폴더 하나가 겹친다고 모든 쌍을 한 레인에 몰던 UI-izba 규칙으로 돌아가지는 않는다. 또 자리 계산은 서로 무관한 직렬 묶음을 이미 차 있는 기존 레인, 곧 남의 줄 뒤에 세웠다.
+
+아래는 `ADR UI-mcth`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
 이 결정은 `ADR UI-i7k9`를 다시 쓴다. 이 결정과 UI-i7k9는 소비자(`server/worker/scheduler.js`의 세션 레인 메시지 처리와 창 소멸 정산)가 같으므로 새 주제가 아니다. 뒤집는 조항은 세션 레인의 "결과는 종단 결과 줄로 headless와 같은 판정을 탄다" 하나이고, 나머지 조항은 그대로 승계한다.
 
@@ -154,6 +160,10 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 ## Decision
 
+**두 이슈가 같은 파일을 선언한 쌍은 고정 부딪힘이고, 폴더만 겹치는 쌍은 jev가 높은 확신으로 독립이라 할 때만 병렬이다. jev의 `conflict`는 같은 파일·공유 상태·계약 조항·배포 대상을 함께 고치는 쌍에 낸다. 기존 직렬 레인이 모두 차 있으면 새 직렬 레인을 추천하고, 적용 때 레인 수를 먼저 늘린다.** 그 밖의 조항은 `ADR UI-mcth`에서 그대로 승계한다. 이 결정이 바꾼 조항은 `(변경, UI-lsr4)`, 새 조항은 `(신설, UI-lsr4)`로 표시했다. 그 밖의 `(변경, …)`·`(신설, …)` 표시는 그 조항이 생긴 이력이다.
+
+아래는 UI-mcth의 Decision 승계분이다.
+
 **세션 레인은 사람 답이 필요한 종단 결과 줄(파킹·실패·환경·recovery 대기)에서 attempt를 정산하지 않는다. 창·claim·슬롯을 유지한 채 답 대기로 두고, 성공과 Worker 자동 대기(blocks·external·base_moved)만 headless와 같은 판정으로 정산해 창을 닫는다. 보류 중 창이 사라지면 그 보류 줄로 정산한다.** 그 밖의 조항은 UI-i7k9에서 그대로 승계한다. UI-mcth가 바꾼 조항은 `(변경, UI-mcth)`로 표시했다.
 
 아래는 UI-i7k9의 Decision 승계분이다.
@@ -164,13 +174,15 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 대기열 배치 추천
 
-- (변경, UI-i7k9) 서버(`server/placement/`)는 후보와 다른 항목(다른 배치 가능 후보, 병렬·직렬 대기 항목, 레인을 점유한 구현 lineage)의 쌍 관계를 만든다. 고정 조건은 직접 blocks 의존 하나이고 그 쌍은 순서로 정하며 jev에 묻지 않는다. 선언 scope 겹침은 어떤 경우에도 고정 관계를 만들지 않는다: 겹치는 접두는 쌍 질문 맨 앞 줄로, 각 이슈의 선언 scope는 재료 본문 앞 필드로 실어 jev 판단 재료로만 쓰고, 선언 scope는 재료 digest에 든다. 나머지 쌍은 모두 jev가 판정하고, 겹침은 jev 관계에 실려 근거 줄에 보인다.
-- (신설, UI-i7k9) jev 질문은 각 이슈를 다른 Worker가 따로 구현·머지하고 머지 충돌은 충돌 해소 세션이 푼다는 전제를 말한다. `conflict`는 어느 쪽도 다른 쪽 결과를 전제하지 않지만 같은 함수·같은 계약 조항·같은 데이터 형식을 서로 다르게 바꿔 해소 세션도 한쪽을 다시 짜야 하는 경우에만 고르고, 해소 세션이 보통 푸는 같은 파일 겹침은 `independent`다. 겹친다는 사실만으로 `conflict`를 고르지 않는다. 질문 문구와 확신도 기준의 소유자는 `server/placement/question.js`다.
+- (변경, UI-lsr4) 서버(`server/placement/`)는 후보와 다른 항목(다른 배치 가능 후보, 병렬·직렬 대기 항목, 레인을 점유한 구현 lineage)의 쌍 관계를 만든다. 고정 조건은 둘이고 둘 다 jev에 묻지 않는다: 직접 blocks 의존은 그 쌍을 순서로 정하고(먼저 본다), 두 이슈의 선언 scope가 같은 파일 항목을 담으면 그 쌍은 부딪힘(`basis: 'file'`)이다. 같은 spec·plan 출처도 예외가 아니다. 항목이 파일인지 폴더인지는 서버가 저장소 루트 기준으로 정한다 — `/`로 끝나거나 루트 아래 실제 폴더면 폴더이고, 파일·아직 없는 경로·stat 실패는 파일이다. 관계 계산은 I/O 없는 순수 함수이고 호출부가 폴더 판정을 넘긴다. 폴더 겹침(폴더와 그 안의 파일, 같은 폴더)은 고정 관계를 만들지 않는다: 겹치는 접두는 쌍 질문 맨 앞 줄로, 각 이슈의 선언 scope는 재료 본문 앞 필드로 실어 jev 판단 재료로 쓰고, 선언 scope는 재료 digest에 든다. 나머지 쌍은 모두 jev가 판정하고, 겹침은 jev 관계에 실려 근거 줄에 보인다. 선언 scope가 겹치는 쌍은 jev가 겹침 독립 기준 이상의 확신으로 `independent`라 할 때만 독립이고, 그 밖의 채택되지 않은 답은 `overlap_guard` 부딪힘이다. 겹치지 않는 쌍의 미채택 답은 `unknown`이고 제약이 아니다. 두 확신도 기준(채택, 겹침 독립)의 소유자는 `server/placement/wire.js` 상수다.
+- (변경, UI-lsr4) jev 질문은 각 이슈를 다른 Worker가 따로 구현·머지한다는 전제를 말한다. `independent`는 동시에 구현·머지해도 서로의 전제를 바꾸지 않고 같은 파일·공유 상태·계약 조항·배포 대상을 함께 고치지 않는 쌍이고, `conflict`는 서로의 결과를 전제하지는 않지만 그것들을 함께 고치는 쌍이다. 겹침 줄은 두 이슈가 닿을 수 있는 곳의 재료이고, 폴더만 겹친다고 같은 파일을 고친다는 뜻은 아니라고 질문이 말한다. 질문 문구의 소유자는 `server/placement/question.js`다.
 - jev 질문 정의(`placement_pair`)는 beads-ui 서버 상수다(ADR dotfiles/dotfiles-hkski). 모델·엔드포인트·시간 제한은 workflow 판정과 같은 값을 코드 registry로 두고 cross-runtime 테스트가 dotfiles 값과 대조한다(ADR UI-u6ud-2). 키는 `TYPESAFE_API_KEY`, 없으면 설치 dotfiles checkout의 `secrets-get typesafe/api-key`이고 프로세스 메모리에만 둔다 — 브라우저 wire와 호출 기록에 키·본문을 싣지 않는다.
 - 쌍 판정은 두 이슈 재료 digest·질문 버전·모델을 키로 서버 상태 디렉터리에 캐시한다. 큐 변화는 jev를 부르지 않는다. 재료가 바뀐 쌍만 다시 묻고 호출 자동 일정·채택 확신도·실패 재시도 간격·동시 호출 수는 `server/placement/question.js`·`wire.js` 상수가 정한다.
 - worker-queue wire는 `placement_relations`(쌍 관계·출처·확신도)와 `placement_status`(후보 상태)를 싣는다. 자리 계산은 화면의 순수 함수(`app/utils/placement/`)가 현재 큐 스냅샷·후보 정렬·고른 집합으로 하고, 레인 blocks 정렬 함수 `orderLaneByBlocks`는 서버 store와 화면이 같은 모듈을 쓴다. `queue-place.js`는 레인 판단을 하지 않는다.
 - 추천은 Worker 탭 후보 카드 슬롯 6의 별도 `[추천 배치]`를 누를 때만 점선 미리보기로 보인다. `[↴ 대기로]` 수동 레인 메뉴는 그대로이고, jev를 못 쓰는 어떤 경우에도 수동 배치를 막지 않는다. 모니터 탭과 이슈 상세에는 달지 않는다(monitor-worker parity §9).
 - 레인에는 사람의 `[적용]`·`[전체 적용]`만 쓴다. 미리보기를 계산한 스냅샷 revision으로 CAS 전송하고, 충돌이면 최종 자리가 같을 때만 한 번 다시 보낸다. 추천은 레인 배치만 쓰고 blocks 의존을 쓰지 않는다.
+- (신설, UI-lsr4) 자리 계산이 여러 개짜리 묶음에 가장 빈 직렬 레인을 고를 때는 설정된 레인이 아니라 `s1`~`s5` 전체에서 짐(대기 항목 수와 점유자 수의 합)이 가장 적은 레인을 고르고, 같으면 낮은 번호가 먼저다. 그래서 빈 기존 레인이 먼저이고, 기존 레인이 모두 차 있으면 점유 없는 새 레인이다. 서버 `lane_states`는 설정 수 밖 레인의 점유를 `hidden` 항목으로 싣고, 자리 계산은 그것을 새 레인 선택에만 쓴다 — `[↴ 대기로]` 메뉴와 레인 그리기(Worker 탭·모니터 탭)는 설정된 레인만 본다. 계획은 필요한 레인 수를 함께 낸다. `[적용]`·`[전체 적용]`은 보낼 자리가 설정 수 밖이면 레인 수 변경(`worker-queue-set-serial-lane-count`, CAS)을 먼저 보내고, 거부되면 아무것도 넣지 않으며, 늘린 뒤 다시 계산한 자리가 보여 준 자리와 다르면 넣지 않고 멈춘다. 새 레인에는 점선 카드를 그리지 않고 표가 레인 증설을 알린다. 빈 레인을 자동으로 줄이지는 않는다.
+- (신설, UI-lsr4) 추천할 수 있는 후보 상태는 `ready`와 `fixed_only`다. 고정 관계만 있는 후보도 jev 호출 없이 추천·적용된다.
 
 배포 실행과 프런트엔드 빌드 (UI-u6ud-5 승계)
 
@@ -1033,6 +1045,15 @@ verify 보류
 - post-merge 잡 원장·`replaces` 승계·CAS 확정을 둔다. 실패 행의 출구는 `[정리 재시도]`(머지 후 정리, 변경 UI-btsr), `[워커로 이어가기]`(폐기 재시도, 옛 폐기 실패 `[재시도]`), `[머지]` 재클릭, `[세션에서 이어가기]`(실패 대화), `[폐기 포기]`다. (변경, UI-k467) 외부 PR 사람 처리 필요 행의 출구는 `[세션에서 이어가기]` 하나다. `[정리 재시도]`와 `[워커로 이어가기]`는 사람 클릭이나 같은 행 실패 대화의 `인계`로 실행되고, 그 인계는 사용자 답의 권한(결과 미상 머지 후 잡 재실행 포함)으로 많아야 한 번 실행한다. 자동 인계는 폐기나 사람 결정을 대신하지 않는다.
 
 ## Consequences
+
+- 되돌리기 어렵다: 질문 버전이 바뀌어 저장된 쌍 캐시 전체가 다시 채워지고, `server/placement/relations.js`·`question.js`·`wire.js`·`service.js`의 `basis: 'file'`·`overlap_guard` 뜻, `server/ws/worker-handlers.js` `lane_states`의 `hidden` 항목, `app/utils/placement/compute.js`의 레인 선택·필요 레인 수와 `apply.js`의 전송 순서, 화면 문구(`app/views/worker/placement.js`)가 함께 움직인다.
+- 맥락 없이는 놀랍다: 하루 전 ADR이 병렬을 기본으로 만들었는데 같은 파일 쌍을 다시 고정 직렬로 돌렸고, 배치 추천이 큐 설정인 직렬 레인 수를 스스로 늘린다.
+- 얻는 것: 같은 파일을 고치는 쌍이 충돌 해소 세션 없이 직렬로 끝나고, 서로 무관한 직렬 묶음이 남의 줄 뒤에 서지 않는다.
+- 감수하는 것: 같은 파일 쌍의 직렬 대기 시간, 폴더 겹침 쌍의 보수적 직렬화, 늘어난 레인 수(자동으로 줄지 않는다). 파일·폴더 판정이 작업 트리 stat에 기대므로, 두 이슈가 같은 폴더를 `/` 없이 적었는데 그 폴더가 아직 없으면 고정 부딪힘이 된다. 숨은 레인 점유자와 제약을 가진 후보는 레인 수를 늘린 뒤 자리가 달라질 수 있고, 이때 적용은 넣지 않고 멈춘다.
+- 기각한 대안: 폴더 겹침도 고정 직렬(UI-izba 규칙) — 폴더 하나로 모든 쌍이 한 레인에 몰린다. 같은 파일도 jev에 맡기기 — 72쌍 중 71쌍이 독립으로 나와 해소 세션 비용을 그대로 진다. 스케줄러가 실행 시점에 부딪힘 상대를 기다리기 — UI-i7k9에서 비채택한 그대로다. 빈 레인 자동 축소 — 지금 동작을 바꾸지 않는다.
+- 폐기: UI-mcth가 UI-i7k9에서 승계한 "고정 조건은 직접 blocks 하나이고 선언 scope 겹침은 어떤 경우에도 고정 관계를 만들지 않는다"와 "jev의 `conflict`는 해소 세션으로도 풀기 어려운 겹침에만 내고 같은 파일 겹침은 `independent`, 겹침만으로 `conflict`를 고르지 않는다" — 위 `(변경, UI-lsr4)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
+
+### ADR UI-mcth의 결과 (승계)
 
 - 되돌리기 어렵다: `scheduler.js`의 세션 레인 메시지 처리(`processSessionLaneMessage`)와 창 소멸 정산(`goneSessionLaneVerdict`), `session-lane.js`의 보류 갈래·답 대기 판정, 카드의 답 대기 렌더(`app/views/worker/lanes.js`), 세션 레인 결과 줄을 쓰는 dotfiles 계약 쪽 기대가 함께 움직인다.
 - 맥락 없이는 놀랍다: "세션 레인 결과는 headless와 같은 판정"을 읽은 사람은 실패·recovery 줄 뒤에도 attempt가 `running`이고 창이 남는 것을 예상하지 못한다.

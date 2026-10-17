@@ -507,6 +507,171 @@ describe('computePlacement relations', () => {
   });
 });
 
+/**
+ * A two-lane snapshot whose both serial lanes are held by a running lineage.
+ *
+ * @param {Partial<any>} [over]
+ * @returns {any}
+ */
+function busyLanes(over = {}) {
+  return queueOf({
+    lane_states: {
+      s1: { occupied_by: ['R-1'] },
+      s2: { occupied_by: ['R-2'] }
+    },
+    ...over
+  });
+}
+
+describe('computePlacement new serial lanes (UI-lsr4)', () => {
+  test('opens a new serial lane when every lane is occupied', () => {
+    const queue = busyLanes();
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      pairs: [rel('C-1', 'C-2', 'conflict')]
+    });
+
+    expect(result.order.map((item) => [item.id, item.lane])).toEqual([
+      ['C-1', 's3'],
+      ['C-2', 's3']
+    ]);
+    expect(result.lane_count).toBe(3);
+    expect(result.configured_lane_count).toBe(2);
+  });
+
+  test('prefers an empty existing lane over a new one', () => {
+    const queue = queueOf({ lane_states: { s1: { occupied_by: ['R-1'] } } });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      pairs: [rel('C-1', 'C-2', 'conflict')]
+    });
+
+    expect(result.by_id['C-1'].lane).toBe('s2');
+    expect(result.lane_count).toBe(2);
+  });
+
+  test('stays within five lanes', () => {
+    const queue = queueOf({
+      serial_lane_count: 5,
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-1', 'S-2']) },
+        { id: 's2', entries: entries(['S-3']) },
+        { id: 's3', entries: [] },
+        { id: 's4', entries: entries(['S-4']) },
+        { id: 's5', entries: entries(['S-5']) }
+      ],
+      lane_states: {
+        s1: { occupied_by: [] },
+        s2: { occupied_by: ['R-2'] },
+        s3: { occupied_by: ['R-3'] },
+        s4: { occupied_by: ['R-4'] },
+        s5: { occupied_by: ['R-5'] }
+      }
+    });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      pairs: [rel('C-1', 'C-2', 'conflict')]
+    });
+
+    expect(result.by_id['C-1'].lane).toBe('s3');
+    expect(result.lane_count).toBe(5);
+  });
+
+  test('reproduces every place after the lane count grows', () => {
+    const chosen = ['C-1', 'C-2', 'C-3', 'C-4', 'C-5'];
+    const display_order = chosen;
+    const pairs = [
+      rel('C-1', 'C-2', 'conflict'),
+      rel('C-3', 'C-4', 'conflict')
+    ];
+    const before = plan({ queue: busyLanes(), chosen, display_order, pairs });
+    const grown = busyLanes({
+      serial_lane_count: before.lane_count,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] },
+        { id: 's3', entries: [] },
+        { id: 's4', entries: [] }
+      ]
+    });
+
+    const after = plan({ queue: grown, chosen, display_order, pairs });
+
+    expect(before.lane_count).toBe(4);
+    expect(after.lane_count).toBe(4);
+    for (const id of chosen) {
+      expect(samePlace(before.by_id[id], after.by_id[id])).toBe(true);
+    }
+  });
+
+  test('skips a hidden occupied lane when opening a new one', () => {
+    const queue = busyLanes({
+      lane_states: {
+        s1: { occupied_by: ['R-1'] },
+        s2: { occupied_by: ['R-2'] },
+        s3: { hidden: true, occupied_by: ['R-3'] }
+      }
+    });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      pairs: [rel('C-1', 'C-2', 'conflict')]
+    });
+
+    expect(result.by_id['C-1'].lane).toBe('s4');
+    expect(result.lane_count).toBe(4);
+  });
+
+  test('keeps a hidden occupant out of the configured lanes', () => {
+    const queue = queueOf({
+      lane_states: { s3: { hidden: true, occupied_by: ['R-3'] } }
+    });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      pairs: [rel('C-1', 'C-2', 'conflict')]
+    });
+
+    expect(result.by_id['C-1'].lane).toBe('s1');
+    expect(result.lane_count).toBe(2);
+  });
+});
+
+describe('computePlacement pair counts (UI-lsr4)', () => {
+  test('counts every compared pair by kind', () => {
+    const queue = queueOf({ queue: entries(['P-1', 'P-2', 'P-3', 'P-4']) });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1'],
+      candidates: ['C-1', 'C-2'],
+      pairs: [
+        rel('C-1', 'P-1', 'independent'),
+        rel('C-1', 'P-2', 'independent'),
+        rel('C-1', 'P-3', 'x_first'),
+        rel('C-1', 'P-4', 'unknown', { confidence: 0.4 }),
+        rel('C-1', 'C-2', 'c_first')
+      ]
+    });
+
+    expect(result.by_id['C-1'].pair_counts).toEqual({
+      total: 5,
+      conflict: 1,
+      order: 1,
+      independent: 2,
+      unknown: 1
+    });
+  });
+});
+
 describe('computePlacement chosen set', () => {
   test('recomputes the remaining candidate when the chosen set shrinks', () => {
     const pairs = [rel('C-1', 'C-2', 'conflict')];
@@ -518,8 +683,8 @@ describe('computePlacement chosen set', () => {
       pairs
     });
 
-    expect(both.by_id['C-2'].lane).toBe('s1');
-    expect(alone.by_id['C-2'].lane).toBe('parallel');
+    expect(both.by_id['C-2'].before).toBe('C-1');
+    expect(alone.by_id['C-2'].before).toBeNull();
   });
 
   test('shows a constraint with an unchosen candidate only as an outside line', () => {
@@ -529,10 +694,46 @@ describe('computePlacement chosen set', () => {
       pairs: [rel('C-1', 'C-2', 'conflict')]
     });
 
-    expect(result.by_id['C-1'].lane).toBe('parallel');
+    expect(result.by_id['C-1'].reasons).toEqual([]);
     expect(result.by_id['C-1'].outside.map((line) => line.other)).toEqual([
       'C-2'
     ]);
+  });
+
+  test('puts a single candidate with an unplaced same-file partner in a serial lane', () => {
+    const pairs = [
+      rel('C-1', 'C-2', 'conflict', { source: 'fixed', basis: 'file' })
+    ];
+
+    const result = plan({ chosen: ['C-1'], candidates: ['C-1', 'C-2'], pairs });
+
+    expect(result.by_id['C-1']).toMatchObject({ lane: 's1', before: null });
+  });
+
+  test('sends the same-file partner after the first once it is queued', () => {
+    const pairs = [
+      rel('C-1', 'C-2', 'conflict', { source: 'fixed', basis: 'file' })
+    ];
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['C-1']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({ queue, chosen: ['C-2'], candidates: ['C-2'], pairs });
+
+    expect(result.by_id['C-2']).toMatchObject({ lane: 's1', before: 'C-1' });
+  });
+
+  test('keeps a lone candidate without an outside constraint parallel', () => {
+    const result = plan({
+      chosen: ['C-1'],
+      candidates: ['C-1', 'C-2'],
+      pairs: [rel('C-1', 'C-2', 'independent')]
+    });
+
+    expect(result.by_id['C-1'].lane).toBe('parallel');
   });
 
   test('keeps the revision the plan was computed on', () => {

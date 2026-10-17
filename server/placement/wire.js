@@ -27,23 +27,30 @@
 /**
  * One pair relation of `placement_relations`.
  *
- * - `source: 'fixed'` — decided by the one machine-known condition, a direct
- *   `blocks` edge; `basis` names it (`blocks`). `confidence`, `jev_choice` and
- *   `judged_at` are null. `in_lane: true` marks a `blocks` edge between two
- *   members of one serial lane, shipped so the browser can apply the store's
- *   ordering rule to a preview.
- * - `source: 'jev'` — jev's cached answer. `relation` is `jev_choice` when
- *   `confidence` ≥ 0.8, otherwise `unknown`; `judged_at` is the answer's
- *   epoch-ms time. `overlap` lists the declared-scope prefixes the two issues
- *   meet on; it is question material and never decides the relation.
+ * - `source: 'fixed'` — decided by a machine-known condition; `basis` names
+ *   it. `blocks`: a direct `blocks` edge, which orders the pair. `file`: both
+ *   issues declare the same FILE item (UI-lsr4 §3.1), a `conflict` whose
+ *   `overlap` lists those files. `confidence`, `jev_choice` and `judged_at`
+ *   are null. `in_lane: true` marks a `blocks` edge between two members of one
+ *   serial lane, shipped so the browser can apply the store's ordering rule to
+ *   a preview.
+ * - `source: 'jev'` — jev's cached answer. `overlap` lists the declared-scope
+ *   prefixes the two issues meet on (a folder overlap). Without an overlap,
+ *   `relation` is `jev_choice` when `confidence` ≥ 0.8, otherwise `unknown`.
+ *   With one, `independent` needs ≥ 0.9 and any other unadopted answer becomes
+ *   `conflict` with `overlap_guard: true` (UI-lsr4 §3.2). `judged_at` is the
+ *   answer's epoch-ms time.
  *
  * @typedef {Object} PlacementRelation
  * @property {string} a - The smaller id.
  * @property {string} b - The larger id.
  * @property {PlacementRelationKind} relation
  * @property {'fixed'|'jev'} source
- * @property {'blocks'} [basis] - Fixed relations only.
- * @property {string[]} [overlap] - jev relations whose declared scopes overlap.
+ * @property {'blocks'|'file'} [basis] - Fixed relations only.
+ * @property {string[]} [overlap] - The shared files of a `file` relation, or
+ * the overlap prefixes of a jev relation whose declared scopes overlap.
+ * @property {true} [overlap_guard] - A jev relation on an overlapping pair
+ * that became `conflict` because the answer fell short of its threshold.
  * @property {true} [in_lane] - In-lane `blocks` edges only.
  * @property {number|null} confidence
  * @property {PlacementJevChoice|null} jev_choice
@@ -64,7 +71,8 @@
  *   `material_missing` when a pair waits on issue material, else `judging`.
  * - `unavailable`: some such pair failed; `reason` is `key_missing`,
  *   `http_<status>`, `timeout`, `connection_failed` or `schema_mismatch`.
- * - `fixed_only`: every pair is decided by a fixed condition.
+ * - `fixed_only`: every pair is decided by a fixed condition (`blocks` or a
+ *   shared file).
  * - `no_counterpart`: nothing to compare against.
  *
  * `done`/`total` count the pairs that need jev (answered / all) and are present
@@ -104,6 +112,14 @@
 
 /** @type {number} A jev answer is adopted at this confidence or above. */
 export const ADOPT_CONFIDENCE = 0.8;
+
+/**
+ * On a pair whose declared scopes overlap, `independent` is adopted only at this
+ * confidence or above (UI-lsr4 §3.2); a shorter answer is a guarded conflict.
+ *
+ * @type {number}
+ */
+export const OVERLAP_INDEPENDENT_CONFIDENCE = 0.9;
 
 /**
  * An unadopted non-`independent` first choice at this confidence or above is

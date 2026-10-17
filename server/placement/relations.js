@@ -3,15 +3,22 @@
  * §4.5) — a pure projection of facts the decoration already holds plus the
  * cached jev answers. No I/O, no clock: the caller passes everything in.
  *
- * The one fixed condition is a direct `blocks` edge, which orders the pair; jev
- * is never asked about that pair. Every other pair takes jev's cached answer,
- * and a declared-scope overlap rides along as question material only (UI-i7k9):
- * it never decides a relation.
+ * Two fixed conditions decide a pair without jev: a direct `blocks` edge,
+ * which orders it, and a FILE item both declared scopes name (UI-lsr4 §3.1),
+ * which makes it a conflict. Every other pair takes jev's cached answer. A
+ * folder overlap rides along as question material, and on such a pair only a
+ * confident `independent` stays parallel (§3.2).
  *
  * @import { PlacementRelation, PlacementStatus, PlacementJevChoice } from './wire.js'
  */
-import { overlapPrefixes } from '../../app/utils/scope-overlap.js';
-import { ADOPT_CONFIDENCE } from './question.js';
+import {
+  normalizeScopePrefix,
+  overlapPrefixes
+} from '../../app/utils/scope-overlap.js';
+import {
+  ADOPT_CONFIDENCE,
+  OVERLAP_INDEPENDENT_CONFIDENCE
+} from './question.js';
 import { orientPair, placementPairKey } from './wire.js';
 
 /**
@@ -34,6 +41,10 @@ import { orientPair, placementPairKey } from './wire.js';
  * null or absent means the material is not there yet.
  * @property {(a: string, b: string, digest_a: string, digest_b: string) => PairJudgment|null} judgmentFor
  * @property {'unknown'|'present'|'missing'} key_state
+ * @property {(item: string) => boolean} [isDirectory] - Whether a declared
+ * scope item names a folder; the caller owns the filesystem reading. An item
+ * ending in `/` is a folder either way, and without this function every other
+ * item is a file.
  */
 
 /**
@@ -49,7 +60,7 @@ import { orientPair, placementPairKey } from './wire.js';
  */
 
 /**
- * The fixed relation of a pair, or null when no direct `blocks` edge holds.
+ * The fixed `blocks` relation of a pair, or null when no direct edge holds.
  *
  * @param {string} a
  * @param {string} b
@@ -78,6 +89,103 @@ function fixedRelation(a, b, input) {
     };
   }
   return null;
+}
+
+/**
+ * Whether a declared scope item names a folder.
+ *
+ * @param {string} item
+ * @param {RelationsInput} input
+ * @returns {boolean}
+ */
+function isFolderItem(item, input) {
+  if (item.endsWith('/')) {
+    return true;
+  }
+  return input.isDirectory ? input.isDirectory(item) : false;
+}
+
+/**
+ * The FILE items both declared scopes name — equal after normalization and a
+ * folder on neither side — sorted; empty when either scope is unknown.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @param {RelationsInput} input
+ * @returns {string[]}
+ */
+function sharedFiles(a, b, input) {
+  const scope_a = input.scopes[a];
+  const scope_b = input.scopes[b];
+  if (!Array.isArray(scope_a) || !Array.isArray(scope_b)) {
+    return [];
+  }
+  /** @type {Set<string>} */
+  const files = new Set();
+  for (const left of scope_a) {
+    const normalized = normalizeScopePrefix(left);
+    if (normalized.length === 0) {
+      continue;
+    }
+    for (const right of scope_b) {
+      if (
+        normalizeScopePrefix(right) === normalized &&
+        !isFolderItem(left, input) &&
+        !isFolderItem(right, input)
+      ) {
+        files.add(normalized);
+      }
+    }
+  }
+  return [...files].sort();
+}
+
+/**
+ * The fixed `file` relation of a pair that declares the same file, or null.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @param {RelationsInput} input
+ * @returns {PlacementRelation|null}
+ */
+function fileRelation(a, b, input) {
+  const files = sharedFiles(a, b, input);
+  if (files.length === 0) {
+    return null;
+  }
+  return {
+    a,
+    b,
+    relation: 'conflict',
+    source: 'fixed',
+    basis: 'file',
+    overlap: files,
+    confidence: null,
+    jev_choice: null,
+    judged_at: null
+  };
+}
+
+/**
+ * The relation a jev answer gives a pair. On an overlapping pair only a
+ * confident `independent` stays parallel; any other unadopted answer guards
+ * the pair as a conflict (UI-lsr4 §3.2).
+ *
+ * @param {{ choice: PlacementJevChoice, confidence: number }} judgment
+ * @param {boolean} overlapping
+ * @returns {{ relation: import('./wire.js').PlacementRelationKind, guard: boolean }}
+ */
+function jevRelation(judgment, overlapping) {
+  const threshold =
+    overlapping && judgment.choice === 'independent'
+      ? OVERLAP_INDEPENDENT_CONFIDENCE
+      : ADOPT_CONFIDENCE;
+  if (judgment.confidence >= threshold) {
+    return { relation: judgment.choice, guard: false };
+  }
+  return overlapping
+    ? { relation: 'conflict', guard: true }
+    : { relation: 'unknown', guard: false };
 }
 
 /**
@@ -133,7 +241,7 @@ export function placementRelations(input) {
       compared += 1;
       const [a, b] = orientPair(candidate, other);
       const key = placementPairKey(a, b);
-      const fixed = fixedRelation(a, b, input);
+      const fixed = fixedRelation(a, b, input) || fileRelation(a, b, input);
       if (fixed) {
         relations[key] = fixed;
         continue;
@@ -152,15 +260,14 @@ export function placementRelations(input) {
       if (judgment && judgment.kind === 'answer') {
         done += 1;
         progress.set(key, true);
+        const adopted = jevRelation(judgment, overlap.length > 0);
         relations[key] = {
           a,
           b,
-          relation:
-            judgment.confidence >= ADOPT_CONFIDENCE
-              ? judgment.choice
-              : 'unknown',
+          relation: adopted.relation,
           source: 'jev',
           ...(overlap.length > 0 ? { overlap } : {}),
+          ...(adopted.guard ? { overlap_guard: true } : {}),
           confidence: judgment.confidence,
           jev_choice: judgment.choice,
           judged_at: judgment.judged_at

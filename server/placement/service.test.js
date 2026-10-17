@@ -481,6 +481,83 @@ describe('placement schedule', () => {
   });
 });
 
+describe('scope folder judgment (UI-lsr4)', () => {
+  test('treats a trailing-slash item as a directory', () => {
+    const { service } = serviceWith();
+    const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
+
+    const out = service.project(
+      WS,
+      input(['UI-1'], ['UI-2'], rows, {
+        scopes: { 'UI-1': ['docs/'], 'UI-2': ['docs/'] }
+      }),
+      OBSERVE
+    );
+
+    expect(out.placement_relations['UI-1|UI-2']).toBeUndefined();
+    expect(out.placement_status['UI-1']).toMatchObject({ state: 'pending' });
+  });
+
+  test('treats an existing directory under the root as a directory', () => {
+    const { service } = serviceWith();
+    fs.mkdirSync(path.join(dir, 'tests'));
+    const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
+
+    const out = service.project(
+      dir,
+      input(['UI-1'], ['UI-2'], rows, {
+        scopes: { 'UI-1': ['tests'], 'UI-2': ['tests'] }
+      }),
+      OBSERVE
+    );
+
+    expect(out.placement_relations['UI-1|UI-2']).toBeUndefined();
+    expect(out.placement_status['UI-1']).toMatchObject({ state: 'pending' });
+  });
+
+  test('treats an existing file under the root as a file', () => {
+    const { service } = serviceWith();
+    fs.writeFileSync(path.join(dir, 'a.js'), '');
+    const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
+
+    const out = service.project(
+      dir,
+      input(['UI-1'], ['UI-2'], rows, {
+        scopes: { 'UI-1': ['a.js'], 'UI-2': ['a.js'] }
+      }),
+      OBSERVE
+    );
+
+    expect(out.placement_relations['UI-1|UI-2']).toMatchObject({
+      relation: 'conflict',
+      basis: 'file'
+    });
+  });
+
+  test('treats a missing path as a file', async () => {
+    const { service, fetch } = serviceWith();
+    const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
+
+    const out = service.project(
+      WS,
+      input(['UI-1'], ['UI-2'], rows, {
+        scopes: { 'UI-1': ['docs/new.js'], 'UI-2': ['docs/new.js'] }
+      }),
+      OBSERVE
+    );
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+
+    expect(out.placement_relations['UI-1|UI-2']).toMatchObject({
+      relation: 'conflict',
+      source: 'fixed',
+      basis: 'file',
+      overlap: ['docs/new.js']
+    });
+    expect(out.placement_status['UI-1']).toEqual({ state: 'fixed_only' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('missing jev key', () => {
   /**
    * @param {ReturnType<typeof vi.fn>} runSecretsGet

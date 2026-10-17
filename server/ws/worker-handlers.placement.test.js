@@ -355,6 +355,38 @@ describe('decorateQueue placement fields (UI-izba §4.5)', () => {
   });
 });
 
+describe('decorateQueue lane_states beyond the configured count (UI-lsr4 §3.3)', () => {
+  test('ships the occupancy of a lane beyond the configured count as hidden', () => {
+    seedSnapshot(['UI-run']);
+    mockCandidates([]);
+    const queue = {
+      ...queueWith([]),
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] }
+      ],
+      attempts: {
+        'att-3': {
+          attempt_id: 'att-3',
+          bead_id: 'UI-run',
+          status: 'running',
+          serial_lane_id: 's3'
+        }
+      }
+    };
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.lane_states.s3).toEqual({
+      hidden: true,
+      occupied_by: ['UI-run']
+    });
+    expect(out.lane_states.s1).not.toHaveProperty('hidden');
+    expect(out.lane_states).not.toHaveProperty('s4');
+  });
+});
+
 describe('worker-placement-rejudge', () => {
   test('replies placement_unavailable without an installed service', async () => {
     const socket = /** @type {any} */ ({ send: vi.fn() });

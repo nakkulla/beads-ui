@@ -5,20 +5,39 @@ import {
   PLACEMENT_QUESTION_VERSION
 } from './question.js';
 
-/** The version of the question before the conflict criteria were narrowed. */
-const PREVIOUS_VERSION = '192b785e09b6';
+/** The version of the question that let a resolution session settle a same-file edit. */
+const PREVIOUS_VERSION = '019d23f3b282';
 
 describe('placement question', () => {
-  test('changes its version when the criteria are narrowed', () => {
+  test('changes its version when the conflict criterion returns to same-file edits', () => {
     expect(PLACEMENT_QUESTION_VERSION).not.toBe(PREVIOUS_VERSION);
   });
 
-  test('tells jev not to pick conflict from an overlap line alone', () => {
+  test('asks conflict for a pair that changes the same file together', () => {
     const question = PLACEMENT_QUESTIONS[PLACEMENT_QUESTION];
 
-    expect(question.instructions).toContain('conflict-resolution session');
     expect(question.criteria.conflict).toContain(
-      'Do not choose this only because the declared scopes overlap'
+      'both change the same file, shared state, contract clause or deployment surface'
+    );
+    expect(question.criteria.independent).toContain(
+      'do not both change the same file'
+    );
+  });
+
+  test('drops the resolution-session premise and the overlap-alone caveat', () => {
+    const question = PLACEMENT_QUESTIONS[PLACEMENT_QUESTION];
+
+    const text = JSON.stringify(question);
+
+    expect(text).not.toContain('conflict-resolution session');
+    expect(text).not.toContain('Do not choose this only because');
+  });
+
+  test('says a folder overlap alone does not mean same-file edits', () => {
+    const question = PLACEMENT_QUESTIONS[PLACEMENT_QUESTION];
+
+    expect(question.instructions).toContain(
+      'does not mean they change the same file'
     );
   });
 });

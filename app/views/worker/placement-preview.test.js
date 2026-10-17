@@ -281,6 +281,20 @@ describe('[추천 배치] button', () => {
     expect(recommendButton(mount, 'RD-1')?.disabled).toBe(false);
   });
 
+  test('is enabled for a fixed-only candidate', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({ placement_status: { 'RD-1': { state: 'fixed_only' } } })
+    );
+
+    const button = recommendButton(mount, 'RD-1');
+
+    expect(button?.disabled).toBe(false);
+    expect(button?.title).toBe(
+      '고정 조건으로 계산한 자리를 대기 열에 미리 보입니다'
+    );
+  });
+
   test.each([
     [
       { state: 'pending', reason: 'judging', done: 1, total: 3 },
@@ -288,10 +302,6 @@ describe('[추천 배치] button', () => {
     ],
     [{ state: 'unavailable', reason: 'key_missing' }, 'jev 키 없음'],
     [{ state: 'unavailable', reason: 'timeout' }, 'jev 응답 없음'],
-    [
-      { state: 'fixed_only' },
-      '고정 조건만 있음 — ⧉ 칩과 레인 순서로 이미 보임'
-    ],
     [{ state: 'no_counterpart' }, '비교할 이슈 없음']
   ])('is disabled with its reason for %o', (status, title) => {
     const { mount } = mountView(
@@ -803,7 +813,7 @@ describe('전체 배치안 explanations', () => {
     );
     expect(fold.open).toBe(false);
     expect(fold.querySelector('summary')?.textContent?.trim()).toBe(
-      '근거 2 · 부딪힘 1 · 독립 1'
+      '판정 2쌍 · 부딪힘 1 · 독립 1'
     );
     expect(fold.textContent).toContain('P-1 — 부딪힘');
     expect(fold.querySelector('.worker-plan__warn')).toBeNull();
@@ -884,5 +894,384 @@ describe('jev progress bar', () => {
     const bar = mount.querySelector('.worker-plan__progress');
 
     expect(bar).toBeNull();
+  });
+});
+
+/**
+ * A fixed same-file conflict between two beads.
+ *
+ * @param {string} x
+ * @param {string} y
+ * @param {string[]} files
+ * @returns {[string, any]}
+ */
+function sameFile(x, y, files) {
+  const [a, b] = x < y ? [x, y] : [y, x];
+  return [
+    placementPairKey(a, b),
+    {
+      a,
+      b,
+      relation: 'conflict',
+      source: 'fixed',
+      basis: 'file',
+      overlap: files,
+      confidence: null,
+      jev_choice: null,
+      judged_at: null
+    }
+  ];
+}
+
+/**
+ * The 배치안 cell text of one full-plan row.
+ *
+ * @param {HTMLElement} mount
+ * @param {string} id
+ * @returns {string}
+ */
+function planPosition(mount, id) {
+  const row = mount.querySelector(`.worker-plan__row[data-bead-id="${id}"]`);
+  return (row?.querySelectorAll('td')[2]?.textContent || '').trim();
+}
+
+describe('position and reason wording (UI-lsr4 §3.4)', () => {
+  test('shows only the order on a parallel row', () => {
+    const { mount } = mountView(vi.fn());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(planPosition(mount, 'RD-3')).toBe('병렬 · 대기 #2');
+    expect(planPosition(mount, 'RD-1')).toBe('직렬 2 · #3 — S2-2 뒤');
+  });
+
+  test('counts every compared pair in the reason summary', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        queue: [
+          { bead_id: 'P-1', added_at: 1 },
+          { bead_id: 'P-2', added_at: 2 }
+        ],
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'S2-1', 'x_first'),
+          rel('RD-3', 'P-1', 'conflict'),
+          rel('RD-3', 'S1-1', 'conflict'),
+          rel('RD-3', 'S2-1', 'x_first'),
+          rel('RD-3', 'RD-1', 'independent', 0.95),
+          rel('RD-3', 'S2-2', 'independent', 0.85),
+          rel('RD-3', 'P-2', 'conflict', 0.4)
+        ])
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-plan__row[data-bead-id="RD-3"]')
+    );
+    expect(row.querySelector('summary')?.textContent?.trim()).toBe(
+      '판정 6쌍 · 부딪힘 2 · 선후 1 · 독립 2 · 모름 1'
+    );
+    expect(
+      Array.from(row.querySelectorAll('.worker-plan__line')).map((line) =>
+        line.textContent?.trim()
+      )
+    ).toContain('그 밖 독립 1쌍');
+  });
+
+  test('names the same file on a fixed reason line', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_status: {
+          'RD-1': { state: 'fixed_only' },
+          'RD-3': { state: 'fixed_only' }
+        },
+        placement_relations: Object.fromEntries([
+          sameFile('RD-1', 'RD-3', ['a.js', 'b.js'])
+        ])
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(
+      mount.querySelector('.worker-plan__row[data-bead-id="RD-1"]')?.textContent
+    ).toContain('RD-3 — 부딪힘 · 고정(같은 파일: a.js, b.js)');
+  });
+
+  test('names the missed threshold on an overlap-guard reason line', () => {
+    const [key, wire] = rel('RD-1', 'RD-3', 'independent', 0.85, ['tests']);
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_relations: {
+          [key]: { ...wire, relation: 'conflict', overlap_guard: true }
+        }
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(
+      mount.querySelector('.worker-plan__row[data-bead-id="RD-1"]')?.textContent
+    ).toContain('RD-3 — 부딪힘 · jev 독립 0.85 < 0.9 (겹침: tests)');
+  });
+
+  test('recommends two fixed-only same-file candidates into one serial lane', async () => {
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [{ bead_id: 'S2-1', added_at: 1 }] }
+      ],
+      lane_states: {},
+      placement_status: {
+        'RD-1': { state: 'fixed_only' },
+        'RD-3': { state: 'fixed_only' }
+      },
+      placement_relations: Object.fromEntries([
+        sameFile('RD-1', 'RD-3', ['a.js'])
+      ])
+    });
+    const after_first = {
+      ...queue,
+      revision: 6,
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'RD-1', added_at: 2 }] },
+        queue.serial_lanes[1]
+      ],
+      placement_status: { 'RD-3': { state: 'fixed_only' } }
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        applied: true,
+        conflict: false,
+        queue: after_first
+      })
+      .mockResolvedValueOnce({
+        applied: true,
+        conflict: false,
+        queue: queueOf({ revision: 7, placement_status: {} })
+      });
+    const { mount } = mountView(transport, queue);
+    click(mount.querySelector('.worker-plan__open'));
+    const shown = [planPosition(mount, 'RD-1'), planPosition(mount, 'RD-3')];
+
+    click(mount.querySelector('.worker-plan__apply'));
+    await flush();
+
+    expect(shown).toEqual(['직렬 1 · #1 — 맨 앞', '직렬 1 · #2 — RD-1 뒤']);
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-queue-place',
+        { bead_id: 'RD-1', lane: 's1', index: 0, expected_revision: 5 }
+      ],
+      [
+        'worker-queue-place',
+        { bead_id: 'RD-3', lane: 's1', index: 1, expected_revision: 6 }
+      ]
+    ]);
+  });
+});
+
+describe('single recommendation of a same-file pair (UI-lsr4 gate-r1)', () => {
+  test('shows a serial lane in the box for a fixed-only same-file candidate', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        serial_lanes: [
+          { id: 's1', entries: [] },
+          { id: 's2', entries: [{ bead_id: 'S2-1', added_at: 1 }] }
+        ],
+        lane_states: {},
+        placement_status: {
+          'RD-1': { state: 'fixed_only' },
+          'RD-3': { state: 'fixed_only' }
+        },
+        placement_relations: Object.fromEntries([
+          sameFile('RD-1', 'RD-3', ['a.js'])
+        ])
+      })
+    );
+
+    click(recommendButton(mount, 'RD-1'));
+
+    expect(
+      mount.querySelector('.worker-recommend__pos')?.textContent?.trim()
+    ).toBe('직렬 1 · #1 — 맨 앞');
+  });
+});
+
+describe('pair count summary (UI-lsr4 gate-r1)', () => {
+  test('shows the pair count when every pair is unknown', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'S2-1', 'x_first'),
+          rel('RD-3', 'RD-1', 'independent', 0.7),
+          rel('RD-3', 'P-1', 'independent', 0.7)
+        ])
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-plan__row[data-bead-id="RD-3"]')
+    );
+    expect(row.querySelector('summary')?.textContent?.trim()).toBe(
+      '판정 2쌍 · 모름 2'
+    );
+  });
+});
+
+describe('new serial lane (UI-lsr4 §3.3)', () => {
+  /**
+   * Two candidates in conflict while both configured lanes are held.
+   *
+   * @returns {any}
+   */
+  function busyQueue() {
+    return queueOf({
+      queue: [],
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] }
+      ],
+      lane_states: {
+        s1: { occupied_by: ['R-1'], order: [], corrections: [], cycle: false },
+        s2: { occupied_by: ['R-2'], order: [], corrections: [], cycle: false }
+      },
+      placement_relations: Object.fromEntries([rel('RD-1', 'RD-3', 'conflict')])
+    });
+  }
+
+  test('names the new lane and the growth under the full plan', () => {
+    const { mount } = mountView(vi.fn(), busyQueue());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(planPosition(mount, 'RD-1')).toBe('직렬 3(새 레인) · #1 — 맨 앞');
+    expect(
+      mount.querySelector('.worker-plan__growth')?.textContent?.trim()
+    ).toBe('적용하면 직렬 레인을 2개에서 3개로 늘립니다');
+  });
+
+  test('draws no dotted card for a place in a new lane', () => {
+    const { mount } = mountView(vi.fn(), busyQueue());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(mount.querySelectorAll('.worker-card--preview').length).toBe(0);
+  });
+
+  test('grows the lanes before [전체 적용] puts a bundle in a new lane', async () => {
+    const grown = {
+      ...busyQueue(),
+      revision: 6,
+      serial_lane_count: 3,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] },
+        { id: 's3', entries: [] }
+      ]
+    };
+    const after_first = {
+      ...grown,
+      revision: 7,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] },
+        { id: 's3', entries: [{ bead_id: 'RD-1', added_at: 3 }] }
+      ],
+      placement_status: { 'RD-3': { state: 'ready', done: 1, total: 1 } }
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ applied: true, conflict: false, queue: grown })
+      .mockResolvedValueOnce({
+        applied: true,
+        conflict: false,
+        queue: after_first
+      })
+      .mockResolvedValueOnce({
+        applied: true,
+        conflict: false,
+        queue: { ...after_first, revision: 8, placement_status: {} }
+      });
+    const { mount } = mountView(transport, busyQueue());
+    click(mount.querySelector('.worker-plan__open'));
+
+    click(mount.querySelector('.worker-plan__apply'));
+    await flush();
+
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-queue-set-serial-lane-count',
+        { count: 3, expected_revision: 5 }
+      ],
+      [
+        'worker-queue-place',
+        { bead_id: 'RD-1', lane: 's3', index: 0, expected_revision: 6 }
+      ],
+      [
+        'worker-queue-place',
+        { bead_id: 'RD-3', lane: 's3', index: 1, expected_revision: 7 }
+      ]
+    ]);
+  });
+
+  test('grows the lanes before a single [적용] into a new lane', async () => {
+    const queue = {
+      ...busyQueue(),
+      placement_status: {
+        'RD-1': { state: 'fixed_only' },
+        'RD-3': { state: 'fixed_only' }
+      },
+      placement_relations: Object.fromEntries([
+        sameFile('RD-1', 'RD-3', ['a.js'])
+      ])
+    };
+    const grown = {
+      ...queue,
+      revision: 6,
+      serial_lane_count: 3,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] },
+        { id: 's3', entries: [] }
+      ]
+    };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ applied: true, conflict: false, queue: grown })
+      .mockResolvedValueOnce({
+        applied: true,
+        conflict: false,
+        queue: { ...grown, revision: 7 }
+      });
+    const { mount } = mountView(transport, queue);
+    click(recommendButton(mount, 'RD-1'));
+    const shown = mount
+      .querySelector('.worker-recommend__pos')
+      ?.textContent?.trim();
+
+    click(mount.querySelector('.worker-recommend__apply'));
+    await flush();
+
+    expect(shown).toBe('직렬 3(새 레인) · #1 — 맨 앞');
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-queue-set-serial-lane-count',
+        { count: 3, expected_revision: 5 }
+      ],
+      [
+        'worker-queue-place',
+        { bead_id: 'RD-1', lane: 's3', index: 0, expected_revision: 6 }
+      ]
+    ]);
   });
 });
