@@ -110,7 +110,12 @@
  * @property {PlacementProgress} placement_progress
  */
 
-/** @type {number} A jev answer is adopted at this confidence or above. */
+/**
+ * A jev answer is adopted at this confidence or above, matching the workflow
+ * judge policy's `providers.jev.thresholds.bind_authoritative`.
+ *
+ * @type {number}
+ */
 export const ADOPT_CONFIDENCE = 0.8;
 
 /**

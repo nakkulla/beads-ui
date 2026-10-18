@@ -3,17 +3,18 @@
  * (UI-izba §4.2–§4.4).
  *
  * The question definition is beads-ui's own (ADR dotfiles-hkski: a consumer
- * that calls jev directly keeps its question on its side). The model, endpoint
- * and time limit are the workflow judge's values, held here as a code registry
- * rather than read from dotfiles at runtime (ADR UI-u6ud-2); the cross-runtime
- * test compares them with dotfiles `judge-questions.yaml` policy.
+ * that calls jev directly keeps its question on its side). The model and
+ * endpoint belong to dotfiles `shell.lib.decision`'s jev provider; the time
+ * limit belongs to the workflow judge's `judge-questions.yaml` policy. They
+ * are held here as a code registry rather than read from dotfiles at runtime
+ * (ADR UI-u6ud-2); the cross-runtime test compares them with those owners.
  */
 import crypto from 'node:crypto';
 
-/** @type {string} The workflow judge's jev model. */
+/** @type {string} The decision adapter's jev model. */
 export const JEV_MODEL = 'jev-1.13.0';
 
-/** @type {string} The workflow judge's jev endpoint. */
+/** @type {string} The decision adapter's jev endpoint. */
 export const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 
 /** @type {number} The workflow judge's time limit (`timeout_s` 5) in ms. */
