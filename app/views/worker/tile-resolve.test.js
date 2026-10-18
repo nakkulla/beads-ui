@@ -704,7 +704,7 @@ describe('tileResolveFields — foreign_handoff row (UI-k467 §3.7)', () => {
 });
 
 describe('tileResolveFields session lane (UI-lbm5 §4.5-§4.6)', () => {
-  test('stands the focus button on a running session-lane tile', () => {
+  test('omits continuation buttons on a running session-lane tile', () => {
     const fields = tileResolveFields({
       id: 'UI-1',
       exec: 'session',
@@ -712,15 +712,10 @@ describe('tileResolveFields session lane (UI-lbm5 §4.5-§4.6)', () => {
       interactive_sessions: [session(/** @type {any} */ ('session_lane'))]
     });
 
-    expect(fields).toEqual({
-      resolve_action: true,
-      resolve_enabled: true,
-      resolve_title:
-        '세션 레인 창(tmux)을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다'
-    });
+    expect(fields).toEqual({});
   });
 
-  test('keeps the focus button beside a Discord link', () => {
+  test('omits continuation buttons beside a session-lane Discord link', () => {
     const fields = tileResolveFields({
       id: 'UI-1',
       exec: 'session',
@@ -732,7 +727,7 @@ describe('tileResolveFields session lane (UI-lbm5 §4.5-§4.6)', () => {
       ]
     });
 
-    expect(fields.resolve_action).toBe(true);
+    expect(fields).toEqual({});
   });
 
   test('draws nothing on a running session-lane tile whose window is closing', () => {

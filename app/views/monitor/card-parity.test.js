@@ -93,6 +93,11 @@ let tmp_root = '';
 /** @type {Array<() => void>} */
 let teardown = [];
 
+const workerTransport = vi.fn(async (/** @type {string} */ type) =>
+  type === 'get-session-defaults' ? { values: {}, warnings: [] } : null
+);
+const monitorTransport = vi.fn(async () => null);
+
 /**
  * @param {number} epoch_ms
  * @returns {string}
@@ -738,9 +743,7 @@ async function mountWorker(mount, queue_snapshot, execPresetStore) {
   const view = createWorkerView(mount, {
     issueStores: stores,
     queueStore,
-    transport: vi.fn(async (/** @type {string} */ type) =>
-      type === 'get-session-defaults' ? { values: {}, warnings: [] } : null
-    ),
+    transport: workerTransport,
     getWorkspacePath: () => WS,
     ...(execPresetStore ? { execPresetStore } : {})
   });
@@ -774,7 +777,7 @@ function mountMonitor(mount, raw_queue, execPresetStore) {
   pipelineStore.set(overTheWire(workspaces), overTheWire(workspaces_state));
   const view = createMonitorView(mount, {
     gotoIssue: () => {},
-    transport: vi.fn(async () => null),
+    transport: monitorTransport,
     router: { gotoView: () => {} },
     pipelineStore,
     getWorkspacePath: () => WS,
@@ -836,6 +839,8 @@ function cardsByBead(mount) {
 }
 
 beforeEach(() => {
+  workerTransport.mockClear();
+  monitorTransport.mockClear();
   tmp_root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-card-parity-'));
   WS = path.join(tmp_root, 'repo-a');
   fs.mkdirSync(WS, { recursive: true });
@@ -1455,9 +1460,10 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
   /**
    * Draw both tabs with the four session-lane beads laid over the fixture.
    *
+   * @param {string} [provider]
    * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
    */
-  async function drawSessionLane() {
+  async function drawSessionLane(provider = 'claude') {
     extra_rows = [
       row('L-1', { labels: ['worker-ineligible'] }),
       row('L-2', {
@@ -1482,7 +1488,7 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
           status: 'running',
           started_at: NOW - 20 * 60 * 1000,
           session_id: '22222222-3333-4444-8555-666666666666',
-          runner: 'claude',
+          runner: provider,
           exec: 'session',
           interactive: {
             pane_id: '%7',
@@ -1495,7 +1501,7 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
         'L-4:session_lane': {
           bead_id: 'L-4',
           kind: 'session_lane',
-          provider: 'claude',
+          provider,
           pane_id: '%7',
           tmux_session: 'bdui-inquiry',
           tmux_window: 'L-4',
@@ -1565,7 +1571,7 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
     ]);
   });
 
-  test('stands [세션에서 이어가기] on the running session-lane tile of both tabs', async () => {
+  test('stands ▤ 세션 on the running session-lane tile of both tabs', async () => {
     const { worker, monitor } = await drawSessionLane();
 
     const labels = [worker, monitor].map((mount) =>
@@ -1573,12 +1579,46 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
         cardsByBead(mount).get('L-4')?.querySelectorAll('button') || []
       )
         .map((button) => (button.textContent || '').trim())
-        .filter((text) => text.includes('세션에서 이어가기'))
+        .filter((text) => text.includes('세션'))
     );
 
-    expect(labels[0]).toHaveLength(1);
+    expect(labels[0]).toEqual(['▤ 세션']);
     expect(labels[1]).toEqual(labels[0]);
   });
+
+  test.each(['claude', 'codex'])(
+    'opens the %s session-lane transcript from both tabs',
+    async (provider) => {
+      const { worker, monitor } = await drawSessionLane(provider);
+      workerTransport.mockClear();
+      monitorTransport.mockClear();
+
+      for (const mount of [worker, monitor]) {
+        const button = /** @type {HTMLElement|null} */ (
+          cardsByBead(mount).get('L-4')?.querySelector('.rtile__session') ||
+            null
+        );
+        expect(button).not.toBeNull();
+        button?.click();
+      }
+
+      const session_id = '22222222-3333-4444-8555-666666666666';
+      for (const transport of [workerTransport, monitorTransport]) {
+        expect(transport).toHaveBeenCalledWith(
+          'subscribe-session-log',
+          expect.objectContaining({
+            attempt_id: `session:${provider}:${session_id}`,
+            session_ref: { bead_id: 'L-4', provider, session_id },
+            ...(transport === monitorTransport ? { root_dir: WS } : {})
+          })
+        );
+        expect(transport).not.toHaveBeenCalledWith(
+          'worker-resolve-in-session',
+          expect.anything()
+        );
+      }
+    }
+  );
 
   test('draws the same conversation-state line on the running tile of both tabs', async () => {
     const { worker, monitor } = await drawSessionLane();

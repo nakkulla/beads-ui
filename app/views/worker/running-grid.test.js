@@ -5014,18 +5014,17 @@ describe('session-lane running tile (UI-lbm5 §4.6)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
   }
 
-  test('puts [세션에서 이어가기] in slot 1 instead of the session drawer and pause', () => {
+  test('puts the session drawer button in slot 1 without continuation or pause', () => {
     const tile = renderLaneTile();
 
     const actions = /** @type {HTMLElement} */ (
       tile.querySelector('.rtile__hd-actions')
     );
-    expect(actions.querySelector('.rtile__resolve')?.textContent?.trim()).toBe(
-      '세션에서 이어가기'
+    expect(actions.querySelector('.rtile__session')?.textContent?.trim()).toBe(
+      '▤ 세션'
     );
     expect(tile.querySelector('.rtile__pause')).toBeNull();
-    expect(tile.querySelector('.rtile__session')).toBeNull();
-    expect(tile.querySelector('.rtile__foot .rtile__resolve')).toBeNull();
+    expect(tile.querySelector('.rtile__resolve')).toBeNull();
   });
 
   test('stands ↗ Discord beside the button when the window is bridged', () => {
@@ -5034,7 +5033,7 @@ describe('session-lane running tile (UI-lbm5 §4.6)', () => {
     const actions = /** @type {HTMLElement} */ (
       tile.querySelector('.rtile__hd-actions')
     );
-    expect(actions.querySelector('.rtile__resolve')).not.toBeNull();
+    expect(actions.querySelector('.rtile__session')).not.toBeNull();
     expect(
       actions
         .querySelector('.interactive-session-discord')
@@ -5049,6 +5048,16 @@ describe('session-lane running tile (UI-lbm5 §4.6)', () => {
       tile.querySelector('.rtile__activity--session-lane')?.textContent
     ).toContain('답 대기 · 어느 쪽으로 갈까요?');
   });
+
+  test.each([{ session_id: null }, { attempt_id: 'old-attempt' }])(
+    'omits the drawer button without this attempt transcript identity %j',
+    (patch) => {
+      const tile = renderLaneTile(patch);
+
+      expect(tile.querySelector('.rtile__session')).toBeNull();
+      expect(tile.querySelector('.rtile__resolve')).toBeNull();
+    }
+  );
 
   test('draws the running turn as 대화 중 with its elapsed', () => {
     const tile = renderLaneTile({ turn_state: 'running' });

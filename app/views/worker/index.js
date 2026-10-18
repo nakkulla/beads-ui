@@ -139,7 +139,8 @@ import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import {
   drawsRunningTile,
   runningGridTemplate,
-  runningTileInput
+  runningTileInput,
+  sessionLaneRef
 } from './running-grid.js';
 import { createSessionToggle } from './session-toggle.js';
 import { tileResolveFields } from './tile-resolve.js';
@@ -4300,6 +4301,21 @@ export function createWorkerView(mount_element, options = {}) {
       );
       const att = tile?.dataset?.attemptId;
       if (att) {
+        const item = current_lanes.running.find(
+          (entry) => entry.attempt_id === att
+        );
+        if (item?.exec === 'session') {
+          const current = sessionLaneRef(item);
+          if (current) {
+            selected_attempt = att;
+            repo_ops_drawer.close();
+            repo_ops_drawer_el.hidden = true;
+            drawer_overlay_el.hidden = false;
+            drawer.open(sessionRefDrawerInput(current, item.id, 'in_progress'));
+            doRender();
+          }
+          return;
+        }
         openDrawerForAttempt(att);
         return;
       }

@@ -175,6 +175,7 @@ import {
   resolveSessionFile,
   sessionRefViews
 } from '../worker/session-ref.js';
+import { codexSessionsRoot } from '../worker/state-paths.js';
 import { readDeclaredBase } from '../worker/target-base.js';
 import {
   EXTERNAL_RESUME_PANE_MARKER,
@@ -4114,16 +4115,15 @@ async function followSessionRefLog(ws, input) {
       item.provider === session_ref.provider &&
       item.session_id === session_ref.session_id
   );
+  const queue = queueStore().snapshot(key);
+  const record = Object.values(queue.interactive_sessions || {}).find(
+    (item) =>
+      item.bead_id === session_ref.bead_id &&
+      item.provider === session_ref.provider &&
+      item.session_id === session_ref.session_id
+  );
   if (entry === undefined) {
-    const records = queueStore().snapshot(key).interactive_sessions || {};
-    if (
-      Object.values(records).some(
-        (record) =>
-          record.bead_id === session_ref.bead_id &&
-          record.provider === session_ref.provider &&
-          record.session_id === session_ref.session_id
-      )
-    ) {
+    if (record) {
       entry = {
         index: 0,
         provider: session_ref.provider,
@@ -4136,7 +4136,23 @@ async function followSessionRefLog(ws, input) {
     giveUp();
     return;
   }
-  const located = resolveSessionFile(entry);
+  const attempt =
+    record?.kind === 'session_lane' && record.attempt_id
+      ? queue.attempts[record.attempt_id]
+      : null;
+  // Match the scheduler's session-lane reader: account launches write their
+  // rollout to that account's CODEX_HOME, not the default interactive home.
+  const sessions_root =
+    attempt?.exec === 'session' &&
+    attempt.bead_id === session_ref.bead_id &&
+    attempt.runner === 'codex' &&
+    entry.provider === 'codex'
+      ? codexSessionsRoot({ codex_account: attempt.codex_account })
+      : null;
+  const located = resolveSessionFile(
+    entry,
+    sessions_root ? { sessions_root } : {}
+  );
   if (located.locality !== 'local' || located.file === null) {
     giveUp();
     return;

@@ -112,7 +112,8 @@ import { createRepoOpsDrawer } from '../worker/repo-ops-timeline.js';
 import {
   drawsRunningTile,
   runningTile,
-  runningTileInput
+  runningTileInput,
+  sessionLaneRef
 } from '../worker/running-grid.js';
 import { createSessionToggle } from '../worker/session-toggle.js';
 import { tileResolveFields } from '../worker/tile-resolve.js';
@@ -3126,6 +3127,18 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('rtile__session')) {
+      if (item?.exec === 'session') {
+        const current = sessionLaneRef(item);
+        if (current) {
+          selected_attempt = attempt_id;
+          showTranscriptOverlay();
+          drawer.open(
+            sessionRefDrawerInput(current, bead_id, 'in_progress', root_dir)
+          );
+          doRender();
+        }
+        return;
+      }
       if (item && item.kind === 'session') {
         // 세션 타일에는 하이라이트할 attempt가 없으므로 `selected_attempt`도
         // 건드리지 않는다 (UI-4xzk §6.4). 드로어 키는 `session:<provider>:<sid>`다.

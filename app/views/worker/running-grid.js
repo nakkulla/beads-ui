@@ -891,6 +891,38 @@ const SESSION_OPEN_BLOCKED = {
 };
 
 /**
+ * The interactive transcript belonging to this session-lane attempt. Both
+ * tabs and the button renderer use this identity, never the headless log key.
+ *
+ * @param {{ exec?: string, attempt_id?: string|null, interactive_sessions?: import('./lane-model.js').InteractiveSessionView[] }} item
+ * @returns {SessionRefView|null}
+ */
+export function sessionLaneRef(item) {
+  if (item.exec !== 'session') {
+    return null;
+  }
+  const view = (item.interactive_sessions || []).find(
+    (entry) =>
+      entry.kind === 'session_lane' &&
+      entry.attempt_id === item.attempt_id &&
+      (entry.provider === 'claude' || entry.provider === 'codex')
+  );
+  if (!view || typeof view.session_id !== 'string' || !view.session_id) {
+    return null;
+  }
+  return {
+    provider: view.provider,
+    session_id: view.session_id,
+    current: true,
+    locality: 'local',
+    index: 0,
+    host: '',
+    last_event_at: null,
+    resume_command: null
+  };
+}
+
+/**
  * `▤ 세션` — 세션 타일의 transcript 열기 버튼 (UI-4xzk §6.4). Worker 타일과 같은
  * 클래스·같은 자리(경과 뒤, `세션` 배지 앞)다 — 같은 조작이 타일 종류마다 다른
  * 곳에 있으면 사용자가 버튼을 찾는 자리가 폭이 아니라 종류에 따라 달라진다.
@@ -1160,9 +1192,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     (tile.exec_chips.orchestration || tile.exec_chips.worker)
       ? tile.exec_chips
       : null;
-  // A running session-lane tile (UI-lbm5 §4.6): its window is the session, so
-  // slot 1 brings that window forward instead of `▤ 세션`/`⏸`, and slot 3 is
-  // its conversation state. There is no pause for it (§4.5).
+  // A running session-lane tile opens its interactive transcript in slot 1
+  // (UI-i40h). Slot 3 keeps its conversation state; it has no pause (§4.5).
   const session_lane_running =
     !session && tile.exec === 'session' && !failed && !held && !paused;
   const session_lane_chip = session ? '' : sessionLaneChipTemplate(tile);
@@ -1465,11 +1496,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const anchor = tile.pair_anchor ?? null;
   const session_at_discard = anchor === 'discard' && discard_button !== '';
   const session_at_external = anchor === 'external' && external_foot !== '';
-  // A running session-lane tile carries its `[세션에서 이어가기]` in slot 1.
   const loose_session =
-    session_at_discard || session_at_external || session_lane_running
-      ? ''
-      : resolve_only;
+    session_at_discard || session_at_external ? '' : resolve_only;
   const resolve_button =
     loose_session || handoff_button
       ? html`${loose_session}${handoff_button}`
@@ -1587,7 +1615,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         ${session || held
           ? ''
           : session_lane_running
-            ? html`${resolve_only}${sessionLaneDiscordTemplate(
+            ? html`${sessionOpenButton(
+                sessionLaneRef(tile)
+              )}${sessionLaneDiscordTemplate(
                 tile.interactive_sessions
               )}${discard_slot1}`
             : failed

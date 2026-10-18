@@ -25,7 +25,8 @@ const bd = vi.hoisted(() => ({
   runBdJsonProjectedInWorkspace: vi.fn()
 }));
 const interactive = vi.hoisted(() => ({
-  records: /** @type {Record<string, any>} */ ({})
+  records: /** @type {Record<string, any>} */ ({}),
+  attempts: /** @type {Record<string, any>} */ ({})
 }));
 
 const tail = vi.hoisted(() => ({
@@ -47,7 +48,7 @@ vi.mock('../worker/runtime.js', () => ({
   getWorkerRuntime: () => ({
     queueStore: {
       snapshot: () => ({
-        attempts: {},
+        attempts: interactive.attempts,
         interactive_sessions: interactive.records
       })
     },
@@ -88,6 +89,7 @@ vi.mock('./context.js', async (importOriginal) => {
 });
 
 const { setConnWorkspace } = await import('./context.js');
+const { codexSessionsRoot } = await import('../worker/state-paths.js');
 const {
   detachSessionLog,
   handleGetSessionRefs,
@@ -169,11 +171,20 @@ beforeEach(() => {
   tail.inputs.length = 0;
   tail.readers.length = 0;
   interactive.records = {};
+  interactive.attempts = {};
+  vi.stubEnv('XDG_STATE_HOME', path.join(home_dir, 'state'));
+  vi.stubEnv('CODEX_HOME', path.join(home_dir, 'codex-default'));
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   fs.rmSync(path.join(home_dir, '.claude'), { recursive: true, force: true });
+  fs.rmSync(path.join(home_dir, 'state'), { recursive: true, force: true });
+  fs.rmSync(path.join(home_dir, 'codex-default'), {
+    recursive: true,
+    force: true
+  });
 });
 
 afterAll(() => {
@@ -286,6 +297,69 @@ describe('subscribe-session-log session_ref validation', () => {
 });
 
 describe('subscribe-session-log session_ref authorization', () => {
+  test.each([
+    { account: 'lane-account', metadata: false },
+    { account: 'lane-account', metadata: true },
+    { account: null, metadata: false }
+  ])(
+    'reads and follows a Codex session-lane rollout from its launch home %j',
+    async ({ account, metadata }) => {
+      const socket = fakeSocket();
+      bdShows(metadata ? { session_ref: `codex:${SESSION_ID}@${HOST}` } : null);
+      interactive.records['UI-1:session_lane'] = {
+        bead_id: 'UI-1',
+        kind: 'session_lane',
+        provider: 'codex',
+        session_id: SESSION_ID,
+        attempt_id: 'lane-attempt'
+      };
+      interactive.attempts['lane-attempt'] = {
+        bead_id: 'UI-1',
+        exec: 'session',
+        runner: 'codex',
+        codex_account: account
+      };
+      const root = codexSessionsRoot({ codex_account: account });
+      const day = new Date().toISOString().slice(0, 10).split('-');
+      const dir = path.join(root, ...day);
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `rollout-${SESSION_ID}.jsonl`);
+      const first = JSON.stringify({
+        type: 'event_msg',
+        payload: { type: 'agent_message', message: 'lane reply' }
+      });
+      fs.writeFileSync(file, `${first}\n`);
+
+      await handleSubscribeSessionLog(
+        socket,
+        subscribeRequest({
+          id: 'c1',
+          attempt_id: `session:codex:${SESSION_ID}`,
+          session_ref: {
+            bead_id: 'UI-1',
+            provider: 'codex',
+            session_id: SESSION_ID
+          }
+        })
+      );
+      tail.inputs[0]?.onLine(
+        JSON.stringify({
+          type: 'event_msg',
+          payload: { type: 'agent_message', message: 'live reply' }
+        })
+      );
+
+      expect(tail.inputs[0]?.file).toBe(file);
+      expect(
+        JSON.stringify(pushOf(socket, 'session-log-snapshot').payload.lines)
+      ).toContain('lane reply');
+      expect(
+        JSON.stringify(pushOf(socket, 'session-log-append').payload.event)
+      ).toContain('live reply');
+      detachSessionLog(socket);
+    }
+  );
+
   test('authorizes the transcript through an interactive session record', async () => {
     const socket = fakeSocket();
     bdShows(null);
