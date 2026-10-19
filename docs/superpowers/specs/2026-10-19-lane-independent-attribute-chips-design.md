@@ -56,9 +56,17 @@ base `9f1cf1fa8f3916550386f658c66f2db8d2acbd98` 기준.
   app/views/worker/lane-model.js:4636, :4651-4666
 - Worker 탭 overlay는 ready·blocked·in_progress 이슈에만 metadata를 싣고 resolved·closed
   이슈에는 싣지 않는다 — app/views/worker/workspace-adapter.js:608-623
-- 모니터 overlay는 완료 레인을 뺀 레인 구성원에만 metadata를 싣고, 그 값은 실행 핀 허용
-  키와 `complex_reason`뿐이다 — server/ws/monitor-handlers.js:633-636, :694-699;
-  server/worker/title-cache.js:77-83
+- 모니터 overlay는 대기·직렬·활성 attempt 구성원에만 metadata를 싣고(완료·PR 대기·세션
+  활성은 빠진다), 그 값은 실행 핀 허용 키와 `complex_reason`뿐이다 —
+  server/ws/monitor-handlers.js:589-601, :633-636, :694-699; server/worker/title-cache.js:77-83
+- 칩 바인딩 판정은 metadata가 없어도 바인딩이 있으면 bound 버튼을 내지만, 상태
+  (`data-state`)가 비고 클릭 안내가 적용으로 계산된다 — app/utils/chip-preset-binding.js:62-80
+- 후보 카드는 `exec_chips`가 있으면 실행 설정 칩을 그리지만 `세션` exec 칩은 그리지 않는다 —
+  app/views/worker/lanes.js:5322-5325, :1992
+- 계약의 `session-preferred`는 `consumer: beads-ui-worker-only`다. 모니터는 여러 저장소를
+  보는 Worker 탭이고(AGENTS.md), UI-lbm5 §4.6이 이미 모니터 후보·대기 행에 이 칩을 실었다 —
+  dotfiles docs/contracts/workflow-state.yaml:637-640;
+  docs/superpowers/specs/2026-10-16-worker-queue-session-lane-design.md:172
 - 실행 핀 허용 키에는 `exec_lane`·`session_preferred_reason`이 없다 —
   app/utils/execution-defaults.js:9-28, server/worker/title-cache.js:77-83 (grep 0건)
 - 두 탭이 받는 큐 스냅샷의 `bead_labels`는 대기·직렬·PR 대기·완료·실행 중 Bead를 모두
@@ -122,10 +130,10 @@ base `9f1cf1fa8f3916550386f658c66f2db8d2acbd98` 기준.
   `execLaneOf`·`complexReason`)를 거친다.
 - Worker 탭 overlay는 resolved·closed 이슈에도 열린 이슈와 같이 metadata를 싣는다.
   클라이언트 메모리 안의 투영이라 전송량은 늘지 않는다.
-- 모니터 overlay는 완료 레인을 포함한 모든 레인 구성원에 두 가지를 싣는다.
+- 모니터 overlay는 PR 대기·완료·세션 활성을 포함한 모든 레인 구성원에 두 가지를 싣는다.
   - 실행 핀: 지금 핀 그대로. `복잡`·area 칩의 바인딩 상태(`applied_exec_preset`·
-    `chip_preset_source`)가 핀에 있으므로, 완료 행에 핀이 없으면 완료 행만 팝업 칩으로
-    갈려 수용 기준 1이 깨진다. 비용은 완료 행마다 허용 키 몇 개다.
+    `chip_preset_source`)가 핀에 있으므로, 핀이 없으면 그 행의 bound 칩만 `data-state`가
+    비고 클릭 안내가 적용으로 계산돼 수용 기준 1이 깨진다. 비용은 행마다 허용 키 몇 개다.
   - 속성 필드: `complex_reason` 옆에 `exec_lane`·`session_preferred_reason`을 더한다.
     지금 `complex_reason`이 실리는 issue-field 경로(`overlayFieldsFor`)를 따른다.
   - 값은 이미 있는 `bd show` 레코드에서 나오므로 bd 호출은 늘지 않는다(ADR UI-u6ud).
@@ -145,7 +153,7 @@ base `9f1cf1fa8f3916550386f658c66f2db8d2acbd98` 기준.
 결정 — 속성 칩과 `세션` exec 칩은 함께 선다 (대안: ineligible·세션 실행이 있으면 exec 칩
 생략; 이유: 속성 칩은 Bead의 **지금** 설정이고 exec 칩은 attempt에 **기록된** 실행
 방식이라, 세션 토글 뒤에는 둘이 다를 수 있다 — UI-lbm5 §4.7 "다음 dispatch부터").
-후보 카드는 attempt가 없으므로 지금처럼 exec 칩이 없다.
+후보 카드는 attempt가 없으므로 지금처럼 `세션` exec 칩이 없다(실행 설정 칩은 그대로).
 
 ### 3.5 클릭
 
@@ -165,17 +173,21 @@ base `9f1cf1fa8f3916550386f658c66f2db8d2acbd98` 기준.
 
 - 2026-08-25 card-header-grammar §5.1: 슬롯 1 행에 속성 칩 다섯을 "모든 변형"으로 적고,
   5b 행의 "`복잡` 및 그 옆의 `frontend`·`backend`(이미 슬롯 5인 변형만)"을 뺀다. :273-274
-  "후보의 … 슬롯 1에 남는다"를 "모든 변형에서 슬롯 1"로 고친다. §3.2 :144-145는 그대로
-  유효하다.
-- 2026-09-22 run-lane-origin §4.3 :149-154, 2026-08-28 chip-grammar :239-245,
-  2026-09-22 chip-preset-bindings §5.4 :290-291, 2026-08-25-session-preferred-chip-consumer
-  §4.1과 수용 기준 4: 각 자리에 "UI-refs 정정: 모든 레인 슬롯 1" 한 줄을 단다.
+  "후보의 … 슬롯 1에 남는다"를 "모든 변형에서 슬롯 1"로 고친다. §3.1 :129-131(실행 중
+  타일 머리줄)과 §3.4 :187-189(`miniRow` 카드 머리줄)의 "헤더에 남는 것" 열거에 속성 칩을
+  더한다. §3.2 :144-145는 그대로 유효하다.
+- 2026-09-22 run-lane-origin §4.3 표 :132(5b의 `복잡`)와 :149-154, 2026-08-28
+  chip-grammar :239-245, 2026-09-22 chip-preset-bindings §5.4 :290-291,
+  2026-08-25-session-preferred-chip-consumer
+  §4.1·수용 기준 4·§7 :275-276(모니터 표시 제외): 각 자리에 "UI-refs 정정: 모든 레인
+  슬롯 1, 두 탭" 한 줄을 단다. 계약 값 `beads-ui-worker-only`는 바꾸지 않는다 — 모니터도
+  Worker 표면이다(§2).
 - 2026-09-14 worker-created-issue-chip :96: 완료 행 일반 출처 생략에 UI-refs 철회를 단다.
 - 모니터-Worker parity §9에는 행을 더하지 않는다 — 탭 사이 차이가 생기지 않는다.
 
 ## 4. 수용 기준
 
-1. 같은 Bead의 슬롯 1 속성 칩 집합·순서·클래스가 후보·대기·실행 중·PR 대기·완료
+1. 같은 Bead의 슬롯 1 속성 칩 집합·순서·클래스·바인딩 상태가 후보·대기·실행 중·PR 대기·완료
    카드에서 같다. 단, 레인 이동 사이에 Bead 라벨·metadata가 바뀐 경우와 §3.3 리뷰 칩
    선행 간선 예외는 제외한다.
 2. 위 1이 Worker·모니터 두 탭에서 같다.
@@ -197,7 +209,8 @@ base `9f1cf1fa8f3916550386f658c66f2db8d2acbd98` 기준.
 ## 6. 테스트
 
 - 새 레인 동일성 테스트(예: `card-lane-identity.test.js`): 한 Bead 픽스처를 다섯 레인
-  렌더러로 그려 슬롯 1 속성 칩의 클래스·텍스트·순서가 같고 슬롯 5b에 판정 칩이 없음을
+  렌더러로 그려 슬롯 1 속성 칩의 클래스·텍스트·순서·`data-state`·클릭 안내(적용·복원)가
+  같고 슬롯 5b에 판정 칩이 없음을
   확인한다. 픽스처는 ineligible, 세션 권장(`exec_lane` 유·무), 복잡+area, `quick_fix`
   리뷰 reviewed를 덮는다.
 - card-parity.test.js: 세션 레인 검사에 PR 대기·완료 `세션` 칩과 네 레인 속성 칩을 더한다.
@@ -220,6 +233,6 @@ base `9f1cf1fa8f3916550386f658c66f2db8d2acbd98` 기준.
 - 전제: ADR UI-u6ud-2 — 계약 키(라벨·metadata) 부재는 fail-quiet 표시 생략이다.
 - Bead 속성 칩은 모든 레인 슬롯 1에 같은 순서로 선다 — 화면 배치라 되돌리기 쉽고 함께
   움직일 외부 소비자가 없다 → ADR 아님
-- 칩의 레인 표시 여부는 재료 출처(Bead vs attempt·큐)가 정한다 — 스펙 수준 분류 규칙이고
-  카드 문법 스펙 §5.1이 소유한다 → ADR 아님
+- 칩의 레인 표시 여부는 재료 출처(Bead vs attempt·큐)가 정한다 — 첫 실패 조건은 되돌리기
+  어려움: 클라이언트 렌더러와 overlay만 함께 움직이고 외부 소비자가 없다 → ADR 아님
 - 완료 행 일반 `↩ from` 표시 — 화면 배치 → ADR 아님
