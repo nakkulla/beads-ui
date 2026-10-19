@@ -7542,6 +7542,17 @@ export function createScheduler(deps) {
         ) {
           return;
         }
+        if (
+          await judgeUnrecognizedQuickfixEnding(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            verdict
+          )
+        ) {
+          return;
+        }
         await settleQuickfixLanding(
           workspace,
           attempt_id,
@@ -8360,6 +8371,65 @@ export function createScheduler(deps) {
         tier_hint: 'waiting',
         ...(head_oid ? { head_oid } : {})
       }
+    );
+    notifyChanged(workspace);
+    await tick(workspace);
+    return true;
+  }
+
+  /**
+   * Settle a quick_fix session that ended on a final line the Worker could
+   * not read as a result line and never pushed, ahead of the landing
+   * settlement (UI-a2fm). Such a session never attempted a landing, so
+   * `delivery_unproven:push_log_absent` would misname it; it is the same
+   * `finished_without_result_line` ending the PR lane already classifies, and
+   * the classifier keeps the session's own first line as the summary so a
+   * look-alike character or typo is visible on the tile.
+   *
+   * A pushed attempt, a `resolved`/`closed` bead, an empty summary and an
+   * unreadable status all fall through to the ordinary landing judgment.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior
+   * @param {RunnerVerdict} verdict
+   * @returns {Promise<boolean>} Whether the attempt was settled here.
+   */
+  async function judgeUnrecognizedQuickfixEnding(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    verdict
+  ) {
+    if (
+      verdict.success !== true ||
+      verdict.terminal_result ||
+      extractSummary(verdict.summary) === null ||
+      !pushRecordAbsent(workspace, attempt_id)
+    ) {
+      return false;
+    }
+    /** @type {string|null} */
+    let bead_status;
+    try {
+      bead_status = await deps.bd.readStatus(bead_id);
+    } catch (err) {
+      log('unrecognized ending status read failed for %s: %o', bead_id, err);
+      return false;
+    }
+    if (bead_status === 'resolved' || bead_status === 'closed') {
+      return false;
+    }
+    await failAttempt(
+      workspace,
+      attempt_id,
+      bead_id,
+      prior,
+      'session_ended_unresolved',
+      undefined,
+      { verdict, bead_status }
     );
     notifyChanged(workspace);
     await tick(workspace);
@@ -9631,6 +9701,18 @@ export function createScheduler(deps) {
                 raw: []
               }
             )
+          ) {
+            return;
+          }
+          if (
+            persisted_verdict &&
+            (await judgeUnrecognizedQuickfixEnding(
+              workspace,
+              attempt_id,
+              bead_id,
+              prior,
+              persisted_verdict
+            ))
           ) {
             return;
           }

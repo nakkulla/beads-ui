@@ -28307,6 +28307,101 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     );
   });
 
+  /**
+   * Finish S1 exit 0 on a final line the result-line parser does not read.
+   *
+   * @param {any} env
+   * @param {boolean} [pushed] - Whether the attempt's push log records a base push.
+   */
+  async function runUnrecognizedEnding(env, pushed = false) {
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.bd.statuses.S1 = 'in_progress';
+    if (pushed) {
+      const push_log = pushLogPath(WS, 'S1-1000-1');
+      fs.mkdirSync(path.dirname(push_log), { recursive: true });
+      fs.writeFileSync(
+        push_log,
+        `${JSON.stringify({ remote_ref: 'refs/heads/release', local_oid: 'a'.repeat(40) })}\n`
+      );
+    }
+
+    env.runner.finish('S1', {
+      success: true,
+      reason: 'ok',
+      summary: '大기 · recovery:credential',
+      terminal_result: null,
+      exit: 0
+    });
+    await flush();
+    await flush();
+  }
+
+  test('classifies an unrecognized result line without a push as finished_without_result_line', async () => {
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:push_log_absent'
+    }));
+    const env = setup({
+      config: waitingConfig([]),
+      slots: 1,
+      quickfixLanding: { settle }
+    });
+
+    await runUnrecognizedEnding(env);
+
+    const attempt = env.store.snapshot(WS).attempts['S1-1000-1'];
+    expect(settle).not.toHaveBeenCalled();
+    expect(attempt).toMatchObject({
+      cause: 'session_ended_unresolved',
+      cause_detail: { summary: '大기 · recovery:credential' }
+    });
+    expectRetryOutcome(attempt, 'finished_without_result_line');
+  });
+
+  test('keeps the landing judgment for an unrecognized result line with a push record', async () => {
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:impl_review_missing'
+    }));
+    const env = setup({
+      config: waitingConfig([]),
+      slots: 1,
+      quickfixLanding: { settle }
+    });
+
+    await runUnrecognizedEnding(env, true);
+
+    expect(settle).toHaveBeenCalledOnce();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
+      'quickfix_landing_failed:delivery_unproven:impl_review_missing'
+    );
+  });
+
+  test('keeps the landing judgment for an unrecognized result line on a resolved bead', async () => {
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: waitingConfig([]),
+      slots: 1,
+      quickfixLanding: { settle }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.bd.statuses.S1 = 'resolved';
+
+    env.runner.finish('S1', {
+      success: true,
+      reason: 'ok',
+      summary: '大기 · recovery:credential',
+      terminal_result: null,
+      exit: 0
+    });
+    await flush();
+    await flush();
+
+    expect(settle).toHaveBeenCalledOnce();
+  });
+
   test('settles the ordinary way when a foreign blocker cannot be read', async () => {
     const config = waitingConfig([
       { dependency_type: 'blocks', id: 'Nosuchrig-1', external: true }
