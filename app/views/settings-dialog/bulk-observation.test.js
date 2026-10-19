@@ -349,3 +349,31 @@ describe('observeKey over a legacy account layer (UI-e1ta §8)', () => {
     expect(legacy).toBe(false);
   });
 });
+
+describe('observeSet over an ordered allow list (UI-9y1k §4.6)', () => {
+  test('reads the same members in another order as mixed', () => {
+    const rows = [
+      { root_dir: '/tmp/a', name: 'a', accounts: ['c1', 'c3'] },
+      { root_dir: '/tmp/b', name: 'b', accounts: ['c3', 'c1'] }
+    ];
+
+    const observation = observeSet(rows, (entry) => entry.accounts, {
+      ordered: true
+    });
+
+    expect(observation.state).toBe('mixed');
+  });
+
+  test('reads the same order as one list in that order', () => {
+    const rows = [
+      { root_dir: '/tmp/a', name: 'a', accounts: ['c3', 'c1'] },
+      { root_dir: '/tmp/b', name: 'b', accounts: ['c3', 'c1'] }
+    ];
+
+    const observation = observeSet(rows, (entry) => entry.accounts, {
+      ordered: true
+    });
+
+    expect(observation).toMatchObject({ state: 'same', value: ['c3', 'c1'] });
+  });
+});

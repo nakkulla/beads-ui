@@ -668,3 +668,26 @@ test('formatBulkResult is re-exported for the account section to reuse phrasing'
 
   expect(text).toEqual({ icon: '✓', text: 'a 적용됨' });
 });
+
+describe('codex switch order in the bulk apply (UI-9y1k §4.6)', () => {
+  test('sends the codex allow list in the screen order to every repository', async () => {
+    const plan = planBulkAccountApply({
+      rows,
+      selected_roots: ['/repo/a', '/repo/b'],
+      edit: edit({ patches: { codex: { accounts: ['c3', 'c1', 'c2'] } } }),
+      catalog_ready: true
+    });
+    const send = vi.fn().mockResolvedValue(applied_policy_response);
+
+    await runBulkAccountApply({ targets: plan.targets, send, adopt: vi.fn() });
+
+    expect(
+      send.mock.calls
+        .filter((call) => call[1].runner === 'codex')
+        .map((call) => [call[1].root_dir, call[1].patch.accounts])
+    ).toEqual([
+      ['/repo/a', ['c3', 'c1', 'c2']],
+      ['/repo/b', ['c3', 'c1', 'c2']]
+    ]);
+  });
+});

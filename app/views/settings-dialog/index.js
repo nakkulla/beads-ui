@@ -129,6 +129,7 @@ const TAB_COPY = {
  *   modelVisibilityStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   timingSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   externalWaitSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
+ *   codexCreditStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   labelOptions: () => string[],
  *   notify?: (message: string) => void,
  *   onOpenChange?: (open: boolean) => void,
@@ -252,6 +253,7 @@ export function createSettingsDialog(mount_element, options) {
       transport,
       implPresetStore: options.implPresetStore,
       modelVisibilityStore: options.modelVisibilityStore,
+      codexCreditStore: options.codexCreditStore,
       notify,
       onQueueAdopt: (queue) => {
         if (bound_root === null) {
@@ -518,6 +520,8 @@ export function createSettingsDialog(mount_element, options) {
         subscribeRows: options.subscribeMonitorRows,
         implPresetStore: options.implPresetStore,
         modelVisibilityStore: options.modelVisibilityStore,
+        codexCreditStore: options.codexCreditStore,
+        notify,
         onBulkApplied: (root_dirs) => options.onBulkApplied?.(root_dirs)
       });
     }

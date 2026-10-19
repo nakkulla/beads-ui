@@ -70,9 +70,9 @@ function observeSeries(store, balances, start = 1_792_400_000) {
 }
 
 /**
- * Turn credits on for {@link KEY} with a cap.
+ * Turn credits on for the test account with a cap.
  *
- * @param {ReturnType<typeof createCodexCreditStore>} store
+ * @param {{ set: (input: { expected_revision: unknown, accounts: unknown }) => unknown, snapshot: () => { revision: number } }} store
  * @param {number} daily_cap
  */
 function allow(store, daily_cap) {

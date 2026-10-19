@@ -3,6 +3,10 @@
  */
 import { html, render } from 'lit-html';
 import { closedRangeSince, normalizeDoneRange } from './data/closed-range.js';
+import {
+  createCodexCreditStore,
+  isCodexCreditSnapshot
+} from './data/codex-credit-store.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
 import { createExecPresetStore } from './data/exec-preset-store.js';
 import {
@@ -141,6 +145,9 @@ const TIMING_SETTINGS_CLIENT_ID = 'timing-settings';
 
 /** Client id for the singleton server-global external-wait settings subscription. */
 const EXTERNAL_WAIT_SETTINGS_CLIENT_ID = 'external-wait-settings';
+
+/** Client id for the singleton server-global Codex credit subscription. */
+const CODEX_CREDITS_CLIENT_ID = 'codex-credits';
 
 /**
  * Publish the sticky header's measured height as `--app-header-h`.
@@ -343,6 +350,7 @@ export function bootstrap(root_element) {
     // 아직 없으면 lane-model의 20초 대체값이 남는다.
     bindQueueGraceSource(() => queueGraceSecondsOf(timing_settings_store));
     const external_wait_settings_store = createExternalWaitSettingsStore();
+    const codex_credit_store = createCodexCreditStore();
     // `▶ 바로 실행` 확인 창의 기본 자원 비율은 서버 전역 설정을 따른다
     // (UI-qbgj §3.6); 값이 아직 없으면 창이 80%로 읽는다.
     bindTakeoverRatioSource(() =>
@@ -408,6 +416,19 @@ export function bootstrap(root_element) {
           values: payload.values,
           overrides: payload.overrides,
           fields: payload.fields
+        });
+      }
+    });
+
+    // Codex 크레딧 채널(UI-9y1k §4.5)의 push. 서버 전역이라 워크스페이스
+    // 전환에도 비우지 않고, 사용량 관측으로 오늘 소모가 바뀔 때도 온다.
+    client.on('codex-credits-snapshot', (payload) => {
+      if (isCodexCreditSnapshot(payload)) {
+        codex_credit_store.set({
+          revision: payload.revision,
+          date: typeof payload.date === 'string' ? payload.date : '',
+          default_daily_cap: payload.default_daily_cap,
+          accounts: payload.accounts
         });
       }
     });
@@ -1070,6 +1091,25 @@ export function bootstrap(root_element) {
       });
     }
 
+    // --- Codex credit subscription lifecycle (server-global) ---
+    let codex_credits_subscribed = false;
+
+    function subscribeCodexCredits() {
+      if (codex_credits_subscribed) {
+        return;
+      }
+      codex_credits_subscribed = true;
+      void tracked_send('subscribe-codex-credits', {
+        id: CODEX_CREDITS_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-codex-credits failed: %o', err);
+        // 구 서버 등으로 구독이 실패하면 값 없음으로 두어 크레딧 행을 그리지
+        // 않고, 다음 재연결이 다시 구독하도록 플래그를 푼다.
+        codex_credit_store.clear();
+        codex_credits_subscribed = false;
+      });
+    }
+
     /**
      * Re-establish the per-workspace push subscriptions on a NEW socket after a
      * reconnect.
@@ -1099,6 +1139,7 @@ export function bootstrap(root_element) {
       model_visibility_subscribed = false;
       timing_settings_subscribed = false;
       external_wait_settings_subscribed = false;
+      codex_credits_subscribed = false;
       worker_queue_unsub = null;
       worker_queue_recovering = false;
       monitor_pipeline_unsub = null;
@@ -1110,6 +1151,7 @@ export function bootstrap(root_element) {
       subscribeModelVisibility();
       subscribeTimingSettings();
       subscribeExternalWaitSettings();
+      subscribeCodexCredits();
       const selected = store.getState().workspace.current?.path;
       if (selected) {
         try {
@@ -1600,6 +1642,7 @@ export function bootstrap(root_element) {
       modelVisibilityStore: model_visibility_store,
       timingSettingsStore: timing_settings_store,
       externalWaitSettingsStore: external_wait_settings_store,
+      codexCreditStore: codex_credit_store,
       transport: (type, payload) => tracked_send(type, payload),
       // 모니터 탭에서 연 헤더 ⚙의 일괄 모드는 보이는 저장소 행을 대상으로 쓴다
       // (UI-nu43 §4.1). 레포 카드 ⚙도 같은 창을 `scope: 'repo'`로 열므로 일괄
@@ -1954,6 +1997,7 @@ export function bootstrap(root_element) {
     subscribeModelVisibility();
     subscribeTimingSettings();
     subscribeExternalWaitSettings();
+    subscribeCodexCredits();
 
     // Load workspaces after startup subscriptions can safely resubscribe.
     void loadWorkspaces().finally(() => {

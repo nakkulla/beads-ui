@@ -133,7 +133,7 @@ function row(patch = {}) {
 const mounted = [];
 
 /**
- * @param {{ rows?: any[], presets?: any, transport?: (type: string, payload: any) => any, onBulkApplied?: (root_dirs: string[]) => void }} [input]
+ * @param {{ rows?: any[], presets?: any, transport?: (type: string, payload: any) => any, onBulkApplied?: (root_dirs: string[]) => void, codexCreditStore?: any }} [input]
  */
 function setup(input = {}) {
   const host = document.createElement('div');
@@ -160,6 +160,8 @@ function setup(input = {}) {
       return () => listeners.delete(fn);
     },
     implPresetStore: { get: () => input.presets || PRESETS },
+    codexCreditStore: input.codexCreditStore,
+    notify: vi.fn(),
     onBulkApplied: input.onBulkApplied
   });
   mounted.push(pane);
@@ -1726,5 +1728,237 @@ describe('createBulkPane gate-r1 (UI-e1ta §3.1, §6, §9)', () => {
     await settle();
 
     expect(el(host, '[data-bulk-badge="claude_account"]')).toBe(null);
+  });
+});
+
+describe('createBulkPane codex order and credits (UI-9y1k §4.6)', () => {
+  const CODEX_THREE = {
+    accounts: [
+      { key: 'c1', number: 1, email: 'one@example.com', status: 'ok' },
+      { key: 'c2', number: 2, email: 'two@example.com', status: 'ok' },
+      { key: 'c3', number: 3, email: 'three@example.com', status: 'ok' }
+    ]
+  };
+
+  /**
+   * One monitor row with the given allow lists.
+   *
+   * @param {string} root_dir
+   * @param {string[]} codex
+   * @param {string[]} [claude]
+   */
+  function policyRow(root_dir, codex, claude = []) {
+    return row({
+      root_dir,
+      name: path.basename(root_dir),
+      provider_limit_policy: {
+        claude: { mode: 'switch', accounts: claude, preempt_pct: null },
+        codex: { mode: 'switch', accounts: codex, preempt_pct: null }
+      }
+    });
+  }
+
+  /**
+   * A credit store holding one snapshot, writable like the real one.
+   *
+   * @param {Record<string, any>} [accounts]
+   */
+  function creditStore(accounts = {}) {
+    /** @type {any} */
+    let state = {
+      revision: 4,
+      date: '2026-10-19',
+      default_daily_cap: 1000,
+      accounts
+    };
+    /** @type {Set<() => void>} */
+    const listeners = new Set();
+    return {
+      get: () => state,
+      /** @param {any} next */
+      set: (next) => {
+        state = next;
+        for (const listener of listeners) {
+          listener();
+        }
+      },
+      /** @param {() => void} listener */
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      }
+    };
+  }
+
+  /**
+   * @param {Array<[string, any]>} calls
+   * @returns {Record<string, any>}
+   */
+  function codexPatchByRepo(calls) {
+    /** @type {Record<string, any>} */
+    const patches = {};
+    for (const payload of payloadsOf(
+      calls,
+      'worker-provider-limit-policy-set'
+    )) {
+      if (payload.runner === 'codex') {
+        patches[payload.root_dir] = payload.patch;
+      }
+    }
+    return patches;
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (/** @type {string} */ url) => ({
+        ok: true,
+        json: async () => (url.includes('claude') ? CLAUDE_ROWS : CODEX_THREE)
+      }))
+    );
+  });
+
+  test('applies the codex order the screen shows to every ticked repository', async () => {
+    const { host, pane, calls } = setup({
+      rows: [policyRow(WS_A, []), policyRow(WS_B, [])]
+    });
+    pane.render('account');
+    await settle();
+
+    for (const key of ['c3', 'c1', 'c2']) {
+      tick(
+        host,
+        `[data-runner="codex"][data-bulk-limit-account="${key}"]`,
+        true
+      );
+    }
+    click(host, '[data-bulk-apply="account"]');
+    await settle();
+
+    const patches = codexPatchByRepo(calls);
+    expect([patches[WS_A].accounts, patches[WS_B].accounts]).toEqual([
+      ['c3', 'c1', 'c2'],
+      ['c3', 'c1', 'c2']
+    ]);
+  });
+
+  test('applies a codex account moved up before the apply', async () => {
+    const { host, pane, calls } = setup({
+      rows: [policyRow(WS_A, ['c1', 'c3']), policyRow(WS_B, ['c1', 'c3'])]
+    });
+    pane.render('account');
+    await settle();
+
+    click(
+      host,
+      '[data-bulk-limit-move="up"][data-bulk-limit-move-account="c3"]'
+    );
+    click(host, '[data-bulk-apply="account"]');
+    await settle();
+
+    expect(codexPatchByRepo(calls)[WS_A].accounts).toEqual(['c3', 'c1']);
+  });
+
+  test('marks a codex list whose repos differ only in order as mixed', async () => {
+    const { host, pane } = setup({
+      rows: [policyRow(WS_A, ['c1', 'c3']), policyRow(WS_B, ['c3', 'c1'])]
+    });
+
+    pane.render('account');
+    await settle();
+
+    expect(
+      el(host, '[data-bulk-badge="codex.accounts"]').getAttribute(
+        'data-bulk-observation'
+      )
+    ).toBe('mixed');
+  });
+
+  test('leaves an order-split codex list out of the apply until touched', async () => {
+    const { host, pane, calls } = setup({
+      rows: [policyRow(WS_A, ['c1', 'c3']), policyRow(WS_B, ['c3', 'c1'])]
+    });
+    pane.render('account');
+    await settle();
+
+    click(host, '[data-bulk-apply="account"]');
+    await settle();
+
+    expect(codexPatchByRepo(calls)[WS_A]).not.toHaveProperty('accounts');
+  });
+
+  test('keeps reading the claude allow list as a set', async () => {
+    const { host, pane } = setup({
+      rows: [
+        policyRow(WS_A, [], ['a@example.com', 'b@example.com']),
+        policyRow(WS_B, [], ['b@example.com', 'a@example.com'])
+      ]
+    });
+
+    pane.render('account');
+    await settle();
+
+    expect(
+      el(host, '[data-bulk-badge="claude.accounts"]').getAttribute(
+        'data-bulk-observation'
+      )
+    ).toBe('same');
+  });
+
+  test('writes the credit switch to the global store without an apply', async () => {
+    const store = creditStore();
+    const { host, pane, calls } = setup({
+      codexCreditStore: store,
+      transport: async (type) =>
+        type === 'codex-credits-set'
+          ? { ok: true, snapshot: { ...store.get(), revision: 5 } }
+          : OK
+    });
+    pane.render('account');
+    await settle();
+
+    tick(host, '[data-codex-credit-allow="c3"]', true);
+    await settle();
+
+    expect(calls.map(([type]) => type)).toEqual(['codex-credits-set']);
+  });
+
+  test('labels the credit section as applying to every repository', async () => {
+    const { host, pane } = setup({ codexCreditStore: creditStore() });
+
+    pane.render('account');
+    await settle();
+
+    expect(el(host, '[data-bulk-codex-credits]').textContent).toContain(
+      '모든 저장소에 적용(전역)'
+    );
+  });
+
+  test('shows the global credit value the execution pane saved', async () => {
+    const store = creditStore();
+    const { host, pane } = setup({ codexCreditStore: store });
+    pane.render('account');
+    await settle();
+
+    store.set({
+      ...store.get(),
+      revision: 5,
+      accounts: {
+        c3: { allow_credits: true, daily_cap: 300, consumed_today: 0 }
+      }
+    });
+
+    expect(el(host, '[data-codex-credit-cap="c3"]').value).toBe('300');
+  });
+
+  test('leaves the credit section out of the footer count', async () => {
+    const { host, pane } = setup({ codexCreditStore: creditStore() });
+
+    pane.render('account');
+    await settle();
+
+    expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
+      '8행을 저장소 2곳에 씁니다'
+    );
   });
 });
