@@ -116,6 +116,33 @@ describe('codex credit settings (UI-9y1k §4.3)', () => {
     expect(warnings).toHaveLength(1);
   });
 
+  test('reads a file with one corrupt ledger entry as credits off', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        revision: 3,
+        settings: { [KEY]: { allow_credits: true, daily_cap: 1000 } },
+        ledger: {
+          [KEY]: {
+            date: '2026-10-19',
+            balance: 61000,
+            observed_at: 1_792_400_000,
+            consumed: '1500',
+            first_use_notified: true,
+            cap_notified: true
+          }
+        }
+      })
+    );
+    const store = makeStore();
+
+    const setting = store.settingsOf(KEY);
+
+    expect(setting.allow_credits).toBe(false);
+    expect(store.anyAllowed()).toBe(false);
+    expect(warnings).toHaveLength(1);
+  });
+
   test('persists one account setting and reads it back from the file', () => {
     allow(makeStore(), 500);
 

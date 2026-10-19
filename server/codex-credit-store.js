@@ -166,8 +166,11 @@ function parseLedgerEntry(raw) {
 }
 
 /**
- * Parse the persisted shape, or null when the root is not one. A bad entry
- * inside a good root drops alone.
+ * Parse the persisted shape, or null when it is not one. Any bad setting or
+ * ledger entry rejects the WHOLE file: dropping one entry alone could keep an
+ * account's `allow_credits: true` while its consumption reads as 0, which
+ * would offer an account already at its cap again (§4.7 — a damaged file
+ * fails toward not spending).
  *
  * @param {unknown} raw
  * @returns {CreditState|null}
@@ -187,15 +190,17 @@ function parseState(raw) {
   const state = { revision: raw.revision, settings: {}, ledger: {} };
   for (const [key, value] of Object.entries(raw.settings)) {
     const setting = isAccountKey(key) ? parseSetting(value) : null;
-    if (setting) {
-      state.settings[key] = setting;
+    if (!setting) {
+      return null;
     }
+    state.settings[key] = setting;
   }
   for (const [key, value] of Object.entries(raw.ledger)) {
     const entry = isAccountKey(key) ? parseLedgerEntry(value) : null;
-    if (entry) {
-      state.ledger[key] = entry;
+    if (!entry) {
+      return null;
     }
+    state.ledger[key] = entry;
   }
   return state;
 }

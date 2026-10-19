@@ -174,6 +174,58 @@ describe('POST /api/codex/switch-candidate (UI-9y1k §4.4)', () => {
     });
   });
 
+  test('answers policy_wait when the policy turns to wait during the catalog read', async () => {
+    /** @type {Record<string, unknown>} */
+    let policy = { mode: 'switch', accounts: [ACCOUNT_2, ACCOUNT_1] };
+    const handler = makeHandler({
+      queueSnapshot: () => ({
+        provider_limit_policy: { codex: { preempt_pct: null, ...policy } },
+        provider_hold: {}
+      }),
+      listAccounts: async () => {
+        policy = { mode: 'wait', accounts: [ACCOUNT_2, ACCOUNT_1] };
+        return {
+          ok: true,
+          accounts: [row(ACCOUNT_1, 1, 20), row(ACCOUNT_2, 2, 60)],
+          active_key: ACCOUNT_3
+        };
+      }
+    });
+
+    const res = await postCandidate(handler, { root_dir: ROOT });
+
+    expect(res.body).toEqual({
+      ok: true,
+      decision: 'none',
+      reason: 'policy_wait'
+    });
+  });
+
+  test('never picks an account removed from the allow list during the catalog read', async () => {
+    /** @type {string[]} */
+    let allowed = [ACCOUNT_2, ACCOUNT_1];
+    const handler = makeHandler({
+      queueSnapshot: () => ({
+        provider_limit_policy: {
+          codex: { mode: 'switch', accounts: allowed, preempt_pct: null }
+        },
+        provider_hold: {}
+      }),
+      listAccounts: async () => {
+        allowed = [ACCOUNT_1];
+        return {
+          ok: true,
+          accounts: [row(ACCOUNT_1, 1, 20), row(ACCOUNT_2, 2, 60)],
+          active_key: ACCOUNT_3
+        };
+      }
+    });
+
+    const res = await postCandidate(handler, { root_dir: ROOT });
+
+    expect(res.body).toMatchObject({ decision: 'switch', account_number: 1 });
+  });
+
   test('picks the first allowed account in the user order', async () => {
     const handler = makeHandler();
 

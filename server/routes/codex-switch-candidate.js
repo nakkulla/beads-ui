@@ -109,6 +109,23 @@ function readBody(raw) {
 }
 
 /**
+ * The Codex limit policy's answer before any selection: `policy_wait` while
+ * it waits, `unconfigured` for an empty allow list, else the allow list in
+ * the user's order.
+ *
+ * @param {any} queue
+ * @returns {{ reason: 'policy_wait'|'unconfigured' }|{ allowed: string[] }}
+ */
+function policyOf(queue) {
+  const policy = queue?.provider_limit_policy?.codex;
+  if (policy?.mode === 'wait') {
+    return { reason: 'policy_wait' };
+  }
+  const allowed = Array.isArray(policy?.accounts) ? policy.accounts : [];
+  return allowed.length === 0 ? { reason: 'unconfigured' } : { allowed };
+}
+
+/**
  * Accounts a usage hold of this workspace's queue names.
  *
  * @param {any} queue
@@ -163,18 +180,11 @@ export function createCodexSwitchCandidateHandler(deps = {}) {
       res.status(400).json({ ok: false, error: 'bad_request' });
       return;
     }
-    const policy = queueSnapshot(workspace)?.provider_limit_policy?.codex;
-    if (policy?.mode === 'wait') {
+    const before = policyOf(queueSnapshot(workspace));
+    if ('reason' in before) {
       res
         .status(200)
-        .json({ ok: true, decision: 'none', reason: 'policy_wait' });
-      return;
-    }
-    const allowed = Array.isArray(policy?.accounts) ? policy.accounts : [];
-    if (allowed.length === 0) {
-      res
-        .status(200)
-        .json({ ok: true, decision: 'none', reason: 'unconfigured' });
+        .json({ ok: true, decision: 'none', reason: before.reason });
       return;
     }
     /** @type {any} */
@@ -207,13 +217,22 @@ export function createCodexSwitchCandidateHandler(deps = {}) {
           body.tried.includes(account.number)
       )
       .map((account) => account.key);
-    // The queue is read again after the catalog, so a hold written while
-    // codex-auth ran still counts.
+    // The codex-auth read takes seconds, so the policy and the holds are read
+    // again from ONE fresh snapshot: a switch to `wait`, a removed account or
+    // a hold written meanwhile decides this answer, not the pre-read state.
+    const fresh = queueSnapshot(workspace);
+    const after = policyOf(fresh);
+    if ('reason' in after) {
+      res
+        .status(200)
+        .json({ ok: true, decision: 'none', reason: after.reason });
+      return;
+    }
     const decision = selectCodexSwitchCandidate({
       accounts,
-      allowed,
+      allowed: after.allowed,
       current_account,
-      held_accounts: heldAccountsOf(queueSnapshot(workspace)),
+      held_accounts: heldAccountsOf(fresh),
       excluded_accounts,
       exclude_same_workspace: body.limit_kind === 'workspace_credits',
       kind: 'reactive',
