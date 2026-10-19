@@ -176,6 +176,17 @@ export function externalWaitSettingsFilePath() {
 }
 
 /**
+ * Absolute path to the SERVER-GLOBAL Codex credit file (UI-9y1k §4.3): each
+ * account's credit permission and daily cap, and today's observed consumption.
+ * Shared across workspaces because the balance belongs to the account.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/codex-credits.json`.
+ */
+export function codexCreditFilePath() {
+  return path.join(stateHome(), 'bdui', 'codex-credits.json');
+}
+
+/**
  * Absolute path to the SERVER-GLOBAL `bdui` state root, the directory every
  * per-workspace slug and server-global file lives in.
  *

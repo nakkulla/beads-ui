@@ -1,12 +1,20 @@
 import { createServer } from 'node:http';
 import { createApp } from './app.js';
 import { printServerUrl } from './cli/daemon.js';
+import {
+  codexCreditStore,
+  createCodexCreditPoller
+} from './codex-credit-store.js';
 import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import { debug, enableAllDebug } from './logging.js';
 import { installPlacementService } from './placement/service.js';
 import { createPoller } from './poller.js';
 import { registerWorkspace, watchRegistry } from './registry-watcher.js';
+import {
+  listAccountsFresh as listCodexAccountsFresh,
+  subscribeCreditObservations
+} from './routes/codex-usage.js';
 import { publishRuntimeIdentity } from './runtime-startup.js';
 import { onTimingSettingsChanged, timingSeconds } from './timing-settings.js';
 import { watchDb } from './watcher.js';
@@ -175,6 +183,21 @@ onTimingSettingsChanged((snapshot) => {
     /** @type {number} */ (snapshot.values.list_poll_interval_seconds)
   );
 });
+
+// Codex credit ledger (UI-9y1k §4.3): every parsed codex-auth list feeds the
+// ledger, and while any account allows credits the server re-reads usage with
+// `--api` every ten minutes so a session spending credits unwatched still
+// moves the ledger and its notices. A settings change re-arms or stops it.
+subscribeCreditObservations((observations) => {
+  codexCreditStore().observe(observations);
+});
+const codex_credit_poller = createCodexCreditPoller({
+  store: codexCreditStore(),
+  readFresh: () => listCodexAccountsFresh(),
+  log
+});
+codexCreditStore().onChange(() => codex_credit_poller.sync());
+codex_credit_poller.sync();
 
 watchRegistry(
   (entries) => {

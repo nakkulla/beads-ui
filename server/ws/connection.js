@@ -12,6 +12,12 @@ import {
   handleSubscribeAdr,
   handleUnsubscribeAdr
 } from './adr-handlers.js';
+import {
+  detachCodexCredits,
+  handleCodexCreditsSet,
+  handleSubscribeCodexCredits,
+  handleUnsubscribeCodexCredits
+} from './codex-credit-handlers.js';
 import { handleGetCompare } from './compare-handlers.js';
 import {
   detachConnectionFromAllRegistries,
@@ -330,6 +336,7 @@ export function attachWsServer(http_server, options = {}) {
         detachModelVisibility(ws);
         detachTimingSettings(ws);
         detachExternalWaitSettings(ws);
+        detachCodexCredits(ws);
       } catch {
         // ignore cleanup errors
       }
@@ -589,6 +596,15 @@ export async function handleMessage(ws, data) {
       return;
     case 'external-wait-settings-set':
       handleExternalWaitSettingsSet(ws, req);
+      return;
+    case 'subscribe-codex-credits':
+      handleSubscribeCodexCredits(ws, req);
+      return;
+    case 'unsubscribe-codex-credits':
+      handleUnsubscribeCodexCredits(ws, req);
+      return;
+    case 'codex-credits-set':
+      handleCodexCreditsSet(ws, req);
       return;
     case 'conversation-settings-get':
       handleConversationSettingsGet(ws, req);

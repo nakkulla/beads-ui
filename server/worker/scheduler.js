@@ -84,6 +84,11 @@ import {
 } from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import {
+  AUTO_SWITCH_5H_MAX_PCT,
+  AUTO_SWITCH_7D_MAX_PCT,
+  selectCodexSwitchCandidate
+} from './codex-switch-candidate.js';
+import {
   autoResumeRetryDelayMs,
   continuationRefusalClass,
   isRetryableRefusal
@@ -235,8 +240,6 @@ const resume_in_flight = new Set();
 // and a judgment's own `bd show` wakes the bd watcher that leads to the next
 // observation, so an unthrottled retry would feed itself.
 const WAIT_RESOLVE_RETRY_MS = 60_000;
-const AUTO_SWITCH_5H_MAX_PCT = 80;
-const AUTO_SWITCH_7D_MAX_PCT = 90;
 const RESUME_HANDOFF_MAX_CHARS = 4_000;
 /**
  * Render a `closed_at` value as ISO 8601: epoch ms or a parsable string
@@ -765,6 +768,10 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {typeof prepareCodexGuardHome} [prepareCodexGuardHome]
  * @property {(key: string) => string} [codexAccountHomeDir]
  * @property {string} [codexRoot]
+ * @property {import('./codex-switch-candidate.js').CreditLedger} [codexCredit]
+ * The server-global Codex credit settings and today's consumption (UI-9y1k
+ * §4.3). Absent wiring reads as every account's credits off, so a Codex
+ * switch then uses window headroom alone.
  * @property {string} [homeDir]
  * @property {() => Promise<string|null>} [resolveDotfilesRoot]
  * The dotfiles repository root, for the dispatch facts card (harness-reduction
@@ -1998,13 +2005,16 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Choose the lowest-usage healthy account the user allows for one runner.
+   * Choose the healthy account the user allows for one runner. Codex follows
+   * the allow list's own order with a reactive-only credit pass
+   * (`selectCodexSwitchCandidate`, UI-9y1k §4.2); Claude keeps the
+   * lowest-long-window-load rule.
    *
    * @param {string} workspace
    * @param {string} runner
    * @param {string|null} current_account
    * @param {string[]} allowed
-   * @param {{ max_pct?: number|null, catalog_accounts?: import('./account-catalog.js').Account[] }} [options]
+   * @param {{ max_pct?: number|null, catalog_accounts?: import('./account-catalog.js').Account[], kind?: 'reactive'|'preempt' }} [options]
    * @returns {Promise<string|null>}
    */
   async function selectProviderSwitchAccount(
@@ -2028,6 +2038,18 @@ export function createScheduler(deps) {
           held_accounts.add(target.account);
         }
       }
+    }
+    if (runner === 'codex') {
+      const decision = selectCodexSwitchCandidate({
+        accounts,
+        allowed,
+        current_account,
+        held_accounts,
+        max_pct: options.max_pct,
+        kind: options.kind === 'preempt' ? 'preempt' : 'reactive',
+        credit: deps.codexCredit ?? null
+      });
+      return decision.decision === 'switch' ? decision.key : null;
     }
     return (
       accounts
@@ -3953,7 +3975,7 @@ export function createScheduler(deps) {
       runner,
       current,
       policy.accounts,
-      { max_pct: preempt_pct }
+      { max_pct: preempt_pct, kind: 'preempt' }
     );
     if (candidate === null) {
       return null;
@@ -4044,7 +4066,7 @@ export function createScheduler(deps) {
               runner,
               from,
               policy.accounts,
-              { max_pct: policy.preempt_pct }
+              { max_pct: policy.preempt_pct, kind: 'preempt' }
             )
           : null;
         if (!row || (crossed && !to)) {

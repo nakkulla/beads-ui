@@ -34,6 +34,7 @@ import {
   workerLabels
 } from '../../app/utils/worker-eligibility.js';
 import { kvGetJson, runBdJsonProjected, runShell } from '../bd.js';
+import { codexCreditStore } from '../codex-credit-store.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
@@ -890,6 +891,7 @@ export function defaultProbePid(pid) {
  *   gh?: any,
  *   makeRunner?: (name: string) => any,
  *   accountCatalog?: ReturnType<typeof createAccountCatalog>,
+ *   codexCredit?: import('./codex-switch-candidate.js').CreditLedger,
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
@@ -1347,6 +1349,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         kvGetJson(key, { cwd: workspace })),
     makeRunner,
     accountCatalog,
+    // The server-global credit settings the Codex switch's credit pass reads
+    // (UI-9y1k §4.2).
+    codexCredit: options.codexCredit || codexCreditStore(),
     providerHealth: {
       /**
        * Forward a durable hold transition after the controller is bound.
