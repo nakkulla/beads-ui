@@ -105,8 +105,9 @@ function hasSpendableCredits(account) {
  * @param {string|null} input.current_account - The account being left.
  * @param {Iterable<string>} [input.held_accounts] - Accounts under a usage hold.
  * @param {Iterable<string>} [input.excluded_accounts] - Accounts already tried.
- * @param {boolean} [input.exclude_same_workspace] - Drop accounts that share the
- * current account's workspace id (a workspace-wide credit limit).
+ * @param {boolean} [input.exclude_same_workspace] - On a workspace-wide credit
+ * limit, drop accounts sharing the current account's workspace id from the
+ * credit pass only: windows are per account, the credit balance is shared.
  * @param {number|null} [input.max_pct] - Preemptive threshold every window must
  * stay under.
  * @param {'reactive'|'preempt'} [input.kind] - `preempt` never uses credits.
@@ -142,8 +143,6 @@ export function selectCodexSwitchCandidate(input) {
       key === input.current_account ||
       held.has(key) ||
       excluded.has(key) ||
-      (current_workspace !== null &&
-        workspaceIdOf(key) === current_workspace) ||
       ordered.includes(account)
     ) {
       continue;
@@ -168,7 +167,11 @@ export function selectCodexSwitchCandidate(input) {
   let capped = false;
   let disabled = false;
   for (const account of ordered) {
-    if (!hasSpendableCredits(account)) {
+    if (
+      (current_workspace !== null &&
+        workspaceIdOf(account.key) === current_workspace) ||
+      !hasSpendableCredits(account)
+    ) {
       continue;
     }
     const setting = input.credit?.settingsOf(account.key) ?? null;

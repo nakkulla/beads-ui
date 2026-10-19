@@ -34731,7 +34731,7 @@ describe('selectCodexSwitchCandidate (UI-9y1k §4.2)', () => {
     expect(decision).toMatchObject({ key: '03', credit_mode: true });
   });
 
-  test('drops accounts sharing the current workspace for a workspace limit', () => {
+  test('keeps a same-workspace account with window room for a workspace limit', () => {
     const accounts = [codexRow('u2::ws-a', 2, 10), codexRow('u3::ws-b', 3, 10)];
 
     const decision = selectCodexSwitchCandidate({
@@ -34741,7 +34741,28 @@ describe('selectCodexSwitchCandidate (UI-9y1k §4.2)', () => {
       exclude_same_workspace: true
     });
 
-    expect(decision).toMatchObject({ key: 'u3::ws-b' });
+    expect(decision).toMatchObject({
+      key: 'u2::ws-a',
+      credit_mode: false,
+      reason: 'window'
+    });
+  });
+
+  test('drops same-workspace credit accounts for a workspace limit', () => {
+    const accounts = [
+      codexRow('u2::ws-a', 2, 100, CREDITS),
+      codexRow('u3::ws-b', 3, 100, CREDITS)
+    ];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['u2::ws-a', 'u3::ws-b'],
+      current_account: 'u1::ws-a',
+      exclude_same_workspace: true,
+      credit: ledger(['u2::ws-a', 'u3::ws-b'])
+    });
+
+    expect(decision).toMatchObject({ key: 'u3::ws-b', credit_mode: true });
   });
 
   test('skips held and excluded accounts', () => {

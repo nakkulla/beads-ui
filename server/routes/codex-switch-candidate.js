@@ -234,6 +234,7 @@ export function createCodexSwitchCandidateHandler(deps = {}) {
       current_account,
       held_accounts: heldAccountsOf(fresh),
       excluded_accounts,
+      // The workspace shares one credit balance, not the per-account windows.
       exclude_same_workspace: body.limit_kind === 'workspace_credits',
       kind: 'reactive',
       credit: deps.credit ?? codexCreditStore()

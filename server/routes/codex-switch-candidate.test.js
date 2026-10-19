@@ -262,15 +262,50 @@ describe('POST /api/codex/switch-candidate (UI-9y1k §4.4)', () => {
     expect(res.body).toMatchObject({ decision: 'switch', account_number: 3 });
   });
 
-  test('drops the current workspace for a workspace credit limit', async () => {
-    const handler = makeHandler();
+  test('keeps a same-workspace account with window room for a workspace credit limit', async () => {
+    const handler = makeHandler({
+      policy: { mode: 'switch', accounts: [ACCOUNT_2, ACCOUNT_3] }
+    });
 
     const res = await postCandidate(handler, {
       root_dir: ROOT,
       limit_kind: 'workspace_credits'
     });
 
-    expect(res.body).toMatchObject({ decision: 'switch', account_number: 3 });
+    expect(res.body).toMatchObject({
+      decision: 'switch',
+      account_number: 2,
+      credit_mode: false,
+      reason: 'window'
+    });
+  });
+
+  test('drops the current workspace from credits for a workspace credit limit', async () => {
+    const credits = { has_credits: true, unlimited: false, balance: 62500 };
+    const handler = makeHandler({
+      policy: { mode: 'switch', accounts: [ACCOUNT_2, ACCOUNT_3] },
+      accounts: [
+        row(ACCOUNT_1, 1, 100),
+        row(ACCOUNT_2, 2, 100, { credits }),
+        row(ACCOUNT_3, 3, 100, { credits })
+      ],
+      credit: {
+        settingsOf: () => ({ allow_credits: true, daily_cap: 1000 }),
+        consumedToday: () => 0
+      }
+    });
+
+    const res = await postCandidate(handler, {
+      root_dir: ROOT,
+      limit_kind: 'workspace_credits'
+    });
+
+    expect(res.body).toMatchObject({
+      decision: 'switch',
+      account_number: 3,
+      credit_mode: true,
+      reason: 'credits'
+    });
   });
 
   test('reads the current account from a bdui mirror home', async () => {
