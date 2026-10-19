@@ -91,6 +91,10 @@
       "readback_recompute_reviewed",
       "route_pin_last"
     ],
+    "entry_question_worker_answer": {
+      "pin": "before_entry_question",
+      "receipt": "after_answer"
+    },
     "automatic_queue_handoff": {
       "applies_to": "separated_prerequisite_or_followup_created_or_adopted_by_originating_session",
       "entry_question": "none",

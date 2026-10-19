@@ -13,6 +13,8 @@ import { parseDescriptionScope } from './artifact-scope.js';
  *   this repository only receives its result (queue placement) via the
  *   existing place API.
  * - `quick_fix_handoff.session_owned_pin` — no reader.
+ * - `quick_fix_handoff.entry_question_worker_answer` — a session-side write
+ *   order (pin before the entry question, receipt after the answer); no reader.
  * - `description_scope.writer` — `parseDescriptionScope` reads only the
  *   `section`/`item` rules.
  * - `metadata.parent_keys.worker_created_from` — already consumed as a code
