@@ -189,21 +189,28 @@ export function observeKey(rows, key, layer) {
 
 /**
  * Observe a SET-valued key — the per-runner allow list (§6). Two repos agree
- * only when their sets hold exactly the same members; order is not a value.
+ * only when their sets hold exactly the same members; order is not a value,
+ * unless `ordered` says the list's order is its meaning (the Codex allow list
+ * is the switch order, UI-9y1k §4.6) — then the same members in another order
+ * are `mixed`.
  *
  * @param {Array<Record<string, any>>} rows
  * @param {(row: Record<string, any>) => string[]} readSet - How to pull one
  * repo's set out of its row.
+ * @param {{ ordered?: boolean }} [options]
  * @returns {{ state: 'same'|'empty'|'mixed', value: string[], per_repo: Array<{ root_dir: string, name: string, value: string }> }}
  */
-export function observeSet(rows, readSet) {
+export function observeSet(rows, readSet, options = {}) {
   const list = Array.isArray(rows) ? rows.filter((row) => isRecord(row)) : [];
   const per_repo = list.map((row) => {
     const members = readSet(row);
     return {
       root_dir: String(row.root_dir ?? ''),
       name: String(row.name ?? row.root_dir ?? ''),
-      value: [...members].sort().join(',')
+      value: (options.ordered === true
+        ? [...members]
+        : [...members].sort()
+      ).join(',')
     };
   });
   if (per_repo.length === 0) {

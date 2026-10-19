@@ -44,6 +44,7 @@ import {
   loadAccountCatalog as readAccountCatalog
 } from './account-catalog.js';
 import { appliedPresetFieldFor } from './bulk-observation.js';
+import { createCodexCreditControls } from './codex-credit-controls.js';
 import {
   AUTO_LITERAL,
   BOOLEAN_DRAFT_ON,
@@ -211,6 +212,9 @@ function isRecord(value) {
  * @property {(queue: any) => void} [onQueueAdopt] - Where an authoritative queue
  * snapshot from a mutation response goes. The dialog writes it back into the
  * shared queue store; the monitor deck adopts it for the tile it belongs to.
+ * @property {{ get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [codexCreditStore]
+ * - Server-global Codex credit settings and today's consumption (UI-9y1k
+ * §4.5); without it the credit rows are not drawn.
  */
 
 /**
@@ -389,6 +393,17 @@ export function createExecutionPane(mount_element, binding) {
   let active_section = 'worker';
 
   let destroyed = false;
+
+  /**
+   * The server-global credit rows under the Codex limit policy (UI-9y1k §4.5).
+   * The same module draws the bulk window's credit section.
+   */
+  const codex_credit_controls = createCodexCreditControls({
+    store: binding.codexCreditStore,
+    transport,
+    notify,
+    onChange: () => doRender()
+  });
 
   /** @returns {any} */
   function queueOf() {
@@ -1301,6 +1316,34 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
+   * Move one allowed account up or down. The allow list's ORDER is the Codex
+   * switch order (UI-9y1k §4.2), so the whole reordered list is saved at once
+   * through the same overlay and chain as a toggle.
+   *
+   * @param {'claude'|'codex'} runner
+   * @param {string} account_key
+   * @param {-1|1} delta
+   */
+  function onLimitAccountMove(runner, account_key, delta) {
+    const current = limitPolicyOf(runner).accounts;
+    const index = current.indexOf(account_key);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= current.length) {
+      return;
+    }
+    const next = current.slice();
+    next[index] = current[target];
+    next[target] = account_key;
+    limit_accounts_pending[runner] = next;
+    doRender();
+    queueLimitSave(runner, { accounts: next }, () => {
+      if (limit_accounts_pending[runner] === next) {
+        limit_accounts_pending[runner] = null;
+      }
+    });
+  }
+
+  /**
    * @param {'claude'|'codex'} runner
    * @param {boolean} on
    */
@@ -2146,42 +2189,9 @@ export function createExecutionPane(mount_element, binding) {
       <div class=${`settings-dialog__row${dim}`} data-limit-accounts=${runner}>
         <span class="settings-dialog__row-label">전환 허용 계정</span>
         <span class="settings-dialog__controls">
-          ${rows.map(
-            (/** @type {any} */ row) =>
-              html`<label class="settings-dialog__check">
-                <input
-                  type="checkbox"
-                  data-limit-runner=${runner}
-                  data-limit-account=${row.key}
-                  .checked=${live(policy.accounts.includes(row.key))}
-                  @change=${(/** @type {Event} */ ev) =>
-                    onLimitAccountToggle(
-                      runner,
-                      row.key,
-                      /** @type {HTMLInputElement} */ (ev.target).checked
-                    )}
-                />
-                ${accountRowLabel(runner, row)}
-              </label>`
-          )}
-          ${orphans.map(
-            (key) =>
-              html`<label class="settings-dialog__check">
-                <input
-                  type="checkbox"
-                  data-limit-runner=${runner}
-                  data-limit-account=${key}
-                  .checked=${live(true)}
-                  @change=${(/** @type {Event} */ ev) =>
-                    onLimitAccountToggle(
-                      runner,
-                      key,
-                      /** @type {HTMLInputElement} */ (ev.target).checked
-                    )}
-                />
-                ${`${key} (목록에 없음)`}
-              </label>`
-          )}
+          ${runner === 'codex'
+            ? codexAllowListTemplate(policy, rows)
+            : allowListTemplate(runner, policy, rows, orphans)}
           ${provider
             ? ''
             : html`<span class="settings-dialog__hint"
@@ -2237,6 +2247,139 @@ export function createExecutionPane(mount_element, binding) {
           >
         </span>
       </div>`;
+  }
+
+  /**
+   * The Claude allow list exactly as before UI-9y1k: catalog order, a set.
+   *
+   * @param {'claude'|'codex'} runner
+   * @param {{ accounts: string[] }} policy
+   * @param {any[]} rows
+   * @param {string[]} orphans
+   * @returns {TemplateResult}
+   */
+  function allowListTemplate(runner, policy, rows, orphans) {
+    return html`${rows.map(
+      (/** @type {any} */ row) =>
+        html`<label class="settings-dialog__check">
+          <input
+            type="checkbox"
+            data-limit-runner=${runner}
+            data-limit-account=${row.key}
+            .checked=${live(policy.accounts.includes(row.key))}
+            @change=${(/** @type {Event} */ ev) =>
+              onLimitAccountToggle(
+                runner,
+                row.key,
+                /** @type {HTMLInputElement} */ (ev.target).checked
+              )}
+          />
+          ${accountRowLabel(runner, row)}
+        </label>`
+    )}
+    ${orphans.map(
+      (key) =>
+        html`<label class="settings-dialog__check">
+          <input
+            type="checkbox"
+            data-limit-runner=${runner}
+            data-limit-account=${key}
+            .checked=${live(true)}
+            @change=${(/** @type {Event} */ ev) =>
+              onLimitAccountToggle(
+                runner,
+                key,
+                /** @type {HTMLInputElement} */ (ev.target).checked
+              )}
+          />
+          ${`${key} (목록에 없음)`}
+        </label>`
+    )}`;
+  }
+
+  /**
+   * The Codex allow list in SWITCH ORDER (UI-9y1k §4.5): allowed accounts in
+   * the stored order, each with ▲/▼, then the accounts not allowed in catalog
+   * order. Moving saves at once, like a toggle.
+   *
+   * @param {{ accounts: string[] }} policy
+   * @param {any[]} rows
+   * @returns {TemplateResult}
+   */
+  function codexAllowListTemplate(policy, rows) {
+    /** @type {Map<string, any>} */
+    const by_key = new Map(rows.map((row) => [String(row.key), row]));
+    const last = policy.accounts.length - 1;
+    return html`${policy.accounts.map((key, index) => {
+      const row = by_key.get(key);
+      const label = row
+        ? accountRowLabel('codex', row)
+        : `${key} (목록에 없음)`;
+      return html`<span
+        class="settings-dialog__limit-order"
+        data-limit-order-item=${key}
+      >
+        <label class="settings-dialog__check">
+          <input
+            type="checkbox"
+            data-limit-runner="codex"
+            data-limit-account=${key}
+            .checked=${live(true)}
+            @change=${(/** @type {Event} */ ev) =>
+              onLimitAccountToggle(
+                'codex',
+                key,
+                /** @type {HTMLInputElement} */ (ev.target).checked
+              )}
+          />
+          ${`${index + 1}. ${label}`}
+        </label>
+        <button
+          type="button"
+          class="op-btn op-btn--ghost op-btn--icon"
+          aria-label=${`${label} 위로`}
+          title="위로"
+          data-limit-move="up"
+          data-limit-move-account=${key}
+          ?disabled=${index === 0}
+          @click=${() => onLimitAccountMove('codex', key, -1)}
+        >
+          ▲
+        </button>
+        <button
+          type="button"
+          class="op-btn op-btn--ghost op-btn--icon"
+          aria-label=${`${label} 아래로`}
+          title="아래로"
+          data-limit-move="down"
+          data-limit-move-account=${key}
+          ?disabled=${index === last}
+          @click=${() => onLimitAccountMove('codex', key, 1)}
+        >
+          ▼
+        </button>
+      </span>`;
+    })}
+    ${rows
+      .filter((row) => !policy.accounts.includes(String(row.key)))
+      .map(
+        (/** @type {any} */ row) =>
+          html`<label class="settings-dialog__check">
+            <input
+              type="checkbox"
+              data-limit-runner="codex"
+              data-limit-account=${row.key}
+              .checked=${live(false)}
+              @change=${(/** @type {Event} */ ev) =>
+                onLimitAccountToggle(
+                  'codex',
+                  row.key,
+                  /** @type {HTMLInputElement} */ (ev.target).checked
+                )}
+            />
+            ${accountRowLabel('codex', row)}
+          </label>`
+      )}`;
   }
 
   /**
@@ -2992,6 +3135,7 @@ export function createExecutionPane(mount_element, binding) {
         ${accountRow('codex_account', 'Codex', 'codex')}
         ${limitPolicyBlock('claude', 'Claude')}
         ${limitPolicyBlock('codex', 'Codex')}
+        ${codex_credit_controls.template(account_catalog.codex?.accounts || [])}
       </div>
     `;
   }
@@ -3066,6 +3210,7 @@ export function createExecutionPane(mount_element, binding) {
     destroy() {
       destroyed = true;
       ++generation;
+      codex_credit_controls.destroy();
       window.removeEventListener('focus', onWindowFocus);
       // lit owns every listener it installed inside this host, so clearing the
       // host through lit is what releases them. The clear MUST go through

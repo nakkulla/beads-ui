@@ -1,5 +1,5 @@
 /**
- * @typedef {{ key: string, number?: number, email: string, status?: string, windows?: Array<{ key?: string, pct: number, resetsAt: string|null }> }} Account
+ * @typedef {{ key: string, number?: number, email: string, status?: string, windows?: Array<{ key?: string, pct: number, resetsAt: string|null }>, credits?: { has_credits: boolean, unlimited: boolean, balance: number|null } }} Account
  * @typedef {{ ok: true, accounts: Account[], active_key: string|null }|{ ok: false, error: string }} AccountList
  * @typedef {(accounts: Account[], active_key: string|null) => void} CatalogObserver
  */

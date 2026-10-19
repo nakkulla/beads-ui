@@ -12,6 +12,7 @@ import {
   __setTimingOverridesForTest
 } from '../timing-settings.js';
 import { createBeadTimeline } from './bead-timeline.js';
+import { selectCodexSwitchCandidate } from './codex-switch-candidate.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import {
@@ -1780,6 +1781,8 @@ function setup(opts) {
       : undefined,
     probePid: opts.probePid,
     processController: opts.processController,
+    // Absent by default: every account's Codex credits read as off.
+    codexCredit: /** @type {any} */ (opts).codexCredit,
     sessionMonitors: opts.sessionMonitors,
     // Absent by default: the external-wait store is a live-wiring dep.
     externalWait: /** @type {any} */ (opts).externalWait,
@@ -6625,6 +6628,253 @@ describe('scheduler provider hold and recovery', () => {
       account_sources: { claude: null, codex: 'outage_switch' },
       account_switched_from: 'codex-hot'
     });
+  });
+
+  /**
+   * A Codex catalog whose active login `codex-hot` is spent, plus the given
+   * rows (UI-9y1k §4.2).
+   *
+   * @param {Array<{ key: string, number: number, pct: number, credits?: any, five_hour?: number }>} rows
+   * @param {number} [hot_pct] - The active login's `5h` usage.
+   */
+  function orderedCodexCatalog(rows, hot_pct = 100) {
+    return {
+      ok: true,
+      active_key: 'codex-hot',
+      accounts: [
+        {
+          key: 'codex-hot',
+          number: 9,
+          email: 'hot@example.com',
+          status: 'ok',
+          windows: [{ key: '5h', pct: hot_pct, resetsAt: null }]
+        },
+        ...rows.map((row) => ({
+          key: row.key,
+          number: row.number,
+          email: `${row.key}@example.com`,
+          status: 'ok',
+          windows: [
+            { key: '5h', pct: row.five_hour ?? 10, resetsAt: null },
+            { key: '7d', pct: row.pct, resetsAt: null }
+          ],
+          ...(row.credits ? { credits: row.credits } : {})
+        }))
+      ]
+    };
+  }
+
+  /**
+   * Codex credit settings where only `allowed` may spend credits.
+   *
+   * @param {string[]} allowed
+   * @param {number} [consumed]
+   */
+  function codexCreditLedger(allowed, consumed = 0) {
+    return {
+      settingsOf: (/** @type {string} */ key) => ({
+        allow_credits: allowed.includes(key),
+        daily_cap: 1000
+      }),
+      consumedToday: () => consumed
+    };
+  }
+
+  /**
+   * Run one Codex attempt into a usage limit and return its continuation.
+   *
+   * @param {any} catalog
+   * @param {string[]} allowed
+   * @param {any} [codexCredit]
+   */
+  async function codexLimitChild(catalog, allowed, codexCredit) {
+    const env = setup({
+      config: { X1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1,
+      codexCredit,
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { key: email, email }
+          })),
+          resolveCodex: vi.fn(async (key) => ({
+            ok: true,
+            account: { key, email: `${key}@example.com` }
+          })),
+          listCodex: vi.fn(async () => catalog)
+        }
+      })
+    });
+    allowSwitchAccounts(env.store, 'codex', allowed);
+    seedQueue(env.store, ['X1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('X1').emit('session_id', 'sid-codex');
+    env.runner.finish('X1', {
+      success: false,
+      reason: 'is_error',
+      raw: codexUsageLimitEvents()
+    });
+    await flush();
+    return (
+      Object.values(env.store.snapshot(WS).attempts).find(
+        (attempt) => attempt.resumed_from === 'X1-1000-1'
+      ) ?? null
+    );
+  }
+
+  /** UI-9y1k acceptance 1. */
+  test('switches a codex usage limit to the first allowed account in the user order', async () => {
+    const catalog = orderedCodexCatalog([
+      { key: 'codex-01', number: 1, pct: 10 },
+      { key: 'codex-02', number: 2, pct: 60 }
+    ]);
+
+    const child = await codexLimitChild(catalog, ['codex-02', 'codex-01']);
+
+    expect(child?.codex_account).toBe('codex-02');
+  });
+
+  /** UI-9y1k acceptance 2 (reactive). */
+  test('switches a codex usage limit onto an allowed credit account', async () => {
+    const catalog = orderedCodexCatalog([
+      { key: 'codex-01', number: 1, pct: 100 },
+      {
+        key: 'codex-03',
+        number: 3,
+        pct: 100,
+        credits: { has_credits: true, unlimited: false, balance: 62500 }
+      }
+    ]);
+
+    const child = await codexLimitChild(
+      catalog,
+      ['codex-01', 'codex-03'],
+      codexCreditLedger(['codex-03'])
+    );
+
+    expect(child?.codex_account).toBe('codex-03');
+  });
+
+  /** UI-9y1k acceptance 3 and 4b. */
+  test('keeps a codex usage limit held once the credit account reached its cap', async () => {
+    const catalog = orderedCodexCatalog([
+      {
+        key: 'codex-03',
+        number: 3,
+        pct: 100,
+        credits: { has_credits: true, unlimited: false, balance: 62500 }
+      }
+    ]);
+
+    const child = await codexLimitChild(
+      catalog,
+      ['codex-03'],
+      codexCreditLedger(['codex-03'], 1000)
+    );
+
+    expect(child).toBeNull();
+  });
+
+  /**
+   * A Codex launch environment for the preemptive switch.
+   *
+   * @param {any} catalog
+   * @param {Record<string, any>} [extra]
+   * @param {Record<string, any>} [bead]
+   */
+  function codexPreemptEnv(catalog, extra = {}, bead = {}) {
+    return setup({
+      config: { X1: { model: 'sol', effort: 'xhigh', ...bead } },
+      slots: 1,
+      codexCredit: codexCreditLedger(['codex-03']),
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { key: email, email }
+          })),
+          resolveCodex: vi.fn(async (key) => ({ ok: true, account: { key } })),
+          listCodex: vi.fn(async () => catalog)
+        }
+      }),
+      ...extra
+    });
+  }
+
+  test('preempts a codex launch onto an account with window headroom', async () => {
+    const env = codexPreemptEnv(
+      orderedCodexCatalog([{ key: 'codex-02', number: 2, pct: 10 }], 85)
+    );
+    allowSwitchAccounts(env.store, 'codex', ['codex-02'], { preempt_pct: 80 });
+    seedQueue(env.store, ['X1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['X1-1000-1']).toMatchObject({
+      codex_account: 'codex-02',
+      account_sources: { codex: 'preempt_switch' }
+    });
+  });
+
+  /** UI-9y1k acceptance 2 (preempt). */
+  test('never preempts a codex launch onto a credit account', async () => {
+    const env = codexPreemptEnv(
+      orderedCodexCatalog(
+        [
+          {
+            key: 'codex-03',
+            number: 3,
+            pct: 100,
+            credits: { has_credits: true, unlimited: false, balance: 62500 }
+          }
+        ],
+        85
+      )
+    );
+    allowSwitchAccounts(env.store, 'codex', ['codex-03'], { preempt_pct: 80 });
+    seedQueue(env.store, ['X1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(
+      env.store.snapshot(WS).attempts['X1-1000-1'].account_sources
+    ).toMatchObject({ codex: null });
+  });
+
+  /** UI-9y1k acceptance 4b (§4.7). */
+  test('keeps a running codex attempt going after its account reaches the credit cap', async () => {
+    const processController = {
+      terminate: vi.fn(async () => ({ ok: true, state: 'gone' })),
+      probe: vi.fn(() => ({ state: 'alive' }))
+    };
+    const env = codexPreemptEnv(
+      orderedCodexCatalog([
+        { key: 'codex-01', number: 1, pct: 100 },
+        {
+          key: 'codex-03',
+          number: 3,
+          pct: 100,
+          credits: { has_credits: true, unlimited: false, balance: 62500 }
+        }
+      ]),
+      {
+        processController,
+        codexCredit: codexCreditLedger(['codex-03'], 5000)
+      },
+      { codex_account: 'codex-03' }
+    );
+    seedQueue(env.store, ['X1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('X1').emit('session_id', 'sid-credit');
+    allowSwitchAccounts(env.store, 'codex', ['codex-01', 'codex-03'], {
+      preempt_pct: 80
+    });
+
+    await env.scheduler.livePreemptPass(WS);
+
+    expect(processController.terminate).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['X1-1000-1'].status).toBe('running');
   });
 
   // RED 12 (spec §5)
@@ -34310,5 +34560,205 @@ describe('session lane (UI-lbm5)', () => {
         env.store.snapshot(WS).attempts[attempt_id].quickfix_landing
       ).toMatchObject({ resolved_by: 'worker:evidence' });
     }, 30_000);
+  });
+});
+
+describe('selectCodexSwitchCandidate (UI-9y1k §4.2)', () => {
+  /**
+   * One catalog row with a `5h` window at 10% and the given weekly usage.
+   *
+   * @param {string} key
+   * @param {number} number
+   * @param {number} weekly
+   * @param {any} [credits]
+   */
+  function codexRow(key, number, weekly, credits) {
+    return {
+      key,
+      number,
+      email: `${key}@example.com`,
+      status: 'ok',
+      windows: [
+        { key: '5h', pct: 10, resetsAt: null },
+        { key: '7d', pct: weekly, resetsAt: null }
+      ],
+      ...(credits ? { credits } : {})
+    };
+  }
+
+  const CREDITS = { has_credits: true, unlimited: false, balance: 62500 };
+
+  /**
+   * @param {string[]} allowed
+   * @param {number} [consumed]
+   */
+  function ledger(allowed, consumed = 0) {
+    return {
+      settingsOf: (/** @type {string} */ key) => ({
+        allow_credits: allowed.includes(key),
+        daily_cap: 1000
+      }),
+      consumedToday: () => consumed
+    };
+  }
+
+  test('picks the first account in the user order over a lower load', () => {
+    const accounts = [codexRow('01', 1, 10), codexRow('02', 2, 60)];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['02', '01', '03'],
+      current_account: 'hot'
+    });
+
+    expect(decision).toEqual({
+      decision: 'switch',
+      key: '02',
+      number: 2,
+      credit_mode: false,
+      reason: 'window'
+    });
+  });
+
+  test('prefers a window account over an earlier credit account', () => {
+    const accounts = [codexRow('03', 3, 100, CREDITS), codexRow('01', 1, 10)];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['03', '01'],
+      current_account: 'hot',
+      credit: ledger(['03'])
+    });
+
+    expect(decision).toMatchObject({ key: '01', credit_mode: false });
+  });
+
+  test('picks an allowed credit account in credit mode for a reactive switch', () => {
+    const accounts = [
+      codexRow('01', 1, 100),
+      codexRow('02', 2, 100),
+      codexRow('03', 3, 100, CREDITS)
+    ];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['01', '02', '03'],
+      current_account: 'hot',
+      kind: 'reactive',
+      credit: ledger(['03'])
+    });
+
+    expect(decision).toMatchObject({
+      decision: 'switch',
+      key: '03',
+      credit_mode: true,
+      reason: 'credits'
+    });
+  });
+
+  test('finds no candidate for a preemptive switch with only credit accounts', () => {
+    const accounts = [codexRow('01', 1, 100), codexRow('03', 3, 100, CREDITS)];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['01', '03'],
+      current_account: 'hot',
+      kind: 'preempt',
+      max_pct: 80,
+      credit: ledger(['03'])
+    });
+
+    expect(decision).toEqual({ decision: 'none', reason: 'no_candidate' });
+  });
+
+  test('answers credits_disabled when the credit account does not allow credits', () => {
+    const accounts = [codexRow('01', 1, 100), codexRow('03', 3, 100, CREDITS)];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['01', '03'],
+      current_account: 'hot',
+      credit: ledger([])
+    });
+
+    expect(decision).toEqual({ decision: 'none', reason: 'credits_disabled' });
+  });
+
+  test('answers credit_cap_reached when today reached the cap', () => {
+    const accounts = [codexRow('01', 1, 100), codexRow('03', 3, 100, CREDITS)];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['01', '03'],
+      current_account: 'hot',
+      credit: ledger(['03'], 1000)
+    });
+
+    expect(decision).toEqual({
+      decision: 'none',
+      reason: 'credit_cap_reached'
+    });
+  });
+
+  test('skips a credit account that does not allow credits for a later one', () => {
+    const accounts = [
+      codexRow('01', 1, 100, CREDITS),
+      codexRow('03', 3, 100, CREDITS)
+    ];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['01', '03'],
+      current_account: 'hot',
+      credit: ledger(['03'])
+    });
+
+    expect(decision).toMatchObject({ key: '03', credit_mode: true });
+  });
+
+  test('ignores the cap of an unlimited credit account', () => {
+    const accounts = [
+      codexRow('03', 3, 100, { has_credits: true, unlimited: true, balance: 0 })
+    ];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['03'],
+      current_account: 'hot',
+      credit: ledger(['03'], 5000)
+    });
+
+    expect(decision).toMatchObject({ key: '03', credit_mode: true });
+  });
+
+  test('drops accounts sharing the current workspace for a workspace limit', () => {
+    const accounts = [codexRow('u2::ws-a', 2, 10), codexRow('u3::ws-b', 3, 10)];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['u2::ws-a', 'u3::ws-b'],
+      current_account: 'u1::ws-a',
+      exclude_same_workspace: true
+    });
+
+    expect(decision).toMatchObject({ key: 'u3::ws-b' });
+  });
+
+  test('skips held and excluded accounts', () => {
+    const accounts = [
+      codexRow('01', 1, 10),
+      codexRow('02', 2, 10),
+      codexRow('03', 3, 10)
+    ];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['01', '02', '03'],
+      current_account: 'hot',
+      held_accounts: ['01'],
+      excluded_accounts: ['02']
+    });
+
+    expect(decision).toMatchObject({ key: '03' });
   });
 });

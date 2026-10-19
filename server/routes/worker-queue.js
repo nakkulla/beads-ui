@@ -42,7 +42,7 @@ import {
  * @returns {string|null} The absolute workspace key, or `null` when the request
  * named a directory it may not touch.
  */
-function workspaceKeyOf(raw) {
+export function workspaceKeyOf(raw) {
   if (typeof raw !== 'string' || raw.length === 0 || !path.isAbsolute(raw)) {
     return null;
   }

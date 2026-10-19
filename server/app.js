@@ -12,6 +12,7 @@ import {
   codexAccountSwitchHandler
 } from './routes/account-switch.js';
 import { claudeUsageHandler } from './routes/claude-usage.js';
+import { codexSwitchCandidateHandler } from './routes/codex-switch-candidate.js';
 import { codexUsageHandler } from './routes/codex-usage.js';
 import { docHandler } from './routes/doc.js';
 import { repoOpsLogHandler } from './routes/repo-ops-log.js';
@@ -189,6 +190,10 @@ export function createApp(config) {
   // Switch the active account of one provider from the usage card.
   app.post('/api/claude-account/switch', claudeAccountSwitchHandler);
   app.post('/api/codex-account/switch', codexAccountSwitchHandler);
+
+  // Which Codex account a session continues on after an account limit
+  // (UI-9y1k §4.4). POST only: a choice prepares that account's CODEX_HOME.
+  app.post('/api/codex/switch-candidate', codexSwitchCandidateHandler);
 
   // Register workspace endpoint - allows CLI to register workspaces dynamically
   // when the server is already running

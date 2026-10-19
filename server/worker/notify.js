@@ -386,7 +386,8 @@ function failureConversationLine(conversation) {
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
  *   hold: (input: NeedsHumanInput) => Promise<void>,
  *   externalWaitCompleted: (input: { bead_id: string, headline: string, repo: string, session?: { label: string, resume_command: string }|null }) => Promise<boolean>,
- *   sessionInquiryCreated: (input: SessionInquiryCreatedInput) => Promise<boolean>
+ *   sessionInquiryCreated: (input: SessionInquiryCreatedInput) => Promise<boolean>,
+ *   codexCreditNotice: (input: { channel: 'ops'|'alert', message: string }) => boolean
  * }}
  */
 export function createNotifier(deps) {
@@ -1085,6 +1086,23 @@ export function createNotifier(deps) {
     },
     async hold(input) {
       await sendFailure(input, 'hold');
+    },
+    // Codex credit notices (UI-9y1k §4.1): the first consumption of an
+    // account-day goes to `ops` (maintenance, no mention) and the daily cap to
+    // `alert`. The channel flag rides in front of the message, which stays the
+    // last argument like every other push.
+    codexCreditNotice(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return false;
+        }
+        const channel = input.channel === 'alert' ? 'alert' : 'ops';
+        return send([...cmd, '--channel', channel], String(input.message));
+      } catch (err) {
+        log('codexCreditNotice failed: %o', err);
+        return false;
+      }
     }
   };
 }

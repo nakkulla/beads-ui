@@ -7,7 +7,9 @@ import path from 'node:path';
 
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
- * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
+ * @typedef {{ has_credits: boolean, unlimited: boolean, balance: number | null }} UsageCredits
+ * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null, credits?: UsageCredits }} UsageAccount
+ * @typedef {{ key: string, number: number, source: string | null, updated_at: number | null, credits: UsageCredits }} CreditObservation
  * @typedef {{ available: false }} UsageUnavailable
  * @typedef {{ available: true, provider: 'codex', windows: UsageWindow[], fetchedAt: string, ageSeconds: number }} CodexUsageActive
  * @typedef {(UsageUnavailable | CodexUsageActive) & { accounts?: UsageAccount[] }} CodexUsagePayload
@@ -155,6 +157,42 @@ function hasUnauthorizedRefresh(input) {
 }
 
 /**
+ * Normalize the `usage.credits` block of one codex-auth row. codex-auth prints
+ * the balance as a decimal string (or `null` when the account has none), so it
+ * is parsed here; a block that is not the documented shape reads as absent.
+ *
+ * @param {unknown} input
+ * @returns {UsageCredits | null}
+ */
+export function normalizeCredits(input) {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  const credits = /** @type {any} */ (input);
+  if (
+    typeof credits.has_credits !== 'boolean' ||
+    typeof credits.unlimited !== 'boolean'
+  ) {
+    return null;
+  }
+  /** @type {number | null} */
+  let balance = null;
+  if (typeof credits.balance === 'number') {
+    balance = Number.isFinite(credits.balance) ? credits.balance : null;
+  } else if (
+    typeof credits.balance === 'string' &&
+    /^-?\d+(\.\d+)?$/.test(credits.balance.trim())
+  ) {
+    balance = Number(credits.balance.trim());
+  }
+  return {
+    has_credits: credits.has_credits,
+    unlimited: credits.unlimited,
+    balance
+  };
+}
+
+/**
  * Normalize one codex-auth account row for the multi-account card. Identity
  * beyond number/email/alias/plan stays out of the response.
  *
@@ -188,6 +226,10 @@ function normalizeAccountRow(input, active_account_key, now) {
   const token_expired = hasUnauthorizedRefresh(row.usage);
   const windows = token_expired ? null : normalizeUsageWindows(row.usage);
   const fetched_at = windows ? epochToIso(row.usage.updated_at) : null;
+  // `credits` is added only when codex-auth printed the block, so a row from an
+  // older codex-auth keeps exactly the fields it had before (UI-9y1k §4.3).
+  const credits = normalizeCredits(row.usage?.credits);
+  const credit_field = credits ? { credits } : {};
   if (!windows || !fetched_at) {
     return {
       key: row.account_key,
@@ -199,7 +241,8 @@ function normalizeAccountRow(input, active_account_key, now) {
       status: token_expired ? 'token_expired' : 'unavailable',
       windows: [],
       fetchedAt: null,
-      ageSeconds: null
+      ageSeconds: null,
+      ...credit_field
     };
   }
 
@@ -213,8 +256,60 @@ function normalizeAccountRow(input, active_account_key, now) {
     status: 'ok',
     windows,
     fetchedAt: fetched_at,
-    ageSeconds: snapshotAge(fetched_at, now)
+    ageSeconds: snapshotAge(fetched_at, now),
+    ...credit_field
   };
+}
+
+/**
+ * Every row's credit observation, for the credit ledger. Unlike the card rows
+ * these keep `usage.source` and `usage.updated_at`, which decide whether the
+ * ledger may count the balance at all (UI-9y1k §4.3).
+ *
+ * @param {unknown} input
+ * @returns {CreditObservation[]}
+ */
+export function creditObservationsOf(input) {
+  if (!input || typeof input !== 'object') {
+    return [];
+  }
+  const root = /** @type {any} */ (input);
+  if (
+    root.schema_version !== 1 ||
+    root.command !== 'list' ||
+    !Array.isArray(root.accounts)
+  ) {
+    return [];
+  }
+  /** @type {CreditObservation[]} */
+  const observations = [];
+  for (const row of root.accounts) {
+    if (
+      !row ||
+      typeof row !== 'object' ||
+      typeof row.account_key !== 'string' ||
+      !Number.isInteger(row.number) ||
+      row.number <= 0
+    ) {
+      continue;
+    }
+    const credits = normalizeCredits(row.usage?.credits);
+    if (!credits) {
+      continue;
+    }
+    const updated_at = row.usage?.updated_at;
+    observations.push({
+      key: row.account_key,
+      number: row.number,
+      source: typeof row.usage?.source === 'string' ? row.usage.source : null,
+      updated_at:
+        typeof updated_at === 'number' && Number.isFinite(updated_at)
+          ? updated_at
+          : null,
+      credits
+    });
+  }
+  return observations;
 }
 
 /**
@@ -331,11 +426,12 @@ export function createCodexAuthRunner(options = {}) {
    * Run one binary candidate without a shell.
    *
    * @param {string} bin
+   * @param {string[]} args
    * @returns {Promise<{ code: number, stdout: string, stderr: string, not_found: boolean }>}
    */
-  function runCandidate(bin) {
+  function runCandidate(bin, args) {
     return new Promise((resolve) => {
-      const child = spawnProcess(bin, ['list', '--json'], {
+      const child = spawnProcess(bin, args, {
         shell: false,
         windowsHide: true
       });
@@ -388,31 +484,91 @@ export function createCodexAuthRunner(options = {}) {
     });
   }
 
-  return async function runCodexAuth() {
-    const from_path = await runCandidate('codex-auth');
+  /**
+   * `api: true` adds `--api`, which makes codex-auth read every account's
+   * usage and credits from the API instead of its local cache (UI-9y1k §4.4).
+   *
+   * @param {{ api?: boolean }} [run_options]
+   */
+  return async function runCodexAuth(run_options = {}) {
+    const args =
+      run_options.api === true
+        ? ['list', '--json', '--api']
+        : ['list', '--json'];
+    const from_path = await runCandidate('codex-auth', args);
     if (!from_path.not_found) {
       return from_path;
     }
-    return runCandidate(path.join(home_dir, '.local', 'bin', 'codex-auth'));
+    return runCandidate(
+      path.join(home_dir, '.local', 'bin', 'codex-auth'),
+      args
+    );
   };
 }
 
 const run_codex_auth_command = createCodexAuthRunner();
 
 /**
+ * @typedef {(options?: { api?: boolean }) => Promise<{ code: number, stdout: string, stderr: string }>} RunCodexAuth
+ */
+
+/** @type {Set<(observations: CreditObservation[]) => void>} */
+const credit_observers = new Set();
+
+/**
+ * Hear every parsed codex-auth list's credit observations. The credit ledger
+ * subscribes here from the server entry rather than this route importing it,
+ * so the route stays free of server-global state (UI-9y1k §4.3).
+ *
+ * @param {(observations: CreditObservation[]) => void} listener
+ * @returns {() => void}
+ */
+export function subscribeCreditObservations(listener) {
+  credit_observers.add(listener);
+  return () => {
+    credit_observers.delete(listener);
+  };
+}
+
+/**
+ * @param {unknown} root
+ */
+function publishCreditObservations(root) {
+  if (credit_observers.size === 0) {
+    return;
+  }
+  const observations = creditObservationsOf(root);
+  if (observations.length === 0) {
+    return;
+  }
+  for (const listener of credit_observers) {
+    try {
+      listener(observations);
+    } catch {
+      // A failing observer must not turn a usage read into a failure.
+    }
+  }
+}
+
+/**
  * Execute codex-auth and collapse every failure to the fail-quiet payload.
  *
- * @param {() => Promise<{ code: number, stdout: string, stderr: string }>} runCodexAuth
+ * @param {RunCodexAuth} runCodexAuth
  * @param {() => number} now
+ * @param {{ api?: boolean }} [run_options]
  * @returns {Promise<CodexUsagePayload>}
  */
-async function loadCodexUsage(runCodexAuth, now) {
+async function loadCodexUsage(runCodexAuth, now, run_options) {
   try {
-    const result = await runCodexAuth();
+    const result = await (run_options
+      ? runCodexAuth(run_options)
+      : runCodexAuth());
     if (!result || result.code !== 0) {
       return unavailable();
     }
-    return normalizeCodexUsage(JSON.parse(result.stdout), now);
+    const root = JSON.parse(result.stdout);
+    publishCreditObservations(root);
+    return normalizeCodexUsage(root, now);
   } catch {
     return unavailable();
   }
@@ -421,7 +577,7 @@ async function loadCodexUsage(runCodexAuth, now) {
 /**
  * Read the module-level positive/negative TTL cache.
  *
- * @param {() => Promise<{ code: number, stdout: string, stderr: string }>} runCodexAuth
+ * @param {RunCodexAuth} runCodexAuth
  * @param {() => number} now
  * @returns {Promise<CodexUsagePayload>}
  */
@@ -488,13 +644,21 @@ export function invalidateCache() {
 /**
  * List normalized Codex accounts through the route's shared cache.
  *
- * @param {{ runCodexAuth?: () => Promise<{ code: number, stdout: string, stderr: string }>, now?: () => number }} [options]
+ * @param {{ runCodexAuth?: RunCodexAuth, now?: () => number }} [options]
  * @returns {Promise<{ ok: true, accounts: UsageAccount[], active_key: string|null }|{ ok: false, error: string }>}
  */
 export async function listAccounts(options = {}) {
   const runCodexAuth = options.runCodexAuth || run_codex_auth_command;
   const now = options.now || (() => Date.now());
   const payload = withCurrentAge(await getCodexUsage(runCodexAuth, now), now);
+  return accountListOf(payload);
+}
+
+/**
+ * @param {CodexUsagePayload} payload
+ * @returns {{ ok: true, accounts: UsageAccount[], active_key: string|null }|{ ok: false, error: string }}
+ */
+function accountListOf(payload) {
   if (!Array.isArray(payload.accounts)) {
     return { ok: false, error: 'codex_account_list_unavailable' };
   }
@@ -507,9 +671,31 @@ export async function listAccounts(options = {}) {
 }
 
 /**
+ * List Codex accounts from a fresh `codex-auth list --json --api` read,
+ * bypassing the 180-second cache (UI-9y1k §4.4). The candidate lookup and the
+ * credit poller read here: both need the newest windows and balances. A good
+ * read also refreshes the shared cache, unless a switch invalidated it while
+ * the read was running.
+ *
+ * @param {{ runCodexAuth?: RunCodexAuth, now?: () => number }} [options]
+ * @returns {Promise<{ ok: true, accounts: UsageAccount[], active_key: string|null }|{ ok: false, error: string }>}
+ */
+export async function listAccountsFresh(options = {}) {
+  const runCodexAuth = options.runCodexAuth || run_codex_auth_command;
+  const now = options.now || (() => Date.now());
+  const generation = cache_generation;
+  const payload = await loadCodexUsage(runCodexAuth, now, { api: true });
+  if (Array.isArray(payload.accounts) && generation === cache_generation) {
+    cached_payload = payload;
+    cache_expires_at = now() + CACHE_TTL_MS;
+  }
+  return accountListOf(withCurrentAge(payload, now));
+}
+
+/**
  * Create the fail-quiet Codex usage route handler.
  *
- * @param {{ runCodexAuth?: () => Promise<{ code: number, stdout: string, stderr: string }>, now?: () => number }} [options]
+ * @param {{ runCodexAuth?: RunCodexAuth, now?: () => number }} [options]
  * @returns {RequestHandler}
  */
 export function createCodexUsageHandler(options = {}) {
@@ -539,4 +725,5 @@ export function __resetCacheForTest() {
   cached_payload = null;
   cache_expires_at = 0;
   in_flight = null;
+  credit_observers.clear();
 }

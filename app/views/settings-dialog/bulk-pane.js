@@ -34,6 +34,7 @@
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { disabledModelsOf } from '../../utils/model-visibility.js';
+import { showToast } from '../../utils/toast.js';
 import { mergeQueue, pruneAdopted } from '../monitor/adopted-queue.js';
 import {
   CATALOG_REASON,
@@ -66,6 +67,7 @@ import {
   bulkFormRowKeysFor,
   createBulkWorkerForm
 } from './bulk-worker-form.js';
+import { createCodexCreditControls } from './codex-credit-controls.js';
 import { WORKFLOW_MODES, normalizeAppliesTo } from './session-model.js';
 
 /** Select value for `기본값 사용` (sent as `null`). */
@@ -111,6 +113,13 @@ const PRESET_LIST_GLOBAL =
 
 /** @type {ReadonlyArray<'claude'|'codex'>} */
 const RUNNERS = ['claude', 'codex'];
+
+/**
+ * The credit section's scope line: it writes ONE server-global value, not the
+ * ticked repos (UI-9y1k §4.6).
+ */
+const CREDIT_BULK_SCOPE =
+  '모든 저장소에 적용(전역) — 위 저장소 선택과 무관하게 바로 저장됩니다';
 
 /** @type {ReadonlyArray<[ 'claude_account'|'codex_account', string, 'claude'|'codex' ]>} */
 const ACCOUNT_FIELDS = [
@@ -162,6 +171,10 @@ const SESSION_DEFAULTS_OP = 'set-session-defaults';
  * @property {{ get: () => any }} [implPresetStore]
  * @property {{ get: () => any }} [modelVisibilityStore] - Server-global model
  * visibility the profile forms filter their model choices by.
+ * @property {{ get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [codexCreditStore]
+ * - Server-global Codex credit settings (UI-9y1k §4.6), written at once by the
+ * `계정` tab's credit section.
+ * @property {(message: string) => void} [notify]
  * @property {(root_dirs: string[]) => void} [onBulkApplied] - Called once when
  * a run ends, with the repos whose result is `applied` or `partial`.
  */
@@ -266,6 +279,17 @@ export function createBulkPane(host, options) {
 
   /** @type {AccountCatalog|null} */
   let catalog = null;
+
+  /**
+   * The global credit section. It writes the server-global store directly,
+   * never through the apply plan, so the repo selection does not touch it.
+   */
+  const codex_credit_controls = createCodexCreditControls({
+    store: options.codexCreditStore,
+    transport: options.transport,
+    notify: options.notify || ((message) => showToast(message, 'error', 4000)),
+    onChange: () => doRender()
+  });
 
   /** @returns {Array<Record<string, any>>} */
   function rows() {
@@ -397,19 +421,24 @@ export function createBulkPane(host, options) {
 
   /**
    * Observe one runner's allow SET. Two repos agree only when the members
-   * match exactly (§6).
+   * match exactly (§6). The Codex list is the switch ORDER (UI-9y1k §4.6), so
+   * there the same members in another order disagree too.
    *
    * @param {'claude'|'codex'} runner
    */
   function observeLimitAccounts(runner) {
-    return observeSet(selectedRows(), (row) => {
-      const policy = policyOf(row, runner);
-      return policy && Array.isArray(policy.accounts)
-        ? policy.accounts.filter(
-            (/** @type {unknown} */ key) => typeof key === 'string'
-          )
-        : [];
-    });
+    return observeSet(
+      selectedRows(),
+      (row) => {
+        const policy = policyOf(row, runner);
+        return policy && Array.isArray(policy.accounts)
+          ? policy.accounts.filter(
+              (/** @type {unknown} */ key) => typeof key === 'string'
+            )
+          : [];
+      },
+      { ordered: runner === 'codex' }
+    );
   }
 
   /**
@@ -1578,6 +1607,18 @@ export function createBulkPane(host, options) {
      */
     const toggleAccount = (account_key, checked) => {
       edited.add(`${runner}.accounts`);
+      if (runner === 'codex') {
+        // The Codex list keeps the screen's ORDER (UI-9y1k §4.6): a new pick
+        // goes to the end, a dropped one leaves the rest where they were.
+        const base = accounts_hold === null ? form.accounts : [];
+        form.accounts = checked
+          ? base.includes(account_key)
+            ? [...base]
+            : [...base, account_key]
+          : base.filter((key) => key !== account_key);
+        doRender();
+        return;
+      }
       const keys = new Set(accounts_hold === null ? form.accounts : []);
       if (checked) {
         keys.add(account_key);
@@ -1588,6 +1629,113 @@ export function createBulkPane(host, options) {
         (key) => keys.has(key)
       );
       doRender();
+    };
+    /**
+     * Move one picked Codex account up or down; the apply sends this order.
+     *
+     * @param {string} account_key
+     * @param {-1|1} delta
+     */
+    const moveAccount = (account_key, delta) => {
+      const index = form.accounts.indexOf(account_key);
+      const target = index + delta;
+      if (index < 0 || target < 0 || target >= form.accounts.length) {
+        return;
+      }
+      edited.add(`${runner}.accounts`);
+      const next = form.accounts.slice();
+      next[index] = form.accounts[target];
+      next[target] = account_key;
+      form.accounts = next;
+      doRender();
+    };
+    /**
+     * The Codex allow list in switch order: picked accounts with ▲/▼, then the
+     * catalog rows not picked. A held (`갈림`·`미확인`) row shows every box off
+     * in catalog order, as before.
+     *
+     * @returns {TemplateResult}
+     */
+    const codexAccountsTemplate = () => {
+      const picked = accounts_hold === null ? form.accounts : [];
+      const last = picked.length - 1;
+      /** @type {Map<string, any>} */
+      const by_key = new Map(
+        (provider?.accounts || []).map((/** @type {any} */ entry) => [
+          String(entry.key),
+          entry
+        ])
+      );
+      return html`${picked.map((key, index) => {
+        const entry = by_key.get(key);
+        const text = entry
+          ? accountRowLabel(runner, entry)
+          : `${key} (목록에 없음)`;
+        return html`<span
+          class="settings-dialog__limit-order"
+          data-bulk-limit-order-item=${key}
+        >
+          <label class="settings-dialog__check">
+            <input
+              type="checkbox"
+              data-bulk-limit-account=${key}
+              data-runner=${runner}
+              .checked=${live(true)}
+              ?disabled=${switch_locked}
+              @change=${(/** @type {Event} */ ev) =>
+                toggleAccount(
+                  key,
+                  /** @type {HTMLInputElement} */ (ev.target).checked
+                )}
+            />
+            ${`${index + 1}. ${text}`}
+          </label>
+          <button
+            type="button"
+            class="op-btn op-btn--ghost op-btn--icon"
+            aria-label=${`${text} 위로`}
+            title="위로"
+            data-bulk-limit-move="up"
+            data-bulk-limit-move-account=${key}
+            ?disabled=${switch_locked || index === 0}
+            @click=${() => moveAccount(key, -1)}
+          >
+            ▲
+          </button>
+          <button
+            type="button"
+            class="op-btn op-btn--ghost op-btn--icon"
+            aria-label=${`${text} 아래로`}
+            title="아래로"
+            data-bulk-limit-move="down"
+            data-bulk-limit-move-account=${key}
+            ?disabled=${switch_locked || index === last}
+            @click=${() => moveAccount(key, 1)}
+          >
+            ▼
+          </button>
+        </span>`;
+      })}
+      ${(provider?.accounts || [])
+        .filter((/** @type {any} */ entry) => !picked.includes(entry.key))
+        .map(
+          (/** @type {any} */ entry) =>
+            html`<label class="settings-dialog__check">
+              <input
+                type="checkbox"
+                data-bulk-limit-account=${entry.key}
+                data-runner=${runner}
+                .checked=${live(false)}
+                ?disabled=${switch_locked}
+                @change=${(/** @type {Event} */ ev) =>
+                  toggleAccount(
+                    entry.key,
+                    /** @type {HTMLInputElement} */ (ev.target).checked
+                  )}
+              />
+              ${accountRowLabel(runner, entry)}
+            </label>`
+        )}`;
     };
     /** @type {Array<['wait'|'switch', string]>} */
     const modes = [
@@ -1648,44 +1796,47 @@ export function createBulkPane(host, options) {
       <div class=${`settings-dialog__row${switch_dim}`}>
         <span class="settings-dialog__row-label">전환 허용 계정</span>
         <span class="settings-dialog__controls settings-dialog__bulk-accounts">
-          ${(provider?.accounts || []).map(
-            (/** @type {any} */ row) =>
-              html`<label class="settings-dialog__check">
-                <input
-                  type="checkbox"
-                  data-bulk-limit-account=${row.key}
-                  data-runner=${runner}
-                  .checked=${live(
-                    accounts_hold === null && form.accounts.includes(row.key)
-                  )}
-                  ?disabled=${switch_locked}
-                  @change=${(/** @type {Event} */ ev) =>
-                    toggleAccount(
-                      row.key,
-                      /** @type {HTMLInputElement} */ (ev.target).checked
-                    )}
-                />
-                ${accountRowLabel(runner, row)}
-              </label>`
-          )}
-          ${orphans.map(
-            (key) =>
-              html`<label class="settings-dialog__check">
-                <input
-                  type="checkbox"
-                  data-bulk-limit-account=${key}
-                  data-runner=${runner}
-                  .checked=${live(true)}
-                  ?disabled=${switch_locked}
-                  @change=${(/** @type {Event} */ ev) =>
-                    toggleAccount(
-                      key,
-                      /** @type {HTMLInputElement} */ (ev.target).checked
-                    )}
-                />
-                ${`${key} (목록에 없음)`}
-              </label>`
-          )}
+          ${runner === 'codex'
+            ? codexAccountsTemplate()
+            : html` ${(provider?.accounts || []).map(
+                (/** @type {any} */ row) =>
+                  html`<label class="settings-dialog__check">
+                    <input
+                      type="checkbox"
+                      data-bulk-limit-account=${row.key}
+                      data-runner=${runner}
+                      .checked=${live(
+                        accounts_hold === null &&
+                          form.accounts.includes(row.key)
+                      )}
+                      ?disabled=${switch_locked}
+                      @change=${(/** @type {Event} */ ev) =>
+                        toggleAccount(
+                          row.key,
+                          /** @type {HTMLInputElement} */ (ev.target).checked
+                        )}
+                    />
+                    ${accountRowLabel(runner, row)}
+                  </label>`
+              )}
+              ${orphans.map(
+                (key) =>
+                  html`<label class="settings-dialog__check">
+                    <input
+                      type="checkbox"
+                      data-bulk-limit-account=${key}
+                      data-runner=${runner}
+                      .checked=${live(true)}
+                      ?disabled=${switch_locked}
+                      @change=${(/** @type {Event} */ ev) =>
+                        toggleAccount(
+                          key,
+                          /** @type {HTMLInputElement} */ (ev.target).checked
+                        )}
+                    />
+                    ${`${key} (목록에 없음)`}
+                  </label>`
+              )}`}
           ${provider
             ? ''
             : html`<span class="settings-dialog__hint"
@@ -1773,6 +1924,29 @@ export function createBulkPane(host, options) {
     </div>`;
   }
 
+  /**
+   * The global Codex credit section (UI-9y1k §4.6). It is not an apply row: it
+   * writes the one server-global setting at once, whatever repos are ticked,
+   * so it neither counts in the footer nor waits for `적용`.
+   *
+   * @returns {TemplateResult|''}
+   */
+  function creditGroupTemplate() {
+    const body = codex_credit_controls.template(
+      catalog?.codex?.accounts || [],
+      CREDIT_BULK_SCOPE
+    );
+    if (body === '') {
+      return '';
+    }
+    return html`<div class="settings-dialog__group" data-bulk-codex-credits>
+      <div class="settings-dialog__group-title">
+        Codex 크레딧 · 모든 저장소에 적용(전역)
+      </div>
+      ${body}
+    </div>`;
+  }
+
   /** @returns {TemplateResult} */
   function accountTemplate() {
     const plan = accountPlan();
@@ -1785,7 +1959,7 @@ export function createBulkPane(host, options) {
         </div>
       </div>
       ${limitGroupTemplate('claude', 'Claude')}
-      ${limitGroupTemplate('codex', 'Codex')}
+      ${limitGroupTemplate('codex', 'Codex')} ${creditGroupTemplate()}
       ${catalogReady()
         ? ''
         : html`<p class="settings-dialog__bulk-reason" data-bulk-reason>
@@ -1891,6 +2065,7 @@ export function createBulkPane(host, options) {
     destroy() {
       destroyed = true;
       cancelRun();
+      codex_credit_controls.destroy();
       if (unsubscribe_rows) {
         unsubscribe_rows();
         unsubscribe_rows = null;

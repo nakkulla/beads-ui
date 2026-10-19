@@ -9174,6 +9174,14 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-small);
 }
 
+/* Codex 전환 허용 계정 한 칸: 순서 체크와 위·아래 이동 (UI-9y1k §4.5). */
+.settings-dialog__limit-order {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
 /* 값 select는 `.ui-select--bare`(이 `background` 단축 속성이 전역 화살표를
    지운다), 글자 입력은 `.ui-input`이다 — 크기는 부품이 정한다 (UI-k5s2). */
 .settings-dialog__controls select,

@@ -9,7 +9,9 @@ import {
   createCodexUsageHandler,
   invalidateCache,
   listAccounts,
-  normalizeCodexUsage
+  listAccountsFresh,
+  normalizeCodexUsage,
+  subscribeCreditObservations
 } from './codex-usage.js';
 
 /**
@@ -742,6 +744,137 @@ describe('codex account listing', () => {
     });
 
     const result = await listAccounts({ runCodexAuth });
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'codex_account_list_unavailable'
+    });
+  });
+});
+
+describe('codex account credits (UI-9y1k §4.3)', () => {
+  test('adds the normalized credits of a row that prints them', () => {
+    const row = accountRow({
+      usage: {
+        ...accountRow().usage,
+        credits: { has_credits: true, unlimited: false, balance: '62500.5' }
+      }
+    });
+
+    const payload = normalizeCodexUsage(listSnapshot([row]));
+
+    expect(payload.accounts?.[0].credits).toEqual({
+      has_credits: true,
+      unlimited: false,
+      balance: 62500.5
+    });
+  });
+
+  test('reads a null balance as no balance', () => {
+    const row = accountRow({
+      usage: {
+        ...accountRow().usage,
+        credits: { has_credits: false, unlimited: false, balance: null }
+      }
+    });
+
+    const payload = normalizeCodexUsage(listSnapshot([row]));
+
+    expect(payload.accounts?.[0].credits).toEqual({
+      has_credits: false,
+      unlimited: false,
+      balance: null
+    });
+  });
+
+  test('keeps the credits of a row whose windows are unavailable', () => {
+    const row = accountRow({
+      usage: {
+        source: 'none',
+        credits: { has_credits: true, unlimited: true, balance: '0' }
+      }
+    });
+
+    const payload = normalizeCodexUsage(listSnapshot([row]));
+
+    expect(payload.accounts?.[0]).toMatchObject({
+      status: 'unavailable',
+      credits: { has_credits: true, unlimited: true, balance: 0 }
+    });
+  });
+
+  test('omits credits from a row without a credits block', () => {
+    const payload = normalizeCodexUsage(listSnapshot([accountRow()]));
+
+    expect(payload.accounts?.[0]).not.toHaveProperty('credits');
+  });
+
+  test('hands every parsed list credit observation to subscribers', async () => {
+    const listener = vi.fn();
+    subscribeCreditObservations(listener);
+    const row = accountRow({
+      usage: {
+        ...accountRow().usage,
+        credits: { has_credits: true, unlimited: false, balance: '10' }
+      }
+    });
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify(listSnapshot([row])),
+      stderr: ''
+    });
+
+    await listAccounts({ runCodexAuth });
+
+    expect(listener).toHaveBeenCalledWith([
+      {
+        key: 'account-1',
+        number: 1,
+        source: 'api',
+        updated_at: 1_786_334_358,
+        credits: { has_credits: true, unlimited: false, balance: 10 }
+      }
+    ]);
+  });
+});
+
+describe('fresh codex account listing (UI-9y1k §4.4)', () => {
+  test('spawns list --json --api for an api read', async () => {
+    const spawn_process = vi.fn(() =>
+      spawnedChild((child) => child.emit('close', 0))
+    );
+    const runCodexAuth = createCodexAuthRunner({ spawn_process });
+
+    await runCodexAuth({ api: true });
+
+    expect(spawn_process).toHaveBeenCalledWith(
+      'codex-auth',
+      ['list', '--json', '--api'],
+      { shell: false, windowsHide: true }
+    );
+  });
+
+  test('bypasses a warm cache with an api read', async () => {
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify(listSnapshot([accountRow()])),
+      stderr: ''
+    });
+    await listAccounts({ runCodexAuth, now: () => 1_786_334_400_000 });
+
+    await listAccountsFresh({ runCodexAuth, now: () => 1_786_334_400_000 });
+
+    expect(runCodexAuth.mock.calls).toEqual([[], [{ api: true }]]);
+  });
+
+  test('returns an error when the api read fails', async () => {
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 1,
+      stdout: '',
+      stderr: 'failed'
+    });
+
+    const result = await listAccountsFresh({ runCodexAuth });
 
     expect(result).toEqual({
       ok: false,

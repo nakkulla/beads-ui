@@ -129,7 +129,7 @@ function queueRow(patch = {}) {
 }
 
 /**
- * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string, disabled_models?: string[] }} [options]
+ * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string, disabled_models?: string[], codexCreditStore?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -162,6 +162,7 @@ function mount(options = {}) {
             }
           : null
     },
+    codexCreditStore: options.codexCreditStore,
     notify,
     onQueueAdopt: (queue) => {
       queue_state = queue;
@@ -2987,5 +2988,289 @@ describe('integrated Worker address repairs', () => {
       vi.doUnmock('../../ws.js');
       vi.doUnmock('../monitor/index.js');
     }
+  });
+});
+
+describe('createExecutionPane codex switch order and credits (UI-9y1k §4.5)', () => {
+  const CODEX_THREE = {
+    accounts: [
+      { key: 'c1', number: 1, email: 'one@example.com', status: 'ok' },
+      { key: 'c2', number: 2, email: 'two@example.com', status: 'ok' },
+      { key: 'c3', number: 3, email: 'three@example.com', status: 'ok' }
+    ]
+  };
+  const CLAUDE_ONE = {
+    accounts: [
+      {
+        key: 'repo@example.com',
+        email: 'repo@example.com',
+        active: true,
+        status: 'ok'
+      }
+    ]
+  };
+
+  /**
+   * @param {string[]} codex_accounts
+   */
+  function orderedQueue(codex_accounts) {
+    return queueRow({
+      provider_limit_policy: {
+        claude: { mode: 'switch', accounts: [], preempt_pct: null },
+        codex: { mode: 'switch', accounts: codex_accounts, preempt_pct: null }
+      }
+    });
+  }
+
+  /**
+   * A credit store holding one snapshot, writable like the real one.
+   *
+   * @param {Record<string, any>} [accounts]
+   */
+  function creditStore(accounts = {}) {
+    /** @type {any} */
+    let state = {
+      revision: 2,
+      date: '2026-10-19',
+      default_daily_cap: 1000,
+      accounts
+    };
+    /** @type {Set<() => void>} */
+    const listeners = new Set();
+    return {
+      get: () => state,
+      /** @param {any} next */
+      set: (next) => {
+        state = next;
+        for (const listener of listeners) {
+          listener();
+        }
+      },
+      /** @param {() => void} listener */
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      }
+    };
+  }
+
+  /**
+   * A transport that answers policy saves with the saved order and credit
+   * saves with the patched snapshot.
+   *
+   * @param {ReturnType<typeof creditStore>} [store]
+   */
+  function echoTransport(store) {
+    return async (/** @type {string} */ type, /** @type {any} */ payload) => {
+      if (type === 'worker-provider-limit-policy-set') {
+        return {
+          applied: true,
+          conflict: false,
+          queue: orderedQueue(payload.patch.accounts)
+        };
+      }
+      if (type === 'codex-credits-set' && store) {
+        const current = store.get();
+        const accounts = { ...current.accounts };
+        for (const [key, patch] of Object.entries(payload.accounts)) {
+          accounts[key] = {
+            allow_credits: false,
+            daily_cap: 1000,
+            consumed_today: 0,
+            ...accounts[key],
+            .../** @type {any} */ (patch)
+          };
+        }
+        return {
+          ok: true,
+          snapshot: { ...current, revision: current.revision + 1, accounts }
+        };
+      }
+      return { values: {}, warnings: [] };
+    };
+  }
+
+  /**
+   * @param {HTMLElement} root
+   * @returns {string[]}
+   */
+  function orderOf(root) {
+    return Array.from(root.querySelectorAll('[data-limit-order-item]')).map(
+      (node) => String(node.getAttribute('data-limit-order-item'))
+    );
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (/** @type {string} */ url) => ({
+        ok: true,
+        json: async () => (url.includes('claude') ? CLAUDE_ONE : CODEX_THREE)
+      }))
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('lists the allowed codex accounts in the stored order', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      queue: orderedQueue(['c3', 'c1'])
+    });
+
+    await pane.load();
+
+    expect(orderOf(root)).toEqual(['c3', 'c1']);
+  });
+
+  test('saves the whole reordered list when an account moves up', async () => {
+    const { root, pane, calls } = mount({
+      section: 'account',
+      queue: orderedQueue(['c3', 'c1']),
+      transport: echoTransport()
+    });
+    await pane.load();
+
+    el(root, '[data-limit-move="up"][data-limit-move-account="c1"]').click();
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      {
+        runner: 'codex',
+        patch: { accounts: ['c1', 'c3'] },
+        expected_revision: 3
+      }
+    ]);
+  });
+
+  test('reopens on the saved order', async () => {
+    const first = mount({
+      section: 'account',
+      queue: orderedQueue(['c3', 'c1']),
+      transport: echoTransport()
+    });
+    await first.pane.load();
+    el(
+      first.root,
+      '[data-limit-move="down"][data-limit-move-account="c3"]'
+    ).click();
+    await settle();
+
+    const reopened = mount({ section: 'account', queue: first.queue() });
+    await reopened.pane.load();
+
+    expect(orderOf(reopened.root)).toEqual(['c1', 'c3']);
+  });
+
+  test('draws no move control on the claude allow list', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: {
+            mode: 'switch',
+            accounts: ['repo@example.com'],
+            preempt_pct: null
+          },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    });
+
+    await pane.load();
+
+    expect(
+      root.querySelector('[data-limit-accounts="claude"] [data-limit-move]')
+    ).toBe(null);
+  });
+
+  test('saves the credit switch as a global setting', async () => {
+    const store = creditStore();
+    const { root, pane, calls } = mount({
+      section: 'account',
+      codexCreditStore: store,
+      transport: echoTransport(store)
+    });
+    await pane.load();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(root, '[data-codex-credit-allow="c3"]')
+    );
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'codex-credits-set')).toEqual([
+      { expected_revision: 2, accounts: { c3: { allow_credits: true } } }
+    ]);
+  });
+
+  test('saves a changed daily cap', async () => {
+    const store = creditStore();
+    const { root, pane, calls } = mount({
+      section: 'account',
+      codexCreditStore: store,
+      transport: echoTransport(store)
+    });
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, '[data-codex-credit-cap="c3"]')
+    );
+    input.value = '250';
+    input.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'codex-credits-set')).toEqual([
+      { expected_revision: 2, accounts: { c3: { daily_cap: 250 } } }
+    ]);
+  });
+
+  test('shows the saved credit values when reopened', async () => {
+    const store = creditStore();
+    const first = mount({
+      section: 'account',
+      codexCreditStore: store,
+      transport: echoTransport(store)
+    });
+    await first.pane.load();
+    const box = /** @type {HTMLInputElement} */ (
+      el(first.root, '[data-codex-credit-allow="c3"]')
+    );
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+    await settle();
+
+    const reopened = mount({ section: 'account', codexCreditStore: store });
+    await reopened.pane.load();
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        el(reopened.root, '[data-codex-credit-allow="c3"]')
+      ).checked
+    ).toBe(true);
+  });
+
+  test('shows today consumption and the global and cap notes', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      codexCreditStore: creditStore({
+        c3: { allow_credits: true, daily_cap: 1000, consumed_today: 12.5 }
+      })
+    });
+
+    await pane.load();
+
+    expect(el(root, '[data-codex-credit-consumed="c3"]').textContent).toBe(
+      '오늘 소모 12.5'
+    );
+    expect(el(root, '[data-codex-credits-scope]').textContent).toContain(
+      '전역'
+    );
+    expect(el(root, '[data-codex-credits-cap-note]').textContent).toContain(
+      '이 값에 닿으면 새로 고르지 않는다'
+    );
   });
 });
