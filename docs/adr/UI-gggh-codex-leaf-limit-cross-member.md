@@ -298,7 +298,8 @@ pause 자격 검사와 `prior_attempt` tuple 승계 — 는 그대로다. 이 �
   조회를 함께 되돌리고 queue.json에 영속된 교차 멤버십을 정리해야 한다.
 - 맥락 없이는 놀랍다(UI-gggh): claude attempt가 Codex 러너 보류 target에 들어 있고, 같은
   target의 다른 멤버와 달리 전환하지 않으며 멤버십 계정이 아닌 자기 러너 계정으로 재개된다.
-  회복 알림의 러너 표시는 target 러너(codex)다.
+  해제 기록은 리프 러너(codex)의 회복으로 남고 재개 계정은 적지 않는다 — 재개는 자기 러너
+  계정으로 다시 해석된다.
 - 트레이드오프(UI-gggh): 계정 번호의 안정성은 codex-auth가 보장하지 않으므로 번호가 다른 계정을
   가리키면 엉뚱한 계정의 회복을 기다릴 수 있다. 대신 bridge payload·dotfiles 계약을 바꾸지 않는다.
 

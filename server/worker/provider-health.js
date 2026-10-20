@@ -1180,18 +1180,27 @@ export function createProviderHealth(deps) {
           continue;
         }
         // The receipt's account is what the resume actually launches on.
-        const recovered_account =
-          (settled.pending || []).find(
-            (
-              /** @type {{ attempt_id: string, account: string|null }} */ receipt
-            ) => receipt.attempt_id === attempt_id
-          )?.account ?? live_target.account;
+        const receipt_account = (settled.pending || []).find(
+          (
+            /** @type {{ attempt_id: string, account: string|null }} */ receipt
+          ) => receipt.attempt_id === attempt_id
+        )?.account;
+        // A session held by its delegated leaf's limit (UI-gggh §3.3) has an
+        // account-less receipt and resolves its own runner's account again,
+        // so the leaf runner's account is not the one it resumes on.
+        const leaf_member =
+          (receipt_account ?? null) === null &&
+          typeof recovered_attempt.runner === 'string' &&
+          recovered_attempt.runner !== runner;
+        const recovered_account = leaf_member
+          ? null
+          : (receipt_account ?? live_target.account);
         hooks.timeline?.append({
           bead_id: recovered_attempt.bead_id,
           attempt_id,
           kind: 'provider_recovered',
           seq: generation,
-          summary: `${runner} 공급자 회복`,
+          summary: `${runner} 공급자 회복${leaf_member ? ' (리프)' : ''}`,
           ...(recovered_account ? { account: recovered_account } : {})
         });
         if (!first) {

@@ -6923,8 +6923,8 @@ export function createScheduler(deps) {
    *
    * `settled` is the retroactive sweep's entry (§3.4): the row already went
    * through its own termination, so the Bead's metadata and claim are not
-   * this write's to restore again, and a row that stopped waiting meanwhile is
-   * left alone.
+   * this write's to restore again, and a row that stopped being a sweep
+   * candidate meanwhile is left alone.
    *
    * @param {string} workspace
    * @param {string} attempt_id
@@ -6991,8 +6991,17 @@ export function createScheduler(deps) {
     const stop_oid = await branchTip(attempt.repo, bead_id);
     const current = deps.store.snapshot(workspace);
     const held_attempt = current.attempts[attempt_id];
+    // A retroactive entry re-reads the sweep's whole candidate rule on the
+    // latest snapshot right before the write (§3.4): a resume, claim, discard
+    // or dismissal that landed during the reads above leaves the row alone.
+    // Only the marker the sweep itself just wrote is set aside.
     if (
-      (options.settled === true && held_attempt?.status !== 'waiting') ||
+      (options.settled === true &&
+        (!held_attempt ||
+          !leafLimitSweepCandidate(current, {
+            ...held_attempt,
+            provider_leaf_checked_at: undefined
+          }))) ||
       (held_attempt?.status === 'paused' &&
         held_attempt.cause?.startsWith('provider_outage:') &&
         current.provider_hold?.[target_runner]?.targets?.some(
@@ -12240,8 +12249,8 @@ export function createScheduler(deps) {
    * Whether one row is a provider recovery wait the retroactive leaf-limit
    * judgment (UI-gggh §3.4) may still read: waiting on `recovery:provider`,
    * never judged, bound to no hold, and free of the exclusions the
-   * preserved-failure sweep keeps — a Bead claim, a discard, a resume or a
-   * live sibling, a withdrawal or a dismissal.
+   * preserved-failure sweep keeps — a completed lane, a Bead claim, a
+   * discard, a resume or a live sibling, a withdrawal or a dismissal.
    *
    * @param {any} q
    * @param {any} attempt
@@ -12256,6 +12265,9 @@ export function createScheduler(deps) {
       typeof attempt.provider_leaf_checked_at !== 'number' &&
       !attempt.withdrawn &&
       attempt.dismissed_at == null &&
+      !(q.done || []).some(
+        (/** @type {any} */ entry) => entry.bead_id === bead_id
+      ) &&
       !Object.hasOwn(q.provider_hold_members || {}, attempt_id) &&
       !Object.values(q.provider_hold || {}).some((/** @type {any} */ hold) =>
         (hold.targets || []).some((/** @type {any} */ target) =>

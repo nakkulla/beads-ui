@@ -6698,8 +6698,12 @@ describe('scheduler provider hold and recovery', () => {
    * with its persisted session log (UI-gggh §3.4).
    *
    * @param {{ account_number?: number, requested_model?: string }} [leaf]
+   * @param {{ onBranchTip?: (queue_store: any) => void }} [options] - Runs
+   * inside the hold's branch-tip read, the last await before its write.
    */
-  function waitingLeafRow(leaf = {}) {
+  function waitingLeafRow(leaf = {}, options = {}) {
+    /** @type {any} */
+    let queue_store = null;
     const sessionLog = createSessionLog();
     const read = vi.spyOn(sessionLog, 'read');
     const log_path = beadSessionLogPath(WS, 'B1', 'waiting-leaf');
@@ -6722,6 +6726,24 @@ describe('scheduler provider hold and recovery', () => {
       config: { B1: {} },
       sessionLog,
       probePid: () => ({ alive: false, started_at: null }),
+      gitRun: vi.fn(
+        async (/** @type {string[]} */ args, /** @type {any} */ run = {}) => {
+          if (args[0] === 'rev-parse' && args[1] === 'refs/heads/B1') {
+            options.onBranchTip?.(queue_store);
+          }
+          if (args.includes('--abbrev-ref')) {
+            return {
+              code: 0,
+              stdout: `${path.basename(run.cwd || '')}\n`,
+              stderr: ''
+            };
+          }
+          if (args[0] === 'ls-remote') {
+            return { code: 0, stdout: '', stderr: '' };
+          }
+          return { code: 1, stdout: '', stderr: '' };
+        }
+      ),
       ...accountDeps({
         accountCatalog: {
           resolveClaude: vi.fn(async (email) => ({
@@ -6736,6 +6758,7 @@ describe('scheduler provider hold and recovery', () => {
         }
       })
     });
+    queue_store = env.store;
     seedProviderAttempt(env.store, 'waiting-leaf', 'B1', {
       status: 'waiting',
       cause: 'session_recovery_wait',
@@ -6782,6 +6805,45 @@ describe('scheduler provider hold and recovery', () => {
       provider_leaf_checked_at: expect.any(Number)
     });
     expect(env.readsOfRow()).toBe(1);
+  });
+
+  test('leaves a waiting leaf-limit row of a completed lane unheld', async () => {
+    const env = waitingLeafRow();
+    env.store.moveToDone(WS, { bead_id: 'B1' });
+    const hold = vi.spyOn(env.store, 'holdProviderAttempt');
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['waiting-leaf'].status).toBe(
+      'waiting'
+    );
+    expect(hold).not.toHaveBeenCalled();
+  });
+
+  test('leaves a waiting row unheld when a resume lands before the hold write', async () => {
+    const env = waitingLeafRow(
+      {},
+      {
+        onBranchTip(queue_store) {
+          queue_store.appendAttempt(WS, {
+            expected_revision: queue_store.snapshot(WS).revision,
+            attempt: {
+              attempt_id: 'resumed-child',
+              bead_id: 'B1',
+              resumed_from: 'waiting-leaf'
+            }
+          });
+        }
+      }
+    );
+    const hold = vi.spyOn(env.store, 'holdProviderAttempt');
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['waiting-leaf'].status).toBe(
+      'waiting'
+    );
+    expect(hold).not.toHaveBeenCalled();
   });
 
   test('leaves a leaf hold out of the codex wait-mode follow pass', async () => {
