@@ -7081,6 +7081,15 @@ summary.repo-ops-log-viewer__attempt-head {
   white-space: nowrap;
 }
 
+/* 직렬 레인 머리(공유 `.worker-pane__hd`)에서 줄어드는 것은 제목뿐이다 — 점유
+   배지와 `Worker ↗`(`header_control`)는 줄바꿈하지 않는다. 제목이 레포 이름을
+   싣는 것은 모니터뿐이고 `microbiome_bile`처럼 끊을 곳 없는 이름이 버튼을 레인
+   밖으로 밀었다 (UI-723e). 말줄임은 끝의 `직렬 N`을 지우므로 감싼다. */
+.mon .worker-wait__lane .worker-pane__title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* 레포 간 상호 정지 경고 (UI-jaua): 공유 대기 본문의 `after` 슬롯이 그리는
    Monitor 전용 cross-repo 사실이라 `mon2-` 이름으로 남는다. 빈 레인 힌트·순환
    경고·점유 배지는 이제 공유 본문(`.worker-wait__*`·`.worker-lane__*`)의
