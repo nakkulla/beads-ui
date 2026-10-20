@@ -1699,7 +1699,7 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
           cardsByBead(mount)
             .get(id)
             ?.querySelectorAll(
-              ':is(.worker-mini__head, .worker-mini__row1, .rtile__hd) > .worker-attrs > *'
+              ':is(.worker-mini__head, .worker-mini__row1, .rtile__hd-main) > .worker-attrs > *'
             ) || []
         ).map((chip) => (chip.textContent || '').trim())
       )

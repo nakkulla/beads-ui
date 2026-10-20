@@ -3898,7 +3898,7 @@ describe('lane origins and independent slot 5 rows (UI-us7l)', () => {
       expect(
         Array.from(
           mount.querySelectorAll(
-            ':is(.worker-card__head, .worker-mini__head, .rtile__hd) > .worker-attrs .judgement-chip'
+            ':is(.worker-card__head, .worker-mini__head, .rtile__hd-main) > .worker-attrs .judgement-chip'
           ),
           (chip) => chip.getAttribute('data-chip-key')
         )

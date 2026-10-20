@@ -3438,10 +3438,26 @@ summary.repo-ops-log-viewer__attempt-head {
   white-space: nowrap;
 }
 
-/* 정체성이 좁아져도 조작 묶음은 머리줄 오른쪽 끝에 남는다. */
+/* 정체성·속성 칩·배지는 왼쪽 묶음 안에서만 줄을 넘긴다 (UI-refs §3.6). 기준
+   폭이 0이라 머리줄의 줄 나누기에서 이 묶음은 폭을 차지하지 않고, 조작 묶음이
+   늘 첫 줄 오른쪽에 남는다 — 머리줄의 줄넘김은 그 뒤의 팝업만 받는다. */
+.rtile__hd-main {
+  display: flex;
+  flex: 1 1 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: inherit;
+  min-width: 0;
+}
+
+/* 정체성이 좁아져도 조작 묶음은 머리줄 오른쪽 끝에 남는다. 왼쪽 묶음이 여러
+   줄이 되어도 첫 줄에 서고, 머리줄 최소 높이 안에서 가운데라 한 줄 타일의
+   세로 정렬은 그대로다. */
 .rtile__hd-actions {
   display: flex;
+  min-height: calc(var(--h-control) + var(--sp-4));
   align-items: center;
+  align-self: flex-start;
   gap: var(--sp-6);
   flex: 0 0 auto;
   margin-left: auto;
@@ -3904,7 +3920,7 @@ summary.repo-ops-log-viewer__attempt-head {
   max-width: 100%;
 }
 
-.worker-attrs > .ctl-chip {
+:is(.worker-attrs, .rtile__hd-main) > .ctl-chip {
   min-width: 0;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -8395,7 +8411,12 @@ button.detail-session__leg:focus-visible {
   /* 머리줄이 줄을 넘기므로 레포 배지도 12ch 상한을 푼다 (UI-nr86): 칩 줄
      해제(UI-pw2g §3.2)가 머리줄을 뺀 이유는 배치 유지였고, 이 폭에서는 긴
      이름이 다음 줄로 내려갈 뿐이다. 640px 초과 폭은 상한을 유지한다. */
-  :is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd)
+  :is(
+      .worker-card__head,
+      .worker-mini__head,
+      .worker-mini__row1,
+      .rtile__hd-main
+    )
     > :is(.worker-card__repo, .worker-mini__repo) {
     flex-shrink: 1;
     max-width: 100%;

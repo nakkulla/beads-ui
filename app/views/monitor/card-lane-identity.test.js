@@ -191,7 +191,7 @@ function draw(lane, fields) {
 function slotOneChips(host) {
   return Array.from(
     host.querySelectorAll(
-      ':is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd) > .worker-attrs > *'
+      ':is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd-main) > .worker-attrs > *'
     ),
     (chip) => ({
       class: Array.from(chip.classList).sort().join(' '),
