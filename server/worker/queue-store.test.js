@@ -9135,8 +9135,9 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
   });
 
   test('pairs every queue-entry creation point with a zero rebase budget', () => {
-    // The two budgets are written together at seven literal sites (spec §3.2;
-    // the automatic-review enrolment site left with UI-d7fy §3.4).
+    // The two budgets are written together at eight literal sites (spec §3.2;
+    // the automatic-review enrolment site left with UI-d7fy §3.4, the red-base
+    // wait's moved-base return joined with UI-ty6k §4.2).
     // Normalization and consumption both floor a missed one, so this is about
     // the third guarantee: no creation point drifts apart from the others.
     const source = fs.readFileSync(
@@ -9148,8 +9149,8 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
       /resolution_rounds: 0,\n\s*rebase_rounds: 0,/g
     );
 
-    expect(source.match(/resolution_rounds: 0,/g)).toHaveLength(7);
-    expect(created).toHaveLength(7);
+    expect(source.match(/resolution_rounds: 0,/g)).toHaveLength(8);
+    expect(created).toHaveLength(8);
   });
 });
 
@@ -17810,9 +17811,9 @@ describe('worker/queue-store red-base follow-up wait (UI-ty6k)', () => {
     expect(result.queue.completion_intents['UI-root']).not.toHaveProperty(
       'followup_wait'
     );
-    expect(
-      result.queue.completion_intents['UI-root'].followup_waits
-    ).toEqual([{ pr_url: PR_URL, head_sha: HEAD }]);
+    expect(result.queue.completion_intents['UI-root'].followup_waits).toEqual([
+      { pr_url: PR_URL, head_sha: HEAD }
+    ]);
   });
 
   test('keeps a resumed wait off the runnable queue', () => {

@@ -308,7 +308,7 @@ describe('repo operation after-ladder recovery', () => {
 
   test.each([
     ['an ordinary', 1, {}],
-    ['a base-only', 0, { target: 'base_only' }]
+    ['a base-only', 0, { target: /** @type {const} */ ('base_only') }]
   ])(
     'opens a repair handoff for %s verify failure %i times',
     async (_label, created, marker) => {
@@ -7172,7 +7172,11 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
 describe('base-only verify candidate (UI-ty6k §3 결정 2)', () => {
   function baseOnlyHarness() {
     const verifyCheckout = {
-      materialize: vi.fn(async () => ({ ok: true, path: root, tree_sha: TREE })),
+      materialize: vi.fn(async () => ({
+        ok: true,
+        path: root,
+        tree_sha: TREE
+      })),
       verify: vi.fn(async () => ({ ok: true })),
       cleanup: vi.fn(async () => {})
     };

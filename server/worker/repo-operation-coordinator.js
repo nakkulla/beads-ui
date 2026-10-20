@@ -224,7 +224,12 @@ export function createRepoOperationCoordinator(deps) {
    * A cleanup retry's successor adds `retry_of` exactly as
    * {@link operationId} does (UI-btsr §3.2).
    *
-   * @param {{ effective_base_sha: string, target_base: string, target_tree: string, script_object_type: string, script_mode: string, script_blob_sha: string, foreign_repo?: string|null, foreign_head_sha?: string|null, retry_of?: string|null }} input
+   * A base-only verify adds `target: 'base_only'` on the same rule (UI-ty6k §3
+   * 결정 2): the pinned base alone has the same tree as the cleanup verify of
+   * the merge that produced it, and adopting that record would bind the wait to
+   * another PR's run.
+   *
+   * @param {{ effective_base_sha: string, target_base: string, target_tree: string, script_object_type: string, script_mode: string, script_blob_sha: string, foreign_repo?: string|null, foreign_head_sha?: string|null, retry_of?: string|null, base_only?: boolean }} input
    */
   function verifyOperationId(input) {
     return crypto
@@ -245,7 +250,8 @@ export function createRepoOperationCoordinator(deps) {
           script_blob_sha: input.script_blob_sha,
           ...(typeof input.retry_of === 'string' && input.retry_of.length > 0
             ? { retry_of: input.retry_of }
-            : {})
+            : {}),
+          ...(input.base_only === true ? { target: 'base_only' } : {})
         })
       )
       .digest('hex')
@@ -1095,7 +1101,10 @@ export function createRepoOperationCoordinator(deps) {
       operation.dismissed ||
       operation.superseded_by ||
       !operation.script_path ||
-      operation.subjects[0]?.bead_id === 'manual'
+      operation.subjects[0]?.bead_id === 'manual' ||
+      // A base-only verify is the red-base wait's diagnostic (UI-ty6k §4.1):
+      // the follow-up it waits on is the linked Bead, never a new repair.
+      operation.target === 'base_only'
     ) {
       return;
     }
@@ -1409,7 +1418,18 @@ export function createRepoOperationCoordinator(deps) {
     } catch {
       return false;
     }
+    // A base-only verify (UI-ty6k §3 결정 2) is the pinned base checked out
+    // alone: the `final_sha` candidate path with no PR head squashed in.
+    const base_only =
+      candidate.base_only !== true ||
+      (!foreign &&
+        typeof candidate.base_sha === 'string' &&
+        typeof candidate.head_sha === 'string' &&
+        typeof candidate.final_sha === 'string' &&
+        candidate.head_sha.toLowerCase() === candidate.base_sha.toLowerCase() &&
+        candidate.final_sha.toLowerCase() === candidate.base_sha.toLowerCase());
     return (
+      base_only &&
       candidate_repo === coordinator_repo &&
       (foreign
         ? typeof foreign.remote === 'string' &&
@@ -1535,7 +1555,8 @@ export function createRepoOperationCoordinator(deps) {
       script_mode: declaration.mode,
       script_blob_sha: declaration.blob_sha,
       foreign_repo: foreign ? foreign.slug : null,
-      foreign_head_sha: foreign ? candidate.head_sha : null
+      foreign_head_sha: foreign ? candidate.head_sha : null,
+      base_only: candidate.base_only === true
     };
     let operation_id = verifyOperationId(verify_identity);
     // The post-merge cleanup's own verify (UI-btsr §3.2): its identity is
@@ -1610,7 +1631,10 @@ export function createRepoOperationCoordinator(deps) {
       script_path: declaration.script,
       script_mode: declaration.mode,
       script_blob_sha: declaration.blob_sha,
-      ...(retry_of !== null ? { retry_of } : {})
+      ...(retry_of !== null ? { retry_of } : {}),
+      ...(candidate.base_only === true
+        ? { target: /** @type {const} */ ('base_only') }
+        : {})
     });
     if (!prerecord.ok) {
       await verify_checkout.cleanup({
