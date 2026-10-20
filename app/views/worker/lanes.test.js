@@ -2487,7 +2487,7 @@ describe('discovered-from chip', () => {
     expect(chip?.getAttribute('data-from-id')).toBe('UI-parent');
   });
 
-  test('omits the from chip on a done row', () => {
+  test('renders the from chip on a done row (UI-refs §3.2)', () => {
     const row = renderRow({
       lane: 'done',
       done: true,
@@ -2495,7 +2495,9 @@ describe('discovered-from chip', () => {
       from_id: 'UI-origin'
     });
 
-    expect(row.querySelector('.ctl-chip--from')).toBeNull();
+    const chip = row.querySelector('.worker-mini__row3 .ctl-chip--from');
+
+    expect(chip?.getAttribute('data-from-id')).toBe('UI-origin');
     expect(row.querySelector('.worker-mini__title')).not.toBeNull();
   });
 
@@ -2794,8 +2796,11 @@ describe('worker-ineligible candidate card (UI-8881, UI-lbm5)', () => {
     const id_index = kids.findIndex((el) =>
       el.classList.contains('worker-card__id')
     );
-    const chip_index = kids.findIndex((el) =>
-      el.classList.contains('worker-card__ineligible')
+    // 속성 칩은 슬롯 1의 묶음 하나에 선다 (UI-refs §3.2).
+    const chip_index = kids.findIndex(
+      (el) =>
+        el.classList.contains('worker-attrs') &&
+        el.querySelector('.worker-card__ineligible') !== null
     );
 
     expect(id_index).toBeGreaterThanOrEqual(0);
@@ -3857,7 +3862,7 @@ describe('exec chip placement', () => {
 
 describe('lane origins and independent slot 5 rows (UI-us7l)', () => {
   test.each(['queue', 'pr_wait', 'candidate', 'running'])(
-    'preserves judgment order in its assigned slot on %s',
+    'preserves judgment order in slot 1 on %s (UI-refs §3.2)',
     (variant) => {
       const item = {
         id: 'A-1',
@@ -3875,16 +3880,19 @@ describe('lane origins and independent slot 5 rows (UI-us7l)', () => {
       } else {
         renderRow(/** @type {any} */ (item));
       }
-      const slot =
-        variant === 'candidate' ? '.worker-card__head' : '.worker-chips--run';
 
       expect(
-        Array.from(mount.querySelectorAll(`${slot} .judgement-chip`), (chip) =>
-          chip.getAttribute('data-chip-key')
+        Array.from(
+          mount.querySelectorAll(
+            ':is(.worker-card__head, .worker-mini__head, .rtile__hd) > .worker-attrs .judgement-chip'
+          ),
+          (chip) => chip.getAttribute('data-chip-key')
         )
       ).toEqual(['complex', 'frontend', 'backend']);
       expect(
-        mount.querySelector('.worker-chips--coords .judgement-chip')
+        mount.querySelector(
+          '.worker-chips .judgement-chip:not(.worker-card__receipt)'
+        )
       ).toBeNull();
     }
   );
@@ -5042,12 +5050,19 @@ describe('quick_fix self-review 칩 자리 (UI-251y §3.2)', () => {
       card.querySelector('.worker-card__head')
     );
 
+    // 속성 칩 묶음이 머리줄 왼쪽 묶음의 끝이고, 리뷰 칩은 그 묶음의 끝이다
+    // (UI-refs §3.2).
     const kids = Array.from(head.children).map((el) => el.className);
-
-    expect(kids.findIndex((c) => c.includes('worker-card__qfr'))).toBe(
-      kids.findIndex((c) => c.includes('worker-card__ineligible')) + 1
+    const attrs = Array.from(
+      head.querySelector('.worker-attrs')?.children || [],
+      (el) => el.className
     );
-    expect(kids.at(-1)).toContain('worker-card__qfr');
+
+    expect(attrs.findIndex((c) => c.includes('worker-card__qfr'))).toBe(
+      attrs.findIndex((c) => c.includes('worker-card__ineligible')) + 1
+    );
+    expect(attrs.at(-1)).toContain('worker-card__qfr');
+    expect(kids.at(-1)).toContain('worker-attrs');
   });
 
   test('keeps every judgement out of the drag and queue eligibility', () => {
@@ -6566,14 +6581,17 @@ describe('복잡 chip on the worker lane surfaces (UI-7nhi §3)', () => {
     expect(card.querySelector('.worker-card__complex')).toBeNull();
   });
 
-  test('draws the chip line for a row whose only chip is the 복잡 판정', () => {
+  test('draws no chip line for a row whose only chip is the 복잡 판정 (UI-refs §3.2)', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
       complex_reason: REASON
     });
 
-    expect(row.querySelector('.worker-chips')).not.toBeNull();
+    expect(row.querySelector('.worker-chips')).toBeNull();
+    expect(
+      row.querySelector('.worker-mini__head .worker-card__complex')
+    ).not.toBeNull();
   });
 
   test('turns the chip into a 판정 button that opens a 사유 popup', () => {
@@ -6677,7 +6695,7 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
     ).toBe('true');
   });
 
-  test('draws the popup under the coordinate line of a waiting row', () => {
+  test('draws the popup under the identity line of a waiting row (UI-refs §3.2)', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
@@ -6688,7 +6706,42 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
       }
     });
 
-    expect(row.querySelector('.worker-chips .chip-popover')).not.toBeNull();
+    expect(
+      row.querySelectorAll('.worker-mini__head > .chip-popover')
+    ).toHaveLength(1);
+    expect(row.querySelector('.worker-chips .chip-popover')).toBeNull();
+  });
+
+  test('draws the popup under the identity line of a three-line done row (UI-refs §3.2)', () => {
+    const row = renderRow({
+      done_layout: 'three_line',
+      workflow: QFR,
+      chip_popover: {
+        chip_key: 'qfr',
+        content: { title: '리뷰', lines: ['한 줄'] }
+      }
+    });
+
+    expect(
+      row.querySelectorAll('.worker-mini__row1 > .chip-popover')
+    ).toHaveLength(1);
+  });
+
+  test('keeps the receipt popup in the execution line of a waiting row', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      complex_reason: REASON,
+      receipt_badge: { codes: ['absent'] },
+      chip_popover: {
+        chip_key: 'receipt',
+        content: { title: '영수증', lines: ['한 줄'] }
+      }
+    });
+
+    expect(
+      row.querySelectorAll('.worker-chips--run > .chip-popover')
+    ).toHaveLength(1);
   });
 });
 

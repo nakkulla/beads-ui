@@ -2469,11 +2469,11 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
   }
 
-  test('draws the chip in the attempt tile meta line', () => {
+  test('draws the chip in the attempt tile identity line (UI-refs §3.2)', () => {
     const tile = renderTile({ complex_reason: REASON });
 
     const chip = /** @type {HTMLElement} */ (
-      tile.querySelector('.rtile__meta .worker-card__complex')
+      tile.querySelector('.rtile__hd > .worker-attrs .worker-card__complex')
     );
 
     expect(chip.textContent?.trim()).toBe('복잡');
@@ -2483,7 +2483,7 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
     expect(chip.dataset.state).toBeUndefined();
   });
 
-  test('draws the chip in the session tile meta line', () => {
+  test('draws the chip in the session tile identity line (UI-refs §3.2)', () => {
     const tile = renderTile({
       kind: 'session',
       attempt_id: null,
@@ -2493,8 +2493,25 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
     });
 
     expect(
-      tile.querySelector('.rtile__meta .worker-card__complex')
+      tile.querySelector('.rtile__hd > .worker-attrs .worker-card__complex')
     ).not.toBeNull();
+    expect(tile.querySelector('.rtile__meta .worker-card__complex')).toBeNull();
+  });
+
+  test('keeps the right-side controls after the attribute chips (UI-refs §3.6)', () => {
+    const tile = renderTile({
+      complex_reason: REASON,
+      labels: ['frontend', 'backend'],
+      worker_ineligible: true
+    });
+    const head = /** @type {HTMLElement} */ (tile.querySelector('.rtile__hd'));
+
+    const kids = Array.from(head.children, (el) => el.className);
+
+    expect(kids.indexOf('worker-attrs')).toBeLessThan(
+      kids.indexOf('rtile__hd-actions')
+    );
+    expect(kids.at(-1)).toBe('rtile__hd-actions');
   });
 
   test('omits the chip when the bead carries no 복잡 판정', () => {
@@ -2520,7 +2537,7 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
     expect(chip.dataset.chipKey).toBe('complex');
   });
 
-  test('draws the 사유 popup inside the tile meta line', () => {
+  test('draws the 사유 popup under the tile identity line (UI-refs §3.2)', () => {
     const tile = renderTile({
       complex_reason: REASON,
       chip_popover: {
@@ -2529,7 +2546,8 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
       }
     });
 
-    expect(tile.querySelector('.rtile__meta .chip-popover')).not.toBeNull();
+    expect(tile.querySelectorAll('.rtile__hd > .chip-popover')).toHaveLength(1);
+    expect(tile.querySelector('.rtile__meta .chip-popover')).toBeNull();
     expect(
       tile.querySelector('.worker-card__complex')?.getAttribute('aria-expanded')
     ).toBe('true');

@@ -581,8 +581,8 @@ function titleCacheHandle() {
 
 /**
  * The bead ids a LANE of this snapshot draws — `queue` ∪ the serial lanes ∪ the
- * running attempts. `pr_wait` and `done` are deliberately out: those rows have
- * no "무엇으로 돌아갈까" to answer (UI-q1tg §3.1).
+ * running attempts. `pr_wait` and `done` are added by the caller where it
+ * needs them (UI-q1tg §3.1, UI-refs §3.3).
  *
  * @param {Record<string, any>} snapshot
  * @returns {Set<string>}
@@ -602,15 +602,43 @@ function laneMemberIds(snapshot) {
 }
 
 /**
+ * The Bead attribute keys of one bead's overlay issue fields (UI-refs §3.3), in
+ * metadata shape — the keys the client's shared attribute judgment reads beside
+ * the pin — or `null` when the bead has none, so its metadata stays the pin
+ * object itself (acceptance 7).
+ *
+ * @param {{ complex_reason?: string, session_preferred_reason?: string, exec_lane?: string }|undefined} fields
+ * @returns {Record<string, string>|null}
+ */
+function attributeMetadataOf(fields) {
+  if (!fields) {
+    return null;
+  }
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const key of /** @type {const} */ ([
+    'complex_reason',
+    'session_preferred_reason',
+    'exec_lane'
+  ])) {
+    const value = fields[key];
+    if (typeof value === 'string' && value.length > 0) {
+      out[key] = value;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
  * One workspace's bead execution material, in the SAME shape the Worker tab's
  * client adapter produces (UI-q1tg §3.1):
  * `{ [bead_id]: { route?: string, metadata?: Record<string, string> } }`.
  *
- * `route` covers lane members and `done`; execution pins cover non-done lane
- * members. `runnable` rows carry their own workflow values, but join this
- * projection for the independently confirmed source workspace. `pr_wait` and
- * `session_active` also join the provenance read even though they remain
- * outside execution-pin selection.
+ * `route` covers lane members and `done`; execution pins and the Bead
+ * attribute fields cover every lane member — queue, serial, running, `pr_wait`,
+ * `done` and `session_active` (UI-refs §3.3). `runnable` rows carry their own
+ * workflow values and pins, but join this projection for the independently
+ * confirmed source workspace.
  *
  * Reads the warm cache alone, so this projection spawns no synchronous child
  * process (ADR 0043), and is partial on the cache's existing contract: a bead
@@ -630,15 +658,17 @@ function beadOverlayFor(root_dir, snapshot, cache, workspace_roots = []) {
   if (!cache) {
     return overlay;
   }
-  const lane_member_ids = laneMemberIds(snapshot);
-  const done_set = new Set(done_ids);
-  const pin_ids = [...lane_member_ids].filter(
-    (bead_id) => !done_set.has(bead_id)
-  );
-  const lane_ids = [...lane_member_ids];
+  const lane_ids = [...laneMemberIds(snapshot)];
   const runnable_ids = [...laneBeadIds(snapshot, ['runnable'])];
   const provenance_only_ids = [
     ...laneBeadIds(snapshot, ['pr_wait', 'session_active'])
+  ];
+  // 실행 핀과 속성 필드는 모든 레인 구성원이 싣는다 (UI-refs §3.3): 슬롯 1
+  // `복잡`·area 칩의 바인딩 상태(`applied_exec_preset`·`chip_preset_source`)가
+  // 핀에 있으므로, 핀이 없는 PR 대기·완료·세션 활성 행은 같은 칩의 상태를 잃는다.
+  // 후보(`runnable`) 행은 자기 `exec_pins`를 싣고 온다.
+  const pin_ids = [
+    ...new Set([...lane_ids, ...done_ids, ...provenance_only_ids])
   ];
   const ids = [
     ...new Set([
@@ -697,8 +727,11 @@ function beadOverlayFor(root_dir, snapshot, cache, workspace_roots = []) {
     cache.execPinFor(root_dir, pin_ids)
   )) {
     const entry = overlay[bead_id] || (overlay[bead_id] = {});
-    const complex_reason = issue_fields[bead_id]?.complex_reason;
-    entry.metadata = complex_reason ? { ...pin, complex_reason } : pin;
+    // 속성 필드는 핀 키가 아니라 issue field로 와서 metadata 옆에 놓인다 — 핀 키
+    // 집합(`EXEC_PIN_KEYS`)은 runnable-cache와 같아야 한다. 속성 키가 없는
+    // 이슈의 metadata는 핀 객체 그대로다.
+    const attributes = attributeMetadataOf(issue_fields[bead_id]);
+    entry.metadata = attributes ? { ...pin, ...attributes } : pin;
   }
   return overlay;
 }

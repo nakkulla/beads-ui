@@ -26,7 +26,11 @@
 import path from 'node:path';
 import { complexReason } from '../../app/utils/complex-judgement.js';
 import { EXECUTION_SETTING_KEYS } from '../../app/utils/execution-defaults.js';
-import { workerLabels } from '../../app/utils/worker-eligibility.js';
+import { sessionPreferredReason } from '../../app/utils/session-preferred.js';
+import {
+  EXEC_LANE_KEY,
+  workerLabels
+} from '../../app/utils/worker-eligibility.js';
 import { isBdProtocolFailure } from '../bd-json.js';
 import { runBdJsonProjected } from '../bd.js';
 import { debug } from '../logging.js';
@@ -164,6 +168,14 @@ function discoveredFromId(raw_issue) {
  * @property {string} complex_reason - The contract's 복잡 판정 signals, judged
  * from label `complex` together with `metadata.complex_reason`; `''` when
  * either half is missing (UI-7nhi §1).
+ * @property {string} session_preferred_reason - The contract's
+ * `session-preferred` reason, judged from the label together with
+ * `metadata.session_preferred_reason`; `''` when the attachment is invalid
+ * (UI-49mc §2). Material of the slot-1 `세션 권장` chip on every lane (UI-refs
+ * §3.3).
+ * @property {string} exec_lane - `metadata.exec_lane` as written (UI-lbm5
+ * §4.1), `''` when it is not a non-empty string. The client judges it with
+ * `execLaneOf`, which ignores it without a valid `session-preferred`.
  * @property {string[]|null} description_scope - The `## scope` section of the
  * issue description (UI-f1qy §4.2), read off the SAME `bd show` payload so the
  * fallback declaration costs no extra process. `null` means the description
@@ -399,6 +411,14 @@ export function createTitleCache(options = {}) {
           : '',
       from_id: discoveredFromId(raw_issue),
       complex_reason: complexReason(raw_issue && raw_issue.labels, metadata),
+      session_preferred_reason: sessionPreferredReason(
+        raw_issue && raw_issue.labels,
+        metadata
+      ),
+      exec_lane:
+        typeof metadata[EXEC_LANE_KEY] === 'string'
+          ? /** @type {string} */ (metadata[EXEC_LANE_KEY])
+          : '',
       description_scope: parseDescriptionScope(
         raw_issue && raw_issue.description
       ),
@@ -826,24 +846,31 @@ export function createTitleCache(options = {}) {
 
     /**
      * Cache hits for `ids` as the issue fields the monitor overlay carries
-     * beside the pin: `priority`, `issue_type`, `from_id`, and the judged
-     * `complex_reason`.
+     * beside the pin: `priority`, `issue_type`, `from_id`, and the Bead
+     * attribute material of the slot-1 chips (UI-refs §3.3) — the judged
+     * `complex_reason` and `session_preferred_reason`, and `exec_lane` as
+     * written. These ride as issue fields, not pin keys: the pin key set must
+     * stay equal to runnable-cache's (`EXEC_PIN_KEYS` above).
      * A field the record cannot supply is omitted, never defaulted (fail-quiet);
      * a bead with none of them is absent. Same partiality contract as the
      * projections above, and no `bd` process of its own.
      *
      * @param {string} workspace
      * @param {string[]} ids
-     * @returns {Record<string, { priority?: number, issue_type?: string, from_id?: string, complex_reason?: string }>}
+     * @returns {Record<string, { priority?: number, issue_type?: string, from_id?: string, complex_reason?: string, session_preferred_reason?: string, exec_lane?: string }>}
      */
     overlayFieldsFor(workspace, ids) {
       const projected = collect(workspace, ids, (rec) => ({
         ...(rec.priority !== null ? { priority: rec.priority } : {}),
         ...(rec.issue_type ? { issue_type: rec.issue_type } : {}),
         ...(rec.from_id ? { from_id: rec.from_id } : {}),
-        ...(rec.complex_reason ? { complex_reason: rec.complex_reason } : {})
+        ...(rec.complex_reason ? { complex_reason: rec.complex_reason } : {}),
+        ...(rec.session_preferred_reason
+          ? { session_preferred_reason: rec.session_preferred_reason }
+          : {}),
+        ...(rec.exec_lane ? { exec_lane: rec.exec_lane } : {})
       }));
-      /** @type {Record<string, { priority?: number, issue_type?: string, from_id?: string, complex_reason?: string }>} */
+      /** @type {Record<string, { priority?: number, issue_type?: string, from_id?: string, complex_reason?: string, session_preferred_reason?: string, exec_lane?: string }>} */
       const out = {};
       for (const [bead_id, fields] of Object.entries(projected)) {
         if (Object.keys(fields).length > 0) {

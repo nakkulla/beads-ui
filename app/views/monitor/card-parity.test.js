@@ -1518,8 +1518,11 @@ describe('session-inquiry row parity between the Worker and Monitor tabs (UI-gsk
 });
 
 describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 §4.6)', () => {
-  /** 세션 레인의 네 모양: 후보 둘(ineligible·세션 실행 선택), 대기 하나, 실행 중 하나. */
-  const LANE_BEADS = ['L-1', 'L-2', 'L-3', 'L-4'];
+  /**
+   * 세션 레인의 여섯 모양: 후보 둘(ineligible·세션 실행 선택), 대기 하나, 실행 중
+   * 하나, PR 대기 하나(ineligible + 복잡·영역), 완료 하나(세션 실행 선택).
+   */
+  const LANE_BEADS = ['L-1', 'L-2', 'L-3', 'L-4', 'L-5', 'L-6'];
 
   /**
    * Draw both tabs with the four session-lane beads laid over the fixture.
@@ -1539,13 +1542,47 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
         }
       }),
       row('L-3', { labels: ['worker-ineligible'] }),
-      row('L-4', { status: 'in_progress', labels: ['worker-ineligible'] })
+      row('L-4', { status: 'in_progress', labels: ['worker-ineligible'] }),
+      row('L-5', {
+        status: 'resolved',
+        labels: ['worker-ineligible', 'complex', 'frontend'],
+        metadata: { route: 'quick_fix', complex_reason: 'hard_diagnosis' }
+      }),
+      row('L-6', {
+        status: 'closed',
+        closed_at: iso(NOW - 30 * 60 * 1000),
+        labels: ['session-preferred'],
+        metadata: {
+          route: 'quick_fix',
+          session_preferred_reason: 'user_feedback_loop',
+          exec_lane: 'session'
+        }
+      })
     ];
     const raw = rawQueue();
     return drawBothTabs(undefined, {
       queue: [...raw.queue, { bead_id: 'L-3', added_at: NOW - HOUR }],
+      pr_wait: [...raw.pr_wait, { bead_id: 'L-5', added_at: NOW - HOUR }],
+      done: [...raw.done, { bead_id: 'L-6', added_at: NOW - 30 * 60 * 1000 }],
       attempts: {
         ...raw.attempts,
+        // PR 대기·완료 행의 `세션` exec 칩 재료는 마지막 구현 attempt의 기록이다.
+        'att-l5': makeAttempt({
+          attempt_id: 'att-l5',
+          bead_id: 'L-5',
+          status: 'done',
+          started_at: NOW - 3 * HOUR,
+          finished_at: NOW - 2 * HOUR,
+          exec: 'session'
+        }),
+        'att-l6': makeAttempt({
+          attempt_id: 'att-l6',
+          bead_id: 'L-6',
+          status: 'done',
+          started_at: NOW - 2 * HOUR,
+          finished_at: NOW - HOUR,
+          exec: 'session'
+        }),
         'att-l4': makeAttempt({
           attempt_id: 'att-l4',
           bead_id: 'L-4',
@@ -1633,6 +1670,48 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
       [true, true],
       [true, true]
     ]);
+  });
+
+  test('draws the 세션 exec chip on the PR-wait and done cards of both tabs (UI-refs §4.4)', async () => {
+    const { worker, monitor } = await drawSessionLane();
+
+    const chips = [worker, monitor].map((mount) =>
+      ['L-5', 'L-6'].map((id) =>
+        Array.from(
+          cardsByBead(mount).get(id)?.querySelectorAll('.exec-chip--session') ||
+            []
+        ).map((chip) => (chip.textContent || '').trim())
+      )
+    );
+
+    expect(chips).toEqual([
+      [['세션'], ['세션']],
+      [['세션'], ['세션']]
+    ]);
+  });
+
+  test('draws the slot-1 attribute chips on the waiting, running, PR-wait and done cards of both tabs (UI-refs §4.1)', async () => {
+    const { worker, monitor } = await drawSessionLane();
+
+    const attrs = [worker, monitor].map((mount) =>
+      ['L-3', 'L-4', 'L-5', 'L-6'].map((id) =>
+        Array.from(
+          cardsByBead(mount)
+            .get(id)
+            ?.querySelectorAll(
+              ':is(.worker-mini__head, .worker-mini__row1, .rtile__hd) > .worker-attrs > *'
+            ) || []
+        ).map((chip) => (chip.textContent || '').trim())
+      )
+    );
+
+    expect(attrs[0]).toEqual([
+      ['worker-ineligible'],
+      ['worker-ineligible'],
+      ['worker-ineligible', '복잡', 'frontend'],
+      ['세션 실행']
+    ]);
+    expect(attrs[1]).toEqual(attrs[0]);
   });
 
   test('stands ▤ 세션 on the running session-lane tile of both tabs', async () => {

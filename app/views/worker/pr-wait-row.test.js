@@ -807,3 +807,87 @@ describe('⏸ 보류로 전환 on PR 대기 rows (UI-0d9i §3.1)', () => {
     );
   });
 });
+
+describe('Bead attribute material on PR 대기 rows (UI-refs §3.3)', () => {
+  /**
+   * One PR 대기 row of a session-lane Bead whose overlay carries every
+   * attribute key.
+   *
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function sessionLaneRow(patch = {}) {
+    return rowsOf(
+      workspace({
+        pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+        bead_overlay: {
+          'A-1': {
+            labels: ['worker-ineligible', 'complex', 'backend'],
+            metadata: {
+              complex_reason: 'hard_diagnosis',
+              impl_runtime: 'codex'
+            }
+          }
+        },
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'A-1',
+            status: 'done',
+            started_at: 1,
+            finished_at: 2,
+            exec: 'session'
+          }
+        },
+        ...patch
+      })
+    )[0];
+  }
+
+  test('copies the attribute fields of the lane item', () => {
+    const row = sessionLaneRow();
+
+    expect(row).toMatchObject({
+      labels: ['worker-ineligible', 'complex', 'backend'],
+      chip_metadata: {
+        complex_reason: 'hard_diagnosis',
+        impl_runtime: 'codex'
+      },
+      complex_reason: 'hard_diagnosis',
+      worker_ineligible: true,
+      exec_lane: 'session'
+    });
+  });
+
+  test('carries the 세션 exec fact of the last implementation attempt', () => {
+    const row = sessionLaneRow();
+
+    expect(row.exec).toBe('session');
+  });
+
+  test('draws the 세션 exec chip and the slot-1 attribute chips on the row', () => {
+    const host = document.createElement('div');
+
+    render(miniRow(sessionLaneRow()), host);
+
+    expect(
+      Array.from(
+        host.querySelectorAll('.worker-mini__head > .worker-attrs > *'),
+        (chip) => chip.textContent?.trim()
+      )
+    ).toEqual(['worker-ineligible', '복잡', 'backend']);
+    expect(
+      host.querySelector('.worker-chips--run .exec-chip--session')?.textContent
+    ).toBe('세션');
+  });
+
+  test('leaves the attribute fields off a row whose lane item has none', () => {
+    const row = rowsOf(
+      workspace({ pr_wait: [{ bead_id: 'A-1', added_at: 1 }] })
+    )[0];
+
+    expect(
+      ['labels', 'chip_metadata', 'exec_lane', 'exec'].map((k) => k in row)
+    ).toEqual([false, false, false, false]);
+  });
+});

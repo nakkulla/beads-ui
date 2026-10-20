@@ -1021,7 +1021,7 @@ describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
     });
   });
 
-  test('omits the execution pin from a done bead', () => {
+  test('carries the execution pin of a done bead (UI-refs §3.3)', () => {
     const out = build({
       workspaces: [WS_A],
       snapshots: {
@@ -1046,10 +1046,118 @@ describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
       ])
     });
 
-    expect(overlayOf(out)['A-done']).toEqual({ route: 'quick_fix' });
+    expect(overlayOf(out)['A-done']).toEqual({
+      route: 'quick_fix',
+      metadata: { impl_runtime: 'claude' }
+    });
     expect(overlayOf(out)['A-q'].metadata).toEqual({
       impl_runtime: 'codex'
     });
+  });
+
+  test('carries the execution pin of PR-wait and session-active members (UI-refs §3.3)', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ pr_wait: [{ bead_id: 'A-pr', added_at: NOW }] })
+      },
+      sessionActive: { [WS_A]: [sessionItem('A-session')] },
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-pr',
+          title: 'PR',
+          metadata: { applied_exec_preset: 'preset-1' }
+        },
+        {
+          id: 'A-session',
+          title: '세션',
+          metadata: { chip_preset_source: 'complex' }
+        }
+      ])
+    });
+
+    expect(overlayOf(out)['A-pr'].metadata).toEqual({
+      applied_exec_preset: 'preset-1'
+    });
+    expect(overlayOf(out)['A-session'].metadata).toEqual({
+      chip_preset_source: 'complex'
+    });
+  });
+
+  test('carries exec_lane and the judged session_preferred_reason beside the pin (UI-refs §3.3)', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ done: [{ bead_id: 'A-done', added_at: NOW }] })
+      },
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-done',
+          title: '완료',
+          labels: ['session-preferred'],
+          metadata: {
+            impl_runtime: 'codex',
+            exec_lane: 'session',
+            session_preferred_reason: 'user_feedback_loop'
+          }
+        }
+      ])
+    });
+
+    expect(overlayOf(out)['A-done'].metadata).toEqual({
+      impl_runtime: 'codex',
+      exec_lane: 'session',
+      session_preferred_reason: 'user_feedback_loop'
+    });
+  });
+
+  test('keeps the pin object unchanged for a bead without attribute keys (UI-refs §4.7)', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
+      },
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-q',
+          title: '대기',
+          labels: ['frontend'],
+          metadata: { impl_runtime: 'codex', applied_exec_preset: 'p' }
+        }
+      ])
+    });
+
+    expect(overlayOf(out)['A-q'].metadata).toEqual({
+      impl_runtime: 'codex',
+      applied_exec_preset: 'p'
+    });
+  });
+
+  test('spends one bd read per lane bead however many lanes carry the pin (UI-refs §4.7)', async () => {
+    const runJson = vi.fn(async () => ({
+      ok: false,
+      error: { code: 'bd_exit_error', message: 'x' }
+    }));
+    const cache = createTitleCache({ runJson: /** @type {any} */ (runJson) });
+
+    build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'A-q', added_at: NOW }],
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          done: [{ bead_id: 'A-done', added_at: NOW }]
+        })
+      },
+      sessionActive: { [WS_A]: [sessionItem('A-session')] },
+      titleCache: cache
+    });
+    // 채움 큐는 한 번에 하나씩 돈다 — 큐가 빌 때까지 넉넉히 넘긴다.
+    for (let tick = 0; tick < 20; tick += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(runJson).toHaveBeenCalledTimes(4);
   });
 
   test('trims the execution pin to the execution setting keys', () => {
@@ -1124,7 +1232,10 @@ describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
         chip_preset_source: 'complex'
       }
     });
-    expect(overlayOf(out)['A-done']).toEqual({ priority: 3 });
+    expect(overlayOf(out)['A-done']).toEqual({
+      priority: 3,
+      metadata: { complex_reason: 'hard_diagnosis' }
+    });
   });
 
   test('carries priority and from_id of a runnable candidate', () => {
@@ -1254,7 +1365,10 @@ describe('buildMonitorPipeline overlay of a done bead (UI-ruwu §6)', () => {
       ])
     });
 
-    expect(overlayOf(out)['A-done']).toEqual({ route: 'quick_fix' });
+    expect(overlayOf(out)['A-done']).toEqual({
+      route: 'quick_fix',
+      metadata: {}
+    });
   });
 });
 

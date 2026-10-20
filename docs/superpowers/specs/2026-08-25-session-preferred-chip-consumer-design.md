@@ -133,6 +133,10 @@ ${worker_ineligible
     : ''}${quickFixReviewChipTemplate(workflow)}
 ```
 
+UI-refs 정정: 모든 레인 슬롯 1, 두 탭 — 이 칩은 후보 카드만이 아니라 대기·실행 중·PR
+대기·완료 카드의 1번 정체성 줄에도 같은 공유 템플릿으로 선다
+(`2026-10-19-lane-independent-attribute-chips-design.md` §3.2).
+
 ### 4.2 툴팁
 
 사유 → 문구 매핑 상수 `SESSION_PREFERRED_TOOLTIP` 하나를 `lanes.js` 안에 둔다.
@@ -274,6 +278,9 @@ Bead 요구가 이름을 지정한 `isSessionPreferred`가 따로 잘못돼도 �
 - `worker-serial`과의 통합. 의미가 다르다 — 직렬 lane 배치 의도 대 세션 권장.
 - Monitor 탭 카드(`miniRow` · `runningTile`) 표시. 계약이
   `consumer: beads-ui-worker-only`로 후보 레인에 한정했다.
+  UI-refs 정정: 모든 레인 슬롯 1, 두 탭 — 모니터는 여러 저장소를 보는 Worker 표면이므로
+  두 탭의 모든 레인 카드가 이 칩을 그린다. 계약 값 `beads-ui-worker-only`는 그대로다
+  (`2026-10-19-lane-independent-attribute-chips-design.md` §2·§3.2).
 - 라벨을 붙이거나 떼는 UI 조작. 이 Bead는 표시만 한다.
 - dotfiles 쪽 계약·체커·스킬 문서·테스트. `dotfiles-oqzc`가 소유한다.
 
@@ -294,6 +301,8 @@ Bead 요구가 이름을 지정한 `isSessionPreferred`가 따로 잘못돼도 �
 4. 유효 부착 후보 카드가 `세션 권장` 칩과 계약 문구 툴팁을 1번 정체성 줄에 그리고,
    `draggable`·`대기로 ↴` 버튼의 `disabled`/`title`·`place_menu` 렌더가 부착 전과
    동일하다(§6.2가 셋을 각각 assert한다).
+   UI-refs 정정: 모든 레인 슬롯 1, 두 탭 — 대기·실행 중·PR 대기·완료 카드도 같은 칩을
+   1번 정체성 줄에 그린다.
 5. `worker-ineligible` 동시 부착 카드가 `worker-ineligible` 표현만 그린다.
 6. `app/protocol.md`가 라벨 이름·advisory 성격·우선순위를 한 줄로 적는다.
 7. `git diff --name-only`가 `server/` 경로를 하나도 담지 않고,

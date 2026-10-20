@@ -18,6 +18,7 @@ import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { failureSentence } from './failure-labels.js';
 import {
+  BEAD_ATTRIBUTE_KEYS,
   baseException,
   prWaitLaneOriginFields,
   resolvesConflict
@@ -1467,6 +1468,28 @@ export function pendingKey(root_dir, bead_id) {
 }
 
 /**
+ * The Bead attribute fields (`BEAD_ATTRIBUTE_KEYS`, UI-refs §3.3) one lane item
+ * carries, copied key by key. A key the item does not carry stays absent, so a
+ * row without the material draws no attribute chip (fail-quiet).
+ *
+ * @param {LaneItem|undefined} item
+ * @returns {Partial<LaneItem>}
+ */
+function beadAttributesOf(item) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  if (!item) {
+    return out;
+  }
+  for (const key of BEAD_ATTRIBUTE_KEYS) {
+    if (item[key] !== undefined) {
+      out[key] = item[key];
+    }
+  }
+  return /** @type {Partial<LaneItem>} */ (out);
+}
+
+/**
  * The merge material of a repository that has no group in this model — every
  * row reads as unqueued (fail-quiet).
  *
@@ -1740,6 +1763,17 @@ export function prWaitRowsOf(input) {
         // 투영이 새로 만드는 객체라 키를 여기서 실어야 하고, 없으면 옮길 것도
         // 없다 (fail-quiet).
         ...(item?.plan_group ? { plan_group: item.plan_group } : {}),
+        // Bead 속성 칩 재료 (UI-refs §3.3): 레인 모델이 모든 항목에 실은 필드를
+        // 그대로 옮긴다 — 행 투영이 새 객체를 만들므로 옮기지 않으면 PR 대기
+        // 카드만 슬롯 1 속성 칩을 잃는다.
+        ...beadAttributesOf(item),
+        // `세션` exec 칩 재료 (UI-lbm5 §4.6): PR 대기 레인 항목이 마지막 구현
+        // attempt에서 얻은 사실이다. 레인 항목이 충돌 해소 타일이면 그 attempt는
+        // 이 PR의 것이 아니므로 같은 판정을 마지막 구현 attempt에서 다시 읽는다.
+        ...(item?.exec === 'session' ||
+        last_impl_by_bead.get(e.bead_id)?.exec === 'session'
+          ? { exec: /** @type {const} */ ('session') }
+          : {}),
         priority: item?.priority,
         from_id: item?.from_id,
         worker_created_from: item?.worker_created_from,

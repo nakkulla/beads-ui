@@ -3892,6 +3892,30 @@ summary.repo-ops-log-viewer__attempt-head {
   overflow-wrap: anywhere;
 }
 
+/* Bead 속성 칩 묶음 (UI-refs §3.2·§3.6): 모든 렌더러의 슬롯 1 정체성 줄에 같은
+   칩이 선다. 묶음 안에서만 줄을 넘기고, 칩은 머리줄 칩과 같이 글자를 잃지
+   않는다. 칩이 하나도 없으면 묶음 요소도 없다. */
+.worker-attrs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: inherit;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.worker-attrs > .ctl-chip {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* 속성 칩의 사유 팝업은 그 칩이 선 머리줄 바로 아래에 연다 (UI-8x90 §5) — 후보
+   카드·대기 행 머리줄과 같은 기준 상자다. */
+:is(.worker-mini__row1, .rtile__hd) {
+  position: relative;
+}
+
 :is(.worker-card, .worker-mini, .rtile) .wait-verdict {
   min-width: 0;
 }
