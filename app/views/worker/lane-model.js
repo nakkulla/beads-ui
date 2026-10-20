@@ -2975,6 +2975,67 @@ function laneItemBuckets(model) {
 }
 
 /**
+ * The keys of the Bead attribute material every lane item carries (UI-refs
+ * §3.3) — the slot-1 attribute chips read nothing else. Exported so a
+ * projection that builds a new row object from a lane item (`pr-wait-row.js`)
+ * copies exactly this set.
+ *
+ * @type {ReadonlyArray<'labels'|'chip_metadata'|'complex_reason'|'worker_ineligible'|'session_preferred'|'session_preferred_reason'|'exec_lane'>}
+ */
+export const BEAD_ATTRIBUTE_KEYS = [
+  'labels',
+  'chip_metadata',
+  'complex_reason',
+  'worker_ineligible',
+  'session_preferred',
+  'session_preferred_reason',
+  'exec_lane'
+];
+
+/**
+ * The Bead attribute fields of one lane item (UI-refs §3.3), judged by the
+ * same shared predicates the candidate projection and the server use
+ * (`isWorkerIneligible`·`sessionPreferredReason`·`execLaneOf`·`complexReason`).
+ *
+ * `worker-ineligible` is a label alone, so it is judged whenever the labels are
+ * known. The other three read metadata too: with `metadata === null` (the
+ * overlay has not observed it) they are not judged at all — judging them
+ * against an absent object would answer "not session-preferred, runs as a
+ * worker" for a Bead whose `세션 실행` is merely unobserved. A field is set only
+ * when it holds a fact, never cleared (fail-quiet).
+ *
+ * @param {unknown} labels
+ * @param {Record<string, any>|null} metadata
+ * @returns {{ worker_ineligible?: true, session_preferred?: true, session_preferred_reason?: string, exec_lane?: 'worker'|'session', complex_reason?: string }}
+ */
+export function beadAttributeFields(labels, metadata) {
+  if (!Array.isArray(labels)) {
+    return {};
+  }
+  /** @type {{ worker_ineligible?: true, session_preferred?: true, session_preferred_reason?: string, exec_lane?: 'worker'|'session', complex_reason?: string }} */
+  const fields = {};
+  const ineligible = isWorkerIneligible(labels);
+  if (ineligible) {
+    fields.worker_ineligible = true;
+  }
+  if (metadata === null) {
+    return fields;
+  }
+  // 우선순위는 계약대로 여기서 접는다 (UI-49mc §4.1): ineligible이면 권장은 없다.
+  const reason = ineligible ? '' : sessionPreferredReason(labels, metadata);
+  if (reason) {
+    fields.session_preferred = true;
+    fields.session_preferred_reason = reason;
+  }
+  fields.exec_lane = execLaneOf(labels, metadata);
+  const complex_reason = complexReason(labels, metadata);
+  if (complex_reason.length > 0) {
+    fields.complex_reason = complex_reason;
+  }
+  return fields;
+}
+
+/**
  * The execution pins one projected row observed, or `null` when the row carries
  * no `exec_pins` object at all. Both readers of that object ask here: the exec
  * chips (UI-eey2 §9.1) and the chip-binding state judgment (UI-wg68 §5.1),
@@ -4581,6 +4642,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (bead_labels && !Array.isArray(item.labels)) {
         item.labels = bead_labels;
       }
+      // Bead 속성 필드 (UI-refs §3.3): 레인과 무관하게 모든 항목이 같은 공유
+      // 판정으로 싣는다 — 슬롯 1 속성 칩이 어느 레인에서나 같은 재료를 읽는다.
+      // metadata를 관측하지 못한 행은 라벨만으로 서는 판정만 받는다.
+      const metadata_observed = !!overlay && Object.hasOwn(overlay, 'metadata');
+      Object.assign(
+        item,
+        beadAttributeFields(
+          item.labels,
+          metadata_observed ? objectOf(overlay.metadata) : null
+        )
+      );
       if (!overlay) {
         continue;
       }
@@ -4633,35 +4705,19 @@ export function buildLanes(workspaces, workspaces_state, options) {
           chips: { ...item_chips, route: overlay.route }
         });
       }
-      if (!Object.hasOwn(overlay, 'metadata')) {
+      if (!metadata_observed) {
         continue;
       }
       const metadata = objectOf(overlay.metadata);
-      // 복잡 판정 (UI-7nhi §3): 라벨과 사유를 함께 읽는다 — 어느 한쪽만 있는
-      // 부착은 무효라 칩이 서지 않는다 (fail-quiet).
-      const complex_reason = complexReason(bead_labels, metadata);
-      if (complex_reason.length > 0) {
-        item.complex_reason = complex_reason;
-      }
       // 칩 바인딩 판정의 재료 (UI-wg68 §5.1): `applied_exec_preset`·
       // `chip_preset_source`와 17핀이 **한 객체에** 있어야 대칭 비교가 선다.
       // 오버레이 metadata가 그 객체의 첫 원천이다 — bead의 metadata 전부이므로
       // 가장 넓다. 없는 행은 아래 `exec_pins` 폴백이 받는다.
       item.chip_metadata = metadata;
       if (item.lane.startsWith('s') || item.lane === 'queue') {
-        // 대기 행의 실행 방식 사실 (UI-lbm5 §4.6): 후보 카드와 같은 공유 술어로
-        // 판정해 두 탭의 대기 카드가 같은 `세션` 칩을 그린다. 판정 재료는
-        // 오버레이의 라벨·metadata다.
-        if (isWorkerIneligible(bead_labels)) {
-          item.worker_ineligible = true;
-        } else {
-          const reason = sessionPreferredReason(bead_labels, metadata);
-          if (reason) {
-            item.session_preferred = true;
-            item.session_preferred_reason = reason;
-          }
-        }
-        if (execLaneOf(bead_labels, metadata) === 'session') {
+        // 대기 행의 실행 방식 사실 (UI-lbm5 §4.6) — 레인 칩 재료라 대기 행에만
+        // 선다. 판정은 위 속성 필드의 `exec_lane`(후보 카드와 같은 공유 술어)이다.
+        if (item.exec_lane === 'session') {
           item.exec = 'session';
         }
         const chips = execChipsFor(

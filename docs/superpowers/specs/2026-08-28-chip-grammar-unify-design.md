@@ -245,6 +245,10 @@ type="button" class="ctl-chip … judgement-chip" data-chip-key="<kind>" aria-ex
 버튼이 될 뿐이다. 클릭하면 **그 칩이 속한 줄 바로 아래**에 `.chip-popover`(`role="dialog"`)가
 카드 안 절대 배치로 열린다. 카드 클릭(상세 열기)보다 먼저 잡고 멈춘다.
 
+UI-refs 정정: 모든 레인 슬롯 1, 두 탭 — 네 판정 칩(과 `frontend`·`backend`)의 자리는
+이제 모든 표면에서 슬롯 1 정체성 줄이고, 팝업은 그 줄 아래에 열린다. 클릭 의미는
+그대로다 (`2026-10-19-lane-independent-attribute-chips-design.md` §3.2·§3.5).
+
 | 칩 | `data-chip-key` | 팝업 제목 | 팝업 본문 |
 | --- | --- | --- | --- |
 | `복잡` | `rec` | 복잡한 작업으로 판정됨 | 사유 목록(§4.6) · `상태: 미적용/적용됨/추천과 다름` · 안내 `적용은 이슈 상세의 실행 설정 편집기에서` |

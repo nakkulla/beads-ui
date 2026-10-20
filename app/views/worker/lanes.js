@@ -1250,10 +1250,9 @@ export function fromChipTemplate(from_id) {
  * Render immutable Worker creation provenance and the distinct relation origin.
  *
  * @param {{ worker_created_from?: string, worker_created_from_root_dir?: string, from_id?: string }} item
- * @param {{ include_from?: boolean }} [options]
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function creationSourceChipsTemplate(item, options = {}) {
+export function creationSourceChipsTemplate(item) {
   const source_id =
     typeof item.worker_created_from === 'string'
       ? item.worker_created_from
@@ -1262,11 +1261,8 @@ export function creationSourceChipsTemplate(item, options = {}) {
     typeof item.worker_created_from_root_dir === 'string'
       ? item.worker_created_from_root_dir
       : '';
-  const include_from = options.include_from !== false;
   const relation =
-    include_from && item.from_id !== source_id
-      ? fromChipTemplate(item.from_id)
-      : '';
+    item.from_id !== source_id ? fromChipTemplate(item.from_id) : '';
   if (source_id.length === 0) {
     return relation;
   }
@@ -1447,6 +1443,110 @@ export function areaChipsTemplate(item, ctx = null) {
       ctx: chip_ctx
     })
   )}`;
+}
+
+/**
+ * The chip keys of the slot-1 Bead attribute chips (UI-refs §3.1). A popup of
+ * one of these keys opens under the identity line, wherever the card stands.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const ATTRIBUTE_CHIP_KEYS = [
+  'ineligible',
+  'session_preferred',
+  'complex',
+  'frontend',
+  'backend',
+  'qfr'
+];
+
+/**
+ * Whether the open 판정 팝업 of this card belongs to a slot-1 attribute chip.
+ *
+ * @param {{ chip_popover?: { chip_key: string }|null }} item
+ * @returns {boolean}
+ */
+export function attributePopoverOpen(item) {
+  return (
+    !!item.chip_popover &&
+    ATTRIBUTE_CHIP_KEYS.includes(item.chip_popover.chip_key)
+  );
+}
+
+/**
+ * The slot-1 Bead attribute chips (UI-refs §3.1·§3.2): `worker-ineligible` |
+ * `세션 권장`/`세션 실행` · `복잡` · `frontend` · `backend` · `quick_fix` 리뷰 칩, in
+ * the candidate card's order. Every renderer of every lane calls this one
+ * template, so the same Bead carries the same chips, classes, binding state and
+ * click meaning in every lane and both tabs; the renderer only picks the place.
+ *
+ * Material is the item's own attribute fields (`worker_ineligible`,
+ * `session_preferred`, `exec_lane`, `complex_reason`, `labels`,
+ * `chip_metadata`, `workflow.quick_fix_review`). A chip without material is not
+ * drawn, and without any chip there is no group element (fail-quiet).
+ *
+ * @param {MiniItem} item
+ * @param {import('../../utils/chip-preset-binding.js').ChipPresetContext|null} [ctx]
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function attributeChipsTemplate(item, ctx = null) {
+  // 계약상 `worker-ineligible`과 상호배타이므로 같은 자리 하나를 나눠 쓴다
+  // (UI-49mc §4.1) — 둘 다 실린 행은 ineligible이 이긴다.
+  const lane_el =
+    item.worker_ineligible === true
+      ? html`<button
+          type="button"
+          class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__ineligible"
+          data-chip-key="ineligible"
+          aria-expanded=${chipOpen(item, 'ineligible') ? 'true' : 'false'}
+          title=${WORKER_INELIGIBLE_TOOLTIP}
+        >
+          worker-ineligible
+        </button>`
+      : item.session_preferred === true
+        ? sessionPreferredChipTemplate(item)
+        : '';
+  const complex_el = complexChipTemplate(
+    item.complex_reason,
+    chipOpen(item, 'complex'),
+    item,
+    ctx
+  );
+  // `frontend`·`backend`는 `복잡` 바로 뒤다 (UI-wg68 §5.4).
+  const area_el = areaChipsTemplate(item, ctx);
+  const qfr_el = quickFixReviewChipTemplate(
+    item.workflow,
+    chipOpen(item, 'qfr')
+  );
+  if (lane_el === '' && complex_el === '' && area_el === '' && qfr_el === '') {
+    return '';
+  }
+  return html`<span class="worker-attrs"
+    >${lane_el}${complex_el}${area_el}${qfr_el}</span
+  >`;
+}
+
+/**
+ * The `세션 권장`/`세션 실행` chip (UI-49mc §4.1, UI-lbm5 §4.7). Its click
+ * toggles `exec_lane`, so the button carries the Bead and its repository.
+ *
+ * @param {MiniItem} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+function sessionPreferredChipTemplate(item) {
+  const tooltip =
+    SESSION_PREFERRED_TOOLTIP[item.session_preferred_reason || ''] || '';
+  const session_lane_set = item.exec_lane === 'session';
+  return html`<button
+    type="button"
+    class="ui-chip ctl-chip ctl-chip--label worker-card__session-preferred session-lane-toggle"
+    data-bead-id=${item.id}
+    data-root-dir=${ifDefined(item.root_dir)}
+    aria-pressed=${session_lane_set ? 'true' : 'false'}
+    title=${[tooltip, SESSION_TOGGLE_HINT].filter(Boolean).join('\n')}
+  >
+    ${session_lane_set ? '세션 실행' : '세션 권장'}
+  </button>`;
 }
 
 /**
@@ -2203,10 +2303,10 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {boolean} [exec_chips_pinned] - Whether {@link MiniItem.exec_chips}
  * are ISSUE PINS differing from the repo default (UI-eey2 §5) rather than the
  * resolved settings — drawn in the pin colour.
- * @property {boolean} [worker_ineligible] - Candidate carries the
- * `worker-ineligible` label (UI-8881). Observation-only: the card is shaded,
- * wears the ⛔ chip, and refuses drag and queue placement. The candidate
- * projection computes it once; the template never re-reads label strings.
+ * @property {boolean} [worker_ineligible] - The Bead carries the
+ * `worker-ineligible` label (UI-8881). Every lane item carries it from the
+ * same projection (UI-refs §3.3) and the slot-1 chip reads it; the template
+ * never re-reads label strings.
  * @property {boolean} [session_preferred] - Candidate carries a VALID
  * `session-preferred` attachment (UI-49mc §4.4): 워커로 돌릴 수는 있지만 세션이
  * 낫다는 advisory. 투영이 `worker_ineligible` 우선순위를 이미 접었으므로 템플릿은
@@ -2271,9 +2371,10 @@ export function interactiveSessionClosingTemplate(views) {
  * chain around it would rewrite the Worker console's rows for no reason.
  *
  * @param {MiniItem} item
+ * @param {import('../../utils/chip-preset-binding.js').ChipPresetContext|null} [chip_ctx]
  * @returns {import('lit-html').TemplateResult}
  */
-function doneThreeLineRow(item) {
+function doneThreeLineRow(item, chip_ctx = null) {
   // Slot 5 splits inside row3; completion and work times keep their positions.
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const usage_options = { scope: undefined, direct_session: false };
@@ -2281,7 +2382,12 @@ function doneThreeLineRow(item) {
   const usage_label = formatUsageTotalWithCost(item.usage);
   const done_at_label = formatRelativeTime(item.done_at);
   const route_el = routeChipTemplate(item.workflow);
-  const from_el = creationSourceChipsTemplate(item, { include_from: false });
+  // 일반 `↩ from`도 완료 행 슬롯 5a에 선다 (UI-refs §3.2).
+  const from_el = creationSourceChipsTemplate(item);
+  // Bead 속성 칩은 다른 레인과 같은 슬롯 1이다 (UI-refs §3.2); 이 행에는 `P n`이
+  // 없으므로 ID 바로 뒤다.
+  const attrs_el = attributeChipsTemplate(item, chip_ctx);
+  const attr_open = attributePopoverOpen(item);
   const exec_el = html`${sessionLaneChipTemplate(item)}${execChipsTemplate(
     item.exec_chips
   )}`;
@@ -2306,7 +2412,8 @@ function doneThreeLineRow(item) {
             >${item.workspace_name}</span
           >`
         : ''}
-      <span class="worker-mini__id" title="클릭하면 ID 복사">${item.id}</span>
+      <span class="worker-mini__id" title="클릭하면 ID 복사">${item.id}</span
+      >${attrs_el}${attr_open ? judgementPopover(item) : ''}
       ${prLinkTemplate(item.pr_url, item.pr_number)}${done_at_label
         ? timeSpan(item.done_at, 'rel', Date.now(), {
             cls: 'worker-mini__done-at',
@@ -3909,7 +4016,7 @@ export function miniRow(item, options = {}) {
     item.done_layout === 'three_line' &&
     !item.external_wait
   ) {
-    return doneThreeLineRow(item);
+    return doneThreeLineRow(item, options.chipPresets || null);
   }
   const draggable = item.draggable && !item.done;
   const queue_row = item.lane === 'queue' || /^s[1-5]$/.test(item.lane);
@@ -3991,13 +4098,18 @@ export function miniRow(item, options = {}) {
     item.lane === 'pr_wait' && !item.external
       ? laneOriginChipTemplate(item.lane_origin)
       : '';
-  // 일반 discovered-from 출처는 완료 행에서 빠진다. Worker 생성 그룹은 immutable
-  // 생성 원본을 설명하므로 완료 행에도 남는다 (UI-j10d §4).
-  const from_el = creationSourceChipsTemplate(item, {
-    include_from: item.lane !== 'done'
-  });
+  // 일반 discovered-from 출처는 완료 행에도 선다 (UI-refs §3.2, UI-j10d §4 생략
+  // 철회): 출처는 끝난 일에도 유효한 정보다.
+  const from_el = creationSourceChipsTemplate(item);
   // 우선순위는 ID 바로 다음이다 — Board 카드와 같은 자리, 같은 문장.
   const pri_el = priorityBadgeTemplate(item.priority);
+  // Bead 속성 칩은 모든 레인의 슬롯 1, `P n`·`⏏ 내려옴` 뒤다 (UI-refs §3.2).
+  // 그 칩의 사유 팝업은 칩이 선 머리줄 아래에 열린다.
+  const attr_open = attributePopoverOpen(item);
+  const attrs_el = html`${attributeChipsTemplate(
+    item,
+    options.chipPresets || null
+  )}${attr_open ? judgementPopover(item) : ''}`;
   // `⏏ 내려옴`은 후보 카드와 같은 슬롯 1 자리, 우선순위 바로 뒤다 (2026-10-01
   // stall-reconcile D8). 팝업은 그 칩이 선 머리줄 아래에 열린다.
   const withdrawn_open = chipOpen(item, 'withdrawn');
@@ -4221,17 +4333,9 @@ export function miniRow(item, options = {}) {
       })
     : '';
   // The `세션` exec chip leads slot 5b on waiting, PR-wait and done rows
-  // alike (UI-lbm5 §4.6).
+  // alike (UI-lbm5 §4.6). Slot 5a coordinates and 5b execution facts each fail
+  // quiet (UI-us7l); `복잡`·`frontend`·`backend` left 5b for slot 1 (UI-refs).
   const session_chip_el = sessionLaneChipTemplate(item);
-  // Slot 5a coordinates and 5b execution facts each fail quiet (UI-us7l).
-  const complex_el = complexChipTemplate(
-    item.complex_reason,
-    chipOpen(item, 'complex'),
-    item,
-    options.chipPresets || null
-  );
-  // `frontend`·`backend`는 `복잡` 바로 뒤다 (UI-wg68 §5.4).
-  const area_el = areaChipsTemplate(item, options.chipPresets || null);
   // 영수증 회계 잔여도 슬롯 5다 (UI-h6t1 §4.1): 같은 줄의 `exec_receipt`·실패
   // 로그 경로와 짝이라 "그 실행이 어디서 무엇으로 일어났고 그 기록이 얼마나
   // 성립하는지"를 한 줄이 답한다.
@@ -4264,15 +4368,14 @@ export function miniRow(item, options = {}) {
   const run_el =
     session_chip_el ||
     has_exec_chips ||
-    complex_el ||
-    area_el ||
     receipt_badge_el ||
     usage_el ||
     log_path_el
       ? html`<div class="worker-chips worker-chips--run">
-          ${session_chip_el}${exec_chips_el}${complex_el}${area_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open ||
+          ${session_chip_el}${exec_chips_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open ||
           plan_open ||
-          withdrawn_open
+          withdrawn_open ||
+          attr_open
             ? ''
             : judgementPopover(item)}
         </div>`
@@ -4338,7 +4441,7 @@ export function miniRow(item, options = {}) {
   >
     ${done_row
       ? html`<div class="worker-mini__row1">
-            ${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${interactive_badges}${interactive_closing}${actions_el}
+            ${repo_el}${id_el}${pri_el}${attrs_el}${pr_el}${foreign_repo_el}${interactive_badges}${interactive_closing}${actions_el}
           </div>
           <div class="worker-mini__row2">${title_el}</div>
           <div class="worker-mini__row3">
@@ -4367,7 +4470,7 @@ export function miniRow(item, options = {}) {
             ${timesMeta(item)}
           </div>`
       : html`<div class="worker-mini__head">
-            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${withdrawn_el}${pr_el}${foreign_repo_el}${badge_els}${interactive_badges}${wait_badge}${interactive_closing}${actions_el}
+            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${withdrawn_el}${attrs_el}${pr_el}${foreign_repo_el}${badge_els}${interactive_badges}${wait_badge}${interactive_closing}${actions_el}
           </div>
           ${reason_el
             ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
@@ -5163,15 +5266,6 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const menu_open =
     queue_placeable && place_menu && place_menu.bead_id === item.id;
   const recommend = !is_deferred ? options.recommend || null : null;
-  // 계약상 `worker-ineligible`과 상호배타이므로 머리줄의 같은 자리 하나를 나눠
-  // 쓴다 (UI-49mc §4.1). 우선순위는 투영이 이미 접었고, 이 라벨은 drag·적재·음영
-  // 어디에도 입력되지 않는다.
-  const session_preferred = item.session_preferred === true;
-  const session_preferred_tooltip =
-    SESSION_PREFERRED_TOOLTIP[item.session_preferred_reason || ''] || '';
-  // The chip's click toggles `exec_lane` (UI-lbm5 §4.7); the reason the old
-  // popup said moves into the tooltip.
-  const session_lane_set = item.exec_lane === 'session';
   const workflow = item.workflow;
   // 판정은 구조화 필드만 읽는다 (§4). `reason`은 표시 문자열이므로 그것을 되읽어
   // 판정을 세우면 문구가 바뀌는 순간 툴팁과 판정 칩이 조용히 어긋난다.
@@ -5261,40 +5355,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
             >♻ 재리뷰 필요</span
           >`
         : ''}
-      ${worker_ineligible
-        ? html`<button
-            type="button"
-            class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__ineligible"
-            data-chip-key="ineligible"
-            aria-expanded=${chipOpen(item, 'ineligible') ? 'true' : 'false'}
-            title=${WORKER_INELIGIBLE_TOOLTIP}
-          >
-            worker-ineligible
-          </button>`
-        : session_preferred
-          ? html`<button
-              type="button"
-              class="ui-chip ctl-chip ctl-chip--label worker-card__session-preferred session-lane-toggle"
-              data-bead-id=${item.id}
-              data-root-dir=${ifDefined(item.root_dir)}
-              aria-pressed=${session_lane_set ? 'true' : 'false'}
-              title=${[session_preferred_tooltip, SESSION_TOGGLE_HINT]
-                .filter(Boolean)
-                .join('\n')}
-            >
-              ${session_lane_set ? '세션 실행' : '세션 권장'}
-            </button>`
-          : ''}${complexChipTemplate(
-        item.complex_reason,
-        chipOpen(item, 'complex'),
+      ${attributeChipsTemplate(
         item,
         options.chipPresets || null
-      )}${areaChipsTemplate(
-        item,
-        options.chipPresets || null
-      )}${quickFixReviewChipTemplate(
-        workflow,
-        chipOpen(item, 'qfr')
       )}${interactiveSessionBadgesTemplate(item.interactive_sessions, {
         bead_id: item.id
       })}

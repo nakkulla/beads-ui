@@ -548,21 +548,28 @@ describe('worker workspace adapter', () => {
       priority: 4,
       from_id: 'SRC',
       worker_created_from: 'ORIGIN',
-      worker_created_from_root_dir: '/repo/origin'
+      worker_created_from_root_dir: '/repo/origin',
+      metadata: {}
     });
   });
 
-  test('carries metadata only for the subscribed ready, blocked and in_progress columns', () => {
+  test('carries metadata for the resolved and closed columns too (UI-refs §3.3)', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [{ id: 'R', metadata: { route: 'x' } }]);
-    seed(stores, 'tab:worker:closed', [{ id: 'C', metadata: { route: 'x' } }]);
+    seed(stores, 'tab:worker:resolved', [
+      { id: 'V', metadata: { exec_lane: 'session' } }
+    ]);
+    seed(stores, 'tab:worker:closed', [
+      { id: 'C', metadata: { complex_reason: 'hard_diagnosis' } }
+    ]);
     const adapter = adapterOf({ stores });
 
     const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
       .bead_overlay;
 
-    expect(Object.hasOwn(overlay.R, 'metadata')).toBe(true);
-    expect(Object.hasOwn(overlay.C, 'metadata')).toBe(false);
+    expect(overlay.R.metadata).toEqual({ route: 'x' });
+    expect(overlay.V.metadata).toEqual({ exec_lane: 'session' });
+    expect(overlay.C.metadata).toEqual({ complex_reason: 'hard_diagnosis' });
   });
 
   test('carries the enriched workflow route into the overlay', () => {

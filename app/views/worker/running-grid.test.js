@@ -59,7 +59,7 @@ describe('worker failed running tile template', () => {
 
       expect(
         mount
-          .querySelector('.rtile__hd > .interactive-session-badge')
+          .querySelector('.rtile__hd-main > .interactive-session-badge')
           ?.textContent?.trim()
       ).toBe('▤ 대화 세션 · bdui-inquiry:resolve-UI-1');
       expect(
@@ -109,7 +109,7 @@ describe('worker failed running tile template', () => {
 
     expect(
       mount
-        .querySelector('.rtile__hd > .interactive-session-badge')
+        .querySelector('.rtile__hd-main > .interactive-session-badge')
         ?.textContent?.trim()
     ).toBe('▤ 대화 세션 · dev:UI-1');
   });
@@ -942,7 +942,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     expect(tile).not.toContain('rtile__legs');
     expect(tile).not.toContain('stepper');
     expect(tile).toMatchInlineSnapshot(
-      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span>  <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions">  <span class="rtile__elapsed" data-ts-fmt="clock" data-ts="1000">4s</span> <button aria-label="라이브 세션 열기" class="op-btn rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="op-btn rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button> <button aria-label="Worker에서 내리기 — 작업은 보존" class="op-btn op-btn--icon op-btn--ghost rtile__withdraw" title="Worker에서 내리기 — 작업은 보존" type="button"> ✕ </button> </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <div class="rtile__hd-main"> <span aria-hidden="true" class="rtile__dot"></span>  <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  </div> <div class="rtile__hd-actions">  <span class="rtile__elapsed" data-ts-fmt="clock" data-ts="1000">4s</span> <button aria-label="라이브 세션 열기" class="op-btn rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="op-btn rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button> <button aria-label="Worker에서 내리기 — 작업은 보존" class="op-btn op-btn--icon op-btn--ghost rtile__withdraw" title="Worker에서 내리기 — 작업은 보존" type="button"> ✕ </button> </div>  </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
     );
   });
 
@@ -1841,7 +1841,7 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
 
     expect(order).toEqual(['rtile__elapsed', 'op-btn rtile__session']);
     expect(
-      tile.querySelectorAll('.rtile__hd > .rtile__session-badge')
+      tile.querySelectorAll('.rtile__hd-main > .rtile__session-badge')
     ).toHaveLength(1);
     expect(tile.querySelector('.rtile__session-badge')?.textContent).toBe(
       '직접 세션'
@@ -2469,11 +2469,13 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
   }
 
-  test('draws the chip in the attempt tile meta line', () => {
+  test('draws the chip in the attempt tile identity line (UI-refs §3.2)', () => {
     const tile = renderTile({ complex_reason: REASON });
 
     const chip = /** @type {HTMLElement} */ (
-      tile.querySelector('.rtile__meta .worker-card__complex')
+      tile.querySelector(
+        '.rtile__hd-main > .worker-attrs .worker-card__complex'
+      )
     );
 
     expect(chip.textContent?.trim()).toBe('복잡');
@@ -2483,7 +2485,7 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
     expect(chip.dataset.state).toBeUndefined();
   });
 
-  test('draws the chip in the session tile meta line', () => {
+  test('draws the chip in the session tile identity line (UI-refs §3.2)', () => {
     const tile = renderTile({
       kind: 'session',
       attempt_id: null,
@@ -2493,8 +2495,61 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
     });
 
     expect(
-      tile.querySelector('.rtile__meta .worker-card__complex')
+      tile.querySelector(
+        '.rtile__hd-main > .worker-attrs .worker-card__complex'
+      )
     ).not.toBeNull();
+    expect(tile.querySelector('.rtile__meta .worker-card__complex')).toBeNull();
+  });
+
+  test('keeps the right-side controls after the attribute chips (UI-refs §3.6)', () => {
+    const tile = renderTile({
+      complex_reason: REASON,
+      labels: ['frontend', 'backend'],
+      worker_ineligible: true
+    });
+    const head = /** @type {HTMLElement} */ (tile.querySelector('.rtile__hd'));
+
+    const kids = Array.from(head.children, (el) => el.className);
+
+    expect(kids).toEqual(['rtile__hd-main', 'rtile__hd-actions']);
+  });
+
+  test('wraps the attribute chips inside the left group, not beside the controls (UI-refs §3.6)', () => {
+    const tile = renderTile({
+      complex_reason: REASON,
+      labels: ['frontend', 'backend'],
+      worker_ineligible: true
+    });
+
+    const attrs = tile.querySelector('.worker-attrs');
+
+    expect(attrs?.parentElement?.className).toBe('rtile__hd-main');
+    expect(
+      tile.querySelector('.rtile__hd > .rtile__hd-actions')?.parentElement
+    ).toBe(attrs?.parentElement?.parentElement);
+    expect(tile.querySelector('.rtile__hd-main .rtile__hd-actions')).toBeNull();
+  });
+
+  test('puts the 사유 popup after the controls so a static popup cannot push them down (UI-refs §3.6)', () => {
+    const tile = renderTile({
+      complex_reason: REASON,
+      chip_popover: {
+        chip_key: 'complex',
+        content: { title: '복잡한 작업으로 판정됨', lines: ['한 줄'] }
+      }
+    });
+
+    const kids = Array.from(
+      /** @type {HTMLElement} */ (tile.querySelector('.rtile__hd')).children,
+      (el) => el.className
+    );
+
+    expect(kids).toEqual([
+      'rtile__hd-main',
+      'rtile__hd-actions',
+      'chip-popover'
+    ]);
   });
 
   test('omits the chip when the bead carries no 복잡 판정', () => {
@@ -2520,7 +2575,7 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
     expect(chip.dataset.chipKey).toBe('complex');
   });
 
-  test('draws the 사유 popup inside the tile meta line', () => {
+  test('draws the 사유 popup under the tile identity line (UI-refs §3.2)', () => {
     const tile = renderTile({
       complex_reason: REASON,
       chip_popover: {
@@ -2529,7 +2584,8 @@ describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
       }
     });
 
-    expect(tile.querySelector('.rtile__meta .chip-popover')).not.toBeNull();
+    expect(tile.querySelectorAll('.rtile__hd > .chip-popover')).toHaveLength(1);
+    expect(tile.querySelector('.rtile__meta .chip-popover')).toBeNull();
     expect(
       tile.querySelector('.worker-card__complex')?.getAttribute('aria-expanded')
     ).toBe('true');

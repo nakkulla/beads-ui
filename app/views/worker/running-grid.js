@@ -37,8 +37,8 @@ import {
 } from './failure-labels.js';
 import { autoResumeRefusalBadge } from './gate-labels.js';
 import {
-  areaChipsTemplate,
-  complexChipTemplate,
+  attributeChipsTemplate,
+  attributePopoverOpen,
   creationSourceChipsTemplate,
   dependencyChipsTemplate,
   discardReceiptTemplate,
@@ -1252,20 +1252,24 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 끼면 좁은 타일에서 조작 버튼이 통째로 다음 줄로 밀린다 (UI-251y §2).
   const route_chip = routeChipTemplate(tile.workflow);
   const source_chips = creationSourceChipsTemplate(tile);
-  const complex_chip = complexChipTemplate(
-    tile.complex_reason,
-    tile.chip_popover?.chip_key === 'complex',
-    /** @type {any} */ (tile),
+  // Bead 속성 칩은 다른 레인과 같은 슬롯 1, `P n` 뒤다 (UI-refs §3.2) — 같은
+  // 공유 템플릿이 같은 칩·같은 클릭을 낸다. 그 칩의 사유 팝업은 머리줄 아래에
+  // 열리고, 나머지 판정 팝업(plan)은 지금처럼 meta 줄 끝이다. 팝업은 조작 묶음
+  // 뒤 머리줄의 마지막 자식이다 (§3.6): 640px 이하에서 정적 블록이 되는 팝업이
+  // 조작 묶음 앞에 서면 조작을 다음 줄로 민다.
+  const attr_chips = attributeChipsTemplate(
+    /** @type {any} */ ({ ...tile, id: tile.bead_id }),
     options.chipPresets || null
   );
-  // `frontend`·`backend`는 `복잡` 바로 뒤, 같은 슬롯 5다 (UI-wg68 §5.4).
-  const area_chips = areaChipsTemplate(
-    /** @type {any} */ (tile),
-    options.chipPresets || null
-  );
-  const chip_popover = tile.chip_popover
-    ? chipPopoverTemplate(tile.chip_popover.content)
-    : '';
+  const attr_open = attributePopoverOpen(tile);
+  const head_popover =
+    tile.chip_popover && attr_open
+      ? chipPopoverTemplate(tile.chip_popover.content)
+      : '';
+  const chip_popover =
+    tile.chip_popover && !attr_open
+      ? chipPopoverTemplate(tile.chip_popover.content)
+      : '';
   const session_receipt_chip = session_receipt
     ? html`<span
         class="ui-chip ctl-chip ctl-chip--exec-receipt"
@@ -1308,8 +1312,6 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     session_receipt_chip ||
     session_lane_chip ||
     exec_chips ||
-    complex_chip ||
-    area_chips ||
     provider_badges.length > 0 ||
     usage_label
       ? html`<div class="rtile__meta">
@@ -1321,14 +1323,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           session_receipt_chip ||
           session_lane_chip ||
           exec_chips ||
-          complex_chip ||
-          area_chips ||
           provider_badges.length > 0 ||
           usage_label
             ? html`<div class="worker-chips worker-chips--run">
                 ${session_ref_chip}${session_receipt_chip}${session_lane_chip}${session
                   ? ''
-                  : execChipsTemplate(exec_chips)}${complex_chip}${area_chips}
+                  : execChipsTemplate(exec_chips)}
                 ${provider_badges.length > 0
                   ? provider_badges.map(
                       (badge) =>
@@ -1583,26 +1583,28 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     data-route=${ifDefined(route_tone.route)}
   >
     <div class="rtile__hd">
-      <span
-        class="rtile__dot${session ? ' rtile__dot--session' : ''}"
-        aria-hidden="true"
-      ></span>
-      ${repo_chip}
-      <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
-      ${priorityBadgeTemplate(tile.priority)}${lineage
-        ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
-        : ''}${session && !external_wait
-        ? html`<span
-            class="rtile__session-badge"
-            title=${tile.status === 'open'
-              ? 'Worker가 아닌 세션이 맡은 이슈 · 아직 in_progress 클레임 전'
-              : 'Worker가 아닌 세션이 in_progress로 잡은 이슈'}
-            >직접 세션</span
-          >`
-        : ''}${status_badges}${interactiveSessionBadgesTemplate(
-        tile.interactive_sessions,
-        { bead_id: tile.bead_id, now }
-      )}
+      <div class="rtile__hd-main">
+        <span
+          class="rtile__dot${session ? ' rtile__dot--session' : ''}"
+          aria-hidden="true"
+        ></span>
+        ${repo_chip}
+        <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
+        ${priorityBadgeTemplate(tile.priority)}${attr_chips}${lineage
+          ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
+          : ''}${session && !external_wait
+          ? html`<span
+              class="rtile__session-badge"
+              title=${tile.status === 'open'
+                ? 'Worker가 아닌 세션이 맡은 이슈 · 아직 in_progress 클레임 전'
+                : 'Worker가 아닌 세션이 in_progress로 잡은 이슈'}
+              >직접 세션</span
+            >`
+          : ''}${status_badges}${interactiveSessionBadgesTemplate(
+          tile.interactive_sessions,
+          { bead_id: tile.bead_id, now }
+        )}
+      </div>
       <div class="rtile__hd-actions">
         ${interactiveSessionClosingTemplate(tile.interactive_sessions)}
         ${wait_lines.map((line) => line.actions)}${session
@@ -1664,6 +1666,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                       </button>`}
                   ${discard_slot1}`}${withdraw_button}
       </div>
+      ${head_popover}
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${wait_body_lines.body}${parked || waiting

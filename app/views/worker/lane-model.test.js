@@ -4,9 +4,11 @@ import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { formatClockLocal } from '../../utils/relative-time.js';
 import { normalizeCandidateSort } from './candidate-sort.js';
 import {
+  BEAD_ATTRIBUTE_KEYS,
   CANDIDATE_FILTER_DEFAULT,
   MIN_SLOTS,
   activeByBead,
+  beadAttributeFields,
   buildLanes,
   lastImplementationStatus,
   latestTerminalAttempt,
@@ -8828,5 +8830,141 @@ describe('session-lane facts (UI-lbm5 §4.6)', () => {
     );
 
     expect(lanes.runnable[0].exec_lane).toBe('session');
+  });
+});
+
+describe('Bead attribute fields on every lane (UI-refs §3.3)', () => {
+  /** The attribute material of one Bead, the same overlay on every lane. */
+  const OVERLAY = {
+    labels: ['session-preferred', 'complex', 'frontend'],
+    metadata: {
+      session_preferred_reason: 'external_roundtrip',
+      exec_lane: 'session',
+      complex_reason: 'hard_diagnosis',
+      applied_exec_preset: 'p1'
+    }
+  };
+
+  /**
+   * @param {any} item
+   * @returns {Record<string, unknown>}
+   */
+  function attributesOf(item) {
+    return Object.fromEntries(
+      BEAD_ATTRIBUTE_KEYS.filter((key) => item[key] !== undefined).map(
+        (key) => [key, item[key]]
+      )
+    );
+  }
+
+  test('carries the same attribute fields on the waiting, running, PR-wait and done items', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-q' }],
+          pr_wait: [{ bead_id: 'A-p' }],
+          done: [{ bead_id: 'A-d', added_at: 5 }],
+          attempts: {
+            r1: {
+              attempt_id: 'r1',
+              bead_id: 'A-r',
+              status: 'running',
+              started_at: 1,
+              session_id: 'sid-1'
+            }
+          },
+          bead_overlay: {
+            'A-q': OVERLAY,
+            'A-r': OVERLAY,
+            'A-p': OVERLAY,
+            'A-d': OVERLAY
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const items = [
+      lanes.queue[0],
+      lanes.running[0],
+      lanes.pr_wait[0],
+      lanes.done[0]
+    ];
+
+    for (const item of items) {
+      expect(attributesOf(item)).toEqual({
+        labels: OVERLAY.labels,
+        chip_metadata: OVERLAY.metadata,
+        complex_reason: 'hard_diagnosis',
+        session_preferred: true,
+        session_preferred_reason: 'external_roundtrip',
+        exec_lane: 'session'
+      });
+    }
+  });
+
+  test('judges worker-ineligible from the snapshot labels when the overlay has no metadata', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-d', added_at: 5 }],
+          bead_labels: { 'A-d': ['worker-ineligible'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(attributesOf(lanes.done[0])).toEqual({
+      labels: ['worker-ineligible'],
+      worker_ineligible: true
+    });
+  });
+
+  test('leaves the metadata judgments out while the metadata is unobserved', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-p' }],
+          bead_overlay: { 'A-p': { labels: ['session-preferred'] } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(attributesOf(lanes.pr_wait[0])).toEqual({
+      labels: ['session-preferred']
+    });
+  });
+
+  test('keeps the 세션 exec chip material off a done item the overlay judges session', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-d', added_at: 5 }],
+          bead_overlay: { 'A-d': OVERLAY }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].exec_lane).toBe('session');
+    expect(lanes.done[0].exec).toBeUndefined();
+  });
+});
+
+describe('beadAttributeFields (UI-refs §3.3)', () => {
+  test('folds session-preferred under worker-ineligible', () => {
+    const fields = beadAttributeFields(
+      ['worker-ineligible', 'session-preferred'],
+      { session_preferred_reason: 'external_roundtrip' }
+    );
+
+    expect(fields).toEqual({ worker_ineligible: true, exec_lane: 'session' });
+  });
+
+  test('judges nothing without a label array', () => {
+    const fields = beadAttributeFields(undefined, { complex_reason: 'x' });
+
+    expect(fields).toEqual({});
   });
 });

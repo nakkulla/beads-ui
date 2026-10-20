@@ -131,6 +131,10 @@ Worker 탭은 단일 레포 표면이라 레포 배지를 받지 않는다. 이 
 | 5a 좌표 | 어느 자리의 것인가 | 레인 출처 칩 · `route` · `↩ from`·워커 생성 출처 · 소속 칩 · 외부 저장소·외부 작업 번호 |
 | 5b 실행 사실 | 누가 무엇으로 얼마나 돌았나 | 세션 정체 칩 · `exec_receipt` · `오케`·`워커` exec 칩 · `복잡`(그 칩을 이미 슬롯 5에 싣는 변형에 한해) · `영수증 잔여` · provider 배지 · usage·비용 · 실패 로그 경로 |
 
+UI-refs 정정: 모든 레인 슬롯 1, 두 탭 — 5b의 `복잡`(과 그 옆 `frontend`·`backend`)은
+모든 변형에서 슬롯 1로 옮겨 이 표의 5b에 더는 없다
+(`2026-10-19-lane-independent-attribute-chips-design.md` §3.2).
+
 두 줄은 각자 재료로 fail-quiet를 판정한다 — 5b가 비었다고 5a가 사라지지 않고 그
 반대도 같다. 레포 배지는 §4.2로 이 표를 떠났다. 5b 안의 순서는 기존 판정을
 유지한다: "누가"(세션 정체)가 "무엇으로 실행했나"(`exec_receipt`)보다
@@ -152,6 +156,10 @@ Worker 탭은 단일 레포 표면이라 레포 배지를 받지 않는다. 이 
 권장`·`worker-ineligible`이 그렇고, 이 스펙이 후보 카드에서 다루는 것은 레포·
 `route`·`↩ from`·exec 칩을 담은 `.worker-chips` 줄 하나뿐이다. `복잡`의 후보 카드
 자리를 슬롯 1로 전제하는 UI-wg68 §5.4와 이 조항은 같은 배치를 말한다.
+
+UI-refs 정정: 모든 레인 슬롯 1, 두 탭 — `복잡`·`세션 권장`·`worker-ineligible`(과
+`frontend`·`backend`·`quick_fix` 리뷰 칩)은 후보만이 아니라 대기·실행 중·PR 대기·완료의
+모든 변형에서 슬롯 1이다 (`2026-10-19-lane-independent-attribute-chips-design.md` §3.2).
 
 클래스는 두 줄이 공유하는 베이스 `.worker-chips`에 한정자를 붙여
 `.worker-chips--coords`(5a)와 `.worker-chips--run`(5b)으로 하고, 타일의

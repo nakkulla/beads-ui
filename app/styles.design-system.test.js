@@ -603,8 +603,43 @@ function failedDiscard() {
 }
 
 /**
+ * All five slot-1 Bead attribute chips of one renderer state (UI-refs §6):
+ * `worker-ineligible` or `세션 권장`/`세션 실행` (exclusive), `복잡`, `frontend`,
+ * `backend` and the `quick_fix` review chip.
+ *
+ * @param {'ineligible'|'session'} lane_chip
+ * @param {Record<string, any>} [workflow]
+ * @returns {Record<string, any>}
+ */
+function attributeFields(lane_chip, workflow = { route: 'spec_backed' }) {
+  return {
+    root_dir: '/repo',
+    labels: [
+      lane_chip === 'ineligible' ? 'worker-ineligible' : 'session-preferred',
+      'complex',
+      'frontend',
+      'backend'
+    ],
+    ...(lane_chip === 'ineligible'
+      ? { worker_ineligible: true }
+      : {
+          session_preferred: true,
+          session_preferred_reason: 'external_roundtrip',
+          exec_lane: 'session'
+        }),
+    complex_reason: 'hard_diagnosis',
+    chip_metadata: {},
+    workflow: {
+      ...workflow,
+      quick_fix_review: { state: 'reviewed', missing: [], digest: 'abc' }
+    }
+  };
+}
+
+/**
  * Card renderer variants the queue fixture alone cannot reach: every row foot
- * action, every tile action and the candidate dependency chips.
+ * action, every tile action and the candidate dependency chips. Every state
+ * also carries all five slot-1 attribute chips (UI-refs §6).
  *
  * @returns {HTMLElement}
  */
@@ -614,6 +649,25 @@ function renderCardVariants() {
   /** @type {any[]} */
   const rows = [
     {
+      ...attributeFields('session'),
+      id: 'D-1',
+      title: 'done row',
+      lane: 'done',
+      done: true,
+      draggable: false
+    },
+    {
+      ...attributeFields('ineligible'),
+      id: 'D-2',
+      title: 'monitor done row',
+      lane: 'done',
+      done: true,
+      draggable: false,
+      done_layout: 'three_line',
+      workspace_name: 'repo'
+    },
+    {
+      ...attributeFields('ineligible'),
       id: 'PR-1',
       title: 'pr row',
       lane: 'pr_wait',
@@ -629,6 +683,7 @@ function renderCardVariants() {
     },
     {
       // 핀이 있는 외부 PR 행의 긴 대상 저장소 라벨 (UI-k467 §3.8).
+      ...attributeFields('session'),
       id: 'PR-3',
       title: 'foreign pr row',
       lane: 'pr_wait',
@@ -649,6 +704,7 @@ function renderCardVariants() {
     },
     {
       // 보관 행의 `⏸ 보류로 전환` (UI-0d9i §3.1).
+      ...attributeFields('ineligible'),
       id: 'PR-4',
       title: 'shelved row',
       lane: 'pr_wait',
@@ -661,6 +717,7 @@ function renderCardVariants() {
       defer_enabled: true
     },
     {
+      ...attributeFields('session'),
       id: 'PR-2',
       title: 'merging row',
       lane: 'pr_wait',
@@ -670,6 +727,7 @@ function renderCardVariants() {
       discard: failedDiscard()
     },
     {
+      ...attributeFields('ineligible'),
       id: 'Q-1',
       title: 'parked row',
       lane: 'queue',
@@ -688,6 +746,8 @@ function renderCardVariants() {
   /** @type {any[]} */
   const tiles = [
     {
+      ...attributeFields('session'),
+      id: 'T-1',
       bead_id: 'T-1',
       attempt_id: 'a1',
       title: 'running',
@@ -697,6 +757,8 @@ function renderCardVariants() {
       can_pause: true
     },
     {
+      ...attributeFields('ineligible'),
+      id: 'T-2',
       bead_id: 'T-2',
       attempt_id: 'a2',
       title: 'paused',
@@ -706,6 +768,8 @@ function renderCardVariants() {
       paused: true
     },
     {
+      ...attributeFields('session'),
+      id: 'T-3',
       bead_id: 'T-3',
       attempt_id: 'a3',
       title: 'failed',
@@ -731,6 +795,14 @@ function renderCardVariants() {
       runningGridTemplate(tiles),
       candidateCard(
         /** @type {any} */ ({
+          ...attributeFields('ineligible', {
+            route: 'quick_fix',
+            route_source: 'explicit',
+            stages: {
+              impl: { fill: 'none', glyph: null, stale: false },
+              close: { fill: 'none', glyph: null, stale: false }
+            }
+          }),
           id: 'C-1',
           title: 'candidate',
           draggable: false,
@@ -739,20 +811,13 @@ function renderCardVariants() {
           reason: '',
           dependency_chips: {
             predecessors: [{ id: 'UI-p', label: '⛓ UI-p', openable: true }]
-          },
-          workflow: {
-            route: 'quick_fix',
-            route_source: 'explicit',
-            stages: {
-              impl: { fill: 'none', glyph: null, stale: false },
-              close: { fill: 'none', glyph: null, stale: false }
-            }
           }
         })
       ),
       // 「보류 N」 카드의 `↺ 되살리기` (UI-0d9i §3.5).
       candidateCard(
         /** @type {any} */ ({
+          ...attributeFields('session'),
           id: 'DF-1',
           title: 'deferred',
           draggable: false,
@@ -804,6 +869,22 @@ describe('Worker tab controls use parts (§3.4 check 3)', () => {
 
     expect(controls.length).toBeGreaterThan(15);
     expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws all five slot-1 attribute chips on every card renderer state (UI-refs §6)', () => {
+    const mount = renderCardVariants();
+
+    const cards = Array.from(
+      mount.querySelectorAll(
+        '.worker-card[data-bead-id], .worker-mini[data-bead-id], .rtile[data-bead-id]'
+      )
+    );
+    const counts = cards.map(
+      (card) => card.querySelectorAll('.worker-attrs > *').length
+    );
+
+    expect(cards.length).toBe(12);
+    expect(counts).toEqual(cards.map(() => 5));
   });
 
   test('draws a long foreign merge label on the truncating button part', () => {

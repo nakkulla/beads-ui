@@ -1353,4 +1353,58 @@ describe('overlay issue fields (UI-yvhx)', () => {
 
     expect(out).toEqual({});
   });
+
+  test('projects the judged session_preferred_reason and the written exec_lane (UI-refs §3.3)', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '세션 권장 이슈',
+      labels: ['session-preferred'],
+      metadata: {
+        session_preferred_reason: 'external_roundtrip',
+        exec_lane: 'session'
+      }
+    });
+
+    const out = cache.overlayFieldsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({
+      'UI-1': {
+        session_preferred_reason: 'external_roundtrip',
+        exec_lane: 'session'
+      }
+    });
+  });
+
+  test('drops the session_preferred_reason when the label is missing (UI-refs §3.3)', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '라벨 없는 이슈',
+      priority: 2,
+      metadata: { session_preferred_reason: 'external_roundtrip' }
+    });
+
+    const out = cache.overlayFieldsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({ 'UI-1': { priority: 2 } });
+  });
+
+  test('keeps exec_lane and session_preferred_reason out of the execution pin (UI-refs §3.3)', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '세션 권장 이슈',
+      labels: ['session-preferred'],
+      metadata: {
+        impl_runtime: 'codex',
+        session_preferred_reason: 'external_roundtrip',
+        exec_lane: 'session'
+      }
+    });
+
+    const out = cache.execPinFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({ 'UI-1': { impl_runtime: 'codex' } });
+  });
 });

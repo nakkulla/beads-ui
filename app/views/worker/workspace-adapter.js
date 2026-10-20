@@ -549,10 +549,10 @@ export function createWorkspaceAdapter(options = {}) {
   }
 
   /**
-   * Board live store가 아는 이슈 필드 (§4.1). `priority`·`from_id`는 다섯 열
-   * 전부에서 모으고, `metadata`는 **구독된** Ready·Blocked·In-progress에서만
-   * 싣는다 — 나머지 두 열의 이슈는 실행 설정·복잡 판정의 핀을 볼 수 없으므로
-   * 전역값만으로 해석하면 틀린 칩이 된다.
+   * Board live store가 아는 이슈 필드 (§4.1). `priority`·`from_id`·`metadata`를
+   * 다섯 열 전부에서 모은다 — 닫힌 열도 같은 `bd list --json` 행이고 metadata를
+   * 싣는다 (UI-refs §3.3, 2026-10-20 실측). 그래서 PR 대기·완료 카드도 다른
+   * 레인과 같은 속성 칩을 단다.
    *
    * @param {any[][]} columns - `[ready, blocked, in_progress, resolved, closed]`
    * @returns {Record<string, any>}
@@ -563,9 +563,8 @@ export function createWorkspaceAdapter(options = {}) {
     const overlay = {};
     /**
      * @param {any} issue
-     * @param {boolean} with_metadata
      */
-    const add = (issue, with_metadata) => {
+    const add = (issue) => {
       if (!issue || typeof issue.id !== 'string' || issue.id.length === 0) {
         return;
       }
@@ -605,7 +604,7 @@ export function createWorkspaceAdapter(options = {}) {
       ) {
         entry.worker_created_from_root_dir = issue.worker_created_from_root_dir;
       }
-      if (with_metadata && !('metadata' in entry)) {
+      if (!('metadata' in entry)) {
         entry.metadata = objectOf(issue.metadata);
         // 서버가 이슈에 얹은 workflow route (`route_source: 'derived'` 포함).
         // 큐 스냅샷의 `bead_workflow`보다 이쪽이 이 bead의 실행 설정을 푸는
@@ -616,11 +615,16 @@ export function createWorkspaceAdapter(options = {}) {
         }
       }
     };
-    for (const issue of [...ready, ...blocked, ...in_progress]) {
-      add(issue, true);
-    }
-    for (const issue of [...resolved, ...closed]) {
-      add(issue, false);
+    // resolved·closed 행도 같은 `bd list --json` 계열이라 metadata를 싣는다
+    // (UI-refs §3.3) — PR 대기·완료 카드의 슬롯 1 속성 칩 재료다.
+    for (const issue of [
+      ...ready,
+      ...blocked,
+      ...in_progress,
+      ...resolved,
+      ...closed
+    ]) {
+      add(issue);
     }
     return overlay;
   }

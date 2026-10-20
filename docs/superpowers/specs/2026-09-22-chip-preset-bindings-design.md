@@ -291,6 +291,9 @@ promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요�
   `.worker-chips`, 실행 타일 `.rtile__meta`(슬롯 5), 이슈 상세 헤더. `복잡` 바로 뒤에
   `frontend`, `backend` 순이다. 슬롯 표(카드 문법 스펙 §5.1)에 "판정 칩 3종"으로 한 줄
   갱신한다. Monitor도 그린다(`복잡`과 같은 규칙).
+  UI-refs 정정: 모든 레인 슬롯 1, 두 탭 — 대기·PR 대기·완료 행과 실행 타일에서도 슬롯 5가
+  아니라 슬롯 1 정체성 줄이다 (`2026-10-19-lane-independent-attribute-chips-design.md`
+  §3.2). 클릭·바인딩은 그대로다.
 - 재료: 후보 행은 서버 runnable 투영의 `labels`(이미 실림), 오버레이 행은 `lane-model.js`가
   `overlay.labels`에서 계산한다(`complexReason`과 같은 자리). 상세 헤더는 issue의 `labels`.
 - `title`은 `frontend: 렌더된 화면으로 acceptance를 판정하는 작업` / `backend: 화면 없는 서버·CLI·스크립트·계약·파이프라인 작업`
