@@ -5078,3 +5078,672 @@ describe('정리 중단 announcer (UI-gske §3.5)', () => {
     ]);
   });
 });
+
+describe('red-base follow-up wait (UI-ty6k)', () => {
+  const RED_HEAD = 'a'.repeat(40);
+  const RED_BASE = 'b'.repeat(40);
+  const MOVED_BASE = 'c'.repeat(40);
+  const NEW_HEAD = 'd'.repeat(40);
+  const LIMIT_MS = 48 * 60 * 60 * 1000;
+
+  /**
+   * A failed pre-merge verify whose same-candidate retry already re-ran.
+   *
+   * @param {Record<string, any>} [patch]
+   */
+  function failedVerifyOperation(patch = {}) {
+    const failure = {
+      code: 'script_failed',
+      fingerprint: 'f'.repeat(64),
+      detail: '',
+      interrupted: false,
+      summary: 'build failed'
+    };
+    return {
+      schema: 1,
+      repo_id: DRIVER_WS,
+      kind: 'verify',
+      subjects: [{ bead_id: 'UI-root', merged_sha: RED_HEAD }],
+      effective_base_sha: RED_BASE,
+      target_base: 'main',
+      target_sha: RED_HEAD,
+      target_tree: 'e'.repeat(40),
+      verify_head_sha: RED_HEAD,
+      verify_head_shas: [RED_HEAD],
+      deploy_worktree: null,
+      script_object_type: 'blob',
+      script_path: 'repo-ops/script/verify',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      state: 'failed',
+      attempt_id: 'verify-one:1',
+      requested_at: 1,
+      started_at: 2,
+      finished_at: 3,
+      process_identity: null,
+      log_path: '/logs/verify-one.log',
+      log_digest: null,
+      exit_code: 1,
+      signal: null,
+      failure,
+      retry: {
+        first_failure: failure,
+        first_fingerprint: failure.fingerprint,
+        first_failed_at: 2,
+        consumed_key: ['verify-one:1', RED_HEAD, 'blob'],
+        absorbed: null,
+        outcome: 'consumed',
+        blocked_reason: null
+      },
+      superseded_by: null,
+      source: 'automatic',
+      manual_run_id: null,
+      dismissed: null,
+      bootstrap_provenance: null,
+      ...patch
+    };
+  }
+
+  /**
+   * A durable queue file holding the seeded root intent and its operations.
+   *
+   * @param {Record<string, any>} snapshot
+   * @returns {string}
+   */
+  function queueFile(snapshot) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-followup-'));
+    tmp_dirs.push(dir);
+    const file = path.join(dir, 'queue.json');
+    fs.writeFileSync(file, JSON.stringify(snapshot));
+    return file;
+  }
+
+  /**
+   * @param {{ operations?: Record<string, any>, issues?: Record<string, any>, baseVerdict?: any, store?: ReturnType<typeof createQueueStore> }} [options]
+   */
+  function waitHarness(options = {}) {
+    const store =
+      options.store ||
+      createQueueStore({
+        filePathFor: () =>
+          queueFile({
+            ...seededCompletionStore().snapshot(DRIVER_WS),
+            repo_operations: options.operations || {
+              'verify-one': failedVerifyOperation()
+            }
+          })
+      });
+    /** @type {Record<string, any>} */
+    const issues = {
+      'UI-root': {
+        id: 'UI-root',
+        status: 'in_progress',
+        metadata: { base_red_followup: 'UI-fix1' }
+      },
+      'UI-fix1': { id: 'UI-fix1', status: 'open', metadata: {} },
+      ...options.issues
+    };
+    const findIssue = vi.fn(async (/** @type {string} */ id) => {
+      const issue = issues[id];
+      if (issue instanceof Error) {
+        throw issue;
+      }
+      return issue ?? null;
+    });
+    const comment = vi.fn(commentSpy());
+    const hold = vi.fn(async () => {});
+    const needsHuman = vi.fn(async () => {});
+    const append = vi.fn();
+    const conversation = {
+      launchForBead: vi.fn(async () => ({ session: 'launched' }))
+    };
+    const completionGate = vi.fn(async () => holdGate());
+    const startCompletionBaseVerify = vi.fn(async () => ({
+      ok: true,
+      operation_id: 'base-op',
+      timeout_ms: 1000
+    }));
+    const awaitCompletionBaseVerify = vi.fn(
+      async () =>
+        options.baseVerdict ?? {
+          operation_id: 'base-op',
+          state: 'failed',
+          reason: 'script_failed'
+        }
+    );
+    const resolveBase = vi.fn(async () => ({
+      ok: true,
+      base: 'main',
+      base_oid: RED_BASE
+    }));
+    const clock = { now: 100 };
+    const driver = actionDriver(store, {
+      prActions: {
+        completionGate,
+        startCompletionBaseVerify,
+        awaitCompletionBaseVerify
+      },
+      bd: { comment, findIssue },
+      notify: { hold, needsHuman },
+      timeline: { append },
+      failureConversation: conversation,
+      resolveBase,
+      now: () => clock.now
+    });
+    return {
+      store,
+      driver,
+      issues,
+      findIssue,
+      comment,
+      hold,
+      needsHuman,
+      append,
+      conversation,
+      completionGate,
+      startCompletionBaseVerify,
+      awaitCompletionBaseVerify,
+      resolveBase,
+      clock
+    };
+  }
+
+  /** Let fire-and-forget pushes and launches run to their end. */
+  async function settle() {
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  /**
+   * @param {ReturnType<typeof waitHarness>} h
+   */
+  function rootIntent(h) {
+    return h.store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+  }
+
+  /**
+   * A coordinator over the harness store whose only effects are the driver's.
+   *
+   * @param {ReturnType<typeof waitHarness>} h
+   */
+  function coordinatorOver(h) {
+    return createCompletionIntentCoordinator({
+      workspace: DRIVER_WS,
+      store: h.store,
+      observe: h.driver.observe,
+      onAction: h.driver.onAction,
+      now: () => h.clock.now
+    });
+  }
+
+  /**
+   * The harness store re-read from its own file by a fresh store instance.
+   *
+   * @param {ReturnType<typeof waitHarness>} h
+   */
+  function restartedStore(h) {
+    const file = queueFile(h.store.snapshot(DRIVER_WS));
+    return createQueueStore({ filePathFor: () => file });
+  }
+
+  test('parks a red-base failure in waiting_followup while a linked follow-up is live', async () => {
+    const h = waitHarness();
+
+    await driveOnce(h.store, h.driver);
+
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'waiting_followup',
+      auto_resolution: { class: 'base_red_followup' },
+      followup_wait: {
+        head_sha: RED_HEAD,
+        base_sha: RED_BASE,
+        links: ['UI-fix1'],
+        base_op_id: 'base-op',
+        stage: 'waiting',
+        deadline_at: 100 + LIMIT_MS,
+        outcome: null
+      }
+    });
+    expect(h.store.snapshot(DRIVER_WS).merge_queue).toEqual([]);
+  });
+
+  test('sends no push, comment or conversation when entering the wait', async () => {
+    const h = waitHarness();
+
+    await driveOnce(h.store, h.driver);
+    await settle();
+
+    expect(h.hold).not.toHaveBeenCalled();
+    expect(h.needsHuman).not.toHaveBeenCalled();
+    expect(h.comment).not.toHaveBeenCalled();
+    expect(h.conversation.launchForBead).not.toHaveBeenCalled();
+  });
+
+  test('records one wait line on the root timeline', async () => {
+    const h = waitHarness();
+
+    await driveOnce(h.store, h.driver);
+
+    expect(h.append.mock.calls.map(([event]) => event.seq)).toEqual([
+      `wait:${RED_HEAD}`
+    ]);
+  });
+
+  test('runs the base-only verify on the base the PR failed on', async () => {
+    const h = waitHarness();
+
+    await driveOnce(h.store, h.driver);
+
+    expect(h.startCompletionBaseVerify).toHaveBeenCalledExactlyOnceWith(
+      'UI-root',
+      { target_base: 'main', base_sha: RED_BASE }
+    );
+  });
+
+  test('waits on the repair handoff Bead of the failed verify', async () => {
+    const h = waitHarness({
+      operations: {
+        'verify-one': failedVerifyOperation({
+          recovery: {
+            classification: 'local_code_defect',
+            disposition: 'repair',
+            reason: null,
+            code_defect: true,
+            prover: 'deterministic_owned_script_failure',
+            handoff: {
+              key: '1'.repeat(64),
+              state: 'bead_recorded',
+              handoff_bead_id: 'UI-rep1',
+              reserved_at: 1,
+              recorded_at: 2,
+              error: null
+            }
+          }
+        })
+      },
+      issues: {
+        'UI-root': { id: 'UI-root', status: 'in_progress', metadata: {} },
+        'UI-rep1': { id: 'UI-rep1', status: 'in_progress', metadata: {} }
+      }
+    });
+
+    await driveOnce(h.store, h.driver);
+
+    expect(rootIntent(h).followup_wait?.links).toEqual(['UI-rep1']);
+  });
+
+  test('holds exactly as before when no linked follow-up exists', async () => {
+    const h = waitHarness({
+      issues: {
+        'UI-root': { id: 'UI-root', status: 'in_progress', metadata: {} }
+      }
+    });
+
+    await driveOnce(h.store, h.driver);
+    await settle();
+
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'holding',
+      hold: { reason: 'script_failed', head_sha: RED_HEAD }
+    });
+    expect(h.hold).toHaveBeenCalledTimes(1);
+    expect(h.conversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['a settled follow-up', { 'UI-fix1': { id: 'UI-fix1', status: 'closed' } }],
+    ['a deferred follow-up', { 'UI-fix1': { id: 'UI-fix1', status: 'deferred' } }],
+    ['an unreadable follow-up', { 'UI-fix1': new Error('bd down') }],
+    [
+      'an other-rig, self or malformed link',
+      {
+        'UI-root': {
+          id: 'UI-root',
+          status: 'in_progress',
+          metadata: { base_red_followup: 'OT-x1,UI-root,UI bad,' }
+        },
+        'OT-x1': { id: 'OT-x1', status: 'open' }
+      }
+    ]
+  ])('holds without a base-only verify behind %s', async (_label, issues) => {
+    const h = waitHarness({ issues });
+
+    await driveOnce(h.store, h.driver);
+
+    expect(rootIntent(h).phase).toBe('holding');
+    expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+  });
+
+  test('holds a failure the same-candidate retry has not re-run', async () => {
+    const h = waitHarness({
+      operations: {
+        'verify-one': failedVerifyOperation({
+          retry: null
+        })
+      }
+    });
+
+    await driveOnce(h.store, h.driver);
+
+    expect(rootIntent(h).phase).toBe('holding');
+    expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['passes', { operation_id: 'base-op', state: 'succeeded', reason: 'succeeded' }],
+    ['times out', { operation_id: 'base-op', state: 'failed', reason: 'timeout' }],
+    ['never settles', null]
+  ])(
+    'holds once with the plain reason when the base-only verify %s',
+    async (_label, verdict) => {
+      const h = waitHarness({ baseVerdict: verdict });
+
+      await driveOnce(h.store, h.driver);
+      await settle();
+
+      expect(rootIntent(h)).toMatchObject({
+        phase: 'holding',
+        hold: { reason: 'script_failed', head_sha: RED_HEAD }
+      });
+      expect(rootIntent(h)).not.toHaveProperty('followup_wait');
+      expect(h.startCompletionBaseVerify).toHaveBeenCalledTimes(1);
+      expect(h.hold).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('returns the saga to gating on a moved base once the follow-ups settle', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'closed' };
+    h.resolveBase.mockResolvedValue({
+      ok: true,
+      base: 'main',
+      base_oid: MOVED_BASE
+    });
+
+    await h.driver.onIssuesChanged();
+
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'gating',
+      auto_resolution: null,
+      subject: { head_sha: RED_HEAD, base_sha: MOVED_BASE },
+      followup_wait: { outcome: 'base_moved' }
+    });
+    expect(
+      h.store.snapshot(DRIVER_WS).merge_queue.map((entry) => entry.bead_id)
+    ).toEqual(['UI-root']);
+  });
+
+  test('merges after the one re-verify on the moved base passes', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'closed' };
+    h.resolveBase.mockResolvedValue({
+      ok: true,
+      base: 'main',
+      base_oid: MOVED_BASE
+    });
+    await h.driver.onIssuesChanged();
+    h.completionGate.mockResolvedValue(
+      redGate({
+        base_sha: MOVED_BASE,
+        subject: { ...intent().subject, base_sha: MOVED_BASE },
+        verdict: { enabled: true, tier: 'eligible' }
+      })
+    );
+
+    const { action } = await driveOnce(h.store, h.driver);
+
+    expect(action).toEqual({ kind: 'merge_subject' });
+  });
+
+  test('holds with the re-verify tail and announces it once when the re-verify fails', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'closed' };
+    h.resolveBase.mockResolvedValue({
+      ok: true,
+      base: 'main',
+      base_oid: MOVED_BASE
+    });
+    await h.driver.onIssuesChanged();
+    h.completionGate.mockResolvedValue(
+      holdGate({
+        base_sha: MOVED_BASE,
+        subject: { ...intent().subject, base_sha: MOVED_BASE }
+      })
+    );
+
+    await driveOnce(h.store, h.driver);
+    await settle();
+
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'holding',
+      hold: { reason: 'script_failed:후속 UI-fix1 착지 뒤 재검증 실패' }
+    });
+    expect(h.hold).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        reason: 'script_failed:후속 UI-fix1 착지 뒤 재검증 실패'
+      })
+    );
+    expect(h.conversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(h.startCompletionBaseVerify).toHaveBeenCalledTimes(1);
+  });
+
+  test('holds right away when the follow-ups settle on an unchanged base', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'closed' };
+
+    await h.driver.onIssuesChanged();
+    await settle();
+
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'holding',
+      hold: { reason: 'script_failed:후속 UI-fix1 끝남·base 그대로' }
+    });
+    expect(h.hold).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        reason: 'script_failed:후속 UI-fix1 끝남·base 그대로'
+      })
+    );
+  });
+
+  test('keeps waiting while a linked follow-up is still live', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+
+    await h.driver.onIssuesChanged();
+
+    expect(rootIntent(h).phase).toBe('waiting_followup');
+    expect(h.resolveBase).not.toHaveBeenCalled();
+  });
+
+  test('holds at the 48-hour wait limit', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.clock.now = 100 + LIMIT_MS;
+
+    await h.driver.onIssuesChanged();
+    await settle();
+
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'holding',
+      hold: { reason: 'script_failed:대기 상한 48시간' }
+    });
+    expect(h.hold).toHaveBeenCalledTimes(1);
+  });
+
+  test('never waits twice on the same PR head', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'closed' };
+    await h.driver.onIssuesChanged();
+    h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'open' };
+    h.store.enqueueMergeManual(DRIVER_WS, {
+      expected_revision: h.store.snapshot(DRIVER_WS).revision,
+      entries: [{ bead_id: 'UI-root', head_sha: RED_HEAD, target_base: 'main' }]
+    });
+
+    await driveOnce(h.store, h.driver);
+
+    expect(rootIntent(h).phase).toBe('holding');
+    expect(h.startCompletionBaseVerify).toHaveBeenCalledTimes(1);
+  });
+
+  test('ends the wait on a [머지] click and re-judges the same head', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+
+    const clicked = h.store.enqueueMergeManual(DRIVER_WS, {
+      expected_revision: h.store.snapshot(DRIVER_WS).revision,
+      entries: [{ bead_id: 'UI-root', head_sha: RED_HEAD, target_base: 'main' }]
+    });
+
+    expect(clicked.ok).toBe(true);
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'gating',
+      auto_resolution: null
+    });
+  });
+
+  test('clears the wait and re-judges a newly pushed head', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.completionGate.mockResolvedValue(
+      holdGate({ subject: { ...intent().subject, head_sha: NEW_HEAD } })
+    );
+
+    const { fact, action } = await driveOnce(h.store, h.driver);
+
+    expect(fact.state).toBe('stale');
+    expect(action).toEqual({ kind: 'gate' });
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'gating',
+      subject: { head_sha: NEW_HEAD }
+    });
+    expect(rootIntent(h)).not.toHaveProperty('followup_wait');
+  });
+
+  test('keeps the wait through a store restart', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    const before = rootIntent(h);
+
+    const restarted = restartedStore(h).snapshot(DRIVER_WS);
+
+    expect(restarted.completion_intents['UI-root']).toMatchObject({
+      phase: 'waiting_followup',
+      followup_wait: before.followup_wait,
+      followup_waits: [
+        { pr_url: 'https://github.com/o/r/pull/1', head_sha: RED_HEAD }
+      ]
+    });
+  });
+
+  test('expires the wait from a coordinator pass with an empty merge queue', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.completionGate.mockClear();
+    h.clock.now = 100 + LIMIT_MS;
+
+    await coordinatorOver(h).reconcile();
+
+    expect(h.store.snapshot(DRIVER_WS).merge_queue).toEqual([]);
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'holding',
+      hold: { reason: 'script_failed:대기 상한 48시간' }
+    });
+    expect(h.completionGate).not.toHaveBeenCalled();
+  });
+
+  test('checks a restarted wait from a coordinator pass without a bd event', async () => {
+    const first = waitHarness();
+    await driveOnce(first.store, first.driver);
+    const h = waitHarness({
+      store: restartedStore(first),
+      issues: { 'UI-fix1': { id: 'UI-fix1', status: 'closed' } }
+    });
+
+    await coordinatorOver(h).reconcile();
+
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'holding',
+      hold: { reason: 'script_failed:후속 UI-fix1 끝남·base 그대로' }
+    });
+  });
+
+  test('adopts a base-only verify that settled while the server was down', async () => {
+    const first = waitHarness();
+    await driveOnce(first.store, first.driver);
+    const snapshot = first.store.snapshot(DRIVER_WS);
+    const waiting = snapshot.completion_intents['UI-root'];
+    const file = queueFile({
+      ...snapshot,
+      completion_intents: {
+        'UI-root': {
+          ...waiting,
+          followup_wait: {
+            ...waiting.followup_wait,
+            stage: 'base_verifying',
+            deadline_at: null
+          }
+        }
+      },
+      repo_operations: {
+        ...snapshot.repo_operations,
+        'base-op': failedVerifyOperation({
+          target: 'base_only',
+          subjects: [{ bead_id: 'UI-root', merged_sha: RED_BASE }],
+          verify_head_sha: RED_BASE,
+          verify_head_shas: [RED_BASE],
+          target_sha: RED_BASE
+        })
+      }
+    });
+    const h = waitHarness({
+      store: createQueueStore({ filePathFor: () => file })
+    });
+    h.clock.now = 500;
+
+    await coordinatorOver(h).reconcile();
+
+    expect(rootIntent(h).followup_wait).toMatchObject({
+      stage: 'waiting',
+      deadline_at: 500 + LIMIT_MS
+    });
+    expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+  });
+
+  test('checks an off-queue wait without observing it', () => {
+    const current = intent({
+      phase: 'waiting_followup',
+      auto_resolution: { class: 'base_red_followup' }
+    });
+
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact: { state: 'waiting' }
+    });
+
+    expect(action).toEqual({ kind: 'check_followup' });
+  });
+
+  test('re-gates a waiting intent whose head moved', () => {
+    const current = intent({
+      phase: 'waiting_followup',
+      auto_resolution: { class: 'base_red_followup' }
+    });
+
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact: { state: 'stale' }
+    });
+
+    expect(action).toEqual({ kind: 'gate' });
+  });
+});

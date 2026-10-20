@@ -96,7 +96,7 @@ describe('completion_status phase projection (UI-hk74 §4)', () => {
     );
   });
 
-  test('names exactly the ten surviving phases', () => {
+  test('names exactly the eleven surviving phases', () => {
     const phases = durableCompletionPhases();
 
     expect(phases).toEqual([
@@ -107,6 +107,7 @@ describe('completion_status phase projection (UI-hk74 §4)', () => {
       'waiting_metadata',
       'reviewing',
       'retrying',
+      'waiting_followup',
       'paused',
       'needs_human',
       'completed'
@@ -123,6 +124,7 @@ describe('completion_status phase projection (UI-hk74 §4)', () => {
       'evidence',
       'failure_reason',
       'failure_stage',
+      'followup_wait',
       'head_sha',
       'hold',
       'log_path',
@@ -196,6 +198,52 @@ describe('completion_status auto_resolution projection (UI-hk74 §9)', () => {
     const status = statusOf(intentQueue('gating', null));
 
     expect(status.auto_resolution).toBeNull();
+  });
+});
+
+describe('completion_status follow-up wait projection (UI-ty6k §4.3)', () => {
+  const WAIT = {
+    head_sha: 'a'.repeat(40),
+    base_sha: 'b'.repeat(40),
+    links: ['R-9'],
+    base_op_id: 'base-op',
+    at: 10,
+    deadline_at: 20,
+    stage: 'waiting',
+    outcome: null
+  };
+  const RESOLUTION = {
+    class: 'base_red_followup',
+    origin_reason: 'script_failed',
+    origin_stage: 'verify',
+    return_phase: 'gating',
+    attempts: 0,
+    next_at: null,
+    last_error: null,
+    op: {}
+  };
+
+  test('carries the wait record the row badge reads', () => {
+    const status = statusOf(
+      intentQueue('waiting_followup', RESOLUTION, { followup_wait: WAIT })
+    );
+
+    expect(status.followup_wait).toEqual({
+      stage: 'waiting',
+      links: ['R-9'],
+      head_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      at: 10,
+      deadline_at: 20
+    });
+  });
+
+  test('carries no wait record outside the wait phase', () => {
+    const status = statusOf(
+      intentQueue('gating', null, { followup_wait: WAIT })
+    );
+
+    expect(status.followup_wait).toBeNull();
   });
 });
 

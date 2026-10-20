@@ -8,6 +8,7 @@ import { createBeadTimeline } from './bead-timeline.js';
 import { ensureDelegationMonitorDir } from './delegation-monitor.js';
 import { createProviderHoldStore } from './provider-holds.js';
 import {
+  COMPLETION_VERIFY_SUPPRESSED_PHASES,
   GUARD_WARNINGS_CAP,
   GUARD_WARNING_COMMAND_MAX,
   LANE_RELEASING_ATTEMPT_STATUSES,
@@ -17578,5 +17579,298 @@ describe('worker/queue-store cross-runner hold members (UI-gggh)', () => {
     });
 
     expect(attempt.provider_leaf_checked_at).toBe(1234);
+  });
+});
+
+describe('worker/queue-store red-base follow-up wait (UI-ty6k)', () => {
+  const HEAD = 'a'.repeat(40);
+  const BASE = 'b'.repeat(40);
+  const PR_URL = 'https://github.com/o/r/pull/1';
+
+  function storeWithIntent() {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'att-UI-root',
+        bead_id: 'UI-root',
+        target_base: 'main',
+        base_oid: BASE
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'att-UI-root',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: PR_URL,
+        head_sha: HEAD,
+        base_sha: BASE,
+        merged_sha: null
+      }
+    });
+    return store;
+  }
+
+  /** @type {import('./queue-store.js').CompletionFollowupWait} */
+  const wait = {
+    head_sha: HEAD,
+    base_sha: BASE,
+    links: ['UI-fix1'],
+    base_op_id: null,
+    at: 10,
+    deadline_at: null,
+    stage: 'base_verifying',
+    outcome: null
+  };
+
+  /** @type {import('./queue-store.js').CompletionAutoResolution} */
+  const resolution = {
+    class: 'base_red_followup',
+    origin_reason: 'script_failed',
+    origin_stage: 'verify',
+    return_phase: 'gating',
+    attempts: 0,
+    next_at: null,
+    last_error: null,
+    op: {
+      completion_op_id: null,
+      failure_key: null,
+      continuation: null,
+      continuation_mismatch: null,
+      operation_id: 'verify-one',
+      head_sha: HEAD,
+      base_sha: BASE,
+      merged_sha: null,
+      cleanup_cursor: null
+    }
+  };
+
+  /** @type {import('./queue-store.js').CompletionHold} */
+  const hold = {
+    class: 'pre_merge_hold',
+    cause: 'verify_failure',
+    reason: 'script_failed',
+    summary: null,
+    operation_id: 'verify-one',
+    log_path: null,
+    head_sha: HEAD,
+    base_sha: BASE,
+    at: 20,
+    comment_at: 20
+  };
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function beginWait(store) {
+    return store.beginCompletionFollowupWait(WS, {
+      root_bead_id: 'UI-root',
+      wait,
+      resolution
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function settleBaseVerify(store) {
+    return store.updateCompletionFollowupWait(WS, {
+      root_bead_id: 'UI-root',
+      head_sha: HEAD,
+      from_stage: 'base_verifying',
+      patch: { stage: 'waiting', base_op_id: 'base-op', deadline_at: 99 }
+    });
+  }
+
+  test('persists the wait record through a cold load', () => {
+    const store = storeWithIntent();
+    beginWait(store);
+    settleBaseVerify(store);
+
+    const restored = createQueueStore().snapshot(WS);
+
+    expect(restored.completion_intents['UI-root']).toMatchObject({
+      phase: 'waiting_followup',
+      auto_resolution: { class: 'base_red_followup' },
+      followup_wait: {
+        ...wait,
+        stage: 'waiting',
+        base_op_id: 'base-op',
+        deadline_at: 99
+      },
+      followup_waits: [{ pr_url: PR_URL, head_sha: HEAD }]
+    });
+  });
+
+  test('removes a waiting intent from the runnable queue', () => {
+    const store = storeWithIntent();
+
+    const result = beginWait(store);
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.merge_queue).toEqual([]);
+  });
+
+  test('records the (PR, head) pair once', () => {
+    const store = storeWithIntent();
+    beginWait(store);
+    store.holdCompletionIntent(WS, { root_bead_id: 'UI-root', hold });
+
+    const again = beginWait(store);
+
+    expect(again.ok).toBe(false);
+    expect(again.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'holding',
+      followup_waits: [{ pr_url: PR_URL, head_sha: HEAD }]
+    });
+  });
+
+  test('ends a wait in a hold and drops its record', () => {
+    const store = storeWithIntent();
+    beginWait(store);
+
+    const result = store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'holding',
+      auto_resolution: null,
+      hold
+    });
+    expect(result.queue.completion_intents['UI-root']).not.toHaveProperty(
+      'followup_wait'
+    );
+  });
+
+  test.each([
+    ['a', 0],
+    ['c', 1]
+  ])('enrolls waiting head %s with %i runnable entries', (head, count) => {
+    const store = storeWithIntent();
+    beginWait(store);
+    const before = store.snapshot(WS);
+
+    const result = store.enqueueMergeAuto(WS, {
+      entries: [
+        {
+          bead_id: 'UI-root',
+          external: false,
+          head_sha: String(head).repeat(40),
+          completion: {
+            source_attempt_id: 'att-UI-root',
+            target_base: 'main',
+            subject: {
+              ...before.completion_intents['UI-root'].subject,
+              head_sha: String(head).repeat(40)
+            }
+          }
+        }
+      ]
+    });
+
+    expect(result.queue.merge_queue).toHaveLength(Number(count));
+  });
+
+  test('suppresses the poller verify while a wait stands', () => {
+    expect(COMPLETION_VERIFY_SUPPRESSED_PHASES.has('waiting_followup')).toBe(
+      true
+    );
+  });
+
+  test('clears the wait record when re-pinning a new head', () => {
+    const store = storeWithIntent();
+    beginWait(store);
+    store.clearCompletionAutoResolution(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'gating'
+    });
+    const subject = store.snapshot(WS).completion_intents['UI-root'].subject;
+
+    const result = store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'gating',
+      subject: { ...subject, head_sha: 'c'.repeat(40) }
+    });
+
+    expect(result.queue.completion_intents['UI-root']).not.toHaveProperty(
+      'followup_wait'
+    );
+    expect(
+      result.queue.completion_intents['UI-root'].followup_waits
+    ).toEqual([{ pr_url: PR_URL, head_sha: HEAD }]);
+  });
+
+  test('keeps a resumed wait off the runnable queue', () => {
+    const store = storeWithIntent();
+    beginWait(store);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: false
+    });
+    store.pauseCompletionIntent(WS, { root_bead_id: 'UI-root' });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+
+    const result = store.resumeCompletionIntent(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.completion_intents['UI-root'].phase).toBe(
+      'waiting_followup'
+    );
+    expect(result.queue.merge_queue).toEqual([]);
+  });
+
+  test('returns a moved-base wait to gating at the queue tail', () => {
+    const store = storeWithIntent();
+    beginWait(store);
+    settleBaseVerify(store);
+
+    const result = store.finishCompletionFollowupWait(WS, {
+      root_bead_id: 'UI-root',
+      head_sha: HEAD,
+      base_sha: 'c'.repeat(40)
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'gating',
+      auto_resolution: null,
+      subject: { head_sha: HEAD, base_sha: 'c'.repeat(40) },
+      followup_wait: { outcome: 'base_moved' }
+    });
+    expect(result.queue.merge_queue.map((entry) => entry.bead_id)).toEqual([
+      'UI-root'
+    ]);
+  });
+
+  test('fails a waiting intent without its wait record closed on cold load', () => {
+    const store = storeWithIntent();
+    beginWait(store);
+    const raw = store.snapshot(WS);
+    delete raw.completion_intents['UI-root'].followup_wait;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const restored = createQueueStore().snapshot(WS);
+
+    expect(restored.completion_intents['UI-root'].phase).toBe('needs_human');
   });
 });

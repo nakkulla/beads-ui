@@ -1464,7 +1464,12 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     expect(notifyChanged).not.toHaveBeenCalled();
   });
 
-  test.each([['needs_human'], ['waiting_metadata'], ['retrying']])(
+  test.each([
+    ['needs_human'],
+    ['waiting_metadata'],
+    ['retrying'],
+    ['waiting_followup']
+  ])(
     'skips verify for a root intent parked in %s',
     async (phase) => {
       const operations = repoOperations();

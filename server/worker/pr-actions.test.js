@@ -4514,6 +4514,75 @@ describe('worker/pr-actions base gate freshness (implementation review 2026-07-3
   });
 });
 
+describe('worker/pr-actions completion base-only verify (UI-ty6k §3 결정 2)', () => {
+  const PINNED_BASE = '1'.repeat(40);
+
+  test('hands the base alone to the verify ledger with the declared script', async () => {
+    const repoOperations = failedVerifyOperations();
+    const env = makeActions({ repoOperations });
+
+    const started = await env.actions.startCompletionBaseVerify(BEAD, {
+      target_base: 'main',
+      base_sha: PINNED_BASE
+    });
+
+    expect(started).toEqual({
+      ok: true,
+      operation_id: 'verify-failed',
+      timeout_ms: 1000
+    });
+    expect(repoOperations.ensureVerify).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        target_base: 'main',
+        base_sha: PINNED_BASE,
+        head_sha: PINNED_BASE,
+        final_sha: PINNED_BASE,
+        base_only: true,
+        bead_id: BEAD,
+        script_path: VERIFY_SCRIPT_PATH
+      })
+    );
+  });
+
+  test('reads the base-only verify result bound to the base', async () => {
+    const repoOperations = failedVerifyOperations();
+    const env = makeActions({ repoOperations });
+
+    const verdict = await env.actions.awaitCompletionBaseVerify(
+      'verify-failed',
+      { base_sha: PINNED_BASE, timeout_ms: 1000 }
+    );
+
+    expect(verdict).toEqual({
+      operation_id: 'verify-failed',
+      state: 'failed',
+      reason: 'verify_cmd_failed'
+    });
+    expect(repoOperations.waitForTerminal).toHaveBeenCalledWith(
+      'verify-failed',
+      { head_sha: PINNED_BASE, timeout_ms: 1000 }
+    );
+  });
+
+  test('starts nothing for a base that declares no verify', async () => {
+    const repoOperations = failedVerifyOperations();
+    repoOperations.hasConfig.mockResolvedValue({
+      ok: true,
+      present: true,
+      verify_script_path: null
+    });
+    const env = makeActions({ repoOperations });
+
+    const started = await env.actions.startCompletionBaseVerify(BEAD, {
+      target_base: 'main',
+      base_sha: PINNED_BASE
+    });
+
+    expect(started.ok).toBe(false);
+    expect(repoOperations.ensureVerify).not.toHaveBeenCalled();
+  });
+});
+
 describe('worker/pr-actions completion gate evidence', () => {
   test('binds an open completion gate to one exact base pin', async () => {
     const first_base = '1'.repeat(40);
