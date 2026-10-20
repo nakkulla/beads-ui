@@ -48,6 +48,10 @@ import { createRuntimeIdentity } from '../runtime-identity.js';
 import { resolveSpecId } from '../spec-id.js';
 import { watchDb } from '../watcher.js';
 import { parsePrNumber } from '../workflow-enrich.js';
+import {
+  WORKSPACE_ACCOUNTS_KV_KEY,
+  normalizeWorkspaceAccounts
+} from '../workspace-accounts.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { createAccountCatalog } from './account-catalog.js';
 import { validateAdmission } from './admission.js';
@@ -3473,6 +3477,27 @@ export async function followWorkerActiveAccounts() {
 }
 
 subscribeAccountSwitched(() => followWorkerActiveAccounts());
+
+/**
+ * Read one workspace's `bd kv` account default layer through the same kv
+ * channel the scheduler's launch decision reads (UI-d3cb §5.1), uncached. The
+ * server's Codex active-account return reads a `wait` repo's Codex default
+ * here (UI-tyc2 §4.1).
+ *
+ * @param {string} workspace_root
+ * @returns {Promise<import('../workspace-accounts.js').WorkspaceAccountsLayer>}
+ */
+export async function readWorkspaceAccountsLayer(workspace_root) {
+  try {
+    return normalizeWorkspaceAccounts(
+      await kvGetJson(WORKSPACE_ACCOUNTS_KV_KEY, {
+        cwd: keyFor(workspace_root)
+      })
+    );
+  } catch {
+    return { state: 'unusable', values: {}, warnings: ['kv_read_failed'] };
+  }
+}
 
 /**
  * Confirm the Bead is readable when a workspace has no live scheduler

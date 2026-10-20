@@ -3,10 +3,16 @@ import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createCodexActiveReturn } from '../codex-active-return.js';
+import { selectCodexSwitchCandidate } from '../worker/codex-switch-candidate.js';
 import {
   __resetSwitchStateForTest,
+  acquireSwitchLock,
   createAccountSwitchHandler,
   createAccountSwitchRunner,
+  isSwitchInFlight,
+  performAccountSwitch,
+  releaseSwitchLock,
   subscribeAccountSwitched
 } from './account-switch.js';
 
@@ -695,5 +701,226 @@ describe('switch runner', () => {
     expect(child.kill).toHaveBeenCalledWith('SIGKILL');
     expect(result.timed_out).toBe(true);
     vi.useRealTimers();
+  });
+});
+
+describe('codex active-account return through the shared switch path', () => {
+  const K1 = 'user-1::ws-a';
+  const K2 = 'user-2::ws-a';
+  const K3 = 'user-3::ws-b';
+
+  /**
+   * @param {string} key
+   * @param {number} number
+   * @param {number} pct
+   * @param {boolean} [active]
+   */
+  function row(key, number, pct, active = false) {
+    return {
+      key,
+      number,
+      email: null,
+      alias: null,
+      plan: null,
+      active,
+      status: 'ok',
+      windows: [{ key: '5h', pct, resetsAt: '2026-10-21T00:00:00.000Z' }],
+      fetchedAt: null,
+      ageSeconds: null
+    };
+  }
+
+  /**
+   * @param {any[]} accounts
+   */
+  function listOf(accounts) {
+    return {
+      ok: /** @type {const} */ (true),
+      accounts,
+      active_key: accounts.find((account) => account.active)?.key ?? null
+    };
+  }
+
+  const STALE = listOf([row(K1, 1, 0), row(K2, 2, 0), row(K3, 3, 100, true)]);
+
+  /**
+   * @param {{ runSwitch: (account_number: number) => Promise<any>, invalidateUsageCache?: () => void, listAccountsFresh?: () => Promise<any> }} options
+   */
+  function autoPass(options) {
+    const notify = vi.fn();
+    const pass = createCodexActiveReturn({
+      listAccounts: async () => STALE,
+      listAccountsFresh: options.listAccountsFresh ?? (async () => STALE),
+      listWorkspaces: () => [{ key: '/repos/beads-ui', name: 'beads-ui' }],
+      queueSnapshot: () => ({
+        provider_limit_policy: {
+          codex: { mode: 'switch', accounts: [K1, K2, K3], preempt_pct: null }
+        },
+        provider_hold: {},
+        attempts: {}
+      }),
+      readWorkspaceAccounts: async () => ({
+        state: 'absent',
+        values: {},
+        warnings: []
+      }),
+      activeAccountOf: () => null,
+      acquireLock: acquireSwitchLock,
+      releaseLock: releaseSwitchLock,
+      isLocked: isSwitchInFlight,
+      switchAccount: (account_number) =>
+        performAccountSwitch({
+          provider: 'codex',
+          account_number,
+          runSwitch: options.runSwitch,
+          invalidateUsageCache: options.invalidateUsageCache ?? (() => {})
+        }),
+      selectCandidate: selectCodexSwitchCandidate,
+      notify,
+      setInterval: () => null,
+      clearInterval: () => {}
+    });
+    return { pass, notify };
+  }
+
+  test('drops the usage cache and tells switch listeners on an auto switch', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const runSwitch = vi.fn().mockResolvedValue(switchResult());
+    const listener = vi.fn(() => {
+      order.push('listener');
+    });
+    const unsubscribe = subscribeAccountSwitched(listener);
+    const { pass } = autoPass({
+      runSwitch,
+      invalidateUsageCache: () => {
+        order.push('invalidate');
+      }
+    });
+
+    try {
+      await pass.observe(STALE);
+      await vi.waitFor(() => expect(listener).toHaveBeenCalled());
+    } finally {
+      unsubscribe();
+    }
+
+    expect(runSwitch).toHaveBeenCalledExactlyOnceWith(1);
+    expect(listener).toHaveBeenCalledExactlyOnceWith('codex');
+    expect(order).toEqual(['invalidate', 'listener']);
+  });
+
+  test('tells no switch listener and sends no notice after a failed auto switch', async () => {
+    const runSwitch = vi.fn().mockResolvedValue(switchResult({ code: 1 }));
+    const invalidateUsageCache = vi.fn();
+    const listener = vi.fn();
+    const unsubscribe = subscribeAccountSwitched(listener);
+    const { pass, notify } = autoPass({ runSwitch, invalidateUsageCache });
+
+    try {
+      await pass.observe(STALE);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      unsubscribe();
+    }
+
+    expect(invalidateUsageCache).not.toHaveBeenCalled();
+    expect(listener).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  test('makes no auto switch while a manual switch is in flight', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(switchResult());
+    });
+    const runSwitch = vi.fn(() => gate);
+    const listAccountsFresh = vi.fn(async () => STALE);
+    const { pass } = autoPass({ runSwitch, listAccountsFresh });
+    const server = await startSwitchServer({
+      codex: createAccountSwitchHandler({
+        provider: 'codex',
+        runSwitch,
+        invalidateUsageCache: () => {}
+      })
+    });
+
+    try {
+      const manual = server.post(CODEX_ROUTE, { number: 2, confirm: true });
+      await vi.waitFor(() => expect(runSwitch).toHaveBeenCalled());
+      await pass.observe(STALE);
+      release();
+      await manual;
+    } finally {
+      await server.close();
+    }
+
+    expect(listAccountsFresh).not.toHaveBeenCalled();
+    expect(runSwitch).toHaveBeenCalledExactlyOnceWith(2);
+  });
+
+  test('answers 409 to a manual switch while the auto pass holds the lock', async () => {
+    /** @type {(value: any) => void} */
+    let release_fresh = () => {};
+    const listAccountsFresh = vi.fn(
+      () => new Promise((resolve) => (release_fresh = resolve))
+    );
+    const runSwitch = vi.fn().mockResolvedValue(switchResult());
+    const { pass } = autoPass({ runSwitch, listAccountsFresh });
+    const server = await startSwitchServer({
+      codex: createAccountSwitchHandler({
+        provider: 'codex',
+        runSwitch,
+        invalidateUsageCache: () => {}
+      })
+    });
+
+    /** @type {{ status: number, body: any }} */
+    let manual;
+    try {
+      const auto = pass.observe(STALE);
+      await vi.waitFor(() => expect(listAccountsFresh).toHaveBeenCalled());
+      manual = await server.post(CODEX_ROUTE, { number: 2, confirm: true });
+      release_fresh(STALE);
+      await auto;
+    } finally {
+      await server.close();
+    }
+
+    expect(manual.status).toBe(409);
+    expect(manual.body).toEqual({ ok: false, error: 'switch_in_flight' });
+    expect(runSwitch).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  test('judges the fresh active account when a manual switch landed first', async () => {
+    const runSwitch = vi.fn().mockResolvedValue(switchResult());
+    const after_manual = listOf([
+      row(K1, 1, 0),
+      row(K2, 2, 10, true),
+      row(K3, 3, 100)
+    ]);
+    const { pass, notify } = autoPass({
+      runSwitch,
+      listAccountsFresh: async () => after_manual
+    });
+    const server = await startSwitchServer({
+      codex: createAccountSwitchHandler({
+        provider: 'codex',
+        runSwitch,
+        invalidateUsageCache: () => {}
+      })
+    });
+
+    try {
+      await server.post(CODEX_ROUTE, { number: 2, confirm: true });
+      await pass.observe(STALE);
+    } finally {
+      await server.close();
+    }
+
+    expect(runSwitch).toHaveBeenCalledExactlyOnceWith(2);
+    expect(notify).not.toHaveBeenCalled();
+    expect(isSwitchInFlight('codex')).toBe(false);
   });
 });

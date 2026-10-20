@@ -301,6 +301,94 @@ async function inUseBeads(provider, account_number) {
 }
 
 /**
+ * Take the per-provider switch lock. The manual handler and the server's own
+ * Codex active-account return (UI-tyc2 §4.2-4) share it, so neither can run
+ * over the other; false means another switch already holds it.
+ *
+ * @param {SwitchProvider} provider
+ * @returns {boolean}
+ */
+export function acquireSwitchLock(provider) {
+  if (in_flight_providers.has(provider)) {
+    return false;
+  }
+  in_flight_providers.add(provider);
+  return true;
+}
+
+/**
+ * Release the per-provider switch lock taken by `acquireSwitchLock`.
+ *
+ * @param {SwitchProvider} provider
+ */
+export function releaseSwitchLock(provider) {
+  in_flight_providers.delete(provider);
+}
+
+/**
+ * Whether a switch of `provider` currently holds the lock.
+ *
+ * @param {SwitchProvider} provider
+ * @returns {boolean}
+ */
+export function isSwitchInFlight(provider) {
+  return in_flight_providers.has(provider);
+}
+
+/**
+ * @typedef {{ ok: true, output: ReturnType<typeof normalizeSwitchOutput> }
+ *   | { ok: false, error: 'switch_failed'|'timeout'|'not_found'|'invalid_output' }} SwitchOutcome
+ */
+
+/**
+ * Run one switch and settle it the way every caller must: classify the tool's
+ * result, and on success drop the usage cache and then tell the switch
+ * listeners. The caller holds the provider lock.
+ *
+ * @param {{ provider: SwitchProvider, account_number: number, runSwitch: (account_number: number) => Promise<SwitchResult>, invalidateUsageCache: (expected_number?: number) => void }} options
+ * @returns {Promise<SwitchOutcome>}
+ */
+export async function performAccountSwitch(options) {
+  const { provider, account_number } = options;
+  try {
+    const result = await options.runSwitch(account_number);
+    if (!result) {
+      return { ok: false, error: 'switch_failed' };
+    }
+    if (result.timed_out) {
+      return { ok: false, error: 'timeout' };
+    }
+    if (result.not_found) {
+      return { ok: false, error: 'not_found' };
+    }
+    if (result.code !== 0) {
+      return { ok: false, error: 'switch_failed' };
+    }
+
+    /** @type {unknown} */
+    let parsed;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      return { ok: false, error: 'invalid_output' };
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return { ok: false, error: 'invalid_output' };
+    }
+
+    if (provider === 'claude') {
+      options.invalidateUsageCache(account_number);
+    } else {
+      options.invalidateUsageCache();
+    }
+    notifyAccountSwitched(provider);
+    return { ok: true, output: normalizeSwitchOutput(parsed) };
+  } catch {
+    return { ok: false, error: 'switch_failed' };
+  }
+}
+
+/**
  * Create the account switch handler for one provider. The usage cache is
  * invalidated on every successful run, including `already-active`, so the
  * follow-up refresh cannot be served from a pre-switch snapshot; then the
@@ -325,12 +413,11 @@ export function createAccountSwitchHandler(options) {
       res.status(400).json({ ok: false, error: 'invalid_number' });
       return;
     }
-    if (in_flight_providers.has(provider)) {
+    if (!acquireSwitchLock(provider)) {
       res.status(409).json({ ok: false, error: 'switch_in_flight' });
       return;
     }
 
-    in_flight_providers.add(provider);
     try {
       if (req.body.confirm !== true) {
         const in_use = await inUseBeads(provider, account_number);
@@ -339,48 +426,21 @@ export function createAccountSwitchHandler(options) {
           return;
         }
       }
-      const result = await runSwitch(account_number);
-      if (!result) {
-        res.status(200).json({ ok: false, error: 'switch_failed' });
+      const outcome = await performAccountSwitch({
+        provider,
+        account_number,
+        runSwitch,
+        invalidateUsageCache
+      });
+      if (!outcome.ok) {
+        res.status(200).json({ ok: false, error: outcome.error });
         return;
       }
-      if (result.timed_out) {
-        res.status(200).json({ ok: false, error: 'timeout' });
-        return;
-      }
-      if (result.not_found) {
-        res.status(200).json({ ok: false, error: 'not_found' });
-        return;
-      }
-      if (result.code !== 0) {
-        res.status(200).json({ ok: false, error: 'switch_failed' });
-        return;
-      }
-
-      /** @type {unknown} */
-      let parsed;
-      try {
-        parsed = JSON.parse(result.stdout);
-      } catch {
-        res.status(200).json({ ok: false, error: 'invalid_output' });
-        return;
-      }
-      if (!parsed || typeof parsed !== 'object') {
-        res.status(200).json({ ok: false, error: 'invalid_output' });
-        return;
-      }
-
-      if (provider === 'claude') {
-        invalidateUsageCache(account_number);
-      } else {
-        invalidateUsageCache();
-      }
-      notifyAccountSwitched(provider);
-      res.status(200).json(normalizeSwitchOutput(parsed));
+      res.status(200).json(outcome.output);
     } catch {
       res.status(200).json({ ok: false, error: 'switch_failed' });
     } finally {
-      in_flight_providers.delete(provider);
+      releaseSwitchLock(provider);
     }
   }
 

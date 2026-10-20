@@ -551,6 +551,49 @@ function publishCreditObservations(root) {
 }
 
 /**
+ * @typedef {{ ok: true, accounts: UsageAccount[], active_key: string|null }} CodexAccountList
+ */
+
+/** @type {Set<(list: CodexAccountList) => void>} */
+const account_list_observers = new Set();
+
+/**
+ * Hear every parsed codex-auth account list, cached or fresh read alike. The
+ * server's Codex active-account return subscribes here from the server entry
+ * (UI-tyc2 §4.2), the same way the credit ledger hears credit observations.
+ * A read that yields no account list is never published.
+ *
+ * @param {(list: CodexAccountList) => void} listener
+ * @returns {() => void}
+ */
+export function subscribeAccountListObservations(listener) {
+  account_list_observers.add(listener);
+  return () => {
+    account_list_observers.delete(listener);
+  };
+}
+
+/**
+ * @param {CodexUsagePayload} payload
+ */
+function publishAccountList(payload) {
+  if (account_list_observers.size === 0) {
+    return;
+  }
+  const list = accountListOf(payload);
+  if (!list.ok) {
+    return;
+  }
+  for (const listener of account_list_observers) {
+    try {
+      listener(list);
+    } catch {
+      // A failing observer must not turn a usage read into a failure.
+    }
+  }
+}
+
+/**
  * Execute codex-auth and collapse every failure to the fail-quiet payload.
  *
  * @param {RunCodexAuth} runCodexAuth
@@ -568,7 +611,9 @@ async function loadCodexUsage(runCodexAuth, now, run_options) {
     }
     const root = JSON.parse(result.stdout);
     publishCreditObservations(root);
-    return normalizeCodexUsage(root, now);
+    const payload = normalizeCodexUsage(root, now);
+    publishAccountList(payload);
+    return payload;
   } catch {
     return unavailable();
   }
@@ -726,4 +771,5 @@ export function __resetCacheForTest() {
   cache_expires_at = 0;
   in_flight = null;
   credit_observers.clear();
+  account_list_observers.clear();
 }
