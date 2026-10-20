@@ -253,21 +253,24 @@ const UNLOCKED_COMPLETION_PHASES = new Set([
   'holding',
   'waiting_metadata',
   'reviewing',
-  'retrying'
+  'retrying',
+  'waiting_followup'
 ]);
 
 /**
- * The three phases the completion coordinator is resolving on its own
- * (UI-hk74 §4). Named apart from {@link UNLOCKED_COMPLETION_PHASES} because
- * §9 gives them an action a `paused` or `needs_human` row does not have: the
- * click ends the automatic wait and hands the saga back to the gate.
+ * The phases the completion coordinator is resolving on its own (UI-hk74 §4,
+ * and the red-base wait of UI-ty6k §4). Named apart from
+ * {@link UNLOCKED_COMPLETION_PHASES} because §9 gives them an action a
+ * `paused` or `needs_human` row does not have: the click ends the automatic
+ * wait and hands the saga back to the gate.
  *
  * @type {Set<string>}
  */
 const AUTO_RESOLUTION_PHASES = new Set([
   'waiting_metadata',
   'reviewing',
-  'retrying'
+  'retrying',
+  'waiting_followup'
 ]);
 
 /**
@@ -375,6 +378,37 @@ export function autoResolutionBadge(completion) {
         live: true
       };
     }
+    case 'waiting_followup': {
+      // The red-base wait (UI-ty6k §4.3): information, not a request — the
+      // linked follow-up's landing is what moves the row. A record without
+      // its follow-up ids names nobody to wait for and draws nothing.
+      const wait = completion.followup_wait;
+      const links =
+        wait && Array.isArray(wait.links)
+          ? wait.links.filter(
+              (link) => typeof link === 'string' && link.length > 0
+            )
+          : [];
+      if (!wait || links.length === 0) {
+        return null;
+      }
+      const deadline =
+        typeof wait.deadline_at === 'number'
+          ? formatTimestampLocal(wait.deadline_at)
+          : '';
+      return {
+        label: `base 실패 — ${links.join(', ')} 착지 대기`,
+        details: [
+          origin,
+          wait.stage === 'base_verifying'
+            ? 'base 단독 검증 중'
+            : '이 PR 없이 base만으로도 검증이 실패했습니다',
+          deadline ? `대기 상한 ${deadline}` : '',
+          '후속이 끝나면 base를 다시 확인해 자동으로 재검증합니다'
+        ].filter(Boolean),
+        live: wait.stage === 'base_verifying'
+      };
+    }
     default:
       return null;
   }
@@ -432,6 +466,7 @@ function completionView(completion, auto_resolution = null) {
     case 'waiting_metadata':
     case 'reviewing':
     case 'retrying':
+    case 'waiting_followup':
       if (!auto_resolution) {
         return null;
       }
@@ -1106,6 +1141,9 @@ function prWaitRow(
   // 들어가 authority를 받은 뒤에도 버튼을 유지한다: 자동 1회가 소진된 뒤 보류의
   // 출구가 그 버튼뿐이고, 세션이 실패하면 다시 눌러야 하기 때문이다.
   const review_after_merge = REVIEW_AFTER_MERGE_GATE_REASONS.has(gate?.reason);
+  // The red-base wait's one button (UI-ty6k §3 결정 5): `[리뷰 후 머지]` ends
+  // the wait into the ordinary gate and hold path, like a `[머지]` re-click.
+  const followup_waiting = completion?.phase === 'waiting_followup';
   // An external conflict WITHOUT a worktree has nowhere to run: the dispatch
   // never recreates one (UI-w0hi 제외), so the button would refuse every time.
   // The badge reports the conflict; the user resolves it in their own session.
@@ -1357,7 +1395,7 @@ function prWaitRow(
           ? '충돌 해소 후 머지'
           : gate?.reason === 'base_behind'
             ? 'base 갱신 후 머지'
-            : review_after_merge
+            : review_after_merge || followup_waiting
               ? '리뷰 후 머지'
               : needs_reclick
                 ? '다시 머지'
@@ -1403,13 +1441,15 @@ function prWaitRow(
                                       ? '리뷰 영수증 ancestry probe 미완료 — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 최종 head를 다시 리뷰시키고, 새 영수증이 최종 head에 유효해지면 큐가 머지합니다'
                                       : gate?.reason === 'spec_id_missing'
                                         ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
-                                        : enabled
-                                          ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                                          : gate && gate.tier === 'merged'
-                                            ? // Already merged with no cleanup failure recorded: the cleanup
-                                              // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                                              '머지됨 — 머지 후 정리 진행 중'
-                                            : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+                                        : followup_waiting
+                                          ? '후속 착지 대기를 끝내고 지금 다시 판정합니다 — 이 head는 다시 대기하지 않습니다'
+                                          : enabled
+                                            ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                                            : gate && gate.tier === 'merged'
+                                              ? // Already merged with no cleanup failure recorded: the cleanup
+                                                // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                                '머지됨 — 머지 후 정리 진행 중'
+                                              : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
   return pinned_foreign
     ? foreignPrRow(row, pinned_foreign, foreign_handoff)

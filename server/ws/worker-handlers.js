@@ -2822,6 +2822,48 @@ function projectAutoResolution(raw) {
 }
 
 /**
+ * Project the red-base wait record (UI-ty6k §4.3) the row badge reads — only
+ * while the intent waits in it. The base-only operation id and the exit
+ * outcome stay server-side; they are coordinator input, not display.
+ *
+ * @param {unknown} phase
+ * @param {unknown} raw
+ * @returns {{ stage: string, links: string[], head_sha: string|null, base_sha: string|null, at: number|null, deadline_at: number|null }|null}
+ */
+function projectFollowupWait(phase, raw) {
+  if (
+    phase !== 'waiting_followup' ||
+    !raw ||
+    typeof raw !== 'object' ||
+    Array.isArray(raw)
+  ) {
+    return null;
+  }
+  const value = /** @type {Record<string, unknown>} */ (raw);
+  if (value.stage !== 'base_verifying' && value.stage !== 'waiting') {
+    return null;
+  }
+  /**
+   * @param {unknown} time
+   * @returns {number|null}
+   */
+  const timeOf = (time) =>
+    typeof time === 'number' && Number.isFinite(time) ? time : null;
+  return {
+    stage: value.stage,
+    links: Array.isArray(value.links)
+      ? value.links
+          .filter((link) => typeof link === 'string' && link.length > 0)
+          .map((link) => String(link).slice(0, 200))
+      : [],
+    head_sha: boundedCompletionText(value.head_sha, 64),
+    base_sha: boundedCompletionText(value.base_sha, 64),
+    at: timeOf(value.at),
+    deadline_at: timeOf(value.deadline_at)
+  };
+}
+
+/**
  * Project the durable coordinator journal into the bounded UI contract. Raw
  * operations never cross the wire; the client gets only root identity, phase,
  * and pinned evidence. A malformed journal is visible as terminal instead of
@@ -2872,7 +2914,8 @@ function completionStatusFor(workspace_key, queue) {
         log_path: null,
         terminal_reason: 'intent_state_invalid',
         hold: null,
-        auto_resolution: null
+        auto_resolution: null,
+        followup_wait: null
       };
       continue;
     }
@@ -2960,7 +3003,8 @@ function completionStatusFor(workspace_key, queue) {
       log_path: value.phase === 'holding' ? (hold?.log_path ?? null) : log_path,
       hold,
       terminal_reason: boundedCompletionText(terminal?.reason, 500),
-      auto_resolution: projectAutoResolution(value.auto_resolution)
+      auto_resolution: projectAutoResolution(value.auto_resolution),
+      followup_wait: projectFollowupWait(value.phase, value.followup_wait)
     };
   }
   return statuses;

@@ -2228,6 +2228,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       kickMerge: () => mergeQueue.kick(),
       repo,
+      // The red-base wait re-fetches the base once its follow-ups settled
+      // (UI-ty6k §4.2), through the one repo-declaration resolver.
+      resolveBase,
       notify,
       // The automatic failure conversation (UI-jbl1 §3.1).
       failureConversation: runtime.failureConversation,

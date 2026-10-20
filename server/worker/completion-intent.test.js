@@ -5203,13 +5203,14 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
       operation_id: 'base-op',
       timeout_ms: 1000
     }));
-    const awaitCompletionBaseVerify = vi.fn(
-      async () =>
-        options.baseVerdict ?? {
-          operation_id: 'base-op',
-          state: 'failed',
-          reason: 'script_failed'
-        }
+    const awaitCompletionBaseVerify = vi.fn(async () =>
+      Object.hasOwn(options, 'baseVerdict')
+        ? options.baseVerdict
+        : {
+            operation_id: 'base-op',
+            state: 'failed',
+            reason: 'script_failed'
+          }
     );
     const resolveBase = vi.fn(async () => ({
       ok: true,
@@ -5394,7 +5395,10 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
 
   test.each([
     ['a settled follow-up', { 'UI-fix1': { id: 'UI-fix1', status: 'closed' } }],
-    ['a deferred follow-up', { 'UI-fix1': { id: 'UI-fix1', status: 'deferred' } }],
+    [
+      'a deferred follow-up',
+      { 'UI-fix1': { id: 'UI-fix1', status: 'deferred' } }
+    ],
     ['an unreadable follow-up', { 'UI-fix1': new Error('bd down') }],
     [
       'an other-rig, self or malformed link',
@@ -5432,8 +5436,14 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
   });
 
   test.each([
-    ['passes', { operation_id: 'base-op', state: 'succeeded', reason: 'succeeded' }],
-    ['times out', { operation_id: 'base-op', state: 'failed', reason: 'timeout' }],
+    [
+      'passes',
+      { operation_id: 'base-op', state: 'succeeded', reason: 'succeeded' }
+    ],
+    [
+      'times out',
+      { operation_id: 'base-op', state: 'failed', reason: 'timeout' }
+    ],
     ['never settles', null]
   ])(
     'holds once with the plain reason when the base-only verify %s',
