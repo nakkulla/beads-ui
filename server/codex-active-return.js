@@ -128,21 +128,24 @@ export function createCodexActiveReturn(deps) {
   }
 
   /**
-   * Judge one account list against the current inputs.
+   * The active row and its exhausted windows, or null when it is not
+   * exhausted (or there is no active row).
    *
    * @param {{ ok: true, accounts: UsageAccount[] }} list
-   * @param {boolean} locked - The confirm stage already holds the lock.
-   * @returns {Promise<Assessment>}
+   * @returns {{ active: UsageAccount, exhausted: UsageWindow[] }|null}
    */
-  async function assess(list, locked) {
+  function exhaustedActiveOf(list) {
     const active = list.accounts.find((account) => account?.active === true);
     const exhausted = active ? exhaustedWindowsOf(active) : [];
-    if (!active || exhausted.length === 0) {
-      return { kind: 'clear' };
-    }
-    if (!locked && deps.isLocked('codex')) {
-      return { kind: 'none', reason: 'switch_in_flight' };
-    }
+    return active && exhausted.length > 0 ? { active, exhausted } : null;
+  }
+
+  /**
+   * Snapshot every readable registered queue, in workspace key order.
+   *
+   * @returns {{ key: string, name: string, queue: any }[]}
+   */
+  function readQueues() {
     /** @type {{ key: string, name: string, queue: any }[]} */
     const queues = [];
     for (const workspace of deps.listWorkspaces()) {
@@ -157,6 +160,63 @@ export function createCodexActiveReturn(deps) {
       }
     }
     queues.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    return queues;
+  }
+
+  /**
+   * Read, BEFORE the judgment's own snapshots, whether each current `wait`
+   * repo has a Codex repo default. The kv reads are the only awaits of a
+   * judgment, so they run first and the judgment itself stays synchronous.
+   *
+   * @param {{ ok: true, accounts: UsageAccount[] }} list
+   * @param {boolean} locked
+   * @returns {Promise<Map<string, boolean>>}
+   */
+  async function readWaitDefaults(list, locked) {
+    /** @type {Map<string, boolean>} */
+    const defaults = new Map();
+    if (
+      exhaustedActiveOf(list) === null ||
+      (!locked && deps.isLocked('codex'))
+    ) {
+      return defaults;
+    }
+    for (const { key, queue } of readQueues()) {
+      if (queue?.provider_limit_policy?.codex?.mode !== 'wait') {
+        continue;
+      }
+      /** @type {WorkspaceAccountsLayer|null} */
+      let layer = null;
+      try {
+        layer = await deps.readWorkspaceAccounts(key);
+      } catch {
+        layer = null;
+      }
+      defaults.set(key, hasCodexDefault(layer));
+    }
+    return defaults;
+  }
+
+  /**
+   * Judge one account list against fresh queue snapshots, synchronously: no
+   * await may separate these snapshots from the switch they decide. A `wait`
+   * repo the pre-read did not cover counts as having no default.
+   *
+   * @param {{ ok: true, accounts: UsageAccount[] }} list
+   * @param {Map<string, boolean>} wait_defaults - From `readWaitDefaults`.
+   * @param {boolean} locked - The confirm stage already holds the lock.
+   * @returns {Assessment}
+   */
+  function judge(list, wait_defaults, locked) {
+    const exhausted_active = exhaustedActiveOf(list);
+    if (exhausted_active === null) {
+      return { kind: 'clear' };
+    }
+    const { active, exhausted } = exhausted_active;
+    if (!locked && deps.isLocked('codex')) {
+      return { kind: 'none', reason: 'switch_in_flight' };
+    }
+    const queues = readQueues();
 
     /** @type {Set<string>} */
     const in_use = new Set();
@@ -165,14 +225,23 @@ export function createCodexActiveReturn(deps) {
     for (const { queue } of queues) {
       for (const attempt of Object.values(queue?.attempts || {})) {
         const record = /** @type {any} */ (attempt);
-        if (record?.status !== 'running' || record?.runner !== 'codex') {
+        if (record?.status !== 'running') {
           continue;
         }
-        const account = deps.activeAccountOf(record);
-        if (account === null) {
+        // Only a Codex run without an account reads the active login; any
+        // runner may carry a `codex_account` with its own CODEX_HOME.
+        if (
+          record.runner === 'codex' &&
+          deps.activeAccountOf(record) === null
+        ) {
           return { kind: 'none', reason: 'accountless_run' };
         }
-        in_use.add(account);
+        if (
+          typeof record.codex_account === 'string' &&
+          record.codex_account.length > 0
+        ) {
+          in_use.add(record.codex_account);
+        }
       }
       collectHeldAccounts(queue, held);
     }
@@ -212,14 +281,7 @@ export function createCodexActiveReturn(deps) {
       if (queue?.provider_limit_policy?.codex?.mode !== 'wait') {
         continue;
       }
-      /** @type {WorkspaceAccountsLayer|null} */
-      let layer = null;
-      try {
-        layer = await deps.readWorkspaceAccounts(key);
-      } catch {
-        layer = null;
-      }
-      if (!hasCodexDefault(layer)) {
+      if (wait_defaults.get(key) !== true) {
         return {
           kind: 'wait_blocked',
           active,
@@ -300,7 +362,11 @@ export function createCodexActiveReturn(deps) {
    */
   async function runPass(list) {
     // A failed read decides nothing and leaves the timer as it was (§4.5).
-    if (!isList(list) || settle(await assess(list, false))) {
+    if (!isList(list)) {
+      return;
+    }
+    const observed_defaults = await readWaitDefaults(list, false);
+    if (settle(judge(list, observed_defaults, false))) {
       return;
     }
     if (!deps.acquireLock('codex')) {
@@ -311,7 +377,10 @@ export function createCodexActiveReturn(deps) {
       if (!isList(fresh)) {
         return;
       }
-      const confirmed = await assess(fresh, true);
+      const fresh_defaults = await readWaitDefaults(fresh, true);
+      // From here to `switchAccount` nothing awaits: the queues the judgment
+      // snapshots are the ones the switch acts on.
+      const confirmed = judge(fresh, fresh_defaults, true);
       if (settle(confirmed) || confirmed.kind !== 'switch') {
         return;
       }

@@ -524,6 +524,38 @@ describe('running attempt guards', () => {
     expect(harness.switchAccount.mock.calls).toEqual([[2]]);
   });
 
+  test('skips a candidate a running Claude attempt uses as its Codex account', async () => {
+    const accounts = [
+      account(K1, 1, 0),
+      account(K2, 2, 0),
+      account(K3, 3, 100, { active: true, balance: 50 })
+    ];
+    const harness = makeHarness({
+      accounts,
+      workspaces: [
+        {
+          key: BEADS_UI,
+          queue: queueOf('switch', [K1, K2, K3], {
+            attempts: {
+              'att-1': {
+                attempt_id: 'att-1',
+                bead_id: 'UI-1',
+                runner: 'claude',
+                status: 'running',
+                claude_account: 'claude-user@example.test',
+                codex_account: K1
+              }
+            }
+          })
+        }
+      ]
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[2]]);
+  });
+
   test('skips a held account', async () => {
     const accounts = [
       account(K1, 1, 0),
@@ -587,6 +619,73 @@ describe('confirm stage', () => {
 
     await harness.pass.observe(harness.state.cached);
 
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('makes no switch when a repo turns into a wait repo without a default during the kv read', async () => {
+    const harness = makeHarness({
+      workspaces: [
+        { key: BEADS_UI, queue: queueOf('switch', [K1, K3]) },
+        { key: TRAIN_BOT, queue: queueOf('wait', [K3]) },
+        { key: '/repos/zeta', queue: queueOf('switch', []) }
+      ],
+      layers: {
+        [TRAIN_BOT]: {
+          state: 'usable',
+          values: { codex_account: K3 },
+          warnings: []
+        }
+      }
+    });
+    const default_layer = harness.state.layers[TRAIN_BOT];
+    let reads = 0;
+    harness.readWorkspaceAccounts.mockImplementation(async () => {
+      reads += 1;
+      if (reads === 2) {
+        harness.state.workspaces[2].queue = queueOf('wait', [K3]);
+      }
+      return default_layer;
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.listAccountsFresh).toHaveBeenCalledTimes(1);
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('makes no switch when an accountless Codex run starts during the kv read', async () => {
+    const harness = makeHarness({
+      workspaces: [
+        { key: BEADS_UI, queue: queueOf('switch', [K1, K3]) },
+        { key: TRAIN_BOT, queue: queueOf('wait', [K3]) }
+      ],
+      layers: {
+        [TRAIN_BOT]: {
+          state: 'usable',
+          values: { codex_account: K3 },
+          warnings: []
+        }
+      }
+    });
+    const default_layer = harness.state.layers[TRAIN_BOT];
+    let reads = 0;
+    harness.readWorkspaceAccounts.mockImplementation(async () => {
+      reads += 1;
+      if (reads === 2) {
+        harness.state.workspaces[0].queue.attempts['att-1'] = {
+          attempt_id: 'att-1',
+          bead_id: 'UI-1',
+          runner: 'codex',
+          status: 'running',
+          codex_account: null
+        };
+      }
+      return default_layer;
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.listAccountsFresh).toHaveBeenCalledTimes(1);
     expect(harness.switchAccount).not.toHaveBeenCalled();
   });
 
