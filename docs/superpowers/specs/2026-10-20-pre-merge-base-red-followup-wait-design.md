@@ -37,9 +37,14 @@ beads-ui `e8887fd411a8e729856f5c64b83642963b0742fd`, dotfiles `d157b4c35bbbec461
 - 머지 후보는 핀 base에 detached 체크아웃을 만들고 PR head를 squash한다 — server/worker/repo-operation-coordinator.js:4223, :4234
 - 검증 operation id는 base·후보 tree·스크립트로 정해진다 — server/worker/repo-operation-coordinator.js:229-254
 - 같은 후보 1회 자동 재시도가 있다 — server/worker/repo-operation-coordinator.js:905, :3200
-- 같은 후보 재현 실패는 수리 Bead를 만들고 `repo_operations[op].recovery.handoff.handoff_bead_id`에 남긴다 — server/worker/repo-operation-coordinator.js:1032-1167, server/worker/queue-store.js:4350
+- 같은 후보 재현 실패가 수리 인계 조건(정책·adapter 준비, `code_defect`, `disposition === 'repair'` 등)을 만족하면 수리 Bead를 만들거나 재사용하고 `repo_operations[op].recovery.handoff.handoff_bead_id`에 남긴다 — server/worker/repo-operation-coordinator.js:1086-1167, server/worker/queue-store.js:4350
 - 폴러는 base·head·스크립트 키로 검증을 중복 없이 돌린다 — server/worker/pr-poller.js:1020-1028
 - bd DB 변경 때 `waiting_metadata` 의도를 다시 보는 트리거가 있다 — server/worker/completion-intent.js:3082
+- `reconcile()`은 60초 깨우기 타이머(`retry_wake_ms`)와 `start()` 직후 한 번 돌지만, 완료 의도 처리는 머지 대기열 머리 하나만 본다 — server/worker/completion-intent.js:657-658, :699-709, :792-800
+- 같은 head의 `holding`만 자동 재등록에서 빠진다 — server/worker/queue-store.js:13754-13760
+- 폴러 검증 억제 단계는 `needs_human`·`waiting_metadata`·`retrying`뿐이다 — server/worker/queue-store.js:1380-1384
+- 주제의 head·base·PR이 게이트 결과와 다르면 stale로 다시 게이트한다 — server/worker/completion-intent.js:2292-2298
+- 같은 정체의 기존 검증 operation은 새로 돌리지 않고 채택한다 — server/worker/repo-operation-coordinator.js:1645-1655
 - 보류 배지는 「검증 실패 — 수정 push 대기」다 — app/views/worker/pr-wait-row.js:170-176
 - base만 다시 핀하면 보류는 유지된다 — server/worker/queue-store.test.js:4002
 - 미확인: 폴러가 `holding` 행에서 base 이동 시 돌린 검증 영수증을 실제로 소비하는 곳이 없다 — 코드 읽기만 했고 실행하지 않았다
@@ -50,8 +55,9 @@ beads-ui `e8887fd411a8e729856f5c64b83642963b0742fd`, dotfiles `d157b4c35bbbec461
   확장). (대안: `holding` 안의 플래그 — 보류 진입 알림·대화 경로와 섞인다.)
 - 결정 2 — base 검증은 기존 검증 체크아웃에서 squash 단계만 뺀 후보로, 같은 `[verify]` 스크립트·같은 operation 장부를
   쓴다(새 실행기 없음). operation 종류는 `verify`, 대상 표시는 `base_only`.
-- 결정 3 — 후속 닫힘 관찰은 기존 `onIssuesChanged` 트리거에 `waiting_followup`을 더하고, 상한 확인은 같은 트리거와 기존
-  재시도 깨우기 타이머로 한다. 새 폴링 루프는 없다.
+- 결정 3 — 후속 닫힘 관찰은 기존 `onIssuesChanged` 트리거에 `waiting_followup`을 더하고, `reconcile()`에 대기열 머리 처리
+  전 단계로 대기열 밖 `waiting_followup` 의도 전체를 훑는 패스를 더한다. 이 패스는 기존 60초 깨우기 타이머와 `start()`
+  직후 한 번 돌아 DB 변경이 없어도 상한 만료와 재시작 복구를 처리한다. 새 타이머·폴링 루프는 없다.
 - 결정 4 — 대기 기록은 queue.json 완료 의도에 영속한다(메모리 관측 캐시에 두지 않는다). 예: `intent.followup_wait =
   {head_sha, base_sha, links, base_op_id, at, deadline_at, outcome}`, `intent.followup_waits[]`에 (PR, head) 1회 기록.
 - 결정 5 — 대기 배지는 「base 실패 — <후속 ID> 착지 대기」, 주의(alert) 아닌 정보 색이다. 버튼은 `[리뷰 후 머지]`만 남긴다.
@@ -65,11 +71,14 @@ beads-ui `e8887fd411a8e729856f5c64b83642963b0742fd`, dotfiles `d157b4c35bbbec461
 `verify_hold` 사실이 나오면 `hold` 전에 대기 판정을 먼저 한다.
 
 1. 실패가 `script_failed`이고 같은 후보 재시도가 소비됐는지 본다. 아니면 `hold`.
-2. 이 (PR, head)가 `followup_waits[]`에 있으면 `hold`.
+2. 이 (PR, head)가 `followup_waits[]`에 있으면 `hold`(정본 dotfiles-84icv §4.2 2단계와 같은 순서 — base 검증 전에 거른다).
 3. 연결 수집: 원 Bead `base_red_followup`(쉼표 분리, 같은 rig ID만, 형식 오류는 버림) + 이 operation의 수리 인계 Bead.
    `bd show`로 상태를 읽어 `open|in_progress|blocked|resolved`만 살아 있음으로 센다. 없으면 `hold`.
-4. base 검증 operation을 시작하고 의도를 `waiting_followup`(하위 상태 `base_verifying`)에 둔다. 머지 대기열 머리를 막지
-   않도록 행은 대기열에서 뺀다(보류와 같은 방식).
+4. base 검증 operation을 시작하고 의도를 `waiting_followup`(하위 상태 `base_verifying`)에 두며, 이때 (PR, head)를
+   `followup_waits[]`에 먼저 기록한다. 머지 대기열 머리를 막지 않도록 행은 대기열에서 뺀다(보류와 같은 방식).
+   - 같은 head의 `waiting_followup`은 자동 머지 재등록에서 `holding`처럼 건너뛰고(queue-store.js:13754-13760 조건 확장),
+     `COMPLETION_VERIFY_SUPPRESSED_PHASES`에 더해 폴러가 base 이동마다 검증을 돌리지 않게 한다. 대기 중 검증은 4.1 5단계의
+     base 검증과 4.2의 재검증 한 번뿐이다.
 5. base 검증이 `script_failed`면 대기 기록을 쓰고 `deadline_at = at + 48h`. 통과·`timeout`·그 밖은 `hold`.
 
 ### 4.2 대기 중
@@ -79,9 +88,11 @@ beads-ui `e8887fd411a8e729856f5c64b83642963b0742fd`, dotfiles `d157b4c35bbbec461
   달라졌으면 새 base로 주제를 다시 핀하고(`setCompletionSubject`의 base 재핀) 보통 검증을 한 번 돌린다.
   통과 → `gating`으로 돌아가 머지. 실패 → `hold`(꼬리 `후속 <ID> 착지 뒤 재검증 실패`).
 - `deadline_at`을 넘기면 `hold`(꼬리 `대기 상한 48시간`).
-- 새 head push는 기존 stale 규칙으로 대기 기록을 비우고 새 head를 처음부터 판정한다.
-- `[리뷰 후 머지]` 클릭은 대기 중에도 지금과 같은 출구다.
-- 재시작: 대기 기록이 영속이므로 서버가 다시 뜨면 `waiting_followup` 의도를 다시 관찰한다. `base_verifying` 중이던 operation은
+- 새 head push는 자동 재등록 제외가 같은 head에만 걸리므로 새 head 행이 다시 들어오고, 기존 stale 규칙으로 대기 기록을
+  비운 뒤 새 head를 처음부터 판정한다.
+- 수동 `[머지]`·`[리뷰 후 머지]` 클릭은 지금처럼 같은 head를 다시 넣는다. 이때 대기를 끝내고 지금의 게이트·보류 경로로
+  넘긴다(그 head는 대기 이력이 있어 다시 대기하지 않는다).
+- 재시작: 대기 기록이 영속이므로 서버가 다시 뜨면 `start()` 직후 결정 3의 패스가 `waiting_followup` 의도를 다시 관찰한다. `base_verifying` 중이던 operation은
   기존 operation 채택 규칙으로 이어 받는다.
 
 ### 4.3 표시
@@ -104,17 +115,21 @@ beads-ui `e8887fd411a8e729856f5c64b83642963b0742fd`, dotfiles `d157b4c35bbbec461
 4. 연결이 닫혔는데 base 그대로 → 곧바로 보류.
 5. 48시간 → 보류. 같은 (PR, head)는 두 번 대기하지 않는다.
 6. 새 head push → 대기 해제 후 새 head 판정. 서버 재시작 뒤 대기 유지.
+7. 머지 대기열이 비고 DB 변경이 없어도 48시간 만료와 재시작 복구가 돈다. 대기 중 같은 head는 자동 재등록되지 않고 폴러가 base 이동으로 검증하지 않는다.
 
 ## 6. 검증
 
-- `node --test server/worker/completion-intent.test.js server/worker/queue-store.test.js`
-- `npm run typecheck`
+- `npx vitest run server/worker/completion-intent.test.js server/worker/queue-store.test.js app/views/worker/pr-wait-row.test.js --reporter=dot`
+- `npm run tsc`
 - `npm test`
 
 ## Test scope
 
-- RED→GREEN: `completion-intent.test.js`에 수용 기준 1~6 각각의 시나리오 테스트(가짜 bd·가짜 operation 러너),
-  `queue-store.test.js`에 대기 기록 영속·(PR, head) 1회·stale 해제 테스트, `pr-wait-row` 배지 렌더 테스트.
+- RED→GREEN: `completion-intent.test.js`에 수용 기준 1, 3~7 각각의 시나리오 테스트(가짜 bd·가짜 operation 러너, 빈
+  대기열 만료·재시작 포함), `queue-store.test.js`에 대기 기록 영속·(PR, head) 1회·같은 head 재등록 제외·검증 억제·stale
+  해제 테스트, `app/views/worker/pr-wait-row.test.js`에 대기 배지 렌더 테스트.
+- 회귀(변경 전에도 통과): 수용 기준 2 — 연결 없음이면 base 검증 없이 지금과 같은 보류(기존 `completion-intent.test.js` 보류
+  테스트와 같은 기대).
 
 ## 7. 경계·후속
 
