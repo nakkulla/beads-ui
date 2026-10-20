@@ -27,25 +27,25 @@ dotfiles-84icv spec(`docs/superpowers/specs/2026-10-20-pre-merge-base-red-follow
 
 ## 2. 검증된 전제
 
-beads-ui `e8887fd411a8e729856f5c64b83642963b0742fd`, dotfiles `d157b4c35bbbec46175134e0ce8fe07bfc99baaf` 기준.
+beads-ui `87953b63734feda5e20e3aa72b96fb5ca25cbf4b`, dotfiles `d157b4c35bbbec46175134e0ce8fe07bfc99baaf` 기준.
 
-- 완료 의도 단계는 `gating|holding|merging|cleaning|waiting_metadata|reviewing|retrying|paused|needs_human|completed`다 — server/worker/queue-store.js:1102
-- 자동 해소 클래스는 단계에 묶인 고정 목록이다 — server/worker/queue-store.js:1342-1346
+- 완료 의도 단계는 `gating|holding|merging|cleaning|waiting_metadata|reviewing|retrying|paused|needs_human|completed`다 — server/worker/queue-store.js:1107
+- 자동 해소 클래스는 단계에 묶인 고정 목록이다 — server/worker/queue-store.js:1347-1351
 - 검증 보류 판정은 `verify_hold` 사실에서 `hold` 동작으로 간다 — server/worker/completion-intent.js:616-624
 - 보류 진입 알림·대화는 `first_hold`(보류 없음 또는 다른 head)일 때만 난다 — server/worker/completion-intent.js:2594, :2627-2661
-- 보류 기록은 `class: pre_merge_hold`, `cause: verify_failure`로 고정된 형이다 — server/worker/queue-store.js:1194-1207
+- 보류 기록은 `class: pre_merge_hold`, `cause: verify_failure`로 고정된 형이다 — server/worker/queue-store.js:1199-1212
 - 머지 후보는 핀 base에 detached 체크아웃을 만들고 PR head를 squash한다 — server/worker/repo-operation-coordinator.js:4223, :4234
 - 검증 operation id는 base·후보 tree·스크립트로 정해진다 — server/worker/repo-operation-coordinator.js:229-254
 - 같은 후보 1회 자동 재시도가 있다 — server/worker/repo-operation-coordinator.js:905, :3200
-- 같은 후보 재현 실패가 수리 인계 조건(정책·adapter 준비, `code_defect`, `disposition === 'repair'` 등)을 만족하면 수리 Bead를 만들거나 재사용하고 `repo_operations[op].recovery.handoff.handoff_bead_id`에 남긴다 — server/worker/repo-operation-coordinator.js:1086-1167, server/worker/queue-store.js:4350
+- 같은 후보 재현 실패가 수리 인계 조건(정책·adapter 준비, `code_defect`, `disposition === 'repair'` 등)을 만족하면 수리 Bead를 만들거나 재사용하고 `repo_operations[op].recovery.handoff.handoff_bead_id`에 남긴다 — server/worker/repo-operation-coordinator.js:1086-1167, server/worker/queue-store.js:4359
 - 폴러는 base·head·스크립트 키로 검증을 중복 없이 돌린다 — server/worker/pr-poller.js:1020-1028
 - bd DB 변경 때 `waiting_metadata` 의도를 다시 보는 트리거가 있다 — server/worker/completion-intent.js:3082
 - `reconcile()`은 60초 깨우기 타이머(`retry_wake_ms`)와 `start()` 직후 한 번 돌지만, 완료 의도 처리는 머지 대기열 머리 하나만 본다 — server/worker/completion-intent.js:657-658, :699-709, :792-800
-- 같은 head의 `holding`만 자동 재등록에서 빠진다 — server/worker/queue-store.js:13754-13760
-- 폴러 검증 억제 단계는 `needs_human`·`waiting_metadata`·`retrying`뿐이다 — server/worker/queue-store.js:1380-1384
+- 같은 head의 `holding`만 자동 재등록에서 빠진다 — server/worker/queue-store.js:13806-13812
+- 폴러 검증 억제 단계는 `needs_human`·`waiting_metadata`·`retrying`뿐이다 — server/worker/queue-store.js:1385-1389
 - 주제의 head·base·PR이 게이트 결과와 다르면 stale로 다시 게이트한다 — server/worker/completion-intent.js:2292-2298
 - 같은 정체의 기존 검증 operation은 새로 돌리지 않고 채택한다 — server/worker/repo-operation-coordinator.js:1645-1655
-- 보류 배지는 「검증 실패 — 수정 push 대기」다 — app/views/worker/pr-wait-row.js:170-176
+- 보류 배지는 「검증 실패 — 수정 push 대기」다 — app/views/worker/pr-wait-row.js:171-177
 - base만 다시 핀하면 보류는 유지된다 — server/worker/queue-store.test.js:4002
 - 미확인: 폴러가 `holding` 행에서 base 이동 시 돌린 검증 영수증을 실제로 소비하는 곳이 없다 — 코드 읽기만 했고 실행하지 않았다
 
@@ -76,7 +76,7 @@ beads-ui `e8887fd411a8e729856f5c64b83642963b0742fd`, dotfiles `d157b4c35bbbec461
    `bd show`로 상태를 읽어 `open|in_progress|blocked|resolved`만 살아 있음으로 센다. 없으면 `hold`.
 4. base 검증 operation을 시작하고 의도를 `waiting_followup`(하위 상태 `base_verifying`)에 두며, 이때 (PR, head)를
    `followup_waits[]`에 먼저 기록한다. 머지 대기열 머리를 막지 않도록 행은 대기열에서 뺀다(보류와 같은 방식).
-   - 같은 head의 `waiting_followup`은 자동 머지 재등록에서 `holding`처럼 건너뛰고(queue-store.js:13754-13760 조건 확장),
+   - 같은 head의 `waiting_followup`은 자동 머지 재등록에서 `holding`처럼 건너뛰고(queue-store.js:13806-13812 조건 확장),
      `COMPLETION_VERIFY_SUPPRESSED_PHASES`에 더해 폴러가 base 이동마다 검증을 돌리지 않게 한다. 대기 중 검증은 4.1 5단계의
      base 검증과 4.2의 재검증 한 번뿐이다.
 5. base 검증이 `script_failed`면 대기 기록을 쓰고 `deadline_at = at + 48h`. 통과·`timeout`·그 밖은 `hold`.
