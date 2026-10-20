@@ -281,6 +281,19 @@ export function setHistoricalUsageRetainer(shouldRetain) {
   monitorRetainsHistoricalUsage = shouldRetain;
 }
 
+/** @type {(workspace: string) => boolean} */
+let monitorObservesPlacement = () => false;
+
+/**
+ * Inject "the monitor shows this workspace" for the placement projection
+ * (UI-hf8v §3.1) without importing the monitor channel that consumes this one.
+ *
+ * @param {(workspace: string) => boolean} observes
+ */
+export function setPlacementMonitorObserver(observes) {
+  monitorObservesPlacement = observes;
+}
+
 /** Build the production account source shared with launch-time resolution. */
 function defaultWorkerAccountCatalog() {
   return createAccountCatalog({
@@ -1956,9 +1969,11 @@ function placementServiceHandle() {
  * for `blocks`, `bead_scope` for the declared-scope overlap, the serial lanes'
  * `laneBlocksEdges` for the in-lane edges — plus the cached jev answers.
  *
- * Only a workspace a Worker tab is subscribed to schedules jev calls; the
- * monitor channel, which assembles through this same function, reads the cache
- * and never asks (사용자 결정 6: the preview is Worker-tab only).
+ * A workspace schedules jev calls (`observe`) when a Worker tab is subscribed
+ * to it, or when a monitor-pipeline subscriber is live and the workspace is
+ * visible on the monitor (UI-hf8v §3.1: the monitor's 전체 배치안 needs the
+ * same judgments). A hidden workspace is never observed because of the
+ * monitor; with neither demand the projection only reads the cache.
  *
  * Fail-quiet: null (both keys omitted) when no service is installed or the
  * projection throws.
@@ -2042,7 +2057,11 @@ function placementFor(workspace_key, queue, bead_scope, bead_blocked_by) {
         lane_edges,
         rows: snapshot ? snapshot.id_index : null
       },
-      { observe: (SUBSCRIBERS.get(workspace_key)?.size || 0) > 0 }
+      {
+        observe:
+          (SUBSCRIBERS.get(workspace_key)?.size || 0) > 0 ||
+          monitorObservesPlacement(workspace_key)
+      }
     );
   } catch (err) {
     log('placement projection failed for %s: %o', workspace_key, err);

@@ -892,9 +892,10 @@ afterEach(() => {
  * has none (`2026-09-02-worker-operation-surface-unify-design.md`: "Worker 탭에
  * `↑↓` nudge를 추가하지 않는다").
  *
- * `[추천 배치]` (`worker-card__recommend`) is left out as §9 lists it: the
- * Worker tab places by its repository's queue and the Monitor keeps the manual
- * `[↴ 대기로]` menu only (UI-izba).
+ * `[추천 배치]` (`worker-card__recommend`) is left out as §9 lists it (`카드별
+ * 추천 배치`): the one-repository preview over the lanes stays on that
+ * repository's Worker tab (UI-izba); the Monitor plans through its `전체
+ * 배치안` repository cards instead (UI-hf8v).
  *
  * Nothing else is normalized: both tabs run on the same frozen clock, so the
  * relative-time text compares as drawn.
@@ -1331,6 +1332,69 @@ describe('placement recommendation parity (UI-izba §4.7)', () => {
     expect(partsByBead(cardsByBead(monitor), SHARED_BEADS)).toEqual(
       partsByBead(cardsByBead(worker), SHARED_BEADS)
     );
+  });
+
+  /**
+   * Every full-plan row as number, cells, check state and dimming.
+   *
+   * @param {Element} root
+   * @returns {Array<Record<string, unknown>>}
+   */
+  function planRows(root) {
+    return Array.from(root.querySelectorAll('.worker-plan__row')).map((row) => {
+      const box = /** @type {HTMLInputElement} */ (
+        row.querySelector('.worker-plan__include')
+      );
+      return {
+        id: row.getAttribute('data-bead-id'),
+        cells: Array.from(row.querySelectorAll('td'), (cell) =>
+          (cell.textContent || '').replace(/\s+/g, ' ').trim()
+        ),
+        checked: box.checked,
+        disabled: box.disabled,
+        dim: row.classList.contains('worker-plan__row--pending')
+      };
+    });
+  }
+
+  /**
+   * @param {Element} root
+   * @param {string} selector
+   */
+  function press(root, selector) {
+    /** @type {HTMLElement} */ (root.querySelector(selector)).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+  }
+
+  test('draws the same full-plan rows on the Worker table and the monitor repository card (UI-hf8v §3.3)', async () => {
+    const { worker, monitor } = await drawBothTabs(undefined, placementPatch());
+
+    press(worker, '.worker-plan__open');
+    press(monitor, '.mon-plan__open');
+
+    const worker_rows = planRows(
+      /** @type {Element} */ (worker.querySelector('.worker-plan'))
+    );
+    expect(worker_rows.length).toBeGreaterThan(0);
+    expect(
+      planRows(
+        /** @type {Element} */ (
+          monitor.querySelector(`.mon-plan__repo[data-root-dir="${WS}"]`)
+        )
+      )
+    ).toEqual(worker_rows);
+  });
+
+  test('gives the monitor a repository card but no card [추천 배치], an intended difference (§9)', async () => {
+    const { monitor } = await drawBothTabs(undefined, placementPatch());
+
+    press(monitor, '.mon-plan__open');
+
+    expect(
+      monitor.querySelector(`.mon-plan__repo[data-root-dir="${WS}"]`)
+    ).not.toBeNull();
+    expect(monitor.querySelector('.worker-card__recommend')).toBeNull();
   });
 });
 

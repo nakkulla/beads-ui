@@ -119,6 +119,7 @@ import { createSessionToggle } from '../worker/session-toggle.js';
 import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
+import { createMonitorPlacementPanel } from './placement-panel.js';
 
 /**
  * @import { CandidateFilter, LaneItem, LaneModel, MonitorOccupant, LaneQueueGroup, MonitorSerialSublane } from '../worker/lane-model.js'
@@ -874,6 +875,36 @@ export function createMonitorView(mount_element, options) {
     }
     return res;
   }
+
+  /**
+   * 전체 배치안 패널 (UI-hf8v §3.2–§3.5): 보이는 레포마다 Worker 탭과 같은 배치안
+   * 표를 레포 카드로 보이고 레포 단위로 적용한다. 표 재료는 Worker 탭과 같은 공유
+   * 함수가 만들고, 여기서는 레포 좌표(이름·`root_dir`·그 레포 큐)만 넘긴다.
+   */
+  const placement_panel = createMonitorPlacementPanel({
+    transport,
+    repos: () => {
+      const workspaces =
+        pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
+      return (Array.isArray(workspaces) ? workspaces : [])
+        .filter((entry) => entry && typeof entry.root_dir === 'string')
+        .map((entry) => ({
+          root_dir: entry.root_dir,
+          name:
+            typeof entry.name === 'string' && entry.name
+              ? entry.name
+              : entry.root_dir
+        }));
+    },
+    queueOf: (root_dir) => queueOf(root_dir),
+    candidatesOf: (root_dir) =>
+      lanes.runnable.filter((item) => item.root_dir === root_dir),
+    adopt: (root_dir, queue) => {
+      exec_adopted.set(root_dir, queue);
+    },
+    requestRender: () => doRender(),
+    showToast
+  });
 
   /**
    * The most current queue snapshot for one repo: 채택된 mutation 응답이 있으면
@@ -2053,8 +2084,15 @@ export function createMonitorView(mount_element, options) {
               ? runnableBody()
               : undefined
           : meta.lane === 'queue'
-            ? lanes.queue_groups.length > 0 || lanes.parallel_rows.length > 0
-              ? waitBodyTemplate()
+            ? lanes.queue_groups.length > 0 ||
+              lanes.parallel_rows.length > 0 ||
+              placement_panel.isOpen()
+              ? // 전체 배치안 패널은 대기 레인 본문 맨 위에 열린다 (UI-hf8v
+                // §3.2) — 그룹이 하나도 없어도 패널은 그린다.
+                html`${placement_panel.panelTemplate()}${lanes.queue_groups
+                  .length > 0 || lanes.parallel_rows.length > 0
+                  ? waitBodyTemplate()
+                  : ''}`
               : undefined
             : meta.lane === 'running'
               ? runningBody(now, running)
@@ -2278,6 +2316,9 @@ export function createMonitorView(mount_element, options) {
             </option>`
         )}
       </select>`;
+    }
+    if (lane === 'queue') {
+      return placement_panel.headerControls();
     }
     return '';
   }
@@ -3396,6 +3437,9 @@ export function createMonitorView(mount_element, options) {
     if (target.closest('a')) {
       return;
     }
+    if (placement_panel.handleClick(target)) {
+      return;
+    }
 
     const external_check = /** @type {HTMLButtonElement|null} */ (
       target?.closest?.('[data-external-wait-op]')
@@ -3655,6 +3699,9 @@ export function createMonitorView(mount_element, options) {
     if (!target || typeof target.closest !== 'function') {
       return;
     }
+    if (placement_panel.handleChange(target)) {
+      return;
+    }
     if (provider_resume) {
       const next = providerResumeDraftChange(
         provider_resume.draft,
@@ -3817,6 +3864,7 @@ export function createMonitorView(mount_element, options) {
     if (ev.key !== 'Escape') {
       return;
     }
+    placement_panel.handleEscape();
     let external_closed = false;
     for (const summary of Array.from(
       console_el.querySelectorAll('details.external-wait-summary[open]')

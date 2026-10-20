@@ -17,8 +17,10 @@
  * @import { PlaceMenuEntry } from './lanes.js'
  * @import { PlacementStatus } from '../../../server/placement/wire.js'
  * @import { PlacementLane, PlacementPlan, PlacementWarning, PlannedPlacement, RelationLine } from '../../utils/placement/compute.js'
+ * @import { PlacementBatchResult } from '../../utils/placement/apply.js'
  */
 import { html } from 'lit-html';
+import { ifDefined } from 'lit-html/directives/if-defined.js';
 import {
   ADOPT_CONFIDENCE,
   OVERLAP_INDEPENDENT_CONFIDENCE
@@ -622,6 +624,229 @@ function reasonCellTemplate(placement) {
 }
 
 /**
+ * The short state word of a candidate that cannot be recommended — the
+ * `recommendButtonState` title without the pending pair count (`jev 판정 중`,
+ * `jev 키 없음`, `jev 응답 없음`, `비교할 이슈 없음`). The monitor's folded
+ * repository line counts candidates by it (UI-hf8v §3.3).
+ *
+ * @param {PlacementStatus} status
+ * @returns {string}
+ */
+export function placementStateWord(status) {
+  return status.state === 'pending'
+    ? 'jev 판정 중'
+    : recommendButtonState(status).title;
+}
+
+/**
+ * The latest jev judged-at time among a snapshot's `placement_relations`, or
+ * null when no pair carries one.
+ *
+ * @param {any} queue
+ * @returns {number|null}
+ */
+export function latestJudgedAt(queue) {
+  /** @type {number|null} */
+  let latest = null;
+  for (const raw of Object.values(
+    objectOf(objectOf(queue).placement_relations)
+  )) {
+    const at = /** @type {any} */ (raw)?.judged_at;
+    if (typeof at === 'number' && (latest === null || at > latest)) {
+      latest = at;
+    }
+  }
+  return latest;
+}
+
+/**
+ * The recommendable candidates of a snapshot: `ready` and `fixed_only`
+ * (UI-lsr4 §3.1). Empty without `placement_status`.
+ *
+ * @param {any} queue
+ * @returns {string[]}
+ */
+export function recommendableIds(queue) {
+  const status = objectOf(queue).placement_status;
+  if (!status || typeof status !== 'object') {
+    return [];
+  }
+  return Object.keys(status).filter((id) =>
+    isRecommendableState(status[id]?.state)
+  );
+}
+
+/**
+ * Why a `[전체 적용]` batch stopped: `자리가 바뀌었습니다` for a changed place,
+ * otherwise the send notice (UI-izba §4.7). The monitor's repository result
+ * line uses the same words (UI-hf8v §3.4).
+ *
+ * @param {NonNullable<PlacementBatchResult['stopped']>} stopped
+ * @returns {string}
+ */
+export function placementStopReason(stopped) {
+  return stopped.cause === 'moved'
+    ? '자리가 바뀌었습니다'
+    : placementSendNotice(stopped.result) || '';
+}
+
+/**
+ * The plan function of one repository for a fixed candidate order — the
+ * `recompute` input of `sendPlacementBatch`.
+ *
+ * @param {string[]} display_order
+ * @returns {(queue: any, chosen: string[]) => PlacementPlan}
+ */
+export function placementRecompute(display_order) {
+  return (queue, chosen) =>
+    computePlacement({
+      queue,
+      relations: queue?.placement_relations,
+      display_order,
+      chosen
+    });
+}
+
+/**
+ * The material of one repository's full plan table (UI-izba §4.7, shared with
+ * the monitor by UI-hf8v §3.3).
+ *
+ * @typedef {Object} FullPlacementPlan
+ * @property {Record<string, PlacementStatus>} status
+ * @property {PlacementPlan} plan - The plan of the checked candidates.
+ * @property {PlacementPlan} base - The plan of every recommendable candidate.
+ * @property {string[]} ready - The recommendable candidates.
+ * @property {Set<string>} checked
+ * @property {string[]} rows - Every candidate with a status entry, in the
+ * candidate display order (unknown ids last, by id).
+ */
+
+/**
+ * The full plan of one snapshot: every recommendable candidate (`ready`,
+ * `fixed_only`) starts checked — warnings and low-confidence rows included,
+ * since the table shows them and a person presses the apply button — the
+ * reader's `checks` override that, and the plan itself is computed with the
+ * checked set only. `base` is the plan of every recommendable candidate: an
+ * unchecked row still shows its reasons and warnings from it. The Worker tab
+ * and the monitor's repository cards both read the table from this.
+ *
+ * @param {any} queue - One repository's `worker-queue` snapshot.
+ * @param {string[]} display_order - That repository's candidate ids in their
+ * lane sort order.
+ * @param {ReadonlyMap<string, boolean>} checks - The reader's checkbox changes.
+ * @returns {FullPlacementPlan}
+ */
+export function fullPlacementPlan(queue, display_order, checks) {
+  const raw_status = objectOf(queue).placement_status;
+  /** @type {Record<string, PlacementStatus>} */
+  const status = raw_status && typeof raw_status === 'object' ? raw_status : {};
+  const recompute = placementRecompute(display_order);
+  /** @param {string[]} chosen */
+  const planOn = (chosen) => recompute(queue, chosen);
+  const ready = recommendableIds(queue);
+  const checked = new Set(
+    ready.filter((id) => !checks.has(id) || checks.get(id) === true)
+  );
+  const rows = Object.keys(status).sort((a, b) => {
+    const ra = display_order.indexOf(a);
+    const rb = display_order.indexOf(b);
+    if (ra !== rb) {
+      return (ra < 0 ? Infinity : ra) - (rb < 0 ? Infinity : rb);
+    }
+    return a < b ? -1 : 1;
+  });
+  return {
+    status,
+    plan: planOn([...checked]),
+    base: planOn(ready),
+    ready,
+    checked,
+    rows
+  };
+}
+
+/**
+ * The full plan table of one repository (UI-hf8v §3.3): number, candidate,
+ * place, reasons and the include checkbox per row, then the lane-growth line
+ * and the repository's stop notice. The Worker tab's `planTemplate` and the
+ * monitor's repository card both draw it, so the two tabs show the same rows
+ * for the same repository state. `root_dir`, when given, rides on each
+ * checkbox so a page with several repositories knows whose row changed.
+ *
+ * @param {FullPlacementPlan} material
+ * @param {{ titleOf: (id: string) => string, busy: boolean, notice: string|null, root_dir?: string }} view
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function placementPlanTable(material, view) {
+  const { status, plan, base, checked, rows } = material;
+  const growth = laneGrowthText(plan);
+  return html`<table class="worker-plan__table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>후보</th>
+          <th>배치안</th>
+          <th>근거</th>
+          <th>포함</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((id) => {
+          const ready = isRecommendableState(status[id]?.state);
+          const item = plan.by_id[id];
+          // An unchecked ready row keeps the reasons and warnings of the
+          // all-ready plan, so the reader sees why it was left out; only
+          // checked rows get a number, a dotted card and a send.
+          const explained = item || (ready ? base.by_id[id] : undefined);
+          return html`<tr
+            class="worker-plan__row${ready ? '' : ' worker-plan__row--pending'}"
+            data-bead-id=${id}
+          >
+            <td>${item ? item.number : ''}</td>
+            <td>
+              <span class="worker-plan__id">${id}</span>
+              ${view.titleOf(id)}
+            </td>
+            <td>
+              ${!ready
+                ? '판정 전'
+                : item
+                  ? placementPositionText(item, plan.configured_lane_count)
+                  : '포함 안 함'}
+            </td>
+            <td>
+              ${explained
+                ? reasonCellTemplate(explained)
+                : ready
+                  ? ''
+                  : recommendButtonState(status[id]).title}
+            </td>
+            <td>
+              <input
+                type="checkbox"
+                class="worker-plan__include"
+                data-bead-id=${id}
+                data-root-dir=${ifDefined(view.root_dir || undefined)}
+                aria-label=${`${id} 포함`}
+                .checked=${checked.has(id)}
+                ?disabled=${!ready || view.busy}
+              />
+            </td>
+          </tr>`;
+        })}
+      </tbody>
+    </table>
+    ${growth
+      ? html`<div class="worker-plan__notice worker-plan__growth">
+          ${growth}
+        </div>`
+      : ''}
+    ${view.notice
+      ? html`<div class="worker-plan__notice">${view.notice}</div>`
+      : ''}`;
+}
+
+/**
  * @param {number|null} at
  * @returns {import('lit-html').TemplateResult|string}
  */
@@ -857,39 +1082,14 @@ export function createPlacementPreview(options) {
   }
 
   /**
-   * The recommendable candidates: `ready` and `fixed_only` (UI-lsr4 §3.1).
+   * The full plan on a snapshot — the shared `fullPlacementPlan` with this
+   * tab's candidate order and checks.
    *
    * @param {any} queue
-   * @returns {string[]}
-   */
-  function readyIds(queue) {
-    const status = queue?.placement_status;
-    if (!status || typeof status !== 'object') {
-      return [];
-    }
-    return Object.keys(status).filter((id) =>
-      isRecommendableState(status[id]?.state)
-    );
-  }
-
-  /**
-   * The full plan on a snapshot: every recommendable candidate starts checked
-   * — warnings and low-confidence rows included, since the table shows them
-   * and a person presses `[전체 적용]` — the reader's checks override that, and
-   * the plan itself is computed with the checked set only. `base` is the plan
-   * of every recommendable candidate: an unchecked row still shows its reasons
-   * and warnings from it.
-   *
-   * @param {any} queue
-   * @returns {{ plan: PlacementPlan, base: PlacementPlan, ready: string[], checked: Set<string> }}
+   * @returns {FullPlacementPlan}
    */
   function fullPlanOn(queue) {
-    const ready = readyIds(queue);
-    const base = planOn(queue, ready);
-    const checked = new Set(
-      ready.filter((id) => !checks.has(id) || checks.get(id) === true)
-    );
-    return { plan: planOn(queue, [...checked]), base, ready, checked };
+    return fullPlacementPlan(queue, displayOrder(), checks);
   }
 
   /**
@@ -995,11 +1195,7 @@ export function createPlacementPreview(options) {
       checks.clear();
       options.showToast(`${result.placed.length}건을 넣었습니다`, 'success');
     } else {
-      const why =
-        result.stopped.cause === 'moved'
-          ? '자리가 바뀌었습니다'
-          : placementSendNotice(result.stopped.result) || '';
-      plan_notice = `${result.placed.length}건 넣음 — ${result.stopped.id}에서 멈춤: ${why}`;
+      plan_notice = `${result.placed.length}건 넣음 — ${result.stopped.id}에서 멈춤: ${placementStopReason(result.stopped)}`;
     }
     requestRender();
   }
@@ -1078,19 +1274,13 @@ export function createPlacementPreview(options) {
       if (!statusMap()) {
         return '';
       }
-      const any_ready = readyIds(queue).length > 0;
+      const any_ready = recommendableIds(queue).length > 0;
       const progress = objectOf(queue.placement_progress);
       const judging =
         typeof progress.done === 'number' &&
         typeof progress.total === 'number' &&
         progress.done < progress.total;
-      let latest = null;
-      for (const raw of Object.values(queue.placement_relations || {})) {
-        const at = /** @type {any} */ (raw)?.judged_at;
-        if (typeof at === 'number' && (latest === null || at > latest)) {
-          latest = at;
-        }
-      }
+      const latest = latestJudgedAt(queue);
       return html`<span class="worker-plan-controls">
         <button
           type="button"
@@ -1148,82 +1338,14 @@ export function createPlacementPreview(options) {
       if (!full_open || !status) {
         return '';
       }
-      const { plan, base, checked } = fullPlanOn(getQueue());
-      const rows = Object.keys(status).sort((a, b) => {
-        const order = displayOrder();
-        const ra = order.indexOf(a);
-        const rb = order.indexOf(b);
-        if (ra !== rb) {
-          return (ra < 0 ? Infinity : ra) - (rb < 0 ? Infinity : rb);
-        }
-        return a < b ? -1 : 1;
-      });
+      const material = fullPlanOn(getQueue());
+      const { plan } = material;
       return html`<section class="worker-plan">
-        <table class="worker-plan__table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>후보</th>
-              <th>배치안</th>
-              <th>근거</th>
-              <th>포함</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.map((id) => {
-              const ready = isRecommendableState(status[id]?.state);
-              const item = plan.by_id[id];
-              // An unchecked ready row keeps the reasons and warnings of the
-              // all-ready plan, so the reader sees why it was left out; only
-              // checked rows get a number, a dotted card and a send.
-              const explained = item || (ready ? base.by_id[id] : undefined);
-              return html`<tr
-                class="worker-plan__row${ready
-                  ? ''
-                  : ' worker-plan__row--pending'}"
-                data-bead-id=${id}
-              >
-                <td>${item ? item.number : ''}</td>
-                <td>
-                  <span class="worker-plan__id">${id}</span>
-                  ${titleOf(id)}
-                </td>
-                <td>
-                  ${!ready
-                    ? '판정 전'
-                    : item
-                      ? placementPositionText(item, plan.configured_lane_count)
-                      : '포함 안 함'}
-                </td>
-                <td>
-                  ${explained
-                    ? reasonCellTemplate(explained)
-                    : ready
-                      ? ''
-                      : recommendButtonState(status[id]).title}
-                </td>
-                <td>
-                  <input
-                    type="checkbox"
-                    class="worker-plan__include"
-                    data-bead-id=${id}
-                    aria-label=${`${id} 포함`}
-                    .checked=${checked.has(id)}
-                    ?disabled=${!ready || busy}
-                  />
-                </td>
-              </tr>`;
-            })}
-          </tbody>
-        </table>
-        ${laneGrowthText(plan)
-          ? html`<div class="worker-plan__notice worker-plan__growth">
-              ${laneGrowthText(plan)}
-            </div>`
-          : ''}
-        ${plan_notice
-          ? html`<div class="worker-plan__notice">${plan_notice}</div>`
-          : ''}
+        ${placementPlanTable(material, {
+          titleOf,
+          busy,
+          notice: plan_notice
+        })}
         <div class="worker-plan__actions">
           <button
             type="button"
