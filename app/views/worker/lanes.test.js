@@ -2501,6 +2501,20 @@ describe('discovered-from chip', () => {
     expect(row.querySelector('.worker-mini__title')).not.toBeNull();
   });
 
+  test('renders the from chip on a three-line done row (UI-refs §3.2)', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      draggable: false,
+      done_layout: 'three_line',
+      from_id: 'UI-origin'
+    });
+
+    const chip = row.querySelector('.worker-mini__row3 .ctl-chip--from');
+
+    expect(chip?.getAttribute('data-from-id')).toBe('UI-origin');
+  });
+
   test('omits the from chip when from_id is absent', () => {
     const row = renderRow({
       lane: 'queue',
