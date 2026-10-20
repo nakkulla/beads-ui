@@ -8400,7 +8400,6 @@ describe('scheduler provider hold and recovery', () => {
     });
   });
 
-  // UI-ftww acceptance 7b (wait policy)
   // UI-ftww acceptance 7a (cross-runner prior_session resume)
   test('moves a cross-runner prior_session resume off the exhausted prior codex account', async () => {
     const env = codexResumeEnv(100, {}, { model: 'opus', effort: 'high' });
@@ -8423,6 +8422,7 @@ describe('scheduler provider hold and recovery', () => {
     });
   });
 
+  // UI-ftww acceptance 7b (wait policy)
   test('keeps an exhausted plain codex resume on its account under the wait policy', async () => {
     const env = codexResumeEnv(100);
     env.store.setProviderLimitPolicy(WS, {
