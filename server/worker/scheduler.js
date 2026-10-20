@@ -499,6 +499,12 @@ const TERMINAL_RECEIPT_RECOVERY_MAX = 32;
 const SESSION_EFFORT_RETRY_LIMIT = 3;
 
 /**
+ * Window usage percent at which a Codex account counts as exhausted (100 means
+ * the window is full); it sits above the stored `preempt_pct` range of 1-99.
+ */
+const CODEX_EXHAUSTED_WINDOW_PCT = 100;
+
+/**
  * Project a session's `blocked_detail` onto the attempt's durable
  * `cause_detail` (UI-2o4z §2). Undefined when the session left nothing to
  * record, so the patch keeps the field null instead of inventing one.
@@ -3995,16 +4001,21 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Move a launch account off a crossed window or usage hold without writing
-   * the Bead's account pin.
+   * Move a launch account off a crossed window, an exhausted Codex window, or
+   * a usage hold without writing the Bead's account pin.
    *
    * @param {string} workspace
    * @param {string} runner
    * @param {{ accounts: { claude: string|null, codex: string|null }, account_sources: AccountSources }} resolved
+   * @param {{ exhausted_only?: boolean }} [options] - `exhausted_only` keeps only the Codex exhausted-window trigger.
    * @returns {Promise<{ from: string, to: string, window: string, pct: number, held?: boolean }|null>}
    */
-  async function applyPreemptSwitch(workspace, runner, resolved) {
+  async function applyPreemptSwitch(workspace, runner, resolved, options = {}) {
     if (runner !== 'claude' && runner !== 'codex') {
+      return null;
+    }
+    const exhausted_only = options.exhausted_only === true;
+    if (exhausted_only && runner !== 'codex') {
       return null;
     }
     const policy = providerLimitPolicyOf(workspace, runner);
@@ -4013,9 +4024,11 @@ export function createScheduler(deps) {
     }
     const preempt_pct = policy.preempt_pct;
     // Moving off a usage-held account is not preemption, so an unset
-    // `preempt_pct` leaves only that trigger, which needs a usage hold.
+    // `preempt_pct` leaves only that trigger, which needs a usage hold. Codex
+    // also reads the catalog for the exhausted-window trigger.
     if (
       preempt_pct === null &&
+      runner !== 'codex' &&
       deps.store
         .snapshot(workspace)
         .provider_hold?.[
@@ -4053,20 +4066,30 @@ export function createScheduler(deps) {
     );
     const windows = Array.isArray(row?.windows) ? row.windows : [];
     const crossed =
-      preempt_pct === null
+      preempt_pct === null || exhausted_only
         ? undefined
         : windows.find(
             (/** @type {any} */ window) =>
               typeof window?.pct === 'number' && window.pct >= preempt_pct
           );
+    const exhausted =
+      runner === 'codex'
+        ? windows.find(
+            (/** @type {any} */ window) =>
+              typeof window?.pct === 'number' &&
+              window.pct >= CODEX_EXHAUSTED_WINDOW_PCT
+          )
+        : undefined;
     const held =
+      !exhausted_only &&
       deps.store
         .snapshot(workspace)
         .provider_hold?.[
           runner
         ]?.targets?.some((/** @type {any} */ target) => target.kind === 'usage_limit' && target.account === current) ===
-      true;
-    if (!crossed && !held) {
+        true;
+    const trigger = crossed ?? exhausted;
+    if (!trigger && !held) {
       return null;
     }
     const candidate = await selectProviderSwitchAccount(
@@ -4099,8 +4122,8 @@ export function createScheduler(deps) {
     return {
       from: current,
       to: candidate,
-      window: typeof crossed?.key === 'string' ? crossed.key : 'usage',
-      pct: crossed?.pct ?? 0,
+      window: typeof trigger?.key === 'string' ? trigger.key : 'usage',
+      pct: trigger?.pct ?? 0,
       held
     };
   }
@@ -4129,11 +4152,12 @@ export function createScheduler(deps) {
       const policy = providerLimitPolicyOf(workspace, runner);
       if (
         policy.mode !== 'switch' ||
-        policy.preempt_pct === null ||
+        (policy.preempt_pct === null && runner !== 'codex') ||
         policy.accounts.length === 0
       ) {
         continue;
       }
+      const preempt_pct = policy.preempt_pct;
       live_preempt_in_flight.add(attempt_id);
       try {
         const list =
@@ -4154,21 +4178,32 @@ export function createScheduler(deps) {
         const row = listed?.ok
           ? listed.accounts?.find((/** @type {any} */ row) => row.key === from)
           : null;
-        const crossed = row?.windows?.find(
-          (/** @type {any} */ window) =>
-            typeof window.pct === 'number' &&
-            window.pct >= /** @type {number} */ (policy.preempt_pct)
-        );
-        const to = crossed
+        const crossed =
+          preempt_pct === null
+            ? undefined
+            : row?.windows?.find(
+                (/** @type {any} */ window) =>
+                  typeof window.pct === 'number' && window.pct >= preempt_pct
+              );
+        const exhausted =
+          runner === 'codex'
+            ? row?.windows?.find(
+                (/** @type {any} */ window) =>
+                  typeof window.pct === 'number' &&
+                  window.pct >= CODEX_EXHAUSTED_WINDOW_PCT
+              )
+            : undefined;
+        const trigger = crossed ?? exhausted;
+        const to = trigger
           ? await selectProviderSwitchAccount(
               workspace,
               runner,
               from,
               policy.accounts,
-              { max_pct: policy.preempt_pct, kind: 'preempt' }
+              { max_pct: preempt_pct, kind: 'preempt' }
             )
           : null;
-        if (!row || (crossed && !to)) {
+        if (!row || (trigger && !to)) {
           deps.store.updateAttempt(workspace, {
             attempt_id,
             patch: {
@@ -4183,11 +4218,11 @@ export function createScheduler(deps) {
         }
         const fresh = providerLimitPolicyOf(workspace, runner);
         if (
-          !crossed ||
+          !trigger ||
           !to ||
           typeof from !== 'string' ||
           fresh.mode !== 'switch' ||
-          fresh.preempt_pct !== policy.preempt_pct ||
+          fresh.preempt_pct !== preempt_pct ||
           !fresh.accounts.includes(to)
         ) {
           continue;
@@ -4195,8 +4230,8 @@ export function createScheduler(deps) {
         await preemptRunningAttempt(workspace, attempt_id, {
           from,
           to,
-          window: crossed.key || 'usage',
-          pct: crossed.pct
+          window: trigger.key || 'usage',
+          pct: trigger.pct
         });
       } finally {
         live_preempt_in_flight.delete(attempt_id);
@@ -17638,7 +17673,7 @@ export function createScheduler(deps) {
             : 'outage_switch'
       };
     }
-    const preempt =
+    const wait_preempt =
       options.external_wait_resume === true
         ? await applyPreemptSwitch(workspace, resolved.exec.runner, resolved)
         : null;
@@ -17824,6 +17859,19 @@ export function createScheduler(deps) {
         decision_token,
         runner_mismatch
       };
+    }
+    // The exhausted check judges the account this launch really spends, so it
+    // runs after the launch runner and accounts are final (spec §4.4).
+    let preempt = wait_preempt;
+    if (preempt === null && runner_name === 'codex') {
+      const launch_target = {
+        accounts: launch_accounts,
+        account_sources: resolved.account_sources
+      };
+      preempt = await applyPreemptSwitch(workspace, 'codex', launch_target, {
+        exhausted_only: true
+      });
+      resolved.account_sources = launch_target.account_sources;
     }
     const candidate_stamped_keys = use_prior
       ? EXEC_SETTING_KEYS
