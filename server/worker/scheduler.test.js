@@ -8015,6 +8015,401 @@ describe('scheduler provider hold and recovery', () => {
     });
   });
 
+  /**
+   * One Codex catalog row with a 5h and a weekly window.
+   *
+   * @param {string} key
+   * @param {number} number
+   * @param {number} five_hour
+   * @param {number} weekly
+   * @param {any} [credits]
+   */
+  function codexWindowRow(key, number, five_hour, weekly, credits) {
+    return {
+      key,
+      number,
+      email: `${key}@example.com`,
+      status: 'ok',
+      windows: [
+        { key: '5h', pct: five_hour, resetsAt: null },
+        { key: '7d', pct: weekly, resetsAt: null }
+      ],
+      ...(credits ? { credits } : {})
+    };
+  }
+
+  /**
+   * A Codex attempt running on `codex-03` with no `preempt_pct` (UI-ftww).
+   *
+   * @param {any[]} rows
+   * @param {Record<string, any>} [extra]
+   */
+  async function codexExhaustedLiveEnv(rows, extra = {}) {
+    /** @type {any} */
+    let env;
+    const processController = {
+      terminate: vi.fn(async () => {
+        env.runner.finish('B1', { success: false, reason: 'killed' });
+        await flush();
+        return { ok: true, state: 'gone' };
+      }),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    env = setup({
+      config: {
+        B1: { model: 'sol', effort: 'xhigh', codex_account: 'codex-03' }
+      },
+      processController,
+      ...accountDeps({
+        accountCatalog: {
+          ...accountDeps().accountCatalog,
+          listCodex: async () => ({
+            ok: true,
+            active_key: 'codex-03',
+            accounts: rows
+          })
+        }
+      }),
+      ...extra
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('B1').emit('session_id', 'sid-codex');
+    allowSwitchAccounts(env.store, 'codex', ['codex-01', 'codex-03']);
+    return { ...env, processController, attempt_id };
+  }
+
+  /** @param {any} env */
+  function liveSwitchChild(env) {
+    return Object.values(env.store.snapshot(WS).attempts).find(
+      (/** @type {any} */ attempt) => attempt.resumed_from
+    );
+  }
+
+  // UI-ftww acceptance 1
+  test('moves an exhausted codex attempt to a window-free account without a preempt threshold', async () => {
+    const env = await codexExhaustedLiveEnv([
+      codexWindowRow('codex-01', 1, 0, 0),
+      codexWindowRow('codex-03', 3, 10, 100)
+    ]);
+
+    await env.scheduler.livePreemptPass(WS);
+
+    expect(env.processController.terminate).toHaveBeenCalledTimes(1);
+    expect(
+      env.store.snapshot(WS).attempts[env.attempt_id].control
+    ).toBeTruthy();
+    expect(liveSwitchChild(env)).toMatchObject({
+      runner: 'codex',
+      codex_account: 'codex-01',
+      account_sources: { codex: 'live_switch' },
+      account_switched_from: 'codex-03'
+    });
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      resume_session_id: 'sid-codex',
+      env: { CODEX_HOME: '/state/codex-homes/codex-01' }
+    });
+  });
+
+  // UI-ftww acceptance 1 (timeline wording)
+  test('records the exhausted window and its percent in the live preempt timeline', async () => {
+    const append = vi.fn();
+    const env = await codexExhaustedLiveEnv(
+      [
+        codexWindowRow('codex-01', 1, 0, 0),
+        codexWindowRow('codex-03', 3, 10, 100)
+      ],
+      { timeline: { append } }
+    );
+
+    await env.scheduler.livePreemptPass(WS);
+
+    const entry = append.mock.calls
+      .map((/** @type {any[]} */ [event]) => event)
+      .find(
+        (/** @type {any} */ event) => event.kind === 'account_live_preempt'
+      );
+    expect(entry.summary).toBe(
+      'codex 실행 중 선제 전환 codex-03 → codex-01 (7d 100%)'
+    );
+  });
+
+  // UI-ftww acceptance 2
+  test('keeps an exhausted codex attempt running when no account has window room', async () => {
+    const env = await codexExhaustedLiveEnv([
+      codexWindowRow('codex-01', 1, 0, 100),
+      codexWindowRow('codex-03', 3, 10, 100)
+    ]);
+
+    await env.scheduler.livePreemptPass(WS);
+
+    const attempt = env.store.snapshot(WS).attempts[env.attempt_id];
+    expect(env.processController.terminate).not.toHaveBeenCalled();
+    expect(attempt.status).toBe('running');
+    expect(attempt.live_preempt_last_skip).toMatchObject({
+      reason: 'no_candidate'
+    });
+  });
+
+  // UI-ftww acceptance 3
+  test('keeps a codex attempt running while its account is below the exhausted window', async () => {
+    const env = await codexExhaustedLiveEnv([
+      codexWindowRow('codex-01', 1, 0, 0),
+      codexWindowRow('codex-03', 3, 10, 99)
+    ]);
+
+    await env.scheduler.livePreemptPass(WS);
+
+    const attempt = env.store.snapshot(WS).attempts[env.attempt_id];
+    expect(env.processController.terminate).not.toHaveBeenCalled();
+    expect(attempt.status).toBe('running');
+    expect(attempt.live_preempt_last_skip).toBeNull();
+  });
+
+  // UI-ftww acceptance 4
+  test('keeps an exhausted codex attempt running under the wait policy', async () => {
+    const env = await codexExhaustedLiveEnv([
+      codexWindowRow('codex-01', 1, 0, 0),
+      codexWindowRow('codex-03', 3, 10, 100)
+    ]);
+    env.store.setProviderLimitPolicy(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      runner: 'codex',
+      patch: { mode: 'wait' }
+    });
+
+    await env.scheduler.livePreemptPass(WS);
+
+    expect(env.processController.terminate).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts[env.attempt_id].status).toBe(
+      'running'
+    );
+  });
+
+  // UI-ftww acceptance 5
+  test('keeps an exhausted claude attempt running without a preempt threshold', async () => {
+    const env = await livePreemptEnv({
+      accountCatalog: {
+        ...accountDeps().accountCatalog,
+        listClaude: async () => ({
+          ok: true,
+          active_key: 'hot@example.com',
+          accounts: [
+            {
+              key: 'hot@example.com',
+              number: 1,
+              email: 'hot@example.com',
+              status: 'ok',
+              windows: [{ key: '5h', pct: 100, resetsAt: null }]
+            },
+            {
+              key: 'cool@example.com',
+              number: 2,
+              email: 'cool@example.com',
+              status: 'ok',
+              windows: [{ key: '5h', pct: 5, resetsAt: null }]
+            }
+          ]
+        })
+      }
+    });
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com']);
+
+    await env.scheduler.livePreemptPass(WS);
+
+    expect(env.processController.terminate).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts[env.attempt_id].status).toBe(
+      'running'
+    );
+  });
+
+  // UI-ftww acceptance 6
+  test('keeps an exhausted codex session lane attempt running', async () => {
+    const env = await codexExhaustedLiveEnv([
+      codexWindowRow('codex-01', 1, 0, 0),
+      codexWindowRow('codex-03', 3, 10, 100)
+    ]);
+    env.store.updateAttempt(WS, {
+      attempt_id: env.attempt_id,
+      patch: { exec: 'session' }
+    });
+
+    await env.scheduler.livePreemptPass(WS);
+
+    expect(env.processController.terminate).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts[env.attempt_id].status).toBe(
+      'running'
+    );
+  });
+
+  // UI-ftww acceptance 8
+  test('never moves an exhausted codex attempt onto a credit account', async () => {
+    const credits = { has_credits: true, unlimited: false, balance: 62500 };
+    const env = await codexExhaustedLiveEnv(
+      [
+        codexWindowRow('codex-01', 1, 10, 100, credits),
+        codexWindowRow('codex-03', 3, 10, 100)
+      ],
+      { codexCredit: codexCreditLedger(['codex-01']) }
+    );
+
+    await env.scheduler.livePreemptPass(WS);
+
+    expect(env.processController.terminate).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts[env.attempt_id].status).toBe(
+      'running'
+    );
+  });
+
+  // UI-ftww acceptance 7
+  test('preempts a codex launch off an exhausted account without a preempt threshold', async () => {
+    const env = codexPreemptEnv(
+      {
+        ok: true,
+        active_key: 'codex-03',
+        accounts: [
+          codexWindowRow('codex-01', 1, 0, 0),
+          codexWindowRow('codex-03', 3, 10, 100)
+        ]
+      },
+      {},
+      { codex_account: 'codex-03' }
+    );
+    allowSwitchAccounts(env.store, 'codex', ['codex-01', 'codex-03']);
+    seedQueue(env.store, ['X1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['X1-1000-1']).toMatchObject({
+      codex_account: 'codex-01',
+      account_sources: { codex: 'preempt_switch' }
+    });
+  });
+
+  /**
+   * A paused Codex attempt on `codex-03`, ready for a plain resume (UI-ftww).
+   *
+   * @param {number} weekly - `codex-03` weekly usage.
+   * @param {Record<string, any>} [patch] - Extra recorded attempt fields.
+   */
+  function codexResumeEnv(weekly, patch = {}) {
+    const env = codexPreemptEnv(
+      {
+        ok: true,
+        active_key: 'codex-03',
+        accounts: [
+          codexWindowRow('codex-01', 1, 0, 0),
+          codexWindowRow('codex-03', 3, 10, weekly)
+        ]
+      },
+      {},
+      { codex_account: 'codex-03' }
+    );
+    allowSwitchAccounts(env.store, 'codex', ['codex-01', 'codex-03']);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'codex-prior',
+        bead_id: 'X1',
+        repo: '/repo',
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        speed: 'default',
+        session_id: 'sid-codex-prior',
+        base_oid: 'base-X1',
+        target_base: 'main',
+        codex_account: 'codex-03',
+        status: 'paused',
+        exec_values: {
+          ...resumableExecValues(),
+          orchestration_model: 'sol',
+          orchestration_effort: 'xhigh'
+        },
+        ...patch
+      }
+    });
+    return env;
+  }
+
+  // UI-ftww acceptance 7a
+  test('resumes a plain codex resume on a window-free account when its account is exhausted', async () => {
+    const env = codexResumeEnv(100);
+
+    const result = await env.scheduler.resume(WS, 'codex-prior');
+
+    expect(result.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      codex_account: 'codex-01',
+      account_sources: { codex: 'preempt_switch' },
+      account_switched_from: 'codex-03'
+    });
+  });
+
+  // UI-ftww acceptance 7a (prior_attempt lock)
+  test('keeps the locked model and effort while a plain codex resume switches its account', async () => {
+    const env = codexResumeEnv(100, {
+      continuation_choice: 'prior_attempt',
+      control: {
+        kind: 'pause',
+        phase: 'done',
+        requested_at: 1000,
+        last_error: null
+      }
+    });
+
+    const result = await env.scheduler.resume(WS, 'codex-prior', {
+      continuation: 'prior_attempt'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      continuation_choice: 'prior_attempt',
+      codex_account: 'codex-01',
+      model: 'sol',
+      effort: 'xhigh'
+    });
+  });
+
+  // UI-ftww acceptance 7b
+  test('keeps a plain codex resume on its account while the window is below exhausted', async () => {
+    const env = codexResumeEnv(99);
+
+    const result = await env.scheduler.resume(WS, 'codex-prior');
+
+    expect(result.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      codex_account: 'codex-03',
+      account_sources: { codex: 'bead' }
+    });
+  });
+
+  // UI-ftww acceptance 7b (wait policy)
+  test('keeps an exhausted plain codex resume on its account under the wait policy', async () => {
+    const env = codexResumeEnv(100);
+    env.store.setProviderLimitPolicy(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      runner: 'codex',
+      patch: { mode: 'wait' }
+    });
+
+    const result = await env.scheduler.resume(WS, 'codex-prior');
+
+    expect(result.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      codex_account: 'codex-03'
+    });
+  });
+
   test.each([{ mode: 'wait' }, { preempt_pct: null }, { accounts: [] }])(
     'skips live switching for policy %j',
     async (patch) => {
