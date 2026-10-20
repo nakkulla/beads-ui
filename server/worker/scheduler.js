@@ -502,7 +502,7 @@ const SESSION_EFFORT_RETRY_LIMIT = 3;
  * Window usage percent at which a Codex account counts as exhausted (100 means
  * the window is full); it sits above the stored `preempt_pct` range of 1-99.
  */
-const CODEX_EXHAUSTED_WINDOW_PCT = 100;
+export const CODEX_EXHAUSTED_WINDOW_PCT = 100;
 
 /**
  * Project a session's `blocked_detail` onto the attempt's durable

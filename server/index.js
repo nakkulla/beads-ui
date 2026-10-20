@@ -1,6 +1,8 @@
 import { createServer } from 'node:http';
+import path from 'node:path';
 import { createApp } from './app.js';
 import { printServerUrl } from './cli/daemon.js';
+import { createCodexActiveReturn } from './codex-active-return.js';
 import {
   codexCreditStore,
   createCodexCreditPoller
@@ -10,18 +12,39 @@ import { resolveWorkspaceDatabase } from './db.js';
 import { debug, enableAllDebug } from './logging.js';
 import { installPlacementService } from './placement/service.js';
 import { createPoller } from './poller.js';
-import { registerWorkspace, watchRegistry } from './registry-watcher.js';
 import {
+  getAvailableWorkspaces,
+  registerWorkspace,
+  watchRegistry
+} from './registry-watcher.js';
+import {
+  acquireSwitchLock,
+  createAccountSwitchRunner,
+  isSwitchInFlight,
+  performAccountSwitch,
+  releaseSwitchLock
+} from './routes/account-switch.js';
+import {
+  invalidateCache as invalidateCodexUsageCache,
+  listAccounts as listCodexAccounts,
   listAccountsFresh as listCodexAccountsFresh,
+  subscribeAccountListObservations,
   subscribeCreditObservations
 } from './routes/codex-usage.js';
 import { publishRuntimeIdentity } from './runtime-startup.js';
 import { onTimingSettingsChanged, timingSeconds } from './timing-settings.js';
 import { watchDb } from './watcher.js';
-import { initWorkerRuntime } from './worker/attach.js';
+import {
+  initWorkerRuntime,
+  readWorkspaceAccountsLayer
+} from './worker/attach.js';
 import { codexModelList } from './worker/codex-model-list.js';
+import { selectCodexSwitchCandidate } from './worker/codex-switch-candidate.js';
+import { activeAccountOf } from './worker/instructions-restart.js';
+import { createNotifier } from './worker/notify.js';
 import { resolveCatalog } from './worker/runner-catalog.js';
 import { getWorkerRuntime } from './worker/runtime.js';
+import { CODEX_EXHAUSTED_WINDOW_PCT } from './worker/scheduler.js';
 import {
   discoverWorkspaces,
   resolveStartupWorkspace
@@ -198,6 +221,45 @@ const codex_credit_poller = createCodexCreditPoller({
 });
 codexCreditStore().onChange(() => codex_credit_poller.sync());
 codex_credit_poller.sync();
+
+// Codex active-account return (UI-tyc2 §4): every parsed codex-auth list is
+// judged, and an exhausted global active account moves to a window-headroom
+// account a switch repo allows together with it, through the manual switch's
+// own lock and switch path.
+const codex_switch_notifier = createNotifier({ getConfig });
+const run_codex_switch = createAccountSwitchRunner({ provider: 'codex' });
+const codex_active_return = createCodexActiveReturn({
+  listAccounts: () => listCodexAccounts(),
+  listAccountsFresh: () => listCodexAccountsFresh(),
+  listWorkspaces: () =>
+    getAvailableWorkspaces().map((workspace) => ({
+      key: path.resolve(workspace.path),
+      name: path.basename(path.resolve(workspace.path))
+    })),
+  queueSnapshot: (workspace) =>
+    getWorkerRuntime().queueStore.snapshot(workspace),
+  readWorkspaceAccounts: (workspace) => readWorkspaceAccountsLayer(workspace),
+  activeAccountOf,
+  acquireLock: acquireSwitchLock,
+  releaseLock: releaseSwitchLock,
+  isLocked: isSwitchInFlight,
+  switchAccount: (account_number) =>
+    performAccountSwitch({
+      provider: 'codex',
+      account_number,
+      runSwitch: run_codex_switch,
+      invalidateUsageCache: invalidateCodexUsageCache
+    }),
+  selectCandidate: selectCodexSwitchCandidate,
+  notify: (message) => {
+    codex_switch_notifier.codexCreditNotice({ channel: 'ops', message });
+  },
+  exhausted_pct: CODEX_EXHAUSTED_WINDOW_PCT,
+  log
+});
+subscribeAccountListObservations((list) => {
+  void codex_active_return.observe(list);
+});
 
 watchRegistry(
   (entries) => {
