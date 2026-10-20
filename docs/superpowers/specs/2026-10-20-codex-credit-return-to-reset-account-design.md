@@ -18,28 +18,29 @@ UI-9y1k(2026-10-19)는 Codex 계정 한도에 닿은 실행이 창 여유 계정
 
 ## 2. 검증된 전제
 
-기준 커밋: `e05fd5037b52b1f1d7e5faec13a504319832e4b9`.
+기준 커밋: `5546157314b2d32d6a167233c3f0156d935ea3d2`(2026-10-20 재검토 갱신 — UI-gggh 착지로 줄 번호만 옮겨졌고 인용 구간 안의 코드는 바뀌지 않았다).
 
-- 실행 중 attempt를 다른 계정으로 옮기는 길은 `livePreemptPass` 하나다. 현재 계정 창 중 하나가 `preempt_pct` 이상이면 창 여유 후보를 골라 `preemptRunningAttempt`로 멈추고 같은 세션을 그 계정에서 재개한다 — server/worker/scheduler.js:4014-4108, :4115
-- `livePreemptPass`는 `preempt_pct`가 null이거나 정책이 `wait`이거나 허용 목록이 비면 그 attempt를 건너뛰고, 세션 레인(`exec: 'session'`)·`review_session`·제어 중 attempt도 건너뛴다 — server/worker/scheduler.js:4020-4036
-- 디스패치 때의 `applyPreemptSwitch`는 `preempt_pct`가 null이면 현재 계정에 usage_limit 보류가 있을 때만 계정을 옮긴다 — server/worker/scheduler.js:3907-3929, :3956-3972
-- 두 길 모두 후보를 `selectProviderSwitchAccount(..., { max_pct: preempt_pct, kind: 'preempt' })`로 고르고, Codex의 preempt 선택은 창 여유 패스만 쓰며 크레딧 계정으로 가지 않는다 — server/worker/scheduler.js:3973-3979, :4064-4070; server/worker/codex-switch-candidate.js:153-166
+- 실행 중 attempt를 다른 계정으로 옮기는 길은 `livePreemptPass` 하나다. 현재 계정 창 중 하나가 `preempt_pct` 이상이면 창 여유 후보를 골라 `preemptRunningAttempt`로 멈추고 같은 세션을 그 계정에서 재개한다 — server/worker/scheduler.js:4113-4207, :4214
+- `livePreemptPass`는 `preempt_pct`가 null이거나 정책이 `wait`이거나 허용 목록이 비면 그 attempt를 건너뛰고, 세션 레인(`exec: 'session'`)·`review_session`·제어 중 attempt도 건너뛴다 — server/worker/scheduler.js:4119-4135
+- 디스패치 때의 `applyPreemptSwitch`는 `preempt_pct`가 null이면 현재 계정에 usage_limit 보류가 있을 때만 계정을 옮긴다 — server/worker/scheduler.js:4006-4028, :4055-4071
+- 두 길 모두 후보를 `selectProviderSwitchAccount(..., { max_pct: preempt_pct, kind: 'preempt' })`로 고르고, Codex의 preempt 선택은 창 여유 패스만 쓰며 크레딧 계정으로 가지 않는다 — server/worker/scheduler.js:4072-4078, :4163-4169; server/worker/codex-switch-candidate.js:153-166
 - 창 여유 기준은 모든 창이 5h ≤ 80%, 그 밖 ≤ 90%(그리고 `max_pct` 미만)이다 — server/worker/codex-switch-candidate.js:31-61
 - 크레딧 패스는 창 기준(5h ≤ 80%, 그 밖 ≤ 90%)을 넘은 계정에서 고른다. 그래서 크레딧 모드로 고른 계정이 아직 100% 미만일 수 있다(예: 주간 95%). 그 동안은 포함 한도를 쓰고, 창이 100%가 된 뒤에야 크레딧이 차감된다. 이번 복귀 조건은 "크레딧 패스로 골랐다"가 아니라 "현재 창이 100%로 관측됐다"이다 — server/worker/codex-switch-candidate.js:46-61, :169-197
-- 일반 재개(`resolveContinuationForAttempt`)는 `external_wait_resume === true`일 때만 `applyPreemptSwitch`를 부르고, 일반 `resume`은 그 값을 넘기지 않는다 — server/worker/scheduler.js:17393-17396, :15625-15647
-- 재개의 `prior_attempt` 계정 잠금은 계정 전환과 기다림 receipt에 계정만 내주고 기록된 나머지 묶음은 지킨다 — server/worker/scheduler.js:17251-17256
-- 실시간 선제 전환은 `account_live_preempt` 타임라인 항목(요약 `<러너> 실행 중 선제 전환 <from> → <to> (<창> <pct>%)`)으로 남고, 디스패치 선제 전환은 계정 출처 `preempt_switch`로 남는다 — server/worker/scheduler.js:16179-16186, :3995-3999
-- 실시간·디스패치 선제 전환은 정책을 다시 읽어 `mode`·`preempt_pct`가 그대로이고 고른 후보가 허용 목록에 남아 있을 때만 옮긴다 — server/worker/scheduler.js:3987-3991, :4085-4092
-- 디스패치 선제 전환은 현재 계정 행이 없어도 그 계정에 usage_limit 보류가 있으면 후보를 고른다 — server/worker/scheduler.js:3952-3979
+- 일반 재개(`resolveContinuationForAttempt`)는 `external_wait_resume === true`일 때만 `applyPreemptSwitch`를 부르고, 일반 `resume`은 그 값을 넘기지 않는다 — server/worker/scheduler.js:17641-17644, :15873-15895
+- 재개의 `prior_attempt` 계정 잠금은 계정 전환과 기다림 receipt에 계정만 내주고 기록된 나머지 묶음은 지킨다 — server/worker/scheduler.js:17499-17504
+- 실시간 선제 전환은 `account_live_preempt` 타임라인 항목(요약 `<러너> 실행 중 선제 전환 <from> → <to> (<창> <pct>%)`)으로 남고, 디스패치 선제 전환은 계정 출처 `preempt_switch`로 남는다 — server/worker/scheduler.js:16427-16434, :4094-4098
+- 실시간·디스패치 선제 전환은 정책을 다시 읽어 `mode`·`preempt_pct`가 그대로이고 고른 후보가 허용 목록에 남아 있을 때만 옮긴다 — server/worker/scheduler.js:4086-4090, :4184-4191
+- 디스패치 선제 전환은 현재 계정 행이 없어도 그 계정에 usage_limit 보류가 있으면 후보를 고른다 — server/worker/scheduler.js:4051-4078
 - Claude 후보 선택에는 크레딧 패스가 없다 — server/worker/scheduler.js:2042-2100
 - 세션 브리지의 `--codex-home`은 한도로 실패한 실행 하나의 재실행에만 붙고, 전역 계정은 바꾸지 않는다 — dotfiles `d6be5465b1183a167642be3b58cd8d04b031e7a3` src/shared/skills/flow/workflow/references/implementation-transient-retry.md:233, :277; src/shared/skills/review/review/references/runtime-legs.md:22
-- 실시간 패스는 실행 중 attempt가 있는 동안 60초마다 돈다 — server/worker/scheduler.js:213, :3121-3142, :14225
+- 실시간 패스는 실행 중 attempt가 있는 동안 60초마다 돈다 — server/worker/scheduler.js:213, :3220-3241, :14473
 - Codex 계정 목록은 180초 캐시이고, `codex-auth list --json`(플래그 없음)이 모든 계정의 창을 `source: api`로 새로 읽는다 — server/routes/codex-usage.js:21; 2026-10-20 `codex-auth list --json` 실측(01·02·03 모두 `refresh.method: api`, `status: ok`)
-- attempt는 실제로 돈 계정을 `codex_account`에 남기고 실시간 패스는 그 값으로 현재 계정을 읽는다 — server/worker/instructions-restart.js:71-77; server/worker/scheduler.js:4053-4054, :15149
-- `preempt_pct`는 1~99 정수만 저장된다 — server/worker/queue-store.js:4950-4955
+- attempt는 실제로 돈 계정을 `codex_account`에 남기고 실시간 패스는 그 값으로 현재 계정을 읽는다 — server/worker/instructions-restart.js:71-77; server/worker/scheduler.js:4152-4153, :15397
+- `preempt_pct`는 1~99 정수만 저장된다 — server/worker/queue-store.js:4959-4964
 - 2026-10-20 실측: switch 모드인 모든 저장소의 Codex 정책이 `preempt_pct: null`이다(`~/.local/state/bdui/*/queue.json`) — 지금은 크레딧 실행이 다른 계정 리셋 뒤에도 끝까지 돈다.
-- 기존 테스트가 "다른 후보가 모두 100%면 상한에 닿은 크레딧 실행은 계속 돈다"를 고정한다 — server/worker/scheduler.test.js:6846-6877
-- ADR UI-9y1k: 선제 전환은 크레딧 계정으로 가지 않고, 상한은 다음 선택만 막으며 이미 시작한 실행은 멈추지 않고, 실행 중 attempt는 `preempt_pct`에서 정지해 허용 계정으로 재개한다 — docs/adr/UI-9y1k-codex-switch-order-and-credits.md:116-122, :227-229
+- 기존 테스트가 "다른 후보가 모두 100%면 상한에 닿은 크레딧 실행은 계속 돈다"를 고정한다 — server/worker/scheduler.test.js:7367-7398
+- ADR UI-gggh(UI-9y1k를 대체하며 그 조항을 그대로 승계): 선제 전환은 크레딧 계정으로 가지 않고, 상한은 다음 선택만 막으며 이미 시작한 실행은 멈추지 않고, 실행 중 attempt는 `preempt_pct`에서 정지해 허용 계정으로 재개한다 — docs/adr/UI-gggh-codex-leaf-limit-cross-member.md:129-135, :271-273
+- ADR UI-gggh의 교차 멤버 조항: 다른 러너 리프 한도로 끝난 attempt는 전환 대상이 아니고, 해제 receipt에 계정이 없어 해제 뒤 자기 러너의 계정 규칙으로 재개한다. UI-gggh 착지(`d688d985`)는 이 설계가 바꾸는 실시간 패스·디스패치 선제 전환·재개 계정 해석의 인용 구간을 바꾸지 않았다 — docs/adr/UI-gggh-codex-leaf-limit-cross-member.md:147-169
 
 ## 3. 목표와 비목표
 
@@ -87,7 +88,7 @@ attempt마다의 판정을 다음처럼 바꾼다. 나머지 거름(세션 레�
 4. 후보 선택, 재확인(정책을 다시 읽어 `mode`·`preempt_pct`가 그대로이고 고른 후보가 허용 목록에 남아
    있음), `preemptRunningAttempt` 호출은 지금 그대로다. `switch_to.window`·`pct`는 트리거한 창의 키와 값이다.
 5. 후보가 없으면 지금처럼 `live_preempt_last_skip: { reason: 'no_candidate' }`를 남기고 계속 돈다
-   (상한에 닿은 크레딧 실행도 계속 돈다 — UI-9y1k §4.7 그대로).
+   (상한에 닿은 크레딧 실행도 계속 돈다 — ADR UI-gggh가 승계한 UI-9y1k 상한 조항 그대로).
 
 ### 4.3 디스패치 복귀 (`applyPreemptSwitch`)
 
@@ -105,7 +106,7 @@ attempt마다의 판정을 다음처럼 바꾼다. 나머지 거름(세션 레�
   그 계정 창이 100% 이상이고 정책이 `switch`이며 창 여유 후보가 있으면 launch-only로 그 후보로 띄우고
   계정 출처는 `preempt_switch`다. Bead 계정 핀은 쓰지 않는다.
 - `prior_attempt` 잠금은 계정 전환·기다림 receipt와 같은 방식으로 계정만 내주고 기록된 나머지 묶음
-  (러너·모델·effort·속도)은 지킨다(UI-np4t §4.3, ADR UI-9y1k 승계 UI-inge 조항 "`prior_attempt` 계정
+  (러너·모델·effort·속도)은 지킨다(UI-np4t §4.3, ADR UI-gggh 승계 UI-inge 조항 "`prior_attempt` 계정
   잠금도 이 전환에는 양보").
 - 실시간 선제 전환·반응 계정 전환의 자동 재개는 이미 후보 계정으로 띄우므로 대개 판정에 걸리지 않는다.
   반응 전환이 크레딧 계정으로 재개하는 경우는 창 여유 후보가 없을 때뿐이라 판정이 후보를 못 찾고 그대로
@@ -144,7 +145,7 @@ attempt마다의 판정을 다음처럼 바꾼다. 나머지 거름(세션 레�
 7b. 일반 재개에서 03이 99% 이하이거나 정책이 `wait`면 계정을 바꾸지 않는다(crossed·held는 일반 재개에
     걸리지 않는다).
 8. 복귀 후보로 크레딧 계정은 고르지 않는다: 01 100%·크레딧 허용, 03 소진 → 이동 없음.
-9. 기존 선제 전환·상한·기다림 모드 테스트는 그대로 통과한다(scheduler.test.js:6846 포함).
+9. 기존 선제 전환·상한·기다림 모드·교차 멤버 테스트는 그대로 통과한다(scheduler.test.js:7367 포함).
 
 Test scope:
 - seam: 실시간 복귀 — `server/worker/scheduler.test.js` `livePreemptPass` (기준 1·2·3·4·5·6·8)
@@ -161,6 +162,6 @@ Test scope:
 
 ## 7. 결정 (ADR 후보)
 
-- 전제: ADR UI-9y1k — 창 여유 계정 우선·반응 전환에서만 크레딧 패스·상한은 다음 선택만 막음·크레딧 설정 전역 조항을 그대로 따른다.
-- Codex 실행이 창이 소진된(100%) 계정으로 도는 동안 허용 목록에 창 여유 계정이 생기면 `preempt_pct`와 무관하게 실시간 선제 전환(멈춤 → 같은 세션 재개)·디스패치 선제 전환·재개 계정 해석으로 그 계정에 옮긴다. ① 되돌리기 어려움: scheduler의 실시간 패스·디스패치 선제 전환·재개 계정 해석(`prior_attempt` 잠금의 계정 양보 포함)이 함께 바뀌고, 사용자 저장소의 `preempt_pct` 운용(지금 모두 꺼짐)이 이 기본 동작을 전제로 굳는다. ② 맥락 없이는 놀라움: 선제 전환 기준을 꺼 둔 저장소에서도 실행이 스스로 멈췄다 다른 계정에서 재개되고, UI-9y1k가 "이미 시작한 실행은 멈추지 않는다"고 적은 크레딧 실행이 멈춘다. ③ 대안 실재: 저장소별 `preempt_pct` 설정 해결, 다음 launch에서만 복귀, attempt의 `credit_mode` 기록으로 판정. UI-9y1k와 소비자(scheduler 선제 전환·후보 선택)가 같고, UI-9y1k가 승계한 UI-inge 조항(실행 중 attempt는 `preempt_pct`에서 정지)에 트리거를 더하므로 그 재진술이다 — `summary`: "Codex 자동 전환 후보는 허용 목록의 사용자 순서로 창 여유 계정을 먼저 고르고 반응 전환에서만 계정별 크레딧 허용·하루 상한(다음 선택만 막음) 안의 크레딧 계정을 고르며, 창이 소진된 계정으로 도는 Codex 실행은 preempt_pct와 무관하게 창 여유 계정이 생기면 그 계정으로 옮기고, 크레딧 설정은 서버 전역이고 세션은 같은 규칙의 후보 조회 API를 쓴다 — 나머지 조항은 UI-np4t 그대로다" → ADR, supersede UI-9y1k
+- 전제: ADR UI-gggh — 창 여유 계정 우선·반응 전환에서만 크레딧 패스·상한은 다음 선택만 막음·크레딧 설정 전역 조항(UI-9y1k 승계)과 다른 러너 리프 한도의 교차 멤버 조항을 그대로 따른다.
+- Codex 실행이 창이 소진된(100%) 계정으로 도는 동안 허용 목록에 창 여유 계정이 생기면 `preempt_pct`와 무관하게 실시간 선제 전환(멈춤 → 같은 세션 재개)·디스패치 선제 전환·재개 계정 해석으로 그 계정에 옮긴다. ① 되돌리기 어려움: scheduler의 실시간 패스·디스패치 선제 전환·재개 계정 해석(`prior_attempt` 잠금의 계정 양보 포함)이 함께 바뀌고, 사용자 저장소의 `preempt_pct` 운용(지금 모두 꺼짐)이 이 기본 동작을 전제로 굳는다. ② 맥락 없이는 놀라움: 선제 전환 기준을 꺼 둔 저장소에서도 실행이 스스로 멈췄다 다른 계정에서 재개되고, UI-gggh가 승계한 UI-9y1k 조항이 "이미 시작한 실행은 멈추지 않는다"고 적은 크레딧 실행이 멈춘다. ③ 대안 실재: 저장소별 `preempt_pct` 설정 해결, 다음 launch에서만 복귀, attempt의 `credit_mode` 기록으로 판정. UI-gggh와 소비자(scheduler 선제 전환·후보 선택)가 같고, UI-gggh가 승계한 UI-inge 조항(실행 중 attempt는 `preempt_pct`에서 정지)에 트리거를 더하므로 그 재진술이다 — `summary`: "Codex 자동 전환 후보는 허용 목록의 사용자 순서로 창 여유 계정을 먼저 고르고 반응 전환에서만 계정별 크레딧 허용·하루 상한(다음 선택만 막음) 안의 크레딧 계정을 고르며, 창이 소진된 계정으로 도는 Codex 실행은 preempt_pct와 무관하게 창 여유 계정이 생기면 그 계정으로 옮기고, 크레딧 설정은 서버 전역이고 세션은 같은 규칙의 후보 조회 API를 쓰고, 세션이 맡긴 다른 러너 리프의 계정 한도로 끝난 attempt는 그 리프 계정 보류의 교차 멤버로 전환·기다림 추종 없이 해제 뒤 자기 러너 계정 규칙으로 재개한다 — 나머지 조항은 UI-np4t 그대로다" → ADR, supersede UI-gggh
 - 소진 기준 100% 상수 — 기본 제외 목록(숫자 한도) → ADR 아님
