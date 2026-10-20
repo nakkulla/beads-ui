@@ -2720,11 +2720,6 @@ export function createCompletionActionDriver(deps) {
   }
 
   /**
-   * @param {string} root_bead_id
-   * @param {CompletionAction} action
-   * @param {any} intent
-   */
-  /**
    * @typedef {{ head_sha: string, base_sha: string|null, reason: string, operation_id: string|null, log_path: string|null, summary: string|null }} HoldInput
    */
 

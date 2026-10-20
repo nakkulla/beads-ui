@@ -5756,4 +5756,170 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
 
     expect(action).toEqual({ kind: 'gate' });
   });
+
+  test('keeps a waiting head on its own record when only the base moved', () => {
+    const current = intent({
+      phase: 'waiting_followup',
+      auto_resolution: { class: 'base_red_followup' }
+    });
+
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact: {
+        state: 'stale',
+        gated: { subject: { ...current.subject, base_sha: MOVED_BASE } }
+      }
+    });
+
+    expect(action).toEqual({ kind: 'check_followup' });
+  });
+
+  test('drops a same-head merge-queue row while checking the wait', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.store.enqueueMerge(DRIVER_WS, {
+      expected_revision: h.store.snapshot(DRIVER_WS).revision,
+      entries: [{ bead_id: 'UI-root' }]
+    });
+
+    await h.driver.onAction(
+      'UI-root',
+      { kind: 'check_followup' },
+      rootIntent(h)
+    );
+
+    expect(h.store.snapshot(DRIVER_WS).merge_queue).toEqual([]);
+    expect(rootIntent(h).phase).toBe('waiting_followup');
+  });
+
+  test('reads the linked follow-ups once per process from coordinator passes', async () => {
+    const h = waitHarness();
+    await driveOnce(h.store, h.driver);
+    h.findIssue.mockClear();
+    const coordinator = coordinatorOver(h);
+
+    await coordinator.reconcile();
+    await coordinator.reconcile();
+
+    expect(h.findIssue.mock.calls.map(([id]) => id)).toEqual(['UI-fix1']);
+  });
+
+  test('re-checks a follow-up that closed during the base-only verify', async () => {
+    const h = waitHarness();
+    h.awaitCompletionBaseVerify.mockImplementation(async () => {
+      h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'closed' };
+      await h.driver.onIssuesChanged();
+      return {
+        operation_id: 'base-op',
+        state: 'failed',
+        reason: 'script_failed'
+      };
+    });
+
+    await driveOnce(h.store, h.driver);
+
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'holding',
+      hold: { reason: 'script_failed:후속 UI-fix1 끝남·base 그대로' }
+    });
+  });
+
+  test('holds a foreign target verify failure without reading follow-ups', async () => {
+    const h = waitHarness({
+      operations: {
+        'verify-one': failedVerifyOperation({ repo_id: '/foreign/target' })
+      }
+    });
+
+    await driveOnce(h.store, h.driver);
+
+    expect(rootIntent(h).phase).toBe('holding');
+    expect(h.findIssue).not.toHaveBeenCalled();
+    expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A restarted store whose wait stopped at `base_verifying`.
+   *
+   * @param {Record<string, any>} wait_patch
+   * @param {Record<string, any>} [operations]
+   */
+  async function baseVerifyingStore(wait_patch, operations = {}) {
+    const first = waitHarness();
+    await driveOnce(first.store, first.driver);
+    const snapshot = first.store.snapshot(DRIVER_WS);
+    const waiting = snapshot.completion_intents['UI-root'];
+    const file = queueFile({
+      ...snapshot,
+      completion_intents: {
+        'UI-root': {
+          ...waiting,
+          followup_wait: {
+            ...waiting.followup_wait,
+            stage: 'base_verifying',
+            deadline_at: null,
+            ...wait_patch
+          }
+        }
+      },
+      repo_operations: { ...snapshot.repo_operations, ...operations }
+    });
+    return createQueueStore({ filePathFor: () => file });
+  }
+
+  test('starts the base-only verify again for a wait that never recorded it', async () => {
+    const h = waitHarness({
+      store: await baseVerifyingStore({ base_op_id: null })
+    });
+
+    await coordinatorOver(h).reconcile();
+
+    expect(h.startCompletionBaseVerify).toHaveBeenCalledExactlyOnceWith(
+      'UI-root',
+      { target_base: 'main', base_sha: RED_BASE }
+    );
+    expect(rootIntent(h).followup_wait).toMatchObject({
+      stage: 'base_verifying',
+      base_op_id: 'base-op'
+    });
+  });
+
+  test('leaves a running base-only verify to the operation ledger', async () => {
+    const h = waitHarness({
+      store: await baseVerifyingStore(
+        { base_op_id: 'base-op' },
+        {
+          'base-op': failedVerifyOperation({
+            target: 'base_only',
+            state: 'running',
+            failure: null,
+            retry: null,
+            exit_code: null,
+            finished_at: null
+          })
+        }
+      )
+    });
+
+    await coordinatorOver(h).reconcile();
+
+    expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    expect(h.awaitCompletionBaseVerify).not.toHaveBeenCalled();
+    expect(rootIntent(h).followup_wait?.stage).toBe('base_verifying');
+  });
+
+  test('holds a base-only verify that outlived the wait limit', async () => {
+    const h = waitHarness({
+      store: await baseVerifyingStore({ base_op_id: 'base-op' })
+    });
+    h.clock.now = 100 + LIMIT_MS;
+
+    await coordinatorOver(h).reconcile();
+
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'holding',
+      hold: { reason: 'script_failed:대기 상한 48시간' }
+    });
+  });
 });

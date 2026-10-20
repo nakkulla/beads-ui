@@ -17863,6 +17863,55 @@ describe('worker/queue-store red-base follow-up wait (UI-ty6k)', () => {
     ]);
   });
 
+  test('resumes a parked wait off the runnable queue through the enroller', () => {
+    const store = storeWithIntent();
+    beginWait(store);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: false
+    });
+    store.pauseCompletionIntent(WS, { root_bead_id: 'UI-root' });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const before = store.snapshot(WS);
+
+    const result = store.enqueueMergeAuto(WS, {
+      entries: [
+        {
+          bead_id: 'UI-root',
+          external: false,
+          head_sha: HEAD,
+          completion: {
+            source_attempt_id: 'att-UI-root',
+            target_base: 'main',
+            subject: before.completion_intents['UI-root'].subject
+          }
+        }
+      ]
+    });
+
+    expect(result.queue.completion_intents['UI-root'].phase).toBe(
+      'waiting_followup'
+    );
+    expect(result.queue.merge_queue).toEqual([]);
+  });
+
+  test('drops the wait record on a [머지] click', () => {
+    const store = storeWithIntent();
+    beginWait(store);
+
+    const result = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
+    });
+
+    expect(result.queue.completion_intents['UI-root']).not.toHaveProperty(
+      'followup_wait'
+    );
+  });
+
   test('fails a waiting intent without its wait record closed on cold load', () => {
     const store = storeWithIntent();
     beginWait(store);
