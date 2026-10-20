@@ -50,6 +50,9 @@
  * attempt stopped on a provider hold or a live account preempt (UI-87gn §3.1).
  * Against `head_oid` it is the attempt's progress evidence; absent when the
  * read failed and on every stop recorded before the field existed.
+ * @property {number} [provider_leaf_checked_at] - When the one-shot sweep
+ * judged this provider recovery wait against its persisted log (UI-gggh
+ * §3.4). Present only after that judgment, so the sweep never re-reads it.
  * @property {number|null} started_at - Epoch ms the session started.
  * @property {number|null} pid - OS process id of the runner.
  * @property {{ pid: number, pgid: number, started_at: number }|null} process_identity -
@@ -3864,6 +3867,10 @@ export function makeAttempt(fields) {
     fields.stop_head_oid.length > 0
       ? { stop_head_oid: fields.stop_head_oid }
       : {}),
+    ...(typeof fields.provider_leaf_checked_at === 'number' &&
+    Number.isFinite(fields.provider_leaf_checked_at)
+      ? { provider_leaf_checked_at: fields.provider_leaf_checked_at }
+      : {}),
     started_at: fields.started_at ?? null,
     pid: fields.pid ?? null,
     process_identity: normalizeProcessIdentity(fields.process_identity),
@@ -5127,16 +5134,20 @@ function normalizeProviderHoldMembers(value) {
     ) {
       continue;
     }
+    // A cross-runner member never carries switch state (UI-gggh §3.3).
+    const cross_runner = raw.cross_runner === true;
     const auto_switch =
-      raw.auto_switch === 'none' ||
-      raw.auto_switch === 'unconfigured' ||
-      raw.auto_switch === 'disabled'
+      !cross_runner &&
+      (raw.auto_switch === 'none' ||
+        raw.auto_switch === 'unconfigured' ||
+        raw.auto_switch === 'disabled')
         ? raw.auto_switch
         : null;
     members[attempt_id] = {
       runner: raw.runner,
       target_id: raw.target_id,
       account: raw.account,
+      ...(cross_runner ? { cross_runner: /** @type {const} */ (true) } : {}),
       auto_switch,
       switch_ready_at:
         auto_switch === 'none' &&
@@ -6749,7 +6760,10 @@ export function createQueueStore(options = {}) {
    * @returns {boolean}
    */
   function waitMemberOf(next, attempt_id, member) {
+    // A cross-runner member waits on its leaf's account, not on the account a
+    // fresh dispatch of its own runner would use (UI-gggh §3.3).
     return (
+      member.cross_runner !== true &&
       waitPolicyOf(next, member.runner) &&
       typeof member.account === 'string' &&
       heldLimitLeaf(next, attempt_id)
@@ -6777,6 +6791,7 @@ export function createQueueStore(options = {}) {
    * Set the workspace's switch state for one global target on every
    * membership bound to it. The state is the workspace's verdict on the
    * target, as it was when it lived on the per-repository target itself.
+   * A cross-runner member keeps none (UI-gggh §3.3).
    *
    * @param {Queue} next
    * @param {string} target_id
@@ -6784,7 +6799,7 @@ export function createQueueStore(options = {}) {
    */
   function bindMemberSwitch(next, target_id, auto_switch) {
     for (const member of Object.values(next.provider_hold_members)) {
-      if (member.target_id !== target_id) {
+      if (member.target_id !== target_id || member.cross_runner === true) {
         continue;
       }
       member.auto_switch = auto_switch;
@@ -9475,8 +9490,13 @@ export function createQueueStore(options = {}) {
      * lets the stale-receipt rule read a live membership as "held again after
      * the receipt" for both receipt kinds.
      *
+     * `cross_runner` binds an attempt of another runner — a session whose
+     * delegated leaf hit the target's account limit (UI-gggh §3.3). Its
+     * membership carries no switch state, inherits none from a sibling, and
+     * never takes a switch verdict.
+     *
      * @param {string} workspace
-     * @param {{ attempt_id: string, patch: Partial<Attempt>, runner: string, target: ProviderTarget, auto_switch?: { candidate_account: string|null } }} input
+     * @param {{ attempt_id: string, patch: Partial<Attempt>, runner: string, target: ProviderTarget, auto_switch?: { candidate_account: string|null }, cross_runner?: boolean }} input
      * @returns {QueueOpResult & { entered?: boolean, generation?: number, target_id?: string, origin?: string }}
      */
     holdProviderAttempt(workspace, input) {
@@ -9526,8 +9546,22 @@ export function createQueueStore(options = {}) {
           bead_id: current.bead_id
         });
         if (global) {
+          if (input.cross_runner === true) {
+            next.provider_hold_members[input.attempt_id] = {
+              runner: input.runner,
+              target_id: global.target_id,
+              account: target.account,
+              cross_runner: true,
+              auto_switch: null,
+              switch_ready_at: null,
+              switch_ready_account: null
+            };
+            return true;
+          }
           const siblings = Object.values(next.provider_hold_members).filter(
-            (member) => member.target_id === global.target_id
+            (member) =>
+              member.target_id === global.target_id &&
+              member.cross_runner !== true
           );
           const decision =
             target.kind === 'usage_limit' && input.auto_switch
@@ -9849,8 +9883,11 @@ export function createQueueStore(options = {}) {
           return false;
         }
         const target_id = located.target.target_id;
+        // A cross-runner member never moves to another account of the target
+        // runner (UI-gggh §3.3): its resume account is its own runner's.
         const members = Object.entries(next.provider_hold_members).filter(
-          ([, member]) => member.target_id === target_id
+          ([, member]) =>
+            member.target_id === target_id && member.cross_runner !== true
         );
         if (!members.some(([, member]) => member.auto_switch === 'none')) {
           return false;
@@ -10224,10 +10261,14 @@ export function createQueueStore(options = {}) {
           const receipt = {
             attempt_id,
             generation,
+            // A cross-runner member's account belongs to its leaf's runner, so
+            // its resume resolves its own runner's account afresh (UI-gggh
+            // §3.3) — an override of the target runner's key would be refused.
             account:
-              member.account !== null &&
-              Array.isArray(roster) &&
-              !roster.includes(member.account)
+              member.cross_runner === true ||
+              (member.account !== null &&
+                Array.isArray(roster) &&
+                !roster.includes(member.account))
                 ? null
                 : member.account,
             kind: /** @type {const} */ ('provider_outage')

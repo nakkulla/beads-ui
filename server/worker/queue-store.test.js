@@ -17374,3 +17374,209 @@ describe('session-lane attempt shape (UI-lbm5 §4.3)', () => {
     });
   });
 });
+
+describe('worker/queue-store cross-runner hold members (UI-gggh)', () => {
+  /** The Codex account target a delegated leaf's limit holds. */
+  const LEAF_TARGET = {
+    runner: 'codex',
+    kind: /** @type {const} */ ('usage_limit'),
+    model: 'astra',
+    account: 'codex-two'
+  };
+
+  /**
+   * Add one running attempt of a runner.
+   *
+   * @param {any} store
+   * @param {string} attempt_id
+   * @param {'claude'|'codex'} runner
+   */
+  function seedAttempt(store, attempt_id, runner) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id: `B-${attempt_id}` }
+    });
+    store.updateAttempt(WS, {
+      attempt_id,
+      patch: {
+        runner,
+        model: runner === 'claude' ? 'opus' : 'astra',
+        status: 'running'
+      }
+    });
+  }
+
+  /**
+   * Hold one attempt on the leaf account's Codex target: a cross-runner
+   * member, or an own-runner member with the scheduler's usage-limit verdict.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {string} attempt_id
+   * @param {boolean} cross_runner
+   */
+  function holdOnLeafTarget(store, attempt_id, cross_runner) {
+    return store.holdProviderAttempt(WS, {
+      attempt_id,
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'codex',
+      target: {
+        kind: 'usage_limit',
+        model: 'astra',
+        account: 'codex-two',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      ...(cross_runner
+        ? { cross_runner: true }
+        : { auto_switch: { candidate_account: null } })
+    });
+  }
+
+  /**
+   * @param {any} store
+   * @param {{ mode?: 'wait'|'switch', accounts?: string[] }} patch
+   */
+  function setCodexPolicy(store, patch) {
+    store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'codex',
+      patch
+    });
+  }
+
+  /**
+   * One own-runner Codex member and one cross-runner claude member on the
+   * same target, under a switch policy allowing `codex-three`.
+   *
+   * @returns {ReturnType<typeof createQueueStore>}
+   */
+  function sharedTarget() {
+    const store = createQueueStore();
+    setCodexPolicy(store, { mode: 'switch', accounts: ['codex-three'] });
+    seedAttempt(store, 'own', 'codex');
+    holdOnLeafTarget(store, 'own', false);
+    seedAttempt(store, 'cross', 'claude');
+    holdOnLeafTarget(store, 'cross', true);
+    return store;
+  }
+
+  test('records a cross-runner member without its sibling switch verdict', () => {
+    const store = sharedTarget();
+
+    const members = store.snapshot(WS).provider_hold_members;
+
+    expect(members.own.auto_switch).toBe('none');
+    expect(members.cross).toEqual({
+      runner: 'codex',
+      target_id: members.own.target_id,
+      account: 'codex-two',
+      cross_runner: true,
+      auto_switch: null,
+      switch_ready_at: null,
+      switch_ready_account: null
+    });
+  });
+
+  test('keeps the cross-runner mark through a cold load', () => {
+    sharedTarget();
+
+    const members = createQueueStore().snapshot(WS).provider_hold_members;
+
+    expect(members.cross).toMatchObject({
+      cross_runner: true,
+      auto_switch: null
+    });
+  });
+
+  test('switches only the own-runner member of a held target', () => {
+    const store = sharedTarget();
+    const found = store.providerHolds.findBy(LEAF_TARGET);
+
+    store.switchHeldProviderAttempts(WS, {
+      runner: 'codex',
+      generation: found?.generation ?? 0,
+      model: 'astra',
+      account: 'codex-two',
+      candidate_account: 'codex-three',
+      target_id: found?.target.target_id
+    });
+
+    const queue = store.snapshot(WS);
+    expect(queue.auto_resume_pending.map((entry) => entry.attempt_id)).toEqual([
+      'own'
+    ]);
+    expect(queue.provider_hold_members.cross).toMatchObject({
+      cross_runner: true
+    });
+  });
+
+  test('keeps a policy save verdict off the cross-runner member', () => {
+    const store = sharedTarget();
+
+    setCodexPolicy(store, { accounts: [] });
+
+    const members = store.snapshot(WS).provider_hold_members;
+    expect([members.own.auto_switch, members.cross.auto_switch]).toEqual([
+      'unconfigured',
+      null
+    ]);
+  });
+
+  test('lists no cross-runner member to follow in wait mode', () => {
+    const store = sharedTarget();
+    setCodexPolicy(store, { mode: 'wait' });
+
+    const members = store.waitFollowMembers(WS);
+
+    expect(members.map((member) => member.attempt_id)).toEqual(['own']);
+  });
+
+  test('releases a cross-runner member with no resume account', () => {
+    const store = sharedTarget();
+    const found = store.providerHolds.findBy(LEAF_TARGET);
+    store.providerHolds.remove(found?.target.target_id ?? '');
+
+    const settled = store.settleProviderMembers(WS, {
+      listed: { codex: ['codex-two'] },
+      runners: ['codex']
+    });
+
+    expect(
+      settled.pending.map((entry) => [entry.attempt_id, entry.account])
+    ).toEqual([
+      ['own', 'codex-two'],
+      ['cross', null]
+    ]);
+  });
+
+  test('gives a waiting cross-runner member an unmarked receipt', () => {
+    const store = sharedTarget();
+    setCodexPolicy(store, { mode: 'wait' });
+    const found = store.providerHolds.findBy(LEAF_TARGET);
+    store.providerHolds.remove(found?.target.target_id ?? '');
+
+    const settled = store.settleProviderMembers(WS, { runners: ['codex'] });
+
+    expect(
+      settled.pending.find((entry) => entry.attempt_id === 'cross')
+    ).toEqual({
+      attempt_id: 'cross',
+      generation: expect.any(Number),
+      account: null,
+      kind: 'provider_outage'
+    });
+  });
+
+  test('keeps the leaf sweep marker through attempt normalization', () => {
+    const attempt = makeAttempt({
+      attempt_id: 'a1',
+      bead_id: 'B1',
+      provider_leaf_checked_at: 1234
+    });
+
+    expect(attempt.provider_leaf_checked_at).toBe(1234);
+  });
+});

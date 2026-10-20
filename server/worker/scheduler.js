@@ -2250,9 +2250,13 @@ export function createScheduler(deps) {
                 : [];
             for (const target of targets) {
               const current = deps.store.snapshot(workspace);
+              // Only an attempt of the hold's own runner can move to another
+              // of its accounts; a cross-runner member (UI-gggh §3.3) waits.
               const eligible = target.attempt_ids.some((attempt_id) => {
                 const attempt = current.attempts[attempt_id];
                 return (
+                  current.provider_hold_members?.[attempt_id]?.cross_runner !==
+                    true &&
                   attempt?.status === 'paused' &&
                   attempt.cause === 'provider_outage:usage_limit' &&
                   !attempt.withdrawn &&
@@ -2908,12 +2912,100 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The Codex catalog key a bridge leaf's `requested_model` names (UI-gggh
+   * §3.2): the key itself, else the first entry whose `id` it is — the
+   * catalog lists aliases before pinned names, so an id resolves to the alias
+   * an ordinary Codex attempt of that model records. Null when the catalog
+   * cannot be read or knows no such model: a target the probe cannot route
+   * would never release.
+   *
+   * @param {string|null} requested_model
+   * @returns {string|null}
+   */
+  function codexCatalogModel(requested_model) {
+    if (typeof requested_model !== 'string' || requested_model.length === 0) {
+      return null;
+    }
+    /** @type {Record<string, { id?: string }>|undefined} */
+    let models;
+    try {
+      models = runtimeCatalog().runners.codex?.models;
+    } catch {
+      return null;
+    }
+    if (!models || typeof models !== 'object') {
+      return null;
+    }
+    if (Object.hasOwn(models, requested_model)) {
+      return requested_model;
+    }
+    const found = Object.entries(models).find(
+      ([, entry]) => entry?.id === requested_model
+    );
+    return found ? found[0] : null;
+  }
+
+  /**
+   * Resolve a delegated Codex leaf's account limit to the hold it belongs on
+   * (UI-gggh §3.2): exactly one Codex catalog row with the manifest's account
+   * number, and the Codex catalog model the leaf requested. An unresolved
+   * number or model, or an unreadable catalog, holds nothing — the attempt
+   * keeps its recovery wait (§4).
+   *
+   * @param {import('./runner/provider-outage.js').ProviderRecoveryOutage} outage
+   * @param {import('./runner/provider-outage.js').CodexLeafLimit} leaf
+   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string, target: { runner: string, model: string } }|null>}
+   */
+  async function leafLimitHold(outage, leaf) {
+    if (
+      leaf.runner !== 'codex' ||
+      leaf.account_number === null ||
+      typeof deps.accountCatalog?.listCodex !== 'function'
+    ) {
+      return null;
+    }
+    const model = codexCatalogModel(leaf.requested_model);
+    if (model === null) {
+      return null;
+    }
+    /** @type {any} */
+    let listed;
+    try {
+      listed = await deps.accountCatalog.listCodex();
+    } catch {
+      return null;
+    }
+    if (!listed?.ok || !Array.isArray(listed.accounts)) {
+      return null;
+    }
+    const rows = listed.accounts.filter(
+      (/** @type {any} */ row) => row?.number === leaf.account_number
+    );
+    const key = rows.length === 1 ? rows[0].key : null;
+    if (typeof key !== 'string' || key.length === 0) {
+      return null;
+    }
+    return {
+      outage: {
+        detail: outage.detail,
+        message: outage.message,
+        scope: outage.scope,
+        resets_at: null
+      },
+      account: key,
+      target: { runner: leaf.runner, model }
+    };
+  }
+
+  /**
    * Require both the session's provider wait and adapter-owned stream evidence.
+   * A delegated leaf's limit names its own runner's hold `target` and account
+   * (UI-gggh §3.2), never the attempt runner's account.
    *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {RunnerVerdict|null} verdict
-   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null }|null>}
+   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null, target?: { runner: string, model: string } }|null>}
    */
   async function providerRecoveryOutageFor(workspace, attempt_id, verdict) {
     if (
@@ -2937,6 +3029,9 @@ export function createScheduler(deps) {
     const outage = classifier({ raw: verdict.raw });
     if (!outage) {
       return null;
+    }
+    if (outage.leaf) {
+      return leafLimitHold(outage, outage.leaf);
     }
     const account = await providerAccountContext(attempt);
     return { outage, account: account.account };
@@ -6820,30 +6915,46 @@ export function createScheduler(deps) {
   /**
    * Persist a provider pause and its dispatch gate as one durable mutation.
    *
+   * The hold lives on the attempt's own runner, model, and account unless
+   * `classified.target` names another runner's — a delegated leaf's limit
+   * (UI-gggh §3.2). Such a cross-runner hold takes no switch at entry (the
+   * session already asked the switch-candidate API) and its membership never
+   * switches (§3.3).
+   *
+   * `settled` is the retroactive sweep's entry (§3.4): the row already went
+   * through its own termination, so the Bead's metadata and claim are not
+   * this write's to restore again, and a row that stopped waiting meanwhile is
+   * left alone.
+   *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} bead_id
    * @param {string|null} prior
-   * @param {{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null }} classified
+   * @param {{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null, target?: { runner: string, model: string } }} classified
+   * @param {{ settled?: boolean }} [options]
    */
   async function holdAttempt(
     workspace,
     attempt_id,
     bead_id,
     prior,
-    classified
+    classified,
+    options = {}
   ) {
     const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
     if (!attempt || typeof attempt.runner !== 'string') {
       return;
     }
+    const target_runner = classified.target?.runner ?? attempt.runner;
+    const target_model = classified.target?.model ?? attempt.model ?? '';
+    const cross_runner = target_runner !== attempt.runner;
     if (
       attempt.status === 'paused' &&
       attempt.cause?.startsWith('provider_outage:') &&
       deps.store
         .snapshot(workspace)
         .provider_hold?.[
-          attempt.runner
+          target_runner
         ]?.targets?.some((/** @type {any} */ target) => target.attempt_ids.includes(attempt_id))
     ) {
       return;
@@ -6858,16 +6969,19 @@ export function createScheduler(deps) {
       usage_limit || outage.detail === 'access_disabled'
         ? 'usage_limit'
         : 'outage';
-    const policy = providerLimitPolicyOf(workspace, attempt.runner);
+    const policy = providerLimitPolicyOf(workspace, target_runner);
     // An unresolved account is fail-closed (§6 F3): the target neither probes
     // nor auto-resumes, because nothing here knows which pool hit the limit,
     // and switching away from an unknown account is an auto-resume. Its only
     // exit is the manual continuation in §9.
     const switch_account =
-      usage_limit && policy.mode === 'switch' && classified.account !== null
+      usage_limit &&
+      !cross_runner &&
+      policy.mode === 'switch' &&
+      classified.account !== null
         ? await selectProviderSwitchAccount(
             workspace,
-            attempt.runner,
+            target_runner,
             classified.account,
             policy.accounts
           )
@@ -6878,11 +6992,12 @@ export function createScheduler(deps) {
     const current = deps.store.snapshot(workspace);
     const held_attempt = current.attempts[attempt_id];
     if (
-      held_attempt?.status === 'paused' &&
-      held_attempt.cause?.startsWith('provider_outage:') &&
-      current.provider_hold?.[attempt.runner]?.targets?.some(
-        (/** @type {any} */ target) => target.attempt_ids.includes(attempt_id)
-      )
+      (options.settled === true && held_attempt?.status !== 'waiting') ||
+      (held_attempt?.status === 'paused' &&
+        held_attempt.cause?.startsWith('provider_outage:') &&
+        current.provider_hold?.[target_runner]?.targets?.some(
+          (/** @type {any} */ target) => target.attempt_ids.includes(attempt_id)
+        ))
     ) {
       return;
     }
@@ -6901,10 +7016,10 @@ export function createScheduler(deps) {
         ...(stop_oid === null ? {} : { stop_head_oid: stop_oid }),
         ...usagePatch(workspace, attempt_id)
       },
-      runner: attempt.runner,
+      runner: target_runner,
       target: {
         kind: target_kind,
-        model: attempt.model ?? '',
+        model: target_model,
         account: classified.account,
         detail: outage.detail,
         last_error: outage.message,
@@ -6912,7 +7027,8 @@ export function createScheduler(deps) {
         rearm_count: 0,
         attempt_ids: [attempt_id]
       },
-      ...(usage_limit
+      ...(cross_runner ? { cross_runner: true } : {}),
+      ...(usage_limit && !cross_runner
         ? { auto_switch: { candidate_account: switch_account } }
         : {})
     });
@@ -6924,7 +7040,7 @@ export function createScheduler(deps) {
       attempt_id,
       kind: 'provider_hold',
       seq: saved.generation ?? 1,
-      summary: `${attempt.runner} ${outage.detail} 보류`,
+      summary: `${target_runner} ${outage.detail} 보류${cross_runner ? ' (리프)' : ''}`,
       at: now()
     });
     // `entered` is true only for the write that CREATED the target — for a
@@ -6933,40 +7049,48 @@ export function createScheduler(deps) {
     if (saved.entered) {
       // The stored reason, not the pre-write guess: the store also decides
       // `cap` and "the candidate is itself held", which this side cannot see.
-      const stored_switch = saved.queue?.provider_hold?.[
-        attempt.runner
-      ]?.targets?.find(
-        (/** @type {any} */ candidate) =>
-          candidate.kind === target_kind &&
-          candidate.account === classified.account
-      )?.auto_switch;
+      // A cross-runner member has no switch verdict of its own (§3.3).
+      const stored_switch = cross_runner
+        ? null
+        : saved.queue?.provider_hold?.[target_runner]?.targets?.find(
+            (/** @type {any} */ candidate) =>
+              candidate.kind === target_kind &&
+              candidate.account === classified.account
+          )?.auto_switch;
       notifyLifecycle('providerHoldEntered', {
         bead_id,
-        runner: attempt.runner,
+        runner: target_runner,
         kind: target_kind,
         detail: outage.detail,
         summary,
         account: classified.account,
         resets_at: outage.resets_at,
         ...(stored_switch ? { auto_switch: stored_switch } : {}),
+        ...(cross_runner ? { cross_runner: true } : {}),
         repo: saved.origin ?? attempt.repo
       });
     }
-    try {
-      await revertWorkflowMode(
+    if (options.settled !== true) {
+      try {
+        await revertWorkflowMode(
+          bead_id,
+          prior,
+          workflowModeSourcePriorOf(workspace, attempt_id)
+        );
+      } catch (err) {
+        log(
+          'workflow_mode revert failed for provider hold %s: %o',
+          bead_id,
+          err
+        );
+      }
+      await revertExecStamps(
         bead_id,
-        prior,
-        workflowModeSourcePriorOf(workspace, attempt_id)
+        execStampedKeysOf(workspace, attempt_id),
+        execRestoreValuesOf(workspace, attempt_id)
       );
-    } catch (err) {
-      log('workflow_mode revert failed for provider hold %s: %o', bead_id, err);
+      await releaseBeadClaim(bead_id, { workspace, attempt_id });
     }
-    await revertExecStamps(
-      bead_id,
-      execStampedKeysOf(workspace, attempt_id),
-      execRestoreValuesOf(workspace, attempt_id)
-    );
-    await releaseBeadClaim(bead_id, { workspace, attempt_id });
     const pending_switch = saved.queue?.auto_resume_pending?.some(
       (/** @type {any} */ entry) =>
         entry.attempt_id === attempt_id && entry.kind === 'account_switch'
@@ -10153,6 +10277,7 @@ export function createScheduler(deps) {
         }
       }
       reclassifyPreservedFailures(workspace);
+      await holdWaitingLeafLimits(workspace);
       await settleStaleWorkerClaims(workspace);
       await settleExternalWaitReservations(workspace);
       await reconcileInteractiveSessions(workspace);
@@ -12107,6 +12232,110 @@ export function createScheduler(deps) {
           at
         });
         notifyChanged(workspace);
+      }
+    }
+  }
+
+  /**
+   * Whether one row is a provider recovery wait the retroactive leaf-limit
+   * judgment (UI-gggh §3.4) may still read: waiting on `recovery:provider`,
+   * never judged, bound to no hold, and free of the exclusions the
+   * preserved-failure sweep keeps — a Bead claim, a discard, a resume or a
+   * live sibling, a withdrawal or a dismissal.
+   *
+   * @param {any} q
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function leafLimitSweepCandidate(q, attempt) {
+    const { attempt_id, bead_id } = attempt;
+    return (
+      attempt.status === 'waiting' &&
+      attempt.cause === 'session_recovery_wait' &&
+      attempt.cause_detail?.recovery?.reason === 'provider' &&
+      typeof attempt.provider_leaf_checked_at !== 'number' &&
+      !attempt.withdrawn &&
+      attempt.dismissed_at == null &&
+      !Object.hasOwn(q.provider_hold_members || {}, attempt_id) &&
+      !Object.values(q.provider_hold || {}).some((/** @type {any} */ hold) =>
+        (hold.targets || []).some((/** @type {any} */ target) =>
+          target.attempt_ids.includes(attempt_id)
+        )
+      ) &&
+      !discardActive(q, { bead_id, attempt_id }) &&
+      !claimed.has(bead_id) &&
+      !resume_in_flight.has(attempt_id) &&
+      !Object.values(q.attempts).some(
+        (/** @type {any} */ sibling) =>
+          sibling.resumed_from === attempt_id ||
+          (sibling.bead_id === bead_id &&
+            (['running', 'pending'].includes(sibling.status) ||
+              running.has(sibling.attempt_id) ||
+              settling.has(sibling.attempt_id)))
+      )
+    );
+  }
+
+  /**
+   * The one-shot retroactive judgment of provider recovery waits recorded
+   * before their leaf evidence could hold them (UI-gggh §3.4). Each candidate's
+   * persisted log goes through the same classifier and resolution as a live
+   * end; a resolved limit holds the row, and every judged row keeps a marker
+   * so its log is never read again.
+   *
+   * @param {string} workspace
+   */
+  async function holdWaitingLeafLimits(workspace) {
+    const q = deps.store.snapshot(workspace);
+    for (const attempt of latestImplementationAttempts(q.attempts).values()) {
+      if (!leafLimitSweepCandidate(q, attempt)) {
+        continue;
+      }
+      const { attempt_id, bead_id } = attempt;
+      try {
+        const raw = persistedSessionRaw(workspace, attempt_id, attempt);
+        if (raw === null) {
+          continue;
+        }
+        // The marker lands before the judgment, so a failure partway cannot
+        // turn the next pass into another read of the same log.
+        const marked = deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: { provider_leaf_checked_at: now() }
+        });
+        if (!marked.ok) {
+          continue;
+        }
+        const classified = await providerRecoveryOutageFor(
+          workspace,
+          attempt_id,
+          persistedRunnerVerdict(attempt, raw)
+        );
+        // The account read above is async: the row must still be the same
+        // unheld wait, by the same exclusions, before it is held.
+        const fresh = deps.store.snapshot(workspace);
+        const current = fresh.attempts[attempt_id];
+        if (
+          !classified ||
+          !current ||
+          !leafLimitSweepCandidate(fresh, {
+            ...current,
+            provider_leaf_checked_at: undefined
+          })
+        ) {
+          continue;
+        }
+        await holdAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          attempt.workflow_mode_prior ?? null,
+          classified,
+          { settled: true }
+        );
+        notifyChanged(workspace);
+      } catch (err) {
+        log('leaf limit sweep failed for %s: %o', attempt_id, err);
       }
     }
   }

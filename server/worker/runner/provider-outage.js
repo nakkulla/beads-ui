@@ -63,6 +63,22 @@ const MONTHS = {
  */
 
 /**
+ * The identity a codex-runner bridge manifest gives one exhausted Codex leaf
+ * (UI-gggh §3.1). A field the manifest left invalid is null; the caller then
+ * cannot resolve a hold target and keeps the recovery wait.
+ *
+ * @typedef {Object} CodexLeafLimit
+ * @property {'codex'} runner
+ * @property {number|null} account_number
+ * @property {string|null} limit_kind
+ * @property {string|null} requested_model
+ */
+
+/**
+ * @typedef {ProviderOutage & { leaf?: CodexLeafLimit }} ProviderRecoveryOutage
+ */
+
+/**
  * @typedef {Object} OutageMatch
  * @property {string} detail
  * @property {string} message
@@ -512,17 +528,147 @@ function rejectedWindow(raw, result_index) {
 }
 
 /**
+ * The tool_result body a stream `user` event carries: a string, or its text
+ * blocks joined. Null for any other content shape.
+ *
+ * @param {any} item
+ * @returns {string|null}
+ */
+function toolResultText(item) {
+  if (typeof item?.content === 'string') {
+    return item.content;
+  }
+  if (!Array.isArray(item?.content)) {
+    return null;
+  }
+  return item.content
+    .filter(
+      (/** @type {any} */ block) =>
+        block?.type === 'text' && typeof block.text === 'string'
+    )
+    .map((/** @type {any} */ block) => block.text)
+    .join('');
+}
+
+/**
+ * Read one codex-runner bridge manifest that ended on `usage_limit` (UI-gggh
+ * §3.1). Only a tool_result body that parses WHOLE as a JSON object whose
+ * non-null `bridge_result` names the bridge transport and the `usage_limit`
+ * error is evidence; a live poll (`bridge_result: null`), another error, a
+ * hand-back paragraph quoting the token, or unparseable text is not.
+ *
+ * @param {any} item
+ * @returns {{ leaf: CodexLeafLimit, message: string }|null}
+ */
+function bridgeLimitOf(item) {
+  if (item?.type !== 'tool_result') {
+    return null;
+  }
+  const text = toolResultText(item);
+  if (text === null) {
+    return null;
+  }
+  /** @type {any} */
+  let envelope;
+  try {
+    envelope = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const manifest =
+    envelope && typeof envelope === 'object' && !Array.isArray(envelope)
+      ? envelope.bridge_result
+      : null;
+  if (
+    !manifest ||
+    typeof manifest !== 'object' ||
+    Array.isArray(manifest) ||
+    manifest.transport !== 'codex_runner_bridge' ||
+    manifest.error_code !== 'usage_limit'
+  ) {
+    return null;
+  }
+  const diagnostics =
+    typeof manifest.diagnostics === 'string'
+      ? manifest.diagnostics
+          .split(/\r?\n/)
+          .map((/** @type {string} */ line) => line.trim())
+          .find((/** @type {string} */ line) => line.length > 0)
+      : undefined;
+  return {
+    leaf: {
+      runner: 'codex',
+      account_number:
+        Number.isInteger(manifest.account_number) && manifest.account_number > 0
+          ? manifest.account_number
+          : null,
+      limit_kind:
+        typeof manifest.limit_kind === 'string' &&
+        manifest.limit_kind.length > 0
+          ? manifest.limit_kind
+          : null,
+      requested_model:
+        typeof manifest.requested_model === 'string' &&
+        manifest.requested_model.length > 0
+          ? manifest.requested_model
+          : null
+    },
+    message: errorDetail(
+      diagnostics
+        ? `codex_runner_bridge usage_limit: ${diagnostics}`
+        : 'codex_runner_bridge usage_limit'
+    )
+  };
+}
+
+/**
+ * The codex leaf limit evidence one stream event carries, latest item first.
+ *
+ * @param {any} event
+ * @returns {{ leaf: CodexLeafLimit, message: string }|null}
+ */
+function leafLimitOf(event) {
+  const content = event?.type === 'user' ? event.message?.content : null;
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    const found = bridgeLimitOf(content[index]);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+/**
  * Find account rejection evidence for an explicit provider recovery wait.
  * A leaf rejection remains relevant after the controller's allowed events.
  * The caller must require the same attempt's recovery:provider result line.
  *
+ * Two evidence kinds are read, and the LAST one in the stream decides
+ * (UI-gggh §3.1): the CLI's own rejected `rate_limit_event` is a limit of the
+ * Claude account; a codex-runner bridge manifest ending on `usage_limit` is a
+ * limit of the delegated Codex leaf's account, returned with its `leaf`
+ * identity for the caller to resolve.
+ *
  * @param {{ raw: any[] }} ctx
- * @returns {ProviderOutage|null}
+ * @returns {ProviderRecoveryOutage|null}
  */
 export function classifyProviderRecoveryOutage(ctx) {
   const raw = Array.isArray(ctx.raw) ? ctx.raw : [];
   for (let index = raw.length - 1; index >= 0; index -= 1) {
     const event = raw[index];
+    const leaf = leafLimitOf(event);
+    if (leaf) {
+      return {
+        detail: 'usage_limit',
+        scope: 'account',
+        message: leaf.message,
+        resets_at: null,
+        leaf: leaf.leaf
+      };
+    }
     if (
       event?.type !== 'rate_limit_event' ||
       event.rate_limit_info?.status !== 'rejected'

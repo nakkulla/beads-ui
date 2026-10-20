@@ -318,4 +318,62 @@ describe('effective provider holds (UI-3v1h §5.5)', () => {
       null
     ]);
   });
+
+  test('takes the switch state from the first own-runner member (UI-gggh)', () => {
+    const projected = effectiveProviderHolds(
+      GLOBAL,
+      {},
+      {
+        'cross-1': {
+          runner: 'claude',
+          target_id: 't-1',
+          account: 'held@example.com',
+          cross_runner: true,
+          auto_switch: null,
+          switch_ready_at: null,
+          switch_ready_account: null
+        },
+        'att-1': {
+          runner: 'claude',
+          target_id: 't-1',
+          account: 'held@example.com',
+          auto_switch: 'none',
+          switch_ready_at: 900,
+          switch_ready_account: 'new@example.com'
+        }
+      }
+    );
+
+    expect(projected.claude.targets[0]).toMatchObject({
+      attempt_ids: ['cross-1', 'att-1'],
+      auto_switch: 'none',
+      switch_ready_at: 900,
+      switch_ready_account: 'new@example.com'
+    });
+  });
+
+  test('projects no switch state for a target only cross-runner members wait on', () => {
+    const projected = effectiveProviderHolds(
+      GLOBAL,
+      {},
+      {
+        'cross-1': {
+          runner: 'claude',
+          target_id: 't-1',
+          account: 'held@example.com',
+          cross_runner: true,
+          auto_switch: null,
+          switch_ready_at: null,
+          switch_ready_account: null
+        }
+      }
+    );
+
+    expect(projected.claude.targets[0]).toMatchObject({
+      attempt_ids: ['cross-1'],
+      auto_switch: null,
+      switch_ready_at: null,
+      switch_ready_account: null
+    });
+  });
 });

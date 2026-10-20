@@ -6140,24 +6140,102 @@ describe('scheduler provider hold and recovery', () => {
   });
 
   /**
+   * The Codex catalog a delegated leaf's account number resolves against.
+   *
+   * @type {Array<{ key: string, number: number, email: string, status: string, windows: Array<{ key: string, pct: number, resetsAt: string|null }> }>}
+   */
+  const CODEX_LEAF_ROWS = [
+    {
+      key: 'codex-two',
+      number: 2,
+      email: 'two@example.com',
+      status: 'ok',
+      windows: [{ key: '5h', pct: 100, resetsAt: null }]
+    },
+    {
+      key: 'codex-three',
+      number: 3,
+      email: 'three@example.com',
+      status: 'ok',
+      windows: [
+        { key: '5h', pct: 10, resetsAt: null },
+        { key: '7d', pct: 20, resetsAt: null }
+      ]
+    }
+  ];
+
+  /**
+   * One subagent tool_result carrying the codex-runner bridge manifest of a
+   * leaf that ended on its Codex account's usage limit (UI-gggh §3.1).
+   *
+   * @param {{ account_number?: number, requested_model?: string }} [leaf]
+   * @returns {any}
+   */
+  function codexLeafLimitEvent(leaf = {}) {
+    return {
+      type: 'user',
+      parent_tool_use_id: 'leaf-1',
+      message: {
+        role: 'user',
+        content: [
+          {
+            tool_use_id: 'toolu_wait',
+            type: 'tool_result',
+            is_error: false,
+            content: JSON.stringify({
+              bridge_result: {
+                transport: 'codex_runner_bridge',
+                error_code: 'usage_limit',
+                limit_kind: 'workspace_credits',
+                account_number: leaf.account_number ?? 2,
+                requested_model: leaf.requested_model ?? 'gpt-6-astra',
+                diagnostics: 'Error: Your workspace is out of credits.'
+              },
+              live: false,
+              terminal: true
+            })
+          }
+        ]
+      }
+    };
+  }
+
+  /**
+   * The classified stop of a claude session whose Codex leaf hit the limit
+   * of catalog account `codex-two`, as `providerRecoveryOutageFor` resolves it.
+   */
+  const LEAF_LIMIT = {
+    outage: {
+      detail: 'usage_limit',
+      message: 'codex_runner_bridge usage_limit',
+      scope: /** @type {const} */ ('account'),
+      resets_at: null
+    },
+    account: 'codex-two',
+    target: { runner: 'codex', model: 'astra' }
+  };
+
+  /**
    * Feed the same recovery evidence through live completion or restart replay.
    *
    * @param {string} source
-   * @param {{ runner?: string, reason?: string, rejected?: boolean, switch_account?: boolean, disposition?: boolean }} [options]
+   * @param {{ runner?: string, reason?: string, rejected?: boolean, switch_account?: boolean, disposition?: boolean, leaf?: { account_number?: number, requested_model?: string } }} [options]
    */
   async function providerRecoveryFixture(source, options = {}) {
     const runner = options.runner ?? 'claude';
     const reason = options.reason ?? 'provider';
     const summary = `대기 · recovery:${reason}`;
     const raw = [
-      {
-        type: 'rate_limit_event',
-        parent_tool_use_id: 'leaf-1',
-        rate_limit_info: {
-          status: options.rejected === false ? 'allowed' : 'rejected',
-          resetsAt: 1790874000
-        }
-      },
+      options.leaf
+        ? codexLeafLimitEvent(options.leaf)
+        : {
+            type: 'rate_limit_event',
+            parent_tool_use_id: 'leaf-1',
+            rate_limit_info: {
+              status: options.rejected === false ? 'allowed' : 'rejected',
+              resetsAt: 1790874000
+            }
+          },
       { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } },
       ...(runner === 'claude'
         ? [
@@ -6219,7 +6297,16 @@ describe('scheduler provider hold and recovery', () => {
             ok: true,
             accounts: rows,
             active_key: rows[0].email
-          }))
+          })),
+          ...(options.leaf
+            ? {
+                listCodex: vi.fn(async () => ({
+                  ok: true,
+                  accounts: CODEX_LEAF_ROWS,
+                  active_key: null
+                }))
+              }
+            : {})
         }
       })
     });
@@ -6372,6 +6459,365 @@ describe('scheduler provider hold and recovery', () => {
       expect(env.hold).not.toHaveBeenCalled();
     }
   );
+
+  test.each(['live', 'persisted'])(
+    'holds a session on its codex leaf account target through %s (UI-gggh)',
+    async (source) => {
+      const env = await providerRecoveryFixture(source, { leaf: {} });
+
+      await env.finish();
+
+      const queue = env.store.snapshot(WS);
+      expect(queue.attempts[env.attempt_id]).toMatchObject({
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      });
+      expect(queue.provider_hold.codex.targets).toMatchObject([
+        {
+          kind: 'usage_limit',
+          model: 'astra',
+          account: 'codex-two',
+          resets_at: null,
+          attempt_ids: [env.attempt_id]
+        }
+      ]);
+      expect(queue.provider_hold.claude).toBeUndefined();
+    }
+  );
+
+  test.each([
+    ['live', { account_number: 9 }],
+    ['persisted', { account_number: 9 }],
+    ['live', { requested_model: 'gpt-9-nova' }],
+    ['persisted', { requested_model: 'gpt-9-nova' }]
+  ])(
+    'keeps an unresolved codex leaf limit waiting through %s (%j)',
+    async (source, leaf) => {
+      const env = await providerRecoveryFixture(source, { leaf });
+
+      await env.finish();
+
+      expect(env.store.snapshot(WS).attempts[env.attempt_id]).toMatchObject({
+        status: 'waiting',
+        cause: 'session_recovery_wait'
+      });
+      expect(env.hold).not.toHaveBeenCalled();
+    }
+  );
+
+  test('records the codex leaf hold on the session timeline (UI-gggh)', async () => {
+    const append = vi.fn();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      timeline: { append },
+      ...accountDeps()
+    });
+    seedProviderAttempt(env.store, 'leaf-held', 'B1');
+
+    await env.scheduler.holdAttempt(WS, 'leaf-held', 'B1', null, LEAF_LIMIT);
+
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'provider_hold',
+        summary: 'codex usage_limit 보류 (리프)'
+      })
+    );
+  });
+
+  test('announces the codex leaf hold without a switch (UI-gggh)', async () => {
+    const notify = { providerHoldEntered: vi.fn() };
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      notify,
+      ...accountDeps()
+    });
+    seedProviderAttempt(env.store, 'leaf-held', 'B1');
+
+    await env.scheduler.holdAttempt(WS, 'leaf-held', 'B1', null, LEAF_LIMIT);
+
+    expect(notify.providerHoldEntered).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runner: 'codex',
+        account: 'codex-two',
+        cross_runner: true
+      })
+    );
+  });
+
+  /**
+   * Hold one claude session on its Codex leaf's account and release that
+   * account's target, as a probe recovery would (UI-gggh §3.3).
+   *
+   * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+   */
+  async function releasedLeafHold(patch = {}) {
+    const env = setup({
+      config: { B1: { claude_account: 'current@example.com' } },
+      slots: 1,
+      ...accountDeps()
+    });
+    seedProviderAttempt(env.store, 'leaf-held', 'B1', {
+      effort: 'high',
+      speed: 'default',
+      session_id: 'sid-leaf',
+      base_oid: 'base-B1',
+      target_base: 'main',
+      claude_account: 'hot@example.com',
+      exec_values: resumableExecValues(),
+      ...patch
+    });
+    await env.scheduler.holdAttempt(WS, 'leaf-held', 'B1', null, LEAF_LIMIT);
+    const settled = recoverTarget(
+      env.store,
+      WS,
+      {
+        runner: 'codex',
+        kind: 'usage_limit',
+        model: 'astra',
+        account: 'codex-two'
+      },
+      { codex: ['codex-two'] }
+    );
+    return { ...env, settled };
+  }
+
+  test('releases a codex leaf hold with no resume account', async () => {
+    const env = await releasedLeafHold();
+
+    expect(env.settled.pending).toEqual([
+      expect.objectContaining({
+        attempt_id: 'leaf-held',
+        account: null,
+        kind: 'provider_outage'
+      })
+    ]);
+  });
+
+  test('resumes a released leaf hold in the same session on its own runner account', async () => {
+    const env = await releasedLeafHold();
+
+    await env.scheduler.consumeProviderAutoResume(WS);
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'leaf-held'
+    );
+    expect(child).toMatchObject({
+      runner: 'claude',
+      claude_account: 'current@example.com',
+      codex_account: null,
+      auto_resume_kind: 'provider_outage'
+    });
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-leaf');
+  });
+
+  test('resumes a locked leaf hold on its recorded account without refusal', async () => {
+    const env = await releasedLeafHold({
+      continuation_choice: 'prior_attempt'
+    });
+
+    await env.scheduler.consumeProviderAutoResume(WS);
+
+    const queue = env.store.snapshot(WS);
+    const child = Object.values(queue.attempts).find(
+      (attempt) => attempt.resumed_from === 'leaf-held'
+    );
+    expect(child).toMatchObject({
+      runner: 'claude',
+      continuation_choice: 'prior_attempt',
+      claude_account: 'hot@example.com'
+    });
+    expect(queue.attempts['leaf-held'].auto_resume_refused).toBeNull();
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-leaf');
+  });
+
+  test('switches the codex member of a leaf target while the session member waits', async () => {
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { key: email, email }
+          })),
+          resolveCodex: vi.fn(async (key) => ({
+            ok: true,
+            account: { key, email: `${key}@example.com` }
+          })),
+          listCodex: vi.fn(async () => ({
+            ok: true,
+            accounts: CODEX_LEAF_ROWS,
+            active_key: 'codex-two'
+          }))
+        }
+      })
+    });
+    allowSwitchAccounts(env.store, 'codex', ['codex-three']);
+    seedProviderAttempt(env.store, 'codex-held', 'H1', {
+      runner: 'codex',
+      model: 'astra'
+    });
+    env.store.holdProviderAttempt(WS, {
+      attempt_id: 'codex-held',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'codex',
+      target: {
+        kind: 'usage_limit',
+        model: 'astra',
+        account: 'codex-two',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: { candidate_account: null }
+    });
+    seedProviderAttempt(env.store, 'leaf-held', 'B1');
+
+    await env.scheduler.holdAttempt(WS, 'leaf-held', 'B1', null, LEAF_LIMIT);
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.provider_hold_members['codex-held']).toBeUndefined();
+    expect(queue.provider_hold_members['leaf-held']).toMatchObject({
+      runner: 'codex',
+      cross_runner: true,
+      auto_switch: null
+    });
+    expect(
+      queue.auto_resume_pending.some(
+        (/** @type {any} */ entry) => entry.attempt_id === 'leaf-held'
+      )
+    ).toBe(false);
+  });
+
+  /**
+   * A provider recovery wait recorded before leaf evidence could hold it,
+   * with its persisted session log (UI-gggh §3.4).
+   *
+   * @param {{ account_number?: number, requested_model?: string }} [leaf]
+   */
+  function waitingLeafRow(leaf = {}) {
+    const sessionLog = createSessionLog();
+    const read = vi.spyOn(sessionLog, 'read');
+    const log_path = beadSessionLogPath(WS, 'B1', 'waiting-leaf');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      [
+        codexLeafLimitEvent(leaf),
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: '대기 · recovery:provider'
+        }
+      ]
+        .map((event) => JSON.stringify(event))
+        .join('\n') + '\n'
+    );
+    const env = setup({
+      config: { B1: {} },
+      sessionLog,
+      probePid: () => ({ alive: false, started_at: null }),
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { key: email, email }
+          })),
+          listCodex: vi.fn(async () => ({
+            ok: true,
+            accounts: CODEX_LEAF_ROWS,
+            active_key: null
+          }))
+        }
+      })
+    });
+    seedProviderAttempt(env.store, 'waiting-leaf', 'B1', {
+      status: 'waiting',
+      cause: 'session_recovery_wait',
+      cause_detail: {
+        recovery: {
+          classification: 'session_recovery_wait',
+          disposition: 'wait',
+          reason: 'provider'
+        }
+      },
+      session_id: 'sid-waiting',
+      started_at: 1000,
+      finished_at: 2000,
+      log_path
+    });
+    const readsOfRow = () =>
+      read.mock.calls.filter((call) => call[1] === 'waiting-leaf').length;
+    return { ...env, readsOfRow };
+  }
+
+  test('holds an already waiting leaf-limit row on reconcile', async () => {
+    const env = waitingLeafRow();
+
+    await env.scheduler.reconcile(WS);
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.attempts['waiting-leaf']).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:usage_limit'
+    });
+    expect(queue.provider_hold.codex.targets).toMatchObject([
+      { account: 'codex-two', model: 'astra', attempt_ids: ['waiting-leaf'] }
+    ]);
+  });
+
+  test('judges an unresolved waiting row once', async () => {
+    const env = waitingLeafRow({ account_number: 9 });
+
+    await env.scheduler.reconcile(WS);
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['waiting-leaf']).toMatchObject({
+      status: 'waiting',
+      provider_leaf_checked_at: expect.any(Number)
+    });
+    expect(env.readsOfRow()).toBe(1);
+  });
+
+  test('leaves a leaf hold out of the codex wait-mode follow pass', async () => {
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { key: email, email }
+          })),
+          listCodex: vi.fn(async () => ({
+            ok: true,
+            accounts: CODEX_LEAF_ROWS,
+            active_key: 'codex-three'
+          }))
+        }
+      })
+    });
+    env.store.setProviderLimitPolicy(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      runner: 'codex',
+      patch: { mode: 'wait' }
+    });
+    seedProviderAttempt(env.store, 'leaf-held', 'B1');
+
+    await env.scheduler.holdAttempt(WS, 'leaf-held', 'B1', null, LEAF_LIMIT);
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.provider_hold_members['leaf-held']).toMatchObject({
+      runner: 'codex',
+      account: 'codex-two'
+    });
+    expect(queue.auto_resume_pending).toEqual([]);
+  });
 
   /**
    * Allow one runner to switch onto a given account set (spec §3.1).
