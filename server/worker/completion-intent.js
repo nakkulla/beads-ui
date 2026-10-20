@@ -3232,11 +3232,12 @@ export function createCompletionActionDriver(deps) {
    * `base_verifying` stage's result, then the linked follow-ups. Once none is
    * live, the base is fetched: unchanged is the hold, moved is one re-verify
    * on the new base. A link read that fails counts as settled; a base that
-   * cannot be read leaves the wait for the next trigger.
+   * cannot be read leaves the wait for the next coordinator pass.
    *
    * @param {string} root_bead_id
    * @param {'pass'|'event'} source - `pass` reads the links once per root per
-   * process (the restart case); `event` is the bd change trigger.
+   * process (the restart case) unless the base read failed; `event` is the bd
+   * change trigger.
    */
   async function checkFollowupWait(root_bead_id, source) {
     const queue = deps.store.snapshot(deps.workspace);
@@ -3279,12 +3280,15 @@ export function createCompletionActionDriver(deps) {
     if (typeof deps.resolveBase !== 'function') {
       return;
     }
+    // Settled links draw no further bd event, so a base this check could not
+    // read must leave the root to the next coordinator pass.
     /** @type {any} */
     let pinned = null;
     try {
       pinned = await deps.resolveBase({ force: true });
     } catch (err) {
       log('follow-up base fetch failed for %s: %o', root_bead_id, err);
+      followup_pass_checked.delete(root_bead_id);
       return;
     }
     if (
@@ -3293,6 +3297,7 @@ export function createCompletionActionDriver(deps) {
       typeof pinned.base_oid !== 'string' ||
       !/^[0-9a-f]{40}$/i.test(pinned.base_oid)
     ) {
+      followup_pass_checked.delete(root_bead_id);
       return;
     }
     const ids = wait.links.join(',');

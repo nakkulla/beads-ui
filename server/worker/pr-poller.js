@@ -44,7 +44,10 @@ import {
 } from './foreign-target.js';
 import { createAncestryProbe, reviewReceiptState } from './merge-gate.js';
 import { onQueueChanged } from './queue-events.js';
-import { COMPLETION_VERIFY_SUPPRESSED_PHASES } from './queue-store.js';
+import {
+  COMPLETION_VERIFY_SUPPRESSED_PHASES,
+  followupWaitStands
+} from './queue-store.js';
 import { resolveRepoOps as defaultResolveRepoOps } from './repo-ops-resolver.js';
 
 const log = debug('worker:pr-poller');
@@ -567,7 +570,7 @@ export function createPrPoller(deps) {
     if (!policy.ok || typeof policy.verify_script_path !== 'string') {
       return { verify: null };
     }
-    if (verifySuppressed(queue, bead_id)) {
+    if (verifySuppressed(queue, bead_id, pr.head_sha)) {
       return { verify: null };
     }
     return {
@@ -832,7 +835,7 @@ export function createPrPoller(deps) {
       !repo_operations ||
       judgment.verify_script_path === null ||
       judgment.base_sha === null ||
-      verifySuppressed(queue, bead_id)
+      verifySuppressed(queue, bead_id, pr.head_sha)
     ) {
       return { verify: null };
     }
@@ -881,23 +884,29 @@ export function createPrPoller(deps) {
   }
 
   /**
-   * Whether this row's completion intent forbids a pre-merge verify run
-   * (UI-hk74 §8). A row that cannot merge under any observation still draws a
-   * fresh verify every time the base moves, which is where the five wasted runs
-   * of the originating incident came from. `reviewing` is deliberately NOT
-   * suppressed: the gate demands a verify receipt the moment a review is
-   * approved.
+   * Whether this row's completion intent forbids a pre-merge verify run of
+   * `head_sha` (UI-hk74 §8). A row that cannot merge under any observation
+   * still draws a fresh verify every time the base moves, which is where the
+   * five wasted runs of the originating incident came from. `reviewing` is
+   * deliberately NOT suppressed: the gate demands a verify receipt the moment a
+   * review is approved. A red-base wait forbids only its own head (UI-ty6k
+   * §4.2): without a new head's verify the enroller never brings its row back,
+   * and the wait would outlive the head it was opened for.
    *
    * @param {Queue} queue
    * @param {string} bead_id
+   * @param {string} head_sha
    */
-  function verifySuppressed(queue, bead_id) {
-    const phase = /** @type {any} */ (queue).completion_intents?.[bead_id]
-      ?.phase;
-    return (
-      typeof phase === 'string' &&
-      COMPLETION_VERIFY_SUPPRESSED_PHASES.has(phase)
-    );
+  function verifySuppressed(queue, bead_id, head_sha) {
+    const intent = /** @type {any} */ (queue).completion_intents?.[bead_id];
+    const phase = intent?.phase;
+    if (
+      typeof phase !== 'string' ||
+      !COMPLETION_VERIFY_SUPPRESSED_PHASES.has(phase)
+    ) {
+      return false;
+    }
+    return phase !== 'waiting_followup' || followupWaitStands(intent, head_sha);
   }
 
   /**

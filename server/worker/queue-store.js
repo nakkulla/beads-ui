@@ -1412,7 +1412,9 @@ export const COMPLETION_RETRY_MAX = 3;
  * approval, so suppressing it there would only add one verify's latency.
  * `waiting_followup` runs exactly two verifies of its own — the base-only one
  * and the one re-verify on a moved base (UI-ty6k §4.1 4단계) — so a base move
- * while it waits draws none.
+ * while it waits draws none. That suppression is for the wait's own head only
+ * ({@link followupWaitStands}): a new head's verify is what brings its row
+ * back to the merge queue, where the stale rule ends the wait (§4.2).
  *
  * @type {Set<string>}
  */
@@ -6106,15 +6108,16 @@ function cancelReviewSessions(next, bead_ids, at) {
 
 /**
  * Whether a red-base wait stands for `head_sha` — the same-head row the
- * automatic enroller must not put back in the merge queue (UI-ty6k §4.1
- * 4단계), exactly as a `holding` intent's held head is not. A new head is not
- * excluded: its row comes back and the stale rule ends the wait.
+ * automatic enroller must not put back in the merge queue and the poller must
+ * not verify (UI-ty6k §4.1 4단계), exactly as a `holding` intent's held head is
+ * not re-enrolled. A new head is neither: its verify runs, its row comes back
+ * and the stale rule ends the wait.
  *
  * @param {CompletionIntent} intent
  * @param {unknown} head_sha
  * @returns {boolean}
  */
-function followupWaitStands(intent, head_sha) {
+export function followupWaitStands(intent, head_sha) {
   return (
     intent.phase === 'waiting_followup' &&
     typeof head_sha === 'string' &&

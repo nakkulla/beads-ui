@@ -1465,20 +1465,46 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
   });
 
   test.each([
-    ['needs_human'],
-    ['waiting_metadata'],
-    ['retrying'],
-    ['waiting_followup']
-  ])('skips verify for a root intent parked in %s', async (phase) => {
+    ['needs_human', {}],
+    ['waiting_metadata', {}],
+    ['retrying', {}],
+    ['waiting_followup', { followup_wait: { head_sha: SHA } }]
+  ])('skips verify for a root intent parked in %s', async (phase, record) => {
     const operations = repoOperations();
     const { poller } = makePoller({
-      queue: { ...queueOf(), completion_intents: { 'UI-1': { phase } } },
+      queue: {
+        ...queueOf(),
+        completion_intents: { 'UI-1': { phase, ...record } }
+      },
       repoOperations: operations
     });
 
     await poller.tick();
 
     expect(operations.ensureVerify).not.toHaveBeenCalled();
+  });
+
+  test('starts verify for a head pushed while a red-base wait stands', async () => {
+    const operations = repoOperations();
+    const { poller } = makePoller({
+      queue: {
+        ...queueOf(),
+        completion_intents: {
+          'UI-1': {
+            phase: 'waiting_followup',
+            followup_wait: { head_sha: SHA }
+          }
+        }
+      },
+      detail: { state: 'ok', data: detailOf({ head_sha: NEW_SHA }) },
+      repoOperations: operations
+    });
+
+    await poller.tick();
+
+    expect(operations.ensureVerify).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ head_sha: NEW_SHA })
+    );
   });
 
   test('starts verify again once the intent returns to gating', async () => {

@@ -8,6 +8,7 @@ import {
   __resetTimingSettingsForTest,
   __setTimingOverridesForTest
 } from '../timing-settings.js';
+import { createAutoMerge } from './auto-merge.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import {
   COMPLETION_RETRY_DELAYS_MS,
@@ -27,11 +28,15 @@ import {
   needsHumanNextAction
 } from './completion-intent.js';
 import { createForeignHandoffAnnouncer } from './foreign-handoff.js';
+import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
+import { createPrPoller } from './pr-poller.js';
 import { createQueueStore } from './queue-store.js';
 import { EXEC_RECEIPT_MERGE_GATE } from './receipt-check.js';
+import { repoOpsVerifyReceiptState } from './repo-ops-display.js';
 import { createFailureConversationLauncher } from './resolve-session.js';
+import { __resetWorkerRuntimeForTest, getWorkerRuntime } from './runtime.js';
 
 const DRIVER_WS = '/repo';
 /** @type {string[]} */
@@ -5085,6 +5090,11 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
   const MOVED_BASE = 'c'.repeat(40);
   const NEW_HEAD = 'd'.repeat(40);
   const LIMIT_MS = 48 * 60 * 60 * 1000;
+  const PR_URL = 'https://github.com/o/r/pull/1';
+
+  afterEach(() => {
+    __resetWorkerRuntimeForTest();
+  });
 
   /**
    * A failed pre-merge verify whose same-candidate retry already re-ran.
@@ -5637,6 +5647,122 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
     expect(rootIntent(h)).not.toHaveProperty('followup_wait');
   });
 
+  test('verifies, enrolls and re-gates a head pushed while the wait stands', async () => {
+    const state_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-followup-'));
+    tmp_dirs.push(state_dir);
+    process.env.XDG_STATE_HOME = state_dir;
+    const seeded = seededCompletionStore().snapshot(DRIVER_WS);
+    const file = queueFile({
+      ...seeded,
+      attempts: {
+        ...seeded.attempts,
+        'att-root': {
+          ...seeded.attempts['att-root'],
+          verify_result: {
+            ok: true,
+            reason: 'ok',
+            pr_url: PR_URL,
+            pr_number: 1
+          }
+        }
+      },
+      repo_operations: { 'verify-one': failedVerifyOperation() }
+    });
+    const h = waitHarness({
+      store: createQueueStore({ filePathFor: () => file })
+    });
+    await driveOnce(h.store, h.driver);
+    const runtime = getWorkerRuntime();
+    const policy = {
+      declaration_state: /** @type {const} */ ('present'),
+      base_sha: RED_BASE
+    };
+    const ensureVerify = vi.fn(async (/** @type {any} */ candidate) => ({
+      ok: true,
+      operation_id: `verify-${candidate.head_sha}`,
+      timeout_ms: 1000
+    }));
+    const poller = createPrPoller({
+      workspace: DRIVER_WS,
+      repo: DRIVER_WS,
+      store: h.store,
+      observations: runtime.prObservations,
+      getSubscriberCount: () => 0,
+      gh: {
+        prDetail: async () => ({
+          state: 'ok',
+          data: {
+            number: 1,
+            url: PR_URL,
+            state: 'OPEN',
+            mergeable: 'MERGEABLE',
+            merge_state_status: 'CLEAN',
+            head_ref: 'UI-root',
+            base_ref: 'main',
+            head_sha: NEW_HEAD
+          }
+        })
+      },
+      readIssue: async () => ({ metadata: { route: 'quick_fix' } }),
+      resolveBase: async () =>
+        /** @type {any} */ ({ ok: true, base: 'main', base_oid: RED_BASE }),
+      repoOperations: {
+        hasConfig: async () => ({
+          ok: true,
+          present: true,
+          verify_script_path: 'repo-ops/script/verify'
+        }),
+        ensureVerify,
+        waitForTerminal: async (_id, options) => ({
+          state: 'succeeded',
+          ok: true,
+          reason: 'ok',
+          head_sha: options.head_sha,
+          effective_base_sha: RED_BASE,
+          log_path: `/logs/verify-${options.head_sha}.log`
+        }),
+        verifyReceipt: () => null
+      }
+    });
+    const enroller = createAutoMerge({
+      workspace: DRIVER_WS,
+      store: h.store,
+      verifyState: () => policy
+    });
+    h.completionGate.mockImplementation(async () => {
+      const observed = runtime.prObservations.get(DRIVER_WS, 'UI-root');
+      return redGate({
+        subject: { ...intent().subject, head_sha: observed?.pr?.head_sha },
+        evidence: { verify: observed?.verify },
+        verdict: evaluateMergeGate(observed, {
+          review_receipt_state: observedReviewReceiptState(observed),
+          verify_receipt_state: repoOpsVerifyReceiptState(
+            policy,
+            observed?.verify
+          )
+        })
+      });
+    });
+
+    await poller.tick();
+    enroller.enroll();
+    await coordinatorOver(h).reconcile();
+
+    expect(
+      ensureVerify.mock.calls.map(([candidate]) => candidate.head_sha)
+    ).toEqual([NEW_HEAD]);
+    expect(
+      h.store.snapshot(DRIVER_WS).merge_queue.map((entry) => entry.bead_id)
+    ).toEqual(['UI-root']);
+    expect(rootIntent(h)).toMatchObject({
+      phase: 'gating',
+      auto_resolution: null,
+      subject: { head_sha: NEW_HEAD },
+      followup_waits: [{ pr_url: PR_URL, head_sha: RED_HEAD }]
+    });
+    expect(rootIntent(h)).not.toHaveProperty('followup_wait');
+  });
+
   test('keeps the wait through a store restart', async () => {
     const h = waitHarness();
     await driveOnce(h.store, h.driver);
@@ -5804,6 +5930,32 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
 
     expect(h.findIssue.mock.calls.map(([id]) => id)).toEqual(['UI-fix1']);
   });
+
+  test.each([
+    ['throws', () => Promise.reject(new Error('fetch failed'))],
+    ['answers no base', async () => ({ ok: false, step: 'fetch' })]
+  ])(
+    'fetches the base again from the next pass after a fetch that %s',
+    async (_label, failedFetch) => {
+      const h = waitHarness();
+      await driveOnce(h.store, h.driver);
+      h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'closed' };
+      h.resolveBase.mockImplementationOnce(/** @type {any} */ (failedFetch));
+      await coordinatorOver(h).reconcile();
+      h.resolveBase.mockResolvedValue({
+        ok: true,
+        base: 'main',
+        base_oid: MOVED_BASE
+      });
+
+      await coordinatorOver(h).reconcile();
+
+      expect(rootIntent(h)).toMatchObject({
+        phase: 'gating',
+        followup_wait: { head_sha: RED_HEAD, outcome: 'base_moved' }
+      });
+    }
+  );
 
   test('re-checks a follow-up that closed during the base-only verify', async () => {
     const h = waitHarness();
