@@ -8300,8 +8300,9 @@ describe('scheduler provider hold and recovery', () => {
    *
    * @param {number} weekly - `codex-03` weekly usage.
    * @param {Record<string, any>} [patch] - Extra recorded attempt fields.
+   * @param {Record<string, any>} [bead] - Extra Bead settings.
    */
-  function codexResumeEnv(weekly, patch = {}) {
+  function codexResumeEnv(weekly, patch = {}, bead = {}) {
     const env = codexPreemptEnv(
       {
         ok: true,
@@ -8312,7 +8313,7 @@ describe('scheduler provider hold and recovery', () => {
         ]
       },
       {},
-      { codex_account: 'codex-03' }
+      { codex_account: 'codex-03', ...bead }
     );
     allowSwitchAccounts(env.store, 'codex', ['codex-01', 'codex-03']);
     env.store.appendAttempt(WS, {
@@ -8400,6 +8401,28 @@ describe('scheduler provider hold and recovery', () => {
   });
 
   // UI-ftww acceptance 7b (wait policy)
+  // UI-ftww acceptance 7a (cross-runner prior_session resume)
+  test('moves a cross-runner prior_session resume off the exhausted prior codex account', async () => {
+    const env = codexResumeEnv(100, {}, { model: 'opus', effort: 'high' });
+    const mismatch = await env.scheduler.resume(WS, 'codex-prior');
+
+    const result = await env.scheduler.resume(WS, 'codex-prior', {
+      continuation: 'prior_session',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(mismatch.reason).toBe('runner_mismatch');
+    expect(result.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      runner: 'codex',
+      codex_account: 'codex-01',
+      account_sources: { codex: 'preempt_switch' },
+      account_switched_from: 'codex-03'
+    });
+  });
+
   test('keeps an exhausted plain codex resume on its account under the wait policy', async () => {
     const env = codexResumeEnv(100);
     env.store.setProviderLimitPolicy(WS, {

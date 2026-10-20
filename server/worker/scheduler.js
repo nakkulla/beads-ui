@@ -17673,17 +17673,10 @@ export function createScheduler(deps) {
             : 'outage_switch'
       };
     }
-    const preempt =
+    const wait_preempt =
       options.external_wait_resume === true
         ? await applyPreemptSwitch(workspace, resolved.exec.runner, resolved)
-        : resolved.exec.runner === 'codex'
-          ? await applyPreemptSwitch(
-              workspace,
-              resolved.exec.runner,
-              resolved,
-              { exhausted_only: true }
-            )
-          : null;
+        : null;
     const prior_runner = recorded_prior_runner ?? resolved.exec.runner;
     const requested_decision = options.continuation || 'auto';
     if (
@@ -17866,6 +17859,19 @@ export function createScheduler(deps) {
         decision_token,
         runner_mismatch
       };
+    }
+    // The exhausted check judges the account this launch really spends, so it
+    // runs after the launch runner and accounts are final (spec §4.4).
+    let preempt = wait_preempt;
+    if (preempt === null && runner_name === 'codex') {
+      const launch_target = {
+        accounts: launch_accounts,
+        account_sources: resolved.account_sources
+      };
+      preempt = await applyPreemptSwitch(workspace, 'codex', launch_target, {
+        exhausted_only: true
+      });
+      resolved.account_sources = launch_target.account_sources;
     }
     const candidate_stamped_keys = use_prior
       ? EXEC_SETTING_KEYS
