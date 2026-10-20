@@ -1469,20 +1469,17 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     ['waiting_metadata'],
     ['retrying'],
     ['waiting_followup']
-  ])(
-    'skips verify for a root intent parked in %s',
-    async (phase) => {
-      const operations = repoOperations();
-      const { poller } = makePoller({
-        queue: { ...queueOf(), completion_intents: { 'UI-1': { phase } } },
-        repoOperations: operations
-      });
+  ])('skips verify for a root intent parked in %s', async (phase) => {
+    const operations = repoOperations();
+    const { poller } = makePoller({
+      queue: { ...queueOf(), completion_intents: { 'UI-1': { phase } } },
+      repoOperations: operations
+    });
 
-      await poller.tick();
+    await poller.tick();
 
-      expect(operations.ensureVerify).not.toHaveBeenCalled();
-    }
-  );
+    expect(operations.ensureVerify).not.toHaveBeenCalled();
+  });
 
   test('starts verify again once the intent returns to gating', async () => {
     const operations = repoOperations();
