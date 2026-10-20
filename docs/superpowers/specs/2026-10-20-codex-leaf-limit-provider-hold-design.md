@@ -54,7 +54,9 @@ deferred), dotfiles 계약·bridge payload 변경.
 - 계정은 `providerAccountContext(attempt)`가 attempt 러너로 해석하므로 claude attempt는 Claude 계정이 나온다 — server/worker/scheduler.js:1933-1975
 - `holdProviderAttempt`는 `runner`를 입력으로 받고 attempt 러너와 대조하지 않으며 멤버에 `{runner, target_id, account, auto_switch}`를 쓴다 — server/worker/queue-store.js:9482-9570
 - 해제 영수증은 멤버 계정을 싣고(server/worker/queue-store.js:10224-10233), 소비 측은 그 계정을 attempt 러너의 override 키에 넣는다(`claude_account`) — server/worker/scheduler.js:16109, :16128-16131; Claude 해석기에 Codex 키가 들어가면 `exec_override_invalid` → permanent 거부로 영구 정지 — server/worker/scheduler.js:16593-16611, server/worker/continuation-refusal.js:87-105
-- 영수증 계정이 null이면 `resolve_provider_account`로 attempt 러너의 계정을 다시 해석하고, 기록된 claude 세션을 transcript째 재개한다 — server/worker/scheduler.js:16122, :17344-17369, :17498-17514
+- 영수증 계정이 null이면 override 없이 `resolve_provider_account`로 attempt 러너의 계정을 다시 해석하고, 기록된 claude 세션을 transcript째 재개한다 — server/worker/scheduler.js:16122, :17344-17369, :17498-17514
+- 예외: `continuation_choice === 'prior_attempt'` 잠금이면 소비 측이 continuation을 `prior_attempt`로 지키고(server/worker/scheduler.js:16111-16118) 재개 계정 재해석을 건너뛰어 기록된 계정을 쓴다(:17344-17347); 영수증 계정이 null이면 잠금 거부(`prior_attempt_locked`) 조건에 걸리지 않는다(:16142-16148)
+- ADR UI-9y1k는 "자동 전환 모드와 기다림 대상 밖 멤버의 재개 계정은 멤버십의 계정"이라고 정한다 — docs/adr/UI-9y1k-codex-switch-order-and-credits.md:92-93
 - 전환 재평가·보류 attempt 전환·멤버 전환 묶음·기다림 추종은 멤버의 러너를 거르지 않는다 — server/worker/scheduler.js:2187-2292, server/worker/queue-store.js:6702, :6751, :6785, :9820-9877; 투영의 대표 멤버는 첫 멤버다 — server/worker/provider-holds.js:267
 - 멤버 정규화는 알려진 필드만 남긴다 — server/worker/queue-store.js:5113
 - 무진전 자동 재개 상한·`stop_head_oid`·`leafPausedBeads` 디스패치 차단은 러너와 무관하다 — server/worker/queue-store.js:5249-5281, server/worker/scheduler.js:5900
@@ -112,8 +114,11 @@ target 러너와 attempt 러너가 다른 멤버(이하 **교차 멤버**)는:
   아니고, 같은 target의 Codex 멤버 `auto_switch`를 바꾸지 않는다(투영 대표 멤버는 첫
   비교차 멤버).
 - 기다림 모드 추종을 하지 않는다(`waitMemberOf` 제외).
-- 해제 영수증 계정은 null이다 → 재개 때 attempt 러너의 계정을 다시 해석하고
-  continuation은 `auto`(기록된 claude 세션 재개).
+- 해제 영수증 계정은 null이다 → 재개에 `exec_override`가 붙지 않는다. 계정과
+  continuation은 그 attempt의 기존 규칙 그대로다: 잠기지 않은 attempt는 자기 러너 계정을
+  다시 해석하고 `auto`로, `prior_attempt` 잠금 attempt는 기록된 자기 러너 계정을 지키고
+  `prior_attempt`로 기록된 claude 세션을 재개한다. 교차 여부는 정산 때(멤버 러너 ≠ attempt
+  러너) 한 번 판정하고, 소비 경로는 바꾸지 않는다.
 - 무진전 상한·디스패치 차단·폐기·✕ 정리는 지금 규칙 그대로다.
 
 결정: 교차 멤버는 전환·기다림 추종에서 빠지고 해제 영수증 계정은 null이다 (대안: 일반
@@ -158,8 +163,9 @@ claim 중, 폐기 진행 중, 재개 진행 중, 철회·✕). 영속 로그로 
 - `scheduler.test.js` `providerRecoveryFixture` 변형(live·persisted): claude attempt +
   Codex 리프 증거 → `provider_hold.codex` target에 묶이고 `paused`; 번호 미해석·모델
   미해석 → `waiting` 유지.
-- 교차 멤버: 해제 영수증 계정 null → claude 세션 재개(`exec_override` 없음); 전환 재평가·
-  기다림 모드에서 교차 멤버 제외.
+- 교차 멤버: 해제 영수증 계정 null → claude 세션 재개(`exec_override` 없음); 잠기지 않은
+  attempt는 자기 러너 계정 재해석, `prior_attempt` 잠금 attempt는 기록 계정으로 재개(거부
+  없음); 전환 재평가·기다림 모드에서 교차 멤버 제외.
 - 소급 판정: 대상 행 보류, 표식 뒤 재판정 없음.
 - `lane-model.test.js`: `provider_hold.codex`에 든 claude attempt가 ⏳ 칩과 Codex 계정 줄로
   그려진다.
@@ -168,11 +174,25 @@ claim 중, 폐기 진행 중, 재개 진행 중, 철회·✕). 영속 로그로 
 
 - 관찰: 세션 레인·대화형 세션의 리프 한도 대기 — 이번 범위 밖, 요청 없음
 - 관찰: 워크스페이스 크레딧을 워크스페이스 단위로 막기 — UI-59f1(deferred)이 소유
+- 관찰: UI-ftww 스펙도 UI-9y1k supersede를 지명한다 — 결정 대상(실행 중 선제 전환 vs 리프 한도 보류 멤버)이 달라 충돌은 없고, 나중에 착지하는 쪽이 그때 현재인 ADR을 supersede 대상으로 바꿔 두 조항을 함께 재진술한다(재검토 lane)
 
 ## 결정 (ADR 후보)
 
 - 전제: ADR UI-9y1k — 보류 해제는 프로브만이 판정하고(UI-o5ll 승계), 세션 리프는 같은
   규칙의 후보 조회 API로 계정을 고른다; 이 설계는 새 해제 경로를 만들지 않고 기존 target에
   멤버를 하나 더 묶는다.
-- 보류 target에 다른 러너의 attempt를 교차 멤버로 묶고, 교차 멤버는 전환·기다림 추종에서 빠지며 해제 뒤 자기 러너 계정으로 재개한다 — 첫 조건 실패: 멤버 기록은 해제 때 비워지고 되돌리기는 scheduler·queue-store 안의 조건 몇 줄이라 함께 움직일 외부 소비자가 없다 → ADR 아님
+- 세션이 맡긴 다른 러너 리프의 계정 한도로 끝난 attempt는 그 리프 계정 보류 target의
+  교차 멤버가 되고, 교차 멤버는 전환·기다림 추종에서 빠지며 해제 뒤 자기 러너의 기존 계정
+  규칙으로 재개한다 — UI-9y1k의 "기다림 대상 밖 멤버의 재개 계정은 멤버십의 계정" 조항에
+  교차 멤버 예외를 더하고 나머지 조항은 그대로다.
+  ① 되돌리기 어려움: 보류 진입(scheduler `holdAttempt`·recovery 분류)·정산과 전환·기다림
+  멤버 경로(queue-store)·투영 대표 멤버(provider-holds)·카드 target 조회(lane-model)가
+  함께 움직이고, queue.json에 교차 멤버십이 영속된다.
+  ② 맥락 없이는 놀라움: claude attempt가 `provider_hold.codex` target에 들어 있고, 같은
+  target의 다른 멤버와 달리 전환하지 않으며 멤버십 계정이 아닌 계정으로 재개된다.
+  ③ 대안 실재: 카탈로그 창 여유를 보고 대기를 직접 재개하는 별도 판정(프로브만이 해제를
+  판정한다는 UI-o5ll 승계 조항과 충돌해 기각), 정해진 간격의 맹목 재시도(재개 세션 비용·
+  같은 실패 반복으로 기각), 지금처럼 수동 재개(요청이 자동 재개라 기각).
+  UI-9y1k와 소비자(scheduler 보류·재개, queue-store 멤버십)가 같으므로 그 재진술이다 —
+  `summary`: "Codex 자동 전환 후보는 허용 목록의 사용자 순서로 창 여유 계정을 먼저 고르고 반응 전환에서만 계정별 크레딧 허용·하루 상한(다음 선택만 막음) 안의 크레딧 계정을 고르며, 크레딧 설정은 서버 전역이고 세션은 같은 규칙의 후보 조회 API를 쓰고, 세션이 맡긴 다른 러너 리프의 계정 한도로 끝난 attempt는 그 리프 계정 보류의 교차 멤버로 전환·기다림 추종 없이 해제 뒤 자기 러너 계정 규칙으로 재개한다 — 나머지 조항은 UI-np4t 그대로다" → ADR, supersede UI-9y1k
 - 리프 증거는 bridge 매니페스트 구조 파싱으로만 판정 — 기본 제외 목록(한 파일 안 구현 선택) → ADR 아님
