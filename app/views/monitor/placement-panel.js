@@ -389,6 +389,18 @@ export function createMonitorPlacementPanel(options) {
             </button>
           </div>`
         : ''}
+      ${result.stopped
+        ? // 성공한 레포만 표를 접는다 (§3.4) — 멈춘 레포는 최신 큐로 다시 계산한
+          // 표를 체크·적용 없이 보이고, [이 레포 배치안 다시 보기]가 다시 연다.
+          html`<div class="mon-plan__scroll">
+            ${placementPlanTable(planOf(repo.root_dir), {
+              titleOf: titleOf(repo.root_dir),
+              busy: true,
+              notice: null,
+              root_dir: repo.root_dir
+            })}
+          </div>`
+        : ''}
     </section>`;
   }
 

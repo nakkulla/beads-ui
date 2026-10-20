@@ -600,6 +600,25 @@ describe('monitor placement apply (UI-hf8v §3.4)', () => {
     ).not.toBeNull();
   });
 
+  test('keeps the table of a stopped repository with its checks disabled', async () => {
+    const { mount } = setup([repo('A', 'repo-a', WS_A)], async () => ({
+      applied: false,
+      conflict: false
+    }));
+    click(mount, '.mon-plan__open');
+
+    click(mount, '.mon-plan__apply-all');
+    await vi.waitFor(() => {
+      expect(mount.querySelector('.mon-plan__review')).not.toBeNull();
+    });
+
+    const box = /** @type {HTMLInputElement|null} */ (
+      card(mount, WS_A).querySelector('.worker-plan__include')
+    );
+    expect(box).not.toBeNull();
+    expect(box?.disabled).toBe(true);
+  });
+
   test('folds the table of a repository that took every place', async () => {
     const { mount } = setup([repo('A', 'repo-a', WS_A)], async () => ({
       applied: true,

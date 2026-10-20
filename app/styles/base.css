@@ -1708,6 +1708,16 @@ select.detail-kv__v:disabled {
   background: var(--bg-panel);
 }
 
+/* 모바일 레인 host는 데스크톱의 `overflow-x: auto`를 물려받아 스크롤 컨테이너로
+   남는다. 그러면 sticky가 늘어나기만 하는 host에 붙어 요약 줄이 문서 화면 아래에
+   서지 않는다. 그래서 패널이 열린 동안만 host의 가로 스크롤을 푼다. 레인이 세로로
+   쌓여 가로로 넘칠 것이 없다. */
+@media (max-width: 640px) {
+  .mon .worker-lanes-host:has(.mon-plan) {
+    overflow-x: visible;
+  }
+}
+
 .mon-plan__total {
   color: var(--text-title);
   font-variant-numeric: tabular-nums;
