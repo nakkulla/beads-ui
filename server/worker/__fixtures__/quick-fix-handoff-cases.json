@@ -726,15 +726,153 @@
     }
   },
   {
-    "name": "대문자 접두 ID는 정본 id_regex가 인식하지 못해 후보가 없다",
+    "name": "대문자 접두 ID도 선행 후보로 인식된다",
     "issue": {
       "id": "dotfiles-slf1",
       "issue_type": "task",
       "metadata": {
         "route": "quick_fix"
       },
-      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 UI-aaaa\n\n## scope\n- server/",
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 UI-c7bv\n\n## scope\n- server/",
       "dependencies": []
+    },
+    "related": {
+      "UI-c7bv": {
+        "id": "UI-c7bv",
+        "dependencies": []
+      }
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["predecessor_edge_missing:UI-c7bv"]
+    }
+  },
+  {
+    "name": "5자 해시 ID도 선행 후보로 인식된다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 dotfiles-5tqvv\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "related": {
+      "dotfiles-5tqvv": {
+        "id": "dotfiles-5tqvv",
+        "dependencies": []
+      }
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["predecessor_edge_missing:dotfiles-5tqvv"]
+    }
+  },
+  {
+    "name": "문장 끝 마침표 앞의 ID도 선행 후보로 인식된다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 dotfiles-5tqvv.\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "related": {
+      "dotfiles-5tqvv": {
+        "id": "dotfiles-5tqvv",
+        "dependencies": []
+      }
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["predecessor_edge_missing:dotfiles-5tqvv"]
+    }
+  },
+  {
+    "name": "하이픈 접두 ID도 선행 후보로 인식된다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 claude-swap-q2v\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "related": {
+      "claude-swap-q2v": {
+        "id": "claude-swap-q2v",
+        "dependencies": []
+      }
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["predecessor_edge_missing:claude-swap-q2v"]
+    }
+  },
+  {
+    "name": "하위 번호 ID도 선행 후보로 인식된다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 UI-we9f.4\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "related": {
+      "UI-we9f.4": {
+        "id": "UI-we9f.4",
+        "dependencies": []
+      }
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["predecessor_edge_missing:UI-we9f.4"]
+    }
+  },
+  {
+    "name": "하위 번호 뒤에 문자가 이어지면 부모가 조회돼도 후보가 없다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 UI-we9f.4x\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "related": {
+      "UI-we9f": {
+        "id": "UI-we9f",
+        "dependencies": []
+      }
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "소문자 접두 ID의 하위 번호 뒤에 문자가 이어지면 부모로 잘리지 않는다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 dotfiles-ab12.4x\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "related": {
+      "dotfiles-ab12": {
+        "id": "dotfiles-ab12",
+        "dependencies": []
+      }
     },
     "expect": {
       "state": "unreviewed",
