@@ -336,6 +336,87 @@ describe('shared PR 대기 projection — 리뷰 보류 (UI-qksl §4)', () => {
   });
 });
 
+describe('shared PR 대기 projection — base 실패 후속 대기 (UI-ty6k §4.3)', () => {
+  const VERIFY_FAILED_GATE = {
+    pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+    gate: {
+      enabled: false,
+      tier: 'verify',
+      gate_badge: '검증 실패',
+      base_badge: '최신',
+      reason: 'script_failed'
+    }
+  };
+
+  /**
+   * @param {Record<string, unknown>} [wait]
+   */
+  function waitingRow(wait = {}) {
+    return rowsOf(
+      workspace({
+        pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+        pr_observations: { 'A-1': VERIFY_FAILED_GATE },
+        completion_status: {
+          'A-1': {
+            root_bead_id: 'A-1',
+            phase: 'waiting_followup',
+            subject_role: 'root',
+            subject_bead_id: 'A-1',
+            head_sha: 'a'.repeat(40),
+            base_sha: 'b'.repeat(40),
+            merged_sha: null,
+            active_attempt_id: null,
+            terminal_reason: null,
+            hold: null,
+            auto_resolution: {
+              class: 'base_red_followup',
+              origin_reason: 'script_failed',
+              attempts: 0,
+              attempt_cap: 3,
+              next_at: null,
+              last_error: null
+            },
+            followup_wait: {
+              stage: 'waiting',
+              links: ['A-9'],
+              head_sha: 'a'.repeat(40),
+              base_sha: 'b'.repeat(40),
+              at: 1,
+              deadline_at: 2,
+              ...wait
+            }
+          }
+        }
+      })
+    )[0];
+  }
+
+  test('wears the follow-up wait badge in the information tone', () => {
+    const row = waitingRow();
+
+    expect([badgeText(row), row.alert]).toEqual([
+      'base 실패 — A-9 착지 대기',
+      false
+    ]);
+  });
+
+  test('leaves the 리뷰 후 머지 button clickable on a waiting row', () => {
+    const row = waitingRow();
+
+    expect([row.merge_action, row.merge_label, row.merge_enabled]).toEqual([
+      true,
+      '리뷰 후 머지',
+      true
+    ]);
+  });
+
+  test('offers no session continuation on a waiting row', () => {
+    const row = waitingRow();
+
+    expect(row.failure_material.completion_phase).toBeNull();
+  });
+});
+
 describe('shared PR 대기 projection — 회계 잔여 칩 (UI-h6t1 §4.2)', () => {
   /**
    * @param {string[]} badge_codes

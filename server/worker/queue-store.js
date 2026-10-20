@@ -949,6 +949,8 @@
  * @property {string} [retry_of] - The failed record this one re-runs on a
  * person's cleanup retry (UI-btsr §3.2), and part of its operation id. Absent
  * on every other record, so their ids and shapes stay as they were.
+ * @property {'base_only'} [target] - A verify of the pinned base alone, with no
+ * PR head squashed in (UI-ty6k §3 결정 2). Absent on every other record.
  * @property {RepoOperationRecovery} [recovery]
  * @property {'automatic'|'manual'} source - Who asked for this operation. Every
  * record the Worker creates by itself is `automatic`; `manual` is the 배포 실행
@@ -1104,7 +1106,7 @@
  * @property {number} at - Epoch ms of the [보관] click.
  */
 /**
- * @typedef {'gating'|'holding'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'paused'|'needs_human'|'completed'} CompletionPhase
+ * @typedef {'gating'|'holding'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'waiting_followup'|'paused'|'needs_human'|'completed'} CompletionPhase
  */
 /**
  * @typedef {Object} CompletionSubject
@@ -1184,7 +1186,7 @@
  * stale record can never grant a second budget.
  *
  * @typedef {Object} CompletionAutoResolution
- * @property {'metadata_watch'|'auto_review'|'retry'} class
+ * @property {'metadata_watch'|'auto_review'|'retry'|'base_red_followup'} class
  * @property {string} origin_reason - The full terminal reason string that would
  * have been recorded had the failure terminalized.
  * @property {string} origin_stage
@@ -1209,6 +1211,23 @@
  * @property {number|null} comment_at
  */
 /**
+ * One pre-merge verify wait on a red base (UI-ty6k §4, contract
+ * `failure_classes.pre_merge_wait`). `stage` is `base_verifying` while the
+ * PR-less base verify runs and `waiting` once the base failed too; `outcome`
+ * is `base_moved` only after the linked follow-ups settled on a moved base, so
+ * the one re-verify's hold can name why it failed.
+ *
+ * @typedef {Object} CompletionFollowupWait
+ * @property {string} head_sha
+ * @property {string} base_sha - The base the PR and the base-only verify failed on.
+ * @property {string[]} links - The live same-rig follow-up Bead ids waited on.
+ * @property {string|null} base_op_id - The base-only verify RepoOperation.
+ * @property {number} at
+ * @property {number|null} deadline_at - Null until the base-only verify failed.
+ * @property {'base_verifying'|'waiting'} stage
+ * @property {'base_moved'|null} outcome
+ */
+/**
  * @typedef {Object} CompletionIntent
  * @property {string} target_base
  * @property {CompletionPhase} phase
@@ -1221,6 +1240,12 @@
  * conversation for (UI-gske §3.5). Kept apart from `hold`, which a subject
  * change clears, so a head that comes back (A→B→A) or a restart never opens a
  * second one; absent until the first launch.
+ * @property {CompletionFollowupWait} [followup_wait] - The red-base wait of the
+ * current head; absent outside it.
+ * @property {Array<{ pr_url: string|null, head_sha: string }>} [followup_waits] -
+ * The (PR, head) pairs that already entered a red-base wait (contract
+ * `once_per: [pr, head_sha]`). Kept apart from `followup_wait`, which a hold or
+ * a new head clears; absent until the first wait.
  * @property {CompletionTerminal|null} terminal_reason
  * @property {CompletionAutoResolution|null} auto_resolution
  * @property {CompletionAutoResolution|null} paused_resolution - The resolution
@@ -1332,6 +1357,7 @@ const COMPLETION_PHASES = [
   'waiting_metadata',
   'reviewing',
   'retrying',
+  'waiting_followup',
   'paused',
   'needs_human',
   'completed'
@@ -1342,12 +1368,17 @@ const COMPLETION_PHASES = [
  * holds it (UI-hk74 §4). Both directions are invariants the normalizer
  * enforces: a class in the wrong phase is a corrupt record, not a hint.
  *
+ * `base_red_followup` is the dotfiles contract's `failure_classes.
+ * pre_merge_wait` cause (UI-ty6k §3 결정 1, ADR UI-u6ud-2 replica): a verify
+ * failure the base reproduces, waiting on linked follow-ups.
+ *
  * @type {Readonly<Record<CompletionAutoResolution['class'], CompletionPhase>>}
  */
 export const COMPLETION_AUTO_RESOLUTION_PHASE = Object.freeze({
   metadata_watch: /** @type {CompletionPhase} */ ('waiting_metadata'),
   auto_review: /** @type {CompletionPhase} */ ('reviewing'),
-  retry: /** @type {CompletionPhase} */ ('retrying')
+  retry: /** @type {CompletionPhase} */ ('retrying'),
+  base_red_followup: /** @type {CompletionPhase} */ ('waiting_followup')
 });
 
 /** @type {Set<CompletionPhase>} */
@@ -1379,13 +1410,19 @@ export const COMPLETION_RETRY_MAX = 3;
  * Phases that must NOT start a pre-merge verify run (UI-hk74 §8). `reviewing`
  * is absent on purpose: the gate demands a verify receipt immediately after an
  * approval, so suppressing it there would only add one verify's latency.
+ * `waiting_followup` runs exactly two verifies of its own — the base-only one
+ * and the one re-verify on a moved base (UI-ty6k §4.1 4단계) — so a base move
+ * while it waits draws none. That suppression is for the wait's own head only
+ * ({@link followupWaitStands}): a new head's verify is what brings its row
+ * back to the merge queue, where the stale rule ends the wait (§4.2).
  *
  * @type {Set<string>}
  */
 export const COMPLETION_VERIFY_SUPPRESSED_PHASES = new Set([
   'needs_human',
   'waiting_metadata',
-  'retrying'
+  'retrying',
+  'waiting_followup'
 ]);
 
 /** @type {NonNullable<Attempt['kind']>[]} */
@@ -1739,6 +1776,9 @@ function invalidCompletionIntent(root_bead_id, value) {
   const raw = isRecord(value) ? value : {};
   const raw_subject = isRecord(raw.subject) ? raw.subject : {};
   const hold_launches = normalizeCompletionHoldLaunches(raw.hold_launches);
+  // Carried like `hold_launches`: a malformed record must not refund the
+  // once-per-(PR, head) wait the contract grants.
+  const followup_waits = normalizeCompletionFollowupWaits(raw.followup_waits);
   return {
     target_base: typeof raw.target_base === 'string' ? raw.target_base : '',
     phase: 'needs_human',
@@ -1756,6 +1796,7 @@ function invalidCompletionIntent(root_bead_id, value) {
     paused_resolution: null,
     hold: null,
     ...(hold_launches.length > 0 ? { hold_launches } : {}),
+    ...(followup_waits.length > 0 ? { followup_waits } : {}),
     terminal_reason: {
       reason: 'intent_state_invalid',
       stage: 'state',
@@ -1802,6 +1843,8 @@ function normalizeCompletionIntent(root_bead_id, value) {
       ? normalizeCompletionAutoResolution(value.paused_resolution)
       : null;
   const hold_launches = normalizeCompletionHoldLaunches(value.hold_launches);
+  const followup_wait = normalizeCompletionFollowupWait(value.followup_wait);
+  const followup_waits = normalizeCompletionFollowupWaits(value.followup_waits);
   if (
     typeof value.target_base !== 'string' ||
     value.target_base.length === 0 ||
@@ -1814,7 +1857,9 @@ function normalizeCompletionIntent(root_bead_id, value) {
     (phase !== 'needs_human' && terminal_reason) ||
     (in_auto_phase &&
       (!auto_resolution ||
-        COMPLETION_AUTO_RESOLUTION_PHASE[auto_resolution.class] !== phase))
+        COMPLETION_AUTO_RESOLUTION_PHASE[auto_resolution.class] !== phase)) ||
+    // A wait with nothing to observe would never end on its own.
+    (phase === 'waiting_followup' && !followup_wait)
   ) {
     return invalidCompletionIntent(root_bead_id, value);
   }
@@ -1831,6 +1876,8 @@ function normalizeCompletionIntent(root_bead_id, value) {
     paused_resolution,
     hold: normalizeCompletionHold(value.hold),
     ...(hold_launches.length > 0 ? { hold_launches } : {}),
+    ...(followup_wait ? { followup_wait } : {}),
+    ...(followup_waits.length > 0 ? { followup_waits } : {}),
     terminal_reason
   };
   return resumed_terminal ? { ...normalized, resumed_terminal } : normalized;
@@ -1855,6 +1902,60 @@ function normalizeCompletionHoldLaunches(value) {
     }
   }
   return launches;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {CompletionFollowupWait|null}
+ */
+function normalizeCompletionFollowupWait(value) {
+  if (
+    !isRecord(value) ||
+    !isSha(value.head_sha) ||
+    !isSha(value.base_sha) ||
+    (value.stage !== 'base_verifying' && value.stage !== 'waiting') ||
+    typeof value.at !== 'number' ||
+    !Number.isFinite(value.at)
+  ) {
+    return null;
+  }
+  /** @type {string[]} */
+  const links = [];
+  for (const link of Array.isArray(value.links) ? value.links : []) {
+    if (
+      typeof link === 'string' &&
+      link.length > 0 &&
+      link.length <= COMPLETION_REASON_MAX &&
+      !links.includes(link)
+    ) {
+      links.push(link);
+    }
+  }
+  return {
+    head_sha: value.head_sha,
+    base_sha: value.base_sha,
+    links,
+    base_op_id:
+      typeof value.base_op_id === 'string' && value.base_op_id.length > 0
+        ? value.base_op_id
+        : null,
+    at: value.at,
+    deadline_at:
+      typeof value.deadline_at === 'number' &&
+      Number.isFinite(value.deadline_at)
+        ? value.deadline_at
+        : null,
+    stage: value.stage,
+    outcome: value.outcome === 'base_moved' ? 'base_moved' : null
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Array<{ pr_url: string|null, head_sha: string }>}
+ */
+function normalizeCompletionFollowupWaits(value) {
+  return normalizeCompletionHoldLaunches(value);
 }
 
 /**
@@ -4596,6 +4697,9 @@ function normalizeRepoOperation(value) {
     ...(typeof value.retry_of === 'string' && value.retry_of.length > 0
       ? { retry_of: value.retry_of }
       : {}),
+    ...(value.kind === 'verify' && value.target === 'base_only'
+      ? { target: /** @type {const} */ ('base_only') }
+      : {}),
     ...(isRecord(value.failure_notice) &&
     typeof value.failure_notice.target_at === 'number' &&
     Number.isFinite(value.failure_notice.target_at)
@@ -6003,6 +6107,25 @@ function cancelReviewSessions(next, bead_ids, at) {
 }
 
 /**
+ * Whether a red-base wait stands for `head_sha` — the same-head row the
+ * automatic enroller must not put back in the merge queue and the poller must
+ * not verify (UI-ty6k §4.1 4단계), exactly as a `holding` intent's held head is
+ * not re-enrolled. A new head is neither: its verify runs, its row comes back
+ * and the stale rule ends the wait.
+ *
+ * @param {CompletionIntent} intent
+ * @param {unknown} head_sha
+ * @returns {boolean}
+ */
+export function followupWaitStands(intent, head_sha) {
+  return (
+    intent.phase === 'waiting_followup' &&
+    typeof head_sha === 'string' &&
+    intent.followup_wait?.head_sha === head_sha
+  );
+}
+
+/**
  * Resume one paused saga without discarding its current subject or lineage.
  * The merged SHA is the durable discriminator between pre-merge gating and
  * post-merge cleanup replay.
@@ -6034,7 +6157,12 @@ function resumeCompletionIntentRecord(next, root_bead_id) {
   } else {
     intent.phase = intent.subject.merged_sha === null ? 'gating' : 'cleaning';
   }
-  if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
+  // A red-base wait is observed off-queue (UI-ty6k §4.1 4단계); a row would
+  // halt the merge queue behind it.
+  if (
+    intent.phase !== 'waiting_followup' &&
+    !next.merge_queue.some((entry) => entry.bead_id === root_bead_id)
+  ) {
     insertRunnableMergeEntry(next, {
       bead_id: root_bead_id,
       resolution_rounds: 0,
@@ -8166,7 +8294,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, retry_of?: string, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, retry_of?: string, target?: 'base_only', bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -8295,6 +8423,9 @@ export function createQueueStore(options = {}) {
           superseded_by: null,
           ...(typeof input.retry_of === 'string' && input.retry_of.length > 0
             ? { retry_of: input.retry_of }
+            : {}),
+          ...(input.kind === 'verify' && input.target === 'base_only'
+            ? { target: /** @type {const} */ ('base_only') }
             : {}),
           source: input.source === 'manual' ? 'manual' : 'automatic',
           manual_run_id:
@@ -12511,6 +12642,11 @@ export function createQueueStore(options = {}) {
           ) {
             // Manual authority outranks automation (UI-hk74 §4): the click ends
             // the wait wherever it stands and hands the saga back to the gate.
+            // A red-base wait's record goes with it; its spent (PR, head) pair
+            // stays, so the gate's verdict for that head holds (UI-ty6k §4.2).
+            if (intent.phase === 'waiting_followup') {
+              delete intent.followup_wait;
+            }
             intent.auto_resolution = null;
             intent.paused_resolution = null;
             intent.phase =
@@ -13367,6 +13503,14 @@ export function createQueueStore(options = {}) {
         ) {
           intent.hold = null;
         }
+        // The stale rule ends a red-base wait for a new head only (UI-ty6k
+        // §4.2); `followup_waits` keeps the spent (PR, head) pairs.
+        if (
+          intent.followup_wait &&
+          intent.followup_wait.head_sha !== normalized_subject.head_sha
+        ) {
+          delete intent.followup_wait;
+        }
         return true;
       });
     },
@@ -13522,7 +13666,8 @@ export function createQueueStore(options = {}) {
           intent.active_op !== null ||
           (intent.phase !== 'gating' &&
             intent.phase !== 'holding' &&
-            intent.phase !== 'retrying')
+            intent.phase !== 'retrying' &&
+            intent.phase !== 'waiting_followup')
         ) {
           return false;
         }
@@ -13534,9 +13679,164 @@ export function createQueueStore(options = {}) {
           normalized.comment_at = intent.hold.comment_at;
         }
         intent.hold = normalized;
+        // A hold is where a red-base wait ends (UI-ty6k §4.2).
+        delete intent.followup_wait;
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id
         );
+        return true;
+      });
+    },
+
+    /**
+     * Park a verify failure in the red-base wait (UI-ty6k §4.1 4단계): the
+     * (PR, head) pair is spent, the `base_red_followup` resolution holds the
+     * phase, and the row leaves the merge queue the way a hold does, all in one
+     * write. A pair already spent is refused — the contract's `once_per` — and
+     * so is a wait for any head but the pinned one.
+     *
+     * The intent's `hold` is left as it is: a wait that ends in a hold for the
+     * same head must not announce that head a second time.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, wait: CompletionFollowupWait, resolution: CompletionAutoResolution }} input
+     * @returns {QueueOpResult}
+     */
+    beginCompletionFollowupWait(workspace, input) {
+      const { root_bead_id, wait, resolution } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized_wait = normalizeCompletionFollowupWait(wait);
+        const normalized_resolution =
+          normalizeCompletionAutoResolution(resolution);
+        if (
+          !intent ||
+          !normalized_wait ||
+          !normalized_resolution ||
+          normalized_resolution.class !== 'base_red_followup' ||
+          intent.active_op !== null ||
+          (intent.phase !== 'gating' &&
+            intent.phase !== 'holding' &&
+            intent.phase !== 'retrying') ||
+          normalized_wait.head_sha !== intent.subject.head_sha
+        ) {
+          return false;
+        }
+        const pr_url = intent.subject.pr_url;
+        const spent = intent.followup_waits || [];
+        if (
+          spent.some(
+            (item) =>
+              item.pr_url === pr_url &&
+              item.head_sha === normalized_wait.head_sha
+          )
+        ) {
+          return false;
+        }
+        intent.auto_resolution = normalized_resolution;
+        intent.paused_resolution = null;
+        if (!applyCompletionPhase(intent, 'waiting_followup')) {
+          return false;
+        }
+        intent.followup_wait = normalized_wait;
+        intent.followup_waits = [
+          ...spent,
+          { pr_url, head_sha: normalized_wait.head_sha }
+        ];
+        next.merge_queue = next.merge_queue.filter(
+          (entry) => entry.bead_id !== root_bead_id
+        );
+        return true;
+      });
+    },
+
+    /**
+     * Move one red-base wait forward a stage (UI-ty6k §4.1 5단계): the base-only
+     * verify's operation id once it started, then `waiting` with the 48-hour
+     * deadline once it failed. Bound to the head and the stage the caller read,
+     * so a late result for a wait that already moved on writes nothing.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, head_sha: string, from_stage: CompletionFollowupWait['stage'], patch: { stage?: CompletionFollowupWait['stage'], base_op_id?: string|null, deadline_at?: number|null } }} input
+     * @returns {QueueOpResult}
+     */
+    updateCompletionFollowupWait(workspace, input) {
+      const { root_bead_id, head_sha, from_stage, patch } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const current = intent?.followup_wait;
+        if (
+          !intent ||
+          !current ||
+          intent.phase !== 'waiting_followup' ||
+          current.head_sha !== head_sha ||
+          current.stage !== from_stage ||
+          !isRecord(patch)
+        ) {
+          return false;
+        }
+        const merged = normalizeCompletionFollowupWait({
+          ...current,
+          ...(patch.stage === undefined ? {} : { stage: patch.stage }),
+          ...(patch.base_op_id === undefined
+            ? {}
+            : { base_op_id: patch.base_op_id }),
+          ...(patch.deadline_at === undefined
+            ? {}
+            : { deadline_at: patch.deadline_at })
+        });
+        if (!merged) {
+          return false;
+        }
+        intent.followup_wait = merged;
+        return true;
+      });
+    },
+
+    /**
+     * End a red-base wait whose linked follow-ups settled on a MOVED base
+     * (UI-ty6k §4.2): the subject is re-pinned to the new base, the saga goes
+     * back to `gating` at the merge-queue tail, and the wait record stays with
+     * `outcome: 'base_moved'` so the one re-verify's hold can say why it
+     * failed. One write, because a `gating` intent with no queue row is one
+     * nothing would ever drive again.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, head_sha: string, base_sha: string }} input
+     * @returns {QueueOpResult}
+     */
+    finishCompletionFollowupWait(workspace, input) {
+      const { root_bead_id, head_sha, base_sha } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const wait = intent?.followup_wait;
+        if (
+          !intent ||
+          !wait ||
+          intent.phase !== 'waiting_followup' ||
+          intent.active_op !== null ||
+          wait.head_sha !== head_sha ||
+          !isSha(base_sha) ||
+          base_sha === wait.base_sha
+        ) {
+          return false;
+        }
+        // Cleared before the phase move: a live resolution holds its phase.
+        intent.auto_resolution = null;
+        intent.paused_resolution = null;
+        if (!applyCompletionPhase(intent, 'gating')) {
+          return false;
+        }
+        intent.subject = { ...intent.subject, base_sha };
+        intent.followup_wait = { ...wait, outcome: 'base_moved' };
+        if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
+          insertRunnableMergeEntry(next, {
+            bead_id: root_bead_id,
+            resolution_rounds: 0,
+            rebase_rounds: 0,
+            resolution: null
+          });
+        }
         return true;
       });
     },
@@ -13808,7 +14108,11 @@ export function createQueueStore(options = {}) {
                 existing_intent.phase === 'completed' ||
                 (existing_intent.phase === 'holding' &&
                   existing_intent.hold?.head_sha ===
-                    entry.completion.subject.head_sha)
+                    entry.completion.subject.head_sha) ||
+                followupWaitStands(
+                  existing_intent,
+                  entry.completion.subject.head_sha
+                )
               ) {
                 continue;
               }
@@ -13821,6 +14125,15 @@ export function createQueueStore(options = {}) {
                   continue;
                 }
                 changed += 1;
+                // A parked red-base wait resumes off-queue for its own head.
+                if (
+                  followupWaitStands(
+                    existing_intent,
+                    entry.completion.subject.head_sha
+                  )
+                ) {
+                  continue;
+                }
               }
               if (!next.merge_queue.some((item) => item.bead_id === bead_id)) {
                 insertRunnableMergeEntry(next, {

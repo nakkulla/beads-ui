@@ -306,6 +306,76 @@ describe('repo operation after-ladder recovery', () => {
     });
   }
 
+  test.each([
+    ['an ordinary', 1, {}],
+    ['a base-only', 0, { target: /** @type {const} */ ('base_only') }]
+  ])(
+    'opens a repair handoff for %s verify failure %i times',
+    async (_label, created, marker) => {
+      const repairHandoff = adapter();
+      const { coordinator, store } = coordinatorFor({ repairHandoff });
+      store.ensureRepoOperation(root, {
+        operation_id: 'verify-op',
+        repo_id: root,
+        kind: 'verify',
+        subjects: [{ bead_id: 'UI-source', merged_sha: TARGET }],
+        effective_base_sha: TARGET,
+        target_base: 'main',
+        target_sha: TARGET,
+        verify_head_sha: TARGET,
+        script_path: 'repo-ops/script/verify',
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40),
+        ...marker
+      });
+      const attempt_id =
+        store.snapshot(root).repo_operations['verify-op'].attempt_id;
+      const failure = {
+        code: 'script_failed',
+        fingerprint: 'same',
+        summary: 'npm ERR! Test failed',
+        detail: 'original',
+        interrupted: false,
+        evidence_confirmed: true
+      };
+      store.startRepoOperation(root, {
+        operation_id: 'verify-op',
+        attempt_id,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(root, 'operation.log')
+      });
+      store.deferRepoOperationRetry(root, {
+        operation_id: 'verify-op',
+        attempt_id,
+        exit_code: 2,
+        signal: null,
+        failure
+      });
+      store.consumeRepoOperationRetry(root, {
+        operation_id: 'verify-op',
+        attempt_id,
+        consumed_key: [attempt_id, TARGET, `${'d'.repeat(40)}:100755`]
+      });
+      store.startRepoOperation(root, {
+        operation_id: 'verify-op',
+        attempt_id,
+        process_identity: { pid: 2, pgid: 2, started_at: 2 },
+        log_path: path.join(root, 'operation.log')
+      });
+      store.settleRepoOperation(root, {
+        operation_id: 'verify-op',
+        attempt_id,
+        exit_code: 2,
+        signal: null,
+        failure
+      });
+
+      await coordinator.reconcile(root);
+
+      expect(repairHandoff.createIssue).toHaveBeenCalledTimes(created);
+    }
+  );
+
   test('pins a checked issue and places it exactly once', async () => {
     const repairHandoff = adapter();
     const { coordinator, store } = coordinatorFor({ repairHandoff });
@@ -7096,5 +7166,85 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
       operation_id: retried.operation_id,
       state: 'succeeded'
     });
+  });
+});
+
+describe('base-only verify candidate (UI-ty6k §3 결정 2)', () => {
+  function baseOnlyHarness() {
+    const verifyCheckout = {
+      materialize: vi.fn(async () => ({
+        ok: true,
+        path: root,
+        tree_sha: TREE
+      })),
+      verify: vi.fn(async () => ({ ok: true })),
+      cleanup: vi.fn(async () => {})
+    };
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      verifyCheckout
+    });
+    return { store, coordinator, verifyCheckout };
+  }
+
+  /** @param {object} [overrides] */
+  function baseOnlyCandidate(overrides = {}) {
+    return verifyCandidate({
+      head_sha: BASE,
+      final_sha: BASE,
+      base_only: true,
+      ...overrides
+    });
+  }
+
+  test('checks out the base alone without squashing a PR head', async () => {
+    const { coordinator, verifyCheckout } = baseOnlyHarness();
+
+    const result = await coordinator.ensureVerify(baseOnlyCandidate());
+
+    expect(result.ok).toBe(true);
+    expect(verifyCheckout.materialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base_sha: BASE,
+        head_sha: BASE,
+        final_sha: BASE
+      })
+    );
+  });
+
+  test('marks the base-only verify record in the operation ledger', async () => {
+    const { store, coordinator } = baseOnlyHarness();
+
+    const result = await coordinator.ensureVerify(baseOnlyCandidate());
+
+    expect(
+      store.snapshot(root).repo_operations[String(result.operation_id)]
+    ).toMatchObject({
+      kind: 'verify',
+      target: 'base_only',
+      verify_head_shas: [BASE]
+    });
+  });
+
+  test('gives a base-only verify an id apart from the same tree as a candidate', async () => {
+    const { coordinator } = baseOnlyHarness();
+
+    const base_only = await coordinator.ensureVerify(baseOnlyCandidate());
+    const candidate = await coordinator.ensureVerify(
+      verifyCandidate({ head_sha: BASE, final_sha: BASE })
+    );
+
+    expect(base_only.operation_id).not.toBe(candidate.operation_id);
+  });
+
+  test('refuses a base-only candidate that carries a PR head', async () => {
+    const { coordinator, verifyCheckout } = baseOnlyHarness();
+
+    const result = await coordinator.ensureVerify(
+      baseOnlyCandidate({ head_sha: HEAD })
+    );
+
+    expect(result).toEqual({ ok: false, code: 'verify_candidate_mismatch' });
+    expect(verifyCheckout.materialize).not.toHaveBeenCalled();
   });
 });

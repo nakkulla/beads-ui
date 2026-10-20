@@ -1639,6 +1639,102 @@ export function createPrActions(deps) {
     };
   }
 
+  /**
+   * Start the red-base wait's base-only verify (UI-ty6k §3 결정 2): the pinned
+   * base checked out alone — no PR head squashed in — through the same
+   * operation ledger and the `[verify]` script that base declares. It returns
+   * once the operation is recorded; {@link awaitCompletionBaseVerify} reads its
+   * result. A base that declares no verify, or opted out of it, starts nothing.
+   *
+   * @param {string} bead_id - The root Bead the wait belongs to.
+   * @param {{ target_base: string, base_sha: string }} input
+   * @returns {Promise<{ ok: true, operation_id: string, timeout_ms: number|null }|{ ok: false, reason: string }>}
+   */
+  async function startCompletionBaseVerify(bead_id, input) {
+    if (!repo_operations) {
+      return { ok: false, reason: 'repo_operations_unavailable' };
+    }
+    const { target_base, base_sha } = input;
+    if (
+      typeof target_base !== 'string' ||
+      target_base.length === 0 ||
+      typeof base_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(base_sha)
+    ) {
+      return { ok: false, reason: 'base_sha_unobserved' };
+    }
+    const config = await repo_operations.hasConfig(base_sha);
+    if (!config.ok) {
+      return { ok: false, reason: config.code || 'repo_ops_config_invalid' };
+    }
+    if (typeof config.verify_script_path !== 'string') {
+      return { ok: false, reason: 'verify_undeclared' };
+    }
+    const ensured = await repo_operations.ensureVerify({
+      repo,
+      origin: 'origin',
+      target_base,
+      base_sha,
+      head_sha: base_sha,
+      final_sha: base_sha,
+      base_only: true,
+      bead_id,
+      script_path: config.verify_script_path
+    });
+    if (
+      ensured.inert ||
+      !ensured.ok ||
+      typeof ensured.operation_id !== 'string'
+    ) {
+      return {
+        ok: false,
+        reason:
+          ensured.code || (ensured.inert ? 'verify_inert' : 'verify_failed')
+      };
+    }
+    return {
+      ok: true,
+      operation_id: ensured.operation_id,
+      timeout_ms:
+        typeof ensured.timeout_ms === 'number' ? ensured.timeout_ms : null
+    };
+  }
+
+  /**
+   * Wait for the base-only verify to settle and read its result, bound to the
+   * base it ran on. Null when it did not settle in its time.
+   *
+   * @param {string} operation_id
+   * @param {{ base_sha: string, timeout_ms?: number|null }} input
+   * @returns {Promise<{ operation_id: string, state: 'succeeded'|'failed', reason: string }|null>}
+   */
+  async function awaitCompletionBaseVerify(operation_id, input) {
+    if (!repo_operations) {
+      return null;
+    }
+    const receipt = await repo_operations.waitForTerminal(operation_id, {
+      head_sha: input.base_sha,
+      ...(typeof input.timeout_ms === 'number'
+        ? { timeout_ms: input.timeout_ms }
+        : {})
+    });
+    if (
+      !receipt ||
+      (receipt.state !== 'succeeded' && receipt.state !== 'failed')
+    ) {
+      return null;
+    }
+    return {
+      operation_id:
+        typeof receipt.operation_id === 'string'
+          ? receipt.operation_id
+          : operation_id,
+      state: receipt.state,
+      reason:
+        typeof receipt.reason === 'string' ? receipt.reason : receipt.state
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Post-merge cleanup — ONE implementation, two triggers (§6).
   // -------------------------------------------------------------------------
@@ -4699,6 +4795,8 @@ export function createPrActions(deps) {
     rollbackVerify,
     resumeCompletionCleanup,
     prState,
-    completionGate
+    completionGate,
+    startCompletionBaseVerify,
+    awaitCompletionBaseVerify
   };
 }

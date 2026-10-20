@@ -5,7 +5,7 @@
  * @typedef {import('../../server/worker/queue-store.js').Queue} Queue
  * @typedef {Object} CompletionStatus
  * @property {string} root_bead_id
- * @property {'gating'|'holding'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'paused'|'needs_human'|'completed'} phase
+ * @property {'gating'|'holding'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'waiting_followup'|'paused'|'needs_human'|'completed'} phase
  * @property {'root'|null} subject_role
  * @property {string|null} subject_bead_id
  * @property {string|null} [head_sha]
@@ -21,6 +21,9 @@
  * @property {{ class: string, origin_reason: string|null, attempts: number, attempt_cap?: number, next_at: number|null, last_error: string|null }|null} [auto_resolution] - The
  * non-terminal automatic resolution the coordinator is running (UI-hk74 §4).
  * Absent on a snapshot from a server that predates it.
+ * @property {{ stage: string, links: string[], head_sha: string|null, base_sha: string|null, at: number|null, deadline_at: number|null }|null} [followup_wait] - The
+ * red-base wait record (UI-ty6k §4.3), only in `waiting_followup`; absent on a
+ * snapshot from a server that predates it.
  * @typedef {Object} ResolutionProjection
  * @property {string} attempt_id
  * @property {string} subject_bead_id
