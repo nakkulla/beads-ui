@@ -7015,9 +7015,10 @@ describe('scheduler provider hold and recovery', () => {
   /**
    * Two codex catalog rows: the active one is hot, the allowed one is idle.
    *
+   * @param {number} [hot_pct] - The active login's `5h` usage.
    * @returns {any}
    */
-  function codexCatalog() {
+  function codexCatalog(hot_pct = 100) {
     return {
       ok: true,
       active_key: 'codex-hot',
@@ -7026,7 +7027,7 @@ describe('scheduler provider hold and recovery', () => {
           key: 'codex-hot',
           email: 'hot@example.com',
           status: 'ok',
-          windows: [{ key: '5h', pct: 100, resetsAt: null }]
+          windows: [{ key: '5h', pct: hot_pct, resetsAt: null }]
         },
         {
           key: 'codex-cool',
@@ -7112,6 +7113,8 @@ describe('scheduler provider hold and recovery', () => {
 
   // RED 11 (spec §5)
   test('switches a codex usage limit onto an allowed codex account', async () => {
+    // Below the exhausted window at launch, so the dispatch keeps `codex-hot`
+    // and the usage limit is what moves it (UI-ftww §4.3).
     const env = setup({
       config: { X1: { model: 'sol', effort: 'xhigh' } },
       slots: 1,
@@ -7125,7 +7128,7 @@ describe('scheduler provider hold and recovery', () => {
             ok: true,
             account: { key, email: `${key}@example.com` }
           })),
-          listCodex: vi.fn(async () => codexCatalog())
+          listCodex: vi.fn(async () => codexCatalog(95))
         }
       })
     });
@@ -7246,10 +7249,15 @@ describe('scheduler provider hold and recovery', () => {
 
   /** UI-9y1k acceptance 1. */
   test('switches a codex usage limit to the first allowed account in the user order', async () => {
-    const catalog = orderedCodexCatalog([
-      { key: 'codex-01', number: 1, pct: 10 },
-      { key: 'codex-02', number: 2, pct: 60 }
-    ]);
+    // Below the exhausted window at launch, so the dispatch keeps `codex-hot`
+    // and the usage limit is what moves it (UI-ftww §4.3).
+    const catalog = orderedCodexCatalog(
+      [
+        { key: 'codex-01', number: 1, pct: 10 },
+        { key: 'codex-02', number: 2, pct: 60 }
+      ],
+      95
+    );
 
     const child = await codexLimitChild(catalog, ['codex-02', 'codex-01']);
 
