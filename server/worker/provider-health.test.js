@@ -1176,6 +1176,105 @@ describe('provider health probe', () => {
     ]).toEqual([['provider_recovered'], ['provider_recovered'], 1]);
   });
 
+  test('records a leaf-held session recovery without the codex account (UI-gggh)', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const env = setup(
+      store,
+      timers,
+      makeSpawn(
+        [
+          { type: 'thread.started', thread_id: 'probe-thread' },
+          { type: 'turn.started' },
+          {
+            type: 'item.completed',
+            item: { id: 'item_0', type: 'agent_message', text: 'ok' }
+          },
+          { type: 'turn.completed', usage: { input_tokens: 1 } }
+        ],
+        0
+      ),
+      {
+        timeline,
+        catalog: {
+          model_index: { opus: 'claude', astra: 'codex' },
+          runners: {
+            claude: {
+              command: 'claude',
+              efforts: [],
+              models: { opus: { id: 'claude-opus-4-8' } }
+            },
+            codex: {
+              command: 'codex',
+              efforts: [],
+              models: { astra: { id: 'gpt-6-astra' } }
+            }
+          }
+        },
+        prepareCodexAccountHome: vi.fn(
+          async (/** @type {any} */ input) =>
+            /** @type {any} */ ({ ok: true, home_dir: input.home_dir })
+        ),
+        codexAccountHomeDir: (/** @type {string} */ key) =>
+          `/state/homes/${key}`,
+        codexRoot: '/root/.codex'
+      }
+    );
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-1', bead_id: 'B1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { runner: 'claude', model: 'opus', status: 'running' }
+    });
+    store.holdProviderAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'paused',
+        cause: 'provider_outage:usage_limit',
+        finished_at: NOW
+      },
+      runner: 'codex',
+      target: {
+        kind: 'usage_limit',
+        model: 'astra',
+        account: 'codex-two',
+        detail: 'usage_limit',
+        last_error: 'usage_limit',
+        resets_at: NOW,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      cross_runner: true
+    });
+    seedHold(store, 'usage_limit', 'codex-two', {
+      attempt_id: 'att-2',
+      runner: 'codex',
+      model: 'astra',
+      resets_at: NOW
+    });
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect([
+      timeline
+        .readTimeline('B1')
+        .map((entry) => [entry.kind, entry.summary, entry.account ?? null]),
+      timeline
+        .readTimeline('B2')
+        .map((entry) => [entry.kind, entry.summary, entry.account ?? null]),
+      env.notify.providerRecovered.mock.calls.length
+    ]).toEqual([
+      [['provider_recovered', 'codex 공급자 회복 (리프)', null]],
+      [['provider_recovered', 'codex 공급자 회복', 'codex-two']],
+      1
+    ]);
+  });
+
   test('records only plain releases for an account-absent receipt and disarm', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();

@@ -2489,6 +2489,55 @@ describe('monitor 공급자 보류 attempt 투영', () => {
     });
   });
 
+  /** A claude session held on its Codex leaf's account target (UI-gggh). */
+  const LEAF_HOLD = {
+    codex: {
+      since: 1000,
+      generation: 4,
+      targets: [
+        {
+          target_id: 'codex-target',
+          kind: 'usage_limit',
+          model: 'astra',
+          account: 'codex-two',
+          detail: 'usage_limit',
+          last_error: 'codex_runner_bridge usage_limit',
+          resets_at: null,
+          next_probe_at: 3000,
+          rearm_count: 0,
+          attempt_ids: ['t1'],
+          auto_switch: null
+        }
+      ]
+    }
+  };
+
+  test('projects a claude session held on its codex leaf target', () => {
+    const map = activeByBead(providerAttempt(), new Map(), {
+      provider_hold: LEAF_HOLD
+    });
+
+    expect(map.get('A-1')?.hold).toMatchObject({
+      kind: 'usage_limit',
+      next_probe_at: 3000,
+      target: { model: 'astra', account: 'codex-two' }
+    });
+  });
+
+  test('draws the hold chip and codex account line on the leaf-held card', () => {
+    const lanes = buildLanes(
+      [workspace({ attempts: providerAttempt(), provider_hold: LEAF_HOLD })],
+      [state()]
+    );
+    const host = document.createElement('div');
+
+    render(runningTile(runningTileInput(lanes.running[0]), 5000), host);
+
+    const header = host.querySelector('.rtile__hd')?.textContent || '';
+    expect(header).toContain('⏳');
+    expect(host.textContent).toContain('astra · codex-two');
+  });
+
   test('carries the account-switch refusal reason to the tile', () => {
     const map = activeByBead(providerAttempt(), new Map(), {
       provider_hold: {

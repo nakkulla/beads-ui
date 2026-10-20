@@ -1596,6 +1596,25 @@ describe('worker/notify provider transitions', () => {
     expect(messageOf(spawn.last())).toContain('계정 전환: 안 함 — 기다림 모드');
   });
 
+  test('names the session leaf limit as why a cross-runner hold stays put', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerHoldEntered({
+      bead_id: 'UI-1',
+      runner: 'codex',
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      summary: 'codex_runner_bridge usage_limit',
+      account: 'codex-two',
+      cross_runner: true
+    });
+
+    expect(messageOf(spawn.last())).toContain(
+      '계정 전환: 안 함 — 세션 리프 한도, 회복 때 같은 세션 재개'
+    );
+  });
+
   // RED 20 (spec §5)
   test('names an empty allowed set as why a limit hold stayed put', async () => {
     const spawn = makeFakeSpawn();

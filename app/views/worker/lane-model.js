@@ -1318,25 +1318,29 @@ function isProviderHoldAttempt(attempt) {
 }
 
 /**
- * Find the durable provider target bound to one attempt.
+ * Find the durable provider target bound to one attempt, under any runner: a
+ * session held by its delegated leaf's limit waits on the leaf runner's
+ * target (UI-gggh §3.5), so the lookup scans every runner's `attempt_ids`.
  *
  * @param {any} attempt
  * @param {unknown} provider_hold
  * @returns {any|null}
  */
 function providerTargetOf(attempt, provider_hold) {
-  const runner = typeof attempt.runner === 'string' ? attempt.runner : '';
-  const hold = objectOf(provider_hold)[runner];
-  if (!hold || !Array.isArray(hold.targets)) {
-    return null;
-  }
-  return (
-    hold.targets.find(
+  for (const hold of Object.values(objectOf(provider_hold))) {
+    if (!hold || !Array.isArray(hold.targets)) {
+      continue;
+    }
+    const target = hold.targets.find(
       (/** @type {any} */ target) =>
         Array.isArray(target?.attempt_ids) &&
         target.attempt_ids.includes(attempt.attempt_id)
-    ) || null
-  );
+    );
+    if (target) {
+      return target;
+    }
+  }
+  return null;
 }
 
 /**

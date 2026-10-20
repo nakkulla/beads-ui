@@ -417,6 +417,204 @@ describe('runner/provider-outage recovery wait classification', () => {
   });
 });
 
+/**
+ * Build one subagent `user` event whose Bash tool_result carries `content`.
+ *
+ * @param {unknown} content
+ * @returns {Record<string, unknown>}
+ */
+function toolResultEvent(content) {
+  return {
+    type: 'user',
+    parent_tool_use_id: 'toolu_leaf',
+    message: {
+      role: 'user',
+      content: [
+        {
+          tool_use_id: 'toolu_wait',
+          type: 'tool_result',
+          content,
+          is_error: false
+        }
+      ]
+    }
+  };
+}
+
+/**
+ * The outer-lifecycle `wait` envelope around one bridge manifest.
+ *
+ * @param {Record<string, unknown>|null} bridge_result
+ * @returns {string}
+ */
+function bridgeEnvelope(bridge_result) {
+  return JSON.stringify({
+    bridge_result,
+    launch_id: 'ui-refs-implementation-review-2',
+    live: bridge_result === null,
+    outer_transport: 'codex_runner_outer',
+    state: bridge_result === null ? 'running' : 'result_ready',
+    terminal: bridge_result !== null
+  });
+}
+
+/**
+ * One bridge manifest that ended on the Codex workspace credit limit.
+ *
+ * @param {Record<string, unknown>} [overrides]
+ * @returns {Record<string, unknown>}
+ */
+function usageLimitManifest(overrides = {}) {
+  return {
+    transport: 'codex_runner_bridge',
+    error_code: 'usage_limit',
+    limit_kind: 'workspace_credits',
+    account_number: 2,
+    requested_model: 'gpt-6-astra',
+    diagnostics:
+      'Error: codex turn failed: Your workspace is out of credits.\ncompanion: /x/codex-task-client.mjs',
+    ...overrides
+  };
+}
+
+describe('runner/provider-outage codex leaf limit evidence (UI-gggh)', () => {
+  test('reads a bridge usage_limit manifest as codex leaf evidence', () => {
+    const raw = [
+      rateLimitEvent({ status: 'allowed' }),
+      toolResultEvent(bridgeEnvelope(usageLimitManifest())),
+      resultEvent({ is_error: false, result: '대기 · recovery:provider' })
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result).toEqual({
+      detail: 'usage_limit',
+      scope: 'account',
+      message:
+        'codex_runner_bridge usage_limit: Error: codex turn failed: Your workspace is out of credits.',
+      resets_at: null,
+      leaf: {
+        runner: 'codex',
+        account_number: 2,
+        limit_kind: 'workspace_credits',
+        requested_model: 'gpt-6-astra'
+      }
+    });
+  });
+
+  test('reads a manifest carried in tool_result text blocks', () => {
+    const envelope = bridgeEnvelope(usageLimitManifest());
+    const raw = [
+      toolResultEvent([
+        { type: 'text', text: envelope.slice(0, 40) },
+        { type: 'text', text: envelope.slice(40) }
+      ])
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result?.leaf?.account_number).toBe(2);
+  });
+
+  test('keeps invalid manifest identity fields null', () => {
+    const raw = [
+      toolResultEvent(
+        bridgeEnvelope(
+          usageLimitManifest({ account_number: 0, requested_model: '' })
+        )
+      )
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result?.leaf).toMatchObject({
+      account_number: null,
+      requested_model: null
+    });
+  });
+
+  test.each([
+    ['a live poll', bridgeEnvelope(null)],
+    [
+      'a success manifest',
+      bridgeEnvelope(usageLimitManifest({ error_code: null }))
+    ],
+    [
+      'another transport',
+      bridgeEnvelope(usageLimitManifest({ transport: 'codex_runner_outer' }))
+    ],
+    [
+      'hand-back prose quoting the token',
+      `[Subagent hand-back] 리뷰어 계정이 usage_limit으로 끝났다: ${bridgeEnvelope(usageLimitManifest())}`
+    ],
+    ['a JSON array', JSON.stringify([{ bridge_result: usageLimitManifest() }])]
+  ])('ignores %s', (_label, content) => {
+    const raw = [
+      toolResultEvent(content),
+      resultEvent({ is_error: false, result: '대기 · recovery:provider' })
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result).toBeNull();
+  });
+
+  test('ignores a manifest outside a tool_result', () => {
+    const raw = [
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: bridgeEnvelope(usageLimitManifest()) }
+          ]
+        }
+      }
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result).toBeNull();
+  });
+
+  test('lets a later bridge manifest win over an earlier rejected window', () => {
+    const raw = [
+      rateLimitEvent({ status: 'rejected', resetsAt: 1790874000 }),
+      toolResultEvent(bridgeEnvelope(usageLimitManifest()))
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result?.leaf?.runner).toBe('codex');
+  });
+
+  test('lets a later rejected window win over an earlier bridge manifest', () => {
+    const raw = [
+      toolResultEvent(bridgeEnvelope(usageLimitManifest())),
+      rateLimitEvent({ status: 'rejected', resetsAt: 1790874000 })
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result).toEqual({
+      detail: 'usage_limit',
+      scope: 'account',
+      message: 'rate_limit_event: account usage limit rejected',
+      resets_at: 1790874000000
+    });
+  });
+
+  test('skips a later live poll to reach the final manifest', () => {
+    const raw = [
+      toolResultEvent(bridgeEnvelope(usageLimitManifest())),
+      toolResultEvent(bridgeEnvelope(null))
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result?.leaf?.limit_kind).toBe('workspace_credits');
+  });
+});
+
 describe('runner/provider-outage stderr classification', () => {
   test.each([
     "Error: Account-4 (held@example.com)'s session login is not valid — run `cswap session login 4`.",

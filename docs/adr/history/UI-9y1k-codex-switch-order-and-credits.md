@@ -1,7 +1,8 @@
 ---
 id: UI-9y1k
 title: 공급자 보류 전역 원본·Codex 전환 순서와 크레딧·Worker 가드
-status: accepted
+status: superseded
+superseded_by: UI-gggh
 date: 2026-10-19
 summary: "Codex 자동 전환 후보는 허용 목록의 사용자 순서로 창 여유 계정을 먼저 고르고 반응 전환에서만 계정별 크레딧 허용·하루 상한(다음 선택만 막음) 안의 크레딧 계정을 고르며, 크레딧 설정은 서버 전역이고 세션은 같은 규칙의 후보 조회 API를 쓴다 — 나머지 조항은 UI-np4t 그대로다"
 supersedes: ["UI-np4t"]

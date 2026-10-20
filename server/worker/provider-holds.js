@@ -66,6 +66,10 @@ const log = debug('worker:provider-holds');
  * @property {'none'|'unconfigured'|'disabled'|null} [auto_switch]
  * @property {number|null} [switch_ready_at]
  * @property {string|null} [switch_ready_account]
+ * @property {true} [cross_runner] - The attempt runs on another runner than
+ * the target's: a session whose delegated leaf hit this account's limit
+ * (UI-gggh §3.3). Such a member never switches nor follows a wait, carries no
+ * switch state, and resumes on its own runner's account rules.
  */
 /**
  * @typedef {Object} ProjectedProviderTarget
@@ -264,7 +268,12 @@ export function effectiveProviderHolds(global_holds, local_holds, members) {
       generation: hold.generation,
       targets: hold.targets.map((target) => {
         const members_of = bound.get(target.target_id) || [];
-        const lead = members_of[0]?.member;
+        // A cross-runner member carries no switch state (UI-gggh §3.3): the
+        // target's verdict is its first own-runner member's, and a target only
+        // cross members wait on has none — nothing there could switch.
+        const lead = members_of.find(
+          (entry) => entry.member.cross_runner !== true
+        )?.member;
         const auto_switch = lead?.auto_switch ?? null;
         return {
           target_id: target.target_id,
