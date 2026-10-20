@@ -1,17 +1,25 @@
 ---
-id: UI-lsr4
-title: jev 배치 추천·직렬 레인 증설과 Worker 대기열 세션 레인
+id: UI-hf8v
+title: 모니터 탭 전체 배치안과 모니터 가시 저장소 jev 판정
 status: accepted
-date: 2026-10-17
-summary: "Worker 대기열 배치 추천은 서버가 jev 쌍 판정(두 이슈 재료 digest로 캐시, 선언 scope 겹침은 질문 재료로 싣는다)과 고정 조건(blocks, 두 이슈가 같은 파일을 선언한 겹침)으로 쌍 관계를 만들고, jev의 충돌은 같은 파일·공유 상태·계약 조항·배포 대상을 함께 고치는 쌍에 내며 폴더만 겹치는 쌍은 jev가 0.9 이상 독립이라 할 때만 병렬로 두고, 화면이 현재 큐·후보 순서로 자리를 계산해 Worker 탭 후보 카드의 별도 [추천 배치] 버튼을 누를 때 점선 미리보기로 보이고([↴ 대기로] 수동 메뉴는 그대로) 레인에는 사람의 [적용]·[전체 적용]만 쓰며, 기존 직렬 레인이 모두 차 있으면 새 직렬 레인(상한 5)을 추천해 적용 때 레인 수를 먼저 늘린다; 큐 변화는 jev를 부르지 않고 추천은 blocks 의존을 쓰지 않으며 질문 정의는 beads-ui 서버에 둔다; 배포·빌드 조항은 UI-u6ud-5에서 승계한 그대로다; worker-ineligible과 exec_lane=session인 session-preferred 이슈는 Worker 대기열에서 세션 레인으로 실행된다 — 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처) headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열리며, 생존은 isDeadAttempt가 마커 pane 관측으로 판정하고(관측 실패는 생존) 결과는 종단 결과 줄로 판정하되 성공과 Worker 자동 대기(blocks·external·base_moved)만 headless와 같은 판정을 타고 창을 닫으며, 사람 답이 필요한 줄(파킹·실패·환경·recovery 대기)은 정산 없이 창·claim·슬롯을 유지한 답 대기로 남고 그 상태에서 창이 사라지면 그 줄로 정산한다; 결과 줄 없는 창 소멸은 클릭 전용 session_exited 실패이고 재개는 세션 레인 attempt의 ↻ 이어하기이며 일시정지는 없다; UI-lbm5가 UI-1eag에서 승계한 나머지 조항은 그대로다"
-supersedes: ["UI-mcth"]
-spec: docs/superpowers/specs/2026-10-17-placement-file-overlap-serial-lanes-design.md
-bead: UI-lsr4
+date: 2026-10-20
+summary: "모니터 탭은 [전체 배치안]으로 보이는 레포마다 Worker 탭과 같은 배치안 표를 레포 카드로 보이고 적용은 레포 단위로 그 레포 revision에 따로 보내 한 레포의 멈춤이 다른 레포를 멈추지 않으며, 모니터 구독이 있으면 보이는 레포도 jev 쌍 판정 일정에 넣는다; 카드별 [추천 배치]·점선 미리보기는 Worker 탭에만 두고 이슈 상세에는 달지 않는다 — 나머지 조항은 UI-lsr4 그대로다"
+supersedes: ["UI-lsr4"]
+spec: docs/superpowers/specs/2026-10-20-monitor-full-placement-plan-design.md
+bead: UI-hf8v
 ---
 
-# jev 배치 추천·직렬 레인 증설과 Worker 대기열 세션 레인
+# 모니터 탭 전체 배치안과 모니터 가시 저장소 jev 판정
 
 ## Context
+
+이 결정은 `ADR UI-lsr4`를 다시 쓴다. 그 ADR의 "추천은 Worker 탭 … 모니터 탭과 이슈 상세에는 달지 않는다" 조항과 "Worker 탭이 구독한 저장소만 jev를 묻는다"는 배치 투영이 이 결정과 소비자(`server/ws/worker-handlers.js` `placementFor`, `app/views/worker/placement.js`, parity 스펙 §9 표, `app/views/monitor/card-parity.test.js`)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 모니터 탭 배제 하나이고, 모니터 가시 저장소의 jev 판정 일정과 모니터 전체 배치안을 신설한다. 나머지 조항은 그대로 승계한다.
+
+UI-hf8v(2026-10-20): `[전체 배치안]`은 Worker 탭 대기 열 머리에만 있고 그 저장소 후보만 다뤘다. 여러 저장소를 배치하려면 저장소마다 Worker 탭을 열어야 했다. 또 jev 일정은 그 저장소의 Worker 탭 구독자가 있을 때만 켜져서, 모니터만 연 저장소의 쌍은 `pending`에 머물렀고 모니터에서 보내는 다시 판정도 효과가 없었다. 사용자 요청(2026-10-20): "모니터탭에서도 전체 배치안 누르면 모든 활성화 레포에 대해 배치를 할수 있도록 하는게 어때?" — 390px 화면 예시를 본 뒤 승인했다.
+
+- 전제: 레인·충돌 판정·큐 revision이 저장소마다 따로다. 한 저장소 revision을 다른 저장소에 쓰면 항상 충돌한다.
+
+아래는 `ADR UI-lsr4`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
 이 결정은 `ADR UI-mcth`를 다시 쓴다. 그 ADR이 UI-i7k9에서 승계한 "고정 조건은 직접 blocks 하나" 조항과 "jev의 충돌은 해소 세션으로도 풀기 어려운 겹침에만" 조항이 이 결정과 소비자(`server/placement/relations.js`·`question.js`·`wire.js`, `app/utils/placement/compute.js`·`apply.js`, `app/views/worker/placement.js`)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 그 둘이고, 직렬 레인 증설과 고정 관계만 있는 후보의 추천을 신설한다. 나머지 조항은 그대로 승계한다.
 
@@ -160,6 +168,10 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 ## Decision
 
+**모니터 탭은 대기 레인 머리의 `[전체 배치안 · N개 레포]`로 보이는 저장소마다 Worker 탭과 같은 배치안 표를 저장소 카드로 보이고, 적용은 저장소 단위로 그 저장소 revision에 따로 보내 한 저장소의 멈춤이 다른 저장소를 멈추지 않는다. 모니터 구독이 있으면 보이는 저장소도 jev 쌍 판정 일정에 넣는다. 카드별 `[추천 배치]`·점선 미리보기는 Worker 탭에만 두고 이슈 상세에는 달지 않는다.** 그 밖의 조항은 `ADR UI-lsr4`에서 그대로 승계한다. 이 결정이 바꾼 조항은 `(변경, UI-hf8v)`, 새 조항은 `(신설, UI-hf8v)`로 표시했다. 그 밖의 `(변경, …)`·`(신설, …)` 표시는 그 조항이 생긴 이력이다.
+
+아래는 UI-lsr4의 Decision 승계분이다.
+
 **두 이슈가 같은 파일을 선언한 쌍은 고정 부딪힘이고, 폴더만 겹치는 쌍은 jev가 높은 확신으로 독립이라 할 때만 병렬이다. jev의 `conflict`는 같은 파일·공유 상태·계약 조항·배포 대상을 함께 고치는 쌍에 낸다. 기존 직렬 레인이 모두 차 있으면 새 직렬 레인을 추천하고, 적용 때 레인 수를 먼저 늘린다.** 그 밖의 조항은 `ADR UI-mcth`에서 그대로 승계한다. 이 결정이 바꾼 조항은 `(변경, UI-lsr4)`, 새 조항은 `(신설, UI-lsr4)`로 표시했다. 그 밖의 `(변경, …)`·`(신설, …)` 표시는 그 조항이 생긴 이력이다.
 
 아래는 UI-mcth의 Decision 승계분이다.
@@ -179,7 +191,9 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 - jev 질문 정의(`placement_pair`)는 beads-ui 서버 상수다(ADR dotfiles/dotfiles-hkski). 모델·엔드포인트·시간 제한은 workflow 판정과 같은 값을 코드 registry로 두고 cross-runtime 테스트가 dotfiles 값과 대조한다(ADR UI-u6ud-2). 키는 `TYPESAFE_API_KEY`, 없으면 설치 dotfiles checkout의 `secrets-get typesafe/api-key`이고 프로세스 메모리에만 둔다 — 브라우저 wire와 호출 기록에 키·본문을 싣지 않는다.
 - 쌍 판정은 두 이슈 재료 digest·질문 버전·모델을 키로 서버 상태 디렉터리에 캐시한다. 큐 변화는 jev를 부르지 않는다. 재료가 바뀐 쌍만 다시 묻고 호출 자동 일정·채택 확신도·실패 재시도 간격·동시 호출 수는 `server/placement/question.js`·`wire.js` 상수가 정한다.
 - worker-queue wire는 `placement_relations`(쌍 관계·출처·확신도)와 `placement_status`(후보 상태)를 싣는다. 자리 계산은 화면의 순수 함수(`app/utils/placement/`)가 현재 큐 스냅샷·후보 정렬·고른 집합으로 하고, 레인 blocks 정렬 함수 `orderLaneByBlocks`는 서버 store와 화면이 같은 모듈을 쓴다. `queue-place.js`는 레인 판단을 하지 않는다.
-- 추천은 Worker 탭 후보 카드 슬롯 6의 별도 `[추천 배치]`를 누를 때만 점선 미리보기로 보인다. `[↴ 대기로]` 수동 레인 메뉴는 그대로이고, jev를 못 쓰는 어떤 경우에도 수동 배치를 막지 않는다. 모니터 탭과 이슈 상세에는 달지 않는다(monitor-worker parity §9).
+- (변경, UI-hf8v) 카드별 추천은 Worker 탭 후보 카드 슬롯 6의 별도 `[추천 배치]`를 누를 때만 점선 미리보기로 보인다. `[↴ 대기로]` 수동 레인 메뉴는 그대로이고, jev를 못 쓰는 어떤 경우에도 수동 배치를 막지 않는다. 모니터 탭은 카드별 `[추천 배치]`와 레인 점선 미리보기를 그리지 않고, 이슈 상세에는 추천을 달지 않는다(monitor-worker parity §9).
+- (신설, UI-hf8v) 모니터 탭 대기 레인 머리는 `[전체 배치안 · N개 레포]`·`판정 중 · N개 레포`·`[↻ 전부 다시 판정]`을 갖고, 배치 재료를 싣는 저장소가 없으면 아무것도 그리지 않는다. 패널은 배치 재료에 후보 항목이 있는 보이는 저장소마다 저장소 카드 하나를 이름순으로 세운다. 표의 행 재료와 그리기는 Worker 탭 전체 배치안과 같은 공유 함수(`app/views/worker/placement.js`)가 만들고, 번호는 저장소마다 1부터 센다. 저장소를 섞은 단일 배치는 만들지 않는다. `[이 레포만 적용]`·`[전체 적용]`은 누른 순간의 대상 저장소·체크·보여 준 자리를 고정하고, 저장소마다 그 차례의 최신 큐에서 그 저장소 `root_dir`·revision으로 `sendPlacementBatch`를 부른다. 그래서 그 사이 자리가 바뀐 저장소는 넣지 않고 멈추며, 한 저장소의 멈춤·실패는 다음 저장소를 멈추지 않는다. `[↻ 전부 다시 판정]`은 재료 있는 보이는 저장소마다 `worker-placement-rejudge`를 하나씩 보내고, jev 호출 속도는 서버 전역 상수가 정한다.
+- (신설, UI-hf8v) 저장소의 배치 투영은 그 저장소에 Worker 탭 구독자가 있거나, 모니터 파이프라인 구독자가 있고 그 저장소가 모니터에 보일 때 jev 일정을 잡는다(observe). 숨긴 저장소는 모니터 때문에 observe하지 않는다. `worker-handlers.js`는 모니터 모듈을 import하지 않고, 모니터 쪽이 가시성 판정을 등록한다. 와이어는 바꾸지 않는다.
 - 레인에는 사람의 `[적용]`·`[전체 적용]`만 쓴다. 미리보기를 계산한 스냅샷 revision으로 CAS 전송하고, 충돌이면 최종 자리가 같을 때만 한 번 다시 보낸다. 추천은 레인 배치만 쓰고 blocks 의존을 쓰지 않는다.
 - (신설, UI-lsr4) 자리 계산이 여러 개짜리 묶음에 가장 빈 직렬 레인을 고를 때는 설정된 레인이 아니라 `s1`~`s5` 전체에서 짐(대기 항목 수와 점유자 수의 합)이 가장 적은 레인을 고르고, 같으면 낮은 번호가 먼저다. 그래서 빈 기존 레인이 먼저이고, 기존 레인이 모두 차 있으면 점유 없는 새 레인이다. 서버 `lane_states`는 설정 수 밖 레인의 점유를 `hidden` 항목으로 싣고, 자리 계산은 그것을 새 레인 선택에만 쓴다 — `[↴ 대기로]` 메뉴와 레인 그리기(Worker 탭·모니터 탭)는 설정된 레인만 본다. 계획은 필요한 레인 수를 함께 낸다. `[적용]`·`[전체 적용]`은 보낼 자리가 설정 수 밖이면 레인 수 변경(`worker-queue-set-serial-lane-count`, CAS)을 먼저 보내고, 거부되면 아무것도 넣지 않으며, 늘린 뒤 다시 계산한 자리가 보여 준 자리와 다르면 넣지 않고 멈춘다. 새 레인에는 점선 카드를 그리지 않고 표가 레인 증설을 알린다. 빈 레인을 자동으로 줄이지는 않는다.
 - (신설, UI-lsr4) 추천할 수 있는 후보 상태는 `ready`와 `fixed_only`다. 고정 관계만 있는 후보도 jev 호출 없이 추천·적용된다.
@@ -1045,6 +1059,15 @@ verify 보류
 - post-merge 잡 원장·`replaces` 승계·CAS 확정을 둔다. 실패 행의 출구는 `[정리 재시도]`(머지 후 정리, 변경 UI-btsr), `[워커로 이어가기]`(폐기 재시도, 옛 폐기 실패 `[재시도]`), `[머지]` 재클릭, `[세션에서 이어가기]`(실패 대화), `[폐기 포기]`다. (변경, UI-k467) 외부 PR 사람 처리 필요 행의 출구는 `[세션에서 이어가기]` 하나다. `[정리 재시도]`와 `[워커로 이어가기]`는 사람 클릭이나 같은 행 실패 대화의 `인계`로 실행되고, 그 인계는 사용자 답의 권한(결과 미상 머지 후 잡 재실행 포함)으로 많아야 한 번 실행한다. 자동 인계는 폐기나 사람 결정을 대신하지 않는다.
 
 ## Consequences
+
+- 되돌리기 어렵다: `server/ws/worker-handlers.js` `placementFor`의 observe 판정과 `setPlacementMonitorObserver`, `server/ws/monitor-handlers.js`의 모니터 가시성 등록, 공유 표 함수(`app/views/worker/placement.js` `fullPlacementPlan`·`placementPlanTable`)와 모니터 패널(`app/views/monitor/placement-panel.js`·`index.js`), 카드 동일성 테스트(`card-parity.test.js`), parity 스펙 §9 표가 함께 움직인다.
+- 맥락 없이는 놀랍다: 이전 ADR이 모니터에는 달지 않는다고 적었고, 모니터가 열려 있기만 해도 Worker 탭을 열지 않은 저장소의 jev 호출이 생긴다.
+- 얻는 것: 저장소마다 Worker 탭을 오가지 않고 보이는 모든 저장소의 배치안을 한 화면에서 보고 적용한다. 모니터만 연 저장소의 쌍도 판정된다.
+- 감수하는 것: 모니터만 연 저장소의 미판정 쌍에 대한 jev 호출(캐시에 없는 쌍만, 동시 호출 수는 서버 전역 상수가 묶는다). `[전체 적용]`은 저장소를 차례로 보내므로 저장소 수만큼 시간이 든다.
+- 기각한 대안: Worker 탭에서만 배치 — 저장소마다 탭을 오가야 한다. 저장소를 섞은 단일 배치 — revision이 저장소마다 따로라 항상 충돌한다. 패널을 열 때만 판정 — 누르는 순간 기다린다. 차례마다 다시 계산한 자리로 전송 — 사람이 본 적 없는 자리가 들어간다.
+- 폐기: UI-lsr4의 "모니터 탭과 이슈 상세에는 달지 않는다" 중 모니터 탭 부분 — 위 `(변경, UI-hf8v)`·`(신설, UI-hf8v)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
+
+### ADR UI-lsr4의 결과 (승계)
 
 - 되돌리기 어렵다: 질문 버전이 바뀌어 저장된 쌍 캐시 전체가 다시 채워지고, `server/placement/relations.js`·`question.js`·`wire.js`·`service.js`의 `basis: 'file'`·`overlap_guard` 뜻, `server/ws/worker-handlers.js` `lane_states`의 `hidden` 항목, `app/utils/placement/compute.js`의 레인 선택·필요 레인 수와 `apply.js`의 전송 순서, 화면 문구(`app/views/worker/placement.js`)가 함께 움직인다.
 - 맥락 없이는 놀랍다: 하루 전 ADR이 병렬을 기본으로 만들었는데 같은 파일 쌍을 다시 고정 직렬로 돌렸고, 배치 추천이 큐 설정인 직렬 레인 수를 스스로 늘린다.
