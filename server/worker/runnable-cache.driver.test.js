@@ -40,6 +40,7 @@ vi.mock('../ws/worker-handlers.js', () => ({
   workerQueueSubscriberTotal: () => 0,
   workerQueueSubscribedWorkspaces: () => [],
   setHistoricalUsageRetainer: () => {},
+  setPlacementMonitorObserver: () => {},
   fanout: () => {}
 }));
 

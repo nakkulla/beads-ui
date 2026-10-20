@@ -66,6 +66,7 @@ import {
   fanout,
   onWorkerSnapshotRefresh,
   setHistoricalUsageRetainer,
+  setPlacementMonitorObserver,
   workerQueueSubscribedWorkspaces,
   workerQueueSubscriberCount,
   workerQueueSubscriberTotal
@@ -1275,6 +1276,22 @@ function queueRevisionMoved(workspace) {
 }
 
 /**
+ * Whether a live monitor subscriber shows `workspace` — at least one
+ * monitor-pipeline subscriber and the workspace is visible (not hidden). The
+ * historical-usage retainer and the placement projection's `observe` read
+ * this through the registration in {@link ensureRefreshWired}.
+ *
+ * @param {string} workspace
+ * @returns {boolean}
+ */
+function monitorShowsWorkspace(workspace) {
+  return (
+    SUBSCRIBERS.size > 0 &&
+    visibleWorkspaceRoots().includes(path.resolve(workspace))
+  );
+}
+
+/**
  * Attach the queue-refresh observer exactly once, and only while somebody is
  * watching: with no monitor subscriber the aggregation has nothing to feed.
  *
@@ -1298,11 +1315,10 @@ function queueRevisionMoved(workspace) {
  */
 function ensureRefreshWired() {
   if (!queue_changed_unsubscribe) {
-    setHistoricalUsageRetainer(
-      (workspace) =>
-        SUBSCRIBERS.size > 0 &&
-        visibleWorkspaceRoots().includes(path.resolve(workspace))
-    );
+    setHistoricalUsageRetainer(monitorShowsWorkspace);
+    // 모니터가 보는 레포도 jev 쌍 판정 일정에 넣는다 (UI-hf8v §3.1) — 숨긴 레포는
+    // 모니터 때문에 observe하지 않는다.
+    setPlacementMonitorObserver(monitorShowsWorkspace);
     queue_changed_unsubscribe = onQueueChanged((workspace) => {
       // `emitQueueChanged`는 진짜 레인 전이만이 아니라 세션 로그 하트비트
       // (`session-log.js`의 last_event_at fanout, 3초 코얼레스)로도 온다 —

@@ -1578,3 +1578,137 @@ select.detail-kv__v:disabled {
     padding-left: var(--sp-14);
   }
 }
+
+/* --- 모니터 전체 배치안 (UI-hf8v §3.2–§3.4) --- */
+
+/* 대기 레인 머리의 `[전체 배치안 · N개 레포]`·`판정 중 · N개 레포`·`[↻ 전부 다시 판정]`.
+   좁은 폭에서는 머리줄 안에서 줄을 바꿔 레인 밖으로 넘치지 않는다. */
+.mon-plan-controls {
+  display: inline-flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  text-transform: none;
+}
+
+.mon-plan__judging {
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+}
+
+/* 패널은 대기 레인 본문 맨 위다. 레포 카드가 차례로 서고 요약 줄이 아래에 붙는다. */
+.mon-plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  min-width: 0;
+  margin-bottom: var(--sp-8);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+.mon-plan__hd {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.mon-plan__title {
+  color: var(--text-title);
+  font-weight: 600;
+}
+
+.mon-plan__close {
+  margin-left: auto;
+}
+
+.mon-plan__repo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-4) 0;
+  border-top: 1px solid var(--border-panel);
+}
+
+.mon-plan__repo-hd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-6);
+  min-width: 0;
+}
+
+.mon-plan__repo-name {
+  color: var(--text-title);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.mon-plan__count,
+.mon-plan__progress,
+.mon-plan__time {
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mon-plan__apply-repo {
+  margin-left: auto;
+}
+
+/* 표만 가로로 민다 — 레인 폭(모바일 390px 포함)을 넘지 않는다. */
+.mon-plan__scroll {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.mon-plan__fold {
+  color: var(--text-dim);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.mon-plan__result {
+  color: var(--accent-success);
+}
+
+.mon-plan__result--stopped {
+  color: var(--accent-warn);
+}
+
+.mon-plan__repo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+}
+
+.mon-plan__empty {
+  color: var(--text-dim);
+}
+
+/* 요약 줄은 패널이 보이는 동안 스크롤 영역(데스크톱은 레인 본문, 모바일은 문서)
+   아래쪽에 붙는다. */
+.mon-plan__summary {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-6);
+  padding: var(--sp-4) 0;
+  border-top: 1px solid var(--border-panel);
+  background: var(--bg-panel);
+}
+
+.mon-plan__total {
+  color: var(--text-title);
+  font-variant-numeric: tabular-nums;
+}
