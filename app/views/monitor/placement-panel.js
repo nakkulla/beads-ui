@@ -115,6 +115,11 @@ export function createMonitorPlacementPanel(options) {
   /** @type {{ at: number, total: number }|null} */
   let applying = null;
   let rejudging = false;
+  /**
+   * Bumped on every close: an apply that outlives its panel must not write
+   * results or clear checks into a panel reopened after it started.
+   */
+  let generation = 0;
 
   /**
    * @param {string} root_dir
@@ -224,6 +229,7 @@ export function createMonitorPlacementPanel(options) {
   }
 
   function reset() {
+    generation += 1;
     checks.clear();
     results.clear();
   }
@@ -259,6 +265,7 @@ export function createMonitorPlacementPanel(options) {
       return;
     }
     const send = transport;
+    const started = generation;
     let placed_total = 0;
     let stopped_total = 0;
     for (let at = 0; at < targets.length; at += 1) {
@@ -302,10 +309,13 @@ export function createMonitorPlacementPanel(options) {
           }
         };
       }
-      results.set(root_dir, result);
-      if (result.stopped === null) {
-        checks.delete(root_dir);
-      } else {
+      if (generation === started) {
+        results.set(root_dir, result);
+        if (result.stopped === null) {
+          checks.delete(root_dir);
+        }
+      }
+      if (result.stopped !== null) {
         stopped_total += 1;
       }
       placed_total += result.placed;

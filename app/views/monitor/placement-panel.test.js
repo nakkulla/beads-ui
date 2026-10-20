@@ -600,6 +600,33 @@ describe('monitor placement apply (UI-hf8v §3.4)', () => {
     ).not.toBeNull();
   });
 
+  test('drops the result of an apply that outlived a closed panel', async () => {
+    /** @type {(value: any) => void} */
+    let release = () => {};
+    const { mount } = setup(
+      [repo('A', 'repo-a', WS_A)],
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    click(mount, '.mon-plan__open');
+    click(mount, '.mon-plan__apply-all');
+    await flush();
+    click(mount, '.mon-plan__close');
+    click(mount, '.mon-plan__open');
+
+    release({ applied: false, conflict: false });
+    await vi.waitFor(() => {
+      expect(toastText()).toContain('넣음');
+    });
+
+    expect(mount.querySelector('.mon-plan__result')).toBeNull();
+    expect(
+      card(mount, WS_A).querySelector('.worker-plan__row[data-bead-id="A-1"]')
+    ).not.toBeNull();
+  });
+
   test('keeps the table of a stopped repository with its checks disabled', async () => {
     const { mount } = setup([repo('A', 'repo-a', WS_A)], async () => ({
       applied: false,
