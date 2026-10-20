@@ -6485,6 +6485,19 @@ describe('scheduler provider hold and recovery', () => {
     }
   );
 
+  test.each(['live', 'persisted'])(
+    'carries the codex leaf limit kind onto its hold target through %s (UI-3ozw)',
+    async (source) => {
+      const env = await providerRecoveryFixture(source, { leaf: {} });
+
+      await env.finish();
+
+      expect(env.store.snapshot(WS).provider_hold.codex.targets).toMatchObject([
+        { account: 'codex-two', limit_kind: 'workspace_credits' }
+      ]);
+    }
+  );
+
   test.each([
     ['live', { account_number: 9 }],
     ['persisted', { account_number: 9 }],

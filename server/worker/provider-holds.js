@@ -40,6 +40,8 @@ const log = debug('worker:provider-holds');
  * @property {number|null} resets_at
  * @property {number} rearm_count
  * @property {number|null} next_probe_at
+ * @property {string} [limit_kind] - A delegated Codex leaf's bridge limit kind
+ * (UI-3ozw); absent when no observation named one.
  */
 /**
  * @typedef {Object} GlobalProviderHold
@@ -87,6 +89,7 @@ const log = debug('worker:provider-holds');
  * @property {number|null} [switch_ready_at]
  * @property {string|null} [switch_ready_account]
  * @property {number|null} [next_probe_at]
+ * @property {string} [limit_kind]
  */
 /**
  * @typedef {Object} ProjectedProviderHold
@@ -174,7 +177,10 @@ function normalizeGlobalTarget(value) {
       typeof value.next_probe_at === 'number' &&
       Number.isFinite(value.next_probe_at)
         ? value.next_probe_at
-        : null
+        : null,
+    ...(typeof value.limit_kind === 'string' && value.limit_kind.length > 0
+      ? { limit_kind: value.limit_kind }
+      : {})
   };
 }
 
@@ -293,7 +299,10 @@ export function effectiveProviderHolds(global_holds, local_holds, members) {
             auto_switch === 'none'
               ? (lead?.switch_ready_account ?? null)
               : null,
-          next_probe_at: target.next_probe_at
+          next_probe_at: target.next_probe_at,
+          ...(target.limit_kind === undefined
+            ? {}
+            : { limit_kind: target.limit_kind })
         };
       })
     };
@@ -562,14 +571,15 @@ export function createProviderHoldStore(options = {}) {
     /**
      * Create or merge one target (§5.2 step 1). A same-key re-entry keeps the
      * target's identity: `detail`, `last_error` and `resets_at` follow the new
-     * observation and `rearm_count` keeps the larger value. `entered` is true
+     * observation, a named `limit_kind` replaces the stored one, and
+     * `rearm_count` keeps the larger value. `entered` is true
      * only for the call that created the target — Node runs this whole
      * function on one turn, so two workspaces entering together still see it
      * once. Throws when the write fails, before any queue write. `since` only
      * seeds a runner hold this call creates (the migration keeps the
      * per-repository hold's start); a live entry starts it now.
      *
-     * @param {{ runner: string, origin: string, since?: number, target: { kind: 'outage'|'usage_limit', model: string, account: string|null, detail?: string, last_error?: string, resets_at?: number|null, rearm_count?: number } }} input
+     * @param {{ runner: string, origin: string, since?: number, target: { kind: 'outage'|'usage_limit', model: string, account: string|null, detail?: string, last_error?: string, resets_at?: number|null, rearm_count?: number, limit_kind?: string } }} input
      * @returns {{ target_id: string, generation: number, since: number, entered: boolean, origin: string }|null}
      */
     enter(input) {
@@ -617,6 +627,9 @@ export function createProviderHoldStore(options = {}) {
           existing.last_error = target.last_error ?? existing.last_error;
           existing.resets_at = resets_at;
           existing.rearm_count = Math.max(existing.rearm_count, rearm_count);
+          if (typeof target.limit_kind === 'string') {
+            existing.limit_kind = target.limit_kind;
+          }
           return {
             target_id: existing.target_id,
             generation: hold.generation,
@@ -637,7 +650,10 @@ export function createProviderHoldStore(options = {}) {
             typeof target.last_error === 'string' ? target.last_error : '',
           resets_at,
           rearm_count,
-          next_probe_at: null
+          next_probe_at: null,
+          ...(typeof target.limit_kind === 'string'
+            ? { limit_kind: target.limit_kind }
+            : {})
         };
         hold.targets.push(created);
         return {

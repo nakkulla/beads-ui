@@ -1032,9 +1032,16 @@ export function judgeWaitReasons(input) {
         );
         const resets_at = timestamp(target.resets_at);
         const next_at = timestamp(target.next_probe_at);
+        // A delegated leaf's bridge names a spent workspace credit pool
+        // (UI-3ozw); a usage window does not apply to it.
+        const credits = target.limit_kind === 'workspace_credits';
         const headline = outage
           ? `${runner} 공급자 장애${target.detail ? ` · ${line(target.detail)}` : ''}`
-          : [runner, `${alias}${plan ? `(${plan})` : ''}`, window, '한도 초과']
+          : [
+              runner,
+              `${alias}${plan ? `(${plan})` : ''}`,
+              ...(credits ? ['크레딧 소진'] : [window, '한도 초과'])
+            ]
               .filter(Boolean)
               .join(' ');
         const release = outage

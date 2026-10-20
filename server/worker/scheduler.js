@@ -2954,7 +2954,7 @@ export function createScheduler(deps) {
    *
    * @param {import('./runner/provider-outage.js').ProviderRecoveryOutage} outage
    * @param {import('./runner/provider-outage.js').CodexLeafLimit} leaf
-   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string, target: { runner: string, model: string } }|null>}
+   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string, target: { runner: string, model: string, limit_kind?: string } }|null>}
    */
   async function leafLimitHold(outage, leaf) {
     if (
@@ -2993,7 +2993,11 @@ export function createScheduler(deps) {
         resets_at: null
       },
       account: key,
-      target: { runner: leaf.runner, model }
+      target: {
+        runner: leaf.runner,
+        model,
+        ...(leaf.limit_kind === null ? {} : { limit_kind: leaf.limit_kind })
+      }
     };
   }
 
@@ -3005,7 +3009,7 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {RunnerVerdict|null} verdict
-   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null, target?: { runner: string, model: string } }|null>}
+   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null, target?: { runner: string, model: string, limit_kind?: string } }|null>}
    */
   async function providerRecoveryOutageFor(workspace, attempt_id, verdict) {
     if (
@@ -6930,7 +6934,7 @@ export function createScheduler(deps) {
    * @param {string} attempt_id
    * @param {string} bead_id
    * @param {string|null} prior
-   * @param {{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null, target?: { runner: string, model: string } }} classified
+   * @param {{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null, target?: { runner: string, model: string, limit_kind?: string } }} classified
    * @param {{ settled?: boolean }} [options]
    */
   async function holdAttempt(
@@ -7034,7 +7038,10 @@ export function createScheduler(deps) {
         last_error: outage.message,
         resets_at: outage.resets_at,
         rearm_count: 0,
-        attempt_ids: [attempt_id]
+        attempt_ids: [attempt_id],
+        ...(classified.target?.limit_kind === undefined
+          ? {}
+          : { limit_kind: classified.target.limit_kind })
       },
       ...(cross_runner ? { cross_runner: true } : {}),
       ...(usage_limit && !cross_runner

@@ -1658,6 +1658,32 @@ describe('wait judgment holds and manual waits', () => {
     expect(result.wait_reasons[0].headline).toBe('codex abcdefgh 한도 초과');
   });
 
+  test('names spent workspace credits in a leaf limit headline', () => {
+    const result = run({
+      queue: provider({ limit_kind: 'workspace_credits' }),
+      account_catalog: {
+        abcdefghijk: { alias: '계정', plan: 'business', window: '5h' }
+      }
+    });
+
+    expect(result.wait_reasons[0].headline).toBe(
+      'codex 계정(business) 크레딧 소진'
+    );
+  });
+
+  test('keeps the window headline for an account leaf limit', () => {
+    const result = run({
+      queue: provider({ limit_kind: 'account' }),
+      account_catalog: {
+        abcdefghijk: { alias: '계정', plan: 'business', window: '5h' }
+      }
+    });
+
+    expect(result.wait_reasons[0].headline).toBe(
+      'codex 계정(business) 5h 한도 초과'
+    );
+  });
+
   test('keeps automatic probing beyond three rearms', () => {
     const result = run({ queue: provider({ rearm_count: 3 }) }).wait_reasons[0];
 

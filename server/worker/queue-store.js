@@ -850,7 +850,9 @@
  * @property {string|null} [switch_ready_account]
  * @property {number|null} [next_probe_at] - When the prober next touches this
  * target. Durable rather than timer-local because the held tile shows it: an
- * in-memory deadline reads as absent for every viewer after a restart.
+ * in-memory deadline reads as absent for every viewer after a restart. * @property {string} [limit_kind] - The bridge manifest's limit kind of a
+ * delegated Codex leaf (UI-3ozw), e.g. `workspace_credits`; absent when the
+ * observation named none.
  */
 /**
  * @typedef {Object} ProviderHold
@@ -5041,7 +5043,10 @@ function normalizeProviderTarget(value) {
       typeof value.next_probe_at === 'number' &&
       Number.isFinite(value.next_probe_at)
         ? value.next_probe_at
-        : null
+        : null,
+    ...(typeof value.limit_kind === 'string' && value.limit_kind.length > 0
+      ? { limit_kind: value.limit_kind }
+      : {})
   };
 }
 
@@ -5092,6 +5097,9 @@ function normalizeProviderHolds(value) {
           existing.rearm_count,
           target.rearm_count
         );
+        if (target.limit_kind !== undefined) {
+          existing.limit_kind = target.limit_kind;
+        }
         existing.auto_switch = target.auto_switch;
         existing.switch_ready_at = target.switch_ready_at;
         existing.switch_ready_account = target.switch_ready_account;
@@ -9638,6 +9646,9 @@ export function createQueueStore(options = {}) {
             existing.rearm_count,
             target.rearm_count
           );
+          if (target.limit_kind !== undefined) {
+            existing.limit_kind = target.limit_kind;
+          }
           if (!existing.attempt_ids.includes(input.attempt_id)) {
             existing.attempt_ids.push(input.attempt_id);
           }
