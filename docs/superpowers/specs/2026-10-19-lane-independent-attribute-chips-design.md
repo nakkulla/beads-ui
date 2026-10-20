@@ -224,8 +224,8 @@ base `9f1cf1fa8f3916550386f658c66f2db8d2acbd98` 기준.
 
 ## 7. 결정 (ADR 후보)
 
-- 전제: ADR UI-lsr4 — worker-ineligible·session-preferred(`exec_lane=session`) 이슈는 세션
-  레인으로 실행된다는 조항을 칩 의미로 따른다.
+- 전제: ADR UI-hf8v — UI-lsr4에서 그대로 승계한 worker-ineligible·session-preferred
+  (`exec_lane=session`) 이슈는 세션 레인으로 실행된다는 조항을 칩 의미로 따른다.
 - 전제: ADR UI-rd2m — `복잡`·`frontend`·`backend` 클릭은 route 계열 바인딩 프리셋 토글
   그대로다.
 - 전제: ADR UI-u6ud — overlay 재료는 기존 스냅샷·`bd show` 레코드에서 투영하고 bd 호출을
