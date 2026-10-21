@@ -491,12 +491,22 @@ describe('worker console styles', () => {
     expect(headerRule).toContain('min-width: 0');
   });
 
-  test('keeps wrapped running tile controls pinned to the right', () => {
+  // 조작 묶음은 첫 줄 오른쪽 끝에 서고, 왼쪽 묶음은 하한 폭이 안 남으면 통째로
+  // 아래 줄로 내려간다 (UI-a4zb): 기준 폭 0이면 좁은 타일에서 칩이 글자 단위로
+  // 꺾이고 ID·레포가 조작 묶음 위로 넘친다.
+  test('keeps running tile controls first-line right and drops a narrow identity group below them', () => {
+    const headerRule =
+      workerBlock.match(/(?:^|\n)\.rtile__hd\s*{([^}]*)}/)?.[1] || '';
+    const mainRule =
+      workerBlock.match(/(?:^|\n)\.rtile__hd-main\s*{([^}]*)}/)?.[1] || '';
     const actionsRule =
       workerBlock.match(/(?:^|\n)\.rtile__hd-actions\s*{([^}]*)}/)?.[1] || '';
 
-    expect(actionsRule).toContain('margin-left: auto');
+    expect(headerRule).toContain('flex-direction: row-reverse');
+    expect(actionsRule).toContain('order: -1');
     expect(actionsRule).toContain('flex: 0 0 auto');
+    expect(mainRule).toMatch(/flex: 1 1 calc\([^)]*12ch[^;]*\);/);
+    expect(mainRule).not.toMatch(/flex: 1 1 0;/);
   });
 
   test('stacks running tile coordinate and run lines as two metadata lines', () => {

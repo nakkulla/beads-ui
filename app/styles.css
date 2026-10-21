@@ -3411,8 +3411,13 @@ summary.repo-ops-log-viewer__attempt-head {
   box-shadow: var(--ring-selected);
 }
 
+/* 조작 묶음을 먼저 놓고(`order: -1`) 오른쪽에서부터 채운다 (UI-refs §3.6): 왼쪽
+   묶음이 하한 폭을 못 받는 좁은 타일에서는 왼쪽 묶음이 조작 묶음 아래 줄로
+   내려가 타일 전체 폭을 쓴다. 기준은 화면 폭이 아니라 타일 폭이다 — 데스크톱
+   실행 그리드의 좁은 타일도 같다. DOM 순서(초점 이동)는 그대로다. */
 .rtile__hd {
   display: flex;
+  flex-direction: row-reverse;
   min-height: calc(var(--h-control) + var(--sp-4));
   align-items: center;
   gap: var(--sp-2);
@@ -3439,22 +3444,24 @@ summary.repo-ops-log-viewer__attempt-head {
 }
 
 /* 정체성·속성 칩·배지는 왼쪽 묶음 안에서만 줄을 넘긴다 (UI-refs §3.6). 기준
-   폭이 0이라 머리줄의 줄 나누기에서 이 묶음은 폭을 차지하지 않고, 조작 묶음이
-   늘 첫 줄 오른쪽에 남는다 — 머리줄의 줄넘김은 그 뒤의 팝업만 받는다. */
+   폭은 점·레포 배지(12ch 상한)·ID·P가 한 줄에 드는 하한이다 — 조작 묶음 옆에
+   이만큼 남지 않으면 묶음 전체가 다음 줄로 내려가므로 칩이 글자 단위로 꺾이거나
+   ID·레포가 조작 묶음 위로 넘치지 않는다. */
 .rtile__hd-main {
   display: flex;
-  flex: 1 1 0;
+  flex: 1 1 calc(12ch + var(--h-control) * 5);
   flex-wrap: wrap;
   align-items: center;
   gap: inherit;
   min-width: 0;
 }
 
-/* 정체성이 좁아져도 조작 묶음은 머리줄 오른쪽 끝에 남는다. 왼쪽 묶음이 여러
-   줄이 되어도 첫 줄에 서고, 머리줄 최소 높이 안에서 가운데라 한 줄 타일의
-   세로 정렬은 그대로다. */
+/* 조작 묶음은 어느 타일 폭에서나 머리줄 첫 줄 오른쪽 끝에 선다. 왼쪽 묶음이
+   여러 줄이 되거나 아래 줄로 내려가도 첫 줄에 서고, 머리줄 최소 높이 안에서
+   가운데라 한 줄 타일의 세로 정렬은 그대로다. */
 .rtile__hd-actions {
   display: flex;
+  order: -1;
   min-height: calc(var(--h-control) + var(--sp-4));
   align-items: center;
   align-self: flex-start;
