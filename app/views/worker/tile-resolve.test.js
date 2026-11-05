@@ -384,6 +384,28 @@ describe('liveConversationResolution (UI-9w5l §3.5)', () => {
     );
   });
 
+  test('says the Discord thread is coming while the bridge prepares it', () => {
+    const line = liveConversationResolution([
+      session('resolve', { discord_url: null, discord_pending: true })
+    ]);
+
+    expect(line).toBe('Discord 스레드 준비 중 — 세션의 첫 답 뒤 생긴다');
+  });
+
+  test('keeps [세션에서 이어가기] while the Discord thread is pending', () => {
+    const item = {
+      id: 'UI-1',
+      ...MATERIALS.cleanup_failed,
+      interactive_sessions: [
+        session('resolve', { discord_url: null, discord_pending: true })
+      ]
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_action).toBe(true);
+  });
+
   test('returns nothing without a live conversation', () => {
     const line = liveConversationResolution([
       session('inquiry', { closing: true, discord_url: DISCORD_URL })

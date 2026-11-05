@@ -3468,6 +3468,11 @@ summary.repo-ops-log-viewer__attempt-head {
   gap: var(--sp-6);
   flex: 0 0 auto;
   margin-left: auto;
+  /* 조작이 늘어도(`↗ Discord`·`Discord 준비 중`, UI-vviq) 묶음 안에서 줄을
+     넘겨 타일 폭을 넘지 않는다. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
 }
 
 .rtile__elapsed {

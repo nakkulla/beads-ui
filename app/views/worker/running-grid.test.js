@@ -5097,6 +5097,28 @@ describe('session-lane running tile (UI-lbm5 §4.6)', () => {
     ).toBe('https://discord.com/x');
   });
 
+  test('stands the ↗ Discord link button of any live conversation in slot 1 (UI-vviq)', () => {
+    const tile = renderLaneTile(
+      {
+        key: 'UI-t1:resolve',
+        kind: 'resolve',
+        discord_url: 'https://discord.com/y'
+      },
+      { exec: undefined }
+    );
+
+    expect(
+      Array.from(
+        tile.querySelectorAll('.interactive-session-discord'),
+        (link) => [
+          link.closest('.rtile__hd-actions') !== null,
+          link.classList.contains('op-btn'),
+          link.getAttribute('href')
+        ]
+      )
+    ).toEqual([[true, true, 'https://discord.com/y']]);
+  });
+
   test('draws the answer wait and the last answer in slot 3', () => {
     const tile = renderLaneTile();
 

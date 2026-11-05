@@ -44,10 +44,17 @@ button.interactive-session-badge {
   cursor: pointer;
 }
 
-.interactive-session-discord {
-  color: var(--text-secondary);
-  font-size: var(--fs-chip);
-  white-space: nowrap;
+/* 슬롯 1 조작의 `↗ Discord`·`Discord 준비 중` (UI-vviq): 크기는 `.op-btn`이
+   정하고, 머리줄에서는 오른쪽 조작 묶음 앞에 붙는다. */
+:is(.worker-mini__head, .worker-mini__row1, .worker-card__head)
+  > :is(.interactive-session-discord, .interactive-session-discord-pending) {
+  margin-left: auto;
+}
+
+/* 전역 `a:visited`·`a:focus`(0,1,1)가 부품 색(0,0,1)을 이기지 않게 한다 — 같은
+   구체도의 부품 hover는 나중에 읽혀 그대로 이긴다. */
+a.interactive-session-discord:is(:link, :visited, :focus) {
+  color: var(--text-muted);
 }
 
 .interactive-session-closing {
@@ -58,7 +65,12 @@ button.interactive-session-badge {
 }
 
 .interactive-session-closing + .worker-mini__rowops,
-.interactive-session-closing + .worker-card__head-actions {
+.interactive-session-closing + .worker-card__head-actions,
+:is(.worker-mini__head, .worker-mini__row1, .worker-card__head)
+  > .interactive-session-closing
+  + :is(.interactive-session-discord, .interactive-session-discord-pending),
+:is(.interactive-session-discord, .interactive-session-discord-pending)
+  + .worker-mini__rowops {
   margin-left: 0;
 }
 

@@ -26,6 +26,7 @@ import {
   formatClock,
   formatElapsed,
   interactiveSessionBadgesTemplate,
+  interactiveSessionDiscordTemplate,
   shortSha
 } from './lanes.js';
 // One template for the log path, shared with the Worker row's completion card
@@ -531,6 +532,9 @@ function operationActionsTemplate(operation) {
           { bead_id: '' }
         )
       : ''}
+    ${resolve.conversation
+      ? interactiveSessionDiscordTemplate([resolve.conversation])
+      : ''}
     <button
       type="button"
       class="op-btn worker-ev__btn worker-repo-op__dismiss"
@@ -840,6 +844,9 @@ function sessionInquiryEventTemplate(event) {
                   [{ ...resolve.conversation, session_id: null }],
                   { bead_id: '' }
                 )
+              : ''}
+            ${resolve.conversation
+              ? interactiveSessionDiscordTemplate([resolve.conversation])
               : ''}
           </div>`
         : ''}

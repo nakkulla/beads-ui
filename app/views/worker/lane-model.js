@@ -455,6 +455,8 @@ const DONE_KIND_LABELS = {
  * @property {number|null} settled_at
  * @property {number} launched_at
  * @property {string|null} discord_url
+ * @property {boolean} [discord_pending] - The server's `discord_pending`
+ * (UI-vviq): live, no thread yet, and the bridge beats. Absent reads as false.
  * @property {boolean} closing
  * @property {'running'|'question'|'limit'|'idle'|null} turn_state
  * @property {number|null} turn_state_since
@@ -3252,6 +3254,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         settled_at: record.settled_at,
         launched_at: record.launched_at,
         discord_url: record.discord_url ?? null,
+        discord_pending: record.discord_pending === true,
         turn_state: record.turn_state ?? null,
         turn_state_since: record.turn_state_since ?? null,
         last_message: record.last_message ?? null,

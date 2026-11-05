@@ -29,6 +29,7 @@ import {
   formatElapsed,
   interactiveSessionBadgesTemplate,
   interactiveSessionClosingTemplate,
+  interactiveSessionDiscordTemplate,
   judgementPopoverContent,
   judgementPopoverOf,
   miniRow,
@@ -173,27 +174,71 @@ describe('interactive session badges', () => {
     );
   });
 
+  test('leaves the Discord link to the slot-1 operation (UI-vviq)', () => {
+    const view = interactiveView({
+      discord_url: 'https://discord.com/channels/1/2'
+    });
+
+    render(
+      interactiveSessionBadgesTemplate([view], { bead_id: 'UI-x1' }),
+      mount
+    );
+
+    expect(mount.querySelector('a')).toBeNull();
+  });
+
   test.each([null, 'https://discord.com/channels/1/2'])(
-    'renders a Discord link only with its URL (%s)',
+    'renders the ↗ Discord link button only with its URL (%s)',
     (discord_url) => {
       const view = interactiveView({ discord_url });
 
-      render(
-        interactiveSessionBadgesTemplate([view], { bead_id: 'UI-x1' }),
-        mount
-      );
+      render(interactiveSessionDiscordTemplate([view]), mount);
 
       const link = mount.querySelector('a');
       expect(link?.getAttribute('href') || null).toBe(discord_url);
       if (discord_url) {
-        expect(link?.getAttribute('target')).toBe('_blank');
-        expect(link?.getAttribute('rel')).toBe('noopener');
-        expect(link?.previousElementSibling?.className).toBe(
-          'ui-chip interactive-session-badge'
-        );
+        expect([
+          link?.className,
+          link?.getAttribute('target'),
+          link?.getAttribute('rel')
+        ]).toEqual([
+          'op-btn interactive-session-discord',
+          '_blank',
+          'noopener'
+        ]);
       }
     }
   );
+
+  test('draws a disabled Discord 준비 중 for a pending thread', () => {
+    const view = interactiveView({ discord_pending: true });
+
+    render(interactiveSessionDiscordTemplate([view]), mount);
+
+    const pending = /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('button.op-btn.interactive-session-discord-pending')
+    );
+    expect([pending?.disabled, pending?.textContent?.trim()]).toEqual([
+      true,
+      'Discord 준비 중'
+    ]);
+  });
+
+  test.each(
+    /** @type {Array<[string, Partial<import('./lane-model.js').InteractiveSessionView>]>} */ ([
+      ['closing', { closing: true }],
+      ['session lane', { kind: 'session_lane' }]
+    ])
+  )('draws no Discord operation for a %s conversation', (_name, patch) => {
+    const view = interactiveView({
+      discord_url: 'https://discord.com/channels/1/2',
+      ...patch
+    });
+
+    render(interactiveSessionDiscordTemplate([view]), mount);
+
+    expect(mount.innerHTML.replace(/<!--.*?-->/g, '').trim()).toBe('');
+  });
 
   test('renders both session kinds', () => {
     const views = [

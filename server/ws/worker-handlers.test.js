@@ -366,10 +366,50 @@ describe('queue defaults preset identity', () => {
 
       expect(result.interactive_sessions['UI-1:resolve']).toEqual({
         ...record,
-        discord_url: available ? url : null
+        discord_url: available ? url : null,
+        discord_pending: false
       });
       expect(read).toHaveBeenCalledOnce();
       expect(record).not.toHaveProperty('discord_url');
+    }
+  );
+  test.each([
+    ['live, no thread, bridge up', 'live', false, true, true],
+    ['live, no thread, bridge down', 'live', false, false, false],
+    ['live, thread made', 'live', true, true, false],
+    ['exiting, no thread, bridge up', 'exiting', false, true, false]
+  ])(
+    'decorates discord_pending when %s',
+    (_name, state, has_thread, bridge_up, expected) => {
+      const url = 'https://discord.com/channels/guild/thread';
+      vi.spyOn(
+        getWorkerRuntime().interactiveLauncher,
+        'readBridgeThreads'
+      ).mockReturnValue(
+        new Map(
+          has_thread
+            ? [['sid', { thread_id: 'thread', guild_id: 'guild', url }]]
+            : []
+        )
+      );
+      vi.spyOn(
+        getWorkerRuntime().interactiveLauncher,
+        'bridgeActive'
+      ).mockReturnValue(bridge_up);
+      const record = {
+        bead_id: 'UI-1',
+        kind: 'resolve',
+        session_id: 'sid',
+        state
+      };
+
+      const result = /** @type {any} */ (
+        decorateQueue(WS, { interactive_sessions: { 'UI-1:resolve': record } })
+      );
+
+      expect(result.interactive_sessions['UI-1:resolve'].discord_pending).toBe(
+        expected
+      );
     }
   );
   test.each([

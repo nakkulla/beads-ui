@@ -178,6 +178,10 @@ base `d14c7927af82881ab6db3a4ae7a35cb446cfb8b6` 기준.
   - `discord_url`이 없으면(브리지 꺼짐·스레드 없음) "[세션에서 이어가기]로 맥의 tmux 창을
     앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수
     없다"이다.
+  - 정정(UI-vviq): `discord_url`이 없어도 브리지 heartbeat가 살아 있으면 서버가 그
+    레코드에 `discord_pending: true`를 싣고, 해결 줄은 "Discord 스레드 준비 중 — 세션의
+    첫 답 뒤 생긴다"이다. 카드 슬롯 1에는 비활성 `Discord 준비 중`이 서고
+    `[세션에서 이어가기]`는 그대로다. 위 tmux 문장은 브리지가 꺼진 경우만 남는다.
   - live 대화가 있으면 이 문장이 사유별 `resolution`보다 앞선다. 고르는 곳은 카드
     재료(`interactive_sessions`·`discord_url`)를 아는 공유 함수 한 곳이다.
 - 버튼: `discord_url`이 없을 때만 `tileResolveFields`가 live 대화 가드를 풀어

@@ -1799,6 +1799,15 @@ export function prWaitRowsOf(input) {
           ? {}
           : { filter_match: item.filter_match }),
         workflow: bead_workflow[e.bead_id] || null,
+        // 대화 배지·진행 줄·`↗ Discord` 재료 (UI-vviq): 행 투영이 새 객체를
+        // 만들므로 옮기지 않으면 PR 대기 카드만 이 대화를 그리지 못한다 — 판정
+        // 입력으로만 넘기면 링크가 버튼을 숨기고 링크 자체는 사라진다.
+        ...(item?.interactive_sessions
+          ? { interactive_sessions: item.interactive_sessions }
+          : {}),
+        ...(item?.conversation_refusal
+          ? { conversation_refusal: item.conversation_refusal }
+          : {}),
         // plan 묶음은 레인 모델이 얹은 것을 옮긴다 (UI-ruwu §2): PR 대기 행은 행
         // 투영이 새로 만드는 객체라 키를 여기서 실어야 하고, 없으면 옮길 것도
         // 없다 (fail-quiet).

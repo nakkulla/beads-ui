@@ -47,6 +47,7 @@ import {
   interactiveProgressLineTemplate,
   interactiveSessionBadgesTemplate,
   interactiveSessionClosingTemplate,
+  interactiveSessionDiscordTemplate,
   laneOriginChipTemplate,
   planChipTemplate,
   priorityBadgeTemplate,
@@ -1606,7 +1607,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         )}
       </div>
       <div class="rtile__hd-actions">
-        ${interactiveSessionClosingTemplate(tile.interactive_sessions)}
+        ${interactiveSessionClosingTemplate(
+          tile.interactive_sessions
+        )}${interactiveSessionDiscordTemplate(tile.interactive_sessions)}
         ${wait_lines.map((line) => line.actions)}${session
           ? html`${typeof tile.started_at === 'number' && !external_wait
               ? elapsed_el

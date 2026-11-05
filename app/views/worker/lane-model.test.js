@@ -791,6 +791,7 @@ describe('interactive session projection', () => {
           bead_id: undefined,
           key: 'A-1:resolve',
           closing: false,
+          discord_pending: false,
           ...NO_TURN
         },
         {
@@ -800,11 +801,27 @@ describe('interactive session projection', () => {
           session_id: 'inquiry-sid',
           key: 'A-1:inquiry',
           closing: false,
+          discord_pending: false,
           ...NO_TURN
         }
       ]);
     }
   );
+
+  test('carries the server discord_pending flag (UI-vviq)', () => {
+    const snapshot = workspace({
+      pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+      interactive_sessions: {
+        'A-1:resolve': { ...record, discord_url: null, discord_pending: true }
+      }
+    });
+
+    const lanes = buildLanes([snapshot], [state()]);
+
+    expect(lanes.pr_wait[0].interactive_sessions?.[0]?.discord_pending).toBe(
+      true
+    );
+  });
 
   test('carries the turn state, its since, and the last message', () => {
     const snapshot = workspace({

@@ -2436,6 +2436,7 @@ export function createDetailPanel(mount_element, options) {
         kind: record.kind,
         state: record.state,
         discord_url: record.discord_url ?? null,
+        discord_pending: record.discord_pending === true,
         closing:
           record.state === 'exiting' ||
           (record.settled_at !== null && record.settled_at !== undefined),

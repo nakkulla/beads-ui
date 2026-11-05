@@ -49,6 +49,8 @@ function hasDiscordConversation(interactive_sessions) {
 }
 
 const DISCORD_RESOLUTION = '↗ Discord에서 대화를 이어간다';
+const DISCORD_PENDING_RESOLUTION =
+  'Discord 스레드 준비 중 — 세션의 첫 답 뒤 생긴다';
 const TMUX_RESOLUTION =
   '[세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다';
 
@@ -65,8 +67,15 @@ export function liveConversationResolution(interactive_sessions) {
   if (!hasLiveConversation(interactive_sessions)) {
     return '';
   }
-  return hasDiscordConversation(interactive_sessions)
-    ? DISCORD_RESOLUTION
+  if (hasDiscordConversation(interactive_sessions)) {
+    return DISCORD_RESOLUTION;
+  }
+  // The bridge is up but has not made the thread yet (UI-vviq): the thread
+  // comes after the session's first answer, so the tmux sentence would lie.
+  return liveConversations(interactive_sessions).some(
+    (view) => view.discord_pending === true
+  )
+    ? DISCORD_PENDING_RESOLUTION
     : TMUX_RESOLUTION;
 }
 

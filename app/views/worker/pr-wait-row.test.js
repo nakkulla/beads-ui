@@ -972,3 +972,79 @@ describe('Bead attribute material on PR 대기 rows (UI-refs §3.3)', () => {
     ).toEqual([false, false, false, false]);
   });
 });
+
+describe('shared PR 대기 projection — 이어가기 대화 (UI-vviq)', () => {
+  /**
+   * A merged PR 대기 row whose Bead has one live resolve conversation.
+   *
+   * @param {Record<string, any>} [record]
+   * @returns {any}
+   */
+  function conversationRow(record = {}) {
+    return rowsOf(
+      workspace({
+        pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+        pr_observations: { 'A-1': MERGED_GATE },
+        interactive_sessions: {
+          'resolve:A-1': {
+            bead_id: 'A-1',
+            kind: 'resolve',
+            provider: 'claude',
+            session_id: 'sess-1',
+            mode: 'fresh',
+            source: 'fresh',
+            fallback_reason: 'no_session_ref',
+            attempt_id: null,
+            tmux_session: 'bdui-hub',
+            tmux_window: 'resolve-A-1',
+            state: 'live',
+            settled_at: null,
+            launched_at: 1,
+            discord_url: 'https://discord.com/channels/1/2',
+            ...record
+          }
+        }
+      })
+    )[0];
+  }
+
+  test('carries the live conversation onto the PR wait row', () => {
+    const row = conversationRow();
+
+    expect(
+      (row.interactive_sessions || []).map(
+        (/** @type {any} */ view) => view.discord_url
+      )
+    ).toEqual(['https://discord.com/channels/1/2']);
+  });
+
+  test('draws the ↗ Discord link button in the row head', () => {
+    const host = document.createElement('div');
+
+    render(miniRow(conversationRow()), host);
+
+    const link = host.querySelector(
+      '.worker-mini__head a.op-btn.interactive-session-discord'
+    );
+    expect(link?.getAttribute('href')).toBe('https://discord.com/channels/1/2');
+  });
+
+  test('draws a disabled Discord 준비 중 while the thread is pending', () => {
+    const host = document.createElement('div');
+
+    render(
+      miniRow(conversationRow({ discord_url: null, discord_pending: true })),
+      host
+    );
+
+    const pending = /** @type {HTMLButtonElement|null} */ (
+      host.querySelector(
+        '.worker-mini__head button.op-btn.interactive-session-discord-pending'
+      )
+    );
+    expect([pending?.disabled, pending?.textContent?.trim()]).toEqual([
+      true,
+      'Discord 준비 중'
+    ]);
+  });
+});

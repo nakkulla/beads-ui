@@ -509,6 +509,17 @@ describe('worker console styles', () => {
     expect(mainRule).not.toMatch(/flex: 1 1 0;/);
   });
 
+  test('wraps the running tile controls inside the tile width (UI-vviq)', () => {
+    const actionsRule =
+      workerBlock.match(/(?:^|\n)\.rtile__hd-actions\s*{([^}]*)}/)?.[1] || '';
+
+    expect(
+      ['flex-wrap: wrap', 'max-width: 100%'].map((decl) =>
+        actionsRule.includes(decl)
+      )
+    ).toEqual([true, true]);
+  });
+
   test('stacks running tile coordinate and run lines as two metadata lines', () => {
     const metaRule =
       workerBlock.match(/(?:^|\n)\.rtile__meta\s*{([^}]*)}/)?.[1] || '';
@@ -806,7 +817,7 @@ describe('worker console styles', () => {
   test('keeps the toolbar labels on one line at every width (UI-0bvr §7.3)', () => {
     const button =
       COMPONENTS.match(
-        /(?:^|\n):is\(button, summary\):where\(\.op-btn\)\s*{([^}]*)}/
+        /(?:^|\n):is\(button, summary, a\):where\(\.op-btn\)\s*{([^}]*)}/
       )?.[1] || '';
     const field = COMPONENTS.match(/(?:^|\n)\.ui-field\s*{([^}]*)}/)?.[1] || '';
 
@@ -824,7 +835,7 @@ describe('worker console styles', () => {
   test('drops the visible box from the ghost operation button (UI-0bvr §7.2)', () => {
     const ghost =
       COMPONENTS.match(
-        /(?:^|\n):is\(button, summary\):where\(\.op-btn--ghost\)\s*{([^}]*)}/
+        /(?:^|\n):is\(button, summary, a\):where\(\.op-btn--ghost\)\s*{([^}]*)}/
       )?.[1] || '';
 
     expect(ghost).toContain('border-color: transparent');

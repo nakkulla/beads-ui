@@ -3260,6 +3260,7 @@ function projectSessionInquiries(raw, interactive_sessions, threads) {
           settled_at: record.settled_at ?? null,
           launched_at: record.launched_at,
           discord_url: record.discord_url ?? null,
+          discord_pending: record.discord_pending === true,
           turn_state: record.turn_state ?? null,
           turn_state_since: record.turn_state_since ?? null,
           last_message: record.last_message ?? null,
@@ -3306,6 +3307,7 @@ function repoOperationResolveMaterial(operation_id, raw, interactive_sessions) {
         settled_at: record.settled_at ?? null,
         launched_at: record.launched_at,
         discord_url: record.discord_url ?? null,
+        discord_pending: record.discord_pending === true,
         turn_state: record.turn_state ?? null,
         turn_state_since: record.turn_state_since ?? null,
         last_message: record.last_message ?? null,
@@ -3619,14 +3621,40 @@ export function decorateQueue(workspace_key, raw_queue) {
   const completion_status = completionStatusFor(workspace_key, overlaid);
   /** @type {Record<string, any>} */
   const public_queue = { ...overlaid };
-  const threads = getWorkerRuntime().interactiveLauncher?.readBridgeThreads();
+  const launcher = getWorkerRuntime().interactiveLauncher;
+  const threads = launcher?.readBridgeThreads();
+  /** @type {boolean|null} */
+  let bridge_active = null;
+  // A live record without a thread yet waits on the bridge's first relayed
+  // event (UI-vviq): the card says `Discord 준비 중` only while the bridge
+  // beats, so a stopped bridge keeps the tmux sentence. Read once, lazily.
+  const discordPending = (/** @type {Record<string, any>} */ record) => {
+    if (record?.state !== 'live') {
+      return false;
+    }
+    if (bridge_active === null) {
+      try {
+        bridge_active = launcher?.bridgeActive?.() === true;
+      } catch {
+        bridge_active = false;
+      }
+    }
+    return bridge_active;
+  };
   public_queue.interactive_sessions = Object.fromEntries(
     Object.entries(
       /** @type {Record<string, any>} */ (overlaid.interactive_sessions || {})
-    ).map(([key, record]) => [
-      key,
-      { ...record, discord_url: threads?.get(record.session_id)?.url || null }
-    ])
+    ).map(([key, record]) => {
+      const discord_url = threads?.get(record.session_id)?.url || null;
+      return [
+        key,
+        {
+          ...record,
+          discord_url,
+          discord_pending: discord_url === null && discordPending(record)
+        }
+      ];
+    })
   );
   // 실제 구현 주체는 내부 필드 제거 전에 파생한다 (UI-ys18 §5.1): trimming이
   // `receipt_check`를 지운 뒤에는 어떤 종료 attempt도 `missing`으로만 읽힌다.

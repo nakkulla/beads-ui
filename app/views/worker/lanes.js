@@ -2001,16 +2001,60 @@ export function interactiveSessionBadgesTemplate(views, options) {
           </button>`
         : html`<span class="ui-chip interactive-session-badge" title=${title}
             >${label}</span
-          >`}${view.discord_url
-        ? html`<a
-            class="interactive-session-discord"
-            href=${view.discord_url}
-            target="_blank"
-            rel="noopener"
-            >↗ Discord</a
-          >`
-        : ''}`;
+          >`}`;
     });
+}
+
+/**
+ * The `↗ Discord` link button of an anchor URL (slot-1 operation, UI-vviq).
+ *
+ * @param {string} url
+ */
+function discordLinkButton(url) {
+  return html`<a
+    class="op-btn interactive-session-discord"
+    href=${url}
+    target="_blank"
+    rel="noopener"
+    title="Discord 스레드에서 이 대화를 이어갑니다"
+    >↗ Discord</a
+  >`;
+}
+
+/**
+ * The slot-1 `↗ Discord` operation of a card's live conversation (UI-vviq):
+ * the link button once the bridge made the thread, a disabled
+ * `Discord 준비 중` while the server marks it `discord_pending`, nothing
+ * otherwise (fail-quiet). A session-lane window speaks through
+ * `sessionLaneDiscordTemplate` instead.
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function interactiveSessionDiscordTemplate(views) {
+  const live = (views || []).filter(
+    (view) =>
+      !!view &&
+      view.kind !== 'session_lane' &&
+      view.state === 'live' &&
+      !view.closing
+  );
+  const url = live.find(
+    (view) => typeof view.discord_url === 'string' && view.discord_url !== ''
+  )?.discord_url;
+  if (url) {
+    return discordLinkButton(url);
+  }
+  return live.some((view) => view.discord_pending === true)
+    ? html`<button
+        type="button"
+        class="op-btn interactive-session-discord-pending"
+        disabled
+        title="Discord 스레드 준비 중 — 세션의 첫 답 뒤 생긴다"
+      >
+        Discord 준비 중
+      </button>`
+    : '';
 }
 
 /**
@@ -2071,13 +2115,7 @@ export function sessionLaneProgressTemplate(views, now = Date.now()) {
 export function sessionLaneDiscordTemplate(views) {
   const url = liveSessionLaneView(views)?.discord_url;
   return typeof url === 'string' && url.length > 0
-    ? html`<a
-        class="interactive-session-discord"
-        href=${url}
-        target="_blank"
-        rel="noopener"
-        >↗ Discord</a
-      >`
+    ? discordLinkButton(url)
     : '';
 }
 
@@ -2431,7 +2469,9 @@ function doneThreeLineRow(item, chip_ctx = null) {
           >`
       )}${interactiveSessionBadgesTemplate(item.interactive_sessions, {
         bead_id: item.id
-      })}${interactiveSessionClosingTemplate(item.interactive_sessions)}
+      })}${interactiveSessionClosingTemplate(
+        item.interactive_sessions
+      )}${interactiveSessionDiscordTemplate(item.interactive_sessions)}
     </div>
     <div class="worker-mini__row2">
       <span class="worker-mini__title">${item.title}</span>
@@ -4011,6 +4051,10 @@ export function miniRow(item, options = {}) {
   const interactive_closing = interactiveSessionClosingTemplate(
     item.interactive_sessions
   );
+  // 슬롯 1 조작의 `↗ Discord` (UI-vviq): 머리줄 오른쪽 조작 묶음 앞에 선다.
+  const interactive_discord = interactiveSessionDiscordTemplate(
+    item.interactive_sessions
+  );
   if (
     item.lane === 'done' &&
     item.done_layout === 'three_line' &&
@@ -4441,7 +4485,7 @@ export function miniRow(item, options = {}) {
   >
     ${done_row
       ? html`<div class="worker-mini__row1">
-            ${repo_el}${id_el}${pri_el}${attrs_el}${pr_el}${foreign_repo_el}${interactive_badges}${interactive_closing}${actions_el}
+            ${repo_el}${id_el}${pri_el}${attrs_el}${pr_el}${foreign_repo_el}${interactive_badges}${interactive_closing}${interactive_discord}${actions_el}
           </div>
           <div class="worker-mini__row2">${title_el}</div>
           <div class="worker-mini__row3">
@@ -4470,7 +4514,7 @@ export function miniRow(item, options = {}) {
             ${timesMeta(item)}
           </div>`
       : html`<div class="worker-mini__head">
-            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${withdrawn_el}${attrs_el}${pr_el}${foreign_repo_el}${badge_els}${interactive_badges}${wait_badge}${interactive_closing}${actions_el}
+            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${withdrawn_el}${attrs_el}${pr_el}${foreign_repo_el}${badge_els}${interactive_badges}${wait_badge}${interactive_closing}${interactive_discord}${actions_el}
           </div>
           ${reason_el
             ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
@@ -5227,9 +5271,10 @@ export const SESSION_TOGGLE_HINT = '누르면 세션 레인 ↔ Worker 전환';
  * `workflow` (inactive workspace) renders without the chip/stepper and never
  * throws.
  *
- * 슬롯 1 조작(`.worker-card__head-actions`)은 지금 재료가 없어 그리지 않는다
- * (UI-lx45 §5): UI-j92s가 그 자리에 두었던 `⛓ 의존성` 버튼은 편집이 이슈 상세
- * `의존성` 절로 옮겨 가며 사라졌다.
+ * 슬롯 1 조작(`.worker-card__head-actions`)은 live 대화의 `↗ Discord`·
+ * `Discord 준비 중`만 싣고(UI-vviq), 재료가 없으면 그리지 않는다 (UI-lx45 §5):
+ * UI-j92s가 그 자리에 두었던 `⛓ 의존성` 버튼은 편집이 이슈 상세 `의존성` 절로
+ * 옮겨 가며 사라졌다.
  *
  * `options.variant: 'deferred'`는 보류 선반의 변형이다 (UI-p7s2 §3.2, ADR 0014):
  * 같은 슬롯 표를 쓰되 (1) foot의 `[↴ 대기로]`와 place 메뉴를 그리지 않고,
@@ -5251,6 +5296,9 @@ export const SESSION_TOGGLE_HINT = '누르면 세션 레인 ↔ Worker 전환';
 export function candidateCard(item, place_menu = null, options = {}) {
   const is_deferred = options.variant === 'deferred';
   const revive = is_deferred && options.revive === true;
+  const head_discord = interactiveSessionDiscordTemplate(
+    item.interactive_sessions
+  );
   // Observation-only rows (UI-8881) are refused here as well as by the
   // projection, so the card cannot become placeable through a caller that
   // forgot the conjunction.
@@ -5367,7 +5415,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
             item
           )}${external.badge}${interactiveSessionClosingTemplate(
         item.interactive_sessions
-      )}
+      )}${head_discord
+        ? html`<div class="worker-card__head-actions">${head_discord}</div>`
+        : ''}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow
