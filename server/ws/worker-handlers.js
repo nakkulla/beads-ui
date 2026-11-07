@@ -8118,35 +8118,6 @@ export async function handleWorkerResolveInSession(ws, req) {
     );
     return;
   }
-  // A newer session owns the Bead its failed attempt sits on (UI-68r5 §3.4):
-  // no conversation is opened on that failure, whatever a stale screen drew.
-  /** @type {string|null} */
-  let owner_refusal = null;
-  try {
-    owner_refusal = await workerSessionOwnerRefusal(key, p.bead_id);
-  } catch (err) {
-    log('session owner check failed for %s/%s: %o', key, p.bead_id, err);
-    owner_refusal = 'session_owner_unobservable';
-  }
-  if (owner_refusal !== null) {
-    ws.send(
-      JSON.stringify(
-        makeOk(req, {
-          bead_id: p.bead_id,
-          launched: false,
-          conflict: false,
-          session: 'not_launched',
-          reason: owner_refusal,
-          mode: null,
-          fallback_reason: null,
-          command: null,
-          bridge_active: false,
-          queue: decorateQueue(key, current)
-        })
-      )
-    );
-    return;
-  }
   // The click's own precondition, re-read server-side: the button is only drawn
   // on a failure row, but a row can settle between render and click and a
   // session that cannot state what it is for is worse than a refusal.
@@ -8252,6 +8223,39 @@ export async function handleWorkerResolveInSession(ws, req) {
         : failure?.failure_class === '파킹'
           ? 'stop'
           : 'failure';
+  // A newer session owns the Bead its failed attempt sits on (UI-68r5 §3.4):
+  // no failure conversation is opened on that failure, whatever a stale screen
+  // drew. Only the failure row is judged — a successor session's own 외부
+  // 작업 완료 row keeps its click and its own resume checks.
+  /** @type {string|null} */
+  let owner_refusal = null;
+  if (row === 'failure') {
+    try {
+      owner_refusal = await workerSessionOwnerRefusal(key, p.bead_id);
+    } catch (err) {
+      log('session owner check failed for %s/%s: %o', key, p.bead_id, err);
+      owner_refusal = 'session_owner_unobservable';
+    }
+  }
+  if (owner_refusal !== null) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          launched: false,
+          conflict: false,
+          session: 'not_launched',
+          reason: owner_refusal,
+          mode: null,
+          fallback_reason: null,
+          command: null,
+          bridge_active: false,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
   try {
     if (row === 'external') {
       const resumed = /** @type {any} */ (

@@ -1313,7 +1313,7 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
    *
    * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
    */
-  async function drawYieldedBead() {
+  async function drawYieldedBead(serial = false) {
     extra_rows = [
       row('Y-1', {
         status: 'in_progress',
@@ -1325,7 +1325,16 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
     ];
     const raw = rawQueue();
     return drawBothTabs(undefined, {
-      queue: [...raw.queue, { bead_id: 'Y-1', added_at: NOW - HOUR }],
+      ...(serial
+        ? {
+            serial_lanes: [
+              {
+                id: 's1',
+                entries: [{ bead_id: 'Y-1', added_at: NOW - HOUR }]
+              }
+            ]
+          }
+        : { queue: [...raw.queue, { bead_id: 'Y-1', added_at: NOW - HOUR }] }),
       attempts: {
         ...raw.attempts,
         'att-y1': makeAttempt({
@@ -1335,11 +1344,22 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
           finished_at: NOW - 2 * HOUR,
           cause: 'stale_work_unresolved',
           cause_detail: { summary: 'remote_branch_owner' },
-          bead_session_ref: 'claude:earlier-session@host'
+          bead_session_ref: 'claude:earlier-session@host',
+          ...(serial ? { serial_lane_id: 's1' } : {})
         })
       }
     });
   }
+
+  test('draws no serial occupant row for a bead a session took over on both tabs', async () => {
+    const { worker, monitor } = await drawYieldedBead(true);
+
+    const drawn = [worker, monitor].map(
+      (mount) => mount.querySelectorAll('[data-bead-id="Y-1"]').length
+    );
+
+    expect(drawn).toEqual([1, 1]);
+  });
 
   test('draws the same card on the worker and monitor tabs for a bead a session took over', async () => {
     const { worker, monitor } = await drawYieldedBead();

@@ -590,6 +590,24 @@ describe('worker-resolve-in-session picks the launcher by row (UI-18a5 §3.2)', 
     });
   });
 
+  test("keeps a successor session's 외부 작업 완료 row clickable while it owns the failed bead", async () => {
+    recordDeployFailure();
+    owner_refusal.value = 'session_owned';
+    completing = {
+      wait_id: 'w-0123456789ab',
+      bead_id: BEAD,
+      stage: 'completing',
+      owner: { kind: 'session' }
+    };
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect([reply.payload.row, session_resumes.length]).toEqual([
+      'external',
+      1
+    ]);
+  });
+
   test('opens a resolve session for an unresolved takeover', async () => {
     const requested_at = new Date(
       Date.now() - TAKEOVER_SETTLE_MS - 60_000

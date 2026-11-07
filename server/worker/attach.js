@@ -29,6 +29,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { sessionGuardedAttempt } from '../../app/utils/active-attempts.js';
 import {
   execLaneOf,
   workerLabels
@@ -3801,19 +3802,32 @@ export async function resumeWorkerAttempt(
  * Whether a person's Worker operation on this Bead must be refused because a
  * newer session owns its failed attempt (UI-68r5 §3.4·§3.5):
  * `session_owned`, `session_owner_unobservable` (fail-closed), or null. The
- * attachment's scheduler reads the material; a workspace with no attachment
- * runs no Worker operation to refuse, so it answers null.
+ * attachment's scheduler reads the material. Without that judgment nothing
+ * can read it, so a Bead whose latest implementation attempt is a failed seat
+ * or a waiting ladder rung is refused as unobservable; any other Bead has no
+ * failure for a session to have taken over.
  *
  * @param {string} workspace_root
  * @param {string} bead_id
  * @returns {Promise<'session_owned'|'session_owner_unobservable'|null>}
  */
 export async function workerSessionOwnerRefusal(workspace_root, bead_id) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att || typeof att.scheduler?.sessionOwnerRefusal !== 'function') {
-    return null;
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (att && typeof att.scheduler?.sessionOwnerRefusal === 'function') {
+    return att.scheduler.sessionOwnerRefusal(key, bead_id);
   }
-  return att.scheduler.sessionOwnerRefusal(keyFor(workspace_root), bead_id);
+  /** @type {Record<string, any>} */
+  let attempts;
+  try {
+    attempts = getWorkerRuntime().queueStore.snapshot(key).attempts || {};
+  } catch (err) {
+    log('session owner queue read failed for %s/%s: %o', key, bead_id, err);
+    return 'session_owner_unobservable';
+  }
+  return sessionGuardedAttempt(attempts, bead_id)
+    ? 'session_owner_unobservable'
+    : null;
 }
 
 /**

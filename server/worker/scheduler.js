@@ -352,6 +352,14 @@ const WORKFLOW_MODE_SOURCE_STAMP_COMMAND =
  * @property {boolean} can_backup_fresh
  * @property {StaleWorkIdentity} identity
  */
+/**
+ * The external-wait resume a residue disposition failure happened inside
+ * (UI-68r5 §3.1): its wait and resume mode, so a rerun replays that resume.
+ *
+ * @typedef {Object} StaleResidueReplay
+ * @property {string} wait_id
+ * @property {'fork'|'fresh'} mode
+ */
 
 /**
  * How far a probed process start time may differ from the attempt's recorded
@@ -13643,9 +13651,11 @@ export function createScheduler(deps) {
    * @param {any} snap
    * @param {StaleResidue} residue
    * @param {string} reason
-   * @param {{ retry?: any, remote_head_sha?: string, ladder?: boolean }} [context] - The env
+   * @param {{ retry?: any, remote_head_sha?: string, external_wait?: StaleResidueReplay }} [context] - The env
    * ladder rung this dispatch continues, the remote branch head the owner
-   * check read, and `ladder: false` for a path a rung cannot replay.
+   * check read, and the external-wait resume the failure happened inside —
+   * kept on the record so every rerun (ladder rung, `↻ 이어하기`, `인계`)
+   * replays that resume rather than an ordinary dispatch.
    */
   function failStaleResidue(
     workspace,
@@ -13665,6 +13675,14 @@ export function createScheduler(deps) {
       external_pr: Boolean(deps.externalPrs?.get(workspace, bead_id)),
       ...(typeof context.remote_head_sha === 'string'
         ? { remote_head_sha: context.remote_head_sha }
+        : {}),
+      ...(context.external_wait
+        ? {
+            external_wait: {
+              wait_id: context.external_wait.wait_id,
+              mode: context.external_wait.mode
+            }
+          }
         : {})
     };
     const recorded = prerecordAttempt(workspace, {
@@ -13703,7 +13721,7 @@ export function createScheduler(deps) {
         });
       }
       const rung =
-        context.ladder !== false && staleFailureTier(reason) === 'transient'
+        staleFailureTier(reason) === 'transient'
           ? scheduleStaleRetry(workspace, bead_id, attempt_id, at)
           : null;
       if (rung === null) {
@@ -13727,22 +13745,7 @@ export function createScheduler(deps) {
           summary: `stale_work_unresolved · ${reason}`,
           at
         });
-        // Judged at the write, not after the launcher's awaits: a failure a
-        // 인계 rerun just wrote meets that handoff's reservation, and the
-        // settlement opens its conversation once the record is gone (§3.2).
-        const handoff_pending = Object.values(
-          deps.store.snapshot(workspace).interactive_sessions || {}
-        ).some(
-          (record) =>
-            record?.bead_id === bead_id && holdsHandoffReservation(record)
-        );
-        announceStaleResidueFailure(
-          workspace,
-          bead_id,
-          snap.repo,
-          reason,
-          handoff_pending
-        );
+        announceTerminalStaleFailure(workspace, bead_id, snap.repo, reason);
       }
       rung_scheduled = rung?.scheduled === true;
     }
@@ -13819,6 +13822,51 @@ export function createScheduler(deps) {
       attempts: scheduled?.attempts ?? lineage?.attempts ?? 0,
       next_at: scheduled?.next_at ?? null
     };
+  }
+
+  /**
+   * Announce the residue disposition failure that just became terminal —
+   * written so, or a ladder rung whose redispatch was refused for good
+   * (UI-68r5 §3.2). Whether a 인계 reservation stands on the row is judged
+   * here, at the write, not after the launcher's awaits: a failure a 인계
+   * rerun just wrote meets that handoff's reservation, and the settlement
+   * opens its conversation once the record is gone.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null|undefined} repo
+   * @param {string} reason - The disposition reason, the cause code.
+   */
+  function announceTerminalStaleFailure(workspace, bead_id, repo, reason) {
+    const handoff_pending = Object.values(
+      deps.store.snapshot(workspace).interactive_sessions || {}
+    ).some(
+      (record) => record?.bead_id === bead_id && holdsHandoffReservation(record)
+    );
+    announceStaleResidueFailure(
+      workspace,
+      bead_id,
+      repo,
+      reason,
+      handoff_pending
+    );
+  }
+
+  /**
+   * The external-wait resume a residue disposition failure happened inside,
+   * or null for one an ordinary dispatch met (UI-68r5 §3.1).
+   *
+   * @param {any} attempt
+   * @returns {StaleResidueReplay|null}
+   */
+  function staleResidueReplayOf(attempt) {
+    const replay = attempt?.cause_detail?.external_wait;
+    return replay &&
+      typeof replay.wait_id === 'string' &&
+      replay.wait_id.length > 0 &&
+      (replay.mode === 'fork' || replay.mode === 'fresh')
+      ? { wait_id: replay.wait_id, mode: replay.mode }
+      : null;
   }
 
   /**
@@ -14006,7 +14054,10 @@ export function createScheduler(deps) {
    * @param {string} cut_base
    * @param {boolean} [rechecked]
    * @param {(residue: StaleResidue|null) => Promise<void>} [continue_dispatch] - Preserve an external-wait reservation and completion prompt.
-   * @param {{ retry?: any, retry_source?: any }} [retry_options]
+   * @param {{ retry?: any, retry_source?: any, external_wait?: StaleResidueReplay }} [retry_options] - The
+   * ladder rung, and in `external_wait` the external-wait resume
+   * `continue_dispatch` belongs to, recorded on a failure so its rerun
+   * replays that resume.
    */
   async function disposeStaleResidue(
     workspace,
@@ -14025,9 +14076,8 @@ export function createScheduler(deps) {
     /** @type {{ remote_head_sha?: string }} */
     const owner_observed = {};
     /**
-     * Record this disposition's failure. An external-wait resume
-     * (`continue_dispatch`) keeps its failures terminal: a ladder rung is an
-     * ordinary dispatch and could not replay that resume (UI-68r5 §3.1).
+     * Record this disposition's failure, with the ladder rung it continues
+     * and the external-wait resume it must replay (UI-68r5 §3.1).
      *
      * @param {StaleResidue} failed_residue
      * @param {string} reason
@@ -14038,7 +14088,9 @@ export function createScheduler(deps) {
         ...(owner_observed.remote_head_sha
           ? { remote_head_sha: owner_observed.remote_head_sha }
           : {}),
-        ...(continue_dispatch ? { ladder: false } : {})
+        ...(retry_options.external_wait
+          ? { external_wait: retry_options.external_wait }
+          : {})
       });
     for (let pass = Number(rechecked); pass < 2; pass++) {
       const owner_reason = await staleWorkOwnerReason(
@@ -15685,15 +15737,19 @@ export function createScheduler(deps) {
    * conversation's own session, puts the conversation's `## 대화 결과` block
    * at the head of its prompt and carries the conversation's identity.
    *
+   * `retry` and `preclaimed` belong to the rerun of a residue disposition
+   * failure this resume met (UI-68r5 §3.1): the ladder rung it continues, and
+   * the bead claim the rerun's caller already holds.
+   *
    * @param {string} workspace
    * @param {string} wait_id
-   * @param {{ mode: 'fork'|'fresh'|'session', conversation?: ExternalConversationDispatch }} options
+   * @param {{ mode: 'fork'|'fresh'|'session', conversation?: ExternalConversationDispatch, retry?: any, preclaimed?: boolean }} options
    * @returns {Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>}
    */
   async function resumeExternalWait(
     workspace,
     wait_id,
-    { mode, conversation }
+    { mode, conversation, retry, preclaimed }
   ) {
     const store = deps.externalWait;
     const key = JSON.stringify([workspace, wait_id]);
@@ -15742,7 +15798,7 @@ export function createScheduler(deps) {
       }
       const bead_id = record.bead_id;
       if (
-        claimed.has(bead_id) ||
+        (claimed.has(bead_id) && preclaimed !== true) ||
         retiring.has(bead_id) ||
         Object.values(q.attempts).some(
           (/** @type {any} */ attempt) =>
@@ -15865,7 +15921,8 @@ export function createScheduler(deps) {
           mode,
           completion_prompt,
           reserveResume,
-          mode === 'fork' ? (conversation ?? null) : null
+          mode === 'fork' ? (conversation ?? null) : null,
+          retry ?? null
         );
       }
       if (!result.ok) {
@@ -15914,6 +15971,8 @@ export function createScheduler(deps) {
    * item, which a session added during the conversation would be — its result
    * line heads the prompt as the `## 대화 결과` block, the launch is announced
    * as `↪ Worker가 이어감`, and the attempt carries its identity.
+   * @param {any} [retry] - The env ladder rung this launch replays after a
+   * transient residue disposition failure (UI-68r5 §3.1).
    */
   async function launchExternalWaitSession(
     workspace,
@@ -15923,7 +15982,8 @@ export function createScheduler(deps) {
     mode,
     completion_prompt,
     reserveResume,
-    conversation = null
+    conversation = null,
+    retry = null
   ) {
     const qualified =
       mode !== 'fork'
@@ -16049,6 +16109,9 @@ export function createScheduler(deps) {
             residue = unknownStaleWorkObservation(null, base, 'observe_failed');
           }
           if (!residue.ok) {
+            // A residue failure here records this resume (UI-68r5 §3.1), so
+            // its ladder rung, `↻ 이어하기` and `인계` replay it — an ordinary
+            // dispatch would only meet the bead's `external_wait` key.
             const disposed = await disposeStaleResidue(
               workspace,
               bead_id,
@@ -16056,7 +16119,11 @@ export function createScheduler(deps) {
               null,
               base,
               false,
-              prepareFreshWorktree
+              prepareFreshWorktree,
+              {
+                ...(retry ? { retry } : {}),
+                external_wait: { wait_id: record.wait_id, mode }
+              }
             );
             if (!disposed.ok) {
               return disposed;
@@ -16362,9 +16429,27 @@ export function createScheduler(deps) {
       }
     }
     if (stale_residue_retry) {
+      // A failure met inside an external-wait resume replays that resume —
+      // the same wait, mode and disposition check (UI-68r5 §3.1). An ordinary
+      // dispatch could never run that bead: its `external_wait` key refuses
+      // admission.
+      const replay = staleResidueReplayOf(prior);
       claimed.add(bead_id);
       try {
-        await dispatch(workspace, bead_id);
+        /** @type {string|null} */
+        let replay_refusal = null;
+        if (replay) {
+          const replayed = /** @type {{ ok: boolean, reason?: string }} */ (
+            await resumeExternalWait(workspace, replay.wait_id, {
+              mode: replay.mode,
+              preclaimed: true,
+              ...(continuation.retry ? { retry: continuation.retry } : {})
+            })
+          );
+          replay_refusal = replayed.ok ? null : (replayed.reason ?? null);
+        } else {
+          await dispatch(workspace, bead_id);
+        }
         const current = deps.store.snapshot(workspace);
         const child = Object.values(current.attempts).find(
           (attempt) =>
@@ -16373,8 +16458,23 @@ export function createScheduler(deps) {
         if (child) {
           deps.store.updateAttempt(workspace, {
             attempt_id: child.attempt_id,
-            patch: { resumed_from: attempt_id }
+            patch: {
+              resumed_from: attempt_id,
+              // A replayed launch is the rung itself, so it carries the
+              // ladder exactly as a dispatched rung does.
+              ...(continuation.retry &&
+              child.status === 'running' &&
+              !child.retry
+                ? { retry: { ...continuation.retry, next_at: null } }
+                : {})
+            }
           });
+          if (continuation.retry) {
+            deps.store.supersedeRetryAttempts(workspace, {
+              bead_id,
+              except_attempt_id: child.attempt_id
+            });
+          }
           notifyChanged(workspace);
         }
         return child?.status === 'running'
@@ -16383,6 +16483,7 @@ export function createScheduler(deps) {
               ok: false,
               reason:
                 child?.cause ||
+                replay_refusal ||
                 current.admission[bead_id]?.reason ||
                 'dispatch_refused'
             };
@@ -20282,12 +20383,18 @@ export function createScheduler(deps) {
         })
       }
     });
-    notifyLifecycle('attemptFailed', {
-      bead_id,
-      cause: latest.cause,
-      repo: latest.repo,
-      cause_detail: { retry_refused: refusal }
-    });
+    // A residue disposition rung that can never start is that failure gone
+    // terminal (UI-68r5 §3.2): it opens its conversation and sends the one
+    // 확인 필요 push, never `attemptFailed`.
+    const stale = latest.cause === 'stale_work_unresolved';
+    if (!stale) {
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: latest.cause,
+        repo: latest.repo,
+        cause_detail: { retry_refused: refusal }
+      });
+    }
     appendTimeline({
       bead_id,
       attempt_id: latest.attempt_id,
@@ -20296,6 +20403,17 @@ export function createScheduler(deps) {
       summary: `자동 재시도 출발 거부 — ${refusal}`,
       at
     });
+    if (stale) {
+      const summary = latest.cause_detail?.summary;
+      announceTerminalStaleFailure(
+        workspace,
+        bead_id,
+        latest.repo ?? null,
+        typeof summary === 'string' && summary.length > 0
+          ? summary
+          : 'stale_work_unresolved'
+      );
+    }
     log('retry lineage failed for %s: %s', bead_id, refusal);
   }
 
@@ -20373,6 +20491,11 @@ export function createScheduler(deps) {
         latest_attempt?.cause === 'stale_work_unresolved'
           ? undefined
           : latest_attempt;
+      // A residue failure met inside an external-wait resume climbs by
+      // replaying that resume through `resume()` (UI-68r5 §3.1).
+      const stale_replay =
+        latest_attempt?.cause === 'stale_work_unresolved' &&
+        staleResidueReplayOf(latest_attempt) !== null;
       const retry = {
         cause: lineage.cause,
         attempts: lineage.attempts,
@@ -20429,7 +20552,8 @@ export function createScheduler(deps) {
         if (
           base_moved ||
           (session_retry && local_session) ||
-          keep_prior_attempt
+          keep_prior_attempt ||
+          stale_replay
         ) {
           const resumed = await resume(workspace, before_attempt_id, {
             continuation: keep_prior_attempt ? 'prior_attempt' : 'auto',

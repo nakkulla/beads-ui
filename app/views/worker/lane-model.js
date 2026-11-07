@@ -3692,6 +3692,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
     /** @type {Set<string>} */
     const claimed = new Set();
+    const session_ownership = sessionOwnershipMap(
+      /** @type {any} */ (workspace).session_ownership
+    );
+    // A failure a session took over draws as that session's tile only
+    // (UI-68r5 §3.4): its serial-lane occupancy stays the server's lease, but
+    // no occupant row repeats it.
+    const { yielded_bead_ids } = activeAttemptStates(
+      attempts,
+      done_at_by_bead,
+      session_ownership
+    );
 
     for (const [bead_id, live] of activeByBead(attempts, done_at_by_bead, {
       discard_operations,
@@ -3706,9 +3717,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       admission,
       // The server's session ownership material (UI-68r5 §3.4): the same
       // third seat input its session exclusion and running count read.
-      session_ownership: sessionOwnershipMap(
-        /** @type {any} */ (workspace).session_ownership
-      )
+      session_ownership
     })) {
       claimed.add(bead_id);
       // Worker 실행 중 타일 전용 필드 (UI-4tud §4.3). 재료가 없으면 키 자체를
@@ -4162,9 +4171,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const lane = serial_by_id.get(id);
       const entries = lane && Array.isArray(lane.entries) ? lane.entries : [];
       const lane_state = objectOf(lane_states[id]);
+      // 세션이 넘겨받은 실패의 점유는 점유 행으로 그리지 않는다 (UI-68r5 §3.4) —
+      // 그 Bead는 세션 타일 하나로만 선다. 레인 멤버십과 서버의 점유는 그대로다.
       const occupied_by = Array.isArray(lane_state.occupied_by)
         ? lane_state.occupied_by.filter(
-            (/** @type {any} */ bead_id) => typeof bead_id === 'string'
+            (/** @type {any} */ bead_id) =>
+              typeof bead_id === 'string' && !yielded_bead_ids.has(bead_id)
           )
         : [];
       // 점유 lineage는 ghost 점유 행이 대표한다 (Worker 탭과 같은 문법) — 대기 행으로 또

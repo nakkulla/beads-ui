@@ -4401,6 +4401,32 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
     expect(lanes.queue.map((item) => item.id)).toEqual([]);
   });
 
+  test('draws no serial occupant row for a yielded bead the lane still holds', () => {
+    const lanes = buildLanes(
+      [
+        yieldedWorkspace({
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+          ],
+          serial_lane_count: 1,
+          lane_states: { s1: { occupied_by: ['A-1'] } }
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial[0];
+    expect({
+      occupants: serial.occupants.map((item) => item.id),
+      items: serial.items.map((item) => item.id),
+      running: lanes.running.map((tile) => [tile.id, tile.kind])
+    }).toEqual({
+      occupants: [],
+      items: ['A-2'],
+      running: [['A-1', 'session']]
+    });
+  });
+
   test('draws the failure tile of a bead whose snapshot carries no ownership', () => {
     const lanes = buildLanes(
       [yieldedWorkspace({ session_ownership: undefined, session_active: [] })],

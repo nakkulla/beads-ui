@@ -19382,6 +19382,148 @@ describe('scheduler worktree residue hygiene', () => {
       }
     );
 
+    test('announces a residue rung whose redispatch can never start as a terminal residue failure', async () => {
+      const base = { ok: true };
+      const env = staleEnv({
+        gitRun: unreadableRemoteGitRun(),
+        resolveBase: async () =>
+          base.ok
+            ? { ok: true, base: 'main', base_oid: 'b'.repeat(40) }
+            : { ok: false, step: 'ref' }
+      });
+      env.worktree.removeIfDiscardable.mockResolvedValue(
+        uniqueStaleObservation()
+      );
+      await env.scheduler.tick(WS);
+      await flush();
+      base.ok = false;
+
+      await env.scheduler.retryNow(WS, 'S1');
+      await flush();
+
+      expect({
+        status: latest(env).status,
+        needs_human: env.notify.needsHuman.mock.calls.map(
+          (/** @type {any[]} */ call) => [
+            call[0].failure_class,
+            call[0].reason,
+            call[0].conversation
+          ]
+        ),
+        attempt_failed: env.notify.attemptFailed.mock.calls.length
+      }).toEqual({
+        status: 'failed',
+        needs_human: [
+          ['잔재 처분 실패', 'remote_ref_observe_failed', LAUNCHED]
+        ],
+        attempt_failed: 0
+      });
+    });
+
+    describe('a residue failure inside an external-wait resume', () => {
+      const WAIT = 'w-0123456789ab';
+
+      /**
+       * S1 is an open bead whose session-owned wait completed and is being
+       * resumed `fresh` with no worktree left; the residue is a pushed branch
+       * whose remote cannot be read (the transient
+       * `remote_ref_observe_failed`).
+       */
+      function externalEnv() {
+        const record = {
+          wait_id: WAIT,
+          root_dir: WS,
+          bead_id: 'S1',
+          owner: {
+            kind: 'session',
+            session_ref: 'claude:registering-session@host',
+            session_pid: 4242,
+            session_start: 'x'
+          },
+          worktree: '/wt/S1',
+          stage: 'completing',
+          completion: {
+            digest: 'c'.repeat(64),
+            completed_at: '2026-11-07T01:00:00.000Z',
+            recovery_needed: false
+          },
+          registered_at: '1970-01-01T00:00:00.500Z',
+          resume: null,
+          jobs: []
+        };
+        const store = {
+          list: () => [record],
+          findByBead: () => record,
+          get: (/** @type {string} */ _ws, /** @type {string} */ wait_id) =>
+            wait_id === WAIT ? record : null,
+          update: vi.fn(
+            (
+              /** @type {string} */ _ws,
+              /** @type {string} */ _wait_id,
+              /** @type {(current: any) => void} */ mutate
+            ) => mutate(record)
+          )
+        };
+        const env = staleEnv({
+          config: { S1: { status: 'open' } },
+          gitRun: unreadableRemoteGitRun(),
+          fs: { existsSync: () => false },
+          externalWait: store
+        });
+        env.worktree.removeIfDiscardable.mockResolvedValue(
+          uniqueStaleObservation({
+            identity: {
+              worktree_realpath: null,
+              branch: 'S1',
+              head_sha: null,
+              branch_head_sha: 'a'.repeat(40),
+              base_oid: 'b'.repeat(40),
+              status_digest: 'status'
+            }
+          })
+        );
+        return { ...env, record };
+      }
+
+      test('climbs the env ladder with the resume it must replay', async () => {
+        const env = externalEnv();
+
+        await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fresh' });
+        await flush();
+
+        expect(latest(env)).toMatchObject({
+          status: 'retry_wait',
+          cause_detail: {
+            summary: 'remote_ref_observe_failed',
+            external_wait: { wait_id: WAIT, mode: 'fresh' }
+          }
+        });
+      });
+
+      test('replays the same external-wait resume on its ladder rung', async () => {
+        const env = externalEnv();
+        await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fresh' });
+        await flush();
+        const rung = latest(env);
+        env.worktree.removeIfDiscardable.mockClear();
+
+        await env.scheduler.retryNow(WS, 'S1');
+        await flush();
+
+        expect({
+          observed: env.worktree.removeIfDiscardable.mock.calls.length > 0,
+          next: latest(env).resumed_from,
+          replay: latest(env).cause_detail?.external_wait,
+          admission: env.store.snapshot(WS).admission.S1?.reason ?? null
+        }).toEqual({
+          observed: true,
+          next: rung.attempt_id,
+          replay: { wait_id: WAIT, mode: 'fresh' },
+          admission: null
+        });
+      });
+    });
+
     test('holds a due ladder rung unspent while a session owns the bead', async () => {
       const clock = { at: 1000 };
       const env = staleEnv({

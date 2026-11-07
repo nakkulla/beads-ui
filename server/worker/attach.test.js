@@ -23,7 +23,8 @@ import {
   retryWorkerCleanup,
   startWorkerRepoOperationDeployRun,
   stopWorkerAttempt,
-  tickWorkerQueue
+  tickWorkerQueue,
+  workerSessionOwnerRefusal
 } from './attach.js';
 import * as attachModule from './attach.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
@@ -35,7 +36,10 @@ import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
 import { recordRepoOpsDisplay } from './repo-ops-display.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
-import { createWorkerRuntime as buildWorkerRuntime } from './runtime.js';
+import {
+  createWorkerRuntime as buildWorkerRuntime,
+  getWorkerRuntime
+} from './runtime.js';
 import { requestStartNow } from './scheduler.js';
 import {
   queueFilePath,
@@ -5367,5 +5371,36 @@ describe('worker/attach hands held guard verdicts to the monitor (guard-hook-byp
 
     expect(options.guard_pending).toBeUndefined();
     expect(typeof options.start_offset).toBe('number');
+  });
+});
+
+describe('session ownership refusal without an attachment (UI-68r5 §3.5)', () => {
+  /**
+   * Record one implementation attempt of B1 in the process queue store.
+   *
+   * @param {Record<string, any>} patch
+   */
+  function seedAttempt(patch) {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'B1', finished_at: 5, ...patch }
+    });
+  }
+
+  test('refuses as unobservable a bead whose failed attempt nothing can judge', async () => {
+    seedAttempt({ status: 'failed', cause: 'stale_work_unresolved' });
+
+    const refusal = await workerSessionOwnerRefusal(WS, 'B1');
+
+    expect(refusal).toBe('session_owner_unobservable');
+  });
+
+  test('allows a bead with no failed attempt to judge', async () => {
+    seedAttempt({ status: 'done' });
+
+    const refusal = await workerSessionOwnerRefusal(WS, 'B1');
+
+    expect(refusal).toBeNull();
   });
 });
