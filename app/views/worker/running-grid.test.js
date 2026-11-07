@@ -5018,6 +5018,31 @@ describe('shared running tile input (UI-yvhx)', () => {
       true
     ]);
   });
+
+  test('draws [세션에서 이어가기] in the foot of a residue disposition failure tile (UI-68r5 §3.2)', () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const tile = runningTileInput({
+      id: 'A-1',
+      attempt_id: 'att-1',
+      title: '잔재',
+      run_state: 'failed',
+      status: 'failed',
+      can_resume: true,
+      failure: {
+        cause: 'stale_work_unresolved',
+        summary: 'remote_branch_owner',
+        resume_eligible: true,
+        resume_reason: null
+      }
+    });
+
+    render(runningTile(tile, 5000), mount);
+
+    expect(
+      mount.querySelector('.rtile__foot .rtile__resolve')?.textContent?.trim()
+    ).toBe('세션에서 이어가기');
+  });
 });
 
 describe('session-lane running tile (UI-lbm5 §4.6)', () => {
