@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createClaudeActiveReturn } from '../claude-active-return.js';
 import { createCodexActiveReturn } from '../codex-active-return.js';
 import { selectCodexSwitchCandidate } from '../worker/codex-switch-candidate.js';
 import {
@@ -12,6 +13,7 @@ import {
   createAccountSwitchRunner,
   isSwitchInFlight,
   performAccountSwitch,
+  recentClaudeSwitch,
   releaseSwitchLock,
   subscribeAccountSwitched
 } from './account-switch.js';
@@ -922,5 +924,319 @@ describe('codex active-account return through the shared switch path', () => {
     expect(runSwitch).toHaveBeenCalledExactlyOnceWith(2);
     expect(notify).not.toHaveBeenCalled();
     expect(isSwitchInFlight('codex')).toBe(false);
+  });
+});
+
+describe('recent Claude switch record', () => {
+  const SWITCHED = JSON.stringify({
+    switched: true,
+    from: { number: 3, email: 'three@hanmail.example' },
+    to: { number: 4, email: 'four@unist.example' }
+  });
+
+  test('records from, to and time after a manual Claude switch', async () => {
+    const runSwitch = vi
+      .fn()
+      .mockResolvedValue(switchResult({ stdout: SWITCHED }));
+    const before = Date.now();
+
+    await requestSwitch(runSwitch, { number: 4 });
+
+    const record = recentClaudeSwitch();
+    expect(record).toMatchObject({
+      from: { number: 3, email: 'three@hanmail.example' },
+      to: { number: 4, email: 'four@unist.example' }
+    });
+    expect(record?.at).toBeGreaterThanOrEqual(before);
+    expect(record?.at).toBeLessThanOrEqual(Date.now());
+  });
+
+  test('records the switch before the switch listeners hear of it', async () => {
+    const runSwitch = vi
+      .fn()
+      .mockResolvedValue(switchResult({ stdout: SWITCHED }));
+    /** @type {any[]} */
+    const seen = [];
+    const unsubscribe = subscribeAccountSwitched(() => {
+      seen.push(recentClaudeSwitch());
+    });
+
+    try {
+      await requestSwitch(runSwitch, { number: 4 });
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+    } finally {
+      unsubscribe();
+    }
+
+    expect(seen[0]).toMatchObject({ to: { number: 4 } });
+  });
+
+  test('records nothing for an unswitched Claude run', async () => {
+    const runSwitch = vi.fn().mockResolvedValue(
+      switchResult({
+        stdout: JSON.stringify({
+          switched: false,
+          from: { number: 4, email: 'four@unist.example' },
+          to: { number: 4, email: 'four@unist.example' }
+        })
+      })
+    );
+
+    await requestSwitch(runSwitch, { number: 4 });
+
+    expect(recentClaudeSwitch()).toBe(null);
+  });
+
+  test('records nothing for a failed Claude switch', async () => {
+    const runSwitch = vi.fn().mockResolvedValue(switchResult({ code: 1 }));
+
+    await requestSwitch(runSwitch, { number: 4 });
+
+    expect(recentClaudeSwitch()).toBe(null);
+  });
+
+  test('records nothing for a Codex switch', async () => {
+    const runSwitch = vi
+      .fn()
+      .mockResolvedValue(switchResult({ stdout: SWITCHED }));
+
+    await performAccountSwitch({
+      provider: 'codex',
+      account_number: 4,
+      runSwitch,
+      invalidateUsageCache: () => {}
+    });
+
+    expect(recentClaudeSwitch()).toBe(null);
+  });
+
+  test('falls back to the requested number when the tool omits the target', async () => {
+    const runSwitch = vi.fn().mockResolvedValue(
+      switchResult({
+        stdout: JSON.stringify({ switched: true, from: { number: 3 } })
+      })
+    );
+
+    await requestSwitch(runSwitch, { number: 4 });
+
+    expect(recentClaudeSwitch()).toMatchObject({
+      from: { number: 3, email: null },
+      to: { number: 4, email: null }
+    });
+  });
+});
+
+describe('claude active-account return through the shared switch path', () => {
+  const A3 = 'three@hanmail.example';
+  const A4 = 'four@unist.example';
+
+  /**
+   * @param {string} email
+   * @param {number} number
+   * @param {number} pct
+   * @param {boolean} [active]
+   */
+  function row(email, number, pct, active = false) {
+    return {
+      key: email,
+      number,
+      email,
+      alias: null,
+      plan: null,
+      active,
+      sessionLoginOwn: true,
+      status: 'ok',
+      windows: [
+        { key: '5h', pct, resetsAt: '2026-11-07T05:00:00.000Z' },
+        { key: '7d', pct: 10, resetsAt: '2026-11-12T00:00:00.000Z' }
+      ],
+      fetchedAt: null,
+      ageSeconds: null
+    };
+  }
+
+  /**
+   * @param {any[]} accounts
+   */
+  function listOf(accounts) {
+    return {
+      ok: /** @type {const} */ (true),
+      accounts,
+      active_key: accounts.find((account) => account.active)?.key ?? null
+    };
+  }
+
+  const EXHAUSTED = listOf([row(A3, 3, 100, true), row(A4, 4, 0)]);
+  const SWITCHED = JSON.stringify({
+    switched: true,
+    from: { number: 3, email: A3 },
+    to: { number: 4, email: A4 }
+  });
+
+  /**
+   * @param {{ runSwitch: (account_number: number) => Promise<any>, invalidateUsageCache?: (expected_number?: number) => void, listAccountsFresh?: () => Promise<any> }} options
+   */
+  function autoPass(options) {
+    const notify = vi.fn();
+    const pass = createClaudeActiveReturn({
+      listAccounts: async () => EXHAUSTED,
+      listAccountsFresh: options.listAccountsFresh ?? (async () => EXHAUSTED),
+      listWorkspaces: () => [{ key: '/repos/beads-ui', name: 'beads-ui' }],
+      queueSnapshot: () => ({
+        provider_limit_policy: {
+          claude: { mode: 'switch', accounts: [A3, A4], preempt_pct: null }
+        },
+        provider_hold: {},
+        attempts: {}
+      }),
+      readWorkspaceAccounts: async () => ({
+        state: 'absent',
+        values: {},
+        warnings: []
+      }),
+      acquireLock: acquireSwitchLock,
+      releaseLock: releaseSwitchLock,
+      isLocked: isSwitchInFlight,
+      switchAccount: (account_number) =>
+        performAccountSwitch({
+          provider: 'claude',
+          account_number,
+          runSwitch: options.runSwitch,
+          invalidateUsageCache: options.invalidateUsageCache ?? (() => {})
+        }),
+      notify,
+      setInterval: () => null,
+      clearInterval: () => {}
+    });
+    return { pass, notify };
+  }
+
+  test('drops the usage cache for the expected account and tells switch listeners', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const runSwitch = vi
+      .fn()
+      .mockResolvedValue(switchResult({ stdout: SWITCHED }));
+    const invalidateUsageCache = vi.fn(() => {
+      order.push('invalidate');
+    });
+    const listener = vi.fn(() => {
+      order.push('listener');
+    });
+    const unsubscribe = subscribeAccountSwitched(listener);
+    const { pass, notify } = autoPass({ runSwitch, invalidateUsageCache });
+
+    try {
+      await pass.observe(EXHAUSTED);
+      await vi.waitFor(() => expect(listener).toHaveBeenCalled());
+    } finally {
+      unsubscribe();
+    }
+
+    expect(runSwitch).toHaveBeenCalledExactlyOnceWith(4);
+    expect(invalidateUsageCache).toHaveBeenCalledExactlyOnceWith(4);
+    expect(listener).toHaveBeenCalledExactlyOnceWith('claude');
+    expect(order).toEqual(['invalidate', 'listener']);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  test('records the auto switch for error attribution', async () => {
+    const runSwitch = vi
+      .fn()
+      .mockResolvedValue(switchResult({ stdout: SWITCHED }));
+    const { pass } = autoPass({ runSwitch });
+
+    await pass.observe(EXHAUSTED);
+
+    expect(recentClaudeSwitch()).toMatchObject({
+      from: { number: 3, email: A3 },
+      to: { number: 4, email: A4 }
+    });
+  });
+
+  test('tells no switch listener, sends no notice and records nothing after a failed auto switch', async () => {
+    const runSwitch = vi.fn().mockResolvedValue(switchResult({ code: 1 }));
+    const invalidateUsageCache = vi.fn();
+    const listener = vi.fn();
+    const unsubscribe = subscribeAccountSwitched(listener);
+    const { pass, notify } = autoPass({ runSwitch, invalidateUsageCache });
+
+    try {
+      await pass.observe(EXHAUSTED);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      unsubscribe();
+    }
+
+    expect(invalidateUsageCache).not.toHaveBeenCalled();
+    expect(listener).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(recentClaudeSwitch()).toBe(null);
+  });
+
+  test('makes no auto switch while a manual switch is in flight', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(switchResult());
+    });
+    const runSwitch = vi.fn(() => gate);
+    const listAccountsFresh = vi.fn(async () => EXHAUSTED);
+    const { pass } = autoPass({ runSwitch, listAccountsFresh });
+    const server = await startSwitchServer({
+      claude: createAccountSwitchHandler({
+        provider: 'claude',
+        runSwitch,
+        invalidateUsageCache: () => {}
+      })
+    });
+
+    try {
+      const manual = server.post(CLAUDE_ROUTE, { number: 4, confirm: true });
+      await vi.waitFor(() => expect(runSwitch).toHaveBeenCalled());
+      await pass.observe(EXHAUSTED);
+      release();
+      await manual;
+    } finally {
+      await server.close();
+    }
+
+    expect(listAccountsFresh).not.toHaveBeenCalled();
+    expect(runSwitch).toHaveBeenCalledExactlyOnceWith(4);
+  });
+
+  test('answers 409 to a manual switch while the auto pass holds the lock', async () => {
+    /** @type {(value: any) => void} */
+    let release_fresh = () => {};
+    const listAccountsFresh = vi.fn(
+      () => new Promise((resolve) => (release_fresh = resolve))
+    );
+    const runSwitch = vi
+      .fn()
+      .mockResolvedValue(switchResult({ stdout: SWITCHED }));
+    const { pass } = autoPass({ runSwitch, listAccountsFresh });
+    const server = await startSwitchServer({
+      claude: createAccountSwitchHandler({
+        provider: 'claude',
+        runSwitch,
+        invalidateUsageCache: () => {}
+      })
+    });
+
+    /** @type {{ status: number, body: any }} */
+    let manual;
+    try {
+      const auto = pass.observe(EXHAUSTED);
+      await vi.waitFor(() => expect(listAccountsFresh).toHaveBeenCalled());
+      manual = await server.post(CLAUDE_ROUTE, { number: 4, confirm: true });
+      release_fresh(EXHAUSTED);
+      await auto;
+    } finally {
+      await server.close();
+    }
+
+    expect(manual.status).toBe(409);
+    expect(manual.body).toEqual({ ok: false, error: 'switch_in_flight' });
+    expect(runSwitch).toHaveBeenCalledExactlyOnceWith(4);
   });
 });

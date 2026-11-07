@@ -516,6 +516,29 @@ export async function listAccounts(options = {}) {
 }
 
 /**
+ * List normalized Claude accounts straight from cswap, past the route cache
+ * and without writing it — the confirm stage of the active-account return
+ * (UI-btp3 §4.2-4). cswap may still answer from its own store; no API read
+ * is forced, since spending its hourly budget can block reads for an hour.
+ *
+ * @param {{ runCswap?: () => Promise<{ code: number, stdout: string, stderr: string }> }} [options]
+ * @returns {Promise<{ ok: true, accounts: UsageAccount[], active_key: string|null }|{ ok: false, error: string }>}
+ */
+export async function listAccountsFresh(options = {}) {
+  const runCswap = options.runCswap || runCswapCommand;
+  const payload = await loadClaudeUsage(runCswap);
+  if (!Array.isArray(payload.accounts)) {
+    return { ok: false, error: 'claude_account_list_unavailable' };
+  }
+  const active = payload.accounts.find((account) => account.active);
+  return {
+    ok: true,
+    accounts: payload.accounts,
+    active_key: active?.key ?? null
+  };
+}
+
+/**
  * Create an Express handler. Tests inject only the external process/time
  * boundaries; production uses the cswap runner above.
  *

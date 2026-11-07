@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { createApp } from './app.js';
+import { createClaudeActiveReturn } from './claude-active-return.js';
 import { printServerUrl } from './cli/daemon.js';
 import { createCodexActiveReturn } from './codex-active-return.js';
 import {
@@ -24,6 +25,11 @@ import {
   performAccountSwitch,
   releaseSwitchLock
 } from './routes/account-switch.js';
+import {
+  invalidateCache as invalidateClaudeUsageCache,
+  listAccounts as listClaudeAccounts,
+  listAccountsFresh as listClaudeAccountsFresh
+} from './routes/claude-usage.js';
 import {
   invalidateCache as invalidateCodexUsageCache,
   listAccounts as listCodexAccounts,
@@ -260,6 +266,39 @@ const codex_active_return = createCodexActiveReturn({
 subscribeAccountListObservations((list) => {
   void codex_active_return.observe(list);
 });
+
+// Claude active-account return (UI-btp3 §4): the same flow and lock as the
+// Codex pass, but always on — nothing else reads the Claude list while the
+// usage view and the Worker are idle — and it moves an active account whose
+// 5h or 7d window is full to a headroom account a switch repo allows with it.
+const run_claude_switch = createAccountSwitchRunner({ provider: 'claude' });
+const claude_active_return = createClaudeActiveReturn({
+  listAccounts: () => listClaudeAccounts(),
+  listAccountsFresh: () => listClaudeAccountsFresh(),
+  listWorkspaces: () =>
+    getAvailableWorkspaces().map((workspace) => ({
+      key: path.resolve(workspace.path),
+      name: path.basename(path.resolve(workspace.path))
+    })),
+  queueSnapshot: (workspace) =>
+    getWorkerRuntime().queueStore.snapshot(workspace),
+  readWorkspaceAccounts: (workspace) => readWorkspaceAccountsLayer(workspace),
+  acquireLock: acquireSwitchLock,
+  releaseLock: releaseSwitchLock,
+  isLocked: isSwitchInFlight,
+  switchAccount: (account_number) =>
+    performAccountSwitch({
+      provider: 'claude',
+      account_number,
+      runSwitch: run_claude_switch,
+      invalidateUsageCache: invalidateClaudeUsageCache
+    }),
+  notify: (message) => {
+    codex_switch_notifier.codexCreditNotice({ channel: 'ops', message });
+  },
+  log
+});
+claude_active_return.start();
 
 watchRegistry(
   (entries) => {

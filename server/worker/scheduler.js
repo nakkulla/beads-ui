@@ -540,6 +540,13 @@ const SESSION_EFFORT_RETRY_LIMIT = 3;
 export const CODEX_EXHAUSTED_WINDOW_PCT = 100;
 
 /**
+ * How long after a Claude switch an accountless attempt's error still
+ * settles on the account switched away from (UI-btp3 §4.1): the macOS
+ * credential cache (about 30 s) plus process exit and settlement.
+ */
+export const CLAUDE_SWITCH_ATTRIBUTION_MS = 120_000;
+
+/**
  * Project a session's `blocked_detail` onto the attempt's durable
  * `cause_detail` (UI-2o4z §2). Undefined when the session left nothing to
  * record, so the patch keeps the field null instead of inventing one.
@@ -804,6 +811,12 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {(runner_name: string) => { name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }} makeRunner
  * @property {typeof acquireClaudeLaunch} [acquireClaudeLaunch]
  * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any>, readClaude?: (email: string) => Promise<any>, activeClaude?: () => Promise<any>, listClaude?: () => Promise<any>, listCodex?: () => Promise<any> }} [accountCatalog]
+ * @property {() => { from: { number: number, email: string|null }|null, to: { number: number, email: string|null }, at: number }|null} [recentClaudeSwitch]
+ * The last Claude switch that moved the active login (UI-btp3 §4.1). An
+ * accountless Claude attempt's error settled within
+ * `CLAUDE_SWITCH_ATTRIBUTION_MS` of it, while the active login is still its
+ * target, lands on the account switched away from. Absent wiring settles on
+ * the active account.
  * @property {() => string|null} [resolveCswapPath]
  * @property {typeof defaultPrepareCodexAccountHome} [prepareCodexAccountHome]
  * @property {typeof prepareCodexGuardHome} [prepareCodexGuardHome]
@@ -2041,14 +2054,55 @@ export function createScheduler(deps) {
       }
       if (typeof deps.accountCatalog.activeClaude === 'function') {
         const result = await deps.accountCatalog.activeClaude();
-        return result.ok
-          ? { account: result.account.email, row: result.account }
-          : { account: null, row: null };
+        if (!result.ok) {
+          return { account: null, row: null };
+        }
+        const switched_from = await claudeSwitchedFromRow(result.account);
+        return switched_from
+          ? { account: switched_from.email, row: switched_from }
+          : { account: result.account.email, row: result.account };
       }
     } catch {
       // Catalog failure is represented as account:null and never broadens proof.
     }
     return { account: null, row: null };
+  }
+
+  /**
+   * The row of the account a Claude switch just moved away from, when the
+   * active login is that switch's target and it landed within
+   * `CLAUDE_SWITCH_ATTRIBUTION_MS` (UI-btp3 §4.1): a request refused before
+   * the switch may only settle after it. Null otherwise, and whenever the
+   * previous account cannot be found, so the caller keeps the active row.
+   *
+   * @param {any} active
+   * @returns {Promise<any|null>}
+   */
+  async function claudeSwitchedFromRow(active) {
+    const record =
+      typeof deps.recentClaudeSwitch === 'function'
+        ? deps.recentClaudeSwitch()
+        : null;
+    if (
+      !record ||
+      !record.from ||
+      !record.to ||
+      typeof record.at !== 'number' ||
+      active?.number !== record.to.number ||
+      now() - record.at > CLAUDE_SWITCH_ATTRIBUTION_MS ||
+      typeof deps.accountCatalog?.listClaude !== 'function'
+    ) {
+      return null;
+    }
+    const from = record.from;
+    const listed = await deps.accountCatalog.listClaude();
+    if (!listed?.ok || !Array.isArray(listed.accounts)) {
+      return null;
+    }
+    const row = listed.accounts.find(
+      (/** @type {any} */ candidate) => candidate?.number === from.number
+    );
+    return row && typeof row.email === 'string' ? row : null;
   }
 
   /**
