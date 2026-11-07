@@ -238,6 +238,10 @@
  * Set only on the attempt an 외부 작업 완료 conversation's `인계` dispatched
  * (UI-18a5 §3.4 한 번 규칙): the conversation record's key and launch time.
  * A restarted pass that finds it treats the handoff as spent. Null elsewhere.
+ * @property {string} [bead_session_ref] - The Bead's raw `session_ref` value
+ * at this attempt's dispatch snapshot (UI-68r5 §3.4), the empty string when
+ * the Bead carried none. A newer session claim is told by an entry this value
+ * lacks; an older record without the key proves no claim.
  * @property {'session'|'fresh'|null} continuation_mode - Whether this child
  * reused the provider session or started a replacement session. Null keeps
  * legacy history neutral.
@@ -586,7 +590,7 @@
  * whether the exit already settled it.
  *
  * @typedef {Object} ConversationHandoffTarget
- * @property {'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'} kind
+ * @property {'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue'} kind
  * @property {string} identity
  */
 /**
@@ -3575,7 +3579,8 @@ function normalizeConversation(raw) {
       target_raw.kind === 'verify_hold' ||
       target_raw.kind === 'merge_gate' ||
       target_raw.kind === 'repo_operation' ||
-      target_raw.kind === 'foreign_handoff') &&
+      target_raw.kind === 'foreign_handoff' ||
+      target_raw.kind === 'stale_residue') &&
     typeof target_raw.identity === 'string'
       ? { kind: target_raw.kind, identity: target_raw.identity }
       : null;
@@ -4154,6 +4159,9 @@ export function makeAttempt(fields) {
       fields.forked_from_session_id.length > 0
         ? fields.forked_from_session_id
         : null,
+    ...(typeof fields.bead_session_ref === 'string'
+      ? { bead_session_ref: fields.bead_session_ref }
+      : {}),
     conflict_resolution: fields.conflict_resolution === true,
     quickfix_lane: fields.quickfix_lane === true,
     worker_claim:

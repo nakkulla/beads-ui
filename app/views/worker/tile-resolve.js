@@ -166,7 +166,7 @@ function handoffAction(item) {
  * The row kinds a `[세션에서 이어가기]` stands on (UI-18a5 §3.1), told apart
  * so the tooltip can say what this row's `인계` will do.
  *
- * @typedef {'stop'|'cleanup'|'verify_hold'|'merge_gate'|'discard'|'external'|'takeover'|'foreign_handoff'} ContinueRow
+ * @typedef {'stop'|'cleanup'|'verify_hold'|'merge_gate'|'discard'|'external'|'takeover'|'foreign_handoff'|'stale_residue'} ContinueRow
  */
 
 /**
@@ -193,7 +193,11 @@ const SESSION_TITLES = Object.freeze({
   // 제목(사람의 [머지]만 풀린다)을 물려받지 않는다 — 이 행은 [머지]로 풀리지
   // 않는다.
   foreign_handoff:
-    '대화 세션을 엽니다 — 외부 PR 사람 처리 필요는 [머지]로 풀리지 않습니다. 대상 저장소에서 `pr-finish` Foreign-pinned Bead 절차로 처리합니다'
+    '대화 세션을 엽니다 — 외부 PR 사람 처리 필요는 [머지]로 풀리지 않습니다. 대상 저장소에서 `pr-finish` Foreign-pinned Bead 절차로 처리합니다',
+  // 잔재 처분 실패 (UI-68r5 §3.2): 인계는 같은 잔재 처분 검사로 디스패치를 한
+  // 번 다시 돌린다 — 대화는 원인을 정리할 뿐 검사를 대신하지 않는다.
+  stale_residue:
+    '대화 세션을 엽니다 — 잔재 처분 실패의 원인을 정리하고, 인계하면 Worker가 같은 잔재 처분 검사로 디스패치를 한 번 다시 돌립니다'
 });
 
 /** The tooltip while the click only focuses a live conversation's window. */
@@ -202,9 +206,10 @@ const FOCUS_TITLE =
 
 /**
  * Which failure, if any, makes this item a 실패 row: the PR 대기 row's own
- * material (`failure_material`, UI-f2sy shared projection) or a failed
- * discard on any card. The newest-most-terminal one names the row, in the
- * server's order (`resolveFailureContext`).
+ * material (`failure_material`, UI-f2sy shared projection), a failed
+ * discard on any card, or a terminal dispatch residue disposition failure on
+ * a 실패 tile (UI-68r5 §3.2). The newest-most-terminal one names the row, in
+ * the server's order (`resolveFailureContext`).
  *
  * @param {any} item
  * @returns {ContinueRow|null}
@@ -225,6 +230,12 @@ function failureRow(item) {
   }
   if (item.discard?.error) {
     return 'discard';
+  }
+  if (
+    item.run_state === 'failed' &&
+    item.failure?.cause === 'stale_work_unresolved'
+  ) {
+    return 'stale_residue';
   }
   return null;
 }

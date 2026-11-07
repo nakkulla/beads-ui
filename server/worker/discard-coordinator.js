@@ -68,6 +68,26 @@ export function createDiscardCoordinator(deps, options = {}) {
   const driving = new Map();
 
   /**
+   * The scheduler's session ownership refusal for one Bead (UI-68r5 §3.4),
+   * or null — also when the scheduler offers no such judgment.
+   *
+   * @param {unknown} bead_id
+   * @returns {Promise<string|null>}
+   */
+  async function sessionOwnerRefusalOf(bead_id) {
+    if (
+      typeof bead_id !== 'string' ||
+      typeof deps.scheduler?.sessionOwnerRefusal !== 'function'
+    ) {
+      return null;
+    }
+    return (
+      (await deps.scheduler.sessionOwnerRefusal(deps.workspace, bead_id)) ??
+      null
+    );
+  }
+
+  /**
    * @param {string} operation_id
    */
   function operationOf(operation_id) {
@@ -2720,6 +2740,13 @@ export function createDiscardCoordinator(deps, options = {}) {
     if (deps.actionInFlight?.(input.bead_id)) {
       return { ok: false, conflict: false, reason: 'action_in_flight' };
     }
+    // A newer session owns the Bead its failed attempt sits on (UI-68r5
+    // §3.4): discarding would delete that session's worktree, so the request
+    // is refused and nothing is recorded.
+    const owner_refusal = await sessionOwnerRefusalOf(input.bead_id);
+    if (owner_refusal !== null) {
+      return { ok: false, conflict: false, reason: owner_refusal };
+    }
     let captured;
     try {
       captured = await captureSource(input.bead_id, input.attempt_id || null);
@@ -2854,6 +2881,10 @@ export function createDiscardCoordinator(deps, options = {}) {
     const operation = operationOf(operation_id);
     if (!discardOperationActive(operation)) {
       return { ok: false, reason: 'operation_not_retryable' };
+    }
+    const owner_refusal = await sessionOwnerRefusalOf(operation.bead_id);
+    if (owner_refusal !== null) {
+      return { ok: false, reason: owner_refusal };
     }
     if (operation.last_error) {
       const cleared = deps.store.advanceDiscardOperation(deps.workspace, {

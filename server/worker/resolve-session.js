@@ -144,6 +144,96 @@ export const REPO_OPERATION_ROW_PREFIX = 'repo-op:';
 export const MANUAL_DEPLOY_FAILURE_CLASS = '수동 배포 실패';
 
 /**
+ * The `클래스:` word of a dispatch residue disposition failure (UI-68r5
+ * §3.2, dotfiles `Worker 세션 대화` 「실패」 목록).
+ */
+export const STALE_RESIDUE_FAILURE_CLASS = '잔재 처분 실패';
+
+/**
+ * The Bead's terminal dispatch residue disposition failure (UI-68r5 §3.2):
+ * its latest implementation attempt, when that attempt ended terminal
+ * `failed` with `stale_work_unresolved` and nobody dismissed it. A ladder
+ * rung (`retry_wait`) is not one — the Worker still owns its next try.
+ *
+ * @param {any} queue - Queue snapshot.
+ * @param {string} bead_id
+ * @returns {any|null}
+ */
+export function staleResidueFailure(queue, bead_id) {
+  /** @type {any} */
+  let latest = null;
+  for (const attempt of Object.values(queue?.attempts || {})) {
+    const record = /** @type {any} */ (attempt);
+    if (record?.bead_id === bead_id && isImplementationAttempt(record)) {
+      latest = record;
+    }
+  }
+  return latest &&
+    latest.status === 'failed' &&
+    latest.cause === 'stale_work_unresolved' &&
+    typeof latest.dismissed_at !== 'number'
+    ? latest
+    : null;
+}
+
+/**
+ * The one-line residue summary the `진단` slot carries (UI-68r5 §3.2):
+ * worktree path, branch, local head sha7, recorded remote head sha7, external
+ * PR presence, then the staged/unstaged/untracked/ahead counts. A field with
+ * nothing behind it is left out.
+ *
+ * @param {any} cause_detail - The failed attempt's `cause_detail`.
+ * @returns {string|null}
+ */
+export function staleResidueDiagnosis(cause_detail) {
+  const residue = cause_detail?.residue;
+  const identity = residue?.identity || {};
+  const summary = residue?.summary || null;
+  /**
+   * @param {unknown} value
+   * @returns {string}
+   */
+  const sha7 = (value) =>
+    typeof value === 'string' && /^[0-9a-f]{7,64}$/i.test(value)
+      ? value.slice(0, 7)
+      : '';
+  const local_head = sha7(identity.head_sha) || sha7(identity.branch_head_sha);
+  const remote_head = sha7(cause_detail?.remote_head_sha);
+  /** @type {string[]} */
+  const parts = [
+    typeof identity.worktree_realpath === 'string' &&
+    identity.worktree_realpath.length > 0
+      ? `워크트리 ${identity.worktree_realpath}`
+      : '',
+    typeof identity.branch === 'string' && identity.branch.length > 0
+      ? `브랜치 ${identity.branch}`
+      : '',
+    local_head ? `로컬 head ${local_head}` : '',
+    remote_head ? `원격 head ${remote_head}` : '',
+    typeof cause_detail?.external_pr === 'boolean'
+      ? cause_detail.external_pr
+        ? '외부 PR 있음'
+        : '외부 PR 없음'
+      : ''
+  ];
+  if (summary && typeof summary === 'object') {
+    for (const [label, key] of /** @type {const} */ ([
+      ['staged', 'staged_count'],
+      ['unstaged', 'unstaged_count'],
+      ['untracked', 'untracked_count'],
+      ['branch ahead', 'branch_ahead'],
+      ['HEAD ahead', 'head_ahead']
+    ])) {
+      if (typeof summary[key] === 'number' && Number.isFinite(summary[key])) {
+        parts.push(`${label} ${summary[key]}`);
+      }
+    }
+  }
+  const line = parts.filter(Boolean).join(' · ');
+  return line.length > 0 ? line : null;
+}
+
+/**
  * The conversation row key of one repo operation.
  *
  * @param {string} operation_id
@@ -257,6 +347,9 @@ export function repoOperationFailureContext(queue, operation_id) {
  * @property {string|null} [foreign_path] - A `foreign_handoff` row's pinned
  * target checkout (UI-k467 §3.7); the conversation's first input names it and
  * the target's own `pr-finish` procedure.
+ * @property {string|null} [worktree] - The `구현 워크트리` a row names itself:
+ * a residue disposition failure names the residue's worktree, or `(없음)`
+ * (UI-68r5 §3.2). Absent means the row's `.worktrees/<bead>` when it exists.
  */
 
 /**
@@ -441,6 +534,22 @@ export function resolveFailureContext(queue, bead_id, foreign = null) {
       detail: null
     };
   }
+  const stale = staleResidueFailure(queue, bead_id);
+  if (stale) {
+    const detail = stale.cause_detail || {};
+    const worktree = detail.residue?.identity?.worktree_realpath;
+    return {
+      failure_class: STALE_RESIDUE_FAILURE_CLASS,
+      reason:
+        typeof detail.summary === 'string' && detail.summary.length > 0
+          ? detail.summary
+          : '원인 미상',
+      stage: 'dispatch',
+      detail: staleResidueDiagnosis(detail),
+      worktree:
+        typeof worktree === 'string' && worktree.length > 0 ? worktree : null
+    };
+  }
   /** @type {any} */
   let latest = null;
   for (const attempt of Object.values(queue?.attempts || {})) {
@@ -576,10 +685,15 @@ export function takeoverCleanupRules(takeover) {
  *   - `repo_operation`: a Bead-less manual deploy failure (UI-jbl1 §3.3) —
  *     the exit is one manual deploy rerun; a rerun on the same target
  *     supersedes the record, which changes the identity.
+ *   - `stale_residue`: a terminal dispatch residue disposition failure
+ *     (UI-68r5 §3.3), after a failed discard and before a park — the exit
+ *     reruns the Bead's dispatch once through the same disposition check;
+ *     the identity is the failed attempt, so a rerun that fails again is a
+ *     new one.
  *
  * @param {any} queue - Queue snapshot.
  * @param {string} bead_id - The row key: a Bead id, or `repo-op:<id>`.
- * @returns {{ kind: 'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff', identity: string }|null}
+ * @returns {{ kind: 'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue', identity: string }|null}
  */
 export function failureHandoffTarget(queue, bead_id) {
   const operation_id = repoOperationIdOf(bead_id);
@@ -632,6 +746,13 @@ export function failureHandoffTarget(queue, bead_id) {
     return {
       kind: 'discard',
       identity: `discard:${discard.operation_id}:${discard.phase}:${discard.last_error}`
+    };
+  }
+  const stale = staleResidueFailure(queue, bead_id);
+  if (stale) {
+    return {
+      kind: 'stale_residue',
+      identity: `stale_residue:${stale.attempt_id}`
     };
   }
   return null;
@@ -915,7 +1036,11 @@ export function createResolveSession(deps) {
       const row_worktree = path.join(checkout, '.worktrees', input.bead_id);
       const prompt = buildFailureEntry({
         failure: input.failure,
-        worktree: existsSync(row_worktree) ? row_worktree : null,
+        worktree: Object.hasOwn(input.failure, 'worktree')
+          ? (input.failure.worktree ?? null)
+          : existsSync(row_worktree)
+            ? row_worktree
+            : null,
         checkout
       });
       const launch_session_id = runner === 'claude' ? randomUUID() : null;

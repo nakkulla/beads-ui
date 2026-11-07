@@ -34,7 +34,9 @@ import {
   activeAttemptStates,
   isImplementationAttempt,
   isWithdrawnAttempt,
-  latestImplementationAttempts
+  latestImplementationAttempts,
+  sessionGuardedBeadIds,
+  sessionOwnershipMaterial
 } from '../../app/utils/active-attempts.js';
 import { sessionPreferredReason } from '../../app/utils/session-preferred.js';
 import {
@@ -82,6 +84,7 @@ import {
   workerMergeEffectInFlight,
   workerMergeQueueState,
   workerRepoId,
+  workerSessionOwnerRefusal,
   workerSlots,
   workerWaitState,
   workerWorktreeExists,
@@ -203,7 +206,11 @@ import {
   runBdInWorkspace,
   runBdJsonProjectedInWorkspace
 } from './context.js';
-import { laneBeadIds, sessionExcludedBeadIds } from './lane-membership.js';
+import {
+  laneBeadIds,
+  sessionExcludedBeadIds,
+  sessionOwnershipOf
+} from './lane-membership.js';
 import { pushKeyed } from './push-patch.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
 import { trimQueueProjection } from './snapshot-retention.js';
@@ -1850,7 +1857,15 @@ function runningLaneBeadIds(queue) {
     }
   }
   const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
-  return [...activeAttemptStates(attempts, done_at_by_bead).winners.keys()];
+  // A failure a session took over draws no 실행중 tile (UI-68r5 §3.4), so it
+  // takes the same third input every other seat consumer reads.
+  return [
+    ...activeAttemptStates(
+      attempts,
+      done_at_by_bead,
+      sessionOwnershipOf(queue)
+    ).winners.keys()
+  ];
 }
 
 /**
@@ -3346,6 +3361,50 @@ function sessionActiveRows(workspace_key, queue) {
 }
 
 /**
+ * The `session_ownership` decoration of one snapshot (UI-68r5 §3.4): for each
+ * Bead whose latest implementation attempt a session could take over, its
+ * live external waits, its session row's status and current `session_ref`,
+ * and its own Worker conversation sessions. The session rows are read with NO
+ * exclusion — the exclusion is what this material decides — and the wait
+ * records raw, so the owning session is known. A snapshot with no such Bead
+ * reads nothing. Fail-quiet: an unreadable source is no evidence, and the
+ * card draws as it did (§3.5).
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, any>} queue - The public projection being decorated.
+ * @returns {Record<string, import('../../app/utils/active-attempts.js').SessionOwnershipMaterial>}
+ */
+function sessionOwnershipFor(workspace_key, queue) {
+  const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
+  if (sessionGuardedBeadIds(attempts).size === 0) {
+    return {};
+  }
+  /** @type {any[]} */
+  let external_waits = [];
+  try {
+    external_waits =
+      getWorkerRuntime().externalWaitStore.list(workspace_key) || [];
+  } catch (err) {
+    log('session ownership wait read failed for %s: %o', workspace_key, err);
+  }
+  /** @type {any[]} */
+  let session_rows = [];
+  try {
+    session_rows =
+      getWorkerRuntime().runnableCache.sessionActivePeek(workspace_key, []) ||
+      [];
+  } catch (err) {
+    log('session ownership row read failed for %s: %o', workspace_key, err);
+  }
+  return sessionOwnershipMaterial({
+    attempts,
+    external_waits,
+    session_rows,
+    interactive_sessions: queue.interactive_sessions
+  });
+}
+
+/**
  * One bead's TRANSFERRED attempt records, or an empty list (§7).
  *
  * `readAttemptsForBead` returns the union of the live queue and the record
@@ -3737,6 +3796,11 @@ export function decorateQueue(workspace_key, raw_queue) {
     done: Array.isArray(public_queue.done) ? public_queue.done : [],
     completion_status
   };
+  // The session ownership material (UI-68r5 §3.4), the third seat input. It
+  // rides the snapshot so the session exclusion, the running lane and the
+  // client lanes all read the same facts — and it is read here, before any
+  // exclusion filter, from the session rows and the external wait records.
+  queue.session_ownership = sessionOwnershipFor(workspace_key, queue);
   const repo_ops = repoOpsDisplayFor(workspace_key);
   const verify_policy = effectiveVerifyPolicy(repo_ops, queue);
   // The canonical repository the attachment operates on (UI-s582 §3). It rides
@@ -8048,6 +8112,35 @@ export async function handleWorkerResolveInSession(ws, req) {
           tmux_session: live_window.tmux_session ?? null,
           tmux_window: live_window.tmux_window ?? null,
           row: 'conversation',
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  // A newer session owns the Bead its failed attempt sits on (UI-68r5 §3.4):
+  // no conversation is opened on that failure, whatever a stale screen drew.
+  /** @type {string|null} */
+  let owner_refusal = null;
+  try {
+    owner_refusal = await workerSessionOwnerRefusal(key, p.bead_id);
+  } catch (err) {
+    log('session owner check failed for %s/%s: %o', key, p.bead_id, err);
+    owner_refusal = 'session_owner_unobservable';
+  }
+  if (owner_refusal !== null) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          launched: false,
+          conflict: false,
+          session: 'not_launched',
+          reason: owner_refusal,
+          mode: null,
+          fallback_reason: null,
+          command: null,
+          bridge_active: false,
           queue: decorateQueue(key, current)
         })
       )

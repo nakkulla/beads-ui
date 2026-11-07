@@ -1404,6 +1404,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // every other runtime singleton: its duplicate guard is a tmux pane marker,
     // which is one truth for the whole machine.
     directionInquiry: runtime.directionInquiry,
+    // The automatic failure conversation of a terminal dispatch residue
+    // disposition failure (UI-68r5 §3.2) — the same launcher every other
+    // failure conversation goes through.
+    failureConversation: runtime.failureConversation,
     // The Worker exits a failure conversation's `인계` runs (UI-18a5 §3.4):
     // the SAME owners the row's `[워커로 이어가기]` and `[머지]` clicks reach,
     // bound late because both are built after the scheduler.
@@ -3791,6 +3795,25 @@ export async function resumeWorkerAttempt(
     ...continuation,
     job_retry_authorized: true
   });
+}
+
+/**
+ * Whether a person's Worker operation on this Bead must be refused because a
+ * newer session owns its failed attempt (UI-68r5 §3.4·§3.5):
+ * `session_owned`, `session_owner_unobservable` (fail-closed), or null. The
+ * attachment's scheduler reads the material; a workspace with no attachment
+ * runs no Worker operation to refuse, so it answers null.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<'session_owned'|'session_owner_unobservable'|null>}
+ */
+export async function workerSessionOwnerRefusal(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || typeof att.scheduler?.sessionOwnerRefusal !== 'function') {
+    return null;
+  }
+  return att.scheduler.sessionOwnerRefusal(keyFor(workspace_root), bead_id);
 }
 
 /**
