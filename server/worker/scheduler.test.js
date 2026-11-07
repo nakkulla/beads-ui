@@ -19482,7 +19482,7 @@ describe('scheduler worktree residue hygiene', () => {
             }
           })
         );
-        return { ...env, record };
+        return { ...env, record, wait_store: store };
       }
 
       test('climbs the env ladder with the resume it must replay', async () => {
@@ -19506,17 +19506,22 @@ describe('scheduler worktree residue hygiene', () => {
         await flush();
         const rung = latest(env);
         env.worktree.removeIfDiscardable.mockClear();
+        env.wait_store.update.mockClear();
 
         await env.scheduler.retryNow(WS, 'S1');
         await flush();
 
         expect({
           observed: env.worktree.removeIfDiscardable.mock.calls.length > 0,
+          // Only the external-wait resume reserves on the wait record; an
+          // ordinary dispatch never writes it.
+          reserved: env.wait_store.update.mock.calls.length > 0,
           next: latest(env).resumed_from,
           replay: latest(env).cause_detail?.external_wait,
           admission: env.store.snapshot(WS).admission.S1?.reason ?? null
         }).toEqual({
           observed: true,
+          reserved: true,
           next: rung.attempt_id,
           replay: { wait_id: WAIT, mode: 'fresh' },
           admission: null
