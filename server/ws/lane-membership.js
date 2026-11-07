@@ -6,7 +6,10 @@
  * session lane's exclusion (UI-yrzu §3) must not drift between them, so the
  * set builders live here rather than in either handler module (UI-0a2m).
  */
-import { activeBeadIds } from '../../app/utils/active-attempts.js';
+import {
+  activeAttemptStates,
+  sessionOwnershipMap
+} from '../../app/utils/active-attempts.js';
 
 /**
  * Valid bead ids across the named flat lanes of one snapshot.
@@ -106,22 +109,43 @@ export function activeLaneBeadIds(snapshot) {
 }
 
 /**
+ * The session ownership material a decorated snapshot carries
+ * (`session_ownership`, UI-68r5 §3.4) — the third seat input, read the same
+ * way by every consumer. A raw snapshot has none, which reads as no evidence.
+ *
+ * @param {Record<string, any>} snapshot
+ * @returns {Map<string, import('../../app/utils/active-attempts.js').SessionOwnershipMaterial>}
+ */
+export function sessionOwnershipOf(snapshot) {
+  return sessionOwnershipMap(snapshot.session_ownership);
+}
+
+/**
  * The ids no session tile may repeat: every worker-owned lane member plus every
  * bead an active worker attempt already draws (UI-yrzu §3). `done` is
  * deliberately absent: a bead a session reopened as `in_progress` is being
  * worked on right now, and its completion history is not a reason to hide that
  * fact.
  *
+ * A Bead whose failure a session took over is NOT excluded, even while it is
+ * still a queue or serial lane member (UI-68r5 §3.4): the session tile is
+ * its one card. Its lane membership itself stays.
+ *
  * @param {Record<string, any>} snapshot
  * @returns {Set<string>}
  */
 export function sessionExcludedBeadIds(snapshot) {
   const ids = activeLaneBeadIds(snapshot);
-  for (const bead_id of activeBeadIds(
+  const { winners, yielded_bead_ids } = activeAttemptStates(
     snapshot.attempts || {},
-    doneAtByBead(snapshot)
-  )) {
+    doneAtByBead(snapshot),
+    sessionOwnershipOf(snapshot)
+  );
+  for (const bead_id of winners.keys()) {
     ids.add(bead_id);
+  }
+  for (const bead_id of yielded_bead_ids) {
+    ids.delete(bead_id);
   }
   return ids;
 }

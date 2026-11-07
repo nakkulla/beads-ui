@@ -505,6 +505,48 @@ describe('tileResolveFields pair anchor (UI-18a5 §3.2)', () => {
     expect(fields.merge_action).toBeUndefined();
     expect(fields.pair_held).toBe(false);
   });
+
+  test('draws [세션에서 이어가기] on a stale residue failure tile without a pair anchor', () => {
+    const item = {
+      id: 'UI-1',
+      run_state: 'failed',
+      failure: { cause: 'stale_work_unresolved' }
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields).toEqual({
+      resolve_action: true,
+      resolve_enabled: true,
+      resolve_title:
+        '대화 세션을 엽니다 — 잔재 처분 실패의 원인을 정리하고, 인계하면 Worker가 같은 잔재 처분 검사로 디스패치를 한 번 다시 돌립니다'
+    });
+  });
+
+  test('names a failed discard ahead of the stale residue failure it sits on', () => {
+    const item = {
+      id: 'UI-1',
+      run_state: 'failed',
+      failure: { cause: 'stale_work_unresolved' },
+      ...MATERIALS.discard_failed
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.pair_anchor).toBe('discard');
+  });
+
+  test('draws no [세션에서 이어가기] on an ordinary failure tile', () => {
+    const item = {
+      id: 'UI-1',
+      run_state: 'failed',
+      failure: { cause: 'session_failed:exit_1' }
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_action).toBeUndefined();
+  });
 });
 
 describe('tileResolveFields conversation handoff', () => {

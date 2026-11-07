@@ -58,7 +58,8 @@ import {
   laneBeadIds,
   lanedBeadIds,
   serialLaneBeadIds,
-  sessionExcludedBeadIds
+  sessionExcludedBeadIds,
+  sessionOwnershipOf
 } from './lane-membership.js';
 import { pushKeyed } from './push-patch.js';
 import {
@@ -594,7 +595,8 @@ function laneMemberIds(snapshot) {
   }
   for (const bead_id of activeBeadIds(
     snapshot.attempts || {},
-    doneAtByBead(snapshot)
+    doneAtByBead(snapshot),
+    sessionOwnershipOf(snapshot)
   )) {
     ids.add(bead_id);
   }
@@ -871,8 +873,15 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
   // just `status === 'running'` — so the count uses the CLIENT'S OWN classifier
   // (`app/utils/active-attempts.js`) rather than a second predicate that would
   // drift from the lane it summarizes.
+  // A failure a session took over yields its seat (UI-68r5 §3.4): the same
+  // ownership material the lanes read keeps it out of `running` and lets its
+  // session row count below.
   /** @type {Set<string>} */
-  const claimed = activeBeadIds(queue.attempts || {}, doneAtByBead(queue));
+  const claimed = activeBeadIds(
+    queue.attempts || {},
+    doneAtByBead(queue),
+    sessionOwnershipOf(queue)
+  );
   const running = claimed.size;
   // Sessions rank immediately after `running` (UI-yrzu §4.2). The exclusion set
   // is what keeps that priority honest, so the count reads exactly the rows the

@@ -203,6 +203,73 @@ describe('interactive session persistence', () => {
     });
   });
 
+  test('keeps the stale_residue handoff kind across a queue reload', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(
+      WS,
+      record({ conversation: { stop: '실패 잔재 처분 실패 · x' } })
+    );
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      conversation: {
+        stop: '실패 잔재 처분 실패 · x',
+        wait_id: null,
+        processed_message_at: 40,
+        message_excerpt: null,
+        result: { kind: 'handoff', line: '인계 · 다시 돌린다', at: 41 },
+        handoff: {
+          line: '인계 · 다시 돌린다',
+          source: 'result_line',
+          message_at: 40,
+          reserved_at: 41,
+          target: { kind: 'stale_residue', identity: 'stale_residue:a1' },
+          started_at: null
+        },
+        takeover_notified_at: null
+      }
+    });
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+        .conversation?.handoff?.target
+    ).toEqual({ kind: 'stale_residue', identity: 'stale_residue:a1' });
+  });
+
+  test('keeps bead_session_ref across a queue reload', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'a1',
+        bead_id: 'B1',
+        bead_session_ref: 'claude:s1@host; codex:s2@host'
+      }
+    });
+
+    const attempt = createQueueStore().load(WS).attempts.a1;
+
+    expect(attempt.bead_session_ref).toBe('claude:s1@host; codex:s2@host');
+  });
+
+  test('keeps an empty dispatch-time session_ref apart from an unrecorded one', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'B1', bead_session_ref: '' }
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a2', bead_id: 'B1' }
+    });
+
+    const attempts = createQueueStore().load(WS).attempts;
+
+    expect([
+      attempts.a1.bead_session_ref,
+      'bead_session_ref' in attempts.a2
+    ]).toEqual(['', false]);
+  });
+
   test('keeps the wait id of an external conversation', () => {
     const store = createQueueStore();
 

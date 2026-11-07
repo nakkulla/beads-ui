@@ -447,7 +447,89 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
 
     expect(resolveFailureContext(queue, BEAD)).toBeNull();
   });
+
+  test('builds the stale residue failure context with the residue diagnosis', () => {
+    const queue = { attempts: { residue: staleResidueAttempt() } };
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context).toEqual({
+      failure_class: '잔재 처분 실패',
+      reason: 'remote_branch_owner',
+      stage: 'dispatch',
+      detail:
+        '워크트리 /repo/.worktrees/UI-jw27 · 브랜치 UI-jw27 · 로컬 head aaaaaaa · 원격 head ddddddd · 외부 PR 없음 · staged 1 · unstaged 2 · untracked 3 · branch ahead 4 · HEAD ahead 0',
+      worktree: '/repo/.worktrees/UI-jw27'
+    });
+  });
+
+  test('prefers a discard failure over a stale residue failure', () => {
+    const queue = {
+      discard_operations: {
+        op1: {
+          bead_id: BEAD,
+          phase: 'requested',
+          last_error: 'stale_work_backup_fresh_failed',
+          requested_at: 5
+        }
+      },
+      attempts: { residue: staleResidueAttempt() }
+    };
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context?.failure_class).toBe('폐기 실패');
+  });
+
+  test('stands no stale residue row while the failure waits on a ladder rung', () => {
+    const queue = {
+      attempts: { residue: staleResidueAttempt({ status: 'retry_wait' }) }
+    };
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context).toBeNull();
+  });
 });
+
+/**
+ * A terminal dispatch residue disposition failure of `BEAD` (UI-68r5 §3.2).
+ *
+ * @param {Record<string, any>} [patch]
+ * @returns {Record<string, any>}
+ */
+function staleResidueAttempt(patch = {}) {
+  return {
+    attempt_id: 'residue',
+    bead_id: BEAD,
+    status: 'failed',
+    cause: 'stale_work_unresolved',
+    finished_at: 900,
+    cause_detail: {
+      summary: 'remote_branch_owner',
+      external_pr: false,
+      remote_head_sha: 'd'.repeat(40),
+      residue: {
+        identity: {
+          worktree_realpath: `/repo/.worktrees/${BEAD}`,
+          branch: BEAD,
+          head_sha: 'a'.repeat(40),
+          branch_head_sha: 'a'.repeat(40),
+          base_oid: 'b'.repeat(40),
+          status_digest: 'c'.repeat(64)
+        },
+        summary: {
+          staged_count: 1,
+          unstaged_count: 2,
+          untracked_count: 3,
+          branch_ahead: 4,
+          head_ahead: 0
+        }
+      }
+    },
+    ...patch
+  };
+}
 
 describe('failure conversation entry block (UI-18a5 §3.3)', () => {
   test('opens on the pinned dotfiles entry block', () => {
@@ -613,6 +695,27 @@ describe('failureHandoffTarget (UI-18a5 §3.4)', () => {
 
   test('returns null for a settled row', () => {
     const target = failureHandoffTarget({}, BEAD);
+
+    expect(target).toBeNull();
+  });
+
+  test('resolves stale_residue handoff target identity from the failed attempt', () => {
+    const queue = { attempts: { residue: staleResidueAttempt() } };
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target).toEqual({
+      kind: 'stale_residue',
+      identity: 'stale_residue:residue'
+    });
+  });
+
+  test('targets no dismissed stale residue failure', () => {
+    const queue = {
+      attempts: { residue: staleResidueAttempt({ dismissed_at: 950 }) }
+    };
+
+    const target = failureHandoffTarget(queue, BEAD);
 
     expect(target).toBeNull();
   });
@@ -1626,6 +1729,28 @@ describe('automatic failure conversation (UI-jbl1 §3.1)', () => {
         placement: 'inquiry',
         failure: expect.objectContaining({ failure_class: '수동 배포 실패' })
       })
+    );
+  });
+
+  test('opens a residue disposition failure on the residue worktree', async () => {
+    const { resolver, tmux } = makeLauncher({ metadata: {} });
+    const failure = /** @type {any} */ (
+      resolveFailureContext(
+        { attempts: { residue: staleResidueAttempt() } },
+        BEAD
+      )
+    );
+
+    await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure,
+      attempt: null
+    });
+
+    expect(launchedWrapper(tmux)).toContain(
+      `- 구현 워크트리: /repo/.worktrees/${BEAD}`
     );
   });
 

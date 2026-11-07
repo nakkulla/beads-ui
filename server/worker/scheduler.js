@@ -53,7 +53,10 @@ import path from 'node:path';
 import {
   isImplementationAttempt,
   isWithdrawnAttempt,
-  latestImplementationAttempts
+  sessionOwnerRefusal as judgeSessionOwnerRefusal,
+  latestImplementationAttempts,
+  sessionGuardedAttempt,
+  sessionOwnershipMaterial
 } from '../../app/utils/active-attempts.js';
 import { laneMismatchOf, laneOfRoute } from '../../app/utils/quickfix-lane.js';
 import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
@@ -132,7 +135,8 @@ import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
   DEFAULT_SLOTS,
   LANE_RELEASING_ATTEMPT_STATUSES,
-  MIN_SLOTS
+  MIN_SLOTS,
+  holdsHandoffReservation
 } from './queue-store.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import {
@@ -145,6 +149,7 @@ import {
   receiptProbeError
 } from './receipt-check.js';
 import {
+  STALE_RESIDUE_FAILURE_CLASS,
   failedDiscardOperation,
   failureHandoffTarget,
   isBeadlessRowKey,
@@ -173,6 +178,7 @@ import {
 import { stderrPathOf } from './session-log.js';
 import {
   resolveSessionFile as defaultResolveSessionFile,
+  parseSessionRef,
   qualifySessionEntry,
   qualifySessionFork
 } from './session-ref.js';
@@ -345,6 +351,14 @@ const WORKFLOW_MODE_SOURCE_STAMP_COMMAND =
  * @property {boolean} can_continue
  * @property {boolean} can_backup_fresh
  * @property {StaleWorkIdentity} identity
+ */
+/**
+ * The external-wait resume a residue disposition failure happened inside
+ * (UI-68r5 §3.1): its wait and resume mode, so a rerun replays that resume.
+ *
+ * @typedef {Object} StaleResidueReplay
+ * @property {string} wait_id
+ * @property {'fork'|'fresh'} mode
  */
 
 /**
@@ -857,6 +871,10 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * after a `parked` record whose attempt came from the stale re-review lane.
  * Absent wiring simply means the park stays a park and the click disposition
  * is the only way out.
+ * @property {{ launchForBead: (input: { workspace: string, repo: string|null, bead_id: string }) => Promise<any> }|null} [failureConversation]
+ * The automatic failure conversation (UI-jbl1 §3.1) a terminal dispatch
+ * residue disposition failure opens once (UI-68r5 §3.2). Absent wiring only
+ * announces the failure.
  * @property {{ complete: (input: { workspace: string, attempt_id: string, bead_id: string, session_ok: boolean, reason?: string|null }) => Promise<{ ok: boolean, reason?: string }> }} [reviewSession]
  * Completion verdict for a `[리뷰 후 머지]` attempt (UI-d7fy §5.4). The queue,
  * not this engine, owns that lane: it re-observes the PR head, re-reads
@@ -933,11 +951,13 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   providerRecovered?: (i: any) => void,
  *   providerAutoResumeDisarmed?: (i: any) => void,
  *   providerLivePreempt?: (i: any) => void,
- *   prWaitEntered: (i: any) => void
+ *   prWaitEntered: (i: any) => void,
+ *   needsHuman?: (i: import('./notify.js').NeedsHumanInput) => Promise<void>|void
  * }} [notify]
  * Outward attempt-lifecycle push (UI-2yoq, notify.js). Optional: absent wiring
  * (every dispatch-only test) simply pushes nothing, exactly like a machine that
- * left `[worker.notify]` off.
+ * left `[worker.notify]` off. `needsHuman` carries a terminal residue
+ * disposition failure (UI-68r5 §3.2).
  * @property {{
  *   install: (i: { workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'guard'|'record'|'deny' }) => { ok: boolean, dir?: string, hook_path?: string, reason?: string },
  *   envFor: (i: { workspace: string, attempt_id: string }) => Record<string, string>,
@@ -1422,19 +1442,20 @@ const INTERACTIVE_KIND_LABELS = {
  * (UI-18a5 §3.4 인계 표), in the `↪ Worker가 이어감` push's `실행:` words.
  * `merge_gate` has none: only a person's `[머지]` waives that hold.
  *
- * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'repo_operation', string>>}
+ * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'repo_operation'|'stale_residue', string>>}
  */
 const FAILURE_HANDOFF_ACTIONS = Object.freeze({
   cleanup: '정리 재시도',
   discard: '폐기 재시도',
   verify_hold: '머지 큐 재등록',
-  repo_operation: '수동 배포 재실행'
+  repo_operation: '수동 배포 재실행',
+  stale_residue: '디스패치 재시도'
 });
 
 /**
  * The `<행 종류>` word of the `대화 인계 · <행 종류> · <결과 줄>` timeline line.
  *
- * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff', string>>}
+ * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue', string>>}
  */
 const FAILURE_HANDOFF_ROWS = Object.freeze({
   cleanup: '실패 — 머지 후 정리',
@@ -1442,8 +1463,36 @@ const FAILURE_HANDOFF_ROWS = Object.freeze({
   verify_hold: '실패 — 머지 전 검증 보류',
   merge_gate: '실패 — 머지 게이트',
   repo_operation: '실패 — 수동 배포',
-  foreign_handoff: '실패 — 외부 PR 사람 처리 필요'
+  foreign_handoff: '실패 — 외부 PR 사람 처리 필요',
+  stale_residue: '실패 — 잔재 처분'
 });
+
+/**
+ * The residue disposition failure reasons that only the environment caused
+ * (UI-68r5 §3.1): they climb the env retry ladder before anyone is asked.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const STALE_TRANSIENT_REASONS = new Set([
+  'remote_ref_observe_failed',
+  'worktree_identity_changed',
+  'worktree_add_failed',
+  'observe_failed',
+  'observer_unavailable',
+  'backup_failed'
+]);
+
+/**
+ * Which way one residue disposition failure goes (UI-68r5 §3.1): `transient`
+ * climbs the env retry ladder, `judgment` ends terminal and opens the failure
+ * conversation. A reason outside the table needs a person.
+ *
+ * @param {string} reason - The disposition reason (`cause_detail.summary`).
+ * @returns {'transient'|'judgment'}
+ */
+export function staleFailureTier(reason) {
+  return STALE_TRANSIENT_REASONS.has(reason) ? 'transient' : 'judgment';
+}
 
 /**
  * The exec lane of a dispatch-time Bead snapshot (UI-lbm5 §4.1). The live
@@ -1533,6 +1582,7 @@ export function interactiveTurnState(running, attention) {
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   unfenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   finalizeDiscardAttempt: (workspace: string, attempt_id: string, bead_id?: string|null, source_status?: string|null) => Promise<{ ok: boolean, reason?: string }>,
+ *   sessionOwnerRefusal: (workspace: string, bead_id: string) => Promise<'session_owned'|'session_owner_unobservable'|null>,
  *   recoverControls: (workspace: string) => Promise<void>,
  *   onIssuesChanged: (workspace: string) => Promise<void>,
  *   rescanWaiting: (workspace: string) => Promise<{ checked: number, returned: number }>,
@@ -3891,8 +3941,17 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {string} repo
    * @param {StaleWorkIdentity} identity
+   * @param {{ remote_head_sha?: string }} [observed] - Receives the remote
+   * branch head this check read, for a failure conversation's diagnosis
+   * (UI-68r5 §3.2); the verdict does not depend on it.
    */
-  async function staleWorkOwnerReason(workspace, bead_id, repo, identity) {
+  async function staleWorkOwnerReason(
+    workspace,
+    bead_id,
+    repo,
+    identity,
+    observed = {}
+  ) {
     if (deps.externalPrs?.get(workspace, bead_id)) {
       return 'external_pr_owner';
     }
@@ -3922,6 +3981,12 @@ export function createScheduler(deps) {
       .filter((line) => line.length > 0);
     const [remote_sha, ref_name, ...rest] =
       lines.length === 1 ? lines[0].split(/\s+/) : [];
+    if (
+      typeof remote_sha === 'string' &&
+      /^[0-9a-f]{40,64}$/i.test(remote_sha)
+    ) {
+      observed.remote_head_sha = remote_sha;
+    }
     const local_sha = identity.branch_head_sha;
     if (
       rest.length > 0 ||
@@ -11279,12 +11344,20 @@ export function createScheduler(deps) {
    * this one to finish. Until the exit returns the record stays and later
    * passes skip it; `end` then removes it.
    *
+   * A residue disposition failure's exit (`stale_residue`, UI-68r5 §3.3) is
+   * the same `resume` the row's `↻ 이어하기` runs, once: the dispatch goes
+   * through the same residue disposition check, and the person's answer
+   * replaces none of it. A rerun that fails again records a new identity;
+   * once the record is removed, that new failure's conversation opens once.
+   * No exit runs while a newer session owns the Bead (§3.4).
+   *
    * @param {string} workspace
    * @param {string} key
    * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
    * @param {() => void} end - Removes the record once a started exit returned.
-   * @returns {Promise<{ done: boolean }>} `done: false` keeps the record for
-   * the next pass or the running exit.
+   * @returns {Promise<{ done: boolean, after_end?: () => void }>} `done:
+   * false` keeps the record for the next pass or the running exit;
+   * `after_end` runs once the caller removed the record.
    */
   async function executeFailureHandoff(workspace, key, record, end) {
     const conversation = record.conversation;
@@ -11300,7 +11373,12 @@ export function createScheduler(deps) {
     const unchanged = target !== null && identityNow() === target.identity;
     if (handoff.started_at !== null) {
       if (!unchanged) {
-        return { done: true };
+        // A restarted pass settles a rerun that already failed again: the
+        // new failure's conversation met this reservation and is still due.
+        return {
+          done: true,
+          after_end: () => relaunchStaleResidue(workspace, bead_id, target)
+        };
       }
       refuseConversationHandoff(workspace, record, '결과 미상');
       return { done: true };
@@ -11321,6 +11399,16 @@ export function createScheduler(deps) {
         summary: `대화 인계 · ${FAILURE_HANDOFF_ROWS[target.kind]} · ${handoff.line} · 실행 없음`
       });
       return { done: true };
+    }
+    // A newer session owns the Bead (UI-68r5 §3.4): no Worker exit runs, and
+    // the row goes back to the person with the reason.
+    const owner_refusal = await sessionOwnerRefusal(workspace, bead_id);
+    if (owner_refusal !== null) {
+      refuseConversationHandoff(workspace, record, owner_refusal);
+      return { done: true };
+    }
+    if (target.kind === 'stale_residue') {
+      return startStaleResidueHandoff(workspace, key, record, end);
     }
     const exits = deps.conversationExits;
     if (!exits) {
@@ -11410,6 +11498,132 @@ export function createScheduler(deps) {
       log('conversation handoff settlement failed for %s: %o', bead_id, err);
     });
     return { done: false };
+  }
+
+  /**
+   * The attempt id a `stale_residue:<attempt_id>` handoff identity names.
+   *
+   * @param {string} identity
+   * @returns {string}
+   */
+  function staleResidueAttemptIdOf(identity) {
+    return identity.slice('stale_residue:'.length);
+  }
+
+  /**
+   * Start a residue disposition failure's `인계` exit (UI-68r5 §3.3): the
+   * same `resume` path the row's `↻ 이어하기` takes on that attempt, under
+   * the existing one-shot rule — `started_at` lands durably first, and the
+   * exit runs outside the pass. A refusal before any rerun returns the row
+   * with its reason; a rerun that fails again opens the NEW failure's
+   * conversation once the record is gone, because that failure's own launch
+   * met this handoff's reservation.
+   *
+   * @param {string} workspace
+   * @param {string} key
+   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+   * @param {() => void} end
+   * @returns {{ done: boolean }}
+   */
+  function startStaleResidueHandoff(workspace, key, record, end) {
+    const conversation = record.conversation;
+    const handoff =
+      /** @type {import('./queue-store.js').ConversationHandoff} */ (
+        conversation.handoff
+      );
+    const target =
+      /** @type {import('./queue-store.js').ConversationHandoffTarget} */ (
+        handoff.target
+      );
+    const bead_id = record.bead_id;
+    if (
+      !patchInteractiveRecord(workspace, key, record, {
+        conversation: {
+          ...conversation,
+          handoff: { ...handoff, started_at: now() }
+        }
+      })
+    ) {
+      return { done: false };
+    }
+    appendTimeline({
+      bead_id,
+      kind: 'interactive_session',
+      seq: `${record.kind}:${record.launched_at}:handoff`,
+      summary: `대화 인계 · ${FAILURE_HANDOFF_ROWS.stale_residue} · ${handoff.line}`
+    });
+    const flight = JSON.stringify([workspace, key]);
+    failure_exits.set(flight, record.launched_at);
+    const run = async () => {
+      /** @type {{ ok: boolean, reason?: string|null }} */
+      let result;
+      try {
+        result = await resume(
+          workspace,
+          staleResidueAttemptIdOf(target.identity),
+          {}
+        );
+      } catch (err) {
+        log('conversation handoff exit failed for %s: %o', bead_id, err);
+        result = { ok: false, reason: 'error' };
+      }
+      try {
+        const identity =
+          failureHandoffTarget(deps.store.snapshot(workspace), bead_id)
+            ?.identity ?? null;
+        if (!result.ok && identity === target.identity) {
+          refuseConversationHandoff(
+            workspace,
+            record,
+            result.reason || 'exit_refused'
+          );
+        } else {
+          notifyLifecycle('conversationResumed', {
+            bead_id,
+            decision: handoff.line,
+            action: FAILURE_HANDOFF_ACTIONS.stale_residue,
+            repo: workspace
+          });
+        }
+        end();
+        relaunchStaleResidue(workspace, bead_id, target);
+      } finally {
+        failure_exits.delete(flight);
+      }
+    };
+    run().catch((err) => {
+      log('conversation handoff settlement failed for %s: %o', bead_id, err);
+    });
+    return { done: false };
+  }
+
+  /**
+   * After a `stale_residue` handoff's record is removed, open the conversation
+   * of the residue failure its rerun ended in — once, and only when that is a
+   * NEW `stale_residue` identity (UI-68r5 §3.2). The failure's own launch at
+   * its terminal write met the handoff reservation (`handoff_pending`), so
+   * this is that identity's first launch; the settlement runs once, so it
+   * never opens twice.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').ConversationHandoffTarget|null} prior
+   */
+  function relaunchStaleResidue(workspace, bead_id, prior) {
+    if (prior?.kind !== 'stale_residue') {
+      return;
+    }
+    const next = failureHandoffTarget(deps.store.snapshot(workspace), bead_id);
+    if (next?.kind !== 'stale_residue' || next.identity === prior.identity) {
+      return;
+    }
+    const repo = repoOfAttempt(
+      workspace,
+      staleResidueAttemptIdOf(next.identity)
+    );
+    launchStaleResidueConversation(workspace, bead_id, repo).catch((err) => {
+      log('stale residue relaunch failed for %s: %o', bead_id, err);
+    });
   }
 
   /**
@@ -11658,6 +11872,7 @@ export function createScheduler(deps) {
       const conversation = record.conversation;
       if (record.kind === 'resolve' || record.kind === 'external_resume') {
         if (conversation.handoff) {
+          /** @type {{ done: boolean, after_end?: () => void }} */
           const outcome =
             record.kind === 'resolve'
               ? await executeFailureHandoff(workspace, key, record, () =>
@@ -11668,6 +11883,7 @@ export function createScheduler(deps) {
             return;
           }
           ended(key, record, 'handoff');
+          outcome.after_end?.();
           return;
         }
         if (
@@ -12880,7 +13096,8 @@ export function createScheduler(deps) {
             bead_id,
             snap,
             describeStaleResidue(actionable, bead_id, null),
-            cause
+            cause,
+            retry_context ? { retry: retry_context } : {}
           );
         }
         return disposeStaleResidue(
@@ -13174,6 +13391,9 @@ export function createScheduler(deps) {
           ...(stale_context
             ? { head_oid: stale_context.identity.head_sha }
             : {}),
+          // The dispatch snapshot's `session_ref`, the baseline a later
+          // session claim is told apart by (UI-68r5 §3.4).
+          bead_session_ref: beadSessionRefOf(final_snap),
           workflow_mode_prior: prior,
           workflow_mode_source_prior: prior_source,
           receipt_baseline,
@@ -13418,17 +13638,53 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Persist and announce an individual failure without changing the residue.
+   * Persist an individual failure without changing the residue, then route
+   * it by its reason (UI-68r5 §3.1): an environment reason climbs the env
+   * retry ladder as a `retry_wait` rung; a judgment reason — or a spent
+   * ladder — ends terminal `failed` and is announced once through
+   * {@link announceStaleResidueFailure}. The `cause` stays
+   * `stale_work_unresolved` either way, so `↻ 이어하기` and the failure
+   * conversation's `인계` keep finding the disposition path.
    *
    * @param {string} workspace
    * @param {string} bead_id
    * @param {any} snap
    * @param {StaleResidue} residue
    * @param {string} reason
+   * @param {{ retry?: any, remote_head_sha?: string, external_wait?: StaleResidueReplay }} [context] - The env
+   * ladder rung this dispatch continues, the remote branch head the owner
+   * check read, and the external-wait resume the failure happened inside —
+   * kept on the record so every rerun (ladder rung, `↻ 이어하기`, `인계`)
+   * replays that resume rather than an ordinary dispatch.
    */
-  function failStaleResidue(workspace, bead_id, snap, residue, reason) {
+  function failStaleResidue(
+    workspace,
+    bead_id,
+    snap,
+    residue,
+    reason,
+    context = {}
+  ) {
     const attempt_id = makeAttemptId(bead_id);
     const lane = serialHeadOf(deps.store.snapshot(workspace), bead_id);
+    const at = now();
+    const retry_context = context.retry || null;
+    const cause_detail = {
+      summary: reason,
+      residue,
+      external_pr: Boolean(deps.externalPrs?.get(workspace, bead_id)),
+      ...(typeof context.remote_head_sha === 'string'
+        ? { remote_head_sha: context.remote_head_sha }
+        : {}),
+      ...(context.external_wait
+        ? {
+            external_wait: {
+              wait_id: context.external_wait.wait_id,
+              mode: context.external_wait.mode
+            }
+          }
+        : {})
+    };
     const recorded = prerecordAttempt(workspace, {
       attempt_id,
       bead_id,
@@ -13437,30 +13693,69 @@ export function createScheduler(deps) {
       base_oid: residue.identity.base_oid,
       head_oid: residue.identity.head_sha,
       serial_lane_id: lane.ok ? lane.lane_id : null,
+      bead_session_ref: beadSessionRefOf(snap),
+      ...(retry_context
+        ? {
+            retry: {
+              cause: retry_context.cause,
+              attempts: retry_context.attempts,
+              max: retry_context.max ?? RETRY_MAX,
+              next_at: null,
+              origin_attempt_id: retry_context.origin_attempt_id ?? null
+            }
+          }
+        : {}),
       status: 'failed',
       cause: 'stale_work_unresolved',
-      cause_detail: { summary: reason, residue },
-      finished_at: now()
+      cause_detail,
+      finished_at: at
     });
+    let rung_scheduled = false;
     if (recorded) {
       deps.store.clearAdmission(workspace, bead_id);
-      notifyLifecycle('attemptFailed', {
-        bead_id,
-        cause: 'stale_work_unresolved',
-        repo: snap.repo,
-        cause_detail: { summary: reason, residue }
-      });
-      appendTimeline({
-        bead_id,
-        attempt_id,
-        kind: 'attempt_failed',
-        seq: 'stale_work_unresolved',
-        summary: `stale_work_unresolved · ${reason}`,
-        at: now()
-      });
+      if (retry_context) {
+        // One live rung per bead, exactly as a launched rung keeps it.
+        deps.store.supersedeRetryAttempts(workspace, {
+          bead_id,
+          except_attempt_id: attempt_id
+        });
+      }
+      const rung =
+        staleFailureTier(reason) === 'transient'
+          ? scheduleStaleRetry(workspace, bead_id, attempt_id, at)
+          : null;
+      if (rung === null) {
+        closeRetryLineage(workspace, bead_id);
+      }
+      if (rung?.scheduled) {
+        appendTimeline({
+          bead_id,
+          attempt_id,
+          kind: 'attempt_retry',
+          seq: rung.attempts,
+          summary: retrySummary(rung.attempts, rung.next_at),
+          at
+        });
+      } else {
+        appendTimeline({
+          bead_id,
+          attempt_id,
+          kind: 'attempt_failed',
+          seq: 'stale_work_unresolved',
+          summary: `stale_work_unresolved · ${reason}`,
+          at
+        });
+        announceTerminalStaleFailure(workspace, bead_id, snap.repo, reason);
+      }
+      rung_scheduled = rung?.scheduled === true;
     }
     claimed.delete(bead_id);
-    dispatch_refused.add(bead_id);
+    // A scheduled rung is fenced by its own `retry_wait`, and the ladder
+    // timer must find the bead free: `runDueRetries` defers any bead this
+    // tick-scoped fence still holds.
+    if (!rung_scheduled) {
+      dispatch_refused.add(bead_id);
+    }
     notifyChanged(workspace);
     requestRescan();
     return {
@@ -13468,6 +13763,283 @@ export function createScheduler(deps) {
       reason: recorded ? 'stale_work_unresolved' : 'attempt_prerecord_failed',
       attempt_id
     };
+  }
+
+  /**
+   * Put one transient residue disposition failure on the bead's env retry
+   * ladder (UI-68r5 §3.1) — the same lineage, delays and `RETRY_MAX` an env
+   * session failure climbs. A scheduled rung leaves the attempt `retry_wait`,
+   * so the candidate fence skips the bead and the ladder timer owns its next
+   * dispatch; a spent ladder leaves it terminal `failed` with
+   * `retry.exhausted`.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} attempt_id - The just-recorded failure.
+   * @param {number} at
+   * @returns {{ scheduled: boolean, attempts: number, next_at: number|null }}
+   */
+  function scheduleStaleRetry(workspace, bead_id, attempt_id, at) {
+    const origin_attempt_id = retryOriginOf(workspace, attempt_id);
+    const applied = deps.store.applyRetryEvent(workspace, {
+      event: {
+        kind: 'retry_scheduled',
+        bead_id,
+        attempt_id,
+        cause: 'stale_work_unresolved',
+        at,
+        origin_attempt_id
+      },
+      now: at
+    });
+    const lineage = applied.lineages.find(
+      (/** @type {import('./queue-hold.js').RetryLineage} */ entry) =>
+        entry.bead_id === bead_id
+    );
+    const scheduled = applied.effects.find(
+      (/** @type {any} */ effect) => effect.kind === 'retry_scheduled'
+    );
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: scheduled ? 'retry_wait' : 'failed',
+        retry: {
+          cause: 'stale_work_unresolved',
+          attempts: lineage?.attempts ?? 0,
+          max: RETRY_MAX,
+          next_at: lineage?.next_at ?? null,
+          origin_attempt_id: lineage?.origin_attempt_id ?? origin_attempt_id,
+          ...(lineage?.base_moved_count
+            ? { base_moved_count: lineage.base_moved_count }
+            : {}),
+          ...(!scheduled ? { exhausted: true } : {})
+        }
+      }
+    });
+    armRetryTimer(workspace);
+    return {
+      scheduled: Boolean(scheduled),
+      attempts: scheduled?.attempts ?? lineage?.attempts ?? 0,
+      next_at: scheduled?.next_at ?? null
+    };
+  }
+
+  /**
+   * Announce the residue disposition failure that just became terminal —
+   * written so, or a ladder rung whose redispatch was refused for good
+   * (UI-68r5 §3.2). Whether a 인계 reservation stands on the row is judged
+   * here, at the write, not after the launcher's awaits: a failure a 인계
+   * rerun just wrote meets that handoff's reservation, and the settlement
+   * opens its conversation once the record is gone.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null|undefined} repo
+   * @param {string} reason - The disposition reason, the cause code.
+   */
+  function announceTerminalStaleFailure(workspace, bead_id, repo, reason) {
+    const handoff_pending = Object.values(
+      deps.store.snapshot(workspace).interactive_sessions || {}
+    ).some(
+      (record) => record?.bead_id === bead_id && holdsHandoffReservation(record)
+    );
+    announceStaleResidueFailure(
+      workspace,
+      bead_id,
+      repo,
+      reason,
+      handoff_pending
+    );
+  }
+
+  /**
+   * The external-wait resume a residue disposition failure happened inside,
+   * or null for one an ordinary dispatch met (UI-68r5 §3.1).
+   *
+   * @param {any} attempt
+   * @returns {StaleResidueReplay|null}
+   */
+  function staleResidueReplayOf(attempt) {
+    const replay = attempt?.cause_detail?.external_wait;
+    return replay &&
+      typeof replay.wait_id === 'string' &&
+      replay.wait_id.length > 0 &&
+      (replay.mode === 'fork' || replay.mode === 'fresh')
+      ? { wait_id: replay.wait_id, mode: replay.mode }
+      : null;
+  }
+
+  /**
+   * Announce one terminal residue disposition failure (UI-68r5 §3.2): open
+   * its failure conversation once through the shared launcher's gates, then
+   * send the one `확인 필요` push carrying that launch outcome. No
+   * `attemptFailed` push goes with it. Fire-and-forget: the terminal record
+   * is already written, and the launcher and notifier never throw.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null|undefined} repo
+   * @param {string} reason - The disposition reason, the cause code.
+   * @param {boolean} handoff_pending - A 인계 reservation stood on the row at
+   * the write: the launcher's own `handoff_pending` answer, given without a
+   * launch.
+   */
+  function announceStaleResidueFailure(
+    workspace,
+    bead_id,
+    repo,
+    reason,
+    handoff_pending
+  ) {
+    const run = async () => {
+      const conversation = handoff_pending
+        ? {
+            session: 'not_launched',
+            reason: 'handoff_pending',
+            tmux_session: null,
+            tmux_window: null
+          }
+        : await launchStaleResidueConversation(workspace, bead_id, repo);
+      if (!deps.notify || typeof deps.notify.needsHuman !== 'function') {
+        return;
+      }
+      await deps.notify.needsHuman({
+        bead_id,
+        failure_class: STALE_RESIDUE_FAILURE_CLASS,
+        reason,
+        next_action: '[세션에서 이어가기]·[↻ 이어하기]·[폐기]',
+        conversation,
+        repo: repo ?? workspace
+      });
+    };
+    run().catch((err) => {
+      log('stale residue failure announce failed for %s: %o', bead_id, err);
+    });
+  }
+
+  /**
+   * Open a residue disposition failure's conversation through the shared
+   * automatic launcher (`launchForBead`: shared switch, one live
+   * conversation per row, handoff reservation), unless a newer session owns
+   * the Bead (UI-68r5 §3.4). Never throws.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null|undefined} repo
+   * @returns {Promise<any>} The launch outcome, or null without a launcher.
+   */
+  async function launchStaleResidueConversation(workspace, bead_id, repo) {
+    if (!deps.failureConversation) {
+      return null;
+    }
+    const refusal = await sessionOwnerRefusal(workspace, bead_id);
+    if (refusal !== null) {
+      return {
+        session: 'not_launched',
+        reason: refusal,
+        tmux_session: null,
+        tmux_window: null
+      };
+    }
+    try {
+      return await deps.failureConversation.launchForBead({
+        workspace,
+        repo: repo ?? workspace,
+        bead_id
+      });
+    } catch (err) {
+      log('stale residue conversation launch failed for %s: %o', bead_id, err);
+      return {
+        session: 'not_launched',
+        reason: 'error',
+        tmux_session: null,
+        tmux_window: null
+      };
+    }
+  }
+
+  /**
+   * The Bead's raw `session_ref` at a dispatch snapshot, recorded on the new
+   * attempt (UI-68r5 §3.4); a Bead carrying none records the empty string, so
+   * a later session claim still reads as new.
+   *
+   * @param {any} snap
+   * @returns {string}
+   */
+  function beadSessionRefOf(snap) {
+    return typeof snap?.session_ref === 'string' ? snap.session_ref : '';
+  }
+
+  /**
+   * Whether a Worker operation on this Bead must be refused because a newer
+   * session owns it (UI-68r5 §3.4·§3.5): `session_owned`, or
+   * `session_owner_unobservable` when the material could not be read and the
+   * readable part proves nothing (fail-closed), else null. Only a Bead whose
+   * latest implementation attempt is a failed seat or a waiting ladder rung
+   * is judged at all, so every other Bead pays no read.
+   *
+   * The material is read live: the external wait records, and the Bead's
+   * status and `session_ref` from bd — the latter only when the attempt
+   * recorded a dispatch-time `session_ref` it could be compared against. A
+   * scheduler built without the external-wait store has no waits to read.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {Promise<'session_owned'|'session_owner_unobservable'|null>}
+   */
+  async function sessionOwnerRefusal(workspace, bead_id) {
+    /** @type {any} */
+    let q;
+    try {
+      q = deps.store.snapshot(workspace);
+    } catch (err) {
+      log('session owner read failed for %s: %o', bead_id, err);
+      return 'session_owner_unobservable';
+    }
+    const attempts = q.attempts || {};
+    const attempt = sessionGuardedAttempt(attempts, bead_id);
+    if (!attempt) {
+      return null;
+    }
+    let unreadable = false;
+    /** @type {any[]} */
+    let waits = [];
+    if (deps.externalWait && typeof deps.externalWait.list === 'function') {
+      try {
+        waits = deps.externalWait
+          .list(workspace)
+          .filter((/** @type {any} */ record) => record?.bead_id === bead_id);
+      } catch (err) {
+        log('session owner wait read failed for %s: %o', bead_id, err);
+        unreadable = true;
+      }
+    }
+    /** @type {any[]} */
+    const session_rows = [];
+    if (typeof attempt.bead_session_ref === 'string') {
+      try {
+        const snap = await deps.bd.snapshotBead(bead_id);
+        const entries = parseSessionRef(snap?.session_ref);
+        session_rows.push({
+          bead_id,
+          status: typeof snap?.status === 'string' ? snap.status : null,
+          session_refs: entries.map((entry, index) => ({
+            ...entry,
+            current: index === entries.length - 1
+          }))
+        });
+      } catch (err) {
+        log('session owner bd read failed for %s: %o', bead_id, err);
+        unreadable = true;
+      }
+    }
+    const material = sessionOwnershipMaterial({
+      attempts,
+      external_waits: waits,
+      session_rows,
+      interactive_sessions: q.interactive_sessions
+    })[bead_id];
+    return judgeSessionOwnerRefusal(attempts, bead_id, material, unreadable);
   }
 
   /**
@@ -13482,7 +14054,10 @@ export function createScheduler(deps) {
    * @param {string} cut_base
    * @param {boolean} [rechecked]
    * @param {(residue: StaleResidue|null) => Promise<void>} [continue_dispatch] - Preserve an external-wait reservation and completion prompt.
-   * @param {{ retry?: any, retry_source?: any }} [retry_options]
+   * @param {{ retry?: any, retry_source?: any, external_wait?: StaleResidueReplay }} [retry_options] - The
+   * ladder rung, and in `external_wait` the external-wait resume
+   * `continue_dispatch` belongs to, recorded on a failure so its rerun
+   * replays that resume.
    */
   async function disposeStaleResidue(
     workspace,
@@ -13498,12 +14073,32 @@ export function createScheduler(deps) {
     const snap = await deps.bd.snapshotBead(bead_id);
     let residue = describeStaleResidue(observation, bead_id, resume_attempt);
     let failure = residue.cause;
+    /** @type {{ remote_head_sha?: string }} */
+    const owner_observed = {};
+    /**
+     * Record this disposition's failure, with the ladder rung it continues
+     * and the external-wait resume it must replay (UI-68r5 §3.1).
+     *
+     * @param {StaleResidue} failed_residue
+     * @param {string} reason
+     */
+    const fail = (failed_residue, reason) =>
+      failStaleResidue(workspace, bead_id, snap, failed_residue, reason, {
+        ...(retry_options.retry ? { retry: retry_options.retry } : {}),
+        ...(owner_observed.remote_head_sha
+          ? { remote_head_sha: owner_observed.remote_head_sha }
+          : {}),
+        ...(retry_options.external_wait
+          ? { external_wait: retry_options.external_wait }
+          : {})
+      });
     for (let pass = Number(rechecked); pass < 2; pass++) {
       const owner_reason = await staleWorkOwnerReason(
         workspace,
         bead_id,
         snap.repo,
-        residue.identity
+        residue.identity,
+        owner_observed
       );
       if (owner_reason) {
         failure = owner_reason;
@@ -13521,7 +14116,7 @@ export function createScheduler(deps) {
           !isPrerequisiteWaitAttempt(resume_attempt) ||
           !PREREQUISITE_RESUME_REFUSALS.has(reason)
         ) {
-          return failStaleResidue(workspace, bead_id, snap, residue, reason);
+          return fail(residue, reason);
         }
         // §4.4: an eligibility refusal of a prerequisite-wait candidate is not
         // a failure — the same pass continues down the ladder without the
@@ -13538,13 +14133,7 @@ export function createScheduler(deps) {
           try {
             await continue_dispatch(residue);
           } catch {
-            return failStaleResidue(
-              workspace,
-              bead_id,
-              snap,
-              residue,
-              'worktree_identity_changed'
-            );
+            return fail(residue, 'worktree_identity_changed');
           }
           claimed.delete(bead_id);
           recordStaleDisposition(bead_id, residue, 'continue');
@@ -13577,13 +14166,7 @@ export function createScheduler(deps) {
             try {
               await continue_dispatch(null);
             } catch {
-              return failStaleResidue(
-                workspace,
-                bead_id,
-                snap,
-                residue,
-                'worktree_add_failed'
-              );
+              return fail(residue, 'worktree_add_failed');
             }
             claimed.delete(bead_id);
           } else {
@@ -13596,7 +14179,7 @@ export function createScheduler(deps) {
           !failure.includes('identity_changed') &&
           failure !== 'local_ref_changed'
         ) {
-          return failStaleResidue(workspace, bead_id, snap, residue, failure);
+          return fail(residue, failure);
         }
       }
       if (
@@ -13629,13 +14212,7 @@ export function createScheduler(deps) {
           try {
             await continue_dispatch(null);
           } catch {
-            return failStaleResidue(
-              workspace,
-              bead_id,
-              snap,
-              residue,
-              'worktree_add_failed'
-            );
+            return fail(residue, 'worktree_add_failed');
           }
           claimed.delete(bead_id);
         } else {
@@ -13653,7 +14230,7 @@ export function createScheduler(deps) {
       residue = describeStaleResidue(observation, bead_id, resume_attempt);
       failure = residue.cause;
     }
-    return failStaleResidue(workspace, bead_id, snap, residue, failure);
+    return fail(residue, failure);
   }
 
   /**
@@ -15160,15 +15737,19 @@ export function createScheduler(deps) {
    * conversation's own session, puts the conversation's `## 대화 결과` block
    * at the head of its prompt and carries the conversation's identity.
    *
+   * `retry` and `preclaimed` belong to the rerun of a residue disposition
+   * failure this resume met (UI-68r5 §3.1): the ladder rung it continues, and
+   * the bead claim the rerun's caller already holds.
+   *
    * @param {string} workspace
    * @param {string} wait_id
-   * @param {{ mode: 'fork'|'fresh'|'session', conversation?: ExternalConversationDispatch }} options
+   * @param {{ mode: 'fork'|'fresh'|'session', conversation?: ExternalConversationDispatch, retry?: any, preclaimed?: boolean }} options
    * @returns {Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>}
    */
   async function resumeExternalWait(
     workspace,
     wait_id,
-    { mode, conversation }
+    { mode, conversation, retry, preclaimed }
   ) {
     const store = deps.externalWait;
     const key = JSON.stringify([workspace, wait_id]);
@@ -15217,7 +15798,7 @@ export function createScheduler(deps) {
       }
       const bead_id = record.bead_id;
       if (
-        claimed.has(bead_id) ||
+        (claimed.has(bead_id) && preclaimed !== true) ||
         retiring.has(bead_id) ||
         Object.values(q.attempts).some(
           (/** @type {any} */ attempt) =>
@@ -15340,7 +15921,8 @@ export function createScheduler(deps) {
           mode,
           completion_prompt,
           reserveResume,
-          mode === 'fork' ? (conversation ?? null) : null
+          mode === 'fork' ? (conversation ?? null) : null,
+          retry ?? null
         );
       }
       if (!result.ok) {
@@ -15389,6 +15971,8 @@ export function createScheduler(deps) {
    * item, which a session added during the conversation would be — its result
    * line heads the prompt as the `## 대화 결과` block, the launch is announced
    * as `↪ Worker가 이어감`, and the attempt carries its identity.
+   * @param {any} [retry] - The env ladder rung this launch replays after a
+   * transient residue disposition failure (UI-68r5 §3.1).
    */
   async function launchExternalWaitSession(
     workspace,
@@ -15398,7 +15982,8 @@ export function createScheduler(deps) {
     mode,
     completion_prompt,
     reserveResume,
-    conversation = null
+    conversation = null,
+    retry = null
   ) {
     const qualified =
       mode !== 'fork'
@@ -15524,6 +16109,9 @@ export function createScheduler(deps) {
             residue = unknownStaleWorkObservation(null, base, 'observe_failed');
           }
           if (!residue.ok) {
+            // A residue failure here records this resume (UI-68r5 §3.1), so
+            // its ladder rung, `↻ 이어하기` and `인계` replay it — an ordinary
+            // dispatch would only meet the bead's `external_wait` key.
             const disposed = await disposeStaleResidue(
               workspace,
               bead_id,
@@ -15531,7 +16119,11 @@ export function createScheduler(deps) {
               null,
               base,
               false,
-              prepareFreshWorktree
+              prepareFreshWorktree,
+              {
+                ...(retry ? { retry } : {}),
+                external_wait: { wait_id: record.wait_id, mode }
+              }
             );
             if (!disposed.ok) {
               return disposed;
@@ -15586,6 +16178,7 @@ export function createScheduler(deps) {
           codex_account: resolved.accounts.codex,
           account_sources: resolved.account_sources,
           ...(preempt ? { account_switched_from: preempt.from } : {}),
+          bead_session_ref: beadSessionRefOf(snap),
           workflow_mode_prior: prior_wf,
           workflow_mode_source_prior: snap.workflow_mode_source ?? null,
           exec_values: execValuesFor(resolved.exec),
@@ -15731,10 +16324,23 @@ export function createScheduler(deps) {
    * Provider receipts can continue that handoff through its unchanged park.
    * `job_retry_authorized` marks the person's `worker-attempt-resume` click
    * (UI-1eag §3.1): only that attachment boundary sets it, and it is read only
-   * by a quick_fix settlement resume, never by a session resume.
+   * by a quick_fix settlement resume, never by a session resume. The same
+   * click is refused first when a newer session owns the Bead (UI-68r5 §3.4).
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
+    if (continuation.job_retry_authorized === true) {
+      // `↻ 이어하기` — the person's click — changes nothing on a failure a
+      // newer session took over (UI-68r5 §3.4·§3.5).
+      const clicked = deps.store.snapshot(workspace).attempts?.[attempt_id];
+      const owner_refusal =
+        typeof clicked?.bead_id === 'string'
+          ? await sessionOwnerRefusal(workspace, clicked.bead_id)
+          : null;
+      if (owner_refusal !== null) {
+        return { ok: false, reason: owner_refusal };
+      }
+    }
     const q = deps.store.snapshot(workspace);
     const prior = q.attempts ? q.attempts[attempt_id] : null;
 
@@ -15839,9 +16445,34 @@ export function createScheduler(deps) {
       }
     }
     if (stale_residue_retry) {
+      // A failure met inside an external-wait resume replays that resume —
+      // the same wait, mode and disposition check (UI-68r5 §3.1). An ordinary
+      // dispatch could never run that bead: its `external_wait` key refuses
+      // admission.
+      const replay = staleResidueReplayOf(prior);
       claimed.add(bead_id);
       try {
-        await dispatch(workspace, bead_id);
+        /** @type {string|null} */
+        let replay_refusal = null;
+        if (replay) {
+          const replayed = /** @type {{ ok: boolean, reason?: string }} */ (
+            await resumeExternalWait(workspace, replay.wait_id, {
+              mode: replay.mode,
+              preclaimed: true,
+              ...(continuation.retry ? { retry: continuation.retry } : {})
+            })
+          );
+          // `provider_held` is this path's name for what an ordinary rung
+          // reports as `provider_gate`: both wait for the hold, never spend
+          // the ladder.
+          replay_refusal = replayed.ok
+            ? null
+            : replayed.reason === 'provider_held'
+              ? 'provider_gate'
+              : (replayed.reason ?? null);
+        } else {
+          await dispatch(workspace, bead_id);
+        }
         const current = deps.store.snapshot(workspace);
         const child = Object.values(current.attempts).find(
           (attempt) =>
@@ -15850,8 +16481,23 @@ export function createScheduler(deps) {
         if (child) {
           deps.store.updateAttempt(workspace, {
             attempt_id: child.attempt_id,
-            patch: { resumed_from: attempt_id }
+            patch: {
+              resumed_from: attempt_id,
+              // A replayed launch is the rung itself, so it carries the
+              // ladder exactly as a dispatched rung does.
+              ...(continuation.retry &&
+              child.status === 'running' &&
+              !child.retry
+                ? { retry: { ...continuation.retry, next_at: null } }
+                : {})
+            }
           });
+          if (continuation.retry) {
+            deps.store.supersedeRetryAttempts(workspace, {
+              bead_id,
+              except_attempt_id: child.attempt_id
+            });
+          }
           notifyChanged(workspace);
         }
         return child?.status === 'running'
@@ -15860,6 +16506,7 @@ export function createScheduler(deps) {
               ok: false,
               reason:
                 child?.cause ||
+                replay_refusal ||
                 current.admission[bead_id]?.reason ||
                 'dispatch_refused'
             };
@@ -17513,6 +18160,7 @@ export function createScheduler(deps) {
         model: launch_model,
         effort: launch_effort,
         speed: launch_speed,
+        bead_session_ref: beadSessionRefOf(snap),
         workflow_mode_prior: prior,
         workflow_mode_source_prior: snap.workflow_mode_source ?? null,
         receipt_baseline,
@@ -18385,6 +19033,7 @@ export function createScheduler(deps) {
       account_sources,
       account_switched_from,
       resume_fallback,
+      bead_session_ref: beadSessionRefOf(bead_snapshot),
       workflow_mode_prior: prior_wf,
       workflow_mode_source_prior: prior_wf_source,
       receipt_baseline,
@@ -19757,12 +20406,18 @@ export function createScheduler(deps) {
         })
       }
     });
-    notifyLifecycle('attemptFailed', {
-      bead_id,
-      cause: latest.cause,
-      repo: latest.repo,
-      cause_detail: { retry_refused: refusal }
-    });
+    // A residue disposition rung that can never start is that failure gone
+    // terminal (UI-68r5 §3.2): it opens its conversation and sends the one
+    // 확인 필요 push, never `attemptFailed`.
+    const stale = latest.cause === 'stale_work_unresolved';
+    if (!stale) {
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: latest.cause,
+        repo: latest.repo,
+        cause_detail: { retry_refused: refusal }
+      });
+    }
     appendTimeline({
       bead_id,
       attempt_id: latest.attempt_id,
@@ -19771,6 +20426,17 @@ export function createScheduler(deps) {
       summary: `자동 재시도 출발 거부 — ${refusal}`,
       at
     });
+    if (stale) {
+      const summary = latest.cause_detail?.summary;
+      announceTerminalStaleFailure(
+        workspace,
+        bead_id,
+        latest.repo ?? null,
+        typeof summary === 'string' && summary.length > 0
+          ? summary
+          : 'stale_work_unresolved'
+      );
+    }
     log('retry lineage failed for %s: %s', bead_id, refusal);
   }
 
@@ -19821,6 +20487,19 @@ export function createScheduler(deps) {
         });
         continue;
       }
+      // A newer session owns the bead (UI-68r5 §3.4): the rung redispatches
+      // nothing and stays unspent, deferred like a live attempt's — a
+      // permanent refusal would rewrite the failure, and the ladder resumes
+      // once the session gives the bead back.
+      const owner_refusal = await sessionOwnerRefusal(workspace, bead_id);
+      if (owner_refusal !== null) {
+        log('retry rung held for %s: %s', bead_id, owner_refusal);
+        deps.store.applyRetryEvent(workspace, {
+          event: { kind: 'retry_deferred', bead_id, at },
+          now: at
+        });
+        continue;
+      }
       // The rung is consumed by the ATTEMPT, not by the intent to dispatch
       // one. `dispatch` returns normally on every ordinary refusal (bead not
       // ready, bd snapshot failure, worktree residue, lane refusal), and
@@ -19828,6 +20507,18 @@ export function createScheduler(deps) {
       // nothing to show for it — the ladder would silently stop climbing.
       const latest_attempt = latestImplementationAttempt(q, bead_id);
       const before_attempt_id = latest_attempt?.attempt_id ?? null;
+      // A residue disposition failure never launched, so its record holds no
+      // runner or model to replay: that rung resolves its settings afresh,
+      // the way a new dispatch does (UI-68r5 §3.1).
+      const retry_source =
+        latest_attempt?.cause === 'stale_work_unresolved'
+          ? undefined
+          : latest_attempt;
+      // A residue failure met inside an external-wait resume climbs by
+      // replaying that resume through `resume()` (UI-68r5 §3.1).
+      const stale_replay =
+        latest_attempt?.cause === 'stale_work_unresolved' &&
+        staleResidueReplayOf(latest_attempt) !== null;
       const retry = {
         cause: lineage.cause,
         attempts: lineage.attempts,
@@ -19884,7 +20575,8 @@ export function createScheduler(deps) {
         if (
           base_moved ||
           (session_retry && local_session) ||
-          keep_prior_attempt
+          keep_prior_attempt ||
+          stale_replay
         ) {
           const resumed = await resume(workspace, before_attempt_id, {
             continuation: keep_prior_attempt ? 'prior_attempt' : 'auto',
@@ -19901,7 +20593,7 @@ export function createScheduler(deps) {
               claimed.add(bead_id);
               refusal = await dispatchForRetry(workspace, bead_id, {
                 retry,
-                retry_source: latest_attempt
+                retry_source
               });
             } else {
               claimed.delete(bead_id);
@@ -19912,7 +20604,7 @@ export function createScheduler(deps) {
         } else {
           refusal = await dispatchForRetry(workspace, bead_id, {
             retry,
-            retry_source: latest_attempt
+            retry_source
           });
         }
       } catch (err) {
@@ -21489,6 +22181,12 @@ export function createScheduler(deps) {
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
   async function retryNow(workspace, bead_id) {
+    // `[지금 재시도]` redispatches the same rung, so a session that took the
+    // bead over refuses it here before the ladder moves (UI-68r5 §3.4).
+    const owner_refusal = await sessionOwnerRefusal(workspace, bead_id);
+    if (owner_refusal !== null) {
+      return { ok: false, reason: owner_refusal };
+    }
     const at = now();
     if (
       !retryStateOf(workspace).lineages.some(
@@ -21997,6 +22695,7 @@ export function createScheduler(deps) {
     fenceDiscardAttempt,
     unfenceDiscardAttempt,
     finalizeDiscardAttempt,
+    sessionOwnerRefusal,
     recoverControls,
     onIssuesChanged,
     rescanWaiting,

@@ -1026,6 +1026,9 @@ describe('external wait resume', () => {
     expect(env.store.snapshot(WS).admission.B1).toBeUndefined();
   });
 
+  // UI-68r5 §3.1: the unreadable remote (`remote_ref_observe_failed`) is an
+  // environment reason, so the failure waits on the env retry ladder — and it
+  // records this resume, which its rung replays.
   test('preserves stale work when fresh user worktree acquisition remains unresolved', async () => {
     const env = fixture({
       seed_prior: false,
@@ -1049,7 +1052,15 @@ describe('external wait resume', () => {
     expect(env.launches).toHaveLength(0);
     expect(env.metadata.external_wait).toBe(WAIT);
     expect(Object.values(env.store.snapshot(WS).attempts).at(-1)).toMatchObject(
-      { status: 'failed', cause: 'stale_work_unresolved', dismissed_at: null }
+      {
+        status: 'retry_wait',
+        cause: 'stale_work_unresolved',
+        dismissed_at: null,
+        cause_detail: {
+          summary: 'remote_ref_observe_failed',
+          external_wait: { wait_id: WAIT, mode: 'fresh' }
+        }
+      }
     );
   });
 

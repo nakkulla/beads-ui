@@ -40,6 +40,8 @@ vi.mock('../worker/attach.js', () => ({
   reviseFixWorkerBead: () => Promise.resolve({ ok: true }),
   startWorkerRepoOperationDeployRun: () => Promise.resolve({ ok: true }),
   workerRepoId: () => null,
+  // No session owns these beads (UI-68r5 §3.4).
+  workerSessionOwnerRefusal: () => Promise.resolve(null),
   stopWorkerReviewSessionProcess: () => Promise.resolve(true),
   tickWorkerQueue: () => Promise.resolve(),
   workerMergeEffectInFlight: () => false,

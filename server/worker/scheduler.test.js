@@ -13,6 +13,7 @@ import {
 } from '../timing-settings.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { selectCodexSwitchCandidate } from './codex-switch-candidate.js';
+import { createDiscardCoordinator } from './discard-coordinator.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import {
@@ -26,6 +27,7 @@ import { RETRY_DELAYS_MS } from './queue-hold.js';
 import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
 import * as operationPolicy from './repo-operation-policy.js';
+import { createFailureConversationLauncher } from './resolve-session.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
@@ -38,6 +40,7 @@ import {
   createScheduler,
   quickFixSelfReviewBlock,
   requestStartNow,
+  staleFailureTier,
   withQuickFixSelfReview
 } from './scheduler.js';
 import { createSessionLog, stderrPathOf } from './session-log.js';
@@ -1770,6 +1773,9 @@ function setup(opts) {
     disposition: opts.disposition,
     directionInquiry: opts.directionInquiry,
     conversationExits: /** @type {any} */ (opts).conversationExits,
+    // Absent by default: a terminal residue disposition failure is then only
+    // announced (UI-68r5 §3.2).
+    failureConversation: /** @type {any} */ (opts).failureConversation,
     backupFreshResidue: /** @type {any} */ (opts).backupFreshResidue,
     // Absent by default: the external registry is a live-wiring dep, and a
     // scheduler built without it must refuse the external dispatch outright.
@@ -18350,7 +18356,7 @@ describe('scheduler worktree residue hygiene', () => {
    */
   function residueEnv(overrides = {}) {
     const append = vi.fn();
-    const notify = { attemptFailed: vi.fn() };
+    const notify = { attemptFailed: vi.fn(), needsHuman: vi.fn() };
     const env = setup({
       config: { S1: {}, S2: {} },
       slots: 1,
@@ -18459,6 +18465,10 @@ describe('scheduler worktree residue hygiene', () => {
     );
   });
 
+  // UI-68r5 §3.1: `observe_failed` is an environment reason, so the failure
+  // this test records now waits on the env retry ladder instead of ending
+  // terminal with an `attemptFailed` push — and, like every env rung, the
+  // waiting row carries the ladder's `retry_wait` fence.
   test('reobserves unknown residue once before recording an individual failure', async () => {
     const env = residueEnv();
     env.worktree.removeIfDiscardable.mockResolvedValue(
@@ -18466,6 +18476,7 @@ describe('scheduler worktree residue hygiene', () => {
     );
 
     await env.scheduler.tick(WS);
+    await flush();
 
     expect(env.worktree.removeIfDiscardable).toHaveBeenCalledTimes(2);
     expect(env.worktree.removeIfDiscardable).toHaveBeenLastCalledWith({
@@ -18473,19 +18484,13 @@ describe('scheduler worktree residue hygiene', () => {
       bead_id: 'S1',
       base: 'b'.repeat(40)
     });
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(env.store.snapshot(WS).admission.S1?.reason).toBe('retry_wait');
     expect(Object.values(env.store.snapshot(WS).attempts)[0]).toMatchObject({
-      status: 'failed',
+      status: 'retry_wait',
       cause: 'stale_work_unresolved'
     });
     expect(env.worktree.remove).not.toHaveBeenCalled();
-    expect(env.notify.attemptFailed).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        bead_id: 'S1',
-        cause: 'stale_work_unresolved',
-        repo: '/repo'
-      })
-    );
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
   });
 
   test('does not notify an unresolved residue failure that could not be recorded', async () => {
@@ -18618,6 +18623,7 @@ describe('scheduler worktree residue hygiene', () => {
     );
 
     await env.scheduler.tick(WS);
+    await flush();
 
     expect(env.worktree.removeIfDiscardable).toHaveBeenCalledTimes(1);
     expect(env.worktree.add).not.toHaveBeenCalled();
@@ -18627,14 +18633,19 @@ describe('scheduler worktree residue hygiene', () => {
       cause: 'stale_work_unresolved',
       cause_detail: { summary: 'archive_failed' }
     });
-    expect(env.notify.attemptFailed).toHaveBeenCalledExactlyOnceWith(
+    // UI-68r5 §3.2: a terminal residue disposition failure is announced by
+    // one 확인 필요 push, never by `attemptFailed`.
+    expect(env.notify.needsHuman).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
-        cause: 'stale_work_unresolved',
-        cause_detail: expect.objectContaining({ summary: 'archive_failed' })
+        failure_class: '잔재 처분 실패',
+        reason: 'archive_failed'
       })
     );
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
   });
 
+  // UI-68r5 §3.1: the `observe_failed` failure waits on the env retry ladder,
+  // so its waiting row carries the ladder's `retry_wait` fence.
   test('records a failure after observation throws twice', async () => {
     const env = residueEnv();
     env.worktree.removeIfDiscardable.mockRejectedValue(new Error('git failed'));
@@ -18645,7 +18656,7 @@ describe('scheduler worktree residue hygiene', () => {
     expect(Object.values(env.store.snapshot(WS).attempts)[0].cause).toBe(
       'stale_work_unresolved'
     );
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(env.store.snapshot(WS).admission.S1?.reason).toBe('retry_wait');
   });
 
   test('keeps another bead runnable after unresolved residue', async () => {
@@ -18814,6 +18825,8 @@ describe('scheduler worktree residue hygiene', () => {
     );
   });
 
+  // UI-68r5 §3.1: the identity change ends on an environment reason, so the
+  // failure waits on the env retry ladder behind its `retry_wait` fence.
   test('refuses adoption when identity changes before launch', async () => {
     const env = residueEnv();
     env.worktree.removeIfDiscardable
@@ -18828,7 +18841,745 @@ describe('scheduler worktree residue hygiene', () => {
     expect(Object.values(env.store.snapshot(WS).attempts)[0].cause).toBe(
       'stale_work_unresolved'
     );
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(env.store.snapshot(WS).admission.S1?.reason).toBe('retry_wait');
+  });
+
+  describe('residue disposition failure conversation (UI-68r5)', () => {
+    /** What the shared automatic launcher answers for an opened window. */
+    const LAUNCHED = {
+      session: 'launched',
+      reason: null,
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-S1'
+    };
+
+    /**
+     * A git runner whose `ls-remote` cannot be read: the transient
+     * `remote_ref_observe_failed` disposition reason.
+     */
+    function unreadableRemoteGitRun() {
+      return vi.fn(
+        async (/** @type {string[]} */ args, /** @type {any} */ run = {}) => {
+          if (args.includes('--abbrev-ref')) {
+            return {
+              code: 0,
+              stdout: `${path.basename(run.cwd || '')}\n`,
+              stderr: ''
+            };
+          }
+          if (args[0] === 'ls-remote') {
+            return { code: 128, stdout: '', stderr: 'unable to access' };
+          }
+          return { code: 1, stdout: '', stderr: '' };
+        }
+      );
+    }
+
+    /**
+     * The residue harness plus a failure conversation launcher, an
+     * interactive launcher whose panes are all gone, and an external wait
+     * store the test fills (or makes unreadable).
+     *
+     * @param {Record<string, any>} [overrides]
+     */
+    function staleEnv(overrides = {}) {
+      /** @type {any[]} */
+      const waits = [];
+      const wait_store = { unreadable: false };
+      const launchForBead = vi.fn(async () => LAUNCHED);
+      const launcher = {
+        listPanesExtended: vi.fn(async () => ({ ok: true, rows: [] })),
+        readPaneOption: vi.fn(async () => ({ ok: true, value: null })),
+        capturePaneTail: vi.fn(async () => ({ ok: true, line: '' })),
+        sendExit: vi.fn(async () => ({ ok: true })),
+        killWindow: vi.fn(async () => ({ ok: true }))
+      };
+      const env = residueEnv({
+        gitRun: remoteBranchGitRun('d'.repeat(40)),
+        failureConversation: { launchForBead },
+        interactiveLauncher: launcher,
+        externalWait: {
+          list: () => {
+            if (wait_store.unreadable) {
+              throw new Error('external wait store unreadable');
+            }
+            return waits;
+          },
+          findByBead: () => null,
+          get: () => null,
+          update: vi.fn()
+        },
+        ...overrides
+      });
+      /** @type {any} */ (env.notify).conversationResumed = vi.fn();
+      return { ...env, waits, wait_store, launchForBead, launcher };
+    }
+
+    /**
+     * A live session-owned external wait on S1, registered long after the
+     * harness clock (`now() === 1000`) wrote any failure.
+     *
+     * @param {string} [stage]
+     */
+    function sessionWait(stage = 'hold') {
+      return {
+        wait_id: 'w-0123456789ab',
+        root_dir: WS,
+        bead_id: 'S1',
+        owner: {
+          kind: 'session',
+          session_ref: 'claude:successor-session@host',
+          session_pid: 4242,
+          session_start: 'Sat Nov  7 01:50:00 2026'
+        },
+        stage,
+        registered_at: '2026-11-07T01:50:00.000Z',
+        jobs: []
+      };
+    }
+
+    /** @param {any} env */
+    const latest = (env) =>
+      /** @type {any} */ (
+        Object.values(env.store.snapshot(WS).attempts).at(-1)
+      );
+
+    /**
+     * @param {any} env
+     * @param {string} attempt_id
+     */
+    const children = (env, attempt_id) =>
+      Object.values(env.store.snapshot(WS).attempts).filter(
+        (/** @type {any} */ attempt) => attempt.resumed_from === attempt_id
+      );
+
+    /**
+     * The failure conversation of S1 with its `인계` reserved against the
+     * residue failure `attempt_id`, its window already gone.
+     *
+     * @param {any} env
+     * @param {string} attempt_id
+     * @param {Record<string, any>} [handoff]
+     */
+    function reserveHandoff(env, attempt_id, handoff = {}) {
+      env.store.recordInteractiveSession(WS, {
+        bead_id: 'S1',
+        kind: 'resolve',
+        provider: 'claude',
+        pane_id: '%9',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'resolve-S1',
+        cwd: '/repo',
+        launched_at: 500,
+        last_seen_alive_at: 500,
+        state: 'live',
+        mode: 'fresh',
+        source: 'fresh',
+        session_id: 'conversation-session',
+        session_id_source: 'launch',
+        conversation: {
+          stop: '실패 잔재 처분 실패 · remote_branch_owner',
+          processed_message_at: 900,
+          result: { kind: 'handoff', line: '인계 · 브랜치를 맞춤', at: 950 },
+          handoff: {
+            line: '인계 · 브랜치를 맞춤',
+            source: 'result_line',
+            message_at: 900,
+            reserved_at: 950,
+            target: {
+              kind: 'stale_residue',
+              identity: `stale_residue:${attempt_id}`
+            },
+            started_at: null,
+            ...handoff
+          }
+        }
+      });
+    }
+
+    /**
+     * A discard coordinator over the harness's store and scheduler, enough
+     * to take a discard request.
+     *
+     * @param {any} env
+     */
+    function discardCoordinatorOf(env) {
+      return createDiscardCoordinator(
+        /** @type {any} */ ({
+          workspace: WS,
+          repo: '/repo',
+          store: env.store,
+          gh: {},
+          bd: {},
+          worktree: env.worktree,
+          gitRun: vi.fn(async () => ({ code: 1, stdout: '', stderr: '' })),
+          scheduler: env.scheduler,
+          archive: {},
+          processController: null,
+          sessionLog: {}
+        })
+      );
+    }
+
+    test.each([
+      ['remote_ref_observe_failed', 'transient'],
+      ['worktree_identity_changed', 'transient'],
+      ['worktree_add_failed', 'transient'],
+      ['observe_failed', 'transient'],
+      ['observer_unavailable', 'transient'],
+      ['backup_failed', 'transient'],
+      ['remote_branch_owner', 'judgment'],
+      ['external_pr_owner', 'judgment'],
+      ['ownership_unknown', 'judgment'],
+      ['backup_unavailable', 'judgment'],
+      ['resume_refused:not_failed', 'judgment'],
+      ['git_error', 'judgment']
+    ])('classifies the %s disposition reason as %s', (reason, tier) => {
+      const classified = staleFailureTier(reason);
+
+      expect(classified).toBe(tier);
+    });
+
+    test('retries a transient stale disposition failure on the env ladder', async () => {
+      const env = staleEnv({ gitRun: unreadableRemoteGitRun() });
+      env.worktree.removeIfDiscardable.mockResolvedValue(
+        uniqueStaleObservation()
+      );
+
+      await env.scheduler.tick(WS);
+      await flush();
+
+      expect(latest(env)).toMatchObject({
+        status: 'retry_wait',
+        cause: 'stale_work_unresolved',
+        cause_detail: { summary: 'remote_ref_observe_failed' },
+        retry: { cause: 'stale_work_unresolved', attempts: 1, max: 3 }
+      });
+      expect(env.store.snapshot(WS).lineages).toEqual([
+        expect.objectContaining({ bead_id: 'S1', attempts: 1 })
+      ]);
+    });
+
+    test('resolves a residue rung afresh instead of from its never-launched record', async () => {
+      const env = staleEnv({ gitRun: unreadableRemoteGitRun() });
+      env.worktree.removeIfDiscardable
+        .mockResolvedValueOnce(uniqueStaleObservation())
+        .mockResolvedValueOnce(uniqueStaleObservation())
+        .mockResolvedValue({ ok: true, removed: false });
+      await env.scheduler.tick(WS);
+      await flush();
+
+      await env.scheduler.retryNow(WS, 'S1');
+
+      expect(latest(env)).toMatchObject({
+        status: 'running',
+        runner: 'claude',
+        model: 'opus'
+      });
+    });
+
+    test('fails terminal and launches one conversation for remote_branch_owner', async () => {
+      const env = staleEnv();
+      seedPushedResidue(env);
+
+      await env.scheduler.tick(WS);
+      await flush();
+
+      expect(latest(env)).toMatchObject({
+        status: 'failed',
+        cause: 'stale_work_unresolved',
+        cause_detail: { summary: 'remote_branch_owner' }
+      });
+      expect(env.launchForBead).toHaveBeenCalledExactlyOnceWith({
+        workspace: WS,
+        repo: '/repo',
+        bead_id: 'S1'
+      });
+    });
+
+    test('launches the conversation once the env ladder exhausts', async () => {
+      const env = staleEnv({ gitRun: unreadableRemoteGitRun() });
+      env.worktree.removeIfDiscardable.mockResolvedValue(
+        uniqueStaleObservation()
+      );
+      await env.scheduler.tick(WS);
+
+      for (let rung = 0; rung < 3; rung++) {
+        await env.scheduler.retryNow(WS, 'S1');
+      }
+      await flush();
+
+      expect(latest(env)).toMatchObject({
+        status: 'failed',
+        retry: expect.objectContaining({ exhausted: true })
+      });
+      expect(env.launchForBead).toHaveBeenCalledOnce();
+    });
+
+    test('skips the conversation launch while a ladder rung waits', async () => {
+      const env = staleEnv({ gitRun: unreadableRemoteGitRun() });
+      env.worktree.removeIfDiscardable.mockResolvedValue(
+        uniqueStaleObservation()
+      );
+
+      await env.scheduler.tick(WS);
+      await flush();
+
+      expect(env.launchForBead).not.toHaveBeenCalled();
+    });
+
+    test('sends one needs-human notification with the conversation line and no attemptFailed', async () => {
+      const env = staleEnv();
+      seedPushedResidue(env);
+
+      await env.scheduler.tick(WS);
+      await flush();
+
+      expect(env.notify.needsHuman).toHaveBeenCalledExactlyOnceWith({
+        bead_id: 'S1',
+        failure_class: '잔재 처분 실패',
+        reason: 'remote_branch_owner',
+        next_action: '[세션에서 이어가기]·[↻ 이어하기]·[폐기]',
+        conversation: LAUNCHED,
+        repo: '/repo'
+      });
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
+
+    test('records the dispatch snapshot session_ref on a new attempt', async () => {
+      const env = setup({
+        config: { S1: { session_ref: 'claude:earlier-session@host' } },
+        slots: 1
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(
+        Object.values(env.store.snapshot(WS).attempts)[0].bead_session_ref
+      ).toBe('claude:earlier-session@host');
+    });
+
+    test('reruns dispatch once through resume on 인계', async () => {
+      const env = staleEnv();
+      seedPushedResidue(env);
+      await env.scheduler.tick(WS);
+      await flush();
+      const failed = latest(env);
+      reserveHandoff(env, failed.attempt_id);
+      env.worktree.removeIfDiscardable.mockResolvedValue({
+        ok: true,
+        removed: false
+      });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(children(env, failed.attempt_id)).toEqual([
+        expect.objectContaining({ status: 'running' })
+      ]);
+    });
+
+    test('ends a restarted 인계 with an unchanged identity as 결과 미상', async () => {
+      const env = staleEnv();
+      seedPushedResidue(env);
+      await env.scheduler.tick(WS);
+      await flush();
+      const failed = latest(env);
+      reserveHandoff(env, failed.attempt_id, { started_at: 960 });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.store.snapshot(WS).conversation_refusals.S1).toMatchObject({
+        reason: '결과 미상',
+        kind: 'resolve'
+      });
+    });
+
+    test('opens the next conversation once when the 인계 rerun fails again', async () => {
+      const resolve = vi.fn(async () => ({
+        launched: true,
+        session: 'launched',
+        reason: null,
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'resolve-S1'
+      }));
+      /** @type {any} */
+      let store_ref = null;
+      const failureConversation = createFailureConversationLauncher({
+        resolveSession: /** @type {any} */ ({
+          resolve,
+          resolveRepoOperation: vi.fn()
+        }),
+        snapshot: (ws) => store_ref.snapshot(ws),
+        getConfig: () => ({}),
+        autoLaunchEnabled: () => true
+      });
+      const env = staleEnv({ failureConversation });
+      store_ref = env.store;
+      seedPushedResidue(env);
+      await env.scheduler.tick(WS);
+      await flush();
+      const failed = latest(env);
+      reserveHandoff(env, failed.attempt_id);
+      resolve.mockClear();
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      await flush();
+
+      const rerun = latest(env);
+      expect(rerun).toMatchObject({
+        status: 'failed',
+        cause: 'stale_work_unresolved',
+        resumed_from: failed.attempt_id
+      });
+      expect(resolve).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          bead_id: 'S1',
+          failure: expect.objectContaining({ failure_class: '잔재 처분 실패' }),
+          attempt: expect.objectContaining({ attempt_id: rerun.attempt_id })
+        })
+      );
+    });
+
+    /**
+     * Each Worker operation on S1's failure, run once the ownership material
+     * stands; each returns the reason it answered and whether it changed the
+     * queue. `transient` operations start from a ladder rung, `early` ones
+     * need the material before the failure is written.
+     *
+     * @type {Array<[string, { transient?: boolean, early?: boolean, act: (env: any, failed: any) => Promise<{ reason: unknown, changed: boolean }> }]>}
+     */
+    const OPERATIONS = [
+      [
+        'discard',
+        {
+          act: async (env) => {
+            const result = await discardCoordinatorOf(env).discard({
+              bead_id: 'S1',
+              expected_revision: env.store.snapshot(WS).revision
+            });
+            return {
+              reason: result.reason,
+              changed:
+                Object.keys(env.store.snapshot(WS).discard_operations || {})
+                  .length > 0
+            };
+          }
+        }
+      ],
+      [
+        'resume',
+        {
+          act: async (env, failed) => {
+            const result = await env.scheduler.resume(WS, failed.attempt_id, {
+              job_retry_authorized: true
+            });
+            return {
+              reason: result.reason,
+              changed: children(env, failed.attempt_id).length > 0
+            };
+          }
+        }
+      ],
+      [
+        'conversation launch',
+        {
+          early: true,
+          act: async (env) => ({
+            reason:
+              env.notify.needsHuman.mock.calls[0]?.[0]?.conversation?.reason,
+            changed: env.launchForBead.mock.calls.length > 0
+          })
+        }
+      ],
+      [
+        '인계',
+        {
+          act: async (env, failed) => {
+            reserveHandoff(env, failed.attempt_id);
+            await env.scheduler.reconcileInteractiveSessions(WS);
+            await flush();
+            return {
+              reason: env.store.snapshot(WS).conversation_refusals.S1?.reason,
+              changed: children(env, failed.attempt_id).length > 0
+            };
+          }
+        }
+      ],
+      [
+        'ladder redispatch',
+        {
+          transient: true,
+          act: async (env, failed) => {
+            const before = Object.keys(env.store.snapshot(WS).attempts).length;
+            const result = await env.scheduler.retryNow(WS, 'S1');
+            return {
+              reason: result.reason,
+              changed:
+                Object.keys(env.store.snapshot(WS).attempts).length !==
+                  before || latest(env).attempt_id !== failed.attempt_id
+            };
+          }
+        }
+      ]
+    ];
+
+    /**
+     * Write S1's residue failure, lay the ownership material over it, and run
+     * one operation.
+     *
+     * @param {(typeof OPERATIONS)[number][1]} operation
+     * @param {(env: any) => void} stand - Makes the material stand.
+     */
+    async function runOperation(operation, stand) {
+      const env = staleEnv(
+        operation.transient ? { gitRun: unreadableRemoteGitRun() } : {}
+      );
+      if (operation.transient) {
+        env.worktree.removeIfDiscardable.mockResolvedValue(
+          uniqueStaleObservation()
+        );
+      } else {
+        seedPushedResidue(env);
+      }
+      if (operation.early) {
+        stand(env);
+      }
+      await env.scheduler.tick(WS);
+      await flush();
+      const failed = latest(env);
+      if (!operation.early) {
+        stand(env);
+      }
+      return operation.act(env, failed);
+    }
+
+    test.each(OPERATIONS)(
+      'refuses %s with session_owned',
+      async (_name, operation) => {
+        const outcome = await runOperation(operation, (env) => {
+          env.waits.push(sessionWait());
+        });
+
+        expect(outcome).toEqual({ reason: 'session_owned', changed: false });
+      }
+    );
+
+    test.each(OPERATIONS)(
+      'refuses %s with session_owner_unobservable when ownership cannot be read',
+      async (_name, operation) => {
+        const outcome = await runOperation(operation, (env) => {
+          env.wait_store.unreadable = true;
+        });
+
+        expect(outcome).toEqual({
+          reason: 'session_owner_unobservable',
+          changed: false
+        });
+      }
+    );
+
+    test('announces a residue rung whose redispatch can never start as a terminal residue failure', async () => {
+      const base = { ok: true };
+      const env = staleEnv({
+        gitRun: unreadableRemoteGitRun(),
+        resolveBase: async () =>
+          base.ok
+            ? { ok: true, base: 'main', base_oid: 'b'.repeat(40) }
+            : { ok: false, step: 'ref' }
+      });
+      env.worktree.removeIfDiscardable.mockResolvedValue(
+        uniqueStaleObservation()
+      );
+      await env.scheduler.tick(WS);
+      await flush();
+      base.ok = false;
+
+      await env.scheduler.retryNow(WS, 'S1');
+      await flush();
+
+      expect({
+        status: latest(env).status,
+        needs_human: env.notify.needsHuman.mock.calls.map(
+          (/** @type {any[]} */ call) => [
+            call[0].failure_class,
+            call[0].reason,
+            call[0].conversation
+          ]
+        ),
+        attempt_failed: env.notify.attemptFailed.mock.calls.length
+      }).toEqual({
+        status: 'failed',
+        needs_human: [
+          ['잔재 처분 실패', 'remote_ref_observe_failed', LAUNCHED]
+        ],
+        attempt_failed: 0
+      });
+    });
+
+    describe('a residue failure inside an external-wait resume', () => {
+      const WAIT = 'w-0123456789ab';
+
+      /**
+       * S1 is an open bead whose session-owned wait completed and is being
+       * resumed `fresh` with no worktree left; the residue is a pushed branch
+       * whose remote cannot be read (the transient
+       * `remote_ref_observe_failed`).
+       */
+      function externalEnv() {
+        const record = {
+          wait_id: WAIT,
+          root_dir: WS,
+          bead_id: 'S1',
+          owner: {
+            kind: 'session',
+            session_ref: 'claude:registering-session@host',
+            session_pid: 4242,
+            session_start: 'x'
+          },
+          worktree: '/wt/S1',
+          stage: 'completing',
+          completion: {
+            digest: 'c'.repeat(64),
+            completed_at: '2026-11-07T01:00:00.000Z',
+            recovery_needed: false
+          },
+          registered_at: '1970-01-01T00:00:00.500Z',
+          resume: null,
+          jobs: []
+        };
+        const store = {
+          list: () => [record],
+          findByBead: () => record,
+          get: (/** @type {string} */ _ws, /** @type {string} */ wait_id) =>
+            wait_id === WAIT ? record : null,
+          update: vi.fn(
+            (
+              /** @type {string} */ _ws,
+              /** @type {string} */ _wait_id,
+              /** @type {(current: any) => void} */ mutate
+            ) => mutate(record)
+          )
+        };
+        const env = staleEnv({
+          config: { S1: { status: 'open' } },
+          gitRun: unreadableRemoteGitRun(),
+          fs: { existsSync: () => false },
+          externalWait: store
+        });
+        env.worktree.removeIfDiscardable.mockResolvedValue(
+          uniqueStaleObservation({
+            identity: {
+              worktree_realpath: null,
+              branch: 'S1',
+              head_sha: null,
+              branch_head_sha: 'a'.repeat(40),
+              base_oid: 'b'.repeat(40),
+              status_digest: 'status'
+            }
+          })
+        );
+        return { ...env, record, wait_store: store };
+      }
+
+      test('climbs the env ladder with the resume it must replay', async () => {
+        const env = externalEnv();
+
+        await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fresh' });
+        await flush();
+
+        expect(latest(env)).toMatchObject({
+          status: 'retry_wait',
+          cause_detail: {
+            summary: 'remote_ref_observe_failed',
+            external_wait: { wait_id: WAIT, mode: 'fresh' }
+          }
+        });
+      });
+
+      test('replays the same external-wait resume on its ladder rung', async () => {
+        const env = externalEnv();
+        await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fresh' });
+        await flush();
+        const rung = latest(env);
+        env.worktree.removeIfDiscardable.mockClear();
+        env.wait_store.update.mockClear();
+
+        await env.scheduler.retryNow(WS, 'S1');
+        await flush();
+
+        expect({
+          observed: env.worktree.removeIfDiscardable.mock.calls.length > 0,
+          // Only the external-wait resume reserves on the wait record; an
+          // ordinary dispatch never writes it.
+          reserved: env.wait_store.update.mock.calls.length > 0,
+          next: latest(env).resumed_from,
+          replay: latest(env).cause_detail?.external_wait,
+          admission: env.store.snapshot(WS).admission.S1?.reason ?? null
+        }).toEqual({
+          observed: true,
+          reserved: true,
+          next: rung.attempt_id,
+          replay: { wait_id: WAIT, mode: 'fresh' },
+          admission: null
+        });
+      });
+
+      test('keeps its ladder rung waiting while the provider is held', async () => {
+        const env = externalEnv();
+        await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fresh' });
+        await flush();
+        const rung = latest(env);
+        env.store.providerHolds.enter({
+          runner: 'claude',
+          origin: WS,
+          target: { kind: 'outage', model: 'opus', account: null }
+        });
+
+        await env.scheduler.retryNow(WS, 'S1');
+        await flush();
+
+        expect({
+          attempt_id: latest(env).attempt_id,
+          status: latest(env).status,
+          needs_human: env.notify.needsHuman.mock.calls.length
+        }).toEqual({
+          attempt_id: rung.attempt_id,
+          status: 'retry_wait',
+          needs_human: 0
+        });
+      });
+    });
+
+    test('holds a due ladder rung unspent while a session owns the bead', async () => {
+      const clock = { at: 1000 };
+      const env = staleEnv({
+        gitRun: unreadableRemoteGitRun(),
+        now: () => clock.at
+      });
+      env.worktree.removeIfDiscardable.mockResolvedValue(
+        uniqueStaleObservation()
+      );
+      await env.scheduler.tick(WS);
+      await flush();
+      const rung = latest(env);
+      env.waits.push(sessionWait());
+      clock.at = 24 * 60 * 60 * 1000;
+
+      // A restart's control recovery re-arms the retry timer from the durable
+      // ladder, and the rung is due at once.
+      await env.scheduler.recoverControls(WS);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await flush();
+
+      expect(latest(env).attempt_id).toBe(rung.attempt_id);
+      expect(env.store.snapshot(WS).lineages).toEqual([
+        expect.objectContaining({ bead_id: 'S1', attempts: 1 })
+      ]);
+    });
   });
 });
 

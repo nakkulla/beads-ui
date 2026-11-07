@@ -29,6 +29,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { sessionGuardedAttempt } from '../../app/utils/active-attempts.js';
 import {
   execLaneOf,
   workerLabels
@@ -1404,6 +1405,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // every other runtime singleton: its duplicate guard is a tmux pane marker,
     // which is one truth for the whole machine.
     directionInquiry: runtime.directionInquiry,
+    // The automatic failure conversation of a terminal dispatch residue
+    // disposition failure (UI-68r5 §3.2) — the same launcher every other
+    // failure conversation goes through.
+    failureConversation: runtime.failureConversation,
     // The Worker exits a failure conversation's `인계` runs (UI-18a5 §3.4):
     // the SAME owners the row's `[워커로 이어가기]` and `[머지]` clicks reach,
     // bound late because both are built after the scheduler.
@@ -3791,6 +3796,38 @@ export async function resumeWorkerAttempt(
     ...continuation,
     job_retry_authorized: true
   });
+}
+
+/**
+ * Whether a person's Worker operation on this Bead must be refused because a
+ * newer session owns its failed attempt (UI-68r5 §3.4·§3.5):
+ * `session_owned`, `session_owner_unobservable` (fail-closed), or null. The
+ * attachment's scheduler reads the material. Without that judgment nothing
+ * can read it, so a Bead whose latest implementation attempt is a failed seat
+ * or a waiting ladder rung is refused as unobservable; any other Bead has no
+ * failure for a session to have taken over.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<'session_owned'|'session_owner_unobservable'|null>}
+ */
+export async function workerSessionOwnerRefusal(workspace_root, bead_id) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (att && typeof att.scheduler?.sessionOwnerRefusal === 'function') {
+    return att.scheduler.sessionOwnerRefusal(key, bead_id);
+  }
+  /** @type {Record<string, any>} */
+  let attempts;
+  try {
+    attempts = getWorkerRuntime().queueStore.snapshot(key).attempts || {};
+  } catch (err) {
+    log('session owner queue read failed for %s/%s: %o', key, bead_id, err);
+    return 'session_owner_unobservable';
+  }
+  return sessionGuardedAttempt(attempts, bead_id)
+    ? 'session_owner_unobservable'
+    : null;
 }
 
 /**

@@ -1304,6 +1304,94 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
     ).not.toBeNull();
     expect(monitor.querySelector('.worker-card__revive')).toBeNull();
   });
+
+  /**
+   * Y-1's residue disposition failure, which a newer session took over by
+   * claiming the bead (UI-68r5 §3.4): the bead is `in_progress` with a
+   * `session_ref` entry the failed attempt never recorded, and it still sits
+   * in the waiting lane.
+   *
+   * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
+   */
+  async function drawYieldedBead(serial = false) {
+    extra_rows = [
+      row('Y-1', {
+        status: 'in_progress',
+        metadata: {
+          route: 'quick_fix',
+          session_ref: 'claude:successor-session@host'
+        }
+      })
+    ];
+    const raw = rawQueue();
+    return drawBothTabs(undefined, {
+      ...(serial
+        ? {
+            serial_lanes: [
+              {
+                id: 's1',
+                entries: [{ bead_id: 'Y-1', added_at: NOW - HOUR }]
+              }
+            ]
+          }
+        : { queue: [...raw.queue, { bead_id: 'Y-1', added_at: NOW - HOUR }] }),
+      attempts: {
+        ...raw.attempts,
+        'att-y1': makeAttempt({
+          attempt_id: 'att-y1',
+          bead_id: 'Y-1',
+          status: 'failed',
+          finished_at: NOW - 2 * HOUR,
+          cause: 'stale_work_unresolved',
+          cause_detail: { summary: 'remote_branch_owner' },
+          bead_session_ref: 'claude:earlier-session@host',
+          ...(serial ? { serial_lane_id: 's1' } : {})
+        })
+      }
+    });
+  }
+
+  test('draws no serial occupant row for a bead a session took over on both tabs', async () => {
+    const { worker, monitor } = await drawYieldedBead(true);
+
+    const drawn = [worker, monitor].map(
+      (mount) => mount.querySelectorAll('[data-bead-id="Y-1"]').length
+    );
+
+    expect(drawn).toEqual([1, 1]);
+  });
+
+  test('draws the same card on the worker and monitor tabs for a bead a session took over', async () => {
+    const { worker, monitor } = await drawYieldedBead();
+
+    const worker_card = /** @type {HTMLElement} */ (
+      cardsByBead(worker).get('Y-1')
+    );
+    const monitor_card = /** @type {HTMLElement} */ (
+      cardsByBead(monitor).get('Y-1')
+    );
+
+    expect(partsOf(monitor_card)).toEqual(partsOf(worker_card));
+  });
+
+  test('draws a bead a session took over as one session tile with no failure on both tabs', async () => {
+    const { worker, monitor } = await drawYieldedBead();
+
+    const cards = [worker, monitor].map((mount) =>
+      Array.from(mount.querySelectorAll('[data-bead-id="Y-1"]')).map(
+        (card) => ({
+          failed: (card.textContent || '').includes('⚠ 실패'),
+          discard: card.querySelector('.rtile__discard') !== null,
+          resume: card.querySelector('.rtile__resume') !== null
+        })
+      )
+    );
+
+    expect(cards).toEqual([
+      [{ failed: false, discard: false, resume: false }],
+      [{ failed: false, discard: false, resume: false }]
+    ]);
+  });
 });
 
 describe('placement recommendation parity (UI-izba §4.7)', () => {
