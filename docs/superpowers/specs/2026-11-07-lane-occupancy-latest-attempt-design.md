@@ -6,6 +6,7 @@ scope:
   - app/views/worker/running-grid.js
   - app/views/monitor/card-parity.test.js
   - app/utils/placement/compute.js
+  - app/views/worker/placement.js
 ---
 
 # 직렬 대기줄 점유는 Bead의 최신 attempt로 판정하고, 선행 이슈는 병렬 레인에 둔다 (UI-ey6v)
@@ -32,7 +33,7 @@ scope:
 
 - 점유 판정은 다음 attempt가 `resumed_from`으로 잇지 않은 attempt를 모두 leaf로 보고, 상태가 해제 집합 밖이면 그 lane을 점유로 센다. 같은 Bead에 더 새로운 attempt가 있는지는 보지 않는다 — server/worker/scheduler.js:1242-1270
 - 해제 집합은 `done`·`stopped`·`discarded`·`waiting`이고, 끝난 상태 집합은 여기에 `failed`·`orphaned`·`parked`·`retry_wait`·`superseded`를 더한다 — server/worker/queue-store.js:2326-2367
-- 이관 판정도 같은 leaf·해제 집합을 읽어 "lane을 잡은 기록"을 큐에 남긴다 — server/worker/queue-store.js:6468-6480
+- 이관 판정도 같은 leaf·해제 집합을 읽어 "lane을 잡은 기록"을 큐에 남긴다. 이관은 삽입 순서의 접미를 남기므로, 삽입 순서 최신 기록은 이력이 통째로 떠나기 전에는 사라지지 않는다 — server/worker/queue-store.js:6468-6480, 6506
 - 원래 설계는 "최신 leaf attempt가 실패·orphaned·paused여도" 점유를 유지한다고 적었다 — docs/superpowers/specs/2026-08-13-worker-lane-scheduling-design.md:152-156
 - 선행 대기가 lane을 푸는 이유는 "선행을 닫는 형제가 같은 레인에서 못 돈다"이다 — docs/superpowers/specs/2026-08-28-worker-prerequisite-wait-tier-design.md:72
 - 실행 중 좌석은 이미 `latestImplementationAttempts`로 Bead의 최신 구현 attempt를 고른다 — app/utils/active-attempts.js:68-91, 503
@@ -48,6 +49,13 @@ scope:
 - 실제로 `rokit-50d`·`rokit-09a`·`rokit-ctq`가 모두 `s1#0`에 배치됐다 — `bd -C ~/GitHub/CRC-rokit show` notes의 `lane_placed:`
 - 배치안 계산은 대기·점유 상대와의 제약(`blocks` 포함)을 `k_items`로 모아 그 lane을 고르고, 제약을 못 맞추면 `uncovered` 경고를 낸다 — app/utils/placement/compute.js:635-684, 765
 - 표시 카드는 Worker와 모니터가 같은 `buildLanes`에서 받는다 — AGENTS.md "워커·모니터 카드 배치 문법"; app/views/worker/index.js:2070; app/views/monitor/index.js:1902
+- `blockedByFields`는 `bead_blocked_by`에 키가 있으면 그 값을 열린 선행으로 쓰고, 키가 없으면 지금 값·동결 선행·admission `blockers`의 합집합을 쓴다 — app/views/worker/lane-model.js:3622-3668
+- 실행 중 레인에 잡힌 Bead는 `claimed`에 들어가 대기 행을 그리지 않는다 — app/views/worker/lane-model.js:3900-3904, 4038-4042
+- `queue-place.js`는 받은 lane에 넣을 뿐 레인을 고르지 않는다 — server/worker/queue-place.js:132-178
+- 배치안 묶음은 고른 후보끼리의 제약으로 잇는다 — app/utils/placement/compute.js:483-522
+- `[전체 적용]`은 한 행을 보낼 때마다 남은 후보로 다시 계산하고, 자리가 표와 다르면 `moved`로 멈춘다 — app/utils/placement/apply.js:289-300
+- `uncovered` 경고 문구는 상대를 직렬 레인으로 옮기면 동시 실행을 피할 수 있다고 말한다 — app/views/worker/placement.js:535-547
+- ADR UI-hf8v는 같은 파일을 선언한 쌍을 고정 부딪힘으로, 폴더만 겹치는 쌍은 jev가 높은 확신으로 독립이라 할 때만 병렬로 둔다 — docs/adr/UI-hf8v-monitor-full-placement-plan.md:175, 189
 
 ## 3. 설계
 
@@ -65,8 +73,10 @@ scope:
 | `done`, `pr_wait` 행 있음 | `failed` | `pr_wait`가 점유 |
 | 아무 상태 | `running`·`paused` | 점유 유지 — 살아 있는 세션은 최신 여부와 무관하다 |
 
-- 결정: 최신의 정의는 실행 중 좌석과 같은 `latestImplementationAttempts`를 쓴다 — 좌석·점유·표기가
-  한 attempt를 읽어야 서로 어긋나지 않는다.
+- 결정: 최신은 `q.attempts` 삽입 순서에서 그 Bead의 마지막 구현 attempt다(대안: 좌석의
+  `latestImplementationAttempts`; 이유: 그 함수는 타임스탬프 순서라 시계가 되돌아간 이력의 부분 이관 뒤 지난
+  실패가 최신으로 되살아날 수 있다. 삽입 순서 최신은 이관이 접미를 보존해 사라지지 않는다). 두 순서는 시계가
+  되돌아갈 때만 갈리고, 좌석 판정은 바꾸지 않는다.
 - 결정: 이관 판정은 점유와 같은 판정 하나를 공유한다 — `LANE_RELEASING_ATTEMPT_STATUSES`가 한 벌인
   것과 같은 이유다. 예: `queue-store.js`가 판정 함수를 내보내고 `activeLaneLineages`가 가져다 쓴다.
 - 구현 attempt가 아닌 기록은 판정이 바뀌지 않는다. attempt의 `status`·`serial_lane_id`도 쓰지 않는다.
@@ -77,7 +87,7 @@ scope:
 
 ### 3.2 점유 행 표기
 
-점유 행 배지를 상태별로 정한다. 재료는 지금처럼 실행 타일의 `run_state`이고, 없으면 3.1과 같은 최신
+점유 행 배지를 상태별로 정한다. 재료는 지금처럼 실행 타일의 `run_state`이고, 없으면 3.1과 같은 삽입 순서 최신
 구현 attempt의 상태다. 새 슬롯은 만들지 않고 기존 배지 자리의 문구만 바꾼다.
 
 | 상태 | 배지 |
@@ -107,8 +117,8 @@ scope:
   행에 남아 사라지지 않는다. 사용자 선택, 2026-11-07).
 
 **표시 조건.** 구현 도중이면서 열린 선행이 하나라도 있는 동안 실행 중 레인에 타일로 그린다. 열린 선행은
-칩과 같은 재료다: `bead_blocked_by`에 키가 있으면 그 값이고, 키가 없으면 동결 선행(`cause_detail.blockers`)을
-열린 것으로 본다. 그래서 키가 있고 값이 비거나 동결 선행도 없으면 타일이 아니다.
+칩과 같은 재료다: `bead_blocked_by`에 키가 있으면 그 값이고, 키가 없으면 지금 값·동결
+선행(`cause_detail.blockers`)·admission `blockers`의 합집합이다(`blockedByFields`와 같다). 그 결과가 비면 타일이 아니다.
 
 - 카드는 기존 대기 타일이다: 슬롯 1 배지 `선행 대기`, 슬롯 4a `⛓ <blocker ID>`, foot에 `폐기`. 이것이
   Bead의 「선행 대기 · <blocker ID>」이고 새 슬롯은 없다.
@@ -135,9 +145,13 @@ Bead가 **이미 대기열에 있거나 lane을 점유한 상대의 직접 `bloc
 
 적용 위치는 두 곳이다.
 
-- beads-ui 배치안 계산(`app/utils/placement/compute.js`): 후보가 대기·점유 상대에 대해 `basis: 'blocks'`인
-  `c_first`이면 그 후보가 든 묶음의 lane은 `parallel`이다. 이 `blocks` 줄에는 `uncovered` 경고를 내지 않는다(순서는
-  간선이 지킨다). 다른 제약은 지금처럼 `uncovered`로 보인다. 묶음 안의 `conflict`도 같은 경고로 보인다.
+- beads-ui 배치안 계산(`app/utils/placement/compute.js`):
+  - 후보가 대기·점유 상대에 대해 `basis: 'blocks'`인 `c_first`이면 그 후보는 묶음을 잇지 않고 혼자 묶음이 되어
+    `parallel` 끝으로 간다. 남은 후보는 그 후보 없이 묶음과 lane을 계산한다. 묶음 전체를 병렬로 보내지 않는다 —
+    선행이 적용된 뒤의 재계산에서도 남은 후보의 자리가 같아 `[전체 적용]`이 `moved`로 멈추지 않는다.
+  - `basis: 'blocks'` 줄에는 어떤 후보든 `uncovered`를 내지 않는다. 순서는 간선이 지키므로 동시에 돌지 않는다.
+  - 이 선행 후보에 남은 다른 제약(대기·점유 상대나 이번에 고른 후보와의 `conflict`)에는 전용 경고를 낸다. 예: 코드
+    `predecessor_parallel`, 문구 `⚠ 선행이라 병렬에 둠 — <상대>와 동시에 돌 수 있음`. 상대를 옮기라고 안내하지 않는다.
 - dotfiles 세션 배치 절차: §5의 크로스 리포 unit으로 같은 규칙을 3·4단계에 더한다.
 
 바꾸지 않는 것은 다음과 같다.
@@ -166,6 +180,8 @@ Bead가 **이미 대기열에 있거나 lane을 점유한 상대의 직접 `bloc
 - UI-68r5는 cc90c986으로 착지했고 이 스펙의 기준이다. 그 스펙의 세션 양보(`yielded_bead_ids`)는 그대로 둔다.
 - 관찰: dotfiles-h7tvc(배치 규칙 보강·jev 판정 묶음)는 다른 주제라 합치지 않는다. 그 Bead가 3·4단계를 고칠 때
   3.4 규칙을 전제로 읽는다.
+- 관찰: UI-ymcx 스펙도 ADR UI-hf8v를 supersede 대상으로 지명한다. 그쪽이 먼저 착지하면 이 스펙의 supersede 대상은
+  그 새 ADR로 옮겨 적는다(재검토 때 `adr_current`로 확인한다). 판정 대상은 서로 겹치지 않는다.
 
 ## 6. 테스트
 
@@ -178,6 +194,8 @@ Bead가 **이미 대기열에 있거나 lane을 점유한 상대의 직접 `bloc
 - `keeps the lane for an older running or paused attempt`
 - `leaves a non-implementation attempt's occupancy unchanged`
 - `transfers a dismissed lane-bound failure once a newer attempt exists`
+- `judges the latest attempt by insertion order when timestamps run backward`
+- `keeps a released failed leaf released across a partial transfer and a reload`
 
 표기(lane-model):
 
@@ -193,6 +211,7 @@ Bead가 **이미 대기열에 있거나 lane을 점유한 상대의 직접 `bloc
 - `keeps the waiting row for an old record without head_oid`
 - `returns to the waiting row once every blocker closes`
 - `treats frozen blockers as open when bead_blocked_by has no key`
+- `treats admission blockers as open when bead_blocked_by has no key and no frozen list exists`
 - `hides the lane row while the tile stands`
 - `leaves slots and running counts unchanged by the prerequisite wait tile`
 - `draws the same prerequisite wait card on the worker and monitor tabs`
@@ -202,7 +221,10 @@ Bead가 **이미 대기열에 있거나 lane을 점유한 상대의 직접 `bloc
 - `places a direct blocks predecessor of a waiting member in the parallel lane`
 - `places a direct blocks predecessor of a lane occupant in the parallel lane`
 - `places the predecessor in the parallel lane despite a file conflict in a serial lane`
-- `warns uncovered for the file conflict and not for the blocks line`
+- `warns predecessor_parallel for the file conflict and nothing for the blocks line`
+- `emits no uncovered warning for any blocks line`
+- `takes the predecessor out of its bundle and lanes the rest without it`
+- `finishes a batch apply of a predecessor and its bundle partner without moved`
 - `keeps a chosen bundle ordered by blocks in its serial lane`
 
 수용 기준: 위 테스트와 기존 scheduler·queue-store·lane-model·compute 테스트, `npm run tsc`, `npm run lint`가 통과한다.
@@ -210,8 +232,15 @@ Bead가 **이미 대기열에 있거나 lane을 점유한 상대의 직접 `bloc
 
 ## 7. 결정 (ADR 후보)
 
-- 전제: ADR UI-hf8v — 카드 슬롯 규칙과 배치 조항(`blocks`가 쌍의 순서를 정한다, `queue-place.js`는 레인을 판단하지 않는다, 수동 배치를 막지 않는다)을 그대로 따른다
+- 전제: ADR UI-hf8v — 아래 후보가 바꾸는 조항 밖의 카드 슬롯 규칙과 배치 조항(`blocks`가 쌍의 순서를 정한다, `queue-place.js`는 레인을 판단하지 않는다, 수동 배치를 막지 않는다)을 그대로 따른다
 - 전제: ADR UI-u6ud-2 — dotfiles 절차 변경은 dotfiles가 소유한다
 - 끝난 attempt는 Bead의 최신일 때만 직렬 대기줄을 점유한다 — 판정 함수 하나와 그 테스트만 고치면 되돌릴 수 있다(되돌리기 어려움 조건 실패) → ADR 아님
 - 구현 도중 선행 대기를 커밋 증거로 판정해 열린 동안 카드로 보인다 — 공유 판정 함수 하나로 되돌릴 수 있다(되돌리기 어려움 조건 실패) → ADR 아님
-- 대기·점유 상대의 직접 `blocks` 선행은 병렬 레인에 둔다 — 자리 계산 한 곳과 dotfiles 절차 한 문단만 고치면 되돌릴 수 있다(되돌리기 어려움 조건 실패) → ADR 아님
+- 대기·점유 상대의 직접 `blocks` 선행은 부딪힘과 무관하게 병렬 레인에 둔다.
+  - 조건 1(되돌리기 어려움): 다음이 함께 움직인다.
+    - beads-ui: `app/utils/placement/compute.js`의 묶음·레인 선택, `app/utils/placement/apply.js`의 `[전체 적용]` 재계산, `app/views/worker/placement.js` 경고 문구
+    - dotfiles: `execution-worker-lane.md`의 세션 배치 절차. 한쪽만 되돌리면 같은 선행이 경로마다 다른 줄에 놓인다
+  - 조건 2(맥락 없이 의외): 같은 파일을 고치는 쌍은 직렬이 기본인데 선행 이슈만 그 상대와 동시에 돌 수 있다.
+  - 조건 3(실제 트레이드오프): 선행이 줄에 막혀 교착될 위험과, 선행이 겹치는 이슈와 동시에 돌아 충돌 해소 세션을 쓸 비용 사이의 선택이다.
+  - UI-hf8v에서 바뀌는 조항: 175행과 189행의 부딪힘 쌍 배치에 "대기·점유 상대의 직접 `blocks` 선행인 후보는 예외로 병렬"을 더한다. 쌍 관계 판정 자체는 바뀌지 않고 나머지 조항은 재진술한다.
+  - `summary`: "대기·점유 상대의 직접 blocks 선행 후보는 쌍 관계·부딪힘과 무관하게 병렬 레인에 두어 점유에 막히지 않게 하고 세션 배치 절차도 같은 규칙을 따른다 — 쌍 판정과 모니터 전체 배치안 등 나머지 조항은 UI-hf8v 그대로다" → ADR, supersede UI-hf8v
