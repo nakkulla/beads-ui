@@ -47,9 +47,18 @@ launch를 요청하는데, lane 울타리는 그 요청을 Bead의 실제 대기
 - Worker 소유 대기 재개는 `continuation: true`와 `prior.serial_lane_id`를 넘겨 이 결함과
   무관하고, 자식 attempt도 `prior.serial_lane_id`를 물려받는다 —
   server/worker/scheduler.js:18310-18315, 18379
-- 외부 PR 충돌 dispatch는 lane 없이 launch하지만, 그 Bead는 `reconcileExternalPrWait`가 이미 모든
-  대기 lane에서 뺐으므로 `waitingLaneOf`가 null이라 거절되지 않는다 —
-  server/worker/scheduler.js:17434-17441, 17452-17455; server/worker/queue-store.js:11386-11426
+- 외부 PR 충돌 dispatch도 lane 없이 launch하고 레지스트리 존재만 확인한다. 레지스트리 등록은 활성
+  Bead만 빼고 lane 멤버는 빼지 않으며, lane에서 `pr_wait`로 옮기는 `reconcileExternalPrWait`는 별도
+  poller 단계이고 비종료 attempt가 있으면 옮기지 않는다. 그래서 등록 뒤 lane 이동 전에는 같은
+  `serial_lane_not_head` 거절이 날 수 있다 — server/worker/scheduler.js:17314-17317, 17434-17441,
+  17452-17455, 5373-5379; server/worker/attach.js:1962-1986; server/worker/pr-poller.js:491-503;
+  server/worker/queue-store.js:11386-11426
+- `launchExternalWaitSession`은 acquire 뒤 `fresh` 분기에서 잔재 관측·워크트리 준비를 await하고,
+  그 뒤 `installGuardHook`(동기)·prerecord가 await 없이 이어진다 — server/worker/scheduler.js:15465-15472,
+  15512-15544, 15546-15557, 4934
+- 재개 거절은 `externalWaitResumeError`가 `resume`을 `attempt_id: null`·`error`로 되돌려 쓰고 호출부가
+  그 경로로 돌려주므로 같은 버튼으로 다시 재개할 수 있다 — server/worker/scheduler.js:15031-15048,
+  15345-15352, 15192; server/worker/external-wait/store.js:79-90
 - Worker 레인 화면은 `serial_lane_not_head`를 행 순번이 이미 말하는 사실로 보고 admission 배지를
   그리지 않는다 — app/views/worker/lane-model.js:2097-2102
 - `[세션에서 이어가기]`(`session`)는 lane 울타리를 거치지 않는다 — server/worker/scheduler.js:15245-15256
@@ -113,8 +122,10 @@ launch를 요청하는데, lane 울타리는 그 요청을 Bead의 실제 대기
 
 ## 5. 경계·비목표
 
-- 결정: 외부 PR 충돌 dispatch(`dispatchExternalConflict`)의 lane 없는 launch는 바꾸지 않는다 —
-  그 Bead는 이미 대기 lane 밖이라 거절되지 않는다(§2).
+- 결정: 외부 PR 충돌 dispatch(`dispatchExternalConflict`)의 lane 없는 launch는 이 spec에서 바꾸지
+  않는다 — 레지스트리 등록과 lane 이동 사이 창에서 같은 거절이 날 수 있지만(§2), 이미 PR이 있는
+  해소 작업에 맨 앞 판정을 적용할지·continuation으로 볼지는 이 재개와 다른 설계 선택이라 별도로
+  다룬다(§8).
 - 결정: Worker 소유 대기 재개(`relaunchFromAttempt`)는 바꾸지 않는다 — 이미 prior lane과
   continuation을 넘긴다(§2).
 - `[세션에서 이어가기]`, 레인 화면 배지·라벨, lane 배치·철회 조작은 바꾸지 않는다.
@@ -134,10 +145,13 @@ launch를 요청하는데, lane 울타리는 그 요청을 Bead의 실제 대기
 - `stamps the waiting lane on the attempt the resume records`
 - `keeps the lane on a relaunch from the resumed attempt`
 - `launches a session-owned wait resume lane-free when the bead sits in no lane`
-- `refuses the resume when the bead moves to another lane before the prerecord`(`fresh`의 워크트리
-  준비 await 동안 lane을 옮긴 뒤 거절과 attempt 미기록을 확인)
+- `refuses the resume when the bead moves behind another entry before the prerecord`(`fresh`의
+  워크트리 준비 await 동안 Bead를 다른 lane의 맨 앞이 아닌 자리로 옮긴 뒤 `serial_lane_not_head`
+  거절과 attempt 미기록을 확인)
+- `records the new lane when the bead moves to the head of an empty lane before the prerecord`(같은
+  await 동안 빈 lane의 맨 앞으로 옮기면 재판정이 그 lane으로 승인하고 attempt가 그 lane을 갖는다)
 
-수용 기준: 위 8개와 기존 external-wait·scheduler 테스트, `npm run tsc`·`npm run lint`가 통과한다.
+수용 기준: 위 9개와 기존 external-wait·scheduler 테스트, `npm run tsc`·`npm run lint`가 통과한다.
 
 ## 7. 결정 (ADR 후보)
 
@@ -149,3 +163,6 @@ launch를 요청하는데, lane 울타리는 그 요청을 Bead의 실제 대기
 ## 8. 경계·후속
 
 없음 — 변경은 한 함수와 그 테스트 안에서 닫힌다.
+
+- 관찰: 외부 PR 충돌 dispatch의 lane 불일치 거절 창(§2·§5) — 해소 작업의 lane 판정 방식이 별도 설계
+  선택이라 이 spec 밖이고, 이 세션 종료 시 결함 후속 Bead로 등록한다
