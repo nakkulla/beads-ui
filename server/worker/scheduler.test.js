@@ -27264,6 +27264,145 @@ describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
     expect(occupancy.size).toBe(0);
   });
 
+  /**
+   * One lane-bound attempt of bead A.
+   *
+   * @param {string} attempt_id
+   * @param {string} status
+   * @param {Record<string, any>} [fields]
+   */
+  function laneAttempt(attempt_id, status, fields = {}) {
+    return {
+      attempt_id,
+      bead_id: 'A',
+      status,
+      serial_lane_id: 's1',
+      ...fields
+    };
+  }
+
+  test('releases a failed leaf once a newer implementation attempt of the bead exists', () => {
+    const occupancy = activeLaneLineages({
+      attempts: {
+        old: laneAttempt('old', 'failed'),
+        wait: laneAttempt('wait', 'waiting', { cause: 'prerequisite_unmet' })
+      }
+    });
+
+    expect(occupancy.size).toBe(0);
+  });
+
+  test('occupies the lane of a newer running attempt, not the failed leaf behind it', () => {
+    const occupancy = activeLaneLineages({
+      attempts: {
+        old: laneAttempt('old', 'failed'),
+        live: laneAttempt('live', 'running', { serial_lane_id: 's2' })
+      }
+    });
+
+    expect([...occupancy.keys()]).toEqual(['s2']);
+  });
+
+  test("keeps the lane for a failed attempt that is the bead's latest", () => {
+    const occupancy = activeLaneLineages({
+      attempts: { failed: laneAttempt('failed', 'failed') }
+    });
+
+    expect(occupancy.get('s1')).toEqual(new Set(['A']));
+  });
+
+  test("keeps the lane for a dismissed failed attempt that is the bead's latest", () => {
+    const occupancy = activeLaneLineages({
+      attempts: {
+        failed: laneAttempt('failed', 'failed', { dismissed_at: 10 })
+      }
+    });
+
+    expect(occupancy.get('s1')).toEqual(new Set(['A']));
+  });
+
+  test('keeps the lane for an older running or paused attempt', () => {
+    const occupants = ['running', 'paused'].map((status) =>
+      activeLaneLineages({
+        attempts: {
+          old: laneAttempt('old', status),
+          wait: laneAttempt('wait', 'waiting')
+        }
+      }).get('s1')
+    );
+
+    expect(occupants).toEqual([new Set(['A']), new Set(['A'])]);
+  });
+
+  test('holds the lane through pr_wait after an older failure is released', () => {
+    const occupancy = activeLaneLineages({
+      attempts: {
+        old: laneAttempt('old', 'failed', { serial_lane_id: 's2' }),
+        done: laneAttempt('done', 'done')
+      },
+      pr_wait: [{ bead_id: 'A', serial_lane_id: 's1' }]
+    });
+
+    expect([...occupancy.keys()]).toEqual(['s1']);
+  });
+
+  test("leaves a non-implementation attempt's occupancy unchanged", () => {
+    const occupancy = activeLaneLineages({
+      attempts: {
+        review: laneAttempt('review', 'failed', { kind: 'review_session' }),
+        wait: laneAttempt('wait', 'waiting')
+      }
+    });
+
+    expect(occupancy.get('s1')).toEqual(new Set(['A']));
+  });
+
+  test('keeps the lane for a failed attempt followed only by a review attempt', () => {
+    const occupancy = activeLaneLineages({
+      attempts: {
+        failed: laneAttempt('failed', 'failed'),
+        review: laneAttempt('review', 'done', { kind: 'review_session' })
+      }
+    });
+
+    expect(occupancy.get('s1')).toEqual(new Set(['A']));
+  });
+
+  test('judges the latest attempt by insertion order when timestamps run backward', () => {
+    const occupancy = activeLaneLineages({
+      attempts: {
+        old: laneAttempt('old', 'failed', {
+          started_at: 900,
+          finished_at: 950
+        }),
+        wait: laneAttempt('wait', 'waiting', {
+          started_at: 100,
+          finished_at: 200
+        })
+      }
+    });
+
+    expect(occupancy.size).toBe(0);
+  });
+
+  test('launches a prerequisite at the lane head while the blocked bead waits behind a failed leaf', async () => {
+    const env = setup({ config: { P: {}, B: {} }, slots: 2 });
+    seedLanes(env.store, { s1: ['P', 'B'] });
+    for (const attempt of [
+      { attempt_id: 'b-old', status: 'failed' },
+      { attempt_id: 'b-wait', status: 'waiting', cause: 'prerequisite_unmet' }
+    ]) {
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { ...attempt, bead_id: 'B', serial_lane_id: 's1' }
+      });
+    }
+
+    await env.scheduler.tick(WS);
+
+    expect([...env.runner.spawnOrder]).toEqual(['P']);
+  });
+
   test('frees the lane for the next head when a failed lineage lands in done', async () => {
     const env = setup({ config: { A: {}, B: {} }, slots: 2 });
     seedLanes(env.store, { s1: ['A', 'B'] });

@@ -1,6 +1,10 @@
 import { render } from 'lit-html';
 import { describe, expect, test } from 'vitest';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import {
+  activeAttemptStates,
+  activeBeadIds
+} from '../../utils/active-attempts.js';
 import { formatClockLocal } from '../../utils/relative-time.js';
 import { normalizeCandidateSort } from './candidate-sort.js';
 import {
@@ -14,6 +18,7 @@ import {
   latestTerminalAttempt,
   prWaitLaneOriginFields,
   routeChipValue,
+  runningLaneBeadIds,
   validTime
 } from './lane-model.js';
 import { candidateCard, setChipPresetContext } from './lanes.js';
@@ -9141,5 +9146,357 @@ describe('beadAttributeFields (UI-refs §3.3)', () => {
     const fields = beadAttributeFields(undefined, { complex_reason: 'x' });
 
     expect(fields).toEqual({});
+  });
+});
+
+describe('점유 행 배지 (UI-ey6v §3.2)', () => {
+  /**
+   * A serial lane that A-1 occupies, as `lane_states` reports it.
+   *
+   * @param {Record<string, any>} attempts
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function occupiedLane(attempts, patch = {}) {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [] }],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          attempts,
+          ...patch
+        })
+      ],
+      [state()]
+    );
+    return lanes.queue_groups[0].sublanes.serial[0];
+  }
+
+  /**
+   * @param {Record<string, any>} fields
+   * @returns {Record<string, any>}
+   */
+  function attemptOf(fields) {
+    return {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        started_at: 10,
+        finished_at: 20,
+        ...fields
+      }
+    };
+  }
+
+  test('labels each occupant status with its own badge', () => {
+    /** @type {Array<[Record<string, any>, string]>} */
+    const table = [
+      [{ status: 'running', finished_at: null }, '실행 중 · 점유'],
+      [{ status: 'paused', finished_at: null }, '일시정지 · 점유'],
+      [{ status: 'failed' }, '실패 · 점유 유지'],
+      [{ status: 'failed', dismissed_at: 30 }, '실패 · 점유 유지'],
+      [{ status: 'orphaned' }, '실패 · 점유 유지'],
+      [{ status: 'parked', cause: 'session_parked' }, '확인 필요 · 점유'],
+      [{ status: 'parked', dismissed_at: 30 }, '확인 필요 · 점유'],
+      [{ status: 'retry_wait' }, '재시도 대기 · 점유'],
+      [
+        { status: 'paused', cause: 'provider_outage:rate_limit' },
+        '공급자 보류 · 점유'
+      ],
+      [{ status: 'superseded' }, '점유'],
+      [{ status: 'waiting', cause: 'base_moved' }, '점유']
+    ];
+
+    const badges = table.map(
+      ([fields]) => occupiedLane(attemptOf(fields)).occupants[0].badge
+    );
+
+    expect(badges).toEqual(table.map(([, badge]) => badge));
+  });
+
+  test('labels a pr_wait occupant with its PR badge', () => {
+    const lane = occupiedLane(attemptOf({ status: 'done' }), {
+      pr_wait: [{ bead_id: 'A-1' }]
+    });
+
+    expect(lane.occupants[0].badge).toBe('PR 대기 · 점유');
+  });
+
+  test('labels a pr_wait occupant with an active discard as discarding', () => {
+    const lane = occupiedLane(attemptOf({ status: 'done' }), {
+      pr_wait: [{ bead_id: 'A-1' }],
+      discard_operations: {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'A-1',
+          attempt_id: 't1',
+          phase: 'requested',
+          requested_at: 40
+        }
+      }
+    });
+
+    expect(lane.occupants[0].badge).toBe('폐기 중 · 점유');
+  });
+
+  test('labels an occupant with no attempt material as plain 점유', () => {
+    const lane = occupiedLane({});
+
+    expect(lane.occupants[0].badge).toBe('점유');
+  });
+
+  test('labels an occupant with an active discard before its attempt status', () => {
+    const lane = occupiedLane(attemptOf({ status: 'failed' }), {
+      discard_operations: {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'A-1',
+          attempt_id: 't1',
+          phase: 'requested',
+          requested_at: 40
+        }
+      }
+    });
+
+    expect(lane.occupants[0].badge).toBe('폐기 중 · 점유');
+  });
+
+  test('ignores a finished discard when labeling an occupant', () => {
+    const lane = occupiedLane(attemptOf({ status: 'failed' }), {
+      discard_operations: {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'A-1',
+          attempt_id: 't1',
+          phase: 'done',
+          requested_at: 40
+        }
+      }
+    });
+
+    expect(lane.occupants[0].badge).toBe('실패 · 점유 유지');
+  });
+
+  test('draws no occupant row for a bead whose latest attempt is a prerequisite wait', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          // The server's occupancy for this history (`activeLaneLineages`).
+          lane_states: { s1: { occupied_by: [] } },
+          attempts: {
+            old: {
+              attempt_id: 'old',
+              bead_id: 'A-1',
+              status: 'failed',
+              serial_lane_id: 's1',
+              started_at: 10,
+              finished_at: 20
+            },
+            wait: {
+              attempt_id: 'wait',
+              bead_id: 'A-1',
+              status: 'waiting',
+              cause: 'prerequisite_unmet',
+              serial_lane_id: 's1',
+              started_at: 30,
+              finished_at: 40
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const lane = lanes.queue_groups[0].sublanes.serial[0];
+    expect({
+      occupants: lane.occupants,
+      items: lane.items.map((item) => item.id),
+      running: lanes.running.map((item) => item.id)
+    }).toEqual({ occupants: [], items: ['A-1'], running: [] });
+  });
+});
+
+describe('구현 도중 선행 대기 타일 (UI-ey6v §3.3)', () => {
+  /**
+   * A prerequisite wait that committed work before it stopped.
+   *
+   * @param {Record<string, any>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function committedWait(patch = {}) {
+    return {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        status: 'waiting',
+        started_at: 10,
+        finished_at: 20,
+        cause: 'prerequisite_unmet',
+        base_oid: 'base',
+        head_oid: 'head',
+        cause_detail: {
+          summary: '선행 B-9 미충족으로 멈췄습니다',
+          blockers: [{ id: 'B-9', rig: null, status: 'open' }],
+          bead_status: 'open'
+        },
+        ...patch
+      }
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} attempts
+   * @param {Record<string, any>} [patch]
+   */
+  function drawnLanes(attempts, patch = {}) {
+    return buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': ['B-9'] },
+          attempts,
+          ...patch
+        })
+      ],
+      [state()]
+    );
+  }
+
+  /**
+   * Which of the two surfaces drew A-1.
+   *
+   * @param {ReturnType<typeof buildLanes>} lanes
+   */
+  function surfaces(lanes) {
+    return {
+      running: lanes.running.map((item) => item.id),
+      queue: lanes.queue.map((item) => item.id)
+    };
+  }
+
+  test('draws a tile for a prerequisite wait with commits while a blocker is open', () => {
+    const lanes = drawnLanes(committedWait());
+
+    expect(surfaces(lanes)).toEqual({ running: ['A-1'], queue: [] });
+    expect(lanes.running[0]).toMatchObject({
+      run_state: 'waiting',
+      blocked_by: ['B-9'],
+      badges: ['⛓ 선행 대기'],
+      can_resume: false,
+      can_pause: false
+    });
+  });
+
+  test('draws a tile when the attempt has no base_oid and has a head', () => {
+    const lanes = drawnLanes(committedWait({ base_oid: null }));
+
+    expect(surfaces(lanes)).toEqual({ running: ['A-1'], queue: [] });
+  });
+
+  test('keeps the waiting row for a prerequisite wait without commits', () => {
+    const lanes = drawnLanes(committedWait({ head_oid: 'base' }));
+
+    expect(surfaces(lanes)).toEqual({ running: [], queue: ['A-1'] });
+  });
+
+  test('keeps the waiting row for an old record without head_oid', () => {
+    const lanes = drawnLanes(committedWait({ head_oid: undefined }));
+
+    expect(surfaces(lanes)).toEqual({ running: [], queue: ['A-1'] });
+  });
+
+  test('returns to the waiting row once every blocker closes', () => {
+    const lanes = drawnLanes(committedWait(), {
+      bead_blocked_by: { 'A-1': [] }
+    });
+
+    expect(surfaces(lanes)).toEqual({ running: [], queue: ['A-1'] });
+    expect(
+      lanes.queue[0].dependency_chips?.released?.map((chip) => chip.id)
+    ).toEqual(['B-9']);
+  });
+
+  test('treats frozen blockers as open when bead_blocked_by has no key', () => {
+    const lanes = drawnLanes(committedWait(), { bead_blocked_by: {} });
+
+    expect(surfaces(lanes)).toEqual({ running: ['A-1'], queue: [] });
+    expect(lanes.running[0].blocked_by).toEqual(['B-9']);
+  });
+
+  test('treats admission blockers as open when bead_blocked_by has no key and no frozen list exists', () => {
+    const lanes = drawnLanes(committedWait({ cause_detail: {} }), {
+      bead_blocked_by: {},
+      admission: {
+        'A-1': {
+          reason: 'prerequisite_unmet',
+          blockers: [{ id: 'B-8', rig: null, status: 'open' }],
+          at: 1
+        }
+      }
+    });
+
+    expect(surfaces(lanes)).toEqual({ running: ['A-1'], queue: [] });
+    expect(lanes.running[0].blocked_by).toEqual(['B-8']);
+  });
+
+  test('keeps the waiting row when nothing names an open blocker', () => {
+    const lanes = drawnLanes(committedWait({ cause_detail: {} }), {
+      bead_blocked_by: {}
+    });
+
+    expect(surfaces(lanes)).toEqual({ running: [], queue: ['A-1'] });
+  });
+
+  test('hides the lane row while the tile stands', () => {
+    const lanes = drawnLanes(committedWait(), {
+      queue: [],
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ]
+    });
+
+    const lane = lanes.queue_groups[0].sublanes.serial[0];
+    expect({
+      items: lane.items.map((item) => item.id),
+      raw_length: lane.raw_length,
+      queue_index: lane.items[0].queue_index
+    }).toEqual({ items: ['A-2'], raw_length: 2, queue_index: 1 });
+  });
+
+  test('leaves slots and running counts unchanged by the prerequisite wait tile', () => {
+    const attempts = committedWait();
+
+    const group = /** @type {any} */ (
+      drawnLanes(attempts).groups_by_root.get(WS_A)
+    );
+    const { winners } = activeAttemptStates(attempts, new Map());
+
+    expect({
+      live_count: group.live_count,
+      over_cap: group.over_cap,
+      seated: winners.has('A-1'),
+      active: activeBeadIds(attempts, new Map()).has('A-1')
+    }).toEqual({
+      live_count: 0,
+      over_cap: false,
+      seated: false,
+      active: false
+    });
+  });
+
+  test('agrees with the running lane membership the placement judgment reads', () => {
+    const attempts = committedWait();
+
+    const open = runningLaneBeadIds({
+      attempts,
+      bead_blocked_by: { 'A-1': ['B-9'] }
+    });
+    const closed = runningLaneBeadIds({
+      attempts,
+      bead_blocked_by: { 'A-1': [] }
+    });
+
+    expect([[...open], [...closed]]).toEqual([['A-1'], []]);
   });
 });

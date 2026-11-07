@@ -743,7 +743,7 @@ describe('preview lanes', () => {
     expect(lane?.classList.contains('worker-wait__lane--empty')).toBe(false);
   });
 
-  test('draws a lane the blocks correction reorders in its final order', () => {
+  test('draws a blocks predecessor of a lane member in the parallel area and leaves that lane as it is', () => {
     const { mount } = mountView(
       vi.fn(),
       queueOf({
@@ -756,7 +756,14 @@ describe('preview lanes', () => {
 
     click(recommendButton(mount, 'RD-1'));
 
-    expect(laneOrder(mount, 's2')).toEqual(['S2-2', 'RD-1', 'S2-1']);
+    expect({
+      s2: laneOrder(mount, 's2'),
+      parallel: Boolean(
+        mount
+          .querySelector('[data-preview-id="RD-1"]')
+          ?.closest('[data-area="parallel"]')
+      )
+    }).toEqual({ s2: ['S2-1', 'S2-2'], parallel: true });
   });
 });
 

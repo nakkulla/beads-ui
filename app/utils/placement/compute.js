@@ -63,7 +63,7 @@ import { orderLaneByBlocks } from './lane-order.js';
  */
 
 /**
- * @typedef {'order_cycle'|'order_unsatisfiable'|'uncovered'|'blocks_reordered'} PlacementWarningCode
+ * @typedef {'order_cycle'|'order_unsatisfiable'|'uncovered'|'blocks_reordered'|'predecessor_parallel'} PlacementWarningCode
  * @typedef {{ code: PlacementWarningCode, other?: string, other_lane?: PlacementLane }} PlacementWarning
  */
 
@@ -480,6 +480,23 @@ export function computePlacement(input) {
    */
   const kindOf = (c, x) => relationBetween(relations, c, x)?.relation ?? null;
 
+  // A candidate that blocks a waiting or lane-occupying item goes to the parallel
+  // lane alone (UI-ey6v §3.4): in that item's serial lane its occupancy could
+  // keep the candidate from ever starting, and the `blocks` edge already keeps
+  // the order. Only such a member relation counts: a chosen or outside partner
+  // holds no lane, so a full_plan group keeps its in-lane order.
+  /** @type {Set<string>} */
+  const predecessors = new Set(
+    chosen.filter((c) =>
+      /** @type {RelationLine[]} */ (lines_by_candidate.get(c)).some(
+        (line) =>
+          line.side === 'member' &&
+          line.basis === 'blocks' &&
+          line.relation === 'c_first'
+      )
+    )
+  );
+
   // Bundles: chosen candidates joined by a constraint relation.
   /** @type {Map<string, string>} */
   const parent = new Map(chosen.map((id) => [id, id]));
@@ -498,7 +515,12 @@ export function computePlacement(input) {
     for (const line of /** @type {RelationLine[]} */ (
       lines_by_candidate.get(c)
     )) {
-      if (line.side === 'chosen' && CONSTRAINTS.has(line.relation)) {
+      if (
+        line.side === 'chosen' &&
+        CONSTRAINTS.has(line.relation) &&
+        !predecessors.has(c) &&
+        !predecessors.has(line.other)
+      ) {
         const ra = find(c);
         const rb = find(line.other);
         if (ra !== rb) {
@@ -517,8 +539,13 @@ export function computePlacement(input) {
   }
   // `chosen` is display-ordered, so every member list is too, and bundles
   // ordered by their first member follow the display order of first members.
-  const bundles = [...bundle_members.values()].sort((p, q) =>
-    compare(p[0], q[0])
+  // Predecessors apply last: once queued, one is a member to the candidates still
+  // waiting, and a chosen blocker of it would turn predecessor mid-batch and stop
+  // `[전체 적용]` with `moved`. Applied after them it never reads as one.
+  const bundles = [...bundle_members.values()].sort(
+    (p, q) =>
+      Number(predecessors.has(p[0])) - Number(predecessors.has(q[0])) ||
+      compare(p[0], q[0])
   );
 
   /**
@@ -659,7 +686,9 @@ export function computePlacement(input) {
       );
     /** @type {PlacementLane} */
     let lane;
-    if (k_items.length === 0) {
+    if (predecessors.has(members[0])) {
+      lane = 'parallel';
+    } else if (k_items.length === 0) {
       lane = needs_serial ? emptiestSerial() : 'parallel';
     } else {
       const k_lanes = new Set(k_items.map((item) => item.lane));
@@ -755,9 +784,20 @@ export function computePlacement(input) {
       }
       lanes.set(lane, final_order);
       for (const line of lines) {
-        if (
+        // A `blocks` line never runs concurrently: the edge keeps the order.
+        if (line.basis === 'blocks' || !CONSTRAINTS.has(line.relation)) {
+          continue;
+        }
+        if (predecessors.has(c)) {
+          if (line.side !== 'outside') {
+            warnings.push({
+              code: 'predecessor_parallel',
+              other: line.other,
+              ...(line.other_lane ? { other_lane: line.other_lane } : {})
+            });
+          }
+        } else if (
           line.side === 'member' &&
-          CONSTRAINTS.has(line.relation) &&
           line.other_lane &&
           (lane === 'parallel' || line.other_lane !== lane)
         ) {

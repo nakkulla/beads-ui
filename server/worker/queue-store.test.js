@@ -14034,6 +14034,64 @@ describe('worker/queue-store record transfer — 접미 불변식 (UI-e20c §3)'
     expect(liveAttemptIds(store)).toEqual(['a-2']);
     expect(fs.existsSync(attemptRecordPath(WS, 'UI-leaf', 'a-1'))).toBe(true);
   });
+
+  test('transfers a dismissed lane-bound failure once a newer attempt exists', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-newer', {
+        status: 'failed',
+        cause: 'session_failed',
+        serial_lane_id: 's1',
+        finished_at: 100,
+        dismissed_at: 150
+      }),
+      'a-2': rawAttempt('a-2', 'UI-newer', {
+        status: 'waiting',
+        cause: 'prerequisite_unmet',
+        serial_lane_id: 's1',
+        started_at: 200,
+        finished_at: 250
+      })
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-2']);
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-newer', 'a-1'))).toBe(true);
+  });
+
+  test('keeps a released failed leaf released across a partial transfer and a reload', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-partial', {
+        status: 'failed',
+        cause: 'session_failed',
+        serial_lane_id: 's1',
+        started_at: 900,
+        dismissed_at: 950
+      }),
+      // Undismissed, so the suffix stops here and the pass stays partial. The
+      // inverted clock makes this record the timestamp-latest once a-1 leaves.
+      'a-2': rawAttempt('a-2', 'UI-partial', {
+        status: 'failed',
+        cause: 'session_failed',
+        serial_lane_id: 's1',
+        started_at: 800
+      }),
+      'a-3': rawAttempt('a-3', 'UI-partial', {
+        status: 'waiting',
+        cause: 'prerequisite_unmet',
+        serial_lane_id: 's1',
+        started_at: 100
+      })
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(Object.keys(reloaded.attempts)).toEqual(['a-2', 'a-3']);
+    expect(activeLaneLineages(reloaded).size).toBe(0);
+  });
 });
 
 describe('worker/queue-store — 레인 해제 집합 단일화 (UI-e20c §9)', () => {
@@ -14050,7 +14108,7 @@ describe('worker/queue-store — 레인 해제 집합 단일화 (UI-e20c §9)', 
     );
 
     expect(source).not.toMatch(/const LANE_RELEASING_\w* = new Set/);
-    expect(source).toContain('LANE_RELEASING_ATTEMPT_STATUSES');
+    expect(source).toContain('attemptHoldsSerialLane');
   });
 });
 

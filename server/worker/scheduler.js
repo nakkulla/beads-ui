@@ -134,9 +134,10 @@ import { providerTargetScope } from './provider-holds.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
   DEFAULT_SLOTS,
-  LANE_RELEASING_ATTEMPT_STATUSES,
   MIN_SLOTS,
-  holdsHandoffReservation
+  attemptHoldsSerialLane,
+  holdsHandoffReservation,
+  laneHoldFacts
 } from './queue-store.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import {
@@ -1225,12 +1226,12 @@ function waitingEntryOf(q, bead_id) {
  * occupied by a lineage while any of these holds for an attempt carrying its
  * `serial_lane_id`:
  *
- *   - a LEAF attempt (nothing resumed from it) in a status outside
- *     {@link LANE_RELEASING_ATTEMPT_STATUSES} — running, paused, failed,
- *     orphaned; `dismissed_at` is a UI hide, never a release. That set is
- *     owned by `queue-store.js` and imported rather than restated: the
- *     transfer predicate reads the same membership, and a second copy here
- *     would let occupancy and transfer mean two different things;
+ *   - an attempt for which `queue-store.js` {@link attemptHoldsSerialLane} says
+ *     so — a leaf outside the releasing set, and when it has ended, its bead's
+ *     latest implementation attempt (UI-ey6v §3.1); `dismissed_at` is a UI hide,
+ *     never a release. That judgment is imported rather than restated: the
+ *     transfer predicate reads the same one, and a second copy here would let
+ *     occupancy and transfer mean two different things;
  *   - the bead sits in durable `pr_wait` without a `merge_shelved` record
  *     (its terminal `done` attempt holds the lane until shelving or merge
  *     cleanup); unshelving restores this occupancy on the next read;
@@ -1241,9 +1242,7 @@ function waitingEntryOf(q, bead_id) {
  */
 export function activeLaneLineages(q) {
   const values = Object.values(q.attempts || {});
-  const resumed = new Set(
-    values.map((attempt) => attempt?.resumed_from).filter(Boolean)
-  );
+  const hold_facts = laneHoldFacts(q);
   /** @type {Map<string, Set<string>>} */
   const lanes = new Map();
   /**
@@ -1260,13 +1259,9 @@ export function activeLaneLineages(q) {
     lanes.set(key, set);
   }
   for (const attempt of values) {
-    if (!attempt || LANE_RELEASING_ATTEMPT_STATUSES.has(attempt.status)) {
-      continue;
+    if (attempt && attemptHoldsSerialLane(attempt, hold_facts)) {
+      occupy(attempt.serial_lane_id, serialLineageId(attempt));
     }
-    if (resumed.has(attempt.attempt_id)) {
-      continue;
-    }
-    occupy(attempt.serial_lane_id, serialLineageId(attempt));
   }
   for (const entry of q.pr_wait || []) {
     if (Object.hasOwn(q.merge_shelved || {}, entry.bead_id)) {
