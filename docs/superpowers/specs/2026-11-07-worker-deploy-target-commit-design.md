@@ -29,7 +29,8 @@ dotfiles 저장소)이 맡는다. 이 Bead는 그 계약을 따르는 beads-ui �
 
 ## 1. 검증된 전제
 
-base `be68d6a3096b4fe9709bdb57452422de8d264897` 기준.
+base `be68d6a3096b4fe9709bdb57452422de8d264897` 기준. 재검토(2026-11-07)에서 `server/worker/queue-store.js`·`AGENTS.md`·ADR 인용은
+base `ebde91313ba25aae584e1a508e41854258a811dd`로 다시 확인했고, 나머지 인용 파일은 그 사이 바뀌지 않았다.
 
 - `resolveEffectiveRepoOps`는 종류와 상관없이 정책을 이전 SHA에서 정한다.
   - 대상에만 선언이 있으면 `bootstrap`, 식별자가 다르면 `transition`으로 분류한다 — server/worker/repo-ops-resolver.js:225-271
@@ -42,11 +43,11 @@ base `be68d6a3096b4fe9709bdb57452422de8d264897` 기준.
 - 서버 재시작 뒤 정리의 정확 조회는 그 기록 SHA에서 선언을 다시 읽는다. 스크립트·모드·blob·제한 시간이 맞지 않으면 `repo_operation_timeout_unresolved`를 낸다 — server/worker/repo-operation-coordinator.js:3558-3573 `findExactDeployOperation`. 정리는 그 코드를 정리 실패로 기록한다 — server/worker/pr-actions.js:4292-4315
 - 기록된 작업을 다시 실행할 때는 기록 SHA와 대상으로 정책을 다시 판정하고, blob·모드가 기록과 다르면 `repo_ops_policy_drift`로 끝낸다 — server/worker/repo-operation-coordinator.js:3174-3201 (`launchQueued`)
 - 등록되지 않은 실패 코드는 문장 없이 원시 코드로 보인다 — app/views/worker/failure-labels.js:192 (`failureSentence`가 `null`), :248 (`failureText`)
-- ADR UI-hf8v의 정리 재시도 조항도 "정책·스크립트는 마지막 성공 배포의 base에서 읽는다"고 적는다 — docs/adr/UI-hf8v-monitor-full-placement-plan.md:326, :330
-- 승인 기록 필드와 그 부착 변이 — server/worker/queue-store.js:964, :4593, :4730, :8436, :8919-8938
+- ADR UI-blx2(UI-hf8v → UI-ey6v → UI-blx2 승계)의 정리 재시도 조항도 "정책·스크립트는 마지막 성공 배포의 base에서 읽는다"고 적는다 — docs/adr/UI-blx2-placement-serialize-conflicting-partner.md:357, :361
+- 승인 기록 필드와 그 부착 변이 — server/worker/queue-store.js:968, :4812, :4949, :8815, :9298-9317
 - 승인 요청 CLI — server/cli/index.js:6, :58, :133-134; server/cli/repo-ops.js:76-96; server/cli/usage.js:14
 - 실패 안내 문장 — app/utils/failure-sentences.js:37-41, :201, :222-223; 복구 분류 목록 server/worker/operation-recovery.js:11
-- 운영 문서와 ADR이 "핀된 base SHA의 `[deploy]`"를 적는다 — AGENTS.md:88; docs/adr/UI-hf8v-monitor-full-placement-plan.md:204, :330
+- 운영 문서와 ADR이 "핀된 base SHA의 `[deploy]`"를 적는다 — AGENTS.md:88; docs/adr/UI-blx2-placement-serialize-conflicting-partner.md:235, :361
 - 실제 큐 파일에 승인 기록 필드가 남아 있다(대부분 `null`, beads-ui·dotfiles 큐에 객체 값 몇 건) — `grep -o '"bootstrap_provenance":[^,]*' ~/.local/state/bdui/*/queue.json`
 
 ## 2. 규칙
@@ -128,10 +129,10 @@ base `be68d6a3096b4fe9709bdb57452422de8d264897` 기준.
     - 각 레포 배포 스크립트의 가정
   - 조건 2(맥락 없이 의외): 같은 저장소 작업 기록인데 검증은 이전 base blob을, 배포는 대상 blob을 실행한다.
   - 조건 3(실제 트레이드오프): 스크립트 변경 PR의 자기 배포와, 첫 배포를 사람이 켜던 통제 사이의 선택이다.
-  - UI-hf8v에서 바뀌는 조항: 정책 커밋 줄(204행), 정리 재시도의 "정책·스크립트는 마지막 성공 배포의
-    base에서 읽는다"(326행), 330행의 기각 사유. 새 조항은 "배포는 대상 커밋, 검증은 이전 base"로
+  - UI-blx2에서 바뀌는 조항: 정책 커밋 줄(235행), 정리 재시도의 "정책·스크립트는 마지막 성공 배포의
+    base에서 읽는다"(357행), 361행의 기각 사유. 새 조항은 "배포는 대상 커밋, 검증은 이전 base"로
     구분한다. 나머지 조항은 재진술한다.
-  - `summary`: "Worker 배포는 머지된 대상 커밋의 repo-ops [deploy] 선언·스크립트로 실행해 첫 선언도 승인 없이 돌고 [배포 실행]은 복구용으로만 남으며 검증만 이전 base blob을 쓴다 — 모니터 전체 배치안과 나머지 조항은 UI-hf8v 그대로다" → ADR, supersede UI-hf8v
+  - `summary`: "Worker 배포는 머지된 대상 커밋의 repo-ops [deploy] 선언·스크립트로 실행해 첫 선언도 승인 없이 돌고 [배포 실행]은 복구용으로만 남으며 검증만 이전 base blob을 쓴다 — 부딪히는 상대 직렬 배치안과 나머지 조항은 UI-blx2 그대로다" → ADR, supersede UI-blx2
 - 지난 레코드의 `bootstrap_provenance` 키를 읽을 때 무시한다 — 조건 1 실패: 정규화 한 곳이라 혼자 되돌릴 수 있음 → ADR 아님
 
 ## 5. 경계·후속
