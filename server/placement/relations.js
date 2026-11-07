@@ -310,6 +310,25 @@ export function placementRelations(input) {
     }
   }
 
+  // Direct `blocks` edges between two waiting or lane-occupying beads, in any
+  // lanes (UI-blx2 §3.6): the browser needs them to tell a partner that is
+  // another item's prerequisite, which it must not pull into a lane. Fixed
+  // relations only — no jev pair, so the states and progress above stay put.
+  // An edge inside one serial lane gets `in_lane` from the loop below.
+  const members = [
+    ...new Set(input.members.filter((id) => !candidate_set.has(id)))
+  ];
+  for (let left = 0; left < members.length; left += 1) {
+    for (let right = left + 1; right < members.length; right += 1) {
+      const [a, b] = orientPair(members[left], members[right]);
+      const key = placementPairKey(a, b);
+      const fixed = relations[key] ? null : fixedRelation(a, b, input);
+      if (fixed) {
+        relations[key] = fixed;
+      }
+    }
+  }
+
   for (const edge of input.lane_edges) {
     if (edge.blocker === edge.blockee) {
       continue;

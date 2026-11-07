@@ -28,6 +28,7 @@ import {
   sessionInquiryRegisterHandler,
   sessionInquiryStateHandler,
   workerQueueGetHandler,
+  workerQueuePlaceBundleHandler,
   workerQueuePlaceHandler,
   workerQueueRemoveHandler
 } from './routes/worker-queue.js';
@@ -175,6 +176,7 @@ export function createApp(config) {
   app.get('/api/worker/queue', workerQueueGetHandler);
   app.get('/api/worker/incidents', workerIncidentsHandler);
   app.post('/api/worker/queue/place', workerQueuePlaceHandler);
+  app.post('/api/worker/queue/place-bundle', workerQueuePlaceBundleHandler);
   app.post('/api/worker/queue/remove', workerQueueRemoveHandler);
   app.post('/api/worker/external-wait', externalWaitRegisterHandler);
   app.post('/api/worker/external-wait/:id/hold', externalWaitHoldHandler);

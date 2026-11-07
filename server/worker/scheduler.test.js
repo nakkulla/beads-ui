@@ -27621,6 +27621,166 @@ describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
   });
 });
 
+describe('스케줄러 레인 상속 (UI-blx2 §3.5)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * A scheduler whose PR observation reads as down, so a finished session
+   * lands on the env retry ladder instead of in PR 대기.
+   *
+   * @param {Record<string, any>} [extra]
+   */
+  function ladderEnv(extra = {}) {
+    const clock = { now: 1000 };
+    const env = setup({
+      config: { B1: {}, B2: {} },
+      slots: 1,
+      now: () => clock.now,
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: false,
+          reason: 'gh_observation_failed',
+          pr_url: null
+        }))
+      },
+      ...extra
+    });
+    return { ...env, clock };
+  }
+
+  /**
+   * Let the earliest rung come due and its timer fire.
+   *
+   * @param {ReturnType<typeof ladderEnv>} env
+   */
+  async function runDue(env) {
+    env.clock.now += RETRY_DELAYS_MS[0];
+    await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+    await flush();
+  }
+
+  /**
+   * The bead's attempts in insertion order.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   * @returns {any[]}
+   */
+  function attemptsOf(store, bead_id) {
+    return Object.values(store.snapshot(WS).attempts).filter(
+      (/** @type {any} */ attempt) => attempt.bead_id === bead_id
+    );
+  }
+
+  test('inherits the bound lane on the retry of a bead outside every waiting lane', async () => {
+    const env = ladderEnv();
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    env.store.remove(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'B1'
+    });
+    env.store.placeBundle(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      lane: 's1',
+      binds: ['B1'],
+      steps: [{ bead_id: 'B2', index: 0 }]
+    });
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    await runDue(env);
+
+    const retried = attemptsOf(env.store, 'B1').at(-1);
+    expect(env.runner.spawnOrder).toEqual(['B1', 'B1']);
+    expect(retried.resumed_from ?? null).toBeNull();
+    expect(retried.serial_lane_id).toBe('s1');
+  });
+
+  test('keeps the next waiting row behind a bound bead that retries', async () => {
+    const env = ladderEnv();
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    env.store.placeBundle(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      lane: 's1',
+      binds: ['B1'],
+      steps: [{ bead_id: 'B2', index: 0 }]
+    });
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    await runDue(env);
+
+    expect(env.runner.spawnOrder).toEqual(['B1', 'B1']);
+    expect(attemptsOf(env.store, 'B1').at(-1).serial_lane_id).toBe('s1');
+    expect(env.store.snapshot(WS).admission.B1).toBeUndefined();
+  });
+
+  test('dispatches a waiting bead on its waiting row lane rather than the lane it holds', async () => {
+    const env = ladderEnv();
+    seedLanes(env.store, { s2: ['B1'] });
+    await env.scheduler.tick(WS);
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+    env.store.setSerialLaneCount(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      count: 1
+    });
+
+    await runDue(env);
+
+    const attempts = attemptsOf(env.store, 'B1');
+    expect(attempts[0].serial_lane_id).toBe('s2');
+    expect(attempts.at(-1).serial_lane_id).toBeNull();
+  });
+
+  test('continues the lane a lineage bound from PR 대기 holds in a conflict relaunch', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'd1', bead_id: 'B1' }
+    });
+    env.store.moveToPrWait(WS, {
+      bead_id: 'B1',
+      attempt_id: 'd1',
+      patch: {
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'base-B1',
+        runner: 'claude',
+        model: 'opus',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+    env.store.placeBundle(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      lane: 's1',
+      binds: ['B1'],
+      steps: [{ bead_id: 'B2', index: 0 }]
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    const child =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(res.ok).toBe(true);
+    expect(env.store.snapshot(WS).attempts.d1.serial_lane_id).toBeNull();
+    expect(child.serial_lane_id).toBe('s1');
+  });
+});
+
 describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () => {
   test('waits on a blocked serial head with a visible reason while other lanes progress', async () => {
     const env = setup({

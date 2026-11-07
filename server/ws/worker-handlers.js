@@ -127,6 +127,10 @@ import {
   usageUnknownResetMs
 } from '../worker/provider-health.js';
 import { onQueueChanged } from '../worker/queue-events.js';
+import {
+  placeBundleInQueue,
+  placeBundleShapeOf
+} from '../worker/queue-place-bundle.js';
 import { placeBeadInQueue, placePlanInQueue } from '../worker/queue-place.js';
 import { removeBeadFromQueue } from '../worker/queue-remove.js';
 import {
@@ -5240,6 +5244,75 @@ export async function handleWorkerQueuePlacePlan(ws, req) {
         ...(outcome.reason ? { reason: outcome.reason } : {}),
         placed: outcome.placed,
         skipped: outcome.skipped,
+        queue: decorateQueue(key, outcome.queue)
+      })
+    )
+  );
+}
+
+/**
+ * Handle `worker-queue-place-bundle` (UI-blx2 §3.4). Payload:
+ * `{ root_dir?, expected_revision, lane: 's1'..'s5', binds: string[],
+ * steps: [{ bead_id, index }] }`.
+ *
+ * One 묶음 of the placement plan in one store CAS: bind at most one lane-less
+ * occupant, then move or add the steps in order. The lane and steps are the
+ * client's; the server judges no lane. Reply: `{ applied, conflict, queue }`
+ * plus `reason` (store refusal) or `admission_reason` + `bead_id` (a step the
+ * admission refused; nothing written). A write fans out once.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerQueuePlaceBundle(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.lane !== 'string' || !/^s[1-5]$/.test(p.lane)) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          "payload.lane must be a serial lane id ('s1'..'s5')"
+        )
+      )
+    );
+    return;
+  }
+  const shape = placeBundleShapeOf(p);
+  if (shape === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { binds: string[], steps: [{ bead_id: string, index: integer }] }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const outcome = await placeBundleInQueue(key, {
+    lane: p.lane,
+    binds: shape.binds,
+    steps: shape.steps,
+    expected_revision: revisionOf(p)
+  });
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        applied: outcome.applied,
+        conflict: outcome.conflict,
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
+        ...(outcome.admission_reason
+          ? {
+              admission_reason: outcome.admission_reason,
+              bead_id: outcome.bead_id
+            }
+          : {}),
         queue: decorateQueue(key, outcome.queue)
       })
     )

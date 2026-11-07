@@ -776,3 +776,118 @@ test('pushes a fresh snapshot to ws subscribers after an http place', async () =
     snapshots[0].payload.queue.queue.map((/** @type {any} */ e) => e.bead_id)
   ).toEqual(['UI-a']);
 });
+
+/**
+ * @param {Record<string, unknown>} body
+ * @returns {Promise<{ status: number, body: any }>}
+ */
+async function postPlaceBundle(body) {
+  const response = await fetch(`${base_url}/api/worker/queue/place-bundle`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return {
+    status: response.status,
+    body: await response.json().catch(() => null)
+  };
+}
+
+test('rejects a place-bundle without expected_revision', async () => {
+  const { status, body } = await postPlaceBundle({
+    root_dir: workspace,
+    lane: 's1',
+    binds: [],
+    steps: [{ bead_id: 'UI-a', index: 0 }]
+  });
+
+  expect(status).toBe(400);
+  expect(body).toEqual({ ok: false, error: 'bad_request' });
+});
+
+test('places a bundle into the lane and reports the new revision', async () => {
+  seedQueueFile({ revision: 3, queue: [{ bead_id: 'UI-x', added_at: 1 }] });
+
+  const { status, body } = await postPlaceBundle({
+    root_dir: workspace,
+    lane: 's1',
+    binds: [],
+    steps: [
+      { bead_id: 'UI-x', index: 0 },
+      { bead_id: 'UI-a', index: 1 }
+    ],
+    expected_revision: 3
+  });
+
+  expect(status).toBe(200);
+  expect(body).toEqual({ ok: true, applied: true, revision: 4 });
+  expect(
+    getWorkerRuntime()
+      .queueStore.snapshot(workspace)
+      .serial_lanes[0].entries.map((entry) => entry.bead_id)
+  ).toEqual(['UI-x', 'UI-a']);
+});
+
+test('reports a place-bundle admission refusal with its bead and writes nothing', async () => {
+  seedQueueFile({ revision: 3, queue: [{ bead_id: 'UI-x', added_at: 1 }] });
+  __setUnattachedAdmissionCheckForTest(async (_root, bead_id) =>
+    bead_id === 'UI-a'
+      ? { ok: false, reason: 'worker_ineligible' }
+      : { ok: true }
+  );
+
+  const { status, body } = await postPlaceBundle({
+    root_dir: workspace,
+    lane: 's1',
+    binds: [],
+    steps: [
+      { bead_id: 'UI-x', index: 0 },
+      { bead_id: 'UI-a', index: 1 }
+    ],
+    expected_revision: 3
+  });
+
+  const queue = getWorkerRuntime().queueStore.snapshot(workspace);
+  expect(status).toBe(200);
+  expect(body).toEqual({
+    ok: true,
+    applied: false,
+    conflict: false,
+    admission_reason: 'worker_ineligible',
+    bead_id: 'UI-a'
+  });
+  expect(queue.revision).toBe(3);
+  expect(queue.admission).toEqual({});
+});
+
+test('pushes a fresh snapshot to ws subscribers after an http place-bundle', async () => {
+  const sock = fakeSocket();
+  setConnWorkspace(sock, /** @type {any} */ ({ root_dir: workspace }));
+  handleSubscribeWorkerQueue(sock, {
+    id: 's1',
+    type: 'subscribe-worker-queue',
+    payload: { id: 'wq' }
+  });
+  sock.sent = [];
+
+  await postPlaceBundle({
+    root_dir: workspace,
+    lane: 's1',
+    binds: [],
+    steps: [{ bead_id: 'UI-a', index: 0 }],
+    expected_revision: 0
+  });
+
+  const snapshots = sock.sent
+    .map((/** @type {string} */ raw) => JSON.parse(raw))
+    .filter(
+      (/** @type {any} */ message) => message.type === 'worker-queue-snapshot'
+    );
+  expect(snapshots).toHaveLength(1);
+  expect(snapshots[0].payload.queue.revision).toBe(1);
+  expect(
+    snapshots[0].payload.queue.serial_lanes[0].entries.map(
+      (/** @type {any} */ e) => e.bead_id
+    )
+  ).toEqual(['UI-a']);
+});

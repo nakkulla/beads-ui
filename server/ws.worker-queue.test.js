@@ -854,6 +854,7 @@ describe('ws worker-queue channel', () => {
       'worker-queue-toggle',
       'worker-automation-toggle',
       'worker-queue-place',
+      'worker-queue-place-bundle',
       'worker-queue-reorder',
       'worker-queue-remove',
       'worker-queue-set-orchestration-defaults',
@@ -1056,6 +1057,141 @@ describe('ws worker-queue channel', () => {
       expected_revision: 0
     });
     expect(tick).not.toHaveBeenCalled();
+  });
+});
+
+describe('ws worker-queue-place-bundle (UI-blx2 §3.4)', () => {
+  /**
+   * A subscribed socket over a queue holding one parallel waiting bead `X`
+   * at revision 1.
+   */
+  async function subscribedWithWaiting() {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm0', 'worker-queue-place', {
+      bead_id: 'X',
+      expected_revision: 0
+    });
+    sock.sent = [];
+    return sock;
+  }
+
+  test('seats a move and an add in one revision and pushes one snapshot', async () => {
+    const sock = await subscribedWithWaiting();
+
+    await send(sock, 'm1', 'worker-queue-place-bundle', {
+      lane: 's1',
+      binds: [],
+      steps: [
+        { bead_id: 'X', index: 0 },
+        { bead_id: 'C', index: 1 }
+      ],
+      expected_revision: 1
+    });
+
+    const reply = replyFor(sock, 'm1').payload;
+    expect(reply).toMatchObject({ applied: true, conflict: false });
+    expect(reply.queue.revision).toBe(2);
+    expect(
+      reply.queue.serial_lanes[0].entries.map(
+        (/** @type {any} */ e) => e.bead_id
+      )
+    ).toEqual(['X', 'C']);
+    expect(queueSnapshots(sock).map((q) => q.revision)).toEqual([2]);
+  });
+
+  test('writes nothing and names the bead when admission refuses an added step', async () => {
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        admission: {
+          check: async (/** @type {string} */ bead_id) =>
+            bead_id === 'C'
+              ? { ok: false, reason: 'spec_missing' }
+              : { ok: true }
+        }
+      })
+    );
+    const sock = await subscribedWithWaiting();
+
+    await send(sock, 'm1', 'worker-queue-place-bundle', {
+      lane: 's1',
+      binds: [],
+      steps: [
+        { bead_id: 'X', index: 0 },
+        { bead_id: 'C', index: 1 }
+      ],
+      expected_revision: 1
+    });
+
+    const reply = replyFor(sock, 'm1').payload;
+    expect(reply).toMatchObject({
+      applied: false,
+      conflict: false,
+      admission_reason: 'spec_missing',
+      bead_id: 'C'
+    });
+    expect(reply.queue.revision).toBe(1);
+    expect(reply.queue.admission.C).toBeUndefined();
+    expect(queueSnapshots(sock)).toEqual([]);
+  });
+
+  test('replies the store reason when the lane is not configured', async () => {
+    const sock = await subscribedWithWaiting();
+
+    await send(sock, 'm1', 'worker-queue-place-bundle', {
+      lane: 's3',
+      binds: [],
+      steps: [{ bead_id: 'X', index: 0 }],
+      expected_revision: 1
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: false,
+      conflict: false,
+      reason: 'lane_invalid'
+    });
+    expect(queueSnapshots(sock)).toEqual([]);
+  });
+
+  test('rejects a payload without steps as a bad request', async () => {
+    const sock = await subscribedWithWaiting();
+
+    await send(sock, 'm1', 'worker-queue-place-bundle', {
+      lane: 's1',
+      binds: [],
+      steps: [],
+      expected_revision: 1
+    });
+
+    expect(replyFor(sock, 'm1')).toMatchObject({
+      ok: false,
+      error: { code: 'bad_request' }
+    });
+  });
+
+  test('kicks the live tick once after a successful bundle', async () => {
+    const tick = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick, stop: vi.fn() },
+        admission: { check: async () => ({ ok: true }) }
+      })
+    );
+    const sock = await subscribedWithWaiting();
+    tick.mockClear();
+
+    await send(sock, 'm1', 'worker-queue-place-bundle', {
+      lane: 's1',
+      binds: [],
+      steps: [{ bead_id: 'C', index: 0 }],
+      expected_revision: 1
+    });
+
+    expect(replyFor(sock, 'm1').payload.applied).toBe(true);
+    expect(tick).toHaveBeenCalledTimes(1);
   });
 });
 
