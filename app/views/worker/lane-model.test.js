@@ -9222,6 +9222,23 @@ describe('점유 행 배지 (UI-ey6v §3.2)', () => {
     expect(lane.occupants[0].badge).toBe('PR 대기 · 점유');
   });
 
+  test('labels a pr_wait occupant with an active discard as discarding', () => {
+    const lane = occupiedLane(attemptOf({ status: 'done' }), {
+      pr_wait: [{ bead_id: 'A-1' }],
+      discard_operations: {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'A-1',
+          attempt_id: 't1',
+          phase: 'requested',
+          requested_at: 40
+        }
+      }
+    });
+
+    expect(lane.occupants[0].badge).toBe('폐기 중 · 점유');
+  });
+
   test('labels an occupant with no attempt material as plain 점유', () => {
     const lane = occupiedLane({});
 

@@ -4211,6 +4211,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
      * @returns {MonitorOccupant}
      */
     const occupantOf = (bead_id) => {
+      // 폐기 중인 Bead는 PR 대기 행이든 attempt 상태가 무엇이든 폐기를 먼저 본다
+      // (UI-ey6v §3.2): PR 대기 항목은 폐기가 끝날 때까지 남는다.
+      const discarding = Boolean(
+        discardProjection(discard_operations, bead_id).operation
+      );
       const in_pr_wait = pr_wait.find(
         (item) => item.id === bead_id && item.root_dir === root_dir
       );
@@ -4218,7 +4223,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         return {
           id: bead_id,
           title: in_pr_wait.title,
-          badge: 'PR 대기 · 점유'
+          badge: discarding ? '폐기 중 · 점유' : 'PR 대기 · 점유'
         };
       }
       const live = running.find(
@@ -4226,11 +4231,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
       );
       // 점유가 실행중 레인보다 오래 산다: ✕로 닫힌 실패는 타일에서 빠지지만 레인은 계속
       // 붙잡는다. 레인 목록만 보면 그 실패를 '실행 중'이라고 부르게 되므로, 타일이 없을
-      // 때는 attempt 상태를 직접 읽는다. 폐기 중인 Bead의 attempt 상태는 무엇이든 될 수
-      // 있어 폐기를 먼저 본다 (UI-ey6v §3.2).
+      // 때는 attempt 상태를 직접 읽는다.
       const status =
         live?.run_state || lastImplementationStatus(attempts, bead_id);
-      const badge = discardProjection(discard_operations, bead_id).operation
+      const badge = discarding
         ? '폐기 중 · 점유'
         : (OCCUPANT_BADGES.get(status || '') ?? '점유');
       return {
