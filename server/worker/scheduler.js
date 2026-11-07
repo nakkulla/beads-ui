@@ -3890,7 +3890,37 @@ export function createScheduler(deps) {
     if (remote.code !== 0) {
       return 'remote_ref_observe_failed';
     }
-    return remote.stdout.trim().length > 0 ? 'remote_branch_owner' : null;
+    if (remote.stdout.trim().length === 0) {
+      return null;
+    }
+    // The bead's own earlier push is not a foreign owner: a single exact
+    // remote head equal to, or an ancestor of, the local branch head is ours.
+    // Anything unparseable or uncomparable stays fail-closed.
+    const lines = remote.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    const [remote_sha, ref_name, ...rest] =
+      lines.length === 1 ? lines[0].split(/\s+/) : [];
+    const local_sha = identity.branch_head_sha;
+    if (
+      rest.length > 0 ||
+      ref_name !== `refs/heads/${identity.branch}` ||
+      typeof remote_sha !== 'string' ||
+      !/^[0-9a-f]{40,64}$/i.test(remote_sha) ||
+      typeof local_sha !== 'string' ||
+      !/^[0-9a-f]{40,64}$/i.test(local_sha)
+    ) {
+      return 'remote_branch_owner';
+    }
+    if (remote_sha.toLowerCase() === local_sha.toLowerCase()) {
+      return null;
+    }
+    const ancestor = await deps.gitRun(
+      ['merge-base', '--is-ancestor', remote_sha, local_sha],
+      { cwd: repo }
+    );
+    return ancestor.code === 0 ? null : 'remote_branch_owner';
   }
 
   /**

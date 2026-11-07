@@ -18678,6 +18678,142 @@ describe('scheduler worktree residue hygiene', () => {
     );
   });
 
+  /**
+   * A git runner whose origin holds branch S1 at `remote_sha`.
+   *
+   * @param {string} remote_sha
+   * @param {number} [ancestor_code] - Exit code of `merge-base --is-ancestor`.
+   */
+  function remoteBranchGitRun(remote_sha, ancestor_code = 1) {
+    return vi.fn(
+      async (/** @type {string[]} */ args, /** @type {any} */ run = {}) => {
+        if (args.includes('--abbrev-ref')) {
+          return {
+            code: 0,
+            stdout: `${path.basename(run.cwd || '')}\n`,
+            stderr: ''
+          };
+        }
+        if (args[0] === 'ls-remote') {
+          return {
+            code: 0,
+            stdout: `${remote_sha}\trefs/heads/S1\n`,
+            stderr: ''
+          };
+        }
+        if (args[0] === 'merge-base' && args[1] === '--is-ancestor') {
+          return { code: ancestor_code, stdout: '', stderr: '' };
+        }
+        return { code: 1, stdout: '', stderr: '' };
+      }
+    );
+  }
+
+  /**
+   * Seed a failed attempt whose session matches the pushed residue head.
+   *
+   * @param {any} env
+   */
+  function seedPushedResidue(env) {
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'prior',
+        bead_id: 'S1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        head_oid: 'a'.repeat(40),
+        session_id: 'session-1',
+        dismissed_at: 900
+      }
+    });
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation({
+        identity: {
+          worktree_realpath: '/wt/S1',
+          branch: 'S1',
+          head_sha: 'a'.repeat(40),
+          branch_head_sha: 'a'.repeat(40),
+          base_oid: 'b'.repeat(40),
+          status_digest: 'c'.repeat(64)
+        }
+      })
+    );
+  }
+
+  test('resumes a residue whose remote branch head is its own branch head', async () => {
+    const env = residueEnv({ gitRun: remoteBranchGitRun('a'.repeat(40)) });
+    seedPushedResidue(env);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').resume_session_id).toBe('session-1');
+    expect(env.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: '잔재 자동 처분 · resume · resume_available'
+      })
+    );
+  });
+
+  test('resumes a residue whose remote branch head is an ancestor of its branch head', async () => {
+    const gitRun = remoteBranchGitRun('d'.repeat(40), 0);
+    const env = residueEnv({ gitRun });
+    seedPushedResidue(env);
+
+    await env.scheduler.tick(WS);
+
+    expect(gitRun).toHaveBeenCalledWith(
+      ['merge-base', '--is-ancestor', 'd'.repeat(40), 'a'.repeat(40)],
+      { cwd: '/repo' }
+    );
+    expect(env.runner.settingsFor('S1').resume_session_id).toBe('session-1');
+  });
+
+  test.each([
+    ['is not an ancestor', 1],
+    ['cannot be compared', 128]
+  ])(
+    'keeps a remote branch owner whose head %s',
+    async (_label, ancestor_code) => {
+      const env = residueEnv({
+        gitRun: remoteBranchGitRun('d'.repeat(40), ancestor_code)
+      });
+      seedPushedResidue(env);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).at(-1)
+      ).toMatchObject({
+        status: 'failed',
+        cause: 'stale_work_unresolved',
+        cause_detail: { summary: 'remote_branch_owner' }
+      });
+    }
+  );
+
+  test('keeps an external PR owner ahead of an own remote branch', async () => {
+    const env = residueEnv({
+      gitRun: remoteBranchGitRun('a'.repeat(40)),
+      externalPrs: { S1: { number: 1 } }
+    });
+    seedPushedResidue(env);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(Object.values(env.store.snapshot(WS).attempts).at(-1)).toMatchObject(
+      {
+        status: 'failed',
+        cause: 'stale_work_unresolved',
+        cause_detail: { summary: 'external_pr_owner' }
+      }
+    );
+  });
+
   test('refuses adoption when identity changes before launch', async () => {
     const env = residueEnv();
     env.worktree.removeIfDiscardable
