@@ -4326,6 +4326,89 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
 
     expect(lanes.running).toEqual([]);
   });
+
+  /**
+   * A residue disposition failure of A-1 that a newer session took over
+   * (UI-68r5 §3.4): the failed attempt, the server's ownership material and
+   * the session row the server no longer excludes.
+   *
+   * @param {Record<string, any>} [patch]
+   */
+  function yieldedWorkspace(patch = {}) {
+    return workspace({
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'A-1',
+          status: 'failed',
+          cause: 'stale_work_unresolved',
+          cause_detail: { summary: 'remote_branch_owner' },
+          started_at: null,
+          finished_at: 1000,
+          bead_session_ref: ''
+        }
+      },
+      session_ownership: {
+        'A-1': {
+          waits: [
+            {
+              owner_kind: 'session',
+              owner_session_id: 'successor',
+              stage: 'hold',
+              registered_at: 5000
+            }
+          ],
+          status: null,
+          current_ref: null,
+          conversation_session_ids: []
+        }
+      },
+      session_active: [sessionActive('A-1', { status: 'open' })],
+      ...patch
+    });
+  }
+
+  test('draws the session tile without failure badge, resume, or discard while a session owns the bead', () => {
+    const lanes = buildLanes([yieldedWorkspace()], [state()]);
+
+    expect(
+      lanes.running.map((tile) => ({
+        id: tile.id,
+        kind: tile.kind,
+        failure: tile.failure ?? null,
+        badges: tile.badges,
+        can_resume: tile.can_resume,
+        discard: tile.discard ?? null
+      }))
+    ).toEqual([
+      {
+        id: 'A-1',
+        kind: 'session',
+        failure: null,
+        badges: [],
+        can_resume: false,
+        discard: null
+      }
+    ]);
+  });
+
+  test('draws no lane row for a yielded bead that still sits in a lane', () => {
+    const lanes = buildLanes(
+      [yieldedWorkspace({ queue: [{ bead_id: 'A-1', added_at: 1 }] })],
+      [state()]
+    );
+
+    expect(lanes.queue.map((item) => item.id)).toEqual([]);
+  });
+
+  test('draws the failure tile of a bead whose snapshot carries no ownership', () => {
+    const lanes = buildLanes(
+      [yieldedWorkspace({ session_ownership: undefined, session_active: [] })],
+      [state()]
+    );
+
+    expect(lanes.running.map((tile) => tile.badges)).toEqual([['⚠ 실패']]);
+  });
 });
 
 describe('monitor 세션 정체 (UI-4xzk §6.4)', () => {

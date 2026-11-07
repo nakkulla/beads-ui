@@ -1687,6 +1687,50 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
     });
   });
 
+  test('passes the ownership input to the monitor running count', () => {
+    const attempts = {
+      'att-1': {
+        attempt_id: 'att-1',
+        bead_id: 'A-yield',
+        status: 'failed',
+        cause: 'stale_work_unresolved',
+        finished_at: NOW - 60 * 60 * 1000,
+        bead_session_ref: ''
+      }
+    };
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'A-yield', added_at: NOW }],
+          attempts,
+          // The decoration `decorateQueue` ships (UI-68r5 §3.4): a newer
+          // session's live wait on the failed bead.
+          session_ownership: {
+            'A-yield': {
+              waits: [
+                {
+                  owner_kind: 'session',
+                  owner_session_id: 'successor',
+                  stage: 'hold',
+                  registered_at: NOW
+                }
+              ],
+              status: null,
+              current_ref: null,
+              conversation_session_ids: []
+            }
+          }
+        })
+      },
+      sessionActive: {
+        [WS_A]: [{ bead_id: 'A-yield', status: 'open', session_refs: [] }]
+      }
+    });
+
+    expect(out[0].counts).toMatchObject({ running: 0, session_active: 1 });
+  });
+
   test('counts a repo with nothing in flight as all zeros', () => {
     const out = buildState({ workspaces: [WS_A] });
 

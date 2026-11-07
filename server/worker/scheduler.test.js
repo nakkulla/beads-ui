@@ -18467,7 +18467,8 @@ describe('scheduler worktree residue hygiene', () => {
 
   // UI-68r5 §3.1: `observe_failed` is an environment reason, so the failure
   // this test records now waits on the env retry ladder instead of ending
-  // terminal with an `attemptFailed` push.
+  // terminal with an `attemptFailed` push — and, like every env rung, the
+  // waiting row carries the ladder's `retry_wait` fence.
   test('reobserves unknown residue once before recording an individual failure', async () => {
     const env = residueEnv();
     env.worktree.removeIfDiscardable.mockResolvedValue(
@@ -18483,7 +18484,7 @@ describe('scheduler worktree residue hygiene', () => {
       bead_id: 'S1',
       base: 'b'.repeat(40)
     });
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(env.store.snapshot(WS).admission.S1?.reason).toBe('retry_wait');
     expect(Object.values(env.store.snapshot(WS).attempts)[0]).toMatchObject({
       status: 'retry_wait',
       cause: 'stale_work_unresolved'
@@ -18643,6 +18644,8 @@ describe('scheduler worktree residue hygiene', () => {
     expect(env.notify.attemptFailed).not.toHaveBeenCalled();
   });
 
+  // UI-68r5 §3.1: the `observe_failed` failure waits on the env retry ladder,
+  // so its waiting row carries the ladder's `retry_wait` fence.
   test('records a failure after observation throws twice', async () => {
     const env = residueEnv();
     env.worktree.removeIfDiscardable.mockRejectedValue(new Error('git failed'));
@@ -18653,7 +18656,7 @@ describe('scheduler worktree residue hygiene', () => {
     expect(Object.values(env.store.snapshot(WS).attempts)[0].cause).toBe(
       'stale_work_unresolved'
     );
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(env.store.snapshot(WS).admission.S1?.reason).toBe('retry_wait');
   });
 
   test('keeps another bead runnable after unresolved residue', async () => {
@@ -18822,6 +18825,8 @@ describe('scheduler worktree residue hygiene', () => {
     );
   });
 
+  // UI-68r5 §3.1: the identity change ends on an environment reason, so the
+  // failure waits on the env retry ladder behind its `retry_wait` fence.
   test('refuses adoption when identity changes before launch', async () => {
     const env = residueEnv();
     env.worktree.removeIfDiscardable
@@ -18836,7 +18841,7 @@ describe('scheduler worktree residue hygiene', () => {
     expect(Object.values(env.store.snapshot(WS).attempts)[0].cause).toBe(
       'stale_work_unresolved'
     );
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(env.store.snapshot(WS).admission.S1?.reason).toBe('retry_wait');
   });
 
   describe('residue disposition failure conversation (UI-68r5)', () => {

@@ -24,6 +24,20 @@ vi.mock('../registry-watcher.js', async (importOriginal) => {
   };
 });
 
+// The scheduler's session ownership judgment (UI-68r5 §3.4) is owned and
+// tested by `scheduler.test.js`; here the click only has to obey its answer.
+const owner_refusal = vi.hoisted(() => ({
+  /** @type {string|null} */
+  value: null
+}));
+vi.mock('../worker/attach.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    workerSessionOwnerRefusal: async () => owner_refusal.value
+  };
+});
+
 const { setConnWorkspace } = await import('./context.js');
 const { TAKEOVER_SETTLE_MS } =
   await import('../worker/external-wait/takeover.js');
@@ -206,6 +220,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  owner_refusal.value = null;
   delete process.env.XDG_STATE_HOME;
   getWorkerRuntime().resolveSession = original_resolve_session;
   handlers.__resetWorkerQueueForTest();
@@ -235,6 +250,28 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
     expect(reply.payload).toMatchObject({ conflict: true, launched: false });
     expect(launches).toEqual([]);
   });
+
+  test.each(['session_owned', 'session_owner_unobservable'])(
+    'refuses [세션에서 이어가기] with %s while a newer session may own the bead',
+    async (reason) => {
+      recordDeployFailure();
+      owner_refusal.value = reason;
+
+      const reply = await click({
+        bead_id: BEAD,
+        expected_revision: revision()
+      });
+
+      expect([reply.payload, launches]).toEqual([
+        expect.objectContaining({
+          launched: false,
+          session: 'not_launched',
+          reason
+        }),
+        []
+      ]);
+    }
+  );
 
   test('launches nothing when the row carries no terminal failure', async () => {
     const reply = await click({
