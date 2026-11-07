@@ -16,7 +16,7 @@
  *
  * @import { PlaceMenuEntry } from './lanes.js'
  * @import { PlacementStatus } from '../../../server/placement/wire.js'
- * @import { PlacementLane, PlacementPlan, PlacementWarning, PlannedPlacement, RelationLine } from '../../utils/placement/compute.js'
+ * @import { BundleStep, PlacementLane, PlacementPlan, PlacementWarning, PlannedPlacement, RelationLine } from '../../utils/placement/compute.js'
  * @import { PlacementBatchResult } from '../../utils/placement/apply.js'
  */
 import { html } from 'lit-html';
@@ -29,7 +29,6 @@ import { resolveSpecEvidence } from '../../../server/spec-id.js';
 import { WORKFLOW_ROUTES } from '../../../server/worker/routes.js';
 import {
   placementSendNotice,
-  sendPlacement,
   sendPlacementBatch
 } from '../../utils/placement/apply.js';
 import {
@@ -527,6 +526,22 @@ export function relationLineText(line, reference = false) {
 }
 
 /**
+ * Why an `uncovered` partner stays where it is (UI-blx2 §3.8) — the tail of
+ * its warning line. A partner without a `reason` gets no tail.
+ *
+ * @type {Record<import('../../utils/placement/compute.js').UncoveredReason, string>}
+ */
+const UNCOVERED_REASON_WORDS = {
+  occupied_other_lane: '상대가 다른 직렬 레인을 잡고 있음',
+  predecessor: '상대가 다른 일의 선행이라 옮기지 않음',
+  waits_in_lane: '상대가 이 레인의 대기 항목을 기다려 묶지 않음',
+  lane_occupied: '레인에 이미 다른 점유가 있어 묶지 않음',
+  discard_active: '상대의 폐기가 진행 중이라 옮기지 않음',
+  not_holdable: '상대가 레인을 잡을 수 있는 상태가 아니라 묶지 않음',
+  no_serial_lane: '직렬 레인이 없어 옮기지 않음'
+};
+
+/**
  * One warning line of the box and the table.
  *
  * @param {PlacementWarning} warning
@@ -542,11 +557,52 @@ export function placementWarningText(warning) {
       return '⚠ blocks 정렬이 자리를 옮겨 선후 조건이 어긋납니다';
     case 'predecessor_parallel':
       return `⚠ 선행이라 병렬에 둠 — ${warning.other}와 동시에 돌 수 있음`;
-    default:
-      return `⚠ ${warning.other}(${placeLaneLabel(
+    default: {
+      const head = `⚠ ${warning.other}(${placeLaneLabel(
         warning.other_lane || 'parallel'
-      )})과 동시에 돌 수 있음 — 상대를 직렬 레인으로 옮기면 피할 수 있음`;
+      )})과 동시에 돌 수 있음`;
+      const why = warning.reason ? UNCOVERED_REASON_WORDS[warning.reason] : '';
+      return why ? `${head} — ${why}` : head;
+    }
   }
+}
+
+/**
+ * What a bound partner is doing now, for its `⛓` line; any other state reads
+ * as `점유`.
+ *
+ * @type {Record<string, string>}
+ */
+const OCCUPANT_STATE_WORDS = {
+  running: '실행 중',
+  paused: '일시정지',
+  failed: '실패',
+  orphaned: '실패',
+  parked: '확인 필요',
+  retry_wait: '재시도 대기',
+  pr_wait: 'PR 대기'
+};
+
+/**
+ * One `move` or `bind` line of a bundle (UI-blx2 §3.7), drawn under the
+ * candidate that pulled the partner — `↪ X: 병렬 #1 → 직렬 1 #1 (옮김)` or
+ * `⛓ X: 실행 중 → 직렬 1 점유로 묶음`.
+ *
+ * @param {BundleStep} step
+ * @param {PlacementLane} lane - Where the bundle seats its steps.
+ * @returns {string}
+ */
+export function bundleStepText(step, lane) {
+  if (step.kind === 'bind') {
+    const state = OCCUPANT_STATE_WORDS[step.from_state || ''] || '점유';
+    return `⛓ ${step.id}: ${state} → ${placeLaneLabel(lane)} 점유로 묶음`;
+  }
+  const from = `${placeLaneLabel(step.from_lane || 'parallel')} #${
+    Number(step.from_index) + 1
+  }`;
+  return `↪ ${step.id}: ${from} → ${placeLaneLabel(lane)} #${
+    Number(step.final_index) + 1
+  } (옮김)`;
 }
 
 /**
@@ -693,6 +749,22 @@ export function placementStopReason(stopped) {
 }
 
 /**
+ * How many bundles of the shown rows went in — what a stopped `[전체 적용]`
+ * reports (UI-blx2 §3.7). A bundle goes in whole or not at all, so its rows'
+ * `bundle` numbers count it once.
+ *
+ * @param {PlannedPlacement[]} shown
+ * @param {string[]} placed
+ * @returns {number}
+ */
+export function placedBundleCount(shown, placed) {
+  const ids = new Set(placed);
+  return new Set(
+    shown.filter((row) => ids.has(row.id)).map((row) => row.bundle)
+  ).size;
+}
+
+/**
  * The plan function of one repository for a fixed candidate order — the
  * `recompute` input of `sendPlacementBatch`.
  *
@@ -814,7 +886,14 @@ export function placementPlanTable(material, view) {
                 ? '판정 전'
                 : item
                   ? placementPositionText(item, plan.configured_lane_count)
-                  : '포함 안 함'}
+                  : '포함 안 함'}${item
+                ? item.pulled.map(
+                    (step) =>
+                      html`<div class="worker-plan__line worker-plan__move">
+                        ${bundleStepText(step, item.lane)}
+                      </div>`
+                  )
+                : ''}
             </td>
             <td>
               ${explained
@@ -878,7 +957,12 @@ export function recommendBoxTemplate(placement, state) {
     <div class="worker-recommend__pos">
       ${placementPositionText(placement, state.lanes?.configured_lane_count)}
     </div>
-    ${placement.reasons.map(
+    ${placement.pulled.map(
+      (step) =>
+        html`<div class="worker-recommend__line worker-recommend__move">
+          ${bundleStepText(step, placement.lane)}
+        </div>`
+    )}${placement.reasons.map(
       (line) =>
         html`<div class="worker-recommend__line">
           ${relationLineText(line)}
@@ -948,11 +1032,38 @@ export function previewCardTemplate(placement, title) {
 }
 
 /**
+ * One dotted card of a partner the plan moves (UI-blx2 §3.7): number, id,
+ * title and a `옮김` tag, in the lane it moves to. Like a candidate's card it
+ * is an overlay — no `data-bead-id`, no drag coordinates — and the partner's
+ * own card stays where it stands until the bundle is applied.
+ *
+ * @param {BundleStep} step
+ * @param {string} title
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function movedCardTemplate(step, title) {
+  return html`<div
+    class="worker-card worker-card--static worker-card--preview"
+    data-preview-id=${step.id}
+    aria-label=${`옮길 자리 ${step.number}: ${step.id}`}
+  >
+    <div class="worker-card__head">
+      <span class="worker-card__preview-no">#${step.number}</span>
+      <span class="worker-card__preview-id">${step.id}</span>
+      <span class="ui-chip worker-card__preview-tag">옮김</span>
+    </div>
+    ${title ? html`<div class="worker-card__title">${title}</div>` : ''}
+  </div>`;
+}
+
+/**
  * Lay the dotted cards of one lane among its drawn rows. A lane the plan puts
- * a candidate in is drawn in the plan's final lane order (`plan.layout`, the
- * order after the store's blocks correction), so the preview shows the lane as
- * `[적용]` will leave it; drawn rows the layout does not name keep their place
- * at the end. A lane without a dotted card is drawn as it is.
+ * a candidate or a moved partner in is drawn in the plan's final lane order
+ * (`plan.layout`, the order after the store's blocks correction), so the
+ * preview shows the lane as `[적용]` will leave it. A row the plan moves out
+ * keeps its place among its neighbours until applied (UI-blx2 §3.7); other
+ * drawn rows the layout does not name keep their place at the end. A lane
+ * without a dotted card is drawn as it is.
  *
  * @param {Array<{ id: string, template: import('lit-html').TemplateResult }>} rows
  * @param {PlacementLane} lane
@@ -961,24 +1072,57 @@ export function previewCardTemplate(placement, title) {
  * @returns {import('lit-html').TemplateResult[]}
  */
 export function interleavePreview(rows, lane, plan, titleOf) {
-  const previews = new Map(
-    (plan ? plan.order : [])
-      .filter((item) => item.lane === lane)
-      .map((item) => [item.id, item])
+  /** @type {Map<string, import('lit-html').TemplateResult>} */
+  const previews = new Map();
+  for (const item of plan ? plan.order : []) {
+    if (item.lane !== lane) {
+      continue;
+    }
+    previews.set(item.id, previewCardTemplate(item, titleOf(item.id)));
+    for (const step of item.bundle_steps) {
+      if (step.kind === 'move' && !previews.has(step.id)) {
+        previews.set(step.id, movedCardTemplate(step, titleOf(step.id)));
+      }
+    }
+  }
+  // Every bundle, a new lane's included: the moved card is not drawn there,
+  // but its own card still keeps its place here.
+  /** @type {Set<string>} */
+  const moved_out = new Set(
+    (plan ? plan.bundles : []).flatMap((bundle) =>
+      bundle.steps
+        .filter((step) => step.kind === 'move' && step.from_lane === lane)
+        .map((step) => step.id)
+    )
   );
   if (!plan || previews.size === 0) {
     return rows.map((row) => row.template);
+  }
+  const layout = [...(plan.layout[lane] || [])];
+  /** @type {string|null} */
+  let previous = null;
+  for (const row of rows) {
+    if (moved_out.has(row.id) && !layout.includes(row.id)) {
+      layout.splice(
+        previous === null ? 0 : layout.indexOf(previous) + 1,
+        0,
+        row.id
+      );
+    }
+    if (layout.includes(row.id)) {
+      previous = row.id;
+    }
   }
   const by_id = new Map(rows.map((row) => [row.id, row]));
   /** @type {Set<string>} */
   const placed = new Set();
   /** @type {import('lit-html').TemplateResult[]} */
   const out = [];
-  for (const id of plan.layout[lane] || []) {
+  for (const id of layout) {
     const preview = previews.get(id);
     const row = by_id.get(id);
     if (preview) {
-      out.push(previewCardTemplate(preview, titleOf(id)));
+      out.push(preview);
     } else if (row && !placed.has(id)) {
       placed.add(id);
       out.push(row.template);
@@ -1066,7 +1210,12 @@ export function createPlacementPreview(options) {
    */
   function titleOf(id) {
     const row = candidates().find((item) => item.id === id);
-    return row && typeof row.title === 'string' ? row.title : '';
+    if (row && typeof row.title === 'string') {
+      return row.title;
+    }
+    // A moved partner is a waiting bead, titled by the snapshot's decoration.
+    const title = objectOf(getQueue()?.bead_titles)[id];
+    return typeof title === 'string' ? title : '';
   }
 
   /**
@@ -1134,11 +1283,15 @@ export function createPlacementPreview(options) {
     };
   }
 
-  /** @param {string} id */
+  /**
+   * `[적용]`: the candidate's bundle through the same send and stop rules as
+   * `[전체 적용]` (UI-blx2 §3.7).
+   *
+   * @param {string} id
+   */
   async function applyOne(id) {
     const queue = getQueue();
-    const plan = planOn(queue, [id]);
-    const placement = plan.by_id[id];
+    const placement = planOn(queue, [id]).by_id[id];
     if (!transport || !placement || busy) {
       return;
     }
@@ -1146,25 +1299,25 @@ export function createPlacementPreview(options) {
     box_notice = null;
     requestRender();
     const root_dir = rootDir();
-    const result = await sendPlacement({
+    const result = await sendPlacementBatch({
       transport,
       root_dir,
-      placement,
-      revision: plan.revision,
-      configured_lane_count: plan.configured_lane_count,
-      lane_count: plan.lane_count,
-      recompute: (next) => planOn(next, [id]),
-      adopt: (next) => adopt(next, root_dir)
+      shown: [placement],
+      queue,
+      recompute: planOn,
+      adopt: (next) => adopt(next, root_dir),
+      snapshot: getQueue
     });
     busy = false;
-    if (result.status === 'applied') {
+    const stopped = result.stopped;
+    if (stopped === null) {
       open_id = null;
-    } else if (result.status === 'moved') {
+    } else if (stopped.cause === 'moved') {
       box_notice = { id, text: '자리가 바뀌었습니다' };
-    } else if (result.status === 'contended') {
-      box_notice = { id, text: placementSendNotice(result) || '' };
+    } else if (stopped.cause === 'contended') {
+      box_notice = { id, text: placementSendNotice(stopped.result) || '' };
     } else {
-      const notice = placementSendNotice(result);
+      const notice = placementSendNotice(stopped.result);
       if (notice) {
         options.showToast(notice, 'error');
       }
@@ -1197,7 +1350,7 @@ export function createPlacementPreview(options) {
       checks.clear();
       options.showToast(`${result.placed.length}건을 넣었습니다`, 'success');
     } else {
-      plan_notice = `${result.placed.length}건 넣음 — ${result.stopped.id}에서 멈춤: ${placementStopReason(result.stopped)}`;
+      plan_notice = `묶음 ${placedBundleCount(shown, result.placed)}개 넣음 — ${result.stopped.id}에서 멈춤: ${placementStopReason(result.stopped)}`;
     }
     requestRender();
   }

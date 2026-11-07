@@ -8,9 +8,15 @@
  * their CAS rule, and take everything else (transport, the snapshot source,
  * the recompute and the adopt step) from the caller.
  *
+ * The unit of a send is the bundle (UI-blx2 §3.3): a lone candidate goes as
+ * `worker-queue-place`, any bundle with a bind, a move or a second candidate
+ * as ONE `worker-queue-place-bundle`, so no partner or candidate can start
+ * between its steps. "Unchanged" means the same bundle — lane and every step's
+ * kind, id and entry right before (`sameBundle`).
+ *
  * @import { PlacementPlan, PlannedPlacement } from './compute.js'
  */
-import { samePlace, serialLaneNumber } from './compute.js';
+import { isLonePlace, sameBundle, serialLaneNumber } from './compute.js';
 
 const MAX_CONFLICT_RETRIES = 5;
 
@@ -31,10 +37,26 @@ const MAX_CONFLICT_RETRIES = 5;
  *   reason when there is one.
  * - `grow_refused`: the place needs more serial lanes and the store refused
  *   to add them (UI-lsr4 §3.3); nothing was placed.
+ * - `unsupported`: the server does not know `worker-queue-place-bundle`
+ *   (`unknown_type`, UI-blx2 §3.9); nothing was placed.
  * - `error`: the transport threw.
  *
- * @typedef {{ status: 'applied', queue: any }|{ status: 'moved', placement: PlannedPlacement|null, queue: any }|{ status: 'contended', queue: any }|{ status: 'refused', reason: string|null }|{ status: 'grow_refused' }|{ status: 'error', message: string }} PlacementSendResult
+ * @typedef {{ status: 'applied', queue: any }|{ status: 'moved', placement: PlannedPlacement|null, queue: any }|{ status: 'contended', queue: any }|{ status: 'refused', reason: string|null }|{ status: 'grow_refused' }|{ status: 'unsupported' }|{ status: 'error', message: string }} PlacementSendResult
  */
+
+/**
+ * Whether a rejected request is the server's `unknown_type` reply.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isUnknownType(error) {
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    /** @type {Record<string, unknown>} */ (error).code === 'unknown_type'
+  );
+}
 
 /**
  * @param {unknown} error
@@ -72,6 +94,47 @@ export function placePayload(placement, revision, root_dir) {
 }
 
 /**
+ * The `worker-queue-place-bundle` payload of the bundle a computed place
+ * belongs to (UI-blx2 §3.4): the bind, then every move and place with the
+ * index the store splices it at.
+ *
+ * @param {PlannedPlacement} placement
+ * @param {number} revision
+ * @param {string} root_dir
+ * @returns {Record<string, unknown>}
+ */
+export function bundlePayload(placement, revision, root_dir) {
+  const steps = placement.bundle_steps;
+  return {
+    lane: placement.lane,
+    binds: steps.filter((step) => step.kind === 'bind').map((step) => step.id),
+    steps: steps
+      .filter((step) => step.kind !== 'bind')
+      .map((step) => ({ bead_id: step.id, index: step.index })),
+    ...(root_dir ? { root_dir } : {}),
+    expected_revision: revision
+  };
+}
+
+/**
+ * Why the store or admission refused a send: the admission reason, naming
+ * the bundle step it refused, else the store's own reason.
+ *
+ * @param {any} response
+ * @returns {string|null}
+ */
+function refusalReason(response) {
+  if (response && typeof response.admission_reason === 'string') {
+    return typeof response.bead_id === 'string'
+      ? `${response.admission_reason} (${response.bead_id})`
+      : response.admission_reason;
+  }
+  return response && typeof response.reason === 'string'
+    ? response.reason
+    : null;
+}
+
+/**
  * The toast a refused or failed send becomes; the same sentences the
  * `[↴ 대기로]` path shows.
  *
@@ -90,6 +153,9 @@ export function placementSendNotice(result) {
   if (result.status === 'grow_refused') {
     return '직렬 레인을 늘리지 못했습니다';
   }
+  if (result.status === 'unsupported') {
+    return '서버가 묶음 배치를 지원하지 않음';
+  }
   if (result.status === 'error') {
     return result.message;
   }
@@ -97,12 +163,12 @@ export function placementSendNotice(result) {
 }
 
 /**
- * Grow the serial lane count to the plan's `lane_count` before a place beyond
+ * Grow the serial lane count to the plan's `lane_count` before a bundle beyond
  * the configured lanes (UI-lsr4 §3.3). A conflict recomputes on the reply's
  * snapshot and retries up to five times only when the same count is still
- * needed and the shown place is unchanged. After the store grew, the place is
- * recomputed on the reply's snapshot and goes on only when it is still the
- * shown place.
+ * needed and the shown bundle is unchanged. After the store grew, the bundle
+ * is recomputed on the reply's snapshot and goes on only when it is still the
+ * shown bundle.
  *
  * @param {Object} input
  * @param {PlacementTransport} input.transport
@@ -137,7 +203,7 @@ async function growSerialLanes(input) {
     const next_plan = next_queue ? recompute(next_queue) : null;
     const next = next_plan ? next_plan.by_id[placement.id] || null : null;
     if (response && response.applied === true && !response.conflict) {
-      if (!next || !samePlace(placement, next)) {
+      if (!next || !sameBundle(placement, next)) {
         return { status: 'moved', placement: next, queue: next_queue };
       }
       return {
@@ -155,7 +221,7 @@ async function growSerialLanes(input) {
     if (
       !next_plan ||
       !next ||
-      !samePlace(placement, next) ||
+      !sameBundle(placement, next) ||
       next_plan.lane_count !== lane_count
     ) {
       return { status: 'moved', placement: next, queue: next_queue };
@@ -170,16 +236,19 @@ async function growSerialLanes(input) {
 }
 
 /**
- * Send one computed place with the §4.7 CAS rule: on a conflict, recompute on
- * the reply's snapshot and retry up to five times with its revision only when
- * the final place is unchanged; otherwise, or at the retry limit, stop.
- * A place beyond `configured_lane_count` first grows the serial lanes to
- * `lane_count` (UI-lsr4 §3.3); without the two counts no growth is checked.
+ * Send the bundle of one computed place with the §4.7 CAS rule: on a
+ * conflict, recompute on the reply's snapshot and retry up to five times with
+ * its revision only when the bundle is unchanged; otherwise, or at the retry
+ * limit, stop. A lone candidate goes as `worker-queue-place`, any other bundle
+ * as one `worker-queue-place-bundle` (UI-blx2 §3.3). A bundle beyond
+ * `configured_lane_count` first grows the serial lanes to `lane_count`
+ * (UI-lsr4 §3.3); without the two counts no growth is checked.
  *
  * @param {Object} input
  * @param {PlacementTransport} input.transport
  * @param {string} input.root_dir
- * @param {PlannedPlacement} input.placement - The place shown.
+ * @param {PlannedPlacement} input.placement - The place shown; its bundle is
+ * what goes out.
  * @param {number} input.revision - The revision it was computed on.
  * @param {number} [input.configured_lane_count] - The plan's
  * `configured_lane_count`.
@@ -213,14 +282,23 @@ export async function sendPlacement(input) {
     revision = grown.revision;
   }
   for (let retries = 0; retries <= MAX_CONFLICT_RETRIES; retries += 1) {
+    const lone = isLonePlace(placement);
     /** @type {any} */
     let response;
     try {
-      response = await transport(
-        'worker-queue-place',
-        placePayload(placement, revision, root_dir)
-      );
+      response = lone
+        ? await transport(
+            'worker-queue-place',
+            placePayload(placement, revision, root_dir)
+          )
+        : await transport(
+            'worker-queue-place-bundle',
+            bundlePayload(placement, revision, root_dir)
+          );
     } catch (error) {
+      if (!lone && isUnknownType(error)) {
+        return { status: 'unsupported' };
+      }
       return { status: 'error', message: errorMessage(error) };
     }
     if (response && response.queue) {
@@ -230,19 +308,13 @@ export async function sendPlacement(input) {
       return { status: 'applied', queue: response.queue };
     }
     if (!response || response.conflict !== true) {
-      return {
-        status: 'refused',
-        reason:
-          response && typeof response.admission_reason === 'string'
-            ? response.admission_reason
-            : null
-      };
+      return { status: 'refused', reason: refusalReason(response) };
     }
     const next_queue = response.queue;
     const next = next_queue
       ? recompute(next_queue).by_id[placement.id] || null
       : null;
-    if (!next || !samePlace(placement, next)) {
+    if (!next || !sameBundle(placement, next)) {
       return { status: 'moved', placement: next, queue: next_queue };
     }
     if (retries === MAX_CONFLICT_RETRIES) {
@@ -256,24 +328,27 @@ export async function sendPlacement(input) {
 }
 
 /**
- * The outcome of `[전체 적용 (n)]`.
+ * The outcome of `[적용]` and `[전체 적용 (n)]`: the candidates whose bundles
+ * went in, and where it stopped — `id` is the first candidate of that bundle.
  *
- * @typedef {{ placed: string[], stopped: null|{ id: string, cause: 'moved'|'contended'|'refused'|'grow_refused'|'error', result: PlacementSendResult } }} PlacementBatchResult
+ * @typedef {{ placed: string[], stopped: null|{ id: string, cause: 'moved'|'contended'|'refused'|'grow_refused'|'unsupported'|'error', result: PlacementSendResult } }} PlacementBatchResult
  */
 
 /**
- * Send the checked places one at a time in apply order (§4.7). Before each
- * send the remaining candidates are recomputed on the latest snapshot — the
- * previous reply's — and the send goes out only when the candidate's place
- * equals the one the table shows, with that snapshot's revision. A place
- * beyond the configured serial lanes first grows them to the recomputed plan's
- * `lane_count`. A different place, a refusal or the conflict retry limit stops
- * the batch.
+ * Send the checked bundles one at a time in apply order (§4.7, UI-blx2 §3.7);
+ * `[적용]` is the same call with one candidate. Before each send the remaining
+ * candidates are recomputed on the latest snapshot — the previous reply's —
+ * and the bundle goes out only when it equals the one shown (lane, and every
+ * step's kind, id and entry right before), with that snapshot's revision. A
+ * bundle beyond the configured serial lanes first grows them to the
+ * recomputed plan's `lane_count`. A different bundle, a refusal, the conflict
+ * retry limit or an error stops the batch; bundles already in stay.
  *
  * @param {Object} input
  * @param {PlacementTransport} input.transport
  * @param {string} input.root_dir
- * @param {PlannedPlacement[]} input.shown - The checked rows, apply order.
+ * @param {PlannedPlacement[]} input.shown - The checked rows, apply order;
+ * the rows of one bundle stand together.
  * @param {any} input.queue - The snapshot to start from.
  * @param {(queue: any, chosen: string[]) => PlacementPlan} input.recompute
  * @param {(queue: any) => void} input.adopt
@@ -286,12 +361,17 @@ export async function sendPlacementBatch(input) {
   /** @type {string[]} */
   const placed = [];
   let queue = input.queue;
-  for (let at = 0; at < shown.length; at += 1) {
+  let at = 0;
+  while (at < shown.length) {
     const row = shown[at];
+    let end = at + 1;
+    while (end < shown.length && shown[end].bundle === row.bundle) {
+      end += 1;
+    }
     const remaining = shown.slice(at).map((item) => item.id);
     const now_plan = recompute(queue, remaining);
     const now = now_plan.by_id[row.id] || null;
-    if (!now || !samePlace(row, now)) {
+    if (!now || !sameBundle(row, now)) {
       return {
         placed,
         stopped: {
@@ -321,8 +401,9 @@ export async function sendPlacementBatch(input) {
         }
       };
     }
-    placed.push(row.id);
+    placed.push(...shown.slice(at, end).map((item) => item.id));
     queue = result.queue || input.snapshot();
+    at = end;
   }
   return { placed, stopped: null };
 }

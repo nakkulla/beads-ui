@@ -7,11 +7,17 @@
  * server cannot see, and because a preview computed from the very snapshot a
  * `[적용]` carries as its `expected_revision` cannot disagree with it.
  *
- * The plan is a SIMULATION of the store: candidates go in one at a time in the
- * apply order, every serial-lane insertion is followed by the store's own
- * `orderLaneByBlocks` correction, and the next candidate is placed on that
- * result. Recomputing on the snapshot a send produced therefore yields the same
- * position for the remaining candidates when nothing else moved.
+ * The plan is a SIMULATION of the store: bundles go in one at a time in the
+ * apply order, each the way the store writes it — a lone candidate as `place`
+ * (one insertion, then `orderLaneByBlocks`), a larger bundle as `place-bundle`
+ * (the bind, every move and place inserted in order, ONE `orderLaneByBlocks`,
+ * then the bound bead's waiting row at the lane head) — and the next bundle is
+ * placed on that result. Recomputing on the snapshot a send produced therefore
+ * yields the same bundles for the rest when nothing else moved.
+ *
+ * A bundle pulls the waiting and lane-less occupying partners its candidates
+ * conflict with into its serial lane (UI-blx2 §3): `uncovered` stays only on a
+ * partner that cannot be moved or bound, and says why.
  *
  * @import { PlacementRelation } from '../../../server/placement/wire.js'
  */
@@ -21,6 +27,7 @@ import {
 } from '../../../server/placement/wire.js';
 import { activeBeadIds } from '../active-attempts.js';
 import { orderLaneByBlocks } from './lane-order.js';
+import { occupancyReader } from './occupancy.js';
 
 /**
  * @typedef {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} PlacementLane
@@ -63,8 +70,53 @@ import { orderLaneByBlocks } from './lane-order.js';
  */
 
 /**
+ * Why an `uncovered` partner stays where it is (UI-blx2 §3.8):
+ * `occupied_other_lane` — it holds another serial lane; `predecessor` — it
+ * directly blocks other work; `waits_in_lane` — binding it would make it wait
+ * on an item waiting in the lane; `lane_occupied` — the lane already has (or
+ * gets) another occupant; `discard_active` — a lane-less occupant whose
+ * discard is in flight; `not_holdable` — a lane-less occupant with no
+ * unshelved PR wait and no lane-holding implementation attempt (a waiting bead
+ * whose review session runs, a session's external PR wait); `no_serial_lane` — the snapshot has no serial
+ * lane to move or bind it into.
+ *
+ * @typedef {'occupied_other_lane'|'predecessor'|'waits_in_lane'|'lane_occupied'|'discard_active'|'not_holdable'|'no_serial_lane'} UncoveredReason
  * @typedef {'order_cycle'|'order_unsatisfiable'|'uncovered'|'blocks_reordered'|'predecessor_parallel'} PlacementWarningCode
- * @typedef {{ code: PlacementWarningCode, other?: string, other_lane?: PlacementLane }} PlacementWarning
+ * @typedef {{ code: PlacementWarningCode, other?: string, other_lane?: PlacementLane, reason?: UncoveredReason }} PlacementWarning
+ */
+
+/**
+ * One step of a bundle (UI-blx2 §3.3): `bind` seats a lane-less occupant as the
+ * lane's occupant, `move` takes a waiting partner out of another lane, `place`
+ * puts a candidate in.
+ *
+ * @typedef {Object} BundleStep
+ * @property {'bind'|'move'|'place'} kind
+ * @property {string} id
+ * @property {PlacementLane|null} from_lane - `move`: the lane it waits in.
+ * @property {number|null} from_index - `move`: its index there.
+ * @property {string|null} from_state - `bind`: what it is doing now
+ * (`running`·`paused`·`failed`·`pr_wait`·…).
+ * @property {number|null} index - `move`·`place`: the index the store splices
+ * it at, counted among the lane's waiting entries at that moment without the
+ * bound bead's row; null for `bind`.
+ * @property {number|null} final_index - `move`·`place`: its position among the
+ * lane's waiting entries after the bundle; null for `bind`.
+ * @property {string|null} before - `move`·`place`: the waiting entry right
+ * before it then, null at the lane head and for `bind`.
+ * @property {number|null} number - `move`·`place`: 1-based apply number, the
+ * number drawn; null for `bind`.
+ */
+
+/**
+ * One bundle of the plan, the unit one send carries.
+ *
+ * @typedef {Object} PlannedBundle
+ * @property {number} bundle - 0-based bundle order.
+ * @property {PlacementLane} lane
+ * @property {string[]} members - Its candidates, apply order.
+ * @property {BundleStep[]} steps - The bind first, then the moves and places
+ * in insertion order.
  */
 
 /**
@@ -72,12 +124,13 @@ import { orderLaneByBlocks } from './lane-order.js';
  *
  * @typedef {Object} PlannedPlacement
  * @property {string} id
- * @property {number} number - 1-based apply order; also the number drawn.
+ * @property {number} number - 1-based apply order among every `move` and
+ * `place` step; also the number drawn.
  * @property {number} bundle - 0-based bundle order.
  * @property {PlacementLane} lane
- * @property {number} index - The `worker-queue-place` index: where the store
- * splices the entry BEFORE its blocks correction, so the store reproduces
- * `final_index` exactly.
+ * @property {number} index - The `worker-queue-place` (or `place-bundle` step)
+ * index: where the store splices the entry BEFORE its blocks correction, so
+ * the store reproduces `final_index` exactly.
  * @property {number} final_index - Position after the blocks correction, in
  * the lane's waiting entries.
  * @property {string|null} before - The waiting entry right before the
@@ -95,15 +148,22 @@ import { orderLaneByBlocks } from './lane-order.js';
  * answer below the adoption confidence.
  * @property {number|null} judged_at - Latest jev answer time among its
  * relations.
+ * @property {BundleStep[]} bundle_steps - Every step of its bundle, the same
+ * list on each member: what `[적용]` sends and compares (UI-blx2 §3.7).
+ * @property {BundleStep[]} pulled - The `move`·`bind` steps of partners this
+ * candidate pulled in, drawn under its row; a partner two members share is
+ * drawn under the first in apply order.
  */
 
 /**
  * @typedef {Object} PlacementPlan
  * @property {number} revision - The snapshot revision the plan was computed on.
  * @property {PlannedPlacement[]} order - Apply order.
+ * @property {PlannedBundle[]} bundles - Apply order.
  * @property {Record<string, PlannedPlacement>} by_id
  * @property {Partial<Record<PlacementLane, string[]>>} layout - Every lane's
- * waiting entries after the whole plan went in, candidates included.
+ * waiting entries after the whole plan went in, candidates and moved partners
+ * included.
  * @property {number} configured_lane_count - The serial lanes the snapshot
  * has.
  * @property {number} lane_count - The serial lanes the plan needs: its highest
@@ -418,29 +478,58 @@ export function computePlacement(input) {
       occupant_lane.set(id, 'parallel');
     }
   }
+  // What the store's `place-bundle` would take each bead as (UI-blx2 §3.1):
+  // a bead it refuses as a step — running, paused, a latest failure, `parked`,
+  // `retry_wait`, PR 대기 — is an occupant even when a waiting row of it stays.
+  const occupancy = occupancyReader(queue, done_at_by_bead);
+
+  /**
+   * Whether a bead occupies a lane now: the store's step refusal, or a bind
+   * an earlier bundle of this plan made.
+   *
+   * @param {string} id
+   * @returns {boolean}
+   */
+  const isOccupant = (id) => occupant_lane.has(id) || occupancy(id).occupant;
+
+  /**
+   * The serial lane an occupant holds now, or null for a lane-less one.
+   *
+   * @param {string} id
+   * @returns {PlacementLane|null}
+   */
+  const heldLaneOf = (id) => {
+    const at = occupant_lane.get(id);
+    if (at && at !== 'parallel') {
+      return at;
+    }
+    return /** @type {PlacementLane|null} */ (occupancy(id).held_lane);
+  };
 
   /**
    * Where a bead stands now: its lane and its index among that lane's waiting
-   * entries; -1 for an occupant that is not a waiting entry.
+   * entries; -1 for an occupant. The members are the server's comparison set
+   * — waiting rows and `occupant_lane` — and occupancy is read before the
+   * waiting arrays (UI-blx2 §3.1): a Worker-started run, a latest failure or a
+   * `retry_wait` keeps its waiting row and is still an occupant.
    *
    * @param {string} id
    * @returns {{ lane: PlacementLane, index: number }|null}
    */
   const locate = (id) => {
-    for (const lane of serial) {
-      const index = /** @type {string[]} */ (lanes.get(lane.id)).indexOf(id);
+    /** @type {{ lane: PlacementLane, index: number }|null} */
+    let waiting = null;
+    for (const [lane, entries] of lanes) {
+      const index = entries.indexOf(id);
       if (index >= 0) {
-        return { lane: lane.id, index };
+        waiting = { lane, index };
+        break;
       }
     }
-    const parallel_index = /** @type {string[]} */ (
-      lanes.get('parallel')
-    ).indexOf(id);
-    if (parallel_index >= 0) {
-      return { lane: 'parallel', index: parallel_index };
+    if (occupant_lane.has(id) || (waiting !== null && isOccupant(id))) {
+      return { lane: heldLaneOf(id) || 'parallel', index: -1 };
     }
-    const occupied = occupant_lane.get(id);
-    return occupied ? { lane: occupied, index: -1 } : null;
+    return waiting;
   };
 
   /** @type {Map<string, RelationLine[]>} */
@@ -497,7 +586,97 @@ export function computePlacement(input) {
     )
   );
 
-  // Bundles: chosen candidates joined by a constraint relation.
+  /**
+   * A candidate's partners (UI-blx2 §3.1): the waiting and lane-occupying
+   * items it is constrained against other than by `blocks` alone — the edge
+   * already keeps a `blocks` pair apart.
+   *
+   * @param {string} c
+   * @returns {RelationLine[]}
+   */
+  const partnerLines = (c) =>
+    /** @type {RelationLine[]} */ (lines_by_candidate.get(c)).filter(
+      (line) =>
+        line.side === 'member' &&
+        CONSTRAINTS.has(line.relation) &&
+        line.basis !== 'blocks'
+    );
+
+  /**
+   * Whether `x` directly blocks other work: another waiting or lane-occupying
+   * item, or a chosen candidate. Pulled into a lane, such a prerequisite could
+   * wait behind an occupant that waits on it (UI-ey6v). Chosen candidates
+   * count too so the answer is the same before and after earlier bundles of
+   * `[전체 적용]` turn them into waiting items.
+   *
+   * @param {string} x
+   * @returns {boolean}
+   */
+  const blocksOtherWork = (x) => {
+    for (const raw of Object.values(relations)) {
+      if (!raw || raw.source !== 'fixed' || raw.basis !== 'blocks') {
+        continue;
+      }
+      /** @type {string|null} */
+      let blockee = null;
+      if (
+        raw.a === x &&
+        (raw.relation === 'a_first' || raw.relation === 'conflict')
+      ) {
+        blockee = raw.b;
+      } else if (
+        raw.b === x &&
+        (raw.relation === 'b_first' || raw.relation === 'conflict')
+      ) {
+        blockee = raw.a;
+      }
+      if (
+        blockee !== null &&
+        blockee !== x &&
+        (chosen_set.has(blockee) ||
+          (!candidates.has(blockee) && locate(blockee) !== null))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /**
+   * The class of a partner (UI-blx2 §3.1), fixed for the whole plan: `move` —
+   * waiting and not an occupant; `bind` — a lane-less occupant the store would
+   * bind; `fixed` — holds a serial lane; `excluded` — blocks other work;
+   * `stuck` — an occupant the store would neither move nor bind.
+   *
+   * @type {Map<string, 'move'|'bind'|'fixed'|'excluded'|'stuck'>}
+   */
+  const partner_class = new Map();
+  /**
+   * @param {string} x
+   * @returns {'move'|'bind'|'fixed'|'excluded'|'stuck'}
+   */
+  const classOf = (x) => {
+    const known = partner_class.get(x);
+    if (known) {
+      return known;
+    }
+    /** @type {'move'|'bind'|'fixed'|'excluded'|'stuck'} */
+    let kind = 'stuck';
+    if (blocksOtherWork(x)) {
+      kind = 'excluded';
+    } else if (!isOccupant(x)) {
+      kind = 'move';
+    } else if (heldLaneOf(x) !== null) {
+      kind = 'fixed';
+    } else if (occupancy(x).bindable) {
+      kind = 'bind';
+    }
+    partner_class.set(x, kind);
+    return kind;
+  };
+
+  // Bundles: chosen candidates joined by a constraint relation, and those
+  // that pull the same partner (UI-blx2 §3.2). A predecessor pulls nothing.
   /** @type {Map<string, string>} */
   const parent = new Map(chosen.map((id) => [id, id]));
   /**
@@ -511,21 +690,44 @@ export function computePlacement(input) {
     }
     return root;
   };
+  /**
+   * @param {string} a
+   * @param {string} b
+   */
+  const join = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) {
+      parent.set(rb, ra);
+    }
+  };
+  /** @type {Map<string, string>} */
+  const first_puller = new Map();
   for (const c of chosen) {
+    if (predecessors.has(c)) {
+      continue;
+    }
     for (const line of /** @type {RelationLine[]} */ (
       lines_by_candidate.get(c)
     )) {
       if (
         line.side === 'chosen' &&
         CONSTRAINTS.has(line.relation) &&
-        !predecessors.has(c) &&
         !predecessors.has(line.other)
       ) {
-        const ra = find(c);
-        const rb = find(line.other);
-        if (ra !== rb) {
-          parent.set(rb, ra);
-        }
+        join(c, line.other);
+      }
+    }
+    for (const line of partnerLines(c)) {
+      const kind = classOf(line.other);
+      if (kind !== 'move' && kind !== 'bind') {
+        continue;
+      }
+      const first = first_puller.get(line.other);
+      if (first === undefined) {
+        first_puller.set(line.other, c);
+      } else {
+        join(first, c);
       }
     }
   }
@@ -653,13 +855,70 @@ export function computePlacement(input) {
     return true;
   };
 
+  /**
+   * The occupants of one lane, this plan's binds included.
+   *
+   * @param {PlacementLane} lane
+   * @returns {string[]}
+   */
+  const occupantsOf = (lane) =>
+    [...occupant_lane].filter(([, at]) => at === lane).map(([id]) => id);
+
+  /**
+   * Whether `x` is directly blocked by an item waiting in `lane`: bound
+   * there, it would hold the lane its own prerequisite needs (§3.1 제외).
+   *
+   * @param {string} x
+   * @param {PlacementLane} lane
+   * @returns {boolean}
+   */
+  const waitsInLane = (x, lane) =>
+    (lanes.get(lane) || []).some((w) => {
+      const line = w === x ? null : relationBetween(relations, x, w);
+      return (
+        !!line &&
+        line.basis === 'blocks' &&
+        (line.relation === 'x_first' || line.relation === 'conflict')
+      );
+    });
+
+  /**
+   * The lane holding the most K items by `count`, lowest number on a tie.
+   *
+   * @param {Iterable<PlacementLane>} choices
+   * @param {(lane: PlacementLane) => number} count
+   * @returns {PlacementLane}
+   */
+  const busiest = (choices, count) =>
+    [...choices].sort(
+      (p, q) => count(q) - count(p) || serialLaneNumber(p) - serialLaneNumber(q)
+    )[0];
+
+  /**
+   * Queue order of a waiting item: the parallel lane first, then serial lanes
+   * by number, each by index (§3.3 tie rule for moves).
+   *
+   * @param {string} id
+   * @returns {number}
+   */
+  const queueRank = (id) => {
+    const at = locate(id);
+    return at ? serialLaneNumber(at.lane) * 10_000 + at.index : 0;
+  };
+
   /** @type {PlannedPlacement[]} */
   const order = [];
+  /** @type {PlannedBundle[]} */
+  const planned_bundles = [];
+  let step_number = 0;
   bundles.forEach((members, bundle_index) => {
-    const sorted = bundleOrder(members, kindOf);
-    // K: the waiting and lane-occupying items a member is constrained against.
-    /** @type {Array<{ id: string, lane: PlacementLane }>} */
-    const k_items = [];
+    const predecessor_bundle = predecessors.has(members[0]);
+    // K: the waiting and lane-occupying items a member is constrained against,
+    // `blocks` lines included — those choose a lane but are never pulled.
+    /** @type {string[]} */
+    const k_ids = [];
+    /** @type {string[]} */
+    const pulls = [];
     for (const c of members) {
       for (const line of /** @type {RelationLine[]} */ (
         lines_by_candidate.get(c)
@@ -667,87 +926,178 @@ export function computePlacement(input) {
         if (
           line.side === 'member' &&
           CONSTRAINTS.has(line.relation) &&
-          line.other_lane &&
-          !k_items.some((item) => item.id === line.other)
+          !k_ids.includes(line.other)
         ) {
-          k_items.push({ id: line.other, lane: line.other_lane });
+          k_ids.push(line.other);
         }
       }
-    }
-    // A lone member constrained against a candidate this plan leaves out
-    // still needs a serial lane: that partner, recommended later, follows it
-    // there through K instead of joining it in the parallel lane.
-    const needs_serial =
-      members.length > 1 ||
-      members.some((c) =>
-        /** @type {RelationLine[]} */ (lines_by_candidate.get(c)).some(
-          (line) => line.side === 'outside' && CONSTRAINTS.has(line.relation)
-        )
-      );
-    /** @type {PlacementLane} */
-    let lane;
-    if (predecessors.has(members[0])) {
-      lane = 'parallel';
-    } else if (k_items.length === 0) {
-      lane = needs_serial ? emptiestSerial() : 'parallel';
-    } else {
-      const k_lanes = new Set(k_items.map((item) => item.lane));
-      const [only] = [...k_lanes];
-      if (k_lanes.size === 1 && only !== 'parallel') {
-        lane = only;
-      } else {
-        /** @type {PlacementLane|null} */
-        let best = null;
-        let best_cover = 0;
-        for (const serial_lane of serial) {
-          const cover = k_items.filter(
-            (item) => item.lane === serial_lane.id
-          ).length;
-          if (cover > best_cover) {
-            best = serial_lane.id;
-            best_cover = cover;
-          }
+      if (predecessor_bundle) {
+        continue;
+      }
+      for (const line of partnerLines(c)) {
+        const kind = classOf(line.other);
+        if (
+          (kind === 'move' || kind === 'bind') &&
+          !pulls.includes(line.other)
+        ) {
+          pulls.push(line.other);
         }
-        lane = best ?? (needs_serial ? emptiestSerial() : 'parallel');
       }
     }
 
-    for (const c of sorted.order) {
-      const entries = /** @type {string[]} */ (lanes.get(lane) || []);
+    /** @type {PlacementLane} */
+    let lane = 'parallel';
+    if (!predecessor_bundle) {
+      const k_at = k_ids
+        .map((id) => ({ id, at: locate(id) }))
+        .filter((item) => item.at !== null)
+        .map((item) => ({
+          id: item.id,
+          at: /** @type {{ lane: PlacementLane, index: number }} */ (item.at)
+        }));
+      // §3.2 step 1: the serial lanes of K items that will not move — the
+      // occupants and the excluded items waiting there.
+      /** @type {Set<PlacementLane>} */
+      const anchors = new Set();
+      /** @type {Set<PlacementLane>} */
+      const waiting_lanes = new Set();
+      for (const item of k_at) {
+        if (item.at.lane === 'parallel') {
+          continue;
+        }
+        if (item.at.index < 0 || classOf(item.id) === 'excluded') {
+          anchors.add(item.at.lane);
+        } else {
+          waiting_lanes.add(item.at.lane);
+        }
+      }
+      if (anchors.size > 0) {
+        lane = busiest(
+          anchors,
+          (choice) => k_at.filter((item) => item.at.lane === choice).length
+        );
+      } else if (waiting_lanes.size > 0) {
+        // Step 2: the lane where most of K already waits — the fewest moves.
+        lane = busiest(
+          waiting_lanes,
+          (choice) =>
+            k_at.filter((item) => item.at.lane === choice && item.at.index >= 0)
+              .length
+        );
+      } else {
+        // Step 3: a lone member with nothing to pull and no constraint with a
+        // candidate this plan leaves out stays parallel. Otherwise — that
+        // partner, recommended later, follows it through K — the emptiest
+        // serial lane, which also has no occupant to bind against.
+        const needs_serial =
+          members.length > 1 ||
+          pulls.length > 0 ||
+          members.some((c) =>
+            /** @type {RelationLine[]} */ (lines_by_candidate.get(c)).some(
+              (line) =>
+                line.side === 'outside' && CONSTRAINTS.has(line.relation)
+            )
+          );
+        lane = needs_serial ? emptiestSerial() : 'parallel';
+      }
+    }
+
+    // Binds (§3.1): one per lane, only into a lane nothing occupies, and not
+    // for a partner waiting on an item waiting in that lane.
+    /** @type {string|null} */
+    let bound = null;
+    /** @type {Map<string, UncoveredReason>} */
+    const held_back = new Map();
+    if (lane !== 'parallel') {
+      for (const x of pulls) {
+        if (classOf(x) !== 'bind') {
+          continue;
+        }
+        if (waitsInLane(x, lane)) {
+          held_back.set(x, 'waits_in_lane');
+        } else if (
+          bound !== null ||
+          occupantsOf(lane).length > 0 ||
+          (hidden_load.get(lane) || 0) > 0
+        ) {
+          held_back.set(x, 'lane_occupied');
+        } else {
+          bound = x;
+        }
+      }
+    }
+    const lane_now = new Set(lanes.get(lane) || []);
+    const moves =
+      lane === 'parallel'
+        ? []
+        : pulls
+            .filter((x) => classOf(x) === 'move' && !lane_now.has(x))
+            .sort((p, q) => queueRank(p) - queueRank(q));
+    /** @type {Map<string, { lane: PlacementLane, index: number }>} */
+    const move_from = new Map(
+      moves.map((x) => [
+        x,
+        /** @type {{ lane: PlacementLane, index: number }} */ (locate(x))
+      ])
+    );
+    // §3.3: topological order, moves before candidates on a tie.
+    const sorted = bundleOrder([...moves, ...members], kindOf);
+    const step_ids = new Set(sorted.order);
+
+    // The store's write order: the bound bead's waiting row leaves every
+    // lane first, every step is spliced in turn, one blocks correction runs,
+    // and the bound row goes back at the lane head.
+    let bound_row = false;
+    if (bound !== null) {
+      const bound_id = bound;
+      for (const [at_lane, row_ids] of lanes) {
+        if (row_ids.includes(bound_id)) {
+          bound_row = true;
+          lanes.set(
+            at_lane,
+            row_ids.filter((id) => id !== bound_id)
+          );
+        }
+      }
+      occupant_lane.set(bound_id, lane);
+    }
+    for (const x of moves) {
+      const from = /** @type {{ lane: PlacementLane, index: number }} */ (
+        move_from.get(x)
+      );
+      lanes.set(
+        from.lane,
+        /** @type {string[]} */ (lanes.get(from.lane)).filter((id) => id !== x)
+      );
+    }
+    /** @type {string[]} */
+    const entries = [...(lanes.get(lane) || [])];
+    /** @type {Map<string, number>} */
+    const splice_index = new Map();
+    /** @type {Map<string, Set<string>>} */
+    const present_at = new Map();
+    /** @type {Map<string, PlacementWarning[]>} */
+    const warnings_of = new Map();
+    for (const y of sorted.order) {
       /** @type {PlacementWarning[]} */
       const warnings = sorted.cycle ? [{ code: 'order_cycle' }] : [];
-      const lines = /** @type {RelationLine[]} */ (lines_by_candidate.get(c));
       let index = entries.length;
       if (lane !== 'parallel') {
         let lower = 0;
         let upper = entries.length;
         let has_upper = false;
-        /**
-         * @param {string} x
-         * @returns {number|null}
-         */
-        const positionIn = (x) => {
-          const at = entries.indexOf(x);
-          if (at >= 0) {
-            return at;
-          }
-          return occupant_lane.get(x) === lane ? -1 : null;
-        };
-        for (const line of lines) {
-          // A cyclic bundle goes in display order (§4.6), so its members'
+        for (const x of new Set([...entries, ...occupantsOf(lane)])) {
+          // A cyclic bundle goes in display order (§4.6), so its steps'
           // relations to each other set no bound.
-          if (
-            line.side === 'outside' ||
-            (sorted.cycle && line.side === 'chosen') ||
-            !CONSTRAINTS.has(line.relation)
-          ) {
+          if (x === y || (sorted.cycle && step_ids.has(x))) {
             continue;
           }
-          const at = positionIn(line.other);
-          if (at === null) {
+          const kind = kindOf(y, x);
+          if (kind === null || !CONSTRAINTS.has(kind)) {
             continue;
           }
-          if (line.relation === 'c_first') {
+          const at = entries.indexOf(x);
+          if (kind === 'c_first') {
             upper = has_upper ? Math.min(upper, at) : at;
             has_upper = true;
           } else {
@@ -757,7 +1107,7 @@ export function computePlacement(input) {
         // The LATEST index the bounds allow: right before the first `c_first`
         // item, else the lane tail. Never jumping ahead of unrelated waiting
         // entries is what keeps an empty-K bundle appended in bundle order
-        // (§4.6) and what lets `[전체 적용]` recompute the remaining candidates
+        // (§4.6) and what lets `[전체 적용]` recompute the remaining bundles
         // on each reply and land on the table's places.
         if (has_upper && lower > upper) {
           warnings.push({ code: 'order_unsatisfiable' });
@@ -766,29 +1116,103 @@ export function computePlacement(input) {
           index = upper;
         }
       }
-      const spliced = [...entries];
-      spliced.splice(index, 0, c);
-      let final_order = spliced;
-      if (lane !== 'parallel') {
-        const topo = orderLaneByBlocks(spliced, edgesAmong(spliced));
-        if (!topo.cycle) {
-          final_order = topo.order;
-        }
+      entries.splice(index, 0, y);
+      splice_index.set(y, index);
+      present_at.set(y, new Set(entries));
+      warnings_of.set(y, warnings);
+    }
+    let final_order = entries;
+    if (lane !== 'parallel') {
+      const topo = orderLaneByBlocks(entries, edgesAmong(entries));
+      if (!topo.cycle) {
+        final_order = topo.order;
+      }
+      for (const c of members) {
+        const warnings = /** @type {PlacementWarning[]} */ (warnings_of.get(c));
+        const present = /** @type {Set<string>} */ (present_at.get(c));
+        const spliced = entries.filter((id) => present.has(id));
         if (
           !warnings.some((w) => w.code === 'order_unsatisfiable') &&
           constraintsHold(c, spliced, lane) &&
-          !constraintsHold(c, final_order, lane)
+          !constraintsHold(
+            c,
+            final_order.filter((id) => present.has(id)),
+            lane
+          )
         ) {
           warnings.push({ code: 'blocks_reordered' });
         }
       }
-      lanes.set(lane, final_order);
+      if (bound_row && bound !== null) {
+        final_order = [bound, ...final_order];
+      }
+    }
+    lanes.set(lane, final_order);
+
+    /** @type {BundleStep[]} */
+    const steps = [];
+    if (bound !== null) {
+      steps.push({
+        kind: 'bind',
+        id: bound,
+        from_lane: null,
+        from_index: null,
+        from_state: occupancy(bound).state,
+        index: null,
+        final_index: null,
+        before: null,
+        number: null
+      });
+    }
+    for (const y of sorted.order) {
+      const final_index = final_order.indexOf(y);
+      const from = move_from.get(y);
+      step_number += 1;
+      steps.push({
+        kind: from ? 'move' : 'place',
+        id: y,
+        from_lane: from ? from.lane : null,
+        from_index: from ? from.index : null,
+        from_state: null,
+        index: /** @type {number} */ (splice_index.get(y)),
+        final_index,
+        before: final_index > 0 ? final_order[final_index - 1] : null,
+        number: step_number
+      });
+    }
+    const placed_members = sorted.order.filter((id) => !move_from.has(id));
+    planned_bundles.push({
+      bundle: bundle_index,
+      lane,
+      members: placed_members,
+      steps
+    });
+    /** @type {Map<string, BundleStep[]>} */
+    const pulled_by = new Map();
+    for (const step of steps) {
+      if (step.kind === 'place') {
+        continue;
+      }
+      const owner = placed_members.find((c) =>
+        partnerLines(c).some((line) => line.other === step.id)
+      );
+      if (owner !== undefined) {
+        pulled_by.set(owner, [...(pulled_by.get(owner) || []), step]);
+      }
+    }
+
+    for (const c of placed_members) {
+      const step = /** @type {BundleStep} */ (
+        steps.find((item) => item.id === c)
+      );
+      const warnings = /** @type {PlacementWarning[]} */ (warnings_of.get(c));
+      const lines = /** @type {RelationLine[]} */ (lines_by_candidate.get(c));
       for (const line of lines) {
         // A `blocks` line never runs concurrently: the edge keeps the order.
         if (line.basis === 'blocks' || !CONSTRAINTS.has(line.relation)) {
           continue;
         }
-        if (predecessors.has(c)) {
+        if (predecessor_bundle) {
           if (line.side !== 'outside') {
             warnings.push({
               code: 'predecessor_parallel',
@@ -796,19 +1220,40 @@ export function computePlacement(input) {
               ...(line.other_lane ? { other_lane: line.other_lane } : {})
             });
           }
-        } else if (
-          line.side === 'member' &&
-          line.other_lane &&
-          (lane === 'parallel' || line.other_lane !== lane)
-        ) {
-          warnings.push({
-            code: 'uncovered',
-            other: line.other,
-            other_lane: line.other_lane
-          });
+          continue;
         }
+        if (line.side !== 'member' || line.other === bound) {
+          continue;
+        }
+        const at = locate(line.other);
+        const there = at ? at.lane : line.other_lane || 'parallel';
+        if (lane !== 'parallel' && there === lane) {
+          continue;
+        }
+        const kind = classOf(line.other);
+        /** @type {UncoveredReason|null} */
+        let reason = held_back.get(line.other) ?? null;
+        if (reason === null) {
+          if (kind === 'fixed') {
+            reason = 'occupied_other_lane';
+          } else if (kind === 'excluded') {
+            reason = 'predecessor';
+          } else if (kind === 'stuck') {
+            // An external PR-wait row is no store record the store could bind.
+            reason = occupancy(line.other).bind_refusal ?? 'not_holdable';
+          } else if (lane === 'parallel') {
+            // A move or bind partner stays out only when the bundle kept the
+            // parallel lane: a snapshot without serial lanes.
+            reason = 'no_serial_lane';
+          }
+        }
+        warnings.push({
+          code: 'uncovered',
+          other: line.other,
+          other_lane: there,
+          ...(reason ? { reason } : {})
+        });
       }
-      const final_index = final_order.indexOf(c);
       const constraint_lines = lines.filter(
         (line) => line.side !== 'outside' && CONSTRAINTS.has(line.relation)
       );
@@ -825,12 +1270,12 @@ export function computePlacement(input) {
         .filter((at) => typeof at === 'number');
       order.push({
         id: c,
-        number: order.length + 1,
+        number: /** @type {number} */ (step.number),
         bundle: bundle_index,
         lane,
-        index,
-        final_index,
-        before: final_index > 0 ? final_order[final_index - 1] : null,
+        index: /** @type {number} */ (step.index),
+        final_index: /** @type {number} */ (step.final_index),
+        before: step.before,
         reasons: independent
           ? [...constraint_lines, independent]
           : constraint_lines,
@@ -850,7 +1295,9 @@ export function computePlacement(input) {
         only_unknown:
           lines.length > 0 &&
           lines.every((line) => line.relation === 'unknown'),
-        judged_at: judged.length > 0 ? Math.max(...judged) : null
+        judged_at: judged.length > 0 ? Math.max(...judged) : null,
+        bundle_steps: steps,
+        pulled: pulled_by.get(c) || []
       });
     }
   });
@@ -858,6 +1305,7 @@ export function computePlacement(input) {
   return {
     revision: typeof queue.revision === 'number' ? queue.revision : 0,
     order,
+    bundles: planned_bundles,
     by_id: Object.fromEntries(order.map((item) => [item.id, item])),
     layout: Object.fromEntries(lanes),
     configured_lane_count: serial.length,
@@ -878,4 +1326,45 @@ export function computePlacement(input) {
  */
 export function samePlace(a, b) {
   return !!a && !!b && a.lane === b.lane && a.before === b.before;
+}
+
+/**
+ * Whether two computed bundles are the same send (UI-blx2 §3.7): the same
+ * lane and every step the same kind, id and entry right before. For a lone
+ * candidate it is {@link samePlace}.
+ *
+ * @param {Pick<PlannedPlacement, 'lane'|'bundle_steps'>|null|undefined} a
+ * @param {Pick<PlannedPlacement, 'lane'|'bundle_steps'>|null|undefined} b
+ * @returns {boolean}
+ */
+export function sameBundle(a, b) {
+  if (
+    !a ||
+    !b ||
+    a.lane !== b.lane ||
+    !Array.isArray(a.bundle_steps) ||
+    !Array.isArray(b.bundle_steps) ||
+    a.bundle_steps.length !== b.bundle_steps.length
+  ) {
+    return false;
+  }
+  const other = b.bundle_steps;
+  return a.bundle_steps.every(
+    (step, at) =>
+      step.kind === other[at].kind &&
+      step.id === other[at].id &&
+      step.before === other[at].before
+  );
+}
+
+/**
+ * Whether a computed bundle is one candidate and nothing else — the bundle
+ * `worker-queue-place` carries; every other goes as one `place-bundle`.
+ *
+ * @param {Pick<PlannedPlacement, 'bundle_steps'>} placement
+ * @returns {boolean}
+ */
+export function isLonePlace(placement) {
+  const steps = placement.bundle_steps;
+  return steps.length === 1 && steps[0].kind === 'place';
 }

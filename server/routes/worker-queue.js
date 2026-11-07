@@ -19,6 +19,10 @@ import {
 } from '../worker/attach.js';
 import { WAIT_ID_RE } from '../worker/external-wait/contract.js';
 import { emitQueueChanged } from '../worker/queue-events.js';
+import {
+  placeBundleInQueue,
+  placeBundleShapeOf
+} from '../worker/queue-place-bundle.js';
 import { placeBeadInQueue } from '../worker/queue-place.js';
 import { removeBeadFromQueue } from '../worker/queue-remove.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -265,6 +269,77 @@ export async function workerQueuePlaceHandler(req, res) {
     applied: true,
     lane: outcome.lane,
     index: outcome.index,
+    revision: outcome.queue.revision
+  });
+}
+
+/**
+ * POST /api/worker/queue/place-bundle
+ *
+ * Body `{ root_dir, expected_revision, lane, binds, steps }` (UI-blx2 §3.4).
+ * Runs the same shared body the WS `worker-queue-place-bundle` runs, fanout
+ * included. `expected_revision` is REQUIRED, as for `place`: the session built
+ * the bundle from a snapshot it fetched separately.
+ *
+ * Replies 200 with `{ ok, applied:true, revision }`, or `applied:false` and
+ * one of `conflict:true` + `revision`, `admission_reason` + `bead_id`, or the
+ * store's `reason`.
+ *
+ * @param {Request} req
+ * @param {Response} res
+ */
+export async function workerQueuePlaceBundleHandler(req, res) {
+  const body = /** @type {any} */ (req.body || {});
+  const workspace_key = workspaceKeyOf(body.root_dir);
+  const shape = placeBundleShapeOf(body);
+  if (
+    workspace_key === null ||
+    typeof body.lane !== 'string' ||
+    !/^s[1-5]$/.test(body.lane) ||
+    shape === null ||
+    !Number.isInteger(body.expected_revision)
+  ) {
+    res.status(400).json({ ok: false, error: 'bad_request' });
+    return;
+  }
+  const outcome = await placeBundleInQueue(workspace_key, {
+    lane: body.lane,
+    binds: shape.binds,
+    steps: shape.steps,
+    expected_revision: body.expected_revision
+  });
+  res.set('Cache-Control', 'no-store');
+  if (typeof outcome.admission_reason === 'string') {
+    res.status(200).json({
+      ok: true,
+      applied: false,
+      conflict: false,
+      admission_reason: outcome.admission_reason,
+      bead_id: outcome.bead_id
+    });
+    return;
+  }
+  if (!outcome.applied) {
+    res.status(200).json(
+      outcome.conflict
+        ? {
+            ok: true,
+            applied: false,
+            conflict: true,
+            revision: outcome.queue.revision
+          }
+        : {
+            ok: true,
+            applied: false,
+            conflict: false,
+            reason: outcome.reason || 'rejected'
+          }
+    );
+    return;
+  }
+  res.status(200).json({
+    ok: true,
+    applied: true,
     revision: outcome.queue.revision
   });
 }

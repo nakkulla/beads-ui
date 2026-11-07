@@ -188,6 +188,67 @@ describe('fixed relations', () => {
   });
 });
 
+describe('member blocks edges (UI-blx2 §3.6)', () => {
+  test('ships a blocks edge between two parallel waiting members as a fixed relation', () => {
+    const facts = input({
+      members: ['UI-5', 'UI-6'],
+      blocked_by: { 'UI-6': ['UI-5'] }
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-5|UI-6']).toEqual({
+      a: 'UI-5',
+      b: 'UI-6',
+      relation: 'a_first',
+      source: 'fixed',
+      basis: 'blocks',
+      confidence: null,
+      jev_choice: null,
+      judged_at: null
+    });
+  });
+
+  test('marks a member blocks edge inside one serial lane as in_lane', () => {
+    const facts = input({
+      members: ['UI-5', 'UI-6'],
+      blocked_by: { 'UI-6': ['UI-5'] },
+      lane_edges: [{ blocker: 'UI-5', blockee: 'UI-6' }]
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-5|UI-6']).toMatchObject({
+      relation: 'a_first',
+      in_lane: true
+    });
+  });
+
+  test('keeps the candidate states and progress when members block each other', () => {
+    const judgmentFor = vi.fn(() => null);
+    const base = {
+      candidates: ['UI-1'],
+      members: ['UI-5', 'UI-6'],
+      judgmentFor
+    };
+    const without = placementRelations(input(base));
+
+    const out = placementRelations(
+      input({ ...base, blocked_by: { 'UI-6': ['UI-5'] } })
+    );
+
+    expect(out.status).toEqual(without.status);
+    expect(out.progress).toEqual(without.progress);
+    expect(out.jev_pairs).toEqual(without.jev_pairs);
+    expect(judgmentFor).not.toHaveBeenCalledWith(
+      'UI-5',
+      'UI-6',
+      expect.anything(),
+      expect.anything()
+    );
+  });
+});
+
 describe('jev relations', () => {
   test('adopts an answer at the 0.8 confidence', () => {
     const facts = input({

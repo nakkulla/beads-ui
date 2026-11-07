@@ -175,6 +175,8 @@ base `a4058fbb7899622c7173a4f6df16065b3d81f93e` (beads-ui `origin/main`), dotfil
   같다.
 - 근거 줄은 K와 묶음의 각 관계, 채택된 `independent` 판정 중 대표 하나를 출처(`고정`·`jev <확신도>`)와
   함께 싣는다.
+- **정정(UI-blx2).** K의 대기 항목은 옮기고 직렬 레인 없는 점유는 묶는다. `uncovered`는 옮길 수 없는 상대에만
+  단다(`2026-11-07-placement-serialize-conflicting-partner-design.md` §3).
 
 ### 4.7 화면
 

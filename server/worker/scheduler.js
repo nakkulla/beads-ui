@@ -135,9 +135,10 @@ import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
   DEFAULT_SLOTS,
   MIN_SLOTS,
-  attemptHoldsSerialLane,
+  activeLaneLineages,
+  heldSerialLaneOf,
   holdsHandoffReservation,
-  laneHoldFacts
+  serialLineageId
 } from './queue-store.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import {
@@ -1005,18 +1006,10 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * Waiting-return throttle timings. Production uses the constants above.
  */
 
-/**
- * @param {any} attempt
- * @returns {string|null}
- */
-function serialLineageId(attempt) {
-  if (!attempt || typeof attempt.bead_id !== 'string') {
-    return null;
-  }
-  return typeof attempt.completion_root_id === 'string'
-    ? attempt.completion_root_id
-    : attempt.bead_id;
-}
+// Per-lane occupancy is the store's ONE walk (`queue-store.js` `laneHolds`):
+// the store's bundle placement judges the same holders these fences read
+// (UI-blx2 §3.4). Re-exported so existing importers keep reading it from here.
+export { activeLaneLineages };
 
 /**
  * Zero-based slot index of a serial lane id, or null for anything else.
@@ -1049,13 +1042,48 @@ function waitingLaneOf(q, bead_id) {
 }
 
 /**
- * Check whether a bead is either outside a serial lane or at its head.
+ * What the dispatch lane resolution reads off a queue snapshot.
  *
- * @param {{ serial_lanes?: Array<{ id: string, entries: Array<{ bead_id: string }> }> }} q
+ * @typedef {Parameters<typeof heldSerialLaneOf>[0] & { queue?: Array<{ bead_id: string }>, serial_lanes?: Array<{ id: string, entries: Array<{ bead_id: string }> }> }} LaneQueueView
+ */
+
+/**
+ * The serial lane a new attempt of this bead runs in (UI-blx2 §3.5): the lane
+ * of its waiting row when it has one (`null` for a parallel row), else the
+ * serial lane its lineage holds right now, else null. Without the second
+ * branch a lineage bound to a lane while it ran, or redispatched from PR 대기
+ * after leaving its waiting row, would mint a lane-free attempt and silently
+ * give the lane up.
+ *
+ * Only a hold of the bead's OWN lineage is inherited: these launches fence as
+ * `lineage_id: bead_id`, and a lane a completion root holds through this bead
+ * would read as another lineage's and refuse a launch that runs lane-free
+ * today.
+ *
+ * @param {LaneQueueView} q
+ * @param {string} bead_id
+ * @returns {string|null}
+ */
+function dispatchLaneOf(q, bead_id) {
+  if (waitingEntryOf(q, bead_id) !== null) {
+    return waitingLaneOf(q, bead_id);
+  }
+  return heldSerialLaneOf(q, bead_id, bead_id);
+}
+
+/**
+ * Check whether a bead is either outside a serial lane or at its head. A bead
+ * with no waiting row takes the lane its lineage holds ({@link dispatchLaneOf})
+ * and has no head position to check: it is that lane's holder already.
+ *
+ * @param {LaneQueueView} q
  * @param {string} bead_id
  * @returns {{ ok: true, lane_id: string|null }|{ ok: false, reason: string }}
  */
 function serialHeadOf(q, bead_id) {
+  if (waitingEntryOf(q, bead_id) === null) {
+    return { ok: true, lane_id: dispatchLaneOf(q, bead_id) };
+  }
   const lane_id = waitingLaneOf(q, bead_id);
   if (lane_id === null) {
     return { ok: true, lane_id: null };
@@ -1231,77 +1259,6 @@ function waitingEntryOf(q, bead_id) {
     }
   }
   return null;
-}
-
-/**
- * Per-lane active lineage occupancy (UI-04vo §2), rebuilt from durable state
- * on every read so a restart reproduces it without a schema field. A lane is
- * occupied by a lineage while any of these holds for an attempt carrying its
- * `serial_lane_id`:
- *
- *   - an attempt for which `queue-store.js` {@link attemptHoldsSerialLane} says
- *     so — a leaf outside the releasing set, and when it has ended, its bead's
- *     latest implementation attempt (UI-ey6v §3.1); `dismissed_at` is a UI hide,
- *     never a release. That judgment is imported rather than restated: the
- *     transfer predicate reads the same one, and a second copy here would let
- *     occupancy and transfer mean two different things;
- *   - the bead sits in durable `pr_wait` without a `merge_shelved` record
- *     (its terminal `done` attempt holds the lane until shelving or merge
- *     cleanup); unshelving restores this occupancy on the next read;
- *   - a discard operation for the lineage is still in flight.
- *
- * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string, serial_lane_id?: string|null }>, merge_shelved?: Record<string, unknown>, discard_operations?: Record<string, any> }} q
- * @returns {Map<string, Set<string>>} lane id → occupying lineage ids.
- */
-export function activeLaneLineages(q) {
-  const values = Object.values(q.attempts || {});
-  const hold_facts = laneHoldFacts(q);
-  /** @type {Map<string, Set<string>>} */
-  const lanes = new Map();
-  /**
-   * @param {unknown} lane
-   * @param {string|null} lineage
-   */
-  function occupy(lane, lineage) {
-    if (serialLaneIndexOf(lane) === null || !lineage) {
-      return;
-    }
-    const key = /** @type {string} */ (lane);
-    const set = lanes.get(key) || new Set();
-    set.add(lineage);
-    lanes.set(key, set);
-  }
-  for (const attempt of values) {
-    if (attempt && attemptHoldsSerialLane(attempt, hold_facts)) {
-      occupy(attempt.serial_lane_id, serialLineageId(attempt));
-    }
-  }
-  for (const entry of q.pr_wait || []) {
-    if (Object.hasOwn(q.merge_shelved || {}, entry.bead_id)) {
-      continue;
-    }
-    const attempt = [...values]
-      .reverse()
-      .find((item) => item?.bead_id === entry?.bead_id);
-    if (attempt && serialLaneIndexOf(attempt.serial_lane_id) !== null) {
-      occupy(attempt.serial_lane_id, serialLineageId(attempt));
-    } else {
-      occupy(entry.serial_lane_id, entry.bead_id);
-    }
-  }
-  for (const operation of Object.values(q.discard_operations || {})) {
-    if (!discardOperationActive(operation)) {
-      continue;
-    }
-    const attempt =
-      (typeof operation.attempt_id === 'string' &&
-        q.attempts?.[operation.attempt_id]) ||
-      [...values].reverse().find((item) => item?.bead_id === operation.bead_id);
-    if (attempt) {
-      occupy(attempt.serial_lane_id, serialLineageId(attempt));
-    }
-  }
-  return lanes;
 }
 
 /**
@@ -6235,9 +6192,14 @@ export function createScheduler(deps) {
       return 'bead_running';
     }
     const lane_id = input.serial_lane_id;
+    const waiting = waitingEntryOf(q, input.bead_id) !== null;
+    // The launch's lane must be the one dispatch resolves (UI-blx2 §3.5). A
+    // bead with no waiting row may still launch lane-free, as the external-PR
+    // resolution always has.
     if (
       input.continuation !== true &&
-      waitingLaneOf(q, input.bead_id) !== lane_id
+      lane_id !== dispatchLaneOf(q, input.bead_id) &&
+      (waiting || lane_id !== null)
     ) {
       return 'serial_lane_not_head';
     }
@@ -6257,7 +6219,9 @@ export function createScheduler(deps) {
     if (occupied_by_other) {
       return 'serial_lane_occupied';
     }
-    if (input.continuation !== true) {
+    // A bead holding the lane with no waiting row is its holder already and
+    // has no head position to check.
+    if (input.continuation !== true && waiting) {
       const index = /** @type {number} */ (serialLaneIndexOf(lane_id));
       const entries = q.serial_lanes?.[index]?.entries || [];
       const bead_index = entries.findIndex(
@@ -16099,7 +16063,7 @@ export function createScheduler(deps) {
     const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
       lineage_id: bead_id,
-      serial_lane_id: waitingLaneOf(deps.store.snapshot(workspace), bead_id)
+      serial_lane_id: dispatchLaneOf(deps.store.snapshot(workspace), bead_id)
     });
     if (!serial_launch.ok) {
       return { ok: false, reason: serial_launch.reason };
@@ -16187,7 +16151,7 @@ export function createScheduler(deps) {
       // The fresh-mode preparation above awaits, so the Bead may have moved
       // lanes since the acquire; re-read synchronously and revalidate the
       // held reservation before the first durable write.
-      const final_lane_id = waitingLaneOf(
+      const final_lane_id = dispatchLaneOf(
         deps.store.snapshot(workspace),
         bead_id
       );
@@ -19020,10 +18984,18 @@ export function createScheduler(deps) {
     // headless shape.
     const session_lane =
       !options.disposition && execLaneOfSnapshot(bead_snapshot) === 'session';
+    // A prior that carries no lane still continues the lane its lineage holds
+    // (UI-blx2 §3.5): a lineage bound from PR 대기 keeps its lane on the `done`
+    // row's `pr_wait` entry only, and `moveToPrWait` re-stamps that entry from
+    // THIS attempt when it lands again.
+    const lineage_id = serialLineageId(prior) || bead_id;
+    const serial_lane_id =
+      prior.serial_lane_id ??
+      heldSerialLaneOf(deps.store.snapshot(workspace), bead_id, lineage_id);
     const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
-      lineage_id: serialLineageId(prior) || bead_id,
-      serial_lane_id: prior.serial_lane_id ?? null,
+      lineage_id,
+      serial_lane_id,
       continuation: true
     });
     if (!serial_launch.ok) {
@@ -19045,6 +19017,23 @@ export function createScheduler(deps) {
     if (retiring.has(bead_id)) {
       serial_lease.release();
       return { ok: false, reason: 'bead_running' };
+    }
+    // The baseline and revalidation reads above await, so a bundle placement
+    // may have bound this lineage to a lane since the acquire: re-read
+    // synchronously and revalidate the held reservation with the lane the
+    // child records (the dispatch path's `final_lane_id` fence).
+    const final_lane_id =
+      prior.serial_lane_id ??
+      heldSerialLaneOf(deps.store.snapshot(workspace), bead_id, lineage_id);
+    const final_launch = serial_lease.revalidate({
+      bead_id,
+      lineage_id,
+      serial_lane_id: final_lane_id,
+      continuation: true
+    });
+    if (!final_launch.ok) {
+      serial_lease.release();
+      return { ok: false, reason: final_launch.reason };
     }
     // Same window: a ✕ recorded while an AUTOMATIC continuation — a provider
     // auto-resume receipt or a retry rung — was under way took the attempt
@@ -19090,7 +19079,7 @@ export function createScheduler(deps) {
       exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
       exec_values,
       exec_restore_values,
-      serial_lane_id: prior.serial_lane_id ?? null,
+      serial_lane_id: final_lane_id,
       quickfix_lane,
       resumed_from: attempt_id,
       ...(options.conversation_return === true

@@ -14,9 +14,11 @@ import {
   LANE_RELEASING_ATTEMPT_STATUSES,
   TERMINAL_ATTEMPT_STATUSES,
   createQueueStore,
+  heldSerialLaneOf,
   makeAttempt,
   orderLaneByBlocks,
   providerNoProgressResumeCount,
+  activeLaneLineages as storeActiveLaneLineages,
   transferableAttempts
 } from './queue-store.js';
 import { activeLaneLineages } from './scheduler.js';
@@ -11398,6 +11400,336 @@ describe('worker/queue-store — plan 묶음 일괄 배치 단일 CAS (UI-ruwu �
   });
 });
 
+describe('worker/queue-store — 배치안 묶음 단일 CAS (UI-blx2 §3.4)', () => {
+  /**
+   * Record one attempt of a bead at the current revision.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   * @param {Record<string, unknown>} [fields]
+   */
+  function seedAttempt(store, bead_id, fields = {}) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: `att-${bead_id}`,
+        bead_id,
+        status: 'running',
+        serial_lane_id: null,
+        ...fields
+      }
+    });
+  }
+
+  /**
+   * Place a bead in a waiting lane at the current revision.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   * @param {string} [lane]
+   */
+  function seedWaiting(store, bead_id, lane) {
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id,
+      lane
+    });
+  }
+
+  /**
+   * Submit a bundle at the current revision into `s1` unless `input` says
+   * otherwise.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {Record<string, unknown>} input
+   */
+  function submitBundle(store, input) {
+    return store.placeBundle(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      lane: 's1',
+      binds: [],
+      steps: [],
+      ...input
+    });
+  }
+
+  /**
+   * @param {any} queue
+   * @param {number} [index]
+   */
+  function laneIds(queue, index = 0) {
+    return queue.serial_lanes[index].entries.map(
+      (/** @type {any} */ e) => e.bead_id
+    );
+  }
+
+  test('writes a bind, a move and an add in one revision', () => {
+    const store = createQueueStore();
+    seedWaiting(store, 'R');
+    seedAttempt(store, 'R');
+    seedWaiting(store, 'X');
+    const before = store.snapshot(WS).revision;
+
+    const r = submitBundle(store, {
+      binds: ['R'],
+      steps: [
+        { bead_id: 'X', index: 0 },
+        { bead_id: 'C', index: 1 }
+      ]
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(laneIds(r.queue)).toEqual(['R', 'X', 'C']);
+    expect(r.queue.queue).toEqual([]);
+  });
+
+  test('stamps the lane on the bound lineage running attempt', () => {
+    const store = createQueueStore();
+    seedAttempt(store, 'R');
+
+    const r = submitBundle(store, {
+      binds: ['R'],
+      steps: [{ bead_id: 'C', index: 0 }]
+    });
+
+    expect(r.queue.attempts['att-R'].serial_lane_id).toBe('s1');
+  });
+
+  test('stamps the lane on the bound lineage pr_wait entry', () => {
+    const store = createQueueStore();
+    seedAttempt(store, 'P');
+    store.moveToPrWait(WS, {
+      bead_id: 'P',
+      attempt_id: 'att-P',
+      patch: { status: 'done', finished_at: 1 }
+    });
+
+    const r = submitBundle(store, {
+      binds: ['P'],
+      steps: [{ bead_id: 'C', index: 0 }]
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.pr_wait).toEqual([
+      expect.objectContaining({ bead_id: 'P', serial_lane_id: 's1' })
+    ]);
+  });
+
+  test('moves the bound bead waiting row to the lane front ahead of every step', () => {
+    const store = createQueueStore();
+    seedWaiting(store, 'W', 's1');
+    seedWaiting(store, 'R');
+    seedAttempt(store, 'R');
+
+    const r = submitBundle(store, {
+      binds: ['R'],
+      steps: [{ bead_id: 'C', index: 0 }]
+    });
+
+    expect(laneIds(r.queue)).toEqual(['R', 'C', 'W']);
+  });
+
+  test('leaves the lane held by the bound lineage alone', () => {
+    const store = createQueueStore();
+    seedAttempt(store, 'R');
+    seedWaiting(store, 'X');
+
+    const r = submitBundle(store, {
+      binds: ['R'],
+      steps: [
+        { bead_id: 'X', index: 0 },
+        { bead_id: 'C', index: 1 }
+      ]
+    });
+
+    expect(activeLaneLineages(r.queue)).toEqual(
+      new Map([['s1', new Set(['R'])]])
+    );
+  });
+
+  test('moves steps into a lane another lineage holds when nothing is bound', () => {
+    const store = createQueueStore();
+    seedAttempt(store, 'O', { serial_lane_id: 's1' });
+    seedWaiting(store, 'X');
+
+    const r = submitBundle(store, {
+      steps: [
+        { bead_id: 'X', index: 0 },
+        { bead_id: 'C', index: 1 }
+      ]
+    });
+
+    expect(r.ok).toBe(true);
+    expect(laneIds(r.queue)).toEqual(['X', 'C']);
+  });
+
+  test('applies the blocks correction as the final step order', () => {
+    const store = createQueueStore();
+
+    const r = submitBundle(store, {
+      steps: [
+        { bead_id: 'A', index: 0 },
+        { bead_id: 'B', index: 1 }
+      ],
+      blocks_edges: [{ blocker: 'B', blockee: 'A' }]
+    });
+
+    expect(laneIds(r.queue)).toEqual(['B', 'A']);
+  });
+
+  test('refuses a bind into a lane another lineage holds and writes nothing', () => {
+    const store = createQueueStore();
+    seedAttempt(store, 'O', { serial_lane_id: 's1' });
+    seedAttempt(store, 'R');
+    const before = store.snapshot(WS);
+
+    const r = submitBundle(store, {
+      binds: ['R'],
+      steps: [{ bead_id: 'C', index: 0 }]
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'lane_occupied'
+    });
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses two binds and writes nothing', () => {
+    const store = createQueueStore();
+    seedAttempt(store, 'R1');
+    seedAttempt(store, 'R2');
+    const before = store.snapshot(WS);
+
+    const r = submitBundle(store, {
+      binds: ['R1', 'R2'],
+      steps: [{ bead_id: 'C', index: 0 }]
+    });
+
+    expect(r).toMatchObject({ ok: false, reason: 'binds_size' });
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses a bind whose lineage already holds a serial lane and writes nothing', () => {
+    const store = createQueueStore();
+    store.setSerialLaneCount(WS, { expected_revision: 0, count: 2 });
+    seedAttempt(store, 'R', { serial_lane_id: 's2' });
+    const before = store.snapshot(WS);
+
+    const r = submitBundle(store, {
+      binds: ['R'],
+      steps: [{ bead_id: 'C', index: 0 }]
+    });
+
+    expect(r).toMatchObject({ ok: false, reason: 'bind_holds_lane' });
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses a bind with no record that could hold a lane', () => {
+    const store = createQueueStore();
+    seedAttempt(store, 'R', { status: 'done' });
+    const before = store.snapshot(WS);
+
+    const r = submitBundle(store, {
+      binds: ['R'],
+      steps: [{ bead_id: 'C', index: 0 }]
+    });
+
+    expect(r).toMatchObject({ ok: false, reason: 'bind_not_holdable' });
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses moving a running bead and writes nothing', () => {
+    const store = createQueueStore();
+    seedWaiting(store, 'X');
+    seedAttempt(store, 'X');
+    const before = store.snapshot(WS);
+
+    const r = submitBundle(store, { steps: [{ bead_id: 'X', index: 0 }] });
+
+    expect(r).toMatchObject({ ok: false, reason: 'member_active' });
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses moving a bead whose latest failure would hold the lane', () => {
+    const store = createQueueStore();
+    seedWaiting(store, 'X');
+    seedAttempt(store, 'X', { status: 'failed' });
+    const before = store.snapshot(WS);
+
+    const r = submitBundle(store, { steps: [{ bead_id: 'X', index: 0 }] });
+
+    expect(r).toMatchObject({ ok: false, reason: 'member_occupant' });
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses a lane beyond the configured count and writes nothing', () => {
+    const store = createQueueStore();
+    const before = store.snapshot(WS);
+
+    const r = submitBundle(store, {
+      lane: 's3',
+      steps: [{ bead_id: 'C', index: 0 }]
+    });
+
+    expect(r).toMatchObject({ ok: false, reason: 'lane_invalid' });
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses a stale revision as a conflict and writes nothing', () => {
+    const store = createQueueStore();
+    seedWaiting(store, 'X');
+    const before = store.snapshot(WS);
+
+    const r = submitBundle(store, {
+      expected_revision: before.revision - 1,
+      steps: [{ bead_id: 'X', index: 0 }]
+    });
+
+    expect(r).toMatchObject({ ok: false, conflict: true });
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+});
+
+describe('worker/queue-store — 붙잡은 직렬 레인 (UI-blx2 §3.5)', () => {
+  test('reads the lane a bead PR 대기 entry holds', () => {
+    const queue = {
+      attempts: {
+        d1: { attempt_id: 'd1', bead_id: 'B', status: 'done' }
+      },
+      pr_wait: [{ bead_id: 'B', serial_lane_id: 's2' }]
+    };
+
+    const lane = heldSerialLaneOf(queue, 'B');
+
+    expect(lane).toBe('s2');
+  });
+
+  test('counts a completion root hold only for that root lineage', () => {
+    const queue = {
+      attempts: {
+        r1: {
+          attempt_id: 'r1',
+          bead_id: 'B',
+          status: 'running',
+          serial_lane_id: 's1',
+          completion_root_id: 'R'
+        }
+      }
+    };
+
+    const lanes = [
+      heldSerialLaneOf(queue, 'B'),
+      heldSerialLaneOf(queue, 'B', 'R'),
+      heldSerialLaneOf(queue, 'B', 'B')
+    ];
+
+    expect(lanes).toEqual(['s1', 's1', null]);
+  });
+});
+
 describe('worker/queue-store — 레인 이동 시 lineage 재바인딩 (UI-04vo 구현 리뷰 1)', () => {
   test('moving a failed bead to another lane moves its lane occupancy with it', () => {
     const store = createQueueStore();
@@ -14108,7 +14440,9 @@ describe('worker/queue-store — 레인 해제 집합 단일화 (UI-e20c §9)', 
     );
 
     expect(source).not.toMatch(/const LANE_RELEASING_\w* = new Set/);
-    expect(source).toContain('attemptHoldsSerialLane');
+    // The scheduler's occupancy IS the store's one walk (UI-blx2 §3.4), which
+    // reads `attemptHoldsSerialLane`.
+    expect(activeLaneLineages).toBe(storeActiveLaneLineages);
   });
 });
 

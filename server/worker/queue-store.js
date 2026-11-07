@@ -2439,6 +2439,145 @@ export function attemptHoldsSerialLane(attempt, facts) {
   );
 }
 
+/**
+ * The lineage a serial-lane hold belongs to: the completion root that owns the
+ * attempt, else the attempt's own bead.
+ *
+ * @param {any} attempt
+ * @returns {string|null}
+ */
+export function serialLineageId(attempt) {
+  if (!attempt || typeof attempt.bead_id !== 'string') {
+    return null;
+  }
+  return typeof attempt.completion_root_id === 'string'
+    ? attempt.completion_root_id
+    : attempt.bead_id;
+}
+
+/**
+ * One serial-lane hold: which lane, by which lineage, through which bead.
+ *
+ * @typedef {Object} LaneHold
+ * @property {string} lane_id - `s1`..`s5`.
+ * @property {string} lineage_id - {@link serialLineageId} of the holding record.
+ * @property {string} bead_id - The bead whose record holds the lane.
+ */
+
+/**
+ * Every serial-lane hold in a queue (UI-04vo §2), rebuilt from durable state
+ * on every read so a restart reproduces it without a schema field. A lane is
+ * held by a lineage while any of these holds for a record carrying its lane:
+ *
+ *   - an attempt for which {@link attemptHoldsSerialLane} says so — a leaf
+ *     outside the releasing set, and when it has ended, its bead's latest
+ *     implementation attempt (UI-ey6v §3.1); `dismissed_at` is a UI hide,
+ *     never a release;
+ *   - the bead sits in durable `pr_wait` without a `merge_shelved` record (its
+ *     terminal `done` attempt holds the lane until shelving or merge cleanup);
+ *     the bead's last attempt's lane wins when it names one, else the entry's;
+ *   - a discard operation for the lineage is still in flight.
+ *
+ * This is the ONE walk: {@link activeLaneLineages} folds it per lane and
+ * {@link heldSerialLaneOf} reads it per bead (UI-blx2 §3.4, §3.5), so the
+ * scheduler's fences and the store's placement checks cannot disagree.
+ *
+ * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string, serial_lane_id?: string|null }>, merge_shelved?: Record<string, unknown>, discard_operations?: Record<string, any> }} q
+ * @returns {LaneHold[]}
+ */
+export function laneHolds(q) {
+  const values = Object.values(q.attempts || {});
+  const hold_facts = laneHoldFacts(q);
+  /** @type {LaneHold[]} */
+  const holds = [];
+  /**
+   * @param {unknown} lane
+   * @param {string|null} lineage
+   * @param {unknown} bead_id
+   */
+  function hold(lane, lineage, bead_id) {
+    if (serialLaneIndex(lane) === null || !lineage) {
+      return;
+    }
+    holds.push({
+      lane_id: /** @type {string} */ (lane),
+      lineage_id: lineage,
+      bead_id: typeof bead_id === 'string' ? bead_id : lineage
+    });
+  }
+  for (const attempt of values) {
+    if (attempt && attemptHoldsSerialLane(attempt, hold_facts)) {
+      hold(attempt.serial_lane_id, serialLineageId(attempt), attempt.bead_id);
+    }
+  }
+  for (const entry of q.pr_wait || []) {
+    if (Object.hasOwn(q.merge_shelved || {}, entry.bead_id)) {
+      continue;
+    }
+    const attempt = [...values]
+      .reverse()
+      .find((item) => item?.bead_id === entry?.bead_id);
+    if (attempt && serialLaneIndex(attempt.serial_lane_id) !== null) {
+      hold(attempt.serial_lane_id, serialLineageId(attempt), entry.bead_id);
+    } else {
+      hold(entry.serial_lane_id, entry.bead_id, entry.bead_id);
+    }
+  }
+  for (const operation of Object.values(q.discard_operations || {})) {
+    if (!discardOperationActive(operation)) {
+      continue;
+    }
+    const attempt =
+      (typeof operation.attempt_id === 'string' &&
+        q.attempts?.[operation.attempt_id]) ||
+      [...values].reverse().find((item) => item?.bead_id === operation.bead_id);
+    if (attempt) {
+      hold(attempt.serial_lane_id, serialLineageId(attempt), operation.bead_id);
+    }
+  }
+  return holds;
+}
+
+/**
+ * Per-lane active lineage occupancy (UI-04vo §2): {@link laneHolds} folded by
+ * lane. A lane may name more than one lineage; the launch fences read that as
+ * "occupied by another" for each of them.
+ *
+ * @param {Parameters<typeof laneHolds>[0]} q
+ * @returns {Map<string, Set<string>>} lane id → occupying lineage ids.
+ */
+export function activeLaneLineages(q) {
+  /** @type {Map<string, Set<string>>} */
+  const lanes = new Map();
+  for (const entry of laneHolds(q)) {
+    const set = lanes.get(entry.lane_id) || new Set();
+    set.add(entry.lineage_id);
+    lanes.set(entry.lane_id, set);
+  }
+  return lanes;
+}
+
+/**
+ * The serial lane a bead's own records hold right now, or null (UI-blx2 §3.5).
+ * Read off the same {@link laneHolds} walk occupancy is built from, so the
+ * lane this returns is one {@link activeLaneLineages} counts the bead in.
+ *
+ * @param {Parameters<typeof laneHolds>[0]} q
+ * @param {string} bead_id
+ * @param {string} [lineage_id] - Count only holds of this lineage; every hold
+ * of the bead when absent.
+ * @returns {string|null}
+ */
+export function heldSerialLaneOf(q, bead_id, lineage_id) {
+  return (
+    laneHolds(q).find(
+      (entry) =>
+        entry.bead_id === bead_id &&
+        (lineage_id === undefined || entry.lineage_id === lineage_id)
+    )?.lane_id ?? null
+  );
+}
+
 /** @type {number} */
 const MIN_SERIAL_LANE_COUNT = 1;
 /** @type {number} */
@@ -8215,6 +8354,187 @@ export function createQueueStore(options = {}) {
           rebindLineageLane(next, bead_id, String(lane));
         }
         applyLaneBlocksOrder(next, lane, input.blocks_edges);
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Seat one placement bundle in a serial lane in a SINGLE CAS (UI-blx2
+     * §3.4): bind at most one lane-less occupant to the lane, move or add the
+     * steps in order, then apply the blocks correction. The lane is the
+     * caller's; nothing here judges which lane suits a bead (ADR UI-hf8v).
+     *
+     * All-or-nothing on the clone the write lands on, like
+     * {@link applySerialGroup}: one failed check rejects the whole mutation
+     * without a revision bump and names it in `reason`:
+     *
+     *   - `lane_invalid`: not an active serial lane;
+     *   - `malformed`: `binds`/`steps` are not the documented arrays;
+     *   - `group_size`: no step; `binds_size`: more than one bind;
+     *   - `duplicate_member`: an id named twice across binds and steps;
+     *   - `discard_active`: a member has a discard in flight;
+     *   - `bind_holds_lane`: the bind bead already holds a serial lane;
+     *   - `bind_not_holdable`: the bind bead has neither an implementation
+     *     attempt that {@link attemptHoldsSerialLane} would let hold a lane nor
+     *     an unshelved `pr_wait` entry;
+     *   - `lane_occupied`: with a bind, the lane is held by another lineage —
+     *     two holders would fence each other's continuations;
+     *   - `member_active`: a step bead is doing work (a non-terminal attempt or
+     *     a `pr_wait` entry);
+     *   - `member_occupant`: a step bead has an implementation attempt that
+     *     holds — or, stamped with the lane, would hold — a serial lane (a
+     *     latest failed, `retry_wait` or `parked` record): seating it would add
+     *     a second holder.
+     *
+     * Writes: the bind lineage's non-releasing implementation attempts and its
+     * `pr_wait` entry take the lane; each step leaves every other array and is
+     * inserted at its `index`, counted among the lane's entries at that moment
+     * WITHOUT the bound bead's own row (earlier steps included), with its
+     * lineage rebound as {@link place} does; then the blocks correction. A
+     * waiting row the bound bead left behind goes to the lane's front LAST, so
+     * the holder stands ahead of every waiting row whatever the indices say
+     * (the {@link rebindLineageLane} invariant: seat and occupancy agree).
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, lane: string, binds: string[], steps: Array<{ bead_id: string, index: number }>, blocks_edges?: { blocker: string, blockee: string }[] }} input
+     * @returns {QueueOpResult & { reason?: string }}
+     */
+    placeBundle(workspace, input) {
+      const { expected_revision, lane } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyMutation(workspace, expected_revision, (next) => {
+        const index = serialLaneIndex(lane);
+        if (index === null || index >= next.serial_lane_count) {
+          reason = 'lane_invalid';
+          return false;
+        }
+        const binds = Array.isArray(input.binds) ? input.binds : null;
+        const steps = Array.isArray(input.steps) ? input.steps : null;
+        if (
+          binds === null ||
+          steps === null ||
+          binds.some((id) => typeof id !== 'string' || id.length === 0) ||
+          steps.some(
+            (step) =>
+              !step ||
+              typeof step.bead_id !== 'string' ||
+              step.bead_id.length === 0
+          )
+        ) {
+          reason = 'malformed';
+          return false;
+        }
+        if (steps.length === 0) {
+          reason = 'group_size';
+          return false;
+        }
+        if (binds.length > 1) {
+          reason = 'binds_size';
+          return false;
+        }
+        const member_ids = [...binds, ...steps.map((step) => step.bead_id)];
+        if (new Set(member_ids).size !== member_ids.length) {
+          reason = 'duplicate_member';
+          return false;
+        }
+        if (member_ids.some((id) => hasActiveDiscardOperation(next, id))) {
+          reason = 'discard_active';
+          return false;
+        }
+        const facts = laneHoldFacts(next);
+        /** @param {string} bead_id */
+        const hasHoldableAttempt = (bead_id) =>
+          Object.values(next.attempts).some(
+            (attempt) =>
+              attempt.bead_id === bead_id &&
+              isImplementationAttempt(attempt) &&
+              attemptHoldsSerialLane(attempt, facts)
+          );
+        const lane_id = String(lane);
+        const bind_id = binds.length === 1 ? binds[0] : null;
+        if (bind_id !== null) {
+          if (heldSerialLaneOf(next, bind_id) !== null) {
+            reason = 'bind_holds_lane';
+            return false;
+          }
+          const unshelved_pr_wait = next.pr_wait.some(
+            (entry) =>
+              entry.bead_id === bind_id &&
+              !Object.hasOwn(next.merge_shelved, bind_id)
+          );
+          if (!unshelved_pr_wait && !hasHoldableAttempt(bind_id)) {
+            reason = 'bind_not_holdable';
+            return false;
+          }
+          /** @type {Set<string>} */
+          const bind_lineages = new Set([bind_id]);
+          for (const attempt of Object.values(next.attempts)) {
+            const lineage =
+              attempt.bead_id === bind_id ? serialLineageId(attempt) : null;
+            if (lineage !== null) {
+              bind_lineages.add(lineage);
+            }
+          }
+          const occupants = activeLaneLineages(next).get(lane_id);
+          if (
+            occupants &&
+            [...occupants].some((lineage) => !bind_lineages.has(lineage))
+          ) {
+            reason = 'lane_occupied';
+            return false;
+          }
+        }
+        const active = activeBeadIds(next);
+        for (const step of steps) {
+          if (active.has(step.bead_id)) {
+            reason = 'member_active';
+            return false;
+          }
+          if (hasHoldableAttempt(step.bead_id)) {
+            reason = 'member_occupant';
+            return false;
+          }
+        }
+        /** @type {QueueEntry|null} */
+        let bound_row = null;
+        if (bind_id !== null) {
+          rebindLineageLane(next, bind_id, lane_id);
+          for (const entry of next.pr_wait) {
+            if (entry.bead_id === bind_id) {
+              entry.serial_lane_id = lane_id;
+            }
+          }
+          // Only the WAITING row moves: `removeFromLanes` would also drop the
+          // holder's `pr_wait` row, merge turn and shelf.
+          bound_row = next.queue.find((e) => e.bead_id === bind_id) || null;
+          next.queue = next.queue.filter((e) => e.bead_id !== bind_id);
+          for (const serial_lane of next.serial_lanes) {
+            bound_row =
+              bound_row ||
+              serial_lane.entries.find((e) => e.bead_id === bind_id) ||
+              null;
+            serial_lane.entries = serial_lane.entries.filter(
+              (e) => e.bead_id !== bind_id
+            );
+          }
+        }
+        const added_at = now();
+        const target = next.serial_lanes[index];
+        for (const step of steps) {
+          removeFromLanes(next, step.bead_id);
+          target.entries.splice(
+            clampIndex(step.index, target.entries.length),
+            0,
+            makeQueueEntry(step.bead_id, added_at)
+          );
+          rebindLineageLane(next, step.bead_id, lane_id);
+        }
+        applyLaneBlocksOrder(next, lane, input.blocks_edges);
+        if (bound_row !== null) {
+          target.entries.unshift(bound_row);
+        }
         return true;
       });
       return reason === null ? result : { ...result, reason };
