@@ -965,7 +965,6 @@
  * @property {{ at: number, by: string }|null} dismissed - A human acknowledged
  * this failed row (UI-q0uy §4.6-2). NOT a state transition: the row stays
  * `failed` and auditable, and only the 해결 필요 tally leaves it out.
- * @property {{ approved_source_path: string, approved_source_sha: string, requested_by: string, requested_at: number }|null} bootstrap_provenance
  * @property {{ target_at: number, consumed_at: number|null }} [failure_notice] -
  * The once-per-failure conversation mark of a MANUAL deploy (UI-jbl1 §3.1):
  * `target_at` is written in the same write that makes the record `failed`,
@@ -4809,9 +4808,6 @@ function normalizeRepoOperation(value) {
   if (subjects.length === 0) {
     return null;
   }
-  const provenance_raw = isRecord(value.bootstrap_provenance)
-    ? value.bootstrap_provenance
-    : null;
   const identity_raw = isRecord(value.process_identity)
     ? value.process_identity
     : null;
@@ -4945,20 +4941,6 @@ function normalizeRepoOperation(value) {
       typeof value.dismissed.at === 'number' &&
       typeof value.dismissed.by === 'string'
         ? { at: value.dismissed.at, by: value.dismissed.by }
-        : null,
-    bootstrap_provenance:
-      provenance_raw &&
-      typeof provenance_raw.approved_source_path === 'string' &&
-      isSha(provenance_raw.approved_source_sha) &&
-      typeof provenance_raw.requested_by === 'string' &&
-      typeof provenance_raw.requested_at === 'number'
-        ? {
-            approved_source_path: provenance_raw.approved_source_path,
-            approved_source_sha:
-              provenance_raw.approved_source_sha.toLowerCase(),
-            requested_by: provenance_raw.requested_by,
-            requested_at: provenance_raw.requested_at
-          }
         : null
   };
 }
@@ -8673,7 +8655,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, retry_of?: string, target?: 'base_only', bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, retry_of?: string, target?: 'base_only' }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -8762,10 +8744,10 @@ export function createQueueStore(options = {}) {
           subjects,
           effective_base_sha: input.effective_base_sha.toLowerCase(),
           target_base: input.target_base,
-          // A target pinned at PRERECORD time (UI-s582 §3.5). The automatic
-          // lane leaves it null and binds at launch; a manual run cannot, since
-          // the tip it was authorized against is the tip it must deploy even if
-          // the record waits behind another operation while the remote moves.
+          // A target pinned at PRERECORD time (UI-s582 §3.5). A deploy names the
+          // commit its declaration came from, so it must launch at that commit
+          // even if the record waits behind another operation while the remote
+          // moves.
           target_sha: isSha(input.target_sha)
             ? input.target_sha.toLowerCase()
             : null,
@@ -8811,8 +8793,7 @@ export function createQueueStore(options = {}) {
             input.source === 'manual' && Number.isInteger(input.manual_run_id)
               ? Number(input.manual_run_id)
               : null,
-          dismissed: null,
-          bootstrap_provenance: input.bootstrap_provenance ?? null
+          dismissed: null
         };
         return true;
       });
@@ -9290,38 +9271,6 @@ export function createQueueStore(options = {}) {
         }
         handoff.placement = handoff.placement || normalized.handoff.placement;
         handoff.error = null;
-        return true;
-      });
-    },
-
-    /**
-     * Attach validated bootstrap provenance and create a fresh attempt only
-     * when the prior record is the provenance-less failed bootstrap record.
-     *
-     * @param {string} workspace
-     * @param {{ operation_id: string, provenance: NonNullable<RepoOperation['bootstrap_provenance']>, attempt_id: string }} input
-     * @returns {QueueOpResult}
-     */
-    attachRepoOperationBootstrap(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const operation = next.repo_operations[input.operation_id];
-        // `failed` is the whole guard. An approved bootstrap request IS the
-        // human remediation entry (master spec §5: a new run after remediation
-        // is a new attempt of the same operation), so re-requesting it must
-        // reopen the record even when the FIRST bootstrap run is what failed —
-        // otherwise a bootstrap that trips a precondition can never be retried,
-        // because its exact input keeps adopting its own terminal failure.
-        if (!operation || operation.state !== 'failed') {
-          return false;
-        }
-        operation.bootstrap_provenance = input.provenance;
-        operation.state = 'queued';
-        operation.attempt_id = input.attempt_id;
-        operation.started_at = null;
-        operation.finished_at = null;
-        operation.failure = null;
-        operation.process_identity = null;
-        operation.retry = null;
         return true;
       });
     },

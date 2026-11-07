@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -81,36 +81,31 @@ describe('RepoOperation store', () => {
     ).toBeTruthy();
   });
 
-  it('reapproves only a failed provenance-less operation with a fresh attempt', () => {
+  it('reads a stored bootstrap_provenance key and drops it on the next write', () => {
     const workspace = mkdtempSync(
       path.join(os.tmpdir(), 'repo-operation-store-')
     );
-    const store = createQueueStore({
-      filePathFor: (root) => path.join(root, 'queue.json')
-    });
-    prerecord(store, workspace, 'deploy-a');
-    const attempt_id =
-      store.snapshot(workspace).repo_operations['deploy-a'].attempt_id;
-    store.settleRepoOperation(workspace, {
-      operation_id: 'deploy-a',
-      attempt_id,
-      exit_code: 1,
-      signal: null
-    });
-    const result = store.attachRepoOperationBootstrap(workspace, {
-      operation_id: 'deploy-a',
-      attempt_id: 'fresh',
-      provenance: {
-        approved_source_path: 'repo-ops/config.toml',
-        approved_source_sha: sha('d'),
-        requested_by: 'operator',
-        requested_at: 1
-      }
-    });
-    expect(result.ok).toBe(true);
-    expect(store.snapshot(workspace).repo_operations['deploy-a']).toMatchObject(
-      { state: 'queued', attempt_id: 'fresh' }
-    );
+    const file = path.join(workspace, 'queue.json');
+    const writer = createQueueStore({ filePathFor: () => file });
+    prerecord(writer, workspace, 'deploy-a');
+    const stored = JSON.parse(readFileSync(file, 'utf8'));
+    stored.repo_operations['deploy-a'].bootstrap_provenance = {
+      approved_source_path: 'docs/spec.md',
+      approved_source_sha: sha('d'),
+      requested_by: 'operator',
+      requested_at: 1
+    };
+    writeFileSync(file, JSON.stringify(stored));
+    const store = createQueueStore({ filePathFor: () => file });
+
+    const read = store.snapshot(workspace).repo_operations['deploy-a'];
+    prerecord(store, workspace, 'deploy-b');
+
+    expect(read.script_blob_sha).toBe(sha('c'));
+    expect(read).not.toHaveProperty('bootstrap_provenance');
+    expect(
+      JSON.parse(readFileSync(file, 'utf8')).repo_operations['deploy-a']
+    ).not.toHaveProperty('bootstrap_provenance');
   });
 
   it('marks a failed row as acknowledged without changing its state', () => {

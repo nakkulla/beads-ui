@@ -47,10 +47,6 @@ import {
   scriptRetryConsumptionKey
 } from './resolution-ladder.js';
 import {
-  repoOpsSpoolPendingDir,
-  repoOpsSpoolProcessedDir
-} from './state-paths.js';
-import {
   workRecoveryClassification,
   workRecoveryReady
 } from './work-recovery-policy.js';
@@ -63,31 +59,6 @@ import { createRepoOpsDeployWorktreeManager } from './worktree.js';
 const default_log = debug('worker:repo-ops');
 
 const RECONCILE_GRACE_MS = 5000;
-
-/**
- * @param {{ repo_operations: Record<string, any> }} queue
- * @param {string} repo_id
- * @param {string} target_base
- * @returns {string|null}
- */
-export function latestSuccessfulDeploySha(queue, repo_id, target_base) {
-  /** @type {any|null} */
-  let latest = null;
-  for (const operation of Object.values(queue.repo_operations || {})) {
-    if (
-      operation.repo_id === repo_id &&
-      operation.kind === 'deploy' &&
-      operation.target_base === target_base &&
-      operation.state === 'succeeded' &&
-      typeof operation.target_sha === 'string' &&
-      typeof operation.finished_at === 'number' &&
-      (!latest || operation.finished_at > latest.finished_at)
-    ) {
-      latest = operation;
-    }
-  }
-  return latest ? latest.target_sha : null;
-}
 
 /**
  * Stable failure identity per master spec §5: a digest over the failure class
@@ -150,7 +121,7 @@ export function createRepoOperationCoordinator(deps) {
    * Resolve an operation's historical/effective policy without publishing it
    * as the current target-base gate authority.
    *
-   * @param {{ repo: string, previous_sha: string|null, target_sha: string, kind?: 'verify'|'deploy', gitRun: any }} input
+   * @param {{ repo: string, previous_sha?: string|null, target_sha: string, kind?: 'verify'|'deploy', gitRun: any }} input
    */
   async function resolveEffective(input) {
     return resolveEffectiveRepoOps(input);
@@ -314,6 +285,54 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * The newest automatic deploy of these subjects that failed under the
+   * previous-base rule (before UI-ymcx). Its identity hashed that base, so the
+   * target-policy identity cannot find it, and without this link a merge that
+   * failed before the upgrade would run again unauthorized, and a person's retry
+   * would leave the exact lookup on the old failure. A record that failed before
+   * binding has no target and still counts: it died on the way to these subjects.
+   *
+   * @param {Record<string, any>} operations
+   * @param {string} target_base
+   * @param {string} target_sha
+   * @param {{ bead_id: string, merged_sha: string }[]} subjects
+   * @returns {string|null}
+   */
+  function oldRuleFailedDeployOf(
+    operations,
+    target_base,
+    target_sha,
+    subjects
+  ) {
+    /** @type {string|null} */
+    let newest_id = null;
+    for (const [operation_id, operation] of Object.entries(operations)) {
+      if (
+        operation.repo_id === deps.repo &&
+        operation.kind === 'deploy' &&
+        operation.state === 'failed' &&
+        operation.source !== 'manual' &&
+        operation.target_base === target_base &&
+        operation.effective_base_sha !== target_sha &&
+        (operation.target_sha === null ||
+          operation.target_sha === target_sha) &&
+        operation.subjects.some((/** @type {any} */ recorded) =>
+          subjects.some(
+            (entry) =>
+              entry.bead_id === recorded.bead_id &&
+              entry.merged_sha.toLowerCase() === recorded.merged_sha
+          )
+        ) &&
+        (newest_id === null ||
+          operation.requested_at > operations[newest_id].requested_at)
+      ) {
+        newest_id = operation_id;
+      }
+    }
+    return newest_id;
+  }
+
+  /**
    * Where a subject's exact lookup starts: the newest record that is itself a
    * retry successor when the subject has one — the run a person's retry last
    * recorded — otherwise the oldest record, as before (UI-btsr §3.3).
@@ -455,11 +474,12 @@ export function createRepoOperationCoordinator(deps) {
    * target it bound, or — when it died before binding one — every subject
    * commit it was created to deploy.
    *
-   * `effective_base_sha` is deliberately NOT a fallback. It names the commit
-   * deployed BEFORE this record, so a record that failed pre-bind would be
-   * covered by the very success that preceded it, and the merge it existed to
-   * deploy would be marked delivered while its cleanup still reports the
-   * failure — a row that can never converge.
+   * `effective_base_sha` is deliberately NOT a fallback. On a verify record or
+   * a deploy record written before UI-ymcx it names the commit deployed BEFORE
+   * this record, so a record that failed pre-bind would be covered by the very
+   * success that preceded it, and the merge it existed to deploy would be marked
+   * delivered while its cleanup still reports the failure — a row that can never
+   * converge.
    *
    * @param {any} operation
    * @returns {string[]} Refs that must all be contained, empty when unprovable.
@@ -2037,13 +2057,15 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
-   * Align, materialize, spawn, and record one already-prerecorded queued
-   * operation. Every pre-spawn failure settles durably instead of leaving a
-   * silent queued record. Caller holds the repo-operation lock.
+   * Align, spawn, and record one already-prerecorded queued deploy operation.
+   * The script runs from the worktree aligned to the target, because deploy
+   * policy IS the target's declaration. Every pre-spawn failure settles durably
+   * instead of leaving a silent queued record. Caller holds the repo-operation
+   * lock.
    *
    * @param {string} workspace
    * @param {string} operation_id
-   * @param {{ declaration: any, classification: string, target_sha: string, retry?: boolean, manual?: boolean, retry_successor?: boolean }} plan
+   * @param {{ declaration: any, target_sha: string, retry?: boolean, manual?: boolean, retry_successor?: boolean }} plan
    */
   async function launchRecorded(workspace, operation_id, plan) {
     const operation =
@@ -2073,36 +2095,8 @@ export function createRepoOperationCoordinator(deps) {
         operation_id
       };
     }
-    let script_path = path.join(aligned.path, plan.declaration.script);
-    if (plan.classification === 'transition') {
-      const materialized = await transition.materialize({
-        workspace,
-        repo: deps.repo,
-        operation_id,
-        blob_sha: plan.declaration.blob_sha,
-        mode: plan.declaration.mode
-      });
-      if (!materialized.ok || typeof materialized.path !== 'string') {
-        if (plan.retry === true) {
-          await settleConsumedRetry(workspace, {
-            operation_id,
-            blocked_reason: 'repo_ops_transition_materialize_failed'
-          });
-        } else {
-          await settleFailure(workspace, operation, operation_id, {
-            code: 'repo_ops_transition_materialize_failed'
-          });
-        }
-        return {
-          ok: false,
-          code: 'repo_ops_transition_materialize_failed',
-          operation_id
-        };
-      }
-      script_path = materialized.path;
-    }
     return spawnRecorded(workspace, operation_id, operation, {
-      script_path,
+      script_path: path.join(aligned.path, plan.declaration.script),
       cwd: aligned.path,
       target_sha: plan.target_sha,
       timeout_ms: plan.declaration.timeout_ms,
@@ -2150,11 +2144,6 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function ensureDeployLocked(subject) {
     const workspace = deps.workspace;
-    const previous_sha = latestSuccessfulDeploySha(
-      deps.store.snapshot(workspace),
-      deps.repo,
-      subject.target_base
-    );
     /** @type {{ ok: boolean, code?: string, target_sha?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} */
     let bound;
     if (subject.target_sha === undefined) {
@@ -2177,45 +2166,25 @@ export function createRepoOperationCoordinator(deps) {
     }
     const target_sha = bound.target_sha;
     const manual = subject.source === 'manual';
-    // The ONE previous-base exception (UI-s582 §3.2), manual path only: policy
-    // and script come from the TIP being deployed rather than from the base the
-    // last success ran under. The tip is a commit that already landed on
-    // `<remote>/<base>`, so this is not an unreviewed script executing itself —
-    // and it is the only way a `[deploy]` activation landing (previous base has
-    // no declaration) can ever be run.
     /** @type {any} */
     const policy = await resolveEffective({
       repo: deps.repo,
-      previous_sha:
-        manual || subject.policy_source === 'target_tip'
-          ? target_sha
-          : previous_sha,
       target_sha,
       kind: 'deploy',
       gitRun: deps.gitRun
     });
-    if (!policy.policy || !policy.target) return policy;
+    if (!policy.policy) {
+      return policy;
+    }
     if (optOutOf().deploy) {
       return { ok: true, inert: true, opted_out: true };
     }
-    if (!policy.policy.deploy && !policy.target.deploy)
-      return { ok: true, inert: true };
-    if (
-      policy.classification === 'bootstrap' &&
-      !subject.bootstrap_provenance
-    ) {
-      return { ok: false, code: 'bootstrap_not_approved' };
-    }
     /** @type {any} */
-    const declaration =
-      policy.classification === 'bootstrap'
-        ? policy.target.deploy
-        : policy.policy.deploy;
-    if (!declaration || declaration.identity_invalid)
+    const declaration = policy.policy.deploy;
+    if (!declaration) {
       return { ok: true, inert: true };
-    const subjects = Array.isArray(subject.subjects)
-      ? subject.subjects
-      : [{ bead_id: 'bootstrap', merged_sha: target_sha }];
+    }
+    const subjects = subject.subjects;
     for (const entry of subjects) {
       const contained = await deps.gitRun(
         ['merge-base', '--is-ancestor', entry.merged_sha, target_sha],
@@ -2225,12 +2194,14 @@ export function createRepoOperationCoordinator(deps) {
         return { ok: false, code: 'repo_operation_subject_not_contained' };
       }
     }
-    // containment 검사는 await다 — verify와 같은 이유로, 사전기록(그리고 그 앞의
-    // bootstrap attach 변이) 직전 값이 판정을 소유한다.
+    // containment 검사는 await다 — verify와 같은 이유로, 사전기록 직전 값이 판정을
+    // 소유한다.
     if (optOutOf().deploy) {
       return { ok: true, inert: true, opted_out: true };
     }
-    const effective_base_sha = previous_sha || target_sha;
+    // The one SHA every later reader takes this record's declaration from, so a
+    // merge that changed the script or its timeout is found again after restart.
+    const effective_base_sha = target_sha;
     const identity = {
       effective_base_sha,
       target_base: subject.target_base,
@@ -2248,35 +2219,39 @@ export function createRepoOperationCoordinator(deps) {
       deps.store.snapshot(workspace).repo_operations[operation_id];
     /** @type {string|null} */
     let retry_of = null;
-    // A fresh approved bootstrap request reopens a failed record — including
-    // one whose own bootstrap run failed. The approval is the authority, and
-    // re-requesting it is the only remediation entry a bootstrap operation has.
+    const old_rule_failure =
+      !existing && !manual
+        ? oldRuleFailedDeployOf(
+            deps.store.snapshot(workspace).repo_operations,
+            subject.target_base,
+            target_sha,
+            subjects
+          )
+        : null;
     if (
-      existing &&
-      existing.state === 'failed' &&
-      subject.bootstrap_provenance
+      (existing && existing.state === 'failed' && !manual) ||
+      old_rule_failure
     ) {
-      const attached = deps.store.attachRepoOperationBootstrap(workspace, {
-        operation_id,
-        provenance: subject.bootstrap_provenance,
-        attempt_id: `${operation_id}:${Date.now()}`
-      });
-      if (!attached.ok) {
-        return { ok: false, code: 'repo_operation_bootstrap_attach_failed' };
-      }
-    } else if (existing && existing.state === 'failed' && !manual) {
       // A failed automatic identity is never reopened (UI-btsr §3.2): its
       // current state is the end of its retry chain. A person's cleanup retry
       // records one successor for a failed tip; every other caller adopts the
       // tip, failure included, exactly as it adopted the record before.
       const operations = deps.store.snapshot(workspace).repo_operations;
-      const tip_id = retryTipOf(operations, operation_id);
+      const tip_id = retryTipOf(operations, old_rule_failure ?? operation_id);
       if (
         operations[tip_id].state === 'failed' &&
         subject.retry_authorized === true
       ) {
         retry_of = tip_id;
         operation_id = operationId({ ...identity, retry_of: tip_id });
+      } else if (old_rule_failure) {
+        // The prerecord below refuses a record under another policy SHA.
+        return {
+          ok: true,
+          operation_id: tip_id,
+          adopted: true,
+          timeout_ms: declaration.timeout_ms
+        };
       } else {
         operation_id = tip_id;
       }
@@ -2291,24 +2266,20 @@ export function createRepoOperationCoordinator(deps) {
       script_path: declaration.script,
       script_mode: declaration.mode,
       script_blob_sha: declaration.blob_sha,
+      // The target is durable from the prerecord on, because the recorded
+      // declaration belongs to this commit: a record that waits behind another
+      // operation must launch here, not at whatever the remote has moved to
+      // (UI-s582 §3.5).
+      target_sha,
       ...(manual
         ? {
             source: /** @type {const} */ ('manual'),
-            // The click-time tip, durable from the prerecord on: a manual
-            // record that waits behind another operation must still launch at
-            // the tip it was authorized against, not at whatever the remote
-            // has moved to by then (UI-s582 §3.5).
-            target_sha,
             ...(Number.isInteger(subject.manual_run_id)
               ? { manual_run_id: subject.manual_run_id }
               : {})
           }
         : {}),
-      // A successor pins the tip the retry fetched for the same reason: the
-      // id it hashes names that target, so a run that waited behind another
-      // operation must not launch at whatever the remote has moved to.
-      ...(retry_of !== null ? { retry_of, target_sha } : {}),
-      bootstrap_provenance: subject.bootstrap_provenance || null
+      ...(retry_of !== null ? { retry_of } : {})
     });
     if (!prerecord.ok)
       return { ok: false, code: 'repo_operation_prerecord_failed' };
@@ -2337,7 +2308,6 @@ export function createRepoOperationCoordinator(deps) {
     }
     const launched = await launchRecorded(workspace, operation_id, {
       declaration,
-      classification: policy.classification,
       target_sha,
       ...(manual ? { manual: true } : {}),
       ...(retry_successor ? { retry_successor: true } : {})
@@ -2986,7 +2956,6 @@ export function createRepoOperationCoordinator(deps) {
     /** @type {any} */
     const policy = await resolveEffective({
       repo: deps.repo,
-      previous_sha: pinned.target_sha,
       target_sha: pinned.target_sha,
       kind: 'deploy',
       gitRun: deps.gitRun
@@ -2994,11 +2963,10 @@ export function createRepoOperationCoordinator(deps) {
     // An unreadable declaration is not the same fact as an absent one, and the
     // refusal vocabulary has no word for it. Fail closed on the target: what
     // could not be read is a target this run cannot stand on.
-    if (!policy || !policy.policy || !policy.target) {
+    if (!policy || !policy.policy) {
       return { ok: false, reason: 'target_unresolved' };
     }
-    const declaration = policy.policy.deploy;
-    if (!declaration || declaration.identity_invalid) {
+    if (!policy.policy.deploy) {
       return { ok: false, reason: 'deploy_not_declared' };
     }
     if (optOutOf().deploy) {
@@ -3026,7 +2994,6 @@ export function createRepoOperationCoordinator(deps) {
     const ensured = await ensureDeployLocked({
       source: 'manual',
       manual_run_id,
-      policy_source: 'target_tip',
       target_base: pinned.target_base,
       target_sha: pinned.target_sha,
       subjects: [{ bead_id: 'manual', merged_sha: pinned.target_sha }]
@@ -3118,9 +3085,6 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function launchQueued(workspace, operation_id, operation) {
     const retry = operation.state === 'retry_pending';
-    // A manual record keeps reading its policy — and now its TARGET — from the
-    // tip it was authorized against, on every relaunch: the previous base may
-    // still have no declaration at all.
     const manual = operation.source === 'manual';
     // A retry re-runs the SAME command at the SAME target the first attempt
     // failed at (contract §3.2). Re-binding would resolve the remote's CURRENT
@@ -3134,7 +3098,9 @@ export function createRepoOperationCoordinator(deps) {
     // bind.
     // A cleanup retry successor (UI-btsr §3.2) keeps the tip its retry pinned
     // and, like a manual run, runs even where the worktree HEAD already holds
-    // it; one recorded without a pin binds like any automatic record.
+    // it. Every deploy record written since UI-ymcx pins its target, which is
+    // its policy SHA; only an automatic record written before that has no pin
+    // and binds here, and its recorded script is checked against that tip below.
     const retry_successor = typeof operation.retry_of === 'string';
     const pinned_target =
       typeof operation.target_sha === 'string' && operation.target_sha
@@ -3142,17 +3108,15 @@ export function createRepoOperationCoordinator(deps) {
         : null;
     /** @type {{ ok: boolean, code?: string, target_sha?: string }} */
     const bound =
-      retry || manual
-        ? pinned_target !== null
-          ? { ok: true, target_sha: pinned_target }
-          : {
+      pinned_target !== null
+        ? { ok: true, target_sha: pinned_target }
+        : retry || manual
+          ? {
               ok: false,
               code: retry
                 ? 'repo_ops_retry_target_missing'
                 : 'manual_target_missing'
             }
-        : retry_successor && pinned_target !== null
-          ? { ok: true, target_sha: pinned_target }
           : await deploy_worktree.bindTarget({
               repo: deps.repo,
               base: operation.target_base
@@ -3173,20 +3137,17 @@ export function createRepoOperationCoordinator(deps) {
     /** @type {any} */
     const policy = await resolveEffective({
       repo: deps.repo,
-      previous_sha: manual ? bound.target_sha : operation.effective_base_sha,
       target_sha: bound.target_sha,
       kind: 'deploy',
       gitRun: deps.gitRun
     });
+    // A record written before UI-ymcx names its previous base's script. Its
+    // target declares another one, so it ends here instead of re-running that
+    // old script.
     /** @type {any} */
-    const declaration = policy.policy
-      ? policy.classification === 'bootstrap'
-        ? policy.target.deploy
-        : policy.policy.deploy
-      : null;
+    const declaration = policy.policy?.deploy || null;
     if (
       !declaration ||
-      declaration.identity_invalid ||
       declaration.mode !== operation.script_mode ||
       declaration.blob_sha !== operation.script_blob_sha
     ) {
@@ -3204,7 +3165,6 @@ export function createRepoOperationCoordinator(deps) {
     }
     await launchRecorded(workspace, operation_id, {
       declaration,
-      classification: policy.classification,
       target_sha: bound.target_sha,
       retry,
       ...(manual ? { manual: true } : {}),
@@ -3993,24 +3953,6 @@ export function createRepoOperationCoordinator(deps) {
         await launchQueued(workspace, operation_id, operation);
       }
     }
-    const pending = repoOpsSpoolPendingDir(workspace);
-    /** @type {string[]} */
-    let names = [];
-    try {
-      names = fs.readdirSync(pending).filter((name) => name.endsWith('.json'));
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      const file = path.join(pending, name);
-      try {
-        const request = JSON.parse(fs.readFileSync(file, 'utf8'));
-        const verdict = await consumeBootstrap(request);
-        writeReceipt(file, verdict);
-      } catch {
-        writeReceipt(file, { ok: false, code: 'bootstrap_provenance_invalid' });
-      }
-    }
   }
 
   /**
@@ -4042,95 +3984,6 @@ export function createRepoOperationCoordinator(deps) {
     } finally {
       release();
     }
-  }
-
-  /**
-   * @param {string} source
-   * @param {unknown} receipt
-   */
-  function writeReceipt(source, receipt) {
-    const processed = repoOpsSpoolProcessedDir(deps.workspace);
-    fs.mkdirSync(processed, { recursive: true });
-    const name = path.basename(source, '.json');
-    const receipt_path = path.join(processed, `${name}.receipt.json`);
-    const temp = `${receipt_path}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(receipt));
-    fs.renameSync(temp, receipt_path);
-    fs.renameSync(source, path.join(processed, `${name}.request.json`));
-  }
-
-  /**
-   * @param {string} value
-   */
-  function isWorkspaceRelativePath(value) {
-    if (typeof value !== 'string' || value === '') return false;
-    if (value.startsWith('/') || value.includes('\0')) return false;
-    return !value
-      .split('/')
-      .some((segment) => segment === '..' || segment === '');
-  }
-
-  /**
-   * @param {any} request
-   */
-  async function consumeBootstrap(request) {
-    if (
-      !request ||
-      typeof request.repo !== 'string' ||
-      typeof request.target_base !== 'string' ||
-      /\s|^-/.test(request.target_base) ||
-      request.target_base === '' ||
-      !isWorkspaceRelativePath(request.approved_source_path) ||
-      !/^[0-9a-f]{40}$/i.test(request.approved_source_sha) ||
-      typeof request.requested_by !== 'string' ||
-      request.requested_by === '' ||
-      !Number.isFinite(request.requested_at)
-    ) {
-      return { ok: false, code: 'bootstrap_provenance_invalid' };
-    }
-    // Provenance binds to THIS coordinator's canonical repo: a request naming
-    // any other checkout (or an unresolvable path) is rejected outright, and
-    // every git proof below runs against the canonical repo only.
-    let canonical_request_repo = '';
-    let canonical_repo = '';
-    try {
-      canonical_request_repo = fs.realpathSync(path.resolve(request.repo));
-      canonical_repo = fs.realpathSync(path.resolve(deps.repo));
-    } catch {
-      return { ok: false, code: 'bootstrap_provenance_invalid' };
-    }
-    if (canonical_request_repo !== canonical_repo) {
-      return { ok: false, code: 'bootstrap_provenance_invalid' };
-    }
-    const commit = await deps.gitRun(
-      ['cat-file', '-e', `${request.approved_source_sha}^{commit}`],
-      { cwd: deps.repo }
-    );
-    const file = await deps.gitRun(
-      [
-        'cat-file',
-        '-e',
-        `${request.approved_source_sha}:${request.approved_source_path}`
-      ],
-      { cwd: deps.repo }
-    );
-    if (commit.code !== 0 || file.code !== 0)
-      return { ok: false, code: 'bootstrap_provenance_invalid' };
-    // consumeBootstrap only runs from reconcileLocked, which already holds the
-    // repo-operation lock — re-acquiring it here would self-deadlock.
-    const ensured = await ensureDeployLocked({
-      target_base: request.target_base,
-      subjects: null,
-      bootstrap_provenance: {
-        approved_source_path: request.approved_source_path,
-        approved_source_sha: request.approved_source_sha.toLowerCase(),
-        requested_by: request.requested_by,
-        requested_at: request.requested_at
-      }
-    });
-    return ensured.ok
-      ? { ok: true, operation_id: ensured.operation_id ?? null }
-      : ensured;
   }
 
   return {

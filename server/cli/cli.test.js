@@ -208,6 +208,16 @@ describe('main', () => {
     expect(output.includes('--open')).toBe(true);
   });
 
+  test('help omits the removed repo-ops-bootstrap command', async () => {
+    const write_spy = write_mock;
+    write_spy.mockClear();
+
+    await main(['--help']);
+
+    const output = write_spy.mock.calls.map((c) => String(c[0])).join('');
+    expect(output.includes('repo-ops-bootstrap')).toBe(false);
+  });
+
   test('dispatches to stop handler', async () => {
     const code = await main(['stop']);
 

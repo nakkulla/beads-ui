@@ -7,8 +7,7 @@ const OWNERSHIP_FAILURES = new Set([
   'repo_ops_ancestry_check_failed',
   'remote_history_not_monotonic',
   'repo_ops_worktree_align_failed',
-  'manual_target_missing',
-  'bootstrap_not_approved'
+  'manual_target_missing'
 ]);
 
 /**

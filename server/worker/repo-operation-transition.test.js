@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
-import { latestSuccessfulDeploySha } from './repo-operation-coordinator.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
 
 /** @type {string[]} */
@@ -81,33 +80,5 @@ describe('RepoOperation transition', () => {
       ok: false,
       code: 'repo_ops_transition_materialize_failed'
     });
-  });
-
-  test('selects the latest successful target SHA for durable policy and monotonic guard', () => {
-    const sha = latestSuccessfulDeploySha(
-      {
-        repo_operations: {
-          old: {
-            repo_id: '/repo',
-            kind: 'deploy',
-            target_base: 'main',
-            state: 'succeeded',
-            target_sha: 'a'.repeat(40),
-            finished_at: 1
-          },
-          latest: {
-            repo_id: '/repo',
-            kind: 'deploy',
-            target_base: 'main',
-            state: 'succeeded',
-            target_sha: 'b'.repeat(40),
-            finished_at: 2
-          }
-        }
-      },
-      '/repo',
-      'main'
-    );
-    expect(sha).toBe('b'.repeat(40));
   });
 });

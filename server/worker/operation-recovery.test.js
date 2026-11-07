@@ -124,7 +124,6 @@ describe('operation recovery classification', () => {
     ['remote_history_not_monotonic', 'ownership_uncertain'],
     ['repo_ops_worktree_align_failed', 'ownership_uncertain'],
     ['manual_target_missing', 'ownership_uncertain'],
-    ['bootstrap_not_approved', 'ownership_uncertain'],
     ['interrupted_without_terminal_exit', 'unknown_outcome'],
     ['timeout', 'unknown_error'],
     ['credential_missing', 'credential_missing'],
