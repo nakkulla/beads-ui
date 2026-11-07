@@ -1,7 +1,8 @@
 ---
 id: UI-ey6v
 title: 선행 이슈 병렬 배치와 배치 추천
-status: accepted
+status: superseded
+superseded_by: UI-blx2
 date: 2026-11-07
 summary: "대기·점유 상대의 직접 blocks 선행 후보는 쌍 관계·부딪힘과 무관하게 병렬 레인에 두어 점유에 막히지 않게 하고 세션 배치 절차도 같은 규칙을 따른다 — 쌍 판정과 모니터 전체 배치안 등 나머지 조항은 UI-hf8v 그대로다"
 supersedes: ["UI-hf8v"]
