@@ -1,7 +1,8 @@
 ---
 id: UI-blx2
 title: 부딪히는 상대를 같은 직렬 레인에 세우는 배치안
-status: accepted
+status: superseded
+superseded_by: UI-ymcx
 date: 2026-11-07
 summary: "배치안은 후보와 부딪히는 대기 상대를 같은 직렬 레인으로 옮기고 직렬 레인 없는 실행·PR 대기 상대는 빈 레인 점유로 묶어 한 묶음을 한 번에 적용하며 uncovered는 옮길 수 없는 상대에만 남긴다 — 선행 병렬 예외 등 나머지는 UI-ey6v 그대로다"
 supersedes: ["UI-ey6v"]
