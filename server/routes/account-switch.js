@@ -19,6 +19,7 @@ import {
  * @typedef {'claude' | 'codex'} SwitchProvider
  * @typedef {{ code: number, stdout: string, stderr: string, not_found: boolean, timed_out: boolean }} SwitchResult
  * @typedef {{ number: number, email: string | null }} AccountRef
+ * @typedef {{ from: AccountRef | null, to: AccountRef, at: number }} ClaudeSwitchRecord
  * @typedef {{ stdout: import('node:stream').Readable | null, stderr: import('node:stream').Readable | null, kill: (signal: NodeJS.Signals) => unknown, on: (event: string, listener: (...args: any[]) => void) => unknown }} SwitchChild
  * @typedef {(command: string, args: string[], options: { shell: false, windowsHide: true }) => SwitchChild} SpawnProcess
  */
@@ -44,6 +45,26 @@ const PROVIDERS = {
  * @type {Set<SwitchProvider>}
  */
 const in_flight_providers = new Set();
+
+/**
+ * The last Claude switch that actually moved the active login (UI-btp3
+ * §4.1), manual or automatic. The scheduler reads it to settle an
+ * accountless attempt's error that lands right after the switch on the
+ * account it ran on. Memory only: a restart forgets it, and settlement then
+ * falls back to the active account.
+ *
+ * @type {ClaudeSwitchRecord | null}
+ */
+let recent_claude_switch = null;
+
+/**
+ * The last Claude switch with `switched: true`, or null.
+ *
+ * @returns {ClaudeSwitchRecord | null}
+ */
+export function recentClaudeSwitch() {
+  return recent_claude_switch;
+}
 
 /**
  * Who hears that a switch landed (UI-np4t §4.4-1). The worker attachment
@@ -302,8 +323,9 @@ async function inUseBeads(provider, account_number) {
 
 /**
  * Take the per-provider switch lock. The manual handler and the server's own
- * Codex active-account return (UI-tyc2 §4.2-4) share it, so neither can run
- * over the other; false means another switch already holds it.
+ * active-account return passes (Codex UI-tyc2 §4.2-4, Claude UI-btp3 §4.2)
+ * share it, so neither can run over the other; false means another switch
+ * already holds it.
  *
  * @param {SwitchProvider} provider
  * @returns {boolean}
@@ -376,13 +398,23 @@ export async function performAccountSwitch(options) {
       return { ok: false, error: 'invalid_output' };
     }
 
+    const output = normalizeSwitchOutput(parsed);
     if (provider === 'claude') {
+      // Recorded before the listeners run: their hold re-evaluation may
+      // already settle an attempt against it.
+      if (output.switched) {
+        recent_claude_switch = {
+          from: output.from,
+          to: output.to ?? { number: account_number, email: null },
+          at: Date.now()
+        };
+      }
       options.invalidateUsageCache(account_number);
     } else {
       options.invalidateUsageCache();
     }
     notifyAccountSwitched(provider);
-    return { ok: true, output: normalizeSwitchOutput(parsed) };
+    return { ok: true, output };
   } catch {
     return { ok: false, error: 'switch_failed' };
   }
@@ -460,4 +492,5 @@ export const codexAccountSwitchHandler = createAccountSwitchHandler({
 /** Reset the per-provider in-flight guard between tests. */
 export function __resetSwitchStateForTest() {
   in_flight_providers.clear();
+  recent_claude_switch = null;
 }

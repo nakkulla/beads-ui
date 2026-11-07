@@ -39,7 +39,10 @@ import { codexCreditStore } from '../codex-credit-store.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
-import { subscribeAccountSwitched } from '../routes/account-switch.js';
+import {
+  recentClaudeSwitch,
+  subscribeAccountSwitched
+} from '../routes/account-switch.js';
 import {
   listAccounts as listClaudeAccounts,
   resolveCswapPath
@@ -1354,6 +1357,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         kvGetJson(key, { cwd: workspace })),
     makeRunner,
     accountCatalog,
+    // The last Claude switch, so an accountless attempt's error settled right
+    // after it lands on the account it ran on (UI-btp3 §4.1).
+    recentClaudeSwitch,
     // The server-global credit settings the Codex switch's credit pass reads
     // (UI-9y1k §4.2).
     codexCredit: options.codexCredit || codexCreditStore(),

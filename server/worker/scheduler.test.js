@@ -1742,6 +1742,9 @@ function setup(opts) {
       .readLastAssistantMessage,
     acquireClaudeLaunch: async () => () => {},
     accountCatalog: opts.accountCatalog,
+    // Absent by default: no recent Claude switch, so an accountless attempt's
+    // error settles on the active account.
+    recentClaudeSwitch: /** @type {any} */ (opts).recentClaudeSwitch,
     providerHealth: opts.providerHealth,
     // Absent by default: an unwired kv channel leaves the repo account layer
     // ABSENT, which is what every test that never stores a default expects.
@@ -36937,5 +36940,175 @@ describe('selectCodexSwitchCandidate (UI-9y1k §4.2)', () => {
     });
 
     expect(decision).toMatchObject({ key: '03' });
+  });
+});
+
+describe('settling an error right after a Claude switch', () => {
+  const NOW = 1_000_000;
+  const A3 = 'three@hanmail.example';
+  const A4 = 'four@unist.example';
+  const PINNED = 'pinned@example.com';
+
+  /**
+   * @param {string} email
+   * @param {number} number
+   * @param {number} pct
+   * @param {boolean} active
+   */
+  function claudeRow(email, number, pct, active) {
+    return {
+      key: email,
+      number,
+      email,
+      active,
+      sessionLoginOwn: true,
+      status: 'ok',
+      windows: [{ key: '5h', pct, resetsAt: null }]
+    };
+  }
+
+  const ROWS = [
+    claudeRow(A3, 3, 100, false),
+    claudeRow(A4, 4, 0, true),
+    claudeRow(PINNED, 5, 100, false)
+  ];
+
+  /**
+   * Run one Claude attempt to a usage-limit error and return the hold
+   * targets it left.
+   *
+   * @param {{ record: any, pinned?: boolean }} options
+   */
+  async function settleLimitError(options) {
+    const env = setup({
+      config: { B1: options.pinned ? { claude_account: PINNED } : {} },
+      slots: 1,
+      now: () => NOW,
+      ...accountDeps({
+        accountCatalog: {
+          ...accountDeps().accountCatalog,
+          activeClaude: vi.fn(async () => ({ ok: true, account: ROWS[1] })),
+          readClaude: vi.fn(async (/** @type {string} */ email) => {
+            const row = ROWS.find((candidate) => candidate.email === email);
+            return row
+              ? { ok: true, account: row }
+              : { ok: false, reason: 'claude_account_unknown' };
+          }),
+          listClaude: vi.fn(async () => ({
+            ok: true,
+            accounts: ROWS,
+            active_key: A4
+          }))
+        }
+      }),
+      recentClaudeSwitch: () => options.record
+    });
+    env.store.setProviderLimitPolicy(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'wait', accounts: [] }
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 429,
+          result: "You've hit your session limit"
+        }
+      ]
+    });
+    await flush();
+
+    return env.store
+      .snapshot(WS)
+      .provider_hold.claude.targets.map(
+        (/** @type {any} */ target) => target.account
+      );
+  }
+
+  /**
+   * @param {number} age_ms
+   * @param {{ from?: any, to?: any }} [overrides]
+   */
+  function switchRecord(age_ms, overrides = {}) {
+    return {
+      from: { number: 3, email: A3 },
+      to: { number: 4, email: A4 },
+      at: NOW - age_ms,
+      ...overrides
+    };
+  }
+
+  test('holds the previous account for an accountless error within 120 seconds', async () => {
+    const accounts = await settleLimitError({ record: switchRecord(60_000) });
+
+    expect(accounts).toEqual([A3]);
+  });
+
+  test('holds the previous account at exactly 120 seconds', async () => {
+    const accounts = await settleLimitError({ record: switchRecord(120_000) });
+
+    expect(accounts).toEqual([A3]);
+  });
+
+  test('finds the previous account by number when the tool gave no email', async () => {
+    const accounts = await settleLimitError({
+      record: switchRecord(10_000, { from: { number: 3, email: null } })
+    });
+
+    expect(accounts).toEqual([A3]);
+  });
+
+  test('holds the active account once 120 seconds have passed', async () => {
+    const accounts = await settleLimitError({ record: switchRecord(120_001) });
+
+    expect(accounts).toEqual([A4]);
+  });
+
+  test('holds the active account without a recorded switch', async () => {
+    const accounts = await settleLimitError({ record: null });
+
+    expect(accounts).toEqual([A4]);
+  });
+
+  test('holds the active account when it is not the switch target', async () => {
+    const accounts = await settleLimitError({
+      record: switchRecord(10_000, { to: { number: 5, email: PINNED } })
+    });
+
+    expect(accounts).toEqual([A4]);
+  });
+
+  test('holds the active account when the previous account is unknown', async () => {
+    const accounts = await settleLimitError({
+      record: switchRecord(10_000, { from: null })
+    });
+
+    expect(accounts).toEqual([A4]);
+  });
+
+  test('holds the active account when the previous account is not listed', async () => {
+    const accounts = await settleLimitError({
+      record: switchRecord(10_000, {
+        from: { number: 9, email: 'gone@example.com' }
+      })
+    });
+
+    expect(accounts).toEqual([A4]);
+  });
+
+  test('holds a pinned attempt on its own account right after a switch', async () => {
+    const accounts = await settleLimitError({
+      record: switchRecord(10_000),
+      pinned: true
+    });
+
+    expect(accounts).toEqual([PINNED]);
   });
 });
