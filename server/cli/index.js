@@ -3,7 +3,6 @@ import { pathToFileURL } from 'node:url';
 import { getConfig } from '../config.js';
 import { debug, enableAllDebug } from '../logging.js';
 import { handleRestart, handleStart, handleStop } from './commands.js';
-import { runRepoOpsBootstrap } from './repo-ops.js';
 import { printUsage } from './usage.js';
 
 /**
@@ -54,8 +53,7 @@ export function parseArgs(args) {
       (token === 'start' ||
         token === 'stop' ||
         token === 'restart' ||
-        token === 'resolve-startup-cwd' ||
-        token === 'repo-ops-bootstrap')
+        token === 'resolve-startup-cwd')
     ) {
       command = token;
       continue;
@@ -128,10 +126,6 @@ export async function main(args) {
   if (command === 'resolve-startup-cwd') {
     process.stdout.write(`${resolveStartupCwd()}\n`);
     return 0;
-  }
-
-  if (command === 'repo-ops-bootstrap') {
-    return await runRepoOpsBootstrap(args.slice(args.indexOf(command) + 1));
   }
 
   if (command === 'start') {

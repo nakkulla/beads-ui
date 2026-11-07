@@ -5149,7 +5149,6 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
       source: 'automatic',
       manual_run_id: null,
       dismissed: null,
-      bootstrap_provenance: null,
       ...patch
     };
   }

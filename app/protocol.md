@@ -1011,15 +1011,15 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   target SHA input and no `expected_revision`: the server pins remote, base and
   the fetched tip through the workspace's one base resolver (never assuming
   `origin`), and reads the `[deploy]` declaration and its script blob from THAT
-  tip — the single previous-base exception, manual path only. `repo_id` is
-  REQUIRED and names the repository the client drew the button for; it is read
-  from `workspace_info.repo_ops.repo_id`, and an absent, empty or non-matching
-  value is refused rather than redirected. A snapshot that carries no `repo_id`
-  leaves the button disabled instead of sending an uncheckable request. Reply:
-  `{ ok: true, operation_id, queue }` or `{ ok: false, reason, queue }` with
-  `reason` ∈ `deploy_not_declared` (no `[deploy]` at the tip) ·
-  `deploy_opted_out` (this workspace's deploy opt-out is on) ·
-  `deploy_in_flight` (a deploy for this repo is `queued`/`running`/
+  tip, as every deploy does. It is the recovery entry for a failed deploy.
+  `repo_id` is REQUIRED and names the repository the client drew the button for;
+  it is read from `workspace_info.repo_ops.repo_id`, and an absent, empty or
+  non-matching value is refused rather than redirected. A snapshot that carries
+  no `repo_id` leaves the button disabled instead of sending an uncheckable
+  request. Reply: `{ ok: true, operation_id, queue }` or
+  `{ ok: false, reason, queue }` with `reason` ∈ `deploy_not_declared` (no
+  `[deploy]` at the tip) · `deploy_opted_out` (this workspace's deploy opt-out
+  is on) · `deploy_in_flight` (a deploy for this repo is `queued`/`running`/
   `retry_pending`) · `target_unresolved` (the base resolver, the declaration
   read, or the ancestry probe could not decide — fail-closed) ·
   `remote_history_not_monotonic` (the deploy worktree HEAD and the tip have

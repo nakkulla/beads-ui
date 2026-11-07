@@ -223,12 +223,28 @@ export async function resolveRepoOps(input) {
 }
 
 /**
- * Pin policy to the previous target base and classify the delivery.
+ * Resolve the policy one delivery runs under and classify it.
  *
- * @param {{ repo: string, previous_sha: string|null, target_sha: string, kind?: 'verify'|'deploy', gitRun: (args: string[], options: { cwd: string }) => Promise<{ code: number, stdout: string, stderr: string }> }} input
+ * Deploy runs the merged target's own declaration and script, so its policy is
+ * the target tree and the classification is always `normal`; `previous_sha` is
+ * not read. Verify pins policy to the previous target base and classifies the
+ * delivery as `normal`, `bootstrap` or `transition`.
+ *
+ * @param {{ repo: string, previous_sha?: string|null, target_sha: string, kind?: 'verify'|'deploy', gitRun: (args: string[], options: { cwd: string }) => Promise<{ code: number, stdout: string, stderr: string }> }} input
  */
 export async function resolveEffectiveRepoOps(input) {
   const kind = input.kind ?? 'deploy';
+  if (kind === 'deploy') {
+    const target = await resolveRepoOps({
+      repo: input.repo,
+      sha: input.target_sha,
+      gitRun: input.gitRun
+    });
+    if (!target.ok && target.code) {
+      return target;
+    }
+    return { policy: target, target, classification: 'normal' };
+  }
   const previous = input.previous_sha
     ? await resolveRepoOps({
         repo: input.repo,

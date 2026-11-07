@@ -349,34 +349,6 @@ export function delegationMonitorRootDir(workspace_root) {
 }
 
 /**
- * Absolute directory used by the Worker-owned bootstrap handoff. CLI callers
- * may create request files here, but only the running Worker consumes them and
- * writes queue state.
- *
- * @param {string} workspace_root
- * @returns {string}
- */
-export function repoOpsSpoolDir(workspace_root) {
-  return path.join(workspaceStateDir(workspace_root), 'repo-ops-spool');
-}
-
-/**
- * @param {string} workspace_root
- * @returns {string}
- */
-export function repoOpsSpoolPendingDir(workspace_root) {
-  return path.join(repoOpsSpoolDir(workspace_root), 'pending');
-}
-
-/**
- * @param {string} workspace_root
- * @returns {string}
- */
-export function repoOpsSpoolProcessedDir(workspace_root) {
-  return path.join(repoOpsSpoolDir(workspace_root), 'processed');
-}
-
-/**
  * @param {string} workspace_root
  * @returns {string}
  */

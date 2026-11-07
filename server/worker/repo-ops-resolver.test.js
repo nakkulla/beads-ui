@@ -86,20 +86,44 @@ describe('resolveRepoOps', () => {
     ).resolves.toMatchObject({ ok: false, code: 'repo_ops_config_invalid' });
   });
 
-  it('classifies no previous policy as bootstrap without reading a previous checkout', async () => {
+  it('classifies a verify policy without a previous checkout as bootstrap', async () => {
+    const gitRun = gitFor({
+      [`show:${TARGET}:repo-ops/config.toml`]:
+        '[verify]\nscript = "repo-ops/script/run"',
+      [`ls-tree:repo-ops/config.toml`]: `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`,
+      [`ls-tree:repo-ops/script/run`]: `100755 blob ${'d'.repeat(40)}\trepo-ops/script/run`
+    });
+
+    const result = await resolveEffectiveRepoOps({
+      repo: '/repo',
+      previous_sha: null,
+      target_sha: TARGET,
+      kind: 'verify',
+      gitRun
+    });
+
+    expect(result).toMatchObject({ classification: 'bootstrap' });
+  });
+
+  it('resolves first deploy declaration without bootstrap classification', async () => {
     const gitRun = gitFor({
       [`show:${TARGET}:repo-ops/config.toml`]:
         '[deploy]\nscript = "repo-ops/script/run"',
       [`ls-tree:repo-ops/config.toml`]: `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`,
       [`ls-tree:repo-ops/script/run`]: `100755 blob ${'d'.repeat(40)}\trepo-ops/script/run`
     });
+
     const result = await resolveEffectiveRepoOps({
       repo: '/repo',
       previous_sha: null,
       target_sha: TARGET,
       gitRun
     });
-    expect(result).toMatchObject({ classification: 'bootstrap' });
+
+    expect(result).toMatchObject({
+      classification: 'normal',
+      policy: { deploy: { blob_sha: 'd'.repeat(40) } }
+    });
   });
 });
 
@@ -133,8 +157,10 @@ describe('resolveEffectiveRepoOps', () => {
     };
   }
 
-  const CONFIG = '[deploy]\nscript = "repo-ops/script/deploy"';
-  const SCRIPT_755 = `100755 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`;
+  const CONFIG = '[verify]\nscript = "repo-ops/script/verify"';
+  const SCRIPT_755 = `100755 blob ${'d'.repeat(40)}\trepo-ops/script/verify`;
+  const DEPLOY_CONFIG = '[deploy]\nscript = "repo-ops/script/deploy"';
+  const DEPLOY_SCRIPT_755 = `100755 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`;
 
   it('classifies identical config and script identity as normal', async () => {
     const gitRun = gitForTrees({
@@ -154,13 +180,14 @@ describe('resolveEffectiveRepoOps', () => {
       repo: '/repo',
       previous_sha: PREVIOUS,
       target_sha: TARGET,
+      kind: 'verify',
       gitRun
     });
 
     expect(result).toMatchObject({ classification: 'normal' });
   });
 
-  it('classifies a config-only change as transition and pins the previous policy', async () => {
+  it('classifies a verify config-only change as transition and pins the previous policy', async () => {
     const gitRun = gitForTrees({
       [PREVIOUS]: {
         config: `${CONFIG}\ntimeout_ms = 1000`,
@@ -178,15 +205,17 @@ describe('resolveEffectiveRepoOps', () => {
       repo: '/repo',
       previous_sha: PREVIOUS,
       target_sha: TARGET,
+      kind: 'verify',
       gitRun
     });
 
-    expect(result).toMatchObject({ classification: 'transition' });
-    if (!('policy' in result) || !('deploy' in result.policy)) return;
-    expect(result.policy.deploy?.timeout_ms).toBe(1000);
+    expect(result).toMatchObject({
+      classification: 'transition',
+      policy: { verify: { timeout_ms: 1000 } }
+    });
   });
 
-  it('classifies changed script bytes as transition while the PR bytes never become policy', async () => {
+  it('keeps verify transition classification while the PR bytes never become policy', async () => {
     const gitRun = gitForTrees({
       [PREVIOUS]: {
         config: CONFIG,
@@ -196,6 +225,64 @@ describe('resolveEffectiveRepoOps', () => {
       [TARGET]: {
         config: CONFIG,
         config_blob: `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`,
+        script_entry: `100755 blob ${'f'.repeat(40)}\trepo-ops/script/verify`
+      }
+    });
+
+    const result = await resolveEffectiveRepoOps({
+      repo: '/repo',
+      previous_sha: PREVIOUS,
+      target_sha: TARGET,
+      kind: 'verify',
+      gitRun
+    });
+
+    expect(result).toMatchObject({
+      classification: 'transition',
+      policy: { verify: { blob_sha: 'd'.repeat(40) } }
+    });
+  });
+
+  it('classifies a verify mode-only change as transition, never normal', async () => {
+    // Same blob SHA, different executable bit: a blob-SHA-only identity would
+    // have judged this 'normal'; the pinned previous policy keeps executing.
+    const gitRun = gitForTrees({
+      [PREVIOUS]: {
+        config: CONFIG,
+        config_blob: `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`,
+        script_entry: SCRIPT_755
+      },
+      [TARGET]: {
+        config: CONFIG,
+        config_blob: `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`,
+        script_entry: `100644 blob ${'d'.repeat(40)}\trepo-ops/script/verify`
+      }
+    });
+
+    const result = await resolveEffectiveRepoOps({
+      repo: '/repo',
+      previous_sha: PREVIOUS,
+      target_sha: TARGET,
+      kind: 'verify',
+      gitRun
+    });
+
+    expect(result).toMatchObject({
+      classification: 'transition',
+      policy: { verify: { mode: '100755' } }
+    });
+  });
+
+  it('resolves deploy policy from the target tree when the script changes', async () => {
+    const gitRun = gitForTrees({
+      [PREVIOUS]: {
+        config: DEPLOY_CONFIG,
+        config_blob: `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`,
+        script_entry: DEPLOY_SCRIPT_755
+      },
+      [TARGET]: {
+        config: `${DEPLOY_CONFIG}\ntimeout_ms = 2000`,
+        config_blob: `100644 blob ${'e'.repeat(40)}\trepo-ops/config.toml`,
         script_entry: `100755 blob ${'f'.repeat(40)}\trepo-ops/script/deploy`
       }
     });
@@ -207,22 +294,39 @@ describe('resolveEffectiveRepoOps', () => {
       gitRun
     });
 
-    expect(result).toMatchObject({ classification: 'transition' });
-    if (!('policy' in result) || !('deploy' in result.policy)) return;
-    expect(result.policy.deploy?.blob_sha).toBe('d'.repeat(40));
+    expect(result).toMatchObject({
+      classification: 'normal',
+      policy: { deploy: { blob_sha: 'f'.repeat(40), timeout_ms: 2000 } }
+    });
   });
 
-  it('classifies a mode-only change as transition, never normal', async () => {
-    // Same blob SHA, different executable bit: a blob-SHA-only identity would
-    // have judged this 'normal'; the pinned previous policy keeps executing.
+  it('resolves no deploy policy when only the previous base declares it', async () => {
     const gitRun = gitForTrees({
       [PREVIOUS]: {
-        config: CONFIG,
+        config: DEPLOY_CONFIG,
         config_blob: `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`,
-        script_entry: SCRIPT_755
+        script_entry: DEPLOY_SCRIPT_755
       },
+      [TARGET]: {}
+    });
+
+    const result = await resolveEffectiveRepoOps({
+      repo: '/repo',
+      previous_sha: PREVIOUS,
+      target_sha: TARGET,
+      gitRun
+    });
+
+    expect(result).toMatchObject({
+      classification: 'normal',
+      policy: { deploy: null }
+    });
+  });
+
+  it('fails closed when the target deploy script loses its executable bit', async () => {
+    const gitRun = gitForTrees({
       [TARGET]: {
-        config: CONFIG,
+        config: DEPLOY_CONFIG,
         config_blob: `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`,
         script_entry: `100644 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`
       }
@@ -235,8 +339,9 @@ describe('resolveEffectiveRepoOps', () => {
       gitRun
     });
 
-    expect(result).toMatchObject({ classification: 'transition' });
-    if (!('policy' in result) || !('deploy' in result.policy)) return;
-    expect(result.policy.deploy?.mode).toBe('100755');
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'repo_ops_config_invalid'
+    });
   });
 });

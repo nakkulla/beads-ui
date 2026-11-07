@@ -37,7 +37,6 @@ function failedDeployOperation(patch = {}) {
       interrupted: false
     },
     superseded_by: null,
-    bootstrap_provenance: null,
     ...patch
   };
 }

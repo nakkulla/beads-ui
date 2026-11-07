@@ -22,10 +22,6 @@ import {
   repoOpsDisplayFor
 } from './repo-ops-display.js';
 import { createFailureConversationLauncher } from './resolve-session.js';
-import {
-  repoOpsSpoolPendingDir,
-  repoOpsSpoolProcessedDir
-} from './state-paths.js';
 import * as recoveryPolicy from './work-recovery-policy.js';
 
 const TARGET = 'b'.repeat(40);
@@ -55,21 +51,13 @@ afterEach(() => {
 });
 
 /**
- * Fake git that resolves the target tree's bootstrap policy and validates the
- * approved source against `known_shas`.
+ * Fake git in which only the target tree declares a repo-ops policy.
  *
- * @param {{ known_shas?: string[], config?: string, script_mode?: string, script_blob_sha?: string }} [options]
+ * @param {{ config?: string, script_mode?: string, script_blob_sha?: string }} [options]
  */
-function gitForBootstrap(options = {}) {
-  const known = new Set(options.known_shas ?? [APPROVED]);
+function gitForTargetPolicy(options = {}) {
   /** @param {string[]} args - Git arguments. */
   return async (args) => {
-    if (args[0] === 'cat-file') {
-      const sha = String(args.at(-1)).split(/[:^]/)[0];
-      return known.has(sha)
-        ? { code: 0, stdout: '', stderr: '' }
-        : { code: 1, stdout: '', stderr: 'missing' };
-    }
     if (args[0] === 'merge-base') {
       return { code: 0, stdout: '', stderr: '' };
     }
@@ -93,15 +81,15 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * Wrap the bootstrap git fake with an explicit ancestry table. A pair absent
+ * Wrap the target-policy git fake with an explicit ancestry table. A pair absent
  * from the table answers `ancestor`, which is what every existing deploy test
  * already assumes.
  *
  * @param {Record<string, boolean|'error'>} pairs - `'<ancestor>-><descendant>'`.
- * @param {{ known_shas?: string[], config?: string, script_mode?: string, script_blob_sha?: string }} [options]
+ * @param {{ config?: string, script_mode?: string, script_blob_sha?: string }} [options]
  */
 function gitWithAncestry(pairs, options = {}) {
-  const base_git = gitForBootstrap(options);
+  const base_git = gitForTargetPolicy(options);
   /**
    * @param {string[]} args
    */
@@ -142,7 +130,7 @@ function coordinatorFor(overrides = {}) {
     repo: root,
     store,
     locks: overrides.locks ?? createLockManager(),
-    gitRun: overrides.gitRun ?? gitForBootstrap(),
+    gitRun: overrides.gitRun ?? gitForTargetPolicy(),
     runner: /** @type {never} */ (runner),
     transition: /** @type {never} */ (
       overrides.transition ?? {
@@ -1276,32 +1264,10 @@ describe('verify candidate pinned commits', () => {
   );
 });
 
-/**
- * @param {object} request
- */
-function spoolRequest(request) {
-  const pending = repoOpsSpoolPendingDir(root);
-  fs.mkdirSync(pending, { recursive: true });
-  const file = path.join(pending, 'req-1.json');
-  fs.writeFileSync(file, JSON.stringify(request));
-  return file;
-}
-
-/**
- * @param {object} [overrides]
- */
-function validRequest(overrides = {}) {
-  return {
-    request_id: 'req-1',
-    repo: root,
-    target_base: 'main',
-    approved_source_path: 'docs/spec.md',
-    approved_source_sha: APPROVED,
-    requested_by: 'operator',
-    requested_at: 7,
-    ...overrides
-  };
-}
+const FIRST_DEPLOY = {
+  target_base: 'main',
+  subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }]
+};
 
 describe('RepoOperation coordinator', () => {
   test('waits for a running deploy to reconcile terminal marker evidence', async () => {
@@ -1329,13 +1295,7 @@ describe('RepoOperation coordinator', () => {
     const started = await coordinator.ensureDeploy({
       target_base: 'main',
       target_sha: TARGET,
-      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
-      bootstrap_provenance: {
-        approved_source_path: 'docs/spec.md',
-        approved_source_sha: APPROVED,
-        requested_by: 'operator',
-        requested_at: 1
-      }
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
     });
 
     const evidence = await coordinator.waitForDeployTerminal(
@@ -1377,13 +1337,7 @@ describe('RepoOperation coordinator', () => {
     const started = await coordinator.ensureDeploy({
       target_base: 'main',
       target_sha: TARGET,
-      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
-      bootstrap_provenance: {
-        approved_source_path: 'docs/spec.md',
-        approved_source_sha: APPROVED,
-        requested_by: 'operator',
-        requested_at: 1
-      }
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
     });
 
     const evidence = await coordinator.waitForDeployTerminal(
@@ -1407,7 +1361,7 @@ describe('RepoOperation coordinator', () => {
     let requested_at = 0;
     const { store, coordinator } = coordinatorFor({
       storeNow: () => requested_at,
-      gitRun: gitForBootstrap({
+      gitRun: gitForTargetPolicy({
         config: `${CONFIG}\ntimeout_ms = 4321`
       })
     });
@@ -1479,7 +1433,7 @@ describe('RepoOperation coordinator', () => {
     let requested_at = 0;
     const { store, coordinator } = coordinatorFor({
       storeNow: () => requested_at,
-      gitRun: gitForBootstrap({
+      gitRun: gitForTargetPolicy({
         config: `${CONFIG}\ntimeout_ms = 4321`
       })
     });
@@ -1551,11 +1505,11 @@ describe('RepoOperation coordinator', () => {
     ],
     [
       'mismatched script identity',
-      gitForBootstrap({ script_blob_sha: 'e'.repeat(40) })
+      gitForTargetPolicy({ script_blob_sha: 'e'.repeat(40) })
     ],
     [
       'invalid pinned timeout',
-      gitForBootstrap({ config: `${CONFIG}\ntimeout_ms = 0` })
+      gitForTargetPolicy({ config: `${CONFIG}\ntimeout_ms = 0` })
     ]
   ])(
     'fails closed for %s during exact deploy lookup',
@@ -1590,7 +1544,7 @@ describe('RepoOperation coordinator', () => {
   // declared `[verify]`: `null` here is what lets the cleanup skip the verify
   // stage instead of demanding a verify candidate it can never build.
   test('reports a deploy-only base as present with no verify script', async () => {
-    const { coordinator } = coordinatorFor({ gitRun: gitForBootstrap() });
+    const { coordinator } = coordinatorFor({ gitRun: gitForTargetPolicy() });
 
     const result = await coordinator.hasConfig(TARGET);
 
@@ -2669,13 +2623,7 @@ describe('RepoOperation coordinator', () => {
     const result = await coordinator.ensureDeploy({
       target_base: 'main',
       target_sha: TARGET,
-      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
-      bootstrap_provenance: {
-        approved_source_path: 'docs/spec.md',
-        approved_source_sha: APPROVED,
-        requested_by: 'operator',
-        requested_at: 1
-      }
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
     });
     const operation = store.snapshot(root).repo_operations[result.operation_id];
 
@@ -2709,7 +2657,7 @@ describe('RepoOperation coordinator', () => {
       fetch_failure: /** @type {const} */ ('nonzero'),
       elapsed_ms: 57_774
     }));
-    const resolvable = gitForBootstrap();
+    const resolvable = gitForTargetPolicy();
     const gitRun = vi.fn(async (/** @type {string[]} */ args) =>
       args[0] === 'rev-parse'
         ? { code: 0, stdout: TARGET, stderr: '' }
@@ -2731,13 +2679,7 @@ describe('RepoOperation coordinator', () => {
     const result = await coordinator.ensureDeploy({
       target_base: 'main',
       target_sha: TARGET,
-      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
-      bootstrap_provenance: {
-        approved_source_path: 'docs/spec.md',
-        approved_source_sha: APPROVED,
-        requested_by: 'operator',
-        requested_at: 1
-      }
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
     });
 
     expect(bindTarget).not.toHaveBeenCalled();
@@ -2745,35 +2687,6 @@ describe('RepoOperation coordinator', () => {
     expect(
       store.snapshot(root).repo_operations[result.operation_id]
     ).toMatchObject({ state: 'running', target_sha: TARGET });
-  });
-
-  test('consumes a valid spool request into a provenance prerecord and receipt', async () => {
-    const { store, coordinator } = coordinatorFor();
-    spoolRequest(validRequest());
-
-    await coordinator.reconcile(root);
-
-    const operations = Object.values(store.snapshot(root).repo_operations);
-    expect(operations).toHaveLength(1);
-    expect(operations[0]).toMatchObject({
-      state: 'running',
-      target_sha: TARGET,
-      bootstrap_provenance: {
-        approved_source_path: 'docs/spec.md',
-        approved_source_sha: APPROVED,
-        requested_by: 'operator'
-      }
-    });
-    const processed = repoOpsSpoolProcessedDir(root);
-    const receipt = JSON.parse(
-      fs.readFileSync(path.join(processed, 'req-1.receipt.json'), 'utf8')
-    );
-    expect(receipt.ok).toBe(true);
-    expect(typeof receipt.operation_id).toBe('string');
-    expect(fs.existsSync(path.join(processed, 'req-1.request.json'))).toBe(
-      true
-    );
-    expect(fs.readdirSync(repoOpsSpoolPendingDir(root))).toHaveLength(0);
   });
 
   test('releases the shared deploy lock before spawning the script', async () => {
@@ -2814,9 +2727,8 @@ describe('RepoOperation coordinator', () => {
         processController: { probe: () => ({ state: 'owned' }) }
       }
     });
-    spoolRequest(validRequest());
 
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
 
     expect(order).toEqual(['bind', 'lock', 'bind', 'unlock', 'spawn']);
   });
@@ -2825,9 +2737,8 @@ describe('RepoOperation coordinator', () => {
     const { store, coordinator } = coordinatorFor({
       deployLock: async () => ({ ok: false, code: 'deploy_lock_timeout' })
     });
-    spoolRequest(validRequest());
 
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
 
     const [operation] = Object.values(store.snapshot(root).repo_operations);
     expect(operation).toMatchObject({
@@ -2859,9 +2770,8 @@ describe('RepoOperation coordinator', () => {
         processController: { probe: () => ({ state: 'owned' }) }
       }
     });
-    spoolRequest(validRequest());
 
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
 
     const [operation] = Object.values(store.snapshot(root).repo_operations);
     expect(operation).toMatchObject({
@@ -2873,7 +2783,7 @@ describe('RepoOperation coordinator', () => {
   });
 
   test('settles a sibling deploy target without realigning it', async () => {
-    const base_git = gitForBootstrap();
+    const base_git = gitForTargetPolicy();
     const gitRun = vi.fn(async (args) => {
       const left = args[2];
       const right = args[3];
@@ -2911,9 +2821,8 @@ describe('RepoOperation coordinator', () => {
         processController: { probe: () => ({ state: 'owned' }) }
       }
     });
-    spoolRequest(validRequest());
 
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
 
     const [operation] = Object.values(store.snapshot(root).repo_operations);
     expect(operation).toMatchObject({
@@ -2925,7 +2834,7 @@ describe('RepoOperation coordinator', () => {
   });
 
   test('settles a pinned target behind the last successful deploy as superseded', async () => {
-    const base_git = gitForBootstrap();
+    const base_git = gitForTargetPolicy();
     const gitRun = vi.fn(async (args) => {
       if (args[0] === 'rev-parse') {
         return { code: 0, stdout: `${TARGET}\n`, stderr: '' };
@@ -2990,13 +2899,7 @@ describe('RepoOperation coordinator', () => {
     const result = await coordinator.ensureDeploy({
       target_base: 'main',
       target_sha: TARGET,
-      subjects: [{ bead_id: 'UI-1', merged_sha: TARGET }],
-      bootstrap_provenance: {
-        approved_source_path: 'docs/spec.md',
-        approved_source_sha: APPROVED,
-        requested_by: 'operator',
-        requested_at: 1
-      }
+      subjects: [{ bead_id: 'UI-1', merged_sha: TARGET }]
     });
 
     expect(result).toMatchObject({ ok: true });
@@ -3028,9 +2931,8 @@ describe('RepoOperation coordinator', () => {
         processController: { probe: () => ({ state: 'owned' }) }
       }
     });
-    spoolRequest(validRequest());
 
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
 
     const [operation] = Object.values(store.snapshot(root).repo_operations);
     expect(operation.state).toBe('succeeded');
@@ -3053,9 +2955,8 @@ describe('RepoOperation coordinator', () => {
         verifyCovered: async () => ({ ok: true })
       }
     });
-    spoolRequest(validRequest());
 
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
 
     const [operation] = Object.values(store.snapshot(root).repo_operations);
     expect([operation.target_sha, operation.deploy_worktree]).toEqual([
@@ -3103,9 +3004,8 @@ describe('RepoOperation coordinator', () => {
       exit_code: 1,
       signal: null
     });
-    spoolRequest(validRequest());
 
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
 
     const operations = store.snapshot(root).repo_operations;
     const [covered_id, covered] = /** @type {[string, any]} */ (
@@ -3118,92 +3018,7 @@ describe('RepoOperation coordinator', () => {
     ]).toEqual(['succeeded', ADVANCED_HEAD, covered_id]);
   });
 
-  test('rejects an unknown approved source without creating any record', async () => {
-    const { store, coordinator } = coordinatorFor({
-      gitRun: gitForBootstrap({ known_shas: [] })
-    });
-    spoolRequest(validRequest());
-
-    await coordinator.reconcile(root);
-
-    expect(store.snapshot(root).repo_operations).toEqual({});
-    const receipt = JSON.parse(
-      fs.readFileSync(
-        path.join(repoOpsSpoolProcessedDir(root), 'req-1.receipt.json'),
-        'utf8'
-      )
-    );
-    expect(receipt).toMatchObject({
-      ok: false,
-      code: 'bootstrap_provenance_invalid'
-    });
-  });
-
-  test('rejects a spool request bound to a foreign repo path', async () => {
-    const foreign = fs.mkdtempSync(path.join(os.tmpdir(), 'foreign-repo-'));
-    const { store, coordinator } = coordinatorFor();
-    spoolRequest(validRequest({ repo: foreign }));
-
-    await coordinator.reconcile(root);
-
-    expect(store.snapshot(root).repo_operations).toEqual({});
-    const receipt = JSON.parse(
-      fs.readFileSync(
-        path.join(repoOpsSpoolProcessedDir(root), 'req-1.receipt.json'),
-        'utf8'
-      )
-    );
-    expect(receipt).toMatchObject({
-      ok: false,
-      code: 'bootstrap_provenance_invalid'
-    });
-    fs.rmSync(foreign, { recursive: true, force: true });
-  });
-
-  test('refuses a bootstrap-classified deploy without provenance', async () => {
-    const { store, coordinator } = coordinatorFor();
-
-    const result = await coordinator.ensureDeploy({
-      target_base: 'main',
-      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }]
-    });
-
-    expect(result).toMatchObject({ ok: false, code: 'bootstrap_not_approved' });
-    expect(store.snapshot(root).repo_operations).toEqual({});
-  });
-
-  test('reopens a failed bootstrap operation on a fresh approved request', async () => {
-    const { store, coordinator } = coordinatorFor();
-    spoolRequest(validRequest());
-    await coordinator.reconcile(root);
-    const [operation_id] = Object.keys(store.snapshot(root).repo_operations);
-    const attempt_id =
-      store.snapshot(root).repo_operations[operation_id].attempt_id;
-    store.settleRepoOperation(root, {
-      operation_id,
-      attempt_id,
-      exit_code: 1,
-      signal: null,
-      failure: {
-        code: 'repo_ops_worktree_unowned',
-        fingerprint: 'f',
-        detail: '',
-        interrupted: false
-      }
-    });
-    expect(store.snapshot(root).repo_operations[operation_id].state).toBe(
-      'failed'
-    );
-
-    spoolRequest(validRequest({ request_id: 'req-2' }));
-    await coordinator.reconcile(root);
-
-    const operation = store.snapshot(root).repo_operations[operation_id];
-    expect(operation.state).not.toBe('failed');
-    expect(operation.failure).toBeNull();
-  });
-
-  test('confirms the evidence of a reopened bootstrap run that shares the old log', async () => {
+  test('confirms the evidence of a cleanup retry run that shares the old log', async () => {
     const log_path = path.join(root, 'operation.log');
     const boundary = (
       /** @type {'start'|'end'} */ event,
@@ -3241,8 +3056,7 @@ describe('RepoOperation coordinator', () => {
         processController: { probe: () => ({ state: 'owned' }) }
       }
     });
-    spoolRequest(validRequest());
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
     const [operation_id] = Object.keys(store.snapshot(root).repo_operations);
     store.settleRepoOperation(root, {
       operation_id,
@@ -3258,11 +3072,14 @@ describe('RepoOperation coordinator', () => {
     });
     marker = null;
 
-    spoolRequest(validRequest({ request_id: 'req-2' }));
-    await coordinator.reconcile(root);
+    const retried = await coordinator.ensureDeploy({
+      ...FIRST_DEPLOY,
+      retry_authorized: true
+    });
     await coordinator.reconcile(root);
 
-    const operation = store.snapshot(root).repo_operations[operation_id];
+    const operation =
+      store.snapshot(root).repo_operations[String(retried.operation_id)];
     const settled = operation.retry?.first_failure ?? operation.failure;
     expect(settled).toMatchObject({ evidence_confirmed: true });
     expect(settled?.fingerprint).toBe(
@@ -3350,7 +3167,7 @@ describe('RepoOperation coordinator', () => {
       repo: root,
       store,
       locks: createLockManager(),
-      gitRun: gitForBootstrap(),
+      gitRun: gitForTargetPolicy(),
       runner: /** @type {never} */ ({
         start: () => ({ ok: false, code: 'unused' }),
         readMarker: () => ({
@@ -4090,8 +3907,7 @@ describe('RepoOperation coordinator', () => {
 describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () => {
   test('acknowledges one failed row through the coordinator', async () => {
     const { store, coordinator } = coordinatorFor();
-    spoolRequest(validRequest());
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
     const [operation_id] = Object.keys(store.snapshot(root).repo_operations);
     const attempt_id =
       store.snapshot(root).repo_operations[operation_id].attempt_id;
@@ -4118,8 +3934,7 @@ describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () =
 
   test('refuses to acknowledge a row that is not failed', async () => {
     const { store, coordinator } = coordinatorFor();
-    spoolRequest(validRequest());
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
     const [operation_id] = Object.keys(store.snapshot(root).repo_operations);
 
     const result = await coordinator.dismiss(operation_id);
@@ -4141,11 +3956,10 @@ describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () =
     });
   });
 
-  test('does not publish a bootstrap operation lookup as current-base policy', async () => {
+  test('does not publish a deploy operation lookup as current-base policy', async () => {
     const { coordinator } = coordinatorFor();
-    spoolRequest(validRequest());
 
-    await coordinator.reconcile(root);
+    await coordinator.ensureDeploy(FIRST_DEPLOY);
 
     expect(repoOpsDisplayFor(root)).toMatchObject({
       status: 'pending',
@@ -4327,13 +4141,13 @@ describe('repo-operation-coordinator workspace opt-out (UI-lsti §2)', () => {
     const start = vi.fn();
     /** @type {any} */
     let opened_store = null;
-    const bootstrap_git = gitForBootstrap();
+    const target_git = gitForTargetPolicy();
     const { store, coordinator } = coordinatorFor({
       gitRun: vi.fn(async (/** @type {string[]} */ args) => {
         if (args[0] === 'merge-base') {
           optOut('deploy', opened_store);
         }
-        return bootstrap_git(args);
+        return target_git(args);
       }),
       runner: {
         start,
@@ -4347,13 +4161,7 @@ describe('repo-operation-coordinator workspace opt-out (UI-lsti §2)', () => {
     const result = await coordinator.ensureDeploy({
       target_base: 'main',
       target_sha: TARGET,
-      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
-      bootstrap_provenance: {
-        approved_source_path: 'docs/spec.md',
-        approved_source_sha: APPROVED,
-        requested_by: 'operator',
-        requested_at: 1
-      }
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
     });
 
     expect(result).toEqual({ ok: true, inert: true, opted_out: true });
@@ -4376,13 +4184,7 @@ describe('repo-operation-coordinator workspace opt-out (UI-lsti §2)', () => {
     const result = await coordinator.ensureDeploy({
       target_base: 'main',
       target_sha: TARGET,
-      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
-      bootstrap_provenance: {
-        approved_source_path: 'docs/spec.md',
-        approved_source_sha: APPROVED,
-        requested_by: 'operator',
-        requested_at: 1
-      }
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
     });
 
     expect(result).toEqual({ ok: true, inert: true, opted_out: true });
@@ -4397,17 +4199,497 @@ describe('repo-operation-coordinator workspace opt-out (UI-lsti §2)', () => {
     const result = await coordinator.ensureDeploy({
       target_base: 'main',
       target_sha: TARGET,
-      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
-      bootstrap_provenance: {
-        approved_source_path: 'docs/spec.md',
-        approved_source_sha: APPROVED,
-        requested_by: 'operator',
-        requested_at: 1
-      }
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
     });
 
     expect(result.inert).toBeUndefined();
     expect(typeof result.operation_id).toBe('string');
+  });
+});
+
+describe('deploy runs the merged commit declaration (UI-ymcx)', () => {
+  const OLD_BLOB = '5'.repeat(40);
+  const NEW_BLOB = 'f'.repeat(40);
+  const WORKTREE = path.join('.worktrees', '.repo-ops-deploy');
+
+  /**
+   * Fake git keyed per commit, so a merge can change what its tree declares.
+   *
+   * @param {Record<string, { blob_sha: string, timeout_ms?: number }>} trees
+   */
+  function gitForTrees(trees) {
+    /** @param {string[]} args - Git arguments. */
+    return async (args) => {
+      if (args[0] === 'merge-base' || args[0] === 'rev-parse') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      const tree = trees[String(args[1]).split(':')[0]];
+      if (args[0] === 'show') {
+        return tree
+          ? {
+              code: 0,
+              stdout:
+                tree.timeout_ms === undefined
+                  ? CONFIG
+                  : `${CONFIG}\ntimeout_ms = ${tree.timeout_ms}`,
+              stderr: ''
+            }
+          : { code: 128, stdout: '', stderr: 'missing' };
+      }
+      if (args[0] === 'ls-tree') {
+        if (!tree) {
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        const entry =
+          args.at(-1) === 'repo-ops/config.toml'
+            ? `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`
+            : `100755 blob ${tree.blob_sha}\trepo-ops/script/deploy`;
+        return { code: 0, stdout: entry, stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: 'unexpected' };
+    };
+  }
+
+  /**
+   * A runner that records what it was asked to spawn.
+   *
+   * @param {{ probe?: string }} [options]
+   */
+  function spawnRecorder(options = {}) {
+    return {
+      start: vi.fn(() => ({
+        ok: true,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(root, 'operation.log')
+      })),
+      readMarker: () => null,
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: options.probe ?? 'owned' }) }
+    };
+  }
+
+  /**
+   * Seed one deploy record the way the previous-base rule wrote it: its policy
+   * SHA is the previous base and its blob is that base's script.
+   *
+   * @param {any} store
+   */
+  function seedOldRuleRecord(store) {
+    store.ensureRepoOperation(root, {
+      operation_id: 'old-rule',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_path: 'repo-ops/script/deploy',
+      script_mode: '100755',
+      script_blob_sha: OLD_BLOB
+    });
+  }
+
+  /** @param {any} store */
+  function startOldRuleRecord(store) {
+    store.startRepoOperation(root, {
+      operation_id: 'old-rule',
+      attempt_id: store.snapshot(root).repo_operations['old-rule'].attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+  }
+
+  test('spawns the deploy worktree target script on a merge that changes it', async () => {
+    const runner = spawnRecorder();
+    const materialize = vi.fn();
+    const { coordinator } = coordinatorFor({
+      runner,
+      transition: { materialize, reclaim: () => {} },
+      gitRun: gitForTrees({
+        [BASE]: { blob_sha: OLD_BLOB },
+        [TARGET]: { blob_sha: NEW_BLOB }
+      })
+    });
+
+    await coordinator.ensureDeploy({ ...FIRST_DEPLOY, target_sha: TARGET });
+
+    expect(materialize).not.toHaveBeenCalled();
+    expect(runner.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        script_path: path.join(root, WORKTREE, 'repo-ops/script/deploy'),
+        target_sha: TARGET
+      })
+    );
+  });
+
+  test('spawns without approval when only the target declares deploy', async () => {
+    const runner = spawnRecorder();
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForTrees({ [TARGET]: { blob_sha: NEW_BLOB } })
+    });
+
+    const result = await coordinator.ensureDeploy({
+      ...FIRST_DEPLOY,
+      target_sha: TARGET
+    });
+
+    expect(runner.start).toHaveBeenCalledOnce();
+    expect(
+      store.snapshot(root).repo_operations[String(result.operation_id)]
+    ).toMatchObject({ state: 'running', script_blob_sha: NEW_BLOB });
+  });
+
+  test('stays inert when the target removed the deploy declaration', async () => {
+    const runner = spawnRecorder();
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForTrees({ [BASE]: { blob_sha: OLD_BLOB } })
+    });
+
+    const result = await coordinator.ensureDeploy({
+      ...FIRST_DEPLOY,
+      target_sha: TARGET
+    });
+
+    expect(result).toEqual({ ok: true, inert: true });
+    expect(runner.start).not.toHaveBeenCalled();
+    expect(store.snapshot(root).repo_operations).toEqual({});
+  });
+
+  test('records the target SHA as the policy SHA of a new deploy', async () => {
+    const { store, coordinator } = coordinatorFor({
+      runner: spawnRecorder(),
+      gitRun: gitForTrees({ [TARGET]: { blob_sha: NEW_BLOB } })
+    });
+
+    const result = await coordinator.ensureDeploy({
+      ...FIRST_DEPLOY,
+      target_sha: TARGET
+    });
+
+    expect(
+      store.snapshot(root).repo_operations[String(result.operation_id)]
+        .effective_base_sha
+    ).toBe(TARGET);
+  });
+
+  test('launches a waiting record at its recorded target after the remote moved', async () => {
+    const runner = spawnRecorder();
+    const bindTarget = vi.fn(async () => ({
+      ok: true,
+      target_sha: ADVANCED_HEAD
+    }));
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      deployWorktree: {
+        bindTarget,
+        readState: async () => ({ ok: true, head: null, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, WORKTREE),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true }),
+        verifyAligned: async () => ({ ok: true })
+      },
+      gitRun: gitForTrees({
+        [TARGET]: { blob_sha: OLD_BLOB },
+        [ADVANCED_HEAD]: { blob_sha: NEW_BLOB }
+      })
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'running-deploy',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-0', merged_sha: BASE }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: OLD_BLOB
+    });
+    store.startRepoOperation(root, {
+      operation_id: 'running-deploy',
+      attempt_id:
+        store.snapshot(root).repo_operations['running-deploy'].attempt_id,
+      process_identity: { pid: 7, pgid: 7, started_at: 1 },
+      log_path: path.join(root, 'running.log'),
+      target_sha: BASE
+    });
+    const queued = await coordinator.ensureDeploy({
+      ...FIRST_DEPLOY,
+      target_sha: TARGET
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'running-deploy',
+      attempt_id:
+        store.snapshot(root).repo_operations['running-deploy'].attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(bindTarget).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(root).repo_operations[String(queued.operation_id)]
+    ).toMatchObject({
+      state: 'running',
+      target_sha: TARGET,
+      script_blob_sha: OLD_BLOB
+    });
+  });
+
+  test('re-adopts a merge that changed script and timeout after a restart', async () => {
+    const gitRun = gitForTrees({
+      [BASE]: { blob_sha: OLD_BLOB, timeout_ms: 1000 },
+      [TARGET]: { blob_sha: NEW_BLOB, timeout_ms: 4321 }
+    });
+    const { coordinator } = coordinatorFor({
+      runner: spawnRecorder(),
+      gitRun
+    });
+    const started = await coordinator.ensureDeploy({
+      ...FIRST_DEPLOY,
+      target_sha: TARGET
+    });
+    const restarted = createRepoOperationCoordinator({
+      workspace: root,
+      repo: root,
+      store: createQueueStore({
+        filePathFor: (workspace) => path.join(workspace, 'queue.json')
+      }),
+      locks: createLockManager(),
+      gitRun,
+      runner: /** @type {never} */ (spawnRecorder())
+    });
+
+    const found = await restarted.findExactDeployOperation({
+      target_base: 'main',
+      bead_id: 'UI-x',
+      merged_sha: TARGET
+    });
+
+    expect(found).toEqual({
+      operation_id: started.operation_id,
+      timeout_ms: 4321
+    });
+  });
+
+  test('adopts an old-rule record after a restart through its recorded base', async () => {
+    const { store, coordinator } = coordinatorFor({
+      runner: spawnRecorder(),
+      gitRun: gitForTrees({
+        [BASE]: { blob_sha: OLD_BLOB, timeout_ms: 1000 },
+        [TARGET]: { blob_sha: NEW_BLOB, timeout_ms: 4321 }
+      })
+    });
+    seedOldRuleRecord(store);
+    startOldRuleRecord(store);
+
+    const found = await coordinator.findExactDeployOperation({
+      target_base: 'main',
+      bead_id: 'UI-x',
+      merged_sha: TARGET
+    });
+
+    expect(found).toEqual({ operation_id: 'old-rule', timeout_ms: 1000 });
+  });
+
+  test('ends the retry of an old-rule record as repo_ops_policy_drift', async () => {
+    const runner = spawnRecorder({ probe: 'gone' });
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForTrees({
+        [BASE]: { blob_sha: OLD_BLOB },
+        [TARGET]: { blob_sha: NEW_BLOB }
+      })
+    });
+    seedOldRuleRecord(store);
+    startOldRuleRecord(store);
+    await coordinator.reconcile(root);
+    expect(store.snapshot(root).repo_operations['old-rule'].state).toBe(
+      'retry_pending'
+    );
+
+    await coordinator.reconcile(root);
+
+    expect(runner.start).not.toHaveBeenCalled();
+    expect(store.snapshot(root).repo_operations['old-rule']).toMatchObject({
+      state: 'failed',
+      retry: { blocked_reason: 'repo_ops_policy_drift' }
+    });
+  });
+
+  test('ends an unpinned queued old-rule record as repo_ops_policy_drift', async () => {
+    const runner = spawnRecorder();
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForTrees({
+        [BASE]: { blob_sha: OLD_BLOB },
+        [TARGET]: { blob_sha: NEW_BLOB }
+      })
+    });
+    seedOldRuleRecord(store);
+
+    await coordinator.reconcile(root);
+
+    expect(runner.start).not.toHaveBeenCalled();
+    expect(store.snapshot(root).repo_operations['old-rule']).toMatchObject({
+      state: 'failed',
+      failure: { code: 'repo_ops_policy_drift' }
+    });
+  });
+
+  /**
+   * Leave the seeded old-rule record terminally failed at TARGET.
+   *
+   * @param {any} store
+   */
+  function failOldRuleRecord(store) {
+    startOldRuleRecord(store);
+    store.settleRepoOperation(root, {
+      operation_id: 'old-rule',
+      attempt_id: store.snapshot(root).repo_operations['old-rule'].attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'old',
+        detail: '',
+        interrupted: false
+      }
+    });
+  }
+
+  test('adopts an old-rule failure when no person authorized a retry', async () => {
+    const runner = spawnRecorder();
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForTrees({ [TARGET]: { blob_sha: NEW_BLOB } })
+    });
+    seedOldRuleRecord(store);
+    failOldRuleRecord(store);
+
+    const ensured = await coordinator.ensureDeploy({
+      target_base: 'main',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      target_sha: TARGET
+    });
+
+    expect(ensured).toMatchObject({ operation_id: 'old-rule', adopted: true });
+    expect(runner.start).not.toHaveBeenCalled();
+  });
+
+  test('records a cleanup retry of an old-rule failure as its successor', async () => {
+    const runner = spawnRecorder();
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForTrees({ [TARGET]: { blob_sha: NEW_BLOB } })
+    });
+    seedOldRuleRecord(store);
+    failOldRuleRecord(store);
+
+    const retried = await coordinator.ensureDeploy({
+      target_base: 'main',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      target_sha: TARGET,
+      retry_authorized: true
+    });
+
+    expect(
+      store.snapshot(root).repo_operations[String(retried.operation_id)]
+    ).toMatchObject({
+      retry_of: 'old-rule',
+      effective_base_sha: TARGET,
+      script_blob_sha: NEW_BLOB
+    });
+  });
+
+  test('finds the successor of an old-rule failure after a restart', async () => {
+    const runner = spawnRecorder();
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForTrees({ [TARGET]: { blob_sha: NEW_BLOB } })
+    });
+    seedOldRuleRecord(store);
+    failOldRuleRecord(store);
+    const retried = await coordinator.ensureDeploy({
+      target_base: 'main',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      target_sha: TARGET,
+      retry_authorized: true
+    });
+
+    const found = await coordinator.findExactDeployOperation({
+      target_base: 'main',
+      bead_id: 'UI-x',
+      merged_sha: TARGET
+    });
+
+    expect(found?.operation_id).toBe(retried.operation_id);
+  });
+
+  test('deploys another merge at the tip an old-rule failure names', async () => {
+    const runner = spawnRecorder();
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForTrees({ [TARGET]: { blob_sha: NEW_BLOB } })
+    });
+    seedOldRuleRecord(store);
+    failOldRuleRecord(store);
+
+    const ensured = await coordinator.ensureDeploy({
+      target_base: 'main',
+      subjects: [{ bead_id: 'UI-y', merged_sha: TARGET }],
+      target_sha: TARGET
+    });
+
+    expect(ensured.operation_id).not.toBe('old-rule');
+    expect(
+      store.snapshot(root).repo_operations[String(ensured.operation_id)]
+    ).toMatchObject({ effective_base_sha: TARGET, script_blob_sha: NEW_BLOB });
+  });
+
+  test('runs a cleanup retry successor from the target commit', async () => {
+    const runner = spawnRecorder();
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForTrees({ [TARGET]: { blob_sha: NEW_BLOB } })
+    });
+    const first = await coordinator.ensureDeploy({
+      ...FIRST_DEPLOY,
+      target_sha: TARGET
+    });
+    store.settleRepoOperation(root, {
+      operation_id: String(first.operation_id),
+      attempt_id:
+        store.snapshot(root).repo_operations[String(first.operation_id)]
+          .attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'old',
+        detail: '',
+        interrupted: false
+      }
+    });
+
+    const retried = await coordinator.ensureDeploy({
+      ...FIRST_DEPLOY,
+      target_sha: TARGET,
+      retry_authorized: true
+    });
+
+    expect(
+      store.snapshot(root).repo_operations[String(retried.operation_id)]
+    ).toMatchObject({
+      retry_of: first.operation_id,
+      effective_base_sha: TARGET,
+      target_sha: TARGET,
+      script_blob_sha: NEW_BLOB
+    });
   });
 });
 
@@ -4433,10 +4715,9 @@ describe('manual deploy run', () => {
   }
 
   /**
-   * Seed one terminal deploy record so `latestSuccessfulDeploySha` has a
-   * previous base to offer. Its target is deliberately NOT the tip: the git
-   * fake only declares `[deploy]` at the tip, so a policy read that used this
-   * SHA would classify as bootstrap and refuse.
+   * Seed one terminal deploy record whose target is deliberately NOT the tip:
+   * the git fake only declares `[deploy]` at the tip, so a policy read that used
+   * this SHA would find no declaration.
    *
    * @param {any} store
    */
@@ -4469,7 +4750,7 @@ describe('manual deploy run', () => {
 
   test('refuses when the fetched tip declares no deploy', async () => {
     const { coordinator } = manualCoordinatorFor({
-      gitRun: gitForBootstrap({ config: 'base = "main"' })
+      gitRun: gitForTargetPolicy({ config: 'base = "main"' })
     });
 
     expect(await coordinator.runManualDeploy()).toEqual({
@@ -4549,7 +4830,7 @@ describe('manual deploy run', () => {
       operation.script_blob_sha,
       operation.effective_base_sha,
       operation.target_sha
-    ]).toEqual(['running', 'd'.repeat(40), HEAD, TARGET]);
+    ]).toEqual(['running', 'd'.repeat(40), TARGET, TARGET]);
   });
 
   test('records the run as manual with its issued run id', async () => {
@@ -4934,7 +5215,7 @@ describe('manual deploy run', () => {
   test('says opted out when the opt-out lands mid-flight', async () => {
     /** @type {any} */
     let store_ref = null;
-    const base_git = gitForBootstrap();
+    const base_git = gitForTargetPolicy();
     const { store, coordinator } = manualCoordinatorFor({
       // The subject-containment probe is the last await before the coordinator
       // re-reads the opt-out, so flipping it there reproduces a workspace that
@@ -5149,7 +5430,7 @@ describe('post-merge job operations (UI-i60a §2)', () => {
 
   test('resolves the job timeout from the deploy declaration', async () => {
     const { coordinator } = coordinatorFor({
-      gitRun: gitForBootstrap({ config: `${CONFIG}\ntimeout_ms = 4321` }),
+      gitRun: gitForTargetPolicy({ config: `${CONFIG}\ntimeout_ms = 4321` }),
       deployWorktree: worktreeAt()
     });
 
@@ -6891,8 +7172,8 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
       manual_run.ok ? manual_run.operation_id : manual_run.reason,
       verify_run.operation_id
     ]).toEqual([
-      '52fd14ec4390e9cef3662973',
-      '25b46f3a47547496ab707714',
+      '2dcebe6791b9125ec0126424',
+      '5c0edeb576a9a2083566f7bc',
       '3cdc3960d65a4bcda696c481'
     ]);
   });
@@ -7026,7 +7307,7 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
     let requested_at = 0;
     const { store, coordinator } = coordinatorFor({
       storeNow: () => requested_at,
-      gitRun: gitForBootstrap({ config: `${CONFIG}\ntimeout_ms = 4321` })
+      gitRun: gitForTargetPolicy({ config: `${CONFIG}\ntimeout_ms = 4321` })
     });
     for (const [operation_id, retry_of] of [
       ['origin-failed', undefined],
