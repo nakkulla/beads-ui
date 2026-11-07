@@ -19527,6 +19527,31 @@ describe('scheduler worktree residue hygiene', () => {
           admission: null
         });
       });
+
+      test('keeps its ladder rung waiting while the provider is held', async () => {
+        const env = externalEnv();
+        await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fresh' });
+        await flush();
+        const rung = latest(env);
+        env.store.providerHolds.enter({
+          runner: 'claude',
+          origin: WS,
+          target: { kind: 'outage', model: 'opus', account: null }
+        });
+
+        await env.scheduler.retryNow(WS, 'S1');
+        await flush();
+
+        expect({
+          attempt_id: latest(env).attempt_id,
+          status: latest(env).status,
+          needs_human: env.notify.needsHuman.mock.calls.length
+        }).toEqual({
+          attempt_id: rung.attempt_id,
+          status: 'retry_wait',
+          needs_human: 0
+        });
+      });
     });
 
     test('holds a due ladder rung unspent while a session owns the bead', async () => {

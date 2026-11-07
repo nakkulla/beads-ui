@@ -16462,7 +16462,14 @@ export function createScheduler(deps) {
               ...(continuation.retry ? { retry: continuation.retry } : {})
             })
           );
-          replay_refusal = replayed.ok ? null : (replayed.reason ?? null);
+          // `provider_held` is this path's name for what an ordinary rung
+          // reports as `provider_gate`: both wait for the hold, never spend
+          // the ladder.
+          replay_refusal = replayed.ok
+            ? null
+            : replayed.reason === 'provider_held'
+              ? 'provider_gate'
+              : (replayed.reason ?? null);
         } else {
           await dispatch(workspace, bead_id);
         }
