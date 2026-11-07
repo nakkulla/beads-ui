@@ -29,7 +29,7 @@ import * as operationPolicy from './repo-operation-policy.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
-import { runSession } from './runner/session.js';
+import { runSession, terminalResultOf } from './runner/session.js';
 import {
   INTERACTIVE_EXIT_DEFER_MAX_MS,
   INTERACTIVE_EXIT_GRACE_MS,
@@ -21330,6 +21330,64 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
   );
 
   test.each([true, false])(
+    'recovers a parked quick_fix as parked before landing (awaiting_user set: %s)',
+    async (with_metadata) => {
+      const sessionLog = createSessionLog();
+      const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+      fs.mkdirSync(path.dirname(log_path), { recursive: true });
+      fs.writeFileSync(
+        log_path,
+        [
+          {
+            type: 'item.completed',
+            item: {
+              type: 'agent_message',
+              text: '파킹 · impl_review_conflict:design'
+            }
+          },
+          { type: 'turn.completed' }
+        ]
+          .map((line) => JSON.stringify(line))
+          .join('\n') + '\n'
+      );
+      const settle = vi.fn(async () => ({
+        ok: false,
+        reason: 'delivery_unproven:push_log_absent',
+        step: null
+      }));
+      const env = reconcileEnv(
+        { alive: false, started_at: null },
+        {
+          'UI-1': {
+            route: 'quick_fix',
+            status: 'open',
+            ...(with_metadata
+              ? { metadata: { awaiting_user: 'impl_review_conflict:design' } }
+              : {})
+          }
+        },
+        { sessionLog, quickfixLanding: { settle } }
+      );
+      env.bd.statuses['UI-1'] = 'in_progress';
+      seedDetachedAttempt(env.store, {
+        runner: 'codex',
+        log_path,
+        quickfix_lane: true,
+        target_base: 'main'
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(settle).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
+        status: 'parked',
+        cause: 'session_parked',
+        cause_detail: { awaiting_user: 'impl_review_conflict:design' }
+      });
+    }
+  );
+
+  test.each([true, false])(
     'keeps a ready recovered quick_fix on landing failure (persisted log: %s)',
     async (with_log) => {
       const { env, settle } = prerequisiteReconcileEnv(true, with_log);
@@ -29731,6 +29789,131 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     });
     await flush();
     await flush();
+
+    expect(settle).toHaveBeenCalledOnce();
+  });
+
+  /**
+   * Finish S1 exit 0 on a park: `summary` is the session's final text and
+   * `awaiting_user` the bead metadata the session left behind (null: none).
+   *
+   * @param {any} env
+   * @param {Record<string, any>} config
+   * @param {{ summary: string, awaiting_user: string|null, pushed?: boolean, status?: string }} ending
+   */
+  async function runParkedEnding(env, config, ending) {
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.bd.statuses.S1 = ending.status ?? 'in_progress';
+    if (ending.awaiting_user !== null) {
+      config.S1.metadata = { awaiting_user: ending.awaiting_user };
+    }
+    if (ending.pushed === true) {
+      const push_log = pushLogPath(WS, 'S1-1000-1');
+      fs.mkdirSync(path.dirname(push_log), { recursive: true });
+      fs.writeFileSync(
+        push_log,
+        `${JSON.stringify({ remote_ref: 'refs/heads/release', local_oid: 'a'.repeat(40) })}\n`
+      );
+    }
+
+    env.runner.finish('S1', {
+      success: true,
+      reason: 'ok',
+      summary: ending.summary,
+      terminal_result: terminalResultOf(ending.summary),
+      exit: 0
+    });
+    await flush();
+    await flush();
+  }
+
+  test('parks a quick_fix session that ended on a park line without pushing', async () => {
+    const config = waitingConfig([]);
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:push_log_absent'
+    }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+
+    await runParkedEnding(env, config, {
+      summary: '파킹 · impl_review_conflict:design',
+      awaiting_user: 'impl_review_conflict:design'
+    });
+
+    expect(settle).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+      status: 'parked',
+      cause: 'session_parked',
+      cause_detail: { awaiting_user: 'impl_review_conflict:design' }
+    });
+  });
+
+  test('parks a quick_fix session that left awaiting_user without a result line', async () => {
+    const config = waitingConfig([]);
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+
+    await runParkedEnding(env, config, {
+      summary: '사용자 결정이 필요해 멈춥니다',
+      awaiting_user: 'impl_review_conflict:design'
+    });
+
+    expect(settle).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('parked');
+  });
+
+  test('parks a park line without awaiting_user on the value the line names', async () => {
+    const config = waitingConfig([]);
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:push_log_absent'
+    }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+
+    await runParkedEnding(env, config, {
+      summary: '파킹 · impl_review_conflict:design',
+      awaiting_user: null
+    });
+
+    expect(settle).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+      status: 'parked',
+      cause: 'session_parked',
+      cause_detail: { awaiting_user: 'impl_review_conflict:design' }
+    });
+  });
+
+  test('keeps the landing judgment for a park line with a push record', async () => {
+    const config = waitingConfig([]);
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:impl_review_missing'
+    }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+
+    await runParkedEnding(env, config, {
+      summary: '파킹 · impl_review_conflict:design',
+      awaiting_user: 'impl_review_conflict:design',
+      pushed: true
+    });
+
+    expect(settle).toHaveBeenCalledOnce();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
+      'quickfix_landing_failed:delivery_unproven:impl_review_missing'
+    );
+  });
+
+  test('keeps the landing judgment for a park line on a closed bead', async () => {
+    const config = waitingConfig([]);
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+
+    await runParkedEnding(env, config, {
+      summary: '파킹 · impl_review_conflict:design',
+      awaiting_user: 'impl_review_conflict:design',
+      status: 'closed'
+    });
 
     expect(settle).toHaveBeenCalledOnce();
   });

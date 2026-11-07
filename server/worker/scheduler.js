@@ -285,6 +285,26 @@ const STALE_PARK_REASONS = new Set([
   'spec_review_stale:revise',
   'plan_approval_stale:revise'
 ]);
+
+/**
+ * The `awaiting_user` value a `파킹 · <value>` result line names, read off the
+ * same first non-empty line `terminalResultOf` reads, or null.
+ *
+ * @param {unknown} summary
+ * @returns {string|null}
+ */
+function parkLineValue(summary) {
+  if (typeof summary !== 'string') {
+    return null;
+  }
+  const line = summary
+    .split(/\r?\n/)
+    .map((part) => part.trim())
+    .find((part) => part.length > 0);
+  const match = line ? /^파킹 · (\S.*)$/.exec(line) : null;
+  return match ? match[1] : null;
+}
+
 const TRANSCRIPT_MISSING_RE =
   /No conversation found with session ID|No session found|session(?: id)? \S+ (?:was )?not found/i;
 
@@ -7770,6 +7790,17 @@ export function createScheduler(deps) {
           return;
         }
         if (
+          await judgeQuickfixPark(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            verdict
+          )
+        ) {
+          return;
+        }
+        if (
           await judgeUnrecognizedQuickfixEnding(
             workspace,
             attempt_id,
@@ -8599,6 +8630,70 @@ export function createScheduler(deps) {
         ...(head_oid ? { head_oid } : {})
       }
     );
+    notifyChanged(workspace);
+    await tick(workspace);
+    return true;
+  }
+
+  /**
+   * Settle a quick_fix session that parked without pushing, ahead of the
+   * landing settlement (UI-kdyd). Such a session never attempted a landing, so
+   * `delivery_unproven:push_log_absent` would misname a user decision as a
+   * landing failure. The ending is handed to the classifier exactly as the PR
+   * lane hands its `no_pr` observation over — no cause plus an `awaiting_user`
+   * — so both lanes park the same way.
+   *
+   * It applies when the session's result line is `파킹 ·` or the bead carries
+   * `awaiting_user`. The bead's key wins; without it the value is the one the
+   * result line names (`파킹 · <awaiting_user 값>`). A pushed attempt, a
+   * `resolved`/`closed` bead, and an unreadable status or `awaiting_user` all
+   * fall through to the ordinary landing judgment.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior
+   * @param {RunnerVerdict} verdict
+   * @returns {Promise<boolean>} Whether the attempt was settled here.
+   */
+  async function judgeQuickfixPark(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    verdict
+  ) {
+    if (verdict.success !== true || !pushRecordAbsent(workspace, attempt_id)) {
+      return false;
+    }
+    /** @type {string|null} */
+    let bead_status;
+    /** @type {string|null} */
+    let awaiting_user;
+    try {
+      bead_status = await deps.bd.readStatus(bead_id);
+      awaiting_user = await deps.bd.readMetadata(bead_id, 'awaiting_user');
+    } catch (err) {
+      log('quick_fix park readback failed for %s: %o', bead_id, err);
+      return false;
+    }
+    if (bead_status === 'resolved' || bead_status === 'closed') {
+      return false;
+    }
+    const park_value =
+      typeof awaiting_user === 'string'
+        ? awaiting_user
+        : verdict.terminal_result?.kind === 'parked'
+          ? parkLineValue(verdict.summary)
+          : null;
+    if (park_value === null) {
+      return false;
+    }
+    await failAttempt(workspace, attempt_id, bead_id, prior, null, undefined, {
+      verdict,
+      bead_status,
+      awaiting_user: park_value
+    });
     notifyChanged(workspace);
     await tick(workspace);
     return true;
@@ -9910,23 +10005,36 @@ export function createScheduler(deps) {
           notifyChanged(workspace);
           await tick(workspace);
         } else {
+          /** @type {RunnerVerdict} */
+          const landing_verdict = persisted_verdict ?? {
+            success: true,
+            reason: 'reconciled',
+            summary: null,
+            terminal_result: null,
+            exit: null,
+            blocked: false,
+            blocked_detail: null,
+            events: [],
+            raw: []
+          };
           if (
             await judgePrerequisiteWait(
               workspace,
               attempt_id,
               bead_id,
               prior,
-              persisted_verdict ?? {
-                success: true,
-                reason: 'reconciled',
-                summary: null,
-                terminal_result: null,
-                exit: null,
-                blocked: false,
-                blocked_detail: null,
-                events: [],
-                raw: []
-              }
+              landing_verdict
+            )
+          ) {
+            return;
+          }
+          if (
+            await judgeQuickfixPark(
+              workspace,
+              attempt_id,
+              bead_id,
+              prior,
+              landing_verdict
             )
           ) {
             return;
