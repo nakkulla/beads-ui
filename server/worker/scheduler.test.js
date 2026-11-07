@@ -27779,6 +27779,65 @@ describe('스케줄러 레인 상속 (UI-blx2 §3.5)', () => {
     expect(env.store.snapshot(WS).attempts.d1.serial_lane_id).toBeNull();
     expect(child.serial_lane_id).toBe('s1');
   });
+
+  test('records the lane a failed lineage is bound to while its resume reads the receipt baseline', async () => {
+    const env = setup({
+      config: {
+        B1: { route: 'spec_backed', spec_review: 'codex@abc' },
+        B2: {}
+      },
+      guardHook: {
+        install: vi.fn(() => ({ ok: true })),
+        envFor: vi.fn(() => ({})),
+        remove: vi.fn()
+      },
+      gitRun: vi.fn(async (/** @type {string[]} */ args) => ({
+        code: args.includes('--abbrev-ref') ? 0 : 1,
+        stdout: args.includes('--abbrev-ref') ? 'B1\n' : '',
+        stderr: ''
+      }))
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'claude',
+        model: 'opus',
+        effort: 'high',
+        session_id: 'sid-f1'
+      }
+    });
+    const readMetadata = env.bd.readMetadata.bind(env.bd);
+    /** @type {any} */
+    let bound = null;
+    vi.spyOn(env.bd, 'readMetadata').mockImplementation(
+      async (bead_id, key) => {
+        const value = await readMetadata(bead_id, key);
+        if (key === 'impl_entry' && bound === null) {
+          bound = env.store.placeBundle(WS, {
+            expected_revision: env.store.snapshot(WS).revision,
+            lane: 's1',
+            binds: ['B1'],
+            steps: [{ bead_id: 'B2', index: 0 }]
+          });
+        }
+        return value;
+      }
+    );
+
+    const res = await env.scheduler.resume(WS, 'f1');
+
+    const child =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(bound).toMatchObject({ ok: true });
+    expect(res.ok).toBe(true);
+    expect(child.resumed_from).toBe('f1');
+    expect(child.serial_lane_id).toBe('s1');
+  });
 });
 
 describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () => {

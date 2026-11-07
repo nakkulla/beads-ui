@@ -514,6 +514,21 @@ describe('uncovered reasons (UI-blx2 §3.8)', () => {
       'lane_occupied',
       'parallel',
       '⚠ X-1(병렬)과 동시에 돌 수 있음 — 레인에 이미 다른 점유가 있어 묶지 않음'
+    ],
+    [
+      'discard_active',
+      'parallel',
+      '⚠ X-1(병렬)과 동시에 돌 수 있음 — 상대의 폐기가 진행 중이라 옮기지 않음'
+    ],
+    [
+      'not_holdable',
+      'parallel',
+      '⚠ X-1(병렬)과 동시에 돌 수 있음 — 상대가 레인을 잡을 수 있는 상태가 아니라 묶지 않음'
+    ],
+    [
+      'no_serial_lane',
+      'parallel',
+      '⚠ X-1(병렬)과 동시에 돌 수 있음 — 직렬 레인이 없어 옮기지 않음'
     ]
   ])(
     'says why for %s',

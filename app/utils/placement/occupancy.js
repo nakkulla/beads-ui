@@ -65,6 +65,11 @@ const SERIAL_IDS = ['s1', 's2', 's3', 's4', 's5'];
  * @property {boolean} bindable - The store would take the bead as `binds`: it
  * holds no serial lane and has an unshelved `pr_wait` row or a lane-holding
  * implementation attempt, and no discard is in flight.
+ * @property {'discard_active'|'not_holdable'|null} bind_refusal - Why the
+ * store would refuse a lane-less occupant as `binds` (`discard_active`, or
+ * `bind_not_holdable` for an occupant with neither an unshelved `pr_wait` row
+ * nor a lane-holding implementation attempt); null when the bead is no such
+ * occupant.
  * @property {string|null} state - What the bead is doing, for the bind line:
  * the 실행중 seat state (`running`·`paused`·`failed`), `pr_wait`, or the latest
  * implementation status of a lane-holding attempt (`parked`·`retry_wait`·…).
@@ -258,12 +263,20 @@ export function occupancyReader(queue, done_at_by_bead) {
     const held_lane = heldLaneOf(bead_id, own);
     const seat = seats.get(bead_id);
     const latest = latest_implementation.get(bead_id);
+    const occupant = active || holdable || held_lane !== null || !!seat;
+    const bindable =
+      held_lane === null && !discarding && (unshelved_pr_wait || holdable);
     /** @type {BeadOccupancy} */
     const result = {
-      occupant: active || holdable || held_lane !== null || !!seat,
+      occupant,
       held_lane,
-      bindable:
-        held_lane === null && !discarding && (unshelved_pr_wait || holdable),
+      bindable,
+      bind_refusal:
+        !occupant || held_lane !== null || bindable
+          ? null
+          : discarding
+            ? 'discard_active'
+            : 'not_holdable',
       state: seat
         ? seat.run_state
         : unshelved_pr_wait

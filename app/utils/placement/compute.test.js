@@ -1166,6 +1166,82 @@ describe('computePlacement conflicting partners (UI-blx2 §3)', () => {
     });
   });
 
+  test('leaves a lane-less partner with a discard in flight in place with uncovered discard_active', () => {
+    const queue = queueOf({
+      attempts: Object.fromEntries([attempt('R-1', 'running')]),
+      discard_operations: { 'op-1': { bead_id: 'R-1', phase: 'requested' } }
+    });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'R-1', 'conflict')] });
+
+    expect(steps(result, 'C-1')).toEqual([['place', 'C-1', 0, null]]);
+    expect(result.by_id['C-1'].warnings).toEqual([
+      {
+        code: 'uncovered',
+        other: 'R-1',
+        other_lane: 'parallel',
+        reason: 'discard_active'
+      }
+    ]);
+  });
+
+  test('leaves a waiting partner whose review session runs in place with uncovered not_holdable', () => {
+    const queue = queueOf({
+      queue: entries(['R-1']),
+      attempts: Object.fromEntries([
+        attempt('R-1', 'running', { kind: 'review_session' })
+      ])
+    });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'R-1', 'conflict')] });
+
+    expect(result.by_id['C-1'].warnings).toEqual([
+      {
+        code: 'uncovered',
+        other: 'R-1',
+        other_lane: 'parallel',
+        reason: 'not_holdable'
+      }
+    ]);
+  });
+
+  test('leaves a session-delivered PR-waiting partner in place with uncovered not_holdable', () => {
+    const queue = queueOf({ pr_wait: [{ bead_id: 'R-1', external: true }] });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'R-1', 'conflict')] });
+
+    expect(result.by_id['C-1'].warnings).toEqual([
+      {
+        code: 'uncovered',
+        other: 'R-1',
+        other_lane: 'parallel',
+        reason: 'not_holdable'
+      }
+    ]);
+  });
+
+  test('warns no_serial_lane for a partner a snapshot without serial lanes cannot take', () => {
+    const queue = queueOf({
+      serial_lane_count: 0,
+      serial_lanes: [],
+      queue: entries(['P-1'])
+    });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'P-1', 'conflict')] });
+
+    expect(result.by_id['C-1']).toMatchObject({
+      lane: 'parallel',
+      warnings: [
+        {
+          code: 'uncovered',
+          other: 'P-1',
+          other_lane: 'parallel',
+          reason: 'no_serial_lane'
+        }
+      ]
+    });
+  });
+
   test('joins two candidates that pull the same partner into one bundle', () => {
     const queue = queueOf({ queue: entries(['P-1']) });
 

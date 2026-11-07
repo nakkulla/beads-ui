@@ -19018,6 +19018,23 @@ export function createScheduler(deps) {
       serial_lease.release();
       return { ok: false, reason: 'bead_running' };
     }
+    // The baseline and revalidation reads above await, so a bundle placement
+    // may have bound this lineage to a lane since the acquire: re-read
+    // synchronously and revalidate the held reservation with the lane the
+    // child records (the dispatch path's `final_lane_id` fence).
+    const final_lane_id =
+      prior.serial_lane_id ??
+      heldSerialLaneOf(deps.store.snapshot(workspace), bead_id, lineage_id);
+    const final_launch = serial_lease.revalidate({
+      bead_id,
+      lineage_id,
+      serial_lane_id: final_lane_id,
+      continuation: true
+    });
+    if (!final_launch.ok) {
+      serial_lease.release();
+      return { ok: false, reason: final_launch.reason };
+    }
     // Same window: a ✕ recorded while an AUTOMATIC continuation — a provider
     // auto-resume receipt or a retry rung — was under way took the attempt
     // off the Worker (2026-10-01 stall-reconcile D7), so that continuation
@@ -19062,7 +19079,7 @@ export function createScheduler(deps) {
       exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
       exec_values,
       exec_restore_values,
-      serial_lane_id,
+      serial_lane_id: final_lane_id,
       quickfix_lane,
       resumed_from: attempt_id,
       ...(options.conversation_return === true

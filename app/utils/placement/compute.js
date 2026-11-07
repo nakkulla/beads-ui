@@ -74,10 +74,13 @@ import { occupancyReader } from './occupancy.js';
  * `occupied_other_lane` — it holds another serial lane; `predecessor` — it
  * directly blocks other work; `waits_in_lane` — binding it would make it wait
  * on an item waiting in the lane; `lane_occupied` — the lane already has (or
- * gets) another occupant. A partner the store would neither move nor bind for
- * another cause carries no reason.
+ * gets) another occupant; `discard_active` — a lane-less occupant whose
+ * discard is in flight; `not_holdable` — a lane-less occupant with no
+ * unshelved PR wait and no lane-holding implementation attempt (a waiting bead
+ * whose review session runs, a session's external PR wait); `no_serial_lane` — the snapshot has no serial
+ * lane to move or bind it into.
  *
- * @typedef {'occupied_other_lane'|'predecessor'|'waits_in_lane'|'lane_occupied'} UncoveredReason
+ * @typedef {'occupied_other_lane'|'predecessor'|'waits_in_lane'|'lane_occupied'|'discard_active'|'not_holdable'|'no_serial_lane'} UncoveredReason
  * @typedef {'order_cycle'|'order_unsatisfiable'|'uncovered'|'blocks_reordered'|'predecessor_parallel'} PlacementWarningCode
  * @typedef {{ code: PlacementWarningCode, other?: string, other_lane?: PlacementLane, reason?: UncoveredReason }} PlacementWarning
  */
@@ -1228,14 +1231,22 @@ export function computePlacement(input) {
           continue;
         }
         const kind = classOf(line.other);
-        /** @type {UncoveredReason|undefined} */
-        const reason =
-          held_back.get(line.other) ??
-          (kind === 'fixed'
-            ? 'occupied_other_lane'
-            : kind === 'excluded'
-              ? 'predecessor'
-              : undefined);
+        /** @type {UncoveredReason|null} */
+        let reason = held_back.get(line.other) ?? null;
+        if (reason === null) {
+          if (kind === 'fixed') {
+            reason = 'occupied_other_lane';
+          } else if (kind === 'excluded') {
+            reason = 'predecessor';
+          } else if (kind === 'stuck') {
+            // An external PR-wait row is no store record the store could bind.
+            reason = occupancy(line.other).bind_refusal ?? 'not_holdable';
+          } else if (lane === 'parallel') {
+            // A move or bind partner stays out only when the bundle kept the
+            // parallel lane: a snapshot without serial lanes.
+            reason = 'no_serial_lane';
+          }
+        }
         warnings.push({
           code: 'uncovered',
           other: line.other,

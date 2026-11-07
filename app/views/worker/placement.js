@@ -535,7 +535,10 @@ const UNCOVERED_REASON_WORDS = {
   occupied_other_lane: '상대가 다른 직렬 레인을 잡고 있음',
   predecessor: '상대가 다른 일의 선행이라 옮기지 않음',
   waits_in_lane: '상대가 이 레인의 대기 항목을 기다려 묶지 않음',
-  lane_occupied: '레인에 이미 다른 점유가 있어 묶지 않음'
+  lane_occupied: '레인에 이미 다른 점유가 있어 묶지 않음',
+  discard_active: '상대의 폐기가 진행 중이라 옮기지 않음',
+  not_holdable: '상대가 레인을 잡을 수 있는 상태가 아니라 묶지 않음',
+  no_serial_lane: '직렬 레인이 없어 옮기지 않음'
 };
 
 /**
