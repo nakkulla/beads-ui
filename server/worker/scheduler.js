@@ -16050,7 +16050,7 @@ export function createScheduler(deps) {
     const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
       lineage_id: bead_id,
-      serial_lane_id: null
+      serial_lane_id: waitingLaneOf(deps.store.snapshot(workspace), bead_id)
     });
     if (!serial_launch.ok) {
       return { ok: false, reason: serial_launch.reason };
@@ -16135,6 +16135,21 @@ export function createScheduler(deps) {
           await prepareFreshWorktree(null);
         }
       }
+      // The fresh-mode preparation above awaits, so the Bead may have moved
+      // lanes since the acquire; re-read synchronously and revalidate the
+      // held reservation before the first durable write.
+      const final_lane_id = waitingLaneOf(
+        deps.store.snapshot(workspace),
+        bead_id
+      );
+      const final_launch = serial_launch.lease.revalidate({
+        bead_id,
+        lineage_id: bead_id,
+        serial_lane_id: final_lane_id
+      });
+      if (!final_launch.ok) {
+        return { ok: false, reason: final_launch.reason };
+      }
       if (
         !installGuardHook({
           workspace,
@@ -16152,6 +16167,7 @@ export function createScheduler(deps) {
           bead_id,
           repo,
           target_base,
+          serial_lane_id: final_lane_id,
           base_oid: prepared_worktree.base_oid,
           head_oid: prepared_worktree.head_oid,
           runner: runner_name,

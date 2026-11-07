@@ -1967,3 +1967,220 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
     );
   });
 });
+
+/**
+ * A session-owned completing wait for B1 with serial lanes pre-placed.
+ *
+ * @param {{ lane_count?: number, lanes?: Record<string, string[]>, worktree_present?: boolean, observation?: Record<string, any>, deps?: Record<string, any> }} [options]
+ */
+function laneResumeFixture(options = {}) {
+  const transcript_dir = path.join(root, '.claude', 'projects', '-repo');
+  fs.mkdirSync(transcript_dir, { recursive: true });
+  fs.writeFileSync(path.join(transcript_dir, 'user-session.jsonl'), '{}\n');
+  const env = fixture({
+    seed_prior: false,
+    worktree_present: options.worktree_present,
+    observation: options.observation,
+    deps: options.deps,
+    snapshot: { session_ref: 'claude:user-session@host' },
+    record: {
+      owner: {
+        kind: 'session',
+        session_ref: 'claude:user-session@host',
+        session_pid: 3333,
+        session_start: AT
+      }
+    }
+  });
+  if (options.lane_count) {
+    env.store.setSerialLaneCount(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      count: options.lane_count
+    });
+  }
+  for (const [lane, bead_ids] of Object.entries(options.lanes || {})) {
+    for (const bead_id of bead_ids) {
+      env.store.place(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        bead_id,
+        lane
+      });
+    }
+  }
+  return env;
+}
+
+/**
+ * A fresh-resume fixture whose worktree preparation awaits: B1 sits at the
+ * head of s1, and `onPrepare` runs inside that await, before the worktree
+ * appears on disk.
+ *
+ * @param {{ lane_count: number, lanes: Record<string, string[]> }} options
+ * @param {(env: ReturnType<typeof fixture>) => void} onPrepare
+ */
+function lanePrepareFixture(options, onPrepare) {
+  let prepared = false;
+  const env = laneResumeFixture({
+    ...options,
+    worktree_present: false,
+    observation: { ok: true },
+    deps: { fs: { existsSync: () => prepared } }
+  });
+  env.worktree.add.mockImplementation(async () => {
+    onPrepare(env);
+    prepared = true;
+    return { path: '/wt/B1', branch: 'B1', base_oid: 'a'.repeat(40) };
+  });
+  return env;
+}
+
+/**
+ * @param {ReturnType<typeof fixture>} env
+ * @param {string} lane
+ * @param {number} [index]
+ */
+function moveB1ToLane(env, lane, index) {
+  env.store.place(WS, {
+    expected_revision: env.store.snapshot(WS).revision,
+    bead_id: 'B1',
+    lane,
+    ...(index === undefined ? {} : { index })
+  });
+}
+
+describe('external wait session resume serial lane (UI-yig0)', () => {
+  test('launches a fork resume of a session-owned wait whose bead heads a serial lane', async () => {
+    const env = laneResumeFixture({ lanes: { s1: ['B1'] } });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fork'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.launches).toHaveLength(1);
+    expect(env.launches[0].settings.resume_session_id).toBe('user-session');
+  });
+
+  test('launches a fresh resume of a session-owned wait whose bead heads a serial lane', async () => {
+    const env = laneResumeFixture({ lanes: { s1: ['B1'] } });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fresh'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.launches).toHaveLength(1);
+    expect(env.launches[0].settings).not.toHaveProperty('resume_session_id');
+  });
+
+  test('refuses the resume with serial_lane_occupied when another lineage occupies the lane', async () => {
+    const env = laneResumeFixture({ lanes: { s1: ['B1'] } });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'other',
+        bead_id: 'OTHER',
+        status: 'failed',
+        serial_lane_id: 's1'
+      }
+    });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fork'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'serial_lane_occupied' });
+    expect(env.launches).toHaveLength(0);
+  });
+
+  test('refuses the resume with serial_lane_not_head when the bead is not the lane head', async () => {
+    const env = laneResumeFixture({ lanes: { s1: ['OTHER', 'B1'] } });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fork'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'serial_lane_not_head' });
+    expect(env.launches).toHaveLength(0);
+  });
+
+  test('stamps the waiting lane on the attempt the resume records', async () => {
+    const env = laneResumeFixture({ lanes: { s1: ['B1'] } });
+
+    await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fork' });
+
+    expect(
+      env.store.snapshot(WS).attempts[env.launches[0].reservation.attempt_id]
+    ).toMatchObject({ bead_id: 'B1', serial_lane_id: 's1' });
+  });
+
+  test('keeps the lane on a relaunch from the resumed attempt', async () => {
+    const env = laneResumeFixture({ lanes: { s1: ['B1'] } });
+    await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fork' });
+    const resumed_id = env.launches[0].reservation.attempt_id;
+    env.launches[0].events.emit('session_id', 'resumed-session');
+    env.launches[0].finish({
+      success: false,
+      reason: 'hook_bypass_blocked',
+      summary: 'blocked'
+    });
+    await vi.waitFor(() => {
+      expect(env.scheduler.isRunning('B1')).toBe(false);
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: resumed_id,
+      patch: { status: 'failed', cause: 'session_failed' }
+    });
+
+    const relaunched = await env.scheduler.resume(WS, resumed_id);
+
+    expect(relaunched.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(relaunched.attempt_id)]
+    ).toMatchObject({ resumed_from: resumed_id, serial_lane_id: 's1' });
+  });
+
+  test('launches a session-owned wait resume lane-free when the bead sits in no lane', async () => {
+    const env = laneResumeFixture();
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fork'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[env.launches[0].reservation.attempt_id]
+    ).toMatchObject({ serial_lane_id: null });
+  });
+
+  test('refuses the resume when the bead moves behind another entry before the prerecord', async () => {
+    const env = lanePrepareFixture(
+      { lane_count: 2, lanes: { s1: ['B1'], s2: ['OTHER'] } },
+      (prepare_env) => moveB1ToLane(prepare_env, 's2')
+    );
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fresh'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'serial_lane_not_head' });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.launches).toHaveLength(0);
+  });
+
+  test('records the new lane when the bead moves to the head of an empty lane before the prerecord', async () => {
+    const env = lanePrepareFixture(
+      { lane_count: 2, lanes: { s1: ['B1'] } },
+      (prepare_env) => moveB1ToLane(prepare_env, 's2', 0)
+    );
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fresh'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[env.launches[0].reservation.attempt_id]
+    ).toMatchObject({ serial_lane_id: 's2' });
+  });
+});
