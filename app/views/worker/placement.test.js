@@ -3,6 +3,7 @@ import { createSubscriptionIssueStore } from '../../data/subscription-issue-stor
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { normalizeCandidateSort } from './candidate-sort.js';
 import {
+  bundleStepText,
   candidatePlacement,
   placeMenuLanes,
   placementFromFacts,
@@ -444,4 +445,91 @@ describe('predecessor placement warning (UI-ey6v §3.4)', () => {
 
     expect(text).toBe('⚠ 선행이라 병렬에 둠 — S-1와 동시에 돌 수 있음');
   });
+});
+
+/**
+ * A bundle step with the fields one line reads.
+ *
+ * @param {Partial<import('../../utils/placement/compute.js').BundleStep>} over
+ * @returns {import('../../utils/placement/compute.js').BundleStep}
+ */
+function step(over) {
+  return {
+    kind: 'move',
+    id: 'X-1',
+    from_lane: null,
+    from_index: null,
+    from_state: null,
+    index: null,
+    final_index: null,
+    before: null,
+    number: null,
+    ...over
+  };
+}
+
+describe('bundle step lines (UI-blx2 §3.7)', () => {
+  test('names where a moved partner comes from and where it lands', () => {
+    const text = bundleStepText(
+      step({
+        id: 'dotfiles-83ss0',
+        from_lane: 'parallel',
+        from_index: 0,
+        final_index: 0
+      }),
+      's1'
+    );
+
+    expect(text).toBe('↪ dotfiles-83ss0: 병렬 #1 → 직렬 1 #1 (옮김)');
+  });
+
+  test('names what a bound partner is doing and the lane it now holds', () => {
+    const text = bundleStepText(
+      step({ kind: 'bind', id: 'UI-x', from_state: 'running' }),
+      's1'
+    );
+
+    expect(text).toBe('⛓ UI-x: 실행 중 → 직렬 1 점유로 묶음');
+  });
+});
+
+describe('uncovered reasons (UI-blx2 §3.8)', () => {
+  test.each([
+    [
+      'occupied_other_lane',
+      's2',
+      '⚠ X-1(직렬 2)과 동시에 돌 수 있음 — 상대가 다른 직렬 레인을 잡고 있음'
+    ],
+    [
+      'predecessor',
+      'parallel',
+      '⚠ X-1(병렬)과 동시에 돌 수 있음 — 상대가 다른 일의 선행이라 옮기지 않음'
+    ],
+    [
+      'waits_in_lane',
+      'parallel',
+      '⚠ X-1(병렬)과 동시에 돌 수 있음 — 상대가 이 레인의 대기 항목을 기다려 묶지 않음'
+    ],
+    [
+      'lane_occupied',
+      'parallel',
+      '⚠ X-1(병렬)과 동시에 돌 수 있음 — 레인에 이미 다른 점유가 있어 묶지 않음'
+    ]
+  ])(
+    'says why for %s',
+    (
+      /** @type {any} */ reason,
+      /** @type {any} */ other_lane,
+      /** @type {string} */ expected
+    ) => {
+      const text = placementWarningText({
+        code: 'uncovered',
+        other: 'X-1',
+        other_lane,
+        reason
+      });
+
+      expect(text).toBe(expected);
+    }
+  );
 });

@@ -1,7 +1,7 @@
 /** @vitest-environment node */
 import { describe, expect, test } from 'vitest';
 import { placementPairKey } from '../../../server/placement/wire.js';
-import { computePlacement, samePlace } from './compute.js';
+import { computePlacement, sameBundle, samePlace } from './compute.js';
 
 /**
  * A wire relation built from the candidate's side: `kind` is how `c` relates
@@ -86,6 +86,57 @@ function plan(input) {
     chosen: input.chosen || ['C-1'],
     candidates: input.candidates || input.chosen || ['C-1']
   });
+}
+
+/**
+ * The bundle steps of a candidate as `[kind, id, index, before]`.
+ *
+ * @param {import('./compute.js').PlacementPlan} result
+ * @param {string} id
+ * @returns {Array<[string, string, number|null, string|null]>}
+ */
+function steps(result, id) {
+  return result.by_id[id].bundle_steps.map((step) => [
+    step.kind,
+    step.id,
+    step.index,
+    step.before
+  ]);
+}
+
+/**
+ * An implementation attempt record as the snapshot carries it.
+ *
+ * @param {string} bead_id
+ * @param {string} status
+ * @param {Record<string, any>} [extra]
+ * @returns {[string, any]}
+ */
+function attempt(bead_id, status, extra = {}) {
+  const attempt_id = `att-${bead_id}-${status}`;
+  return [
+    attempt_id,
+    {
+      attempt_id,
+      bead_id,
+      kind: 'implementation',
+      status,
+      started_at: 100,
+      serial_lane_id: null,
+      ...extra
+    }
+  ];
+}
+
+/**
+ * A fixed `blocks` relation between two queued beads: `blocker` lands first.
+ *
+ * @param {string} blocker
+ * @param {string} blockee
+ * @returns {[string, any]}
+ */
+function memberBlocks(blocker, blockee) {
+  return rel(blocker, blockee, 'c_first', { source: 'fixed', basis: 'blocks' });
 }
 
 describe('computePlacement bundles', () => {
@@ -254,7 +305,7 @@ describe('computePlacement lane rules', () => {
     });
   });
 
-  test('picks the serial lane covering most of a scattered K and warns uncovered for the rest', () => {
+  test('moves a partner waiting in another serial lane into the lane where most of K waits', () => {
     const queue = queueOf({
       serial_lanes: [
         { id: 's1', entries: entries(['S-1']) },
@@ -271,21 +322,25 @@ describe('computePlacement lane rules', () => {
       ]
     });
 
-    expect(result.by_id['C-1'].lane).toBe('s2');
-    expect(result.by_id['C-1'].warnings).toEqual([
-      { code: 'uncovered', other: 'S-1', other_lane: 's1' }
+    expect(steps(result, 'C-1')).toEqual([
+      ['move', 'S-1', 2, 'T-2'],
+      ['place', 'C-1', 3, 'S-1']
     ]);
+    expect(result.by_id['C-1']).toMatchObject({ lane: 's2', warnings: [] });
+    expect(result.layout.s1).toEqual([]);
   });
 
-  test('keeps a lone candidate whose K is parallel-only in the parallel lane with uncovered', () => {
+  test('pulls a lone candidate and its parallel conflict partner into the emptiest serial lane, partner first', () => {
     const queue = queueOf({ queue: entries(['P-1']) });
 
     const result = plan({ queue, pairs: [rel('C-1', 'P-1', 'conflict')] });
 
-    expect(result.by_id['C-1'].lane).toBe('parallel');
-    expect(result.by_id['C-1'].warnings).toEqual([
-      { code: 'uncovered', other: 'P-1', other_lane: 'parallel' }
+    expect(result.by_id['C-1']).toMatchObject({ lane: 's1', warnings: [] });
+    expect(steps(result, 'C-1')).toEqual([
+      ['move', 'P-1', 0, null],
+      ['place', 'C-1', 1, 'P-1']
     ]);
+    expect(result.layout).toMatchObject({ parallel: [], s1: ['P-1', 'C-1'] });
   });
 
   test('puts the candidate at the tail with order_unsatisfiable when its in-lane bounds cross', () => {
@@ -382,14 +437,17 @@ describe('computePlacement lane rules', () => {
     expect(result.layout.s1).toEqual(['S-2', 'S-1', 'C-1']);
   });
 
-  test('reads an occupant without a serial lane as standing in the parallel lane', () => {
+  test('binds an unshelved PR-waiting partner without a serial lane to the emptiest lane', () => {
     const queue = queueOf({ pr_wait: [{ bead_id: 'R-1' }] });
 
     const result = plan({ queue, pairs: [rel('C-1', 'R-1', 'conflict')] });
 
-    expect(result.by_id['C-1'].warnings).toEqual([
-      { code: 'uncovered', other: 'R-1', other_lane: 'parallel' }
-    ]);
+    expect(result.by_id['C-1']).toMatchObject({ lane: 's1', warnings: [] });
+    expect(result.by_id['C-1'].bundle_steps[0]).toMatchObject({
+      kind: 'bind',
+      id: 'R-1',
+      from_state: 'pr_wait'
+    });
   });
 
   test('skips a shelved pr_wait entry as an occupant', () => {
@@ -912,6 +970,276 @@ describe('computePlacement predecessors (UI-ey6v §3.4)', () => {
     });
 
     expect(result.by_id['C-1'].lane).toBe('s1');
+  });
+});
+
+describe('computePlacement conflicting partners (UI-blx2 §3)', () => {
+  test('puts the candidate before a c_first partner it moves', () => {
+    const queue = queueOf({ queue: entries(['P-1']) });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'P-1', 'c_first')] });
+
+    expect(steps(result, 'C-1')).toEqual([
+      ['place', 'C-1', 0, null],
+      ['move', 'P-1', 1, 'C-1']
+    ]);
+  });
+
+  test('binds a running partner without a serial lane before the candidate', () => {
+    const queue = queueOf({
+      attempts: Object.fromEntries([attempt('R-1', 'running')])
+    });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'R-1', 'conflict')] });
+
+    expect(steps(result, 'C-1')).toEqual([
+      ['bind', 'R-1', null, null],
+      ['place', 'C-1', 0, null]
+    ]);
+    expect(result.by_id['C-1']).toMatchObject({ lane: 's1', warnings: [] });
+  });
+
+  test('binds a running partner that kept its waiting row and seats that row at the lane head', () => {
+    const queue = queueOf({
+      queue: entries(['R-1']),
+      attempts: Object.fromEntries([attempt('R-1', 'running')])
+    });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'R-1', 'conflict')] });
+
+    expect(steps(result, 'C-1')).toEqual([
+      ['bind', 'R-1', null, null],
+      ['place', 'C-1', 0, 'R-1']
+    ]);
+    expect(result.layout).toMatchObject({ parallel: [], s1: ['R-1', 'C-1'] });
+  });
+
+  test('binds rather than moves a waiting partner whose latest attempt waits to retry', () => {
+    const queue = queueOf({
+      queue: entries(['R-1']),
+      attempts: Object.fromEntries([
+        attempt('R-1', 'retry_wait', { finished_at: 120 })
+      ])
+    });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'R-1', 'conflict')] });
+
+    expect(result.by_id['C-1'].bundle_steps[0]).toMatchObject({
+      kind: 'bind',
+      id: 'R-1',
+      from_state: 'retry_wait'
+    });
+  });
+
+  test('binds one of two lane-less partners and leaves the other lane_occupied', () => {
+    const queue = queueOf({
+      attempts: Object.fromEntries([
+        attempt('R-1', 'running'),
+        attempt('R-2', 'running')
+      ])
+    });
+
+    const result = plan({
+      queue,
+      pairs: [rel('C-1', 'R-1', 'conflict'), rel('C-1', 'R-2', 'conflict')]
+    });
+
+    expect(steps(result, 'C-1')[0]).toEqual(['bind', 'R-1', null, null]);
+    expect(result.by_id['C-1'].warnings).toEqual([
+      {
+        code: 'uncovered',
+        other: 'R-2',
+        other_lane: 'parallel',
+        reason: 'lane_occupied'
+      }
+    ]);
+  });
+
+  test('binds nothing into a chosen lane another bead occupies', () => {
+    const queue = queueOf({
+      lane_states: { s2: { occupied_by: ['F-1'] } },
+      attempts: Object.fromEntries([attempt('R-1', 'running')])
+    });
+
+    const result = plan({
+      queue,
+      pairs: [rel('C-1', 'F-1', 'conflict'), rel('C-1', 'R-1', 'conflict')]
+    });
+
+    expect(steps(result, 'C-1')).toEqual([['place', 'C-1', 0, null]]);
+    expect(result.by_id['C-1']).toMatchObject({
+      lane: 's2',
+      warnings: [
+        {
+          code: 'uncovered',
+          other: 'R-1',
+          other_lane: 'parallel',
+          reason: 'lane_occupied'
+        }
+      ]
+    });
+  });
+
+  test('picks the occupied lane holding more of K and warns occupied_other_lane for the other', () => {
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: entries(['T-1']) }
+      ],
+      lane_states: {
+        s1: { occupied_by: ['F-1'] },
+        s2: { occupied_by: ['F-2'] }
+      }
+    });
+
+    const result = plan({
+      queue,
+      pairs: [
+        rel('C-1', 'F-1', 'conflict'),
+        rel('C-1', 'F-2', 'conflict'),
+        rel('C-1', 'T-1', 'conflict')
+      ]
+    });
+
+    expect(result.by_id['C-1']).toMatchObject({
+      lane: 's2',
+      before: 'T-1',
+      warnings: [
+        {
+          code: 'uncovered',
+          other: 'F-1',
+          other_lane: 's1',
+          reason: 'occupied_other_lane'
+        }
+      ]
+    });
+  });
+
+  test('leaves a partner that blocks another waiting item in place with uncovered predecessor', () => {
+    const queue = queueOf({ queue: entries(['P-1', 'P-2']) });
+
+    const result = plan({
+      queue,
+      pairs: [rel('C-1', 'P-1', 'conflict'), memberBlocks('P-1', 'P-2')]
+    });
+
+    expect(steps(result, 'C-1')).toEqual([['place', 'C-1', 2, 'P-2']]);
+    expect(result.by_id['C-1'].warnings).toEqual([
+      {
+        code: 'uncovered',
+        other: 'P-1',
+        other_lane: 'parallel',
+        reason: 'predecessor'
+      }
+    ]);
+  });
+
+  test('binds no partner that waits on an item waiting in the chosen lane', () => {
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['W-1']) },
+        { id: 's2', entries: [] }
+      ],
+      attempts: Object.fromEntries([attempt('R-1', 'running')])
+    });
+
+    const result = plan({
+      queue,
+      pairs: [
+        rel('C-1', 'W-1', 'conflict'),
+        rel('C-1', 'R-1', 'conflict'),
+        memberBlocks('W-1', 'R-1')
+      ]
+    });
+
+    expect(steps(result, 'C-1')).toEqual([['place', 'C-1', 1, 'W-1']]);
+    expect(result.by_id['C-1']).toMatchObject({
+      lane: 's1',
+      warnings: [
+        {
+          code: 'uncovered',
+          other: 'R-1',
+          other_lane: 'parallel',
+          reason: 'waits_in_lane'
+        }
+      ]
+    });
+  });
+
+  test('joins two candidates that pull the same partner into one bundle', () => {
+    const queue = queueOf({ queue: entries(['P-1']) });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      pairs: [
+        rel('C-1', 'P-1', 'conflict'),
+        rel('C-2', 'P-1', 'conflict'),
+        rel('C-1', 'C-2', 'independent')
+      ]
+    });
+
+    expect(result.bundles).toHaveLength(1);
+    expect(steps(result, 'C-2')).toEqual([
+      ['move', 'P-1', 0, null],
+      ['place', 'C-1', 1, 'P-1'],
+      ['place', 'C-2', 2, 'C-1']
+    ]);
+    expect(result.by_id['C-1'].pulled.map((step) => step.id)).toEqual(['P-1']);
+    expect(result.by_id['C-2'].pulled).toEqual([]);
+  });
+
+  test('keeps a predecessor alone in the parallel lane without pulling its partner', () => {
+    const queue = queueOf({
+      queue: entries(['P-1']),
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-1']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({
+      queue,
+      pairs: [
+        rel('C-1', 'S-1', 'c_first', { source: 'fixed', basis: 'blocks' }),
+        rel('C-1', 'P-1', 'conflict')
+      ]
+    });
+
+    expect(steps(result, 'C-1')).toEqual([['place', 'C-1', 1, 'P-1']]);
+    expect(result.by_id['C-1']).toMatchObject({ lane: 'parallel' });
+  });
+
+  test('numbers a moved partner and the candidate in apply order', () => {
+    const queue = queueOf({ queue: entries(['P-1']) });
+
+    const result = plan({ queue, pairs: [rel('C-1', 'P-1', 'conflict')] });
+
+    expect(
+      result.by_id['C-1'].bundle_steps.map((step) => [step.id, step.number])
+    ).toEqual([
+      ['P-1', 1],
+      ['C-1', 2]
+    ]);
+    expect(result.by_id['C-1'].number).toBe(2);
+  });
+});
+
+describe('sameBundle', () => {
+  test('tells a bundle whose partner turned from a move into a bind apart', () => {
+    const waiting = plan({
+      queue: queueOf({ queue: entries(['P-1']) }),
+      pairs: [rel('C-1', 'P-1', 'conflict')]
+    });
+    const started = plan({
+      queue: queueOf({
+        queue: entries(['P-1']),
+        attempts: Object.fromEntries([attempt('P-1', 'running')])
+      }),
+      pairs: [rel('C-1', 'P-1', 'conflict')]
+    });
+
+    expect(sameBundle(waiting.by_id['C-1'], started.by_id['C-1'])).toBe(false);
   });
 });
 

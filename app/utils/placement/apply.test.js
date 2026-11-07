@@ -7,6 +7,7 @@ import {
   sendPlacementBatch
 } from './apply.js';
 import { computePlacement } from './compute.js';
+import { orderLaneByBlocks } from './lane-order.js';
 
 /**
  * @param {string} id
@@ -14,7 +15,8 @@ import { computePlacement } from './compute.js';
  * @returns {import('./compute.js').PlannedPlacement}
  */
 function placed(id, over = {}) {
-  return {
+  /** @type {import('./compute.js').PlannedPlacement} */
+  const row = {
     id,
     number: 1,
     bundle: 0,
@@ -35,8 +37,29 @@ function placed(id, over = {}) {
     warnings: [],
     only_unknown: false,
     judged_at: null,
+    bundle_steps: [],
+    pulled: [],
     ...over
   };
+  // A lone candidate's bundle is its own place.
+  return over.bundle_steps
+    ? row
+    : {
+        ...row,
+        bundle_steps: [
+          {
+            kind: 'place',
+            id,
+            from_lane: null,
+            from_index: null,
+            from_state: null,
+            index: row.index,
+            final_index: row.final_index,
+            before: row.before,
+            number: row.number
+          }
+        ]
+      };
 }
 
 /**
@@ -51,6 +74,7 @@ function planFromQueue(queue) {
   return {
     revision: queue.revision,
     order: Object.values(by_id),
+    bundles: [],
     by_id,
     layout: {},
     configured_lane_count: queue.configured_lane_count ?? 2,
@@ -209,8 +233,8 @@ describe('sendPlacement', () => {
 describe('sendPlacementBatch', () => {
   test('continues the batch after two conflicts leave the shown place unchanged', async () => {
     const first = placed('C-1', { before: null, index: 0 });
-    const second = placed('C-2', { before: 'C-1', index: 1 });
-    const third = placed('C-3', { before: 'C-2', index: 2 });
+    const second = placed('C-2', { before: 'C-1', index: 1, bundle: 1 });
+    const third = placed('C-3', { before: 'C-2', index: 2, bundle: 2 });
     const places = { 'C-1': first, 'C-2': second, 'C-3': third };
     const transport = vi
       .fn()
@@ -247,7 +271,7 @@ describe('sendPlacementBatch', () => {
 
   test('sends the shown rows one at a time with each reply revision', async () => {
     const first = placed('C-1', { before: null, index: 0 });
-    const second = placed('C-2', { before: 'C-1', index: 1 });
+    const second = placed('C-2', { before: 'C-1', index: 1, bundle: 1 });
     const start = { revision: 3, places: { 'C-1': first, 'C-2': second } };
     const after_first = { revision: 4, places: { 'C-2': second } };
     const transport = vi
@@ -283,11 +307,11 @@ describe('sendPlacementBatch', () => {
 
   test('stops before a row whose recomputed place differs from the table', async () => {
     const first = placed('C-1', { before: null, index: 0 });
-    const second = placed('C-2', { before: 'C-1', index: 1 });
+    const second = placed('C-2', { before: 'C-1', index: 1, bundle: 1 });
     const start = { revision: 3, places: { 'C-1': first, 'C-2': second } };
     const after_first = {
       revision: 4,
-      places: { 'C-2': placed('C-2', { before: 'X-1' }) }
+      places: { 'C-2': placed('C-2', { before: 'X-1', bundle: 1 }) }
     };
     const transport = vi.fn().mockResolvedValue({
       applied: true,
@@ -565,37 +589,192 @@ describe('serial lane growth (UI-lsr4 §3.3)', () => {
   });
 });
 
+/**
+ * A fixed relation between two beads, `first` landing before `second`.
+ *
+ * @param {string} first
+ * @param {string} second
+ * @param {'blocks'|'file'} basis
+ * @returns {[string, Record<string, any>]}
+ */
+function fixed(first, second, basis) {
+  const [a, b] = first < second ? [first, second] : [second, first];
+  return [
+    placementPairKey(a, b),
+    {
+      a,
+      b,
+      relation:
+        basis === 'file' ? 'conflict' : first === a ? 'a_first' : 'b_first',
+      source: 'fixed',
+      basis,
+      confidence: null,
+      jev_choice: null,
+      judged_at: null
+    }
+  ];
+}
+
+/**
+ * A stand-in for the store's three writes, in the store's own order
+ * (`queue-store.js` `place`, `placeBundle`, `setSerialLaneCount`) — not the
+ * plan's simulation, so a disagreement between the two shows up as `moved`.
+ * `place`: leave every lane, splice at the clamped index, blocks correction.
+ * `place-bundle`: stamp the bind's lane on its live attempts and `pr_wait`
+ * row and take its waiting row out; each step leaves every lane and is spliced
+ * at its index; one blocks correction; the bound row goes to the lane head.
+ * A placed bead leaves the candidates; the bound lineage occupies the lane.
+ *
+ * @param {Record<string, any>} relations - The `blocks` edges come from here,
+ * as the store reads them from `blocked_by`.
+ * @returns {(queue: any, type: string, payload: any) => any}
+ */
+function storeStandIn(relations) {
+  /**
+   * @param {string[]} ids
+   * @returns {{ blocker: string, blockee: string }[]}
+   */
+  const edgesAmong = (ids) =>
+    Object.values(relations).flatMap((raw) =>
+      raw.source === 'fixed' &&
+      raw.basis === 'blocks' &&
+      ids.includes(raw.a) &&
+      ids.includes(raw.b)
+        ? [
+            ...(raw.relation !== 'b_first'
+              ? [{ blocker: raw.a, blockee: raw.b }]
+              : []),
+            ...(raw.relation !== 'a_first'
+              ? [{ blocker: raw.b, blockee: raw.a }]
+              : [])
+          ]
+        : []
+    );
+  return (queue, type, payload) => {
+    const next = structuredClone(queue);
+    /** @param {string} lane */
+    const laneOf = (lane) =>
+      lane === 'parallel'
+        ? next.queue
+        : next.serial_lanes.find((/** @type {any} */ l) => l.id === lane)
+            .entries;
+    /** @param {string} bead_id */
+    const removeFromLanes = (bead_id) => {
+      next.queue = next.queue.filter(
+        (/** @type {any} */ e) => e.bead_id !== bead_id
+      );
+      for (const lane of next.serial_lanes) {
+        lane.entries = lane.entries.filter(
+          (/** @type {any} */ e) => e.bead_id !== bead_id
+        );
+      }
+      next.pr_wait = next.pr_wait.filter(
+        (/** @type {any} */ e) => e.bead_id !== bead_id
+      );
+    };
+    /**
+     * @param {string} bead_id
+     * @param {string} lane
+     * @param {number} index
+     */
+    const splice = (bead_id, lane, index) => {
+      removeFromLanes(bead_id);
+      const entries = laneOf(lane);
+      entries.splice(Math.min(index, entries.length), 0, {
+        bead_id,
+        added_at: next.revision
+      });
+      delete next.placement_status[bead_id];
+    };
+    /** @param {string} lane */
+    const correct = (lane) => {
+      if (lane === 'parallel') {
+        return;
+      }
+      const target = next.serial_lanes.find(
+        (/** @type {any} */ l) => l.id === lane
+      );
+      const ids = target.entries.map((/** @type {any} */ e) => e.bead_id);
+      const topo = orderLaneByBlocks(ids, edgesAmong(ids));
+      if (!topo.cycle) {
+        target.entries = topo.order.map((id) =>
+          target.entries.find((/** @type {any} */ e) => e.bead_id === id)
+        );
+      }
+    };
+    if (type === 'worker-queue-set-serial-lane-count') {
+      next.serial_lane_count = payload.count;
+      while (next.serial_lanes.length < payload.count) {
+        next.serial_lanes.push({
+          id: `s${next.serial_lanes.length + 1}`,
+          entries: []
+        });
+      }
+    } else if (type === 'worker-queue-place') {
+      splice(payload.bead_id, payload.lane, payload.index);
+      correct(payload.lane);
+    } else {
+      const [bind] = payload.binds;
+      /** @type {any} */
+      let bound_row = null;
+      if (bind) {
+        for (const attempt of Object.values(next.attempts)) {
+          if (
+            /** @type {any} */ (attempt).bead_id === bind &&
+            !['done', 'stopped', 'discarded', 'waiting'].includes(
+              /** @type {any} */ (attempt).status
+            )
+          ) {
+            /** @type {any} */ (attempt).serial_lane_id = payload.lane;
+          }
+        }
+        for (const entry of next.pr_wait) {
+          if (entry.bead_id === bind) {
+            entry.serial_lane_id = payload.lane;
+          }
+        }
+        bound_row =
+          [
+            next.queue,
+            ...next.serial_lanes.map((/** @type {any} */ l) => l.entries)
+          ]
+            .flat()
+            .find((/** @type {any} */ e) => e.bead_id === bind) || null;
+        next.queue = next.queue.filter(
+          (/** @type {any} */ e) => e.bead_id !== bind
+        );
+        for (const lane of next.serial_lanes) {
+          lane.entries = lane.entries.filter(
+            (/** @type {any} */ e) => e.bead_id !== bind
+          );
+        }
+        next.lane_states = {
+          ...next.lane_states,
+          [payload.lane]: {
+            occupied_by: [
+              ...(next.lane_states[payload.lane]?.occupied_by || []),
+              bind
+            ]
+          }
+        };
+      }
+      for (const step of payload.steps) {
+        splice(step.bead_id, payload.lane, step.index);
+      }
+      correct(payload.lane);
+      if (bound_row) {
+        laneOf(payload.lane).unshift(bound_row);
+      }
+    }
+    next.revision += 1;
+    return next;
+  };
+}
+
 describe('sendPlacementBatch over the real computation (UI-ey6v §3.4)', () => {
   /**
-   * A fixed relation between two beads, `first` landing before `second`.
-   *
-   * @param {string} first
-   * @param {string} second
-   * @param {'blocks'|'file'} basis
-   * @returns {[string, Record<string, any>]}
-   */
-  function fixed(first, second, basis) {
-    const [a, b] = first < second ? [first, second] : [second, first];
-    return [
-      placementPairKey(a, b),
-      {
-        a,
-        b,
-        relation:
-          basis === 'file' ? 'conflict' : first === a ? 'a_first' : 'b_first',
-        source: 'fixed',
-        basis,
-        confidence: null,
-        jev_choice: null,
-        judged_at: null
-      }
-    ];
-  }
-
-  /**
-   * Run `[전체 적용]` against a stand-in for the store's `place`: it splices at
-   * the sent index and takes the bead off the candidates, so each recompute reads
-   * the bead as a member the way the next snapshot does.
+   * Run `[전체 적용]` against the store stand-in, so each recompute reads the
+   * placed beads as members the way the next snapshot does.
    *
    * @param {string[]} display_order
    * @param {Array<[string, Record<string, any>]>} pairs
@@ -633,24 +812,12 @@ describe('sendPlacementBatch over the real computation (UI-ey6v §3.4)', () => {
       ),
       ...queue_patch
     };
+    const store = storeStandIn(relations);
     /** @type {any} */
     let latest = start;
-    const transport = vi.fn(async (_type, payload) => {
-      const next = structuredClone(latest);
-      const entries =
-        payload.lane === 'parallel'
-          ? next.queue
-          : next.serial_lanes.find(
-              (/** @type {any} */ lane) => lane.id === payload.lane
-            ).entries;
-      entries.splice(payload.index, 0, {
-        bead_id: payload.bead_id,
-        added_at: next.revision
-      });
-      delete next.placement_status[payload.bead_id];
-      next.revision += 1;
-      latest = next;
-      return { applied: true, conflict: false, queue: next };
+    const transport = vi.fn(async (type, payload) => {
+      latest = store(latest, type, payload);
+      return { applied: true, conflict: false, queue: latest };
     });
     const shown = recompute(start, display_order).order;
     const result = await sendPlacementBatch({
@@ -710,5 +877,325 @@ describe('sendPlacementBatch over the real computation (UI-ey6v §3.4)', () => {
         (/** @type {any} */ e) => e.bead_id
       )
     }).toEqual({ parallel: ['C-1'], s1: ['S-1', 'C-2'] });
+  });
+});
+
+describe('bundle sends (UI-blx2 §3.7)', () => {
+  /**
+   * A jev conflict between two beads.
+   *
+   * @param {string} x
+   * @param {string} y
+   * @returns {[string, Record<string, any>]}
+   */
+  function conflict(x, y) {
+    const [a, b] = x < y ? [x, y] : [y, x];
+    return [
+      placementPairKey(a, b),
+      {
+        a,
+        b,
+        relation: 'conflict',
+        source: 'jev',
+        confidence: 0.9,
+        jev_choice: 'conflict',
+        judged_at: 1
+      }
+    ];
+  }
+
+  /**
+   * A running implementation attempt without a serial lane.
+   *
+   * @param {string} bead_id
+   * @returns {[string, Record<string, any>]}
+   */
+  function running(bead_id) {
+    return [
+      `att-${bead_id}`,
+      {
+        attempt_id: `att-${bead_id}`,
+        bead_id,
+        kind: 'implementation',
+        status: 'running',
+        started_at: 10,
+        serial_lane_id: null
+      }
+    ];
+  }
+
+  /**
+   * @param {string[]} display_order
+   * @param {Record<string, any>} [over]
+   * @returns {any}
+   */
+  function startQueue(display_order, over = {}) {
+    return {
+      revision: 1,
+      queue: [],
+      serial_lane_count: 3,
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'S-1', added_at: 1 }] },
+        { id: 's2', entries: [] },
+        { id: 's3', entries: [] }
+      ],
+      lane_states: {},
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      placement_status: Object.fromEntries(
+        display_order.map((id) => [id, { state: 'ready' }])
+      ),
+      ...over
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} relations
+   * @param {string[]} display_order
+   * @returns {(queue: any, chosen: string[]) => import('./compute.js').PlacementPlan}
+   */
+  function recomputeWith(relations, display_order) {
+    return (queue, chosen) =>
+      computePlacement({ queue, relations, display_order, chosen });
+  }
+
+  test('sends a bundle as one worker-queue-place-bundle with its bind and steps', async () => {
+    const relations = Object.fromEntries([
+      conflict('C-1', 'P-1'),
+      conflict('C-1', 'R-1')
+    ]);
+    const recompute = recomputeWith(relations, ['C-1']);
+    const start = startQueue(['C-1'], {
+      queue: [{ bead_id: 'P-1', added_at: 1 }],
+      attempts: Object.fromEntries([running('R-1')])
+    });
+    const transport = vi
+      .fn()
+      .mockResolvedValue({ applied: true, conflict: false, queue: null });
+
+    await sendPlacementBatch({
+      transport,
+      root_dir: '/repo',
+      shown: recompute(start, ['C-1']).order,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => start
+    });
+
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-queue-place-bundle',
+        {
+          lane: 's2',
+          binds: ['R-1'],
+          steps: [
+            { bead_id: 'P-1', index: 0 },
+            { bead_id: 'C-1', index: 1 }
+          ],
+          root_dir: '/repo',
+          expected_revision: 1
+        }
+      ]
+    ]);
+  });
+
+  test('finishes [전체 적용] of a move bundle, a bind bundle and a lone place over the reply snapshots', async () => {
+    const display_order = ['C-1', 'C-2', 'C-3'];
+    const relations = Object.fromEntries([
+      conflict('C-1', 'P-1'),
+      conflict('C-2', 'R-1')
+    ]);
+    const recompute = recomputeWith(relations, display_order);
+    const start = startQueue(display_order, {
+      queue: [
+        { bead_id: 'P-1', added_at: 1 },
+        { bead_id: 'R-1', added_at: 2 }
+      ],
+      attempts: Object.fromEntries([running('R-1')])
+    });
+    const store = storeStandIn(relations);
+    /** @type {any} */
+    let latest = start;
+    const transport = vi.fn(async (type, payload) => {
+      latest = store(latest, type, payload);
+      return { applied: true, conflict: false, queue: latest };
+    });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown: recompute(start, display_order).order,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => latest
+    });
+
+    expect(result).toEqual({ placed: ['C-1', 'C-2', 'C-3'], stopped: null });
+    expect({
+      types: transport.mock.calls.map((call) => call[0]),
+      parallel: latest.queue.map((/** @type {any} */ e) => e.bead_id),
+      s2: latest.serial_lanes[1].entries.map(
+        (/** @type {any} */ e) => e.bead_id
+      ),
+      s3: latest.serial_lanes[2].entries.map(
+        (/** @type {any} */ e) => e.bead_id
+      )
+    }).toEqual({
+      types: [
+        'worker-queue-place-bundle',
+        'worker-queue-place-bundle',
+        'worker-queue-place'
+      ],
+      parallel: ['C-3'],
+      s2: ['P-1', 'C-1'],
+      s3: ['R-1', 'C-2']
+    });
+  });
+
+  test('stops as moved without sending when the partner started before its bundle', async () => {
+    const relations = Object.fromEntries([conflict('C-1', 'P-1')]);
+    const recompute = recomputeWith(relations, ['C-1']);
+    const start = startQueue(['C-1'], {
+      queue: [{ bead_id: 'P-1', added_at: 1 }]
+    });
+    const started = {
+      ...start,
+      revision: 2,
+      attempts: Object.fromEntries([running('P-1')])
+    };
+    const transport = vi.fn();
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown: recompute(start, ['C-1']).order,
+      queue: started,
+      recompute,
+      adopt: () => {},
+      snapshot: () => started
+    });
+
+    expect(transport).not.toHaveBeenCalled();
+    expect(result.stopped).toMatchObject({ id: 'C-1', cause: 'moved' });
+  });
+
+  test('stops on a refused bundle with the store reason and the bundles already in', async () => {
+    const display_order = ['C-1', 'C-2'];
+    const relations = Object.fromEntries([conflict('C-2', 'P-1')]);
+    const recompute = recomputeWith(relations, display_order);
+    const start = startQueue(display_order, {
+      queue: [{ bead_id: 'P-1', added_at: 1 }]
+    });
+    const store = storeStandIn(relations);
+    /** @type {any} */
+    let latest = start;
+    const transport = vi.fn(async (type, payload) => {
+      if (type === 'worker-queue-place-bundle') {
+        return {
+          applied: false,
+          conflict: false,
+          reason: 'member_occupant',
+          queue: latest
+        };
+      }
+      latest = store(latest, type, payload);
+      return { applied: true, conflict: false, queue: latest };
+    });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown: recompute(start, display_order).order,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => latest
+    });
+
+    expect(result.placed).toEqual(['C-1']);
+    expect(result.stopped).toMatchObject({ id: 'C-2', cause: 'refused' });
+    expect(
+      placementSendNotice(/** @type {any} */ (result.stopped).result)
+    ).toBe('큐 적재 거부: member_occupant');
+  });
+
+  test('stops with the unsupported-server notice when the server answers unknown_type', async () => {
+    const relations = Object.fromEntries([conflict('C-1', 'P-1')]);
+    const recompute = recomputeWith(relations, ['C-1']);
+    const start = startQueue(['C-1'], {
+      queue: [{ bead_id: 'P-1', added_at: 1 }]
+    });
+    const transport = vi.fn().mockRejectedValue({
+      code: 'unknown_type',
+      message: 'Unknown message type: worker-queue-place-bundle'
+    });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown: recompute(start, ['C-1']).order,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => start
+    });
+
+    expect(result).toMatchObject({
+      placed: [],
+      stopped: { id: 'C-1', cause: 'unsupported' }
+    });
+    expect(
+      placementSendNotice(/** @type {any} */ (result.stopped).result)
+    ).toBe('서버가 묶음 배치를 지원하지 않음');
+  });
+
+  test('grows the serial lanes once before a single bundle into a new lane', async () => {
+    const relations = Object.fromEntries([conflict('C-1', 'P-1')]);
+    const recompute = recomputeWith(relations, ['C-1']);
+    const start = startQueue(['C-1'], {
+      queue: [{ bead_id: 'P-1', added_at: 1 }],
+      serial_lane_count: 1,
+      serial_lanes: [{ id: 's1', entries: [{ bead_id: 'S-1', added_at: 1 }] }]
+    });
+    const store = storeStandIn(relations);
+    /** @type {any} */
+    let latest = start;
+    const transport = vi.fn(async (type, payload) => {
+      latest = store(latest, type, payload);
+      return { applied: true, conflict: false, queue: latest };
+    });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown: recompute(start, ['C-1']).order,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => latest
+    });
+
+    expect(result.stopped).toBeNull();
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-queue-set-serial-lane-count',
+        { count: 2, expected_revision: 1 }
+      ],
+      [
+        'worker-queue-place-bundle',
+        {
+          lane: 's2',
+          binds: [],
+          steps: [
+            { bead_id: 'P-1', index: 0 },
+            { bead_id: 'C-1', index: 1 }
+          ],
+          expected_revision: 2
+        }
+      ]
+    ]);
   });
 });

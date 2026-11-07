@@ -666,7 +666,7 @@ describe('전체 배치안', () => {
     await vi.waitFor(() => {
       expect(
         mount.querySelector('.worker-plan__notice')?.textContent?.trim()
-      ).toBe('1건 넣음 — RD-3에서 멈춤: 큐가 계속 바뀌어 멈췄습니다');
+      ).toBe('묶음 1개 넣음 — RD-3에서 멈춤: 큐가 계속 바뀌어 멈췄습니다');
     });
 
     expect(transport).toHaveBeenCalledTimes(7);
@@ -695,7 +695,7 @@ describe('전체 배치안', () => {
     expect(transport).toHaveBeenCalledTimes(1);
     expect(
       mount.querySelector('.worker-plan__notice')?.textContent?.trim()
-    ).toBe('1건 넣음 — RD-3에서 멈춤: 자리가 바뀌었습니다');
+    ).toBe('묶음 1개 넣음 — RD-3에서 멈춤: 자리가 바뀌었습니다');
   });
 });
 
@@ -821,6 +821,7 @@ function uncheck(mount, id) {
 }
 
 describe('전체 배치안 explanations', () => {
+  // P-1 blocks S1-1, so RD-3 leaves it where it is and keeps the warning.
   test('keeps the warning of a row the reader unchecks', () => {
     const { mount } = mountView(
       vi.fn(),
@@ -828,7 +829,8 @@ describe('전체 배치안 explanations', () => {
         placement_relations: Object.fromEntries([
           rel('RD-1', 'S2-1', 'x_first'),
           rel('RD-1', 'RD-3', 'independent'),
-          rel('RD-3', 'P-1', 'conflict')
+          rel('RD-3', 'P-1', 'conflict'),
+          blocks('P-1', 'S1-1', 'c_first')
         ])
       })
     );
@@ -848,7 +850,8 @@ describe('전체 배치안 explanations', () => {
         placement_relations: Object.fromEntries([
           rel('RD-1', 'S2-1', 'x_first'),
           rel('RD-1', 'RD-3', 'independent'),
-          rel('RD-3', 'P-1', 'conflict')
+          rel('RD-3', 'P-1', 'conflict'),
+          blocks('P-1', 'S1-1', 'c_first')
         ])
       })
     );
@@ -1069,7 +1072,7 @@ describe('position and reason wording (UI-lsr4 §3.4)', () => {
     ).toContain('RD-3 — 부딪힘 · jev 독립 0.85 < 0.9 (겹침: tests)');
   });
 
-  test('recommends two fixed-only same-file candidates into one serial lane', async () => {
+  test('recommends two fixed-only same-file candidates into one serial lane in one bundle send', async () => {
     const queue = queueOf({
       serial_lanes: [
         { id: 's1', entries: [] },
@@ -1115,12 +1118,16 @@ describe('position and reason wording (UI-lsr4 §3.4)', () => {
     expect(shown).toEqual(['직렬 1 · #1 — 맨 앞', '직렬 1 · #2 — RD-1 뒤']);
     expect(transport.mock.calls).toEqual([
       [
-        'worker-queue-place',
-        { bead_id: 'RD-1', lane: 's1', index: 0, expected_revision: 5 }
-      ],
-      [
-        'worker-queue-place',
-        { bead_id: 'RD-3', lane: 's1', index: 1, expected_revision: 6 }
+        'worker-queue-place-bundle',
+        {
+          lane: 's1',
+          binds: [],
+          steps: [
+            { bead_id: 'RD-1', index: 0 },
+            { bead_id: 'RD-3', index: 1 }
+          ],
+          expected_revision: 5
+        }
       ]
     ]);
   });
@@ -1264,12 +1271,16 @@ describe('new serial lane (UI-lsr4 §3.3)', () => {
         { count: 3, expected_revision: 5 }
       ],
       [
-        'worker-queue-place',
-        { bead_id: 'RD-1', lane: 's3', index: 0, expected_revision: 6 }
-      ],
-      [
-        'worker-queue-place',
-        { bead_id: 'RD-3', lane: 's3', index: 1, expected_revision: 7 }
+        'worker-queue-place-bundle',
+        {
+          lane: 's3',
+          binds: [],
+          steps: [
+            { bead_id: 'RD-1', index: 0 },
+            { bead_id: 'RD-3', index: 1 }
+          ],
+          expected_revision: 6
+        }
       ]
     ]);
   });
@@ -1323,5 +1334,109 @@ describe('new serial lane (UI-lsr4 §3.3)', () => {
         { bead_id: 'RD-1', lane: 's3', index: 0, expected_revision: 6 }
       ]
     ]);
+  });
+});
+
+describe('conflicting partner bundle (UI-blx2 §3.7)', () => {
+  /**
+   * RD-3 conflicts with P-1, which waits in the parallel lane; s1 is empty,
+   * so the bundle moves P-1 there and puts RD-3 after it.
+   *
+   * @returns {any}
+   */
+  function partnerQueue() {
+    return queueOf({
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        {
+          id: 's2',
+          entries: [
+            { bead_id: 'S2-1', added_at: 1 },
+            { bead_id: 'S2-2', added_at: 2 }
+          ]
+        }
+      ],
+      lane_states: {},
+      bead_titles: { 'P-1': 'P-1 title' },
+      placement_relations: Object.fromEntries([
+        rel('RD-1', 'S2-1', 'x_first'),
+        rel('RD-3', 'P-1', 'conflict')
+      ])
+    });
+  }
+
+  test('sends the bundle of a single [적용] as one worker-queue-place-bundle', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      queue: partnerQueue()
+    });
+    const { mount } = mountView(transport, partnerQueue());
+    click(recommendButton(mount, 'RD-3'));
+
+    click(mount.querySelector('.worker-recommend__apply'));
+    await flush();
+
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-queue-place-bundle',
+        {
+          lane: 's1',
+          binds: [],
+          steps: [
+            { bead_id: 'P-1', index: 0 },
+            { bead_id: 'RD-3', index: 1 }
+          ],
+          expected_revision: 5
+        }
+      ]
+    ]);
+  });
+
+  test('draws the move line in the box under the position line', () => {
+    const { mount } = mountView(vi.fn(), partnerQueue());
+
+    click(recommendButton(mount, 'RD-3'));
+
+    expect(
+      mount.querySelector('.worker-recommend__move')?.textContent?.trim()
+    ).toBe('↪ P-1: 병렬 #1 → 직렬 1 #1 (옮김)');
+  });
+
+  test('draws the move line under the candidate row of the full plan', () => {
+    const { mount } = mountView(vi.fn(), partnerQueue());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(
+      mount
+        .querySelector(
+          '.worker-plan__row[data-bead-id="RD-3"] .worker-plan__move'
+        )
+        ?.textContent?.trim()
+    ).toBe('↪ P-1: 병렬 #1 → 직렬 1 #1 (옮김)');
+  });
+
+  test('draws a dotted 옮김 card in the new lane and keeps the partner card in place', () => {
+    const { mount } = mountView(vi.fn(), partnerQueue());
+
+    click(recommendButton(mount, 'RD-3'));
+
+    const moved = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s1 [data-preview-id="P-1"]')
+    );
+    expect({
+      s1: laneOrder(mount, 's1'),
+      tag: moved.querySelector('.worker-card__preview-tag')?.textContent,
+      title: moved.querySelector('.worker-card__title')?.textContent,
+      own: Boolean(
+        mount.querySelector('[data-area="parallel"] [data-bead-id="P-1"]')
+      )
+    }).toEqual({
+      s1: ['P-1', 'RD-3'],
+      tag: '옮김',
+      title: 'P-1 title',
+      own: true
+    });
   });
 });
