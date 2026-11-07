@@ -1,7 +1,8 @@
 ---
 id: UI-hf8v
 title: 모니터 탭 전체 배치안과 모니터 가시 저장소 jev 판정
-status: accepted
+status: superseded
+superseded_by: UI-ey6v
 date: 2026-10-20
 summary: "모니터 탭은 [전체 배치안]으로 보이는 레포마다 Worker 탭과 같은 배치안 표를 레포 카드로 보이고 적용은 레포 단위로 그 레포 revision에 따로 보내 한 레포의 멈춤이 다른 레포를 멈추지 않으며, 모니터 구독이 있으면 보이는 레포도 jev 쌍 판정 일정에 넣는다; 카드별 [추천 배치]·점선 미리보기는 Worker 탭에만 두고 이슈 상세에는 달지 않는다 — 나머지 조항은 UI-lsr4 그대로다"
 supersedes: ["UI-lsr4"]
