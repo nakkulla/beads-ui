@@ -1271,6 +1271,7 @@
 import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
 import { normalizeCodexChildren } from './codex-children/normalize.js';
@@ -2350,10 +2351,11 @@ export const TERMINAL_ATTEMPT_STATUSES = new Set([
  * lane until it merges-and-cleans or is discarded, so those two are absent
  * here even though they are terminal for membership purposes.
  *
- * This is the ONLY copy. `scheduler.js` `activeLaneLineages` imports it rather
- * than declaring its own, and {@link isTransferableRecord} reads it to decide
- * whether a record still holds a lane: the two answers have to come from one
- * membership or a transfer would free a lane occupancy still believes in.
+ * This is the ONLY copy. {@link attemptHoldsSerialLane} is its one reader for
+ * the question "does this record hold a lane": `scheduler.js`
+ * `activeLaneLineages` and {@link isTransferableRecord} both ask that predicate,
+ * because the two answers have to agree or a transfer would free a lane
+ * occupancy still believes in.
  *
  * @type {Set<string>}
  */
@@ -2366,6 +2368,76 @@ export const LANE_RELEASING_ATTEMPT_STATUSES = new Set([
   // landing closes the blocker this bead is waiting on.
   'waiting'
 ]);
+
+/**
+ * What {@link attemptHoldsSerialLane} needs to know about the whole queue,
+ * computed once per judgment.
+ *
+ * @typedef {Object} LaneHoldFacts
+ * @property {Set<string>} resumed_ids - Attempts some other attempt resumes
+ * from: the records that are not leaves of their lineage.
+ * @property {Map<string, any>} latest_implementation - bead id → that bead's
+ * last implementation record in `q.attempts` INSERTION order.
+ */
+
+/**
+ * @param {{ attempts?: Record<string, any> }} q
+ * @returns {LaneHoldFacts}
+ */
+export function laneHoldFacts(q) {
+  /** @type {Set<string>} */
+  const resumed_ids = new Set();
+  /** @type {Map<string, any>} */
+  const latest_implementation = new Map();
+  for (const attempt of Object.values(q.attempts || {})) {
+    if (!attempt) {
+      continue;
+    }
+    if (typeof attempt.resumed_from === 'string' && attempt.resumed_from) {
+      resumed_ids.add(attempt.resumed_from);
+    }
+    if (isImplementationAttempt(attempt)) {
+      latest_implementation.set(attempt.bead_id, attempt);
+    }
+  }
+  return { resumed_ids, latest_implementation };
+}
+
+/**
+ * Whether one attempt record holds the serial lane it carries (UI-ey6v §3.1) —
+ * the one judgment occupancy and the transfer share.
+ *
+ * A record outside the releasing set holds its lane while it is a leaf, with
+ * one more release: an implementation attempt that has ENDED holds only as its
+ * bead's latest. The history behind a newer attempt is not this bead's current
+ * state, and letting it keep the lane deadlocks a prerequisite parked behind
+ * it. `running`/`paused` are not terminal, so a live session holds whatever
+ * came after it, and a non-implementation record is not judged by this rule.
+ *
+ * "Latest" is the INSERTION order, not the timestamp order the 실행중 seat reads
+ * (`latestImplementationAttempts`): the transfer keeps a suffix of each bead's
+ * history, so the insertion-order latest cannot leave while anything older
+ * stays, and a released record stays released after a partial transfer and a
+ * reload. A timestamp order would resurrect an older failure there when the
+ * clock had gone backwards.
+ *
+ * @param {any} attempt
+ * @param {LaneHoldFacts} facts
+ * @returns {boolean}
+ */
+export function attemptHoldsSerialLane(attempt, facts) {
+  if (
+    LANE_RELEASING_ATTEMPT_STATUSES.has(String(attempt.status)) ||
+    facts.resumed_ids.has(attempt.attempt_id)
+  ) {
+    return false;
+  }
+  return !(
+    isImplementationAttempt(attempt) &&
+    TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status)) &&
+    facts.latest_implementation.get(attempt.bead_id) !== attempt
+  );
+}
 
 /** @type {number} */
 const MIN_SERIAL_LANE_COUNT = 1;
@@ -5825,7 +5897,10 @@ function waitingLaneEntries(q, lane) {
  * bead's CURRENT work, not the abandoned record.
  *
  * Only non-releasing attempts are rebound — a `done`/`stopped`/`discarded`
- * record is history and its lane snapshot stays as it was.
+ * record is history and its lane snapshot stays as it was. An ended attempt
+ * behind a newer one is rebound too even though it holds nothing
+ * ({@link attemptHoldsSerialLane}): this is a snapshot write, not an occupancy
+ * read, so the stamp cannot change what any lane holds.
  *
  * @param {Queue} q
  * @param {string} bead_id
@@ -5853,8 +5928,8 @@ function rebindLineageLane(q, bead_id, lane_id) {
  * The release conditions are merge-and-cleanup completion or discard
  * (worker-lane-scheduling §2), but occupancy is rebuilt from attempt records
  * and {@link LANE_RELEASING_ATTEMPT_STATUSES} is narrower than terminality on
- * purpose: a `failed`/`orphaned` leaf keeps its lane until the lineage lands.
- * Nothing lowered it when the landing itself never terminated that attempt —
+ * purpose: a `failed`/`orphaned` latest leaf keeps its lane until the lineage
+ * lands. Nothing lowered it when the landing itself never terminated that attempt —
  * an externally merged PR, or a [머지] click on a bead whose last attempt
  * failed — so the lane stayed occupied forever, because every later release
  * event fires against work this bead no longer has.
@@ -6422,34 +6497,14 @@ function heldBeads(q) {
 }
 
 /**
- * The attempt ids some other attempt resumes from — the records that are NOT
- * leaves of their lineage.
- *
- * @param {Queue} q
- * @returns {Set<string>}
- */
-function resumedFromIds(q) {
-  /** @type {Set<string>} */
-  const ids = new Set();
-  for (const attempt of Object.values(q.attempts)) {
-    if (typeof attempt.resumed_from === 'string' && attempt.resumed_from) {
-      ids.add(attempt.resumed_from);
-    }
-  }
-  return ids;
-}
-
-/**
  * Whether ONE record may leave `queue.json` — processed-terminal (§7) and not
  * holding a serial lane (§3).
  *
- * The lane half mirrors `scheduler.js` `activeLaneLineages` by construction: a
- * leaf attempt (nothing resumed from it) carrying a serial `serial_lane_id` in
- * a status outside {@link LANE_RELEASING_ATTEMPT_STATUSES} owns that lane's
- * mutex until the lineage lands or is discarded. `dismissed_at` is a UI hide,
- * never a release, so a dismissed `failed` and a `superseded` leaf are
- * processed terminals that still hold a lane — transferring one would let
- * another lineage walk into an occupied lane.
+ * The lane half is {@link attemptHoldsSerialLane}, the same judgment
+ * `scheduler.js` `activeLaneLineages` reads: `dismissed_at` is a UI hide, never
+ * a release, so a dismissed `failed` and a `superseded` leaf that are their
+ * bead's latest are processed terminals that still hold a lane — transferring
+ * one would let another lineage walk into an occupied lane.
  *
  * This predicate says nothing about ORDER. Whether a transferable record may
  * actually go is decided by {@link transferableAttempts}, and the order it
@@ -6460,22 +6515,18 @@ function resumedFromIds(q) {
  * smaller `finished_at` than the failure it followed, would sort the suffix
  * apart from the way the readers read it.
  *
- * @param {Queue} q
  * @param {Attempt} attempt
- * @param {Set<string>} [resumed_ids] - Precomputed {@link resumedFromIds}.
+ * @param {LaneHoldFacts} facts
  * @returns {boolean}
  */
-function isTransferableRecord(q, attempt, resumed_ids = resumedFromIds(q)) {
+function isTransferableRecord(attempt, facts) {
   if (!isProcessedTerminalAttempt(attempt)) {
     return false;
   }
-  if (serialLaneIndex(attempt.serial_lane_id) === null) {
-    return true;
-  }
-  if (LANE_RELEASING_ATTEMPT_STATUSES.has(String(attempt.status))) {
-    return true;
-  }
-  return resumed_ids.has(attempt.attempt_id);
+  return (
+    serialLaneIndex(attempt.serial_lane_id) === null ||
+    !attemptHoldsSerialLane(attempt, facts)
+  );
 }
 
 /**
@@ -6505,7 +6556,7 @@ function isTransferableRecord(q, attempt, resumed_ids = resumedFromIds(q)) {
  */
 export function transferableAttempts(q) {
   const held = heldBeads(q);
-  const resumed_ids = resumedFromIds(q);
+  const facts = laneHoldFacts(q);
   /** @type {Set<string>} */
   const stopped = new Set();
   /** @type {Attempt[]} */
@@ -6514,7 +6565,7 @@ export function transferableAttempts(q) {
     if (held.has(attempt.bead_id) || stopped.has(attempt.bead_id)) {
       continue;
     }
-    if (!isTransferableRecord(q, attempt, resumed_ids)) {
+    if (!isTransferableRecord(attempt, facts)) {
       stopped.add(attempt.bead_id);
       continue;
     }

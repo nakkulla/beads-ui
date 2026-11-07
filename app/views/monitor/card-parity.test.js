@@ -1394,6 +1394,119 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
   });
 });
 
+describe('prerequisite wait card parity between the Worker and Monitor tabs (UI-ey6v §3.3)', () => {
+  /**
+   * L-1 stopped mid-implementation on the open blocker L-2 and still has the
+   * failed attempt it left behind in serial lane s1, the rokit-471 shape. The
+   * lane occupancy comes from the server's real `activeLaneLineages`.
+   *
+   * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
+   */
+  function drawPrerequisiteWait() {
+    extra_rows = [
+      row('L-1', {
+        status: 'in_progress',
+        dependencies: [
+          { issue_id: 'L-1', depends_on_id: 'L-2', type: 'blocks' }
+        ]
+      }),
+      row('L-2')
+    ];
+    const raw = rawQueue();
+    return drawBothTabs(undefined, {
+      serial_lanes: [
+        {
+          id: 's1',
+          entries: [
+            { bead_id: 'L-2', added_at: NOW - 2 * HOUR },
+            { bead_id: 'L-1', added_at: NOW - HOUR }
+          ]
+        }
+      ],
+      attempts: {
+        ...raw.attempts,
+        'att-l1-old': makeAttempt({
+          attempt_id: 'att-l1-old',
+          bead_id: 'L-1',
+          status: 'failed',
+          started_at: NOW - 4 * HOUR,
+          finished_at: NOW - 3 * HOUR,
+          cause: 'session_failed',
+          serial_lane_id: 's1'
+        }),
+        'att-l1-wait': makeAttempt({
+          attempt_id: 'att-l1-wait',
+          bead_id: 'L-1',
+          status: 'waiting',
+          started_at: NOW - 2 * HOUR,
+          finished_at: NOW - HOUR,
+          cause: 'prerequisite_unmet',
+          base_oid: 'a'.repeat(40),
+          head_oid: 'b'.repeat(40),
+          serial_lane_id: 's1',
+          cause_detail: {
+            summary: '선행 L-2가 닫혀야 합니다',
+            blockers: [{ id: 'L-2', rig: null, status: 'open' }],
+            bead_status: 'in_progress'
+          }
+        })
+      }
+    });
+  }
+
+  test('draws the same prerequisite wait card on the worker and monitor tabs', async () => {
+    const { worker, monitor } = await drawPrerequisiteWait();
+
+    const worker_card = /** @type {HTMLElement} */ (
+      cardsByBead(worker).get('L-1')
+    );
+    const monitor_card = /** @type {HTMLElement} */ (
+      cardsByBead(monitor).get('L-1')
+    );
+
+    expect(partsOf(monitor_card)).toEqual(partsOf(worker_card));
+  });
+
+  test('draws the wait badge, the blocker chip and the discard on both tabs', async () => {
+    const { worker, monitor } = await drawPrerequisiteWait();
+
+    const cards = [worker, monitor].map((mount) => {
+      const card = /** @type {HTMLElement} */ (cardsByBead(mount).get('L-1'));
+      return {
+        tile: card.classList.contains('rtile--waiting'),
+        badge: card.querySelector('.wait-verdict summary')?.textContent?.trim(),
+        chip: card.querySelector('.worker-dep--pred')?.textContent?.trim(),
+        discard: card.querySelector('.rtile__discard')?.textContent?.trim(),
+        withdraw: card.querySelector('.rtile__withdraw') !== null,
+        session: card.querySelector('.rtile__resolve') !== null
+      };
+    });
+
+    const expected = {
+      tile: true,
+      badge: '⛓ 선행 대기',
+      chip: '⛓ L-2',
+      discard: '폐기',
+      withdraw: false,
+      session: false
+    };
+    expect(cards).toEqual([expected, expected]);
+  });
+
+  test('draws the bead only as its tile beside the prerequisite row on both tabs', async () => {
+    const { worker, monitor } = await drawPrerequisiteWait();
+
+    const drawn = [worker, monitor].map((mount) => ({
+      rows: mount.querySelectorAll('[data-bead-id="L-1"]').length,
+      tile: mount.querySelector('.rtile[data-bead-id="L-1"]') !== null,
+      head: mount.querySelector('[data-bead-id="L-2"]') !== null
+    }));
+
+    const expected = { rows: 1, tile: true, head: true };
+    expect(drawn).toEqual([expected, expected]);
+  });
+});
+
 describe('placement recommendation parity (UI-izba §4.7)', () => {
   /** @returns {Record<string, any>} */
   function placementPatch() {

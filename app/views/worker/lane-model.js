@@ -689,13 +689,36 @@ export function occupantRowInput(occupant, lane, group) {
  */
 
 /**
+ * The occupant row's badge by the occupying attempt's state (UI-ey6v §3.2). Any
+ * other value says only `점유`: a bead with no evidence of running is never
+ * called 실행 중.
+ *
+ * @type {ReadonlyMap<string, string>}
+ */
+const OCCUPANT_BADGES = new Map([
+  ['running', '실행 중 · 점유'],
+  ['paused', '일시정지 · 점유'],
+  ['failed', '실패 · 점유 유지'],
+  ['orphaned', '실패 · 점유 유지'],
+  ['parked', '확인 필요 · 점유'],
+  ['retry_wait', '재시도 대기 · 점유'],
+  ['provider_hold', '공급자 보류 · 점유']
+]);
+
+/**
  * Status of a bead's last implementation attempt, or null when it has none.
  *
  * 레인 점유는 실행중 레인보다 오래 산다 (`activeLaneLineages`): ✕로 닫힌 실패,
- * supersede된 실패, 이미 완료로 정리된 실패는 실행중 타일에서 빠지지만 lineage는 레인을
- * 계속 붙잡는다. 그 상태를 실행중 레인 목록에서만 읽으면 실패가 '실행 중'이 된다.
+ * supersede된 실패, 이미 완료로 정리된 실패는 실행중 타일에서 빠지지만 그것이 Bead의
+ * 최신 구현 attempt인 동안 lineage는 레인을 계속 붙잡는다. 그 상태를 실행중 레인
+ * 목록에서만 읽으면 실패가 '실행 중'이 된다.
  *
  * head review·repair attempt는 제외한다 — 점유는 구현 attempt의 질문이다.
+ *
+ * 서버의 점유 판정은 삽입 순서를 읽지만 (`attemptHoldsSerialLane`) 스냅샷의 키 순서는
+ * 삽입 순서가 아니다: `trimQueueProjection`이 이관된 옛 기록을 살아 있는 기록 뒤에
+ * 덧붙인다. 그래서 여기서는 시각 순서를 읽는다 — 두 순서는 시계가 되돌아갈 때만
+ * 갈리고, 그때 틀리는 것은 배지 문구뿐이며 점유 자체는 서버 `lane_states` 값이다.
  *
  * @param {Record<string, any>} attempts
  * @param {string} bead_id
@@ -765,8 +788,80 @@ export function runningLaneBeadIds(queue) {
   }
   return new Set(
     activeByBead(objectOf(snapshot.attempts), done_at_by_bead, {
-      session_ownership: sessionOwnershipMap(snapshot.session_ownership)
+      session_ownership: sessionOwnershipMap(snapshot.session_ownership),
+      admission: objectOf(snapshot.admission),
+      bead_blocked_by: objectOf(snapshot.bead_blocked_by)
     }).keys()
+  );
+}
+
+/**
+ * Well-formed blocker ids out of one `{ id }` list; anything else drops out.
+ *
+ * @param {unknown} list
+ * @returns {string[]}
+ */
+function blockerIdsOf(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((/** @type {any} */ blocker) => blocker?.id)
+    .filter(
+      (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+    );
+}
+
+/**
+ * The blockers a `prerequisite_unmet` admission record proved (UI-d3i1 §5.4).
+ *
+ * @param {Record<string, any>} admission
+ * @param {string} bead_id
+ * @returns {string[]}
+ */
+function provenBlockerIds(admission, bead_id) {
+  const record = admission[bead_id];
+  return record && record.reason === 'prerequisite_unmet'
+    ? blockerIdsOf(record.blockers)
+    : [];
+}
+
+/**
+ * Whether a prerequisite wait stands as a 실행 중 tile rather than a waiting row
+ * (UI-ey6v §3.3): the attempt committed work before it stopped, and a blocker is
+ * still open. Every consumer asks this one function, so 레인·`claimed`·동결 선행
+ * 재료 cannot disagree.
+ *
+ * The commit evidence is the `attemptHasPreservedWork` comparison: no `base_oid`
+ * reads as different, no `head_oid` is an old record and stays a row. The open
+ * blockers are what the 4a chip draws ({@link buildLanes} `blockedByFields`): a
+ * `bead_blocked_by` key owns the answer; without one (모름) the frozen list and
+ * the admission's proven list stand as open.
+ *
+ * @param {any} attempt
+ * @param {{ admission?: Record<string, any>, bead_blocked_by?: Record<string, any> }} input
+ * @returns {boolean}
+ */
+function prerequisiteWaitDrawsTile(attempt, input) {
+  const base =
+    typeof attempt.base_oid === 'string' && attempt.base_oid.length > 0
+      ? attempt.base_oid
+      : null;
+  if (
+    typeof attempt.head_oid !== 'string' ||
+    attempt.head_oid.length === 0 ||
+    attempt.head_oid === base
+  ) {
+    return false;
+  }
+  const bead_blocked_by = objectOf(input.bead_blocked_by);
+  if (Object.hasOwn(bead_blocked_by, attempt.bead_id)) {
+    const open = bead_blocked_by[attempt.bead_id];
+    return (
+      Array.isArray(open) &&
+      open.some((id) => typeof id === 'string' && id.length > 0)
+    );
+  }
+  return (
+    blockerIdsOf(attempt.cause_detail?.blockers).length > 0 ||
+    provenBlockerIds(objectOf(input.admission), attempt.bead_id).length > 0
   );
 }
 
@@ -781,7 +876,7 @@ export function runningLaneBeadIds(queue) {
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
- * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any>, bead_timelines?: Record<string, any>, provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any>, admission?: Record<string, any>, runner_catalog?: any, session_ownership?: Map<string, import('../../utils/active-attempts.js').SessionOwnershipMaterial> }} [input]
+ * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any>, bead_timelines?: Record<string, any>, provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any>, admission?: Record<string, any>, bead_blocked_by?: Record<string, any>, runner_catalog?: any, session_ownership?: Map<string, import('../../utils/active-attempts.js').SessionOwnershipMaterial> }} [input]
  * @returns {Map<string, any>}
  */
 export function activeByBead(attempts, done_at_by_bead, input = {}) {
@@ -861,11 +956,13 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
     }
     // 선행을 기다리는 attempt는 실행 흔적이 아니라 큐 순서 정보다 (직렬 레인
     // 순서 고정 스펙 §5.1): 세션은 착수하지 않고 끝났으므로 실행 중 그리드가
-    // 아니라 그 bead의 대기 행(병렬 큐·직렬 레인 entry)이 대표한다. 재료는
-    // `cause` 하나이고 recovery는 세션 해결·폐기 조작을 가진 타일이다.
+    // 아니라 그 bead의 대기 행(병렬 큐·직렬 레인 entry)이 대표한다. recovery는
+    // 세션 해결·폐기 조작을 가진 타일이다. 예외는 구현 도중에 선행을 만난
+    // attempt다 (UI-ey6v §3.3): 선행이 열린 동안 타일로 선다.
     if (
       held.run_state === 'waiting' &&
-      held.attempt?.cause === 'prerequisite_unmet'
+      held.attempt?.cause === 'prerequisite_unmet' &&
+      !prerequisiteWaitDrawsTile(held.attempt, input)
     ) {
       continue;
     }
@@ -3619,25 +3716,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (wait?.recovery) {
         return { ...decorated, wait };
       }
-      const record = admission[bead_id];
       // 선행 대기 admission의 blockers도 같은 재료다 (UI-d3i1 §5.4): attempt가
       // 없는 큐 항목은 `wait`가 없고, 증명된 blocker는 그 record에만 있다.
-      const proven =
-        record &&
-        record.reason === 'prerequisite_unmet' &&
-        Array.isArray(record.blockers)
-          ? record.blockers
-          : [];
-      const frozen = (wait?.blockers || frozen_blockers || [])
-        .map((/** @type {any} */ blocker) => blocker.id)
-        .filter(
-          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
-        );
-      const proven_ids = proven
-        .map((/** @type {any} */ blocker) => blocker.id)
-        .filter(
-          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
-        );
+      const frozen = blockerIdsOf(wait?.blockers || frozen_blockers);
+      const proven_ids = provenBlockerIds(admission, bead_id);
       if (Object.hasOwn(bead_blocked_by, bead_id)) {
         const open = decorated.blocked_by || [];
         // attempt가 없는 admission 행에서는 증명된 blocker가 동결 목록의 자리를
@@ -3681,7 +3763,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     )) {
       if (
         held.run_state === 'waiting' &&
-        held.attempt?.cause === 'prerequisite_unmet'
+        held.attempt?.cause === 'prerequisite_unmet' &&
+        !prerequisiteWaitDrawsTile(held.attempt, { admission, bead_blocked_by })
       ) {
         prerequisite_wait_blockers.set(
           bead_id,
@@ -3715,6 +3798,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       account_catalog: objectOf(workspace.account_catalog),
       runner_catalog,
       admission,
+      bead_blocked_by,
       // The server's session ownership material (UI-68r5 §3.4): the same
       // third seat input its session exclusion and running count read.
       session_ownership
@@ -4142,16 +4226,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
       );
       // 점유가 실행중 레인보다 오래 산다: ✕로 닫힌 실패는 타일에서 빠지지만 레인은 계속
       // 붙잡는다. 레인 목록만 보면 그 실패를 '실행 중'이라고 부르게 되므로, 타일이 없을
-      // 때는 attempt 상태를 직접 읽는다 (Worker `occupantBadge`와 같은 원천).
-      const status = live
-        ? live.run_state
-        : lastImplementationStatus(attempts, bead_id);
-      const badge =
-        status === 'failed' || status === 'orphaned'
-          ? '실패 · 점유 유지'
-          : status === 'paused'
-            ? '일시정지 · 점유'
-            : '실행 중 · 점유';
+      // 때는 attempt 상태를 직접 읽는다. 폐기 중인 Bead의 attempt 상태는 무엇이든 될 수
+      // 있어 폐기를 먼저 본다 (UI-ey6v §3.2).
+      const status =
+        live?.run_state || lastImplementationStatus(attempts, bead_id);
+      const badge = discardProjection(discard_operations, bead_id).operation
+        ? '폐기 중 · 점유'
+        : (OCCUPANT_BADGES.get(status || '') ?? '점유');
       return {
         id: bead_id,
         title: live ? live.title : base(bead_id).title,

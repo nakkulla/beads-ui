@@ -540,6 +540,8 @@ export function placementWarningText(warning) {
       return '⚠ 이 레인 안의 선후 조건을 함께 만족할 수 없어 맨 뒤에 둡니다';
     case 'blocks_reordered':
       return '⚠ blocks 정렬이 자리를 옮겨 선후 조건이 어긋납니다';
+    case 'predecessor_parallel':
+      return `⚠ 선행이라 병렬에 둠 — ${warning.other}와 동시에 돌 수 있음`;
     default:
       return `⚠ ${warning.other}(${placeLaneLabel(
         warning.other_lane || 'parallel'

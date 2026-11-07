@@ -6,7 +6,8 @@ import {
   candidatePlacement,
   placeMenuLanes,
   placementFromFacts,
-  placementTitle
+  placementTitle,
+  placementWarningText
 } from './placement.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
@@ -430,5 +431,17 @@ describe('worker placement', () => {
       { id: 's1', label: '직렬 1', count: 1 },
       { id: 's2', label: '직렬 2', count: 0 }
     ]);
+  });
+});
+
+describe('predecessor placement warning (UI-ey6v §3.4)', () => {
+  test('names the concurrent partner without telling the person to move it', () => {
+    const text = placementWarningText({
+      code: 'predecessor_parallel',
+      other: 'S-1',
+      other_lane: 's1'
+    });
+
+    expect(text).toBe('⚠ 선행이라 병렬에 둠 — S-1와 동시에 돌 수 있음');
   });
 });

@@ -160,6 +160,14 @@ serial 이슈가 실행 중이면 다른 모든 launch 거부)로 얹혀 있다.
   점유는 보관과 무관하게 유지한다. `[보관 해제]`로 기록을 지우면 같은 파생
   판정에서 PR 대기 점유가 다시 생긴다(별도 점유 쓰기 없음). 서버의
   `lane_states.occupied_by`를 읽는 헤더 점유 배지·ghost 행도 이 판정을 따른다.
+- **정정(UI-ey6v).** 점유하는 끝난 attempt는 Bead의 최신 구현 attempt뿐이다.
+  위 "최신 leaf attempt가 실패·orphaned·paused여도"의 실패·orphaned는 그
+  attempt가 `q.attempts` 삽입 순서에서 Bead의 마지막 구현 attempt일 때만 레인을
+  잡는다 — 더 새로운 구현 attempt가 있으면 지난 실패는 레인을 풀어 그 뒤에 선
+  선행 이슈가 막히지 않는다. 살아 있는 `running`·`paused` attempt, `pr_wait`
+  행, 진행 중인 폐기의 점유는 그대로이고, 점유 판정과 이관 판정은
+  `queue-store.js` `attemptHoldsSerialLane` 하나를 함께 읽는다
+  (`2026-11-07-lane-occupancy-latest-attempt-design.md` §3.1).
 - dispatch 후보: 병렬 레인의 모든 ready 항목 + 점유 없는 각 직렬 레인의 head
   (entries[0])가 ready인 경우. 전역 실행 중 attempt 수 < `slots`일 때만
   launch한다. `slots=1`이 전역 순차 override로 계속 동작한다.

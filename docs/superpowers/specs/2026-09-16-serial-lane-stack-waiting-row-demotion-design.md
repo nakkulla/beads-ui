@@ -84,6 +84,8 @@ prerequisiteWaiting(held) :=
 
 `parked`·`retry_wait`·`provider_hold`는 손대지 않는다. Monitor 탭은 같은 `buildLanes`를 쓰므로 함께 바뀐다(ADR 0014). Monitor `status_label`의 `waiting` 갈래(`monitor/index.js:1326-1331`)는 그대로 둔다 — `'선행 대기'` 폴백은 `cause` 미상 타일(fail-closed로 남는 것)의 라벨로 계속 쓰인다. 남는 `waiting` 타일은 세 가지다: `base_moved`, recovery, `cause` 미상.
 
+**정정(UI-ey6v).** 구현 도중이고 선행이 열린 attempt는 타일이다. `waiting/prerequisite_unmet`이면서 `head_oid`가 `base_oid`와 다르면(`base_oid`가 없으면 다른 것으로 본다) 커밋을 남기고 멈춘 것이므로, 열린 선행이 하나라도 있는 동안 위 강등 대신 기존 대기 타일(슬롯 1 `⛓ 선행 대기`, 4a `⛓ <ID>`, foot `폐기`)로 실행 중 그리드에 서고 그 Bead의 대기 행은 그리지 않는다. 열린 선행은 4a 칩과 같은 재료다: `bead_blocked_by`에 키가 있으면 그 값, 없으면 동결 선행과 admission `blockers`의 합집합이다. 선행이 모두 닫히거나 `head_oid`가 없는 옛 기록이면 이 절의 강등이 그대로 적용된다. 이 타일은 `running`이 아니어서 슬롯·실행 중 카운트·좌석은 바뀌지 않는다(`2026-11-07-lane-occupancy-latest-attempt-design.md` §3.3).
+
 ### 5.2 강등된 행의 모양
 
 강등된 bead의 행은 자기 레인·순번·진입 시각을 그대로 지킨다(UI-n99w §2-4, UI-wc67 §3.1). 표시는 전부 기존 규칙이다.

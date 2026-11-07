@@ -1,10 +1,12 @@
 /** @vitest-environment node */
 import { describe, expect, test, vi } from 'vitest';
+import { placementPairKey } from '../../../server/placement/wire.js';
 import {
   placementSendNotice,
   sendPlacement,
   sendPlacementBatch
 } from './apply.js';
+import { computePlacement } from './compute.js';
 
 /**
  * @param {string} id
@@ -560,5 +562,153 @@ describe('serial lane growth (UI-lsr4 §3.3)', () => {
 
     expect(transport).toHaveBeenCalledTimes(1);
     expect(result.status).toBe('moved');
+  });
+});
+
+describe('sendPlacementBatch over the real computation (UI-ey6v §3.4)', () => {
+  /**
+   * A fixed relation between two beads, `first` landing before `second`.
+   *
+   * @param {string} first
+   * @param {string} second
+   * @param {'blocks'|'file'} basis
+   * @returns {[string, Record<string, any>]}
+   */
+  function fixed(first, second, basis) {
+    const [a, b] = first < second ? [first, second] : [second, first];
+    return [
+      placementPairKey(a, b),
+      {
+        a,
+        b,
+        relation:
+          basis === 'file' ? 'conflict' : first === a ? 'a_first' : 'b_first',
+        source: 'fixed',
+        basis,
+        confidence: null,
+        jev_choice: null,
+        judged_at: null
+      }
+    ];
+  }
+
+  /**
+   * Run `[전체 적용]` against a stand-in for the store's `place`: it splices at
+   * the sent index and takes the bead off the candidates, so each recompute reads
+   * the bead as a member the way the next snapshot does.
+   *
+   * @param {string[]} display_order
+   * @param {Array<[string, Record<string, any>]>} pairs
+   * @param {Record<string, any>} [queue_patch]
+   */
+  async function applyAll(display_order, pairs, queue_patch = {}) {
+    const relations = /** @type {Record<string, any>} */ (
+      Object.fromEntries(pairs)
+    );
+    /**
+     * @param {any} queue
+     * @param {string[]} chosen
+     */
+    const recompute = (queue, chosen) =>
+      computePlacement({
+        queue,
+        relations,
+        display_order,
+        chosen
+      });
+    const start = {
+      revision: 1,
+      queue: [],
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'S-1', added_at: 1 }] },
+        { id: 's2', entries: [] }
+      ],
+      lane_states: {},
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      placement_status: Object.fromEntries(
+        display_order.map((id) => [id, { state: 'ready' }])
+      ),
+      ...queue_patch
+    };
+    /** @type {any} */
+    let latest = start;
+    const transport = vi.fn(async (_type, payload) => {
+      const next = structuredClone(latest);
+      const entries =
+        payload.lane === 'parallel'
+          ? next.queue
+          : next.serial_lanes.find(
+              (/** @type {any} */ lane) => lane.id === payload.lane
+            ).entries;
+      entries.splice(payload.index, 0, {
+        bead_id: payload.bead_id,
+        added_at: next.revision
+      });
+      delete next.placement_status[payload.bead_id];
+      next.revision += 1;
+      latest = next;
+      return { applied: true, conflict: false, queue: next };
+    });
+    const shown = recompute(start, display_order).order;
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => latest
+    });
+    return { result, shown, latest };
+  }
+
+  test('finishes a batch apply of a predecessor and its bundle partner without moved', async () => {
+    const { result } = await applyAll(
+      ['C-1', 'C-2'],
+      [fixed('C-1', 'S-1', 'blocks'), fixed('C-1', 'C-2', 'file')]
+    );
+
+    expect(result).toEqual({ placed: ['C-2', 'C-1'], stopped: null });
+  });
+
+  test('finishes a batch apply of a predecessor and a bundle in a serial lane without moved', async () => {
+    const { result, latest } = await applyAll(
+      ['C-1', 'C-2', 'C-3'],
+      [
+        fixed('C-1', 'S-1', 'blocks'),
+        fixed('C-1', 'C-2', 'file'),
+        fixed('C-2', 'C-3', 'file')
+      ]
+    );
+
+    expect(result.stopped).toBeNull();
+    expect({
+      parallel: latest.queue.map((/** @type {any} */ e) => e.bead_id),
+      s2: latest.serial_lanes[1].entries.map(
+        (/** @type {any} */ e) => e.bead_id
+      )
+    }).toEqual({ parallel: ['C-1'], s2: ['C-2', 'C-3'] });
+  });
+
+  test('finishes a batch apply when a chosen candidate blocks the predecessor', async () => {
+    const { result, latest } = await applyAll(
+      ['C-1', 'C-2'],
+      [
+        fixed('C-1', 'S-1', 'blocks'),
+        fixed('C-2', 'C-1', 'blocks'),
+        fixed('C-2', 'S-1', 'file')
+      ]
+    );
+
+    expect(result.stopped).toBeNull();
+    expect({
+      parallel: latest.queue.map((/** @type {any} */ e) => e.bead_id),
+      s1: latest.serial_lanes[0].entries.map(
+        (/** @type {any} */ e) => e.bead_id
+      )
+    }).toEqual({ parallel: ['C-1'], s1: ['S-1', 'C-2'] });
   });
 });

@@ -743,6 +743,178 @@ describe('computePlacement chosen set', () => {
   });
 });
 
+describe('computePlacement predecessors (UI-ey6v §3.4)', () => {
+  /**
+   * A direct `blocks` relation: the candidate must land before the other.
+   *
+   * @param {string} c
+   * @param {string} x
+   */
+  function blocks(c, x) {
+    return rel(c, x, 'c_first', { source: 'fixed', basis: 'blocks' });
+  }
+
+  /**
+   * A same-file relation.
+   *
+   * @param {string} c
+   * @param {string} x
+   */
+  function fileConflict(c, x) {
+    return rel(c, x, 'conflict', { source: 'fixed', basis: 'file' });
+  }
+
+  /** S-1 waits in s1, and R-1 occupies s2. */
+  function busyQueue() {
+    return queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-1']) },
+        { id: 's2', entries: [] }
+      ],
+      lane_states: { s2: { occupied_by: ['R-1'] } },
+      pr_wait: [{ bead_id: 'R-1' }]
+    });
+  }
+
+  test('places a direct blocks predecessor of a waiting member in the parallel lane', () => {
+    const result = plan({ queue: busyQueue(), pairs: [blocks('C-1', 'S-1')] });
+
+    expect(result.by_id['C-1']).toMatchObject({
+      lane: 'parallel',
+      before: null
+    });
+  });
+
+  test('places a direct blocks predecessor of a lane occupant in the parallel lane', () => {
+    const result = plan({ queue: busyQueue(), pairs: [blocks('C-1', 'R-1')] });
+
+    expect(result.by_id['C-1'].lane).toBe('parallel');
+  });
+
+  test('places the predecessor in the parallel lane despite a file conflict in a serial lane', () => {
+    const result = plan({
+      queue: busyQueue(),
+      pairs: [blocks('C-1', 'R-1'), fileConflict('C-1', 'S-1')]
+    });
+
+    expect(result.by_id['C-1'].lane).toBe('parallel');
+  });
+
+  test('warns predecessor_parallel for the file conflict and nothing for the blocks line', () => {
+    const result = plan({
+      queue: busyQueue(),
+      pairs: [blocks('C-1', 'R-1'), fileConflict('C-1', 'S-1')]
+    });
+
+    expect(result.by_id['C-1'].warnings).toEqual([
+      { code: 'predecessor_parallel', other: 'S-1', other_lane: 's1' }
+    ]);
+  });
+
+  test('warns predecessor_parallel for a conflict with a chosen candidate', () => {
+    const result = plan({
+      queue: busyQueue(),
+      chosen: ['C-1', 'C-2'],
+      pairs: [blocks('C-1', 'S-1'), fileConflict('C-1', 'C-2')]
+    });
+
+    expect(result.by_id['C-1'].warnings).toEqual([
+      { code: 'predecessor_parallel', other: 'C-2' }
+    ]);
+  });
+
+  test('keeps a successor of a member in that member lane without a warning', () => {
+    const result = plan({
+      queue: busyQueue(),
+      pairs: [
+        rel('C-1', 'S-1', 'x_first', { source: 'fixed', basis: 'blocks' })
+      ]
+    });
+
+    expect(result.by_id['C-1']).toMatchObject({ lane: 's1', warnings: [] });
+  });
+
+  test('emits no uncovered warning for any blocks line', () => {
+    const queue = queueOf({
+      queue: entries(['P-1', 'P-2']),
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-1']) },
+        { id: 's2', entries: entries(['S-2']) }
+      ]
+    });
+
+    const result = plan({
+      queue,
+      pairs: [
+        // Followed into s1 by covering it.
+        rel('C-1', 'S-1', 'conflict', { source: 'fixed', basis: 'file' }),
+        rel('C-1', 'S-2', 'x_first', { source: 'fixed', basis: 'blocks' }),
+        rel('C-1', 'P-1', 'x_first', { source: 'fixed', basis: 'blocks' }),
+        rel('C-1', 'P-2', 'conflict', { source: 'fixed', basis: 'blocks' })
+      ]
+    });
+
+    expect(result.by_id['C-1'].warnings).toEqual([]);
+  });
+
+  test('takes the predecessor out of its bundle and lanes the rest without it', () => {
+    const result = plan({
+      queue: busyQueue(),
+      display_order: ['C-1', 'C-2', 'C-3'],
+      chosen: ['C-1', 'C-2', 'C-3'],
+      pairs: [
+        blocks('C-1', 'S-1'),
+        fileConflict('C-1', 'C-2'),
+        fileConflict('C-2', 'C-3')
+      ]
+    });
+
+    expect(
+      result.order.map((item) => [item.id, item.lane, item.bundle])
+    ).toEqual([
+      ['C-2', 's3', 0],
+      ['C-3', 's3', 0],
+      ['C-1', 'parallel', 1]
+    ]);
+  });
+
+  test('leaves a lone partner of a predecessor in the parallel lane without a warning', () => {
+    const result = plan({
+      queue: busyQueue(),
+      chosen: ['C-1', 'C-2'],
+      pairs: [blocks('C-1', 'S-1'), fileConflict('C-1', 'C-2')]
+    });
+
+    expect(result.by_id['C-2']).toMatchObject({
+      lane: 'parallel',
+      warnings: []
+    });
+  });
+
+  test('keeps a chosen bundle ordered by blocks in its serial lane', () => {
+    const result = plan({
+      display_order: ['C-2', 'C-1'],
+      chosen: ['C-1', 'C-2'],
+      pairs: [blocks('C-1', 'C-2')]
+    });
+
+    expect(result.order.map((item) => [item.id, item.lane])).toEqual([
+      ['C-1', 's1'],
+      ['C-2', 's1']
+    ]);
+  });
+
+  test('keeps a lone candidate that only blocks an unplaced candidate in a serial lane', () => {
+    const result = plan({
+      chosen: ['C-1'],
+      candidates: ['C-1', 'C-2'],
+      pairs: [blocks('C-1', 'C-2')]
+    });
+
+    expect(result.by_id['C-1'].lane).toBe('s1');
+  });
+});
+
 describe('samePlace', () => {
   test('compares the lane and the entry right before', () => {
     const shown = { lane: /** @type {'s1'} */ ('s1'), before: 'S-1' };
