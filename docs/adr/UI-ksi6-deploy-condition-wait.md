@@ -1,17 +1,30 @@
 ---
-id: UI-ymcx
-title: 머지된 커밋의 선언·스크립트로 도는 Worker 배포
+id: UI-ksi6
+title: 배포 종료 코드 75의 조건 대기와 자동 재확인
 status: accepted
-date: 2026-11-07
-summary: "Worker 배포는 머지된 대상 커밋의 repo-ops [deploy] 선언·스크립트로 실행해 첫 선언도 승인 없이 돌고 [배포 실행]은 복구용으로만 남으며 검증만 이전 base blob을 쓴다 — 부딪히는 상대 직렬 배치안과 나머지 조항은 UI-blx2 그대로다"
-supersedes: ["UI-blx2"]
-spec: docs/superpowers/specs/2026-11-07-worker-deploy-target-commit-design.md
-bead: UI-ymcx
+date: 2026-11-08
+summary: "배포 스크립트가 종료 코드 75로 끝나면 Worker는 수정 Bead 없이 조건 대기로 두고 계약 간격·기한 안에서 실패 기록을 잇는 재시도 후계로 자동 재실행해 성공하면 정리를 끝내며, 같은 사슬의 반복 실패는 기록·알림을 한 번만 남긴다"
+supersedes: ["UI-ymcx"]
+spec: docs/superpowers/specs/2026-11-08-deploy-condition-wait-auto-recheck-design.md
+bead: UI-ksi6
 ---
 
-# 머지된 커밋의 선언·스크립트로 도는 Worker 배포
+# 배포 종료 코드 75의 조건 대기와 자동 재확인
 
 ## Context
+
+이 결정은 `ADR UI-ymcx`를 다시 쓴다. 그 ADR이 UI-btsr에서 승계한 "tip이 실패이면 사람 권한이 있을 때만 tip을 잇는 새 기록 하나를 사전기록한다"·"부팅 재개, `resumeCompletionCleanup`, 관측형 자동 재시도, 첫 정리 실행은 권한이 없고 실패 기록을 지금처럼 채택한다" 조항과 "배포 해소 사다리는 `script_retry` 한 단계" 조항이 이 결정과 소비자(`server/worker/repo-operation-coordinator.js` 배포 사슬, `server/worker/resolution-ladder.js`)를 공유하므로 새 주제가 아니다. 정본 계약(종료 코드 75의 의미·자동 재확인 허가·간격과 기한 값)은 형제 `ADR dotfiles/dotfiles-rnyd9`가 정하고, 이 ADR은 beads-ui 쪽 소비 구현의 결정이다.
+
+- UI-ymcx: 조항 "배포 해소 사다리는 `script_retry` 한 단계"·UI-btsr 승계 "사람 권한은 `retryCleanupLocked` 진입에만"·"tip이 실패이면 사람 권한이 있을 때만 후계" 변경, UI-ksi6 조항 신설, 나머지 유지.
+- 전제: ADR UI-u6ud-2 — 종료 코드 어휘와 자동 실행 허가는 dotfiles 계약이 정의하고 beads-ui는 핀 사본(`generated/contracts/`)으로 소비하며, 낮은 스키마면 표시와 동작을 지금대로 둔다(fail-quiet).
+
+UI-ksi6(2026-11-08): Cortex-n5y·Cortex-io3는 코드 착지까지 마쳤지만 착지 단계의 배포(Cortex `repo-ops/script/deploy`)가 exit 1로 끝났다. 라이브 볼트가 매시 자동 커밋과 갈라졌거나 미커밋 편집이 겹쳐, 스크립트가 사용자 편집을 지키려고 설계대로 거부한 것이다. Worker는 몇 초 간격 두 번의 같은 실패를 코드 결함으로 보고 수정 Bead(Cortex-604)를 만들었고, 그 Bead는 "refuted: 설계대로 거부"로 닫혔다. 이튿날 조건이 저절로 풀려 라이브가 두 착지 SHA를 담았는데도 카드는 6시간 넘게 「실패 · 착지 실패」로 남았다. 사용자 결정(2026-11-08): "기다리면 풀리는" 배포 실패는 스크립트가 신호로 알리고, Worker는 수정 Bead 없이 대기로 두며 스스로 다시 확인해 정리까지 끝낸다.
+
+대안과 기각 사유: stderr 표지 줄 — 로그 문구가 계약이 되어 깨지기 쉽다. 같은 fingerprint 재시도에 시간 간격을 두는 판정 강화 — 스크립트만 아는 차이를 Worker가 추측한다. 다른 경로의 성공만 관측하는 읽기 확인 — 저장소마다 배포 증거 정의가 새로 필요하다. base tip 이동 때만 재실행 — 원격 이동 없이 풀리는 조건을 놓친다.
+
+아래는 `ADR UI-ymcx`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
+
+### ADR UI-ymcx의 맥락 (승계)
 
 이 결정은 `ADR UI-blx2`를 다시 쓴다. 그 ADR이 UI-u6ud-5에서 승계한 "핀된 base SHA의 `[deploy]`" 조항과 UI-btsr에서 승계한 "정책·스크립트는 마지막 성공 배포의 base에서 읽는다" 조항이 이 결정과 소비자(`server/worker/repo-operation-coordinator.js` 배포 실행·정리 재시도)를 공유하므로 새 주제가 아니다. 정본 계약 변경은 형제 `ADR dotfiles/dotfiles-8lp38`이 맡고, 이 ADR은 beads-ui 쪽 소비 구현의 결정이다.
 
@@ -21,7 +34,7 @@ UI-ymcx(2026-11-07): train_bot-q54 PR #16이 배포 스크립트와 `requirement
 
 아래는 `ADR UI-blx2`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-### ADR UI-blx2의 맥락 (승계)
+#### ADR UI-blx2의 맥락 (승계)
 
 이 결정은 `ADR UI-ey6v`를 다시 쓴다. 그 ADR과 소비자(`app/utils/placement/compute.js`의 묶음·레인 선택, `app/utils/placement/apply.js`의 `[적용]`·`[전체 적용]` 전송, `app/views/worker/placement.js` 경고 문구, dotfiles `execution-worker-lane.md` 세션 배치 절차)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 `(신설, UI-ey6v)` 조항 안의 "상대의 배치는 옮기지 않는다" 전제와, 대기·점유 상대(K)를 고칠 수 없는 입력으로 보고 덮지 못한 상대에 `uncovered`를 다는 승계 규칙이다. 선행 병렬 예외와 나머지 조항은 그대로 승계한다.
 
@@ -61,7 +74,7 @@ UI-mcth(2026-10-17): Cortex-cv5(`worker-ineligible`) 세션 레인 attempt의 Co
 
 아래는 UI-i7k9의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-### ADR UI-i7k9의 맥락 (승계)
+#### ADR UI-i7k9의 맥락 (승계)
 
 이 결정은 `ADR UI-izba`와 `ADR UI-lbm5`를 하나로 통합해 다시 쓴다. 두 ADR은 `app/views/worker/placement.js`를 함께 다스린다 — UI-izba는 배치 추천 미리보기를, UI-lbm5는 후보 사실·자격 판정(세션 레인 후보)을. 이 결정이 바꾸는 배치 판정도 같은 소비자를 지나므로 새 주제가 아니다.
 
@@ -72,14 +85,14 @@ UI-i7k9(2026-10-16): UI-izba 배치 추천을 쓰면서 병렬 배치가 거의 
 
 아래는 두 원본의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-### ADR UI-izba의 맥락 (승계)
+#### ADR UI-izba의 맥락 (승계)
 
 - `UI-u6ud-5`는 배포 실행·빌드 소유와 함께 "병렬성 분석 기능은 없다"를 상시 조항으로 들고 있었다. 2026-08의 병렬성 분석(ADR 0009로 제거)은 버튼을 눌러야 분석이 돌았고 느려서 실시간으로 쓸 수 없었다. 0009 본문은 제거 이유를 신뢰·채택 실패로 적었지만, 사용자 증언(2026-10-16)으로 실제 이유는 느림·실시간 불가였다.
 - 지금은 대기열에 넣을 이슈의 병렬·직렬 레인 배치를 사람이 매번 정한다. 결정적 신호(blocks 재정렬, spec scope 겹침 `⧉` 칩)는 이미 있지만 경로로 안 보이는 관계는 없다.
 - jev 실측(workflow 판정 로그 1,787건)은 응답 p50 403ms·p90 940ms였다. 볼 때마다 부르면 지연이 남고, 미리 판정해 캐시하면 누르는 순간 기다리지 않는다.
 - 이 ADR은 `UI-u6ud-5`를 대체한다. 배포·빌드 조항은 바뀌지 않고 아래 Decision에 그대로 다시 적는다. 뒤집는 조항은 "병렬성 분석 기능은 없다" 하나다.
 
-### ADR UI-lbm5의 맥락 (승계)
+#### ADR UI-lbm5의 맥락 (승계)
 
 이 결정은 `ADR UI-1eag`를 다시 쓴다. 그 ADR이 UI-5chz를 거쳐 승계한 UI-gske의 "생존 소유" 조항과 이 결정이 소비자(`scheduler.js`의 `reconcile`·`occupiedBeadIds`·`isDeadAttempt`, 대화형 창의 마커 정산)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 생존 소유의 두 문장이다. 세션 레인 attempt는 pid가 아니라 마커 pane으로 생존을 판정하고, 슬롯을 점유하는 대화형 세션이다. 나머지 조항은 그대로 승계한다.
 
@@ -93,7 +106,7 @@ UI-lbm5(2026-10-16): session-hub로 대화형 Claude 세션을 열 수 있게 �
 
 아래는 `ADR UI-1eag`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-#### ADR UI-1eag의 맥락 (승계)
+##### ADR UI-1eag의 맥락 (승계)
 
 이 결정은 `ADR UI-5chz`를 다시 쓴다. 그 ADR이 승계한 post-merge 잡 원장·`replaces` 승계·CAS 확정과 머지 후 결함 인계 조항이 이 결정과 소비자(`pr-actions.js` 정리, `queue-store.js` 원장, `repo-operation-coordinator.js` 잡 정렬)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 없다. 이 결정은 승계 조항에 실행 위치 규칙 둘을 더한다.
 
@@ -104,7 +117,7 @@ UI-1eag(2026-10-16): dotfiles-gqsok(PR #607)의 정리가 `post_merge_job_target
 
 아래는 `ADR UI-5chz`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-#### ADR UI-5chz의 맥락 (승계)
+##### ADR UI-5chz의 맥락 (승계)
 
 이 결정은 `ADR UI-gske`를 다시 쓴다. 그 ADR과 소비자(`notify.js` 대화 알림 집합, `scheduler.js` reconcile의 메시지 처리 뒤 알림)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 UI-gske가 UI-nuwy에서 승계한 둘이다: "대화 알림은 `🙋 확인 필요`·`❓ 답 대기`·`↪ Worker가 이어감`·`🙋 사람 인수` 넷"과 "같은 멈춤의 재알림은 `❓`가 맡는다". 나머지 조항은 모두 승계한다.
 
@@ -117,7 +130,7 @@ UI-5chz(2026-10-16): Worker 대화 세션(Cortex-ppg 충돌 해소 대화)이 �
 
 아래는 `ADR UI-gske`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-#### ADR UI-gske의 맥락 (승계)
+##### ADR UI-gske의 맥락 (승계)
 
 이 결정은 `ADR UI-btsr`를 다시 쓴다. 그 ADR과 소비자(`resolve-session.js` 실패 대화 자동 기동기, `completion-intent.js` 알림 대상 `NEEDS_HUMAN_NOTIFY_CLASSES`, `wait-judgment.js` 조치 필요 불변식, 「저장소 작업」 서랍의 Bead 없는 행 대화, 설정 창 스위치 문구)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 둘이다: "정리 중단은 알리지 않는다"와 "머지 전 검증 보류·정리 중단·외부 작업 완료는 자동 기동하지 않는다". 나머지 조항은 모두 승계한다.
 
@@ -129,7 +142,7 @@ UI-gske(2026-10-13): base-sync 보관 해소 세션이 사람 판단이 필요�
 
 아래는 `ADR UI-btsr`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-#### ADR UI-btsr의 맥락 (승계)
+##### ADR UI-btsr의 맥락 (승계)
 
 이 결정은 `ADR UI-c74x`(세션이 선언한 자격 증명 대기의 같은 세션 대화)를 다시 쓴다. 그 ADR과 소비자(`pr-actions.js` 정리 재시도 권한, `pr-wait-row.js` 술어·버튼, `scheduler.js` 인계 실행, `notify.js`·`completion-intent.js` 다음 행동 문구)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 UI-18a5에서 승계한 "실패의 머지 후 정리는 정리 재시도 = `[워커로 이어가기]`"라는 출구 이름 하나이고, 나머지 조항은 모두 승계한다. 버튼 이름의 정본은 dotfiles 계약 `needs_human_reentry.actions.cleanup_retry.label`이고(`ADR UI-u6ud-2`), 그 이름을 `[정리 재시도]`로 바꾸는 계약 쪽 결정은 형제 dotfiles-md59z가 `ADR dotfiles/dotfiles-imy71`을 대체하며 기록했다. 이 ADR은 그 소비자 쪽 결정이다.
 
@@ -139,7 +152,7 @@ UI-btsr(2026-10-12): dotfiles-3hflz의 머지 후 자동 배포가 볼트 접근
 
 아래는 `ADR UI-c74x`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-#### ADR UI-c74x의 맥락 (승계)
+##### ADR UI-c74x의 맥락 (승계)
 
 이 결정은 `ADR UI-k467`(외부 PR 사람 처리 필요 실패 행과 알림 클래스)을 다시 쓴다. 그 ADR과 소비자(`session-stall.js`의 대화 대상 술어, `direction-inquiry.js` 진입 블록 사본과 다이제스트 테스트, scheduler의 대화 기동, `wait-judgment.js`의 복구 대기 판정, `notify.js`의 대화 알림)를 공유하므로 새 주제가 아니다. 바꾸는 조항은 UI-k467이 UI-jbl1(UI-nuwy)에서 승계한 둘 — "대화 대상 복구 사유는 `authority`·`no_progress`"와 "`credential`은 판정이 바뀌지 않는 공급자 보류 경로" — 이고 나머지는 모두 승계한다. 어느 멈춤이 사람 대화를 여는지와 진입 블록 바이트의 정본은 dotfiles `ADR dotfiles/dotfiles-imy71`(사람 멈춤 세 종류)이고 이 ADR은 그 소비자 쪽 결정이다.
 
@@ -152,7 +165,7 @@ UI-c74x(2026-10-10): dotfiles-ubf0o의 Worker 세션이 NAS의 Codex 로그인 �
 
 아래는 `ADR UI-k467`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-#### ADR UI-k467의 맥락 (승계)
+##### ADR UI-k467의 맥락 (승계)
 
 이 결정은 `ADR UI-9w5l`(버튼으로 풀리는 조치 필요와 대기 사유 무알림)을 다시 쓴다. 그 ADR과 소비자(`completion-intent.js` 알림 분류, `notify.js` 다음 행동 문구, `tileResolveFields` 행 종류, `pr-wait-row.js` `[머지]` 술어)를 공유하므로 새 주제가 아니다. 바꾸는 조항은 UI-jbl1에서 승계한 닫힌 목록 둘 — 남는 `needs_human` 알림 클래스와 `[세션에서 이어가기]`가 서는 실패 행 — 이고 나머지는 모두 승계한다. 외부 PR의 머지 권한·대상 `[verify]`·`foreign_handoff`·머지 뒤 마감 조항의 정본은 dotfiles `ADR dotfiles/dotfiles-8k8yf`이고 이 ADR은 그 소비자 쪽 결정이다.
 
@@ -165,7 +178,7 @@ UI-k467(2026-10-11): dotfiles-s6vnr은 rig가 없는 research-repo-template의 P
 
 아래는 `ADR UI-9w5l`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-#### ADR UI-9w5l의 맥락 (승계)
+##### ADR UI-9w5l의 맥락 (승계)
 
 이 결정은 `ADR UI-jbl1`(실패 대화 자동 기동과 확인 필요 알림 통일)을 다시 쓴다. 그 ADR과 소비자(`tileResolveFields`, `handleWorkerResolveInSession`의 resolve-in-session 경로, 대기 판정 어휘와 `notify.js`)를 공유하므로 새 주제가 아니다. 뒤집는 조항은 둘이고 나머지는 모두 승계한다: (a) UI-u6ud-7 승계 대기 어휘의 "선행이 `blocked`·`deferred`·worker-ineligible이면 `action_required`"는 "선행 대기는 늘 `normal`"이 된다. (b) "살아 있는 대화형 세션이 종류와 상관없이 하나라도 있으면 `[세션에서 이어가기]`가 서지 않는다"에 "Discord 링크가 없으면 서고 클릭은 그 대화 창을 앞으로 부른다"는 예외가 붙는다.
 
@@ -175,7 +188,7 @@ UI-9w5l(2026-10-11): dotfiles-8k8yf가 일부러 세션 작업 dotfiles-kb9oi(wo
 
 아래는 `ADR UI-jbl1`의 Context 승계분이다. 원본은 `docs/adr/history/`에 있다.
 
-#### ADR UI-jbl1의 맥락 (승계)
+##### ADR UI-jbl1의 맥락 (승계)
 
 이 결정은 `ADR UI-qbgj`(대화형 세션 이어가기 짝과 외부 작업 바로 실행)·`ADR UI-18a5-2`(대화형 레코드 원천과 정산 세 종류)·`ADR UI-18a5-3`(머지 게이트 보류와 실패 행 출구)를 다시 쓴다. 세 ADR과 소비자(`notify.js` 알림 제목, 대화 레코드 키를 읽는 reconcile·투영·UI, 실패 행 출구, 진입 블록 사본과 다이제스트)를 공유하므로 새 주제가 아니다. 대화와 수리의 경계, 공용 스위치, 진입 블록의 읽기 전용 진단, Bead 없는 저장소 작업 실패 대화의 정본은 dotfiles `ADR dotfiles/dotfiles-ids1k`(실패 대화 세션 자동 기동 계약)이고 이 ADR은 그 소비자 쪽 결정이다.
 
@@ -194,6 +207,19 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 ## Decision
 
+**`[deploy]` 스크립트가 종료 코드 75로 끝나면 그 기록은 수정 Bead 없는 조건 대기(`condition_wait`)다. Worker는 계약이 정한 간격·기한 안에서 실패 tip을 잇는 `retry_of` 후계를 사람 재시도와 같은 사슬로 자동 실행하고, 성공하면 남은 정리를 끝낸다. 같은 사슬의 반복 75는 기록·알림을 다시 남기지 않는다.** 이 결정이 바꾼 조항은 `(변경, UI-ksi6)`, 새 조항은 `(신설, UI-ksi6)`로 표시했다. 그 밖의 조항은 `ADR UI-ymcx`에서 그대로 승계한다.
+
+- (신설, UI-ksi6) 75는 `[deploy]`에만 적용한다. 그 기록의 실패 코드는 `condition_wait`이고, 요약은 스크립트 출력의 마지막 비어 있지 않은 줄(거부 사유)이다. `[verify]`·잡의 75와, 조건 대기를 정의하지 않은 낮은 스키마 핀 아래의 75는 지금처럼 `script_failed`다.
+- (신설, UI-ksi6) `condition_wait`는 코드 결함 증명이 아니다. 복구 분류는 계약의 대기(`disposition: wait`, `reason: condition`)이고 수정 Bead 인계는 일어나지 않는다. 75가 아닌 실패의 분류·인계는 그대로다.
+- (신설, UI-ksi6) 자동 재확인 권한은 tip이 실패이고 실패 코드가 `condition_wait`이며, 지금이 tip의 종료 시각 + 간격 이후이고 사슬 머리(`retry_of`를 거슬러 처음 만나는 `condition_wait`)의 종료 시각 + 기한 이전일 때만 생긴다. 간격·기한은 계약 키 `condition_wait_deploy_recheck`가 소유한다(현재 기본 30분·24시간). 판정은 저장소 작업 잠금 안에서 내구 기록만으로 하므로 재시작·겹친 tick·사람 클릭이 같은 tip에 와도 후계는 하나다. 새 상태 기계나 Bead metadata 사본은 없다.
+- (신설, UI-ksi6) 진입은 사람 재시도와 같은 정산 진입이다: quick_fix 착지의 `repo_operations` 커서 정산, PR 정리(완료 의도가 모는 행 포함)의 정리 재실행. 자동 재확인의 배포 대상은 대기 tip의 대상 SHA라 base가 움직여도 같은 사슬을 잇는다. 검사는 기존 scheduler 주기에 얹고 새 타이머는 없다. Bead 없는 수동 `[배포 실행]` 행은 분류·표시만 바뀌고 자동 재확인은 없다.
+- (신설, UI-ksi6) 후계가 다시 75면 새 tip이 되어 다음 시각을 기다리고, 다른 실패면 일반 분류를 탄다. 기한이 지나면 자동 재확인을 멈추고 행은 사람 판단(`action_required`)이 된다. 사람 `[정리 재시도]`는 기한 안팎과 무관하게 즉시 후계를 만든다. `descendant_success_covers_ancestor_rows`는 그대로다.
+- (신설, UI-ksi6) 기한 전의 사슬은 종단 실패가 아니다. 사슬의 첫 75에 대기 알림과 대기 댓글을 한 번 남기고(사슬 머리 기록의 내구 표시), 실패 기록 댓글·실패 알림·실패 대화 자동 기동은 기한이 지날 때 사슬당 한 번이다.
+
+아래는 `ADR UI-ymcx`의 Decision 승계분이다.
+
+### ADR UI-ymcx에서 승계하는 조항
+
 **Worker 배포는 머지된 대상 커밋의 `repo-ops/config.toml` `[deploy]` 선언과 그 커밋의 스크립트로 실행한다. 분류는 `normal` 하나이고, 대상이 선언하면 이전 base와 상관없이 승인 없이 돌며, 대상에 선언이 없으면 할 일이 없다. 검증(`kind: 'verify'`)은 이전 base 정책과 실체화를 그대로 쓴다. `[배포 실행]`은 복구 진입점으로만 남는다.** 이 결정이 바꾼 조항은 `(변경, UI-ymcx)`, 새 조항은 `(신설, UI-ymcx)`로 표시했다. 그 밖의 조항은 `ADR UI-blx2`에서 그대로 승계한다.
 
 - (신설, UI-ymcx) 새 배포 기록의 정책 SHA(`effective_base_sha` 자리)는 대상 SHA이고, 대상은 사전기록부터 기록에 핀된다. 기록을 다시 읽는 곳(재시도·재실행 `launchQueued`, 재시작 뒤 정확 조회 `findExactDeployOperation`, 부팅 재개)은 그 기록의 선언을 다시 찾는다. 그래서 스크립트나 제한 시간을 바꾼 머지도 재시작 뒤 같은 선언을 찾고, 다른 작업 뒤에서 기다린 기록은 원격이 움직여도 자기 대상에서 돈다.
@@ -202,7 +228,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 아래는 `ADR UI-blx2`의 Decision 승계분이다.
 
-### ADR UI-blx2에서 승계하는 조항
+#### ADR UI-blx2에서 승계하는 조항
 
 **배치안은 후보와 부딪힘·순서 관계(`conflict`·`c_first`·`x_first`, `blocks` 제외)가 있는 대기 상대를 후보와 같은 직렬 레인으로 옮기고, 직렬 레인 없이 실행·PR 대기 중인 상대는 비어 있는 그 레인의 점유로 하나만 묶는다. 한 묶음의 묶기·옮기기·후보 넣기는 `worker-queue-place-bundle`(HTTP `POST /api/worker/queue/place-bundle`) 한 CAS로 확정하고, `uncovered`는 옮기거나 묶을 수 없는 상대에만 이유와 함께 단다. 선행 병렬 예외 등 나머지 조항은 UI-ey6v 그대로다.** 이 결정이 바꾼 조항은 `(변경, UI-blx2)`, 새 조항은 `(신설, UI-blx2)`로 표시했다. 그 밖의 `(변경, …)`·`(신설, …)` 표시는 그 조항이 생긴 이력이다.
 
@@ -232,7 +258,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 **배치 추천의 고정 조건은 직접 blocks 하나이고, 선언 scope 겹침은 jev 질문의 재료로만 싣는다. jev의 `conflict`는 해소 세션으로도 풀기 어려운 겹침에만 낸다.** 그 밖의 조항은 두 원본에서 그대로 승계한다. 바뀐 조항은 `(변경, UI-i7k9)`, 새 조항은 `(신설, UI-i7k9)`로 표시했다.
 
-### ADR UI-izba에서 승계하는 조항
+#### ADR UI-izba에서 승계하는 조항
 
 대기열 배치 추천
 
@@ -256,14 +282,14 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 - reconciler, 외부 deployment job, candidate release 디렉터리와 `current` symlink, runtime marker 읽기·쓰기, self-restart helper는 없고 retirement checker가 그 토큰의 재등장을 막는다.
 - 스크립트의 restart marker 파일은 진단용 흔적이지 성공 판정의 authority가 아니다. 성공 조건은 health identity readback이다.
 - 수동 `[배포 실행]` 버튼이 저장소 작업 화면에 있다.
-- 배포 해소 사다리는 `script_retry` 한 단계이고 토글 없이 상시다.
+- (변경, UI-ksi6) 배포 해소 사다리는 `script_retry` 한 단계이고 토글 없이 상시다. 단 `[deploy]` 종료 코드 75로 끝난 `condition_wait` 기록에는 `script_retry`를 걸지 않고 건너뛴 근거만 남기며, 그 tip은 위 UI-ksi6 조항의 계약 한도 안 자동 후계로만 다시 돈다.
 - `app/main.bundle.js`·`app/main.bundle.js.map`은 tracked가 아니다(`.gitignore`). `package.json#files`의 두 항목은 유지해 `prepack`이 만든 파일이 패키지에 들어간다.
 - 빌드 소유자는 배포(`repo-ops/script/deploy`), 머지 직전 `repo-ops/script/verify`(`npm run tsc` 뒤·`npm test` 앞에 `npm run build`), 패키징(`prepack`) 셋이다.
 - 정적 모드 서버(`server/app.js`)는 시작 시 번들이 없으면 `npm run build`와 `BDUI_FRONTEND_MODE=live`를 안내하는 오류로 종료한다. 자동 빌드도 live 모드로의 조용한 fallback도 없고, on-demand 번들은 live 모드에만 있다.
 - 어떤 테스트도 커밋된 번들의 존재에 의존하지 않고 정적 모드 응답은 임시 `app_dir`의 번들 fixture로 검증한다.
 - 번들 커밋이 남은 PR·워크트리는 base 동기화의 modify/delete 충돌에서 삭제를 채택한다. 별도 마이그레이션 스크립트는 없다.
 
-### ADR UI-lbm5에서 승계하는 조항
+#### ADR UI-lbm5에서 승계하는 조항
 
 **`worker-ineligible`과 `exec_lane=session`인 `session-preferred` 이슈는 Worker 대기열에서 세션 레인으로 실행된다. 같은 admission·공유 슬롯·직렬 레인을 거쳐 Worker attempt로 기록되고(fast_track·worker 출처), headless와 같은 계정·가드 훅 env로 Worker 표지 없이 session-hub 대화형 창으로 열린다. 생존은 `isDeadAttempt`가 마커 pane 관측으로 판정하고(관측 실패는 생존), 결과는 종단 결과 줄로 판정하되 성공과 Worker 자동 대기(blocks·external·base_moved)만 headless와 같은 판정을 타고 창을 닫으며, 사람 답이 필요한 줄(파킹·실패·환경·recovery 대기)은 정산 없이 창·claim·슬롯을 유지한 답 대기로 남고 그 상태에서 창이 사라지면 그 줄로 정산한다(변경, UI-mcth). 결과 줄 없는 창 소멸은 클릭 전용 `session_exited` 실패이고, 재개는 세션 레인 attempt의 `↻ 이어하기`이며, 일시정지는 없다.**
 
@@ -296,7 +322,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 아래는 `ADR UI-1eag`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-lbm5)`로 표시했다.
 
-#### ADR UI-1eag에서 승계하는 조항
+##### ADR UI-1eag에서 승계하는 조항
 
 **Worker 직접 push 착지도 영수증에 결속된 착지 head에서 `repo_operations`와 `branch_cleanup` 사이의 같은 머지 후 잡 단계를 지난다. 공유 배포 워크트리 HEAD가 행의 머지 SHA를 엄격히 앞서고 base에 포함되면, 행은 자기 잡 이름을 그 HEAD 트리에서 해석해 같은 blob 또는 그 키를 대체 선언한 수정본을 기존 예약·승계로 HEAD에서 실행하고, 그 밖은 `post_merge_job_target_moved`로 멈춘다.**
 
@@ -322,7 +348,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 아래는 `ADR UI-5chz`의 Decision 승계분이다. 이 결정과 어긋나는 조항은 없다.
 
-#### ADR UI-5chz에서 승계하는 조항
+##### ADR UI-5chz에서 승계하는 조항
 
 **대화 세션(문의·해결·외부 재개)의 답 대기는 beads-ui가 Discord 채널로 보내지 않는다. 같은 멈춤의 재알림은 dotfiles 브리지의 세션 스레드가 맡고, 대화 알림은 `🙋 확인 필요`·`↪ Worker가 이어감`·`🙋 사람 인수` 셋이다. 세션 레인의 답 대기도 같은 원칙이다.**
 
@@ -337,7 +363,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 아래는 `ADR UI-gske`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-5chz)`로 표시했다.
 
-#### ADR UI-gske에서 승계하는 조항
+##### ADR UI-gske에서 승계하는 조항
 
 **base-sync 보관 해소 세션이 등록한 Bead 없는 사람 필요 행을 받아 「저장소 작업」 서랍과 확인 필요 칩에 올리고, 같은 세션을 `--resume`으로 잇고, 보관 ref가 사라지면 닫는다. 정리 단계 완료 종단·완료 의도 없는 정리 중단·머지 전 검증 실패 보류를 공용 스위치 아래 실패당 한 번 자동으로 열고, 정리 실패도 「🙋 확인 필요 · 정리 중단」으로 알린다.**
 
@@ -367,13 +393,13 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 아래는 `ADR UI-btsr`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-gske)`로 표시했다.
 
-#### ADR UI-btsr에서 승계하는 조항
+##### ADR UI-btsr에서 승계하는 조항
 
 **머지 후 정리가 멈춘 행의 Worker 출구 이름은 `[정리 재시도]`다. 사람 재시도(클릭·인계)는 저장소 작업 단계의 실패한 배포·검증을 `retry_of`로 이은 새 실행으로 한 번 다시 돌리고, 끝난 기록은 다시 열지 않는다.**
 
-- 사람 권한은 `retryCleanupLocked`로 들어오는 진입에만 있다: 정리 실패 행 `[정리 재시도]` 클릭, 이미 머지된 PR의 `[머지]` 클릭, 실패 대화 `인계`. 부팅 재개, `resumeCompletionCleanup`, 관측형 자동 재시도, 첫 정리 실행은 권한이 없고 실패 기록을 지금처럼 채택한다.
+- (변경, UI-ksi6) 사람 권한은 `retryCleanupLocked`로 들어오는 진입에만 있다: 정리 실패 행 `[정리 재시도]` 클릭, 이미 머지된 PR의 `[머지]` 클릭, 실패 대화 `인계`. 부팅 재개, `resumeCompletionCleanup`, 관측형 자동 재시도, 첫 정리 실행은 권한이 없고 실패 기록을 지금처럼 채택한다. 예외는 하나다: tip이 `condition_wait`이고 계약 기한 안에서 재확인 시각이 됐으면 이 진입들도 사람 권한 없이 그 tip의 후계 하나를 사전기록한다.
 - 새 실행의 식별자는 자동 식별 입력에 `retry_of: <잇는 실패 기록>`을 더해 해시하고, 그 키는 있을 때만 더한다(`manual_run_id`와 같은 방식). 그래서 기존 자동·검증·수동 식별자는 바이트 그대로다. 배포와 정리 경로 검증에 똑같이 적용하고, 머지 전 게이트 검증과 외부 대상 검증은 바꾸지 않는다.
-- 한 식별자의 현재 상태는 `retry_of` 체인의 끝(tip)이다. tip이 진행 중이거나 성공이면 채택하고, 실패이면 사람 권한이 있을 때만 tip을 잇는 새 기록 하나를 사전기록한다. 대체된 실패에는 `superseded_by`를 쓴다. 정확 조회·부팅 재개·결과 대기는 tip을 읽는다.
+- (변경, UI-ksi6) 한 식별자의 현재 상태는 `retry_of` 체인의 끝(tip)이다. tip이 진행 중이거나 성공이면 채택하고, 실패이면 사람 권한이 있을 때, 또는 tip이 `condition_wait`이고 계약 기한 안에서 재확인 시각이 됐을 때만 tip을 잇는 새 기록 하나를 사전기록한다. 대체된 실패에는 `superseded_by`를 쓴다. 정확 조회·부팅 재개·결과 대기는 tip을 읽는다.
 - 나머지 입력은 자동 실행 그대로다. 대상은 정리가 막 fetch한 base tip이고 (변경, UI-ymcx) 정책·스크립트는 그 대상 커밋에서 읽는다. 새 기록은 `script_retry` 한 단계를 새로 갖는다. 재시도 후계는 배포 작업 트리 HEAD가 이미 대상을 담고 있어도 스크립트를 실제로 실행한다(수동 실행과 같은 자리의 예외).
 - 후계가 사전기록되면 실행 전에 그 Bead의 정리 실패 기록을 지우고 커서를 `repo_operations`에 둔다. 실행 중 재시작돼도 부팅 재개가 행을 잇고, 재실패는 새 시각의 새 정리 실패다. 인계 한 번 규칙의 판정은 바꾸지 않는다.
 - 같은 클릭을 가리키는 문구(요청 중 배지, 「저장소 작업」 서랍 버튼, 진행 표시, 알림·댓글 `다음:` 문장, 사용자 조작 기록, 거부 토스트)도 `[정리 재시도]`다. 확인 필요 대화 인계, 외부 작업 완료 fork, 폐기 실패 재시도의 `[워커로 이어가기]`와 실행 타일 `↻ 정리 재시도`는 그대로다.
@@ -382,7 +408,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 아래는 `ADR UI-c74x`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-btsr)`로 표시했다.
 
-#### ADR UI-c74x에서 승계하는 조항
+##### ADR UI-c74x에서 승계하는 조항
 
 **세션이 선언한 복구 대기 중 `authority`·`no_progress`·`credential`은 같은 세션 대화 대상이다. 공급자 보류로 바뀌지 않은 세션 선언 `provider`는 대상이 아니다.**
 
@@ -394,7 +420,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 아래는 `ADR UI-k467`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-c74x)`로 표시했다.
 
-#### ADR UI-k467에서 승계하는 조항
+##### ADR UI-k467에서 승계하는 조항
 
 **외부 PR 사람 처리 필요(`foreign_handoff`)는 남는 `needs_human` 알림 클래스이자 `[세션에서 이어가기]`가 서는 실패 행이다. 그 행은 `[머지]`로 풀리지 않고 `[워커로 이어가기]`를 그리지 않으며, `[세션에서 이어가기]`만 출구다.**
 
@@ -405,7 +431,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 아래는 `ADR UI-9w5l`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-k467)`로 표시했다.
 
-#### ADR UI-9w5l에서 승계하는 조항
+##### ADR UI-9w5l에서 승계하는 조항
 
 **조치 필요(`action_required`)는 beads-ui 버튼으로 해결할 수 있는 대기 사유에만 서고, 버튼 이름을 담은 해결 문장을 함께 싣는다. 선행 대기는 늘 `normal`이고 대기 사유 판정은 Discord로 알리지 않는다. 살아 있는 대화가 있는 행은 Discord 링크가 없을 때만 `[세션에서 이어가기]`를 그리고, 그 클릭은 새로 띄우지 않고 그 대화 창을 앞으로 부른다.**
 
@@ -427,7 +453,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 아래는 `ADR UI-jbl1`의 Decision 승계분이다. 위 결정과 어긋나는 조항은 `(변경, UI-9w5l)`로 표시했다.
 
-#### ADR UI-jbl1에서 승계하는 조항
+##### ADR UI-jbl1에서 승계하는 조항
 
 **실패 종단(배포·post-merge 잡 실패, 머지 게이트 보류, 외부 PR 사람 처리 필요(변경, UI-k467), 폐기 실패, 수동 배포 실패)은 공용 대화 자동 기동 스위치가 켜지면 클릭과 같은 해결 세션을 분리 창에 실패당 한 번 자동으로 연다. 알림은 「🙋 확인 필요 · <클래스>」 하나로 통일하고 「🚨 사람 필요」를 없앤다. 수동 배포 실패는 「저장소 작업」 서랍의 `[세션에서 이어가기]`와 작업 식별자 키의 대화 레코드를 가지며 인계는 그 작업 1회 재실행이다.**
 
@@ -461,7 +487,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 
 - 아래 승계 조항의 자동 게이트 `worker_direction_inquiry.enabled`는 공용 대화 자동 기동 스위치(저장값, 없으면 그 config.toml 값)로 읽는다. "Bead당 하나"인 대화 수는 "행(Bead 또는 저장소 작업)당 하나"로 읽는다.
 
-#### ADR UI-qbgj에서 승계하는 조항
+##### ADR UI-qbgj에서 승계하는 조항
 
 **대기 중인 Slurm 등록 잡의 대기 사유·앞 대기 수·예상 시작·파티션 배정·호스트 실제 여유는 같은 관찰 ssh 안의 읽기 전용 조회로 얻는 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다. 외부 잡을 바꾸는 유일한 경로는 사람이 확인한 `▶ 바로 실행`이고, 단일 대기 Slurm 잡을 `sjob takeover` 한 명령으로 같은 호스트 로컬 실행(워크플로면 `profiles/server-local`로 하위 단계까지)으로 옮긴 뒤 같은 대기 레코드에서 `sjob_local` 잡으로 제자리 교체한다.**
 
@@ -480,7 +506,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 - 자원 기본값의 비율은 타이밍 설정 표가 아닌 별도 서버 전역 설정(`server/external-wait-settings.js`)이 소유한다.
 - 관찰 자체는 여전히 잡을 바꾸지 않는다. "실행 방식(작은 머리 잡 + 하위 잡)은 바꾸지 않는다"는 기본 실행 방식에 관한 것으로 유지하고, 바로 실행만 프로젝트의 `profiles/server-local`로 워크플로 전체를 정한 코어 안에서 로컬로 돌린다.
 
-#### ADR UI-18a5에서 승계하는 조항
+##### ADR UI-18a5에서 승계하는 조항
 
 
 **beads-ui가 여는 대화형 세션(확인 필요·실패·외부 작업 완료)은 모두 `[세션에서 이어가기]` 하나로 열고 `인계`·`인수`·`보류`로 끝난다. `[워커로 이어가기]`는 대화 없이 Worker가 잇는 짝이고(머지 후 정리가 멈춘 행에서는 `[정리 재시도]`, 변경 UI-btsr), `인계`는 그 행의 Worker 출구를 사용자 답의 권한으로 많아야 한 번 실행하며 머지 게이트 위조 판정은 예외다. 외부 작업 완료 대화가 인수·인계 없이 끝나면 대기 키를 다시 써 완료 행으로 되돌린다. 자동 기동은 사람 판단 멈춤과, 공용 스위치가 켜졌을 때의 실패 종단에 둔다(변경, UI-jbl1).**
@@ -513,11 +539,11 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 - 대화형 세션 배지·대기 팝업·시각 줄의 종류 이름(`재개`·`해결`·`문의` 세션)은 `대화 세션` 하나다. fork·같은 세션·새 세션 구분은 툴팁에만 둔다.
 - 배포 시점에 살아 있던 `conversation` 없는 해결·외부 재개 레코드는 옛 규칙으로 정산한다.
 
-#### ADR UI-ny0h-2에서 승계하는 조항
+##### ADR UI-ny0h-2에서 승계하는 조항
 
 **미분류 실패 재시도 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정이 정하고 두 값은 서로 독립이다.** 사다리 칸 길이는 `env_retry_delays_seconds`, base_moved 재개 지연은 `base_moved_retry_seconds`(`server/timing-settings.js`)이다. 값은 지연을 계산하는 순간에 읽고, 바뀐 값은 다음 예약부터 적용되며 기록된 `next_at`은 다시 쓰지 않는다.
 
-##### ADR UI-q15q에서 승계하는 조항
+###### ADR UI-q15q에서 승계하는 조항
 
 **외부 작업의 하위 잡은 등록 잡과 같은 사용자·같은 `WorkDir`에서 등록 잡 시작 이후 제출된 Slurm
 잡이다. 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하고 로그는 읽지 않는다. 하위 잡은 표시
@@ -539,7 +565,7 @@ UI-jbl1(2026-10-06): oliveyoung 수동 배포(`[배포 실행]`) 실패를 진�
 - 카드 슬롯 3은 등록 잡을 이름으로 보이고 하위 잡 요약 줄을 붙이며, 슬롯 1 배지는 등록 잡만
   센다. 표시 형식은 `docs/superpowers/specs/2026-10-02-external-job-spawned-slurm-jobs-design.md` §3.5·§3.6과 카드 문법 스펙 §5.1 정정(UI-q15q)이 소유한다.
 
-##### ADR UI-nuwy에서 승계하는 조항
+###### ADR UI-nuwy에서 승계하는 조항
 
 **사람이 필요한 멈춤은 같은 Worker 세션을 fork 없이 tmux 대화형으로 열어 해결한다. 대화 턴
 종료는 답 대기(`action_required`)이고, 첫 줄 `인계 ·`를 관측하면 창 소멸을 확인한 뒤 같은
@@ -663,7 +689,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
 - schema 2에서 이유 없는 `repair`(코드 결함 아님)·`reconcile` 작업 복구도 수정 Bead가 없으면
   사람 판단 행(`action_required`)으로 남는다.
 
-###### ADR UI-ri8n에서 승계하는 조항
+####### ADR UI-ri8n에서 승계하는 조항
 
 단계 관측
 
@@ -706,7 +732,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
 - 바꾸지 않는 것: 자동 기동 게이트·브리지 이벤트, 레코드의 생존·종료 규칙(ADR UI-nuwy-2),
   대기 어휘 4종과 대표 사유 순서, 슬롯 6의 `폐기`.
 
-####### ADR UI-l48z에서 승계한 조항
+######## ADR UI-l48z에서 승계한 조항
 
 
 세션 소유 외부 대기 Bead는 `external_wait` 키 하나를 술어로 후보 레인이 아니라
@@ -756,7 +782,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
   fork·fresh와 `/stop`의 서버 동작, 관찰기 주기·hold 예산·admission의 `external_wait`
   거절은 바꾸지 않는다.
 
-####### ADR UI-u6ud-8에서 승계한 조항
+######## ADR UI-u6ud-8에서 승계한 조항
 
 레인과 카드 조립
 
@@ -820,7 +846,7 @@ attempt를 같은 세션·기록 실행 설정으로 재개한다. `인수 ·`�
   `ui-order-snapshot`)와 그 서버 저장소는 없다.
 - 공유 코드는 `app/views/stepper.js`와 `app/views/exec-format.js`에 둔다.
 
-####### ADR UI-u6ud-7에서 승계한 조항
+######## ADR UI-u6ud-7에서 승계한 조항
 
 대기 어휘
 
@@ -1000,7 +1026,7 @@ base_moved와 재개 종류
   세션의 엄격한 재개만 허용한다.
 - provider 보존은 실행 위치 선택이며 승인·review 권한을 부여하지 않는다.
 
-###### 대안과 기각 사유
+####### 대안과 기각 사유
 
 - **fork 문의 세션이 끝까지 가는 현행.** 가드·관측이 없고 문의 금지 때문에 끝내지 못한다
   (`beads-sw1` 실측).
@@ -1033,7 +1059,7 @@ UI-l48z에서 승계한 대안:
 - **카드에 `⧉ 재개 명령` 버튼을 더한다.** 조작이 하나 늘고 세션 칩 복사와 Discord 명령
   줄로 같은 일이 된다.
 
-#### ADR UI-18a5-2에서 승계하는 조항
+##### ADR UI-18a5-2에서 승계하는 조항
 
 이력 기록
 
@@ -1067,7 +1093,7 @@ in_progress 선점
 - 해제는 기존 종료 경로(`releaseBeadClaim`)와 `reconcile` 정산이 한다. `worker_claim=written`인 채 terminal이 된 attempt(같은 Bead의 살아 있는 attempt 없음·`pr_url` 없음·Bead가 여전히 `in_progress`)는 정산에서 `open`으로 되돌리고 `released`를 기록한다. 기록 없는 Bead를 스캔하는 별도 재조정은 없다.
 - readiness 술어(route·spec_review·impl_entry·의존성)는 status와 무관하게 판정한다.
 
-#### ADR UI-18a5-3에서 승계하는 조항
+##### ADR UI-18a5-3에서 승계하는 조항
 
 영수증 신선도
 
@@ -1111,6 +1137,14 @@ verify 보류
 
 ## Consequences
 
+- 되돌리기 어렵다: `server/worker/repo-operation-coordinator.js`(75 판정·자동 후계·대기 알림/댓글), `resolution-ladder.js`(재확인 일정), `operation-recovery.js`, `quickfix-landing.js`·`scheduler.js`·`pr-actions.js`·`completion-intent.js`(재확인 진입), `wait-judgment.js`와 카드 표시, 핀 사본 소비자(`repo-operation-policy.js`·`work-recovery-policy.js`), 그리고 75를 쓰기 시작한 저장소 스크립트(Cortex)가 함께 움직인다.
+- 맥락 없이는 놀랍다: "자동 재실행은 `script_retry` 1회뿐"이던 불변식에, 계약 한도 안에서 사람 없이 실패 tip의 후계를 만드는 예외가 하나 생긴다.
+- 얻는 것: 설계대로 거부한 배포가 수정 Bead를 만들지 않고, 조건이 풀리면 사람 클릭 없이 정리·닫기까지 끝난다.
+- 감수하는 것: 75를 잘못 쓰는 스크립트는 기한까지 대기로 보이며 실패 알림이 늦어진다. 재확인은 스크립트를 실제로 다시 돌리므로 재실행 안전은 스크립트 소유자의 의무다.
+- 폐기: UI-ymcx가 승계한 "자동 진입은 실패 tip을 언제나 채택한다"는 전제 — 위 `(변경, UI-ksi6)`·`(신설, UI-ksi6)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
+
+### ADR UI-ymcx의 결과 (승계)
+
 - 되돌리기 어렵다: `server/worker/repo-ops-resolver.js` 판정, `repo-operation-coordinator.js`의 배포 실행·기록 정책 SHA, 정리의 정확 조회, `queue-store.js` 레코드 형태, `server/cli/`, `app/utils/failure-sentences.js`, `AGENTS.md` 운영 문단, `app/protocol.md`, 각 레포 배포 스크립트의 가정이 함께 움직인다.
 - 맥락 없이는 놀랍다: 같은 저장소 작업 기록인데 검증은 이전 base blob을, 배포는 대상 blob을 실행한다.
 - 얻는 것: 스크립트를 고치는 PR이 자기 수정으로 배포되고, 첫 `[deploy]` 선언이 사람 없이 돈다.
@@ -1118,7 +1152,7 @@ verify 보류
 - 기각한 대안: 이전 base 규칙 유지와 스크립트 변경 PR 전용 승인 — 사람이 매번 켜야 하고 train_bot 사고가 그대로 남는다. 검증도 대상 blob으로 — 머지 전 코드가 자기 검증을 고칠 수 있어 머지 안전망이 무너진다.
 - 폐기: UI-blx2가 승계한 "핀된 base SHA의 `[deploy]`", "정책·스크립트는 마지막 성공 배포의 base에서 읽는다", 수동 배포 기각 사유의 이전 base 근거, UI-s582의 "수동 경로만의 유일한 이전 base 예외" — 위 `(변경, UI-ymcx)`·`(신설, UI-ymcx)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
 
-### ADR UI-blx2의 결과 (승계)
+#### ADR UI-blx2의 결과 (승계)
 
 - 되돌리기 어렵다: beads-ui `app/utils/placement/compute.js` 분류·레인 선택, `app/utils/placement/apply.js` 묶음 전송, `app/views/worker/placement.js` 표·문구, `server/worker/queue-store.js` `placeBundle`과 `place-bundle` WS·HTTP 조작, dotfiles `execution-worker-lane.md` 세션 배치 절차가 함께 움직인다. 한쪽만 되돌리면 같은 쌍이 경로마다 다른 자리에 놓인다.
 - 맥락 없이는 놀랍다: 한 후보의 배치가 이미 대기 중인 다른 이슈의 자리를 바꾸고, 실행 중인 이슈를 직렬 레인 점유자로 만든다.
@@ -1127,7 +1161,7 @@ verify 보류
 - 기각한 대안: 상대를 고정 입력으로 두고 경고만 — 사람이 매번 옮겨야 한다. 실행 중 상대가 있으면 후보를 보류 행으로 — 사람이 다시 열어야 한다. 단계마다 따로 전송 — 단계 사이에 후보나 상대가 먼저 시작하는 틈과 일부만 적용된 묶음이 생긴다. 기존 `place`로 묶기 — `pr_wait`·`done` 항목을 지운다.
 - 폐기: UI-ey6v가 승계한 "K는 고정 입력, 덮지 못하면 `uncovered`" 규칙과 "상대의 배치는 옮기지 않는다" 전제 — 위 `(변경, UI-blx2)`·`(신설, UI-blx2)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
 
-### ADR UI-ey6v의 결과 (승계)
+#### ADR UI-ey6v의 결과 (승계)
 
 - 되돌리기 어렵다: beads-ui `app/utils/placement/compute.js`의 묶음·레인 선택과 적용 순서, `app/utils/placement/apply.js`의 `[전체 적용]` 재계산(선행 후보가 적용된 뒤에도 남은 후보 자리가 같아야 한다), `app/views/worker/placement.js`의 `predecessor_parallel` 문구, dotfiles `execution-worker-lane.md` 세션 배치 절차가 함께 움직인다. 한쪽만 되돌리면 같은 선행이 경로마다 다른 줄에 놓인다.
 - 맥락 없이는 놀랍다: 같은 파일을 고치는 쌍은 직렬이 기본인데 선행 이슈만 그 상대와 동시에 돌 수 있다.
@@ -1136,7 +1170,7 @@ verify 보류
 - 기각한 대안: 겹침이 있으면 직렬 유지 — 최신 attempt가 실패인 상대 뒤에서 선행이 다시 막힌다. 선행 후보의 묶음 전체를 병렬로 — `[전체 적용]` 재계산에서 근거가 사라져 `moved`로 멈춘다. `queue-place.js`가 레인을 고쳐 넣기 — 레인을 판단하지 않는다는 조항과 수동 배치를 막지 않는다는 조항을 깬다.
 - 폐기: 없음. UI-hf8v의 조항은 모두 승계하고 부딪힘 쌍 배치에 선행 예외 하나를 더했다.
 
-### ADR UI-hf8v의 결과 (승계)
+#### ADR UI-hf8v의 결과 (승계)
 
 - 되돌리기 어렵다: `server/ws/worker-handlers.js` `placementFor`의 observe 판정과 `setPlacementMonitorObserver`, `server/ws/monitor-handlers.js`의 모니터 가시성 등록, 공유 표 함수(`app/views/worker/placement.js` `fullPlacementPlan`·`placementPlanTable`)와 모니터 패널(`app/views/monitor/placement-panel.js`·`index.js`), 카드 동일성 테스트(`card-parity.test.js`), parity 스펙 §9 표가 함께 움직인다.
 - 맥락 없이는 놀랍다: 이전 ADR이 모니터에는 달지 않는다고 적었고, 모니터가 열려 있기만 해도 Worker 탭을 열지 않은 저장소의 jev 호출이 생긴다.
@@ -1145,7 +1179,7 @@ verify 보류
 - 기각한 대안: Worker 탭에서만 배치 — 저장소마다 탭을 오가야 한다. 저장소를 섞은 단일 배치 — revision이 저장소마다 따로라 항상 충돌한다. 패널을 열 때만 판정 — 누르는 순간 기다린다. 차례마다 다시 계산한 자리로 전송 — 사람이 본 적 없는 자리가 들어간다.
 - 폐기: UI-lsr4의 "모니터 탭과 이슈 상세에는 달지 않는다" 중 모니터 탭 부분 — 위 `(변경, UI-hf8v)`·`(신설, UI-hf8v)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
 
-### ADR UI-lsr4의 결과 (승계)
+#### ADR UI-lsr4의 결과 (승계)
 
 - 되돌리기 어렵다: 질문 버전이 바뀌어 저장된 쌍 캐시 전체가 다시 채워지고, `server/placement/relations.js`·`question.js`·`wire.js`·`service.js`의 `basis: 'file'`·`overlap_guard` 뜻, `server/ws/worker-handlers.js` `lane_states`의 `hidden` 항목, `app/utils/placement/compute.js`의 레인 선택·필요 레인 수와 `apply.js`의 전송 순서, 화면 문구(`app/views/worker/placement.js`)가 함께 움직인다.
 - 맥락 없이는 놀랍다: 하루 전 ADR이 병렬을 기본으로 만들었는데 같은 파일 쌍을 다시 고정 직렬로 돌렸고, 배치 추천이 큐 설정인 직렬 레인 수를 스스로 늘린다.
@@ -1154,7 +1188,7 @@ verify 보류
 - 기각한 대안: 폴더 겹침도 고정 직렬(UI-izba 규칙) — 폴더 하나로 모든 쌍이 한 레인에 몰린다. 같은 파일도 jev에 맡기기 — 72쌍 중 71쌍이 독립으로 나와 해소 세션 비용을 그대로 진다. 스케줄러가 실행 시점에 부딪힘 상대를 기다리기 — UI-i7k9에서 비채택한 그대로다. 빈 레인 자동 축소 — 지금 동작을 바꾸지 않는다.
 - 폐기: UI-mcth가 UI-i7k9에서 승계한 "고정 조건은 직접 blocks 하나이고 선언 scope 겹침은 어떤 경우에도 고정 관계를 만들지 않는다"와 "jev의 `conflict`는 해소 세션으로도 풀기 어려운 겹침에만 내고 같은 파일 겹침은 `independent`, 겹침만으로 `conflict`를 고르지 않는다" — 위 `(변경, UI-lsr4)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
 
-### ADR UI-mcth의 결과 (승계)
+#### ADR UI-mcth의 결과 (승계)
 
 - 되돌리기 어렵다: `scheduler.js`의 세션 레인 메시지 처리(`processSessionLaneMessage`)와 창 소멸 정산(`goneSessionLaneVerdict`), `session-lane.js`의 보류 갈래·답 대기 판정, 카드의 답 대기 렌더(`app/views/worker/lanes.js`), 세션 레인 결과 줄을 쓰는 dotfiles 계약 쪽 기대가 함께 움직인다.
 - 맥락 없이는 놀랍다: "세션 레인 결과는 headless와 같은 판정"을 읽은 사람은 실패·recovery 줄 뒤에도 attempt가 `running`이고 창이 남는 것을 예상하지 못한다.
@@ -1162,7 +1196,7 @@ verify 보류
 - 감수하는 것: 답을 기다리는 동안 세션 레인이 Worker 슬롯을 계속 점유하므로 다음 행이 기다린다(사용자 결정 2026-10-17).
 - 폐기: UI-i7k9의 "결과는 종단 결과 줄로 headless와 같은 판정을 탄다" — 위 `(변경, UI-mcth)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
 
-### ADR UI-i7k9의 결과 (승계)
+#### ADR UI-i7k9의 결과 (승계)
 
 - 되돌리기 어렵다: 질문 버전이 바뀌어 저장된 쌍 캐시 전체가 다시 채워지고, `server/placement/relations.js`·`material.js`·`question.js`·`service.js`, wire `basis`·`overlap`의 뜻, 화면 근거 줄(`app/views/worker/placement.js`)이 함께 움직인다.
 - 맥락 없이는 놀랍다: 선언 scope가 겹치는데도 병렬로 배치될 수 있다. 머지 충돌을 충돌 해소 세션이 푼다는 전제 없이는 위험해 보인다.
@@ -1171,14 +1205,14 @@ verify 보류
 - 기각한 대안: 스케줄러가 실행 시점에 부딪힘 상대를 기다리는 기능 — jev를 탭과 무관하게 돌려야 하고, 보이지 않는 대기·기아 처리 비용에 비해 아끼는 해소 세션이 적다. 같은 파일 정확 일치만 고정으로 남기기 — 해소 세션이 같은 파일 겹침도 대부분 푼다.
 - 폐기: UI-izba의 "선언 scope 겹침은 충돌이고(같은 spec·plan 출처 예외) jev에 묻지 않는다" — 위 `(변경, UI-i7k9)` 조항으로 대체했다. 그 밖에 폐기한 조항은 없다.
 
-### ADR UI-izba의 결과 (승계)
+#### ADR UI-izba의 결과 (승계)
 
 - 되돌리려면 worker-queue wire 필드 `placement_relations`·`placement_status`, `server/placement/`의 jev 클라이언트·쌍 캐시·일정, `app/utils/placement/` 자리 계산, 카드 슬롯 6의 `[추천 배치]`와 카드 문법 스펙 §5.1 행, parity §9 행, 저장된 쌍 캐시, jev 키 소비가 함께 움직인다.
 - 이슈 제목·본문·spec 절이 jev(외부 API)로 나간다. 그 대가로 사람이 매번 배치를 정하는 부담이 준다. 키가 없는 서버에서는 `[추천 배치]`가 꺼진 채 수동 배치만 남는다.
 - 기각한 대안: dotfiles workflow 판정 pack을 새로 두고 서버가 `workflow-judge.py`를 spawn — pack·호출 상한·로그가 Bead 하나 기준이라 쌍 질문과 맞지 않고 호출마다 Python을 띄운다. 버튼을 눌러야 분석 — 0009를 지운 이유를 되풀이한다. 볼 때 jev 호출 — 0.4~0.9초 지연이 남는다. `[적용]`이 blocks 의존까지 쓰기 — 잘못된 판정이 구현 진입을 막는다.
 - 배포·빌드 조항은 `UI-u6ud-5`에서 바뀌지 않았다. 그 밖에 폐기한 조항은 없다.
 
-### ADR UI-lbm5의 결과 (승계)
+#### ADR UI-lbm5의 결과 (승계)
 
 - 되돌리기 어렵다: admission 세 곳(`admission.js`·`attach.js`·`scheduler.js`), 스케줄러 디스패치 분기와 `isDeadAttempt`·대화 정산·일시정지 거절, tmux 기동기의 계정 래퍼·env 전달, attempt 모양(`queue-store.js`), 카드 슬롯(`lanes.js`·`lane-model.js`·모니터), dotfiles continuation 판정이 함께 움직인다.
 - 맥락 없이는 놀랍다: "worker-ineligible인데 Worker 대기열에서 돈다"는 설명 없이는 모순으로 읽힌다.
@@ -1186,7 +1220,7 @@ verify 보류
 - 감수하는 것: 세션 레인 창이 Worker 슬롯을 차지하는 동안 다음 Worker 행은 기다린다. 허브 claude 창의 권한 확인 대화상자가 답 대기로 드러나는지는 실측되지 않았다.
 - `ADR UI-1eag`의 조항은 생존 소유의 두 문장을 바꾼 것 말고는 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-1eag의 결과 (승계)
+##### ADR UI-1eag의 결과 (승계)
 
 - 되돌리기 어렵다: durable `quickfix_landing.cursor` 어휘(`queue-store.js`), PR·quick_fix 두 정산의 공유 러너(`post-merge-job.js`, `pr-actions.js`, `quickfix-landing.js`), 코디네이터 잡 target 판정(`repo-operation-coordinator.js` `eligibleJobHead`), 사람 재개 권한 배선(`attach.js`·`scheduler.js`), dotfiles 정본 조항과 체커가 함께 움직인다.
 - 맥락 없이는 놀랍다: 원래 행이 자기 머지 SHA가 아닌 트리에서 잡을 실행하고, 다른 Bead가 착지시킨 수정본도 실행한다.
@@ -1194,7 +1228,7 @@ verify 보류
 - 감수하는 것: 세션 소유 quick_fix 착지의 잡은 여전히 뒤 Worker 행이 처리한다. quick_fix 행에는 실패 대화 `인계` 출구가 없어 `job_retry`는 사람의 재개 클릭에서만 온다.
 - `ADR UI-5chz`의 조항은 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-5chz의 결과 (승계)
+##### ADR UI-5chz의 결과 (승계)
 
 - 되돌리기 어렵다: `notify.js` 대화 알림 집합, `scheduler.js` reconcile의 메시지 처리 뒤 알림, 재알림을 맡는 쪽(dotfiles 브리지와 훅 직접 전송)에 대한 의존이 함께 움직인다. 진행 중인 UI-lbm5의 세션 레인 알림 설계도 따라 바뀐다.
 - 맥락 없이는 놀랍다: 사람이 답해야 하는 상태인데 `#beads-worker` 채널에는 아무 알림이 없다. 첫 멈춤의 `🙋 확인 필요`만 채널로 나간다.
@@ -1203,7 +1237,7 @@ verify 보류
 - UI-lbm5와 이 ADR은 모두 `ADR UI-gske`를 supersede한다. 나중에 착지하는 쪽이 먼저 착지한 쪽의 ADR을 승계하고 supersede 대상을 그 ADR로 고친다.
 - `ADR UI-gske`의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-gske의 결과 (승계)
+##### ADR UI-gske의 결과 (승계)
 
 - 되돌리기 어렵다: 새 HTTP 입력과 dotfiles `session-inquiry` CLI, `queue.session_inquiries` 저장 형태, 대기 판정 사유, 서랍·칩 화면과 Worker·모니터 동일성 테스트, 대화 레코드 행 키와 정산, `NEEDS_HUMAN_NOTIFY_CLASSES`와 클릭 세션 클래스 표, 보류 분기 기동, 완료 의도의 `hold_launches`·`cleanup_failed`의 1회 표시, 설정 창 문구가 함께 움직인다.
 - 맥락 없이는 놀랍다: beads-ui가 자기가 띄우지 않은 외부 세션을 같은 id로 다시 연다. 조용하던 정리 실패가 알림과 대화를 만든다.
@@ -1211,7 +1245,7 @@ verify 보류
 - 감수하는 것: 다른 호스트에서 돈 세션은 로컬 레지스트리에 없어 dead로 보이고 `--resume`이 실패한다(버튼이 남는다). 닫힌 행은 보존 기한 없이 큐에 남는다. 정리 실패마다 알림이 하나씩 늘어난다.
 - `ADR UI-btsr`의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-btsr의 결과 (승계)
+##### ADR UI-btsr의 결과 (승계)
 
 - 되돌리기 어렵다: `queue.json` `repo_operations`에 저장되는 식별자 해시와 `retry_of`·`superseded_by` 체인, 체인을 읽는 정확 조회·부팅 재개·결과 대기, `pr-actions.js` 정리 재시도 권한, 두 탭의 공유 카드 렌더러와 동일성 테스트, 알림·댓글 `다음:` 문장, 카드 문법 정본, dotfiles 계약 라벨(형제 dotfiles-md59z)이 함께 움직인다.
 - 맥락 없이는 놀랍다: 같은 날 Accepted인 UI-c74x가 이 행을 `[워커로 이어가기]`로 불렀다(짝 문법). "종단 기록은 다시 열지 않는다"와 "사람이 누르면 다시 돈다"는 함께 읽혀야 한다.
@@ -1219,7 +1253,7 @@ verify 보류
 - 감수하는 것: 짝 문법의 균일함(머지 후 정리 행만 다른 이름)과 체인을 읽는 조회 경로의 복잡도.
 - `ADR UI-c74x`의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-c74x의 결과 (승계)
+##### ADR UI-c74x의 결과 (승계)
 
 - 되돌리기 어렵다: dotfiles 계약 멈춤 종류·진입 블록 바이트·dotfiles 다이제스트 테스트와 beads-ui `session-stall.js` 술어·`direction-inquiry.js` 진입 블록 사본·세 다이제스트 테스트가 함께 움직인다.
 - 맥락 없이는 놀랍다: UI-jbl1은 `credential`을 공급자 보류 경로로 보냈지만, 세션이 선언한 자격 증명 대기는 그 경로에 닿지 않는다.
@@ -1228,7 +1262,7 @@ verify 보류
 - 대안과 기각 사유: 대기 알림만 보내기 — 대기 사유 판정은 Discord로 알리지 않는다는 승계 조항을 뒤집고 사용자가 매번 버튼으로 세션을 연다. 지금처럼 두기 — 무알림 정지가 남는다.
 - `ADR UI-k467`의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-k467의 결과 (승계)
+##### ADR UI-k467의 결과 (승계)
 
 - 되돌리기 어렵다: `completion-intent.js` 분류·알림 맵, `notify.js` 다음 행동 문구, `tile-resolve.js` 행 종류, `pr-wait-row.js` `[머지]` 술어, `failure-sentences.js`, dotfiles `failure_classes.foreign_handoff.notify_label` 복사본이 함께 움직인다.
 - 맥락 없이는 놀랍다: 같은 PR 대기의 `needs_human` 행인데 머지 게이트 보류와 달리 `[머지]`가 출구가 아니다.
@@ -1237,7 +1271,7 @@ verify 보류
 - 대안과 기각 사유: 해소 attempt로 충돌을 자동 해결 — 대상 저장소의 쓰기 소유가 rig Worker에 없다. `[머지]`로 풀기 — 계약이 사람에게 넘기라고 정한 경우를 클릭 하나로 우회한다.
 - `ADR UI-9w5l`의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-9w5l의 결과 (승계)
+##### ADR UI-9w5l의 결과 (승계)
 
 - 되돌리기 어렵다: wait-judgment 생산자, `notify.js`, `tileResolveFields`, resolve-in-session 핸들러, 팝업·상세 렌더러, 모니터, 범례, protocol `WaitReason`·`VerdictCode`가 함께 움직인다.
 - 맥락 없이는 놀랍다: 새 대기 사유를 더하는 사람은 "사람이 봐야 함"을 `action_required`로 올리고 알림을 기대하기 쉽다. 이 저장소에서 `action_required`는 "beads-ui 버튼으로 풀 수 있다"는 뜻이고, 버튼 없는 기다림은 `normal`이다.
@@ -1246,7 +1280,7 @@ verify 보류
 - 대안과 기각 사유: 선행 대기 알림만 끄기 — 다른 버튼 없는 조치 필요가 남는다. sjob에 holding 해제 명령 추가 — dotfiles 계약 변경이 필요하고 해결 세션이 operator recovery로 같은 일을 한다. beads-ui 안 답 입력칸 — 사용자가 범위 밖으로 정했다.
 - `ADR UI-jbl1`의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-jbl1의 결과 (승계)
+##### ADR UI-jbl1의 결과 (승계)
 
 - 되돌리기 어렵다: 알림 제목을 읽는 사람의 Discord 필터와 습관, 대화 레코드 키를 읽는 reconcile·투영·UI(`queue-store.js`·`scheduler.js`·`worker-handlers.js`·`repo-ops-timeline.js`·`tile-resolve.js`), 종단 자리(`completion-intent.js`·`discard-coordinator.js`·`repo-operation-coordinator.js`), `notify.js`, 서버 전역 `conversation-settings.js`와 전역 탭 섹션, 진입 블록 사본과 다이제스트가 함께 움직인다.
 - 맥락 없이는 놀랍다: 나흘 전 결정(UI-18a5, 자동 기동은 멈춤에만)과 ADR 0005의 자동 수리 폐기를 뒤집는 것처럼 보인다. 자동 대화는 첫 답 전 읽기 전용 진단과 질문만 한다.
@@ -1255,7 +1289,7 @@ verify 보류
 - 대안과 기각 사유: 실패는 클릭으로만 여는 현행 — 멈춤과 경험이 갈린다. 실패별 스위치 — 사용자가 전체 공통 하나로 정했다. 설정을 `workflow_session_defaults`에 둠 — 계약 등록 키가 아니고 dotfiles 스킬이 읽지 않는다.
 - UI-qbgj·UI-18a5-2·UI-18a5-3의 조항은 위에 표시한 변경 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-qbgj의 결과 (승계)
+##### ADR UI-qbgj의 결과 (승계)
 
 - 되돌리기 어렵다: dotfiles `docs/contracts/external-wait.md`·`workflow-state.yaml`, `sjob takeover`·실행 기록, 연구 템플릿 `profiles/server-local`·`run_workflow.sh`와 그것을 받은 프로젝트, `adapters/slurm.js`·`adapters/sjob-local.js`·`takeover.js`·`observer.js`·`service.js`, `attach.js` 투영, 카드·상세 렌더러, 완료 프롬프트가 함께 움직인다.
 - 맥락 없이는 놀랍다: 관찰 전용이던 외부 대기에 잡을 취소·실행하는 조작이 하나 있고, head job만이 아니라 워크플로 전체를 옮긴다.
@@ -1264,7 +1298,7 @@ verify 보류
 - 대안과 기각 사유: wrapper 역파싱으로 원 명령 복원 — `--wrapper`·확장자 없는 실행을 놓친다. beads-ui가 `scancel`·`sjob run --local`을 직접 조합 — sjob 형식 지식이 새고 hold 보상 순서를 둘이 나눠 갖는다. head job만 로컬 — 하위 단계가 다시 같은 큐 뒤에 선다.
 - UI-18a5의 조항은 외부 작업 조항에 두 조항을 더한 것 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-18a5의 결과 (승계)
+##### ADR UI-18a5의 결과 (승계)
 
 
 - 되돌리기 어렵다: dotfiles 계약 어휘·진입 블록 핀(`direction-inquiry.js` 사본과 다이제스트 테스트), `tile-resolve.js` 술어, `worker-handlers.js` 클릭 라우팅, `scheduler.js` 인계 실행·한 번 규칙·외부 되돌림, `notify.js` 대화 알림, 카드 슬롯 표가 함께 움직인다.
@@ -1274,7 +1308,7 @@ verify 보류
 - 대안과 기각 사유: 종류별 표면 유지 — 같은 이름이 다른 세션을 열어 혼동이 남는다. 실패 인계는 창만 닫고 재시도는 사람이 누름 — 버튼을 합쳐도 끝맺음이 종류마다 달라진다.
 - UI-ny0h-2의 조항은 넓힌 둘(대화 대상, 출구 이름) 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-ny0h-2의 결과 (승계)
+##### ADR UI-ny0h-2의 결과 (승계)
 
 - 두 지연은 설정 화면 `대기·주기` 묶음에서 따로 바뀐다. 되돌리려면 위 소비자와 함께 `server/timing-settings.js`의 두 키와 저장 파일 `timing-settings.json`이 움직인다.
 - 하위 잡 관찰을 되돌리려면 dotfiles `docs/contracts/external-wait.md` Record·관찰 절,
@@ -1286,7 +1320,7 @@ verify 보류
 - 기각한 대안: 별도 감시 루프와 별도 파일(ssh·수명·정리가 두 갈래), snakemake 진행 줄 파싱
   (snakemake 전용이라 사용자 기각), 의존성 일괄 제출(플러그인 미지원, 실패 시 의존 잡이 대기로 남음).
 
-##### ADR UI-nuwy의 결과 (승계)
+###### ADR UI-nuwy의 결과 (승계)
 
 - 되돌리기 어렵다: `direction-inquiry.js` 기동(같은 세션 명령·진입 블록 사본), `scheduler.js`
   reconcile의 메시지 처리·인계 이어가기와 `resume()`의 `conversation_return` 예외, `admission.js`의
@@ -1302,14 +1336,14 @@ verify 보류
 - UI-ri8n의 조항은 뒤집은 둘(`idle → normal`, 파킹·복구 대기 출구를 fork 문의 세션이 끝까지
   처리하는 조항과 그 알림·프롬프트) 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-18a5-2의 결과 (승계)
+##### ADR UI-18a5-2의 결과 (승계)
 
 - 되돌리기 어렵다: `queue-store.js` 레코드 필드, `scheduler.js` `reconcileInteractivePass` 정산, 세 런처(`direction-inquiry.js`·`resolve-session.js`·`external-wait/session-resume.js`)의 레코드 쓰기가 함께 움직인다.
 - 맥락 없이는 놀랍다: fork로 연 해결 세션도 대화 레코드이고, 그 인계는 세션 재개가 아니라 행의 조작을 실행한다.
 - 얻는 것은 정산 규칙 하나, 감수하는 것은 옛 레코드 읽기 호환 기간이다. 대안(종류별 정산 유지)은 끝맺음 통합을 막는다.
 - UI-nuwy-2의 조항은 넓힌 둘(`conversation` 보유 종류, 인계·보류 정산 종류) 외에 전부 승계했고 폐기한 조항은 없다.
 
-#### ADR UI-18a5-3의 결과 (승계)
+##### ADR UI-18a5-3의 결과 (승계)
 
 - 머지 게이트의 보류·terminal·알림 규칙과 실패 행 출구가 한 행으로 읽힌다. 되돌리려면 receipt-check 레지스트리·review lineage claim·completion intent phase·알림 클래스와 함께 `pr-actions.js` 정리 재시도 권한, `discard-coordinator.js` 재시도, 머지 큐 재등록, `scheduler.js` 인계 실행·한 번 규칙, PR 대기 행 버튼과 `pr-wait-row.js` 술어, `notify.js` 다음 행동 문구가 움직인다.
 - 맥락 없이는 놀랍다: 세션 결과 줄로 정리 재시도·머지 큐 재등록이 일어나고, 위조 판정 행에서만 인계가 아무것도 하지 않는다.

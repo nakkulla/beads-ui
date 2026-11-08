@@ -5,7 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
-| UI-ymcx | [머지된 커밋의 선언·스크립트로 도는 Worker 배포](UI-ymcx-worker-deploy-target-commit.md) | 2026-11-07 | Worker 배포는 머지된 대상 커밋의 repo-ops [deploy] 선언·스크립트로 실행해 첫 선언도 승인 없이 돌고 [배포 실행]은 복구용으로만 남으며 검증만 이전 base blob을 쓴다 — 부딪히는 상대 직렬 배치안과 나머지 조항은 UI-blx2 그대로다 |
+| UI-ksi6 | [배포 종료 코드 75의 조건 대기와 자동 재확인](UI-ksi6-deploy-condition-wait.md) | 2026-11-08 | 배포 스크립트가 종료 코드 75로 끝나면 Worker는 수정 Bead 없이 조건 대기로 두고 계약 간격·기한 안에서 실패 기록을 잇는 재시도 후계로 자동 재실행해 성공하면 정리를 끝내며, 같은 사슬의 반복 실패는 기록·알림을 한 번만 남긴다 |
 | UI-btp3 | [공급자 보류 전역 원본·전환 순서·리프 한도·소진·활성 복귀](UI-btp3-active-account-return.md) | 2026-11-07 | Codex 자동 전환 후보는 허용 목록의 사용자 순서로 창 여유 계정을 먼저 고르고 반응 전환에서만 계정별 크레딧 허용·하루 상한(다음 선택만 막음) 안의 크레딧 계정을 고르며, 창이 소진된 계정으로 도는 Codex 실행은 preempt_pct와 무관하게 창 여유 계정이 생기면 그 계정으로 옮기고, 전역 활성 Codex 계정이 소진되면 활성과 후보를 함께 허용한 switch 저장소가 있을 때만 서버가 창 여유 계정으로 바꾸되 Codex 기본 계정 없는 기다림 저장소가 있거나 계정 없이 도는 실행이 있으면 바꾸지 않고, 전역 활성 Claude 계정의 5시간·주간 창이 100%이면 같은 저장소 기준으로 두 창이 모두 100% 미만인 계정으로 바꾸되 Claude 기본 계정 없는 기다림 저장소가 있으면 바꾸지 않고 계정 없는 실행은 막지 않되 전환 직후 정산되는 그 실행의 오류는 직전 계정에 귀속하며, 크레딧 설정은 서버 전역이고 세션은 같은 규칙의 후보 조회 API를 쓰고, 세션이 맡긴 다른 러너 리프의 계정 한도로 끝난 attempt는 그 리프 계정 보류의 교차 멤버로 전환·기다림 추종 없이 해제 뒤 자기 러너 계정 규칙으로 재개한다 — 나머지 조항은 UI-np4t 그대로다 |
 | UI-rd2m | [실행 프리셋과 route 계열별 판정 칩](UI-rd2m-exec-presets-and-chips-by-route.md) | 2026-10-14 | 실행 프리셋은 applies_to 계열별 id 하나가 정체성이고 읽을 때 계열 키 집합을 대칭 비교하며 dispatchPreset과 카드 비교는 분리한다; 판정 칩 복잡·frontend·backend는 칩마다 general·quick_fix 서버 전역 바인딩을 하나씩 갖고 클릭은 이슈 route 계열의 바인딩 프리셋을 그 이슈에 적용하며 재클릭은 첫 클릭 전 핀으로 되돌리고 그 전이는 같은 워크스페이스·이슈별로 요청 순서대로 직렬화한다; 칩 바인딩 편집은 모니터 일괄 창의 서버 전역 탭에만 있고 저장소 하나를 편집하는 창에는 섞지 않는다 |
 | UI-gpac-2 | [모델 활성은 꺼 둔 목록으로 거르고 새 Codex 고정 이름은 숨긴다](UI-gpac-2-model-visibility-hides-new-codex-pinned.md) | 2026-10-12 | 모델 활성은 서버 전역 꺼 둔 모델 목록이 선택지 표시에서만 빼는 것이며 카탈로그·저장 값·디스패치 검증·단가는 그대로 둔다; 새로 추가되는 모델은 자동으로 보이되 Codex 고정 이름(<계열>-<버전>)은 처음 나타날 때 꺼 둔 목록에 더해져 사용자가 켤 때만 보이고, 기존 상태 파일은 이전 카탈로그 이름을 이미 본 이름으로 이전한다; 저장된 값이 꺼 둔 모델이면 (비활성)으로 남기고 러너마다 하나 이상 켜 둔다 |
@@ -154,5 +154,6 @@
 | UI-gggh | [공급자 보류 전역 원본·Codex 전환 순서·리프 한도 교차 멤버](history/UI-gggh-codex-leaf-limit-cross-member.md) | superseded | [UI-ftww](history/UI-ftww-codex-exhausted-account-return.md) |
 | UI-hf8v | [모니터 탭 전체 배치안과 모니터 가시 저장소 jev 판정](history/UI-hf8v-monitor-full-placement-plan.md) | superseded | [UI-ey6v](history/UI-ey6v-predecessor-parallel-placement.md) |
 | UI-tyc2 | [공급자 보류 전역 원본·Codex 전환 순서·리프 한도·소진·활성 복귀](history/UI-tyc2-codex-active-account-return.md) | superseded | [UI-btp3](UI-btp3-active-account-return.md) |
-| UI-blx2 | [부딪히는 상대를 같은 직렬 레인에 세우는 배치안](history/UI-blx2-placement-serialize-conflicting-partner.md) | superseded | [UI-ymcx](UI-ymcx-worker-deploy-target-commit.md) |
+| UI-blx2 | [부딪히는 상대를 같은 직렬 레인에 세우는 배치안](history/UI-blx2-placement-serialize-conflicting-partner.md) | superseded | [UI-ymcx](history/UI-ymcx-worker-deploy-target-commit.md) |
 | UI-ey6v | [선행 이슈 병렬 배치와 배치 추천](history/UI-ey6v-predecessor-parallel-placement.md) | superseded | [UI-blx2](history/UI-blx2-placement-serialize-conflicting-partner.md) |
+| UI-ymcx | [머지된 커밋의 선언·스크립트로 도는 Worker 배포](history/UI-ymcx-worker-deploy-target-commit.md) | superseded | [UI-ksi6](UI-ksi6-deploy-condition-wait.md) |
