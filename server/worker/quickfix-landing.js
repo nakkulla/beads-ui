@@ -1067,10 +1067,13 @@ export function createQuickfixLanding(deps) {
    * recorded, and a receipt that moved since stops on `head_mismatch` before
    * any job runs.
    *
-   * `job_retry` is a person's authority to re-run an outcome-unknown job. It
-   * is honoured only when this settlement resumes a failure recorded at the
-   * `post_merge_jobs` step — the same boundary the PR cleanup draws with
-   * `resume_step === 'post_merge_jobs'`; every other pass ignores it.
+   * `job_retry` is a person's authority to re-run what a recorded failure
+   * stopped on, read only for the step that failure was recorded at — the
+   * same boundaries the PR cleanup draws on its `resume_step`. At
+   * `post_merge_jobs` it re-runs an outcome-unknown job; at `repo_operations`
+   * it lets the coordinator record one `retry_of` successor of a failed
+   * deploy tip (UI-btsr §3.2) instead of adopting the failure. Every other
+   * pass ignores it.
    *
    * @param {{ attempt_id: string, bead_id: string, target_base: string, job_retry?: boolean }} input
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step: string|null }>}
@@ -1083,11 +1086,13 @@ export function createQuickfixLanding(deps) {
     const durable_cursor = HEAD_BOUND_CURSORS.has(durable_landing?.cursor)
       ? durable_landing.cursor
       : null;
-    const job_retry =
+    const resumes_failure =
       input.job_retry === true &&
-      durable_cursor === 'post_merge_jobs' &&
       typeof durable_landing?.reason === 'string' &&
       durable_landing.reason.length > 0;
+    const job_retry = resumes_failure && durable_cursor === 'post_merge_jobs';
+    const deploy_retry =
+      resumes_failure && durable_landing?.cursor === 'repo_operations';
     const durable_head_sha =
       typeof durable_landing?.head_sha === 'string'
         ? durable_landing.head_sha
@@ -1421,7 +1426,37 @@ export function createQuickfixLanding(deps) {
             // already-deployed descendant is covered by the coordinator's
             // existing descendant_success_covers_ancestor_rows monotonicity.
             target_sha: head_sha,
-            subjects: [{ bead_id, merged_sha: head_sha }]
+            subjects: [{ bead_id, merged_sha: head_sha }],
+            ...(deploy_retry
+              ? {
+                  retry_authorized: true,
+                  // The attempt stays `failed` through this pass, and boot
+                  // reconcile resumes only `running` ones. A deploy that
+                  // restarts this server would otherwise leave the null
+                  // reason `markStep` wrote, which reads as a session resume;
+                  // a pending reason keeps the row on the settlement retry
+                  // that adopts the new run's outcome.
+                  on_retry_recorded: () => {
+                    deps.store.updateAttempt(workspace, {
+                      attempt_id,
+                      patch: {
+                        quickfix_landing: landingRecord(
+                          {
+                            ...storedPosition(
+                              'repo_operations',
+                              head_sha,
+                              bound
+                            ),
+                            reason: 'repo_operation_pending'
+                          },
+                          landing_extra
+                        )
+                      }
+                    });
+                    notifyChanged(workspace);
+                  }
+                }
+              : {})
           });
         } catch (err) {
           log('quick_fix deploy start failed for %s: %o', bead_id, err);

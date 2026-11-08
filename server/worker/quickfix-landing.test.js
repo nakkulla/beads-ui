@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { createQueueStore } from './queue-store.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
@@ -54,6 +55,7 @@ afterEach(() => {
  *   containmentCode?: number,
  *   config?: any,
  *   deploy?: any,
+ *   recordsRetry?: boolean,
  *   evidence?: any,
  *   repoOperations?: boolean,
  *   removeResult?: { ok: boolean, removed: boolean, reason: string|null },
@@ -314,8 +316,12 @@ function makeLanding(options = {}) {
       calls.push('repoOperations:hasConfig');
       return options.config || { ok: true, present: false };
     }),
-    ensureDeploy: vi.fn(async () => {
+    ensureDeploy: vi.fn(async (/** @type {any} */ subject) => {
       calls.push('repoOperations:ensureDeploy');
+      // The coordinator calls this right after it records a retry successor.
+      if (options.recordsRetry === true) {
+        subject.on_retry_recorded?.();
+      }
       return options.deploy || { ok: true, inert: true };
     }),
     waitForDeployTerminal: vi.fn(async () => {
@@ -936,6 +942,136 @@ test('propagates terminal deployment failure', async () => {
     ok: false,
     reason: 'deploy_script_failed',
     step: 'repo_operations'
+  });
+});
+
+const FAILED_DEPLOY_PROGRESS = Object.freeze({
+  cursor: 'repo_operations',
+  head_sha: HEAD_SHA,
+  reason: 'deploy_script_failed'
+});
+
+/**
+ * Run the standard settlement input as the person's resume click.
+ *
+ * @param {ReturnType<typeof createQuickfixLanding>} landing
+ */
+function settleRetry(landing) {
+  return landing.settle({
+    attempt_id: ATTEMPT,
+    bead_id: BEAD,
+    target_base: 'main',
+    job_retry: true
+  });
+}
+
+test('authorizes one deploy retry when a person resumes a repo_operations failure', async () => {
+  const { landing, repoOperations } = makeLanding({
+    landingProgress: FAILED_DEPLOY_PROGRESS,
+    config: { ok: true, present: true },
+    deploy: { ok: true, inert: false, operation_id: 'deploy-2' }
+  });
+
+  await settleRetry(landing);
+
+  expect(repoOperations.ensureDeploy).toHaveBeenCalledWith({
+    target_base: 'main',
+    target_sha: HEAD_SHA,
+    subjects: [{ bead_id: BEAD, merged_sha: HEAD_SHA }],
+    retry_authorized: true,
+    on_retry_recorded: expect.any(Function)
+  });
+});
+
+test('keeps a retried deploy row on the settlement resume while the new run is out', async () => {
+  const { landing, store } = makeLanding({
+    landingProgress: FAILED_DEPLOY_PROGRESS,
+    config: { ok: true, present: true },
+    deploy: { ok: true, inert: false, operation_id: 'deploy-2' },
+    recordsRetry: true,
+    evidence: { state: 'running' }
+  });
+
+  await settleRetry(landing);
+  const pending = store.updateAttempt.mock.calls
+    .map((/** @type {any[]} */ call) => call[1].patch.quickfix_landing)
+    .find(
+      (/** @type {any} */ record) => record.reason === 'repo_operation_pending'
+    );
+
+  expect(pending).toEqual({
+    cursor: 'repo_operations',
+    head_sha: HEAD_SHA,
+    reason: 'repo_operation_pending'
+  });
+  expect(resumeKindOf(pending)).toBe('settlement');
+});
+
+test('authorizes the deploy retry again from a pending retried row', async () => {
+  const { landing, repoOperations } = makeLanding({
+    landingProgress: {
+      ...FAILED_DEPLOY_PROGRESS,
+      reason: 'repo_operation_pending'
+    },
+    config: { ok: true, present: true },
+    deploy: { ok: true, inert: true }
+  });
+
+  await settleRetry(landing);
+
+  expect(repoOperations.ensureDeploy).toHaveBeenCalledWith(
+    expect.objectContaining({ retry_authorized: true })
+  );
+});
+
+test('closes the Bead after an authorized deploy retry succeeds', async () => {
+  const { landing, calls } = makeLanding({
+    landingProgress: FAILED_DEPLOY_PROGRESS,
+    config: { ok: true, present: true },
+    deploy: { ok: true, inert: false, operation_id: 'deploy-2' },
+    evidence: { state: 'succeeded' }
+  });
+
+  const result = await settleRetry(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(calls).toContain('worktree:removeCompleted');
+  expect(calls).toContain('bd:setStatus:closed');
+});
+
+test('withholds deploy retry authority from a resume without the person click', async () => {
+  const { landing, repoOperations } = makeLanding({
+    landingProgress: FAILED_DEPLOY_PROGRESS,
+    config: { ok: true, present: true },
+    deploy: { ok: true, inert: true }
+  });
+
+  await settle(landing);
+
+  expect(repoOperations.ensureDeploy).toHaveBeenCalledWith({
+    target_base: 'main',
+    target_sha: HEAD_SHA,
+    subjects: [{ bead_id: BEAD, merged_sha: HEAD_SHA }]
+  });
+});
+
+test('withholds deploy retry authority when the person resumes an earlier step', async () => {
+  const { landing, repoOperations } = makeLanding({
+    landingProgress: {
+      cursor: 'base_containment',
+      head_sha: HEAD_SHA,
+      reason: 'containment_unobservable'
+    },
+    config: { ok: true, present: true },
+    deploy: { ok: true, inert: true }
+  });
+
+  await settleRetry(landing);
+
+  expect(repoOperations.ensureDeploy).toHaveBeenCalledWith({
+    target_base: 'main',
+    target_sha: HEAD_SHA,
+    subjects: [{ bead_id: BEAD, merged_sha: HEAD_SHA }]
   });
 });
 
