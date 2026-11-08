@@ -9179,6 +9179,63 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-chip);
 }
 
+/* 전역 탭 `프리셋 관리` (UI-u3po): 줄마다 이름·걸린 칩·조작이 감겨 390px에서도
+   폭을 넘지 않는다. 크기는 부품이 정하고 여기는 배치·색만 적는다. */
+.preset-manage__profile + .preset-manage__profile {
+  margin-top: var(--sp-10);
+}
+
+.preset-manage__profile-title {
+  margin-bottom: var(--sp-4);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+}
+
+.preset-manage__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6) var(--sp-8);
+  align-items: center;
+  padding: var(--sp-5) 0;
+}
+
+.preset-manage__row + .preset-manage__row {
+  border-top: 1px solid var(--border-kv-row);
+}
+
+.preset-manage__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-body-sm);
+  overflow-wrap: anywhere;
+}
+
+.preset-manage__chips {
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  overflow-wrap: anywhere;
+}
+
+.preset-manage__input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.preset-manage__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin-left: auto;
+}
+
+.preset-manage__warn {
+  flex-basis: 100%;
+  color: var(--accent-warn);
+  font-size: var(--fs-chip);
+}
+
 /* 관측 배지 (UI-e1ta §3): 행이 지금 무엇을 읽었는지만 말한다 — 조작이 아니다.
    값이 서지 않은 두 상태(갈림·미확인)만 색을 쓴다. */
 .settings-dialog__obs {
