@@ -8,6 +8,9 @@ scope:
   - server/worker/scheduler.js
   - server/worker/wait-judgment.js
   - server/worker/queue-store.js
+  - server/worker/failure-class.js
+  - server/worker/repo-operation-policy.js
+  - server/worker/work-recovery-policy.js
   - generated/contracts/
   - app/utils/failure-sentences.js
   - app/views/worker/failure-labels.js
@@ -46,6 +49,11 @@ Bead: UI-ksi6 · 선행: UI-2wnv(quick_fix [정리 재시도]의 배포 재실�
 - quick_fix 착지의 배포 호출은 `retry_authorized`를 넘기지 않는다(UI-2wnv가 고침) — `server/worker/quickfix-landing.js:1417-1425`, `:1086-1090`
 - 수정 Bead가 있으면 대기 행은 「수정 작업 대기」, 없으면 action_required로 사람에게 묻는다 — `server/worker/wait-judgment.js:959-996`
 - PR 정리 경로에는 이미 관측형 예약 재시도(`retry_count`·`next_retry_at`, 3회)가 있다. `base_containment`·`branch_cleanup` 한정이다 — `server/worker/resolution-ladder.js:133-145`, `server/worker/queue-store.js:709`
+- 현행 ADR UI-ymcx는 배포 해소 사다리를 `script_retry` 한 단계로, 실패 tip의 후계를 사람 권한에만 두고 자동 진입은 실패를 채택한다고 정한다 — `docs/adr/UI-ymcx-worker-deploy-target-commit.md:259`, `:374-378`
+- 스크립트 요약은 합친 출력에서 첫 스크립트 실패 줄을, 없으면 마지막 비어 있지 않은 줄을 고른다 — `server/worker/failure-class.js:235-253`
+- 핀 사본 소비자는 배포 정책 schema·`consumer_schema_required` 4와 복구 정책 schema 2만 지원으로 판정한다 — `server/worker/repo-operation-policy.js:106`, `:166`, `server/worker/work-recovery-policy.js:169-179`
+- 조건이 `failure.code === 'condition_wait'`인 기록은 지금 분류에서 `unknown_error`로 떨어진다(대기·unclassified) — `server/worker/operation-recovery.js:33-76`
+- `cortex-vault-sync`는 rebase 충돌·동기화 중 로컬 이동·미커밋 편집 겹침(exit 3)에서는 아무것도 바꾸지 않고 멈추지만, 로컬 갱신 뒤 push 거부로도 실패한다 — dotfiles `src/shell/bin/cortex-vault-sync:72-89`
 - 착지 실패 칩과 타일 상태 문구 — `app/views/worker/failure-labels.js:56`, `app/views/worker/running-grid.js:1177`, `:1362`
 - Cortex 배포의 거부 지점(index lock·staged·sync 거부·바뀐 스킬 파일 미커밋 편집)은 모두 exit 1이다 — Cortex `repo-ops/script/deploy:73`, `:75`, `:77`, `:101`
 - [정리 재시도]를 눌러도 새 배포 로그 없이 0.15초 만에 같은 실패가 재보고됐다 — `~/.local/state/bdui/Cortex-609851f1fa3d/beads/Cortex-n5y/events.jsonl` 마지막 4줄(2026-11-08)
@@ -57,7 +65,7 @@ Bead: UI-ksi6 · 선행: UI-2wnv(quick_fix [정리 재시도]의 배포 재실�
 결정: `[deploy]` 스크립트가 "외부 조건이 아직 안 맞아 거부했고, 다시 돌려도 안전하다"를 알리는 신호는 종료 코드 75(`EX_TEMPFAIL`, sysexits)다 (대안: stderr 표지 줄 — 로그 문구가 계약이 되어 깨지기 쉽다; 같은 fingerprint 재시도에 시간 간격을 두는 판정 강화 — 스크립트만 아는 차이를 Worker가 추측한다; 이유: 표준 관례이고 스크립트 소유자가 재실행 안전성을 선언한다).
 
 - 적용은 `[deploy]`만이다. `[verify]`의 75는 지금처럼 `script_failed`다.
-- 75로 끝난 배포 기록의 실패 코드는 `condition_wait`다(예: 이름. 계약 어휘는 dotfiles 형제가 정한다). 마지막 stderr 줄은 기존처럼 요약으로 남는다.
+- 75로 끝난 배포 기록의 실패 코드는 `condition_wait`다(예: 이름. 계약 어휘는 dotfiles 형제가 정한다). 요약은 지금 `scriptSummary`가 합친 출력에서 첫 스크립트 실패 줄을 고르므로(`server/worker/failure-class.js:235-253`), `condition_wait`에서는 계약대로 출력의 마지막 비어 있지 않은 줄(거부 사유)을 요약으로 고른다. 그 밖의 종료는 지금 규칙 그대로다.
 - `condition_wait`에는 `script_retry`를 걸지 않고, 걸지 않은 근거를 기존 skip evidence로 남긴다. 몇 초 안의 재실행은 조건을 바꾸지 못한다.
 - `condition_wait`는 코드 결함 증명이 아니다. 분류는 계약의 대기 분류이고, 수정 Bead 인계는 일어나지 않는다.
 - 75로 끝났어도 스크립트가 만든 부분 효과와 로그는 보존한다. 배포 작업 트리 tracked-clean 검사 등 기존 사후 검사는 그대로 한다.
@@ -95,7 +103,10 @@ Bead: UI-ksi6 · 선행: UI-2wnv(quick_fix [정리 재시도]의 배포 재실�
 
 ### 3.4 Cortex 스크립트 (크로스 리포 unit)
 
-- 라이브 체크아웃 상태 때문에 거부하는 지점은 `fail` 대신 75로 끝낸다. 대상은 index lock, staged 변경, `cortex-vault-sync` 거부, 바뀐 계약·스킬 파일의 미커밋 편집이다(`deploy:73`, `:75`, `:77`, `:101`).
+결정: 75는 라이브 체크아웃을 바꾸지 않은 거부에만 쓴다 — 판정은 거부 시점의 라이브 HEAD가 스크립트 시작 때 읽은 `live_before`와 같은지다 (대안: 거부 지점 목록만으로 75 — `cortex-vault-sync`는 로컬 갱신 뒤 push 거부로도 실패해 라이브 HEAD를 이미 옮겼을 수 있다(dotfiles `src/shell/bin/cortex-vault-sync:83-89`); 이유: 계약의 "부분 효과 없는 거부" 의무를 스크립트가 직접 확인한다).
+
+- 동기화 전 거부(index lock `deploy:73`, staged 변경 `:75`)는 라이브를 건드리기 전이므로 75다.
+- `cortex-vault-sync` 실패(`:77`)와 바뀐 계약·스킬 파일의 미커밋 편집(`:101`)은 라이브 HEAD가 `live_before` 그대로일 때만 75다. 그 전에 sync가 rebase 충돌·로컬 이동·미커밋 편집 겹침(exit 3)으로 아무것도 바꾸지 않고 멈춘 경우가 여기에 든다. 라이브 HEAD가 움직였거나 읽을 수 없으면 1이다.
 - 설치 누락·읽기 실패·대상 SHA 불일치·작업 트리 dirty 등 그 밖의 실패는 1로 둔다.
 - 거부 메시지의 "the hourly auto-commit retries the live sync"는 Worker 자동 재확인과 겹치므로 문구를 사실대로 고친다.
 - 이 변경은 계약 형제가 75의 의미를 정의한 뒤에 착지한다. 그 전에 착지하면 75가 지금처럼 `script_failed`로 읽혀 현행과 같으므로, 순서가 틀려도 해롭지는 않다.
@@ -122,7 +133,9 @@ Bead: UI-ksi6 · 선행: UI-2wnv(quick_fix [정리 재시도]의 배포 재실�
   - 자동 권한 + tip `condition_wait` + 시각 도래면 `retry_of` 후계 하나를 만들고 스크립트를 실제로 실행한다.
   - 시각 전·기한 후·tip이 다른 실패면 후계를 만들지 않는다.
   - 같은 tip에 자동 tick과 사람 클릭이 겹쳐도 후계는 하나다.
-- `server/worker/operation-recovery.test.js`: 같은 fingerprint로 반복된 `condition_wait`는 `code_defect`가 아니고 handoff key가 없다.
+- `server/worker/operation-recovery.test.js`: 같은 fingerprint로 반복된 `condition_wait`는 `classification: 'condition_wait'`, `disposition: 'wait'`, `reason: 'condition'`이고 `code_defect: false`, handoff key가 없다(지금은 `unknown_error`로 떨어져 첫 세 단언이 실패한다).
+- `server/worker/failure-class.test.js`: 앞쪽에 스크립트 실패 줄이 있고 마지막 줄이 거부 사유인 75 출력의 요약은 마지막 줄이다. 75가 아니면 지금처럼 첫 실패 줄이다.
+- `server/worker/repo-operation-policy.test.js`·`server/worker/work-recovery-policy.test.js`: 새 스키마 핀 사본을 지원으로 판정하고 새 항목(`condition_wait_deploy_recheck`의 간격·기한, `condition_wait` 분류)을 읽는다. 지금 스키마(4·2)를 읽으면 75를 `script_failed`로 다루고 자동 재확인을 하지 않는다.
 - `server/worker/quickfix-landing.test.js`: `repo_operations` 커서 실패가 75 → (조건 해소) 0으로 바뀌면 자동 재확인이 정리·닫기까지 잇는다. 사슬 반복 75는 실패 기록을 새로 쓰지 않는다.
 - `server/worker/pr-actions.test.js`: PR 정리 `repo_operations` 단계에서 같은 동작을 한다.
 - `server/worker/wait-judgment.test.js`: 기한 안 행은 `normal`이고 다음 시각을 싣는다. 기한 후 행은 `action_required`(`decision`)다.
@@ -141,7 +154,6 @@ Bead: UI-ksi6 · 선행: UI-2wnv(quick_fix [정리 재시도]의 배포 재실�
 ## 결정 (ADR 후보)
 
 - 전제: ADR UI-u6ud-2 — 종료 코드 어휘·자동 실행 허가는 dotfiles 계약이 정의하고 beads-ui는 핀 사본으로 소비하며, 낮은 스키마면 표시와 동작을 지금대로 둔다(fail-quiet).
-- 전제: ADR UI-ymcx — 배포는 머지된 대상 커밋의 선언·스크립트로 돌고, 재시도 후계도 같은 규칙으로 실행한다.
-- 배포 스크립트의 종료 코드 75는 수정 Bead 없는 조건 대기이고, Worker는 계약 간격·기한 안에서 실패 tip을 잇는 재시도 후계로 자동 재실행해 성공하면 정리를 끝낸다. 같은 사슬의 반복 75는 기록·알림을 한 번만 남긴다. 되돌리기 어렵다: coordinator·operation-recovery·quickfix-landing·pr-actions·wait-judgment·카드 표시, 그리고 75를 쓰기 시작한 저장소 스크립트(Cortex)가 함께 움직여야 한다. 횡단적이다: 모든 저장소의 배포 실패 처리와 사람 확인 지점을 바꾼다. 놀랍다: 지금은 "자동 재실행은 `script_retry` 1회뿐"이 불변식이다. 새 주제: 가장 가까운 현행 ADR UI-ymcx는 배포를 어느 커밋의 스크립트로 돌리느냐를 정하고, 이 결정은 실패 뒤 복구·분류·표시를 정한다. 소비자 집합이 다르다(operation-recovery·wait-judgment·quickfix-landing·카드). `summary`: "배포 스크립트가 종료 코드 75로 끝나면 Worker는 수정 Bead 없이 조건 대기로 두고 계약 간격·기한 안에서 실패 기록을 잇는 재시도 후계로 자동 재실행해 성공하면 정리를 끝내며, 같은 사슬의 반복 실패는 기록·알림을 한 번만 남긴다" → ADR
+- 배포 스크립트의 종료 코드 75는 수정 Bead 없는 조건 대기이고, Worker는 계약 간격·기한 안에서 실패 tip을 잇는 재시도 후계로 자동 재실행해 성공하면 정리를 끝낸다. 같은 사슬의 반복 75는 기록·알림을 한 번만 남긴다. 되돌리기 어렵다: coordinator·operation-recovery·quickfix-landing·pr-actions·wait-judgment·카드 표시, 그리고 75를 쓰기 시작한 저장소 스크립트(Cortex)가 함께 움직여야 한다. 횡단적이다: 모든 저장소의 배포 실패 처리와 사람 확인 지점을 바꾼다. 놀랍다: 지금은 "자동 재실행은 `script_retry` 1회뿐"이 불변식이다. 대체: ADR UI-ymcx가 UI-btsr에서 승계한 조항 "tip이 실패이면 사람 권한이 있을 때만 tip을 잇는 새 기록 하나를 사전기록한다"·"부팅 재개, `resumeCompletionCleanup`, 관측형 자동 재시도, 첫 정리 실행은 권한이 없고 실패 기록을 지금처럼 채택한다"와, "배포 해소 사다리는 `script_retry` 한 단계"(`docs/adr/UI-ymcx-worker-deploy-target-commit.md:259`, `:374-378`)를 이 결정이 바꾼다 — `condition_wait` tip의 계약 한도 안 자동 후계만 예외이고, 그 밖의 실패 tip은 그 조항 그대로다. 새 ADR은 UI-ymcx의 나머지 조항(대상 커밋 선언·스크립트 실행, 첫 선언 무승인, [배포 실행] 복구용, 검증의 이전 base blob, `[정리 재시도]` 이름과 `retry_of` 식별·`superseded_by`·tip 읽기·재시도 후계의 실제 실행, 직렬 배치안 등)을 그대로 재진술한다. `summary`: "배포 스크립트가 종료 코드 75로 끝나면 Worker는 수정 Bead 없이 조건 대기로 두고 계약 간격·기한 안에서 실패 기록을 잇는 재시도 후계로 자동 재실행해 성공하면 정리를 끝내며, 같은 사슬의 반복 실패는 기록·알림을 한 번만 남긴다" → ADR, supersede UI-ymcx
 - 대기 행·타일의 문구와 칩 값(`⏳ 배포 조건 대기`, `대기`) — 기존 슬롯의 값 추가로 되돌리기 쉽다 → ADR 아님
 - 간격 30분·기한 24시간 — 계약 값이라 dotfiles 형제가 소유하고, 조정은 값 변경이다 → ADR 아님
