@@ -147,6 +147,22 @@ function segmentsOf(code) {
   return code.split(':').filter((segment) => segment.length > 0);
 }
 
+/** The category word of a `[deploy]` exit-75 condition wait (dotfiles-rnyd9). */
+const CONDITION_WAIT_CATEGORY = '배포 조건 대기';
+
+/**
+ * Whether a failure code — bare or behind a lane prefix such as
+ * `quickfix_landing_failed:` — is a `[deploy]` exit-75 condition wait
+ * (dotfiles-rnyd9). The card reads it as a wait: its status says `대기` and
+ * its chip is not a danger one.
+ *
+ * @param {unknown} code
+ * @returns {boolean}
+ */
+export function isConditionWait(code) {
+  return segmentsOf(code).includes('condition_wait');
+}
+
 /**
  * The mapped category word for a failure code, before the public fallback.
  *
@@ -154,6 +170,11 @@ function segmentsOf(code) {
  * @returns {string|null}
  */
 function mappedFailureCategory(code) {
+  // A landing or cleanup stopped on a `[deploy]` condition wait is a wait, not
+  // the lane's failure, whichever segment the lane prefix puts first.
+  if (isConditionWait(code)) {
+    return CONDITION_WAIT_CATEGORY;
+  }
   for (const segment of segmentsOf(code)) {
     // Own-property only: a token like `constructor` or `toString` would
     // otherwise match a prototype member and escape the raw-token fallback.
@@ -411,7 +432,11 @@ export function terminationText(operation, timeout_ms) {
  * @type {Record<string, string>}
  */
 const RETRY_BLOCKED_SENTENCES = {
-  schema_unsupported: '핀된 정책 스키마를 지원하지 않습니다.'
+  schema_unsupported: '핀된 정책 스키마를 지원하지 않습니다.',
+  // dotfiles-rnyd9: a `[deploy]` exit 75 is rechecked on the contract interval
+  // instead of retried seconds later.
+  deploy_exit_75:
+    '배포 조건 대기는 즉시 재시도하지 않고 정해진 간격으로 다시 확인합니다.'
 };
 
 /**

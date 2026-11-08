@@ -4,11 +4,139 @@ import {
   cleanupFailureRetryClass,
   cleanupRetryParked,
   cleanupRetryWaitUntil,
+  conditionWaitSchedule,
+  conditionWaitState,
+  conditionWaitTipFor,
   normalizeScriptRetry,
   resolutionAccess,
   scriptIdentity,
   scriptRetryConsumptionKey
 } from './resolution-ladder.js';
+
+describe('deploy condition wait schedule (dotfiles-rnyd9)', () => {
+  const POLICY = {
+    failure_code: 'condition_wait',
+    interval_ms: 1_800_000,
+    deadline_ms: 86_400_000
+  };
+
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function waitRecord(patch = {}) {
+    return {
+      kind: 'deploy',
+      state: 'failed',
+      source: 'automatic',
+      subjects: [{ bead_id: 'UI-1', merged_sha: 'a'.repeat(40) }],
+      failure: { code: 'condition_wait', fingerprint: 'f' },
+      finished_at: 1_000,
+      superseded_by: null,
+      ...patch
+    };
+  }
+
+  test('times the next recheck from the tip and the deadline from the chain head', () => {
+    const operations = {
+      head: waitRecord({ superseded_by: 'mid', finished_at: 1_000 }),
+      mid: waitRecord({
+        retry_of: 'head',
+        superseded_by: 'tip',
+        finished_at: 2_000_000
+      }),
+      tip: waitRecord({ retry_of: 'mid', finished_at: 4_000_000 })
+    };
+
+    const schedule = conditionWaitSchedule(operations, 'tip', POLICY);
+
+    expect(schedule).toEqual({
+      tip_id: 'tip',
+      head_id: 'head',
+      next_at: 4_000_000 + 1_800_000,
+      deadline_at: 1_000 + 86_400_000
+    });
+  });
+
+  test('starts the deadline at the first exit 75 after an ordinary failure', () => {
+    const operations = {
+      first: waitRecord({
+        failure: { code: 'script_failed', fingerprint: 'x' },
+        superseded_by: 'tip'
+      }),
+      tip: waitRecord({ retry_of: 'first', finished_at: 5_000 })
+    };
+
+    const schedule = conditionWaitSchedule(operations, 'tip', POLICY);
+
+    expect(schedule?.head_id).toBe('tip');
+  });
+
+  test('answers the same schedule from records reread after a restart', () => {
+    const operations = {
+      head: waitRecord({ superseded_by: 'tip' }),
+      tip: waitRecord({ retry_of: 'head', finished_at: 3_000 })
+    };
+    const before = conditionWaitSchedule(operations, 'tip', POLICY);
+
+    const after = conditionWaitSchedule(
+      JSON.parse(JSON.stringify(operations)),
+      'tip',
+      POLICY
+    );
+
+    expect(after).toEqual(before);
+  });
+
+  test.each([
+    ['a superseded tip', { superseded_by: 'next' }],
+    ['a manual run', { source: 'manual' }],
+    ['another failure', { failure: { code: 'script_failed' } }],
+    ['a verify record', { kind: 'verify' }],
+    ['a dismissed row', { dismissed: { at: 1, by: 'user' } }]
+  ])('schedules nothing for %s', (_name, patch) => {
+    const schedule = conditionWaitSchedule(
+      { tip: waitRecord(patch) },
+      'tip',
+      POLICY
+    );
+
+    expect(schedule).toBeNull();
+  });
+
+  test('schedules nothing without a pinned condition wait', () => {
+    const schedule = conditionWaitSchedule({ tip: waitRecord() }, 'tip', null);
+
+    expect(schedule).toBeNull();
+  });
+
+  test.each([
+    [1_000 + 1_799_999, 'waiting'],
+    [1_000 + 1_800_000, 'due'],
+    [1_000 + 86_400_000, 'expired']
+  ])('reads the schedule at %s as %s', (now, state) => {
+    const schedule = /** @type {any} */ (
+      conditionWaitSchedule({ tip: waitRecord() }, 'tip', POLICY)
+    );
+
+    expect(conditionWaitState(schedule, now)).toBe(state);
+  });
+
+  test('finds the newest waiting tip of a Bead', () => {
+    const operations = {
+      old: waitRecord({ superseded_by: 'tip' }),
+      tip: waitRecord({ retry_of: 'old', finished_at: 9_000 }),
+      other: waitRecord({
+        subjects: [{ bead_id: 'UI-2', merged_sha: 'b'.repeat(40) }],
+        finished_at: 10_000
+      })
+    };
+
+    const schedule = conditionWaitTipFor(operations, 'UI-1', POLICY);
+
+    expect(schedule?.tip_id).toBe('tip');
+  });
+});
 
 describe('cleanup retry scheduling', () => {
   const failure = {

@@ -41,6 +41,12 @@ export function classifyOperationRecovery({
     key = 'ownership_uncertain';
   } else if (failure.fetch_failure || failure.code === 'timeout') {
     key = 'unknown_error';
+  } else if (operation.kind === 'deploy' && failure.code === 'condition_wait') {
+    // A `[deploy]` exit 75 (dotfiles-rnyd9) is the script's own "the outside
+    // condition refused, rerun is safe" — never a reproduced code defect, so it
+    // takes the contract's wait entry and no repair handoff. A pin without the
+    // entry (schema 2) yields null below and the row stays `unknown_error`.
+    key = 'condition_wait';
   } else if (
     ['verify', 'deploy', 'job'].includes(operation.kind) &&
     failure.code === 'script_failed' &&

@@ -4,6 +4,7 @@ import { describe, expect, test } from 'vitest';
 import {
   REPO_OPERATION_POLICY_PATH,
   classifyRepoOperationFailure,
+  conditionWaitPolicy,
   loadRepoOperationPolicy,
   projectRepoOperationPolicy
 } from './repo-operation-policy.js';
@@ -13,11 +14,32 @@ import {
  * copy without re-pinning here (or re-pinning without the approved artifact)
  * fails the contract, which is the whole point of the pin.
  */
-const APPROVED_SOURCE_COMMIT = '7ba0ed991639188b1f1d647819bcec3f4acbf50e';
-const APPROVED_BLOB = 'ce032fff7f50a9a0eb5c1403b327712003d644ab';
-const APPROVED_BYTES = 2778;
+const APPROVED_SOURCE_COMMIT = 'f374b4dff4f839342bb988a859e6e8330b5bdcf2';
+const APPROVED_BLOB = '322c0ce824b84aeec5726a4ac7273769175dc617';
+const APPROVED_BYTES = 3605;
 const APPROVED_DIGEST =
-  '323f6256278c4280a5cb7d2c4dec8037cd71f43cf83629ad85baf6ad4aefd479';
+  '093695ccbada88386e913d8093e36ad8eedbcc87166c4438af44273e070ebce9';
+
+/**
+ * The pinned artifact as the schema-4 pin read before dotfiles-rnyd9: no
+ * exit-75 code, no recheck item and its own `consumer_schema_required`.
+ *
+ * @returns {Record<string, any>}
+ */
+function schema4Policy() {
+  const policy = JSON.parse(
+    nodeFs.readFileSync(REPO_OPERATION_POLICY_PATH, 'utf8')
+  );
+  delete policy.after_ladder_recovery.deploy_exit_75;
+  delete policy.condition_wait_deploy_recheck;
+  delete policy.never_automatic_exceptions;
+  policy.schema_version = 4;
+  policy.after_ladder_recovery.consumer_schema_required = 4;
+  policy.worker_automatic = policy.worker_automatic.filter(
+    (/** @type {string} */ item) => item !== 'condition_wait_deploy_recheck'
+  );
+  return policy;
+}
 
 /**
  * @param {number} schema_version
@@ -25,9 +47,13 @@ const APPROVED_DIGEST =
  * @param {Record<string, any>} [policy_patch]
  */
 function pinnedAt(schema_version, provenance_patch = {}, policy_patch = {}) {
+  const base =
+    schema_version === 4
+      ? schema4Policy()
+      : JSON.parse(nodeFs.readFileSync(REPO_OPERATION_POLICY_PATH, 'utf8'));
   const bytes = Buffer.from(
     JSON.stringify({
-      ...JSON.parse(nodeFs.readFileSync(REPO_OPERATION_POLICY_PATH, 'utf8')),
+      ...base,
       schema_version,
       ...policy_patch
     })
@@ -65,7 +91,7 @@ describe('pinned repo-operation policy contract', () => {
     { source_commit: '' }
   ])('rejects mismatched provenance %j', (patch) => {
     const loaded = loadRepoOperationPolicy({
-      fs: /** @type {any} */ (pinnedAt(4, patch))
+      fs: /** @type {any} */ (pinnedAt(5, patch))
     });
 
     expect(loaded.supported).toBe(false);
@@ -75,13 +101,94 @@ describe('pinned repo-operation policy contract', () => {
     { resolution_ladder: [] },
     { worker_automatic: [''] },
     { after_ladder_recovery: null },
-    { after_ladder_recovery: { consumer_schema_required: 4 } }
+    { after_ladder_recovery: { consumer_schema_required: 5 } }
   ])('rejects unusable operation structure %j', (patch) => {
     const loaded = loadRepoOperationPolicy({
-      fs: /** @type {any} */ (pinnedAt(4, {}, patch))
+      fs: /** @type {any} */ (pinnedAt(5, {}, patch))
     });
 
     expect(loaded.supported).toBe(false);
+  });
+
+  test.each([
+    ['a recheck item without an interval', { interval_ms: 0 }],
+    ['a recheck item without a deadline', { deadline_ms: undefined }]
+  ])('rejects a schema 5 pin with %s', (_name, patch) => {
+    const policy = JSON.parse(
+      nodeFs.readFileSync(REPO_OPERATION_POLICY_PATH, 'utf8')
+    );
+
+    const loaded = loadRepoOperationPolicy({
+      fs: /** @type {any} */ (
+        pinnedAt(
+          5,
+          {},
+          {
+            condition_wait_deploy_recheck: {
+              ...policy.condition_wait_deploy_recheck,
+              ...patch
+            }
+          }
+        )
+      )
+    });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test('rejects a schema 5 pin naming another exit-75 code', () => {
+    const policy = JSON.parse(
+      nodeFs.readFileSync(REPO_OPERATION_POLICY_PATH, 'utf8')
+    );
+
+    const loaded = loadRepoOperationPolicy({
+      fs: /** @type {any} */ (
+        pinnedAt(
+          5,
+          {},
+          {
+            after_ladder_recovery: {
+              ...policy.after_ladder_recovery,
+              deploy_exit_75: 'other_wait'
+            }
+          }
+        )
+      )
+    });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test('marks the pinned schema 5 artifact supported', () => {
+    const loaded = loadRepoOperationPolicy();
+
+    expect([loaded.policy.schema_version, loaded.supported]).toEqual([5, true]);
+  });
+
+  test('reads the condition-wait interval and deadline from the pin', () => {
+    const policy = conditionWaitPolicy();
+
+    expect(policy).toEqual({
+      failure_code: 'condition_wait',
+      interval_ms: 1_800_000,
+      deadline_ms: 86_400_000
+    });
+  });
+
+  test('grants no condition wait under a schema 4 pin', () => {
+    const policy = conditionWaitPolicy({
+      fs: /** @type {any} */ (pinnedAt(4))
+    });
+
+    expect(policy).toBeNull();
+  });
+
+  test('grants no condition wait under an unsupported pin', () => {
+    const policy = conditionWaitPolicy({
+      fs: /** @type {any} */ (pinnedAt(5, { sha256: 'wrong' }))
+    });
+
+    expect(policy).toBeNull();
   });
 
   test.each(['read', 'parse'])(
@@ -175,7 +282,7 @@ describe('pinned repo-operation policy contract', () => {
       resolution_ladder: projected.resolution_ladder.map((entry) => entry.id),
       never_automatic: projected.never_automatic.length
     }).toEqual({
-      worker_automatic: 7,
+      worker_automatic: 8,
       resolution_ladder: ['script_retry'],
       never_automatic: 7
     });
@@ -270,7 +377,7 @@ describe('pinned repo-operation policy contract', () => {
     expect(loaded.supported).toBe(true);
   });
 
-  test.each([1, 2, 3, 7])(
+  test.each([1, 2, 3, 6, 7])(
     'marks schema version %s unsupported',
     (schema_version) => {
       const loaded = loadRepoOperationPolicy({

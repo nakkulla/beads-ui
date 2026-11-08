@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "work_recovery": {
     "dispositions": [
       "repair",
@@ -12,6 +12,7 @@
       "credential",
       "prerequisite",
       "authority",
+      "condition",
       "no_progress",
       "unclassified"
     ],
@@ -55,6 +56,12 @@
         "disposition": "wait",
         "reason": "authority",
         "scope": "outside_approved_scope"
+      },
+      "condition_wait": {
+        "disposition": "wait",
+        "reason": "condition",
+        "scope": "deploy_record_only",
+        "next": "recheck_by_retry_successor_within_automation_policy_limits"
       },
       "rereview_errors_blocked": {
         "disposition": "repair",

@@ -1048,10 +1048,13 @@ test('withholds deploy retry authority from a resume without the person click', 
 
   await settle(landing);
 
+  // The pending-record hook rides along for the coordinator's own
+  // condition-wait recheck (dotfiles-rnyd9); the person's authority does not.
   expect(repoOperations.ensureDeploy).toHaveBeenCalledWith({
     target_base: 'main',
     target_sha: HEAD_SHA,
-    subjects: [{ bead_id: BEAD, merged_sha: HEAD_SHA }]
+    subjects: [{ bead_id: BEAD, merged_sha: HEAD_SHA }],
+    on_retry_recorded: expect.any(Function)
   });
 });
 
@@ -1072,6 +1075,122 @@ test('withholds deploy retry authority when the person resumes an earlier step',
     target_base: 'main',
     target_sha: HEAD_SHA,
     subjects: [{ bead_id: BEAD, merged_sha: HEAD_SHA }]
+  });
+});
+
+describe('deploy condition wait recheck (dotfiles-rnyd9)', () => {
+  const CONDITION_WAIT_PROGRESS = Object.freeze({
+    cursor: 'repo_operations',
+    head_sha: HEAD_SHA,
+    reason: 'condition_wait'
+  });
+
+  test('stops the landing on the condition wait the deploy settled on', async () => {
+    const { landing } = makeLanding({
+      config: { ok: true, present: true },
+      deploy: { ok: true, inert: false, operation_id: 'deploy-1' },
+      evidence: { state: 'failed', code: 'condition_wait' }
+    });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'condition_wait',
+      step: 'repo_operations'
+    });
+  });
+
+  test('names a condition wait on the history as a wait', async () => {
+    const timeline = timelineRecorder();
+    const { landing } = makeLanding({
+      timeline,
+      config: { ok: true, present: true },
+      deploy: { ok: true, inert: false, operation_id: 'deploy-1' },
+      evidence: { state: 'failed', code: 'condition_wait' }
+    });
+
+    await settle(landing);
+
+    const stop = timeline.events.find(
+      (event) => event.seq === 'repo_operations:failed'
+    );
+    expect(stop?.summary).toMatch(/^배포 조건 대기 — /);
+  });
+
+  test('keeps one history line for a repeated condition wait', async () => {
+    const timeline = timelineRecorder();
+    const { landing } = makeLanding({
+      timeline,
+      landingProgress: CONDITION_WAIT_PROGRESS,
+      config: { ok: true, present: true },
+      deploy: { ok: true, inert: false, operation_id: 'deploy-2' },
+      evidence: { state: 'failed', code: 'condition_wait' }
+    });
+
+    await settle(landing);
+    await settle(landing);
+
+    const stops = new Set(
+      timeline.events
+        .filter((event) => String(event.seq).endsWith(':failed'))
+        .map((event) => event.seq)
+    );
+    expect([...stops]).toEqual(['repo_operations:failed']);
+  });
+
+  test('passes no person authority on the automatic recheck', async () => {
+    const { landing, repoOperations } = makeLanding({
+      landingProgress: CONDITION_WAIT_PROGRESS,
+      config: { ok: true, present: true },
+      deploy: { ok: true, inert: true }
+    });
+
+    await settle(landing);
+
+    expect(repoOperations.ensureDeploy.mock.calls[0][0]).not.toHaveProperty(
+      'retry_authorized'
+    );
+  });
+
+  test('keeps the rechecked row on the settlement resume while the new run is out', async () => {
+    const { landing, store } = makeLanding({
+      landingProgress: CONDITION_WAIT_PROGRESS,
+      config: { ok: true, present: true },
+      deploy: { ok: true, inert: false, operation_id: 'deploy-2' },
+      recordsRetry: true,
+      evidence: { state: 'running' }
+    });
+
+    await settle(landing);
+    const pending = store.updateAttempt.mock.calls
+      .map((/** @type {any[]} */ call) => call[1].patch.quickfix_landing)
+      .find(
+        (/** @type {any} */ record) =>
+          record.reason === 'repo_operation_pending'
+      );
+
+    expect(pending).toEqual({
+      cursor: 'repo_operations',
+      head_sha: HEAD_SHA,
+      reason: 'repo_operation_pending'
+    });
+  });
+
+  test('continues the recheck that succeeded through cleanup and the close', async () => {
+    const { landing, calls } = makeLanding({
+      landingProgress: CONDITION_WAIT_PROGRESS,
+      config: { ok: true, present: true },
+      deploy: { ok: true, inert: false, operation_id: 'deploy-2' },
+      recordsRetry: true,
+      evidence: { state: 'succeeded' }
+    });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(calls).toContain('worktree:removeCompleted');
+    expect(calls).toContain('bd:setStatus:closed');
   });
 });
 

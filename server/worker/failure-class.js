@@ -229,13 +229,20 @@ export const SCRIPT_FAILURE_LINE_RE =
  * line — a script that ends by printing its own error needs no pattern, and a
  * script that fails in the middle of a long run does.
  *
+ * A `[deploy]` run that ended on the contract's `condition_wait` (exit 75,
+ * dotfiles-rnyd9) owes its refusal reason as the LAST line, so for it the
+ * last non-empty line is the summary even when an earlier line looks like a
+ * failure.
+ *
  * @param {unknown} output - The script's captured stdout+stderr.
+ * @param {{ code?: string|null }} [options] - The settled failure code.
  * @returns {string | null} null when there is no non-empty line at all.
  */
-export function scriptSummary(output) {
+export function scriptSummary(output, options = {}) {
   if (typeof output !== 'string') {
     return null;
   }
+  const last_line_wins = options.code === 'condition_wait';
   /** @type {string | null} */
   let last_non_empty = null;
   for (const line of output.split(/\r?\n/)) {
@@ -243,7 +250,7 @@ export function scriptSummary(output) {
     if (trimmed.length === 0) {
       continue;
     }
-    if (SCRIPT_FAILURE_LINE_RE.test(trimmed)) {
+    if (!last_line_wins && SCRIPT_FAILURE_LINE_RE.test(trimmed)) {
       return trimmed.slice(0, SUMMARY_MAX_CHARS);
     }
     last_non_empty = trimmed;

@@ -970,7 +970,9 @@
  * `target_at` is written in the same write that makes the record `failed`,
  * `consumed_at` before the one notification and automatic conversation. A
  * failed record without it — every record written before this field — reads
- * as already consumed.
+ * as already consumed. An automatic `[deploy]` record that settled on the
+ * exit-75 `condition_wait` carries the same mark (dotfiles-rnyd9): the chain
+ * head's is the once-per-chain mark spent when the recheck deadline passes.
  */
 /**
  * @typedef {Object} DiscardOperation

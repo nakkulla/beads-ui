@@ -338,10 +338,12 @@ export function createQuickfixLanding(deps) {
         // re-appends the same id and the reader keeps one line. A failure is a
         // different fact than reaching the step, hence the suffix.
         seq: reason === null ? step : `${step ?? 'precondition'}:failed`,
+        // A `[deploy]` condition wait (dotfiles-rnyd9) is a wait the Worker
+        // rechecks, not a failed landing; its repeats share this one seq.
         summary:
           reason === null
             ? `착지 단계: ${label ?? step}`
-            : `착지 실패 — ${failureTokenSummary(reason) ?? reason}${
+            : `${reason === 'condition_wait' ? '배포 조건 대기' : '착지 실패'} — ${failureTokenSummary(reason) ?? reason}${
                 label === undefined || label === null ? '' : ` (${label})`
               }`
       });
@@ -1073,7 +1075,10 @@ export function createQuickfixLanding(deps) {
    * `post_merge_jobs` it re-runs an outcome-unknown job; at `repo_operations`
    * it lets the coordinator record one `retry_of` successor of a failed
    * deploy tip (UI-btsr §3.2) instead of adopting the failure. Every other
-   * pass ignores it.
+   * pass ignores it. A pass without it that resumes a `repo_operations`
+   * failure is the automatic recheck of a `condition_wait` tip
+   * (dotfiles-rnyd9): the coordinator alone decides whether its time came,
+   * and the same pending record follows when it records a successor.
    *
    * @param {{ attempt_id: string, bead_id: string, target_base: string, job_retry?: boolean }} input
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step: string|null }>}
@@ -1087,12 +1092,19 @@ export function createQuickfixLanding(deps) {
       ? durable_landing.cursor
       : null;
     const resumes_failure =
-      input.job_retry === true &&
       typeof durable_landing?.reason === 'string' &&
       durable_landing.reason.length > 0;
-    const job_retry = resumes_failure && durable_cursor === 'post_merge_jobs';
-    const deploy_retry =
+    const job_retry =
+      input.job_retry === true &&
+      resumes_failure &&
+      durable_cursor === 'post_merge_jobs';
+    // Any pass resuming a failure recorded at the deploy step may see the
+    // coordinator record one `retry_of` successor: a person's retry always
+    // (UI-btsr §3.2), and the automatic recheck of a `condition_wait` tip
+    // whose time came (dotfiles-rnyd9), which the coordinator alone judges.
+    const resumes_deploy_failure =
       resumes_failure && durable_landing?.cursor === 'repo_operations';
+    const deploy_retry = input.job_retry === true && resumes_deploy_failure;
     const durable_head_sha =
       typeof durable_landing?.head_sha === 'string'
         ? durable_landing.head_sha
@@ -1427,9 +1439,9 @@ export function createQuickfixLanding(deps) {
             // existing descendant_success_covers_ancestor_rows monotonicity.
             target_sha: head_sha,
             subjects: [{ bead_id, merged_sha: head_sha }],
-            ...(deploy_retry
+            ...(deploy_retry ? { retry_authorized: true } : {}),
+            ...(resumes_deploy_failure
               ? {
-                  retry_authorized: true,
                   // The attempt stays `failed` through this pass, and boot
                   // reconcile resumes only `running` ones. A deploy that
                   // restarts this server would otherwise leave the null

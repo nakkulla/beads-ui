@@ -280,6 +280,128 @@ export function scriptRetryConsumptionKey(operation) {
 }
 
 /**
+ * @typedef {{ failure_code: string, interval_ms: number, deadline_ms: number }} ConditionWaitPolicy
+ * @typedef {{ tip_id: string, head_id: string, next_at: number, deadline_at: number }} ConditionWaitSchedule
+ */
+
+/**
+ * Whether one record is an automatic deploy that settled on the contract's
+ * `[deploy]` exit-75 condition wait (dotfiles-rnyd9).
+ *
+ * @param {any} operation
+ * @param {ConditionWaitPolicy} policy
+ * @returns {boolean}
+ */
+function isConditionWaitRecord(operation, policy) {
+  return (
+    isRecord(operation) &&
+    operation.kind === 'deploy' &&
+    operation.state === 'failed' &&
+    operation.failure?.code === policy.failure_code &&
+    typeof operation.finished_at === 'number' &&
+    Number.isFinite(operation.finished_at)
+  );
+}
+
+/**
+ * The recheck schedule of a `condition_wait` tip, read from durable records
+ * only, so a restart answers the same: the next recheck is the tip's
+ * `finished_at` plus the contract interval, and the deadline is the chain
+ * head's — the first `condition_wait` reached by following `retry_of` back —
+ * `finished_at` plus the contract deadline. Null for any other record, a
+ * superseded one, a Bead-less manual run (classification only, no recheck),
+ * or while the pinned contract grants no condition wait.
+ *
+ * @param {Record<string, any>} operations
+ * @param {string} tip_id
+ * @param {ConditionWaitPolicy|null} policy
+ * @returns {ConditionWaitSchedule|null}
+ */
+export function conditionWaitSchedule(operations, tip_id, policy) {
+  const tip = operations?.[tip_id];
+  if (
+    !policy ||
+    !isConditionWaitRecord(tip, policy) ||
+    tip.source === 'manual' ||
+    tip.dismissed ||
+    tip.superseded_by
+  ) {
+    return null;
+  }
+  let head_id = tip_id;
+  const seen = new Set([tip_id]);
+  let cursor = tip;
+  while (
+    typeof cursor.retry_of === 'string' &&
+    !seen.has(cursor.retry_of) &&
+    isRecord(operations[cursor.retry_of])
+  ) {
+    seen.add(cursor.retry_of);
+    const predecessor_id = cursor.retry_of;
+    cursor = operations[predecessor_id];
+    if (isConditionWaitRecord(cursor, policy)) {
+      head_id = predecessor_id;
+    }
+  }
+  return {
+    tip_id,
+    head_id,
+    next_at: tip.finished_at + policy.interval_ms,
+    deadline_at: operations[head_id].finished_at + policy.deadline_ms
+  };
+}
+
+/**
+ * The current `condition_wait` tip deploying one Bead, as its schedule: the
+ * newest unsuperseded record naming the Bead that {@link conditionWaitSchedule}
+ * accepts. Null when the Bead's deploy is not waiting on a condition.
+ *
+ * @param {Record<string, any>} operations
+ * @param {string} bead_id
+ * @param {ConditionWaitPolicy|null} policy
+ * @returns {ConditionWaitSchedule|null}
+ */
+export function conditionWaitTipFor(operations, bead_id, policy) {
+  /** @type {ConditionWaitSchedule|null} */
+  let found = null;
+  for (const [operation_id, operation] of Object.entries(operations || {})) {
+    if (
+      !Array.isArray(operation?.subjects) ||
+      !operation.subjects.some(
+        (/** @type {any} */ subject) => subject?.bead_id === bead_id
+      )
+    ) {
+      continue;
+    }
+    const schedule = conditionWaitSchedule(operations, operation_id, policy);
+    if (
+      schedule !== null &&
+      (found === null ||
+        operation.finished_at > operations[found.tip_id].finished_at)
+    ) {
+      found = schedule;
+    }
+  }
+  return found;
+}
+
+/**
+ * Where a condition-wait schedule stands at `now`: `due` once the next
+ * recheck time came inside the deadline, `expired` from the deadline on (the
+ * automatic recheck stops and a person decides), `waiting` before either.
+ *
+ * @param {ConditionWaitSchedule} schedule
+ * @param {number} now
+ * @returns {'due'|'waiting'|'expired'}
+ */
+export function conditionWaitState(schedule, now) {
+  if (now >= schedule.deadline_at) {
+    return 'expired';
+  }
+  return now >= schedule.next_at ? 'due' : 'waiting';
+}
+
+/**
  * Whether the ONE automatic ladder step is open for this operation right now.
  *
  * `script_retry` is always on when the pinned schema is understood — there is

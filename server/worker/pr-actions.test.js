@@ -174,7 +174,9 @@ function seedStore(options = {}) {
  *   locks?: { acquire: (key: string) => Promise<() => void> },
  *   noNotify?: boolean,
  *   failureConversation?: { launchForBead: (input: any) => Promise<any> },
- *   timeline?: { append: (input: any) => unknown }
+ *   timeline?: { append: (input: any) => unknown },
+ *   now?: () => number,
+ *   conditionWaitPolicy?: () => any
  * }} [options]
  */
 function makeActions(options = {}) {
@@ -496,7 +498,14 @@ function makeActions(options = {}) {
     }),
     tick: vi.fn(async () => {
       calls.push('sched:tick');
-    })
+    }),
+    /** @type {Array<(workspace: string) => Promise<unknown>>} */
+    condition_listeners: [],
+    /** @param {(workspace: string) => Promise<unknown>} listener */
+    onConditionRecheck(listener) {
+      scheduler.condition_listeners.push(listener);
+      return () => {};
+    }
   };
 
   const verify_results = options.verifyResults || [{ ok: true, reason: 'ok' }];
@@ -606,7 +615,10 @@ function makeActions(options = {}) {
     },
     requeryDelayMs: 0,
     sleep: async () => {},
-    now: () => 1000,
+    now: options.now || (() => 1000),
+    ...(options.conditionWaitPolicy
+      ? { conditionWaitPolicy: options.conditionWaitPolicy }
+      : {}),
     // `noNotify` builds the actions with no notifier at all — the shape every
     // pre-UI-9rrk construction site still has.
     notify: options.noNotify === true ? undefined : notify,
@@ -8109,5 +8121,172 @@ describe('cleanup retry reruns the failed repo operation (UI-btsr §3.1–§3.3)
     expect(operations.ensureDeploy.mock.calls[0]).not.toContainEqual(
       expect.objectContaining({ retry_authorized: true })
     );
+  });
+});
+
+describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)', () => {
+  const POLICY = {
+    failure_code: 'condition_wait',
+    interval_ms: 1_000,
+    deadline_ms: 10_000
+  };
+  const MERGED = 'c'.repeat(40);
+
+  /**
+   * One settled `condition_wait` deploy of the row's Bead.
+   *
+   * @param {any} store
+   * @param {number} finished_at
+   */
+  function seedConditionWait(store, finished_at) {
+    store.ensureRepoOperation(WS, {
+      operation_id: 'wait-head',
+      repo_id: REPO,
+      kind: 'deploy',
+      subjects: [{ bead_id: BEAD, merged_sha: MERGED }],
+      effective_base_sha: BASE_SHA,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      target_sha: BASE_SHA
+    });
+    const operation = store.snapshot(WS).repo_operations['wait-head'];
+    store.settleRepoOperation(WS, {
+      operation_id: 'wait-head',
+      attempt_id: operation.attempt_id,
+      exit_code: 75,
+      signal: null,
+      finished_at,
+      conversation_target: true,
+      failure: {
+        code: 'condition_wait',
+        fingerprint: 'f',
+        detail: '',
+        interrupted: false,
+        summary: 'live checkout has uncommitted edits'
+      }
+    });
+  }
+
+  /**
+   * A row stopped at the deploy step on a condition wait, over a fake
+   * coordinator whose deploy settles on `evidence`.
+   *
+   * @param {{ finished_at: number, evidence?: any, now?: number }} input
+   */
+  function waitRow(input) {
+    const store = seedStore({
+      cleanup_failed: {
+        [BEAD]: { step: 'repo_operations', reason: 'condition_wait' }
+      }
+    });
+    store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'repo_operations',
+      merge_sha: MERGED,
+      head_ref: BEAD,
+      pr_url: 'https://github.com/o/r/pull/304'
+    });
+    seedConditionWait(store, input.finished_at);
+    const operations = {
+      hasConfig: vi.fn(async () => ({
+        ok: true,
+        present: true,
+        verify_script_path: null
+      })),
+      ensureVerify: vi.fn(async () => ({ ok: true, inert: true })),
+      ensureDeploy: vi.fn(async (/** @type {any} */ subject) => {
+        subject.on_retry_recorded?.();
+        return { ok: true, operation_id: 'wait-next', timeout_ms: 1000 };
+      }),
+      waitForTerminal: vi.fn(),
+      waitForDeployTerminal: vi.fn(
+        async () => input.evidence ?? { state: 'succeeded' }
+      ),
+      verifyReceipt: vi.fn(),
+      findExactDeployOperation: vi.fn(async () => null),
+      deploymentEvidence: vi.fn(async () => ({ state: 'succeeded' }))
+    };
+    const env = makeActions({
+      ...ON_BASE,
+      store,
+      repoOperations: operations,
+      details: [prOf({ state: 'MERGED', merged_sha: MERGED })],
+      now: () => input.now ?? 1_000,
+      conditionWaitPolicy: () => POLICY
+    });
+    const recheck = () =>
+      Promise.all(
+        env.scheduler.condition_listeners.map((listener) => listener(WS))
+      );
+    return { ...env, operations, recheck };
+  }
+
+  test('registers its row scan on the scheduler pass', () => {
+    const env = waitRow({ finished_at: 0 });
+
+    expect(env.scheduler.condition_listeners).toHaveLength(1);
+  });
+
+  test('replays the cleanup without person authority once the recheck time came', async () => {
+    const env = waitRow({ finished_at: 0 });
+
+    await env.recheck();
+
+    expect(env.operations.ensureDeploy).toHaveBeenCalledOnce();
+    expect(env.operations.ensureDeploy.mock.calls[0][0]).not.toHaveProperty(
+      'retry_authorized'
+    );
+  });
+
+  test('closes the Bead after the recheck deploy succeeds', async () => {
+    const env = waitRow({ finished_at: 0 });
+
+    await env.recheck();
+
+    expect(env.store.snapshot(WS).done).toContainEqual(
+      expect.objectContaining({ bead_id: BEAD })
+    );
+  });
+
+  test('leaves the row alone before the recheck time', async () => {
+    const env = waitRow({ finished_at: 500 });
+
+    await env.recheck();
+
+    expect(env.operations.ensureDeploy).not.toHaveBeenCalled();
+  });
+
+  test('ignores the pass of another workspace', async () => {
+    const env = waitRow({ finished_at: 0 });
+
+    await env.scheduler.condition_listeners[0]('/tmp/other-workspace');
+
+    expect(env.operations.ensureDeploy).not.toHaveBeenCalled();
+  });
+
+  test('keeps a repeated condition-wait stop unannounced inside the deadline', async () => {
+    const env = waitRow({
+      finished_at: 0,
+      evidence: { state: 'failed', code: 'condition_wait' }
+    });
+
+    await env.recheck();
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'repo_operations',
+      reason: 'condition_wait'
+    });
+    expect(env.notify.needsHuman).not.toHaveBeenCalled();
+  });
+
+  test('announces the deadline once instead of rechecking', async () => {
+    const env = waitRow({ finished_at: 0, now: 20_000 });
+
+    await env.recheck();
+    await env.recheck();
+
+    expect(env.operations.ensureDeploy).not.toHaveBeenCalled();
+    expect(env.notify.needsHuman).toHaveBeenCalledOnce();
   });
 });

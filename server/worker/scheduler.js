@@ -150,6 +150,11 @@ import {
   receiptLineageForAttempt,
   receiptProbeError
 } from './receipt-check.js';
+import { conditionWaitPolicy } from './repo-operation-policy.js';
+import {
+  conditionWaitState,
+  conditionWaitTipFor
+} from './resolution-ladder.js';
 import {
   STALE_RESIDUE_FAILURE_CLASS,
   failedDiscardOperation,
@@ -198,6 +203,7 @@ import {
   SESSION_LANE_PANE_MARKER
 } from './tmux-launcher.js';
 import * as default_usage_receipts from './usage-receipts.js';
+import { conditionWaitRelease } from './wait-judgment.js';
 import * as default_work_recovery_policy from './work-recovery-policy.js';
 import { publishWorkspaceActivity } from './workspace-activity.js';
 import { branchForBead, readRebaseBranch } from './worktree.js';
@@ -890,6 +896,10 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * The automatic failure conversation (UI-jbl1 §3.1) a terminal dispatch
  * residue disposition failure opens once (UI-68r5 §3.2). Absent wiring only
  * announces the failure.
+ * @property {() => import('./resolution-ladder.js').ConditionWaitPolicy|null} [conditionWaitPolicy]
+ * The pinned `[deploy]` exit-75 condition wait (dotfiles-rnyd9); defaults to
+ * the pinned repo-operation policy. Null keeps every landing failure on its
+ * ordinary records and rechecks nothing.
  * @property {{ complete: (input: { workspace: string, attempt_id: string, bead_id: string, session_ok: boolean, reason?: string|null }) => Promise<{ ok: boolean, reason?: string }> }} [reviewSession]
  * Completion verdict for a `[리뷰 후 머지]` attempt (UI-d7fy §5.4). The queue,
  * not this engine, owns that lane: it re-observes the PR head, re-reads
@@ -1552,6 +1562,7 @@ export function interactiveTurnState(running, attention) {
  *   onIssuesChanged: (workspace: string) => Promise<void>,
  *   rescanWaiting: (workspace: string) => Promise<{ checked: number, returned: number }>,
  *   reconcile: (workspace: string) => Promise<void>,
+ *   onConditionRecheck: (listener: (workspace: string) => Promise<unknown>) => () => void,
  *   reconcileInteractiveSessions: (workspace: string) => Promise<void>,
  *   conversationHandoff: (workspace: string, input: { bead_id: string, attempt_id: string }) => Promise<{ ok: boolean, reason: string|null, pending?: boolean }>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
@@ -1564,6 +1575,8 @@ export function interactiveTurnState(running, attention) {
  */
 export function createScheduler(deps) {
   const now = deps.now || (() => Date.now());
+  const conditionWait =
+    deps.conditionWaitPolicy || (() => conditionWaitPolicy());
   const fs = deps.fs || nodeFs;
   const guardHook = deps.guardHook || default_guard_hook;
   const interactiveTmuxSession =
@@ -1749,6 +1762,100 @@ export function createScheduler(deps) {
       .then(() => undefined)
       .catch((err) => {
         log('attempt failure comment failed for %s: %o', bead_id, err);
+      });
+  }
+
+  /**
+   * Chain heads whose one wait comment this process already posted — the same
+   * in-memory guard {@link commented_attempts} gives the failure comment.
+   *
+   * @type {Set<string>}
+   */
+  const condition_wait_commented = new Set();
+
+  /**
+   * How a quick_fix landing stopped on a `[deploy]` condition wait records
+   * itself (dotfiles-rnyd9 `condition_wait_chain`), read from the Bead's
+   * durable deploy chain: `first` for the chain's first exit 75 inside its
+   * deadline (one wait comment), `quiet` for a repeat inside it or for a
+   * deadline already announced, and null — the ordinary failure records — for
+   * the one pass that claims the chain head's once-mark after the deadline, or
+   * when the pin grants no condition wait at all.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {'first'|'quiet'|null}
+   */
+  function conditionWaitRecordOf(workspace, bead_id) {
+    const schedule = conditionWaitTipFor(
+      deps.store.snapshot(workspace).repo_operations || {},
+      bead_id,
+      conditionWait()
+    );
+    if (schedule === null) {
+      return null;
+    }
+    if (conditionWaitState(schedule, now()) !== 'expired') {
+      return schedule.head_id === schedule.tip_id ? 'first' : 'quiet';
+    }
+    return claimConditionWaitDeadline(workspace, schedule.head_id)
+      ? null
+      : 'quiet';
+  }
+
+  /**
+   * Spend a condition-wait chain's once-mark — the head record's
+   * `failure_notice`, written unconsumed when it settled — so the deadline's
+   * failure records are left once per chain, across restarts.
+   *
+   * @param {string} workspace
+   * @param {string} head_id
+   * @returns {boolean} Whether THIS call claimed it.
+   */
+  function claimConditionWaitDeadline(workspace, head_id) {
+    return (
+      typeof deps.store.consumeRepoOperationFailureNotice === 'function' &&
+      deps.store.consumeRepoOperationFailureNotice(workspace, {
+        operation_id: head_id
+      }).ok === true
+    );
+  }
+
+  /**
+   * Post the one wait comment of a condition-wait chain: what the script said
+   * and when the Worker looks again. Best-effort like the failure comment.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   */
+  function postConditionWaitComment(workspace, bead_id) {
+    const queue = deps.store.snapshot(workspace);
+    const schedule = conditionWaitTipFor(
+      queue.repo_operations || {},
+      bead_id,
+      conditionWait()
+    );
+    if (
+      typeof deps.bd?.comment !== 'function' ||
+      schedule === null ||
+      condition_wait_commented.has(schedule.head_id)
+    ) {
+      return;
+    }
+    condition_wait_commented.add(schedule.head_id);
+    const tip = queue.repo_operations[schedule.tip_id];
+    const text = [
+      `배포 조건 대기${typeof tip.failure?.summary === 'string' ? ` · ${tip.failure.summary}` : ''}`,
+      conditionWaitRelease(schedule, false),
+      '수정 Bead 없이 Worker가 정해진 간격으로 배포를 다시 확인합니다.',
+      ...(typeof tip.log_path === 'string' ? [`로그: ${tip.log_path}`] : [])
+    ].join('\n');
+    const post = deps.bd.comment;
+    comment_chain = comment_chain
+      .then(() => post(bead_id, text))
+      .then(() => undefined)
+      .catch((err) => {
+        log('condition wait comment failed for %s: %o', bead_id, err);
       });
   }
 
@@ -6568,9 +6675,11 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {import('./failure-class.js').FailureClassification} classification
    * @param {any} cause_detail
-   * @param {{ moot?: boolean, bead_status?: string|null, awaiting_user?: string|null, repo?: string|null, at?: number, head_oid?: string }} [options]
+   * @param {{ moot?: boolean, bead_status?: string|null, awaiting_user?: string|null, repo?: string|null, at?: number, head_oid?: string, condition_wait?: 'first'|'quiet' }} [options]
    * `head_oid` is the owned worktree HEAD a proven prerequisite wait observed
    * (prerequisite-wait-residue D3); the residue resume matches identity on it.
+   * `condition_wait` marks a quick_fix landing stopped on a `[deploy]`
+   * condition wait inside its deadline (see {@link conditionWaitRecordOf}).
    */
   function settleFailureTier(
     workspace,
@@ -6890,6 +6999,54 @@ export function createScheduler(deps) {
         ...(options.moot === true ? { dismissed_at: at } : {})
       }
     });
+    // A landing stopped on a `[deploy]` condition wait is not a terminal
+    // failure before its deadline (dotfiles-rnyd9 `condition_wait_chain`):
+    // the row stays `failed` for the settlement resume, but only the chain's
+    // first exit 75 leaves a record — one wait comment — and a repeat leaves
+    // none. The failure push, line and comment come once, at the deadline.
+    if (options.condition_wait) {
+      if (options.condition_wait === 'first') {
+        postConditionWaitComment(workspace, bead_id);
+      }
+      if (tier === 'individual') {
+        closeRetryLineage(workspace, bead_id);
+      }
+      return;
+    }
+    announceAttemptFailure(
+      workspace,
+      attempt_id,
+      bead_id,
+      classification,
+      cause_detail,
+      { moot: options.moot === true, repo, at }
+    );
+    if (tier === 'individual') {
+      closeRetryLineage(workspace, bead_id);
+    }
+  }
+
+  /**
+   * The three records of a terminal attempt failure — the lifecycle push, the
+   * `attempt_failed` history line and the hand-off comment — shared by the
+   * failure tier and the condition wait that reaches its deadline.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {import('./failure-class.js').FailureClassification} classification
+   * @param {any} cause_detail
+   * @param {{ moot: boolean, repo: string|null|undefined, at: number }} options
+   */
+  function announceAttemptFailure(
+    workspace,
+    attempt_id,
+    bead_id,
+    classification,
+    cause_detail,
+    options
+  ) {
+    const { repo, at } = options;
     notifyLifecycle('attemptFailed', {
       bead_id,
       cause: classification.cause,
@@ -6909,9 +7066,6 @@ export function createScheduler(deps) {
         false
       );
     }
-    if (tier === 'individual') {
-      closeRetryLineage(workspace, bead_id);
-    }
   }
 
   /**
@@ -6929,7 +7083,8 @@ export function createScheduler(deps) {
    * (UI-2o4z §2); the classifier's `summary` is merged into it here.
    * @param {{ moot?: boolean, verdict?: any, bead_status?: string|null,
    *   pr_url?: string|null, awaiting_user?: string|null,
-   *   tier_hint?: 'waiting', head_oid?: string }} [options]
+   *   tier_hint?: 'waiting', head_oid?: string,
+   *   condition_wait?: 'first'|'quiet' }} [options]
    * `verdict`/`bead_status`/`pr_url`/`awaiting_user` are the classifier's
    * inputs (§3.1): without them a successful-but-undelivered ending cannot be
    * told apart from a park, so only the paths that HAVE them pass them.
@@ -7044,6 +7199,9 @@ export function createScheduler(deps) {
         at,
         ...(typeof options.head_oid === 'string' && options.head_oid.length > 0
           ? { head_oid: options.head_oid }
+          : {}),
+        ...(options.condition_wait
+          ? { condition_wait: options.condition_wait }
           : {})
       }
     );
@@ -9000,13 +9158,18 @@ export function createScheduler(deps) {
       typeof result.reason === 'string' && result.reason.length > 0
         ? result.reason
         : 'unknown';
+    const condition_wait =
+      reason === 'condition_wait'
+        ? conditionWaitRecordOf(workspace, bead_id)
+        : null;
     await failAttempt(
       workspace,
       attempt_id,
       bead_id,
       prior,
       `quickfix_landing_failed:${reason}`,
-      result.detail
+      result.detail,
+      condition_wait ? { condition_wait } : {}
     );
     notifyChanged(workspace);
     await tick(workspace);
@@ -10548,9 +10711,147 @@ export function createScheduler(deps) {
       await settleStaleWorkerClaims(workspace);
       await settleExternalWaitReservations(workspace);
       await reconcileInteractiveSessions(workspace);
+      startConditionRechecks(workspace);
     } finally {
       reconciling.delete(workspace);
     }
+  }
+
+  /**
+   * Due-check owners of `[deploy]` condition waits outside this engine — the
+   * PR cleanup lane registers one — run on the same periodic pass.
+   *
+   * @type {Set<(workspace: string) => Promise<unknown>>}
+   */
+  const condition_recheck_listeners = new Set();
+
+  /** Workspaces whose condition-wait due check is still running. @type {Set<string>} */
+  const condition_rechecking = new Set();
+
+  /**
+   * Register one more due-check on the periodic pass (dotfiles-rnyd9). The PR
+   * cleanup lane, built after this engine, hangs its own row scan here so no
+   * second timer exists.
+   *
+   * @param {(workspace: string) => Promise<unknown>} listener
+   * @returns {() => void} Unregister.
+   */
+  function onConditionRecheck(listener) {
+    condition_recheck_listeners.add(listener);
+    return () => {
+      condition_recheck_listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Start the condition-wait due check off the periodic pass: a recheck waits
+   * for its deploy to settle, which must not hold the dead-attempt
+   * reconciliation behind it. One check per workspace at a time.
+   *
+   * @param {string} workspace
+   */
+  function startConditionRechecks(workspace) {
+    if (condition_rechecking.has(workspace)) {
+      return;
+    }
+    condition_rechecking.add(workspace);
+    recheckConditionWaits(workspace)
+      .catch((err) => {
+        log('condition wait recheck failed for %s: %o', workspace, err);
+      })
+      .finally(() => {
+        condition_rechecking.delete(workspace);
+      });
+  }
+
+  /**
+   * The automatic recheck of quick_fix landings stopped on a `[deploy]`
+   * condition wait (dotfiles-rnyd9 `condition_wait_deploy_recheck`). A row
+   * whose recheck time came re-enters the SAME settlement resume a person's
+   * `[정리 재시도]` takes, without that person's authority — the coordinator
+   * alone grants the successor, from the durable chain. A row past its
+   * deadline is rechecked no more; its failure records are left once.
+   * Registered owners scan their own rows afterwards.
+   *
+   * @param {string} workspace
+   */
+  async function recheckConditionWaits(workspace) {
+    const policy = conditionWait();
+    if (policy !== null) {
+      const q = deps.store.snapshot(workspace);
+      for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
+        const record = /** @type {any} */ (attempt);
+        if (
+          record?.status !== 'failed' ||
+          record.quickfix_lane !== true ||
+          record.quickfix_landing?.cursor !== 'repo_operations' ||
+          record.quickfix_landing.reason !== 'condition_wait' ||
+          latestImplementationAttempt(q, record.bead_id)?.attempt_id !==
+            attempt_id
+        ) {
+          continue;
+        }
+        const schedule = conditionWaitTipFor(
+          q.repo_operations || {},
+          record.bead_id,
+          policy
+        );
+        if (schedule === null) {
+          continue;
+        }
+        const state = conditionWaitState(schedule, now());
+        if (state === 'expired') {
+          announceConditionWaitDeadline(workspace, attempt_id, schedule);
+        } else if (state === 'due') {
+          await resume(workspace, attempt_id);
+        }
+      }
+    }
+    for (const listener of condition_recheck_listeners) {
+      try {
+        await listener(workspace);
+      } catch (err) {
+        log('condition wait listener failed for %s: %o', workspace, err);
+      }
+    }
+  }
+
+  /**
+   * Leave a condition-wait chain's terminal failure records once its deadline
+   * passed (dotfiles-rnyd9 `repo_operation_failure: once_per_chain_at_deadline`):
+   * the push, the `attempt_failed` line and the hand-off comment the attempt
+   * skipped while it waited. The chain head's once-mark makes it one per chain.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {import('./resolution-ladder.js').ConditionWaitSchedule} schedule
+   */
+  function announceConditionWaitDeadline(workspace, attempt_id, schedule) {
+    const attempt = /** @type {any} */ (
+      deps.store.snapshot(workspace).attempts?.[attempt_id]
+    );
+    if (!attempt || !claimConditionWaitDeadline(workspace, schedule.head_id)) {
+      return;
+    }
+    const cause = typeof attempt.cause === 'string' ? attempt.cause : '';
+    announceAttemptFailure(
+      workspace,
+      attempt_id,
+      attempt.bead_id,
+      {
+        tier: 'individual',
+        cause,
+        summary:
+          typeof attempt.cause_detail?.summary === 'string'
+            ? attempt.cause_detail.summary
+            : failureTokenSummary(cause),
+        retry: null,
+        env_group: null
+      },
+      attempt.cause_detail ?? null,
+      { moot: false, repo: attempt.repo ?? null, at: schedule.deadline_at }
+    );
+    notifyChanged(workspace);
   }
 
   /** @type {Map<string, Promise<unknown>>} */
@@ -22738,6 +23039,7 @@ export function createScheduler(deps) {
     onIssuesChanged,
     rescanWaiting,
     reconcile,
+    onConditionRecheck,
     reconcileInteractiveSessions,
     conversationHandoff,
     sweepClosedQueue,

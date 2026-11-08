@@ -33,7 +33,8 @@ import {
   failureCategory,
   failureNextAction,
   failureSentence,
-  failureText
+  failureText,
+  isConditionWait
 } from './failure-labels.js';
 import { autoResumeRefusalBadge } from './gate-labels.js';
 import {
@@ -1114,6 +1115,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       : null;
   const failed = tile.failed === true;
   const failure = failed ? tile.failure || null : null;
+  // A `[deploy]` condition wait (dotfiles-rnyd9) keeps the failure slot and
+  // popover — its exits are the failure's — but is not drawn as a failure.
+  const condition_wait = failure !== null && isConditionWait(failure.cause);
   // 파킹·backoff 대기는 실패가 아니다 (UI-5ym8 §2): 같은 투영을 읽지만 실패
   // 뱃지도 팝오버도 얻지 않고, 큐가 계속 간다는 사실이 색으로도 보여야 한다.
   const parked = tile.parked === true && !failed;
@@ -1354,12 +1358,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const failure_badges = failure
     ? html`<button
           type="button"
-          class="ui-chip rtile__failure-badge"
+          class="ui-chip rtile__failure-badge${condition_wait
+            ? ' rtile__held-badge'
+            : ''}"
           data-attempt-id=${failure.attempt_id}
           aria-expanded=${failure.open === true ? 'true' : 'false'}
-          aria-label="실패 상세"
+          aria-label=${condition_wait ? '대기 상세' : '실패 상세'}
         >
-          ⛔ ${failureCategory(failure.cause) || '실패'}
+          ${`${condition_wait ? '⏳' : '⛔'} ${failureCategory(failure.cause) || '실패'}`}
         </button>
         ${failure.halted_auto_advance
           ? html`<span class="rtile__auto-halted">자동 진행 꺼짐</span>`
@@ -1569,13 +1575,17 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused
       ? ' rtile--paused'
-      : ''}${failed ? ' rtile--failed rtile--compact' : ''}${held
-      ? ' rtile--held rtile--compact'
-      : ''}${parked ? ' rtile--parked' : ''}${retry_wait
-      ? ' rtile--retry-wait'
-      : ''}${waiting ? ' rtile--waiting' : ''}${session
-      ? ' rtile--session'
-      : ''}${provider_hold ? ' rtile--provider-hold' : ''}${external_wait
+      : ''}${failed
+      ? condition_wait
+        ? ' rtile--held rtile--compact'
+        : ' rtile--failed rtile--compact'
+      : ''}${held ? ' rtile--held rtile--compact' : ''}${parked
+      ? ' rtile--parked'
+      : ''}${retry_wait ? ' rtile--retry-wait' : ''}${waiting
+      ? ' rtile--waiting'
+      : ''}${session ? ' rtile--session' : ''}${provider_hold
+      ? ' rtile--provider-hold'
+      : ''}${external_wait
       ? ' rtile--external-wait'
       : ''}${tile.filter_match === false ? ' is-dimmed' : ''}"
     data-bead-id=${tile.bead_id}
@@ -1785,8 +1795,9 @@ function tileOverlay(tile) {
 
 /**
  * The status wording of one running lane item, one table for both tabs: an
- * orphaned failure reads `중단됨`, a parked session `확인 필요`, and a wait
- * caused by a moved base `반영 대기`.
+ * orphaned failure reads `중단됨`, a parked session `확인 필요`, a wait
+ * caused by a moved base `반영 대기`, and a landing stopped on a `[deploy]`
+ * condition wait `대기` (dotfiles-rnyd9).
  *
  * @param {any} item - A lane-model running item.
  * @returns {string|undefined}
@@ -1794,6 +1805,9 @@ function tileOverlay(tile) {
 function runningStatusLabel(item) {
   switch (item.run_state) {
     case 'failed':
+      if (isConditionWait(item.failure?.cause)) {
+        return '대기';
+      }
       return item.status === 'orphaned' ? '중단됨' : '실패';
     case 'parked':
       return '확인 필요';

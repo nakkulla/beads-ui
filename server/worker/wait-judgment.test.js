@@ -217,6 +217,107 @@ describe('operation recovery wait reasons', () => {
   });
 });
 
+describe('deploy condition wait rows (dotfiles-rnyd9)', () => {
+  const POLICY = {
+    failure_code: 'condition_wait',
+    interval_ms: 30 * MINUTE,
+    deadline_ms: 24 * 60 * MINUTE
+  };
+
+  /** @param {Record<string, any>} [patch] */
+  function waitOperation(patch = {}) {
+    return {
+      kind: 'deploy',
+      state: 'failed',
+      source: 'automatic',
+      subjects: [{ bead_id: 'UI-consumer' }],
+      finished_at: NOW - 10 * MINUTE,
+      superseded_by: null,
+      failure: {
+        code: 'condition_wait',
+        summary: 'live checkout has uncommitted edits'
+      },
+      recovery: {
+        classification: 'condition_wait',
+        disposition: 'wait',
+        reason: 'condition',
+        code_defect: false,
+        handoff: null
+      },
+      ...patch
+    };
+  }
+
+  /** @param {Record<string, any>} operations */
+  function judge(operations) {
+    return run({
+      queue: queue({ repo_operations: operations }),
+      condition_wait_policy: POLICY
+    }).wait_reasons;
+  }
+
+  test('keeps a row inside its deadline normal', () => {
+    const [row] = judge({ op: waitOperation() });
+
+    expect(row).toMatchObject({
+      kind: 'recovery',
+      verdict: 'normal',
+      headline: '배포 조건 대기 · live checkout has uncommitted edits',
+      actions: []
+    });
+    expect(row.verdict_reason).toBeUndefined();
+  });
+
+  test('carries the next recheck time inside the deadline', () => {
+    const [row] = judge({ op: waitOperation() });
+
+    expect(row.next_check_at).toBe(NOW + 20 * MINUTE);
+    expect(row.release).toBe(
+      '다음 자동 재확인 12:20 · 기한 09/16 11:50 — 지금 다시 돌리려면 [정리 재시도]'
+    );
+  });
+
+  test('times the deadline from the chain head', () => {
+    const [row] = judge({
+      head: waitOperation({
+        finished_at: NOW - 23 * 60 * MINUTE,
+        superseded_by: 'tip'
+      }),
+      tip: waitOperation({ retry_of: 'head' })
+    });
+
+    expect(row.release).toContain('기한 09/15 13:00');
+    expect(row.since).toBe(NOW - 23 * 60 * MINUTE);
+  });
+
+  test('asks for a decision once the deadline passed', () => {
+    const [row] = judge({
+      op: waitOperation({ finished_at: NOW - 25 * 60 * MINUTE })
+    });
+
+    expect(row).toMatchObject({
+      verdict: 'action_required',
+      verdict_reason: expect.objectContaining({ code: 'decision' }),
+      release: '기한 지남 — [세션에서 이어가기]로 원인을 보거나 [정리 재시도]'
+    });
+    expect(row.next_check_at).toBeUndefined();
+  });
+
+  test('asks for a decision on a Bead-less manual run nothing rechecks', () => {
+    const [row] = judge({
+      op: waitOperation({
+        source: 'manual',
+        subjects: [{ bead_id: 'manual' }]
+      })
+    });
+
+    expect(row).toMatchObject({
+      headline: '배포 조건 대기 · live checkout has uncommitted edits',
+      verdict: 'action_required'
+    });
+  });
+});
+
 /**
  * @param {Record<string, any>} [overrides]
  * @returns {Record<string, any>}
