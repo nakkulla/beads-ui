@@ -37422,6 +37422,9 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
    */
   function waitEnv(input) {
     const notify = { attemptFailed: vi.fn() };
+    const failureConversation = {
+      launchForBead: vi.fn(async () => ({ session: 'launched' }))
+    };
     const settle =
       input.settle ||
       vi.fn(async () => ({
@@ -37435,11 +37438,14 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
       notify,
       quickfixLanding: { settle },
       now: input.now,
-      .../** @type {any} */ ({ conditionWaitPolicy: () => POLICY })
+      .../** @type {any} */ ({
+        conditionWaitPolicy: () => POLICY,
+        failureConversation
+      })
     });
     const comment = vi.fn(async () => {});
     /** @type {any} */ (env.bd).comment = comment;
-    return { ...env, notify, settle, comment };
+    return { ...env, notify, settle, comment, failureConversation };
   }
 
   /**
@@ -37451,7 +37457,7 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
     }
   }
 
-  test('leaves one wait comment and no failure push for the first exit 75', async () => {
+  test('leaves no failure push or comment of its own for the first exit 75', async () => {
     const clock = { now: 50_000 };
     const env = waitEnv({ now: () => clock.now });
     seedConditionWait(env.store, 'head', 50_000);
@@ -37464,10 +37470,7 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
     await env.scheduler.commentsIdle();
 
     expect(env.notify.attemptFailed).not.toHaveBeenCalled();
-    expect(env.comment).toHaveBeenCalledTimes(1);
-    expect(
-      String(/** @type {any[][]} */ (env.comment.mock.calls)[0][1])
-    ).toMatch(/^배포 조건 대기/);
+    expect(env.comment).not.toHaveBeenCalled();
   });
 
   test('leaves nothing new for a repeated exit 75 in the chain', async () => {
@@ -37595,5 +37598,58 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
     expect(env.settle).not.toHaveBeenCalled();
     expect(env.notify.attemptFailed).toHaveBeenCalledTimes(1);
     expect(env.comment).toHaveBeenCalledTimes(1);
+  });
+
+  test('opens the failure conversation once when the deadline passes', async () => {
+    const clock = { now: 60_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.failureConversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(env.failureConversation.launchForBead).toHaveBeenCalledWith({
+      workspace: WS,
+      repo: '/repo',
+      bead_id: 'S1'
+    });
+  });
+
+  test('opens the failure conversation once for a landing that settles past the deadline', async () => {
+    const clock = { now: 60_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.resume(WS, 'quickfix-wait', {
+      job_retry_authorized: true
+    });
+    await env.scheduler.resume(WS, 'quickfix-wait', {
+      job_retry_authorized: true
+    });
+    await flush();
+
+    expect(env.failureConversation.launchForBead).toHaveBeenCalledTimes(1);
+  });
+
+  test('opens no failure conversation inside the deadline', async () => {
+    const clock = { now: 50_500 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.resume(WS, 'quickfix-wait', {
+      job_retry_authorized: true
+    });
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.failureConversation.launchForBead).not.toHaveBeenCalled();
   });
 });

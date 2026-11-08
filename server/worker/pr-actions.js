@@ -2775,9 +2775,18 @@ export function createPrActions(deps) {
             }
           }
         }
+        // An automatic replay of a cleanup waiting on a `[deploy]` condition
+        // deploys the waiting tip's own target, so the coordinator records
+        // that tip's `retry_of` successor in the same chain even after the
+        // base moved on (dotfiles-rnyd9 `condition_wait_deploy_recheck`); a
+        // newer base SHA would start a separate record and a fresh deadline.
+        // A person's retry deploys the current base as before.
+        const wait_target = retry_authorized
+          ? null
+          : conditionWaitTargetOf(bead_id, target_base);
         const deployed = await repo_operations.ensureDeploy({
           target_base,
-          target_sha: synced.sha,
+          target_sha: wait_target ?? synced.sha,
           subjects: [{ bead_id, merged_sha: merge_sha }],
           ...(retry_authorized ? { retry_authorized: true } : {}),
           // The coordinator also records a successor on its own for a
@@ -3365,6 +3374,33 @@ export function createPrActions(deps) {
         operation_id: schedule.head_id
       }).ok === true
     );
+  }
+
+  /**
+   * The deploy target of a cleanup waiting on a `[deploy]` condition
+   * (dotfiles-rnyd9): the target SHA of the Bead's `condition_wait` tip while
+   * its chain is inside the deadline, for the same base. Null otherwise —
+   * no wait, a deadline that passed, or a tip of another base.
+   *
+   * @param {string} bead_id
+   * @param {string} target_base
+   * @returns {string|null}
+   */
+  function conditionWaitTargetOf(bead_id, target_base) {
+    const operations = deps.store.snapshot(workspace).repo_operations || {};
+    const schedule = conditionWaitTipFor(operations, bead_id, conditionWait());
+    if (
+      schedule === null ||
+      conditionWaitState(schedule, (deps.now || Date.now)()) === 'expired'
+    ) {
+      return null;
+    }
+    const tip = operations[schedule.tip_id];
+    return tip.target_base === target_base &&
+      typeof tip.target_sha === 'string' &&
+      /^[0-9a-f]{40}$/i.test(tip.target_sha)
+      ? tip.target_sha
+      : null;
   }
 
   /**

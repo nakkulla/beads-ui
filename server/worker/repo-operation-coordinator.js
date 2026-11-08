@@ -87,7 +87,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string, owner?: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null, notify?: { needsHuman: (input: any) => Promise<void>, conditionWaitEntered?: (input: { bead_id: string, summary?: string|null, release: string, repo?: string|null }) => Promise<void> }|null, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string, owner?: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null, notify?: { needsHuman: (input: any) => Promise<void>, conditionWaitEntered?: (input: { bead_id: string, summary?: string|null, release: string, repo?: string|null }) => Promise<void> }|null, comment?: (bead_id: string, text: string) => Promise<void>, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -113,6 +113,9 @@ export function createRepoOperationCoordinator(deps) {
   // The automatic failure conversation (UI-jbl1 §3.1). Optional on the same
   // rule as the notifier: without it the failure is only announced.
   const failure_conversation = deps.failureConversation || null;
+  // The Bead comment writer the one wait comment of a `[deploy]` condition
+  // wait chain goes through (dotfiles-rnyd9). Optional like the notifier.
+  const comment = deps.comment || null;
   const now = deps.now || (() => Date.now());
   const sleep =
     deps.sleep ||
@@ -830,11 +833,13 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
-   * Push the one wait notification of a `[deploy]` condition-wait chain
-   * (dotfiles-rnyd9 `first_exit_75_notification: wait_notification_once`):
-   * on the chain's first exit 75 only, claimed on the head record before it is
-   * sent, so a repeat 75, a re-settlement and a restart send nothing. A wait,
-   * not a failure: what the script said and when the Worker looks again. A
+   * Leave the one wait notification and the one wait comment of a `[deploy]`
+   * condition-wait chain (dotfiles-rnyd9 `first_exit_75_notification:
+   * wait_notification_once`): on the chain's first exit 75 only, claimed on
+   * the head record before either is sent, so a repeat 75, a re-settlement
+   * and a restart leave nothing again. Both the quick_fix landing and the PR
+   * cleanup deploy settle here, so both get the same records. A wait, not a
+   * failure: what the script said and when the Worker looks again. A
    * Bead-less manual run, which nothing rechecks, has no schedule and is
    * announced as the failure it is.
    *
@@ -852,31 +857,50 @@ export function createRepoOperationCoordinator(deps) {
     const bead_id = operation?.subjects?.find(
       (/** @type {any} */ subject) => typeof subject?.bead_id === 'string'
     )?.bead_id;
+    const announce =
+      typeof notify?.conditionWaitEntered === 'function'
+        ? notify.conditionWaitEntered
+        : null;
     if (
       schedule === null ||
       schedule.head_id !== operation_id ||
       typeof bead_id !== 'string' ||
-      typeof notify?.conditionWaitEntered !== 'function' ||
+      (announce === null && comment === null) ||
       typeof deps.store.claimRepoOperationWaitNotice !== 'function' ||
       !deps.store.claimRepoOperationWaitNotice(workspace, { operation_id }).ok
     ) {
       return;
     }
-    const announce = notify.conditionWaitEntered;
-    const run = async () => {
-      await announce({
-        bead_id,
-        summary:
-          typeof operation.failure?.summary === 'string'
-            ? operation.failure.summary
-            : null,
-        release: conditionWaitRelease(schedule, false),
-        repo: deps.repo
+    const summary =
+      typeof operation.failure?.summary === 'string'
+        ? operation.failure.summary
+        : null;
+    const release = conditionWaitRelease(schedule, false);
+    if (announce !== null) {
+      const run = async () => {
+        await announce({ bead_id, summary, release, repo: deps.repo });
+      };
+      run().catch((err) => {
+        log('condition wait notify failed: %o', err);
       });
-    };
-    run().catch((err) => {
-      log('condition wait notify failed: %o', err);
-    });
+    }
+    if (comment !== null) {
+      const text = [
+        `배포 조건 대기${summary === null ? '' : ` · ${summary}`}`,
+        release,
+        '수정 Bead 없이 Worker가 정해진 간격으로 배포를 다시 확인합니다.',
+        ...(typeof operation.log_path === 'string' &&
+        operation.log_path.length > 0
+          ? [`로그: ${operation.log_path}`]
+          : [])
+      ].join('\n');
+      const post = async () => {
+        await comment(bead_id, text);
+      };
+      post().catch((err) => {
+        log('condition wait comment failed for %s: %o', bead_id, err);
+      });
+    }
   }
 
   /**
@@ -980,7 +1004,11 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} workspace
    * @param {any} operation
    * @param {string} operation_id
-   * @param {{ code: string, detail?: string, interrupted?: boolean, exit_code?: number|null, signal?: string|null, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, started_at?: number }} failure
+   * @param {{ code: string, detail?: string, interrupted?: boolean, exit_code?: number|null, signal?: string|null, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, started_at?: number, finished_at?: number }} failure
+   * `finished_at` is the runner marker's script exit time; the record keeps it
+   * instead of the settlement time, so a settlement read late still schedules
+   * a `condition_wait` recheck and deadline from the exit (dotfiles-rnyd9
+   * `interval_from: tip_exit`).
    */
   async function settleFailure(workspace, operation, operation_id, failure) {
     const current =
@@ -1054,6 +1082,9 @@ export function createRepoOperationCoordinator(deps) {
       signal: failure.signal ?? null,
       log_digest,
       failure: failure_record,
+      ...(Number.isFinite(failure.finished_at)
+        ? { finished_at: Number(failure.finished_at) }
+        : {}),
       retry_outcome:
         current.retry === null &&
         (blocked_reason !== null || !scriptRetryApplicable(current))
@@ -1489,7 +1520,8 @@ export function createRepoOperationCoordinator(deps) {
               : deploy_code,
           exit_code: marker.exit_code,
           signal: marker.signal,
-          started_at: marker.started_at
+          started_at: marker.started_at,
+          finished_at: marker.finished_at
         });
         return;
       }
@@ -1529,7 +1561,8 @@ export function createRepoOperationCoordinator(deps) {
               : 'script_failed',
         exit_code: marker.exit_code,
         signal: marker.signal,
-        started_at: marker.started_at
+        started_at: marker.started_at,
+        finished_at: marker.finished_at
       }
     );
     if (operation.kind === 'verify' && disposition !== 'retry_pending') {

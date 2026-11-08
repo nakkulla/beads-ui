@@ -8131,6 +8131,7 @@ describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)',
     deadline_ms: 10_000
   };
   const MERGED = 'c'.repeat(40);
+  const MOVED_BASE = '9'.repeat(40);
 
   /**
    * One settled `condition_wait` deploy of the row's Bead.
@@ -8175,7 +8176,10 @@ describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)',
    * `intent` stands a completion intent on the row in every snapshot the
    * actions read.
    *
-   * @param {{ finished_at: number, evidence?: any, now?: number, intent?: Record<string, any> }} input
+   * `base_moved` makes the fetched base tip a newer SHA than the waiting
+   * tip's target.
+   *
+   * @param {{ finished_at: number, evidence?: any, now?: number, intent?: Record<string, any>, base_moved?: boolean }} input
    */
   function waitRow(input) {
     const seeded = seedStore({
@@ -8224,7 +8228,15 @@ describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)',
       repoOperations: operations,
       details: [prOf({ state: 'MERGED', merged_sha: MERGED })],
       now: () => input.now ?? 1_000,
-      conditionWaitPolicy: () => POLICY
+      conditionWaitPolicy: () => POLICY,
+      ...(input.base_moved
+        ? {
+            gitStdout: (/** @type {string[]} */ args) =>
+              args[0] === 'rev-parse' && args[1] === 'origin/main'
+                ? `${MOVED_BASE}\n`
+                : undefined
+          }
+        : {})
     });
     const recheck = () =>
       Promise.all(
@@ -8248,6 +8260,64 @@ describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)',
     expect(env.operations.ensureDeploy.mock.calls[0][0]).not.toHaveProperty(
       'retry_authorized'
     );
+  });
+
+  test('deploys the waiting tip target when the base moved during the wait', async () => {
+    const env = waitRow({ finished_at: 0, base_moved: true });
+
+    await env.recheck();
+
+    expect(env.operations.ensureDeploy.mock.calls[0][0]).toMatchObject({
+      target_sha: BASE_SHA
+    });
+  });
+
+  test('deploys the waiting tip target on the completion intent replay after the base moved', async () => {
+    const env = waitRow({
+      finished_at: 0,
+      base_moved: true,
+      intent: {
+        phase: 'cleaning',
+        subject: { role: 'root' },
+        active_op: { kind: 'retry_cleanup' }
+      }
+    });
+
+    await env.actions.resumeCompletionCleanup(BEAD);
+
+    expect(env.operations.ensureDeploy.mock.calls[0][0]).toMatchObject({
+      target_sha: BASE_SHA
+    });
+  });
+
+  test('deploys the moved base for a person retry', async () => {
+    const env = waitRow({ finished_at: 0, base_moved: true });
+
+    await env.actions.retryCleanup(BEAD);
+
+    expect(env.operations.ensureDeploy.mock.calls[0][0]).toMatchObject({
+      retry_authorized: true,
+      target_sha: MOVED_BASE
+    });
+  });
+
+  test('deploys the moved base on an automatic replay past the chain deadline', async () => {
+    const env = waitRow({
+      finished_at: 0,
+      base_moved: true,
+      now: 20_000,
+      intent: {
+        phase: 'cleaning',
+        subject: { role: 'root' },
+        active_op: { kind: 'retry_cleanup' }
+      }
+    });
+
+    await env.actions.resumeCompletionCleanup(BEAD);
+
+    expect(env.operations.ensureDeploy.mock.calls[0][0]).toMatchObject({
+      target_sha: MOVED_BASE
+    });
   });
 
   test('closes the Bead after the recheck deploy succeeds', async () => {
