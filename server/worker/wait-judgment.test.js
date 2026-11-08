@@ -268,6 +268,25 @@ describe('deploy condition wait rows (dotfiles-rnyd9)', () => {
     expect(row.verdict_reason).toBeUndefined();
   });
 
+  test('keeps the row of a PR cleanup its completion intent drives normal', () => {
+    const [row] = run({
+      queue: queue({
+        pr_wait: [{ bead_id: 'UI-consumer' }],
+        completion_intents: { 'UI-consumer': { phase: 'cleaning' } },
+        cleanup_failed: {
+          'UI-consumer': { step: 'repo_operations', reason: 'condition_wait' }
+        },
+        repo_operations: { op: waitOperation() }
+      }),
+      condition_wait_policy: POLICY
+    }).wait_reasons;
+
+    expect(row).toMatchObject({
+      verdict: 'normal',
+      next_check_at: NOW + 20 * MINUTE
+    });
+  });
+
   test('carries the next recheck time inside the deadline', () => {
     const [row] = judge({ op: waitOperation() });
 

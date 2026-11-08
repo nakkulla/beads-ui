@@ -201,6 +201,43 @@ describe('cleanup retry scheduling', () => {
   ])('keeps missing retry evidence unparked for queue %j', (queue) => {
     expect(cleanupRetryParked(queue, 'UI-root', 999)).toBe(false);
   });
+
+  describe('a cleanup stopped on a deploy condition wait (dotfiles-rnyd9)', () => {
+    const POLICY = {
+      failure_code: 'condition_wait',
+      interval_ms: 1_000,
+      deadline_ms: 10_000
+    };
+    const queue = {
+      completion_intents: { 'UI-root': { phase: 'cleaning', active_op: null } },
+      cleanup_failed: {
+        'UI-root': { step: 'repo_operations', reason: 'condition_wait' }
+      },
+      repo_operations: {
+        'wait-head': {
+          kind: 'deploy',
+          state: 'failed',
+          source: 'automatic',
+          subjects: [{ bead_id: 'UI-root', merged_sha: 'a'.repeat(40) }],
+          failure: { code: 'condition_wait', fingerprint: 'f' },
+          finished_at: 0,
+          superseded_by: null
+        }
+      }
+    };
+
+    test.each([
+      [999, true],
+      [1_000, false],
+      [10_000, false]
+    ])('parks it at %i only while it waits', (now, expected) => {
+      expect(cleanupRetryParked(queue, 'UI-root', now, POLICY)).toBe(expected);
+    });
+
+    test('keeps it at the head under a pin without the wait', () => {
+      expect(cleanupRetryParked(queue, 'UI-root', 999, null)).toBe(false);
+    });
+  });
 });
 
 describe('cleanup failure retry classification', () => {

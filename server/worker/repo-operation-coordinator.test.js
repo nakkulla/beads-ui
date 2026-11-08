@@ -7022,7 +7022,7 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
    * to, the way the shared worktree does: after the first run aligned the
    * target, HEAD already holds it.
    *
-   * @param {{ repo?: string, sleep?: (ms: number) => Promise<void>, now?: () => number, conditionWaitPolicy?: () => any, timeline?: { append: (input: any) => unknown } }} [options]
+   * @param {{ repo?: string, sleep?: (ms: number) => Promise<void>, now?: () => number, conditionWaitPolicy?: () => any, timeline?: { append: (input: any) => unknown }, notify?: any }} [options]
    */
   function retryHarness(options = {}) {
     const deploy = { head: /** @type {string|null} */ (null) };
@@ -7096,7 +7096,8 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
       ...(options.now ? { now: options.now } : {}),
       ...(options.conditionWaitPolicy
         ? { conditionWaitPolicy: options.conditionWaitPolicy }
-        : {})
+        : {}),
+      ...(options.notify ? { notify: options.notify } : {})
     });
     store.ensureRepoOperation(root, {
       operation_id: 'previous-deploy',
@@ -7471,12 +7472,17 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
     function waitHarness(options = {}) {
       const clock = { now: 100_000 };
       const policy = options.policy === undefined ? POLICY : options.policy;
+      const notify = {
+        needsHuman: vi.fn(async () => {}),
+        conditionWaitEntered: vi.fn(async () => {})
+      };
       const harness = retryHarness({
         now: () => clock.now,
         conditionWaitPolicy: () => policy,
+        notify,
         ...(options.timeline ? { timeline: options.timeline } : {})
       });
-      return { ...harness, clock };
+      return { ...harness, clock, notify };
     }
 
     /**
@@ -7699,6 +7705,51 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
         'operation_recovery'
       ]);
       expect(lines[0].summary).toMatch(/^배포 조건 대기 — condition_wait/);
+    });
+
+    test('pushes one wait notification at the first exit 75 of a chain', async () => {
+      const harness = waitHarness();
+
+      await settleRun(harness, 75);
+
+      expect(harness.notify.conditionWaitEntered).toHaveBeenCalledOnce();
+      expect(harness.notify.conditionWaitEntered).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bead_id: 'UI-1',
+          release: expect.stringMatching(/^다음 자동 재확인 \d\d:\d\d · 기한 /)
+        })
+      );
+      expect(harness.notify.needsHuman).not.toHaveBeenCalled();
+    });
+
+    test('pushes no wait notification for a repeat exit 75 in the chain', async () => {
+      const harness = waitHarness();
+      await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+
+      await settleRun(harness, 75);
+      await harness.coordinator.reconcile(root);
+
+      expect(harness.notify.conditionWaitEntered).toHaveBeenCalledOnce();
+    });
+
+    test('pushes the wait notification once across a restart', async () => {
+      const harness = waitHarness();
+      await settleRun(harness, 75);
+      const restarted = waitHarness();
+
+      await restarted.coordinator.reconcile(root);
+
+      expect(restarted.notify.conditionWaitEntered).not.toHaveBeenCalled();
+    });
+
+    test('pushes no wait notification under a pin without the wait', async () => {
+      const harness = waitHarness({ policy: null });
+
+      await settleRun(harness, 75);
+      await harness.coordinator.reconcile(root);
+
+      expect(harness.notify.conditionWaitEntered).not.toHaveBeenCalled();
     });
   });
 });

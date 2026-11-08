@@ -1750,3 +1750,37 @@ describe('session-inquiry creation push (UI-gske §3.3)', () => {
     expect(spawn.last().args[0].split('\n')).toHaveLength(4);
   });
 });
+
+describe('worker/notify deploy condition wait (dotfiles-rnyd9)', () => {
+  test('sends the wait, the script reason and the next recheck', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conditionWaitEntered({
+      bead_id: 'UI-1',
+      summary: 'live checkout has uncommitted edits\nsecond line',
+      release:
+        '다음 자동 재확인 12:20 · 기한 09/16 11:50 — 지금 다시 돌리려면 [정리 재시도]',
+      repo: '/r/proj'
+    });
+
+    expect(messageOf(spawn.last()).split('\n')).toEqual([
+      '🤖 ⏳ 배포 조건 대기 — UI-1',
+      '사유: live checkout has uncommitted edits',
+      '다음: 다음 자동 재확인 12:20 · 기한 09/16 11:50 — 지금 다시 돌리려면 [정리 재시도]',
+      '리포: proj'
+    ]);
+  });
+
+  test('sends nothing while notifications are off', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(
+      { enabled: false },
+      { spawnImpl: spawn.spawnImpl }
+    );
+
+    await notifier.conditionWaitEntered({ bead_id: 'UI-1', release: 'x' });
+
+    expect(spawn.calls).toHaveLength(0);
+  });
+});

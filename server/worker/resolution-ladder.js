@@ -147,18 +147,55 @@ export function cleanupRetryWaitUntil(failure) {
 /**
  * Keep a scheduled cleanup in the queue without blocking later merges.
  *
+ * A cleanup stopped at its deploy on a `[deploy]` condition wait
+ * (dotfiles-rnyd9) is parked the same way until its recheck time comes; due
+ * and expired ones stay unparked so the completion lane decides them.
+ *
  * @param {any} queue
  * @param {string} bead_id
  * @param {number} now
+ * @param {ConditionWaitPolicy|null} [condition_wait_policy]
  * @returns {boolean}
  */
-export function cleanupRetryParked(queue, bead_id, now) {
+export function cleanupRetryParked(
+  queue,
+  bead_id,
+  now,
+  condition_wait_policy = null
+) {
   const intent = queue?.completion_intents?.[bead_id];
   if (intent?.phase !== 'cleaning' || intent.active_op) {
     return false;
   }
-  const until = cleanupRetryWaitUntil(queue?.cleanup_failed?.[bead_id]);
+  const failure = queue?.cleanup_failed?.[bead_id];
+  const schedule = cleanupConditionWait(queue, bead_id, condition_wait_policy);
+  if (schedule !== null) {
+    return conditionWaitState(schedule, now) === 'waiting';
+  }
+  const until = cleanupRetryWaitUntil(failure);
   return until !== null && now < until;
+}
+
+/**
+ * The condition-wait schedule of a PR cleanup stopped at its deploy step on a
+ * `[deploy]` condition wait (dotfiles-rnyd9), read from the durable deploy
+ * chain. Null for any other stop, or while the pin grants no condition wait.
+ *
+ * @param {any} queue
+ * @param {string} bead_id
+ * @param {ConditionWaitPolicy|null} policy
+ * @returns {ConditionWaitSchedule|null}
+ */
+export function cleanupConditionWait(queue, bead_id, policy) {
+  const failure = queue?.cleanup_failed?.[bead_id];
+  if (
+    !policy ||
+    failure?.step !== 'repo_operations' ||
+    failure.reason !== policy.failure_code
+  ) {
+    return null;
+  }
+  return conditionWaitTipFor(queue?.repo_operations || {}, bead_id, policy);
 }
 
 /**

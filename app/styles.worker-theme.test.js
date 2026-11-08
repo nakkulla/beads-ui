@@ -1102,3 +1102,15 @@ describe('design token definitions', () => {
     expect([...new Set(dangling)]).toEqual([]);
   });
 });
+
+describe('deploy condition wait chip (UI-ksi6)', () => {
+  test('keeps the chip hover off the danger colour', () => {
+    const hover =
+      CSS.match(
+        /(?:^|\n)\.rtile__failure-badge\.rtile__held-badge:hover\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(hover).toContain('border-color: var(--text-muted)');
+    expect(hover).not.toContain('--accent-danger');
+  });
+});

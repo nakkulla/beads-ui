@@ -51,6 +51,7 @@ import {
   scriptRetryApplicable,
   scriptRetryConsumptionKey
 } from './resolution-ladder.js';
+import { conditionWaitRelease } from './wait-judgment.js';
 import {
   workRecoveryClassification,
   workRecoveryReady
@@ -86,7 +87,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string, owner?: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null, notify?: { needsHuman: (input: any) => Promise<void> }|null, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string, owner?: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null, notify?: { needsHuman: (input: any) => Promise<void>, conditionWaitEntered?: (input: { bead_id: string, summary?: string|null, release: string, repo?: string|null }) => Promise<void> }|null, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -829,6 +830,54 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Push the one wait notification of a `[deploy]` condition-wait chain
+   * (dotfiles-rnyd9 `first_exit_75_notification: wait_notification_once`):
+   * on the chain's first exit 75 only, claimed on the head record before it is
+   * sent, so a repeat 75, a re-settlement and a restart send nothing. A wait,
+   * not a failure: what the script said and when the Worker looks again. A
+   * Bead-less manual run, which nothing rechecks, has no schedule and is
+   * announced as the failure it is.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   */
+  function announceConditionWait(workspace, operation_id) {
+    const operations = deps.store.snapshot(workspace).repo_operations;
+    const schedule = conditionWaitSchedule(
+      operations,
+      operation_id,
+      conditionWait()
+    );
+    const operation = operations[operation_id];
+    const bead_id = operation?.subjects?.find(
+      (/** @type {any} */ subject) => typeof subject?.bead_id === 'string'
+    )?.bead_id;
+    if (
+      schedule === null ||
+      schedule.head_id !== operation_id ||
+      typeof bead_id !== 'string' ||
+      typeof notify?.conditionWaitEntered !== 'function' ||
+      typeof deps.store.claimRepoOperationWaitNotice !== 'function' ||
+      !deps.store.claimRepoOperationWaitNotice(workspace, { operation_id }).ok
+    ) {
+      return;
+    }
+    notify
+      .conditionWaitEntered({
+        bead_id,
+        summary:
+          typeof operation.failure?.summary === 'string'
+            ? operation.failure.summary
+            : null,
+        release: conditionWaitRelease(schedule, false),
+        repo: deps.repo
+      })
+      .catch((/** @type {unknown} */ err) => {
+        log('condition wait notify failed: %o', err);
+      });
+  }
+
+  /**
    * Whether a settled `condition_wait` record continues a chain that already
    * met the condition: an earlier record reached through `retry_of` is a
    * `condition_wait` too, so this one is the same wait (dotfiles-rnyd9).
@@ -1016,6 +1065,9 @@ export function createRepoOperationCoordinator(deps) {
       // the deadline passes.
       conversation_target: isManualRun(current) || condition_wait
     });
+    if (condition_wait) {
+      announceConditionWait(workspace, operation_id);
+    }
     recordOperationFailure(current, operation_id, failure, evidence.summary);
     await sweepDescendantCoverage(workspace, operation_id);
     transition.reclaim(workspace, operation_id);

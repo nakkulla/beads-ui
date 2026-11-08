@@ -42,6 +42,7 @@
 import { timingSeconds } from '../timing-settings.js';
 import { failureTokenSummary } from './failure-class.js';
 import { foreignHandoffCauseOf } from './foreign-handoff.js';
+import { conditionWaitPolicy } from './repo-operation-policy.js';
 import { cleanupRetryParked } from './resolution-ladder.js';
 
 /**
@@ -204,6 +205,7 @@ const MERGE_STEP_LABELS = Object.freeze({
  *   notifyChanged?: (workspace: string) => void,
  *   timeline?: { append: (input: any) => unknown, readTimeline?: (bead_id: string, options?: any) => any[] },
  *   now?: () => number,
+ *   conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null,
  *   setTimer?: (fn: () => void, ms: number) => any,
  *   setResolutionPollTimer?: (fn: () => void, ms: number) => any,
  *   clearTimer?: (handle: any) => void,
@@ -218,6 +220,10 @@ const MERGE_STEP_LABELS = Object.freeze({
 export function createMergeQueue(deps) {
   const workspace = deps.workspace;
   const now = deps.now || (() => Date.now());
+  // A cleanup waiting on a `[deploy]` condition (dotfiles-rnyd9) is parked
+  // like a scheduled cleanup retry; null under a pin that predates it.
+  const conditionWait =
+    deps.conditionWaitPolicy || (() => conditionWaitPolicy());
   const setTimer =
     deps.setTimer ||
     ((/** @type {() => void} */ fn, /** @type {number} */ ms) => {
@@ -354,7 +360,7 @@ export function createMergeQueue(deps) {
       lane.find(
         (/** @type {any} */ entry) =>
           entry.resolution?.state !== 'yielded' &&
-          !cleanupRetryParked(q, entry.bead_id, now()) &&
+          !cleanupRetryParked(q, entry.bead_id, now(), conditionWait()) &&
           // A gate hold does NOT stop the drain (UI-d7fy §3.3): the item keeps
           // its slot and its authority, and everything behind it keeps
           // merging. It is skipped for the REST OF THIS PASS only — the set is

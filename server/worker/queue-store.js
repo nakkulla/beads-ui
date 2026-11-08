@@ -973,6 +973,10 @@
  * as already consumed. An automatic `[deploy]` record that settled on the
  * exit-75 `condition_wait` carries the same mark (dotfiles-rnyd9): the chain
  * head's is the once-per-chain mark spent when the recheck deadline passes.
+ * @property {number} [wait_notice_at] - When the one wait notification of a
+ * `condition_wait` chain was claimed (dotfiles-rnyd9
+ * `first_exit_75_notification`), on the chain head. Absent until then, so a
+ * restart or a re-settlement of the same run sends nothing again.
  */
 /**
  * @typedef {Object} DiscardOperation
@@ -4930,6 +4934,10 @@ function normalizeRepoOperation(value) {
                 : null
           }
         }
+      : {}),
+    ...(typeof value.wait_notice_at === 'number' &&
+    Number.isFinite(value.wait_notice_at)
+      ? { wait_notice_at: value.wait_notice_at }
       : {}),
     // Provenance of the request, not a state: only an exact `manual` marks the
     // 배포 실행 click, so an unreadable value reads as the Worker's own work.
@@ -9084,6 +9092,32 @@ export function createQueueStore(options = {}) {
           ...operation.failure_notice,
           consumed_at: now()
         };
+        return true;
+      });
+    },
+
+    /**
+     * Claim the one wait notification of a `[deploy]` condition-wait chain
+     * (dotfiles-rnyd9) on its head record, before it is sent. Refused when the
+     * record is not a settled `condition_wait` or the claim was already made —
+     * a re-settlement, a restart's second pass, or a repeat exit 75.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    claimRepoOperationWaitNotice(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (
+          !operation ||
+          operation.state !== 'failed' ||
+          operation.failure?.code !== 'condition_wait' ||
+          typeof operation.wait_notice_at === 'number'
+        ) {
+          return false;
+        }
+        operation.wait_notice_at = now();
         return true;
       });
     },

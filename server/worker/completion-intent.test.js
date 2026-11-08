@@ -6074,3 +6074,343 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
     });
   });
 });
+
+describe('deploy condition wait in the completion cleanup (dotfiles-rnyd9)', () => {
+  const POLICY = {
+    failure_code: 'condition_wait',
+    interval_ms: 1_000,
+    deadline_ms: 10_000
+  };
+  const MERGED = 'c'.repeat(40);
+
+  /**
+   * Settle one automatic deploy of UI-root on the exit-75 condition wait.
+   *
+   * @param {any} store
+   * @param {string} operation_id
+   * @param {number} finished_at
+   * @param {string} [retry_of]
+   */
+  function settleWait(store, operation_id, finished_at, retry_of) {
+    store.ensureRepoOperation(DRIVER_WS, {
+      operation_id,
+      repo_id: DRIVER_WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-root', merged_sha: MERGED }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      target_sha: 'b'.repeat(40),
+      ...(retry_of ? { retry_of } : {})
+    });
+    if (retry_of) {
+      store.supersedeRepoOperation(DRIVER_WS, {
+        operation_id: retry_of,
+        successor_id: operation_id
+      });
+    }
+    store.settleRepoOperation(DRIVER_WS, {
+      operation_id,
+      attempt_id:
+        store.snapshot(DRIVER_WS).repo_operations[operation_id].attempt_id,
+      exit_code: 75,
+      signal: null,
+      finished_at,
+      conversation_target: true,
+      failure: {
+        code: 'condition_wait',
+        fingerprint: 'f',
+        detail: '',
+        interrupted: false,
+        summary: 'live checkout has uncommitted edits'
+      }
+    });
+    store.recordCleanupFailure(DRIVER_WS, {
+      bead_id: 'UI-root',
+      step: 'repo_operations',
+      reason: 'condition_wait',
+      summary: 'live checkout has uncommitted edits'
+    });
+  }
+
+  /**
+   * UI-root merged and its cleanup stopped at the deploy step on the chain
+   * head `wait-head`, settled at 0.
+   *
+   * @param {{ now: number, policy?: any, resume?: (root_bead_id: string) => Promise<any> }} input
+   */
+  function waitingCleanup(input) {
+    const store = seededCompletionStore();
+    store.setCompletionSubject(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      phase: 'cleaning',
+      subject: { ...intent().subject, merged_sha: MERGED }
+    });
+    settleWait(store, 'wait-head', 0);
+    const clock = { now: input.now };
+    const needsHuman = vi.fn(async () => {});
+    const comment = vi.fn(commentSpy());
+    const append = vi.fn();
+    const resumeCompletionCleanup = vi.fn(
+      input.resume || (async () => ({ ok: false }))
+    );
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(), resumeCompletionCleanup },
+      bd: { comment },
+      notify: { needsHuman },
+      timeline: { append },
+      now: () => clock.now,
+      conditionWaitPolicy: () =>
+        input.policy === undefined ? POLICY : input.policy
+    });
+    /**
+     * One coordinator-shaped pass: observe, decide at the clock, act. A
+     * stopped or finished intent decides nothing, so it is not observed.
+     */
+    async function pass() {
+      const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+      if (current.phase === 'needs_human' || current.phase === 'completed') {
+        return null;
+      }
+      const fact = await driver.observe('UI-root', current);
+      const action = decideCompletionAction({
+        auto_merge: true,
+        intent: current,
+        fact,
+        now: clock.now
+      });
+      if (action) {
+        await driver.onAction('UI-root', action, current);
+      }
+      await driver.commentsIdle();
+      return action;
+    }
+    return {
+      store,
+      driver,
+      clock,
+      needsHuman,
+      comment,
+      append,
+      resumeCompletionCleanup,
+      pass
+    };
+  }
+
+  test('waits without a terminal before the recheck time', async () => {
+    const env = waitingCleanup({ now: 500 });
+
+    const action = await env.pass();
+
+    expect(action).toBeNull();
+    expect(
+      env.store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'cleaning', terminal_reason: null });
+    expect(env.needsHuman).not.toHaveBeenCalled();
+    expect(env.comment).not.toHaveBeenCalled();
+  });
+
+  test('replays the cleanup once the recheck time came', async () => {
+    const env = waitingCleanup({ now: 1_500 });
+
+    const action = await env.pass();
+
+    expect(action).toEqual({ kind: 'retry_cleanup' });
+    expect(env.resumeCompletionCleanup).toHaveBeenCalledOnce();
+  });
+
+  test('completes the intent when the recheck deploy succeeds', async () => {
+    /** @type {ReturnType<typeof createQueueStore>|null} */
+    let held = null;
+    const env = waitingCleanup({
+      now: 1_500,
+      resume: async () => {
+        held?.moveToDone(DRIVER_WS, { bead_id: 'UI-root' });
+        return { ok: true, step: null, reason: null };
+      }
+    });
+    held = env.store;
+
+    await env.pass();
+
+    expect(
+      env.store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'completed', active_op: null });
+  });
+
+  test('returns to the wait without spending the cleanup retry budget when the recheck meets the condition again', async () => {
+    /** @type {ReturnType<typeof createQueueStore>|null} */
+    let held = null;
+    const env = waitingCleanup({
+      now: 1_500,
+      resume: async () => {
+        if (held) {
+          settleWait(held, 'wait-next', 1_500, 'wait-head');
+        }
+        return { ok: false, step: 'repo_operations', reason: 'condition_wait' };
+      }
+    });
+    held = env.store;
+
+    await env.pass();
+    const next = await env.pass();
+
+    expect(next).toBeNull();
+    expect(
+      env.store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'cleaning',
+      active_op: null,
+      terminal_reason: null
+    });
+    expect(
+      env.store.snapshot(DRIVER_WS).cleanup_failed['UI-root']
+    ).not.toHaveProperty('retry_count');
+    expect(env.append).not.toHaveBeenCalled();
+    expect(env.needsHuman).not.toHaveBeenCalled();
+  });
+
+  test('returns a recovered replay whose successor met the condition again to the wait', async () => {
+    const env = waitingCleanup({ now: 1_000 });
+    env.store.prepareCompletionOp(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      phase: 'cleaning',
+      op: {
+        op_id: 'cleanup-crashed',
+        kind: 'retry_cleanup',
+        failure_key: createCompletionFailureKey({
+          stage: 'repo_operations',
+          reason: 'condition_wait',
+          subject_sha: MERGED,
+          base_sha: 'b'.repeat(40),
+          evidence: {}
+        }),
+        attempt_id: null,
+        status: 'prepared'
+      }
+    });
+    settleWait(env.store, 'wait-next', 1_500, 'wait-head');
+    env.clock.now = 1_600;
+
+    const action = await env.pass();
+
+    expect(action).toEqual({ kind: 'reconcile_op' });
+    expect(env.resumeCompletionCleanup).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'cleaning',
+      active_op: null,
+      terminal_reason: null
+    });
+    expect(env.needsHuman).not.toHaveBeenCalled();
+  });
+
+  test('stops for a person once when the deadline passed', async () => {
+    const env = waitingCleanup({ now: 20_000 });
+
+    await env.pass();
+    await env.pass();
+
+    expect(
+      env.store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'cleanup_failed:condition_wait' }
+    });
+    expect(env.resumeCompletionCleanup).not.toHaveBeenCalled();
+    expect(env.needsHuman).toHaveBeenCalledOnce();
+  });
+
+  test('spends the chain head once-mark at the deadline terminal', async () => {
+    const env = waitingCleanup({ now: 20_000 });
+
+    await env.pass();
+
+    expect(
+      env.store.snapshot(DRIVER_WS).repo_operations['wait-head'].failure_notice
+        ?.consumed_at
+    ).toEqual(expect.any(Number));
+  });
+
+  test('stops a condition-wait cleanup as before under a pin without the wait', async () => {
+    const env = waitingCleanup({ now: 1_500, policy: null });
+
+    const action = await env.pass();
+
+    expect(action).toEqual({
+      kind: 'needs_human',
+      reason: 'cleanup_failed:condition_wait',
+      terminal: true
+    });
+    expect(env.resumeCompletionCleanup).not.toHaveBeenCalled();
+  });
+
+  test('skips a cleanup waiting on a deploy condition so later merges go on', async () => {
+    let now = 500;
+    const failure = { step: 'repo_operations', reason: 'condition_wait' };
+    const queue = {
+      auto_merge: true,
+      merge_queue: [{ bead_id: 'UI-root' }, { bead_id: 'UI-later' }],
+      completion_intents: {
+        'UI-root': intent({ phase: 'cleaning' }),
+        'UI-later': intent({
+          subject: { ...intent().subject, bead_id: 'UI-later' }
+        })
+      },
+      cleanup_failed: { 'UI-root': failure },
+      repo_operations: {
+        'wait-head': {
+          kind: 'deploy',
+          state: 'failed',
+          failure: { code: 'condition_wait' },
+          finished_at: 0,
+          subjects: [{ bead_id: 'UI-root', merged_sha: MERGED }],
+          source: 'automatic',
+          superseded_by: null,
+          dismissed: null
+        }
+      }
+    };
+    const schedule = {
+      tip_id: 'wait-head',
+      head_id: 'wait-head',
+      next_at: 1_000,
+      deadline_at: 10_000
+    };
+    const onAction = vi.fn();
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: DRIVER_WS,
+      store: { snapshot: () => queue },
+      now: () => now,
+      conditionWaitPolicy: () => POLICY,
+      onAction,
+      observe: async (bead_id) =>
+        bead_id === 'UI-root'
+          ? {
+              state: 'cleanup_repairable',
+              evidence: failure,
+              condition_wait: schedule
+            }
+          : { state: 'green' }
+    });
+
+    await coordinator.reconcile();
+    now = 1_000;
+    await coordinator.reconcile();
+
+    expect(onAction.mock.calls).toEqual([
+      [
+        'UI-later',
+        { kind: 'merge_subject' },
+        queue.completion_intents['UI-later']
+      ],
+      [
+        'UI-root',
+        { kind: 'retry_cleanup' },
+        queue.completion_intents['UI-root']
+      ]
+    ]);
+  });
+});

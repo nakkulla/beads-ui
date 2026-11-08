@@ -56,6 +56,7 @@ const TITLE = {
   landed: `${SENDER} ✅ 착지 완료`,
   awaiting_user: `${SENDER} ⏸️ 파킹`,
   provider_hold: `${SENDER} ⏳ 공급자 보류`,
+  condition_wait: `${SENDER} ⏳ 배포 조건 대기`,
   provider_recovered: `${SENDER} ✅ 공급자 회복`,
   provider_live_preempt: `${SENDER} 🔀 실행 중 계정 전환`,
   provider_disarmed: `${SENDER} 🚨 자동 재개 중단`,
@@ -380,6 +381,7 @@ function failureConversationLine(conversation) {
  *   quickfixLanded: (input: { bead_id: string, title?: string|null, head_sha?: string|null, close_kind?: string|null, repo?: string|null }) => Promise<void>,
  *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, branch?: string|null, session?: string|null, reason?: string|null, mode?: string|null, fallback_reason?: string|null, session_id?: string|null, tmux_session?: string|null, tmux_window?: string|null, redispatch_refusal?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
  *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'unconfigured'|'disabled'|null, cross_runner?: boolean, repo?: string|null }) => Promise<void>,
+ *   conditionWaitEntered: (input: { bead_id: string, summary?: string|null, release: string, repo?: string|null }) => Promise<void>,
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   providerLivePreempt: (input: { bead_id: string, runner: string, from: string, to: string, window: string, pct: number, repo?: string|null }) => Promise<void>,
@@ -922,6 +924,38 @@ export function createNotifier(deps) {
         send(cmd, lines.join('\n'));
       } catch (err) {
         log('providerHoldEntered failed: %o', err);
+      }
+    },
+
+    // A `[deploy]` exit 75 (dotfiles-rnyd9): the script refused on an outside
+    // condition and the Worker reruns it on the contract interval. A wait, not
+    // a failure, so it rides the plain channel like the provider hold; the
+    // caller claims it once per chain and builds the release sentence.
+    async conditionWaitEntered(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title = await lookupTitle(input.bead_id);
+        const lines = [
+          headline(TITLE.condition_wait, input.bead_id, bead_title)
+        ];
+        const summary = firstLine(input.summary);
+        if (summary) {
+          lines.push(`사유: ${summary}`);
+        }
+        const release = text(input.release);
+        if (release) {
+          lines.push(`다음: ${release}`);
+        }
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('conditionWaitEntered failed: %o', err);
       }
     },
 
