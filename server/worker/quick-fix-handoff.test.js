@@ -110,7 +110,7 @@ describe('loadQuickFixHandoff', () => {
     expect(first).toMatchObject({
       supported: true,
       schema_version: 1,
-      source_commit: '90400180e1ae5af9019ee9f7892a957d2cde02d1'
+      source_commit: 'd6747158a2f865a7ab59bb27376697dc276926ae'
     });
     expect(first.rules?.quick_fix_handoff.receipt.key).toBe('quick_fix_review');
     expect(second).toBe(first);
@@ -216,6 +216,32 @@ describe('loadQuickFixHandoff', () => {
     );
 
     expect(judged?.missing).toEqual([]);
+  });
+
+  test('rejects the excepting scan when adr_approval names no heading suffix', () => {
+    const artifact = structuredClone(ARTIFACT);
+    delete artifact.quick_fix_handoff.checks.adr_approval;
+    const loaded = loadQuickFixHandoff({ fs: fixtureFs(artifact) });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test('scans an ADR candidate section too under the plain scan value', () => {
+    const artifact = structuredClone(ARTIFACT);
+    artifact.quick_fix_handoff.checks.user_decision_reserved.scan =
+      'all_body_lines_trimmed';
+
+    const judged = judgeQuickFixHandoff(
+      {
+        issue_type: 'task',
+        metadata: { route: 'quick_fix' },
+        description:
+          '## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 결정 (ADR 후보)\n- 사용자 승인이 필요한 경계\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/'
+      },
+      { fs: fixtureFs(artifact) }
+    );
+
+    expect(judged?.missing).toEqual(['user_decision_reserved:L8']);
   });
 });
 

@@ -57,7 +57,7 @@
         }
       },
       "user_decision_reserved": {
-        "scan": "all_body_lines_trimmed",
+        "scan": "all_body_lines_trimmed_except_adr_candidate_section",
         "line_regex": [
           "^(?!(?:-[ \\t]+)?결정[ \\t]+—)[^\\n]*사용자[^\\n]{0,12}?(결정|승인|확인|답)[^\\n]{0,24}?(필요|미정|전에는|정한다|정할|기다리|받은 뒤|받기 전|없으면)",
           "^(?!(?:-[ \\t]+)?결정[ \\t]+—)[^\\n]*(결정|승인|확인)[^\\n]{0,8}?1회[^\\n]{0,8}?필요",
@@ -66,6 +66,34 @@
         "missing_token": "user_decision_reserved:L<n>",
         "details_key": "user_decision_reserved",
         "absent_match": "skip_fail_quiet"
+      },
+      "external_deploy": {
+        "scan": "all_body_lines_trimmed",
+        "line_regex": "^(?:-[ \\t]+)?외부 배포[ \\t]+—[ \\t]*\\S",
+        "details_key": "external_deploy",
+        "unlabeled_regex": "^(?!(?:-[ \\t]+)?외부 배포[ \\t]+—[ \\t]*\\S)[^\\n]*(?:tail|꼬리)[^\\n]{0,4}?에[^\\n]{0,30}?(?:더한다|더해|추가한다|추가해)",
+        "excluded_regex": "(?i)^(?!(?:-[ \\t]+)?(?:외부 배포|결정)[ \\t]+—)[^\\n]*제외[^\\n]*(?:배포|deploy)",
+        "excluded_only_when": "external_deploy_line_present",
+        "missing_tokens": {
+          "unlabeled": "external_deploy_unlabeled:L<n>",
+          "excluded": "external_deploy_excluded:L<n>"
+        },
+        "absent_match": "skip_fail_quiet"
+      },
+      "adr_approval": {
+        "section_heading_suffix": "결정 (ADR 후보)",
+        "key": "adr_approval",
+        "format_regex": "^user@[0-9a-f]{12}$",
+        "digest_of": "adr_candidate_section_body_rstrip_space_tab_outer_blanks_dropped_lf_joined_utf8_sha256_12_hex",
+        "digest_writer": "check-adr-candidates.py --bead <id> --approval-digest",
+        "missing_tokens": {
+          "adr_approval_missing": "adr_approval_missing",
+          "adr_approval_stale": "adr_approval_stale"
+        },
+        "enforcement_points": [
+          "bd_write_guard_key_forgery",
+          "quick_fix_tail_check_adr_candidates_bead"
+        ]
       }
     },
     "receipt": {
@@ -98,6 +126,16 @@
     "automatic_queue_handoff": {
       "applies_to": "separated_prerequisite_or_followup_created_or_adopted_by_originating_session",
       "entry_question": "none",
+      "adr_section": {
+        "valid_key": "no_question",
+        "absent_or_stale_key_interactive": {
+          "ask": "one_prose_sentence_with_whole_section_then_end_turn",
+          "before_answer": "no_placement",
+          "approved": "write_key_in_answer_turn_then_continue_handoff",
+          "refused": "repin_spec_backed"
+        },
+        "no_human_answer_session": "pin_spec_backed"
+      },
       "starts_after": "reviewed_body_and_existing_route_pin_order",
       "config": {
         "source": "worker_url_resolver",
@@ -235,7 +273,7 @@
           "post_review_head_change": "controller_exact_delta_self_review_and_receipt_update"
         },
         "session_delivery": {
-          "default": "base_push_containment_and_push_head_bound_valid_impl_review_then_completion_report_then_resolved_without_pr_url"
+          "default": "base_push_containment_and_push_head_bound_valid_impl_review_then_body_external_deploy_lines_then_completion_report_then_resolved_without_pr_url"
         },
         "worker_owns": {
           "default": [

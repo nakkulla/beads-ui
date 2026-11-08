@@ -1071,5 +1071,49 @@
       "state": "unreviewed",
       "missing": ["user_decision_reserved:L6"]
     }
+  },
+  {
+    "name": "결정 (ADR 후보) 절 안의 사용자 결정 문구는 예약 줄로 세지 않는다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "adr_approval": "user@2eb4e5a1a122"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 결정 (ADR 후보)\n- 사용자 승인이 필요한 배포 경계를 정한다 → ADR 아님\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "결정 (ADR 후보) 절의 제외는 필수 라벨 줄에서 끝난다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "adr_approval": "user@f3a9b8bd11fa"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 결정 (ADR 후보)\n- 배포 경계를 정한다 → ADR 아님\n검증 bundle — npm test\n- 사용자 승인이 필요한 배포 경계\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["user_decision_reserved:L10"]
+    }
+  },
+  {
+    "name": "코드 블록 안의 결정 (ADR 후보) 머리는 절을 열지 않는다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n```\n## 결정 (ADR 후보)\n- 사용자 승인이 필요한 일\n```\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["user_decision_reserved:L8"]
+    }
   }
 ]

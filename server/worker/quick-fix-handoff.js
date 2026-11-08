@@ -26,6 +26,12 @@ import { parseDescriptionScope } from './artifact-scope.js';
  * `checks.user_decision_reserved.details_key` is also unread: this module
  * never emits per-line detail objects, only the `missing` token.
  *
+ * `checks.adr_approval` is read only for `section_heading_suffix`, which the
+ * `all_body_lines_trimmed_except_adr_candidate_section` scan needs to find the
+ * span it skips. Its approval tokens (`adr_approval_missing`/`_stale`) and the
+ * whole `checks.external_deploy` rule are emitted by the dotfiles Python
+ * checker only; this module never emits them.
+ *
  * Regex translation for `checks.user_decision_reserved.line_regex`: each
  * pattern is compiled with the `u` flag so counted quantifiers advance by
  * Unicode code point like Python `re`, not UTF-16 code unit. A pattern
@@ -68,6 +74,24 @@ const LINE_BOUNDARY_RE = /\r\n|\n/;
 const TRIM_RE = /^[ \t]+|[ \t]+$/g;
 
 const REGEX_METACHARS_RE = /[.*+?^${}()|[\]\\]/g;
+
+const SCAN_ALL = 'all_body_lines_trimmed';
+const SCAN_EXCEPT_ADR = 'all_body_lines_trimmed_except_adr_candidate_section';
+
+/**
+ * Python `str.isspace()` / Unicode `re` `\s`, written out because JS `\s` adds
+ * U+FEFF and drops U+001C..U+001F and U+0085. The ADR section reader below
+ * mirrors `check-adr-candidates.py`, which leans on those Python semantics.
+ */
+const PY_SPACE =
+  '\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
+const PY_LSTRIP_RE = new RegExp(`^[${PY_SPACE}]+`, 'u');
+/** `HEADING_RE` of `check-adr-candidates.py`; `.` there never stops at U+2028. */
+const ADR_HEADING_RE = new RegExp(
+  `^(#{1,6})[${PY_SPACE}]+([^\\n]*?)[${PY_SPACE}]*$`,
+  'u'
+);
+const FENCE = '```';
 
 /** @typedef {{ readFileSync: (path: string, encoding?: string) => Buffer|string }} QuickFixHandoffFs */
 /**
@@ -209,17 +233,28 @@ function predecessorEdgeUsable(rule) {
 }
 
 /**
+ * The excepting scan is defined by `adr_approval.section_heading_suffix`; a pin
+ * that names the scan without that suffix is unreadable, not a full-body scan.
+ *
  * @param {unknown} rule
+ * @param {unknown} adr_rule
  * @returns {boolean}
  */
-function userDecisionReservedUsable(rule) {
+function userDecisionReservedUsable(rule, adr_rule) {
   if (rule === undefined) {
     return true;
   }
   if (!isRecord(rule)) {
     return false;
   }
-  if (rule.scan !== 'all_body_lines_trimmed') {
+  if (rule.scan === SCAN_EXCEPT_ADR) {
+    if (
+      !isRecord(adr_rule) ||
+      !isNonEmptyString(adr_rule.section_heading_suffix)
+    ) {
+      return false;
+    }
+  } else if (rule.scan !== SCAN_ALL) {
     return false;
   }
   if (!Array.isArray(rule.line_regex) || rule.line_regex.length === 0) {
@@ -282,7 +317,10 @@ function rulesUsable(handoff, description_scope) {
     isNonEmptyString(receipt.key) &&
     isNonEmptyString(receipt.format_regex) &&
     predecessorEdgeUsable(checks.predecessor_edge) &&
-    userDecisionReservedUsable(checks.user_decision_reserved)
+    userDecisionReservedUsable(
+      checks.user_decision_reserved,
+      checks.adr_approval
+    )
   );
 }
 
@@ -562,14 +600,66 @@ function predecessorState(issue, sections, rule, resolver) {
 }
 
 /**
+ * 1-based body line numbers of every `## …결정 (ADR 후보)` section: the heading
+ * line and its body up to the next h1/h2 or the first required-label line. A
+ * port of `check-adr-candidates.py` `split_sections` as `check-quick-fix-handoff.py`
+ * `adr_approval_state` calls it — `\r\n` joins, a lone CR becomes a space so
+ * line numbers stay on `splitLines`, and a fenced line never opens a section.
+ *
+ * @param {string} text
+ * @param {string} suffix
+ * @param {RegExp[]} label_patterns
+ * @returns {Set<number>}
+ */
+function adrCandidateSectionLines(text, suffix, label_patterns) {
+  /** @type {Set<number>} */
+  const excluded = new Set();
+  if (!text.includes(suffix)) {
+    return excluded;
+  }
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, ' ').split('\n');
+  let fenced = false;
+  let in_section = false;
+  let body_open = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.replace(PY_LSTRIP_RE, '').startsWith(FENCE)) {
+      fenced = !fenced;
+    }
+    const match = fenced ? null : ADR_HEADING_RE.exec(line);
+    if (match && match[1].length <= 2) {
+      in_section = match[1].length === 2 && match[2].endsWith(suffix);
+      body_open = in_section;
+      if (in_section) {
+        excluded.add(index + 1);
+      }
+      continue;
+    }
+    if (!in_section || !body_open) {
+      continue;
+    }
+    const trimmed = trimAscii(line);
+    if (label_patterns.some((pattern) => pattern.test(trimmed))) {
+      body_open = false;
+      continue;
+    }
+    excluded.add(index + 1);
+  }
+  return excluded;
+}
+
+/**
  * `user_decision_reserved:L<n>` tokens for every trimmed body line matching
- * one of the pinned reservation regexes, resolver-independent (§4.4).
+ * one of the pinned reservation regexes, resolver-independent (§4.4). Lines
+ * in `excluded` are skipped: an ADR candidate section is proven by
+ * `adr_approval`, not by this check.
  *
  * @param {string} text
  * @param {Record<string, any>|undefined} rule
+ * @param {Set<number>} excluded
  * @returns {string[]}
  */
-function reservationTokens(text, rule) {
+function reservationTokens(text, rule, excluded) {
   if (!rule) {
     return [];
   }
@@ -580,6 +670,9 @@ function reservationTokens(text, rule) {
   const tokens = [];
   const lines = splitLines(text);
   for (let index = 0; index < lines.length; index += 1) {
+    if (excluded.has(index + 1)) {
+      continue;
+    }
     const trimmed = trimAscii(lines[index]);
     if (
       patterns.some((/** @type {RegExp} */ pattern) => pattern.test(trimmed))
@@ -658,7 +751,18 @@ export function judgeQuickFixHandoff(issue, deps = {}) {
     missing.push(
       ...predecessorState(record, sections, predecessor_rule, deps.predecessors)
     );
-    missing.push(...reservationTokens(text, checks.user_decision_reserved));
+    const reservation_rule = checks.user_decision_reserved;
+    const excluded =
+      reservation_rule?.scan === SCAN_EXCEPT_ADR
+        ? adrCandidateSectionLines(
+            text,
+            checks.adr_approval.section_heading_suffix,
+            named.map((/** @type {string} */ name) =>
+              namedRegex(checks.sections.label_regex, name)
+            )
+          )
+        : new Set();
+    missing.push(...reservationTokens(text, reservation_rule, excluded));
 
     const digest = bodyDigest(description);
     const receipt = metadata[receipt_rules.key];
