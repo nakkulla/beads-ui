@@ -14,11 +14,11 @@ import {
   workRecoveryReady
 } from './work-recovery-policy.js';
 
-const APPROVED_SOURCE_COMMIT = 'f031c9853f536c1478e9d1129b8c69628be27ef8';
-const APPROVED_BLOB = '3d274eb4af16b799a8e307f6224385fca242778f';
+const APPROVED_SOURCE_COMMIT = 'f374b4dff4f839342bb988a859e6e8330b5bdcf2';
+const APPROVED_BLOB = '3eb5a5f86ecee74b88421d07e0fdf3371dbc84ff';
 const APPROVED_DIGEST =
-  '3eb106150a71d24a21ff36ffaaab21d8516684a1547549289a7f84cc57735498';
-const APPROVED_BYTES = 5258;
+  'ec8352589fcff5e434d4655136989ed76adcba5713d181e4db7905c1dfeffe45';
+const APPROVED_BYTES = 5490;
 
 /**
  * @param {Record<string, any>} [artifact_patch]
@@ -98,7 +98,7 @@ describe('pinned work-recovery policy', () => {
 
     expect(loaded).toMatchObject({
       supported: true,
-      schema_version: 2,
+      schema_version: 3,
       source_commit: APPROVED_SOURCE_COMMIT,
       policy: { readiness_value: '1' }
     });
@@ -251,7 +251,41 @@ describe('pinned work-recovery policy', () => {
   test('stamps the supported schema version', () => {
     const schema = workRecoveryPolicySchema();
 
-    expect(schema).toBe(2);
+    expect(schema).toBe(3);
+  });
+
+  test('reads condition_wait as a condition wait', () => {
+    const entry = workRecoveryClassification('condition_wait');
+
+    expect(entry).toEqual({
+      classification: 'condition_wait',
+      disposition: 'wait',
+      reason: 'condition',
+      next: 'recheck_by_retry_successor_within_automation_policy_limits'
+    });
+  });
+
+  test('keeps a schema 2 pin supported', () => {
+    const policy = loadWorkRecoveryPolicy().policy;
+    const classification = { ...policy?.classification };
+    delete classification.condition_wait;
+    const injected = fixture({
+      schema_version: 2,
+      work_recovery: {
+        ...policy,
+        wait_reasons: policy?.wait_reasons.filter(
+          (/** @type {string} */ reason) => reason !== 'condition'
+        ),
+        classification
+      }
+    });
+
+    const loaded = loadWorkRecoveryPolicy({ fs: injected });
+
+    expect(loaded).toMatchObject({ supported: true, schema_version: 2 });
+    expect(Object.hasOwn(loaded.policy?.classification, 'condition_wait')).toBe(
+      false
+    );
   });
 
   test('reads verification_failure as an in-session repair', () => {

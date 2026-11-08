@@ -17463,6 +17463,74 @@ describe('worker/queue-store stall-reconcile records (2026-10-01)', () => {
   });
 });
 
+describe('worker/queue-store condition-wait notification mark (dotfiles-rnyd9)', () => {
+  /**
+   * @param {any} store - A queue store from `createQueueStore()`.
+   * @param {string} code - The settled failure code.
+   */
+  function failDeploy(store, code) {
+    store.ensureRepoOperation(WS, {
+      operation_id: 'deploy-1',
+      attempt_id: 'deploy-1:1',
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'e'.repeat(40)
+    });
+    store.settleRepoOperation(WS, {
+      operation_id: 'deploy-1',
+      attempt_id: 'deploy-1:1',
+      exit_code: code === 'condition_wait' ? 75 : 1,
+      signal: null,
+      failure: { code, fingerprint: 'f', detail: '', interrupted: false },
+      conversation_target: true
+    });
+  }
+
+  test('claims the mark of a settled condition wait once', () => {
+    const store = createQueueStore();
+    failDeploy(store, 'condition_wait');
+
+    const first = store.claimRepoOperationWaitNotice(WS, {
+      operation_id: 'deploy-1'
+    });
+    const again = store.claimRepoOperationWaitNotice(WS, {
+      operation_id: 'deploy-1'
+    });
+
+    expect([first.ok, again.ok]).toEqual([true, false]);
+  });
+
+  test('keeps a claimed mark across a reload', () => {
+    const store = createQueueStore();
+    failDeploy(store, 'condition_wait');
+    store.claimRepoOperationWaitNotice(WS, { operation_id: 'deploy-1' });
+
+    const reloaded = createQueueStore();
+
+    expect(
+      reloaded.snapshot(WS).repo_operations['deploy-1'].wait_notice_at
+    ).toEqual(expect.any(Number));
+    expect(
+      reloaded.claimRepoOperationWaitNotice(WS, { operation_id: 'deploy-1' }).ok
+    ).toBe(false);
+  });
+
+  test('refuses the mark on an ordinary script failure', () => {
+    const store = createQueueStore();
+    failDeploy(store, 'script_failed');
+
+    const claimed = store.claimRepoOperationWaitNotice(WS, {
+      operation_id: 'deploy-1'
+    });
+
+    expect(claimed.ok).toBe(false);
+  });
+});
+
 describe('worker/queue-store manual deploy conversation mark (UI-jbl1 §3.1)', () => {
   /**
    * @param {any} store - A queue store from `createQueueStore()`.

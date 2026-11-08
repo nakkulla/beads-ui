@@ -21,6 +21,7 @@ import {
   __resetRepoOpsDisplayForTest,
   repoOpsDisplayFor
 } from './repo-ops-display.js';
+import { conditionWaitSchedule } from './resolution-ladder.js';
 import { createFailureConversationLauncher } from './resolve-session.js';
 import * as recoveryPolicy from './work-recovery-policy.js';
 
@@ -7022,11 +7023,11 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
    * to, the way the shared worktree does: after the first run aligned the
    * target, HEAD already holds it.
    *
-   * @param {{ repo?: string, sleep?: (ms: number) => Promise<void> }} [options]
+   * @param {{ repo?: string, sleep?: (ms: number) => Promise<void>, now?: () => number, conditionWaitPolicy?: () => any, timeline?: { append: (input: any) => unknown }, notify?: any, comment?: (bead_id: string, text: string) => Promise<void> }} [options]
    */
   function retryHarness(options = {}) {
     const deploy = { head: /** @type {string|null} */ (null) };
-    /** @type {{ current: { exit_code: number, signal: null }|null }} */
+    /** @type {{ current: { exit_code: number, signal: null, finished_at?: number }|null }} */
     const marker = { current: null };
     const start = vi.fn(() => ({
       ok: true,
@@ -7034,7 +7035,8 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
       log_path: path.join(root, 'operation.log')
     }));
     const store = createQueueStore({
-      filePathFor: (workspace) => path.join(workspace, 'queue.json')
+      filePathFor: (workspace) => path.join(workspace, 'queue.json'),
+      ...(options.now ? { now: options.now } : {})
     });
     const repo = options.repo ?? root;
     const coordinator = createRepoOperationCoordinator({
@@ -7090,7 +7092,14 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
         base_oid: TARGET,
         local_only: false
       }),
-      sleep: options.sleep
+      sleep: options.sleep,
+      ...(options.timeline ? { timeline: options.timeline } : {}),
+      ...(options.now ? { now: options.now } : {}),
+      ...(options.conditionWaitPolicy
+        ? { conditionWaitPolicy: options.conditionWaitPolicy }
+        : {}),
+      ...(options.notify ? { notify: options.notify } : {}),
+      ...(options.comment ? { comment: options.comment } : {})
     });
     store.ensureRepoOperation(root, {
       operation_id: 'previous-deploy',
@@ -7446,6 +7455,380 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
     expect(receipt).toMatchObject({
       operation_id: retried.operation_id,
       state: 'succeeded'
+    });
+  });
+
+  describe('deploy condition wait recheck (dotfiles-rnyd9)', () => {
+    const POLICY = {
+      failure_code: 'condition_wait',
+      interval_ms: 1_000,
+      deadline_ms: 10_000
+    };
+
+    /**
+     * A harness whose store and coordinator share one movable clock and whose
+     * pin grants the condition wait (or, with `policy: null`, predates it).
+     *
+     * @param {{ policy?: any, timeline?: { append: (input: any) => unknown } }} [options]
+     */
+    function waitHarness(options = {}) {
+      const clock = { now: 100_000 };
+      const policy = options.policy === undefined ? POLICY : options.policy;
+      const notify = {
+        needsHuman: vi.fn(async () => {}),
+        conditionWaitEntered: vi.fn(async () => {})
+      };
+      /** @type {import('vitest').Mock<(bead_id: string, text: string) => Promise<void>>} */
+      const comment = vi.fn(async () => {});
+      const harness = retryHarness({
+        now: () => clock.now,
+        conditionWaitPolicy: () => policy,
+        notify,
+        comment,
+        ...(options.timeline ? { timeline: options.timeline } : {})
+      });
+      return { ...harness, clock, notify, comment };
+    }
+
+    /**
+     * Run the automatic deploy and settle it on the given exit, which leaves
+     * the deploy worktree HEAD at the target (UI-btsr §4).
+     *
+     * @param {ReturnType<typeof waitHarness>} harness
+     * @param {number} exit_code
+     * @param {any} [subject]
+     * @returns {Promise<string>}
+     */
+    async function settleRun(harness, exit_code, subject = DEPLOY_SUBJECT) {
+      const run = await harness.coordinator.ensureDeploy(subject);
+      harness.marker.current = { exit_code, signal: null };
+      await harness.coordinator.reconcile(root);
+      harness.marker.current = null;
+      return String(run.operation_id);
+    }
+
+    /**
+     * @param {ReturnType<typeof waitHarness>} harness
+     * @param {string} operation_id
+     */
+    function successorsOf(harness, operation_id) {
+      return Object.values(harness.store.snapshot(root).repo_operations).filter(
+        (operation) => operation.retry_of === operation_id
+      );
+    }
+
+    test('settles a deploy exit 75 as condition_wait', async () => {
+      const harness = waitHarness();
+
+      const tip_id = await settleRun(harness, 75);
+
+      const tip = harness.store.snapshot(root).repo_operations[tip_id];
+      expect([tip.state, tip.failure?.code]).toEqual([
+        'failed',
+        'condition_wait'
+      ]);
+    });
+
+    test('records the skipped script_retry as not applicable', async () => {
+      const harness = waitHarness();
+
+      const tip_id = await settleRun(harness, 75);
+      await harness.coordinator.reconcile(root);
+
+      const tip = harness.store.snapshot(root).repo_operations[tip_id];
+      expect(tip.retry).toMatchObject({
+        outcome: 'not_applicable',
+        blocked_reason: 'deploy_exit_75',
+        consumed_key: null
+      });
+      expect(harness.start).toHaveBeenCalledTimes(1);
+    });
+
+    test('keeps a deploy exit 75 an ordinary script failure under a pin without the wait', async () => {
+      const harness = waitHarness({ policy: null });
+
+      const tip_id = await settleRun(harness, 75);
+
+      const tip = harness.store.snapshot(root).repo_operations[tip_id];
+      expect(tip.state).toBe('retry_pending');
+      expect(tip.retry?.first_failure?.code).toBe('script_failed');
+    });
+
+    test('keeps a verify exit 75 an ordinary script failure', async () => {
+      const harness = waitHarness();
+      const run = await harness.coordinator.ensureVerify(
+        cleanupVerifyCandidate()
+      );
+      harness.marker.current = { exit_code: 75, signal: null };
+
+      await harness.coordinator.reconcile(root);
+
+      const verify =
+        harness.store.snapshot(root).repo_operations[String(run.operation_id)];
+      expect(verify.retry?.first_failure?.code).toBe('script_failed');
+    });
+
+    test('records one successor that really runs once the recheck time came', async () => {
+      const harness = waitHarness();
+      const tip_id = await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+
+      const rechecked = await harness.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+
+      const operations = harness.store.snapshot(root).repo_operations;
+      expect(operations[String(rechecked.operation_id)]).toMatchObject({
+        retry_of: tip_id,
+        state: 'running'
+      });
+      expect(operations[tip_id].superseded_by).toBe(rechecked.operation_id);
+      expect(harness.deploy.head).toBe(TARGET);
+      expect(harness.start).toHaveBeenCalledTimes(2);
+    });
+
+    test('calls the retry hook when the automatic recheck records its successor', async () => {
+      const harness = waitHarness();
+      await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+      const on_retry_recorded = vi.fn();
+
+      await harness.coordinator.ensureDeploy({
+        ...DEPLOY_SUBJECT,
+        on_retry_recorded
+      });
+
+      expect(on_retry_recorded).toHaveBeenCalledTimes(1);
+    });
+
+    test('adopts the tip before the recheck time', async () => {
+      const harness = waitHarness();
+      const tip_id = await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms - 1;
+
+      const adopted = await harness.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+
+      expect(adopted).toMatchObject({ operation_id: tip_id, adopted: true });
+      expect(successorsOf(harness, tip_id)).toHaveLength(0);
+    });
+
+    test('adopts the tip once the chain deadline passed', async () => {
+      const harness = waitHarness();
+      const head_id = await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+      const tip_id = await settleRun(harness, 75);
+      harness.clock.now += POLICY.deadline_ms;
+
+      const adopted = await harness.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+
+      expect(tip_id).not.toBe(head_id);
+      expect(adopted).toMatchObject({ operation_id: tip_id, adopted: true });
+      expect(successorsOf(harness, tip_id)).toHaveLength(0);
+    });
+
+    test('adopts a tip that failed otherwise however long ago', async () => {
+      const harness = waitHarness();
+      const failed_id = await seedFailedDeploy(harness);
+      harness.clock.now += POLICY.interval_ms;
+
+      const adopted = await harness.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+
+      expect(adopted).toMatchObject({ operation_id: failed_id, adopted: true });
+      expect(successorsOf(harness, failed_id)).toHaveLength(0);
+    });
+
+    test('records a person retry successor past the deadline', async () => {
+      const harness = waitHarness();
+      const tip_id = await settleRun(harness, 75);
+      harness.clock.now += POLICY.deadline_ms;
+
+      const retried = await harness.coordinator.ensureDeploy({
+        ...DEPLOY_SUBJECT,
+        retry_authorized: true
+      });
+
+      expect(
+        harness.store.snapshot(root).repo_operations[
+          String(retried.operation_id)
+        ].retry_of
+      ).toBe(tip_id);
+    });
+
+    test('records one successor when a tick and a click meet the same tip', async () => {
+      const harness = waitHarness();
+      const tip_id = await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+
+      const [tick, click] = await Promise.all([
+        harness.coordinator.ensureDeploy(DEPLOY_SUBJECT),
+        harness.coordinator.ensureDeploy({
+          ...DEPLOY_SUBJECT,
+          retry_authorized: true
+        })
+      ]);
+
+      expect(successorsOf(harness, tip_id)).toHaveLength(1);
+      expect(tick.operation_id).toBe(click.operation_id);
+      expect(harness.start).toHaveBeenCalledTimes(2);
+    });
+
+    test('keeps the recheck time of a condition_wait tip across a restart', async () => {
+      const harness = waitHarness();
+      const tip_id = await settleRun(harness, 75);
+      const finished_at = Number(
+        harness.store.snapshot(root).repo_operations[tip_id].finished_at
+      );
+      const restarted = waitHarness();
+      restarted.clock.now = finished_at + POLICY.interval_ms - 1;
+
+      const early = await restarted.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+      restarted.clock.now = finished_at + POLICY.interval_ms;
+      const due = await restarted.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+
+      expect(early).toMatchObject({ operation_id: tip_id, adopted: true });
+      expect(
+        restarted.store.snapshot(root).repo_operations[String(due.operation_id)]
+          .retry_of
+      ).toBe(tip_id);
+    });
+
+    test('writes the history line once per condition-wait chain', async () => {
+      const timeline = createBeadTimeline({ workspace_root: root });
+      const harness = waitHarness({ timeline });
+      await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+
+      await settleRun(harness, 75);
+
+      const lines = timeline
+        .readTimeline('UI-1')
+        .filter(
+          (/** @type {any} */ event) =>
+            event.kind === 'operation_failed' ||
+            event.kind === 'operation_recovery'
+        );
+      expect(lines.map((/** @type {any} */ event) => event.kind)).toEqual([
+        'operation_failed',
+        'operation_recovery'
+      ]);
+      expect(lines[0].summary).toMatch(/^배포 조건 대기 — condition_wait/);
+    });
+
+    test('pushes one wait notification at the first exit 75 of a chain', async () => {
+      const harness = waitHarness();
+
+      await settleRun(harness, 75);
+
+      expect(harness.notify.conditionWaitEntered).toHaveBeenCalledOnce();
+      expect(harness.notify.conditionWaitEntered).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bead_id: 'UI-1',
+          release: expect.stringMatching(/^다음 자동 재확인 \d\d:\d\d · 기한 /)
+        })
+      );
+      expect(harness.notify.needsHuman).not.toHaveBeenCalled();
+    });
+
+    test('pushes no wait notification for a repeat exit 75 in the chain', async () => {
+      const harness = waitHarness();
+      await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+
+      await settleRun(harness, 75);
+      await harness.coordinator.reconcile(root);
+
+      expect(harness.notify.conditionWaitEntered).toHaveBeenCalledOnce();
+    });
+
+    test('pushes the wait notification once across a restart', async () => {
+      const harness = waitHarness();
+      await settleRun(harness, 75);
+      const restarted = waitHarness();
+
+      await restarted.coordinator.reconcile(root);
+
+      expect(restarted.notify.conditionWaitEntered).not.toHaveBeenCalled();
+    });
+
+    test('pushes no wait notification under a pin without the wait', async () => {
+      const harness = waitHarness({ policy: null });
+
+      await settleRun(harness, 75);
+      await harness.coordinator.reconcile(root);
+
+      expect(harness.notify.conditionWaitEntered).not.toHaveBeenCalled();
+    });
+
+    test('posts one wait comment at the first exit 75 of a chain', async () => {
+      const harness = waitHarness();
+
+      await settleRun(harness, 75);
+
+      expect(harness.comment).toHaveBeenCalledOnce();
+      expect(harness.comment.mock.calls[0][0]).toBe('UI-1');
+      expect(harness.comment.mock.calls[0][1]).toMatch(/^배포 조건 대기/);
+    });
+
+    test('posts no wait comment for a repeat exit 75 in the chain', async () => {
+      const harness = waitHarness();
+      await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+
+      await settleRun(harness, 75);
+      await harness.coordinator.reconcile(root);
+
+      expect(harness.comment).toHaveBeenCalledOnce();
+    });
+
+    test('posts the wait comment once across a restart', async () => {
+      const harness = waitHarness();
+      await settleRun(harness, 75);
+      const restarted = waitHarness();
+
+      await restarted.coordinator.reconcile(root);
+
+      expect(restarted.comment).not.toHaveBeenCalled();
+    });
+
+    test('keeps the chain head deadline and leaves no second wait record for a recheck pinned to the waiting tip target', async () => {
+      const harness = waitHarness();
+      const head_id = await settleRun(harness, 75);
+      const head_finished_at = Number(
+        harness.store.snapshot(root).repo_operations[head_id].finished_at
+      );
+      harness.clock.now += POLICY.interval_ms;
+
+      const tip_id = await settleRun(harness, 75, DEPLOY_SUBJECT);
+
+      const operations = harness.store.snapshot(root).repo_operations;
+      expect(operations[tip_id]).toMatchObject({
+        retry_of: head_id,
+        target_sha: TARGET
+      });
+      expect(
+        conditionWaitSchedule(operations, tip_id, POLICY)?.deadline_at
+      ).toBe(head_finished_at + POLICY.deadline_ms);
+      expect(harness.notify.conditionWaitEntered).toHaveBeenCalledOnce();
+      expect(harness.comment).toHaveBeenCalledOnce();
+    });
+
+    test('records the script exit time of a condition wait settled late', async () => {
+      const harness = waitHarness();
+      const run = await harness.coordinator.ensureDeploy(DEPLOY_SUBJECT);
+      const exited_at = harness.clock.now - 5_000;
+      harness.marker.current = {
+        exit_code: 75,
+        signal: null,
+        finished_at: exited_at
+      };
+
+      await harness.coordinator.reconcile(root);
+
+      const operations = harness.store.snapshot(root).repo_operations;
+      const tip_id = String(run.operation_id);
+      expect(operations[tip_id].finished_at).toBe(exited_at);
+      expect(conditionWaitSchedule(operations, tip_id, POLICY)).toMatchObject({
+        next_at: exited_at + POLICY.interval_ms,
+        deadline_at: exited_at + POLICY.deadline_ms
+      });
     });
   });
 });

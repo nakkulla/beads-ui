@@ -1,8 +1,8 @@
 {
   "source_repo": "dotfiles",
   "source_path": "generated/contracts/work-recovery-policy.json",
-  "source_commit": "f031c9853f536c1478e9d1129b8c69628be27ef8",
-  "source_blob_sha": "3d274eb4af16b799a8e307f6224385fca242778f",
-  "sha256": "3eb106150a71d24a21ff36ffaaab21d8516684a1547549289a7f84cc57735498",
-  "bytes": 5258
+  "source_commit": "f374b4dff4f839342bb988a859e6e8330b5bdcf2",
+  "source_blob_sha": "3eb5a5f86ecee74b88421d07e0fdf3371dbc84ff",
+  "sha256": "ec8352589fcff5e434d4655136989ed76adcba5713d181e4db7905c1dfeffe45",
+  "bytes": 5490
 }

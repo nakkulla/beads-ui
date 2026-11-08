@@ -35,10 +35,13 @@ import {
   COMPLETION_RETRY_MAX
 } from './queue-store.js';
 import { RECEIPT_HOLD_RESOLUTION } from './receipt-check.js';
+import { conditionWaitPolicy } from './repo-operation-policy.js';
 import {
+  cleanupConditionWait,
   cleanupFailureRetryClass,
   cleanupRetryParked,
   cleanupRetryWaitUntil,
+  conditionWaitState,
   isCleanupResolutionFailure
 } from './resolution-ladder.js';
 
@@ -461,7 +464,10 @@ function decideFollowupWait(intent, fact) {
  * @typedef {{ state: CompletionFactState, reason?: string }} CompletionFact
  */
 /**
- * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any, op_id?: string|null, terminal?: boolean }} ObservedCompletionFact
+ * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any, op_id?: string|null, terminal?: boolean, condition_wait?: import('./resolution-ladder.js').ConditionWaitSchedule }} ObservedCompletionFact
+ * `condition_wait` is the recheck schedule of a cleanup stopped at its deploy
+ * on a `[deploy]` condition wait (dotfiles-rnyd9), read from the durable
+ * deploy chain; absent for every other stop and under a pin without it.
  */
 /**
  * `terminal` marks a `needs_human` the KERNEL itself judged terminal (UI-8w4t
@@ -640,6 +646,24 @@ export function decideCompletionAction(input) {
   }
   if (intent.phase === 'cleaning') {
     if (fact.state === 'cleanup_repairable') {
+      // A `[deploy]` condition wait (dotfiles-rnyd9) is no failure before its
+      // deadline: it waits for its recheck time, then replays the cleanup —
+      // the deploy coordinator alone grants the `retry_of` successor — and
+      // stops for a person once the deadline passed. None of it spends the
+      // transient cleanup retry budget.
+      if (fact.condition_wait) {
+        const state = conditionWaitState(
+          fact.condition_wait,
+          typeof input.now === 'number' ? input.now : 0
+        );
+        if (state === 'waiting') {
+          return null;
+        }
+        if (state === 'due') {
+          return { kind: 'retry_cleanup' };
+        }
+        return needsHuman(completionFailureReason(fact), true);
+      }
       if (cleanupFailureRetryClass(fact.evidence) === 'transient') {
         const { retry_count } = fact.evidence;
         if (Number.isInteger(retry_count) && retry_count >= 3) {
@@ -702,6 +726,7 @@ export function decideCompletionAction(input) {
  *   adoptLegacy?: (root_bead_id: string, intent: any, queue: any) => Promise<boolean>|boolean,
  *   onAttemptSettled?: (input: any) => Promise<void>|void,
  *   now?: () => number,
+ *   conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null,
  *   retryWakeMs?: number,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -712,6 +737,10 @@ export function createCompletionIntentCoordinator(deps) {
   const onAction = deps.onAction || (() => {});
   const adoptLegacy = deps.adoptLegacy || (() => false);
   const now = deps.now || (() => Date.now());
+  // A cleanup waiting on a `[deploy]` condition (dotfiles-rnyd9) is parked
+  // like a scheduled cleanup retry; null under a pin that predates it.
+  const conditionWait =
+    deps.conditionWaitPolicy || (() => conditionWaitPolicy());
   const log = deps.log || (() => {});
   // A delayed retry is the one transition no queue event announces: its due
   // time passes in silence. One coarse timer covers every waiting row, which is
@@ -807,7 +836,7 @@ export function createCompletionIntentCoordinator(deps) {
       ? queue.merge_queue.find(
           (/** @type {any} */ entry) =>
             entry?.resolution?.state !== 'yielded' &&
-            !cleanupRetryParked(queue, entry?.bead_id, now())
+            !cleanupRetryParked(queue, entry?.bead_id, now(), conditionWait())
         )
       : null;
     const root_bead_id =
@@ -1412,6 +1441,7 @@ function operationIdentity(root_bead_id, kind, failure_key) {
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
  *   notify?: { needsHuman: (input: any) => Promise<void>, hold?: (input: any) => Promise<void> }|null,
  *   failureConversation?: { launchForBead: (input: { workspace: string, repo: string|null, bead_id: string }) => Promise<any> }|null,
+ *   conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null,
  *   now?: () => number,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -1419,6 +1449,10 @@ function operationIdentity(root_bead_id, kind, failure_key) {
 export function createCompletionActionDriver(deps) {
   const facts = new Map();
   const now = deps.now || (() => Date.now());
+  // The pinned `[deploy]` exit-75 condition wait (dotfiles-rnyd9). Null under a
+  // pin that predates it, which leaves every cleanup stop as it was.
+  const conditionWait =
+    deps.conditionWaitPolicy || (() => conditionWaitPolicy());
   const log = deps.log || (() => {});
   // The outward push (UI-jw27). Optional so every existing construction site
   // (and test) keeps working with no notifier at all — a missing one is
@@ -1763,15 +1797,26 @@ export function createCompletionActionDriver(deps) {
       );
       return;
     }
-    const cleanup_failure = deps.store.snapshot(deps.workspace)
-      .cleanup_failed?.[root_bead_id];
+    const settled_queue = deps.store.snapshot(deps.workspace);
+    const cleanup_failure = settled_queue.cleanup_failed?.[root_bead_id];
     const until = cleanupRetryWaitUntil(cleanup_failure);
+    const condition_wait = cleanupConditionWait(
+      settled_queue,
+      root_bead_id,
+      conditionWait()
+    );
     // Preparation only happens after the deadline. A newer wait or exhausted
-    // budget therefore proves this recovered operation already failed.
+    // budget therefore proves this recovered operation already failed. A
+    // condition wait is prepared only once its recheck time came, so one not
+    // due now is the successor's own exit 75 (or a deadline that passed
+    // meanwhile): the replay is over and the row decides again in `cleaning`.
     if (
       recovering &&
-      cleanupFailureRetryClass(cleanup_failure) === 'transient' &&
-      (cleanup_failure.retry_count >= 3 || (until !== null && now() < until))
+      ((cleanupFailureRetryClass(cleanup_failure) === 'transient' &&
+        (cleanup_failure.retry_count >= 3 ||
+          (until !== null && now() < until))) ||
+        (condition_wait !== null &&
+          conditionWaitState(condition_wait, now()) !== 'due'))
     ) {
       const advanced = deps.store.advanceCompletionOp(deps.workspace, {
         root_bead_id,
@@ -2368,12 +2413,18 @@ export function createCompletionActionDriver(deps) {
       evidence: { output_tail: failure.output_tail }
     });
     if (isCleanupResolutionFailure(failure)) {
+      const condition_wait = cleanupConditionWait(
+        queue,
+        root_bead_id,
+        conditionWait()
+      );
       return {
         state: 'cleanup_repairable',
         source: 'verify',
         failure_key,
         evidence: failure,
-        op_id: operationIdFromLogPath(failure.log_path)
+        op_id: operationIdFromLogPath(failure.log_path),
+        ...(condition_wait === null ? {} : { condition_wait })
       };
     }
     return { state: 'cleanup_pending', reason: 'cleanup_incomplete' };
@@ -3616,6 +3667,15 @@ export function createCompletionActionDriver(deps) {
         // §1). A cleanup cause is often `verify_cmd_failed`, which the surviving
         // retry policy would have parked in `retrying` and re-run automatically
         // — the exact automation this lane exists to stop.
+        if (fact.condition_wait) {
+          // A condition wait past its deadline (dotfiles-rnyd9): this terminal
+          // is the chain's one announcement, so the chain head's once-mark is
+          // spent too and the cleanup lane's own deadline notice stays silent
+          // for the same chain, whoever stops it later.
+          deps.store.consumeRepoOperationFailureNotice?.(deps.workspace, {
+            operation_id: fact.condition_wait.head_id
+          });
+        }
         terminalize(
           root_bead_id,
           reason,

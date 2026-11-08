@@ -54,6 +54,13 @@ export const REPO_OPERATION_POLICY_PROVENANCE_PATH = path.join(
  * @property {string[]} never_automatic
  */
 
+/**
+ * The schemas this consumer reads. Schema 4 predates the `[deploy]` exit-75
+ * condition wait and keeps every behaviour it had (fail-quiet: 75 stays an
+ * ordinary `script_failed`, nothing rechecks); schema 5 adds it.
+ */
+const SUPPORTED_SCHEMA_VERSIONS = new Set([4, 5]);
+
 /** @type {{ policy: Record<string, any>, provenance: Record<string, any>, digest: string, supported: boolean }|null} */
 let cached = null;
 
@@ -80,6 +87,33 @@ function stringList(value) {
   );
 }
 
+/** @param {unknown} value */
+function positiveInteger(value) {
+  return Number.isInteger(value) && Number(value) > 0;
+}
+
+/**
+ * The schema-5 additions (dotfiles-rnyd9): a `[deploy]` exit 75 names its
+ * failure code, the recheck item carries its interval and deadline, and the
+ * worker_automatic list admits it. Schema 4 carries none of them.
+ *
+ * @param {Record<string, any>} policy
+ */
+function validConditionWait(policy) {
+  const recheck = policy.condition_wait_deploy_recheck;
+  return (
+    // The one code every consumer (recovery classification, summary, wait
+    // rows, cards) names; another token would be a contract this consumer
+    // does not read.
+    policy.after_ladder_recovery.deploy_exit_75 === 'condition_wait' &&
+    isRecord(recheck) &&
+    positiveInteger(recheck.interval_ms) &&
+    positiveInteger(recheck.deadline_ms) &&
+    Array.isArray(policy.worker_automatic) &&
+    policy.worker_automatic.includes('condition_wait_deploy_recheck')
+  );
+}
+
 /** @param {unknown} policy */
 function validPolicy(policy) {
   if (!isRecord(policy)) {
@@ -103,7 +137,8 @@ function validPolicy(policy) {
         entry.attempts_per_operation_attempt > 0
     ) &&
     isRecord(recovery) &&
-    recovery.consumer_schema_required === 4 &&
+    recovery.consumer_schema_required === policy.schema_version &&
+    (policy.schema_version === 4 || validConditionWait(policy)) &&
     isRecord(recovery.diagnosis) &&
     stringList(recovery.diagnosis.requires) &&
     isRecord(recovery.code_defect_handoff) &&
@@ -163,7 +198,7 @@ export function loadRepoOperationPolicy(deps = {}) {
       digest,
       supported:
         isRecord(policy) &&
-        policy.schema_version === 4 &&
+        SUPPORTED_SCHEMA_VERSIONS.has(policy.schema_version) &&
         validPolicy(policy) &&
         provenanceMatches(provenance, bytes, digest)
     };
@@ -183,6 +218,27 @@ export function loadRepoOperationPolicy(deps = {}) {
  */
 export function repoOperationPolicySupported() {
   return loadRepoOperationPolicy().supported;
+}
+
+/**
+ * The `[deploy]` exit-75 condition wait the pinned contract grants
+ * (dotfiles-rnyd9): the failure code such a run records and the recheck
+ * interval and deadline. Null while the pin is unsupported or predates it
+ * (schema 4), which keeps exit 75 an ordinary `script_failed`.
+ *
+ * @param {{ fs?: typeof import('node:fs') }} [deps]
+ * @returns {{ failure_code: string, interval_ms: number, deadline_ms: number }|null}
+ */
+export function conditionWaitPolicy(deps = {}) {
+  const { policy, supported } = loadRepoOperationPolicy(deps);
+  if (!supported || policy.schema_version === 4) {
+    return null;
+  }
+  return {
+    failure_code: policy.after_ladder_recovery.deploy_exit_75,
+    interval_ms: policy.condition_wait_deploy_recheck.interval_ms,
+    deadline_ms: policy.condition_wait_deploy_recheck.deadline_ms
+  };
 }
 
 /**

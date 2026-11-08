@@ -667,6 +667,29 @@ describe('worker script output summary', () => {
   test('caps a fallback last line at 200 characters', () => {
     expect(scriptSummary('y'.repeat(300))).toHaveLength(200);
   });
+
+  test('takes the refusal reason on the last line of a condition wait', () => {
+    const output = [
+      'error: cannot pull with rebase: You have unstaged changes.',
+      'live checkout has uncommitted edits; retry later',
+      ''
+    ].join('\n');
+
+    expect(scriptSummary(output, { code: 'condition_wait' })).toEqual(
+      'live checkout has uncommitted edits; retry later'
+    );
+  });
+
+  test('keeps the first failure line for any other failure code', () => {
+    const output = [
+      'error: cannot pull with rebase: You have unstaged changes.',
+      'live checkout has uncommitted edits; retry later'
+    ].join('\n');
+
+    expect(scriptSummary(output, { code: 'script_failed' })).toEqual(
+      'error: cannot pull with rebase: You have unstaged changes.'
+    );
+  });
 });
 
 describe('worker guard kill summary', () => {

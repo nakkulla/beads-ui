@@ -31,6 +31,10 @@ export const FAILURE_SENTENCES = Object.freeze({
   gh_observation_failed: 'GitHub에서 PR 상태를 읽지 못했습니다.',
   verify_script_failure: '검증 스크립트가 실패했습니다.',
   deploy_script_failure: '배포 스크립트가 실패했습니다.',
+  // dotfiles-rnyd9: `[deploy]` exit 75 — the script refused on an outside
+  // condition and declared the rerun safe, so nothing is broken yet.
+  condition_wait:
+    '배포 스크립트가 외부 조건이 맞지 않아 거부했습니다 — Worker가 정해진 간격으로 다시 확인합니다.',
   interrupted_without_terminal_exit: '작업이 종료 기록 없이 중단됐습니다.',
   manual_target_missing:
     '수동 배포 기록에 핀된 대상 SHA가 없어 실행하지 않았습니다.',
@@ -160,6 +164,8 @@ export const RECOVERY_WAIT_SENTENCES = Object.freeze({
     '승인·안전 판단을 기다리며, 필요한 결정이 확인되면 이어갈 수 있습니다.',
   verification:
     '검증 오류의 정정을 기다리며, 원인이 고쳐지면 이어갈 수 있습니다.',
+  condition:
+    '배포 조건이 풀리기를 기다리며, 조건이 맞으면 다시 실행할 수 있습니다.',
   no_progress:
     '같은 오류에 진전이 없어 멈췄으며, 원인이 정정되면 이어갈 수 있습니다.',
   unclassified:

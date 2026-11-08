@@ -1816,7 +1816,8 @@ function setup(opts) {
     publishActivity: opts.publishActivity,
     waitingRescan: opts.waitingRescan,
     sleep: /** @type {any} */ (opts).sleep,
-    interactiveTmuxSession: /** @type {any} */ (opts).interactiveTmuxSession
+    interactiveTmuxSession: /** @type {any} */ (opts).interactiveTmuxSession,
+    conditionWaitPolicy: /** @type {any} */ (opts).conditionWaitPolicy
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
   // constructor dep, so a test sets it exactly the way the UI does.
@@ -2143,7 +2144,7 @@ describe('scheduler work recovery waits', () => {
                   classification,
                   disposition: 'wait',
                   reason,
-                  policy_schema: 2
+                  policy_schema: 3
                 }
               }
             : { env_pattern: 'unknown' })
@@ -37329,5 +37330,326 @@ describe('settling an error right after a Claude switch', () => {
     });
 
     expect(accounts).toEqual([PINNED]);
+  });
+});
+
+describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
+  const POLICY = {
+    failure_code: 'condition_wait',
+    interval_ms: 1_000,
+    deadline_ms: 10_000
+  };
+  const HEAD_SHA = 'a'.repeat(40);
+
+  /**
+   * Record one settled `condition_wait` deploy of S1, optionally continuing
+   * an earlier one through `retry_of`.
+   *
+   * @param {any} store
+   * @param {string} operation_id
+   * @param {number} finished_at
+   * @param {string} [retry_of]
+   */
+  function seedConditionWait(store, operation_id, finished_at, retry_of) {
+    store.ensureRepoOperation(WS, {
+      operation_id,
+      repo_id: '/repo',
+      kind: 'deploy',
+      subjects: [{ bead_id: 'S1', merged_sha: HEAD_SHA }],
+      effective_base_sha: HEAD_SHA,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      target_sha: HEAD_SHA,
+      ...(retry_of ? { retry_of } : {})
+    });
+    if (retry_of) {
+      store.supersedeRepoOperation(WS, {
+        operation_id: retry_of,
+        successor_id: operation_id
+      });
+    }
+    const operation = store.snapshot(WS).repo_operations[operation_id];
+    store.settleRepoOperation(WS, {
+      operation_id,
+      attempt_id: operation.attempt_id,
+      exit_code: 75,
+      signal: null,
+      finished_at,
+      conversation_target: true,
+      failure: {
+        code: 'condition_wait',
+        fingerprint: 'f',
+        detail: '',
+        interrupted: false,
+        summary: 'live checkout has uncommitted edits'
+      }
+    });
+  }
+
+  /**
+   * A failed quick_fix landing attempt stopped at the deploy step.
+   *
+   * @param {any} store
+   */
+  function seedLandingWait(store) {
+    seedQueue(store, ['S1']);
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'quickfix-wait', bead_id: 'S1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'quickfix-wait',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        workflow_mode_prior: null,
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: HEAD_SHA,
+          reason: 'condition_wait'
+        },
+        cause: 'quickfix_landing_failed:condition_wait',
+        cause_detail: { summary: 'deploy waits on a condition' }
+      }
+    });
+  }
+
+  /**
+   * @param {{ now: () => number, settle?: any }} input
+   */
+  function waitEnv(input) {
+    const notify = { attemptFailed: vi.fn() };
+    const failureConversation = {
+      launchForBead: vi.fn(async () => ({ session: 'launched' }))
+    };
+    const settle =
+      input.settle ||
+      vi.fn(async () => ({
+        ok: false,
+        reason: 'condition_wait',
+        step: 'repo_operations'
+      }));
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      notify,
+      quickfixLanding: { settle },
+      now: input.now,
+      .../** @type {any} */ ({
+        conditionWaitPolicy: () => POLICY,
+        failureConversation
+      })
+    });
+    const comment = vi.fn(async () => {});
+    /** @type {any} */ (env.bd).comment = comment;
+    return { ...env, notify, settle, comment, failureConversation };
+  }
+
+  /**
+   * Let the off-pass recheck the periodic reconcile started run to its end.
+   */
+  async function settleRecheck() {
+    for (let index = 0; index < 6; index += 1) {
+      await flush();
+    }
+  }
+
+  test('leaves no failure push or comment of its own for the first exit 75', async () => {
+    const clock = { now: 50_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.resume(WS, 'quickfix-wait', {
+      job_retry_authorized: true
+    });
+    await env.scheduler.commentsIdle();
+
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    expect(env.comment).not.toHaveBeenCalled();
+  });
+
+  test('leaves nothing new for a repeated exit 75 in the chain', async () => {
+    const clock = { now: 52_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedConditionWait(env.store, 'tip', 51_500, 'head');
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.resume(WS, 'quickfix-wait', {
+      job_retry_authorized: true
+    });
+    await env.scheduler.commentsIdle();
+
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    expect(env.comment).not.toHaveBeenCalled();
+  });
+
+  test('re-enters the settlement without person authority once the recheck time came', async () => {
+    const clock = { now: 51_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.settle).toHaveBeenCalledTimes(1);
+    expect(env.settle).toHaveBeenCalledWith({
+      attempt_id: 'quickfix-wait',
+      bead_id: 'S1',
+      target_base: 'main'
+    });
+  });
+
+  test('adopts the outcome of a recheck a restart left pending', async () => {
+    const clock = { now: 52_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedConditionWait(env.store, 'tip', 51_500, 'head');
+    seedLandingWait(env.store);
+    env.store.updateAttempt(WS, {
+      attempt_id: 'quickfix-wait',
+      patch: {
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: HEAD_SHA,
+          reason: 'repo_operation_pending'
+        }
+      }
+    });
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.settle).toHaveBeenCalledTimes(1);
+    expect(env.settle).toHaveBeenCalledWith({
+      attempt_id: 'quickfix-wait',
+      bead_id: 'S1',
+      target_base: 'main'
+    });
+  });
+
+  test('leaves a pending recheck alone while its deploy still runs', async () => {
+    const clock = { now: 52_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    env.store.ensureRepoOperation(WS, {
+      operation_id: 'running-next',
+      repo_id: '/repo',
+      kind: 'deploy',
+      subjects: [{ bead_id: 'S1', merged_sha: HEAD_SHA }],
+      effective_base_sha: HEAD_SHA,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      target_sha: HEAD_SHA,
+      retry_of: 'head'
+    });
+    seedLandingWait(env.store);
+    env.store.updateAttempt(WS, {
+      attempt_id: 'quickfix-wait',
+      patch: {
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: HEAD_SHA,
+          reason: 'repo_operation_pending'
+        }
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.settle).not.toHaveBeenCalled();
+  });
+
+  test('waits without a settlement before the recheck time', async () => {
+    const clock = { now: 50_999 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.settle).not.toHaveBeenCalled();
+  });
+
+  test('announces the deadline once per chain instead of rechecking', async () => {
+    const clock = { now: 60_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+    await env.scheduler.commentsIdle();
+
+    expect(env.settle).not.toHaveBeenCalled();
+    expect(env.notify.attemptFailed).toHaveBeenCalledTimes(1);
+    expect(env.comment).toHaveBeenCalledTimes(1);
+  });
+
+  test('opens the failure conversation once when the deadline passes', async () => {
+    const clock = { now: 60_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.failureConversation.launchForBead).toHaveBeenCalledTimes(1);
+    expect(env.failureConversation.launchForBead).toHaveBeenCalledWith({
+      workspace: WS,
+      repo: '/repo',
+      bead_id: 'S1'
+    });
+  });
+
+  test('opens the failure conversation once for a landing that settles past the deadline', async () => {
+    const clock = { now: 60_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.resume(WS, 'quickfix-wait', {
+      job_retry_authorized: true
+    });
+    await env.scheduler.resume(WS, 'quickfix-wait', {
+      job_retry_authorized: true
+    });
+    await flush();
+
+    expect(env.failureConversation.launchForBead).toHaveBeenCalledTimes(1);
+  });
+
+  test('opens no failure conversation inside the deadline', async () => {
+    const clock = { now: 50_500 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.resume(WS, 'quickfix-wait', {
+      job_retry_authorized: true
+    });
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.failureConversation.launchForBead).not.toHaveBeenCalled();
   });
 });

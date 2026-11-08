@@ -27,7 +27,10 @@ import {
 } from './operation-recovery.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import { lastAttemptOutput } from './repo-operation-log.js';
-import { repoOperationPolicySupported } from './repo-operation-policy.js';
+import {
+  conditionWaitPolicy,
+  repoOperationPolicySupported
+} from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
 import {
@@ -41,11 +44,14 @@ import {
   resolveRepoOps
 } from './repo-ops-resolver.js';
 import {
+  conditionWaitSchedule,
+  conditionWaitState,
   normalizeScriptRetry,
   resolutionAccess,
   scriptRetryApplicable,
   scriptRetryConsumptionKey
 } from './resolution-ladder.js';
+import { conditionWaitRelease } from './wait-judgment.js';
 import {
   workRecoveryClassification,
   workRecoveryReady
@@ -81,7 +87,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string, owner?: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, notify?: { needsHuman: (input: any) => Promise<void> }|null, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string, owner?: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null, notify?: { needsHuman: (input: any) => Promise<void>, conditionWaitEntered?: (input: { bead_id: string, summary?: string|null, release: string, repo?: string|null }) => Promise<void> }|null, comment?: (bead_id: string, text: string) => Promise<void>, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -94,6 +100,11 @@ export function createRepoOperationCoordinator(deps) {
   const verify_checkout =
     deps.verifyCheckout || createVerifyCheckout({ fs, gitRun: deps.gitRun });
   const policySupported = deps.policySupported || repoOperationPolicySupported;
+  // The `[deploy]` exit-75 condition wait (dotfiles-rnyd9). Null under a pin
+  // that predates it, which keeps 75 an ordinary `script_failed` and lets no
+  // automatic recheck through.
+  const conditionWait =
+    deps.conditionWaitPolicy || (() => conditionWaitPolicy());
   const log = deps.log || default_log;
   // The outward push (UI-jw27). Optional so every existing construction site
   // (and test) keeps working with no notifier at all — a missing one is
@@ -102,6 +113,9 @@ export function createRepoOperationCoordinator(deps) {
   // The automatic failure conversation (UI-jbl1 §3.1). Optional on the same
   // rule as the notifier: without it the failure is only announced.
   const failure_conversation = deps.failureConversation || null;
+  // The Bead comment writer the one wait comment of a `[deploy]` condition
+  // wait chain goes through (dotfiles-rnyd9). Optional like the notifier.
+  const comment = deps.comment || null;
   const now = deps.now || (() => Date.now());
   const sleep =
     deps.sleep ||
@@ -395,9 +409,11 @@ export function createRepoOperationCoordinator(deps) {
    *
    * @param {string} file
    * @param {number} [started_at] - The settled run's marker `started_at`.
+   * @param {string} [code] - The failure code being settled; `condition_wait`
+   * takes the script's last line as the summary (dotfiles-rnyd9).
    * @returns {{ digest: string|null, summary: string|null, confirmed: boolean }}
    */
-  function logEvidence(file, started_at) {
+  function logEvidence(file, started_at, code) {
     /** @type {{ bytes: Buffer, confirmed: boolean }} */
     let last;
     try {
@@ -408,7 +424,7 @@ export function createRepoOperationCoordinator(deps) {
     const digest = crypto.createHash('sha256').update(last.bytes).digest('hex');
     return {
       digest,
-      summary: scriptSummary(last.bytes.toString('utf8')),
+      summary: scriptSummary(last.bytes.toString('utf8'), { code }),
       confirmed: last.confirmed
     };
   }
@@ -772,12 +788,21 @@ export function createRepoOperationCoordinator(deps) {
     if (!deps.timeline) {
       return;
     }
+    const condition_wait = failure.code === 'condition_wait';
+    // A recheck that met the same condition again is the same wait, not a new
+    // fact (dotfiles-rnyd9 `repeated_exit_75_in_chain`): only the chain's
+    // first exit 75 goes on the history.
+    if (condition_wait && conditionWaitRepeated(operation_id)) {
+      return;
+    }
     const kind_label =
       operation?.kind === 'verify'
-        ? '검증'
+        ? '검증 실패'
         : operation?.kind === 'job'
-          ? '잡'
-          : '배포';
+          ? '잡 실패'
+          : condition_wait
+            ? '배포 조건 대기'
+            : '배포 실패';
     const exit_code = failure.exit_code ?? null;
     const line = [
       `${failure.code}`,
@@ -798,13 +823,101 @@ export function createRepoOperationCoordinator(deps) {
         // operation fails once, and a settlement replayed after a restart
         // re-appends the same id for the same run.
         seq: operation_id,
-        summary: `${kind_label} 실패 — ${line}`,
+        summary: `${kind_label} — ${line}`,
         ...(typeof operation?.log_path === 'string' &&
         operation.log_path.length > 0
           ? { log_path: operation.log_path }
           : {})
       });
     }
+  }
+
+  /**
+   * Leave the one wait notification and the one wait comment of a `[deploy]`
+   * condition-wait chain (dotfiles-rnyd9 `first_exit_75_notification:
+   * wait_notification_once`): on the chain's first exit 75 only, claimed on
+   * the head record before either is sent, so a repeat 75, a re-settlement
+   * and a restart leave nothing again. Both the quick_fix landing and the PR
+   * cleanup deploy settle here, so both get the same records. A wait, not a
+   * failure: what the script said and when the Worker looks again. A
+   * Bead-less manual run, which nothing rechecks, has no schedule and is
+   * announced as the failure it is.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   */
+  function announceConditionWait(workspace, operation_id) {
+    const operations = deps.store.snapshot(workspace).repo_operations;
+    const schedule = conditionWaitSchedule(
+      operations,
+      operation_id,
+      conditionWait()
+    );
+    const operation = operations[operation_id];
+    const bead_id = operation?.subjects?.find(
+      (/** @type {any} */ subject) => typeof subject?.bead_id === 'string'
+    )?.bead_id;
+    const announce =
+      typeof notify?.conditionWaitEntered === 'function'
+        ? notify.conditionWaitEntered
+        : null;
+    if (
+      schedule === null ||
+      schedule.head_id !== operation_id ||
+      typeof bead_id !== 'string' ||
+      (announce === null && comment === null) ||
+      typeof deps.store.claimRepoOperationWaitNotice !== 'function' ||
+      !deps.store.claimRepoOperationWaitNotice(workspace, { operation_id }).ok
+    ) {
+      return;
+    }
+    const summary =
+      typeof operation.failure?.summary === 'string'
+        ? operation.failure.summary
+        : null;
+    const release = conditionWaitRelease(schedule, false);
+    if (announce !== null) {
+      const run = async () => {
+        await announce({ bead_id, summary, release, repo: deps.repo });
+      };
+      run().catch((err) => {
+        log('condition wait notify failed: %o', err);
+      });
+    }
+    if (comment !== null) {
+      const text = [
+        `배포 조건 대기${summary === null ? '' : ` · ${summary}`}`,
+        release,
+        '수정 Bead 없이 Worker가 정해진 간격으로 배포를 다시 확인합니다.',
+        ...(typeof operation.log_path === 'string' &&
+        operation.log_path.length > 0
+          ? [`로그: ${operation.log_path}`]
+          : [])
+      ].join('\n');
+      const post = async () => {
+        await comment(bead_id, text);
+      };
+      post().catch((err) => {
+        log('condition wait comment failed for %s: %o', bead_id, err);
+      });
+    }
+  }
+
+  /**
+   * Whether a settled `condition_wait` record continues a chain that already
+   * met the condition: an earlier record reached through `retry_of` is a
+   * `condition_wait` too, so this one is the same wait (dotfiles-rnyd9).
+   *
+   * @param {string} operation_id
+   * @returns {boolean}
+   */
+  function conditionWaitRepeated(operation_id) {
+    const schedule = conditionWaitSchedule(
+      deps.store.snapshot(deps.workspace).repo_operations,
+      operation_id,
+      conditionWait()
+    );
+    return schedule !== null && schedule.head_id !== operation_id;
   }
 
   /**
@@ -891,14 +1004,23 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} workspace
    * @param {any} operation
    * @param {string} operation_id
-   * @param {{ code: string, detail?: string, interrupted?: boolean, exit_code?: number|null, signal?: string|null, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, started_at?: number }} failure
+   * @param {{ code: string, detail?: string, interrupted?: boolean, exit_code?: number|null, signal?: string|null, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, started_at?: number, finished_at?: number }} failure
+   * `finished_at` is the runner marker's script exit time; the record keeps it
+   * instead of the settlement time, so a settlement read late still schedules
+   * a `condition_wait` recheck and deadline from the exit (dotfiles-rnyd9
+   * `interval_from: tip_exit`).
    */
   async function settleFailure(workspace, operation, operation_id, failure) {
     const current =
       deps.store.snapshot(workspace).repo_operations[operation_id] || operation;
     const evidence = current.log_path
-      ? logEvidence(current.log_path, failure.started_at)
+      ? logEvidence(current.log_path, failure.started_at, failure.code)
       : { digest: null, summary: null, confirmed: false };
+    // A `[deploy]` exit 75 takes no `script_retry` (contract
+    // `not_applicable_when: deploy_exit_75`): a rerun seconds later cannot
+    // change the outside condition. The skip is recorded through the ladder's
+    // existing skip evidence, `retry.outcome: 'not_applicable'`.
+    const condition_wait = failure.code === 'condition_wait';
     const log_digest = evidence.digest;
     const failure_record = {
       code: failure.code,
@@ -925,6 +1047,7 @@ export function createRepoOperationCoordinator(deps) {
       subject: current
     });
     if (
+      !condition_wait &&
       current.state === 'running' &&
       current.retry === null &&
       access.script_retry &&
@@ -941,10 +1064,12 @@ export function createRepoOperationCoordinator(deps) {
       return 'retry_pending';
     }
     const blocked_reason =
-      current.state === 'running' &&
-      current.retry === null &&
-      !policySupported()
-        ? 'schema_unsupported'
+      current.state === 'running' && current.retry === null
+        ? !policySupported()
+          ? 'schema_unsupported'
+          : condition_wait
+            ? 'deploy_exit_75'
+            : null
         : null;
     // A record that is ALREADY terminal is a no-op for the store, so the
     // conversation mark below is bound to the same fact: this pass is what
@@ -957,14 +1082,25 @@ export function createRepoOperationCoordinator(deps) {
       signal: failure.signal ?? null,
       log_digest,
       failure: failure_record,
+      ...(Number.isFinite(failure.finished_at)
+        ? { finished_at: Number(failure.finished_at) }
+        : {}),
       retry_outcome:
         current.retry === null &&
         (blocked_reason !== null || !scriptRetryApplicable(current))
           ? 'not_applicable'
           : undefined,
       retry_blocked_reason: blocked_reason,
-      conversation_target: isManualRun(current)
+      // An automatic condition wait is not terminal before its deadline
+      // (dotfiles-rnyd9 `condition_wait_chain`), so its once-per-chain
+      // announcement waits: the same durable mark a manual failure carries is
+      // left unconsumed here, and the chain head's mark is the one spent when
+      // the deadline passes.
+      conversation_target: isManualRun(current) || condition_wait
     });
+    if (condition_wait) {
+      announceConditionWait(workspace, operation_id);
+    }
     recordOperationFailure(current, operation_id, failure, evidence.summary);
     await sweepDescendantCoverage(workspace, operation_id);
     transition.reclaim(workspace, operation_id);
@@ -1101,7 +1237,13 @@ export function createRepoOperationCoordinator(deps) {
     // Reconcile re-enters here for every failed operation on every pass and
     // the timeline file is append-only (the reader dedupes by event_id, the
     // file does not), so a line is written only when the classification moved.
-    if (recoveryClassificationChanged(previous, recovery)) {
+    if (
+      recoveryClassificationChanged(previous, recovery) &&
+      !(
+        operation.failure?.code === 'condition_wait' &&
+        conditionWaitRepeated(operation_id)
+      )
+    ) {
       recordRecoveryEvent(
         operation,
         'operation_recovery',
@@ -1310,6 +1452,25 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Whether a terminal marker is the `[deploy]` script's exit 75 — "an
+   * outside condition refused this run, and rerunning it is safe"
+   * (`EX_TEMPFAIL`, dotfiles-rnyd9). `[verify]` and job 75 stay ordinary
+   * failures, and so does every 75 under a pin that predates the wait.
+   *
+   * @param {any} operation
+   * @param {{ exit_code: number|null, signal: string|null }} marker
+   * @returns {boolean}
+   */
+  function conditionWaitExit(operation, marker) {
+    return (
+      operation.kind === 'deploy' &&
+      marker.exit_code === 75 &&
+      !marker.signal &&
+      conditionWait() !== null
+    );
+  }
+
+  /**
    * Terminal settlement from a runner marker, including the master §6.3 step 7
    * post-run readback: a deploy succeeds only when the owned worktree is still
    * at the bound target and clean.
@@ -1359,7 +1520,8 @@ export function createRepoOperationCoordinator(deps) {
               : deploy_code,
           exit_code: marker.exit_code,
           signal: marker.signal,
-          started_at: marker.started_at
+          started_at: marker.started_at,
+          finished_at: marker.finished_at
         });
         return;
       }
@@ -1391,10 +1553,16 @@ export function createRepoOperationCoordinator(deps) {
       operation,
       operation_id,
       {
-        code: marker.exit_code === 124 ? 'timeout' : 'script_failed',
+        code:
+          marker.exit_code === 124
+            ? 'timeout'
+            : conditionWaitExit(operation, marker)
+              ? 'condition_wait'
+              : 'script_failed',
         exit_code: marker.exit_code,
         signal: marker.signal,
-        started_at: marker.started_at
+        started_at: marker.started_at,
+        finished_at: marker.finished_at
       }
     );
     if (operation.kind === 'verify' && disposition !== 'retry_pending') {
@@ -2238,9 +2406,22 @@ export function createRepoOperationCoordinator(deps) {
       // tip, failure included, exactly as it adopted the record before.
       const operations = deps.store.snapshot(workspace).repo_operations;
       const tip_id = retryTipOf(operations, old_rule_failure ?? operation_id);
+      // The one automatic exception (dotfiles-rnyd9
+      // `condition_wait_deploy_recheck`): a `condition_wait` tip whose recheck
+      // time came inside its chain's deadline records the same successor a
+      // person's retry does. It is judged here, under the repo-operation lock,
+      // from durable records alone, so a tick, a restart and a click that
+      // overlap still find one failed tip and record one successor.
+      const schedule = conditionWaitSchedule(
+        operations,
+        tip_id,
+        conditionWait()
+      );
+      const recheck_due =
+        schedule !== null && conditionWaitState(schedule, now()) === 'due';
       if (
         operations[tip_id].state === 'failed' &&
-        subject.retry_authorized === true
+        (subject.retry_authorized === true || recheck_due)
       ) {
         retry_of = tip_id;
         operation_id = operationId({ ...identity, retry_of: tip_id });

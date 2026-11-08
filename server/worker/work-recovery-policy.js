@@ -21,8 +21,16 @@ export const WORK_RECOVERY_POLICY_PROVENANCE_PATH = path.join(
   'work-recovery-policy.provenance.json'
 );
 export const WORK_RECOVERY_RESULT_LINE_PREFIX = '대기 · recovery:';
-/** The only projection schema this consumer reads; others fail closed. */
-export const SUPPORTED_SCHEMA_VERSION = 2;
+/**
+ * The newest projection schema this consumer reads. Schema 3 adds the
+ * `condition_wait` entry and its `condition` reason (dotfiles-rnyd9); schema 2
+ * lacks them and is still read as before, so a `[deploy]` exit 75 classified
+ * under it stays `unknown_error`. Every other schema fails closed.
+ */
+export const SUPPORTED_SCHEMA_VERSION = 3;
+
+/** @type {ReadonlySet<unknown>} */
+const SUPPORTED_SCHEMA_VERSIONS = new Set([2, SUPPORTED_SCHEMA_VERSION]);
 
 /** @typedef {{ readFileSync: (path: string, encoding?: string) => Buffer|string }} WorkRecoveryFs */
 /**
@@ -172,7 +180,7 @@ export function loadWorkRecoveryPolicy(deps = {}) {
       : null;
     loaded =
       isRecord(artifact) &&
-      schema_version === SUPPORTED_SCHEMA_VERSION &&
+      SUPPORTED_SCHEMA_VERSIONS.has(schema_version) &&
       provenanceMatches(provenance, bytes, digest) &&
       validPolicy(artifact.work_recovery)
         ? {

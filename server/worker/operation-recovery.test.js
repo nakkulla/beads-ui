@@ -307,3 +307,63 @@ describe('repair handoff description', () => {
     }
   });
 });
+
+describe('deploy condition wait classification (dotfiles-rnyd9)', () => {
+  /** @param {Record<string, any>} [patch] */
+  function conditionWait(patch = {}) {
+    return classify({
+      exit_code: 75,
+      failure: {
+        code: 'condition_wait',
+        fingerprint: 'same',
+        summary: 'live checkout has uncommitted edits; retry later',
+        evidence_confirmed: true
+      },
+      retry: {
+        outcome: 'consumed',
+        first_failure: { fingerprint: 'same', evidence_confirmed: true }
+      },
+      ...patch
+    });
+  }
+
+  test('classifies a repeated condition_wait as the contract condition wait', () => {
+    const result = conditionWait();
+
+    expect(result).toMatchObject({
+      classification: 'condition_wait',
+      disposition: 'wait',
+      reason: 'condition',
+      code_defect: false
+    });
+  });
+
+  test('reserves no repair handoff for a repeated condition_wait', () => {
+    const result = conditionWait();
+
+    expect(result?.handoff_key).toBeNull();
+  });
+
+  test('keeps a verify record named condition_wait out of the wait entry', () => {
+    const result = conditionWait({ kind: 'verify' });
+
+    expect(result?.classification).not.toBe('condition_wait');
+  });
+
+  test('falls back to unknown_error when the pin has no condition_wait entry', () => {
+    const result = classifyOperationRecovery({
+      operation: operation({
+        failure: { code: 'condition_wait', fingerprint: 'same' }
+      }),
+      policy_supported: true,
+      classify: (key) =>
+        key === 'condition_wait' ? null : workRecoveryClassification(key)
+    });
+
+    expect(result).toMatchObject({
+      classification: 'unknown_error',
+      code_defect: false,
+      handoff_key: null
+    });
+  });
+});

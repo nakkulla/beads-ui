@@ -11,6 +11,11 @@ import {
   TAKEOVER_SETTLE_MS,
   takeoverTarget
 } from './external-wait/takeover.js';
+import { conditionWaitPolicy } from './repo-operation-policy.js';
+import {
+  conditionWaitSchedule,
+  conditionWaitState
+} from './resolution-ladder.js';
 import {
   hasInquiryConversation,
   isOpenInquiry,
@@ -71,6 +76,9 @@ export const WAIT_THRESHOLDS = Object.freeze({
  * @property {Record<string, any>} [account_catalog]
  * @property {ObservationTimes} [observed_at]
  * @property {number} now
+ * @property {import('./resolution-ladder.js').ConditionWaitPolicy|null} [condition_wait_policy]
+ * The `[deploy]` exit-75 recheck interval and deadline; defaults to the pinned
+ * repo-operation policy, which is read once per process.
  */
 
 const STOP_OBSERVING_CONFIRM =
@@ -259,6 +267,33 @@ function timestamp(value) {
 function localClock(at) {
   const date = new Date(at);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * `MM/DD HH:MM` in the server's local timezone, for a clock that may fall on
+ * another day.
+ *
+ * @param {number} at
+ * @returns {string}
+ */
+function localDateClock(at) {
+  const date = new Date(at);
+  return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${localClock(at)}`;
+}
+
+/**
+ * The release sentence of a `[deploy]` condition wait (dotfiles-rnyd9): when
+ * the Worker looks again and when it stops, or — past the deadline — the two
+ * exits a person has. Shared by the wait row and the chain's one wait comment.
+ *
+ * @param {import('./resolution-ladder.js').ConditionWaitSchedule} schedule
+ * @param {boolean} expired
+ * @returns {string}
+ */
+export function conditionWaitRelease(schedule, expired) {
+  return expired
+    ? '기한 지남 — [세션에서 이어가기]로 원인을 보거나 [정리 재시도]'
+    : `다음 자동 재확인 ${localClock(schedule.next_at)} · 기한 ${localDateClock(schedule.deadline_at)} — 지금 다시 돌리려면 [정리 재시도]`;
 }
 
 /**
@@ -928,7 +963,13 @@ export function judgeWaitReasons(input) {
     }
   }
 
-  for (const operation of Object.values(queue.repo_operations || {})) {
+  const condition_wait_policy =
+    input.condition_wait_policy === undefined
+      ? conditionWaitPolicy()
+      : input.condition_wait_policy;
+  for (const [operation_id, operation] of Object.entries(
+    queue.repo_operations || {}
+  )) {
     const recovery = operation?.recovery;
     if (
       operation?.state !== 'failed' ||
@@ -968,6 +1009,46 @@ export function judgeWaitReasons(input) {
         );
         result.targets.push({ id: handoff_bead_id, kind: 'issue' });
         addClocks(result, { since: handoff.recorded_at });
+        wait_reasons.push(result);
+      } else if (
+        recovery.reason === 'condition' &&
+        operation.failure?.code === 'condition_wait'
+      ) {
+        // A `[deploy]` exit 75 (dotfiles-rnyd9): inside its deadline nothing
+        // is asked of a person — the Worker reruns it on the contract
+        // interval. Past the deadline, or on a Bead-less manual run nothing
+        // rechecks, it asks like any other wait.
+        const schedule = conditionWaitSchedule(
+          queue.repo_operations,
+          operation_id,
+          condition_wait_policy
+        );
+        const summary = line(operation.failure?.summary);
+        const expired =
+          schedule === null || conditionWaitState(schedule, now) === 'expired';
+        const result = reason(
+          'recovery',
+          bead_id,
+          root_dir,
+          `배포 조건 대기${summary ? ` · ${summary}` : ''}`,
+          schedule === null
+            ? RECOVERY_WAIT_SENTENCES.condition
+            : conditionWaitRelease(schedule, expired)
+        );
+        addClocks(result, {
+          since:
+            schedule === null
+              ? operation.finished_at
+              : queue.repo_operations[schedule.head_id].finished_at,
+          ...(expired || schedule === null
+            ? {}
+            : { next_check_at: schedule.next_at })
+        });
+        if (expired) {
+          judge(result, 'action_required', 'decision');
+          result.resolution = RESOLUTIONS.session;
+          sessionActions(result);
+        }
         wait_reasons.push(result);
       } else if (
         ['wait', 'reconcile'].includes(recovery.disposition) ||

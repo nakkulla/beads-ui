@@ -82,8 +82,13 @@ import {
   receiptGateState,
   receiptLineageForAttempt
 } from './receipt-check.js';
+import { conditionWaitPolicy } from './repo-operation-policy.js';
 import { resolveRepoOps as defaultResolveRepoOps } from './repo-ops-resolver.js';
-import { cleanupFailureRetryClass } from './resolution-ladder.js';
+import {
+  cleanupFailureRetryClass,
+  conditionWaitState,
+  conditionWaitTipFor
+} from './resolution-ladder.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:pr-actions');
@@ -270,7 +275,8 @@ function authoritativeMergeSha(pr) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runBaseSync?: (file: string, args: string[], options: { cwd: string, encoding: 'utf8' }) => Promise<{ stdout: string }>,
  *   homeDir?: string,
- *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void>, reconcileInteractiveSessions?: (workspace: string) => Promise<void> },
+ *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void>, reconcileInteractiveSessions?: (workspace: string) => Promise<void>, onConditionRecheck?: (listener: (workspace: string) => Promise<unknown>) => () => void },
+ *   conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
@@ -294,6 +300,9 @@ function authoritativeMergeSha(pr) {
  * `announceCleanupInterruption` pushes and opens a cleanup stop no completion
  * intent drives once per record (UI-gske §3.5);
  * `resolveRepoOps` reads a pinned foreign target's declaration (tests inject).
+ * `conditionWaitPolicy` is the pinned `[deploy]` exit-75 condition wait
+ * (dotfiles-rnyd9); it defaults to the pinned repo-operation policy, and the
+ * row scan that rechecks it hangs on `scheduler.onConditionRecheck`.
  */
 export function createPrActions(deps) {
   const workspace = deps.workspace;
@@ -327,6 +336,8 @@ export function createPrActions(deps) {
       }));
   const repo_operations = deps.repoOperations || null;
   const resolveRepoOps = deps.resolveRepoOps || defaultResolveRepoOps;
+  const conditionWait =
+    deps.conditionWaitPolicy || (() => conditionWaitPolicy());
   // The `post_merge_jobs` step is the shared runner every landing settlement
   // uses (UI-1eag §3.1); this module only supplies the PR row's merge SHA,
   // its retry authority and its failure record.
@@ -2764,16 +2775,24 @@ export function createPrActions(deps) {
             }
           }
         }
+        // An automatic replay of a cleanup waiting on a `[deploy]` condition
+        // deploys the waiting tip's own target, so the coordinator records
+        // that tip's `retry_of` successor in the same chain even after the
+        // base moved on (dotfiles-rnyd9 `condition_wait_deploy_recheck`); a
+        // newer base SHA would start a separate record and a fresh deadline.
+        // A person's retry deploys the current base as before.
+        const wait_target = retry_authorized
+          ? null
+          : conditionWaitTargetOf(bead_id, target_base);
         const deployed = await repo_operations.ensureDeploy({
           target_base,
-          target_sha: synced.sha,
+          target_sha: wait_target ?? synced.sha,
           subjects: [{ bead_id, merged_sha: merge_sha }],
-          ...(retry_authorized
-            ? {
-                retry_authorized: true,
-                on_retry_recorded: () => resumeRetriedRow(bead_id)
-              }
-            : {})
+          ...(retry_authorized ? { retry_authorized: true } : {}),
+          // The coordinator also records a successor on its own for a
+          // `condition_wait` tip whose recheck time came (dotfiles-rnyd9), so
+          // the row resumes the same way whoever authorized the new run.
+          on_retry_recorded: () => resumeRetriedRow(bead_id)
         });
         if (!deployed.ok) {
           return failCleanup(
@@ -3285,7 +3304,12 @@ export function createPrActions(deps) {
       });
       if (
         recorded.ok === true &&
-        typeof deps.announceCleanupInterruption === 'function'
+        typeof deps.announceCleanupInterruption === 'function' &&
+        !(
+          step === 'repo_operations' &&
+          reason === 'condition_wait' &&
+          conditionWaitQuiet(bead_id)
+        )
       ) {
         // The announcer decides whether a completion intent still drives
         // this cleanup; a foreign handoff stop is announced by its caller.
@@ -3320,6 +3344,139 @@ export function createPrActions(deps) {
     });
     notifyChanged(workspace);
   }
+
+  /**
+   * Whether a `repo_operations` stop on a `[deploy]` condition wait stays
+   * unannounced (dotfiles-rnyd9 `condition_wait_chain`): always inside its
+   * deadline, and past it unless THIS call spends the chain head's once-mark
+   * — so the `정리 중단` push and conversation come once per chain, when the
+   * deadline passes. Without a schedule (no pin support) the stop is an
+   * ordinary one.
+   *
+   * @param {string} bead_id
+   * @returns {boolean}
+   */
+  function conditionWaitQuiet(bead_id) {
+    const schedule = conditionWaitTipFor(
+      deps.store.snapshot(workspace).repo_operations || {},
+      bead_id,
+      conditionWait()
+    );
+    if (schedule === null) {
+      return false;
+    }
+    if (conditionWaitState(schedule, (deps.now || Date.now)()) !== 'expired') {
+      return true;
+    }
+    return !(
+      typeof deps.store.consumeRepoOperationFailureNotice === 'function' &&
+      deps.store.consumeRepoOperationFailureNotice(workspace, {
+        operation_id: schedule.head_id
+      }).ok === true
+    );
+  }
+
+  /**
+   * The deploy target of a cleanup waiting on a `[deploy]` condition
+   * (dotfiles-rnyd9): the target SHA of the Bead's `condition_wait` tip while
+   * its chain is inside the deadline, for the same base. Null otherwise —
+   * no wait, a deadline that passed, or a tip of another base.
+   *
+   * @param {string} bead_id
+   * @param {string} target_base
+   * @returns {string|null}
+   */
+  function conditionWaitTargetOf(bead_id, target_base) {
+    const operations = deps.store.snapshot(workspace).repo_operations || {};
+    const schedule = conditionWaitTipFor(operations, bead_id, conditionWait());
+    if (
+      schedule === null ||
+      conditionWaitState(schedule, (deps.now || Date.now)()) === 'expired'
+    ) {
+      return null;
+    }
+    const tip = operations[schedule.tip_id];
+    return tip.target_base === target_base &&
+      typeof tip.target_sha === 'string' &&
+      /^[0-9a-f]{40}$/i.test(tip.target_sha)
+      ? tip.target_sha
+      : null;
+  }
+
+  /**
+   * The automatic recheck of PR cleanups stopped on a `[deploy]` condition
+   * wait (dotfiles-rnyd9 `condition_wait_deploy_recheck`), on the scheduler's
+   * periodic pass. A row whose recheck time came replays its cleanup without a
+   * person's authority — the coordinator alone grants the `retry_of`
+   * successor from the durable chain — and a row past its deadline is
+   * announced once instead of rechecked.
+   *
+   * @param {string} target_workspace
+   */
+  async function recheckConditionWaits(target_workspace) {
+    if (target_workspace !== workspace || !repo_operations) {
+      return;
+    }
+    const policy = conditionWait();
+    if (policy === null) {
+      return;
+    }
+    const q = deps.store.snapshot(workspace);
+    for (const row of q.pr_wait || []) {
+      const bead_id = row.bead_id;
+      const failure = q.cleanup_failed?.[bead_id];
+      const intent = q.completion_intents?.[bead_id];
+      if (
+        failure?.step !== 'repo_operations' ||
+        failure.reason !== 'condition_wait' ||
+        in_flight.has(bead_id) ||
+        discardActive(q, bead_id) ||
+        // A completion intent owns its row's cleanup and journal; this scan
+        // never drives it a second way.
+        (intent && intent.phase !== 'completed')
+      ) {
+        continue;
+      }
+      const schedule = conditionWaitTipFor(
+        q.repo_operations || {},
+        bead_id,
+        policy
+      );
+      if (schedule === null) {
+        continue;
+      }
+      const state = conditionWaitState(schedule, (deps.now || Date.now)());
+      if (state === 'expired') {
+        if (
+          !conditionWaitQuiet(bead_id) &&
+          typeof deps.announceCleanupInterruption === 'function'
+        ) {
+          try {
+            deps.announceCleanupInterruption(bead_id);
+          } catch (err) {
+            log(
+              'condition wait deadline announce failed for %s: %o',
+              bead_id,
+              err
+            );
+          }
+        }
+        continue;
+      }
+      if (state !== 'due') {
+        continue;
+      }
+      in_flight.add(bead_id);
+      try {
+        await runCleanup(bead_id);
+      } finally {
+        in_flight.delete(bead_id);
+        clearStep(bead_id);
+      }
+    }
+  }
+
+  deps.scheduler?.onConditionRecheck?.(recheckConditionWaits);
 
   // -------------------------------------------------------------------------
   // Actions.

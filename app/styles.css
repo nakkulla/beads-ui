@@ -3663,6 +3663,12 @@ summary.repo-ops-log-viewer__attempt-head {
   white-space: nowrap;
 }
 
+/* 배포 조건 대기 칩 (UI-ksi6): 실패 칩 슬롯에 놓인 대기 값이라 hover도
+   위험색 테두리를 쓰지 않는다. */
+.rtile__failure-badge.rtile__held-badge:hover {
+  border-color: var(--text-muted);
+}
+
 .rtile__provider-hold-badge {
   font: inherit;
   font-size: var(--fs-chip);

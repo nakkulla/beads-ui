@@ -1394,6 +1394,78 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
   });
 });
 
+describe('deploy condition wait card parity between the Worker and Monitor tabs (dotfiles-rnyd9)', () => {
+  /**
+   * CW-1's quick_fix landing stopped at its deploy step on a `[deploy]` exit
+   * 75: the attempt stays `failed` for the settlement resume, and the card
+   * reads it as a wait.
+   *
+   * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
+   */
+  function drawConditionWait() {
+    extra_rows = [
+      row('CW-1', { status: 'resolved', metadata: { route: 'quick_fix' } })
+    ];
+    const raw = rawQueue();
+    return drawBothTabs(undefined, {
+      queue: [...raw.queue, { bead_id: 'CW-1', added_at: NOW - HOUR }],
+      attempts: {
+        ...raw.attempts,
+        'att-c1': makeAttempt({
+          attempt_id: 'att-c1',
+          bead_id: 'CW-1',
+          status: 'failed',
+          started_at: NOW - 2 * HOUR,
+          finished_at: NOW - HOUR,
+          quickfix_lane: true,
+          quickfix_landing: {
+            cursor: 'repo_operations',
+            head_sha: 'c'.repeat(40),
+            reason: 'condition_wait'
+          },
+          cause: 'quickfix_landing_failed:condition_wait',
+          cause_detail: { summary: 'live checkout has uncommitted edits' }
+        })
+      }
+    });
+  }
+
+  test('draws the same condition-wait card on the worker and monitor tabs', async () => {
+    const { worker, monitor } = await drawConditionWait();
+
+    const worker_card = /** @type {HTMLElement} */ (
+      cardsByBead(worker).get('CW-1')
+    );
+    const monitor_card = /** @type {HTMLElement} */ (
+      cardsByBead(monitor).get('CW-1')
+    );
+
+    expect(partsOf(monitor_card)).toEqual(partsOf(worker_card));
+  });
+
+  test('draws the ⏳ 배포 조건 대기 chip and the 대기 status on both tabs', async () => {
+    const { worker, monitor } = await drawConditionWait();
+
+    const cards = [worker, monitor].map((mount) => {
+      const card = /** @type {HTMLElement} */ (
+        mount.querySelector('.rtile[data-bead-id="CW-1"]')
+      );
+      return {
+        chip: card.querySelector('.rtile__failure-badge')?.textContent?.trim(),
+        status: card.querySelector('.rtile__elapsed')?.textContent?.trim(),
+        danger: card.classList.contains('rtile--failed')
+      };
+    });
+
+    const expected = {
+      chip: '⏳ 배포 조건 대기',
+      status: '대기',
+      danger: false
+    };
+    expect(cards).toEqual([expected, expected]);
+  });
+});
+
 describe('prerequisite wait card parity between the Worker and Monitor tabs (UI-ey6v §3.3)', () => {
   /**
    * L-1 stopped mid-implementation on the open blocker L-2 and still has the

@@ -1218,6 +1218,16 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repairHandoff: createOperationRepairHandoff(bd),
     gitRun,
     notify,
+    // The one wait comment of a `[deploy]` condition-wait chain
+    // (dotfiles-rnyd9), through the workspace's one bd writer.
+    ...(typeof bd.comment === 'function'
+      ? {
+          comment: (
+            /** @type {string} */ bead_id,
+            /** @type {string} */ text
+          ) => bd.comment(bead_id, text)
+        }
+      : {}),
     // The automatic failure conversation of a manual deploy (UI-jbl1 §3.1).
     failureConversation: runtime.failureConversation,
     autoAdvanceRestore: options.autoAdvanceRestore
