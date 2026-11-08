@@ -619,7 +619,7 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
     await settle();
   }
 
-  test('draws the 판정 칩 프리셋 and 활성 모델 groups', async () => {
+  test('draws the 프리셋 관리, 판정 칩 프리셋 and 활성 모델 groups', async () => {
     const { root, dialog } = mount({ modelVisibility: MODEL_VISIBILITY });
     dialog.open(undefined, { scope: 'monitor' });
     await settle();
@@ -629,7 +629,7 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
     const titles = Array.from(
       root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
     ).map((title) => title.textContent?.trim());
-    expect(titles).toEqual(['판정 칩 프리셋', '활성 모델']);
+    expect(titles).toEqual(['프리셋 관리', '판정 칩 프리셋', '활성 모델']);
     dialog.destroy();
   });
 
@@ -658,7 +658,12 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
     const titles = Array.from(
       root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
     ).map((title) => title.textContent?.trim());
-    expect(titles).toEqual(['판정 칩 프리셋', '활성 모델', '대기·주기']);
+    expect(titles).toEqual([
+      '프리셋 관리',
+      '판정 칩 프리셋',
+      '활성 모델',
+      '대기·주기'
+    ]);
     expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
     dialog.destroy();
   });
@@ -688,7 +693,12 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
     const titles = Array.from(
       root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
     ).map((title) => title.textContent?.trim());
-    expect(titles).toEqual(['판정 칩 프리셋', '활성 모델', '외부 작업']);
+    expect(titles).toEqual([
+      '프리셋 관리',
+      '판정 칩 프리셋',
+      '활성 모델',
+      '외부 작업'
+    ]);
     dialog.destroy();
   });
 
@@ -711,7 +721,12 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
     const titles = Array.from(
       root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
     ).map((title) => title.textContent?.trim());
-    expect(titles).toEqual(['판정 칩 프리셋', '활성 모델', '대화 세션']);
+    expect(titles).toEqual([
+      '프리셋 관리',
+      '판정 칩 프리셋',
+      '활성 모델',
+      '대화 세션'
+    ]);
     expect(transport).toHaveBeenCalledWith('conversation-settings-get', {});
     dialog.destroy();
   });

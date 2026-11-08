@@ -31,6 +31,7 @@ import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
 import { createExternalWaitSection } from './external-wait-section.js';
 import { createModelVisibilitySection } from './model-visibility-section.js';
+import { createPresetManageSection } from './preset-manage-section.js';
 import { createRepoPane } from './repo-pane.js';
 import { createTimingSection } from './timing-section.js';
 
@@ -178,6 +179,8 @@ export function createSettingsDialog(mount_element, options) {
   const bulk_host = document.createElement('div');
   bulk_host.className = 'settings-dialog__pane-host';
 
+  /** @type {ReturnType<typeof createPresetManageSection>|null} */
+  let preset_manage = null;
   /** @type {ReturnType<typeof createChipBindingsTab>|null} */
   let chip_tab = null;
   /** @type {ReturnType<typeof createModelVisibilitySection>|null} */
@@ -190,8 +193,8 @@ export function createSettingsDialog(mount_element, options) {
   let conversation_section = null;
   /**
    * The `전역` 탭's own host — 서버 전역 값이라 일괄 pane과 섞지 않는다 (§6).
-   * It holds five groups: the chip bindings under their own title, then the
-   * model-visibility section, then the timing section (UI-ny0h §3.5), then the
+   * It holds six groups: the preset management section (UI-u3po), the chip
+   * bindings under their own title, then the model-visibility section, then the timing section (UI-ny0h §3.5), then the
    * external-wait section (UI-qbgj §3.6), then the conversation section
    * (UI-jbl1 §3.4), each drawn into its own child host.
    */
@@ -204,11 +207,13 @@ export function createSettingsDialog(mount_element, options) {
   chip_title.textContent = '판정 칩 프리셋';
   const chip_host = document.createElement('div');
   chip_group.append(chip_title, chip_host);
+  const preset_manage_host = document.createElement('div');
   const model_host = document.createElement('div');
   const timing_host = document.createElement('div');
   const external_wait_host = document.createElement('div');
   const conversation_host = document.createElement('div');
   global_host.append(
+    preset_manage_host,
     chip_group,
     model_host,
     timing_host,
@@ -463,6 +468,13 @@ export function createSettingsDialog(mount_element, options) {
       if (global_host.parentElement !== slot) {
         slot.appendChild(global_host);
       }
+      if (!preset_manage) {
+        preset_manage = createPresetManageSection(preset_manage_host, {
+          transport,
+          implPresetStore: options.implPresetStore
+        });
+      }
+      preset_manage.render();
       if (!chip_tab) {
         chip_tab = createChipBindingsTab(chip_host, {
           transport,
@@ -538,6 +550,8 @@ export function createSettingsDialog(mount_element, options) {
     bulk_pane?.destroy();
     bulk_pane = null;
     bulk_host.remove();
+    preset_manage?.destroy();
+    preset_manage = null;
     chip_tab?.destroy();
     chip_tab = null;
     model_section?.destroy();
@@ -785,6 +799,7 @@ export function createSettingsDialog(mount_element, options) {
       if (is_open) {
         execution_pane?.render();
         bulk_pane?.render();
+        preset_manage?.render();
         chip_tab?.render();
       }
     });
