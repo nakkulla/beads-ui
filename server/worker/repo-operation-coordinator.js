@@ -862,8 +862,9 @@ export function createRepoOperationCoordinator(deps) {
     ) {
       return;
     }
-    notify
-      .conditionWaitEntered({
+    const announce = notify.conditionWaitEntered;
+    const run = async () => {
+      await announce({
         bead_id,
         summary:
           typeof operation.failure?.summary === 'string'
@@ -871,10 +872,11 @@ export function createRepoOperationCoordinator(deps) {
             : null,
         release: conditionWaitRelease(schedule, false),
         repo: deps.repo
-      })
-      .catch((/** @type {unknown} */ err) => {
-        log('condition wait notify failed: %o', err);
       });
+    };
+    run().catch((err) => {
+      log('condition wait notify failed: %o', err);
+    });
   }
 
   /**
