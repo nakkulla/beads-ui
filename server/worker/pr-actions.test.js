@@ -8172,14 +8172,25 @@ describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)',
    * A row stopped at the deploy step on a condition wait, over a fake
    * coordinator whose deploy settles on `evidence`.
    *
-   * @param {{ finished_at: number, evidence?: any, now?: number }} input
+   * `intent` stands a completion intent on the row in every snapshot the
+   * actions read.
+   *
+   * @param {{ finished_at: number, evidence?: any, now?: number, intent?: Record<string, any> }} input
    */
   function waitRow(input) {
-    const store = seedStore({
+    const seeded = seedStore({
       cleanup_failed: {
         [BEAD]: { step: 'repo_operations', reason: 'condition_wait' }
       }
     });
+    const store = input.intent
+      ? Object.assign(Object.create(seeded), {
+          snapshot: (/** @type {string} */ workspace) => ({
+            ...seeded.snapshot(workspace),
+            completion_intents: { [BEAD]: input.intent }
+          })
+        })
+      : seeded;
     store.setCleanupCursor(WS, {
       bead_id: BEAD,
       cursor: 'repo_operations',
@@ -8251,6 +8262,14 @@ describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)',
 
   test('leaves the row alone before the recheck time', async () => {
     const env = waitRow({ finished_at: 500 });
+
+    await env.recheck();
+
+    expect(env.operations.ensureDeploy).not.toHaveBeenCalled();
+  });
+
+  test('leaves a row its completion intent drives to that lane', async () => {
+    const env = waitRow({ finished_at: 0, intent: { phase: 'cleaning' } });
 
     await env.recheck();
 

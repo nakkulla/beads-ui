@@ -3389,11 +3389,15 @@ export function createPrActions(deps) {
     for (const row of q.pr_wait || []) {
       const bead_id = row.bead_id;
       const failure = q.cleanup_failed?.[bead_id];
+      const intent = q.completion_intents?.[bead_id];
       if (
         failure?.step !== 'repo_operations' ||
         failure.reason !== 'condition_wait' ||
         in_flight.has(bead_id) ||
-        discardActive(q, bead_id)
+        discardActive(q, bead_id) ||
+        // A completion intent owns its row's cleanup and journal; this scan
+        // never drives it a second way.
+        (intent && intent.phase !== 'completed')
       ) {
         continue;
       }

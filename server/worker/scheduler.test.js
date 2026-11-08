@@ -37505,6 +37505,69 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
     });
   });
 
+  test('adopts the outcome of a recheck a restart left pending', async () => {
+    const clock = { now: 52_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedConditionWait(env.store, 'tip', 51_500, 'head');
+    seedLandingWait(env.store);
+    env.store.updateAttempt(WS, {
+      attempt_id: 'quickfix-wait',
+      patch: {
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: HEAD_SHA,
+          reason: 'repo_operation_pending'
+        }
+      }
+    });
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.settle).toHaveBeenCalledTimes(1);
+    expect(env.settle).toHaveBeenCalledWith({
+      attempt_id: 'quickfix-wait',
+      bead_id: 'S1',
+      target_base: 'main'
+    });
+  });
+
+  test('leaves a pending recheck alone while its deploy still runs', async () => {
+    const clock = { now: 52_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    env.store.ensureRepoOperation(WS, {
+      operation_id: 'running-next',
+      repo_id: '/repo',
+      kind: 'deploy',
+      subjects: [{ bead_id: 'S1', merged_sha: HEAD_SHA }],
+      effective_base_sha: HEAD_SHA,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      target_sha: HEAD_SHA,
+      retry_of: 'head'
+    });
+    seedLandingWait(env.store);
+    env.store.updateAttempt(WS, {
+      attempt_id: 'quickfix-wait',
+      patch: {
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: HEAD_SHA,
+          reason: 'repo_operation_pending'
+        }
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.settle).not.toHaveBeenCalled();
+  });
+
   test('waits without a settlement before the recheck time', async () => {
     const clock = { now: 50_999 };
     const env = waitEnv({ now: () => clock.now });

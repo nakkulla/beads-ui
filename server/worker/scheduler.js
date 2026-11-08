@@ -10771,6 +10771,12 @@ export function createScheduler(deps) {
    * `[정리 재시도]` takes, without that person's authority — the coordinator
    * alone grants the successor, from the durable chain. A row past its
    * deadline is rechecked no more; its failure records are left once.
+   *
+   * A row the recheck already moved to `repo_operation_pending` — its
+   * successor was recorded, and this server then restarted before the
+   * settlement read the run's end — re-enters the same settlement once no
+   * deploy of its Bead is still in flight, so the run's outcome is adopted
+   * (close, the next wait, or an ordinary failure) without a click.
    * Registered owners scan their own rows afterwards.
    *
    * @param {string} workspace
@@ -10781,14 +10787,22 @@ export function createScheduler(deps) {
       const q = deps.store.snapshot(workspace);
       for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
         const record = /** @type {any} */ (attempt);
+        const reason = record?.quickfix_landing?.reason;
         if (
           record?.status !== 'failed' ||
           record.quickfix_lane !== true ||
           record.quickfix_landing?.cursor !== 'repo_operations' ||
-          record.quickfix_landing.reason !== 'condition_wait' ||
+          (reason !== 'condition_wait' &&
+            reason !== 'repo_operation_pending') ||
           latestImplementationAttempt(q, record.bead_id)?.attempt_id !==
             attempt_id
         ) {
+          continue;
+        }
+        if (reason === 'repo_operation_pending') {
+          if (!deployInFlightFor(q.repo_operations || {}, record.bead_id)) {
+            await resume(workspace, attempt_id);
+          }
           continue;
         }
         const schedule = conditionWaitTipFor(
@@ -10814,6 +10828,25 @@ export function createScheduler(deps) {
         log('condition wait listener failed for %s: %o', workspace, err);
       }
     }
+  }
+
+  /**
+   * Whether a deploy naming this Bead has not reached its end yet.
+   *
+   * @param {Record<string, any>} operations
+   * @param {string} bead_id
+   * @returns {boolean}
+   */
+  function deployInFlightFor(operations, bead_id) {
+    return Object.values(operations).some(
+      (operation) =>
+        operation?.kind === 'deploy' &&
+        ['queued', 'running', 'retry_pending'].includes(operation.state) &&
+        Array.isArray(operation.subjects) &&
+        operation.subjects.some(
+          (/** @type {any} */ subject) => subject?.bead_id === bead_id
+        )
+    );
   }
 
   /**
