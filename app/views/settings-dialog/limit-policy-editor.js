@@ -181,6 +181,7 @@ export function createLimitPolicyEditor(deps) {
       // the box on that choice until its own save settles.
       if (accounts_pending[runner] === next) {
         accounts_pending[runner] = null;
+        deps.render();
       }
     });
   }
@@ -209,6 +210,7 @@ export function createLimitPolicyEditor(deps) {
     queueSave(runner, { accounts: next }, () => {
       if (accounts_pending[runner] === next) {
         accounts_pending[runner] = null;
+        deps.render();
       }
     });
   }

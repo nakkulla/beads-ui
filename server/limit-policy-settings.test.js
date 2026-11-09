@@ -111,6 +111,25 @@ describe('reading the settings file', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('codex');
   });
+
+  test('falls back a stored global entry that lacks its mode to repo scope', () => {
+    writeFile({
+      revision: 2,
+      runners: {
+        claude: {
+          scope: 'global',
+          accounts: ['a@example.test'],
+          preempt_pct: null
+        }
+      }
+    });
+    const store = makeStore();
+
+    const snapshot = store.snapshot();
+
+    expect(snapshot.runners.claude).toEqual(DEFAULT_ENTRY);
+    expect(warnings).toHaveLength(1);
+  });
 });
 
 describe('writing the settings', () => {

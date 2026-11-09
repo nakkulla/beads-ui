@@ -214,6 +214,13 @@ function storedEntryError(raw) {
   if (raw.scope !== 'repo' && raw.scope !== 'global') {
     return "scope는 'repo' 또는 'global'이어야 합니다";
   }
+  // A persisted entry is a whole policy, not a patch: a missing field must not
+  // fall back to `switch`/empty and silently enable an override.
+  for (const field of ['mode', 'accounts', 'preempt_pct']) {
+    if (!(field in raw)) {
+      return `${field} 필드가 없습니다`;
+    }
+  }
   return providerLimitPolicyPatchError(raw);
 }
 
