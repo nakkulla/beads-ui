@@ -2868,9 +2868,11 @@ describe('views/monitor [대기로 ↴] lane menu (UI-e6hw §6)', () => {
 describe('views/monitor drag and drop (UI-e6hw §5)', () => {
   /**
    * @param {{ queue?: any[], serial_lane_count?: number, serial_lanes?: any[], attempts?: any }} [patch]
+   * @param {{ transport?: (type: string, payload?: any) => Promise<any> }} [input]
    */
-  function dragSetup(patch = {}) {
+  function dragSetup(patch = {}, input = {}) {
     return setup({
+      ...input,
       workspaces: [
         workspace({
           runnable: [{ bead_id: 'A-9', title: 'cand' }],
@@ -3037,6 +3039,37 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
         `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"]`
       ).classList.contains('is-collapsed')
     ).toBe(true);
+  });
+
+  test('keeps a default-folded empty group folded after a drop on its header lands', async () => {
+    const { mount, view, sent } = dragSetup(
+      { queue: [] },
+      {
+        transport: async () => ({
+          applied: true,
+          conflict: false,
+          queue: { revision: 2, queue: [{ bead_id: 'A-9' }] }
+        })
+      }
+    );
+    const section = () =>
+      el(mount, `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"]`);
+    view.load();
+    const folded_before = section().classList.contains('is-collapsed');
+
+    fireDrag(el(mount, '#monitor-runnable .worker-card'), 'dragstart');
+    const ev = fireDrag(section().querySelector('.mon2-sec__hd'), 'drop');
+    await flushMicrotasks();
+
+    expect(folded_before).toBe(true);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(sent[0].type).toBe('worker-queue-place');
+    expect(section().classList.contains('is-collapsed')).toBe(true);
+    expect(
+      section()
+        .querySelector('.mon2-sec__toggle')
+        ?.getAttribute('aria-expanded')
+    ).toBe('false');
   });
 
   test('ignores a drop on the folded group header of another repo', () => {

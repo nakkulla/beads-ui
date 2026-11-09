@@ -22,6 +22,8 @@
  * @property {(root_dir: string, queue: any) => void} [adoptQueue]
  * @property {() => void} [onDragBegin]
  * @property {boolean} [candidate_drop]
+ * @property {(zone: HTMLElement, target: DropTarget) => void} [onDropAccepted] -
+ * Called with the zone a drop landed on, just before its queue request.
  * @property {(x: number, y: number) => Element|null} [hitTest] - The element
  * under a touch point; defaults to `document.elementFromPoint`.
  */
@@ -83,7 +85,8 @@ export function createLaneDrag(options) {
     requestRender,
     adoptQueue,
     onDragBegin,
-    candidate_drop
+    candidate_drop,
+    onDropAccepted
   } = options;
   const hitTest =
     options.hitTest ||
@@ -662,6 +665,7 @@ export function createLaneDrag(options) {
     const target = touch_over;
     endTouch();
     if (drag && target) {
+      onDropAccepted?.(target.zone, target.target);
       void applyDrop(drag, target.target);
     }
   }
@@ -792,6 +796,7 @@ export function createLaneDrag(options) {
       return;
     }
     ev.preventDefault();
+    onDropAccepted?.(target.zone, target.target);
     void applyDrop(drag, target.target);
   }
 

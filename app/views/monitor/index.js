@@ -822,6 +822,16 @@ export function createMonitorView(mount_element, options) {
     onDragBegin: () => {
       place_menu_bead = null;
     },
+    // 접힌 레포 묶음 머리줄(접혔을 때만 `data-drop`)에 떨어뜨린 이슈는 묶음을
+    // 펼치지 않는다 (UI-5cmo §3.2) — 큐가 차서 기본 접힘이 풀리기 전에 고정한다.
+    onDropAccepted: (zone, target) => {
+      if (
+        target.kind === 'parallel' &&
+        zone.classList.contains('mon2-sec__hd')
+      ) {
+        pinQueueGroupFolded(target.root_dir);
+      }
+    },
     // 접힌 후보 띠에 대기 행을 떨어뜨리면 큐에서 뺀다 — Monitor의 기존 문법이다.
     candidate_drop: true
   });
@@ -1508,6 +1518,23 @@ export function createMonitorView(mount_element, options) {
   function queueGroupCollapsed(root_dir, is_empty) {
     const stored = sections_state[root_dir]?.queue;
     return typeof stored === 'boolean' ? stored : is_empty;
+  }
+
+  /**
+   * Store a folded 대기 group as folded when only its default (`is_empty`)
+   * folds it, so a drop that fills the group leaves it folded.
+   *
+   * @param {string} root_dir
+   */
+  function pinQueueGroupFolded(root_dir) {
+    if (typeof sections_state[root_dir]?.queue === 'boolean') {
+      return;
+    }
+    sections_state = {
+      ...sections_state,
+      [root_dir]: { ...(sections_state[root_dir] || {}), queue: true }
+    };
+    saveSections(sections_state);
   }
 
   /**
