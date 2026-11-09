@@ -19,41 +19,73 @@ const DEFAULT_KILL_GRACE_MS = 1_000;
  */
 
 /**
+ * @typedef {{ kill?: (target: number, signal: NodeJS.Signals|number) => void, exec?: (file: string, args: string[]) => string }} ProbeDeps
+ */
+
+/**
+ * @param {string} file
+ * @param {string[]} args
+ * @returns {string}
+ */
+function execPs(file, args) {
+  // LC_ALL=C pins lstart to the POSIX date format; a localized month or
+  // weekday name is not Date.parse-able and read as ps_parse_failed.
+  return execFileSync(file, args, {
+    encoding: 'utf8',
+    env: { ...process.env, LC_ALL: 'C' }
+  });
+}
+
+/**
+ * @param {number} target
+ * @param {NodeJS.Signals|number} signal
+ */
+function killProbe(target, signal) {
+  process.kill(target, signal);
+}
+
+/**
+ * Observe a pid; a zombie (ps stat `Z`) has already exited and only awaits
+ * reaping, so it reads as alive false.
+ *
  * @param {number} pid
+ * @param {ProbeDeps} [deps]
  * @returns {{ ok: boolean, alive?: boolean, pgid?: number|null, started_at?: number|null, reason?: string }}
  */
-function inspectProcess(pid) {
-  let alive = false;
+export function inspectProcess(pid, deps = {}) {
+  const kill_impl = deps.kill || killProbe;
+  const exec_impl = deps.exec || execPs;
   try {
-    process.kill(pid, 0);
-    alive = true;
+    kill_impl(pid, 0);
   } catch (err) {
     const code = err && /** @type {any} */ (err).code;
-    if (code === 'EPERM') {
-      alive = true;
-    } else if (code === 'ESRCH') {
+    if (code === 'ESRCH') {
       return { ok: true, alive: false, pgid: null, started_at: null };
-    } else {
+    }
+    if (code !== 'EPERM') {
       return { ok: false, reason: 'pid_probe_failed' };
     }
   }
-  if (!alive) {
-    return { ok: true, alive: false, pgid: null, started_at: null };
-  }
   try {
-    const output = execFileSync(
-      'ps',
-      ['-o', 'pgid=', '-o', 'lstart=', '-p', String(pid)],
-      // LC_ALL=C pins lstart to the POSIX date format; a localized month or
-      // weekday name is not Date.parse-able and read as ps_parse_failed.
-      { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }
-    ).trim();
-    const match = /^(\d+)\s+(.+)$/.exec(output);
+    const output = exec_impl('ps', [
+      '-o',
+      'pgid=',
+      '-o',
+      'stat=',
+      '-o',
+      'lstart=',
+      '-p',
+      String(pid)
+    ]).trim();
+    const match = /^(\d+)\s+(\S+)\s+(.+)$/.exec(output);
     if (!match) {
       return { ok: false, reason: 'ps_parse_failed' };
     }
+    if (match[2].startsWith('Z')) {
+      return { ok: true, alive: false, pgid: null, started_at: null };
+    }
     const pgid = Number(match[1]);
-    const started_at = Date.parse(match[2]);
+    const started_at = Date.parse(match[3]);
     if (!Number.isInteger(pgid) || !Number.isFinite(started_at)) {
       return { ok: false, reason: 'ps_parse_failed' };
     }
@@ -64,23 +96,43 @@ function inspectProcess(pid) {
 }
 
 /**
+ * Report whether a process group still has a live member. macOS answers
+ * `kill(-pgid, 0)` with EPERM for a group whose only members are zombies,
+ * so EPERM is settled by listing the group's non-zombie members.
+ *
  * @param {number} pgid
+ * @param {ProbeDeps} [deps]
  * @returns {boolean|null}
  */
-function processGroupAlive(pgid) {
+export function processGroupAlive(pgid, deps = {}) {
+  const kill_impl = deps.kill || killProbe;
+  const exec_impl = deps.exec || execPs;
   try {
-    process.kill(-pgid, 0);
+    kill_impl(-pgid, 0);
     return true;
   } catch (err) {
     const code = err && /** @type {any} */ (err).code;
-    if (code === 'EPERM') {
-      return true;
-    }
     if (code === 'ESRCH') {
       return false;
     }
+    if (code !== 'EPERM') {
+      return null;
+    }
+  }
+  /** @type {string} */
+  let output;
+  try {
+    output = exec_impl('ps', ['-A', '-o', 'pgid=', '-o', 'stat=']);
+  } catch {
     return null;
   }
+  for (const line of output.split('\n')) {
+    const match = /^\s*(\d+)\s+(\S+)/.exec(line);
+    if (match && Number(match[1]) === pgid && !match[2].startsWith('Z')) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -243,6 +295,11 @@ export function createProcessController(deps = {}) {
       if (code === 'ESRCH') {
         const after = probe(identity);
         return { ok: after.state === 'gone', ...after };
+      }
+      // macOS refuses killpg with EPERM once the group holds only zombies;
+      // a partial delivery to a still-live group stays a failure.
+      if (code === 'EPERM' && probe(identity).state === 'gone') {
+        return { ok: true, state: 'gone' };
       }
       return { ok: false, state: 'unknown', reason: 'signal_failed' };
     }

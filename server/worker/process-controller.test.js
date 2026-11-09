@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   createProcessController,
-  observeProcessIdentity
+  inspectProcess,
+  observeProcessIdentity,
+  processGroupAlive
 } from './process-controller.js';
 
 const IDENTITY = {
@@ -154,6 +156,95 @@ describe('worker process controller identity', () => {
   });
 });
 
+/**
+ * @param {string} code
+ */
+function errno(code) {
+  return Object.assign(new Error(code), { code });
+}
+
+describe('worker process controller zombie probes', () => {
+  test('reads a zombie leader as not alive', () => {
+    const exec = vi.fn(() => '4242 Z    Mon Nov  9 14:59:14 2026\n');
+
+    const result = inspectProcess(4242, { kill: vi.fn(), exec });
+
+    expect(result).toEqual({
+      ok: true,
+      alive: false,
+      pgid: null,
+      started_at: null
+    });
+  });
+
+  test('reads a running leader with its group and start time', () => {
+    const exec = vi.fn(() => '4242 Ss   Mon Nov  9 14:59:14 2026\n');
+
+    const result = inspectProcess(4242, { kill: vi.fn(), exec });
+
+    expect(result).toEqual({
+      ok: true,
+      alive: true,
+      pgid: 4242,
+      started_at: Date.parse('Mon Nov  9 14:59:14 2026')
+    });
+  });
+
+  test('treats an EPERM group holding only zombies as absent', () => {
+    const kill = vi.fn(() => {
+      throw errno('EPERM');
+    });
+    const exec = vi.fn(() => ' 4242 Z\n 4242 Z\n  100 Ss\n');
+
+    const result = processGroupAlive(4242, { kill, exec });
+
+    expect(result).toBe(false);
+  });
+
+  test('keeps an EPERM group alive while a non-zombie member remains', () => {
+    const kill = vi.fn(() => {
+      throw errno('EPERM');
+    });
+    const exec = vi.fn(() => ' 4242 Z\n 4242 S\n');
+
+    const result = processGroupAlive(4242, { kill, exec });
+
+    expect(result).toBe(true);
+  });
+
+  test('fails closed when the EPERM group listing fails', () => {
+    const kill = vi.fn(() => {
+      throw errno('EPERM');
+    });
+    const exec = vi.fn(() => {
+      throw new Error('ps failed');
+    });
+
+    const result = processGroupAlive(4242, { kill, exec });
+
+    expect(result).toBeNull();
+  });
+
+  test('reports gone for a zombie leader whose group holds only zombies', () => {
+    const kill = vi.fn(() => {
+      throw errno('EPERM');
+    });
+    const controller = createProcessController({
+      inspect: (pid) =>
+        inspectProcess(pid, {
+          kill: vi.fn(),
+          exec: () => '4242 Z    Mon Nov  9 14:59:14 2026\n'
+        }),
+      groupAlive: (pgid) =>
+        processGroupAlive(pgid, { kill, exec: () => ' 4242 Z\n' })
+    });
+
+    const result = controller.probe(IDENTITY);
+
+    expect(result).toEqual({ state: 'gone' });
+  });
+});
+
 describe('worker process controller signaling', () => {
   test('revalidates identity immediately before signaling the group', () => {
     const env = setup();
@@ -178,6 +269,41 @@ describe('worker process controller signaling', () => {
 
     expect(result).toEqual({ ok: false, state: 'recycled' });
     expect(env.signal).not.toHaveBeenCalled();
+  });
+
+  test('accepts an EPERM signal when the re-probe finds the group gone', () => {
+    const inspections = [
+      { ok: true, alive: true, pgid: 4242, started_at: 1_000 },
+      { ok: true, alive: false, pgid: null, started_at: null }
+    ];
+    const groups = [true, false];
+    const env = setup({
+      inspect: vi.fn(() => inspections.shift()),
+      groupAlive: vi.fn(() => groups.shift()),
+      signal: vi.fn(() => {
+        throw errno('EPERM');
+      })
+    });
+
+    const result = env.controller.signal(IDENTITY, 'SIGTERM');
+
+    expect(result).toEqual({ ok: true, state: 'gone' });
+  });
+
+  test('fails an EPERM signal when the re-probe still finds the group owned', () => {
+    const env = setup({
+      signal: vi.fn(() => {
+        throw errno('EPERM');
+      })
+    });
+
+    const result = env.controller.signal(IDENTITY, 'SIGSTOP');
+
+    expect(result).toEqual({
+      ok: false,
+      state: 'unknown',
+      reason: 'signal_failed'
+    });
   });
 
   test('uses TERM then KILL and confirms process group absence', async () => {
