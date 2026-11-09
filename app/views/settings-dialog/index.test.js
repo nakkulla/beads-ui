@@ -93,7 +93,7 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any, externalWaitSettings?: any, conversationSettings?: any }} [options]
+ * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any, externalWaitSettings?: any, limitPolicySettings?: any, conversationSettings?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -164,6 +164,10 @@ function mount(options = {}) {
     },
     externalWaitSettingsStore: {
       get: () => options.externalWaitSettings ?? null,
+      set: () => {}
+    },
+    limitPolicySettingsStore: {
+      get: () => options.limitPolicySettings ?? null,
       set: () => {}
     },
     labelOptions: () => ['worker-serial'],
@@ -698,6 +702,50 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
       '판정 칩 프리셋',
       '활성 모델',
       '외부 작업'
+    ]);
+    dialog.destroy();
+  });
+
+  test('draws one 한도 대응 group per runner after the 외부 작업 group in the 전역 tab', async () => {
+    const entry = { mode: 'switch', accounts: [], preempt_pct: null };
+    const { root, dialog } = mount({
+      modelVisibility: MODEL_VISIBILITY,
+      externalWaitSettings: {
+        revision: 0,
+        values: { takeover_ratio_percent: 80 },
+        overrides: {},
+        fields: {
+          takeover_ratio_percent: {
+            default: 80,
+            min: 10,
+            max: 100,
+            unit: 'percent'
+          }
+        }
+      },
+      limitPolicySettings: {
+        revision: 0,
+        runners: {
+          claude: { scope: 'repo', ...entry },
+          codex: { scope: 'repo', ...entry }
+        }
+      }
+    });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+
+    const titles = Array.from(
+      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
+    ).map((title) => title.textContent?.trim());
+    expect(titles).toEqual([
+      '프리셋 관리',
+      '판정 칩 프리셋',
+      '활성 모델',
+      '외부 작업',
+      'Claude 한도 대응',
+      'Codex 한도 대응'
     ]);
     dialog.destroy();
   });

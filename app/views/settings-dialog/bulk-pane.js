@@ -33,6 +33,7 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { limitScopeOf } from '../../data/limit-policy-settings-store.js';
 import { disabledModelsOf } from '../../utils/model-visibility.js';
 import { showToast } from '../../utils/toast.js';
 import { mergeQueue, pruneAdopted } from '../monitor/adopted-queue.js';
@@ -68,6 +69,7 @@ import {
   createBulkWorkerForm
 } from './bulk-worker-form.js';
 import { createCodexCreditControls } from './codex-credit-controls.js';
+import { GLOBAL_LIMIT_LOCK_NOTE } from './limit-policy-editor.js';
 import { WORKFLOW_MODES, normalizeAppliesTo } from './session-model.js';
 
 /** Select value for `기본값 사용` (sent as `null`). */
@@ -174,6 +176,9 @@ const SESSION_DEFAULTS_OP = 'set-session-defaults';
  * @property {{ get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [codexCreditStore]
  * - Server-global Codex credit settings (UI-9y1k §4.6), written at once by the
  * `계정` tab's credit section.
+ * @property {{ get: () => any }} [limitPolicySettingsStore] - Server-global
+ * limit-policy settings (UI-giog §4.2); a runner whose scope is `global` has
+ * its repo `한도 대응` rows locked and left out of the apply.
  * @property {(message: string) => void} [notify]
  * @property {(root_dirs: string[]) => void} [onBulkApplied] - Called once when
  * a run ends, with the repos whose result is `applied` or `partial`.
@@ -617,6 +622,10 @@ export function createBulkPane(host, options) {
       edit.values[key] = value === USE_DEFAULT ? null : value;
     }
     for (const runner of RUNNERS) {
+      // A runner on the global policy has locked repo rows: nothing to write.
+      if (limitGlobal(runner)) {
+        continue;
+      }
       const form = runner_forms[runner];
       const text = form.pct_text.trim();
       /** @type {Partial<import('../monitor/bulk-account-apply.js').LimitPatch>} */
@@ -642,6 +651,17 @@ export function createBulkPane(host, options) {
       }
     }
     return edit;
+  }
+
+  /**
+   * Whether this runner follows the server-global limit policy (UI-giog §4.1):
+   * its repo `한도 대응` rows then show the stored values but are locked.
+   *
+   * @param {'claude'|'codex'} runner
+   * @returns {boolean}
+   */
+  function limitGlobal(runner) {
+    return limitScopeOf(options.limitPolicySettingsStore, runner) === 'global';
   }
 
   /**
@@ -1572,7 +1592,10 @@ export function createBulkPane(host, options) {
   function limitGroupTemplate(runner, label) {
     const form = runner_forms[runner];
     const provider = catalog ? catalog[runner] : null;
-    const disabled = running !== null;
+    // A runner on the global policy keeps showing the stored repo values, but
+    // they decide nothing, so every row is locked and dimmed (UI-giog §4.1).
+    const global = limitGlobal(runner);
+    const disabled = running !== null || global;
     const mode_observation = observeLimitField(runner, 'mode');
     const mode_hold = holdOf(`${runner}.mode`, mode_observation);
     // A settled `기다림` never switches, so the allow set and the threshold have
@@ -1580,7 +1603,8 @@ export function createBulkPane(host, options) {
     // repositories may still switch.
     const switch_off = mode_hold === null && form.mode === 'wait';
     const switch_locked = disabled || switch_off;
-    const switch_dim = switch_off ? ' settings-dialog__row--off' : '';
+    const switch_dim = switch_off || global ? ' settings-dialog__row--off' : '';
+    const mode_dim = global ? ' settings-dialog__row--off' : '';
     const accounts_observation = observeLimitAccounts(runner);
     const accounts_hold = holdOf(`${runner}.accounts`, accounts_observation);
     const preempt_observation = observeLimitField(runner, 'preempt');
@@ -1744,7 +1768,7 @@ export function createBulkPane(host, options) {
     ];
     return html`<div class="settings-dialog__group" data-bulk-limit=${runner}>
       <div class="settings-dialog__group-title">${label} 한도 대응</div>
-      <div class="settings-dialog__row">
+      <div class=${`settings-dialog__row${mode_dim}`}>
         <span class="settings-dialog__row-label">대응 방식</span>
         <span class="settings-dialog__controls">
           <span
@@ -1921,6 +1945,16 @@ export function createBulkPane(host, options) {
           ${badgeTemplate(`${runner}.preempt`, preempt_observation)}
         </span>
       </div>
+      ${global
+        ? html`<div class="settings-dialog__row" data-bulk-limit-note=${runner}>
+            <span class="settings-dialog__row-label"></span>
+            <span class="settings-dialog__controls">
+              <span class="settings-dialog__hint"
+                >${GLOBAL_LIMIT_LOCK_NOTE}</span
+              >
+            </span>
+          </div>`
+        : ''}
     </div>`;
   }
 

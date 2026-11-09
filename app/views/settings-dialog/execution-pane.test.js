@@ -129,7 +129,7 @@ function queueRow(patch = {}) {
 }
 
 /**
- * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string, disabled_models?: string[], codexCreditStore?: any }} [options]
+ * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string, disabled_models?: string[], codexCreditStore?: any, limitPolicySettingsStore?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -163,6 +163,7 @@ function mount(options = {}) {
           : null
     },
     codexCreditStore: options.codexCreditStore,
+    limitPolicySettingsStore: options.limitPolicySettingsStore,
     notify,
     onQueueAdopt: (queue) => {
       queue_state = queue;
@@ -3272,5 +3273,103 @@ describe('createExecutionPane codex switch order and credits (UI-9y1k §4.5)', (
     expect(el(root, '[data-codex-credits-cap-note]').textContent).toContain(
       '이 값에 닿으면 새로 고르지 않는다'
     );
+  });
+});
+
+describe('createExecutionPane global limit scope lock (UI-giog §4.1)', () => {
+  /**
+   * A settings store whose Claude scope is `global`, Codex `repo`.
+   *
+   * @returns {{ get: () => any }}
+   */
+  function claudeGlobalStore() {
+    const entry = { mode: 'switch', accounts: [], preempt_pct: null };
+    return {
+      get: () => ({
+        revision: 2,
+        runners: {
+          claude: { scope: 'global', ...entry },
+          codex: { scope: 'repo', ...entry }
+        }
+      })
+    };
+  }
+
+  test('disables every repo limit control of a runner on the global policy', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      limitPolicySettingsStore: claudeGlobalStore()
+    });
+
+    await pane.load();
+
+    const controls = Array.from(
+      root.querySelectorAll(
+        '[data-limit-mode-runner="claude"] button, [data-limit-preempt="claude"], [data-limit-preempt-pct="claude"]'
+      )
+    );
+    expect(controls.length).toBe(4);
+    expect(
+      controls.every((node) => /** @type {any} */ (node).disabled === true)
+    ).toBe(true);
+  });
+
+  test('dims the locked runner rows and names where they change', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      limitPolicySettingsStore: claudeGlobalStore()
+    });
+
+    await pane.load();
+
+    expect(
+      el(root, '[data-limit-mode-row="claude"]').classList.contains(
+        'settings-dialog__row--off'
+      )
+    ).toBe(true);
+    expect(el(root, '[data-limit-note="claude"]').textContent?.trim()).toBe(
+      '전역 적용 중 — 모니터 ⚙ 전역 탭에서 바꿉니다'
+    );
+  });
+
+  test('keeps showing the stored mode of a locked runner', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      limitPolicySettingsStore: claudeGlobalStore(),
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: { mode: 'wait', accounts: [], preempt_pct: null },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    });
+
+    await pane.load();
+
+    expect(
+      el(
+        root,
+        '[data-limit-mode-runner="claude"] button[data-limit-mode="wait"]'
+      ).getAttribute('aria-pressed')
+    ).toBe('true');
+  });
+
+  test('leaves the repo-scope runner editable and without the note', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      limitPolicySettingsStore: claudeGlobalStore()
+    });
+
+    await pane.load();
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        el(
+          root,
+          '[data-limit-mode-runner="codex"] button[data-limit-mode="wait"]'
+        )
+      ).disabled
+    ).toBe(false);
+    expect(root.querySelector('[data-limit-note="codex"]')).toBeNull();
   });
 });

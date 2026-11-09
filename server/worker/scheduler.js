@@ -63,6 +63,7 @@ import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { createTranscriptReducer } from '../../app/utils/transcript-lines.js';
 import { execLaneOf } from '../../app/utils/worker-eligibility.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
+import { effectiveLimitPolicy } from '../limit-policy-settings.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
 import {
@@ -4192,7 +4193,9 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Read one runner's durable usage-limit policy from the queue snapshot.
+   * Read the usage-limit policy one runner follows in this workspace at this
+   * moment: the server-global policy while that runner's scope is `global`,
+   * else the queue snapshot's stored policy (UI-giog §4.3).
    *
    * @param {string} workspace
    * @param {string} runner
@@ -4201,14 +4204,7 @@ export function createScheduler(deps) {
   function providerLimitPolicyOf(workspace, runner) {
     const stored = /** @type {any} */ (deps.store.snapshot(workspace))
       .provider_limit_policy?.[runner];
-    return stored && typeof stored === 'object'
-      ? {
-          mode: stored.mode === 'wait' ? 'wait' : 'switch',
-          accounts: Array.isArray(stored.accounts) ? stored.accounts : [],
-          preempt_pct:
-            typeof stored.preempt_pct === 'number' ? stored.preempt_pct : null
-        }
-      : { mode: 'switch', accounts: [], preempt_pct: null };
+    return effectiveLimitPolicy(stored, runner);
   }
 
   /**

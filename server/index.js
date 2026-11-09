@@ -10,6 +10,10 @@ import {
 } from './codex-credit-store.js';
 import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
+import {
+  globalLimitPolicyOf,
+  onLimitPolicyApplied
+} from './limit-policy-settings.js';
 import { debug, enableAllDebug } from './logging.js';
 import { installPlacementService } from './placement/service.js';
 import { createPoller } from './poller.js';
@@ -40,10 +44,7 @@ import {
 import { publishRuntimeIdentity } from './runtime-startup.js';
 import { onTimingSettingsChanged, timingSeconds } from './timing-settings.js';
 import { watchDb } from './watcher.js';
-import {
-  initWorkerRuntime,
-  readWorkspaceAccountsLayer
-} from './worker/attach.js';
+import { initWorkerRuntime } from './worker/attach.js';
 import { codexModelList } from './worker/codex-model-list.js';
 import { selectCodexSwitchCandidate } from './worker/codex-switch-candidate.js';
 import { activeAccountOf } from './worker/instructions-restart.js';
@@ -228,15 +229,17 @@ const codex_credit_poller = createCodexCreditPoller({
 codexCreditStore().onChange(() => codex_credit_poller.sync());
 codex_credit_poller.sync();
 
-// Codex active-account return (UI-tyc2 §4): every parsed codex-auth list is
-// judged, and an exhausted global active account moves to a window-headroom
-// account a switch repo allows together with it, through the manual switch's
-// own lock and switch path.
+// Codex active-account return (UI-tyc2 §4, UI-giog §4.4): every parsed
+// codex-auth list is judged, and while Codex's limit scope is `global` an
+// active account at the global trigger moves to a window-headroom account the
+// global allow list holds with it, through the manual switch's own lock and
+// switch path. A `repo` scope never switches the global login.
 const codex_switch_notifier = createNotifier({ getConfig });
 const run_codex_switch = createAccountSwitchRunner({ provider: 'codex' });
 const codex_active_return = createCodexActiveReturn({
   listAccounts: () => listCodexAccounts(),
   listAccountsFresh: () => listCodexAccountsFresh(),
+  globalPolicyOf: (provider) => globalLimitPolicyOf(provider),
   listWorkspaces: () =>
     getAvailableWorkspaces().map((workspace) => ({
       key: path.resolve(workspace.path),
@@ -244,7 +247,6 @@ const codex_active_return = createCodexActiveReturn({
     })),
   queueSnapshot: (workspace) =>
     getWorkerRuntime().queueStore.snapshot(workspace),
-  readWorkspaceAccounts: (workspace) => readWorkspaceAccountsLayer(workspace),
   activeAccountOf,
   acquireLock: acquireSwitchLock,
   releaseLock: releaseSwitchLock,
@@ -267,14 +269,16 @@ subscribeAccountListObservations((list) => {
   void codex_active_return.observe(list);
 });
 
-// Claude active-account return (UI-btp3 §4): the same flow and lock as the
-// Codex pass, but always on — nothing else reads the Claude list while the
-// usage view and the Worker are idle — and it moves an active account whose
-// 5h or 7d window is full to a headroom account a switch repo allows with it.
+// Claude active-account return (UI-btp3 §4, UI-giog §4.4): the same flow and
+// lock as the Codex pass, but always on — nothing else reads the Claude list
+// while the usage view and the Worker are idle — and while Claude's limit
+// scope is `global` it moves an active account whose 5h or 7d window reached
+// the global trigger to a headroom account the global allow list holds with it.
 const run_claude_switch = createAccountSwitchRunner({ provider: 'claude' });
 const claude_active_return = createClaudeActiveReturn({
   listAccounts: () => listClaudeAccounts(),
   listAccountsFresh: () => listClaudeAccountsFresh(),
+  globalPolicyOf: (provider) => globalLimitPolicyOf(provider),
   listWorkspaces: () =>
     getAvailableWorkspaces().map((workspace) => ({
       key: path.resolve(workspace.path),
@@ -282,7 +286,6 @@ const claude_active_return = createClaudeActiveReturn({
     })),
   queueSnapshot: (workspace) =>
     getWorkerRuntime().queueStore.snapshot(workspace),
-  readWorkspaceAccounts: (workspace) => readWorkspaceAccountsLayer(workspace),
   acquireLock: acquireSwitchLock,
   releaseLock: releaseSwitchLock,
   isLocked: isSwitchInFlight,
@@ -299,6 +302,13 @@ const claude_active_return = createClaudeActiveReturn({
   log
 });
 claude_active_return.start();
+
+// A global limit-policy write hands both passes one judgment once every repo's
+// hold verdicts and switch pass followed the new settings (UI-giog §4.1).
+onLimitPolicyApplied(() => {
+  void codex_active_return.evaluateNow();
+  void claude_active_return.evaluateNow();
+});
 
 watchRegistry(
   (entries) => {

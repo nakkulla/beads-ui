@@ -8,6 +8,7 @@ import { activeAccountOf } from './worker/instructions-restart.js';
 
 /**
  * @typedef {import('./routes/codex-usage.js').UsageAccount} UsageAccount
+ * @typedef {import('./limit-policy-settings.js').GlobalLimitPolicy} GlobalLimitPolicy
  */
 
 const K1 = 'user-1::ws-a';
@@ -47,6 +48,18 @@ function account(key, number, pct_5h, options = {}) {
 }
 
 /**
+ * @param {number} pct_5h
+ * @param {number} pct_7d
+ * @returns {any[]}
+ */
+function windowsOf(pct_5h, pct_7d) {
+  return [
+    { key: '5h', pct: pct_5h, resetsAt: '2026-10-21T00:00:00.000Z' },
+    { key: '7d', pct: pct_7d, resetsAt: '2026-10-25T00:00:00.000Z' }
+  ];
+}
+
+/**
  * @param {UsageAccount[]} accounts
  */
 function listOf(accounts) {
@@ -67,16 +80,30 @@ function commonAccounts() {
 }
 
 /**
- * @param {'switch'|'wait'} mode
+ * The Codex server-global limit policy: scope `global`, mode `switch`.
+ *
  * @param {string[]} accounts
+ * @param {Partial<GlobalLimitPolicy>} [extra]
+ * @returns {GlobalLimitPolicy}
+ */
+function globalPolicy(accounts, extra = {}) {
+  return {
+    scope: 'global',
+    mode: 'switch',
+    accounts,
+    preempt_pct: null,
+    ...extra
+  };
+}
+
+/**
+ * One workspace queue; `provider_limit_policy` is the repo's stored policy,
+ * which the pass never reads.
+ *
  * @param {Record<string, unknown>} [extra]
  */
-function queueOf(mode, accounts, extra = {}) {
+function queueOf(extra = {}) {
   return {
-    provider_limit_policy: {
-      codex: { mode, accounts, preempt_pct: null },
-      claude: { mode: 'switch', accounts: [], preempt_pct: null }
-    },
     provider_hold: {},
     attempts: {},
     ...extra
@@ -84,7 +111,18 @@ function queueOf(mode, accounts, extra = {}) {
 }
 
 /**
- * @param {Partial<{ accounts: UsageAccount[], fresh: UsageAccount[], workspaces: Array<{ key: string, queue?: any, throws?: boolean }>, layers: Record<string, any>, locked: boolean }>} [overrides]
+ * @param {'switch'|'wait'} mode
+ * @param {string[]} accounts
+ */
+function repoPolicyOf(mode, accounts) {
+  return {
+    codex: { mode, accounts, preempt_pct: null },
+    claude: { mode: 'switch', accounts: [], preempt_pct: null }
+  };
+}
+
+/**
+ * @param {Partial<{ accounts: UsageAccount[], fresh: UsageAccount[], policy: GlobalLimitPolicy, workspaces: Array<{ key: string, queue?: any, throws?: boolean }>, locked: boolean }>} [overrides]
  */
 function makeHarness(overrides = {}) {
   const accounts = overrides.accounts ?? commonAccounts();
@@ -93,11 +131,9 @@ function makeHarness(overrides = {}) {
     cached: listOf(accounts),
     /** @type {any} */
     fresh: listOf(overrides.fresh ?? accounts),
-    workspaces: overrides.workspaces ?? [
-      { key: BEADS_UI, queue: queueOf('switch', [K1, K3]) }
-    ],
-    /** @type {Record<string, any>} */
-    layers: overrides.layers ?? {},
+    /** @type {GlobalLimitPolicy} */
+    policy: overrides.policy ?? globalPolicy([K1, K3]),
+    workspaces: overrides.workspaces ?? [{ key: BEADS_UI, queue: queueOf() }],
     locked: overrides.locked === true
   };
   /** @type {Array<() => void>} */
@@ -113,13 +149,11 @@ function makeHarness(overrides = {}) {
   const disarm = vi.fn();
   const listAccounts = vi.fn(async () => state.cached);
   const listAccountsFresh = vi.fn(async () => state.fresh);
-  const readWorkspaceAccounts = vi.fn(
-    async (/** @type {string} */ workspace) =>
-      state.layers[workspace] ?? { state: 'absent', values: {}, warnings: [] }
-  );
+  const globalPolicyOf = vi.fn(() => state.policy);
   const pass = createCodexActiveReturn({
     listAccounts,
     listAccountsFresh,
+    globalPolicyOf,
     listWorkspaces: () =>
       state.workspaces.map((workspace) => ({
         key: workspace.key,
@@ -132,7 +166,6 @@ function makeHarness(overrides = {}) {
       }
       return found.queue;
     },
-    readWorkspaceAccounts,
     activeAccountOf,
     acquireLock: () => {
       if (state.locked) {
@@ -161,7 +194,7 @@ function makeHarness(overrides = {}) {
     disarm,
     listAccounts,
     listAccountsFresh,
-    readWorkspaceAccounts,
+    globalPolicyOf,
     /** Run the most recently armed timer callback and let it settle. */
     async tick() {
       ticks[ticks.length - 1]();
@@ -180,14 +213,14 @@ describe('switching the exhausted active account', () => {
     expect(harness.switchAccount.mock.calls).toEqual([[1]]);
   });
 
-  test('sends one ops notice naming both accounts and the full window', async () => {
+  test('sends one ops notice naming the global login, both accounts and the full window', async () => {
     const harness = makeHarness();
 
     await harness.pass.observe(harness.state.cached);
 
     expect(harness.notify.mock.calls).toEqual([
       [
-        '🔁 Codex 활성 계정 자동 전환 — 계정 #3 → 계정 #1\n#3 5h 100% · 새로 시작하는 호출부터 적용'
+        '🔁 Codex 전역 로그인 자동 전환 — 계정 #3 → 계정 #1\n#3 5h 100% · 전역 한도 대응 · 새로 시작하는 호출부터 적용'
       ]
     ]);
   });
@@ -233,7 +266,7 @@ describe('switching the exhausted active account', () => {
     ];
     const harness = makeHarness({
       accounts,
-      workspaces: [{ key: BEADS_UI, queue: queueOf('switch', [K1, K2, K3]) }]
+      policy: globalPolicy([K1, K2, K3])
     });
 
     await harness.pass.observe(harness.state.cached);
@@ -255,196 +288,15 @@ describe('switching the exhausted active account', () => {
   });
 });
 
-describe('policy criterion', () => {
-  test('makes no switch when the only repo allowing the active account waits', async () => {
+describe('global policy criterion', () => {
+  test('makes no switch while the Codex scope is repo, even when a repo allows both accounts', async () => {
     const harness = makeHarness({
-      workspaces: [{ key: TRAIN_BOT, queue: queueOf('wait', [K1, K3]) }],
-      layers: {
-        [TRAIN_BOT]: {
-          state: 'usable',
-          values: { codex_account: K3 },
-          warnings: []
-        }
-      }
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('makes no switch when no switch repo allows the active account', async () => {
-    const harness = makeHarness({
-      workspaces: [{ key: BEADS_UI, queue: queueOf('switch', [K1]) }]
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('makes no switch when no single repo allows both accounts', async () => {
-    const harness = makeHarness({
+      policy: globalPolicy([K1, K3], { scope: 'repo' }),
       workspaces: [
-        { key: '/repos/a', queue: queueOf('switch', [K3]) },
-        { key: '/repos/b', queue: queueOf('switch', [K1]) }
-      ]
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('takes the first candidate in workspace key order', async () => {
-    const accounts = [
-      account(K1, 1, 0),
-      account(K2, 2, 0),
-      account(K3, 3, 100, { active: true })
-    ];
-    const harness = makeHarness({
-      accounts,
-      workspaces: [
-        { key: '/repos/b', queue: queueOf('switch', [K3, K1]) },
-        { key: '/repos/a', queue: queueOf('switch', [K3, K2]) }
-      ]
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount.mock.calls).toEqual([[2]]);
-  });
-
-  test('drops a repo whose queue cannot be read from the criterion', async () => {
-    const harness = makeHarness({
-      workspaces: [
-        { key: '/repos/a', throws: true },
-        { key: BEADS_UI, queue: queueOf('switch', [K1, K3]) }
-      ]
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount.mock.calls).toEqual([[1]]);
-  });
-});
-
-describe('wait protection', () => {
-  const WAIT_WORKSPACES = [
-    { key: BEADS_UI, queue: queueOf('switch', [K1, K3]) },
-    { key: TRAIN_BOT, queue: queueOf('wait', [K1, K3]) }
-  ];
-
-  test('makes no switch while a wait repo has no Codex default account', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('sends one hold notice naming the wait repo', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.notify.mock.calls).toEqual([
-      [
-        '⏸ Codex 활성 계정 자동 전환 보류 — 기다림 저장소 train_bot이 활성 로그인을 씀\n그 저장소에 Codex 기본 계정을 정하면 다음 판정부터 전환합니다'
-      ]
-    ]);
-  });
-
-  test('sends no second hold notice within the same exhaustion interval', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
-    await harness.pass.observe(harness.state.cached);
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.notify).toHaveBeenCalledTimes(1);
-  });
-
-  test('sends the hold notice again in a later exhaustion interval', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
-    await harness.pass.observe(harness.state.cached);
-    await harness.pass.observe(
-      listOf([account(K1, 1, 0), account(K3, 3, 50, { active: true })])
-    );
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.notify).toHaveBeenCalledTimes(2);
-  });
-
-  test('switches when the wait repo has a Codex default account', async () => {
-    const harness = makeHarness({
-      workspaces: WAIT_WORKSPACES,
-      layers: {
-        [TRAIN_BOT]: {
-          state: 'usable',
-          values: { codex_account: K3 },
-          warnings: []
-        }
-      }
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount.mock.calls).toEqual([[1]]);
-  });
-
-  test('blocks when the wait repo account layer is unusable', async () => {
-    const harness = makeHarness({
-      workspaces: WAIT_WORKSPACES,
-      layers: {
-        [TRAIN_BOT]: {
-          state: 'unusable',
-          values: {},
-          warnings: ['kv_read_failed']
-        }
-      }
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('blocks when reading the wait repo default throws', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
-    harness.readWorkspaceAccounts.mockRejectedValue(new Error('kv down'));
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('blocks for a wait repo whose only content is a pending wait_release receipt', async () => {
-    const harness = makeHarness({
-      workspaces: [
-        { key: BEADS_UI, queue: queueOf('switch', [K1, K3]) },
         {
-          key: TRAIN_BOT,
-          queue: queueOf('wait', [K3], {
-            attempts: {
-              'att-1': {
-                attempt_id: 'att-1',
-                bead_id: 'TB-1',
-                runner: 'codex',
-                status: 'provider_hold',
-                codex_account: K3
-              }
-            },
-            auto_resume_pending: [
-              {
-                attempt_id: 'att-1',
-                generation: 1,
-                account: null,
-                kind: 'provider_outage',
-                origin: 'wait_release',
-                held_account: K3
-              }
-            ]
+          key: BEADS_UI,
+          queue: queueOf({
+            provider_limit_policy: repoPolicyOf('switch', [K1, K3])
           })
         }
       ]
@@ -455,15 +307,169 @@ describe('wait protection', () => {
     expect(harness.switchAccount).not.toHaveBeenCalled();
   });
 
-  test('sends no hold notice when no candidate exists', async () => {
+  test('arms no timer while the Codex scope is repo', async () => {
+    const harness = makeHarness({
+      policy: globalPolicy([K1, K3], { scope: 'repo' })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.arm).not.toHaveBeenCalled();
+  });
+
+  test('makes no switch while the global mode waits', async () => {
+    const harness = makeHarness({
+      policy: globalPolicy([K1, K3], { mode: 'wait' })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('makes no switch while the global allow list is empty', async () => {
+    const harness = makeHarness({ policy: globalPolicy([]) });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('makes no switch when the global allow list lacks the active account', async () => {
+    const harness = makeHarness({ policy: globalPolicy([K1]) });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('switches even when a wait repo has no Codex default account', async () => {
+    const harness = makeHarness({
+      workspaces: [
+        {
+          key: TRAIN_BOT,
+          queue: queueOf({
+            provider_limit_policy: repoPolicyOf('wait', [K1, K3])
+          })
+        }
+      ]
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[1]]);
+  });
+
+  test('sends no hold notice for a wait repo', async () => {
     const harness = makeHarness({
       accounts: [account(K1, 1, 100), account(K3, 3, 100, { active: true })],
-      workspaces: WAIT_WORKSPACES
+      workspaces: [
+        {
+          key: TRAIN_BOT,
+          queue: queueOf({
+            provider_limit_policy: repoPolicyOf('wait', [K1, K3])
+          })
+        }
+      ]
     });
 
     await harness.pass.observe(harness.state.cached);
 
     expect(harness.notify).not.toHaveBeenCalled();
+  });
+
+  test('takes the first window-headroom account in the global allow list order', async () => {
+    const accounts = [
+      account(K1, 1, 0),
+      account(K2, 2, 0),
+      account(K3, 3, 100, { active: true })
+    ];
+    const harness = makeHarness({
+      accounts,
+      policy: globalPolicy([K3, K2, K1])
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[2]]);
+  });
+
+  test('ignores a queue that cannot be read', async () => {
+    const harness = makeHarness({
+      workspaces: [
+        { key: '/repos/a', throws: true },
+        { key: BEADS_UI, queue: queueOf() }
+      ]
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[1]]);
+  });
+});
+
+describe('global trigger', () => {
+  test('switches once the active window reaches the preemptive threshold', async () => {
+    const harness = makeHarness({
+      accounts: [account(K1, 1, 0), account(K3, 3, 85, { active: true })],
+      policy: globalPolicy([K1, K3], { preempt_pct: 80 })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[1]]);
+  });
+
+  test('names the window at the threshold in the notice', async () => {
+    const harness = makeHarness({
+      accounts: [account(K1, 1, 0), account(K3, 3, 85, { active: true })],
+      policy: globalPolicy([K1, K3], { preempt_pct: 80 })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.notify.mock.calls[0][0]).toContain(
+      '#3 5h 85% · 전역 한도 대응'
+    );
+  });
+
+  test('leaves an active account below the preemptive threshold alone', async () => {
+    const harness = makeHarness({
+      accounts: [account(K1, 1, 0), account(K3, 3, 79, { active: true })],
+      policy: globalPolicy([K1, K3], { preempt_pct: 80 })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('judges when only one of the two windows reaches the threshold', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(K1, 1, 0),
+        account(K3, 3, 0, { active: true, windows: windowsOf(20, 85) })
+      ],
+      policy: globalPolicy([K1, K3], { preempt_pct: 80 })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[1]]);
+  });
+
+  test('refuses a candidate whose window is at the threshold', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(K1, 1, 0, { windows: windowsOf(10, 60) }),
+        account(K3, 3, 85, { active: true })
+      ],
+      policy: globalPolicy([K1, K3], { preempt_pct: 60 })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
   });
 });
 
@@ -473,7 +479,7 @@ describe('running attempt guards', () => {
       workspaces: [
         {
           key: BEADS_UI,
-          queue: queueOf('switch', [K1, K3], {
+          queue: queueOf({
             attempts: {
               'att-1': {
                 attempt_id: 'att-1',
@@ -501,10 +507,11 @@ describe('running attempt guards', () => {
     ];
     const harness = makeHarness({
       accounts,
+      policy: globalPolicy([K1, K2, K3]),
       workspaces: [
         {
           key: BEADS_UI,
-          queue: queueOf('switch', [K1, K2, K3], {
+          queue: queueOf({
             attempts: {
               'att-1': {
                 attempt_id: 'att-1',
@@ -532,10 +539,11 @@ describe('running attempt guards', () => {
     ];
     const harness = makeHarness({
       accounts,
+      policy: globalPolicy([K1, K2, K3]),
       workspaces: [
         {
           key: BEADS_UI,
-          queue: queueOf('switch', [K1, K2, K3], {
+          queue: queueOf({
             attempts: {
               'att-1': {
                 attempt_id: 'att-1',
@@ -564,10 +572,11 @@ describe('running attempt guards', () => {
     ];
     const harness = makeHarness({
       accounts,
+      policy: globalPolicy([K1, K2, K3]),
       workspaces: [
         {
           key: BEADS_UI,
-          queue: queueOf('switch', [K1, K2, K3], {
+          queue: queueOf({
             provider_hold: {
               codex: { generation: 1, targets: [{ account: K1 }] }
             }
@@ -622,65 +631,11 @@ describe('confirm stage', () => {
     expect(harness.switchAccount).not.toHaveBeenCalled();
   });
 
-  test('makes no switch when a repo turns into a wait repo without a default during the kv read', async () => {
-    const harness = makeHarness({
-      workspaces: [
-        { key: BEADS_UI, queue: queueOf('switch', [K1, K3]) },
-        { key: TRAIN_BOT, queue: queueOf('wait', [K3]) },
-        { key: '/repos/zeta', queue: queueOf('switch', []) }
-      ],
-      layers: {
-        [TRAIN_BOT]: {
-          state: 'usable',
-          values: { codex_account: K3 },
-          warnings: []
-        }
-      }
-    });
-    const default_layer = harness.state.layers[TRAIN_BOT];
-    let reads = 0;
-    harness.readWorkspaceAccounts.mockImplementation(async () => {
-      reads += 1;
-      if (reads === 2) {
-        harness.state.workspaces[2].queue = queueOf('wait', [K3]);
-      }
-      return default_layer;
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.listAccountsFresh).toHaveBeenCalledTimes(1);
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('makes no switch when an accountless Codex run starts during the kv read', async () => {
-    const harness = makeHarness({
-      workspaces: [
-        { key: BEADS_UI, queue: queueOf('switch', [K1, K3]) },
-        { key: TRAIN_BOT, queue: queueOf('wait', [K3]) }
-      ],
-      layers: {
-        [TRAIN_BOT]: {
-          state: 'usable',
-          values: { codex_account: K3 },
-          warnings: []
-        }
-      }
-    });
-    const default_layer = harness.state.layers[TRAIN_BOT];
-    let reads = 0;
-    harness.readWorkspaceAccounts.mockImplementation(async () => {
-      reads += 1;
-      if (reads === 2) {
-        harness.state.workspaces[0].queue.attempts['att-1'] = {
-          attempt_id: 'att-1',
-          bead_id: 'UI-1',
-          runner: 'codex',
-          status: 'running',
-          codex_account: null
-        };
-      }
-      return default_layer;
+  test('makes no switch when the scope turns repo before the fresh read returns', async () => {
+    const harness = makeHarness();
+    harness.listAccountsFresh.mockImplementation(async () => {
+      harness.state.policy = globalPolicy([K1, K3], { scope: 'repo' });
+      return harness.state.fresh;
     });
 
     await harness.pass.observe(harness.state.cached);
@@ -743,6 +698,17 @@ describe('confirm stage', () => {
   });
 });
 
+describe('one judgment on request', () => {
+  test('reads the cached list and switches on evaluateNow', async () => {
+    const harness = makeHarness();
+
+    await harness.pass.evaluateNow();
+
+    expect(harness.listAccounts).toHaveBeenCalledTimes(1);
+    expect(harness.switchAccount.mock.calls).toEqual([[1]]);
+  });
+});
+
 describe('exhaustion timer', () => {
   test('arms a 60-second timer on observing exhaustion', async () => {
     const harness = makeHarness({ locked: true });
@@ -782,6 +748,16 @@ describe('exhaustion timer', () => {
     await harness.tick();
 
     expect(harness.disarm).toHaveBeenCalledTimes(1);
+    expect(harness.pass.timerRunning()).toBe(false);
+  });
+
+  test('stops when a tick finds the scope turned repo', async () => {
+    const harness = makeHarness({ locked: true });
+    await harness.pass.observe(harness.state.cached);
+    harness.state.policy = globalPolicy([K1, K3], { scope: 'repo' });
+
+    await harness.tick();
+
     expect(harness.pass.timerRunning()).toBe(false);
   });
 

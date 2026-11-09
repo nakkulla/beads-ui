@@ -14,6 +14,10 @@ import {
   isExternalWaitSettingsSnapshot,
   takeoverRatioOf
 } from './data/external-wait-settings-store.js';
+import {
+  createLimitPolicySettingsStore,
+  isLimitPolicySnapshot
+} from './data/limit-policy-settings-store.js';
 import { createModelVisibilityStore } from './data/model-visibility-store.js';
 import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
 import { createSessionLogStore } from './data/session-log-store.js';
@@ -142,6 +146,9 @@ const MODEL_VISIBILITY_CLIENT_ID = 'model-visibility';
 
 /** Client id for the singleton server-global timing-settings subscription. */
 const TIMING_SETTINGS_CLIENT_ID = 'timing-settings';
+
+/** Client id for the singleton server-global limit-policy settings subscription. */
+const LIMIT_POLICY_SETTINGS_CLIENT_ID = 'limit-policy-settings';
 
 /** Client id for the singleton server-global external-wait settings subscription. */
 const EXTERNAL_WAIT_SETTINGS_CLIENT_ID = 'external-wait-settings';
@@ -350,6 +357,9 @@ export function bootstrap(root_element) {
     // 아직 없으면 lane-model의 20초 대체값이 남는다.
     bindQueueGraceSource(() => queueGraceSecondsOf(timing_settings_store));
     const external_wait_settings_store = createExternalWaitSettingsStore();
+    // 한도 대응 전역 설정(UI-giog §4.2): 저장소 창·일괄 창도 적용 범위를 읽어
+    // 행을 잠그므로 앱 시작 때 구독한다.
+    const limit_policy_settings_store = createLimitPolicySettingsStore();
     const codex_credit_store = createCodexCreditStore();
     // `▶ 바로 실행` 확인 창의 기본 자원 비율은 서버 전역 설정을 따른다
     // (UI-qbgj §3.6); 값이 아직 없으면 창이 80%로 읽는다.
@@ -403,6 +413,17 @@ export function bootstrap(root_element) {
           values: payload.values,
           overrides: payload.overrides,
           fields: payload.fields
+        });
+      }
+    });
+
+    // 한도 대응 전역 설정 채널(UI-giog §4.2)의 push. 서버 전역이라 워크스페이스
+    // 전환에도 비우지 않고, 스냅샷을 통째로 교체한다.
+    client.on('limit-policy-settings-snapshot', (payload) => {
+      if (isLimitPolicySnapshot(payload)) {
+        limit_policy_settings_store.set({
+          revision: payload.revision,
+          runners: payload.runners
         });
       }
     });
@@ -1072,6 +1093,25 @@ export function bootstrap(root_element) {
       });
     }
 
+    // --- Limit-policy settings subscription lifecycle (server-global) ---
+    let limit_policy_settings_subscribed = false;
+
+    function subscribeLimitPolicySettings() {
+      if (limit_policy_settings_subscribed) {
+        return;
+      }
+      limit_policy_settings_subscribed = true;
+      void tracked_send('subscribe-limit-policy-settings', {
+        id: LIMIT_POLICY_SETTINGS_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-limit-policy-settings failed: %o', err);
+        // 구 서버 등으로 구독이 실패하면 값 없음으로 두어 두 러너를 저장소별로
+        // 읽게 하고, 다음 재연결이 다시 구독하도록 플래그를 푼다.
+        limit_policy_settings_store.clear();
+        limit_policy_settings_subscribed = false;
+      });
+    }
+
     // --- External-wait settings subscription lifecycle (server-global) ---
     let external_wait_settings_subscribed = false;
 
@@ -1138,6 +1178,7 @@ export function bootstrap(root_element) {
       // flashing every hidden model back into the selectors.
       model_visibility_subscribed = false;
       timing_settings_subscribed = false;
+      limit_policy_settings_subscribed = false;
       external_wait_settings_subscribed = false;
       codex_credits_subscribed = false;
       worker_queue_unsub = null;
@@ -1150,6 +1191,7 @@ export function bootstrap(root_element) {
       subscribeExecPresets();
       subscribeModelVisibility();
       subscribeTimingSettings();
+      subscribeLimitPolicySettings();
       subscribeExternalWaitSettings();
       subscribeCodexCredits();
       const selected = store.getState().workspace.current?.path;
@@ -1642,6 +1684,7 @@ export function bootstrap(root_element) {
       modelVisibilityStore: model_visibility_store,
       timingSettingsStore: timing_settings_store,
       externalWaitSettingsStore: external_wait_settings_store,
+      limitPolicySettingsStore: limit_policy_settings_store,
       codexCreditStore: codex_credit_store,
       transport: (type, payload) => tracked_send(type, payload),
       // 모니터 탭에서 연 헤더 ⚙의 일괄 모드는 보이는 저장소 행을 대상으로 쓴다
@@ -1996,6 +2039,7 @@ export function bootstrap(root_element) {
     subscribeExecPresets();
     subscribeModelVisibility();
     subscribeTimingSettings();
+    subscribeLimitPolicySettings();
     subscribeExternalWaitSettings();
     subscribeCodexCredits();
 

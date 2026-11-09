@@ -57,6 +57,12 @@ import {
   handleUnsubscribeExternalWaitSettings
 } from './external-wait-settings-handlers.js';
 import {
+  detachLimitPolicySettings,
+  handleLimitPolicySettingsSet,
+  handleSubscribeLimitPolicySettings,
+  handleUnsubscribeLimitPolicySettings
+} from './limit-policy-settings-handlers.js';
+import {
   detachModelVisibility,
   handleModelVisibilitySet,
   handleSubscribeModelVisibility,
@@ -336,6 +342,7 @@ export function attachWsServer(http_server, options = {}) {
         detachImplPresets(ws);
         detachModelVisibility(ws);
         detachTimingSettings(ws);
+        detachLimitPolicySettings(ws);
         detachExternalWaitSettings(ws);
         detachCodexCredits(ws);
       } catch {
@@ -588,6 +595,15 @@ export async function handleMessage(ws, data) {
       return;
     case 'timing-settings-set':
       handleTimingSettingsSet(ws, req);
+      return;
+    case 'subscribe-limit-policy-settings':
+      handleSubscribeLimitPolicySettings(ws, req);
+      return;
+    case 'unsubscribe-limit-policy-settings':
+      handleUnsubscribeLimitPolicySettings(ws, req);
+      return;
+    case 'limit-policy-settings-set':
+      await handleLimitPolicySettingsSet(ws, req);
       return;
     case 'subscribe-external-wait-settings':
       handleSubscribeExternalWaitSettings(ws, req);

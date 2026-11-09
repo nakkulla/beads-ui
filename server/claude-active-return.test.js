@@ -7,6 +7,7 @@ import {
 /**
  * @typedef {import('./routes/claude-usage.js').UsageAccount} UsageAccount
  * @typedef {import('./routes/claude-usage.js').UsageWindow} UsageWindow
+ * @typedef {import('./limit-policy-settings.js').GlobalLimitPolicy} GlobalLimitPolicy
  */
 
 const A3 = 'three@hanmail.example';
@@ -72,16 +73,30 @@ function commonAccounts() {
 }
 
 /**
- * @param {'switch'|'wait'} mode
+ * The Claude server-global limit policy: scope `global`, mode `switch`.
+ *
  * @param {string[]} accounts
+ * @param {Partial<GlobalLimitPolicy>} [extra]
+ * @returns {GlobalLimitPolicy}
+ */
+function globalPolicy(accounts, extra = {}) {
+  return {
+    scope: 'global',
+    mode: 'switch',
+    accounts,
+    preempt_pct: null,
+    ...extra
+  };
+}
+
+/**
+ * One workspace queue; `provider_limit_policy` is the repo's stored policy,
+ * which the pass never reads.
+ *
  * @param {Record<string, unknown>} [extra]
  */
-function queueOf(mode, accounts, extra = {}) {
+function queueOf(extra = {}) {
   return {
-    provider_limit_policy: {
-      claude: { mode, accounts, preempt_pct: null },
-      codex: { mode: 'switch', accounts: [], preempt_pct: null }
-    },
     provider_hold: {},
     attempts: {},
     ...extra
@@ -89,7 +104,18 @@ function queueOf(mode, accounts, extra = {}) {
 }
 
 /**
- * @param {Partial<{ accounts: UsageAccount[], fresh: UsageAccount[], workspaces: Array<{ key: string, queue?: any, throws?: boolean }>, layers: Record<string, any>, locked: boolean }>} [overrides]
+ * @param {'switch'|'wait'} mode
+ * @param {string[]} accounts
+ */
+function repoPolicyOf(mode, accounts) {
+  return {
+    claude: { mode, accounts, preempt_pct: null },
+    codex: { mode: 'switch', accounts: [], preempt_pct: null }
+  };
+}
+
+/**
+ * @param {Partial<{ accounts: UsageAccount[], fresh: UsageAccount[], policy: GlobalLimitPolicy, workspaces: Array<{ key: string, queue?: any, throws?: boolean }>, locked: boolean }>} [overrides]
  */
 function makeHarness(overrides = {}) {
   const accounts = overrides.accounts ?? commonAccounts();
@@ -98,11 +124,9 @@ function makeHarness(overrides = {}) {
     cached: listOf(accounts),
     /** @type {any} */
     fresh: listOf(overrides.fresh ?? accounts),
-    workspaces: overrides.workspaces ?? [
-      { key: BEADS_UI, queue: queueOf('switch', [A3, A4]) }
-    ],
-    /** @type {Record<string, any>} */
-    layers: overrides.layers ?? {},
+    /** @type {GlobalLimitPolicy} */
+    policy: overrides.policy ?? globalPolicy([A3, A4]),
+    workspaces: overrides.workspaces ?? [{ key: BEADS_UI, queue: queueOf() }],
     locked: overrides.locked === true
   };
   /** @type {Array<() => void>} */
@@ -118,13 +142,11 @@ function makeHarness(overrides = {}) {
   const disarm = vi.fn();
   const listAccounts = vi.fn(async () => state.cached);
   const listAccountsFresh = vi.fn(async () => state.fresh);
-  const readWorkspaceAccounts = vi.fn(
-    async (/** @type {string} */ workspace) =>
-      state.layers[workspace] ?? { state: 'absent', values: {}, warnings: [] }
-  );
+  const globalPolicyOf = vi.fn(() => state.policy);
   const pass = createClaudeActiveReturn({
     listAccounts,
     listAccountsFresh,
+    globalPolicyOf,
     listWorkspaces: () =>
       state.workspaces.map((workspace) => ({
         key: workspace.key,
@@ -137,7 +159,6 @@ function makeHarness(overrides = {}) {
       }
       return found.queue;
     },
-    readWorkspaceAccounts,
     acquireLock: () => {
       if (state.locked) {
         return false;
@@ -164,7 +185,7 @@ function makeHarness(overrides = {}) {
     disarm,
     listAccounts,
     listAccountsFresh,
-    readWorkspaceAccounts,
+    globalPolicyOf,
     /** Run the most recently armed timer callback and let it settle. */
     async tick() {
       ticks[ticks.length - 1]();
@@ -207,7 +228,7 @@ describe('switching the exhausted active Claude account', () => {
 
     expect(harness.notify.mock.calls).toEqual([
       [
-        '🔁 Claude 활성 계정 자동 전환 — 계정 #3 → 계정 #4\n#3 5h 100% · 실행 중 세션도 곧 새 계정을 씁니다'
+        '🔁 Claude 전역 로그인 자동 전환 — 계정 #3 → 계정 #4\n#3 5h 100% · 전역 한도 대응 · 실행 중 세션도 곧 새 계정을 씁니다'
       ]
     ]);
   });
@@ -367,7 +388,7 @@ describe('candidate rule', () => {
       workspaces: [
         {
           key: BEADS_UI,
-          queue: queueOf('switch', [A3, A4], {
+          queue: queueOf({
             provider_hold: {
               claude: { targets: [{ account: A4, attempt_ids: ['x'] }] }
             }
@@ -388,7 +409,7 @@ describe('candidate rule', () => {
         account(A4, 4, windowsOf(0, 60)),
         account(A5, 5, windowsOf(80, 20))
       ],
-      workspaces: [{ key: BEADS_UI, queue: queueOf('switch', [A3, A4, A5]) }]
+      policy: globalPolicy([A3, A4, A5])
     });
 
     await harness.pass.observe(harness.state.cached);
@@ -403,7 +424,7 @@ describe('candidate rule', () => {
         account(A5, 5, windowsOf(0, 20)),
         account(A4, 4, windowsOf(50, 20))
       ],
-      workspaces: [{ key: BEADS_UI, queue: queueOf('switch', [A3, A5, A4]) }]
+      policy: globalPolicy([A3, A5, A4])
     });
 
     await harness.pass.observe(harness.state.cached);
@@ -412,39 +433,17 @@ describe('candidate rule', () => {
   });
 });
 
-describe('policy criterion', () => {
-  test('makes no switch when the only repo allowing the active account waits', async () => {
+describe('global policy criterion', () => {
+  test('makes no switch while the Claude scope is repo, even when a repo allows both accounts', async () => {
     const harness = makeHarness({
-      workspaces: [{ key: TRAIN_BOT, queue: queueOf('wait', [A3, A4]) }],
-      layers: {
-        [TRAIN_BOT]: {
-          state: 'usable',
-          values: { claude_account: A4 },
-          warnings: []
-        }
-      }
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('makes no switch when no switch repo allows the active account', async () => {
-    const harness = makeHarness({
-      workspaces: [{ key: BEADS_UI, queue: queueOf('switch', [A4]) }]
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('makes no switch when no single repo allows both accounts', async () => {
-    const harness = makeHarness({
+      policy: globalPolicy([A3, A4], { scope: 'repo' }),
       workspaces: [
-        { key: '/repos/a', queue: queueOf('switch', [A3]) },
-        { key: '/repos/b', queue: queueOf('switch', [A4]) }
+        {
+          key: BEADS_UI,
+          queue: queueOf({
+            provider_limit_policy: repoPolicyOf('switch', [A3, A4])
+          })
+        }
       ]
     });
 
@@ -453,116 +452,155 @@ describe('policy criterion', () => {
     expect(harness.switchAccount).not.toHaveBeenCalled();
   });
 
-  test('takes the first candidate in workspace key order', async () => {
+  test('keeps the always-on timer while the Claude scope is repo', async () => {
+    const harness = makeHarness({
+      policy: globalPolicy([A3, A4], { scope: 'repo' })
+    });
+    harness.pass.start();
+
+    await harness.tick();
+
+    expect(harness.pass.timerRunning()).toBe(true);
+  });
+
+  test('makes no switch while the global mode waits', async () => {
+    const harness = makeHarness({
+      policy: globalPolicy([A3, A4], { mode: 'wait' })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('makes no switch while the global allow list is empty', async () => {
+    const harness = makeHarness({ policy: globalPolicy([]) });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('makes no switch when the global allow list lacks the active account', async () => {
+    const harness = makeHarness({ policy: globalPolicy([A4]) });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('switches even when a wait repo has no Claude default account', async () => {
+    const harness = makeHarness({
+      workspaces: [
+        {
+          key: TRAIN_BOT,
+          queue: queueOf({
+            provider_limit_policy: repoPolicyOf('wait', [A3, A4])
+          })
+        }
+      ]
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[4]]);
+  });
+
+  test('sends no hold notice for a wait repo', async () => {
     const harness = makeHarness({
       accounts: [
         account(A3, 3, windowsOf(100, 10), { active: true }),
-        account(A4, 4, windowsOf(0, 10)),
-        account(A5, 5, windowsOf(0, 50))
+        account(A4, 4, windowsOf(100, 10))
       ],
       workspaces: [
-        { key: '/repos/b', queue: queueOf('switch', [A3, A4]) },
-        { key: '/repos/a', queue: queueOf('switch', [A3, A5]) }
+        {
+          key: TRAIN_BOT,
+          queue: queueOf({
+            provider_limit_policy: repoPolicyOf('wait', [A3, A4])
+          })
+        }
       ]
     });
 
     await harness.pass.observe(harness.state.cached);
 
-    expect(harness.switchAccount.mock.calls).toEqual([[5]]);
+    expect(harness.notify).not.toHaveBeenCalled();
   });
 });
 
-describe('wait protection', () => {
-  const WAIT_WORKSPACES = [
-    { key: BEADS_UI, queue: queueOf('switch', [A3, A4]) },
-    { key: TRAIN_BOT, queue: queueOf('wait', []) }
-  ];
+describe('global trigger', () => {
+  test('switches once a judged window reaches the preemptive threshold', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(A3, 3, windowsOf(85, 10), { active: true }),
+        account(A4, 4, windowsOf(0, 10))
+      ],
+      policy: globalPolicy([A3, A4], { preempt_pct: 80 })
+    });
 
-  test('makes no switch while a wait repo has no Claude default account', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[4]]);
+  });
+
+  test('leaves an active account below the preemptive threshold alone', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(A3, 3, windowsOf(79, 10), { active: true }),
+        account(A4, 4, windowsOf(0, 10))
+      ],
+      policy: globalPolicy([A3, A4], { preempt_pct: 80 })
+    });
 
     await harness.pass.observe(harness.state.cached);
 
     expect(harness.switchAccount).not.toHaveBeenCalled();
   });
 
-  test('sends one hold notice naming the wait repo', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
+  test('judges when only the seven-day window reaches the threshold', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(A3, 3, windowsOf(20, 85), { active: true }),
+        account(A4, 4, windowsOf(0, 10))
+      ],
+      policy: globalPolicy([A3, A4], { preempt_pct: 80 })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[4]]);
+  });
+
+  test('refuses a candidate whose judged window is at the threshold', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(A3, 3, windowsOf(85, 10), { active: true }),
+        account(A4, 4, windowsOf(80, 10))
+      ],
+      policy: globalPolicy([A3, A4], { preempt_pct: 80 })
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('names the window at the threshold in the notice', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(A3, 3, windowsOf(85, 10), { active: true }),
+        account(A4, 4, windowsOf(0, 10))
+      ],
+      policy: globalPolicy([A3, A4], { preempt_pct: 80 })
+    });
 
     await harness.pass.observe(harness.state.cached);
 
     expect(harness.notify.mock.calls).toEqual([
       [
-        '⏸ Claude 활성 계정 자동 전환 보류 — 기다림 저장소 train_bot이 활성 로그인을 씀\n그 저장소에 Claude 기본 계정을 정하면 다음 판정부터 전환합니다'
+        '🔁 Claude 전역 로그인 자동 전환 — 계정 #3 → 계정 #4\n#3 5h 85% · 전역 한도 대응 · 실행 중 세션도 곧 새 계정을 씁니다'
       ]
     ]);
-  });
-
-  test('sends no second hold notice within the same exhaustion interval', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
-    await harness.pass.observe(harness.state.cached);
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.notify).toHaveBeenCalledTimes(1);
-  });
-
-  test('sends the hold notice again in a later exhaustion interval', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
-    await harness.pass.observe(harness.state.cached);
-    await harness.pass.observe(
-      listOf([
-        account(A3, 3, windowsOf(50, 10), { active: true }),
-        account(A4, 4, windowsOf(0, 10))
-      ])
-    );
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.notify).toHaveBeenCalledTimes(2);
-  });
-
-  test('switches when the wait repo has a Claude default account', async () => {
-    const harness = makeHarness({
-      workspaces: WAIT_WORKSPACES,
-      layers: {
-        [TRAIN_BOT]: {
-          state: 'usable',
-          values: { claude_account: A4 },
-          warnings: []
-        }
-      }
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount.mock.calls).toEqual([[4]]);
-  });
-
-  test('blocks when the wait repo only has a Codex default account', async () => {
-    const harness = makeHarness({
-      workspaces: WAIT_WORKSPACES,
-      layers: {
-        [TRAIN_BOT]: {
-          state: 'usable',
-          values: { codex_account: 'user-1::ws-a' },
-          warnings: []
-        }
-      }
-    });
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
-  });
-
-  test('blocks when reading the wait repo default throws', async () => {
-    const harness = makeHarness({ workspaces: WAIT_WORKSPACES });
-    harness.readWorkspaceAccounts.mockRejectedValue(new Error('kv down'));
-
-    await harness.pass.observe(harness.state.cached);
-
-    expect(harness.switchAccount).not.toHaveBeenCalled();
   });
 });
 
@@ -572,7 +610,7 @@ describe('running attempts', () => {
       workspaces: [
         {
           key: BEADS_UI,
-          queue: queueOf('switch', [A3, A4], {
+          queue: queueOf({
             attempts: runningClaude(null)
           })
         }
@@ -589,7 +627,7 @@ describe('running attempts', () => {
       workspaces: [
         {
           key: BEADS_UI,
-          queue: queueOf('switch', [A3, A4], { attempts: runningClaude(A4) })
+          queue: queueOf({ attempts: runningClaude(A4) })
         }
       ]
     });
@@ -608,7 +646,7 @@ describe('running attempts', () => {
       workspaces: [
         {
           key: BEADS_UI,
-          queue: queueOf('switch', [A3, A4], { attempts: runningClaude(A4) })
+          queue: queueOf({ attempts: runningClaude(A4) })
         }
       ]
     });
@@ -625,10 +663,11 @@ describe('running attempts', () => {
         account(A4, 4, windowsOf(0, 10), { own: false }),
         account(A5, 5, windowsOf(0, 50))
       ],
+      policy: globalPolicy([A3, A4, A5]),
       workspaces: [
         {
           key: BEADS_UI,
-          queue: queueOf('switch', [A3, A4, A5], {
+          queue: queueOf({
             attempts: runningClaude(A4)
           })
         }
@@ -666,6 +705,19 @@ describe('confirm stage', () => {
 
     await harness.pass.observe(harness.state.cached);
 
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+  });
+
+  test('makes no switch when the scope turns repo before the fresh read returns', async () => {
+    const harness = makeHarness();
+    harness.listAccountsFresh.mockImplementation(async () => {
+      harness.state.policy = globalPolicy([A3, A4], { scope: 'repo' });
+      return harness.state.fresh;
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.listAccountsFresh).toHaveBeenCalledTimes(1);
     expect(harness.switchAccount).not.toHaveBeenCalled();
   });
 
@@ -722,6 +774,17 @@ describe('confirm stage', () => {
     await first;
 
     expect(harness.listAccountsFresh).toHaveBeenCalledTimes(1);
+    expect(harness.switchAccount.mock.calls).toEqual([[4]]);
+  });
+});
+
+describe('one judgment on request', () => {
+  test('reads the cached list and switches on evaluateNow', async () => {
+    const harness = makeHarness();
+
+    await harness.pass.evaluateNow();
+
+    expect(harness.listAccounts).toHaveBeenCalledTimes(1);
     expect(harness.switchAccount.mock.calls).toEqual([[4]]);
   });
 });

@@ -30,6 +30,7 @@ import { createConversationSection } from './conversation-section.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
 import { createExternalWaitSection } from './external-wait-section.js';
+import { createLimitPolicySection } from './limit-policy-section.js';
 import { createModelVisibilitySection } from './model-visibility-section.js';
 import { createPresetManageSection } from './preset-manage-section.js';
 import { createRepoPane } from './repo-pane.js';
@@ -130,6 +131,7 @@ const TAB_COPY = {
  *   modelVisibilityStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   timingSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   externalWaitSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
+ *   limitPolicySettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   codexCreditStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   labelOptions: () => string[],
  *   notify?: (message: string) => void,
@@ -189,14 +191,17 @@ export function createSettingsDialog(mount_element, options) {
   let timing_section = null;
   /** @type {ReturnType<typeof createExternalWaitSection>|null} */
   let external_wait_section = null;
+  /** @type {ReturnType<typeof createLimitPolicySection>|null} */
+  let limit_policy_section = null;
   /** @type {ReturnType<typeof createConversationSection>|null} */
   let conversation_section = null;
   /**
    * The `전역` 탭's own host — 서버 전역 값이라 일괄 pane과 섞지 않는다 (§6).
-   * It holds six groups: the preset management section (UI-u3po), the chip
+   * It holds seven groups: the preset management section (UI-u3po), the chip
    * bindings under their own title, then the model-visibility section, then the timing section (UI-ny0h §3.5), then the
-   * external-wait section (UI-qbgj §3.6), then the conversation section
-   * (UI-jbl1 §3.4), each drawn into its own child host.
+   * external-wait section (UI-qbgj §3.6), then the limit-policy section
+   * (UI-giog §4.5), then the conversation section (UI-jbl1 §3.4), each drawn
+   * into its own child host.
    */
   const global_host = document.createElement('div');
   global_host.className = 'settings-dialog__pane-host';
@@ -211,6 +216,7 @@ export function createSettingsDialog(mount_element, options) {
   const model_host = document.createElement('div');
   const timing_host = document.createElement('div');
   const external_wait_host = document.createElement('div');
+  const limit_policy_host = document.createElement('div');
   const conversation_host = document.createElement('div');
   global_host.append(
     preset_manage_host,
@@ -218,6 +224,7 @@ export function createSettingsDialog(mount_element, options) {
     model_host,
     timing_host,
     external_wait_host,
+    limit_policy_host,
     conversation_host
   );
 
@@ -259,6 +266,7 @@ export function createSettingsDialog(mount_element, options) {
       implPresetStore: options.implPresetStore,
       modelVisibilityStore: options.modelVisibilityStore,
       codexCreditStore: options.codexCreditStore,
+      limitPolicySettingsStore: options.limitPolicySettingsStore,
       notify,
       onQueueAdopt: (queue) => {
         if (bound_root === null) {
@@ -510,6 +518,15 @@ export function createSettingsDialog(mount_element, options) {
         });
       }
       external_wait_section.render();
+      if (!limit_policy_section) {
+        limit_policy_section = createLimitPolicySection(limit_policy_host, {
+          transport,
+          limitPolicySettingsStore: options.limitPolicySettingsStore,
+          toast: (message, kind) =>
+            showToast(message, /** @type {any} */ (kind))
+        });
+      }
+      limit_policy_section.render();
       if (!conversation_section) {
         conversation_section = createConversationSection(conversation_host, {
           transport,
@@ -533,6 +550,7 @@ export function createSettingsDialog(mount_element, options) {
         implPresetStore: options.implPresetStore,
         modelVisibilityStore: options.modelVisibilityStore,
         codexCreditStore: options.codexCreditStore,
+        limitPolicySettingsStore: options.limitPolicySettingsStore,
         notify,
         onBulkApplied: (root_dirs) => options.onBulkApplied?.(root_dirs)
       });
@@ -560,6 +578,8 @@ export function createSettingsDialog(mount_element, options) {
     timing_section = null;
     external_wait_section?.destroy();
     external_wait_section = null;
+    limit_policy_section?.destroy();
+    limit_policy_section = null;
     conversation_section?.destroy();
     conversation_section = null;
     global_host.remove();
@@ -818,6 +838,21 @@ export function createSettingsDialog(mount_element, options) {
     );
   }
 
+  // A runner's limit scope locks or frees the repo `한도 대응` rows in both the
+  // repo pane and the bulk pane (UI-giog §4.1), so a push redraws them.
+  /** @type {null | (() => void)} */
+  let unsubscribe_limit_policy = null;
+  if (options.limitPolicySettingsStore?.subscribe) {
+    unsubscribe_limit_policy = options.limitPolicySettingsStore.subscribe(
+      () => {
+        if (is_open) {
+          execution_pane?.render();
+          bulk_pane?.render();
+        }
+      }
+    );
+  }
+
   // The `저장소` tab reads the monitor's live rows, so a push redraws it while it
   // is the visible tab (a repo's failure count or revision moves under it).
   /** @type {null | (() => void)} */
@@ -938,6 +973,10 @@ export function createSettingsDialog(mount_element, options) {
       if (unsubscribe_rows) {
         unsubscribe_rows();
         unsubscribe_rows = null;
+      }
+      if (unsubscribe_limit_policy) {
+        unsubscribe_limit_policy();
+        unsubscribe_limit_policy = null;
       }
       if (unsubscribe_queue) {
         unsubscribe_queue();

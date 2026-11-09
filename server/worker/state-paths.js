@@ -166,6 +166,16 @@ export function timingSettingsFilePath() {
 }
 
 /**
+ * Absolute path to the SERVER-GLOBAL limit-policy settings file: each runner's
+ * global usage-limit policy and its `repo`/`global` apply scope (UI-giog §4.2).
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/limit-policy-settings.json`.
+ */
+export function limitPolicySettingsFilePath() {
+  return path.join(stateHome(), 'bdui', 'limit-policy-settings.json');
+}
+
+/**
  * Absolute path to the SERVER-GLOBAL external-wait settings file: the
  * user-changed `▶ 바로 실행` defaults (UI-qbgj §3.6). Shared across workspaces.
  *

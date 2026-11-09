@@ -5,6 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createApp } from '../app.js';
+import {
+  __resetLimitPolicySettingsForTest,
+  __setLimitPolicySettingsForTest
+} from '../limit-policy-settings.js';
 import { prepareCodexAccountHome } from '../worker/codex-account-home.js';
 import {
   createCodexSwitchCandidateHandler,
@@ -127,6 +131,7 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmp_dir, { recursive: true, force: true });
+  __resetLimitPolicySettingsForTest();
 });
 
 describe('POST /api/codex/switch-candidate (UI-9y1k §4.4)', () => {
@@ -244,6 +249,28 @@ describe('POST /api/codex/switch-candidate (UI-9y1k §4.4)', () => {
       credit_mode: false,
       reason: 'window'
     });
+  });
+
+  test('answers policy_wait while global Codex wait overrides a switching repo', async () => {
+    __setLimitPolicySettingsForTest({
+      codex: { scope: 'global', mode: 'wait', accounts: [] }
+    });
+    const handler = makeHandler();
+
+    const res = await postCandidate(handler, { root_dir: ROOT });
+
+    expect(res.body).toMatchObject({ decision: 'none', reason: 'policy_wait' });
+  });
+
+  test('picks from the global allow list while the Codex scope is global', async () => {
+    __setLimitPolicySettingsForTest({
+      codex: { scope: 'global', mode: 'switch', accounts: [ACCOUNT_3] }
+    });
+    const handler = makeHandler({ policy: { mode: 'wait', accounts: [] } });
+
+    const res = await postCandidate(handler, { root_dir: ROOT });
+
+    expect(res.body).toMatchObject({ decision: 'switch', account_number: 3 });
   });
 
   test('carries no email and no account key in the answer', async () => {
