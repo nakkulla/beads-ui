@@ -69,6 +69,7 @@ afterEach(() => {
  *   readIssueThrows?: boolean,
  *   timeline?: any,
  *   notifier?: { quickfixLanded: (input: any) => Promise<void> }|null,
+ *   baseSync?: { syncBase: (target_base: string, candidate_sha?: string|null) => Promise<any> },
  *   readMetadataThrows?: boolean,
  *   foreign?: {
  *     pins: Record<string, string>,
@@ -348,6 +349,7 @@ function makeLanding(options = {}) {
     readPushLog,
     timeline: options.timeline,
     notifier: options.notifier,
+    baseSync: options.baseSync,
     notifyChanged: () => calls.push('notify'),
     now: () => 1234
   });
@@ -2681,5 +2683,130 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
       'branch_cleanup',
       'parent_close'
     ]);
+  });
+});
+
+describe('local base sync after the close', () => {
+  /**
+   * A base sync stand-in that logs into the landing's own call order.
+   *
+   * @param {string[]} calls
+   * @param {() => Promise<any>} result
+   */
+  function baseSyncInto(calls, result) {
+    return {
+      syncBase: vi.fn(async (target_base, candidate_sha) => {
+        calls.push(`baseSync:${target_base}:${candidate_sha}`);
+        return result();
+      })
+    };
+  }
+
+  test('runs base sync once with the landed head after the close', async () => {
+    const baseSync = baseSyncInto([], async () => ({
+      ok: true,
+      sha: HEAD_SHA,
+      outcome: 'base_sync:synced:fast_forward'
+    }));
+    const { landing, bd } = makeLanding({ baseSync });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(baseSync.syncBase).toHaveBeenCalledTimes(1);
+    expect(baseSync.syncBase).toHaveBeenCalledWith('main', HEAD_SHA);
+    expect(bd.setStatus.mock.calls.at(-1)?.[1]).toBe('closed');
+    expect(bd.readStatus.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      baseSync.syncBase.mock.invocationCallOrder[0]
+    );
+  });
+
+  test('records the base sync outcome on the bead timeline', async () => {
+    const timeline = timelineRecorder();
+    const baseSync = baseSyncInto([], async () => ({
+      ok: true,
+      sha: HEAD_SHA,
+      outcome: 'fetch_only:not_on_base'
+    }));
+    const { landing } = makeLanding({ baseSync, timeline });
+
+    await settle(landing);
+
+    expect(timeline.events.at(-1)).toMatchObject({
+      bead_id: BEAD,
+      attempt_id: ATTEMPT,
+      kind: 'landing_step',
+      seq: 'base_sync',
+      summary: '로컬 base 동기화 — fetch_only:not_on_base'
+    });
+  });
+
+  test('keeps the close and its announcement when base sync fails', async () => {
+    const quickfixLanded = vi.fn(async () => {});
+    const timeline = timelineRecorder();
+    const baseSync = baseSyncInto([], async () => {
+      throw new Error('helper crashed');
+    });
+    const { landing, store } = makeLanding({
+      baseSync,
+      timeline,
+      notifier: { quickfixLanded }
+    });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(store.moveToDone).toHaveBeenCalledTimes(1);
+    expect(quickfixLanded).toHaveBeenCalledTimes(1);
+    expect(timeline.events.at(-1).summary).toBe(
+      '로컬 base 동기화 — failed:sync_error'
+    );
+  });
+
+  test.each([
+    ['refuted close', { status: 'closed', closeReason: 'refuted: no bug' }],
+    ['no-delta close', { status: 'closed', closeReason: 'no-delta: no work' }]
+  ])('skips base sync on a %s', async (_name, options) => {
+    const baseSync = baseSyncInto([], async () => ({
+      ok: true,
+      sha: HEAD_SHA,
+      outcome: 'fetch_only:not_on_base'
+    }));
+    const { landing } = makeLanding({ ...options, baseSync });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(baseSync.syncBase).not.toHaveBeenCalled();
+  });
+
+  test('skips base sync on a foreign landing', async () => {
+    const baseSync = baseSyncInto([], async () => ({
+      ok: true,
+      sha: HEAD_SHA,
+      outcome: 'fetch_only:not_on_base'
+    }));
+    const { landing } = makeLanding({
+      foreign: { pins: FOREIGN_PINS },
+      baseSync
+    });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(baseSync.syncBase).not.toHaveBeenCalled();
+  });
+
+  test('skips base sync when the landing stops before the close', async () => {
+    const baseSync = baseSyncInto([], async () => ({
+      ok: true,
+      sha: HEAD_SHA,
+      outcome: 'fetch_only:not_on_base'
+    }));
+    const { landing } = makeLanding({ containmentCode: 1, baseSync });
+
+    await settle(landing);
+
+    expect(baseSync.syncBase).not.toHaveBeenCalled();
   });
 });

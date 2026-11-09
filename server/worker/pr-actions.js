@@ -43,17 +43,14 @@
  *
  * @import { Queue } from './queue-store.js'
  * @import { PrDetail } from './gh.js'
+ * @import { BaseSyncOutcome } from './base-sync.js'
  */
-import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { FOREIGN_HANDOFF_SENTENCES } from '../../app/utils/failure-sentences.js';
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
-import { workflowScriptDir } from './attempt-facts.js';
+import { createBaseSync } from './base-sync.js';
 import { beadDeferLockKey } from './bead-defer.js';
 import { discardOperationActive } from './discard-phase.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
@@ -142,14 +139,6 @@ export const CLEANUP_STEPS = [
 const CLOSURE_STEPS = CLEANUP_STEPS.slice(
   CLEANUP_STEPS.indexOf('post_merge_jobs')
 );
-
-/**
- * What step 1 did to the LOCAL checkout. The installed workflow helper owns
- * base-sync decisions; its result and reason pass through to the cleanup log.
- * Historical outcomes remain readable in persisted cleanup records.
- *
- * @typedef {`base_sync:${string}:${string}`|'fast_forwarded'|'fetch_only:not_on_base'|'fetch_only:dirty'|'fetch_only:diverged'} BaseSyncOutcome
- */
 
 /**
  * @typedef {Object} MergeClickResult
@@ -307,8 +296,13 @@ function authoritativeMergeSha(pr) {
 export function createPrActions(deps) {
   const workspace = deps.workspace;
   const repo = deps.repo;
-  const runBaseSync = deps.runBaseSync || promisify(execFile);
-  const home_dir = deps.homeDir || os.homedir();
+  const base_sync_runner = createBaseSync({
+    repo,
+    gitRun: deps.gitRun,
+    worktree: deps.worktree,
+    runBaseSync: deps.runBaseSync,
+    homeDir: deps.homeDir
+  });
   const probeAncestry = createAncestryProbe({ gitRun: deps.gitRun, repo });
   const sleep =
     deps.sleep ||
@@ -1751,119 +1745,16 @@ export function createPrActions(deps) {
   // -------------------------------------------------------------------------
 
   /**
-   * Step 1 — base 동기화, with an EXPLICIT outcome (§6).
-   *
-   * Fetches and pins the base for downstream containment and deployment. On
-   * the base branch, the installed workflow helper owns lossless local sync,
-   * including dirty checkouts. Its outcome never blocks cleanup: downstream
-   * operations use the fetched SHA, independently of the local checkout.
+   * Step 1 — base 동기화, with an EXPLICIT outcome (§6). The shared
+   * {@link createBaseSync} owns the fetch, the helper run and the outcome; the
+   * quick_fix landing uses the same function after its close.
    *
    * @param {string} target_base
-   * @param {string|null} [candidate_sha] - Already fetched candidate. When
-   * present, update the checkout toward this exact commit instead of fetching
-   * a potentially newer base tip.
-   * @returns {Promise<{ ok: true, sha: string, outcome: BaseSyncOutcome }|{ ok: false, reason: string }>}
+   * @param {string|null} [candidate_sha]
+   * @returns {Promise<import('./base-sync.js').BaseSyncResult>}
    */
-  async function syncBase(target_base, candidate_sha = null) {
-    // Every command below writes or reads this repo's ref database, so the whole
-    // sequence is serialized under the topology lock (§8). No worktree-manager
-    // call happens inside — those take the same lock (see `withTopologyLock`).
-    return deps.worktree.withTopologyLock(repo, async () => {
-      let sha = candidate_sha;
-      if (sha === null) {
-        const fetched = await deps.gitRun(
-          ['fetch', '--no-tags', 'origin', target_base],
-          { cwd: repo }
-        );
-        if (fetched.code !== 0) {
-          return {
-            ok: /** @type {const} */ (false),
-            reason: 'base_fetch_failed'
-          };
-        }
-        const rev = await deps.gitRun(['rev-parse', `origin/${target_base}`], {
-          cwd: repo
-        });
-        if (rev.code !== 0 || rev.stdout.trim().length === 0) {
-          return {
-            ok: /** @type {const} */ (false),
-            reason: 'base_rev_unavailable'
-          };
-        }
-        sha = rev.stdout.trim();
-      }
-      const head = await deps.gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], {
-        cwd: repo
-      });
-      if (head.code !== 0 || head.stdout.trim() !== target_base) {
-        return {
-          ok: /** @type {const} */ (true),
-          sha,
-          outcome: /** @type {BaseSyncOutcome} */ ('fetch_only:not_on_base')
-        };
-      }
-      /** @type {BaseSyncOutcome} */
-      let outcome = 'base_sync:failed:script_missing';
-      try {
-        const script = ['claude', 'codex']
-          .map((runner) =>
-            path.join(
-              workflowScriptDir(home_dir, runner),
-              'sync-target-base-checkout.py'
-            )
-          )
-          .find((file) => existsSync(file));
-        if (script) {
-          const synced = await runBaseSync(
-            'python3',
-            [
-              script,
-              '--repo',
-              repo,
-              '--remote',
-              'origin',
-              '--base',
-              target_base,
-              '--target-sha',
-              sha
-            ],
-            { cwd: repo, encoding: 'utf8' }
-          );
-          const report = JSON.parse(synced.stdout);
-          outcome =
-            report !== null &&
-            typeof report.result === 'string' &&
-            report.result.length > 0 &&
-            typeof report.reason === 'string' &&
-            report.reason.length > 0
-              ? `base_sync:${report.result}:${report.reason}`
-              : 'base_sync:failed:invalid_response';
-        }
-      } catch (error) {
-        const code = /** @type {NodeJS.ErrnoException} */ (error).code;
-        outcome = `base_sync:failed:${error instanceof SyntaxError ? 'invalid_json' : code || 'script_error'}`;
-        try {
-          const report = JSON.parse(
-            /** @type {{ stdout: string }} */ (error).stdout
-          );
-          if (
-            report !== null &&
-            report.result === 'failed' &&
-            typeof report.reason === 'string' &&
-            report.reason.length > 0
-          ) {
-            outcome = `base_sync:failed:${report.reason}`;
-          }
-        } catch {
-          // Keep the execution error when no valid failure report was emitted.
-        }
-      }
-      return {
-        ok: /** @type {const} */ (true),
-        sha,
-        outcome
-      };
-    });
+  function syncBase(target_base, candidate_sha = null) {
+    return base_sync_runner.syncBase(target_base, candidate_sha);
   }
 
   /**
