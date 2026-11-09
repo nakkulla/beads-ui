@@ -51,10 +51,14 @@ describe('parallel slot usage and lane origins (UI-us7l)', () => {
     view.load();
 
     expect(
-      Array.from(mount.querySelectorAll('.worker-wait__slots'), (el) =>
+      Array.from(mount.querySelectorAll('.worker-wait__slots'), (el) => [
+        el.closest('.mon2-sec')?.getAttribute('data-root-dir'),
         el.textContent?.replace(/\s+/g, ' ').trim()
-      )
-    ).toEqual(['repo-a 0/3', 'repo-b 1/1 ⚠']);
+      ])
+    ).toEqual([
+      [WS_A, '병렬 슬롯 0/3'],
+      [WS_B, '병렬 슬롯 1/1 ⚠']
+    ]);
     expect(mount.querySelectorAll('.worker-wait__slots--warn')).toHaveLength(1);
     expect(
       mount.querySelector('.rtile .worker-chips--coords .ctl-chip--lane')
@@ -543,7 +547,7 @@ describe('views/monitor repo sections (UI-eey2 §5·§6)', () => {
 
     view.load();
 
-    const badge = el(mount, '.worker-wait__area--parallel .worker-mini__repo');
+    const badge = el(mount, '[data-drop="parallel"] .worker-mini__repo');
     expect(badge.getAttribute('title')).toBe('repo-a · 자동화 켜짐');
     expect(el(mount, '#monitor-queue .mon2-sec__auto')).toBeNull();
   });
@@ -582,7 +586,7 @@ describe('views/monitor repo sections (UI-eey2 §5·§6)', () => {
 
     expect(el(mount, '.worker-wait__lane--empty')).toBeTruthy();
     expect(el(mount, '.worker-wait__hint').textContent?.trim()).toBe(
-      'repo-a · 직렬 2 · 비어 있음'
+      '직렬 2 · 비어 있음'
     );
   });
 });
@@ -1236,7 +1240,7 @@ describe('views/monitor lane header controls (UI-eey2 §3)', () => {
   });
 });
 
-describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
+describe('views/monitor 대기 레포 묶음의 레인 (UI-e6hw §4, UI-5cmo §3.1)', () => {
   const workspaces = [
     workspace({ queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }),
     workspace({
@@ -1250,17 +1254,54 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     state(),
     state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
   ];
-  test('splits the waiting lane into a parallel and a serial area', () => {
+  test('stacks one repo group per repo in name order with no merged area', () => {
+    const { mount, view } = setup({
+      workspaces: [...workspaces].reverse(),
+      workspaces_state
+    });
+
+    view.load();
+
+    expect(
+      Array.from(mount.querySelectorAll('#monitor-queue .mon2-sec'), (sec) =>
+        sec.getAttribute('data-root-dir')
+      )
+    ).toEqual([WS_A, WS_B]);
+    expect(el(mount, '#monitor-queue .worker-wait__area')).toBeNull();
+  });
+
+  test('keeps each repo parallel row inside its own repo group', () => {
     const { mount, view } = setup({ workspaces, workspaces_state });
 
     view.load();
 
     expect(
       Array.from(
-        mount.querySelectorAll('#monitor-queue .worker-wait__area')
-      ).map((a) => a.getAttribute('data-area'))
-    ).toEqual(['parallel', 'serial']);
-    expect(el(mount, '#monitor-queue .mon2-sec')).toBeNull();
+        mount.querySelectorAll(
+          `#monitor-queue .mon2-sec[data-root-dir="${WS_B}"] [data-drop="parallel"] .mon2-item`
+        ),
+        (row) => row.getAttribute('data-bead-id')
+      )
+    ).toEqual(['B-1']);
+  });
+
+  test('marks each repo parallel lane as that repo drop target', () => {
+    const { mount, view } = setup({ workspaces, workspaces_state });
+
+    view.load();
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('#monitor-queue [data-drop="parallel"]'),
+        (zone) => [
+          zone.getAttribute('data-root-dir'),
+          zone.getAttribute('data-lane-length')
+        ]
+      )
+    ).toEqual([
+      [WS_A, '2'],
+      [WS_B, '1']
+    ]);
   });
 
   test('shows the occupying bead in the serial lane header and as a ghost row', () => {
@@ -1382,7 +1423,7 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     ).toEqual(['✕']);
   });
 
-  test('names each repo serial lane with its repo', () => {
+  test('titles the repo lanes 병렬 and 직렬 N without the repo prefix', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
@@ -1395,24 +1436,103 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     view.load();
 
     expect(
-      el(mount, '.worker-wait__lane .worker-pane__title').textContent?.trim()
-    ).toBe('repo-a · 직렬 1');
+      Array.from(
+        mount.querySelectorAll('.worker-wait__lane .worker-pane__title'),
+        (title) => title.textContent?.trim()
+      )
+    ).toEqual(['병렬', '직렬 1']);
   });
 
-  test('collapses an area and remembers it', () => {
+  test('moves Worker ↗ from the serial lane header to the repo group header', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('#monitor-queue .mon2-sec__worker'),
+        (button) => button.parentElement?.className
+      )
+    ).toEqual(['mon2-sec__hd']);
+  });
+
+  test('folds a repo group and remembers it under sections_state queue', () => {
     const { mount, view } = setup({ workspaces, workspaces_state });
 
     view.load();
-    click(mount, '.worker-wait__area-toggle[data-area="parallel"]');
+    click(mount, `#monitor-queue .mon2-sec__toggle[data-root-dir="${WS_A}"]`);
 
     expect(
-      mount.querySelectorAll('.worker-wait__area--parallel .mon2-item')
+      mount.querySelectorAll(
+        `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"] .mon2-item`
+      )
     ).toHaveLength(0);
     expect(
       JSON.parse(
-        window.localStorage.getItem('beads-ui.monitor.lane-collapsed') || '{}'
-      ).areas
-    ).toEqual({ parallel: true });
+        window.localStorage.getItem('beads-ui.monitor.sections') || '{}'
+      )[WS_A]
+    ).toEqual({ queue: true });
+  });
+
+  test('restores a pressed repo group fold after a reload', () => {
+    window.localStorage.setItem(
+      'beads-ui.monitor.sections',
+      JSON.stringify({ [WS_A]: { queue: true } })
+    );
+    const { mount, view } = setup({ workspaces, workspaces_state });
+
+    view.load();
+
+    expect(
+      el(
+        mount,
+        `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"]`
+      ).classList.contains('is-collapsed')
+    ).toBe(true);
+  });
+
+  test('folds an empty repo group by default into one line', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 't' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const group = el(
+      mount,
+      `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"]`
+    );
+    expect(group.classList.contains('is-collapsed')).toBe(true);
+    expect(
+      group
+        .querySelector('.mon2-sec__hd')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('▸ repo-a 0 비어 있음 Worker ↗');
+  });
+
+  test('opens a default-folded group for good when a person presses it', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 't' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, `#monitor-queue .mon2-sec__toggle[data-root-dir="${WS_A}"]`);
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.monitor.sections') || '{}'
+      )[WS_A]
+    ).toEqual({ queue: false });
   });
 
   test('leaves no 🔗 popover behind', () => {
@@ -1423,6 +1543,33 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     expect(el(mount, '.mon-link')).toBeNull();
     expect(el(mount, '.mon2-chains')).toBeNull();
     expect(el(mount, '.mon2-item__ops')).toBeNull();
+  });
+});
+
+describe('views/monitor 대기 레포 묶음 (UI-5cmo §3.1)', () => {
+  test('draws the configured 직렬 1 of a repo whose only serial lane is empty', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [{ id: 's1', entries: [] }],
+          runnable: [{ bead_id: 'A-1', title: 't' }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, `#monitor-queue .mon2-sec__toggle[data-root-dir="${WS_A}"]`);
+
+    expect(
+      Array.from(
+        mount.querySelectorAll(
+          `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"] .worker-wait__lane .worker-pane__title`
+        ),
+        (node) => node.textContent?.trim()
+      )
+    ).toEqual(['병렬', '직렬 1']);
   });
 });
 
@@ -2815,6 +2962,101 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
     expect(sent[0].payload.index).toBe(2);
   });
 
+  test('places a candidate at index k of its own repo parallel lane', async () => {
+    const { mount, view, sent } = dragSetup();
+
+    view.load();
+    fireDrag(el(mount, '#monitor-runnable .worker-card'), 'dragstart');
+    fireDrag(
+      el(
+        mount,
+        `[data-drop="parallel"][data-root-dir="${WS_A}"] .mon2-item[data-bead-id="A-2"] .worker-mini`
+      ),
+      'drop'
+    );
+    await flushMicrotasks();
+
+    expect(sent[0]).toEqual({
+      type: 'worker-queue-place',
+      payload: {
+        bead_id: 'A-9',
+        index: 1,
+        root_dir: WS_A,
+        expected_revision: 1
+      }
+    });
+  });
+
+  test('shows no drop target on another repo parallel lane', () => {
+    const { mount, view, sent } = dragSetup();
+
+    view.load();
+    fireDrag(el(mount, '#monitor-runnable .worker-card'), 'dragstart');
+    const over = fireDrag(
+      el(mount, `[data-drop="parallel"][data-root-dir="${WS_B}"]`),
+      'dragover'
+    );
+    const drop = fireDrag(
+      el(mount, `[data-drop="parallel"][data-root-dir="${WS_B}"] .worker-mini`),
+      'drop'
+    );
+
+    expect(over.defaultPrevented).toBe(false);
+    expect(drop.defaultPrevented).toBe(false);
+    expect(sent).toEqual([]);
+  });
+
+  test('appends to its repo parallel end when dropped on that folded group header', async () => {
+    const { mount, view, sent } = dragSetup();
+
+    view.load();
+    click(mount, `#monitor-queue .mon2-sec__toggle[data-root-dir="${WS_A}"]`);
+    fireDrag(el(mount, '#monitor-runnable .worker-card'), 'dragstart');
+    const ev = fireDrag(
+      el(
+        mount,
+        `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"] .mon2-sec__hd`
+      ),
+      'drop'
+    );
+    await flushMicrotasks();
+
+    expect(ev.defaultPrevented).toBe(true);
+    expect(sent[0]).toEqual({
+      type: 'worker-queue-place',
+      payload: {
+        bead_id: 'A-9',
+        index: 2,
+        root_dir: WS_A,
+        expected_revision: 1
+      }
+    });
+    expect(
+      el(
+        mount,
+        `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"]`
+      ).classList.contains('is-collapsed')
+    ).toBe(true);
+  });
+
+  test('ignores a drop on the folded group header of another repo', () => {
+    const { mount, view, sent } = dragSetup();
+
+    view.load();
+    click(mount, `#monitor-queue .mon2-sec__toggle[data-root-dir="${WS_B}"]`);
+    fireDrag(el(mount, '#monitor-runnable .worker-card'), 'dragstart');
+    const ev = fireDrag(
+      el(
+        mount,
+        `#monitor-queue .mon2-sec[data-root-dir="${WS_B}"] .mon2-sec__hd`
+      ),
+      'drop'
+    );
+
+    expect(ev.defaultPrevented).toBe(false);
+    expect(sent).toEqual([]);
+  });
+
   test('places a candidate into a serial lane with its lane id', async () => {
     const { mount, view, sent } = dragSetup({
       serial_lane_count: 2,
@@ -2891,7 +3133,7 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
     const { mount, view, sent } = dragSetup();
 
     view.load();
-    click(mount, '.worker-wait__area--parallel .worker-mini__rowops-remove');
+    click(mount, '[data-drop="parallel"] .worker-mini__rowops-remove');
     await flushMicrotasks();
 
     expect(sent[0]).toEqual({
@@ -2904,7 +3146,7 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
     const { mount, view, sent } = dragSetup();
 
     view.load();
-    click(mount, '.worker-wait__area--parallel .worker-mini__rowops-down');
+    click(mount, '[data-drop="parallel"] .worker-mini__rowops-down');
     await flushMicrotasks();
 
     expect(sent[0]).toEqual({
@@ -5522,7 +5764,7 @@ describe('views/monitor resolve action while an inquiry lives (UI-ri8n)', () => 
     );
 
     const button = mount.querySelector(
-      '.worker-wait__area--parallel .worker-mini__resolve'
+      '[data-drop="parallel"] .worker-mini__resolve'
     );
 
     expect(button !== null).toBe(drawn);
@@ -5539,7 +5781,7 @@ describe('views/monitor resolve action while an inquiry lives (UI-ri8n)', () => 
     );
 
     const button = mount.querySelector(
-      '.worker-wait__lane .worker-mini__resolve'
+      '[data-drop="repo-serial"] .worker-mini__resolve'
     );
 
     expect(button !== null).toBe(drawn);

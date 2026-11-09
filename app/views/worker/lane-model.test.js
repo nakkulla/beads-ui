@@ -3758,6 +3758,71 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
   });
 });
 
+describe('configured serial lanes of a repo group (UI-5cmo §3.1)', () => {
+  test('keeps the one empty configured serial lane the Worker tab hides', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [{ id: 's1', entries: [] }],
+          runnable: [runnable('A-1')]
+        })
+      ],
+      [state()]
+    );
+
+    const group = lanes.queue_groups[0];
+    expect(group.sublanes.serial).toEqual([]);
+    expect(
+      (group.configured_serial || []).map((lane) => [lane.id, lane.empty])
+    ).toEqual([['s1', true]]);
+  });
+
+  test('counts as many configured lanes as the snapshot serial_lane_count', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lane_count: 3,
+          serial_lanes: [
+            { id: 's1', entries: [] },
+            { id: 's2', entries: [{ bead_id: 'A-2' }] },
+            { id: 's3', entries: [] }
+          ],
+          runnable: [runnable('A-1')]
+        })
+      ],
+      [state()]
+    );
+
+    const group = lanes.queue_groups[0];
+    expect((group.configured_serial || []).map((lane) => lane.id)).toEqual([
+      's1',
+      's2',
+      's3'
+    ]);
+    expect(group.serial_lane_count).toBe(3);
+  });
+
+  test('leaves an empty lane past the configured count out', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-2' }] },
+            { id: 's2', entries: [] }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(
+      (lanes.queue_groups[0].configured_serial || []).map((lane) => lane.id)
+    ).toEqual(['s1']);
+  });
+});
+
 describe('monitor 병렬 통합 큐 (UI-e6hw §4.1)', () => {
   test('flattens every visible repo queue into one list ordered by repo name', () => {
     const lanes = buildLanes(

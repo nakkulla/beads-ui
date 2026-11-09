@@ -5647,7 +5647,7 @@ export function paneTemplate(pane) {
  * @property {string} [pane_id] - pane 요소 `id`. 생략하면 `worker-pane-lane-<id>`;
  * 빈 문자열이면 `id` 속성을 붙이지 않는다 — 레포마다 같은 `s1`을 가진 Monitor가
  * 문서 안 중복 id를 만들지 않으려고 쓴다.
- * @property {string} title - `직렬 1` · `dotfiles · 직렬 1`.
+ * @property {string} title - `직렬 1` · `병렬`.
  * @property {import('lit-html').TemplateResult[]} rows - 호출 측이 이미 그려
  * 넘긴 행 목록 (`miniRow` 등). 본문은 구조만 소유하므로 행 렌더링에 관여하지
  * 않는다.
@@ -5661,7 +5661,8 @@ export function paneTemplate(pane) {
  * @property {import('lit-html').TemplateResult} [after] - pane 아래에 호출
  * 측이 직접 그리는 조각 (Monitor 상호 정지 경고).
  * @property {import('lit-html').TemplateResult} [header_control] - 점유 표시
- * 오른쪽에 서는 탭 고유 컨트롤 (Monitor `Worker ↗`).
+ * 오른쪽에 서는 탭 고유 컨트롤. 모니터의 `Worker ↗`는 레포 묶음 머리로
+ * 옮겨 갔다 (UI-5cmo §3.1).
  * @property {WaitDropAttrs} [drop] - `worker-wait__rows`에 실을 드롭 좌표.
  */
 
@@ -5781,20 +5782,22 @@ export function waitBody(model) {
         : html`<div class="worker-wait__area-body">
             ${serial.notice ? serial.notice : ''}
             ${serial.extra_panes ? serial.extra_panes : ''}
-            ${serial.lanes.map((lane) => serialLaneTemplate(lane))}
+            ${serial.lanes.map((lane) => waitLaneTemplate(lane))}
           </div>`}
     </section>
   </div>`;
 }
 
 /**
- * One 직렬 레인 wrapper (§4.2·§4.3): pane + 빈 레인 힌트 + 순환 경고 +
+ * One 대기 레인 wrapper (§4.2·§4.3): pane + 빈 레인 힌트 + 순환 경고 +
  * 호출 측 `after`. pane/힌트의 표시 조건은 `app/styles.css` 한 곳이 소유한다.
+ * Worker 직렬 영역과 모니터 레포 묶음의 `병렬`·`직렬 N` 레인이 같은 wrapper를
+ * 쓴다 (UI-5cmo §3.1).
  *
  * @param {WaitSerialLane} lane
  * @returns {import('lit-html').TemplateResult}
  */
-function serialLaneTemplate(lane) {
+export function waitLaneTemplate(lane) {
   const drop = lane.drop || {};
   const badge_el = lane.badge
     ? html`<span
