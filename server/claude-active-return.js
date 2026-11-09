@@ -1,17 +1,21 @@
 /**
- * Move the global active Claude account to a headroom account once its
- * five-hour or seven-day window is full (UI-btp3 §4).
+ * Move the global active Claude login to a headroom account once its
+ * five-hour or seven-day window reaches the global trigger (UI-btp3 §4,
+ * UI-giog §4.4).
  *
  * The active login is what every Claude call without its own account runs
  * on — interactive sessions, Hermes, and Worker attempts that pinned no
  * account. This pass shares the Codex pass's lock, confirm, notice and
- * single-flight flow (`createActiveReturn`) and differs only in its rules:
+ * single-flight flow (`createActiveReturn`) and its criterion: only the
+ * Claude server-global limit policy, with scope `global` and mode `switch`,
+ * and an allow list holding both the active account and the candidate. It
+ * differs only in its rules:
  *
- * - Trigger: the active row's `5h` or `7d` window at pct >= 100. Model
- *   windows never trigger a switch.
- * - Candidate: in the switch repo's allow list, usage status `ok`, not the
- *   active account, not a `provider_hold` target, at least one reported
- *   `5h`/`7d` window and every such window below 100. Lowest seven-day use
+ * - Trigger: the active row's `5h` or `7d` window at or above the global
+ *   `preempt_pct`, else 100. Model windows never trigger a switch.
+ * - Candidate: in the global allow list, usage status `ok`, not the active
+ *   account, not a `provider_hold` target, at least one reported `5h`/`7d`
+ *   window and every such window below the trigger. Lowest seven-day use
  *   first, then account number. Model windows are ignored here too.
  * - A Claude run without an account does NOT block the switch (§4.1): the
  *   active account is already refusing requests at 100%, and the switch
@@ -78,12 +82,14 @@ function sevenDayPctOf(row) {
 }
 
 /**
- * The candidate one switch repo's allow list yields, or null.
+ * The candidate the global allow list yields, or null. Every judged window
+ * must stay below `max_pct` (the trigger; 100 when absent).
  *
  * @param {CandidateInput} input
  * @returns {ReturnCandidate|null}
  */
 export function pickClaudeCandidate(input) {
+  const max_pct = typeof input.max_pct === 'number' ? input.max_pct : FULL_PCT;
   const eligible = input.accounts.filter((row) => {
     if (
       typeof row?.key !== 'string' ||
@@ -98,7 +104,7 @@ export function pickClaudeCandidate(input) {
     }
     const windows = judgedWindowsOf(row);
     return (
-      windows.length > 0 && windows.every((window) => window.pct < FULL_PCT)
+      windows.length > 0 && windows.every((window) => window.pct < max_pct)
     );
   });
   eligible.sort(
@@ -112,7 +118,6 @@ export function pickClaudeCandidate(input) {
 /** @type {ActiveReturnRules} */
 const CLAUDE_RULES = {
   provider: 'claude',
-  default_field: 'claude_account',
   countsWindow: (window) => JUDGED_WINDOWS.has(window?.key),
   scanRunning(record, accounts) {
     const account = record.claude_account;
@@ -131,13 +136,8 @@ const CLAUDE_RULES = {
   always_on: true,
   switchNotice: (from, to, windows) =>
     [
-      `🔁 Claude 활성 계정 자동 전환 — 계정 #${from} → 계정 #${to}`,
-      `#${from} ${windows} · 실행 중 세션도 곧 새 계정을 씁니다`
-    ].join('\n'),
-  waitNotice: (wait_repo) =>
-    [
-      `⏸ Claude 활성 계정 자동 전환 보류 — 기다림 저장소 ${wait_repo}이 활성 로그인을 씀`,
-      '그 저장소에 Claude 기본 계정을 정하면 다음 판정부터 전환합니다'
+      `🔁 Claude 전역 로그인 자동 전환 — 계정 #${from} → 계정 #${to}`,
+      `#${from} ${windows} · 전역 한도 대응 · 실행 중 세션도 곧 새 계정을 씁니다`
     ].join('\n')
 };
 

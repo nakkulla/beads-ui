@@ -30,6 +30,7 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { limitScopeOf } from '../../data/limit-policy-settings-store.js';
 import { errorText } from '../../utils/error-text.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import {
@@ -45,6 +46,10 @@ import {
 } from './account-catalog.js';
 import { appliedPresetFieldFor } from './bulk-observation.js';
 import { createCodexCreditControls } from './codex-credit-controls.js';
+import {
+  GLOBAL_LIMIT_LOCK_NOTE,
+  createLimitPolicyEditor
+} from './limit-policy-editor.js';
 import {
   AUTO_LITERAL,
   BOOLEAN_DRAFT_ON,
@@ -184,13 +189,6 @@ export function paneSectionSegmentTemplate(active, onSelect) {
 }
 
 /**
- * Threshold the preemptive-switch row offers when the user turns it on without
- * naming one (UI-13o1 §3.5). Stored values outside 1-99 are rejected, so this
- * default is inside that range on purpose.
- */
-const DEFAULT_PREEMPT_PCT = 80;
-
-/**
  * @param {unknown} value
  * @returns {value is Record<string, any>}
  */
@@ -215,6 +213,9 @@ function isRecord(value) {
  * @property {{ get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [codexCreditStore]
  * - Server-global Codex credit settings and today's consumption (UI-9y1k
  * §4.5); without it the credit rows are not drawn.
+ * @property {{ get: () => any }} [limitPolicySettingsStore] - Server-global
+ * limit-policy settings (UI-giog §4.2); a runner whose scope is `global` has
+ * its `한도 대응` rows locked here. Without it every runner reads as `repo`.
  */
 
 /**
@@ -316,35 +317,24 @@ export function createExecutionPane(mount_element, binding) {
    */
   let session_save_chain = Promise.resolve();
   /**
-   * The allow list a runner's unanswered save is carrying. The stored value is
-   * a whole set, and {@link sendQueueCas} re-sends its payload on a revision
-   * conflict, so two clicks computed from the SAME queue snapshot would make
-   * the second one put the first one's account back. Reading the pending list
-   * instead makes the second click extend the first, and rendering it keeps the
-   * box on the user's newest choice.
-   *
-   * @type {{ claude: string[]|null, codex: string[]|null }}
+   * The per-runner `한도 대응` rows, shared with the monitor ⚙ `전역` tab
+   * (UI-giog §4.5). They read this repo's STORED policy from the queue and
+   * write it through the queue CAS; a pending allow-list save overlays the
+   * stored set so a re-sent CAS payload cannot undo a newer click.
    */
-  let limit_accounts_pending = { claude: null, codex: null };
-  /**
-   * Raw text of a runner's preemptive-threshold box the user is still typing.
-   * Written on every keystroke for the same reason as `session_text_draft`:
-   * the monitor re-renders this pane every second, and `live()` would reset
-   * the box to the stored value before `change` fires.
-   *
-   * @type {{ claude: string|null, codex: string|null }}
-   */
-  let limit_preempt_draft = { claude: null, codex: null };
-  /**
-   * One save chain per runner, so a mode/threshold write cannot overtake the
-   * allow-list write it was clicked after.
-   *
-   * @type {{ claude: Promise<void>, codex: Promise<void> }}
-   */
-  let limit_save_chain = {
-    claude: Promise.resolve(),
-    codex: Promise.resolve()
-  };
+  const limit_editor = createLimitPolicyEditor({
+    policyOf: (runner) => {
+      const queue = queueOf();
+      const all =
+        queue && isRecord(queue.provider_limit_policy)
+          ? queue.provider_limit_policy
+          : null;
+      return all ? all[runner] : null;
+    },
+    save: (runner, patch) => saveLimitPolicy(runner, patch),
+    catalogOf: (runner) => account_catalog[runner],
+    render: () => doRender()
+  });
   /**
    * Accounts are MACHINE-local, so this list is independent of `root_dir` and
    * is read once per mounted pane rather than once per bound repo.
@@ -1210,40 +1200,6 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * One runner's stored limit policy, defaulted the way the queue defaults it
-   * so a snapshot without the field still renders (fail-quiet, UI-13o1 §3.1).
-   *
-   * @param {'claude'|'codex'} runner
-   * @returns {{ mode: string, accounts: string[], preempt_pct: number|null }}
-   */
-  function limitPolicyOf(runner) {
-    const queue = queueOf();
-    const all =
-      queue && isRecord(queue.provider_limit_policy)
-        ? queue.provider_limit_policy
-        : null;
-    const raw = all && isRecord(all[runner]) ? all[runner] : null;
-    const accounts = Array.isArray(raw?.accounts)
-      ? raw.accounts.filter(
-          (/** @type {unknown} */ key) =>
-            typeof key === 'string' && key.length > 0
-        )
-      : [];
-    const pct = raw?.preempt_pct;
-    return {
-      mode: raw?.mode === 'wait' ? 'wait' : 'switch',
-      accounts: limit_accounts_pending[runner] ?? accounts,
-      preempt_pct:
-        typeof pct === 'number' &&
-        Number.isInteger(pct) &&
-        pct >= 1 &&
-        pct <= 99
-          ? pct
-          : null
-    };
-  }
-
-  /**
    * Write one runner's policy patch. The failure path is the automation one so
    * a save error reads the same wherever this pane writes the queue.
    *
@@ -1257,133 +1213,6 @@ export function createExecutionPane(mount_element, binding) {
       notify(`자동화 설정 저장 실패: ${errorText(err)}`);
     }
     doRender();
-  }
-
-  /**
-   * Queue one runner's policy save behind the ones already in flight, so the
-   * server sees the clicks in the order the user made them.
-   *
-   * @param {'claude'|'codex'} runner
-   * @param {Record<string, unknown>} patch
-   * @param {(() => void)|null} [settled] - Runs after the save, false-free.
-   */
-  function queueLimitSave(runner, patch, settled = null) {
-    limit_save_chain[runner] = limit_save_chain[runner].then(async () => {
-      await saveLimitPolicy(runner, patch);
-      if (settled) {
-        settled();
-      }
-    });
-  }
-
-  /**
-   * @param {'claude'|'codex'} runner
-   * @param {'wait'|'switch'} mode
-   */
-  function onLimitModeChange(runner, mode) {
-    if (limitPolicyOf(runner).mode === mode) {
-      return;
-    }
-    queueLimitSave(runner, { mode });
-  }
-
-  /**
-   * Send the WHOLE allow list, not a delta: the stored value is a set and the
-   * server merges shallowly, so a partial array would drop the other picks.
-   *
-   * @param {'claude'|'codex'} runner
-   * @param {string} account_key
-   * @param {boolean} on
-   */
-  function onLimitAccountToggle(runner, account_key, on) {
-    const current = limitPolicyOf(runner).accounts;
-    const next = on
-      ? current.includes(account_key)
-        ? current
-        : [...current, account_key]
-      : current.filter((key) => key !== account_key);
-    if (next === current) {
-      return;
-    }
-    limit_accounts_pending[runner] = next;
-    queueLimitSave(runner, { accounts: next }, () => {
-      // A newer click has already replaced the overlay; leaving it alone keeps
-      // the box on that choice until its own save settles.
-      if (limit_accounts_pending[runner] === next) {
-        limit_accounts_pending[runner] = null;
-      }
-    });
-  }
-
-  /**
-   * Move one allowed account up or down. The allow list's ORDER is the Codex
-   * switch order (UI-9y1k §4.2), so the whole reordered list is saved at once
-   * through the same overlay and chain as a toggle.
-   *
-   * @param {'claude'|'codex'} runner
-   * @param {string} account_key
-   * @param {-1|1} delta
-   */
-  function onLimitAccountMove(runner, account_key, delta) {
-    const current = limitPolicyOf(runner).accounts;
-    const index = current.indexOf(account_key);
-    const target = index + delta;
-    if (index < 0 || target < 0 || target >= current.length) {
-      return;
-    }
-    const next = current.slice();
-    next[index] = current[target];
-    next[target] = account_key;
-    limit_accounts_pending[runner] = next;
-    doRender();
-    queueLimitSave(runner, { accounts: next }, () => {
-      if (limit_accounts_pending[runner] === next) {
-        limit_accounts_pending[runner] = null;
-      }
-    });
-  }
-
-  /**
-   * @param {'claude'|'codex'} runner
-   * @param {boolean} on
-   */
-  function onLimitPreemptToggle(runner, on) {
-    if (!on) {
-      queueLimitSave(runner, { preempt_pct: null });
-      return;
-    }
-    queueLimitSave(runner, {
-      preempt_pct: limitPolicyOf(runner).preempt_pct ?? DEFAULT_PREEMPT_PCT
-    });
-  }
-
-  /**
-   * A value outside 1-99 is not stored; the row re-renders so the input snaps
-   * back to what the queue holds rather than showing a rejected number.
-   *
-   * @param {'claude'|'codex'} runner
-   * @param {string} raw
-   */
-  function onLimitPreemptPctChange(runner, raw) {
-    const value = Number.parseInt(raw, 10);
-    if (!Number.isInteger(value) || value < 1 || value > 99) {
-      limit_preempt_draft[runner] = null;
-      doRender();
-      return;
-    }
-    if (limitPolicyOf(runner).preempt_pct === value) {
-      limit_preempt_draft[runner] = null;
-      return;
-    }
-    // 저장 응답이 오기 전 재렌더가 옛 값을 잠깐 그리지 않도록 초안은 저장이
-    // 끝난 뒤에 걷는다 — 그 사이 새로 친 값이 있으면 그것을 남긴다.
-    limit_preempt_draft[runner] = raw;
-    queueLimitSave(runner, { preempt_pct: value }, () => {
-      if (limit_preempt_draft[runner] === raw) {
-        limit_preempt_draft[runner] = null;
-        doRender();
-      }
-    });
   }
 
   /**
@@ -2141,248 +1970,6 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * One runner's limit-response block: mode, allow list, preemptive threshold
-   * (UI-13o1 §3.5). `기다림` only dims the two lower rows — the values stay
-   * editable because the mode gates the decision, not the setting.
-   *
-   * @param {'claude'|'codex'} runner
-   * @param {string} label
-   * @returns {TemplateResult}
-   */
-  function limitPolicyBlock(runner, label) {
-    const policy = limitPolicyOf(runner);
-    const provider = account_catalog[runner];
-    const rows = provider ? provider.accounts : [];
-    const known = new Set(rows.map((/** @type {any} */ row) => row.key));
-    const orphans = policy.accounts.filter((key) => !known.has(key));
-    const dim = policy.mode === 'switch' ? '' : ' settings-dialog__row--off';
-    return html`<div class="settings-dialog__row">
-        <span class="settings-dialog__row-label">${label} 한도 대응</span>
-        <span class="settings-dialog__controls">
-          <span
-            class="settings-dialog__seg"
-            role="group"
-            aria-label=${`${label} 한도 대응`}
-            data-limit-mode-runner=${runner}
-          >
-            <button
-              type="button"
-              class=${policy.mode === 'wait' ? 'op-btn is-active' : 'op-btn'}
-              data-limit-mode="wait"
-              aria-pressed=${String(policy.mode === 'wait')}
-              @click=${() => onLimitModeChange(runner, 'wait')}
-            >
-              기다림
-            </button>
-            <button
-              type="button"
-              class=${policy.mode === 'switch' ? 'op-btn is-active' : 'op-btn'}
-              data-limit-mode="switch"
-              aria-pressed=${String(policy.mode === 'switch')}
-              @click=${() => onLimitModeChange(runner, 'switch')}
-            >
-              자동 전환
-            </button>
-          </span>
-        </span>
-      </div>
-      <div class=${`settings-dialog__row${dim}`} data-limit-accounts=${runner}>
-        <span class="settings-dialog__row-label">전환 허용 계정</span>
-        <span class="settings-dialog__controls">
-          ${runner === 'codex'
-            ? codexAllowListTemplate(policy, rows)
-            : allowListTemplate(runner, policy, rows, orphans)}
-          ${provider
-            ? ''
-            : html`<span class="settings-dialog__hint"
-                >계정 목록을 불러올 수 없습니다</span
-              >`}
-        </span>
-      </div>
-      <div
-        class=${`settings-dialog__row${dim}`}
-        data-limit-preempt-row=${runner}
-      >
-        <span class="settings-dialog__row-label">선제 전환</span>
-        <span class="settings-dialog__controls">
-          <label class="settings-dialog__check">
-            <input
-              type="checkbox"
-              data-limit-preempt=${runner}
-              .checked=${live(policy.preempt_pct !== null)}
-              @change=${(/** @type {Event} */ ev) =>
-                onLimitPreemptToggle(
-                  runner,
-                  /** @type {HTMLInputElement} */ (ev.target).checked
-                )}
-            />
-            사용량
-          </label>
-          <input
-            type="number"
-            class="ui-input"
-            min="1"
-            max="99"
-            step="1"
-            aria-label=${`${label} 선제 전환 임계`}
-            data-limit-preempt-pct=${runner}
-            .value=${live(
-              limit_preempt_draft[runner] ??
-                String(policy.preempt_pct ?? DEFAULT_PREEMPT_PCT)
-            )}
-            @input=${(/** @type {Event} */ ev) => {
-              limit_preempt_draft[runner] = String(
-                /** @type {HTMLInputElement} */ (ev.target).value
-              );
-            }}
-            @change=${(/** @type {Event} */ ev) =>
-              onLimitPreemptPctChange(
-                runner,
-                String(/** @type {HTMLInputElement} */ (ev.target).value)
-              )}
-          />
-          <span class="settings-dialog__hint"
-            >% 이상이면 미리 전환 · 실행 중인 세션도 이 값에서 전환합니다 ·
-            사용량 반영은 최대 몇 분 지연될 수 있습니다</span
-          >
-        </span>
-      </div>`;
-  }
-
-  /**
-   * The Claude allow list exactly as before UI-9y1k: catalog order, a set.
-   *
-   * @param {'claude'|'codex'} runner
-   * @param {{ accounts: string[] }} policy
-   * @param {any[]} rows
-   * @param {string[]} orphans
-   * @returns {TemplateResult}
-   */
-  function allowListTemplate(runner, policy, rows, orphans) {
-    return html`${rows.map(
-      (/** @type {any} */ row) =>
-        html`<label class="settings-dialog__check">
-          <input
-            type="checkbox"
-            data-limit-runner=${runner}
-            data-limit-account=${row.key}
-            .checked=${live(policy.accounts.includes(row.key))}
-            @change=${(/** @type {Event} */ ev) =>
-              onLimitAccountToggle(
-                runner,
-                row.key,
-                /** @type {HTMLInputElement} */ (ev.target).checked
-              )}
-          />
-          ${accountRowLabel(runner, row)}
-        </label>`
-    )}
-    ${orphans.map(
-      (key) =>
-        html`<label class="settings-dialog__check">
-          <input
-            type="checkbox"
-            data-limit-runner=${runner}
-            data-limit-account=${key}
-            .checked=${live(true)}
-            @change=${(/** @type {Event} */ ev) =>
-              onLimitAccountToggle(
-                runner,
-                key,
-                /** @type {HTMLInputElement} */ (ev.target).checked
-              )}
-          />
-          ${`${key} (목록에 없음)`}
-        </label>`
-    )}`;
-  }
-
-  /**
-   * The Codex allow list in SWITCH ORDER (UI-9y1k §4.5): allowed accounts in
-   * the stored order, each with ▲/▼, then the accounts not allowed in catalog
-   * order. Moving saves at once, like a toggle.
-   *
-   * @param {{ accounts: string[] }} policy
-   * @param {any[]} rows
-   * @returns {TemplateResult}
-   */
-  function codexAllowListTemplate(policy, rows) {
-    /** @type {Map<string, any>} */
-    const by_key = new Map(rows.map((row) => [String(row.key), row]));
-    const last = policy.accounts.length - 1;
-    return html`${policy.accounts.map((key, index) => {
-      const row = by_key.get(key);
-      const label = row
-        ? accountRowLabel('codex', row)
-        : `${key} (목록에 없음)`;
-      return html`<span
-        class="settings-dialog__limit-order"
-        data-limit-order-item=${key}
-      >
-        <label class="settings-dialog__check">
-          <input
-            type="checkbox"
-            data-limit-runner="codex"
-            data-limit-account=${key}
-            .checked=${live(true)}
-            @change=${(/** @type {Event} */ ev) =>
-              onLimitAccountToggle(
-                'codex',
-                key,
-                /** @type {HTMLInputElement} */ (ev.target).checked
-              )}
-          />
-          ${`${index + 1}. ${label}`}
-        </label>
-        <button
-          type="button"
-          class="op-btn op-btn--ghost op-btn--icon"
-          aria-label=${`${label} 위로`}
-          title="위로"
-          data-limit-move="up"
-          data-limit-move-account=${key}
-          ?disabled=${index === 0}
-          @click=${() => onLimitAccountMove('codex', key, -1)}
-        >
-          ▲
-        </button>
-        <button
-          type="button"
-          class="op-btn op-btn--ghost op-btn--icon"
-          aria-label=${`${label} 아래로`}
-          title="아래로"
-          data-limit-move="down"
-          data-limit-move-account=${key}
-          ?disabled=${index === last}
-          @click=${() => onLimitAccountMove('codex', key, 1)}
-        >
-          ▼
-        </button>
-      </span>`;
-    })}
-    ${rows
-      .filter((row) => !policy.accounts.includes(String(row.key)))
-      .map(
-        (/** @type {any} */ row) =>
-          html`<label class="settings-dialog__check">
-            <input
-              type="checkbox"
-              data-limit-runner="codex"
-              data-limit-account=${row.key}
-              .checked=${live(false)}
-              @change=${(/** @type {Event} */ ev) =>
-                onLimitAccountToggle(
-                  'codex',
-                  row.key,
-                  /** @type {HTMLInputElement} */ (ev.target).checked
-                )}
-            />
-            ${accountRowLabel('codex', row)}
-          </label>`
-      )}`;
-  }
-
-  /**
    * The account layer's own banner. `unusable` states the CONSEQUENCE rather
    * than the code, because that is what the user is looking at this pane to
    * undo — re-picking a value rewrites a legal object and clears it (§6.1).
@@ -3121,6 +2708,25 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
+   * One runner's `한도 대응` rows. While that runner follows the server-global
+   * policy the stored values stay visible but locked, with a one-line pointer
+   * to where they change (UI-giog §4.1).
+   *
+   * @param {'claude'|'codex'} runner
+   * @param {string} label
+   * @returns {TemplateResult}
+   */
+  function limitRows(runner, label) {
+    const global =
+      limitScopeOf(binding.limitPolicySettingsStore, runner) === 'global';
+    return limit_editor.template(runner, label, {
+      mode_label: `${label} 한도 대응`,
+      locked: global,
+      note: global ? GLOBAL_LIMIT_LOCK_NOTE : null
+    });
+  }
+
+  /**
    * This repo's execution accounts and per-runner limit policy. Neither is part
    * of an execution preset, so neither belongs on the Worker tab.
    *
@@ -3133,8 +2739,7 @@ export function createExecutionPane(mount_element, binding) {
         <div class="settings-dialog__group-title">실행 계정</div>
         ${accountRow('claude_account', 'Claude', 'claude')}
         ${accountRow('codex_account', 'Codex', 'codex')}
-        ${limitPolicyBlock('claude', 'Claude')}
-        ${limitPolicyBlock('codex', 'Codex')}
+        ${limitRows('claude', 'Claude')} ${limitRows('codex', 'Codex')}
         ${codex_credit_controls.template(account_catalog.codex?.accounts || [])}
       </div>
     `;

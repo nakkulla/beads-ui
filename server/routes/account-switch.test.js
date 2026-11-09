@@ -753,18 +753,16 @@ describe('codex active-account return through the shared switch path', () => {
     const pass = createCodexActiveReturn({
       listAccounts: async () => STALE,
       listAccountsFresh: options.listAccountsFresh ?? (async () => STALE),
+      globalPolicyOf: () => ({
+        scope: 'global',
+        mode: 'switch',
+        accounts: [K1, K2, K3],
+        preempt_pct: null
+      }),
       listWorkspaces: () => [{ key: '/repos/beads-ui', name: 'beads-ui' }],
       queueSnapshot: () => ({
-        provider_limit_policy: {
-          codex: { mode: 'switch', accounts: [K1, K2, K3], preempt_pct: null }
-        },
         provider_hold: {},
         attempts: {}
-      }),
-      readWorkspaceAccounts: async () => ({
-        state: 'absent',
-        values: {},
-        warnings: []
       }),
       activeAccountOf: () => null,
       acquireLock: acquireSwitchLock,
@@ -1081,18 +1079,16 @@ describe('claude active-account return through the shared switch path', () => {
     const pass = createClaudeActiveReturn({
       listAccounts: async () => EXHAUSTED,
       listAccountsFresh: options.listAccountsFresh ?? (async () => EXHAUSTED),
+      globalPolicyOf: () => ({
+        scope: 'global',
+        mode: 'switch',
+        accounts: [A3, A4],
+        preempt_pct: null
+      }),
       listWorkspaces: () => [{ key: '/repos/beads-ui', name: 'beads-ui' }],
       queueSnapshot: () => ({
-        provider_limit_policy: {
-          claude: { mode: 'switch', accounts: [A3, A4], preempt_pct: null }
-        },
         provider_hold: {},
         attempts: {}
-      }),
-      readWorkspaceAccounts: async () => ({
-        state: 'absent',
-        values: {},
-        warnings: []
       }),
       acquireLock: acquireSwitchLock,
       releaseLock: releaseSwitchLock,

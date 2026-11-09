@@ -8,6 +8,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execLaneOf } from '../../app/utils/worker-eligibility.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import {
+  __resetLimitPolicySettingsForTest,
+  __setLimitPolicySettingsForTest
+} from '../limit-policy-settings.js';
+import {
   __resetTimingSettingsForTest,
   __setTimingOverridesForTest
 } from '../timing-settings.js';
@@ -5672,6 +5676,51 @@ describe('scheduler provider hold and recovery', () => {
     }
   );
 
+  describe('global limit policy scope (UI-giog)', () => {
+    afterEach(() => {
+      __resetLimitPolicySettingsForTest();
+    });
+
+    test('records a disabled hold while global wait overrides a switching repo', async () => {
+      __setLimitPolicySettingsForTest({
+        claude: { scope: 'global', mode: 'wait', accounts: [] }
+      });
+
+      const env = await noneHeldEnv('claude', false);
+
+      expect(
+        env.store.snapshot(WS).provider_hold_members['none-held'].auto_switch
+      ).toBe('disabled');
+    });
+
+    test('switches a re-bound hold once global switch turns on over a waiting repo', async () => {
+      const env = await noneHeldEnv('claude', false);
+      env.rows[1].windows[0].pct = 0;
+      env.store.setProviderLimitPolicy(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        runner: 'claude',
+        patch: { mode: 'wait' }
+      });
+      await env.scheduler.reevaluateProviderSwitches(WS);
+      __setLimitPolicySettingsForTest({
+        claude: {
+          scope: 'global',
+          mode: 'switch',
+          accounts: env.rows.map((row) => row.key)
+        }
+      });
+
+      env.store.rebindProviderSwitchVerdicts(WS, 'claude');
+      await env.scheduler.reevaluateProviderSwitches(WS);
+
+      const children = Object.values(env.store.snapshot(WS).attempts).filter(
+        (attempt) => attempt.resumed_from === 'none-held'
+      );
+      expect(children).toHaveLength(1);
+      expect(children[0].claude_account).toBe(env.rows[1].key);
+    });
+  });
+
   // RED 5 companion at the scheduler seam (spec §5)
   test('keeps the timer path when the runner waits out its limit', async () => {
     const listClaude = vi.fn(async () => ({ ok: true, accounts: [] }));
@@ -8469,6 +8518,66 @@ describe('scheduler provider hold and recovery', () => {
       ).toBeNull();
     }
   );
+
+  describe('global limit policy scope (UI-giog)', () => {
+    afterEach(() => {
+      __resetLimitPolicySettingsForTest();
+    });
+
+    test('preempts a live session at the global threshold while the repo sets none', async () => {
+      const env = await livePreemptEnv();
+      allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
+        preempt_pct: null
+      });
+      __setLimitPolicySettingsForTest({
+        claude: {
+          scope: 'global',
+          mode: 'switch',
+          accounts: ['cool@example.com'],
+          preempt_pct: 80
+        }
+      });
+
+      await env.scheduler.livePreemptPass(WS);
+
+      expect(env.processController.terminate).toHaveBeenCalledTimes(1);
+    });
+
+    test('keeps a live session below the global threshold the repo threshold would cross', async () => {
+      const env = await livePreemptEnv();
+      __setLimitPolicySettingsForTest({
+        claude: {
+          scope: 'global',
+          mode: 'switch',
+          accounts: ['cool@example.com'],
+          preempt_pct: 90
+        }
+      });
+
+      await env.scheduler.livePreemptPass(WS);
+
+      expect(env.processController.terminate).not.toHaveBeenCalled();
+    });
+
+    test('stops no live session by saving the global settings alone', async () => {
+      const env = await livePreemptEnv();
+
+      __setLimitPolicySettingsForTest({
+        claude: {
+          scope: 'global',
+          mode: 'switch',
+          accounts: ['cool@example.com'],
+          preempt_pct: 80
+        }
+      });
+      await flush();
+
+      expect(env.processController.terminate).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS).attempts[env.attempt_id].status).toBe(
+        'running'
+      );
+    });
+  });
 
   test.each(['no_candidate', 'no_row'])(
     'records %s without stopping the live attempt',

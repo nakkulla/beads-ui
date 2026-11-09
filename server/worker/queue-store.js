@@ -830,10 +830,7 @@
  * @property {string|null} from_cause - The attempt cause the ✕ found.
  */
 /**
- * @typedef {Object} ProviderLimitPolicy
- * @property {'wait'|'switch'} mode - What a usage limit does on this runner.
- * @property {string[]} accounts - Catalog keys the user allows a switch TO.
- * @property {number|null} preempt_pct - Preemptive switch threshold, or null.
+ * @typedef {import('../limit-policy-settings.js').ProviderLimitPolicy} ProviderLimitPolicy
  */
 /**
  * @typedef {Object} ProviderTarget
@@ -1277,6 +1274,11 @@ import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import {
+  defaultProviderLimitPolicy,
+  effectiveLimitPolicy,
+  normalizeProviderLimitPolicyEntry
+} from '../limit-policy-settings.js';
 import { debug } from '../logging.js';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
 import { normalizeCodexChildren } from './codex-children/normalize.js';
@@ -5224,60 +5226,12 @@ function isAccountSourceValue(value) {
 }
 
 /**
- * Build the per-runner default: switching is on, but the allowed set is empty,
- * so nothing switches until the user picks accounts (spec §3.1 decision 1).
- *
- * @returns {ProviderLimitPolicy}
- */
-function defaultProviderLimitPolicy() {
-  return { mode: 'switch', accounts: [], preempt_pct: null };
-}
-
-/**
  * @returns {{ claude: ProviderLimitPolicy, codex: ProviderLimitPolicy }}
  */
 function emptyProviderLimitPolicy() {
   return {
     claude: defaultProviderLimitPolicy(),
     codex: defaultProviderLimitPolicy()
-  };
-}
-
-/**
- * Normalize one runner's stored policy, dropping values outside the contract.
- *
- * @param {unknown} value
- * @returns {ProviderLimitPolicy}
- */
-function normalizeProviderLimitPolicyEntry(value) {
-  if (!isRecord(value)) {
-    return defaultProviderLimitPolicy();
-  }
-  /** @type {string[]} */
-  const accounts = [];
-  if (Array.isArray(value.accounts)) {
-    for (const entry of value.accounts) {
-      if (
-        typeof entry === 'string' &&
-        entry.length > 0 &&
-        entry.length <= 256 &&
-        !/\s/.test(entry) &&
-        !accounts.includes(entry)
-      ) {
-        accounts.push(entry);
-      }
-    }
-  }
-  return {
-    mode: value.mode === 'wait' ? 'wait' : 'switch',
-    accounts,
-    preempt_pct:
-      typeof value.preempt_pct === 'number' &&
-      Number.isInteger(value.preempt_pct) &&
-      value.preempt_pct >= 1 &&
-      value.preempt_pct <= 99
-        ? value.preempt_pct
-        : null
   };
 }
 
@@ -6993,6 +6947,24 @@ export function createQueueStore(options = {}) {
   }
 
   /**
+   * The policy a decision for `runner` follows inside a mutation: the global
+   * policy while that runner's scope is `global`, else the workspace's stored
+   * one (UI-giog §4.3). Stored values are never rewritten here.
+   *
+   * @param {Queue} next
+   * @param {string} runner
+   * @returns {ProviderLimitPolicy}
+   */
+  function limitPolicyOf(next, runner) {
+    return effectiveLimitPolicy(
+      runner === 'claude' || runner === 'codex'
+        ? next.provider_limit_policy?.[runner]
+        : null,
+      runner
+    );
+  }
+
+  /**
    * Decide one usage-limit entry's automatic switch from the workspace policy.
    * The candidate was chosen OUTSIDE the mutation against an async catalog
    * read, so the allowed set is re-read here: a user who unchecked that
@@ -7004,10 +6976,7 @@ export function createQueueStore(options = {}) {
    * @returns {'disabled'|'unconfigured'|'none'|'switch'}
    */
   function switchDecision(next, runner, candidate_account) {
-    const policy =
-      (runner === 'claude' || runner === 'codex'
-        ? next.provider_limit_policy?.[runner]
-        : null) ?? defaultProviderLimitPolicy();
+    const policy = limitPolicyOf(next, runner);
     if (policy.mode !== 'switch') {
       return 'disabled';
     }
@@ -7070,7 +7039,7 @@ export function createQueueStore(options = {}) {
   function waitPolicyOf(next, runner) {
     return (
       (runner === 'claude' || runner === 'codex') &&
-      next.provider_limit_policy?.[runner]?.mode === 'wait'
+      limitPolicyOf(next, runner).mode === 'wait'
     );
   }
 
@@ -7114,6 +7083,20 @@ export function createQueueStore(options = {}) {
   }
 
   /**
+   * Whether a membership or target still records a planned switch
+   * (`switch_ready_at`/`switch_ready_account`).
+   *
+   * @param {{ switch_ready_at?: number|null, switch_ready_account?: string|null }} entry
+   * @returns {boolean}
+   */
+  function switchReadyRecorded(entry) {
+    return (
+      (entry.switch_ready_at ?? null) !== null ||
+      (entry.switch_ready_account ?? null) !== null
+    );
+  }
+
+  /**
    * Set the workspace's switch state for one global target on every
    * membership bound to it. The state is the workspace's verdict on the
    * target, as it was when it lived on the per-repository target itself.
@@ -7122,11 +7105,19 @@ export function createQueueStore(options = {}) {
    * @param {Queue} next
    * @param {string} target_id
    * @param {'none'|'unconfigured'|'disabled'|null} auto_switch
+   * @returns {boolean} Whether any membership changed.
    */
   function bindMemberSwitch(next, target_id, auto_switch) {
+    let changed = false;
     for (const member of Object.values(next.provider_hold_members)) {
       if (member.target_id !== target_id || member.cross_runner === true) {
         continue;
+      }
+      if (
+        member.auto_switch !== auto_switch ||
+        (auto_switch !== 'none' && switchReadyRecorded(member))
+      ) {
+        changed = true;
       }
       member.auto_switch = auto_switch;
       if (auto_switch !== 'none') {
@@ -7134,6 +7125,58 @@ export function createQueueStore(options = {}) {
         member.switch_ready_account = null;
       }
     }
+    return changed;
+  }
+
+  /**
+   * The switch verdict a hold recorded at entry is the policy's verdict, so a
+   * held attempt follows the policy in effect while it waits: re-bind this
+   * runner's hold members and local targets to `switchDecision` now, clearing
+   * `switch_ready_*` unless the verdict is `none`. A null verdict is no
+   * usage-limit decision (an outage, or a target whose switched members
+   * already left) and stays null. Shared by the repo policy write and the
+   * global settings write (UI-giog §4.1).
+   *
+   * @param {Queue} next
+   * @param {string} runner
+   * @returns {boolean} Whether any member or target changed.
+   */
+  function rebindSwitchVerdicts(next, runner) {
+    if (runner !== 'claude' && runner !== 'codex') {
+      return false;
+    }
+    const verdict = /** @type {'disabled'|'unconfigured'|'none'} */ (
+      switchDecision(next, runner, null)
+    );
+    let changed = false;
+    const target_ids = new Set(
+      Object.values(next.provider_hold_members)
+        .filter(
+          (member) => member.runner === runner && member.auto_switch !== null
+        )
+        .map((member) => member.target_id)
+    );
+    for (const target_id of target_ids) {
+      if (bindMemberSwitch(next, target_id, verdict)) {
+        changed = true;
+      }
+    }
+    for (const target of next.provider_hold[runner]?.targets ?? []) {
+      if (target.kind === 'usage_limit' && target.auto_switch) {
+        if (
+          target.auto_switch !== verdict ||
+          (verdict !== 'none' && switchReadyRecorded(target))
+        ) {
+          changed = true;
+        }
+        target.auto_switch = verdict;
+        if (verdict !== 'none') {
+          target.switch_ready_at = null;
+          target.switch_ready_account = null;
+        }
+      }
+    }
+    return changed;
   }
 
   /**
@@ -9673,35 +9716,25 @@ export function createQueueStore(options = {}) {
               'preempt_pct' in patch ? patch.preempt_pct : current.preempt_pct
           })
         };
-        // The switch verdict a hold recorded at entry is the policy's verdict,
-        // so a held attempt follows the policy the user saves while it waits.
-        // A null verdict is no usage-limit decision (an outage, or a target
-        // whose switched members already left) and stays null.
-        const verdict = /** @type {'disabled'|'unconfigured'|'none'} */ (
-          switchDecision(next, input.runner, null)
-        );
-        const target_ids = new Set(
-          Object.values(next.provider_hold_members)
-            .filter(
-              (member) =>
-                member.runner === input.runner && member.auto_switch !== null
-            )
-            .map((member) => member.target_id)
-        );
-        for (const target_id of target_ids) {
-          bindMemberSwitch(next, target_id, verdict);
-        }
-        for (const target of next.provider_hold[input.runner]?.targets ?? []) {
-          if (target.kind === 'usage_limit' && target.auto_switch) {
-            target.auto_switch = verdict;
-            if (verdict !== 'none') {
-              target.switch_ready_at = null;
-              target.switch_ready_account = null;
-            }
-          }
-        }
+        rebindSwitchVerdicts(next, input.runner);
         return true;
       });
+    },
+
+    /**
+     * Re-bind one runner's standing hold verdicts to the policy in effect now
+     * without touching the stored repo policy — the global settings write runs
+     * this for every registered workspace (UI-giog §4.1). No write and no
+     * revision bump when nothing changes (`ok: false`).
+     *
+     * @param {string} workspace
+     * @param {string} runner
+     * @returns {QueueOpResult}
+     */
+    rebindProviderSwitchVerdicts(workspace, runner) {
+      return applyUnconditional(workspace, (next) =>
+        rebindSwitchVerdicts(next, runner)
+      );
     },
 
     /**
@@ -10264,7 +10297,7 @@ export function createQueueStore(options = {}) {
           const ready_account = input.patch.switch_ready_account;
           const policy =
             input.runner === 'claude' || input.runner === 'codex'
-              ? next.provider_limit_policy[input.runner]
+              ? limitPolicyOf(next, input.runner)
               : null;
           for (const member of members) {
             const valid =
@@ -10331,7 +10364,7 @@ export function createQueueStore(options = {}) {
           const ready_account = input.patch.switch_ready_account;
           const policy =
             input.runner === 'claude' || input.runner === 'codex'
-              ? next.provider_limit_policy[input.runner]
+              ? limitPolicyOf(next, input.runner)
               : null;
           const valid =
             target.auto_switch === 'none' &&
@@ -10370,7 +10403,7 @@ export function createQueueStore(options = {}) {
       return applyUnconditional(workspace, (next) => {
         const policy =
           input.runner === 'claude' || input.runner === 'codex'
-            ? next.provider_limit_policy[input.runner]
+            ? limitPolicyOf(next, input.runner)
             : null;
         if (
           !located ||
