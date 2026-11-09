@@ -242,18 +242,22 @@ function cleanupBackupReceipt(value) {
  *   readPushLog?: (input: { attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string },
  *   timeline?: { append: (input: any) => unknown },
  *   notifier?: { quickfixLanded: (input: any) => Promise<void> }|null,
+ *   baseSync?: { syncBase: (target_base: string, candidate_sha?: string|null) => Promise<import('./base-sync.js').BaseSyncResult> }|null,
  *   notifyChanged?: (workspace: string) => void,
  *   now?: () => number
  * }} deps
  * `readPushLog` is the attempt's own pre-push record (`guard-hook.js`, record
  * mode) — the delivery evidence §5.3 judges. An absent dep reads exactly like
  * an absent log: unproven, never innocent.
+ * `baseSync` is the shared local base sync the PR cleanup also uses
+ * (`base-sync.js`); without it a landing leaves the human checkout alone.
  */
 export function createQuickfixLanding(deps) {
   const workspace = deps.workspace;
   const repo = deps.repo;
   const repo_operations = deps.repoOperations || null;
   const notifier = deps.notifier || null;
+  const base_sync = deps.baseSync || null;
   const notifyChanged = deps.notifyChanged || (() => {});
   const now = deps.now || (() => Date.now());
   // The `post_merge_jobs` step is the SAME runner the PR cleanup uses
@@ -281,6 +285,52 @@ export function createQuickfixLanding(deps) {
       await notifier.quickfixLanded({ repo, ...input });
     } catch (err) {
       log('quick_fix landed notify failed: %o', err);
+    }
+  }
+
+  /**
+   * Bring the human checkout up to the landed head after a delta close, the
+   * same helper the PR cleanup runs after a merge. The local checkout is not
+   * part of the completion judgment (`human_local_checkout_sync`), so the
+   * outcome only reaches the log and the bead timeline and never changes the
+   * settled close.
+   *
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string} target_base
+   * @param {string} head_sha
+   */
+  async function syncLocalBase(attempt_id, bead_id, target_base, head_sha) {
+    if (!base_sync) {
+      return;
+    }
+    /** @type {string} */
+    let outcome;
+    try {
+      const synced = await base_sync.syncBase(target_base, head_sha);
+      outcome = synced.ok ? synced.outcome : `failed:${synced.reason}`;
+    } catch (err) {
+      log('quick_fix local base sync threw for %s: %o', bead_id, err);
+      outcome = 'failed:sync_error';
+    }
+    log('quick_fix local base sync for %s: %s', bead_id, outcome);
+    if (!deps.timeline) {
+      return;
+    }
+    try {
+      deps.timeline.append({
+        bead_id,
+        attempt_id,
+        kind: 'landing_step',
+        seq: 'base_sync',
+        summary: `로컬 base 동기화 — ${outcome}`
+      });
+    } catch (err) {
+      log(
+        'quick_fix base sync timeline record failed for %s: %o',
+        bead_id,
+        err
+      );
     }
   }
 
@@ -1631,6 +1681,10 @@ export function createQuickfixLanding(deps) {
     });
     notifyChanged(workspace);
     await announceLanded({ bead_id, head_sha });
+    // A foreign landing moved another repository's base, not this checkout's.
+    if (!foreign) {
+      await syncLocalBase(attempt_id, bead_id, target_base, head_sha);
+    }
     return { ok: true };
   }
 

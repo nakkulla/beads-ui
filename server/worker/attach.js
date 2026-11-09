@@ -62,6 +62,7 @@ import { validateAdmission } from './admission.js';
 import { resolveDotfilesRoot } from './attempt-facts.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import { createAutoMerge } from './auto-merge.js';
+import { createBaseSync } from './base-sync.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import {
@@ -1248,6 +1249,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         repoOperations: repoOperationCoordinator,
         // Direct landing shares the scheduler and merge notifier instance.
         notifier: notify,
+        // The same local base sync the PR cleanup runs after a merge.
+        baseSync: createBaseSync({ repo, gitRun, worktree }),
         // The attempt's OWN pre-push record (2026-08-28 worker-failure-tiers spec
         // §5): the lane's landing is judged from the ref/SHA the record-mode hook
         // wrote, not from the session's self-report. Bound here because the
