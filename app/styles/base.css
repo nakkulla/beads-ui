@@ -1612,32 +1612,8 @@ select.detail-kv__v:disabled {
   white-space: nowrap;
 }
 
-/* 패널은 대기 레인 본문 맨 위다. 레포 카드가 차례로 서고 요약 줄이 아래에 붙는다. */
-.mon-plan {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-6);
-  min-width: 0;
-  margin-bottom: var(--sp-8);
-  color: var(--text-muted);
-  font-size: var(--fs-small);
-}
-
-.mon-plan__hd {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-6);
-}
-
-.mon-plan__title {
-  color: var(--text-title);
-  font-weight: 600;
-}
-
-.mon-plan__close {
-  margin-left: auto;
-}
-
+/* 레포 표 블록은 그 레포 대기 묶음 본문 맨 아래, 마지막 레인 뒤에 선다 (UI-5cmo
+   §3.3). 대기 본문 맨 위의 패널 틀은 없고 요약 줄이 본문 맨 아래에 붙는다. */
 .mon-plan__repo {
   display: flex;
   flex-direction: column;
@@ -1645,6 +1621,14 @@ select.detail-kv__v:disabled {
   min-width: 0;
   padding: var(--sp-4) 0;
   border-top: 1px solid var(--border-panel);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+/* 적용 대상에서 뺀 레포의 표는 흐리게 보인다 (§3.5). `[이 레포만 적용]`은 그대로
+   누를 수 있다. */
+.mon-plan__repo--off {
+  opacity: 0.6;
 }
 
 .mon-plan__repo-hd {
@@ -1655,10 +1639,15 @@ select.detail-kv__v:disabled {
   min-width: 0;
 }
 
-.mon-plan__repo-name {
+.mon-plan__target {
   color: var(--text-title);
-  font-weight: 600;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+}
+
+.mon-plan__off {
+  color: var(--accent-warn);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
 }
 
 .mon-plan__count,
@@ -1700,12 +1689,8 @@ select.detail-kv__v:disabled {
   gap: var(--sp-6);
 }
 
-.mon-plan__empty {
-  color: var(--text-dim);
-}
-
-/* 요약 줄은 패널이 보이는 동안 스크롤 영역(데스크톱은 레인 본문, 모바일은 문서)
-   아래쪽에 붙는다. */
+/* 요약 줄은 전체 배치안이 열린 동안 스크롤 영역(데스크톱은 레인 본문, 모바일은
+   문서) 아래쪽에 붙는다. */
 .mon-plan__summary {
   position: sticky;
   bottom: 0;
@@ -1718,14 +1703,16 @@ select.detail-kv__v:disabled {
   padding: var(--sp-4) 0;
   border-top: 1px solid var(--border-panel);
   background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
 }
 
 /* 모바일 레인 host는 데스크톱의 `overflow-x: auto`를 물려받아 스크롤 컨테이너로
    남는다. 그러면 sticky가 늘어나기만 하는 host에 붙어 요약 줄이 문서 화면 아래에
-   서지 않는다. 그래서 패널이 열린 동안만 host의 가로 스크롤을 푼다. 레인이 세로로
-   쌓여 가로로 넘칠 것이 없다. */
+   서지 않는다. 그래서 전체 배치안이 열린 동안만 host의 가로 스크롤을 푼다. 레인이
+   세로로 쌓여 가로로 넘칠 것이 없다. */
 @media (max-width: 640px) {
-  .mon .worker-lanes-host:has(.mon-plan) {
+  .mon .worker-lanes-host:has(.mon-plan__summary) {
     overflow-x: visible;
   }
 }

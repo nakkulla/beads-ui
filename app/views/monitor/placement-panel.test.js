@@ -240,7 +240,7 @@ describe('monitor queue header controls (UI-hf8v §3.2)', () => {
   });
 });
 
-describe('monitor placement panel (UI-hf8v §3.3)', () => {
+describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
   test('opens with only the apply buttons off when nothing is recommendable', () => {
     const { mount } = setup([
       repo('A', 'repo-a', WS_A, {
@@ -252,7 +252,9 @@ describe('monitor placement panel (UI-hf8v §3.3)', () => {
 
     click(mount, '.mon-plan__open');
 
-    expect(mount.querySelector('#monitor-queue .mon-plan')).not.toBeNull();
+    expect(
+      mount.querySelector('#monitor-queue .mon-plan__summary')
+    ).not.toBeNull();
     expect(
       /** @type {HTMLButtonElement} */ (
         mount.querySelector('.mon-plan__apply-all')
@@ -260,7 +262,7 @@ describe('monitor placement panel (UI-hf8v §3.3)', () => {
     ).toBe(true);
   });
 
-  test('draws repository cards in name order', () => {
+  test('draws the repository table blocks in name order', () => {
     const { mount } = setup([
       repo('B', 'repo-b', WS_B),
       repo('A', 'repo-a', WS_A)
@@ -269,8 +271,120 @@ describe('monitor placement panel (UI-hf8v §3.3)', () => {
     click(mount, '.mon-plan__open');
 
     expect(
-      Array.from(mount.querySelectorAll('.mon-plan__repo-name'), text)
-    ).toEqual(['repo-a', 'repo-b']);
+      Array.from(mount.querySelectorAll('.mon-plan__repo'), (block) =>
+        block.getAttribute('data-root-dir')
+      )
+    ).toEqual([WS_A, WS_B]);
+  });
+
+  test('stands each table block at the bottom of its own repo group', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('B', 'repo-b', WS_B)
+    ]);
+
+    click(mount, '.mon-plan__open');
+
+    expect(
+      [WS_A, WS_B].map((root) => {
+        const block = card(mount, root);
+        return [
+          block.closest('.mon2-sec')?.getAttribute('data-root-dir'),
+          block.parentElement?.lastElementChild === block
+        ];
+      })
+    ).toEqual([
+      [WS_A, true],
+      [WS_B, true]
+    ]);
+  });
+
+  test('leaves the repository name out of the block head', () => {
+    const { mount } = setup([repo('A', 'repo-a', WS_A)]);
+
+    click(mount, '.mon-plan__open');
+
+    const head = text(card(mount, WS_A).querySelector('.mon-plan__repo-hd'));
+    expect(head.startsWith('적용 대상 추천 1 / 1')).toBe(true);
+    expect(head).not.toContain('repo-a');
+  });
+
+  test('draws no panel frame at the top of the queue body', () => {
+    const { mount } = setup([repo('A', 'repo-a', WS_A)]);
+
+    click(mount, '.mon-plan__open');
+
+    const body = /** @type {HTMLElement} */ (
+      mount.querySelector('#monitor-queue .mon2-queue-body')
+    );
+    expect(mount.querySelector('.mon-plan__hd')).toBeNull();
+    expect(body.firstElementChild?.classList.contains('mon2-sec')).toBe(true);
+  });
+
+  test('puts the summary row at the bottom of the queue body', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('B', 'repo-b', WS_B)
+    ]);
+
+    click(mount, '.mon-plan__open');
+
+    const body = /** @type {HTMLElement} */ (
+      mount.querySelector('#monitor-queue .mon2-queue-body')
+    );
+    expect(body.lastElementChild?.classList.contains('mon-plan__summary')).toBe(
+      true
+    );
+    expect(text(mount.querySelector('.mon-plan__total'))).toBe(
+      '2건 · 2개 레포 — repo-a 1 · repo-b 1'
+    );
+  });
+
+  test('lays the preview card among the lane rows in the plan order', () => {
+    const { mount } = setup([repo('A', 'repo-a', WS_A)]);
+
+    click(mount, '.mon-plan__open');
+
+    const lane = /** @type {HTMLElement} */ (
+      mount.querySelector(`[data-drop="parallel"][data-root-dir="${WS_A}"]`)
+    );
+    expect(
+      Array.from(
+        lane.children,
+        (node) =>
+          node.getAttribute('data-bead-id') ||
+          `preview:${node.getAttribute('data-preview-id')}`
+      )
+    ).toEqual(['A-P', 'preview:A-1']);
+  });
+
+  test('draws the preview card in the configured 직렬 1 a plan names (UI-5cmo §3.1)', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A, {
+        placement_relations: Object.fromEntries([rel('A-1', 'A-P', 'conflict')])
+      })
+    ]);
+
+    click(mount, '.mon-plan__open');
+
+    const lane = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        `[data-drop="repo-serial"][data-root-dir="${WS_A}"][data-lane-id="s1"]`
+      )
+    );
+    expect(lane.querySelector('[data-preview-id="A-1"]')).not.toBeNull();
+    expect(
+      text(
+        lane.closest('.worker-pane')?.querySelector('.worker-pane__title') ||
+          null
+      )
+    ).toBe('직렬 1');
+  });
+
+  test('draws no preview card while the full plan is closed', () => {
+    const { mount } = setup([repo('A', 'repo-a', WS_A)]);
+
+    expect(mount.querySelector('.worker-card--preview')).toBeNull();
   });
 
   test('numbers the rows from 1 in every repository', () => {
@@ -283,7 +397,7 @@ describe('monitor placement panel (UI-hf8v §3.3)', () => {
 
     expect(
       [WS_A, WS_B].map((root) =>
-        text(card(mount, root).querySelector('.worker-plan__row td'))
+        text(card(mount, root).querySelectorAll('.worker-plan__row td')[1])
       )
     ).toEqual(['1', '1']);
   });
@@ -304,17 +418,39 @@ describe('monitor placement panel (UI-hf8v §3.3)', () => {
 
     expect(
       text(mount.querySelector('details.mon-plan__repo--folded > summary'))
-    ).toBe('repo-c · 추천할 후보 없음 — jev 판정 중 2 · 비교할 이슈 없음 1');
+    ).toBe('배치안 · 추천할 후보 없음 — jev 판정 중 2 · 비교할 이슈 없음 1');
   });
 
-  test('draws the panel in a queue lane without groups or parallel rows', () => {
+  test('keeps open the repo group of a repository with only a folded block', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('C', 'repo-c', WS_C, {
+        queue: [],
+        placement_status: { 'C-3': { state: 'no_counterpart' } }
+      })
+    ]);
+
+    click(mount, '.mon-plan__open');
+
+    expect(
+      mount.querySelector(
+        `#monitor-queue .mon2-sec[data-root-dir="${WS_C}"] details.mon-plan__repo--folded`
+      )
+    ).not.toBeNull();
+  });
+
+  test('stands a repo group with its block for a repository the lane model leaves out', () => {
     const entry = repo('A', 'repo-a', WS_A, { queue: [] });
     entry.runnable = [];
 
     const { mount } = setup([entry]);
     click(mount, '.mon-plan__open');
 
-    expect(mount.querySelector('#monitor-queue .mon-plan')).not.toBeNull();
+    expect(
+      mount.querySelector(
+        `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"] .mon-plan__repo`
+      )
+    ).not.toBeNull();
   });
 
   test('closes the panel with Esc', () => {
@@ -323,16 +459,21 @@ describe('monitor placement panel (UI-hf8v §3.3)', () => {
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 
-    expect(mount.querySelector('.mon-plan')).toBeNull();
+    expect(
+      mount.querySelector('.mon-plan__summary, .mon-plan__repo')
+    ).toBeNull();
+    expect(mount.querySelector('.worker-card--preview')).toBeNull();
   });
 
-  test('closes the panel with ✕', () => {
+  test('closes the panel with the summary row ✕', () => {
     const { mount } = setup([repo('A', 'repo-a', WS_A)]);
     click(mount, '.mon-plan__open');
 
-    click(mount, '.mon-plan__close');
+    click(mount, '.mon-plan__summary .mon-plan__close');
 
-    expect(mount.querySelector('.mon-plan')).toBeNull();
+    expect(
+      mount.querySelector('.mon-plan__summary, .mon-plan__repo')
+    ).toBeNull();
   });
 
   test('keeps a checkbox change to its own repository', () => {
@@ -354,8 +495,155 @@ describe('monitor placement panel (UI-hf8v §3.3)', () => {
       )
     ).toEqual(['이 레포만 적용 (0)', '이 레포만 적용 (1)']);
     expect(text(mount.querySelector('.mon-plan__total'))).toBe(
-      '1건 · 1개 레포'
+      '1건 · 1개 레포 — repo-b 1'
     );
+  });
+});
+
+/**
+ * Turn one repository's `적용 대상` box on or off.
+ *
+ * @param {HTMLElement} mount
+ * @param {string} root_dir
+ * @param {boolean} on
+ */
+function setTarget(mount, root_dir, on) {
+  const box = /** @type {HTMLInputElement} */ (
+    card(mount, root_dir).querySelector('.mon-plan__target-box')
+  );
+  box.checked = on;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+describe('monitor placement apply targets (UI-5cmo §3.5)', () => {
+  test('starts every repository block with its target box on', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('B', 'repo-b', WS_B)
+    ]);
+
+    click(mount, '.mon-plan__open');
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.mon-plan__target-box'),
+        (box) => /** @type {HTMLInputElement} */ (box).checked
+      )
+    ).toEqual([true, true]);
+  });
+
+  test('leaves a repository turned off out of the summary count', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('B', 'repo-b', WS_B)
+    ]);
+    click(mount, '.mon-plan__open');
+
+    setTarget(mount, WS_A, false);
+
+    expect(text(mount.querySelector('.mon-plan__total'))).toBe(
+      '1건 · 1개 레포 — repo-b 1'
+    );
+  });
+
+  test('dims the block and preview cards of a repository turned off', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('B', 'repo-b', WS_B)
+    ]);
+    click(mount, '.mon-plan__open');
+
+    setTarget(mount, WS_A, false);
+
+    expect(
+      [WS_A, WS_B].map((root) => [
+        card(mount, root).classList.contains('mon-plan__repo--off'),
+        mount
+          .querySelector(`.mon2-sec--queue[data-root-dir="${root}"]`)
+          ?.classList.contains('mon2-sec--plan-off')
+      ])
+    ).toEqual([
+      [true, true],
+      [false, false]
+    ]);
+    expect(text(card(mount, WS_A).querySelector('.mon-plan__off'))).toBe(
+      '적용 대상에서 뺌'
+    );
+  });
+
+  test('sends nothing to a repository turned off on [선택한 레포 적용]', async () => {
+    const { mount, send } = setup(
+      [repo('A', 'repo-a', WS_A), repo('B', 'repo-b', WS_B)],
+      async (type, payload) => ({
+        applied: true,
+        conflict: false,
+        queue: repoQueue(payload.root_dir === WS_A ? 'A' : 'B', {
+          placement_status: {}
+        })
+      })
+    );
+    click(mount, '.mon-plan__open');
+    setTarget(mount, WS_A, false);
+
+    click(mount, '.mon-plan__apply-all');
+    await vi.waitFor(() => {
+      expect(toastText()).toContain('넣음');
+    });
+
+    expect(send.mock.calls.map((call) => call[1].root_dir)).toEqual([WS_B]);
+  });
+
+  test('turns [선택한 레포 적용] off and asks for a choice when every repository is off', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('B', 'repo-b', WS_B)
+    ]);
+    click(mount, '.mon-plan__open');
+
+    setTarget(mount, WS_A, false);
+    setTarget(mount, WS_B, false);
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.mon-plan__apply-all')
+      ).disabled
+    ).toBe(true);
+    expect(text(mount.querySelector('.mon-plan__total'))).toBe(
+      '적용할 레포를 고르세요'
+    );
+  });
+
+  test('still sends [이 레포만 적용] of a repository turned off', async () => {
+    const { mount, send } = setup(
+      [repo('A', 'repo-a', WS_A), repo('B', 'repo-b', WS_B)],
+      async () => ({
+        applied: true,
+        conflict: false,
+        queue: repoQueue('A', { placement_status: {} })
+      })
+    );
+    click(mount, '.mon-plan__open');
+    setTarget(mount, WS_A, false);
+
+    click(mount, `.mon-plan__apply-repo[data-root-dir="${WS_A}"]`);
+    await flush();
+
+    expect(send.mock.calls.map((call) => call[1].root_dir)).toEqual([WS_A]);
+  });
+
+  test('forgets the target choices when the panel closes', () => {
+    const { mount } = setup([repo('A', 'repo-a', WS_A)]);
+    click(mount, '.mon-plan__open');
+    setTarget(mount, WS_A, false);
+
+    click(mount, '.mon-plan__close');
+    click(mount, '.mon-plan__open');
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        card(mount, WS_A).querySelector('.mon-plan__target-box')
+      ).checked
+    ).toBe(true);
   });
 });
 
@@ -573,7 +861,7 @@ describe('monitor placement apply (UI-hf8v §3.4)', () => {
     expect(
       Array.from(
         mount.querySelectorAll(
-          '.mon-plan__apply-repo, .mon-plan__apply-all, .mon-plan .worker-plan__include'
+          '.mon-plan__apply-repo, .mon-plan__apply-all, .mon-plan__repo .worker-plan__include, .mon-plan__target-box'
         ),
         (node) => /** @type {HTMLButtonElement} */ (node).disabled
       ).every(Boolean)

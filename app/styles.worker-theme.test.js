@@ -1114,3 +1114,22 @@ describe('deploy condition wait chip (UI-ksi6)', () => {
     expect(hover).not.toContain('--accent-danger');
   });
 });
+
+describe('placement preview card and plan table (UI-5cmo §3.4·§3.6)', () => {
+  test('draws the preview card with a thick plan-colour dash and a plan-tinted ground', () => {
+    const rule =
+      CSS.match(/(?:^|\n)\.worker-card--preview\s*{([^}]*)}/)?.[1] || '';
+
+    expect(rule).toContain('border: 2px dashed var(--stage-plan-on)');
+    expect(rule).toContain(
+      'background: color-mix(in srgb, var(--stage-plan-on) 10%, transparent)'
+    );
+  });
+
+  test('keeps the plan table header cells on one line', () => {
+    const rule =
+      CSS.match(/(?:^|\n)\.worker-plan__table th\s*{([^}]*)}/)?.[1] || '';
+
+    expect(rule).toContain('white-space: nowrap');
+  });
+});

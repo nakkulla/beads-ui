@@ -1659,6 +1659,72 @@ describe('placement recommendation parity (UI-izba §4.7)', () => {
     ).toEqual(worker_rows);
   });
 
+  /**
+   * The cards one waiting lane draws, in order: a lane row by its Bead id, a
+   * preview or moved card as `preview:<id>`.
+   *
+   * @param {Element} root
+   * @param {string} selector - The lane's drop zone.
+   * @returns {string[]}
+   */
+  function laneSequence(root, selector) {
+    const zone = root.querySelector(selector);
+    return zone
+      ? Array.from(zone.children, (node) =>
+          node.hasAttribute('data-preview-id')
+            ? `preview:${node.getAttribute('data-preview-id')}`
+            : node.getAttribute('data-bead-id') || ''
+        )
+      : [];
+  }
+
+  test('lays the same preview cards in the same lane order on both tabs (UI-5cmo §3.3)', async () => {
+    const { placementPairKey } =
+      await import('../../../server/placement/wire.js');
+    const key = placementPairKey('C-1', 'Q-1');
+    const { worker, monitor } = await drawBothTabs(undefined, {
+      serial_lanes: [{ id: 's1', entries: [] }],
+      placement_status: {
+        'C-1': { state: 'ready', done: 1, total: 1 },
+        'C-2': { state: 'ready', done: 1, total: 1 }
+      },
+      placement_relations: {
+        [key]: {
+          a: 'C-1',
+          b: 'Q-1',
+          relation: 'conflict',
+          source: 'jev',
+          confidence: 0.95,
+          jev_choice: 'conflict',
+          judged_at: NOW - HOUR
+        }
+      }
+    });
+
+    press(worker, '.worker-plan__open');
+    press(monitor, '.mon-plan__open');
+
+    const lanes = [
+      [
+        '[data-drop="parallel"]',
+        `[data-drop="parallel"][data-root-dir="${WS}"]`
+      ],
+      [
+        '[data-drop="repo-serial"][data-lane-id="s1"]',
+        `[data-drop="repo-serial"][data-root-dir="${WS}"][data-lane-id="s1"]`
+      ]
+    ];
+    const worker_lanes = lanes.map(([selector]) =>
+      laneSequence(worker, selector)
+    );
+    expect(
+      worker_lanes.flat().filter((id) => id.startsWith('preview:'))
+    ).not.toHaveLength(0);
+    expect(
+      lanes.map(([, selector]) => laneSequence(monitor, selector))
+    ).toEqual(worker_lanes);
+  });
+
   test('gives the monitor a repository card but no card [추천 배치], an intended difference (§9)', async () => {
     const { monitor } = await drawBothTabs(undefined, placementPatch());
 

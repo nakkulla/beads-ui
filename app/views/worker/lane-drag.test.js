@@ -452,6 +452,130 @@ describe('드롭 타깃 식별자 (UI-4tud §4.5)', () => {
   });
 });
 
+describe('레포별 병렬 드롭 타깃 (UI-5cmo §3.2)', () => {
+  /**
+   * Two rows `A`·`B` in the `/r` parallel lane and a candidate `C`.
+   *
+   * @param {{ extra?: string, root_dir?: string }} [parts]
+   */
+  function setupParallel(parts = {}) {
+    const dom = mountDom({
+      rows:
+        sourceHtml({
+          id: 'A',
+          kind: 'parallel',
+          row_index: 0,
+          queue_index: 0
+        }) +
+        sourceHtml({ id: 'B', kind: 'parallel', row_index: 1, queue_index: 1 }),
+      extra:
+        sourceHtml({ id: 'C', kind: 'candidate', root_dir: parts.root_dir }) +
+        (parts.extra ?? '')
+    });
+    return setup({
+      dom,
+      lanes: laneModelOf({
+        parallel_raw_length: { '/r': 2 },
+        owner_of: { A: '/r', B: '/r', C: parts.root_dir ?? '/r' },
+        queue: [parallelRow('A', 0), parallelRow('B', 1)],
+        queue_groups: [groupOf(4), groupOf(6, '/other')]
+      })
+    });
+  }
+
+  test('places a candidate at the queue index of the row it lands on', async () => {
+    const ctx = setupParallel();
+
+    startDrag(ctx.mount, 'C');
+    fireDrag(rowOf(ctx.mount, 'B'), 'drop');
+    await flush();
+
+    expect(ctx.sent).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: {
+          bead_id: 'C',
+          index: 1,
+          root_dir: '/r',
+          expected_revision: 4
+        }
+      }
+    ]);
+  });
+
+  test('reorders a row to the queue index of the row it lands on', async () => {
+    const ctx = setupParallel();
+
+    startDrag(ctx.mount, 'B');
+    fireDrag(rowOf(ctx.mount, 'A'), 'drop');
+    await flush();
+
+    expect(ctx.sent).toEqual([
+      {
+        type: 'worker-queue-reorder',
+        payload: {
+          bead_id: 'B',
+          to_index: 0,
+          root_dir: '/r',
+          expected_revision: 1
+        }
+      }
+    ]);
+  });
+
+  test('refuses a parallel lane owned by another repo at hover time', async () => {
+    const ctx = setupParallel({ root_dir: '/other' });
+
+    startDrag(ctx.mount, 'C');
+    const over = fireDrag(rowOf(ctx.mount, 'A'), 'dragover');
+    const drop = fireDrag(rowOf(ctx.mount, 'A'), 'drop');
+    await flush();
+
+    expect(over.defaultPrevented).toBe(false);
+    expect(drop.defaultPrevented).toBe(false);
+    expect(ctx.sent).toEqual([]);
+    expect(ctx.showToast).not.toHaveBeenCalled();
+  });
+
+  test('toasts and sends nothing for another repo parallel target handed to applyDrop', async () => {
+    const ctx = setupParallel();
+
+    await ctx.drag.applyDrop(
+      { kind: 'candidate', bead_id: 'C', root_dir: '/r' },
+      { kind: 'parallel', root_dir: '/other', index: 0 }
+    );
+
+    expect(ctx.showToast).toHaveBeenCalledWith(
+      '다른 레포 이슈는 이 병렬 레인에 넣을 수 없습니다',
+      'error'
+    );
+    expect(ctx.sent).toEqual([]);
+  });
+
+  test('appends to the repo parallel end on a folded repo group header', async () => {
+    const ctx = setupParallel({
+      extra:
+        '<header id="folded" data-drop="parallel" data-root-dir="/r" data-lane-length="3"></header>'
+    });
+
+    startDrag(ctx.mount, 'C');
+    fireDrag(document.getElementById('folded'), 'drop');
+    await flush();
+
+    expect(ctx.sent).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: {
+          bead_id: 'C',
+          index: 3,
+          root_dir: '/r',
+          expected_revision: 4
+        }
+      }
+    ]);
+  });
+});
+
 describe('터치 길게 누르기 끌기 (UI-97xm)', () => {
   test('starts no touch drag before the 350 ms long press', () => {
     vi.useFakeTimers();

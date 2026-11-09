@@ -6,8 +6,12 @@
  * {@link LONG_PRESS_MS} long press — a finger that moves first scrolls the page
  * instead — and land on the same drop targets and queue requests.
  *
+ * A lane drop target names the repository whose queue it is and the index in
+ * that queue (UI-5cmo §3.2): a parallel lane belongs to one repository just as
+ * a serial lane does.
+ *
  * @typedef {{ kind: 'candidate'|'parallel'|'repo-serial', bead_id: string, root_dir: string, queue_index?: number, lane_id?: string }} DropDrag
- * @typedef {{ kind: 'candidate' }|{ kind: 'parallel', marker_index: number }|{ kind: 'repo-serial', root_dir: string, lane_id: 's1'|'s2'|'s3'|'s4'|'s5', index: number }} DropTarget
+ * @typedef {{ kind: 'candidate' }|{ kind: 'parallel', root_dir: string, index: number }|{ kind: 'repo-serial', root_dir: string, lane_id: 's1'|'s2'|'s3'|'s4'|'s5', index: number }} DropTarget
  * @typedef {Object} LaneDragOptions
  * @property {((type: string, payload?: unknown) => Promise<any>)|undefined} transport
  * @property {HTMLElement} console_el
@@ -18,6 +22,8 @@
  * @property {(root_dir: string, queue: any) => void} [adoptQueue]
  * @property {() => void} [onDragBegin]
  * @property {boolean} [candidate_drop]
+ * @property {(zone: HTMLElement, target: DropTarget) => void} [onDropAccepted] -
+ * Called with the zone a drop landed on, just before its queue request.
  * @property {(x: number, y: number) => Element|null} [hitTest] - The element
  * under a touch point; defaults to `document.elementFromPoint`.
  */
@@ -79,7 +85,8 @@ export function createLaneDrag(options) {
     requestRender,
     adoptQueue,
     onDragBegin,
-    candidate_drop
+    candidate_drop,
+    onDropAccepted
   } = options;
   const hitTest =
     options.hitTest ||
@@ -230,32 +237,25 @@ export function createLaneDrag(options) {
     );
   }
 
-  /** @param {string} root_dir - @param {number} marker_index */
-  function parallelInsertIndex(root_dir, marker_index) {
-    const lanes = getLanes();
-    const rows = lanes.parallel_rows;
-    const marker = Math.max(0, Math.min(rows.length, marker_index));
-    const over = rows[marker];
-    if (over?.root_dir === root_dir) {
-      return over.queue_index ?? 0;
-    }
-    for (let i = marker - 1; i >= 0; i -= 1) {
-      if (rows[i].root_dir === root_dir) {
-        return (rows[i].queue_index ?? 0) + 1;
-      }
-    }
-    for (let i = marker; i < rows.length; i += 1) {
-      if (rows[i].root_dir === root_dir) {
-        return rows[i].queue_index ?? 0;
-      }
-    }
-    return lanes.parallel_raw_length[root_dir] ?? 0;
+  /**
+   * The end of one repository's parallel queue: the server array length, so a
+   * row that left for the running lane still counts.
+   *
+   * @param {string} root_dir
+   * @returns {number}
+   */
+  function parallelEnd(root_dir) {
+    return getLanes().parallel_raw_length[root_dir] ?? 0;
   }
 
   /** @param {DropDrag} drag - @param {DropTarget} target */
   async function applyDrop(drag, target) {
     if (target.kind === 'repo-serial' && drag.root_dir !== target.root_dir) {
       showToast('다른 레포 이슈는 이 직렬 레인에 넣을 수 없습니다', 'error');
+      return;
+    }
+    if (target.kind === 'parallel' && drag.root_dir !== target.root_dir) {
+      showToast('다른 레포 이슈는 이 병렬 레인에 넣을 수 없습니다', 'error');
       return;
     }
     /** @type {{ type: string, payload: Record<string, any>, root_dir: string }|null} */
@@ -269,7 +269,7 @@ export function createLaneDrag(options) {
         };
       }
     } else if (target.kind === 'parallel') {
-      const index = parallelInsertIndex(drag.root_dir, target.marker_index);
+      const index = target.index;
       if (drag.kind === 'candidate' || drag.kind === 'repo-serial') {
         op = {
           type: 'worker-queue-place',
@@ -278,16 +278,19 @@ export function createLaneDrag(options) {
         };
       } else {
         const source = drag.queue_index;
-        const over = getLanes().parallel_rows[target.marker_index];
-        if (source !== undefined && over?.id !== drag.bead_id) {
-          const to_index = source > index ? index : index - 1;
-          if (to_index >= 0 && to_index !== source) {
-            op = {
-              type: 'worker-queue-reorder',
-              payload: { bead_id: drag.bead_id, to_index },
-              root_dir: drag.root_dir
-            };
-          }
+        const to_index =
+          source !== undefined && source > index ? index : index - 1;
+        if (
+          source !== undefined &&
+          index !== source &&
+          to_index >= 0 &&
+          to_index !== source
+        ) {
+          op = {
+            type: 'worker-queue-reorder',
+            payload: { bead_id: drag.bead_id, to_index },
+            root_dir: drag.root_dir
+          };
         }
       }
     } else if (drag.kind === 'repo-serial' && drag.lane_id === target.lane_id) {
@@ -329,23 +332,30 @@ export function createLaneDrag(options) {
   // 나온다 — 실행중으로 빠진 버드는 DOM에 없다.
 
   /**
-   * Where the drop marker sits: 지금 **보이는** 그 영역/레인 행 기준
-   * 0..rows.length.
+   * The server index a drop on `zone` inserts at: the queue index of the row
+   * under the pointer (insert before it), else the lane end the zone carries
+   * (`data-lane-length`), else `end`. Preview cards carry no queue index, so
+   * a drop on one lands at the end like a drop on the empty part of the lane.
    *
    * @param {HTMLElement} zone
    * @param {HTMLElement|null} node
+   * @param {number} end
    * @returns {number}
    */
-  function markerIndexIn(zone, node) {
+  function laneIndexIn(zone, node, end) {
     const row =
-      node && typeof node.closest === 'function'
-        ? /** @type {HTMLElement|null} */ (node.closest('[data-row-index]'))
+      typeof node?.closest === 'function'
+        ? /** @type {HTMLElement|null} */ (node.closest('[data-queue-index]'))
         : null;
-    if (row && zone.contains(row)) {
-      const index = Number(row.getAttribute('data-row-index'));
-      return Number.isFinite(index) ? index : 0;
+    const raw =
+      row && zone.contains(row)
+        ? row.getAttribute('data-queue-index')
+        : zone.getAttribute('data-lane-length');
+    if (raw === null || raw === '') {
+      return end;
     }
-    return zone.querySelectorAll('[data-row-index]').length;
+    const index = Number(raw);
+    return Number.isFinite(index) ? index : 0;
   }
 
   /**
@@ -371,12 +381,13 @@ export function createLaneDrag(options) {
       return null;
     }
     const lane = pane.getAttribute('data-lane');
-    if (lane === 'queue') {
+    if (lane === 'queue' && dragging) {
       return {
         zone: pane,
         target: {
           kind: 'parallel',
-          marker_index: getLanes().parallel_rows.length
+          root_dir: dragging.root_dir,
+          index: parallelEnd(dragging.root_dir)
         }
       };
     }
@@ -387,8 +398,11 @@ export function createLaneDrag(options) {
   }
 
   /**
-   * The zone a drop may actually land on. 레포 직렬 레인만 `root_dir` 일치를
-   * 요구한다 (§4.2).
+   * The zone a drop may actually land on. 병렬·직렬 레인은 모두 한 레포의 큐라서
+   * `root_dir`이 드래그한 이슈와 같아야 타깃이 된다 (§4.2, UI-5cmo §3.2) — 다른 레포
+   * 레인 위에서는 호버 단계부터 타깃이 아니므로 드롭 자체가 일어나지 않는다. 좌표가
+   * 없는 병렬 영역(`data-root-dir` 없음)은 드래그한 이슈의 레포로 읽는다. 접힌 레포
+   * 묶음 머리줄도 행 없는 `data-drop="parallel"`이라 그 레포 큐 끝이다.
    *
    * @param {EventTarget|null} hit - The drag event's target, or the element
    * under a touch point.
@@ -411,9 +425,19 @@ export function createLaneDrag(options) {
       return { zone, target: { kind: 'candidate' } };
     }
     if (kind === 'parallel') {
+      const root_dir = zone.hasAttribute('data-root-dir')
+        ? zone.getAttribute('data-root-dir') || ''
+        : dragging.root_dir;
+      if (root_dir !== dragging.root_dir) {
+        return null;
+      }
       return {
         zone,
-        target: { kind: 'parallel', marker_index: markerIndexIn(zone, node) }
+        target: {
+          kind: 'parallel',
+          root_dir,
+          index: laneIndexIn(zone, node, parallelEnd(root_dir))
+        }
       };
     }
     if (kind === 'repo-serial') {
@@ -421,22 +445,13 @@ export function createLaneDrag(options) {
       if (root_dir !== dragging.root_dir) {
         return null;
       }
-      const row =
-        typeof node?.closest === 'function'
-          ? /** @type {HTMLElement|null} */ (node.closest('[data-queue-index]'))
-          : null;
-      const raw =
-        row && zone.contains(row)
-          ? row.getAttribute('data-queue-index')
-          : zone.getAttribute('data-lane-length');
-      const index = Number(raw);
       return {
         zone,
         target: {
           kind: 'repo-serial',
           root_dir,
           lane_id: /** @type {any} */ (zone.getAttribute('data-lane-id') || ''),
-          index: Number.isFinite(index) ? index : 0
+          index: laneIndexIn(zone, node, 0)
         }
       };
     }
@@ -650,6 +665,7 @@ export function createLaneDrag(options) {
     const target = touch_over;
     endTouch();
     if (drag && target) {
+      onDropAccepted?.(target.zone, target.target);
       void applyDrop(drag, target.target);
     }
   }
@@ -780,6 +796,7 @@ export function createLaneDrag(options) {
       return;
     }
     ev.preventDefault();
+    onDropAccepted?.(target.zone, target.target);
     void applyDrop(drag, target.target);
   }
 

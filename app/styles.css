@@ -5757,13 +5757,13 @@ summary.repo-ops-log-viewer__attempt-head {
   opacity: 0.7;
 }
 
-/* 배치 추천 미리보기 (UI-izba §4.7). 점선 카드는 레인 구성원이 아니라 덧그림이라
-   같은 카드 상자에 점선 테두리만 바꾸고, 누르거나 끌 것이 없다는 것을 커서로도
-   말한다. */
+/* 배치 추천 미리보기 (UI-izba §4.7, 구분 UI-5cmo §3.6). 점선 카드는 레인 구성원이
+   아니라 덧그림이다 — 두 탭 모두 배치안 색 굵은 대시 테두리, 그 색을 옅게 섞은
+   배경, 배치안 색 번호 세 가지로 기존 카드와 갈린다. 글자 색은 기존 카드 그대로라
+   두 테마의 대비가 같고, 누르거나 끌 것이 없다는 것을 커서로도 말한다. */
 .worker-card--preview {
-  border-style: dotted;
-  border-color: var(--stage-plan-on);
-  background: transparent;
+  border: 2px dashed var(--stage-plan-on);
+  background: color-mix(in srgb, var(--stage-plan-on) 10%, transparent);
   cursor: default;
 }
 
@@ -5872,10 +5872,32 @@ summary.repo-ops-log-viewer__attempt-head {
   background: var(--stage-plan-dim);
 }
 
-/* 근거 칸: 요약 한 줄로 접고 누르면 관계 줄을 편다. 경고 줄은 접힘 밖이다. */
+/* 배치안 칸 (UI-5cmo §3.4): 자리 문장 → 옮김·묶음 줄 → 경고 줄 → `근거 ▸`. 근거는
+   누르면 판정 요약 줄과 관계 줄을 편다. 경고·옮김 줄은 접힘 밖이다. */
+.worker-plan__pos {
+  color: var(--text-title);
+}
+
 .worker-plan__reasons > summary {
   color: var(--text-dim);
+  list-style: none;
   cursor: pointer;
+}
+
+.worker-plan__reasons > summary::-webkit-details-marker {
+  display: none;
+}
+
+.worker-plan__reasons > summary::after {
+  content: ' ▸';
+}
+
+.worker-plan__reasons[open] > summary::after {
+  content: ' ▾';
+}
+
+.worker-plan__pairs {
+  color: var(--text-dim);
 }
 
 .worker-plan__warn {
@@ -5905,6 +5927,11 @@ summary.repo-ops-log-viewer__attempt-head {
   border-bottom: 1px solid var(--border-panel);
   text-align: left;
   vertical-align: top;
+}
+
+/* 머리 칸은 줄을 바꾸지 않는다 — 좁은 폭에서 `포함`이 `포/함`으로 깨졌다. */
+.worker-plan__table th {
+  white-space: nowrap;
 }
 
 .worker-plan__row--pending {
@@ -7074,6 +7101,26 @@ summary.repo-ops-log-viewer__attempt-head {
   gap: var(--sp-3);
 }
 
+/* 대기 레포 묶음 (UI-5cmo §3.1): 본문은 그 레포의 `병렬`·`직렬 N` 레인과 표 블록이
+   쌓인다 — 레인 사이 간격은 직렬 영역의 것과 같다. 묶음 사이 간격은
+   `.mon2-sec + .mon2-sec`가 이미 소유하므로 바깥 스택은 간격을 더하지 않는다. */
+.mon2-queue-body {
+  gap: 0;
+}
+
+.mon2-sec__body--queue {
+  gap: var(--sp-6);
+}
+
+.mon2-sec__empty {
+  color: var(--text-dim);
+}
+
+/* 적용 대상에서 뺀 레포의 미리보기 카드는 흐려진다 (§3.5). */
+.mon2-sec--plan-off .worker-card--preview {
+  opacity: 0.5;
+}
+
 .mon2-flat {
   display: flex;
   flex-direction: column;
@@ -7100,9 +7147,9 @@ summary.repo-ops-log-viewer__attempt-head {
 }
 
 /* 직렬 레인 머리(공유 `.worker-pane__hd`)에서 줄어드는 것은 제목뿐이다 — 점유
-   배지와 `Worker ↗`(`header_control`)는 줄바꿈하지 않는다. 제목이 레포 이름을
-   싣는 것은 모니터뿐이고 `microbiome_bile`처럼 끊을 곳 없는 이름이 버튼을 레인
-   밖으로 밀었다 (UI-723e). 말줄임은 끝의 `직렬 N`을 지우므로 감싼다. */
+   배지는 줄바꿈하지 않는다. 레인 제목은 이제 `직렬 N`뿐이고 레포 이름은 묶음
+   머리(`.mon2-sec__name`, 말줄임)가 싣지만 (UI-5cmo §3.1), 좁은 레인에서 배지를
+   밀어내지 않도록 감싸기는 그대로 둔다 (UI-723e). */
 .mon .worker-wait__lane .worker-pane__title {
   min-width: 0;
   overflow-wrap: anywhere;

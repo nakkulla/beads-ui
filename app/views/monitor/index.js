@@ -19,6 +19,7 @@
  * 보여야 한다.
  */
 import { html, render } from 'lit-html';
+import { ifDefined } from 'lit-html/directives/if-defined.js';
 import {
   DONE_RANGE_OPTIONS,
   closedRangeSince,
@@ -92,8 +93,9 @@ import {
   setChipPresetContext,
   shelveReplyToast,
   shelvedSectionTemplate,
-  waitBody
+  waitLaneTemplate
 } from '../worker/lanes.js';
+import { interleavePreview, planTargetsLane } from '../worker/placement.js';
 import {
   createPlanSkipMemory,
   placePlanFromPopup,
@@ -536,9 +538,9 @@ export function createMonitorView(mount_element, options) {
   /** `보관 N` 묶음의 열림 상태 (UI-sd12 §3.4). */
   let shelved_open = loadShelvedOpen();
   /**
-   * 레인·영역 접힘 (UI-5ksp §4.4). 레포 섹션은 계속 `sections_state`가
-   * 소유하지만, 다섯 레인과 대기 본문의 두 영역은 Worker 탭과 같은 스토어를
-   * 같은 규칙으로 쓴다 — 저장 키만 탭마다 다르다.
+   * 레인 접힘 (UI-5ksp §4.4). 레포 섹션(후보·대기 묶음)은 계속
+   * `sections_state`가 소유하지만, 다섯 레인은 Worker 탭과 같은 스토어를 같은
+   * 규칙으로 쓴다 — 저장 키만 탭마다 다르다.
    */
   const collapse = createLaneCollapse('beads-ui.monitor.lane-collapsed');
   /**
@@ -819,6 +821,16 @@ export function createMonitorView(mount_element, options) {
     },
     onDragBegin: () => {
       place_menu_bead = null;
+    },
+    // 접힌 레포 묶음 머리줄(접혔을 때만 `data-drop`)에 떨어뜨린 이슈는 묶음을
+    // 펼치지 않는다 (UI-5cmo §3.2) — 큐가 차서 기본 접힘이 풀리기 전에 고정한다.
+    onDropAccepted: (zone, target) => {
+      if (
+        target.kind === 'parallel' &&
+        zone.classList.contains('mon2-sec__hd')
+      ) {
+        pinQueueGroupFolded(target.root_dir);
+      }
     },
     // 접힌 후보 띠에 대기 행을 떨어뜨리면 큐에서 뺀다 — Monitor의 기존 문법이다.
     candidate_drop: true
@@ -1495,11 +1507,47 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * Whether one 대기 repo group is folded (UI-5cmo §3.1): the stored
+   * `sections_state[root_dir].queue` when a person pressed it, else folded
+   * exactly when the group has nothing to show (`is_empty`).
+   *
+   * @param {string} root_dir
+   * @param {boolean} is_empty
+   * @returns {boolean}
+   */
+  function queueGroupCollapsed(root_dir, is_empty) {
+    const stored = sections_state[root_dir]?.queue;
+    return typeof stored === 'boolean' ? stored : is_empty;
+  }
+
+  /**
+   * Store a folded 대기 group as folded when only its default (`is_empty`)
+   * folds it, so a drop that fills the group leaves it folded.
+   *
    * @param {string} root_dir
    */
-  function toggleSection(root_dir) {
+  function pinQueueGroupFolded(root_dir) {
+    if (typeof sections_state[root_dir]?.queue === 'boolean') {
+      return;
+    }
+    sections_state = {
+      ...sections_state,
+      [root_dir]: { ...(sections_state[root_dir] || {}), queue: true }
+    };
+    saveSections(sections_state);
+  }
+
+  /**
+   * Flip one repo section and store it. The 대기 group stores the opposite of
+   * what it showed, so a press on a default-folded group opens it for good.
+   *
+   * @param {string} root_dir
+   * @param {'runnable'|'queue'} section
+   * @param {boolean} shown_collapsed
+   */
+  function toggleSection(root_dir, section, shown_collapsed) {
     const entry = { ...(sections_state[root_dir] || {}) };
-    entry.runnable = !entry.runnable;
+    entry[section] = !shown_collapsed;
     sections_state = { ...sections_state, [root_dir]: entry };
     saveSections(sections_state);
     doRender();
@@ -1514,16 +1562,6 @@ export function createMonitorView(mount_element, options) {
    */
   function toggleLaneCollapse(lane) {
     collapse.toggle(lane);
-    doRender();
-  }
-
-  /**
-   * One 대기 본문 영역(병렬·직렬)도 같은 저장-후-재렌더 계약을 쓴다.
-   *
-   * @param {import('../worker/lane-collapse.js').AreaId} area
-   */
-  function toggleWaitArea(area) {
-    collapse.toggleArea(area);
     doRender();
   }
 
@@ -1785,8 +1823,8 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * One 병렬 영역 row (§4.1). Worker `miniRow` 그대로이고, 드래그 좌표만 바깥
-   * shell이 싣는다.
+   * One 레포 묶음 `병렬` 레인 row (§4.1, UI-5cmo §3.1). Worker `miniRow`
+   * 그대로이고, 드래그 좌표만 바깥 shell이 싣는다.
    *
    * @param {LaneItem} item
    * @param {number} row_index
@@ -1889,29 +1927,49 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * One 레포 직렬 레인의 공유 대기 본문 모델 (UI-5ksp §4.2). 본문 구조는
-   * `waitBody`가 소유하므로 여기서는 재료만 만든다 — 행, 점유 배지, 레포
-   * `Worker ↗`, 드롭 좌표, 그리고 레포 간 상호 정지 경고(`after`)다. 그 경고는
-   * Monitor 전용 cross-repo 사실이라 공유 본문이 아니라 이 슬롯이 소유한다.
+   * One 레포 직렬 레인의 대기 레인 모델 (UI-5ksp §4.2, 레포 묶음 UI-5cmo §3.1).
+   * 구조는 공유 `waitLaneTemplate`이 소유하므로 여기서는 재료만 만든다 — 점유
+   * 행, 대기 행 사이에 끼운 미리보기 카드, 점유 배지, 드롭 좌표, 그리고 레포 간
+   * 상호 정지 경고(`after`)다. 그 경고는 Monitor 전용 cross-repo 사실이라 공유
+   * 본문이 아니라 이 슬롯이 소유한다. 제목은 묶음 머리가 이미 레포를 말하므로
+   * `직렬 N`뿐이다.
    *
    * @param {LaneQueueGroup} group
    * @param {MonitorSerialSublane} lane
+   * @param {import('../../utils/placement/compute.js').PlacementPlan|null} plan
+   * @param {(id: string) => string} titleOf
    * @returns {import('../worker/lanes.js').WaitSerialLane}
    */
-  function serialLaneModel(group, lane) {
+  function serialLaneModel(group, lane, plan, titleOf) {
     const occupants = lane.occupants;
     const cross_wait = lane.cross_wait_peers || [];
+    const lane_id =
+      /** @type {import('../../utils/placement/compute.js').PlacementLane} */ (
+        lane.id
+      );
     return {
       id: lane.id,
       // 레포마다 같은 `s1`이 있으므로 pane 요소 id는 붙이지 않는다.
       pane_id: '',
-      title: `${group.name} · ${SERIAL_LANE_LABEL} ${lane.index + 1}`,
+      title: `${SERIAL_LANE_LABEL} ${lane.index + 1}`,
       rows: [
         ...occupants.map((occupant) => occupantRow(occupant, lane, group)),
-        ...lane.items.map((item, index) => serialRow(lane, item, index))
+        // 미리보기 카드는 행 사이의 덧그림이다 (UI-izba §4.7) — 드래그 좌표
+        // (`data-queue-index`)를 갖지 않으므로 드롭 인덱스를 밀지 않는다.
+        ...interleavePreview(
+          lane.items.map((item, index) => ({
+            id: item.id,
+            template: serialRow(lane, item, index)
+          })),
+          lane_id,
+          plan,
+          titleOf
+        )
       ],
       count: lane.items.length,
-      empty: lane.empty === true,
+      // 미리보기 카드가 서는 레인은 비어 보이지 않아야 한다 — 빈 레인 접기 규칙
+      // (390px)이 미리보기를 감춘다. 건수는 실제 구성원만 센다.
+      empty: lane.empty === true && !planTargetsLane(plan, lane_id),
       // 점유자가 없으면 배지 자체를 그리지 않는다 (fail-quiet, §4.2) — 툴팁은
       // 배지가 실제로 말할 것이 있을 때만 붙는다.
       ...(occupants.length > 0
@@ -1927,14 +1985,12 @@ export function createMonitorView(mount_element, options) {
           }
         : {}),
       cycle: lane.cycle,
-      header_control: html`<button
-        type="button"
-        class="op-btn mon2-sec__worker"
-        data-root-dir=${group.root_dir}
-        title="이 레포의 Worker 탭으로 이동"
-      >
-        Worker ↗
-      </button>`,
+      drop: {
+        drop: 'repo-serial',
+        root_dir: group.root_dir,
+        lane_id: lane.id,
+        lane_length: String(lane.raw_length)
+      },
       ...(cross_wait.length > 0
         ? {
             after: html`${cross_wait.map(
@@ -1949,56 +2005,173 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Render 대기 lane body (§4, 공유 본문은 UI-5ksp §4.2): 병렬 영역 하나 + 직렬
-   * 영역 하나. 레포 섹션은 없다 — 카드가 자기 레포를 이미 알고 있으므로 레포는
-   * 좌표가 아니라 배지다. 구조는 두 탭이 공유하는 `waitBody`가 소유한다.
+   * One repo group's `병렬` lane (UI-5cmo §3.1): the repository's parallel
+   * queue rows with the plan's preview cards laid among them. The lane is that
+   * repository's own drop target (`data-drop="parallel"` + `data-root-dir`), so
+   * a drop lands at an index of that repository's queue.
    *
+   * @param {LaneQueueGroup} group
+   * @param {import('../../utils/placement/compute.js').PlacementPlan|null} plan
+   * @param {(id: string) => string} titleOf
+   * @returns {import('../worker/lanes.js').WaitSerialLane}
+   */
+  function parallelLaneModel(group, plan, titleOf) {
+    const items = group.sublanes.parallel;
+    return {
+      id: 'parallel',
+      pane_id: '',
+      title: '병렬',
+      rows: interleavePreview(
+        items.map((item, index) => ({
+          id: item.id,
+          template: parallelRow(item, index)
+        })),
+        'parallel',
+        plan,
+        titleOf
+      ),
+      count: items.length,
+      empty: false,
+      drop: {
+        drop: 'parallel',
+        root_dir: group.root_dir,
+        lane_length: String(group.raw_queue_length)
+      }
+    };
+  }
+
+  /**
+   * The repo groups of the 대기 lane body (UI-5cmo §3.1): every group the lane
+   * model keeps, plus — while the full plan is open — each repository with
+   * plan entries or a result line, by name.
+   *
+   * @returns {LaneQueueGroup[]}
+   */
+  function waitGroups() {
+    /** @type {Map<string, LaneQueueGroup>} */
+    const by_root = new Map(
+      lanes.queue_groups.map((group) => [group.root_dir, group])
+    );
+    for (const root_dir of placement_panel.repoRoots()) {
+      const group = lanes.groups_by_root.get(root_dir);
+      if (group && !by_root.has(root_dir)) {
+        by_root.set(root_dir, group);
+      }
+    }
+    return [...by_root.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * One 대기 repo group (UI-5cmo §3.1): a header shaped like the 후보 repo
+   * section — caret, name, waiting count, `병렬 슬롯 n/m`, `Worker ↗` — then
+   * the `병렬` lane, every configured `직렬 N` lane and, while the full plan is
+   * open, that repository's table block. A folded group's header is a drop
+   * target for that repository's issues: they go to the end of its parallel
+   * queue and the group stays folded.
+   *
+   * @param {LaneQueueGroup} group
    * @returns {import('lit-html').TemplateResult}
    */
-  function waitBodyTemplate() {
-    const parallel_roots = new Set(
-      lanes.parallel_rows.map((item) => item.root_dir)
-    );
-    return waitBody({
-      parallel: {
-        rows: lanes.parallel_rows.map((item, index) =>
-          parallelRow(item, index)
-        ),
-        count: lanes.parallel_rows.length,
-        slots: lanes.queue_groups
-          .filter(
-            (group) =>
-              parallel_roots.has(group.root_dir) ||
-              group.live_count >= 1 ||
-              group.over_cap
-          )
-          .sort((a, b) => a.name.localeCompare(b.name))
-          .map((group) => ({
-            root_dir: group.root_dir,
-            name: group.name,
-            live: group.live_count,
-            cap: group.slots,
-            saturated: group.live_count >= group.slots
-          })),
-        collapsed: collapse.isAreaCollapsed('parallel'),
-        drop: { drop: 'parallel' }
-      },
-      serial: {
-        lanes: lanes.queue_groups.flatMap((group) =>
-          group.sublanes.serial.map((lane) => ({
-            ...serialLaneModel(group, lane),
-            drop: {
-              drop: 'repo-serial',
-              root_dir: group.root_dir,
-              lane_id: lane.id,
-              lane_length: String(lane.raw_length)
-            }
-          }))
-        ),
-        collapsed: collapse.isAreaCollapsed('serial'),
-        extra_panes: []
-      }
-    });
+  function queueGroupTemplate(group) {
+    const root_dir = group.root_dir;
+    const plan = placement_panel.previewPlan(root_dir);
+    const titleOf = placement_panel.titleOf(root_dir);
+    const serial = group.configured_serial || group.sublanes.serial;
+    const waiting =
+      group.sublanes.parallel.length +
+      serial.reduce((sum, lane) => sum + lane.items.length, 0);
+    const occupied = serial.some((lane) => lane.occupants.length > 0);
+    // 표 블록(추천할 후보 없음 접힘·적용 결과 줄 포함)이 서는 레포는 배치안이 있는
+    // 레포라 기본으로 접지 않는다 — 접으면 그 블록이 묶음 안에 숨는다.
+    const has_block = placement_panel.repoRoots().includes(root_dir);
+    const is_empty =
+      waiting === 0 &&
+      !occupied &&
+      !has_block &&
+      !(plan && plan.order.length > 0);
+    const collapsed = queueGroupCollapsed(root_dir, is_empty);
+    // 슬롯 표시 규칙은 합친 병렬 영역 머리의 것을 그대로 옮겼다 (§3.1).
+    const shows_slots =
+      group.sublanes.parallel.length > 0 ||
+      group.live_count >= 1 ||
+      group.over_cap;
+    const saturated = group.live_count >= group.slots;
+    const excluded = placement_panel.isExcluded(root_dir);
+    return html`<section
+      class="mon2-sec mon2-sec--queue${collapsed
+        ? ' is-collapsed'
+        : ''}${excluded ? ' mon2-sec--plan-off' : ''}"
+      data-root-dir=${root_dir}
+      data-section="queue"
+    >
+      <header
+        class="mon2-sec__hd"
+        data-drop=${ifDefined(collapsed ? 'parallel' : undefined)}
+        data-root-dir=${ifDefined(collapsed ? root_dir : undefined)}
+        data-lane-length=${ifDefined(
+          collapsed ? String(group.raw_queue_length) : undefined
+        )}
+      >
+        <button
+          type="button"
+          class="op-btn op-btn--icon mon2-sec__toggle"
+          data-root-dir=${root_dir}
+          data-section="queue"
+          aria-expanded=${collapsed ? 'false' : 'true'}
+          aria-label=${`${group.name} 대기 묶음 ${collapsed ? '펼치기' : '접기'}`}
+        >
+          ${collapsed ? '▸' : '▾'}
+        </button>
+        <span class="mon2-sec__name" title=${root_dir}>${group.name}</span>
+        <span class="mon2-sec__count">${waiting}</span>
+        ${collapsed && is_empty
+          ? html`<span class="mon2-sec__empty">비어 있음</span>`
+          : ''}
+        ${shows_slots
+          ? html`<span
+              class="worker-wait__slots${saturated
+                ? ' worker-wait__slots--warn'
+                : ''}"
+              data-root-dir=${root_dir}
+              title=${`실행 중 ${group.live_count} / 슬롯 ${group.slots} — 슬롯이 빌 때까지 이 레포의 병렬 항목은 나가지 않는다`}
+              >병렬 슬롯
+              ${group.live_count}/${group.slots}${saturated ? ' ⚠' : ''}</span
+            >`
+          : ''}
+        <button
+          type="button"
+          class="op-btn mon2-sec__worker"
+          data-root-dir=${root_dir}
+          title="이 레포의 Worker 탭으로 이동"
+        >
+          Worker ↗
+        </button>
+      </header>
+      ${collapsed
+        ? ''
+        : html`<div class="mon2-sec__body mon2-sec__body--queue">
+            ${waitLaneTemplate(parallelLaneModel(group, plan, titleOf))}
+            ${serial.map((lane) =>
+              waitLaneTemplate(serialLaneModel(group, lane, plan, titleOf))
+            )}
+            ${placement_panel.blockTemplate(root_dir)}
+          </div>`}
+    </section>`;
+  }
+
+  /**
+   * Render 대기 lane body (UI-5cmo §3.1): repo groups in name order, each with
+   * its own `병렬` and `직렬 N` lanes, then the full plan's summary row while it
+   * is open. 합친 병렬 영역·직렬 영역은 없다 — 한 레포의 레인이 한데 모인다.
+   *
+   * @param {LaneQueueGroup[]} groups
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function waitBodyTemplate(groups) {
+    return html`<div class="worker-wait mon2-queue-body">
+      ${groups.map((group) => queueGroupTemplate(group))}
+      ${placement_panel.summaryTemplate()}
+    </div>`;
   }
 
   /**
@@ -2060,6 +2233,7 @@ export function createMonitorView(mount_element, options) {
       shelved_open
     );
     const running = runningItems();
+    const wait_groups = waitGroups();
     /** @type {Record<string, LaneItem[]>} */
     const by_lane = {
       runnable: lanes.runnable,
@@ -2084,15 +2258,10 @@ export function createMonitorView(mount_element, options) {
               ? runnableBody()
               : undefined
           : meta.lane === 'queue'
-            ? lanes.queue_groups.length > 0 ||
-              lanes.parallel_rows.length > 0 ||
-              placement_panel.isOpen()
-              ? // 전체 배치안 패널은 대기 레인 본문 맨 위에 열린다 (UI-hf8v
-                // §3.2) — 그룹이 하나도 없어도 패널은 그린다.
-                html`${placement_panel.panelTemplate()}${lanes.queue_groups
-                  .length > 0 || lanes.parallel_rows.length > 0
-                  ? waitBodyTemplate()
-                  : ''}`
+            ? wait_groups.length > 0 || placement_panel.isOpen()
+              ? // 전체 배치안이 열려 있으면 묶음이 하나도 없어도 요약 줄은 그린다
+                // (UI-5cmo §3.3).
+                waitBodyTemplate(wait_groups)
               : undefined
             : meta.lane === 'running'
               ? runningBody(now, running)
@@ -2592,10 +2761,9 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Move each repo's 자동/수동 state onto its badge tooltip (§4.1) — 병렬
-   * 영역에는 섹션 헤더가 없다. 배지는 두 탭이 공유하는 Worker 템플릿이
-   * 그리므로, 그 템플릿을 모니터 전용 사실로 갈라놓는 대신 렌더 뒤에 툴팁만
-   * 덧쓴다.
+   * Move each repo's 자동/수동 state onto its `병렬` lane row badge tooltip
+   * (§4.1). 배지는 두 탭이 공유하는 Worker 템플릿이 그리므로, 그 템플릿을 모니터
+   * 전용 사실로 갈라놓는 대신 렌더 뒤에 툴팁만 덧쓴다.
    */
   function applyRepoAutomationTooltips() {
     /** @type {Map<string, boolean>} */
@@ -2605,7 +2773,7 @@ export function createMonitorView(mount_element, options) {
     }
     for (const badge of Array.from(
       console_el.querySelectorAll(
-        '.worker-wait__area--parallel .worker-mini__repo'
+        '.mon2-sec--queue [data-drop="parallel"] .worker-mini__repo'
       )
     )) {
       const root_dir =
@@ -2872,41 +3040,30 @@ export function createMonitorView(mount_element, options) {
     }
     await applyDrop(drag, {
       kind: 'parallel',
-      marker_index: lanes.parallel_rows.length
+      root_dir: item.root_dir,
+      index: lanes.parallel_raw_length[item.root_dir] ?? 0
     });
   }
 
   /**
-   * The 병렬 영역's mobile `↑ ↓` (§6): 같은 레포 행 사이에서만 자리를
-   * 바꾼다.
+   * The `병렬` lane's mobile `↑ ↓` (§6): 같은 레포 병렬 큐 안에서만 자리를
+   * 바꾼다 — 위로는 앞 행 자리에, 아래로는 뒤 행의 **다음** 자리에 넣는다.
    *
    * @param {string} bead_id
    * @param {-1|1} direction
    */
   async function nudgeParallelRow(bead_id, direction) {
-    const rows = lanes.parallel_rows;
+    const item = item_by_bead.get(bead_id);
+    const rows = item
+      ? lanes.groups_by_root.get(item.root_dir)?.sublanes.parallel || []
+      : [];
     const position = rows.findIndex((row) => row.id === bead_id);
-    if (position < 0) {
+    const neighbour = rows[position + direction];
+    if (position < 0 || !neighbour) {
       return;
     }
     const root_dir = rows[position].root_dir;
-    /** @type {number[]} */
-    const siblings = [];
-    rows.forEach((row, index) => {
-      if (row.root_dir === root_dir) {
-        siblings.push(index);
-      }
-    });
-    const at = siblings.indexOf(position);
-    const neighbour = siblings[at + direction];
-    if (typeof neighbour !== 'number') {
-      return;
-    }
-    // 위로는 앞 형제 자리에, 아래로는 뒤 형제의 **다음** 자리에 마커를 둔다.
-    const marker_index =
-      direction === -1
-        ? neighbour
-        : (siblings[at + 2] ?? Math.min(rows.length, neighbour + 1));
+    const neighbour_index = neighbour.queue_index ?? 0;
     await applyDrop(
       {
         kind: 'parallel',
@@ -2914,7 +3071,11 @@ export function createMonitorView(mount_element, options) {
         root_dir,
         queue_index: rows[position].queue_index ?? 0
       },
-      { kind: 'parallel', marker_index }
+      {
+        kind: 'parallel',
+        root_dir,
+        index: direction === -1 ? neighbour_index : neighbour_index + 1
+      }
     );
   }
 
@@ -3510,7 +3671,13 @@ export function createMonitorView(mount_element, options) {
     );
     if (section_toggle) {
       ev.preventDefault();
-      toggleSection(section_toggle.getAttribute('data-root-dir') || '');
+      toggleSection(
+        section_toggle.getAttribute('data-root-dir') || '',
+        section_toggle.getAttribute('data-section') === 'queue'
+          ? 'queue'
+          : 'runnable',
+        section_toggle.getAttribute('aria-expanded') === 'false'
+      );
       return;
     }
 
@@ -3531,19 +3698,6 @@ export function createMonitorView(mount_element, options) {
       ) {
         toggleLaneCollapse(lane);
       }
-      return;
-    }
-
-    const area_toggle = /** @type {HTMLElement|null} */ (
-      target.closest('.worker-wait__area-toggle[data-area]')
-    );
-    if (area_toggle) {
-      ev.preventDefault();
-      toggleWaitArea(
-        /** @type {'parallel'|'serial'} */ (
-          area_toggle.getAttribute('data-area') || 'parallel'
-        )
-      );
       return;
     }
 

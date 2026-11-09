@@ -865,7 +865,8 @@ describe('전체 배치안 explanations', () => {
       row.querySelector('details.worker-plan__reasons')
     );
     expect(fold.open).toBe(false);
-    expect(fold.querySelector('summary')?.textContent?.trim()).toBe(
+    expect(fold.querySelector('summary')?.textContent?.trim()).toBe('근거');
+    expect(fold.querySelector('.worker-plan__line')?.textContent?.trim()).toBe(
       '판정 2쌍 · 부딪힘 1 · 독립 1'
     );
     expect(fold.textContent).toContain('P-1 — 부딪힘');
@@ -895,6 +896,80 @@ describe('전체 배치안 explanations', () => {
         card.getAttribute('data-preview-id')
       )
     ).toEqual(['RD-1']);
+  });
+});
+
+describe('full plan table columns (UI-5cmo §3.4)', () => {
+  test('heads the table with 포함 · # · 후보 · 배치안', () => {
+    const { mount } = mountView(vi.fn());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(
+      Array.from(mount.querySelectorAll('.worker-plan__table th'), (cell) =>
+        cell.textContent?.trim()
+      )
+    ).toEqual(['포함', '#', '후보', '배치안']);
+  });
+
+  test('puts the include checkbox in the first cell of a row', () => {
+    const { mount } = mountView(vi.fn());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    const first = mount.querySelector('.worker-plan__row td');
+    expect(first?.querySelector('.worker-plan__include')).not.toBeNull();
+  });
+
+  test('names the state after 판정 전 on a row not judged yet', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_status: {
+          'RD-1': { state: 'ready', done: 1, total: 1 },
+          'RD-3': { state: 'pending', reason: 'judging' }
+        }
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(
+      mount
+        .querySelector(
+          '.worker-plan__row[data-bead-id="RD-3"] .worker-plan__pos'
+        )
+        ?.textContent?.trim()
+    ).toBe('판정 전 · jev 판정 중');
+  });
+
+  test('lays the warning lines before the 근거 fold in the place cell', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'S2-1', 'x_first'),
+          rel('RD-1', 'RD-3', 'independent'),
+          rel('RD-3', 'P-1', 'conflict'),
+          blocks('P-1', 'S1-1', 'c_first')
+        ])
+      })
+    );
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    const cell = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-plan__row[data-bead-id="RD-3"] td:last-child'
+      )
+    );
+    expect(
+      Array.from(cell.children, (child) => child.className.split(' ').pop())
+    ).toEqual([
+      'worker-plan__pos',
+      'worker-plan__warn',
+      'worker-plan__reasons'
+    ]);
   });
 });
 
@@ -977,7 +1052,7 @@ function sameFile(x, y, files) {
 }
 
 /**
- * The 배치안 cell text of one full-plan row.
+ * The place sentence of one full-plan row — the first line of its 배치안 cell.
  *
  * @param {HTMLElement} mount
  * @param {string} id
@@ -985,7 +1060,7 @@ function sameFile(x, y, files) {
  */
 function planPosition(mount, id) {
   const row = mount.querySelector(`.worker-plan__row[data-bead-id="${id}"]`);
-  return (row?.querySelectorAll('td')[2]?.textContent || '').trim();
+  return (row?.querySelector('.worker-plan__pos')?.textContent || '').trim();
 }
 
 describe('position and reason wording (UI-lsr4 §3.4)', () => {
@@ -1023,7 +1098,7 @@ describe('position and reason wording (UI-lsr4 §3.4)', () => {
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-plan__row[data-bead-id="RD-3"]')
     );
-    expect(row.querySelector('summary')?.textContent?.trim()).toBe(
+    expect(row.querySelector('.worker-plan__pairs')?.textContent?.trim()).toBe(
       '판정 6쌍 · 부딪힘 2 · 선후 1 · 독립 2 · 모름 1'
     );
     expect(
@@ -1161,8 +1236,8 @@ describe('single recommendation of a same-file pair (UI-lsr4 gate-r1)', () => {
   });
 });
 
-describe('pair count summary (UI-lsr4 gate-r1)', () => {
-  test('shows the pair count when every pair is unknown', () => {
+describe('pair count summary (UI-lsr4 gate-r1, UI-5cmo §3.4)', () => {
+  test('draws no 근거 fold on a row whose pairs are all unknown', () => {
     const { mount } = mountView(
       vi.fn(),
       queueOf({
@@ -1179,9 +1254,7 @@ describe('pair count summary (UI-lsr4 gate-r1)', () => {
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-plan__row[data-bead-id="RD-3"]')
     );
-    expect(row.querySelector('summary')?.textContent?.trim()).toBe(
-      '판정 2쌍 · 모름 2'
-    );
+    expect(row.querySelector('details.worker-plan__reasons')).toBeNull();
   });
 });
 
@@ -1415,6 +1488,17 @@ describe('conflicting partner bundle (UI-blx2 §3.7)', () => {
         )
         ?.textContent?.trim()
     ).toBe('↪ P-1: 병렬 #1 → 직렬 1 #1 (옮김)');
+  });
+
+  test('keeps the move line of the full plan outside the 근거 fold', () => {
+    const { mount } = mountView(vi.fn(), partnerQueue());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    const move = mount.querySelector(
+      '.worker-plan__row[data-bead-id="RD-3"] .worker-plan__move'
+    );
+    expect(move?.closest('details')).toBeNull();
   });
 
   test('draws a dotted 옮김 card in the new lane and keeps the partner card in place', () => {

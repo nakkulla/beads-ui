@@ -601,6 +601,12 @@ export function occupantRowInput(occupant, lane, group) {
  * @property {LaneItem[]} items
  * @property {{ parallel: LaneItem[], serial: MonitorSerialSublane[] }} sublanes
  * @property {number} serial_lane_count
+ * @property {MonitorSerialSublane[]} [configured_serial] - Every serial lane
+ * below {@link serial_lane_count}, an empty one included, plus a lane past it
+ * that still holds members (UI-5cmo §3.1). `sublanes.serial` leaves out the one
+ * empty configured lane the Worker tab hides; the monitor repo group draws
+ * this list, so its lanes and the placement plan's configured lane count read
+ * the same snapshot value.
  * @property {number} raw_queue_length - 병렬 큐 서버 배열의 entry 수 (§6).
  * @property {number} live_count - 슬롯을 점유하는 실행 중 attempt 수 (UI-4tud
  * §4.3). 세션 타일·일시정지·실패 타일은 세지 않는다.
@@ -3248,6 +3254,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const queue_by_root = new Map();
   /** @type {Map<string, MonitorSerialSublane[]>} */
   const serial_by_root = new Map();
+  /** @type {Map<string, MonitorSerialSublane[]>} */
+  const configured_serial_by_root = new Map();
   /** @type {Map<string, number>} */
   const serial_count_by_root = new Map();
   /** @type {Map<string, number>} */
@@ -4246,7 +4254,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     };
 
     /** @type {MonitorSerialSublane[]} */
-    const projected_serial = [];
+    const configured_serial = [];
     for (
       let lane_index = 0;
       lane_index < Math.max(serial_lane_count, serial_lanes.length);
@@ -4285,16 +4293,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
         items.push(item);
         queue.push(item);
       }
-      // 설정된 레인 수가 1이고 그마저 비었으면 힌트도 생략한다 (§6): 드롭
-      // 타깃이 하나뿐인 병렬 pane과 구분할 것이 없다.
+      // 설정 수 밖의 빈 레인은 어디에도 서지 않는다 — 넣을 수 없는 보관 칸이다.
       if (
         items.length === 0 &&
         occupied_by.length === 0 &&
-        (serial_lane_count <= 1 || lane_index >= serial_lane_count)
+        lane_index >= serial_lane_count
       ) {
         continue;
       }
-      projected_serial.push({
+      configured_serial.push({
         id,
         index: lane_index,
         items,
@@ -4310,7 +4317,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : {})
       });
     }
-    serial_by_root.set(root_dir, projected_serial);
+    configured_serial_by_root.set(root_dir, configured_serial);
+    // 설정된 레인 수가 1이고 그마저 비었으면 Worker 탭은 힌트도 생략한다 (§6):
+    // 드롭 타깃이 하나뿐인 병렬 pane과 구분할 것이 없다. 모니터 레포 묶음은 설정된
+    // 레인을 모두 그리므로 `configured_serial`을 읽는다 (UI-5cmo §3.1).
+    serial_by_root.set(
+      root_dir,
+      configured_serial.filter(
+        (lane) => !(lane.empty === true && serial_lane_count <= 1)
+      )
+    );
 
     const place_lanes = Array.from(
       { length: serial_lane_count },
@@ -5104,6 +5120,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
       items: parallel,
       sublanes: { parallel, serial },
       serial_lane_count: serial_count_by_root.get(source.root_dir) || 0,
+      configured_serial:
+        configured_serial_by_root.get(source.root_dir) || serial,
       raw_queue_length: raw_queue_length_by_root.get(source.root_dir) || 0
     };
     // PR 대기 줄의 머지 재료는 대기 레인 표시와 무관하게 모든 저장소가 얻는다

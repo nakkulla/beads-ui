@@ -1,10 +1,12 @@
 /**
- * 모니터 탭 전체 배치안 (UI-hf8v §3.2–§3.5).
+ * 모니터 탭 전체 배치안 (UI-hf8v §3.2–§3.5, 레포 묶음 배치 UI-5cmo §3.3·§3.5).
  *
- * 대기 레인 머리의 `[전체 배치안 · N개 레포]`가 보이는 레포마다 Worker 탭과 같은 배치안
- * 표를 레포 카드로 보인다. 표의 재료와 그리기는 Worker 탭과 같은 공유 함수
- * (`fullPlacementPlan`·`placementPlanTable`)가 소유하고, 이 모듈은 레포 카드의 틀,
- * 레포·Bead 키 체크 기억, 레포 단위 적용 순서와 결과 줄만 갖는다.
+ * 대기 레인 머리의 `[전체 배치안 · N개 레포]`가 열면, 대기 열의 레포 묶음마다 그 레포
+ * 계획의 미리보기 카드가 레인 안 실제 자리에 끼이고(공유 `interleavePreview`), 그
+ * 레포의 표 블록이 묶음 맨 아래에 선다. 대기 본문 맨 아래에는 요약 줄이 붙는다. 표의
+ * 재료와 그리기는 Worker 탭과 같은 공유 함수(`fullPlacementPlan`·`placementPlanTable`)가
+ * 소유하고, 이 모듈은 레포 블록의 머리, 레포·Bead 키 체크와 적용 대상 기억, 레포 단위
+ * 적용 순서와 결과 줄, 요약 줄만 갖는다.
  *
  * 적용 단위는 레포다. 레인·충돌 판정·큐 revision이 레포마다 따로라 레포를 섞은
  * 단일 배치는 만들지 않는다. 누른 순간의 대상 레포·체크·`shown`을 고정하고, 레포마다
@@ -12,7 +14,7 @@
  * `moved`로 멈춘다.
  *
  * @import { PlacementStatus } from '../../../server/placement/wire.js'
- * @import { PlannedPlacement } from '../../utils/placement/compute.js'
+ * @import { PlacementPlan, PlannedPlacement } from '../../utils/placement/compute.js'
  */
 import { html } from 'lit-html';
 import { sendPlacementBatch } from '../../utils/placement/apply.js';
@@ -26,7 +28,9 @@ import {
   placementPlanTable,
   placementRecompute,
   placementStateWord,
-  placementStopReason
+  placementStopReason,
+  placementTitleOf,
+  previewablePlan
 } from '../worker/placement.js';
 
 /**
@@ -110,6 +114,13 @@ export function createMonitorPlacementPanel(options) {
    * @type {Map<string, Map<string, boolean>>}
    */
   const checks = new Map();
+  /**
+   * The `적용 대상` checks (UI-5cmo §3.5): a repository is a target until its
+   * box is turned off, and the memory lasts until the panel closes.
+   *
+   * @type {Map<string, boolean>}
+   */
+  const targets = new Map();
   /** @type {Map<string, RepoApplyResult>} */
   const results = new Map();
   /** @type {{ at: number, total: number }|null} */
@@ -194,11 +205,18 @@ export function createMonitorPlacementPanel(options) {
    * @returns {(id: string) => string}
    */
   function titleOf(root_dir) {
-    const rows = options.candidatesOf(root_dir);
-    return (id) => {
-      const row = rows.find((item) => item.id === id);
-      return row && typeof row.title === 'string' ? row.title : '';
-    };
+    return placementTitleOf(
+      options.candidatesOf(root_dir),
+      options.queueOf(root_dir)
+    );
+  }
+
+  /**
+   * @param {string} root_dir
+   * @returns {boolean}
+   */
+  function isTarget(root_dir) {
+    return targets.get(root_dir) !== false;
   }
 
   /**
@@ -213,7 +231,7 @@ export function createMonitorPlacementPanel(options) {
   }
 
   /**
-   * The repositories `[전체 적용]` would send, in panel order: no result line
+   * The repositories with something to send, in panel order: no result line
    * yet and at least one checked place.
    *
    * @returns {Array<{ repo: MonitorPlacementRepo, count: number }>}
@@ -228,9 +246,20 @@ export function createMonitorPlacementPanel(options) {
       .filter((item) => item.count > 0);
   }
 
+  /**
+   * What `[선택한 레포 적용]` sends (UI-5cmo §3.5): the applicable
+   * repositories whose `적용 대상` box is on.
+   *
+   * @returns {Array<{ repo: MonitorPlacementRepo, count: number }>}
+   */
+  function selected() {
+    return applicable().filter((item) => isTarget(item.repo.root_dir));
+  }
+
   function reset() {
     generation += 1;
     checks.clear();
+    targets.clear();
     results.clear();
   }
 
@@ -365,18 +394,19 @@ export function createMonitorPlacementPanel(options) {
   }
 
   /**
+   * The result block of a repository the panel applied (UI-hf8v §3.4): its
+   * result line, and for a stopped one `[이 레포 배치안 다시 보기]` and the table
+   * recomputed on the latest queue without checks.
+   *
    * @param {MonitorPlacementRepo} repo
    * @param {RepoApplyResult} result
    * @returns {import('lit-html').TemplateResult}
    */
-  function resultCardTemplate(repo, result) {
+  function resultBlockTemplate(repo, result) {
     return html`<section
       class="mon-plan__repo mon-plan__repo--done"
       data-root-dir=${repo.root_dir}
     >
-      <div class="mon-plan__repo-hd">
-        <span class="mon-plan__repo-name">${repo.name}</span>
-      </div>
       <div
         class="mon-plan__result${result.stopped
           ? ' mon-plan__result--stopped'
@@ -415,13 +445,17 @@ export function createMonitorPlacementPanel(options) {
   }
 
   /**
+   * One repository's table block at the bottom of its repo group (UI-5cmo
+   * §3.3). The repo group header already names the repository, so the block
+   * head starts with the `적용 대상` check instead of the name.
+   *
    * @param {MonitorPlacementRepo} repo
    * @returns {import('lit-html').TemplateResult}
    */
-  function repoCardTemplate(repo) {
+  function repoBlockTemplate(repo) {
     const result = results.get(repo.root_dir);
     if (result) {
-      return resultCardTemplate(repo, result);
+      return resultBlockTemplate(repo, result);
     }
     const queue = options.queueOf(repo.root_dir);
     const material = planOf(repo.root_dir);
@@ -440,7 +474,7 @@ export function createMonitorPlacementPanel(options) {
         data-root-dir=${repo.root_dir}
       >
         <summary class="mon-plan__fold">
-          ${repo.name} · 추천할 후보 없음 —
+          배치안 · 추천할 후보 없음 —
           ${foldedStateCounts(material.status, material.rows)}
         </summary>
         ${table}
@@ -449,9 +483,26 @@ export function createMonitorPlacementPanel(options) {
     const progress = judgingProgress(queue);
     const latest = latestJudgedAt(queue);
     const count = material.plan.order.length;
-    return html`<section class="mon-plan__repo" data-root-dir=${repo.root_dir}>
+    const on = isTarget(repo.root_dir);
+    return html`<section
+      class="mon-plan__repo${on ? '' : ' mon-plan__repo--off'}"
+      data-root-dir=${repo.root_dir}
+    >
       <div class="mon-plan__repo-hd">
-        <span class="mon-plan__repo-name">${repo.name}</span>
+        <label
+          class="ui-field mon-plan__target"
+          title="[선택한 레포 적용]이 이 레포를 보낼지 정합니다"
+        >
+          <input
+            type="checkbox"
+            class="mon-plan__target-box"
+            data-root-dir=${repo.root_dir}
+            .checked=${on}
+            ?disabled=${busy}
+          />
+          적용 대상
+        </label>
+        ${on ? '' : html`<span class="mon-plan__off">적용 대상에서 뺌</span>`}
         <span class="mon-plan__count"
           >추천 ${material.ready.length} / ${material.rows.length}</span
         >
@@ -479,6 +530,33 @@ export function createMonitorPlacementPanel(options) {
       </div>
       ${table}
     </section>`;
+  }
+
+  /**
+   * The summary row's words (UI-5cmo §3.3·§3.5): the apply progress while
+   * sending; otherwise the count, the repository count and each target
+   * repository's count — `N건 · M개 레포 — repo-a 3 · repo-b 2`. With
+   * places to send but every repository turned off it asks for a choice.
+   *
+   * @param {Array<{ repo: MonitorPlacementRepo, count: number }>} chosen
+   * @returns {string}
+   */
+  function summaryText(chosen) {
+    if (applying) {
+      return `적용 중 · ${applying.at}/${applying.total} 레포`;
+    }
+    if (panelRepos().length === 0) {
+      return '배치안을 볼 후보가 있는 레포가 없습니다';
+    }
+    if (chosen.length === 0) {
+      return applicable().length > 0
+        ? '적용할 레포를 고르세요'
+        : '0건 · 0개 레포';
+    }
+    const total = chosen.reduce((sum, item) => sum + item.count, 0);
+    return `${total}건 · ${chosen.length}개 레포 — ${chosen
+      .map((item) => `${item.repo.name} ${item.count}`)
+      .join(' · ')}`;
   }
 
   return {
@@ -513,7 +591,7 @@ export function createMonitorPlacementPanel(options) {
           aria-pressed=${open ? 'true' : 'false'}
           ?disabled=${shown === 0 && !open}
           title=${shown > 0
-            ? '보이는 레포마다 후보 배치안을 레포 카드로 봅니다'
+            ? '보이는 레포마다 후보 배치안을 대기 레인 안 자리와 레포 표로 봅니다'
             : '배치안을 볼 후보가 있는 레포가 없습니다'}
         >
           전체 배치안 · ${shown}개 레포
@@ -534,50 +612,105 @@ export function createMonitorPlacementPanel(options) {
       </span>`;
     },
     /**
-     * The open panel at the top of the queue-lane body, or nothing.
+     * The repositories that get a repo group while the panel is open (UI-5cmo
+     * §3.1): every repository with candidate entries or a result line, by
+     * name. Empty while closed.
      *
+     * @returns {string[]}
+     */
+    repoRoots() {
+      return open ? panelRepos().map((repo) => repo.root_dir) : [];
+    },
+    /**
+     * The plan whose preview and moved cards one repo group's lanes draw
+     * (UI-5cmo §3.3): the checked candidates' plan, minus places in a lane
+     * the repository does not have yet. Null while closed, for a repository
+     * without placement material and for one that already holds a result line.
+     *
+     * @param {string} root_dir
+     * @returns {PlacementPlan|null}
+     */
+    previewPlan(root_dir) {
+      if (!open || results.has(root_dir)) {
+        return null;
+      }
+      const status = objectOf(options.queueOf(root_dir)).placement_status;
+      if (!status || typeof status !== 'object') {
+        return null;
+      }
+      return previewablePlan(planOf(root_dir).plan);
+    },
+    /**
+     * The card title of a Bead in one repository's plan — the same words the
+     * Worker tab's preview cards use (`placementTitleOf`).
+     *
+     * @param {string} root_dir
+     * @returns {(id: string) => string}
+     */
+    titleOf(root_dir) {
+      return titleOf(root_dir);
+    },
+    /**
+     * Whether a repository's `적용 대상` box is off while the panel is open —
+     * the repo group dims its table and preview cards (UI-5cmo §3.5).
+     *
+     * @param {string} root_dir
+     * @returns {boolean}
+     */
+    isExcluded(root_dir) {
+      return open && !isTarget(root_dir);
+    },
+    /**
+     * One repository's table block for the bottom of its repo group, or
+     * nothing while closed or for a repository without plan entries
+     * (fail-quiet).
+     *
+     * @param {string} root_dir
      * @returns {import('lit-html').TemplateResult|''}
      */
-    panelTemplate() {
+    blockTemplate(root_dir) {
       if (!open) {
         return '';
       }
-      const repos = panelRepos();
-      const targets = applicable();
-      const total = targets.reduce((sum, item) => sum + item.count, 0);
-      return html`<section class="mon-plan" aria-label="전체 배치안">
-        <div class="mon-plan__hd">
-          <span class="mon-plan__title">전체 배치안</span>
-          <button
-            type="button"
-            class="op-btn op-btn--ghost op-btn--icon mon-plan__close"
-            title="전체 배치안 닫기"
-            aria-label="전체 배치안 닫기"
-          >
-            ✕
-          </button>
-        </div>
-        ${repos.length === 0
-          ? html`<div class="mon-plan__empty">
-              배치안을 볼 후보가 있는 레포가 없습니다
-            </div>`
-          : repos.map((repo) => repoCardTemplate(repo))}
-        <div class="mon-plan__summary">
-          <span class="mon-plan__total"
-            >${applying
-              ? `적용 중 · ${applying.at}/${applying.total} 레포`
-              : `${total}건 · ${targets.length}개 레포`}</span
-          >
-          <button
-            type="button"
-            class="op-btn op-btn--primary mon-plan__apply-all"
-            ?disabled=${total === 0 || applying !== null}
-            title="체크한 자리가 있는 레포를 이름순으로 하나씩 적용합니다"
-          >
-            전체 적용
-          </button>
-        </div>
-      </section>`;
+      const repo = panelRepos().find((item) => item.root_dir === root_dir);
+      return repo ? repoBlockTemplate(repo) : '';
+    },
+    /**
+     * The summary row at the bottom of the queue-lane body (UI-5cmo §3.3):
+     * the target count line, `[선택한 레포 적용]` and the close `✕`. Nothing
+     * while closed.
+     *
+     * @returns {import('lit-html').TemplateResult|''}
+     */
+    summaryTemplate() {
+      if (!open) {
+        return '';
+      }
+      const chosen = selected();
+      const total = chosen.reduce((sum, item) => sum + item.count, 0);
+      return html`<div
+        class="mon-plan__summary"
+        role="group"
+        aria-label="전체 배치안"
+      >
+        <span class="mon-plan__total">${summaryText(chosen)}</span>
+        <button
+          type="button"
+          class="op-btn op-btn--primary mon-plan__apply-all"
+          ?disabled=${total === 0 || applying !== null}
+          title="적용 대상으로 고른 레포 중 체크한 자리가 있는 레포를 이름순으로 하나씩 적용합니다"
+        >
+          선택한 레포 적용
+        </button>
+        <button
+          type="button"
+          class="op-btn op-btn--ghost op-btn--icon mon-plan__close"
+          title="전체 배치안 닫기"
+          aria-label="전체 배치안 닫기"
+        >
+          ✕
+        </button>
+      </div>`;
     },
     /**
      * Handle a click in the monitor. True when this module took it.
@@ -631,7 +764,7 @@ export function createMonitorPlacementPanel(options) {
       );
       if (apply_all) {
         if (!apply_all.disabled) {
-          void apply(applicable().map((item) => item.repo));
+          void apply(selected().map((item) => item.repo));
         }
         return true;
       }
@@ -647,21 +780,37 @@ export function createMonitorPlacementPanel(options) {
         }
         return true;
       }
-      // The panel and the header controls are not cards: a click inside them
-      // must not fall through to the card's open-detail default.
-      return !!target.closest('.mon-plan, .mon-plan-controls');
+      // The blocks, the summary row and the header controls are not cards: a
+      // click inside them must not fall through to the card's open-detail
+      // default.
+      return !!target.closest(
+        '.mon-plan__repo, .mon-plan__summary, .mon-plan-controls'
+      );
     },
     /**
-     * Handle a change event (the repository cards' include checkboxes).
+     * Handle a change event: a block's `적용 대상` box or its include
+     * checkboxes.
      *
      * @param {HTMLElement|null} target
      * @returns {boolean}
      */
     handleChange(target) {
+      if (!target || typeof target.closest !== 'function') {
+        return false;
+      }
+      const target_box = /** @type {HTMLInputElement|null} */ (
+        target.closest('.mon-plan__target-box')
+      );
+      if (target_box) {
+        const root_dir = target_box.dataset.rootDir || '';
+        if (root_dir) {
+          targets.set(root_dir, target_box.checked);
+          requestRender();
+        }
+        return true;
+      }
       const box = /** @type {HTMLInputElement|null} */ (
-        target && typeof target.closest === 'function'
-          ? target.closest('.mon-plan .worker-plan__include')
-          : null
+        target.closest('.mon-plan__repo .worker-plan__include')
       );
       if (!box) {
         return false;

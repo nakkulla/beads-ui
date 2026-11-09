@@ -651,14 +651,15 @@ export function otherIndependentText(placement) {
 }
 
 /**
- * The 근거 cell of a full-plan row (UI-7y8h): relation lines folded under a
- * `<details>` summary, warning lines outside it so they stay visible. A row
- * without relation lines draws no fold.
+ * The explanation lines under a full-plan row's place (UI-5cmo §3.4): the
+ * warning lines, always shown, then the `근거` fold. The fold opens on the
+ * pair count summary and then the relation, `그 밖 독립`, reference and
+ * outside lines; a row without any of those lines draws no fold.
  *
  * @param {PlannedPlacement} placement
  * @returns {import('lit-html').TemplateResult}
  */
-function reasonCellTemplate(placement) {
+function reasonLinesTemplate(placement) {
   const other_independent = otherIndependentText(placement);
   const lines = [
     ...placement.reasons.map((line) => relationLineText(line)),
@@ -666,19 +667,22 @@ function reasonCellTemplate(placement) {
     ...placement.references.map((line) => relationLineText(line, true)),
     ...placement.outside.map((line) => outsideLineText(line))
   ];
-  return html`${placement.pair_counts.total > 0 || lines.length > 0
-    ? html`<details class="worker-plan__reasons">
-        <summary>${reasonSummaryText(placement)}</summary>
-        ${lines.map(
-          (text) => html`<div class="worker-plan__line">${text}</div>`
-        )}
-      </details>`
-    : ''}${placement.warnings.map(
+  return html`${placement.warnings.map(
     (warning) =>
       html`<div class="worker-plan__line worker-plan__warn">
         ${placementWarningText(warning)}
       </div>`
-  )}`;
+  )}${lines.length > 0
+    ? html`<details class="worker-plan__reasons">
+        <summary>근거</summary>
+        <div class="worker-plan__line worker-plan__pairs">
+          ${reasonSummaryText(placement)}
+        </div>
+        ${lines.map(
+          (text) => html`<div class="worker-plan__line">${text}</div>`
+        )}
+      </details>`
+    : ''}`;
 }
 
 /**
@@ -840,12 +844,15 @@ export function fullPlacementPlan(queue, display_order, checks) {
 }
 
 /**
- * The full plan table of one repository (UI-hf8v §3.3): number, candidate,
- * place, reasons and the include checkbox per row, then the lane-growth line
- * and the repository's stop notice. The Worker tab's `planTemplate` and the
- * monitor's repository card both draw it, so the two tabs show the same rows
- * for the same repository state. `root_dir`, when given, rides on each
- * checkbox so a page with several repositories knows whose row changed.
+ * The full plan table of one repository (UI-hf8v §3.3, columns UI-5cmo §3.4):
+ * the include checkbox, number, candidate and place per row, then the
+ * lane-growth line and the repository's stop notice. The place cell carries the
+ * place sentence, the move and bind lines, the warning lines and the folded
+ * `근거`; a row not judged yet says `판정 전 · <state>`. The Worker tab's
+ * `planTemplate` and the monitor's repository block both draw it, so the two
+ * tabs show the same rows for the same repository state. `root_dir`, when
+ * given, rides on each checkbox so a page with several repositories knows
+ * whose row changed.
  *
  * @param {FullPlacementPlan} material
  * @param {{ titleOf: (id: string) => string, busy: boolean, notice: string|null, root_dir?: string }} view
@@ -857,11 +864,10 @@ export function placementPlanTable(material, view) {
   return html`<table class="worker-plan__table">
       <thead>
         <tr>
+          <th>포함</th>
           <th>#</th>
           <th>후보</th>
           <th>배치안</th>
-          <th>근거</th>
-          <th>포함</th>
         </tr>
       </thead>
       <tbody>
@@ -876,32 +882,6 @@ export function placementPlanTable(material, view) {
             class="worker-plan__row${ready ? '' : ' worker-plan__row--pending'}"
             data-bead-id=${id}
           >
-            <td>${item ? item.number : ''}</td>
-            <td>
-              <span class="worker-plan__id">${id}</span>
-              ${view.titleOf(id)}
-            </td>
-            <td>
-              ${!ready
-                ? '판정 전'
-                : item
-                  ? placementPositionText(item, plan.configured_lane_count)
-                  : '포함 안 함'}${item
-                ? item.pulled.map(
-                    (step) =>
-                      html`<div class="worker-plan__line worker-plan__move">
-                        ${bundleStepText(step, item.lane)}
-                      </div>`
-                  )
-                : ''}
-            </td>
-            <td>
-              ${explained
-                ? reasonCellTemplate(explained)
-                : ready
-                  ? ''
-                  : recommendButtonState(status[id]).title}
-            </td>
             <td>
               <input
                 type="checkbox"
@@ -912,6 +892,28 @@ export function placementPlanTable(material, view) {
                 .checked=${checked.has(id)}
                 ?disabled=${!ready || view.busy}
               />
+            </td>
+            <td>${item ? item.number : ''}</td>
+            <td>
+              <span class="worker-plan__id">${id}</span>
+              ${view.titleOf(id)}
+            </td>
+            <td>
+              <div class="worker-plan__pos">
+                ${!ready
+                  ? `판정 전 · ${recommendButtonState(status[id]).title}`
+                  : item
+                    ? placementPositionText(item, plan.configured_lane_count)
+                    : '포함 안 함'}
+              </div>
+              ${item
+                ? item.pulled.map(
+                    (step) =>
+                      html`<div class="worker-plan__line worker-plan__move">
+                        ${bundleStepText(step, item.lane)}
+                      </div>`
+                  )
+                : ''}${explained ? reasonLinesTemplate(explained) : ''}
             </td>
           </tr>`;
         })}
@@ -1137,6 +1139,46 @@ export function interleavePreview(rows, lane, plan, titleOf) {
 }
 
 /**
+ * The title a full-plan row and a dotted card show for a Bead: the candidate's
+ * own title, else — for a moved partner, which is a waiting Bead — the
+ * snapshot's `bead_titles` decoration, else nothing. Both tabs title their
+ * table and cards through it.
+ *
+ * @param {Array<{ id: string, title?: string }>} candidates
+ * @param {any} queue - That repository's `worker-queue` snapshot.
+ * @returns {(id: string) => string}
+ */
+export function placementTitleOf(candidates, queue) {
+  const titles = objectOf(objectOf(queue).bead_titles);
+  return (id) => {
+    const row = candidates.find((item) => item.id === id);
+    if (row && typeof row.title === 'string') {
+      return row.title;
+    }
+    const title = titles[id];
+    return typeof title === 'string' ? title : '';
+  };
+}
+
+/**
+ * The plan whose dotted cards a waiting lane draws: a place in a lane beyond
+ * the configured count draws no dotted card, since that lane does not exist
+ * until `[적용]` grows the count (UI-lsr4 §3.3) and the table's `(새 레인)` and
+ * growth line say so instead. Both tabs read their preview through it.
+ *
+ * @param {PlacementPlan} plan
+ * @returns {PlacementPlan}
+ */
+export function previewablePlan(plan) {
+  return {
+    ...plan,
+    order: plan.order.filter(
+      (item) => serialLaneNumber(item.lane) <= plan.configured_lane_count
+    )
+  };
+}
+
+/**
  * Whether the plan draws a dotted card in this lane.
  *
  * @param {PlacementPlan|null} plan
@@ -1209,13 +1251,7 @@ export function createPlacementPreview(options) {
    * @returns {string}
    */
   function titleOf(id) {
-    const row = candidates().find((item) => item.id === id);
-    if (row && typeof row.title === 'string') {
-      return row.title;
-    }
-    // A moved partner is a waiting bead, titled by the snapshot's decoration.
-    const title = objectOf(getQueue()?.bead_titles)[id];
-    return typeof title === 'string' ? title : '';
+    return placementTitleOf(candidates(), getQueue())(id);
   }
 
   /**
@@ -1261,9 +1297,7 @@ export function createPlacementPreview(options) {
   }
 
   /**
-   * The plan whose dotted cards the waiting lanes draw now. A place in a lane
-   * beyond the configured count draws no dotted card: that lane does not
-   * exist until `[적용]` grows the count (UI-lsr4 §3.3).
+   * The plan whose dotted cards the waiting lanes draw now (`previewablePlan`).
    *
    * @returns {PlacementPlan|null}
    */
@@ -1272,15 +1306,7 @@ export function createPlacementPreview(options) {
       return null;
     }
     const plan = full_open ? fullPlanOn(getQueue()).plan : openPlan();
-    if (!plan) {
-      return null;
-    }
-    return {
-      ...plan,
-      order: plan.order.filter(
-        (item) => serialLaneNumber(item.lane) <= plan.configured_lane_count
-      )
-    };
+    return plan ? previewablePlan(plan) : null;
   }
 
   /**
