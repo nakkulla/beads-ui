@@ -35651,12 +35651,32 @@ describe('session lane (UI-lbm5)', () => {
       expect(env.runner.spawnOrder).toEqual([]);
     });
 
-    test('keeps a session-preferred row without exec_lane on the headless Worker', async () => {
+    test('launches the session lane for a session-preferred row without exec_lane', async () => {
       const env = laneEnv({
         config: {
           S1: {
             labels: ['session-preferred'],
             metadata: { session_preferred_reason: 'external_roundtrip' }
+          }
+        }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launcher.launch).toHaveBeenCalledOnce();
+      expect(env.runner.spawnOrder).toEqual([]);
+    });
+
+    test('keeps a session-preferred row with exec_lane=worker on the headless Worker', async () => {
+      const env = laneEnv({
+        config: {
+          S1: {
+            labels: ['session-preferred'],
+            metadata: {
+              session_preferred_reason: 'external_roundtrip',
+              exec_lane: 'worker'
+            }
           }
         }
       });

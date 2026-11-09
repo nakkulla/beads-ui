@@ -41,7 +41,8 @@ import {
 import { sessionPreferredReason } from '../../app/utils/session-preferred.js';
 import {
   EXEC_LANE_KEY,
-  EXEC_LANE_SESSION
+  EXEC_LANE_WORKER,
+  execLaneOf
 } from '../../app/utils/worker-eligibility.js';
 import { providerLimitPolicyPatchError } from '../limit-policy-settings.js';
 import {
@@ -8860,10 +8861,12 @@ export async function handleWorkerConversationHandoff(ws, req) {
 const session_toggle_chains = new Map();
 
 /**
- * The `세션 권장` chip click (UI-lbm5 §4.7): `{ id, root_dir? }` toggles that
- * issue's `exec_lane` metadata between `session` and unset, then reads it
- * back. Clicks on one issue are applied in request order. A write failure or
- * a readback that does not echo the intended value answers an error — the
+ * The `session-preferred` chip click (UI-lbm5 §4.7, UI-57us): `{ id,
+ * root_dir? }` toggles that issue's `exec_lane` metadata between `worker` and
+ * unset, then reads it back and answers the re-judged run lane (`execLaneOf`).
+ * Unset is the default `session`, so a new issue follows the default with no
+ * write. Clicks on one issue are applied in request order. A write failure or
+ * a readback whose judged lane is not the intended one answers an error — the
  * client toasts it and the next snapshot is the truth. An issue without a
  * valid `session-preferred` attachment is refused: the key would be ignored.
  *
@@ -8952,16 +8955,11 @@ async function runChipSessionToggle(ws, req, id, workspace_key) {
     );
     return;
   }
-  const to_session = metadata[EXEC_LANE_KEY] !== EXEC_LANE_SESSION;
+  const to_worker = metadata[EXEC_LANE_KEY] !== EXEC_LANE_WORKER;
   const updated = await runBdInWorkspace(
     ws,
-    to_session
-      ? [
-          'update',
-          id,
-          '--set-metadata',
-          `${EXEC_LANE_KEY}=${EXEC_LANE_SESSION}`
-        ]
+    to_worker
+      ? ['update', id, '--set-metadata', `${EXEC_LANE_KEY}=${EXEC_LANE_WORKER}`]
       : ['update', id, '--unset-metadata', EXEC_LANE_KEY],
     { cwd }
   );
@@ -8986,18 +8984,19 @@ async function runChipSessionToggle(ws, req, id, workspace_key) {
     );
     return;
   }
-  const read_metadata = /** @type {any} */ (shown.data)?.metadata || {};
-  const exec_lane =
-    read_metadata[EXEC_LANE_KEY] === EXEC_LANE_SESSION
-      ? EXEC_LANE_SESSION
-      : null;
-  if ((exec_lane === EXEC_LANE_SESSION) !== to_session) {
+  const read_issue = /** @type {any} */ (shown.data) || {};
+  const read_metadata =
+    read_issue.metadata && typeof read_issue.metadata === 'object'
+      ? read_issue.metadata
+      : {};
+  const exec_lane = execLaneOf(read_issue.labels, read_metadata);
+  if (exec_lane !== (to_worker ? 'worker' : 'session')) {
     ws.send(
       JSON.stringify(
         makeError(
           req,
           'readback_mismatch',
-          `exec_lane readback is ${exec_lane ?? 'unset'}`
+          `exec_lane readback judges ${exec_lane} (stored ${String(read_metadata[EXEC_LANE_KEY] ?? 'unset')})`
         )
       )
     );

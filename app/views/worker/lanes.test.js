@@ -2936,7 +2936,7 @@ describe('session-preferred candidate card (UI-49mc)', () => {
   const EXTERNAL_ROUNDTRIP_TITLE =
     '하네스 밖 상대와 예측 불가 왕복 반복 — 다른 rig 세션·사람·외부 시스템';
 
-  test('draws the 세션 권장 chip with the contract tooltip', () => {
+  test('draws the default session-preferred chip as 세션 실행 with the contract tooltip', () => {
     const card = renderCandidate({
       session_preferred: true,
       session_preferred_reason: 'external_roundtrip'
@@ -2946,7 +2946,7 @@ describe('session-preferred candidate card (UI-49mc)', () => {
       card.querySelector('.worker-card__session-preferred')
     );
 
-    expect(chip.textContent?.trim()).toBe('세션 권장');
+    expect(chip.textContent?.trim()).toBe('세션 실행');
     expect(chip.title).toBe(
       `${EXTERNAL_ROUNDTRIP_TITLE}\n누르면 세션 레인 ↔ Worker 전환`
     );
@@ -2967,7 +2967,7 @@ describe('session-preferred candidate card (UI-49mc)', () => {
     expect(chip.getAttribute('aria-pressed')).toBe('true');
   });
 
-  test('draws the unset state unpressed', () => {
+  test('draws the worker state as Worker 실행 unpressed', () => {
     const card = renderCandidate({
       session_preferred: true,
       session_preferred_reason: 'external_roundtrip',
@@ -2978,6 +2978,7 @@ describe('session-preferred candidate card (UI-49mc)', () => {
       card.querySelector('.worker-card__session-preferred')
     );
 
+    expect(chip.textContent?.trim()).toBe('Worker 실행');
     expect(chip.getAttribute('aria-pressed')).toBe('false');
     expect(chip.classList.contains('session-lane-toggle')).toBe(true);
   });

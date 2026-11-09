@@ -1,7 +1,8 @@
 ---
 id: UI-5cmo
 title: 모니터 레포 묶음 레인 안 전체 배치안 미리보기
-status: accepted
+status: superseded
+superseded_by: UI-57us
 date: 2026-11-09
 summary: "모니터 탭 전체 배치안은 레포 묶음마다 레인 안 점선 미리보기와 그 묶음 아래 레포 표를 보이고 적용은 적용 대상으로 고른 레포에만 레포 단위로 보낸다 — 카드별 [추천 배치]는 Worker 탭에만 두고 나머지 배치 조항은 UI-ksi6 그대로다"
 supersedes: ["UI-ksi6"]

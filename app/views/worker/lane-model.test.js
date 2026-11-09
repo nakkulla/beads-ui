@@ -9031,6 +9031,46 @@ describe('session-lane facts (UI-lbm5 §4.6)', () => {
       session_preferred: true,
       session_preferred_reason: 'user_feedback_loop'
     });
+  });
+
+  test('judges a waiting session-preferred row without exec_lane into the session lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: {
+            'A-2': {
+              labels: ['session-preferred'],
+              metadata: { session_preferred_reason: 'user_feedback_loop' }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].exec).toBe('session');
+  });
+
+  test('keeps a waiting session-preferred row with exec_lane=worker off the session lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: {
+            'A-2': {
+              labels: ['session-preferred'],
+              metadata: {
+                session_preferred_reason: 'user_feedback_loop',
+                exec_lane: 'worker'
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
     expect(lanes.queue[0].exec).toBeUndefined();
   });
 

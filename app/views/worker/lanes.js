@@ -1475,7 +1475,7 @@ export function attributePopoverOpen(item) {
 
 /**
  * The slot-1 Bead attribute chips (UI-refs §3.1·§3.2): `worker-ineligible` |
- * `세션 권장`/`세션 실행` · `복잡` · `frontend` · `backend` · `quick_fix` 리뷰 칩, in
+ * `세션 실행`/`Worker 실행` · `복잡` · `frontend` · `backend` · `quick_fix` 리뷰 칩, in
  * the candidate card's order. Every renderer of every lane calls this one
  * template, so the same Bead carries the same chips, classes, binding state and
  * click meaning in every lane and both tabs; the renderer only picks the place.
@@ -1527,8 +1527,10 @@ export function attributeChipsTemplate(item, ctx = null) {
 }
 
 /**
- * The `세션 권장`/`세션 실행` chip (UI-49mc §4.1, UI-lbm5 §4.7). Its click
- * toggles `exec_lane`, so the button carries the Bead and its repository.
+ * The `세션 실행`/`Worker 실행` chip (UI-49mc §4.1, UI-lbm5 §4.7, UI-57us). A
+ * valid `session-preferred` Bead runs in the session lane unless its
+ * `exec_lane` is `worker`; the click toggles that opt-out, so the button
+ * carries the Bead and its repository.
  *
  * @param {MiniItem} item
  * @returns {import('lit-html').TemplateResult}
@@ -1536,7 +1538,9 @@ export function attributeChipsTemplate(item, ctx = null) {
 function sessionPreferredChipTemplate(item) {
   const tooltip =
     SESSION_PREFERRED_TOOLTIP[item.session_preferred_reason || ''] || '';
-  const session_lane_set = item.exec_lane === 'session';
+  // 유효한 session-preferred의 기본은 세션 레인이다 (UI-57us): `worker` 판정만
+  // Worker 실행으로 그리고, 판정이 실리지 않은 행도 기본을 따른다.
+  const session_lane_set = item.exec_lane !== 'worker';
   return html`<button
     type="button"
     class="ui-chip ctl-chip ctl-chip--label worker-card__session-preferred session-lane-toggle"
@@ -1545,7 +1549,7 @@ function sessionPreferredChipTemplate(item) {
     aria-pressed=${session_lane_set ? 'true' : 'false'}
     title=${[tooltip, SESSION_TOGGLE_HINT].filter(Boolean).join('\n')}
   >
-    ${session_lane_set ? '세션 실행' : '세션 권장'}
+    ${session_lane_set ? '세션 실행' : 'Worker 실행'}
   </button>`;
 }
 
@@ -2397,7 +2401,8 @@ export function interactiveSessionClosingTemplate(views) {
  * 대기·완료: attempt 기록) 실행될(대기: `execLaneOf` 판정) 행이다 (UI-lbm5
  * §4.6). 슬롯 5b `세션` exec 칩의 유일한 재료이고, 아니면 필드도 없다.
  * @property {'worker'|'session'} [exec_lane] - 후보 카드의 실행 방식 판정
- * (UI-lbm5 §4.7). `세션 권장` 칩의 눌림 상태(`세션 실행`)를 정한다.
+ * (UI-lbm5 §4.7, UI-57us). `session-preferred` 칩의 눌림 상태(`세션 실행`)를
+ * 정한다 — `worker`일 때만 `Worker 실행`이다.
  */
 
 /**

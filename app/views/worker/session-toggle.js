@@ -1,9 +1,10 @@
 /**
- * The `세션 권장` chip click (UI-lbm5 §4.7), shared by the Worker tab and the
- * monitor so both send the same op and say the same toasts. The server
- * toggles the issue's `exec_lane` between `session` and unset and reads it
- * back; a failure is only toasted — the chip is not reverted locally, the next
- * snapshot is the truth (§5).
+ * The `session-preferred` chip click (UI-lbm5 §4.7, UI-57us), shared by the
+ * Worker tab and the monitor so both send the same op and say the same toasts.
+ * The server toggles the issue's `exec_lane` between `worker` and unset and
+ * answers the re-judged run lane (`exec_lane: 'session'|'worker'`); a failure
+ * is only toasted — the chip is not reverted locally, the next snapshot is the
+ * truth (§5).
  */
 import { errorText } from '../../utils/error-text.js';
 

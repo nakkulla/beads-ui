@@ -252,7 +252,7 @@ UI-refs 정정: 모든 레인 슬롯 1, 두 탭 — 네 판정 칩(과 `frontend
 | 칩 | `data-chip-key` | 팝업 제목 | 팝업 본문 |
 | --- | --- | --- | --- |
 | `복잡` | `rec` | 복잡한 작업으로 판정됨 | 사유 목록(§4.6) · `상태: 미적용/적용됨/추천과 다름` · 안내 `적용은 이슈 상세의 실행 설정 편집기에서` |
-| `세션 권장` 정정(UI-lbm5) | — (팝업 없음) | — | 클릭은 사유 팝업이 아니라 `chip-session-toggle`(이슈 `exec_lane` `session` ↔ 해제)이다. 해제 상태 라벨 `세션 권장`, 설정 상태 `세션 실행`(`aria-pressed=true`). 툴팁은 `SESSION_PREFERRED_TOOLTIP[reason]` 한 줄과 `누르면 세션 레인 ↔ Worker 전환` |
+| `세션 권장` 정정(UI-lbm5, UI-57us) | — (팝업 없음) | — | 클릭은 사유 팝업이 아니라 `chip-session-toggle`(이슈 `exec_lane` `worker` ↔ 해제)이다. 기본(해제) 상태는 세션 레인 실행이라 라벨 `세션 실행`(`aria-pressed=true`), `exec_lane=worker` 상태는 `Worker 실행`(headless). 툴팁은 `SESSION_PREFERRED_TOOLTIP[reason]` 한 줄과 `누르면 세션 레인 ↔ Worker 전환` |
 | `worker-ineligible` | `ineligible` | 세션 레인으로 실행된다 정정(UI-lbm5) | `워커 대신 세션 레인으로 실행된다 — 대기열에 올리면 구현 승인` · `worker-ineligible 라벨이 붙어 있다 — 라벨은 이슈 상세의 라벨 절에서 뗀다` |
 | `리뷰 ✓` / `리뷰 stale` | `qfr` | 현행 상태 문장 | `missing[]` 목록(없으면 `빠진 항목 없음`) |
 | `영수증 · <code>` 정정(UI-h6t1) | `receipt` | 실행 영수증 회계 잔여 — 머지는 진행 | 코드별 한 줄(`RECEIPT_BADGE_TEXT`; 어휘 밖 코드는 코드 문자열 그대로) · 안내 `자동 머지 판정에는 영향이 없다 — 정정은 bd update --set-metadata exec_receipt=… 로` |

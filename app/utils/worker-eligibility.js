@@ -3,14 +3,17 @@ import { sessionPreferredReason } from './session-preferred.js';
 export const WORKER_INELIGIBLE_LABEL = 'worker-ineligible';
 
 /**
- * The beads-ui metadata key a `세션 권장` chip click writes (UI-lbm5 §4.1).
- * Same standing as `applied_exec_preset`: a consumer-owned key, not a contract
- * key.
+ * The beads-ui metadata key the `session-preferred` chip click writes (UI-lbm5
+ * §4.1, UI-57us). Same standing as `applied_exec_preset`: a consumer-owned
+ * key, not a contract key.
  */
 export const EXEC_LANE_KEY = 'exec_lane';
 
-/** The one `exec_lane` value that selects the session lane. */
-export const EXEC_LANE_SESSION = 'session';
+/**
+ * The one `exec_lane` value that opts a valid `session-preferred` Bead out of
+ * the session lane into a headless Worker run (UI-57us).
+ */
+export const EXEC_LANE_WORKER = 'worker';
 
 /**
  * Keep only label entries the workflow contract can name.
@@ -39,8 +42,9 @@ export function isWorkerIneligible(labels) {
  * projection, the cards and the scheduler share:
  *
  *   - `worker-ineligible` → `session`, always.
- *   - a valid `session-preferred` attachment (label AND enum reason) whose
- *     metadata `exec_lane` is `session` → `session`.
+ *   - a valid `session-preferred` attachment (label AND enum reason) →
+ *     `session`, unless its metadata `exec_lane` is `worker` (UI-57us). An
+ *     absent key, a stored `session` and any other value all mean `session`.
  *   - anything else → `worker`. A stray `exec_lane` without a valid attachment
  *     is ignored (fail-quiet).
  *
@@ -54,7 +58,7 @@ export function execLaneOf(labels, metadata) {
   }
   if (
     sessionPreferredReason(labels, metadata) !== '' &&
-    /** @type {any} */ (metadata)[EXEC_LANE_KEY] === EXEC_LANE_SESSION
+    /** @type {any} */ (metadata)[EXEC_LANE_KEY] !== EXEC_LANE_WORKER
   ) {
     return 'session';
   }

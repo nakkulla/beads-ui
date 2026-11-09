@@ -115,25 +115,25 @@ beforeEach(() => {
   bd.beforeUpdate = null;
 });
 
-describe('chip-session-toggle (UI-lbm5 §4.7)', () => {
-  test('sets exec_lane=session on an unset issue and answers the readback', async () => {
+describe('chip-session-toggle (UI-lbm5 §4.7, UI-57us)', () => {
+  test('sets exec_lane=worker on an unset issue and answers the judged worker lane', async () => {
     preferred('UI-1');
     const socket = fakeSocket();
 
     await handleChipSessionToggle(socket, toggleReq({ id: 'UI-1' }));
 
     expect(bd.updates).toEqual([
-      [WS, 'update', 'UI-1', '--set-metadata', 'exec_lane=session']
+      [WS, 'update', 'UI-1', '--set-metadata', 'exec_lane=worker']
     ]);
     expect(lastReply(socket)).toMatchObject({
       ok: true,
-      payload: { id: 'UI-1', exec_lane: 'session' }
+      payload: { id: 'UI-1', exec_lane: 'worker' }
     });
   });
 
-  test('unsets exec_lane on an issue already set to the session lane', async () => {
+  test('unsets exec_lane on an issue set to worker and answers the session lane', async () => {
     preferred('UI-1');
-    bd.metadata['UI-1'].exec_lane = 'session';
+    bd.metadata['UI-1'].exec_lane = 'worker';
     const socket = fakeSocket();
 
     await handleChipSessionToggle(socket, toggleReq({ id: 'UI-1' }));
@@ -141,7 +141,19 @@ describe('chip-session-toggle (UI-lbm5 §4.7)', () => {
     expect(bd.updates).toEqual([
       [WS, 'update', 'UI-1', '--unset-metadata', 'exec_lane']
     ]);
-    expect(lastReply(socket).payload).toMatchObject({ exec_lane: null });
+    expect(lastReply(socket).payload).toMatchObject({ exec_lane: 'session' });
+  });
+
+  test('writes exec_lane=worker over a stored exec_lane=session', async () => {
+    preferred('UI-1');
+    bd.metadata['UI-1'].exec_lane = 'session';
+    const socket = fakeSocket();
+
+    await handleChipSessionToggle(socket, toggleReq({ id: 'UI-1' }));
+
+    expect(bd.updates).toEqual([
+      [WS, 'update', 'UI-1', '--set-metadata', 'exec_lane=worker']
+    ]);
   });
 
   test('writes in the repo the card names by root_dir', async () => {
@@ -197,7 +209,7 @@ describe('chip-session-toggle (UI-lbm5 §4.7)', () => {
 
   test('answers an error when the readback disagrees with the write', async () => {
     preferred('UI-1');
-    bd.readback_override = 'worker';
+    bd.readback_override = 'session';
     const socket = fakeSocket();
 
     await handleChipSessionToggle(socket, toggleReq({ id: 'UI-1' }));

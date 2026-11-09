@@ -5,8 +5,8 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-57us | [session-preferred 기본 세션 레인과 Worker 전환 칩](UI-57us-session-preferred-default-session-lane.md) | 2026-11-10 | session-preferred 이슈는 exec_lane=worker가 아니면 Worker 대기열에서 세션 레인으로 실행되고 세션 권장 칩은 exec_lane=worker를 토글하며(기본 세션 실행, 누르면 Worker 실행), worker-ineligible은 항상 세션 레인이고 나머지 조항은 UI-5cmo 그대로다 |
 | UI-giog | [한도 대응 전역 적용 범위·공급자 보류 전역 원본·활성 복귀](UI-giog-global-limit-policy-scope.md) | 2026-11-09 | 한도 대응에 러너별 서버 전역 정책과 적용 범위 스위치를 두어, 전역이면 모든 저장소의 그 러너 Worker 판정과 전역 활성 계정 자동 전환이 전역 정책(저장소 값은 보존)을 따르고 저장소별이면 저장소 정책만 쓰며 전역 활성 계정은 자동으로 바꾸지 않고, 전역 활성 계정 전환은 전역 허용 목록과 선제 전환 임계(없으면 100%) 미만 후보로 판정하며 기다림 보호를 두지 않는다 — 나머지 조항은 UI-btp3 그대로다 |
-| UI-5cmo | [모니터 레포 묶음 레인 안 전체 배치안 미리보기](UI-5cmo-monitor-repo-group-placement-preview.md) | 2026-11-09 | 모니터 탭 전체 배치안은 레포 묶음마다 레인 안 점선 미리보기와 그 묶음 아래 레포 표를 보이고 적용은 적용 대상으로 고른 레포에만 레포 단위로 보낸다 — 카드별 [추천 배치]는 Worker 탭에만 두고 나머지 배치 조항은 UI-ksi6 그대로다 |
 | UI-rd2m | [실행 프리셋과 route 계열별 판정 칩](UI-rd2m-exec-presets-and-chips-by-route.md) | 2026-10-14 | 실행 프리셋은 applies_to 계열별 id 하나가 정체성이고 읽을 때 계열 키 집합을 대칭 비교하며 dispatchPreset과 카드 비교는 분리한다; 판정 칩 복잡·frontend·backend는 칩마다 general·quick_fix 서버 전역 바인딩을 하나씩 갖고 클릭은 이슈 route 계열의 바인딩 프리셋을 그 이슈에 적용하며 재클릭은 첫 클릭 전 핀으로 되돌리고 그 전이는 같은 워크스페이스·이슈별로 요청 순서대로 직렬화한다; 칩 바인딩 편집은 모니터 일괄 창의 서버 전역 탭에만 있고 저장소 하나를 편집하는 창에는 섞지 않는다 |
 | UI-gpac-2 | [모델 활성은 꺼 둔 목록으로 거르고 새 Codex 고정 이름은 숨긴다](UI-gpac-2-model-visibility-hides-new-codex-pinned.md) | 2026-10-12 | 모델 활성은 서버 전역 꺼 둔 모델 목록이 선택지 표시에서만 빼는 것이며 카탈로그·저장 값·디스패치 검증·단가는 그대로 둔다; 새로 추가되는 모델은 자동으로 보이되 Codex 고정 이름(<계열>-<버전>)은 처음 나타날 때 꺼 둔 목록에 더해져 사용자가 켤 때만 보이고, 기존 상태 파일은 이전 카탈로그 이름을 이미 본 이름으로 이전한다; 저장된 값이 꺼 둔 모델이면 (비활성)으로 남기고 러너마다 하나 이상 켜 둔다 |
 | UI-gpac | [Codex 모델 카탈로그의 원천은 Codex CLI 목록이다](UI-gpac-codex-catalog-from-cli-list.md) | 2026-10-12 | beads-ui의 Codex 모델 선택지는 서버가 Codex CLI 목록(codex debug models)을 비동기로 읽어 dotfiles와 같은 규칙(계열별 최신 list·v2 → 별칭, 모든 적격 버전 → <계열>-<버전> 고정 이름)으로 만들고, 규칙은 JS로 복제해 dotfiles 해석기와 교차 테스트로 묶는다; 마지막 성공 목록을 영속해 읽기 실패가 카탈로그를 줄이지 않으며, effort·speed는 계열 템플릿을, 단가는 별칭이 해석된 고정 이름의 것을 상속하며, 목록에서 빠진 고정 이름의 저장값은 원문을 보존하고 실행은 기본값으로 대신한다 |
@@ -158,4 +158,5 @@
 | UI-btp3 | [공급자 보류 전역 원본·전환 순서·리프 한도·소진·활성 복귀](history/UI-btp3-active-account-return.md) | superseded | [UI-giog](UI-giog-global-limit-policy-scope.md) |
 | UI-ey6v | [선행 이슈 병렬 배치와 배치 추천](history/UI-ey6v-predecessor-parallel-placement.md) | superseded | [UI-blx2](history/UI-blx2-placement-serialize-conflicting-partner.md) |
 | UI-ymcx | [머지된 커밋의 선언·스크립트로 도는 Worker 배포](history/UI-ymcx-worker-deploy-target-commit.md) | superseded | [UI-ksi6](history/UI-ksi6-deploy-condition-wait.md) |
-| UI-ksi6 | [배포 종료 코드 75의 조건 대기와 자동 재확인](history/UI-ksi6-deploy-condition-wait.md) | superseded | [UI-5cmo](UI-5cmo-monitor-repo-group-placement-preview.md) |
+| UI-ksi6 | [배포 종료 코드 75의 조건 대기와 자동 재확인](history/UI-ksi6-deploy-condition-wait.md) | superseded | [UI-5cmo](history/UI-5cmo-monitor-repo-group-placement-preview.md) |
+| UI-5cmo | [모니터 레포 묶음 레인 안 전체 배치안 미리보기](history/UI-5cmo-monitor-repo-group-placement-preview.md) | superseded | [UI-57us](UI-57us-session-preferred-default-session-lane.md) |

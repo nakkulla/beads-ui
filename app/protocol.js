@@ -664,8 +664,8 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   // restores one (UI-wg68 §3, §4). Both ride the preset list's CAS revision.
   'impl-preset-bind',
   'chip-preset-toggle',
-  // The `세션 권장` chip click (UI-lbm5 §4.7): toggles one issue's
-  // `exec_lane` between `session` and unset, serialized per issue.
+  // The `session-preferred` chip click (UI-lbm5 §4.7, UI-57us): toggles one
+  // issue's `exec_lane` between `worker` and unset, serialized per issue.
   'chip-session-toggle',
   'apply-impl-preset',
   'apply-impl-preset-global',

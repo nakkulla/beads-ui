@@ -8886,7 +8886,7 @@ describe('session-preferred candidates (UI-49mc)', () => {
 
     expect(
       card.querySelector('.worker-card__session-preferred')?.textContent?.trim()
-    ).toBe('세션 권장');
+    ).toBe('세션 실행');
   });
 
   test('omits the chip when the label carries no reason', () => {
