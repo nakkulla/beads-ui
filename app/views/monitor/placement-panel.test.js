@@ -387,7 +387,7 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
     expect(mount.querySelector('.worker-card--preview')).toBeNull();
   });
 
-  test('numbers the rows from 1 in every repository', () => {
+  test('numbers the preview cards from 1 in every repository', () => {
     const { mount } = setup([
       repo('A', 'repo-a', WS_A),
       repo('B', 'repo-b', WS_B)
@@ -397,9 +397,34 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
 
     expect(
       [WS_A, WS_B].map((root) =>
-        text(card(mount, root).querySelectorAll('.worker-plan__row td')[1])
+        text(
+          mount.querySelector(
+            `[data-drop="parallel"][data-root-dir="${root}"] .worker-card__preview-no`
+          )
+        )
       )
-    ).toEqual(['1', '1']);
+    ).toEqual(['#1', '#1']);
+  });
+
+  test('heads every repository table with 포함 · 후보 (UI-msmj)', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('B', 'repo-b', WS_B)
+    ]);
+
+    click(mount, '.mon-plan__open');
+
+    expect(
+      [WS_A, WS_B].map((root) =>
+        Array.from(
+          card(mount, root).querySelectorAll('.worker-plan__table th'),
+          (cell) => text(cell)
+        )
+      )
+    ).toEqual([
+      ['포함', '후보'],
+      ['포함', '후보']
+    ]);
   });
 
   test('folds a repository without a recommendable candidate into one line', () => {

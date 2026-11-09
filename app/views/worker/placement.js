@@ -616,76 +616,6 @@ export function outsideLineText(line) {
 }
 
 /**
- * The folded 근거 summary of a full-plan row — "판정 6쌍 · 부딪힘 2 · 선후 1 ·
- * 독립 2 · 모름 1": every pair the candidate was compared on, then each nonzero
- * kind (UI-lsr4 §3.4). Outside constraints count as 부딪힘.
- *
- * @param {Pick<PlannedPlacement, 'pair_counts'>} placement
- * @returns {string}
- */
-export function reasonSummaryText(placement) {
-  const counts = placement.pair_counts;
-  const parts = [
-    `판정 ${counts.total}쌍`,
-    ...(counts.conflict > 0 ? [`부딪힘 ${counts.conflict}`] : []),
-    ...(counts.order > 0 ? [`선후 ${counts.order}`] : []),
-    ...(counts.independent > 0 ? [`독립 ${counts.independent}`] : []),
-    ...(counts.unknown > 0 ? [`모름 ${counts.unknown}`] : [])
-  ];
-  return parts.join(' · ');
-}
-
-/**
- * The "그 밖 독립 4쌍" line: the independent pairs the folded lines do not
- * show, or null when there are none.
- *
- * @param {Pick<PlannedPlacement, 'pair_counts'|'reasons'>} placement
- * @returns {string|null}
- */
-export function otherIndependentText(placement) {
-  const shown = placement.reasons.filter(
-    (line) => line.relation === 'independent'
-  ).length;
-  const rest = placement.pair_counts.independent - shown;
-  return rest > 0 ? `그 밖 독립 ${rest}쌍` : null;
-}
-
-/**
- * The explanation lines under a full-plan row's place (UI-5cmo §3.4): the
- * warning lines, always shown, then the `근거` fold. The fold opens on the
- * pair count summary and then the relation, `그 밖 독립`, reference and
- * outside lines; a row without any of those lines draws no fold.
- *
- * @param {PlannedPlacement} placement
- * @returns {import('lit-html').TemplateResult}
- */
-function reasonLinesTemplate(placement) {
-  const other_independent = otherIndependentText(placement);
-  const lines = [
-    ...placement.reasons.map((line) => relationLineText(line)),
-    ...(other_independent ? [other_independent] : []),
-    ...placement.references.map((line) => relationLineText(line, true)),
-    ...placement.outside.map((line) => outsideLineText(line))
-  ];
-  return html`${placement.warnings.map(
-    (warning) =>
-      html`<div class="worker-plan__line worker-plan__warn">
-        ${placementWarningText(warning)}
-      </div>`
-  )}${lines.length > 0
-    ? html`<details class="worker-plan__reasons">
-        <summary>근거</summary>
-        <div class="worker-plan__line worker-plan__pairs">
-          ${reasonSummaryText(placement)}
-        </div>
-        ${lines.map(
-          (text) => html`<div class="worker-plan__line">${text}</div>`
-        )}
-      </details>`
-    : ''}`;
-}
-
-/**
  * The short state word of a candidate that cannot be recommended — the
  * `recommendButtonState` title without the pending pair count (`jev 판정 중`,
  * `jev 키 없음`, `jev 응답 없음`, `비교할 이슈 없음`). The monitor's folded
@@ -844,15 +774,16 @@ export function fullPlacementPlan(queue, display_order, checks) {
 }
 
 /**
- * The full plan table of one repository (UI-hf8v §3.3, columns UI-5cmo §3.4):
- * the include checkbox, number, candidate and place per row, then the
- * lane-growth line and the repository's stop notice. The place cell carries the
- * place sentence, the move and bind lines, the warning lines and the folded
- * `근거`; a row not judged yet says `판정 전 · <state>`. The Worker tab's
- * `planTemplate` and the monitor's repository block both draw it, so the two
- * tabs show the same rows for the same repository state. `root_dir`, when
- * given, rides on each checkbox so a page with several repositories knows
- * whose row changed.
+ * The full plan table of one repository (UI-hf8v §3.3, columns UI-5cmo §3.4,
+ * UI-msmj): the include checkbox and the candidate per row, then the
+ * lane-growth line and the repository's stop notice. Places and moves are read
+ * from the dotted cards in the lanes, so the candidate cell carries only small
+ * lines under the title for a row that has something to say: `판정 전 · <state>`
+ * on a row not judged yet, else the warning lines — of the all-ready plan for
+ * an unchecked row. The Worker tab's `planTemplate` and the monitor's
+ * repository block both draw it, so the two tabs show the same rows for the
+ * same repository state. `root_dir`, when given, rides on each checkbox so a
+ * page with several repositories knows whose row changed.
  *
  * @param {FullPlacementPlan} material
  * @param {{ titleOf: (id: string) => string, busy: boolean, notice: string|null, root_dir?: string }} view
@@ -865,19 +796,17 @@ export function placementPlanTable(material, view) {
       <thead>
         <tr>
           <th>포함</th>
-          <th>#</th>
           <th>후보</th>
-          <th>배치안</th>
         </tr>
       </thead>
       <tbody>
         ${rows.map((id) => {
           const ready = isRecommendableState(status[id]?.state);
-          const item = plan.by_id[id];
-          // An unchecked ready row keeps the reasons and warnings of the
-          // all-ready plan, so the reader sees why it was left out; only
-          // checked rows get a number, a dotted card and a send.
-          const explained = item || (ready ? base.by_id[id] : undefined);
+          // An unchecked ready row keeps the warnings of the all-ready plan,
+          // so the reader sees why it was left out; only checked rows get a
+          // dotted card and a send.
+          const explained =
+            plan.by_id[id] || (ready ? base.by_id[id] : undefined);
           return html`<tr
             class="worker-plan__row${ready ? '' : ' worker-plan__row--pending'}"
             data-bead-id=${id}
@@ -893,27 +822,21 @@ export function placementPlanTable(material, view) {
                 ?disabled=${!ready || view.busy}
               />
             </td>
-            <td>${item ? item.number : ''}</td>
             <td>
               <span class="worker-plan__id">${id}</span>
               ${view.titleOf(id)}
-            </td>
-            <td>
-              <div class="worker-plan__pos">
-                ${!ready
-                  ? `판정 전 · ${recommendButtonState(status[id]).title}`
-                  : item
-                    ? placementPositionText(item, plan.configured_lane_count)
-                    : '포함 안 함'}
-              </div>
-              ${item
-                ? item.pulled.map(
-                    (step) =>
-                      html`<div class="worker-plan__line worker-plan__move">
-                        ${bundleStepText(step, item.lane)}
+              ${!ready
+                ? html`<div class="worker-plan__line worker-plan__state">
+                    판정 전 · ${recommendButtonState(status[id]).title}
+                  </div>`
+                : ''}${explained
+                ? explained.warnings.map(
+                    (warning) =>
+                      html`<div class="worker-plan__line worker-plan__warn">
+                        ${placementWarningText(warning)}
                       </div>`
                   )
-                : ''}${explained ? reasonLinesTemplate(explained) : ''}
+                : ''}
             </td>
           </tr>`;
         })}

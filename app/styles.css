@@ -5872,31 +5872,13 @@ summary.repo-ops-log-viewer__attempt-head {
   background: var(--stage-plan-dim);
 }
 
-/* 배치안 칸 (UI-5cmo §3.4): 자리 문장 → 옮김·묶음 줄 → 경고 줄 → `근거 ▸`. 근거는
-   누르면 판정 요약 줄과 관계 줄을 편다. 경고·옮김 줄은 접힘 밖이다. */
-.worker-plan__pos {
-  color: var(--text-title);
+/* 후보 칸 아래 작은 줄 (UI-5cmo §3.4, UI-msmj): 판정 전 상태나 경고가 있는 행에만
+   후보 제목 아래에 선다. 자리와 옮김은 레인 안 점선 카드가 보인다. */
+.worker-plan__line {
+  font-size: var(--fs-chip);
 }
 
-.worker-plan__reasons > summary {
-  color: var(--text-dim);
-  list-style: none;
-  cursor: pointer;
-}
-
-.worker-plan__reasons > summary::-webkit-details-marker {
-  display: none;
-}
-
-.worker-plan__reasons > summary::after {
-  content: ' ▸';
-}
-
-.worker-plan__reasons[open] > summary::after {
-  content: ' ▾';
-}
-
-.worker-plan__pairs {
+.worker-plan__state {
   color: var(--text-dim);
 }
 
