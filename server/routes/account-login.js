@@ -98,9 +98,6 @@ import {
  * @property {LoginChild|null} child
  * @property {number|null} pid
  * @property {Promise<void>|null} pid_record
- * @property {boolean} exited
- * @property {Promise<void>} exit_promise
- * @property {() => void} mark_exited
  * @property {string|null} home
  * @property {string} output
  * @property {string|null} window_id
@@ -115,6 +112,8 @@ import {
  * @property {RunCommand} [runCommand]
  * @property {(args: string[]) => Promise<CommandResult>} [runTmux]
  * @property {(pid: number, signal: NodeJS.Signals) => void} [killGroup]
+ * @property {(pgid: number) => boolean} [groupAlive] - Whether any process of
+ * the group is left; a stop is judged by the group, not its leader.
  * @property {(pid: number) => boolean} [processAlive]
  * @property {LoginFiles} [files]
  * @property {Record<LoginProvider, () => Promise<AccountListRead>>} [listAccounts]
@@ -693,6 +692,22 @@ function defaultKillGroup(pid, signal) {
 }
 
 /**
+ * Whether a process group still has a member: only ESRCH means gone, so an
+ * EPERM (a member someone else owns) or any other error counts as alive.
+ *
+ * @param {number} pgid
+ * @returns {boolean}
+ */
+function defaultGroupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return /** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH';
+  }
+}
+
+/**
  * @param {number} pid
  * @returns {boolean}
  */
@@ -788,6 +803,7 @@ export function createAccountLoginManager(options = {}) {
       return run(tmux, args, { timeout_ms: TMUX_TIMEOUT_MS });
     });
   const killGroup = options.killGroup || defaultKillGroup;
+  const groupAlive = options.groupAlive || defaultGroupAlive;
   const processAlive = options.processAlive || defaultProcessAlive;
   const files = options.files || createLoginFiles();
   /** @type {Record<LoginProvider, () => Promise<AccountListRead>>} */
@@ -948,15 +964,58 @@ export function createAccountLoginManager(options = {}) {
   // ---- Codex ---------------------------------------------------------------
 
   /**
-   * Remove the pid record (only once the process is gone, so a survivor
-   * stays findable by the startup sweep) and the temp home.
+   * Wait up to `ms` for a process group to be gone, checking before each
+   * sleep so a group that is gone already answers at once.
+   *
+   * @param {number} pgid
+   * @param {number} ms
+   * @returns {Promise<boolean>} Whether the group was gone within `ms`.
+   */
+  async function waitGroupGone(pgid, ms) {
+    for (let waited = 0; ; waited += GONE_POLL_MS) {
+      if (!groupAlive(pgid)) {
+        return true;
+      }
+      if (waited >= ms) {
+        return false;
+      }
+      await sleep(GONE_POLL_MS);
+    }
+  }
+
+  /**
+   * End a process group: SIGTERM, then SIGKILL once it outlives the grace,
+   * and a check that it is gone. Every step is judged by the GROUP, because a
+   * leader that exits on SIGTERM leaves a descendant that ignores it running.
+   *
+   * @param {number} pgid
+   * @returns {Promise<boolean>} Whether the group is gone.
+   */
+  async function endGroup(pgid) {
+    if (!groupAlive(pgid)) {
+      return true;
+    }
+    killGroup(pgid, 'SIGTERM');
+    if (await waitGroupGone(pgid, STOP_GRACE_MS)) {
+      return true;
+    }
+    killGroup(pgid, 'SIGKILL');
+    return waitGroupGone(pgid, KILL_CONFIRM_MS);
+  }
+
+  /**
+   * Leave nothing of a Codex login behind, on every end path: the child's
+   * process group ends first (at once when it is gone already), then — only
+   * once it is gone, so a survivor stays findable by the startup sweep — the
+   * pid record, and the temp home.
    *
    * @param {LoginSession} session
-   * @param {boolean} process_gone
-   * @returns {Promise<boolean>} Whether the temp home is gone.
+   * @returns {Promise<boolean>} Whether the group and the temp home are gone.
    */
-  async function codexCleanup(session, process_gone) {
-    if (process_gone && session.pid_record) {
+  async function codexCleanup(session) {
+    const gone =
+      typeof session.pid === 'number' ? await endGroup(session.pid) : true;
+    if (gone && session.pid_record) {
       const pending = session.pid_record;
       session.pid_record = null;
       await pending.catch(() => {});
@@ -970,43 +1029,23 @@ export function createAccountLoginManager(options = {}) {
         return false;
       }
     }
-    return true;
+    return gone;
   }
 
   /**
-   * @param {LoginSession} session
-   * @param {number} ms
-   * @returns {Promise<boolean>} Whether the child exited within `ms`.
-   */
-  function waitExit(session, ms) {
-    if (session.exited) {
-      return Promise.resolve(true);
-    }
-    return Promise.race([
-      session.exit_promise.then(() => true),
-      sleep(ms).then(() => session.exited)
-    ]);
-  }
-
-  /**
-   * Codex stop: SIGTERM to the child's process group, SIGKILL after five
-   * seconds if it is still alive, then the temp home goes.
+   * Clean a Codex login up, then end it with `end` — or with
+   * `cleanup_incomplete` when something was left behind (a leftover temp home
+   * is removed later by the startup sweep).
    *
    * @param {LoginSession} session
-   * @returns {Promise<boolean>} Whether nothing was left behind.
+   * @param {LoginEnd} end
    */
-  async function stopCodex(session) {
-    let gone = true;
-    if (session.child && !session.exited && typeof session.pid === 'number') {
-      killGroup(session.pid, 'SIGTERM');
-      gone = await waitExit(session, STOP_GRACE_MS);
-      if (!gone) {
-        killGroup(session.pid, 'SIGKILL');
-        gone = await waitExit(session, KILL_CONFIRM_MS);
-      }
-    }
-    const cleaned = await codexCleanup(session, gone);
-    return gone && cleaned;
+  async function finishCodex(session, end) {
+    const clean = await codexCleanup(session);
+    finish(
+      session,
+      clean ? end : { state: 'failed', error: 'cleanup_incomplete' }
+    );
   }
 
   /**
@@ -1043,7 +1082,10 @@ export function createAccountLoginManager(options = {}) {
       return;
     }
     if (!stillRunning(session)) {
-      await codexCleanup(session, true);
+      // A stop already ended the session while the home was being made, and
+      // an end is write-once; a home left here holds no login (codex never
+      // ran) and the startup sweep removes it.
+      await codexCleanup(session);
       return;
     }
 
@@ -1058,21 +1100,18 @@ export function createAccountLoginManager(options = {}) {
         env: { ...env, CODEX_HOME: session.home }
       });
     } catch (error) {
-      await codexCleanup(session, true);
       const spawn_error = /** @type {NodeJS.ErrnoException} */ (error);
-      finish(session, {
+      await finishCodex(session, {
         state: 'failed',
         error: spawn_error.code === 'ENOENT' ? 'not_found' : 'login_failed'
       });
       return;
     }
     session.child = child;
-    child.on('exit', () => session.mark_exited());
     child.on('error', (error) => {
       if (typeof child.pid === 'number') {
         return;
       }
-      session.mark_exited();
       const spawn_error = /** @type {NodeJS.ErrnoException} */ (error);
       void onCodexSpawnFailed(
         session,
@@ -1080,7 +1119,6 @@ export function createAccountLoginManager(options = {}) {
       );
     });
     child.on('close', (code) => {
-      session.mark_exited();
       void onCodexClose(session, code);
     });
     if (typeof child.pid === 'number') {
@@ -1121,8 +1159,7 @@ export function createAccountLoginManager(options = {}) {
       return;
     }
     session.finishing = true;
-    await codexCleanup(session, true);
-    finish(session, { state: 'failed', error });
+    await finishCodex(session, { state: 'failed', error });
   }
 
   /**
@@ -1148,13 +1185,15 @@ export function createAccountLoginManager(options = {}) {
       } catch {
         end = { state: 'failed', error: 'login_failed' };
       }
-      await codexCleanup(session, true);
-      finish(session, end);
+      await finishCodex(session, end);
       return;
     }
     const message = lastOutputLine(session.output);
-    await codexCleanup(session, true);
-    finish(session, { state: 'failed', error: 'login_failed', message });
+    await finishCodex(session, {
+      state: 'failed',
+      error: 'login_failed',
+      message
+    });
   }
 
   /**
@@ -1615,7 +1654,7 @@ export function createAccountLoginManager(options = {}) {
       try {
         clean =
           session.provider === 'codex'
-            ? await stopCodex(session)
+            ? await codexCleanup(session)
             : await closeWindow(session);
       } catch {
         clean = false;
@@ -1644,11 +1683,6 @@ export function createAccountLoginManager(options = {}) {
    * @returns {LoginSession}
    */
   function newSession(input) {
-    /** @type {() => void} */
-    let mark = () => {};
-    const exit_promise = new Promise((resolve) => {
-      mark = () => resolve(undefined);
-    });
     /** @type {LoginSession} */
     const session = {
       id: randomId(),
@@ -1671,12 +1705,6 @@ export function createAccountLoginManager(options = {}) {
       child: null,
       pid: null,
       pid_record: null,
-      exited: false,
-      exit_promise: /** @type {Promise<void>} */ (exit_promise),
-      mark_exited: () => {
-        session.exited = true;
-        mark();
-      },
       home: null,
       output: '',
       window_id: null,
@@ -1870,7 +1898,8 @@ export function createAccountLoginManager(options = {}) {
    * tmux session (and the legacy `bdui-login`), its recorded process groups
    * whose command line is still `codex login`, and its temp homes. A live
    * server's logins, this process's own, and anything whose owner cannot be
-   * read stay. Runs once; a start waits for it.
+   * read stay. A pid record goes only once its group is gone. Runs once; a
+   * start waits for it.
    *
    * @returns {Promise<{ closed_sessions: number, stopped_groups: number, removed_records: number, removed_homes: number }>}
    */
@@ -1925,9 +1954,19 @@ export function createAccountLoginManager(options = {}) {
       if (!ownerGone(record.owner)) {
         continue;
       }
-      if (record.pid !== null && (await isCodexLogin(record.pid))) {
-        await stopGroup(record.pid);
-        summary.stopped_groups += 1;
+      if (record.pid !== null) {
+        if (await isCodexLogin(record.pid)) {
+          if (!(await endGroup(record.pid))) {
+            // The group outlived SIGKILL: its record stays for the next start.
+            continue;
+          }
+          summary.stopped_groups += 1;
+        } else if (!processAlive(record.pid) && groupAlive(record.pid)) {
+          // The leader is gone but its group lives on, so no command line
+          // says it is still a codex login: it is not signalled, and the
+          // record stays while the group does.
+          continue;
+        }
       }
       try {
         await files.removePidRecord(record.login_id);
@@ -1975,24 +2014,6 @@ export function createAccountLoginManager(options = {}) {
       return listed.code === 0 && listed.stdout.includes('codex login');
     } catch {
       return false;
-    }
-  }
-
-  /**
-   * SIGTERM a leftover group, then SIGKILL it if it outlives the grace.
-   *
-   * @param {number} pid
-   */
-  async function stopGroup(pid) {
-    killGroup(pid, 'SIGTERM');
-    for (let waited = 0; waited < STOP_GRACE_MS; waited += GONE_POLL_MS) {
-      if (!processAlive(pid)) {
-        return;
-      }
-      await sleep(GONE_POLL_MS);
-    }
-    if (processAlive(pid)) {
-      killGroup(pid, 'SIGKILL');
     }
   }
 

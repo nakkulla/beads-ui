@@ -2447,6 +2447,179 @@ describe('usage meter account login and removal (UI-xm29 §4.5)', () => {
     meter.destroy();
   });
 
+  const CONFIRM_REQUIRED = {
+    ok: false,
+    error: 'confirm_required',
+    refs: [],
+    unchecked_repos: 0
+  };
+
+  // TWO_CLAUDE after a removal elsewhere renumbered it: #2 is another account.
+  const MOVED_CLAUDE = {
+    available: false,
+    accounts: [
+      accountRow({ number: 1, active: true }),
+      accountRow({ number: 2, email: 'three@example.com' })
+    ]
+  };
+
+  /**
+   * A route answer the test releases by hand.
+   */
+  function deferredAnswer() {
+    /** @type {(value: unknown) => void} */
+    let resolve = () => {};
+    const promise = new Promise((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  test('drops the confirm when a refresh puts another account at its number', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    let moved = false;
+    stubAccountApi({
+      claude: () => (moved ? MOVED_CLAUDE : TWO_CLAUDE),
+      routes: { 'POST /api/claude-account/remove': [CONFIRM_REQUIRED] }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+    el('.usage-meter__remove').click();
+    await flush();
+    moved = true;
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(document.querySelector('.usage-meter__remove-confirm')).toBeNull();
+    expect(document.querySelector('.usage-meter__remove')).not.toBeNull();
+    meter.destroy();
+  });
+
+  test('keeps the confirm through a refresh that keeps its account at its number', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: { 'POST /api/claude-account/remove': [CONFIRM_REQUIRED] }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+    el('.usage-meter__remove').click();
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(
+      document.querySelector('.usage-meter__remove-confirm')
+    ).not.toBeNull();
+    meter.destroy();
+  });
+
+  test('drops a pre-check answer that lands after the list moved', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const answer = deferredAnswer();
+    let moved = false;
+    stubAccountApi({
+      claude: () => (moved ? MOVED_CLAUDE : TWO_CLAUDE),
+      routes: { 'POST /api/claude-account/remove': [answer.promise] }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+    el('.usage-meter__remove').click();
+    moved = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    answer.resolve(CONFIRM_REQUIRED);
+    await flush();
+
+    expect(document.querySelector('.usage-meter__remove-confirm')).toBeNull();
+    meter.destroy();
+  });
+
+  test('ignores a pre-check answer that lands after 관리 went off and on again', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const answer = deferredAnswer();
+    stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: { 'POST /api/claude-account/remove': [answer.promise] }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+    el('.usage-meter__remove').click();
+    el('.usage-meter__manage').click();
+    el('.usage-meter__manage').click();
+
+    answer.resolve(CONFIRM_REQUIRED);
+    await flush();
+
+    expect(document.querySelector('.usage-meter__remove-confirm')).toBeNull();
+    expect(
+      /** @type {HTMLButtonElement} */ (el('.usage-meter__remove')).disabled
+    ).toBe(false);
+    meter.destroy();
+  });
+
+  test('ignores a pre-check answer that lands after the card closed', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const answer = deferredAnswer();
+    stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: { 'POST /api/claude-account/remove': [answer.promise] }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+    el('.usage-meter__remove').click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    answer.resolve(CONFIRM_REQUIRED);
+    await flush();
+
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+
+    expect(document.querySelector('.usage-meter__remove-confirm')).toBeNull();
+    meter.destroy();
+  });
+
+  test('still reports a confirmed removal that lands after the card closed', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const answer = deferredAnswer();
+    stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/claude-account/remove': [CONFIRM_REQUIRED, answer.promise]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+    el('.usage-meter__remove').click();
+    await flush();
+    el('.usage-meter__remove-confirm').click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    answer.resolve({
+      ok: true,
+      removed: { number: 2, email: 'two@example.com' }
+    });
+    await flush();
+
+    await openFakeCard(mount);
+
+    expect(text('.usage-meter__section-message')).toBe(
+      '삭제됨 — two@example.com'
+    );
+    meter.destroy();
+  });
+
   test('starts an add login for the section provider', async () => {
     vi.useFakeTimers();
     const mount = mountMeter();

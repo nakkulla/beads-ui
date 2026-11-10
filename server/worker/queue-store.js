@@ -6808,6 +6808,15 @@ export function createQueueStore(options = {}) {
   /** @type {Map<string, boolean>} */
   const auto_advance_at_shutdown = new Map();
   /**
+   * Workspaces whose cold load could not read their queue file (anything but
+   * a missing file). Their cached queue started empty, so for the rest of
+   * this process it cannot say what ran before; a strict snapshot refuses
+   * them.
+   *
+   * @type {Set<string>}
+   */
+  const load_failures = new Set();
+  /**
    * Cross-lane ids this process's cold load disarmed, per workspace (UI-jaua
    * §5.1). Process-lifetime only — it is deliberately NOT part of the cached
    * queue, so no mutation can flush it to disk.
@@ -6860,6 +6869,9 @@ export function createQueueStore(options = {}) {
         error.message.startsWith('post_merge_job_repair_malformed:')
       ) {
         throw error;
+      }
+      if (/** @type {NodeJS.ErrnoException} */ (error)?.code !== 'ENOENT') {
+        load_failures.add(key);
       }
       q = emptyQueue();
       retirements = [];
@@ -7771,13 +7783,20 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Current in-memory snapshot (loads on first access).
+     * Current in-memory snapshot (loads on first access). With `strict`, a
+     * workspace whose cold load could not read its queue file throws instead
+     * of answering with the empty queue it started from.
      *
      * @param {string} workspace
+     * @param {{ strict?: boolean }} [options]
      * @returns {Queue}
      */
-    snapshot(workspace) {
-      return exportQueue(workspace, ensureLoaded(workspace));
+    snapshot(workspace, options = {}) {
+      const q = ensureLoaded(workspace);
+      if (options.strict && load_failures.has(keyFor(workspace))) {
+        throw new Error('queue_unreadable');
+      }
+      return exportQueue(workspace, q);
     },
 
     /**
@@ -15199,6 +15218,7 @@ export function createQueueStore(options = {}) {
      */
     __clearCacheForTest() {
       cache.clear();
+      load_failures.clear();
       repair_lane_retirements.clear();
       retired_kind_attempts.clear();
       provider_holds.__clearCacheForTest();

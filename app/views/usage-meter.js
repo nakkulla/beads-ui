@@ -16,7 +16,8 @@ import { showToast } from '../utils/toast.js';
  * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
  * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean }} ProviderSnapshot
  * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, remove_endpoint: string, login_tools: string }} ProviderDescriptor
- * @typedef {{ kind: 'ok' | 'warn' | 'error' | 'confirm' | 'remove_confirm', text: string }} RowMessage
+ * @typedef {{ number: number, key: string, name: string }} RemoveTarget
+ * @typedef {{ kind: 'ok' | 'warn' | 'error' | 'confirm', text: string } | { kind: 'remove_confirm', text: string, target: RemoveTarget }} RowMessage
  * @typedef {{
  *   provider: string,
  *   mode: 'relogin' | 'add',
@@ -680,6 +681,10 @@ export function createUsageMeter(mount_element, options = {}) {
   const manage_providers = new Set();
   /** @type {Set<string>} */
   const removing_providers = new Set();
+  // provider key -> how many times its [관리] went off (or the card closed);
+  // a remove pre-check answers only the [관리] it was asked from.
+  /** @type {Map<string, number>} */
+  const manage_generations = new Map();
   // A poll started before an account switch can settle after the post-switch
   // refresh; only the newest refresh may write the snapshots.
   let refresh_generation = 0;
@@ -762,10 +767,9 @@ export function createUsageMeter(mount_element, options = {}) {
     if (open_provider === null) {
       return;
     }
-    for (const provider_key of manage_providers) {
-      clearRemoveConfirms(provider_key);
+    for (const provider_key of [...manage_providers]) {
+      endManage(provider_key);
     }
-    manage_providers.clear();
     open_provider = null;
     document.removeEventListener('mousedown', onDocMousedown);
     document.removeEventListener('keydown', onDocKeydown);
@@ -1143,6 +1147,35 @@ export function createUsageMeter(mount_element, options = {}) {
   }
 
   /**
+   * Drop every remove confirm that no longer stands: its provider's [관리] is
+   * off, or the row at its number no longer holds the account it was opened
+   * for (a refresh moved the list), so a confirm never lands on another
+   * account. Runs before each draw, which also catches a pre-check answer
+   * that arrived after the list moved.
+   */
+  function dropStaleRemoveConfirms() {
+    for (const provider of PROVIDERS) {
+      const managing = manage_providers.has(provider.key);
+      const accounts = accountsOf(provider.key);
+      for (const [key, message] of row_messages) {
+        if (
+          message.kind !== 'remove_confirm' ||
+          !key.startsWith(`${provider.key}:`)
+        ) {
+          continue;
+        }
+        const target = message.target;
+        const row = accounts.find(
+          (account) => account.number === target.number
+        );
+        if (!managing || row === undefined || row.key !== target.key) {
+          row_messages.delete(key);
+        }
+      }
+    }
+  }
+
+  /**
    * Put a notice on the row of `account_number` when the list still has it,
    * else on the section.
    *
@@ -1487,14 +1520,28 @@ export function createUsageMeter(mount_element, options = {}) {
   }
 
   /**
+   * Turn [관리] of one provider off: its confirm lines go, and a remove
+   * pre-check still in flight no longer answers.
+   *
+   * @param {string} provider_key
+   */
+  function endManage(provider_key) {
+    manage_providers.delete(provider_key);
+    clearRemoveConfirms(provider_key);
+    manage_generations.set(
+      provider_key,
+      (manage_generations.get(provider_key) ?? 0) + 1
+    );
+  }
+
+  /**
    * Toggle [관리] of one provider. Turning it off drops its confirm lines.
    *
    * @param {string} provider_key
    */
   function toggleManage(provider_key) {
     if (manage_providers.has(provider_key)) {
-      manage_providers.delete(provider_key);
-      clearRemoveConfirms(provider_key);
+      endManage(provider_key);
     } else {
       manage_providers.add(provider_key);
     }
@@ -1502,32 +1549,50 @@ export function createUsageMeter(mount_element, options = {}) {
   }
 
   /**
+   * The account a row's [삭제] asks about, pinned by number AND key so its
+   * confirm line can tell when the number moved to another account.
+   *
+   * @param {string} provider_key
+   * @param {UsageAccount} account
+   * @returns {RemoveTarget}
+   */
+  function removeTargetOf(provider_key, account) {
+    return {
+      number: account.number,
+      key: account.key,
+      name: accountDisplayName(
+        accountsOf(provider_key),
+        account.key,
+        account.email
+      )
+    };
+  }
+
+  /**
    * Ask the server to remove one account. Without `confirm` the server never
    * deletes: it answers with a block, or the references the confirm line
-   * shows (UI-xm29 §4.4-5). Only the confirm line's [삭제] sends `confirm`.
+   * shows (UI-xm29 §4.4-5). Only the confirm line's [삭제] sends `confirm`,
+   * with the target its pre-check pinned. A pre-check answer that lands after
+   * [관리] went off or the card closed is dropped.
    *
    * @param {ProviderDescriptor} provider
-   * @param {UsageAccount} account
+   * @param {RemoveTarget} target
    * @param {boolean} [confirm]
    */
-  async function removeAccount(provider, account, confirm = false) {
+  async function removeAccount(provider, target, confirm = false) {
     if (removing_providers.has(provider.key)) {
       return;
     }
-    const row_key = rowKey(provider.key, account.number);
-    const name = accountDisplayName(
-      accountsOf(provider.key),
-      account.key,
-      account.email
-    );
+    const row_key = rowKey(provider.key, target.number);
+    const generation = manage_generations.get(provider.key) ?? 0;
     removing_providers.add(provider.key);
     row_messages.delete(row_key);
     section_messages.delete(provider.key);
     renderProviders();
 
     const body = await postJson(provider.remove_endpoint, {
-      number: account.number,
-      key: account.key,
+      number: target.number,
+      key: target.key,
       ...(confirm ? { confirm: true } : {})
     });
     if (destroyed) {
@@ -1535,10 +1600,18 @@ export function createUsageMeter(mount_element, options = {}) {
     }
     removing_providers.delete(provider.key);
 
+    if (
+      !confirm &&
+      (!manage_providers.has(provider.key) ||
+        (manage_generations.get(provider.key) ?? 0) !== generation)
+    ) {
+      renderProviders();
+      return;
+    }
     if (body && body.ok === true) {
       section_messages.set(provider.key, {
         kind: 'ok',
-        text: `삭제됨 — ${name}`
+        text: `삭제됨 — ${target.name}`
       });
       renderProviders();
       await refresh();
@@ -1547,7 +1620,8 @@ export function createUsageMeter(mount_element, options = {}) {
     if (body && body.error === 'confirm_required') {
       row_messages.set(row_key, {
         kind: 'remove_confirm',
-        text: removeConfirmText(body.refs, body.unchecked_repos)
+        text: removeConfirmText(body.refs, body.unchecked_repos),
+        target
       });
       renderProviders();
       return;
@@ -1754,7 +1828,8 @@ export function createUsageMeter(mount_element, options = {}) {
       type="button"
       class="op-btn op-btn--danger usage-meter__remove"
       ?disabled=${removing_providers.has(provider.key)}
-      @click=${() => void removeAccount(provider, account)}
+      @click=${() =>
+        void removeAccount(provider, removeTargetOf(provider.key, account))}
     >
       삭제
     </button>`;
@@ -1793,12 +1868,13 @@ export function createUsageMeter(mount_element, options = {}) {
         </button>`;
     }
     if (message.kind === 'remove_confirm') {
+      const target = message.target;
       return html`<span class="usage-meter__message-ops">
         <button
           type="button"
           class="op-btn op-btn--danger usage-meter__remove-confirm"
           ?disabled=${removing_providers.has(provider.key)}
-          @click=${() => void removeAccount(provider, account, true)}
+          @click=${() => void removeAccount(provider, target, true)}
         >
           삭제
         </button>
@@ -2126,6 +2202,7 @@ export function createUsageMeter(mount_element, options = {}) {
 
   /** Draw every currently available provider. */
   function drawProviders() {
+    dropStaleRemoveConfirms();
     const now_ms = Date.now();
     /** @type {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }[]} */
     const entries = [];

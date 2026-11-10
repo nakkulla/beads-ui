@@ -313,11 +313,19 @@ function codexHarness(options = {}) {
   const { files, state } = fakeFiles();
   /** @type {FakeChild[]} */
   const children = [];
+  // Process groups by pgid: a child's group lives until the child exits,
+  // and a straggler keeps its group alive after the leader is gone.
+  /** @type {Set<number>} */
+  const live_groups = new Set();
+  /** @type {Set<number>} */
+  const stragglers = new Set();
   /** @type {Array<[string, boolean]>} */
   const lock_seen = [];
   const spawnLogin = vi.fn(() => {
     const child = fakeChild(4000 + children.length);
     children.push(child);
+    live_groups.add(child.pid);
+    child.on('exit', () => live_groups.delete(child.pid));
     return child;
   });
   const runCommand = vi.fn(
@@ -356,6 +364,7 @@ function codexHarness(options = {}) {
     runCommand,
     runTmux: async () => commandResult(1),
     killGroup,
+    groupAlive: (pgid) => live_groups.has(pgid) || stragglers.has(pgid),
     processAlive: () => false,
     files,
     listAccounts: { codex: listCodex, claude: listClaude },
@@ -379,6 +388,7 @@ function codexHarness(options = {}) {
     listCodex,
     invalidateCodex,
     killGroup,
+    stragglers,
     log,
     lock_seen
   };
@@ -718,6 +728,67 @@ describe('codex login flow', () => {
       message: 'skipped   auth.json: MissingEmail'
     });
   });
+
+  test('fails cleanup_incomplete when the temp home outlives a successful login', async () => {
+    const h = codexHarness();
+    const { login_id, child } = await startCodexToCode(h, { mode: 'add' });
+    vi.mocked(h.files.removeTempHome).mockRejectedValueOnce(new Error('busy'));
+
+    await completeCodexLogin(h, child, authFor(KEY_C, 'c@example.com'));
+
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'failed',
+      error: 'cleanup_incomplete'
+    });
+  });
+
+  test('fails cleanup_incomplete when the temp home outlives a failed login', async () => {
+    const h = codexHarness();
+    const { login_id, child } = await startCodexToCode(h, { mode: 'add' });
+    vi.mocked(h.files.removeTempHome).mockRejectedValueOnce(new Error('busy'));
+
+    endChild(child, 1);
+    await drain();
+
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'failed',
+      error: 'cleanup_incomplete'
+    });
+  });
+
+  test('fails cleanup_incomplete when the temp home outlives a spawn that threw', async () => {
+    const h = codexHarness();
+    h.spawnLogin.mockImplementationOnce(() => {
+      throw Object.assign(new Error('spawn'), { code: 'ENOENT' });
+    });
+    vi.mocked(h.files.removeTempHome).mockRejectedValueOnce(new Error('busy'));
+
+    const started = await h.manager.start({ provider: 'codex', mode: 'add' });
+    await drain();
+
+    expect(h.manager.status(started.ok ? started.login_id : '')).toMatchObject({
+      state: 'failed',
+      error: 'cleanup_incomplete'
+    });
+  });
+
+  test('fails cleanup_incomplete when the temp home outlives a spawn error', async () => {
+    const h = codexHarness();
+    const child = fakeChild(4000);
+    /** @type {any} */ (child).pid = undefined;
+    h.spawnLogin.mockImplementationOnce(() => child);
+    vi.mocked(h.files.removeTempHome).mockRejectedValueOnce(new Error('busy'));
+    const started = await h.manager.start({ provider: 'codex', mode: 'add' });
+    await drain();
+
+    child.emit('error', Object.assign(new Error('spawn'), { code: 'ENOENT' }));
+    await drain();
+
+    expect(h.manager.status(started.ok ? started.login_id : '')).toMatchObject({
+      state: 'failed',
+      error: 'cleanup_incomplete'
+    });
+  });
 });
 
 describe('codex switch lock', () => {
@@ -825,6 +896,63 @@ describe('codex stop procedure', () => {
       error: 'cleanup_incomplete'
     });
     expect(h.state.pid_records.has(login_id)).toBe(true);
+  });
+
+  test('SIGKILLs the group when only its leader exits on SIGTERM', async () => {
+    const h = codexHarness();
+    const { login_id, child } = await startCodexToCode(h, { mode: 'add' });
+    h.stragglers.add(4000);
+    h.killGroup.mockImplementation((_pid, signal) => {
+      if (signal === 'SIGTERM') {
+        endChild(child, null, 'SIGTERM');
+      } else {
+        h.stragglers.delete(4000);
+      }
+    });
+
+    const pending = h.manager.cancel(login_id);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const cancelled = await pending;
+
+    expect(h.killGroup.mock.calls).toEqual([
+      [4000, 'SIGTERM'],
+      [4000, 'SIGKILL']
+    ]);
+    expect(cancelled).toEqual({ ok: true, state: 'cancelled', error: null });
+  });
+
+  test('keeps the pid record while a descendant outlives SIGKILL after its leader exited', async () => {
+    const h = codexHarness();
+    const { login_id, child } = await startCodexToCode(h, { mode: 'add' });
+    h.stragglers.add(4000);
+    h.killGroup.mockImplementation((_pid, signal) => {
+      if (signal === 'SIGTERM') {
+        endChild(child, null, 'SIGTERM');
+      }
+    });
+
+    const pending = h.manager.cancel(login_id);
+    await vi.advanceTimersByTimeAsync(6_500);
+    const cancelled = await pending;
+
+    expect(cancelled).toEqual({
+      ok: true,
+      state: 'failed',
+      error: 'cleanup_incomplete'
+    });
+    expect(h.state.pid_records.has(login_id)).toBe(true);
+  });
+
+  test('ends a descendant that a login exiting on its own left behind', async () => {
+    const h = codexHarness();
+    const { login_id, child } = await startCodexToCode(h, { mode: 'add' });
+    h.stragglers.add(4000);
+    h.killGroup.mockImplementation(() => h.stragglers.delete(4000));
+
+    await completeCodexLogin(h, child, authFor(KEY_C, 'c@example.com'));
+
+    expect(h.killGroup.mock.calls).toEqual([[4000, 'SIGTERM']]);
+    expect(h.manager.status(login_id)?.state).toBe('done');
   });
 
   test('ignores the child close that a stop caused', async () => {
@@ -1020,6 +1148,7 @@ function claudeHarness(options = {}) {
     runCommand: vi.fn(async () => commandResult(0)),
     runTmux: tmux.runTmux,
     killGroup: vi.fn(),
+    groupAlive: () => false,
     processAlive: () => false,
     files,
     listAccounts: {
@@ -1468,17 +1597,27 @@ function sweepHarness(options = {}) {
   state.homes.add('/state/account-login/codex-tmp/home-777-c');
   state.homes.add('/state/account-login/codex-tmp/home-garbage');
   const alive = new Set([222, 501, 502, 503, 504, 505]);
-  const killGroup = vi.fn((/** @type {number} */ pid) => {
-    alive.delete(pid);
-  });
+  // Process groups by pgid, apart from the leader so a group can outlive it.
+  const groups = new Set([501, 502, 503, 504, 505]);
+  const killGroup = vi.fn(
+    /** @type {(pid: number, signal: NodeJS.Signals) => void} */ (
+      (pid) => {
+        alive.delete(pid);
+        groups.delete(pid);
+      }
+    )
+  );
+  // `ps -o command= -p <pid>`: a gone pid exits 1 with no line.
   const runCommand = vi.fn(
     async (/** @type {string} */ _bin, /** @type {string[]} */ args) =>
-      commandResult(
-        0,
-        args[3] === '503'
-          ? '/usr/bin/vim notes.txt\n'
-          : '/Users/me/.local/share/codex/bin/codex login --device-auth\n'
-      )
+      alive.has(Number(args[3]))
+        ? commandResult(
+            0,
+            args[3] === '503'
+              ? '/usr/bin/vim notes.txt\n'
+              : '/Users/me/.local/share/codex/bin/codex login --device-auth\n'
+          )
+        : commandResult(1)
   );
   const runTmux = vi.fn(async (/** @type {string[]} */ args) =>
     args[0] === 'list-sessions'
@@ -1493,11 +1632,21 @@ function sweepHarness(options = {}) {
     files,
     runCommand,
     killGroup,
+    groupAlive: (pgid) => groups.has(pgid),
     processAlive: (pid) => alive.has(pid),
     runTmux,
     owner_pid: 777
   });
-  return { manager, state, files, killGroup, runCommand, runTmux };
+  return {
+    manager,
+    state,
+    files,
+    alive,
+    groups,
+    killGroup,
+    runCommand,
+    runTmux
+  };
 }
 
 /**
@@ -1542,6 +1691,48 @@ describe('startup cleanup', () => {
 
     expect(h.killGroup.mock.calls).toEqual([[501, 'SIGTERM']]);
     expect(summary.stopped_groups).toBe(1);
+  });
+
+  test('SIGKILLs a leftover group whose leader alone exits on SIGTERM', async () => {
+    const h = sweepHarness();
+    h.killGroup.mockImplementation((pid, signal) => {
+      h.alive.delete(pid);
+      if (signal === 'SIGKILL') {
+        h.groups.delete(pid);
+      }
+    });
+
+    const pending = h.manager.cleanupStale();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await pending;
+
+    expect(h.killGroup.mock.calls).toEqual([
+      [501, 'SIGTERM'],
+      [501, 'SIGKILL']
+    ]);
+    expect(h.state.pid_records.has('dead-codex')).toBe(false);
+  });
+
+  test('keeps the record of a leftover group that outlives SIGKILL', async () => {
+    const h = sweepHarness();
+    h.killGroup.mockImplementation(() => {});
+
+    const pending = h.manager.cleanupStale();
+    await vi.advanceTimersByTimeAsync(6_500);
+    const summary = await pending;
+
+    expect(h.state.pid_records.has('dead-codex')).toBe(true);
+    expect(summary.stopped_groups).toBe(0);
+  });
+
+  test('keeps the record of a group whose leader is gone without signalling it', async () => {
+    const h = sweepHarness();
+    h.alive.delete(501);
+
+    await h.manager.cleanupStale();
+
+    expect(h.killGroup).not.toHaveBeenCalled();
+    expect(h.state.pid_records.has('dead-codex')).toBe(true);
   });
 
   test("checks the command line only of dead owners' records", async () => {
