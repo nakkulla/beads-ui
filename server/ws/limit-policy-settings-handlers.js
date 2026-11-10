@@ -161,7 +161,8 @@ function registeredWorkspaces() {
  * workspace's standing hold verdicts to that workspace's own stored policy,
  * re-run each workspace's switch pass, and then drop the runner from the list.
  * A workspace whose re-binding fails keeps its runner in the list (one log
- * line) for the next start; an unreadable registry keeps every runner.
+ * line) for the next start, a workspace whose switch pass fails keeps every
+ * resumed runner, and an unreadable registry keeps every runner.
  * Re-binding writes no policy value, so a repeat — after a stop between the
  * migration and here, or part way through — lands on the same verdicts.
  *
@@ -201,11 +202,16 @@ export async function resumeLimitPolicyRebind() {
       }
     }
   }
+  // A workspace's switch pass covers every runner at once, so its failure
+  // keeps every runner this start resumed in the list for the next start.
   await Promise.all(
     workspaces.map((workspace) =>
       Promise.resolve()
         .then(() => reevaluateWorkerProviderSwitches(workspace))
         .catch((err) => {
+          for (const runner of runners) {
+            failed.add(runner);
+          }
           log(
             'provider switch reevaluation after verdict rebind failed for %s: %o',
             workspace,

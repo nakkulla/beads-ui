@@ -132,10 +132,27 @@ describe('createWorkerUrlSection (UI-32oq §4.5)', () => {
     );
   });
 
-  test('draws no connectivity check control', async () => {
-    const { host } = await mount(async () => readReply());
+  test('sends no connectivity probe from any of its controls', async () => {
+    const { host, transport } = await mount(async (kind, payload) => {
+      if (kind === 'set-worker-url-common') {
+        const saved = readReply(payload.value, 'saved');
+        return {
+          common_saved: true,
+          common: saved.worker_url.common,
+          worker_url: saved.worker_url
+        };
+      }
+      return readReply();
+    });
 
-    expect(el(host, '[data-worker-url-refresh]')).toBe(null);
+    for (const button of Array.from(host.querySelectorAll('button'))) {
+      button.click();
+      await settle();
+    }
+
+    expect(
+      new Set(transport.mock.calls.map((/** @type {any[]} */ c) => c[0]))
+    ).toEqual(new Set(['get-session-defaults', 'set-worker-url-common']));
   });
 
   test.each(['invalid', 'unavailable'])(
@@ -279,6 +296,140 @@ describe('createWorkerUrlSection (UI-32oq §4.5)', () => {
 
     expect(el(host, '[data-worker-common-input]').value).toBe(
       'http://common:3000'
+    );
+  });
+});
+
+describe('createWorkerUrlSection re-reads (ADR UI-32oq-2, UI-u6ud-11 승계)', () => {
+  /**
+   * Mount on a store whose stored common value the test can move.
+   *
+   * @returns {Promise<Awaited<ReturnType<typeof mount>> & { store: (reply: any) => void }>}
+   */
+  async function mountOnStore() {
+    let stored = readReply();
+    const view = await mount(async () => stored);
+    return {
+      ...view,
+      store: (reply) => {
+        stored = reply;
+      }
+    };
+  }
+
+  test('re-reads the common value on window focus', async () => {
+    const { host, store } = await mountOnStore();
+    store(readReply('http://moved:3000', 'moved'));
+
+    window.dispatchEvent(new Event('focus'));
+    await settle();
+
+    expect(el(host, '[data-worker-url-state]').textContent).toBe(
+      'http://moved:3000'
+    );
+  });
+
+  test('re-reads the common value from 새로고침', async () => {
+    const { host, store } = await mountOnStore();
+    store(readReply('http://moved:3000', 'moved'));
+
+    el(host, '[data-worker-url-refresh]').click();
+    await settle();
+
+    expect(el(host, '[data-worker-url-state]').textContent).toBe(
+      'http://moved:3000'
+    );
+  });
+
+  test('keeps the typed value and its revision across a re-read', async () => {
+    const { host, transport, store } = await mountOnStore();
+    type(host, 'http://draft:3000');
+    store(readReply('http://moved:3000', 'moved'));
+    window.dispatchEvent(new Event('focus'));
+    await settle();
+
+    const shown = el(host, '[data-worker-url-state]').textContent;
+
+    el(host, '[data-worker-common-save]').click();
+    await settle();
+
+    expect([shown, savesOf(transport)]).toEqual([
+      'http://moved:3000',
+      [{ value: 'http://draft:3000', expected_revision: 'original' }]
+    ]);
+  });
+
+  test('stops re-reading on window focus once destroyed', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const transport = vi.fn(async () => readReply());
+    const section = createWorkerUrlSection(host, { transport });
+    await section.load();
+    section.destroy();
+
+    window.dispatchEvent(new Event('focus'));
+    await settle();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  test('drops a re-read that a later one overtook', async () => {
+    /** @type {Array<(reply: any) => void>} */
+    const waiting = [];
+    let reads = 0;
+    const { host } = await mount(async () => {
+      reads += 1;
+      if (reads === 1) {
+        return readReply();
+      }
+      return new Promise((resolve) => {
+        waiting.push(resolve);
+      });
+    });
+    window.dispatchEvent(new Event('focus'));
+    el(host, '[data-worker-url-refresh]').click();
+
+    waiting[1](readReply('http://newer:3000', 'newer'));
+    await settle();
+    waiting[0](readReply('http://older:3000', 'older'));
+    await settle();
+
+    expect(el(host, '[data-worker-url-state]').textContent).toBe(
+      'http://newer:3000'
+    );
+  });
+
+  test('drops a re-read that a save overtook', async () => {
+    /** @type {Array<(reply: any) => void>} */
+    const waiting = [];
+    let reads = 0;
+    const { host } = await mount(async (kind, payload) => {
+      if (kind === 'set-worker-url-common') {
+        const saved = readReply(payload.value, 'saved');
+        return {
+          common_saved: true,
+          common: saved.worker_url.common,
+          worker_url: saved.worker_url
+        };
+      }
+      reads += 1;
+      if (reads === 1) {
+        return readReply();
+      }
+      return new Promise((resolve) => {
+        waiting.push(resolve);
+      });
+    });
+    window.dispatchEvent(new Event('focus'));
+    type(host, 'http://new:3000');
+    el(host, '[data-worker-common-save]').click();
+    await settle();
+
+    waiting[0](readReply('http://before-save:3000', 'before'));
+    await settle();
+
+    expect(el(host, '[data-worker-url-state]').textContent).toBe(
+      'http://new:3000'
     );
   });
 });

@@ -186,6 +186,12 @@ export function createSettingsDialog(mount_element, options) {
   /** The adopted queue for a non-connected target; newer than its monitor row. */
   /** @type {any} */
   let repo_queue = null;
+  /**
+   * Which binding of the target panes is live. Every teardown moves it on, so
+   * a pane created for an earlier target can no longer adopt a late reply
+   * into `repo_queue` or the queue store.
+   */
+  let target_generation = 0;
 
   /**
    * @param {string} [class_name]
@@ -342,6 +348,7 @@ export function createSettingsDialog(mount_element, options) {
       return execution_pane;
     }
     const bound_root = targetIsConnected() ? null : target_root;
+    const generation = target_generation;
     execution_pane = createExecutionPane(pane_host, {
       root_dir: bound_root,
       queue: () =>
@@ -356,6 +363,9 @@ export function createSettingsDialog(mount_element, options) {
       onOpenActiveAccount: () => selectTab('active_account'),
       notify,
       onQueueAdopt: (queue) => {
+        if (generation !== target_generation) {
+          return;
+        }
         if (bound_root === null) {
           options.queueStore?.set?.(queue);
           return;
@@ -382,6 +392,7 @@ export function createSettingsDialog(mount_element, options) {
       return null;
     }
     const connected = targetIsConnected();
+    const generation = target_generation;
     repo_pane = createRepoPane(repo_host, {
       root_dir: bound_root,
       transport,
@@ -394,6 +405,9 @@ export function createSettingsDialog(mount_element, options) {
         ) ?? null,
       adopted: () => repo_queue,
       onQueueAdopt: (queue) => {
+        if (generation !== target_generation) {
+          return;
+        }
         if (connected) {
           options.queueStore?.set?.(queue);
         }
@@ -509,6 +523,7 @@ export function createSettingsDialog(mount_element, options) {
 
   /** Tear down the panes bound to the target, dropping their unsaved input. */
   function destroyTargetPanes() {
+    target_generation += 1;
     execution_pane?.destroy();
     execution_pane = null;
     pane_host.remove();

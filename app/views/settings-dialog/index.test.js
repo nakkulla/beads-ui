@@ -564,6 +564,84 @@ describe('createSettingsDialog target (UI-32oq §4.4)', () => {
     ).toBe('');
   });
 
+  /**
+   * Open the `저장소` tab on REPO_A, send a cap change whose reply waits, and
+   * move the target to REPO_B before that reply lands.
+   *
+   * @returns {Promise<{ root: HTMLElement, transport: any, pushRows: (rows: Array<Record<string, any>>) => void, release: (reply: any) => void }>}
+   */
+  async function capChangeThenRetarget() {
+    /** @type {Array<(reply: any) => void>} */
+    const waiting = [];
+    const transport = vi.fn(async (/** @type {string} */ type) => {
+      if (type === 'worker-queue-set-slots') {
+        return new Promise((resolve) => {
+          waiting.push(resolve);
+        });
+      }
+      return { values: {}, warnings: [] };
+    });
+    const { root, dialog, pushRows } = mount({
+      monitorRows: TWO_ROWS,
+      transport
+    });
+    dialog.open('repo', { scope: 'repo', root_dir: REPO_A });
+    await settle();
+    const input = /** @type {HTMLInputElement} */ (
+      root.querySelector('[data-seam="repo-slots"]')
+    );
+    input.value = '5';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const picker = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[data-target-repo]')
+    );
+    picker.value = REPO_B;
+    picker.dispatchEvent(new Event('change'));
+    await settle();
+    return {
+      root,
+      transport,
+      pushRows,
+      release: (reply) => waiting.shift()?.(reply)
+    };
+  }
+
+  test('keeps a late queue reply of the old target out of the new target 실행 pane', async () => {
+    const { root, pushRows, release } = await capChangeThenRetarget();
+    await openTab(root, 'execution');
+
+    release({
+      applied: true,
+      queue: monitorRow(REPO_A, 'repo-a', {
+        revision: 10,
+        orchestration_model: 'opus'
+      })
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    pushRows(TWO_ROWS);
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('select[data-key="orchestration_model"]')
+      ).value
+    ).toBe('');
+  });
+
+  test('sends no conflict retry for the old target after the target changes', async () => {
+    const { transport, release } = await capChangeThenRetarget();
+
+    release({
+      applied: false,
+      conflict: true,
+      queue: monitorRow(REPO_A, 'repo-a', { revision: 9 })
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(payloadsOf(transport, 'worker-queue-set-slots')).toEqual([
+      { slots: 5, root_dir: REPO_A, expected_revision: 4 }
+    ]);
+  });
+
   test('switches to several repositories from the target bar', async () => {
     const { root, dialog, transport } = mount({
       monitorRows: TWO_ROWS,
@@ -1060,6 +1138,36 @@ describe('createSettingsDialog 저장소 tab (UI-f2sy §7, UI-32oq §4.5)', () =
         }
       ]
     ]);
+  });
+
+  test('sends no opt-out conflict retry for the old target after the target changes', async () => {
+    /** @type {Array<(reply: any) => void>} */
+    const waiting = [];
+    const transport = vi.fn(async (/** @type {string} */ type) => {
+      if (type === 'worker-repo-ops-opt-out-toggle') {
+        return new Promise((resolve) => {
+          waiting.push(resolve);
+        });
+      }
+      return { values: {}, warnings: [] };
+    });
+    const { root } = await openRepoTab({ monitorRows: TWO_ROWS, transport });
+    const check = /** @type {HTMLInputElement} */ (
+      root.querySelector('[data-lane="verify"] input[type="checkbox"]')
+    );
+    check.checked = false;
+    check.dispatchEvent(new Event('change', { bubbles: true }));
+    const picker = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[data-target-repo]')
+    );
+    picker.value = REPO_A;
+    picker.dispatchEvent(new Event('change'));
+    await settle();
+
+    waiting[0]({ applied: false, conflict: true, queue: { ...ENTRY } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(callsOf(transport, 'worker-repo-ops-opt-out-toggle').length).toBe(1);
   });
 
   test('sends 배포 실행 with its repository', async () => {

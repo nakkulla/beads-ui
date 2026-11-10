@@ -1073,4 +1073,24 @@ describe('Claude departure and return (UI-32oq §4.2)', () => {
 
     expect(harness.switchAccount).not.toHaveBeenCalled();
   });
+
+  test('passes over a listed default before until and moves to the next target', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(A3, 3, windowsOf(0, 0)),
+        account(A4, 4, windowsOf(100, 10), { active: true }),
+        account(A5, 5, windowsOf(0, 50))
+      ],
+      settings: settingsOf([A3, A4, A5], { default_account: A3 }),
+      record: DEPARTED
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[5]]);
+    expect(harness.departures.get('claude')).toEqual({
+      ...DEPARTED,
+      to_account: A5
+    });
+  });
 });

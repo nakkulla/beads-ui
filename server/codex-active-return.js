@@ -21,10 +21,12 @@
  * - Return: while a record stands, the observed active is its `to_account`,
  *   `until` has passed (or is null), and the default's row is `ok` with every
  *   judged window below the trigger, the login goes back to the default —
- *   also when the active account is below the trigger. The record ends when
- *   the observed active is the default, or neither the default nor
- *   `to_account` (a person switched), or when the settings turn the switch
- *   off or change the default.
+ *   also when the active account is below the trigger. While the record
+ *   stands this is the only way onto the default: a default that is also in
+ *   the target list is never picked as an ordinary departure target. The
+ *   record ends when the observed active is the default, or neither the
+ *   default nor `to_account` (a person switched), or when the settings turn
+ *   the switch off or change the default.
  * - Guards, for a departure and a return alike: a switch already holding the
  *   lock, a running Codex attempt with no account (it reads the active
  *   login's auth file), a target a running attempt uses (skipped), and a held
@@ -430,12 +432,19 @@ export function createActiveReturn(rules, deps) {
         return { kind: 'none', reason: 'default_unavailable', forget };
       }
     }
+    // While a departure stands, the default takes the login back only through
+    // the return above (§4.2 rule 4): a listed default is no ordinary target,
+    // or a move to it would skip `until` and end the record early.
+    const excluded =
+      record === null
+        ? scan.in_use
+        : new Set([...scan.in_use, record.default_account]);
     const candidate = rules.pickCandidate({
       accounts: list.accounts,
       allowed: settings.accounts,
       current_account: active.key,
       held_accounts: scan.held,
-      excluded_accounts: scan.in_use,
+      excluded_accounts: excluded,
       max_pct: trigger_pct
     });
     if (candidate === null) {

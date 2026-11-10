@@ -220,7 +220,9 @@ export function createRepoPane(host, options) {
 
   /**
    * One repo-scoped CAS mutation. A conflict is retried ONCE on the revision the
-   * reply carried, the way every other repo mutation on the monitor does.
+   * reply carried, the way every other repo mutation on the monitor does. A
+   * reply that lands after `destroy()` (the window closed or moved to another
+   * target) is dropped: no adoption, no retry, no notice.
    *
    * @param {string} type
    * @param {Record<string, unknown>} payload
@@ -235,14 +237,22 @@ export function createRepoPane(host, options) {
       });
     try {
       let res = await attempt();
+      if (destroyed) {
+        return null;
+      }
       adopt(res);
       if (res && res.conflict) {
         res = await attempt();
+        if (destroyed) {
+          return null;
+        }
         adopt(res);
       }
       return res;
     } catch (err) {
-      notify(`저장소 설정 저장 실패: ${errorText(err)}`);
+      if (!destroyed) {
+        notify(`저장소 설정 저장 실패: ${errorText(err)}`);
+      }
       return null;
     }
   }
@@ -292,15 +302,23 @@ export function createRepoPane(host, options) {
   const repo_ops_settings = createRepoOpsSettings({
     queueStore: {
       get: () => entryQueue() || {},
-      set: (queue) => options.onQueueAdopt(queue)
+      set: (queue) => {
+        if (!destroyed) {
+          options.onQueueAdopt(queue);
+        }
+      }
     },
     // The declaration block sends its own ops without a repository; this window
-    // is bound to one, so the wrapper names it on every request.
+    // is bound to one, so the wrapper names it on every request. After
+    // `destroy()` it sends nothing, so the block's conflict retry cannot write
+    // the old target once the window moved on.
     transport: (type, payload) =>
-      options.transport(type, {
-        .../** @type {Record<string, unknown>} */ (payload),
-        root_dir
-      }),
+      destroyed
+        ? Promise.resolve(null)
+        : options.transport(type, {
+            .../** @type {Record<string, unknown>} */ (payload),
+            root_dir
+          }),
     // No `onOpenScript`: the script popup mounts on `document.body`, beneath a
     // modal dialog's top layer, so this window leaves that viewer to the
     // repository's Worker tab.

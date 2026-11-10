@@ -1169,6 +1169,58 @@ describe('return to the default (UI-32oq §4.2)', () => {
     expect(harness.departures.get('codex')).toEqual(departedTo(K2));
   });
 
+  test('passes over a listed default before until and moves to the next target', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(K1, 1, 0),
+        account(K2, 2, 100, { active: true }),
+        account(K3, 3, 0)
+      ],
+      settings: settingsOf([K1, K2, K3], { default_account: K1 }),
+      record: departedTo(K2),
+      now: BEFORE_RESET
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[3]]);
+    expect(harness.departures.get('codex')).toEqual(departedTo(K3));
+  });
+
+  test('keeps the record when a listed default is the only target before until', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(K1, 1, 0),
+        account(K2, 2, 100, { active: true }),
+        account(K3, 3, 100)
+      ],
+      settings: settingsOf([K1, K2, K3], { default_account: K1 }),
+      record: departedTo(K2),
+      now: BEFORE_RESET
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount).not.toHaveBeenCalled();
+    expect(harness.departures.get('codex')).toEqual(departedTo(K2));
+  });
+
+  test('takes a listed default as an ordinary target while no record stands', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(K1, 1, 0),
+        account(K2, 2, 100, { active: true }),
+        account(K3, 3, 0)
+      ],
+      settings: settingsOf([K1, K2, K3], { default_account: K1 }),
+      now: BEFORE_RESET
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[1]]);
+  });
+
   test('carries a default through A to B to C and back to A', async () => {
     const harness = makeHarness({
       accounts: [

@@ -462,6 +462,20 @@ describe('resuming the migration rebind (UI-32oq §4.1)', () => {
     expect(readSettings().rebind_pending).toEqual(['codex']);
   });
 
+  test('keeps the runner pending when one workspace switch pass fails', async () => {
+    migrateThenRestart();
+    reevaluate.mockImplementation(async (/** @type {string} */ workspace) => {
+      if (workspace === path.resolve(WS_A)) {
+        throw new Error('switch pass failed');
+      }
+    });
+
+    const outcome = await resumeLimitPolicyRebind();
+
+    expect(outcome).toEqual({ done: [], pending: ['codex'] });
+    expect(readSettings().rebind_pending).toEqual(['codex']);
+  });
+
   test('still re-binds the other workspaces when one fails', async () => {
     migrateThenRestart();
     const rebind = spyRebind().mockImplementation((workspace) => {

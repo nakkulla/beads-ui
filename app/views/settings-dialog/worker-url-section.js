@@ -9,6 +9,11 @@
  * connectivity probe. A repository's own stored exception is not edited here:
  * the `저장소` tab shows it read-only with `지우기`.
  *
+ * It reads again only on window focus and on `새로고침` (ADR UI-32oq-2, the
+ * UI-u6ud-11 clause it inherits) — no watcher, no polling. A re-read keeps an
+ * unsaved edit and the revision it was started on, and a reply that a newer
+ * read or a save overtook is dropped.
+ *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  */
 import { html, render } from 'lit-html';
@@ -73,6 +78,8 @@ export function createWorkerUrlSection(host, options) {
   let saving = false;
   let invalid = false;
   let destroyed = false;
+  /** The newest read; an older reply, or one a save overtook, is dropped. */
+  let read_query = 0;
 
   /** Permit writes only with a readable common document and revision. */
   function editable() {
@@ -86,35 +93,42 @@ export function createWorkerUrlSection(host, options) {
 
   /**
    * Read the common value through the connected workspace. The first read
-   * fills the box; a later one (after a conflict) keeps the user's typed
-   * value and only moves what `취소/최신값 채택` would adopt.
+   * fills the box; a later one (focus, `새로고침`, after a conflict) keeps the
+   * user's typed value and only moves what `취소/최신값 채택` would adopt.
    *
    * @param {boolean} initial
    */
   async function read(initial) {
+    const query = ++read_query;
+    /** @type {any} */
+    let next;
     try {
       const res = await options.transport('get-session-defaults', {});
-      if (destroyed) {
-        return;
-      }
-      worker_url = res?.worker_url ?? null;
+      next = res?.worker_url ?? null;
     } catch {
-      if (destroyed) {
-        return;
-      }
-      worker_url = {
+      next = {
         status: 'unavailable',
         error: { code: 'workspace_unavailable' }
       };
     }
+    if (destroyed || query !== read_query) {
+      return;
+    }
+    worker_url = next;
     draft = adoptWorkerCommon(draft, worker_url?.common ?? null, initial);
     loading = false;
     doRender();
   }
 
-  /** The first read. */
+  /** Re-read on focus or `새로고침`, keeping any unsaved edit. */
+  function refresh() {
+    void read(false);
+  }
+
+  /** The first read; from here on window focus reads again. */
   function load() {
     loading = true;
+    window.addEventListener('focus', refresh);
     doRender();
     return read(true);
   }
@@ -141,6 +155,8 @@ export function createWorkerUrlSection(host, options) {
         return;
       }
       if (res?.common_saved === true) {
+        // The save's readback is newer than any read still in flight.
+        ++read_query;
         draft = adoptWorkerCommon(draft, res.common, true);
         worker_url = res.worker_url ?? worker_url;
         invalid = false;
@@ -205,6 +221,14 @@ export function createWorkerUrlSection(host, options) {
         <span class="settings-dialog__row-label">지금 값</span>
         <span class="settings-dialog__controls">
           <span data-worker-url-state>${commonStateText(worker_url)}</span>
+          <button
+            type="button"
+            class="op-btn"
+            data-worker-url-refresh
+            @click=${refresh}
+          >
+            새로고침
+          </button>
           ${notes.length > 0
             ? html`<span class="settings-dialog__hint" data-worker-url-warnings
                 >${notes.join(', ')}</span
@@ -281,6 +305,7 @@ export function createWorkerUrlSection(host, options) {
     render: doRender,
     destroy() {
       destroyed = true;
+      window.removeEventListener('focus', refresh);
       render(html``, host);
     }
   };
