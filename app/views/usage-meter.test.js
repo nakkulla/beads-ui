@@ -5,7 +5,9 @@ import { createLimitPolicySettingsStore } from '../data/limit-policy-settings-st
 import {
   createUsageMeter,
   formatResetClock,
-  formatResetTime
+  formatResetTime,
+  loginFailureText,
+  removeConfirmText
 } from './usage-meter.js';
 
 // A pass-through spy: the idle tests count how often the header goes through
@@ -876,7 +878,7 @@ describe('usage meter account card', () => {
     meter.destroy();
   });
 
-  test('replaces the bars with a relogin message on an expired account', async () => {
+  test('replaces the bars with a short expiry status on an expired account', async () => {
     const mount = mountMeter();
     stubProviders({
       available: false,
@@ -890,7 +892,7 @@ describe('usage meter account card', () => {
       document
         .querySelector('.usage-meter__account-status')
         ?.textContent?.trim()
-    ).toBe('토큰 만료 — cswap 재로그인 필요');
+    ).toBe('토큰 만료');
     expect(document.querySelector('.usage-meter__account-window')).toBeNull();
     meter.destroy();
   });
@@ -1988,5 +1990,1045 @@ describe('usage meter default account (UI-32oq §4.4)', () => {
 
     expect(star('two@example.com').classList).toContain('is-active');
     meter.destroy();
+  });
+});
+
+describe('usage meter account login and removal (UI-xm29 §4.5)', () => {
+  const CODEX = {
+    key: 'codex',
+    label: 'Codex',
+    endpoint: '/api/codex-usage',
+    switch_endpoint: '/api/codex-account/switch',
+    remove_endpoint: '/api/codex-account/remove',
+    login_tools: 'codex·codex-auth'
+  };
+
+  /**
+   * Serve the usage lists plus scripted account answers. A route key is
+   * `<METHOD> <url>`; its queue answers in order and repeats its last entry.
+   * A usage payload may be a function, read on every poll.
+   *
+   * @param {{ claude?: unknown, codex?: unknown, routes?: Record<string, unknown[]> }} options
+   */
+  function stubAccountApi({
+    claude = { available: false },
+    codex = { available: false },
+    routes = {}
+  }) {
+    /** @type {Record<string, unknown[]>} */
+    const queues = {};
+    for (const [route, answers] of Object.entries(routes)) {
+      queues[route] = [...answers];
+    }
+    const fetchMock = vi.fn(
+      (/** @type {string} */ url, /** @type {RequestInit} */ init) => {
+        const method = init?.method ?? 'GET';
+        /** @type {unknown} */
+        let payload = { ok: false, error: 'unrouted' };
+        if (url === '/api/claude-usage') {
+          payload = typeof claude === 'function' ? claude() : claude;
+        } else if (url === '/api/codex-usage') {
+          payload = typeof codex === 'function' ? codex() : codex;
+        } else {
+          const queue = queues[`${method} ${url}`];
+          if (queue !== undefined) {
+            payload = queue.length > 1 ? queue.shift() : queue[0];
+          }
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(payload)
+        });
+      }
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  /**
+   * @param {ReturnType<typeof vi.fn>} fetchMock
+   * @param {string} method
+   * @param {string} url
+   */
+  function callsTo(fetchMock, method, url) {
+    return fetchMock.mock.calls.filter(
+      (call) => call[0] === url && (call[1]?.method ?? 'GET') === method
+    );
+  }
+
+  /**
+   * @param {ReturnType<typeof vi.fn>} fetchMock
+   * @param {string} url
+   */
+  function postedBody(fetchMock, url) {
+    const calls = callsTo(fetchMock, 'POST', url);
+    return JSON.parse(String(calls[calls.length - 1]?.[1]?.body));
+  }
+
+  /** Let pending fetch answers and timers due now land. */
+  async function flush() {
+    await vi.advanceTimersByTimeAsync(1);
+  }
+
+  /**
+   * Open the card of one provider under fake timers.
+   *
+   * @param {HTMLElement} mount
+   * @param {string} [label]
+   */
+  async function openFakeCard(mount, label) {
+    await flush();
+    /** @type {HTMLButtonElement} */ (toggleButton(mount, label)).click();
+    await flush();
+  }
+
+  /**
+   * @param {string} selector
+   * @returns {HTMLElement}
+   */
+  function el(selector) {
+    return /** @type {HTMLElement} */ (document.querySelector(selector));
+  }
+
+  /**
+   * @param {string} selector
+   */
+  function text(selector) {
+    return document
+      .querySelector(selector)
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  const TWO_CLAUDE = {
+    available: false,
+    accounts: [
+      accountRow({ number: 1, active: true }),
+      accountRow({ number: 2, email: 'two@example.com' })
+    ]
+  };
+
+  const EXPIRED_CLAUDE = {
+    available: false,
+    accounts: [
+      accountRow({ number: 1, active: true }),
+      accountRow({
+        number: 2,
+        email: 'two@example.com',
+        status: 'token_expired'
+      })
+    ]
+  };
+
+  const CODEX_AWAITING = {
+    ok: true,
+    login_id: 'L1',
+    provider: 'codex',
+    mode: 'add',
+    number: null,
+    state: 'awaiting_user',
+    url: 'https://auth.openai.com/codex/device',
+    user_code: 'ABCD-12345',
+    needs_code: false
+  };
+
+  const CLAUDE_AWAITING = {
+    ok: true,
+    login_id: 'L1',
+    provider: 'claude',
+    mode: 'relogin',
+    number: 2,
+    state: 'awaiting_user',
+    url: 'https://claude.ai/oauth/authorize?x=1',
+    user_code: null,
+    needs_code: true
+  };
+
+  test('offers 재로그인 only on an expired row', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({ claude: EXPIRED_CLAUDE });
+    const meter = createUsageMeter(mount);
+
+    await openFakeCard(mount);
+
+    const buttons = document.querySelectorAll('.usage-meter__relogin');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].closest('.usage-meter__account')?.textContent).toContain(
+      'two@example.com'
+    );
+    expect(buttons[0].className).toBe(
+      'op-btn op-btn--primary usage-meter__relogin'
+    );
+    meter.destroy();
+  });
+
+  test('draws 계정 추가 and 관리 on the section title row', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({ claude: TWO_CLAUDE });
+    const meter = createUsageMeter(mount);
+
+    await openFakeCard(mount);
+
+    const head = el('.usage-meter__section-head');
+    expect(
+      Array.from(head.querySelectorAll('button'), (button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual(['+ 계정 추가', '관리']);
+    expect(el('.usage-meter__manage').getAttribute('aria-pressed')).toBe(
+      'false'
+    );
+    meter.destroy();
+  });
+
+  test('shows 삭제 on the inactive rows while 관리 is on', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({ claude: TWO_CLAUDE });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+
+    el('.usage-meter__manage').click();
+
+    const removes = document.querySelectorAll('.usage-meter__remove');
+    expect(removes).toHaveLength(1);
+    expect(removes[0].className).toBe(
+      'op-btn op-btn--danger usage-meter__remove'
+    );
+    expect(el('.usage-meter__manage').getAttribute('aria-pressed')).toBe(
+      'true'
+    );
+    expect(el('.usage-meter__manage').classList).toContain('is-active');
+    meter.destroy();
+  });
+
+  test('hides 삭제 again when 관리 turns off', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({ claude: TWO_CLAUDE });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+
+    el('.usage-meter__manage').click();
+
+    expect(document.querySelector('.usage-meter__remove')).toBeNull();
+    expect(document.querySelector('.usage-meter__remove-note')).toBeNull();
+    meter.destroy();
+  });
+
+  test('shows a muted note instead of 삭제 on the active row', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({ claude: TWO_CLAUDE });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+
+    el('.usage-meter__manage').click();
+
+    const active_row = el('.usage-meter__account--active');
+    expect(active_row.querySelector('.usage-meter__remove')).toBeNull();
+    expect(
+      active_row.querySelector('.usage-meter__remove-note')?.textContent?.trim()
+    ).toBe('활성 계정은 지울 수 없음');
+    meter.destroy();
+  });
+
+  test('asks the server without confirm on the first 삭제', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/claude-account/remove': [
+          { ok: false, error: 'confirm_required', refs: [], unchecked_repos: 0 }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+
+    el('.usage-meter__remove').click();
+    await flush();
+
+    expect(postedBody(fetchMock, '/api/claude-account/remove')).toEqual({
+      number: 2,
+      key: 'two@example.com'
+    });
+    meter.destroy();
+  });
+
+  test('shows 삭제할까요? on the confirm line when nothing names the account', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/claude-account/remove': [
+          { ok: false, error: 'confirm_required', refs: [], unchecked_repos: 0 }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+
+    el('.usage-meter__remove').click();
+    await flush();
+
+    const line = el('.usage-meter__account-message');
+    expect(text('.usage-meter__message-text')).toBe('삭제할까요?');
+    expect(
+      Array.from(line.querySelectorAll('button'), (button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual(['삭제', '취소']);
+    expect(document.querySelector('.usage-meter__remove')).toBeNull();
+    meter.destroy();
+  });
+
+  test('lists the settings that name the account on the confirm line', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/claude-account/remove': [
+          {
+            ok: false,
+            error: 'confirm_required',
+            refs: [
+              { kind: 'default_account' },
+              { kind: 'workspace_pin', workspace: 'a', path: '/a' },
+              { kind: 'workspace_pin', workspace: 'b', path: '/b' },
+              { kind: 'active_allow_list' }
+            ],
+            unchecked_repos: 1
+          }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+
+    el('.usage-meter__remove').click();
+    await flush();
+
+    expect(text('.usage-meter__message-text')).toBe(
+      '평소 계정 · 저장소 2곳 고정 · 허용 목록 · 저장소 1곳 확인 못 함 — 그래도 삭제할까요? 평소 계정이 사라지면 자동 복귀가 멈춥니다.'
+    );
+    meter.destroy();
+  });
+
+  test('shows only the reason when the removal is blocked', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/claude-account/remove': [
+          { ok: false, error: 'account_in_use', in_use: ['UI-one', 'UI-two'] }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+
+    el('.usage-meter__remove').click();
+    await flush();
+
+    expect(text('.usage-meter__account-message--error')).toBe(
+      '실행 중인 워커가 이 계정을 사용 중이라 지울 수 없음 (UI-one, UI-two)'
+    );
+    expect(document.querySelector('.usage-meter__remove-confirm')).toBeNull();
+    meter.destroy();
+  });
+
+  test('sends confirm only from the confirm line', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/claude-account/remove': [
+          {
+            ok: false,
+            error: 'confirm_required',
+            refs: [],
+            unchecked_repos: 0
+          },
+          { ok: true, removed: { number: 2, email: 'two@example.com' } }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+    el('.usage-meter__remove').click();
+    await flush();
+
+    el('.usage-meter__remove-confirm').click();
+    await flush();
+
+    expect(postedBody(fetchMock, '/api/claude-account/remove')).toEqual({
+      number: 2,
+      key: 'two@example.com',
+      confirm: true
+    });
+    meter.destroy();
+  });
+
+  test('reports the removal on the section and re-reads usage', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/claude-account/remove': [
+          {
+            ok: false,
+            error: 'confirm_required',
+            refs: [],
+            unchecked_repos: 0
+          },
+          { ok: true, removed: { number: 2, email: 'two@example.com' } }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+    el('.usage-meter__remove').click();
+    await flush();
+    const usage_reads = callsTo(fetchMock, 'GET', '/api/claude-usage').length;
+
+    el('.usage-meter__remove-confirm').click();
+    await flush();
+
+    expect(text('.usage-meter__section-message')).toBe(
+      '삭제됨 — two@example.com'
+    );
+    expect(callsTo(fetchMock, 'GET', '/api/claude-usage').length).toBe(
+      usage_reads + 1
+    );
+    meter.destroy();
+  });
+
+  test('re-reads the list when the account changed under the click', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/claude-account/remove': [
+          { ok: false, error: 'account_changed' }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__manage').click();
+    const usage_reads = callsTo(fetchMock, 'GET', '/api/claude-usage').length;
+
+    el('.usage-meter__remove').click();
+    await flush();
+
+    expect(callsTo(fetchMock, 'GET', '/api/claude-usage').length).toBe(
+      usage_reads + 1
+    );
+    expect(text('.usage-meter__section-message')).toBe(
+      '계정 목록이 바뀌어 지우지 않음 — 목록을 다시 읽었습니다'
+    );
+    meter.destroy();
+  });
+
+  test('starts an add login for the section provider', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      codex: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CODEX_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+
+    el('.usage-meter__add').click();
+    await flush();
+
+    expect(postedBody(fetchMock, '/api/account-login')).toEqual({
+      provider: 'codex',
+      mode: 'add'
+    });
+    meter.destroy();
+  });
+
+  test('shows the Codex link, device code and waiting line', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      codex: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CODEX_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+
+    el('.usage-meter__add').click();
+    await flush();
+
+    const link = /** @type {HTMLAnchorElement} */ (
+      el('.usage-meter__login-link')
+    );
+    expect([
+      text('.usage-meter__login-hint'),
+      link.getAttribute('href'),
+      link.getAttribute('target'),
+      link.getAttribute('rel'),
+      text('.usage-meter__login-code'),
+      text('.usage-meter__login-copy'),
+      text('.usage-meter__login-wait'),
+      text('.usage-meter__login-cancel')
+    ]).toEqual([
+      '이 링크를 열어 로그인하고 코드를 입력하세요',
+      'https://auth.openai.com/codex/device',
+      '_blank',
+      'noopener',
+      'ABCD-12345',
+      '복사',
+      '기다리는 중…',
+      '취소'
+    ]);
+    meter.destroy();
+  });
+
+  test('copies the Codex device code', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText }
+    });
+    stubAccountApi({
+      codex: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CODEX_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+    el('.usage-meter__add').click();
+    await flush();
+
+    el('.usage-meter__login-copy').click();
+    await flush();
+
+    expect(writeText).toHaveBeenCalledWith('ABCD-12345');
+    expect(text('.usage-meter__login-copy')).toBe('복사됨');
+    meter.destroy();
+    // @ts-expect-error -- drop the instance override.
+    delete navigator.clipboard;
+  });
+
+  test('shows the Claude link and a code field for a relogin', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      claude: EXPIRED_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CLAUDE_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+
+    el('.usage-meter__relogin').click();
+    await flush();
+
+    expect(postedBody(fetchMock, '/api/account-login')).toEqual({
+      provider: 'claude',
+      mode: 'relogin',
+      number: 2
+    });
+    expect([
+      text('.usage-meter__login-title'),
+      text('.usage-meter__login-hint'),
+      el('.usage-meter__login-link').getAttribute('href'),
+      el('.usage-meter__login-input').className,
+      text('.usage-meter__login-submit')
+    ]).toEqual([
+      '재로그인 — two@example.com',
+      '이 링크를 열어 로그인한 뒤 받은 코드를 붙여 넣으세요',
+      'https://claude.ai/oauth/authorize?x=1',
+      'ui-input usage-meter__login-input',
+      '확인'
+    ]);
+    meter.destroy();
+  });
+
+  test('keeps the typed code across the usage poll re-render', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: EXPIRED_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CLAUDE_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__relogin').click();
+    await flush();
+    const input = /** @type {HTMLInputElement} */ (
+      el('.usage-meter__login-input')
+    );
+    input.value = 'pasted-code';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(
+      /** @type {HTMLInputElement} */ (el('.usage-meter__login-input')).value
+    ).toBe('pasted-code');
+    meter.destroy();
+  });
+
+  test('submits the pasted code once and waits for verification', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      claude: EXPIRED_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [
+          CLAUDE_AWAITING,
+          { ...CLAUDE_AWAITING, state: 'verifying', needs_code: false }
+        ],
+        'POST /api/account-login/L1/code': [{ ok: true, state: 'verifying' }]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__relogin').click();
+    await flush();
+    const input = /** @type {HTMLInputElement} */ (
+      el('.usage-meter__login-input')
+    );
+    input.value = ' pasted-code ';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    el('.usage-meter__login-submit').click();
+    await flush();
+
+    expect(postedBody(fetchMock, '/api/account-login/L1/code')).toEqual({
+      code: 'pasted-code'
+    });
+    expect(document.querySelector('.usage-meter__login-input')).toBeNull();
+    expect(text('.usage-meter__login-wait')).toBe('확인하는 중…');
+    meter.destroy();
+  });
+
+  test('cancels the session and closes the panel', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      codex: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CODEX_AWAITING],
+        'POST /api/account-login/L1/cancel': [
+          { ok: true, state: 'cancelled', error: null }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+    el('.usage-meter__add').click();
+    await flush();
+
+    el('.usage-meter__login-cancel').click();
+    await flush();
+
+    expect(
+      callsTo(fetchMock, 'POST', '/api/account-login/L1/cancel')
+    ).toHaveLength(1);
+    expect(document.querySelector('.usage-meter__login')).toBeNull();
+    expect(text('.usage-meter__section-message')).toBe('로그인 취소됨');
+    meter.destroy();
+  });
+
+  test('opens the running session panel on login_in_flight', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      claude: EXPIRED_CLAUDE,
+      routes: {
+        'POST /api/account-login': [
+          { ok: false, error: 'login_in_flight', login_id: 'L9' }
+        ],
+        'GET /api/account-login/L9': [
+          { ...CLAUDE_AWAITING, login_id: 'L9', mode: 'add', number: null }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+
+    el('.usage-meter__relogin').click();
+    await flush();
+
+    expect(callsTo(fetchMock, 'GET', '/api/account-login/L9')).toHaveLength(1);
+    expect(text('.usage-meter__login-title')).toBe('Claude 계정 추가');
+    expect(document.querySelector('.usage-meter__login-input')).not.toBeNull();
+    meter.destroy();
+  });
+
+  test('reports a jumped-to add on the section, not on the clicked row', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: EXPIRED_CLAUDE,
+      routes: {
+        'POST /api/account-login': [
+          { ok: false, error: 'login_in_flight', login_id: 'L9' }
+        ],
+        'GET /api/account-login/L9': [
+          {
+            ...CLAUDE_AWAITING,
+            login_id: 'L9',
+            mode: 'add',
+            number: null,
+            state: 'done',
+            url: null,
+            needs_code: false,
+            result: {
+              outcome: 'added',
+              key: 'three@example.com',
+              email: 'three@example.com',
+              number: null
+            }
+          }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+
+    el('.usage-meter__relogin').click();
+    await flush();
+
+    expect([
+      text('.usage-meter__section-message'),
+      document.querySelector(
+        '.usage-meter__account .usage-meter__account-message'
+      )
+    ]).toEqual(['추가됨 — three@example.com', null]);
+    meter.destroy();
+  });
+
+  test('reads the session status every 2 seconds while the panel is open', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      codex: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CODEX_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+    el('.usage-meter__add').click();
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(callsTo(fetchMock, 'GET', '/api/account-login/L1')).toHaveLength(3);
+    meter.destroy();
+  });
+
+  test('stops reading the status once the session ends', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      codex: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [
+          CODEX_AWAITING,
+          {
+            ...CODEX_AWAITING,
+            state: 'failed',
+            url: null,
+            user_code: null,
+            error: 'login_failed',
+            message: 'denied'
+          }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+    el('.usage-meter__add').click();
+    await flush();
+    await vi.advanceTimersByTimeAsync(2_000);
+    const reads = callsTo(fetchMock, 'GET', '/api/account-login/L1').length;
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect([
+      reads,
+      callsTo(fetchMock, 'GET', '/api/account-login/L1').length,
+      document.querySelector('.usage-meter__login')
+    ]).toEqual([2, 2, null]);
+    meter.destroy();
+  });
+
+  test('stops reading the status when the card closes', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      codex: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CODEX_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+    el('.usage-meter__add').click();
+    await flush();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    const reads = callsTo(fetchMock, 'GET', '/api/account-login/L1').length;
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(callsTo(fetchMock, 'GET', '/api/account-login/L1').length).toBe(
+      reads
+    );
+    meter.destroy();
+  });
+
+  test('resumes the open panel when the card opens on its provider again', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      claude: TWO_CLAUDE,
+      codex: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CODEX_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+    el('.usage-meter__add').click();
+    await flush();
+    /** @type {HTMLButtonElement} */ (toggleButton(mount, 'Claude')).click();
+    await vi.advanceTimersByTimeAsync(10_000);
+    const reads = callsTo(fetchMock, 'GET', '/api/account-login/L1').length;
+
+    /** @type {HTMLButtonElement} */ (toggleButton(mount, 'Codex')).click();
+    await flush();
+
+    expect([
+      callsTo(fetchMock, 'GET', '/api/account-login/L1').length - reads,
+      text('.usage-meter__login-code')
+    ]).toEqual([1, 'ABCD-12345']);
+    meter.destroy();
+  });
+
+  test('stops reading the status on destroy', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      codex: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CODEX_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+    el('.usage-meter__add').click();
+    await flush();
+    const reads = callsTo(fetchMock, 'GET', '/api/account-login/L1').length;
+
+    meter.destroy();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(callsTo(fetchMock, 'GET', '/api/account-login/L1').length).toBe(
+      reads
+    );
+  });
+
+  test('reports a finished relogin as 로그인됨 on its row', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: EXPIRED_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [
+          {
+            ...CLAUDE_AWAITING,
+            state: 'done',
+            url: null,
+            needs_code: false,
+            result: {
+              outcome: 'updated',
+              key: 'two@example.com',
+              email: 'two@example.com',
+              number: 2
+            }
+          }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+
+    el('.usage-meter__relogin').click();
+    await flush();
+
+    const rows = document.querySelectorAll('.usage-meter__account');
+    expect(
+      rows[1]
+        .querySelector('.usage-meter__account-message--ok')
+        ?.textContent?.trim()
+    ).toBe('로그인됨 — two@example.com');
+    expect(document.querySelector('.usage-meter__login')).toBeNull();
+    meter.destroy();
+  });
+
+  test('reports an added account on its new row after re-reading usage', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    let added = false;
+    stubAccountApi({
+      codex: () =>
+        added
+          ? {
+              available: false,
+              accounts: [
+                ...TWO_CLAUDE.accounts,
+                accountRow({ number: 3, email: 'three@example.com' })
+              ]
+            }
+          : TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [
+          {
+            ...CODEX_AWAITING,
+            state: 'done',
+            url: null,
+            user_code: null,
+            result: {
+              outcome: 'added',
+              key: 'three@example.com',
+              email: 'three@example.com',
+              number: 3
+            }
+          }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount, 'Codex');
+    added = true;
+
+    el('.usage-meter__add').click();
+    await flush();
+
+    const rows = document.querySelectorAll('.usage-meter__account');
+    expect(rows).toHaveLength(3);
+    expect(
+      rows[2]
+        .querySelector('.usage-meter__account-message--ok')
+        ?.textContent?.trim()
+    ).toBe('추가됨 — three@example.com');
+    meter.destroy();
+  });
+
+  test('shows the signed-in email when a relogin reaches another account', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: EXPIRED_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [
+          {
+            ...CLAUDE_AWAITING,
+            state: 'failed',
+            url: null,
+            needs_code: false,
+            error: 'identity_mismatch',
+            logged_in_email: 'other@example.com'
+          }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+
+    el('.usage-meter__relogin').click();
+    await flush();
+
+    expect(text('.usage-meter__account-message--error')).toBe(
+      'other@example.com로 로그인됨 — 다른 계정'
+    );
+    meter.destroy();
+  });
+
+  test('adds the terminal hint to a failed Codex login', () => {
+    const body = { error: 'login_failed', message: 'device auth disabled' };
+
+    const sentence = loginFailureText(CODEX, body);
+
+    expect(sentence).toBe(
+      '로그인 실패 — device auth disabled · Mac 터미널에서 codex-auth login으로 로그인하세요'
+    );
+  });
+
+  test('shows an unknown failure code as it is', () => {
+    const body = { error: 'brand_new_code' };
+
+    const sentence = loginFailureText(CODEX, body);
+
+    expect(sentence).toBe('로그인 실패 — brand_new_code');
+  });
+
+  test('names the provider tools when a login tool is missing', () => {
+    const body = { error: 'not_found' };
+
+    const sentence = loginFailureText(CODEX, body);
+
+    expect(sentence).toBe('로그인 실패 — 도구를 찾지 못함 (codex·codex-auth)');
+  });
+
+  test('counts the repo policies and leaves out the default note without a usual account', () => {
+    const refs = [
+      { kind: 'workspace_policy', workspace: 'a' },
+      { kind: 'workspace_policy', workspace: 'b' }
+    ];
+
+    const sentence = removeConfirmText(refs, 0);
+
+    expect(sentence).toBe('저장소 2곳 한도 정책 — 그래도 삭제할까요?');
   });
 });
