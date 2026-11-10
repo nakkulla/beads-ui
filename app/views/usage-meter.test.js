@@ -1894,6 +1894,26 @@ describe('usage meter default account (UI-32oq §4.4)', () => {
     meter.destroy();
   });
 
+  test('says an empty default when the entry carries no default account', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: settingsStore({ default_account: undefined }),
+        transport: vi.fn()
+      }
+    });
+
+    await openCard(mount);
+
+    expect(
+      document
+        .querySelector('[data-limit-policy-line="claude"]')
+        ?.textContent?.trim()
+    ).toBe('자동 전환 켬 · default 비움');
+    meter.destroy();
+  });
+
   test('adds the return time to the head line while a departure stands', async () => {
     const mount = mountMeter();
     serveTwoClaudeAccounts();

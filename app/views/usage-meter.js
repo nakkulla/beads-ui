@@ -772,7 +772,7 @@ export function createUsageMeter(mount_element, options = {}) {
       ];
     const parts = [
       `자동 전환 ${entry.auto_switch === true ? '켬' : '끔'}`,
-      entry.default_account === null
+      typeof entry.default_account !== 'string' || entry.default_account === ''
         ? 'default 비움'
         : `default ${accountDisplayName(accounts, entry.default_account)}`
     ];
