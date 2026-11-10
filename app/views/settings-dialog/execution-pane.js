@@ -30,7 +30,6 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
-import { limitScopeOf } from '../../data/limit-policy-settings-store.js';
 import { errorText } from '../../utils/error-text.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import {
@@ -46,10 +45,7 @@ import {
 } from './account-catalog.js';
 import { appliedPresetFieldFor } from './bulk-observation.js';
 import { createCodexCreditControls } from './codex-credit-controls.js';
-import {
-  GLOBAL_LIMIT_LOCK_NOTE,
-  createLimitPolicyEditor
-} from './limit-policy-editor.js';
+import { createLimitPolicyEditor } from './limit-policy-editor.js';
 import {
   AUTO_LITERAL,
   BOOLEAN_DRAFT_ON,
@@ -213,9 +209,6 @@ function isRecord(value) {
  * @property {{ get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [codexCreditStore]
  * - Server-global Codex credit settings and today's consumption (UI-9y1k
  * §4.5); without it the credit rows are not drawn.
- * @property {{ get: () => any }} [limitPolicySettingsStore] - Server-global
- * limit-policy settings (UI-giog §4.2); a runner whose scope is `global` has
- * its `한도 대응` rows locked here. Without it every runner reads as `repo`.
  */
 
 /**
@@ -2708,21 +2701,16 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * One runner's `한도 대응` rows. While that runner follows the server-global
-   * policy the stored values stay visible but locked, with a one-line pointer
-   * to where they change (UI-giog §4.1).
+   * One runner's `한도 대응` rows: always this repo's own policy, editable —
+   * no server-global setting overrides it (UI-32oq §4.1).
    *
    * @param {'claude'|'codex'} runner
    * @param {string} label
    * @returns {TemplateResult}
    */
   function limitRows(runner, label) {
-    const global =
-      limitScopeOf(binding.limitPolicySettingsStore, runner) === 'global';
     return limit_editor.template(runner, label, {
-      mode_label: `${label} 한도 대응`,
-      locked: global,
-      note: global ? GLOBAL_LIMIT_LOCK_NOTE : null
+      mode_label: `${label} 한도 대응`
     });
   }
 

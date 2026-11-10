@@ -1,17 +1,17 @@
 /**
  * Client-side holder for the latest server-global limit-policy settings
- * snapshot (UI-giog §4.2). Total-state, last-snapshot-wins; `null` means no
- * snapshot received yet (an older server, or before the first push), and every
- * reader then treats both runners as `repo` scope (fail-quiet).
+ * snapshot (UI-giog §4.2, UI-32oq §4.1). Total-state, last-snapshot-wins;
+ * `null` means no snapshot received yet (an older server, or before the first
+ * push), and every reader then treats both runners' active-login auto switch
+ * as off (fail-quiet).
  *
- * The repo `계정` tab and the bulk window read `scope` from here to lock their
- * `한도 대응` rows, so the app subscribes at start rather than when the `전역`
- * tab opens.
+ * The settings decide only the global active-login auto switch per runner;
+ * a repo's `한도 대응` rows always edit that repo's own policy.
  *
  * @typedef {'claude'|'codex'} LimitPolicyRunner
  * @typedef {Object} LimitPolicyEntry
- * @property {'repo'|'global'} scope
- * @property {'wait'|'switch'} mode
+ * @property {boolean} auto_switch
+ * @property {string|null} default_account
  * @property {string[]} accounts
  * @property {number|null} preempt_pct
  * @typedef {Object} LimitPolicySettingsState
@@ -76,18 +76,4 @@ export function isLimitPolicySnapshot(payload) {
     !!payload.runners.codex &&
     typeof payload.runners.codex === 'object'
   );
-}
-
-/**
- * One runner's apply scope the server is using: `global` only when a snapshot
- * says so, else `repo`.
- *
- * @param {{ get: () => any }|null|undefined} store
- * @param {LimitPolicyRunner} runner
- * @returns {'repo'|'global'}
- */
-export function limitScopeOf(store, runner) {
-  return store?.get()?.runners?.[runner]?.scope === 'global'
-    ? 'global'
-    : 'repo';
 }

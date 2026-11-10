@@ -133,7 +133,7 @@ function row(patch = {}) {
 const mounted = [];
 
 /**
- * @param {{ rows?: any[], presets?: any, transport?: (type: string, payload: any) => any, onBulkApplied?: (root_dirs: string[]) => void, codexCreditStore?: any, limitPolicySettingsStore?: any }} [input]
+ * @param {{ rows?: any[], presets?: any, transport?: (type: string, payload: any) => any, onBulkApplied?: (root_dirs: string[]) => void, codexCreditStore?: any }} [input]
  */
 function setup(input = {}) {
   const host = document.createElement('div');
@@ -161,7 +161,6 @@ function setup(input = {}) {
     },
     implPresetStore: { get: () => input.presets || PRESETS },
     codexCreditStore: input.codexCreditStore,
-    limitPolicySettingsStore: input.limitPolicySettingsStore,
     notify: vi.fn(),
     onBulkApplied: input.onBulkApplied
   });
@@ -1964,92 +1963,24 @@ describe('createBulkPane codex order and credits (UI-9y1k §4.6)', () => {
   });
 });
 
-describe('createBulkPane global limit scope lock (UI-giog §4.1)', () => {
-  /**
-   * A settings store whose Claude scope is `global`, Codex `repo`.
-   *
-   * @returns {{ get: () => any }}
-   */
-  function claudeGlobalStore() {
-    const entry = { mode: 'switch', accounts: [], preempt_pct: null };
-    return {
-      get: () => ({
-        revision: 2,
-        runners: {
-          claude: { scope: 'global', ...entry },
-          codex: { scope: 'repo', ...entry }
-        }
-      })
-    };
-  }
-
-  test('disables every limit control of a runner on the global policy', async () => {
-    const { host, pane } = setup({
-      limitPolicySettingsStore: claudeGlobalStore()
-    });
+describe('bulk pane repo limit rows (UI-32oq §4.1)', () => {
+  test('leaves every limit control editable', async () => {
+    const { host, pane } = setup();
 
     pane.render('account');
     await settle();
 
     const controls = [
       ...el(host, '[data-bulk-limit="claude"]').querySelectorAll(
-        'button, input, select'
+        '[data-bulk-limit-mode-runner] button'
       )
     ];
     expect(controls.length).toBeGreaterThan(0);
-    expect(controls.every((node) => node.disabled === true)).toBe(true);
+    expect(controls.every((node) => node.disabled === false)).toBe(true);
   });
 
-  test('dims every row of the locked runner and names where it changes', async () => {
-    const { host, pane } = setup({
-      limitPolicySettingsStore: claudeGlobalStore()
-    });
-
-    pane.render('account');
-    await settle();
-
-    const rows = [
-      ...el(host, '[data-bulk-limit="claude"]').querySelectorAll(
-        '.settings-dialog__row:not([data-bulk-limit-note])'
-      )
-    ];
-    expect(
-      rows.every((node) => node.classList.contains('settings-dialog__row--off'))
-    ).toBe(true);
-    expect(el(host, '[data-bulk-limit-note="claude"]').textContent.trim()).toBe(
-      '전역 적용 중 — 모니터 ⚙ 전역 탭에서 바꿉니다'
-    );
-  });
-
-  test('keeps showing the stored mode of the locked runner', async () => {
-    const { host, pane } = setup({
-      rows: [
-        row({
-          provider_limit_policy: {
-            claude: { mode: 'wait', accounts: [], preempt_pct: null },
-            codex: { mode: 'switch', accounts: [], preempt_pct: null }
-          }
-        })
-      ],
-      limitPolicySettingsStore: claudeGlobalStore()
-    });
-
-    pane.render('account');
-    await settle();
-
-    expect(
-      el(
-        host,
-        '[data-bulk-limit-mode-runner="claude"] [data-bulk-limit-mode="wait"]'
-      ).getAttribute('aria-pressed')
-    ).toBe('true');
-  });
-
-  test('writes no limit policy for the locked runner on apply', async () => {
-    const { host, pane, calls } = setup({
-      rows: [row()],
-      limitPolicySettingsStore: claudeGlobalStore()
-    });
+  test('writes the limit policy of both runners on apply', async () => {
+    const { host, pane, calls } = setup({ rows: [row()] });
     pane.render('account');
     await settle();
 
@@ -2060,23 +1991,6 @@ describe('createBulkPane global limit scope lock (UI-giog §4.1)', () => {
       payloadsOf(calls, 'worker-provider-limit-policy-set').map(
         (payload) => payload.runner
       )
-    ).toEqual(['codex']);
-  });
-
-  test('leaves the repo-scope runner editable', async () => {
-    const { host, pane } = setup({
-      limitPolicySettingsStore: claudeGlobalStore()
-    });
-
-    pane.render('account');
-    await settle();
-
-    expect(
-      el(
-        host,
-        '[data-bulk-limit-mode-runner="codex"] [data-bulk-limit-mode="wait"]'
-      ).disabled
-    ).toBe(false);
-    expect(host.querySelector('[data-bulk-limit-note="codex"]')).toBeNull();
+    ).toEqual(['claude', 'codex']);
   });
 });

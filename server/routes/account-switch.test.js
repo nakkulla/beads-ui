@@ -753,9 +753,9 @@ describe('codex active-account return through the shared switch path', () => {
     const pass = createCodexActiveReturn({
       listAccounts: async () => STALE,
       listAccountsFresh: options.listAccountsFresh ?? (async () => STALE),
-      globalPolicyOf: () => ({
-        scope: 'global',
-        mode: 'switch',
+      settingsOf: () => ({
+        auto_switch: true,
+        default_account: null,
         accounts: [K1, K2, K3],
         preempt_pct: null
       }),
@@ -1079,9 +1079,9 @@ describe('claude active-account return through the shared switch path', () => {
     const pass = createClaudeActiveReturn({
       listAccounts: async () => EXHAUSTED,
       listAccountsFresh: options.listAccountsFresh ?? (async () => EXHAUSTED),
-      globalPolicyOf: () => ({
-        scope: 'global',
-        mode: 'switch',
+      settingsOf: () => ({
+        auto_switch: true,
+        default_account: null,
         accounts: [A3, A4],
         preempt_pct: null
       }),

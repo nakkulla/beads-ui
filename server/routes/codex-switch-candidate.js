@@ -5,8 +5,8 @@
  * A Claude session whose Codex run (review, consult, implementation leaf)
  * ended on an account limit asks here which account to continue on. The answer
  * comes from the SAME rule the Worker's reactive switch uses
- * (`selectCodexSwitchCandidate`) over the workspace's effective Codex limit
- * policy (the global one while Codex's scope is `global`), the
+ * (`selectCodexSwitchCandidate`) over the workspace's own Codex limit
+ * policy (UI-32oq §4.1: no global override), the
  * server-global credit settings, and one fresh `codex-auth list --json --api`
  * read — the 180-second usage cache is bypassed, because the caller has just
  * hit a limit the cache may not show yet.
@@ -25,7 +25,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { codexCreditStore } from '../codex-credit-store.js';
-import { effectiveLimitPolicy } from '../limit-policy-settings.js';
+import { normalizeProviderLimitPolicyEntry } from '../limit-policy-settings.js';
 import {
   codexAccountAuthFile,
   prepareCodexAccountHome
@@ -111,18 +111,17 @@ function readBody(raw) {
 }
 
 /**
- * The effective Codex limit policy's answer before any selection — the
- * server-global policy while Codex's scope is `global`, else the workspace's
- * (UI-giog §4.3): `policy_wait` while it waits, `unconfigured` for an empty
- * allow list, else the allow list in the user's order.
+ * The workspace's own Codex limit policy's answer before any selection — no
+ * server-global setting overrides it (UI-32oq §4.1): `policy_wait` while it
+ * waits, `unconfigured` for an empty allow list, else the allow list in the
+ * user's order.
  *
  * @param {any} queue
  * @returns {{ reason: 'policy_wait'|'unconfigured' }|{ allowed: string[] }}
  */
 function policyOf(queue) {
-  const policy = effectiveLimitPolicy(
-    queue?.provider_limit_policy?.codex,
-    'codex'
+  const policy = normalizeProviderLimitPolicyEntry(
+    queue?.provider_limit_policy?.codex
   );
   if (policy.mode === 'wait') {
     return { reason: 'policy_wait' };

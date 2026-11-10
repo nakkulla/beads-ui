@@ -706,8 +706,13 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
     dialog.destroy();
   });
 
-  test('draws one 한도 대응 group per runner after the 외부 작업 group in the 전역 tab', async () => {
-    const entry = { mode: 'switch', accounts: [], preempt_pct: null };
+  test('draws one active-login auto-switch group per runner after the 외부 작업 group in the 전역 tab', async () => {
+    const entry = {
+      auto_switch: false,
+      default_account: null,
+      accounts: [],
+      preempt_pct: null
+    };
     const { root, dialog } = mount({
       modelVisibility: MODEL_VISIBILITY,
       externalWaitSettings: {
@@ -725,10 +730,7 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
       },
       limitPolicySettings: {
         revision: 0,
-        runners: {
-          claude: { scope: 'repo', ...entry },
-          codex: { scope: 'repo', ...entry }
-        }
+        runners: { claude: entry, codex: entry }
       }
     });
     dialog.open(undefined, { scope: 'monitor' });
@@ -744,8 +746,8 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
       '판정 칩 프리셋',
       '활성 모델',
       '외부 작업',
-      'Claude 한도 대응',
-      'Codex 한도 대응'
+      'Claude 활성 계정 자동 전환',
+      'Codex 활성 계정 자동 전환'
     ]);
     dialog.destroy();
   });

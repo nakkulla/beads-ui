@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import path from 'node:path';
+import { activeLoginReturnStore } from './active-login-return-store.js';
 import { createApp } from './app.js';
 import { createClaudeActiveReturn } from './claude-active-return.js';
 import { printServerUrl } from './cli/daemon.js';
@@ -11,8 +12,9 @@ import {
 import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import {
-  globalLimitPolicyOf,
-  onLimitPolicyApplied
+  activeSwitchSettingsOf,
+  limitPolicySettingsStore,
+  onLimitPolicySettingsChanged
 } from './limit-policy-settings.js';
 import { debug, enableAllDebug } from './logging.js';
 import { installPlacementService } from './placement/service.js';
@@ -58,6 +60,7 @@ import {
 } from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
 import { broadcastImplPresets } from './ws/exec-preset-handlers.js';
+import { resumeLimitPolicyRebind } from './ws/limit-policy-settings-handlers.js';
 import { observeCodexModelList } from './ws/model-visibility-handlers.js';
 import {
   notifyMonitorCatalogChanged,
@@ -229,17 +232,35 @@ const codex_credit_poller = createCodexCreditPoller({
 codexCreditStore().onChange(() => codex_credit_poller.sync());
 codex_credit_poller.sync();
 
-// Codex active-account return (UI-tyc2 §4, UI-giog §4.4): every parsed
-// codex-auth list is judged, and while Codex's limit scope is `global` an
-// active account at the global trigger moves to a window-headroom account the
-// global allow list holds with it, through the manual switch's own lock and
-// switch path. A `repo` scope never switches the global login.
+// Limit-policy settings (UI-32oq §4.1): a file still in the UI-giog shape is
+// rewritten once in the new shape, recording in `rebind_pending` the runners
+// whose hold verdicts the retired global override had bound. The re-binding
+// itself waits for the worker runtime (see the listen callback). A failed
+// write leaves the converted value serving from memory and retries next start.
+const limit_policy_migration = limitPolicySettingsStore().migrate();
+if (limit_policy_migration.migrated) {
+  log(
+    'limit-policy settings migrated; rebind pending for %o',
+    limit_policy_migration.rebind_pending
+  );
+}
+
+// The departure records both active-login passes share (UI-32oq §4.2): one
+// file, so a return still due after a redeploy happens.
+const active_login_departures = activeLoginReturnStore();
+
+// Codex active-account return (UI-tyc2 §4, UI-32oq §4.2): every parsed
+// codex-auth list is judged. While Codex's auto switch is on, an active
+// account at the trigger moves to a window-headroom account the target list
+// holds, and a login moved off the default goes back once the default reset,
+// through the manual switch's own lock and switch path.
 const codex_switch_notifier = createNotifier({ getConfig });
 const run_codex_switch = createAccountSwitchRunner({ provider: 'codex' });
 const codex_active_return = createCodexActiveReturn({
   listAccounts: () => listCodexAccounts(),
   listAccountsFresh: () => listCodexAccountsFresh(),
-  globalPolicyOf: (provider) => globalLimitPolicyOf(provider),
+  settingsOf: (provider) => activeSwitchSettingsOf(provider),
+  departures: active_login_departures,
   listWorkspaces: () =>
     getAvailableWorkspaces().map((workspace) => ({
       key: path.resolve(workspace.path),
@@ -268,17 +289,19 @@ const codex_active_return = createCodexActiveReturn({
 subscribeAccountListObservations((list) => {
   void codex_active_return.observe(list);
 });
+// The Codex timer otherwise arms only on an observed trigger; a departure
+// record that survived the restart arms it here so the return still happens.
+codex_active_return.start();
 
-// Claude active-account return (UI-btp3 §4, UI-giog §4.4): the same flow and
-// lock as the Codex pass, but always on — nothing else reads the Claude list
-// while the usage view and the Worker are idle — and while Claude's limit
-// scope is `global` it moves an active account whose 5h or 7d window reached
-// the global trigger to a headroom account the global allow list holds with it.
+// Claude active-account return (UI-btp3 §4, UI-32oq §4.2): the same flow,
+// lock and departure records as the Codex pass, but always on — nothing else
+// reads the Claude list while the usage view and the Worker are idle.
 const run_claude_switch = createAccountSwitchRunner({ provider: 'claude' });
 const claude_active_return = createClaudeActiveReturn({
   listAccounts: () => listClaudeAccounts(),
   listAccountsFresh: () => listClaudeAccountsFresh(),
-  globalPolicyOf: (provider) => globalLimitPolicyOf(provider),
+  settingsOf: (provider) => activeSwitchSettingsOf(provider),
+  departures: active_login_departures,
   listWorkspaces: () =>
     getAvailableWorkspaces().map((workspace) => ({
       key: path.resolve(workspace.path),
@@ -303,9 +326,10 @@ const claude_active_return = createClaudeActiveReturn({
 });
 claude_active_return.start();
 
-// A global limit-policy write hands both passes one judgment once every repo's
-// hold verdicts and switch pass followed the new settings (UI-giog §4.1).
-onLimitPolicyApplied(() => {
+// A settings write hands both passes one judgment at once: the Codex timer is
+// idle until a trigger, and a changed default or a switch turned off ends a
+// departure record at the top of the next pass (UI-32oq §4.2 rule 5).
+onLimitPolicySettingsChanged(() => {
   void codex_active_return.evaluateNow();
   void claude_active_return.evaluateNow();
 });
@@ -386,6 +410,18 @@ server.listen(config.port, config.host, async () => {
       getSubscriberCount: pollDemandFor,
       runtime_identity
     });
+    // Finish the re-binding the limit-policy migration left pending (UI-32oq
+    // §4.1) now that every workspace's switch pass is attached. A runner a
+    // workspace failed for stays pending and is retried next start.
+    void resumeLimitPolicyRebind()
+      .then((outcome) => {
+        if (outcome.done.length > 0 || outcome.pending.length > 0) {
+          log('limit-policy verdict rebind: %o', outcome);
+        }
+      })
+      .catch((err) => {
+        log('limit-policy verdict rebind failed: %o', err);
+      });
     // The direction-inquiry environment premise, checked ONCE at startup
     // (UI-7uid §3.7): whether this process can reach the user's tmux socket at
     // all. Here rather than inside the runtime factory so that unit tests,

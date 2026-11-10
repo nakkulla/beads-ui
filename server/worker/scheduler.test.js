@@ -5676,24 +5676,24 @@ describe('scheduler provider hold and recovery', () => {
     }
   );
 
-  describe('global limit policy scope (UI-giog)', () => {
+  describe('repo policy only (UI-32oq §4.1)', () => {
     afterEach(() => {
       __resetLimitPolicySettingsForTest();
     });
 
-    test('records a disabled hold while global wait overrides a switching repo', async () => {
+    test('records a none hold for a switching repo while the global auto switch is off', async () => {
       __setLimitPolicySettingsForTest({
-        claude: { scope: 'global', mode: 'wait', accounts: [] }
+        claude: { auto_switch: false, accounts: [] }
       });
 
       const env = await noneHeldEnv('claude', false);
 
       expect(
         env.store.snapshot(WS).provider_hold_members['none-held'].auto_switch
-      ).toBe('disabled');
+      ).toBe('none');
     });
 
-    test('switches a re-bound hold once global switch turns on over a waiting repo', async () => {
+    test('switches no hold of a waiting repo while the global auto switch is on', async () => {
       const env = await noneHeldEnv('claude', false);
       env.rows[1].windows[0].pct = 0;
       env.store.setProviderLimitPolicy(WS, {
@@ -5701,11 +5701,9 @@ describe('scheduler provider hold and recovery', () => {
         runner: 'claude',
         patch: { mode: 'wait' }
       });
-      await env.scheduler.reevaluateProviderSwitches(WS);
       __setLimitPolicySettingsForTest({
         claude: {
-          scope: 'global',
-          mode: 'switch',
+          auto_switch: true,
           accounts: env.rows.map((row) => row.key)
         }
       });
@@ -5716,8 +5714,7 @@ describe('scheduler provider hold and recovery', () => {
       const children = Object.values(env.store.snapshot(WS).attempts).filter(
         (attempt) => attempt.resumed_from === 'none-held'
       );
-      expect(children).toHaveLength(1);
-      expect(children[0].claude_account).toBe(env.rows[1].key);
+      expect(children).toHaveLength(0);
     });
   });
 
@@ -8519,38 +8516,21 @@ describe('scheduler provider hold and recovery', () => {
     }
   );
 
-  describe('global limit policy scope (UI-giog)', () => {
+  describe('repo policy only (UI-32oq §4.1)', () => {
     afterEach(() => {
       __resetLimitPolicySettingsForTest();
     });
 
-    test('preempts a live session at the global threshold while the repo sets none', async () => {
+    test('keeps a live session the global trigger would cross while the repo sets no threshold', async () => {
       const env = await livePreemptEnv();
       allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
         preempt_pct: null
       });
       __setLimitPolicySettingsForTest({
         claude: {
-          scope: 'global',
-          mode: 'switch',
+          auto_switch: true,
           accounts: ['cool@example.com'],
           preempt_pct: 80
-        }
-      });
-
-      await env.scheduler.livePreemptPass(WS);
-
-      expect(env.processController.terminate).toHaveBeenCalledTimes(1);
-    });
-
-    test('keeps a live session below the global threshold the repo threshold would cross', async () => {
-      const env = await livePreemptEnv();
-      __setLimitPolicySettingsForTest({
-        claude: {
-          scope: 'global',
-          mode: 'switch',
-          accounts: ['cool@example.com'],
-          preempt_pct: 90
         }
       });
 
@@ -8559,13 +8539,27 @@ describe('scheduler provider hold and recovery', () => {
       expect(env.processController.terminate).not.toHaveBeenCalled();
     });
 
+    test('preempts a live session at the repo threshold below the global trigger', async () => {
+      const env = await livePreemptEnv();
+      __setLimitPolicySettingsForTest({
+        claude: {
+          auto_switch: true,
+          accounts: ['cool@example.com'],
+          preempt_pct: 90
+        }
+      });
+
+      await env.scheduler.livePreemptPass(WS);
+
+      expect(env.processController.terminate).toHaveBeenCalledTimes(1);
+    });
+
     test('stops no live session by saving the global settings alone', async () => {
       const env = await livePreemptEnv();
 
       __setLimitPolicySettingsForTest({
         claude: {
-          scope: 'global',
-          mode: 'switch',
+          auto_switch: true,
           accounts: ['cool@example.com'],
           preempt_pct: 80
         }

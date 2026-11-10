@@ -1276,7 +1276,6 @@ import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import {
   defaultProviderLimitPolicy,
-  effectiveLimitPolicy,
   normalizeProviderLimitPolicyEntry
 } from '../limit-policy-settings.js';
 import { debug } from '../logging.js';
@@ -6947,20 +6946,19 @@ export function createQueueStore(options = {}) {
   }
 
   /**
-   * The policy a decision for `runner` follows inside a mutation: the global
-   * policy while that runner's scope is `global`, else the workspace's stored
-   * one (UI-giog §4.3). Stored values are never rewritten here.
+   * The policy a decision for `runner` follows inside a mutation: the
+   * workspace's own stored one, normalized — no server-global setting
+   * overrides it (UI-32oq §4.1). Stored values are never rewritten here.
    *
    * @param {Queue} next
    * @param {string} runner
    * @returns {ProviderLimitPolicy}
    */
   function limitPolicyOf(next, runner) {
-    return effectiveLimitPolicy(
+    return normalizeProviderLimitPolicyEntry(
       runner === 'claude' || runner === 'codex'
         ? next.provider_limit_policy?.[runner]
-        : null,
-      runner
+        : null
     );
   }
 
@@ -7135,7 +7133,7 @@ export function createQueueStore(options = {}) {
    * `switch_ready_*` unless the verdict is `none`. A null verdict is no
    * usage-limit decision (an outage, or a target whose switched members
    * already left) and stays null. Shared by the repo policy write and the
-   * global settings write (UI-giog §4.1).
+   * start-up re-binding the UI-32oq migration leaves pending.
    *
    * @param {Queue} next
    * @param {string} runner
@@ -9722,10 +9720,12 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Re-bind one runner's standing hold verdicts to the policy in effect now
-     * without touching the stored repo policy — the global settings write runs
-     * this for every registered workspace (UI-giog §4.1). No write and no
-     * revision bump when nothing changes (`ok: false`).
+     * Re-bind one runner's standing hold verdicts to the workspace's stored
+     * policy without touching that policy — the server start runs this for
+     * every registered workspace while the UI-32oq migration leaves the
+     * runner in `rebind_pending` (verdicts bound under the retired global
+     * override). No write and no revision bump when nothing changes
+     * (`ok: false`).
      *
      * @param {string} workspace
      * @param {string} runner

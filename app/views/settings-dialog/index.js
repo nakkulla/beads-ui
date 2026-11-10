@@ -266,7 +266,6 @@ export function createSettingsDialog(mount_element, options) {
       implPresetStore: options.implPresetStore,
       modelVisibilityStore: options.modelVisibilityStore,
       codexCreditStore: options.codexCreditStore,
-      limitPolicySettingsStore: options.limitPolicySettingsStore,
       notify,
       onQueueAdopt: (queue) => {
         if (bound_root === null) {
@@ -550,7 +549,6 @@ export function createSettingsDialog(mount_element, options) {
         implPresetStore: options.implPresetStore,
         modelVisibilityStore: options.modelVisibilityStore,
         codexCreditStore: options.codexCreditStore,
-        limitPolicySettingsStore: options.limitPolicySettingsStore,
         notify,
         onBulkApplied: (root_dirs) => options.onBulkApplied?.(root_dirs)
       });
@@ -838,21 +836,6 @@ export function createSettingsDialog(mount_element, options) {
     );
   }
 
-  // A runner's limit scope locks or frees the repo `한도 대응` rows in both the
-  // repo pane and the bulk pane (UI-giog §4.1), so a push redraws them.
-  /** @type {null | (() => void)} */
-  let unsubscribe_limit_policy = null;
-  if (options.limitPolicySettingsStore?.subscribe) {
-    unsubscribe_limit_policy = options.limitPolicySettingsStore.subscribe(
-      () => {
-        if (is_open) {
-          execution_pane?.render();
-          bulk_pane?.render();
-        }
-      }
-    );
-  }
-
   // The `저장소` tab reads the monitor's live rows, so a push redraws it while it
   // is the visible tab (a repo's failure count or revision moves under it).
   /** @type {null | (() => void)} */
@@ -973,10 +956,6 @@ export function createSettingsDialog(mount_element, options) {
       if (unsubscribe_rows) {
         unsubscribe_rows();
         unsubscribe_rows = null;
-      }
-      if (unsubscribe_limit_policy) {
-        unsubscribe_limit_policy();
-        unsubscribe_limit_policy = null;
       }
       if (unsubscribe_queue) {
         unsubscribe_queue();

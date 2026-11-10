@@ -417,8 +417,8 @@ export function bootstrap(root_element) {
       }
     });
 
-    // 한도 대응 전역 설정 채널(UI-giog §4.2)의 push. 서버 전역이라 워크스페이스
-    // 전환에도 비우지 않고, 스냅샷을 통째로 교체한다.
+    // 활성 계정 자동 전환 설정 채널(UI-giog §4.2, UI-32oq §4.1)의 push. 서버
+    // 전역이라 워크스페이스 전환에도 비우지 않고, 스냅샷을 통째로 교체한다.
     client.on('limit-policy-settings-snapshot', (payload) => {
       if (isLimitPolicySnapshot(payload)) {
         limit_policy_settings_store.set({
@@ -1105,8 +1105,8 @@ export function bootstrap(root_element) {
         id: LIMIT_POLICY_SETTINGS_CLIENT_ID
       }).catch((err) => {
         log('subscribe-limit-policy-settings failed: %o', err);
-        // 구 서버 등으로 구독이 실패하면 값 없음으로 두어 두 러너를 저장소별로
-        // 읽게 하고, 다음 재연결이 다시 구독하도록 플래그를 푼다.
+        // 구 서버 등으로 구독이 실패하면 값 없음으로 두어 두 러너의 활성 계정
+        // 자동 전환을 끔으로 읽게 하고, 다음 재연결이 다시 구독하도록 플래그를 푼다.
         limit_policy_settings_store.clear();
         limit_policy_settings_subscribed = false;
       });

@@ -603,7 +603,7 @@ export async function handleMessage(ws, data) {
       handleUnsubscribeLimitPolicySettings(ws, req);
       return;
     case 'limit-policy-settings-set':
-      await handleLimitPolicySettingsSet(ws, req);
+      handleLimitPolicySettingsSet(ws, req);
       return;
     case 'subscribe-external-wait-settings':
       handleSubscribeExternalWaitSettings(ws, req);

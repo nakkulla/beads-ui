@@ -251,26 +251,28 @@ describe('POST /api/codex/switch-candidate (UI-9y1k §4.4)', () => {
     });
   });
 
-  test('answers policy_wait while global Codex wait overrides a switching repo', async () => {
+  test('answers policy_wait for a waiting repo while the Codex auto switch is on', async () => {
     __setLimitPolicySettingsForTest({
-      codex: { scope: 'global', mode: 'wait', accounts: [] }
+      codex: { auto_switch: true, default_account: null, accounts: [ACCOUNT_3] }
     });
-    const handler = makeHandler();
+    const handler = makeHandler({ policy: { mode: 'wait', accounts: [] } });
 
     const res = await postCandidate(handler, { root_dir: ROOT });
 
     expect(res.body).toMatchObject({ decision: 'none', reason: 'policy_wait' });
   });
 
-  test('picks from the global allow list while the Codex scope is global', async () => {
+  test('picks from the repo allow list, not the auto-switch targets', async () => {
     __setLimitPolicySettingsForTest({
-      codex: { scope: 'global', mode: 'switch', accounts: [ACCOUNT_3] }
+      codex: { auto_switch: true, default_account: null, accounts: [ACCOUNT_3] }
     });
-    const handler = makeHandler({ policy: { mode: 'wait', accounts: [] } });
+    const handler = makeHandler({
+      policy: { mode: 'switch', accounts: [ACCOUNT_2] }
+    });
 
     const res = await postCandidate(handler, { root_dir: ROOT });
 
-    expect(res.body).toMatchObject({ decision: 'switch', account_number: 3 });
+    expect(res.body).toMatchObject({ decision: 'switch', account_number: 2 });
   });
 
   test('carries no email and no account key in the answer', async () => {

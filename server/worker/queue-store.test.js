@@ -1499,7 +1499,7 @@ describe('worker/queue-store provider hold', () => {
     expect(result.queue.auto_resume_pending).toEqual([]);
   });
 
-  describe('global limit policy scope (UI-giog)', () => {
+  describe('repo policy only (UI-32oq §4.1)', () => {
     afterEach(() => {
       __resetLimitPolicySettingsForTest();
     });
@@ -1519,105 +1519,70 @@ describe('worker/queue-store provider hold', () => {
       });
     }
 
-    test('records disabled while global wait overrides a switching repo', () => {
+    /**
+     * Rewrite the stored claude mode on disk and cold-load a new store: the
+     * held verdicts stay as they were bound before, as the retired global
+     * override left them.
+     *
+     * @param {'wait'|'switch'} mode
+     * @returns {ReturnType<typeof createQueueStore>}
+     */
+    function restartWithStoredMode(mode) {
+      const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+      raw.provider_limit_policy.claude.mode = mode;
+      fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+      return createQueueStore();
+    }
+
+    test('records disabled for a waiting repo while the global auto switch is on', () => {
       const store = createQueueStore();
-      setRepoPolicy(store, 'switch', ['new@example.com']);
+      setRepoPolicy(store, 'wait', ['new@example.com']);
       __setLimitPolicySettingsForTest({
-        claude: { scope: 'global', mode: 'wait', accounts: [] }
+        claude: { auto_switch: true, accounts: ['new@example.com'] }
       });
 
-      const result = holdUsageLimit(
-        store,
-        'att-global-wait',
-        'old@example.com'
-      );
+      const result = holdUsageLimit(store, 'att-repo-wait', 'old@example.com');
 
       expect(
-        result.queue.provider_hold_members['att-global-wait'].auto_switch
+        result.queue.provider_hold_members['att-repo-wait'].auto_switch
       ).toBe('disabled');
     });
 
-    test('records none while global switch overrides a waiting repo', () => {
+    test('records none for a switching repo while the global auto switch is off', () => {
       const store = createQueueStore();
-      setRepoPolicy(store, 'wait', []);
+      setRepoPolicy(store, 'switch', ['new@example.com']);
       __setLimitPolicySettingsForTest({
-        claude: {
-          scope: 'global',
-          mode: 'switch',
-          accounts: ['new@example.com']
-        }
+        claude: { auto_switch: false, accounts: [] }
       });
 
       const result = holdUsageLimit(
         store,
-        'att-global-switch',
+        'att-repo-switch',
         'old@example.com'
       );
 
       expect(
-        result.queue.provider_hold_members['att-global-switch'].auto_switch
+        result.queue.provider_hold_members['att-repo-switch'].auto_switch
       ).toBe('none');
     });
 
-    test('accepts a planned switch while global switch overrides a waiting repo', () => {
+    test('rebinds a none verdict left under a policy that now waits to disabled', () => {
       const store = createQueueStore();
-      setRepoPolicy(store, 'wait', []);
-      __setLimitPolicySettingsForTest({
-        claude: {
-          scope: 'global',
-          mode: 'switch',
-          accounts: ['new@example.com']
-        }
-      });
-      const held = holdUsageLimit(store, 'att-ready', 'old@example.com');
-
-      const result = store.updateProviderTarget(WS, {
-        runner: 'claude',
-        generation: /** @type {number} */ (held.generation),
-        kind: 'usage_limit',
-        model: 'opus',
-        account: 'old@example.com',
-        patch: {
-          switch_ready_at: 10_000,
-          switch_ready_account: 'new@example.com'
-        }
-      });
-
-      expect(result.queue.provider_hold_members['att-ready']).toMatchObject({
-        switch_ready_at: 10_000,
-        switch_ready_account: 'new@example.com'
-      });
-    });
-
-    test('rebinds a disabled hold to none when global switch turns on', () => {
-      const store = createQueueStore();
-      setRepoPolicy(store, 'wait', []);
+      setRepoPolicy(store, 'switch', ['new@example.com']);
       holdUsageLimit(store, 'att-rebind', 'old@example.com');
-      __setLimitPolicySettingsForTest({
-        claude: {
-          scope: 'global',
-          mode: 'switch',
-          accounts: ['new@example.com']
-        }
-      });
+      const restarted = restartWithStoredMode('wait');
 
-      const result = store.rebindProviderSwitchVerdicts(WS, 'claude');
+      const result = restarted.rebindProviderSwitchVerdicts(WS, 'claude');
 
+      expect(result.ok).toBe(true);
       expect(result.queue.provider_hold_members['att-rebind'].auto_switch).toBe(
-        'none'
+        'disabled'
       );
     });
 
-    test('rebinds a none hold back to disabled and clears its planned switch when the scope returns to a waiting repo', () => {
+    test('clears the planned switch of a verdict it rebinds to disabled', () => {
       const store = createQueueStore();
-      setRepoPolicy(store, 'wait', []);
-      __setLimitPolicySettingsForTest({
-        claude: {
-          scope: 'global',
-          mode: 'switch',
-          accounts: ['new@example.com']
-        }
-      });
+      setRepoPolicy(store, 'switch', ['new@example.com']);
       const held = holdUsageLimit(store, 'att-back', 'old@example.com');
       store.updateProviderTarget(WS, {
         runner: 'claude',
@@ -1630,9 +1595,9 @@ describe('worker/queue-store provider hold', () => {
           switch_ready_account: 'new@example.com'
         }
       });
-      __setLimitPolicySettingsForTest({ claude: { scope: 'repo' } });
+      const restarted = restartWithStoredMode('wait');
 
-      const result = store.rebindProviderSwitchVerdicts(WS, 'claude');
+      const result = restarted.rebindProviderSwitchVerdicts(WS, 'claude');
 
       expect(result.queue.provider_hold_members['att-back']).toMatchObject({
         auto_switch: 'disabled',
@@ -1643,17 +1608,11 @@ describe('worker/queue-store provider hold', () => {
 
     test('keeps the stored repo policy through a rebind', () => {
       const store = createQueueStore();
-      setRepoPolicy(store, 'wait', ['repo@example.com']);
+      setRepoPolicy(store, 'switch', ['repo@example.com']);
       holdUsageLimit(store, 'att-keep', 'old@example.com');
-      __setLimitPolicySettingsForTest({
-        claude: {
-          scope: 'global',
-          mode: 'switch',
-          accounts: ['new@example.com']
-        }
-      });
+      const restarted = restartWithStoredMode('wait');
 
-      const result = store.rebindProviderSwitchVerdicts(WS, 'claude');
+      const result = restarted.rebindProviderSwitchVerdicts(WS, 'claude');
 
       expect(result.queue.provider_limit_policy.claude).toEqual({
         mode: 'wait',
@@ -2953,31 +2912,31 @@ describe('worker/queue-store wait-mode account follow (UI-np4t)', () => {
     ]);
   });
 
-  test('lists a member to follow while global wait overrides a switching repo', () => {
+  test('lists no member to follow for a switching repo while the global auto switch is off', () => {
     const store = createQueueStore();
     seedAttempt(store, 'a1');
     holdOn(store, 'a1', 'hanmail@example.com');
     __setLimitPolicySettingsForTest({
-      claude: { scope: 'global', mode: 'wait', accounts: [] }
-    });
-
-    const waiting = store.waitFollowMembers(WS);
-
-    expect(waiting.map((member) => member.attempt_id)).toEqual(['a1']);
-  });
-
-  test('lists no member to follow while global switch overrides a waiting repo', () => {
-    const store = createQueueStore();
-    setMode(store, 'wait');
-    seedAttempt(store, 'a1');
-    holdOn(store, 'a1', 'hanmail@example.com');
-    __setLimitPolicySettingsForTest({
-      claude: { scope: 'global', mode: 'switch', accounts: [] }
+      claude: { auto_switch: false, accounts: [] }
     });
 
     const following = store.waitFollowMembers(WS);
 
     expect(following).toEqual([]);
+  });
+
+  test('lists a member to follow for a waiting repo while the global auto switch is on', () => {
+    const store = createQueueStore();
+    setMode(store, 'wait');
+    seedAttempt(store, 'a1');
+    holdOn(store, 'a1', 'hanmail@example.com');
+    __setLimitPolicySettingsForTest({
+      claude: { auto_switch: true, accounts: ['other@example.com'] }
+    });
+
+    const waiting = store.waitFollowMembers(WS);
+
+    expect(waiting.map((member) => member.attempt_id)).toEqual(['a1']);
   });
 
   test('follow moves a wait-mode member to the resolved account target', () => {

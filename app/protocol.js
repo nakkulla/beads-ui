@@ -682,8 +682,8 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'unsubscribe-timing-settings',
   'timing-settings-set',
   'timing-settings-snapshot',
-  // Server-global limit-policy settings (UI-giog §4.2): each runner's global
-  // usage-limit policy and its `repo`/`global` apply scope.
+  // Server-global limit-policy settings (UI-giog §4.2, UI-32oq §4.1): each
+  // runner's active-login auto switch, default account, targets and trigger.
   'subscribe-limit-policy-settings',
   'unsubscribe-limit-policy-settings',
   'limit-policy-settings-set',
