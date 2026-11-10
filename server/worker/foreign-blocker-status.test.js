@@ -9,6 +9,7 @@ import {
   foreignBlockerClosedAtFor,
   foreignBlockerStatusFor,
   onForeignBlockerResolved,
+  prefixOfBeadId,
   prewarmIssuePrefix,
   queryForeignBlockerStatus,
   visibleWorkspaceRoots
@@ -123,6 +124,20 @@ afterEach(() => {
   }
   unsubscribes = [];
   vi.restoreAllMocks();
+});
+
+describe('prefixOfBeadId', () => {
+  test('keeps a hyphenated issue prefix whole', () => {
+    const prefix = prefixOfBeadId('claude-swap-3uj');
+
+    expect(prefix).toBe('claude-swap');
+  });
+
+  test('reads a phase child id by its parent prefix', () => {
+    const prefix = prefixOfBeadId('UI-a1b2.1');
+
+    expect(prefix).toBe('UI');
+  });
 });
 
 describe('applyForeignBlockerCleanup judgments (UI-u6zf §3.2)', () => {
@@ -802,6 +817,28 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
       closed_at: null,
       close_reason: null
     });
+  });
+
+  test('reads a blocker whose owning rig has a hyphenated prefix', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'claude-swap-3uj', status: 'closed' }
+      })
+    );
+
+    const result = await queryForeignBlockerStatus(
+      'claude-swap-3uj',
+      WS_A,
+      querySeams({ [WS_B]: 'claude-swap' })
+    );
+
+    expect(result).toMatchObject({ ok: true, status: 'closed' });
+    expect(runBdJsonProjected).toHaveBeenCalledWith(
+      'show',
+      ['show', 'claude-swap-3uj', '--json'],
+      { cwd: WS_B, expected_id: 'claude-swap-3uj' }
+    );
   });
 
   test('returns closed_at as epoch ms and close_reason from the owning rig payload (§4.3)', async () => {

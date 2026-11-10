@@ -28,6 +28,7 @@ import {
 } from './attach.js';
 import * as attachModule from './attach.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
+import { prefixOfBeadId } from './foreign-blocker-status.js';
 import {
   pushLogPath as guardPushLogPath,
   install as installGuardHook
@@ -2757,9 +2758,11 @@ describe('worker/attach waiting activity routing (UI-978d §4)', () => {
    *
    * @param {string|null} rig
    * @param {string} [lane] - `'parallel'` or a serial lane id.
+   * @param {{ owner_prefix?: string, blocker_id?: string }} [options]
    */
-  function admissionActivityAttachment(rig, lane = 'parallel') {
-    foreign_prefix_capture.value = 'OWNER';
+  function admissionActivityAttachment(rig, lane = 'parallel', options = {}) {
+    const { owner_prefix = 'OWNER', blocker_id = 'OWNER-1' } = options;
+    foreign_prefix_capture.value = owner_prefix;
     const runtime = createWorkerRuntime();
     runtime.queueStore.place(WS, {
       expected_revision: runtime.queueStore.snapshot(WS).revision,
@@ -2769,7 +2772,7 @@ describe('worker/attach waiting activity routing (UI-978d §4)', () => {
     runtime.queueStore.recordAdmission(WS, {
       bead_id: 'UI-waiting',
       reason: 'prerequisite_unmet',
-      blockers: [{ id: 'OWNER-1', rig, status: 'open' }]
+      blockers: [{ id: blocker_id, rig, status: 'open' }]
     });
     const att = createWorkerAttachment(WS, {
       runtime,
@@ -2789,6 +2792,19 @@ describe('worker/attach waiting activity routing (UI-978d §4)', () => {
   test('rescans when an admission blocker names the moving rig', () => {
     const owner_root = path.join(tmp_state, 'owner');
     const { rescan } = admissionActivityAttachment('OWNER');
+
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    expect(rescan).toHaveBeenCalledWith(path.resolve(WS));
+  });
+
+  test('rescans when a hyphenated-prefix rig blocker moves', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { rescan } = admissionActivityAttachment(
+      prefixOfBeadId('claude-swap-3uj'),
+      'parallel',
+      { owner_prefix: 'claude-swap', blocker_id: 'claude-swap-3uj' }
+    );
 
     publishWorkspaceActivity(path.resolve(owner_root));
 

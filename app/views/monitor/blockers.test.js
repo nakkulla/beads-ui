@@ -71,6 +71,15 @@ describe('monitor blocker locations (UI-2gi1 §6.3)', () => {
     expect(scope).toBe('internal');
   });
 
+  test('classifies a blocker of a hyphenated-prefix workspace as internal', () => {
+    const scope = classifyBlockerPrefix('claude-swap-3uj', [
+      { issue_prefix: 'claude-swap' },
+      { issue_prefix: 'UI' }
+    ]);
+
+    expect(scope).toBe('internal');
+  });
+
   test('classifies an unmatched blocker as external when every prefix is known', () => {
     const scope = classifyBlockerPrefix('EXT-1', [
       { issue_prefix: 'A' },

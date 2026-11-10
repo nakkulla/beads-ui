@@ -120,7 +120,7 @@ export function buildBlockerLocationMap(lanes) {
  */
 export function classifyBlockerPrefix(blocker_id, workspaces_state) {
   const states = Array.isArray(workspaces_state) ? workspaces_state : [];
-  const split_at = blocker_id.indexOf('-');
+  const split_at = blocker_id.lastIndexOf('-');
   const prefix = split_at > 0 ? blocker_id.slice(0, split_at) : blocker_id;
   if (
     states.some(

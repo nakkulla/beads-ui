@@ -222,13 +222,15 @@ export function prewarmIssuePrefix(root_dir, requester_root) {
 }
 
 /**
- * Rig prefix of a bead id — the part before the first `-` (same split as the
- * client's `classifyBlockerPrefix`).
+ * Rig prefix of a bead id — the part before the last `-`, so a hyphenated
+ * issue_prefix such as `claude-swap` survives (the hash part has no `-` and a
+ * child id appends `.N`). Same split as the client's `classifyBlockerPrefix`
+ * and `wait-judgment.js`.
  *
  * @param {string} bead_id
  */
 export function prefixOfBeadId(bead_id) {
-  const split_at = bead_id.indexOf('-');
+  const split_at = bead_id.lastIndexOf('-');
   return split_at > 0 ? bead_id.slice(0, split_at) : bead_id;
 }
 
