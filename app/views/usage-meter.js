@@ -17,7 +17,7 @@ import { showToast } from '../utils/toast.js';
  * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean }} ProviderSnapshot
  * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, remove_endpoint: string, login_tools: string }} ProviderDescriptor
  * @typedef {{ number: number, key: string, name: string }} RemoveTarget
- * @typedef {{ kind: 'ok' | 'warn' | 'error' | 'confirm', text: string } | { kind: 'remove_confirm', text: string, target: RemoveTarget }} RowMessage
+ * @typedef {{ kind: 'ok' | 'warn' | 'error', text: string } | { kind: 'confirm', text: string, key: string | null } | { kind: 'remove_confirm', text: string, target: RemoveTarget }} RowMessage
  * @typedef {{
  *   provider: string,
  *   mode: 'relogin' | 'add',
@@ -877,8 +877,14 @@ export function createUsageMeter(mount_element, options = {}) {
             (/** @type {unknown} */ id) => typeof id === 'string'
           )
         : [];
+      // The confirm stands for the account at this number now; a refresh
+      // that moves another account here drops it (dropStaleConfirms).
+      const switch_row = accountsOf(provider.key).find(
+        (account) => account.number === account_number
+      );
       row_messages.set(row_key, {
         kind: 'confirm',
+        key: switch_row ? switch_row.key : null,
         text: `실행 중인 워커가 이 계정을 사용 중입니다${in_use.length > 0 ? ` (${in_use.join(', ')})` : ''}. 전환하면 토큰 갱신 충돌로 워커의 로그인이 풀릴 수 있습니다.`
       });
       renderProviders();
@@ -1147,29 +1153,36 @@ export function createUsageMeter(mount_element, options = {}) {
   }
 
   /**
-   * Drop every remove confirm that no longer stands: its provider's [관리] is
-   * off, or the row at its number no longer holds the account it was opened
-   * for (a refresh moved the list), so a confirm never lands on another
-   * account. Runs before each draw, which also catches a pre-check answer
-   * that arrived after the list moved.
+   * Drop every remove or switch confirm that no longer stands: the row at its
+   * number no longer holds the account it was opened for (a refresh moved the
+   * list), or — for a remove confirm — its provider's [관리] is off, so a
+   * confirm never lands on another account. Runs before each draw, which also
+   * catches a pre-check answer that arrived after the list moved.
    */
-  function dropStaleRemoveConfirms() {
+  function dropStaleConfirms() {
     for (const provider of PROVIDERS) {
       const managing = manage_providers.has(provider.key);
       const accounts = accountsOf(provider.key);
       for (const [key, message] of row_messages) {
-        if (
-          message.kind !== 'remove_confirm' ||
-          !key.startsWith(`${provider.key}:`)
-        ) {
+        if (!key.startsWith(`${provider.key}:`)) {
           continue;
         }
-        const target = message.target;
-        const row = accounts.find(
-          (account) => account.number === target.number
-        );
-        if (!managing || row === undefined || row.key !== target.key) {
-          row_messages.delete(key);
+        if (message.kind === 'remove_confirm') {
+          const target = message.target;
+          const row = accounts.find(
+            (account) => account.number === target.number
+          );
+          if (!managing || row === undefined || row.key !== target.key) {
+            row_messages.delete(key);
+          }
+          continue;
+        }
+        if (message.kind === 'confirm' && message.key !== null) {
+          const number = Number(key.slice(provider.key.length + 1));
+          const row = accounts.find((account) => account.number === number);
+          if (row === undefined || row.key !== message.key) {
+            row_messages.delete(key);
+          }
         }
       }
     }
@@ -2202,7 +2215,7 @@ export function createUsageMeter(mount_element, options = {}) {
 
   /** Draw every currently available provider. */
   function drawProviders() {
-    dropStaleRemoveConfirms();
+    dropStaleConfirms();
     const now_ms = Date.now();
     /** @type {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }[]} */
     const entries = [];

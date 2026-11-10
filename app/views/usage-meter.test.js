@@ -2497,6 +2497,32 @@ describe('usage meter account login and removal (UI-xm29 §4.5)', () => {
     meter.destroy();
   });
 
+  test('drops the switch confirm when a refresh puts another account at its number', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    let moved = false;
+    stubAccountApi({
+      claude: () => (moved ? MOVED_CLAUDE : TWO_CLAUDE),
+      routes: {
+        'POST /api/claude-account/switch': [
+          { ok: false, error: 'account_in_use', in_use: ['UI-one'] }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__switch').click();
+    await flush();
+    expect(document.querySelector('.usage-meter__confirm')).not.toBeNull();
+    moved = true;
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(document.querySelector('.usage-meter__confirm')).toBeNull();
+    expect(document.querySelector('.usage-meter__switch')).not.toBeNull();
+    meter.destroy();
+  });
+
   test('keeps the confirm through a refresh that keeps its account at its number', async () => {
     vi.useFakeTimers();
     const mount = mountMeter();
