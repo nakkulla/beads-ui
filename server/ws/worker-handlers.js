@@ -168,6 +168,7 @@ import { createTailReader } from '../worker/runner/tail-reader.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { activeLaneLineages, requestStartNow } from '../worker/scheduler.js';
 import { scopeCache } from '../worker/scope-cache.js';
+import { attemptCostUsage } from '../worker/session-cost.js';
 import {
   isOpenInquiry,
   sessionInquiryRowKey
@@ -2686,7 +2687,7 @@ export function attemptsWithUsage(queue, workspace_key) {
     } else if (live) {
       projected = {
         ...projected,
-        usage: live
+        usage: attemptCostUsage(attempts, attempt, live).usage
       };
     }
     if (running) {

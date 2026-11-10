@@ -722,6 +722,38 @@ describe('worker/bd-metadata scanBeads (UI-7agi §1, UI-m6bg)', () => {
     expect(pr_rows.map((row) => row.bead_id)).toEqual(['UI-1']);
   });
 
+  test('returns a closed bead carrying a pr_url as a closed PR row only (UI-26du)', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [
+        ...ROWS,
+        {
+          id: 'UI-7',
+          status: 'closed',
+          metadata: { pr_url: 'https://github.com/o/r/pull/14' }
+        }
+      ]
+    }));
+
+    const { pr_rows, closed_pr_rows } = await createBdMetadata({
+      runJson
+    }).scanBeads();
+
+    expect(closed_pr_rows).toEqual([
+      {
+        bead_id: 'UI-4',
+        pr_url: 'https://github.com/o/r/pull/11',
+        metadata: {}
+      },
+      {
+        bead_id: 'UI-7',
+        pr_url: 'https://github.com/o/r/pull/14',
+        metadata: {}
+      }
+    ]);
+    expect(pr_rows.map((row) => row.bead_id)).toEqual(['UI-1']);
+  });
+
   test('projects every receipt metadata key onto the scanned row', async () => {
     const metadata = Object.fromEntries([
       ['pr_url', 'https://github.com/o/r/pull/7'],

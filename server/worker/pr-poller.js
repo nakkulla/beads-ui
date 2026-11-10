@@ -226,7 +226,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
  * @param {{
  *   workspace: string,
  *   repo: string,
- *   store: { snapshot: (workspace: string) => Queue, reconcileExternalPrWait?: (workspace: string, input: { bead_id: string, pr_url: string, head_ref: string }) => { ok: boolean }, promoteMergedExternal?: (workspace: string, input: any) => { ok: boolean }, recordCleanupFailure?: (workspace: string, input: any) => unknown },
+ *   store: { snapshot: (workspace: string) => Queue, reconcileExternalPrWait?: (workspace: string, input: { bead_id: string, pr_url: string, head_ref: string }) => { ok: boolean }, promoteMergedExternal?: (workspace: string, input: any) => { ok: boolean }, recordCleanupFailure?: (workspace: string, input: any) => unknown, retireClosedPrWait?: (workspace: string, bead_id: string) => { ok: boolean } },
  *   gh: { prDetail: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').PrDetail>>, repoSlug?: (repo_dir: string) => Promise<string|null> },
  *   observations: ReturnType<typeof import('./pr-observations.js').createPrObservationStore>,
  *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
@@ -239,9 +239,11 @@ export function resolvePrRef(queue, bead_id, external = null) {
  *   onDiscardObservation?: (bead_id: string) => Promise<unknown>,
  *   external?: {
  *     refresh: () => Promise<unknown>,
- *     list: () => import('./external-pr.js').ExternalPrRow[]
+ *     list: () => import('./external-pr.js').ExternalPrRow[],
+ *     statusOf?: (bead_id: string) => string|null
  *   },
  *   notifyChanged?: (workspace: string) => void,
+ *   actionInFlight?: (bead_id: string) => boolean,
  *   foreignTargetOf?: (bead_id: string) => import('./external-pr.js').ForeignTargetJudgment|null,
  *   announceForeignHandoff?: (input: { bead_id: string, cause: string, identity: string, pr_url?: string|null, foreign_path?: string|null }) => unknown,
  *   resolveRepoOps?: (input: { repo: string, sha: string, gitRun: any }) => Promise<any>,
@@ -354,6 +356,53 @@ export function createPrPoller(deps) {
   let off_queue_changed = null;
 
   /**
+   * Whether bd read this durable row's bead `closed` in a scan that finished
+   * BEFORE the PR read about to happen (UI-26du). The tick's
+   * `external.refresh()` is that scan; a PR then read as not merged was not
+   * merged when the bead closed, so no post-merge work is owed to the row.
+   *
+   * @param {string} bead_id
+   * @param {import('./external-pr.js').ExternalPrRow|null} external_row
+   * @returns {boolean}
+   */
+  function closedBeforeRead(bead_id, external_row) {
+    return (
+      external_row === null &&
+      typeof external?.statusOf === 'function' &&
+      external.statusOf(bead_id) === 'closed'
+    );
+  }
+
+  /**
+   * Retire the `pr_wait` row of a bead closed before its unmerged PR was read
+   * (UI-26du). The store refuses a row anything still works on.
+   *
+   * @param {string} bead_id
+   * @returns {boolean} True when the row left the lane.
+   */
+  function retireClosedRow(bead_id) {
+    // A [머지] click may be waiting on GitHub's answer for this very PR; its
+    // cleanup needs the row the click started from.
+    if (
+      typeof deps.store.retireClosedPrWait !== 'function' ||
+      typeof deps.actionInFlight !== 'function' ||
+      deps.actionInFlight(bead_id)
+    ) {
+      return false;
+    }
+    try {
+      if (deps.store.retireClosedPrWait(workspace, bead_id).ok) {
+        log('closed bead %s left pr_wait (PR not merged)', bead_id);
+        notifyChanged(workspace);
+        return true;
+      }
+    } catch (err) {
+      log('closed pr_wait retirement failed for %s: %o', bead_id, err);
+    }
+    return false;
+  }
+
+  /**
    * Observe one bead's PR. Returns true when the cache changed.
    *
    * @param {Queue} queue
@@ -363,6 +412,7 @@ export function createPrPoller(deps) {
    * @returns {Promise<{ verify: Promise<void>|null }>}
    */
   async function observeBead(queue, bead_id, external_row = null) {
+    const closed_before = closedBeforeRead(bead_id, external_row);
     // The pinned foreign target (UI-k467 §3.3), re-derived from the scan's
     // pins on every turn. A Worker-delivered row is not in the registry
     // overlay, so its judgment comes from the scan-wide map.
@@ -371,7 +421,13 @@ export function createPrPoller(deps) {
         ? deps.foreignTargetOf(bead_id)
         : null;
     if (judged && judged.state === 'ok') {
-      return observeForeign(queue, bead_id, external_row, judged.target);
+      return observeForeign(
+        queue,
+        bead_id,
+        external_row,
+        judged.target,
+        closed_before
+      );
     }
     if (judged && judged.state === 'invalid') {
       // Pinned, but the detection does not hold: the contract token is the
@@ -409,6 +465,10 @@ export function createPrPoller(deps) {
       deps.observations.record(workspace, bead_id, {
         error: 'pr_ref_unknown'
       });
+      // With no PR to observe, nothing can ever merge it out of the lane.
+      if (closed_before) {
+        retireClosedRow(bead_id);
+      }
       return { verify: null };
     }
 
@@ -485,6 +545,12 @@ export function createPrPoller(deps) {
           })
         };
       }
+      if (pr.state !== 'MERGED' && closed_before) {
+        retireClosedRow(bead_id);
+      }
+      return { verify: null };
+    }
+    if (closed_before && retireClosedRow(bead_id)) {
       return { verify: null };
     }
 
@@ -627,14 +693,25 @@ export function createPrPoller(deps) {
    * @param {string} bead_id
    * @param {import('./external-pr.js').ExternalPrRow|null} external_row
    * @param {import('./foreign-target.js').ForeignPrTarget} target
+   * @param {boolean} closed_before - {@link closedBeforeRead}, judged before
+   * any PR read.
    * @returns {Promise<{ verify: Promise<void>|null }>}
    */
-  async function observeForeign(queue, bead_id, external_row, target) {
+  async function observeForeign(
+    queue,
+    bead_id,
+    external_row,
+    target,
+    closed_before
+  ) {
     const ref = resolvePrRef(queue, bead_id, external_row);
     if (!ref) {
       deps.observations.record(workspace, bead_id, {
         error: 'pr_ref_unknown'
       });
+      if (closed_before) {
+        retireClosedRow(bead_id);
+      }
       return { verify: null };
     }
     // The slug and the number come from ONE parse of the pinned `pr_url`; a
@@ -741,6 +818,12 @@ export function createPrPoller(deps) {
           })
         };
       }
+      if (pr.state !== 'MERGED' && closed_before) {
+        retireClosedRow(bead_id);
+      }
+      return { verify: null };
+    }
+    if (closed_before && retireClosedRow(bead_id)) {
       return { verify: null };
     }
     if (

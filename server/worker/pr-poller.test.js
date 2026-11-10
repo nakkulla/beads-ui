@@ -137,6 +137,7 @@ function repoOperations(input = {}) {
  *   onDeployment?: any,
  *   onDiscardObservation?: any,
  *   external?: any,
+ *   actionInFlight?: (bead_id: string) => boolean,
  *   timing_interval?: boolean
  * }} [input]
  */
@@ -194,6 +195,7 @@ function makePoller(input = {}) {
     onMerged: input.onMerged,
     onDiscardObservation: input.onDiscardObservation,
     external: input.external,
+    actionInFlight: input.actionInFlight ?? (() => false),
     notifyChanged,
     ...(input.timing_interval ? {} : { intervalSeconds: 0 }),
     sleep: async () => {},
@@ -1874,5 +1876,89 @@ describe('pr-poller — unscanned foreign PR guard (UI-k467 §4-3)', () => {
     expect(observations.get('/ws', 'UI-1')?.error).toBe(
       'foreign_target_unscanned'
     );
+  });
+});
+
+describe('worker/pr-poller — closed bead seats (UI-26du)', () => {
+  /**
+   * @param {string} status
+   */
+  function statusExternal(status) {
+    return {
+      refresh: vi.fn(async () => {}),
+      list: () => [],
+      statusOf: () => status
+    };
+  }
+
+  /**
+   * @param {Parameters<typeof makePoller>[0]} input
+   */
+  function closedPoller(input) {
+    const made = makePoller(input);
+    const retire = vi.fn(() => ({ ok: true }));
+    /** @type {any} */ (made.store).retireClosedPrWait = retire;
+    return { ...made, retire };
+  }
+
+  test('retires the row of a bead closed before its OPEN PR was read', async () => {
+    const { poller, retire, notifyChanged } = closedPoller({
+      external: statusExternal('closed')
+    });
+
+    await poller.tick();
+
+    expect(retire).toHaveBeenCalledWith('/ws', 'UI-1');
+    expect(notifyChanged).toHaveBeenCalled();
+  });
+
+  test('retires the row of a closed bead whose pr_wait records no PR', async () => {
+    const { poller, retire, prDetail } = closedPoller({
+      queue: queueOf({ pr_number: null, pr_url: '' }),
+      external: statusExternal('closed')
+    });
+
+    await poller.tick();
+
+    expect(prDetail).not.toHaveBeenCalled();
+    expect(retire).toHaveBeenCalledWith('/ws', 'UI-1');
+  });
+
+  test('hands a closed bead with a MERGED PR to post-merge cleanup instead', async () => {
+    const onMerged = vi.fn(async () => {});
+    const { poller, retire } = closedPoller({
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
+      onMerged,
+      external: statusExternal('closed')
+    });
+
+    await poller.tick();
+
+    expect(onMerged).toHaveBeenCalled();
+    expect(retire).not.toHaveBeenCalled();
+  });
+
+  test('keeps the row while a merge click on the bead is in flight', async () => {
+    const { poller, retire } = closedPoller({
+      external: statusExternal('closed'),
+      actionInFlight: () => true
+    });
+
+    await poller.tick();
+
+    expect(retire).not.toHaveBeenCalled();
+  });
+
+  test('keeps the row of a deferred bead with an open PR', async () => {
+    const { poller, retire } = closedPoller({
+      external: statusExternal('deferred')
+    });
+
+    await poller.tick();
+
+    expect(retire).not.toHaveBeenCalled();
   });
 });

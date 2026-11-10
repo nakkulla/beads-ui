@@ -174,6 +174,7 @@ import { monitorGuardEvents } from './runner/guard-events.js';
 import { RUNNERS, adapterSpec, runtimeCatalog } from './runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from './runner/preamble.js';
 import { terminalResultOf } from './runner/session.js';
+import { attemptCostUsage } from './session-cost.js';
 import {
   SESSION_LANE_KIND,
   SESSION_LANE_STOP,
@@ -3732,19 +3733,29 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id
-   * @returns {{ usage?: any, usage_segments?: any[] }}
+   * @returns {{ usage?: any, usage_segments?: any[], session_cost_usd?: number }}
    */
   function usagePatch(workspace, attempt_id) {
     const prepared = deps.workerSessionObservations?.get(workspace, attempt_id);
-    const usage =
+    let usage =
       prepared?.usage ??
       (deps.usage ? deps.usage.get(workspace, attempt_id) : null);
     let model = null;
     let runner = null;
+    /** @type {{ session_cost_usd?: number }} */
+    let session_cost = {};
     try {
-      const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+      const attempts = deps.store.snapshot(workspace).attempts;
+      const attempt = attempts?.[attempt_id];
       model = typeof attempt?.model === 'string' ? attempt.model : null;
       runner = typeof attempt?.runner === 'string' ? attempt.runner : null;
+      // A resumed Claude session reports its cumulative cost; the record
+      // keeps this attempt's increment (UI-26du).
+      const costed = attemptCostUsage(attempts, attempt, usage);
+      usage = costed.usage;
+      if (costed.session_cost_usd !== undefined) {
+        session_cost = { session_cost_usd: costed.session_cost_usd };
+      }
     } catch {
       // The usage itself can still settle without optional model scope.
     }
@@ -3765,11 +3776,16 @@ export function createScheduler(deps) {
       );
     }
     if (usage && Array.isArray(prepared?.usage_segments)) {
-      return { usage, usage_segments: prepared.usage_segments };
+      return {
+        usage,
+        usage_segments: prepared.usage_segments,
+        ...session_cost
+      };
     }
     return usage
       ? {
           usage,
+          ...session_cost,
           usage_segments: [
             {
               provider: runner,
@@ -5694,6 +5710,12 @@ export function createScheduler(deps) {
       // (2026-10-01 stall-reconcile D4). Riding the poller's existing read
       // adds no bd call, and works with automatic dispatch off too.
       moved = deps.store.clearTransientAdmissions(workspace).ok || moved;
+      // A closed bead's admission and legacy deploy-reconcile records describe
+      // nothing that can happen again (UI-26du). Its `pr_wait` row is retired
+      // by the PR poller, which alone can prove the PR was not merged.
+      if (typeof deps.store.dropClosedRecords === 'function') {
+        moved = deps.store.dropClosedRecords(workspace, statuses).ok || moved;
+      }
     } finally {
       // A persist that throws mid-sweep leaves the EARLIER moves durable. The
       // caller swallows the error, so without the finally those rows would sit

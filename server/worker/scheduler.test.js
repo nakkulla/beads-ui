@@ -23978,6 +23978,38 @@ describe('scheduler token usage (UI-raqh §1)', () => {
     expect(attempt.usage).toBe(null);
   });
 
+  test('records a same-session resume cost as the increment over its parent', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const first = env.runner.eventsFor('A1');
+    first.emit('session_id', 'sid-1');
+    first.emit('event', {
+      kind: 'result',
+      usage: { input_tokens: 5, output_tokens: 5, total_cost_usd: 1.5 }
+    });
+    const parent_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.pause(WS, parent_id);
+    const resumed = await env.scheduler.resume(WS, parent_id);
+    const child_id = String(resumed.attempt_id);
+    const second = env.runner.eventsFor('A1');
+    second.emit('session_id', 'sid-1');
+    second.emit('event', {
+      kind: 'result',
+      usage: { input_tokens: 1, output_tokens: 1, total_cost_usd: 2 }
+    });
+
+    env.runner.finish('A1', { success: true });
+    await flush();
+    await flush();
+
+    const child = env.store.snapshot(WS).attempts[child_id];
+    expect(resumed.ok).toBe(true);
+    expect(child.resumed_from).toBe(parent_id);
+    expect(child.usage).toMatchObject({ total_cost_usd: 0.5 });
+    expect(child.session_cost_usd).toBe(2);
+  });
+
   test('persists usage when the attempt is paused', async () => {
     const env = setup({ config: { A1: {} } });
     seedQueue(env.store, ['A1']);
@@ -34688,6 +34720,18 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
       expect(env.store.snapshot(WS).admission.B1.reason).toBe(
         'prerequisite_unmet'
       );
+    });
+
+    test('drops any admission badge of a bead bd reads closed (UI-26du)', () => {
+      const env = stallEnv();
+      env.store.recordAdmission(WS, {
+        bead_id: 'B1',
+        reason: 'failed_unhandled'
+      });
+
+      env.scheduler.sweepClosedQueue(WS, { B1: 'closed' });
+
+      expect(env.store.snapshot(WS).admission.B1).toBeUndefined();
     });
   });
 

@@ -166,7 +166,13 @@
  * ends (success/failure/pause/stop) from the live tally in `usage-store.js`.
  * Null on an attempt whose runner reported none and on every record written
  * before the field existed — the display is fail-quiet, so a null simply
- * renders nothing.
+ * renders nothing. For a Claude attempt that resumed an earlier attempt's
+ * session, `total_cost_usd` is this attempt's increment (UI-26du).
+ * @property {number} [session_cost_usd] - The Claude session's cumulative
+ * reported cost at this attempt's end, the baseline a later resume of the same
+ * session subtracts. Absent on non-Claude attempts, on attempts that reported
+ * no cost, and on records written before the field existed (whose
+ * `usage.total_cost_usd` is that raw total).
  * @property {Array<{ provider?: string, role?: string, scope_id?: string, turn_id?: string, model?: string|null, usage: Record<string, number>, observed_from?: number|null, observed_through?: number|null, partial?: boolean, partial_reasons?: string[], cost_covered?: boolean }>} usage_segments -
  * Provider/model scopes retained when a cumulative conversation total spans
  * more than one priced model. Unknown residual scopes carry `partial: true`.
@@ -4290,6 +4296,10 @@ export function makeAttempt(fields) {
     usage: isRecord(fields.usage)
       ? /** @type {Attempt['usage']} */ (fields.usage)
       : null,
+    ...(typeof fields.session_cost_usd === 'number' &&
+    Number.isFinite(fields.session_cost_usd)
+      ? { session_cost_usd: fields.session_cost_usd }
+      : {}),
     usage_segments: Array.isArray(fields.usage_segments)
       ? fields.usage_segments.filter(
           (segment) => isRecord(segment) && isRecord(segment.usage)
@@ -15066,6 +15076,98 @@ export function createQueueStore(options = {}) {
           }
           delete next.merge_shelved[bead_id];
           dropped = true;
+        }
+        return dropped;
+      });
+    },
+
+    /**
+     * Retire the durable `pr_wait` row of a bead bd closed while its PR was
+     * not merged (UI-26du). The caller proves that order: it read `closed`
+     * BEFORE it observed the PR as OPEN, CLOSED-unmerged, or absent. Nothing
+     * else can take such a row out — the poller acts only on MERGED — so its
+     * seat and shelf would stay forever. The row leaves through the ordinary
+     * lane exit, which drops the shelf, merge turn, and auto-merge exclusion
+     * with it; it does not enter `done`, which records a merged PR.
+     *
+     * Refused while anything still works on the row: a started post-merge
+     * cleanup (`cleanup_cursor`/`merge_sha`), a recorded cleanup failure, a
+     * merge-queue turn, an active discard, an unfinished completion saga, or
+     * a non-terminal attempt other than a `paused` record a later attempt
+     * already resumed. Scheduler-owned (no CAS).
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {QueueOpResult}
+     */
+    retireClosedPrWait(workspace, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        const row = next.pr_wait.find((entry) => entry.bead_id === bead_id);
+        if (
+          !row ||
+          row.external === true ||
+          row.cleanup_cursor !== null ||
+          row.merge_sha !== null ||
+          next.cleanup_failed[bead_id] ||
+          next.merge_queue.some((entry) => entry.bead_id === bead_id) ||
+          (next.completion_intents[bead_id] &&
+            !isFinishedCompletionIntent(next.completion_intents[bead_id])) ||
+          Object.values(next.discard_operations).some(
+            (operation) =>
+              operation.bead_id === bead_id && discardOperationActive(operation)
+          ) ||
+          Object.values(next.attempts).some(
+            (attempt) =>
+              attempt.bead_id === bead_id &&
+              !TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status)) &&
+              !(
+                attempt.status === 'paused' &&
+                Object.values(next.attempts).some(
+                  (child) => child.resumed_from === attempt.attempt_id
+                )
+              )
+          )
+        ) {
+          return false;
+        }
+        removeFromLanes(next, bead_id);
+        return true;
+      });
+    },
+
+    /**
+     * Drop the admission records and the retired merge-click deploy records
+     * (`reconcile`, opaque since repo operations replaced it) of
+     * beads bd reads as `closed` (UI-26du). A closed bead is never dispatched
+     * or deployed again through them. A bead absent from `statuses` is left
+     * alone. No revision bump when nothing matched. Scheduler-owned (no CAS).
+     *
+     * @param {string} workspace
+     * @param {Record<string, string>} statuses - Bead id → bd status, from ONE
+     * scan.
+     * @returns {QueueOpResult}
+     */
+    dropClosedRecords(workspace, statuses) {
+      return applyUnconditional(workspace, (next) => {
+        let dropped = false;
+        for (const bead_id of Object.keys(next.admission)) {
+          if (statuses[bead_id] === 'closed') {
+            delete next.admission[bead_id];
+            dropped = true;
+          }
+        }
+        const legacy = /** @type {Record<string, unknown>} */ (next);
+        const reconcile = legacy.reconcile;
+        if (isRecord(reconcile)) {
+          for (const bead_id of Object.keys(reconcile)) {
+            if (statuses[bead_id] === 'closed') {
+              delete reconcile[bead_id];
+              dropped = true;
+            }
+          }
+          if (dropped && Object.keys(reconcile).length === 0) {
+            delete legacy.reconcile;
+          }
         }
         return dropped;
       });

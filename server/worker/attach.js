@@ -1846,6 +1846,25 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   }
 
   /**
+   * The closed-bead scan rows whose bead still sits in this workspace's durable
+   * `pr_wait` lane.
+   *
+   * @param {import('./bd-metadata.js').ExternalPrScanRow[]|undefined} rows
+   * @returns {import('./bd-metadata.js').ExternalPrScanRow[]}
+   */
+  function closedPrWaitRows(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return [];
+    }
+    const waiting = new Set(
+      runtime.queueStore
+        .snapshot(keyFor(workspace_root))
+        .pr_wait.map((entry) => entry.bead_id)
+    );
+    return rows.filter((row) => waiting.has(row.bead_id));
+  }
+
+  /**
    * Re-derive the workspace's EXTERNAL PR rows from bd (UI-7agi §1): every
    * `resolved` bead still carrying a `metadata.pr_url`. Memory only — nothing
    * is written into `queue.json`, because none of these beads ran here.
@@ -1899,7 +1918,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       return;
     }
     const generation = ++external_scan_generation;
-    const { pr_rows, deferred_pr_rows, statuses, fresh } = await bd.scanBeads();
+    const { pr_rows, deferred_pr_rows, closed_pr_rows, statuses, fresh } =
+      await bd.scanBeads();
     if (generation !== external_scan_generation) {
       return;
     }
@@ -1915,7 +1935,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       .../** @type {import('./bd-metadata.js').ExternalPrScanRow[]} */ (
         pr_rows
       ),
-      ...(Array.isArray(deferred_pr_rows) ? deferred_pr_rows : [])
+      ...(Array.isArray(deferred_pr_rows) ? deferred_pr_rows : []),
+      // A closed bead still holding a durable `pr_wait` row keeps its target,
+      // so the poller can read its PR before retiring the row (UI-26du).
+      ...closedPrWaitRows(closed_pr_rows)
     ]);
     // The same generation's statuses are the PR 대기 projection's material
     // (UI-0d9i §3.4): a row whose Bead reads `deferred` is hidden on the wire.
@@ -2492,8 +2515,12 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // never.
     external: {
       refresh: refreshExternalPrs,
-      list: () => runtime.externalPrs.list(keyFor(workspace_root))
+      list: () => runtime.externalPrs.list(keyFor(workspace_root)),
+      // The scan's statuses, read before a PR read (UI-26du closed seats).
+      statusOf: (bead_id) =>
+        runtime.externalPrs.statusOf(keyFor(workspace_root), bead_id)
     },
+    actionInFlight: (bead_id) => prActions?.isInFlight(bead_id) === true,
     // The pinned foreign target of every scanned PR Bead (UI-k467 §3.3) and
     // the once-recorded `foreign_handoff` push (§3.7).
     foreignTargetOf: (bead_id) =>
