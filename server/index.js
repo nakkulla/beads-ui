@@ -24,6 +24,7 @@ import {
   registerWorkspace,
   watchRegistry
 } from './registry-watcher.js';
+import { cleanupStaleLogins } from './routes/account-login.js';
 import {
   acquireSwitchLock,
   createAccountSwitchRunner,
@@ -351,6 +352,18 @@ watchRegistry(
 );
 
 server.listen(config.port, config.host, async () => {
+  // Sweep what account logins of a server process that is no longer alive
+  // left behind (UI-xm29 §4.1): its `bdui-login-<pid>` tmux session, recorded
+  // `codex login` process groups and temp CODEX_HOMEs; a live server's stay.
+  // Here, once, and never at import or inside createApp, so tests and app
+  // builds never touch a real tmux or process.
+  void cleanupStaleLogins()
+    .then((summary) => {
+      log('account login startup sweep: %o', summary);
+    })
+    .catch((err) => {
+      log('account login startup sweep failed: %o', err);
+    });
   const runtime = publishRuntimeIdentity({ server });
   if (!runtime.ok) {
     process.exitCode = 1;

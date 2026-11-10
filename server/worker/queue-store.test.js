@@ -18621,3 +18621,35 @@ describe('worker/queue-store red-base follow-up wait (UI-ty6k)', () => {
     expect(restored.completion_intents['UI-root'].phase).toBe('needs_human');
   });
 });
+
+describe('strict queue snapshot (UI-xm29 §4.4 remove)', () => {
+  test('answers an empty queue for a workspace without a queue file', () => {
+    const store = createQueueStore();
+
+    const queue = store.snapshot(WS, { strict: true });
+
+    expect(queue.attempts).toEqual({});
+  });
+
+  test('throws for a workspace whose queue file did not parse', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(queueFilePath(WS), '{ not json');
+    const store = createQueueStore();
+
+    expect(() => store.snapshot(WS, { strict: true })).toThrow(
+      'queue_unreadable'
+    );
+  });
+
+  test('keeps refusing after the lenient read cached the empty queue', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(queueFilePath(WS), '{ not json');
+    const store = createQueueStore();
+    const lenient = store.snapshot(WS);
+
+    expect(lenient.attempts).toEqual({});
+    expect(() => store.snapshot(WS, { strict: true })).toThrow(
+      'queue_unreadable'
+    );
+  });
+});

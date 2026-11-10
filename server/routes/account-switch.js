@@ -299,26 +299,58 @@ async function inUseBeads(provider, account_number) {
     if (!account_key) {
       return [];
     }
-    const account_field =
-      provider === 'claude' ? 'claude_account' : 'codex_account';
-    const { queueStore } = getWorkerRuntime();
-    /** @type {Set<string>} */
-    const bead_ids = new Set();
-    for (const workspace of getAvailableWorkspaces()) {
-      const queue = queueStore.snapshot(path.resolve(workspace.path));
-      for (const attempt of Object.values(queue.attempts)) {
-        if (
-          attempt.status === 'running' &&
-          attempt[account_field] === account_key
-        ) {
-          bead_ids.add(attempt.bead_id);
-        }
-      }
-    }
-    return [...bead_ids];
+    return scanRunningBeads(provider, account_key, false);
   } catch {
     return [];
   }
+}
+
+/**
+ * The Beads whose running attempt uses `account_key` (Claude: email, Codex:
+ * account key) across registered workspaces. Unlike the switch path's
+ * advisory check this throws when the registry or a queue cannot be read, so
+ * a caller that must not proceed on an unknown answer (UI-xm29 §4.4 remove)
+ * can refuse instead.
+ *
+ * @param {SwitchProvider} provider
+ * @param {string} account_key
+ * @returns {string[]}
+ */
+export function runningBeadsUsingAccount(provider, account_key) {
+  return scanRunningBeads(provider, account_key, true);
+}
+
+/**
+ * The scan behind both in-use checks. `strict` reads the registry and each
+ * queue so that a read failure throws; without it an unreadable registry or
+ * queue reads as empty, which keeps the switch path's advisory check
+ * fail-open per workspace.
+ *
+ * @param {SwitchProvider} provider
+ * @param {string} account_key
+ * @param {boolean} strict
+ * @returns {string[]}
+ */
+function scanRunningBeads(provider, account_key, strict) {
+  const account_field =
+    provider === 'claude' ? 'claude_account' : 'codex_account';
+  const { queueStore } = getWorkerRuntime();
+  /** @type {Set<string>} */
+  const bead_ids = new Set();
+  for (const workspace of getAvailableWorkspaces({ strict })) {
+    const queue = queueStore.snapshot(path.resolve(workspace.path), {
+      strict
+    });
+    for (const attempt of Object.values(queue.attempts)) {
+      if (
+        attempt.status === 'running' &&
+        attempt[account_field] === account_key
+      ) {
+        bead_ids.add(attempt.bead_id);
+      }
+    }
+  }
+  return [...bead_ids];
 }
 
 /**

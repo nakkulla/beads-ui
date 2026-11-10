@@ -510,8 +510,87 @@ a {
   border-top: 1px solid var(--border-chip);
 }
 
-.usage-meter__section-title {
+/* 제목 줄: 왼쪽 제목, 오른쪽 [+ 계정 추가]·[관리] (UI-xm29 §4.5). 좁은 폭에서는
+   버튼 묶음이 다음 줄로 접힌다. 크기는 `.op-btn`이 정한다. */
+.usage-meter__section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-6);
   margin: 0 0 var(--sp-8);
+}
+
+.usage-meter__section-ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+}
+
+.usage-meter__manage.is-active {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.usage-meter__section-message {
+  margin: 0 0 var(--sp-6);
+  overflow-wrap: anywhere;
+}
+
+/* 로그인 패널: 섹션 제목 아래 하나만. 링크·코드·입력·버튼 줄은 넘치면 접힌다. */
+.usage-meter__login {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin: 0 0 var(--sp-8);
+  padding: var(--sp-8);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-8);
+}
+
+.usage-meter__login-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-body-sm);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.usage-meter__login-hint,
+.usage-meter__login-wait {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+}
+
+.usage-meter__login-wait {
+  color: var(--text-muted);
+}
+
+.usage-meter__login-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+/* 기기 코드는 크게, 길게 눌러 고를 수 있게 한 덩이로 선택된다. */
+.usage-meter__login-code {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-title-lg);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  user-select: all;
+}
+
+.usage-meter__login-input {
+  flex: 1 1 12em;
+  min-width: 0;
+}
+
+.usage-meter__section-title {
+  margin: 0;
   color: var(--text-secondary);
   font-size: var(--fs-chip);
   font-weight: 700;
@@ -680,9 +759,38 @@ a {
   text-overflow: ellipsis;
 }
 
+/* 사용량이 없는 줄: 상태 문구와 [재로그인]이 한 줄, 넘치면 접힌다. */
+.usage-meter__account-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
 .usage-meter__account-status {
   color: var(--text-muted);
   font-size: var(--fs-chip);
+}
+
+/* [관리]가 켜진 동안의 줄 조작: [삭제] 또는 활성 줄의 흐린 안내. */
+.usage-meter__account-ops {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.usage-meter__remove-note {
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+}
+
+.usage-meter__message-ops {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin-left: var(--sp-6);
+  vertical-align: middle;
 }
 
 .usage-meter__account-message {
@@ -695,6 +803,10 @@ a {
 
 .usage-meter__account-message--error {
   color: var(--accent-danger);
+}
+
+.usage-meter__account-message--ok {
+  color: var(--accent-success);
 }
 
 .usage-meter__note {

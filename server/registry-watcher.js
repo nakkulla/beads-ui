@@ -64,17 +64,36 @@ export function getRegistryPath() {
  * @returns {RegistryEntry[]}
  */
 export function readRegistry() {
-  const registry_path = getRegistryPath();
   try {
-    const content = fs.readFileSync(registry_path, 'utf8');
-    const data = JSON.parse(content);
-    if (Array.isArray(data)) {
-      return data;
-    }
-    return [];
+    return readRegistryStrict();
   } catch {
     return [];
   }
+}
+
+/**
+ * Read and parse the registry file, telling an unreadable registry from an
+ * empty one: a missing file is no entry, while a read error, a parse error or
+ * a non-array body throws.
+ *
+ * @returns {RegistryEntry[]}
+ */
+export function readRegistryStrict() {
+  /** @type {string} */
+  let content;
+  try {
+    content = fs.readFileSync(getRegistryPath(), 'utf8');
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+  const data = JSON.parse(content);
+  if (!Array.isArray(data)) {
+    throw new Error('registry is not an array');
+  }
+  return data;
 }
 
 /**
@@ -108,12 +127,14 @@ export function findWorkspaceEntry(root_dir) {
 
 /**
  * Get all available workspaces from both the file-based registry and
- * dynamically registered in-memory workspaces.
+ * dynamically registered in-memory workspaces. With `strict`, a registry that
+ * cannot be read throws instead of reading as no file workspace.
  *
+ * @param {{ strict?: boolean }} [options]
  * @returns {Array<{ path: string, database: string, pid: number, version: string }>}
  */
-export function getAvailableWorkspaces() {
-  const entries = readRegistry();
+export function getAvailableWorkspaces(options = {}) {
+  const entries = options.strict ? readRegistryStrict() : readRegistry();
   const fileWorkspaces = entries.map((entry) => ({
     path: entry.workspace_path,
     database: entry.database_path,

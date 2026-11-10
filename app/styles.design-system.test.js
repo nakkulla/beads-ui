@@ -1173,7 +1173,8 @@ const HEADER_HTML =
 /**
  * Serve the Claude usage with three managed accounts (one active) and answer
  * an account switch with `account_in_use`, so the card can show `[전환]` and
- * the `[그래도 전환]`·`[취소]` confirmation at once.
+ * the `[그래도 전환]`·`[취소]` confirmation at once; a login start opens a
+ * Claude session waiting for its pasted code (UI-xm29 login panel).
  */
 function stubUsageFetch() {
   const resets_at = new Date(Date.now() + 60 * 60_000).toISOString();
@@ -1206,7 +1207,21 @@ function stubUsageFetch() {
               ? usage
               : url === '/api/claude-account/switch'
                 ? { ok: false, error: 'account_in_use', in_use: ['UI-one'] }
-                : { available: false }
+                : url === '/api/account-login'
+                  ? { ok: true, login_id: 'L1' }
+                  : url === '/api/account-login/L1'
+                    ? {
+                        ok: true,
+                        login_id: 'L1',
+                        provider: 'claude',
+                        mode: 'add',
+                        number: null,
+                        state: 'awaiting_user',
+                        url: 'https://claude.ai/oauth/authorize',
+                        user_code: null,
+                        needs_code: true
+                      }
+                    : { available: false }
           )
       })
     )
@@ -1296,6 +1311,29 @@ describe('header controls use parts (§3.4 check 3)', () => {
     expect(
       document.querySelectorAll('.workspace-picker__manage-checkbox').length
     ).toBe(2);
+    expect(controlsWithoutPart(document.body)).toEqual([]);
+  });
+
+  test('draws the usage card login panel and manage controls with a part', async () => {
+    const header = await renderHeader();
+    /** @type {HTMLButtonElement} */ (
+      header.querySelector('.usage-meter__toggle')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.usage-meter__manage')).not.toBeNull()
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.usage-meter__manage')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.usage-meter__add')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.usage-meter__login-input')).not.toBeNull()
+    );
+
+    expect(document.querySelectorAll('.usage-meter__remove').length).toBe(2);
     expect(controlsWithoutPart(document.body)).toEqual([]);
   });
 });

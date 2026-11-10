@@ -15,6 +15,7 @@ import {
   performAccountSwitch,
   recentClaudeSwitch,
   releaseSwitchLock,
+  runningBeadsUsingAccount,
   subscribeAccountSwitched
 } from './account-switch.js';
 
@@ -548,6 +549,26 @@ describe.each(/** @type {const} */ (['claude', 'codex']))(
       const response = await request({ number: 2 });
 
       expect(response.runSwitch).toHaveBeenCalledWith(2);
+    });
+
+    test('reads the registry and queues leniently for the advisory check', async () => {
+      account_deps.workspaces.mockImplementation((options) => {
+        if (options?.strict) {
+          throw new Error('registry unreadable');
+        }
+        return [{ path: '/workspace/one' }];
+      });
+
+      const response = await request({ number: 2 });
+
+      expect(response.body).toEqual({
+        ok: false,
+        error: 'account_in_use',
+        in_use: ['UI-one']
+      });
+      expect(account_deps.snapshot).toHaveBeenCalledWith('/workspace/one', {
+        strict: false
+      });
     });
 
     test('releases the provider guard after requesting confirmation', async () => {
@@ -1234,5 +1255,63 @@ describe('claude active-account return through the shared switch path', () => {
     expect(manual.status).toBe(409);
     expect(manual.body).toEqual({ ok: false, error: 'switch_in_flight' });
     expect(runSwitch).toHaveBeenCalledExactlyOnceWith(4);
+  });
+});
+
+describe('strict in-use scan for account removal', () => {
+  test('returns each running Bead on the account once across workspaces', () => {
+    account_deps.workspaces.mockReturnValue([
+      { path: '/workspace/one' },
+      { path: '/workspace/two' }
+    ]);
+    account_deps.snapshot.mockImplementation((workspace) => ({
+      attempts:
+        workspace === '/workspace/one'
+          ? { a: { bead_id: 'UI-one', status: 'running', codex_account: 'k' } }
+          : {
+              b: { bead_id: 'UI-one', status: 'running', codex_account: 'k' },
+              c: { bead_id: 'UI-two', status: 'succeeded', codex_account: 'k' }
+            }
+    }));
+
+    const in_use = runningBeadsUsingAccount('codex', 'k');
+
+    expect(in_use).toEqual(['UI-one']);
+  });
+
+  test('throws when a queue snapshot cannot be read', () => {
+    account_deps.workspaces.mockReturnValue([{ path: '/workspace/one' }]);
+    account_deps.snapshot.mockImplementation(() => {
+      throw new Error('unavailable');
+    });
+
+    expect(() => runningBeadsUsingAccount('claude', 'a@example.com')).toThrow(
+      'unavailable'
+    );
+  });
+
+  test('reads the registry and every queue strictly', () => {
+    account_deps.workspaces.mockReturnValue([{ path: '/workspace/one' }]);
+    account_deps.snapshot.mockReturnValue({ attempts: {} });
+
+    runningBeadsUsingAccount('codex', 'k');
+
+    expect(account_deps.workspaces).toHaveBeenCalledWith({ strict: true });
+    expect(account_deps.snapshot).toHaveBeenCalledWith('/workspace/one', {
+      strict: true
+    });
+  });
+
+  test('throws when the registry cannot be read', () => {
+    account_deps.workspaces.mockImplementation((options) => {
+      if (options?.strict) {
+        throw new Error('registry unreadable');
+      }
+      return [];
+    });
+
+    expect(() => runningBeadsUsingAccount('codex', 'k')).toThrow(
+      'registry unreadable'
+    );
   });
 });
