@@ -12,7 +12,7 @@
 - 이 저장소가 읽고 표시하는 workflow 계약 표면(라벨·metadata 키·`status` 어휘)의
   정본은 dotfiles
   `docs/contracts/workflow-contract.md`/`workflow-state.yaml`이다. beads-ui는
-  소비자이며 정의자가 아니다(ADR UI-u6ud-2) — 계약 키 부재를 관측하면 표시를
+  소비자이며 정의자가 아니다(ADR UI-jlov) — 계약 키 부재를 관측하면 표시를
   생략(fail-quiet)하고 계약 쪽 정정을 별도로 제기한다.
 
 ## Coding Standards

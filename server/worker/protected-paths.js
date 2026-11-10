@@ -4,7 +4,7 @@
  *
  * beads-ui never reads the protected list: the installed dotfiles checker owns
  * the prefix rules and this module only runs it and consumes `--json` (ADR
- * UI-u6ud-2). Neither function throws; every failure is a fixed reason token
+ * UI-jlov). Neither function throws; every failure is a fixed reason token
  * the notice prints as `확인 못 함 (<reason>)`.
  */
 import { execFile } from 'node:child_process';

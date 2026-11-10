@@ -1,12 +1,13 @@
 ---
 id: UI-u6ud-2
 title: dotfiles 계약 소비와 ADR 탭 체커 소비
-status: accepted
+status: superseded
 date: 2026-09-23
 summary: "beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제해 검증을 소유하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며 JS 리더는 표를 그릴 수 있는지만 판정한다"
 supersedes: [12, 39]
 spec: docs/superpowers/specs/2026-09-23-adr-cleanup-history-dir-reader-and-consolidation-design.md
 bead: UI-u6ud
+superseded_by: UI-jlov
 ---
 
 # dotfiles 계약 소비와 ADR 탭 체커 소비
