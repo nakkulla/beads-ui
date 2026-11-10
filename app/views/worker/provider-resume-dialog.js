@@ -10,6 +10,7 @@
  * 뿐이므로, 그 둘만 호출자가 넘긴다.
  */
 import { html } from 'lit-html';
+import { accountDisplayName } from '../../utils/account-display-name.js';
 import { visibleModelChoices } from '../../utils/model-visibility.js';
 
 /**
@@ -425,7 +426,7 @@ export function providerResumeDialogTemplate(
                   account
                 );
                 const value = accountValueOf(draft.runner, account);
-                const label = account.alias || account.email || value;
+                const label = accountDisplayName(accounts, value, value);
                 return html`<option
                   value=${value}
                   ?selected=${value === draft.account}

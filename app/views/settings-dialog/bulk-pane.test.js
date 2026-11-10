@@ -777,7 +777,7 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
         (/** @type {HTMLOptionElement} */ option) => option.textContent?.trim()
       )
     ).toEqual([
-      '기본값 사용 — 현재 로그인(a@example.com)',
+      '비움 — 활성 로그인(a@example.com)',
       'a@example.com (team)',
       'b@example.com'
     ]);

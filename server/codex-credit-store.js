@@ -42,6 +42,7 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { accountDisplayName } from '../app/utils/account-display-name.js';
 import { getConfig } from './config.js';
 import { createNotifier } from './worker/notify.js';
 import { codexCreditFilePath } from './worker/state-paths.js';
@@ -357,10 +358,11 @@ export function createCodexCreditStore(options = {}) {
    * @param {CreditState} state
    * @param {CreditObservation} observation
    * @param {string} today
+   * @param {any[]} accounts - The read's account rows, for the notice name.
    * @returns {CreditNotice[]|null} The notices to send, or null when the
    * observation was not admitted.
    */
-  function admit(state, observation, today) {
+  function admit(state, observation, today, accounts) {
     const balance = observation.credits.balance;
     if (
       observation.source !== 'api' ||
@@ -407,7 +409,11 @@ export function createCodexCreditStore(options = {}) {
     state.ledger[observation.key] = entry;
     /** @type {CreditNotice[]} */
     const notices = [];
-    const label = `계정 #${observation.number}`;
+    const label = accountDisplayName(
+      accounts,
+      observation.key,
+      `계정 #${observation.number}`
+    );
     const setting = settingsOf(observation.key);
     const unlimited = observation.credits.unlimited === true;
     const cap_text = unlimited
@@ -463,9 +469,11 @@ export function createCodexCreditStore(options = {}) {
      * observations change nothing.
      *
      * @param {CreditObservation[]} observations
+     * @param {any[]} [accounts] - The same read's account rows; without them
+     * a notice keeps the account number.
      * @returns {boolean} Whether the ledger changed.
      */
-    observe(observations) {
+    observe(observations, accounts = []) {
       const state = ensureLoaded();
       const today = kstDate(now());
       /** @type {CreditNotice[]} */
@@ -477,7 +485,7 @@ export function createCodexCreditStore(options = {}) {
         if (!isRecord(observation) || !isAccountKey(observation.key)) {
           continue;
         }
-        const admitted = admit(state, observation, today);
+        const admitted = admit(state, observation, today, accounts);
         if (admitted) {
           changed = true;
           notices.push(...admitted);

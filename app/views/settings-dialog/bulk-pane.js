@@ -1524,7 +1524,7 @@ export function createBulkPane(host, options) {
       <span class="settings-dialog__row-label">${label}</span>
       <select
         class="ui-select ui-select--bare"
-        aria-label=${`${label} 실행 계정`}
+        aria-label=${`${label} 저장소 고정 계정`}
         data-bulk-account=${key}
         ?disabled=${running !== null || !provider}
         @change=${(/** @type {Event} */ ev) => {
@@ -1951,7 +1951,7 @@ export function createBulkPane(host, options) {
   function accountTemplate() {
     const plan = accountPlan();
     return html`<div class="settings-dialog__group">
-        <div class="settings-dialog__group-title">실행 계정</div>
+        <div class="settings-dialog__group-title">저장소 고정 계정</div>
         <div class="settings-dialog__controls settings-dialog__bulk-row">
           ${ACCOUNT_FIELDS.map(([key, label, provider_key]) =>
             accountSelectTemplate(key, label, provider_key)

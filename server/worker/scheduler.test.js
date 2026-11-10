@@ -5286,6 +5286,56 @@ describe('scheduler provider hold and recovery', () => {
     );
   });
 
+  test('names the held account by email and alias in the hold notice', async () => {
+    const notify = { providerHoldEntered: vi.fn() };
+    const env = setup({
+      config: { B1: { claude_account: 'held@example.com' } },
+      slots: 1,
+      notify,
+      ...accountDeps({
+        accountCatalog: {
+          ...accountDeps().accountCatalog,
+          listClaude: vi.fn(async () => ({
+            ok: true,
+            accounts: [
+              {
+                key: 'held@example.com',
+                number: 1,
+                email: 'held@example.com',
+                alias: 'work'
+              }
+            ]
+          })),
+          readClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { email, status: 'ok', windows: [] }
+          }))
+        }
+      })
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 403,
+          result:
+            'Your organization has disabled Claude subscription access for Claude Code'
+        }
+      ]
+    });
+    await flush();
+
+    expect(notify.providerHoldEntered).toHaveBeenCalledWith(
+      expect.objectContaining({ account: 'held@example.com (work)' })
+    );
+  });
+
   test('switches a usage-limited attempt to the lowest eligible account', async () => {
     const append = vi.fn();
     const providerRecovered = vi.fn();
@@ -5757,7 +5807,6 @@ describe('scheduler provider hold and recovery', () => {
     const queue = env.store.snapshot(WS);
     expect(queue.provider_hold.claude.targets[0].auto_switch).toBe('disabled');
     expect(queue.auto_resume_pending).toEqual([]);
-    expect(listClaude).not.toHaveBeenCalled();
   });
 
   // 보존 검증 27 (spec §5)

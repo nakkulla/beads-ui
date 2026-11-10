@@ -149,12 +149,12 @@ describe('views/detail-panel/exec-accounts', () => {
 
     expect(mount.querySelector('[data-exec-accounts]')).not.toBe(null);
     expect(optionLabels(selectFor(mount, 'claude_account'))).toEqual([
-      '기본값 사용 — 현재 로그인(active@example.com)',
+      '비움 — 활성 로그인(active@example.com)',
       'active@example.com (main)',
       'expired@example.com · token_expired'
     ]);
     expect(optionLabels(selectFor(mount, 'codex_account'))).toEqual([
-      '기본값 사용 — 현재 로그인(codex@example.com · team)',
+      '비움 — 활성 로그인(codex@example.com · team)',
       'codex@example.com · team (work)'
     ]);
     expect(mount.textContent).toContain(
@@ -209,7 +209,7 @@ describe('views/detail-panel/exec-accounts', () => {
 
     expect(select.value).toBe('removed-key');
     expect(optionLabels(select)).toEqual([
-      '기본값 사용 — 현재 로그인(current@example.com · pro)',
+      '비움 — 활성 로그인(current@example.com · pro)',
       'removed-key (목록에 없음)',
       'current@example.com · pro'
     ]);
@@ -293,7 +293,7 @@ describe('views/detail-panel/exec-accounts workspace defaults (UI-d3cb §6.2)', 
     });
 
     expect(optionLabels(selectFor(mount, 'claude_account'))[0]).toBe(
-      '레포 기본값 사용(repo@example.com (team))'
+      '저장소 고정 계정(repo@example.com (team))'
     );
   });
 
@@ -305,7 +305,7 @@ describe('views/detail-panel/exec-accounts workspace defaults (UI-d3cb §6.2)', 
     });
 
     expect(optionLabels(selectFor(mount, 'codex_account'))[0]).toBe(
-      '레포 기본값 사용(retired-key)'
+      '저장소 고정 계정(retired-key)'
     );
   });
 
@@ -317,7 +317,7 @@ describe('views/detail-panel/exec-accounts workspace defaults (UI-d3cb §6.2)', 
     });
 
     expect(optionLabels(selectFor(mount, 'codex_account'))[0]).toBe(
-      '기본값 사용 — 현재 로그인(current@example.com · pro)'
+      '비움 — 활성 로그인(current@example.com · pro)'
     );
   });
 
@@ -329,7 +329,7 @@ describe('views/detail-panel/exec-accounts workspace defaults (UI-d3cb §6.2)', 
     });
 
     expect(optionLabels(selectFor(mount, 'claude_account'))[0]).toBe(
-      '기본값 사용 — 현재 로그인(active@example.com)'
+      '비움 — 활성 로그인(active@example.com)'
     );
   });
 
@@ -341,7 +341,7 @@ describe('views/detail-panel/exec-accounts workspace defaults (UI-d3cb §6.2)', 
     });
 
     expect(optionLabels(selectFor(mount, 'claude_account'))[0]).toBe(
-      '기본값 사용 — 현재 로그인(active@example.com)'
+      '비움 — 활성 로그인(active@example.com)'
     );
     expect(mount.textContent).not.toContain('invalid_value');
   });
@@ -350,7 +350,7 @@ describe('views/detail-panel/exec-accounts workspace defaults (UI-d3cb §6.2)', 
     const mount = mountTemplate({}, CATALOG, undefined, null);
 
     expect(optionLabels(selectFor(mount, 'claude_account'))[0]).toBe(
-      '기본값 사용 — 현재 로그인(active@example.com)'
+      '비움 — 활성 로그인(active@example.com)'
     );
   });
 

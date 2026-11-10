@@ -783,7 +783,7 @@ describe('usage meter account card', () => {
     meter.destroy();
   });
 
-  test('prefers the alias as the row label and keeps the email as its title', async () => {
+  test('shows the email with its alias as the row label and keeps the email as its title', async () => {
     const mount = mountMeter();
     stubProviders({
       available: false,
@@ -797,9 +797,38 @@ describe('usage meter account card', () => {
     await openCard(mount);
 
     const labels = document.querySelectorAll('.usage-meter__account-label');
-    expect(labels[0].textContent).toBe('work');
+    expect(labels[0].textContent).toBe('one@example.com (work)');
     expect(labels[0].getAttribute('title')).toBe('one@example.com');
     expect(labels[1].textContent).toBe('two@example.com');
+    meter.destroy();
+  });
+
+  test('widens a repeated Codex email by its plan in the row label', async () => {
+    const mount = mountMeter();
+    stubProviders(
+      { available: false },
+      {
+        available: false,
+        accounts: [
+          {
+            ...accountRow({ number: 1, email: 'a@x.com', plan: 'plus' }),
+            key: 'u1::w1'
+          },
+          {
+            ...accountRow({ number: 2, email: 'a@x.com', plan: 'team' }),
+            key: 'u1::w2'
+          }
+        ]
+      }
+    );
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    const labels = Array.from(
+      document.querySelectorAll('.usage-meter__account-label')
+    ).map((label) => label.textContent);
+    expect(labels).toEqual(['a@x.com · plus', 'a@x.com · team']);
     meter.destroy();
   });
 

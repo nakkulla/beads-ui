@@ -221,8 +221,8 @@ onTimingSettingsChanged((snapshot) => {
 // ledger, and while any account allows credits the server re-reads usage with
 // `--api` every ten minutes so a session spending credits unwatched still
 // moves the ledger and its notices. A settings change re-arms or stops it.
-subscribeCreditObservations((observations) => {
-  codexCreditStore().observe(observations);
+subscribeCreditObservations((observations, accounts) => {
+  codexCreditStore().observe(observations, accounts);
 });
 const codex_credit_poller = createCodexCreditPoller({
   store: codexCreditStore(),

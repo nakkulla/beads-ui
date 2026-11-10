@@ -21,6 +21,7 @@
 import { TRANSIENT_ADMISSION_REASONS } from '../../../server/worker/continuation-refusal.js';
 import { priceUsage } from '../../../server/worker/usage-pricing.js';
 import { isExternalWaitObservation } from '../../protocol.js';
+import { accountDisplayName } from '../../utils/account-display-name.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
@@ -1479,6 +1480,24 @@ function accountAliasOf(account, account_catalog) {
 }
 
 /**
+ * Name one account key the way every notice does (UI-32oq §4.3): the email,
+ * widened by alias or plan, or the key itself when the runner's list is absent.
+ *
+ * @param {string} runner
+ * @param {string} account
+ * @param {unknown} account_catalog
+ * @returns {string}
+ */
+function accountNameOf(runner, account, account_catalog) {
+  const rows = objectOf(account_catalog)[runner];
+  return accountDisplayName(
+    Array.isArray(rows) ? rows : null,
+    account,
+    account
+  );
+}
+
+/**
  * Read where this hold stands with automatic recovery. A pending receipt wins
  * because it is the live intent; a recorded refusal beats the cap because it
  * says what actually happened to the attempt's automatic resume. `disarmed`
@@ -1642,11 +1661,11 @@ function providerHoldProjection(attempt, input) {
     ...(target?.auto_switch === 'none' &&
     typeof target.switch_ready_account === 'string'
       ? {
-          switch_ready_account:
-            accountAliasOf(
-              target.switch_ready_account,
-              input.account_catalog
-            ) || target.switch_ready_account
+          switch_ready_account: accountNameOf(
+            typeof attempt.runner === 'string' ? attempt.runner : 'claude',
+            target.switch_ready_account,
+            input.account_catalog
+          )
         }
       : {}),
     ...(auto_resume === null ? {} : { auto_resume }),
@@ -1825,8 +1844,9 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
   const auto_switch = autoSwitchText(target.auto_switch, {
     switch_ready_at: target.switch_ready_at,
     switch_ready_account:
-      accountAliasOf(target.switch_ready_account, account_catalog) ||
-      target.switch_ready_account
+      typeof target.switch_ready_account === 'string'
+        ? accountNameOf(runner, target.switch_ready_account, account_catalog)
+        : target.switch_ready_account
   });
   // 보류가 선 시각은 러너 단위 레코드의 것이다 — target별 시각은 따로 없다.
   const since_clock = formatClockLocal(entry.since);

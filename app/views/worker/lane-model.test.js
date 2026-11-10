@@ -2501,7 +2501,7 @@ describe('monitor 공급자 보류 attempt 투영', () => {
       resets_at: 2000,
       next_probe_at: 3000,
       switch_ready_at: 1500,
-      switch_ready_account: '대안',
+      switch_ready_account: 'two@example.com (대안)',
       auto_resume: 'pending',
       target: {
         model: 'opus-4.8',

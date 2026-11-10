@@ -115,19 +115,19 @@ function defaultLabel(provider_key, provider, workspace_default) {
     const known = provider
       ? provider.accounts.find((account) => account.key === workspace_default)
       : undefined;
-    return `레포 기본값 사용(${known ? formatter(known) : workspace_default})`;
+    return `저장소 고정 계정(${known ? formatter(known) : workspace_default})`;
   }
   if (!provider) {
     return '(기본)';
   }
   if (!provider.active) {
-    return '기본값 사용 — 현재 로그인(확인 불가)';
+    return '비움 — 활성 로그인(확인 불가)';
   }
   const active_label =
     provider_key === 'claude'
       ? provider.active.email
       : codexLabel({ ...provider.active, alias: null });
-  return `기본값 사용 — 현재 로그인(${active_label})`;
+  return `비움 — 활성 로그인(${active_label})`;
 }
 
 /**

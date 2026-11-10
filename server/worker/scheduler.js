@@ -50,6 +50,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { accountDisplayName } from '../../app/utils/account-display-name.js';
 import {
   isImplementationAttempt,
   isWithdrawnAttempt,
@@ -2053,6 +2054,37 @@ export function createScheduler(deps) {
       deps.notify[event](input);
     } catch (err) {
       log('worker notify %s failed: %o', event, err);
+    }
+  }
+
+  /**
+   * Name account keys for a push the way the cards do (UI-32oq §4.3), from the
+   * cached account list the scheduler already reads. A runner without a list,
+   * a failed read, or a key the list lacks keeps the key (fail-quiet).
+   *
+   * @param {string} runner
+   * @param {Array<string|null|undefined>} keys
+   * @returns {Promise<Array<string|null|undefined>>}
+   */
+  async function accountNamesFor(runner, keys) {
+    if (!keys.some((key) => typeof key === 'string')) {
+      return keys;
+    }
+    try {
+      const listed =
+        runner === 'codex' &&
+        typeof deps.accountCatalog?.listCodex === 'function'
+          ? await deps.accountCatalog.listCodex()
+          : runner === 'claude' &&
+              typeof deps.accountCatalog?.listClaude === 'function'
+            ? await deps.accountCatalog.listClaude()
+            : null;
+      const rows = listed?.ok ? listed.accounts : null;
+      return keys.map((key) =>
+        typeof key === 'string' ? accountDisplayName(rows, key) : key
+      );
+    } catch {
+      return keys;
     }
   }
 
@@ -7370,13 +7402,16 @@ export function createScheduler(deps) {
               candidate.kind === target_kind &&
               candidate.account === classified.account
           )?.auto_switch;
+      const [account_name] = await accountNamesFor(target_runner, [
+        classified.account
+      ]);
       notifyLifecycle('providerHoldEntered', {
         bead_id,
         runner: target_runner,
         kind: target_kind,
         detail: outage.detail,
         summary,
-        account: classified.account,
+        account: account_name,
         resets_at: outage.resets_at,
         ...(stored_switch ? { auto_switch: stored_switch } : {}),
         ...(cross_runner ? { cross_runner: true } : {}),
@@ -17601,11 +17636,15 @@ export function createScheduler(deps) {
               seq: 'live_preempt',
               summary: `${prior.runner} 실행 중 선제 전환 ${switched_from} → ${pending.account} (${intent.window} ${intent.pct}%)`
             });
+            const [from_name, to_name] = await accountNamesFor(prior.runner, [
+              switched_from,
+              pending.account
+            ]);
             notifyLifecycle('providerLivePreempt', {
               bead_id: prior.bead_id,
               runner: prior.runner,
-              from: switched_from,
-              to: pending.account,
+              from: from_name,
+              to: to_name,
               window: intent.window,
               pct: intent.pct,
               repo: prior.repo
@@ -17629,14 +17668,18 @@ export function createScheduler(deps) {
                 account: launched
               })
             );
+            const [from_name, to_name] = await accountNamesFor(
+              prior.runner || 'claude',
+              [switched_from, launched]
+            );
             notifyLifecycle('providerRecovered', {
               bead_id: prior.bead_id,
               runner: prior.runner || 'claude',
               duration_ms: Math.max(0, now() - (hold?.since || now())),
               resumed_beads: [prior.bead_id],
               refusal: null,
-              switched_from,
-              switched_to: launched,
+              switched_from: from_name,
+              switched_to: to_name,
               repo: prior.repo
             });
           } else if (settles_deferred) {
@@ -17674,14 +17717,18 @@ export function createScheduler(deps) {
                 account: pending.account
               })
             );
+            const [from_name, to_name] = await accountNamesFor(
+              prior.runner || 'claude',
+              [switched_from, pending.account]
+            );
             notifyLifecycle('providerRecovered', {
               bead_id: prior.bead_id,
               runner: prior.runner || 'claude',
               duration_ms: Math.max(0, now() - (hold?.since || now())),
               resumed_beads: [prior.bead_id],
               refusal: null,
-              switched_from,
-              switched_to: pending.account,
+              switched_from: from_name,
+              switched_to: to_name,
               repo: prior.repo
             });
           }

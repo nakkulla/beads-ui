@@ -237,7 +237,7 @@ describe('switching the exhausted active Claude account', () => {
 
     expect(harness.notify.mock.calls).toEqual([
       [
-        '🔁 Claude 활성 계정 자동 전환 — 계정 #3 → 계정 #4\n#3 5h 100% · 실행 중 세션도 곧 새 계정을 씁니다'
+        '🔁 Claude 활성 계정 자동 전환 — three@hanmail.example → four@unist.example\n5h 100% · 실행 중 세션도 곧 새 계정을 씁니다'
       ]
     ]);
   });
@@ -597,7 +597,7 @@ describe('trigger', () => {
 
     expect(harness.notify.mock.calls).toEqual([
       [
-        '🔁 Claude 활성 계정 자동 전환 — 계정 #3 → 계정 #4\n#3 5h 85% · 실행 중 세션도 곧 새 계정을 씁니다'
+        '🔁 Claude 활성 계정 자동 전환 — three@hanmail.example → four@unist.example\n5h 85% · 실행 중 세션도 곧 새 계정을 씁니다'
       ]
     ]);
   });
@@ -977,7 +977,7 @@ describe('Claude departure and return (UI-32oq §4.2)', () => {
 
     expect(harness.notify.mock.calls).toEqual([
       [
-        '🔁 Claude 활성 계정 자동 전환 — 계정 #3 → 계정 #4\n#3 5h 100% · 실행 중 세션도 곧 새 계정을 씁니다\ndefault 사용량 회복 확인 뒤 복귀'
+        '🔁 Claude 활성 계정 자동 전환 — three@hanmail.example → four@unist.example\n5h 100% · 실행 중 세션도 곧 새 계정을 씁니다\ndefault 사용량 회복 확인 뒤 복귀'
       ]
     ]);
   });
@@ -995,7 +995,7 @@ describe('Claude departure and return (UI-32oq §4.2)', () => {
     expect(harness.switchAccount.mock.calls).toEqual([[3]]);
     expect(harness.notify.mock.calls).toEqual([
       [
-        '↩ Claude default 계정으로 복귀 — 계정 #4 → 계정 #3\n실행 중 세션도 곧 새 계정을 씁니다'
+        '↩ Claude default 계정으로 복귀 — four@unist.example → three@hanmail.example\n실행 중 세션도 곧 새 계정을 씁니다'
       ]
     ]);
   });

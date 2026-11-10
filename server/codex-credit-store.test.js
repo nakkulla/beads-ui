@@ -286,6 +286,31 @@ describe('codex credit notices (UI-9y1k §4.1)', () => {
     ]);
   });
 
+  test('names the account by its email in the first-use notice', () => {
+    const store = makeStore();
+    const accounts = [
+      { key: KEY, number: 3, email: 'user-3@example.test', alias: null }
+    ];
+
+    store.observe([observation(100, 1_000)], accounts);
+    store.observe([observation(90, 2_000)], accounts);
+
+    expect(notices[0].message).toContain(
+      '💳 Codex 크레딧 사용 시작 — user-3@example.test\n'
+    );
+  });
+
+  test('keeps the account number when the list cannot name the account', () => {
+    const store = makeStore();
+
+    store.observe([observation(100, 1_000)]);
+    store.observe([observation(90, 2_000)]);
+
+    expect(notices[0].message).toContain(
+      '💳 Codex 크레딧 사용 시작 — 계정 #3\n'
+    );
+  });
+
   test('sends one alert stating the real total when the cap is reached', () => {
     const store = makeStore();
     allow(store, 10);

@@ -110,6 +110,7 @@
  * `activeAccountOf` is the account a run record pinned, or null;
  * `selectCandidate` is `selectCodexSwitchCandidate`.
  */
+import { accountDisplayName } from '../app/utils/account-display-name.js';
 import { createDepartureStore } from './active-login-return-store.js';
 
 /** The cached-list re-read period of an active-account return pass. */
@@ -161,13 +162,15 @@ export function returnHintOf(record) {
 
 /**
  * How a notice names one account row. Every notice of this flow goes through
- * here, so a display-name rule replaces one function.
+ * here; the shared display name reads the observed list, and a row the list
+ * cannot name keeps its number (fail-quiet).
  *
- * @param {{ number: number }} row
+ * @param {any[]} accounts
+ * @param {{ key: string, number: number }} row
  * @returns {string}
  */
-function accountLabel(row) {
-  return `계정 #${row.number}`;
+function accountLabel(accounts, row) {
+  return accountDisplayName(accounts, row.key, `계정 #${row.number}`);
 }
 
 /**
@@ -587,9 +590,10 @@ export function createActiveReturn(rules, deps) {
    * switch leaves the record as it was; the next cycle judges again.
    *
    * @param {Extract<Assessment, { kind: 'switch' }>} confirmed
+   * @param {any[]} accounts - The list the switch was judged on, for names.
    * @returns {Promise<void>}
    */
-  async function runSwitch(confirmed) {
+  async function runSwitch(confirmed, accounts) {
     const from = confirmed.active;
     const to = confirmed.candidate;
     const result = await deps.switchAccount(to.number);
@@ -611,7 +615,7 @@ export function createActiveReturn(rules, deps) {
       );
       deps.notify(
         [
-          `↩ ${rules.label} default 계정으로 복귀 — ${accountLabel(from)} → ${accountLabel(to)}`,
+          `↩ ${rules.label} default 계정으로 복귀 — ${accountLabel(accounts, from)} → ${accountLabel(accounts, to)}`,
           rules.effect
         ].join('\n')
       );
@@ -628,8 +632,8 @@ export function createActiveReturn(rules, deps) {
     );
     deps.notify(
       [
-        `🔁 ${rules.label} 활성 계정 자동 전환 — ${accountLabel(from)} → ${accountLabel(to)}`,
-        `#${from.number} ${windows} · ${rules.effect}`,
+        `🔁 ${rules.label} 활성 계정 자동 전환 — ${accountLabel(accounts, from)} → ${accountLabel(accounts, to)}`,
+        `${windows} · ${rules.effect}`,
         ...(record === null ? [] : [returnHintOf(record)])
       ].join('\n')
     );
@@ -670,7 +674,7 @@ export function createActiveReturn(rules, deps) {
       if (confirmed.kind !== 'switch') {
         return;
       }
-      await runSwitch(confirmed);
+      await runSwitch(confirmed, fresh.accounts);
     } finally {
       deps.releaseLock(provider);
     }

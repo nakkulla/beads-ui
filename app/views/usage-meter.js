@@ -1,8 +1,9 @@
 import { html, render } from 'lit-html';
+import { accountDisplayName } from '../utils/account-display-name.js';
 
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
- * @typedef {{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
+ * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
  * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean }} ProviderSnapshot
  * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, tool: string }} ProviderDescriptor
  * @typedef {{ kind: 'warn' | 'error' | 'confirm', text: string }} RowMessage
@@ -210,6 +211,8 @@ function normalizeAccountRow(input) {
     return null;
   }
   return {
+    key:
+      typeof row.key === 'string' && row.key.length > 0 ? row.key : row.email,
     number: row.number,
     email: row.email,
     alias:
@@ -771,9 +774,11 @@ export function createUsageMeter(mount_element) {
    *
    * @param {ProviderDescriptor} provider
    * @param {UsageAccount} account
+   * @param {UsageAccount[]} accounts - The provider's whole list, which decides
+   * whether the name needs the plan or number to stay unambiguous.
    * @param {number} now_ms
    */
-  function renderAccount(provider, account, now_ms) {
+  function renderAccount(provider, account, accounts, now_ms) {
     const is_ok = account.status === 'ok';
     const stale =
       typeof account.ageSeconds === 'number' &&
@@ -797,7 +802,7 @@ export function createUsageMeter(mount_element) {
     return html`<div class=${classes.join(' ')}>
       <div class="usage-meter__account-head">
         <span class="usage-meter__account-label" title=${account.email}
-          >${account.alias === null ? account.email : account.alias}</span
+          >${accountDisplayName(accounts, account.key, account.email)}</span
         >
         ${account.plan === null
           ? ''
@@ -879,7 +884,7 @@ export function createUsageMeter(mount_element) {
         ${snapshot.accounts.length}
       </h2>
       ${snapshot.accounts.map((account) =>
-        renderAccount(provider, account, now_ms)
+        renderAccount(provider, account, snapshot.accounts, now_ms)
       )}
     </section>`;
   }

@@ -253,7 +253,7 @@ describe('switching the exhausted active account', () => {
 
     expect(harness.notify.mock.calls).toEqual([
       [
-        '🔁 Codex 활성 계정 자동 전환 — 계정 #3 → 계정 #1\n#3 5h 100% · 새로 시작하는 호출부터 적용'
+        '🔁 Codex 활성 계정 자동 전환 — user-3@example.test → user-1@example.test\n5h 100% · 새로 시작하는 호출부터 적용'
       ]
     ]);
   });
@@ -452,7 +452,7 @@ describe('trigger', () => {
     await harness.pass.observe(harness.state.cached);
 
     expect(harness.notify.mock.calls[0][0]).toContain(
-      '#3 5h 85% · 새로 시작하는 호출부터 적용'
+      '5h 85% · 새로 시작하는 호출부터 적용'
     );
   });
 
@@ -1018,7 +1018,7 @@ describe('return to the default (UI-32oq §4.2)', () => {
 
     expect(harness.notify.mock.calls).toEqual([
       [
-        '↩ Codex default 계정으로 복귀 — 계정 #2 → 계정 #1\n새로 시작하는 호출부터 적용'
+        '↩ Codex default 계정으로 복귀 — user-2@example.test → user-1@example.test\n새로 시작하는 호출부터 적용'
       ]
     ]);
   });
@@ -1443,7 +1443,7 @@ describe('departure notices (UI-32oq §4.2)', () => {
 
     expect(harness.notify.mock.calls).toEqual([
       [
-        '🔁 Codex 활성 계정 자동 전환 — 계정 #1 → 계정 #2\n#1 5h 100% · 새로 시작하는 호출부터 적용\ndefault 리셋 05:00 뒤 복귀'
+        '🔁 Codex 활성 계정 자동 전환 — user-1@example.test → user-2@example.test\n5h 100% · 새로 시작하는 호출부터 적용\ndefault 리셋 05:00 뒤 복귀'
       ]
     ]);
   });

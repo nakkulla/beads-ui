@@ -1771,12 +1771,12 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
 
     expect(root.querySelector('[data-exec-accounts-group]')).not.toBe(null);
     expect(labels(accountSelect(root, 'claude_account'))).toEqual([
-      '기본값 사용 — 현재 로그인(active@example.com)',
+      '비움 — 활성 로그인(active@example.com)',
       'repo@example.com (team)',
       'active@example.com'
     ]);
     expect(labels(accountSelect(root, 'codex_account'))).toEqual([
-      '기본값 사용 — 현재 로그인(codex@example.com · pro)',
+      '비움 — 활성 로그인(codex@example.com · pro)',
       'codex@example.com · pro'
     ]);
   });
@@ -1901,7 +1901,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     const select = accountSelect(root, 'claude_account');
     expect(select.value).toBe('repo@example.com');
     expect(labels(select)).toEqual([
-      '기본값 사용 — 현재 로그인(확인 불가)',
+      '비움 — 활성 로그인(확인 불가)',
       'repo@example.com (목록에 없음)'
     ]);
   });

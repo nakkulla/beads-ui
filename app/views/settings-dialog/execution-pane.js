@@ -2724,7 +2724,7 @@ export function createExecutionPane(mount_element, binding) {
     return html`
       ${accountBanner()}
       <div class="settings-dialog__group" data-exec-accounts-group>
-        <div class="settings-dialog__group-title">실행 계정</div>
+        <div class="settings-dialog__group-title">저장소 고정 계정</div>
         ${accountRow('claude_account', 'Claude', 'claude')}
         ${accountRow('codex_account', 'Codex', 'codex')}
         ${limitRows('claude', 'Claude')} ${limitRows('codex', 'Codex')}
