@@ -9602,10 +9602,21 @@ export function createScheduler(deps) {
     if (!probe.alive) {
       return true;
     }
+    // `started_at` is when the record was written, which can precede the
+    // spawn by seconds (an account-switch resume); the identity observed right
+    // after the spawn is the process's own start time, so it is the PID-reuse
+    // reference whenever it names this pid.
+    const identity = attempt.process_identity;
+    const reference_started_at =
+      identity != null &&
+      identity.pid === attempt.pid &&
+      Number.isFinite(identity.started_at)
+        ? identity.started_at
+        : attempt.started_at;
     return (
-      attempt.started_at != null &&
+      reference_started_at != null &&
       probe.started_at != null &&
-      Math.abs(probe.started_at - attempt.started_at) > PID_START_TOLERANCE_MS
+      Math.abs(probe.started_at - reference_started_at) > PID_START_TOLERANCE_MS
     );
   }
 

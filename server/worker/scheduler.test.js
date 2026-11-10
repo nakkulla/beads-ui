@@ -10625,6 +10625,58 @@ describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
     expect(env.scheduler.runningCount()).toBe(2);
   });
 
+  test('keeps a late-spawned live attempt running by its process_identity start', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: true, started_at: 4000 })
+    });
+    seedSurvivingAttempt(env.store, 'UI-1', {
+      started_at: 1000,
+      process_identity: { pid: 4242, pgid: 4242, started_at: 4000 }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-UI-1'].status).toBe('running');
+  });
+
+  test('treats a pid whose start differs from process_identity as reused', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: true, started_at: 7000 })
+    });
+    seedSurvivingAttempt(env.store, 'UI-1', {
+      started_at: 1000,
+      process_identity: { pid: 4242, pgid: 4242, started_at: 4000 }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-UI-1'].status).not.toBe(
+      'running'
+    );
+  });
+
+  test('judges a record without process_identity by its started_at', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: true, started_at: 4000 })
+    });
+    seedSurvivingAttempt(env.store, 'UI-1', {
+      started_at: 1000,
+      process_identity: null
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-UI-1'].status).not.toBe(
+      'running'
+    );
+  });
+
   test('probes no pid when this process owns every running attempt', async () => {
     const probePid = vi.fn(() => ({ alive: true, started_at: 1000 }));
     const env = setup({ config: { S1: {}, S2: {} }, slots: 2, probePid });
