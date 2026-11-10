@@ -2519,7 +2519,9 @@ export function createMonitorView(mount_element, options) {
       running_sort,
       candidate_filter,
       candidate_chain: candidate_sort,
-      group_by_repo
+      group_by_repo,
+      // 점검 Bead는 후보에서 빼기만 한다 — 점검 선반은 Worker 탭에만 그린다 (§9).
+      hygiene_shelf: true
     };
     return buildLanes(workspaces, workspaces_state, options);
   }

@@ -259,6 +259,8 @@ function baseIssues() {
     }),
     // 보류.
     row('F-1', { status: 'deferred' }),
+    // 자동 점검 Bead — Worker 점검 선반에만 선다 (UI-n1uo).
+    row('H-1', { metadata: { hygiene_kind: 'instruction_budget' } }),
     // 대기 중인 Slurm 잡 하나를 기다리는 외부 대기 — 용량 줄·▶ 바로 실행.
     row('E-1')
   ];
@@ -947,7 +949,7 @@ function partsByBead(cards, ids) {
 
 /**
  * 두 탭에 모두 서는 Bead id — 고정 자료의 레인 구성원이다. Worker 탭에만 서는
- * 두 모집단(Worker 밖에서 닫힌 이슈, 보류 이슈)은 §9가 따로 정한다.
+ * 세 모집단(Worker 밖에서 닫힌 이슈, 보류 이슈, 자동 점검 이슈)은 §9가 따로 정한다.
  */
 const SHARED_BEADS = [
   'B-1',
@@ -1266,6 +1268,15 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
       worker.querySelector('.worker-deferred [data-bead-id="F-1"]')
     ).not.toBeNull();
     expect(monitor.querySelector('[data-bead-id="F-1"]')).toBeNull();
+  });
+
+  test('stands an inspection issue only on the Worker inspection shelf (UI-n1uo)', async () => {
+    const { worker, monitor } = await drawBothTabs();
+
+    expect(
+      worker.querySelector('.worker-hygiene [data-bead-id="H-1"]')
+    ).not.toBeNull();
+    expect(monitor.querySelector('[data-bead-id="H-1"]')).toBeNull();
   });
 
   test('draws ⏸ 보류로 전환 on the shelved row on both tabs (UI-0d9i §3.1)', async () => {
