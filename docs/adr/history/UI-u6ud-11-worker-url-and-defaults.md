@@ -1,7 +1,8 @@
 ---
 id: UI-u6ud-11
 title: Worker 주소와 저장소 defaults 소비
-status: accepted
+status: superseded
+superseded_by: UI-32oq-2
 date: 2026-09-23
 summary: "Beads UI는 저장소 defaults 저장값과 Worker 주소 적용값을 분리하고 공통 주소의 조회·쓰기는 설치된 dotfiles worker-url CLI로만 하며 kv·공통 파일을 직접 쓰거나 적용값을 추측하지 않는다; defaults의 키·schema·허용값·부재 규칙은 dotfiles 계약이 정의하고 beads-ui는 어휘를 넓히거나 하네스 기본값을 복제하지 않으며 kv 읽기는 fail-quiet, 사용자 편집 쓰기는 strict 거절이다; 설정 화면은 적용 주소·저장소 예외·공통 기본값을 따로 보이고 새 연결 점검 API는 두지 않는다"
 supersedes: ["UI-wecw"]
