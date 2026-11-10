@@ -2501,12 +2501,12 @@ describe('monitor 공급자 보류 attempt 투영', () => {
       resets_at: 2000,
       next_probe_at: 3000,
       switch_ready_at: 1500,
-      switch_ready_account: '대안',
+      switch_ready_account: 'two@example.com (대안)',
       auto_resume: 'pending',
       target: {
         model: 'opus-4.8',
         account: 'one@example.com',
-        account_alias: '업무'
+        account_alias: 'one@example.com (업무)'
       }
     });
   });
@@ -2558,6 +2558,64 @@ describe('monitor 공급자 보류 attempt 투영', () => {
     const header = host.querySelector('.rtile__hd')?.textContent || '';
     expect(header).toContain('⏳');
     expect(host.textContent).toContain('astra · codex-two');
+  });
+
+  // UI-32oq §4.3: the held account is named from the list of the runner whose
+  // hold names it — a Claude session held on its Codex leaf reads the Codex
+  // list, never the Claude one.
+  test('names the codex leaf account by its email on the leaf-held card', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: providerAttempt(),
+          provider_hold: LEAF_HOLD,
+          account_catalog: {
+            claude: [{ email: 'one@example.com', alias: '업무' }],
+            codex: [
+              {
+                key: 'codex-two',
+                email: 'two@example.com',
+                alias: null,
+                plan: 'plus',
+                number: 2
+              }
+            ]
+          }
+        })
+      ],
+      [state()]
+    );
+    const host = document.createElement('div');
+
+    render(runningTile(runningTileInput(lanes.running[0]), 5000), host);
+
+    expect(host.textContent).toContain('astra · two@example.com');
+  });
+
+  test('names the codex switch-ready account of a leaf hold by its email', () => {
+    const leaf = LEAF_HOLD.codex.targets[0];
+    const map = activeByBead(providerAttempt(), new Map(), {
+      provider_hold: {
+        codex: {
+          ...LEAF_HOLD.codex,
+          targets: [
+            {
+              ...leaf,
+              auto_switch: 'none',
+              switch_ready_account: 'codex-three'
+            }
+          ]
+        }
+      },
+      account_catalog: {
+        claude: [{ email: 'one@example.com', alias: '업무' }],
+        codex: [{ key: 'codex-three', email: 'three@example.com' }]
+      }
+    });
+
+    expect(map.get('A-1')?.hold?.switch_ready_account).toBe(
+      'three@example.com'
+    );
   });
 
   test('carries the account-switch refusal reason to the tile', () => {
@@ -8030,7 +8088,9 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     );
 
     expect(lanes.queue[0].gate?.label).not.toContain('업무');
-    expect(lanes.queue[0].gate?.lines).toContain('sonnet · 업무');
+    expect(lanes.queue[0].gate?.lines).toContain(
+      'sonnet · a@example.com (업무)'
+    );
   });
 
   test('draws no usage gate when the row account cannot be resolved', () => {
@@ -8204,6 +8264,39 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
       'provider_usage',
       undefined
     ]);
+  });
+
+  test('names a codex gate account by its email in the popup lines', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          account_catalog: {
+            codex: [{ key: 'acct-1', email: 'one@example.com', active: true }]
+          },
+          provider_hold: {
+            codex: {
+              since: 1,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'usage_limit',
+                  model: 'sol',
+                  account: 'acct-1',
+                  resets_at: 7000
+                }
+              ]
+            }
+          },
+          bead_overlay: {
+            'A-1': { metadata: { orchestration_model: 'sol' } }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.queue[0].gate?.lines).toContain('sol · one@example.com');
   });
 
   // 서버 판정이 기록으로 오면 그것이 칩의 재료이고 자체 판정은 예측으로 내려간다

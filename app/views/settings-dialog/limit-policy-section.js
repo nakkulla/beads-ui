@@ -1,10 +1,13 @@
 /**
- * The bulk window `전역` tab's `한도 대응` groups (UI-giog §4.5).
+ * The settings dialog `활성 계정` tab's active-login auto-switch groups (UI-giog §4.5,
+ * UI-32oq §4.1).
  *
- * One group per runner, rows in this order: `적용 범위` (`저장소별 / 전역`) with
- * its one-line guidance, then `대응 방식`·`전환 허용 계정`·`선제 전환` drawn by
- * the same editor as the repo `계정` tab. While the scope is `저장소별` those
- * three rows are dimmed but stay editable: the values wait for the switch.
+ * One group per runner, rows in this order: `자동 전환` (`켬 / 끔`) with its
+ * one-line guidance, `default 계정` (the account a departure starts from and a
+ * return goes back to; it need not be a target), then `전환 허용 계정` and
+ * `선제 전환` drawn by the same editor as the repo `계정` tab, without its
+ * mode row. While the switch is off the editor rows are dimmed but stay
+ * editable. None of these values reaches a repo's Worker.
  *
  * Values come from the `limit-policy-settings` channel and are written with
  * one `limit-policy-settings-set` per click (revision CAS; a conflict adopts
@@ -15,14 +18,21 @@
  * @typedef {'claude'|'codex'} LimitRunner
  */
 import { html, render } from 'lit-html';
-import { isLimitPolicySnapshot } from '../../data/limit-policy-settings-store.js';
+import { live } from 'lit-html/directives/live.js';
+import {
+  isLimitPolicySnapshot,
+  limitPolicyStateOf
+} from '../../data/limit-policy-settings-store.js';
 import { errorText } from '../../utils/error-text.js';
-import { loadAccountCatalog } from './account-catalog.js';
+import { accountRowLabel, loadAccountCatalog } from './account-catalog.js';
 import { createLimitPolicyEditor } from './limit-policy-editor.js';
 
-/** The guidance line under each `적용 범위` row. */
-export const LIMIT_SCOPE_GUIDE =
-  '전역: 모든 저장소의 Worker와 Mac 전역 로그인이 아래 값을 따릅니다 · 저장소별: 각 저장소 설정을 쓰고 전역 로그인은 자동으로 바꾸지 않습니다';
+/** The guidance line under each `자동 전환` row. */
+export const ACTIVE_SWITCH_GUIDE =
+  '켜면 활성 로그인이 기준에 닿을 때 아래 계정으로 옮기고, default 계정에서 떠났으면 default가 리셋된 뒤 돌아옵니다 · 저장소 Worker는 각 저장소의 한도 대응을 따릅니다';
+
+/** Select value for an unset default account. */
+const NO_DEFAULT = '';
 
 /** @type {ReadonlyArray<[LimitRunner, string]>} */
 const RUNNERS = [
@@ -69,7 +79,7 @@ export function createLimitPolicySection(host, options) {
    */
   function adopt(next) {
     if (isLimitPolicySnapshot(next)) {
-      options.limitPolicySettingsStore?.set?.(next);
+      options.limitPolicySettingsStore?.set?.(limitPolicyStateOf(next));
     }
   }
 
@@ -134,13 +144,63 @@ export function createLimitPolicySection(host, options) {
 
   /**
    * @param {LimitRunner} runner
-   * @param {'repo'|'global'} scope
+   * @param {boolean} on
    */
-  function onScopeChange(runner, scope) {
-    if (snapshot()?.runners[runner]?.scope === scope) {
+  function onAutoSwitchChange(runner, on) {
+    if (snapshot()?.runners[runner]?.auto_switch === on) {
       return;
     }
-    void save(runner, { scope });
+    void save(runner, { auto_switch: on });
+  }
+
+  /**
+   * @param {LimitRunner} runner
+   * @param {string} value - A catalog key, or `NO_DEFAULT`.
+   */
+  function onDefaultChange(runner, value) {
+    const next = value === NO_DEFAULT ? null : value;
+    if ((snapshot()?.runners[runner]?.default_account ?? null) === next) {
+      return;
+    }
+    void save(runner, { default_account: next });
+  }
+
+  /**
+   * The `default 계정` select: unset, then every catalog account, then a
+   * stored default the catalog no longer lists.
+   *
+   * @param {LimitRunner} runner
+   * @param {string} label
+   * @param {string|null} current
+   * @returns {TemplateResult}
+   */
+  function defaultSelect(runner, label, current) {
+    const rows = catalog[runner]?.accounts ?? [];
+    const listed = rows.some((/** @type {any} */ row) => row.key === current);
+    return html`<select
+      class="ui-select ui-select--bare"
+      aria-label=${`${label} default 계정`}
+      data-limit-default=${runner}
+      .value=${live(current ?? NO_DEFAULT)}
+      @change=${(/** @type {Event} */ ev) =>
+        onDefaultChange(
+          runner,
+          String(/** @type {HTMLSelectElement} */ (ev.target).value)
+        )}
+    >
+      <option value=${NO_DEFAULT} ?selected=${current === null}>비움</option>
+      ${rows.map(
+        (/** @type {any} */ row) =>
+          html`<option value=${row.key} ?selected=${row.key === current}>
+            ${accountRowLabel(runner, row)}
+          </option>`
+      )}
+      ${current !== null && !listed
+        ? html`<option value=${current} selected>
+            ${`${current} (목록에 없음)`}
+          </option>`
+        : ''}
+    </select>`;
   }
 
   /**
@@ -150,34 +210,37 @@ export function createLimitPolicySection(host, options) {
    * @returns {TemplateResult}
    */
   function runnerGroup(state, runner, label) {
-    const scope = state.runners[runner].scope === 'global' ? 'global' : 'repo';
-    /** @type {Array<['repo'|'global', string]>} */
-    const scopes = [
-      ['repo', '저장소별'],
-      ['global', '전역']
+    const entry = state.runners[runner];
+    const on = entry.auto_switch === true;
+    /** @type {Array<[boolean, string]>} */
+    const choices = [
+      [true, '켬'],
+      [false, '끔']
     ];
     return html`<section
       class="settings-dialog__group"
       data-limit-global=${runner}
     >
-      <div class="settings-dialog__group-title">${label} 한도 대응</div>
-      <div class="settings-dialog__row" data-limit-scope-row=${runner}>
-        <span class="settings-dialog__row-label">적용 범위</span>
+      <div class="settings-dialog__group-title">
+        ${label} 활성 계정 자동 전환
+      </div>
+      <div class="settings-dialog__row" data-limit-auto-row=${runner}>
+        <span class="settings-dialog__row-label">자동 전환</span>
         <span class="settings-dialog__controls">
           <span
             class="settings-dialog__seg"
             role="group"
-            aria-label=${`${label} 적용 범위`}
-            data-limit-scope-runner=${runner}
+            aria-label=${`${label} 활성 계정 자동 전환`}
+            data-limit-auto-runner=${runner}
           >
-            ${scopes.map(
+            ${choices.map(
               ([value, text]) =>
                 html`<button
                   type="button"
-                  class=${scope === value ? 'op-btn is-active' : 'op-btn'}
-                  data-limit-scope=${value}
-                  aria-pressed=${String(scope === value)}
-                  @click=${() => onScopeChange(runner, value)}
+                  class=${on === value ? 'op-btn is-active' : 'op-btn'}
+                  data-limit-auto=${value ? 'on' : 'off'}
+                  aria-pressed=${String(on === value)}
+                  @click=${() => onAutoSwitchChange(runner, value)}
                 >
                   ${text}
                 </button>`
@@ -185,13 +248,16 @@ export function createLimitPolicySection(host, options) {
           </span>
         </span>
       </div>
-      <p class="settings-dialog__hint-block" data-limit-scope-guide=${runner}>
-        ${LIMIT_SCOPE_GUIDE}
+      <p class="settings-dialog__hint-block" data-limit-auto-guide=${runner}>
+        ${ACTIVE_SWITCH_GUIDE}
       </p>
-      ${editor.template(runner, label, {
-        mode_label: '대응 방식',
-        dim: scope === 'repo'
-      })}
+      <div class="settings-dialog__row" data-limit-default-row=${runner}>
+        <span class="settings-dialog__row-label">default 계정</span>
+        <span class="settings-dialog__controls">
+          ${defaultSelect(runner, label, entry.default_account ?? null)}
+        </span>
+      </div>
+      ${editor.template(runner, label, { mode_label: null, dim: !on })}
     </section>`;
   }
 

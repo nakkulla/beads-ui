@@ -1,5 +1,5 @@
 /**
- * The bulk window's `전역` tab `프리셋 관리` group: every server-global
+ * The settings dialog `프리셋·모델` tab's `프리셋 관리` group: every server-global
  * execution preset, one row each under its profile, with rename, duplicate,
  * and a two-step delete.
  *

@@ -1,28 +1,39 @@
 /**
- * Server-global limit-policy settings WebSocket channel (UI-giog §4.2).
+ * Server-global limit-policy settings WebSocket channel (UI-giog §4.2,
+ * UI-32oq §4.1).
  *
  * `subscribe-limit-policy-settings` answers with the current snapshot at once;
- * a successful `limit-policy-settings-set` replies `ok`, pushes the new
- * snapshot to every subscriber, and then propagates the change (§4.1): for
- * every registered workspace it re-binds the changed runners' standing hold
- * verdicts to the new effective policy (the repo policy itself is never
- * written), then re-runs that workspace's provider switch pass, and finally
- * announces the end so the active-login passes judge once. One workspace's
- * failure is logged and the others continue.
+ * a successful `limit-policy-settings-set` replies `ok` and pushes the new
+ * snapshot to every subscriber. The settings decide only the global
+ * active-login switch, so a write re-binds no repo's hold verdicts; the
+ * server entry hears the store's change and hands both active-login passes
+ * one judgment.
  *
  * A refused set still replies on the same envelope: `{ ok: false, code,
  * runner?, message, snapshot }`.
  *
+ * Every snapshot this channel sends — the subscribe answer, a set reply
+ * (accepted, refused or failed) and a fanout — also carries the active-login
+ * departure records, read-only: `departures: { claude: record|null, codex:
+ * record|null }` (UI-32oq §4.4 status lines). They are not part of the
+ * settings, so they move no `revision` and no write names them; a record
+ * that is created, followed or cleared pushes the current snapshot to every
+ * subscriber (`bindDepartureBroadcast`). An unreadable record reads as null.
+ *
+ * The one repo-wide pass left here is `resumeLimitPolicyRebind`, which the
+ * server start runs to finish the re-binding the UI-32oq migration recorded
+ * in `rebind_pending`.
+ *
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  * @import { LimitPolicyRunner, LimitPolicySnapshot } from '../limit-policy-settings.js'
+ * @import { DepartureRecord, DepartureStore } from '../active-login-return-store.js'
+ * @typedef {LimitPolicySnapshot & { departures: Record<LimitPolicyRunner, DepartureRecord|null> }} LimitPolicyChannelSnapshot
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
-import {
-  announceLimitPolicyApplied,
-  limitPolicySettingsStore
-} from '../limit-policy-settings.js';
+import { activeLoginReturnStore } from '../active-login-return-store.js';
+import { limitPolicySettingsStore } from '../limit-policy-settings.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { reevaluateWorkerProviderSwitches } from '../worker/attach.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -33,6 +44,40 @@ const DEFAULT_CLIENT_ID = 'limit-policy-settings';
 
 /** @type {Set<{ ws: WebSocket, client_id: string }>} */
 const SUBSCRIBERS = new Set();
+
+/** @type {ReadonlyArray<LimitPolicyRunner>} */
+const RUNNERS = Object.freeze(['claude', 'codex']);
+
+/**
+ * One runner's departure record, or null when there is none or it cannot be
+ * read (fail-quiet).
+ *
+ * @param {LimitPolicyRunner} runner
+ * @returns {DepartureRecord|null}
+ */
+function departureOf(runner) {
+  try {
+    return activeLoginReturnStore().get(runner);
+  } catch (err) {
+    log('limit-policy settings: departure read failed for %s: %o', runner, err);
+    return null;
+  }
+}
+
+/**
+ * A settings snapshot with the departure records laid beside it.
+ *
+ * @param {LimitPolicySnapshot} snapshot
+ * @returns {LimitPolicyChannelSnapshot}
+ */
+function channelSnapshot(snapshot) {
+  /** @type {Record<LimitPolicyRunner, DepartureRecord|null>} */
+  const departures = { claude: null, codex: null };
+  for (const runner of RUNNERS) {
+    departures[runner] = departureOf(runner);
+  }
+  return { ...snapshot, departures };
+}
 
 /**
  * @param {RequestEnvelope} req
@@ -58,7 +103,7 @@ function emitSnapshot(ws, client_id, snapshot) {
         payload: {
           type: 'limit-policy-settings-snapshot',
           id: client_id,
-          ...snapshot
+          ...channelSnapshot(snapshot)
         }
       })
     );
@@ -77,9 +122,24 @@ function fanout(snapshot) {
 }
 
 /**
- * Every registered workspace, keyed the way the queue store keys them.
+ * Push the current snapshot to every subscriber whenever a departure record
+ * is created, followed or cleared. The server entry binds the store both
+ * active-login passes share.
  *
- * @returns {string[]}
+ * @param {DepartureStore} departures
+ * @returns {() => void} Unbind.
+ */
+export function bindDepartureBroadcast(departures) {
+  return departures.onChange(() => {
+    fanout(limitPolicySettingsStore().snapshot());
+  });
+}
+
+/**
+ * Every registered workspace, keyed the way the queue store keys them, or
+ * null when the registry cannot be read.
+ *
+ * @returns {string[]|null}
  */
 function registeredWorkspaces() {
   /** @type {Set<string>} */
@@ -90,22 +150,39 @@ function registeredWorkspaces() {
     }
   } catch (err) {
     log('limit-policy settings: registry read failed: %o', err);
+    return null;
   }
   return [...keys];
 }
 
 /**
- * Carry a successful write to every registered workspace (§4.1, §4.6):
- * re-bind, then the switch pass, then one active-login judgment.
+ * Finish the hold-verdict re-binding the UI-32oq migration left pending
+ * (§4.1): for each runner in `rebind_pending`, re-bind every registered
+ * workspace's standing hold verdicts to that workspace's own stored policy,
+ * re-run each workspace's switch pass, and then drop the runner from the list.
+ * A workspace whose re-binding fails keeps its runner in the list (one log
+ * line) for the next start, a workspace whose switch pass fails keeps every
+ * resumed runner, and an unreadable registry keeps every runner.
+ * Re-binding writes no policy value, so a repeat — after a stop between the
+ * migration and here, or part way through — lands on the same verdicts.
  *
- * @param {LimitPolicyRunner[]} runners - The runners whose entry changed.
- * @returns {Promise<void>}
+ * @returns {Promise<{ done: LimitPolicyRunner[], pending: LimitPolicyRunner[] }>}
  */
-export async function propagateLimitPolicyChange(runners) {
+export async function resumeLimitPolicyRebind() {
+  const store = limitPolicySettingsStore();
+  const runners = store.rebindPending();
+  if (runners.length === 0) {
+    return { done: [], pending: [] };
+  }
   const workspaces = registeredWorkspaces();
+  if (workspaces === null) {
+    return { done: [], pending: runners };
+  }
   const queue_store = getWorkerRuntime().queueStore;
-  for (const workspace of workspaces) {
-    for (const runner of runners) {
+  /** @type {Set<LimitPolicyRunner>} */
+  const failed = new Set();
+  for (const runner of runners) {
+    for (const workspace of workspaces) {
       try {
         const result = queue_store.rebindProviderSwitchVerdicts(
           workspace,
@@ -115,6 +192,7 @@ export async function propagateLimitPolicyChange(runners) {
           fanoutWorkerQueue(workspace, /** @type {any} */ (result.queue));
         }
       } catch (err) {
+        failed.add(runner);
         log(
           'limit-policy settings: %s verdict rebind failed for %s: %o',
           runner,
@@ -124,20 +202,36 @@ export async function propagateLimitPolicyChange(runners) {
       }
     }
   }
+  // A workspace's switch pass covers every runner at once, so its failure
+  // keeps every runner this start resumed in the list for the next start.
   await Promise.all(
     workspaces.map((workspace) =>
       Promise.resolve()
         .then(() => reevaluateWorkerProviderSwitches(workspace))
         .catch((err) => {
+          for (const runner of runners) {
+            failed.add(runner);
+          }
           log(
-            'provider switch reevaluation after limit-policy settings failed for %s: %o',
+            'provider switch reevaluation after verdict rebind failed for %s: %o',
             workspace,
             err
           );
         })
     )
   );
-  announceLimitPolicyApplied();
+  /** @type {LimitPolicyRunner[]} */
+  const done = [];
+  /** @type {LimitPolicyRunner[]} */
+  const pending = [];
+  for (const runner of runners) {
+    if (!failed.has(runner) && store.completeRebind(runner)) {
+      done.push(runner);
+    } else {
+      pending.push(runner);
+    }
+  }
+  return { done, pending };
 }
 
 /**
@@ -200,14 +294,14 @@ export function handleUnsubscribeLimitPolicySettings(ws, req) {
 
 /**
  * Handle `limit-policy-settings-set`. Payload: `{ expected_revision, runners:
- * { claude?: patch, codex?: patch } }` where a patch may carry `scope`
- * (`'repo'|'global'`), `mode`, `accounts`, and `preempt_pct`.
+ * { claude?: patch, codex?: patch } }` where a patch may carry `auto_switch`,
+ * `default_account`, `accounts`, and `preempt_pct` — any other field is
+ * refused as `invalid_value`.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
- * @returns {Promise<void>} Settles once the change has propagated.
  */
-export async function handleLimitPolicySettingsSet(ws, req) {
+export function handleLimitPolicySettingsSet(ws, req) {
   const payload = /** @type {any} */ (req.payload ?? {});
   const store = limitPolicySettingsStore();
   /** @type {import('../limit-policy-settings.js').LimitPolicySetResult} */
@@ -225,7 +319,7 @@ export async function handleLimitPolicySettingsSet(ws, req) {
           req,
           'internal_error',
           'failed to persist limit-policy settings',
-          { snapshot: store.snapshot() }
+          { snapshot: channelSnapshot(store.snapshot()) }
         )
       )
     );
@@ -239,15 +333,16 @@ export async function handleLimitPolicySettingsSet(ws, req) {
           code: result.code,
           ...(result.runner === undefined ? {} : { runner: result.runner }),
           message: result.message,
-          snapshot: result.snapshot
+          snapshot: channelSnapshot(result.snapshot)
         })
       )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, { ok: true, snapshot: result.snapshot })));
+  ws.send(
+    JSON.stringify(
+      makeOk(req, { ok: true, snapshot: channelSnapshot(result.snapshot) })
+    )
+  );
   fanout(result.snapshot);
-  if (result.changed.length > 0) {
-    await propagateLimitPolicyChange(result.changed);
-  }
 }

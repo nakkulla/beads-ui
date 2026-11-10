@@ -826,7 +826,7 @@ describe('codex account credits (UI-9y1k §4.3)', () => {
 
     await listAccounts({ runCodexAuth });
 
-    expect(listener).toHaveBeenCalledWith([
+    expect(listener.mock.calls[0][0]).toEqual([
       {
         key: 'account-1',
         number: 1,
@@ -835,6 +835,28 @@ describe('codex account credits (UI-9y1k §4.3)', () => {
         credits: { has_credits: true, unlimited: false, balance: 10 }
       }
     ]);
+  });
+
+  test('hands the same read account rows to credit subscribers', async () => {
+    const listener = vi.fn();
+    subscribeCreditObservations(listener);
+    const row = accountRow({
+      usage: {
+        ...accountRow().usage,
+        credits: { has_credits: true, unlimited: false, balance: '10' }
+      }
+    });
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify(listSnapshot([row])),
+      stderr: ''
+    });
+
+    await listAccounts({ runCodexAuth });
+
+    expect(
+      listener.mock.calls[0][1].map((/** @type {any} */ a) => a.key)
+    ).toEqual(['account-1']);
   });
 });
 

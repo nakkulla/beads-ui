@@ -404,6 +404,15 @@ async function refreshWorkerAccountCatalog() {
                   typeof account.alias === 'string' && account.alias.length > 0
                     ? account.alias
                     : null,
+                // The display name widens a repeated email by plan, then number
+                // (UI-32oq §4.3).
+                plan:
+                  typeof account.plan === 'string' && account.plan.length > 0
+                    ? account.plan
+                    : null,
+                number: Number.isInteger(account.number)
+                  ? account.number
+                  : null,
                 status:
                   typeof account.status === 'string'
                     ? account.status

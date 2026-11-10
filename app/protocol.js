@@ -682,8 +682,8 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'unsubscribe-timing-settings',
   'timing-settings-set',
   'timing-settings-snapshot',
-  // Server-global limit-policy settings (UI-giog §4.2): each runner's global
-  // usage-limit policy and its `repo`/`global` apply scope.
+  // Server-global limit-policy settings (UI-giog §4.2, UI-32oq §4.1): each
+  // runner's active-login auto switch, default account, targets and trigger.
   'subscribe-limit-policy-settings',
   'unsubscribe-limit-policy-settings',
   'limit-policy-settings-set',
@@ -704,7 +704,7 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'codex-credits-snapshot',
   // Server-global conversation settings (UI-jbl1 §3.4): the shared automatic
   // launch switch and the fresh runtime and model/effort of every Worker
-  // session conversation. A request/response pair read when the `전역` tab
+  // session conversation. A request/response pair read when the `운영` tab
   // opens; nothing pushes it.
   'conversation-settings-get',
   'conversation-settings-set',

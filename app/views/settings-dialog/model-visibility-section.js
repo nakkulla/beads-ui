@@ -1,5 +1,5 @@
 /**
- * The bulk window `전역` tab's `활성 모델` group (UI-ooc0 §5).
+ * The settings dialog `프리셋·모델` tab's `활성 모델` group (UI-ooc0 §5).
  *
  * One checkbox per catalog model, per runner; checked means the model shows in
  * selectors. The list is server-global, so this group reads and writes only

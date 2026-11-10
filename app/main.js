@@ -16,7 +16,8 @@ import {
 } from './data/external-wait-settings-store.js';
 import {
   createLimitPolicySettingsStore,
-  isLimitPolicySnapshot
+  isLimitPolicySnapshot,
+  limitPolicyStateOf
 } from './data/limit-policy-settings-store.js';
 import { createModelVisibilityStore } from './data/model-visibility-store.js';
 import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
@@ -290,9 +291,7 @@ export function bootstrap(root_element) {
   /** @type {HTMLElement|null} */
   const detail_mount = document.getElementById('detail-panel');
 
-  if (usage_mount) {
-    createUsageMeter(usage_mount);
-  }
+  const usage_meter = usage_mount ? createUsageMeter(usage_mount) : null;
 
   if (worker_root && monitor_root && compare_root && adr_root && detail_mount) {
     /** @type {HTMLElement|null} */
@@ -360,6 +359,11 @@ export function bootstrap(root_element) {
     // 한도 대응 전역 설정(UI-giog §4.2): 저장소 창·일괄 창도 적용 범위를 읽어
     // 행을 잠그므로 앱 시작 때 구독한다.
     const limit_policy_settings_store = createLimitPolicySettingsStore();
+    // 사용량 카드의 ★와 머리 줄(UI-32oq §4.4)은 같은 설정 채널을 읽고 쓴다.
+    usage_meter?.bindLimitPolicy({
+      store: limit_policy_settings_store,
+      transport: (type, payload) => tracked_send(type, payload)
+    });
     const codex_credit_store = createCodexCreditStore();
     // `▶ 바로 실행` 확인 창의 기본 자원 비율은 서버 전역 설정을 따른다
     // (UI-qbgj §3.6); 값이 아직 없으면 창이 80%로 읽는다.
@@ -417,14 +421,11 @@ export function bootstrap(root_element) {
       }
     });
 
-    // 한도 대응 전역 설정 채널(UI-giog §4.2)의 push. 서버 전역이라 워크스페이스
-    // 전환에도 비우지 않고, 스냅샷을 통째로 교체한다.
+    // 활성 계정 자동 전환 설정 채널(UI-giog §4.2, UI-32oq §4.1)의 push. 서버
+    // 전역이라 워크스페이스 전환에도 비우지 않고, 스냅샷을 통째로 교체한다.
     client.on('limit-policy-settings-snapshot', (payload) => {
       if (isLimitPolicySnapshot(payload)) {
-        limit_policy_settings_store.set({
-          revision: payload.revision,
-          runners: payload.runners
-        });
+        limit_policy_settings_store.set(limitPolicyStateOf(payload));
       }
     });
 
@@ -920,7 +921,13 @@ export function bootstrap(root_element) {
      * @returns {boolean}
      */
     function pipelineChannelWanted(state) {
-      return state.view === 'monitor' || state.selected_id != null;
+      // 설정 창의 대상 선택·여러 저장소·다른 저장소의 큐는 모니터 행을 읽는다
+      // (UI-32oq §4.4) — 창이 열린 동안은 어느 탭에서든 구독한다.
+      return (
+        state.view === 'monitor' ||
+        state.selected_id != null ||
+        settings_dialog_open
+      );
     }
 
     /**
@@ -1105,8 +1112,8 @@ export function bootstrap(root_element) {
         id: LIMIT_POLICY_SETTINGS_CLIENT_ID
       }).catch((err) => {
         log('subscribe-limit-policy-settings failed: %o', err);
-        // 구 서버 등으로 구독이 실패하면 값 없음으로 두어 두 러너를 저장소별로
-        // 읽게 하고, 다음 재연결이 다시 구독하도록 플래그를 푼다.
+        // 구 서버 등으로 구독이 실패하면 값 없음으로 두어 두 러너의 활성 계정
+        // 자동 전환을 끔으로 읽게 하고, 다음 재연결이 다시 구독하도록 플래그를 푼다.
         limit_policy_settings_store.clear();
         limit_policy_settings_subscribed = false;
       });
@@ -1691,6 +1698,7 @@ export function bootstrap(root_element) {
       // (UI-nu43 §4.1). 레포 카드 ⚙도 같은 창을 `scope: 'repo'`로 열므로 일괄
       // 적용 뒤 열린 패널을 다시 읽던 경로는 없다 (UI-e1ta §7).
       monitorRows: () => monitor_pipeline_store.getWorkspacesState(),
+      connectedRoot: () => store.getState().workspace.current?.path ?? null,
       // 레포 `⚙`의 `저장소` 탭은 그 저장소의 파이프라인 항목과 저장소 작업 서랍을
       // 읽는다 (UI-f2sy §7). `monitor_view`는 아래에서 만들어지지만 서랍은 창이
       // 열린 뒤의 클릭에서만 열린다.
@@ -1737,8 +1745,8 @@ export function bootstrap(root_element) {
       if (btn_settings) {
         btn_settings.setAttribute('aria-label', '설정');
         btn_settings.setAttribute('title', '설정');
-        // 모니터 탭의 헤더 ⚙는 연결 저장소가 아니라 보이는 여러 저장소의 일괄
-        // 설정 창이다 (UI-nu43 §3.1). 다른 탭은 연결 저장소 하나의 창이다.
+        // 모든 ⚙는 같은 창을 열고 처음 대상만 다르다 (UI-32oq §4.4): 모니터
+        // 탭의 헤더 ⚙는 여러 저장소, 다른 탭은 연결 저장소다.
         btn_settings.addEventListener('click', () => {
           if (store.getState().view === 'monitor') {
             settings_dialog.open(undefined, { scope: 'monitor' });

@@ -92,3 +92,27 @@ describe('provider resume dialog model visibility (UI-ooc0 §4.2)', () => {
     expect(next?.model).toBe('astra');
   });
 });
+
+describe('provider resume dialog account names (UI-32oq §4.3)', () => {
+  test('names each Codex account by email and plan when the email repeats', () => {
+    const queue = {
+      ...queueWith({ runner: 'codex', model: 'terra' }),
+      account_catalog: {
+        codex: [
+          { key: 'u1::w1', email: 'a@x.com', alias: null, plan: 'plus' },
+          { key: 'u1::w2', email: 'a@x.com', alias: 'team', plan: 'team' }
+        ]
+      }
+    };
+    const draft = providerResumeDraft('a1', queue, []);
+    const root = document.createElement('div');
+
+    render(providerResumeDialogTemplate(draft, queue, []), root);
+
+    const options = Array.from(
+      root.querySelectorAll('.provider-resume-dialog__account option')
+    ).map((option) => option.textContent?.trim());
+    expect(options).toContain('a@x.com · plus');
+    expect(options).toContain('a@x.com · team (team)');
+  });
+});

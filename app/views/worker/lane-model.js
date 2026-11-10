@@ -21,6 +21,7 @@
 import { TRANSIENT_ADMISSION_REASONS } from '../../../server/worker/continuation-refusal.js';
 import { priceUsage } from '../../../server/worker/usage-pricing.js';
 import { isExternalWaitObservation } from '../../protocol.js';
+import { accountDisplayName } from '../../utils/account-display-name.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
@@ -1430,16 +1431,17 @@ function isProviderHoldAttempt(attempt) {
 }
 
 /**
- * Find the durable provider target bound to one attempt, under any runner: a
- * session held by its delegated leaf's limit waits on the leaf runner's
- * target (UI-gggh §3.5), so the lookup scans every runner's `attempt_ids`.
+ * Find the durable provider target bound to one attempt, under any runner, with
+ * the runner whose hold names it: a session held by its delegated leaf's limit
+ * waits on the leaf runner's target (UI-gggh §3.5), so the lookup scans every
+ * runner's `attempt_ids`, and that target's account belongs to the leaf runner.
  *
  * @param {any} attempt
  * @param {unknown} provider_hold
- * @returns {any|null}
+ * @returns {{ runner: string, target: any }|null}
  */
 function providerTargetOf(attempt, provider_hold) {
-  for (const hold of Object.values(objectOf(provider_hold))) {
+  for (const [runner, hold] of Object.entries(objectOf(provider_hold))) {
     if (!hold || !Array.isArray(hold.targets)) {
       continue;
     }
@@ -1449,33 +1451,28 @@ function providerTargetOf(attempt, provider_hold) {
         target.attempt_ids.includes(attempt.attempt_id)
     );
     if (target) {
-      return target;
+      return { runner, target };
     }
   }
   return null;
 }
 
 /**
- * Resolve a Claude account alias without replacing its durable email identity.
+ * Name one account key the way every notice does (UI-32oq §4.3): the email,
+ * widened by alias or plan, or the key itself when the runner's list is absent.
  *
- * @param {string|null} account
+ * @param {string} runner
+ * @param {string} account
  * @param {unknown} account_catalog
- * @returns {string|null}
+ * @returns {string}
  */
-function accountAliasOf(account, account_catalog) {
-  if (account === null) {
-    return null;
-  }
-  const claude = objectOf(account_catalog).claude;
-  if (!Array.isArray(claude)) {
-    return null;
-  }
-  const row = claude.find(
-    (/** @type {any} */ candidate) => candidate?.email === account
+function accountNameOf(runner, account, account_catalog) {
+  const rows = objectOf(account_catalog)[runner];
+  return accountDisplayName(
+    Array.isArray(rows) ? rows : null,
+    account,
+    account
   );
-  return row && typeof row.alias === 'string' && row.alias.length > 0
-    ? row.alias
-    : null;
 }
 
 /**
@@ -1561,7 +1558,8 @@ function providerHoldProjection(attempt, input) {
     attempt.cause_detail && typeof attempt.cause_detail === 'object'
       ? attempt.cause_detail
       : null;
-  const target = providerTargetOf(attempt, input.provider_hold);
+  const held = providerTargetOf(attempt, input.provider_hold);
+  const target = held === null ? null : held.target;
   const model =
     typeof target?.model === 'string' && target.model.length > 0
       ? target.model
@@ -1588,7 +1586,21 @@ function providerHoldProjection(attempt, input) {
         : null;
   const next_probe_at =
     typeof target?.next_probe_at === 'number' ? target.next_probe_at : null;
-  const account_alias = accountAliasOf(account, input.account_catalog);
+  // A target's account is named from the list of the runner whose hold names
+  // it; the `claude_account` fallback is a Claude email (UI-32oq §4.3).
+  const account_runner =
+    held !== null &&
+    typeof target?.account === 'string' &&
+    target.account.length > 0
+      ? held.runner
+      : 'claude';
+  // The tile's `account_alias` is the field the hold popup draws (`alias ||
+  // account`), so it carries this shared display name — `email (alias)`, not
+  // the bare alias — while `account` keeps the key.
+  const account_name =
+    account === null
+      ? null
+      : accountNameOf(account_runner, account, input.account_catalog);
   const history = timelineFields(input.history);
   // 활성 보류가 있으면 프로브가 판정하므로 배지는 지금 그대로다 (D5). 서버
   // sweep과 같은 술어 — 서 있는 보류가 이 attempt를 묶거나 그 러너 전체를
@@ -1630,7 +1642,7 @@ function providerHoldProjection(attempt, input) {
           target: {
             ...(model ? { model } : {}),
             ...(account ? { account } : {}),
-            ...(account_alias ? { account_alias } : {})
+            ...(account_name ? { account_alias: account_name } : {})
           }
         }
       : {}),
@@ -1642,11 +1654,11 @@ function providerHoldProjection(attempt, input) {
     ...(target?.auto_switch === 'none' &&
     typeof target.switch_ready_account === 'string'
       ? {
-          switch_ready_account:
-            accountAliasOf(
-              target.switch_ready_account,
-              input.account_catalog
-            ) || target.switch_ready_account
+          switch_ready_account: accountNameOf(
+            held === null ? 'claude' : held.runner,
+            target.switch_ready_account,
+            input.account_catalog
+          )
         }
       : {}),
     ...(auto_resume === null ? {} : { auto_resume }),
@@ -1784,7 +1796,11 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
   const outage = target.kind === 'outage';
   const target_account =
     typeof target.account === 'string' ? target.account : null;
-  const alias = accountAliasOf(target_account, account_catalog);
+  // The shared display name (UI-32oq §4.3); the key stays in `account`.
+  const account_name =
+    target_account === null
+      ? null
+      : accountNameOf(runner, target_account, account_catalog);
   const tile = {
     kind: outage ? 'outage' : 'usage_limit',
     ...(typeof target.resets_at === 'number'
@@ -1799,7 +1815,7 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
     target: {
       ...(typeof target.model === 'string' ? { model: target.model } : {}),
       ...(target_account ? { account: target_account } : {}),
-      ...(alias ? { account_alias: alias } : {})
+      ...(account_name ? { account_alias: account_name } : {})
     },
     ...(typeof target.auto_switch === 'string'
       ? { auto_switch: target.auto_switch }
@@ -1810,7 +1826,7 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
       /** @type {unknown} */ (tile)
     )
   );
-  const who = [target.model, alias || target_account]
+  const who = [target.model, account_name]
     .filter((value) => typeof value === 'string' && value.length > 0)
     .join(' · ');
   const last_error =
@@ -1825,8 +1841,9 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
   const auto_switch = autoSwitchText(target.auto_switch, {
     switch_ready_at: target.switch_ready_at,
     switch_ready_account:
-      accountAliasOf(target.switch_ready_account, account_catalog) ||
-      target.switch_ready_account
+      typeof target.switch_ready_account === 'string'
+        ? accountNameOf(runner, target.switch_ready_account, account_catalog)
+        : target.switch_ready_account
   });
   // 보류가 선 시각은 러너 단위 레코드의 것이다 — target별 시각은 따로 없다.
   const since_clock = formatClockLocal(entry.since);

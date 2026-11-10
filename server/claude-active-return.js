@@ -1,28 +1,29 @@
 /**
- * Move the global active Claude login to a headroom account once its
- * five-hour or seven-day window reaches the global trigger (UI-btp3 §4,
- * UI-giog §4.4).
+ * Move the global active Claude login off an account whose five-hour or
+ * seven-day window reached the trigger, and back to the default account once
+ * that account has reset (UI-btp3 §4, UI-32oq §4.2).
  *
  * The active login is what every Claude call without its own account runs
  * on — interactive sessions, Hermes, and Worker attempts that pinned no
- * account. This pass shares the Codex pass's lock, confirm, notice and
- * single-flight flow (`createActiveReturn`) and its criterion: only the
- * Claude server-global limit policy, with scope `global` and mode `switch`,
- * and an allow list holding both the active account and the candidate. It
- * differs only in its rules:
+ * account. This pass shares the Codex pass's lock, confirm, departure record,
+ * return, notice and single-flight flow (`createActiveReturn`) and its
+ * criterion: only the Claude server-global active-switch settings, with
+ * `auto_switch` on and a non-empty target list. It differs only in its rules:
  *
- * - Trigger: the active row's `5h` or `7d` window at or above the global
- *   `preempt_pct`, else 100. Model windows never trigger a switch.
- * - Candidate: in the global allow list, usage status `ok`, not the active
+ * - Trigger: the active row's `5h` or `7d` window at or above
+ *   `preempt_pct`, else 100. Model windows never trigger a switch, and only
+ *   `5h`/`7d` decide whether the default has room to return.
+ * - Candidate: in the target list, usage status `ok`, not the active
  *   account, not a `provider_hold` target, at least one reported `5h`/`7d`
  *   window and every such window below the trigger. Lowest seven-day use
  *   first, then account number. Model windows are ignored here too.
  * - A Claude run without an account does NOT block the switch (§4.1): the
  *   active account is already refusing requests at 100%, and the switch
  *   writes under the credential lock.
- * - A running attempt's `claude_account` is kept out of the candidates
- *   unless that account is `sessionLoginOwn` — its token lineage belongs to
- *   the profile, the same rule the manual switch's in-use check applies.
+ * - A running attempt's `claude_account` is kept out of the targets — the
+ *   default on a return included — unless that account is `sessionLoginOwn`:
+ *   its token lineage belongs to the profile, the same rule the manual
+ *   switch's in-use check applies.
  * - The timer is always on: nothing else reads the Claude list while the
  *   usage view and the Worker are idle, so the pass watches on its own.
  *
@@ -82,7 +83,7 @@ function sevenDayPctOf(row) {
 }
 
 /**
- * The candidate the global allow list yields, or null. Every judged window
+ * The departure target the target list yields, or null. Every judged window
  * must stay below `max_pct` (the trigger; 100 when absent).
  *
  * @param {CandidateInput} input
@@ -118,6 +119,7 @@ export function pickClaudeCandidate(input) {
 /** @type {ActiveReturnRules} */
 const CLAUDE_RULES = {
   provider: 'claude',
+  label: 'Claude',
   countsWindow: (window) => JUDGED_WINDOWS.has(window?.key),
   scanRunning(record, accounts) {
     const account = record.claude_account;
@@ -134,11 +136,7 @@ const CLAUDE_RULES = {
   },
   pickCandidate: pickClaudeCandidate,
   always_on: true,
-  switchNotice: (from, to, windows) =>
-    [
-      `🔁 Claude 전역 로그인 자동 전환 — 계정 #${from} → 계정 #${to}`,
-      `#${from} ${windows} · 전역 한도 대응 · 실행 중 세션도 곧 새 계정을 씁니다`
-    ].join('\n')
+  effect: '실행 중 세션도 곧 새 계정을 씁니다'
 };
 
 /**

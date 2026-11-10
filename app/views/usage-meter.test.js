@@ -1,6 +1,7 @@
 import { render } from 'lit-html';
 import fs from 'node:fs';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createLimitPolicySettingsStore } from '../data/limit-policy-settings-store.js';
 import {
   createUsageMeter,
   formatResetClock,
@@ -783,7 +784,7 @@ describe('usage meter account card', () => {
     meter.destroy();
   });
 
-  test('prefers the alias as the row label and keeps the email as its title', async () => {
+  test('shows the email with its alias as the row label and keeps the email as its title', async () => {
     const mount = mountMeter();
     stubProviders({
       available: false,
@@ -797,9 +798,38 @@ describe('usage meter account card', () => {
     await openCard(mount);
 
     const labels = document.querySelectorAll('.usage-meter__account-label');
-    expect(labels[0].textContent).toBe('work');
+    expect(labels[0].textContent).toBe('one@example.com (work)');
     expect(labels[0].getAttribute('title')).toBe('one@example.com');
     expect(labels[1].textContent).toBe('two@example.com');
+    meter.destroy();
+  });
+
+  test('widens a repeated Codex email by its plan in the row label', async () => {
+    const mount = mountMeter();
+    stubProviders(
+      { available: false },
+      {
+        available: false,
+        accounts: [
+          {
+            ...accountRow({ number: 1, email: 'a@x.com', plan: 'plus' }),
+            key: 'u1::w1'
+          },
+          {
+            ...accountRow({ number: 2, email: 'a@x.com', plan: 'team' }),
+            key: 'u1::w2'
+          }
+        ]
+      }
+    );
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    const labels = Array.from(
+      document.querySelectorAll('.usage-meter__account-label')
+    ).map((label) => label.textContent);
+    expect(labels).toEqual(['a@x.com · plus', 'a@x.com · team']);
     meter.destroy();
   });
 
@@ -1631,6 +1661,332 @@ describe('usage meter polling while idle (UI-yu2o)', () => {
     expect(
       mount.querySelector('.usage-meter__window')?.getAttribute('title')
     ).toBe(`resets ${formatResetClock(reset_at)}`);
+    meter.destroy();
+  });
+});
+
+describe('usage meter default account (UI-32oq §4.4)', () => {
+  const ENTRY = {
+    auto_switch: true,
+    default_account: null,
+    accounts: [],
+    preempt_pct: null
+  };
+
+  /**
+   * A settings store whose Claude entry is laid over by `claude`.
+   *
+   * @param {Record<string, unknown>} [claude]
+   * @param {any} [departures]
+   */
+  function settingsStore(claude = {}, departures) {
+    const store = createLimitPolicySettingsStore();
+    store.set({
+      revision: 5,
+      runners: { claude: { ...ENTRY, ...claude }, codex: ENTRY },
+      departures: departures ?? { claude: null, codex: null }
+    });
+    return store;
+  }
+
+  function serveTwoClaudeAccounts() {
+    stubProviders({
+      available: false,
+      accounts: [
+        accountRow({ number: 1, email: 'one@example.com', active: true }),
+        accountRow({ number: 2, email: 'two@example.com' })
+      ]
+    });
+  }
+
+  /**
+   * @param {string} key
+   * @returns {HTMLButtonElement}
+   */
+  function star(key) {
+    return /** @type {HTMLButtonElement} */ (
+      document.querySelector(`[data-default-account="${key}"]`)
+    );
+  }
+
+  test('draws no star without a settings snapshot', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: createLimitPolicySettingsStore(),
+        transport: vi.fn()
+      }
+    });
+
+    await openCard(mount);
+
+    expect(document.querySelector('.usage-meter__default')).toBeNull();
+    meter.destroy();
+  });
+
+  test('draws no head line without a settings snapshot', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: createLimitPolicySettingsStore(),
+        transport: vi.fn()
+      }
+    });
+
+    await openCard(mount);
+
+    expect(document.querySelector('.usage-meter__policy')).toBeNull();
+    meter.destroy();
+  });
+
+  test('marks the current default row active', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: settingsStore({ default_account: 'two@example.com' }),
+        transport: vi.fn()
+      }
+    });
+
+    await openCard(mount);
+
+    expect(star('two@example.com').classList).toContain('is-active');
+    expect(star('one@example.com').classList).not.toContain('is-active');
+    meter.destroy();
+  });
+
+  test('makes a clicked row the runner default with the current revision', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const transport = vi.fn(async () => ({ ok: true }));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store: settingsStore(), transport }
+    });
+    await openCard(mount);
+
+    star('two@example.com').click();
+
+    await vi.waitFor(() =>
+      expect(transport).toHaveBeenCalledWith('limit-policy-settings-set', {
+        expected_revision: 5,
+        runners: { claude: { default_account: 'two@example.com' } }
+      })
+    );
+    meter.destroy();
+  });
+
+  test('clears the default when its own row is clicked again', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const transport = vi.fn(async () => ({ ok: true }));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: settingsStore({ default_account: 'two@example.com' }),
+        transport
+      }
+    });
+    await openCard(mount);
+
+    star('two@example.com').click();
+
+    await vi.waitFor(() =>
+      expect(transport).toHaveBeenCalledWith('limit-policy-settings-set', {
+        expected_revision: 5,
+        runners: { claude: { default_account: null } }
+      })
+    );
+    meter.destroy();
+  });
+
+  test('raises an error toast on a conflict', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const toast = vi.fn();
+    const transport = vi.fn(async () => ({
+      ok: false,
+      code: 'conflict',
+      message: 'stale',
+      snapshot: null
+    }));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store: settingsStore(), transport, toast }
+    });
+    await openCard(mount);
+
+    star('two@example.com').click();
+
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect(toast.mock.calls[0][1]).toBe('error');
+    meter.destroy();
+  });
+
+  test('sends a conflicted click only once', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const toast = vi.fn();
+    const transport = vi.fn(async () => ({
+      ok: false,
+      code: 'conflict',
+      message: 'stale',
+      snapshot: null
+    }));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store: settingsStore(), transport, toast }
+    });
+    await openCard(mount);
+
+    star('two@example.com').click();
+
+    await vi.waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(transport).toHaveBeenCalledTimes(1);
+    meter.destroy();
+  });
+
+  test('redraws the stars from the snapshot a conflict carries', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const store = settingsStore();
+    const transport = vi.fn(async () => ({
+      ok: false,
+      code: 'conflict',
+      message: 'stale',
+      snapshot: {
+        revision: 6,
+        runners: {
+          claude: { ...ENTRY, default_account: 'one@example.com' },
+          codex: ENTRY
+        },
+        departures: { claude: null, codex: null }
+      }
+    }));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store, transport, toast: vi.fn() }
+    });
+    await openCard(mount);
+
+    star('two@example.com').click();
+
+    await vi.waitFor(() =>
+      expect(star('one@example.com').classList).toContain('is-active')
+    );
+    expect(store.get()?.revision).toBe(6);
+    meter.destroy();
+  });
+
+  test('says the auto switch state and the default on the head line', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: settingsStore({ default_account: 'two@example.com' }),
+        transport: vi.fn()
+      }
+    });
+
+    await openCard(mount);
+
+    expect(
+      document.querySelector('[data-limit-policy-line="claude"]')?.textContent
+    ).toContain('자동 전환 켬 · default two@example.com');
+    meter.destroy();
+  });
+
+  test('says an empty default when the entry carries no default account', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: settingsStore({ default_account: undefined }),
+        transport: vi.fn()
+      }
+    });
+
+    await openCard(mount);
+
+    expect(
+      document
+        .querySelector('[data-limit-policy-line="claude"]')
+        ?.textContent?.trim()
+    ).toBe('자동 전환 켬 · default 비움');
+    meter.destroy();
+  });
+
+  test('adds the return time to the head line while a departure stands', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const until = new Date(2026, 10, 10, 9, 30).toISOString();
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: settingsStore(
+          { default_account: 'two@example.com' },
+          {
+            claude: {
+              default_account: 'two@example.com',
+              to_account: 'one@example.com',
+              until
+            },
+            codex: null
+          }
+        ),
+        transport: vi.fn()
+      }
+    });
+
+    await openCard(mount);
+
+    expect(
+      document
+        .querySelector('[data-limit-policy-line="claude"]')
+        ?.textContent?.trim()
+    ).toBe('자동 전환 켬 · default two@example.com · 리셋 09:30 뒤 복귀');
+    meter.destroy();
+  });
+
+  test('re-reads the account lists when a departure record appears', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const store = settingsStore();
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store, transport: vi.fn() }
+    });
+    await openCard(mount);
+    const fetchMock = /** @type {any} */ (globalThis.fetch);
+    const before = fetchMock.mock.calls.length;
+
+    store.set(
+      settingsStore(
+        {},
+        {
+          claude: {
+            default_account: 'two@example.com',
+            to_account: 'one@example.com',
+            until: null
+          },
+          codex: null
+        }
+      ).get()
+    );
+
+    expect(fetchMock.mock.calls.length).toBe(before + 2);
+    meter.destroy();
+  });
+
+  test('redraws the open card when the settings store changes', async () => {
+    const mount = mountMeter();
+    serveTwoClaudeAccounts();
+    const store = settingsStore();
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store, transport: vi.fn() }
+    });
+    await openCard(mount);
+    await vi.waitFor(() => expect(star('two@example.com')).not.toBeNull());
+
+    store.set(settingsStore({ default_account: 'two@example.com' }).get());
+
+    expect(star('two@example.com').classList).toContain('is-active');
     meter.destroy();
   });
 });

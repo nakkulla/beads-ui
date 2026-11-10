@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLimitPolicySettingsStore } from '../../data/limit-policy-settings-store.js';
 import {
-  LIMIT_SCOPE_GUIDE,
+  ACTIVE_SWITCH_GUIDE,
   createLimitPolicySection
 } from './limit-policy-section.js';
 
@@ -12,11 +12,17 @@ const K2 = 'user-2::ws-a';
 const mounted = [];
 
 /**
- * @param {'repo'|'global'} scope
+ * @param {boolean} auto_switch
  * @param {Record<string, unknown>} [extra]
  */
-function entry(scope, extra = {}) {
-  return { scope, mode: 'switch', accounts: [], preempt_pct: null, ...extra };
+function entry(auto_switch, extra = {}) {
+  return {
+    auto_switch,
+    default_account: null,
+    accounts: [],
+    preempt_pct: null,
+    ...extra
+  };
 }
 
 /**
@@ -29,8 +35,8 @@ async function mount(options = {}) {
   store.set({
     revision: 5,
     runners: {
-      claude: options.claude ?? entry('repo'),
-      codex: options.codex ?? entry('repo')
+      claude: options.claude ?? entry(false),
+      codex: options.codex ?? entry(false)
     }
   });
   /** @type {Array<[string, any]>} */
@@ -85,7 +91,7 @@ afterEach(() => {
   }
 });
 
-describe('createLimitPolicySection (UI-giog §4.5)', () => {
+describe('createLimitPolicySection (UI-giog §4.5, UI-32oq §4.1)', () => {
   test('draws one group per runner, Claude first', async () => {
     const { host } = await mount();
 
@@ -96,18 +102,18 @@ describe('createLimitPolicySection (UI-giog §4.5)', () => {
     expect(groups).toEqual(['claude', 'codex']);
   });
 
-  test('orders the rows scope, guidance, mode, allow list, preemptive switch', async () => {
+  test('orders the rows auto switch, guidance, default, targets, trigger', async () => {
     const { host } = await mount();
 
     const order = Array.from(
       el(host, '[data-limit-global="claude"]').children
     ).map((node) =>
-      node.matches('[data-limit-scope-row]')
-        ? 'scope'
-        : node.matches('[data-limit-scope-guide]')
+      node.matches('[data-limit-auto-row]')
+        ? 'auto'
+        : node.matches('[data-limit-auto-guide]')
           ? 'guide'
-          : node.matches('[data-limit-mode-row]')
-            ? 'mode'
+          : node.matches('[data-limit-default-row]')
+            ? 'default'
             : node.matches('[data-limit-accounts]')
               ? 'accounts'
               : node.matches('[data-limit-preempt-row]')
@@ -117,45 +123,44 @@ describe('createLimitPolicySection (UI-giog §4.5)', () => {
 
     expect(order).toEqual([
       'settings-dialog__group-title',
-      'scope',
+      'auto',
       'guide',
-      'mode',
+      'default',
       'accounts',
       'preempt'
     ]);
   });
 
-  test('labels the scope split and the mode row', async () => {
+  test('draws no wait/switch mode row', async () => {
     const { host } = await mount();
 
-    const scope_texts = Array.from(
+    expect(host.querySelector('[data-limit-mode-row]')).toBeNull();
+  });
+
+  test('labels the auto switch split', async () => {
+    const { host } = await mount();
+
+    const texts = Array.from(
       host.querySelectorAll(
-        '[data-limit-scope-runner="claude"] button[data-limit-scope]'
+        '[data-limit-auto-runner="claude"] button[data-limit-auto]'
       )
     ).map((node) => node.textContent?.trim());
 
-    expect(scope_texts).toEqual(['저장소별', '전역']);
-    expect(
-      el(
-        host,
-        '[data-limit-mode-row="claude"] .settings-dialog__row-label'
-      ).textContent?.trim()
-    ).toBe('대응 방식');
+    expect(texts).toEqual(['켬', '끔']);
   });
 
-  test('shows the scope guidance under the scope row', async () => {
+  test('shows the guidance under the auto switch row', async () => {
     const { host } = await mount();
 
     expect(
-      el(host, '[data-limit-scope-guide="codex"]').textContent?.trim()
-    ).toBe(LIMIT_SCOPE_GUIDE);
+      el(host, '[data-limit-auto-guide="codex"]').textContent?.trim()
+    ).toBe(ACTIVE_SWITCH_GUIDE);
   });
 
-  test('dims the three policy rows while the scope is repo but keeps them editable', async () => {
+  test('dims the target and trigger rows while the auto switch is off but keeps them editable', async () => {
     const { host } = await mount();
 
     const rows = [
-      el(host, '[data-limit-mode-row="claude"]'),
       el(host, '[data-limit-accounts="claude"]'),
       el(host, '[data-limit-preempt-row="claude"]')
     ];
@@ -164,28 +169,28 @@ describe('createLimitPolicySection (UI-giog §4.5)', () => {
       rows.every((row) => row.classList.contains('settings-dialog__row--off'))
     ).toBe(true);
     expect(
-      /** @type {HTMLButtonElement} */ (
-        el(host, '[data-limit-mode-runner="claude"] [data-limit-mode="wait"]')
+      /** @type {HTMLInputElement} */ (
+        el(host, '[data-limit-preempt="claude"]')
       ).disabled
     ).toBe(false);
   });
 
-  test('undims the mode row once the scope is global', async () => {
-    const { host } = await mount({ claude: entry('global') });
+  test('undims the target rows once the auto switch is on', async () => {
+    const { host } = await mount({ claude: entry(true) });
 
     expect(
-      el(host, '[data-limit-mode-row="claude"]').classList.contains(
+      el(host, '[data-limit-accounts="claude"]').classList.contains(
         'settings-dialog__row--off'
       )
     ).toBe(false);
   });
 
-  test('sends the scope click as a per-runner patch against the revision', async () => {
+  test('sends the auto switch click as a per-runner patch against the revision', async () => {
     const { host, calls } = await mount();
 
     el(
       host,
-      '[data-limit-scope-runner="codex"] button[data-limit-scope="global"]'
+      '[data-limit-auto-runner="codex"] button[data-limit-auto="on"]'
     ).click();
     await settle();
 
@@ -194,18 +199,29 @@ describe('createLimitPolicySection (UI-giog §4.5)', () => {
     ).toEqual([
       [
         'limit-policy-settings-set',
-        { expected_revision: 5, runners: { codex: { scope: 'global' } } }
+        { expected_revision: 5, runners: { codex: { auto_switch: true } } }
       ]
     ]);
   });
 
-  test('sends a mode click through the same channel', async () => {
-    const { host, calls } = await mount();
+  test('offers an unset default and every catalog account', async () => {
+    const { host } = await mount();
 
-    el(
-      host,
-      '[data-limit-mode-runner="claude"] button[data-limit-mode="wait"]'
-    ).click();
+    const values = Array.from(
+      host.querySelectorAll('[data-limit-default="codex"] option')
+    ).map((node) => /** @type {HTMLOptionElement} */ (node).value);
+
+    expect(values).toEqual(['', K1, K2]);
+  });
+
+  test('sends a picked default through the same channel', async () => {
+    const { host, calls } = await mount();
+    const select = /** @type {HTMLSelectElement} */ (
+      el(host, '[data-limit-default="codex"]')
+    );
+
+    select.value = K2;
+    select.dispatchEvent(new Event('change'));
     await settle();
 
     expect(
@@ -213,14 +229,36 @@ describe('createLimitPolicySection (UI-giog §4.5)', () => {
     ).toEqual([
       [
         'limit-policy-settings-set',
-        { expected_revision: 5, runners: { claude: { mode: 'wait' } } }
+        { expected_revision: 5, runners: { codex: { default_account: K2 } } }
       ]
     ]);
   });
 
-  test('keeps the Codex allow list in its stored order', async () => {
+  test('sends an unset default as null', async () => {
+    const { host, calls } = await mount({
+      codex: entry(true, { default_account: K1 })
+    });
+    const select = /** @type {HTMLSelectElement} */ (
+      el(host, '[data-limit-default="codex"]')
+    );
+
+    select.value = '';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(
+      calls.filter(([type]) => type === 'limit-policy-settings-set')
+    ).toEqual([
+      [
+        'limit-policy-settings-set',
+        { expected_revision: 5, runners: { codex: { default_account: null } } }
+      ]
+    ]);
+  });
+
+  test('keeps the Codex target list in its stored order', async () => {
     const { host } = await mount({
-      codex: entry('global', { accounts: [K2, K1] })
+      codex: entry(true, { accounts: [K2, K1] })
     });
 
     const order = Array.from(
@@ -238,18 +276,18 @@ describe('createLimitPolicySection (UI-giog §4.5)', () => {
         ok: true,
         snapshot: {
           revision: 6,
-          runners: { claude: entry('global'), codex: entry('repo') }
+          runners: { claude: entry(true), codex: entry(false) }
         }
       })
     });
 
     el(
       host,
-      '[data-limit-scope-runner="claude"] button[data-limit-scope="global"]'
+      '[data-limit-auto-runner="claude"] button[data-limit-auto="on"]'
     ).click();
     await settle();
 
-    expect(store.get()?.runners.claude.scope).toBe('global');
+    expect(store.get()?.runners.claude.auto_switch).toBe(true);
   });
 
   test('re-sends a conflicted patch once against the adopted revision', async () => {
@@ -263,7 +301,7 @@ describe('createLimitPolicySection (UI-giog §4.5)', () => {
               code: 'conflict',
               snapshot: {
                 revision: 9,
-                runners: { claude: entry('repo'), codex: entry('repo') }
+                runners: { claude: entry(false), codex: entry(false) }
               }
             }
           : { ok: true };
@@ -272,7 +310,7 @@ describe('createLimitPolicySection (UI-giog §4.5)', () => {
 
     el(
       host,
-      '[data-limit-scope-runner="claude"] button[data-limit-scope="global"]'
+      '[data-limit-auto-runner="claude"] button[data-limit-auto="on"]'
     ).click();
     await settle();
 

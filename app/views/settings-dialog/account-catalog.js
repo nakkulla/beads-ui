@@ -122,11 +122,11 @@ export function accountRowLabel(provider_key, row) {
 export function accountDefaultLabel(provider_key, provider) {
   const active = provider ? provider.active : null;
   if (!isRecord(active)) {
-    return '기본값 사용 — 현재 로그인(확인 불가)';
+    return '비움 — 활성 로그인(확인 불가)';
   }
   const active_label =
     provider_key === 'claude'
       ? active.email
       : codexLabel(/** @type {any} */ ({ ...active, alias: null }));
-  return `기본값 사용 — 현재 로그인(${active_label})`;
+  return `비움 — 활성 로그인(${active_label})`;
 }

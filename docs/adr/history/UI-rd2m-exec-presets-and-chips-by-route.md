@@ -1,7 +1,8 @@
 ---
 id: UI-rd2m
 title: 실행 프리셋과 route 계열별 판정 칩
-status: accepted
+status: superseded
+superseded_by: UI-32oq-2
 date: 2026-10-14
 summary: "실행 프리셋은 applies_to 계열별 id 하나가 정체성이고 읽을 때 계열 키 집합을 대칭 비교하며 dispatchPreset과 카드 비교는 분리한다; 판정 칩 복잡·frontend·backend는 칩마다 general·quick_fix 서버 전역 바인딩을 하나씩 갖고 클릭은 이슈 route 계열의 바인딩 프리셋을 그 이슈에 적용하며 재클릭은 첫 클릭 전 핀으로 되돌리고 그 전이는 같은 워크스페이스·이슈별로 요청 순서대로 직렬화한다; 칩 바인딩 편집은 모니터 일괄 창의 서버 전역 탭에만 있고 저장소 하나를 편집하는 창에는 섞지 않는다"
 supersedes: ["UI-u6ud-10"]

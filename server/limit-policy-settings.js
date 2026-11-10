@@ -1,39 +1,51 @@
 /**
- * Server-global usage-limit policy and its per-runner apply scope (UI-giog
- * §4.1-§4.3).
+ * Server-global active-login auto-switch settings, per runner (UI-32oq §4.1).
  *
- * Each runner (`claude`, `codex`) carries one global policy in the same shape
- * as a repo's `provider_limit_policy[runner]` — `{ mode, accounts,
- * preempt_pct }` — plus `scope: 'repo'|'global'`. `global` makes the global
- * policy the EFFECTIVE policy of every registered repo for that runner and
- * turns on the global active-login switch; `repo` keeps each repo's own
- * policy and never switches the global login. Repo values are never written
- * here: `effectiveLimitPolicy` overlays them at read time.
+ * Each runner (`claude`, `codex`) carries `{ auto_switch, default_account,
+ * accounts, preempt_pct }`: whether bdui moves that runner's global active
+ * login on its own, the default account it leaves from and returns to (it
+ * need not be in `accounts`), the accounts it may move TO (for Codex the
+ * order is the switch order), and the trigger (null means the provider's
+ * exhausted level). Nothing here reaches a repo's Worker: every repo decision
+ * reads that repo's own stored `provider_limit_policy` through
+ * `normalizeProviderLimitPolicyEntry` — there is no global override.
  *
  * The file is `$XDG_STATE_HOME/bdui/limit-policy-settings.json`
- * (`{ revision, runners: { claude, codex } }`). Reads are fail-quiet (a missing
- * or corrupt file reads as the defaults; one bad runner falls back alone with
- * one log line), so a broken file reads as `repo` and neither overrides a repo
- * nor switches a login. Writes are strict: a revision CAS, and a rejected
- * request writes nothing (`conflict`, `invalid_value`). Consumers read the
- * current value at decision time through the synchronous getters.
+ * (`{ revision, runners: { claude, codex }, rebind_pending }`). Reads are
+ * fail-quiet and read-only: a missing or corrupt file reads as both runners
+ * off, one bad runner falls back alone with one log line, and a file still in
+ * the UI-giog shape (an entry with `scope`) reads converted in memory. Only
+ * `migrate()` — which the server entry calls once at start — writes the
+ * converted shape back, with one revision CAS, together with
+ * `rebind_pending`: the runners whose scope was `global`, whose standing hold
+ * verdicts were bound to the global policy and must be re-bound to each
+ * repo's own. User writes are strict: a revision CAS, and a rejected request
+ * writes nothing (`conflict`, `invalid_value`). Consumers read the current
+ * value at decision time through the synchronous getters.
  *
  * This module also owns the repo policy's normalizer and strict patch check,
- * so the queue store, the WS handlers and the global store share one rule set.
+ * so the queue store, the scheduler, the candidate route and the WS handlers
+ * share one rule set.
  *
  * @typedef {'claude'|'codex'} LimitPolicyRunner
- * @typedef {'repo'|'global'} LimitPolicyScope
  * @typedef {Object} ProviderLimitPolicy
  * @property {'wait'|'switch'} mode - What a usage limit does on this runner.
  * @property {string[]} accounts - Catalog keys the user allows a switch TO.
  * @property {number|null} preempt_pct - Preemptive switch threshold, or null.
- * @typedef {ProviderLimitPolicy & { scope: LimitPolicyScope }} GlobalLimitPolicy
+ * @typedef {Object} ActiveSwitchSettings
+ * @property {boolean} auto_switch - Whether the global active login moves on
+ * its own.
+ * @property {string|null} default_account - The account a departure starts
+ * from and a return goes back to, or null while unset.
+ * @property {string[]} accounts - Catalog keys the active login may move TO.
+ * @property {number|null} preempt_pct - The trigger, or null for exhausted.
  * @typedef {Object} LimitPolicySnapshot
  * @property {number} revision
- * @property {Record<LimitPolicyRunner, GlobalLimitPolicy>} runners
+ * @property {Record<LimitPolicyRunner, ActiveSwitchSettings>} runners
  * @typedef {'conflict'|'invalid_value'} LimitPolicyErrorCode
- * @typedef {{ ok: true, snapshot: LimitPolicySnapshot, changed: LimitPolicyRunner[] }
+ * @typedef {{ ok: true, snapshot: LimitPolicySnapshot }
  *   | { ok: false, code: LimitPolicyErrorCode, runner?: string, message: string, snapshot: LimitPolicySnapshot }} LimitPolicySetResult
+ * @typedef {{ revision: number, runners: Record<LimitPolicyRunner, ActiveSwitchSettings>, rebind_pending: LimitPolicyRunner[], legacy: boolean }} LimitPolicyState
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
@@ -41,6 +53,14 @@ import { limitPolicySettingsFilePath } from './worker/state-paths.js';
 
 /** @type {ReadonlyArray<LimitPolicyRunner>} */
 export const LIMIT_POLICY_RUNNERS = Object.freeze(['claude', 'codex']);
+
+/** The only fields a stored entry or a write patch may carry. */
+const SWITCH_SETTINGS_FIELDS = Object.freeze([
+  'auto_switch',
+  'default_account',
+  'accounts',
+  'preempt_pct'
+]);
 
 /**
  * @param {unknown} value
@@ -59,6 +79,54 @@ function isRunner(runner) {
 }
 
 /**
+ * Whether a value can name a catalog account: a non-empty key of at most 256
+ * characters without whitespace.
+ *
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+function isAccountKey(value) {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    !/\s/.test(value)
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is number}
+ */
+function isPreemptPct(value) {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 99
+  );
+}
+
+/**
+ * Account keys in their given order, without duplicates or illegal entries.
+ *
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function normalizeAccountKeys(value) {
+  /** @type {string[]} */
+  const accounts = [];
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (isAccountKey(entry) && !accounts.includes(entry)) {
+        accounts.push(entry);
+      }
+    }
+  }
+  return accounts;
+}
+
+/**
  * Build the per-runner default: switching is on, but the allowed set is empty,
  * so nothing switches until the user picks accounts (UI-13o1 §3.1 decision 1).
  *
@@ -69,7 +137,8 @@ export function defaultProviderLimitPolicy() {
 }
 
 /**
- * Normalize one runner's stored policy, dropping values outside the contract.
+ * Normalize one runner's stored repo policy, dropping values outside the
+ * contract. Every repo decision reads its policy through here.
  *
  * @param {unknown} value
  * @returns {ProviderLimitPolicy}
@@ -78,37 +147,16 @@ export function normalizeProviderLimitPolicyEntry(value) {
   if (!isRecord(value)) {
     return defaultProviderLimitPolicy();
   }
-  /** @type {string[]} */
-  const accounts = [];
-  if (Array.isArray(value.accounts)) {
-    for (const entry of value.accounts) {
-      if (
-        typeof entry === 'string' &&
-        entry.length > 0 &&
-        entry.length <= 256 &&
-        !/\s/.test(entry) &&
-        !accounts.includes(entry)
-      ) {
-        accounts.push(entry);
-      }
-    }
-  }
   return {
     mode: value.mode === 'wait' ? 'wait' : 'switch',
-    accounts,
-    preempt_pct:
-      typeof value.preempt_pct === 'number' &&
-      Number.isInteger(value.preempt_pct) &&
-      value.preempt_pct >= 1 &&
-      value.preempt_pct <= 99
-        ? value.preempt_pct
-        : null
+    accounts: normalizeAccountKeys(value.accounts),
+    preempt_pct: isPreemptPct(value.preempt_pct) ? value.preempt_pct : null
   };
 }
 
 /**
- * Strictly check one policy patch: every field present must be legal. The
- * stored set decides which paid account the Worker spends next, so a
+ * Strictly check one repo policy patch: every field present must be legal.
+ * The stored set decides which paid account the Worker spends next, so a
  * malformed patch is refused rather than silently normalized.
  *
  * @param {unknown} patch
@@ -122,28 +170,14 @@ export function providerLimitPolicyPatchError(patch) {
     return "mode must be 'wait' or 'switch'";
   }
   if ('accounts' in patch) {
-    if (
-      !Array.isArray(patch.accounts) ||
-      patch.accounts.some(
-        (/** @type {unknown} */ entry) =>
-          typeof entry !== 'string' ||
-          entry.length === 0 ||
-          entry.length > 256 ||
-          /\s/.test(entry)
-      )
-    ) {
+    if (!Array.isArray(patch.accounts) || !patch.accounts.every(isAccountKey)) {
       return 'accounts must be an array of account keys';
     }
   }
   if (
     'preempt_pct' in patch &&
     patch.preempt_pct !== null &&
-    !(
-      typeof patch.preempt_pct === 'number' &&
-      Number.isInteger(patch.preempt_pct) &&
-      patch.preempt_pct >= 1 &&
-      patch.preempt_pct <= 99
-    )
+    !isPreemptPct(patch.preempt_pct)
   ) {
     return 'preempt_pct must be null or an integer 1-99';
   }
@@ -151,33 +185,74 @@ export function providerLimitPolicyPatchError(patch) {
 }
 
 /**
- * The global entry a missing or broken file reads as: `repo` scope over the
- * repo default policy (UI-giog §4.1 initial value).
+ * Strictly check one active-switch settings patch: only the four known
+ * fields, each legal. An unknown field (an old client's `scope`/`mode`) is
+ * refused so the writer learns the shape changed.
  *
- * @returns {GlobalLimitPolicy}
+ * @param {unknown} patch
+ * @returns {string|null} Why the patch is refused, or null when it is legal.
  */
-function defaultGlobalEntry() {
-  return { scope: 'repo', ...defaultProviderLimitPolicy() };
+function switchSettingsPatchError(patch) {
+  if (!isRecord(patch)) {
+    return 'runner patch must be an object';
+  }
+  for (const field of Object.keys(patch)) {
+    if (!SWITCH_SETTINGS_FIELDS.includes(field)) {
+      return `unknown field: ${field}`;
+    }
+  }
+  if ('auto_switch' in patch && typeof patch.auto_switch !== 'boolean') {
+    return 'auto_switch must be a boolean';
+  }
+  if (
+    'default_account' in patch &&
+    patch.default_account !== null &&
+    !isAccountKey(patch.default_account)
+  ) {
+    return 'default_account must be null or an account key';
+  }
+  return providerLimitPolicyPatchError({
+    ...('accounts' in patch ? { accounts: patch.accounts } : {}),
+    ...('preempt_pct' in patch ? { preempt_pct: patch.preempt_pct } : {})
+  });
 }
 
 /**
- * @returns {Record<LimitPolicyRunner, GlobalLimitPolicy>}
+ * The settings a missing or broken entry reads as: auto switch off, no
+ * default, no target accounts (UI-32oq §4.7).
+ *
+ * @returns {ActiveSwitchSettings}
+ */
+export function defaultActiveSwitchSettings() {
+  return {
+    auto_switch: false,
+    default_account: null,
+    accounts: [],
+    preempt_pct: null
+  };
+}
+
+/**
+ * @returns {Record<LimitPolicyRunner, ActiveSwitchSettings>}
  */
 function defaultRunners() {
-  return { claude: defaultGlobalEntry(), codex: defaultGlobalEntry() };
+  return {
+    claude: defaultActiveSwitchSettings(),
+    codex: defaultActiveSwitchSettings()
+  };
 }
 
 /**
- * @param {GlobalLimitPolicy} entry
- * @returns {GlobalLimitPolicy}
+ * @param {ActiveSwitchSettings} entry
+ * @returns {ActiveSwitchSettings}
  */
 function cloneEntry(entry) {
   return { ...entry, accounts: [...entry.accounts] };
 }
 
 /**
- * @param {Record<LimitPolicyRunner, GlobalLimitPolicy>} runners
- * @returns {Record<LimitPolicyRunner, GlobalLimitPolicy>}
+ * @param {Record<LimitPolicyRunner, ActiveSwitchSettings>} runners
+ * @returns {Record<LimitPolicyRunner, ActiveSwitchSettings>}
  */
 function cloneRunners(runners) {
   return {
@@ -187,22 +262,24 @@ function cloneRunners(runners) {
 }
 
 /**
- * @param {GlobalLimitPolicy} a
- * @param {GlobalLimitPolicy} b
- * @returns {boolean}
+ * Normalize one legal settings record (stored entry or merged patch).
+ *
+ * @param {Record<string, unknown>} value
+ * @returns {ActiveSwitchSettings}
  */
-function sameEntry(a, b) {
-  return (
-    a.scope === b.scope &&
-    a.mode === b.mode &&
-    a.preempt_pct === b.preempt_pct &&
-    a.accounts.length === b.accounts.length &&
-    a.accounts.every((key, index) => b.accounts[index] === key)
-  );
+function normalizeSwitchSettings(value) {
+  return {
+    auto_switch: value.auto_switch === true,
+    default_account: isAccountKey(value.default_account)
+      ? value.default_account
+      : null,
+    accounts: normalizeAccountKeys(value.accounts),
+    preempt_pct: isPreemptPct(value.preempt_pct) ? value.preempt_pct : null
+  };
 }
 
 /**
- * Why one persisted runner entry is not usable, or null when it is.
+ * Why one persisted entry in the current shape is not usable, or null.
  *
  * @param {unknown} raw
  * @returns {string|null}
@@ -211,17 +288,76 @@ function storedEntryError(raw) {
   if (!isRecord(raw)) {
     return '객체가 아닙니다';
   }
-  if (raw.scope !== 'repo' && raw.scope !== 'global') {
-    return "scope는 'repo' 또는 'global'이어야 합니다";
-  }
-  // A persisted entry is a whole policy, not a patch: a missing field must not
-  // fall back to `switch`/empty and silently enable an override.
-  for (const field of ['mode', 'accounts', 'preempt_pct']) {
+  // A persisted entry is a whole value, not a patch: a missing field must not
+  // fall back to a default and silently turn a switch on or off.
+  for (const field of SWITCH_SETTINGS_FIELDS) {
     if (!(field in raw)) {
       return `${field} 필드가 없습니다`;
     }
   }
-  return providerLimitPolicyPatchError(raw);
+  return switchSettingsPatchError(raw);
+}
+
+/**
+ * Convert one UI-giog entry (`{ scope, mode, accounts, preempt_pct }`) to the
+ * current shape (§4.1 migration): the auto switch is on only where the old
+ * entry switched the global login — scope `global`, mode `switch`, a
+ * non-empty allow list — and the default is left for the user to pick. An
+ * entry the old reader would have refused read as `repo` there, so it
+ * converts to the default and was never `global`.
+ *
+ * @param {Record<string, unknown>} raw
+ * @returns {{ entry: ActiveSwitchSettings, global: boolean, error: string|null }}
+ */
+function convertLegacyEntry(raw) {
+  /** @type {string|null} */
+  let error = null;
+  if (raw.scope !== 'repo' && raw.scope !== 'global') {
+    error = "scope는 'repo' 또는 'global'이어야 합니다";
+  } else {
+    for (const field of ['mode', 'accounts', 'preempt_pct']) {
+      if (!(field in raw)) {
+        error = `${field} 필드가 없습니다`;
+        break;
+      }
+    }
+  }
+  error = error ?? providerLimitPolicyPatchError(raw);
+  if (error !== null) {
+    return { entry: defaultActiveSwitchSettings(), global: false, error };
+  }
+  const policy = normalizeProviderLimitPolicyEntry(raw);
+  const global = raw.scope === 'global';
+  return {
+    entry: {
+      auto_switch:
+        global && policy.mode === 'switch' && policy.accounts.length > 0,
+      default_account: null,
+      accounts: policy.accounts,
+      preempt_pct: policy.preempt_pct
+    },
+    global,
+    error: null
+  };
+}
+
+/**
+ * Runner names of a stored `rebind_pending`, unknown or repeated ones dropped.
+ *
+ * @param {unknown} value
+ * @returns {LimitPolicyRunner[]}
+ */
+function normalizeRebindPending(value) {
+  /** @type {LimitPolicyRunner[]} */
+  const pending = [];
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (isRunner(entry) && !pending.includes(entry)) {
+        pending.push(entry);
+      }
+    }
+  }
+  return pending;
 }
 
 /**
@@ -240,13 +376,28 @@ export function createLimitPolicySettingsStore(options = {}) {
   const fs = options.fs ?? nodeFs;
   const warn = options.warn ?? console.warn;
 
-  /** @type {{ revision: number, runners: Record<LimitPolicyRunner, GlobalLimitPolicy> } | null} */
+  /** @type {LimitPolicyState | null} */
   let cache = null;
   /** @type {Set<(snapshot: LimitPolicySnapshot, previous: LimitPolicySnapshot) => void>} */
   const listeners = new Set();
 
   /**
-   * @returns {{ revision: number, runners: Record<LimitPolicyRunner, GlobalLimitPolicy> }}
+   * @returns {LimitPolicyState}
+   */
+  function defaultState() {
+    return {
+      revision: 0,
+      runners: defaultRunners(),
+      rebind_pending: [],
+      legacy: false
+    };
+  }
+
+  /**
+   * Read the file once. Never writes: an old-shape file is converted in
+   * memory and stays old on disk until `migrate()`.
+   *
+   * @returns {LimitPolicyState}
    */
   function ensureLoaded() {
     if (cache) {
@@ -259,12 +410,12 @@ export function createLimitPolicySettingsStore(options = {}) {
     } catch (err) {
       if (/** @type {any} */ (err)?.code !== 'ENOENT') {
         warn(
-          `limit-policy-settings: ${filePath()} 읽기 실패(${String(err)}): 저장소별로 읽습니다.`
+          `limit-policy-settings: ${filePath()} 읽기 실패(${String(err)}): 자동 전환 끔으로 읽습니다.`
         );
       }
     }
     if (text === null) {
-      cache = { revision: 0, runners: defaultRunners() };
+      cache = defaultState();
       return cache;
     }
     /** @type {unknown} */
@@ -282,31 +433,53 @@ export function createLimitPolicySettingsStore(options = {}) {
       !isRecord(raw.runners)
     ) {
       warn(
-        `limit-policy-settings: ${filePath()} 무시: 형식이 잘못되어 저장소별로 읽습니다.`
+        `limit-policy-settings: ${filePath()} 무시: 형식이 잘못되어 자동 전환 끔으로 읽습니다.`
       );
-      cache = { revision: 0, runners: defaultRunners() };
+      cache = defaultState();
       return cache;
     }
     const runners = defaultRunners();
+    let legacy = false;
+    /** @type {LimitPolicyRunner[]} */
+    const legacy_global = [];
     for (const runner of LIMIT_POLICY_RUNNERS) {
       const entry = raw.runners[runner];
       if (entry === undefined) {
         continue;
       }
+      if (isRecord(entry) && 'scope' in entry) {
+        legacy = true;
+        const converted = convertLegacyEntry(entry);
+        if (converted.error !== null) {
+          warn(
+            `limit-policy-settings: ${runner} 옛 값 무시(${converted.error}): 자동 전환 끔으로 읽습니다.`
+          );
+        }
+        runners[runner] = converted.entry;
+        if (converted.global) {
+          legacy_global.push(runner);
+        }
+        continue;
+      }
       const reason = storedEntryError(entry);
       if (reason) {
         warn(
-          `limit-policy-settings: ${runner} 무시(${reason}): 저장소별로 읽습니다.`
+          `limit-policy-settings: ${runner} 무시(${reason}): 자동 전환 끔으로 읽습니다.`
         );
         continue;
       }
-      const record = /** @type {Record<string, unknown>} */ (entry);
-      runners[runner] = {
-        scope: /** @type {LimitPolicyScope} */ (record.scope),
-        ...normalizeProviderLimitPolicyEntry(record)
-      };
+      runners[runner] = normalizeSwitchSettings(
+        /** @type {Record<string, unknown>} */ (entry)
+      );
     }
-    cache = { revision: raw.revision, runners };
+    cache = {
+      revision: raw.revision,
+      runners,
+      rebind_pending: legacy
+        ? legacy_global
+        : normalizeRebindPending(raw.rebind_pending),
+      legacy
+    };
     return cache;
   }
 
@@ -319,14 +492,27 @@ export function createLimitPolicySettingsStore(options = {}) {
   }
 
   /**
-   * @param {Record<LimitPolicyRunner, GlobalLimitPolicy>} runners
-   * @param {number} revision
+   * Write the whole file atomically. Every write carries `rebind_pending`, so
+   * a user write never drops a re-binding the migration left pending.
+   *
+   * @param {Omit<LimitPolicyState, 'legacy'>} state
    */
-  function persist(runners, revision) {
+  function persist(state) {
     const file = filePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ revision, runners }, null, 2));
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify(
+        {
+          revision: state.revision,
+          runners: state.runners,
+          rebind_pending: state.rebind_pending
+        },
+        null,
+        2
+      )
+    );
     fs.renameSync(tmp, file);
   }
 
@@ -348,13 +534,79 @@ export function createLimitPolicySettingsStore(options = {}) {
     snapshot,
 
     /**
-     * One runner's current global entry (a copy).
+     * One runner's current settings (a copy).
      *
      * @param {LimitPolicyRunner} runner
-     * @returns {GlobalLimitPolicy}
+     * @returns {ActiveSwitchSettings}
      */
     runner(runner) {
       return cloneEntry(ensureLoaded().runners[runner]);
+    },
+
+    /**
+     * Rewrite a UI-giog-shape file in the current shape, once, with the
+     * converted `rebind_pending` (§4.1). A file already current is left
+     * alone. A failed write is logged and the converted value keeps serving
+     * from memory; the next start reads the old file and tries again.
+     *
+     * @returns {{ migrated: boolean, rebind_pending: LimitPolicyRunner[] }}
+     */
+    migrate() {
+      const state = ensureLoaded();
+      if (!state.legacy) {
+        return { migrated: false, rebind_pending: [...state.rebind_pending] };
+      }
+      const revision = state.revision + 1;
+      try {
+        persist({ ...state, revision });
+      } catch (err) {
+        warn(
+          `limit-policy-settings: 새 모양 이전 쓰기 실패(${String(err)}): 다음 시작에 다시 합니다.`
+        );
+        return { migrated: false, rebind_pending: [...state.rebind_pending] };
+      }
+      cache = { ...state, revision, legacy: false };
+      return { migrated: true, rebind_pending: [...state.rebind_pending] };
+    },
+
+    /**
+     * The runners whose hold verdicts still wait to be re-bound (a copy).
+     *
+     * @returns {LimitPolicyRunner[]}
+     */
+    rebindPending() {
+      return [...ensureLoaded().rebind_pending];
+    },
+
+    /**
+     * Drop one runner from `rebind_pending` once every repo re-bound it. The
+     * read-modify-write runs synchronously on the one in-process state, so a
+     * concurrent user write can neither lose this removal nor be lost to it.
+     * The revision does not move: `rebind_pending` is not part of the
+     * snapshot a client compares against. False when the write failed (the
+     * runner stays pending, in memory and on disk, for the next start).
+     *
+     * @param {LimitPolicyRunner} runner
+     * @returns {boolean}
+     */
+    completeRebind(runner) {
+      const state = ensureLoaded();
+      if (!state.rebind_pending.includes(runner)) {
+        return true;
+      }
+      const rebind_pending = state.rebind_pending.filter(
+        (entry) => entry !== runner
+      );
+      try {
+        persist({ ...state, rebind_pending });
+      } catch (err) {
+        warn(
+          `limit-policy-settings: ${runner} 재결속 완료 쓰기 실패(${String(err)}): 다음 시작에 다시 합니다.`
+        );
+        return false;
+      }
+      cache = { ...state, rebind_pending, legacy: false };
+      return true;
     },
 
     /**
@@ -394,13 +646,7 @@ export function createLimitPolicySettingsStore(options = {}) {
             snapshot: snapshot()
           };
         }
-        const reason =
-          providerLimitPolicyPatchError(patch) ??
-          ('scope' in /** @type {Record<string, unknown>} */ (patch) &&
-          /** @type {any} */ (patch).scope !== 'repo' &&
-          /** @type {any} */ (patch).scope !== 'global'
-            ? "scope must be 'repo' or 'global'"
-            : null);
+        const reason = switchSettingsPatchError(patch);
         if (reason) {
           return {
             ok: false,
@@ -410,28 +656,27 @@ export function createLimitPolicySettingsStore(options = {}) {
             snapshot: snapshot()
           };
         }
-        const fields = /** @type {Record<string, any>} */ (patch);
-        const current = next[runner];
-        next[runner] = {
-          scope: fields.scope ?? current.scope,
-          ...normalizeProviderLimitPolicyEntry({
-            mode: fields.mode ?? current.mode,
-            accounts: fields.accounts ?? current.accounts,
-            preempt_pct:
-              'preempt_pct' in fields ? fields.preempt_pct : current.preempt_pct
-          })
-        };
+        next[runner] = normalizeSwitchSettings({
+          ...next[runner],
+          .../** @type {Record<string, unknown>} */ (patch)
+        });
       }
-      const changed = LIMIT_POLICY_RUNNERS.filter(
-        (runner) => !sameEntry(state.runners[runner], next[runner])
-      );
       const previous = snapshot();
       const revision = state.revision + 1;
-      persist(next, revision);
-      cache = { revision, runners: next };
+      persist({
+        revision,
+        runners: next,
+        rebind_pending: state.rebind_pending
+      });
+      cache = {
+        revision,
+        runners: next,
+        rebind_pending: state.rebind_pending,
+        legacy: false
+      };
       const result = snapshot();
       emit(result, previous);
-      return { ok: true, snapshot: result, changed };
+      return { ok: true, snapshot: result };
     },
 
     /**
@@ -450,7 +695,7 @@ export function createLimitPolicySettingsStore(options = {}) {
     /**
      * Test hook: replace runner entries in memory (no disk) and notify.
      *
-     * @param {Partial<Record<LimitPolicyRunner, Partial<GlobalLimitPolicy>>>} runners
+     * @param {Partial<Record<LimitPolicyRunner, Partial<ActiveSwitchSettings>>>} runners
      */
     __setRunnersForTest(runners) {
       const state = ensureLoaded();
@@ -459,13 +704,10 @@ export function createLimitPolicySettingsStore(options = {}) {
       for (const runner of LIMIT_POLICY_RUNNERS) {
         const patch = runners[runner];
         if (patch) {
-          next[runner] = {
-            scope: patch.scope ?? next[runner].scope,
-            ...normalizeProviderLimitPolicyEntry({ ...next[runner], ...patch })
-          };
+          next[runner] = normalizeSwitchSettings({ ...next[runner], ...patch });
         }
       }
-      cache = { revision: state.revision + 1, runners: next };
+      cache = { ...state, revision: state.revision + 1, runners: next };
       emit(snapshot(), previous);
     },
 
@@ -492,37 +734,14 @@ export function limitPolicySettingsStore() {
 }
 
 /**
- * One runner's global entry at this moment. Read at decision time; never
- * cache across judgments.
+ * One runner's active-switch settings at this moment. Read at decision time;
+ * never cache across judgments.
  *
  * @param {LimitPolicyRunner} runner
- * @returns {GlobalLimitPolicy}
+ * @returns {ActiveSwitchSettings}
  */
-export function globalLimitPolicyOf(runner) {
+export function activeSwitchSettingsOf(runner) {
   return limitPolicySettingsStore().runner(runner);
-}
-
-/**
- * The policy a decision for `runner` follows: the global policy while that
- * runner's scope is `global`, else the normalized stored repo policy. Every
- * consumer reads through here — none re-judges `scope` itself (UI-giog §4.1).
- *
- * @param {unknown} stored - The repo's `provider_limit_policy[runner]`.
- * @param {string} runner
- * @returns {ProviderLimitPolicy}
- */
-export function effectiveLimitPolicy(stored, runner) {
-  if (isRunner(runner)) {
-    const global = globalLimitPolicyOf(runner);
-    if (global.scope === 'global') {
-      return {
-        mode: global.mode,
-        accounts: global.accounts,
-        preempt_pct: global.preempt_pct
-      };
-    }
-  }
-  return normalizeProviderLimitPolicyEntry(stored);
 }
 
 /**
@@ -535,52 +754,17 @@ export function onLimitPolicySettingsChanged(listener) {
   return limitPolicySettingsStore().onChange(listener);
 }
 
-/** @type {Set<() => void>} */
-const APPLIED_LISTENERS = new Set();
-
-/**
- * Subscribe to the END of a successful write's propagation: every repo's
- * hold verdicts were re-bound and its switch pass re-run. The server entry
- * hands the active-login passes one judgment here (UI-giog §4.1).
- *
- * @param {() => void} listener
- * @returns {() => void} Unsubscribe.
- */
-export function onLimitPolicyApplied(listener) {
-  APPLIED_LISTENERS.add(listener);
-  return () => {
-    APPLIED_LISTENERS.delete(listener);
-  };
-}
-
-/**
- * Announce that a write finished propagating (the WS write handler calls
- * this last). One failing listener never stops the others.
- */
-export function announceLimitPolicyApplied() {
-  for (const listener of [...APPLIED_LISTENERS]) {
-    try {
-      listener();
-    } catch (err) {
-      console.warn(
-        `limit-policy-settings: 적용 알림 처리 실패(${String(err)})`
-      );
-    }
-  }
-}
-
 /**
  * Test-only: drop the shared store so the next read starts from the file.
  */
 export function __resetLimitPolicySettingsForTest() {
   STORE = null;
-  APPLIED_LISTENERS.clear();
 }
 
 /**
  * Test-only: pin runner entries of the shared store in memory and notify.
  *
- * @param {Partial<Record<LimitPolicyRunner, Partial<GlobalLimitPolicy>>>} runners
+ * @param {Partial<Record<LimitPolicyRunner, Partial<ActiveSwitchSettings>>>} runners
  */
 export function __setLimitPolicySettingsForTest(runners) {
   limitPolicySettingsStore().__setRunnersForTest(runners);

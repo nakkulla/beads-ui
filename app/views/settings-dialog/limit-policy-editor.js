@@ -2,9 +2,11 @@
  * One runner's `한도 대응` rows — `대응 방식`, `전환 허용 계정`, `선제 전환` —
  * and the click handling behind them (UI-13o1 §3.5, UI-9y1k §4.5).
  *
- * The repo `계정` tab and the monitor ⚙ `전역` tab draw the SAME rows from this
+ * The settings dialog's `계정` and `활성 계정` tabs draw these rows from this
  * one editor (UI-giog §4.5); only the policy source and the save channel
- * differ, so neither screen reassembles the rows by hand. A screen hands in:
+ * differ, so neither screen reassembles the rows by hand. The `활성 계정` tab's
+ * active-login switch has no wait/switch mode (UI-32oq §4.1), so it leaves the
+ * mode row out and draws its own rows above. A screen hands in:
  *
  * - `policyOf(runner)` — the stored policy object (any shape; read
  *   fail-quiet),
@@ -19,10 +21,9 @@
  * @typedef {'claude'|'codex'} LimitRunner
  * @typedef {{ mode: 'wait'|'switch', accounts: string[], preempt_pct: number|null }} LimitPolicyView
  * @typedef {Object} LimitRowsOptions
- * @property {string} mode_label - The first row's label.
- * @property {boolean} [dim] - Dim all three rows (values stay editable).
- * @property {boolean} [locked] - Dim and disable all three rows.
- * @property {string|null} [note] - One hint line under the rows.
+ * @property {string|null} mode_label - The mode row's label, or null to leave
+ * the mode row out.
+ * @property {boolean} [dim] - Dim every drawn row (values stay editable).
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
@@ -34,10 +35,6 @@ import { accountRowLabel } from './account-catalog.js';
  * default is inside that range on purpose.
  */
 export const DEFAULT_PREEMPT_PCT = 80;
-
-/** The note a repo row carries while its runner follows the global policy. */
-export const GLOBAL_LIMIT_LOCK_NOTE =
-  '전역 적용 중 — 모니터 ⚙ 전역 탭에서 바꿉니다';
 
 /**
  * @param {unknown} value
@@ -265,10 +262,9 @@ export function createLimitPolicyEditor(deps) {
    * @param {LimitPolicyView} policy
    * @param {any[]} rows
    * @param {string[]} orphans
-   * @param {boolean} locked
    * @returns {TemplateResult}
    */
-  function allowListTemplate(runner, policy, rows, orphans, locked) {
+  function allowListTemplate(runner, policy, rows, orphans) {
     return html`${rows.map(
       (/** @type {any} */ row) =>
         html`<label class="settings-dialog__check">
@@ -277,7 +273,6 @@ export function createLimitPolicyEditor(deps) {
             data-limit-runner=${runner}
             data-limit-account=${row.key}
             .checked=${live(policy.accounts.includes(row.key))}
-            ?disabled=${locked}
             @change=${(/** @type {Event} */ ev) =>
               onAccountToggle(
                 runner,
@@ -296,7 +291,6 @@ export function createLimitPolicyEditor(deps) {
             data-limit-runner=${runner}
             data-limit-account=${key}
             .checked=${live(true)}
-            ?disabled=${locked}
             @change=${(/** @type {Event} */ ev) =>
               onAccountToggle(
                 runner,
@@ -316,10 +310,9 @@ export function createLimitPolicyEditor(deps) {
    *
    * @param {LimitPolicyView} policy
    * @param {any[]} rows
-   * @param {boolean} locked
    * @returns {TemplateResult}
    */
-  function codexAllowListTemplate(policy, rows, locked) {
+  function codexAllowListTemplate(policy, rows) {
     /** @type {Map<string, any>} */
     const by_key = new Map(rows.map((row) => [String(row.key), row]));
     const last = policy.accounts.length - 1;
@@ -338,7 +331,6 @@ export function createLimitPolicyEditor(deps) {
             data-limit-runner="codex"
             data-limit-account=${key}
             .checked=${live(true)}
-            ?disabled=${locked}
             @change=${(/** @type {Event} */ ev) =>
               onAccountToggle(
                 'codex',
@@ -355,7 +347,7 @@ export function createLimitPolicyEditor(deps) {
           title="위로"
           data-limit-move="up"
           data-limit-move-account=${key}
-          ?disabled=${locked || index === 0}
+          ?disabled=${index === 0}
           @click=${() => onAccountMove('codex', key, -1)}
         >
           ▲
@@ -367,7 +359,7 @@ export function createLimitPolicyEditor(deps) {
           title="아래로"
           data-limit-move="down"
           data-limit-move-account=${key}
-          ?disabled=${locked || index === last}
+          ?disabled=${index === last}
           @click=${() => onAccountMove('codex', key, 1)}
         >
           ▼
@@ -384,7 +376,6 @@ export function createLimitPolicyEditor(deps) {
               data-limit-runner="codex"
               data-limit-account=${row.key}
               .checked=${live(false)}
-              ?disabled=${locked}
               @change=${(/** @type {Event} */ ev) =>
                 onAccountToggle(
                   'codex',
@@ -398,10 +389,56 @@ export function createLimitPolicyEditor(deps) {
   }
 
   /**
-   * One runner's three rows: mode, allow list, preemptive threshold. `기다림`
-   * only dims the two lower rows — the values stay editable because the mode
-   * gates the decision, not the setting. `dim` dims all three (still
-   * editable); `locked` dims and disables all three.
+   * The repo tab's wait/switch choice for one runner (`기다림 / 자동 전환`).
+   *
+   * @param {LimitRunner} runner
+   * @param {string} label - The runner's display name (`Claude`, `Codex`).
+   * @param {string} mode_label
+   * @param {LimitPolicyView} policy
+   * @param {string} row_dim
+   * @returns {TemplateResult}
+   */
+  function modeRowTemplate(runner, label, mode_label, policy, row_dim) {
+    return html`<div
+      class=${`settings-dialog__row${row_dim}`}
+      data-limit-mode-row=${runner}
+    >
+      <span class="settings-dialog__row-label">${mode_label}</span>
+      <span class="settings-dialog__controls">
+        <span
+          class="settings-dialog__seg"
+          role="group"
+          aria-label=${`${label} 한도 대응`}
+          data-limit-mode-runner=${runner}
+        >
+          <button
+            type="button"
+            class=${policy.mode === 'wait' ? 'op-btn is-active' : 'op-btn'}
+            data-limit-mode="wait"
+            aria-pressed=${String(policy.mode === 'wait')}
+            @click=${() => onModeChange(runner, 'wait')}
+          >
+            기다림
+          </button>
+          <button
+            type="button"
+            class=${policy.mode === 'switch' ? 'op-btn is-active' : 'op-btn'}
+            data-limit-mode="switch"
+            aria-pressed=${String(policy.mode === 'switch')}
+            @click=${() => onModeChange(runner, 'switch')}
+          >
+            자동 전환
+          </button>
+        </span>
+      </span>
+    </div>`;
+  }
+
+  /**
+   * One runner's rows: mode (unless `mode_label` is null), allow list,
+   * preemptive threshold. `기다림` only dims the two lower rows — the values
+   * stay editable because the mode gates the decision, not the setting.
+   * `dim` dims every drawn row (still editable).
    *
    * @param {LimitRunner} runner
    * @param {string} label - The runner's display name (`Claude`, `Codex`).
@@ -414,52 +451,18 @@ export function createLimitPolicyEditor(deps) {
     const rows = provider ? provider.accounts : [];
     const known = new Set(rows.map((/** @type {any} */ row) => row.key));
     const orphans = policy.accounts.filter((key) => !known.has(key));
-    const locked = options.locked === true;
-    const all_dim = locked || options.dim === true;
     const off = ' settings-dialog__row--off';
-    const top_dim = all_dim ? off : '';
-    const dim = all_dim || policy.mode !== 'switch' ? off : '';
-    return html`<div
-        class=${`settings-dialog__row${top_dim}`}
-        data-limit-mode-row=${runner}
-      >
-        <span class="settings-dialog__row-label">${options.mode_label}</span>
-        <span class="settings-dialog__controls">
-          <span
-            class="settings-dialog__seg"
-            role="group"
-            aria-label=${`${label} 한도 대응`}
-            data-limit-mode-runner=${runner}
-          >
-            <button
-              type="button"
-              class=${policy.mode === 'wait' ? 'op-btn is-active' : 'op-btn'}
-              data-limit-mode="wait"
-              aria-pressed=${String(policy.mode === 'wait')}
-              ?disabled=${locked}
-              @click=${() => onModeChange(runner, 'wait')}
-            >
-              기다림
-            </button>
-            <button
-              type="button"
-              class=${policy.mode === 'switch' ? 'op-btn is-active' : 'op-btn'}
-              data-limit-mode="switch"
-              aria-pressed=${String(policy.mode === 'switch')}
-              ?disabled=${locked}
-              @click=${() => onModeChange(runner, 'switch')}
-            >
-              자동 전환
-            </button>
-          </span>
-        </span>
-      </div>
+    const top_dim = options.dim === true ? off : '';
+    const dim = options.dim === true || policy.mode !== 'switch' ? off : '';
+    return html`${options.mode_label === null
+        ? ''
+        : modeRowTemplate(runner, label, options.mode_label, policy, top_dim)}
       <div class=${`settings-dialog__row${dim}`} data-limit-accounts=${runner}>
         <span class="settings-dialog__row-label">전환 허용 계정</span>
         <span class="settings-dialog__controls">
           ${runner === 'codex'
-            ? codexAllowListTemplate(policy, rows, locked)
-            : allowListTemplate(runner, policy, rows, orphans, locked)}
+            ? codexAllowListTemplate(policy, rows)
+            : allowListTemplate(runner, policy, rows, orphans)}
           ${provider
             ? ''
             : html`<span class="settings-dialog__hint"
@@ -478,7 +481,6 @@ export function createLimitPolicyEditor(deps) {
               type="checkbox"
               data-limit-preempt=${runner}
               .checked=${live(policy.preempt_pct !== null)}
-              ?disabled=${locked}
               @change=${(/** @type {Event} */ ev) =>
                 onPreemptToggle(
                   runner,
@@ -495,7 +497,6 @@ export function createLimitPolicyEditor(deps) {
             step="1"
             aria-label=${`${label} 선제 전환 임계`}
             data-limit-preempt-pct=${runner}
-            ?disabled=${locked}
             .value=${live(
               preempt_draft[runner] ??
                 String(policy.preempt_pct ?? DEFAULT_PREEMPT_PCT)
@@ -516,15 +517,7 @@ export function createLimitPolicyEditor(deps) {
             사용량 반영은 최대 몇 분 지연될 수 있습니다</span
           >
         </span>
-      </div>
-      ${options.note
-        ? html`<div class="settings-dialog__row" data-limit-note=${runner}>
-            <span class="settings-dialog__row-label"></span>
-            <span class="settings-dialog__controls">
-              <span class="settings-dialog__hint">${options.note}</span>
-            </span>
-          </div>`
-        : ''}`;
+      </div>`;
   }
 
   return { policyOf, template };

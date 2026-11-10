@@ -5,15 +5,12 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
-| UI-57us | [session-preferred 기본 세션 레인과 Worker 전환 칩](UI-57us-session-preferred-default-session-lane.md) | 2026-11-10 | session-preferred 이슈는 exec_lane=worker가 아니면 Worker 대기열에서 세션 레인으로 실행되고 세션 권장 칩은 exec_lane=worker를 토글하며(기본 세션 실행, 누르면 Worker 실행), worker-ineligible은 항상 세션 레인이고 나머지 조항은 UI-5cmo 그대로다 |
-| UI-giog | [한도 대응 전역 적용 범위·공급자 보류 전역 원본·활성 복귀](UI-giog-global-limit-policy-scope.md) | 2026-11-09 | 한도 대응에 러너별 서버 전역 정책과 적용 범위 스위치를 두어, 전역이면 모든 저장소의 그 러너 Worker 판정과 전역 활성 계정 자동 전환이 전역 정책(저장소 값은 보존)을 따르고 저장소별이면 저장소 정책만 쓰며 전역 활성 계정은 자동으로 바꾸지 않고, 전역 활성 계정 전환은 전역 허용 목록과 선제 전환 임계(없으면 100%) 미만 후보로 판정하며 기다림 보호를 두지 않는다 — 나머지 조항은 UI-btp3 그대로다 |
-| UI-rd2m | [실행 프리셋과 route 계열별 판정 칩](UI-rd2m-exec-presets-and-chips-by-route.md) | 2026-10-14 | 실행 프리셋은 applies_to 계열별 id 하나가 정체성이고 읽을 때 계열 키 집합을 대칭 비교하며 dispatchPreset과 카드 비교는 분리한다; 판정 칩 복잡·frontend·backend는 칩마다 general·quick_fix 서버 전역 바인딩을 하나씩 갖고 클릭은 이슈 route 계열의 바인딩 프리셋을 그 이슈에 적용하며 재클릭은 첫 클릭 전 핀으로 되돌리고 그 전이는 같은 워크스페이스·이슈별로 요청 순서대로 직렬화한다; 칩 바인딩 편집은 모니터 일괄 창의 서버 전역 탭에만 있고 저장소 하나를 편집하는 창에는 섞지 않는다 |
-| UI-gpac-2 | [모델 활성은 꺼 둔 목록으로 거르고 새 Codex 고정 이름은 숨긴다](UI-gpac-2-model-visibility-hides-new-codex-pinned.md) | 2026-10-12 | 모델 활성은 서버 전역 꺼 둔 모델 목록이 선택지 표시에서만 빼는 것이며 카탈로그·저장 값·디스패치 검증·단가는 그대로 둔다; 새로 추가되는 모델은 자동으로 보이되 Codex 고정 이름(<계열>-<버전>)은 처음 나타날 때 꺼 둔 목록에 더해져 사용자가 켤 때만 보이고, 기존 상태 파일은 이전 카탈로그 이름을 이미 본 이름으로 이전한다; 저장된 값이 꺼 둔 모델이면 (비활성)으로 남기고 러너마다 하나 이상 켜 둔다 |
+| UI-32oq-2 | [설정 창 하나와 대상·서버 전체 탭 묶음](UI-32oq-2-settings-one-window-target-and-server-tabs.md) | 2026-11-10 | 설정 창은 어느 ⚙에서 열든 같은 탭 목록이고 처음 대상(연결 저장소·그 저장소·여러 저장소)만 다르며, 레일은 대상 저장소 탭과 서버 전체 탭으로 나뉘어 칩 바인딩·활성 모델·대화 세션 설정·Worker 공통 주소는 서버 전체 탭에서 대상과 무관하게 편집하고, Worker 주소의 저장소 예외는 저장돼 있을 때만 그 저장소 탭에 읽기 전용으로 보이며 지우기만 허용한다 — 프리셋 정체성·판정 칩 규칙(UI-rd2m), 모델 활성 규칙(UI-gpac-2), 세션 레인·대화 규칙(UI-57us), 적용값 분리·CLI 전용 공통 쓰기·fail-quiet 읽기(UI-u6ud-11)는 그대로다 |
+| UI-32oq | [한도 대응 저장소 정책·활성 계정 자동 전환과 default 복귀](UI-32oq-limit-policy-repo-and-active-login-return.md) | 2026-11-10 | 한도 대응은 Worker 판정에 저장소 정책만 쓰고 전역 덮어쓰기는 없으며, 서버 전역 설정은 러너별 활성 계정 자동 전환(켬/끔·default 계정·허용 목록·트리거)만 정한다; 활성 계정이 트리거에 닿으면 허용 목록 후보로 옮기고, default에서 떠난 기록은 재시작을 넘어 남아 그 소진 창의 리셋 시각이 지나고 default의 창이 모두 트리거 미만이면 default로 돌아오며, 관측한 활성 계정이 기록과 다르면 사람이 바꾼 것으로 보고 복귀하지 않는다 — 나머지 조항은 UI-giog 그대로다 |
 | UI-gpac | [Codex 모델 카탈로그의 원천은 Codex CLI 목록이다](UI-gpac-codex-catalog-from-cli-list.md) | 2026-10-12 | beads-ui의 Codex 모델 선택지는 서버가 Codex CLI 목록(codex debug models)을 비동기로 읽어 dotfiles와 같은 규칙(계열별 최신 list·v2 → 별칭, 모든 적격 버전 → <계열>-<버전> 고정 이름)으로 만들고, 규칙은 JS로 복제해 dotfiles 해석기와 교차 테스트로 묶는다; 마지막 성공 목록을 영속해 읽기 실패가 카탈로그를 줄이지 않으며, effort·speed는 계열 템플릿을, 단가는 별칭이 해석된 고정 이름의 것을 상속하며, 목록에서 빠진 고정 이름의 저장값은 원문을 보존하고 실행은 기본값으로 대신한다 |
 | UI-ny0h | [Worker 머지 큐·머지 자격·독립 스위치와 해소 대기 설정](UI-ny0h-merge-queue-and-resolution-wait-setting.md) | 2026-10-03 | PR 랜딩 작업의 머지는 Worker의 단일 순차 큐만 실행하고 완료는 MERGED 관측이다; 머지 자격은 저장소 안의 입력(PR·base·head identity, mergeability, 리뷰·실행 영수증, [verify])만 보고 GitHub checks는 읽지 않는다; auto_merge와 auto_advance는 독립 스위치이고 어떤 클릭도 둘을 함께 바꾸지 않는다; 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이고 그 길이는 서버 전역 타이밍 설정이 정하며 충돌 해소 fence는 수동 권한 면제·슬롯 여유로 판정한다 |
 | UI-u6ud-9 | [사용량 집계](UI-u6ud-9-usage-aggregation.md) | 2026-09-23 | 사용량은 검증된 직접 사용량만 부모·자식 중복 없이 합산하고 입증되지 않은 값은 추정 가산하지 않으며 미관측 범위는 부분 집계로 표시한다; 직접 세션 카드는 현재 참조 대화 전체를 보이되 Bead별 배분·워크스페이스 합계 가산을 하지 않는다 |
 | UI-u6ud-2 | [dotfiles 계약 소비와 ADR 탭 체커 소비](UI-u6ud-2-dotfiles-contract-consumption.md) | 2026-09-23 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제해 검증을 소유하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며 JS 리더는 표를 그릴 수 있는지만 판정한다 |
-| UI-u6ud-11 | [Worker 주소와 저장소 defaults 소비](UI-u6ud-11-worker-url-and-defaults.md) | 2026-09-23 | Beads UI는 저장소 defaults 저장값과 Worker 주소 적용값을 분리하고 공통 주소의 조회·쓰기는 설치된 dotfiles worker-url CLI로만 하며 kv·공통 파일을 직접 쓰거나 적용값을 추측하지 않는다; defaults의 키·schema·허용값·부재 규칙은 dotfiles 계약이 정의하고 beads-ui는 어휘를 넓히거나 하네스 기본값을 복제하지 않으며 kv 읽기는 fail-quiet, 사용자 편집 쓰기는 strict 거절이다; 설정 화면은 적용 주소·저장소 예외·공통 기본값을 따로 보이고 새 연결 점검 API는 두지 않는다 |
 | UI-u6ud | [데이터 계층과 스냅샷 투영](UI-u6ud-data-layer-snapshot-projection.md) | 2026-09-23 | 데이터 계층은 bd CLI shell-out(스냅샷 세대당 기본 2회 read, legacy 3회)이고 DB 직결·daemon·batch RPC는 없다; issue-detail을 포함한 모든 목록은 같은 워크스페이스 스냅샷 세대에서 투영하고 상세 전용 bd read는 없다; 워크스페이스·후보 투영은 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스는 title-cache 외에 띄우지 않는다; 구독별 store는 전체 issue push를 받아 내용 변경만 통지하고 registry가 구독 출처를 전달한다 |
 
 ## 이력
@@ -92,7 +89,7 @@
 | UI-cmx3 | [직렬 레인은 선두만 실행 후보이고 선행 대기 우회 예외는 없다](history/UI-cmx3-serial-lane-head-only-no-prerequisite-bypass.md) | superseded | [UI-3pu9](history/UI-3pu9-auto-advance-off-quiet-wait-cards.md) |
 | UI-cmx3-2 | [선행 대기 attempt가 있는 bead는 held 타일이 아니라 대기 행이 대표한다](history/UI-cmx3-2-prerequisite-waiting-attempt-represented-by-waiting-row.md) | superseded | [UI-3pu9](history/UI-3pu9-auto-advance-off-quiet-wait-cards.md) |
 | UI-tqqp | [bd closed·deferred Bead는 모든 대기 레인에서 자동으로 물러나고 leaf paused attempt는 Bead 종료가 우선해 stopped로 종결된다](history/UI-tqqp-closed-deferred-beads-auto-retire-from-waiting-lanes.md) | superseded | [UI-u6ud-7](history/UI-u6ud-7-worker-wait-resume-residue.md) |
-| UI-wecw | [Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 — defaults 어휘·검증의 dotfiles 소유권과 fail-quiet 읽기·strict 쓰기는 0013을 승계한다](history/UI-wecw-worker-url-stored-vs-effective-split-common-via-dotfiles-cli.md) | superseded | [UI-u6ud-11](UI-u6ud-11-worker-url-and-defaults.md) |
+| UI-wecw | [Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 — defaults 어휘·검증의 dotfiles 소유권과 fail-quiet 읽기·strict 쓰기는 0013을 승계한다](history/UI-wecw-worker-url-stored-vs-effective-split-common-via-dotfiles-cli.md) | superseded | [UI-u6ud-11](history/UI-u6ud-11-worker-url-and-defaults.md) |
 | UI-1l3a | [공급자 게이트의 판정은 서버가 러너 무관 사다리로 내리고 기록으로 공개하며 상한 target은 재시작 시 한 번 프로브된다](history/UI-1l3a-provider-gate-verdict-is-server-owned-and-recorded.md) | superseded | [UI-inge](history/UI-inge-auto-switch-mode-account-limits-never-stall-automation.md) |
 | UI-3pu9 | [자동 진행 꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다](history/UI-3pu9-auto-advance-off-quiet-wait-cards.md) | superseded | [UI-z437](history/UI-z437-external-wait-is-consumer-bead-state-fork-resume.md) |
 | UI-nu43 | [모니터 탭의 헤더 설정은 여러 저장소 일괄 적용 창이고 레포 카드 설정은 그 저장소만 편집한다](history/UI-nu43-monitor-header-settings-bulk-mode.md) | superseded | [UI-628r](history/UI-628r-bulk-settings-edit-surface-explicit-accounts.md) |
@@ -116,14 +113,15 @@
 | UI-wg68-2 | [모니터 일괄 창은 워커·quick fix·세션·계정에 서버 전역 칩 바인딩을 편집하는 다섯 번째 탭 칩을 더하며 그 탭만 적용 대상 저장소와 무관하고 단일 창에는 없다 — 두 모드가 같은 네 탭이라는 점만 UI-uohc-2에서 뒤집고 나머지는 승계한다](history/UI-wg68-2-bulk-settings-fifth-tab-chip-bindings.md) | superseded | [UI-u6ud-10](history/UI-u6ud-10-exec-presets-and-chips.md) |
 | UI-hgd2 | [선행 대기 attempt는 잔재 재개 후보다 — 복귀 dispatch의 잔재 처분 사다리가 보존 세션을 resume하고 대기 종결이 worktree HEAD를 기록한다](history/UI-hgd2-prerequisite-wait-attempt-is-residue-resume-candidate.md) | superseded | [UI-u6ud-7](history/UI-u6ud-7-worker-wait-resume-residue.md) |
 | UI-l48z | [세션 소유 외부 대기는 실행 중 레인의 세션 타일이다](history/UI-l48z-session-external-wait-is-running-lane-session-tile.md) | superseded | [UI-ri8n](history/UI-ri8n-live-inquiry-session-decides-stall-verdict-and-resolve-exit.md) |
-| UI-u6ud-10 | [실행 프리셋과 판정 칩](history/UI-u6ud-10-exec-presets-and-chips.md) | superseded | [UI-rd2m](UI-rd2m-exec-presets-and-chips-by-route.md) |
+| UI-u6ud-10 | [실행 프리셋과 판정 칩](history/UI-u6ud-10-exec-presets-and-chips.md) | superseded | [UI-rd2m](history/UI-rd2m-exec-presets-and-chips-by-route.md) |
+| UI-u6ud-11 | [Worker 주소와 저장소 defaults 소비](history/UI-u6ud-11-worker-url-and-defaults.md) | superseded | [UI-32oq-2](UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
 | UI-u6ud-3 | [Worker 머지 큐와 머지 자격](history/UI-u6ud-3-worker-merge-queue.md) | superseded | [UI-6mpl](history/UI-6mpl-merge-queue-and-independent-toggles.md) |
 | UI-u6ud-4 | [머지 게이트 보류](history/UI-u6ud-4-merge-gate-holds.md) | superseded | [UI-18a5-3](history/UI-18a5-3-merge-gate-holds-and-failure-exits.md) |
 | UI-u6ud-5 | [배포 실행과 프런트엔드 빌드](history/UI-u6ud-5-deploy-and-build.md) | superseded | [UI-izba](history/UI-izba-jev-queue-placement-and-deploy-build.md) |
 | UI-u6ud-6 | [Worker 이력 기록과 세션 생존 소유](history/UI-u6ud-6-worker-history-and-liveness.md) | superseded | [UI-nuwy-2](history/UI-nuwy-2-worker-history-liveness-and-conversation-source.md) |
 | UI-u6ud-7 | [Worker 대기·재개·잔재 처분](history/UI-u6ud-7-worker-wait-resume-residue.md) | superseded | [UI-l48z](history/UI-l48z-session-external-wait-is-running-lane-session-tile.md) |
 | UI-u6ud-8 | [후보 레인과 카드 조립](history/UI-u6ud-8-candidate-lanes-and-cards.md) | superseded | [UI-l48z](history/UI-l48z-session-external-wait-is-running-lane-session-tile.md) |
-| UI-ooc0 | [모델 활성은 서버 전역 꺼 둔 모델 목록으로 선택지만 거른다](history/UI-ooc0-model-visibility-disabled-list.md) | superseded | [UI-gpac-2](UI-gpac-2-model-visibility-hides-new-codex-pinned.md) |
+| UI-ooc0 | [모델 활성은 서버 전역 꺼 둔 모델 목록으로 선택지만 거른다](history/UI-ooc0-model-visibility-disabled-list.md) | superseded | [UI-gpac-2](history/UI-gpac-2-model-visibility-hides-new-codex-pinned.md) |
 | UI-ri8n | [멈춤 판정과 [세션에서 해결]은 살아 있는 문의 세션이 정한다](history/UI-ri8n-live-inquiry-session-decides-stall-verdict-and-resolve-exit.md) | superseded | [UI-nuwy](history/UI-nuwy-same-worker-session-conversation-and-return.md) |
 | UI-nuwy | [사람 대화는 같은 Worker 세션에서 하고 인계 뒤 Worker가 이어간다](history/UI-nuwy-same-worker-session-conversation-and-return.md) | superseded | [UI-q15q](history/UI-q15q-external-spawned-jobs-and-same-session-conversation.md) |
 | UI-nuwy-2 | [Worker 이력 기록·세션 생존과 대화 세션 원천](history/UI-nuwy-2-worker-history-liveness-and-conversation-source.md) | superseded | [UI-18a5-2](history/UI-18a5-2-conversation-records-three-kinds.md) |
@@ -139,8 +137,10 @@
 | UI-9w5l | [버튼으로 풀리는 조치 필요와 대기 사유 무알림](history/UI-9w5l-action-required-resolvable-by-button.md) | superseded | [UI-k467](history/UI-k467-foreign-pr-handoff-failure-row.md) |
 | UI-btsr | [정리 재시도는 멈춘 저장소 작업을 새 실행으로 다시 돌린다](history/UI-btsr-cleanup-retry-reruns-repo-operation.md) | superseded | [UI-gske](history/UI-gske-session-inquiry-row-and-failure-auto-launch.md) |
 | UI-c74x | [세션이 선언한 자격 증명 대기의 같은 세션 대화](history/UI-c74x-credential-wait-conversation.md) | superseded | [UI-btsr](history/UI-btsr-cleanup-retry-reruns-repo-operation.md) |
+| UI-gpac-2 | [모델 활성은 꺼 둔 목록으로 거르고 새 Codex 고정 이름은 숨긴다](history/UI-gpac-2-model-visibility-hides-new-codex-pinned.md) | superseded | [UI-32oq-2](UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
 | UI-k467 | [외부 PR 사람 처리 필요 실패 행과 알림 클래스](history/UI-k467-foreign-pr-handoff-failure-row.md) | superseded | [UI-c74x](history/UI-c74x-credential-wait-conversation.md) |
 | UI-gske | [세션 소유 사람 필요 행과 실패 대화 자동 기동](history/UI-gske-session-inquiry-row-and-failure-auto-launch.md) | superseded | [UI-5chz](history/UI-5chz-conversation-answer-wait-thread-only.md) |
+| UI-rd2m | [실행 프리셋과 route 계열별 판정 칩](history/UI-rd2m-exec-presets-and-chips-by-route.md) | superseded | [UI-32oq-2](UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
 | UI-1eag | [직접 push 착지의 머지 후 잡과 앞선 배포 HEAD 해석](history/UI-1eag-direct-push-post-merge-jobs-advanced-head.md) | superseded | [UI-lbm5](history/UI-lbm5-worker-queue-session-lane.md) |
 | UI-5chz | [대화 세션 답 대기는 세션 스레드로만 알림](history/UI-5chz-conversation-answer-wait-thread-only.md) | superseded | [UI-1eag](history/UI-1eag-direct-push-post-merge-jobs-advanced-head.md) |
 | UI-izba | [jev 쌍 판정 대기열 배치 추천과 배포·빌드](history/UI-izba-jev-queue-placement-and-deploy-build.md) | superseded | [UI-i7k9](history/UI-i7k9-placement-criteria-and-session-lane.md) |
@@ -155,8 +155,10 @@
 | UI-hf8v | [모니터 탭 전체 배치안과 모니터 가시 저장소 jev 판정](history/UI-hf8v-monitor-full-placement-plan.md) | superseded | [UI-ey6v](history/UI-ey6v-predecessor-parallel-placement.md) |
 | UI-tyc2 | [공급자 보류 전역 원본·Codex 전환 순서·리프 한도·소진·활성 복귀](history/UI-tyc2-codex-active-account-return.md) | superseded | [UI-btp3](history/UI-btp3-active-account-return.md) |
 | UI-blx2 | [부딪히는 상대를 같은 직렬 레인에 세우는 배치안](history/UI-blx2-placement-serialize-conflicting-partner.md) | superseded | [UI-ymcx](history/UI-ymcx-worker-deploy-target-commit.md) |
-| UI-btp3 | [공급자 보류 전역 원본·전환 순서·리프 한도·소진·활성 복귀](history/UI-btp3-active-account-return.md) | superseded | [UI-giog](UI-giog-global-limit-policy-scope.md) |
+| UI-btp3 | [공급자 보류 전역 원본·전환 순서·리프 한도·소진·활성 복귀](history/UI-btp3-active-account-return.md) | superseded | [UI-giog](history/UI-giog-global-limit-policy-scope.md) |
 | UI-ey6v | [선행 이슈 병렬 배치와 배치 추천](history/UI-ey6v-predecessor-parallel-placement.md) | superseded | [UI-blx2](history/UI-blx2-placement-serialize-conflicting-partner.md) |
 | UI-ymcx | [머지된 커밋의 선언·스크립트로 도는 Worker 배포](history/UI-ymcx-worker-deploy-target-commit.md) | superseded | [UI-ksi6](history/UI-ksi6-deploy-condition-wait.md) |
 | UI-ksi6 | [배포 종료 코드 75의 조건 대기와 자동 재확인](history/UI-ksi6-deploy-condition-wait.md) | superseded | [UI-5cmo](history/UI-5cmo-monitor-repo-group-placement-preview.md) |
-| UI-5cmo | [모니터 레포 묶음 레인 안 전체 배치안 미리보기](history/UI-5cmo-monitor-repo-group-placement-preview.md) | superseded | [UI-57us](UI-57us-session-preferred-default-session-lane.md) |
+| UI-5cmo | [모니터 레포 묶음 레인 안 전체 배치안 미리보기](history/UI-5cmo-monitor-repo-group-placement-preview.md) | superseded | [UI-57us](history/UI-57us-session-preferred-default-session-lane.md) |
+| UI-giog | [한도 대응 전역 적용 범위·공급자 보류 전역 원본·활성 복귀](history/UI-giog-global-limit-policy-scope.md) | superseded | [UI-32oq](UI-32oq-limit-policy-repo-and-active-login-return.md) |
+| UI-57us | [session-preferred 기본 세션 레인과 Worker 전환 칩](history/UI-57us-session-preferred-default-session-lane.md) | superseded | [UI-32oq-2](UI-32oq-2-settings-one-window-target-and-server-tabs.md) |

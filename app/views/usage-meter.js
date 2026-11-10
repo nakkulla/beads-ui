@@ -1,12 +1,27 @@
 import { html, render } from 'lit-html';
+import {
+  departuresOf,
+  isLimitPolicySnapshot,
+  limitPolicyStateOf
+} from '../data/limit-policy-settings-store.js';
+import { accountDisplayName } from '../utils/account-display-name.js';
+import { returnWhenOf } from '../utils/active-login-return.js';
+import { errorText } from '../utils/error-text.js';
+import { showToast } from '../utils/toast.js';
 
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
- * @typedef {{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
+ * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
  * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean }} ProviderSnapshot
  * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, tool: string }} ProviderDescriptor
  * @typedef {{ kind: 'warn' | 'error' | 'confirm', text: string }} RowMessage
  * @typedef {{ kind: 'ok', snapshot: ProviderSnapshot } | { kind: 'empty' } | { kind: 'error' }} ProviderRead
+ * @typedef {import('../data/limit-policy-settings-store.js').LimitPolicySettingsState} LimitPolicySettingsState
+ * @typedef {{
+ *   store: { get: () => LimitPolicySettingsState|null, set?: (state: LimitPolicySettingsState|null) => void, subscribe?: (fn: () => void) => () => void },
+ *   transport: (type: any, payload?: unknown) => Promise<any>,
+ *   toast?: (message: string, kind?: string) => void
+ * }} LimitPolicyBinding
  */
 
 const MONTH_NAMES = [
@@ -210,6 +225,8 @@ function normalizeAccountRow(input) {
     return null;
   }
   return {
+    key:
+      typeof row.key === 'string' && row.key.length > 0 ? row.key : row.email,
     number: row.number,
     email: row.email,
     alias:
@@ -360,10 +377,25 @@ function rowKey(provider_key, account_number) {
 /**
  * Render and poll independent provider usage snapshots.
  *
+ * With the active-login settings bound (at creation or later through
+ * `bindLimitPolicy`), each card section also says `자동 전환 켬/끔 · default
+ * <이름>` and, while a departure record stands, when the default comes back;
+ * every account row gets a ★ that makes it that runner's default account, or
+ * clears the default when it already is (UI-32oq §4.4). Without a settings
+ * snapshot neither is drawn (fail-quiet).
+ *
  * @param {HTMLElement} mount_element
+ * @param {{ limitPolicy?: LimitPolicyBinding }} [options]
  */
-export function createUsageMeter(mount_element) {
+export function createUsageMeter(mount_element, options = {}) {
   let destroyed = false;
+  /** @type {LimitPolicyBinding|null} */
+  let limit_policy = null;
+  /** @type {(() => void)|null} */
+  let unsubscribe_limit_policy = null;
+  // Runners whose ★ write is in flight; their stars wait for the answer.
+  /** @type {Set<string>} */
+  const default_saving = new Set();
   // Provider key of the open card section. One provider at a time: each header
   // group is its own toggle, so the card shows only that provider's accounts.
   /** @type {string | null} */
@@ -604,6 +636,188 @@ export function createUsageMeter(mount_element) {
   }
 
   /**
+   * The bound settings snapshot, or null while none is known.
+   *
+   * @returns {LimitPolicySettingsState|null}
+   */
+  function limitPolicyState() {
+    const state = limit_policy?.store.get() ?? null;
+    return isLimitPolicySnapshot(state) ? state : null;
+  }
+
+  /**
+   * One runner's settings entry, or null.
+   *
+   * @param {string} provider_key
+   */
+  function limitEntryOf(provider_key) {
+    const state = limitPolicyState();
+    if (!state || (provider_key !== 'claude' && provider_key !== 'codex')) {
+      return null;
+    }
+    return state.runners[provider_key] ?? null;
+  }
+
+  /**
+   * Adopt a snapshot a write answered with, so a refused ★ redraws from the
+   * latest values.
+   *
+   * @param {unknown} next
+   */
+  function adoptLimitPolicy(next) {
+    if (limit_policy && isLimitPolicySnapshot(next)) {
+      limit_policy.store.set?.(limitPolicyStateOf(next));
+    }
+  }
+
+  /**
+   * @param {string} message
+   */
+  function limitPolicyToast(message) {
+    const toast =
+      limit_policy?.toast ||
+      ((/** @type {string} */ text) => showToast(text, 'error', 4000));
+    toast(message, 'error');
+  }
+
+  /**
+   * Make one account a runner's default account, or clear the default
+   * (`next: null`), through the settings channel's revision CAS. A conflict
+   * is not re-sent: the click was computed from a snapshot someone else
+   * moved, so the meter adopts the latest snapshot, says so and redraws.
+   *
+   * @param {string} provider_key
+   * @param {string|null} next
+   */
+  async function setDefaultAccount(provider_key, next) {
+    const binding = limit_policy;
+    const state = limitPolicyState();
+    if (!binding || !state || default_saving.has(provider_key)) {
+      return;
+    }
+    default_saving.add(provider_key);
+    renderProviders();
+    try {
+      const res = await binding.transport('limit-policy-settings-set', {
+        expected_revision: state.revision,
+        runners: { [provider_key]: { default_account: next } }
+      });
+      adoptLimitPolicy(res?.snapshot);
+      if (res?.ok === false) {
+        limitPolicyToast(
+          res.code === 'conflict'
+            ? 'default 계정 저장 실패: 다른 곳에서 먼저 바꿨습니다 — 최신 값으로 다시 그렸습니다'
+            : `default 계정 저장 실패: ${res.message ?? res.code}`
+        );
+      }
+    } catch (err) {
+      adoptLimitPolicy(/** @type {any} */ (err)?.details?.snapshot);
+      limitPolicyToast(`default 계정 저장 실패: ${errorText(err)}`);
+    } finally {
+      default_saving.delete(provider_key);
+      if (!destroyed) {
+        renderProviders();
+      }
+    }
+  }
+
+  /**
+   * The ★ of one account row, or nothing without a settings snapshot.
+   *
+   * @param {ProviderDescriptor} provider
+   * @param {UsageAccount} account
+   * @param {string} name - The row's display name.
+   */
+  function defaultStarTemplate(provider, account, name) {
+    const entry = limitEntryOf(provider.key);
+    if (!entry) {
+      return '';
+    }
+    const is_default = entry.default_account === account.key;
+    const label = is_default
+      ? `default 계정 비우기 — ${name}`
+      : `default 계정으로 — ${name}`;
+    return html`<button
+      type="button"
+      class=${`op-btn op-btn--ghost op-btn--icon usage-meter__default${
+        is_default ? ' is-active' : ''
+      }`}
+      aria-pressed=${String(is_default)}
+      aria-label=${label}
+      title=${label}
+      data-default-account=${account.key}
+      ?disabled=${default_saving.has(provider.key)}
+      @click=${() =>
+        void setDefaultAccount(provider.key, is_default ? null : account.key)}
+    >
+      ${is_default ? '★' : '☆'}
+    </button>`;
+  }
+
+  /**
+   * The section's head line: `자동 전환 켬/끔 · default <이름>`, plus when the
+   * default comes back while a departure record stands.
+   *
+   * @param {ProviderDescriptor} provider
+   * @param {UsageAccount[]} accounts
+   */
+  function policyLineTemplate(provider, accounts) {
+    const entry = limitEntryOf(provider.key);
+    if (!entry) {
+      return '';
+    }
+    const record =
+      departuresOf(limitPolicyState())[
+        /** @type {'claude'|'codex'} */ (provider.key)
+      ];
+    const parts = [
+      `자동 전환 ${entry.auto_switch === true ? '켬' : '끔'}`,
+      typeof entry.default_account !== 'string' || entry.default_account === ''
+        ? 'default 비움'
+        : `default ${accountDisplayName(accounts, entry.default_account)}`
+    ];
+    if (record !== null) {
+      parts.push(returnWhenOf(record));
+    }
+    return html`<p
+      class="usage-meter__policy"
+      data-limit-policy-line=${provider.key}
+    >
+      ${parts.join(' · ')}
+    </p>`;
+  }
+
+  /**
+   * Bind the active-login settings: their store, the transport a ★ writes
+   * through and the toast a refused write raises. A departure record change
+   * also re-reads the account lists.
+   *
+   * @param {LimitPolicyBinding} binding
+   */
+  function bindLimitPolicy(binding) {
+    unsubscribe_limit_policy?.();
+    limit_policy = binding;
+    let departure_signature = JSON.stringify(departuresOf(limitPolicyState()));
+    unsubscribe_limit_policy =
+      binding.store.subscribe?.(() => {
+        if (destroyed) {
+          return;
+        }
+        renderProviders();
+        // A record that appears or ends means the active login moved; read
+        // the lists now so the rows' `active` agrees with the head line.
+        const signature = JSON.stringify(departuresOf(limitPolicyState()));
+        if (signature !== departure_signature) {
+          departure_signature = signature;
+          void refresh();
+        }
+      }) ?? null;
+    if (!destroyed) {
+      renderProviders();
+    }
+  }
+
+  /**
    * Dismiss the row confirmation without issuing a switch request.
    *
    * @param {string} provider_key
@@ -771,9 +985,11 @@ export function createUsageMeter(mount_element) {
    *
    * @param {ProviderDescriptor} provider
    * @param {UsageAccount} account
+   * @param {UsageAccount[]} accounts - The provider's whole list, which decides
+   * whether the name needs the plan or number to stay unambiguous.
    * @param {number} now_ms
    */
-  function renderAccount(provider, account, now_ms) {
+  function renderAccount(provider, account, accounts, now_ms) {
     const is_ok = account.status === 'ok';
     const stale =
       typeof account.ageSeconds === 'number' &&
@@ -794,10 +1010,12 @@ export function createUsageMeter(mount_element) {
       classes.push('usage-meter__account--stale');
     }
 
+    const name = accountDisplayName(accounts, account.key, account.email);
     return html`<div class=${classes.join(' ')}>
       <div class="usage-meter__account-head">
+        ${defaultStarTemplate(provider, account, name)}
         <span class="usage-meter__account-label" title=${account.email}
-          >${account.alias === null ? account.email : account.alias}</span
+          >${name}</span
         >
         ${account.plan === null
           ? ''
@@ -878,8 +1096,9 @@ export function createUsageMeter(mount_element) {
         ${provider.label} · 활성 ${active_count} / 전체
         ${snapshot.accounts.length}
       </h2>
+      ${policyLineTemplate(provider, snapshot.accounts)}
       ${snapshot.accounts.map((account) =>
-        renderAccount(provider, account, now_ms)
+        renderAccount(provider, account, snapshot.accounts, now_ms)
       )}
     </section>`;
   }
@@ -1050,11 +1269,15 @@ export function createUsageMeter(mount_element) {
   }
 
   hide();
+  if (options.limitPolicy) {
+    bindLimitPolicy(options.limitPolicy);
+  }
   onTick();
   interval_id = setInterval(onTick, POLL_MS);
   doc.addEventListener('visibilitychange', onVisibilityChange);
 
   return {
+    bindLimitPolicy,
     /** Stop polling, release the document listeners and clear the mount. */
     destroy() {
       destroyed = true;
@@ -1063,6 +1286,8 @@ export function createUsageMeter(mount_element) {
         interval_id = null;
       }
       doc.removeEventListener('visibilitychange', onVisibilityChange);
+      unsubscribe_limit_policy?.();
+      unsubscribe_limit_policy = null;
       closeCard();
       hide();
     }

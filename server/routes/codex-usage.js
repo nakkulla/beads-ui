@@ -512,15 +512,17 @@ const run_codex_auth_command = createCodexAuthRunner();
  * @typedef {(options?: { api?: boolean }) => Promise<{ code: number, stdout: string, stderr: string }>} RunCodexAuth
  */
 
-/** @type {Set<(observations: CreditObservation[]) => void>} */
+/** @type {Set<(observations: CreditObservation[], accounts: UsageAccount[]) => void>} */
 const credit_observers = new Set();
 
 /**
  * Hear every parsed codex-auth list's credit observations. The credit ledger
  * subscribes here from the server entry rather than this route importing it,
- * so the route stays free of server-global state (UI-9y1k §4.3).
+ * so the route stays free of server-global state (UI-9y1k §4.3). The listener
+ * also gets the same read's account rows, so a notice names accounts the way
+ * the cards do (UI-32oq §4.3).
  *
- * @param {(observations: CreditObservation[]) => void} listener
+ * @param {(observations: CreditObservation[], accounts: UsageAccount[]) => void} listener
  * @returns {() => void}
  */
 export function subscribeCreditObservations(listener) {
@@ -532,8 +534,9 @@ export function subscribeCreditObservations(listener) {
 
 /**
  * @param {unknown} root
+ * @param {UsageAccount[]} accounts
  */
-function publishCreditObservations(root) {
+function publishCreditObservations(root, accounts) {
   if (credit_observers.size === 0) {
     return;
   }
@@ -543,7 +546,7 @@ function publishCreditObservations(root) {
   }
   for (const listener of credit_observers) {
     try {
-      listener(observations);
+      listener(observations, accounts);
     } catch {
       // A failing observer must not turn a usage read into a failure.
     }
@@ -610,8 +613,11 @@ async function loadCodexUsage(runCodexAuth, now, run_options) {
       return unavailable();
     }
     const root = JSON.parse(result.stdout);
-    publishCreditObservations(root);
     const payload = normalizeCodexUsage(root, now);
+    publishCreditObservations(
+      root,
+      Array.isArray(payload.accounts) ? payload.accounts : []
+    );
     publishAccountList(payload);
     return payload;
   } catch {

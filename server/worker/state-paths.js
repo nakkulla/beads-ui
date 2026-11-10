@@ -167,12 +167,23 @@ export function timingSettingsFilePath() {
 
 /**
  * Absolute path to the SERVER-GLOBAL limit-policy settings file: each runner's
- * global usage-limit policy and its `repo`/`global` apply scope (UI-giog §4.2).
+ * active-login auto-switch settings (UI-32oq §4.1; the file name is UI-giog's).
  *
  * @returns {string} `$XDG_STATE_HOME/bdui/limit-policy-settings.json`.
  */
 export function limitPolicySettingsFilePath() {
   return path.join(stateHome(), 'bdui', 'limit-policy-settings.json');
+}
+
+/**
+ * Absolute path to the SERVER-GLOBAL active-login departure records (UI-32oq
+ * §4.2): per runner, the default account an automatic switch left and when it
+ * may return. Kept on disk because every merge redeploys the server.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/active-login-return.json`.
+ */
+export function activeLoginReturnFilePath() {
+  return path.join(stateHome(), 'bdui', 'active-login-return.json');
 }
 
 /**
