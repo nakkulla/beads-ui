@@ -107,6 +107,16 @@ describe('server app wiring (no listen)', () => {
     expect(body.workspace_config).toEqual({ default_workspace: '/w' });
   });
 
+  test('mounts the account login status route', async () => {
+    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+    const config = getConfig();
+    const app = createApp(liveConfig(config));
+
+    const body = await fetchJsonFromApp(app, '/api/account-login/unknown-id');
+
+    expect(body).toEqual({ ok: false, error: 'login_not_found' });
+  });
+
   test('index.html exists in configured app_dir', () => {
     process.env.BDUI_CONFIG_PATH = missingConfigPath();
     const config = getConfig();

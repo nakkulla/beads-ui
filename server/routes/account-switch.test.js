@@ -15,6 +15,7 @@ import {
   performAccountSwitch,
   recentClaudeSwitch,
   releaseSwitchLock,
+  runningBeadsUsingAccount,
   subscribeAccountSwitched
 } from './account-switch.js';
 
@@ -1234,5 +1235,38 @@ describe('claude active-account return through the shared switch path', () => {
     expect(manual.status).toBe(409);
     expect(manual.body).toEqual({ ok: false, error: 'switch_in_flight' });
     expect(runSwitch).toHaveBeenCalledExactlyOnceWith(4);
+  });
+});
+
+describe('strict in-use scan for account removal', () => {
+  test('returns each running Bead on the account once across workspaces', () => {
+    account_deps.workspaces.mockReturnValue([
+      { path: '/workspace/one' },
+      { path: '/workspace/two' }
+    ]);
+    account_deps.snapshot.mockImplementation((workspace) => ({
+      attempts:
+        workspace === '/workspace/one'
+          ? { a: { bead_id: 'UI-one', status: 'running', codex_account: 'k' } }
+          : {
+              b: { bead_id: 'UI-one', status: 'running', codex_account: 'k' },
+              c: { bead_id: 'UI-two', status: 'succeeded', codex_account: 'k' }
+            }
+    }));
+
+    const in_use = runningBeadsUsingAccount('codex', 'k');
+
+    expect(in_use).toEqual(['UI-one']);
+  });
+
+  test('throws when a queue snapshot cannot be read', () => {
+    account_deps.workspaces.mockReturnValue([{ path: '/workspace/one' }]);
+    account_deps.snapshot.mockImplementation(() => {
+      throw new Error('unavailable');
+    });
+
+    expect(() => runningBeadsUsingAccount('claude', 'a@example.com')).toThrow(
+      'unavailable'
+    );
   });
 });

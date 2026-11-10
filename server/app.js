@@ -8,6 +8,16 @@ import zlib from 'node:zlib';
 import { checkHealth } from './health.js';
 import { registerWorkspace } from './registry-watcher.js';
 import {
+  accountLoginCancelHandler,
+  accountLoginCodeHandler,
+  accountLoginStartHandler,
+  accountLoginStatusHandler
+} from './routes/account-login.js';
+import {
+  claudeAccountRemoveHandler,
+  codexAccountRemoveHandler
+} from './routes/account-remove.js';
+import {
   claudeAccountSwitchHandler,
   codexAccountSwitchHandler
 } from './routes/account-switch.js';
@@ -192,6 +202,15 @@ export function createApp(config) {
   // Switch the active account of one provider from the usage card.
   app.post('/api/claude-account/switch', claudeAccountSwitchHandler);
   app.post('/api/codex-account/switch', codexAccountSwitchHandler);
+
+  // Remove an account, and log one in again or add one, from the usage card
+  // without moving the active login (UI-xm29 §4.1-§4.4).
+  app.post('/api/claude-account/remove', claudeAccountRemoveHandler);
+  app.post('/api/codex-account/remove', codexAccountRemoveHandler);
+  app.post('/api/account-login', accountLoginStartHandler);
+  app.get('/api/account-login/:id', accountLoginStatusHandler);
+  app.post('/api/account-login/:id/code', accountLoginCodeHandler);
+  app.post('/api/account-login/:id/cancel', accountLoginCancelHandler);
 
   // Which Codex account a session continues on after an account limit
   // (UI-9y1k §4.4). POST only: a choice prepares that account's CODEX_HOME.
