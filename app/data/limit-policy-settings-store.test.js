@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
   createLimitPolicySettingsStore,
-  isLimitPolicySnapshot
+  departuresOf,
+  isLimitPolicySnapshot,
+  limitPolicyStateOf
 } from './limit-policy-settings-store.js';
 
 const ENTRY = {
@@ -56,5 +58,58 @@ describe('limit-policy settings store (UI-giog §4.2, UI-32oq §4.1)', () => {
     store.clear();
 
     expect(calls).toBe(1);
+  });
+});
+
+describe('departure records on a snapshot (UI-32oq §4.4)', () => {
+  const RECORD = {
+    default_account: 'a@x.test',
+    to_account: 'b@x.test',
+    until: null
+  };
+
+  test('keeps a pushed record when the snapshot lands in the store', () => {
+    const store = createLimitPolicySettingsStore();
+    const payload = {
+      type: 'limit-policy-settings-snapshot',
+      id: 'limit-policy-settings',
+      revision: 2,
+      runners: { claude: ENTRY, codex: ENTRY },
+      departures: { claude: RECORD, codex: null }
+    };
+
+    store.set(limitPolicyStateOf(payload));
+
+    expect(store.get()).toEqual({
+      revision: 2,
+      runners: { claude: ENTRY, codex: ENTRY },
+      departures: { claude: RECORD, codex: null }
+    });
+  });
+
+  test('reads a snapshot without records as no record', () => {
+    const payload = { revision: 2, runners: { claude: ENTRY, codex: ENTRY } };
+
+    const departures = departuresOf(payload);
+
+    expect(departures).toEqual({ claude: null, codex: null });
+  });
+
+  test('reads a malformed record as no record', () => {
+    const payload = {
+      departures: { claude: { default_account: 'a', to_account: 'a' } }
+    };
+
+    const departures = departuresOf(payload);
+
+    expect(departures).toEqual({ claude: null, codex: null });
+  });
+
+  test('accepts a snapshot from a server that sends no records', () => {
+    const payload = { revision: 0, runners: { claude: ENTRY, codex: ENTRY } };
+
+    const accepted = isLimitPolicySnapshot(payload);
+
+    expect(accepted).toBe(true);
   });
 });

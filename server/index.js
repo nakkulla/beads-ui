@@ -60,7 +60,10 @@ import {
 } from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
 import { broadcastImplPresets } from './ws/exec-preset-handlers.js';
-import { resumeLimitPolicyRebind } from './ws/limit-policy-settings-handlers.js';
+import {
+  bindDepartureBroadcast,
+  resumeLimitPolicyRebind
+} from './ws/limit-policy-settings-handlers.js';
 import { observeCodexModelList } from './ws/model-visibility-handlers.js';
 import {
   notifyMonitorCatalogChanged,
@@ -248,6 +251,9 @@ if (limit_policy_migration.migrated) {
 // The departure records both active-login passes share (UI-32oq §4.2): one
 // file, so a return still due after a redeploy happens.
 const active_login_departures = activeLoginReturnStore();
+// A record created, followed or cleared reaches the settings channel's
+// subscribers, whose status lines name the return (UI-32oq §4.4).
+bindDepartureBroadcast(active_login_departures);
 
 // Codex active-account return (UI-tyc2 §4, UI-32oq §4.2): every parsed
 // codex-auth list is judged. While Codex's auto switch is on, an active

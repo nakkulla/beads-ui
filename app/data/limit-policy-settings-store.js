@@ -8,16 +8,25 @@
  * The settings decide only the global active-login auto switch per runner;
  * a repo's `한도 대응` rows always edit that repo's own policy.
  *
+ * Every snapshot also carries the read-only active-login departure records
+ * (UI-32oq §4.4 status lines). They are not settings: no write names them and
+ * they move no `revision`. A snapshot without them, or a malformed record,
+ * reads as no record (fail-quiet).
+ *
  * @typedef {'claude'|'codex'} LimitPolicyRunner
  * @typedef {Object} LimitPolicyEntry
  * @property {boolean} auto_switch
  * @property {string|null} default_account
  * @property {string[]} accounts
  * @property {number|null} preempt_pct
+ * @typedef {import('../utils/active-login-return.js').DepartureRecord} DepartureRecord
+ * @typedef {Record<LimitPolicyRunner, DepartureRecord|null>} DepartureRecords
  * @typedef {Object} LimitPolicySettingsState
  * @property {number} revision
  * @property {Record<LimitPolicyRunner, LimitPolicyEntry>} runners
+ * @property {DepartureRecords} [departures]
  */
+import { parseDepartureRecord } from '../utils/active-login-return.js';
 
 /**
  * @returns {{ get: () => LimitPolicySettingsState|null, set: (state: LimitPolicySettingsState|null) => void, clear: () => void, subscribe: (listener: () => void) => () => void }}
@@ -76,4 +85,38 @@ export function isLimitPolicySnapshot(payload) {
     !!payload.runners.codex &&
     typeof payload.runners.codex === 'object'
   );
+}
+
+/**
+ * Both runners' departure records of a snapshot; an absent or malformed one
+ * reads as null.
+ *
+ * @param {unknown} payload
+ * @returns {DepartureRecords}
+ */
+export function departuresOf(payload) {
+  const raw =
+    !!payload && typeof payload === 'object'
+      ? /** @type {any} */ (payload).departures
+      : null;
+  const records = !!raw && typeof raw === 'object' ? raw : {};
+  return {
+    claude: parseDepartureRecord(records.claude),
+    codex: parseDepartureRecord(records.codex)
+  };
+}
+
+/**
+ * The state this store holds for one accepted snapshot payload: the settings
+ * and the departure records, without the envelope fields.
+ *
+ * @param {LimitPolicySettingsState} payload
+ * @returns {LimitPolicySettingsState}
+ */
+export function limitPolicyStateOf(payload) {
+  return {
+    revision: payload.revision,
+    runners: payload.runners,
+    departures: departuresOf(payload)
+  };
 }

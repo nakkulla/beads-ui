@@ -16,16 +16,17 @@
  * fails the change still holds in memory for this process (one log line), so
  * a return already earned is not lost to a full disk.
  *
+ * Every effective `set` and `clear` tells the `onChange` listeners, which is
+ * how the limit-policy settings channel pushes a record to the clients
+ * (UI-32oq §4.4 status lines). A throwing listener is ignored.
+ *
  * @typedef {'claude'|'codex'} ReturnRunner
- * @typedef {Object} DepartureRecord
- * @property {string} default_account - The default account the switch left.
- * @property {string} to_account - The account the active login moved to.
- * @property {string|null} until - ISO time after which the default may
- * return, or null when only its usage decides.
- * @typedef {{ get: (runner: ReturnRunner) => DepartureRecord|null, set: (runner: ReturnRunner, record: DepartureRecord) => void, clear: (runner: ReturnRunner) => void }} DepartureStore
+ * @typedef {import('../app/utils/active-login-return.js').DepartureRecord} DepartureRecord
+ * @typedef {{ get: (runner: ReturnRunner) => DepartureRecord|null, set: (runner: ReturnRunner, record: DepartureRecord) => void, clear: (runner: ReturnRunner) => void, onChange: (listener: () => void) => () => void }} DepartureStore
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { parseDepartureRecord } from '../app/utils/active-login-return.js';
 import { activeLoginReturnFilePath } from './worker/state-paths.js';
 
 /** @type {ReadonlyArray<ReturnRunner>} */
@@ -37,47 +38,6 @@ const RUNNERS = Object.freeze(['claude', 'codex']);
  */
 function isRecord(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-/**
- * @param {unknown} value
- * @returns {value is string}
- */
-function isAccountKey(value) {
-  return (
-    typeof value === 'string' &&
-    value.length > 0 &&
-    value.length <= 256 &&
-    !/\s/.test(value)
-  );
-}
-
-/**
- * One stored record, or null when any field is outside the shape.
- *
- * @param {unknown} raw
- * @returns {DepartureRecord|null}
- */
-function parseRecord(raw) {
-  if (
-    !isRecord(raw) ||
-    !isAccountKey(raw.default_account) ||
-    !isAccountKey(raw.to_account) ||
-    raw.default_account === raw.to_account
-  ) {
-    return null;
-  }
-  if (
-    raw.until !== null &&
-    !(typeof raw.until === 'string' && Number.isFinite(Date.parse(raw.until)))
-  ) {
-    return null;
-  }
-  return {
-    default_account: raw.default_account,
-    to_account: raw.to_account,
-    until: raw.until
-  };
 }
 
 /**
@@ -101,6 +61,18 @@ export function createDepartureStore(options = {}) {
 
   /** @type {Partial<Record<ReturnRunner, DepartureRecord>> | null} */
   let cache = null;
+  /** @type {Set<() => void>} */
+  const listeners = new Set();
+
+  function emit() {
+    for (const listener of Array.from(listeners)) {
+      try {
+        listener();
+      } catch {
+        // One failing listener must not stop the others or the pass.
+      }
+    }
+  }
 
   /**
    * @returns {Partial<Record<ReturnRunner, DepartureRecord>>}
@@ -136,7 +108,7 @@ export function createDepartureStore(options = {}) {
       if (entry === undefined) {
         continue;
       }
-      const record = parseRecord(entry);
+      const record = parseDepartureRecord(entry);
       if (record === null) {
         warn(
           `active-login-return: ${runner} 무시: 형식이 잘못되어 떠남 기록 없음으로 읽습니다.`
@@ -177,6 +149,7 @@ export function createDepartureStore(options = {}) {
       const next = { ...ensureLoaded(), [runner]: { ...record } };
       cache = next;
       persist(next);
+      emit();
     },
     clear(runner) {
       const current = ensureLoaded();
@@ -187,6 +160,13 @@ export function createDepartureStore(options = {}) {
       delete next[runner];
       cache = next;
       persist(next);
+      emit();
+    },
+    onChange(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     }
   };
 }
@@ -204,4 +184,12 @@ export function activeLoginReturnStore() {
     STORE = createDepartureStore();
   }
   return STORE;
+}
+
+/**
+ * Test-only: drop the process-wide store (and its listeners), so the next
+ * `activeLoginReturnStore()` reads the file again.
+ */
+export function __resetActiveLoginReturnStoreForTest() {
+  STORE = null;
 }

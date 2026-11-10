@@ -19,7 +19,10 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
-import { isLimitPolicySnapshot } from '../../data/limit-policy-settings-store.js';
+import {
+  isLimitPolicySnapshot,
+  limitPolicyStateOf
+} from '../../data/limit-policy-settings-store.js';
 import { errorText } from '../../utils/error-text.js';
 import { accountRowLabel, loadAccountCatalog } from './account-catalog.js';
 import { createLimitPolicyEditor } from './limit-policy-editor.js';
@@ -76,7 +79,7 @@ export function createLimitPolicySection(host, options) {
    */
   function adopt(next) {
     if (isLimitPolicySnapshot(next)) {
-      options.limitPolicySettingsStore?.set?.(next);
+      options.limitPolicySettingsStore?.set?.(limitPolicyStateOf(next));
     }
   }
 

@@ -552,14 +552,30 @@ a {
   gap: var(--sp-6);
 }
 
+/* 계정 이메일은 줄여 쓰지 않는다 — 도메인만 다른 두 계정이 같아 보인다.
+   넘치면 그 토큰 안에서 줄을 바꾼다 (UI-32oq §4.3). */
 .usage-meter__account-label {
-  overflow: hidden;
   flex: 1 1 auto;
   min-width: 0;
   color: var(--text-primary);
   font-size: var(--fs-body-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+/* 머리 한 줄: 자동 전환 켬/끔 · default 계정 · 복귀 시각 (UI-32oq §4.4). */
+.usage-meter__policy {
+  margin: 0 0 var(--sp-6);
+  color: var(--text-secondary);
+  font-size: var(--fs-caption);
+  overflow-wrap: anywhere;
+}
+
+.usage-meter__default {
+  flex: none;
+}
+
+.usage-meter__default.is-active {
+  color: var(--accent-warn);
 }
 
 .usage-meter__account-tag {
@@ -7404,11 +7420,14 @@ summary.repo-ops-log-viewer__attempt-head {
   color: var(--text-title);
 }
 
+/* 보류 카드의 전환 계정 이메일도 이 줄에 온다 — 줄이지 않고 토큰 안에서 줄을
+   바꾸도록, 카드 쪽 조상의 `nowrap`을 물려받지 않는다 (UI-32oq §4.3). */
 .chip-popover__lines {
   margin: 0;
   padding-left: var(--sp-16);
   color: var(--text-secondary);
   font-size: var(--fs-caption);
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
@@ -9245,6 +9264,13 @@ button.detail-session__leg:focus-visible {
   margin: 0 0 var(--sp-8);
   color: var(--text-dim);
   font-size: var(--fs-chip);
+}
+
+/* 활성 로그인 상태 줄: 이메일을 줄이지 않고 넘치면 토큰 안에서 줄을 바꾼다
+   (UI-32oq §4.3·§4.4). */
+.settings-dialog__login-line {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 
 /* `실행` 탭의 두 블록(워커·quick fix, UI-32oq §4.4). quick fix는 접힌

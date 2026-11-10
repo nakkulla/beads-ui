@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  __resetActiveLoginReturnStoreForTest,
+  activeLoginReturnStore
+} from './active-login-return-store.js';
+import {
   __resetLimitPolicySettingsForTest,
   activeSwitchSettingsOf,
   limitPolicySettingsStore,
@@ -19,7 +23,10 @@ import {
   attachWsServer,
   handleMessage
 } from './ws.js';
-import { resumeLimitPolicyRebind } from './ws/limit-policy-settings-handlers.js';
+import {
+  bindDepartureBroadcast,
+  resumeLimitPolicyRebind
+} from './ws/limit-policy-settings-handlers.js';
 
 const WS_A = '/tmp/limit-policy-ws-a';
 const WS_B = '/tmp/limit-policy-ws-b';
@@ -156,6 +163,7 @@ beforeEach(() => {
   __resetRegistriesForTest();
   __resetLimitPolicySettingsChannelForTest();
   __resetLimitPolicySettingsForTest();
+  __resetActiveLoginReturnStoreForTest();
   __resetWorkerRuntimeForTest();
   attachWsServer(createServer(), { path: '/ws' });
 });
@@ -165,6 +173,7 @@ afterEach(() => {
   __resetRegistriesForTest();
   __resetLimitPolicySettingsChannelForTest();
   __resetLimitPolicySettingsForTest();
+  __resetActiveLoginReturnStoreForTest();
   __resetWorkerRuntimeForTest();
   fs.rmSync(tmp_state, { recursive: true, force: true });
 });
@@ -193,7 +202,8 @@ describe('ws limit-policy settings channel', () => {
             accounts: [],
             preempt_pct: null
           }
-        }
+        },
+        departures: { claude: null, codex: null }
       }
     ]);
   });
@@ -299,6 +309,86 @@ describe('ws limit-policy settings channel', () => {
     expect(replyTo(sock, 'w1').payload).toMatchObject({
       ok: false,
       code: 'invalid_value'
+    });
+  });
+});
+
+describe('departure records on the settings channel (UI-32oq §4.4)', () => {
+  /** @type {import('./active-login-return-store.js').DepartureRecord} */
+  const RECORD = {
+    default_account: 'k1',
+    to_account: 'k2',
+    until: '2026-11-10T05:00:00.000Z'
+  };
+
+  test('lays a standing departure record beside the settings on subscribe', async () => {
+    activeLoginReturnStore().set('codex', RECORD);
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-limit-policy-settings', { id: 'lp' });
+
+    expect(snapshots(sock)[0].departures).toEqual({
+      claude: null,
+      codex: RECORD
+    });
+  });
+
+  test('pushes the snapshot to a subscriber when a record is created', async () => {
+    const departures = activeLoginReturnStore();
+    const unbind = bindDepartureBroadcast(departures);
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-limit-policy-settings', { id: 'lp' });
+
+    departures.set('claude', RECORD);
+
+    const pushed = snapshots(sock);
+    expect(pushed).toHaveLength(2);
+    expect(pushed[1].departures).toEqual({ claude: RECORD, codex: null });
+    unbind();
+  });
+
+  test('pushes the snapshot to a subscriber when a record ends', async () => {
+    const departures = activeLoginReturnStore();
+    departures.set('claude', RECORD);
+    const unbind = bindDepartureBroadcast(departures);
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-limit-policy-settings', { id: 'lp' });
+
+    departures.clear('claude');
+
+    expect(snapshots(sock).at(-1).departures).toEqual({
+      claude: null,
+      codex: null
+    });
+    unbind();
+  });
+
+  test('moves no revision when a record changes', async () => {
+    const departures = activeLoginReturnStore();
+    const unbind = bindDepartureBroadcast(departures);
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-limit-policy-settings', { id: 'lp' });
+
+    departures.set('codex', RECORD);
+
+    expect(snapshots(sock).map((snapshot) => snapshot.revision)).toEqual([
+      0, 0
+    ]);
+    unbind();
+  });
+
+  test('carries the departure records on a set reply', async () => {
+    activeLoginReturnStore().set('codex', RECORD);
+    const sock = fakeSocket();
+
+    await send(sock, 'w1', 'limit-policy-settings-set', {
+      expected_revision: 0,
+      runners: { codex: { auto_switch: true } }
+    });
+
+    expect(replyTo(sock, 'w1').payload.snapshot.departures).toEqual({
+      claude: null,
+      codex: RECORD
     });
   });
 });

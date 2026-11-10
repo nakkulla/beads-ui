@@ -30,6 +30,7 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { departuresOf } from '../../data/limit-policy-settings-store.js';
 import { errorText } from '../../utils/error-text.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import {
@@ -43,6 +44,12 @@ import {
   accountRowLabel,
   loadAccountCatalog as readAccountCatalog
 } from './account-catalog.js';
+import {
+  PINNED_EMPTY_WARNING,
+  accountTabStatusText,
+  departureSignature,
+  warnsPinnedEmpty
+} from './active-login-status.js';
 import { appliedPresetFieldFor } from './bulk-observation.js';
 import { createCodexCreditControls } from './codex-credit-controls.js';
 import { createLimitPolicyEditor } from './limit-policy-editor.js';
@@ -167,6 +174,12 @@ function isRecord(value) {
  * @property {{ get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [codexCreditStore]
  * - Server-global Codex credit settings and today's consumption (UI-9y1k
  * §4.5); without it the credit rows are not drawn.
+ * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [limitPolicySettingsStore]
+ * - Server-global active-login auto switch and departure records (UI-32oq
+ * §4.4); without it the `계정` tab draws no active-login status line and no
+ * pinned-empty warning.
+ * @property {() => void} [onOpenActiveAccount] - Switch the dialog to the
+ * `활성 계정` tab; without it the status line has no link.
  */
 
 /**
@@ -211,6 +224,11 @@ export function createExecutionPane(mount_element, binding) {
   /** What the server last confirmed; the draft is diffed against this. */
   /** @type {Record<string, string>} */
   let account_baseline = {};
+  /**
+   * Whether this load read the pinned accounts. Until then — and after a
+   * failed read — an empty draft does not mean an empty pin.
+   */
+  let account_read = false;
   /**
    * Account writes run one at a time. `bd kv` has no CAS, so the handler's
    * read-merge-write narrows the clobber window but does not close it: two
@@ -311,6 +329,33 @@ export function createExecutionPane(mount_element, binding) {
     notify,
     onChange: () => doRender()
   });
+
+  /**
+   * The departure records last seen, so a change re-reads the account list
+   * whose `active` row the status line names.
+   */
+  let departure_signature = departureSignature(limitPolicyState());
+  const unsubscribe_limit_policy =
+    binding.limitPolicySettingsStore?.subscribe?.(() => {
+      const signature = departureSignature(limitPolicyState());
+      if (signature !== departure_signature) {
+        departure_signature = signature;
+        if (account_catalog_loaded) {
+          void loadAccountCatalog();
+        }
+      }
+      doRender();
+    }) ?? null;
+
+  /**
+   * The server-global limit-policy settings snapshot, or null.
+   *
+   * @returns {any}
+   */
+  function limitPolicyState() {
+    const state = binding.limitPolicySettingsStore?.get() ?? null;
+    return isRecord(state) && isRecord(state.runners) ? state : null;
+  }
 
   /** @returns {any} */
   function queueOf() {
@@ -604,13 +649,15 @@ export function createExecutionPane(mount_element, binding) {
 
   /** Read the repo's exec account defaults. */
   async function loadWorkspaceAccounts() {
+    account_read = false;
     try {
-      adoptAccountResponse(
-        await send('get-workspace-accounts', {
-          ...rootPayload()
-        }),
-        true
-      );
+      const res = await send('get-workspace-accounts', {
+        ...rootPayload()
+      });
+      adoptAccountResponse(res, true);
+      if (isRecord(res)) {
+        account_read = true;
+      }
     } catch (err) {
       account_layer = {
         state: 'unusable',
@@ -2222,24 +2269,87 @@ export function createExecutionPane(mount_element, binding) {
    * @returns {TemplateResult}
    */
   function limitRows(runner, label) {
-    return limit_editor.template(runner, label, {
+    return html`${limit_editor.template(runner, label, {
       mode_label: `${label} 한도 대응`
+    })}
+    ${pinnedEmptyWarning(runner)}`;
+  }
+
+  /**
+   * The warning a runner gets when this repo waits, its pin is empty and the
+   * active-login auto switch is on (UI-32oq §4.4) — an empty pin follows that
+   * switch, so `기다림` alone does not keep the account. Nothing is locked.
+   *
+   * @param {'claude'|'codex'} runner
+   * @returns {TemplateResult|''}
+   */
+  function pinnedEmptyWarning(runner) {
+    const state = limitPolicyState();
+    if (!state || !account_read) {
+      return '';
+    }
+    const key = `${runner}_account`;
+    const warns = warnsPinnedEmpty({
+      mode: limit_editor.policyOf(runner).mode,
+      pinned: Object.hasOwn(account_draft, key) ? account_draft[key] : UNSET,
+      auto_switch: state.runners[runner]?.auto_switch === true
     });
+    if (!warns) {
+      return '';
+    }
+    return html`<div
+      class="settings-dialog__banner"
+      data-limit-pinned-warning=${runner}
+      role="note"
+    >
+      ${PINNED_EMPTY_WARNING}
+    </div>`;
+  }
+
+  /**
+   * The active-login status line with its `활성 계정` link (UI-32oq §4.4).
+   *
+   * @returns {TemplateResult|''}
+   */
+  function activeLoginLine() {
+    const state = limitPolicyState();
+    if (!binding.limitPolicySettingsStore) {
+      return '';
+    }
+    const open = binding.onOpenActiveAccount;
+    return html`<p
+      class="settings-dialog__hint-block settings-dialog__login-line"
+      data-account-login-status
+    >
+      <span data-account-login-text
+        >${accountTabStatusText(account_catalog, departuresOf(state))}</span
+      >
+      ${open
+        ? html`<button
+            type="button"
+            class="op-btn op-btn--ghost"
+            data-open-active-account
+            @click=${() => open()}
+          >
+            활성 계정 ›
+          </button>`
+        : ''}
+    </p>`;
   }
 
   /**
    * This repo's pinned accounts and per-runner limit policy. Neither is part of
    * an execution preset, so neither belongs on the `실행` tab.
    *
-   * The `settings-account` unit mounts two lines here (UI-32oq §4.4): the
+   * Two lines come from the active-login settings (UI-32oq §4.4): the
    * active-login status line with its `활성 계정` link above the group, and
-   * the per-runner wait-mode warning beside each runner's limit rows.
+   * the per-runner pinned-empty warning under each runner's limit rows.
    *
    * @returns {TemplateResult}
    */
   function accountSection() {
     return html`
-      ${accountBanner()}
+      ${accountBanner()} ${activeLoginLine()}
       <div class="settings-dialog__group" data-exec-accounts-group>
         <div class="settings-dialog__group-title">저장소 고정 계정</div>
         ${accountRow('claude_account', 'Claude', 'claude')}
@@ -2302,6 +2412,7 @@ export function createExecutionPane(mount_element, binding) {
       destroyed = true;
       ++generation;
       codex_credit_controls.destroy();
+      unsubscribe_limit_policy?.();
       window.removeEventListener('focus', onWindowFocus);
       // lit owns every listener it installed inside this host, so clearing the
       // host through lit is what releases them. The clear MUST go through

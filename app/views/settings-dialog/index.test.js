@@ -1302,6 +1302,73 @@ describe('createSettingsDialog server-wide tabs (UI-32oq §4.4)', () => {
     ]);
   });
 
+  test('draws the active-login status lines above the runner groups on 활성 계정', async () => {
+    const entry = {
+      auto_switch: true,
+      default_account: null,
+      accounts: [],
+      preempt_pct: null
+    };
+    const { root, dialog } = mount({
+      limitPolicySettings: {
+        revision: 0,
+        runners: { claude: entry, codex: entry }
+      }
+    });
+    dialog.open();
+    await settle();
+
+    await openTab(root, 'active_account');
+    await settle();
+
+    const pane = /** @type {HTMLElement} */ (
+      root.querySelector('[data-pane="active_account"]')
+    );
+    const status = pane.querySelector('[data-active-login-status]');
+    const groups = pane.querySelector('[data-group="limit-policy"]');
+    expect(
+      Array.from(pane.querySelectorAll('[data-active-login-line]'), (line) =>
+        line.getAttribute('data-active-login-line')
+      )
+    ).toEqual(['claude', 'codex']);
+    expect(
+      status &&
+        groups &&
+        status.compareDocumentPosition(groups) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
+  test('switches to 활성 계정 from the 계정 tab status line', async () => {
+    const entry = {
+      auto_switch: false,
+      default_account: null,
+      accounts: [],
+      preempt_pct: null
+    };
+    const { root, dialog } = mount({
+      limitPolicySettings: {
+        revision: 0,
+        runners: { claude: entry, codex: entry }
+      }
+    });
+    dialog.open();
+    await settle();
+    await openTab(root, 'account');
+    await settle();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-open-active-account]')
+    ).click();
+    await settle();
+
+    expect(
+      root
+        .querySelector('[role="tab"][aria-selected="true"]')
+        ?.getAttribute('data-tab')
+    ).toBe('active_account');
+  });
+
   test('draws Worker 주소, 대기·주기, 외부 작업 and 대화 세션 in order on 운영', async () => {
     const { root, dialog, transport } = mount({
       timingSettings: TIMING,

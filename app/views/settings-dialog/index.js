@@ -29,6 +29,7 @@
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { showToast } from '../../utils/toast.js';
+import { createActiveLoginStatus } from './active-login-status.js';
 import { createBulkPane } from './bulk-pane.js';
 import { createChipBindingsTab } from './chip-bindings-tab.js';
 import { createConversationSection } from './conversation-section.js';
@@ -208,13 +209,16 @@ export function createSettingsDialog(mount_element, options) {
 
   /** @type {ReturnType<typeof createLimitPolicySection>|null} */
   let limit_policy_section = null;
+  /** @type {ReturnType<typeof createActiveLoginStatus>|null} */
+  let active_login_status = null;
   /**
-   * The `활성 계정` tab's host. The `settings-account` unit adds the current
-   * status line above the per-runner groups (UI-32oq §4.4).
+   * The `활성 계정` tab's host: the current status lines above the per-runner
+   * groups (UI-32oq §4.4).
    */
   const active_account_host = makeHost();
+  const active_login_status_host = document.createElement('div');
   const limit_policy_host = document.createElement('div');
-  active_account_host.append(limit_policy_host);
+  active_account_host.append(active_login_status_host, limit_policy_host);
 
   /** @type {ReturnType<typeof createPresetManageSection>|null} */
   let preset_manage = null;
@@ -348,6 +352,8 @@ export function createSettingsDialog(mount_element, options) {
       implPresetStore: options.implPresetStore,
       modelVisibilityStore: options.modelVisibilityStore,
       codexCreditStore: options.codexCreditStore,
+      limitPolicySettingsStore: options.limitPolicySettingsStore,
+      onOpenActiveAccount: () => selectTab('active_account'),
       notify,
       onQueueAdopt: (queue) => {
         if (bound_root === null) {
@@ -422,6 +428,12 @@ export function createSettingsDialog(mount_element, options) {
 
   /** Draw the `활성 계정` tab's sections into their hosts. */
   function drawActiveAccount() {
+    if (!active_login_status) {
+      active_login_status = createActiveLoginStatus(active_login_status_host, {
+        limitPolicySettingsStore: options.limitPolicySettingsStore
+      });
+    }
+    active_login_status.render();
     if (!limit_policy_section) {
       limit_policy_section = createLimitPolicySection(limit_policy_host, {
         transport,
@@ -512,6 +524,8 @@ export function createSettingsDialog(mount_element, options) {
 
   /** Tear down the server-wide sections. */
   function destroyServerSections() {
+    active_login_status?.destroy();
+    active_login_status = null;
     limit_policy_section?.destroy();
     limit_policy_section = null;
     active_account_host.remove();

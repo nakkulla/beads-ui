@@ -16,7 +16,8 @@ import {
 } from './data/external-wait-settings-store.js';
 import {
   createLimitPolicySettingsStore,
-  isLimitPolicySnapshot
+  isLimitPolicySnapshot,
+  limitPolicyStateOf
 } from './data/limit-policy-settings-store.js';
 import { createModelVisibilityStore } from './data/model-visibility-store.js';
 import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
@@ -290,9 +291,7 @@ export function bootstrap(root_element) {
   /** @type {HTMLElement|null} */
   const detail_mount = document.getElementById('detail-panel');
 
-  if (usage_mount) {
-    createUsageMeter(usage_mount);
-  }
+  const usage_meter = usage_mount ? createUsageMeter(usage_mount) : null;
 
   if (worker_root && monitor_root && compare_root && adr_root && detail_mount) {
     /** @type {HTMLElement|null} */
@@ -360,6 +359,11 @@ export function bootstrap(root_element) {
     // 한도 대응 전역 설정(UI-giog §4.2): 저장소 창·일괄 창도 적용 범위를 읽어
     // 행을 잠그므로 앱 시작 때 구독한다.
     const limit_policy_settings_store = createLimitPolicySettingsStore();
+    // 사용량 카드의 ★와 머리 줄(UI-32oq §4.4)은 같은 설정 채널을 읽고 쓴다.
+    usage_meter?.bindLimitPolicy({
+      store: limit_policy_settings_store,
+      transport: (type, payload) => tracked_send(type, payload)
+    });
     const codex_credit_store = createCodexCreditStore();
     // `▶ 바로 실행` 확인 창의 기본 자원 비율은 서버 전역 설정을 따른다
     // (UI-qbgj §3.6); 값이 아직 없으면 창이 80%로 읽는다.
@@ -421,10 +425,7 @@ export function bootstrap(root_element) {
     // 전역이라 워크스페이스 전환에도 비우지 않고, 스냅샷을 통째로 교체한다.
     client.on('limit-policy-settings-snapshot', (payload) => {
       if (isLimitPolicySnapshot(payload)) {
-        limit_policy_settings_store.set({
-          revision: payload.revision,
-          runners: payload.runners
-        });
+        limit_policy_settings_store.set(limitPolicyStateOf(payload));
       }
     });
 

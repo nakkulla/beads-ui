@@ -12,6 +12,14 @@
  * A refused set still replies on the same envelope: `{ ok: false, code,
  * runner?, message, snapshot }`.
  *
+ * Every snapshot this channel sends — the subscribe answer, a set reply
+ * (accepted, refused or failed) and a fanout — also carries the active-login
+ * departure records, read-only: `departures: { claude: record|null, codex:
+ * record|null }` (UI-32oq §4.4 status lines). They are not part of the
+ * settings, so they move no `revision` and no write names them; a record
+ * that is created, followed or cleared pushes the current snapshot to every
+ * subscriber (`bindDepartureBroadcast`). An unreadable record reads as null.
+ *
  * The one repo-wide pass left here is `resumeLimitPolicyRebind`, which the
  * server start runs to finish the re-binding the UI-32oq migration recorded
  * in `rebind_pending`.
@@ -19,9 +27,12 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  * @import { LimitPolicyRunner, LimitPolicySnapshot } from '../limit-policy-settings.js'
+ * @import { DepartureRecord, DepartureStore } from '../active-login-return-store.js'
+ * @typedef {LimitPolicySnapshot & { departures: Record<LimitPolicyRunner, DepartureRecord|null> }} LimitPolicyChannelSnapshot
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
+import { activeLoginReturnStore } from '../active-login-return-store.js';
 import { limitPolicySettingsStore } from '../limit-policy-settings.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { reevaluateWorkerProviderSwitches } from '../worker/attach.js';
@@ -33,6 +44,40 @@ const DEFAULT_CLIENT_ID = 'limit-policy-settings';
 
 /** @type {Set<{ ws: WebSocket, client_id: string }>} */
 const SUBSCRIBERS = new Set();
+
+/** @type {ReadonlyArray<LimitPolicyRunner>} */
+const RUNNERS = Object.freeze(['claude', 'codex']);
+
+/**
+ * One runner's departure record, or null when there is none or it cannot be
+ * read (fail-quiet).
+ *
+ * @param {LimitPolicyRunner} runner
+ * @returns {DepartureRecord|null}
+ */
+function departureOf(runner) {
+  try {
+    return activeLoginReturnStore().get(runner);
+  } catch (err) {
+    log('limit-policy settings: departure read failed for %s: %o', runner, err);
+    return null;
+  }
+}
+
+/**
+ * A settings snapshot with the departure records laid beside it.
+ *
+ * @param {LimitPolicySnapshot} snapshot
+ * @returns {LimitPolicyChannelSnapshot}
+ */
+function channelSnapshot(snapshot) {
+  /** @type {Record<LimitPolicyRunner, DepartureRecord|null>} */
+  const departures = { claude: null, codex: null };
+  for (const runner of RUNNERS) {
+    departures[runner] = departureOf(runner);
+  }
+  return { ...snapshot, departures };
+}
 
 /**
  * @param {RequestEnvelope} req
@@ -58,7 +103,7 @@ function emitSnapshot(ws, client_id, snapshot) {
         payload: {
           type: 'limit-policy-settings-snapshot',
           id: client_id,
-          ...snapshot
+          ...channelSnapshot(snapshot)
         }
       })
     );
@@ -74,6 +119,20 @@ function fanout(snapshot) {
   for (const subscriber of SUBSCRIBERS) {
     emitSnapshot(subscriber.ws, subscriber.client_id, snapshot);
   }
+}
+
+/**
+ * Push the current snapshot to every subscriber whenever a departure record
+ * is created, followed or cleared. The server entry binds the store both
+ * active-login passes share.
+ *
+ * @param {DepartureStore} departures
+ * @returns {() => void} Unbind.
+ */
+export function bindDepartureBroadcast(departures) {
+  return departures.onChange(() => {
+    fanout(limitPolicySettingsStore().snapshot());
+  });
 }
 
 /**
@@ -254,7 +313,7 @@ export function handleLimitPolicySettingsSet(ws, req) {
           req,
           'internal_error',
           'failed to persist limit-policy settings',
-          { snapshot: store.snapshot() }
+          { snapshot: channelSnapshot(store.snapshot()) }
         )
       )
     );
@@ -268,12 +327,16 @@ export function handleLimitPolicySettingsSet(ws, req) {
           code: result.code,
           ...(result.runner === undefined ? {} : { runner: result.runner }),
           message: result.message,
-          snapshot: result.snapshot
+          snapshot: channelSnapshot(result.snapshot)
         })
       )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, { ok: true, snapshot: result.snapshot })));
+  ws.send(
+    JSON.stringify(
+      makeOk(req, { ok: true, snapshot: channelSnapshot(result.snapshot) })
+    )
+  );
   fanout(result.snapshot);
 }

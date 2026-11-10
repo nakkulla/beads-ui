@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createLimitPolicySettingsStore } from '../../data/limit-policy-settings-store.js';
+import { PINNED_EMPTY_WARNING } from './active-login-status.js';
 import { createExecutionPane } from './execution-pane.js';
 
 const REPO_B = '/tmp/example/repo-b';
@@ -129,7 +131,7 @@ function queueRow(patch = {}) {
 }
 
 /**
- * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string, disabled_models?: string[], codexCreditStore?: any }} [options]
+ * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string, disabled_models?: string[], codexCreditStore?: any, limitPolicySettingsStore?: any, onOpenActiveAccount?: () => void }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -163,6 +165,8 @@ function mount(options = {}) {
           : null
     },
     codexCreditStore: options.codexCreditStore,
+    limitPolicySettingsStore: options.limitPolicySettingsStore,
+    onOpenActiveAccount: options.onOpenActiveAccount,
     notify,
     onQueueAdopt: (queue) => {
       queue_state = queue;
@@ -2570,5 +2574,237 @@ describe('createExecutionPane repo limit rows (UI-32oq §4.1)', () => {
     await pane.load();
 
     expect(root.querySelector('[data-limit-note]')).toBeNull();
+  });
+});
+
+describe('createExecutionPane active-login lines (UI-32oq §4.4)', () => {
+  /**
+   * A settings store whose Claude auto switch is `claude_on`.
+   *
+   * @param {boolean} claude_on
+   * @param {any} [departures]
+   */
+  function settingsStore(claude_on, departures) {
+    const store = createLimitPolicySettingsStore();
+    const entry = {
+      auto_switch: false,
+      default_account: null,
+      accounts: [],
+      preempt_pct: null
+    };
+    store.set({
+      revision: 1,
+      runners: {
+        claude: { ...entry, auto_switch: claude_on },
+        codex: entry
+      },
+      departures: departures ?? { claude: null, codex: null }
+    });
+    return store;
+  }
+
+  /**
+   * @param {'wait'|'switch'} claude_mode
+   * @returns {Record<string, any>}
+   */
+  function queueWith(claude_mode) {
+    return queueRow({
+      provider_limit_policy: {
+        claude: { mode: claude_mode, accounts: [], preempt_pct: null },
+        codex: { mode: 'wait', accounts: [], preempt_pct: null }
+      }
+    });
+  }
+
+  /**
+   * @param {HTMLElement} root
+   * @returns {string[]}
+   */
+  function warnedRunners(root) {
+    return Array.from(root.querySelectorAll('[data-limit-pinned-warning]')).map(
+      (node) => node.getAttribute('data-limit-pinned-warning') || ''
+    );
+  }
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('warns a waiting runner whose pin is empty while its auto switch is on', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      queue: queueWith('wait'),
+      limitPolicySettingsStore: settingsStore(true)
+    });
+
+    await pane.load();
+
+    expect(warnedRunners(root)).toEqual(['claude']);
+    expect(
+      root
+        .querySelector('[data-limit-pinned-warning="claude"]')
+        ?.textContent?.trim()
+    ).toBe(PINNED_EMPTY_WARNING);
+  });
+
+  test('draws no warning for a runner that switches accounts', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      queue: queueWith('switch'),
+      limitPolicySettingsStore: settingsStore(true)
+    });
+
+    await pane.load();
+
+    expect(warnedRunners(root)).toEqual([]);
+  });
+
+  test('draws no warning once the runner has a pinned account', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      queue: queueWith('wait'),
+      values: { claude_account: 'repo@example.com' },
+      limitPolicySettingsStore: settingsStore(true)
+    });
+
+    await pane.load();
+
+    expect(warnedRunners(root)).toEqual([]);
+  });
+
+  test('draws no warning while the runner auto switch is off', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      queue: queueWith('wait'),
+      limitPolicySettingsStore: settingsStore(false)
+    });
+
+    await pane.load();
+
+    expect(warnedRunners(root)).toEqual([]);
+  });
+
+  test('draws the warning when the auto switch turns on after mounting', async () => {
+    const store = settingsStore(false);
+    const { root, pane } = mount({
+      section: 'account',
+      queue: queueWith('wait'),
+      limitPolicySettingsStore: store
+    });
+    await pane.load();
+
+    store.set(settingsStore(true).get());
+
+    expect(warnedRunners(root)).toEqual(['claude']);
+  });
+
+  test('draws no warning before the pinned accounts are read', async () => {
+    const { root } = mount({
+      section: 'account',
+      queue: queueWith('wait'),
+      limitPolicySettingsStore: settingsStore(true)
+    });
+
+    const warned = warnedRunners(root);
+
+    expect(warned).toEqual([]);
+  });
+
+  test('draws no warning when the pinned accounts cannot be read', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      queue: queueWith('wait'),
+      limitPolicySettingsStore: settingsStore(true),
+      transport: async (/** @type {string} */ type) => {
+        if (type === 'get-workspace-accounts') {
+          throw new Error('kv down');
+        }
+        return { values: {}, warnings: [] };
+      }
+    });
+
+    await pane.load();
+
+    expect(warnedRunners(root)).toEqual([]);
+  });
+
+  test('leaves every limit control and pin select editable beside the warning', async () => {
+    const { root, pane } = mount({
+      section: 'account',
+      queue: queueWith('wait'),
+      limitPolicySettingsStore: settingsStore(true)
+    });
+
+    await pane.load();
+
+    const controls = Array.from(
+      root.querySelectorAll(
+        'select[data-account-key], [data-limit-mode-runner] button, [data-limit-preempt], [data-limit-preempt-pct]'
+      )
+    );
+    expect(controls.length).toBe(10);
+    expect(
+      controls.every((node) => /** @type {any} */ (node).disabled === false)
+    ).toBe(true);
+  });
+
+  test('names each active login and a pending default return on the status line', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (/** @type {string} */ url) => ({
+        ok: true,
+        json: async () =>
+          url.includes('claude')
+            ? {
+                accounts: [
+                  {
+                    key: 'a@example.com',
+                    email: 'a@example.com',
+                    active: false
+                  },
+                  { key: 'b@example.com', email: 'b@example.com', active: true }
+                ]
+              }
+            : {
+                accounts: [{ key: 'ck', email: 'c@example.com', active: true }]
+              }
+      }))
+    );
+    const until = new Date(2026, 10, 10, 14, 5).toISOString();
+    const { root, pane } = mount({
+      section: 'account',
+      limitPolicySettingsStore: settingsStore(true, {
+        claude: {
+          default_account: 'a@example.com',
+          to_account: 'b@example.com',
+          until
+        },
+        codex: null
+      })
+    });
+
+    await pane.load();
+
+    expect(
+      root.querySelector('[data-account-login-text]')?.textContent?.trim()
+    ).toBe(
+      '활성 로그인: Claude b@example.com (default a@example.com 리셋 14:05 뒤 복귀) · Codex c@example.com'
+    );
+  });
+
+  test('opens the 활성 계정 tab from the status line link', async () => {
+    const open = vi.fn();
+    const { root, pane } = mount({
+      section: 'account',
+      limitPolicySettingsStore: settingsStore(false),
+      onOpenActiveAccount: open
+    });
+    await pane.load();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-open-active-account]')
+    ).click();
+
+    expect(open).toHaveBeenCalledTimes(1);
   });
 });

@@ -111,7 +111,11 @@
  * `selectCandidate` is `selectCodexSwitchCandidate`.
  */
 import { accountDisplayName } from '../app/utils/account-display-name.js';
+import { returnHintOf } from '../app/utils/active-login-return.js';
 import { createDepartureStore } from './active-login-return-store.js';
+
+// The return-hint wording is shared with the app's status lines (UI-32oq §4.4).
+export { clockOf, returnHintOf } from '../app/utils/active-login-return.js';
 
 /** The cached-list re-read period of an active-account return pass. */
 export const ACTIVE_RETURN_INTERVAL_MS = 60_000;
@@ -132,32 +136,6 @@ function collectHeldAccounts(queue, into) {
       }
     }
   }
-}
-
-/**
- * Local `HH:MM` of an ISO time — the return time a notice names.
- *
- * @param {string} iso
- * @returns {string}
- */
-export function clockOf(iso) {
-  const date = new Date(iso);
-  return `${String(date.getHours()).padStart(2, '0')}:${String(
-    date.getMinutes()
-  ).padStart(2, '0')}`;
-}
-
-/**
- * The return hint a departure notice and a status line carry while a record
- * stands (UI-32oq §4.2 notices).
- *
- * @param {DepartureRecord} record
- * @returns {string}
- */
-export function returnHintOf(record) {
-  return record.until === null
-    ? 'default 사용량 회복 확인 뒤 복귀'
-    : `default 리셋 ${clockOf(record.until)} 뒤 복귀`;
 }
 
 /**
