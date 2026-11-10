@@ -219,16 +219,16 @@ function fakeFiles() {
     removed_homes: [],
     /** @type {Map<string, Buffer>} */
     auth: new Map(),
-    /** @type {Map<string, number>} */
+    /** @type {Map<string, { owner: number|null, pid: number|null }>} */
     pid_records: new Map(),
     /** @type {Buffer[]} */
     replaced: []
   };
   /** @type {LoginFiles} */
   const files = {
-    createTempHome: vi.fn(async () => {
+    createTempHome: vi.fn(async (/** @type {number} */ owner) => {
       next += 1;
-      const home = `/state/account-login/codex-tmp/home-${next}`;
+      const home = `/state/account-login/codex-tmp/home-${owner}-${next}`;
       state.homes.add(home);
       return home;
     }),
@@ -248,21 +248,29 @@ function fakeFiles() {
       state.replaced.push(bytes);
     }),
     writePidRecord: vi.fn(
-      async (/** @type {string} */ id, /** @type {number} */ pid) => {
-        state.pid_records.set(id, pid);
+      async (
+        /** @type {string} */ id,
+        /** @type {number} */ owner,
+        /** @type {number} */ pid
+      ) => {
+        state.pid_records.set(id, { owner, pid });
       }
     ),
     removePidRecord: vi.fn(async (/** @type {string} */ id) => {
       state.pid_records.delete(id);
     }),
     readPidRecords: vi.fn(async () =>
-      [...state.pid_records].map(([login_id, pid]) => ({ login_id, pid }))
+      [...state.pid_records].map(([login_id, record]) => ({
+        login_id,
+        ...record
+      }))
     ),
-    removeTempHomes: vi.fn(async () => {
-      const count = state.homes.size;
-      state.homes.clear();
-      return count;
-    })
+    listTempHomes: vi.fn(async () =>
+      [...state.homes].map((home) => {
+        const match = path.basename(home).match(/^home-(\d+)-/);
+        return { home, owner: match ? Number(match[1]) : null };
+      })
+    )
   };
   return { files, state };
 }
@@ -356,6 +364,7 @@ function codexHarness(options = {}) {
       id += 1;
       return `login-${id}`;
     },
+    owner_pid: 777,
     env: { PATH: '/usr/bin:/bin' },
     log
   });
@@ -496,11 +505,14 @@ describe('codex login flow', () => {
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: expect.objectContaining({
-          CODEX_HOME: '/state/account-login/codex-tmp/home-1'
+          CODEX_HOME: '/state/account-login/codex-tmp/home-777-1'
         })
       })
     );
-    expect(h.state.pid_records.get('login-1')).toBe(4000);
+    expect(h.state.pid_records.get('login-1')).toEqual({
+      owner: 777,
+      pid: 4000
+    });
   });
 
   test('adds a new account and reports added', async () => {
@@ -538,7 +550,7 @@ describe('codex login flow', () => {
     await completeCodexLogin(h, child, authFor(KEY_C, 'c@example.com'));
 
     expect(h.state.removed_homes).toEqual([
-      '/state/account-login/codex-tmp/home-1'
+      '/state/account-login/codex-tmp/home-777-1'
     ]);
     expect(h.state.homes.size).toBe(0);
     expect(h.state.pid_records.size).toBe(0);
@@ -552,7 +564,7 @@ describe('codex login flow', () => {
 
     expect(h.runCommand).toHaveBeenCalledWith(
       '/fake/codex-auth',
-      ['import', '/state/account-login/codex-tmp/home-1/auth.json'],
+      ['import', '/state/account-login/codex-tmp/home-777-1/auth.json'],
       expect.anything()
     );
   });
@@ -927,7 +939,7 @@ function fakeTmux(options = {}) {
     if (command === 'has-session') {
       return state.session
         ? commandResult(0)
-        : commandResult(1, '', "can't find session: bdui-login");
+        : commandResult(1, '', "can't find session: bdui-login-777");
     }
     if (command === 'new-session' || command === 'new-window') {
       state.session = true;
@@ -1019,6 +1031,7 @@ function claudeHarness(options = {}) {
     },
     invalidateUsageCache: { claude: invalidateClaude, codex: vi.fn() },
     randomId: () => 'abcdef12-3456-7890-abcd-ef1234567890',
+    owner_pid: 777,
     env: { PATH: '/usr/bin:/bin' },
     log
   });
@@ -1072,7 +1085,7 @@ describe('claude login window', () => {
       'respawn-pane'
     ]);
     expect(h.tmux.calls[1]).toEqual(
-      expect.arrayContaining(['-d', '-s', 'bdui-login', '/bin/sleep'])
+      expect.arrayContaining(['-d', '-s', 'bdui-login-777', '/bin/sleep'])
     );
     expect(h.tmux.calls[3]).toEqual([
       'set-option',
@@ -1094,7 +1107,7 @@ describe('claude login window', () => {
       'new-window',
       '-d',
       '-t',
-      '=bdui-login:',
+      '=bdui-login-777:',
       '-n',
       'login-claude-abcdef12',
       '-P',
@@ -1437,71 +1450,140 @@ describe('claude stop procedure', () => {
   });
 });
 
+/**
+ * Leftovers of three owners: 111 is a dead server, 222 a live one, 777 this
+ * process; plus records and names whose owner cannot be read.
+ *
+ * @param {{ sessions?: CommandResult }} [options]
+ */
+function sweepHarness(options = {}) {
+  const { files, state } = fakeFiles();
+  state.pid_records.set('dead-codex', { owner: 111, pid: 501 });
+  state.pid_records.set('live-owner', { owner: 222, pid: 502 });
+  state.pid_records.set('dead-recycled', { owner: 111, pid: 503 });
+  state.pid_records.set('own', { owner: 777, pid: 504 });
+  state.pid_records.set('unreadable', { owner: null, pid: 505 });
+  state.homes.add('/state/account-login/codex-tmp/home-111-a');
+  state.homes.add('/state/account-login/codex-tmp/home-222-b');
+  state.homes.add('/state/account-login/codex-tmp/home-777-c');
+  state.homes.add('/state/account-login/codex-tmp/home-garbage');
+  const alive = new Set([222, 501, 502, 503, 504, 505]);
+  const killGroup = vi.fn((/** @type {number} */ pid) => {
+    alive.delete(pid);
+  });
+  const runCommand = vi.fn(
+    async (/** @type {string} */ _bin, /** @type {string[]} */ args) =>
+      commandResult(
+        0,
+        args[3] === '503'
+          ? '/usr/bin/vim notes.txt\n'
+          : '/Users/me/.local/share/codex/bin/codex login --device-auth\n'
+      )
+  );
+  const runTmux = vi.fn(async (/** @type {string[]} */ args) =>
+    args[0] === 'list-sessions'
+      ? options.sessions ||
+        commandResult(
+          0,
+          'work\nbdui-login-111\nbdui-login-222\nbdui-login-777\nbdui-login\nbdui-login-x\n'
+        )
+      : commandResult(0)
+  );
+  const manager = createAccountLoginManager({
+    files,
+    runCommand,
+    killGroup,
+    processAlive: (pid) => alive.has(pid),
+    runTmux,
+    owner_pid: 777
+  });
+  return { manager, state, files, killGroup, runCommand, runTmux };
+}
+
+/**
+ * @param {ReturnType<typeof sweepHarness>} h
+ */
+function killedSessions(h) {
+  return h.runTmux.mock.calls
+    .map(([args]) => args)
+    .filter((args) => args[0] === 'kill-session');
+}
+
 describe('startup cleanup', () => {
-  test('closes the bdui-login tmux session', async () => {
-    const h = claudeHarness();
+  test('closes the login tmux sessions of dead owners and the legacy name only', async () => {
+    const h = sweepHarness();
 
     await h.manager.cleanupStale();
 
-    expect(h.tmux.calls).toContainEqual(['kill-session', '-t', '=bdui-login']);
+    expect(killedSessions(h)).toEqual([
+      ['kill-session', '-t', '=bdui-login-111'],
+      ['kill-session', '-t', '=bdui-login']
+    ]);
   });
 
-  test('stops only recorded groups whose command line is codex login', async () => {
-    const { files, state } = fakeFiles();
-    state.pid_records.set('old-login', 111);
-    state.pid_records.set('recycled', 222);
-    const killGroup = vi.fn();
-    const runCommand = vi.fn(
-      async (/** @type {string} */ _bin, /** @type {string[]} */ args) =>
-        commandResult(
-          0,
-          args[3] === '111'
-            ? '/Users/me/.local/share/codex/bin/codex login --device-auth\n'
-            : '/usr/bin/vim notes.txt\n'
-        )
-    );
-    const alive = new Set([111, 222]);
-    killGroup.mockImplementation((pid) => alive.delete(pid));
-    const manager = createAccountLoginManager({
-      files,
-      runCommand,
-      killGroup,
-      processAlive: (pid) => alive.has(pid),
-      runTmux: async () => commandResult(1, '', 'no server running')
+  test('closes nothing when no tmux server runs', async () => {
+    const h = sweepHarness({
+      sessions: commandResult(
+        1,
+        '',
+        'no server running on /tmp/tmux-501/default'
+      )
     });
 
-    const summary = await manager.cleanupStale();
+    await h.manager.cleanupStale();
 
-    expect(runCommand).toHaveBeenCalledWith(
-      '/bin/ps',
-      ['-o', 'command=', '-p', '111'],
-      expect.anything()
-    );
-    expect(killGroup.mock.calls).toEqual([[111, 'SIGTERM']]);
-    expect(state.pid_records.size).toBe(0);
-    expect(summary).toMatchObject({ stopped_groups: 1, removed_records: 2 });
+    expect(killedSessions(h)).toEqual([]);
   });
 
-  test('deletes leftover temp CODEX_HOMEs', async () => {
-    const { files, state } = fakeFiles();
-    state.homes.add('/state/account-login/codex-tmp/home-old');
-    const manager = createAccountLoginManager({
-      files,
-      runCommand: vi.fn(async () => commandResult(1)),
-      runTmux: async () => commandResult(1)
-    });
+  test("stops a dead owner's recorded codex login group", async () => {
+    const h = sweepHarness();
 
-    const summary = await manager.cleanupStale();
+    const summary = await h.manager.cleanupStale();
 
-    expect(files.removeTempHomes).toHaveBeenCalledOnce();
+    expect(h.killGroup.mock.calls).toEqual([[501, 'SIGTERM']]);
+    expect(summary.stopped_groups).toBe(1);
+  });
+
+  test("checks the command line only of dead owners' records", async () => {
+    const h = sweepHarness();
+
+    await h.manager.cleanupStale();
+
+    expect(h.runCommand.mock.calls.map(([, args]) => args[3])).toEqual([
+      '501',
+      '503'
+    ]);
+  });
+
+  test('keeps the records of a live owner, this process and an unreadable owner', async () => {
+    const h = sweepHarness();
+
+    const summary = await h.manager.cleanupStale();
+
+    expect([...h.state.pid_records.keys()]).toEqual([
+      'live-owner',
+      'own',
+      'unreadable'
+    ]);
+    expect(summary.removed_records).toBe(2);
+  });
+
+  test('removes only the temp homes of dead owners', async () => {
+    const h = sweepHarness();
+
+    const summary = await h.manager.cleanupStale();
+
+    expect(h.state.removed_homes).toEqual([
+      '/state/account-login/codex-tmp/home-111-a'
+    ]);
     expect(summary.removed_homes).toBe(1);
   });
 
   test('makes a start wait for the sweep', async () => {
     const h = codexHarness();
-    /** @type {(value: number) => void} */
+    /** @type {(value: Array<{ home: string, owner: number|null }>) => void} */
     let release = () => {};
-    vi.mocked(h.files.removeTempHomes).mockImplementation(
+    vi.mocked(h.files.listTempHomes).mockImplementation(
       () =>
         new Promise((resolve) => {
           release = resolve;
@@ -1512,7 +1594,7 @@ describe('startup cleanup', () => {
     const pending = h.manager.start({ provider: 'codex', mode: 'add' });
     await drain();
     const spawned_before = h.spawnLogin.mock.calls.length;
-    release(0);
+    release([]);
     await pending;
     await drain();
 
@@ -1705,9 +1787,10 @@ describe('login files', () => {
   test('creates a 0700 temp home that stores the login in auth.json', async () => {
     const files = createLoginFiles({ state_dir: path.join(root, 'login') });
 
-    const home = await files.createTempHome();
+    const home = await files.createTempHome(4242);
 
     expect(path.dirname(home)).toBe(path.join(root, 'login', 'codex-tmp'));
+    expect(path.basename(home)).toMatch(/^home-4242-/);
     expect(fs.statSync(home).mode & 0o777).toBe(0o700);
     expect(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).toBe(
       'cli_auth_credentials_store = "file"\n'
@@ -1756,17 +1839,21 @@ describe('login files', () => {
     expect(fs.readdirSync(codex_home)).toEqual(['auth.json']);
   });
 
-  test('empties only the temp-home folder on the startup sweep', async () => {
+  test('lists temp homes with the owner pid their names carry', async () => {
     const state_dir = path.join(root, 'account-login');
     const files = createLoginFiles({ state_dir });
-    await files.createTempHome();
-    fs.mkdirSync(path.join(root, 'codex-homes', 'real'), { recursive: true });
+    const home = await files.createTempHome(4242);
+    fs.mkdirSync(path.join(state_dir, 'codex-tmp', 'stray'));
 
-    const removed = await files.removeTempHomes();
+    const listed = await files.listTempHomes();
 
-    expect(removed).toBe(1);
-    expect(fs.readdirSync(path.join(state_dir, 'codex-tmp'))).toEqual([]);
-    expect(fs.existsSync(path.join(root, 'codex-homes', 'real'))).toBe(true);
+    expect(listed).toEqual(
+      expect.arrayContaining([
+        { home, owner: 4242 },
+        { home: path.join(state_dir, 'codex-tmp', 'stray'), owner: null }
+      ])
+    );
+    expect(listed).toHaveLength(2);
   });
 
   test('refuses to remove a folder outside the temp-home folder', async () => {
@@ -1779,12 +1866,12 @@ describe('login files', () => {
 
   test('round-trips pid records', async () => {
     const files = createLoginFiles({ state_dir: path.join(root, 'login') });
-    await files.writePidRecord('login-a', 4321);
+    await files.writePidRecord('login-a', 4242, 4321);
 
     const records = await files.readPidRecords();
     await files.removePidRecord('login-a');
 
-    expect(records).toEqual([{ login_id: 'login-a', pid: 4321 }]);
+    expect(records).toEqual([{ login_id: 'login-a', owner: 4242, pid: 4321 }]);
     expect(await files.readPidRecords()).toEqual([]);
   });
 });

@@ -352,10 +352,11 @@ watchRegistry(
 );
 
 server.listen(config.port, config.host, async () => {
-  // Sweep what an earlier process's account logins left behind (UI-xm29
-  // §4.1): the `bdui-login` tmux session, recorded `codex login` process
-  // groups and temp CODEX_HOMEs. Here, once, and never at import or inside
-  // createApp, so tests and app builds never touch a real tmux or process.
+  // Sweep what account logins of a server process that is no longer alive
+  // left behind (UI-xm29 §4.1): its `bdui-login-<pid>` tmux session, recorded
+  // `codex login` process groups and temp CODEX_HOMEs; a live server's stay.
+  // Here, once, and never at import or inside createApp, so tests and app
+  // builds never touch a real tmux or process.
   void cleanupStaleLogins()
     .then((summary) => {
       log('account login startup sweep: %o', summary);

@@ -4,10 +4,11 @@
  * A login session logs one account in WITHOUT moving the active login. Codex
  * runs `codex login --device-auth` in a throwaway `CODEX_HOME` and imports the
  * result with `codex-auth import`; Claude runs `cswap login` in a window of the
- * server-only tmux session `bdui-login`, and cswap owns isolation, identity and
- * storage there. At most one session per provider is in progress. Sessions
- * live in memory only; the server entry's one startup sweep
- * (`cleanupStaleLogins`) removes what an earlier process left behind.
+ * server-only tmux session `bdui-login-<server pid>`, and cswap owns
+ * isolation, identity and storage there. At most one session per provider is
+ * in progress. Sessions live in memory only; the server entry's one startup
+ * sweep (`cleanupStaleLogins`) removes what a server process that is no
+ * longer alive left behind.
  *
  * Nothing a login prints reaches a log: codes, device codes, tokens and tool
  * output stay inside the session, and the only tool text a client sees is the
@@ -57,18 +58,21 @@ import {
  * startup sweep reads, and the atomic replacement of the global Codex login.
  *
  * @typedef {Object} LoginFiles
- * @property {() => Promise<string>} createTempHome - A new 0700 `CODEX_HOME`.
+ * @property {(owner: number) => Promise<string>} createTempHome - A new 0700
+ * `CODEX_HOME` named `home-<owner pid>-…`.
  * @property {(home: string) => Promise<void>} removeTempHome
  * @property {(home: string) => string} tempAuthPath
  * @property {(home: string) => Promise<Buffer>} readTempAuth
  * @property {(bytes: Buffer) => Promise<void>} replaceActiveAuth - Atomically
  * replace `$CODEX_HOME/auth.json` (0600 temp file in the same folder, then
  * rename).
- * @property {(login_id: string, pid: number) => Promise<void>} writePidRecord
+ * @property {(login_id: string, owner: number, pid: number) => Promise<void>} writePidRecord -
+ * Record the child pid with the server process that owns it.
  * @property {(login_id: string) => Promise<void>} removePidRecord
- * @property {() => Promise<Array<{ login_id: string, pid: number|null }>>} readPidRecords
- * @property {() => Promise<number>} removeTempHomes - Delete every leftover
- * temp home; returns how many.
+ * @property {() => Promise<Array<{ login_id: string, owner: number|null, pid: number|null }>>} readPidRecords
+ * @property {() => Promise<Array<{ home: string, owner: number|null }>>} listTempHomes -
+ * Every temp home with the owner pid its name carries (null when the name
+ * does not parse).
  */
 
 /**
@@ -118,6 +122,8 @@ import {
  * @property {(provider: LoginProvider) => boolean} [acquireLock]
  * @property {(provider: LoginProvider) => void} [releaseLock]
  * @property {() => string} [randomId]
+ * @property {number} [owner_pid] - The pid of the server process that owns
+ * this manager's logins (default `process.pid`).
  * @property {NodeJS.ProcessEnv} [env]
  * @property {(...args: any[]) => void} [log]
  */
@@ -131,6 +137,8 @@ export const POLL_MS = 1_000;
 export const GONE_POLL_MS = 250;
 export const LOCK_RETRY_MS = 500;
 export const LOCK_RETRY_LIMIT = 60;
+// The legacy fixed session name; each server now opens its own
+// `bdui-login-<owner pid>` (see loginTmuxSessionName).
 export const LOGIN_TMUX_SESSION = 'bdui-login';
 // Wide enough that the ~450-character Claude OAuth URL never wraps, so a
 // TUI that hard-wraps at the pane width cannot cut it.
@@ -165,6 +173,18 @@ function isRecord(value) {
  */
 function nonEmptyString(value) {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * A usable process id, or null.
+ *
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function pidOf(value) {
+  return Number.isInteger(value) && /** @type {number} */ (value) > 1
+    ? /** @type {number} */ (value)
+    : null;
 }
 
 /**
@@ -482,8 +502,9 @@ export function runCommand(bin, args, options = {}) {
 
 /**
  * The file side of logins under `<state root>/account-login`: `codex-tmp/`
- * holds the throwaway homes (and nothing else, so the startup sweep may
- * empty it), `pids/` the pid records.
+ * holds the throwaway homes (and nothing else), `pids/` the pid records.
+ * Both carry the pid of the server process that owns them, so a startup
+ * sweep can leave a live server's logins alone.
  *
  * @param {{ state_dir?: string, codex_home?: string, fs?: typeof fs.promises }} [options]
  * @returns {LoginFiles}
@@ -541,10 +562,10 @@ export function createLoginFiles(options = {}) {
   }
 
   return {
-    async createTempHome() {
+    async createTempHome(owner) {
       await ensurePrivateDir(stateDir());
       await ensurePrivateDir(homesDir());
-      const home = await fsp.mkdtemp(path.join(homesDir(), 'home-'));
+      const home = await fsp.mkdtemp(path.join(homesDir(), `home-${owner}-`));
       await fsp.chmod(home, 0o700);
       // File storage keeps the login in `<home>/auth.json`, where the import
       // reads it, instead of a keychain item the sweep could not find.
@@ -581,48 +602,80 @@ export function createLoginFiles(options = {}) {
         throw error;
       }
     },
-    async writePidRecord(login_id, pid) {
+    async writePidRecord(login_id, owner, pid) {
       await ensurePrivateDir(stateDir());
       await ensurePrivateDir(pidsDir());
-      await fsp.writeFile(path.join(pidsDir(), `${login_id}.pid`), `${pid}\n`, {
-        mode: 0o600
-      });
+      await fsp.writeFile(
+        path.join(pidsDir(), `${login_id}.pid`),
+        `${JSON.stringify({ owner, pid })}\n`,
+        { mode: 0o600 }
+      );
     },
     async removePidRecord(login_id) {
       await fsp.rm(path.join(pidsDir(), `${login_id}.pid`), { force: true });
     },
     async readPidRecords() {
-      /** @type {Array<{ login_id: string, pid: number|null }>} */
+      /** @type {Array<{ login_id: string, owner: number|null, pid: number|null }>} */
       const records = [];
       for (const name of await readDirOrEmpty(pidsDir())) {
         if (!name.endsWith('.pid')) {
           continue;
         }
-        /** @type {number|null} */
-        let pid = null;
+        /** @type {unknown} */
+        let parsed = null;
         try {
-          const text = await fsp.readFile(path.join(pidsDir(), name), 'utf8');
-          const parsed = Number.parseInt(text.trim(), 10);
-          pid = Number.isInteger(parsed) && parsed > 1 ? parsed : null;
+          parsed = JSON.parse(
+            await fsp.readFile(path.join(pidsDir(), name), 'utf8')
+          );
         } catch {
-          pid = null;
+          parsed = null;
         }
-        records.push({ login_id: name.slice(0, -'.pid'.length), pid });
+        const record = isRecord(parsed) ? parsed : {};
+        records.push({
+          login_id: name.slice(0, -'.pid'.length),
+          owner: pidOf(record.owner),
+          pid: pidOf(record.pid)
+        });
       }
       return records;
     },
-    async removeTempHomes() {
-      let removed = 0;
-      for (const name of await readDirOrEmpty(homesDir())) {
-        await fsp.rm(path.join(homesDir(), name), {
-          recursive: true,
-          force: true
-        });
-        removed += 1;
-      }
-      return removed;
+    async listTempHomes() {
+      return (await readDirOrEmpty(homesDir())).map((name) => {
+        const match = name.match(/^home-(\d+)-/);
+        return {
+          home: path.join(homesDir(), name),
+          owner: match ? pidOf(Number(match[1])) : null
+        };
+      });
     }
   };
+}
+
+/**
+ * The server-only tmux session one server process opens its login windows
+ * in. The owner pid in the name lets another server's startup sweep tell a
+ * live server's logins from a dead one's leftovers.
+ *
+ * @param {number} owner_pid
+ * @returns {string}
+ */
+export function loginTmuxSessionName(owner_pid) {
+  return `${LOGIN_TMUX_SESSION}-${owner_pid}`;
+}
+
+/**
+ * The owner pid a login tmux session name carries; the legacy fixed name
+ * reads as `legacy`, any other name as null.
+ *
+ * @param {string} name
+ * @returns {number|'legacy'|null}
+ */
+function loginSessionOwnerOf(name) {
+  if (name === LOGIN_TMUX_SESSION) {
+    return 'legacy';
+  }
+  const match = name.match(/^bdui-login-(\d+)$/);
+  return match ? pidOf(Number(match[1])) : null;
 }
 
 /**
@@ -750,6 +803,8 @@ export function createAccountLoginManager(options = {}) {
   const acquireLock = options.acquireLock || acquireSwitchLock;
   const releaseLock = options.releaseLock || releaseSwitchLock;
   const randomId = options.randomId || (() => crypto.randomUUID());
+  const owner_pid = options.owner_pid ?? process.pid;
+  const tmux_session = loginTmuxSessionName(owner_pid);
   const log = options.log || default_log;
 
   /** @type {Map<string, LoginSession>} */
@@ -982,7 +1037,7 @@ export function createAccountLoginManager(options = {}) {
       return;
     }
     try {
-      session.home = await files.createTempHome();
+      session.home = await files.createTempHome(owner_pid);
     } catch {
       finish(session, { state: 'failed', error: 'login_failed' });
       return;
@@ -1031,7 +1086,7 @@ export function createAccountLoginManager(options = {}) {
     if (typeof child.pid === 'number') {
       session.pid = child.pid;
       session.pid_record = files
-        .writePidRecord(session.id, child.pid)
+        .writePidRecord(session.id, owner_pid, child.pid)
         .catch(() => {});
     }
     /**
@@ -1279,7 +1334,7 @@ export function createAccountLoginManager(options = {}) {
   async function openLoginWindow(name) {
     const placeholder = ['/bin/sleep', '60'];
     const format = '#{window_id} #{pane_id}';
-    const has = await runTmux(['has-session', '-t', `=${LOGIN_TMUX_SESSION}`]);
+    const has = await runTmux(['has-session', '-t', `=${tmux_session}`]);
     if (has.not_found) {
       return { ok: false, error: 'not_found' };
     }
@@ -1288,7 +1343,7 @@ export function createAccountLoginManager(options = {}) {
         'new-window',
         '-d',
         '-t',
-        `=${LOGIN_TMUX_SESSION}:`,
+        `=${tmux_session}:`,
         '-n',
         name,
         '-P',
@@ -1303,7 +1358,7 @@ export function createAccountLoginManager(options = {}) {
             'new-session',
             '-d',
             '-s',
-            LOGIN_TMUX_SESSION,
+            tmux_session,
             '-n',
             name,
             '-x',
@@ -1810,11 +1865,14 @@ export function createAccountLoginManager(options = {}) {
   }
 
   /**
-   * The startup sweep (§4.1): close the whole `bdui-login` tmux session,
-   * stop only recorded process groups whose command line is `codex login`,
-   * and delete every leftover temp home. Runs once; a start waits for it.
+   * The startup sweep (§4.1), owner-scoped: it touches only what a server
+   * process that is no longer alive left behind — its `bdui-login-<pid>`
+   * tmux session (and the legacy `bdui-login`), its recorded process groups
+   * whose command line is still `codex login`, and its temp homes. A live
+   * server's logins, this process's own, and anything whose owner cannot be
+   * read stay. Runs once; a start waits for it.
    *
-   * @returns {Promise<{ tmux_session_closed: boolean, stopped_groups: number, removed_records: number, removed_homes: number }>}
+   * @returns {Promise<{ closed_sessions: number, stopped_groups: number, removed_records: number, removed_homes: number }>}
    */
   function cleanupStale() {
     if (!startup_cleanup) {
@@ -1823,24 +1881,40 @@ export function createAccountLoginManager(options = {}) {
     return /** @type {Promise<any>} */ (startup_cleanup);
   }
 
+  /**
+   * Whether `owner` names a server process that is gone: never this
+   * process, and EPERM (someone else's live process) counts as alive.
+   *
+   * @param {number|null} owner
+   */
+  function ownerGone(owner) {
+    return owner !== null && owner !== owner_pid && !processAlive(owner);
+  }
+
   async function sweep() {
     const summary = {
-      tmux_session_closed: false,
+      closed_sessions: 0,
       stopped_groups: 0,
       removed_records: 0,
       removed_homes: 0
     };
     try {
-      const closed = await runTmux([
-        'kill-session',
-        '-t',
-        `=${LOGIN_TMUX_SESSION}`
-      ]);
-      summary.tmux_session_closed = closed.code === 0;
+      const listed = await runTmux(['list-sessions', '-F', '#{session_name}']);
+      // A failed listing (no tmux, no server) leaves nothing to close.
+      const names = listed.code === 0 ? listed.stdout.split('\n') : [];
+      for (const name of names.map((line) => line.trim())) {
+        const owner = loginSessionOwnerOf(name);
+        if (owner === 'legacy' || (owner !== null && ownerGone(owner))) {
+          const closed = await runTmux(['kill-session', '-t', `=${name}`]);
+          if (closed.code === 0) {
+            summary.closed_sessions += 1;
+          }
+        }
+      }
     } catch {
-      // No tmux, or no such session: nothing to close.
+      // No tmux: nothing to close.
     }
-    /** @type {Array<{ login_id: string, pid: number|null }>} */
+    /** @type {Array<{ login_id: string, owner: number|null, pid: number|null }>} */
     let records = [];
     try {
       records = await files.readPidRecords();
@@ -1848,6 +1922,9 @@ export function createAccountLoginManager(options = {}) {
       records = [];
     }
     for (const record of records) {
+      if (!ownerGone(record.owner)) {
+        continue;
+      }
       if (record.pid !== null && (await isCodexLogin(record.pid))) {
         await stopGroup(record.pid);
         summary.stopped_groups += 1;
@@ -1859,10 +1936,23 @@ export function createAccountLoginManager(options = {}) {
         // A record that stays is retried next start.
       }
     }
+    /** @type {Array<{ home: string, owner: number|null }>} */
+    let homes = [];
     try {
-      summary.removed_homes = await files.removeTempHomes();
+      homes = await files.listTempHomes();
     } catch {
-      summary.removed_homes = 0;
+      homes = [];
+    }
+    for (const entry of homes) {
+      if (!ownerGone(entry.owner)) {
+        continue;
+      }
+      try {
+        await files.removeTempHome(entry.home);
+        summary.removed_homes += 1;
+      } catch {
+        // A home that stays is retried next start.
+      }
     }
     return summary;
   }
@@ -1930,7 +2020,9 @@ export function accountLoginManager() {
 /**
  * The startup sweep of the shared manager. Only the server entry calls it,
  * once after `listen`, so a test or a module import never closes a real tmux
- * session or signals a real process.
+ * session or signals a real process; and it only touches what a dead server
+ * process left, so a dev server started beside the shared one leaves the
+ * shared one's logins alone.
  */
 export function cleanupStaleLogins() {
   return accountLoginManager().cleanupStale();
