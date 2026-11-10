@@ -2,9 +2,9 @@
  * One runner's `한도 대응` rows — `대응 방식`, `전환 허용 계정`, `선제 전환` —
  * and the click handling behind them (UI-13o1 §3.5, UI-9y1k §4.5).
  *
- * The repo `계정` tab and the monitor ⚙ `전역` tab draw these rows from this
+ * The settings dialog's `계정` and `활성 계정` tabs draw these rows from this
  * one editor (UI-giog §4.5); only the policy source and the save channel
- * differ, so neither screen reassembles the rows by hand. The `전역` tab's
+ * differ, so neither screen reassembles the rows by hand. The `활성 계정` tab's
  * active-login switch has no wait/switch mode (UI-32oq §4.1), so it leaves the
  * mode row out and draws its own rows above. A screen hands in:
  *

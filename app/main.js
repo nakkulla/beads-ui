@@ -920,7 +920,13 @@ export function bootstrap(root_element) {
      * @returns {boolean}
      */
     function pipelineChannelWanted(state) {
-      return state.view === 'monitor' || state.selected_id != null;
+      // 설정 창의 대상 선택·여러 저장소·다른 저장소의 큐는 모니터 행을 읽는다
+      // (UI-32oq §4.4) — 창이 열린 동안은 어느 탭에서든 구독한다.
+      return (
+        state.view === 'monitor' ||
+        state.selected_id != null ||
+        settings_dialog_open
+      );
     }
 
     /**
@@ -1691,6 +1697,7 @@ export function bootstrap(root_element) {
       // (UI-nu43 §4.1). 레포 카드 ⚙도 같은 창을 `scope: 'repo'`로 열므로 일괄
       // 적용 뒤 열린 패널을 다시 읽던 경로는 없다 (UI-e1ta §7).
       monitorRows: () => monitor_pipeline_store.getWorkspacesState(),
+      connectedRoot: () => store.getState().workspace.current?.path ?? null,
       // 레포 `⚙`의 `저장소` 탭은 그 저장소의 파이프라인 항목과 저장소 작업 서랍을
       // 읽는다 (UI-f2sy §7). `monitor_view`는 아래에서 만들어지지만 서랍은 창이
       // 열린 뒤의 클릭에서만 열린다.
@@ -1737,8 +1744,8 @@ export function bootstrap(root_element) {
       if (btn_settings) {
         btn_settings.setAttribute('aria-label', '설정');
         btn_settings.setAttribute('title', '설정');
-        // 모니터 탭의 헤더 ⚙는 연결 저장소가 아니라 보이는 여러 저장소의 일괄
-        // 설정 창이다 (UI-nu43 §3.1). 다른 탭은 연결 저장소 하나의 창이다.
+        // 모든 ⚙는 같은 창을 열고 처음 대상만 다르다 (UI-32oq §4.4): 모니터
+        // 탭의 헤더 ⚙는 여러 저장소, 다른 탭은 연결 저장소다.
         btn_settings.addEventListener('click', () => {
           if (store.getState().view === 'monitor') {
             settings_dialog.open(undefined, { scope: 'monitor' });

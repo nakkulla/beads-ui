@@ -255,8 +255,35 @@ describe('main exec-preset subscription lifecycle', () => {
     const dialog = document.getElementById('settings-dialog');
     expect(dialog).not.toBe(null);
     expect(dialog?.hasAttribute('open')).toBe(true);
-    expect(dialog?.querySelector('[role="tab"][data-tab="worker"]')).not.toBe(
-      null
-    );
+    expect(
+      dialog?.querySelector('[role="tab"][data-tab="execution"]')
+    ).not.toBe(null);
+  });
+
+  test('subscribes the monitor pipeline while the settings window is open outside the monitor', async () => {
+    bootstrap(setupShell());
+    await settle();
+    const before = CLIENT.sent.length;
+
+    /** @type {HTMLButtonElement} */ (
+      document.getElementById('display-settings-btn')
+    ).click();
+    await settle();
+    const opened = CLIENT.sent
+      .slice(before)
+      .map((/** @type {{ type: string }} */ message) => message.type);
+    const after_open = CLIENT.sent.length;
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.settings-dialog__close')
+    ).click();
+    await settle();
+
+    expect([
+      opened.includes('subscribe-monitor-pipeline'),
+      CLIENT.sent
+        .slice(after_open)
+        .map((/** @type {{ type: string }} */ message) => message.type)
+        .includes('unsubscribe-monitor-pipeline')
+    ]).toEqual([true, true]);
   });
 });

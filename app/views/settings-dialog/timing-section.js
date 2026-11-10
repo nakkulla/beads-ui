@@ -1,5 +1,5 @@
 /**
- * The bulk window `전역` tab's `대기·주기` group (UI-ny0h §3.5).
+ * The settings dialog `운영` tab's `대기·주기` group (UI-ny0h §3.5).
  *
  * Server-global wait, observation, retry, and refresh durations. The group
  * reads and writes only the `timing-settings-snapshot` material: the server's

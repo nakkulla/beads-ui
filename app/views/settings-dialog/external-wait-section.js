@@ -1,5 +1,5 @@
 /**
- * The bulk window `전역` tab's `외부 작업` group (UI-qbgj §3.6).
+ * The settings dialog `운영` tab's `외부 작업` group (UI-qbgj §3.6).
  *
  * Server-global defaults of the external-wait surface, read from and written
  * to the `external-wait-settings` channel. The server's `fields` table owns the

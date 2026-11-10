@@ -1,5 +1,5 @@
 /**
- * The bulk window `전역` tab's `대화 세션` group (UI-jbl1 §3.4).
+ * The settings dialog `운영` tab's `대화 세션` group (UI-jbl1 §3.4).
  *
  * Server-global launch settings of every Worker session conversation, read
  * from and written to the `conversation-settings` request pair: the ONE

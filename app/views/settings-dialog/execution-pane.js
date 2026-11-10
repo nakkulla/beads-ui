@@ -1,26 +1,26 @@
 /**
- * The `실행` settings pane, extracted from the unified settings dialog so two
- * surfaces can mount the SAME code (UI-eey2 §4.4): the dialog's `실행` tab and
- * the monitor deck's per-repo `⚙` panel.
+ * The settings dialog's `실행` and `계정` panes for ONE target repository
+ * (UI-32oq §4.4).
  *
  * The pane owns one state machine — session-defaults draft over a server
  * baseline, the UI-only orchestration runtime selection, the orchestration
  * draft over the queue snapshot, and execution presets — and draws ONE of its
- * four sections at a time through `render(section)`: `worker` (the execution
- * profile), `quick_fix` (the route-scoped profile and its own preset bar),
- * `session` (what an interactive session reads), `account` (this repo's
- * execution accounts and limit policy). The automation switches are NOT
- * here: the Worker toolbar is their one editing surface (UI-7yh2 §3.12).
+ * two sections at a time through `render(section)`: `execution` (the worker
+ * profile, then the route-scoped quick fix profile folded under it, each with
+ * its own preset bar) and `account` (this repo's pinned accounts and limit
+ * policy). The automation switches are NOT here: the Worker toolbar is their
+ * one editing surface (UI-7yh2 §3.12). What only the repository itself owns
+ * (concurrency, main sync, stored-only values) is the `저장소` tab's
+ * `repo-pane.js`.
  *
- * `binding.root_dir` is the ONE axis that separates the two mounts:
- * - `null` — the connected workspace. Every payload is EXACTLY what the dialog
- *   sent before this extraction; no `root_dir` key appears.
+ * `binding.root_dir` is the ONE axis that separates the connected workspace
+ * from any other target:
+ * - `null` — the connected workspace. No payload carries a `root_dir` key.
  * - a string — another repo. Every op carries `root_dir`, and the queue-CAS ops
  *   retry ONCE with the revision the conflict response carried, because a
  *   foreign repo's revision moves without this client noticing.
  *
- * The pane uses classes and `data-*` only — never `id` — because the monitor can
- * mount it inline on a page that already holds the dialog's copy.
+ * The pane uses classes and `data-*` only — never `id`.
  *
  * Failure handling follows the dialog's contract (spec §F): a kv value that
  * cannot be parsed shows a warning banner and leaves the layer empty, and a save
@@ -48,7 +48,6 @@ import { createCodexCreditControls } from './codex-credit-controls.js';
 import { createLimitPolicyEditor } from './limit-policy-editor.js';
 import {
   AUTO_LITERAL,
-  BOOLEAN_DRAFT_ON,
   IMPL_DISPATCHES,
   IMPL_RUNTIMES,
   IMPL_SPEEDS,
@@ -59,17 +58,14 @@ import {
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
-  WORKFLOW_MODES,
   WORKSPACE_KV_KEYS,
   adoptSessionDefaultValues,
-  adoptWorkerCommon,
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
-  isHttpOriginValue,
   narrowImplTarget,
   normalizeAppliesTo,
   orchestrationEffortOptions,
@@ -77,9 +73,7 @@ import {
   orchestrationRuntimeInitial,
   orchestrationRuntimeOptions,
   presetKeysFor,
-  speedVisible,
-  workerUrlMessage,
-  workerUrlWarning
+  speedVisible
 } from './session-model.js';
 
 /** The `(기본)` sentinel a select uses for "no explicit value". */
@@ -141,48 +135,12 @@ function presetApplyTitle(state) {
 }
 
 /**
- * The four sections one mounted pane can draw, in rail and segment order. The
- * dialog's rail and the monitor panel's segment both name these ids.
+ * The two sections one mounted pane can draw, by the dialog tab ids that show
+ * them.
  *
- * @type {ReadonlyArray<{ id: string, label: string }>}
+ * @type {ReadonlyArray<string>}
  */
-export const PANE_SECTIONS = [
-  { id: 'worker', label: '워커' },
-  { id: 'quick_fix', label: 'quick fix' },
-  { id: 'session', label: '세션' },
-  { id: 'account', label: '계정' }
-];
-
-/**
- * The `[워커|quick fix|세션|계정]` segment both mounts draw, so the section
- * chooser is written once. The monitor panel renders it in its own head; the
- * dialog rail uses its tab buttons instead and never calls this.
- *
- * @param {string} active - The section id currently drawn.
- * @param {(section: string) => void} onSelect
- * @returns {TemplateResult}
- */
-export function paneSectionSegmentTemplate(active, onSelect) {
-  return html`<span
-    class="settings-dialog__seg"
-    role="group"
-    aria-label="실행 설정 구역"
-    data-pane-sections
-  >
-    ${PANE_SECTIONS.map(
-      (section) =>
-        html`<button
-          type="button"
-          class=${active === section.id ? 'op-btn is-active' : 'op-btn'}
-          data-pane-section=${section.id}
-          aria-pressed=${String(active === section.id)}
-          @click=${() => onSelect(section.id)}
-        >
-          ${section.label}
-        </button>`
-    )}
-  </span>`;
-}
+export const PANE_SECTIONS = ['execution', 'account'];
 
 /**
  * @param {unknown} value
@@ -232,47 +190,11 @@ export function createExecutionPane(mount_element, binding) {
   /** The user's in-progress edits — deliberately NOT reset on a save failure. */
   /** @type {Record<string, string>} */
   let session_draft = {};
-  /**
-   * Raw text a free-form session key's box holds that the draft has not
-   * adopted: the user is mid-typing, or their last commit failed the key's
-   * format. Kept OUT of `session_draft` on purpose — the pane saves the whole
-   * session diff on every edit, so parking an unsavable value there would make
-   * the next select change ship a patch the server refuses in full.
-   *
-   * It is written on every keystroke, like `preset_name_draft`, because the box
-   * renders through `live()`: any re-render (the monitor adopting a queue
-   * snapshot, another row saving) would otherwise reset the box to the
-   * committed value and swallow what the user was typing.
-   *
-   * @type {Record<string, string>}
-   */
-  let session_text_draft = {};
-  /**
-   * Free-form keys whose LAST COMMIT attempt failed the format. Separate from
-   * the text above because typing is not a verdict: the box turns red when the
-   * user commits something illegal, and goes quiet again as soon as they resume
-   * editing it.
-   *
-   * @type {Record<string, true>}
-   */
-  let session_text_invalid = {};
-  /**
-   * Explicit deletions of stored values omitted by normalization.
-   *
-   * @type {Set<string>}
-   */
-  const session_deletions = new Set();
   /** @type {string[]} */
   let session_warnings = [];
   let session_loading = false;
   let generation = 0;
-  let worker_query = 0;
-  /** @type {any} */
-  let worker_url = null;
-  /** @type {{ value: string, revision: string|null, dirty: boolean }} */
-  let common_draft = { value: '', revision: null, dirty: false };
-  let common_saving = false;
-  let common_invalid = false;
+  let session_query = 0;
 
   /**
    * The repo's `bd kv` exec account layer as the server last reported it
@@ -310,7 +232,7 @@ export function createExecutionPane(mount_element, binding) {
    */
   let session_save_chain = Promise.resolve();
   /**
-   * The per-runner `한도 대응` rows, shared with the monitor ⚙ `전역` tab
+   * The per-runner `한도 대응` rows, shared with the `활성 계정` tab
    * (UI-giog §4.5). They read this repo's STORED policy from the queue and
    * write it through the queue CAS; a pending allow-list save overlays the
    * stored set so a re-sent CAS payload cannot undo a newer click.
@@ -373,7 +295,9 @@ export function createExecutionPane(mount_element, binding) {
   let prompt_data = null;
 
   /** Which of {@link PANE_SECTIONS} this mount currently draws. */
-  let active_section = 'worker';
+  let active_section = 'execution';
+  /** Whether the `실행` tab's quick fix block is unfolded; shut by default. */
+  let quick_fix_open = false;
 
   let destroyed = false;
 
@@ -471,189 +395,7 @@ export function createExecutionPane(mount_element, binding) {
     );
   }
 
-  /** @param {any} value */
-  function adoptWorkerUrl(value) {
-    worker_url = value || null;
-    common_draft = adoptWorkerCommon(common_draft, worker_url?.common ?? null);
-  }
-
-  /** Permit writes only with a readable common document and revision. */
-  function commonEditable() {
-    return (
-      worker_url?.status === 'ok' &&
-      ['configured', 'unset'].includes(worker_url.common.state) &&
-      typeof worker_url.common.revision === 'string' &&
-      !common_saving
-    );
-  }
-
-  /** @param {Event} event */
-  function onCommonInput(event) {
-    common_draft = {
-      ...common_draft,
-      value: /** @type {HTMLInputElement} */ (event.target).value,
-      dirty: true
-    };
-    common_invalid = false;
-    doRender();
-  }
-
-  /** Explicitly discard the common edit and bind the latest observed revision. */
-  function cancelCommonEdit() {
-    common_draft = adoptWorkerCommon(
-      common_draft,
-      worker_url?.common ?? null,
-      true
-    );
-    common_invalid = false;
-    doRender();
-  }
-
-  /** @param {boolean} [clear] */
-  async function saveCommon(clear = false) {
-    if (!commonEditable() || common_draft.revision === null) {
-      return;
-    }
-    const value = clear ? null : common_draft.value.trim() || null;
-    if (value !== null && !isHttpOriginValue(value)) {
-      common_invalid = true;
-      doRender();
-      return;
-    }
-    const request_generation = generation;
-    const request_root = root_dir;
-    common_saving = true;
-    doRender();
-    try {
-      const res = await send('set-worker-url-common', {
-        value,
-        expected_revision: common_draft.revision,
-        ...rootPayload()
-      });
-      if (!res || !isCurrent(request_generation, request_root)) {
-        return;
-      }
-      if (res.common_saved === true) {
-        ++worker_query;
-        session_loading = false;
-        common_draft = adoptWorkerCommon(common_draft, res.common, true);
-        // The common readback remains usable even if resolving this root failed.
-        worker_url = res.worker_url;
-        common_invalid = false;
-      }
-    } catch (err) {
-      if (!isCurrent(request_generation, request_root)) {
-        return;
-      }
-      const code = /** @type {any} */ (err).code;
-      notify(
-        code === 'revision_conflict'
-          ? '다른 창에서 변경됨 — 새로고침 후 다시 시도'
-          : `공통 기본값 저장 실패: ${errorText(err)}`
-      );
-    } finally {
-      if (isCurrent(request_generation, request_root)) {
-        common_saving = false;
-        doRender();
-      }
-    }
-  }
-
-  /** Render applied origin separately from both stored forms. */
-  function workerAddressRows() {
-    const common = worker_url?.common;
-    const cause =
-      common?.state === 'invalid'
-        ? '공통 설정 형식 오류 — 편집할 수 없습니다'
-        : common?.state === 'unavailable'
-          ? '공통 설정 읽기 오류 — 편집할 수 없습니다'
-          : common && common.revision === null
-            ? '공통 설정의 버전을 확인할 수 없어 편집할 수 없습니다'
-            : '';
-    return html` <div class="settings-dialog__row" data-worker-url>
-        <span class="settings-dialog__row-label">실제 적용 주소</span>
-        <span class="settings-dialog__controls">
-          <span data-worker-url-effective>${workerUrlMessage(worker_url)}</span>
-          <button
-            type="button"
-            class="op-btn"
-            data-worker-url-refresh
-            @click=${onWindowFocus}
-          >
-            새로고침
-          </button>
-          ${worker_url?.warnings?.length
-            ? html`<span class="settings-dialog__hint"
-                >${worker_url.warnings.map(workerUrlWarning).join(', ')}</span
-              >`
-            : ''}
-        </span>
-      </div>
-      ${textRow(
-        'bdui_url',
-        '이 저장소의 예외',
-        'http://호스트:3000',
-        `비워 저장하면 공통값을 사용합니다${!session_draft.bdui_url && worker_url?.status === 'ok' && common.value ? ` — 공통 기본값: ${common.value}` : ''}`,
-        'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)',
-        isHttpOriginValue
-      )}
-      <div class="settings-dialog__row" data-worker-url-common>
-        <span class="settings-dialog__row-label">공통 기본값</span>
-        <span class="settings-dialog__controls">
-          <input
-            type="text"
-            data-worker-common-input
-            aria-label="공통 기본값"
-            class=${`ui-input settings-dialog__text${common_invalid ? ' settings-dialog__text--invalid' : ''}`}
-            aria-invalid=${String(common_invalid)}
-            .value=${live(common_draft.value)}
-            ?disabled=${!commonEditable()}
-            @input=${onCommonInput}
-          />
-          <button
-            type="button"
-            class="op-btn"
-            data-worker-common-save
-            ?disabled=${!commonEditable()}
-            @click=${() => saveCommon()}
-          >
-            저장
-          </button>
-          <button
-            type="button"
-            class="op-btn"
-            data-worker-common-clear
-            ?disabled=${!commonEditable()}
-            @click=${() => saveCommon(true)}
-          >
-            지우기
-          </button>
-          <button
-            type="button"
-            class="op-btn"
-            data-worker-common-cancel
-            ?disabled=${common_saving || !common_draft.dirty}
-            @click=${cancelCommonEdit}
-          >
-            취소/최신값 채택
-          </button>
-          <span class="settings-dialog__hint"
-            >이 서버 운영 계정의 모든 저장소에 적용됩니다. 자체 예외가 있는
-            저장소는 그 예외를 계속 사용합니다.</span
-          >
-          <span class="settings-dialog__hint" data-worker-common-latest
-            >최근 조회값: ${common?.value ?? '없음'}</span
-          >
-          <span class="settings-dialog__hint"
-            >${common_invalid
-              ? 'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)'
-              : cause}</span
-          >
-        </span>
-      </div>`;
-  }
-
-  /** Refresh without discarding either form's pending edits. */
+  /** Re-read the kv layer on focus without discarding pending edits. */
   function onWindowFocus() {
     void loadSessionDefaults();
   }
@@ -701,17 +443,15 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * Read the workspace session defaults without hiding edits during refresh.
+   * Read the workspace session defaults. A refresh adopts the readback only
+   * while the draft holds no unsaved edit, so it never hides one.
    *
-   * @param {{ initial?: boolean, worker_only?: boolean }} [options]
+   * @param {{ initial?: boolean }} [options]
    */
-  async function loadSessionDefaults({
-    initial = false,
-    worker_only = false
-  } = {}) {
+  async function loadSessionDefaults({ initial = false } = {}) {
     const request_generation = generation;
     const request_root = root_dir;
-    const query = ++worker_query;
+    const query = ++session_query;
     session_loading = initial;
     doRender();
     try {
@@ -719,54 +459,32 @@ export function createExecutionPane(mount_element, binding) {
       if (
         !res ||
         !isCurrent(request_generation, request_root) ||
-        query !== worker_query
+        query !== session_query
       ) {
         return;
-      }
-      adoptWorkerUrl(res.worker_url);
-      if (initial) {
-        common_draft = adoptWorkerCommon(
-          common_draft,
-          worker_url?.common ?? null,
-          true
-        );
-        common_invalid = false;
-        common_saving = false;
       }
       if (
         initial ||
-        (!worker_only &&
-          session_deletions.size === 0 &&
-          Object.keys(
-            buildSessionDefaultsPatch(session_baseline, session_draft)
-          ).length === 0 &&
-          Object.keys(session_text_draft).length === 0)
+        Object.keys(buildSessionDefaultsPatch(session_baseline, session_draft))
+          .length === 0
       ) {
         session_baseline = adoptSessionDefaultValues(res.values);
         session_draft = { ...session_baseline };
-        session_text_draft = {};
-        session_text_invalid = {};
       }
-      if (!worker_only) {
-        session_warnings = Array.isArray(res?.warnings) ? res.warnings : [];
-      }
+      session_warnings = Array.isArray(res?.warnings) ? res.warnings : [];
     } catch (err) {
       if (
         !isCurrent(request_generation, request_root) ||
-        query !== worker_query
+        query !== session_query
       ) {
         return;
       }
-      adoptWorkerUrl({
-        status: 'unavailable',
-        error: { code: 'workspace_unavailable' }
-      });
       session_warnings = ['kv_read_failed'];
       notify(`세션 기본값을 읽지 못했습니다: ${errorText(err)}`);
     } finally {
       if (
         isCurrent(request_generation, request_root) &&
-        query === worker_query
+        query === session_query
       ) {
         session_loading = false;
         doRender();
@@ -820,15 +538,11 @@ export function createExecutionPane(mount_element, binding) {
     });
   }
 
-  /** Save the session-tab diff. On failure the draft is KEPT (spec §F). */
+  /** Save the session-defaults diff. On failure the draft is KEPT (spec §F). */
   async function saveSessionDefaults() {
     const request_generation = generation;
     const request_root = root_dir;
     const patch = buildSessionDefaultsPatch(session_baseline, session_draft);
-    const sent_deletions = new Set(session_deletions);
-    for (const key of sent_deletions) {
-      patch[key] = null;
-    }
     if (Object.keys(patch).length === 0) {
       return;
     }
@@ -841,18 +555,10 @@ export function createExecutionPane(mount_element, binding) {
       if (!res || !isCurrent(request_generation, request_root)) {
         return;
       }
-      ++worker_query;
+      ++session_query;
       session_loading = false;
-      adoptWorkerUrl(res.worker_url);
       session_baseline = adoptSessionDefaultValues(res?.values);
       session_draft = reconcileSessionDraft(sent, session_baseline);
-      for (const key of sent_deletions) {
-        session_deletions.delete(key);
-      }
-      // `session_text_draft` deliberately survives: this save may belong to an
-      // unrelated key, and the text box's own commit already cleared its entry
-      // on the way in. Dropping it here would silently discard text the user
-      // is still fixing.
       session_warnings = Array.isArray(res?.warnings) ? res.warnings : [];
     } catch (err) {
       if (!isCurrent(request_generation, request_root)) {
@@ -954,7 +660,7 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * Save the account-section diff, the way the session tab saves its own. On
+   * Save the account-section diff, the way the session defaults save theirs. On
    * failure the draft is KEPT so a retry costs no re-entry (§6.1).
    */
   async function saveWorkspaceAccounts() {
@@ -1010,55 +716,6 @@ export function createExecutionPane(mount_element, binding) {
     if (pruned.queue) {
       void saveOrchestration();
     }
-  }
-
-  /**
-   * Record a free-form key's keystrokes without judging or saving them. No
-   * render: the box already shows what was typed, and re-rendering mid-word
-   * would fight the caret.
-   *
-   * @param {string} key
-   * @param {string} raw
-   */
-  function onTextInput(key, raw) {
-    session_text_draft[key] = raw;
-    delete session_text_invalid[key];
-  }
-
-  /**
-   * Commit one free-form session key on blur/Enter. An empty box is the
-   * deletion request; a value that passes the key's format becomes the draft
-   * value and saves; a value that fails is marked invalid and saves NOTHING, so
-   * the row can show why without the server refusing an unrelated edit
-   * alongside it.
-   *
-   * @param {string} key
-   * @param {string} raw - The box's text, already trimmed.
-   * @param {(value: string) => boolean} isValid
-   */
-  function onTextCommit(key, raw, isValid) {
-    session_text_draft[key] = raw;
-    if (raw.length > 0 && !isValid(raw)) {
-      session_text_invalid[key] = true;
-      doRender();
-      return;
-    }
-    delete session_text_draft[key];
-    delete session_text_invalid[key];
-    if (raw.length === 0) {
-      delete session_draft[key];
-      if (
-        !Object.hasOwn(session_baseline, key) &&
-        session_warnings.includes(`invalid_value:${key}`)
-      ) {
-        session_deletions.add(key);
-      }
-    } else {
-      session_draft[key] = raw;
-      session_deletions.delete(key);
-    }
-    doRender();
-    queueSessionSave();
   }
 
   /**
@@ -1540,7 +1197,6 @@ export function createExecutionPane(mount_element, binding) {
       worker_draft = {};
       orchestration_runtime = null;
     }
-    void loadSessionDefaults({ worker_only: true });
   }
 
   /**
@@ -1815,95 +1471,6 @@ export function createExecutionPane(mount_element, binding) {
           resolution_source,
           route
         )}
-      </span>
-    </div>`;
-  }
-
-  /**
-   * One free-text session-default row, for a workspace kv key the contract
-   * types `enum: none` — no `(기본)`-first select can carry it, so the row
-   * offers a box whose empty state IS the unset state.
-   *
-   * Keystrokes only record; the commit fires on `change` (blur/Enter), because
-   * a half-typed URL is not a value worth asking the server to store.
-   *
-   * @param {string} key
-   * @param {string} label
-   * @param {string} placeholder
-   * @param {string} hint - What the value is FOR, shown while the box is valid.
-   * @param {string} format_hint - What a legal value looks like, shown instead
-   * once a committed value fails the format.
-   * @param {(value: string) => boolean} isValid
-   * @returns {TemplateResult}
-   */
-  function textRow(key, label, placeholder, hint, format_hint, isValid) {
-    const invalid = Object.hasOwn(session_text_invalid, key);
-    const value = session_text_draft[key] ?? session_draft[key] ?? UNSET;
-    return html`<div class="settings-dialog__row">
-      <span class="settings-dialog__row-label">${label}</span>
-      <span class="settings-dialog__controls">
-        <input
-          type="text"
-          class=${`ui-input settings-dialog__text${invalid ? ' settings-dialog__text--invalid' : ''}`}
-          data-key=${key}
-          aria-label=${label}
-          aria-invalid=${String(invalid)}
-          placeholder=${placeholder}
-          .value=${live(value)}
-          @input=${(/** @type {Event} */ ev) =>
-            onTextInput(
-              key,
-              String(/** @type {HTMLInputElement} */ (ev.target).value)
-            )}
-          @change=${(/** @type {Event} */ ev) =>
-            onTextCommit(
-              key,
-              String(/** @type {HTMLInputElement} */ (ev.target).value).trim(),
-              isValid
-            )}
-        />
-        ${value.length === 0
-          ? html`<span class="settings-dialog__source-badge">기본</span>`
-          : ''}
-        <span class="settings-dialog__hint" data-key-hint=${key}
-          >${invalid ? format_hint : hint}</span
-        >
-      </span>
-    </div>`;
-  }
-
-  /**
-   * One `type: bool` session key as a checkbox. The draft holds the marker
-   * string, so the row reuses `onSessionChange` unchanged: checking writes the
-   * marker and unchecking drops the key, which `buildSessionDefaultsPatch`
-   * turns into the JSON boolean and the deletion request respectively.
-   *
-   * @param {string} key
-   * @param {string} label - The row's short category, left of the box.
-   * @param {string} check_label - What the checkbox itself promises to do.
-   * @param {string} hint
-   * @returns {TemplateResult}
-   */
-  function checkRow(key, label, check_label, hint) {
-    return html`<div class="settings-dialog__row">
-      <span class="settings-dialog__row-label">${label}</span>
-      <span class="settings-dialog__controls">
-        <label class="settings-dialog__check">
-          <input
-            type="checkbox"
-            data-key=${key}
-            .checked=${session_draft[key] === BOOLEAN_DRAFT_ON}
-            @change=${(/** @type {Event} */ ev) =>
-              onSessionChange(
-                key,
-                /** @type {HTMLInputElement} */ (ev.target).checked
-                  ? BOOLEAN_DRAFT_ON
-                  : UNSET
-              )}
-          />
-          ${check_label}
-        </label>
-        <span class="settings-dialog__hint" data-key-hint=${key}>${hint}</span>
       </span>
     </div>`;
   }
@@ -2583,120 +2150,66 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * The execution profile the Worker and an interactive session share. The
-   * quick_fix rows are NOT here: they are their own tab, and this tab's preset
-   * bar lists general presets only (§6.1).
+   * The quick fix block's folded one-line summary: what a quick fix Bead's
+   * worker runs on and who implements it, so the block can stay shut.
+   *
+   * @returns {string}
+   */
+  function quickFixSummary() {
+    if (!supportsQuickFixLane()) {
+      return QUICK_FIX_UNSUPPORTED;
+    }
+    const orchestration = currentOrchestrationValues();
+    const model = orchestration.quick_fix_orchestration_model || '일반 값';
+    const effort = orchestration.quick_fix_orchestration_effort || '일반 값';
+    const impl = quickFixDelegated() ? '구현 위임' : '메인 세션이 구현';
+    return `오케스트레이션 ${model} / ${effort} · ${impl}`;
+  }
+
+  /**
+   * The `실행` tab: the worker profile the Worker and an interactive session
+   * share, then the route-scoped quick fix profile folded under it. Each block
+   * keeps its own preset bar, because a preset belongs to one family (UI-rd2m,
+   * UI-32oq §4.6).
    *
    * @returns {TemplateResult}
    */
-  function workerSection() {
+  function executionSection() {
     if (session_loading) {
       return html`<div class="settings-dialog__empty">불러오는 중…</div>`;
     }
     const visibility = speedVisibility();
     return html`
       ${sessionWarningBanner()} ${projectionBanner()}
-      ${presetStripTemplate('general')} ${orchestrationGroup(visibility)}
-      ${implGroup(visibility)} ${reviewGatesGroup(visibility)}
-      ${systemPromptSection()}
-    `;
-  }
-
-  /**
-   * The route-scoped quick_fix profile: its own preset bar and two groups. A
-   * server with no quick_fix lane leaves the rows locked with the same copy
-   * they carried inside the Worker tab (§6.1).
-   *
-   * @returns {TemplateResult}
-   */
-  function quickFixSection() {
-    if (session_loading) {
-      return html`<div class="settings-dialog__empty">불러오는 중…</div>`;
-    }
-    const visibility = speedVisibility();
-    return html`
-      ${sessionWarningBanner()} ${projectionBanner()}
-      ${presetStripTemplate('quick_fix')}
-      ${quickFixOrchestrationGroup(visibility)} ${quickFixImplGroup(visibility)}
-    `;
-  }
-
-  /**
-   * What only an INTERACTIVE session reads: the Worker always runs
-   * `fast_track`, so the mode row is not part of the execution profile.
-   *
-   * @returns {TemplateResult}
-   */
-  function sessionSection() {
-    if (session_loading) {
-      return html`<div class="settings-dialog__empty">불러오는 중…</div>`;
-    }
-    const workflow_view = buildExecutionOptionView(
-      'workflow_mode',
-      WORKFLOW_MODES,
-      session_draft,
-      executionProjection(),
-      runnerCatalog()
-    );
-    return html`
-      ${sessionWarningBanner()}
-      <div class="settings-dialog__group" data-session-workflow-group>
-        <div class="settings-dialog__group-title">워크플로우</div>
-        <div class="settings-dialog__row">
-          <span class="settings-dialog__row-label">모드</span>
-          <span class="settings-dialog__controls">
-            <span class="settings-dialog__seg" role="group">
-              <button
-                type="button"
-                class=${session_draft.workflow_mode
-                  ? 'op-btn'
-                  : 'op-btn is-active'}
-                data-mode=${UNSET}
-                aria-pressed=${String(!session_draft.workflow_mode)}
-                @click=${() => onSessionChange('workflow_mode', UNSET)}
-              >
-                ${workflow_view.unset_label}
-              </button>
-              ${!session_draft.workflow_mode
-                ? html`<span class="settings-dialog__source-badge">기본</span>`
-                : ''}
-              ${WORKFLOW_MODES.map(
-                (mode) =>
-                  html`<button
-                    type="button"
-                    class=${session_draft.workflow_mode === mode
-                      ? 'op-btn is-active'
-                      : 'op-btn'}
-                    data-mode=${mode}
-                    aria-pressed=${String(session_draft.workflow_mode === mode)}
-                    @click=${() => onSessionChange('workflow_mode', mode)}
-                  >
-                    ${mode}
-                  </button>`
-              )}
-            </span>
-          </span>
+      <section class="settings-dialog__block" data-exec-block="worker">
+        <div class="settings-dialog__block-title">
+          워커
+          <span class="settings-dialog__hint"
+            >Worker와 대화형 세션이 함께 쓰는 실행 프로파일</span
+          >
         </div>
-        <div class="settings-dialog__row" data-workflow-mode-hint>
-          <span class="settings-dialog__row-label"></span>
-          <span class="settings-dialog__controls">
-            <span class="settings-dialog__hint"
-              >Worker는 항상 fast_track으로 돕니다. 이 값은 대화형 세션의
-              기본입니다.</span
-            >
-          </span>
-        </div>
-      </div>
-      <div class="settings-dialog__group" data-session-advanced-group>
-        <div class="settings-dialog__group-title">고급</div>
-        ${workerAddressRows()}
-        ${checkRow(
-          'base_sync_accept_local_commits',
-          'base 동기화',
-          '로컬 base 사용자 커밋 자동 rebase+push',
-          '꺼두면 로컬 base 체크아웃의 사용자 커밋은 그대로 남습니다'
-        )}
-      </div>
+        ${presetStripTemplate('general')} ${orchestrationGroup(visibility)}
+        ${implGroup(visibility)} ${reviewGatesGroup(visibility)}
+        ${systemPromptSection()}
+      </section>
+      <details
+        class="settings-dialog__block settings-dialog__fold"
+        data-exec-block="quick_fix"
+        ?open=${quick_fix_open}
+        @toggle=${(/** @type {Event} */ ev) => {
+          quick_fix_open = /** @type {HTMLDetailsElement} */ (ev.target).open;
+        }}
+      >
+        <summary class="op-btn settings-dialog__fold-head">
+          <span class="settings-dialog__block-title">quick fix</span>
+          <span class="settings-dialog__hint" data-quick-fix-summary
+            >${quickFixSummary()}</span
+          >
+        </summary>
+        ${presetStripTemplate('quick_fix')}
+        ${quickFixOrchestrationGroup(visibility)}
+        ${quickFixImplGroup(visibility)}
+      </details>
     `;
   }
 
@@ -2715,8 +2228,12 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * This repo's execution accounts and per-runner limit policy. Neither is part
-   * of an execution preset, so neither belongs on the Worker tab.
+   * This repo's pinned accounts and per-runner limit policy. Neither is part of
+   * an execution preset, so neither belongs on the `실행` tab.
+   *
+   * The `settings-account` unit mounts two lines here (UI-32oq §4.4): the
+   * active-login status line with its `활성 계정` link above the group, and
+   * the per-runner wait-mode warning beside each runner's limit rows.
    *
    * @returns {TemplateResult}
    */
@@ -2737,16 +2254,7 @@ export function createExecutionPane(mount_element, binding) {
    * @returns {TemplateResult}
    */
   function paneTemplate() {
-    if (active_section === 'quick_fix') {
-      return quickFixSection();
-    }
-    if (active_section === 'session') {
-      return sessionSection();
-    }
-    if (active_section === 'account') {
-      return accountSection();
-    }
-    return workerSection();
+    return active_section === 'account' ? accountSection() : executionSection();
   }
 
   function doRender() {
@@ -2760,19 +2268,12 @@ export function createExecutionPane(mount_element, binding) {
     /** Reset the per-open drafts and read the bound repo's kv layers. */
     load() {
       ++generation;
-      common_saving = false;
-      common_invalid = false;
-      common_draft = { value: '', revision: null, dirty: false };
-      worker_url = null;
       session_baseline = {};
       session_draft = {};
-      session_deletions.clear();
       session_warnings = [];
       window.addEventListener('focus', onWindowFocus);
       worker_draft = {};
       orchestration_runtime = null;
-      session_text_draft = {};
-      session_text_invalid = {};
       /** @type {Promise<void>[]} */
       const pending = [
         loadSessionDefaults({ initial: true }),
@@ -2790,10 +2291,7 @@ export function createExecutionPane(mount_element, binding) {
      * @param {string} [section]
      */
     render(section) {
-      if (
-        typeof section === 'string' &&
-        PANE_SECTIONS.some((entry) => entry.id === section)
-      ) {
+      if (typeof section === 'string' && PANE_SECTIONS.includes(section)) {
         active_section = section;
       }
       doRender();

@@ -12,15 +12,13 @@
  * stays out of the apply until the user touches it. A row that DOES stand on a
  * value is written untouched, which is UI-628r's contract unchanged.
  *
- * - `워커` is the 17-row general execution profile form (`bulk-worker-form.js`)
- *   with its own preset bar; a preset fills it and the apply takes one of two
- *   paths (`bulk-preset-apply.js`).
- * - `quick fix` is the same form over the 8-row quick_fix profile, with its own
- *   preset bar and its own apply record; choosing a preset there edits that
- *   tab's rows alone (UI-uohc §6.2).
- * - `세션` is the three interactive-session rows, written per repo with
- *   `set-session-defaults` (§5).
- * - `계정` is the execution accounts and limit policy form, applied whole
+ * - `실행` holds two blocks, each with its own preset bar, apply button and
+ *   results (UI-32oq §4.4): the 17-row general execution profile form
+ *   (`bulk-worker-form.js`), whose apply takes one of two paths
+ *   (`bulk-preset-apply.js`), and, folded under it, the same form over the
+ *   8-row quick_fix profile with its own apply record; choosing a preset in
+ *   one block edits that block's rows alone (UI-uohc §6.2).
+ * - `계정` is the pinned accounts and limit policy form, applied whole
  *   (`bulk-account-apply.js`).
  *
  * Requests run sequentially per repo; each response queue is adopted so the
@@ -68,7 +66,7 @@ import {
   createBulkWorkerForm
 } from './bulk-worker-form.js';
 import { createCodexCreditControls } from './codex-credit-controls.js';
-import { WORKFLOW_MODES, normalizeAppliesTo } from './session-model.js';
+import { normalizeAppliesTo } from './session-model.js';
 
 /** Select value for `기본값 사용` (sent as `null`). */
 const USE_DEFAULT = '__bulk_use_default__';
@@ -128,31 +126,10 @@ const ACCOUNT_FIELDS = [
 ];
 
 /**
- * The three rows the `세션` tab draws (§5). `base_sync_accept_local_commits` is
- * a contract `bool` whose stored `false` and absence are the same fact, so it
- * carries two values instead of a `기본값 사용` (§5).
+ * One apply button's own plan, run and results (UI-32oq §4.4).
  *
- * @type {ReadonlyArray<{ key: string, label: string, kind: 'select'|'text', choices: string[], choice_labels?: Record<string, string> }>}
+ * @typedef {'worker'|'quick_fix'|'account'} RunSection
  */
-const SESSION_ROWS = [
-  {
-    key: 'workflow_mode',
-    label: '모드',
-    kind: 'select',
-    choices: [...WORKFLOW_MODES]
-  },
-  { key: 'bdui_url', label: 'Worker 주소', kind: 'text', choices: [] },
-  {
-    key: 'base_sync_accept_local_commits',
-    label: 'base 동기화',
-    kind: 'select',
-    choices: ['true'],
-    choice_labels: { '': '끔', true: '켬' }
-  }
-];
-
-/** The op every 세션 row is written with; one call per repo (§5). */
-const SESSION_DEFAULTS_OP = 'set-session-defaults';
 
 /**
  * @typedef {Object} RunnerForm
@@ -209,8 +186,10 @@ function freshRunnerForm() {
  * @param {BulkPaneOptions} options
  */
 export function createBulkPane(host, options) {
-  /** @type {'worker'|'quick_fix'|'session'|'account'} */
-  let section = 'worker';
+  /** @type {'execution'|'account'} */
+  let section = 'execution';
+  /** Whether the `실행` tab's quick fix block is unfolded; shut by default. */
+  let quick_fix_open = false;
   let destroyed = false;
 
   /** Mutation response queues per repo (newer than the aggregate rows). */
@@ -243,21 +222,20 @@ export function createBulkPane(host, options) {
    */
   const preset_error = { worker: '', quick_fix: '' };
 
-  /** @type {{ worker: BulkResult[]|null, quick_fix: BulkResult[]|null, session: BulkResult[]|null, account: BulkResult[]|null }} */
+  /** @type {{ worker: BulkResult[]|null, quick_fix: BulkResult[]|null, account: BulkResult[]|null }} */
   let results = {
     worker: null,
     quick_fix: null,
-    session: null,
     account: null
   };
-  /** @type {{ section: 'worker'|'quick_fix'|'session'|'account', done: number, total: number }|null} */
+  /** @type {{ section: RunSection, done: number, total: number }|null} */
   let running = null;
   let run_token = 0;
 
   /**
-   * Which account-tab and session-tab fields the user has touched. Keyed by
-   * the row's own id (`claude_account`, `claude.mode`, `workflow_mode`, …) so
-   * one set answers for every control shape (§3.1).
+   * Which account-tab fields the user has touched. Keyed by the row's own id
+   * (`claude_account`, `claude.mode`, …) so one set answers for every control
+   * shape (§3.1).
    *
    * @type {Set<string>}
    */
@@ -273,10 +251,6 @@ export function createBulkPane(host, options) {
     claude: freshRunnerForm(),
     codex: freshRunnerForm()
   };
-  /** The 세션 tab's three rows, as the screen holds them. */
-  /** @type {Record<string, string>} */
-  const session_values = {};
-
   /** @type {AccountCatalog|null} */
   let catalog = null;
 
@@ -442,17 +416,6 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * Observe one 세션 row. All three live in the session-defaults layer, so a
-   * repo that has not read that layer makes the row `미확인` (§5).
-   *
-   * @param {string} key
-   * @returns {import('./bulk-observation.js').Observation}
-   */
-  function observeSession(key) {
-    return observeKey(selectedRows(), key, 'session_defaults');
-  }
-
-  /**
    * Whether a field stands on a hold rather than a value.
    *
    * @param {string} id - The field's own edit id.
@@ -478,7 +441,7 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * Re-read every account-tab and session-tab row the user has not touched
+   * Re-read every account-tab row the user has not touched
    * (§3.1). A run in flight freezes the recomputation (§9).
    */
   function observeForms() {
@@ -517,17 +480,6 @@ export function createBulkPane(host, options) {
         form.preempt = numeric !== null && numeric !== 'off' ? 'pct' : 'off';
         form.pct_text =
           numeric !== null && numeric !== 'off' ? numeric : DEFAULT_PREEMPT_PCT;
-      }
-    }
-    for (const row of SESSION_ROWS) {
-      if (edited.has(row.key)) {
-        continue;
-      }
-      const observation = observeSession(row.key);
-      if (observation.state === 'same' && observation.value !== null) {
-        session_values[row.key] = observation.value;
-      } else {
-        delete session_values[row.key];
       }
     }
   }
@@ -693,121 +645,6 @@ export function createBulkPane(host, options) {
     });
   }
 
-  /**
-   * The 세션 tab's payload: the rows that stand on a value, `기본값 사용` rows
-   * included as `null` deletions (§5). `base_sync_accept_local_commits` is a
-   * contract `bool`, so its two screen values are `true` and the deletion.
-   *
-   * @returns {Record<string, string|boolean|null>}
-   */
-  function sessionValues() {
-    /** @type {Record<string, string|boolean|null>} */
-    const out = {};
-    for (const row of SESSION_ROWS) {
-      if (holdOf(row.key, observeSession(row.key)) !== null) {
-        continue;
-      }
-      const value = session_values[row.key];
-      const present = typeof value === 'string' && value.length > 0;
-      if (row.key === 'base_sync_accept_local_commits') {
-        out[row.key] = present ? true : null;
-        continue;
-      }
-      out[row.key] = present ? value : null;
-    }
-    return out;
-  }
-
-  /**
-   * The 세션 tab's plan, in the same shape the two other tabs' plans carry so
-   * one apply button template serves all three.
-   *
-   * @returns {{ targets: Array<Record<string, any>>, disabled_reason: string|null }}
-   */
-  function sessionPlan() {
-    const values = sessionValues();
-    const targets = selectedRows().map((row) => ({
-      root_dir: String(row.root_dir),
-      name: typeof row.name === 'string' ? row.name : String(row.root_dir),
-      values
-    }));
-    /** @type {string|null} */
-    let disabled_reason = null;
-    if (running !== null) {
-      disabled_reason = '적용 중입니다';
-    } else if (targets.length === 0) {
-      disabled_reason = '적용할 저장소를 고르세요';
-    }
-    return { targets, disabled_reason };
-  }
-
-  /**
-   * Write the 세션 rows to each ticked repo, one call at a time — the same
-   * sequential contract the two other tabs run under (§5).
-   *
-   * @param {{ targets: Array<Record<string, any>>, send: (type: string, payload: any) => Promise<any>, onProgress: (progress: { done: number, total: number, results: BulkResult[] }) => void, isCancelled: () => boolean }} input
-   * @returns {Promise<BulkResult[]>}
-   */
-  async function runBulkSessionApply(input) {
-    /** @type {BulkResult[]} */
-    const out = [];
-    for (const target of input.targets) {
-      if (input.isCancelled()) {
-        break;
-      }
-      /** @type {BulkResult} */
-      let result;
-      if (Object.keys(target.values).length === 0) {
-        out.push({
-          root_dir: target.root_dir,
-          name: target.name,
-          state: 'skipped',
-          detail: '값이 선 행이 없습니다'
-        });
-        input.onProgress({
-          done: out.length,
-          total: input.targets.length,
-          results: out
-        });
-        continue;
-      }
-      try {
-        const res = await input.send(SESSION_DEFAULTS_OP, {
-          values: target.values,
-          root_dir: target.root_dir
-        });
-        result =
-          isRecord(res) && res.error === undefined
-            ? {
-                root_dir: target.root_dir,
-                name: target.name,
-                state: 'applied',
-                detail: ''
-              }
-            : {
-                root_dir: target.root_dir,
-                name: target.name,
-                state: 'failed',
-                detail: messageOf(res)
-              };
-      } catch (err) {
-        result = {
-          root_dir: target.root_dir,
-          name: target.name,
-          state: 'failed',
-          detail: messageOf(err)
-        };
-      }
-      out.push(result);
-      input.onProgress({
-        done: out.length,
-        total: input.targets.length,
-        results: out
-      });
-    }
-    return out;
-  }
-
   /** Stop a run in flight: the remaining targets are not sent. */
   function cancelRun() {
     run_token += 1;
@@ -815,22 +652,22 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * The plan of one tab.
+   * The plan of one apply button.
    *
-   * @param {'worker'|'quick_fix'|'session'|'account'} run_section
+   * @param {RunSection} run_section
    * @returns {{ targets: Array<any>, disabled_reason: string|null }}
    */
   function planOf(run_section) {
     if (run_section === 'worker' || run_section === 'quick_fix') {
       return presetPlan(run_section);
     }
-    return run_section === 'session' ? sessionPlan() : accountPlan();
+    return accountPlan();
   }
 
   /**
-   * Run the active tab's plan.
+   * Run one apply button's plan.
    *
-   * @param {'worker'|'quick_fix'|'session'|'account'} run_section
+   * @param {RunSection} run_section
    */
   async function startRun(run_section) {
     const plan = planOf(run_section);
@@ -870,13 +707,6 @@ export function createBulkPane(host, options) {
     let outcome;
     if (run_section === 'worker' || run_section === 'quick_fix') {
       outcome = await runBulkApply(input);
-    } else if (run_section === 'session') {
-      outcome = await runBulkSessionApply({
-        targets: /** @type {any} */ (targets),
-        send: input.send,
-        onProgress: input.onProgress,
-        isCancelled: input.isCancelled
-      });
     } else {
       outcome = await runBulkAccountApply(input);
     }
@@ -926,9 +756,13 @@ export function createBulkPane(host, options) {
     doRender();
   }
 
-  /** Narrow the selection to the failed and partial repos of this tab. */
-  function onRetry() {
-    const list = results[section];
+  /**
+   * Narrow the selection to the failed and partial repos of one apply.
+   *
+   * @param {RunSection} run_section
+   */
+  function onRetry(run_section) {
+    const list = results[run_section];
     if (!list) {
       return;
     }
@@ -1018,7 +852,7 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * @param {'worker'|'quick_fix'|'session'|'account'} run_section
+   * @param {RunSection} run_section
    * @param {{ targets: unknown[], disabled_reason: string|null }} plan
    * @returns {TemplateResult}
    */
@@ -1033,15 +867,20 @@ export function createBulkPane(host, options) {
       ?disabled=${reason !== null}
       @click=${() => void startRun(run_section)}
     >
-      ${running
+      ${running && running.section === run_section
         ? `적용 중 ${running.done}/${running.total}`
         : `선택 ${plan.targets.length}곳에 적용`}
     </button>`;
   }
 
-  /** @returns {TemplateResult|''} */
-  function resultsTemplate() {
-    const list = results[section];
+  /**
+   * One apply button's per-repo results.
+   *
+   * @param {RunSection} run_section
+   * @returns {TemplateResult|''}
+   */
+  function resultsTemplate(run_section) {
+    const list = results[run_section];
     if (!list || list.length === 0) {
       return '';
     }
@@ -1059,9 +898,9 @@ export function createBulkPane(host, options) {
         ? html`<button
             type="button"
             class="op-btn settings-dialog__bulk-retry"
-            data-bulk-retry=${section}
+            data-bulk-retry=${run_section}
             ?disabled=${running !== null}
-            @click=${onRetry}
+            @click=${() => onRetry(run_section)}
           >
             실패·부분 적용 저장소만 다시 적용
           </button>`
@@ -1367,122 +1206,8 @@ export function createBulkPane(host, options) {
           )}</span
         >
         ${applyButtonTemplate(tab, plan)}
-      </div>`;
-  }
-
-  /**
-   * One 세션 row (§5). The control shape follows the row's own kind, and the
-   * hold option sits on top of the choices exactly as the worker form's does.
-   *
-   * @param {{ key: string, label: string, kind: 'select'|'text', choices: string[], choice_labels?: Record<string, string> }} row
-   * @returns {TemplateResult}
-   */
-  function sessionRowTemplate(row) {
-    const observation = observeSession(row.key);
-    const hold = holdOf(row.key, observation);
-    const hold_option = holdOptionOf(observation);
-    const value = session_values[row.key] ?? '';
-    const disabled = running !== null;
-    /** @param {string} next */
-    const onPick = (next) => {
-      if (next === HOLD) {
-        edited.delete(row.key);
-      } else {
-        edited.add(row.key);
-        if (next.length > 0) {
-          session_values[row.key] = next;
-        } else {
-          delete session_values[row.key];
-        }
-      }
-      doRender();
-    };
-    const control =
-      row.kind === 'text'
-        ? html`<input
-            type="text"
-            class="ui-input settings-dialog__text"
-            aria-label=${row.label}
-            data-bulk-session=${row.key}
-            placeholder=${hold === null
-              ? 'http://호스트:3000'
-              : HOLD_LABEL[hold]}
-            .value=${live(hold === null ? value : '')}
-            ?disabled=${disabled}
-            @input=${(/** @type {Event} */ ev) =>
-              onPick(String(/** @type {HTMLInputElement} */ (ev.target).value))}
-          />`
-        : html`<select
-            class="ui-select ui-select--bare"
-            aria-label=${row.label}
-            data-bulk-session=${row.key}
-            ?disabled=${disabled}
-            @change=${(/** @type {Event} */ ev) =>
-              onPick(
-                String(/** @type {HTMLSelectElement} */ (ev.target).value)
-              )}
-          >
-            ${hold_option === null
-              ? ''
-              : html`<option value=${HOLD} ?selected=${hold !== null}>
-                  ${HOLD_LABEL[hold_option]}
-                </option>`}
-            <option value="" ?selected=${hold === null && value === ''}>
-              ${row.choice_labels?.[''] ?? '기본값 사용'}
-            </option>
-            ${row.choices.map(
-              (choice) =>
-                html`<option
-                  value=${choice}
-                  ?selected=${hold === null && value === choice}
-                >
-                  ${row.choice_labels?.[choice] ?? choice}
-                </option>`
-            )}
-          </select>`;
-    return html`<div class="settings-dialog__row">
-      <span class="settings-dialog__row-label">${row.label}</span>
-      <span class="settings-dialog__controls">
-        ${control}
-        ${hold_option !== null && row.kind === 'text'
-          ? html`<button
-              type="button"
-              class="op-btn"
-              data-bulk-session-release=${row.key}
-              ?disabled=${disabled}
-              @click=${() => onPick(HOLD)}
-            >
-              ↩ 관측으로 되돌리기
-            </button>`
-          : ''}
-        ${badgeTemplate(row.key, observation)}
-      </span>
-    </div>`;
-  }
-
-  /** @returns {TemplateResult} */
-  function sessionTemplate() {
-    const plan = sessionPlan();
-    let mixed = 0;
-    let pending = 0;
-    for (const row of SESSION_ROWS) {
-      const hold = holdOf(row.key, observeSession(row.key));
-      if (hold === 'mixed') {
-        mixed += 1;
-      } else if (hold === 'pending') {
-        pending += 1;
-      }
-    }
-    return html`<div class="settings-dialog__group" data-bulk-group="session">
-        <div class="settings-dialog__group-title">대화형 세션</div>
-        ${SESSION_ROWS.map((row) => sessionRowTemplate(row))}
       </div>
-      <div class="settings-dialog__bulk-hd settings-dialog__bulk-foot">
-        <span class="settings-dialog__bulk-count" data-bulk-count
-          >${footerCount(SESSION_ROWS.length, { mixed, pending })}</span
-        >
-        ${applyButtonTemplate('session', plan)}
-      </div>`;
+      ${resultsTemplate(tab)}`;
   }
 
   /**
@@ -1973,7 +1698,8 @@ export function createBulkPane(host, options) {
           })}</span
         >
         ${applyButtonTemplate('account', plan)}
-      </div>`;
+      </div>
+      ${resultsTemplate('account')}`;
   }
 
   /**
@@ -2005,12 +1731,42 @@ export function createBulkPane(host, options) {
     return { mixed, pending };
   }
 
+  /**
+   * The `실행` tab: the general profile block, then the quick fix block
+   * folded under it with a one-line summary (UI-32oq §4.4).
+   *
+   * @returns {TemplateResult}
+   */
+  function executionTemplate() {
+    return html`<section
+        class="settings-dialog__block"
+        data-bulk-block="worker"
+      >
+        <div class="settings-dialog__block-title">워커</div>
+        ${profileTemplate('worker')}
+      </section>
+      <details
+        class="settings-dialog__block settings-dialog__fold"
+        data-bulk-block="quick_fix"
+        ?open=${quick_fix_open}
+        @toggle=${(/** @type {Event} */ ev) => {
+          quick_fix_open = /** @type {HTMLDetailsElement} */ (ev.target).open;
+        }}
+      >
+        <summary class="op-btn settings-dialog__fold-head">
+          <span class="settings-dialog__block-title">quick fix</span>
+          <span class="settings-dialog__hint" data-quick-fix-summary
+            >route가 quick fix인 Bead만 읽는
+            ${bulkFormRowKeysFor('quick_fix').length}행 · 따로 적용합니다</span
+          >
+        </summary>
+        ${profileTemplate('quick_fix')}
+      </details>`;
+  }
+
   /** @returns {TemplateResult} */
   function sectionTemplate() {
-    if (section === 'worker' || section === 'quick_fix') {
-      return profileTemplate(section);
-    }
-    return section === 'session' ? sessionTemplate() : accountTemplate();
+    return section === 'account' ? accountTemplate() : executionTemplate();
   }
 
   function doRender() {
@@ -2021,7 +1777,7 @@ export function createBulkPane(host, options) {
     observeForms();
     render(
       html`<div class="settings-dialog__bulk" data-bulk-section=${section}>
-        ${targetsTemplate()} ${sectionTemplate()} ${resultsTemplate()}
+        ${targetsTemplate()} ${sectionTemplate()}
       </div>`,
       host
     );
@@ -2045,16 +1801,10 @@ export function createBulkPane(host, options) {
      * Draw one tab. Switching to another tab stops a run in flight; called
      * with nothing it redraws the tab on screen.
      *
-     * @param {'worker'|'quick_fix'|'session'|'account'} [next]
+     * @param {'execution'|'account'} [next]
      */
     render(next) {
-      if (
-        (next === 'worker' ||
-          next === 'quick_fix' ||
-          next === 'session' ||
-          next === 'account') &&
-        next !== section
-      ) {
+      if ((next === 'execution' || next === 'account') && next !== section) {
         if (running !== null) {
           cancelRun();
         }

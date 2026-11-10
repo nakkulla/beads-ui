@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createDisplayPolicyStore } from '../../data/display-policy-store.js';
 import {
-  BULK_SETTINGS_TABS,
+  PICK_ONE_REPO,
+  SERVER_TABS,
   SETTINGS_TABS,
+  TARGET_TABS,
   createSettingsDialog
 } from './index.js';
 
@@ -93,7 +95,7 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any, externalWaitSettings?: any, limitPolicySettings?: any, conversationSettings?: any }} [options]
+ * @param {{ values?: Record<string, string|boolean>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any, externalWaitSettings?: any, limitPolicySettings?: any, conversationSettings?: any, connectedRoot?: string|null }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -129,6 +131,16 @@ function mount(options = {}) {
   };
   /** @type {Set<() => void>} */
   const queue_listeners = new Set();
+  let rows_state = options.monitorRows || [];
+  /** @type {Set<() => void>} */
+  const row_listeners = new Set();
+  /** @param {Array<Record<string, any>>} rows */
+  const pushRows = (rows) => {
+    rows_state = rows;
+    for (const listener of row_listeners) {
+      listener();
+    }
+  };
   /** @param {any} queue */
   const pushQueue = (queue) => {
     queue_state = queue;
@@ -171,12 +183,19 @@ function mount(options = {}) {
       set: () => {}
     },
     labelOptions: () => ['worker-serial'],
+    connectedRoot: () => options.connectedRoot ?? null,
     notify,
-    monitorRows: () => options.monitorRows || [],
+    monitorRows: () => rows_state,
+    subscribeMonitorRows: (fn) => {
+      row_listeners.add(fn);
+      return () => {
+        row_listeners.delete(fn);
+      };
+    },
     monitorPipeline: () => options.monitorPipeline || [],
     onOpenRepoOps: options.onOpenRepoOps
   });
-  return { root, dialog, transport, notify, policy_store, pushQueue };
+  return { root, dialog, transport, notify, policy_store, pushQueue, pushRows };
 }
 
 /** Let the dialog's `open()` load finish. */
@@ -186,53 +205,145 @@ async function settle() {
   await Promise.resolve();
 }
 
+/**
+ * @param {HTMLElement} root
+ * @param {string} tab_id
+ */
+async function openTab(root, tab_id) {
+  /** @type {HTMLButtonElement} */ (
+    root.querySelector(`[data-tab="${tab_id}"]`)
+  ).click();
+  await settle();
+}
+
+/**
+ * @param {HTMLElement} root
+ * @returns {string[]}
+ */
+function railTabs(root) {
+  return Array.from(root.querySelectorAll('[role="tab"]'), (tab) =>
+    String(tab.getAttribute('data-tab'))
+  );
+}
+
+/**
+ * @param {any} transport
+ * @param {string} type
+ * @returns {any[]}
+ */
+function payloadsOf(transport, type) {
+  return transport.mock.calls
+    .filter((/** @type {any[]} */ call) => call[0] === type)
+    .map((/** @type {any[]} */ call) => call[1]);
+}
+
+const REPO_A = '/tmp/example/repo-a';
+const REPO_B = '/tmp/example/repo-b';
+
+/**
+ * @param {string} root_dir
+ * @param {string} name
+ * @param {Record<string, any>} [patch]
+ */
+function monitorRow(root_dir, name, patch = {}) {
+  return {
+    root_dir,
+    name,
+    revision: 4,
+    slots: 2,
+    serial_lane_count: 1,
+    runner_catalog: CATALOG,
+    execution_defaults: EXECUTION_DEFAULTS,
+    quick_fix_orchestration_model: null,
+    ...patch
+  };
+}
+
+const TWO_ROWS = [monitorRow(REPO_A, 'repo-a'), monitorRow(REPO_B, 'repo-b')];
+
 beforeEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('createSettingsDialog tabs', () => {
-  test('renders the five rail tabs in contract order', async () => {
+describe('createSettingsDialog tabs (UI-32oq §4.4)', () => {
+  test('draws the same rail from every entry point', async () => {
+    const { root, dialog } = mount({ monitorRows: TWO_ROWS });
+    dialog.open();
+    await settle();
+    const header = railTabs(root);
+    dialog.close();
+    dialog.open(undefined, { scope: 'repo', root_dir: REPO_B });
+    await settle();
+    const strip = railTabs(root);
+    dialog.close();
+
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    const ids = SETTINGS_TABS.map((tab) => tab.id);
+    expect([header, strip, railTabs(root)]).toEqual([ids, ids, ids]);
+  });
+
+  test('lists the target tabs then the server-wide tabs', () => {
+    expect([
+      TARGET_TABS.map((tab) => tab.label),
+      SERVER_TABS.map((tab) => tab.label)
+    ]).toEqual([
+      ['실행', '계정', '저장소', '표시'],
+      ['활성 계정', '프리셋·모델', '운영']
+    ]);
+  });
+
+  test('labels the two rail groups', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
 
-    const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
-      tab.getAttribute('data-tab')
-    );
-
-    expect(tabs).toEqual([
-      'worker',
-      'quick_fix',
-      'session',
-      'account',
-      'display'
-    ]);
-    expect(SETTINGS_TABS.map((tab) => tab.label)).toEqual([
-      '워커',
-      'quick fix',
-      '세션',
-      '계정',
-      '표시'
-    ]);
+    expect(
+      Array.from(root.querySelectorAll('[data-rail-group]'), (node) =>
+        node.textContent?.trim()
+      )
+    ).toEqual(['대상 저장소', '서버 전체']);
   });
 
-  test('gives the quick fix tab a glyph no other rail tab carries', () => {
+  test('gives every rail tab a glyph no other tab carries', () => {
     const glyphs = SETTINGS_TABS.map((tab) => tab.glyph);
 
     expect(new Set(glyphs).size).toBe(glyphs.length);
-    expect(SETTINGS_TABS.find((tab) => tab.id === 'quick_fix')?.glyph).toBe(
-      '◈'
-    );
   });
 
-  test('opens on the 워커 tab', async () => {
+  test('draws no session tab', async () => {
+    const { root, dialog } = mount();
+    dialog.open();
+    await settle();
+
+    expect(root.querySelector('[data-tab="session"]')).toBe(null);
+  });
+
+  test('opens on the 실행 tab', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
 
     const selected = root.querySelector('[role="tab"][aria-selected="true"]');
 
-    expect(selected?.getAttribute('data-tab')).toBe('worker');
+    expect(selected?.getAttribute('data-tab')).toBe('execution');
+  });
+
+  test('opens the preset entry on the 실행 tab', async () => {
+    const { root, dialog } = mount();
+    dialog.open('execution');
+    await settle();
+
+    expect(root.querySelector('#settings-pane-execution')).not.toBe(null);
+  });
+
+  test('opens an id the rail does not carry on the 실행 tab', async () => {
+    const { root, dialog } = mount();
+    dialog.open('worker');
+    await settle();
+
+    expect(root.querySelector('#settings-pane-execution')).not.toBe(null);
   });
 
   test('opens directly on the 계정 tab when asked', async () => {
@@ -241,11 +352,6 @@ describe('createSettingsDialog tabs', () => {
     await settle();
 
     expect(root.querySelector('#settings-pane-account')).not.toBe(null);
-    expect(
-      root
-        .querySelector('[role="tab"][aria-selected="true"]')
-        ?.getAttribute('data-tab')
-    ).toBe('account');
   });
 
   test('renders only the active tab', async () => {
@@ -253,23 +359,20 @@ describe('createSettingsDialog tabs', () => {
     dialog.open();
     await settle();
 
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="display"]')
-    ).click();
+    await openTab(root, 'display');
 
     expect(root.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
     expect(root.querySelector('#settings-pane-display')).not.toBe(null);
-    expect(root.querySelector('#settings-pane-worker')).toBe(null);
   });
 
-  test('renders the worker groups in the approved order', async () => {
+  test('renders the worker block groups in the approved order', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
 
     const groups = Array.from(
       root.querySelectorAll(
-        '#settings-pane-worker .settings-dialog__preset-bar, #settings-pane-worker .settings-dialog__group'
+        '[data-exec-block="worker"] .settings-dialog__preset-bar, [data-exec-block="worker"] .settings-dialog__group'
       )
     ).map((element) =>
       element.classList.contains('settings-dialog__preset-bar')
@@ -288,19 +391,14 @@ describe('createSettingsDialog tabs', () => {
     ]);
   });
 
-  test('renders the quick fix groups under their own tab', async () => {
+  test('renders the quick fix groups inside its own folded block', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
 
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="quick_fix"]')
-    ).click();
-    await settle();
-
     const groups = Array.from(
       root.querySelectorAll(
-        '#settings-pane-quick_fix .settings-dialog__preset-bar, #settings-pane-quick_fix .settings-dialog__group'
+        '[data-exec-block="quick_fix"] .settings-dialog__preset-bar, [data-exec-block="quick_fix"] .settings-dialog__group'
       )
     ).map((element) =>
       element.classList.contains('settings-dialog__preset-bar')
@@ -314,73 +412,421 @@ describe('createSettingsDialog tabs', () => {
   });
 });
 
-describe('createSettingsDialog repo scope (UI-e1ta §7)', () => {
-  const REPO_ROWS = [
-    {
-      root_dir: '/tmp/example/repo-b',
-      name: 'repo-b',
-      revision: 4,
-      runner_catalog: CATALOG,
-      execution_defaults: EXECUTION_DEFAULTS,
-      quick_fix_orchestration_model: null
-    }
-  ];
+describe('createSettingsDialog target (UI-32oq §4.4)', () => {
+  /**
+   * @param {HTMLElement} root
+   * @returns {{ mode: string|null, repo: string|null }}
+   */
+  function targetOf(root) {
+    const picker = /** @type {HTMLSelectElement|null} */ (
+      root.querySelector('[data-target-repo]')
+    );
+    return {
+      mode:
+        root
+          .querySelector('[data-target-mode][aria-pressed="true"]')
+          ?.getAttribute('data-target-mode') ?? null,
+      repo: picker ? picker.value : null
+    };
+  }
 
-  test('draws the four execution tabs and the 저장소 tab titled after that repository', async () => {
-    const { root, dialog } = mount({ monitorRows: REPO_ROWS });
-
-    dialog.open(undefined, {
-      scope: 'repo',
-      root_dir: '/tmp/example/repo-b'
+  test('opens the header gear on the connected repository', async () => {
+    const { root, dialog, transport } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
     });
+
+    dialog.open();
     await settle();
 
-    const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
-      tab.textContent?.replace(/\s+/g, ' ').trim()
-    );
-    expect(tabs).toEqual([
-      '◆ 워커',
-      '◈ quick fix',
-      '◇ 세션',
-      '◎ 계정',
-      '▣ 저장소'
-    ]);
-    expect(
-      root.querySelector('.settings-dialog__pane-head h2')?.textContent
-    ).toBe('repo-b 실행 설정');
-    dialog.destroy();
+    expect(targetOf(root)).toEqual({ mode: 'single', repo: REPO_A });
+    expect(payloadsOf(transport, 'get-session-defaults')).toEqual([{}]);
   });
 
-  test('binds the execution pane to that repository', async () => {
-    const { dialog, transport } = mount({ monitorRows: REPO_ROWS });
-
-    dialog.open(undefined, {
-      scope: 'repo',
-      root_dir: '/tmp/example/repo-b'
+  test('opens the repo strip gear on that repository', async () => {
+    const { root, dialog, transport } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
     });
+
+    dialog.open(undefined, { scope: 'repo', root_dir: REPO_B });
     await settle();
 
-    expect(transport.mock.calls).toContainEqual([
-      'get-session-defaults',
-      { root_dir: '/tmp/example/repo-b' }
+    expect(targetOf(root)).toEqual({ mode: 'single', repo: REPO_B });
+    expect(payloadsOf(transport, 'get-session-defaults')).toEqual([
+      { root_dir: REPO_B }
     ]);
-    expect(dialog.repoRoot()).toBe('/tmp/example/repo-b');
-    dialog.destroy();
+  });
+
+  test('opens the monitor header gear on several repositories', async () => {
+    const { root, dialog } = mount({ monitorRows: TWO_ROWS });
+
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    expect(targetOf(root)).toEqual({ mode: 'multi', repo: null });
+    expect(root.querySelector('[data-pane="bulk"] [data-bulk-repo]')).not.toBe(
+      null
+    );
+  });
+
+  test('names the repo strip repository as the bound root', async () => {
+    const { dialog } = mount({ monitorRows: TWO_ROWS });
+
+    dialog.open(undefined, { scope: 'repo', root_dir: REPO_B });
+    await settle();
+
+    expect(dialog.repoRoot()).toBe(REPO_B);
+  });
+
+  test('names no bound root for a header gear open', async () => {
+    const { dialog } = mount({ monitorRows: TWO_ROWS, connectedRoot: REPO_A });
+
+    dialog.open();
+    await settle();
+
+    expect(dialog.repoRoot()).toBe(null);
+  });
+
+  test('lists the connected repository even before the monitor rows arrive', async () => {
+    const { root, dialog } = mount({ connectedRoot: REPO_A });
+
+    dialog.open();
+    await settle();
+
+    expect(
+      Array.from(root.querySelectorAll('[data-target-repo] option'), (node) =>
+        node.textContent?.trim()
+      )
+    ).toEqual(['repo-a · 연결됨']);
+  });
+
+  test('lists the monitor rows in the picker once they arrive', async () => {
+    const { root, dialog, pushRows } = mount({ connectedRoot: REPO_A });
+    dialog.open();
+    await settle();
+
+    pushRows(TWO_ROWS);
+
+    expect(
+      Array.from(root.querySelectorAll('[data-target-repo] option'), (node) =>
+        node.textContent?.trim()
+      )
+    ).toEqual(['repo-a · 연결됨', 'repo-b']);
+  });
+
+  test('rebinds the execution pane to the repository picked', async () => {
+    const { root, dialog, transport } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
+    });
+    dialog.open();
+    await settle();
+    const picker = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[data-target-repo]')
+    );
+
+    picker.value = REPO_B;
+    picker.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(transport, 'get-session-defaults')).toEqual([
+      {},
+      { root_dir: REPO_B }
+    ]);
+    expect(dialog.repoRoot()).toBe(REPO_B);
+  });
+
+  test('drops unsaved input when the target changes', async () => {
+    const { root, dialog } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
+    });
+    dialog.open();
+    await settle();
+    const name = /** @type {HTMLInputElement} */ (
+      root.querySelector('[aria-label="프리셋 이름"]')
+    );
+    name.value = '쓰다 만 이름';
+    name.dispatchEvent(new Event('input'));
+    const picker = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[data-target-repo]')
+    );
+
+    picker.value = REPO_B;
+    picker.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        root.querySelector('[aria-label="프리셋 이름"]')
+      ).value
+    ).toBe('');
+  });
+
+  test('switches to several repositories from the target bar', async () => {
+    const { root, dialog, transport } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
+    });
+    dialog.open();
+    await settle();
+    const reads = transport.mock.calls.length;
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-target-mode="multi"]')
+    ).click();
+    await settle();
+
+    expect(root.querySelector('[data-pane="bulk"] [data-bulk-repo]')).not.toBe(
+      null
+    );
+    expect(root.querySelector('[data-target-repo]')).toBe(null);
+    expect(transport.mock.calls.length).toBe(reads);
+  });
+
+  test('returns to the last single repository from several repositories', async () => {
+    const { root, dialog } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
+    });
+    dialog.open(undefined, { scope: 'repo', root_dir: REPO_B });
+    await settle();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-target-mode="multi"]')
+    ).click();
+    await settle();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-target-mode="single"]')
+    ).click();
+    await settle();
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('[data-target-repo]')
+      ).value
+    ).toBe(REPO_B);
+  });
+
+  test('follows a new target in the picker after the user changed it', async () => {
+    const { root, dialog } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
+    });
+    dialog.open();
+    await settle();
+    const picker = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[data-target-repo]')
+    );
+    picker.value = REPO_B;
+    picker.dispatchEvent(new Event('change'));
+    await settle();
+    dialog.close();
+
+    dialog.open();
+    await settle();
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('[data-target-repo]')
+      ).value
+    ).toBe(REPO_A);
+  });
+
+  test('redraws the connected execution pane when the queue store changes', async () => {
+    const { root, dialog, pushQueue } = mount({ connectedRoot: REPO_A });
+    dialog.open();
+    await settle();
+
+    pushQueue({
+      revision: 4,
+      slots: 2,
+      runner_catalog: CATALOG,
+      execution_defaults: EXECUTION_DEFAULTS,
+      orchestration_model: 'opus',
+      orchestration_effort: null,
+      orchestration_speed: null,
+      quick_fix_orchestration_model: null,
+      quick_fix_orchestration_effort: null,
+      quick_fix_orchestration_speed: null
+    });
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('select[data-key="orchestration_model"]')
+      ).value
+    ).toBe('opus');
+  });
+
+  test('keeps a typed server-wide value across a monitor push', async () => {
+    const { root, dialog, pushRows } = mount({
+      connectedRoot: REPO_A,
+      transport: vi.fn(async (/** @type {string} */ type) =>
+        type === 'get-session-defaults'
+          ? {
+              values: {},
+              warnings: [],
+              worker_url: {
+                status: 'ok',
+                effective_url: 'http://common:3000',
+                source: 'common',
+                workspace_override: null,
+                common: {
+                  value: 'http://common:3000',
+                  state: 'configured',
+                  revision: 'r1'
+                },
+                warnings: []
+              }
+            }
+          : {}
+      )
+    });
+    dialog.open('operations');
+    await settle();
+    const input = /** @type {HTMLInputElement} */ (
+      root.querySelector('[data-worker-common-input]')
+    );
+    input.value = 'http://typing:3000';
+    input.dispatchEvent(new Event('input'));
+
+    pushRows(TWO_ROWS);
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        root.querySelector('[data-worker-common-input]')
+      ).value
+    ).toBe('http://typing:3000');
+  });
+
+  test('says the server-wide tabs ignore the target', async () => {
+    const { root, dialog } = mount();
+    dialog.open();
+    await settle();
+    const on_target = root.querySelector('[data-target-note]');
+
+    await openTab(root, 'operations');
+
+    expect(on_target).toBe(null);
+    expect(root.querySelector('[data-target-note]')?.textContent?.trim()).toBe(
+      '서버 전체 탭은 대상과 무관합니다'
+    );
   });
 });
 
-describe('createSettingsDialog 저장소 tab (UI-f2sy §7)', () => {
-  const REPO_B = '/tmp/example/repo-b';
-  const STATE_ROW = {
-    root_dir: REPO_B,
-    name: 'repo-b',
-    revision: 4,
-    slots: 2,
-    serial_lane_count: 1,
-    runner_catalog: CATALOG,
-    execution_defaults: EXECUTION_DEFAULTS,
-    quick_fix_orchestration_model: null
-  };
+describe('createSettingsDialog several repositories (UI-nu43 §3.1, UI-32oq §4.4)', () => {
+  /**
+   * @param {any} transport
+   * @returns {string[]}
+   */
+  function requestTypes(transport) {
+    return transport.mock.calls.map((/** @type {any[]} */ call) => call[0]);
+  }
+
+  test('sends no connected workspace read', async () => {
+    const { root, dialog, transport } = mount({ monitorRows: TWO_ROWS });
+
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    expect(requestTypes(transport)).toEqual([]);
+    expect(root.querySelector('[data-quick-fix-group]')).toBe(null);
+  });
+
+  test('keeps the bulk editing surface on the 계정 tab', async () => {
+    const { root, dialog } = mount({ monitorRows: TWO_ROWS });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openTab(root, 'account');
+
+    expect(root.querySelector('.settings-dialog__pane-sub')?.textContent).toBe(
+      '선택한 저장소의 저장소 고정 계정과 한도 대응을 읽어 세웁니다.'
+    );
+    expect(root.querySelector('[data-bulk-apply="account"]')).not.toBe(null);
+  });
+
+  test.each(['repo', 'display'])(
+    'asks for one repository on the %s tab',
+    async (tab_id) => {
+      const { root, dialog } = mount({ monitorRows: TWO_ROWS });
+      dialog.open(undefined, { scope: 'monitor' });
+      await settle();
+
+      await openTab(root, tab_id);
+
+      expect(
+        root.querySelector('[data-target-notice]')?.textContent?.trim()
+      ).toBe(PICK_ONE_REPO);
+    }
+  );
+
+  test('offers no bulk main 동기화', async () => {
+    const { root, dialog } = mount({ monitorRows: TWO_ROWS });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openTab(root, 'repo');
+
+    expect(root.querySelector('[data-seam="main-sync"]')).toBe(null);
+  });
+
+  test('returns to the connected repository after a bulk open is closed', async () => {
+    const { root, dialog } = mount({ monitorRows: TWO_ROWS });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+    dialog.close();
+
+    dialog.open();
+    await settle();
+
+    expect(root.querySelector('[data-bulk-repo]')).toBe(null);
+    expect(root.querySelector('[data-exec-block="quick_fix"]')).not.toBe(null);
+  });
+});
+
+describe('createSettingsDialog 표시 tab target (UI-32oq §4.4)', () => {
+  test('edits the display policy of the connected repository', async () => {
+    const { root, dialog } = mount({ connectedRoot: REPO_A });
+    dialog.open('display');
+    await settle();
+
+    expect(
+      root.querySelector('#settings-pane-display [data-label="worker-serial"]')
+    ).not.toBe(null);
+  });
+
+  test('edits the display policy when the picked repository is the connected one', async () => {
+    const { root, dialog } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
+    });
+
+    dialog.open('display', { scope: 'repo', root_dir: REPO_A });
+    await settle();
+
+    expect(root.querySelector('[data-label="worker-serial"]')).not.toBe(null);
+  });
+
+  test('names the connected repository for any other target', async () => {
+    const { root, dialog } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
+    });
+
+    dialog.open('display', { scope: 'repo', root_dir: REPO_B });
+    await settle();
+
+    expect(
+      root.querySelector('[data-target-notice]')?.textContent?.trim()
+    ).toBe('연결된 저장소(repo-a)에서만 바꿀 수 있습니다');
+    expect(root.querySelector('[data-label="worker-serial"]')).toBe(null);
+  });
+});
+
+describe('createSettingsDialog 저장소 tab (UI-f2sy §7, UI-32oq §4.5)', () => {
+  const STATE_ROW = monitorRow(REPO_B, 'repo-b');
   const ENTRY = {
     root_dir: REPO_B,
     name: 'repo-b',
@@ -430,6 +876,38 @@ describe('createSettingsDialog 저장소 tab (UI-f2sy §7)', () => {
     );
   }
 
+  /**
+   * A transport whose session-default layer merges each write like the server.
+   *
+   * @param {Record<string, any>} initial
+   * @param {string[]} [warnings]
+   */
+  function kvTransport(initial, warnings = []) {
+    /** @type {Record<string, any>} */
+    let values = { ...initial };
+    return vi.fn(
+      async (/** @type {string} */ type, /** @type {any} */ payload) => {
+        if (type === 'set-session-defaults') {
+          for (const [key, value] of Object.entries(payload.values)) {
+            if (value === null) {
+              delete values[key];
+            } else {
+              values[key] = value;
+            }
+          }
+          warnings = [];
+        }
+        if (
+          type === 'get-session-defaults' ||
+          type === 'set-session-defaults'
+        ) {
+          return { values: { ...values }, warnings };
+        }
+        return { values: {}, warnings: [] };
+      }
+    );
+  }
+
   test('draws the cap, lane count, base and declaration for a repository with an entry', async () => {
     const { root } = await openRepoTab();
 
@@ -444,6 +922,21 @@ describe('createSettingsDialog 저장소 tab (UI-f2sy §7)', () => {
       root.querySelector('[data-seam="repo-ops"]') !== null,
       root.querySelector('[data-seam="repo-ops-open"]') !== null
     ]).toEqual(['2', '1', 'main', true, true]);
+  });
+
+  test('orders the groups as 동시 실행, main 동기화, 저장소 작업, 저장만 된 값', async () => {
+    const { root } = await openRepoTab({
+      transport: kvTransport({ workflow_mode: 'fast_track' })
+    });
+
+    expect(
+      Array.from(
+        root.querySelectorAll(
+          '[data-pane="repo"] .settings-dialog__group > .settings-dialog__group-title'
+        ),
+        (node) => node.childNodes[0]?.textContent?.trim()
+      )
+    ).toEqual(['동시 실행', 'main 동기화', '저장소 작업', '저장만 된 값']);
   });
 
   test('shows the declared script paths as text with no dead button', async () => {
@@ -468,6 +961,22 @@ describe('createSettingsDialog 저장소 tab (UI-f2sy §7)', () => {
       root.querySelector('[data-seam="repo-ops"]'),
       root.querySelector('[data-seam="repo-ops-open"]')
     ]).toEqual([true, true, null, null, null]);
+  });
+
+  test('draws the connected repository from the queue store before its row arrives', async () => {
+    const { root, dialog, transport } = mount({ connectedRoot: REPO_A });
+
+    dialog.open('repo');
+    await settle();
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        root.querySelector('[data-seam="repo-slots"]')
+      ).value
+    ).toBe('2');
+    expect(payloadsOf(transport, 'get-session-defaults')).toContainEqual({
+      root_dir: REPO_A
+    });
   });
 
   test('sends the cap with its repository and revision', async () => {
@@ -580,24 +1089,125 @@ describe('createSettingsDialog 저장소 tab (UI-f2sy §7)', () => {
     expect(onOpenRepoOps).toHaveBeenCalledWith(REPO_B);
   });
 
-  test('leaves the 저장소 tab out of the connected-workspace and bulk windows', async () => {
-    const { root, dialog } = mount({ monitorRows: [STATE_ROW] });
+  test('presses the stored main 동기화 choice', async () => {
+    const { root } = await openRepoTab({
+      transport: kvTransport({ base_sync_accept_local_commits: true })
+    });
 
-    dialog.open();
-    await settle();
-    const single = root.querySelector('[data-tab="repo"]');
-    dialog.close();
-    dialog.open(undefined, { scope: 'monitor' });
+    expect(
+      root
+        .querySelector('[data-seam="main-sync-choice"][aria-pressed="true"]')
+        ?.textContent?.trim()
+    ).toBe('위에 다시 쌓아 push');
+  });
+
+  test('names the main 동기화 row and its two choices', async () => {
+    const { root } = await openRepoTab({ transport: kvTransport({}) });
+
+    const group = root.querySelector('[data-seam="main-sync"]');
+
+    expect([
+      group?.querySelector('.settings-dialog__row-label')?.textContent?.trim(),
+      Array.from(
+        group?.querySelectorAll('[data-seam="main-sync-choice"]') || [],
+        (node) => node.textContent?.trim()
+      )
+    ]).toEqual(['main에 직접 한 커밋', ['위에 다시 쌓아 push', '손대지 않음']]);
+  });
+
+  test('sends 위에 다시 쌓아 push as the JSON boolean the contract stores', async () => {
+    const transport = kvTransport({});
+    const { root } = await openRepoTab({ transport });
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-seam="main-sync-choice"][data-value="true"]')
+    ).click();
     await settle();
 
-    expect([single, root.querySelector('[data-tab="repo"]')]).toEqual([
-      null,
-      null
+    expect(payloadsOf(transport, 'set-session-defaults')).toEqual([
+      { values: { base_sync_accept_local_commits: true }, root_dir: REPO_B }
     ]);
+  });
+
+  test('sends 손대지 않음 as the deletion request', async () => {
+    const transport = kvTransport({ base_sync_accept_local_commits: true });
+    const { root } = await openRepoTab({ transport });
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-seam="main-sync-choice"][data-value="false"]')
+    ).click();
+    await settle();
+
+    expect(payloadsOf(transport, 'set-session-defaults')).toEqual([
+      { values: { base_sync_accept_local_commits: null }, root_dir: REPO_B }
+    ]);
+  });
+
+  test('draws no stored-only group while nothing is stored', async () => {
+    const { root } = await openRepoTab({
+      transport: kvTransport({ impl_runtime: 'codex' })
+    });
+
+    expect(root.querySelector('[data-seam="stored-only"]')).toBe(null);
+  });
+
+  test('shows a stored Worker address exception read-only with 지우기', async () => {
+    const { root } = await openRepoTab({
+      transport: kvTransport({ bdui_url: 'http://exception:3000' })
+    });
+
+    const line = root.querySelector('[data-stored-only="bdui_url"]');
+
+    expect([
+      line?.querySelector('[data-stored-only-value]')?.textContent?.trim(),
+      line?.querySelector('input'),
+      line?.querySelector('[data-stored-only-clear]')?.className
+    ]).toEqual(['http://exception:3000', null, 'op-btn']);
+  });
+
+  test('shows a stored workflow mode read-only', async () => {
+    const { root } = await openRepoTab({
+      transport: kvTransport({ workflow_mode: 'fast_track' })
+    });
+
+    expect(
+      root
+        .querySelector(
+          '[data-stored-only="workflow_mode"] [data-stored-only-value]'
+        )
+        ?.textContent?.trim()
+    ).toBe('fast_track');
+  });
+
+  test('clears a stored value with 지우기 and drops its line', async () => {
+    const transport = kvTransport({ bdui_url: 'http://exception:3000' });
+    const { root } = await openRepoTab({ transport });
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-stored-only-clear="bdui_url"]')
+    ).click();
+    await settle();
+
+    expect(payloadsOf(transport, 'set-session-defaults')).toEqual([
+      { values: { bdui_url: null }, root_dir: REPO_B }
+    ]);
+    expect(root.querySelector('[data-seam="stored-only"]')).toBe(null);
+  });
+
+  test('shows a stored value the server refused as 형식 오류', async () => {
+    const { root } = await openRepoTab({
+      transport: kvTransport({}, ['invalid_value:bdui_url'])
+    });
+
+    expect(
+      root
+        .querySelector('[data-stored-only="bdui_url"] [data-stored-only-value]')
+        ?.textContent?.trim()
+    ).toBe('형식 오류');
   });
 });
 
-describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
+describe('createSettingsDialog server-wide tabs (UI-32oq §4.4)', () => {
   const MODEL_VISIBILITY = {
     revision: 2,
     disabled_models: ['opus-4.8'],
@@ -612,101 +1222,63 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
       ]
     }
   };
+  const TIMING = {
+    revision: 1,
+    values: { queue_grace_seconds: 20 },
+    overrides: {},
+    fields: {
+      queue_grace_seconds: { default: 20, min: 0, max: 600, unit: 'seconds' }
+    }
+  };
+  const EXTERNAL_WAIT = {
+    revision: 0,
+    values: { takeover_ratio_percent: 80 },
+    overrides: {},
+    fields: {
+      takeover_ratio_percent: {
+        default: 80,
+        min: 10,
+        max: 100,
+        unit: 'percent'
+      }
+    }
+  };
+  const CONVERSATION = {
+    revision: 1,
+    values: { auto_launch: true },
+    overrides: {},
+    fields: { auto_launch: { kind: 'boolean', default: true } }
+  };
 
   /**
    * @param {HTMLElement} root
+   * @param {string} slot
+   * @returns {Array<string|undefined>}
    */
-  async function openGlobalTab(root) {
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="global"]')
-    ).click();
-    await settle();
+  function titlesOf(root, slot) {
+    return Array.from(
+      root.querySelectorAll(
+        `[data-pane="${slot}"] .settings-dialog__group-title`
+      ),
+      (title) => title.textContent?.trim()
+    );
   }
 
-  test('draws the 프리셋 관리, 판정 칩 프리셋 and 활성 모델 groups', async () => {
+  test('draws the 프리셋 관리, 판정 칩 프리셋 and 활성 모델 groups on 프리셋·모델', async () => {
     const { root, dialog } = mount({ modelVisibility: MODEL_VISIBILITY });
-    dialog.open(undefined, { scope: 'monitor' });
+    dialog.open();
     await settle();
 
-    await openGlobalTab(root);
+    await openTab(root, 'presets');
 
-    const titles = Array.from(
-      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
-    ).map((title) => title.textContent?.trim());
-    expect(titles).toEqual(['프리셋 관리', '판정 칩 프리셋', '활성 모델']);
-    dialog.destroy();
-  });
-
-  test('draws the 대기·주기 group third in the 전역 tab', async () => {
-    const { root, dialog } = mount({
-      modelVisibility: MODEL_VISIBILITY,
-      timingSettings: {
-        revision: 1,
-        values: { queue_grace_seconds: 20 },
-        overrides: {},
-        fields: {
-          queue_grace_seconds: {
-            default: 20,
-            min: 0,
-            max: 600,
-            unit: 'seconds'
-          }
-        }
-      }
-    });
-    dialog.open(undefined, { scope: 'monitor' });
-    await settle();
-
-    await openGlobalTab(root);
-
-    const titles = Array.from(
-      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
-    ).map((title) => title.textContent?.trim());
-    expect(titles).toEqual([
+    expect(titlesOf(root, 'presets')).toEqual([
       '프리셋 관리',
       '판정 칩 프리셋',
-      '활성 모델',
-      '대기·주기'
+      '활성 모델'
     ]);
-    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    dialog.destroy();
   });
 
-  test('draws the 외부 작업 group after the 활성 모델 group in the 전역 tab', async () => {
-    const { root, dialog } = mount({
-      modelVisibility: MODEL_VISIBILITY,
-      externalWaitSettings: {
-        revision: 0,
-        values: { takeover_ratio_percent: 80 },
-        overrides: {},
-        fields: {
-          takeover_ratio_percent: {
-            default: 80,
-            min: 10,
-            max: 100,
-            unit: 'percent'
-          }
-        }
-      }
-    });
-    dialog.open(undefined, { scope: 'monitor' });
-    await settle();
-
-    await openGlobalTab(root);
-
-    const titles = Array.from(
-      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
-    ).map((title) => title.textContent?.trim());
-    expect(titles).toEqual([
-      '프리셋 관리',
-      '판정 칩 프리셋',
-      '활성 모델',
-      '외부 작업'
-    ]);
-    dialog.destroy();
-  });
-
-  test('draws one active-login auto-switch group per runner after the 외부 작업 group in the 전역 tab', async () => {
+  test('draws one active-login auto-switch group per runner on 활성 계정', async () => {
     const entry = {
       auto_switch: false,
       default_account: null,
@@ -714,94 +1286,86 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
       preempt_pct: null
     };
     const { root, dialog } = mount({
-      modelVisibility: MODEL_VISIBILITY,
-      externalWaitSettings: {
-        revision: 0,
-        values: { takeover_ratio_percent: 80 },
-        overrides: {},
-        fields: {
-          takeover_ratio_percent: {
-            default: 80,
-            min: 10,
-            max: 100,
-            unit: 'percent'
-          }
-        }
-      },
       limitPolicySettings: {
         revision: 0,
         runners: { claude: entry, codex: entry }
       }
     });
-    dialog.open(undefined, { scope: 'monitor' });
+    dialog.open();
     await settle();
 
-    await openGlobalTab(root);
+    await openTab(root, 'active_account');
 
-    const titles = Array.from(
-      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
-    ).map((title) => title.textContent?.trim());
-    expect(titles).toEqual([
-      '프리셋 관리',
-      '판정 칩 프리셋',
-      '활성 모델',
-      '외부 작업',
+    expect(titlesOf(root, 'active_account')).toEqual([
       'Claude 활성 계정 자동 전환',
       'Codex 활성 계정 자동 전환'
     ]);
-    dialog.destroy();
   });
 
-  test('draws the 대화 세션 group last in the 전역 tab from the server snapshot', async () => {
+  test('draws Worker 주소, 대기·주기, 외부 작업 and 대화 세션 in order on 운영', async () => {
     const { root, dialog, transport } = mount({
-      modelVisibility: MODEL_VISIBILITY,
-      conversationSettings: {
-        revision: 1,
-        values: { auto_launch: true },
-        overrides: {},
-        fields: { auto_launch: { kind: 'boolean', default: true } }
-      }
+      timingSettings: TIMING,
+      externalWaitSettings: EXTERNAL_WAIT,
+      conversationSettings: CONVERSATION
     });
-    dialog.open(undefined, { scope: 'monitor' });
+    dialog.open();
     await settle();
 
-    await openGlobalTab(root);
+    await openTab(root, 'operations');
     await settle();
 
-    const titles = Array.from(
-      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
-    ).map((title) => title.textContent?.trim());
-    expect(titles).toEqual([
-      '프리셋 관리',
-      '판정 칩 프리셋',
-      '활성 모델',
+    expect(titlesOf(root, 'operations')).toEqual([
+      'Worker 주소',
+      '대기·주기',
+      '외부 작업',
       '대화 세션'
     ]);
     expect(transport).toHaveBeenCalledWith('conversation-settings-get', {});
-    dialog.destroy();
   });
 
-  test('shows the config.toml fallback of the 대화 자동 기동 switch in the 전역 tab', async () => {
+  test('draws the same server-wide groups whatever the target', async () => {
     const { root, dialog } = mount({
       modelVisibility: MODEL_VISIBILITY,
-      conversationSettings: {
-        revision: 1,
-        values: { auto_launch: true },
-        overrides: {},
-        fields: { auto_launch: { kind: 'boolean', default: true } }
-      }
+      monitorRows: TWO_ROWS
     });
-    dialog.open(undefined, { scope: 'monitor' });
+    dialog.open('presets');
+    await settle();
+    const single = titlesOf(root, 'presets');
+    dialog.close();
+
+    dialog.open('presets', { scope: 'monitor' });
     await settle();
 
-    await openGlobalTab(root);
+    expect(titlesOf(root, 'presets')).toEqual(single);
+  });
+
+  test('keeps a server-wide section across a target change', async () => {
+    const { root, dialog } = mount({
+      monitorRows: TWO_ROWS,
+      timingSettings: TIMING
+    });
+    dialog.open('operations');
+    await settle();
+    const before = root.querySelector('[data-pane="operations"] > *');
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-target-mode="multi"]')
+    ).click();
+    await settle();
+
+    expect(root.querySelector('[data-pane="operations"] > *')).toBe(before);
+  });
+
+  test('shows the config.toml fallback of the 대화 자동 기동 switch on 운영', async () => {
+    const { root, dialog } = mount({ conversationSettings: CONVERSATION });
+    dialog.open('operations');
+    await settle();
     await settle();
 
     expect(
       root.querySelector('[data-key="auto_launch"] .settings-timing__default')
         ?.textContent
     ).toBe('config.toml 켜짐');
-    dialog.destroy();
   });
 
   test('reads the codex model-list note from the worker queue without monitor rows', async () => {
@@ -812,15 +1376,12 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
         runner_catalog: { ...CATALOG, codex_list: { source: 'seed' } }
       }
     });
-    dialog.open(undefined, { scope: 'monitor' });
+    dialog.open('presets');
     await settle();
-
-    await openGlobalTab(root);
 
     expect(
       root.querySelector('[data-codex-model-list]')?.textContent?.trim()
     ).toBe('모델 목록을 읽지 못해 기본 표를 씁니다');
-    dialog.destroy();
   });
 
   test('redraws the codex model-list note when the worker queue changes', async () => {
@@ -828,9 +1389,8 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
       modelVisibility: MODEL_VISIBILITY,
       queue: { revision: 3, runner_catalog: CATALOG }
     });
-    dialog.open(undefined, { scope: 'monitor' });
+    dialog.open('presets');
     await settle();
-    await openGlobalTab(root);
     const before = root.querySelector('[data-codex-model-list]');
 
     pushQueue({
@@ -840,171 +1400,40 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
 
     expect(before).toBeNull();
     expect(root.querySelector('[data-codex-model-list]')).not.toBeNull();
-    dialog.destroy();
   });
 
   test('draws no 대화 세션 group before a conversation snapshot arrives', async () => {
-    const { root, dialog } = mount({ modelVisibility: MODEL_VISIBILITY });
-    dialog.open(undefined, { scope: 'monitor' });
-    await settle();
-
-    await openGlobalTab(root);
+    const { root, dialog } = mount();
+    dialog.open('operations');
     await settle();
 
     expect(root.querySelector('[data-group="conversation"]')).toBeNull();
-    dialog.destroy();
   });
 
   test('draws no 대기·주기 group before a timing snapshot arrives', async () => {
-    const { root, dialog } = mount({ modelVisibility: MODEL_VISIBILITY });
-    dialog.open(undefined, { scope: 'monitor' });
+    const { root, dialog } = mount();
+    dialog.open('operations');
     await settle();
-
-    await openGlobalTab(root);
 
     expect(root.querySelector('[data-group="timing"]')).toBeNull();
-    dialog.destroy();
   });
 
-  test('disables the last enabled checkbox of a runner', async () => {
+  test('disables the last enabled model checkbox of a runner', async () => {
     const { root, dialog } = mount({ modelVisibility: MODEL_VISIBILITY });
-    dialog.open(undefined, { scope: 'monitor' });
+    dialog.open('presets');
     await settle();
-
-    await openGlobalTab(root);
 
     const opus = /** @type {HTMLInputElement} */ (
       root.querySelector('input[data-model="opus"]')
-    );
-    const astra = /** @type {HTMLInputElement} */ (
-      root.querySelector('input[data-model="astra"]')
     );
     expect(opus.disabled).toBe(true);
     expect(opus.closest('label')?.title).toBe(
       '러너마다 하나 이상 켜 두어야 합니다.'
     );
-    expect(astra.disabled).toBe(false);
-    dialog.destroy();
   });
 });
 
-describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
-  const MONITOR_ROWS = [
-    {
-      root_dir: '/tmp/example/repo-a',
-      name: 'repo-a',
-      revision: 1,
-      auto_advance: true,
-      quick_fix_orchestration_model: null
-    }
-  ];
-
-  /**
-   * @param {any} transport
-   * @returns {string[]}
-   */
-  function requestTypes(transport) {
-    return transport.mock.calls.map((/** @type {any[]} */ call) => call[0]);
-  }
-
-  test('draws the 워커·quick fix·세션·계정·전역 tabs when opened from the monitor', async () => {
-    const { root, dialog } = mount({ monitorRows: MONITOR_ROWS });
-
-    dialog.open(undefined, { scope: 'monitor' });
-    await settle();
-
-    const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
-      tab.textContent?.replace(/\s+/g, ' ').trim()
-    );
-    expect(tabs).toEqual([
-      '◆ 워커',
-      '◈ quick fix',
-      '◇ 세션',
-      '◎ 계정',
-      '⬡ 전역'
-    ]);
-    expect(BULK_SETTINGS_TABS.map((tab) => tab.id)).toEqual([
-      'worker',
-      'quick_fix',
-      'session',
-      'account',
-      'global'
-    ]);
-    dialog.destroy();
-  });
-
-  test('sends no connected workspace read in bulk mode', async () => {
-    const { root, dialog, transport } = mount({ monitorRows: MONITOR_ROWS });
-
-    dialog.open(undefined, { scope: 'monitor' });
-    await settle();
-
-    expect(requestTypes(transport)).toEqual([]);
-    expect(root.querySelector('[data-quick-fix-group]')).toBe(null);
-    expect(root.querySelector('[data-pane="bulk"] [data-bulk-repo]')).not.toBe(
-      null
-    );
-    dialog.destroy();
-  });
-
-  test('titles both bulk tabs as 여러 저장소 설정 with their own subtitle', async () => {
-    const { root, dialog } = mount({ monitorRows: MONITOR_ROWS });
-    dialog.open(undefined, { scope: 'monitor' });
-    await settle();
-    const worker = {
-      title: root.querySelector('.settings-dialog__pane-head h2')?.textContent,
-      sub: root.querySelector('.settings-dialog__pane-sub')?.textContent
-    };
-
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="account"]')
-    ).click();
-    await settle();
-
-    expect(worker).toEqual({
-      title: '여러 저장소 설정',
-      sub: '선택한 저장소의 현재 실행 프로필을 읽어 세웁니다. 프리셋을 고르면 17행이 그 값으로 채워집니다.'
-    });
-    expect(
-      root.querySelector('.settings-dialog__pane-head h2')?.textContent
-    ).toBe('여러 저장소 설정');
-    expect(root.querySelector('.settings-dialog__pane-sub')?.textContent).toBe(
-      '선택한 저장소의 실행 계정과 한도 대응을 읽어 세웁니다.'
-    );
-    expect(root.querySelector('[data-bulk-count]')).not.toBe(null);
-    dialog.destroy();
-  });
-
-  test('keeps the five tabs and the connected workspace reads when opened without a scope', async () => {
-    const { root, dialog, transport } = mount({ monitorRows: MONITOR_ROWS });
-
-    dialog.open();
-    await settle();
-
-    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    expect(requestTypes(transport)).toEqual(
-      expect.arrayContaining(['get-session-defaults', 'get-workspace-accounts'])
-    );
-    expect(root.querySelector('[data-bulk-repo]')).toBe(null);
-    dialog.destroy();
-  });
-
-  test('returns to the single mode after a bulk open is closed', async () => {
-    const { root, dialog } = mount({ monitorRows: MONITOR_ROWS });
-    dialog.open(undefined, { scope: 'monitor' });
-    await settle();
-    dialog.close();
-
-    dialog.open('quick_fix');
-    await settle();
-
-    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    expect(root.querySelector('[data-quick-fix-group]')).not.toBe(null);
-    dialog.destroy();
-  });
-});
-
-describe('createSettingsDialog session tab', () => {
+describe('createSettingsDialog 실행 tab session defaults', () => {
   test('renders actual defaults with source badge and full model id', async () => {
     const { root, dialog } = mount();
     dialog.open();
@@ -1058,19 +1487,18 @@ describe('createSettingsDialog session tab', () => {
     });
   });
 
-  test('writes workflow_mode=standard as a literal rather than a deletion', async () => {
-    const { root, dialog, transport } = mount();
-    dialog.open('session');
-    await settle();
-
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-mode="standard"]')
-    ).click();
-    await settle();
-
-    expect(transport).toHaveBeenCalledWith('set-session-defaults', {
-      values: { workflow_mode: 'standard' }
+  test('draws no mode row and no Worker address input', async () => {
+    const { root, dialog } = mount({
+      values: { workflow_mode: 'fast_track', bdui_url: 'http://x:3000' }
     });
+    dialog.open();
+    await settle();
+
+    expect([
+      root.querySelector('[data-mode]'),
+      root.querySelector('[data-key="bdui_url"]'),
+      root.querySelector('[data-key="workflow_mode"]')
+    ]).toEqual([null, null, null]);
   });
 
   test('offers no 실행 방식 row in the workspace session defaults', async () => {
@@ -1117,7 +1545,7 @@ describe('createSettingsDialog session tab', () => {
     const { root, dialog } = mount({
       values: { quick_fix_impl_dispatch: 'delegated' }
     });
-    dialog.open('quick_fix');
+    dialog.open();
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -1142,7 +1570,7 @@ describe('createSettingsDialog session tab', () => {
         orchestration_speed: null
       }
     });
-    dialog.open('quick_fix');
+    dialog.open();
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -1313,7 +1741,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     dialog.open();
     await settle();
     const warning = root.querySelector(
-      '#settings-pane-worker [data-execution-defaults-warning]'
+      '#settings-pane-execution [data-execution-defaults-warning]'
     );
     const select = /** @type {HTMLSelectElement} */ (
       root.querySelector('select[data-key="orchestration_model"]')
@@ -1478,7 +1906,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     await settle();
 
     expect(
-      root.querySelector('#settings-pane-worker [data-preset-bar="general"]')
+      root.querySelector('#settings-pane-execution [data-preset-bar="general"]')
     ).not.toBe(null);
     expect(transport).toHaveBeenCalledWith('get-session-defaults', {});
   });
@@ -1496,7 +1924,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     dialog.open();
     await settle();
     const keys = Array.from(
-      root.querySelectorAll('#settings-pane-worker select[data-key]')
+      root.querySelectorAll('#settings-pane-execution select[data-key]')
     ).map((select) => select.getAttribute('data-key'));
 
     expect(keys).toContain('orchestration_model');
@@ -1715,7 +2143,7 @@ describe('createSettingsDialog implementation presets', () => {
 
     const runtime = /** @type {HTMLSelectElement} */ (
       root.querySelector(
-        '#settings-pane-worker [data-key="orchestration_runtime"]'
+        '#settings-pane-execution [data-key="orchestration_runtime"]'
       )
     );
     runtime.value = 'codex';
@@ -1723,7 +2151,7 @@ describe('createSettingsDialog implementation presets', () => {
     await settle();
     const model_select = /** @type {HTMLSelectElement} */ (
       root.querySelector(
-        '#settings-pane-worker [data-key="orchestration_model"]'
+        '#settings-pane-execution [data-key="orchestration_model"]'
       )
     );
     model_select.value = 'sol';

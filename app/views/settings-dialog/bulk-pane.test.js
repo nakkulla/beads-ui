@@ -196,6 +196,16 @@ function el(host, selector) {
 }
 
 /**
+ * The `실행` tab's folded quick fix block.
+ *
+ * @param {HTMLElement} host
+ * @returns {HTMLElement}
+ */
+function qb(host) {
+  return el(host, '[data-bulk-block="quick_fix"]');
+}
+
+/**
  * @param {HTMLElement} host
  * @param {string} selector
  * @param {string} value
@@ -282,7 +292,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
       ]
     });
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(el(host, `[data-bulk-repo="${WS_A}"]`).checked).toBe(true);
     expect(el(host, `[data-bulk-repo="${WS_B}"]`).checked).toBe(true);
@@ -290,12 +300,12 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 
   test('restores the default selection on a fresh mount', () => {
     const first = setup();
-    first.pane.render('worker');
+    first.pane.render('execution');
     tick(first.host, `[data-bulk-repo="${WS_A}"]`, false);
     first.pane.destroy();
 
     const second = setup();
-    second.pane.render('worker');
+    second.pane.render('execution');
 
     expect(el(second.host, `[data-bulk-repo="${WS_A}"]`).checked).toBe(true);
   });
@@ -303,7 +313,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
   test('names the repositories inside a labelled fieldset in row order', () => {
     const { host, pane } = setup();
 
-    pane.render('worker');
+    pane.render('execution');
 
     const fieldset = el(host, 'fieldset.settings-dialog__bulk-targets');
     expect(fieldset.querySelector('legend')?.textContent).toBe('적용 대상');
@@ -316,18 +326,18 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 
   test('keeps the selection across a tab switch', () => {
     const { host, pane } = setup();
-    pane.render('worker');
+    pane.render('execution');
     tick(host, `[data-bulk-repo="${WS_B}"]`, false);
 
     pane.render('account');
-    pane.render('worker');
+    pane.render('execution');
 
     expect(el(host, `[data-bulk-repo="${WS_B}"]`).checked).toBe(false);
   });
 
   test('drops a repository that leaves the rows from the selection', () => {
     const { host, pane, pushRows } = setup();
-    pane.render('worker');
+    pane.render('execution');
 
     pushRows([row()]);
     pushRows([row(), row({ root_dir: WS_B, name: 'repo-b', revision: 5 })]);
@@ -349,7 +359,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 
   test('seeds the default selection once the rows arrive', () => {
     const { host, pane, pushRows } = setup({ rows: [] });
-    pane.render('worker');
+    pane.render('execution');
 
     pushRows([row()]);
 
@@ -366,7 +376,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 
   test('takes every visible repository from the 전체 box', () => {
     const { host, pane } = setup();
-    pane.render('worker');
+    pane.render('execution');
     tick(host, '[data-bulk-all]', false);
 
     tick(host, '[data-bulk-all]', true);
@@ -377,7 +387,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 
   test('drops every repository when 전체 is unticked', () => {
     const { host, pane } = setup();
-    pane.render('worker');
+    pane.render('execution');
 
     tick(host, '[data-bulk-all]', false);
 
@@ -388,7 +398,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
   test('checks 전체 while every repository stands selected', () => {
     const { host, pane } = setup();
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(el(host, '[data-bulk-all]').checked).toBe(true);
     expect(el(host, '[data-bulk-all]').indeterminate).toBe(false);
@@ -396,7 +406,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 
   test('marks 전체 indeterminate while only some repositories are selected', () => {
     const { host, pane } = setup();
-    pane.render('worker');
+    pane.render('execution');
 
     tick(host, `[data-bulk-repo="${WS_B}"]`, false);
 
@@ -406,7 +416,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 
   test('leaves 전체 unchecked while no repository is selected', () => {
     const { host, pane } = setup({ rows: [row()] });
-    pane.render('worker');
+    pane.render('execution');
 
     tick(host, `[data-bulk-repo="${WS_A}"]`, false);
 
@@ -417,7 +427,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
   test('draws 전체 ahead of the repositories inside the fieldset', () => {
     const { host, pane } = setup();
 
-    pane.render('worker');
+    pane.render('execution');
 
     const boxes = el(
       host,
@@ -429,7 +439,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 
   test('disables the apply button once no repository is ticked', () => {
     const { host, pane } = setup({ rows: [row()] });
-    pane.render('worker');
+    pane.render('execution');
 
     tick(host, `[data-bulk-repo="${WS_A}"]`, false);
 
@@ -443,11 +453,14 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
   test('draws the three general execution profile groups', () => {
     const { host, pane } = setup();
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(
-      Array.from(host.querySelectorAll('[data-bulk-group]'), (node) =>
-        node.getAttribute('data-bulk-group')
+      Array.from(
+        el(host, '[data-bulk-block="worker"]').querySelectorAll(
+          '[data-bulk-group]'
+        ),
+        (node) => node.getAttribute('data-bulk-group')
       )
     ).toEqual(['orchestration', 'impl', 'review']);
   });
@@ -455,7 +468,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
   test('counts the rows this round writes in the footer', () => {
     const { host, pane } = setup();
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
       '16행을 저장소 2곳에 씁니다'
@@ -464,7 +477,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
 
   test('sends one preset request per selected repository in order', async () => {
     const { host, pane, calls } = setup();
-    pane.render('worker');
+    pane.render('execution');
 
     choose(host, '[data-bulk-preset]', 'p1');
     click(host, '[data-bulk-apply="worker"]');
@@ -488,7 +501,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
 
   test('sends the kv write then the queue write once a row is edited', async () => {
     const { host, pane, calls } = setup({ rows: [row()] });
-    pane.render('worker');
+    pane.render('execution');
 
     choose(host, '[data-bulk-key="impl_review_model"]', 'fable');
     click(host, '[data-bulk-apply="worker"]');
@@ -518,7 +531,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
         ]
       }
     });
-    pane.render('worker');
+    pane.render('execution');
 
     choose(host, '[data-bulk-preset]', 'p1');
 
@@ -532,7 +545,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
           ? { ...OK, queue_applied: false }
           : OK
     });
-    pane.render('worker');
+    pane.render('execution');
 
     choose(host, '[data-bulk-preset]', 'p1');
     click(host, '[data-bulk-apply="worker"]');
@@ -555,7 +568,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
           ? { ...OK, applied: false, queue_applied: false }
           : OK
     });
-    pane.render('worker');
+    pane.render('execution');
     choose(host, '[data-bulk-preset]', 'p1');
     click(host, '[data-bulk-apply="worker"]');
     await settle();
@@ -575,7 +588,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
         return OK;
       }
     });
-    pane.render('worker');
+    pane.render('execution');
     choose(host, '[data-bulk-preset]', 'p1');
 
     click(host, '[data-bulk-apply="worker"]');
@@ -606,7 +619,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
         return OK;
       }
     });
-    pane.render('worker');
+    pane.render('execution');
     choose(host, '[data-bulk-preset]', 'p1');
     click(host, '[data-bulk-apply="worker"]');
     await settle();
@@ -630,7 +643,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
         return OK;
       }
     });
-    pane.render('worker');
+    pane.render('execution');
     choose(host, '[data-bulk-preset]', 'p1');
     click(host, '[data-bulk-apply="worker"]');
     await settle();
@@ -644,14 +657,14 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
 
   test('keeps each tab result separately', async () => {
     const { host, pane } = setup();
-    pane.render('worker');
+    pane.render('execution');
     choose(host, '[data-bulk-preset]', 'p1');
     click(host, '[data-bulk-apply="worker"]');
     await settle();
 
     pane.render('account');
     const account_results = host.querySelectorAll('[data-bulk-result]').length;
-    pane.render('worker');
+    pane.render('execution');
 
     expect(account_results).toBe(0);
     expect(host.querySelectorAll('[data-bulk-result]')).toHaveLength(2);
@@ -659,11 +672,11 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
 
   test('keeps the form values across a tab switch', async () => {
     const { host, pane } = setup();
-    pane.render('worker');
+    pane.render('execution');
     choose(host, '[data-bulk-key="impl_review_model"]', 'fable');
 
     pane.render('account');
-    pane.render('worker');
+    pane.render('execution');
 
     expect(el(host, '[data-bulk-key="impl_review_model"]').value).toBe('fable');
   });
@@ -687,7 +700,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
         return OK;
       }
     });
-    pane.render('worker');
+    pane.render('execution');
 
     choose(host, '[data-bulk-preset]', 'p1');
     click(host, '[data-bulk-apply="worker"]');
@@ -710,7 +723,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
             })
           : OK
     });
-    pane.render('worker');
+    pane.render('execution');
     choose(host, '[data-bulk-preset]', 'p1');
     click(host, '[data-bulk-apply="worker"]');
     await settle();
@@ -1091,7 +1104,7 @@ describe('createBulkPane 관측 (UI-e1ta §3)', () => {
       ]
     });
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(el(host, '[data-bulk-key="impl_effort"]').value).toBe('high');
     expect(
@@ -1112,7 +1125,7 @@ describe('createBulkPane 관측 (UI-e1ta §3)', () => {
         })
       ]
     });
-    pane.render('worker');
+    pane.render('execution');
 
     click(host, '[data-bulk-apply="worker"]');
     await settle();
@@ -1134,7 +1147,7 @@ describe('createBulkPane 관측 (UI-e1ta §3)', () => {
         })
       ]
     });
-    pane.render('worker');
+    pane.render('execution');
 
     click(host, '[data-bulk-apply="worker"]');
     await settle();
@@ -1153,7 +1166,7 @@ describe('createBulkPane 관측 (UI-e1ta §3)', () => {
         })
       ]
     });
-    pane.render('worker');
+    pane.render('execution');
     choose(host, '[data-bulk-key="impl_effort"]', 'low');
 
     tick(host, `[data-bulk-repo="${WS_B}"]`, false);
@@ -1173,7 +1186,7 @@ describe('createBulkPane 관측 (UI-e1ta §3)', () => {
         })
       ]
     });
-    pane.render('worker');
+    pane.render('execution');
     choose(host, '[data-bulk-key="impl_effort"]', 'low');
 
     choose(host, '[data-bulk-key="impl_effort"]', '__bulk_hold__');
@@ -1197,7 +1210,7 @@ describe('createBulkPane 관측 (UI-e1ta §3)', () => {
       ]
     });
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(el(host, '[data-bulk-preset-save]').disabled).toBe(true);
     expect(el(host, '[data-bulk-preset-save]').title).toBe(
@@ -1207,56 +1220,45 @@ describe('createBulkPane 관측 (UI-e1ta §3)', () => {
   });
 });
 
-describe('createBulkPane 세션 탭 (UI-e1ta §5)', () => {
-  test('stands the three rows on what the repositories hold', () => {
-    const { host, pane } = setup({
-      rows: [
-        row({ session_defaults: { workflow_mode: 'fast_track' } }),
-        row({
-          root_dir: WS_B,
-          name: 'repo-b',
-          session_defaults: { workflow_mode: 'fast_track' }
-        })
-      ]
-    });
+describe('createBulkPane 실행 tab (UI-32oq §4.4)', () => {
+  test('draws the general block before the folded quick fix block', () => {
+    const { host, pane } = setup();
 
-    pane.render('session');
+    pane.render('execution');
 
-    expect(el(host, '[data-bulk-session="workflow_mode"]').value).toBe(
-      'fast_track'
-    );
-    expect(el(host, '[data-bulk-session="bdui_url"]')).not.toBe(null);
     expect(
-      el(host, '[data-bulk-session="base_sync_accept_local_commits"]')
-    ).not.toBe(null);
+      Array.from(host.querySelectorAll('[data-bulk-block]'), (node) =>
+        node.getAttribute('data-bulk-block')
+      )
+    ).toEqual(['worker', 'quick_fix']);
+    expect(/** @type {HTMLDetailsElement} */ (qb(host)).open).toBe(false);
   });
 
-  test('writes the session rows once per repository', async () => {
-    const { host, pane, calls } = setup();
-    pane.render('session');
+  test('draws no session row on either tab', () => {
+    const { host, pane } = setup();
 
-    choose(host, '[data-bulk-session="workflow_mode"]', 'standard');
-    click(host, '[data-bulk-apply="session"]');
+    pane.render('execution');
+    const on_execution = host.querySelector('[data-bulk-session]');
+    pane.render('account');
+
+    expect([on_execution, host.querySelector('[data-bulk-session]')]).toEqual([
+      null,
+      null
+    ]);
+  });
+
+  test('labels only the running apply button with its progress', async () => {
+    const { host, pane } = setup({ transport: () => new Promise(() => {}) });
+    pane.render('execution');
+    choose(host, '[data-bulk-preset]', 'p1');
+
+    click(host, '[data-bulk-apply="worker"]');
     await settle();
 
-    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
-      {
-        root_dir: WS_A,
-        values: {
-          workflow_mode: 'standard',
-          bdui_url: null,
-          base_sync_accept_local_commits: null
-        }
-      },
-      {
-        root_dir: WS_B,
-        values: {
-          workflow_mode: 'standard',
-          bdui_url: null,
-          base_sync_accept_local_commits: null
-        }
-      }
-    ]);
+    expect([
+      el(host, '[data-bulk-apply="worker"]').textContent.trim(),
+      el(host, '[data-bulk-apply="quick_fix"]').textContent.trim()
+    ]).toEqual(['적용 중 0/2', '선택 2곳에 적용']);
   });
 });
 
@@ -1338,7 +1340,7 @@ describe('createBulkPane 적용된 프리셋 (UI-e1ta §4.1)', () => {
       ]
     });
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(
       el(host, '[data-bulk-applied-preset-value]').textContent.trim()
@@ -1357,7 +1359,7 @@ describe('createBulkPane 적용된 프리셋 (UI-e1ta §4.1)', () => {
       ]
     });
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(
       el(host, '[data-bulk-applied-preset-value]').textContent.trim()
@@ -1369,7 +1371,7 @@ describe('createBulkPane 적용된 프리셋 (UI-e1ta §4.1)', () => {
     delete plain.applied_exec_preset;
     const { host, pane } = setup({ rows: [plain] });
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(el(host, '[data-bulk-applied-preset]')).toBe(null);
   });
@@ -1400,34 +1402,35 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
   test('draws its own two groups and none of the worker tab rows', () => {
     const { host, pane } = setup();
 
-    pane.render('quick_fix');
+    pane.render('execution');
 
     expect(
-      Array.from(host.querySelectorAll('[data-bulk-group]'), (node) =>
+      Array.from(qb(host).querySelectorAll('[data-bulk-group]'), (node) =>
         node.getAttribute('data-bulk-group')
       )
     ).toEqual(['quick_fix_orchestration', 'quick_fix_impl']);
-    expect(el(host, '[data-bulk-key="impl_review_model"]')).toBe(null);
+    expect(el(qb(host), '[data-bulk-key="impl_review_model"]')).toBe(null);
   });
 
   test('counts its eight rows in the footer', () => {
     const { host, pane } = setup();
 
-    pane.render('quick_fix');
+    pane.render('execution');
 
-    expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
-      '8행을 저장소 2곳에 씁니다'
-    );
+    expect(
+      el(qb(host), '[data-bulk-count]').textContent.replace(/\s+/g, ' ')
+    ).toBe('8행을 저장소 2곳에 씁니다');
   });
 
   test('offers only the quick_fix presets in its bar', () => {
     const { host, pane } = setup({ presets: BOTH_PRESETS });
 
-    pane.render('quick_fix');
+    pane.render('execution');
 
     expect(
-      Array.from(host.querySelectorAll('[data-bulk-preset] option'), (node) =>
-        node.textContent?.trim()
+      Array.from(
+        qb(host).querySelectorAll('[data-bulk-preset] option'),
+        (node) => node.textContent?.trim()
       )
     ).toEqual(['실행 프리셋…', 'quick fix 기본']);
   });
@@ -1435,25 +1438,32 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
   test('offers only the general presets in the worker bar', () => {
     const { host, pane } = setup({ presets: BOTH_PRESETS });
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(
-      Array.from(host.querySelectorAll('[data-bulk-preset] option'), (node) =>
-        node.textContent?.trim()
+      Array.from(
+        el(
+          host,
+          '[data-bulk-block="worker"] [data-bulk-preset]'
+        ).querySelectorAll('option'),
+        (node) => node.textContent?.trim()
       )
     ).toEqual(['실행 프리셋…', '위임']);
   });
 
   test('marks only its own rows 편집됨 when a preset is chosen', () => {
     const { host, pane } = setup({ presets: BOTH_PRESETS });
-    pane.render('quick_fix');
+    pane.render('execution');
 
-    choose(host, '[data-bulk-preset]', 'q1');
+    choose(qb(host), '[data-bulk-preset]', 'q1');
 
     expect(
-      el(host, '[data-bulk-badge="quick_fix_impl_model"]').textContent.trim()
+      el(
+        qb(host),
+        '[data-bulk-badge="quick_fix_impl_model"]'
+      ).textContent.trim()
     ).toBe('편집됨');
-    pane.render('worker');
+    pane.render('execution');
     expect(
       el(host, '[data-bulk-badge="impl_model"]')?.textContent.trim()
     ).not.toBe('편집됨');
@@ -1461,10 +1471,10 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
 
   test('sends one preset request per repository from its own bar', async () => {
     const { host, pane, calls } = setup({ presets: BOTH_PRESETS });
-    pane.render('quick_fix');
+    pane.render('execution');
 
-    choose(host, '[data-bulk-preset]', 'q1');
-    click(host, '[data-bulk-apply="quick_fix"]');
+    choose(qb(host), '[data-bulk-preset]', 'q1');
+    click(qb(host), '[data-bulk-apply="quick_fix"]');
     await settle();
 
     expect(payloadsOf(calls, 'apply-impl-preset-global')).toEqual([
@@ -1485,10 +1495,10 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
 
   test('writes only the quick_fix kv keys once a row is edited', async () => {
     const { host, pane, calls } = setup({ rows: [row()] });
-    pane.render('quick_fix');
+    pane.render('execution');
 
-    choose(host, '[data-bulk-key="quick_fix_impl_dispatch"]', 'delegated');
-    click(host, '[data-bulk-apply="quick_fix"]');
+    choose(qb(host), '[data-bulk-key="quick_fix_impl_dispatch"]', 'delegated');
+    click(qb(host), '[data-bulk-apply="quick_fix"]');
     await settle();
 
     const values = payloadsOf(calls, 'set-session-defaults')[0].values;
@@ -1510,10 +1520,10 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
         })
       ]
     });
-    pane.render('quick_fix');
+    pane.render('execution');
 
-    choose(host, '[data-bulk-key="quick_fix_impl_dispatch"]', 'delegated');
-    click(host, '[data-bulk-apply="quick_fix"]');
+    choose(qb(host), '[data-bulk-key="quick_fix_impl_dispatch"]', 'delegated');
+    click(qb(host), '[data-bulk-apply="quick_fix"]');
     await settle();
 
     const values = payloadsOf(calls, 'set-session-defaults')[0].values;
@@ -1528,12 +1538,12 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
           ? { ...OK, applied: false, queue_applied: false }
           : OK
     });
-    pane.render('quick_fix');
-    choose(host, '[data-bulk-preset]', 'q1');
-    click(host, '[data-bulk-apply="quick_fix"]');
+    pane.render('execution');
+    choose(qb(host), '[data-bulk-preset]', 'q1');
+    click(qb(host), '[data-bulk-apply="quick_fix"]');
     await settle();
 
-    click(host, '[data-bulk-retry="quick_fix"]');
+    click(qb(host), '[data-bulk-retry="quick_fix"]');
 
     expect(el(host, `[data-bulk-repo="${WS_A}"]`).checked).toBe(false);
     expect(el(host, `[data-bulk-repo="${WS_B}"]`).checked).toBe(true);
@@ -1554,19 +1564,19 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
     ];
     const { host, pane } = setup({ rows, presets: BOTH_PRESETS });
 
-    pane.render('quick_fix');
+    pane.render('execution');
 
     expect(
-      el(host, '[data-bulk-applied-preset-value]').textContent.trim()
+      el(qb(host), '[data-bulk-applied-preset-value]').textContent.trim()
     ).toBe('quick fix 기본');
   });
 
   test('draws no apply record line while the projection omits the field', () => {
     const { host, pane } = setup();
 
-    pane.render('quick_fix');
+    pane.render('execution');
 
-    expect(el(host, '[data-bulk-applied-preset]')).toBe(null);
+    expect(el(qb(host), '[data-bulk-applied-preset]')).toBe(null);
   });
 
   test('locks its whole preset bar on a server with no quick_fix lane', () => {
@@ -1574,13 +1584,13 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
     delete legacy.quick_fix_orchestration_model;
     const { host, pane } = setup({ rows: [legacy], presets: BOTH_PRESETS });
 
-    pane.render('quick_fix');
+    pane.render('execution');
 
     const locked = [
-      el(host, '[data-bulk-preset]'),
-      el(host, '[data-bulk-preset-name]'),
-      el(host, '[data-bulk-preset-save]'),
-      el(host, '[data-bulk-preset-delete]')
+      el(qb(host), '[data-bulk-preset]'),
+      el(qb(host), '[data-bulk-preset-name]'),
+      el(qb(host), '[data-bulk-preset-save]'),
+      el(qb(host), '[data-bulk-preset-delete]')
     ].map((control) => ({
       disabled: control.disabled,
       title: control.getAttribute('title')
@@ -1602,7 +1612,7 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
     delete legacy.quick_fix_orchestration_model;
     const { host, pane } = setup({ rows: [legacy], presets: BOTH_PRESETS });
 
-    pane.render('worker');
+    pane.render('execution');
 
     expect(el(host, '[data-bulk-preset]').disabled).toBe(false);
   });
@@ -1610,9 +1620,9 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
   test('says the preset list is server-wide on both tabs 저장', () => {
     const { host, pane } = setup({ presets: BOTH_PRESETS });
 
-    pane.render('quick_fix');
-    const quick_fix_title = el(host, '[data-bulk-preset-save]').title;
-    pane.render('worker');
+    pane.render('execution');
+    const quick_fix_title = el(qb(host), '[data-bulk-preset-save]').title;
+    pane.render('execution');
 
     expect([
       quick_fix_title,
@@ -1629,42 +1639,6 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
 });
 
 describe('createBulkPane gate-r1 (UI-e1ta §3.1, §6, §9)', () => {
-  test('keeps a half-typed Worker 주소 across a snapshot push', () => {
-    const { host, pane, pushRows } = setup();
-    pane.render('session');
-    const input = el(host, '[data-bulk-session="bdui_url"]');
-    input.value = 'http://host:3000';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-
-    pushRows([row(), row({ root_dir: WS_B, name: 'repo-b', revision: 6 })]);
-
-    expect(el(host, '[data-bulk-session="bdui_url"]').value).toBe(
-      'http://host:3000'
-    );
-  });
-
-  test('disables the 주소 관측 되돌리기 button while a run is in flight', async () => {
-    const { host, pane } = setup({
-      rows: [
-        row({ session_defaults: { bdui_url: 'http://a:3000' } }),
-        row({
-          root_dir: WS_B,
-          name: 'repo-b',
-          session_defaults: { bdui_url: 'http://b:3000' }
-        })
-      ],
-      transport: () => new Promise(() => {})
-    });
-    pane.render('session');
-
-    click(host, '[data-bulk-apply="session"]');
-    await settle();
-
-    expect(el(host, '[data-bulk-session-release="bdui_url"]').disabled).toBe(
-      true
-    );
-  });
-
   test('offers a stored account the catalog does not carry', async () => {
     const { host, pane } = setup({
       rows: [

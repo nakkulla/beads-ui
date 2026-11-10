@@ -1,20 +1,25 @@
 /**
- * The `저장소` tab of the per-repository settings window (UI-f2sy §7).
+ * The settings dialog's `저장소` tab for ONE target repository (UI-f2sy §7,
+ * UI-32oq §4.4–§4.5).
  *
- * The monitor's repo deck keeps only one `⚠ N` badge per tile; everything else a
- * repository owns beyond its execution profile lives here: the concurrency cap
- * and serial-lane count (editable), the declared base branch (read only), the
- * repo-operation declaration block the Worker tab draws inline, and the button
- * that opens the same timeline drawer the badge opens.
+ * What a repository owns beyond its execution profile lives here, in this
+ * order: the concurrency cap, serial-lane count and declared base; `main 동기화`
+ * (the `base_sync_accept_local_commits` session default); the repo-operation
+ * declaration block the Worker tab draws inline, with the button that opens the
+ * same timeline drawer the monitor badge opens; and the stored-only values — a
+ * `bdui_url` exception or a `workflow_mode` that no screen edits any more,
+ * drawn read-only with `지우기` only while one is stored.
  *
- * The material is that repository's monitor pipeline entry. A repository whose
- * entry is absent still has its `workspaces_state` row, so only the two
+ * The queue material is that repository's monitor pipeline entry. A repository
+ * whose entry is absent still has its `workspaces_state` row, so only the two
  * concurrency controls are drawn for it (fail-quiet): the declaration, the base
  * and the timeline need the entry's `workspace_info`, `declared_base` and
- * `repo_operations`.
+ * `repo_operations`. The session-default material is this pane's own
+ * `get-session-defaults` read.
  *
- * Every mutation carries this repository's `root_dir` and its own revision, and a
- * CAS conflict is retried once on the revision the server answered with.
+ * Every mutation carries this repository's `root_dir`; a queue CAS conflict is
+ * retried once on the revision the server answered with, and a session-default
+ * write sends the one key it changes so it never clobbers another surface's.
  */
 import { html, render } from 'lit-html';
 import { errorText } from '../../utils/error-text.js';
@@ -26,6 +31,28 @@ const MIN_SLOTS = 1;
 
 /** Upper bound of the fixed serial-lane set, mirroring the server's 1..5. */
 const SERIAL_LANE_MAX = 5;
+
+/** The session-default key the `main 동기화` row writes (a contract bool). */
+const BASE_SYNC_KEY = 'base_sync_accept_local_commits';
+
+/**
+ * Stored session defaults no screen edits any more (UI-32oq §4.5), in display
+ * order, with what the read-only line calls each.
+ *
+ * @type {ReadonlyArray<{ key: string, label: string, hint: string }>}
+ */
+export const STORED_ONLY_KEYS = [
+  {
+    key: 'bdui_url',
+    label: 'Worker 주소 예외',
+    hint: '공통 주소보다 우선합니다 — 지우면 이 저장소도 공통 주소를 씁니다'
+  },
+  {
+    key: 'workflow_mode',
+    label: '워크플로 모드',
+    hint: '대화형 세션의 진입 질문 여부입니다 — 지우면 계약 기본값을 따릅니다'
+  }
+];
 
 /**
  * @param {unknown} value
@@ -59,12 +86,85 @@ function revisionOf(queue) {
  *   onOpenRepoOps: () => void,
  *   notify?: (message: string) => void
  * }} options
- * @returns {{ render: () => void, destroy: () => void }}
+ * @returns {{ load: () => Promise<void>, render: () => void, destroy: () => void }}
  */
 export function createRepoPane(host, options) {
   const root_dir = options.root_dir;
   const notify =
     options.notify || ((message) => showToast(message, 'error', 4000));
+  let destroyed = false;
+
+  /**
+   * The repository's session-default values as the server last reported them,
+   * or `null` before the first read lands (the rows are not drawn then).
+   *
+   * @type {Record<string, unknown>|null}
+   */
+  let session_values = null;
+  /** @type {string[]} */
+  let session_warnings = [];
+  let session_failed = false;
+  /** Session-default writes run one at a time, like the execution pane's. */
+  /** @type {Promise<void>} */
+  let session_chain = Promise.resolve();
+
+  /** @param {any} res */
+  function adoptSessionReply(res) {
+    if (!isRecord(res)) {
+      return;
+    }
+    session_values = isRecord(res.values) ? { ...res.values } : {};
+    session_warnings = Array.isArray(res.warnings) ? res.warnings : [];
+    session_failed = false;
+  }
+
+  /** Read this repository's session defaults. */
+  async function loadSessionDefaults() {
+    try {
+      const res = await options.transport('get-session-defaults', { root_dir });
+      if (destroyed) {
+        return;
+      }
+      adoptSessionReply(res);
+    } catch (err) {
+      if (destroyed) {
+        return;
+      }
+      session_failed = true;
+      notify(`저장소 세션 기본값을 읽지 못했습니다: ${errorText(err)}`);
+    }
+    doRender();
+  }
+
+  /**
+   * Write ONE session-default key. `null` is the server's deletion request.
+   *
+   * @param {string} key
+   * @param {boolean|null} value
+   */
+  function writeSessionKey(key, value) {
+    session_chain = session_chain.then(async () => {
+      if (destroyed) {
+        return;
+      }
+      try {
+        const res = await options.transport('set-session-defaults', {
+          values: { [key]: value },
+          root_dir
+        });
+        if (destroyed) {
+          return;
+        }
+        adoptSessionReply(res);
+      } catch (err) {
+        if (destroyed) {
+          return;
+        }
+        notify(`저장소 설정 저장 실패: ${errorText(err)}`);
+      }
+      doRender();
+    });
+  }
 
   /**
    * The newest queue facts for the two concurrency controls. A mutation reply
@@ -283,6 +383,114 @@ export function createRepoPane(host, options) {
   }
 
   /**
+   * `main 동기화`: whether a commit made directly on the local base checkout
+   * is rebased onto the new base and pushed (`base_sync_accept_local_commits`).
+   * A stored `false` and absence are the same fact, so `손대지 않음` deletes.
+   *
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function mainSyncGroup() {
+    if (session_values === null) {
+      return session_failed
+        ? html`<section class="settings-dialog__group" data-seam="main-sync">
+            <div class="settings-dialog__group-title">main 동기화</div>
+            <div class="settings-dialog__empty">
+              이 저장소의 세션 기본값을 읽지 못했습니다
+            </div>
+          </section>`
+        : '';
+    }
+    const on = session_values[BASE_SYNC_KEY] === true;
+    /** @type {Array<[boolean, string]>} */
+    const choices = [
+      [true, '위에 다시 쌓아 push'],
+      [false, '손대지 않음']
+    ];
+    return html`<section class="settings-dialog__group" data-seam="main-sync">
+      <div class="settings-dialog__group-title">
+        main 동기화
+        <span class="settings-dialog__hint"
+          >PR 머지 뒤 로컬 main을 따라 올릴 때</span
+        >
+      </div>
+      <div class="settings-dialog__row">
+        <span class="settings-dialog__row-label">main에 직접 한 커밋</span>
+        <span class="settings-dialog__controls">
+          <span class="settings-dialog__seg" role="group">
+            ${choices.map(
+              ([value, label]) =>
+                html`<button
+                  type="button"
+                  class=${on === value ? 'op-btn is-active' : 'op-btn'}
+                  data-seam="main-sync-choice"
+                  data-value=${String(value)}
+                  aria-pressed=${String(on === value)}
+                  @click=${() => {
+                    if (on !== value) {
+                      writeSessionKey(BASE_SYNC_KEY, value ? true : null);
+                    }
+                  }}
+                >
+                  ${label}
+                </button>`
+            )}
+          </span>
+        </span>
+      </div>
+    </section>`;
+  }
+
+  /**
+   * The stored-only values: one read-only line with `지우기` per key that is
+   * stored (or stored in a shape the server refused), nothing otherwise.
+   *
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function storedOnlyGroup() {
+    if (session_values === null) {
+      return '';
+    }
+    const values = session_values;
+    const lines = STORED_ONLY_KEYS.filter(
+      (entry) =>
+        Object.hasOwn(values, entry.key) ||
+        session_warnings.includes(`invalid_value:${entry.key}`)
+    );
+    if (lines.length === 0) {
+      return '';
+    }
+    return html`<section class="settings-dialog__group" data-seam="stored-only">
+      <div class="settings-dialog__group-title">
+        저장만 된 값
+        <span class="settings-dialog__hint">편집 칸이 없어진 값입니다</span>
+      </div>
+      ${lines.map((entry) => {
+        const value = values[entry.key];
+        return html`<div
+          class="settings-dialog__row"
+          data-stored-only=${entry.key}
+        >
+          <span class="settings-dialog__row-label">${entry.label}</span>
+          <span class="settings-dialog__controls">
+            <span class="ui-chip" data-stored-only-value
+              >${typeof value === 'string' ? value : '형식 오류'}</span
+            >
+            <button
+              type="button"
+              class="op-btn"
+              data-stored-only-clear=${entry.key}
+              @click=${() => writeSessionKey(entry.key, null)}
+            >
+              지우기
+            </button>
+            <span class="settings-dialog__hint">${entry.hint}</span>
+          </span>
+        </div>`;
+      })}
+    </section>`;
+  }
+
+  /**
    * @returns {import('lit-html').TemplateResult}
    */
   function template() {
@@ -297,6 +505,7 @@ export function createRepoPane(host, options) {
         <div class="settings-dialog__group-title">동시 실행</div>
         ${concurrencyRows(queue)} ${entry ? baseRow(entry) : ''}
       </section>
+      ${mainSyncGroup()}
       ${entry
         ? html`<section
             class="settings-dialog__group"
@@ -315,16 +524,22 @@ export function createRepoPane(host, options) {
               </button>
             </div>
           </section>`
-        : ''}`;
+        : ''}
+      ${storedOnlyGroup()}`;
   }
 
   function doRender() {
+    if (destroyed) {
+      return;
+    }
     render(template(), host);
   }
 
   return {
+    load: loadSessionDefaults,
     render: doRender,
     destroy() {
+      destroyed = true;
       render(html``, host);
     }
   };

@@ -704,7 +704,7 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'codex-credits-snapshot',
   // Server-global conversation settings (UI-jbl1 §3.4): the shared automatic
   // launch switch and the fresh runtime and model/effort of every Worker
-  // session conversation. A request/response pair read when the `전역` tab
+  // session conversation. A request/response pair read when the `운영` tab
   // opens; nothing pushes it.
   'conversation-settings-get',
   'conversation-settings-set',

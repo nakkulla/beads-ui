@@ -21,7 +21,6 @@ import { createHelpDialog } from './views/help-dialog/index.js';
 import { createMonitorView } from './views/monitor/index.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
 import {
-  BULK_SETTINGS_TABS,
   SETTINGS_TABS,
   createSettingsDialog
 } from './views/settings-dialog/index.js';
@@ -2097,6 +2096,7 @@ async function renderSettingsDialog(scope) {
       set: () => {}
     },
     labelOptions: () => ['ui', 'worker-serial'],
+    connectedRoot: () => '/repo-a',
     notify: vi.fn(),
     monitorRows: () => [
       dialogMonitorRow('/repo-a', 'repo-a'),
@@ -2133,7 +2133,7 @@ async function renderSettingsDialog(scope) {
   if (scope === 'repo') {
     dialog.open('repo', { scope: 'repo', root_dir: '/repo-a' });
   } else {
-    dialog.open('worker', scope === 'monitor' ? { scope: 'monitor' } : {});
+    dialog.open('execution', scope === 'monitor' ? { scope: 'monitor' } : {});
   }
   await settle();
   return /** @type {HTMLElement} */ (
@@ -2180,8 +2180,8 @@ describe('dialogs use parts (§3.4 check 3)', () => {
     }
   );
 
-  test.each(BULK_SETTINGS_TABS.map((tab) => tab.id))(
-    'draws every control of the %s bulk settings tab with a part',
+  test.each(SETTINGS_TABS.map((tab) => tab.id))(
+    'draws every control of the %s settings tab on several repositories with a part',
     async (tab_id) => {
       const dialog = await renderSettingsDialog('monitor');
 

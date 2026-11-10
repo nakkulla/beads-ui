@@ -1,5 +1,5 @@
 /**
- * The bulk window `전역` tab's active-login auto-switch groups (UI-giog §4.5,
+ * The settings dialog `활성 계정` tab's active-login auto-switch groups (UI-giog §4.5,
  * UI-32oq §4.1).
  *
  * One group per runner, rows in this order: `자동 전환` (`켬 / 끔`) with its
