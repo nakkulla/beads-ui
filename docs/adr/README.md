@@ -5,13 +5,13 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-jlov | [dotfiles 계약 소비와 설치본 체커 소비](UI-jlov-dotfiles-contract-and-checker-consumption.md) | 2026-11-11 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호와 Worker 착지 알림의 보호 경로 표시는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며, 보호 경로 판정 실패는 생략하지 않고 확인 못 함으로 적는다 |
 | UI-xm29 | [화면 로그인·계정 추가는 격리 로그인](UI-xm29-isolated-account-login.md) | 2026-11-10 | 화면 로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이다 — Codex는 beads-ui가 임시 CODEX_HOME에서 기기 코드 로그인 뒤 codex-auth import로 넣고 대상이 활성 계정일 때만 전역 auth.json을 같은 계정의 새 자격으로 원자 교체하며, Claude는 claude-swap의 cswap login이 격리·신원 확인·저장을 맡고 beads-ui는 tmux로 URL을 보이고 코드를 넣기만 하며, 계정 목록에 쓰는 단계만 러너별 전환 잠금을 잡는다 |
 | UI-32oq-2 | [설정 창 하나와 대상·서버 전체 탭 묶음](UI-32oq-2-settings-one-window-target-and-server-tabs.md) | 2026-11-10 | 설정 창은 어느 ⚙에서 열든 같은 탭 목록이고 처음 대상(연결 저장소·그 저장소·여러 저장소)만 다르며, 레일은 대상 저장소 탭과 서버 전체 탭으로 나뉘어 칩 바인딩·활성 모델·대화 세션 설정·Worker 공통 주소는 서버 전체 탭에서 대상과 무관하게 편집하고, Worker 주소의 저장소 예외는 저장돼 있을 때만 그 저장소 탭에 읽기 전용으로 보이며 지우기만 허용한다 — 프리셋 정체성·판정 칩 규칙(UI-rd2m), 모델 활성 규칙(UI-gpac-2), 세션 레인·대화 규칙(UI-57us), 적용값 분리·CLI 전용 공통 쓰기·fail-quiet 읽기(UI-u6ud-11)는 그대로다 |
 | UI-32oq | [한도 대응 저장소 정책·활성 계정 자동 전환과 default 복귀](UI-32oq-limit-policy-repo-and-active-login-return.md) | 2026-11-10 | 한도 대응은 Worker 판정에 저장소 정책만 쓰고 전역 덮어쓰기는 없으며, 서버 전역 설정은 러너별 활성 계정 자동 전환(켬/끔·default 계정·허용 목록·트리거)만 정한다; 활성 계정이 트리거에 닿으면 허용 목록 후보로 옮기고, default에서 떠난 기록은 재시작을 넘어 남아 그 소진 창의 리셋 시각이 지나고 default의 창이 모두 트리거 미만이면 default로 돌아오며, 관측한 활성 계정이 기록과 다르면 사람이 바꾼 것으로 보고 복귀하지 않는다 — 나머지 조항은 UI-giog 그대로다 |
 | UI-gpac | [Codex 모델 카탈로그의 원천은 Codex CLI 목록이다](UI-gpac-codex-catalog-from-cli-list.md) | 2026-10-12 | beads-ui의 Codex 모델 선택지는 서버가 Codex CLI 목록(codex debug models)을 비동기로 읽어 dotfiles와 같은 규칙(계열별 최신 list·v2 → 별칭, 모든 적격 버전 → <계열>-<버전> 고정 이름)으로 만들고, 규칙은 JS로 복제해 dotfiles 해석기와 교차 테스트로 묶는다; 마지막 성공 목록을 영속해 읽기 실패가 카탈로그를 줄이지 않으며, effort·speed는 계열 템플릿을, 단가는 별칭이 해석된 고정 이름의 것을 상속하며, 목록에서 빠진 고정 이름의 저장값은 원문을 보존하고 실행은 기본값으로 대신한다 |
 | UI-ny0h | [Worker 머지 큐·머지 자격·독립 스위치와 해소 대기 설정](UI-ny0h-merge-queue-and-resolution-wait-setting.md) | 2026-10-03 | PR 랜딩 작업의 머지는 Worker의 단일 순차 큐만 실행하고 완료는 MERGED 관측이다; 머지 자격은 저장소 안의 입력(PR·base·head identity, mergeability, 리뷰·실행 영수증, [verify])만 보고 GitHub checks는 읽지 않는다; auto_merge와 auto_advance는 독립 스위치이고 어떤 클릭도 둘을 함께 바꾸지 않는다; 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이고 그 길이는 서버 전역 타이밍 설정이 정하며 충돌 해소 fence는 수동 권한 면제·슬롯 여유로 판정한다 |
 | UI-u6ud-9 | [사용량 집계](UI-u6ud-9-usage-aggregation.md) | 2026-09-23 | 사용량은 검증된 직접 사용량만 부모·자식 중복 없이 합산하고 입증되지 않은 값은 추정 가산하지 않으며 미관측 범위는 부분 집계로 표시한다; 직접 세션 카드는 현재 참조 대화 전체를 보이되 Bead별 배분·워크스페이스 합계 가산을 하지 않는다 |
-| UI-u6ud-2 | [dotfiles 계약 소비와 ADR 탭 체커 소비](UI-u6ud-2-dotfiles-contract-consumption.md) | 2026-09-23 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제해 검증을 소유하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며 JS 리더는 표를 그릴 수 있는지만 판정한다 |
 | UI-u6ud | [데이터 계층과 스냅샷 투영](UI-u6ud-data-layer-snapshot-projection.md) | 2026-09-23 | 데이터 계층은 bd CLI shell-out(스냅샷 세대당 기본 2회 read, legacy 3회)이고 DB 직결·daemon·batch RPC는 없다; issue-detail을 포함한 모든 목록은 같은 워크스페이스 스냅샷 세대에서 투영하고 상세 전용 bd read는 없다; 워크스페이스·후보 투영은 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스는 title-cache 외에 띄우지 않는다; 구독별 store는 전체 issue push를 받아 내용 변경만 통지하고 registry가 구독 출처를 전달한다 |
 
 ## 이력
@@ -28,7 +28,7 @@
 | 0009 | [병렬성 분석 기능 전면 제거와 수동 배포 실행](history/0009-parallelism-analysis-removal.md) | superseded | [UI-u6ud-5](history/UI-u6ud-5-deploy-and-build.md) |
 | 0010 | [배포 실행은 Worker generic execution, 저장소 지식은 repo-ops 스크립트](history/0010-repo-operation-execution-ownership-split.md) | superseded | [UI-u6ud-5](history/UI-u6ud-5-deploy-and-build.md) |
 | 0011 | [auto_merge와 auto_advance는 별개의 스위치](history/0011-auto-merge-and-auto-advance-independent-toggles.md) | superseded | [UI-u6ud-3](history/UI-u6ud-3-worker-merge-queue.md) |
-| 0012 | [워크플로 계약은 코드 내 field registry로 복제해 소비한다](history/0012-workflow-contract-consumed-via-code-field-registry.md) | superseded | [UI-u6ud-2](UI-u6ud-2-dotfiles-contract-consumption.md) |
+| 0012 | [워크플로 계약은 코드 내 field registry로 복제해 소비한다](history/0012-workflow-contract-consumed-via-code-field-registry.md) | superseded | [UI-u6ud-2](history/UI-u6ud-2-dotfiles-contract-consumption.md) |
 | 0013 | [세션 기본값의 source of truth를 dotfiles kv로 이관](history/0013-session-defaults-owned-by-dotfiles-kv.md) | superseded | [UI-wecw](history/UI-wecw-worker-url-stored-vs-effective-split-common-via-dotfiles-cli.md) |
 | 0014 | [레인과 카드는 단일 buildLanes 계약과 공유 슬롯 표로 조립한다](history/0014-single-build-lanes-contract-and-shared-slot-table.md) | superseded | [UI-u6ud-8](history/UI-u6ud-8-candidate-lanes-and-cards.md) |
 | 0015 | [30분은 queue-yield deadline이고 충돌 해소 fence는 슬롯 기반이다](history/0015-queue-yield-deadline-and-slot-based-conflict-fence.md) | superseded | [UI-u6ud-3](history/UI-u6ud-3-worker-merge-queue.md) |
@@ -55,7 +55,7 @@
 | 0036 | [파킹의 출구는 문의 세션뿐이고 해제 전이 재디스패치는 stale 두 값에만 걸린다](history/0036-parked-exit-is-inquiry-session-only.md) | superseded | [UI-u6ud-7](history/UI-u6ud-7-worker-wait-resume-residue.md) |
 | 0037 | [완료 레인 행은 슬롯 5 줄에서 실행 사실을 말한다](history/0037-done-lane-row-states-execution-facts.md) | superseded | [UI-j10d](history/UI-j10d-done-row-worker-creation-provenance.md) |
 | 0038 | [처분 대기 admission이 화면 대표를 정한다 — 대기 행이 held 타일·점유 ghost를 이긴다](history/0038-stale-disposition-admission-elects-the-waiting-row.md) | superseded | [UI-a5l2-2](history/UI-a5l2-2-four-wait-kinds-env-ladder-inquiry-exit-auto-residue.md) |
-| 0039 | [ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비한다](history/0039-adr-tab-spawns-installed-checkers-json.md) | superseded | [UI-u6ud-2](UI-u6ud-2-dotfiles-contract-consumption.md) |
+| 0039 | [ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비한다](history/0039-adr-tab-spawns-installed-checkers-json.md) | superseded | [UI-u6ud-2](history/UI-u6ud-2-dotfiles-contract-consumption.md) |
 | 0040 | [머지 게이트의 영수증 보류는 자동 해소 주체 유무로 나뉘고 위조 3종은 즉시 terminal needs_human이다](history/0040-receipt-hold-unresolvable-terminal-needs-human.md) | superseded | [UI-u6ud-4](history/UI-u6ud-4-merge-gate-holds.md) |
 | 0041 | [연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다](history/0041-connected-run-preserves-waiting-lanes.md) | superseded | [UI-wc67](history/UI-wc67-retire-connected-lanes-use-repository-queues.md) |
 | 0042 | [quick_fix 재개는 실패 사유로 session과 settlement를 가르고 착지 정산 재실행 버튼은 정리 재시도로 부른다](history/0042-quickfix-resume-by-reason-settlement-button-is-cleanup-retry.md) | superseded | [UI-lmqu-2](history/UI-lmqu-2-base-moved-session-resume.md) |
@@ -116,6 +116,7 @@
 | UI-l48z | [세션 소유 외부 대기는 실행 중 레인의 세션 타일이다](history/UI-l48z-session-external-wait-is-running-lane-session-tile.md) | superseded | [UI-ri8n](history/UI-ri8n-live-inquiry-session-decides-stall-verdict-and-resolve-exit.md) |
 | UI-u6ud-10 | [실행 프리셋과 판정 칩](history/UI-u6ud-10-exec-presets-and-chips.md) | superseded | [UI-rd2m](history/UI-rd2m-exec-presets-and-chips-by-route.md) |
 | UI-u6ud-11 | [Worker 주소와 저장소 defaults 소비](history/UI-u6ud-11-worker-url-and-defaults.md) | superseded | [UI-32oq-2](UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
+| UI-u6ud-2 | [dotfiles 계약 소비와 ADR 탭 체커 소비](history/UI-u6ud-2-dotfiles-contract-consumption.md) | superseded | [UI-jlov](UI-jlov-dotfiles-contract-and-checker-consumption.md) |
 | UI-u6ud-3 | [Worker 머지 큐와 머지 자격](history/UI-u6ud-3-worker-merge-queue.md) | superseded | [UI-6mpl](history/UI-6mpl-merge-queue-and-independent-toggles.md) |
 | UI-u6ud-4 | [머지 게이트 보류](history/UI-u6ud-4-merge-gate-holds.md) | superseded | [UI-18a5-3](history/UI-18a5-3-merge-gate-holds-and-failure-exits.md) |
 | UI-u6ud-5 | [배포 실행과 프런트엔드 빌드](history/UI-u6ud-5-deploy-and-build.md) | superseded | [UI-izba](history/UI-izba-jev-queue-placement-and-deploy-build.md) |

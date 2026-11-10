@@ -317,6 +317,56 @@ function firstLine(value) {
   return trimmed === null ? null : (text(trimmed.split('\n')[0]) ?? null);
 }
 
+/** How many protected paths a landing notice names before `외 <k>개`. */
+const PROTECTED_PATHS_SHOWN = 5;
+
+/**
+ * The extra body lines of a self-improvement auto landing notice (UI-jlov
+ * spec §4.2). Pure; a malformed input adds nothing so the notice stays as it
+ * was.
+ *
+ * @param {unknown} self_improvement - `{ changed, changed_count?, protected?, reason? }`
+ * @returns {string[]} lines to append after the repo line, empty when absent.
+ */
+export function selfImprovementLines(self_improvement) {
+  if (self_improvement === null || typeof self_improvement !== 'object') {
+    return [];
+  }
+  const si = /** @type {Record<string, unknown>} */ (self_improvement);
+  if (typeof si.changed !== 'boolean') {
+    return [];
+  }
+  const label = '자기개선 자동 수정';
+  if (!si.changed) {
+    return [label];
+  }
+  const count = si.changed_count;
+  const first =
+    typeof count === 'number' && Number.isInteger(count) && count >= 0
+      ? `${label} · 바뀐 파일 ${count}개`
+      : label;
+  const paths = si.protected;
+  if (Array.isArray(paths) && paths.every((p) => typeof p === 'string')) {
+    if (paths.length === 0) {
+      return [first, '보호 경로: 없음'];
+    }
+    const shown = paths
+      .slice(0, PROTECTED_PATHS_SHOWN)
+      .map((p) => p.replace(/[\r\n]+/g, ' '))
+      .join(', ');
+    const rest = paths.length - PROTECTED_PATHS_SHOWN;
+    return [
+      first,
+      `⚠ 보호 경로 수정: ${shown}${rest > 0 ? ` 외 ${rest}개` : ''}`
+    ];
+  }
+  const reason = text(si.reason);
+  return [
+    first,
+    reason ? `보호 경로: 확인 못 함 (${reason})` : '보호 경로: 확인 못 함'
+  ];
+}
+
 /**
  * The push preview's first line: the transition, then the bead it is about.
  * Without the id and title here a notification says only that SOMETHING moved,
@@ -378,7 +428,7 @@ function failureConversationLine(conversation) {
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
- *   quickfixLanded: (input: { bead_id: string, title?: string|null, head_sha?: string|null, close_kind?: string|null, repo?: string|null }) => Promise<void>,
+ *   quickfixLanded: (input: { bead_id: string, title?: string|null, head_sha?: string|null, close_kind?: string|null, repo?: string|null, self_improvement?: { changed: boolean, changed_count?: number|null, protected?: string[]|null, reason?: string|null } }) => Promise<void>,
  *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, branch?: string|null, session?: string|null, reason?: string|null, mode?: string|null, fallback_reason?: string|null, session_id?: string|null, tmux_session?: string|null, tmux_window?: string|null, redispatch_refusal?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
  *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'unconfigured'|'disabled'|null, cross_runner?: boolean, repo?: string|null }) => Promise<void>,
  *   conditionWaitEntered: (input: { bead_id: string, summary?: string|null, release: string, repo?: string|null }) => Promise<void>,
@@ -1088,6 +1138,7 @@ export function createNotifier(deps) {
         if (repo) {
           lines.push(`리포: ${repo}`);
         }
+        lines.push(...selfImprovementLines(input.self_improvement));
         send(cmd, lines.join('\n'));
       } catch (err) {
         log('quickfixLanded failed: %o', err);

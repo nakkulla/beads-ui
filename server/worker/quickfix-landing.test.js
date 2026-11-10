@@ -71,6 +71,9 @@ afterEach(() => {
  *   notifier?: { quickfixLanded: (input: any) => Promise<void> }|null,
  *   baseSync?: { syncBase: (target_base: string, candidate_sha?: string|null) => Promise<any> },
  *   readMetadataThrows?: boolean,
+ *   tier?: string,
+ *   checkProtectedPaths?: (input: { paths: string[], rig: string }) => Promise<any>,
+ *   diffByRange?: Record<string, { code?: number, stdout?: string }>,
  *   foreign?: {
  *     pins: Record<string, string>,
  *     remotes?: Record<string, string>,
@@ -209,9 +212,15 @@ function makeLanding(options = {}) {
         throw new Error('bd unreachable');
       }
       calls.push(`bd:readIssue:${bead_status}`);
-      return Object.hasOwn(options, 'closeReason')
-        ? { status: bead_status, close_reason: options.closeReason }
-        : { status: bead_status };
+      return {
+        status: bead_status,
+        ...(Object.hasOwn(options, 'closeReason')
+          ? { close_reason: options.closeReason }
+          : {}),
+        ...(options.tier === undefined
+          ? {}
+          : { metadata: { self_improvement_tier: options.tier } })
+      };
     }),
     setStatus: vi.fn(async (bead_id, status) => {
       calls.push(`bd:setStatus:${status}`);
@@ -241,6 +250,10 @@ function makeLanding(options = {}) {
     calls.push(`git:${args.join(' ')}`);
     if (args[0] === 'fetch') {
       return { code: options.fetchCode ?? 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'diff') {
+      const range = options.diffByRange?.[args.slice(-2).join('..')];
+      return { code: 0, stdout: '', stderr: '', ...range };
     }
     if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
       return {
@@ -347,6 +360,7 @@ function makeLanding(options = {}) {
     worktree,
     repoOperations: options.repoOperations === false ? null : repoOperations,
     readPushLog,
+    checkProtectedPaths: options.checkProtectedPaths,
     timeline: options.timeline,
     notifier: options.notifier,
     baseSync: options.baseSync,
@@ -532,6 +546,358 @@ test('keeps settlement successful when landing notification rejects', async () =
 
   expect(result).toEqual({ ok: true });
   expect(quickfixLanded).toHaveBeenCalledTimes(1);
+});
+
+describe('self-improvement auto landing notice (UI-jlov)', () => {
+  const OLD_TIP = 'e'.repeat(40);
+  const MID_SHA = 'd'.repeat(40);
+  const DEFAULT_RANGE = `${OLD_TIP}..${HEAD_SHA}`;
+
+  /** @param {Record<string, unknown>[]} entries */
+  function pushLogOf(entries) {
+    return { ok: /** @type {const} */ (true), entries };
+  }
+
+  test('sends the checker verdict for paths gathered from the push record', async () => {
+    const quickfixLanded = vi.fn(async () => {});
+    const checkProtectedPaths = vi.fn(async () => ({
+      ok: true,
+      protected: ['hooks/a.py']
+    }));
+    const { landing } = makeLanding({
+      tier: 'auto',
+      notifier: { quickfixLanded },
+      checkProtectedPaths,
+      diffByRange: { [DEFAULT_RANGE]: { stdout: 'hooks/a.py\0docs/b.md\0' } }
+    });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(checkProtectedPaths).toHaveBeenCalledWith({
+      paths: ['hooks/a.py', 'docs/b.md'],
+      rig: 'quickfix'
+    });
+    expect(quickfixLanded).toHaveBeenCalledTimes(1);
+    expect(quickfixLanded).toHaveBeenCalledWith({
+      repo: REPO,
+      bead_id: BEAD,
+      head_sha: HEAD_SHA,
+      self_improvement: {
+        changed: true,
+        changed_count: 2,
+        protected: ['hooks/a.py'],
+        reason: null
+      }
+    });
+  });
+
+  test('runs git diff in the repo root after the worktree is gone', async () => {
+    const { landing, gitRun } = makeLanding({
+      tier: 'auto',
+      checkProtectedPaths: async () => ({ ok: true, protected: [] })
+    });
+
+    await settle(landing);
+
+    const diff_call = gitRun.mock.calls.find((call) => call[0][0] === 'diff');
+    expect(diff_call?.[0]).toEqual([
+      'diff',
+      '--name-only',
+      '--no-renames',
+      '-z',
+      OLD_TIP,
+      HEAD_SHA
+    ]);
+    expect(diff_call?.[1]).toEqual({ cwd: REPO });
+  });
+
+  test('unions the paths of several base lines', async () => {
+    const checkProtectedPaths = vi.fn(async () => ({
+      ok: true,
+      protected: []
+    }));
+    const { landing } = makeLanding({
+      tier: 'auto',
+      checkProtectedPaths,
+      pushLog: pushLogOf([
+        {
+          local_oid: MID_SHA,
+          remote_ref: 'refs/heads/main',
+          remote_oid: OLD_TIP
+        },
+        {
+          local_oid: HEAD_SHA,
+          remote_ref: 'refs/heads/main',
+          remote_oid: MID_SHA
+        },
+        {
+          local_oid: HEAD_SHA,
+          remote_ref: 'refs/heads/topic',
+          remote_oid: OLD_TIP
+        }
+      ]),
+      diffByRange: {
+        [`${OLD_TIP}..${MID_SHA}`]: { stdout: 'a.js\0b.js\0' },
+        [`${MID_SHA}..${HEAD_SHA}`]: { stdout: 'b.js\0c.js\0' }
+      }
+    });
+
+    await settle(landing);
+
+    expect(checkProtectedPaths).toHaveBeenCalledWith({
+      paths: ['a.js', 'b.js', 'c.js'],
+      rig: 'quickfix'
+    });
+  });
+
+  test('reports range_unknown without the checker when remote_oid is zeros', async () => {
+    const quickfixLanded = vi.fn(async () => {});
+    const checkProtectedPaths = vi.fn(async () => ({
+      ok: true,
+      protected: []
+    }));
+    const { landing } = makeLanding({
+      tier: 'auto',
+      notifier: { quickfixLanded },
+      checkProtectedPaths,
+      pushLog: pushLogOf([
+        {
+          local_oid: HEAD_SHA,
+          remote_ref: 'refs/heads/main',
+          remote_oid: '0'.repeat(40)
+        }
+      ])
+    });
+
+    await settle(landing);
+
+    expect(checkProtectedPaths).not.toHaveBeenCalled();
+    expect(quickfixLanded).toHaveBeenCalledWith({
+      repo: REPO,
+      bead_id: BEAD,
+      head_sha: HEAD_SHA,
+      self_improvement: {
+        changed: true,
+        changed_count: null,
+        protected: null,
+        reason: 'range_unknown'
+      }
+    });
+  });
+
+  test('reports git_error when the diff fails', async () => {
+    const quickfixLanded = vi.fn(async () => {});
+    const { landing } = makeLanding({
+      tier: 'auto',
+      notifier: { quickfixLanded },
+      checkProtectedPaths: async () => ({ ok: true, protected: [] }),
+      diffByRange: { [DEFAULT_RANGE]: { code: 128 } }
+    });
+
+    await settle(landing);
+
+    expect(quickfixLanded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        self_improvement: expect.objectContaining({ reason: 'git_error' })
+      })
+    );
+  });
+
+  test('keeps the settlement and names the reason when the checker times out', async () => {
+    const quickfixLanded = vi.fn(async () => {});
+    const { landing, calls } = makeLanding({
+      tier: 'auto',
+      notifier: { quickfixLanded },
+      checkProtectedPaths: async () => ({ ok: false, reason: 'timeout' }),
+      diffByRange: { [DEFAULT_RANGE]: { stdout: 'a.js\0' } }
+    });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(calls).toContain('store:moveToDone');
+    expect(quickfixLanded).toHaveBeenCalledWith({
+      repo: REPO,
+      bead_id: BEAD,
+      head_sha: HEAD_SHA,
+      self_improvement: {
+        changed: true,
+        changed_count: 1,
+        protected: null,
+        reason: 'timeout'
+      }
+    });
+  });
+
+  test('reports checker_missing when the checker dep is absent', async () => {
+    const quickfixLanded = vi.fn(async () => {});
+    const { landing } = makeLanding({
+      tier: 'auto',
+      notifier: { quickfixLanded },
+      diffByRange: { [DEFAULT_RANGE]: { stdout: 'a.js\0' } }
+    });
+
+    await settle(landing);
+
+    expect(quickfixLanded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        self_improvement: {
+          changed: true,
+          changed_count: 1,
+          protected: null,
+          reason: 'checker_missing'
+        }
+      })
+    );
+  });
+
+  test('keeps the notice and settlement when the checker dep throws', async () => {
+    const quickfixLanded = vi.fn(async () => {});
+    const { landing, calls } = makeLanding({
+      tier: 'auto',
+      notifier: { quickfixLanded },
+      checkProtectedPaths: async () => {
+        throw new Error('boom');
+      },
+      diffByRange: { [DEFAULT_RANGE]: { stdout: 'a.js\0' } }
+    });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(calls).toContain('store:moveToDone');
+    expect(quickfixLanded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        self_improvement: {
+          changed: true,
+          changed_count: 1,
+          protected: null,
+          reason: 'checker_missing'
+        }
+      })
+    );
+  });
+
+  test('reports range_unknown for a foreign landing despite a same-named base line', async () => {
+    const quickfixLanded = vi.fn(async () => {});
+    const checkProtectedPaths = vi.fn(async () => ({
+      ok: true,
+      protected: []
+    }));
+    const { landing, readPushLog } = makeLanding({
+      tier: 'auto',
+      notifier: { quickfixLanded },
+      checkProtectedPaths,
+      foreign: { pins: FOREIGN_PINS }
+    });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(readPushLog).not.toHaveBeenCalled();
+    expect(checkProtectedPaths).not.toHaveBeenCalled();
+    expect(quickfixLanded).toHaveBeenCalledWith({
+      repo: REPO,
+      bead_id: BEAD,
+      head_sha: HEAD_SHA,
+      self_improvement: {
+        changed: true,
+        changed_count: null,
+        protected: null,
+        reason: 'range_unknown'
+      }
+    });
+  });
+
+  test.each([
+    ['another value', { tier: 'review' }],
+    ['no tier', {}]
+  ])('leaves the notice untouched for %s', async (description, options) => {
+    const quickfixLanded = vi.fn(async () => {});
+    const checkProtectedPaths = vi.fn(async () => ({
+      ok: true,
+      protected: []
+    }));
+    const { landing, readPushLog } = makeLanding({
+      ...options,
+      notifier: { quickfixLanded },
+      checkProtectedPaths
+    });
+
+    await settle(landing);
+
+    expect(quickfixLanded).toHaveBeenCalledWith({
+      repo: REPO,
+      bead_id: BEAD,
+      head_sha: HEAD_SHA
+    });
+    expect(checkProtectedPaths).not.toHaveBeenCalled();
+    expect(readPushLog).not.toHaveBeenCalled();
+  });
+
+  test('reads the tier from the issue and never from a metadata read', async () => {
+    const { landing, bd } = makeLanding({
+      tier: 'auto',
+      checkProtectedPaths: async () => ({ ok: true, protected: [] })
+    });
+
+    await settle(landing);
+
+    expect(bd.readIssue).toHaveBeenCalledTimes(1);
+    const keys = bd.readMetadata.mock.calls.map((call) => call[1]);
+    expect(keys).not.toContain('self_improvement_tier');
+  });
+
+  test.each([
+    ['refuted: premise disproved', 'refuted'],
+    ['no-delta: already correct', 'no-delta']
+  ])(
+    'marks a %s close as an auto fix without a file count',
+    async (closeReason, close_kind) => {
+      const quickfixLanded = vi.fn(async () => {});
+      const checkProtectedPaths = vi.fn(async () => ({
+        ok: true,
+        protected: []
+      }));
+      const { landing } = makeLanding({
+        tier: 'auto',
+        status: 'closed',
+        closeReason,
+        notifier: { quickfixLanded },
+        checkProtectedPaths
+      });
+
+      await settle(landing);
+
+      expect(quickfixLanded).toHaveBeenCalledWith({
+        repo: REPO,
+        bead_id: BEAD,
+        close_kind,
+        self_improvement: { changed: false }
+      });
+      expect(checkProtectedPaths).not.toHaveBeenCalled();
+    }
+  );
+
+  test('sends no notice when resuming an already closed parent_close', async () => {
+    const quickfixLanded = vi.fn(async () => {});
+    const { landing } = makeLanding({
+      tier: 'auto',
+      status: 'closed',
+      landingProgress: {
+        cursor: 'parent_close',
+        head_sha: HEAD_SHA,
+        reason: 'bd_close_failed'
+      },
+      notifier: { quickfixLanded }
+    });
+
+    const result = await settle(landing);
+
+    expect(result).toEqual({ ok: true });
+    expect(quickfixLanded).not.toHaveBeenCalled();
+  });
 });
 
 test('lands when the timeline append fails', async () => {

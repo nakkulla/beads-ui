@@ -55,7 +55,7 @@ import { parsePrNumber } from '../workflow-enrich.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { createAccountCatalog } from './account-catalog.js';
 import { validateAdmission } from './admission.js';
-import { resolveDotfilesRoot } from './attempt-facts.js';
+import { resolveDotfilesRoot, resolveWorkflowPython } from './attempt-facts.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import { createAutoMerge } from './auto-merge.js';
 import { createBaseSync } from './base-sync.js';
@@ -92,6 +92,7 @@ import {
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
+import { checkProtectedPaths } from './protected-paths.js';
 import { createProviderHealth } from './provider-health.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
@@ -1253,6 +1254,22 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         // landing module has no workspace of its own.
         readPushLog: (/** @type {{ attempt_id: string }} */ input) =>
           readPushLog({ workspace: keyFor(workspace_root), ...input }),
+        // The installed dotfiles checker that judges a self-improvement auto
+        // landing's changed paths (UI-jlov); the root is resolved per call.
+        checkProtectedPaths: async (
+          /** @type {{ paths: string[], rig: string }} */ input
+        ) => {
+          const dotfiles_root = await resolveDotfilesRoot({
+            run: baseGitRun,
+            homeDir: os.homedir()
+          });
+          return checkProtectedPaths({
+            ...input,
+            cwd: repo,
+            dotfiles_root,
+            python: resolveWorkflowPython(dotfiles_root) ?? 'python3'
+          });
+        },
         // The workspace's ONE bead-history writer (§5), not a second instance.
         timeline,
         notifyChanged: (/** @type {string} */ ws_key) =>

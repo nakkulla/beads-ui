@@ -44,6 +44,7 @@ import {
   resolveForeignRemote as resolveSharedForeignRemote
 } from './foreign-target.js';
 import { createPostMergeJobRunner } from './post-merge-job.js';
+import { collectChangedPaths } from './protected-paths.js';
 import { resolveRepoOps } from './repo-ops-resolver.js';
 import { branchForBead } from './worktree.js';
 
@@ -145,6 +146,29 @@ function noChangeCloseKind(close_reason) {
 }
 
 /**
+ * The self-improvement facts a landing notice carries (UI-jlov §4.2); the
+ * shape `notify.js` `selfImprovementLines` reads.
+ *
+ * @typedef {{ changed: boolean, changed_count?: number|null, protected?: string[]|null, reason?: string|null }} SelfImprovementFacts
+ */
+
+/**
+ * Whether the bead's own `self_improvement_tier` is exactly `auto`, read off
+ * the issue `settle` already holds so no second bd read can fail silently.
+ *
+ * @param {Record<string, any>} issue
+ * @returns {boolean}
+ */
+function isSelfImprovementAuto(issue) {
+  const metadata = issue.metadata;
+  return (
+    metadata !== null &&
+    typeof metadata === 'object' &&
+    metadata.self_improvement_tier === 'auto'
+  );
+}
+
+/**
  * The four contract failures named by design §11 are the central cases. The
  * remaining values distinguish an unobservable judgment from the exact lower
  * settlement step that failed, instead of reporting false success.
@@ -240,6 +264,7 @@ function cleanupBackupReceipt(value) {
  *     waitForJobTerminal?: (operation_id: string, input?: any) => Promise<any>
  *   }|null,
  *   readPushLog?: (input: { attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string },
+ *   checkProtectedPaths?: (input: { paths: string[], rig: string }) => Promise<{ ok: true, protected: string[] }|{ ok: false, reason: string }>,
  *   timeline?: { append: (input: any) => unknown },
  *   notifier?: { quickfixLanded: (input: any) => Promise<void> }|null,
  *   baseSync?: { syncBase: (target_base: string, candidate_sha?: string|null) => Promise<import('./base-sync.js').BaseSyncResult> }|null,
@@ -251,6 +276,8 @@ function cleanupBackupReceipt(value) {
  * an absent log: unproven, never innocent.
  * `baseSync` is the shared local base sync the PR cleanup also uses
  * (`base-sync.js`); without it a landing leaves the human checkout alone.
+ * `checkProtectedPaths` judges the changed paths of a self-improvement auto
+ * landing (UI-jlov); an absent dep reads as `checker_missing`.
  */
 export function createQuickfixLanding(deps) {
   const workspace = deps.workspace;
@@ -275,7 +302,7 @@ export function createQuickfixLanding(deps) {
    * Announce only a newly durable terminal success. The notifier is no-throw by
    * contract; this guard also protects settlement from a broken injected fake.
    *
-   * @param {{ bead_id: string, head_sha?: string|null, close_kind?: string|null }} input
+   * @param {{ bead_id: string, head_sha?: string|null, close_kind?: string|null, self_improvement?: SelfImprovementFacts }} input
    */
   async function announceLanded(input) {
     if (!notifier || typeof notifier.quickfixLanded !== 'function') {
@@ -285,6 +312,81 @@ export function createQuickfixLanding(deps) {
       await notifier.quickfixLanded({ repo, ...input });
     } catch (err) {
       log('quick_fix landed notify failed: %o', err);
+    }
+  }
+
+  /**
+   * The self-improvement facts of a delta landing (UI-jlov §4.3-§4.4): which
+   * paths the attempt changed on the base and which of them are protected. It
+   * never throws and never changes the settlement; a failed judgment is a
+   * reason token the notice prints as `확인 못 함`. The worktree is already
+   * gone here, so every git call runs in the rig repo.
+   *
+   * @param {string} attempt_id
+   * @param {string} target_base
+   * @param {{ repo: string, path: string, base: string }|null} foreign - A
+   * foreign landing has no push record in this repository's hook, so its range
+   * is unknown without reading the log.
+   * @returns {Promise<SelfImprovementFacts>}
+   */
+  async function selfImprovementFacts(attempt_id, target_base, foreign) {
+    /** @type {number|null} */
+    let changed_count = null;
+    try {
+      if (foreign) {
+        return {
+          changed: true,
+          changed_count: null,
+          protected: null,
+          reason: 'range_unknown'
+        };
+      }
+      const read = deps.readPushLog
+        ? deps.readPushLog({ attempt_id })
+        : { ok: /** @type {const} */ (false), reason: 'absent' };
+      if (!read.ok) {
+        return {
+          changed: true,
+          changed_count: null,
+          protected: null,
+          reason: 'range_unknown'
+        };
+      }
+      const collected = await collectChangedPaths({
+        entries: read.entries,
+        base_ref: `refs/heads/${target_base}`,
+        gitRun: deps.gitRun,
+        cwd: repo
+      });
+      if (!collected.ok) {
+        return {
+          changed: true,
+          changed_count: null,
+          protected: null,
+          reason: collected.reason
+        };
+      }
+      changed_count = collected.paths.length;
+      const checked = deps.checkProtectedPaths
+        ? await deps.checkProtectedPaths({
+            paths: collected.paths,
+            rig: path.basename(repo)
+          })
+        : { ok: /** @type {const} */ (false), reason: 'checker_missing' };
+      return {
+        changed: true,
+        changed_count,
+        protected: checked.ok ? checked.protected : null,
+        reason: checked.ok ? null : checked.reason
+      };
+    } catch (err) {
+      log('quick_fix self-improvement facts failed: %o', err);
+      return {
+        changed: true,
+        changed_count,
+        protected: null,
+        reason: changed_count === null ? 'git_error' : 'checker_missing'
+      };
     }
   }
 
@@ -1033,6 +1135,8 @@ export function createQuickfixLanding(deps) {
    * @param {'refuted'|'no_delta'} kind
    * @param {LandingExtra} [extra] - What every record of this attempt carries
    * (a backup receipt restored from an earlier run, UI-w2ou §3.4).
+   * @param {boolean} [self_improvement_auto] - The bead's tier is `auto`, so
+   * the notice says so.
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step: string|null }>}
    */
   async function settleNoChangeClose(
@@ -1040,7 +1144,8 @@ export function createQuickfixLanding(deps) {
     bead_id,
     target_base,
     kind,
-    extra = null
+    extra = null,
+    self_improvement_auto = false
   ) {
     const fetched = await fetchBase(target_base);
     if (!fetched.ok) {
@@ -1104,7 +1209,11 @@ export function createQuickfixLanding(deps) {
     });
     notifyChanged(workspace);
     const close_kind = kind === 'no_delta' ? 'no-delta' : 'refuted';
-    await announceLanded({ bead_id, close_kind });
+    await announceLanded(
+      self_improvement_auto
+        ? { bead_id, close_kind, self_improvement: { changed: false } }
+        : { bead_id, close_kind }
+    );
     return { ok: true };
   }
 
@@ -1203,6 +1312,7 @@ export function createQuickfixLanding(deps) {
       );
     }
     const status = typeof issue.status === 'string' ? issue.status : null;
+    const self_improvement_auto = isSelfImprovementAuto(issue);
     if (
       status === 'closed' &&
       durable_cursor === 'parent_close' &&
@@ -1247,7 +1357,8 @@ export function createQuickfixLanding(deps) {
         bead_id,
         target_base,
         no_change_kind,
-        landing_extra
+        landing_extra,
+        self_improvement_auto
       );
     }
 
@@ -1680,7 +1791,19 @@ export function createQuickfixLanding(deps) {
       }
     });
     notifyChanged(workspace);
-    await announceLanded({ bead_id, head_sha });
+    await announceLanded(
+      self_improvement_auto
+        ? {
+            bead_id,
+            head_sha,
+            self_improvement: await selfImprovementFacts(
+              attempt_id,
+              target_base,
+              foreign
+            )
+          }
+        : { bead_id, head_sha }
+    );
     // A foreign landing moved another repository's base, not this checkout's.
     if (!foreign) {
       await syncLocalBase(attempt_id, bead_id, target_base, head_sha);
