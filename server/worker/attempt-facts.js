@@ -483,6 +483,26 @@ export function shellQuote(value) {
 }
 
 /**
+ * The workflow venv python under the dotfiles root, when it exists.
+ *
+ * @param {string|null} dotfiles_root
+ * @param {{ existsSync: (p: string) => boolean }} [fs] - Injected file system
+ * for tests; defaults to the node fs module.
+ * @returns {string|null} null when the root is unknown or the venv is absent.
+ */
+export function resolveWorkflowPython(dotfiles_root, fs = nodeFs) {
+  if (typeof dotfiles_root !== 'string' || dotfiles_root.length === 0) {
+    return null;
+  }
+  const candidate = path.join(dotfiles_root, '.venv', 'bin', 'python');
+  try {
+    return fs.existsSync(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Collect the whole `## 시도 사실` payload for one dispatch.
  *
  * Called from the scheduler AFTER `workflow_mode=fast_track` is stamped, so
@@ -518,16 +538,7 @@ export async function buildAttemptFacts(input, deps) {
       dotfiles_root = null;
     }
   }
-  /** @type {string|null} */
-  let workflow_python = null;
-  if (typeof dotfiles_root === 'string' && dotfiles_root.length > 0) {
-    const candidate = path.join(dotfiles_root, '.venv', 'bin', 'python');
-    try {
-      workflow_python = fs.existsSync(candidate) ? candidate : null;
-    } catch {
-      workflow_python = null;
-    }
-  }
+  const workflow_python = resolveWorkflowPython(dotfiles_root, fs);
   /** @type {string|null} */
   let pitfalls = null;
   if (typeof input.worktree === 'string' && input.worktree.length > 0) {

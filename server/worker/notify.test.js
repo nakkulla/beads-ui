@@ -825,6 +825,114 @@ describe('worker/notify argv assembly', () => {
     expect(message).not.toContain('종결:');
   });
 
+  describe('self-improvement auto landing lines (UI-jlov)', () => {
+    const BASE = `🤖 ✅ 착지 완료 — UI-1\n착지: ${'a'.repeat(40)}\n리포: proj`;
+
+    /** @param {any} self_improvement */
+    async function landWith(self_improvement) {
+      const spawn = makeFakeSpawn();
+      const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+      await notifier.quickfixLanded({
+        bead_id: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        repo: '/r/proj',
+        self_improvement
+      });
+
+      return messageOf(spawn.last());
+    }
+
+    test('names the protected paths a landing touched', async () => {
+      const message = await landWith({
+        changed: true,
+        changed_count: 3,
+        protected: ['hooks/a.py', 'docs/adr/x.md']
+      });
+
+      expect(message).toBe(
+        `${BASE}\n자기개선 자동 수정 · 바뀐 파일 3개\n⚠ 보호 경로 수정: hooks/a.py, docs/adr/x.md`
+      );
+    });
+
+    test('says no protected path when none was touched', async () => {
+      const message = await landWith({
+        changed: true,
+        changed_count: 2,
+        protected: []
+      });
+
+      expect(message).toBe(
+        `${BASE}\n자기개선 자동 수정 · 바뀐 파일 2개\n보호 경로: 없음`
+      );
+    });
+
+    test('names the reason when the judgment failed', async () => {
+      const message = await landWith({
+        changed: true,
+        changed_count: 4,
+        protected: null,
+        reason: 'timeout'
+      });
+
+      expect(message).toBe(
+        `${BASE}\n자기개선 자동 수정 · 바뀐 파일 4개\n보호 경로: 확인 못 함 (timeout)`
+      );
+    });
+
+    test('omits the file count when the range is unknown', async () => {
+      const message = await landWith({
+        changed: true,
+        changed_count: null,
+        protected: null,
+        reason: 'range_unknown'
+      });
+
+      expect(message).toBe(
+        `${BASE}\n자기개선 자동 수정\n보호 경로: 확인 못 함 (range_unknown)`
+      );
+    });
+
+    test('adds only the label for a no-change close', async () => {
+      const spawn = makeFakeSpawn();
+      const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+      await notifier.quickfixLanded({
+        bead_id: 'UI-1',
+        close_kind: 'no-delta',
+        self_improvement: { changed: false }
+      });
+
+      expect(messageOf(spawn.last())).toBe(
+        '🤖 ✅ 착지 완료 — UI-1\n종결: no-delta\n자기개선 자동 수정'
+      );
+    });
+
+    test('folds protected paths past five into a count', async () => {
+      const paths = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+
+      const message = await landWith({
+        changed: true,
+        changed_count: 9,
+        protected: paths
+      });
+
+      expect(message).toContain('⚠ 보호 경로 수정: a, b, c, d, e 외 2개');
+    });
+
+    test('keeps the body unchanged without self_improvement', async () => {
+      const message = await landWith(undefined);
+
+      expect(message).toBe(BASE);
+    });
+
+    test('keeps the body unchanged for a malformed self_improvement', async () => {
+      const message = await landWith({ changed: 'yes' });
+
+      expect(message).toBe(BASE);
+    });
+  });
+
   test('spawns the configured command argv without a shell', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(
