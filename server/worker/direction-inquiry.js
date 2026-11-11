@@ -42,6 +42,7 @@ import {
   DEFAULT_START_TOLERANCE_MS,
   observeProcessIdentity
 } from './process-controller.js';
+import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
 import { qualifyAttemptSession } from './session-ref.js';
 import { conversationStopLabel } from './session-stall.js';
 // The tmux launch primitives are shared with the failure conversation
@@ -260,6 +261,7 @@ export function inquiryWrapper(input) {
 
 /**
  * @typedef {Object} DirectionInquiryDeps
+ * @property {import('./session-launch-accounts.js').ResolveSessionAccounts} [resolveSessionAccounts]
  * @property {() => any} getConfig - Runtime config accessor (server/config.js).
  * @property {{ readIssue: (workspace: string, bead_id: string) => Promise<any> }} bd
  * @property {{ conversationConfirm?: (input: any) => Promise<unknown>|unknown }} notifier
@@ -598,6 +600,12 @@ export function createDirectionInquiry(deps) {
         };
       }
     }
+    const account_options = await resolveSessionLaunchOptions(
+      deps.resolveSessionAccounts,
+      workspace,
+      bead_id,
+      target.runner
+    );
     // A handoff reservation belongs to the reconcile pass that continues it
     // (UI-nuwy §3.4). Checked with no await left before the launch, so a new
     // window can neither reopen the handed-off session nor replace the record.
@@ -643,6 +651,7 @@ export function createDirectionInquiry(deps) {
     // A click opens in the person's own tmux session; the automatic trigger
     // stays in the background inquiry session (UI-a119 §3.1).
     const launched = await launcher.launch({
+      ...account_options,
       marker: PANE_MARKER,
       key: bead_id,
       tmux_session: config.tmux_session,

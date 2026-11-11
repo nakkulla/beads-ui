@@ -57,6 +57,7 @@ import {
   selfRepairFailureIdentity
 } from './resolution-ladder.js';
 import { sessionInquiryIdOf } from './session-inquiry/contract.js';
+import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
 import { qualifyInteractiveForkSource } from './session-ref.js';
 import {
   RESOLVE_PANE_MARKER,
@@ -883,6 +884,7 @@ export function failedDiscardOperation(queue, bead_id) {
 
 /**
  * @typedef {Object} ResolveSessionDeps
+ * @property {import('./session-launch-accounts.js').ResolveSessionAccounts} [resolveSessionAccounts]
  * @property {() => any} getConfig - Runtime config accessor (server/config.js).
  * @property {{ readIssue: (workspace: string, bead_id: string) => Promise<any> }} bd
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
@@ -1149,6 +1151,12 @@ export function createResolveSession(deps) {
             : [prompt]
           : forkArgs(runner, session_id, prompt, launch_session_id);
       const outcome = await launcher.launch({
+        ...(await resolveSessionLaunchOptions(
+          deps.resolveSessionAccounts,
+          input.workspace,
+          input.bead_id,
+          runner
+        )),
         marker: RESOLVE_PANE_MARKER,
         key: input.bead_id,
         tmux_session: tmuxSessionName(),
@@ -1240,6 +1248,12 @@ export function createResolveSession(deps) {
       });
       const launch_session_id = runner === 'claude' ? randomUUID() : null;
       const outcome = await launcher.launch({
+        ...(await resolveSessionLaunchOptions(
+          deps.resolveSessionAccounts,
+          input.workspace,
+          null,
+          runner
+        )),
         marker: RESOLVE_PANE_MARKER,
         key: row_key,
         tmux_session: tmuxSessionName(),

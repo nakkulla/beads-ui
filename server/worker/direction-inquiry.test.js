@@ -241,6 +241,7 @@ const INHERIT_SETTINGS = {
  *
  * @param {{
  *   tmux?: ReturnType<typeof makeHub>,
+ *   resolveSessionAccounts?: import('./session-launch-accounts.js').ResolveSessionAccounts,
  *   enabled?: boolean,
  *   readIssue?: any,
  *   statFile?: any,
@@ -265,6 +266,7 @@ function makeInquiry(over = {}) {
     over.resolveClaude || (() => '/opt/homebrew/bin/claude');
   const conversationConfirm = vi.fn(async () => true);
   const inquiry = createDirectionInquiry({
+    resolveSessionAccounts: over.resolveSessionAccounts,
     getConfig: () => ({
       worker_direction_inquiry: {
         enabled: over.enabled !== false,
@@ -943,6 +945,64 @@ describe('direction-inquiry confirm notification', () => {
 });
 
 describe('direction-inquiry click', () => {
+  test('wraps the resumed Claude session with its current account', async () => {
+    const resolveSessionAccounts = vi.fn(async () => ({
+      claude_account: 'repo@example.com',
+      cswap_path: '/bin/cswap'
+    }));
+    const { inquiry, tmux } = makeInquiry({
+      resolveSessionAccounts,
+      readAttempt: async () =>
+        attempt({ runner: 'claude', session_id: 'claude-sid' })
+    });
+
+    await inquiry.launchForClick(parkedInput());
+
+    expect(resolveSessionAccounts).toHaveBeenCalledWith('/ws', BEAD, 'claude');
+    expect(tmux.wrapper()).toContain(
+      "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '/opt/homebrew/bin/claude'"
+    );
+  });
+
+  test('resumes Codex with the current account HOME', async () => {
+    const account_home = path.join(codex_home, 'repo-account');
+    const { inquiry, tmux } = makeInquiry({
+      resolveSessionAccounts: async () => ({
+        env: { CODEX_HOME: account_home }
+      })
+    });
+
+    await inquiry.launchForClick(parkedInput());
+
+    expect(tmux.calls.find((call) => call[0] === 'open')).toContain(
+      `CODEX_HOME=${account_home}`
+    );
+  });
+
+  test.each(['unset', 'failed'])(
+    'retains the active login when the account is %s',
+    async (state) => {
+      const { inquiry, tmux } = makeInquiry({
+        tmux: makeHub({
+          panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
+        }),
+        readAttempt: async () =>
+          attempt({ runner: 'claude', session_id: 'claude-sid' }),
+        resolveSessionAccounts: async () => {
+          if (state === 'failed') {
+            throw new Error('lookup failed');
+          }
+          return null;
+        }
+      });
+
+      const result = await inquiry.launchForClick(parkedInput());
+
+      expect(result.launched).toBe(true);
+      expect(tmux.wrapper()).toContain("exec '/opt/homebrew/bin/claude'");
+    }
+  );
+
   test('launches from a click while automatic launch is disabled', async () => {
     const tmux = makeHub({
       panes_seq: [

@@ -60,7 +60,7 @@ function writeRegistry(name, entry) {
 }
 
 /**
- * @param {{ record?: Record<string, any>, launch?: any, focus?: any, panes?: any, run?: any, unset?: any, sessionsDir?: string }} [options]
+ * @param {{ resolveSessionAccounts?: import('../session-launch-accounts.js').ResolveSessionAccounts, record?: Record<string, any>, launch?: any, focus?: any, panes?: any, run?: any, unset?: any, sessionsDir?: string }} [options]
  */
 function fixture(options = {}) {
   /** @type {any} */
@@ -149,6 +149,7 @@ function fixture(options = {}) {
     )
   );
   const resumer = createExternalWaitSessionResume({
+    resolveSessionAccounts: options.resolveSessionAccounts,
     launcher,
     externalWait,
     recordInteractiveSession,
@@ -179,6 +180,50 @@ function fixture(options = {}) {
 }
 
 describe('session resume qualification', () => {
+  test('resumes with the current Bead account wrapper', async () => {
+    const resolveSessionAccounts = vi.fn(async () => ({
+      claude_account: 'repo@example.com',
+      cswap_path: '/bin/cswap'
+    }));
+    const env = fixture({ resolveSessionAccounts });
+
+    await env.resume();
+
+    expect(resolveSessionAccounts).toHaveBeenCalledWith(WS, 'B1', 'claude');
+    expect(env.launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wrapper: {
+          executable: '/bin/cswap',
+          args: ['run', 'repo@example.com', '--share-history', '--']
+        }
+      })
+    );
+  });
+
+  test.each(['unset', 'failed'])(
+    'retains the active login when the account is %s',
+    async (state) => {
+      const env = fixture({
+        resolveSessionAccounts: async () => {
+          if (state === 'failed') {
+            throw new Error('lookup failed');
+          }
+          return null;
+        }
+      });
+
+      const result = await env.resume();
+
+      expect(result.session).toBe('launched');
+      expect(env.launcher.launch).toHaveBeenCalledWith(
+        expect.not.objectContaining({ env: expect.anything() })
+      );
+      expect(env.launcher.launch).toHaveBeenCalledWith(
+        expect.not.objectContaining({ wrapper: expect.anything() })
+      );
+    }
+  );
+
   test.each([
     ['', 'no_session_ref'],
     ['claude:-bad@host', 'unsafe_session_id'],

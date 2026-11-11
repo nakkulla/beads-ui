@@ -20,6 +20,7 @@
  *     they change something, so a steady row never moves the queue revision.
  */
 import { debug } from '../../logging.js';
+import { resolveSessionLaunchOptions } from '../session-launch-accounts.js';
 import { EXTERNAL_RESUME_PANE_MARKER } from '../tmux-launcher.js';
 import {
   REF_ABSENT_REASON,
@@ -51,6 +52,7 @@ export const OWNER_UNVERIFIED_MESSAGE =
 
 /**
  * @typedef {Object} SessionInquiryDeps
+ * @property {import('../session-launch-accounts.js').ResolveSessionAccounts} [resolveSessionAccounts]
  * @property {string} workspace
  * @property {{
  *   snapshot: (workspace: string) => any,
@@ -180,11 +182,13 @@ export function createSessionInquiryRuntime(deps) {
    *
    * @param {SessionInquiry} row
    * @param {'inquiry'|'user'} placement
+   * @param {Pick<import('../tmux-launcher.js').LaunchInput, 'env'|'wrapper'>} account_options
    * @returns {Promise<InquiryResumeOutcome>}
    */
-  async function resume(row, placement) {
+  async function resume(row, placement, account_options) {
     const row_key = sessionInquiryRowKey(row.id);
     const outcome = await deps.launcher.launch({
+      ...account_options,
       marker: EXTERNAL_RESUME_PANE_MARKER,
       key: row_key,
       tmux_session: deps.tmuxSession(),
@@ -291,6 +295,15 @@ export function createSessionInquiryRuntime(deps) {
     }
     const liveness = await deps.ownerLiveness('claude', row.session_id);
     recordLiveness(row, liveness);
+    const account_options =
+      liveness.state === 'dead'
+        ? await resolveSessionLaunchOptions(
+            deps.resolveSessionAccounts,
+            deps.workspace,
+            null,
+            'claude'
+          )
+        : {};
     const current = rowOf(row.id);
     const session_id = row.session_id;
     if (
@@ -326,7 +339,7 @@ export function createSessionInquiryRuntime(deps) {
     }
     deps.notifyChanged(deps.workspace);
     try {
-      const outcome = await resume(current, 'inquiry');
+      const outcome = await resume(current, 'inquiry', account_options);
       if (outcome.session === 'not_launched') {
         log(
           'automatic session-inquiry resume not launched for %s: %s',
@@ -406,6 +419,15 @@ export function createSessionInquiryRuntime(deps) {
       }
       const command = `claude --resume ${row.session_id}`;
       const liveness = await deps.ownerLiveness('claude', row.session_id);
+      const account_options =
+        liveness.state === 'dead'
+          ? await resolveSessionLaunchOptions(
+              deps.resolveSessionAccounts,
+              deps.workspace,
+              null,
+              'claude'
+            )
+          : {};
       // The liveness verdict is about the session id checked; a row closed or
       // re-registered meanwhile is not the row this verdict may act on.
       const latest = rowOf(id);
@@ -445,7 +467,7 @@ export function createSessionInquiryRuntime(deps) {
           command
         });
       }
-      return resume(latest, 'user');
+      return resume(latest, 'user', account_options);
     },
 
     /**

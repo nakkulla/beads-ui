@@ -174,7 +174,7 @@ const FLAG_CATALOG = {
 };
 
 /**
- * @param {{ tmux?: ReturnType<typeof makeHub>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
+ * @param {{ resolveSessionAccounts?: import('./session-launch-accounts.js').ResolveSessionAccounts, tmux?: ReturnType<typeof makeHub>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
  */
 function makeLauncher(input = {}) {
   // Each test states the settings it is about; the default keeps every
@@ -182,6 +182,7 @@ function makeLauncher(input = {}) {
   const settings = { ...INHERIT_SETTINGS, ...(input.settings ?? {}) };
   const tmux = input.tmux ?? makeHub();
   const resolver = createResolveSession({
+    resolveSessionAccounts: input.resolveSessionAccounts,
     getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
     existsSync: input.existsSync ?? (() => false),
     bd: {
@@ -735,6 +736,115 @@ describe('failureHandoffTarget (UI-18a5 §3.4)', () => {
 });
 
 describe('createResolveSession (UI-jw27 §4)', () => {
+  test.each(['bead', 'repo-operation'])(
+    'launches the %s conversation through its current Claude account',
+    async (kind) => {
+      const resolveSessionAccounts = vi.fn(async () => ({
+        claude_account: 'repo@example.com',
+        cswap_path: '/bin/cswap'
+      }));
+      const { resolver, tmux } = makeLauncher({ resolveSessionAccounts });
+
+      if (kind === 'bead') {
+        await resolver.resolve({
+          workspace: REPO,
+          bead_id: BEAD,
+          failure: FAILURE
+        });
+      } else {
+        await resolver.resolveRepoOperation({
+          workspace: REPO,
+          operation_id: 'op-1',
+          failure: FAILURE
+        });
+      }
+
+      expect(resolveSessionAccounts).toHaveBeenCalledWith(
+        REPO,
+        kind === 'bead' ? BEAD : null,
+        'claude'
+      );
+      expect(hubCommand(tmux.calls)).toContain(
+        "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '/usr/local/bin/claude'"
+      );
+    }
+  );
+
+  test.each(['bead', 'repo-operation'])(
+    'launches the %s conversation in its current Codex HOME',
+    async (kind) => {
+      const account_home = path.join(codex_home, 'repo-account');
+      const resolveSessionAccounts = vi.fn(async () => ({
+        env: { CODEX_HOME: account_home }
+      }));
+      const { resolver, tmux } = makeLauncher({
+        resolveSessionAccounts,
+        currentRunner: () => 'codex'
+      });
+
+      if (kind === 'bead') {
+        await resolver.resolve({
+          workspace: REPO,
+          bead_id: BEAD,
+          failure: FAILURE
+        });
+      } else {
+        await resolver.resolveRepoOperation({
+          workspace: REPO,
+          operation_id: 'op-1',
+          failure: FAILURE
+        });
+      }
+
+      expect(resolveSessionAccounts).toHaveBeenCalledWith(
+        REPO,
+        kind === 'bead' ? BEAD : null,
+        'codex'
+      );
+      expect(tmux.calls.find((call) => call[0] === 'open')).toContain(
+        `CODEX_HOME=${account_home}`
+      );
+    }
+  );
+
+  test.each([
+    ['bead', 'unset'],
+    ['bead', 'failed'],
+    ['repo-operation', 'unset'],
+    ['repo-operation', 'failed']
+  ])(
+    'retains the active login when the %s account is %s',
+    async (kind, state) => {
+      const { resolver, tmux } = makeLauncher({
+        resolveSessionAccounts: async () => {
+          if (state === 'failed') {
+            throw new Error('lookup failed');
+          }
+          return null;
+        }
+      });
+
+      const result =
+        kind === 'bead'
+          ? await resolver.resolve({
+              workspace: REPO,
+              bead_id: BEAD,
+              failure: FAILURE
+            })
+          : await resolver.resolveRepoOperation({
+              workspace: REPO,
+              operation_id: 'op-1',
+              failure: FAILURE
+            });
+
+      expect(result.launched).toBe(true);
+      expect(hubCommand(tmux.calls)).toContain("exec '/usr/local/bin/claude'");
+      expect(tmux.calls.find((call) => call[0] === 'open')).not.toContain(
+        '--env'
+      );
+    }
+  );
+
   test('records the attempt fork with the UUID passed to claude', async () => {
     const recordInteractiveSession = vi.fn();
     const { resolver, tmux } = makeLauncher({

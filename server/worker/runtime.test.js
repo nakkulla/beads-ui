@@ -83,6 +83,34 @@ test('shares the current runner resolver between inquiry and resolve launchers',
   expect(resolveForDispatch).toHaveBeenCalledExactlyOnceWith(WS, bead);
 });
 
+test('routes both conversation launchers to the requested workspace account resolver', async () => {
+  const inquiry = vi.spyOn(directionInquiry, 'createDirectionInquiry');
+  const resolve = vi.spyOn(resolveSession, 'createResolveSession');
+  const runtime = createWorkerRuntime();
+  const first = vi.fn(async () => ({ claude_account: 'first@example.com' }));
+  const second = vi.fn(async () => ({ claude_account: 'second@example.com' }));
+  runtime.session_account_resolvers.set(WS, first);
+  runtime.session_account_resolvers.set('/other', second);
+  const resolveAccounts = inquiry.mock.calls[0][0].resolveSessionAccounts;
+
+  const accounts = await resolveAccounts?.(WS, 'B1', 'claude');
+
+  expect(resolveAccounts).toBe(resolve.mock.calls[0][0].resolveSessionAccounts);
+  expect(accounts?.claude_account).toBe('first@example.com');
+  expect(first).toHaveBeenCalledExactlyOnceWith(WS, 'B1', 'claude');
+  expect(second).not.toHaveBeenCalled();
+});
+
+test('leaves an unattached conversation on the active login', async () => {
+  const resolve = vi.spyOn(resolveSession, 'createResolveSession');
+  createWorkerRuntime();
+  const resolveAccounts = resolve.mock.calls[0][0].resolveSessionAccounts;
+
+  const accounts = await resolveAccounts?.(WS, null, 'codex');
+
+  expect(accounts).toBeNull();
+});
+
 test('writes the external wait metadata and confirms it before replying', async () => {
   const runtime = createWorkerRuntime();
   const record = runtime.externalWaitStore.insert(WS, externalWaitInput());

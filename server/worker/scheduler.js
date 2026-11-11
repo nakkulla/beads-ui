@@ -188,6 +188,7 @@ import {
   sessionLanePaneAlive,
   sessionLaneVerdict
 } from './session-lane.js';
+import { sessionLaunchAccountOptions } from './session-launch-accounts.js';
 import { stderrPathOf } from './session-log.js';
 import {
   resolveSessionFile as defaultResolveSessionFile,
@@ -1543,6 +1544,7 @@ export function interactiveTurnState(running, attention) {
  * @param {SchedulerDeps} deps
  * @returns {{
  *   commentsIdle: () => Promise<void>,
+ *   resolveSessionAccounts: import('./session-launch-accounts.js').ResolveSessionAccounts,
  *   tick: (workspace: string) => Promise<void>,
  *   disposeStaleResidue: (workspace: string, bead_id: string, observation: WorktreeObservation, resume_attempt: Attempt|null, cut_base: string) => Promise<any>,
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
@@ -1638,6 +1640,7 @@ export function createScheduler(deps) {
     }
     external_wait_session_resume ||= createExternalWaitSessionResume({
       launcher,
+      resolveSessionAccounts,
       externalWait: store,
       recordInteractiveSession: (workspace, record) =>
         deps.store.recordInteractiveSession(workspace, record),
@@ -4686,6 +4689,38 @@ export function createScheduler(deps) {
       applied.env = { CODEX_HOME: prepared.home_dir };
     }
     return { ok: true, ...applied };
+  }
+
+  /**
+   * Re-resolve current account pins and provider switches for a conversation.
+   * Account lookup failures leave the conversation on the active login.
+   *
+   * @param {string} workspace
+   * @param {string|null} bead_id
+   * @param {string} runner
+   * @returns {Promise<import('./session-launch-accounts.js').SessionAccounts|null>}
+   */
+  async function resolveSessionAccounts(workspace, bead_id, runner) {
+    try {
+      const snap =
+        bead_id === null
+          ? /** @type {BeadSnapshot} */ ({})
+          : await deps.bd.snapshotBead(bead_id);
+      const resolved = resolveDispatchSettings(
+        workspace,
+        snap,
+        await readWorkspaceAccountsLayer(workspace)
+      );
+      if (!resolved.ok) {
+        return null;
+      }
+      await applyPreemptSwitch(workspace, runner, resolved);
+      const accounts = await resolveLaunchAccounts(resolved.accounts, runner);
+      return accounts.ok ? accounts : null;
+    } catch (err) {
+      log('conversation account resolution failed for %s: %o', bead_id, err);
+      return null;
+    }
   }
 
   /**
@@ -15576,22 +15611,8 @@ export function createScheduler(deps) {
         runner: runner_name,
         placement: 'inquiry',
         conversation_flags: false,
-        env,
-        ...(runner_name === 'claude' &&
-        typeof account_settings.claude_account === 'string' &&
-        typeof account_settings.cswap_path === 'string'
-          ? {
-              wrapper: {
-                executable: account_settings.cswap_path,
-                args: [
-                  'run',
-                  account_settings.claude_account,
-                  '--share-history',
-                  '--'
-                ]
-              }
-            }
-          : {})
+        ...sessionLaunchAccountOptions(account_settings, runner_name),
+        env
       });
     } catch (err) {
       log('session lane launch threw for %s: %o', attempt_id, err);
@@ -23898,6 +23919,7 @@ export function createScheduler(deps) {
     reevaluateProviderSwitches,
     livePreemptPass,
     preemptRunningAttempt,
+    resolveSessionAccounts,
     holdAttempt,
     resolveConflict,
     dispatchExternalConflict,

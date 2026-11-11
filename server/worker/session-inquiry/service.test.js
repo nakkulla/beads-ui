@@ -76,7 +76,7 @@ function register(store, patch = {}) {
  * A runtime over `store` with every outside seam faked.
  *
  * @param {ReturnType<typeof createQueueStore>} store
- * @param {{ ref_code?: number, liveness?: import('../external-wait/session-resume.js').OwnerLiveness, duringLiveness?: () => void, switch_on?: boolean, launch?: any, focus?: any, launcher?: any }} [options]
+ * @param {{ resolveSessionAccounts?: import('../session-launch-accounts.js').ResolveSessionAccounts, ref_code?: number, liveness?: import('../external-wait/session-resume.js').OwnerLiveness, duringLiveness?: () => void, switch_on?: boolean, launch?: any, focus?: any, launcher?: any }} [options]
  */
 function runtimeFor(store, options = {}) {
   const launcher = options.launcher || {
@@ -107,6 +107,7 @@ function runtimeFor(store, options = {}) {
   });
   const notifyChanged = vi.fn();
   const runtime = createSessionInquiryRuntime({
+    resolveSessionAccounts: options.resolveSessionAccounts,
     workspace: WS,
     store,
     launcher: /** @type {any} */ (launcher),
@@ -130,6 +131,122 @@ function rowOf(store, id) {
 }
 
 describe('session-inquiry reconcile: ref observation', () => {
+  test.each(['click', 'automatic'])(
+    'uses the repository Claude account for a %s resume',
+    async (trigger) => {
+      const store = createQueueStore();
+      const id = register(store);
+      const resolveSessionAccounts = vi.fn(async () => ({
+        claude_account: 'repo@example.com',
+        cswap_path: '/bin/cswap'
+      }));
+      const { runtime, launcher } = runtimeFor(store, {
+        resolveSessionAccounts
+      });
+
+      if (trigger === 'click') {
+        await runtime.click(id);
+      } else {
+        await runtime.reconcile();
+      }
+
+      expect(resolveSessionAccounts).toHaveBeenCalledWith(WS, null, 'claude');
+      expect(launcher.launch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          wrapper: {
+            executable: '/bin/cswap',
+            args: ['run', 'repo@example.com', '--share-history', '--']
+          }
+        })
+      );
+    }
+  );
+
+  test.each(['unset', 'failed'])(
+    'retains the active login when the account is %s',
+    async (state) => {
+      const store = createQueueStore();
+      const id = register(store);
+      const { runtime, launcher } = runtimeFor(store, {
+        resolveSessionAccounts: async () => {
+          if (state === 'failed') {
+            throw new Error('lookup failed');
+          }
+          return null;
+        }
+      });
+
+      const result = await runtime.click(id);
+
+      expect(result.launched).toBe(true);
+      const input = launcher.launch.mock.calls[0][0];
+      expect(input).not.toHaveProperty('env');
+      expect(input).not.toHaveProperty('wrapper');
+    }
+  );
+
+  test.each(['click', 'automatic'])(
+    'refuses a row closed during a %s account lookup',
+    async (trigger) => {
+      const store = createQueueStore();
+      const id = register(store);
+      const { runtime, launcher } = runtimeFor(store, {
+        resolveSessionAccounts: async () => {
+          store.transitionSessionInquiry(WS, id, { state: 'closed', at: NOW });
+          return {
+            claude_account: 'repo@example.com',
+            cswap_path: '/bin/cswap'
+          };
+        }
+      });
+
+      const result =
+        trigger === 'click'
+          ? await runtime.click(id)
+          : await runtime.reconcile();
+
+      expect(launcher.launch).not.toHaveBeenCalled();
+      if (trigger === 'click') {
+        expect(result).toMatchObject({
+          session: 'not_launched',
+          reason: 'inquiry_closed'
+        });
+      }
+    }
+  );
+
+  test.each(['click', 'automatic'])(
+    'refuses a session replaced during a %s account lookup',
+    async (trigger) => {
+      const store = createQueueStore();
+      const id = register(store);
+      const { runtime, launcher } = runtimeFor(store, {
+        resolveSessionAccounts: async () => {
+          register(store, { session_id: SID_B });
+          return {
+            claude_account: 'repo@example.com',
+            cswap_path: '/bin/cswap'
+          };
+        }
+      });
+
+      const result =
+        trigger === 'click'
+          ? await runtime.click(id)
+          : await runtime.reconcile();
+
+      expect(rowOf(store, id).session_id).toBe(SID_B);
+      expect(launcher.launch).not.toHaveBeenCalled();
+      expect(rowOf(store, id).auto_resume_consumed).toEqual([]);
+      if (trigger === 'click') {
+        expect(result).toMatchObject({
+          session: 'not_launched',
+          reason: 'session_replaced'
+        });
+      }
+    }
+  );
+
   test('closes the row as ref_absent when show-ref exits 1', async () => {
     const store = createQueueStore();
     const id = register(store);

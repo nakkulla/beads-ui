@@ -6239,6 +6239,153 @@ describe('scheduler provider hold and recovery', () => {
     return { ...result, generation: result.generation };
   }
 
+  test('re-reads conversation account defaults and keeps the Bead pin first', async () => {
+    let account = 'repo@example.com';
+    const env = setup({
+      config: { B1: {}, B2: { claude_account: 'pinned@example.com' } },
+      kvGet: async () => ({
+        ok: true,
+        value: { schema: 1, claude_account: account }
+      }),
+      ...accountDeps()
+    });
+
+    const first = await env.scheduler.resolveSessionAccounts(
+      WS,
+      'B1',
+      'claude'
+    );
+    account = 'changed@example.com';
+    const second = await env.scheduler.resolveSessionAccounts(
+      WS,
+      'B1',
+      'claude'
+    );
+    const pinned = await env.scheduler.resolveSessionAccounts(
+      WS,
+      'B2',
+      'claude'
+    );
+    const beadless = await env.scheduler.resolveSessionAccounts(
+      WS,
+      null,
+      'claude'
+    );
+
+    expect([
+      first?.claude_account,
+      second?.claude_account,
+      pinned?.claude_account,
+      beadless?.claude_account
+    ]).toEqual([
+      'repo@example.com',
+      'changed@example.com',
+      'pinned@example.com',
+      'changed@example.com'
+    ]);
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.bd.calls).toEqual([]);
+  });
+
+  test('prepares the current Codex account HOME for a conversation', async () => {
+    const env = setup({
+      config: { B1: { codex_account: 'codex-02' } },
+      ...accountDeps()
+    });
+
+    const accounts = await env.scheduler.resolveSessionAccounts(
+      WS,
+      'B1',
+      'codex'
+    );
+
+    expect(accounts?.env).toEqual({
+      CODEX_HOME: '/state/codex-homes/codex-02'
+    });
+  });
+
+  test.each(['unusable-kv', 'missing-account', 'bd-failure'])(
+    'falls back to active login for conversation account failure %s',
+    async (failure) => {
+      const env = setup({
+        config: {
+          B1: {
+            claude_account: 'missing@example.com',
+            throwOnSnapshotAt: failure === 'bd-failure' ? 'all' : undefined
+          }
+        },
+        ...accountDeps(),
+        ...(failure === 'unusable-kv'
+          ? { kvGet: async () => ({ ok: false }) }
+          : {}),
+        ...(failure === 'missing-account'
+          ? {
+              accountCatalog: {
+                resolveClaude: async () => ({ ok: false, reason: 'not_found' })
+              }
+            }
+          : {})
+      });
+
+      const result = await env.scheduler.resolveSessionAccounts(
+        WS,
+        'B1',
+        'claude'
+      );
+
+      expect(result).toBeNull();
+    }
+  );
+
+  test('switches a conversation away from the currently usage-held account', async () => {
+    const rows = ['held@example.com', 'ready@example.com'].map((key) => ({
+      key,
+      email: key,
+      status: 'ok',
+      windows: [
+        { key: '5h', pct: key.startsWith('held') ? 100 : 20, resetsAt: null }
+      ]
+    }));
+    const deps = accountDeps();
+    const env = setup({
+      config: { B1: { claude_account: rows[0].key } },
+      ...deps,
+      accountCatalog: {
+        ...deps.accountCatalog,
+        listClaude: async () => ({
+          ok: true,
+          accounts: rows,
+          active_key: rows[0].key
+        }),
+        readClaude: async (/** @type {string} */ email) => ({
+          ok: true,
+          account: rows.find((row) => row.key === email)
+        })
+      }
+    });
+    allowSwitchAccounts(
+      env.store,
+      'claude',
+      rows.map((row) => row.key)
+    );
+    seedProviderAttempt(env.store, 'held-conversation', 'H1');
+    registerProviderHold(
+      env.store,
+      'held-conversation',
+      'usage_limit',
+      rows[0].key
+    );
+
+    const result = await env.scheduler.resolveSessionAccounts(
+      WS,
+      'B1',
+      'claude'
+    );
+
+    expect(result?.claude_account).toBe(rows[1].key);
+    expect(env.bd.calls).toEqual([]);
+  });
+
   test('routes a live Claude outage to provider hold without queue failure state', async () => {
     const providerHealth = { sync: vi.fn() };
     const env = setup({

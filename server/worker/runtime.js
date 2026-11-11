@@ -77,6 +77,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createResolveSession>} resolveSession
  * @property {ReturnType<typeof createFailureConversationLauncher>} failureConversation
  * @property {ReturnType<typeof createTmuxLauncher>} interactiveLauncher
+ * @property {Map<string, import('./session-launch-accounts.js').ResolveSessionAccounts>} session_account_resolvers
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {ReturnType<typeof createExternalWaitService>} externalWait
  * @property {ReturnType<typeof createExternalWaitStore>} externalWaitStore
@@ -212,6 +213,22 @@ export function createWorkerRuntime() {
   // click and a badge can never disagree about which bead is parked.
   const reviseParked = createReviseParkedStore();
   const interactiveLauncher = createTmuxLauncher();
+  /** @type {Map<string, import('./session-launch-accounts.js').ResolveSessionAccounts>} */
+  const session_account_resolvers = new Map();
+  /**
+   * @param {string} workspace
+   * @param {string|null} bead_id
+   * @param {string} runner
+   */
+  async function resolveSessionAccounts(workspace, bead_id, runner) {
+    return (
+      session_account_resolvers.get(path.resolve(workspace))?.(
+        workspace,
+        bead_id,
+        runner
+      ) ?? null
+    );
+  }
   /**
    * Resolve current settings only when no recorded session owns the provider.
    *
@@ -239,6 +256,7 @@ export function createWorkerRuntime() {
   // from the `bd show` the launcher already makes, so no title cache has to be
   // bound to it.
   const directionInquiry = createDirectionInquiry({
+    resolveSessionAccounts,
     getConfig,
     currentRunner,
     store: {
@@ -273,6 +291,7 @@ export function createWorkerRuntime() {
   // reader shape. No notifier: this launch is a click the user already made, so
   // the reply on their own socket IS the report.
   const resolveSession = createResolveSession({
+    resolveSessionAccounts,
     getConfig,
     store: {
       recordInteractiveSession: (ws, rec) =>
@@ -396,6 +415,7 @@ export function createWorkerRuntime() {
     resolveSession,
     failureConversation,
     interactiveLauncher,
+    session_account_resolvers,
     sessionLog,
     /**
      * @param {() => number} fn

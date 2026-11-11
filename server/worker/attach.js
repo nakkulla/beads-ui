@@ -1692,6 +1692,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   const sessionInquiry =
     options.sessionInquiry ||
     createSessionInquiryRuntime({
+      resolveSessionAccounts: scheduler.resolveSessionAccounts,
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
       launcher: runtime.interactiveLauncher,
@@ -2618,6 +2619,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     }
   });
 
+  runtime.session_account_resolvers?.set(
+    keyFor(workspace_root),
+    scheduler.resolveSessionAccounts
+  );
   return {
     runtime,
     scheduler,
@@ -4438,7 +4443,8 @@ export function __setUnattachedAdmissionCheckForTest(reader) {
  * that built it.
  */
 export function __resetWorkerAttachmentsForTest() {
-  for (const att of ATTACHMENTS.values()) {
+  for (const [workspace, att] of ATTACHMENTS) {
+    att.runtime?.session_account_resolvers?.delete(workspace);
     att.stopExternalWaitHooks?.();
     att.waitJudge?.stop();
     try {

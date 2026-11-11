@@ -33,6 +33,7 @@ import {
   externalConversationReason,
   fillConversationEntry
 } from '../direction-inquiry.js';
+import { resolveSessionLaunchOptions } from '../session-launch-accounts.js';
 import { qualifySessionFork, sessionResumeCommand } from '../session-ref.js';
 import { EXTERNAL_RESUME_PANE_MARKER } from '../tmux-launcher.js';
 import { externalWaitCompletionPrompt } from './completion-prompt.js';
@@ -93,6 +94,7 @@ export function externalConversationEntry(record) {
 
 /**
  * @typedef {Object} SessionResumeDeps
+ * @property {import('../session-launch-accounts.js').ResolveSessionAccounts} [resolveSessionAccounts]
  * @property {Pick<ReturnType<typeof import('../tmux-launcher.js').createTmuxLauncher>, 'launch'|'focusRunning'|'listPanesExtended'|'bridgeActive'>} launcher
  * @property {{ get: (workspace: string, wait_id: string) => WaitRecord|null, update: (workspace: string, wait_id: string, mutate: (record: WaitRecord) => void) => unknown }} externalWait
  * @property {(workspace: string, record: Record<string, unknown>) => unknown} recordInteractiveSession
@@ -521,6 +523,12 @@ export function createExternalWaitSessionResume(deps) {
     });
     const tmux_session = deps.tmuxSession();
     const outcome = await deps.launcher.launch({
+      ...(await resolveSessionLaunchOptions(
+        deps.resolveSessionAccounts,
+        workspace,
+        record.bead_id,
+        provider
+      )),
       marker: EXTERNAL_RESUME_PANE_MARKER,
       key: record.bead_id,
       tmux_session,
