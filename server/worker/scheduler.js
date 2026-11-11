@@ -154,8 +154,11 @@ import {
 } from './receipt-check.js';
 import { conditionWaitPolicy } from './repo-operation-policy.js';
 import {
+  FIX_WAIT_LIMIT_MS,
   conditionWaitState,
-  conditionWaitTipFor
+  conditionWaitTipFor,
+  operationIncidentFingerprint,
+  selfRepairFailureIdentity
 } from './resolution-ladder.js';
 import {
   STALE_RESIDUE_FAILURE_CLASS,
@@ -197,7 +200,8 @@ import { staleResidueIntact } from './stale-work.js';
 import {
   codexAttemptHomeDir,
   codexSessionsRoot,
-  codexAccountHomeDir as defaultCodexAccountHomeDir
+  codexAccountHomeDir as defaultCodexAccountHomeDir,
+  queueFilePath
 } from './state-paths.js';
 import {
   EXTERNAL_RESUME_PANE_MARKER,
@@ -898,7 +902,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * after a `parked` record whose attempt came from the stale re-review lane.
  * Absent wiring simply means the park stays a park and the click disposition
  * is the only way out.
- * @property {{ launchForBead: (input: { workspace: string, repo: string|null, bead_id: string }) => Promise<any> }|null} [failureConversation]
+ * @property {{ launchForBead: (input: { workspace: string, repo: string|null, bead_id: string }) => Promise<any>, launchForRepoOperation?: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null} [failureConversation]
  * The automatic failure conversation (UI-jbl1 §3.1) a terminal dispatch
  * residue disposition failure opens once (UI-68r5 §3.2), and a quick_fix
  * landing's `[deploy]` condition wait opens once when its chain's deadline
@@ -1549,7 +1553,7 @@ export function interactiveTurnState(running, attention) {
  *   sweepStalledContinuations: (workspace: string) => { rearmed: string[], restored: string[] },
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, job_retry_authorized?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, job_retry_authorized?: boolean, self_repair_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<ProviderAutoResumeOutcome>,
  *   reevaluateProviderSwitches: (workspace: string, catalog_accounts?: import('./account-catalog.js').Account[]) => Promise<void>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
@@ -6424,6 +6428,37 @@ export function createScheduler(deps) {
       ) {
         return;
       }
+      const queue = deps.store.snapshot(workspace);
+      const wait = queue.fix_waits[bead_id];
+      if (
+        recovery?.reason === 'no_progress' &&
+        wait?.state === 'rerunning' &&
+        selfRepairFailureIdentity(queue, bead_id, workspace) ===
+          wait.failure_identity
+      ) {
+        /** @type {Set<string>} */
+        const seen = new Set();
+        /** @type {string|null} */
+        let cursor = attempt_id;
+        while (cursor && !seen.has(cursor)) {
+          seen.add(cursor);
+          if (cursor === wait.attempt_id) {
+            exhaustFixWait(workspace, bead_id, wait, '같은 실패 재발');
+            recovery = {
+              ...recovery,
+              self_repair_exhausted: '같은 실패 재발'
+            };
+            deps.store.updateAttempt(workspace, {
+              attempt_id,
+              patch: {
+                cause_detail: { ...attempt.cause_detail, recovery }
+              }
+            });
+            break;
+          }
+          cursor = queue.attempts[cursor]?.resumed_from;
+        }
+      }
       // `🙋 확인 필요` goes out once per stopped attempt (UI-nuwy §3.7). The
       // durable stamp lands BEFORE the trigger can send, so a restart or a
       // later reclassification of the same attempt never repeats it.
@@ -6436,6 +6471,7 @@ export function createScheduler(deps) {
           patch: {
             cause_detail: {
               ...(attempt.cause_detail || {}),
+              ...(recovery ? { recovery } : {}),
               confirm_notified_at: now()
             }
           }
@@ -10842,14 +10878,18 @@ export function createScheduler(deps) {
    * @returns {boolean}
    */
   function deployInFlightFor(operations, bead_id) {
+    const manual_id = repoOperationIdOf(bead_id);
     return Object.values(operations).some(
       (operation) =>
         operation?.kind === 'deploy' &&
         ['queued', 'running', 'retry_pending'].includes(operation.state) &&
-        Array.isArray(operation.subjects) &&
-        operation.subjects.some(
-          (/** @type {any} */ subject) => subject?.bead_id === bead_id
-        )
+        (manual_id !== null
+          ? operation.source === 'manual' &&
+            operation.repo_id === operations[manual_id]?.repo_id
+          : Array.isArray(operation.subjects) &&
+            operation.subjects.some(
+              (/** @type {any} */ subject) => subject?.bead_id === bead_id
+            ))
     );
   }
 
@@ -10887,7 +10927,11 @@ export function createScheduler(deps) {
         env_group: null
       },
       attempt.cause_detail ?? null,
-      { moot: false, repo: attempt.repo ?? null, at: schedule.deadline_at }
+      {
+        moot: false,
+        repo: attempt.repo ?? null,
+        at: schedule.exhausted_at ?? schedule.deadline_at
+      }
     );
     launchConditionWaitConversation(workspace, attempt.bead_id, attempt.repo);
     notifyChanged(workspace);
@@ -10950,9 +10994,6 @@ export function createScheduler(deps) {
    * @returns {Promise<void>}
    */
   function reconcileInteractiveSessions(workspace) {
-    if (!deps.interactiveLauncher) {
-      return Promise.resolve();
-    }
     return withInteractiveLock(workspace, () =>
       reconcileInteractivePass(workspace)
     );
@@ -12354,9 +12395,372 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Resolve a fix against registered rigs, including hidden workspaces.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null} [owner]
+   * @returns {Promise<{ rig: string, issue: any }|null>}
+   */
+  async function readFixBead(workspace, bead_id, owner = null) {
+    try {
+      if (owner === null || owner === workspace) {
+        const issue = await deps.bd.readIssue?.(bead_id);
+        if (issue?.id === bead_id && typeof issue.status === 'string') {
+          return { rig: workspace, issue };
+        }
+      }
+    } catch {
+      // A foreign id is deliberately not found by the local rig.
+    }
+    const found = await queryForeignBlockerStatus(bead_id, workspace);
+    if (!found.ok || (owner !== null && found.owner_root !== owner)) {
+      return null;
+    }
+    return {
+      rig: found.owner_root,
+      issue: {
+        id: bead_id,
+        status: found.status,
+        close_reason: found.close_reason
+      }
+    };
+  }
+
+  /** @type {Set<string>} */
+  const fix_wait_flights = new Set();
+
+  /**
+   * Persist exhaustion before any human-exit conversation can compose its entry.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').FixWait} wait
+   * @param {string} reason
+   */
+  function exhaustFixWait(workspace, bead_id, wait, reason) {
+    deps.store.recordFixWait(workspace, bead_id, {
+      ...wait,
+      state: 'exhausted',
+      exhausted_reason: reason,
+      exhausted_at: now()
+    });
+    appendTimeline({
+      bead_id,
+      kind: 'interactive_session',
+      seq: `fix-wait:${wait.entered_at}:exit`,
+      summary: `수정 대기 종료 · ${reason}`
+    });
+  }
+
+  /**
+   * Find the reserved manual run even after a restart before its id was saved.
+   * The adapter returns only ok/reason; the queue's monotonic run id correlates
+   * its durable operation without relying on the `manual` subject's Bead id.
+   *
+   * @param {{ repo_operations: Record<string, any> }} queue
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').FixWait} wait
+   * @returns {[string, any]|undefined}
+   */
+  function fixWaitManualOperation(queue, bead_id, wait) {
+    if (wait.rerun_operation_id) {
+      const operation = queue.repo_operations[wait.rerun_operation_id];
+      return operation ? [wait.rerun_operation_id, operation] : undefined;
+    }
+    const origin = queue.repo_operations[repoOperationIdOf(bead_id) || ''];
+    return Object.entries(queue.repo_operations).find(
+      ([, operation]) =>
+        operation.kind === 'deploy' &&
+        operation.source === 'manual' &&
+        operation.repo_id === origin?.repo_id &&
+        typeof wait.rerun_manual_run_id === 'number' &&
+        operation.manual_run_id === wait.rerun_manual_run_id
+    );
+  }
+
+  /**
+   * Observe durable fix waits independently of pane lifetime and auto-advance.
+   *
    * @param {string} workspace
    */
+  async function reconcileFixWaits(workspace) {
+    for (const [bead_id, stored_wait] of Object.entries(
+      deps.store.snapshot(workspace).fix_waits || {}
+    )) {
+      let wait = stored_wait;
+      const flight = `${workspace}:${bead_id}`;
+      if (
+        !['waiting', 'rerunning'].includes(wait.state) ||
+        fix_wait_flights.has(flight)
+      ) {
+        continue;
+      }
+      const q = deps.store.snapshot(workspace);
+      const manual_rerun =
+        wait.state === 'rerunning' && repoOperationIdOf(bead_id) !== null;
+      const manual_operation = manual_rerun
+        ? fixWaitManualOperation(q, bead_id, wait)
+        : undefined;
+      if (manual_operation && !wait.rerun_operation_id) {
+        wait = { ...wait, rerun_operation_id: manual_operation[0] };
+        deps.store.recordFixWait(workspace, bead_id, wait);
+      }
+      const identity = manual_rerun
+        ? manual_operation?.[1].state === 'failed'
+          ? operationIncidentFingerprint(workspace, manual_operation[1])
+          : null
+        : selfRepairFailureIdentity(q, bead_id, workspace);
+      const running =
+        !wait.exhausted_reason &&
+        (manual_rerun
+          ? !manual_operation ||
+            !['succeeded', 'failed'].includes(manual_operation[1].state)
+          : deployInFlightFor(q.repo_operations, bead_id) ||
+            Object.values(q.attempts).some(
+              (row) => row.bead_id === bead_id && row.status === 'running'
+            ));
+      const passed =
+        !wait.exhausted_reason &&
+        (manual_rerun
+          ? manual_operation?.[1].state === 'succeeded'
+          : q.done.some((/** @type {any} */ row) => row.bead_id === bead_id) ||
+            (identity === null && !running));
+      /** @type {string|null} */
+      let exhausted = null;
+      if (
+        passed ||
+        (!wait.exhausted_reason &&
+          identity !== null &&
+          identity !== wait.failure_identity &&
+          !running &&
+          wait.state === 'rerunning')
+      ) {
+        deps.store.recordFixWait(workspace, bead_id, {
+          ...wait,
+          state: 'passed'
+        });
+        appendTimeline({
+          bead_id,
+          kind: 'interactive_session',
+          seq: `fix-wait:${wait.entered_at}:exit`,
+          summary: '수정 대기 종료 · 원래 흐름으로 이어감'
+        });
+        continue;
+      }
+      if (wait.state === 'rerunning') {
+        if (running) {
+          continue;
+        }
+        exhausted = wait.exhausted_reason || '같은 실패 재발';
+      } else if (now() - wait.entered_at >= FIX_WAIT_LIMIT_MS) {
+        exhausted = '48시간 초과';
+      } else {
+        if (
+          running ||
+          (await sessionOwnerRefusal(workspace, bead_id)) !== null
+        ) {
+          continue;
+        }
+        const found = await readFixBead(workspace, wait.bead_id, wait.rig);
+        if (!found || found.issue.status !== 'closed') {
+          continue;
+        }
+        /** @type {any} */
+        let fix_queue = null;
+        try {
+          fix_queue =
+            wait.rig === workspace
+              ? deps.store.snapshot(workspace)
+              : JSON.parse(
+                  nodeFs.readFileSync(queueFilePath(wait.rig), 'utf8')
+                );
+        } catch {
+          exhausted = '착지 확인 불가';
+        }
+        const done = fix_queue?.done?.find(
+          (/** @type {any} */ row) => row.bead_id === wait.bead_id
+        );
+        const discarded = Object.values(
+          fix_queue?.discard_operations || {}
+        ).some((/** @type {any} */ row) => row.bead_id === wait.bead_id);
+        const landed =
+          !!done &&
+          Object.values(fix_queue?.repo_operations || {}).some(
+            (/** @type {any} */ row) =>
+              row.kind === 'deploy' &&
+              row.state === 'succeeded' &&
+              Array.isArray(row.subjects) &&
+              row.subjects.some(
+                (/** @type {any} */ subject) =>
+                  subject.bead_id === wait.bead_id &&
+                  typeof subject.merged_sha === 'string' &&
+                  /^[0-9a-f]{40}$/i.test(subject.merged_sha)
+              )
+          );
+        if (
+          /^(refuted:|no-delta:)/.test(found.issue.close_reason || '') ||
+          discarded
+        ) {
+          exhausted = '착지 없이 닫힘';
+        } else if (!landed || !found.issue.close_reason) {
+          exhausted = '착지 확인 불가';
+        }
+        if (exhausted === null) {
+          const current = deps.store.snapshot(workspace);
+          if (
+            current.fix_waits[bead_id]?.state !== 'waiting' ||
+            current.fix_waits[bead_id]?.entered_at !== wait.entered_at ||
+            selfRepairFailureIdentity(current, bead_id, workspace) !==
+              identity ||
+            deployInFlightFor(current.repo_operations, bead_id) ||
+            Object.values(current.attempts).some(
+              (row) => row.bead_id === bead_id && row.status === 'running'
+            )
+          ) {
+            continue;
+          }
+          if (
+            wait.attempt_id &&
+            !current.attempts[wait.attempt_id]?.quickfix_lane
+          ) {
+            try {
+              const snap = await deps.bd.snapshotBead(bead_id);
+              if (snap.blocked) {
+                continue;
+              }
+            } catch {
+              continue;
+            }
+          }
+          const rerunning = {
+            ...wait,
+            state: /** @type {const} */ ('rerunning'),
+            ...(repoOperationIdOf(bead_id) !== null
+              ? { rerun_manual_run_id: current.manual_deploy_seq + 1 }
+              : {})
+          };
+          if (!deps.store.recordFixWait(workspace, bead_id, rerunning).ok) {
+            continue;
+          }
+          fix_wait_flights.add(flight);
+          // Cleanup exits reconcile conversations themselves; keep the exit
+          // outside this pass so that reconciliation never awaits itself.
+          const run = async () => {
+            try {
+              const result = wait.attempt_id
+                ? await resume(workspace, wait.attempt_id, {
+                    self_repair_retry: true
+                  })
+                : repoOperationIdOf(bead_id) !== null
+                  ? await deps.conversationExits?.rerunManualDeploy?.(workspace)
+                  : await deps.conversationExits?.retryCleanup(
+                      workspace,
+                      bead_id
+                    );
+              if (!result?.ok) {
+                deps.store.recordFixWait(workspace, bead_id, {
+                  ...rerunning,
+                  exhausted_reason: '재실행 거절'
+                });
+              } else if (repoOperationIdOf(bead_id) !== null) {
+                const operation = fixWaitManualOperation(
+                  deps.store.snapshot(workspace),
+                  bead_id,
+                  rerunning
+                );
+                if (operation) {
+                  deps.store.recordFixWait(workspace, bead_id, {
+                    ...rerunning,
+                    rerun_operation_id: operation[0]
+                  });
+                }
+              }
+            } catch {
+              deps.store.recordFixWait(workspace, bead_id, {
+                ...rerunning,
+                exhausted_reason: '재실행 실패'
+              });
+            } finally {
+              fix_wait_flights.delete(flight);
+            }
+          };
+          void run();
+          continue;
+        }
+      }
+      if (exhausted === null) {
+        continue;
+      }
+      exhaustFixWait(workspace, bead_id, wait, exhausted);
+      if (!wait.chain_head) {
+        notifyLifecycle('attemptFailed', {
+          bead_id,
+          cause: exhausted,
+          summary: `자가 수리: 소진 — ${exhausted}`,
+          repo: workspace
+        });
+      }
+      if (
+        wait.attempt_id &&
+        q.attempts[wait.attempt_id]?.cause_detail?.recovery
+      ) {
+        const attempt = q.attempts[wait.attempt_id];
+        deps.store.updateAttempt(workspace, {
+          attempt_id: wait.attempt_id,
+          patch: {
+            cause_detail: {
+              ...attempt.cause_detail,
+              recovery: {
+                ...attempt.cause_detail.recovery,
+                self_repair_exhausted: exhausted
+              }
+            }
+          }
+        });
+        await deps.directionInquiry?.onParkedAttempt({
+          workspace,
+          repo: workspace,
+          bead_id,
+          attempt_id: wait.attempt_id,
+          target_base: q.attempts[wait.attempt_id].target_base || null,
+          awaiting_user: null,
+          recovery: { reason: 'no_progress', self_repair_exhausted: exhausted },
+          confirm: true
+        });
+      } else if (repoOperationIdOf(bead_id) !== null) {
+        const original =
+          q.repo_operations[/** @type {string} */ (repoOperationIdOf(bead_id))];
+        const latest =
+          manual_operation ||
+          Object.entries(q.repo_operations)
+            .filter(
+              ([, row]) =>
+                row.kind === 'deploy' &&
+                row.source === 'manual' &&
+                row.repo_id === original?.repo_id
+            )
+            .at(-1);
+        if (latest) {
+          await deps.failureConversation?.launchForRepoOperation?.({
+            workspace,
+            repo: workspace,
+            operation_id: latest[0]
+          });
+        }
+      } else {
+        await deps.failureConversation?.launchForBead({
+          workspace,
+          repo: workspace,
+          bead_id
+        });
+      }
+    }
+  }
+
+  /** @param {string} workspace */
   async function reconcileInteractivePass(workspace) {
+    await reconcileFixWaits(workspace);
     const launcher = deps.interactiveLauncher;
     if (!launcher) {
       return;
@@ -12656,12 +13060,80 @@ export function createScheduler(deps) {
       }
       const at = now();
       const read = parseConversationResult(message.first_line ?? message.text);
-      const parsed =
+      let parsed =
         !reopenable ||
         (read?.kind === 'handoff' &&
           bead_statuses.get(record.bead_id) === 'open')
           ? read
           : null;
+      if (parsed?.kind === 'fix_wait') {
+        const q = deps.store.snapshot(workspace);
+        const target = failureHandoffTarget(q, record.bead_id);
+        const eligible =
+          (record.kind === 'resolve' &&
+            !['verify_hold', 'merge_gate', 'foreign_handoff'].includes(
+              target?.kind || ''
+            )) ||
+          (record.kind === 'inquiry' &&
+            /(?:^|\s)recovery:no_progress(?:\s|$)/.test(conversation.stop));
+        const identity = selfRepairFailureIdentity(
+          q,
+          record.bead_id,
+          workspace
+        );
+        const previous =
+          q.fix_waits[record.bead_id] ||
+          (repoOperationIdOf(record.bead_id) !== null
+            ? Object.entries(q.fix_waits).find(
+                ([key, row]) =>
+                  repoOperationIdOf(key) !== null &&
+                  row.used_identities.includes(identity || '')
+              )?.[1]
+            : null);
+        const fix =
+          eligible &&
+          identity &&
+          !previous?.used_identities.includes(identity) &&
+          parsed.bead_id
+            ? await readFixBead(workspace, parsed.bead_id)
+            : null;
+        if (!fix || !identity) {
+          parsed = null;
+        } else {
+          const schedule = conditionWaitTipFor(
+            q.repo_operations,
+            record.bead_id,
+            conditionWait()
+          );
+          const prior = record.attempt_id
+            ? q.attempts[record.attempt_id]
+            : null;
+          const wait = {
+            bead_id: parsed.bead_id,
+            rig: fix.rig,
+            entered_at: at,
+            failure_identity: identity,
+            failure_repo: workspace,
+            state: /** @type {const} */ ('waiting'),
+            chain_head: schedule?.head_id || null,
+            attempt_id:
+              record.kind === 'inquiry' || prior?.quickfix_lane
+                ? record.attempt_id
+                : null,
+            exhausted_reason: null,
+            used_identities: [...(previous?.used_identities || []), identity]
+          };
+          if (!deps.store.recordFixWait(workspace, record.bead_id, wait).ok) {
+            return;
+          }
+          appendTimeline({
+            bead_id: record.bead_id,
+            kind: 'interactive_session',
+            seq: `fix-wait:${at}:enter`,
+            summary: `수정 대기 · ${parsed.bead_id}`
+          });
+        }
+      }
       /** @type {import('./queue-store.js').ConversationState} */
       const next = {
         ...conversation,
@@ -12712,7 +13184,7 @@ export function createScheduler(deps) {
       }
       if (parsed?.kind === 'handoff') {
         await closeConversationWindow(workspace, key, record);
-      } else if (parsed?.kind === 'hold') {
+      } else if (parsed?.kind === 'hold' || parsed?.kind === 'fix_wait') {
         if (record.kind === 'inquiry') {
           stampConversationEnd(
             workspace,
@@ -13547,6 +14019,13 @@ export function createScheduler(deps) {
     reservation = null,
     options = {}
   ) {
+    if (
+      deps.store.snapshot(workspace).fix_waits[bead_id]?.state === 'waiting'
+    ) {
+      reservation?.release();
+      claimed.delete(bead_id);
+      return;
+    }
     const stale_context = options.stale_work || null;
     // The env ladder this dispatch continues (spec §3.3), stamped onto the new
     // attempt so the tile can say "자동 재시도 2/3" without walking history.
@@ -16990,7 +17469,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }} [continuation]
    * `conversation_return` is the UI-nuwy §3.4 handoff: it alone admits a
    * `parked` prior, skips only admission's `awaiting_user` presence refusal,
    * and puts the `## 대화 결과` block at the head of the resume prompt.
@@ -17016,6 +17495,20 @@ export function createScheduler(deps) {
     }
     const q = deps.store.snapshot(workspace);
     const prior = q.attempts ? q.attempts[attempt_id] : null;
+    const self_repair_retry =
+      continuation.self_repair_retry === true &&
+      !!prior &&
+      q.fix_waits[prior.bead_id]?.state === 'rerunning' &&
+      q.fix_waits[prior.bead_id].attempt_id === attempt_id;
+    if (
+      prior &&
+      q.fix_waits[prior.bead_id]?.state === 'waiting' &&
+      !conditionWaitTipFor(q.repo_operations, prior.bead_id, conditionWait()) &&
+      continuation.job_retry_authorized !== true &&
+      !continuation.conversation_return
+    ) {
+      return { ok: false, reason: 'fix_wait' };
+    }
 
     const recovery_wait =
       prior?.status === 'waiting' && !!prior.cause_detail?.recovery;
@@ -17028,7 +17521,8 @@ export function createScheduler(deps) {
         ? continuation.conversation_return
         : null;
     const conversation_parked =
-      conversation_return !== null && prior?.status === 'parked';
+      (conversation_return !== null || self_repair_retry) &&
+      prior?.status === 'parked';
     if (
       recovery_wait &&
       continuation.provider_auto_resume === true &&
@@ -17207,14 +17701,15 @@ export function createScheduler(deps) {
       // `post_merge_jobs` step. A continuation that also carries an automatic
       // marker is never that click, whatever else it says.
       const job_retry =
-        continuation.job_retry_authorized === true &&
-        !continuation.retry &&
-        continuation.provider_auto_resume !== true &&
-        continuation.provider_receipt_resume !== true &&
-        continuation.preclaimed !== true &&
-        continuation.auto_resume_kind === undefined &&
-        continuation.resume_fallback === undefined &&
-        conversation_return === null;
+        self_repair_retry ||
+        (continuation.job_retry_authorized === true &&
+          !continuation.retry &&
+          continuation.provider_auto_resume !== true &&
+          continuation.provider_receipt_resume !== true &&
+          continuation.preclaimed !== true &&
+          continuation.auto_resume_kind === undefined &&
+          continuation.resume_fallback === undefined &&
+          conversation_return === null);
       claimed.add(bead_id);
       settling.add(attempt_id);
       try {

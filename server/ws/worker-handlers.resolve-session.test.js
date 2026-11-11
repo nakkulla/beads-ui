@@ -336,7 +336,8 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
           reason: 'script_failed',
           stage: 'repo_operations',
           detail: 'deploy verification failed',
-          log_path: '/tmp/deploy.log'
+          log_path: '/tmp/deploy.log',
+          fingerprint: expect.stringMatching(/^[0-9a-f]{12}$/)
         }
       })
     ]);

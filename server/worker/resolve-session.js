@@ -52,6 +52,10 @@ import {
   foreignHandoffReason
 } from './foreign-handoff.js';
 import { holdsHandoffReservation } from './queue-store.js';
+import {
+  operationIncidentFingerprint,
+  selfRepairFailureIdentity
+} from './resolution-ladder.js';
 import { sessionInquiryIdOf } from './session-inquiry/contract.js';
 import { qualifyInteractiveForkSource } from './session-ref.js';
 import {
@@ -317,7 +321,7 @@ export function repoOperationFailureContext(queue, operation_id) {
    */
   const textOrNull = (value) =>
     typeof value === 'string' && value.length > 0 ? value : null;
-  return {
+  return repairFailureContext(queue, repoOperationRowKey(operation_id), {
     failure_class: MANUAL_DEPLOY_FAILURE_CLASS,
     reason: textOrNull(failure.code) ?? '원인 미상',
     stage: 'deploy',
@@ -326,11 +330,78 @@ export function repoOperationFailureContext(queue, operation_id) {
     operation_id,
     target_sha: textOrNull(operation.target_sha),
     deploy_worktree: textOrNull(operation.deploy_worktree)
+  });
+}
+
+/**
+ * Enrich every caller's context from the same durable queue evidence.
+ *
+ * @param {any} queue
+ * @param {string} row_key
+ * @param {ResolveFailureContext|null} failure
+ * @returns {ResolveFailureContext|null}
+ */
+function repairFailureContext(queue, row_key, failure) {
+  if (!failure) {
+    return null;
+  }
+  const operation_id = repoOperationIdOf(row_key);
+  const operation =
+    operation_id !== null
+      ? queue.repo_operations?.[operation_id]
+      : Object.values(queue.repo_operations || {})
+          .filter(
+            (/** @type {any} */ row) =>
+              row.state === 'failed' &&
+              !row.superseded_by &&
+              !row.dismissed &&
+              row.subjects?.some(
+                (/** @type {any} */ subject) => subject.bead_id === row_key
+              )
+          )
+          .at(-1);
+  const waits =
+    operation_id !== null
+      ? Object.entries(queue.fix_waits || {})
+          .filter(([key]) => repoOperationIdOf(key) !== null)
+          .map(([, row]) => row)
+      : [queue.fix_waits?.[row_key]].filter(Boolean);
+  const wait = waits.find(
+    (/** @type {any} */ row) =>
+      row.state === 'exhausted' &&
+      row.failure_identity ===
+        (operation_id !== null
+          ? operationIncidentFingerprint(
+              row.failure_repo || operation.repo_id || '',
+              operation
+            )
+          : selfRepairFailureIdentity(
+              queue,
+              row_key,
+              row.failure_repo || operation?.repo_id || ''
+            ))
+  );
+  return {
+    ...failure,
+    ...(typeof operation?.repo_id === 'string' && operation.repo_id.length > 0
+      ? {
+          fingerprint: operationIncidentFingerprint(
+            operation.repo_id,
+            operation
+          )
+        }
+      : {}),
+    ...(wait
+      ? { self_repair_exhausted: wait.exhausted_reason || '같은 실패 재발' }
+      : {})
   };
 }
 
 /**
  * @typedef {Object} ResolveFailureContext
+ * @property {string} [fingerprint]
+ * @property {string} [self_repair_exhausted]
+ * @property {boolean} [early_diagnosis]
  * @property {string} failure_class
  * @property {string} reason
  * @property {string|null} stage
@@ -418,6 +489,20 @@ function cleanupFailureContext(cleanup) {
  * @returns {ResolveFailureContext|null}
  */
 export function resolveFailureContext(queue, bead_id, foreign = null) {
+  return repairFailureContext(
+    queue,
+    bead_id,
+    baseFailureContext(queue, bead_id, foreign)
+  );
+}
+
+/**
+ * @param {any} queue
+ * @param {string} bead_id
+ * @param {any} foreign
+ * @returns {ResolveFailureContext|null}
+ */
+function baseFailureContext(queue, bead_id, foreign) {
   const operation_id = repoOperationIdOf(bead_id);
   if (operation_id !== null) {
     return repoOperationFailureContext(queue, operation_id);
@@ -591,7 +676,7 @@ export function failureSituation(failure) {
    */
   const flat = (value) =>
     typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
-  return [
+  const fields = [
     `클래스 ${flat(failure.failure_class)}`,
     `원인 코드 ${flat(failure.reason)}`,
     flat(failure.stage) && `단계 ${flat(failure.stage)}`,
@@ -604,6 +689,15 @@ export function failureSituation(failure) {
   ]
     .filter(Boolean)
     .join(' · ');
+  return [
+    fields,
+    failure.fingerprint ? `지문: ${failure.fingerprint}` : '',
+    failure.self_repair_exhausted
+      ? `자가 수리: 소진 — ${failure.self_repair_exhausted}`
+      : ''
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 /**
@@ -1220,6 +1314,7 @@ export function createResolveSession(deps) {
  */
 function newConversation(failure) {
   return {
+    ...(failure.early_diagnosis ? { early_diagnosis: true } : {}),
     stop: failureConversationReason(failure),
     wait_id: null,
     processed_message_at: null,
@@ -1307,6 +1402,22 @@ export function createFailureConversationLauncher(deps) {
    * @returns {AutoLaunchOutcome|null}
    */
   function rowGate(queue, row_key) {
+    const operation_id = repoOperationIdOf(row_key);
+    const repair_wait =
+      queue.fix_waits?.[row_key] ||
+      (operation_id !== null
+        ? Object.entries(queue.fix_waits || {}).find(
+            ([key, row]) =>
+              repoOperationIdOf(key) !== null &&
+              queue.repo_operations?.[
+                /** @type {string} */ (repoOperationIdOf(key))
+              ]?.repo_id === queue.repo_operations?.[operation_id]?.repo_id &&
+              ['waiting', 'rerunning'].includes(/** @type {any} */ (row).state)
+          )?.[1]
+        : null);
+    if (['waiting', 'rerunning'].includes(repair_wait?.state)) {
+      return notLaunched('fix_wait');
+    }
     const records = Object.values(queue?.interactive_sessions || {}).filter(
       (/** @type {any} */ record) =>
         record?.bead_id === row_key && record.settled_at === null
@@ -1368,7 +1479,7 @@ export function createFailureConversationLauncher(deps) {
      * the default selection reads first. A record replaced since falls back
      * to the default selection.
      *
-     * @param {{ workspace: string, repo?: string|null, bead_id: string, cleanup_at?: number }} input
+     * @param {{ workspace: string, repo?: string|null, bead_id: string, cleanup_at?: number, early_diagnosis?: string }} input
      * @returns {Promise<AutoLaunchOutcome>}
      */
     async launchForBead(input) {
@@ -1395,15 +1506,55 @@ export function createFailureConversationLauncher(deps) {
         log('foreign observation read failed for %s: %o', input.bead_id, err);
       }
       const cleanup = queue?.cleanup_failed?.[input.bead_id];
-      const failure =
+      let failure =
         typeof input.cleanup_at === 'number' &&
         cleanup &&
         typeof cleanup === 'object' &&
         cleanup.at === input.cleanup_at
           ? cleanupFailureContext(cleanup)
           : resolveFailureContext(queue, input.bead_id, foreign);
+      if (input.early_diagnosis) {
+        const operation = queue.repo_operations?.[input.early_diagnosis];
+        if (operation?.failure?.code === 'condition_wait') {
+          failure = {
+            failure_class: '배포 조건 대기',
+            reason: 'condition_wait',
+            stage: 'deploy',
+            detail:
+              operation.failure.summary || operation.failure.detail || null,
+            log_path: operation.log_path,
+            early_diagnosis: true
+          };
+        }
+      }
       if (!failure) {
         return notLaunched('no_terminal_failure');
+      }
+      const identity = selfRepairFailureIdentity(
+        queue,
+        input.bead_id,
+        input.workspace
+      );
+      const operation = Object.values(queue.repo_operations || {})
+        .filter(
+          (/** @type {any} */ row) =>
+            row.state === 'failed' &&
+            !row.superseded_by &&
+            (row.subjects || []).some(
+              (/** @type {any} */ subject) => subject.bead_id === input.bead_id
+            )
+        )
+        .at(-1);
+      if (operation) {
+        failure.fingerprint = operationIncidentFingerprint(
+          input.workspace,
+          operation
+        );
+      }
+      const wait = queue.fix_waits?.[input.bead_id];
+      if (wait?.state === 'exhausted' && wait.failure_identity === identity) {
+        failure.self_repair_exhausted =
+          wait.exhausted_reason || '같은 실패 재발';
       }
       /** @type {any} */
       let attempt = null;

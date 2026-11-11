@@ -18,14 +18,14 @@ import {
 /**
  * Digest of the fenced `text` block under `## Worker 세션 대화` in dotfiles
  * `src/shared/skills/flow/workflow/references/execution-common.md` at commit
- * `2727fd9e922e8b1877eae97c9edef7c237336ac9` (dotfiles-xipsh, UI-3713),
- * taken over the block's inner content WITHOUT a trailing newline (4248
+ * `0b75f47718a394bc507a2b9c09833cb69af061cc` (dotfiles-6sc5i, UI-hozk),
+ * taken over the block's inner content WITHOUT a trailing newline (8796
  * bytes). The two repositories are deliberately NOT compared at runtime: the
  * Worker `[verify]` checkout has no dotfiles path, so a cross-repo read would
  * be a test that never runs.
  */
 const ENTRY_BLOCK_DIGEST =
-  '5413c6601a9965fba3f4a5bbfd8599ae76275b31e8f7244617892be947f63d4e';
+  '155f79b9f9cb2c89fa6c055d2c183a602d13b53c07baa2f1fa9a96538f46ae77';
 
 const BEAD = 'UI-7uid';
 const AWAITING = 'spec_review_stale:revise';
@@ -344,7 +344,7 @@ describe('direction-inquiry entry block', () => {
   test('carries no trailing newline', () => {
     const bytes = Buffer.byteLength(CONVERSATION_ENTRY_BLOCK, 'utf8');
 
-    expect(bytes).toBe(4248);
+    expect(bytes).toBe(8796);
     expect(CONVERSATION_ENTRY_BLOCK.endsWith('\n')).toBe(false);
   });
 
@@ -578,6 +578,22 @@ describe('direction-inquiry same-session launch', () => {
     await inquiry.onParkedAttempt(recoveryInput());
 
     expect(tmux.wrapper()).toContain('- 상황: 범위 밖 파일');
+  });
+
+  test('includes exhausted self-repair in the no-progress entry situation', async () => {
+    const tmux = launchingHub();
+    const { inquiry } = makeInquiry({ tmux });
+
+    await inquiry.onParkedAttempt(
+      recoveryInput({
+        recovery: {
+          reason: 'no_progress',
+          self_repair_exhausted: '같은 실패 재발'
+        }
+      })
+    );
+
+    expect(tmux.wrapper()).toContain('자가 수리: 소진 — 같은 실패 재발');
   });
 
   test('labels a legacy recovery stop as an old record', async () => {

@@ -1,3 +1,98 @@
+import { createHash } from 'node:crypto';
+
+export const FIX_WAIT_LIMIT_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Stable incident identity shared by the conversation and incident reader.
+ *
+ * @param {string} repo
+ * @param {any} operation
+ * @returns {string}
+ */
+export function operationIncidentFingerprint(repo, operation) {
+  const summary = String(
+    operation.failure?.summary || operation.failure?.detail || ''
+  )
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, '<time>')
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?\b/gi, '<time>')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        repo,
+        operation.kind,
+        operation.script_path || '',
+        operation.failure?.code || '',
+        summary
+      ])
+    )
+    .digest('hex')
+    .slice(0, 12);
+}
+
+/**
+ * The failure being repaired, independent of retry operation/attempt ids.
+ *
+ * @param {any} queue
+ * @param {string} bead_id
+ * @param {string} repo
+ * @returns {string|null}
+ */
+export function selfRepairFailureIdentity(queue, bead_id, repo) {
+  if (bead_id.startsWith('repo-op:')) {
+    const origin = queue.repo_operations?.[bead_id.slice('repo-op:'.length)];
+    const latest = Object.values(queue.repo_operations || {})
+      .filter(
+        (/** @type {any} */ row) =>
+          row.kind === 'deploy' &&
+          row.source === 'manual' &&
+          row.repo_id === origin?.repo_id
+      )
+      .at(-1);
+    return latest && /** @type {any} */ (latest).state === 'failed'
+      ? operationIncidentFingerprint(repo, latest)
+      : null;
+  }
+  const operation = Object.values(queue.repo_operations || {})
+    .filter(
+      (/** @type {any} */ row) =>
+        row.state === 'failed' &&
+        !row.superseded_by &&
+        !row.dismissed &&
+        (row.subjects || []).some(
+          (/** @type {any} */ subject) => subject.bead_id === bead_id
+        )
+    )
+    .at(-1);
+  if (operation) {
+    return operationIncidentFingerprint(repo, operation);
+  }
+  const cleanup = queue.cleanup_failed?.[bead_id];
+  if (cleanup) {
+    return operationIncidentFingerprint(repo, {
+      kind: cleanup.step,
+      failure: { code: cleanup.reason, summary: cleanup.detail }
+    });
+  }
+  const attempt = Object.values(queue.attempts || {})
+    .filter((/** @type {any} */ row) => row.bead_id === bead_id)
+    .at(-1);
+  if (
+    attempt &&
+    ['waiting', 'failed', 'parked'].includes(
+      /** @type {any} */ (attempt).status
+    )
+  ) {
+    const row = /** @type {any} */ (attempt);
+    return operationIncidentFingerprint(repo, {
+      kind: 'attempt',
+      failure: { code: row.cause, summary: row.cause_detail?.summary }
+    });
+  }
+  return null;
+}
+
 /**
  * Pure script-retry judgments over the durable operation record.
  *
@@ -318,7 +413,7 @@ export function scriptRetryConsumptionKey(operation) {
 
 /**
  * @typedef {{ failure_code: string, interval_ms: number, deadline_ms: number }} ConditionWaitPolicy
- * @typedef {{ tip_id: string, head_id: string, next_at: number, deadline_at: number }} ConditionWaitSchedule
+ * @typedef {{ tip_id: string, head_id: string, next_at: number, deadline_at: number, exhausted_at?: number }} ConditionWaitSchedule
  */
 
 /**
@@ -383,8 +478,18 @@ export function conditionWaitSchedule(operations, tip_id, policy) {
   return {
     tip_id,
     head_id,
+    ...(operations[head_id].fix_wait?.state === 'exhausted' &&
+    typeof operations[head_id].fix_wait.exhausted_at === 'number'
+      ? { exhausted_at: operations[head_id].fix_wait.exhausted_at }
+      : {}),
     next_at: tip.finished_at + policy.interval_ms,
-    deadline_at: operations[head_id].finished_at + policy.deadline_ms
+    deadline_at: operations[head_id].fix_wait
+      ? ['waiting', 'rerunning'].includes(operations[head_id].fix_wait.state)
+        ? operations[head_id].fix_wait.entered_at + FIX_WAIT_LIMIT_MS
+        : operations[head_id].fix_wait.state === 'exhausted'
+          ? 0
+          : operations[head_id].finished_at + policy.deadline_ms
+      : operations[head_id].finished_at + policy.deadline_ms
   };
 }
 

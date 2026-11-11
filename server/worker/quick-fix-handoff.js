@@ -22,6 +22,10 @@ import { parseDescriptionScope } from './artifact-scope.js';
  * - `process_routes.quick_fix.worker_dispatch` — the behavior is already a
  *   fixed code path (ADR 0019/0031/0050).
  * - `manual_merge_continuation.auto_review_dispatch` — ADR 0019.
+ * - `quick_fix_handoff.checks.provenance_edge`, `quick_fix_handoff.bead_resolution`
+ *   and the `order` step `body_edges_written` — dotfiles Python checker only
+ *   (dotfiles-vthk5); this module emits no `provenance_edge_missing` token and
+ *   resolves Beads only in the local rig.
  *
  * `checks.user_decision_reserved.details_key` is also unread: this module
  * never emits per-line detail objects, only the `missing` token.

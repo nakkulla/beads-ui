@@ -586,7 +586,7 @@
  * @property {number|null} [event_at]
  */
 /**
- * @typedef {'handoff'|'takeover'|'hold'} ConversationResultKind
+ * @typedef {'handoff'|'takeover'|'hold'|'fix_wait'} ConversationResultKind
  */
 /**
  * The row a failure conversation's handoff will act on, fixed when the
@@ -621,6 +621,7 @@
  * gone.
  *
  * @typedef {Object} ConversationState
+ * @property {boolean} [early_diagnosis]
  * @property {string} stop - The `대화 사유` the entry block printed.
  * @property {string|null} wait_id - The external wait an 외부 작업 완료
  * conversation reopened; null for the other two kinds.
@@ -645,6 +646,7 @@
  */
 /**
  * @typedef {Object} Queue
+ * @property {Record<string, FixWait>} fix_waits - Durable self-repair attempts, including exhausted identities.
  * @property {Record<string, InteractiveSession>} interactive_sessions - Live interactive panes, keyed by bead and kind.
  * @property {Record<string, ConversationRefusal>} conversation_refusals - The
  * last refused conversation handoff of a failure or 외부 작업 완료 row, keyed
@@ -924,6 +926,8 @@
  */
 /**
  * @typedef {Object} RepoOperation
+ * @property {FixWait} [fix_wait]
+ * @property {number} [early_diagnosis_at]
  * @property {number} schema
  * @property {string} repo_id
  * @property {'verify'|'deploy'|'job'} kind
@@ -2786,6 +2790,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'completion_intents',
   'discard_operations',
   'interactive_sessions',
+  'fix_waits',
   'conversation_refusals',
   'session_inquiries',
   'merge_policy',
@@ -2855,6 +2860,7 @@ function emptyQueue() {
     completion_intents: {},
     discard_operations: {},
     interactive_sessions: {},
+    fix_waits: {},
     conversation_refusals: {},
     session_inquiries: {},
     repo_ops_opt_out: { verify: false, deploy: false },
@@ -3786,7 +3792,8 @@ function normalizeConversation(raw) {
     isRecord(result_raw) &&
     (result_raw.kind === 'handoff' ||
       result_raw.kind === 'takeover' ||
-      result_raw.kind === 'hold') &&
+      result_raw.kind === 'hold' ||
+      result_raw.kind === 'fix_wait') &&
     stringOrNullValue(result_raw.line) !== null &&
     finiteOrNull(result_raw.at) !== null
       ? {
@@ -3826,6 +3833,7 @@ function normalizeConversation(raw) {
       : null;
   return {
     stop: raw.stop,
+    ...(raw.early_diagnosis === true ? { early_diagnosis: true } : {}),
     wait_id: stringOrNullValue(raw.wait_id),
     processed_message_at: finiteOrNull(raw.processed_message_at),
     message_excerpt: stringOrNullValue(raw.message_excerpt),
@@ -3833,6 +3841,68 @@ function normalizeConversation(raw) {
     handoff,
     takeover_notified_at: finiteOrNull(raw.takeover_notified_at),
     ...(raw.handback_allowed === true ? { handback_allowed: true } : {})
+  };
+}
+
+/**
+ * @typedef {Object} FixWait
+ * @property {string} bead_id
+ * @property {string} rig
+ * @property {number} entered_at
+ * @property {string} failure_identity
+ * @property {string} [failure_repo]
+ * @property {'waiting'|'rerunning'|'exhausted'|'passed'} state
+ * @property {string|null} chain_head
+ * @property {string|null} attempt_id
+ * @property {string|null} exhausted_reason
+ * @property {number} [exhausted_at]
+ * @property {string} [rerun_operation_id]
+ * @property {number} [rerun_manual_run_id]
+ * @property {string[]} used_identities
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {FixWait|null}
+ */
+function normalizeFixWait(value) {
+  if (
+    !isRecord(value) ||
+    !stringOrNullValue(value.bead_id) ||
+    !stringOrNullValue(value.rig) ||
+    !stringOrNullValue(value.failure_identity) ||
+    finiteOrNull(value.entered_at) === null ||
+    !['waiting', 'rerunning', 'exhausted', 'passed'].includes(
+      String(value.state)
+    )
+  ) {
+    return null;
+  }
+  return {
+    bead_id: String(value.bead_id),
+    rig: String(value.rig),
+    entered_at: Number(value.entered_at),
+    failure_identity: String(value.failure_identity),
+    ...(stringOrNullValue(value.failure_repo)
+      ? { failure_repo: String(value.failure_repo) }
+      : {}),
+    state: /** @type {FixWait['state']} */ (value.state),
+    chain_head: stringOrNullValue(value.chain_head),
+    attempt_id: stringOrNullValue(value.attempt_id),
+    exhausted_reason: stringOrNullValue(value.exhausted_reason),
+    ...(finiteOrNull(value.exhausted_at) !== null
+      ? { exhausted_at: Number(value.exhausted_at) }
+      : {}),
+    ...(stringOrNullValue(value.rerun_operation_id)
+      ? { rerun_operation_id: String(value.rerun_operation_id) }
+      : {}),
+    ...(Number.isSafeInteger(value.rerun_manual_run_id) &&
+    Number(value.rerun_manual_run_id) > 0
+      ? { rerun_manual_run_id: Number(value.rerun_manual_run_id) }
+      : {}),
+    used_identities: Array.isArray(value.used_identities)
+      ? value.used_identities.filter((id) => typeof id === 'string')
+      : [String(value.failure_identity)]
   };
 }
 
@@ -4927,6 +4997,12 @@ function normalizeRepoOperation(value) {
     signal: typeof value.signal === 'string' ? value.signal : null,
     failure: settled_failure,
     retry,
+    ...(normalizeFixWait(value.fix_wait)
+      ? { fix_wait: /** @type {FixWait} */ (normalizeFixWait(value.fix_wait)) }
+      : {}),
+    ...(typeof value.early_diagnosis_at === 'number'
+      ? { early_diagnosis_at: value.early_diagnosis_at }
+      : {}),
     ...(recovery ? { recovery } : {}),
     superseded_by:
       typeof value.superseded_by === 'string' ? value.superseded_by : null,
@@ -5906,6 +5982,14 @@ function normalizeQueue(raw) {
     raw.conversation_refusals
   );
   q.session_inquiries = normalizeSessionInquiries(raw.session_inquiries);
+  for (const [bead_id, value] of Object.entries(
+    isRecord(raw.fix_waits) ? raw.fix_waits : {}
+  )) {
+    const wait = normalizeFixWait(value);
+    if (wait) {
+      q.fix_waits[bead_id] = wait;
+    }
+  }
   // 부재·비객체·비불리언은 모두 '실행'으로 읽는다: opt-out은 사용자가 명시적으로
   // 켠 설정이며, 읽을 수 없는 값이 게이트를 건너뛰게 만들어서는 안 된다.
   q.repo_ops_opt_out = {
@@ -7801,6 +7885,45 @@ export function createQueueStore(options = {}) {
         throw new Error('queue_unreadable');
       }
       return exportQueue(workspace, q);
+    },
+
+    /**
+     * Persist the wait and the chain clock together, before any rerun.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @param {FixWait} wait
+     */
+    recordFixWait(workspace, bead_id, wait) {
+      return applyUnconditional(workspace, (next) => {
+        const normalized = normalizeFixWait(wait);
+        if (!normalized) {
+          return false;
+        }
+        next.fix_waits[bead_id] = normalized;
+        if (
+          normalized.chain_head &&
+          next.repo_operations[normalized.chain_head]
+        ) {
+          next.repo_operations[normalized.chain_head].fix_wait = normalized;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {string} operation_id
+     */
+    claimEarlyDiagnosis(workspace, operation_id) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[operation_id];
+        if (!operation || typeof operation.early_diagnosis_at === 'number') {
+          return false;
+        }
+        operation.early_diagnosis_at = now();
+        return true;
+      });
     },
 
     /**

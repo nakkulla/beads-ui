@@ -9,6 +9,22 @@ import {
 } from './interactive-progress.js';
 
 describe('parseConversationResult', () => {
+  test('reads the fix Bead from a self-repair result', () => {
+    const line = '수정 대기 · dotfiles-abc12 — deploy script defect';
+
+    expect(parseConversationResult(line)).toEqual({
+      kind: 'fix_wait',
+      line,
+      bead_id: 'dotfiles-abc12'
+    });
+  });
+
+  test.each(['수정 대기 ·', '수정 대기 · ??? — unknown'])(
+    'rejects an unreadable fix id in %s',
+    (line) => {
+      expect(parseConversationResult(line)).toBeNull();
+    }
+  );
   test.each([
     ['워커가 이어감 · 범위 확장 승인', 'handoff'],
     ['이 대화에서 마무리 · 내가 끝까지 간다', 'takeover'],

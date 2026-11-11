@@ -1417,35 +1417,65 @@ describe('deploy condition wait card parity between the Worker and Monitor tabs 
    * 75: the attempt stays `failed` for the settlement resume, and the card
    * reads it as a wait.
    *
+   * @param {boolean} [fix_wait]
    * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
    */
-  function drawConditionWait() {
+  function drawConditionWait(fix_wait = false) {
     extra_rows = [
       row('CW-1', { status: 'resolved', metadata: { route: 'quick_fix' } })
     ];
     const raw = rawQueue();
-    return drawBothTabs(undefined, {
-      queue: [...raw.queue, { bead_id: 'CW-1', added_at: NOW - HOUR }],
-      attempts: {
-        ...raw.attempts,
-        'att-c1': makeAttempt({
-          attempt_id: 'att-c1',
-          bead_id: 'CW-1',
-          status: 'failed',
-          started_at: NOW - 2 * HOUR,
-          finished_at: NOW - HOUR,
-          quickfix_lane: true,
-          quickfix_landing: {
-            cursor: 'repo_operations',
-            head_sha: 'c'.repeat(40),
-            reason: 'condition_wait'
-          },
-          cause: 'quickfix_landing_failed:condition_wait',
-          cause_detail: { summary: 'live checkout has uncommitted edits' }
-        })
-      }
-    });
+    return drawBothTabs(
+      undefined,
+      {
+        fix_waits: fix_wait
+          ? {
+              'CW-1': {
+                bead_id: 'dotfiles-fix',
+                state: 'waiting',
+                entered_at: NOW - HOUR
+              }
+            }
+          : {},
+        queue: [...raw.queue, { bead_id: 'CW-1', added_at: NOW - HOUR }],
+        attempts: {
+          ...raw.attempts,
+          'att-c1': makeAttempt({
+            attempt_id: 'att-c1',
+            bead_id: 'CW-1',
+            status: 'failed',
+            started_at: NOW - 2 * HOUR,
+            finished_at: NOW - HOUR,
+            quickfix_lane: true,
+            quickfix_landing: {
+              cursor: 'repo_operations',
+              head_sha: 'c'.repeat(40),
+              reason: 'condition_wait'
+            },
+            cause: 'quickfix_landing_failed:condition_wait',
+            cause_detail: { summary: 'live checkout has uncommitted edits' }
+          })
+        }
+      },
+      undefined,
+      ['CW-1']
+    );
   }
+
+  test('draws the fix wait id and remaining limit identically on both tabs', async () => {
+    const { worker, monitor } = await drawConditionWait(true);
+
+    const worker_card = /** @type {HTMLElement} */ (
+      cardsByBead(worker).get('CW-1')
+    );
+    const monitor_card = /** @type {HTMLElement} */ (
+      cardsByBead(monitor).get('CW-1')
+    );
+
+    expect(partsOf(monitor_card)).toEqual(partsOf(worker_card));
+    expect(worker_card.textContent).toContain('수정 대기 · dotfiles-fix');
+    expect(worker_card.textContent).toContain('47시간');
+  });
 
   test('draws the same condition-wait card on the worker and monitor tabs', async () => {
     const { worker, monitor } = await drawConditionWait();

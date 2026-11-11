@@ -406,7 +406,7 @@ export function foreignBlockerClosedAtFor(bead_id, owner_root, requester_root) {
  * unparsable); `close_reason` is the rig's recorded reason or null. Both are
  * readback for a resume prompt only — the status judgment reads `status`.
  *
- * @typedef {{ ok: true, status: string, closed_at: number|null, close_reason: string|null }
+ * @typedef {{ ok: true, status: string, closed_at: number|null, close_reason: string|null, owner_root: string }
  *   | { ok: false, reason: 'no_rig'|'bd_failed'|'unparsable' }} ForeignBlockerQuery
  */
 
@@ -519,6 +519,7 @@ export async function queryForeignBlockerStatus(
   return {
     ok: true,
     status,
+    owner_root,
     closed_at:
       typeof closed_at === 'number' && closed_at > 0 ? closed_at : null,
     close_reason:

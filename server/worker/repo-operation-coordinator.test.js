@@ -7023,7 +7023,7 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
    * to, the way the shared worktree does: after the first run aligned the
    * target, HEAD already holds it.
    *
-   * @param {{ repo?: string, sleep?: (ms: number) => Promise<void>, now?: () => number, conditionWaitPolicy?: () => any, timeline?: { append: (input: any) => unknown }, notify?: any, comment?: (bead_id: string, text: string) => Promise<void> }} [options]
+   * @param {{ repo?: string, sleep?: (ms: number) => Promise<void>, now?: () => number, conditionWaitPolicy?: () => any, timeline?: { append: (input: any) => unknown }, notify?: any, failureConversation?: any, comment?: (bead_id: string, text: string) => Promise<void> }} [options]
    */
   function retryHarness(options = {}) {
     const deploy = { head: /** @type {string|null} */ (null) };
@@ -7099,7 +7099,10 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
         ? { conditionWaitPolicy: options.conditionWaitPolicy }
         : {}),
       ...(options.notify ? { notify: options.notify } : {}),
-      ...(options.comment ? { comment: options.comment } : {})
+      ...(options.comment ? { comment: options.comment } : {}),
+      ...(options.failureConversation
+        ? { failureConversation: options.failureConversation }
+        : {})
     });
     store.ensureRepoOperation(root, {
       operation_id: 'previous-deploy',
@@ -7469,7 +7472,7 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
      * A harness whose store and coordinator share one movable clock and whose
      * pin grants the condition wait (or, with `policy: null`, predates it).
      *
-     * @param {{ policy?: any, timeline?: { append: (input: any) => unknown } }} [options]
+     * @param {{ policy?: any, failureConversation?: any, timeline?: { append: (input: any) => unknown } }} [options]
      */
     function waitHarness(options = {}) {
       const clock = { now: 100_000 };
@@ -7485,6 +7488,7 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
         conditionWaitPolicy: () => policy,
         notify,
         comment,
+        failureConversation: options.failureConversation,
         ...(options.timeline ? { timeline: options.timeline } : {})
       });
       return { ...harness, clock, notify, comment };
@@ -7527,6 +7531,65 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
         'failed',
         'condition_wait'
       ]);
+    });
+
+    test('opens early diagnosis once after the second 75 and preserves the deadline marker', async () => {
+      const launcher = {
+        autoLaunchEnabled: () => true,
+        launchForBead: vi.fn(async () => ({ session: 'launched' }))
+      };
+      const harness = waitHarness({ failureConversation: launcher });
+      const head = await settleRun(harness, 75);
+      expect(launcher.launchForBead).not.toHaveBeenCalled();
+      harness.clock.now += POLICY.interval_ms;
+
+      await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+      await settleRun(harness, 75);
+      await harness.coordinator.reconcile(root);
+
+      expect(launcher.launchForBead).toHaveBeenCalledTimes(1);
+      const restarted = createQueueStore({
+        filePathFor: (workspace) => path.join(workspace, 'queue.json')
+      });
+      expect(
+        restarted.snapshot(root).repo_operations[head].early_diagnosis_at
+      ).toBeTypeOf('number');
+      expect(
+        harness.store.snapshot(root).repo_operations[head].failure_notice
+          ?.consumed_at
+      ).toBeNull();
+    });
+
+    test('keeps early diagnosis off with the shared launch switch', async () => {
+      const launcher = {
+        autoLaunchEnabled: () => false,
+        launchForBead: vi.fn(async () => ({ session: 'launched' }))
+      };
+      const harness = waitHarness({ failureConversation: launcher });
+      const head = await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+
+      await settleRun(harness, 75);
+
+      expect(launcher.launchForBead).not.toHaveBeenCalled();
+      expect(
+        harness.store.snapshot(root).repo_operations[head].early_diagnosis_at
+      ).toBeUndefined();
+    });
+
+    test('keeps a chain that passes its first recheck out of early diagnosis', async () => {
+      const launcher = {
+        autoLaunchEnabled: () => true,
+        launchForBead: vi.fn(async () => ({ session: 'launched' }))
+      };
+      const harness = waitHarness({ failureConversation: launcher });
+      await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+
+      await settleRun(harness, 0);
+
+      expect(launcher.launchForBead).not.toHaveBeenCalled();
     });
 
     test('records the skipped script_retry as not applicable', async () => {

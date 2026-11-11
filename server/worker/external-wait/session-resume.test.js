@@ -13,11 +13,11 @@ import {
 
 /**
  * The dotfiles entry block digest the 외부 작업 완료 conversation opens with
- * (`2727fd9e922e8b1877eae97c9edef7c237336ac9`, 4248 bytes without a trailing
+ * (`0b75f47718a394bc507a2b9c09833cb69af061cc`, 8796 bytes without a trailing
  * newline) — the same pin `direction-inquiry.test.js` holds (UI-18a5 §3.3).
  */
 const ENTRY_BLOCK_DIGEST =
-  '5413c6601a9965fba3f4a5bbfd8599ae76275b31e8f7244617892be947f63d4e';
+  '155f79b9f9cb2c89fa6c055d2c183a602d13b53c07baa2f1fa9a96538f46ae77';
 
 const WS = '/repo';
 const WAIT = 'w-0123456789ab';

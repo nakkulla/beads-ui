@@ -39,13 +39,20 @@ const RESULT_LINE_PREFIXES = [
  * line is returned whole, never cut to the display budget.
  *
  * @param {unknown} first_line
- * @returns {{ kind: 'handoff'|'takeover'|'hold', line: string }|null}
+ * @returns {{ kind: 'handoff'|'takeover'|'hold'|'fix_wait', line: string, bead_id?: string }|null}
  */
 export function parseConversationResult(first_line) {
   if (typeof first_line !== 'string') {
     return null;
   }
   const line = first_line.trim();
+  if (line.startsWith('수정 대기 ·')) {
+    const match =
+      /^수정 대기 ·\s+([A-Za-z][A-Za-z0-9_-]*-[a-z0-9]+(?:\.[0-9]+)*)(?=\s|$)/.exec(
+        line
+      );
+    return match ? { kind: 'fix_wait', line, bead_id: match[1] } : null;
+  }
   for (const [prefix, kind] of RESULT_LINE_PREFIXES) {
     if (line.startsWith(prefix)) {
       return { kind, line };

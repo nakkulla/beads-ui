@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { hubCommand, hubReply } from '../../test/session-hub.js';
 import { conversationLaunchFlags } from '../conversation-settings.js';
 import { CONVERSATION_ENTRY_BLOCK } from './direction-inquiry.js';
+import { selfRepairFailureIdentity } from './resolution-ladder.js';
 import {
   buildFailureEntry,
   createFailureConversationLauncher,
@@ -18,11 +19,11 @@ import {
 
 /**
  * The dotfiles entry block digest the failure conversation opens with
- * (`2727fd9e922e8b1877eae97c9edef7c237336ac9`, 4248 bytes without a trailing
+ * (`0b75f47718a394bc507a2b9c09833cb69af061cc`, 8796 bytes without a trailing
  * newline) — the same pin `direction-inquiry.test.js` holds (UI-18a5 §3.3).
  */
 const ENTRY_BLOCK_DIGEST =
-  '5413c6601a9965fba3f4a5bbfd8599ae76275b31e8f7244617892be947f63d4e';
+  '155f79b9f9cb2c89fa6c055d2c183a602d13b53c07baa2f1fa9a96538f46ae77';
 
 const BEAD = 'UI-jw27';
 const REPO = '/tmp/example-workspace/project-a';
@@ -580,6 +581,17 @@ describe('failure conversation entry block (UI-18a5 §3.3)', () => {
     expect(entry).toContain(`- target_base 체크아웃: ${REPO}\n`);
   });
 
+  test('includes optional failure identity and exhausted repair in the situation', () => {
+    const situation = failureSituation({
+      ...FAILURE,
+      fingerprint: '012345abcdef',
+      self_repair_exhausted: '48시간 초과'
+    });
+
+    expect(situation).toContain('\n지문: 012345abcdef');
+    expect(situation).toContain('\n자가 수리: 소진 — 48시간 초과');
+  });
+
   test('adds nothing past the dotfiles block', () => {
     const entry = buildFailureEntry({
       failure: FAILURE,
@@ -587,8 +599,9 @@ describe('failure conversation entry block (UI-18a5 §3.3)', () => {
       checkout: REPO
     });
 
-    expect(entry.endsWith('중첩 헤드리스 세션 기동.')).toBe(true);
-    expect(entry).not.toContain('[정리 재시도]');
+    expect(
+      entry.endsWith(CONVERSATION_ENTRY_BLOCK.split('\n').at(-1) || '')
+    ).toBe(true);
   });
 
   test('states the three takeover dispositions for an unresolved takeover', () => {
@@ -1528,6 +1541,54 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       kind: 'repo_operation',
       identity: 'repo_operation:op-1:f1'
     });
+  });
+
+  test('carries exhausted repair evidence into a manual failure context', () => {
+    const queue = {
+      repo_operations: { 'op-1': MANUAL_OPERATION },
+      fix_waits: {
+        'repo-op:op-1': {
+          state: 'exhausted',
+          failure_identity: selfRepairFailureIdentity(
+            { repo_operations: { 'op-1': MANUAL_OPERATION } },
+            'repo-op:op-1',
+            '/repo'
+          ),
+          failure_repo: '/repo',
+          exhausted_reason: '48시간 초과'
+        }
+      }
+    };
+
+    const failure = repoOperationFailureContext(queue, 'op-1');
+
+    expect(failure?.self_repair_exhausted).toBe('48시간 초과');
+  });
+
+  test('keeps exhaustion on the tracked manual rerun after another click', () => {
+    const queue = {
+      repo_operations: {
+        'op-1': MANUAL_OPERATION,
+        'op-2': { ...MANUAL_OPERATION, state: 'running', failure: null }
+      },
+      fix_waits: {
+        'repo-op:origin': {
+          state: 'exhausted',
+          failure_identity: selfRepairFailureIdentity(
+            { repo_operations: { 'op-1': MANUAL_OPERATION } },
+            'repo-op:op-1',
+            '/repo'
+          ),
+          failure_repo: '/repo',
+          rerun_operation_id: 'op-1',
+          exhausted_reason: '같은 실패 재발'
+        }
+      }
+    };
+
+    const failure = repoOperationFailureContext(queue, 'op-1');
+
+    expect(failure?.self_repair_exhausted).toBe('같은 실패 재발');
   });
 
   test('opens a fresh session in the repository root without a Bead read', async () => {

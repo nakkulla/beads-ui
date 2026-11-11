@@ -57,9 +57,10 @@ export const REPO_OPERATION_POLICY_PROVENANCE_PATH = path.join(
 /**
  * The schemas this consumer reads. Schema 4 predates the `[deploy]` exit-75
  * condition wait and keeps every behaviour it had (fail-quiet: 75 stays an
- * ordinary `script_failed`, nothing rechecks); schema 5 adds it.
+ * ordinary `script_failed`, nothing rechecks); schema 5 adds it and schema 6
+ * adds early diagnosis without changing the schema-5 recovery projection.
  */
-const SUPPORTED_SCHEMA_VERSIONS = new Set([4, 5]);
+const SUPPORTED_SCHEMA_VERSIONS = new Set([4, 5, 6]);
 
 /** @type {{ policy: Record<string, any>, provenance: Record<string, any>, digest: string, supported: boolean }|null} */
 let cached = null;
@@ -137,8 +138,14 @@ function validPolicy(policy) {
         entry.attempts_per_operation_attempt > 0
     ) &&
     isRecord(recovery) &&
-    recovery.consumer_schema_required === policy.schema_version &&
+    recovery.consumer_schema_required ===
+      (policy.schema_version === 6 ? 5 : policy.schema_version) &&
     (policy.schema_version === 4 || validConditionWait(policy)) &&
+    (policy.schema_version !== 6 ||
+      (policy.condition_wait_deploy_recheck.early_diagnosis?.at ===
+        'second_exit_75_in_chain' &&
+        policy.condition_wait_deploy_recheck.early_diagnosis?.once_per ===
+          'chain')) &&
     isRecord(recovery.diagnosis) &&
     stringList(recovery.diagnosis.requires) &&
     isRecord(recovery.code_defect_handoff) &&
@@ -218,6 +225,15 @@ export function loadRepoOperationPolicy(deps = {}) {
  */
 export function repoOperationPolicySupported() {
   return loadRepoOperationPolicy().supported;
+}
+
+/** Whether schema 6 grants failure self-repair and early diagnosis.
+ *
+ * @param {{ fs?: typeof import('node:fs') }} [deps]
+ */
+export function failureSelfRepairEnabled(deps = {}) {
+  const loaded = loadRepoOperationPolicy(deps);
+  return loaded.supported && loaded.policy.schema_version === 6;
 }
 
 /**
