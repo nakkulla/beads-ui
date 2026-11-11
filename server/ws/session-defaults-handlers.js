@@ -25,6 +25,7 @@ import {
   validateSessionDefaultsPatch
 } from '../session-defaults.js';
 import { commonSet, resolveWorkerUrl } from '../worker-url.js';
+import { tickWorkerQueue } from '../worker/attach.js';
 import { APPLIES_TO_VALUES } from '../worker/exec-enums.js';
 import { APPLIED_PRESET_FIELDS } from '../worker/queue-store.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -90,6 +91,21 @@ function writeKv(ws, target, key, value) {
   return target.explicit
     ? kvSetJsonAtRoot(target.root, key, value)
     : kvSetJsonInWorkspace(ws, key, value);
+}
+
+/**
+ * Wake the repo's dispatch loop after a confirmed kv write. Both keys feed the
+ * launch decision (runner, account) and nothing else ticks on a settings
+ * change, so a row the old values gated would otherwise wait for an unrelated
+ * event (UI-lu1b). Fire-and-forget: the write already succeeded, and a tick
+ * failure must not turn the reply into an error.
+ *
+ * @param {string} root
+ */
+function kickScheduler(root) {
+  Promise.resolve(tickWorkerQueue(root)).catch((err) => {
+    log('worker tick after kv write failed for %s: %o', root, err);
+  });
 }
 
 /**
@@ -320,6 +336,7 @@ export async function handleSetSessionDefaults(ws, req) {
   // The monitor's per-repo cache now holds a value this write replaced, and it
   // is the writer that knows which repo moved (UI-eey2 §9.4).
   invalidateSessionDefaults(target.root);
+  kickScheduler(target.root);
   ws.send(
     JSON.stringify(
       makeOk(req, {
@@ -536,6 +553,7 @@ export async function handleSetWorkspaceAccounts(ws, req) {
   // copy so the bulk window observes the account just written instead of the
   // one the TTL still holds. `workflow_session_defaults` is untouched here.
   invalidateWorkspaceAccounts(target.root);
+  kickScheduler(target.root);
   ws.send(
     JSON.stringify(
       makeOk(req, {

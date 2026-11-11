@@ -21,6 +21,7 @@ const kvGetJsonAtRoot = vi.fn();
 const kvSetJsonAtRoot = vi.fn();
 const invalidateSessionDefaults = vi.fn();
 const invalidateWorkspaceAccounts = vi.fn();
+const tickWorkerQueue = vi.fn();
 
 const WS_CONN = '/workspace';
 const WS_OTHER = '/other-repo';
@@ -60,6 +61,11 @@ vi.mock('./context.js', () => ({
     /** @type {any} */ value
   ) => kvSetJsonAtRoot(root, key, value),
   log: () => {}
+}));
+
+vi.mock('../worker/attach.js', async (importOriginal) => ({
+  .../** @type {any} */ (await importOriginal()),
+  tickWorkerQueue: (/** @type {string} */ root) => tickWorkerQueue(root)
 }));
 
 vi.mock('./monitor-handlers.js', () => ({
@@ -111,6 +117,7 @@ beforeEach(() => {
   kvSetJsonAtRoot.mockReset();
   invalidateSessionDefaults.mockReset();
   invalidateWorkspaceAccounts.mockReset();
+  tickWorkerQueue.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -582,6 +589,39 @@ describe('set-session-defaults root_dir (UI-eey2 §9.5)', () => {
     expect(sent[0].error.code).toBe('kv_write_failed');
     expect(invalidateSessionDefaults).not.toHaveBeenCalled();
   });
+
+  test('kicks the named repo scheduler after a confirmed write', async () => {
+    kvGetJsonAtRoot
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_runtime: 'codex' }
+      });
+    kvSetJsonAtRoot.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 'set',
+      type: 'set-session-defaults',
+      payload: { root_dir: WS_OTHER, values: { impl_runtime: 'codex' } }
+    });
+
+    expect(tickWorkerQueue).toHaveBeenCalledWith(WS_OTHER);
+  });
+
+  test('leaves the scheduler alone when the write fails', async () => {
+    kvGetJsonAtRoot.mockResolvedValue({ ok: true, value: { schema: 1 } });
+    kvSetJsonAtRoot.mockResolvedValue({ ok: false, error: 'db locked' });
+    const { ws } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 'set',
+      type: 'set-session-defaults',
+      payload: { root_dir: WS_OTHER, values: { impl_runtime: 'codex' } }
+    });
+
+    expect(tickWorkerQueue).not.toHaveBeenCalled();
+  });
 });
 
 describe('get-workspace-accounts (UI-d3cb §4)', () => {
@@ -758,6 +798,80 @@ describe('set-workspace-accounts (UI-d3cb §4)', () => {
     });
 
     expect(invalidateWorkspaceAccounts).toHaveBeenCalledWith(WS_CONN);
+  });
+
+  test('kicks the repo scheduler so gated rows are re-judged after a write', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, claude_account: 'held@example.com' }
+      })
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { claude_account: null } }
+    });
+
+    expect(tickWorkerQueue).toHaveBeenCalledWith(WS_CONN);
+  });
+
+  test('kicks the named repo scheduler for a root_dir write', async () => {
+    kvGetJsonAtRoot
+      .mockResolvedValueOnce({ ok: true, value: undefined })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, codex_account: 'k' }
+      });
+    kvSetJsonAtRoot.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { root_dir: WS_OTHER, values: { codex_account: 'k' } }
+    });
+
+    expect(tickWorkerQueue).toHaveBeenCalledWith(WS_OTHER);
+  });
+
+  test('leaves the scheduler alone when the account readback mismatches', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: undefined })
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { codex_account: 'k' } }
+    });
+
+    expect(tickWorkerQueue).not.toHaveBeenCalled();
+  });
+
+  test('replies success even when the scheduler kick rejects', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: undefined })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, codex_account: 'k' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    tickWorkerQueue.mockRejectedValue(new Error('tick failed'));
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { codex_account: 'k' } }
+    });
+
+    expect(sent[0].ok).toBe(true);
   });
 
   test('keeps the monitor cached account layer when the readback mismatches', async () => {

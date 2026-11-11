@@ -6341,6 +6341,37 @@ describe('scheduler provider hold and recovery', () => {
     });
   });
 
+  test('re-judges a gated row against the repo account layer the next tick reads', async () => {
+    /** @type {Record<string, unknown>} */
+    let layer = { schema: 1, claude_account: 'held@example.com' };
+    const deps = accountDeps();
+    deps.accountCatalog.activeClaude = vi.fn(async () => ({
+      ok: true,
+      account: { email: 'active@example.com' }
+    }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      kvGet: vi.fn(async () => ({ ok: true, value: layer })),
+      ...deps
+    });
+    seedProviderAttempt(env.store, 'held-1', 'H1');
+    registerProviderHold(
+      env.store,
+      'held-1',
+      'usage_limit',
+      'held@example.com'
+    );
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    layer = { schema: 1 };
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+    expect(env.store.snapshot(WS).admission.B1).toBeUndefined();
+  });
+
   test.each([
     ['has no active account', async () => ({ ok: true, accounts: [] })],
     [

@@ -3507,7 +3507,9 @@ export async function tickWorkerQueue(workspace_root) {
 
 /**
  * Reconsider held usage-limit attempts after the workspace's switch policy
- * changed, so a policy saved while they wait applies to them now. No-op
+ * changed, so a policy saved while they wait applies to them now. The tick
+ * after it does the same for queued rows the provider gate turned away: the
+ * policy decides the preemptive switch the gate judges (UI-lu1b). No-op
  * without an attachment.
  *
  * @param {string} workspace_root
@@ -3518,6 +3520,7 @@ export async function reevaluateWorkerProviderSwitches(workspace_root) {
     return;
   }
   await att.scheduler.reevaluateProviderSwitches(keyFor(workspace_root));
+  await att.scheduler.tick(keyFor(workspace_root));
 }
 
 /**

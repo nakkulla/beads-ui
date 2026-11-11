@@ -19,6 +19,7 @@ import {
   createOperationRepairHandoff,
   createWorkerAttachment,
   initWorkerRuntime,
+  reevaluateWorkerProviderSwitches,
   resumeWorkerAttempt,
   retryWorkerCleanup,
   startWorkerRepoOperationDeployRun,
@@ -1803,6 +1804,28 @@ describe('worker/attach construction + live loop (F1)', () => {
 
   test('stopWorkerAttempt returns false when no attachment is registered', async () => {
     expect(await stopWorkerAttempt(WS, 'att-9')).toBe(false);
+  });
+
+  test('reevaluateWorkerProviderSwitches ticks the queue after the switch pass', async () => {
+    /** @type {string[]} */
+    const order = [];
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        scheduler: {
+          reevaluateProviderSwitches: vi.fn(async () => {
+            order.push('reevaluate');
+          }),
+          tick: vi.fn(async (/** @type {string} */ workspace) => {
+            order.push(`tick:${workspace}`);
+          })
+        }
+      })
+    );
+
+    await reevaluateWorkerProviderSwitches(WS);
+
+    expect(order).toEqual(['reevaluate', `tick:${path.resolve(WS)}`]);
   });
 
   test('account switch route triggers a follow pass on every attached workspace', async () => {
