@@ -5,12 +5,31 @@ import {
   PLACEMENT_QUESTION_VERSION
 } from './question.js';
 
-/** The version of the question that let a resolution session settle a same-file edit. */
-const PREVIOUS_VERSION = '019d23f3b282';
+/** The version of the question whose order criteria left out shared groundwork use. */
+const PREVIOUS_VERSION = 'd0b8ae971950';
 
 describe('placement question', () => {
-  test('changes its version when the conflict criterion returns to same-file edits', () => {
+  test('changes its version when the order criteria add shared groundwork use', () => {
     expect(PLACEMENT_QUESTION_VERSION).not.toBe(PREVIOUS_VERSION);
+  });
+
+  test('orders a pair where one side uses groundwork the other lays down', () => {
+    const question = PLACEMENT_QUESTIONS[PLACEMENT_QUESTION];
+
+    expect(question.criteria.a_first).toContain(
+      'B uses shared groundwork (infrastructure, a helper, a schema, a contract or configuration) that A newly lays down or changes'
+    );
+    expect(question.criteria.b_first).toContain(
+      'A uses shared groundwork (infrastructure, a helper, a schema, a contract or configuration) that B newly lays down or changes'
+    );
+  });
+
+  test('keeps conflict for pairs where neither relies on the other', () => {
+    const question = PLACEMENT_QUESTIONS[PLACEMENT_QUESTION];
+
+    expect(question.criteria.conflict).toMatch(
+      /^Neither relies on the other's result/
+    );
   });
 
   test('asks conflict for a pair that changes the same file together', () => {

@@ -54,9 +54,9 @@ export const PLACEMENT_QUESTIONS = Object.freeze({
       independent:
         "Implementing and merging both at the same time changes neither one's premises, and the two do not both change the same file, shared state, contract clause or deployment surface.",
       a_first:
-        "B builds on A's result, or B would have to be redone if A landed later.",
+        "B builds on A's result, B uses shared groundwork (infrastructure, a helper, a schema, a contract or configuration) that A newly lays down or changes, or B would have to be redone if A landed later.",
       b_first:
-        "A builds on B's result, or A would have to be redone if B landed later.",
+        "A builds on B's result, A uses shared groundwork (infrastructure, a helper, a schema, a contract or configuration) that B newly lays down or changes, or A would have to be redone if B landed later.",
       conflict:
         "Neither relies on the other's result, but both change the same file, shared state, contract clause or deployment surface, so doing them at the same time collides."
     })
