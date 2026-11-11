@@ -121,7 +121,7 @@ export const WAIT_KINDS = Object.freeze(
       label: '확인 필요',
       when: '세션이 사용자 답변이나 원인 확인을 요청하고 멈춤',
       release:
-        '같은 세션과의 대화에서 답하고 인계하면 Worker가 같은 세션을 이어감',
+        '같은 세션과의 대화에서 답하고 Worker로 넘기면 Worker가 같은 세션을 이어감',
       action:
         '[세션에서 이어가기] · [워커로 이어가기] · 폐기 — 대화가 답을 기다리면 [워커로 이어가기] · 폐기',
       elapsed_word: '대기',

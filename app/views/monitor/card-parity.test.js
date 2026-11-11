@@ -522,8 +522,10 @@ function externalWaitRecord() {
  *
  * @param {Record<string, any>} raw_queue
  * @param {import('../../protocol.js').CapacityView['takeover_blocker']} [takeover_blocker]
+ * @param {string[]} [judged_beads] - Beads whose own wait reasons the
+ * server's judgment also carries, for a case that reads them.
  */
-function seedExternalWait(raw_queue, takeover_blocker) {
+function seedExternalWait(raw_queue, takeover_blocker, judged_beads = []) {
   vi.mocked(workerWaitState).mockImplementation((root) => {
     const external_waits = root === WS ? [externalWaitRecord()] : [];
     if (takeover_blocker && external_waits.length > 0) {
@@ -544,7 +546,8 @@ function seedExternalWait(raw_queue, takeover_blocker) {
       wait_reasons: judged.wait_reasons.filter(
         (/** @type {any} */ reason) =>
           reason.kind === 'external_job' ||
-          String(reason.subject.bead_id).startsWith('session-inquiry:')
+          String(reason.subject.bead_id).startsWith('session-inquiry:') ||
+          judged_beads.includes(String(reason.subject.bead_id))
       )
     });
   });
@@ -799,18 +802,21 @@ function mountMonitor(mount, raw_queue, execPresetStore) {
  * raw queue record.
  * @param {any} [execPresetStore] - The preset snapshot both tabs read their
  * chip bindings from.
+ * @param {string[]} [judged_beads] - Beads whose own wait reasons the server
+ * judgment carries to both tabs.
  * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
  */
 async function drawBothTabs(
   takeover_blocker,
   queue_patch = {},
-  execPresetStore
+  execPresetStore,
+  judged_beads = []
 ) {
   stubBd();
   seedPrObservations();
   await warmServerCaches();
   const raw_queue = { ...rawQueue(), ...queue_patch };
-  seedExternalWait(raw_queue, takeover_blocker);
+  seedExternalWait(raw_queue, takeover_blocker, judged_beads);
   const queue_snapshot = decorateQueue(WS, raw_queue);
   const worker = document.createElement('div');
   const monitor = document.createElement('div');
@@ -2129,4 +2135,231 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
     expect(lines[0]).toContain('답 대기 · 어느 쪽으로 갈까요?');
     expect(lines[1]).toBe(lines[0]);
   });
+});
+
+describe('takeover handback card parity between the Worker and Monitor tabs (UI-3713 §3.3)', () => {
+  /**
+   * K-1's parked attempt after its 멈춤 conversation ended in
+   * `이 대화에서 마무리`: still live, or with its window closed, and the
+   * server's handback flag either way.
+   *
+   * @param {'live'|'closed'} window_state
+   * @param {boolean} handback_allowed
+   * @returns {Record<string, any>}
+   */
+  function takeoverPatch(window_state, handback_allowed) {
+    const attempts = rawQueue().attempts;
+    const flag = handback_allowed ? { handback_allowed: true } : {};
+    if (window_state === 'closed') {
+      const parked = attempts['att-k1'];
+      return {
+        attempts: {
+          ...attempts,
+          'att-k1': {
+            ...parked,
+            cause_detail: {
+              ...parked.cause_detail,
+              conversation: {
+                launched_at: NOW - HOUR,
+                ended_at: NOW - HOUR / 2,
+                ended_by: 'takeover',
+                refusal: null,
+                ...flag
+              }
+            }
+          }
+        }
+      };
+    }
+    return {
+      interactive_sessions: {
+        'K-1:inquiry': {
+          bead_id: 'K-1',
+          kind: 'inquiry',
+          provider: 'claude',
+          pane_id: '%9',
+          tmux_session: 'bdui-inquiry',
+          tmux_window: 'K-1',
+          launched_at: NOW - HOUR,
+          state: 'live',
+          settled_at: null,
+          session_id: 'sid-k1',
+          attempt_id: 'att-k1',
+          turn_state: 'idle',
+          turn_state_since: NOW - HOUR / 2,
+          last_message: {
+            text: '이 대화에서 마무리 · 여기서 끝까지 한다',
+            at: NOW - HOUR / 2
+          },
+          conversation: {
+            stop: 'awaiting_user=spec_review',
+            processed_message_at: NOW - HOUR / 2,
+            result: {
+              kind: 'takeover',
+              line: '이 대화에서 마무리 · 여기서 끝까지 한다',
+              at: NOW - HOUR / 2
+            },
+            handoff: null,
+            ...flag
+          }
+        }
+      }
+    };
+  }
+
+  const CASES = [
+    ['live', true],
+    ['live', false],
+    ['closed', true],
+    ['closed', false]
+  ];
+
+  test.each(CASES)(
+    'draws the same K-1 card on a %s takeover with handback_allowed %s on both tabs',
+    async (window_state, handback_allowed) => {
+      const { worker, monitor } = await drawBothTabs(
+        undefined,
+        takeoverPatch(
+          /** @type {'live'|'closed'} */ (window_state),
+          /** @type {boolean} */ (handback_allowed)
+        ),
+        undefined,
+        ['K-1']
+      );
+
+      const parts = [worker, monitor].map((mount) =>
+        partsOf(/** @type {HTMLElement} */ (cardsByBead(mount).get('K-1')))
+      );
+
+      expect(parts[1]).toEqual(parts[0]);
+    }
+  );
+
+  test.each(CASES)(
+    'stands [워커로 이어가기] on a %s takeover only when handback_allowed is %s',
+    async (window_state, handback_allowed) => {
+      const { worker, monitor } = await drawBothTabs(
+        undefined,
+        takeoverPatch(
+          /** @type {'live'|'closed'} */ (window_state),
+          /** @type {boolean} */ (handback_allowed)
+        ),
+        undefined,
+        ['K-1']
+      );
+
+      const present = [worker, monitor].map(
+        (mount) =>
+          cardsByBead(mount)
+            .get('K-1')
+            ?.querySelector('.worker-mini__handoff, .rtile__handoff') != null
+      );
+
+      expect(present).toEqual([handback_allowed, handback_allowed]);
+    }
+  );
+});
+
+describe('takeover handback on failure and external cards (UI-3713 §3.3)', () => {
+  /**
+   * One live takeover conversation of `kind` on `bead_id` with the server's
+   * handback flag; neither kind carries an attempt.
+   *
+   * @param {string} bead_id
+   * @param {'resolve'|'external_resume'} kind
+   * @param {boolean} handback_allowed
+   * @returns {Record<string, any>}
+   */
+  function liveTakeoverPatch(bead_id, kind, handback_allowed) {
+    return {
+      interactive_sessions: {
+        [`${bead_id}:${kind}`]: {
+          bead_id,
+          kind,
+          provider: 'claude',
+          pane_id: '%9',
+          tmux_session: 'bdui-inquiry',
+          tmux_window: bead_id,
+          launched_at: NOW - HOUR,
+          state: 'live',
+          settled_at: null,
+          session_id: `sid-${bead_id}`,
+          attempt_id: null,
+          turn_state: 'idle',
+          turn_state_since: NOW - HOUR / 2,
+          last_message: {
+            text: '이 대화에서 마무리 · 여기서 끝까지 한다',
+            at: NOW - HOUR / 2
+          },
+          conversation: {
+            stop:
+              kind === 'resolve' ? '실패 정리 중단 · boom' : '외부 작업 완료 w',
+            processed_message_at: NOW - HOUR / 2,
+            result: {
+              kind: 'takeover',
+              line: '이 대화에서 마무리 · 여기서 끝까지 한다',
+              at: NOW - HOUR / 2
+            },
+            handoff: null,
+            ...(handback_allowed ? { handback_allowed: true } : {})
+          }
+        }
+      }
+    };
+  }
+
+  test.each([
+    ['W-2', 'resolve', true],
+    ['W-2', 'resolve', false],
+    ['E-1', 'external_resume', true],
+    ['E-1', 'external_resume', false]
+  ])(
+    'stands [워커로 이어가기] on the %s card with a live %s takeover only when handback_allowed is %s',
+    async (bead_id, kind, handback_allowed) => {
+      const { worker, monitor } = await drawBothTabs(
+        undefined,
+        liveTakeoverPatch(
+          /** @type {string} */ (bead_id),
+          /** @type {'resolve'|'external_resume'} */ (kind),
+          /** @type {boolean} */ (handback_allowed)
+        )
+      );
+
+      const present = [worker, monitor].map(
+        (mount) =>
+          cardsByBead(mount)
+            .get(/** @type {string} */ (bead_id))
+            ?.querySelector('.worker-mini__handoff, .rtile__handoff') != null
+      );
+
+      expect(present).toEqual([handback_allowed, handback_allowed]);
+    }
+  );
+
+  test.each([
+    ['W-2', 'resolve'],
+    ['E-1', 'external_resume']
+  ])(
+    'draws the same %s card with a live %s takeover marked handback_allowed on both tabs',
+    async (bead_id, kind) => {
+      const { worker, monitor } = await drawBothTabs(
+        undefined,
+        liveTakeoverPatch(
+          /** @type {string} */ (bead_id),
+          /** @type {'resolve'|'external_resume'} */ (kind),
+          true
+        )
+      );
+
+      const parts = [worker, monitor].map((mount) =>
+        partsOf(
+          /** @type {HTMLElement} */ (
+            cardsByBead(mount).get(/** @type {string} */ (bead_id))
+          )
+        )
+      );
+
+      expect(parts[1]).toEqual(parts[0]);
+    }
+  );
 });

@@ -18,11 +18,17 @@ export const PROGRESS_MESSAGE_MAX_CHARS = 160;
 export const PROGRESS_EXCERPT_MAX_CHARS = 400;
 
 /**
- * The three conversation-turn result lines (dotfiles `Worker 세션 대화`).
+ * The three conversation-turn result lines (dotfiles `Worker 세션 대화`):
+ * the current prefixes, then the old ones, which stay read-compatible with
+ * the same meaning because conversations opened on the old block and their
+ * transcripts remain (UI-3713 §3.1).
  *
  * @type {ReadonlyArray<[string, 'handoff'|'takeover'|'hold']>}
  */
 const RESULT_LINE_PREFIXES = [
+  ['워커가 이어감 ·', 'handoff'],
+  ['이 대화에서 마무리 ·', 'takeover'],
+  ['나중에 ·', 'hold'],
   ['인계 ·', 'handoff'],
   ['인수 ·', 'takeover'],
   ['보류 ·', 'hold']

@@ -8775,7 +8775,8 @@ async function resolveSessionInquiryInSession(ws, req, p) {
 
 /**
  * Handle `worker-conversation-handoff`. Payload:
- * `{ bead_id, attempt_id, expected_revision }`.
+ * `{ bead_id, attempt_id, expected_revision }`; `attempt_id` is explicitly
+ * null for a conversation record without one (외부 작업 완료, UI-3713 §3.3).
  *
  * [워커로 이어가기] (UI-nuwy §3.6): the person ended a conversation stop
  * without a result line and hands it back to the Worker. Same skeleton as
@@ -8793,20 +8794,22 @@ export async function handleWorkerConversationHandoff(ws, req) {
   if (
     typeof p.bead_id !== 'string' ||
     p.bead_id.trim().length === 0 ||
-    typeof p.attempt_id !== 'string' ||
-    p.attempt_id.trim().length === 0
+    (p.attempt_id !== null &&
+      (typeof p.attempt_id !== 'string' || p.attempt_id.trim().length === 0))
   ) {
     ws.send(
       JSON.stringify(
         makeError(
           req,
           'bad_request',
-          'payload requires { bead_id: string, attempt_id: string }'
+          'payload requires { bead_id: string, attempt_id: string|null }'
         )
       )
     );
     return;
   }
+  /** @type {string|null} */
+  const attempt_id = typeof p.attempt_id === 'string' ? p.attempt_id : null;
   const key = mutationWorkspaceOf(ws, req);
   if (key === null) {
     return;
@@ -8817,7 +8820,7 @@ export async function handleWorkerConversationHandoff(ws, req) {
       JSON.stringify(
         makeOk(req, {
           bead_id: p.bead_id,
-          attempt_id: p.attempt_id,
+          attempt_id,
           resumed: false,
           pending: false,
           conflict: true,
@@ -8833,7 +8836,7 @@ export async function handleWorkerConversationHandoff(ws, req) {
   try {
     result = await conversationHandoffWorker(key, {
       bead_id: p.bead_id,
-      attempt_id: p.attempt_id
+      attempt_id
     });
   } catch (err) {
     log('conversation handoff failed for %s/%s: %o', key, p.bead_id, err);
@@ -8850,7 +8853,7 @@ export async function handleWorkerConversationHandoff(ws, req) {
     JSON.stringify(
       makeOk(req, {
         bead_id: p.bead_id,
-        attempt_id: p.attempt_id,
+        attempt_id,
         resumed: result.ok === true,
         pending: result.pending === true,
         conflict: false,

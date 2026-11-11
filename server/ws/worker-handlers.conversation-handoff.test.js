@@ -123,6 +123,20 @@ describe('worker-conversation-handoff', () => {
     });
   });
 
+  test('passes a null attempt id for a conversation record without one', async () => {
+    const reply = await click({
+      bead_id: BEAD,
+      attempt_id: null,
+      expected_revision: revision()
+    });
+
+    expect(handoff.fn).toHaveBeenCalledWith(WS, {
+      bead_id: BEAD,
+      attempt_id: null
+    });
+    expect(reply.payload).toMatchObject({ attempt_id: null, resumed: true });
+  });
+
   test('carries the scheduler refusal reason in the reply', async () => {
     handoff.fn = vi.fn(async () => ({
       ok: false,

@@ -850,6 +850,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   readStatus: (bead_id: string) => Promise<string|null>,
  *   comment?: (bead_id: string, text: string) => Promise<unknown>,
  *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
+ *   findIssue?: (bead_id: string) => Promise<Record<string, any>|null>,
  *   readyBeadIds?: () => Promise<Set<string>>
  * }} bd
  * `comment` is OPTIONAL because a scheduler built without it — every existing
@@ -858,6 +859,9 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * (waiting-tier spec §4.2): it is the ONLY reader of a bead's outgoing `blocks`
  * edges, so an attachment without it cannot prove a prerequisite wait and every
  * such ending falls through to the ordinary landing settlement.
+ * `findIssue` (`bd list --id`, which leaves `.beads/last-touched` alone) is
+ * the issue-change refresh's status reader for a takeover conversation's
+ * handback flag (UI-3713 §3.3); without it the flag reads false.
  * `readyBeadIds` is optional for the same compatibility reason. Without the
  * workspace-wide ready reader, waiting return scans fail quiet and ordinary
  * scheduler behavior stays unchanged.
@@ -1431,7 +1435,7 @@ const FAILURE_HANDOFF_ACTIONS = Object.freeze({
 });
 
 /**
- * The `<행 종류>` word of the `대화 인계 · <행 종류> · <결과 줄>` timeline line.
+ * The `<행 종류>` word of the `Worker로 넘김 · <행 종류> · <결과 줄>` timeline line.
  *
  * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue', string>>}
  */
@@ -1567,7 +1571,7 @@ export function interactiveTurnState(running, attention) {
  *   reconcile: (workspace: string) => Promise<void>,
  *   onConditionRecheck: (listener: (workspace: string) => Promise<unknown>) => () => void,
  *   reconcileInteractiveSessions: (workspace: string) => Promise<void>,
- *   conversationHandoff: (workspace: string, input: { bead_id: string, attempt_id: string }) => Promise<{ ok: boolean, reason: string|null, pending?: boolean }>,
+ *   conversationHandoff: (workspace: string, input: { bead_id: string, attempt_id: string|null }) => Promise<{ ok: boolean, reason: string|null, pending?: boolean }>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   activeBeadIds: (workspace: string) => Set<string>,
  *   externalProtectedBeadIds: (workspace: string) => Set<string>,
@@ -11233,7 +11237,7 @@ export function createScheduler(deps) {
   }
 
   /** The result-line stand-in the `[워커로 이어가기]` click carries (§3.6). */
-  const CONVERSATION_BUTTON_LINE = '사용자가 [워커로 이어가기]로 인계';
+  const CONVERSATION_BUTTON_LINE = '사용자가 [워커로 이어가기]로 넘김';
 
   /**
    * Whether an interactive record is a Worker session conversation still
@@ -11273,6 +11277,164 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Whether an open conversation ended in `이 대화에서 마무리` (takeover) and
+   * holds no handoff — the one record a handback (UI-3713 §3.2-§3.3) may
+   * still return to the Worker while its Bead is `open`.
+   *
+   * @param {import('./queue-store.js').InteractiveSession|undefined|null} record
+   * @returns {record is import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }}
+   */
+  function holdsTakeover(record) {
+    return (
+      isOpenConversation(record) &&
+      !record.conversation.handoff &&
+      record.conversation.result?.kind === 'takeover'
+    );
+  }
+
+  /**
+   * The stopped attempt whose 멈춤 conversation's window closed after a
+   * takeover (UI-3713 §3.3 창 닫힘): the Bead's latest implementation attempt,
+   * still resumable, stamped `ended_by='takeover'`, with no open inquiry
+   * record in front of it. Null otherwise.
+   *
+   * @param {any} q
+   * @param {string} bead_id
+   * @returns {any|null}
+   */
+  function closedTakeoverAttempt(q, bead_id) {
+    const attempt = latestImplementationAttempt(q, bead_id);
+    if (
+      !attempt ||
+      attempt.cause_detail?.conversation?.ended_by !== 'takeover' ||
+      !(
+        attempt.status === 'parked' ||
+        (attempt.status === 'waiting' && !!attempt.cause_detail?.recovery)
+      ) ||
+      isOpenConversation(q.interactive_sessions?.[`${bead_id}:inquiry`])
+    ) {
+      return null;
+    }
+    return attempt;
+  }
+
+  /**
+   * Write one Bead's handback flag (UI-3713 §3.3) from an observed status on
+   * its live takeover records and its closed takeover 멈춤 attempt — only
+   * where the value changed, so a repeated observation writes nothing. The
+   * flag is true only for `open`; null (unreadable) is false.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null} status
+   */
+  function applyHandbackStatus(workspace, bead_id, status) {
+    const allowed = status === 'open';
+    const q = deps.store.snapshot(workspace);
+    for (const [key, record] of Object.entries(q.interactive_sessions || {})) {
+      if (
+        record.bead_id !== bead_id ||
+        !holdsTakeover(record) ||
+        (record.conversation.handback_allowed === true) === allowed
+      ) {
+        continue;
+      }
+      patchInteractiveRecord(workspace, key, record, {
+        conversation: { ...record.conversation, handback_allowed: allowed }
+      });
+    }
+    const attempt = closedTakeoverAttempt(q, bead_id);
+    const ended = attempt?.cause_detail?.conversation;
+    if (!attempt) {
+      return;
+    }
+    // A Bead back at `open` lifts an earlier `not_open` click refusal with
+    // the button it refused.
+    const refusal =
+      allowed && ended.refusal === 'not_open' ? null : (ended.refusal ?? null);
+    if (
+      (ended.handback_allowed === true) === allowed &&
+      refusal === (ended.refusal ?? null)
+    ) {
+      return;
+    }
+    const updated = deps.store.updateAttempt(workspace, {
+      attempt_id: attempt.attempt_id,
+      patch: {
+        cause_detail: {
+          ...attempt.cause_detail,
+          conversation: { ...ended, refusal, handback_allowed: allowed }
+        }
+      }
+    });
+    if (updated.ok) {
+      notifyChanged(workspace);
+    }
+  }
+
+  /**
+   * Refresh the handback flag of every Bead holding a takeover — a live
+   * takeover record or a closed takeover 멈춤 attempt — from `bd list --id`
+   * (`findIssue`), once per Bead (UI-3713 §3.3). Run from the issue-change
+   * signal, so it must never itself touch `.beads/last-touched`: `bd show`
+   * would re-fire that same signal. Never throws; a failed read is false.
+   *
+   * @param {string} workspace
+   */
+  async function refreshHandbacks(workspace) {
+    const q = deps.store.snapshot(workspace);
+    /** @type {Set<string>} */
+    const beads = new Set();
+    for (const record of Object.values(q.interactive_sessions || {})) {
+      if (holdsTakeover(record) && !isBeadlessRowKey(record.bead_id)) {
+        beads.add(record.bead_id);
+      }
+    }
+    for (const attempt of Object.values(q.attempts || {})) {
+      if (
+        attempt.cause_detail?.conversation?.ended_by === 'takeover' &&
+        closedTakeoverAttempt(q, attempt.bead_id) !== null
+      ) {
+        beads.add(attempt.bead_id);
+      }
+    }
+    for (const bead_id of beads) {
+      /** @type {string|null} */
+      let status = null;
+      try {
+        const issue =
+          typeof deps.bd.findIssue === 'function'
+            ? await deps.bd.findIssue(bead_id)
+            : null;
+        status = typeof issue?.status === 'string' ? issue.status : null;
+      } catch (err) {
+        log('handback status read failed for %s: %o', bead_id, err);
+      }
+      try {
+        applyHandbackStatus(workspace, bead_id, status);
+      } catch (err) {
+        log('handback flag write failed for %s: %o', bead_id, err);
+      }
+    }
+  }
+
+  /**
+   * The click's authoritative Bead status read (UI-3713 §3.3): `bd show`,
+   * once per person's click; null when it cannot be read.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<string|null>}
+   */
+  async function readHandbackStatus(bead_id) {
+    try {
+      return await deps.bd.readStatus(bead_id);
+    } catch (err) {
+      log('handback click status read failed for %s: %o', bead_id, err);
+      return null;
+    }
+  }
+
+  /**
    * Patch one interactive record only while it is still the same launch.
    *
    * @param {string} workspace
@@ -11299,20 +11461,24 @@ export function createScheduler(deps) {
    * Stamp how a conversation ended on its attempt (`cause_detail.conversation`,
    * UI-nuwy §3.8), the durable fact the card reads after the record is gone:
    * `pane_gone` offers `[워커로 이어가기]`, `hold`/`takeover`/`handoff` do not.
-   * A `refusal` names why a handoff did not continue.
+   * A `refusal` names why a handoff did not continue. A `takeover` end
+   * carries the record's handback flag (UI-3713 §3.3): `[워커로 이어가기]`
+   * stands on it while the Bead is `open`.
    *
    * @param {string} workspace
    * @param {string|null} attempt_id
    * @param {number} launched_at
    * @param {'pane_gone'|'hold'|'handoff'|'takeover'} ended_by
    * @param {string|null} [refusal]
+   * @param {boolean} [handback_allowed]
    */
   function stampConversationEnd(
     workspace,
     attempt_id,
     launched_at,
     ended_by,
-    refusal = null
+    refusal = null,
+    handback_allowed = false
   ) {
     if (!attempt_id) {
       return;
@@ -11325,7 +11491,8 @@ export function createScheduler(deps) {
     if (
       previous?.launched_at === launched_at &&
       previous.ended_by === ended_by &&
-      (previous.refusal ?? null) === refusal
+      (previous.refusal ?? null) === refusal &&
+      (previous.handback_allowed === true) === handback_allowed
     ) {
       return;
     }
@@ -11338,7 +11505,8 @@ export function createScheduler(deps) {
             launched_at,
             ended_at: now(),
             ended_by,
-            refusal
+            refusal,
+            ...(handback_allowed ? { handback_allowed: true } : {})
           }
         }
       }
@@ -11414,7 +11582,7 @@ export function createScheduler(deps) {
         ...(attempt_id ? { attempt_id } : {}),
         kind: 'interactive_session',
         seq: `inquiry:${launched_at}:handoff_refused`,
-        summary: `대화 인계 거절 · ${reason}`
+        summary: `Worker로 넘김 거절 · ${reason}`
       });
       return { done: true, ok: false, reason };
     };
@@ -11498,73 +11666,183 @@ export function createScheduler(deps) {
   }
 
   /**
-   * `[워커로 이어가기]` (UI-nuwy §3.6): the fallback exit when the person ended
-   * the conversation without a result line. A live conversation waiting for
-   * the person gets a `button` handoff reservation and its window closed — the
-   * reconcile pass continues once the pane is gone. A conversation whose window
-   * already vanished without a result line continues directly.
+   * Reserve a `button` handoff on a live conversation and close its window
+   * (UI-nuwy §3.6, UI-3713 §3.3 창 살아 있음): the record turns into the
+   * same handoff a result line would have reserved — a failure conversation
+   * fixes its target now — and the reconcile pass runs that kind's Worker exit
+   * once the pane is gone.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string }} input
+   * @param {string} key
+   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+   * @returns {Promise<{ ok: boolean, reason: string|null, pending?: boolean }>}
+   */
+  async function reserveButtonHandoff(workspace, key, record) {
+    const at = now();
+    const conversation = {
+      ...record.conversation,
+      handback_allowed: false,
+      result: {
+        kind: /** @type {const} */ ('handoff'),
+        line: CONVERSATION_BUTTON_LINE,
+        at
+      },
+      handoff: {
+        line: CONVERSATION_BUTTON_LINE,
+        source: /** @type {const} */ ('button'),
+        message_at: record.conversation.processed_message_at,
+        reserved_at: at,
+        target:
+          record.kind === 'resolve'
+            ? failureHandoffTarget(
+                deps.store.snapshot(workspace),
+                record.bead_id
+              )
+            : null,
+        started_at: null
+      }
+    };
+    if (!patchInteractiveRecord(workspace, key, record, { conversation })) {
+      return { ok: false, reason: 'record_changed' };
+    }
+    appendTimeline({
+      bead_id: record.bead_id,
+      ...(record.attempt_id ? { attempt_id: record.attempt_id } : {}),
+      kind: 'interactive_session',
+      seq: `${record.kind}:${record.launched_at}:handoff`,
+      summary: `Worker로 넘김 예약 · ${CONVERSATION_BUTTON_LINE}`
+    });
+    await closeConversationWindow(workspace, key, record);
+    return { ok: true, reason: null, pending: true };
+  }
+
+  /**
+   * Refuse a handback click whose Bead is not `open` (UI-3713 §3.3): the
+   * reason lands on the timeline, and the observed status drops the button.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null} attempt_id
+   * @param {string} seq
+   * @param {string|null} status
+   * @returns {{ ok: boolean, reason: string }}
+   */
+  function refuseHandback(workspace, bead_id, attempt_id, seq, status) {
+    applyHandbackStatus(workspace, bead_id, status);
+    appendTimeline({
+      bead_id,
+      ...(attempt_id ? { attempt_id } : {}),
+      kind: 'interactive_session',
+      seq,
+      summary: 'Worker로 넘김 거절 · not_open'
+    });
+    return { ok: false, reason: 'not_open' };
+  }
+
+  /**
+   * `[워커로 이어가기]` (UI-nuwy §3.6, UI-3713 §3.3): the exit when the person
+   * ended the conversation without a result line, or after
+   * `이 대화에서 마무리` while the Bead is still `open`.
+   *
+   *   - A live takeover conversation of any kind (멈춤, 실패, 외부 작업
+   *     완료) is accepted only when a fresh status read says `open`; it then
+   *     gets a `button` handoff reservation and its window closed.
+   *   - A live 멈춤 conversation waiting for the person gets the same
+   *     reservation.
+   *   - A 멈춤 conversation whose window already vanished without a result
+   *     line, or after a takeover with the Bead `open`, continues directly.
+   *
+   * `attempt_id` is null for a record without one (외부 작업 완료).
+   *
+   * @param {string} workspace
+   * @param {{ bead_id: string, attempt_id: string|null }} input
    * @returns {Promise<{ ok: boolean, reason: string|null, pending?: boolean }>}
    */
   function conversationHandoff(workspace, input) {
     return withInteractiveLock(workspace, async () => {
+      const attempt_id =
+        typeof input.attempt_id === 'string' && input.attempt_id.length > 0
+          ? input.attempt_id
+          : null;
+      const sessions =
+        deps.store.snapshot(workspace).interactive_sessions || {};
+      const handback_key = ['inquiry', 'resolve', 'external_resume']
+        .map((kind) => `${input.bead_id}:${kind}`)
+        .find((candidate) => {
+          const current = sessions[candidate];
+          return holdsTakeover(current) && current.state === 'live';
+        });
+      if (handback_key !== undefined) {
+        const live = sessions[handback_key];
+        if (!holdsTakeover(live)) {
+          return { ok: false, reason: 'record_changed' };
+        }
+        if ((live.attempt_id ?? null) !== attempt_id) {
+          return { ok: false, reason: 'attempt_mismatch' };
+        }
+        const status = await readHandbackStatus(input.bead_id);
+        if (status !== 'open') {
+          return refuseHandback(
+            workspace,
+            input.bead_id,
+            attempt_id,
+            `${live.kind}:${live.launched_at}:handback_refused`,
+            status
+          );
+        }
+        return reserveButtonHandoff(workspace, handback_key, live);
+      }
       const key = `${input.bead_id}:inquiry`;
-      const record = deps.store.snapshot(workspace).interactive_sessions?.[key];
+      const record = sessions[key];
       if (isOpenConversation(record)) {
-        if (record.attempt_id !== input.attempt_id) {
+        if ((record.attempt_id ?? null) !== attempt_id) {
           return { ok: false, reason: 'attempt_mismatch' };
         }
         if (!conversationAwaitsAnswer(record)) {
           return { ok: false, reason: 'not_awaiting_answer' };
         }
-        const at = now();
-        const conversation = {
-          ...record.conversation,
-          result: {
-            kind: /** @type {const} */ ('handoff'),
-            line: CONVERSATION_BUTTON_LINE,
-            at
-          },
-          handoff: {
-            line: CONVERSATION_BUTTON_LINE,
-            source: /** @type {const} */ ('button'),
-            message_at: record.conversation.processed_message_at,
-            reserved_at: at,
-            target: null,
-            started_at: null
-          }
-        };
-        if (!patchInteractiveRecord(workspace, key, record, { conversation })) {
-          return { ok: false, reason: 'record_changed' };
-        }
-        appendTimeline({
-          bead_id: input.bead_id,
-          attempt_id: input.attempt_id,
-          kind: 'interactive_session',
-          seq: `inquiry:${record.launched_at}:handoff`,
-          summary: `대화 인계 예약 · ${CONVERSATION_BUTTON_LINE}`
-        });
-        await closeConversationWindow(workspace, key, record);
-        return { ok: true, reason: null, pending: true };
+        return reserveButtonHandoff(workspace, key, record);
       }
       if (record && record.kind === 'inquiry' && record.settled_at === null) {
         return { ok: false, reason: 'conversation_live' };
       }
-      const attempt =
-        deps.store.snapshot(workspace).attempts?.[input.attempt_id];
+      const attempt = attempt_id
+        ? deps.store.snapshot(workspace).attempts?.[attempt_id]
+        : undefined;
       const ended = attempt?.cause_detail?.conversation;
       if (
+        !attempt_id ||
         !attempt ||
         attempt.bead_id !== input.bead_id ||
-        ended?.ended_by !== 'pane_gone'
+        (ended?.ended_by !== 'pane_gone' && ended?.ended_by !== 'takeover')
       ) {
         return { ok: false, reason: 'no_conversation_exit' };
       }
+      // A window closed after `이 대화에서 마무리` goes back to the Worker
+      // exactly like one closed without a result line — while the Bead is
+      // still `open` (UI-3713 §3.3 창 닫힘).
+      if (ended.ended_by === 'takeover') {
+        const status = await readHandbackStatus(input.bead_id);
+        if (status !== 'open') {
+          stampConversationEnd(
+            workspace,
+            attempt_id,
+            ended.launched_at,
+            'takeover',
+            'not_open'
+          );
+          return refuseHandback(
+            workspace,
+            input.bead_id,
+            attempt_id,
+            `inquiry:${ended.launched_at}:handback_refused`,
+            status
+          );
+        }
+      }
       const outcome = await continueConversationHandoff(workspace, {
         bead_id: input.bead_id,
-        attempt_id: input.attempt_id,
+        attempt_id,
         launched_at: ended.launched_at,
         line: CONVERSATION_BUTTON_LINE,
         source: 'button'
@@ -11598,7 +11876,7 @@ export function createScheduler(deps) {
       ...(record.attempt_id ? { attempt_id: record.attempt_id } : {}),
       kind: 'interactive_session',
       seq: `${record.kind}:${record.launched_at}:handoff_refused`,
-      summary: `대화 인계 거절 · ${reason}`
+      summary: `Worker로 넘김 거절 · ${reason}`
     });
   }
 
@@ -11796,7 +12074,7 @@ export function createScheduler(deps) {
         bead_id,
         kind: 'interactive_session',
         seq: `${record.kind}:${record.launched_at}:handoff`,
-        summary: `대화 인계 · ${FAILURE_HANDOFF_ROWS[target.kind]} · ${handoff.line} · 실행 없음`
+        summary: `Worker로 넘김 · ${FAILURE_HANDOFF_ROWS[target.kind]} · ${handoff.line} · 실행 없음`
       });
       return { done: true };
     }
@@ -11844,7 +12122,7 @@ export function createScheduler(deps) {
       bead_id,
       kind: 'interactive_session',
       seq: `${record.kind}:${record.launched_at}:handoff`,
-      summary: `대화 인계 · ${FAILURE_HANDOFF_ROWS[target.kind]} · ${handoff.line}`
+      summary: `Worker로 넘김 · ${FAILURE_HANDOFF_ROWS[target.kind]} · ${handoff.line}`
     });
     const action = FAILURE_HANDOFF_ACTIONS[target.kind];
     const flight = JSON.stringify([workspace, key]);
@@ -11950,7 +12228,7 @@ export function createScheduler(deps) {
       bead_id,
       kind: 'interactive_session',
       seq: `${record.kind}:${record.launched_at}:handoff`,
-      summary: `대화 인계 · ${FAILURE_HANDOFF_ROWS.stale_residue} · ${handoff.line}`
+      summary: `Worker로 넘김 · ${FAILURE_HANDOFF_ROWS.stale_residue} · ${handoff.line}`
     });
     const flight = JSON.stringify([workspace, key]);
     failure_exits.set(flight, record.launched_at);
@@ -12061,7 +12339,7 @@ export function createScheduler(deps) {
       bead_id: record.bead_id,
       kind: 'interactive_session',
       seq: `${record.kind}:${record.launched_at}:handoff`,
-      summary: `대화 인계 · 외부 작업 완료 · ${handoff.line}`
+      summary: `Worker로 넘김 · 외부 작업 완료 · ${handoff.line}`
     });
     /** @type {{ ok: boolean, reason?: string }} */
     let result;
@@ -12182,6 +12460,14 @@ export function createScheduler(deps) {
       session_lane_targets
     );
     /**
+     * The Bead status this pass read for each unsettled record's Bead (the
+     * `bd show` below); a Bead whose read failed, or a Bead-less row, has no
+     * entry and reads as unreadable (UI-3713 §3.2).
+     *
+     * @type {Map<string, string|null>}
+     */
+    const bead_statuses = new Map();
+    /**
      * A launch may replace the same key while tmux I/O is in flight.
      *
      * @param {string} key
@@ -12261,9 +12547,10 @@ export function createScheduler(deps) {
      *   - 멈춤 (`inquiry`): without a result line the attempt is stamped
      *     `pane_gone` and the card offers the `[워커로 이어가기]` fallback.
      *   - 실패 (`resolve`): the row stays as it is and the pair stands again.
-     *   - 외부 작업 완료 (`external_resume`): `인수` leaves the Bead to the
-     *     session; `보류` or no result line returns the record to its
-     *     completion row first.
+     *   - 외부 작업 완료 (`external_resume`): a takeover leaves the Bead to
+     *     the session once it left `open`; a hold, no result line, or a
+     *     takeover whose Bead this pass read `open` returns the record to its
+     *     completion row first (UI-3713 §3.3).
      *
      * @param {string} key
      * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
@@ -12286,9 +12573,13 @@ export function createScheduler(deps) {
           outcome.after_end?.();
           return;
         }
+        // After `이 대화에서 마무리` the Bead stays the session's only once it
+        // left `open`; while it is still `open` the window's end returns the
+        // completion row like a result-less end (UI-3713 §3.3 창 닫힘).
         if (
           record.kind === 'external_resume' &&
-          conversation.result?.kind !== 'takeover' &&
+          (conversation.result?.kind !== 'takeover' ||
+            bead_statuses.get(record.bead_id) === 'open') &&
           (await revertExternalConversation(workspace, record)) === 'retry'
         ) {
           return;
@@ -12326,7 +12617,9 @@ export function createScheduler(deps) {
           workspace,
           record.attempt_id,
           record.launched_at,
-          'takeover'
+          'takeover',
+          null,
+          conversation.handback_allowed === true
         );
       } else if (kind !== 'hold') {
         stampConversationEnd(
@@ -12349,12 +12642,22 @@ export function createScheduler(deps) {
      * a turn that started and ended between two passes. The processed id and
      * excerpt land in the same record write as the outcome.
      *
+     * A takeover conversation keeps being read (UI-3713 §3.2): only a new
+     * `워커가 이어감` line while this pass read the Bead as `open` changes it,
+     * into the same handoff the line would have reserved first. Any other
+     * message — a hold or takeover line, a handoff line on a Bead that is not
+     * `open` or could not be read — is only marked processed.
+     *
      * @param {string} key
      * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
      */
     async function processConversationMessage(key, record) {
       const conversation = record.conversation;
-      if (conversation.handoff || conversation.result) {
+      // The record is an open conversation already: `holdsTakeover` minus
+      // that part, written out so the record type is not narrowed away.
+      const reopenable =
+        !conversation.handoff && conversation.result?.kind === 'takeover';
+      if ((conversation.handoff || conversation.result) && !reopenable) {
         // A window that did not take the close is asked again.
         if (
           record.state === 'live' &&
@@ -12403,9 +12706,13 @@ export function createScheduler(deps) {
         return;
       }
       const at = now();
-      const parsed = parseConversationResult(
-        message.first_line ?? message.text
-      );
+      const read = parseConversationResult(message.first_line ?? message.text);
+      const parsed =
+        !reopenable ||
+        (read?.kind === 'handoff' &&
+          bead_statuses.get(record.bead_id) === 'open')
+          ? read
+          : null;
       /** @type {import('./queue-store.js').ConversationState} */
       const next = {
         ...conversation,
@@ -12416,6 +12723,7 @@ export function createScheduler(deps) {
         next.result = { kind: parsed.kind, line: parsed.line, at };
       }
       if (parsed?.kind === 'handoff') {
+        next.handback_allowed = false;
         next.handoff = {
           line: parsed.line,
           source: 'result_line',
@@ -12435,6 +12743,9 @@ export function createScheduler(deps) {
       }
       if (parsed?.kind === 'takeover') {
         next.takeover_notified_at = at;
+        // The flag the card's `[워커로 이어가기]` reads from now on, from the
+        // status this pass already read (UI-3713 §3.3).
+        next.handback_allowed = bead_statuses.get(record.bead_id) === 'open';
       }
       if (
         !patchInteractiveRecord(workspace, key, record, { conversation: next })
@@ -12653,6 +12964,10 @@ export function createScheduler(deps) {
     for (const bead_id of unsettled_beads) {
       try {
         const status = await deps.bd.readStatus(bead_id);
+        bead_statuses.set(bead_id, status);
+        // The same read refreshes a live takeover's handback flag — no
+        // second `bd` call (UI-3713 §3.3).
+        applyHandbackStatus(workspace, bead_id, status);
         const current_records = Object.entries(
           deps.store.snapshot(workspace).interactive_sessions
         ).filter(
@@ -21330,6 +21645,14 @@ export function createScheduler(deps) {
         continue;
       }
       await resumeParkedAttempt(workspace, record.bead_id, record.attempt_id);
+    }
+    // After the parked-resume scan, so a slow read never delays it: a claim
+    // or a reopen of a Bead holding a takeover moves its handback flag
+    // (UI-3713 §3.3).
+    try {
+      await refreshHandbacks(workspace);
+    } catch (err) {
+      log('handback refresh failed for %s: %o', workspace, err);
     }
   }
 

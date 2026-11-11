@@ -374,7 +374,7 @@ function handoffAction(result, attempt_id) {
     op: CONVERSATION_HANDOFF_OP,
     label: '[워커로 이어가기]',
     title:
-      '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어간다 — 결과 줄 자리에 "사용자가 [워커로 이어가기]로 인계"를 싣는다',
+      '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어간다 — 결과 줄 자리에 "사용자가 [워커로 이어가기]로 넘김"을 싣는다',
     payload: { ...result.subject, ...(attempt_id ? { attempt_id } : {}) }
   });
 }
@@ -433,7 +433,13 @@ function judgeStalledSession(result, queue, bead_id, attempt) {
       label: '[세션에서 이어가기]',
       payload
     });
-    if (attempt?.cause_detail?.conversation?.ended_by === 'pane_gone') {
+    // A window closed without a result line, or after `이 대화에서 마무리`
+    // while the server last read the Bead as `open` (UI-3713 §3.3).
+    const ended = attempt?.cause_detail?.conversation;
+    if (
+      ended?.ended_by === 'pane_gone' ||
+      (ended?.ended_by === 'takeover' && ended.handback_allowed === true)
+    ) {
       handoffAction(result, attempt_id);
     }
     discardAction(result, attempt_id);
@@ -659,7 +665,7 @@ export function judgeWaitReasons(input) {
             op: SESSION_CONTINUE_OP,
             label: '[세션에서 이어가기]',
             title:
-              '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 — 인계하면 Worker가 그 세션에서 attempt를 시작합니다',
+              '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 — Worker로 넘기면 Worker가 그 세션에서 attempt를 시작합니다',
             placement: 'card',
             payload: { root_dir, bead_id: row.bead_id, wait_id: row.wait_id }
           },
@@ -934,7 +940,7 @@ export function judgeWaitReasons(input) {
           bead_id,
           root_dir,
           `사용자 결정 대기 · ${value}`,
-          '같은 세션과의 대화에서 답하고 인계하면 Worker가 이어간다'
+          '같은 세션과의 대화에서 답하고 Worker로 넘기면 Worker가 이어간다'
         );
         judgeStalledSession(result, queue, bead_id, attempt);
         addClocks(result, { since: attempt.finished_at });

@@ -51,7 +51,7 @@ const default_log = debug('worker:external-wait-session-resume');
  * @type {string}
  */
 export const EXTERNAL_CONVERSATION_LEAD =
-  '대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다 · 이 세션은 외부 작업 완료 Worker 세션 대화로 열린다(`references/execution-common.md` `## Worker 세션 대화`) · `인수` 뒤 첫 편집 전에 `bd show --json`으로 `external_wait` 키가 없음을 확인한 뒤 Bead를 클레임한다';
+  '대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다 · 이 세션은 외부 작업 완료 Worker 세션 대화로 열린다(`references/execution-common.md` `## Worker 세션 대화`) · `이 대화에서 마무리` 뒤 첫 편집 전에 `bd show --json`으로 `external_wait` 키가 없음을 확인한 뒤 Bead를 클레임한다';
 
 /**
  * The first input of an 외부 작업 완료 conversation: the dotfiles entry block

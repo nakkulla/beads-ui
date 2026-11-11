@@ -237,7 +237,7 @@ describe('tileResolveFields', () => {
     const fields = tileResolveFields(item, false);
 
     expect(fields.resolve_title).toBe(
-      '멈춘 세션을 같은 세션 그대로 대화로 다시 엽니다 — 인계하면 Worker가 이어갑니다'
+      '멈춘 세션을 같은 세션 그대로 대화로 다시 엽니다 — Worker로 넘기면 Worker가 이어갑니다'
     );
   });
 
@@ -247,7 +247,7 @@ describe('tileResolveFields', () => {
     const fields = tileResolveFields(item, false);
 
     expect(fields.resolve_title).toBe(
-      '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 실패한 단계를 다시 돌립니다'
+      '기록된 세션을 대화로 엽니다 — Worker로 넘기면 Worker가 실패한 단계를 다시 돌립니다'
     );
   });
 
@@ -269,7 +269,7 @@ describe('tileResolveFields', () => {
     const fields = tileResolveFields(item, false);
 
     expect(fields.resolve_title).toBe(
-      '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 실패한 폐기를 다시 시도합니다'
+      '기록된 세션을 대화로 엽니다 — Worker로 넘기면 Worker가 실패한 폐기를 다시 시도합니다'
     );
   });
 
@@ -360,7 +360,7 @@ describe('tileResolveFields takeover row (UI-9w5l §3.4)', () => {
     const fields = tileResolveFields(item, false);
 
     expect(fields.resolve_title).toBe(
-      '멈춘 세션을 같은 세션 그대로 대화로 다시 엽니다 — 인계하면 Worker가 이어갑니다'
+      '멈춘 세션을 같은 세션 그대로 대화로 다시 엽니다 — Worker로 넘기면 Worker가 이어갑니다'
     );
   });
 });
@@ -519,7 +519,7 @@ describe('tileResolveFields pair anchor (UI-18a5 §3.2)', () => {
       resolve_action: true,
       resolve_enabled: true,
       resolve_title:
-        '대화 세션을 엽니다 — 잔재 처분 실패의 원인을 정리하고, 인계하면 Worker가 같은 잔재 처분 검사로 디스패치를 한 번 다시 돌립니다'
+        '대화 세션을 엽니다 — 잔재 처분 실패의 원인을 정리하고, Worker로 넘기면 Worker가 같은 잔재 처분 검사로 디스패치를 한 번 다시 돌립니다'
     });
   });
 
@@ -622,6 +622,105 @@ describe('tileResolveFields conversation handoff', () => {
     const fields = tileResolveFields(item, false, true);
 
     expect(fields.handoff_enabled).toBe(false);
+  });
+});
+
+describe('tileResolveFields handback after a takeover (UI-3713 §3.3)', () => {
+  /**
+   * A live takeover conversation view with the server's handback flag.
+   *
+   * @param {'inquiry'|'resolve'|'external_resume'} kind
+   * @param {boolean} handback_allowed
+   * @param {Record<string, any>} [over]
+   */
+  function takeover(kind, handback_allowed, over = {}) {
+    return session(kind, {
+      attempt_id: kind === 'external_resume' ? null : 'a1',
+      conversation: {
+        handoff: null,
+        result: { kind: 'takeover' },
+        ...(handback_allowed ? { handback_allowed: true } : {})
+      },
+      ...over
+    });
+  }
+
+  test.each(['inquiry', 'resolve', 'external_resume'])(
+    'shows [워커로 이어가기] on a live %s takeover marked handback_allowed',
+    (kind) => {
+      const item = {
+        id: 'UI-1',
+        run_state: 'parked',
+        interactive_sessions: [takeover(/** @type {any} */ (kind), true)]
+      };
+
+      const fields = tileResolveFields(item, false, false);
+
+      expect(fields).toMatchObject({
+        handoff_action: true,
+        handoff_enabled: true,
+        handoff_attempt_id: kind === 'external_resume' ? null : 'a1',
+        pair_held: true
+      });
+      expect(fields.resolve_action).toBeUndefined();
+    }
+  );
+
+  test('hides [워커로 이어가기] on a live takeover without handback_allowed', () => {
+    const item = {
+      id: 'UI-1',
+      run_state: 'parked',
+      interactive_sessions: [takeover('inquiry', false)]
+    };
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields.handoff_action).toBeUndefined();
+    expect(fields.pair_held).toBe(true);
+  });
+
+  test('hides [워커로 이어가기] on a closing takeover even when handback_allowed', () => {
+    const item = {
+      id: 'UI-1',
+      run_state: 'parked',
+      interactive_sessions: [
+        takeover('inquiry', true, { state: 'exiting', closing: true })
+      ]
+    };
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields.handoff_action).toBeUndefined();
+  });
+
+  test('keeps the cleanup-retry exit masked beside the handback button', () => {
+    const item = {
+      id: 'UI-1',
+      ...MATERIALS.cleanup_failed,
+      interactive_sessions: [takeover('resolve', true)]
+    };
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      handoff_action: true,
+      pair_anchor: 'merge',
+      pair_held: true,
+      merge_action: false
+    });
+  });
+
+  test('omits the handback button on a worker-ineligible Bead', () => {
+    const item = {
+      id: 'UI-1',
+      run_state: 'parked',
+      labels: ['worker-ineligible'],
+      interactive_sessions: [takeover('inquiry', true)]
+    };
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields.handoff_action).toBeUndefined();
   });
 });
 

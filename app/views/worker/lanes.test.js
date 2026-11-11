@@ -347,7 +347,7 @@ describe('inquiry session live card (UI-ri8n)', () => {
     ['running', null, null, '대화 중 8분'],
     ['idle', 5, null, '답 대기'],
     ['question', null, null, '답 대기'],
-    ['running', 5, 'takeover', '사람 인수']
+    ['running', 5, 'takeover', '대화에서 마무리 중']
   ])(
     'renders a %s conversation turn with processed %s and result %s as %s',
     (turn_state, processed_message_at, result_kind, tail) => {

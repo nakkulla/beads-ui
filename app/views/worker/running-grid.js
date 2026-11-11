@@ -1444,7 +1444,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         class="op-btn rtile__resolve"
         ?disabled=${tile.resolve_enabled === false}
         title=${tile.resolve_title ||
-        '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 이 행을 잇습니다'}
+        '기록된 세션을 대화로 엽니다 — Worker로 넘기면 Worker가 이 행을 잇습니다'}
         aria-label="세션에서 이어가기"
       >
         세션에서 이어가기
