@@ -148,6 +148,6 @@ Worker 주소는 공통 파일 `${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/worke
     dotfiles 계약·`worker-url`과 함께 움직인다.
   - 맥락 없이는 의외: dotfiles 계약이 아직 `bdui_url` kv 키를 허용하는 동안 beads-ui가 먼저 그 키를 모르는 키로 다룬다.
   - 실제 절충: 응답 모양을 영구 유지하는 대안과 dotfiles를 먼저 바꾸는 대안이 있었다. 사용자가 beads-ui 먼저를 골랐다.
-  - `summary`: "Worker 주소는 dotfiles resolver가 공통 설정 하나로 정한 값만 읽고 보이며 저장소별 예외는 읽지도 보이지도 쓰지도 않는다 — 나머지 조항은 UI-3713 그대로다"
-  → ADR, supersede UI-3713
+  - `summary`: "Worker 주소는 dotfiles resolver가 공통 설정 하나로 정한 값만 읽고 보이며 저장소별 예외는 읽지도 보이지도 쓰지도 않는다 — 나머지 조항은 UI-hozk 그대로다"
+  → ADR, supersede UI-hozk
 - 저장소 탭 문구·주석 정리 — 문구는 되돌리기 쉽다 → ADR 아님
