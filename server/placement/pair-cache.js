@@ -16,6 +16,7 @@ import {
   CACHE_UNUSED_TTL_MS,
   JEV_MODEL,
   PLACEMENT_CHOICES,
+  PLACEMENT_PREFER_CHOICES,
   PLACEMENT_QUESTION_VERSION
 } from './question.js';
 
@@ -37,9 +38,19 @@ const SAVE_DELAY_MS = 1_000;
  * @property {string} model
  * @property {import('./wire.js').PlacementJevChoice} choice
  * @property {number} confidence
+ * @property {import('./wire.js').PlacementPreferChoice} [prefer_choice] - The
+ * preference answer (UI-unf5 §3.3). Every jev answer carries it; an entry
+ * stored without it reads as no preference.
+ * @property {number} [prefer_confidence]
  * @property {number} judged_at
  * @property {number} used_at
  * @property {number} [persisted_used_at] - In memory only.
+ */
+
+/**
+ * One answer as the cache stores it.
+ *
+ * @typedef {{ choice: import('./wire.js').PlacementJevChoice, confidence: number, prefer_choice?: import('./wire.js').PlacementPreferChoice, prefer_confidence?: number, judged_at: number }} PairAnswer
  */
 
 /**
@@ -87,6 +98,20 @@ function entryOf(value) {
   ) {
     return null;
   }
+  const has_prefer =
+    Object.hasOwn(raw, 'prefer_choice') ||
+    Object.hasOwn(raw, 'prefer_confidence');
+  const prefer_choices = /** @type {readonly string[]} */ (
+    PLACEMENT_PREFER_CHOICES
+  );
+  if (
+    has_prefer &&
+    (typeof raw.prefer_choice !== 'string' ||
+      !prefer_choices.includes(raw.prefer_choice) ||
+      typeof raw.prefer_confidence !== 'number')
+  ) {
+    return null;
+  }
   return {
     a: /** @type {string} */ (raw.a),
     b: /** @type {string} */ (raw.b),
@@ -96,10 +121,30 @@ function entryOf(value) {
     model: /** @type {string} */ (raw.model),
     choice: /** @type {import('./wire.js').PlacementJevChoice} */ (raw.choice),
     confidence: raw.confidence,
+    ...preferOf(raw),
     judged_at: raw.judged_at,
     used_at: raw.used_at,
     persisted_used_at: raw.used_at
   };
+}
+
+/**
+ * The preference fields of an answer, or none when it carries no preference.
+ *
+ * @param {{ prefer_choice?: unknown, prefer_confidence?: unknown }} answer
+ * @returns {{ prefer_choice?: import('./wire.js').PlacementPreferChoice, prefer_confidence?: number }}
+ */
+function preferOf(answer) {
+  return typeof answer.prefer_choice === 'string' &&
+    typeof answer.prefer_confidence === 'number'
+    ? {
+        prefer_choice:
+          /** @type {import('./wire.js').PlacementPreferChoice} */ (
+            answer.prefer_choice
+          ),
+        prefer_confidence: answer.prefer_confidence
+      }
+    : {};
 }
 
 /**
@@ -228,7 +273,7 @@ export function createPairCache(options) {
      * @param {string} b
      * @param {string} digest_a
      * @param {string} digest_b
-     * @param {{ choice: import('./wire.js').PlacementJevChoice, confidence: number, judged_at: number }} answer
+     * @param {PairAnswer} answer
      */
     set(a, b, digest_a, digest_b, answer) {
       entries.set(pairCacheKey(a, b, digest_a, digest_b), {
@@ -240,6 +285,7 @@ export function createPairCache(options) {
         model: JEV_MODEL,
         choice: answer.choice,
         confidence: answer.confidence,
+        ...preferOf(answer),
         judged_at: answer.judged_at,
         used_at: now()
       });

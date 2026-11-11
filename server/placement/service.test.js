@@ -9,6 +9,7 @@ import {
   FAILURE_BACKOFF_MS,
   JEV_MODEL,
   KEY_RECHECK_MS,
+  PLACEMENT_PREFER_QUESTION,
   PLACEMENT_QUESTION
 } from './question.js';
 import { createPlacementService, isPlaceableCandidate } from './service.js';
@@ -44,6 +45,15 @@ function validAnswer() {
           a_first: 0.05,
           b_first: 0.03,
           conflict: 0.02
+        }
+      },
+      [PLACEMENT_PREFER_QUESTION]: {
+        choice: 'b_better_first',
+        confidence: 0.75,
+        probabilities: {
+          a_better_first: 0.05,
+          b_better_first: 0.75,
+          no_preference: 0.2
         }
       }
     }
@@ -534,8 +544,8 @@ describe('scope folder judgment (UI-lsr4)', () => {
     });
   });
 
-  test('treats a missing path as a file', async () => {
-    const { service, fetch } = serviceWith();
+  test('treats a missing path as a file', () => {
+    const { service } = serviceWith();
     const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
 
     const out = service.project(
@@ -545,7 +555,6 @@ describe('scope folder judgment (UI-lsr4)', () => {
       }),
       OBSERVE
     );
-    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
 
     expect(out.placement_relations['UI-1|UI-2']).toMatchObject({
       relation: 'conflict',
@@ -554,7 +563,57 @@ describe('scope folder judgment (UI-lsr4)', () => {
       overlap: ['docs/new.js']
     });
     expect(out.placement_status['UI-1']).toEqual({ state: 'fixed_only' });
-    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('same-file pair preference (UI-unf5 §3.2, §3.10)', () => {
+  const SAME_FILE = { scopes: { 'UI-1': ['app/a.js'], 'UI-2': ['app/a.js'] } };
+
+  test('asks a same-file pair and ships its preference on the next projection', async () => {
+    const { service, fetch } = serviceWith();
+    const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
+    service.project(WS, input(['UI-1'], ['UI-2'], rows, SAME_FILE), OBSERVE);
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+    await service.idle();
+
+    const wire = service.project(
+      WS,
+      input(['UI-1'], ['UI-2'], rows, SAME_FILE),
+      OBSERVE
+    );
+
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(wire.placement_relations['UI-1|UI-2']).toMatchObject({
+      relation: 'conflict',
+      source: 'fixed',
+      basis: 'file',
+      prefer: 'b',
+      prefer_confidence: 0.75
+    });
+    expect(wire.placement_status['UI-1']).toEqual({ state: 'fixed_only' });
+  });
+
+  test('keeps a candidate whose same-file pair failed out of unavailable', async () => {
+    const fetch = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({})
+    }));
+    const { service } = serviceWith({ fetch });
+    const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
+    service.project(WS, input(['UI-1'], ['UI-2'], rows, SAME_FILE), OBSERVE);
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+    await service.idle();
+
+    const wire = service.project(
+      WS,
+      input(['UI-1'], ['UI-2'], rows, SAME_FILE),
+      OBSERVE
+    );
+
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(wire.placement_status['UI-1']).toEqual({ state: 'fixed_only' });
+    expect(wire.placement_relations['UI-1|UI-2']).not.toHaveProperty('prefer');
   });
 });
 
@@ -625,6 +684,25 @@ describe('call record', () => {
     expect(callLog.append).toHaveBeenCalledOnce();
     expect(written).not.toContain(KEY);
     expect(written).not.toContain('비밀스러운');
+  });
+
+  test('records the preference choice and confidence with the order answer', async () => {
+    const { service, callLog } = serviceWith();
+    const rows = rowMap({ 'UI-1': row('UI-1'), 'UI-2': row('UI-2') });
+    service.project(WS, input(['UI-1'], ['UI-2'], rows), OBSERVE);
+    await vi.advanceTimersByTimeAsync(BATCH_DELAY_MS);
+
+    await service.idle();
+
+    expect(callLog.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        choice: 'independent',
+        confidence: 0.9,
+        prefer_choice: 'b_better_first',
+        prefer_confidence: 0.75,
+        reason: null
+      })
+    );
   });
 });
 

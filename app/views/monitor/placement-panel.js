@@ -25,6 +25,7 @@ import {
 import {
   fullPlacementPlan,
   latestJudgedAt,
+  placementOrderOf,
   placementPlanTable,
   placementRecompute,
   placementStateWord,
@@ -46,7 +47,7 @@ import {
  * pipeline carries.
  * @property {(root_dir: string) => any} queueOf - That repository's latest
  * queue (an adopted reply laid over the pipeline entry).
- * @property {(root_dir: string) => Array<{ id: string, title?: string }>} candidatesOf -
+ * @property {(root_dir: string) => Array<{ id: string, title?: string, priority?: number }>} candidatesOf -
  * That repository's candidates in the monitor's candidate lane order.
  * @property {(root_dir: string, queue: any) => void} adopt - Adopt a reply's
  * queue for the repository the send went to.
@@ -193,11 +194,14 @@ export function createMonitorPlacementPanel(options) {
   }
 
   /**
+   * The repository's plan order material — the shared `placementOrderOf`, as
+   * the Worker tab builds it.
+   *
    * @param {string} root_dir
-   * @returns {string[]}
+   * @returns {import('../worker/placement.js').PlacementOrder}
    */
-  function displayOrder(root_dir) {
-    return options.candidatesOf(root_dir).map((item) => item.id);
+  function orderOf(root_dir) {
+    return placementOrderOf(options.candidatesOf(root_dir));
   }
 
   /**
@@ -225,7 +229,7 @@ export function createMonitorPlacementPanel(options) {
   function planOf(root_dir) {
     return fullPlacementPlan(
       options.queueOf(root_dir),
-      displayOrder(root_dir),
+      orderOf(root_dir),
       checksOf(root_dir)
     );
   }
@@ -274,20 +278,20 @@ export function createMonitorPlacementPanel(options) {
     if (!transport || applying !== null) {
       return;
     }
-    /** @type {Array<{ repo: MonitorPlacementRepo, display_order: string[], shown: PlannedPlacement[] }>} */
+    /** @type {Array<{ repo: MonitorPlacementRepo, order: import('../worker/placement.js').PlacementOrder, shown: PlannedPlacement[] }>} */
     const targets = [];
     for (const repo of repos) {
       if (results.has(repo.root_dir)) {
         continue;
       }
-      const display_order = displayOrder(repo.root_dir);
+      const order = orderOf(repo.root_dir);
       const shown = fullPlacementPlan(
         options.queueOf(repo.root_dir),
-        display_order,
+        order,
         checksOf(repo.root_dir)
       ).plan.order;
       if (shown.length > 0) {
-        targets.push({ repo, display_order, shown });
+        targets.push({ repo, order, shown });
       }
     }
     if (targets.length === 0) {
@@ -298,7 +302,7 @@ export function createMonitorPlacementPanel(options) {
     let placed_total = 0;
     let stopped_total = 0;
     for (let at = 0; at < targets.length; at += 1) {
-      const { repo, display_order, shown } = targets[at];
+      const { repo, order, shown } = targets[at];
       const root_dir = repo.root_dir;
       applying = { at: at + 1, total: targets.length };
       requestRender();
@@ -310,7 +314,7 @@ export function createMonitorPlacementPanel(options) {
           root_dir,
           shown,
           queue: options.queueOf(root_dir),
-          recompute: placementRecompute(display_order),
+          recompute: placementRecompute(order),
           adopt: (queue) => {
             options.adopt(root_dir, queue);
             requestRender();

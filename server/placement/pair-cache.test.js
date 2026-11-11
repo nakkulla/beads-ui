@@ -62,6 +62,44 @@ describe('pair cache', () => {
     expect(second.size()).toBe(0);
   });
 
+  test('stores the preference choice and confidence and reads them after a restart', async () => {
+    const file = path.join(dir, 'cache.json');
+    const first = createPairCache({ file });
+    first.load();
+    first.set('UI-1', 'UI-2', 'da', 'db', {
+      ...ANSWER,
+      prefer_choice: 'b_better_first',
+      prefer_confidence: 0.76
+    });
+    await first.flush();
+
+    const second = createPairCache({ file });
+    second.load();
+
+    expect(second.get('UI-1', 'UI-2', 'da', 'db')).toMatchObject({
+      choice: 'conflict',
+      prefer_choice: 'b_better_first',
+      prefer_confidence: 0.76
+    });
+  });
+
+  test('drops a saved entry whose preference choice is unknown', async () => {
+    const file = path.join(dir, 'cache.json');
+    const first = createPairCache({ file });
+    first.load();
+    first.set('UI-1', 'UI-2', 'da', 'db', ANSWER);
+    await first.flush();
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    saved.entries[0].prefer_choice = 'maybe';
+    saved.entries[0].prefer_confidence = 0.9;
+    fs.writeFileSync(file, JSON.stringify(saved));
+
+    const second = createPairCache({ file });
+    second.load();
+
+    expect(second.size()).toBe(0);
+  });
+
   test('writes the cache file with mode 0600', async () => {
     const file = path.join(dir, 'nested', 'cache.json');
     const cache = createPairCache({ file });
@@ -89,6 +127,8 @@ describe('call log', () => {
         digest_b: 'db',
         choice: 'independent',
         confidence: 0.9,
+        prefer_choice: 'a_better_first',
+        prefer_confidence: 0.74,
         ms: 400,
         reason: null,
         state: 'issue body text',
@@ -106,6 +146,8 @@ describe('call log', () => {
       'digest_b',
       'choice',
       'confidence',
+      'prefer_choice',
+      'prefer_confidence',
       'ms',
       'reason'
     ]);

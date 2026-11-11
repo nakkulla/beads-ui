@@ -1,14 +1,19 @@
 import { describe, expect, test } from 'vitest';
+import { placementPairKey } from '../../../server/placement/wire.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import { createMonitorPlacementPanel } from '../monitor/placement-panel.js';
 import { normalizeCandidateSort } from './candidate-sort.js';
 import {
   bundleStepText,
   candidatePlacement,
+  createPlacementPreview,
   placeMenuLanes,
   placementFromFacts,
+  placementOrderOf,
   placementTitle,
-  placementWarningText
+  placementWarningText,
+  relationLineText
 } from './placement.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
@@ -547,4 +552,149 @@ describe('uncovered reasons (UI-blx2 §3.8)', () => {
       expect(text).toBe(expected);
     }
   );
+});
+
+/**
+ * A relation line with the fields one reason line reads.
+ *
+ * @param {Partial<import('../../utils/placement/compute.js').RelationLine>} over
+ * @returns {import('../../utils/placement/compute.js').RelationLine}
+ */
+function line(over) {
+  return {
+    other: 'UI-b',
+    side: 'chosen',
+    other_lane: null,
+    relation: 'conflict',
+    source: 'jev',
+    confidence: 0.9,
+    jev_choice: 'conflict',
+    judged_at: 1,
+    ...over
+  };
+}
+
+describe('order slots on screen (UI-unf5 §3.9)', () => {
+  test('tails a reason line with the adopted preference', () => {
+    const text = relationLineText(
+      line({ prefer_first: 'UI-b', prefer_confidence: 0.82 })
+    );
+
+    expect(text).toBe(
+      'UI-b — 부딪힘 · jev 0.90 · 먼저 하면 좋은 쪽: UI-b (jev 0.82)'
+    );
+  });
+
+  test('tails a same-file line with the preference after its fixed source', () => {
+    const text = relationLineText(
+      line({
+        source: 'fixed',
+        basis: 'file',
+        overlap: ['app/a.js'],
+        confidence: null,
+        jev_choice: null,
+        prefer_first: 'UI-a',
+        prefer_confidence: 0.7
+      })
+    );
+
+    expect(text).toBe(
+      'UI-b — 부딪힘 · 고정(같은 파일: app/a.js) · 먼저 하면 좋은 쪽: UI-a (jev 0.70)'
+    );
+  });
+
+  test('draws no tail without a preference', () => {
+    const text = relationLineText(line({}));
+
+    expect(text).toBe('UI-b — 부딪힘 · jev 0.90');
+  });
+
+  test('says a cyclic bundle goes in priority and display order', () => {
+    const text = placementWarningText({ code: 'order_cycle' });
+
+    expect(text).toBe(
+      '⚠ 묶음 안 선후가 순환합니다 — 우선순위·표시 순서대로 둡니다'
+    );
+  });
+
+  test('builds the display order and the priorities from the candidate rows', () => {
+    const rows = [
+      { id: 'C-1', priority: 3 },
+      { id: 'C-2' },
+      { id: 'C-3', priority: 0 }
+    ];
+
+    const order = placementOrderOf(rows);
+
+    expect(order).toEqual({
+      display_order: ['C-1', 'C-2', 'C-3'],
+      priority: { 'C-1': 3, 'C-3': 0 }
+    });
+  });
+
+  test('gives the Worker tab and the monitor the same priority input', () => {
+    const root_dir = '/tmp/example/repo-a';
+    const rows = [
+      { id: 'C-1', title: 'one', priority: 3 },
+      { id: 'C-2', title: 'two', priority: 1 }
+    ];
+    const queue = {
+      revision: 2,
+      queue: [],
+      serial_lane_count: 1,
+      serial_lanes: [{ id: 's1', entries: [] }],
+      lane_states: {},
+      attempts: {},
+      done: [],
+      pr_wait: [],
+      placement_status: {
+        'C-1': { state: 'ready', done: 1, total: 1 },
+        'C-2': { state: 'ready', done: 1, total: 1 }
+      },
+      placement_relations: {
+        [placementPairKey('C-1', 'C-2')]: {
+          a: 'C-1',
+          b: 'C-2',
+          relation: 'independent',
+          source: 'jev',
+          confidence: 0.9,
+          jev_choice: 'independent',
+          judged_at: 1
+        }
+      }
+    };
+    const noop = () => {};
+    const worker = createPlacementPreview({
+      transport: undefined,
+      getQueue: () => queue,
+      rootDir: () => root_dir,
+      candidates: () => rows,
+      requestRender: noop,
+      adopt: noop,
+      showToast: noop
+    });
+    const monitor = createMonitorPlacementPanel({
+      transport: undefined,
+      repos: () => [{ root_dir, name: 'repo-a' }],
+      queueOf: () => queue,
+      candidatesOf: () => rows,
+      adopt: noop,
+      requestRender: noop,
+      showToast: noop
+    });
+    const worker_open = document.createElement('button');
+    worker_open.className = 'worker-plan__open';
+    const monitor_open = document.createElement('button');
+    monitor_open.className = 'mon-plan__open';
+    worker.handleClick(worker_open);
+    monitor.handleClick(monitor_open);
+
+    const worker_ids = worker.activePlan()?.order.map((item) => item.id);
+    const monitor_ids = monitor
+      .previewPlan(root_dir)
+      ?.order.map((item) => item.id);
+
+    expect(worker_ids).toEqual(['C-2', 'C-1']);
+    expect(monitor_ids).toEqual(worker_ids);
+  });
 });

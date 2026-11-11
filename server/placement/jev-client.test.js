@@ -8,14 +8,27 @@ import {
   JEV_ENDPOINT,
   JEV_MODEL,
   KEY_RECHECK_MS,
+  PLACEMENT_PREFER_QUESTION,
   PLACEMENT_QUESTION,
   PLACEMENT_QUESTIONS
 } from './question.js';
 
 const KEY = 'fixture-key-not-real';
 
+/** A well-formed answer to the preference question. */
+const PREFER_ANSWER = Object.freeze({
+  choice: 'a_better_first',
+  confidence: 0.82,
+  probabilities: {
+    a_better_first: 0.82,
+    b_better_first: 0.05,
+    no_preference: 0.13
+  }
+});
+
 /**
- * A well-formed jev answer for the placement question.
+ * A well-formed jev answer for the two placement questions; `overrides`
+ * patch the order answer.
  *
  * @param {Record<string, unknown>} [overrides]
  * @returns {Record<string, any>}
@@ -34,7 +47,8 @@ function answer(overrides = {}) {
           conflict: 0.02
         },
         ...overrides
-      }
+      },
+      [PLACEMENT_PREFER_QUESTION]: PREFER_ANSWER
     }
   };
 }
@@ -64,7 +78,7 @@ function envKeys() {
 }
 
 describe('jev request', () => {
-  test('posts the model, the text state and the one placement question', async () => {
+  test('posts the model, the text state and the two placement questions', async () => {
     const fetch = fixtureFetch(answer());
     const client = createJevClient({ fetch, keys: envKeys() });
 
@@ -101,7 +115,7 @@ describe('jev request', () => {
     expect(choices).toEqual(['independent', 'a_first', 'b_first', 'conflict']);
   });
 
-  test('returns the choice, confidence and probabilities of a valid answer', async () => {
+  test('returns both answers of a valid two-answer response', async () => {
     const client = createJevClient({
       fetch: fixtureFetch(answer()),
       keys: envKeys()
@@ -118,7 +132,9 @@ describe('jev request', () => {
         a_first: 0.86,
         b_first: 0.04,
         conflict: 0.02
-      }
+      },
+      prefer_choice: 'a_better_first',
+      prefer_confidence: 0.82
     });
   });
 
@@ -181,6 +197,43 @@ describe('jev response checks', () => {
 
   test('rejects a choice that is not the most probable', () => {
     const raw = answer({ choice: 'independent' });
+
+    const result = validateJevResponse(raw);
+
+    expect(result).toEqual({ ok: false, reason: 'schema_mismatch' });
+  });
+
+  test('rejects a response without the preference answer', () => {
+    const raw = answer();
+    delete raw.answers[PLACEMENT_PREFER_QUESTION];
+
+    const result = validateJevResponse(raw);
+
+    expect(result).toEqual({ ok: false, reason: 'schema_mismatch' });
+  });
+
+  test('rejects a preference answer outside its three choices', () => {
+    const raw = answer();
+    raw.answers[PLACEMENT_PREFER_QUESTION] = {
+      ...PREFER_ANSWER,
+      choice: 'a_first'
+    };
+
+    const result = validateJevResponse(raw);
+
+    expect(result).toEqual({ ok: false, reason: 'schema_mismatch' });
+  });
+
+  test('rejects preference probabilities that do not sum to one', () => {
+    const raw = answer();
+    raw.answers[PLACEMENT_PREFER_QUESTION] = {
+      ...PREFER_ANSWER,
+      probabilities: {
+        a_better_first: 0.82,
+        b_better_first: 0.2,
+        no_preference: 0.13
+      }
+    };
 
     const result = validateJevResponse(raw);
 

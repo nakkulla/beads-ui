@@ -1,6 +1,7 @@
 /**
- * The jev client of the placement judgment (UI-izba §4.2): one choice question
- * per request, the workflow judge's request shape and its response checks.
+ * The jev client of the placement judgment (UI-izba §4.2): the order question
+ * and the preference question (UI-unf5 §3.2) in one request, the workflow
+ * judge's request shape and its response checks.
  *
  * The key is `TYPESAFE_API_KEY`, else the installed dotfiles checkout's
  * `src/shell/bin/secrets-get typesafe/api-key` (ADR dotfiles-hkski). It lives
@@ -20,6 +21,8 @@ import {
   JEV_USER_AGENT,
   KEY_RECHECK_MS,
   PLACEMENT_CHOICES,
+  PLACEMENT_PREFER_CHOICES,
+  PLACEMENT_PREFER_QUESTION,
   PLACEMENT_QUESTION,
   PLACEMENT_QUESTIONS
 } from './question.js';
@@ -28,10 +31,14 @@ const log = debug('placement:jev');
 
 /**
  * @typedef {import('./wire.js').PlacementJevChoice} PlacementJevChoice
+ * @typedef {import('./wire.js').PlacementPreferChoice} PlacementPreferChoice
  */
 
 /**
- * @typedef {{ ok: true, choice: PlacementJevChoice, confidence: number, probabilities: Record<string, number> }|{ ok: false, reason: string }} JevResult
+ * A pair's two answers: `choice`/`confidence`/`probabilities` of the order
+ * question, `prefer_choice`/`prefer_confidence` of the preference question.
+ *
+ * @typedef {{ ok: true, choice: PlacementJevChoice, confidence: number, probabilities: Record<string, number>, prefer_choice: PlacementPreferChoice, prefer_confidence: number }|{ ok: false, reason: string }} JevResult
  */
 
 /**
@@ -217,11 +224,57 @@ function isProbability(value) {
 }
 
 /**
- * The workflow judge's response checks for one choice question: the model
- * matches, the answer set is exactly this question, the choice is one of the
- * four, `probabilities` covers exactly the four with values in [0, 1] summing
- * to 1 ± 0.001, the chosen choice holds the maximum, and `confidence` is a
- * probability. Any miss is `schema_mismatch` for the pair.
+ * The workflow judge's checks for one choice answer: the choice is one of
+ * `options`, `probabilities` covers exactly those with values in [0, 1]
+ * summing to 1 ± 0.001, the chosen choice holds the maximum, and `confidence`
+ * is a probability. Null on any miss.
+ *
+ * @param {unknown} value
+ * @param {readonly string[]} options
+ * @returns {{ choice: string, confidence: number, probabilities: Record<string, number> }|null}
+ */
+function checkedAnswer(value, options) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const answer = /** @type {Record<string, any>} */ (value);
+  if (!options.includes(answer.choice)) {
+    return null;
+  }
+  const probabilities = answer.probabilities;
+  if (
+    !probabilities ||
+    typeof probabilities !== 'object' ||
+    Object.keys(probabilities).length !== options.length ||
+    !options.every((option) => isProbability(probabilities[option]))
+  ) {
+    return null;
+  }
+  const values = options.map((option) => Number(probabilities[option]));
+  const sum = values.reduce((acc, n) => acc + n, 0);
+  if (Math.abs(sum - 1) > 0.001) {
+    return null;
+  }
+  if (probabilities[answer.choice] !== Math.max(...values)) {
+    return null;
+  }
+  if (!isProbability(answer.confidence)) {
+    return null;
+  }
+  return {
+    choice: answer.choice,
+    confidence: answer.confidence,
+    probabilities: Object.fromEntries(
+      options.map((option) => [option, Number(probabilities[option])])
+    )
+  };
+}
+
+/**
+ * The response checks for the two placement questions (UI-unf5 §3.2): the
+ * model matches, the answer set is exactly the two questions, and each answer
+ * passes the workflow judge's choice checks against its own choices. Any miss
+ * — one answer included — is `schema_mismatch` for the whole pair.
  *
  * @param {unknown} raw
  * @returns {JevResult}
@@ -242,48 +295,32 @@ export function validateJevResponse(raw) {
   if (
     !answers ||
     typeof answers !== 'object' ||
-    Object.keys(answers).length !== 1 ||
-    !Object.hasOwn(answers, PLACEMENT_QUESTION)
+    Object.keys(answers).length !== 2 ||
+    !Object.hasOwn(answers, PLACEMENT_QUESTION) ||
+    !Object.hasOwn(answers, PLACEMENT_PREFER_QUESTION)
   ) {
     return mismatch;
   }
-  const value = answers[PLACEMENT_QUESTION];
-  const options = /** @type {readonly string[]} */ (PLACEMENT_CHOICES);
-  if (!value || typeof value !== 'object' || !options.includes(value.choice)) {
-    return mismatch;
-  }
-  const probabilities = value.probabilities;
-  if (
-    !probabilities ||
-    typeof probabilities !== 'object' ||
-    Object.keys(probabilities).length !== options.length ||
-    !options.every((option) => isProbability(probabilities[option]))
-  ) {
-    return mismatch;
-  }
-  const values = options.map((option) => Number(probabilities[option]));
-  const sum = values.reduce((acc, n) => acc + n, 0);
-  if (Math.abs(sum - 1) > 0.001) {
-    return mismatch;
-  }
-  if (probabilities[value.choice] !== Math.max(...values)) {
-    return mismatch;
-  }
-  if (!isProbability(value.confidence)) {
+  const order = checkedAnswer(answers[PLACEMENT_QUESTION], PLACEMENT_CHOICES);
+  const prefer = checkedAnswer(
+    answers[PLACEMENT_PREFER_QUESTION],
+    PLACEMENT_PREFER_CHOICES
+  );
+  if (order === null || prefer === null) {
     return mismatch;
   }
   return {
     ok: true,
-    choice: value.choice,
-    confidence: value.confidence,
-    probabilities: Object.fromEntries(
-      options.map((option) => [option, Number(probabilities[option])])
-    )
+    choice: /** @type {PlacementJevChoice} */ (order.choice),
+    confidence: order.confidence,
+    probabilities: order.probabilities,
+    prefer_choice: /** @type {PlacementPreferChoice} */ (prefer.choice),
+    prefer_confidence: prefer.confidence
   };
 }
 
 /**
- * The request body: model, text state, and the one question (workflow judge
+ * The request body: model, text state, and the two questions (workflow judge
  * `request_payload` shape).
  *
  * @param {string} state
@@ -313,7 +350,7 @@ export function createJevClient(options = {}) {
     keys,
 
     /**
-     * Ask the placement question about one pair state. Never throws and never
+     * Ask the placement questions about one pair state. Never throws and never
      * reports the key or the state back.
      *
      * @param {string} state

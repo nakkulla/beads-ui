@@ -28,14 +28,16 @@ function input(overrides) {
 /**
  * @param {string} choice
  * @param {number} confidence
+ * @param {Record<string, unknown>} [prefer] - The preference answer fields.
  * @returns {import('./relations.js').PairJudgment}
  */
-function answered(choice, confidence) {
+function answered(choice, confidence, prefer = {}) {
   return /** @type {any} */ ({
     kind: 'answer',
     choice,
     confidence,
-    judged_at: 1_700
+    judged_at: 1_700,
+    ...prefer
   });
 }
 
@@ -396,7 +398,7 @@ describe('candidate states', () => {
 });
 
 describe('declared-scope overlap (UI-lsr4)', () => {
-  test('fixes a same-file pair as a conflict without asking jev', () => {
+  test('fixes a same-file pair as a conflict whatever the order answer says', () => {
     const judgmentFor = vi.fn(() => answered('independent', 0.99));
     const facts = input({
       candidates: ['UI-1', 'UI-2'],
@@ -420,10 +422,8 @@ describe('declared-scope overlap (UI-lsr4)', () => {
       jev_choice: null,
       judged_at: null
     });
-    expect(out.jev_pairs).toEqual([]);
     expect(out.progress).toEqual({ done: 0, total: 0 });
     expect(out.status['UI-1']).toEqual({ state: 'fixed_only' });
-    expect(judgmentFor).not.toHaveBeenCalled();
   });
 
   test('keeps a blocks edge ahead of a shared file', () => {
@@ -565,5 +565,154 @@ describe('declared-scope overlap (UI-lsr4)', () => {
       done: 0,
       total: 1
     });
+  });
+});
+
+describe('preference (UI-unf5 §3.2–§3.3)', () => {
+  test('adopts a 0.7 preference as prefer and prefer_confidence in small-id orientation', () => {
+    const facts = input({
+      candidates: ['UI-1'],
+      members: ['UI-2'],
+      judgmentFor: () =>
+        answered('independent', 0.9, {
+          prefer_choice: 'b_better_first',
+          prefer_confidence: 0.7
+        })
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toEqual({
+      a: 'UI-1',
+      b: 'UI-2',
+      relation: 'independent',
+      source: 'jev',
+      confidence: 0.9,
+      jev_choice: 'independent',
+      judged_at: 1_700,
+      prefer: 'b',
+      prefer_confidence: 0.7
+    });
+  });
+
+  test('leaves prefer off a 0.69 preference', () => {
+    const facts = input({
+      candidates: ['UI-1'],
+      members: ['UI-2'],
+      judgmentFor: () =>
+        answered('independent', 0.9, {
+          prefer_choice: 'a_better_first',
+          prefer_confidence: 0.69
+        })
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).not.toHaveProperty('prefer');
+    expect(out.relations['UI-1|UI-2']).not.toHaveProperty('prefer_confidence');
+  });
+
+  test('leaves prefer off a confident no_preference', () => {
+    const facts = input({
+      candidates: ['UI-1'],
+      members: ['UI-2'],
+      judgmentFor: () =>
+        answered('independent', 0.9, {
+          prefer_choice: 'no_preference',
+          prefer_confidence: 0.95
+        })
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).not.toHaveProperty('prefer');
+    expect(out.relations['UI-1|UI-2']).not.toHaveProperty('prefer_confidence');
+  });
+
+  test('asks a same-file pair and puts its preference on the fixed relation while keeping fixed_only', () => {
+    const judgmentFor = vi.fn(() =>
+      answered('independent', 0.99, {
+        prefer_choice: 'a_better_first',
+        prefer_confidence: 0.82
+      })
+    );
+    const facts = input({
+      candidates: ['UI-1'],
+      members: ['UI-2'],
+      scopes: { 'UI-1': ['app/a.js'], 'UI-2': ['app/a.js'] },
+      judgmentFor
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.relations['UI-1|UI-2']).toEqual({
+      a: 'UI-1',
+      b: 'UI-2',
+      relation: 'conflict',
+      source: 'fixed',
+      basis: 'file',
+      overlap: ['app/a.js'],
+      confidence: null,
+      jev_choice: null,
+      judged_at: null,
+      prefer: 'a',
+      prefer_confidence: 0.82
+    });
+    expect(out.jev_pairs).toEqual([
+      { a: 'UI-1', b: 'UI-2', overlap: ['app/a.js'] }
+    ]);
+    expect(judgmentFor).toHaveBeenCalledWith(
+      'UI-1',
+      'UI-2',
+      'd-UI-1',
+      'd-UI-2'
+    );
+    expect(out.status['UI-1']).toEqual({ state: 'fixed_only' });
+    expect(out.progress).toEqual({ done: 0, total: 0 });
+  });
+
+  test('keeps a same-file pair out of the counts of a candidate that also needs jev', () => {
+    const facts = input({
+      candidates: ['UI-1'],
+      members: ['UI-2', 'UI-3'],
+      scopes: { 'UI-1': ['app/a.js'], 'UI-2': ['app/a.js'] },
+      judgmentFor: (a, b) =>
+        b === 'UI-2' ? null : answered('independent', 0.9)
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.status['UI-1']).toEqual({ state: 'ready', done: 1, total: 1 });
+    expect(out.progress).toEqual({ done: 1, total: 1 });
+  });
+
+  test('keeps a candidate fixed_only when its same-file pair failed', () => {
+    const facts = input({
+      candidates: ['UI-1'],
+      members: ['UI-2'],
+      scopes: { 'UI-1': ['app/a.js'], 'UI-2': ['app/a.js'] },
+      judgmentFor: () => ({ kind: 'failed', reason: 'timeout' })
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.status['UI-1']).toEqual({ state: 'fixed_only' });
+  });
+
+  test('keeps a blocks pair out of the judged pairs', () => {
+    const judgmentFor = vi.fn(() => answered('independent', 0.9));
+    const facts = input({
+      candidates: ['UI-1'],
+      members: ['UI-2'],
+      blocked_by: { 'UI-2': ['UI-1'] },
+      scopes: { 'UI-1': ['app/a.js'], 'UI-2': ['app/a.js'] },
+      judgmentFor
+    });
+
+    const out = placementRelations(facts);
+
+    expect(out.jev_pairs).toEqual([]);
+    expect(judgmentFor).not.toHaveBeenCalled();
+    expect(out.relations['UI-1|UI-2']).not.toHaveProperty('prefer');
   });
 });

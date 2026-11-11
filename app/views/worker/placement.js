@@ -512,8 +512,26 @@ function relationWords(other, kind) {
 }
 
 /**
+ * The preference tail of a reason line (UI-unf5 §3.9) —
+ * ` · 먼저 하면 좋은 쪽: UI-a (jev 0.82)` — or nothing without an adopted
+ * preference.
+ *
+ * @param {RelationLine} line
+ * @returns {string}
+ */
+function preferText(line) {
+  if (
+    typeof line.prefer_first !== 'string' ||
+    typeof line.prefer_confidence !== 'number'
+  ) {
+    return '';
+  }
+  return ` · 먼저 하면 좋은 쪽: ${line.prefer_first} (jev ${line.prefer_confidence.toFixed(2)})`;
+}
+
+/**
  * One reason line. `참고` 줄(배치에 쓰지 않는 저확신 jev 답)은 jev의 첫 choice를
- * 말한다.
+ * 말한다. 채택된 preference가 있으면 꼬리를 단다.
  *
  * @param {RelationLine} line
  * @param {boolean} [reference]
@@ -521,8 +539,8 @@ function relationWords(other, kind) {
  */
 export function relationLineText(line, reference = false) {
   return reference
-    ? `참고: ${relationWords(line.other, line.jev_choice)} · ${sourceText(line)}`
-    : `${relationWords(line.other, line.relation)} · ${sourceText(line)}`;
+    ? `참고: ${relationWords(line.other, line.jev_choice)} · ${sourceText(line)}${preferText(line)}`
+    : `${relationWords(line.other, line.relation)} · ${sourceText(line)}${preferText(line)}`;
 }
 
 /**
@@ -550,7 +568,7 @@ const UNCOVERED_REASON_WORDS = {
 export function placementWarningText(warning) {
   switch (warning.code) {
     case 'order_cycle':
-      return '⚠ 묶음 안 선후가 순환합니다 — 표시 순서대로 둡니다';
+      return '⚠ 묶음 안 선후가 순환합니다 — 우선순위·표시 순서대로 둡니다';
     case 'order_unsatisfiable':
       return '⚠ 이 레인 안의 선후 조건을 함께 만족할 수 없어 맨 뒤에 둡니다';
     case 'blocks_reordered':
@@ -699,18 +717,46 @@ export function placedBundleCount(shown, placed) {
 }
 
 /**
+ * The candidate order material a plan reads (UI-unf5 §3.4): the display order
+ * of the candidate lane and each candidate's priority.
+ *
+ * @typedef {{ display_order: string[], priority: Record<string, number> }} PlacementOrder
+ */
+
+/**
+ * The order material of one repository's candidate rows, in their lane sort
+ * order — the one place both tabs build a plan's `display_order` and
+ * `priority` from, so the Worker tab and the monitor order the same rows the
+ * same way. A row without a numeric `priority` gets no entry.
+ *
+ * @param {Array<{ id: string, priority?: number }>} candidates
+ * @returns {PlacementOrder}
+ */
+export function placementOrderOf(candidates) {
+  /** @type {Record<string, number>} */
+  const priority = {};
+  for (const row of candidates) {
+    if (typeof row.priority === 'number') {
+      priority[row.id] = row.priority;
+    }
+  }
+  return { display_order: candidates.map((row) => row.id), priority };
+}
+
+/**
  * The plan function of one repository for a fixed candidate order — the
  * `recompute` input of `sendPlacementBatch`.
  *
- * @param {string[]} display_order
+ * @param {PlacementOrder} order
  * @returns {(queue: any, chosen: string[]) => PlacementPlan}
  */
-export function placementRecompute(display_order) {
+export function placementRecompute(order) {
   return (queue, chosen) =>
     computePlacement({
       queue,
       relations: queue?.placement_relations,
-      display_order,
+      display_order: order.display_order,
+      priority: order.priority,
       chosen
     });
 }
@@ -739,22 +785,23 @@ export function placementRecompute(display_order) {
  * and the monitor's repository cards both read the table from this.
  *
  * @param {any} queue - One repository's `worker-queue` snapshot.
- * @param {string[]} display_order - That repository's candidate ids in their
- * lane sort order.
+ * @param {PlacementOrder} order - That repository's candidate order material
+ * (`placementOrderOf`); the rows keep the display order alone.
  * @param {ReadonlyMap<string, boolean>} checks - The reader's checkbox changes.
  * @returns {FullPlacementPlan}
  */
-export function fullPlacementPlan(queue, display_order, checks) {
+export function fullPlacementPlan(queue, order, checks) {
   const raw_status = objectOf(queue).placement_status;
   /** @type {Record<string, PlacementStatus>} */
   const status = raw_status && typeof raw_status === 'object' ? raw_status : {};
-  const recompute = placementRecompute(display_order);
+  const recompute = placementRecompute(order);
   /** @param {string[]} chosen */
   const planOn = (chosen) => recompute(queue, chosen);
   const ready = recommendableIds(queue);
   const checked = new Set(
     ready.filter((id) => !checks.has(id) || checks.get(id) === true)
   );
+  const display_order = order.display_order;
   const rows = Object.keys(status).sort((a, b) => {
     const ra = display_order.indexOf(a);
     const rb = display_order.indexOf(b);
@@ -1128,8 +1175,8 @@ export function planTargetsLane(plan, lane) {
  * @property {((type: string, payload?: unknown) => Promise<any>)|undefined} transport
  * @property {() => any} getQueue - The current `worker-queue` snapshot.
  * @property {() => string} rootDir
- * @property {() => Array<{ id: string, title?: string }>} candidates - The
- * candidate lane in its sort order.
+ * @property {() => Array<{ id: string, title?: string, priority?: number }>} candidates -
+ * The candidate lane in its sort order.
  * @property {() => void} requestRender
  * @property {(queue: any, root_dir: string) => void} adopt - Adopt a reply's
  * queue for the workspace the send went to (captured at send time, so a reply
@@ -1164,9 +1211,9 @@ export function createPlacementPreview(options) {
     return status && typeof status === 'object' ? status : null;
   }
 
-  /** @returns {string[]} */
-  function displayOrder() {
-    return candidates().map((item) => item.id);
+  /** @returns {PlacementOrder} */
+  function orderNow() {
+    return placementOrderOf(candidates());
   }
 
   /**
@@ -1183,12 +1230,7 @@ export function createPlacementPreview(options) {
    * @returns {PlacementPlan}
    */
   function planOn(queue, chosen) {
-    return computePlacement({
-      queue,
-      relations: queue?.placement_relations,
-      display_order: displayOrder(),
-      chosen
-    });
+    return placementRecompute(orderNow())(queue, chosen);
   }
 
   /**
@@ -1199,7 +1241,7 @@ export function createPlacementPreview(options) {
    * @returns {FullPlacementPlan}
    */
   function fullPlanOn(queue) {
-    return fullPlacementPlan(queue, displayOrder(), checks);
+    return fullPlacementPlan(queue, orderNow(), checks);
   }
 
   /**
@@ -1240,7 +1282,9 @@ export function createPlacementPreview(options) {
    */
   async function applyOne(id) {
     const queue = getQueue();
-    const placement = planOn(queue, [id]).by_id[id];
+    // The order the shown place was computed with recomputes every reply.
+    const recompute = placementRecompute(orderNow());
+    const placement = recompute(queue, [id]).by_id[id];
     if (!transport || !placement || busy) {
       return;
     }
@@ -1253,7 +1297,7 @@ export function createPlacementPreview(options) {
       root_dir,
       shown: [placement],
       queue,
-      recompute: planOn,
+      recompute,
       adopt: (next) => adopt(next, root_dir),
       snapshot: getQueue
     });
@@ -1276,7 +1320,10 @@ export function createPlacementPreview(options) {
 
   async function applyAll() {
     const queue = getQueue();
-    const shown = fullPlanOn(queue).plan.order;
+    // Frozen at the click like the monitor's: the table's order material is
+    // what every reply recomputes with (UI-unf5 §3.8).
+    const order = orderNow();
+    const shown = fullPlacementPlan(queue, order, checks).plan.order;
     if (!transport || shown.length === 0 || busy) {
       return;
     }
@@ -1289,7 +1336,7 @@ export function createPlacementPreview(options) {
       root_dir,
       shown,
       queue,
-      recompute: planOn,
+      recompute: placementRecompute(order),
       adopt: (next) => adopt(next, root_dir),
       snapshot: getQueue
     });

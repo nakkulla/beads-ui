@@ -397,6 +397,8 @@ export function createPlacementService(options) {
         {
           choice: result.choice,
           confidence: result.confidence,
+          prefer_choice: result.prefer_choice,
+          prefer_confidence: result.prefer_confidence,
           judged_at: ended
         }
       );
@@ -413,6 +415,8 @@ export function createPlacementService(options) {
       digest_b: job.material_b.digest,
       choice: result.ok ? result.choice : null,
       confidence: result.ok ? result.confidence : null,
+      prefer_choice: result.ok ? result.prefer_choice : null,
+      prefer_confidence: result.ok ? result.prefer_confidence : null,
       ms: ended - started,
       reason: result.ok ? null : result.reason
     });
@@ -503,6 +507,8 @@ export function createPlacementService(options) {
               kind: 'answer',
               choice: entry.choice,
               confidence: entry.confidence,
+              prefer_choice: entry.prefer_choice,
+              prefer_confidence: entry.prefer_confidence,
               judged_at: entry.judged_at
             };
           }

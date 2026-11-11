@@ -29,8 +29,21 @@ export const JEV_TIMEOUT_MS = 5_000;
 export const JEV_USER_AGENT =
   'beads-ui-placement/1 (+https://github.com/nakkulla/beads-ui)';
 
-/** @type {string} The one question name a placement request carries. */
+/**
+ * The order question a placement request carries. Literal-typed so each of
+ * the two questions keeps its own criteria type.
+ *
+ * @type {'placement_pair'}
+ */
 export const PLACEMENT_QUESTION = 'placement_pair';
+
+/**
+ * The preference question the same request carries (UI-unf5 §3.2): which
+ * landing first makes the other easier, when no order is required.
+ *
+ * @type {'placement_prefer'}
+ */
+export const PLACEMENT_PREFER_QUESTION = 'placement_prefer';
 
 /**
  * The four choices, with A the smaller id of the pair and B the larger one.
@@ -42,8 +55,18 @@ export const PLACEMENT_CHOICES = Object.freeze(
 );
 
 /**
- * The question as the request carries it (`questions` member shape of the
- * workflow judge: `type`, `instructions`, `criteria`).
+ * The three preference choices, in the same A/B orientation.
+ *
+ * @type {readonly ['a_better_first', 'b_better_first', 'no_preference']}
+ */
+export const PLACEMENT_PREFER_CHOICES = Object.freeze(
+  /** @type {const} */ (['a_better_first', 'b_better_first', 'no_preference'])
+);
+
+/**
+ * The two questions as the request carries them (`questions` member shape of
+ * the workflow judge: `type`, `instructions`, `criteria`). Same-file pairs are
+ * asked too, but only their `placement_prefer` answer is read (UI-unf5 §3.2).
  */
 export const PLACEMENT_QUESTIONS = Object.freeze({
   [PLACEMENT_QUESTION]: Object.freeze({
@@ -59,6 +82,19 @@ export const PLACEMENT_QUESTIONS = Object.freeze({
         "A builds on B's result, A uses shared groundwork (infrastructure, a helper, a schema, a contract or configuration) that B newly lays down or changes, or A would have to be redone if B landed later.",
       conflict:
         "Neither relies on the other's result, but both change the same file, shared state, contract clause or deployment surface, so doing them at the same time collides."
+    })
+  }),
+  [PLACEMENT_PREFER_QUESTION]: Object.freeze({
+    type: 'choice',
+    instructions:
+      'Issues A and B (A has the smaller id) will be implemented by separate workers and merged separately. The state may begin with a line naming the paths their declared scopes overlap on; that line is material about where the two may touch. A folder on that line only says both work somewhere under it, which by itself does not mean they change the same file. Assume neither has to land before the other. If one lands first, which order makes the other easier, smaller or less likely to be redone?',
+    criteria: Object.freeze({
+      a_better_first:
+        'B is likely to reuse, extend or be simplified by what A adds or changes (a helper, a component, a schema, a contract, configuration, or a fix B leans on), or B would need changes if A landed after it.',
+      b_better_first:
+        'A is likely to reuse, extend or be simplified by what B adds or changes (a helper, a component, a schema, a contract, configuration, or a fix A leans on), or A would need changes if B landed after it.',
+      no_preference:
+        'Neither makes the other easier or safer, so the order does not materially matter.'
     })
   })
 });
@@ -82,6 +118,7 @@ export const PLACEMENT_QUESTION_VERSION = crypto
 export {
   ADOPT_CONFIDENCE,
   OVERLAP_INDEPENDENT_CONFIDENCE,
+  PREFER_CONFIDENCE,
   REFERENCE_CONFIDENCE
 } from './wire.js';
 
