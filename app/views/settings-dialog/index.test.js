@@ -781,19 +781,20 @@ describe('createSettingsDialog target (UI-32oq §4.4)', () => {
     ).toBe('http://typing:3000');
   });
 
-  test('says the server-wide tabs ignore the target', async () => {
-    const { root, dialog } = mount();
-    dialog.open();
-    await settle();
-    const on_target = root.querySelector('[data-target-note]');
+  test.each(['active_account', 'presets', 'operations'])(
+    'hides the target bar on the server-wide %s tab',
+    async (tab) => {
+      const { root, dialog } = mount();
+      dialog.open();
+      await settle();
+      expect(root.querySelector('[data-target-bar]')).not.toBe(null);
 
-    await openTab(root, 'operations');
+      await openTab(root, tab);
 
-    expect(on_target).toBe(null);
-    expect(root.querySelector('[data-target-note]')?.textContent?.trim()).toBe(
-      '서버 전체 탭은 대상과 무관합니다'
-    );
-  });
+      expect(root.querySelector('[data-target-bar]')).toBe(null);
+      expect(root.querySelector('[data-target-note]')).toBe(null);
+    }
+  );
 });
 
 describe('createSettingsDialog several repositories (UI-nu43 §3.1, UI-32oq §4.4)', () => {
@@ -823,7 +824,7 @@ describe('createSettingsDialog several repositories (UI-nu43 §3.1, UI-32oq §4.
     await openTab(root, 'account');
 
     expect(root.querySelector('.settings-dialog__pane-sub')?.textContent).toBe(
-      '선택한 저장소의 저장소 고정 계정과 한도 대응을 읽어 세웁니다.'
+      '선택한 저장소 Worker의 default 계정과 자동 전환을 읽어 세웁니다.'
     );
     expect(root.querySelector('[data-bulk-apply="account"]')).not.toBe(null);
   });
@@ -1440,8 +1441,8 @@ describe('createSettingsDialog server-wide tabs (UI-32oq §4.4)', () => {
     await openTab(root, 'active_account');
 
     expect(titlesOf(root, 'active_account')).toEqual([
-      'Claude 활성 계정 자동 전환',
-      'Codex 활성 계정 자동 전환'
+      'Claude 활성 로그인',
+      'Codex 활성 로그인'
     ]);
   });
 
@@ -1549,21 +1550,23 @@ describe('createSettingsDialog server-wide tabs (UI-32oq §4.4)', () => {
     expect(titlesOf(root, 'presets')).toEqual(single);
   });
 
-  test('keeps a server-wide section across a target change', async () => {
+  test('restores the selected repository after visiting a server-wide tab', async () => {
     const { root, dialog } = mount({
       monitorRows: TWO_ROWS,
       timingSettings: TIMING
     });
-    dialog.open('operations');
-    await settle();
-    const before = root.querySelector('[data-pane="operations"] > *');
-
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-target-mode="multi"]')
-    ).click();
+    dialog.open('account', { scope: 'repo', root_dir: REPO_B });
     await settle();
 
-    expect(root.querySelector('[data-pane="operations"] > *')).toBe(before);
+    await openTab(root, 'operations');
+    expect(root.querySelector('[data-target-bar]')).toBe(null);
+    await openTab(root, 'account');
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('[data-target-repo]')
+      ).value
+    ).toBe(REPO_B);
   });
 
   test('shows the config.toml fallback of the 대화 자동 기동 switch on 운영', async () => {

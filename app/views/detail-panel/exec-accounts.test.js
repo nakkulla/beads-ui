@@ -293,7 +293,7 @@ describe('views/detail-panel/exec-accounts workspace defaults (UI-d3cb §6.2)', 
     });
 
     expect(optionLabels(selectFor(mount, 'claude_account'))[0]).toBe(
-      '저장소 고정 계정(repo@example.com (team))'
+      '저장소 default 계정(repo@example.com (team))'
     );
   });
 
@@ -305,7 +305,7 @@ describe('views/detail-panel/exec-accounts workspace defaults (UI-d3cb §6.2)', 
     });
 
     expect(optionLabels(selectFor(mount, 'codex_account'))[0]).toBe(
-      '저장소 고정 계정(retired-key)'
+      '저장소 default 계정(retired-key)'
     );
   });
 

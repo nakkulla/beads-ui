@@ -1,5 +1,5 @@
 /**
- * One runner's `한도 대응` rows — `대응 방식`, `전환 허용 계정`, `선제 전환` —
+ * One runner's account rows — `자동 전환`, `전환 허용 계정`, `옮기는 시점` —
  * and the click handling behind them (UI-13o1 §3.5, UI-9y1k §4.5).
  *
  * The settings dialog's `계정` and `활성 계정` tabs draw these rows from this
@@ -24,6 +24,7 @@
  * @property {string|null} mode_label - The mode row's label, or null to leave
  * the mode row out.
  * @property {boolean} [dim] - Dim every drawn row (values stay editable).
+ * @property {TemplateResult} [default_row] - The runner's default account row.
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
@@ -340,7 +341,7 @@ export function createLimitPolicyEditor(deps) {
   }
 
   /**
-   * The repo tab's wait/switch choice for one runner (`기다림 / 자동 전환`).
+   * The repo tab's wait/switch choice for one runner (`켬 / 끔`).
    *
    * @param {LimitRunner} runner
    * @param {string} label - The runner's display name (`Claude`, `Codex`).
@@ -359,18 +360,9 @@ export function createLimitPolicyEditor(deps) {
         <span
           class="settings-dialog__seg"
           role="group"
-          aria-label=${`${label} 한도 대응`}
+          aria-label=${`${label} 자동 전환`}
           data-limit-mode-runner=${runner}
         >
-          <button
-            type="button"
-            class=${policy.mode === 'wait' ? 'op-btn is-active' : 'op-btn'}
-            data-limit-mode="wait"
-            aria-pressed=${String(policy.mode === 'wait')}
-            @click=${() => onModeChange(runner, 'wait')}
-          >
-            기다림
-          </button>
           <button
             type="button"
             class=${policy.mode === 'switch' ? 'op-btn is-active' : 'op-btn'}
@@ -378,7 +370,16 @@ export function createLimitPolicyEditor(deps) {
             aria-pressed=${String(policy.mode === 'switch')}
             @click=${() => onModeChange(runner, 'switch')}
           >
-            자동 전환
+            켬
+          </button>
+          <button
+            type="button"
+            class=${policy.mode === 'wait' ? 'op-btn is-active' : 'op-btn'}
+            data-limit-mode="wait"
+            aria-pressed=${String(policy.mode === 'wait')}
+            @click=${() => onModeChange(runner, 'wait')}
+          >
+            끔
           </button>
         </span>
       </span>
@@ -406,6 +407,7 @@ export function createLimitPolicyEditor(deps) {
     return html`${options.mode_label === null
         ? ''
         : modeRowTemplate(runner, label, options.mode_label, policy, top_dim)}
+      ${options.default_row ?? ''}
       <div class=${`settings-dialog__row${dim}`} data-limit-accounts=${runner}>
         <span class="settings-dialog__row-label">전환 허용 계정</span>
         <span class="settings-dialog__controls">
@@ -421,7 +423,7 @@ export function createLimitPolicyEditor(deps) {
         class=${`settings-dialog__row${dim}`}
         data-limit-preempt-row=${runner}
       >
-        <span class="settings-dialog__row-label">선제 전환</span>
+        <span class="settings-dialog__row-label">옮기는 시점</span>
         <span class="settings-dialog__controls">
           <label class="settings-dialog__check">
             <input

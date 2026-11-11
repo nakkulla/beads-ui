@@ -790,7 +790,7 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
         (/** @type {HTMLOptionElement} */ option) => option.textContent?.trim()
       )
     ).toEqual([
-      '비움 — 활성 로그인(a@example.com)',
+      '비움 — 활성 계정 따름 (지금 a@example.com)',
       'a@example.com (team)',
       'b@example.com'
     ]);
@@ -924,6 +924,24 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
     ).toEqual(['b@example.com']);
   });
 
+  test.each(['claude', 'codex'])(
+    'orders the four bulk %s account rows like the single repository tab',
+    async (runner) => {
+      const { host, pane } = setup();
+
+      pane.render('account');
+      await settle();
+
+      const group = el(host, `[data-bulk-limit="${runner}"]`);
+      expect(
+        Array.from(
+          group.querySelectorAll('.settings-dialog__row-label'),
+          (node) => node.textContent.trim()
+        )
+      ).toEqual(['자동 전환', 'default 계정', '전환 허용 계정', '옮기는 시점']);
+    }
+  );
+
   test('keeps the allow account boxes editable', async () => {
     const { host, pane } = setup();
 
@@ -938,7 +956,7 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
     ).toBe(false);
   });
 
-  test('locks the allow accounts and the preemptive switch on 기다림', async () => {
+  test('keeps the allow accounts and trigger editable while auto switch is off', async () => {
     const { host, pane } = setup();
     pane.render('account');
     await settle();
@@ -953,8 +971,8 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
         host,
         '[data-runner="claude"][data-bulk-limit-account="a@example.com"]'
       ).disabled
-    ).toBe(true);
-    expect(el(host, '[data-bulk-preempt="claude"]').disabled).toBe(true);
+    ).toBe(false);
+    expect(el(host, '[data-bulk-preempt="claude"]').disabled).toBe(false);
   });
 
   test('dims the allow and preemptive rows on 기다림', async () => {
@@ -976,7 +994,7 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
           'settings-dialog__row--off'
         )
       )
-    ).toEqual([false, true, true]);
+    ).toEqual([false, false, true, true]);
   });
 
   test('keeps the allow accounts live while the mode is split', async () => {

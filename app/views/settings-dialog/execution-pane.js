@@ -1544,7 +1544,7 @@ export function createExecutionPane(mount_element, binding) {
       <span class="settings-dialog__controls">
         <select
           class="ui-select ui-select--bare"
-          aria-label=${label}
+          aria-label=${`${provider_key === 'claude' ? 'Claude' : 'Codex'} ${label}`}
           data-account-key=${key}
           @change=${(/** @type {Event} */ ev) =>
             onAccountChange(
@@ -1553,7 +1553,7 @@ export function createExecutionPane(mount_element, binding) {
             )}
         >
           <option value=${UNSET} ?selected=${selected.length === 0}>
-            ${accountDefaultLabel(provider_key, provider)}
+            ${accountDefaultLabel(provider)}
           </option>
           ${selected.length > 0 && !known
             ? html`<option value=${selected} selected>
@@ -2270,7 +2270,8 @@ export function createExecutionPane(mount_element, binding) {
    */
   function limitRows(runner, label) {
     return html`${limit_editor.template(runner, label, {
-      mode_label: `${label} 한도 대응`
+      mode_label: '자동 전환',
+      default_row: accountRow(`${runner}_account`, 'default 계정', runner)
     })}
     ${pinnedEmptyWarning(runner)}`;
   }
@@ -2350,11 +2351,13 @@ export function createExecutionPane(mount_element, binding) {
   function accountSection() {
     return html`
       ${accountBanner()} ${activeLoginLine()}
-      <div class="settings-dialog__group" data-exec-accounts-group>
-        <div class="settings-dialog__group-title">저장소 고정 계정</div>
-        ${accountRow('claude_account', 'Claude', 'claude')}
-        ${accountRow('codex_account', 'Codex', 'codex')}
-        ${limitRows('claude', 'Claude')} ${limitRows('codex', 'Codex')}
+      <div class="settings-dialog__group" data-exec-accounts-group="claude">
+        <div class="settings-dialog__group-title">Claude 이 저장소 Worker</div>
+        ${limitRows('claude', 'Claude')}
+      </div>
+      <div class="settings-dialog__group" data-exec-accounts-group="codex">
+        <div class="settings-dialog__group-title">Codex 이 저장소 Worker</div>
+        ${limitRows('codex', 'Codex')}
         ${codex_credit_controls.template(account_catalog.codex?.accounts || [])}
       </div>
     `;

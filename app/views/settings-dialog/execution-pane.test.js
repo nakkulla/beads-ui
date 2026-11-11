@@ -1533,6 +1533,25 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     vi.unstubAllGlobals();
   });
 
+  test.each(['claude', 'codex'])(
+    'orders the four %s Worker account rows like the active login tab',
+    async (runner) => {
+      const { root, pane } = mount({ section: 'account' });
+
+      await pane.load();
+
+      const group = /** @type {HTMLElement} */ (
+        root.querySelector(`[data-exec-accounts-group="${runner}"]`)
+      );
+      expect(
+        Array.from(
+          group.querySelectorAll('.settings-dialog__row-label'),
+          (node) => node.textContent.trim()
+        )
+      ).toEqual(['자동 전환', 'default 계정', '전환 허용 계정', '옮기는 시점']);
+    }
+  );
+
   test('renders both provider selects in their own group', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane } = mount({ section: 'account' });
@@ -1541,12 +1560,12 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
 
     expect(root.querySelector('[data-exec-accounts-group]')).not.toBe(null);
     expect(labels(accountSelect(root, 'claude_account'))).toEqual([
-      '비움 — 활성 로그인(active@example.com)',
+      '비움 — 활성 계정 따름 (지금 active@example.com)',
       'repo@example.com (team)',
       'active@example.com'
     ]);
     expect(labels(accountSelect(root, 'codex_account'))).toEqual([
-      '비움 — 활성 로그인(codex@example.com · pro)',
+      '비움 — 활성 계정 따름 (지금 codex@example.com)',
       'codex@example.com · pro'
     ]);
   });
@@ -1671,7 +1690,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     const select = accountSelect(root, 'claude_account');
     expect(select.value).toBe('repo@example.com');
     expect(labels(select)).toEqual([
-      '비움 — 활성 로그인(확인 불가)',
+      '비움 — 활성 계정 따름 (지금 확인 불가)',
       'repo@example.com (목록에 없음)'
     ]);
   });

@@ -221,9 +221,7 @@ export function createLimitPolicySection(host, options) {
       class="settings-dialog__group"
       data-limit-global=${runner}
     >
-      <div class="settings-dialog__group-title">
-        ${label} 활성 계정 자동 전환
-      </div>
+      <div class="settings-dialog__group-title">${label} 활성 로그인</div>
       <div class="settings-dialog__row" data-limit-auto-row=${runner}>
         <span class="settings-dialog__row-label">자동 전환</span>
         <span class="settings-dialog__controls">

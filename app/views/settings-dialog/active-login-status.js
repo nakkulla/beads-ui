@@ -35,11 +35,11 @@ export const LOGIN_RUNNERS = [
 
 /** The note under the `활성 계정` tab's status lines. */
 export const WORKER_LOGIN_NOTE =
-  '저장소 고정 계정이 없는 저장소의 Worker도 이 로그인을 씁니다.';
+  '저장소 default 계정이 없는 저장소의 Worker도 이 로그인을 씁니다.';
 
 /** The `계정` tab warning for a waiting repo with an empty pin. */
 export const PINNED_EMPTY_WARNING =
-  '고정 계정이 비어 있어 활성 계정 자동 전환을 따라갑니다. 기다림을 지키려면 고정 계정을 고르세요.';
+  '자동 전환 끔인데 default가 비어 있어 활성 계정 자동 전환을 따라갑니다. 지키려면 default 계정을 고르세요.';
 
 /** What a line says when the account list cannot name the login. */
 const UNKNOWN_LOGIN = '확인 불가';

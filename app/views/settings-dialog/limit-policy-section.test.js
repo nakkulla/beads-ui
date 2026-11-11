@@ -92,6 +92,22 @@ afterEach(() => {
 });
 
 describe('createLimitPolicySection (UI-giog §4.5, UI-32oq §4.1)', () => {
+  test.each(['claude', 'codex'])(
+    'orders the four %s active login rows like the Worker account tab',
+    async (runner) => {
+      const { host } = await mount();
+
+      const group = el(host, `[data-limit-global="${runner}"]`);
+
+      expect(
+        Array.from(
+          group.querySelectorAll('.settings-dialog__row-label'),
+          (node) => node.textContent.trim()
+        )
+      ).toEqual(['자동 전환', 'default 계정', '전환 허용 계정', '옮기는 시점']);
+    }
+  );
+
   test('draws one group per runner, Claude first', async () => {
     const { host } = await mount();
 

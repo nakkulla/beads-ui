@@ -115,7 +115,7 @@ function defaultLabel(provider_key, provider, workspace_default) {
     const known = provider
       ? provider.accounts.find((account) => account.key === workspace_default)
       : undefined;
-    return `저장소 고정 계정(${known ? formatter(known) : workspace_default})`;
+    return `저장소 default 계정(${known ? formatter(known) : workspace_default})`;
   }
   if (!provider) {
     return '(기본)';

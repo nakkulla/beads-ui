@@ -14595,6 +14595,215 @@ describe('scheduler resume (spec §1)', () => {
     });
   }
 
+  /**
+   * @param {'claude'|'codex'} runner
+   * @param {string} source
+   */
+  function switchedResumeEnv(runner, source) {
+    const model = runner === 'codex' ? 'sol' : 'opus';
+    const env = setup({
+      config: { B1: { model } },
+      slots: 1,
+      kvGet: vi.fn(async () => ({
+        ok: true,
+        value: {
+          schema: 1,
+          claude_account: 'default@example.com',
+          codex_account: 'default-codex'
+        }
+      })),
+      ...accountDeps()
+    });
+    seedAttempt(
+      env.store,
+      'switched',
+      resumablePrior({
+        runner,
+        model,
+        claude_account: 'switched@example.com',
+        codex_account: 'switched-codex',
+        account_sources: { claude: source, codex: source },
+        exec_values: {
+          ...Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null])),
+          orchestration_model: model,
+          orchestration_effort: 'high'
+        }
+      })
+    );
+    return env;
+  }
+
+  const return_cases = /** @type {const} */ ([
+    ['claude', 'outage_switch'],
+    ['claude', 'live_switch'],
+    ['codex', 'outage_switch'],
+    ['codex', 'live_switch']
+  ]);
+
+  /**
+   * @param {ReturnType<typeof setup>} env
+   * @param {'claude'|'codex'} runner
+   * @param {boolean} listed
+   */
+  function releaseSwitchedProvider(env, runner, listed) {
+    const account =
+      runner === 'codex' ? 'switched-codex' : 'switched@example.com';
+    const model = runner === 'codex' ? 'sol' : 'opus';
+    env.store.holdProviderAttempt(WS, {
+      attempt_id: 'switched',
+      runner,
+      patch: { status: 'paused', cause: 'provider_outage:outage' },
+      target: {
+        kind: 'outage',
+        model,
+        account,
+        detail: 'outage',
+        last_error: '503',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+    return recoverTarget(
+      env.store,
+      WS,
+      { runner, kind: 'outage', model, account },
+      { [runner]: listed ? [account] : [] }
+    );
+  }
+
+  test.each(return_cases)(
+    'returns a %s %s conversation to its repository default',
+    async (runner, source) => {
+      const env = switchedResumeEnv(runner, source);
+
+      const result = await env.scheduler.resume(WS, 'switched', {
+        conversation_return: { line: '인계 · 계속 진행', source: 'button' }
+      });
+
+      expect(result.ok).toBe(true);
+      const child = Object.values(env.store.snapshot(WS).attempts).at(-1);
+      expect(child).toMatchObject({
+        [`${runner}_account`]:
+          runner === 'codex' ? 'default-codex' : 'default@example.com',
+        account_sources: { [runner]: 'workspace_default' },
+        model: runner === 'codex' ? 'sol' : 'opus',
+        effort: 'high'
+      });
+      expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+    }
+  );
+
+  test.each(return_cases)(
+    'returns a %s %s provider resume to its repository default',
+    async (runner, source) => {
+      const env = switchedResumeEnv(runner, source);
+      const settled = releaseSwitchedProvider(env, runner, true);
+
+      const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(settled.pending[0].account).toBe(
+        runner === 'codex' ? 'switched-codex' : 'switched@example.com'
+      );
+      expect(result.resumed_beads).toEqual(['B1']);
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).at(-1)
+      ).toMatchObject({
+        [`${runner}_account`]:
+          runner === 'codex' ? 'default-codex' : 'default@example.com',
+        account_sources: { [runner]: 'workspace_default' }
+      });
+      expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+    }
+  );
+
+  test.each(return_cases)(
+    'keeps the switched %s %s account for an unpinned receipt while the default is held',
+    async (runner, source) => {
+      const env = switchedResumeEnv(runner, source);
+      const settled = releaseSwitchedProvider(env, runner, false);
+      env.store.providerHolds.enter({
+        runner,
+        origin: WS,
+        target: {
+          kind: 'usage_limit',
+          model: runner === 'codex' ? 'sol' : 'opus',
+          account: runner === 'codex' ? 'default-codex' : 'default@example.com',
+          detail: 'usage_limit',
+          last_error: 'limit'
+        }
+      });
+
+      const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(settled.pending[0].account).toBeNull();
+      expect(result.resumed_beads).toEqual(['B1']);
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).at(-1)
+      ).toMatchObject({
+        [`${runner}_account`]:
+          runner === 'codex' ? 'switched-codex' : 'switched@example.com',
+        account_sources: { [runner]: source }
+      });
+      expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+    }
+  );
+
+  test.each(return_cases)(
+    'keeps the switched %s %s account while the default is held',
+    async (runner, source) => {
+      const env = switchedResumeEnv(runner, source);
+      env.store.providerHolds.enter({
+        runner,
+        origin: WS,
+        target: {
+          kind: 'usage_limit',
+          model: runner === 'codex' ? 'sol' : 'opus',
+          account: runner === 'codex' ? 'default-codex' : 'default@example.com',
+          detail: 'usage_limit',
+          last_error: 'limit'
+        }
+      });
+
+      const result = await env.scheduler.resume(WS, 'switched', {
+        conversation_return: { line: '인계 · 계속 진행', source: 'button' }
+      });
+
+      expect(result.ok).toBe(true);
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).at(-1)
+      ).toMatchObject({
+        [`${runner}_account`]:
+          runner === 'codex' ? 'switched-codex' : 'switched@example.com',
+        account_sources: { [runner]: source }
+      });
+    }
+  );
+
+  test.each(return_cases)(
+    'prefers the issue pin when returning a %s %s account',
+    async (runner, source) => {
+      const env = switchedResumeEnv(runner, source);
+      const snapshot = env.bd.snapshotBead;
+      env.bd.snapshotBead = vi.fn(async (id) => ({
+        ...(await snapshot(id)),
+        [`${runner}_account`]: 'issue-pin'
+      }));
+
+      const result = await env.scheduler.resume(WS, 'switched', {
+        conversation_return: { line: '인계 · 계속 진행', source: 'button' }
+      });
+
+      expect(result.ok).toBe(true);
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).at(-1)
+      ).toMatchObject({
+        [`${runner}_account`]: 'issue-pin',
+        account_sources: { [runner]: 'bead' }
+      });
+    }
+  );
+
   test('dismisses a terminal resume when its owned worktree disappears', async () => {
     const env = setup({
       config: { B1: { status: 'open' } },

@@ -92,8 +92,9 @@ const TAB_COPY = {
   },
   account: {
     title: '계정',
-    sub: '이 저장소 Worker의 저장소 고정 계정과, 그 계정이 차면 어떻게 할지 정합니다. Mac의 현재 로그인은 바꾸지 않습니다.',
-    multi_sub: '선택한 저장소의 저장소 고정 계정과 한도 대응을 읽어 세웁니다.'
+    sub: '이 저장소 Worker의 default 계정과 자동 전환을 정합니다.',
+    multi_sub:
+      '선택한 저장소 Worker의 default 계정과 자동 전환을 읽어 세웁니다.'
   },
   repo: {
     title: '저장소',
@@ -105,7 +106,7 @@ const TAB_COPY = {
   },
   active_account: {
     title: '활성 계정',
-    sub: 'Mac의 현재 로그인을 자동으로 바꿉니다. 대화형 세션과 고정 계정이 없는 저장소의 Worker가 이 로그인을 씁니다. 저장소별 설정과 따로 동작합니다.'
+    sub: 'Mac의 현재 로그인을 자동으로 바꿉니다. 대화형 세션과 default 계정이 없는 저장소의 Worker가 이 로그인을 씁니다. 저장소별 설정과 따로 동작합니다.'
   },
   presets: {
     title: '프리셋·모델',
@@ -657,9 +658,11 @@ export function createSettingsDialog(mount_element, options) {
     return connected !== null && rowOf(connected) ? connected : CONNECTED_VALUE;
   }
 
-  /** @returns {TemplateResult} */
+  /** @returns {TemplateResult|''} */
   function targetBarTemplate() {
-    const server_tab = SERVER_TABS.some((tab) => tab.id === active_tab);
+    if (SERVER_TABS.some((tab) => tab.id === active_tab)) {
+      return '';
+    }
     const value = pickerValue();
     return html`<div class="settings-dialog__target" data-target-bar>
       <span class="settings-dialog__target-label">대상</span>
@@ -704,11 +707,6 @@ export function createSettingsDialog(mount_element, options) {
         : html`<span class="settings-dialog__target-hint"
             >아래 적용 대상에서 고릅니다</span
           >`}
-      ${server_tab
-        ? html`<span class="settings-dialog__hint" data-target-note
-            >서버 전체 탭은 대상과 무관합니다</span
-          >`
-        : ''}
     </div>`;
   }
 

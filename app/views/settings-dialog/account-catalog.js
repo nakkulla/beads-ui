@@ -115,18 +115,13 @@ export function accountRowLabel(provider_key, row) {
  * The "no repo default" option label: what that choice falls through to, which
  * is the machine's current login.
  *
- * @param {'claude'|'codex'} provider_key
  * @param {AccountProviderCatalog|null} provider
  * @returns {string}
  */
-export function accountDefaultLabel(provider_key, provider) {
+export function accountDefaultLabel(provider) {
   const active = provider ? provider.active : null;
   if (!isRecord(active)) {
-    return '비움 — 활성 로그인(확인 불가)';
+    return '비움 — 활성 계정 따름 (지금 확인 불가)';
   }
-  const active_label =
-    provider_key === 'claude'
-      ? active.email
-      : codexLabel(/** @type {any} */ ({ ...active, alias: null }));
-  return `비움 — 활성 로그인(${active_label})`;
+  return `비움 — 활성 계정 따름 (지금 ${active.email})`;
 }

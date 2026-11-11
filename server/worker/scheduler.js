@@ -1555,7 +1555,7 @@ export function interactiveTurnState(running, attention) {
  *   sweepStalledContinuations: (workspace: string) => { rearmed: string[], restored: string[] },
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, job_retry_authorized?: boolean, self_repair_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<ProviderAutoResumeOutcome>,
  *   reevaluateProviderSwitches: (workspace: string, catalog_accounts?: import('./account-catalog.js').Account[]) => Promise<void>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
@@ -19627,9 +19627,24 @@ export function createScheduler(deps) {
     if (base_resolved.exec.invalid_reason) {
       return { ok: false, reason: base_resolved.exec.invalid_reason };
     }
+    const resume_runner = /** @type {'claude'|'codex'} */ (
+      base_resolved.exec.runner
+    );
+    const switched_source = base_resolved.account_sources[resume_runner];
+    const return_switched_account =
+      (options.conversation_return === true || provider_auto_resume) &&
+      !ladder_retry &&
+      !recovery_wait &&
+      !prior_attempt_choice &&
+      !strict_preserved &&
+      !account_switch &&
+      !wait_receipt &&
+      (switched_source === 'outage_switch' ||
+        switched_source === 'live_switch');
     if (
       provider_auto_resume &&
       options.resolve_provider_account === true &&
+      !return_switched_account &&
       (!prior_attempt_choice || wait_receipt)
     ) {
       const workspace_accounts = await readWorkspaceAccountsLayer(workspace);
@@ -19661,6 +19676,36 @@ export function createScheduler(deps) {
       return override_result;
     }
     const resolved = override_result.resolved;
+    if (return_switched_account) {
+      const workspace_accounts = await readWorkspaceAccountsLayer(workspace);
+      if (workspace_accounts.state === 'unusable') {
+        return { ok: false, reason: 'workspace_accounts_unavailable' };
+      }
+      const key =
+        resume_runner === 'codex' ? 'codex_account' : 'claude_account';
+      const account = effectiveAccount(
+        bead_snapshot[key],
+        workspace_accounts.values[key]
+      );
+      const accounts = { ...resolved.accounts, [resume_runner]: account.value };
+      // Judge after receipt overrides: an account-bearing receipt must not
+      // undo the return, and an unpinned receipt must still respect holds.
+      const gate = await providerDispatchHeld(
+        workspace,
+        resume_runner,
+        accounts
+      );
+      resolved.accounts = {
+        ...resolved.accounts,
+        [resume_runner]: gate.held
+          ? base_resolved.accounts[resume_runner]
+          : account.value
+      };
+      resolved.account_sources = {
+        ...resolved.account_sources,
+        [resume_runner]: gate.held ? switched_source : account.source
+      };
+    }
     if (
       account_switch &&
       !wait_receipt &&

@@ -1245,48 +1245,48 @@ export function createBulkPane(host, options) {
       );
       return row ? accountRowLabel(provider_key, row) : stored;
     };
-    return html`<span class="settings-dialog__bulk-field">
-      <span class="settings-dialog__row-label">${label}</span>
-      <select
-        class="ui-select ui-select--bare"
-        aria-label=${`${label} 저장소 고정 계정`}
-        data-bulk-account=${key}
-        ?disabled=${running !== null || !provider}
-        @change=${(/** @type {Event} */ ev) => {
-          const next = String(
-            /** @type {HTMLSelectElement} */ (ev.target).value
-          );
-          if (next === HOLD) {
-            edited.delete(key);
-          } else {
-            edited.add(key);
-            account_values[key] = next;
-          }
-          doRender();
-        }}
-      >
-        ${hold_option === null
-          ? ''
-          : html`<option value=${HOLD} ?selected=${hold !== null}>
-              ${HOLD_LABEL[hold_option]}
-            </option>`}
-        <option value=${USE_DEFAULT} ?selected=${value === USE_DEFAULT}>
-          ${accountDefaultLabel(provider_key, provider)}
-        </option>
-        ${orphan_value === null
-          ? ''
-          : html`<option value=${orphan_value} selected>
-              ${`${orphan_value} (목록에 없음)`}
-            </option>`}
-        ${(provider?.accounts || []).map(
-          (/** @type {any} */ row) =>
-            html`<option value=${row.key} ?selected=${row.key === value}>
-              ${accountRowLabel(provider_key, row)}
-            </option>`
-        )}
-      </select>
-      ${badgeTemplate(key, observation, nameOf)}
-    </span>`;
+    return html` <span class="settings-dialog__row-label">${label}</span>
+      <span class="settings-dialog__controls">
+        <select
+          class="ui-select ui-select--bare"
+          aria-label=${`${provider_key === 'claude' ? 'Claude' : 'Codex'} ${label}`}
+          data-bulk-account=${key}
+          ?disabled=${running !== null || !provider}
+          @change=${(/** @type {Event} */ ev) => {
+            const next = String(
+              /** @type {HTMLSelectElement} */ (ev.target).value
+            );
+            if (next === HOLD) {
+              edited.delete(key);
+            } else {
+              edited.add(key);
+              account_values[key] = next;
+            }
+            doRender();
+          }}
+        >
+          ${hold_option === null
+            ? ''
+            : html`<option value=${HOLD} ?selected=${hold !== null}>
+                ${HOLD_LABEL[hold_option]}
+              </option>`}
+          <option value=${USE_DEFAULT} ?selected=${value === USE_DEFAULT}>
+            ${accountDefaultLabel(provider)}
+          </option>
+          ${orphan_value === null
+            ? ''
+            : html`<option value=${orphan_value} selected>
+                ${`${orphan_value} (목록에 없음)`}
+              </option>`}
+          ${(provider?.accounts || []).map(
+            (/** @type {any} */ row) =>
+              html`<option value=${row.key} ?selected=${row.key === value}>
+                ${accountRowLabel(provider_key, row)}
+              </option>`
+          )}
+        </select>
+        ${badgeTemplate(key, observation, nameOf)}
+      </span>`;
   }
 
   /**
@@ -1304,7 +1304,7 @@ export function createBulkPane(host, options) {
     // nothing to drive; a split or unread mode stays live because some
     // repositories may still switch.
     const switch_off = mode_hold === null && form.mode === 'wait';
-    const switch_locked = disabled || switch_off;
+    const switch_locked = disabled;
     const switch_dim = switch_off ? ' settings-dialog__row--off' : '';
     const accounts_observation = observeLimitAccounts(runner);
     const accounts_hold = holdOf(`${runner}.accounts`, accounts_observation);
@@ -1441,18 +1441,18 @@ export function createBulkPane(host, options) {
     };
     /** @type {Array<['wait'|'switch', string]>} */
     const modes = [
-      ['wait', '기다림'],
-      ['switch', '자동 전환']
+      ['switch', '켬'],
+      ['wait', '끔']
     ];
     return html`<div class="settings-dialog__group" data-bulk-limit=${runner}>
-      <div class="settings-dialog__group-title">${label} 한도 대응</div>
+      <div class="settings-dialog__group-title">${label} 이 저장소 Worker</div>
       <div class="settings-dialog__row">
-        <span class="settings-dialog__row-label">대응 방식</span>
+        <span class="settings-dialog__row-label">자동 전환</span>
         <span class="settings-dialog__controls">
           <span
             class="settings-dialog__seg"
             role="group"
-            aria-label=${`${label} 대응 방식`}
+            aria-label=${`${label} 자동 전환`}
             data-bulk-limit-mode-runner=${runner}
           >
             ${mode_hold_option === null
@@ -1495,6 +1495,13 @@ export function createBulkPane(host, options) {
           ${badgeTemplate(`${runner}.mode`, mode_observation)}
         </span>
       </div>
+      <div class="settings-dialog__row">
+        ${accountSelectTemplate(
+          runner === 'claude' ? 'claude_account' : 'codex_account',
+          'default 계정',
+          runner
+        )}
+      </div>
       <div class=${`settings-dialog__row${switch_dim}`}>
         <span class="settings-dialog__row-label">전환 허용 계정</span>
         <span class="settings-dialog__controls settings-dialog__bulk-accounts">
@@ -1522,7 +1529,7 @@ export function createBulkPane(host, options) {
         </span>
       </div>
       <div class=${`settings-dialog__row${switch_dim}`}>
-        <span class="settings-dialog__row-label">선제 전환</span>
+        <span class="settings-dialog__row-label">옮기는 시점</span>
         <span class="settings-dialog__controls">
           <select
             class="ui-select ui-select--bare"
@@ -1612,15 +1619,7 @@ export function createBulkPane(host, options) {
   /** @returns {TemplateResult} */
   function accountTemplate() {
     const plan = accountPlan();
-    return html`<div class="settings-dialog__group">
-        <div class="settings-dialog__group-title">저장소 고정 계정</div>
-        <div class="settings-dialog__controls settings-dialog__bulk-row">
-          ${ACCOUNT_FIELDS.map(([key, label, provider_key]) =>
-            accountSelectTemplate(key, label, provider_key)
-          )}
-        </div>
-      </div>
-      ${limitGroupTemplate('claude', 'Claude')}
+    return html`${limitGroupTemplate('claude', 'Claude')}
       ${limitGroupTemplate('codex', 'Codex')} ${creditGroupTemplate()}
       ${catalogReady()
         ? ''
