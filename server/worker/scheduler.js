@@ -89,9 +89,9 @@ import {
 } from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import {
-  AUTO_SWITCH_5H_MAX_PCT,
-  AUTO_SWITCH_7D_MAX_PCT,
-  selectCodexSwitchCandidate
+  WINDOW_LIMIT_PCT,
+  selectCodexSwitchCandidate,
+  windowsHaveRoom
 } from './codex-switch-candidate.js';
 import {
   autoResumeRetryDelayMs,
@@ -2218,7 +2218,8 @@ export function createScheduler(deps) {
    * Choose the healthy account the user allows for one runner. Codex follows
    * the allow list's own order with a reactive-only credit pass
    * (`selectCodexSwitchCandidate`, UI-9y1k §4.2); Claude takes the first
-   * account in that same order that passes the health filter (UI-iopp).
+   * account in that same order whose every reported window is under its limit
+   * (`windowsHaveRoom`, UI-d9c1).
    *
    * @param {string} workspace
    * @param {string} runner
@@ -2273,27 +2274,7 @@ export function createScheduler(deps) {
           ) {
             return false;
           }
-          const windows = Array.isArray(account.windows) ? account.windows : [];
-          if (windows.length === 0) {
-            return false;
-          }
-          // The receiving account must be healthy in EVERY window it reports.
-          // A codex window key derived from minutes is not `5h`, so it reads
-          // through the "every other window" rule rather than dropping out.
-          return windows.every((/** @type {any} */ window) => {
-            if (typeof window?.pct !== 'number') {
-              return false;
-            }
-            if (
-              typeof options.max_pct === 'number' &&
-              window.pct >= options.max_pct
-            ) {
-              return false;
-            }
-            return window.key === '5h'
-              ? window.pct <= AUTO_SWITCH_5H_MAX_PCT
-              : window.pct <= AUTO_SWITCH_7D_MAX_PCT;
-          });
+          return windowsHaveRoom(account, options.max_pct);
         })
         .sort(
           (/** @type {any} */ left, /** @type {any} */ right) =>
@@ -2305,7 +2286,7 @@ export function createScheduler(deps) {
   /**
    * Estimate when an allowed account can next pass the existing selector.
    * A held account needs every local target to reset; an unheld account needs
-   * every over-threshold window to reset. Unknown deadlines supply no timer.
+   * every window at its limit to reset. Unknown deadlines supply no timer.
    *
    * @param {string} workspace
    * @param {string} current_account
@@ -2345,13 +2326,7 @@ export function createScheduler(deps) {
           continue;
         }
         deadlines = windows
-          .filter(
-            (window) =>
-              window.pct >
-              (window.key === '5h'
-                ? AUTO_SWITCH_5H_MAX_PCT
-                : AUTO_SWITCH_7D_MAX_PCT)
-          )
+          .filter((window) => window.pct >= WINDOW_LIMIT_PCT)
           .map((window) =>
             window.resetsAt === null ? NaN : Date.parse(window.resetsAt)
           );

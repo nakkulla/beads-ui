@@ -8,9 +8,9 @@
  * 1. Walk the policy's allow list IN ITS ORDER — the user's order replaces the
  *    old long-window load sort — keeping accounts that are `ok`, not the
  *    current one, not held, and not excluded.
- * 2. Window pass: the first account whose every window is within the switch
- *    thresholds (and under `max_pct` for a preemptive move) → `credit_mode:
- *    false`. Free headroom is always used before paid credits.
+ * 2. Window pass: the first account whose every reported window is under
+ *    `WINDOW_LIMIT_PCT` (and under `max_pct` for a preemptive move) →
+ *    `credit_mode: false`. Free headroom is always used before paid credits.
  * 3. Credit pass, reactive selection only: the first account in the same order
  *    whose OWN credit permission is on, that has credits (`unlimited` or a
  *    positive balance), and whose consumption today is under its daily cap
@@ -28,16 +28,17 @@
  *   | { decision: 'none', reason: NoCandidateReason }} CodexSwitchDecision
  */
 
-/** Highest `5h` window percentage an account may show to receive a switch. */
-export const AUTO_SWITCH_5H_MAX_PCT = 80;
-/** Highest percentage any other window may show to receive a switch. */
-export const AUTO_SWITCH_7D_MAX_PCT = 90;
+/**
+ * A window at or above this percentage has hit its limit, so an account
+ * showing it cannot receive a switch (UI-d9c1).
+ */
+export const WINDOW_LIMIT_PCT = 100;
 
 /**
- * Whether every reported window leaves room under the switch thresholds. A
- * Codex window key derived from minutes is not `5h`, so it reads through the
- * "every other window" rule rather than dropping out; an account with no
- * window has no evidence of headroom.
+ * Whether every reported window is still under its limit (and under `max_pct`
+ * for a preemptive move). Any window key counts, so a Codex window derived
+ * from minutes is judged like `5h`; an account with no window has no evidence
+ * of headroom.
  *
  * @param {Account} account
  * @param {number|null|undefined} max_pct
@@ -55,9 +56,7 @@ export function windowsHaveRoom(account, max_pct) {
     if (typeof max_pct === 'number' && window.pct >= max_pct) {
       return false;
     }
-    return window.key === '5h'
-      ? window.pct <= AUTO_SWITCH_5H_MAX_PCT
-      : window.pct <= AUTO_SWITCH_7D_MAX_PCT;
+    return window.pct < WINDOW_LIMIT_PCT;
   });
 }
 

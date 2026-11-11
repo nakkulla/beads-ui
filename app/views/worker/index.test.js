@@ -2636,7 +2636,7 @@ describe('views/worker', () => {
             email: 'full@example.com',
             alias: '가득 참',
             status: 'ok',
-            windows: [{ key: '5h', pct: 95 }]
+            windows: [{ key: '5h', pct: 100 }]
           },
           {
             email: 'unknown-week@example.com',
@@ -2668,7 +2668,7 @@ describe('views/worker', () => {
     expect(model.querySelectorAll('optgroup')).toHaveLength(2);
     expect(account.value).toBe('one@example.com');
     expect(account.options[1].disabled).toBe(true);
-    expect(account.options[1].textContent).toContain('5시간 사용량 80% 초과');
+    expect(account.options[1].textContent).toContain('5시간 사용량 한도 도달');
     expect(account.options[2].disabled).toBe(true);
     expect(account.options[2].textContent).toContain('7일 사용량 미관측');
   });

@@ -85,7 +85,8 @@ function accountValueOf(runner, account) {
 }
 
 /**
- * Explain whether a Claude account meets the manual switch health threshold.
+ * Explain whether a Claude account can take a manual switch: its `5h` and `7d`
+ * windows must be under the limit, as in the automatic switch (UI-d9c1).
  *
  * @param {string} runner
  * @param {any} account
@@ -113,15 +114,15 @@ function providerAccountEligibility(runner, account) {
   if (!five_hour || typeof five_hour.pct !== 'number') {
     return { eligible: false, reason: '5시간 사용량 미관측' };
   }
-  if (five_hour.pct > 80) {
-    return { eligible: false, reason: '5시간 사용량 80% 초과' };
+  if (five_hour.pct >= 100) {
+    return { eligible: false, reason: '5시간 사용량 한도 도달' };
   }
   if (seven_day) {
     if (typeof seven_day.pct !== 'number') {
       return { eligible: false, reason: '7일 사용량 미관측' };
     }
-    if (seven_day.pct > 90) {
-      return { eligible: false, reason: '7일 사용량 90% 초과' };
+    if (seven_day.pct >= 100) {
+      return { eligible: false, reason: '7일 사용량 한도 도달' };
     }
   }
   return { eligible: true, reason: '' };

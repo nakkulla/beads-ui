@@ -417,6 +417,19 @@ describe('active-switch settings criterion', () => {
     expect(harness.switchAccount.mock.calls).toEqual([[2]]);
   });
 
+  test('takes a candidate whose windows sit just under the default trigger', async () => {
+    const harness = makeHarness({
+      accounts: [
+        account(K1, 1, 99, { windows: windowsOf(99, 99) }),
+        account(K3, 3, 100, { active: true })
+      ]
+    });
+
+    await harness.pass.observe(harness.state.cached);
+
+    expect(harness.switchAccount.mock.calls).toEqual([[1]]);
+  });
+
   test('ignores a queue that cannot be read', async () => {
     const harness = makeHarness({
       workspaces: [

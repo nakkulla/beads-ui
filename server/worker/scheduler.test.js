@@ -5693,7 +5693,7 @@ describe('scheduler provider hold and recovery', () => {
         number: 2,
         email: 'no-five@example.com',
         status: 'ok',
-        windows: [{ key: '7d', pct: 95, resetsAt: null }]
+        windows: [{ key: '7d', pct: 100, resetsAt: null }]
       },
       {
         key: 'held@example.com',
@@ -5709,7 +5709,7 @@ describe('scheduler provider hold and recovery', () => {
         status: 'ok',
         windows: [
           { key: '5h', pct: 5, resetsAt: null },
-          { key: '7d', pct: 91, resetsAt: null }
+          { key: '7d', pct: 100, resetsAt: null }
         ]
       },
       {
@@ -6007,11 +6007,11 @@ describe('scheduler provider hold and recovery', () => {
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
-  test('waits for every over-threshold window of an unheld candidate', async () => {
+  test('waits for every window at the limit of an unheld candidate', async () => {
     const env = await noneHeldEnv('claude', false);
     env.rows[1].windows.push({
       key: '7d',
-      pct: 95,
+      pct: 100,
       resetsAt: new Date(40_000).toISOString()
     });
 
@@ -37615,6 +37615,38 @@ describe('selectCodexSwitchCandidate (UI-9y1k §4.2)', () => {
       credit_mode: false,
       reason: 'window'
     });
+  });
+
+  test('takes an account whose every window sits just under the limit', () => {
+    const accounts = [
+      {
+        ...codexRow('01', 1, 99),
+        windows: [
+          { key: '5h', pct: 99, resetsAt: null },
+          { key: '7d', pct: 99, resetsAt: null }
+        ]
+      }
+    ];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['01'],
+      current_account: 'hot'
+    });
+
+    expect(decision).toMatchObject({ key: '01', credit_mode: false });
+  });
+
+  test('skips an account with one window at the limit', () => {
+    const accounts = [codexRow('01', 1, 100), codexRow('02', 2, 91)];
+
+    const decision = selectCodexSwitchCandidate({
+      accounts,
+      allowed: ['01', '02'],
+      current_account: 'hot'
+    });
+
+    expect(decision).toMatchObject({ key: '02', credit_mode: false });
   });
 
   test('prefers a window account over an earlier credit account', () => {
