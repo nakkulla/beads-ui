@@ -411,14 +411,14 @@ describe('candidate rule', () => {
     expect(harness.switchAccount).not.toHaveBeenCalled();
   });
 
-  test('picks the candidate with the lowest seven-day use first', async () => {
+  test('picks the first eligible account in target list order', async () => {
     const harness = makeHarness({
       accounts: [
         account(A3, 3, windowsOf(100, 10), { active: true }),
-        account(A4, 4, windowsOf(0, 60)),
-        account(A5, 5, windowsOf(80, 20))
+        account(A4, 4, windowsOf(0, 10)),
+        account(A5, 5, windowsOf(80, 60))
       ],
-      settings: settingsOf([A3, A4, A5])
+      settings: settingsOf([A3, A5, A4])
     });
 
     await harness.pass.observe(harness.state.cached);
@@ -426,12 +426,12 @@ describe('candidate rule', () => {
     expect(harness.switchAccount.mock.calls).toEqual([[5]]);
   });
 
-  test('breaks an equal seven-day use by account number', async () => {
+  test('skips an earlier listed account that fails the filter', async () => {
     const harness = makeHarness({
       accounts: [
         account(A3, 3, windowsOf(100, 10), { active: true }),
-        account(A5, 5, windowsOf(0, 20)),
-        account(A4, 4, windowsOf(50, 20))
+        account(A4, 4, windowsOf(0, 60)),
+        account(A5, 5, windowsOf(100, 20))
       ],
       settings: settingsOf([A3, A5, A4])
     });

@@ -1,7 +1,8 @@
 ---
 id: UI-32oq
 title: 한도 대응 저장소 정책·활성 계정 자동 전환과 default 복귀
-status: accepted
+status: superseded
+superseded_by: UI-iopp
 date: 2026-11-10
 summary: "한도 대응은 Worker 판정에 저장소 정책만 쓰고 전역 덮어쓰기는 없으며, 서버 전역 설정은 러너별 활성 계정 자동 전환(켬/끔·default 계정·허용 목록·트리거)만 정한다; 활성 계정이 트리거에 닿으면 허용 목록 후보로 옮기고, default에서 떠난 기록은 재시작을 넘어 남아 그 소진 창의 리셋 시각이 지나고 default의 창이 모두 트리거 미만이면 default로 돌아오며, 관측한 활성 계정이 기록과 다르면 사람이 바꾼 것으로 보고 복귀하지 않는다 — 나머지 조항은 UI-giog 그대로다"
 supersedes: ["UI-giog"]

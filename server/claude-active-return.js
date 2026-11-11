@@ -15,8 +15,9 @@
  *   `5h`/`7d` decide whether the default has room to return.
  * - Candidate: in the target list, usage status `ok`, not the active
  *   account, not a `provider_hold` target, at least one reported `5h`/`7d`
- *   window and every such window below the trigger. Lowest seven-day use
- *   first, then account number. Model windows are ignored here too.
+ *   window and every such window below the trigger. The first such account
+ *   in the target list's own order wins (UI-iopp), as on Codex. Model
+ *   windows are ignored here too.
  * - A Claude run without an account does NOT block the switch (§4.1): the
  *   active account is already refusing requests at 100%, and the switch
  *   writes under the credential lock.
@@ -71,20 +72,9 @@ function judgedWindowsOf(row) {
 }
 
 /**
- * The seven-day use a candidate sorts by. A row without a seven-day window
- * (a team plan reports none) has no weekly use to weigh, so it sorts as 0.
- *
- * @param {any} row
- * @returns {number}
- */
-function sevenDayPctOf(row) {
-  const seven_day = judgedWindowsOf(row).find((window) => window.key === '7d');
-  return seven_day ? seven_day.pct : 0;
-}
-
-/**
- * The departure target the target list yields, or null. Every judged window
- * must stay below `max_pct` (the trigger; 100 when absent).
+ * The departure target the target list yields, or null: the first allowed
+ * account in list order whose judged windows all stay below `max_pct` (the
+ * trigger; 100 when absent).
  *
  * @param {CandidateInput} input
  * @returns {ReturnCandidate|null}
@@ -110,7 +100,7 @@ export function pickClaudeCandidate(input) {
   });
   eligible.sort(
     (left, right) =>
-      sevenDayPctOf(left) - sevenDayPctOf(right) || left.number - right.number
+      input.allowed.indexOf(left.key) - input.allowed.indexOf(right.key)
   );
   const first = eligible[0];
   return first ? { key: first.key, number: first.number } : null;

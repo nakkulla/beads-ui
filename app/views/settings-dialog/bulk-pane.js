@@ -395,8 +395,8 @@ export function createBulkPane(host, options) {
 
   /**
    * Observe one runner's allow SET. Two repos agree only when the members
-   * match exactly (§6). The Codex list is the switch ORDER (UI-9y1k §4.6), so
-   * there the same members in another order disagree too.
+   * match exactly (§6). The list is the switch ORDER (UI-9y1k §4.6; Claude too
+   * since UI-iopp), so the same members in another order disagree too.
    *
    * @param {'claude'|'codex'} runner
    */
@@ -411,7 +411,7 @@ export function createBulkPane(host, options) {
             )
           : [];
       },
-      { ordered: runner === 'codex' }
+      { ordered: true }
     );
   }
 
@@ -1312,17 +1312,6 @@ export function createBulkPane(host, options) {
     const preempt_hold = holdOf(`${runner}.preempt`, preempt_observation);
     const mode_hold_option = holdOptionOf(mode_observation);
     const preempt_hold_option = holdOptionOf(preempt_observation);
-    const catalog_keys = (provider?.accounts || []).map(
-      (/** @type {any} */ entry) => String(entry.key)
-    );
-    // Members the catalog does not carry still belong to the allow set, so they
-    // get their own checkbox and keep their place in the written order — the
-    // screen and the request say the same thing (execution-pane `limitPolicyBlock`).
-    const orphans =
-      accounts_hold === null
-        ? form.accounts.filter((key) => !catalog_keys.includes(key))
-        : [];
-    const account_order = [...catalog_keys, ...orphans];
     /**
      * Toggle one allow-set member. Pressing any box means the SCREEN's set is
      * now the runner's set (ADR UI-a5l2), so a hold counts from empty.
@@ -1332,31 +1321,18 @@ export function createBulkPane(host, options) {
      */
     const toggleAccount = (account_key, checked) => {
       edited.add(`${runner}.accounts`);
-      if (runner === 'codex') {
-        // The Codex list keeps the screen's ORDER (UI-9y1k §4.6): a new pick
-        // goes to the end, a dropped one leaves the rest where they were.
-        const base = accounts_hold === null ? form.accounts : [];
-        form.accounts = checked
-          ? base.includes(account_key)
-            ? [...base]
-            : [...base, account_key]
-          : base.filter((key) => key !== account_key);
-        doRender();
-        return;
-      }
-      const keys = new Set(accounts_hold === null ? form.accounts : []);
-      if (checked) {
-        keys.add(account_key);
-      } else {
-        keys.delete(account_key);
-      }
-      form.accounts = [...new Set([...account_order, account_key])].filter(
-        (key) => keys.has(key)
-      );
+      // The list keeps the screen's ORDER (UI-9y1k §4.6, UI-iopp): a new pick
+      // goes to the end, a dropped one leaves the rest where they were.
+      const base = accounts_hold === null ? form.accounts : [];
+      form.accounts = checked
+        ? base.includes(account_key)
+          ? [...base]
+          : [...base, account_key]
+        : base.filter((key) => key !== account_key);
       doRender();
     };
     /**
-     * Move one picked Codex account up or down; the apply sends this order.
+     * Move one picked account up or down; the apply sends this order.
      *
      * @param {string} account_key
      * @param {-1|1} delta
@@ -1375,13 +1351,14 @@ export function createBulkPane(host, options) {
       doRender();
     };
     /**
-     * The Codex allow list in switch order: picked accounts with ▲/▼, then the
-     * catalog rows not picked. A held (`갈림`·`미확인`) row shows every box off
+     * The allow list in switch order: picked accounts with ▲/▼ (a member the
+     * catalog lacks keeps its place, marked `목록에 없음`), then the catalog
+     * rows not picked. A held (`갈림`·`미확인`) row shows every box off
      * in catalog order, as before.
      *
      * @returns {TemplateResult}
      */
-    const codexAccountsTemplate = () => {
+    const accountsTemplate = () => {
       const picked = accounts_hold === null ? form.accounts : [];
       const last = picked.length - 1;
       /** @type {Map<string, any>} */
@@ -1521,47 +1498,7 @@ export function createBulkPane(host, options) {
       <div class=${`settings-dialog__row${switch_dim}`}>
         <span class="settings-dialog__row-label">전환 허용 계정</span>
         <span class="settings-dialog__controls settings-dialog__bulk-accounts">
-          ${runner === 'codex'
-            ? codexAccountsTemplate()
-            : html` ${(provider?.accounts || []).map(
-                (/** @type {any} */ row) =>
-                  html`<label class="settings-dialog__check">
-                    <input
-                      type="checkbox"
-                      data-bulk-limit-account=${row.key}
-                      data-runner=${runner}
-                      .checked=${live(
-                        accounts_hold === null &&
-                          form.accounts.includes(row.key)
-                      )}
-                      ?disabled=${switch_locked}
-                      @change=${(/** @type {Event} */ ev) =>
-                        toggleAccount(
-                          row.key,
-                          /** @type {HTMLInputElement} */ (ev.target).checked
-                        )}
-                    />
-                    ${accountRowLabel(runner, row)}
-                  </label>`
-              )}
-              ${orphans.map(
-                (key) =>
-                  html`<label class="settings-dialog__check">
-                    <input
-                      type="checkbox"
-                      data-bulk-limit-account=${key}
-                      data-runner=${runner}
-                      .checked=${live(true)}
-                      ?disabled=${switch_locked}
-                      @change=${(/** @type {Event} */ ev) =>
-                        toggleAccount(
-                          key,
-                          /** @type {HTMLInputElement} */ (ev.target).checked
-                        )}
-                    />
-                    ${`${key} (목록에 없음)`}
-                  </label>`
-              )}`}
+          ${accountsTemplate()}
           ${provider
             ? ''
             : html`<span class="settings-dialog__hint"

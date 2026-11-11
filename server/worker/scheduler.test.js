@@ -5677,7 +5677,7 @@ describe('scheduler provider hold and recovery', () => {
     );
   });
 
-  test('switches a usage-limited attempt to the lowest eligible account', async () => {
+  test('switches a usage-limited attempt to the first eligible account in allow list order', async () => {
     const append = vi.fn();
     const providerRecovered = vi.fn();
     const rows = [
@@ -5717,14 +5717,20 @@ describe('scheduler provider hold and recovery', () => {
         number: 9,
         email: 'candidate-two@example.com',
         status: 'ok',
-        windows: [{ key: '5h', pct: 20, resetsAt: null }]
+        windows: [
+          { key: '5h', pct: 20, resetsAt: null },
+          { key: '7d', pct: 10, resetsAt: null }
+        ]
       },
       {
         key: 'candidate-one@example.com',
         number: 5,
         email: 'candidate-one@example.com',
         status: 'ok',
-        windows: [{ key: '5h', pct: 70, resetsAt: null }]
+        windows: [
+          { key: '5h', pct: 70, resetsAt: null },
+          { key: '7d', pct: 40, resetsAt: null }
+        ]
       }
     ];
     const accountCatalog = {
@@ -5751,11 +5757,14 @@ describe('scheduler provider hold and recovery', () => {
       timeline: { append },
       notify: { providerRecovered }
     });
-    allowSwitchAccounts(
-      env.store,
-      'claude',
-      rows.map((row) => row.key)
-    );
+    allowSwitchAccounts(env.store, 'claude', [
+      'old@example.com',
+      'no-five@example.com',
+      'held@example.com',
+      'late@example.com',
+      'candidate-one@example.com',
+      'candidate-two@example.com'
+    ]);
     seedProviderAttempt(env.store, 'held-other', 'H1');
     registerProviderHold(
       env.store,

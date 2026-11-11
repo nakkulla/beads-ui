@@ -1861,7 +1861,7 @@ describe('createBulkPane codex order and credits (UI-9y1k §4.6)', () => {
     expect(codexPatchByRepo(calls)[WS_A]).not.toHaveProperty('accounts');
   });
 
-  test('keeps reading the claude allow list as a set', async () => {
+  test('marks a claude list whose repos differ only in order as mixed', async () => {
     const { host, pane } = setup({
       rows: [
         policyRow(WS_A, [], ['a@example.com', 'b@example.com']),
@@ -1876,7 +1876,7 @@ describe('createBulkPane codex order and credits (UI-9y1k §4.6)', () => {
       el(host, '[data-bulk-badge="claude.accounts"]').getAttribute(
         'data-bulk-observation'
       )
-    ).toBe('same');
+    ).toBe('mixed');
   });
 
   test('writes the credit switch to the global store without an apply', async () => {

@@ -2217,8 +2217,8 @@ export function createScheduler(deps) {
   /**
    * Choose the healthy account the user allows for one runner. Codex follows
    * the allow list's own order with a reactive-only credit pass
-   * (`selectCodexSwitchCandidate`, UI-9y1k §4.2); Claude keeps the
-   * lowest-long-window-load rule.
+   * (`selectCodexSwitchCandidate`, UI-9y1k §4.2); Claude takes the first
+   * account in that same order that passes the health filter (UI-iopp).
    *
    * @param {string} workspace
    * @param {string} runner
@@ -2295,19 +2295,10 @@ export function createScheduler(deps) {
               : window.pct <= AUTO_SWITCH_7D_MAX_PCT;
           });
         })
-        .sort((/** @type {any} */ left, /** @type {any} */ right) => {
-          const by_usage = longWindowLoad(left) - longWindowLoad(right);
-          if (by_usage !== 0) {
-            return by_usage;
-          }
-          if (
-            typeof left.number === 'number' &&
-            typeof right.number === 'number'
-          ) {
-            return left.number - right.number;
-          }
-          return String(left.key).localeCompare(String(right.key));
-        })[0]?.key || null
+        .sort(
+          (/** @type {any} */ left, /** @type {any} */ right) =>
+            allowed.indexOf(left.key) - allowed.indexOf(right.key)
+        )[0]?.key || null
     );
   }
 
@@ -2747,23 +2738,6 @@ export function createScheduler(deps) {
       notifyChanged(workspace);
     }
     return written;
-  }
-
-  /**
-   * The heaviest non-`5h` window of one catalog row, or 0 when it has none.
-   *
-   * @param {any} account
-   * @returns {number}
-   */
-  function longWindowLoad(account) {
-    const windows = Array.isArray(account?.windows) ? account.windows : [];
-    let load = 0;
-    for (const window of windows) {
-      if (window?.key !== '5h' && typeof window?.pct === 'number') {
-        load = Math.max(load, window.pct);
-      }
-    }
-    return load;
   }
 
   /**

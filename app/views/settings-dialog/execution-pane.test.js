@@ -2116,7 +2116,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     );
     expect(box.checked).toBe(true);
     expect(box.closest('label')?.textContent?.trim()).toBe(
-      'gone@example.com (목록에 없음)'
+      '1. gone@example.com (목록에 없음)'
     );
   });
 });
@@ -2440,26 +2440,36 @@ describe('createExecutionPane codex switch order and credits (UI-9y1k §4.5)', (
     expect(orderOf(reopened.root)).toEqual(['c1', 'c3']);
   });
 
-  test('draws no move control on the claude allow list', async () => {
-    const { root, pane } = mount({
+  test('saves the whole reordered claude list when an account moves up', async () => {
+    const { root, pane, calls } = mount({
       section: 'account',
       queue: queueRow({
         provider_limit_policy: {
           claude: {
             mode: 'switch',
-            accounts: ['repo@example.com'],
+            accounts: ['repo@example.com', 'next@example.com'],
             preempt_pct: null
           },
           codex: { mode: 'switch', accounts: [], preempt_pct: null }
         }
-      })
+      }),
+      transport: echoTransport()
     });
-
     await pane.load();
 
-    expect(
-      root.querySelector('[data-limit-accounts="claude"] [data-limit-move]')
-    ).toBe(null);
+    el(
+      root,
+      '[data-limit-accounts="claude"] [data-limit-move="up"][data-limit-move-account="next@example.com"]'
+    ).click();
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      {
+        runner: 'claude',
+        patch: { accounts: ['next@example.com', 'repo@example.com'] },
+        expected_revision: 3
+      }
+    ]);
   });
 
   test('saves the credit switch as a global setting', async () => {

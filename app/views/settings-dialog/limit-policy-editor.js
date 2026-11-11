@@ -184,8 +184,8 @@ export function createLimitPolicyEditor(deps) {
   }
 
   /**
-   * Move one allowed account up or down. The allow list's ORDER is the Codex
-   * switch order (UI-9y1k §4.2), so the whole reordered list is saved at once
+   * Move one allowed account up or down. The allow list's ORDER is the switch
+   * order (UI-9y1k §4.2, UI-iopp), so the whole reordered list is saved at once
    * through the same overlay and chain as a toggle.
    *
    * @param {LimitRunner} runner
@@ -256,71 +256,22 @@ export function createLimitPolicyEditor(deps) {
   }
 
   /**
-   * The Claude allow list exactly as before UI-9y1k: catalog order, a set.
+   * One runner's allow list in SWITCH ORDER (UI-9y1k §4.5, UI-iopp for
+   * Claude): allowed accounts in the stored order, each with ▲/▼, then the
+   * accounts not allowed in catalog order. Moving saves at once, like a toggle.
    *
    * @param {LimitRunner} runner
    * @param {LimitPolicyView} policy
    * @param {any[]} rows
-   * @param {string[]} orphans
    * @returns {TemplateResult}
    */
-  function allowListTemplate(runner, policy, rows, orphans) {
-    return html`${rows.map(
-      (/** @type {any} */ row) =>
-        html`<label class="settings-dialog__check">
-          <input
-            type="checkbox"
-            data-limit-runner=${runner}
-            data-limit-account=${row.key}
-            .checked=${live(policy.accounts.includes(row.key))}
-            @change=${(/** @type {Event} */ ev) =>
-              onAccountToggle(
-                runner,
-                row.key,
-                /** @type {HTMLInputElement} */ (ev.target).checked
-              )}
-          />
-          ${accountRowLabel(runner, row)}
-        </label>`
-    )}
-    ${orphans.map(
-      (key) =>
-        html`<label class="settings-dialog__check">
-          <input
-            type="checkbox"
-            data-limit-runner=${runner}
-            data-limit-account=${key}
-            .checked=${live(true)}
-            @change=${(/** @type {Event} */ ev) =>
-              onAccountToggle(
-                runner,
-                key,
-                /** @type {HTMLInputElement} */ (ev.target).checked
-              )}
-          />
-          ${`${key} (목록에 없음)`}
-        </label>`
-    )}`;
-  }
-
-  /**
-   * The Codex allow list in SWITCH ORDER (UI-9y1k §4.5): allowed accounts in
-   * the stored order, each with ▲/▼, then the accounts not allowed in catalog
-   * order. Moving saves at once, like a toggle.
-   *
-   * @param {LimitPolicyView} policy
-   * @param {any[]} rows
-   * @returns {TemplateResult}
-   */
-  function codexAllowListTemplate(policy, rows) {
+  function allowListTemplate(runner, policy, rows) {
     /** @type {Map<string, any>} */
     const by_key = new Map(rows.map((row) => [String(row.key), row]));
     const last = policy.accounts.length - 1;
     return html`${policy.accounts.map((key, index) => {
       const row = by_key.get(key);
-      const label = row
-        ? accountRowLabel('codex', row)
-        : `${key} (목록에 없음)`;
+      const label = row ? accountRowLabel(runner, row) : `${key} (목록에 없음)`;
       return html`<span
         class="settings-dialog__limit-order"
         data-limit-order-item=${key}
@@ -328,12 +279,12 @@ export function createLimitPolicyEditor(deps) {
         <label class="settings-dialog__check">
           <input
             type="checkbox"
-            data-limit-runner="codex"
+            data-limit-runner=${runner}
             data-limit-account=${key}
             .checked=${live(true)}
             @change=${(/** @type {Event} */ ev) =>
               onAccountToggle(
-                'codex',
+                runner,
                 key,
                 /** @type {HTMLInputElement} */ (ev.target).checked
               )}
@@ -348,7 +299,7 @@ export function createLimitPolicyEditor(deps) {
           data-limit-move="up"
           data-limit-move-account=${key}
           ?disabled=${index === 0}
-          @click=${() => onAccountMove('codex', key, -1)}
+          @click=${() => onAccountMove(runner, key, -1)}
         >
           ▲
         </button>
@@ -360,7 +311,7 @@ export function createLimitPolicyEditor(deps) {
           data-limit-move="down"
           data-limit-move-account=${key}
           ?disabled=${index === last}
-          @click=${() => onAccountMove('codex', key, 1)}
+          @click=${() => onAccountMove(runner, key, 1)}
         >
           ▼
         </button>
@@ -373,17 +324,17 @@ export function createLimitPolicyEditor(deps) {
           html`<label class="settings-dialog__check">
             <input
               type="checkbox"
-              data-limit-runner="codex"
+              data-limit-runner=${runner}
               data-limit-account=${row.key}
               .checked=${live(false)}
               @change=${(/** @type {Event} */ ev) =>
                 onAccountToggle(
-                  'codex',
+                  runner,
                   row.key,
                   /** @type {HTMLInputElement} */ (ev.target).checked
                 )}
             />
-            ${accountRowLabel('codex', row)}
+            ${accountRowLabel(runner, row)}
           </label>`
       )}`;
   }
@@ -449,8 +400,6 @@ export function createLimitPolicyEditor(deps) {
     const policy = policyOf(runner);
     const provider = deps.catalogOf(runner);
     const rows = provider ? provider.accounts : [];
-    const known = new Set(rows.map((/** @type {any} */ row) => row.key));
-    const orphans = policy.accounts.filter((key) => !known.has(key));
     const off = ' settings-dialog__row--off';
     const top_dim = options.dim === true ? off : '';
     const dim = options.dim === true || policy.mode !== 'switch' ? off : '';
@@ -460,9 +409,7 @@ export function createLimitPolicyEditor(deps) {
       <div class=${`settings-dialog__row${dim}`} data-limit-accounts=${runner}>
         <span class="settings-dialog__row-label">전환 허용 계정</span>
         <span class="settings-dialog__controls">
-          ${runner === 'codex'
-            ? codexAllowListTemplate(policy, rows)
-            : allowListTemplate(runner, policy, rows, orphans)}
+          ${allowListTemplate(runner, policy, rows)}
           ${provider
             ? ''
             : html`<span class="settings-dialog__hint"
