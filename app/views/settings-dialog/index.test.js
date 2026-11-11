@@ -95,7 +95,7 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string|boolean>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any, externalWaitSettings?: any, limitPolicySettings?: any, conversationSettings?: any, connectedRoot?: string|null }} [options]
+ * @param {{ values?: Record<string, string|boolean>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, autoPool?: any, timingSettings?: any, externalWaitSettings?: any, limitPolicySettings?: any, conversationSettings?: any, connectedRoot?: string|null }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -168,6 +168,10 @@ function mount(options = {}) {
     },
     modelVisibilityStore: {
       get: () => options.modelVisibility ?? null,
+      set: () => {}
+    },
+    autoPoolStore: {
+      get: () => options.autoPool ?? null,
       set: () => {}
     },
     timingSettingsStore: {
@@ -1383,6 +1387,41 @@ describe('createSettingsDialog server-wide tabs (UI-32oq §4.4)', () => {
       '프리셋 관리',
       '판정 칩 프리셋',
       '활성 모델'
+    ]);
+  });
+
+  test('draws the auto 후보 group below 활성 모델 on 프리셋·모델', async () => {
+    const { root, dialog } = mount({
+      modelVisibility: MODEL_VISIBILITY,
+      autoPool: {
+        revision: 0,
+        runtimes: {},
+        choices: {
+          claude: {
+            models: ['opus'],
+            efforts: ['low', 'xhigh'],
+            defaults: null,
+            catalog_models: null
+          },
+          codex: {
+            models: ['sol'],
+            efforts: ['low', 'xhigh'],
+            defaults: null,
+            catalog_models: ['sol']
+          }
+        }
+      }
+    });
+    dialog.open();
+    await settle();
+
+    await openTab(root, 'presets');
+
+    expect(titlesOf(root, 'presets')).toEqual([
+      '프리셋 관리',
+      '판정 칩 프리셋',
+      '활성 모델',
+      'auto 후보'
     ]);
   });
 

@@ -21,6 +21,7 @@ import {
   claudeAccountSwitchHandler,
   codexAccountSwitchHandler
 } from './routes/account-switch.js';
+import { autoPoolHandler } from './routes/auto-pool.js';
 import { claudeUsageHandler } from './routes/claude-usage.js';
 import { codexSwitchCandidateHandler } from './routes/codex-switch-candidate.js';
 import { codexUsageHandler } from './routes/codex-usage.js';
@@ -215,6 +216,10 @@ export function createApp(config) {
   // Which Codex account a session continues on after an account limit
   // (UI-9y1k §4.4). POST only: a choice prepares that account's CODEX_HOME.
   app.post('/api/codex/switch-candidate', codexSwitchCandidateHandler);
+
+  // The auto-pool candidates dotfiles reads for an `auto` implementation unit
+  // (UI-y7h1 §3.3). Read-only; the settings window edits it over WebSocket.
+  app.get('/api/auto-pool', autoPoolHandler);
 
   // Register workspace endpoint - allows CLI to register workspaces dynamically
   // when the server is already running

@@ -156,6 +156,17 @@ export function modelVisibilityFilePath() {
 }
 
 /**
+ * Absolute path to the SERVER-GLOBAL auto-pool file: the candidate models and
+ * effort range the dotfiles `bind` judgment uses for an `auto` implementation
+ * unit (UI-y7h1 §3.1). Shared across workspaces.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/auto-pool.json`.
+ */
+export function autoPoolFilePath() {
+  return path.join(stateHome(), 'bdui', 'auto-pool.json');
+}
+
+/**
  * Absolute path to the SERVER-GLOBAL timing-settings file: the user-changed
  * wait, observation, and retry durations. Shared across workspaces.
  *

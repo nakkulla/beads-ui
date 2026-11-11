@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-y7h1 | [auto 구현 리프 후보는 beads-ui 서버 전역 설정이다](UI-y7h1-auto-pool-server-global-setting.md) | 2026-11-11 | auto 구현 리프의 후보 모델과 effort 범위는 beads-ui 서버 전역 설정이 정본이고 저장소별 값 없이 dotfiles가 GET /api/auto-pool로만 읽으며, 빠진 런타임은 dotfiles 출하 기본값을 따른다 |
 | UI-jlov | [dotfiles 계약 소비와 설치본 체커 소비](UI-jlov-dotfiles-contract-and-checker-consumption.md) | 2026-11-11 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호와 Worker 착지 알림의 보호 경로 표시는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며, 보호 경로 판정 실패는 생략하지 않고 확인 못 함으로 적는다 |
 | UI-golv | [설정 창·대화 결과 줄과 배치안 순서·카드 포함 체크](UI-golv-placement-card-include-check.md) | 2026-11-11 | 전체 배치안은 표 없이 레인 안 점선 미리보기 카드의 체크로 포함을 고르고, 카드가 없는 후보(체크 뺀 후보·판정 전 후보는 빠진 후보 줄, 새 레인 후보는 증설 안내 줄)만 레인 아래 줄에 체크로 남기며, 모니터의 적용 대상 체크와 레포 적용은 레포 묶음 머리에 둔다 — 나머지 조항은 UI-unf5 그대로다 |
 | UI-d9c1 | [한도 대응 저장소 정책·활성 계정 자동 전환과 한도 미만 후보](UI-d9c1-limit-policy-under-limit-candidates.md) | 2026-11-11 | 자동 전환 후보 거름에서 건강 임계(5h 80%·그 밖의 창 90%)를 없앤다 — Claude·Codex 수신 계정은 보고된 모든 창이 100% 미만(선제 전환이면 preempt_pct 미만)이면 되고, 수동 재개 대화상자도 같은 기준이며, 사용자 순서·크레딧 패스 등 나머지 조항은 UI-iopp 그대로다 |

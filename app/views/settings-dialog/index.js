@@ -30,6 +30,7 @@ import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { showToast } from '../../utils/toast.js';
 import { createActiveLoginStatus } from './active-login-status.js';
+import { createAutoPoolSection } from './auto-pool-section.js';
 import { createBulkPane } from './bulk-pane.js';
 import { createChipBindingsTab } from './chip-bindings-tab.js';
 import { createConversationSection } from './conversation-section.js';
@@ -135,6 +136,7 @@ function baseName(root_dir) {
  *   queueStore?: { get: () => any, set?: (queue: any) => void, subscribe?: (fn: () => void) => () => void },
  *   implPresetStore?: { get: () => any, subscribe?: (fn: () => void) => () => void },
  *   modelVisibilityStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
+ *   autoPoolStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   timingSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   externalWaitSettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   limitPolicySettingsStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
@@ -232,7 +234,12 @@ export function createSettingsDialog(mount_element, options) {
   let chip_tab = null;
   /** @type {ReturnType<typeof createModelVisibilitySection>|null} */
   let model_section = null;
-  /** The `프리셋·모델` tab's host: preset management, chip presets, models. */
+  /** @type {ReturnType<typeof createAutoPoolSection>|null} */
+  let auto_pool_section = null;
+  /**
+   * The `프리셋·모델` tab's host: preset management, chip presets, models, and
+   * the auto-pool candidates below the model list (UI-y7h1 §3.4).
+   */
   const presets_host = makeHost();
   const preset_manage_host = document.createElement('div');
   const chip_group = document.createElement('section');
@@ -243,7 +250,13 @@ export function createSettingsDialog(mount_element, options) {
   const chip_host = document.createElement('div');
   chip_group.append(chip_title, chip_host);
   const model_host = document.createElement('div');
-  presets_host.append(preset_manage_host, chip_group, model_host);
+  const auto_pool_host = document.createElement('div');
+  presets_host.append(
+    preset_manage_host,
+    chip_group,
+    model_host,
+    auto_pool_host
+  );
 
   /** @type {ReturnType<typeof createWorkerUrlSection>|null} */
   let worker_url_section = null;
@@ -483,6 +496,15 @@ export function createSettingsDialog(mount_element, options) {
       });
     }
     model_section.render();
+    if (!auto_pool_section) {
+      auto_pool_section = createAutoPoolSection(auto_pool_host, {
+        transport,
+        autoPoolStore: options.autoPoolStore,
+        modelVisibilityStore: options.modelVisibilityStore,
+        notify
+      });
+    }
+    auto_pool_section.render();
   }
 
   /** Draw the `운영` tab's sections into their hosts. */
@@ -550,6 +572,8 @@ export function createSettingsDialog(mount_element, options) {
     chip_tab = null;
     model_section?.destroy();
     model_section = null;
+    auto_pool_section?.destroy();
+    auto_pool_section = null;
     presets_host.remove();
     worker_url_section?.destroy();
     worker_url_section = null;

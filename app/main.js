@@ -2,6 +2,10 @@
  * @import { MessageType } from './protocol.js'
  */
 import { html, render } from 'lit-html';
+import {
+  createAutoPoolStore,
+  isAutoPoolSnapshot
+} from './data/auto-pool-store.js';
 import { closedRangeSince, normalizeDoneRange } from './data/closed-range.js';
 import {
   createCodexCreditStore,
@@ -144,6 +148,9 @@ const EXEC_PRESETS_CLIENT_ID = 'exec:presets';
 
 /** Client id for the singleton server-global model-visibility subscription. */
 const MODEL_VISIBILITY_CLIENT_ID = 'model-visibility';
+
+/** Client id for the singleton server-global auto-pool subscription. */
+const AUTO_POOL_CLIENT_ID = 'auto-pool';
 
 /** Client id for the singleton server-global timing-settings subscription. */
 const TIMING_SETTINGS_CLIENT_ID = 'timing-settings';
@@ -351,6 +358,7 @@ export function bootstrap(root_element) {
     const display_policy_store = createDisplayPolicyStore();
     const exec_preset_store = createExecPresetStore();
     const model_visibility_store = createModelVisibilityStore();
+    const auto_pool_store = createAutoPoolStore();
     const timing_settings_store = createTimingSettingsStore();
     // Worker 탭의 유예 남은 초는 서버가 쓰는 값을 따른다 (UI-ny0h §3.5); 값이
     // 아직 없으면 lane-model의 20초 대체값이 남는다.
@@ -404,6 +412,18 @@ export function bootstrap(root_element) {
           revision: snapshot.revision,
           disabled_models: snapshot.disabled_models,
           runners: snapshot.runners
+        });
+      }
+    });
+
+    // auto 후보 채널(UI-y7h1 §3.4)의 push. 서버 전역이라 워크스페이스 전환에도
+    // 비우지 않고, 스냅샷을 통째로 교체한다.
+    client.on('auto-pool-snapshot', (payload) => {
+      if (isAutoPoolSnapshot(payload)) {
+        auto_pool_store.set({
+          revision: payload.revision,
+          runtimes: payload.runtimes,
+          choices: payload.choices
         });
       }
     });
@@ -1081,6 +1101,23 @@ export function bootstrap(root_element) {
       });
     }
 
+    // --- Auto-pool subscription lifecycle (server-global singleton) ---
+    let auto_pool_subscribed = false;
+
+    function subscribeAutoPool() {
+      if (auto_pool_subscribed) {
+        return;
+      }
+      auto_pool_subscribed = true;
+      void tracked_send('subscribe-auto-pool', {
+        id: AUTO_POOL_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-auto-pool failed: %o', err);
+        auto_pool_store.clear();
+        auto_pool_subscribed = false;
+      });
+    }
+
     // --- Timing-settings subscription lifecycle (server-global singleton) ---
     let timing_settings_subscribed = false;
 
@@ -1184,6 +1221,7 @@ export function bootstrap(root_element) {
       // The last snapshot stays: filtering by it until the new one lands beats
       // flashing every hidden model back into the selectors.
       model_visibility_subscribed = false;
+      auto_pool_subscribed = false;
       timing_settings_subscribed = false;
       limit_policy_settings_subscribed = false;
       external_wait_settings_subscribed = false;
@@ -1197,6 +1235,7 @@ export function bootstrap(root_element) {
       sub_generation.worker += 1;
       subscribeExecPresets();
       subscribeModelVisibility();
+      subscribeAutoPool();
       subscribeTimingSettings();
       subscribeLimitPolicySettings();
       subscribeExternalWaitSettings();
@@ -1689,6 +1728,7 @@ export function bootstrap(root_element) {
       queueStore: worker_queue_store,
       implPresetStore: exec_preset_store,
       modelVisibilityStore: model_visibility_store,
+      autoPoolStore: auto_pool_store,
       timingSettingsStore: timing_settings_store,
       externalWaitSettingsStore: external_wait_settings_store,
       limitPolicySettingsStore: limit_policy_settings_store,
@@ -2046,6 +2086,7 @@ export function bootstrap(root_element) {
     subscribeDisplayPolicy();
     subscribeExecPresets();
     subscribeModelVisibility();
+    subscribeAutoPool();
     subscribeTimingSettings();
     subscribeLimitPolicySettings();
     subscribeExternalWaitSettings();

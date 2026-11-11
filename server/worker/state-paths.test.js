@@ -3,6 +3,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   attemptRecordPath,
+  autoPoolFilePath,
   beadArchivePath,
   beadSessionLogPath,
   beadSessionStderrPath,
@@ -136,6 +137,14 @@ describe('modelVisibilityFilePath', () => {
   test('derives one server-global file under the bdui state root', () => {
     expect(modelVisibilityFilePath()).toBe(
       path.join('/state', 'bdui', 'model-visibility.json')
+    );
+  });
+});
+
+describe('autoPoolFilePath', () => {
+  test('derives one server-global file under the bdui state root', () => {
+    expect(autoPoolFilePath()).toBe(
+      path.join('/state', 'bdui', 'auto-pool.json')
     );
   });
 });
