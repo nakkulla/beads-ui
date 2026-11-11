@@ -283,6 +283,30 @@ describe('auto pool section (UI-y7h1 §3.4)', () => {
     ]);
   });
 
+  test('shows a stored effort outside the range as a disabled option', () => {
+    const snapshot = structuredClone(SNAPSHOT);
+    snapshot.runtimes.codex.effort = { min: 'minimal', max: 'max' };
+
+    const { host } = mountSection(async () => ({}), { snapshot });
+
+    const options = Array.from(
+      host.querySelectorAll(
+        'select[data-runtime="codex"][data-auto-pool-field="max"] option'
+      )
+    ).map((option) => {
+      const el = /** @type {HTMLOptionElement} */ (option);
+      return [el.value, el.disabled];
+    });
+    expect(options).toEqual([
+      ['low', false],
+      ['medium', false],
+      ['high', false],
+      ['xhigh', false],
+      ['minimal', true],
+      ['max', true]
+    ]);
+  });
+
   test('hides hidden models but keeps a stored one', () => {
     const { host } = mountSection(async () => ({}), {
       disabled: ['terra', 'terra-6.1', 'luna']

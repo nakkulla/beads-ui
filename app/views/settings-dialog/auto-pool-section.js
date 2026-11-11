@@ -54,6 +54,9 @@ export const AUTO_POOL_DEFAULTS_UNKNOWN = '기본값(dotfiles가 정함)';
 /** Option label suffix of a stored Codex name the server catalog lacks. */
 export const AUTO_POOL_NOT_IN_CATALOG = '계정 목록에 없음';
 
+/** Option label suffix of a stored effort outside the selectable range. */
+export const AUTO_POOL_EFFORT_OUT_OF_RANGE = '선택 불가';
+
 /**
  * What each `auto-pool-set` refusal means (server `AutoPoolErrorCode`).
  */
@@ -322,7 +325,7 @@ export function createAutoPoolSection(host, options) {
   /**
    * @param {string} label
    * @param {string} value
-   * @param {Array<{ value: string, label: string }>} entries
+   * @param {Array<{ value: string, label: string, disabled?: boolean }>} entries
    * @param {Record<string, string>} data
    * @param {(value: string) => void} onPick
    * @returns {TemplateResult}
@@ -343,6 +346,7 @@ export function createAutoPoolSection(host, options) {
             html`<option
               value=${entry.value}
               ?selected=${entry.value === value}
+              ?disabled=${entry.disabled === true}
             >
               ${entry.label}
             </option>`
@@ -368,13 +372,20 @@ export function createAutoPoolSection(host, options) {
         label: modelLabel(runtime, choice, name)
       }))
     ];
-    const efforts = Array.isArray(choice?.efforts) ? [...choice.efforts] : [];
-    for (const value of [row.min, row.max]) {
+    const efforts = Array.isArray(choice?.efforts) ? choice.efforts : [];
+    /** @type {Array<{ value: string, label: string, disabled?: boolean }>} */
+    const effort_entries = efforts.map((value) => ({ value, label: value }));
+    // A stored value outside the projection range stays visible but cannot be
+    // picked again, so the choices never exceed the list up to `xhigh`.
+    for (const value of new Set([row.min, row.max])) {
       if (value.length > 0 && !efforts.includes(value)) {
-        efforts.push(value);
+        effort_entries.push({
+          value,
+          label: `${value} · ${AUTO_POOL_EFFORT_OUT_OF_RANGE}`,
+          disabled: true
+        });
       }
     }
-    const effort_entries = efforts.map((value) => ({ value, label: value }));
     const defaults = choice?.defaults ?? null;
     const count = rowModels(row).length;
     const hint = row.follow
