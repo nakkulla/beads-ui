@@ -14,6 +14,7 @@ export function operationIncidentFingerprint(repo, operation) {
     operation.failure?.summary || operation.failure?.detail || ''
   )
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, '<time>')
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, '<date>')
     .replace(/\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?\b/gi, '<time>')
     .replace(/\s+/g, ' ')
     .trim();

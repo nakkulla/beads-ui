@@ -4299,18 +4299,34 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
   });
 
   test.each([
-    ['refuted: not a defect', false, '착지 없이 닫힘'],
-    ['no-delta: already fixed', false, '착지 없이 닫힘'],
-    ['merged', false, '착지 확인 불가'],
-    ['merged', true, '착지 없이 닫힘']
+    ['refuted: not a defect', false, '착지 없이 닫힘', true],
+    ['no-delta: already fixed', false, '착지 없이 닫힘', true],
+    ['merged', false, '착지 확인 불가', false],
+    [undefined, false, '착지 확인 불가', false],
+    ['merged', true, '착지 없이 닫힘', true]
   ])(
     'returns a closed fix to the human exit for %s',
-    async (close_reason, discarded, exhausted_reason) => {
+    async (close_reason, discarded, exhausted_reason, landed) => {
       const env = failureEnv({
-        patch: () =>
-          discarded
+        patch: () => ({
+          ...(landed
+            ? {
+                done: [{ bead_id: 'UI-fix', merge_sha: 'a'.repeat(40) }],
+                repo_operations: {
+                  deploy: {
+                    kind: 'deploy',
+                    state: 'succeeded',
+                    subjects: [
+                      { bead_id: 'UI-fix', merged_sha: 'a'.repeat(40) }
+                    ]
+                  }
+                }
+              }
+            : {}),
+          ...(discarded
             ? { discard_operations: { fix: { bead_id: 'UI-fix' } } }
-            : {}
+            : {})
+        })
       });
       openFailureConversation(env);
       say(env, '수정 대기 · UI-fix — job defect');
@@ -4363,7 +4379,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     });
   });
 
-  test('reruns a quick-fix landing from deploy subjects despite a null done merge SHA', async () => {
+  test('reruns a quick-fix landing without a close reason or done merge SHA', async () => {
     const sha = 'a'.repeat(40);
     const env = failureEnv({
       patch: () => ({
@@ -4397,9 +4413,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     const readIssue = env.bd.readIssue;
     env.bd.readIssue = /** @type {any} */ (
       async (/** @type {string} */ id) =>
-        id === 'UI-fix'
-          ? { id, status: 'closed', close_reason: 'merged' }
-          : readIssue(id)
+        id === 'UI-fix' ? { id, status: 'closed' } : readIssue(id)
     );
 
     await env.scheduler.reconcileInteractiveSessions(WS);
@@ -4431,8 +4445,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
             ok: true,
             data: {
               id: 'dotfiles-fix',
-              status: closed ? 'closed' : 'open',
-              close_reason: closed ? 'merged' : null
+              status: closed ? 'closed' : 'open'
             }
           };
     const file = queueFilePath(rig);
@@ -4440,7 +4453,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
-        done: [{ bead_id: 'dotfiles-fix', merged_sha: sha }],
+        done: [{ bead_id: 'dotfiles-fix', merge_sha: null }],
         repo_operations: {
           deploy: {
             kind: 'deploy',
@@ -4587,7 +4600,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     expect(record(env).conversation?.result).toBeNull();
   });
 
-  test('returns the same failure after rerun to the human exit', async () => {
+  test('returns the same failure on the next date after rerun to the human exit', async () => {
     const sha = 'a'.repeat(40);
     const env = failureEnv({
       patch: () => ({
@@ -4603,6 +4616,12 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       }),
       exits: { retryCleanup: vi.fn(async () => ({ ok: true })) }
     });
+    env.real.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_jobs',
+      reason: 'post_merge_job_failed',
+      detail: '[2026-11-11 13:46:12] [ERROR] job defect'
+    });
     openFailureConversation(env);
     say(env, '수정 대기 · UI-fix — job defect');
     await env.scheduler.reconcileInteractiveSessions(WS);
@@ -4616,6 +4635,13 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
 
     await env.scheduler.reconcileInteractiveSessions(WS);
     await flush();
+    env.setTime(1000 + 24 * 3600000);
+    env.real.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_jobs',
+      reason: 'post_merge_job_failed',
+      detail: '[2026-11-12 09:00:00] [ERROR] job defect'
+    });
     await env.scheduler.reconcileInteractiveSessions(WS);
 
     expect(env.exits.retryCleanup).toHaveBeenCalledTimes(1);

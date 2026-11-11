@@ -8,10 +8,54 @@ import {
   conditionWaitState,
   conditionWaitTipFor,
   normalizeScriptRetry,
+  operationIncidentFingerprint,
   resolutionAccess,
   scriptIdentity,
   scriptRetryConsumptionKey
 } from './resolution-ladder.js';
+
+describe('operation incident fingerprint', () => {
+  test.each([
+    [
+      '[2026-11-11 13:46:12] [ERROR] deploy failed',
+      '[2026-11-12 09:00:00] [ERROR] deploy failed'
+    ],
+    [
+      '[2026-11-11] [ERROR] deploy failed',
+      '[2026-11-12] [ERROR] deploy failed'
+    ],
+    [
+      '2026-11-11T13:46:12.000Z deploy failed',
+      '2026-11-12T09:00:00.000Z deploy failed'
+    ]
+  ])('keeps the same failure identity across dates: %s', (first, next) => {
+    const before = operationIncidentFingerprint('repo', {
+      kind: 'deploy',
+      failure: { summary: first }
+    });
+
+    const after = operationIncidentFingerprint('repo', {
+      kind: 'deploy',
+      failure: { summary: next }
+    });
+
+    expect(after).toBe(before);
+  });
+
+  test('distinguishes different failures after removing dates', () => {
+    const before = operationIncidentFingerprint('repo', {
+      kind: 'deploy',
+      failure: { summary: '[2026-11-11 13:46:12] [ERROR] build failed' }
+    });
+
+    const after = operationIncidentFingerprint('repo', {
+      kind: 'deploy',
+      failure: { summary: '[2026-11-12 09:00:00] [ERROR] restart failed' }
+    });
+
+    expect(after).not.toBe(before);
+  });
+});
 
 describe('deploy condition wait schedule (dotfiles-rnyd9)', () => {
   test('expires an exhausted chain immediately while preserving its actual failure time', () => {

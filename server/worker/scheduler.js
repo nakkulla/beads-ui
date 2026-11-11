@@ -12638,7 +12638,7 @@ export function createScheduler(deps) {
           discarded
         ) {
           exhausted = '착지 없이 닫힘';
-        } else if (!landed || !found.issue.close_reason) {
+        } else if (!landed) {
           exhausted = '착지 확인 불가';
         }
         if (exhausted === null) {
