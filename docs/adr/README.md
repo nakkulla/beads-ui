@@ -5,8 +5,8 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
-| UI-unf5 | [설정 창·대화 결과 줄과 배치안 순서 자리의 jev 선호](UI-unf5-placement-soft-order-jev-prefer.md) | 2026-11-11 | 전체 배치안에서 필수 선후(직접 blocks, 채택된 jev 선후·부딪힘)가 정하지 않는 순서 자리는 같은 jev 요청의 선호 질문(확신도 0.7 이상, 같은 파일 쌍에도 묻는다) → 우선순위 → 표시 순서로 정하고, 선호는 묶기·직렬 레인·넣을 자리를 만들지 않으며 이미 대기 중인 항목 앞으로 끼우지 않는다 — 나머지 조항은 UI-3713 그대로다 |
 | UI-jlov | [dotfiles 계약 소비와 설치본 체커 소비](UI-jlov-dotfiles-contract-and-checker-consumption.md) | 2026-11-11 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호와 Worker 착지 알림의 보호 경로 표시는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며, 보호 경로 판정 실패는 생략하지 않고 확인 못 함으로 적는다 |
+| UI-golv | [설정 창·대화 결과 줄과 배치안 순서·카드 포함 체크](UI-golv-placement-card-include-check.md) | 2026-11-11 | 전체 배치안은 표 없이 레인 안 점선 미리보기 카드의 체크로 포함을 고르고, 카드가 없는 후보(체크 뺀 후보·판정 전 후보는 빠진 후보 줄, 새 레인 후보는 증설 안내 줄)만 레인 아래 줄에 체크로 남기며, 모니터의 적용 대상 체크와 레포 적용은 레포 묶음 머리에 둔다 — 나머지 조항은 UI-unf5 그대로다 |
 | UI-d9c1 | [한도 대응 저장소 정책·활성 계정 자동 전환과 한도 미만 후보](UI-d9c1-limit-policy-under-limit-candidates.md) | 2026-11-11 | 자동 전환 후보 거름에서 건강 임계(5h 80%·그 밖의 창 90%)를 없앤다 — Claude·Codex 수신 계정은 보고된 모든 창이 100% 미만(선제 전환이면 preempt_pct 미만)이면 되고, 수동 재개 대화상자도 같은 기준이며, 사용자 순서·크레딧 패스 등 나머지 조항은 UI-iopp 그대로다 |
 | UI-xm29 | [화면 로그인·계정 추가는 격리 로그인](UI-xm29-isolated-account-login.md) | 2026-11-10 | 화면 로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이다 — Codex는 beads-ui가 임시 CODEX_HOME에서 기기 코드 로그인 뒤 codex-auth import로 넣고 대상이 활성 계정일 때만 전역 auth.json을 같은 계정의 새 자격으로 원자 교체하며, Claude는 claude-swap의 cswap login이 격리·신원 확인·저장을 맡고 beads-ui는 tmux로 URL을 보이고 코드를 넣기만 하며, 계정 목록에 쓰는 단계만 러너별 전환 잠금을 잡는다 |
 | UI-gpac | [Codex 모델 카탈로그의 원천은 Codex CLI 목록이다](UI-gpac-codex-catalog-from-cli-list.md) | 2026-10-12 | beads-ui의 Codex 모델 선택지는 서버가 Codex CLI 목록(codex debug models)을 비동기로 읽어 dotfiles와 같은 규칙(계열별 최신 list·v2 → 별칭, 모든 적격 버전 → <계열>-<버전> 고정 이름)으로 만들고, 규칙은 JS로 복제해 dotfiles 해석기와 교차 테스트로 묶는다; 마지막 성공 목록을 영속해 읽기 실패가 카탈로그를 줄이지 않으며, effort·speed는 계열 템플릿을, 단가는 별칭이 해석된 고정 이름의 것을 상속하며, 목록에서 빠진 고정 이름의 저장값은 원문을 보존하고 실행은 기본값으로 대신한다 |
@@ -166,5 +166,6 @@
 | UI-32oq | [한도 대응 저장소 정책·활성 계정 자동 전환과 default 복귀](history/UI-32oq-limit-policy-repo-and-active-login-return.md) | superseded | [UI-iopp](history/UI-iopp-limit-policy-user-order-candidates.md) |
 | UI-32oq-2 | [설정 창 하나와 대상·서버 전체 탭 묶음](history/UI-32oq-2-settings-one-window-target-and-server-tabs.md) | superseded | [UI-3713](history/UI-3713-conversation-result-words-and-handback.md) |
 | UI-57us | [session-preferred 기본 세션 레인과 Worker 전환 칩](history/UI-57us-session-preferred-default-session-lane.md) | superseded | [UI-32oq-2](history/UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
-| UI-3713 | [설정 창 묶음과 대화 결과 줄·마무리 뒤 되돌리기](history/UI-3713-conversation-result-words-and-handback.md) | superseded | [UI-unf5](UI-unf5-placement-soft-order-jev-prefer.md) |
+| UI-3713 | [설정 창 묶음과 대화 결과 줄·마무리 뒤 되돌리기](history/UI-3713-conversation-result-words-and-handback.md) | superseded | [UI-unf5](history/UI-unf5-placement-soft-order-jev-prefer.md) |
 | UI-iopp | [한도 대응 저장소 정책·활성 계정 자동 전환과 사용자 순서 후보](history/UI-iopp-limit-policy-user-order-candidates.md) | superseded | [UI-d9c1](UI-d9c1-limit-policy-under-limit-candidates.md) |
+| UI-unf5 | [설정 창·대화 결과 줄과 배치안 순서 자리의 jev 선호](history/UI-unf5-placement-soft-order-jev-prefer.md) | superseded | [UI-golv](UI-golv-placement-card-include-check.md) |

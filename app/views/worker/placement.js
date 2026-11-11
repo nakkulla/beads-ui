@@ -11,7 +11,7 @@
  * 이 모듈이 정하는 것은 버튼을 활성으로 그릴지와 그 title 문장뿐이다.
  *
  * 같은 모듈이 Worker 탭의 배치 추천 미리보기(UI-izba §4.7)도 소유한다: `[추천 배치]`의
- * 켜짐·title, 근거 상자, 점선 카드, 전체 배치안 표와 그 전송이다. 자리 계산 자체는
+ * 켜짐·title, 근거 상자, 점선 카드와 그 포함 체크, 카드 없는 후보 줄과 그 전송이다. 자리 계산 자체는
  * `app/utils/placement/compute.js`의 순수 함수다.
  *
  * @import { PlaceMenuEntry } from './lanes.js'
@@ -21,6 +21,7 @@
  */
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { live } from 'lit-html/directives/live.js';
 import {
   ADOPT_CONFIDENCE,
   OVERLAP_INDEPENDENT_CONFIDENCE
@@ -560,7 +561,7 @@ const UNCOVERED_REASON_WORDS = {
 };
 
 /**
- * One warning line of the box and the table.
+ * One warning line of the box, a dotted card and a cardless row.
  *
  * @param {PlacementWarning} warning
  * @returns {string}
@@ -762,7 +763,7 @@ export function placementRecompute(order) {
 }
 
 /**
- * The material of one repository's full plan table (UI-izba §4.7, shared with
+ * The material of one repository's full plan (UI-izba §4.7, shared with
  * the monitor by UI-hf8v §3.3).
  *
  * @typedef {Object} FullPlacementPlan
@@ -778,11 +779,11 @@ export function placementRecompute(order) {
 /**
  * The full plan of one snapshot: every recommendable candidate (`ready`,
  * `fixed_only`) starts checked — warnings and low-confidence rows included,
- * since the table shows them and a person presses the apply button — the
+ * since the cards and rows show them and a person presses the apply button — the
  * reader's `checks` override that, and the plan itself is computed with the
  * checked set only. `base` is the plan of every recommendable candidate: an
  * unchecked row still shows its reasons and warnings from it. The Worker tab
- * and the monitor's repository cards both read the table from this.
+ * and the monitor's repo groups both read the full plan from this.
  *
  * @param {any} queue - One repository's `worker-queue` snapshot.
  * @param {PlacementOrder} order - That repository's candidate order material
@@ -821,82 +822,169 @@ export function fullPlacementPlan(queue, order, checks) {
 }
 
 /**
- * The full plan table of one repository (UI-hf8v §3.3, columns UI-5cmo §3.4,
- * UI-msmj): the include checkbox and the candidate per row, then the
- * lane-growth line and the repository's stop notice. Places and moves are read
- * from the dotted cards in the lanes, so the candidate cell carries only small
- * lines under the title for a row that has something to say: `판정 전 · <state>`
- * on a row not judged yet, else the warning lines — of the all-ready plan for
- * an unchecked row. The Worker tab's `planTemplate` and the monitor's
- * repository block both draw it, so the two tabs show the same rows for the
- * same repository state. `root_dir`, when given, rides on each checkbox so a
- * page with several repositories knows whose row changed.
+ * The include material a dotted card carries while the full plan is open
+ * (UI-golv): the checkbox state and, on a page with several repositories,
+ * whose card it is. Without it a card has no checkbox and no warning line —
+ * the single `[추천 배치]` preview draws its cards that way.
+ *
+ * @typedef {{ busy: boolean, root_dir?: string }} PreviewInclude
+ */
+
+/**
+ * The include checkbox of the full plan, on a dotted card and on a
+ * cardless row alike. `live` keeps a reused input in step with the plan:
+ * unchecking one card removes it, and lit may hand its input to the next card.
+ *
+ * @param {string} id
+ * @param {boolean} checked
+ * @param {boolean} disabled
+ * @param {string|undefined} root_dir
+ * @returns {import('lit-html').TemplateResult}
+ */
+function includeBoxTemplate(id, checked, disabled, root_dir) {
+  return html`<input
+    type="checkbox"
+    class="worker-plan__include"
+    data-bead-id=${id}
+    data-root-dir=${ifDefined(root_dir || undefined)}
+    aria-label=${`${id} 포함`}
+    .checked=${live(checked)}
+    ?disabled=${disabled}
+  />`;
+}
+
+/**
+ * Warning lines of one candidate, drawn in its card's slot 4b or under its
+ * cardless row.
+ *
+ * @param {PlacementWarning[]} warnings
+ * @returns {import('lit-html').TemplateResult[]}
+ */
+function warningLines(warnings) {
+  return warnings.map(
+    (warning) =>
+      html`<div class="worker-plan__line worker-plan__warn">
+        ${placementWarningText(warning)}
+      </div>`
+  );
+}
+
+/**
+ * One cardless candidate row under the lanes: checkbox, id and title, then
+ * small lines — the place of a new-lane candidate, `판정 전 · <state>` of one
+ * not judged yet, and the warnings.
+ *
+ * @param {string} id
+ * @param {{ checked: boolean, ready: boolean, state: string, position: string, warnings: PlacementWarning[] }} row
+ * @param {{ titleOf: (id: string) => string, busy: boolean, root_dir?: string }} view
+ * @returns {import('lit-html').TemplateResult}
+ */
+function planRowTemplate(id, row, view) {
+  return html`<div
+    class="worker-plan__row${row.ready ? '' : ' worker-plan__row--pending'}"
+    data-plan-id=${id}
+  >
+    <div class="worker-plan__row-hd">
+      ${includeBoxTemplate(
+        id,
+        row.checked,
+        !row.ready || view.busy,
+        view.root_dir
+      )}
+      <span class="worker-plan__id">${id}</span>
+      <span class="worker-plan__title">${view.titleOf(id)}</span>
+    </div>
+    ${row.position
+      ? html`<div class="worker-plan__line">${row.position}</div>`
+      : ''}
+    ${!row.ready
+      ? html`<div class="worker-plan__line worker-plan__state">
+          판정 전 · ${row.state}
+        </div>`
+      : ''}${warningLines(row.warnings)}
+  </div>`;
+}
+
+/**
+ * The lines of one repository's full plan under its lanes (UI-golv): the
+ * include choice lives on the dotted cards in the lanes, so only a candidate
+ * without a card gets a row here. A place in a new serial lane rides on the
+ * lane-growth line with its checkbox, position and warnings; every other
+ * candidate without a card — unchecked, not judged yet, or dropped by the
+ * plan — is a `빠진 후보` row, an unchecked one keeping the warnings of the
+ * all-ready plan. Then the repository's stop notice. Every candidate row of
+ * the material is drawn exactly once, as a card or as a row. The Worker
+ * tab's `planTemplate` and the monitor's repository block both draw it, so
+ * the two tabs show the same rows for the same repository state. `root_dir`,
+ * when given, rides on each checkbox so a page with several repositories
+ * knows whose row changed. Empty when there is nothing to say.
  *
  * @param {FullPlacementPlan} material
  * @param {{ titleOf: (id: string) => string, busy: boolean, notice: string|null, root_dir?: string }} view
- * @returns {import('lit-html').TemplateResult}
+ * @returns {import('lit-html').TemplateResult|''}
  */
-export function placementPlanTable(material, view) {
+export function placementPlanLines(material, view) {
   const { status, plan, base, checked, rows } = material;
+  const carded = new Set(previewablePlan(plan).order.map((item) => item.id));
+  // Rows keep the display order; the plan's apply order lives in each row's
+  // place line.
+  const fresh = rows
+    .filter((id) => !carded.has(id) && plan.by_id[id])
+    .map((id) => plan.by_id[id]);
+  const fresh_ids = new Set(fresh.map((item) => item.id));
+  const left = rows.filter((id) => !carded.has(id) && !fresh_ids.has(id));
   const growth = laneGrowthText(plan);
-  return html`<table class="worker-plan__table">
-      <thead>
-        <tr>
-          <th>포함</th>
-          <th>후보</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows.map((id) => {
+  if (!growth && fresh.length === 0 && left.length === 0 && !view.notice) {
+    return '';
+  }
+  return html`${growth || fresh.length > 0
+    ? html`<div class="worker-plan__group worker-plan__growth-group">
+        ${growth
+          ? html`<div class="worker-plan__notice worker-plan__growth">
+              ${growth}
+            </div>`
+          : ''}
+        ${fresh.map((item) =>
+          planRowTemplate(
+            item.id,
+            {
+              checked: true,
+              ready: true,
+              state: '',
+              position: placementPositionText(item, plan.configured_lane_count),
+              warnings: item.warnings
+            },
+            view
+          )
+        )}
+      </div>`
+    : ''}
+  ${left.length > 0
+    ? html`<div class="worker-plan__group worker-plan__left">
+        <div class="worker-plan__label">빠진 후보</div>
+        ${left.map((id) => {
           const ready = isRecommendableState(status[id]?.state);
           // An unchecked ready row keeps the warnings of the all-ready plan,
-          // so the reader sees why it was left out; only checked rows get a
-          // dotted card and a send.
+          // so the reader sees why it was left out.
           const explained =
             plan.by_id[id] || (ready ? base.by_id[id] : undefined);
-          return html`<tr
-            class="worker-plan__row${ready ? '' : ' worker-plan__row--pending'}"
-            data-bead-id=${id}
-          >
-            <td>
-              <input
-                type="checkbox"
-                class="worker-plan__include"
-                data-bead-id=${id}
-                data-root-dir=${ifDefined(view.root_dir || undefined)}
-                aria-label=${`${id} 포함`}
-                .checked=${checked.has(id)}
-                ?disabled=${!ready || view.busy}
-              />
-            </td>
-            <td>
-              <span class="worker-plan__id">${id}</span>
-              ${view.titleOf(id)}
-              ${!ready
-                ? html`<div class="worker-plan__line worker-plan__state">
-                    판정 전 · ${recommendButtonState(status[id]).title}
-                  </div>`
-                : ''}${explained
-                ? explained.warnings.map(
-                    (warning) =>
-                      html`<div class="worker-plan__line worker-plan__warn">
-                        ${placementWarningText(warning)}
-                      </div>`
-                  )
-                : ''}
-            </td>
-          </tr>`;
+          return planRowTemplate(
+            id,
+            {
+              checked: ready && checked.has(id),
+              ready,
+              state: ready ? '' : recommendButtonState(status[id]).title,
+              position: '',
+              warnings: explained ? explained.warnings : []
+            },
+            view
+          );
         })}
-      </tbody>
-    </table>
-    ${growth
-      ? html`<div class="worker-plan__notice worker-plan__growth">
-          ${growth}
-        </div>`
-      : ''}
-    ${view.notice
-      ? html`<div class="worker-plan__notice">${view.notice}</div>`
-      : ''}`;
+      </div>`
+    : ''}
+  ${view.notice
+    ? html`<div class="worker-plan__notice">${view.notice}</div>`
+    : ''}`;
 }
 
 /**
@@ -983,23 +1071,32 @@ export function recommendBoxTemplate(placement, state) {
 
 /**
  * One dotted preview card (§4.7): number, id, title. An overlay, not a lane
- * member — no `data-bead-id`, no drag coordinates.
+ * member — no `data-bead-id`, no drag coordinates. While the full plan is open
+ * (`include`) the card also carries the include checkbox at the left end of
+ * its slot-1 line, before `#N`, and its warning lines in slot 4b (UI-golv): a
+ * card stands only for a checked candidate, so its box is always on, and
+ * turning it off recomputes the plan without that candidate.
  *
  * @param {PlannedPlacement} placement
  * @param {string} title
+ * @param {PreviewInclude|null} [include]
  * @returns {import('lit-html').TemplateResult}
  */
-export function previewCardTemplate(placement, title) {
+export function previewCardTemplate(placement, title, include = null) {
   return html`<div
     class="worker-card worker-card--static worker-card--preview"
     data-preview-id=${placement.id}
     aria-label=${`추천 자리 ${placement.number}: ${placement.id}`}
   >
     <div class="worker-card__head">
+      ${include
+        ? includeBoxTemplate(placement.id, true, include.busy, include.root_dir)
+        : ''}
       <span class="worker-card__preview-no">#${placement.number}</span>
       <span class="worker-card__preview-id">${placement.id}</span>
     </div>
     ${title ? html`<div class="worker-card__title">${title}</div>` : ''}
+    ${include ? warningLines(placement.warnings) : ''}
   </div>`;
 }
 
@@ -1041,16 +1138,18 @@ export function movedCardTemplate(step, title) {
  * @param {PlacementLane} lane
  * @param {PlacementPlan|null} plan
  * @param {(id: string) => string} titleOf
+ * @param {PreviewInclude|null} [include] - Given while the full plan is open:
+ * the candidates' cards carry the include checkbox (moved cards never do).
  * @returns {import('lit-html').TemplateResult[]}
  */
-export function interleavePreview(rows, lane, plan, titleOf) {
+export function interleavePreview(rows, lane, plan, titleOf, include = null) {
   /** @type {Map<string, import('lit-html').TemplateResult>} */
   const previews = new Map();
   for (const item of plan ? plan.order : []) {
     if (item.lane !== lane) {
       continue;
     }
-    previews.set(item.id, previewCardTemplate(item, titleOf(item.id)));
+    previews.set(item.id, previewCardTemplate(item, titleOf(item.id), include));
     for (const step of item.bundle_steps) {
       if (step.kind === 'move' && !previews.has(step.id)) {
         previews.set(step.id, movedCardTemplate(step, titleOf(step.id)));
@@ -1112,7 +1211,7 @@ export function interleavePreview(rows, lane, plan, titleOf) {
  * The title a full-plan row and a dotted card show for a Bead: the candidate's
  * own title, else — for a moved partner, which is a waiting Bead — the
  * snapshot's `bead_titles` decoration, else nothing. Both tabs title their
- * table and cards through it.
+ * rows and cards through it.
  *
  * @param {Array<{ id: string, title?: string }>} candidates
  * @param {any} queue - That repository's `worker-queue` snapshot.
@@ -1133,8 +1232,8 @@ export function placementTitleOf(candidates, queue) {
 /**
  * The plan whose dotted cards a waiting lane draws: a place in a lane beyond
  * the configured count draws no dotted card, since that lane does not exist
- * until `[적용]` grows the count (UI-lsr4 §3.3) and the table's `(새 레인)` and
- * growth line say so instead. Both tabs read their preview through it.
+ * until `[적용]` grows the count (UI-lsr4 §3.3) and the growth line's row with
+ * `(새 레인)` says so instead. Both tabs read their preview through it.
  *
  * @param {PlacementPlan} plan
  * @returns {PlacementPlan}
@@ -1320,7 +1419,7 @@ export function createPlacementPreview(options) {
 
   async function applyAll() {
     const queue = getQueue();
-    // Frozen at the click like the monitor's: the table's order material is
+    // Frozen at the click like the monitor's: the shown order material is
     // what every reply recomputes with (UI-unf5 §3.8).
     const order = orderNow();
     const shown = fullPlacementPlan(queue, order, checks).plan.order;
@@ -1411,7 +1510,13 @@ export function createPlacementPreview(options) {
      * @returns {import('lit-html').TemplateResult[]}
      */
     laneRows(rows, lane, plan) {
-      return interleavePreview(rows, lane, plan, titleOf);
+      return interleavePreview(
+        rows,
+        lane,
+        plan,
+        titleOf,
+        full_open ? { busy } : null
+      );
     },
     activePlan,
     /**
@@ -1480,7 +1585,8 @@ export function createPlacementPreview(options) {
       </span>`;
     },
     /**
-     * The full plan table below the waiting column, or nothing while closed.
+     * The full plan's cardless rows, notice and actions below the waiting
+     * column (UI-golv), or nothing while closed.
      *
      * @returns {import('lit-html').TemplateResult|string}
      */
@@ -1492,7 +1598,7 @@ export function createPlacementPreview(options) {
       const material = fullPlanOn(getQueue());
       const { plan } = material;
       return html`<section class="worker-plan">
-        ${placementPlanTable(material, {
+        ${placementPlanLines(material, {
           titleOf,
           busy,
           notice: plan_notice
@@ -1588,12 +1694,16 @@ export function createPlacementPreview(options) {
         void rejudge();
         return true;
       }
-      // The box and the table are not the card: a click inside them must not
-      // fall through to the card's open-detail default.
-      return !!target.closest('.worker-recommend, .worker-plan');
+      // The box, the plan lines and a dotted card's checkbox are not the
+      // card: a click inside them must not fall through to the card's
+      // open-detail default.
+      return !!target.closest(
+        '.worker-recommend, .worker-plan, .worker-card--preview'
+      );
     },
     /**
-     * Handle a change event (the full plan's include checkboxes).
+     * Handle a change event (the full plan's include checkboxes, on a dotted
+     * card or a cardless row).
      *
      * @param {HTMLElement|null} target
      * @returns {boolean}

@@ -2,11 +2,13 @@
  * 모니터 탭 전체 배치안 (UI-hf8v §3.2–§3.5, 레포 묶음 배치 UI-5cmo §3.3·§3.5).
  *
  * 대기 레인 머리의 `[전체 배치안 · N개 레포]`가 열면, 대기 열의 레포 묶음마다 그 레포
- * 계획의 미리보기 카드가 레인 안 실제 자리에 끼이고(공유 `interleavePreview`), 그
- * 레포의 표 블록이 묶음 맨 아래에 선다. 대기 본문 맨 아래에는 요약 줄이 붙는다. 표의
- * 재료와 그리기는 Worker 탭과 같은 공유 함수(`fullPlacementPlan`·`placementPlanTable`)가
- * 소유하고, 이 모듈은 레포 블록의 머리, 레포·Bead 키 체크와 적용 대상 기억, 레포 단위
- * 적용 순서와 결과 줄, 요약 줄만 갖는다.
+ * 계획의 미리보기 카드가 포함 체크와 함께 레인 안 실제 자리에 끼이고(공유
+ * `interleavePreview`), 카드가 없는 후보 줄이 묶음 맨 아래에 선다(UI-golv). 적용 대상
+ * 체크·`[이 레포만 적용]`·결과 줄은 묶음 머리 바로 아래 줄에 선다. 대기 본문 맨
+ * 아래에는 요약 줄이 붙는다. 카드와 줄의 재료와 그리기는 Worker 탭과 같은 공유
+ * 함수(`fullPlacementPlan`·`interleavePreview`·`placementPlanLines`)가 소유하고, 이
+ * 모듈은 묶음 머리 줄, 레포·Bead 키 체크와 적용 대상 기억, 레포 단위 적용 순서와 결과
+ * 줄, 요약 줄만 갖는다.
  *
  * 적용 단위는 레포다. 레인·충돌 판정·큐 revision이 레포마다 따로라 레포를 섞은
  * 단일 배치는 만들지 않는다. 누른 순간의 대상 레포·체크·`shown`을 고정하고, 레포마다
@@ -26,7 +28,7 @@ import {
   fullPlacementPlan,
   latestJudgedAt,
   placementOrderOf,
-  placementPlanTable,
+  placementPlanLines,
   placementRecompute,
   placementStateWord,
   placementStopReason,
@@ -398,20 +400,21 @@ export function createMonitorPlacementPanel(options) {
   }
 
   /**
-   * The result block of a repository the panel applied (UI-hf8v §3.4): its
-   * result line, and for a stopped one `[이 레포 배치안 다시 보기]` and the table
-   * recomputed on the latest queue without checks.
+   * The result line of a repository the panel applied (UI-hf8v §3.4), in its
+   * repo group head, and for a stopped one `[이 레포 배치안 다시 보기]`, which
+   * clears the line and the checks and draws the cards again on the latest
+   * queue. A repository with a result line draws no cards and no rows.
    *
    * @param {MonitorPlacementRepo} repo
    * @param {RepoApplyResult} result
    * @returns {import('lit-html').TemplateResult}
    */
-  function resultBlockTemplate(repo, result) {
-    return html`<section
-      class="mon-plan__repo mon-plan__repo--done"
+  function resultHeadTemplate(repo, result) {
+    return html`<div
+      class="mon-plan__head mon-plan__head--done"
       data-root-dir=${repo.root_dir}
     >
-      <div
+      <span
         class="mon-plan__result${result.stopped
           ? ' mon-plan__result--stopped'
           : ''}"
@@ -419,59 +422,110 @@ export function createMonitorPlacementPanel(options) {
         ${result.stopped
           ? `✕ ${result.placed}건 넣음 — ${result.stopped.id}에서 멈춤: ${result.stopped.why}`
           : `✓ ${result.placed}건 넣음`}
-      </div>
+      </span>
       ${result.stopped
-        ? html`<div class="mon-plan__repo-actions">
-            <button
-              type="button"
-              class="op-btn mon-plan__review"
-              data-root-dir=${repo.root_dir}
-              ?disabled=${applying !== null}
-              title="결과 줄과 체크를 지우고 최신 큐로 다시 계산한 표를 봅니다"
-            >
-              이 레포 배치안 다시 보기
-            </button>
-          </div>`
+        ? html`<button
+            type="button"
+            class="op-btn mon-plan__review"
+            data-root-dir=${repo.root_dir}
+            ?disabled=${applying !== null}
+            title="결과 줄과 체크를 지우고 최신 큐로 다시 계산한 배치안을 봅니다"
+          >
+            이 레포 배치안 다시 보기
+          </button>`
         : ''}
-      ${result.stopped
-        ? // 성공한 레포만 표를 접는다 (§3.4) — 멈춘 레포는 최신 큐로 다시 계산한
-          // 표를 체크·적용 없이 보이고, [이 레포 배치안 다시 보기]가 다시 연다.
-          html`<div class="mon-plan__scroll">
-            ${placementPlanTable(planOf(repo.root_dir), {
-              titleOf: titleOf(repo.root_dir),
-              busy: true,
-              notice: null,
-              root_dir: repo.root_dir
-            })}
-          </div>`
-        : ''}
-    </section>`;
+    </div>`;
   }
 
   /**
-   * One repository's table block at the bottom of its repo group (UI-5cmo
-   * §3.3). The repo group header already names the repository, so the block
-   * head starts with the `적용 대상` check instead of the name.
+   * One repository's line under its repo group head (UI-golv): the `적용 대상`
+   * check, the counts, the judging progress and time, and `[이 레포만 적용]` —
+   * or the result line once applied. Nothing for a repository without a
+   * recommendable candidate; its folded line stands at the group bottom.
    *
    * @param {MonitorPlacementRepo} repo
-   * @returns {import('lit-html').TemplateResult}
+   * @returns {import('lit-html').TemplateResult|''}
    */
-  function repoBlockTemplate(repo) {
+  function repoHeadTemplate(repo) {
     const result = results.get(repo.root_dir);
     if (result) {
-      return resultBlockTemplate(repo, result);
+      return resultHeadTemplate(repo, result);
+    }
+    const material = planOf(repo.root_dir);
+    if (material.ready.length === 0) {
+      return '';
     }
     const queue = options.queueOf(repo.root_dir);
-    const material = planOf(repo.root_dir);
     const busy = applying !== null;
-    const table = html`<div class="mon-plan__scroll">
-      ${placementPlanTable(material, {
-        titleOf: titleOf(repo.root_dir),
-        busy,
-        notice: null,
-        root_dir: repo.root_dir
-      })}
+    const progress = judgingProgress(queue);
+    const latest = latestJudgedAt(queue);
+    const count = material.plan.order.length;
+    const on = isTarget(repo.root_dir);
+    return html`<div
+      class="mon-plan__head${on ? '' : ' mon-plan__head--off'}"
+      data-root-dir=${repo.root_dir}
+    >
+      <label
+        class="ui-field mon-plan__target"
+        title="[선택한 레포 적용]이 이 레포를 보낼지 정합니다"
+      >
+        <input
+          type="checkbox"
+          class="mon-plan__target-box"
+          data-root-dir=${repo.root_dir}
+          .checked=${on}
+          ?disabled=${busy}
+        />
+        적용 대상
+      </label>
+      ${on ? '' : html`<span class="mon-plan__off">적용 대상에서 뺌</span>`}
+      <span class="mon-plan__count"
+        >추천 ${material.ready.length} / ${material.rows.length}</span
+      >
+      ${progress
+        ? html`<span class="mon-plan__progress"
+            >jev ${progress.done}/${progress.total}</span
+          >`
+        : ''}
+      ${typeof latest === 'number'
+        ? html`<span
+            class="mon-plan__time"
+            title=${`마지막 jev 판정 ${formatTimestampLocal(latest)}`}
+            >판정 ${formatClockLocal(latest)}</span
+          >`
+        : ''}
+      <button
+        type="button"
+        class="op-btn op-btn--primary mon-plan__apply-repo"
+        data-root-dir=${repo.root_dir}
+        ?disabled=${count === 0 || busy}
+        title="이 레포의 체크한 후보를 번호 순서대로 하나씩 넣습니다"
+      >
+        이 레포만 적용 (${count})
+      </button>
     </div>`;
+  }
+
+  /**
+   * One repository's cardless rows at the bottom of its repo group (UI-golv):
+   * the shared `placementPlanLines`. A repository without a recommendable
+   * candidate folds them into one line; one with a result line, or with
+   * nothing to say, draws nothing.
+   *
+   * @param {MonitorPlacementRepo} repo
+   * @returns {import('lit-html').TemplateResult|''}
+   */
+  function repoBlockTemplate(repo) {
+    if (results.has(repo.root_dir)) {
+      return '';
+    }
+    const material = planOf(repo.root_dir);
+    const lines = placementPlanLines(material, {
+      titleOf: titleOf(repo.root_dir),
+      busy: applying !== null,
+      notice: null,
+      root_dir: repo.root_dir
+    });
     if (material.ready.length === 0) {
       return html`<details
         class="mon-plan__repo mon-plan__repo--folded"
@@ -481,58 +535,19 @@ export function createMonitorPlacementPanel(options) {
           배치안 · 추천할 후보 없음 —
           ${foldedStateCounts(material.status, material.rows)}
         </summary>
-        ${table}
+        ${lines}
       </details>`;
     }
-    const progress = judgingProgress(queue);
-    const latest = latestJudgedAt(queue);
-    const count = material.plan.order.length;
-    const on = isTarget(repo.root_dir);
+    if (lines === '') {
+      return '';
+    }
     return html`<section
-      class="mon-plan__repo${on ? '' : ' mon-plan__repo--off'}"
+      class="mon-plan__repo${isTarget(repo.root_dir)
+        ? ''
+        : ' mon-plan__repo--off'}"
       data-root-dir=${repo.root_dir}
     >
-      <div class="mon-plan__repo-hd">
-        <label
-          class="ui-field mon-plan__target"
-          title="[선택한 레포 적용]이 이 레포를 보낼지 정합니다"
-        >
-          <input
-            type="checkbox"
-            class="mon-plan__target-box"
-            data-root-dir=${repo.root_dir}
-            .checked=${on}
-            ?disabled=${busy}
-          />
-          적용 대상
-        </label>
-        ${on ? '' : html`<span class="mon-plan__off">적용 대상에서 뺌</span>`}
-        <span class="mon-plan__count"
-          >추천 ${material.ready.length} / ${material.rows.length}</span
-        >
-        ${progress
-          ? html`<span class="mon-plan__progress"
-              >jev ${progress.done}/${progress.total}</span
-            >`
-          : ''}
-        ${typeof latest === 'number'
-          ? html`<span
-              class="mon-plan__time"
-              title=${`마지막 jev 판정 ${formatTimestampLocal(latest)}`}
-              >판정 ${formatClockLocal(latest)}</span
-            >`
-          : ''}
-        <button
-          type="button"
-          class="op-btn op-btn--primary mon-plan__apply-repo"
-          data-root-dir=${repo.root_dir}
-          ?disabled=${count === 0 || busy}
-          title="이 레포의 체크한 후보를 번호 순서대로 하나씩 넣습니다"
-        >
-          이 레포만 적용 (${count})
-        </button>
-      </div>
-      ${table}
+      ${lines}
     </section>`;
   }
 
@@ -595,7 +610,7 @@ export function createMonitorPlacementPanel(options) {
           aria-pressed=${open ? 'true' : 'false'}
           ?disabled=${shown === 0 && !open}
           title=${shown > 0
-            ? '보이는 레포마다 후보 배치안을 대기 레인 안 자리와 레포 표로 봅니다'
+            ? '보이는 레포마다 후보 배치안을 대기 레인 안 자리와 포함 체크로 봅니다'
             : '배치안을 볼 후보가 있는 레포가 없습니다'}
         >
           전체 배치안 · ${shown}개 레포
@@ -655,8 +670,22 @@ export function createMonitorPlacementPanel(options) {
       return titleOf(root_dir);
     },
     /**
+     * The include material of one repository's preview cards while the panel
+     * is open (UI-golv): the cards then carry the include checkbox. Null when
+     * `previewPlan` draws no card.
+     *
+     * @param {string} root_dir
+     * @returns {import('../worker/placement.js').PreviewInclude|null}
+     */
+    previewInclude(root_dir) {
+      if (!open || results.has(root_dir)) {
+        return null;
+      }
+      return { busy: applying !== null, root_dir };
+    },
+    /**
      * Whether a repository's `적용 대상` box is off while the panel is open —
-     * the repo group dims its table and preview cards (UI-5cmo §3.5).
+     * the repo group dims its cardless rows and preview cards (UI-5cmo §3.5).
      *
      * @param {string} root_dir
      * @returns {boolean}
@@ -665,7 +694,22 @@ export function createMonitorPlacementPanel(options) {
       return open && !isTarget(root_dir);
     },
     /**
-     * One repository's table block for the bottom of its repo group, or
+     * One repository's line under its repo group head (UI-golv) — the target
+     * check and `[이 레포만 적용]`, or the result line — or nothing while
+     * closed or for a repository without plan entries (fail-quiet).
+     *
+     * @param {string} root_dir
+     * @returns {import('lit-html').TemplateResult|''}
+     */
+    headTemplate(root_dir) {
+      if (!open) {
+        return '';
+      }
+      const repo = panelRepos().find((item) => item.root_dir === root_dir);
+      return repo ? repoHeadTemplate(repo) : '';
+    },
+    /**
+     * One repository's cardless rows for the bottom of its repo group, or
      * nothing while closed or for a repository without plan entries
      * (fail-quiet).
      *
@@ -784,16 +828,16 @@ export function createMonitorPlacementPanel(options) {
         }
         return true;
       }
-      // The blocks, the summary row and the header controls are not cards: a
-      // click inside them must not fall through to the card's open-detail
-      // default.
+      // The group head line, the rows, the summary row, the header controls
+      // and a dotted card's checkbox are not cards: a click inside them must
+      // not fall through to the card's open-detail default.
       return !!target.closest(
-        '.mon-plan__repo, .mon-plan__summary, .mon-plan-controls'
+        '.mon-plan__head, .mon-plan__repo, .mon-plan__summary, .mon-plan-controls, .worker-card--preview'
       );
     },
     /**
-     * Handle a change event: a block's `적용 대상` box or its include
-     * checkboxes.
+     * Handle a change event: a repository's `적용 대상` box or an include
+     * checkbox, on a dotted card or a cardless row.
      *
      * @param {HTMLElement|null} target
      * @returns {boolean}
@@ -814,7 +858,7 @@ export function createMonitorPlacementPanel(options) {
         return true;
       }
       const box = /** @type {HTMLInputElement|null} */ (
-        target.closest('.mon-plan__repo .worker-plan__include')
+        target.closest('.worker-plan__include[data-root-dir]')
       );
       if (!box) {
         return false;

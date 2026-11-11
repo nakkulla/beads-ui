@@ -563,7 +563,7 @@ describe('전체 배치안', () => {
     click(mount.querySelector('.worker-plan__open'));
 
     const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-plan__row[data-bead-id="RD-3"]')
+      mount.querySelector('.worker-plan__row[data-plan-id="RD-3"]')
     );
     expect(row.textContent).toContain('판정 전');
     expect(
@@ -839,7 +839,7 @@ describe('전체 배치안 explanations', () => {
     uncheck(mount, 'RD-3');
 
     expect(
-      mount.querySelector('.worker-plan__row[data-bead-id="RD-3"]')?.textContent
+      mount.querySelector('.worker-plan__row[data-plan-id="RD-3"]')?.textContent
     ).toContain('P-1(병렬)과 동시에 돌 수 있음');
   });
 
@@ -866,29 +866,126 @@ describe('전체 배치안 explanations', () => {
   });
 });
 
-describe('full plan table columns (UI-5cmo §3.4, UI-msmj)', () => {
-  test('heads the table with 포함 · 후보', () => {
+describe('full plan include on the dotted cards (UI-golv)', () => {
+  test('draws no plan table', () => {
+    const { mount } = mountView(vi.fn());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(mount.querySelector('.worker-plan table')).toBeNull();
+  });
+
+  test('puts the include checkbox at the left end of the dotted card head, before #N', () => {
     const { mount } = mountView(vi.fn());
 
     click(mount.querySelector('.worker-plan__open'));
 
     expect(
-      Array.from(mount.querySelectorAll('.worker-plan__table th'), (cell) =>
-        cell.textContent?.trim()
+      Array.from(
+        previewCard(mount, 'RD-1').querySelector('.worker-card__head')
+          ?.children || [],
+        (child) => child.className
       )
-    ).toEqual(['포함', '후보']);
+    ).toEqual([
+      'worker-plan__include',
+      'worker-card__preview-no',
+      'worker-card__preview-id'
+    ]);
   });
 
-  test('puts the include checkbox in the first cell of a row', () => {
+  test('draws every dotted card of the full plan with its box on', () => {
     const { mount } = mountView(vi.fn());
 
     click(mount.querySelector('.worker-plan__open'));
 
-    const first = mount.querySelector('.worker-plan__row td');
-    expect(first?.querySelector('.worker-plan__include')).not.toBeNull();
+    expect(
+      Array.from(
+        mount.querySelectorAll('.worker-card--preview .worker-plan__include'),
+        (box) => [
+          box.getAttribute('data-bead-id'),
+          /** @type {HTMLInputElement} */ (box).checked
+        ]
+      )
+    ).toEqual([
+      ['RD-3', true],
+      ['RD-1', true]
+    ]);
   });
 
-  test('names the state after 판정 전 on a row not judged yet', () => {
+  test('draws no checkbox on the dotted card of a single [추천 배치] preview', () => {
+    const { mount } = mountView(vi.fn());
+
+    click(recommendButton(mount, 'RD-1'));
+
+    expect(
+      previewCard(mount, 'RD-1').querySelector('.worker-plan__include')
+    ).toBeNull();
+  });
+
+  test('moves an unchecked candidate from its dotted card to the 빠진 후보 row', () => {
+    const { mount } = mountView(vi.fn());
+    click(mount.querySelector('.worker-plan__open'));
+
+    uncheck(mount, 'RD-1');
+
+    expect({
+      card: mount.querySelector('[data-preview-id="RD-1"]'),
+      left: Array.from(
+        mount.querySelectorAll('.worker-plan__left .worker-plan__row'),
+        (row) => [
+          row.getAttribute('data-plan-id'),
+          /** @type {HTMLInputElement} */ (
+            row.querySelector('.worker-plan__include')
+          ).checked
+        ]
+      )
+    }).toEqual({ card: null, left: [['RD-1', false]] });
+  });
+
+  test('brings the dotted card back when the 빠진 후보 box is checked again', () => {
+    const { mount } = mountView(vi.fn());
+    click(mount.querySelector('.worker-plan__open'));
+    uncheck(mount, 'RD-1');
+    const box = /** @type {HTMLInputElement} */ (
+      mount.querySelector(
+        '.worker-plan__left .worker-plan__include[data-bead-id="RD-1"]'
+      )
+    );
+
+    box.checked = true;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect({
+      card: Boolean(mount.querySelector('[data-preview-id="RD-1"]')),
+      left: mount.querySelector('.worker-plan__left')
+    }).toEqual({ card: true, left: null });
+  });
+
+  test('keeps the box of the next dotted card on after the one before it is unchecked', () => {
+    const { mount } = mountView(
+      vi.fn(),
+      queueOf({
+        queue: [],
+        serial_lane_count: 1,
+        serial_lanes: [{ id: 's1', entries: [] }],
+        lane_states: {},
+        placement_relations: Object.fromEntries([
+          rel('RD-1', 'RD-3', 'conflict')
+        ])
+      })
+    );
+    click(mount.querySelector('.worker-plan__open'));
+
+    uncheck(mount, 'RD-1');
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        previewCard(mount, 'RD-3').querySelector('.worker-plan__include')
+      ).checked
+    ).toBe(true);
+  });
+
+  test('names the state after 판정 전 on a 빠진 후보 row not judged yet', () => {
     const { mount } = mountView(
       vi.fn(),
       queueOf({
@@ -903,16 +1000,16 @@ describe('full plan table columns (UI-5cmo §3.4, UI-msmj)', () => {
 
     expect(
       Array.from(
-        candidateCell(mount, 'RD-3').children,
+        planRow(mount, 'RD-3').children,
         (child) => `${child.className} ${child.textContent?.trim()}`
       )
     ).toEqual([
-      'worker-plan__id RD-3',
+      expect.stringMatching(/^worker-plan__row-hd RD-3\s+RD-3 title$/),
       'worker-plan__line worker-plan__state 판정 전 · jev 판정 중'
     ]);
   });
 
-  test('draws the warning line under the candidate title of its row only', () => {
+  test('draws the warning line in the slot 4b of its own dotted card only', () => {
     const { mount } = mountView(
       vi.fn(),
       queueOf({
@@ -929,63 +1026,69 @@ describe('full plan table columns (UI-5cmo §3.4, UI-msmj)', () => {
 
     expect({
       warned: Array.from(
-        candidateCell(mount, 'RD-3').children,
+        previewCard(mount, 'RD-3').children,
         (child) => child.className
       ),
-      text: candidateCell(mount, 'RD-3')
+      text: previewCard(mount, 'RD-3')
         .querySelector('.worker-plan__warn')
         ?.textContent?.trim(),
-      quiet: candidateCell(mount, 'RD-1').querySelector('.worker-plan__line')
+      quiet: previewCard(mount, 'RD-1').querySelector('.worker-plan__line')
     }).toEqual({
-      warned: ['worker-plan__id', 'worker-plan__line worker-plan__warn'],
+      warned: [
+        'worker-card__head',
+        'worker-card__title',
+        'worker-plan__line worker-plan__warn'
+      ],
       text: expect.stringContaining('P-1(병렬)과 동시에 돌 수 있음'),
       quiet: null
     });
   });
 
-  test('keeps only the id and the title in the candidate cell of a judged row without a warning', () => {
+  test('draws no 빠진 후보 row while every candidate has a dotted card', () => {
     const { mount } = mountView(vi.fn());
 
     click(mount.querySelector('.worker-plan__open'));
 
-    const cell = candidateCell(mount, 'RD-1');
-    expect({
-      children: Array.from(cell.children, (child) => child.className),
-      text: (cell.textContent || '').replace(/\s+/g, ' ').trim(),
-      fold: mount.querySelector('.worker-plan details')
-    }).toEqual({
-      children: ['worker-plan__id'],
-      text: 'RD-1 RD-1 title',
-      fold: null
-    });
+    expect(mount.querySelector('.worker-plan__row')).toBeNull();
   });
 
-  test('leaves the move out of the full plan row and draws the 옮김 card in the lane', () => {
+  test('draws no checkbox on the 옮김 card of a moved partner', () => {
     const { mount } = mountView(vi.fn(), partnerQueue());
 
     click(mount.querySelector('.worker-plan__open'));
 
     expect({
-      row: mount
-        .querySelector('.worker-plan__row[data-bead-id="RD-3"]')
-        ?.textContent?.includes('옮김'),
       lane: Boolean(
         mount.querySelector('#worker-pane-lane-s1 [data-preview-id="P-1"]')
-      )
-    }).toEqual({ row: false, lane: true });
+      ),
+      box: previewCard(mount, 'P-1').querySelector('.worker-plan__include')
+    }).toEqual({ lane: true, box: null });
   });
 });
 
 /**
- * The candidate cell of one full-plan row.
+ * The dotted card of one Bead in the waiting lanes.
  *
  * @param {HTMLElement} mount
  * @param {string} id
  * @returns {HTMLElement}
  */
-function candidateCell(mount, id) {
+function previewCard(mount, id) {
   return /** @type {HTMLElement} */ (
-    mount.querySelector(`.worker-plan__row[data-bead-id="${id}"] td:last-child`)
+    mount.querySelector(`.worker-card--preview[data-preview-id="${id}"]`)
+  );
+}
+
+/**
+ * One cardless full-plan row under the lanes.
+ *
+ * @param {HTMLElement} mount
+ * @param {string} id
+ * @returns {HTMLElement}
+ */
+function planRow(mount, id) {
+  return /** @type {HTMLElement} */ (
+    mount.querySelector(`.worker-plan__row[data-plan-id="${id}"]`)
   );
 }
 
@@ -1286,6 +1389,57 @@ describe('new serial lane (UI-lsr4 §3.3)', () => {
     click(mount.querySelector('.worker-plan__open'));
 
     expect(mount.querySelectorAll('.worker-card--preview').length).toBe(0);
+  });
+
+  test('lists the new-lane candidates in the display order when the apply order differs (UI-golv)', () => {
+    const [key, relation] = rel('RD-1', 'RD-3', 'conflict');
+    const { mount } = mountView(vi.fn(), {
+      ...busyQueue(),
+      placement_relations: {
+        [key]: { ...relation, prefer: 'b', prefer_confidence: 0.9 }
+      }
+    });
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.worker-plan__growth-group .worker-plan__row'),
+        (row) => [
+          row.getAttribute('data-plan-id'),
+          row
+            .querySelector('.worker-plan__row-hd + .worker-plan__line')
+            ?.textContent?.trim()
+        ]
+      )
+    ).toEqual([
+      ['RD-1', '직렬 3(새 레인) · #2 — RD-3 뒤'],
+      ['RD-3', '직렬 3(새 레인) · #1 — 맨 앞']
+    ]);
+  });
+
+  test('puts the new-lane candidates on the growth line with their boxes on (UI-golv)', () => {
+    const { mount } = mountView(vi.fn(), busyQueue());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.worker-plan__growth-group .worker-plan__row'),
+        (row) => [
+          row.getAttribute('data-plan-id'),
+          /** @type {HTMLInputElement} */ (
+            row.querySelector('.worker-plan__include')
+          ).checked,
+          row
+            .querySelector('.worker-plan__row-hd + .worker-plan__line')
+            ?.textContent?.trim()
+        ]
+      )
+    ).toEqual([
+      ['RD-1', true, '직렬 3(새 레인) · #1 — 맨 앞'],
+      ['RD-3', true, '직렬 3(새 레인) · #2 — RD-1 뒤']
+    ]);
   });
 
   test('grows the lanes before [전체 적용] puts a bundle in a new lane', async () => {

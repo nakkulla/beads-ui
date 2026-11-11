@@ -1939,9 +1939,10 @@ export function createMonitorView(mount_element, options) {
    * @param {MonitorSerialSublane} lane
    * @param {import('../../utils/placement/compute.js').PlacementPlan|null} plan
    * @param {(id: string) => string} titleOf
+   * @param {import('../worker/placement.js').PreviewInclude|null} include
    * @returns {import('../worker/lanes.js').WaitSerialLane}
    */
-  function serialLaneModel(group, lane, plan, titleOf) {
+  function serialLaneModel(group, lane, plan, titleOf, include) {
     const occupants = lane.occupants;
     const cross_wait = lane.cross_wait_peers || [];
     const lane_id =
@@ -1964,7 +1965,8 @@ export function createMonitorView(mount_element, options) {
           })),
           lane_id,
           plan,
-          titleOf
+          titleOf,
+          include
         )
       ],
       count: lane.items.length,
@@ -2014,9 +2016,10 @@ export function createMonitorView(mount_element, options) {
    * @param {LaneQueueGroup} group
    * @param {import('../../utils/placement/compute.js').PlacementPlan|null} plan
    * @param {(id: string) => string} titleOf
+   * @param {import('../worker/placement.js').PreviewInclude|null} include
    * @returns {import('../worker/lanes.js').WaitSerialLane}
    */
-  function parallelLaneModel(group, plan, titleOf) {
+  function parallelLaneModel(group, plan, titleOf, include) {
     const items = group.sublanes.parallel;
     return {
       id: 'parallel',
@@ -2029,7 +2032,8 @@ export function createMonitorView(mount_element, options) {
         })),
         'parallel',
         plan,
-        titleOf
+        titleOf,
+        include
       ),
       count: items.length,
       empty: false,
@@ -2066,7 +2070,9 @@ export function createMonitorView(mount_element, options) {
    * One 대기 repo group (UI-5cmo §3.1): a header shaped like the 후보 repo
    * section — caret, name, waiting count, `병렬 슬롯 n/m`, `Worker ↗` — then
    * the `병렬` lane, every configured `직렬 N` lane and, while the full plan is
-   * open, that repository's table block. A folded group's header is a drop
+   * open, that repository's head line (target check, `[이 레포만 적용]`, result
+   * line) right under the header and its cardless rows at the bottom
+   * (UI-golv). A folded group's header is a drop
    * target for that repository's issues: they go to the end of its parallel
    * queue and the group stays folded.
    *
@@ -2077,13 +2083,14 @@ export function createMonitorView(mount_element, options) {
     const root_dir = group.root_dir;
     const plan = placement_panel.previewPlan(root_dir);
     const titleOf = placement_panel.titleOf(root_dir);
+    const include = placement_panel.previewInclude(root_dir);
     const serial = group.configured_serial || group.sublanes.serial;
     const waiting =
       group.sublanes.parallel.length +
       serial.reduce((sum, lane) => sum + lane.items.length, 0);
     const occupied = serial.some((lane) => lane.occupants.length > 0);
-    // 표 블록(추천할 후보 없음 접힘·적용 결과 줄 포함)이 서는 레포는 배치안이 있는
-    // 레포라 기본으로 접지 않는다 — 접으면 그 블록이 묶음 안에 숨는다.
+    // 배치안 줄(추천할 후보 없음 접힘·적용 결과 줄 포함)이 서는 레포는 배치안이
+    // 있는 레포라 기본으로 접지 않는다 — 접으면 카드와 줄이 묶음 안에 숨는다.
     const has_block = placement_panel.repoRoots().includes(root_dir);
     const is_empty =
       waiting === 0 &&
@@ -2148,12 +2155,17 @@ export function createMonitorView(mount_element, options) {
           Worker ↗
         </button>
       </header>
+      ${placement_panel.headTemplate(root_dir)}
       ${collapsed
         ? ''
         : html`<div class="mon2-sec__body mon2-sec__body--queue">
-            ${waitLaneTemplate(parallelLaneModel(group, plan, titleOf))}
+            ${waitLaneTemplate(
+              parallelLaneModel(group, plan, titleOf, include)
+            )}
             ${serial.map((lane) =>
-              waitLaneTemplate(serialLaneModel(group, lane, plan, titleOf))
+              waitLaneTemplate(
+                serialLaneModel(group, lane, plan, titleOf, include)
+              )
             )}
             ${placement_panel.blockTemplate(root_dir)}
           </div>`}

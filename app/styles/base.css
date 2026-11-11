@@ -1612,8 +1612,8 @@ select.detail-kv__v:disabled {
   white-space: nowrap;
 }
 
-/* 레포 표 블록은 그 레포 대기 묶음 본문 맨 아래, 마지막 레인 뒤에 선다 (UI-5cmo
-   §3.3). 대기 본문 맨 위의 패널 틀은 없고 요약 줄이 본문 맨 아래에 붙는다. */
+/* 레포의 카드 없는 후보 줄은 그 레포 대기 묶음 본문 맨 아래, 마지막 레인 뒤에
+   선다 (UI-golv). 대기 본문 맨 위의 패널 틀은 없고 요약 줄이 본문 맨 아래에 붙는다. */
 .mon-plan__repo {
   display: flex;
   flex-direction: column;
@@ -1625,18 +1625,24 @@ select.detail-kv__v:disabled {
   font-size: var(--fs-small);
 }
 
-/* 적용 대상에서 뺀 레포의 표는 흐리게 보인다 (§3.5). `[이 레포만 적용]`은 그대로
-   누를 수 있다. */
+/* 적용 대상에서 뺀 레포의 카드 없는 후보 줄은 흐리게 보인다 (§3.5). 묶음 머리 줄의
+   `[이 레포만 적용]`은 그대로 누를 수 있다. */
 .mon-plan__repo--off {
   opacity: 0.6;
 }
 
-.mon-plan__repo-hd {
+/* 묶음 머리 바로 아래 줄 (UI-golv): 적용 대상 체크·건수·판정·`[이 레포만 적용]`,
+   적용 뒤에는 결과 줄. 머리줄은 줄을 바꾸지 않으므로 이 줄이 따로 서서 좁은 폭에서
+   줄을 바꾼다. */
+.mon-plan__head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-3) var(--sp-6);
   min-width: 0;
+  padding: 0 0 var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
 }
 
 .mon-plan__target {
@@ -1663,12 +1669,6 @@ select.detail-kv__v:disabled {
   margin-left: auto;
 }
 
-/* 표만 가로로 민다 — 레인 폭(모바일 390px 포함)을 넘지 않는다. */
-.mon-plan__scroll {
-  min-width: 0;
-  overflow-x: auto;
-}
-
 .mon-plan__fold {
   color: var(--text-dim);
   cursor: pointer;
@@ -1676,17 +1676,13 @@ select.detail-kv__v:disabled {
 }
 
 .mon-plan__result {
+  min-width: 0;
   color: var(--accent-success);
+  overflow-wrap: anywhere;
 }
 
 .mon-plan__result--stopped {
   color: var(--accent-warn);
-}
-
-.mon-plan__repo-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-6);
 }
 
 /* 요약 줄은 전체 배치안이 열린 동안 스크롤 영역(데스크톱은 레인 본문, 모바일은

@@ -1115,7 +1115,7 @@ describe('deploy condition wait chip (UI-ksi6)', () => {
   });
 });
 
-describe('placement preview card and plan table (UI-5cmo §3.4·§3.6)', () => {
+describe('placement preview card (UI-5cmo §3.6, UI-golv)', () => {
   test('draws the preview card with a thick plan-colour dash and a plan-tinted ground', () => {
     const rule =
       CSS.match(/(?:^|\n)\.worker-card--preview\s*{([^}]*)}/)?.[1] || '';
@@ -1126,10 +1126,12 @@ describe('placement preview card and plan table (UI-5cmo §3.4·§3.6)', () => {
     );
   });
 
-  test('keeps the plan table header cells on one line', () => {
+  test('keeps the include checkbox of a preview card from shrinking', () => {
     const rule =
-      CSS.match(/(?:^|\n)\.worker-plan__table th\s*{([^}]*)}/)?.[1] || '';
+      CSS.match(
+        /(?:^|\n)\.worker-card--preview \.worker-plan__include\s*{([^}]*)}/
+      )?.[1] || '';
 
-    expect(rule).toContain('white-space: nowrap');
+    expect(rule).toContain('flex: none');
   });
 });

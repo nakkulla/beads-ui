@@ -1625,26 +1625,27 @@ describe('placement recommendation parity (UI-izba §4.7)', () => {
   });
 
   /**
-   * Every full-plan row as number, cells, check state and dimming.
+   * Every include checkbox of the full plan (UI-golv), on a dotted card or a
+   * cardless row, as where it stands, its Bead, its words and its state.
    *
    * @param {Element} root
    * @returns {Array<Record<string, unknown>>}
    */
-  function planRows(root) {
-    return Array.from(root.querySelectorAll('.worker-plan__row')).map((row) => {
-      const box = /** @type {HTMLInputElement} */ (
-        row.querySelector('.worker-plan__include')
-      );
-      return {
-        id: row.getAttribute('data-bead-id'),
-        cells: Array.from(row.querySelectorAll('td'), (cell) =>
-          (cell.textContent || '').replace(/\s+/g, ' ').trim()
-        ),
-        checked: box.checked,
-        disabled: box.disabled,
-        dim: row.classList.contains('worker-plan__row--pending')
-      };
-    });
+  function planIncludes(root) {
+    return Array.from(root.querySelectorAll('.worker-plan__include')).map(
+      (node) => {
+        const box = /** @type {HTMLInputElement} */ (node);
+        const holder = box.closest('.worker-card--preview, .worker-plan__row');
+        return {
+          id: box.getAttribute('data-bead-id'),
+          on_card: holder?.classList.contains('worker-card--preview'),
+          text: (holder?.textContent || '').replace(/\s+/g, ' ').trim(),
+          checked: box.checked,
+          disabled: box.disabled,
+          dim: holder?.classList.contains('worker-plan__row--pending')
+        };
+      }
+    );
   }
 
   /**
@@ -1657,23 +1658,34 @@ describe('placement recommendation parity (UI-izba §4.7)', () => {
     );
   }
 
-  test('draws the same full-plan rows on the Worker table and the monitor repository card (UI-hf8v §3.3)', async () => {
-    const { worker, monitor } = await drawBothTabs(undefined, placementPatch());
+  test('draws the same include checkboxes on the cards and rows of both tabs (UI-golv)', async () => {
+    const { worker, monitor } = await drawBothTabs(undefined, {
+      placement_status: {
+        'C-1': { state: 'ready', done: 1, total: 1 },
+        'C-2': { state: 'pending', reason: 'judging', done: 0, total: 1 }
+      },
+      placement_relations: {}
+    });
 
     press(worker, '.worker-plan__open');
     press(monitor, '.mon-plan__open');
 
-    const worker_rows = planRows(
-      /** @type {Element} */ (worker.querySelector('.worker-plan'))
+    const worker_boxes = planIncludes(
+      /** @type {Element} */ (worker.querySelector('#worker-pane-queue'))
     );
-    expect(worker_rows.length).toBeGreaterThan(0);
+    expect(worker_boxes.map((box) => [box.id, box.on_card])).toEqual([
+      ['C-1', true],
+      ['C-2', false]
+    ]);
     expect(
-      planRows(
+      planIncludes(
         /** @type {Element} */ (
-          monitor.querySelector(`.mon-plan__repo[data-root-dir="${WS}"]`)
+          monitor.querySelector(
+            `#monitor-queue .mon2-sec--queue[data-root-dir="${WS}"]`
+          )
         )
       )
-    ).toEqual(worker_rows);
+    ).toEqual(worker_boxes);
   });
 
   /**
@@ -1742,13 +1754,13 @@ describe('placement recommendation parity (UI-izba §4.7)', () => {
     ).toEqual(worker_lanes);
   });
 
-  test('gives the monitor a repository card but no card [추천 배치], an intended difference (§9)', async () => {
+  test('gives the monitor a repository head line but no card [추천 배치], an intended difference (§9)', async () => {
     const { monitor } = await drawBothTabs(undefined, placementPatch());
 
     press(monitor, '.mon-plan__open');
 
     expect(
-      monitor.querySelector(`.mon-plan__repo[data-root-dir="${WS}"]`)
+      monitor.querySelector(`.mon-plan__head[data-root-dir="${WS}"]`)
     ).not.toBeNull();
     expect(monitor.querySelector('.worker-card__recommend')).toBeNull();
   });

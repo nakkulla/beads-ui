@@ -6000,8 +6000,15 @@ summary.repo-ops-log-viewer__attempt-head {
   background: var(--stage-plan-dim);
 }
 
-/* 후보 칸 아래 작은 줄 (UI-5cmo §3.4, UI-msmj): 판정 전 상태나 경고가 있는 행에만
-   후보 제목 아래에 선다. 자리와 옮김은 레인 안 점선 카드가 보인다. */
+/* 점선 카드의 포함 체크 (UI-golv): 전체 배치안이 열린 동안 슬롯 1 정체성 줄 왼쪽
+   끝, `#N` 앞에 선다. 체크박스는 자기 크기다. */
+.worker-card--preview .worker-plan__include {
+  flex: none;
+  margin: 0;
+}
+
+/* 카드 경고 줄과 카드 없는 후보 줄 아래 작은 줄 (UI-golv): 새 레인 자리, 판정 전
+   상태, 경고가 있을 때만 선다. 자리와 옮김은 레인 안 점선 카드가 보인다. */
 .worker-plan__line {
   font-size: var(--fs-chip);
 }
@@ -6014,44 +6021,66 @@ summary.repo-ops-log-viewer__attempt-head {
   color: var(--accent-warn);
 }
 
-/* 전체 배치안 표: 대기 열 아래. 좁은 폭에서는 표만 가로로 민다. */
+/* 전체 배치안 줄: 대기 열 아래. 카드 없는 후보(레인 증설 안내 줄의 새 레인 자리,
+   `빠진 후보`)만 체크·ID·제목 줄로 서고, 긴 제목은 줄을 바꿔 열 폭을 넘지 않는다. */
 .worker-plan {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
   min-width: 0;
   padding: var(--sp-4) 0;
-  overflow-x: auto;
   color: var(--text-muted);
   font-size: var(--fs-small);
 }
 
-.worker-plan__table {
-  width: 100%;
-  border-collapse: collapse;
+.worker-plan__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
 }
 
-.worker-plan__table th,
-.worker-plan__table td {
-  padding: var(--sp-2) var(--sp-3);
+.worker-plan__label {
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+}
+
+.worker-plan__row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: var(--sp-2) 0;
   border-bottom: 1px solid var(--border-panel);
-  text-align: left;
-  vertical-align: top;
 }
 
-/* 머리 칸은 줄을 바꾸지 않는다 — 좁은 폭에서 `포함`이 `포/함`으로 깨졌다. */
-.worker-plan__table th {
-  white-space: nowrap;
+.worker-plan__row-hd {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.worker-plan__row-hd .worker-plan__include {
+  flex: none;
+  margin: 0;
+}
+
+.worker-plan__title {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .worker-plan__row--pending {
   color: var(--text-dim);
 }
 
+/* ID는 줄을 바꾸지 않는다 — 긴 제목 옆에서 `RD-`/`1`로 깨졌다. */
 .worker-plan__id {
-  margin-right: var(--sp-2);
+  flex: none;
   color: var(--text-id-mono);
   font-family: var(--font-mono);
+  white-space: nowrap;
 }
 
 .worker-pane__empty {
@@ -7226,7 +7255,8 @@ summary.repo-ops-log-viewer__attempt-head {
   color: var(--text-dim);
 }
 
-/* 적용 대상에서 뺀 레포의 미리보기 카드는 흐려진다 (§3.5). */
+/* 적용 대상에서 뺀 레포의 미리보기 카드는 흐려진다 (§3.5). 카드의 포함 체크는
+   그대로 누를 수 있다. */
 .mon2-sec--plan-off .worker-card--preview {
   opacity: 0.5;
 }

@@ -1,7 +1,8 @@
 ---
 id: UI-unf5
 title: 설정 창·대화 결과 줄과 배치안 순서 자리의 jev 선호
-status: accepted
+status: superseded
+superseded_by: UI-golv
 date: 2026-11-11
 summary: "전체 배치안에서 필수 선후(직접 blocks, 채택된 jev 선후·부딪힘)가 정하지 않는 순서 자리는 같은 jev 요청의 선호 질문(확신도 0.7 이상, 같은 파일 쌍에도 묻는다) → 우선순위 → 표시 순서로 정하고, 선호는 묶기·직렬 레인·넣을 자리를 만들지 않으며 이미 대기 중인 항목 앞으로 끼우지 않는다 — 나머지 조항은 UI-3713 그대로다"
 supersedes: ["UI-3713"]

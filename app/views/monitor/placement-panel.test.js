@@ -168,14 +168,44 @@ function flush() {
 }
 
 /**
+ * One repository's 대기 repo group: its head line, lanes with preview cards
+ * and cardless rows (UI-golv).
+ *
  * @param {HTMLElement} mount
  * @param {string} root_dir
  * @returns {HTMLElement}
  */
 function card(mount, root_dir) {
   return /** @type {HTMLElement} */ (
-    mount.querySelector(`.mon-plan__repo[data-root-dir="${root_dir}"]`)
+    mount.querySelector(
+      `#monitor-queue .mon2-sec--queue[data-root-dir="${root_dir}"]`
+    )
   );
+}
+
+/**
+ * One repository's line under its repo group header (UI-golv).
+ *
+ * @param {HTMLElement} mount
+ * @param {string} root_dir
+ * @returns {HTMLElement}
+ */
+function head(mount, root_dir) {
+  return /** @type {HTMLElement} */ (
+    mount.querySelector(`.mon-plan__head[data-root-dir="${root_dir}"]`)
+  );
+}
+
+/**
+ * Turn one include checkbox on or off the way a reader does.
+ *
+ * @param {Element|null} box
+ * @param {boolean} on
+ */
+function setInclude(box, on) {
+  const input = /** @type {HTMLInputElement} */ (box);
+  input.checked = on;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 /** @returns {string} */
@@ -262,7 +292,7 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
     ).toBe(true);
   });
 
-  test('draws the repository table blocks in name order', () => {
+  test('draws the repository head lines in name order', () => {
     const { mount } = setup([
       repo('B', 'repo-b', WS_B),
       repo('A', 'repo-a', WS_A)
@@ -271,42 +301,52 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
     click(mount, '.mon-plan__open');
 
     expect(
-      Array.from(mount.querySelectorAll('.mon-plan__repo'), (block) =>
-        block.getAttribute('data-root-dir')
+      Array.from(mount.querySelectorAll('.mon-plan__head'), (line) =>
+        line.getAttribute('data-root-dir')
       )
     ).toEqual([WS_A, WS_B]);
   });
 
-  test('stands each table block at the bottom of its own repo group', () => {
-    const { mount } = setup([
-      repo('A', 'repo-a', WS_A),
-      repo('B', 'repo-b', WS_B)
-    ]);
-
-    click(mount, '.mon-plan__open');
-
-    expect(
-      [WS_A, WS_B].map((root) => {
-        const block = card(mount, root);
-        return [
-          block.closest('.mon2-sec')?.getAttribute('data-root-dir'),
-          block.parentElement?.lastElementChild === block
-        ];
-      })
-    ).toEqual([
-      [WS_A, true],
-      [WS_B, true]
-    ]);
-  });
-
-  test('leaves the repository name out of the block head', () => {
+  test('stands the head line right under its repo group header without the name (UI-golv)', () => {
     const { mount } = setup([repo('A', 'repo-a', WS_A)]);
 
     click(mount, '.mon-plan__open');
 
-    const head = text(card(mount, WS_A).querySelector('.mon-plan__repo-hd'));
-    expect(head.startsWith('적용 대상 추천 1 / 1')).toBe(true);
-    expect(head).not.toContain('repo-a');
+    const line = head(mount, WS_A);
+    expect({
+      after_header:
+        line.previousElementSibling?.classList.contains('mon2-sec__hd'),
+      starts: text(line).startsWith('적용 대상 추천 1 / 1'),
+      named: text(line).includes('repo-a')
+    }).toEqual({ after_header: true, starts: true, named: false });
+  });
+
+  test('moves an unchecked card to the 빠진 후보 row at the bottom of its own repo group (UI-golv)', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('B', 'repo-b', WS_B)
+    ]);
+    click(mount, '.mon-plan__open');
+
+    setInclude(
+      card(mount, WS_A).querySelector(
+        '.worker-card--preview .worker-plan__include'
+      ),
+      false
+    );
+
+    const block = /** @type {HTMLElement} */ (
+      card(mount, WS_A).querySelector('.mon-plan__repo')
+    );
+    expect({
+      card: card(mount, WS_A).querySelector('[data-preview-id="A-1"]'),
+      left: Array.from(
+        block.querySelectorAll('.worker-plan__left .worker-plan__row'),
+        (row) => row.getAttribute('data-plan-id')
+      ),
+      last: block.parentElement?.lastElementChild === block,
+      other: card(mount, WS_B).querySelector('.mon-plan__repo')
+    }).toEqual({ card: null, left: ['A-1'], last: true, other: null });
   });
 
   test('draws no panel frame at the top of the queue body', () => {
@@ -406,7 +446,7 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
     ).toEqual(['#1', '#1']);
   });
 
-  test('heads every repository table with 포함 · 후보 (UI-msmj)', () => {
+  test('puts the include checkbox on the preview card of every repository (UI-golv)', () => {
     const { mount } = setup([
       repo('A', 'repo-a', WS_A),
       repo('B', 'repo-b', WS_B)
@@ -415,16 +455,29 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
     click(mount, '.mon-plan__open');
 
     expect(
-      [WS_A, WS_B].map((root) =>
-        Array.from(
-          card(mount, root).querySelectorAll('.worker-plan__table th'),
-          (cell) => text(cell)
-        )
-      )
+      [WS_A, WS_B].map((root) => {
+        const box = /** @type {HTMLInputElement} */ (
+          card(mount, root).querySelector(
+            '.worker-card--preview .worker-plan__include'
+          )
+        );
+        return [box.getAttribute('data-root-dir'), box.checked];
+      })
     ).toEqual([
-      ['포함', '후보'],
-      ['포함', '후보']
+      [WS_A, true],
+      [WS_B, true]
     ]);
+  });
+
+  test('draws no plan table in any repo group (UI-golv)', () => {
+    const { mount } = setup([
+      repo('A', 'repo-a', WS_A),
+      repo('B', 'repo-b', WS_B)
+    ]);
+
+    click(mount, '.mon-plan__open');
+
+    expect(mount.querySelector('#monitor-queue table')).toBeNull();
   });
 
   test('folds a repository without a recommendable candidate into one line', () => {
@@ -464,7 +517,7 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
     ).not.toBeNull();
   });
 
-  test('stands a repo group with its block for a repository the lane model leaves out', () => {
+  test('stands a repo group with its head line for a repository the lane model leaves out', () => {
     const entry = repo('A', 'repo-a', WS_A, { queue: [] });
     entry.runnable = [];
 
@@ -473,7 +526,7 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
 
     expect(
       mount.querySelector(
-        `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"] .mon-plan__repo`
+        `#monitor-queue .mon2-sec[data-root-dir="${WS_A}"] .mon-plan__head`
       )
     ).not.toBeNull();
   });
@@ -485,7 +538,9 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 
     expect(
-      mount.querySelector('.mon-plan__summary, .mon-plan__repo')
+      mount.querySelector(
+        '.mon-plan__summary, .mon-plan__head, .mon-plan__repo'
+      )
     ).toBeNull();
     expect(mount.querySelector('.worker-card--preview')).toBeNull();
   });
@@ -497,7 +552,9 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
     click(mount, '.mon-plan__summary .mon-plan__close');
 
     expect(
-      mount.querySelector('.mon-plan__summary, .mon-plan__repo')
+      mount.querySelector(
+        '.mon-plan__summary, .mon-plan__head, .mon-plan__repo'
+      )
     ).toBeNull();
   });
 
@@ -571,7 +628,7 @@ describe('monitor placement apply targets (UI-5cmo §3.5)', () => {
     );
   });
 
-  test('dims the block and preview cards of a repository turned off', () => {
+  test('dims the preview cards of a repository turned off', () => {
     const { mount } = setup([
       repo('A', 'repo-a', WS_A),
       repo('B', 'repo-b', WS_B)
@@ -582,16 +639,14 @@ describe('monitor placement apply targets (UI-5cmo §3.5)', () => {
 
     expect(
       [WS_A, WS_B].map((root) => [
-        card(mount, root).classList.contains('mon-plan__repo--off'),
-        mount
-          .querySelector(`.mon2-sec--queue[data-root-dir="${root}"]`)
-          ?.classList.contains('mon2-sec--plan-off')
+        head(mount, root).classList.contains('mon-plan__head--off'),
+        card(mount, root).classList.contains('mon2-sec--plan-off')
       ])
     ).toEqual([
       [true, true],
       [false, false]
     ]);
-    expect(text(card(mount, WS_A).querySelector('.mon-plan__off'))).toBe(
+    expect(text(head(mount, WS_A).querySelector('.mon-plan__off'))).toBe(
       '적용 대상에서 뺌'
     );
   });
@@ -886,7 +941,7 @@ describe('monitor placement apply (UI-hf8v §3.4)', () => {
     expect(
       Array.from(
         mount.querySelectorAll(
-          '.mon-plan__apply-repo, .mon-plan__apply-all, .mon-plan__repo .worker-plan__include, .mon-plan__target-box'
+          '.mon-plan__apply-repo, .mon-plan__apply-all, .worker-plan__include, .mon-plan__target-box'
         ),
         (node) => /** @type {HTMLButtonElement} */ (node).disabled
       ).every(Boolean)
@@ -894,7 +949,7 @@ describe('monitor placement apply (UI-hf8v §3.4)', () => {
     release({ applied: false, conflict: false });
   });
 
-  test('redraws the table of a stopped repository on [이 레포 배치안 다시 보기]', async () => {
+  test('draws the cards of a stopped repository again on [이 레포 배치안 다시 보기]', async () => {
     const { mount } = setup([repo('A', 'repo-a', WS_A)], async () => ({
       applied: false,
       conflict: false
@@ -909,7 +964,7 @@ describe('monitor placement apply (UI-hf8v §3.4)', () => {
 
     expect(card(mount, WS_A).querySelector('.mon-plan__result')).toBeNull();
     expect(
-      card(mount, WS_A).querySelector('.worker-plan__row[data-bead-id="A-1"]')
+      card(mount, WS_A).querySelector('[data-preview-id="A-1"]')
     ).not.toBeNull();
   });
 
@@ -936,11 +991,11 @@ describe('monitor placement apply (UI-hf8v §3.4)', () => {
 
     expect(mount.querySelector('.mon-plan__result')).toBeNull();
     expect(
-      card(mount, WS_A).querySelector('.worker-plan__row[data-bead-id="A-1"]')
+      card(mount, WS_A).querySelector('[data-preview-id="A-1"]')
     ).not.toBeNull();
   });
 
-  test('keeps the table of a stopped repository with its checks disabled', async () => {
+  test('draws only the result line and [이 레포 배치안 다시 보기] for a stopped repository (UI-golv)', async () => {
     const { mount } = setup([repo('A', 'repo-a', WS_A)], async () => ({
       applied: false,
       conflict: false
@@ -952,14 +1007,14 @@ describe('monitor placement apply (UI-hf8v §3.4)', () => {
       expect(mount.querySelector('.mon-plan__review')).not.toBeNull();
     });
 
-    const box = /** @type {HTMLInputElement|null} */ (
-      card(mount, WS_A).querySelector('.worker-plan__include')
-    );
-    expect(box).not.toBeNull();
-    expect(box?.disabled).toBe(true);
+    expect({
+      review: Boolean(head(mount, WS_A).querySelector('.mon-plan__review')),
+      cards: card(mount, WS_A).querySelector('.worker-card--preview'),
+      rows: card(mount, WS_A).querySelector('.mon-plan__repo')
+    }).toEqual({ review: true, cards: null, rows: null });
   });
 
-  test('folds the table of a repository that took every place', async () => {
+  test('draws only the result line for a repository that took every place', async () => {
     const { mount } = setup([repo('A', 'repo-a', WS_A)], async () => ({
       applied: true,
       conflict: false,
@@ -974,7 +1029,10 @@ describe('monitor placement apply (UI-hf8v §3.4)', () => {
       ).not.toBeNull();
     });
 
-    expect(card(mount, WS_A).querySelector('.worker-plan__table')).toBeNull();
+    expect({
+      line: text(head(mount, WS_A)),
+      rows: card(mount, WS_A).querySelector('.mon-plan__repo')
+    }).toEqual({ line: '✓ 1건 넣음', rows: null });
   });
 });
 
