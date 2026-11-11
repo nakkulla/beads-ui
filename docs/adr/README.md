@@ -6,8 +6,8 @@
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
 | UI-jlov | [dotfiles 계약 소비와 설치본 체커 소비](UI-jlov-dotfiles-contract-and-checker-consumption.md) | 2026-11-11 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호와 Worker 착지 알림의 보호 경로 표시는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며, 보호 경로 판정 실패는 생략하지 않고 확인 못 함으로 적는다 |
+| UI-3713 | [설정 창 묶음과 대화 결과 줄·마무리 뒤 되돌리기](UI-3713-conversation-result-words-and-handback.md) | 2026-11-11 | Worker 대화 결과 줄은 새 접두(워커가 이어감·이 대화에서 마무리·나중에)와 옛 접두를 같은 kind로 읽고, takeover로 끝난 행도 Bead가 open이면 뒤 메시지의 handoff 줄이나 [워커로 이어가기]로 Worker에 넘기며, 대화 알림은 🙋 확인 필요·↪ Worker가 이어감·🙋 대화에서 마무리 셋이다 — 나머지 조항은 UI-32oq-2 그대로다 |
 | UI-xm29 | [화면 로그인·계정 추가는 격리 로그인](UI-xm29-isolated-account-login.md) | 2026-11-10 | 화면 로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이다 — Codex는 beads-ui가 임시 CODEX_HOME에서 기기 코드 로그인 뒤 codex-auth import로 넣고 대상이 활성 계정일 때만 전역 auth.json을 같은 계정의 새 자격으로 원자 교체하며, Claude는 claude-swap의 cswap login이 격리·신원 확인·저장을 맡고 beads-ui는 tmux로 URL을 보이고 코드를 넣기만 하며, 계정 목록에 쓰는 단계만 러너별 전환 잠금을 잡는다 |
-| UI-32oq-2 | [설정 창 하나와 대상·서버 전체 탭 묶음](UI-32oq-2-settings-one-window-target-and-server-tabs.md) | 2026-11-10 | 설정 창은 어느 ⚙에서 열든 같은 탭 목록이고 처음 대상(연결 저장소·그 저장소·여러 저장소)만 다르며, 레일은 대상 저장소 탭과 서버 전체 탭으로 나뉘어 칩 바인딩·활성 모델·대화 세션 설정·Worker 공통 주소는 서버 전체 탭에서 대상과 무관하게 편집하고, Worker 주소의 저장소 예외는 저장돼 있을 때만 그 저장소 탭에 읽기 전용으로 보이며 지우기만 허용한다 — 프리셋 정체성·판정 칩 규칙(UI-rd2m), 모델 활성 규칙(UI-gpac-2), 세션 레인·대화 규칙(UI-57us), 적용값 분리·CLI 전용 공통 쓰기·fail-quiet 읽기(UI-u6ud-11)는 그대로다 |
 | UI-32oq | [한도 대응 저장소 정책·활성 계정 자동 전환과 default 복귀](UI-32oq-limit-policy-repo-and-active-login-return.md) | 2026-11-10 | 한도 대응은 Worker 판정에 저장소 정책만 쓰고 전역 덮어쓰기는 없으며, 서버 전역 설정은 러너별 활성 계정 자동 전환(켬/끔·default 계정·허용 목록·트리거)만 정한다; 활성 계정이 트리거에 닿으면 허용 목록 후보로 옮기고, default에서 떠난 기록은 재시작을 넘어 남아 그 소진 창의 리셋 시각이 지나고 default의 창이 모두 트리거 미만이면 default로 돌아오며, 관측한 활성 계정이 기록과 다르면 사람이 바꾼 것으로 보고 복귀하지 않는다 — 나머지 조항은 UI-giog 그대로다 |
 | UI-gpac | [Codex 모델 카탈로그의 원천은 Codex CLI 목록이다](UI-gpac-codex-catalog-from-cli-list.md) | 2026-10-12 | beads-ui의 Codex 모델 선택지는 서버가 Codex CLI 목록(codex debug models)을 비동기로 읽어 dotfiles와 같은 규칙(계열별 최신 list·v2 → 별칭, 모든 적격 버전 → <계열>-<버전> 고정 이름)으로 만들고, 규칙은 JS로 복제해 dotfiles 해석기와 교차 테스트로 묶는다; 마지막 성공 목록을 영속해 읽기 실패가 카탈로그를 줄이지 않으며, effort·speed는 계열 템플릿을, 단가는 별칭이 해석된 고정 이름의 것을 상속하며, 목록에서 빠진 고정 이름의 저장값은 원문을 보존하고 실행은 기본값으로 대신한다 |
 | UI-ny0h | [Worker 머지 큐·머지 자격·독립 스위치와 해소 대기 설정](UI-ny0h-merge-queue-and-resolution-wait-setting.md) | 2026-10-03 | PR 랜딩 작업의 머지는 Worker의 단일 순차 큐만 실행하고 완료는 MERGED 관측이다; 머지 자격은 저장소 안의 입력(PR·base·head identity, mergeability, 리뷰·실행 영수증, [verify])만 보고 GitHub checks는 읽지 않는다; auto_merge와 auto_advance는 독립 스위치이고 어떤 클릭도 둘을 함께 바꾸지 않는다; 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이고 그 길이는 서버 전역 타이밍 설정이 정하며 충돌 해소 fence는 수동 권한 면제·슬롯 여유로 판정한다 |
@@ -115,7 +115,7 @@
 | UI-hgd2 | [선행 대기 attempt는 잔재 재개 후보다 — 복귀 dispatch의 잔재 처분 사다리가 보존 세션을 resume하고 대기 종결이 worktree HEAD를 기록한다](history/UI-hgd2-prerequisite-wait-attempt-is-residue-resume-candidate.md) | superseded | [UI-u6ud-7](history/UI-u6ud-7-worker-wait-resume-residue.md) |
 | UI-l48z | [세션 소유 외부 대기는 실행 중 레인의 세션 타일이다](history/UI-l48z-session-external-wait-is-running-lane-session-tile.md) | superseded | [UI-ri8n](history/UI-ri8n-live-inquiry-session-decides-stall-verdict-and-resolve-exit.md) |
 | UI-u6ud-10 | [실행 프리셋과 판정 칩](history/UI-u6ud-10-exec-presets-and-chips.md) | superseded | [UI-rd2m](history/UI-rd2m-exec-presets-and-chips-by-route.md) |
-| UI-u6ud-11 | [Worker 주소와 저장소 defaults 소비](history/UI-u6ud-11-worker-url-and-defaults.md) | superseded | [UI-32oq-2](UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
+| UI-u6ud-11 | [Worker 주소와 저장소 defaults 소비](history/UI-u6ud-11-worker-url-and-defaults.md) | superseded | [UI-32oq-2](history/UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
 | UI-u6ud-2 | [dotfiles 계약 소비와 ADR 탭 체커 소비](history/UI-u6ud-2-dotfiles-contract-consumption.md) | superseded | [UI-jlov](UI-jlov-dotfiles-contract-and-checker-consumption.md) |
 | UI-u6ud-3 | [Worker 머지 큐와 머지 자격](history/UI-u6ud-3-worker-merge-queue.md) | superseded | [UI-6mpl](history/UI-6mpl-merge-queue-and-independent-toggles.md) |
 | UI-u6ud-4 | [머지 게이트 보류](history/UI-u6ud-4-merge-gate-holds.md) | superseded | [UI-18a5-3](history/UI-18a5-3-merge-gate-holds-and-failure-exits.md) |
@@ -139,10 +139,10 @@
 | UI-9w5l | [버튼으로 풀리는 조치 필요와 대기 사유 무알림](history/UI-9w5l-action-required-resolvable-by-button.md) | superseded | [UI-k467](history/UI-k467-foreign-pr-handoff-failure-row.md) |
 | UI-btsr | [정리 재시도는 멈춘 저장소 작업을 새 실행으로 다시 돌린다](history/UI-btsr-cleanup-retry-reruns-repo-operation.md) | superseded | [UI-gske](history/UI-gske-session-inquiry-row-and-failure-auto-launch.md) |
 | UI-c74x | [세션이 선언한 자격 증명 대기의 같은 세션 대화](history/UI-c74x-credential-wait-conversation.md) | superseded | [UI-btsr](history/UI-btsr-cleanup-retry-reruns-repo-operation.md) |
-| UI-gpac-2 | [모델 활성은 꺼 둔 목록으로 거르고 새 Codex 고정 이름은 숨긴다](history/UI-gpac-2-model-visibility-hides-new-codex-pinned.md) | superseded | [UI-32oq-2](UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
+| UI-gpac-2 | [모델 활성은 꺼 둔 목록으로 거르고 새 Codex 고정 이름은 숨긴다](history/UI-gpac-2-model-visibility-hides-new-codex-pinned.md) | superseded | [UI-32oq-2](history/UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
 | UI-k467 | [외부 PR 사람 처리 필요 실패 행과 알림 클래스](history/UI-k467-foreign-pr-handoff-failure-row.md) | superseded | [UI-c74x](history/UI-c74x-credential-wait-conversation.md) |
 | UI-gske | [세션 소유 사람 필요 행과 실패 대화 자동 기동](history/UI-gske-session-inquiry-row-and-failure-auto-launch.md) | superseded | [UI-5chz](history/UI-5chz-conversation-answer-wait-thread-only.md) |
-| UI-rd2m | [실행 프리셋과 route 계열별 판정 칩](history/UI-rd2m-exec-presets-and-chips-by-route.md) | superseded | [UI-32oq-2](UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
+| UI-rd2m | [실행 프리셋과 route 계열별 판정 칩](history/UI-rd2m-exec-presets-and-chips-by-route.md) | superseded | [UI-32oq-2](history/UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
 | UI-1eag | [직접 push 착지의 머지 후 잡과 앞선 배포 HEAD 해석](history/UI-1eag-direct-push-post-merge-jobs-advanced-head.md) | superseded | [UI-lbm5](history/UI-lbm5-worker-queue-session-lane.md) |
 | UI-5chz | [대화 세션 답 대기는 세션 스레드로만 알림](history/UI-5chz-conversation-answer-wait-thread-only.md) | superseded | [UI-1eag](history/UI-1eag-direct-push-post-merge-jobs-advanced-head.md) |
 | UI-izba | [jev 쌍 판정 대기열 배치 추천과 배포·빌드](history/UI-izba-jev-queue-placement-and-deploy-build.md) | superseded | [UI-i7k9](history/UI-i7k9-placement-criteria-and-session-lane.md) |
@@ -163,4 +163,5 @@
 | UI-ksi6 | [배포 종료 코드 75의 조건 대기와 자동 재확인](history/UI-ksi6-deploy-condition-wait.md) | superseded | [UI-5cmo](history/UI-5cmo-monitor-repo-group-placement-preview.md) |
 | UI-5cmo | [모니터 레포 묶음 레인 안 전체 배치안 미리보기](history/UI-5cmo-monitor-repo-group-placement-preview.md) | superseded | [UI-57us](history/UI-57us-session-preferred-default-session-lane.md) |
 | UI-giog | [한도 대응 전역 적용 범위·공급자 보류 전역 원본·활성 복귀](history/UI-giog-global-limit-policy-scope.md) | superseded | [UI-32oq](UI-32oq-limit-policy-repo-and-active-login-return.md) |
-| UI-57us | [session-preferred 기본 세션 레인과 Worker 전환 칩](history/UI-57us-session-preferred-default-session-lane.md) | superseded | [UI-32oq-2](UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
+| UI-32oq-2 | [설정 창 하나와 대상·서버 전체 탭 묶음](history/UI-32oq-2-settings-one-window-target-and-server-tabs.md) | superseded | [UI-3713](UI-3713-conversation-result-words-and-handback.md) |
+| UI-57us | [session-preferred 기본 세션 레인과 Worker 전환 칩](history/UI-57us-session-preferred-default-session-lane.md) | superseded | [UI-32oq-2](history/UI-32oq-2-settings-one-window-target-and-server-tabs.md) |

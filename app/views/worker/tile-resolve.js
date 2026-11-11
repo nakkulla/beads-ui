@@ -118,6 +118,27 @@ function holdsConversationOutcome(interactive_sessions) {
 }
 
 /**
+ * The live takeover conversation the server marked `handback_allowed`
+ * (UI-3713 §3.3): it ended in `이 대화에서 마무리`, holds no handoff, and
+ * its Bead was last read `open`. The renderer never reads the Bead status;
+ * this flag alone decides. Null when none stands.
+ *
+ * @param {any[]|null|undefined} interactive_sessions
+ * @returns {any|null}
+ */
+function handbackConversation(interactive_sessions) {
+  return (
+    liveConversations(interactive_sessions).find(
+      (view) =>
+        !!view.conversation &&
+        !view.conversation.handoff &&
+        view.conversation.result?.kind === 'takeover' &&
+        view.conversation.handback_allowed === true
+    ) ?? null
+  );
+}
+
+/**
  * The first action with `op` in an item's server-projected wait reasons,
  * optionally only from reasons of one kind.
  *
@@ -141,9 +162,15 @@ function projectedAction(item, op, kind) {
   return null;
 }
 
+/** The tooltip of a takeover row's `[워커로 이어가기]` (UI-3713 §3.3). */
+const HANDBACK_TITLE =
+  '이 대화에서 마무리한 행을 Worker로 넘깁니다 — 대화 창을 닫고 Worker가 이 행을 잇습니다';
+
 /**
- * The server-projected `[워커로 이어가기]` action of an item, if any
- * (UI-nuwy §3.6). The server decides when it stands; this only finds it.
+ * The `[워커로 이어가기]` of an item, if any: the server-projected action
+ * (UI-nuwy §3.6), else a live takeover conversation the server marked
+ * `handback_allowed` (UI-3713 §3.3). The server decides when either stands;
+ * this only finds it.
  *
  * @param {any} item
  * @returns {{ attempt_id: string|null, title: string|null }|null}
@@ -151,7 +178,16 @@ function projectedAction(item, op, kind) {
 function handoffAction(item) {
   const action = projectedAction(item, CONVERSATION_HANDOFF_OP);
   if (!action) {
-    return null;
+    const handback = handbackConversation(item.interactive_sessions);
+    return handback
+      ? {
+          attempt_id:
+            typeof handback.attempt_id === 'string'
+              ? handback.attempt_id
+              : null,
+          title: HANDBACK_TITLE
+        }
+      : null;
   }
   return {
     attempt_id:
@@ -176,17 +212,17 @@ function handoffAction(item) {
  * @type {Readonly<Record<ContinueRow, string>>}
  */
 const SESSION_TITLES = Object.freeze({
-  stop: '멈춘 세션을 같은 세션 그대로 대화로 다시 엽니다 — 인계하면 Worker가 이어갑니다',
+  stop: '멈춘 세션을 같은 세션 그대로 대화로 다시 엽니다 — Worker로 넘기면 Worker가 이어갑니다',
   cleanup:
-    '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 실패한 단계를 다시 돌립니다',
+    '기록된 세션을 대화로 엽니다 — Worker로 넘기면 Worker가 실패한 단계를 다시 돌립니다',
   verify_hold:
-    '기록된 세션을 대화로 엽니다 — 수정 커밋을 push하거나, 인계하면 Worker가 머지 큐에 다시 넣어 현재 head에서 검증을 다시 돌립니다',
+    '기록된 세션을 대화로 엽니다 — 수정 커밋을 push하거나, Worker로 넘기면 Worker가 머지 큐에 다시 넣어 현재 head에서 검증을 다시 돌립니다',
   merge_gate:
-    '기록된 세션을 대화로 엽니다 — 머지 게이트 보류는 사람의 [머지]만 풀므로 인계해도 Worker는 실행하지 않습니다',
+    '기록된 세션을 대화로 엽니다 — 머지 게이트 보류는 사람의 [머지]만 풀므로 Worker로 넘겨도 Worker는 실행하지 않습니다',
   discard:
-    '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 실패한 폐기를 다시 시도합니다',
+    '기록된 세션을 대화로 엽니다 — Worker로 넘기면 Worker가 실패한 폐기를 다시 시도합니다',
   external:
-    '보존 세션을 같은 워크트리에서 대화로 다시 엽니다 — 인계하면 Worker가 그 세션에서 attempt를 시작합니다',
+    '보존 세션을 같은 워크트리에서 대화로 다시 엽니다 — Worker로 넘기면 Worker가 그 세션에서 attempt를 시작합니다',
   takeover:
     '해결 세션을 열어 서버의 바로 실행 기록을 확인·정리합니다 — 정리되면 다음 관측에서 대기가 풀립니다',
   // 외부 PR 사람 처리 필요 (UI-k467 §3.7): 출구는 이 세션 하나다. `merge_gate`
@@ -197,7 +233,7 @@ const SESSION_TITLES = Object.freeze({
   // 잔재 처분 실패 (UI-68r5 §3.2): 인계는 같은 잔재 처분 검사로 디스패치를 한
   // 번 다시 돌린다 — 대화는 원인을 정리할 뿐 검사를 대신하지 않는다.
   stale_residue:
-    '대화 세션을 엽니다 — 잔재 처분 실패의 원인을 정리하고, 인계하면 Worker가 같은 잔재 처분 검사로 디스패치를 한 번 다시 돌립니다'
+    '대화 세션을 엽니다 — 잔재 처분 실패의 원인을 정리하고, Worker로 넘기면 Worker가 같은 잔재 처분 검사로 디스패치를 한 번 다시 돌립니다'
 });
 
 /** The tooltip while the click only focuses a live conversation's window. */
@@ -252,15 +288,18 @@ function failureRow(item) {
  *     outcome (handoff reservation, takeover) holds the row. A live
  *     conversation without a link draws the button, row or not, and its click
  *     focuses that conversation's window (UI-9w5l §3.5).
- *   - `handoff_*`: the 확인 필요 row's `[워커로 이어가기]`, server-projected.
- *     The 실패 rows' and the 외부 작업 완료 row's `[워커로 이어가기]` are
- *     their own buttons (cleanup retry, discard retry, external fork); this
- *     names them only through `pair_anchor`.
+ *   - `handoff_*`: the 확인 필요 row's `[워커로 이어가기]`, server-projected,
+ *     or the handback of a live takeover conversation of any kind the server
+ *     marked `handback_allowed` (UI-3713 §3.3). The 실패 rows' and the 외부
+ *     작업 완료 row's own `[워커로 이어가기]` are their own buttons (cleanup
+ *     retry, discard retry, external fork); this names them only through
+ *     `pair_anchor`.
  *   - `pair_anchor`: which button is this row's `[워커로 이어가기]` — the
  *     renderer puts `[세션에서 이어가기]` right in front of it.
  *   - `pair_held`: a decided outcome hides both halves of the pair; the row's
  *     other operations stay. The discard and merge fields come back already
- *     masked, so a renderer has nothing to re-judge.
+ *     masked, so a renderer has nothing to re-judge. A takeover's handback
+ *     (`handoff_*`) still stands beside a held pair.
  *
  * @param {any} item - A lane-model item (`id`, `run_state`, `wait`,
  * `wait_reasons`, `discard`, `interactive_sessions`, `conversation_refusal`)
@@ -296,7 +335,7 @@ export function tileResolveFields(
         handoff_action: true,
         handoff_enabled: !handoff_pending,
         handoff_title: handoff_pending
-          ? '인계 요청 중 — 서버 응답을 기다립니다'
+          ? 'Worker로 넘기는 중 — 서버 응답을 기다립니다'
           : handoff.title ||
             '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어갑니다',
         handoff_attempt_id: handoff.attempt_id
@@ -334,7 +373,12 @@ export function tileResolveFields(
         : (failure ?? (item.run_state === 'parked' ? 'stop' : null));
   const stale_backup =
     item.discard?.operation?.kind === 'stale_work_backup_fresh';
-  const anchor = handoff
+  // A takeover row's handback button (UI-3713 §3.3) stands in the
+  // `[워커로 이어가기]` place, but the row's own Worker exit keeps the anchor
+  // so the held outcome still masks it below.
+  const projected_handoff =
+    projectedAction(item, CONVERSATION_HANDOFF_OP) !== null;
+  const native_anchor = projected_handoff
     ? 'handoff'
     : item.failure_material?.cleanup_retry === true
       ? 'merge'
@@ -343,6 +387,7 @@ export function tileResolveFields(
         : external
           ? 'external'
           : null;
+  const anchor = native_anchor ?? (handoff ? 'handoff' : null);
   const held = holdsConversationOutcome(item.interactive_sessions);
   /** @type {{ pair_anchor?: 'handoff'|'merge'|'discard'|'external'|null, pair_held?: boolean, discard?: any, discard_action?: boolean, merge_action?: boolean }} */
   const pair =
@@ -389,7 +434,7 @@ export function tileResolveFields(
 
 /** What a repo-operation row's `[세션에서 이어가기]` opens (UI-jbl1 §3.3). */
 const REPO_OPERATION_SESSION_TITLE =
-  '새 세션을 저장소 루트에서 대화로 엽니다 — 원인을 읽기 전용으로 진단하고, 인계하면 Worker가 같은 배포를 한 번 다시 실행합니다';
+  '새 세션을 저장소 루트에서 대화로 엽니다 — 원인을 읽기 전용으로 진단하고, Worker로 넘기면 Worker가 같은 배포를 한 번 다시 실행합니다';
 
 /**
  * The `[세션에서 이어가기]` decision of one 저장소 작업 drawer row (UI-jbl1

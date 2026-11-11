@@ -3873,7 +3873,7 @@ export async function workerSessionOwnerRefusal(workspace_root, bead_id) {
  * is registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one.
  *
  * @param {string} workspace_root
- * @param {{ bead_id: string, attempt_id: string }} input
+ * @param {{ bead_id: string, attempt_id: string|null }} input
  * @returns {Promise<{ ok: boolean, reason: string|null, pending?: boolean }>}
  */
 export async function conversationHandoffWorker(workspace_root, input) {

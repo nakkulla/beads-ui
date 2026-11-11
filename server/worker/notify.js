@@ -96,7 +96,7 @@ const FAILURE_CONVERSATION_FALLBACK = '대화를 열지 못함 — [세션에서
 const CONVERSATION_TITLE = {
   confirm: '🙋 확인 필요',
   resumed: '↪ Worker가 이어감',
-  takeover: '🙋 사람 인수'
+  takeover: '🙋 대화에서 마무리'
 };
 
 /**

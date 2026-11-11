@@ -1624,6 +1624,16 @@ function makeFakeBd(config) {
         : (statuses[bead_id] ?? null);
     },
     /**
+     * Exact-id lookup (`bd list --id`) over the same live statuses.
+     *
+     * @param {string} bead_id
+     * @returns {Promise<Record<string, any>|null>}
+     */
+    async findIssue(bead_id) {
+      const status = statuses[bead_id];
+      return typeof status === 'string' ? { id: bead_id, status } : null;
+    },
+    /**
      * The whole issue, the prerequisite-wait judgment's only reader of a bead's
      * outgoing `blocks` edges (선행 대기 계층 §4.2). Fail-closed like the real
      * one: a bead configured to throw makes the judgment impossible.
@@ -3223,7 +3233,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
 
     expect(result).toEqual({ ok: true, reason: null });
     expect(String(env.runner.spawnedBead('S1').prompt)).toContain(
-      '- 이번 대화의 결과 줄: 사용자가 [워커로 이어가기]로 인계'
+      '- 이번 대화의 결과 줄: 사용자가 [워커로 이어가기]로 넘김'
     );
   });
 
@@ -3243,7 +3253,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
     expect(env.launcher.sendExit).toHaveBeenCalledOnce();
     expect(record(env).conversation.handoff).toMatchObject({
       source: 'button',
-      line: '사용자가 [워커로 이어가기]로 인계',
+      line: '사용자가 [워커로 이어가기]로 넘김',
       message_at: 900
     });
     expect(env.runner.spawnOrder).toEqual(['S1']);
@@ -3275,6 +3285,231 @@ describe('same-session conversation return (UI-nuwy)', () => {
     });
 
     expect(result).toEqual({ ok: false, reason: 'no_conversation_exit' });
+  });
+
+  describe('handback after a takeover (UI-3713)', () => {
+    /**
+     * A live 멈춤 conversation that ended its turn in a takeover, with the
+     * Bead at `status` when the pass read it.
+     *
+     * @param {string} status
+     */
+    async function takenOver(status) {
+      const env = conversationEnv();
+      const prior = await stopForConversation(env);
+      await env.bd.setStatus('S1', status);
+      openConversation(env, prior);
+      say(env, '이 대화에서 마무리 · 여기서 끝까지 해');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      return { env, prior };
+    }
+
+    test('reserves a handoff from a later 워커가 이어감 line while the Bead is open', async () => {
+      const { env } = await takenOver('open');
+      say(env, '워커가 이어감 · Worker가 이어서 적용', 960);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env)).toMatchObject({
+        state: 'exiting',
+        conversation: {
+          processed_message_at: 960,
+          result: {
+            kind: 'handoff',
+            line: '워커가 이어감 · Worker가 이어서 적용'
+          },
+          handoff: { source: 'result_line' }
+        }
+      });
+      expect(env.launcher.sendExit).toHaveBeenCalledWith('%5');
+    });
+
+    test('resumes the same session once the handed-back window is gone', async () => {
+      const { env, prior } = await takenOver('open');
+      say(env, '인계 · Worker가 이어서 적용', 960);
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(children(env, prior.attempt_id)).toHaveLength(1);
+      expect(record(env)).toBeUndefined();
+    });
+
+    test('only marks a later handoff line processed while the Bead is in_progress', async () => {
+      const { env } = await takenOver('in_progress');
+      say(env, '워커가 이어감 · Worker가 이어서 적용', 960);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation).toMatchObject({
+        processed_message_at: 960,
+        result: { kind: 'takeover' },
+        handoff: null
+      });
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    });
+
+    test('changes nothing on a later hold line after a takeover', async () => {
+      const { env } = await takenOver('open');
+      say(env, '나중에 · 내일 본다', 960);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation).toMatchObject({
+        processed_message_at: 960,
+        result: { kind: 'takeover' },
+        handoff: null
+      });
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+      expect(env.notify.conversationTakeover).toHaveBeenCalledOnce();
+    });
+
+    test('marks a live takeover handback_allowed while the Bead is open', async () => {
+      const { env } = await takenOver('open');
+
+      const flag = record(env).conversation.handback_allowed;
+
+      expect(flag).toBe(true);
+    });
+
+    test('leaves a live takeover without handback while the Bead is in_progress', async () => {
+      const { env } = await takenOver('in_progress');
+
+      const flag = record(env).conversation.handback_allowed;
+
+      expect(flag).toBeUndefined();
+    });
+
+    test('drops the handback flag when the pass cannot read the Bead status', async () => {
+      const { env } = await takenOver('open');
+      vi.spyOn(env.bd, 'readStatus').mockRejectedValue(
+        new Error('bd unavailable')
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation.handback_allowed).toBeUndefined();
+    });
+
+    test('stamps a same-pass closed takeover without handback when the status is unreadable', async () => {
+      const { env, prior } = await takenOver('open');
+      vi.spyOn(env.bd, 'readStatus').mockRejectedValue(
+        new Error('bd unavailable')
+      );
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      const ended = attemptOf(env, prior.attempt_id).cause_detail.conversation;
+      expect(ended.ended_by).toBe('takeover');
+      expect(ended.handback_allowed).not.toBe(true);
+    });
+
+    test('drops the handback flag on an issue change without a bd show', async () => {
+      const { env } = await takenOver('open');
+      await env.bd.setStatus('S1', 'in_progress');
+      const readStatus = vi.spyOn(env.bd, 'readStatus');
+
+      await env.scheduler.onIssuesChanged(WS);
+
+      expect(record(env).conversation.handback_allowed).toBeUndefined();
+      expect(readStatus).not.toHaveBeenCalled();
+    });
+
+    test('reserves a button handoff on a live takeover while the Bead is open', async () => {
+      const { env, prior } = await takenOver('open');
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id
+      });
+
+      expect(result).toEqual({ ok: true, reason: null, pending: true });
+      expect(record(env).conversation.handoff).toMatchObject({
+        source: 'button',
+        line: '사용자가 [워커로 이어가기]로 넘김'
+      });
+      expect(env.launcher.sendExit).toHaveBeenCalledOnce();
+    });
+
+    test('refuses the button on a live takeover as not_open while the Bead is in_progress', async () => {
+      const { env, prior } = await takenOver('in_progress');
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'not_open' });
+      expect(record(env).conversation.handoff).toBeNull();
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    });
+
+    test('stamps a closed takeover window with its handback flag', async () => {
+      const { env, prior } = await takenOver('open');
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(
+        attemptOf(env, prior.attempt_id).cause_detail.conversation
+      ).toMatchObject({ ended_by: 'takeover', handback_allowed: true });
+    });
+
+    test('continues a closed takeover from the button while the Bead is open', async () => {
+      const { env, prior } = await takenOver('open');
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id
+      });
+
+      expect(result).toEqual({ ok: true, reason: null });
+      expect(children(env, prior.attempt_id)).toHaveLength(1);
+    });
+
+    test('refuses a closed takeover button as not_open and names it on the attempt', async () => {
+      const { env, prior } = await takenOver('open');
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await env.bd.setStatus('S1', 'in_progress');
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'not_open' });
+      expect(
+        attemptOf(env, prior.attempt_id).cause_detail.conversation
+      ).toMatchObject({ ended_by: 'takeover', refusal: 'not_open' });
+      expect(children(env, prior.attempt_id)).toHaveLength(0);
+    });
+
+    test('lifts a not_open refusal once the Bead is open again', async () => {
+      const { env, prior } = await takenOver('open');
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await env.bd.setStatus('S1', 'in_progress');
+      await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id
+      });
+      await env.bd.setStatus('S1', 'open');
+
+      await env.scheduler.onIssuesChanged(WS);
+
+      expect(
+        attemptOf(env, prior.attempt_id).cause_detail.conversation
+      ).toMatchObject({
+        ended_by: 'takeover',
+        refusal: null,
+        handback_allowed: true
+      });
+    });
   });
 
   test('returns a refusal before any child to the decision with its reason', async () => {
@@ -3897,6 +4132,112 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     expect(record(env)).toBeUndefined();
   });
 
+  describe('handback after a takeover (UI-3713)', () => {
+    /**
+     * A live failure conversation that ended its turn in a takeover, with
+     * the Bead at `status` when the pass read it.
+     *
+     * @param {string} status
+     */
+    async function takenOver(status) {
+      const env = failureEnv();
+      await env.bd.setStatus(BEAD, status);
+      openFailureConversation(env);
+      say(env, '이 대화에서 마무리 · 내가 끝까지 간다');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      return env;
+    }
+
+    test('runs the cleanup retry from a later 워커가 이어감 line while the Bead is open', async () => {
+      const env = await takenOver('open');
+      say(env, '워커가 이어감 · 잡 다시', 960);
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      const reserved = record(env)?.conversation?.handoff;
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(reserved).toMatchObject({
+        source: 'result_line',
+        target: { kind: 'cleanup' }
+      });
+      expect(env.exits.retryCleanup).toHaveBeenCalledExactlyOnceWith(WS, BEAD);
+    });
+
+    test('only marks a later handoff line processed while the Bead is in_progress', async () => {
+      const env = await takenOver('in_progress');
+      say(env, '워커가 이어감 · 잡 다시', 960);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env)?.conversation).toMatchObject({
+        processed_message_at: 960,
+        result: { kind: 'takeover' },
+        handoff: null
+      });
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    });
+
+    test('reserves a button handoff with the failure target on a live takeover', async () => {
+      const env = await takenOver('open');
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: BEAD,
+        attempt_id: null
+      });
+
+      expect(result).toEqual({ ok: true, reason: null, pending: true });
+      expect(record(env)?.conversation?.handoff).toMatchObject({
+        source: 'button',
+        target: { kind: 'cleanup' }
+      });
+      expect(env.launcher.sendExit).toHaveBeenCalledWith('%7');
+    });
+
+    test('runs the cleanup retry from the button once the window is gone', async () => {
+      const env = await takenOver('open');
+      await env.scheduler.conversationHandoff(WS, {
+        bead_id: BEAD,
+        attempt_id: null
+      });
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryCleanup).toHaveBeenCalledExactlyOnceWith(WS, BEAD);
+    });
+
+    test('refuses the button on a live takeover as not_open while the Bead is in_progress', async () => {
+      const env = await takenOver('in_progress');
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: BEAD,
+        attempt_id: null
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'not_open' });
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    });
+
+    test('leaves a closed takeover to the row own exit pair', async () => {
+      const env = await takenOver('open');
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: BEAD,
+        attempt_id: null
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'no_conversation_exit' });
+      expect(record(env)).toBeUndefined();
+      expect(env.real.snapshot(WS).cleanup_failed[BEAD]).toBeDefined();
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    });
+  });
+
   test('runs the cleanup retry with click authority once the window is gone', async () => {
     const env = failureEnv();
     openFailureConversation(env);
@@ -3942,7 +4283,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     expect(env.timeline.append).toHaveBeenCalledWith(
       expect.objectContaining({
         seq: 'resolve:500:handoff',
-        summary: '대화 인계 · 실패 — 머지 후 정리 · 인계 · 잡 다시'
+        summary: 'Worker로 넘김 · 실패 — 머지 후 정리 · 인계 · 잡 다시'
       })
     );
   });
@@ -4075,7 +4416,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     expect(env.timeline.append).toHaveBeenCalledWith(
       expect.objectContaining({
         seq: 'resolve:500:handoff_refused',
-        summary: '대화 인계 거절 · action_in_flight'
+        summary: 'Worker로 넘김 거절 · action_in_flight'
       })
     );
     expect(env.notify.conversationResumed).not.toHaveBeenCalled();

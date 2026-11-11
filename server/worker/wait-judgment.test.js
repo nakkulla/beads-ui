@@ -796,6 +796,42 @@ describe('recovery wait judgment', () => {
     }
   );
 
+  test('offers the handoff button after a takeover window closed with handback_allowed', () => {
+    const attempt = recoveryAttempt('authority');
+    attempt.cause_detail.conversation = {
+      launched_at: NOW - 10 * MINUTE,
+      ended_at: NOW,
+      ended_by: 'takeover',
+      refusal: null,
+      handback_allowed: true
+    };
+
+    const result = run({ queue: queue({ attempts: { a: attempt } }) })
+      .wait_reasons[0];
+
+    expect(ops(result)).toEqual([
+      'worker-resolve-in-session',
+      'worker-conversation-handoff',
+      'worker-discard'
+    ]);
+  });
+
+  test('names a not_open handback refusal on a closed takeover', () => {
+    const attempt = recoveryAttempt('authority');
+    attempt.cause_detail.conversation = {
+      launched_at: NOW - 10 * MINUTE,
+      ended_at: NOW,
+      ended_by: 'takeover',
+      refusal: 'not_open'
+    };
+
+    const result = run({ queue: queue({ attempts: { a: attempt } }) })
+      .wait_reasons[0];
+
+    expect(result.verdict_reason?.message).toContain('이어가기 거절: not_open');
+    expect(ops(result)).not.toContain('worker-conversation-handoff');
+  });
+
   test('names a handoff refusal on the returned decision', () => {
     const attempt = recoveryAttempt('authority');
     attempt.cause_detail.conversation = {
@@ -1186,7 +1222,7 @@ describe('wait judgment external work', () => {
       {
         label: '[세션에서 이어가기]',
         title:
-          '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 — 인계하면 Worker가 그 세션에서 attempt를 시작합니다',
+          '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 — Worker로 넘기면 Worker가 그 세션에서 attempt를 시작합니다',
         placement: 'card',
         confirm: undefined,
         mode: undefined
@@ -1884,7 +1920,8 @@ describe('wait judgment holds and manual waits', () => {
     expect(result.wait_reasons[0]).toMatchObject({
       kind: 'awaiting_user',
       headline: '사용자 결정 대기 · 방향 선택',
-      release: '같은 세션과의 대화에서 답하고 인계하면 Worker가 이어간다',
+      release:
+        '같은 세션과의 대화에서 답하고 Worker로 넘기면 Worker가 이어간다',
       verdict_reason: { code: 'decision' }
     });
   });

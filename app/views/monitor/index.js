@@ -1401,7 +1401,8 @@ export function createMonitorView(mount_element, options) {
 
   /**
    * `[워커로 이어가기]` (UI-nuwy §3.6), the Monitor twin of the Worker tab's
-   * click: the server reserves the handoff or continues directly.
+   * click: the server reserves the handoff or continues directly. An empty
+   * `attempt_id` is a conversation record without one (UI-3713 §3.3).
    *
    * @param {string} bead_id
    * @param {string} attempt_id
@@ -1409,7 +1410,7 @@ export function createMonitorView(mount_element, options) {
    * @param {number} revision
    */
   async function handoffToWorker(bead_id, attempt_id, root_dir, revision) {
-    if (!attempt_id || handoff_pending.has(bead_id)) {
+    if (!bead_id || handoff_pending.has(bead_id)) {
       return;
     }
     handoff_pending.add(bead_id);
@@ -1417,7 +1418,7 @@ export function createMonitorView(mount_element, options) {
     try {
       const res = await sendCas(
         'worker-conversation-handoff',
-        { bead_id, attempt_id },
+        { bead_id, attempt_id: attempt_id || null },
         root_dir,
         revision,
         false

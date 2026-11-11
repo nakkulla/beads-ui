@@ -717,7 +717,7 @@ function cleanupEventTemplate(event, repo = '') {
                   data-bead-id=${cleanup.bead_id}
                   ?disabled=${pair.resolve_enabled === false}
                   title=${pair.resolve_title ||
-                  '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 실패한 단계를 다시 돌립니다'}
+                  '기록된 세션을 대화로 엽니다 — Worker로 넘기면 Worker가 실패한 단계를 다시 돌립니다'}
                 >
                   세션에서 이어가기
                 </button>`

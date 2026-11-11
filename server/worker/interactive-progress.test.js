@@ -10,6 +10,9 @@ import {
 
 describe('parseConversationResult', () => {
   test.each([
+    ['워커가 이어감 · 범위 확장 승인', 'handoff'],
+    ['이 대화에서 마무리 · 내가 끝까지 간다', 'takeover'],
+    ['나중에 · 내일 본다', 'hold'],
     ['인계 · 범위 확장 승인', 'handoff'],
     ['인수 · 내가 끝까지 간다', 'takeover'],
     ['보류 · 내일 본다', 'hold']

@@ -1630,6 +1630,7 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
     };
     const env = fixture({
       seed_prior: false,
+      status: options.status,
       snapshot: {
         session_ref: 'claude:user-session@host',
         ...options.snapshot
@@ -1782,7 +1783,7 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
   });
 
   test('leaves a taken-over Bead to the session without re-setting the key', async () => {
-    const env = conversationFixture();
+    const env = conversationFixture({ status: 'in_progress' });
     say(env, '인수 · 이 세션에서 끝까지 간다');
     await env.scheduler.reconcileInteractiveSessions(WS);
     env.panes.rows = [];
@@ -1794,6 +1795,93 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
     });
     expect(env.metadata).not.toHaveProperty('external_wait');
     expect(recordOf(env)?.stage).toBe('resumed');
+  });
+
+  describe('handback after a takeover (UI-3713)', () => {
+    /**
+     * A live 외부 작업 완료 conversation that ended its turn in a takeover,
+     * with the Bead at `status`.
+     *
+     * @param {string} status
+     */
+    async function takenOver(status) {
+      const env = conversationFixture({ status });
+      say(env, '이 대화에서 마무리 · 이 세션에서 끝까지 간다');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      return env;
+    }
+
+    test('dispatches one Worker attempt from a later 워커가 이어감 line while the Bead is open', async () => {
+      const env = await takenOver('open');
+      say(env, '워커가 이어감 · 결과 확인 뒤 커밋', 960);
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      const reserved = conversationOf(env)?.conversation?.handoff;
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(reserved).toMatchObject({ source: 'result_line', target: null });
+      expect(env.launches).toHaveLength(1);
+      expect(env.launches[0].settings).toMatchObject({
+        resume_session_id: 'user-session',
+        fork_session: true
+      });
+    });
+
+    test('only marks a later handoff line processed while the Bead is in_progress', async () => {
+      const env = await takenOver('in_progress');
+      say(env, '워커가 이어감 · 결과 확인 뒤 커밋', 960);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(conversationOf(env)?.conversation).toMatchObject({
+        processed_message_at: 960,
+        result: { kind: 'takeover' },
+        handoff: null
+      });
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    });
+
+    test('dispatches one Worker attempt from the button on a live takeover', async () => {
+      const env = await takenOver('open');
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'B1',
+        attempt_id: null
+      });
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(result).toEqual({ ok: true, reason: null, pending: true });
+      expect(env.launches).toHaveLength(1);
+      expect(conversationOf(env)).toBeUndefined();
+    });
+
+    test('refuses the button on a live takeover as not_open while the Bead is in_progress', async () => {
+      const env = await takenOver('in_progress');
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'B1',
+        attempt_id: null
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'not_open' });
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    });
+
+    test('returns a closed takeover to its completion row while the Bead is open', async () => {
+      const env = await takenOver('open');
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.metadata.external_wait).toBe(WAIT);
+      expect(recordOf(env)).toMatchObject({
+        stage: 'completing',
+        resume: null
+      });
+      expect(conversationOf(env)).toBeUndefined();
+    });
   });
 
   test('dispatches one Worker attempt from the conversation session on handoff', async () => {

@@ -1238,7 +1238,7 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
     await notifier.conversationTakeover({ bead_id: 'UI-1' });
 
     expect(messageOf(spawn.last())).toBe(
-      '🙋 사람 인수 — UI-1\nWorker는 정산만 관찰'
+      '🙋 대화에서 마무리 — UI-1\nWorker는 정산만 관찰'
     );
   });
 

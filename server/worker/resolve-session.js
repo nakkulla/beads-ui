@@ -644,7 +644,7 @@ export function buildFailureEntry(input) {
 export function foreignHandoffRules(failure) {
   return [
     `분류 ${FOREIGN_HANDOFF_NOTIFY_LABEL} · 원인 ${failure.reason} · Bead ${failure.bead_id || '(미상)'} · foreign_path ${failure.foreign_path || '(미상)'}`,
-    '대상 저장소에서 `pr-finish` Foreign-pinned Bead 절차로 처리한다. [머지]로는 풀리지 않고, Worker로 넘기는 인계는 없다.'
+    '대상 저장소에서 `pr-finish` Foreign-pinned Bead 절차로 처리한다. [머지]로는 풀리지 않고, Worker로 넘기는 길은 없다.'
   ].join('\n');
 }
 
@@ -664,7 +664,7 @@ export function takeoverCleanupRules(takeover) {
     `2. 실행 전 실패가 확정된 경우(PID 증거가 없고 프로세스 부재가 확인됨)에만 \`scontrol release ${job}\`로 hold를 풀고 기록을 지운다. 원래 Slurm 잡이 대기열로 돌아가고 관측이 unheld no_takeover를 읽어 대기를 푼다.`,
     '3. PID 증거가 있으면(실행 중이든 이미 끝났든) release·취소·재실행을 하지 않는다. 실행 결과와 남은 정리를 확인하고, sjob 공개 인터페이스로 끝낼 수 없는 정리는 이 대화에서 사용자에게 증거와 선택지를 보이고 답을 받아 처리한다.',
     '4. 실행 여부를 판정할 수 없으면 아무것도 바꾸지 않고, 이 대화에서 사용자에게 증거를 보이고 묻는다.',
-    '원격 기록이 started 또는 unheld no_takeover가 되면 다음 관측에서 대기가 풀린다 — 인계는 필요 없다.'
+    '원격 기록이 started 또는 unheld no_takeover가 되면 다음 관측에서 대기가 풀린다 — Worker로 넘길 필요는 없다.'
   ].join('\n');
 }
 

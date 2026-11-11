@@ -629,6 +629,9 @@
  * @property {{ kind: ConversationResultKind, line: string, at: number }|null} result
  * @property {ConversationHandoff|null} handoff
  * @property {number|null} takeover_notified_at
+ * @property {boolean} [handback_allowed] - A takeover conversation with no
+ * handoff may go back to the Worker: the last observed Bead status was
+ * `open` (UI-3713 §3.3). Absent reads as false; only `true` is kept.
  */
 /**
  * Why a failure or 외부 작업 완료 conversation's handoff did not run
@@ -3828,7 +3831,8 @@ function normalizeConversation(raw) {
     message_excerpt: stringOrNullValue(raw.message_excerpt),
     result,
     handoff,
-    takeover_notified_at: finiteOrNull(raw.takeover_notified_at)
+    takeover_notified_at: finiteOrNull(raw.takeover_notified_at),
+    ...(raw.handback_allowed === true ? { handback_allowed: true } : {})
   };
 }
 

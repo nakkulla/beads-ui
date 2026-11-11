@@ -1840,7 +1840,7 @@ export function liveInquiryView(views) {
  * The turn-state tail of an interactive session badge (UI-ri8n §3.3):
  * `작업 중 <경과>` · `질문 대기` · `한도 대기` · `턴 종료 <경과>`. A
  * same-session conversation (UI-nuwy §3.8) reads its server record instead:
- * `대화 중 <경과>` · `답 대기` · `사람 인수`. A null `turn_state` draws
+ * `대화 중 <경과>` · `답 대기` · `대화에서 마무리 중`. A null `turn_state` draws
  * nothing (fail-quiet).
  *
  * @param {import('./lane-model.js').InteractiveSessionView} view
@@ -1864,7 +1864,7 @@ function interactiveTurnWord(view) {
   const conversation = view.conversation;
   if (conversation) {
     if (conversation.result?.kind === 'takeover') {
-      return { word: '사람 인수', timed: false };
+      return { word: '대화에서 마무리 중', timed: false };
     }
     if (view.turn_state === 'running') {
       return { word: '대화 중', timed: true };
@@ -2158,7 +2158,7 @@ export function resolveSessionButton(item, cls) {
     aria-label="세션에서 이어가기"
     ?disabled=${item.resolve_enabled === false}
     title=${item.resolve_title ||
-    '기록된 세션을 대화로 엽니다 — 인계하면 Worker가 이 행을 잇습니다'}
+    '기록된 세션을 대화로 엽니다 — Worker로 넘기면 Worker가 이 행을 잇습니다'}
   >
     세션에서 이어가기
   </button>`;

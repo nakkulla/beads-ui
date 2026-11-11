@@ -1340,13 +1340,14 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * `[워커로 이어가기]` (UI-nuwy §3.6): hand a conversation stop back to the
    * Worker. The server decides — a reservation while the window closes, a
-   * direct resume after it vanished, or a refusal with its reason.
+   * direct resume after it vanished, or a refusal with its reason. An empty
+   * `attempt_id` is a conversation record without one (UI-3713 §3.3).
    *
    * @param {string} bead_id
    * @param {string} attempt_id
    */
   async function handoffToWorker(bead_id, attempt_id) {
-    if (!transport || !bead_id || !attempt_id || handoff_pending.has(bead_id)) {
+    if (!transport || !bead_id || handoff_pending.has(bead_id)) {
       return;
     }
     handoff_pending.add(bead_id);
@@ -1355,7 +1356,7 @@ export function createWorkerView(mount_element, options = {}) {
       const res = /** @type {any} */ (
         await transport('worker-conversation-handoff', {
           bead_id,
-          attempt_id,
+          attempt_id: attempt_id || null,
           expected_revision: currentRevision()
         })
       );

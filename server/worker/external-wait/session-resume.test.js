@@ -13,11 +13,11 @@ import {
 
 /**
  * The dotfiles entry block digest the 외부 작업 완료 conversation opens with
- * (`eff1c2f8fab51c8523d4b2c477bbba80d4e3e1a8`, 3368 bytes without a trailing
+ * (`2727fd9e922e8b1877eae97c9edef7c237336ac9`, 4248 bytes without a trailing
  * newline) — the same pin `direction-inquiry.test.js` holds (UI-18a5 §3.3).
  */
 const ENTRY_BLOCK_DIGEST =
-  '38e926305be951c5dffa9c0c5f7aad126c46bd7fd93c766522aa3db9415e2149';
+  '5413c6601a9965fba3f4a5bbfd8599ae76275b31e8f7244617892be947f63d4e';
 
 const WS = '/repo';
 const WAIT = 'w-0123456789ab';
@@ -423,7 +423,7 @@ describe('session resume launch', () => {
     expect(clauses).toEqual([
       '대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다',
       '이 세션은 외부 작업 완료 Worker 세션 대화로 열린다(`references/execution-common.md` `## Worker 세션 대화`)',
-      '`인수` 뒤 첫 편집 전에 `bd show --json`으로 `external_wait` 키가 없음을 확인한 뒤 Bead를 클레임한다'
+      '`이 대화에서 마무리` 뒤 첫 편집 전에 `bd show --json`으로 `external_wait` 키가 없음을 확인한 뒤 Bead를 클레임한다'
     ]);
   });
 
