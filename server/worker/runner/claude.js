@@ -124,9 +124,10 @@ export const WORKER_SEALED_SKILLS = Object.freeze([
  * exported so the argv test compares the STRUCTURE rather than re-typing the
  * JSON, which is how the two would drift.
  *
- * @type {{ skillOverrides: Record<string, string> }}
+ * @type {{ autoCompactWindow: number, skillOverrides: Record<string, string> }}
  */
 export const WORKER_SETTINGS_OVERRIDE = Object.freeze({
+  autoCompactWindow: 200000,
   skillOverrides: Object.freeze(
     Object.fromEntries(
       WORKER_SEALED_SKILLS.map((name) => [name, 'user-invocable-only'])

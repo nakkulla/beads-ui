@@ -1720,27 +1720,26 @@ describe('runner/claude worker skill seal and read guard (spec D4)', () => {
       }
     });
   });
-  test('carries the skillOverrides settings right after the permission mode', () => {
+  test('carries skill overrides and the auto-compaction window after the permission mode', () => {
     const spec = claudeSpec();
 
     const built = spec.buildArgv(BEAD, WS, {});
 
     const mode_idx = built.args.indexOf('bypassPermissions');
     expect(built.args[mode_idx + 1]).toBe('--settings');
-    expect(JSON.parse(built.args[mode_idx + 2])).toEqual(
-      WORKER_SETTINGS_OVERRIDE
-    );
+    expect(JSON.parse(built.args[mode_idx + 2])).toEqual({
+      ...WORKER_SETTINGS_OVERRIDE,
+      autoCompactWindow: 200000
+    });
   });
 
   test('seals every prose-style skill as user-invocable-only', () => {
-    expect(WORKER_SETTINGS_OVERRIDE).toEqual({
-      skillOverrides: {
-        caveman: 'user-invocable-only',
-        humanizer: 'user-invocable-only',
-        deck: 'user-invocable-only',
-        storyboard: 'user-invocable-only',
-        design: 'user-invocable-only'
-      }
+    expect(WORKER_SETTINGS_OVERRIDE.skillOverrides).toEqual({
+      caveman: 'user-invocable-only',
+      humanizer: 'user-invocable-only',
+      deck: 'user-invocable-only',
+      storyboard: 'user-invocable-only',
+      design: 'user-invocable-only'
     });
   });
 
