@@ -32,8 +32,11 @@ Worker 주소는 공통 파일 `${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/worke
 
 - 서버 어댑터는 `--workspace-json-stdin`으로 서버가 읽은 kv를 넘기고, `source` 세 값과 `workspace_override` 필드를
   엄격히 검사해 어긋나면 `unavailable`이다 — server/worker-url.js:84-110
-- `get-session-defaults`의 `worker_url`은 kv 읽기가 실패하면 resolver를 부르지 않고 `workspace_unavailable`을
-  내고, resolver 오류는 `helper_unavailable`로 바꾼다 — server/ws/session-defaults-handlers.js:151-170
+- `get-session-defaults`는 kv 읽기 자체가 실패하면(`ok:false`) 요청 전체를 `kv_read_failed`로 실패시킨다. 읽기는
+  됐지만 값이 비었거나 경고가 붙으면 `worker_url`을 resolver 없이 `workspace_unavailable`로 내고, resolver 오류는
+  `helper_unavailable`로 바꾼다 — server/ws/session-defaults-handlers.js:151-170, 189-192
+- 카드·모니터·Worker 화면은 Worker 주소(`worker_url`·`effective_url`·`bdui_url`)를 읽지 않는다 —
+  `grep -rln 'worker_url\|effective_url\|bdui_url' app/views/worker app/views/monitor app/views/*.js` 결과 없음(테스트 제외)
 - `bdui_url`은 저장소 기본값 키 목록과 형식 판정에 들어 있다 — server/worker/exec-enums.js:196-202,
   server/session-defaults.js:80
 - 목록 밖 키는 읽을 때 `unknown_key:<key>` 경고와 함께 버려지고, 쓰기 요청에 들어 있으면 거절되며, 병합은 저장돼
@@ -66,8 +69,10 @@ Worker 주소는 공통 파일 `${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/worke
 
 - 서버는 `worker-url resolve --root <등록 root> --json`을 stdin 없이 부른다. 옛 도구는 이때 kv를 직접 읽고, 새 도구는
   공통 파일만 읽는다. 두 경우 모두 같은 명령이 성공한다.
-- 결정: `worker_url` 해석은 서버의 kv 읽기 성공에 기대지 않는다 — 주소가 더 이상 kv에 없으므로 kv 읽기 실패가 주소
-  표시를 막지 않는다. resolver가 낸 오류(옛 도구의 kv 읽기 실패 포함)는 지금처럼 `helper_unavailable`로 보인다.
+- kv 읽기 자체가 실패하는 경우(`kv_read_failed`)의 처리는 바꾸지 않는다.
+- 결정: kv는 읽혔지만 값이 비었거나 경고가 붙은 경우에도 `worker_url`은 resolver 결과를 싣는다 — 주소가 더 이상 kv에
+  없으므로 kv 값의 상태가 주소 표시를 막을 이유가 없다. resolver가 낸 오류(옛 도구의 kv 읽기 실패 포함)는 지금처럼
+  `helper_unavailable`로 보인다.
 - 받아들이는 응답: `schema:1`, `effective_url` 문자열|null, `source` ∈ {`common`, `unset`}, 유효한 `common` 객체,
   `warnings` 배열이다. `workspace_override`는 있어도 없어도 되고 읽지 않는다.
 - 결정: `source=workspace` 응답은 `helper_unavailable`로 처리한다 — 옛 도구가 kv 예외를 찾았다는 뜻인데, 그 예외는
@@ -119,7 +124,8 @@ Worker 주소는 공통 파일 `${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/worke
 - `server/worker-url.test.js`: stdin 없이 `resolve --root`를 부른다; `workspace_override` 없는 응답 수용; 옛 모양
   (`workspace_override:null`, `source=common`) 수용; `source=workspace` → `helper_unavailable`; 반환값에
   `workspace_override` 없음. 같은 파일의 배포 후 잡 테스트는 잡 파일을 바꾸지 않으므로 그대로다.
-- `server/ws/session-defaults-handlers.test.js`: kv 읽기가 실패해도 `worker_url`은 resolver 결과를 싣는다.
+- `server/ws/session-defaults-handlers.test.js`: kv 값에 경고가 붙어도 `worker_url`은 resolver 결과를 싣는다; kv 읽기
+  자체가 실패하면(`ok:false`) 지금처럼 `kv_read_failed`다.
 - `server/session-defaults.test.js`: kv의 `bdui_url` → `unknown_key:bdui_url` 경고; `bdui_url` 쓰기 요청 거절; 다른 키
   저장 때 남은 `bdui_url` 보존.
 - `server/worker/exec-enums.test.js`: 키 목록에 `bdui_url` 없음.
