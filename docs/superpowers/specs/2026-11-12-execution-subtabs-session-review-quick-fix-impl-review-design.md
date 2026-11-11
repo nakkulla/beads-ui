@@ -81,6 +81,15 @@ scope:
   app/utils/execution-defaults.js:571
 - 닫히지 않은 Bead 가운데 사양·계획 리뷰 핀을 가진 것은 없다 — `bd list --all --limit 0 --json`으로 확인(2026-11-12,
   10건 중 0건)
+- 이슈 상세 개별 편집은 저장소 값을 공용 해석기에 넘겨 "기본값 사용" 표시에 쓴다 —
+  app/views/detail-panel/exec-settings.js:895, app/views/detail-panel/exec-settings.js:933
+- 설정 창이 보내지 않은 입력을 버리는 시점은 대상 전환과 창 닫기다 — app/views/settings-dialog/index.js:548,
+  app/views/settings-dialog/index.js:1159
+- quick fix 레인을 모르는 서버에서는 quick fix 행 전체가 같은 문구로 잠긴다 —
+  app/views/settings-dialog/execution-pane.js:2035, app/views/settings-dialog/execution-pane.js:2052
+- 리뷰 세션 기동은 프롬프트와 실행만 맡고 리뷰어를 고르지 않는다 — server/worker/review-session.js:36,
+  server/worker/review-session.js:128, server/worker/review-session.js:414
+- 프리셋 생성·수정은 계열 어휘 밖 키를 가진 요청을 거부한다 — server/exec-preset-store.js:314
 
 ## 3. 설계
 
@@ -149,7 +158,8 @@ scope:
 
 - Worker 정책 계산(`server/worker/policy.js`)과 이슈 스냅샷(`server/worker/attach.js`) — 이슈 핀만 읽고, 핀 이름은
   quick fix에서도 정규 이름이다.
-- 이슈 상세의 개별 편집(`app/views/detail-panel/exec-settings.js`) — 이슈 핀을 쓰는 화면이라 저장소 값과 무관하다.
+- 이슈 상세 개별 편집(`app/views/detail-panel/exec-settings.js`)의 핀 저장 경로 — 핀 이름과 쓰기는 그대로다. 행의
+  "기본값 사용" 표시는 위 해석기를 따르므로 quick fix 이슈에서 같은 순서로 바뀐다.
 - 리뷰 세션 기동(`server/worker/review-session.js`) — 리뷰어 선택에 관여하지 않는다.
 
 다른 route의 이슈는 지금과 같다. beads-ui는 이 순서를 보이기만 하고, 실제 선택은 dotfiles 리뷰어 선택기가 한다.
@@ -228,7 +238,7 @@ beads-ui는 dotfiles unit이 닫힌 뒤에 구현에 들어간다. 새 키를 �
   - route 근거: 키 이름·어휘·읽는 순서를 §3.6이 정하고 이 스펙의 승인과 리뷰가 그 설계를 덮는다. dotfiles에 남는 일은
     이미 있는 quick fix 전용 kv 프로파일과 리뷰어 선택기에 같은 모양의 키 셋을 더하는 닫힌 작업이다(선례: dotfiles-0d42i).
   - 그 Bead의 ADR 절은 ADR dotfiles/dotfiles-o7y9-9의 "quick fix 전용 kv는 다섯 평면 키" 조항을 고쳐 적는 supersede를
-    지명하고, 사용자 ADR 승인을 받은 뒤에 Worker로 넘긴다.
+    지명한다. 이 Bead는 dotfiles-vz3le가 닫힌 뒤에 구현에 들어간다.
 - 관찰: 이슈 상세의 사양·계획 리뷰 핀 편집 — 계약의 Bead 층이 살아 있어 그대로 둔다.
 
 ## 8. 결정 (ADR 후보)
