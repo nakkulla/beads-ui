@@ -2084,7 +2084,6 @@ async function renderSettingsDialog(scope) {
         status: 'ok',
         effective_url: 'http://host:3000',
         source: 'common',
-        workspace_override: null,
         common: {
           value: 'http://host:3000',
           state: 'configured',

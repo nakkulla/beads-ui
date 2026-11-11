@@ -230,17 +230,16 @@ describe('session key lists', () => {
     expect(WORKSPACE_KV_KEYS[0]).toBe('workflow_mode');
   });
 
-  test('drops impl_dispatch from the twenty-one workspace kv keys', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(21);
+  test('drops impl_dispatch from the twenty workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(20);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
 
   test('mirrors the quick_fix kv block after the per-bead keys', () => {
-    expect(WORKSPACE_KV_KEYS.slice(-7)).toEqual([
+    expect(WORKSPACE_KV_KEYS.slice(-6)).toEqual([
       ...QUICK_FIX_KV_KEYS,
-      'base_sync_accept_local_commits',
-      'bdui_url'
+      'base_sync_accept_local_commits'
     ]);
   });
 
@@ -654,8 +653,7 @@ describe('buildPresetDiff', () => {
       'impl_dispatch',
       'workflow_mode',
       ...QUICK_FIX_KV_KEYS,
-      'base_sync_accept_local_commits',
-      'bdui_url'
+      'base_sync_accept_local_commits'
     ]);
   });
 
@@ -876,22 +874,22 @@ describe('buildSessionDefaultsPatch', () => {
     expect(patch).toEqual({ quick_fix_impl_model: 'terra' });
   });
 
-  test('diffs bdui_url like any other workspace kv key', () => {
+  test('ignores an obsolete bdui_url change when building a patch', () => {
     const patch = buildSessionDefaultsPatch(
       { bdui_url: 'http://one:3000' },
       { bdui_url: 'http://two:3000' }
     );
 
-    expect(patch).toEqual({ bdui_url: 'http://two:3000' });
+    expect(patch).toEqual({});
   });
 
-  test('sends a dropped bdui_url as the null deletion request', () => {
+  test('ignores a dropped obsolete bdui_url when building a patch', () => {
     const patch = buildSessionDefaultsPatch(
       { bdui_url: 'http://one:3000' },
       {}
     );
 
-    expect(patch).toEqual({ bdui_url: null });
+    expect(patch).toEqual({});
   });
 
   test('sends the checked bool key as a JSON boolean, not the draft marker', () => {
@@ -1053,7 +1051,6 @@ describe('common Worker draft', () => {
   });
 
   test.each([
-    ['workspace', '이 저장소의 예외'],
     ['common', '공통 기본값'],
     ['unset', '미설정']
   ])('labels source %s', (source, label) => {
@@ -1064,6 +1061,7 @@ describe('common Worker draft', () => {
     });
 
     expect(message).toContain(label);
+    expect(message).not.toContain('이 저장소의 예외');
   });
 
   test.each([

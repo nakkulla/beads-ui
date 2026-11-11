@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   isHttpOriginValue,
+  mergeSessionDefaults,
   normalizeSessionDefaults,
   validateSessionDefaultsPatch
 } from './session-defaults.js';
@@ -46,32 +47,15 @@ describe('isHttpOriginValue', () => {
 });
 
 describe('normalizeSessionDefaults bdui_url', () => {
-  test('keeps a well-formed origin without warning', () => {
-    const layer = normalize({ schema: 1, bdui_url: 'http://100.64.0.1:3000' });
+  test.each(['http://100.64.0.1:3000', 'beads.example:3000', 3000])(
+    'drops the obsolete key with an unknown-key warning for %s',
+    (value) => {
+      const layer = normalize({ schema: 1, bdui_url: value });
 
-    expect(layer.values).toEqual({ bdui_url: 'http://100.64.0.1:3000' });
-    expect(layer.warnings).toEqual([]);
-  });
-
-  test('no longer reports the contract key as unknown', () => {
-    const layer = normalize({ bdui_url: 'https://beads.example' });
-
-    expect(layer.warnings).not.toContain('unknown_key:bdui_url');
-  });
-
-  test('drops a malformed origin with the ordinary invalid_value warning', () => {
-    const layer = normalize({ bdui_url: 'beads.example:3000' });
-
-    expect(layer.values).toEqual({});
-    expect(layer.warnings).toEqual(['invalid_value:bdui_url']);
-  });
-
-  test('drops a non-string value like any other key', () => {
-    const layer = normalize({ bdui_url: 3000 });
-
-    expect(layer.values).toEqual({});
-    expect(layer.warnings).toEqual(['invalid_value:bdui_url']);
-  });
+      expect(layer.values).toEqual({});
+      expect(layer.warnings).toEqual(['unknown_key:bdui_url']);
+    }
+  );
 
   test('keeps the enum keys alongside it on their own rule', () => {
     const layer = normalize({
@@ -81,10 +65,12 @@ describe('normalizeSessionDefaults bdui_url', () => {
     });
 
     expect(layer.values).toEqual({
-      bdui_url: 'http://host:3000',
       impl_speed: 'fast'
     });
-    expect(layer.warnings).toEqual(['invalid_value:workflow_mode']);
+    expect(layer.warnings).toEqual([
+      'unknown_key:bdui_url',
+      'invalid_value:workflow_mode'
+    ]);
   });
 });
 
@@ -177,16 +163,14 @@ describe('normalizeSessionDefaults base_sync_accept_local_commits', () => {
     ]);
   });
 
-  test('keeps the enum and format keys alongside it on their own rules', () => {
+  test('keeps the enum keys alongside it on their own rules', () => {
     const layer = normalize({
       base_sync_accept_local_commits: true,
-      bdui_url: 'http://host:3000',
       workflow_mode: 'fast_track'
     });
 
     expect(layer.values).toEqual({
       base_sync_accept_local_commits: true,
-      bdui_url: 'http://host:3000',
       workflow_mode: 'fast_track'
     });
     expect(layer.warnings).toEqual([]);
@@ -239,29 +223,17 @@ describe('validateSessionDefaultsPatch base_sync_accept_local_commits', () => {
 });
 
 describe('validateSessionDefaultsPatch bdui_url', () => {
-  test('accepts a well-formed origin', () => {
-    const result = validate({ bdui_url: 'http://100.64.0.1:3000' });
+  test.each(['http://100.64.0.1:3000', 'http://host:3000/', '', null])(
+    'refuses an obsolete-key write for %s',
+    (value) => {
+      const result = validate({ bdui_url: value });
 
-    expect(result).toEqual({
-      ok: true,
-      patch: { bdui_url: 'http://100.64.0.1:3000' }
-    });
-  });
-
-  test('refuses a malformed origin by the same format rule as the read path', () => {
-    const result = validate({ bdui_url: 'http://host:3000/' });
-
-    expect(result).toEqual({
-      ok: false,
-      reason: 'invalid value for bdui_url: http://host:3000/'
-    });
-  });
-
-  test('reads an empty value as the deletion request', () => {
-    const result = validate({ bdui_url: '' });
-
-    expect(result).toEqual({ ok: true, patch: { bdui_url: null } });
-  });
+      expect(result).toEqual({
+        ok: false,
+        reason: 'unknown session-default key: bdui_url'
+      });
+    }
+  );
 
   test('still refuses a key outside the contract vocabulary', () => {
     const result = validate({ bdui_urls: 'http://host:3000' });
@@ -269,6 +241,20 @@ describe('validateSessionDefaultsPatch bdui_url', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'unknown session-default key: bdui_urls'
+    });
+  });
+});
+
+describe('mergeSessionDefaults', () => {
+  test('preserves a leftover Worker URL while saving another key', () => {
+    const current = { schema: 1, bdui_url: 'http://exception:3000' };
+
+    const next = mergeSessionDefaults(current, { impl_speed: 'fast' });
+
+    expect(next).toEqual({
+      schema: 1,
+      bdui_url: 'http://exception:3000',
+      impl_speed: 'fast'
     });
   });
 });

@@ -48,11 +48,11 @@ export const QUICK_FIX_KV_KEYS = [
 ];
 
 /**
- * The twenty-one keys `bd kv workflow_session_defaults` may STORE, in the
+ * The twenty keys `bd kv workflow_session_defaults` may STORE, in the
  * contract's own order. `impl_dispatch` is absent by contract
  * (`write_rule: user_write_only`): a workspace-global dispatch would decide for
  * every later bead, so the session-defaults group offers no such row.
- * The quick_fix profile, `base_sync_accept_local_commits`, and `bdui_url` are
+ * The quick_fix profile and `base_sync_accept_local_commits` are
  * kv-only keys — none has a per-bead layer, so no preset and no pin can carry
  * them.
  */
@@ -60,8 +60,7 @@ export const WORKSPACE_KV_KEYS = [
   'workflow_mode',
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
   ...QUICK_FIX_KV_KEYS,
-  'base_sync_accept_local_commits',
-  'bdui_url'
+  'base_sync_accept_local_commits'
 ];
 
 /**
@@ -116,9 +115,7 @@ export function adoptSessionDefaultValues(values) {
  * True for an absolute `http`/`https` origin written exactly as `URL`
  * normalizes it — no trailing slash, path, query, fragment, or userinfo.
  *
- * `bdui_url` is the one workspace kv key the contract types `enum: none`
- * (`workflow-state.yaml key_scoped`), so the dialog judges its FORMAT before
- * offering to save it rather than letting the server refuse the whole patch.
+ * The common Worker address is checked before offering to save it.
  * The server enforces the same rule in `server/session-defaults.js`; the two
  * runtimes share no module, so the equality is asserted from both test files.
  *
@@ -704,7 +701,7 @@ function presetDiffKeysFor(applies_to) {
 
 /**
  * Declared keys of one profile that its apply does NOT write. In the general
- * profile `impl_dispatch` is `user_write_only` and `workflow_mode`/`bdui_url`
+ * profile `impl_dispatch` is `user_write_only` and `workflow_mode`
  * have no preset layer at all; the quick_fix profile writes every key it may
  * carry, so its list is empty.
  *
@@ -900,7 +897,6 @@ export function workerUrlMessage(worker_url) {
   }
   /** @type {Record<string, string>} */
   const labels = {
-    workspace: '이 저장소의 예외',
     common: '공통 기본값',
     unset: '미설정'
   };
@@ -910,8 +906,6 @@ export function workerUrlMessage(worker_url) {
 export function workerUrlWarning(warning) {
   const code = typeof warning === 'string' ? warning : warning?.code;
   switch (code) {
-    case 'workspace_invalid':
-      return '저장소 예외 주소의 형식이 잘못되어 건너뛰었습니다';
     case 'common_invalid':
       return '공통 설정 형식이 잘못되어 공통값을 사용하지 않습니다';
     case 'common_unavailable':

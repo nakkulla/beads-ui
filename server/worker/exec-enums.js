@@ -170,7 +170,7 @@ export const QUICK_FIX_KV_KEYS = [
 ];
 
 /**
- * The 21 keys that may be STORED workspace-wide through
+ * The 20 keys that may be STORED workspace-wide through
  * `bd kv workflow_session_defaults` (dotfiles `workflow-state.yaml
  * workspace_kv_defaults.allowed_keys`), in that contract's own order.
  *
@@ -180,16 +180,14 @@ export const QUICK_FIX_KV_KEYS = [
  * object therefore drops per key with a warning, never failing the layer.
  *
  * The list is NOT a subset of the per-bead list: it carries the route-scoped
- * {@link QUICK_FIX_KV_KEYS} profile, `base_sync_accept_local_commits`, and
- * `bdui_url` (`key_scoped`, `metadata_key: forbidden`). None of those seven is
+ * {@link QUICK_FIX_KV_KEYS} profile and `base_sync_accept_local_commits`
+ * (`key_scoped`, `metadata_key: forbidden`). None of those six is
  * a {@link GENERAL_PRESET_KEYS} member, so {@link presetKvKeysFor} leaves them
  * out of the general profile and a general preset apply preserves them.
  *
- * Those last two are also the only keys with no entry in
- * {@link sessionDefaultEnums}: the contract types `bdui_url` `enum: none` and
- * `base_sync_accept_local_commits` `type: bool`, so both are judged in
- * `server/session-defaults.js` — by FORMAT and by JSON type — rather than by
- * this table.
+ * The last key has no entry in {@link sessionDefaultEnums}: the contract types
+ * `base_sync_accept_local_commits` `type: bool`, so it is judged in
+ * `server/session-defaults.js` by JSON type rather than by this table.
  *
  * @type {ReadonlyArray<string>}
  */
@@ -197,8 +195,7 @@ export const WORKSPACE_KV_KEYS = [
   'workflow_mode',
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
   ...QUICK_FIX_KV_KEYS,
-  'base_sync_accept_local_commits',
-  'bdui_url'
+  'base_sync_accept_local_commits'
 ];
 
 /**

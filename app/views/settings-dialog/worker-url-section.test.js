@@ -24,7 +24,6 @@ function readReply(value = 'http://common:3000', revision = 'original', state) {
       status: 'ok',
       effective_url: value,
       source: value === null ? 'unset' : 'common',
-      workspace_override: null,
       common: {
         value,
         state: state ?? (value === null ? 'unset' : 'configured'),
@@ -96,6 +95,7 @@ describe('createWorkerUrlSection (UI-32oq §4.5)', () => {
     expect(el(host, '[data-worker-url-state]').textContent).toBe(
       'http://common:3000'
     );
+    expect(host.textContent).not.toContain('이 저장소의 예외');
   });
 
   test('shows an unset common value as 미설정', async () => {
@@ -122,7 +122,7 @@ describe('createWorkerUrlSection (UI-32oq §4.5)', () => {
   test('shows only the common-address resolver warnings', async () => {
     const reply = readReply();
     reply.worker_url.warnings = /** @type {any} */ ([
-      'workspace_invalid',
+      'unknown_warning',
       'common_unavailable'
     ]);
     const { host } = await mount(async () => reply);

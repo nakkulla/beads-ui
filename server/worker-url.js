@@ -5,13 +5,12 @@ import { execFile } from 'node:child_process';
  *
  * @param {string} file
  * @param {string[]} argv
- * @param {import('node:child_process').ExecFileOptions & { input?: string }} options
+ * @param {import('node:child_process').ExecFileOptions} options
  * @returns {Promise<{stdout: string}>}
  */
 function runHelper(file, argv, options) {
   return new Promise((resolve, reject) => {
-    const { input, ...exec_options } = options;
-    const child = execFile(file, argv, exec_options, (error, stdout) => {
+    const child = execFile(file, argv, options, (error, stdout) => {
       if (error) {
         reject(Object.assign(error, { stdout }));
       } else {
@@ -20,7 +19,7 @@ function runHelper(file, argv, options) {
     });
     // A process exiting before consuming stdin is handled by execFile's result.
     child.stdin?.on('error', () => {});
-    child.stdin?.end(input);
+    child.stdin?.end();
   });
 }
 
@@ -51,16 +50,14 @@ function unavailable(code = 'helper_unavailable') {
 /**
  * @param {string[]} argv
  * @param {typeof runHelper} run
- * @param {string} [input]
  * @returns {Promise<any>}
  */
-async function invoke(argv, run, input) {
+async function invoke(argv, run) {
   try {
     const result = await run('worker-url', argv, {
       timeout: 12000,
       maxBuffer: 1024 * 1024,
-      encoding: 'utf8',
-      input
+      encoding: 'utf8'
     });
     const parsed = JSON.parse(result.stdout);
     return parsed?.schema === 1 ? parsed : null;
@@ -78,33 +75,26 @@ async function invoke(argv, run, input) {
 }
 
 /**
- * @param {{ root: string, workspace: Record<string, unknown> }} input
+ * @param {{ root: string }} input
  * @param {typeof runHelper} [run]
  */
-export async function resolveWorkerUrl({ root, workspace }, run = runHelper) {
-  const result = await invoke(
-    ['resolve', '--root', root, '--workspace-json-stdin', '--json'],
-    run,
-    JSON.stringify(workspace)
-  );
+export async function resolveWorkerUrl({ root }, run = runHelper) {
+  const result = await invoke(['resolve', '--root', root, '--json'], run);
   if (
     !result ||
     result.error ||
     !nullableString(result.effective_url) ||
-    !['workspace', 'common', 'unset'].includes(result.source) ||
-    !nullableString(result.workspace_override) ||
+    !['common', 'unset'].includes(result.source) ||
     !validCommon(result.common) ||
     !Array.isArray(result.warnings)
   ) {
     return unavailable();
   }
-  const { effective_url, source, workspace_override, common, warnings } =
-    result;
+  const { effective_url, source, common, warnings } = result;
   return {
     status: 'ok',
     effective_url,
     source,
-    workspace_override,
     common,
     warnings
   };

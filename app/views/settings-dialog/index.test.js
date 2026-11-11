@@ -753,7 +753,6 @@ describe('createSettingsDialog target (UI-32oq §4.4)', () => {
                 status: 'ok',
                 effective_url: 'http://common:3000',
                 source: 'common',
-                workspace_override: null,
                 common: {
                   value: 'http://common:3000',
                   state: 'configured',
@@ -1263,18 +1262,13 @@ describe('createSettingsDialog 저장소 tab (UI-f2sy §7, UI-32oq §4.5)', () =
     expect(root.querySelector('[data-seam="stored-only"]')).toBe(null);
   });
 
-  test('shows a stored Worker address exception read-only with 지우기', async () => {
+  test('omits the obsolete Worker address exception row', async () => {
     const { root } = await openRepoTab({
       transport: kvTransport({ bdui_url: 'http://exception:3000' })
     });
 
-    const line = root.querySelector('[data-stored-only="bdui_url"]');
-
-    expect([
-      line?.querySelector('[data-stored-only-value]')?.textContent?.trim(),
-      line?.querySelector('input'),
-      line?.querySelector('[data-stored-only-clear]')?.className
-    ]).toEqual(['http://exception:3000', null, 'op-btn']);
+    expect(root.querySelector('[data-stored-only="bdui_url"]')).toBe(null);
+    expect(root.textContent).not.toContain('Worker 주소 예외');
   });
 
   test('shows a stored workflow mode read-only', async () => {
@@ -1292,28 +1286,30 @@ describe('createSettingsDialog 저장소 tab (UI-f2sy §7, UI-32oq §4.5)', () =
   });
 
   test('clears a stored value with 지우기 and drops its line', async () => {
-    const transport = kvTransport({ bdui_url: 'http://exception:3000' });
+    const transport = kvTransport({ workflow_mode: 'fast_track' });
     const { root } = await openRepoTab({ transport });
 
     /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-stored-only-clear="bdui_url"]')
+      root.querySelector('[data-stored-only-clear="workflow_mode"]')
     ).click();
     await settle();
 
     expect(payloadsOf(transport, 'set-session-defaults')).toEqual([
-      { values: { bdui_url: null }, root_dir: REPO_B }
+      { values: { workflow_mode: null }, root_dir: REPO_B }
     ]);
     expect(root.querySelector('[data-seam="stored-only"]')).toBe(null);
   });
 
   test('shows a stored value the server refused as 형식 오류', async () => {
     const { root } = await openRepoTab({
-      transport: kvTransport({}, ['invalid_value:bdui_url'])
+      transport: kvTransport({}, ['invalid_value:workflow_mode'])
     });
 
     expect(
       root
-        .querySelector('[data-stored-only="bdui_url"] [data-stored-only-value]')
+        .querySelector(
+          '[data-stored-only="workflow_mode"] [data-stored-only-value]'
+        )
         ?.textContent?.trim()
     ).toBe('형식 오류');
   });
@@ -1703,7 +1699,7 @@ describe('createSettingsDialog 실행 tab session defaults', () => {
 
   test('draws no mode row and no Worker address input', async () => {
     const { root, dialog } = mount({
-      values: { workflow_mode: 'fast_track', bdui_url: 'http://x:3000' }
+      values: { workflow_mode: 'fast_track' }
     });
     dialog.open();
     await settle();

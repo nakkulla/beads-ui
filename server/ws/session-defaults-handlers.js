@@ -146,22 +146,9 @@ function workerUnavailable(code) {
 
 /**
  * @param {string} root
- * @param {Awaited<ReturnType<typeof readSessionDefaults>>} read
  */
-async function resolveSnapshot(root, read) {
-  if (
-    !read.ok ||
-    (read.found !== false && (read.raw === undefined || read.warning))
-  ) {
-    return workerUnavailable('workspace_unavailable');
-  }
-  const result = await resolveWorkerUrl({
-    root,
-    workspace:
-      read.found === false
-        ? {}
-        : /** @type {Record<string, unknown>} */ (read.raw)
-  });
+async function resolveSnapshot(root) {
+  const result = await resolveWorkerUrl({ root });
   return result.status === 'ok'
     ? result
     : workerUnavailable('helper_unavailable');
@@ -196,7 +183,7 @@ export async function handleGetSessionDefaults(ws, req) {
       makeOk(req, {
         values: read.values,
         warnings: read.warnings,
-        worker_url: await resolveSnapshot(target.root, read)
+        worker_url: await resolveSnapshot(target.root)
       })
     )
   );
@@ -342,7 +329,7 @@ export async function handleSetSessionDefaults(ws, req) {
       makeOk(req, {
         values: after.values,
         warnings: after.warnings,
-        worker_url: await resolveSnapshot(target.root, after)
+        worker_url: await resolveSnapshot(target.root)
       })
     )
   );
@@ -387,16 +374,12 @@ export async function handleSetWorkerUrlCommon(ws, req) {
     );
     return;
   }
-  const read = await readSessionDefaults(ws, {
-    root: target.root,
-    explicit: true
-  });
   ws.send(
     JSON.stringify(
       makeOk(req, {
         common_saved: true,
         common: saved.common,
-        worker_url: await resolveSnapshot(target.root, read)
+        worker_url: await resolveSnapshot(target.root)
       })
     )
   );
