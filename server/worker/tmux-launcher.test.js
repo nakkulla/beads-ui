@@ -254,8 +254,13 @@ describe('tmux interactive session inspection and exit', () => {
 
   test.each([
     ['earlier\n ❯ \n   \n', '❯'],
+    ['❯\nmodel: Opus\nContext: 12%\nsid: abc\n⏵⏵ auto mode on\n', '❯'],
+    ['❯ draft\nmodel: Opus\n⏵⏵ auto mode on\n', '❯ draft'],
+    ['❯ earlier\noutput\n❯\ncustom status\n', '❯'],
+    ['❯\noutput\n❯ draft\ncustom status\n', '❯ draft'],
+    ['Working...\ncustom status\n', null],
     ['\n \n', null]
-  ])('captures the last nonblank line from %j', async (stdout, expected) => {
+  ])('captures the last Claude prompt from %j', async (stdout, expected) => {
     const runTmux = vi.fn(async () => ({
       code: 0,
       stdout: /** @type {string} */ (stdout),

@@ -63,7 +63,8 @@ import {
   EXTERNAL_RESUME_PANE_MARKER,
   INQUIRY_PANE_MARKER,
   RESOLVE_PANE_MARKER,
-  SESSION_LANE_PANE_MARKER
+  SESSION_LANE_PANE_MARKER,
+  createTmuxLauncher
 } from './tmux-launcher.js';
 import { createUsageStore } from './usage-store.js';
 import { createVerifier } from './verify.js';
@@ -625,6 +626,31 @@ describe('interactive session reconciliation', () => {
         exit_requested_at: 1000
       });
       expect(h.launcher.killWindow).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(['', 'draft'])(
+    'checks Claude input %j above status lines before exiting',
+    async (input) => {
+      const h = interactiveFixture({ settled_at: 1 });
+      const launcher = createTmuxLauncher({
+        runTmux: async () => ({
+          code: 0,
+          stdout: `❯ ${input}\nmodel: Opus\nContext: 12%\nsid: abc\n⏵⏵ auto mode on\n`,
+          stderr: ''
+        })
+      });
+      h.launcher.capturePaneTail.mockImplementation(launcher.capturePaneTail);
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      if (input === '') {
+        expect(h.launcher.sendExit).toHaveBeenCalledExactlyOnceWith('%1');
+        expect(h.current().state).toBe('exiting');
+      } else {
+        expect(h.launcher.sendExit).not.toHaveBeenCalled();
+        expect(h.current()).toMatchObject({ state: 'live', defer_since: 1000 });
+      }
     }
   );
 

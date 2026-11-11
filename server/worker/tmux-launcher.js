@@ -536,7 +536,7 @@ export function createTmuxLauncher(deps = {}) {
   }
 
   /**
-   * Capture the last nonblank pane line for the caller's idle judgment.
+   * Capture the last Claude prompt, ignoring the status lines below it.
    *
    * @param {string} pane_id
    */
@@ -551,7 +551,7 @@ export function createTmuxLauncher(deps = {}) {
         result.stdout
           .split('\n')
           .map((line) => line.trim())
-          .filter(Boolean)
+          .filter((line) => line.startsWith('❯'))
           .at(-1) ?? null
     };
   }
