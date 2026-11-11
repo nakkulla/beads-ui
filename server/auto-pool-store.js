@@ -259,8 +259,10 @@ export function validateAutoPoolRuntimes(raw, implementation) {
   const runtimes = {};
   for (const [runtime, entry] of Object.entries(raw)) {
     if (
-      !/** @type {ReadonlyArray<string>} */ (AUTO_POOL_RUNTIMES).includes(
-        runtime
+      !(
+        /** @type {ReadonlyArray<string>} */ (AUTO_POOL_RUNTIMES).includes(
+          runtime
+        )
       )
     ) {
       return { ok: false, code: 'invalid_auto_pool', runtime: null };
