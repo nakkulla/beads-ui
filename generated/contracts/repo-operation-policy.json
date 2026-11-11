@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "worker_automatic": [
     "owned_deploy_worktree_fetch_detached_alignment_recreate",
     "recovered_pre_execution_fetch_timeout_retry_once",
@@ -21,7 +21,11 @@
     "successor_exit_75": "becomes_new_tip",
     "successor_other_exit": "ordinary_classification",
     "after_deadline": "stop_then_human_exit",
-    "manual_deploy_without_bead": "classification_only_no_recheck"
+    "manual_deploy_without_bead": "classification_only_no_recheck",
+    "early_diagnosis": {
+      "at": "second_exit_75_in_chain",
+      "once_per": "chain"
+    }
   },
   "resolution_ladder": [
     {

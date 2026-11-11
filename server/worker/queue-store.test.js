@@ -44,6 +44,25 @@ let tmp_state;
 const WS = '/tmp/example-workspace/project-a';
 
 describe('interactive session persistence', () => {
+  test('retains a fix-wait identity and spent state after cold load', () => {
+    const store = createQueueStore();
+    const wait = {
+      bead_id: 'dotfiles-fix',
+      rig: '/tmp/foreign-rig',
+      entered_at: 1000,
+      failure_identity: '012345abcdef',
+      state: /** @type {const} */ ('rerunning'),
+      chain_head: null,
+      attempt_id: null,
+      exhausted_reason: null,
+      used_identities: ['012345abcdef']
+    };
+    store.recordFixWait(WS, 'B1', wait);
+
+    const queue = createQueueStore().load(WS);
+
+    expect(queue.fix_waits.B1).toEqual(wait);
+  });
   /** @param {Record<string, unknown>} [patch] */
   function record(patch = {}) {
     return {

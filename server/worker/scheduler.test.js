@@ -55,6 +55,7 @@ import {
   codexSessionsRoot,
   delegationMonitorDir,
   guardHookDir,
+  queueFilePath,
   usageReceiptInboxDir
 } from './state-paths.js';
 import {
@@ -86,6 +87,39 @@ vi.mock('./foreign-blocker-status.js', async (importOriginal) => {
 });
 
 const WS = '/tmp/example-workspace/project-a';
+
+const fix_query_seam = vi.hoisted(() => ({
+  /** @type {null|string[]} */ roots: null,
+  /** @type {null|((family: string, args: string[], options: any) => Promise<any>)} */ run: null
+}));
+vi.mock('../registry-watcher.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    getAvailableWorkspaces: () =>
+      fix_query_seam.roots
+        ? fix_query_seam.roots.map((root) => ({ path: root }))
+        : actual.getAvailableWorkspaces()
+  };
+});
+vi.mock('../bd.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    runBdJsonProjected: (
+      /** @type {string} */ family,
+      /** @type {string[]} */ args,
+      /** @type {any} */ options
+    ) =>
+      fix_query_seam.run
+        ? fix_query_seam.run(family, args, options)
+        : actual.runBdJsonProjected(family, args, options)
+  };
+});
+afterEach(() => {
+  fix_query_seam.roots = null;
+  fix_query_seam.run = null;
+});
 
 describe('interactive session reconciliation', () => {
   /** @param {Record<string, any>} [patch] */
@@ -2660,6 +2694,102 @@ describe('same-session conversation return (UI-nuwy)', () => {
   const PARK_VALUE = 'impl_review_conflict:design';
   const STALE_VALUE = 'plan_approval_stale:revise';
 
+  test('accepts a fix wait only from a no-progress stop conversation', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior, {
+      conversation: { stop: '멈춤 recovery:no_progress' }
+    });
+    say(env, '수정 대기 · UI-fix — outside-session defect');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits.S1).toMatchObject({
+      bead_id: 'UI-fix',
+      attempt_id: prior.attempt_id,
+      state: 'waiting'
+    });
+  });
+
+  test.each(['inquiry', 'external_resume'])(
+    'ignores a fix wait from an ineligible %s conversation',
+    async (kind) => {
+      const env = conversationEnv({
+        kind: /** @type {'inquiry'|'external_resume'} */ (kind)
+      });
+      const prior = await stopForConversation(env);
+      openConversation(env, prior);
+      say(env, '수정 대기 · UI-fix — outside-session defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.store.snapshot(WS).fix_waits.S1).toBeUndefined();
+    }
+  );
+
+  test('resumes a no-progress session once after its prerequisite fix lands', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior, {
+      conversation: { stop: '멈춤 recovery:no_progress' }
+    });
+    say(env, '수정 대기 · UI-fix — prerequisite defect');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const sha = 'c'.repeat(40);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'fix', bead_id: 'UI-fix' }
+    });
+    env.store.moveToPrWait(WS, {
+      bead_id: 'UI-fix',
+      attempt_id: 'fix',
+      patch: { status: 'done' }
+    });
+    env.store.setCleanupCursor(WS, {
+      bead_id: 'UI-fix',
+      cursor: 'base_containment',
+      merge_sha: sha
+    });
+    env.store.moveToDone(WS, { bead_id: 'UI-fix' });
+    env.store.ensureRepoOperation(WS, {
+      operation_id: 'fix-deploy',
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-fix', merged_sha: sha }],
+      effective_base_sha: sha,
+      target_base: 'main',
+      target_sha: sha,
+      script_mode: '100755',
+      script_blob_sha: sha
+    });
+    const deploy = env.store.snapshot(WS).repo_operations['fix-deploy'];
+    env.store.settleRepoOperation(WS, {
+      operation_id: 'fix-deploy',
+      attempt_id: deploy.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    const readIssue = env.bd.readIssue;
+    env.bd.readIssue = async (id) =>
+      id === 'UI-fix'
+        ? { id, status: 'closed', close_reason: 'merged' }
+        : readIssue(id);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits.S1).toMatchObject({
+      state: 'rerunning',
+      exhausted_reason: null
+    });
+    expect(
+      Object.values(env.store.snapshot(WS).attempts).filter(
+        (row) => row.resumed_from === prior.attempt_id
+      )
+    ).toHaveLength(1);
+  });
+
   /**
    * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any, kind?: 'inquiry'|'resolve'|'external_resume', provider?: 'claude'|'codex' }} [options]
    */
@@ -4049,6 +4179,296 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
 
   /** @param {ReturnType<typeof failureEnv>} env */
   const record = (env) => env.real.snapshot(WS).interactive_sessions[KEY];
+
+  test('accepts a fix wait without a user answer from a failure conversation', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '수정 대기 · UI-fix — job defect');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits?.F1).toMatchObject({
+      bead_id: 'UI-fix',
+      rig: WS,
+      state: 'waiting',
+      entered_at: 1000
+    });
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+  });
+
+  test('closes an early diagnosis hold without a user answer', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, {
+      conversation: {
+        stop: '실패 배포 실패 · condition_wait',
+        early_diagnosis: true
+      }
+    });
+    say(env, '나중에 · 조건 대기 — next recheck');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(record(env).conversation?.result?.kind).toBe('hold');
+    expect(env.launcher.sendExit).toHaveBeenCalledTimes(1);
+    expect(env.real.snapshot(WS).cleanup_failed.F1).toBeDefined();
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['refuted: not a defect', false, '착지 없이 닫힘'],
+    ['no-delta: already fixed', false, '착지 없이 닫힘'],
+    ['merged', false, '착지 확인 불가'],
+    ['merged', true, '착지 없이 닫힘']
+  ])(
+    'returns a closed fix to the human exit for %s',
+    async (close_reason, discarded, exhausted_reason) => {
+      const env = failureEnv({
+        patch: () =>
+          discarded
+            ? { discard_operations: { fix: { bead_id: 'UI-fix' } } }
+            : {}
+      });
+      openFailureConversation(env);
+      say(env, '수정 대기 · UI-fix — job defect');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      const readIssue = env.bd.readIssue;
+      env.bd.readIssue = /** @type {any} */ (
+        async (/** @type {string} */ id) =>
+          id === 'UI-fix'
+            ? { id, status: 'closed', close_reason }
+            : readIssue(id)
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.store.snapshot(WS).fix_waits.F1).toMatchObject({
+        state: 'exhausted',
+        exhausted_reason
+      });
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    }
+  );
+
+  test('waits another tick when a fix cannot be read', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '수정 대기 · UI-fix — job defect');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.bd.readIssue = async () => {
+      throw new Error('unreadable');
+    };
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits.F1.state).toBe('waiting');
+  });
+
+  test('exhausts a fix wait at 48 hours', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '수정 대기 · UI-fix — job defect');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.setTime(1000 + 48 * 3600000);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits.F1).toMatchObject({
+      state: 'exhausted',
+      exhausted_reason: '48시간 초과'
+    });
+  });
+
+  test('reruns a landed and deployed fix once', async () => {
+    const sha = 'a'.repeat(40);
+    const env = failureEnv({
+      patch: () => ({
+        done: [{ bead_id: 'UI-fix', merged_sha: sha }],
+        repo_operations: {
+          deploy: { kind: 'deploy', state: 'succeeded', target_sha: sha }
+        }
+      })
+    });
+    openFailureConversation(env);
+    say(env, '수정 대기 · UI-fix — job defect');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const readIssue = env.bd.readIssue;
+    env.bd.readIssue = /** @type {any} */ (
+      async (/** @type {string} */ id) =>
+        id === 'UI-fix'
+          ? { id, status: 'closed', close_reason: 'merged' }
+          : readIssue(id)
+    );
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryCleanup).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).fix_waits.F1.state).toBe('passed');
+    expect(env.notify.conversationResumed).not.toHaveBeenCalled();
+  });
+
+  test('uses the foreign rig queue as landing evidence', async () => {
+    const rig = fs.mkdtempSync(path.join(os.tmpdir(), 'foreign-fix-'));
+    const sha = 'c'.repeat(40);
+    let closed = false;
+    const env = failureEnv();
+    const readIssue = env.bd.readIssue;
+    env.bd.readIssue = async (id) => {
+      if (id.startsWith('dotfiles-')) {
+        throw new Error('foreign id');
+      }
+      return readIssue(id);
+    };
+    fix_query_seam.roots = [WS, rig];
+    fix_query_seam.run = async (family) =>
+      family === 'config'
+        ? { ok: true, data: { issue_prefix: 'dotfiles' } }
+        : {
+            ok: true,
+            data: {
+              id: 'dotfiles-fix',
+              status: closed ? 'closed' : 'open',
+              close_reason: closed ? 'merged' : null
+            }
+          };
+    const file = queueFilePath(rig);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        done: [{ bead_id: 'dotfiles-fix', merged_sha: sha }],
+        repo_operations: {
+          deploy: { kind: 'deploy', state: 'succeeded', target_sha: sha }
+        }
+      })
+    );
+    try {
+      openFailureConversation(env);
+      say(env, '수정 대기 · dotfiles-fix — foreign deploy defect');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      expect(env.store.snapshot(WS).fix_waits.F1.rig).toBe(rig);
+      closed = true;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryCleanup).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(rig, { recursive: true, force: true });
+    }
+  });
+
+  test('ends fix wait after a human retry passes without a second rerun', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '수정 대기 · UI-fix — job defect');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.real.clearCleanupFailure(WS, 'F1');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits.F1.state).toBe('passed');
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+  });
+
+  test('keeps a landed fix waiting while a human retry runs', async () => {
+    const sha = 'a'.repeat(40);
+    let human_running = false;
+    const env = failureEnv({
+      patch: () => ({
+        done: [{ bead_id: 'UI-fix', merged_sha: sha }],
+        repo_operations: {
+          deploy: { kind: 'deploy', state: 'succeeded', target_sha: sha }
+        },
+        ...(human_running
+          ? { attempts: { human: { bead_id: 'F1', status: 'running' } } }
+          : {})
+      })
+    });
+    openFailureConversation(env);
+    say(env, '수정 대기 · UI-fix — job defect');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    human_running = true;
+    env.bd.readIssue = async () => ({
+      id: 'UI-fix',
+      status: 'closed',
+      close_reason: 'merged'
+    });
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits.F1.state).toBe('waiting');
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+  });
+
+  test('rejects a second fix wait for the same failure', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    say(env, '수정 대기 · UI-fix — job defect');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const wait = env.store.snapshot(WS).fix_waits.F1;
+    env.store.recordFixWait(WS, 'F1', {
+      ...wait,
+      state: 'exhausted',
+      exhausted_reason: 'same failure'
+    });
+    env.real.removeInteractiveSession(WS, KEY);
+    openFailureConversation(env, { launched_at: 950 });
+    say(env, '수정 대기 · UI-fix2 — same job defect', 980);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits.F1.bead_id).toBe('UI-fix');
+    expect(record(env).conversation?.result).toBeNull();
+  });
+
+  test('keeps an unresolvable fix id out of conversation results', async () => {
+    const env = failureEnv();
+    openFailureConversation(env);
+    env.bd.readIssue = async () => {
+      throw new Error('missing');
+    };
+    say(env, '수정 대기 · missing-abc — unknown rig');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits.F1).toBeUndefined();
+    expect(record(env).conversation?.result).toBeNull();
+  });
+
+  test('returns the same failure after rerun to the human exit', async () => {
+    const sha = 'a'.repeat(40);
+    const env = failureEnv({
+      patch: () => ({
+        done: [{ bead_id: 'UI-fix', merged_sha: sha }],
+        repo_operations: {
+          deploy: { kind: 'deploy', state: 'succeeded', target_sha: sha }
+        }
+      }),
+      exits: { retryCleanup: vi.fn(async () => ({ ok: true })) }
+    });
+    openFailureConversation(env);
+    say(env, '수정 대기 · UI-fix — job defect');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const readIssue = env.bd.readIssue;
+    env.bd.readIssue = /** @type {any} */ (
+      async (/** @type {string} */ id) =>
+        id === 'UI-fix'
+          ? { id, status: 'closed', close_reason: 'merged' }
+          : readIssue(id)
+    );
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryCleanup).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).fix_waits.F1).toMatchObject({
+      state: 'exhausted',
+      exhausted_reason: '같은 실패 재발'
+    });
+  });
 
   /**
    * A handoff reservation as the result-line pass writes it.
@@ -38186,6 +38606,103 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
       attempt_id: 'quickfix-wait',
       bead_id: 'S1',
       target_base: 'main'
+    });
+  });
+
+  test('keeps condition rechecks running beyond the original deadline during fix wait', async () => {
+    const clock = { now: 50_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+    env.store.recordFixWait(WS, 'S1', {
+      bead_id: 'UI-fix',
+      rig: WS,
+      entered_at: clock.now,
+      failure_identity: 'test-failure',
+      state: 'waiting',
+      chain_head: 'head',
+      attempt_id: 'quickfix-wait',
+      exhausted_reason: null,
+      used_identities: ['test-failure']
+    });
+    clock.now += 25 * 3600000;
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.settle).toHaveBeenCalledTimes(1);
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+  });
+
+  test('reruns a condition-wait step immediately after its fix lands', async () => {
+    const clock = { now: 50_001 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+    const sha = 'c'.repeat(40);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'fix', bead_id: 'UI-fix' }
+    });
+    env.store.moveToPrWait(WS, {
+      bead_id: 'UI-fix',
+      attempt_id: 'fix',
+      patch: { status: 'done' }
+    });
+    env.store.setCleanupCursor(WS, {
+      bead_id: 'UI-fix',
+      cursor: 'base_containment',
+      merge_sha: sha
+    });
+    env.store.moveToDone(WS, { bead_id: 'UI-fix' });
+    env.store.ensureRepoOperation(WS, {
+      operation_id: 'fix-deploy',
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-fix', merged_sha: sha }],
+      effective_base_sha: sha,
+      target_base: 'main',
+      target_sha: sha,
+      script_mode: '100755',
+      script_blob_sha: sha
+    });
+    const deploy = env.store.snapshot(WS).repo_operations['fix-deploy'];
+    env.store.settleRepoOperation(WS, {
+      operation_id: 'fix-deploy',
+      attempt_id: deploy.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    env.bd.readIssue = async () => ({
+      id: 'UI-fix',
+      status: 'closed',
+      close_reason: 'merged'
+    });
+    env.store.recordFixWait(WS, 'S1', {
+      bead_id: 'UI-fix',
+      rig: WS,
+      entered_at: 50_000,
+      failure_identity: 'test-failure',
+      state: 'waiting',
+      chain_head: 'head',
+      attempt_id: 'quickfix-wait',
+      exhausted_reason: null,
+      used_identities: ['test-failure']
+    });
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await settleRecheck();
+
+    expect(env.store.snapshot(WS).fix_waits.S1).toMatchObject({
+      state: 'rerunning'
+    });
+    expect(env.settle).toHaveBeenCalledWith({
+      attempt_id: 'quickfix-wait',
+      bead_id: 'S1',
+      target_base: 'main',
+      job_retry: true
     });
   });
 

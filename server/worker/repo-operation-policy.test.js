@@ -5,6 +5,7 @@ import {
   REPO_OPERATION_POLICY_PATH,
   classifyRepoOperationFailure,
   conditionWaitPolicy,
+  failureSelfRepairEnabled,
   loadRepoOperationPolicy,
   projectRepoOperationPolicy
 } from './repo-operation-policy.js';
@@ -14,11 +15,11 @@ import {
  * copy without re-pinning here (or re-pinning without the approved artifact)
  * fails the contract, which is the whole point of the pin.
  */
-const APPROVED_SOURCE_COMMIT = 'f374b4dff4f839342bb988a859e6e8330b5bdcf2';
-const APPROVED_BLOB = '322c0ce824b84aeec5726a4ac7273769175dc617';
-const APPROVED_BYTES = 3605;
+const APPROVED_SOURCE_COMMIT = '0b75f47718a394bc507a2b9c09833cb69af061cc';
+const APPROVED_BLOB = 'cd2270679da50d9de19c7a63f37dd01678fde2bd';
+const APPROVED_BYTES = 3702;
 const APPROVED_DIGEST =
-  '093695ccbada88386e913d8093e36ad8eedbcc87166c4438af44273e070ebce9';
+  '8c877770cb7c65cf90fc40d87986fb9f311e2a5c76ae63cba3b2ae37ff657491';
 
 /**
  * The pinned artifact as the schema-4 pin read before dotfiles-rnyd9: no
@@ -159,10 +160,17 @@ describe('pinned repo-operation policy contract', () => {
     expect(loaded.supported).toBe(false);
   });
 
-  test('marks the pinned schema 5 artifact supported', () => {
+  test('marks the pinned schema 6 artifact supported', () => {
     const loaded = loadRepoOperationPolicy();
 
-    expect([loaded.policy.schema_version, loaded.supported]).toEqual([5, true]);
+    expect([loaded.policy.schema_version, loaded.supported]).toEqual([6, true]);
+  });
+
+  test('keeps early diagnosis disabled under a schema 5 pin', () => {
+    expect(
+      failureSelfRepairEnabled({ fs: /** @type {any} */ (pinnedAt(5)) })
+    ).toBe(false);
+    expect(failureSelfRepairEnabled()).toBe(true);
   });
 
   test('reads the condition-wait interval and deadline from the pin', () => {
@@ -377,7 +385,7 @@ describe('pinned repo-operation policy contract', () => {
     expect(loaded.supported).toBe(true);
   });
 
-  test.each([1, 2, 3, 6, 7])(
+  test.each([1, 2, 3, 7])(
     'marks schema version %s unsupported',
     (schema_version) => {
       const loaded = loadRepoOperationPolicy({

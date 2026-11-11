@@ -13,6 +13,7 @@ import {
 } from './external-wait/takeover.js';
 import { conditionWaitPolicy } from './repo-operation-policy.js';
 import {
+  FIX_WAIT_LIMIT_MS,
   conditionWaitSchedule,
   conditionWaitState
 } from './resolution-ladder.js';
@@ -1191,6 +1192,29 @@ export function judgeWaitReasons(input) {
         payload: { inquiry_id: row.id }
       });
     }
+    wait_reasons.push(result);
+  }
+  for (const [bead_id, wait] of Object.entries(queue.fix_waits || {})) {
+    if (!['waiting', 'rerunning'].includes(wait.state)) {
+      continue;
+    }
+    for (let index = wait_reasons.length - 1; index >= 0; index -= 1) {
+      if (wait_reasons[index].subject.bead_id === bead_id) {
+        wait_reasons.splice(index, 1);
+      }
+    }
+    const remaining = Math.max(
+      0,
+      Math.ceil((wait.entered_at + FIX_WAIT_LIMIT_MS - now) / 60000)
+    );
+    const result = reason(
+      'recovery',
+      bead_id,
+      root_dir,
+      `수정 대기 · ${wait.bead_id}`,
+      `48시간 상한까지 ${Math.floor(remaining / 60)}시간 ${remaining % 60}분`
+    );
+    addClocks(result, { since: wait.entered_at });
     wait_reasons.push(result);
   }
   // 자동 진행 꺼짐(`queue.auto_advance === false`)은 사유를 내지 않는다

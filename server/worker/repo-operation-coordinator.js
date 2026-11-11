@@ -29,6 +29,7 @@ import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import { lastAttemptOutput } from './repo-operation-log.js';
 import {
   conditionWaitPolicy,
+  failureSelfRepairEnabled,
   repoOperationPolicySupported
 } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
@@ -87,7 +88,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string, owner?: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null, notify?: { needsHuman: (input: any) => Promise<void>, conditionWaitEntered?: (input: { bead_id: string, summary?: string|null, release: string, repo?: string|null }) => Promise<void> }|null, comment?: (bead_id: string, text: string) => Promise<void>, failureConversation?: { launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void>, relocate?: (input: { repo: string, from: string, to: string, owner?: string }) => Promise<{ ok: boolean, path?: string }> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null, notify?: { needsHuman: (input: any) => Promise<void>, conditionWaitEntered?: (input: { bead_id: string, summary?: string|null, release: string, repo?: string|null }) => Promise<void> }|null, comment?: (bead_id: string, text: string) => Promise<void>, failureSelfRepairEnabled?: () => boolean, failureConversation?: { autoLaunchEnabled?: () => boolean, launchForBead?: (input: { workspace: string, repo: string, bead_id: string, early_diagnosis?: string }) => Promise<any>, launchForRepoOperation: (input: { workspace: string, repo: string, operation_id: string }) => Promise<any> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -904,9 +905,58 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
-   * Whether a settled `condition_wait` record continues a chain that already
-   * met the condition: an earlier record reached through `retry_of` is a
-   * `condition_wait` too, so this one is the same wait (dotfiles-rnyd9).
+   * Claim one early diagnosis independently of the deadline conversation.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   */
+  async function diagnoseConditionWait(workspace, operation_id) {
+    const launcher = failure_conversation;
+    if (
+      !(deps.failureSelfRepairEnabled || failureSelfRepairEnabled)() ||
+      !launcher?.autoLaunchEnabled?.() ||
+      !launcher.launchForBead
+    ) {
+      return;
+    }
+    const queue = deps.store.snapshot(workspace);
+    const schedule = conditionWaitSchedule(
+      queue.repo_operations,
+      operation_id,
+      conditionWait()
+    );
+    if (!schedule || schedule.head_id === operation_id) {
+      return;
+    }
+    const bead_id = queue.repo_operations[operation_id].subjects.find(
+      (subject) => subject.bead_id !== 'manual'
+    )?.bead_id;
+    if (
+      !bead_id ||
+      Object.values(queue.interactive_sessions).some(
+        (row) =>
+          row.bead_id === bead_id &&
+          row.settled_at === null &&
+          ['live', 'exiting'].includes(row.state)
+      ) ||
+      !deps.store.claimEarlyDiagnosis(workspace, schedule.head_id).ok
+    ) {
+      return;
+    }
+    try {
+      await launcher.launchForBead({
+        workspace,
+        repo: deps.repo,
+        bead_id,
+        early_diagnosis: operation_id
+      });
+    } catch (err) {
+      log('early diagnosis launch failed: %o', err);
+    }
+  }
+
+  /**
+   * Whether this settled record repeats an earlier condition in the chain.
    *
    * @param {string} operation_id
    * @returns {boolean}
@@ -1100,6 +1150,7 @@ export function createRepoOperationCoordinator(deps) {
     });
     if (condition_wait) {
       announceConditionWait(workspace, operation_id);
+      await diagnoseConditionWait(workspace, operation_id);
     }
     recordOperationFailure(current, operation_id, failure, evidence.summary);
     await sweepDescendantCoverage(workspace, operation_id);

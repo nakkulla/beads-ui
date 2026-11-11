@@ -123,6 +123,76 @@ function collect(carry = []) {
   );
 }
 
+test('counts a self-resolved condition-wait chain once as transient', async () => {
+  const operation = {
+    kind: 'deploy',
+    repo_id: roots[0],
+    script_path: 'repo-ops/script/deploy',
+    state: 'failed',
+    failure: { code: 'condition_wait', summary: 'resource busy' },
+    finished_at: START + 1000,
+    subjects: [{ bead_id: 'UI-a' }]
+  };
+  writeJson(queueFilePath(roots[0]), {
+    repo_operations: {
+      first: { ...operation, superseded_by: 'second' },
+      second: { ...operation, retry_of: 'first', superseded_by: 'passed' },
+      passed: {
+        ...operation,
+        state: 'succeeded',
+        retry_of: 'second',
+        finished_at: START + 2000
+      }
+    }
+  });
+  event(roots[0], 'UI-a', 'unused', {
+    kind: 'operation_failed',
+    seq: 'first',
+    summary: '배포 조건 대기 — condition_wait'
+  });
+  event(roots[0], 'UI-a', 'unused', {
+    kind: 'operation_failed',
+    seq: 'second',
+    at: START + 1500,
+    summary: '배포 조건 대기 — condition_wait'
+  });
+
+  const result = await collect();
+
+  expect(result.fingerprints).toHaveLength(1);
+  expect(result.fingerprints[0]).toMatchObject({
+    kind: 'operation_failed',
+    count: 1,
+    transient: true
+  });
+  expect(result.fingerprints[0].fp).toMatch(/^[a-f0-9]{12}$/);
+});
+
+test('counts a deadline attempt event with its condition-wait chain', async () => {
+  writeJson(queueFilePath(roots[0]), {
+    repo_operations: {
+      first: {
+        kind: 'deploy',
+        state: 'failed',
+        failure: { code: 'condition_wait', summary: 'busy' },
+        subjects: [{ bead_id: 'UI-a' }],
+        finished_at: START + 1000,
+        failure_notice: { consumed_at: START + 2000 }
+      }
+    }
+  });
+  attempt(roots[0], 'UI-a', 'landing', {
+    cause: 'quickfix_landing_failed:condition_wait'
+  });
+  event(roots[0], 'UI-a', 'unused', { kind: 'operation_failed', seq: 'first' });
+  event(roots[0], 'UI-a', 'landing', { at: START + 2000 });
+
+  const result = await collect();
+
+  expect(result.fingerprints).toHaveLength(1);
+  expect(result.fingerprints[0]).toMatchObject({ count: 1, transient: false });
+});
+
 test('groups two cause segments across workspaces and keeps distinct bead identities', async () => {
   attempt(roots[0], 'UI-a', 'first');
   attempt(roots[1], 'UI-a', 'second', { cause: 'verify_failed:tests:exit_2' });

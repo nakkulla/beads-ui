@@ -10,6 +10,7 @@ import path from 'node:path';
 import { runBdJsonProjected } from '../bd.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { classifyFailure } from './failure-class.js';
+import { operationIncidentFingerprint } from './resolution-ladder.js';
 import {
   attemptRecordPath,
   beadTimelinePath,
@@ -244,6 +245,8 @@ export async function collectWorkerIncidents(input, options = {}) {
 
   /** @type {Map<string, Incident>} */
   const incidents = new Map();
+  /** @type {Set<string>} */
+  const counted_operations = new Set();
   for (const workspace_root of roots) {
     const queue = readRecord(queueFilePath(workspace_root));
     const issues = new Map(
@@ -265,42 +268,102 @@ export async function collectWorkerIncidents(input, options = {}) {
       const events = readEvents(beadTimelinePath(workspace_root, bead_id));
       for (const event of events) {
         if (
-          !['attempt_failed', 'guard_denied'].includes(event.kind) ||
+          !['attempt_failed', 'guard_denied', 'operation_failed'].includes(
+            event.kind
+          ) ||
           !Number.isFinite(event.at) ||
           event.at > through
         ) {
           continue;
         }
         const attempt = attempts.get(event.attempt_id || '');
-        const fields = incidentFields(event, attempt);
-        const fp = createHash('sha256')
-          .update(
-            `${event.kind}|${fields.cause_head}|${fields.env_group || ''}`
-          )
-          .digest('hex')
-          .slice(0, 12);
+        const operation_id =
+          event.kind === 'operation_failed'
+            ? event.event_id.slice(
+                `${event.kind}:${event.attempt_id || bead_id}:`.length
+              )
+            : event.kind === 'attempt_failed' &&
+                /(?:^|:)condition_wait$/.test(attempt?.cause || '')
+              ? Object.entries(queue?.repo_operations || {})
+                  .filter(
+                    ([, row]) =>
+                      row.failure?.code === 'condition_wait' &&
+                      row.finished_at <= event.at &&
+                      row.subjects?.some(
+                        (/** @type {any} */ subject) =>
+                          subject.bead_id === bead_id
+                      )
+                  )
+                  .sort(
+                    (left, right) => right[1].finished_at - left[1].finished_at
+                  )[0]?.[0]
+              : null;
+        const operation = operation_id
+          ? queue?.repo_operations?.[operation_id]
+          : null;
+        if (event.kind === 'operation_failed' && !operation) {
+          continue;
+        }
+        let chain_id = operation_id;
+        let cursor = operation;
+        const seen = new Set();
+        while (
+          cursor?.failure?.code === 'condition_wait' &&
+          cursor.retry_of &&
+          !seen.has(cursor.retry_of)
+        ) {
+          seen.add(cursor.retry_of);
+          const previous = queue?.repo_operations?.[cursor.retry_of];
+          if (previous?.failure?.code !== 'condition_wait') {
+            break;
+          }
+          chain_id = cursor.retry_of;
+          cursor = previous;
+        }
+        const chain_key = `${workspace_root}:${chain_id}`;
+        const operation_seen = operation && counted_operations.has(chain_key);
+        const fields = operation
+          ? {
+              cause_head: operation.failure?.code || 'unknown',
+              tier: 'individual',
+              env_group: null
+            }
+          : incidentFields(event, attempt);
+        const fp = operation
+          ? operationIncidentFingerprint(workspace_root, cursor)
+          : createHash('sha256')
+              .update(
+                `${event.kind}|${fields.cause_head}|${fields.env_group || ''}`
+              )
+              .digest('hex')
+              .slice(0, 12);
         if (event.at < since && !carry.has(fp)) {
           continue;
+        }
+        if (operation) {
+          counted_operations.add(chain_key);
         }
         const at = new Date(event.at).toISOString();
         let incident = incidents.get(fp);
         if (!incident) {
           incident = {
             fp,
-            kind: event.kind,
+            kind: operation ? 'operation_failed' : event.kind,
             ...fields,
             count: 0,
             beads: [],
             first_at: at,
             last_at: at,
             samples: [],
-            transient: fields.tier === 'env',
+            transient: operation
+              ? operation.failure?.code === 'condition_wait'
+              : fields.tier === 'env',
             self_origin: false,
             recurred_after_fix: false
           };
           incidents.set(fp, incident);
         }
-        incident.count += 1;
+        incident.count += operation_seen ? 0 : 1;
         if (
           !incident.beads.some(
             (bead) =>
@@ -319,13 +382,26 @@ export async function collectWorkerIncidents(input, options = {}) {
         });
         incident.samples.sort((left, right) => right.at.localeCompare(left.at));
         incident.samples.length = Math.min(3, incident.samples.length);
-        incident.transient &&= [...attempts.values()].some(
-          (candidate) =>
-            candidate.attempt_id !== event.attempt_id &&
-            candidate.status === 'done' &&
-            timestamp(candidate.finished_at) > event.at &&
-            timestamp(candidate.finished_at) <= through
-        );
+        if (operation) {
+          const chain_seen = new Set();
+          let tip = cursor;
+          while (tip?.superseded_by && !chain_seen.has(tip.superseded_by)) {
+            chain_seen.add(tip.superseded_by);
+            tip = queue?.repo_operations?.[tip.superseded_by];
+          }
+          incident.transient &&=
+            tip?.state === 'succeeded' &&
+            !cursor.fix_wait &&
+            cursor.failure_notice?.consumed_at == null;
+        } else {
+          incident.transient &&= [...attempts.values()].some(
+            (candidate) =>
+              candidate.attempt_id !== event.attempt_id &&
+              candidate.status === 'done' &&
+              timestamp(candidate.finished_at) > event.at &&
+              timestamp(candidate.finished_at) <= through
+          );
+        }
         incident.self_origin ||= Boolean(
           issues.get(bead_id)?.metadata?.self_improvement_from
         );

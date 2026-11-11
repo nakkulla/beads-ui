@@ -760,6 +760,7 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
 
       expect(result).toEqual({
         ok: true,
+        owner_root: WS_B,
         status,
         closed_at: null,
         close_reason: null
@@ -813,6 +814,7 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
 
     expect(result).toEqual({
       ok: true,
+      owner_root: WS_B,
       status: 'open',
       closed_at: null,
       close_reason: null
@@ -862,6 +864,7 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
 
     expect(result).toEqual({
       ok: true,
+      owner_root: WS_B,
       status: 'closed',
       closed_at: Date.parse('2026-09-22T11:20:30Z'),
       close_reason: '계약 정정 착지'
@@ -889,6 +892,7 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
 
       expect(result).toEqual({
         ok: true,
+        owner_root: WS_B,
         status: 'closed',
         closed_at: null,
         close_reason: null
@@ -977,6 +981,7 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
 
     expect(result).toEqual({
       ok: true,
+      owner_root: WS_B,
       status: 'open',
       closed_at: null,
       close_reason: null
@@ -1011,6 +1016,7 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
 
     expect(result).toEqual({
       ok: true,
+      owner_root: WS_B,
       status: 'open',
       closed_at: null,
       close_reason: null

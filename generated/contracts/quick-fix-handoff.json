@@ -13,6 +13,7 @@
       "section_end": "next_h2_or_label_or_end_of_text",
       "duplicates": "first_occurrence_only"
     },
+    "bead_resolution": "local_rig_then_shared_server_longest_prefix",
     "checks": {
       "sections": {
         "required": [
@@ -55,6 +56,44 @@
           "missing": "predecessor_edge_missing:<id>",
           "reversed": "predecessor_edge_reversed:<id>"
         }
+      },
+      "provenance_edge": {
+        "scan": "all_body_lines",
+        "trigger": "출처:",
+        "quoted_preceding_chars": [
+          "\"",
+          "`",
+          "'",
+          "“",
+          "「"
+        ],
+        "clause_end_chars": [
+          "(",
+          "（",
+          "—",
+          ";"
+        ],
+        "id_regex_source": "checks.predecessor_edge.id_regex",
+        "candidate": "first_id_not_followed_by_slash",
+        "excludes": "self_id",
+        "accepted_edges": [
+          {
+            "side": "issue_dependencies",
+            "dependency_types": [
+              "discovered-from",
+              "blocks"
+            ]
+          },
+          {
+            "side": "candidate_dependencies_contain_issue",
+            "dependency_types": [
+              "blocks"
+            ]
+          }
+        ],
+        "absent_mention": "skip_fail_quiet",
+        "unresolved_candidate": "skip_fail_quiet",
+        "missing_token": "provenance_edge_missing:<id>"
       },
       "user_decision_reserved": {
         "scan": "all_body_lines_trimmed_except_adr_candidate_section",
@@ -114,6 +153,7 @@
     },
     "order": [
       "description_complete",
+      "body_edges_written",
       "checker_pass",
       "receipt_write",
       "readback_recompute_reviewed",

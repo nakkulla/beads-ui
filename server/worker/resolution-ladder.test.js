@@ -14,6 +14,23 @@ import {
 } from './resolution-ladder.js';
 
 describe('deploy condition wait schedule (dotfiles-rnyd9)', () => {
+  test('keeps rechecks due beyond 24 hours during fix wait', () => {
+    const operations = {
+      tip: waitRecord({
+        finished_at: 1,
+        fix_wait: { state: 'waiting', entered_at: 1 }
+      })
+    };
+
+    const schedule = conditionWaitSchedule(operations, 'tip', POLICY);
+
+    expect(
+      conditionWaitState(
+        /** @type {NonNullable<typeof schedule>} */ (schedule),
+        25 * 3600000
+      )
+    ).toBe('due');
+  });
   const POLICY = {
     failure_code: 'condition_wait',
     interval_ms: 1_800_000,
