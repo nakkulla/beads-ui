@@ -1199,3 +1199,246 @@ describe('bundle sends (UI-blx2 §3.7)', () => {
     ]);
   });
 });
+
+describe('[전체 적용] with preferences (UI-unf5 §3.8)', () => {
+  /**
+   * A jev relation between two beads; `prefer_first`, when given, is the
+   * bead an adopted preference lands first.
+   *
+   * @param {string} x
+   * @param {string} y
+   * @param {'independent'|'conflict'} relation
+   * @param {string} [prefer_first]
+   * @returns {[string, Record<string, any>]}
+   */
+  function jev(x, y, relation, prefer_first) {
+    const [a, b] = x < y ? [x, y] : [y, x];
+    return [
+      placementPairKey(a, b),
+      {
+        a,
+        b,
+        relation,
+        source: 'jev',
+        confidence: 0.9,
+        jev_choice: relation,
+        judged_at: 1,
+        ...(prefer_first
+          ? { prefer: prefer_first === a ? 'a' : 'b', prefer_confidence: 0.8 }
+          : {})
+      }
+    ];
+  }
+
+  /**
+   * @param {string[]} display_order
+   * @param {Record<string, any>} relations
+   * @returns {any}
+   */
+  function startQueue(display_order, relations) {
+    return {
+      revision: 1,
+      queue: [],
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'S-1', added_at: 1 }] },
+        { id: 's2', entries: [] }
+      ],
+      lane_states: {},
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      placement_relations: relations,
+      placement_status: Object.fromEntries(
+        display_order.map((id) => [id, { state: 'ready' }])
+      )
+    };
+  }
+
+  /**
+   * The tabs' recompute: the reply snapshot's own relations, with the
+   * display order and priorities the table was computed with.
+   *
+   * @param {string[]} display_order
+   * @param {Record<string, number>} priority
+   * @returns {(queue: any, chosen: string[]) => import('./compute.js').PlacementPlan}
+   */
+  function recomputeWith(display_order, priority) {
+    return (queue, chosen) =>
+      computePlacement({
+        queue,
+        relations: queue.placement_relations,
+        display_order,
+        priority,
+        chosen
+      });
+  }
+
+  test('lands every bundle of a plan with preferences on its table place without moved', async () => {
+    // Lone parallel D = C-1, A = C-2, B = C-3, C = C-4 with preferences
+    // A→B→C→A and A→D; the C-5/C-6 bundle goes first by priority and its
+    // steps follow C-6's preference against that priority.
+    const display_order = ['C-1', 'C-2', 'C-3', 'C-4', 'C-5', 'C-6'];
+    const priority = { 'C-5': 1, 'C-6': 2 };
+    const relations = Object.fromEntries([
+      jev('C-2', 'C-3', 'independent', 'C-2'),
+      jev('C-3', 'C-4', 'independent', 'C-3'),
+      jev('C-4', 'C-2', 'independent', 'C-4'),
+      jev('C-2', 'C-1', 'independent', 'C-2'),
+      jev('C-1', 'C-3', 'independent'),
+      jev('C-1', 'C-4', 'independent'),
+      jev('C-5', 'C-6', 'conflict', 'C-6')
+    ]);
+    const start = startQueue(display_order, relations);
+    const recompute = recomputeWith(display_order, priority);
+    const shown = recompute(start, display_order).order;
+    const store = storeStandIn(relations);
+    /** @type {any} */
+    let latest = start;
+    const transport = vi.fn(async (type, payload) => {
+      latest = store(latest, type, payload);
+      return { applied: true, conflict: false, queue: latest };
+    });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => latest
+    });
+
+    expect(shown.map((item) => [item.id, item.lane, item.before])).toEqual([
+      ['C-6', 's2', null],
+      ['C-5', 's2', 'C-6'],
+      ['C-2', 'parallel', null],
+      ['C-1', 'parallel', 'C-2'],
+      ['C-3', 'parallel', 'C-1'],
+      ['C-4', 'parallel', 'C-3']
+    ]);
+    expect(result).toEqual({
+      placed: ['C-6', 'C-5', 'C-2', 'C-1', 'C-3', 'C-4'],
+      stopped: null
+    });
+    expect({
+      parallel: latest.queue.map((/** @type {any} */ e) => e.bead_id),
+      s2: latest.serial_lanes[1].entries.map(
+        (/** @type {any} */ e) => e.bead_id
+      )
+    }).toEqual({ parallel: ['C-2', 'C-1', 'C-3', 'C-4'], s2: ['C-6', 'C-5'] });
+  });
+
+  test('lands predecessor bundles with a mandatory cycle and a preference without moved', async () => {
+    // Five predecessors of S-1: C-1→C-2→C-3→C-1 is a jev order cycle and
+    // C-5 is better landed before C-4.
+    const display_order = ['C-1', 'C-2', 'C-3', 'C-4', 'C-5'];
+    /**
+     * @param {string} first
+     * @param {string} second
+     * @returns {[string, Record<string, any>]}
+     */
+    const order = (first, second) => {
+      const [a, b] = first < second ? [first, second] : [second, first];
+      return [
+        placementPairKey(a, b),
+        {
+          a,
+          b,
+          relation: first === a ? 'a_first' : 'b_first',
+          source: 'jev',
+          confidence: 0.9,
+          jev_choice: first === a ? 'a_first' : 'b_first',
+          judged_at: 1
+        }
+      ];
+    };
+    const relations = Object.fromEntries([
+      ...display_order.map((id) => fixed(id, 'S-1', 'blocks')),
+      order('C-1', 'C-2'),
+      order('C-2', 'C-3'),
+      order('C-3', 'C-1'),
+      jev('C-4', 'C-5', 'independent', 'C-5'),
+      jev('C-1', 'C-4', 'independent'),
+      jev('C-1', 'C-5', 'independent'),
+      jev('C-2', 'C-4', 'independent'),
+      jev('C-2', 'C-5', 'independent'),
+      jev('C-3', 'C-4', 'independent'),
+      jev('C-3', 'C-5', 'independent')
+    ]);
+    const start = startQueue(display_order, relations);
+    const recompute = recomputeWith(display_order, {});
+    const shown = recompute(start, display_order).order;
+    const store = storeStandIn(relations);
+    /** @type {any} */
+    let latest = start;
+    const transport = vi.fn(async (type, payload) => {
+      latest = store(latest, type, payload);
+      return { applied: true, conflict: false, queue: latest };
+    });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => latest
+    });
+
+    expect(shown.map((item) => item.id)).toEqual([
+      'C-5',
+      'C-4',
+      'C-1',
+      'C-2',
+      'C-3'
+    ]);
+    expect(result).toEqual({
+      placed: ['C-5', 'C-4', 'C-1', 'C-2', 'C-3'],
+      stopped: null
+    });
+  });
+
+  test('stops as moved when a reply snapshot carries a new preference that changes the plan', async () => {
+    const display_order = ['C-1', 'C-2', 'C-3'];
+    const relations = Object.fromEntries([
+      jev('C-1', 'C-2', 'independent'),
+      jev('C-1', 'C-3', 'independent'),
+      jev('C-2', 'C-3', 'independent')
+    ]);
+    const start = startQueue(display_order, relations);
+    const recompute = recomputeWith(display_order, {});
+    const shown = recompute(start, display_order).order;
+    const store = storeStandIn(relations);
+    /** @type {any} */
+    let latest = start;
+    const transport = vi.fn(async (type, payload) => {
+      latest = {
+        ...store(latest, type, payload),
+        placement_relations: Object.fromEntries([
+          jev('C-1', 'C-2', 'independent'),
+          jev('C-1', 'C-3', 'independent'),
+          jev('C-2', 'C-3', 'independent', 'C-3')
+        ])
+      };
+      return { applied: true, conflict: false, queue: latest };
+    });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => latest
+    });
+
+    expect(shown.map((item) => item.id)).toEqual(['C-1', 'C-2', 'C-3']);
+    expect(result.placed).toEqual(['C-1']);
+    expect(result.stopped).toMatchObject({ id: 'C-2', cause: 'moved' });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+});

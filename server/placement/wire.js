@@ -25,6 +25,12 @@
  */
 
 /**
+ * jev's answer to the preference question, in the same orientation.
+ *
+ * @typedef {'a_better_first'|'b_better_first'|'no_preference'} PlacementPreferChoice
+ */
+
+/**
  * One pair relation of `placement_relations`.
  *
  * - `source: 'fixed'` — decided by a machine-known condition; `basis` names
@@ -41,6 +47,14 @@
  *   `conflict` with `overlap_guard: true` (UI-lsr4 §3.2). `judged_at` is the
  *   answer's epoch-ms time.
  *
+ * `prefer` (UI-unf5 §3.3) names the side better landed first — `a` or `b`, the
+ * same orientation as `a_first` — when jev's preference answer is
+ * `a_better_first`/`b_better_first` at {@link PREFER_CONFIDENCE} or above;
+ * `prefer_confidence` is that answer's confidence. Both are absent otherwise.
+ * A `jev` relation or a `file` relation may carry them (a same-file pair is
+ * asked for its preference only); a `blocks` relation never does. A
+ * preference only orders; it never bundles, lanes or moves an insert index.
+ *
  * @typedef {Object} PlacementRelation
  * @property {string} a - The smaller id.
  * @property {string} b - The larger id.
@@ -55,6 +69,8 @@
  * @property {number|null} confidence
  * @property {PlacementJevChoice|null} jev_choice
  * @property {number|null} judged_at
+ * @property {'a'|'b'} [prefer] - The side better landed first.
+ * @property {number} [prefer_confidence]
  */
 
 /**
@@ -77,6 +93,10 @@
  *
  * `done`/`total` count the pairs that need jev (answered / all) and are present
  * whenever `total` > 0, so the browser can say "3쌍 중 1쌍 완료".
+ *
+ * A same-file pair is asked for its preference, but it is a fixed pair: its
+ * judgment — pending, answered or failed — counts in no state, no `done` and
+ * no `total` (UI-unf5 §3.2, §3.10).
  *
  * @typedef {Object} PlacementStatus
  * @property {PlacementState} state
@@ -134,6 +154,16 @@ export const OVERLAP_INDEPENDENT_CONFIDENCE = 0.9;
  * @type {number}
  */
 export const REFERENCE_CONFIDENCE = 0.5;
+
+/**
+ * A preference answer (`a_better_first`/`b_better_first`) is adopted as a
+ * relation's `prefer` at this confidence or above (UI-unf5 §3.1). Lower than
+ * {@link ADOPT_CONFIDENCE} on purpose: a preference only orders what nothing
+ * else orders, while an adopted order answer serializes the pair.
+ *
+ * @type {number}
+ */
+export const PREFER_CONFIDENCE = 0.7;
 
 /** @type {string} Separator of a pair key; never part of a bead id. */
 export const PAIR_KEY_SEPARATOR = '|';

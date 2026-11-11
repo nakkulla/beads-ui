@@ -2,10 +2,11 @@
  * Placement computation of the Worker queue recommendation (UI-izba §4.6).
  *
  * Pure and deterministic: the same queue snapshot, pair relations, candidate
- * display order and chosen set always give the same plan. The browser runs it
- * because the display order is a per-browser `localStorage` preference the
- * server cannot see, and because a preview computed from the very snapshot a
- * `[적용]` carries as its `expected_revision` cannot disagree with it.
+ * display order and priorities, and chosen set always give the same plan. The
+ * browser runs it because the display order is a per-browser `localStorage`
+ * preference the server cannot see, and because a preview computed from the
+ * very snapshot a `[적용]` carries as its `expected_revision` cannot disagree
+ * with it.
  *
  * The plan is a SIMULATION of the store: bundles go in one at a time in the
  * apply order, each the way the store writes it — a lone candidate as `place`
@@ -18,6 +19,13 @@
  * A bundle pulls the waiting and lane-less occupying partners its candidates
  * conflict with into its serial lane (UI-blx2 §3): `uncovered` stays only on a
  * partner that cannot be moved or bound, and says why.
+ *
+ * What mandatory order (a direct `blocks` edge, an adopted jev order, a
+ * conflict) leaves open — the order of a bundle's steps and the apply order of
+ * bundles — goes to an adopted jev preference, then the BASE order: priority
+ * ascending (a non-number after 4), then the display order, then the id
+ * (UI-unf5 §3.1). A preference only orders: it never bundles, lanes, warns or
+ * moves an insert index (§3.7).
  *
  * @import { PlacementRelation } from '../../../server/placement/wire.js'
  */
@@ -59,6 +67,9 @@ import { occupancyReader } from './occupancy.js';
  * @property {CandidateRelationKind|null} jev_choice - jev's first choice,
  * candidate-oriented.
  * @property {number|null} judged_at
+ * @property {string} [prefer_first] - The bead an adopted jev preference
+ * would land first (UI-unf5 §3.3); absent without one.
+ * @property {number} [prefer_confidence]
  */
 
 /**
@@ -178,6 +189,8 @@ import { occupancyReader } from './occupancy.js';
  * @property {Record<string, PlacementRelation>|null|undefined} relations -
  * `placement_relations`.
  * @property {string[]} display_order - Candidate ids in the lane's sort order.
+ * @property {Record<string, number>} [priority] - Candidate priority (0..4) by
+ * id, the base order's first key; an id without a number sorts after 4.
  * @property {Iterable<string>} chosen - Candidates to place.
  * @property {Iterable<string>} [candidates] - Every placeable candidate; the
  * ones not chosen become `outside` lines. Defaults to the keys of
@@ -233,6 +246,38 @@ function orient(kind, c_is_a) {
 }
 
 /**
+ * The bead an adopted preference of a wire relation lands first, or null
+ * without one. The server adopts (UI-unf5 §3.3); `prefer` names `a` or `b`.
+ *
+ * @param {PlacementRelation|undefined} raw
+ * @returns {string|null}
+ */
+function preferredOf(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  if (raw.prefer === 'a') {
+    return raw.a;
+  }
+  if (raw.prefer === 'b') {
+    return raw.b;
+  }
+  return null;
+}
+
+/**
+ * Whether an adopted preference lands `x` before `y`.
+ *
+ * @param {Record<string, PlacementRelation>} relations
+ * @param {string} x
+ * @param {string} y
+ * @returns {boolean}
+ */
+function prefersFirst(relations, x, y) {
+  return x !== y && preferredOf(relations[placementPairKey(x, y)]) === x;
+}
+
+/**
  * The relation between the candidate and another bead, oriented to the
  * candidate, or null when the wire carries none.
  *
@@ -251,6 +296,7 @@ function relationBetween(relations, c, x) {
   if (relation === null) {
     return null;
   }
+  const prefer_first = preferredOf(raw);
   return {
     other: x,
     relation,
@@ -260,7 +306,10 @@ function relationBetween(relations, c, x) {
     ...(raw.overlap_guard === true ? { overlap_guard: true } : {}),
     confidence: typeof raw.confidence === 'number' ? raw.confidence : null,
     jev_choice: orient(raw.jev_choice, c_is_a),
-    judged_at: typeof raw.judged_at === 'number' ? raw.judged_at : null
+    judged_at: typeof raw.judged_at === 'number' ? raw.judged_at : null,
+    ...(prefer_first !== null && typeof raw.prefer_confidence === 'number'
+      ? { prefer_first, prefer_confidence: raw.prefer_confidence }
+      : {})
   };
 }
 
@@ -363,41 +412,118 @@ function byDisplay(display_order) {
 }
 
 /**
- * Topological order of one bundle under `c_first`/`x_first`, display order
- * breaking ties. A cycle keeps the display order.
+ * Base rank of a candidate (UI-unf5 §3.1): priority ascending — an id without
+ * a 0..4 priority after 4 — then the display rank, then the id.
  *
- * @param {string[]} members - Display-ordered.
- * @param {(c: string, x: string) => CandidateRelationKind|null} kindOf
- * @returns {{ order: string[], cycle: boolean }}
+ * @param {string[]} display_order
+ * @param {Record<string, number>} priority
+ * @returns {(a: string, b: string) => number}
  */
-function bundleOrder(members, kindOf) {
-  /** @type {Map<string, Set<string>>} */
-  const before = new Map(members.map((id) => [id, new Set()]));
-  for (const c of members) {
-    for (const x of members) {
-      if (c !== x && kindOf(c, x) === 'x_first') {
-        /** @type {Set<string>} */ (before.get(c)).add(x);
+function byBase(display_order, priority) {
+  const display = byDisplay(display_order);
+  /**
+   * @param {string} id
+   * @returns {number}
+   */
+  const level = (id) => {
+    const value = Object.hasOwn(priority, id) ? priority[id] : null;
+    return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 4
+      ? Number(value)
+      : 5;
+  };
+  return (a, b) => level(a) - level(b) || display(a, b);
+}
+
+/**
+ * The units `start` reaches over both edge kinds, inside `live` only.
+ *
+ * @param {number} start
+ * @param {number[]} live
+ * @param {boolean[][]} must
+ * @param {boolean[][]} prefer
+ * @returns {Set<number>}
+ */
+function reachableFrom(start, live, must, prefer) {
+  const seen = new Set([start]);
+  const stack = [start];
+  while (stack.length > 0) {
+    const from = /** @type {number} */ (stack.pop());
+    for (const to of live) {
+      if (!seen.has(to) && (must[from][to] || prefer[from][to])) {
+        seen.add(to);
+        stack.push(to);
       }
     }
   }
-  /** @type {string[]} */
+  return seen;
+}
+
+/**
+ * Greedy topological order under mandatory and preferred edges (UI-unf5
+ * §3.5). Every step looks only at the units still left (R) and the edges
+ * inside R: of the units with no mandatory predecessor in R, the first by tie
+ * key with no preferred predecessor in R goes next. When every such unit has
+ * one, the preferences run in a cycle; then a unit qualifies when each of its
+ * preferred predecessors in R shares its strongly connected component (both
+ * edge kinds, inside R), so only the preferences inside the cycle are dropped
+ * and one coming in from outside it still holds. Without a mandatory cycle in
+ * R such a unit always exists — a mandatory source of a component nothing
+ * else in R reaches. A mandatory cycle in R breaks the same way, one unit at
+ * a time: the first by tie key with no mandatory predecessor in R, else the
+ * first of R by tie key, and `cycle` reports it. Keeping the units already
+ * chosen, rather than starting over in tie-key order, is what keeps the
+ * prefix property below on a cycle too.
+ *
+ * Each choice depends on R and the edges inside it only, so dropping a prefix
+ * of the order and sorting the rest again gives the rest of the order —
+ * `[전체 적용]` recomputes on each reply and relies on it (§3.8).
+ *
+ * A preference between two units a mandatory edge already relates is dropped:
+ * mandatory order decides that pair, and a contradicting preference must not
+ * pull an unrelated unit into a cycle with it.
+ *
+ * @template T
+ * @param {T[]} units - In tie-key order.
+ * @param {(u: T, v: T) => boolean} mustBefore - `u` must land before `v`.
+ * @param {(u: T, v: T) => boolean} preferBefore - `u` is better landed before
+ * `v`.
+ * @returns {{ order: T[], cycle: boolean }}
+ */
+function softOrder(units, mustBefore, preferBefore) {
+  /** @type {boolean[][]} */
+  const must = units.map((u, i) =>
+    units.map((v, j) => i !== j && mustBefore(u, v))
+  );
+  /** @type {boolean[][]} */
+  const prefer = units.map((u, i) =>
+    units.map(
+      (v, j) => i !== j && !must[i][j] && !must[j][i] && preferBefore(u, v)
+    )
+  );
+  /** @type {number[]} */
+  let rest = units.map((_, i) => i);
+  /** @type {T[]} */
   const order = [];
-  const emitted = new Set();
-  while (order.length < members.length) {
-    const next = members.find(
-      (id) =>
-        !emitted.has(id) &&
-        [.../** @type {Set<string>} */ (before.get(id))].every((x) =>
-          emitted.has(x)
-        )
-    );
+  let cycle = false;
+  while (rest.length > 0) {
+    const live = rest;
+    const possible = live.filter((j) => !live.some((i) => must[i][j]));
+    let next = possible.find((j) => !live.some((i) => prefer[i][j]));
     if (next === undefined) {
-      return { order: [...members], cycle: true };
+      next = possible.find((j) => {
+        const back = reachableFrom(j, live, must, prefer);
+        return live.every((i) => !prefer[i][j] || back.has(i));
+      });
     }
-    emitted.add(next);
-    order.push(next);
+    if (next === undefined) {
+      cycle = true;
+      next = possible.length > 0 ? possible[0] : live[0];
+    }
+    const chosen = next;
+    order.push(units[chosen]);
+    rest = live.filter((i) => i !== chosen);
   }
-  return { order, cycle: false };
+  return { order, cycle };
 }
 
 /**
@@ -411,7 +537,7 @@ export function computePlacement(input) {
   const relations = /** @type {Record<string, PlacementRelation>} */ (
     objectOf(input.relations)
   );
-  const compare = byDisplay(input.display_order);
+  const compare = byBase(input.display_order, objectOf(input.priority));
   const chosen = [...new Set(input.chosen)].sort(compare);
   const chosen_set = new Set(chosen);
   const candidates = new Set(
@@ -739,15 +865,24 @@ export function computePlacement(input) {
     list.push(c);
     bundle_members.set(root, list);
   }
-  // `chosen` is display-ordered, so every member list is too, and bundles
-  // ordered by their first member follow the display order of first members.
-  // Predecessors apply last: once queued, one is a member to the candidates still
-  // waiting, and a chosen blocker of it would turn predecessor mid-batch and stop
-  // `[전체 적용]` with `moved`. Applied after them it never reads as one.
-  const bundles = [...bundle_members.values()].sort(
-    (p, q) =>
-      Number(predecessors.has(p[0])) - Number(predecessors.has(q[0])) ||
-      compare(p[0], q[0])
+  // `chosen` is in base order, so every member list is too, and a bundle's
+  // tie key is its first member's base rank. Predecessors apply last: once
+  // queued, one is a member to the candidates still waiting, and a chosen
+  // blocker of it would turn predecessor mid-batch and stop `[전체 적용]` with
+  // `moved`. Applied after them it never reads as one. Each group is sorted on
+  // its own (UI-unf5 §3.6): a member's `c_first` toward another bundle's
+  // member is a mandatory edge — between predecessors, which are never
+  // joined — and an adopted preference between members a preferred one. A
+  // mandatory cycle is broken by the base order, without a warning.
+  const bundles = [false, true].flatMap(
+    (trailing) =>
+      softOrder(
+        [...bundle_members.values()]
+          .filter((members) => predecessors.has(members[0]) === trailing)
+          .sort((p, q) => compare(p[0], q[0])),
+        (p, q) => p.some((c) => q.some((x) => kindOf(c, x) === 'c_first')),
+        (p, q) => p.some((c) => q.some((x) => prefersFirst(relations, c, x)))
+      ).order
   );
 
   /**
@@ -825,14 +960,17 @@ export function computePlacement(input) {
   };
 
   /**
-   * Whether the candidate's in-lane constraints hold in `order`.
+   * Whether the candidate's in-lane constraints hold in `order`. A conflict
+   * with another step of its own bundle (`steps`) orders nothing: the serial
+   * lane already keeps the two apart, whichever goes first.
    *
    * @param {string} c
    * @param {string[]} order
    * @param {PlacementLane} lane
+   * @param {Set<string>} steps
    * @returns {boolean}
    */
-  const constraintsHold = (c, order, lane) => {
+  const constraintsHold = (c, order, lane, steps) => {
     const own = order.indexOf(c);
     for (const x of order) {
       if (x === c) {
@@ -840,6 +978,9 @@ export function computePlacement(input) {
       }
       const kind = kindOf(c, x);
       const at = order.indexOf(x);
+      if (kind === 'conflict' && steps.has(x)) {
+        continue;
+      }
       if ((kind === 'x_first' || kind === 'conflict') && at > own) {
         return false;
       }
@@ -1040,8 +1181,13 @@ export function computePlacement(input) {
         /** @type {{ lane: PlacementLane, index: number }} */ (locate(x))
       ])
     );
-    // §3.3: topological order, moves before candidates on a tie.
-    const sorted = bundleOrder([...moves, ...members], kindOf);
+    // §3.3, UI-unf5 §3.5: mandatory order, then adopted preferences, then the
+    // tie key — moves first in queue order, then the candidates in base order.
+    const sorted = softOrder(
+      [...moves, ...members],
+      (u, v) => kindOf(u, v) === 'c_first',
+      (u, v) => prefersFirst(relations, u, v)
+    );
     const step_ids = new Set(sorted.order);
 
     // The store's write order: the bound bead's waiting row leaves every
@@ -1087,13 +1233,21 @@ export function computePlacement(input) {
         let upper = entries.length;
         let has_upper = false;
         for (const x of new Set([...entries, ...occupantsOf(lane)])) {
-          // A cyclic bundle goes in display order (§4.6), so its steps'
-          // relations to each other set no bound.
+          // A cyclic bundle's cycle is broken by tie key (§4.6), so its
+          // steps' relations to each other set no bound.
           if (x === y || (sorted.cycle && step_ids.has(x))) {
             continue;
           }
           const kind = kindOf(y, x);
-          if (kind === null || !CONSTRAINTS.has(kind)) {
+          // A conflict between two steps of this bundle orders nothing: the
+          // serial lane keeps them apart either way. As a bound it would let
+          // the step order — a preference included — push a step with an
+          // upper bound behind a waiting item (UI-unf5 §3.7).
+          if (
+            kind === null ||
+            !CONSTRAINTS.has(kind) ||
+            (kind === 'conflict' && step_ids.has(x))
+          ) {
             continue;
           }
           const at = entries.indexOf(x);
@@ -1133,11 +1287,12 @@ export function computePlacement(input) {
         const spliced = entries.filter((id) => present.has(id));
         if (
           !warnings.some((w) => w.code === 'order_unsatisfiable') &&
-          constraintsHold(c, spliced, lane) &&
+          constraintsHold(c, spliced, lane, step_ids) &&
           !constraintsHold(
             c,
             final_order.filter((id) => present.has(id)),
-            lane
+            lane,
+            step_ids
           )
         ) {
           warnings.push({ code: 'blocks_reordered' });

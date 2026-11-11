@@ -83,9 +83,31 @@ function plan(input) {
     queue: input.queue || queueOf(),
     relations: Object.fromEntries(input.pairs || []),
     display_order: input.display_order || ['C-1', 'C-2', 'C-3'],
+    ...(input.priority ? { priority: input.priority } : {}),
     chosen: input.chosen || ['C-1'],
     candidates: input.candidates || input.chosen || ['C-1']
   });
+}
+
+/**
+ * A wire relation with an adopted preference: `first` is the bead better
+ * landed first (UI-unf5 §3.3).
+ *
+ * @param {[string, any]} entry - A relation from {@link rel}.
+ * @param {string} first
+ * @param {number} [confidence]
+ * @returns {[string, any]}
+ */
+function preferring(entry, first, confidence = 0.8) {
+  const [key, raw] = entry;
+  return [
+    key,
+    {
+      ...raw,
+      prefer: first === raw.a ? 'a' : 'b',
+      prefer_confidence: confidence
+    }
+  ];
 }
 
 /**
@@ -1325,5 +1347,295 @@ describe('samePlace', () => {
 
     expect(samePlace(shown, { lane: 's1', before: 'S-1' })).toBe(true);
     expect(samePlace(shown, { lane: 's1', before: 'S-2' })).toBe(false);
+  });
+});
+
+describe('computePlacement order slots (UI-unf5 §3.4–§3.7)', () => {
+  test('orders the two conflicting candidates of a bundle by a preference against the display order', () => {
+    const result = plan({
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-1', 'C-2'],
+      pairs: [preferring(rel('C-1', 'C-2', 'conflict'), 'C-2')]
+    });
+
+    expect(
+      result.order.map((item) => [item.id, item.bundle, item.lane, item.before])
+    ).toEqual([
+      ['C-2', 0, 's1', null],
+      ['C-1', 0, 's1', 'C-2']
+    ]);
+  });
+
+  test('breaks a preference cycle by the base order and keeps a preference coming in from outside it', () => {
+    // A = C-2, B = C-3, C = C-4, D = C-1; base order D, A, B, C.
+    const pairs = [
+      preferring(rel('C-2', 'C-3', 'conflict'), 'C-2'),
+      preferring(rel('C-3', 'C-4', 'conflict'), 'C-3'),
+      preferring(rel('C-4', 'C-2', 'conflict'), 'C-4'),
+      preferring(rel('C-2', 'C-1', 'conflict'), 'C-2'),
+      rel('C-1', 'C-3', 'conflict'),
+      rel('C-1', 'C-4', 'conflict')
+    ];
+
+    const result = plan({
+      chosen: ['C-1', 'C-2', 'C-3', 'C-4'],
+      display_order: ['C-1', 'C-2', 'C-3', 'C-4'],
+      pairs
+    });
+
+    expect(result.order.map((item) => item.id)).toEqual([
+      'C-2',
+      'C-1',
+      'C-3',
+      'C-4'
+    ]);
+    expect(result.order.flatMap((item) => item.warnings)).toEqual([]);
+  });
+
+  test('finds the preference cycles again among the units still left', () => {
+    // P = C-1, X = C-2, Y = C-3, Z = C-4, W = C-5: P→Y→X→P and Y→Z→W→Y share
+    // Y. Once P is out, X no longer shares a component with Y, so Y goes next.
+    const pairs = [
+      preferring(rel('C-1', 'C-3', 'independent'), 'C-1'),
+      preferring(rel('C-3', 'C-2', 'independent'), 'C-3'),
+      preferring(rel('C-2', 'C-1', 'independent'), 'C-2'),
+      preferring(rel('C-3', 'C-4', 'independent'), 'C-3'),
+      preferring(rel('C-4', 'C-5', 'independent'), 'C-4'),
+      preferring(rel('C-5', 'C-3', 'independent'), 'C-5')
+    ];
+
+    const result = plan({
+      chosen: ['C-1', 'C-2', 'C-3', 'C-4', 'C-5'],
+      display_order: ['C-1', 'C-2', 'C-3', 'C-4', 'C-5'],
+      pairs
+    });
+
+    expect(result.order.map((item) => item.id)).toEqual([
+      'C-1',
+      'C-3',
+      'C-2',
+      'C-4',
+      'C-5'
+    ]);
+  });
+
+  test('keeps a step with an upper bound ahead of a waiting item when a preference puts its conflict partner first', () => {
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-1']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-2', 'C-1'],
+      pairs: [
+        preferring(rel('C-1', 'C-2', 'conflict'), 'C-1'),
+        rel('C-2', 'S-1', 'c_first')
+      ]
+    });
+
+    expect(result.layout.s1).toEqual(['C-2', 'S-1', 'C-1']);
+    expect(result.order.flatMap((item) => item.warnings)).toEqual([]);
+  });
+
+  test('lets the priority beat the display order without a preference', () => {
+    const result = plan({
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-1', 'C-2'],
+      priority: { 'C-1': 3, 'C-2': 1 },
+      pairs: [rel('C-1', 'C-2', 'conflict')]
+    });
+
+    expect(result.order.map((item) => item.id)).toEqual(['C-2', 'C-1']);
+  });
+
+  test('puts a candidate without a priority after priority 4', () => {
+    const result = plan({
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-1', 'C-2'],
+      priority: { 'C-2': 4 },
+      pairs: [rel('C-1', 'C-2', 'conflict')]
+    });
+
+    expect(result.order.map((item) => item.id)).toEqual(['C-2', 'C-1']);
+  });
+
+  test('keeps a mandatory cycle in base order with order_cycle', () => {
+    const result = plan({
+      chosen: ['C-1', 'C-2', 'C-3'],
+      priority: { 'C-3': 0 },
+      pairs: [
+        rel('C-1', 'C-2', 'c_first'),
+        rel('C-2', 'C-3', 'c_first'),
+        rel('C-3', 'C-1', 'c_first')
+      ]
+    });
+
+    expect(result.order.map((item) => item.id)).toEqual(['C-3', 'C-1', 'C-2']);
+    expect(
+      result.order.map((item) => item.warnings.map((warning) => warning.code))
+    ).toEqual([['order_cycle'], ['order_cycle'], ['order_cycle']]);
+  });
+
+  test('lets a mandatory order beat a preference', () => {
+    const result = plan({
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-2', 'C-1'],
+      pairs: [preferring(rel('C-1', 'C-2', 'c_first'), 'C-2')]
+    });
+
+    expect(result.order.map((item) => item.id)).toEqual(['C-1', 'C-2']);
+    expect(result.order.flatMap((item) => item.warnings)).toEqual([]);
+  });
+
+  test('lets a preference between the candidate and a moved partner beat the moves-first tie', () => {
+    const queue = queueOf({ queue: entries(['P-1']) });
+
+    const result = plan({
+      queue,
+      pairs: [preferring(rel('C-1', 'P-1', 'conflict'), 'C-1')]
+    });
+
+    expect(steps(result, 'C-1')).toEqual([
+      ['place', 'C-1', 0, null],
+      ['move', 'P-1', 1, 'C-1']
+    ]);
+    expect(result.layout).toMatchObject({ parallel: [], s1: ['C-1', 'P-1'] });
+  });
+
+  test('orders lone parallel candidates by a preference', () => {
+    const result = plan({
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-1', 'C-2'],
+      pairs: [preferring(rel('C-1', 'C-2', 'independent'), 'C-2')]
+    });
+
+    expect(
+      result.order.map((item) => [item.id, item.number, item.lane, item.before])
+    ).toEqual([
+      ['C-2', 1, 'parallel', null],
+      ['C-1', 2, 'parallel', 'C-2']
+    ]);
+  });
+
+  test('applies a predecessor bundle last whatever the preference says', () => {
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-1']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-1', 'C-2'],
+      pairs: [
+        memberBlocks('C-1', 'S-1'),
+        preferring(rel('C-1', 'C-2', 'independent'), 'C-1')
+      ]
+    });
+
+    expect(result.order.map((item) => [item.id, item.lane])).toEqual([
+      ['C-2', 'parallel'],
+      ['C-1', 'parallel']
+    ]);
+  });
+
+  test('orders two predecessor bundles that block each other by blocks against a preference', () => {
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-1', 'S-2']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-1', 'C-2'],
+      pairs: [
+        memberBlocks('C-1', 'S-1'),
+        memberBlocks('C-2', 'S-2'),
+        preferring(memberBlocks('C-2', 'C-1'), 'C-1')
+      ]
+    });
+
+    expect(result.order.map((item) => [item.id, item.bundle])).toEqual([
+      ['C-2', 0],
+      ['C-1', 1]
+    ]);
+  });
+
+  test('neither bundles nor serializes a pair that has only a preference', () => {
+    const result = plan({
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-1', 'C-2'],
+      pairs: [
+        preferring(rel('C-1', 'C-2', 'unknown', { confidence: 0.4 }), 'C-2')
+      ]
+    });
+
+    expect(
+      result.order.map((item) => [item.id, item.bundle, item.lane])
+    ).toEqual([
+      ['C-2', 0, 'parallel'],
+      ['C-1', 1, 'parallel']
+    ]);
+    expect(result.order.flatMap((item) => item.warnings)).toEqual([]);
+  });
+
+  test('keeps a preferred candidate behind a waiting item in its serial lane', () => {
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-1']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({
+      queue,
+      pairs: [preferring(rel('C-1', 'S-1', 'conflict'), 'C-1')]
+    });
+
+    expect(result.by_id['C-1']).toMatchObject({
+      lane: 's1',
+      index: 1,
+      before: 'S-1',
+      warnings: []
+    });
+  });
+
+  test('keeps a preferred candidate behind an unrelated waiting item at the parallel tail', () => {
+    const queue = queueOf({ queue: entries(['P-1']) });
+
+    const result = plan({
+      queue,
+      pairs: [preferring(rel('C-1', 'P-1', 'independent'), 'C-1')]
+    });
+
+    expect(result.by_id['C-1']).toMatchObject({
+      lane: 'parallel',
+      index: 1,
+      before: 'P-1'
+    });
+  });
+
+  test('carries an adopted preference on the relation line', () => {
+    const result = plan({
+      chosen: ['C-1', 'C-2'],
+      pairs: [preferring(rel('C-1', 'C-2', 'conflict'), 'C-2', 0.82)]
+    });
+
+    expect(result.by_id['C-1'].reasons).toEqual([
+      expect.objectContaining({
+        other: 'C-2',
+        prefer_first: 'C-2',
+        prefer_confidence: 0.82
+      })
+    ]);
   });
 });

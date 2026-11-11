@@ -9,7 +9,13 @@
  * folder overlap rides along as question material, and on such a pair only a
  * confident `independent` stays parallel (§3.2).
  *
- * @import { PlacementRelation, PlacementStatus, PlacementJevChoice } from './wire.js'
+ * A same-file pair is still asked (UI-unf5 §3.2): it shares a serial lane
+ * with no order, which is where a preference helps most. Only its preference
+ * answer is read — the fixed relation keeps deciding the constraint — and its
+ * judgment counts in no candidate state and no progress. A `blocks` pair is
+ * never asked.
+ *
+ * @import { PlacementRelation, PlacementStatus, PlacementJevChoice, PlacementPreferChoice } from './wire.js'
  */
 import {
   normalizeScopePrefix,
@@ -17,15 +23,17 @@ import {
 } from '../../app/utils/scope-overlap.js';
 import {
   ADOPT_CONFIDENCE,
-  OVERLAP_INDEPENDENT_CONFIDENCE
+  OVERLAP_INDEPENDENT_CONFIDENCE,
+  PREFER_CONFIDENCE
 } from './question.js';
 import { orientPair, placementPairKey } from './wire.js';
 
 /**
  * A cached answer or a remembered failure for one pair, as the caller's lookup
- * returns it. Null means neither.
+ * returns it. Null means neither. An answer without `prefer_choice` reads as
+ * no preference.
  *
- * @typedef {{ kind: 'answer', choice: PlacementJevChoice, confidence: number, judged_at: number }|{ kind: 'failed', reason: string }} PairJudgment
+ * @typedef {{ kind: 'answer', choice: PlacementJevChoice, confidence: number, prefer_choice?: PlacementPreferChoice, prefer_confidence?: number, judged_at: number }|{ kind: 'failed', reason: string }} PairJudgment
  */
 
 /**
@@ -52,7 +60,8 @@ import { orientPair, placementPairKey } from './wire.js';
  * @property {Record<string, PlacementRelation>} relations
  * @property {Record<string, PlacementStatus>} status
  * @property {Array<{ a: string, b: string, overlap?: string[] }>} jev_pairs -
- * Every pair that needs jev and has both materials, answered or not, in
+ * Every pair jev is asked about — those that need jev and the same-file pairs
+ * asked for their preference — that has both materials, answered or not, in
  * small-id orientation; `overlap` is the declared-scope prefixes the two meet
  * on, present only when they do.
  * @property {import('./wire.js').PlacementProgress} progress - Distinct pairs
@@ -189,6 +198,29 @@ function jevRelation(judgment, overlapping) {
 }
 
 /**
+ * The relation fields an adopted preference adds (UI-unf5 §3.3): `prefer`
+ * names the side better landed first in small-id orientation — the request's
+ * A is the pair's `a`, as for `a_first` — and nothing below
+ * {@link PREFER_CONFIDENCE} or for `no_preference`.
+ *
+ * @param {{ prefer_choice?: PlacementPreferChoice, prefer_confidence?: number }} judgment
+ * @returns {{ prefer?: 'a'|'b', prefer_confidence?: number }}
+ */
+function preferFields(judgment) {
+  const confidence = judgment.prefer_confidence;
+  if (typeof confidence !== 'number' || confidence < PREFER_CONFIDENCE) {
+    return {};
+  }
+  if (judgment.prefer_choice === 'a_better_first') {
+    return { prefer: 'a', prefer_confidence: confidence };
+  }
+  if (judgment.prefer_choice === 'b_better_first') {
+    return { prefer: 'b', prefer_confidence: confidence };
+  }
+  return {};
+}
+
+/**
  * The declared-scope prefixes two beads meet on, or an empty list when either
  * scope is unknown.
  *
@@ -241,15 +273,32 @@ export function placementRelations(input) {
       compared += 1;
       const [a, b] = orientPair(candidate, other);
       const key = placementPairKey(a, b);
-      const fixed = fixedRelation(a, b, input) || fileRelation(a, b, input);
-      if (fixed) {
-        relations[key] = fixed;
+      const blocks = fixedRelation(a, b, input);
+      if (blocks) {
+        relations[key] = blocks;
+        continue;
+      }
+      const digest_a = input.digests[a];
+      const digest_b = input.digests[b];
+      const has_material =
+        typeof digest_a === 'string' && typeof digest_b === 'string';
+      const file = fileRelation(a, b, input);
+      if (file) {
+        // Asked for the preference only: the shared file already decides the
+        // constraint, so neither the answer nor a failure touches the state.
+        relations[key] = file;
+        if (has_material) {
+          const overlap = scopeOverlap(a, b, input);
+          jev_pairs.set(key, overlap.length > 0 ? { a, b, overlap } : { a, b });
+          const judgment = input.judgmentFor(a, b, digest_a, digest_b);
+          if (judgment && judgment.kind === 'answer') {
+            Object.assign(file, preferFields(judgment));
+          }
+        }
         continue;
       }
       total += 1;
-      const digest_a = input.digests[a];
-      const digest_b = input.digests[b];
-      if (typeof digest_a !== 'string' || typeof digest_b !== 'string') {
+      if (!has_material) {
         material_missing = true;
         progress.set(key, false);
         continue;
@@ -270,7 +319,8 @@ export function placementRelations(input) {
           ...(adopted.guard ? { overlap_guard: true } : {}),
           confidence: judgment.confidence,
           jev_choice: judgment.choice,
-          judged_at: judgment.judged_at
+          judged_at: judgment.judged_at,
+          ...preferFields(judgment)
         };
         continue;
       }

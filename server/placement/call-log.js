@@ -21,6 +21,9 @@ const log = debug('placement:call-log');
  * @property {string} digest_b
  * @property {string|null} choice
  * @property {number|null} confidence
+ * @property {string|null} prefer_choice - The preference answer (UI-unf5
+ * §3.3), null on failure.
+ * @property {number|null} prefer_confidence
  * @property {number} ms
  * @property {string|null} reason - Failure reason, null on success.
  */
@@ -35,6 +38,8 @@ const FIELDS = Object.freeze([
   'digest_b',
   'choice',
   'confidence',
+  'prefer_choice',
+  'prefer_confidence',
   'ms',
   'reason'
 ]);

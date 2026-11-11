@@ -1,7 +1,8 @@
 ---
 id: UI-3713
 title: 설정 창 묶음과 대화 결과 줄·마무리 뒤 되돌리기
-status: accepted
+status: superseded
+superseded_by: UI-unf5
 date: 2026-11-11
 summary: "Worker 대화 결과 줄은 새 접두(워커가 이어감·이 대화에서 마무리·나중에)와 옛 접두를 같은 kind로 읽고, takeover로 끝난 행도 Bead가 open이면 뒤 메시지의 handoff 줄이나 [워커로 이어가기]로 Worker에 넘기며, 대화 알림은 🙋 확인 필요·↪ Worker가 이어감·🙋 대화에서 마무리 셋이다 — 나머지 조항은 UI-32oq-2 그대로다"
 supersedes: ["UI-32oq-2"]
