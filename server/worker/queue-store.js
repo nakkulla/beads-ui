@@ -3855,6 +3855,9 @@ function normalizeConversation(raw) {
  * @property {string|null} chain_head
  * @property {string|null} attempt_id
  * @property {string|null} exhausted_reason
+ * @property {number} [exhausted_at]
+ * @property {string} [rerun_operation_id]
+ * @property {number} [rerun_manual_run_id]
  * @property {string[]} used_identities
  */
 
@@ -3887,6 +3890,16 @@ function normalizeFixWait(value) {
     chain_head: stringOrNullValue(value.chain_head),
     attempt_id: stringOrNullValue(value.attempt_id),
     exhausted_reason: stringOrNullValue(value.exhausted_reason),
+    ...(finiteOrNull(value.exhausted_at) !== null
+      ? { exhausted_at: Number(value.exhausted_at) }
+      : {}),
+    ...(stringOrNullValue(value.rerun_operation_id)
+      ? { rerun_operation_id: String(value.rerun_operation_id) }
+      : {}),
+    ...(Number.isSafeInteger(value.rerun_manual_run_id) &&
+    Number(value.rerun_manual_run_id) > 0
+      ? { rerun_manual_run_id: Number(value.rerun_manual_run_id) }
+      : {}),
     used_identities: Array.isArray(value.used_identities)
       ? value.used_identities.filter((id) => typeof id === 'string')
       : [String(value.failure_identity)]

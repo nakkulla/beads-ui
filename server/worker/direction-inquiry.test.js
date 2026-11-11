@@ -580,6 +580,22 @@ describe('direction-inquiry same-session launch', () => {
     expect(tmux.wrapper()).toContain('- 상황: 범위 밖 파일');
   });
 
+  test('includes exhausted self-repair in the no-progress entry situation', async () => {
+    const tmux = launchingHub();
+    const { inquiry } = makeInquiry({ tmux });
+
+    await inquiry.onParkedAttempt(
+      recoveryInput({
+        recovery: {
+          reason: 'no_progress',
+          self_repair_exhausted: '같은 실패 재발'
+        }
+      })
+    );
+
+    expect(tmux.wrapper()).toContain('자가 수리: 소진 — 같은 실패 재발');
+  });
+
   test('labels a legacy recovery stop as an old record', async () => {
     const tmux = launchingHub();
     const { inquiry } = makeInquiry({ tmux });

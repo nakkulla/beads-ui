@@ -370,11 +370,16 @@ function repairFailureContext(queue, row_key, failure) {
     (/** @type {any} */ row) =>
       row.state === 'exhausted' &&
       row.failure_identity ===
-        selfRepairFailureIdentity(
-          queue,
-          row_key,
-          row.failure_repo || operation?.repo_id || ''
-        )
+        (operation_id !== null
+          ? operationIncidentFingerprint(
+              row.failure_repo || operation.repo_id || '',
+              operation
+            )
+          : selfRepairFailureIdentity(
+              queue,
+              row_key,
+              row.failure_repo || operation?.repo_id || ''
+            ))
   );
   return {
     ...failure,

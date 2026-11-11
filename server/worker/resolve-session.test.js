@@ -1565,6 +1565,32 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
     expect(failure?.self_repair_exhausted).toBe('48시간 초과');
   });
 
+  test('keeps exhaustion on the tracked manual rerun after another click', () => {
+    const queue = {
+      repo_operations: {
+        'op-1': MANUAL_OPERATION,
+        'op-2': { ...MANUAL_OPERATION, state: 'running', failure: null }
+      },
+      fix_waits: {
+        'repo-op:origin': {
+          state: 'exhausted',
+          failure_identity: selfRepairFailureIdentity(
+            { repo_operations: { 'op-1': MANUAL_OPERATION } },
+            'repo-op:op-1',
+            '/repo'
+          ),
+          failure_repo: '/repo',
+          rerun_operation_id: 'op-1',
+          exhausted_reason: '같은 실패 재발'
+        }
+      }
+    };
+
+    const failure = repoOperationFailureContext(queue, 'op-1');
+
+    expect(failure?.self_repair_exhausted).toBe('같은 실패 재발');
+  });
+
   test('opens a fresh session in the repository root without a Bead read', async () => {
     const readIssue = vi.fn(async () => ({ id: BEAD, metadata: {} }));
     const recordInteractiveSession = vi.fn();

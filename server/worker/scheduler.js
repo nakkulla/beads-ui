@@ -157,6 +157,7 @@ import {
   FIX_WAIT_LIMIT_MS,
   conditionWaitState,
   conditionWaitTipFor,
+  operationIncidentFingerprint,
   selfRepairFailureIdentity
 } from './resolution-ladder.js';
 import {
@@ -6427,6 +6428,37 @@ export function createScheduler(deps) {
       ) {
         return;
       }
+      const queue = deps.store.snapshot(workspace);
+      const wait = queue.fix_waits[bead_id];
+      if (
+        recovery?.reason === 'no_progress' &&
+        wait?.state === 'rerunning' &&
+        selfRepairFailureIdentity(queue, bead_id, workspace) ===
+          wait.failure_identity
+      ) {
+        /** @type {Set<string>} */
+        const seen = new Set();
+        /** @type {string|null} */
+        let cursor = attempt_id;
+        while (cursor && !seen.has(cursor)) {
+          seen.add(cursor);
+          if (cursor === wait.attempt_id) {
+            exhaustFixWait(workspace, bead_id, wait, '같은 실패 재발');
+            recovery = {
+              ...recovery,
+              self_repair_exhausted: '같은 실패 재발'
+            };
+            deps.store.updateAttempt(workspace, {
+              attempt_id,
+              patch: {
+                cause_detail: { ...attempt.cause_detail, recovery }
+              }
+            });
+            break;
+          }
+          cursor = queue.attempts[cursor]?.resumed_from;
+        }
+      }
       // `🙋 확인 필요` goes out once per stopped attempt (UI-nuwy §3.7). The
       // durable stamp lands BEFORE the trigger can send, so a restart or a
       // later reclassification of the same attempt never repeats it.
@@ -6439,6 +6471,7 @@ export function createScheduler(deps) {
           patch: {
             cause_detail: {
               ...(attempt.cause_detail || {}),
+              ...(recovery ? { recovery } : {}),
               confirm_notified_at: now()
             }
           }
@@ -10845,14 +10878,18 @@ export function createScheduler(deps) {
    * @returns {boolean}
    */
   function deployInFlightFor(operations, bead_id) {
+    const manual_id = repoOperationIdOf(bead_id);
     return Object.values(operations).some(
       (operation) =>
         operation?.kind === 'deploy' &&
         ['queued', 'running', 'retry_pending'].includes(operation.state) &&
-        Array.isArray(operation.subjects) &&
-        operation.subjects.some(
-          (/** @type {any} */ subject) => subject?.bead_id === bead_id
-        )
+        (manual_id !== null
+          ? operation.source === 'manual' &&
+            operation.repo_id === operations[manual_id]?.repo_id
+          : Array.isArray(operation.subjects) &&
+            operation.subjects.some(
+              (/** @type {any} */ subject) => subject?.bead_id === bead_id
+            ))
     );
   }
 
@@ -10890,7 +10927,11 @@ export function createScheduler(deps) {
         env_group: null
       },
       attempt.cause_detail ?? null,
-      { moot: false, repo: attempt.repo ?? null, at: schedule.deadline_at }
+      {
+        moot: false,
+        repo: attempt.repo ?? null,
+        at: schedule.exhausted_at ?? schedule.deadline_at
+      }
     );
     launchConditionWaitConversation(workspace, attempt.bead_id, attempt.repo);
     notifyChanged(workspace);
@@ -12390,14 +12431,64 @@ export function createScheduler(deps) {
   const fix_wait_flights = new Set();
 
   /**
+   * Persist exhaustion before any human-exit conversation can compose its entry.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').FixWait} wait
+   * @param {string} reason
+   */
+  function exhaustFixWait(workspace, bead_id, wait, reason) {
+    deps.store.recordFixWait(workspace, bead_id, {
+      ...wait,
+      state: 'exhausted',
+      exhausted_reason: reason,
+      exhausted_at: now()
+    });
+    appendTimeline({
+      bead_id,
+      kind: 'interactive_session',
+      seq: `fix-wait:${wait.entered_at}:exit`,
+      summary: `수정 대기 종료 · ${reason}`
+    });
+  }
+
+  /**
+   * Find the reserved manual run even after a restart before its id was saved.
+   * The adapter returns only ok/reason; the queue's monotonic run id correlates
+   * its durable operation without relying on the `manual` subject's Bead id.
+   *
+   * @param {{ repo_operations: Record<string, any> }} queue
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').FixWait} wait
+   * @returns {[string, any]|undefined}
+   */
+  function fixWaitManualOperation(queue, bead_id, wait) {
+    if (wait.rerun_operation_id) {
+      const operation = queue.repo_operations[wait.rerun_operation_id];
+      return operation ? [wait.rerun_operation_id, operation] : undefined;
+    }
+    const origin = queue.repo_operations[repoOperationIdOf(bead_id) || ''];
+    return Object.entries(queue.repo_operations).find(
+      ([, operation]) =>
+        operation.kind === 'deploy' &&
+        operation.source === 'manual' &&
+        operation.repo_id === origin?.repo_id &&
+        typeof wait.rerun_manual_run_id === 'number' &&
+        operation.manual_run_id === wait.rerun_manual_run_id
+    );
+  }
+
+  /**
    * Observe durable fix waits independently of pane lifetime and auto-advance.
    *
    * @param {string} workspace
    */
   async function reconcileFixWaits(workspace) {
-    for (const [bead_id, wait] of Object.entries(
+    for (const [bead_id, stored_wait] of Object.entries(
       deps.store.snapshot(workspace).fix_waits || {}
     )) {
+      let wait = stored_wait;
       const flight = `${workspace}:${bead_id}`;
       if (
         !['waiting', 'rerunning'].includes(wait.state) ||
@@ -12406,20 +12497,41 @@ export function createScheduler(deps) {
         continue;
       }
       const q = deps.store.snapshot(workspace);
-      const identity = selfRepairFailureIdentity(q, bead_id, workspace);
+      const manual_rerun =
+        wait.state === 'rerunning' && repoOperationIdOf(bead_id) !== null;
+      const manual_operation = manual_rerun
+        ? fixWaitManualOperation(q, bead_id, wait)
+        : undefined;
+      if (manual_operation && !wait.rerun_operation_id) {
+        wait = { ...wait, rerun_operation_id: manual_operation[0] };
+        deps.store.recordFixWait(workspace, bead_id, wait);
+      }
+      const identity = manual_rerun
+        ? manual_operation?.[1].state === 'failed'
+          ? operationIncidentFingerprint(workspace, manual_operation[1])
+          : null
+        : selfRepairFailureIdentity(q, bead_id, workspace);
       const running =
-        deployInFlightFor(q.repo_operations, bead_id) ||
-        Object.values(q.attempts).some(
-          (row) => row.bead_id === bead_id && row.status === 'running'
-        );
+        !wait.exhausted_reason &&
+        (manual_rerun
+          ? !manual_operation ||
+            !['succeeded', 'failed'].includes(manual_operation[1].state)
+          : deployInFlightFor(q.repo_operations, bead_id) ||
+            Object.values(q.attempts).some(
+              (row) => row.bead_id === bead_id && row.status === 'running'
+            ));
       const passed =
-        q.done.some((/** @type {any} */ row) => row.bead_id === bead_id) ||
-        (identity === null && !running);
+        !wait.exhausted_reason &&
+        (manual_rerun
+          ? manual_operation?.[1].state === 'succeeded'
+          : q.done.some((/** @type {any} */ row) => row.bead_id === bead_id) ||
+            (identity === null && !running));
       /** @type {string|null} */
       let exhausted = null;
       if (
         passed ||
-        (identity !== null &&
+        (!wait.exhausted_reason &&
+          identity !== null &&
           identity !== wait.failure_identity &&
           !running &&
           wait.state === 'rerunning')
@@ -12469,18 +12581,22 @@ export function createScheduler(deps) {
         const done = fix_queue?.done?.find(
           (/** @type {any} */ row) => row.bead_id === wait.bead_id
         );
-        const merged_sha = done?.merged_sha || done?.merge_sha;
         const discarded = Object.values(
           fix_queue?.discard_operations || {}
         ).some((/** @type {any} */ row) => row.bead_id === wait.bead_id);
         const landed =
-          typeof merged_sha === 'string' &&
-          /^[0-9a-f]{40}$/i.test(merged_sha) &&
+          !!done &&
           Object.values(fix_queue?.repo_operations || {}).some(
             (/** @type {any} */ row) =>
               row.kind === 'deploy' &&
               row.state === 'succeeded' &&
-              row.target_sha === merged_sha
+              Array.isArray(row.subjects) &&
+              row.subjects.some(
+                (/** @type {any} */ subject) =>
+                  subject.bead_id === wait.bead_id &&
+                  typeof subject.merged_sha === 'string' &&
+                  /^[0-9a-f]{40}$/i.test(subject.merged_sha)
+              )
           );
         if (
           /^(refuted:|no-delta:)/.test(found.issue.close_reason || '') ||
@@ -12517,12 +12633,14 @@ export function createScheduler(deps) {
               continue;
             }
           }
-          if (
-            !deps.store.recordFixWait(workspace, bead_id, {
-              ...wait,
-              state: 'rerunning'
-            }).ok
-          ) {
+          const rerunning = {
+            ...wait,
+            state: /** @type {const} */ ('rerunning'),
+            ...(repoOperationIdOf(bead_id) !== null
+              ? { rerun_manual_run_id: current.manual_deploy_seq + 1 }
+              : {})
+          };
+          if (!deps.store.recordFixWait(workspace, bead_id, rerunning).ok) {
             continue;
           }
           fix_wait_flights.add(flight);
@@ -12542,15 +12660,25 @@ export function createScheduler(deps) {
                     );
               if (!result?.ok) {
                 deps.store.recordFixWait(workspace, bead_id, {
-                  ...wait,
-                  state: 'rerunning',
+                  ...rerunning,
                   exhausted_reason: '재실행 거절'
                 });
+              } else if (repoOperationIdOf(bead_id) !== null) {
+                const operation = fixWaitManualOperation(
+                  deps.store.snapshot(workspace),
+                  bead_id,
+                  rerunning
+                );
+                if (operation) {
+                  deps.store.recordFixWait(workspace, bead_id, {
+                    ...rerunning,
+                    rerun_operation_id: operation[0]
+                  });
+                }
               }
             } catch {
               deps.store.recordFixWait(workspace, bead_id, {
-                ...wait,
-                state: 'rerunning',
+                ...rerunning,
                 exhausted_reason: '재실행 실패'
               });
             } finally {
@@ -12561,17 +12689,10 @@ export function createScheduler(deps) {
           continue;
         }
       }
-      deps.store.recordFixWait(workspace, bead_id, {
-        ...wait,
-        state: 'exhausted',
-        exhausted_reason: exhausted
-      });
-      appendTimeline({
-        bead_id,
-        kind: 'interactive_session',
-        seq: `fix-wait:${wait.entered_at}:exit`,
-        summary: `수정 대기 종료 · ${exhausted}`
-      });
+      if (exhausted === null) {
+        continue;
+      }
+      exhaustFixWait(workspace, bead_id, wait, exhausted);
       if (!wait.chain_head) {
         notifyLifecycle('attemptFailed', {
           bead_id,
@@ -12610,14 +12731,16 @@ export function createScheduler(deps) {
       } else if (repoOperationIdOf(bead_id) !== null) {
         const original =
           q.repo_operations[/** @type {string} */ (repoOperationIdOf(bead_id))];
-        const latest = Object.entries(q.repo_operations)
-          .filter(
-            ([, row]) =>
-              row.kind === 'deploy' &&
-              row.source === 'manual' &&
-              row.repo_id === original?.repo_id
-          )
-          .at(-1);
+        const latest =
+          manual_operation ||
+          Object.entries(q.repo_operations)
+            .filter(
+              ([, row]) =>
+                row.kind === 'deploy' &&
+                row.source === 'manual' &&
+                row.repo_id === original?.repo_id
+            )
+            .at(-1);
         if (latest) {
           await deps.failureConversation?.launchForRepoOperation?.({
             workspace,

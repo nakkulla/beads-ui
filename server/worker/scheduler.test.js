@@ -31,6 +31,7 @@ import { RETRY_DELAYS_MS } from './queue-hold.js';
 import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
 import * as operationPolicy from './repo-operation-policy.js';
+import { selfRepairFailureIdentity } from './resolution-ladder.js';
 import { createFailureConversationLauncher } from './resolve-session.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
@@ -1877,6 +1878,63 @@ function setup(opts) {
 }
 
 describe('scheduler work recovery waits', () => {
+  test('exhausts the same no-progress fix rerun before opening its only inquiry', async () => {
+    const onParkedAttempt = vi.fn(async () => ({
+      session: 'not_launched',
+      reason: 'disabled'
+    }));
+    const env = recoveryEnv({ directionInquiry: { onParkedAttempt } });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'original-session');
+    /** @type {Partial<import('./runner/session.js').RunnerVerdict>} */
+    const verdict = {
+      success: true,
+      summary: 'same failure',
+      terminal_result: { kind: 'recovery_wait', reason: 'no_progress' }
+    };
+    const prior = await endSession(env, verdict);
+    const identity = /** @type {string} */ (
+      selfRepairFailureIdentity(env.store.snapshot(WS), 'S1', WS)
+    );
+    env.store.recordFixWait(WS, 'S1', {
+      bead_id: 'UI-fix',
+      rig: WS,
+      entered_at: 500,
+      failure_identity: identity,
+      state: 'rerunning',
+      chain_head: null,
+      attempt_id: prior.attempt_id,
+      exhausted_reason: null,
+      used_identities: [identity]
+    });
+    await env.scheduler.resume(WS, prior.attempt_id, {
+      self_repair_retry: true
+    });
+    onParkedAttempt.mockClear();
+
+    const child = await endSession(env, verdict);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(onParkedAttempt).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        attempt_id: child.attempt_id,
+        recovery: expect.objectContaining({
+          reason: 'no_progress',
+          self_repair_exhausted: '같은 실패 재발'
+        })
+      })
+    );
+    expect(env.store.snapshot(WS).fix_waits.S1).toMatchObject({
+      state: 'exhausted',
+      exhausted_at: 1000,
+      exhausted_reason: '같은 실패 재발'
+    });
+    expect(child.cause_detail.recovery.self_repair_exhausted).toBe(
+      '같은 실패 재발'
+    );
+  });
+
   test.each(['verification', 'reconcile', 'unclassified'])(
     'keeps an unadvertised %s token out of the conversation',
     async (reason) => {
@@ -4274,20 +4332,39 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
 
     expect(env.store.snapshot(WS).fix_waits.F1).toMatchObject({
       state: 'exhausted',
+      exhausted_at: 1000 + 48 * 3600000,
       exhausted_reason: '48시간 초과'
     });
   });
 
-  test('reruns a landed and deployed fix once', async () => {
+  test('reruns a quick-fix landing from deploy subjects despite a null done merge SHA', async () => {
     const sha = 'a'.repeat(40);
     const env = failureEnv({
       patch: () => ({
-        done: [{ bead_id: 'UI-fix', merged_sha: sha }],
         repo_operations: {
-          deploy: { kind: 'deploy', state: 'succeeded', target_sha: sha }
+          deploy: {
+            kind: 'deploy',
+            state: 'succeeded',
+            target_sha: sha,
+            subjects: [{ bead_id: 'UI-fix', merged_sha: sha }]
+          }
         }
       })
     });
+    seedPrWait(env.real, 'UI-fix');
+    env.real.updateAttempt(WS, {
+      attempt_id: 'att-UI-fix',
+      patch: {
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor: 'branch_cleanup',
+          head_sha: sha,
+          reason: null
+        }
+      }
+    });
+    env.real.moveToDone(WS, { bead_id: 'UI-fix' });
+    expect(env.real.snapshot(WS).done[0].merge_sha).toBeNull();
     openFailureConversation(env);
     say(env, '수정 대기 · UI-fix — job defect');
     await env.scheduler.reconcileInteractiveSessions(WS);
@@ -4339,7 +4416,12 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       JSON.stringify({
         done: [{ bead_id: 'dotfiles-fix', merged_sha: sha }],
         repo_operations: {
-          deploy: { kind: 'deploy', state: 'succeeded', target_sha: sha }
+          deploy: {
+            kind: 'deploy',
+            state: 'succeeded',
+            target_sha: sha,
+            subjects: [{ bead_id: 'dotfiles-fix', merged_sha: sha }]
+          }
         }
       })
     );
@@ -4357,6 +4439,43 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     } finally {
       fs.rmSync(rig, { recursive: true, force: true });
     }
+  });
+
+  test.each([
+    [],
+    [{ bead_id: 'UI-other', merged_sha: 'a'.repeat(40) }],
+    [{ bead_id: 'UI-fix', merged_sha: 'unverified' }]
+  ])('rejects landing without the fix subject SHA: %j', async (...subjects) => {
+    const sha = 'a'.repeat(40);
+    const env = failureEnv({
+      patch: () => ({
+        done: [{ bead_id: 'UI-fix', merge_sha: sha }],
+        repo_operations: {
+          deploy: {
+            kind: 'deploy',
+            state: 'succeeded',
+            target_sha: sha,
+            subjects
+          }
+        }
+      })
+    });
+    openFailureConversation(env);
+    say(env, '수정 대기 · UI-fix — deploy defect');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.bd.readIssue = async (id) => ({
+      id,
+      status: 'closed',
+      close_reason: 'merged'
+    });
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.store.snapshot(WS).fix_waits.F1).toMatchObject({
+      state: 'exhausted',
+      exhausted_reason: '착지 확인 불가'
+    });
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
   });
 
   test('ends fix wait after a human retry passes without a second rerun', async () => {
@@ -4379,7 +4498,12 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       patch: () => ({
         done: [{ bead_id: 'UI-fix', merged_sha: sha }],
         repo_operations: {
-          deploy: { kind: 'deploy', state: 'succeeded', target_sha: sha }
+          deploy: {
+            kind: 'deploy',
+            state: 'succeeded',
+            target_sha: sha,
+            subjects: [{ bead_id: 'UI-fix', merged_sha: sha }]
+          }
         },
         ...(human_running
           ? { attempts: { human: { bead_id: 'F1', status: 'running' } } }
@@ -4443,7 +4567,12 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       patch: () => ({
         done: [{ bead_id: 'UI-fix', merged_sha: sha }],
         repo_operations: {
-          deploy: { kind: 'deploy', state: 'succeeded', target_sha: sha }
+          deploy: {
+            kind: 'deploy',
+            state: 'succeeded',
+            target_sha: sha,
+            subjects: [{ bead_id: 'UI-fix', merged_sha: sha }]
+          }
         }
       }),
       exits: { retryCleanup: vi.fn(async () => ({ ok: true })) }
@@ -5078,6 +5207,172 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
   const ROW = `repo-op:${OP}`;
   const KEY = `${ROW}:resolve`;
 
+  test('keeps fix wait active while a human manual deploy runs', async () => {
+    const env = repoOpEnv();
+    const identity = /** @type {string} */ (
+      selfRepairFailureIdentity(env.real.snapshot(WS), ROW, WS)
+    );
+    env.real.recordFixWait(WS, ROW, {
+      bead_id: 'UI-fix',
+      rig: WS,
+      entered_at: 500,
+      failure_identity: identity,
+      state: 'waiting',
+      chain_head: null,
+      attempt_id: null,
+      exhausted_reason: null,
+      used_identities: [identity]
+    });
+    env.real.ensureRepoOperation(WS, {
+      operation_id: 'human-manual',
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'manual', merged_sha: 'd'.repeat(40) }],
+      effective_base_sha: 'd'.repeat(40),
+      target_base: 'main',
+      target_sha: 'd'.repeat(40),
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      source: 'manual',
+      manual_run_id: 2
+    });
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.real.snapshot(WS).fix_waits[ROW].state).toBe('waiting');
+    expect(env.exits.rerunManualDeploy).not.toHaveBeenCalled();
+  });
+
+  test.each(['succeeded', 'same_failure', 'new_failure'])(
+    'tracks the actual manual fix rerun through %s',
+    async (outcome) => {
+      const env = repoOpEnv();
+      const sha = 'd'.repeat(40);
+      seedPrWait(env.real, 'UI-fix');
+      env.real.moveToDone(WS, { bead_id: 'UI-fix' });
+      env.real.ensureRepoOperation(WS, {
+        operation_id: 'fix-deploy',
+        repo_id: WS,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-fix', merged_sha: sha }],
+        effective_base_sha: sha,
+        target_base: 'main',
+        target_sha: sha,
+        script_mode: '100755',
+        script_blob_sha: sha
+      });
+      const fix = env.real.snapshot(WS).repo_operations['fix-deploy'];
+      env.real.settleRepoOperation(WS, {
+        operation_id: 'fix-deploy',
+        attempt_id: fix.attempt_id,
+        exit_code: 0,
+        signal: null
+      });
+      env.bd.readIssue = async (id) => ({
+        id,
+        status: 'closed',
+        close_reason: 'merged'
+      });
+      const identity = /** @type {string} */ (
+        selfRepairFailureIdentity(env.real.snapshot(WS), ROW, WS)
+      );
+      env.real.issueManualDeployRun(WS);
+      env.real.recordFixWait(WS, ROW, {
+        bead_id: 'UI-fix',
+        rig: WS,
+        entered_at: 500,
+        failure_identity: identity,
+        state: 'waiting',
+        chain_head: null,
+        attempt_id: null,
+        exhausted_reason: null,
+        used_identities: [identity]
+      });
+      env.exits.rerunManualDeploy.mockImplementation(async () => {
+        env.real.issueManualDeployRun(WS);
+        env.real.ensureRepoOperation(WS, {
+          operation_id: 'actual-rerun',
+          repo_id: WS,
+          kind: 'deploy',
+          subjects: [{ bead_id: 'manual', merged_sha: sha }],
+          effective_base_sha: sha,
+          target_base: 'main',
+          target_sha: sha,
+          script_mode: '100755',
+          script_blob_sha: sha,
+          source: 'manual',
+          manual_run_id: 2
+        });
+        return { ok: true, reason: null };
+      });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      // Recover the durable correlation if a restart preceded the id write.
+      const { rerun_operation_id, ...reserved } =
+        env.real.snapshot(WS).fix_waits[ROW];
+      expect(rerun_operation_id).toBe('actual-rerun');
+      env.real.recordFixWait(WS, ROW, reserved);
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.real.snapshot(WS).fix_waits[ROW]).toMatchObject({
+        state: 'rerunning',
+        rerun_operation_id: 'actual-rerun'
+      });
+      const rerun = env.real.snapshot(WS).repo_operations['actual-rerun'];
+      env.real.settleRepoOperation(WS, {
+        operation_id: 'actual-rerun',
+        attempt_id: rerun.attempt_id,
+        exit_code: outcome === 'succeeded' ? 0 : 2,
+        signal: null,
+        failure:
+          outcome === 'succeeded'
+            ? null
+            : {
+                code:
+                  outcome === 'new_failure'
+                    ? 'another_failure'
+                    : 'script_failed',
+                fingerprint: 'f1',
+                detail: '',
+                interrupted: false
+              }
+      });
+      // A later manual click must not substitute its outcome for this rerun.
+      env.real.ensureRepoOperation(WS, {
+        operation_id: 'other-manual',
+        repo_id: WS,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'manual', merged_sha: sha }],
+        effective_base_sha: sha,
+        target_base: 'main',
+        target_sha: sha,
+        script_mode: '100755',
+        script_blob_sha: sha,
+        source: 'manual',
+        manual_run_id: 3
+      });
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.real.snapshot(WS).fix_waits[ROW]).toMatchObject({
+        state: outcome === 'same_failure' ? 'exhausted' : 'passed',
+        ...(outcome === 'same_failure'
+          ? { exhausted_reason: '같은 실패 재발' }
+          : {})
+      });
+      expect(env.exits.rerunManualDeploy).toHaveBeenCalledTimes(1);
+      if (outcome === 'same_failure') {
+        expect(
+          env.failureConversation.launchForRepoOperation
+        ).toHaveBeenCalledExactlyOnceWith({
+          workspace: WS,
+          repo: WS,
+          operation_id: 'actual-rerun'
+        });
+      }
+    }
+  );
+
   /**
    * A repo-operation conversation pass harness: a real queue store holding
    * one failed manual deploy, one `resolve` pane keyed by the operation, a
@@ -5086,6 +5381,9 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
    */
   function repoOpEnv() {
     let at = 1000;
+    const failureConversation = {
+      launchForRepoOperation: vi.fn(async () => ({ session: 'not_launched' }))
+    };
     const real = makeQueueStore({ now: () => at });
     real.ensureRepoOperation(WS, {
       operation_id: OP,
@@ -5169,7 +5467,8 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       ...{
         interactiveLauncher: launcher,
         readLastAssistantMessage: () => message.current,
-        conversationExits: exits
+        conversationExits: exits,
+        failureConversation
       }
     });
     const readStatus = vi.spyOn(env.bd, 'readStatus');
@@ -5182,7 +5481,8 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       transcript,
       exits,
       notify,
-      readStatus
+      readStatus,
+      failureConversation
     };
   }
 
@@ -38523,6 +38823,7 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
    */
   function waitEnv(input) {
     const notify = { attemptFailed: vi.fn() };
+    const timeline = { append: vi.fn() };
     const failureConversation = {
       launchForBead: vi.fn(async () => ({ session: 'launched' }))
     };
@@ -38537,6 +38838,7 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
       config: { S1: { route: 'quick_fix' } },
       slots: 1,
       notify,
+      timeline,
       quickfixLanding: { settle },
       now: input.now,
       .../** @type {any} */ ({
@@ -38546,7 +38848,7 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
     });
     const comment = vi.fn(async () => {});
     /** @type {any} */ (env.bd).comment = comment;
-    return { ...env, notify, settle, comment, failureConversation };
+    return { ...env, notify, timeline, settle, comment, failureConversation };
   }
 
   /**
@@ -38633,6 +38935,34 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
 
     expect(env.settle).toHaveBeenCalledTimes(1);
     expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+  });
+
+  test('records an exhausted early repair failure at its actual exhaustion time', async () => {
+    const exhausted_at = Date.UTC(2026, 10, 12);
+    const env = waitEnv({ now: () => exhausted_at + 1 });
+    seedConditionWait(env.store, 'head', exhausted_at - 5000);
+    seedLandingWait(env.store);
+    env.store.recordFixWait(WS, 'S1', {
+      bead_id: 'UI-fix',
+      rig: WS,
+      entered_at: exhausted_at - 1000,
+      failure_identity: 'test-failure',
+      state: 'exhausted',
+      chain_head: 'head',
+      attempt_id: 'quickfix-wait',
+      exhausted_reason: '같은 실패 재발',
+      exhausted_at,
+      used_identities: ['test-failure']
+    });
+
+    await env.scheduler.reconcile(WS);
+    await settleRecheck();
+
+    expect(env.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'attempt_failed', at: exhausted_at })
+    );
+    expect(env.notify.attemptFailed).toHaveBeenCalledTimes(1);
+    expect(env.settle).not.toHaveBeenCalled();
   });
 
   test('reruns a condition-wait step immediately after its fix lands', async () => {

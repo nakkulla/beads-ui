@@ -413,7 +413,7 @@ export function scriptRetryConsumptionKey(operation) {
 
 /**
  * @typedef {{ failure_code: string, interval_ms: number, deadline_ms: number }} ConditionWaitPolicy
- * @typedef {{ tip_id: string, head_id: string, next_at: number, deadline_at: number }} ConditionWaitSchedule
+ * @typedef {{ tip_id: string, head_id: string, next_at: number, deadline_at: number, exhausted_at?: number }} ConditionWaitSchedule
  */
 
 /**
@@ -478,6 +478,10 @@ export function conditionWaitSchedule(operations, tip_id, policy) {
   return {
     tip_id,
     head_id,
+    ...(operations[head_id].fix_wait?.state === 'exhausted' &&
+    typeof operations[head_id].fix_wait.exhausted_at === 'number'
+      ? { exhausted_at: operations[head_id].fix_wait.exhausted_at }
+      : {}),
     next_at: tip.finished_at + policy.interval_ms,
     deadline_at: operations[head_id].fix_wait
       ? ['waiting', 'rerunning'].includes(operations[head_id].fix_wait.state)

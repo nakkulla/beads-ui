@@ -55,6 +55,9 @@ describe('interactive session persistence', () => {
       chain_head: null,
       attempt_id: null,
       exhausted_reason: null,
+      rerun_operation_id: 'manual-rerun',
+      rerun_manual_run_id: 2,
+      exhausted_at: 2000,
       used_identities: ['012345abcdef']
     };
     store.recordFixWait(WS, 'B1', wait);

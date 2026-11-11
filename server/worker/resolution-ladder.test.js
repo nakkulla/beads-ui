@@ -14,6 +14,25 @@ import {
 } from './resolution-ladder.js';
 
 describe('deploy condition wait schedule (dotfiles-rnyd9)', () => {
+  test('expires an exhausted chain immediately while preserving its actual failure time', () => {
+    const exhausted_at = Date.UTC(2026, 10, 12);
+    const operations = {
+      tip: waitRecord({
+        finished_at: exhausted_at - 1000,
+        fix_wait: { state: 'exhausted', exhausted_at }
+      })
+    };
+
+    const schedule = conditionWaitSchedule(operations, 'tip', POLICY);
+
+    expect(schedule).toMatchObject({ deadline_at: 0, exhausted_at });
+    expect(
+      conditionWaitState(
+        /** @type {NonNullable<typeof schedule>} */ (schedule),
+        exhausted_at
+      )
+    ).toBe('expired');
+  });
   test('keeps rechecks due beyond 24 hours during fix wait', () => {
     const operations = {
       tip: waitRecord({
