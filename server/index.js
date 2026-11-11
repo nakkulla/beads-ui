@@ -11,6 +11,7 @@ import {
 } from './codex-credit-store.js';
 import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
+import { installHermesCodexFollow } from './hermes-codex-follow.js';
 import {
   activeSwitchSettingsOf,
   limitPolicySettingsStore,
@@ -296,6 +297,9 @@ const codex_active_return = createCodexActiveReturn({
 subscribeAccountListObservations((list) => {
   void codex_active_return.observe(list);
 });
+// Hermes's own openai-codex pool puts the same account first after every
+// Codex switch, manual or automatic (UI-ow0x).
+installHermesCodexFollow();
 // The Codex timer otherwise arms only on an observed trigger; a departure
 // record that survived the restart arms it here so the return still happens.
 codex_active_return.start();
