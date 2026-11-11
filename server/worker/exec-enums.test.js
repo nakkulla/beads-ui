@@ -231,7 +231,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   });
 
   test('drops impl_dispatch from the workspace kv list', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(21);
+    expect(WORKSPACE_KV_KEYS).toHaveLength(20);
 
     expect(WORKSPACE_KV_KEYS).toEqual([
       'workflow_mode',
@@ -253,13 +253,12 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
       'quick_fix_impl_model',
       'quick_fix_impl_effort',
       'quick_fix_impl_speed',
-      'base_sync_accept_local_commits',
-      'bdui_url'
+      'base_sync_accept_local_commits'
     ]);
   });
 
-  test('appends bdui_url as the last kv-only key', () => {
-    expect(WORKSPACE_KV_KEYS.at(-1)).toBe('bdui_url');
+  test('excludes the obsolete bdui_url key from workspace defaults', () => {
+    expect(WORKSPACE_KV_KEYS).not.toContain('bdui_url');
   });
 
   test('exceeds the per-bead list by the route profile and the kv-only keys', () => {
@@ -270,8 +269,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     expect(extra).toEqual([
       'workflow_mode',
       ...QUICK_FIX_KV_KEYS,
-      'base_sync_accept_local_commits',
-      'bdui_url'
+      'base_sync_accept_local_commits'
     ]);
   });
 
@@ -293,12 +291,11 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     ).not.toContain('bdui_url');
   });
 
-  test('gives bdui_url no enum entry, since the contract types it as a string', () => {
+  test('excludes the obsolete bdui_url key from session enums', () => {
     const session_enums = sessionDefaultEnums(
       resolveCatalog({ warn: () => {} })
     );
 
-    expect(WORKSPACE_KV_KEYS).toContain('bdui_url');
     expect(Object.keys(session_enums)).not.toContain('bdui_url');
   });
 
@@ -971,7 +968,7 @@ describe('workspace kv mirror across the two runtimes', () => {
     expect(QUICK_FIX_LANE_MAP).toEqual(CLIENT_QUICK_FIX_LANE_MAP);
   });
 
-  test('judges every bdui_url case the same way on both sides', () => {
+  test('judges common Worker URL origins the same way on both sides', () => {
     const cases = [
       'http://100.64.0.1:3000',
       'https://beads.example',

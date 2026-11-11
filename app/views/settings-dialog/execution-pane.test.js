@@ -2252,7 +2252,7 @@ describe('createExecutionPane session-defaults lifecycle', () => {
     expect(pane.sessionDraft()).toEqual({ impl_runtime: 'codex' });
   });
 
-  test('leaves a stored Worker address exception out of every save', async () => {
+  test('ignores an obsolete Worker address key in every save', async () => {
     const { root, pane, calls } = mount({
       values: { bdui_url: 'http://exception:3000', impl_runtime: 'codex' }
     });

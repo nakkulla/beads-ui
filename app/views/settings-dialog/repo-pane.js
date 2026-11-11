@@ -6,8 +6,8 @@
  * order: the concurrency cap, serial-lane count and declared base; `main 동기화`
  * (the `base_sync_accept_local_commits` session default); the repo-operation
  * declaration block the Worker tab draws inline, with the button that opens the
- * same timeline drawer the monitor badge opens; and the stored-only values — a
- * `bdui_url` exception or a `workflow_mode` that no screen edits any more,
+ * same timeline drawer the monitor badge opens; and a stored `workflow_mode`
+ * that no screen edits any more,
  * drawn read-only with `지우기` only while one is stored.
  *
  * The queue material is that repository's monitor pipeline entry. A repository
@@ -42,11 +42,6 @@ const BASE_SYNC_KEY = 'base_sync_accept_local_commits';
  * @type {ReadonlyArray<{ key: string, label: string, hint: string }>}
  */
 export const STORED_ONLY_KEYS = [
-  {
-    key: 'bdui_url',
-    label: 'Worker 주소 예외',
-    hint: '공통 주소보다 우선합니다 — 지우면 이 저장소도 공통 주소를 씁니다'
-  },
   {
     key: 'workflow_mode',
     label: '워크플로 모드',

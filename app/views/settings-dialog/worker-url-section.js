@@ -6,8 +6,7 @@
  * workspace's `get-session-defaults` reply (`worker_url.common`) and writes it
  * with `set-worker-url-common` under the revision it read. It shows the stored
  * state and the resolver's common-address warnings only — there is no
- * connectivity probe. A repository's own stored exception is not edited here:
- * the `저장소` tab shows it read-only with `지우기`.
+ * connectivity probe.
  *
  * It reads again only on window focus and on `새로고침` (ADR UI-32oq-2, the
  * UI-u6ud-11 clause it inherits) — no watcher, no polling. A re-read keeps an
@@ -30,7 +29,7 @@ import {
 const ORIGIN_FORMAT =
   'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)';
 
-/** Resolver warnings about the common value; a repo exception is not one. */
+/** Resolver warnings about the common value. */
 const COMMON_WARNINGS = ['common_invalid', 'common_unavailable'];
 
 /**

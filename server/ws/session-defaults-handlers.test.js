@@ -1031,7 +1031,6 @@ const WORKER_URL = {
   status: 'ok',
   effective_url: COMMON.value,
   source: 'common',
-  workspace_override: null,
   common: COMMON,
   warnings: []
 };
@@ -1056,7 +1055,7 @@ describe('Worker URL session defaults', () => {
     kvGetJsonAtRoot.mockResolvedValue({ ok: true, found: false });
   });
 
-  test('resolves normal absence with one empty snapshot and no writes', async () => {
+  test('resolves normal absence from the root without writes', async () => {
     const { ws, sent } = fakeWs();
 
     await handleGetSessionDefaults(ws, {
@@ -1066,8 +1065,7 @@ describe('Worker URL session defaults', () => {
     });
 
     expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
-      root: WS_OTHER,
-      workspace: {}
+      root: WS_OTHER
     });
     expect(kvGetJsonAtRoot).toHaveBeenCalledTimes(1);
     expect(sent[0].payload).toEqual({
@@ -1080,13 +1078,9 @@ describe('Worker URL session defaults', () => {
     expect(commonSet).not.toHaveBeenCalled();
   });
 
-  test.each([
-    { ok: true, found: true },
-    { ok: true, found: true, warning: 'kv_value_unparsable' },
-    { ok: true, found: true, value: {}, warning: 'kv_value_unparsable' }
-  ])('blocks resolution of unreadable stored snapshots %j', async (read) => {
+  test('fails a kv read before resolving the Worker address', async () => {
     const { ws, sent } = fakeWs();
-    kvGetJsonAtRoot.mockResolvedValue(read);
+    kvGetJsonAtRoot.mockResolvedValue({ ok: false, error: 'bd unavailable' });
 
     await handleGetSessionDefaults(ws, {
       id: 'get',
@@ -1094,16 +1088,43 @@ describe('Worker URL session defaults', () => {
       payload: { root_dir: WS_OTHER }
     });
 
+    expect(sent[0].error.code).toBe('kv_read_failed');
     expect(resolveWorkerUrl).not.toHaveBeenCalled();
-    expect(sent[0].payload.worker_url.error.code).toBe('workspace_unavailable');
-    expect(sent[0].payload.warnings).toEqual(
-      read.warning ? [read.warning] : []
-    );
   });
+
+  test.each([
+    { ok: true, found: true },
+    { ok: true, found: true, warning: 'kv_value_unparsable' },
+    { ok: true, found: true, value: {}, warning: 'kv_value_unparsable' }
+  ])(
+    'resolves the address despite an empty or warned kv value %j',
+    async (read) => {
+      const { ws, sent } = fakeWs();
+      kvGetJsonAtRoot.mockResolvedValue(read);
+
+      await handleGetSessionDefaults(ws, {
+        id: 'get',
+        type: 'get-session-defaults',
+        payload: { root_dir: WS_OTHER }
+      });
+
+      expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
+        root: WS_OTHER
+      });
+      expect(sent[0].payload.worker_url).toEqual(WORKER_URL);
+      expect(sent[0].payload.warnings).toEqual(
+        read.warning ? [read.warning] : []
+      );
+    }
+  );
 
   test('preserves stored values and kv warnings when the helper fails', async () => {
     const { ws, sent } = fakeWs();
-    const raw = { schema: 1, bdui_url: 'http://exception:3000', extra: 'kept' };
+    const raw = {
+      schema: 1,
+      impl_speed: 'fast',
+      bdui_url: 'http://exception:3000'
+    };
     kvGetJsonAtRoot.mockResolvedValue({ ok: true, found: true, value: raw });
     vi.mocked(resolveWorkerUrl).mockResolvedValue({
       status: 'unavailable',
@@ -1117,11 +1138,10 @@ describe('Worker URL session defaults', () => {
     });
 
     expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
-      root: WS_OTHER,
-      workspace: raw
+      root: WS_OTHER
     });
-    expect(sent[0].payload.values.bdui_url).toBe('http://exception:3000');
-    expect(sent[0].payload.warnings.length).toBeGreaterThan(0);
+    expect(sent[0].payload.values).toEqual({ impl_speed: 'fast' });
+    expect(sent[0].payload.warnings).toEqual(['unknown_key:bdui_url']);
     expect(sent[0].payload.worker_url).toEqual({
       status: 'unavailable',
       effective_url: null,
@@ -1137,13 +1157,14 @@ describe('Worker URL session defaults', () => {
       const after = {
         schema: 1,
         workflow_mode: 'fast_track',
+        bdui_url: 'http://exception:3000',
         foreign_key: 'preserved'
       };
       kvGetJsonAtRoot
         .mockResolvedValueOnce({
           ok: true,
           found: true,
-          value: { ...after, bdui_url: 'http://exception:3000' }
+          value: { ...after, impl_speed: 'fast' }
         })
         .mockResolvedValueOnce({ ok: true, found: true, value: after });
       kvSetJsonAtRoot.mockResolvedValue({ ok: true });
@@ -1157,7 +1178,7 @@ describe('Worker URL session defaults', () => {
       await handleSetSessionDefaults(ws, {
         id: 'set',
         type: 'set-session-defaults',
-        payload: { root_dir: WS_OTHER, values: { bdui_url: null } }
+        payload: { root_dir: WS_OTHER, values: { impl_speed: null } }
       });
 
       expect(sent[0].ok).toBe(true);
@@ -1171,8 +1192,7 @@ describe('Worker URL session defaults', () => {
         after
       );
       expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
-        root: WS_OTHER,
-        workspace: after
+        root: WS_OTHER
       });
     }
   );
@@ -1206,14 +1226,10 @@ describe('Worker URL session defaults', () => {
     await handleSetWorkerUrlCommon(ws, commonRequest({ root_dir: undefined }));
 
     expect(sent[0].ok).toBe(true);
-    expect(kvGetJsonAtRoot).toHaveBeenCalledExactlyOnceWith(
-      WS_CONN,
-      'workflow_session_defaults'
-    );
+    expect(kvGetJsonAtRoot).not.toHaveBeenCalled();
     expect(kvGetJsonInWorkspace).not.toHaveBeenCalled();
     expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
-      root: WS_CONN,
-      workspace: {}
+      root: WS_CONN
     });
   });
 
@@ -1232,7 +1248,7 @@ describe('Worker URL session defaults', () => {
     expect(commonSet).not.toHaveBeenCalled();
   });
 
-  test('reports common success even if the root read fails afterward', async () => {
+  test('resolves a saved common address independently of kv availability', async () => {
     const { ws, sent } = fakeWs();
     vi.mocked(commonSet).mockResolvedValue({ status: 'ok', common: COMMON });
     kvGetJsonAtRoot.mockResolvedValue({ ok: false, error: 'bd unavailable' });
@@ -1241,8 +1257,11 @@ describe('Worker URL session defaults', () => {
 
     expect(sent[0].ok).toBe(true);
     expect(sent[0].payload.common_saved).toBe(true);
-    expect(sent[0].payload.worker_url.error.code).toBe('workspace_unavailable');
-    expect(resolveWorkerUrl).not.toHaveBeenCalled();
+    expect(sent[0].payload.worker_url).toEqual(WORKER_URL);
+    expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
+      root: WS_OTHER
+    });
+    expect(kvGetJsonAtRoot).not.toHaveBeenCalled();
   });
 
   test('lets only the first client save a shared revision', async () => {
@@ -1263,6 +1282,9 @@ describe('Worker URL session defaults', () => {
     ).toHaveLength(1);
     expect(second.sent[0].error.code).toBe('revision_conflict');
     expect(commonSet).toHaveBeenCalledTimes(2);
-    expect(kvGetJsonAtRoot).toHaveBeenCalledTimes(1);
+    expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
+      root: WS_OTHER
+    });
+    expect(kvGetJsonAtRoot).not.toHaveBeenCalled();
   });
 });

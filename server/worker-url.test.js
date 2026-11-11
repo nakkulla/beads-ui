@@ -390,13 +390,11 @@ const RESOLVED = {
   schema: 1,
   effective_url: COMMON.value,
   source: 'common',
-  workspace_override: null,
   common: COMMON,
   warnings: []
 };
 const INPUT = {
-  root: '/repo with spaces',
-  workspace: { schema: 1, impl_model: 'sol' }
+  root: '/repo with spaces'
 };
 
 /** @param {any} body */
@@ -405,16 +403,15 @@ function successfulRun(body = RESOLVED) {
 }
 
 describe('worker URL adapter', () => {
-  test('binds the root and exact snapshot to bounded argv-only execution', async () => {
+  test('binds the root to bounded execution without stdin input', async () => {
     const run = successfulRun();
 
     await resolveWorkerUrl(INPUT, run);
 
     expect(run).toHaveBeenCalledExactlyOnceWith(
       'worker-url',
-      ['resolve', '--root', INPUT.root, '--workspace-json-stdin', '--json'],
+      ['resolve', '--root', INPUT.root, '--json'],
       {
-        input: JSON.stringify(INPUT.workspace),
         timeout: 12000,
         maxBuffer: 1024 * 1024,
         encoding: 'utf8'
@@ -422,6 +419,60 @@ describe('worker URL adapter', () => {
     );
     expect(run.mock.calls[0][2]).not.toHaveProperty('shell');
     expect(run.mock.calls[0][2]).not.toHaveProperty('env');
+  });
+
+  test.each([{}, { workspace_override: null }, { workspace_override: false }])(
+    'accepts a common response and ignores the obsolete field %j',
+    async (extra) => {
+      const run = successfulRun({ ...RESOLVED, ...extra });
+
+      const result = await resolveWorkerUrl(INPUT, run);
+
+      expect(result).toEqual({
+        status: 'ok',
+        effective_url: COMMON.value,
+        source: 'common',
+        common: COMMON,
+        warnings: []
+      });
+      expect(result).not.toHaveProperty('workspace_override');
+    }
+  );
+
+  test('accepts an unset common address', async () => {
+    const common = { value: null, revision: 'missing', state: 'unset' };
+    const run = successfulRun({
+      ...RESOLVED,
+      effective_url: null,
+      source: 'unset',
+      common
+    });
+
+    const result = await resolveWorkerUrl(INPUT, run);
+
+    expect(result).toEqual({
+      status: 'ok',
+      effective_url: null,
+      source: 'unset',
+      common,
+      warnings: []
+    });
+  });
+
+  test('rejects a legacy workspace source as helper unavailable', async () => {
+    const run = successfulRun({
+      ...RESOLVED,
+      source: 'workspace',
+      effective_url: 'http://exception:3000',
+      workspace_override: 'http://exception:3000'
+    });
+
+    const result = await resolveWorkerUrl(INPUT, run);
+
+    expect(result).toEqual({
+      status: 'unavailable',
+      error: { code: 'helper_unavailable' }
+    });
   });
 
   test.each([null, 'http://new:3000'])(
@@ -460,7 +511,6 @@ describe('worker URL adapter', () => {
     { schema: 2 },
     { effective_url: 3 },
     { source: 'guessed' },
-    { workspace_override: false },
     { common: { ...COMMON, state: 'broken' } },
     { common: { ...COMMON, revision: 2 } },
     { common: { ...COMMON, revision: '' } },

@@ -1510,22 +1510,27 @@ provider from it — only an exact `impl_model` token names one.
   so the write re-reads immediately beforehand, making it per-KEY
   last-write-wins, and confirms with a readback. Success has the same shape as
   GET; a resolver failure does not fail a successful kv write.
-- Both replies keep `values.bdui_url` as the stored repository exception only.
+- Both replies omit `bdui_url` from `values`. A leftover kv entry is dropped
+  from the reply with an `unknown_key:bdui_url` warning; writes containing that
+  key are rejected. Saving another key preserves the leftover entry in kv.
   `worker_url` is
-  `{ status: 'ok', effective_url: string|null, source: 'workspace'|'common'|'unset', workspace_override: string|null, common: { value: string|null, state: 'configured'|'unset'|'invalid'|'unavailable', revision: string|null }, warnings: unknown[] }`.
+  `{ status: 'ok', effective_url: string|null, source: 'common'|'unset', common: { value: string|null, state: 'configured'|'unset'|'invalid'|'unavailable', revision: string|null }, warnings: unknown[] }`.
   A missing common document uses revision `missing`. Resolver warnings are
   separate from kv `warnings`. Failure is
-  `{ status: 'unavailable', effective_url: null, source: null, error: { code: 'helper_unavailable'|'workspace_unavailable' } }`;
-  normal absence resolves an empty snapshot, while an unreadable stored value is
-  unavailable.
+  `{ status: 'unavailable', effective_url: null, source: null, error: { code: 'helper_unavailable' } }`.
+  Resolution calls `worker-url resolve --root <root> --json` without stdin. An
+  empty or warned kv value does not block resolution; a failed kv read still
+  fails `get-session-defaults` with `kv_read_failed`. Legacy helper responses
+  may include `workspace_override`, which is ignored; `source: 'workspace'` is
+  treated as `helper_unavailable`.
 - `set-worker-url-common` payload:
   `{ root_dir?, value: string|null, expected_revision: string }`. A canonical
   HTTP(S) origin sets the common default; only `null` deletes it (empty strings
   are `bad_request`). Root must be registered and revision non-empty. This
   writes neither kv nor queue. Success is
   `{ common_saved: true, common, worker_url }`, including when the follow-up
-  root read fails (`worker_url.error.code: 'workspace_unavailable'`). CLI errors
-  use the normal error envelope: `revision_conflict`, `invalid_input`,
+  resolver fails (`worker_url.error.code: 'helper_unavailable'`). CLI errors use
+  the normal error envelope: `revision_conflict`, `invalid_input`,
   `common_invalid`, `common_unavailable`, or `helper_unavailable`. Clients keep
   the draft and its original revision on conflict and never retry automatically.
 - An execution preset belongs to ONE profile, named by
@@ -1633,7 +1638,7 @@ provider from it — only an exact `impl_model` token names one.
     three `orchestration_*` queue keys are PRESERVED.
 
   A key the sparse preset omits is unset WITHIN its own profile; a key outside
-  the profile never appears in the patch, so `workflow_mode`, `bdui_url`,
+  the profile never appears in the patch, so `workflow_mode`,
   `base_sync_accept_local_commits`, accounts and concurrency keep whatever the
   workspace holds. The queue records the applied preset in that profile's own
   field (`applied_exec_preset` or `applied_quick_fix_preset`) and does not touch
