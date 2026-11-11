@@ -1,12 +1,8 @@
 ---
 scope:
-  - server/worker/direction-inquiry.js
-  - server/worker/interactive-progress.js
-  - server/worker/scheduler.js
-  - server/worker/notify.js
-  - server/worker/external-wait/session-resume.js
-  - app/views/worker/lanes.js
-  - app/views/worker/tile-resolve.js
+  - server/worker/
+  - app/views/worker/
+  - app/views/monitor/
 ---
 
 # Worker 대화 결과 줄 새 단어를 읽고, 마무리로 끝난 행을 Worker로 되돌릴 길을 연다 (UI-3713)
@@ -34,6 +30,11 @@ scope:
 - `[워커로 이어가기]`는 결과 없는 live 대화(`conversationAwaitsAnswer`)나 `ended_by='pane_gone'`인 닫힌 대화만 받는다 — server/worker/scheduler.js:11257-11265, :11510-11572
 - 핸드오프의 이어가기는 `continueConversationHandoff` 하나다. 해제가 이미 쓰인 stale 파킹은 해제 전이 재디스패치, 그 밖은 같은 세션 재개다 — server/worker/scheduler.js:11380-11497
 - 해제 전이 감시는 열린 대화가 있는 Bead를 건너뛴다 — server/worker/scheduler.js:21300-21310
+- 창이 사라진 대화의 정산은 종류마다 다르다: 실패(`resolve`)·외부 작업 완료(`external_resume`)는 핸드오프가 없으면 레코드를 지우고, 실패 행은 자기 출구 짝이 다시 서며, 외부 작업 완료는 takeover가 아니면 완료 행으로 되돌리고(`revertExternalConversation`) takeover면 되돌리지 않는다. 멈춤(`inquiry`)만 attempt에 `ended_by`를 남긴다 — server/worker/scheduler.js:12255-12301, :12303-12337
+- 핸드오프 예약의 대상은 종류마다 다르다: 실패는 `failureHandoffTarget`, 외부 작업 완료는 `executeExternalHandoff`, 멈춤은 `continueConversationHandoff` — server/worker/scheduler.js:12273-12285, :12418-12434
+- `[워커로 이어가기]` 핸들러 `conversationHandoff`는 `<bead>:inquiry` 레코드만 찾는다. 외부 작업 완료 레코드는 `attempt_id`가 없다 — server/worker/scheduler.js:11510-11515, :11421-11423
+- 모니터는 Worker와 같은 `tileResolveFields`를 부른다 — app/views/monitor/index.js:121, :1772, :1845
+- 카드 동일성 테스트에는 대화 결과 takeover 사례가 없다 — app/views/monitor/card-parity.test.js (`grep -n takeover` 0건)
 - 카드는 대화 뷰의 takeover 결과가 있으면 이어가기 짝을 숨긴다. 버튼 유무는 `tileResolveFields` 하나가 정한다 — app/views/worker/tile-resolve.js:109-117, :364
 - 카드의 대화 뷰에는 Bead 상태가 없다. 같은 파일의 `takeover`(:311-321)는 외부 잡 `takeover_unresolved`이고 대화 인수와 다르다 — app/views/worker/tile-resolve.js:309-321, server/worker/wait-judgment.js:740-742
 - 배지 꼬리 `사람 인수`, 알림 제목 `🙋 사람 인수` — app/views/worker/lanes.js:1866-1867, server/worker/notify.js:96-100
@@ -55,22 +56,34 @@ scope:
 
 - takeover 결과가 있고 핸드오프 예약이 없는 live 대화는 계속 새 assistant 메시지를 읽는다. 다른 결과는 지금처럼 더
   읽지 않는다.
-- 새 메시지의 첫 줄이 handoff 접두이고 그 Bead 상태가 `open`이면, 처음부터 handoff로 끝난 대화와 같은 기록을 한다:
-  결과를 handoff로 바꾸고, `source: 'result_line'` 예약을 걸고, 타임라인에 `대화 결과 · <줄>`을 남기고, 창을 닫는다. 그
-  뒤는 지금의 `continueConversationHandoff` 그대로다.
+- 새 메시지의 첫 줄이 handoff 접두이고 그 Bead 상태가 `open`이면, 그 대화 종류가 처음부터 handoff로 끝났을 때와 같은
+  기록을 한다: 결과를 handoff로 바꾸고, `source: 'result_line'` 예약을 그 종류의 대상으로 걸고(실패는
+  `failureHandoffTarget`, 외부 작업 완료와 멈춤은 레코드가 가진 대상), 타임라인에 `대화 결과 · <줄>`을 남기고, 창을 닫는다.
+  그 뒤는 지금의 종류별 실행 그대로다(멈춤 `continueConversationHandoff`, 실패 `executeFailureHandoff`, 외부 작업 완료
+  `executeExternalHandoff`).
 - Bead가 `open`이 아니거나(`in_progress`·`resolved`·`closed`) 상태를 읽지 못하면 그 메시지는 처리한 것으로만 표시하고 행을
   바꾸지 않는다. 읽기 실패는 다음 pass가 다시 묻지 않는다(fail-quiet: 사람이 3.3의 버튼을 누를 수 있다).
 - takeover 뒤 hold·takeover 줄은 상태를 바꾸지 않는다.
 
 ### 3.3 마무리 행의 `[워커로 이어가기]`
 
-- 서버는 takeover로 끝난 대화(live든 닫혔든)의 투영에 되돌리기 가능 여부 한 값(예: `handback_allowed`)을 싣는다. 그
+- 서버는 takeover 결과를 가진 live 대화(세 종류)와 `ended_by='takeover'`인 닫힌 멈춤 대화의 투영에 되돌리기 가능 여부
+  한 값(예: `handback_allowed`)을 싣는다. 그
   값은 Bead 상태가 `open`일 때만 참이고, 상태를 읽지 못하면 거짓이다. `tileResolveFields`는 그 값이 참이면
   `[워커로 이어가기]`를 보이고, 거짓이면 지금처럼 숨긴다. 렌더러는 Bead 상태를 다시 판정하지 않는다.
-- 클릭은 `conversationHandoff`로 간다. 서버는 Bead 상태를 다시 읽어 `open`일 때만 받는다.
-  - live 대화가 takeover 결과를 가진 경우: `button` 핸드오프를 예약하고 창을 닫는다(결과 없는 live 대화와 같은 길).
-  - 창이 이미 닫혀 `ended_by='takeover'`인 경우: `pane_gone`과 같이 `continueConversationHandoff`를 바로 부른다.
-  - Bead가 `open`이 아니면 `not_open` 사유로 거절하고 카드에 그 사유를 보인다.
+- 클릭은 서버가 Bead 상태를 다시 읽어 `open`일 때만 받는다. `open`이 아니면 `not_open` 사유로 거절하고 카드에 그 사유를
+  보인다. 받은 클릭은 대화 종류와 창 상태에 따라 아래로 간다.
+
+| 종류 | 창 살아 있음 (takeover 결과) | 창 닫힘 |
+| --- | --- | --- |
+| 멈춤 `inquiry` | 그 레코드에 `button` 핸드오프를 예약하고 창을 닫는다 → `continueConversationHandoff` | attempt의 `ended_by='takeover'`를 `pane_gone`과 같이 받아 `continueConversationHandoff`를 바로 부른다 |
+| 실패 `resolve` | 그 레코드에 `failureHandoffTarget` 대상의 `button` 핸드오프를 예약하고 창을 닫는다 → `executeFailureHandoff` | 바뀌지 않는다 — 레코드가 지워지면 실패 행 자기 출구 짝(`[정리 재시도]` 등)이 지금처럼 다시 선다 |
+| 외부 작업 완료 `external_resume` | 그 레코드에 `button` 핸드오프를 예약하고 창을 닫는다 → `executeExternalHandoff` | takeover로 끝났어도 창이 사라질 때 Bead가 `open`이면 결과 없이 끝난 대화처럼 완료 행으로 되돌린다(`revertExternalConversation`). 그러면 완료 행의 `[워커로 이어가기]`(fork)가 다시 선다 |
+
+- 그래서 `[워커로 이어가기]` 핸들러는 `<bead>:inquiry` 밖의 live takeover 레코드(실패·외부 작업 완료)도 찾는다.
+- 결정: 닫힌 실패·외부 작업 완료 대화는 레코드를 새로 보존하지 않는다 (대안: takeover 레코드를 지우지 않고 남겨 버튼
+  핸드오프 대상으로 씀; 이유: 실패 행은 이미 자기 출구가 돌아오고, 외부 작업 완료는 기존 되돌림 경로가 같은 출구를
+  돌려준다. 새 보존 상태는 정산 규칙을 늘린다).
 - 결정: 버튼 노출은 Bead `open` 하나로 정한다 (대안: 대화 idle 경과 시간; 이유: 계약이 클레임 여부를 되돌리기 신호로
   정했다. 시간으로는 생각 중인 사람과 버려진 행을 가르지 못한다).
 - 결정: 새 슬롯을 만들지 않는다. 기존 `[워커로 이어가기]` 자리를 쓴다(ADR UI-32oq-2의 카드 슬롯 규칙, 슬롯 표 변경 없음).
@@ -78,8 +91,11 @@ scope:
 
 ### 3.4 사람이 읽는 단어
 
-결과 줄을 가리키는 `인계`·`인수`·`보류`를 새 말로 바꾼다. 결과 줄과 상관없는 같은 글자(예: 저장소 작업 설정의 "재시작
-후 작업 인계", 머지 게이트 보류)는 그대로 둔다.
+`server/worker/`·`app/views/`의 사람이 읽는 문구(툴팁·배지·알림·타임라인 요약·세션 프롬프트 문장)에서 대화 결과를 가리키는
+`인계`·`인수`·`보류`를 모두 새 말로 바꾼다. 아래 표는 예이고 목록이 아니다 — 리뷰가 찾은 자리(`wait-judgment.js`,
+`resolve-session.js`, `wait-vocabulary.js`, `running-grid.js`, `repo-ops-timeline.js`, `lanes.js`의 같은 툴팁)도 포함한다. 결과 줄과
+상관없는 같은 글자(예: 저장소 작업 설정의 "재시작 후 작업 인계", 머지 게이트 보류, 외부 잡 `takeover_unresolved`의 "바로
+실행")는 그대로 둔다. 테스트 픽스처의 옛 결과 줄은 읽기 호환 사례로 남긴다.
 
 | 자리 | 지금 | 새 문구 (예) |
 | --- | --- | --- |
@@ -101,20 +117,24 @@ dotfiles-xipsh가 먼저 착지한다(`blocks`). 그 전까지 beads-ui는 옛 �
 
 1. digest 테스트가 dotfiles-xipsh 착지 바이트와 같은 값으로 통과한다.
 2. 새 접두 셋과 옛 접두 셋이 각각 같은 kind로 파싱된다.
-3. takeover로 기록된 live 대화가 Bead `open`일 때 뒤 메시지의 `워커가 이어감 ·`(또는 `인계 ·`)로 handoff가 예약되고
-   `continueConversationHandoff`가 돈다. Bead가 `in_progress`면 아무것도 바뀌지 않는다.
-4. takeover 행의 카드가 Bead `open`일 때 `[워커로 이어가기]`를 보이고, `in_progress`일 때 보이지 않는다. 모니터도 같다.
-5. 버튼 클릭이 live takeover 대화에서는 예약 후 창 닫기, 닫힌 takeover 대화에서는 바로 이어가기로 가고, Bead가 `open`이
-   아니면 `not_open`으로 거절된다.
-6. 3.4 표의 자리에 옛 단어가 남지 않는다.
+3. takeover로 기록된 live 대화가 Bead `open`일 때 뒤 메시지의 `워커가 이어감 ·`(또는 `인계 ·`)로 그 종류의 handoff가
+   예약되고 종류별 실행이 돈다(멈춤·실패·외부 작업 완료 각각). Bead가 `in_progress`면 아무것도 바뀌지 않는다.
+4. `handback_allowed`가 참인 행의 카드가 `[워커로 이어가기]`를 보이고, 거짓(`in_progress` 등)이면 보이지 않는다. 모니터도
+   같다.
+5. 버튼 클릭이 3.3 표의 종류·창 상태별 길로 가고, Bead가 `open`이 아니면 `not_open`으로 거절된다. takeover로 끝난 외부 작업
+   완료 대화는 창이 사라질 때 Bead가 `open`이면 완료 행으로 돌아온다.
+6. `server/worker/`·`app/views/`의 테스트·주석 밖 문자열에서 대화 결과 뜻의 `인계`·`인수`가 검색되지 않는다(3.4의 다른 뜻
+   예외만 남는다).
 
 ## 5. 테스트 범위 (Test scope)
 
 - `server/worker/interactive-progress.test.js`: 새·옛 접두 여섯 사례의 kind.
 - `server/worker/direction-inquiry.test.js`: digest 고정값.
-- `server/worker/scheduler` 대화 테스트: takeover 뒤 handoff 줄 처리(Bead `open`/`in_progress`), 버튼 핸드오프의 live·닫힌
-  takeover 두 길과 `not_open` 거절.
-- `app/views/worker/tile-resolve.test.js`: takeover 행 버튼 노출 술어. 카드 동일성 테스트가 모니터를 잡는다.
+- `server/worker/scheduler` 대화 테스트: takeover 뒤 handoff 줄 처리(세 종류 × Bead `open`/`in_progress`), 3.3 표의 버튼
+  여섯 칸, `not_open` 거절, takeover 외부 작업 완료 대화의 창 소멸 시 `open`이면 완료 행 복귀.
+- `app/views/worker/tile-resolve.test.js`: `handback_allowed` 참·거짓에 따른 버튼 노출.
+- `app/views/monitor/card-parity.test.js`: live takeover 대화와 닫힌 takeover 멈춤 사례를 더하고, 두 탭 동일성과 함께
+  `handback_allowed` 참이면 버튼이 있고 거짓이면 없음을 직접 확인한다.
 - 문구 테스트: 배지 꼬리·알림 제목·툴팁 기대 문자열 갱신.
 - 검증: `npm run tsc`, `npm run lint`, `npx vitest run --reporter=dot`.
 
