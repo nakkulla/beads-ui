@@ -3381,6 +3381,31 @@ describe('same-session conversation return (UI-nuwy)', () => {
       expect(flag).toBeUndefined();
     });
 
+    test('drops the handback flag when the pass cannot read the Bead status', async () => {
+      const { env } = await takenOver('open');
+      vi.spyOn(env.bd, 'readStatus').mockRejectedValue(
+        new Error('bd unavailable')
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation.handback_allowed).toBeUndefined();
+    });
+
+    test('stamps a same-pass closed takeover without handback when the status is unreadable', async () => {
+      const { env, prior } = await takenOver('open');
+      vi.spyOn(env.bd, 'readStatus').mockRejectedValue(
+        new Error('bd unavailable')
+      );
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      const ended = attemptOf(env, prior.attempt_id).cause_detail.conversation;
+      expect(ended.ended_by).toBe('takeover');
+      expect(ended.handback_allowed).not.toBe(true);
+    });
+
     test('drops the handback flag on an issue change without a bd show', async () => {
       const { env } = await takenOver('open');
       await env.bd.setStatus('S1', 'in_progress');

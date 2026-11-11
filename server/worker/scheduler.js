@@ -12997,6 +12997,15 @@ export function createScheduler(deps) {
           bead_id,
           err
         );
+        // An unreadable status is no evidence the Bead is still `open`: the
+        // handback flag drops, so a same-pass window end stamps it false too
+        // (UI-3713 §3.3).
+        bead_statuses.set(bead_id, null);
+        try {
+          applyHandbackStatus(workspace, bead_id, null);
+        } catch (flag_err) {
+          log('handback flag write failed for %s: %o', bead_id, flag_err);
+        }
       }
     }
     for (const [key, record] of Object.entries(records)) {
