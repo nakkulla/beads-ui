@@ -2133,6 +2133,29 @@ async function renderSettingsDialog(scope) {
       }),
       set: () => {}
     },
+    autoPoolStore: {
+      get: () => ({
+        revision: 1,
+        runtimes: {
+          codex: { models: ['sol'], effort: { min: 'high', max: 'xhigh' } }
+        },
+        choices: {
+          claude: {
+            models: ['opus'],
+            efforts: ['low', 'xhigh'],
+            defaults: null,
+            catalog_models: null
+          },
+          codex: {
+            models: ['sol'],
+            efforts: ['low', 'xhigh'],
+            defaults: null,
+            catalog_models: ['sol']
+          }
+        }
+      }),
+      set: () => {}
+    },
     labelOptions: () => ['ui', 'worker-serial'],
     connectedRoot: () => '/repo-a',
     notify: vi.fn(),

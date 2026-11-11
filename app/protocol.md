@@ -1679,6 +1679,51 @@ pricing ignore it. State lives in `$XDG_STATE_HOME/bdui/model-visibility.json`.
   - `runner_all_disabled` — every model of one runner would be disabled.
   - `internal_error` — the file could not be written.
 
+## Auto pool channel
+
+Server-global candidates for an implementation unit whose model and effort are
+`auto` (UI-y7h1 §3): per runtime (`claude`, `codex`) 0 to 2 models, lowest slot
+first, and an effort range. Directly set models and efforts and execution
+presets are unaffected. State lives in `$XDG_STATE_HOME/bdui/auto-pool.json` as
+`{ revision, runtimes }`; a runtime absent from `runtimes` follows the dotfiles
+shipped defaults. A missing or corrupt file reads as revision 0 with an empty
+`runtimes`, and stored names are never filtered or rewritten on read.
+
+- `subscribe-auto-pool` `{ id? }` → `ok { id }`, then an immediate
+  `auto-pool-snapshot`. `unsubscribe-auto-pool` `{ id? }` →
+  `ok { id, unsubscribed }`. Closing the connection drops its subscription. A
+  new Codex CLI list pushes a fresh snapshot to every subscriber.
+- `auto-pool-snapshot` payload: `{ type, id, revision, runtimes, choices }`
+  where `runtimes` is the stored document
+  (`{ <runtime>: { models, effort: { min, max } } }`) and `choices` is
+  `{ claude|codex: { models, efforts, defaults, catalog_models } }`: the model
+  options (Claude: the pinned projection's `model_catalog.claude` without
+  `fable`; Codex: the projection's families, then the catalog's pinned names),
+  the projection's `effort_catalog.<runtime>` up to `xhigh`, the projection's
+  `implementation.auto_pool_defaults.<runtime>` or `null` while the pin has no
+  such key, and (Codex only, else `null`) every name of the server's Codex
+  catalog. The client drops hidden models from the options itself.
+- `auto-pool-set` `{ expected_revision, runtimes }` replaces the whole document.
+  Success → `ok { snapshot }`, then the new snapshot is pushed to every
+  subscriber. Rejections write nothing and carry the current snapshot in
+  `error.details.snapshot` and the offending runtime (or `null`) in
+  `error.details.runtime`. Names and efforts are checked against the pinned
+  projection, not the runtime catalog:
+  - `conflict` — `expected_revision` is not the current revision.
+  - `invalid_auto_pool` — wrong shape, a runtime other than `claude`/`codex`,
+    more than 2 models, or a repeated model.
+  - `unknown_model` — a Claude name outside `model_catalog.claude` or `fable`; a
+    Codex name that is neither a family of `model_catalog.codex.families` nor a
+    `<family>-<version>` pinned name of one (whether the account's Codex list
+    has it is not checked).
+  - `invalid_effort_range` — `min` or `max` outside `effort_catalog.<runtime>`,
+    `min` above `max`, or `max` above `xhigh`.
+  - `internal_error` — the file could not be written.
+
+`GET /api/auto-pool` (read-only; tailnet binding, no token, no CORS) answers the
+stored document as kept, without filling defaults:
+`{ "ok": true, "schema": 1, "revision": N, "runtimes": { … } }`.
+
 ## Timing settings channel
 
 Server-global wait, observation, retry, and refresh durations (UI-ny0h §3). One

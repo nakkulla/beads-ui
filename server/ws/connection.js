@@ -13,6 +13,12 @@ import {
   handleUnsubscribeAdr
 } from './adr-handlers.js';
 import {
+  detachAutoPool,
+  handleAutoPoolSet,
+  handleSubscribeAutoPool,
+  handleUnsubscribeAutoPool
+} from './auto-pool-handlers.js';
+import {
   detachCodexCredits,
   handleCodexCreditsSet,
   handleSubscribeCodexCredits,
@@ -341,6 +347,7 @@ export function attachWsServer(http_server, options = {}) {
         detachDisplayPolicy(ws);
         detachImplPresets(ws);
         detachModelVisibility(ws);
+        detachAutoPool(ws);
         detachTimingSettings(ws);
         detachLimitPolicySettings(ws);
         detachExternalWaitSettings(ws);
@@ -586,6 +593,15 @@ export async function handleMessage(ws, data) {
       return;
     case 'model-visibility-set':
       handleModelVisibilitySet(ws, req);
+      return;
+    case 'subscribe-auto-pool':
+      handleSubscribeAutoPool(ws, req);
+      return;
+    case 'unsubscribe-auto-pool':
+      handleUnsubscribeAutoPool(ws, req);
+      return;
+    case 'auto-pool-set':
+      handleAutoPoolSet(ws, req);
       return;
     case 'subscribe-timing-settings':
       handleSubscribeTimingSettings(ws, req);

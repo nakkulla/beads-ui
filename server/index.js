@@ -61,6 +61,7 @@ import {
   resolveStartupWorkspace
 } from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
+import { notifyAutoPoolCatalogChanged } from './ws/auto-pool-handlers.js';
 import { broadcastImplPresets } from './ws/exec-preset-handlers.js';
 import {
   bindDepartureBroadcast,
@@ -166,6 +167,7 @@ codex_model_list.onChange(() => {
     legacy_names: legacy_model_names
   });
   notifyMonitorCatalogChanged();
+  notifyAutoPoolCatalogChanged();
   for (const workspace of workerQueueSubscribedWorkspaces()) {
     try {
       fanoutWorkerQueue(
