@@ -13,7 +13,6 @@ export { __resetRegistriesForTest, registryFor } from './context.js';
 export { __resetWorkerQueueForTest } from './worker-handlers.js';
 export { __resetDisplayPolicyForTest } from './display-policy-handlers.js';
 export { __resetModelVisibilityForTest } from './model-visibility-handlers.js';
-export { __resetAutoPoolForTest } from './auto-pool-handlers.js';
 export { __resetTimingSettingsChannelForTest } from './timing-settings-handlers.js';
 export { __resetLimitPolicySettingsChannelForTest } from './limit-policy-settings-handlers.js';
 export { __resetExternalWaitSettingsChannelForTest } from './external-wait-settings-handlers.js';
