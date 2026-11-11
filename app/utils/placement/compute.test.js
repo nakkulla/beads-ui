@@ -1392,6 +1392,55 @@ describe('computePlacement order slots (UI-unf5 §3.4–§3.7)', () => {
     expect(result.order.flatMap((item) => item.warnings)).toEqual([]);
   });
 
+  test('finds the preference cycles again among the units still left', () => {
+    // P = C-1, X = C-2, Y = C-3, Z = C-4, W = C-5: P→Y→X→P and Y→Z→W→Y share
+    // Y. Once P is out, X no longer shares a component with Y, so Y goes next.
+    const pairs = [
+      preferring(rel('C-1', 'C-3', 'independent'), 'C-1'),
+      preferring(rel('C-3', 'C-2', 'independent'), 'C-3'),
+      preferring(rel('C-2', 'C-1', 'independent'), 'C-2'),
+      preferring(rel('C-3', 'C-4', 'independent'), 'C-3'),
+      preferring(rel('C-4', 'C-5', 'independent'), 'C-4'),
+      preferring(rel('C-5', 'C-3', 'independent'), 'C-5')
+    ];
+
+    const result = plan({
+      chosen: ['C-1', 'C-2', 'C-3', 'C-4', 'C-5'],
+      display_order: ['C-1', 'C-2', 'C-3', 'C-4', 'C-5'],
+      pairs
+    });
+
+    expect(result.order.map((item) => item.id)).toEqual([
+      'C-1',
+      'C-3',
+      'C-2',
+      'C-4',
+      'C-5'
+    ]);
+  });
+
+  test('keeps a step with an upper bound ahead of a waiting item when a preference puts its conflict partner first', () => {
+    const queue = queueOf({
+      serial_lanes: [
+        { id: 's1', entries: entries(['S-1']) },
+        { id: 's2', entries: [] }
+      ]
+    });
+
+    const result = plan({
+      queue,
+      chosen: ['C-1', 'C-2'],
+      display_order: ['C-2', 'C-1'],
+      pairs: [
+        preferring(rel('C-1', 'C-2', 'conflict'), 'C-1'),
+        rel('C-2', 'S-1', 'c_first')
+      ]
+    });
+
+    expect(result.layout.s1).toEqual(['C-2', 'S-1', 'C-1']);
+    expect(result.order.flatMap((item) => item.warnings)).toEqual([]);
+  });
+
   test('lets the priority beat the display order without a preference', () => {
     const result = plan({
       chosen: ['C-1', 'C-2'],

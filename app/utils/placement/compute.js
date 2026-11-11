@@ -954,14 +954,17 @@ export function computePlacement(input) {
   };
 
   /**
-   * Whether the candidate's in-lane constraints hold in `order`.
+   * Whether the candidate's in-lane constraints hold in `order`. A conflict
+   * with another step of its own bundle (`steps`) orders nothing: the serial
+   * lane already keeps the two apart, whichever goes first.
    *
    * @param {string} c
    * @param {string[]} order
    * @param {PlacementLane} lane
+   * @param {Set<string>} steps
    * @returns {boolean}
    */
-  const constraintsHold = (c, order, lane) => {
+  const constraintsHold = (c, order, lane, steps) => {
     const own = order.indexOf(c);
     for (const x of order) {
       if (x === c) {
@@ -969,6 +972,9 @@ export function computePlacement(input) {
       }
       const kind = kindOf(c, x);
       const at = order.indexOf(x);
+      if (kind === 'conflict' && steps.has(x)) {
+        continue;
+      }
       if ((kind === 'x_first' || kind === 'conflict') && at > own) {
         return false;
       }
@@ -1227,7 +1233,15 @@ export function computePlacement(input) {
             continue;
           }
           const kind = kindOf(y, x);
-          if (kind === null || !CONSTRAINTS.has(kind)) {
+          // A conflict between two steps of this bundle orders nothing: the
+          // serial lane keeps them apart either way. As a bound it would let
+          // the step order — a preference included — push a step with an
+          // upper bound behind a waiting item (UI-unf5 §3.7).
+          if (
+            kind === null ||
+            !CONSTRAINTS.has(kind) ||
+            (kind === 'conflict' && step_ids.has(x))
+          ) {
             continue;
           }
           const at = entries.indexOf(x);
@@ -1267,11 +1281,12 @@ export function computePlacement(input) {
         const spliced = entries.filter((id) => present.has(id));
         if (
           !warnings.some((w) => w.code === 'order_unsatisfiable') &&
-          constraintsHold(c, spliced, lane) &&
+          constraintsHold(c, spliced, lane, step_ids) &&
           !constraintsHold(
             c,
             final_order.filter((id) => present.has(id)),
-            lane
+            lane,
+            step_ids
           )
         ) {
           warnings.push({ code: 'blocks_reordered' });
