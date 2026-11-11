@@ -579,8 +579,9 @@ export function occupantRowInput(occupant, lane, group) {
  * @property {number} index
  * @property {LaneItem[]} items
  * @property {string[]} occupied_by
- * @property {MonitorOccupant[]} occupants - `occupied_by`의 표시 투영 (Worker
- * 탭 ghost 행과 같은 형태). 제목은 실행중/PR 대기 항목에서 찾고, 없으면 id다.
+ * @property {MonitorOccupant[]} occupants - `occupied_by`와 실행 중 타일로
+ * 빠진 entry의 표시 투영 (Worker 탭 ghost 행과 같은 형태). 제목은
+ * 실행중/PR 대기 항목에서 찾고, 없으면 id다.
  * @property {number} corrections
  * @property {boolean} cycle
  * @property {number} raw_length - 서버 배열의 entry 수. DOM에는 실행중으로 빠진
@@ -709,6 +710,7 @@ const OCCUPANT_BADGES = new Map([
   ['orphaned', '실패 · 점유 유지'],
   ['parked', '확인 필요 · 점유'],
   ['retry_wait', '재시도 대기 · 점유'],
+  ['waiting', '대기 · 점유'],
   ['provider_hold', '공급자 보류 · 점유']
 ]);
 
@@ -3800,6 +3802,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
     /** @type {Set<string>} */
     const claimed = new Set();
+    /** @type {Set<string>} */
+    const running_claimed = new Set();
     const session_ownership = sessionOwnershipMap(
       /** @type {any} */ (workspace).session_ownership
     );
@@ -3829,6 +3833,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       session_ownership
     })) {
       claimed.add(bead_id);
+      running_claimed.add(bead_id);
       // Worker 실행 중 타일 전용 필드 (UI-4tud §4.3). 재료가 없으면 키 자체를
       // 만들지 않는다 (fail-quiet) — Monitor 타일 표시는 그대로다.
       const attempt = attempt_by_id.get(live.attempt_id) || null;
@@ -4299,7 +4304,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const items = [];
       for (let i = 0; i < entries.length; i++) {
         const entry_bead_id = entries[i] && entries[i].bead_id;
-        if (typeof entry_bead_id === 'string' && ghost_ids.has(entry_bead_id)) {
+        // A held tile can still be the serial head without a server lease
+        // (UI-2oef). Preserve its place without changing `occupied_by`.
+        if (
+          typeof entry_bead_id === 'string' &&
+          (ghost_ids.has(entry_bead_id) ||
+            (running_claimed.has(entry_bead_id) &&
+              !yielded_bead_ids.has(entry_bead_id)))
+        ) {
+          ghost_ids.add(entry_bead_id);
           claimed.add(entry_bead_id);
           continue;
         }
@@ -4313,7 +4326,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // 설정 수 밖의 빈 레인은 어디에도 서지 않는다 — 넣을 수 없는 보관 칸이다.
       if (
         items.length === 0 &&
-        occupied_by.length === 0 &&
+        ghost_ids.size === 0 &&
         lane_index >= serial_lane_count
       ) {
         continue;
@@ -4324,14 +4337,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
         items,
         raw_length: entries.length,
         occupied_by,
-        occupants: occupied_by.map((bead_id) => occupantOf(bead_id)),
+        occupants: Array.from(ghost_ids, occupantOf),
         corrections: Array.isArray(lane_state.corrections)
           ? lane_state.corrections.length
           : 0,
         cycle: lane_state.cycle === true,
-        ...(items.length === 0 && occupied_by.length === 0
-          ? { empty: true }
-          : {})
+        ...(items.length === 0 && ghost_ids.size === 0 ? { empty: true } : {})
       });
     }
     configured_serial_by_root.set(root_dir, configured_serial);
@@ -5110,9 +5121,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const live_count = live_by_root.get(source.root_dir) || 0;
     const has_queue =
       parallel.length > 0 ||
-      serial.some(
-        (lane) => lane.items.length > 0 || lane.occupied_by.length > 0
-      );
+      serial.some((lane) => lane.items.length > 0 || lane.occupants.length > 0);
     const slots =
       typeof source.slots === 'number' && source.slots >= MIN_SLOTS
         ? source.slots

@@ -1969,7 +1969,7 @@ export function createMonitorView(mount_element, options) {
           include
         )
       ],
-      count: lane.items.length,
+      count: occupants.length + lane.items.length,
       // 미리보기 카드가 서는 레인은 비어 보이지 않아야 한다 — 빈 레인 접기 규칙
       // (390px)이 미리보기를 감춘다. 건수는 실제 구성원만 센다.
       empty: lane.empty === true && !planTargetsLane(plan, lane_id),

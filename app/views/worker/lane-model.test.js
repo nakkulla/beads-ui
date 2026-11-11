@@ -9402,7 +9402,7 @@ describe('점유 행 배지 (UI-ey6v §3.2)', () => {
         '공급자 보류 · 점유'
       ],
       [{ status: 'superseded' }, '점유'],
-      [{ status: 'waiting', cause: 'base_moved' }, '점유']
+      [{ status: 'waiting', cause: 'base_moved' }, '대기 · 점유']
     ];
 
     const badges = table.map(
@@ -9512,6 +9512,127 @@ describe('점유 행 배지 (UI-ey6v §3.2)', () => {
       items: lane.items.map((item) => item.id),
       running: lanes.running.map((item) => item.id)
     }).toEqual({ occupants: [], items: ['A-1'], running: [] });
+  });
+});
+
+describe('실행 중 타일의 직렬 자리 표시 (UI-2oef)', () => {
+  /**
+   * A recovery wait at the head of serial lane s2, without a server lease.
+   *
+   * @param {Record<string, any>} [patch]
+   */
+  function recoveryWorkspace(patch = {}) {
+    return workspace({
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's2', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ],
+      lane_states: { s2: { occupied_by: [] } },
+      bead_titles: { 'A-1': '복귀 대기 작업' },
+      attempts: {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'waiting',
+          cause: 'session_recovery_wait',
+          serial_lane_id: 's2',
+          started_at: 10,
+          finished_at: 20
+        }
+      },
+      ...patch
+    });
+  }
+
+  test('keeps a recovery wait visible in its serial lane beside its running tile', () => {
+    const snapshot = recoveryWorkspace();
+
+    const lanes = buildLanes([snapshot], [state()]);
+
+    const lane = lanes.queue_groups[0].sublanes.serial[1];
+    expect(lane.occupants).toEqual([
+      { id: 'A-1', title: '복귀 대기 작업', badge: '대기 · 점유' }
+    ]);
+    expect(lane.items.map((item) => [item.id, item.queue_index])).toEqual([
+      ['A-2', 1]
+    ]);
+    expect(lane.occupied_by).toEqual([]);
+    expect(lane.raw_length).toBe(2);
+    expect(lanes.running.map((item) => [item.id, item.run_state])).toEqual([
+      ['A-1', 'waiting']
+    ]);
+    expect(snapshot.lane_states.s2.occupied_by).toEqual([]);
+  });
+
+  test('keeps a prerequisite wait without a tile as a waiting row', () => {
+    const snapshot = recoveryWorkspace();
+    snapshot.attempts.t1.cause = 'prerequisite_unmet';
+
+    const lanes = buildLanes([snapshot], [state()]);
+
+    const lane = lanes.queue_groups[0].sublanes.serial[1];
+    expect(lane.occupants).toEqual([]);
+    expect(lane.items.map((item) => item.id)).toEqual(['A-1', 'A-2']);
+    expect(lanes.running).toEqual([]);
+  });
+
+  test('projects a server occupant with a running tile only once', () => {
+    const snapshot = recoveryWorkspace();
+    snapshot.attempts.t1.status = 'running';
+    snapshot.lane_states.s2.occupied_by = ['A-1'];
+
+    const lanes = buildLanes([snapshot], [state()]);
+
+    const lane = lanes.queue_groups[0].sublanes.serial[1];
+    expect(lane.occupants).toEqual([
+      { id: 'A-1', title: '복귀 대기 작업', badge: '실행 중 · 점유' }
+    ]);
+    expect(lane.items.map((item) => item.id)).toEqual(['A-2']);
+    expect(lane.occupied_by).toEqual(['A-1']);
+  });
+
+  test('keeps a serial lane containing only a recovery ghost expanded', () => {
+    const snapshot = recoveryWorkspace({
+      serial_lane_count: 1,
+      serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+      lane_states: { s1: { occupied_by: [] } }
+    });
+    snapshot.attempts.t1.serial_lane_id = 's1';
+
+    const lanes = buildLanes([snapshot], [state()]);
+
+    const group = lanes.queue_groups[0];
+    expect(group.sublanes.serial.map((lane) => lane.id)).toEqual(['s1']);
+    expect(group.configured_serial?.[0].empty).toBeUndefined();
+    expect(group.sublanes.serial[0].raw_length).toBe(1);
+  });
+
+  test('keeps a recovery ghost visible past the configured serial lane count', () => {
+    const snapshot = recoveryWorkspace({
+      serial_lane_count: 1,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [{ bead_id: 'A-1' }] }
+      ]
+    });
+
+    const lanes = buildLanes([snapshot], [state()]);
+
+    expect(
+      lanes.queue_groups[0].sublanes.serial.map((lane) => lane.id)
+    ).toEqual(['s2']);
+  });
+
+  test('tags a recovery ghost without label facts as matched in both serial lane projections', () => {
+    const snapshot = recoveryWorkspace();
+
+    const lanes = buildLanes([snapshot], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, labels: ['ops'] }
+    });
+
+    const group = lanes.queue_groups[0];
+    expect(group.sublanes.serial[1].occupants[0].filter_match).toBe(true);
+    expect(group.configured_serial?.[1].occupants[0].filter_match).toBe(true);
   });
 });
 

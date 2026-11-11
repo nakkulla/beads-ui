@@ -1519,9 +1519,10 @@ describe('prerequisite wait card parity between the Worker and Monitor tabs (UI-
    * failed attempt it left behind in serial lane s1, the rokit-471 shape. The
    * lane occupancy comes from the server's real `activeLaneLineages`.
    *
+   * @param {Record<string, any>} [attempt_patch]
    * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
    */
-  function drawPrerequisiteWait() {
+  function drawPrerequisiteWait(attempt_patch = {}) {
     extra_rows = [
       row('L-1', {
         status: 'in_progress',
@@ -1567,7 +1568,8 @@ describe('prerequisite wait card parity between the Worker and Monitor tabs (UI-
             summary: '선행 L-2가 닫혀야 합니다',
             blockers: [{ id: 'L-2', rig: null, status: 'open' }],
             bead_status: 'in_progress'
-          }
+          },
+          ...attempt_patch
         })
       }
     });
@@ -1612,18 +1614,42 @@ describe('prerequisite wait card parity between the Worker and Monitor tabs (UI-
     expect(cards).toEqual([expected, expected]);
   });
 
-  test('draws the bead only as its tile beside the prerequisite row on both tabs', async () => {
-    const { worker, monitor } = await drawPrerequisiteWait();
+  test.each(['prerequisite_unmet', 'session_recovery_wait'])(
+    'draws one serial ghost beside the tile for %s on both tabs',
+    async (cause) => {
+      const { worker, monitor } = await drawPrerequisiteWait({ cause });
 
-    const drawn = [worker, monitor].map((mount) => ({
-      rows: mount.querySelectorAll('[data-bead-id="L-1"]').length,
-      tile: mount.querySelector('.rtile[data-bead-id="L-1"]') !== null,
-      head: mount.querySelector('[data-bead-id="L-2"]') !== null
-    }));
+      const drawn = [worker, monitor].map((mount) => {
+        const ghosts = mount.querySelectorAll(
+          '.worker-mini--ghost[data-bead-id="L-1"]'
+        );
+        const ghost = ghosts[0];
+        return {
+          ghosts: ghosts.length,
+          tile: mount.querySelector('.rtile[data-bead-id="L-1"]') !== null,
+          head: mount.querySelector('[data-bead-id="L-2"]') !== null,
+          badge: ghost?.textContent?.includes('대기 · 점유'),
+          draggable: ghost?.getAttribute('draggable'),
+          queue_index: ghost?.getAttribute('data-queue-index'),
+          count: ghost
+            ?.closest('.worker-pane')
+            ?.querySelector('.worker-pane__count')
+            ?.textContent?.trim()
+        };
+      });
 
-    const expected = { rows: 1, tile: true, head: true };
-    expect(drawn).toEqual([expected, expected]);
-  });
+      const expected = {
+        ghosts: 1,
+        tile: true,
+        head: true,
+        badge: true,
+        draggable: 'false',
+        queue_index: null,
+        count: '2'
+      };
+      expect(drawn).toEqual([expected, expected]);
+    }
+  );
 });
 
 describe('placement recommendation parity (UI-izba §4.7)', () => {
