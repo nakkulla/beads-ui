@@ -468,7 +468,11 @@ function reachableFrom(start, live, must, prefer) {
  * edge kinds, inside R), so only the preferences inside the cycle are dropped
  * and one coming in from outside it still holds. Without a mandatory cycle in
  * R such a unit always exists — a mandatory source of a component nothing
- * else in R reaches. A mandatory cycle returns every unit in tie-key order.
+ * else in R reaches. A mandatory cycle in R breaks the same way, one unit at
+ * a time: the first by tie key with no mandatory predecessor in R, else the
+ * first of R by tie key, and `cycle` reports it. Keeping the units already
+ * chosen, rather than starting over in tie-key order, is what keeps the
+ * prefix property below on a cycle too.
  *
  * Each choice depends on R and the edges inside it only, so dropping a prefix
  * of the order and sorting the rest again gives the rest of the order —
@@ -500,6 +504,7 @@ function softOrder(units, mustBefore, preferBefore) {
   let rest = units.map((_, i) => i);
   /** @type {T[]} */
   const order = [];
+  let cycle = false;
   while (rest.length > 0) {
     const live = rest;
     const possible = live.filter((j) => !live.some((i) => must[i][j]));
@@ -511,13 +516,14 @@ function softOrder(units, mustBefore, preferBefore) {
       });
     }
     if (next === undefined) {
-      return { order: [...units], cycle: true };
+      cycle = true;
+      next = possible.length > 0 ? possible[0] : live[0];
     }
     const chosen = next;
     order.push(units[chosen]);
     rest = live.filter((i) => i !== chosen);
   }
-  return { order, cycle: false };
+  return { order, cycle };
 }
 
 /**
@@ -867,7 +873,7 @@ export function computePlacement(input) {
   // its own (UI-unf5 §3.6): a member's `c_first` toward another bundle's
   // member is a mandatory edge — between predecessors, which are never
   // joined — and an adopted preference between members a preferred one. A
-  // mandatory cycle keeps the base order, without a warning.
+  // mandatory cycle is broken by the base order, without a warning.
   const bundles = [false, true].flatMap(
     (trailing) =>
       softOrder(
@@ -1227,8 +1233,8 @@ export function computePlacement(input) {
         let upper = entries.length;
         let has_upper = false;
         for (const x of new Set([...entries, ...occupantsOf(lane)])) {
-          // A cyclic bundle goes in tie-key order (§4.6), so its steps'
-          // relations to each other set no bound.
+          // A cyclic bundle's cycle is broken by tie key (§4.6), so its
+          // steps' relations to each other set no bound.
           if (x === y || (sorted.cycle && step_ids.has(x))) {
             continue;
           }

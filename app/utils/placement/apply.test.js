@@ -1330,6 +1330,77 @@ describe('[전체 적용] with preferences (UI-unf5 §3.8)', () => {
     }).toEqual({ parallel: ['C-2', 'C-1', 'C-3', 'C-4'], s2: ['C-6', 'C-5'] });
   });
 
+  test('lands predecessor bundles with a mandatory cycle and a preference without moved', async () => {
+    // Five predecessors of S-1: C-1→C-2→C-3→C-1 is a jev order cycle and
+    // C-5 is better landed before C-4.
+    const display_order = ['C-1', 'C-2', 'C-3', 'C-4', 'C-5'];
+    /**
+     * @param {string} first
+     * @param {string} second
+     * @returns {[string, Record<string, any>]}
+     */
+    const order = (first, second) => {
+      const [a, b] = first < second ? [first, second] : [second, first];
+      return [
+        placementPairKey(a, b),
+        {
+          a,
+          b,
+          relation: first === a ? 'a_first' : 'b_first',
+          source: 'jev',
+          confidence: 0.9,
+          jev_choice: first === a ? 'a_first' : 'b_first',
+          judged_at: 1
+        }
+      ];
+    };
+    const relations = Object.fromEntries([
+      ...display_order.map((id) => fixed(id, 'S-1', 'blocks')),
+      order('C-1', 'C-2'),
+      order('C-2', 'C-3'),
+      order('C-3', 'C-1'),
+      jev('C-4', 'C-5', 'independent', 'C-5'),
+      jev('C-1', 'C-4', 'independent'),
+      jev('C-1', 'C-5', 'independent'),
+      jev('C-2', 'C-4', 'independent'),
+      jev('C-2', 'C-5', 'independent'),
+      jev('C-3', 'C-4', 'independent'),
+      jev('C-3', 'C-5', 'independent')
+    ]);
+    const start = startQueue(display_order, relations);
+    const recompute = recomputeWith(display_order, {});
+    const shown = recompute(start, display_order).order;
+    const store = storeStandIn(relations);
+    /** @type {any} */
+    let latest = start;
+    const transport = vi.fn(async (type, payload) => {
+      latest = store(latest, type, payload);
+      return { applied: true, conflict: false, queue: latest };
+    });
+
+    const result = await sendPlacementBatch({
+      transport,
+      root_dir: '',
+      shown,
+      queue: start,
+      recompute,
+      adopt: () => {},
+      snapshot: () => latest
+    });
+
+    expect(shown.map((item) => item.id)).toEqual([
+      'C-5',
+      'C-4',
+      'C-1',
+      'C-2',
+      'C-3'
+    ]);
+    expect(result).toEqual({
+      placed: ['C-5', 'C-4', 'C-1', 'C-2', 'C-3'],
+      stopped: null
+    });
+  });
+
   test('stops as moved when a reply snapshot carries a new preference that changes the plan', async () => {
     const display_order = ['C-1', 'C-2', 'C-3'];
     const relations = Object.fromEntries([
