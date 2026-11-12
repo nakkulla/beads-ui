@@ -269,6 +269,50 @@ beforeEach(() => {
   document.body.innerHTML = '';
 });
 
+describe('Hermes execution settings', () => {
+  test.each(['single', 'multi'])(
+    'reads one server-wide snapshot in %s target mode',
+    async (mode) => {
+      const transport = vi.fn(async (type) =>
+        type === 'relay-defaults-get'
+          ? {
+              ok: true,
+              snapshot: {
+                revision: 0,
+                overrides: {},
+                effective: { 'claude.model': 'opus' },
+                allowed: { 'claude.model': ['opus'] }
+              },
+              codex_models: {}
+            }
+          : { values: {}, warnings: [] }
+      );
+      const { root, dialog } = mount({ transport, monitorRows: TWO_ROWS });
+      dialog.open();
+      await settle();
+      if (mode === 'multi') {
+        /** @type {HTMLButtonElement} */ (
+          root.querySelector('[data-target-mode="multi"]')
+        ).click();
+        await settle();
+      }
+      await openTab(root, 'execution');
+
+      /** @type {HTMLButtonElement} */ (
+        root.querySelector('[data-execution-subtab="hermes"]')
+      ).click();
+      await settle();
+
+      expect(transport).toHaveBeenCalledWith('relay-defaults-get', {});
+      expect(payloadsOf(transport, 'relay-defaults-get')).toHaveLength(1);
+      expect(
+        root.querySelector('[data-group="relay-defaults"]')?.textContent
+      ).toContain('모든 저장소에 공통');
+      dialog.destroy();
+    }
+  );
+});
+
 describe('createSettingsDialog tabs (UI-32oq §4.4)', () => {
   test('draws the same rail from every entry point', async () => {
     const { root, dialog } = mount({ monitorRows: TWO_ROWS });

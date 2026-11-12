@@ -2077,6 +2077,22 @@ async function renderSettingsDialog(scope) {
   });
   /** @type {Record<string, any>} */
   const replies = {
+    'relay-defaults-get': {
+      ok: true,
+      snapshot: {
+        revision: 0,
+        overrides: {},
+        effective: { 'claude.model': 'opus', 'claude.effort': 'high' },
+        allowed: {
+          'claude.model': ['opus'],
+          'claude.effort': ['high'],
+          'codex.model': '[A-Za-z0-9._-]+',
+          'codex.effort': ['high'],
+          'codex.speed': ['default', 'fast']
+        }
+      },
+      codex_models: { sol: { id: 'gpt-6.1-sol' } }
+    },
     'get-session-defaults': {
       values: {},
       warnings: [],
@@ -2228,7 +2244,10 @@ describe('dialogs use parts (§3.4 check 3)', () => {
 
   test.each(
     ['single', 'monitor'].flatMap((scope) =>
-      ['worker', 'quick_fix', 'session_review'].map((tab) => [scope, tab])
+      ['worker', 'quick_fix', 'session_review', 'hermes'].map((tab) => [
+        scope,
+        tab
+      ])
     )
   )(
     'draws every execution sub tab control with a part (%s %s)',
@@ -2241,7 +2260,7 @@ describe('dialogs use parts (§3.4 check 3)', () => {
       await settle();
 
       expect(dialog.querySelectorAll('[data-execution-subtab]')).toHaveLength(
-        3
+        4
       );
       expect(
         dialog
@@ -2249,6 +2268,11 @@ describe('dialogs use parts (§3.4 check 3)', () => {
           ?.classList.contains('is-active')
       ).toBe(true);
       expect(controlsWithoutPart(dialog)).toEqual([]);
+      if (tab === 'hermes') {
+        expect(
+          dialog.querySelectorAll('[data-group="relay-defaults"] select')
+        ).toHaveLength(5);
+      }
     }
   );
 

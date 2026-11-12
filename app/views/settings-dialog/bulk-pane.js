@@ -68,6 +68,7 @@ import {
   SESSION_REVIEW_NOTICE,
   executionSubtabs
 } from './execution-subtabs.js';
+import { createRelayDefaultsSection } from './relay-defaults-section.js';
 import { normalizeAppliesTo } from './session-model.js';
 
 /** Select value for `기본값 사용` (sent as `null`). */
@@ -190,6 +191,11 @@ function freshRunnerForm() {
  * @param {BulkPaneOptions} options
  */
 export function createBulkPane(host, options) {
+  const relay_host = document.createElement('div');
+  const relay_section = createRelayDefaultsSection(relay_host, {
+    transport: options.transport,
+    modelVisibilityStore: options.modelVisibilityStore
+  });
   /** @type {'execution'|'account'} */
   let section = 'execution';
   /** @type {import('./execution-subtabs.js').ExecutionSubtab} */
@@ -1728,6 +1734,14 @@ export function createBulkPane(host, options) {
    * @returns {TemplateResult}
    */
   function executionTemplate() {
+    if (execution_subtab === 'hermes') {
+      relay_section.render();
+      return html`${executionSubtabs(execution_subtab, (tab) => {
+        execution_subtab = tab;
+        options.onExecutionSubtabChange?.(tab);
+        doRender();
+      })}${relay_host}`;
+    }
     return html`${executionSubtabs(execution_subtab, (tab) => {
       execution_subtab = tab;
       options.onExecutionSubtabChange?.(tab);
@@ -1815,6 +1829,7 @@ export function createBulkPane(host, options) {
     },
     destroy() {
       destroyed = true;
+      relay_section.destroy();
       cancelRun();
       codex_credit_controls.destroy();
       if (unsubscribe_rows) {

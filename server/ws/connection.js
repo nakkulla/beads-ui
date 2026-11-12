@@ -98,6 +98,7 @@ import {
   handleUpdateWorkflowMeta
 } from './mutation-handlers.js';
 import { scheduleListRefresh, setRefreshDebounceMs } from './refresh.js';
+import { handleRelayDefaults } from './relay-defaults-handlers.js';
 import { handleSearchIssues } from './search-handlers.js';
 import {
   handleGetSessionDefaults,
@@ -644,6 +645,10 @@ export async function handleMessage(ws, data) {
       return;
     case 'conversation-settings-set':
       handleConversationSettingsSet(ws, req);
+      return;
+    case 'relay-defaults-get':
+    case 'relay-defaults-set':
+      await handleRelayDefaults(ws, req);
       return;
     case 'impl-preset-create':
       handleImplPresetCreate(ws, req);

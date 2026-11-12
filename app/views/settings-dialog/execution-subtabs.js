@@ -1,6 +1,6 @@
 import { html } from 'lit-html';
 
-/** @typedef {'worker'|'quick_fix'|'session_review'} ExecutionSubtab */
+/** @typedef {'worker'|'quick_fix'|'session_review'|'hermes'} ExecutionSubtab */
 
 /**
  * @param {ExecutionSubtab} selected
@@ -11,7 +11,8 @@ export function executionSubtabs(selected, onSelect) {
   const tabs = [
     ['worker', '워커'],
     ['quick_fix', 'quick fix'],
-    ['session_review', '세션 리뷰']
+    ['session_review', '세션 리뷰'],
+    ['hermes', 'Hermes 세션']
   ];
   return html`<div
     class="settings-dialog__seg"

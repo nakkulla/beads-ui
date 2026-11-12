@@ -194,7 +194,7 @@ async function settle() {
 }
 
 describe('execution sub tabs', () => {
-  test('renders three execution sub tabs with the worker tab first', async () => {
+  test('renders execution sub tabs with the worker tab first', async () => {
     const { root, pane } = mount();
 
     await pane.load();
@@ -203,7 +203,7 @@ describe('execution sub tabs', () => {
       Array.from(root.querySelectorAll('[data-execution-subtab]'), (button) =>
         button.textContent?.trim()
       )
-    ).toEqual(['워커', 'quick fix', '세션 리뷰']);
+    ).toEqual(['워커', 'quick fix', '세션 리뷰', 'Hermes 세션']);
     expect(
       el(root, '[data-execution-subtab="worker"]').getAttribute('aria-pressed')
     ).toBe('true');

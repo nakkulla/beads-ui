@@ -57,6 +57,7 @@ import {
   executionSubtabs
 } from './execution-subtabs.js';
 import { createLimitPolicyEditor } from './limit-policy-editor.js';
+import { createRelayDefaultsSection } from './relay-defaults-section.js';
 import {
   AUTO_LITERAL,
   IMPL_DISPATCHES,
@@ -202,6 +203,11 @@ export function createExecutionPane(mount_element, binding) {
       : null;
   const notify =
     binding.notify || ((message) => showToast(message, 'error', 4000));
+  const relay_host = document.createElement('div');
+  const relay_section = createRelayDefaultsSection(relay_host, {
+    transport: binding.transport,
+    modelVisibilityStore: binding.modelVisibilityStore
+  });
 
   /** Values last read from the server; the diff baseline. */
   /** @type {Record<string, string>} */
@@ -2229,17 +2235,21 @@ export function createExecutionPane(mount_element, binding) {
    * @returns {TemplateResult}
    */
   function executionSection() {
+    const subtabs = executionSubtabs(execution_subtab, (tab) => {
+      execution_subtab = tab;
+      binding.onExecutionSubtabChange?.(tab);
+      doRender();
+    });
+    if (execution_subtab === 'hermes') {
+      relay_section.render();
+      return html`${subtabs}${relay_host}`;
+    }
     if (session_loading) {
       return html`<div class="settings-dialog__empty">불러오는 중…</div>`;
     }
     const visibility = speedVisibility();
     return html`
-      ${executionSubtabs(execution_subtab, (tab) => {
-        execution_subtab = tab;
-        binding.onExecutionSubtabChange?.(tab);
-        doRender();
-      })}
-      ${sessionWarningBanner()} ${projectionBanner()}
+      ${subtabs} ${sessionWarningBanner()} ${projectionBanner()}
       ${execution_subtab === 'worker'
         ? html`
             <section class="settings-dialog__block" data-exec-block="worker">
@@ -2433,6 +2443,7 @@ export function createExecutionPane(mount_element, binding) {
     sessionDraft: () => ({ ...session_draft }),
     destroy() {
       destroyed = true;
+      relay_section.destroy();
       ++generation;
       codex_credit_controls.destroy();
       unsubscribe_limit_policy?.();
