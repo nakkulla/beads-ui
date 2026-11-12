@@ -1,10 +1,11 @@
 ---
 id: UI-7gv4
 title: Worker 주소는 공통 설정 하나
-status: accepted
+status: superseded
 date: 2026-11-12
 summary: "Worker 주소는 dotfiles resolver가 공통 설정 하나로 정한 값만 읽고 보이며 저장소별 예외는 읽지도 보이지도 쓰지도 않는다 — 나머지 조항은 UI-hozk 그대로다"
 supersedes: ["UI-hozk"]
+superseded_by: UI-2mvi
 spec: docs/superpowers/specs/2026-11-11-worker-url-repo-exception-removal-consumer-design.md
 bead: UI-7gv4
 ---
