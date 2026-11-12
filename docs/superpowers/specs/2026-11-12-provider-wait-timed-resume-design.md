@@ -35,7 +35,7 @@ Discord 알림, 대화 기동, 일반 디스패치 가운데 어느 것도 일�
 - 세션의 `recovery:provider` 결말은 러너 어댑터의 복구 분류기가 증거를 줄 때만 보류가 되고, 분류기가 없으면 판정
   없이 끝난다 — server/worker/scheduler.js:3180, server/worker/scheduler.js:3196
 - 복구 분류기는 Claude 어댑터에만 있고 Codex 어댑터에는 없다. 그래서 Codex 러너 attempt의 `recovery:provider`는
-  보류가 될 길이 없다 — server/worker/runner/claude.js:946, server/worker/runner/codex.js:526
+  보류가 될 길이 없다 — server/worker/runner/claude.js:947, server/worker/runner/codex.js:526
 - 보류가 되지 않은 복구 결말은 `session_recovery_wait`로 기록되고 사유 토큰을 그대로 싣는다 —
   server/worker/scheduler.js:7974, server/worker/failure-class.js:543
 - 대화 대상 복구 사유는 `authority`·`no_progress`·`credential` 셋이고 `provider`는 없다 —
@@ -69,8 +69,8 @@ Discord 알림, 대화 기동, 일반 디스패치 가운데 어느 것도 일�
 - 배포 조건 대기는 레코드에서 다음 재확인 시각을 유도해 reconcile 패스가 시작한다 —
   server/worker/scheduler.js:10828
 - 현행 ADR은 "공급자 보류로 바뀌지 않은 세션 선언 `provider`는 대화 대상이 아니다"라고 정하고, 그 대기의 처리는
-  2026-10-10 사용자 결정으로 범위 밖에 두었다 — docs/adr/UI-7gv4-worker-url-common-only.md:917,
-  docs/adr/UI-7gv4-worker-url-common-only.md:380
+  2026-10-10 사용자 결정으로 범위 밖에 두었다 — docs/adr/UI-2mvi-execution-preset-keys-and-subtabs.md:970,
+  docs/adr/UI-2mvi-execution-preset-keys-and-subtabs.md:404
 - 교차 멤버 설계는 "정해진 간격의 맹목 재시도"를 재개 비용과 같은 실패 반복을 이유로 기각했다. 그 자리에는 해제를
   판정할 프로브 target이 있었다 — docs/adr/UI-d9c1-limit-policy-under-limit-candidates.md:482
 - dotfiles 계약은 결과 줄을 대기 의도로만 읽고 재개 자격의 증거로 보지 않으며, 복구는 기존 attempt 계보와 재시도
@@ -221,7 +221,7 @@ Test scope:
     간격 재시도"가 이 자리에서는 허용된다. 프로브할 보류 target이 없는 행이라는 점이 다르다.
   - 실제 절충: 고아 대기를 없애는 대신 최대 두 번의 헛재개 비용을 낸다. 기각한 대안은 즉시 알림만(매번 사람 클릭이
     필요), 즉시 대화 기동(dotfiles 계약의 사람 멈춤 종류를 먼저 바꿔야 함), 초기화 시각 파싱(§3.2)이다.
-  - `summary`: "공급자 보류로 바뀌지 않은 세션 선언 provider 대기는 Worker가 같은 세션을 1시간·5시간 뒤 두 번 자동 재개하고 같은 결말이 두 번 반복되면 기존 no_progress 대화로 넘기며, 대화 대상 사유 집합과 공급자 보류 해제 규칙은 그대로다 — 나머지 조항은 UI-7gv4 그대로다"
-  → ADR, supersede UI-7gv4
+  - `summary`: "공급자 보류로 바뀌지 않은 세션 선언 provider 대기는 Worker가 같은 세션을 1시간·5시간 뒤 두 번 자동 재개하고 같은 결말이 두 번 반복되면 기존 no_progress 대화로 넘기며, 대화 대상 사유 집합과 공급자 보류 해제 규칙은 그대로다 — 나머지 조항은 UI-2mvi 그대로다"
+  → ADR, supersede UI-2mvi
 - 사다리 기본값 3600초·18000초와 타이밍 키 이름 — 숫자 한도와 이름 → ADR 아님
 - 카드 해제 문장과 타임라인 요약 문구 — 표시 형식 → ADR 아님
