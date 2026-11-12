@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { expect, test, vi } from 'vitest';
+import { afterAll, expect, test, vi } from 'vitest';
 import { SPAWNED_TIMEOUT_SECONDS, observeSlurmJob } from './slurm.js';
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +17,36 @@ const JOB = {
   expected: ['/work/result']
 };
 const EPOCH = Date.parse(JOB.submitted_at) / 1000;
+const TOOL_BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'slurm-test-tools-'));
+
+afterAll(() => {
+  fs.rmSync(TOOL_BIN, { recursive: true, force: true });
+});
+
+/**
+ * Reuse executable launchers: first execution of each new script is slow on macOS.
+ * Each fixture still owns its command bodies and exposes only its own tools.
+ *
+ * @param {string} dir
+ * @param {Record<string, string>} tools
+ */
+function writeTools(dir, tools) {
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  for (const [name, body] of Object.entries(tools)) {
+    fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`);
+    const launcher = path.join(TOOL_BIN, name);
+    if (!fs.existsSync(launcher)) {
+      fs.writeFileSync(
+        launcher,
+        `#!/bin/sh\nexec /bin/sh "$EWM_DIR/${name}" "$@"\n`,
+        { mode: 0o755 }
+      );
+    }
+    fs.symlinkSync(launcher, path.join(bin, name));
+  }
+  return bin;
+}
 
 /**
  * @param {{queue?:string, control?:string, queue_rc?:number, control_rc?:number, log_rc?:number, log?:string, artifacts?:string}} [options]
@@ -271,7 +301,7 @@ test.each([
       '===== Job Started: old =====\nJob ID: 123\n===== Job Finished: old =====\nExit code: 9\n';
     const latest = `===== Job Started: ${started} =====\nJob ID: ${kind === 'new-mismatch' ? '999' : '123'}\n${kind === 'new-unfinished' ? '' : '===== Job Finished: later =====\nExit code: 0\n'}`;
     fs.writeFileSync(log_path, old + latest);
-    for (const [name, body] of Object.entries({
+    const bin = writeTools(dir, {
       squeue:
         kind === 'queue-error'
           ? 'exit 1'
@@ -280,16 +310,16 @@ test.each([
             : 'exit 0',
       scontrol: 'exit 1',
       date: `case "$2" in current) echo ${EPOCH};; old) echo ${EPOCH - 1};; *) exit 1;; esac`
-    })) {
-      fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`, {
-        mode: 0o755
-      });
-    }
+    });
     /** @type {import('../store.js').Run} */
     const run = async (argv) => {
       const result = await execFileAsync('/bin/sh', ['-c', argv[6]], {
         timeout: 10000,
-        env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          EWM_DIR: dir
+        }
       });
       return { code: 0, stdout: result.stdout, stderr: result.stderr };
     };
@@ -560,23 +590,19 @@ async function runObservation({
       ? `JobCompType             = jobcomp/filetxt\nJobCompLoc              = ${completion_path}\n`
       : config || ''
   );
-  for (const [name, body] of Object.entries({
+  const bin = writeTools(dir, {
     squeue: `case "$*" in *-u*) cat '${dir}/queue.txt'; exit ${queue_rc};; *) echo RUNNING;; esac`,
     scontrol: `case "$1 $2" in "show job") cat '${dir}/control.txt';; "show config") ${config === null ? 'exit 1' : `cat '${dir}/config.txt'`};; esac`,
     tac: `awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }' "$2"`,
     date: 'case "$1" in +*) echo 2026-09-21T10:00:00;; *) exit 1;; esac',
     ...tools
-  })) {
-    fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`, {
-      mode: 0o755
-    });
-  }
+  });
   /** @type {import('../store.js').Run} */
   const run = async (argv) => {
     const result = await execFileAsync('/bin/sh', ['-c', argv[6]], {
       timeout: 10000,
       maxBuffer: 16 * 1024 * 1024,
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, EWM_DIR: dir }
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, EWM_DIR: dir }
     });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };
   };
