@@ -11,7 +11,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, test, vi } from 'vitest';
 
 // Every test below runs the REAL deploy script, which spawns `git`, a shell,
 // and the fake `npm`/`bdui-shared` binaries. One such run costs ~1s on an idle
@@ -33,6 +33,21 @@ const ADAPTER = path.join(
   'deploy'
 );
 const STUB_INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
+// Reuse executable launchers while keeping command bodies and logs per fixture.
+// Executing a newly created script for every case is slow on macOS.
+const TOOL_BIN = fs.mkdtempSync(
+  path.join(os.tmpdir(), 'repo-ops-deploy-tools-')
+);
+const TOOL_LAUNCHER = path.join(TOOL_BIN, 'run-tool');
+fs.writeFileSync(
+  TOOL_LAUNCHER,
+  '#!/bin/sh\nexec /bin/sh "$BDUI_TEST_TOOL_ROOT/${0##*/}" "$@"\n',
+  { mode: 0o755 }
+);
+
+afterAll(() => {
+  fs.rmSync(TOOL_BIN, { recursive: true, force: true });
+});
 
 /** @type {string[]} */
 const created_roots = [];
@@ -87,26 +102,26 @@ function fixture(options = {}) {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin);
   fs.writeFileSync(
-    path.join(bin, 'npm'),
+    path.join(root, 'npm'),
     `#!/bin/sh\nprintf 'npm %s\\n' "$*" >> "$CALL_LOG"\n${options.npm_body || ''}\n`,
     'utf8'
   );
-  fs.chmodSync(path.join(bin, 'npm'), 0o755);
   fs.writeFileSync(
-    path.join(bin, 'bdui-shared'),
+    path.join(root, 'bdui-shared'),
     `#!/bin/sh\nprintf 'bdui-shared %s\\n' "$*" >> "$CALL_LOG"\n${options.restart_body || ''}\n`,
     'utf8'
   );
-  fs.chmodSync(path.join(bin, 'bdui-shared'), 0o755);
   // The health probe is the only `node` the script runs; the fake answers with
   // the canned verdict instead of doing a real fetch.
   const health = options.health ?? `ok ${STUB_INSTANCE_ID}`;
   fs.writeFileSync(
-    path.join(bin, 'node'),
+    path.join(root, 'node'),
     `#!/bin/sh\nprintf 'node health\\n' >> "$CALL_LOG"\nprintf '%s' '${health}'\n`,
     'utf8'
   );
-  fs.chmodSync(path.join(bin, 'node'), 0o755);
+  for (const name of ['npm', 'bdui-shared', 'node']) {
+    fs.symlinkSync(TOOL_LAUNCHER, path.join(bin, name));
+  }
 
   return { root, repo, sha, bin, log };
 }
@@ -123,6 +138,7 @@ function run(env, overrides = {}) {
       ...process.env,
       PATH: `${env.bin}${path.delimiter}${process.env.PATH}`,
       CALL_LOG: env.log,
+      BDUI_TEST_TOOL_ROOT: env.root,
       REPO_OPS_TARGET_SHA: overrides.sha || env.sha,
       REPO_OPS_TARGET_BASE: 'main',
       REPO_OPS_REPO_ROOT: overrides.root || env.repo,
@@ -144,6 +160,7 @@ function runAsync(env, extra_env = {}) {
       ...process.env,
       PATH: `${env.bin}${path.delimiter}${process.env.PATH}`,
       CALL_LOG: env.log,
+      BDUI_TEST_TOOL_ROOT: env.root,
       REPO_OPS_TARGET_SHA: env.sha,
       REPO_OPS_TARGET_BASE: 'main',
       REPO_OPS_REPO_ROOT: env.repo,

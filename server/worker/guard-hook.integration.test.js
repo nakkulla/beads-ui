@@ -2,7 +2,15 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi
+} from 'vitest';
 import { envFor, install, readPushLog } from './guard-hook.js';
 
 // This file drives REAL child processes (git, a shell, node), so its wall time
@@ -16,6 +24,18 @@ const ATTEMPT = 'UI-8mvc-1';
 // A slash-bearing base is the realistic shape (`ilsun/dev`) AND the quoting
 // case: the ref name is interpolated into a `/bin/sh` script.
 const BASE = 'ilsun/dev';
+// Share only the executable launcher; each test still installs and runs its own
+// generated hook. New executable files incur a first-run delay on macOS.
+const HOOK_BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-guard-launcher-'));
+fs.writeFileSync(
+  path.join(HOOK_BIN, 'pre-push'),
+  '#!/bin/sh\nexec /bin/sh "$BDUI_TEST_PUSH_HOOK" "$@"\n',
+  { mode: 0o755 }
+);
+
+afterAll(() => {
+  fs.rmSync(HOOK_BIN, { recursive: true, force: true });
+});
 
 /** @type {string} */
 let tmp;
@@ -53,13 +73,14 @@ function git(args, cwd) {
  * @param {string} command
  * @param {string[]} args
  * @param {string} cwd
+ * @param {Record<string, string>} [env]
  * @returns {{ code: number, stdout: string, stderr: string }}
  */
-function run(command, args, cwd) {
+function run(command, args, cwd, env = hook_env) {
   const result = spawnSync(command, args, {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, ...hook_env }
+    env: { ...process.env, ...env }
   });
   return {
     code: typeof result.status === 'number' ? result.status : 1,
@@ -164,7 +185,13 @@ beforeEach(() => {
     target_base: BASE
   });
   expect(installed.ok).toBe(true);
-  hook_env = envFor({ workspace: repo, attempt_id: ATTEMPT });
+  const env = envFor({ workspace: repo, attempt_id: ATTEMPT });
+  const hooks_key = `GIT_CONFIG_VALUE_${Number(env.GIT_CONFIG_COUNT) - 1}`;
+  hook_env = {
+    ...env,
+    [hooks_key]: HOOK_BIN,
+    BDUI_TEST_PUSH_HOOK: path.join(env[hooks_key], 'pre-push')
+  };
 });
 
 afterEach(() => {
@@ -196,7 +223,13 @@ describe('guard hook — prevention layer (UI-8mvc §2)', () => {
     commit(repo, 'base-landing');
     const before = remoteTip(origin, BASE);
 
-    const result = run('git', ['push', 'origin', `HEAD:${BASE}`], repo);
+    // Keep a direct installed-hook push as coverage of envFor and OS execution.
+    const result = run(
+      'git',
+      ['push', 'origin', `HEAD:${BASE}`],
+      repo,
+      envFor({ workspace: repo, attempt_id: ATTEMPT })
+    );
 
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain('bdui guard');

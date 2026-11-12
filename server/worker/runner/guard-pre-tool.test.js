@@ -35,10 +35,16 @@ afterEach(() => {
  * @param {string} [runner]
  */
 function runHook(command, runner = 'claude') {
-  return spawnSync(preToolHookPath(root, input.attempt_id), [runner], {
-    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
-    encoding: 'utf8'
-  });
+  // Read each generated script with the installed shell, avoiding macOS's
+  // first-execution cost without changing the hook's command or error handling.
+  return spawnSync(
+    '/bin/sh',
+    [preToolHookPath(root, input.attempt_id), runner],
+    {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+      encoding: 'utf8'
+    }
+  );
 }
 
 test.each([
@@ -92,7 +98,14 @@ test.each([
 });
 
 test('returns the same denial to Codex', () => {
-  const result = runHook('gh pr merge 42', 'codex');
+  // Keep one direct execution to cover the installed shebang and executable bit.
+  const result = spawnSync(preToolHookPath(root, input.attempt_id), ['codex'], {
+    input: JSON.stringify({
+      tool_name: 'Bash',
+      tool_input: { command: 'gh pr merge 42' }
+    }),
+    encoding: 'utf8'
+  });
 
   expect(
     JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason
@@ -101,8 +114,8 @@ test('returns the same denial to Codex', () => {
 
 test('allows malformed input and records the hook error', () => {
   const result = spawnSync(
-    preToolHookPath(root, input.attempt_id),
-    ['claude'],
+    '/bin/sh',
+    [preToolHookPath(root, input.attempt_id), 'claude'],
     { input: '{', encoding: 'utf8' }
   );
 

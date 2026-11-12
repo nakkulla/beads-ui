@@ -18,13 +18,19 @@ const JOB = {
 };
 const EPOCH = Date.parse(JOB.submitted_at) / 1000;
 const TOOL_BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'slurm-test-tools-'));
+const TOOL_LAUNCHER = path.join(TOOL_BIN, 'run-tool');
+fs.writeFileSync(
+  TOOL_LAUNCHER,
+  '#!/bin/sh\nexec /bin/sh "$EWM_DIR/${0##*/}" "$@"\n',
+  { mode: 0o755 }
+);
 
 afterAll(() => {
   fs.rmSync(TOOL_BIN, { recursive: true, force: true });
 });
 
 /**
- * Reuse executable launchers: first execution of each new script is slow on macOS.
+ * Reuse one executable: first execution of each new script is slow on macOS.
  * Each fixture still owns its command bodies and exposes only its own tools.
  *
  * @param {string} dir
@@ -35,15 +41,7 @@ function writeTools(dir, tools) {
   fs.mkdirSync(bin);
   for (const [name, body] of Object.entries(tools)) {
     fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`);
-    const launcher = path.join(TOOL_BIN, name);
-    if (!fs.existsSync(launcher)) {
-      fs.writeFileSync(
-        launcher,
-        `#!/bin/sh\nexec /bin/sh "$EWM_DIR/${name}" "$@"\n`,
-        { mode: 0o755 }
-      );
-    }
-    fs.symlinkSync(launcher, path.join(bin, name));
+    fs.symlinkSync(TOOL_LAUNCHER, path.join(bin, name));
   }
   return bin;
 }
