@@ -6995,7 +6995,7 @@ describe('scheduler provider hold and recovery', () => {
         number: 1,
         email: 'old@example.com',
         status: 'ok',
-        windows: [{ key: '5h', pct: 100, resetsAt: null }]
+        windows: [{ key: '5h', pct: 99, resetsAt: null }]
       },
       {
         key: 'no-five@example.com',
@@ -7085,6 +7085,7 @@ describe('scheduler provider hold and recovery', () => {
     await env.scheduler.tick(WS);
     env.runner.eventsFor('B1').emit('session_id', 'sid-limit');
 
+    rows[0].windows[0].pct = 100;
     env.runner.finish('B1', {
       success: false,
       reason: 'is_error',
@@ -7498,6 +7499,7 @@ describe('scheduler provider hold and recovery', () => {
     seedQueue(env.store, ['B1']);
     await env.scheduler.tick(WS);
 
+    listClaude.mockClear();
     env.runner.finish('B1', {
       success: false,
       reason: 'is_error',
@@ -8861,7 +8863,7 @@ describe('scheduler provider hold and recovery', () => {
         number: 1,
         email: 'old@example.com',
         status: 'ok',
-        windows: [{ key: '5h', pct: 100, resetsAt: null }]
+        windows: [{ key: '5h', pct: 99, resetsAt: null }]
       },
       {
         key: 'forbidden@example.com',
@@ -8905,6 +8907,7 @@ describe('scheduler provider hold and recovery', () => {
     await env.scheduler.tick(WS);
     env.runner.eventsFor('B1').emit('session_id', 'sid-limit');
 
+    rows[0].windows[0].pct = 100;
     env.runner.finish('B1', {
       success: false,
       reason: 'is_error',
@@ -10940,6 +10943,72 @@ describe('scheduler provider hold and recovery', () => {
         attempt_id: 'B1-1000-1',
         summary: 'claude 선제 전환 hot@example.com → cool@example.com (5h 85%)'
       })
+    );
+  });
+
+  describe('claude full window without preempt_pct', () => {
+    test.each(['5h', '7d'])(
+      'switches a pinned account whose %s window is full before dispatch',
+      async (window_key) => {
+        const catalog = claudeCatalog();
+        catalog.accounts[0].windows = [
+          { key: window_key, pct: 100, resetsAt: null }
+        ];
+        const env = preemptEnv(
+          { B1: { claude_account: 'hot@example.com' } },
+          {
+            accountCatalog: {
+              ...accountDeps().accountCatalog,
+              listClaude: async () => catalog
+            }
+          }
+        );
+        allowSwitchAccounts(env.store, 'claude', ['cool@example.com']);
+        seedQueue(env.store, ['B1']);
+
+        await env.scheduler.tick(WS);
+
+        expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+          claude_account: 'cool@example.com',
+          account_sources: { claude: 'preempt_switch', codex: null },
+          account_switched_from: 'hot@example.com'
+        });
+      }
+    );
+
+    test.each([
+      { windows: [{ key: '5h', pct: 99, resetsAt: null }] },
+      {
+        windows: [
+          { key: '5h', pct: 5, resetsAt: null },
+          { key: 'fable', pct: 100, resetsAt: null }
+        ]
+      }
+    ])(
+      'keeps a pinned account with available quota %j',
+      async ({ windows }) => {
+        const catalog = claudeCatalog();
+        catalog.accounts[0].windows = windows;
+        const env = preemptEnv(
+          { B1: { claude_account: 'hot@example.com' } },
+          {
+            accountCatalog: {
+              ...accountDeps().accountCatalog,
+              listClaude: async () => catalog
+            }
+          }
+        );
+        allowSwitchAccounts(env.store, 'claude', ['cool@example.com']);
+        seedQueue(env.store, ['B1']);
+
+        await env.scheduler.tick(WS);
+
+        expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+          claude_account: 'hot@example.com',
+          account_sources: { claude: 'bead', codex: null },
+          account_switched_from: null
+        });
+      }
     );
   });
 

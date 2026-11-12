@@ -4220,7 +4220,7 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Move a launch account off a crossed window, an exhausted Codex window, or
+   * Move a launch account off a crossed window, an exhausted quota window, or
    * a usage hold without writing the Bead's account pin.
    *
    * @param {string} workspace
@@ -4242,21 +4242,6 @@ export function createScheduler(deps) {
       return null;
     }
     const preempt_pct = policy.preempt_pct;
-    // Moving off a usage-held account is not preemption, so an unset
-    // `preempt_pct` leaves only that trigger, which needs a usage hold. Codex
-    // also reads the catalog for the exhausted-window trigger.
-    if (
-      preempt_pct === null &&
-      runner !== 'codex' &&
-      deps.store
-        .snapshot(workspace)
-        .provider_hold?.[
-          runner
-        ]?.targets?.some((/** @type {any} */ target) => target.kind === 'usage_limit') !==
-        true
-    ) {
-      return null;
-    }
     const list =
       runner === 'codex'
         ? deps.accountCatalog?.listCodex
@@ -4291,14 +4276,14 @@ export function createScheduler(deps) {
             (/** @type {any} */ window) =>
               typeof window?.pct === 'number' && window.pct >= preempt_pct
           );
-    const exhausted =
-      runner === 'codex'
-        ? windows.find(
-            (/** @type {any} */ window) =>
-              typeof window?.pct === 'number' &&
-              window.pct >= CODEX_EXHAUSTED_WINDOW_PCT
-          )
-        : undefined;
+    const exhausted_pct =
+      runner === 'codex' ? CODEX_EXHAUSTED_WINDOW_PCT : WINDOW_LIMIT_PCT;
+    const exhausted = windows.find(
+      (/** @type {any} */ window) =>
+        typeof window?.pct === 'number' &&
+        window.pct >= exhausted_pct &&
+        (runner === 'codex' || window.key === '5h' || window.key === '7d')
+    );
     const held =
       !exhausted_only &&
       deps.store
