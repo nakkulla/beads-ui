@@ -5,8 +5,20 @@ import { expect, test } from 'vitest';
 import {
   FAILURE_NEXT_ACTIONS,
   FAILURE_SENTENCES,
-  RECOVERY_WAIT_SENTENCES
+  RECOVERY_WAIT_SENTENCES,
+  providerWaitResumeSentence
 } from './failure-sentences.js';
+
+test.each([0, 1])(
+  'names the provider wait automatic resume rung %i',
+  (step) => {
+    const sentence = providerWaitResumeSentence(step, 2);
+
+    expect(sentence).toBe(
+      `공급자·사용량 조건 해제를 기다리며, 예정 시각에 자동으로 이어갑니다(${step + 1}/2).`
+    );
+  }
+);
 
 /**
  * The `QuickfixLandingReason` tokens, read from the typedef that declares them

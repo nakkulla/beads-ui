@@ -119,10 +119,11 @@
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
  * @property {string|null} cause - Failure cause shown by the decision tile.
- * @property {'provider_outage'|'account_switch'|null} auto_resume_kind - Marks
+ * @property {'provider_outage'|'account_switch'|'provider_wait'|null} auto_resume_kind - Marks
  * how an attempt was continued after a provider hold: `provider_outage` is the
  * automatic reset resume the no-progress cap counts, `account_switch` is a
- * limit switch child and does not consume that cap.
+ * limit switch child and does not consume that cap. `provider_wait` continues
+ * an unheld recovery wait and uses recovery's same-cause repeat count instead.
  * @property {string|null} resume_refused - Diagnostic from a refused continuation.
  * @property {string|null} auto_resume_refused - Why the recovery resume was
  * turned away (`worktree_missing` and the like). Kept on the attempt because
@@ -4340,7 +4341,8 @@ export function makeAttempt(fields) {
     cause: fields.cause ?? null,
     auto_resume_kind:
       fields.auto_resume_kind === 'provider_outage' ||
-      fields.auto_resume_kind === 'account_switch'
+      fields.auto_resume_kind === 'account_switch' ||
+      fields.auto_resume_kind === 'provider_wait'
         ? fields.auto_resume_kind
         : null,
     resume_refused:

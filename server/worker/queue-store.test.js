@@ -44,6 +44,42 @@ let tmp_state;
 const WS = '/tmp/example-workspace/project-a';
 
 describe('interactive session persistence', () => {
+  test('preserves the provider wait resume kind through save and cold reload', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'provider-wait',
+        bead_id: 'B1',
+        auto_resume_kind: 'provider_wait'
+      }
+    });
+
+    const attempt = createQueueStore().load(WS).attempts['provider-wait'];
+
+    expect(attempt.auto_resume_kind).toBe('provider_wait');
+  });
+
+  test('ends the provider hold cap at a provider wait continuation', () => {
+    const ancestor = makeAttempt({
+      attempt_id: 'outage',
+      bead_id: 'B1',
+      auto_resume_kind: 'provider_outage'
+    });
+    const attempt = makeAttempt({
+      attempt_id: 'wait',
+      bead_id: 'B1',
+      auto_resume_kind: 'provider_wait',
+      resumed_from: 'outage'
+    });
+
+    const count = providerNoProgressResumeCount(
+      { outage: ancestor, wait: attempt },
+      attempt
+    );
+
+    expect(count).toBe(0);
+  });
   test('retains a fix-wait identity and spent state after cold load', () => {
     const store = createQueueStore();
     const wait = {
