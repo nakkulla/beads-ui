@@ -19,6 +19,137 @@ afterEach(() => {
 });
 
 describe('exec-preset-store defaults', () => {
+  test.each(['spec_review_model', 'plan_review_model'])(
+    'rejects a general preset carrying a spec or plan review key',
+    (key) => {
+      const store = createExecPresetStore({
+        filePath: path.join(tmp_dir, 'exec-presets.json')
+      });
+      const created = store.create({
+        expected_revision: 0,
+        name: '일반',
+        settings: {}
+      });
+
+      const invalid_create = store.create({
+        expected_revision: 1,
+        name: '리뷰',
+        settings: { [key]: 'codex' }
+      });
+      const invalid_update = store.update({
+        expected_revision: 1,
+        id: created.presets[0].id,
+        name: '일반',
+        settings: { [key]: 'codex' }
+      });
+
+      expect(invalid_create).toMatchObject({
+        applied: false,
+        reason: 'invalid'
+      });
+      expect(invalid_update).toMatchObject({
+        applied: false,
+        reason: 'invalid'
+      });
+    }
+  );
+
+  test('strips spec and plan review keys from stored general presets once', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 4,
+        presets: [
+          {
+            id: 'p1',
+            name: '일반',
+            applies_to: 'general',
+            settings: {
+              spec_review_model: 'codex',
+              spec_review_effort: 'high',
+              spec_review_speed: 'fast',
+              plan_review_model: 'astra',
+              plan_review_effort: 'xhigh',
+              plan_review_speed: 'default',
+              impl_review_model: 'fable'
+            }
+          },
+          {
+            id: 'p2',
+            name: '구형',
+            settings: { spec_review_model: 'opus', retired_key: 'keep' }
+          },
+          {
+            id: 'q1',
+            name: 'quick fix',
+            applies_to: 'quick_fix',
+            settings: { spec_review_model: 'codex' }
+          }
+        ]
+      })
+    );
+    const store = createExecPresetStore({ filePath: file_path });
+
+    const result = store.migrateSessionReviews({ marker: { version: 1 } });
+    const after = fs.readFileSync(file_path, 'utf8');
+    const restarted = createExecPresetStore({ filePath: file_path });
+    const repeated = restarted.migrateSessionReviews({
+      marker: { version: 1 }
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.removals).toHaveLength(2);
+    expect(store.snapshot().presets.map((preset) => preset.settings)).toEqual([
+      { impl_review_model: 'fable' },
+      { retired_key: 'keep' },
+      { spec_review_model: 'codex' }
+    ]);
+    expect(JSON.parse(after).session_review_migration).toEqual({ version: 1 });
+    expect(repeated.applied).toBe(false);
+    expect(fs.readFileSync(file_path, 'utf8')).toBe(after);
+  });
+
+  test('retries the session review migration after an atomic write fails', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    const initial = {
+      revision: 1,
+      presets: [
+        {
+          id: 'p1',
+          name: '일반',
+          applies_to: 'general',
+          settings: { spec_review_model: 'codex' },
+          origin: { kind: 'user' }
+        }
+      ],
+      chip_bindings: UNBOUND_CHIPS,
+      quick_fix_chip_bindings: UNBOUND_CHIPS
+    };
+    fs.writeFileSync(file_path, JSON.stringify(initial));
+    const failing = createExecPresetStore({
+      filePath: file_path,
+      fs: {
+        ...fs,
+        renameSync: () => {
+          throw new Error('write failed');
+        }
+      }
+    });
+
+    expect(() =>
+      failing.migrateSessionReviews({ marker: { version: 1 } })
+    ).toThrow('write failed');
+
+    expect(JSON.parse(fs.readFileSync(file_path, 'utf8'))).toEqual(initial);
+    expect(failing.snapshot().presets[0].settings).toEqual({
+      spec_review_model: 'codex'
+    });
+    const restarted = createExecPresetStore({ filePath: file_path });
+    expect(
+      restarted.migrateSessionReviews({ marker: { version: 1 } }).applied
+    ).toBe(true);
+  });
   test.each(['EACCES', 'EIO'])(
     'caches the read failure signal for %s',
     (code) => {
@@ -739,7 +870,7 @@ describe('exec-preset-store profiles', () => {
       expected_revision: 0,
       name: '리뷰 포함',
       applies_to: 'quick_fix',
-      settings: { impl_review_model: 'fable' }
+      settings: { spec_review_model: 'fable' }
     });
 
     expect(result).toMatchObject({
@@ -823,7 +954,7 @@ describe('exec-preset-store profiles', () => {
       expected_revision: 2,
       id: 'qf-1',
       name: '빠른 수정',
-      settings: { impl_review_model: 'fable' }
+      settings: { spec_review_model: 'fable' }
     });
 
     expect(updated.presets[0].applies_to).toBe('quick_fix');

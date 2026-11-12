@@ -44,11 +44,14 @@ export const QUICK_FIX_KV_KEYS = [
   'quick_fix_impl_runtime',
   'quick_fix_impl_model',
   'quick_fix_impl_effort',
-  'quick_fix_impl_speed'
+  'quick_fix_impl_speed',
+  'quick_fix_impl_review_model',
+  'quick_fix_impl_review_effort',
+  'quick_fix_impl_review_speed'
 ];
 
 /**
- * The twenty keys `bd kv workflow_session_defaults` may STORE, in the
+ * The 23 keys `bd kv workflow_session_defaults` may STORE, in the
  * contract's own order. `impl_dispatch` is absent by contract
  * (`write_rule: user_write_only`): a workspace-global dispatch would decide for
  * every later bead, so the session-defaults group offers no such row.
@@ -185,7 +188,10 @@ export const QUICK_FIX_LANE_MAP = Object.freeze({
   impl_runtime: 'quick_fix_impl_runtime',
   impl_model: 'quick_fix_impl_model',
   impl_effort: 'quick_fix_impl_effort',
-  impl_speed: 'quick_fix_impl_speed'
+  impl_speed: 'quick_fix_impl_speed',
+  impl_review_model: 'quick_fix_impl_review_model',
+  impl_review_effort: 'quick_fix_impl_review_effort',
+  impl_review_speed: 'quick_fix_impl_review_speed'
 });
 
 /**
@@ -208,16 +214,20 @@ export function normalizeAppliesTo(value) {
 }
 
 /**
- * The 17 keys a `general` preset may carry — the same set as
- * {@link BEAD_PIN_KEYS}, named separately because this one is the profile's
- * `settings` vocabulary. Mirrors server `GENERAL_PRESET_KEYS`.
+ * The six session-only review keys; mirrors server SESSION_REVIEW_KEYS.
  */
-export const GENERAL_PRESET_KEYS = [...BEAD_PIN_KEYS];
+export const SESSION_REVIEW_KEYS = BEAD_APPLY_KEYS.filter(
+  (key) => key.startsWith('spec_review_') || key.startsWith('plan_review_')
+);
+
+/** The eleven orchestration, implementation and implementation review keys. */
+export const GENERAL_PRESET_KEYS = BEAD_PIN_KEYS.filter(
+  (key) => !SESSION_REVIEW_KEYS.includes(key)
+);
 
 /**
  * The five implementation keys a `quick_fix` preset may carry, in CANONICAL
- * names. The nine review keys are deliberately absent: a review setting is a
- * profile-independent axis. Mirrors server `QUICK_FIX_IMPL_KEYS`.
+ * names. Review keys are listed separately in the preset key set. Mirrors server `QUICK_FIX_IMPL_KEYS`.
  */
 export const QUICK_FIX_IMPL_KEYS = [
   'impl_dispatch',
@@ -227,14 +237,17 @@ export const QUICK_FIX_IMPL_KEYS = [
   'impl_speed'
 ];
 
-/** The 8 keys a `quick_fix` preset may carry; mirrors server list. */
+/** The eleven canonical keys a quick fix preset carries; mirrors server. */
 export const QUICK_FIX_PRESET_KEYS = [
   ...ORCHESTRATION_KEYS,
-  ...QUICK_FIX_IMPL_KEYS
+  ...QUICK_FIX_IMPL_KEYS,
+  'impl_review_model',
+  'impl_review_effort',
+  'impl_review_speed'
 ];
 
 /**
- * The 13 kv keys a `general` apply replaces. `impl_dispatch` is the one
+ * The seven kv keys a general apply replaces. `impl_dispatch` is the one
  * general preset key with no kv member — the contract keeps it
  * `write_rule: user_write_only`. Mirrors server `GENERAL_PRESET_KV_KEYS`.
  */
@@ -686,8 +699,8 @@ export const PRESET_DIFF_LABELS = {
 
 /**
  * Exactly the canonical keys one profile's apply replaces, in declaration
- * order. A `general` apply writes its 13 kv keys and the three queue
- * orchestration keys; a `quick_fix` apply writes all 8 of its keys, because
+ * order. A general apply writes its seven kv keys and the three queue
+ * orchestration keys; a quick fix apply writes all eleven of its keys, because
  * `impl_dispatch` IS a contract-allowed global there (design §4).
  *
  * @param {unknown} applies_to

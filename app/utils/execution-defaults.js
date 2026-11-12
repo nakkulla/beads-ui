@@ -27,6 +27,9 @@ export const EXECUTION_SETTING_KEYS = [
   'quick_fix_impl_model',
   'quick_fix_impl_effort',
   'quick_fix_impl_speed',
+  'quick_fix_impl_review_model',
+  'quick_fix_impl_review_effort',
+  'quick_fix_impl_review_speed',
   'orchestration_model',
   'orchestration_effort',
   'orchestration_speed',
@@ -79,6 +82,9 @@ const QUICK_FIX_RESOLUTION_KEYS = {
   quick_fix_impl_model: 'impl_model',
   quick_fix_impl_effort: 'impl_effort',
   quick_fix_impl_speed: 'impl_speed',
+  quick_fix_impl_review_model: 'impl_review_model',
+  quick_fix_impl_review_effort: 'impl_review_effort',
+  quick_fix_impl_review_speed: 'impl_review_speed',
   quick_fix_orchestration_model: 'orchestration_model',
   quick_fix_orchestration_effort: 'orchestration_effort',
   quick_fix_orchestration_speed: 'orchestration_speed'
@@ -396,7 +402,17 @@ function unavailableResult(key, pin, global_values) {
  */
 export function resolveExecutionSettings(input) {
   const pin = isRecord(input.pin) ? input.pin : {};
-  const global_values = isRecord(input.global) ? input.global : {};
+  const global_values = { ...(isRecord(input.global) ? input.global : {}) };
+  if (input.route === 'quick_fix') {
+    for (const suffix of ['model', 'effort', 'speed']) {
+      const value = usableString(
+        global_values[`quick_fix_impl_review_${suffix}`]
+      );
+      if (value !== null) {
+        global_values[`impl_review_${suffix}`] = value;
+      }
+    }
+  }
   const projection = isRecord(input.execution_defaults)
     ? input.execution_defaults
     : null;
@@ -1019,6 +1035,11 @@ export function resolveExecutionSettings(input) {
       : unavailableResult(quick_key, pin, global_values);
   }
 
+  for (const suffix of ['model', 'effort', 'speed']) {
+    const canonical_key = `impl_review_${suffix}`;
+    rows[`quick_fix_${canonical_key}`] = { ...rows[canonical_key] };
+  }
+
   if (session) {
     // Built last on purpose: its unset label quotes the orchestration model row,
     // which the loop above has only just resolved against the real workspace
@@ -1195,7 +1216,9 @@ export function buildOptionView(input) {
       ];
       let option_label = row.display;
       if (
-        Object.values(REVIEW_PAIRS).includes(input.key) &&
+        Object.values(REVIEW_PAIRS).includes(
+          QUICK_FIX_RESOLUTION_KEYS[input.key] || input.key
+        ) &&
         row.resolution !== 'incompatible' &&
         Object.hasOwn(REVIEWER_OPTION_LABELS, choice)
       ) {

@@ -175,6 +175,8 @@ export function createSettingsDialog(mount_element, options) {
   mount_element.appendChild(dialog);
 
   let active_tab = 'execution';
+  /** @type {import('./execution-subtabs.js').ExecutionSubtab} */
+  let execution_subtab = 'worker';
   let is_open = false;
   let prefix_draft = '';
   /** @type {'single'|'multi'} */
@@ -364,6 +366,10 @@ export function createSettingsDialog(mount_element, options) {
     const bound_root = targetIsConnected() ? null : target_root;
     const generation = target_generation;
     execution_pane = createExecutionPane(pane_host, {
+      executionSubtab: execution_subtab,
+      onExecutionSubtabChange: (tab) => {
+        execution_subtab = tab;
+      },
       root_dir: bound_root,
       queue: () =>
         bound_root === null
@@ -441,6 +447,10 @@ export function createSettingsDialog(mount_element, options) {
   function ensureBulkPane() {
     if (!bulk_pane) {
       bulk_pane = createBulkPane(bulk_host, {
+        executionSubtab: execution_subtab,
+        onExecutionSubtabChange: (tab) => {
+          execution_subtab = tab;
+        },
         transport,
         rows: monitorRows,
         subscribeRows: options.subscribeMonitorRows,
@@ -1131,6 +1141,7 @@ export function createSettingsDialog(mount_element, options) {
       return;
     }
     is_open = true;
+    execution_subtab = 'worker';
     const repo =
       open_options.scope === 'repo' &&
       typeof open_options.root_dir === 'string' &&

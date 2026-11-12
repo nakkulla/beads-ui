@@ -21,7 +21,6 @@ import {
 } from '../session-defaults.js';
 import {
   APPLIED_EXEC_PRESET_KEY,
-  BEAD_PIN_KEYS,
   CHIP_BINDING_KEYS,
   CHIP_PRESET_RESTORE_KEY,
   CHIP_PRESET_SOURCE_KEY,
@@ -131,7 +130,7 @@ export function buildApplyImplPresetArgs(
   issue_id,
   settings,
   preset_id,
-  replaced_keys = BEAD_PIN_KEYS
+  replaced_keys = presetKeysFor('general')
 ) {
   const args = ['update', issue_id];
   for (const key of replaced_keys) {
@@ -966,12 +965,13 @@ export function handleImplPresetBind(ws, req) {
  * pin key the issue carries a string value for, plus its preset identity.
  *
  * @param {Record<string, unknown>} metadata
+ * @param {'general'|'quick_fix'} profile
  * @returns {Record<string, string>}
  */
-function restorePointOf(metadata) {
+function restorePointOf(metadata, profile) {
   /** @type {Record<string, string>} */
   const point = {};
-  for (const key of [...BEAD_PIN_KEYS, APPLIED_EXEC_PRESET_KEY]) {
+  for (const key of [...presetKeysFor(profile), APPLIED_EXEC_PRESET_KEY]) {
     const value = metadata[key];
     if (typeof value === 'string' && value.length > 0) {
       point[key] = value;
@@ -988,11 +988,12 @@ function restorePointOf(metadata) {
  *
  * @param {string} issue_id
  * @param {Record<string, string>|null} restore_point
+ * @param {'general'|'quick_fix'} profile
  * @returns {string[]}
  */
-function buildChipRestoreArgs(issue_id, restore_point) {
+function buildChipRestoreArgs(issue_id, restore_point, profile) {
   const args = ['update', issue_id];
-  for (const key of [...BEAD_PIN_KEYS, APPLIED_EXEC_PRESET_KEY]) {
+  for (const key of [...presetKeysFor(profile), APPLIED_EXEC_PRESET_KEY]) {
     const value = restore_point?.[key];
     if (typeof value === 'string' && value.length > 0) {
       args.push('--set-metadata', `${key}=${value}`);
@@ -1070,6 +1071,7 @@ async function runChipPresetToggle(ws, req, input) {
       : {}
   );
   const route = metadata.route;
+  const profile = route === 'quick_fix' ? 'quick_fix' : 'general';
   // The issue's profile picks the binding map; it matches the family
   // `presetSettingsForIssue` replaces keys for (design §3.3).
   const bindings =
@@ -1112,7 +1114,7 @@ async function runChipPresetToggle(ws, req, input) {
       }
     }
     restore_fallback = restore_point === null;
-    args = buildChipRestoreArgs(id, restore_point);
+    args = buildChipRestoreArgs(id, restore_point, profile);
   } else {
     const resolved = resolvePresetForApply(
       ws,
@@ -1154,7 +1156,7 @@ async function runChipPresetToggle(ws, req, input) {
     if (typeof metadata[CHIP_PRESET_RESTORE_KEY] !== 'string') {
       args.push(
         '--set-metadata',
-        `${CHIP_PRESET_RESTORE_KEY}=${JSON.stringify(restorePointOf(metadata))}`
+        `${CHIP_PRESET_RESTORE_KEY}=${JSON.stringify(restorePointOf(metadata, profile))}`
       );
     }
   }

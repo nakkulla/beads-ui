@@ -360,10 +360,11 @@ function runtimeExpectationPending(preset, runner_catalog) {
  * beats reporting a drift that only an absent catalog invented.
  *
  * The compared key range follows the ISSUE's profile (design §5): a
- * `route=quick_fix` issue is judged on 8 keys, every other issue on 17. A
- * quick fix preset replaces no review pin, so a review pin standing on such an
- * issue is not a drift — `normalizeAppliesTo` reads the route the same way the
- * apply path does, since every route but `quick_fix` takes a general preset.
+ * `route=quick_fix` issue is judged on the quick fix profile's 11 keys, every
+ * other issue on the general profile's 11. Neither profile carries a spec or
+ * plan review key, so such a pin is never a drift — `normalizeAppliesTo` reads
+ * the route the same way the apply path does, since every route but
+ * `quick_fix` takes a general preset.
  *
  * @param {Record<string, unknown>|null|undefined} bead_metadata
  * @param {{ applies_to?: unknown, settings?: Record<string, any>|null }|null|undefined} preset

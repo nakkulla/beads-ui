@@ -2226,6 +2226,32 @@ describe('dialogs use parts (§3.4 check 3)', () => {
     document.body.innerHTML = '';
   });
 
+  test.each(
+    ['single', 'monitor'].flatMap((scope) =>
+      ['worker', 'quick_fix', 'session_review'].map((tab) => [scope, tab])
+    )
+  )(
+    'draws every execution sub tab control with a part (%s %s)',
+    async (scope, tab) => {
+      const dialog = await renderSettingsDialog(
+        /** @type {'single'|'monitor'} */ (scope)
+      );
+
+      clickOn(dialog, `[data-execution-subtab="${tab}"]`);
+      await settle();
+
+      expect(dialog.querySelectorAll('[data-execution-subtab]')).toHaveLength(
+        3
+      );
+      expect(
+        dialog
+          .querySelector(`[data-execution-subtab="${tab}"]`)
+          ?.classList.contains('is-active')
+      ).toBe(true);
+      expect(controlsWithoutPart(dialog)).toEqual([]);
+    }
+  );
+
   test.each(SETTINGS_TABS.map((tab) => tab.id))(
     'draws every control of the %s settings tab with a part',
     async (tab_id) => {

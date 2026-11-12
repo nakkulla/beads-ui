@@ -52,6 +52,10 @@ import {
 } from './active-login-status.js';
 import { appliedPresetFieldFor } from './bulk-observation.js';
 import { createCodexCreditControls } from './codex-credit-controls.js';
+import {
+  SESSION_REVIEW_NOTICE,
+  executionSubtabs
+} from './execution-subtabs.js';
 import { createLimitPolicyEditor } from './limit-policy-editor.js';
 import {
   AUTO_LITERAL,
@@ -164,6 +168,8 @@ function isRecord(value) {
  * dialog hands `queueStore.get()`, the monitor hands that repo's
  * `workspaces_state` row.
  * @property {(type: any, payload?: unknown) => Promise<any>} transport
+ * @property {import('./execution-subtabs.js').ExecutionSubtab} [executionSubtab]
+ * @property {(tab: import('./execution-subtabs.js').ExecutionSubtab) => void} [onExecutionSubtabChange]
  * @property {{ get: () => any }} [implPresetStore]
  * @property {{ get: () => any }} [modelVisibilityStore] - Server-global model
  * visibility; its disabled list filters the model and reviewer choices.
@@ -314,8 +320,8 @@ export function createExecutionPane(mount_element, binding) {
 
   /** Which of {@link PANE_SECTIONS} this mount currently draws. */
   let active_section = 'execution';
-  /** Whether the `실행` tab's quick fix block is unfolded; shut by default. */
-  let quick_fix_open = false;
+  /** @type {import('./execution-subtabs.js').ExecutionSubtab} */
+  let execution_subtab = binding.executionSubtab || 'worker';
 
   let destroyed = false;
 
@@ -986,6 +992,12 @@ export function createExecutionPane(mount_element, binding) {
       impl_review_speed: speedVisible(catalog, {
         model: reviewerModelToken(session_draft.impl_review_model)
       }),
+      quick_fix_impl_review_speed: speedVisible(catalog, {
+        model: reviewerModelToken(
+          session_draft.quick_fix_impl_review_model ||
+            session_draft.impl_review_model
+        )
+      }),
       impl_speed: speedVisible(catalog, {
         runtime: session_draft.impl_runtime,
         model: session_draft.impl_model
@@ -1631,7 +1643,9 @@ export function createExecutionPane(mount_element, binding) {
           model_choices,
           onSessionChange,
           session_draft,
-          false
+          model_key.startsWith('quick_fix_') && !supportsQuickFixLane(),
+          { ...session_draft, ...currentOrchestrationValues() },
+          model_key.startsWith('quick_fix_') ? 'quick_fix' : null
         )}
         ${selectControl(
           effort_key,
@@ -1639,7 +1653,9 @@ export function createExecutionPane(mount_element, binding) {
           REVIEW_EFFORTS,
           onSessionChange,
           session_draft,
-          false
+          model_key.startsWith('quick_fix_') && !supportsQuickFixLane(),
+          { ...session_draft, ...currentOrchestrationValues() },
+          model_key.startsWith('quick_fix_') ? 'quick_fix' : null
         )}
         ${speed_visible
           ? selectControl(
@@ -1648,7 +1664,9 @@ export function createExecutionPane(mount_element, binding) {
               REVIEW_SPEEDS,
               onSessionChange,
               session_draft,
-              false
+              model_key.startsWith('quick_fix_') && !supportsQuickFixLane(),
+              { ...session_draft, ...currentOrchestrationValues() },
+              model_key.startsWith('quick_fix_') ? 'quick_fix' : null
             )
           : ''}
       </span>
@@ -2002,33 +2020,42 @@ export function createExecutionPane(mount_element, binding) {
         리뷰 게이트
         <span class="settings-dialog__hint">모델 · effort · 속도</span>
       </div>
-      ${gateRow(
-        '사양 리뷰',
-        'spec',
-        'spec_review_model',
-        REVIEW_STEP_MODELS,
-        'spec_review_effort',
-        'spec_review_speed',
-        visibility.spec_review_speed
-      )}
-      ${gateRow(
-        '계획 리뷰',
-        'plan',
-        'plan_review_model',
-        PLAN_REVIEW_MODELS,
-        'plan_review_effort',
-        'plan_review_speed',
-        visibility.plan_review_speed
-      )}
-      ${gateRow(
-        '구현 리뷰',
-        'impl',
-        'impl_review_model',
-        REVIEW_STEP_MODELS,
-        'impl_review_effort',
-        'impl_review_speed',
-        visibility.impl_review_speed
-      )}
+      ${execution_subtab === 'session_review'
+        ? html`${gateRow(
+            '사양 리뷰',
+            'spec',
+            'spec_review_model',
+            REVIEW_STEP_MODELS,
+            'spec_review_effort',
+            'spec_review_speed',
+            visibility.spec_review_speed
+          )}
+          ${gateRow(
+            '계획 리뷰',
+            'plan',
+            'plan_review_model',
+            PLAN_REVIEW_MODELS,
+            'plan_review_effort',
+            'plan_review_speed',
+            visibility.plan_review_speed
+          )} `
+        : gateRow(
+            '구현 리뷰',
+            'impl',
+            execution_subtab === 'quick_fix'
+              ? 'quick_fix_impl_review_model'
+              : 'impl_review_model',
+            REVIEW_STEP_MODELS,
+            execution_subtab === 'quick_fix'
+              ? 'quick_fix_impl_review_effort'
+              : 'impl_review_effort',
+            execution_subtab === 'quick_fix'
+              ? 'quick_fix_impl_review_speed'
+              : 'impl_review_speed',
+            execution_subtab === 'quick_fix'
+              ? visibility.quick_fix_impl_review_speed
+              : visibility.impl_review_speed
+          )}
     </div>`;
   }
 
@@ -2197,27 +2224,7 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * The quick fix block's folded one-line summary: what a quick fix Bead's
-   * worker runs on and who implements it, so the block can stay shut.
-   *
-   * @returns {string}
-   */
-  function quickFixSummary() {
-    if (!supportsQuickFixLane()) {
-      return QUICK_FIX_UNSUPPORTED;
-    }
-    const orchestration = currentOrchestrationValues();
-    const model = orchestration.quick_fix_orchestration_model || '일반 값';
-    const effort = orchestration.quick_fix_orchestration_effort || '일반 값';
-    const impl = quickFixDelegated() ? '구현 위임' : '메인 세션이 구현';
-    return `오케스트레이션 ${model} / ${effort} · ${impl}`;
-  }
-
-  /**
-   * The `실행` tab: the worker profile the Worker and an interactive session
-   * share, then the route-scoped quick fix profile folded under it. Each block
-   * keeps its own preset bar, because a preset belongs to one family (UI-rd2m,
-   * UI-32oq §4.6).
+   * The execution sub tab selector and the selected repository form.
    *
    * @returns {TemplateResult}
    */
@@ -2227,36 +2234,49 @@ export function createExecutionPane(mount_element, binding) {
     }
     const visibility = speedVisibility();
     return html`
+      ${executionSubtabs(execution_subtab, (tab) => {
+        execution_subtab = tab;
+        binding.onExecutionSubtabChange?.(tab);
+        doRender();
+      })}
       ${sessionWarningBanner()} ${projectionBanner()}
-      <section class="settings-dialog__block" data-exec-block="worker">
-        <div class="settings-dialog__block-title">
-          워커
-          <span class="settings-dialog__hint"
-            >Worker와 대화형 세션이 함께 쓰는 실행 프로파일</span
-          >
-        </div>
-        ${presetStripTemplate('general')} ${orchestrationGroup(visibility)}
-        ${implGroup(visibility)} ${reviewGatesGroup(visibility)}
-        ${systemPromptSection()}
-      </section>
-      <details
-        class="settings-dialog__block settings-dialog__fold"
-        data-exec-block="quick_fix"
-        ?open=${quick_fix_open}
-        @toggle=${(/** @type {Event} */ ev) => {
-          quick_fix_open = /** @type {HTMLDetailsElement} */ (ev.target).open;
-        }}
-      >
-        <summary class="op-btn settings-dialog__fold-head">
-          <span class="settings-dialog__block-title">quick fix</span>
-          <span class="settings-dialog__hint" data-quick-fix-summary
-            >${quickFixSummary()}</span
-          >
-        </summary>
-        ${presetStripTemplate('quick_fix')}
-        ${quickFixOrchestrationGroup(visibility)}
-        ${quickFixImplGroup(visibility)}
-      </details>
+      ${execution_subtab === 'worker'
+        ? html`
+            <section class="settings-dialog__block" data-exec-block="worker">
+              <div class="settings-dialog__block-title">
+                워커
+                <span class="settings-dialog__hint"
+                  >Worker와 대화형 세션이 함께 쓰는 실행 프로파일</span
+                >
+              </div>
+              ${presetStripTemplate('general')}
+              ${orchestrationGroup(visibility)} ${implGroup(visibility)}
+              ${reviewGatesGroup(visibility)} ${systemPromptSection()}
+            </section>
+          `
+        : execution_subtab === 'quick_fix'
+          ? html`<section
+              class="settings-dialog__block"
+              data-exec-block="quick_fix"
+              title=${quickFixDisabledTitle() || ''}
+            >
+              <div class="settings-dialog__block-title">quick fix</div>
+              ${supportsQuickFixLane()
+                ? ''
+                : html`<p class="settings-dialog__hint">
+                    ${QUICK_FIX_UNSUPPORTED}
+                  </p>`}
+              ${presetStripTemplate('quick_fix')}
+              ${quickFixOrchestrationGroup(visibility)}
+              ${quickFixImplGroup(visibility)} ${reviewGatesGroup(visibility)}
+            </section>`
+          : html`<section
+              class="settings-dialog__block"
+              data-exec-block="session_review"
+            >
+              <p class="settings-dialog__hint">${SESSION_REVIEW_NOTICE}</p>
+              ${reviewGatesGroup(visibility)}
+            </section>`}
     `;
   }
 

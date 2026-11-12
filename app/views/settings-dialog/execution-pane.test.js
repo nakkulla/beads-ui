@@ -193,6 +193,60 @@ async function settle() {
   await Promise.resolve();
 }
 
+describe('execution sub tabs', () => {
+  test('renders three execution sub tabs with the worker tab first', async () => {
+    const { root, pane } = mount();
+
+    await pane.load();
+
+    expect(
+      Array.from(root.querySelectorAll('[data-execution-subtab]'), (button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual(['워커', 'quick fix', '세션 리뷰']);
+    expect(
+      el(root, '[data-execution-subtab="worker"]').getAttribute('aria-pressed')
+    ).toBe('true');
+  });
+
+  test('renders spec and plan review rows only in the session review sub tab', async () => {
+    const { root, pane } = mount();
+    await pane.load();
+    expect(root.querySelector('[data-key="spec_review_model"]')).toBe(null);
+    qf(root);
+    expect(root.querySelector('[data-key="plan_review_model"]')).toBe(null);
+
+    el(root, '[data-execution-subtab="session_review"]').click();
+
+    expect(root.querySelector('[data-key="spec_review_model"]')).not.toBe(null);
+    expect(root.querySelector('[data-key="plan_review_model"]')).not.toBe(null);
+    expect(root.querySelector('[data-key="impl_review_model"]')).toBe(null);
+    expect(root.querySelector('[data-preset-bar]')).toBe(null);
+    expect(root.textContent).toContain(
+      'Worker는 이 두 리뷰를 돌리지 않습니다 · 이 저장소에서 여는 세션이 씁니다'
+    );
+  });
+
+  test('keeps unsent input across a sub tab switch', async () => {
+    const { root, pane } = mount();
+    await pane.load();
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, '[aria-label="프리셋 이름"]')
+    );
+    input.value = '보내지 않은 이름';
+    input.dispatchEvent(new Event('input'));
+
+    qf(root);
+    el(root, '[data-execution-subtab="session_review"]').click();
+    el(root, '[data-execution-subtab="worker"]').click();
+
+    expect(
+      /** @type {HTMLInputElement} */ (el(root, '[aria-label="프리셋 이름"]'))
+        .value
+    ).toBe('보내지 않은 이름');
+  });
+});
+
 /**
  * @param {HTMLElement} root
  * @param {string} selector
@@ -209,6 +263,7 @@ function el(root, selector) {
  * @returns {HTMLElement}
  */
 function qf(root) {
+  el(root, '[data-execution-subtab="quick_fix"]').click();
   return el(root, '[data-exec-block="quick_fix"]');
 }
 
@@ -361,6 +416,7 @@ describe('createExecutionPane model visibility (UI-ooc0 §4.2)', () => {
     });
 
     await pane.load();
+    el(root, '[data-execution-subtab="session_review"]').click();
 
     const values = optionsOf(root, 'spec_review_model').map(
       (option) => option.value
@@ -381,7 +437,9 @@ describe('createExecutionPane quick fix tab (UI-uohc §6.1)', () => {
     expect(rows.map((row) => row.getAttribute('data-key'))).toEqual([
       'quick_fix_orchestration_model',
       'quick_fix_orchestration_effort',
-      'quick_fix_impl_dispatch'
+      'quick_fix_impl_dispatch',
+      'quick_fix_impl_review_model',
+      'quick_fix_impl_review_effort'
     ]);
   });
 
@@ -426,7 +484,9 @@ describe('createExecutionPane quick fix tab (UI-uohc §6.1)', () => {
       'quick_fix_impl_runtime',
       'quick_fix_impl_model',
       'quick_fix_impl_effort',
-      'quick_fix_impl_speed'
+      'quick_fix_impl_speed',
+      'quick_fix_impl_review_model',
+      'quick_fix_impl_review_effort'
     ]);
   });
 
@@ -518,15 +578,20 @@ describe('createExecutionPane quick fix tab (UI-uohc §6.1)', () => {
     ).toBe(false);
   });
 
-  test('folds the quick fix block shut by default', async () => {
+  test('renders no quick fix fold', async () => {
     const { root, pane } = mount();
 
     await pane.load();
 
-    expect(/** @type {HTMLDetailsElement} */ (qf(root)).open).toBe(false);
+    qf(root);
+
+    expect(root.querySelector('details[data-exec-block="quick_fix"]')).toBe(
+      null
+    );
+    expect(root.querySelector('[data-quick-fix-summary]')).toBe(null);
   });
 
-  test('summarizes the folded quick fix block in one line', async () => {
+  test('renders one implementation review row in the quick fix sub tab', async () => {
     const { root, pane } = mount({
       queue: queueRow({
         quick_fix_orchestration_model: 'sol',
@@ -536,21 +601,26 @@ describe('createExecutionPane quick fix tab (UI-uohc §6.1)', () => {
 
     await pane.load();
 
-    expect(el(qf(root), '[data-quick-fix-summary]').textContent?.trim()).toBe(
-      '오케스트레이션 sol / medium · 메인 세션이 구현'
-    );
+    const block = qf(root);
+
+    expect(
+      block.querySelectorAll('[data-key="quick_fix_impl_review_model"]')
+    ).toHaveLength(1);
+    expect(block.querySelector('[data-key="spec_review_model"]')).toBe(null);
   });
 
-  test('keeps the quick fix block open across a re-render once unfolded', async () => {
+  test('keeps the selected execution sub tab across a re-render', async () => {
     const { root, pane } = mount();
     await pane.load();
-    const block = /** @type {HTMLDetailsElement} */ (qf(root));
-    block.open = true;
-    block.dispatchEvent(new Event('toggle'));
+    qf(root);
 
     pane.render();
 
-    expect(/** @type {HTMLDetailsElement} */ (qf(root)).open).toBe(true);
+    expect(
+      el(root, '[data-execution-subtab="quick_fix"]').getAttribute(
+        'aria-pressed'
+      )
+    ).toBe('true');
   });
 
   test('locks its rows when the server takes no quick_fix values', async () => {
@@ -580,7 +650,7 @@ describe('createExecutionPane preset strip', () => {
       Array.from(root.querySelectorAll('[data-preset-apply-global]'), (node) =>
         node.closest('[data-exec-block]')?.getAttribute('data-exec-block')
       )
-    ).toEqual(['worker', 'quick_fix']);
+    ).toEqual(['worker']);
     expect(root.querySelector('[data-preset-lane-tabs]')).toBe(null);
     expect(root.querySelector('[data-preset-apply-quick-fix]')).toBe(null);
   });
@@ -972,7 +1042,7 @@ describe('createExecutionPane preset strip', () => {
     ).not.toBe(null);
 
     const effort = /** @type {HTMLSelectElement} */ (
-      el(root, 'select[data-key="spec_review_effort"]')
+      el(root, 'select[data-key="impl_review_effort"]')
     );
     effort.value = 'high';
     effort.dispatchEvent(new Event('change'));
@@ -1088,6 +1158,7 @@ describe('createExecutionPane 속도 rows', () => {
     const { root, pane } = mount({ values: { spec_review_model: 'self' } });
 
     await pane.load();
+    el(root, '[data-execution-subtab="session_review"]').click();
 
     expect(root.querySelector('select[data-key="spec_review_speed"]')).toBe(
       null
@@ -1098,6 +1169,7 @@ describe('createExecutionPane 속도 rows', () => {
     const { root, pane } = mount({ values: { spec_review_model: 'codex' } });
 
     await pane.load();
+    el(root, '[data-execution-subtab="session_review"]').click();
 
     expect(root.querySelector('select[data-key="spec_review_speed"]')).not.toBe(
       null
@@ -1137,7 +1209,7 @@ describe('createExecutionPane sections', () => {
       Array.from(root.querySelectorAll('[data-exec-block]'), (node) =>
         node.getAttribute('data-exec-block')
       )
-    ).toEqual(['worker', 'quick_fix']);
+    ).toEqual(['worker']);
   });
 
   test('ignores a section id the pane does not draw', async () => {
@@ -2261,7 +2333,7 @@ describe('createExecutionPane session-defaults lifecycle', () => {
     await pane.load();
     pick(root, 'impl_speed', 'fast');
     await finishRefresh();
-    pick(root, 'spec_review_effort', 'high');
+    pick(root, 'impl_review_effort', 'high');
 
     await pane.load();
     release({ values: { impl_speed: 'fast' }, warnings: [] });

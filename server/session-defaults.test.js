@@ -75,6 +75,26 @@ describe('normalizeSessionDefaults bdui_url', () => {
 });
 
 describe('normalizeSessionDefaults quick_fix profile', () => {
+  test('accepts the three quick fix review kv keys with the review vocabulary', () => {
+    const values = {
+      quick_fix_impl_review_model: 'astra',
+      quick_fix_impl_review_effort: 'xhigh',
+      quick_fix_impl_review_speed: 'fast'
+    };
+
+    const normalized = normalizeSessionDefaults(values);
+    const valid = validateSessionDefaultsPatch(values);
+    const invalid = normalizeSessionDefaults({
+      quick_fix_impl_review_model: 'sol'
+    });
+
+    expect(normalized).toEqual({ values, warnings: [] });
+    expect(valid).toEqual({ ok: true, patch: values });
+    expect(invalid).toEqual({
+      values: {},
+      warnings: ['invalid_value:quick_fix_impl_review_model']
+    });
+  });
   test('keeps all five valid quick_fix values', () => {
     const layer = normalize({
       schema: 1,

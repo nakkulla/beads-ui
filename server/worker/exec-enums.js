@@ -166,11 +166,14 @@ export const QUICK_FIX_KV_KEYS = [
   'quick_fix_impl_runtime',
   'quick_fix_impl_model',
   'quick_fix_impl_effort',
-  'quick_fix_impl_speed'
+  'quick_fix_impl_speed',
+  'quick_fix_impl_review_model',
+  'quick_fix_impl_review_effort',
+  'quick_fix_impl_review_speed'
 ];
 
 /**
- * The 20 keys that may be STORED workspace-wide through
+ * The 23 keys that may be STORED workspace-wide through
  * `bd kv workflow_session_defaults` (dotfiles `workflow-state.yaml
  * workspace_kv_defaults.allowed_keys`), in that contract's own order.
  *
@@ -181,7 +184,7 @@ export const QUICK_FIX_KV_KEYS = [
  *
  * The list is NOT a subset of the per-bead list: it carries the route-scoped
  * {@link QUICK_FIX_KV_KEYS} profile and `base_sync_accept_local_commits`
- * (`key_scoped`, `metadata_key: forbidden`). None of those six is
+ * (`key_scoped`, `metadata_key: forbidden`). None of those keys is
  * a {@link GENERAL_PRESET_KEYS} member, so {@link presetKvKeysFor} leaves them
  * out of the general profile and a general preset apply preserves them.
  *
@@ -209,7 +212,7 @@ export const ORCHESTRATION_KEYS = [
   'orchestration_speed'
 ];
 
-/** The 17 keys replaced when a user applies a preset to one Bead. */
+/** All seventeen keys available to the per-Bead execution editor. */
 export const BEAD_PIN_KEYS = [...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS];
 
 /**
@@ -266,7 +269,10 @@ export const QUICK_FIX_LANE_MAP = Object.freeze({
   impl_runtime: 'quick_fix_impl_runtime',
   impl_model: 'quick_fix_impl_model',
   impl_effort: 'quick_fix_impl_effort',
-  impl_speed: 'quick_fix_impl_speed'
+  impl_speed: 'quick_fix_impl_speed',
+  impl_review_model: 'quick_fix_impl_review_model',
+  impl_review_effort: 'quick_fix_impl_review_effort',
+  impl_review_speed: 'quick_fix_impl_review_speed'
 });
 
 /**
@@ -291,19 +297,21 @@ export function normalizeAppliesTo(value) {
 }
 
 /**
- * The 17 keys a `general` preset may carry. The same set as
- * {@link BEAD_PIN_KEYS} and named separately on purpose: this one is the
- * profile's `settings` vocabulary, that one is what an apply writes onto a
- * Bead, and the two are free to drift.
+ * The six review keys used only by interactive sessions, outside presets.
  *
  * @type {ReadonlyArray<string>}
  */
-export const GENERAL_PRESET_KEYS = [...BEAD_PIN_KEYS];
+export const SESSION_REVIEW_KEYS = BEAD_APPLY_KEYS.filter(
+  (key) => key.startsWith('spec_review_') || key.startsWith('plan_review_')
+);
+
+/** The eleven orchestration, implementation and implementation review keys. */
+export const GENERAL_PRESET_KEYS = BEAD_PIN_KEYS.filter(
+  (key) => !SESSION_REVIEW_KEYS.includes(key)
+);
 
 /**
- * The five implementation keys a `quick_fix` preset may carry, in canonical
- * names. The nine review keys are deliberately absent: review settings are a
- * profile-independent axis and the contract has no route-scoped review key.
+ * The five implementation keys shared by both profiles, in canonical names.
  *
  * @type {ReadonlyArray<string>}
  */
@@ -316,17 +324,20 @@ export const QUICK_FIX_IMPL_KEYS = [
 ];
 
 /**
- * The 8 keys a `quick_fix` preset may carry.
+ * The eleven canonical keys a quick fix preset may carry.
  *
  * @type {ReadonlyArray<string>}
  */
 export const QUICK_FIX_PRESET_KEYS = [
   ...ORCHESTRATION_KEYS,
-  ...QUICK_FIX_IMPL_KEYS
+  ...QUICK_FIX_IMPL_KEYS,
+  'impl_review_model',
+  'impl_review_effort',
+  'impl_review_speed'
 ];
 
 /**
- * The 13 kv keys a `general` apply replaces. `impl_dispatch` is the one
+ * The seven kv keys a general apply replaces. `impl_dispatch` is the one
  * general preset key with no kv member: the contract makes it
  * `write_rule: user_write_only`, so it stays an issue pin.
  *
@@ -355,8 +366,8 @@ export function presetKeysFor(applies_to) {
  * Replaces the retired 18-key `PRESET_KV_KEYS`, which carried both profiles.
  *
  * The general profile stores canonical names, so its list is the canonical
- * keys themselves; the quick_fix profile stores its five canonical
- * implementation keys under the prefixed {@link QUICK_FIX_KV_KEYS} names, so
+ * keys themselves; the quick_fix profile stores its eight canonical
+ * implementation and review keys under the prefixed {@link QUICK_FIX_KV_KEYS} names, so
  * that is the list an apply replaces there.
  *
  * @param {unknown} applies_to
@@ -401,7 +412,10 @@ export function sessionDefaultEnums(catalog = runtimeCatalog()) {
     quick_fix_impl_runtime: ['claude', 'codex'],
     quick_fix_impl_model: base.impl_model,
     quick_fix_impl_effort: [AUTO_LITERAL, ...base.impl_effort],
-    quick_fix_impl_speed: IMPL_SPEEDS
+    quick_fix_impl_speed: IMPL_SPEEDS,
+    quick_fix_impl_review_model: REVIEW_STEP_MODELS,
+    quick_fix_impl_review_effort: REVIEW_EFFORTS,
+    quick_fix_impl_review_speed: REVIEW_SPEEDS
   };
 }
 

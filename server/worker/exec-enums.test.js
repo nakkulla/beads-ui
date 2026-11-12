@@ -143,7 +143,7 @@ const EXPECTED_KEYS = [
 ];
 
 describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
-  test('orders the 17 preset pin keys with orchestration first', () => {
+  test('orders the 17 issue pin keys with orchestration first', () => {
     expect(BEAD_PIN_KEYS).toEqual([...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS]);
     expect(BEAD_PIN_KEYS).toHaveLength(17);
     expect(new Set(BEAD_PIN_KEYS).size).toBe(17);
@@ -162,28 +162,37 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     }
   });
 
-  test('carries the 17 per-Bead pins in the general profile', () => {
-    expect(GENERAL_PRESET_KEYS).toHaveLength(17);
+  test('keeps eleven keys in each preset profile', () => {
+    expect(GENERAL_PRESET_KEYS).toHaveLength(11);
+    expect(QUICK_FIX_PRESET_KEYS).toHaveLength(11);
 
-    expect(GENERAL_PRESET_KEYS).toEqual([...BEAD_PIN_KEYS]);
+    expect(GENERAL_PRESET_KEYS).toEqual(
+      BEAD_PIN_KEYS.filter(
+        (key) =>
+          !key.startsWith('spec_review_') && !key.startsWith('plan_review_')
+      )
+    );
     expect(Object.keys(implPresetEnums('general'))).toEqual(
       GENERAL_PRESET_KEYS
     );
   });
 
   test('carries orchestration plus the five implementation keys in the quick_fix profile', () => {
-    expect(QUICK_FIX_PRESET_KEYS).toHaveLength(8);
+    expect(QUICK_FIX_PRESET_KEYS).toHaveLength(11);
 
     expect(QUICK_FIX_PRESET_KEYS).toEqual([
       ...ORCHESTRATION_KEYS,
-      ...QUICK_FIX_IMPL_KEYS
+      ...QUICK_FIX_IMPL_KEYS,
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_review_speed'
     ]);
     expect(Object.keys(implPresetEnums('quick_fix'))).toEqual(
       QUICK_FIX_PRESET_KEYS
     );
   });
 
-  test('leaves the nine review keys out of the quick_fix profile', () => {
+  test('keeps only implementation review keys in each profile', () => {
     const review_keys = BEAD_APPLY_KEYS.filter(
       (key) =>
         key.endsWith('_review_model') ||
@@ -193,8 +202,12 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
 
     expect(review_keys).toHaveLength(9);
     for (const key of review_keys) {
-      expect(GENERAL_PRESET_KEYS).toContain(key);
-      expect(QUICK_FIX_PRESET_KEYS).not.toContain(key);
+      expect(GENERAL_PRESET_KEYS.includes(key)).toBe(
+        key.startsWith('impl_review_')
+      );
+      expect(QUICK_FIX_PRESET_KEYS.includes(key)).toBe(
+        key.startsWith('impl_review_')
+      );
     }
   });
 
@@ -231,7 +244,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   });
 
   test('drops impl_dispatch from the workspace kv list', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(20);
+    expect(WORKSPACE_KV_KEYS).toHaveLength(23);
 
     expect(WORKSPACE_KV_KEYS).toEqual([
       'workflow_mode',
@@ -253,6 +266,9 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
       'quick_fix_impl_model',
       'quick_fix_impl_effort',
       'quick_fix_impl_speed',
+      'quick_fix_impl_review_model',
+      'quick_fix_impl_review_effort',
+      'quick_fix_impl_review_speed',
       'base_sync_accept_local_commits'
     ]);
   });
@@ -310,8 +326,8 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     );
   });
 
-  test('replaces thirteen canonical kv keys for a general apply', () => {
-    expect(GENERAL_PRESET_KV_KEYS).toHaveLength(13);
+  test('replaces seven canonical kv keys for a general apply', () => {
+    expect(GENERAL_PRESET_KV_KEYS).toHaveLength(7);
 
     expect(presetKvKeysFor('general')).toEqual(GENERAL_PRESET_KV_KEYS);
     expect(GENERAL_PRESET_KV_KEYS).not.toContain('impl_dispatch');
@@ -322,7 +338,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     ).toBe(true);
   });
 
-  test('replaces the five prefixed kv keys for a quick_fix apply', () => {
+  test('replaces the eight prefixed kv keys for a quick_fix apply', () => {
     expect(presetKvKeysFor('quick_fix')).toEqual(QUICK_FIX_KV_KEYS);
 
     for (const key of QUICK_FIX_KV_KEYS) {
@@ -425,15 +441,15 @@ describe('worker/exec-enums preset profiles', () => {
     });
   });
 
-  test('rejects a review key in the quick_fix profile', () => {
+  test('rejects a session review key in the quick_fix profile', () => {
     const result = validateImplPresetSettings(
-      { impl_review_model: 'fable' },
+      { spec_review_model: 'fable' },
       { applies_to: 'quick_fix' }
     );
 
     expect(result).toEqual({
       ok: false,
-      reason: 'unknown_impl_preset_key:impl_review_model'
+      reason: 'unknown_impl_preset_key:spec_review_model'
     });
   });
 
@@ -541,16 +557,16 @@ describe('worker/exec-enums preset profiles', () => {
 
   test('validates review speed without a missing enum crash', () => {
     const accepted = validateImplPresetSettings({
-      spec_review_speed: 'fast'
+      impl_review_speed: 'fast'
     });
     const rejected = validateImplPresetSettings({
-      spec_review_speed: 'turbo'
+      impl_review_speed: 'turbo'
     });
 
     expect(accepted).toEqual({ ok: true });
     expect(rejected).toEqual({
       ok: false,
-      reason: 'invalid_spec_review_speed'
+      reason: 'invalid_impl_review_speed'
     });
   });
 
@@ -747,9 +763,7 @@ describe('worker/exec-enums reviewer token validation', () => {
     'accepts %s across execution preset review settings',
     (reviewer_model) => {
       const settings = {
-        spec_review_model: reviewer_model,
-        impl_review_model: reviewer_model,
-        plan_review_model: reviewer_model
+        impl_review_model: reviewer_model
       };
 
       const result = validateImplPresetSettings(settings);

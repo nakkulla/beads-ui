@@ -12,12 +12,9 @@
  * stays out of the apply until the user touches it. A row that DOES stand on a
  * value is written untouched, which is UI-628r's contract unchanged.
  *
- * - `실행` holds two blocks, each with its own preset bar, apply button and
- *   results (UI-32oq §4.4): the 17-row general execution profile form
- *   (`bulk-worker-form.js`), whose apply takes one of two paths
- *   (`bulk-preset-apply.js`), and, folded under it, the same form over the
- *   8-row quick_fix profile with its own apply record; choosing a preset in
- *   one block edits that block's rows alone (UI-uohc §6.2).
+ * - `실행` has worker, quick fix and session review sub tabs. The first two
+ *   have independent preset bars and apply records; session review edits only
+ *   the six repository review keys and writes no queue values.
  * - `계정` is the pinned accounts and limit policy form, applied whole
  *   (`bulk-account-apply.js`).
  *
@@ -46,6 +43,7 @@ import {
   planBulkApply,
   retryRootsOf,
   runBulkApply,
+  runBulkTargets,
   supportsQuickFixLane
 } from '../monitor/bulk-preset-apply.js';
 import {
@@ -66,6 +64,10 @@ import {
   createBulkWorkerForm
 } from './bulk-worker-form.js';
 import { createCodexCreditControls } from './codex-credit-controls.js';
+import {
+  SESSION_REVIEW_NOTICE,
+  executionSubtabs
+} from './execution-subtabs.js';
 import { normalizeAppliesTo } from './session-model.js';
 
 /** Select value for `기본값 사용` (sent as `null`). */
@@ -128,7 +130,7 @@ const ACCOUNT_FIELDS = [
 /**
  * One apply button's own plan, run and results (UI-32oq §4.4).
  *
- * @typedef {'worker'|'quick_fix'|'account'} RunSection
+ * @typedef {'worker'|'quick_fix'|'session_review'|'account'} RunSection
  */
 
 /**
@@ -142,6 +144,8 @@ const ACCOUNT_FIELDS = [
 /**
  * @typedef {Object} BulkPaneOptions
  * @property {(type: any, payload?: unknown) => Promise<any>} transport
+ * @property {import('./execution-subtabs.js').ExecutionSubtab} [executionSubtab]
+ * @property {(tab: import('./execution-subtabs.js').ExecutionSubtab) => void} [onExecutionSubtabChange]
  * @property {() => Array<Record<string, any>>} rows - The monitor pipeline
  * store's `workspaces_state`.
  * @property {(fn: () => void) => () => void} [subscribeRows]
@@ -188,8 +192,8 @@ function freshRunnerForm() {
 export function createBulkPane(host, options) {
   /** @type {'execution'|'account'} */
   let section = 'execution';
-  /** Whether the `실행` tab's quick fix block is unfolded; shut by default. */
-  let quick_fix_open = false;
+  /** @type {import('./execution-subtabs.js').ExecutionSubtab} */
+  let execution_subtab = options.executionSubtab || 'worker';
   let destroyed = false;
 
   /** Mutation response queues per repo (newer than the aggregate rows). */
@@ -222,10 +226,11 @@ export function createBulkPane(host, options) {
    */
   const preset_error = { worker: '', quick_fix: '' };
 
-  /** @type {{ worker: BulkResult[]|null, quick_fix: BulkResult[]|null, account: BulkResult[]|null }} */
+  /** @type {Record<RunSection, BulkResult[]|null>} */
   let results = {
     worker: null,
     quick_fix: null,
+    session_review: null,
     account: null
   };
   /** @type {{ section: RunSection, done: number, total: number }|null} */
@@ -308,7 +313,7 @@ export function createBulkPane(host, options) {
     return supportsQuickFixLane(formRows());
   }
 
-  /** The `워커` tab's 17-row form (§6.2). */
+  /** The worker profile's eleven-row form. */
   const worker_form = createBulkWorkerForm({
     rows: formRows,
     profile: 'general',
@@ -319,7 +324,7 @@ export function createBulkPane(host, options) {
   });
 
   /**
-   * The `quick fix` tab's 8-row form. Its labels resolve against the `워커`
+   * The quick fix profile's eleven-row form. Its labels resolve against the `워커`
    * tab's screen values, which is what makes an empty quick_fix row name the
    * general row it falls through to (§6.2).
    */
@@ -332,13 +337,24 @@ export function createBulkPane(host, options) {
     disabledModels: () => disabledModelsOf(options.modelVisibilityStore)
   });
 
+  const session_review_form = createBulkWorkerForm({
+    rows: formRows,
+    profile: 'session_review',
+    selectedRows: () => selectedRows(),
+    onChange: () => doRender(),
+    disabledModels: () => disabledModelsOf(options.modelVisibilityStore)
+  });
+
   /**
    * The form of one profile tab.
    *
-   * @param {'worker'|'quick_fix'} tab
+   * @param {'worker'|'quick_fix'|'session_review'} tab
    * @returns {ReturnType<typeof createBulkWorkerForm>}
    */
   function formOf(tab) {
+    if (tab === 'session_review') {
+      return session_review_form;
+    }
     return tab === 'quick_fix' ? quick_fix_form : worker_form;
   }
 
@@ -450,6 +466,7 @@ export function createBulkPane(host, options) {
     }
     worker_form.observe(false);
     quick_fix_form.observe(false);
+    session_review_form.observe(false);
     for (const [key] of ACCOUNT_FIELDS) {
       if (edited.has(key)) {
         continue;
@@ -613,11 +630,11 @@ export function createBulkPane(host, options) {
    * One profile tab's plan. Only that tab's form and selection feed it, so a
    * preset chosen on the other tab makes no targets here (§6.2).
    *
-   * @param {'worker'|'quick_fix'} tab
+   * @param {'worker'|'quick_fix'|'session_review'} tab
    * @returns {import('../monitor/bulk-preset-apply.js').BulkPlan}
    */
   function presetPlan(tab) {
-    const preset = chosenPreset(tab);
+    const preset = tab === 'session_review' ? null : chosenPreset(tab);
     const form = formOf(tab);
     return planBulkApply({
       rows: mergedRows(),
@@ -658,7 +675,7 @@ export function createBulkPane(host, options) {
    * @returns {{ targets: Array<any>, disabled_reason: string|null }}
    */
   function planOf(run_section) {
-    if (run_section === 'worker' || run_section === 'quick_fix') {
+    if (run_section !== 'account') {
       return presetPlan(run_section);
     }
     return accountPlan();
@@ -705,7 +722,45 @@ export function createBulkPane(host, options) {
     };
     /** @type {BulkResult[]} */
     let outcome;
-    if (run_section === 'worker' || run_section === 'quick_fix') {
+    if (run_section === 'session_review') {
+      outcome = await runBulkTargets({
+        targets,
+        skippedResult: (target) => ({
+          root_dir: target.root_dir,
+          name: target.name,
+          state: 'skipped',
+          detail: '중단됨'
+        }),
+        runOne: async (target) => {
+          /** @type {BulkResult} */
+          const result = {
+            root_dir: target.root_dir,
+            name: target.name,
+            state: 'failed',
+            detail: ''
+          };
+          try {
+            const response = await options.transport(
+              'set-session-defaults',
+              target.kv_payload
+            );
+            result.state =
+              isRecord(response) &&
+              !response.error &&
+              response.applied !== false
+                ? 'applied'
+                : 'failed';
+            result.detail =
+              result.state === 'applied' ? '' : messageOf(response);
+          } catch (err) {
+            result.detail = err instanceof Error ? err.message : String(err);
+          }
+          return { result, stopped: false, cancelled: false };
+        },
+        onProgress: input.onProgress,
+        isCancelled: input.isCancelled
+      });
+    } else if (run_section === 'worker' || run_section === 'quick_fix') {
       outcome = await runBulkApply(input);
     } else {
       outcome = await runBulkAccountApply(input);
@@ -1668,36 +1723,46 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * The `실행` tab: the general profile block, then the quick fix block
-   * folded under it with a one-line summary (UI-32oq §4.4).
+   * The execution sub tab selector and the selected form.
    *
    * @returns {TemplateResult}
    */
   function executionTemplate() {
-    return html`<section
-        class="settings-dialog__block"
-        data-bulk-block="worker"
-      >
-        <div class="settings-dialog__block-title">워커</div>
-        ${profileTemplate('worker')}
-      </section>
-      <details
-        class="settings-dialog__block settings-dialog__fold"
-        data-bulk-block="quick_fix"
-        ?open=${quick_fix_open}
-        @toggle=${(/** @type {Event} */ ev) => {
-          quick_fix_open = /** @type {HTMLDetailsElement} */ (ev.target).open;
-        }}
-      >
-        <summary class="op-btn settings-dialog__fold-head">
-          <span class="settings-dialog__block-title">quick fix</span>
-          <span class="settings-dialog__hint" data-quick-fix-summary
-            >route가 quick fix인 Bead만 읽는
-            ${bulkFormRowKeysFor('quick_fix').length}행 · 따로 적용합니다</span
+    return html`${executionSubtabs(execution_subtab, (tab) => {
+      execution_subtab = tab;
+      options.onExecutionSubtabChange?.(tab);
+      doRender();
+    })}
+    ${execution_subtab === 'worker'
+      ? html`<section class="settings-dialog__block" data-bulk-block="worker">
+          <div class="settings-dialog__block-title">워커</div>
+          ${profileTemplate('worker')}
+        </section> `
+      : execution_subtab === 'quick_fix'
+        ? html`<section
+            class="settings-dialog__block"
+            data-bulk-block="quick_fix"
           >
-        </summary>
-        ${profileTemplate('quick_fix')}
-      </details>`;
+            <div class="settings-dialog__block-title">quick fix</div>
+            ${profileTemplate('quick_fix')}
+          </section>`
+        : html`<section
+            class="settings-dialog__block"
+            data-bulk-block="session_review"
+          >
+            <p class="settings-dialog__hint">${SESSION_REVIEW_NOTICE}</p>
+            ${session_review_form.template(running !== null)}
+            <div class="settings-dialog__bulk-hd settings-dialog__bulk-foot">
+              <span class="settings-dialog__bulk-count" data-bulk-count
+                >${footerCount(6, session_review_form.holdCounts())}</span
+              >
+              ${applyButtonTemplate(
+                'session_review',
+                presetPlan('session_review')
+              )}
+            </div>
+            ${resultsTemplate('session_review')}
+          </section>`}`;
   }
 
   /** @returns {TemplateResult} */

@@ -205,6 +205,34 @@ function aliasDefaults(alias) {
 }
 
 describe('worker/attempt-facts reviewer preset (spec D1)', () => {
+  test('resolves the quick fix reviewer preset from the quick fix kv key first', async () => {
+    const input = factsInput({
+      route: 'quick_fix',
+      kv_values: {
+        quick_fix_impl_review_model: 'opus',
+        impl_review_model: 'codex'
+      }
+    });
+    const deps = {
+      homeDir: HOME,
+      fs: fakeFs({}),
+      loadDefaults: () => PINNED_DEFAULTS
+    };
+
+    const quick_fix = await buildAttemptFacts(input, deps);
+    const pinned = await buildAttemptFacts(
+      { ...input, bead_values: { impl_review_model: 'codex' } },
+      deps
+    );
+    const general = await buildAttemptFacts(
+      { ...input, route: 'spec_backed' },
+      deps
+    );
+
+    expect(quick_fix.reviewer_preset?.token).toBe('opus');
+    expect(pinned.reviewer_preset?.token).toBe('codex');
+    expect(general.reviewer_preset?.token).toBe('codex');
+  });
   test('falls back to the pinned default reviewer token', () => {
     expect(resolveReviewerPreset({}, PINNED_DEFAULTS)).toEqual({
       token: 'codex',

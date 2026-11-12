@@ -73,6 +73,23 @@ function resolve(input) {
 }
 
 describe('formatAttemptOrchestrationChip', () => {
+  test('reads the quick fix review value first on a quick fix issue', () => {
+    const input = {
+      route: 'quick_fix',
+      global: {
+        impl_review_model: 'codex',
+        quick_fix_impl_review_model: 'fable'
+      }
+    };
+
+    const chip = formatImplReviewChip(resolve(input));
+    const pinned = formatImplReviewChip(
+      resolve({ ...input, pin: { impl_review_model: 'self' } })
+    );
+
+    expect(chip?.text).toContain('fable');
+    expect(pinned?.text).toBe('자체 검토');
+  });
   test('passes the recorded attempt tuple through as chip text', () => {
     const attempt = {
       runner: 'claude',

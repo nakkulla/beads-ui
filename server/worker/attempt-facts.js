@@ -589,7 +589,10 @@ export async function buildAttemptFacts(input, deps) {
     reviewer_preset: resolveReviewerPreset(
       {
         bead: input.bead_values?.impl_review_model,
-        kv: input.kv_values?.impl_review_model
+        kv:
+          (input.route === 'quick_fix'
+            ? input.kv_values?.quick_fix_impl_review_model
+            : null) || input.kv_values?.impl_review_model
       },
       defaults,
       catalog

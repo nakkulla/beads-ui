@@ -142,6 +142,30 @@ describe('resolveLayer', () => {
 });
 
 describe('effectiveRows', () => {
+  test('reads the quick fix review value first on a quick fix issue', () => {
+    const workspace = {
+      impl_review_model: 'codex',
+      quick_fix_impl_review_model: 'fable',
+      quick_fix_impl_review_effort: 'low',
+      quick_fix_impl_review_speed: 'fast'
+    };
+
+    const rows = effectiveRows(
+      ['impl_review_model', 'impl_review_effort', 'impl_review_speed'],
+      { route: 'quick_fix' },
+      workspace,
+      PROJECTION
+    );
+    const pinned = resolveLayer(
+      'impl_review_model',
+      { route: 'quick_fix', impl_review_model: 'codex' },
+      workspace,
+      PROJECTION
+    );
+
+    expect(rows.map((entry) => entry.value)).toEqual(['fable', 'low', 'fast']);
+    expect(pinned).toMatchObject({ value: 'codex', source: 'pin' });
+  });
   test('produces one row per key of the requested group', () => {
     const rows = effectiveRows(
       ['workflow_mode', 'impl_model'],
@@ -308,12 +332,12 @@ describe('presetExpectationForIssue', () => {
     const expectation = presetExpectationForIssue(
       {
         applies_to: 'quick_fix',
-        settings: { impl_runtime: 'codex', impl_review_model: 'fable' }
+        settings: { impl_runtime: 'codex', plan_review_model: 'fable' }
       },
       RUNNER_CATALOG
     );
 
-    expect(Object.hasOwn(expectation, 'impl_review_model')).toBe(false);
+    expect(Object.hasOwn(expectation, 'plan_review_model')).toBe(false);
   });
 
   test('ignores a prefixed key, which no profile stores in a preset', () => {
@@ -486,11 +510,11 @@ describe('presetDeviation', () => {
     expect(deviation).toEqual({ count: 0, entries: [] });
   });
 
-  test('ignores a review pin on a quick_fix issue, which the profile never replaces', () => {
+  test('ignores session review pins on a quick_fix issue', () => {
     const deviation = presetDeviation(
       {
-        impl_review_model: 'fable',
-        impl_review_effort: 'high',
+        plan_review_model: 'fable',
+        plan_review_effort: 'high',
         spec_review_model: 'codex',
         impl_runtime: 'codex'
       },
@@ -583,9 +607,9 @@ describe('presetPreviewRows', () => {
     expect(preview).toEqual({ rows: [] });
   });
 
-  test('leaves a review pin out of a quick_fix issue preview', () => {
+  test('leaves a session review pin out of a quick_fix issue preview', () => {
     const preview = presetPreviewRows(
-      { route: 'quick_fix', impl_review_model: 'fable' },
+      { route: 'quick_fix', plan_review_model: 'fable' },
       { applies_to: 'quick_fix', settings: {} },
       'quick_fix',
       {},

@@ -17,6 +17,7 @@ import {
   GENERAL_PRESET_KV_KEYS,
   ORCHESTRATION_KEYS,
   QUICK_FIX_LANE_MAP,
+  SESSION_REVIEW_KEYS,
   execSettingEnums,
   implPresetEnums,
   normalizeAppliesTo,
@@ -412,7 +413,7 @@ export function createExecPresetCoordinator(options) {
     const enums = execSettingEnums();
     /** @type {Record<string, string>} */
     const candidates = {};
-    for (const key of GENERAL_PRESET_KV_KEYS) {
+    for (const key of [...GENERAL_PRESET_KV_KEYS, ...SESSION_REVIEW_KEYS]) {
       const value = legacy_settings[key];
       const allowed = enums[key];
       if (
@@ -792,6 +793,23 @@ export function createExecPresetCoordinator(options) {
     if (all_ok) {
       reseedPresets();
       splitPresetProfiles();
+      try {
+        const state = presetStore.snapshot();
+        if (state.preset_profile_migration) {
+          const migrated = presetStore.migrateSessionReviews({
+            marker: { version: 1 }
+          });
+          for (const entry of migrated.removals) {
+            warn(
+              `실행 프리셋 세션 리뷰 분리: ${entry.name} ${JSON.stringify(entry.removed)}`
+            );
+          }
+        }
+      } catch (err) {
+        warn(
+          `실행 프리셋 세션 리뷰 분리 실패: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
     // A workspace that could not be migrated is DEFERRED, not fatal: its own
     // durable state is untouched (fill-only-empty, marker unwritten), so the
