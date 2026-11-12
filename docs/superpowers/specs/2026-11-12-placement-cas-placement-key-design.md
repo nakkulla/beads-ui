@@ -44,32 +44,55 @@ scope:
 - 웹 배치 전송은 conflict 뒤 다시 계산해서, 묶음이 같으면 최대 5회까지 다시 보낸다 — app/utils/placement/apply.js:21, :307-327
 - dotfiles 에이전트 절차는 conflict 뒤 판단을 1단계부터 다시 하고 한 번만 다시 시도한다 — dotfiles src/shared/skills/flow/workflow/references/execution-worker-lane.md:149-152, :203-206
 - 자리 판정이 읽는 attempt 필드: `status`·`resumed_from`·`attempt_id`·`bead_id`·`kind`·`completion_root_id`·삽입 순서·`withdrawn` — server/worker/queue-store.js:2407-2424, :2448-2460, :2469-2475, app/utils/active-attempts.js:35-41, :50-60
-- 배치 계산이 읽는 큐 필드: `queue`·`serial_lanes`·`serial_lane_count`·`done`·`pr_wait`·`merge_shelved`·`discard_operations`·`attempts`(`bead_id`·`status`·`serial_lane_id`·`resumed_from`·`started_at`·`finished_at`) — `grep -on 'queue\.[a-z_]\+\|attempt\.[a-z_]\+\|entry\.[a-z_]\+' app/utils/placement/*.js` 집계
+- 웹 배치 계산과 그 보조 함수가 읽는 큐 필드: 최상위 `queue`·`serial_lanes`·`serial_lane_count`·`done`·`pr_wait`·`merge_shelved`·`discard_operations`·`attempts`·`interactive_sessions`; attempt `attempt_id`·`bead_id`·`bead_session_ref`·`dismissed_at`·`finished_at`·`kind`·`resumed_from`·`serial_lane_id`·`session_id`·`started_at`·`status`·`withdrawn`; 행 `added_at`·`bead_id`·`external`·`serial_lane_id`; 폐기 작업 `attempt_id`·`bead_id`; 머지 큐 `bead_id` — 실제 `~/.local/state/bdui/*/queue.json` 레코드 키와 `app/utils/active-attempts.js`·`app/utils/placement/*.js`의 속성 접근을 교차한 결과
+- 레인 없는 실패 attempt는 `dismissed_at`이 있거나 완료 행의 `added_at`이 그 `finished_at` 이후면 실행 중 상대에서 빠진다 — app/utils/active-attempts.js:541-557
+- 폐기 작업은 `attempt_id`가 가리키는 attempt의 레인을 점유한다 — app/utils/placement/occupancy.js:231-239, server/worker/queue-store.js:2508 `laneHolds`
+- 세션 소유권 판정은 attempt의 `bead_session_ref`·`session_id`·`dismissed_at`과 대화형 세션의 `bead_id`·`session_id`를 읽는다 — app/utils/active-attempts.js:257-263, :350-362, :431-461
+- 서버 투영은 `merge_queue` 항목을 가상 `pr_wait` 행으로 덧붙인다 — server/ws/worker-handlers.js:943-972
+- REST GET 투영은 대기 행의 `bead_id`·`added_at`, running attempt의 `bead_id`·`serial_lane_id`, 구현 attempt의 `attempt_id`·`bead_id`·`status`·`kind`(`external_conflict` 제외), `pr_wait`의 `bead_id`·`serial_lane_id`를 싣는다 — server/routes/worker-queue.js:72-174, :187-204
+- REST place·place-bundle·remove의 conflict 응답은 큐 없이 `revision`만 싣는다 — server/routes/worker-queue.js:254-262, :322-330, :376-383
+- 대기열 밖 입력은 큐 revision을 올리지 않는다: 외부 PR 목록(`server/worker/external-pr.js`에 큐 store 쓰기 없음), 외부 대기 저장소, bd 기반 runnable·세션 행·의존·범위, jev 쌍 캐시 — `grep -n 'queueStore' server/worker/external-pr.js` 결과 없음, server/ws/worker-handlers.js:3393-3421, :2018-2101
+- 지문에 새로 넣는 attempt 필드는 일회성으로 쓰인다: `bead_session_ref`는 정산 지점에서(server/worker/scheduler.js:14674, :14974, :17466, :19491), `dismissed_at`은 정리할 때(server/worker/queue-store.js:10098, :11737), 대화형 세션 `session_id`는 비어 있을 때만 관측해서 쓴다(server/worker/scheduler.js:13560-13575)
+- 기존 테스트가 관측 패스마다 `last_seen_alive_at` 갱신을 기대한다 — server/worker/scheduler.test.js:250-262
 - 진행 중 폐기는 `phase`가 종단 단계가 아닌 작업이다 — server/worker/discard-phase.js:8-16
 
 ## 3. 설계
 
 ### 3.1 배치 지문
 
-배치 지문은 대기열 스냅숏에서 대기 자리 판단이 기대는 부분만 모은 결정적 요약이다. 같은
-지문이면 그 판단의 전제가 같다.
+배치 지문은 대기열 스냅숏에서 대기 자리 판단이 기대는 부분만 모은 결정적 요약이다.
 
-결정: 지문에 들어가는 것은 아래뿐이다.
+결정(불변식): 지문이 같은 두 스냅숏은, 자리를 판단하는 세 곳 — 웹 배치 계산
+(`app/utils/placement/`와 `app/utils/active-attempts.js`), 서버가 스냅숏에 덧붙이는 배치
+정보(`withExternalPrWait`·`sessionOwnershipFor`·`placementFor`·`laneStatesFor`), REST GET
+투영 — 에 대기열에서 나온 같은 입력을 준다. 아래 목록은 이 불변식의 현재 열거다.
 
-1. 병렬 대기 줄(`queue`)의 행 순서와 각 행의 `bead_id`·`serial_lane_id`·`external`.
-2. `serial_lane_count`, 그리고 직렬 레인마다 `id`와 행 순서(`bead_id`).
-3. `done` 행의 `bead_id`(배치는 `done` 행을 새로 넣는 것으로 센다).
-4. `pr_wait` 행의 순서와 각 행의 `bead_id`·`serial_lane_id`, `merge_shelved`의 키 집합.
+1. 병렬 대기 줄(`queue`)의 행 순서와 각 행의 `bead_id`·`added_at`·`serial_lane_id`·`external`.
+2. `serial_lane_count`, 그리고 직렬 레인마다 `id`와 행 순서(각 행의 `bead_id`·`added_at`).
+3. `done` 행의 `bead_id`·`added_at`(배치는 `done` 행을 새로 넣는 것으로 세고, 완료 시각은
+   실패 attempt가 해결됐는지 가른다).
+4. `pr_wait` 행의 순서와 각 행의 `bead_id`·`serial_lane_id`, `merge_shelved`의 키 집합,
+   `merge_queue` 항목의 `bead_id` 순서.
 5. `attempts`의 삽입 순서와 각 attempt의 `attempt_id`·`bead_id`·`kind`·`status`·
    `serial_lane_id`·`resumed_from`·`completion_root_id`·`started_at`·`finished_at`·
-   `withdrawn` 유무.
-6. 진행 중인 폐기 작업의 `bead_id` 집합.
+   `session_id`·`bead_session_ref`·`external_conflict`, 그리고 `withdrawn`과 `dismissed_at`의
+   유무.
+6. 진행 중인 폐기 작업의 `bead_id`·`attempt_id` 쌍.
+7. 대화형 세션의 `bead_id`·`session_id` 쌍.
 
-그 밖의 필드(대화형 세션, attempt의 세션·사용량·진행 기록, 공급자 보류, 설정, 위에 없는
-시각)는 지문에 넣지 않는다. 예: 위 항목을 고정된 키 순서의 JSON 문자열로 만들고, 그
-문자열이나 해시를 지문으로 쓴다.
+그 밖의 필드(대화형 세션의 생존 시각·진행 상태·마지막 메시지, attempt의 사용량·진행 기록,
+공급자 보류, 설정, 위에 없는 시각)는 지문에 넣지 않는다. 예: 위 항목을 고정된 키 순서의
+JSON 문자열로 만들고, 그 문자열이나 해시를 지문으로 쓴다.
 
-새 필드가 자리 판단에 쓰이기 시작하면 그 필드를 지문에 넣는 일은 그 변경의 몫이다.
+새로 넣은 항목 중 주기적으로 다른 값으로 다시 쓰이는 것은 없다. 대기·완료 행 시각은 행을
+넣을 때, `session_id`는 처음 관측할 때, `bead_session_ref`는 attempt를 정산할 때,
+`dismissed_at`은 정리할 때 한 번 쓰인다(§2).
+
+결정: 대기열 밖 입력(외부 PR 목록, 외부 대기, bd 기반 runnable·세션 행·의존·범위, jev
+캐시)은 지문에 넣지 않는다. 이들은 지금도 큐 revision을 올리지 않아, 정확한 번호 확인도
+이들을 지켜 준 적이 없다(§2). 이 변경은 그 보호 범위를 줄이지 않는다.
+
+자리 판단이 대기열의 새 필드를 읽기 시작하면, 그 필드를 지문에 넣는 일은 그 변경의 몫이다.
 §5의 지문 테스트가 들어간 항목과 빠진 항목을 고정해 두므로, 넣지 않으면 리뷰에서 드러난다.
 
 ### 3.2 최근 지문 기억과 판정
@@ -120,7 +143,8 @@ scope:
 ### 3.6 바꾸지 않는 것
 
 - 결정: 요청·응답 모양은 바꾸지 않는다 — 웹 화면, 모니터, REST 에이전트, dotfiles 절차가
-  모두 지금 형태로 계속 동작해야 한다. conflict 응답은 지금처럼 현재 큐를 싣는다.
+  모두 지금 형태로 계속 동작해야 한다. conflict 응답도 지금 모양 그대로다 — WS는 현재 큐를
+  싣고, REST(place·place-bundle·remove)는 `revision`만 싣는다(§2).
 - revision 번호는 지금처럼 모든 쓰기마다 오른다. 구독 갱신과 순서 판단은 revision을
   그대로 쓴다.
 - 배치 판단(어느 레인 몇 번째, 묶을 상대)은 계속 요청하는 쪽이 한다. 서버는 다시 판단하지
@@ -138,8 +162,12 @@ scope:
 
 새 테스트(이름은 예시):
 
-- 지문: 3.1의 1~6 항목 각각을 바꾸면 지문이 달라진다; `interactive_sessions`, attempt의
-  사용량·세션 필드, `provider_hold`, 슬롯 수를 바꾸면 지문이 같다.
+- 지문: 3.1의 1~7 항목 각각을 바꾸면 지문이 달라진다; 대화형 세션의 `last_seen_alive_at`·
+  `turn_state`·마지막 메시지, attempt의 사용량·진행 기록, `provider_hold`, 슬롯 수를 바꾸면
+  지문이 같다.
+- 투영 상대: 레인 없는 실패 attempt를 정리(dismiss)하거나, 그 Bead의 완료 행이 생기거나,
+  `merge_queue`에 항목이 들거나, 대화형 세션이 실패 attempt의 Bead에 `session_id`를 얻으면
+  낡은 번호의 place-bundle이 conflict다.
 - 판정: 정확히 같은 번호 통과; 무관한 스케줄러 쓰기 뒤 낡은 번호 통과; 대기 줄이 바뀐 뒤
   낡은 번호 거절; 1024개를 넘어 밀려난 번호 거절; 현재보다 큰 번호 거절; A→B→A 통과.
 - 조작별: `place`·`placeBundle`·`remove`·`reorder`가 무관한 쓰기 뒤 낡은 번호로 적용된다;
