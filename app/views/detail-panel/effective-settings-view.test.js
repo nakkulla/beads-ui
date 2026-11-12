@@ -664,7 +664,7 @@ describe('effective-settings applied preset token (UI-xq3h §3.4)', () => {
     );
   });
 
-  test('reports no drift on a review-pinned issue a quick fix preset just took', () => {
+  test('counts implementation review pins absent from the applied quick fix preset', () => {
     const mount = renderResolvedCard({
       metadata: {
         ...QUICK_FIX_METADATA,
@@ -675,7 +675,7 @@ describe('effective-settings applied preset token (UI-xq3h §3.4)', () => {
     });
 
     expect(mount.querySelector('.detail-effective__applied')?.textContent).toBe(
-      '프리셋 페이블 기본'
+      '프리셋 페이블 기본 · 2개 변경'
     );
   });
 

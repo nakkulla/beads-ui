@@ -638,12 +638,6 @@ describe('buildApplyImplPresetArgs', () => {
       'orchestration_model',
       'orchestration_effort',
       'orchestration_speed',
-      'spec_review_model',
-      'spec_review_effort',
-      'spec_review_speed',
-      'plan_review_model',
-      'plan_review_effort',
-      'plan_review_speed',
       'impl_review_model',
       'impl_review_effort',
       'impl_review_speed',
@@ -666,11 +660,11 @@ describe('buildApplyImplPresetArgs', () => {
     ]);
   });
 
-  test('unsets exactly the 17 pin keys for an empty preset', () => {
+  test('unsets exactly the 11 pin keys for an empty preset', () => {
     const args = buildApplyImplPresetArgs('UI-1', {}, 'preset-1');
 
     const named = args.slice(2, -2).filter((_, index) => index % 2 === 1);
-    expect(named).toHaveLength(17);
+    expect(named).toHaveLength(11);
     expect(named).not.toContain('workflow_mode');
     expect(named.slice(0, 3)).toEqual([
       'orchestration_model',
@@ -678,7 +672,7 @@ describe('buildApplyImplPresetArgs', () => {
       'orchestration_speed'
     ]);
     expect(args.slice(2, -2).filter((_, index) => index % 2 === 0)).toEqual(
-      Array(17).fill('--unset-metadata')
+      Array(11).fill('--unset-metadata')
     );
   });
 
@@ -782,7 +776,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
     ).toBe(false);
   });
 
-  test('leaves the nine review pins alone when a quick_fix preset applies', async () => {
+  test('keeps existing spec and plan review pins on an issue apply', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(
       ws,
@@ -792,7 +786,14 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
     );
     runBdJsonProjectedInWorkspace.mockResolvedValue({
       ok: true,
-      data: { id: 'UI-1', metadata: { route: 'quick_fix' } }
+      data: {
+        id: 'UI-1',
+        metadata: {
+          route: 'quick_fix',
+          spec_review_model: 'codex',
+          plan_review_model: 'fable'
+        }
+      }
     });
     runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
 
@@ -809,6 +810,8 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
           index % 2 === 1
       )
       .map((/** @type {string} */ value) => value.split('=')[0]);
+    expect(named).not.toContain('spec_review_model');
+    expect(named).not.toContain('plan_review_model');
     expect(named).toEqual([
       'orchestration_model',
       'orchestration_effort',
@@ -817,7 +820,10 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
       'impl_runtime',
       'impl_model',
       'impl_effort',
-      'impl_speed'
+      'impl_speed',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_review_speed'
     ]);
   });
 
@@ -928,7 +934,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
   test('pins the preset onto the bead and replies with the readback issue', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, {
-      spec_review_speed: 'fast',
+      impl_review_speed: 'fast',
       impl_dispatch: 'delegated',
       impl_runtime: 'auto'
     });
@@ -939,7 +945,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
       data: {
         id: 'UI-1',
         metadata: {
-          spec_review_speed: 'fast',
+          impl_review_speed: 'fast',
           impl_dispatch: 'delegated'
         }
       }
@@ -956,7 +962,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
       buildApplyImplPresetArgs(
         'UI-1',
         {
-          spec_review_speed: 'fast',
+          impl_review_speed: 'fast',
           impl_dispatch: 'delegated',
           impl_runtime: 'auto'
         },
@@ -1111,6 +1117,69 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
 });
 
 describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
+  test('writes quick fix review kv keys on a quick fix workspace apply', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      {
+        impl_review_model: 'astra',
+        impl_review_effort: 'xhigh',
+        impl_review_speed: 'fast'
+      },
+      'quick_fix'
+    );
+    const initial = {
+      schema: 1,
+      impl_review_model: 'fable',
+      spec_review_model: 'codex'
+    };
+    const expected = {
+      ...initial,
+      quick_fix_impl_review_model: 'astra',
+      quick_fix_impl_review_effort: 'xhigh',
+      quick_fix_impl_review_speed: 'fast'
+    };
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: initial })
+      .mockResolvedValueOnce({ ok: true, value: expected });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1, expected_queue_revision: 0 }
+    });
+
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual(expected);
+    expect(sent.at(-1).payload).toMatchObject({ applied: true });
+  });
+
+  test('clears quick fix review kv keys when the quick fix preset omits them', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {}, 'quick_fix');
+    const expected = { schema: 1, impl_review_model: 'fable' };
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          ...expected,
+          quick_fix_impl_review_model: 'astra',
+          quick_fix_impl_review_effort: 'xhigh',
+          quick_fix_impl_review_speed: 'fast'
+        }
+      })
+      .mockResolvedValueOnce({ ok: true, value: expected });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1, expected_queue_revision: 0 }
+    });
+
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual(expected);
+  });
   test('replaces the general kv and queue values and publishes the updated queue', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, {
@@ -1158,6 +1227,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
       {
         schema: 1,
         impl_dispatch: 'delegated',
+        spec_review_model: 'claude',
         workflow_mode: 'fast_track',
         impl_runtime: 'codex',
         quick_fix_impl_model: 'terra'
@@ -1476,17 +1546,26 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
     });
   });
 
-  test('clears a review session key the preset does not carry', async () => {
+  test('preserves spec and plan review kv on a general workspace apply', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, { impl_speed: 'fast' });
     kvGetJsonInWorkspace
       .mockResolvedValueOnce({
         ok: true,
-        value: { schema: 1, spec_review_model: 'claude' }
+        value: {
+          schema: 1,
+          spec_review_model: 'codex',
+          plan_review_model: 'fable'
+        }
       })
       .mockResolvedValueOnce({
         ok: true,
-        value: { schema: 1, impl_speed: 'fast' }
+        value: {
+          schema: 1,
+          impl_speed: 'fast',
+          spec_review_model: 'codex',
+          plan_review_model: 'fable'
+        }
       });
     kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
 
@@ -1502,7 +1581,9 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
 
     expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual({
       schema: 1,
-      impl_speed: 'fast'
+      impl_speed: 'fast',
+      spec_review_model: 'codex',
+      plan_review_model: 'fable'
     });
   });
 

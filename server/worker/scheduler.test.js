@@ -883,7 +883,7 @@ describe('dispatch preset observations', () => {
         orchestration_model: 'opus',
         orchestration_effort: 'high',
         orchestration_speed: 'default',
-        spec_review_speed: 'default',
+        impl_review_speed: 'default',
         impl_runtime: 'claude',
         impl_model: 'auto'
       }
@@ -967,13 +967,13 @@ describe('dispatch preset observations', () => {
     ],
     [
       'quick_fix',
-      { orchestration_speed: 'fast', spec_review_speed: 'fast' },
+      { orchestration_speed: 'fast', impl_review_speed: 'fast' },
       ['orchestration_speed']
     ],
     [
       'spec_backed',
-      { orchestration_speed: 'fast', spec_review_speed: 'fast' },
-      ['orchestration_speed', 'spec_review_speed']
+      { orchestration_speed: 'fast', impl_review_speed: 'fast' },
+      ['orchestration_speed', 'impl_review_speed']
     ],
     ['full_plan', {}, []],
     ['spec_backed', { impl_runtime: null, impl_model: '' }, []]

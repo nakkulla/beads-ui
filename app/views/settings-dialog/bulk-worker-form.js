@@ -46,6 +46,7 @@ import {
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
+  SESSION_REVIEW_KEYS,
   buildExecutionOptionView,
   implEffortOptions,
   implModelOptions,
@@ -89,6 +90,9 @@ const FORM_LOADING = '불러오는 중';
  * @returns {ReadonlyArray<string>}
  */
 export function bulkFormQueueKeysFor(applies_to) {
+  if (applies_to === 'session_review') {
+    return [];
+  }
   return normalizeAppliesTo(applies_to) === 'quick_fix'
     ? QUICK_FIX_ORCHESTRATION_KEYS
     : ORCHESTRATION_KEYS;
@@ -96,7 +100,7 @@ export function bulkFormQueueKeysFor(applies_to) {
 
 /**
  * The rows one profile's tab DRAWS, in that profile's own STORAGE key names:
- * 17 canonical rows for `general` and 8 prefixed rows for `quick_fix` (§6.2).
+ * Eleven rows for each preset profile, or six canonical session review rows.
  *
  * The general list keeps `impl_dispatch`, which exists only so a preset can
  * carry it (UI-e1ta §4) — the contract gives it no workspace-global storage
@@ -108,6 +112,9 @@ export function bulkFormQueueKeysFor(applies_to) {
  * @returns {ReadonlyArray<string>}
  */
 export function bulkFormRowKeysFor(applies_to) {
+  if (applies_to === 'session_review') {
+    return SESSION_REVIEW_KEYS;
+  }
   return normalizeAppliesTo(applies_to) === 'quick_fix'
     ? QUICK_FIX_PRESET_KEYS.map((key) => QUICK_FIX_LANE_MAP[key])
     : GENERAL_PRESET_KEYS;
@@ -121,9 +128,8 @@ export function bulkFormRowKeysFor(applies_to) {
  * @returns {ReadonlyArray<string>}
  */
 export function bulkFormKeysFor(applies_to) {
-  const profile = normalizeAppliesTo(applies_to);
-  return bulkFormRowKeysFor(profile).filter(
-    (key) => layerOf(key, profile) !== null
+  return bulkFormRowKeysFor(applies_to).filter(
+    (key) => layerOf(key, applies_to) !== null
   );
 }
 
@@ -137,6 +143,9 @@ export function bulkFormKeysFor(applies_to) {
  * @returns {import('./bulk-observation.js').ObservationLayer|null}
  */
 function layerOf(key, applies_to) {
+  if (applies_to === 'session_review') {
+    return SESSION_REVIEW_KEYS.includes(key) ? 'session_defaults' : null;
+  }
   const profile = normalizeAppliesTo(applies_to);
   const kv_keys =
     profile === 'quick_fix' ? QUICK_FIX_KV_KEYS : GENERAL_PRESET_KV_KEYS;
@@ -169,7 +178,7 @@ function storedValue(value) {
  * @typedef {Object} BulkWorkerFormOptions
  * @property {() => Array<Record<string, any>>} rows - The monitor rows the form
  * reads its catalog from, selected repos first.
- * @property {'general'|'quick_fix'} [profile] - Which preset profile this form
+ * @property {'general'|'quick_fix'|'session_review'} [profile] - Which profile this form
  * edits; `general` by default.
  * @property {(row: Record<string, any>) => Record<string, any>} [queueOf] - How
  * to read one row's queue surface; the row itself by default.
@@ -441,6 +450,12 @@ export function createBulkWorkerForm({
         quick_fix_impl_speed: speedVisible(catalog, {
           runtime: values.quick_fix_impl_runtime,
           model: values.quick_fix_impl_model
+        }),
+        quick_fix_impl_review_speed: speedVisible(catalog, {
+          model: reviewerModelToken(
+            values.quick_fix_impl_review_model ||
+              resolutionValues?.().impl_review_model
+          )
         })
       };
     }
@@ -860,16 +875,16 @@ export function createBulkWorkerForm({
           `${label} 모델`,
           model_choices,
           onValueChange,
-          disabled,
-          null
+          disabled || (is_quick_fix && !quickFixSupported()),
+          is_quick_fix ? 'quick_fix' : null
         )}
         ${selectControl(
           effort_key,
           `${label} effort`,
           REVIEW_EFFORTS,
           onValueChange,
-          disabled,
-          null
+          disabled || (is_quick_fix && !quickFixSupported()),
+          is_quick_fix ? 'quick_fix' : null
         )}
         ${speed_shown
           ? selectControl(
@@ -877,8 +892,8 @@ export function createBulkWorkerForm({
               `${label} 속도`,
               REVIEW_SPEEDS,
               onValueChange,
-              disabled,
-              null
+              disabled || (is_quick_fix && !quickFixSupported()),
+              is_quick_fix ? 'quick_fix' : null
             )
           : ''}
       </span>
@@ -1018,36 +1033,41 @@ export function createBulkWorkerForm({
         리뷰 게이트
         <span class="settings-dialog__hint">모델 · effort · 속도</span>
       </div>
-      ${gateRow(
-        '사양 리뷰',
-        'spec',
-        'spec_review_model',
-        REVIEW_STEP_MODELS,
-        'spec_review_effort',
-        'spec_review_speed',
-        visibility.spec_review_speed,
-        disabled
-      )}
-      ${gateRow(
-        '계획 리뷰',
-        'plan',
-        'plan_review_model',
-        PLAN_REVIEW_MODELS,
-        'plan_review_effort',
-        'plan_review_speed',
-        visibility.plan_review_speed,
-        disabled
-      )}
-      ${gateRow(
-        '구현 리뷰',
-        'impl',
-        'impl_review_model',
-        REVIEW_STEP_MODELS,
-        'impl_review_effort',
-        'impl_review_speed',
-        visibility.impl_review_speed,
-        disabled
-      )}
+      ${profile === 'session_review'
+        ? html`${gateRow(
+            '사양 리뷰',
+            'spec',
+            'spec_review_model',
+            REVIEW_STEP_MODELS,
+            'spec_review_effort',
+            'spec_review_speed',
+            visibility.spec_review_speed,
+            disabled
+          )}
+          ${gateRow(
+            '계획 리뷰',
+            'plan',
+            'plan_review_model',
+            PLAN_REVIEW_MODELS,
+            'plan_review_effort',
+            'plan_review_speed',
+            visibility.plan_review_speed,
+            disabled
+          )} `
+        : gateRow(
+            '구현 리뷰',
+            'impl',
+            is_quick_fix ? 'quick_fix_impl_review_model' : 'impl_review_model',
+            REVIEW_STEP_MODELS,
+            is_quick_fix
+              ? 'quick_fix_impl_review_effort'
+              : 'impl_review_effort',
+            is_quick_fix ? 'quick_fix_impl_review_speed' : 'impl_review_speed',
+            is_quick_fix
+              ? visibility.quick_fix_impl_review_speed
+              : visibility.impl_review_speed,
+            disabled
+          )}
     </div>`;
   }
 
@@ -1282,8 +1302,7 @@ export function createBulkWorkerForm({
     },
 
     /**
-     * This profile's groups, in tab order: three for `워커` and two for
-     * `quick fix`. With no row yet there is no catalog to draw options from,
+     * This profile's groups in tab order. With no row yet there is no catalog,
      * so the form says so instead of guessing.
      *
      * @param {boolean} [disabled] - `true` while a run is in flight.
@@ -1299,9 +1318,13 @@ export function createBulkWorkerForm({
         </p>`;
       }
       const visibility = speedVisibility();
+      if (profile === 'session_review') {
+        return reviewGatesGroup(visibility, disabled);
+      }
       if (is_quick_fix) {
         return html`${quickFixOrchestrationGroup(visibility, disabled)}
-        ${quickFixImplGroup(visibility, disabled)}`;
+        ${quickFixImplGroup(visibility, disabled)}
+        ${reviewGatesGroup(visibility, disabled)}`;
       }
       return html`${orchestrationGroup(visibility, disabled)}
       ${implGroup(visibility, disabled)}

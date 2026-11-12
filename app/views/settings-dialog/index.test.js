@@ -395,10 +395,13 @@ describe('createSettingsDialog tabs (UI-32oq §4.4)', () => {
     ]);
   });
 
-  test('renders the quick fix groups inside its own folded block', async () => {
+  test('renders the quick fix groups inside its selected sub tab', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-execution-subtab="quick_fix"]')
+    ).click();
 
     const groups = Array.from(
       root.querySelectorAll(
@@ -412,11 +415,44 @@ describe('createSettingsDialog tabs (UI-32oq §4.4)', () => {
             ?.childNodes[0]?.textContent?.trim()
     );
 
-    expect(groups).toEqual(['프리셋', '오케스트레이션', '구현']);
+    expect(groups).toEqual(['프리셋', '오케스트레이션', '구현', '리뷰 게이트']);
   });
 });
 
 describe('createSettingsDialog target (UI-32oq §4.4)', () => {
+  test('remembers the execution sub tab across targets until the dialog closes', async () => {
+    const { root, dialog } = mount({
+      monitorRows: TWO_ROWS,
+      connectedRoot: REPO_A
+    });
+    dialog.open();
+    await settle();
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-execution-subtab="session_review"]')
+    ).click();
+
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-target-mode="multi"]')
+    ).click();
+    await settle();
+
+    expect(
+      root
+        .querySelector('[data-execution-subtab="session_review"]')
+        ?.getAttribute('aria-pressed')
+    ).toBe('true');
+    expect(root.querySelector('[data-bulk-key="spec_review_model"]')).not.toBe(
+      null
+    );
+    dialog.close();
+    dialog.open();
+    await settle();
+    expect(
+      root
+        .querySelector('[data-execution-subtab="worker"]')
+        ?.getAttribute('aria-pressed')
+    ).toBe('true');
+  });
   /**
    * @param {HTMLElement} root
    * @returns {{ mode: string|null, repo: string|null }}
@@ -864,7 +900,7 @@ describe('createSettingsDialog several repositories (UI-nu43 §3.1, UI-32oq §4.
     await settle();
 
     expect(root.querySelector('[data-bulk-repo]')).toBe(null);
-    expect(root.querySelector('[data-exec-block="quick_fix"]')).not.toBe(null);
+    expect(root.querySelector('[data-exec-block="worker"]')).not.toBe(null);
   });
 });
 
@@ -1651,6 +1687,9 @@ describe('createSettingsDialog 실행 tab session defaults', () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-execution-subtab="session_review"]')
+    ).click();
 
     const select = /** @type {HTMLSelectElement} */ (
       root.querySelector('select[data-key="spec_review_model"]')
@@ -1760,6 +1799,9 @@ describe('createSettingsDialog 실행 tab session defaults', () => {
     });
     dialog.open();
     await settle();
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-execution-subtab="quick_fix"]')
+    ).click();
 
     const select = /** @type {HTMLSelectElement} */ (
       root.querySelector('select[data-key="quick_fix_impl_model"]')
@@ -1785,6 +1827,9 @@ describe('createSettingsDialog 실행 tab session defaults', () => {
     });
     dialog.open();
     await settle();
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-execution-subtab="quick_fix"]')
+    ).click();
 
     const select = /** @type {HTMLSelectElement} */ (
       root.querySelector('select[data-key="quick_fix_impl_model"]')
@@ -2142,7 +2187,8 @@ describe('createSettingsDialog execution tab orchestration', () => {
 
     expect(keys).toContain('orchestration_model');
     expect(keys).toContain('impl_runtime');
-    expect(keys).toContain('spec_review_model');
+    expect(keys).not.toContain('spec_review_model');
+    expect(keys).toContain('impl_review_model');
   });
 });
 

@@ -1,6 +1,7 @@
 import { render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { createBulkWorkerForm } from './bulk-worker-form.js';
+import { SESSION_REVIEW_KEYS } from './session-model.js';
 
 const CATALOG = {
   runners: {
@@ -18,6 +19,55 @@ const CATALOG = {
   },
   model_index: { opus: 'claude', sol: 'codex' }
 };
+
+test('renders the session review bulk form over six keys', () => {
+  const rows = [
+    row({
+      session_defaults: {
+        spec_review_model: 'codex',
+        plan_review_model: 'codex',
+        spec_review_effort: 'high'
+      }
+    }),
+    row({
+      root_dir: '/tmp/example/repo-b',
+      session_defaults: {
+        spec_review_model: 'codex',
+        plan_review_model: 'codex',
+        spec_review_effort: 'low'
+      }
+    })
+  ];
+  const form = createBulkWorkerForm({
+    rows: () => rows,
+    profile: 'session_review'
+  });
+  const host = document.createElement('div');
+
+  form.observe(false);
+  render(form.template(), host);
+
+  expect(
+    Array.from(host.querySelectorAll('[data-bulk-key]'), (control) =>
+      control.getAttribute('data-bulk-key')
+    )
+  ).toEqual(SESSION_REVIEW_KEYS);
+  expect(form.queueValues()).toEqual({});
+  expect(form.kvValues()).not.toHaveProperty('spec_review_effort');
+  expect(
+    host.querySelector('[data-bulk-key="spec_review_effort"]')?.textContent
+  ).toContain('갈림');
+});
+
+test('omits spec and plan review rows from the general bulk form', () => {
+  const { host, form } = mount();
+
+  const keys = Object.keys(form.kvValues());
+
+  expect(host.querySelector('[data-bulk-key="spec_review_model"]')).toBe(null);
+  expect(host.querySelector('[data-bulk-key="plan_review_model"]')).toBe(null);
+  expect(keys.some((key) => SESSION_REVIEW_KEYS.includes(key))).toBe(false);
+});
 
 const EXECUTION_DEFAULTS = {
   supported: true,
@@ -202,7 +252,7 @@ describe('createBulkWorkerForm payloads (UI-628r §4.1)', () => {
 
     const kv = form.kvValues();
 
-    expect(Object.keys(kv)).toHaveLength(13);
+    expect(Object.keys(kv)).toHaveLength(7);
     expect(kv.impl_model).toBe('sol');
     expect(kv.impl_effort).toBe(null);
   });
@@ -320,7 +370,7 @@ describe('createBulkWorkerForm quick_fix tab (UI-uohc §6.2)', () => {
     );
   });
 
-  test('writes eight rows across its two payloads', () => {
+  test('writes eleven rows across its two payloads', () => {
     const { quick_fix_form } = mountPair();
 
     const kv = quick_fix_form.kvValues();
@@ -331,7 +381,10 @@ describe('createBulkWorkerForm quick_fix tab (UI-uohc §6.2)', () => {
       'quick_fix_impl_runtime',
       'quick_fix_impl_model',
       'quick_fix_impl_effort',
-      'quick_fix_impl_speed'
+      'quick_fix_impl_speed',
+      'quick_fix_impl_review_model',
+      'quick_fix_impl_review_effort',
+      'quick_fix_impl_review_speed'
     ]);
     expect(Object.keys(queue)).toEqual([
       'quick_fix_orchestration_model',

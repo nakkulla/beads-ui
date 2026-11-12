@@ -230,14 +230,14 @@ describe('session key lists', () => {
     expect(WORKSPACE_KV_KEYS[0]).toBe('workflow_mode');
   });
 
-  test('drops impl_dispatch from the twenty workspace kv keys', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(20);
+  test('drops impl_dispatch from the twenty-three workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(23);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
 
   test('mirrors the quick_fix kv block after the per-bead keys', () => {
-    expect(WORKSPACE_KV_KEYS.slice(-6)).toEqual([
+    expect(WORKSPACE_KV_KEYS.slice(-9)).toEqual([
       ...QUICK_FIX_KV_KEYS,
       'base_sync_accept_local_commits'
     ]);
@@ -258,7 +258,7 @@ describe('session key lists', () => {
     }
   });
 
-  test('maps exactly eight preset fields onto the quick_fix lane', () => {
+  test('maps exactly eleven preset fields onto the quick_fix lane', () => {
     expect(QUICK_FIX_ORCHESTRATION_KEYS).toEqual([
       'quick_fix_orchestration_model',
       'quick_fix_orchestration_effort',
@@ -272,18 +272,15 @@ describe('session key lists', () => {
       impl_runtime: 'quick_fix_impl_runtime',
       impl_model: 'quick_fix_impl_model',
       impl_effort: 'quick_fix_impl_effort',
-      impl_speed: 'quick_fix_impl_speed'
+      impl_speed: 'quick_fix_impl_speed',
+      impl_review_model: 'quick_fix_impl_review_model',
+      impl_review_effort: 'quick_fix_impl_review_effort',
+      impl_review_speed: 'quick_fix_impl_review_speed'
     });
   });
 
-  test('names the thirteen kv keys a general apply replaces', () => {
+  test('names the seven kv keys a general apply replaces', () => {
     expect(GENERAL_PRESET_KV_KEYS).toEqual([
-      'spec_review_model',
-      'spec_review_effort',
-      'spec_review_speed',
-      'plan_review_model',
-      'plan_review_effort',
-      'plan_review_speed',
       'impl_review_model',
       'impl_review_effort',
       'impl_review_speed',
@@ -298,22 +295,26 @@ describe('session key lists', () => {
     expect(IMPL_DISPATCHES).toEqual(['delegated', 'main']);
   });
 
-  test('carries the seventeen pin keys in the general profile', () => {
-    expect(GENERAL_PRESET_KEYS).toEqual([...BEAD_PIN_KEYS]);
-    expect(GENERAL_PRESET_KEYS).toHaveLength(17);
+  test('carries eleven keys in the general profile', () => {
+    expect(GENERAL_PRESET_KEYS).toEqual([...SERVER_GENERAL_PRESET_KEYS]);
+    expect(GENERAL_PRESET_KEYS).toHaveLength(11);
   });
 
-  test('carries eight canonical keys in the quick_fix profile', () => {
+  test('carries eleven canonical keys in the quick_fix profile', () => {
     expect(QUICK_FIX_PRESET_KEYS).toEqual([
       ...ORCHESTRATION_KEYS,
-      ...QUICK_FIX_IMPL_KEYS
+      ...QUICK_FIX_IMPL_KEYS,
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_review_speed'
     ]);
-    expect(QUICK_FIX_PRESET_KEYS).toHaveLength(8);
+    expect(QUICK_FIX_PRESET_KEYS).toHaveLength(11);
   });
 
-  test('leaves the nine review keys out of the quick_fix profile', () => {
-    for (const key of BEAD_APPLY_KEYS.filter((entry) =>
-      entry.includes('_review_')
+  test('leaves the six session review keys out of the quick_fix profile', () => {
+    for (const key of BEAD_APPLY_KEYS.filter(
+      (entry) =>
+        entry.startsWith('spec_review_') || entry.startsWith('plan_review_')
     )) {
       expect(QUICK_FIX_PRESET_KEYS).not.toContain(key);
     }
@@ -632,12 +633,6 @@ describe('buildPresetDiff', () => {
     const diff = buildPresetDiff({}, every_key, 'general');
 
     expect(diff.rows.map((row) => row.key)).toEqual([
-      'spec_review_model',
-      'spec_review_effort',
-      'spec_review_speed',
-      'plan_review_model',
-      'plan_review_effort',
-      'plan_review_speed',
       'impl_review_model',
       'impl_review_effort',
       'impl_review_speed',
@@ -652,12 +647,18 @@ describe('buildPresetDiff', () => {
     expect(diff.ignored_keys).toEqual([
       'impl_dispatch',
       'workflow_mode',
+      'spec_review_model',
+      'spec_review_effort',
+      'spec_review_speed',
+      'plan_review_model',
+      'plan_review_effort',
+      'plan_review_speed',
       ...QUICK_FIX_KV_KEYS,
       'base_sync_accept_local_commits'
     ]);
   });
 
-  test('compares exactly the eight keys one quick_fix apply writes', () => {
+  test('compares exactly the eleven keys one quick_fix apply writes', () => {
     const every_key = Object.fromEntries(
       QUICK_FIX_PRESET_KEYS.map((key) => [key, 'x'])
     );
@@ -668,14 +669,17 @@ describe('buildPresetDiff', () => {
     expect(diff.ignored_keys).toEqual([]);
   });
 
-  test('leaves the review keys out of a quick_fix comparison', () => {
+  test('compares implementation review keys in a quick_fix comparison', () => {
     const diff = buildPresetDiff(
       { impl_review_model: 'astra' },
       { impl_model: 'sol' },
       'quick_fix'
     );
 
-    expect(diff.rows.map((row) => row.key)).toEqual(['impl_model']);
+    expect(diff.rows.map((row) => row.key)).toEqual([
+      'impl_model',
+      'impl_review_model'
+    ]);
   });
 
   test('returns impl_dispatch as ignored rather than comparing it', () => {

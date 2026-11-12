@@ -202,6 +202,7 @@ function el(host, selector) {
  * @returns {HTMLElement}
  */
 function qb(host) {
+  el(host, '[data-execution-subtab="quick_fix"]').click();
   return el(host, '[data-bulk-block="quick_fix"]');
 }
 
@@ -471,7 +472,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
     pane.render('execution');
 
     expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
-      '16행을 저장소 2곳에 씁니다'
+      '10행을 저장소 2곳에 씁니다'
     );
   });
 
@@ -1239,7 +1240,52 @@ describe('createBulkPane 관측 (UI-e1ta §3)', () => {
 });
 
 describe('createBulkPane 실행 tab (UI-32oq §4.4)', () => {
-  test('draws the general block before the folded quick fix block', () => {
+  test('applies session review rows without writing a preset or queue value', async () => {
+    const { host, pane, calls } = setup({
+      transport: () => ({ values: {}, warnings: [] })
+    });
+    pane.render('execution');
+    click(host, '[data-execution-subtab="session_review"]');
+    choose(host, '[data-bulk-key="spec_review_effort"]', 'high');
+    click(host, '[data-execution-subtab="worker"]');
+    click(host, '[data-execution-subtab="session_review"]');
+    expect(el(host, '[data-bulk-key="spec_review_effort"]').value).toBe('high');
+    expect(host.querySelector('[data-bulk-preset]')).toBe(null);
+
+    click(host, '[data-bulk-apply="session_review"]');
+    await settle();
+
+    expect(calls.map(([type]) => type)).toEqual([
+      'set-session-defaults',
+      'set-session-defaults'
+    ]);
+    expect(calls[0][1].values).toEqual({
+      spec_review_model: null,
+      spec_review_effort: 'high',
+      spec_review_speed: null,
+      plan_review_model: null,
+      plan_review_effort: null,
+      plan_review_speed: null
+    });
+    expect(
+      host.querySelector('[data-bulk-results]')?.textContent || host.textContent
+    ).not.toContain('실패');
+  });
+
+  test('keeps unread session review rows out of a bulk apply', async () => {
+    const { host, pane, calls } = setup({
+      rows: [row({ session_defaults_state: 'unreadable' })]
+    });
+    pane.render('execution');
+    click(host, '[data-execution-subtab="session_review"]');
+
+    click(host, '[data-bulk-apply="session_review"]');
+    await settle();
+
+    expect(calls[0][1].values).toEqual({});
+    expect(host.textContent).toContain('미확인');
+  });
+  test('draws the worker block first without a quick fix fold', () => {
     const { host, pane } = setup();
 
     pane.render('execution');
@@ -1248,8 +1294,8 @@ describe('createBulkPane 실행 tab (UI-32oq §4.4)', () => {
       Array.from(host.querySelectorAll('[data-bulk-block]'), (node) =>
         node.getAttribute('data-bulk-block')
       )
-    ).toEqual(['worker', 'quick_fix']);
-    expect(/** @type {HTMLDetailsElement} */ (qb(host)).open).toBe(false);
+    ).toEqual(['worker']);
+    expect(host.querySelector('details[data-bulk-block]')).toBe(null);
   });
 
   test('draws no session row on either tab', () => {
@@ -1273,10 +1319,13 @@ describe('createBulkPane 실행 tab (UI-32oq §4.4)', () => {
     click(host, '[data-bulk-apply="worker"]');
     await settle();
 
-    expect([
-      el(host, '[data-bulk-apply="worker"]').textContent.trim(),
-      el(host, '[data-bulk-apply="quick_fix"]').textContent.trim()
-    ]).toEqual(['적용 중 0/2', '선택 2곳에 적용']);
+    expect(el(host, '[data-bulk-apply="worker"]').textContent.trim()).toBe(
+      '적용 중 0/2'
+    );
+    qb(host);
+    expect(el(host, '[data-bulk-apply="quick_fix"]').textContent.trim()).toBe(
+      '선택 2곳에 적용'
+    );
   });
 });
 
@@ -1426,18 +1475,18 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
       Array.from(qb(host).querySelectorAll('[data-bulk-group]'), (node) =>
         node.getAttribute('data-bulk-group')
       )
-    ).toEqual(['quick_fix_orchestration', 'quick_fix_impl']);
+    ).toEqual(['quick_fix_orchestration', 'quick_fix_impl', 'review']);
     expect(el(qb(host), '[data-bulk-key="impl_review_model"]')).toBe(null);
   });
 
-  test('counts its eight rows in the footer', () => {
+  test('counts its eleven rows in the footer', () => {
     const { host, pane } = setup();
 
     pane.render('execution');
 
     expect(
       el(qb(host), '[data-bulk-count]').textContent.replace(/\s+/g, ' ')
-    ).toBe('8행을 저장소 2곳에 씁니다');
+    ).toBe('11행을 저장소 2곳에 씁니다');
   });
 
   test('offers only the quick_fix presets in its bar', () => {

@@ -2,7 +2,7 @@
  * Server-global execution preset persistence.
  *
  * A preset belongs to one profile (`applies_to`) and sparsely carries that
- * profile's canonical keys: 17 for `general`, 8 for `quick_fix`. No stored
+ * profile's eleven canonical keys for both `general` and `quick_fix`. No stored
  * preset carries a `quick_fix_` prefixed key any more (design §3).
  *
  * @typedef {Object} ExecPreset
@@ -23,6 +23,7 @@
  * map for `quick_fix` presets, applied to `route=quick_fix` issues.
  * @property {{ version: number }} [reseed_migration]
  * @property {{ version: number }} [preset_profile_migration]
+ * @property {{ version: number }} [session_review_migration]
  */
 import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
@@ -30,6 +31,7 @@ import path from 'node:path';
 import {
   CHIP_BINDING_KEYS,
   QUICK_FIX_LANE_MAP,
+  SESSION_REVIEW_KEYS,
   implPresetEnums,
   normalizeAppliesTo,
   validateImplPresetSettings
@@ -125,6 +127,15 @@ function normalizeState(raw) {
   ) {
     state.preset_profile_migration = {
       version: Number(raw.preset_profile_migration.version)
+    };
+  }
+  if (
+    isRecord(raw.session_review_migration) &&
+    Number.isInteger(raw.session_review_migration.version) &&
+    Number(raw.session_review_migration.version) > 0
+  ) {
+    state.session_review_migration = {
+      version: Number(raw.session_review_migration.version)
     };
   }
   // A key outside the chip vocabulary is dropped and an absent field reads as
@@ -876,6 +887,52 @@ export function createExecPresetStore(options = {}) {
           next.quick_fix_chip_bindings ?? emptyChipBindings()
         )
       };
+    },
+
+    /**
+     * Remove session-only review keys and persist the marker atomically.
+     *
+     * @param {{ marker: { version: number } }} input
+     */
+    migrateSessionReviews(input) {
+      const current = ensureLoaded();
+      /** @type {Array<{ name: string, removed: Record<string, string> }>} */
+      const removals = [];
+      if (current.session_review_migration) {
+        return { applied: false, removals };
+      }
+      const presets = clone(current.presets);
+      for (const preset of presets) {
+        if (preset.applies_to !== 'general') {
+          continue;
+        }
+        /** @type {Record<string, string>} */
+        const removed = {};
+        for (const key of SESSION_REVIEW_KEYS) {
+          if (Object.hasOwn(preset.settings, key)) {
+            removed[key] = preset.settings[key];
+            delete preset.settings[key];
+          }
+        }
+        if (Object.keys(removed).length > 0) {
+          removals.push({ name: preset.name, removed });
+        }
+      }
+      const next = {
+        ...current,
+        revision: current.revision + 1,
+        presets,
+        session_review_migration: { version: input.marker.version }
+      };
+      persist(next);
+      const readback = JSON.parse(fs.readFileSync(file_path, 'utf8'));
+      if (JSON.stringify(readback) !== JSON.stringify(next)) {
+        throw new Error(
+          'Exec preset session review migration failed readback verification'
+        );
+      }
+      commitCache(next);
+      return { applied: true, removals };
     }
   };
 }

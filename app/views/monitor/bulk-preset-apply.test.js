@@ -31,7 +31,7 @@ function row(overrides) {
 }
 
 /**
- * The `워커` tab's form before anyone touches it: the general profile's 13 kv
+ * The `워커` tab's form before anyone touches it: the general profile's 7 kv
  * keys and 3 queue keys, all empty.
  */
 const EMPTY_FORM = {
@@ -45,7 +45,7 @@ const EMPTY_FORM = {
 };
 
 /**
- * The `quick fix` tab's form before anyone touches it: that profile's 5
+ * The `quick fix` tab's form before anyone touches it: that profile's 8
  * prefixed kv keys and its 3 prefixed queue keys.
  */
 const EMPTY_QUICK_FIX_FORM = {
@@ -264,7 +264,7 @@ describe('planBulkApply form path (UI-628r §4.2)', () => {
     });
 
     expect(Object.keys(plan.targets[0].kv_payload?.values || {})).toHaveLength(
-      13
+      7
     );
     expect(plan.targets[0].kv_payload).toEqual({
       values: EMPTY_FORM.kv_values,

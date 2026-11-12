@@ -111,6 +111,52 @@ function createFixture(options = {}) {
 }
 
 describe('exec-preset-coordinator implementation presets', () => {
+  test('leaves workspace kv review values untouched by the preset migration', async () => {
+    const kv = {
+      schema: 1,
+      spec_review_model: 'codex',
+      plan_review_model: 'fable'
+    };
+    const warn = vi.fn();
+    const fixture = createFixture({
+      kv,
+      warn,
+      queue: { revision: 0 },
+      preset: {
+        revision: 3,
+        reseed_migration: { version: 1 },
+        preset_profile_migration: { version: 1 },
+        presets: [
+          {
+            id: 'p1',
+            name: '일반',
+            settings: {
+              spec_review_model: 'astra',
+              plan_review_model: 'skip',
+              impl_review_model: 'codex'
+            }
+          },
+          {
+            id: 'p2',
+            name: '구형',
+            settings: { spec_review_model: 'codex', removed_key: 'keep' }
+          }
+        ]
+      }
+    });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(fixture.kvValue()).toEqual(kv);
+    expect(fixture.kvSet).not.toHaveBeenCalled();
+    expect(
+      fixture.coordinator.snapshot().presets.map((preset) => preset.id)
+    ).toEqual(['p1']);
+    expect(warn.mock.calls).toHaveLength(2);
+    expect(warn.mock.calls[0][0]).toContain('일반');
+    expect(warn.mock.calls[0][0]).toContain('astra');
+  });
   test('keeps an old partial profile in the applicable snapshot', () => {
     const fixture = createFixture({
       preset: {
@@ -140,7 +186,7 @@ describe('exec-preset-coordinator implementation presets', () => {
     ]);
   });
 
-  test('keeps a full 17-key general profile and hides a preset with an outside key', () => {
+  test('keeps a full 11-key general profile and hides a preset with an outside key', () => {
     const presetStore = {
       snapshot: () => ({
         revision: 2,
@@ -150,12 +196,6 @@ describe('exec-preset-coordinator implementation presets', () => {
             name: '전체 일반 프로필',
             applies_to: /** @type {'general'} */ ('general'),
             settings: {
-              spec_review_model: 'codex',
-              spec_review_effort: 'high',
-              spec_review_speed: 'fast',
-              plan_review_model: 'fable',
-              plan_review_effort: 'low',
-              plan_review_speed: 'default',
               impl_review_model: 'self',
               impl_review_effort: 'xhigh',
               impl_review_speed: 'fast',
