@@ -6,6 +6,8 @@ scope:
   - server/ws/compare-handlers.test.js
   - server/worker/scheduler.js
   - server/worker/queue-store.js
+  - server/worker/session-observation.js
+  - server/worker/usage-receipts.js
   - app/views/compare/
   - app/styles.css
   - app/protocol.md
@@ -35,6 +37,10 @@ scope:
   같이 다룬다).
 - quick fix와 일반 작업(spec_backed·full_plan)은 **나눠서** 비교하고 기준선도 따로 잡는다.
 - 화면은 frontend-design 지침을 따라 다시 만든다.
+- 어떤 세션이든 **오케스트레이터·구현 리프·리뷰어가 실제로 어떤 모델·effort로 돌았는지**는
+  알 수 있어야 한다. 화면의 "모름"은 기록이 정말 없는 세션에만 남고, 그런 누락 자체를 막는다.
+- 한 세션이 리프를 여러 개 썼다면 auto가 고른 것이므로 리프 런타임으로 묶는다:
+  `claude auto`·`codex auto`·`모든 런타임 auto`.
 
 ## 2. 검증된 전제
 
@@ -47,8 +53,12 @@ scope:
 - dispatch는 `exec_preset`을 attempt에 찍고, 이전 설정을 잇는 재개는 그것을 승계한다 — server/worker/scheduler.js:14587, 17360, 19368, 20004-20005
 - scheduler는 dispatch 때 `workflow_session_defaults` kv를 이미 fail-quiet로 읽는다 — server/worker/scheduler.js:5974-5984
 - attempt `exec_values`의 구현·리뷰 키는 Bead 핀 층만 담는다. kv 프로필 값은 들어가지 않는다 — server/worker/policy.js:309-330
-- quick fix 전용 kv 키(`quick_fix_impl_dispatch`·`quick_fix_impl_review_model` 등)는 비어 있으면 같은 이름의 일반 키로 내려간다 — server/worker/exec-enums.js:152-174
+- quick fix 전용 kv 키(`quick_fix_impl_review_model` 등)는 비어 있으면 같은 이름의 일반 키로 내려간다. 예외로 `quick_fix_impl_dispatch`는 일반 kv 층이 없다(kv `impl_dispatch` 금지) — server/worker/exec-enums.js:152-174
 - 실행 영수증(`exec_receipt`)은 push 직전 최종 head에서 한 번 쓴다. 그래서 push까지 못 간 attempt에는 실행자가 남지 않는다 — dotfiles workflow 스킬 SKILL.md `## Execution`(`write-exec-receipt.py` 단락)
+- attempt는 실제로 돈 하위 실행을 durable하게 남긴다: `usage_segments`(오케스트레이터 모델 조각), `usage_legs`(Claude 하위 에이전트는 `agent_type`·`model`·`effort`, Codex 레그는 `role: implementation|review-consult`·`model`·`effort`), `codex_children`(Codex 네이티브 하위 세션의 `agent_path`·`model`·`effort`) — server/worker/queue-store.js:176-188, 432-460; server/worker/usage-receipts.js:149-226; server/worker/codex-children/normalize.js:103
+- 레그는 Worker가 붙잡은 세션 스트림과 attempt별 사용량 영수증 파일에서 모인다 — server/worker/scheduler.js:3330-3375, 3585-3615
+- 실측(attempt 기록 스캔, 최근 구현 attempt): Claude 오케스트레이터 `done` 336건 중 구현 리뷰 레그 324건·`impl-<effort>` 리프 레그 160건(나머지는 직접 구현), Codex 오케스트레이터 `done` 208건 중 `codex_children` 202건. 비교 투영은 이 기록을 읽지 않고 `exec_receipt`·프리셋 추정만 본다 — server/worker/compare-projection.js:164-216, 1272-1300
+- 실측(30일 417건): attempt 대화 기록이 Worker 세션 폴더에 없는 17건 중 대부분이 tmux 대화형 attempt(`interactive` 필드)이고, 그 대화 파일은 `~/.claude/projects/<cwd>/<session_id>.jsonl`에 남아 있지만 `usage_segments`·`usage_legs`가 비어 있다. 대화형 경로는 종료 때 레그를 모으지 않는다.
 - 구현 리뷰 영수증의 `self@`는 수정 뒤 후속 리뷰가 앞 리뷰어 토큰을 덮어쓴 것이라, 영수증 접두어로는 처음 리뷰어를 알 수 없다 — dotfiles docs/contracts/workflow-contract.md:76
 - 화면 조작은 `.op-btn`·`.ui-select`·`.ui-chip` 부품과 역할 토큰만 쓴다 — docs/design-system.md:84-165
 - 실측(`get-compare`, 30일, 2026-11-12): 417세션 중 실행자 `미기록` 113건(92건 quick fix), 프리셋 미대조 46건, 구현 실행자 축 15그룹. 일반 작업에서 착지하지 못한 attempt 24건은 모두 실행자 기록이 없다(실제 리프별 착지율은 생존 편향). 섞인 기준선으로는 문제 세션 52%, 일반 작업만으로는 76%이고 그중 109건이 리뷰 지적이다.
@@ -85,22 +95,26 @@ scope:
 5. **눈여겨볼 차이**(§4.4).
 6. **비교 표**(§4.2)와 범례(문제 종류 색, 초록 칸 뜻).
 7. **용어 설명**(`<details>`, 접힘): 오케스트레이터·구현 리프·리프 자동/고정·직접 구현·
-   여러 리프·리프 기록 없음·추정/설정 모름·착지·문제 세션·표본 적음을 평이하게
+   auto 묶음(`claude auto` 등)·관측 기록 없음·추정/설정 모름·착지·문제 세션·표본 적음을 평이하게
    설명하고, 바뀐 이름은 예전 이름을 함께 적는다.
 
 ### 4.2 비교 표
 
 - 열: 이름 | 세션(이슈 수 보조) | 착지율 | 문제 세션 | 평균 시간 | 평균 비용. `구현 리프`
-  보기는 착지율 대신 `리프를 고른 방식`(자동 n·고정 n·모름 n)을, `리뷰어` 보기는 끝에
+  보기는 끝에 `리프를 고른 방식`(설정 기준 자동 n·고정 n·모름 n)을, `리뷰어` 보기는 끝에
   `리뷰 라운드`(착지 이슈 평균)를 더한다.
 - 지표 칸: 값, 막대(같은 표 안 최댓값 기준, 비율은 0~100%), 평균 눈금, 보조 줄(착지
-  `a/b`, 문제 `a/n`, `중앙값 …`). 문제 세션 막대는 종류별(리뷰 지적·재시도·사람 개입·
-  실패·폐기·시간·비용 초과) 색 조각이고 툴팁에 건수를 적는다.
+  `a/b`, 문제 `a/n`, `중앙값 …`). 문제 세션 막대는 전체 길이가 `problem_rate`이고, 그 길이를
+  문제 기준에서 켜진 **모든** 키(실패·폐기·재시도·리뷰 지적·사람 개입·verify 실패·시간 초과·
+  비용 초과·핀 조정)의 건수 비율로 나눈 색 조각이다. 한 세션이 여러 키에 걸리면 키별 건수는
+  각각 세지만 조각은 비율로만 나누므로 막대는 `problem_rate`를 넘지 않는다. 툴팁은 키별 실제
+  건수와 "한 세션이 여러 종류에 걸릴 수 있음"을 적는다.
 - 최고 표시: 견줄 단위(§5.5) 가운데 착지율 최고·문제 세션 최소·평균 시간 최단·평균 비용
   최저인 칸을 초록으로 칠하고 `최고`·`최소`·`최단`·`최저` 꼬리표를 단다. 동률이거나
   단위가 하나뿐이면 달지 않는다.
 - 표본 적음: `n < 5`인 줄은 흐리게, `표본 적음` 칩을 달고, 정렬과 무관하게 아래로 보낸다.
-- 설정 모름·리뷰어 모름 줄은 점선 칩(`프리셋 기록 없음` 등)을 달고 최고 표시·찾은 차이에서 뺀다.
+- `리프 설정 모름`·`관측 기록 없음` 줄은 점선 칩(`프리셋 기록 없음`·`실행 기록 없음`)을 달고
+  최고 표시·찾은 차이에서 뺀다.
 - 정렬: 열 머리를 누르면 그 지표로 정렬하고 다시 누르면 방향을 바꾼다. 기본은 세션 수
   내림차순.
 - 하위 줄: `설정` 보기에서 그룹 안 리뷰어가 둘 이상이면 리뷰어별 줄을 **늘** 펼쳐 보이고,
@@ -136,26 +150,43 @@ scope:
   — 기간을 넓혀 보세요.`, `설정` 보기는 `견줄 수 있는 설정이 하나뿐입니다 — 구현 리프 보기에서
   실제 리프끼리 견줘 보세요.`(지난 기간의 행은 대부분 프리셋 기록이 없거나 삭제된 프리셋이라
   기간을 넓혀도 `리프 설정 모름`만 는다).
-- `구현 리프` 보기에는 늘: 착지하지 못한 세션 n건을 뺐다는 사실과, 자동 선택은 작업에
-  맞춰 리프를 고르므로 리프 간 차이에 작업 크기 차이가 섞여 있다는 주의.
+- `구현 리프` 보기에는 늘: 자동 선택은 작업에 맞춰 리프를 고르므로 리프 간 차이에 작업
+  크기 차이가 섞여 있다는 주의.
 - `설정`·`리뷰어` 보기에는 늘: 설정마다 맡은 작업이 달라 차이에 작업 차이가 섞여 있다는 주의.
 - `리뷰어` 보기에는 늘: 리뷰어가 착지 뒤 품질에 주는 효과는 재지 않고 라운드·지적·비용·
   시간만 견준다는 주의.
-- 견줄 행이 하나도 없으면(예: quick fix의 리뷰어가 모두 모름) 표 자리에 빈 상태 문장:
-  무엇이 없어서 못 견주는지와 이번 변경 뒤 실행부터 기록된다는 것.
+- `관측 기록 없음` 행이 있으면: `실행 기록이 없는 세션 n건은 어떤 모델로 돌았는지 알 수
+  없어 순위에서 뺐습니다.`
+- 견줄 행이 하나도 없으면 표 자리에 빈 상태 문장: 무엇이 없어서 못 견주는지.
 
 ## 5. 데이터 정의
 
-### 5.1 행의 유효 설정
+### 5.1 행의 실제 실행과 설정
 
-행(종단 구현 attempt 하나, 선행 스펙 §4.1 그대로)마다 세 값을 둔다.
+행(종단 구현 attempt 하나, 선행 스펙 §4.1 그대로)마다 **실제로 돈 것**(`executed`)과
+**정해 둔 것**(설정)을 따로 둔다. 모델·effort 비교는 실제 실행으로 하고, 자동/고정처럼
+실행에서 알 수 없는 것만 설정으로 한다.
 
-- `orchestrator`: 관측값 `orchestration.model`·`effort`와, `exec_values.orchestration_speed`가
-  `fast`이면 `fast`. 이름 예: `opus · high`, `astra · xhigh · fast`. 모델이 없으면 `기록 없음`.
+**실제 실행 `executed`** — attempt 기록에서만 읽는다(§2).
+
+- `orchestrator`: attempt `model`·`effort`와, `exec_values.orchestration_speed`가 `fast`이면
+  `fast`. 이름 예: `opus · high`, `astra · xhigh · fast`.
+- `leaves[]`(`{ runtime, model, effort, cost_usd }`): Claude 하위 에이전트 레그 중
+  `agent_type`이 `impl-<effort>`인 것(effort는 레그 `effort`, 없으면 `agent_type`의 접미어),
+  Codex 레그 중 `role = implementation`인 것, `codex_children` 중 `agent_path`가 구현을 뜻하고
+  리뷰를 뜻하지 않는 것(예: `/root/implement…`). 모델은 카탈로그 정규화 이름(`gpt-5.6-sol` ≡
+  `sol`, `claude-opus-5-5` ≡ `opus`). 전송용 레그(`codex-runner`)와 그 밖의 하위 에이전트
+  (`general-purpose` 등)는 리프가 아니다.
+- `reviewers[]`(`{ model, effort }`): 구현 게이트 리뷰 레그 — Codex `role = review-consult`이고
+  영수증 ID가 spec·plan 리뷰가 아닌 것, `codex_children` 중 `agent_path`가 구현 리뷰를 뜻하는
+  것, Claude `advisor` 계열 하위 에이전트.
+- `observed`: `usage_segments`·`usage_legs`·`codex_children` 중 하나라도 있으면 참.
+
+**설정** — 근거(`basis`)는 아래 층에서 위에서부터 처음 값이 있는 것이다.
+
 - `leaf_setting`(일반 작업만): `{ mode: 'auto'|'fixed'|'direct'|'default'|'unknown', model, effort, runtime, basis }`.
-- `reviewer_setting`: `{ model, effort, basis }` 또는 모름.
-
-근거(`basis`)는 위에서부터 처음 값이 있는 층이다.
+- `reviewer_setting`: `{ model, effort, basis }` 또는 모름(설정 보기의 하위 줄은 실제 리뷰어로
+  나누므로 이 값은 응답에만 싣는다).
 
 1. `recorded` — attempt의 `exec_profile`(§6). 키가 `null`이면 그 설정은 `default`(설정 없음,
    하네스 기본값)다.
@@ -175,24 +206,28 @@ scope:
   `opus · high → 리프 고정 sonnet`, `opus · high → 리프 설정 모름`. 프리셋 이름은 그룹의
   `aliases`(이름별 건수, 프리셋 없음은 `프리셋 기록 없음`)로만 싣는다 — 프리셋 이름이 다르고
   설정이 같으면 한 그룹이다.
-- `orchestration`: `orchestrator`.
-- `impl_actor`: 실제 실행자의 **모델 계열**. 위임은 카탈로그 정규화 모델(`gpt-5.6-sol` ≡
-  `sol`), 영수증 `main`은 `직접 구현`, 유닛 실행자가 엇갈리면 `여러 리프`(조합과 무관하게 한
-  그룹, 유닛별 실행자는 행의 `parts`), 영수증이 없으면 `리프 기록 없음`. 강도는 그룹 키가
-  아니라 하위 내역이다. **착지한 행만** 그룹·요약에 넣는다(실행 영수증이 push 직전에만
-  남아 미착지 행의 실행자는 모른다). 응답에 뺀 수를 싣는다.
-- `reviewer`: `reviewer_setting`. 이름 예: `codex · xhigh`, `리뷰어 기본값`, `리뷰어 모름`.
-  구현 리뷰 영수증의 접두어는 쓰지 않는다(§2, `self@` 덮어쓰기).
+- `orchestration`: `executed.orchestrator`.
+- `impl_actor`: `executed.leaves`의 **모델**. 리프 모델이 하나면 그 모델(예: `opus`,
+  `sonnet`, `sol`), 둘 이상이면 auto가 고른 것으로 보고 리프 런타임으로 묶는다 — 모두
+  Claude면 `claude auto`, 모두 Codex면 `codex auto`, 섞이면 `모든 런타임 auto`(구성은 행의
+  `leaves`). 관측은 있는데 리프가 없으면 `직접 구현`, 관측이 없으면 `관측 기록 없음`. 강도는
+  그룹 키가 아니라 하위 내역이다. 결과와 무관하게 모든 행을 넣는다(실패한 세션도 리프 레그가
+  남는다). `실행 영수증`(`exec_receipt`)은 이 축에 쓰지 않는다.
+- `reviewer`: `executed.reviewers`의 모델·effort(예: `codex · xhigh` — `gpt-6.1-sol`은
+  카탈로그 이름으로). 둘 이상이면 `여러 리뷰어`, 관측은 있는데 구현 리뷰 레그가 없으면
+  `외부 리뷰 없음`(자체 리뷰였거나 리뷰 전에 끝남), 관측이 없으면 `관측 기록 없음`. 구현 리뷰
+  영수증의 접두어는 쓰지 않는다(§2, `self@` 덮어쓰기).
+- `setting` 보기의 하위 줄도 `reviewer` 보기와 같은 실제 리뷰어 키로 나눈다.
 
 ### 5.3 용어
 
 | 지금 | 바뀐 이름 |
 | --- | --- |
 | `main` | `직접 구현` |
-| 실행자 `미기록` | `리프 기록 없음` |
-| `혼합 n종`·`<모델>/혼합` | `여러 리프` |
-| 오케스트레이션 `미기록` | `기록 없음` |
-| `미대조` 배지 | 없음 — `리프 설정 모름`·`리뷰어 모름` 이름과 점선 칩 |
+| 실행자 `미기록` | 없음 — 실제 실행 레그로 판정하고, 기록이 정말 없으면 `관측 기록 없음` |
+| `혼합 n종`·`<모델>/혼합` | `claude auto`·`codex auto`·`모든 런타임 auto` |
+| 오케스트레이션 `미기록` | `관측 기록 없음` |
+| `미대조` 배지 | 없음 — `리프 설정 모름` 이름과 점선 칩 |
 
 ### 5.4 집계
 
@@ -201,19 +236,18 @@ scope:
   `cost_usd`·`tokens`의 `{ mean, median, sample, total, partial_count }`)를 그대로 갖고,
   `review_rounds_mean`(대표 attempt의 `impl_review_stats.round` 평균), 쓰인 기간
   `first_finished_at`·`last_finished_at`, 실제 리프 분포 `actual_leaves`(§5.2 `impl_actor`
-  이름별 건수, 건수 내림)를 더한다. `설정` 보기의 이름 아래 보조 줄은 프리셋 이름 건수와
+  이름별 건수, 건수 내림), 관측 없는 행 수 `unobserved_count`를 더한다. `설정` 보기의 이름 아래 보조 줄은 프리셋 이름 건수와
   실제 리프 분포(예: `실제 리프 sol 11 · opus 1`)를 함께 적는다.
-- 하위 내역 `children`: `setting`은 리뷰어별(둘 이상일 때), `impl_actor`는 강도별과 리프
-  모드별, `orchestration`·`reviewer`는 설정별. 각 항목은 같은 집계 필드다.
+- 하위 내역 `children`: `setting`은 실제 리뷰어별(둘 이상일 때), `impl_actor`는 강도별과
+  리프 모드별(auto 묶음은 리프 모델 구성별), `orchestration`·`reviewer`는 설정별. 각 항목은
+  같은 집계 필드다.
 - 문제 판정 기준선은 지금처럼 필터를 통과한 행 전체(= 선택한 작업 종류)에서 잡는다.
-  `impl_actor`의 착지 행 부분집합도 같은 판정을 쓴다.
 - 평균이 머리값이고 중앙값은 보조다(선행 스펙 결정 유지).
 
 ### 5.5 견줄 단위와 최고 표시
 
 - 견줄 단위: `setting` 보기는 하위 줄이 있으면 하위 줄, 없으면 그룹. 다른 보기는 그룹.
-- 자격: `n ≥ 5`, 착지율은 판정 `≥ 3`, 설정·리뷰어가 `unknown`이 아님(`impl_actor`의
-  `리프 기록 없음`도 제외).
+- 자격: `n ≥ 5`, 착지율은 판정 `≥ 3`, `리프 설정 모름`·`관측 기록 없음`이 아님.
 - 서버가 단위마다 `best: string[]`(`landing`·`problem`·`duration`·`cost`)와 `small_sample`,
   `eligible`을 싣는다. 찾은 차이 문장은 클라이언트가 이 값으로 만든다.
 
@@ -231,25 +265,37 @@ dispatch 지점에서 `exec_profile`을 durable 필드로 더한다.
 - 재개: 이전 설정을 잇는 재개(`use_prior`)는 `prior.exec_profile`을 승계하고, 지금 설정을
   고른 실행은 새로 기록한다(`exec_preset`과 같은 규칙).
 - `queue-store.js` attempt typedef에 필드를 더하고, 없는 과거 기록은 `null`로 읽는다.
-- UI 소유 관측값이며 workflow metadata·영수증·게이트 입력이 아니다. 하네스가 실제로
-  고른 리프는 지금처럼 실행 영수증이 말한다.
+- UI 소유 관측값이며 workflow metadata·영수증·게이트 입력이 아니다. 실제로 돈 리프·리뷰어는
+  §5.1의 실행 레그가 말한다.
 
 결정: kv 키 이름은 `exec-enums.js`의 기존 registry(`QUICK_FIX_KV_KEYS` 등)에서 가져오고
 새로 적지 않는다 — 계약 키의 정의자는 dotfiles다(ADR UI-jlov).
+
+### 6.2 실행 레그 누락 막기
+
+- 대화형(tmux) attempt도 끝날 때(성공·실패·중지·파킹) 그 세션의 대화 파일(Claude는
+  `~/.claude/projects/<cwd 슬러그>/<session_id>.jsonl`, Codex는 그 스레드 rollout)을
+  기존 세션 관측 fold(`session-observation.js`)로 읽어 `usage_segments`·`usage_legs`·
+  `codex_children`을 headless attempt와 같은 모양으로 남긴다. 사용량 영수증 파일 수집은
+  지금처럼 함께 돈다.
+- 이미 끝난 attempt 중 관측이 비었고 `session_id`의 대화 파일이 남아 있는 것은 서버가 한 번
+  보충한다(기존 종단 영수증 복구처럼 워크스페이스당 한 번에 몇 건씩, 결과를 durable하게
+  쓰고 다시 읽지 않는다). 파일이 없으면 건너뛰고 그 attempt는 `관측 기록 없음`으로 남는다.
+- 종단 attempt가 관측 없이 끝나면 그 bead 타임라인에 `observation_missing` 이벤트를 한 줄
+  남겨(원인: 대화 파일 없음·읽기 실패) 누락이 조용히 쌓이지 않게 한다.
 
 ## 7. 프로토콜
 
 - op은 그대로 `get-compare` → `compare-snapshot`.
 - 요청: `group_by`는 `setting`(기본)·`orchestration`·`impl_actor`·`reviewer`, `preset`은
   `setting`으로 읽는다. `routes`는 작업 종류가 정한다. 나머지 필드는 그대로.
-- 응답: `{ summary, groups, rows, workspaces, warnings, criteria, scope }`.
-  - `rows[]`에 `orchestrator`·`leaf_setting`·`reviewer_setting`·`leaf`(`{ family, label,
-    effort, parts? }`)를 더하고, `impl_actor.label`·`composition`은 §5.3 용어를 쓴다.
-    `preset_candidates`는 없앤다.
+- 응답: `{ summary, groups, rows, workspaces, warnings, criteria }`.
+  - `rows[]`에 `executed`(`{ orchestrator, leaves, reviewers, observed }`)·`leaf_setting`·
+    `reviewer_setting`를 더하고, `composition`은 실제 실행으로 짓는다(예: `opus · high →
+    sonnet · high`, `opus · high → claude auto`). `impl_actor`·`preset_candidates`는 없앤다.
   - `groups[]`는 §5.2~5.5 형태: `key`·`name`·`aliases`·집계·`children`·`best`·
-    `small_sample`·`eligible`·`inferred_count`(근거가 `preset_current`인 행 수). `badge`는
+    `small_sample`·`eligible`·`inferred_count`(설정 근거가 `preset_current`인 행 수). `badge`는
     없앤다.
-  - `scope`: `{ landed_only: boolean, excluded_not_landed: number }`.
 - `app/protocol.md`의 `get-compare` 절을 이 형태로 다시 쓴다.
 
 ## 8. 오류 처리
@@ -260,26 +306,41 @@ dispatch 지점에서 `exec_profile`을 durable 필드로 더한다.
 
 ## 9. 테스트
 
-- `compare-projection.test.js`: 같은 오케스트레이터·리프 설정에 리뷰어만 다른 두 프리셋이
-  한 `setting` 그룹이 되고 리뷰어 하위 줄 둘을 갖는다; quick fix `setting` 키는 오케스트레이터만
-  본다; 근거 층 순서(`recorded` > `pinned` > `preset_current` > `unknown`)와 `recorded`의
-  `null` → `default`; 프리셋이 키를 담지 않으면 `preset_current`가 값을 주지 않는다; 리프 모드
-  다섯(런타임만 있고 모델이 `null`이면 `auto`); `actual_leaves`와 `first/last_finished_at`; `impl_actor`가 모델 계열로 묶고(`gpt-5.6-sol` ≡ `sol`) 강도는 하위 내역이다; 엇갈린
-  유닛은 조합과 무관하게 `여러 리프` 한 그룹이다; `impl_actor`가 착지 행만 넣고
-  `excluded_not_landed`를 싣는다; `reviewer`가 영수증 접두어가 아니라 설정으로 묶는다;
-  `review_rounds_mean`; 견줄 단위·자격(`n ≥ 5`, 모름 제외)·동률이면 `best` 없음;
-  `small_sample`; `preset` 별칭; §5.3 이름.
+- `compare-projection.test.js`:
+  - 실제 실행: Claude `impl-high` 레그 → 리프 `opus · high`, Codex `role = implementation` 레그와
+    `codex_children` 구현 경로 → Codex 리프, `codex-runner`·`general-purpose` 레그는 리프 아님;
+    리뷰 레그(`review-consult`, spec 리뷰 영수증 제외, `codex_children` 구현 리뷰 경로); 관측
+    없음 → `관측 기록 없음`; 실패한 attempt도 리프 레그로 묶인다.
+  - `impl_actor`: 단일 모델(`gpt-5.6-sol` ≡ `sol`), 여러 모델 → `claude auto`·`codex auto`·
+    `모든 런타임 auto`, 리프 없음 → `직접 구현`; 강도·구성 하위 내역.
+  - `reviewer`·`setting` 하위 줄이 실제 리뷰어로 나뉘고 영수증 접두어(`self@`)를 쓰지 않는다;
+    여러 리뷰어·외부 리뷰 없음.
+  - 같은 오케스트레이터·리프 설정에 리뷰어만 다른 두 프리셋이 한 `setting` 그룹이 된다; quick
+    fix `setting` 키는 오케스트레이터만 본다.
+  - 설정 근거 층 순서(`recorded` > `pinned` > `preset_current` > `unknown`)와 `recorded`의 `null` →
+    `default`; 프리셋이 키를 담지 않으면 `preset_current`가 값을 주지 않는다; 리프 모드 다섯(런타임만
+    있고 모델이 `null`이면 `auto`).
+  - 기준선: 같은 attempt 집합에서 `routes`를 일반 작업·quick fix로 바꾸면 시간·비용 초과 판정
+    기준선(`criteria.baselines`)이 각 종류의 중앙값이 된다.
+  - 문제 막대 재료: 한 세션이 여러 문제 키에 걸려도 `problem_count`는 한 번이고 키별 건수는 각각
+    센다(§4.2 막대 규칙의 입력).
+  - `actual_leaves`·`unobserved_count`·`first/last_finished_at`·`review_rounds_mean`; 견줄 단위·자격
+    (`n ≥ 5`, 모름·관측 없음 제외)·동률이면 `best` 없음; `small_sample`; `preset` 별칭; §5.3 이름.
 - `compare-handlers.test.js`: `group_by` 정규화(`reviewer`·`preset` 별칭·잘못된 값).
-- `scheduler.test.js`·`queue-store.test.js`: dispatch가 Bead 핀 > quick fix kv > 일반 kv 순으로
-  `exec_profile`을 기록한다; quick fix의 빈 `quick_fix_impl_review_model`이 일반 키로 내려간다;
-  kv 읽기 실패면 `null`이고 dispatch는 계속된다; `use_prior` 재개가 승계한다; 과거 기록이
-  `null`로 읽힌다.
+- `scheduler.test.js`·`queue-store.test.js`:
+  - dispatch가 Bead 핀 > quick fix kv > 일반 kv 순으로 `exec_profile`을 기록한다; quick fix의 빈
+    `quick_fix_impl_review_model`이 일반 키로 내려가고 `impl_dispatch`는 일반 kv를 보지 않는다;
+    kv 읽기 실패면 `null`이고 dispatch는 계속된다; `use_prior` 재개가 승계한다; 과거 기록이
+    `null`로 읽힌다.
+  - 대화형 attempt 종료가 대화 파일 fold로 `usage_segments`·`usage_legs`를 남긴다(성공·실패·중지
+    각각); 관측 빈 종단 attempt 보충이 파일이 있으면 채우고 없으면 건너뛰며 한 번만 돈다; 관측
+    없이 끝나면 `observation_missing` 이벤트가 한 줄 남는다.
 - `app/views/compare/index.test.js`: 작업 종류 전환이 `routes`로 재요청하고 선택을 저장한다;
   quick fix에는 `설정`·`리뷰어` 보기만 있다; 표의 최고 칸·`표본 적음`·점선 칩; 열 머리 정렬;
-  리뷰어 하위 줄과 부모 대비 차이; `구현 리프` 보기의 `리프를 고른 방식` 열과 착지율 열 부재;
-  찾은 차이 규칙(두 단위 비교·기간 겹침 주의·종류 절반·보기별 단위 하나 안내·추정 안내·작업
-  차이 주의·빈 상태); 용어 설명; 세션 펼침
-  유지와 딥링크.
+  리뷰어 하위 줄과 부모 대비 차이; `구현 리프` 보기의 착지율 열과 `리프를 고른 방식` 열; 문제
+  막대 길이가 `problem_rate`와 같고 조각이 켜진 모든 문제 키를 담는다(여러 키에 걸린 세션 포함);
+  찾은 차이 규칙(두 단위 비교·기간 겹침 주의·종류 절반·평균이 중앙값 2배 초과 주의·보기별 단위
+  하나 안내·추정 안내·관측 없음 건수·작업 차이 주의·빈 상태); 용어 설명; 세션 펼침 유지와 딥링크.
 - 모바일은 Pre-Handoff에서 390px 캡처(npx 캐시 Playwright)로 §4.3 배치와 가로 넘침 없음을
   확인한다. 프론트 편집 뒤 prettier → `npm run build` 순서.
 
@@ -288,11 +349,11 @@ dispatch 지점에서 `exec_profile`을 durable 필드로 더한다.
 - 화면 구현은 `frontend-design` 지침을 `docs/design-system.md` 안에서 따른다: 새 조작은
   부품(`.op-btn`·`.ui-select`·`.ui-chip`)으로만, 역할 규칙은 색·배치만, 원시 값 대신 토큰.
 - `app/views/compare/index.js`(1108줄)는 표·찾은 차이·용어를 별도 모듈로 나눠도 된다
-  (예: `table.js`, `findings.js`, `labels.js`). 실험(bench) 관련 코드는 이미 없다.
+  (예: `table.js`, `findings.js`, `labels.js`).
 
 ## 구현 unit 후보
 
-1. 기록 — `server/worker/scheduler.js`·`server/worker/queue-store.js`(§6).
+1. 기록 — `server/worker/scheduler.js`·`server/worker/queue-store.js`·`server/worker/session-observation.js`(§6).
 2. 투영 — `server/worker/compare-projection.js`·`server/ws/compare-handlers.js`·`app/protocol.md`(§5·§7).
 3. 화면 — `app/views/compare/`·`app/styles.css`(§4).
 
@@ -301,17 +362,19 @@ dispatch 지점에서 `exec_profile`을 durable 필드로 더한다.
 - 전제: ADR UI-jlov — 계약 kv 키는 dotfiles가 정의하고 beads-ui는 코드 registry로 복제한 subset만 읽으며 부재는 fail-quiet 표시 생략이다.
 - 전제: ADR UI-u6ud-9 — 비용은 검증된 직접 사용량 합이고 불완전한 범위는 부분 집계로 표시한다.
 - 전제: ADR UI-u6ud — 이슈 제목·상태·`impl_review_stats`는 워크스페이스 스냅샷 투영에서 읽는다.
-- **비교의 설정·리뷰어 축은 dispatch가 attempt에 기록한 실행 당시 프로필(`exec_profile`)이고,
-  기록이 없으면 Bead 핀 → 프리셋의 지금 설정 순으로 추정하며, 실제 리프 축은 착지한 세션만
-  견준다** — 되돌리기 어려움: 성립(attempt 기록 형식이 늘고 scheduler·queue-store·
-  compare-projection·`app/views/compare/`가 함께 움직이며, 쌓인 기록은 지울 수 없다). 맥락 없이
-  놀라움: 성립(리프 보기에 착지율이 없는 이유, 리뷰 영수증의 리뷰어를 쓰지 않는 이유, 같은
-  프리셋 이름이 시점에 따라 다른 그룹에 드는 이유). 실제 트레이드오프: 성립(정확한 기록 vs
-  dispatch 경로 확장; 착지 세션만 비교 vs 실패 포함 비교의 편향). 새 주제: 가장 가까운
-  UI-2mvi는 프리셋 키 집합과 설정 창 소비자(`exec-enums.js`·`exec-preset-handlers.js`·
-  `app/views/settings-dialog/`)를 다루고 이 결정의 소비자와 겹치지 않는다.
-  `summary`: "비교의 설정·리뷰어 축은 dispatch가 기록한 exec_profile이고 기록이 없으면 Bead 핀 → 프리셋의 지금 설정으로 추정하며 실제 리프 축은 착지한 세션만 견준다"
-  → ADR
+- **비교의 모델·effort 축(오케스트레이터·구현 리프·리뷰어)은 attempt가 남긴 실제 실행 레그
+  (`usage_legs`·`codex_children`·`usage_segments`)이고 대화형 attempt도 종료 때 같은 레그를
+  남기며, 자동/고정 같은 설정 축만 dispatch가 기록한 `exec_profile` → Bead 핀 → 프리셋의 지금
+  설정 순으로 읽는다** — 되돌리기 어려움: 성립(attempt 기록 형식이 늘고 scheduler의 dispatch·
+  대화형 종료, queue-store attempt 기록, session-observation fold, compare-projection,
+  `app/views/compare/`가 함께 움직이며, 쌓인 기록은 지울 수 없다). 맥락 없이 놀라움: 성립(실행
+  영수증·리뷰 영수증이 아니라 사용량 레그가 실행자의 정본인 이유, 여러 리프가 `auto` 묶음이 되는
+  이유, 같은 프리셋 이름이 시점에 따라 다른 그룹에 드는 이유). 실제 트레이드오프: 성립(정확한
+  기록 vs dispatch·종료 경로 확장; 레그 분류 규칙의 유지 비용). UI-2mvi가 승계한 "dispatch가
+  attempt에 적용 프리셋을 기록한다"(`dispatchPreset`·attempt 기록) 조항과 소비자를 공유하므로
+  그 ADR을 다시 쓴다. 뒤집는 조항은 없고 기록 필드와 비교 읽기 규칙을 더한다.
+  `summary`: "비교의 오케스트레이터·구현 리프·리뷰어 모델·effort는 attempt가 남긴 실제 실행 레그로 읽고 대화형 attempt도 종료 때 같은 레그를 남기며, 자동/고정 같은 설정만 dispatch가 기록한 exec_profile → Bead 핀 → 프리셋의 지금 설정 순으로 읽는다 — 나머지 조항은 UI-2mvi 그대로다"
+  → ADR, supersede UI-2mvi
 - 작업 종류 분리와 종류별 기준선, 리뷰어를 뺀 설정 묶기와 리뷰어 하위 줄, 비교 표 배치,
   `n ≥ 5` 표본 규칙, 용어 변경, 찾은 차이 문장 — 표시 정의이며 언제든 되돌릴 수 있다 → ADR 아님
 
