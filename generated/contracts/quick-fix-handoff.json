@@ -74,7 +74,7 @@
           ";"
         ],
         "id_regex_source": "checks.predecessor_edge.id_regex",
-        "candidate": "first_id_not_followed_by_slash",
+        "candidate": "first_resolved_id_not_followed_by_slash",
         "excludes": "self_id",
         "accepted_edges": [
           {
