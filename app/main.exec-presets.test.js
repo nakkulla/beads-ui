@@ -272,6 +272,12 @@ describe('main exec-preset subscription lifecycle', () => {
     const opened = CLIENT.sent
       .slice(before)
       .map((/** @type {{ type: string }} */ message) => message.type);
+    expect(
+      CLIENT.sent.find(
+        (/** @type {{ type: string }} */ message) =>
+          message.type === 'subscribe-monitor-pipeline'
+      ).payload.passive
+    ).toBe(true);
     const after_open = CLIENT.sent.length;
     /** @type {HTMLButtonElement} */ (
       document.querySelector('.settings-dialog__close')
@@ -285,5 +291,61 @@ describe('main exec-preset subscription lifecycle', () => {
         .map((/** @type {{ type: string }} */ message) => message.type)
         .includes('unsubscribe-monitor-pipeline')
     ]).toEqual([true, true]);
+  });
+
+  test.each(['monitor', 'worker?issue=UI-1'])(
+    'promotes the passive settings subscription when navigating to %s',
+    async (route) => {
+      bootstrap(setupShell());
+      await settle();
+      /** @type {HTMLButtonElement} */ (
+        document.getElementById('display-settings-btn')
+      ).click();
+      await settle();
+
+      window.location.hash = `#/${route}`;
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      await settle();
+
+      const subscriptions = CLIENT.sent.filter(
+        (/** @type {{ type: string }} */ message) =>
+          message.type === 'subscribe-monitor-pipeline'
+      );
+      expect(
+        subscriptions.map((/** @type {any} */ m) => m.payload.passive)
+      ).toEqual([true, undefined]);
+
+      window.location.hash = '#/worker';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      await settle();
+
+      expect(
+        CLIENT.sent.filter(
+          (/** @type {{ type: string }} */ message) =>
+            message.type === 'subscribe-monitor-pipeline'
+        )
+      ).toHaveLength(2);
+    }
+  );
+
+  test('restores a passive settings subscription after reconnect', async () => {
+    bootstrap(setupShell());
+    await settle();
+    /** @type {HTMLButtonElement} */ (
+      document.getElementById('display-settings-btn')
+    ).click();
+    await settle();
+    CLIENT.sent.length = 0;
+
+    CLIENT.emitConnection('reconnecting');
+    CLIENT.emitConnection('open');
+    await settle();
+
+    const subscriptions = CLIENT.sent.filter(
+      (/** @type {{ type: string }} */ message) =>
+        message.type === 'subscribe-monitor-pipeline'
+    );
+    expect(subscriptions).toHaveLength(1);
+    expect(subscriptions[0].payload.passive).toBe(true);
   });
 });

@@ -1204,11 +1204,12 @@ function pushNow() {
  * pipeline array is the payload's reason to exist, so a control-state build that
  * throws must degrade the group headers, not suppress the whole push.
  *
+ * @param {Parameters<typeof buildMonitorWorkspacesState>[0]} [options]
  * @returns {Array<Record<string, unknown>>}
  */
-function safeWorkspacesState() {
+function safeWorkspacesState(options = {}) {
   try {
-    return buildMonitorWorkspacesState();
+    return buildMonitorWorkspacesState(options);
   } catch (err) {
     log('monitor: workspace state build failed: %o', err);
     return [];
@@ -1655,13 +1656,24 @@ function clientIdOf(req) {
 
 /**
  * Handle `subscribe-monitor-pipeline`. Payload is optional (`{ id }` addresses
- * the pushes; absent means the default id).
+ * the pushes; absent means the default id). `passive: true` sends cached state
+ * without starting subscription-time scans.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export function handleSubscribeMonitorPipeline(ws, req) {
   const client_id = clientIdOf(req);
+  const passive = /** @type {any} */ (req.payload)?.passive === true;
+  /** @type {Parameters<typeof buildMonitorPipeline>[0]} */
+  const options = passive
+    ? {
+        runnableFor: (key, exclude_ids, query) =>
+          runnableCache().runnablePeek(key, exclude_ids, query),
+        sessionActiveFor: (key, exclude_ids) =>
+          runnableCache().sessionActivePeek(key, exclude_ids)
+      }
+    : {};
   // Re-subscribing the same (ws, client_id) is idempotent.
   for (const sub of SUBSCRIBERS) {
     if (sub.ws === ws && sub.client_id === client_id) {
@@ -1675,18 +1687,20 @@ export function handleSubscribeMonitorPipeline(ws, req) {
   log('subscribe-monitor-pipeline %s', client_id);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
 
-  prewarmVisibleIssuePrefixes();
+  if (!passive) {
+    prewarmVisibleIssuePrefixes();
+  }
 
   let workspaces = /** @type {Array<Record<string, unknown>>} */ ([]);
   try {
-    workspaces = buildMonitorPipeline();
+    workspaces = buildMonitorPipeline(options);
   } catch (err) {
     log('monitor: initial pipeline build failed: %o', err);
   }
   try {
     const body = {
       workspaces,
-      workspaces_state: safeWorkspacesState()
+      workspaces_state: safeWorkspacesState(options)
     };
     const values = splitMonitorPipeline(body);
     const canonical = new Map(
@@ -1696,11 +1710,11 @@ export function handleSubscribeMonitorPipeline(ws, req) {
   } catch (err) {
     log('monitor: initial pipeline split failed: %o', err);
   }
-  refreshExternalPrsForVisible();
-  // One immediate fill per visible workspace (spec §4): the first tick is a
-  // whole poll interval away, and a dashboard that opens empty for 30 seconds
-  // reads as "nothing is runnable".
-  refillRunnableForVisible();
+  if (!passive) {
+    refreshExternalPrsForVisible();
+    // A dashboard needs fresh candidates before the first periodic tick.
+    refillRunnableForVisible();
+  }
 }
 
 /**

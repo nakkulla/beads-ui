@@ -927,6 +927,7 @@ export function bootstrap(root_element) {
     // --- Monitor pipeline channel lifecycle (UI-nprg) ---
     /** @type {(() => Promise<unknown>) | null} */
     let monitor_pipeline_unsub = null;
+    let monitor_pipeline_passive = false;
     let monitor_pipeline_recovering = false;
 
     /**
@@ -963,7 +964,12 @@ export function bootstrap(root_element) {
         clearMonitorPipelineChannel();
         return;
       }
-      if (monitor_pipeline_unsub) {
+      const state = store.getState();
+      const passive =
+        settings_dialog_open &&
+        state.view !== 'monitor' &&
+        state.selected_id == null;
+      if (monitor_pipeline_unsub && (!monitor_pipeline_passive || passive)) {
         return;
       }
       const recovering = monitor_pipeline_recovering;
@@ -972,8 +978,10 @@ export function bootstrap(root_element) {
           id: MONITOR_PIPELINE_CLIENT_ID
         });
       monitor_pipeline_unsub = unsubscribe;
+      monitor_pipeline_passive = passive;
       void tracked_send('subscribe-monitor-pipeline', {
-        id: MONITOR_PIPELINE_CLIENT_ID
+        id: MONITOR_PIPELINE_CLIENT_ID,
+        ...(passive ? { passive: true } : {})
       }).catch((err) => {
         log('subscribe-monitor-pipeline failed: %o', err);
         if (recovering && monitor_pipeline_unsub === unsubscribe) {
@@ -984,6 +992,7 @@ export function bootstrap(root_element) {
     }
 
     function clearMonitorPipelineChannel() {
+      monitor_pipeline_passive = false;
       monitor_pipeline_recovering = false;
       if (monitor_pipeline_unsub) {
         void monitor_pipeline_unsub().catch(() => {});
@@ -1229,6 +1238,7 @@ export function bootstrap(root_element) {
       worker_queue_unsub = null;
       worker_queue_recovering = false;
       monitor_pipeline_unsub = null;
+      monitor_pipeline_passive = false;
       monitor_pipeline_recovering = false;
       adr_unsub = null;
       worker_unsubs.clear();

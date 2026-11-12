@@ -5,6 +5,14 @@ import {
   splitMonitorPipeline
 } from '../../app/data/keyed-patch.js';
 
+const cache_reads = vi.hoisted(() => ({
+  runnableFor: vi.fn(() => []),
+  sessionActiveFor: vi.fn(() => []),
+  runnablePeek: vi.fn(() => [{ bead_id: 'A-r', title: 'Cached candidate' }]),
+  sessionActivePeek: vi.fn(() => [{ bead_id: 'A-s', title: 'Cached session' }]),
+  refresh: vi.fn()
+}));
+
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
@@ -105,8 +113,7 @@ vi.mock('../worker/runtime.js', () => ({
     // subscriber/push/demand behaviour, and a real cache would put a `bd list`
     // per repo behind every subscribe.
     runnableCache: {
-      runnableFor: () => [],
-      refresh: () => {},
+      ...cache_reads,
       /** @param {string} workspace */
       invalidate: (workspace) => {
         invalidations.push(workspace);
@@ -184,6 +191,7 @@ beforeEach(() => {
   invalidations = [];
   kv_reads = [];
   kv_answer = async () => ({ ok: true, value: {} });
+  vi.clearAllMocks();
   __resetMonitorPipelineForTest();
 });
 
@@ -193,6 +201,68 @@ afterEach(() => {
 });
 
 describe('monitor-pipeline subscription (UI-nprg)', () => {
+  test('sends cached lanes and counts for a passive subscription without starting scans', () => {
+    const ws = fakeWs();
+    const req = subscribeReq('m1');
+    req.payload.passive = true;
+
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), req);
+
+    expect(kv_reads).toEqual([]);
+    expect(external_refreshes).toEqual([]);
+    expect(cache_reads.refresh).not.toHaveBeenCalled();
+    expect(cache_reads.runnableFor).not.toHaveBeenCalled();
+    expect(cache_reads.sessionActiveFor).not.toHaveBeenCalled();
+    expect(ws.latest().workspaces[0]).toMatchObject({
+      runnable: [{ bead_id: 'A-r' }],
+      session_active: [{ bead_id: 'A-s' }]
+    });
+    expect(ws.latest().workspaces_state[0].counts).toMatchObject({
+      runnable: 1,
+      session_active: 1
+    });
+    expect(cache_reads.runnablePeek).toHaveBeenCalledWith(
+      WS_A,
+      new Set(['A-1']),
+      {
+        include_unadmitted: true
+      }
+    );
+    expect(monitorPipelineSubscriberCount()).toBe(1);
+    expect(pollDemandFor(WS_A)).toBe(1);
+  });
+
+  test('starts the existing scans when a passive subscription is promoted', () => {
+    const ws = fakeWs();
+    const req = subscribeReq('m1');
+    req.payload.passive = true;
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), req);
+
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+
+    expect(kv_reads).toEqual([WS_A]);
+    expect(external_refreshes).toEqual([WS_A]);
+    expect(cache_reads.refresh).toHaveBeenCalledWith(WS_A);
+    expect(cache_reads.runnableFor).toHaveBeenCalled();
+    expect(cache_reads.sessionActiveFor).toHaveBeenCalled();
+    expect(ws.snapshots()).toHaveLength(2);
+    expect(monitorPipelineSubscriberCount()).toBe(1);
+  });
+
+  test('keeps delivering queue refreshes to a passive subscriber', () => {
+    const ws = fakeWs();
+    const req = subscribeReq('m1');
+    req.payload.passive = true;
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), req);
+
+    snapshots[WS_A].revision = 2;
+    refresh_listener?.(WS_A);
+    vi.advanceTimersByTime(1000);
+
+    expect(ws.pushes()).toHaveLength(2);
+    expect(ws.latest().workspaces_state[0].revision).toBe(2);
+  });
+
   test('pushes an initial aggregated snapshot on subscribe', () => {
     const ws = fakeWs();
 
