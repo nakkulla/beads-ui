@@ -68,7 +68,10 @@ import {
 } from './tmux-launcher.js';
 import { createUsageStore } from './usage-store.js';
 import { createVerifier } from './verify.js';
-import { conversationVerdict } from './wait-judgment.js';
+import {
+  conversationVerdict,
+  providerWaitResumeSchedule
+} from './wait-judgment.js';
 import * as work_recovery_policy from './work-recovery-policy.js';
 
 // foreign blocker 조회의 양성 경로 seam (UI-d3i1 §12): 기본은 원 구현이고, 한
@@ -2208,6 +2211,393 @@ describe('scheduler work recovery waits', () => {
     const attempts = Object.values(env.store.snapshot(WS).attempts);
     return attempts[attempts.length - 1];
   }
+
+  describe('timed unheld provider waits', () => {
+    const HOUR = 3600_000;
+
+    afterEach(() => {
+      vi.useRealTimers();
+      __resetTimingSettingsForTest();
+    });
+
+    /** @param {Record<string, any>} [options] */
+    async function providerWaitEnv(options = {}) {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      let at = 1000;
+      const onParkedAttempt = vi.fn(async () => ({
+        session: 'not_launched',
+        reason: 'disabled'
+      }));
+      const env = recoveryEnv({
+        now: () => at,
+        directionInquiry: { onParkedAttempt },
+        ...options
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.eventsFor('S1').emit('session_id', 'provider-session');
+      const prior = await endSession(env, {
+        success: true,
+        summary: 'provider condition unchanged',
+        terminal_result: { kind: 'recovery_wait', reason: 'provider' }
+      });
+      return {
+        ...env,
+        prior,
+        onParkedAttempt,
+        /** @param {number} value */
+        setTime(value) {
+          at = value;
+        }
+      };
+    }
+
+    test('resumes a due provider wait once with its recorded session and lineage', async () => {
+      const env = await providerWaitEnv();
+      env.setTime(env.prior.finished_at + HOUR);
+
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      const child = Object.values(env.store.snapshot(WS).attempts).find(
+        (attempt) => attempt.resumed_from === env.prior.attempt_id
+      );
+      expect(child).toMatchObject({
+        auto_resume_kind: 'provider_wait',
+        continuation_choice: 'prior_attempt',
+        continuation_mode: 'session'
+      });
+      expect(child?.conversation_return).toBeNull();
+      expect(child?.account_switched_from).toBeNull();
+      expect(env.runner.settingsFor('S1').resume_session_id).toBe(
+        'provider-session'
+      );
+      expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+      expect(
+        env.timeline.append.mock.calls.filter(
+          ([entry]) => entry.summary === 'provider 대기 자동 재개 · 1/2'
+        )
+      ).toHaveLength(1);
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
+
+    test('opens the provider wait resume prompt with the elapsed wait', async () => {
+      const env = await providerWaitEnv();
+      env.setTime(env.prior.finished_at + HOUR);
+
+      await env.scheduler.reconcile(WS);
+
+      const prompt = env.runner.spawnedBead('S1').prompt;
+      expect(prompt).toContain(
+        '이전 무인 세션이 대기 · recovery:provider로 끝났고 예약된 대기 시간이 지났다'
+      );
+      expect(prompt).toContain('공급자·사용량 조건이 풀렸는지 먼저 확인하라');
+      expect(prompt).toContain(
+        '여전히 막혀 있으면 같은 결과 줄 대기 · recovery:provider로 끝내라'
+      );
+      expect(prompt).not.toContain('attempt가 실패로 남았다');
+    });
+
+    test('records one provider wait resume line without a Discord start notification', async () => {
+      const notify = {
+        attemptStarted: vi.fn(),
+        attemptFailed: vi.fn(),
+        prWaitEntered: vi.fn()
+      };
+      const env = await providerWaitEnv({ notify });
+      notify.attemptStarted.mockClear();
+      env.setTime(env.prior.finished_at + HOUR);
+
+      await env.scheduler.reconcile(WS);
+
+      const child = Object.values(env.store.snapshot(WS).attempts).find(
+        (attempt) => attempt.resumed_from === env.prior.attempt_id
+      );
+      const lines = env.timeline.append.mock.calls.filter(
+        ([entry]) => entry.attempt_id === child?.attempt_id
+      );
+      expect(lines).toHaveLength(1);
+      expect(lines[0][0].summary).toBe('provider 대기 자동 재개 · 1/2');
+      expect(notify.attemptStarted).not.toHaveBeenCalled();
+    });
+
+    test('arms only the earliest future provider wait per workspace', async () => {
+      const env = await providerWaitEnv();
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          ...env.prior,
+          attempt_id: 'later',
+          bead_id: 'S2',
+          finished_at: env.prior.finished_at + HOUR
+        }
+      });
+      await env.scheduler.reconcile(WS);
+      await env.scheduler.reconcile(WS);
+
+      expect(vi.getTimerCount()).toBe(1);
+      env.setTime(env.prior.finished_at + HOUR);
+      await vi.advanceTimersByTimeAsync(HOUR);
+      expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+    });
+
+    test('preserves a provider wait when its route changed before the timed resume', async () => {
+      const config = {
+        S1: {
+          status: 'open',
+          model: 'opus',
+          effort: 'high',
+          route: 'spec_backed'
+        }
+      };
+      const env = await providerWaitEnv({ config });
+      config.S1.route = 'quick_fix';
+      env.setTime(env.prior.finished_at + HOUR);
+      const before = env.store.snapshot(WS).attempts[env.prior.attempt_id];
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.store.snapshot(WS).attempts[env.prior.attempt_id]).toEqual(
+        before
+      );
+      expect(env.runner.spawnOrder).toEqual(['S1']);
+    });
+
+    test('leaves a provider wait to the live conversation that owns its Bead', async () => {
+      const env = await providerWaitEnv();
+      env.setTime(env.prior.finished_at + HOUR);
+      env.store.recordInteractiveSession(WS, {
+        bead_id: 'S1',
+        kind: 'inquiry',
+        provider: 'claude',
+        attempt_id: env.prior.attempt_id,
+        session_id: 'provider-session',
+        mode: 'fork',
+        source: 'attempt',
+        state: 'live',
+        pane_id: '%1',
+        tmux_session: 'inquiry',
+        tmux_window: 'S1',
+        launched_at: env.prior.finished_at,
+        conversation: { stop: 'recovery:provider' }
+      });
+
+      const result = await env.scheduler.resume(WS, env.prior.attempt_id, {
+        continuation: 'prior_attempt',
+        provider_auto_resume: true,
+        auto_resume_kind: 'provider_wait'
+      });
+
+      expect(result).toMatchObject({ ok: false, reason: 'bead_running' });
+      expect(env.runner.spawnOrder).toEqual(['S1']);
+    });
+
+    test('arms a future wait and resumes only when its time arrives', async () => {
+      const env = await providerWaitEnv();
+      const before = env.store.snapshot(WS).attempts[env.prior.attempt_id];
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.runner.spawnOrder).toEqual(['S1']);
+      expect(env.store.snapshot(WS).attempts[env.prior.attempt_id]).toEqual(
+        before
+      );
+      env.setTime(env.prior.finished_at + HOUR);
+      await vi.advanceTimersByTimeAsync(HOUR);
+      expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+    });
+
+    test('resumes a persisted due provider wait after scheduler restart', async () => {
+      const env = await providerWaitEnv();
+      await env.scheduler.reconcile(WS);
+      vi.clearAllTimers();
+      const store = createQueueStore();
+      store.load(WS);
+      store.setAutoAdvance(WS, true);
+      const restarted = recoveryEnv({
+        store,
+        now: () => env.prior.finished_at + HOUR
+      });
+
+      await restarted.scheduler.reconcile(WS);
+      await restarted.scheduler.reconcile(WS);
+
+      expect(restarted.runner.spawnOrder).toEqual(['S1']);
+      expect(Object.values(store.snapshot(WS).attempts)).toContainEqual(
+        expect.objectContaining({
+          resumed_from: env.prior.attempt_id,
+          auto_resume_kind: 'provider_wait'
+        })
+      );
+    });
+
+    test('rearms a future provider wait after scheduler restart', async () => {
+      const env = await providerWaitEnv();
+      await env.scheduler.reconcile(WS);
+      vi.clearAllTimers();
+      const clock = { at: env.prior.finished_at };
+      const future = recoveryEnv({ store: env.store, now: () => clock.at });
+      await future.scheduler.reconcile(WS);
+      expect(future.runner.spawnOrder).toEqual([]);
+      clock.at += HOUR;
+      await vi.advanceTimersByTimeAsync(HOUR);
+
+      expect(future.runner.spawnOrder).toEqual(['S1']);
+    });
+
+    test.each(['worktree', 'session', 'provider_gate'])(
+      'preserves the provider wait and count when %s refuses its resume',
+      async (refusal) => {
+        const env = await providerWaitEnv();
+        if (refusal === 'worktree') {
+          env.worktree.exists.mockReturnValue(false);
+        }
+        if (refusal === 'session') {
+          env.store.updateAttempt(WS, {
+            attempt_id: env.prior.attempt_id,
+            patch: { session_id: null }
+          });
+        }
+        if (refusal === 'provider_gate') {
+          env.store.appendAttempt(WS, {
+            expected_revision: env.store.snapshot(WS).revision,
+            attempt: { attempt_id: 'other-held', bead_id: 'other' }
+          });
+          env.store.holdProviderAttempt(WS, {
+            attempt_id: 'other-held',
+            runner: 'claude',
+            target: {
+              kind: 'outage',
+              model: 'opus',
+              account: null,
+              detail: 'overloaded_529',
+              last_error: 'overloaded',
+              resets_at: null,
+              rearm_count: 0,
+              attempt_ids: []
+            },
+            patch: { status: 'paused', cause: 'provider_outage:overloaded_529' }
+          });
+        }
+        env.setTime(env.prior.finished_at + HOUR);
+        const before = env.store.snapshot(WS).attempts[env.prior.attempt_id];
+
+        await env.scheduler.reconcile(WS);
+
+        expect(env.store.snapshot(WS).attempts[env.prior.attempt_id]).toEqual(
+          before
+        );
+        expect(env.runner.spawnOrder).toEqual(['S1']);
+      }
+    );
+
+    test('preserves a due wait while automatic advance is off and resumes when enabled', async () => {
+      const env = await providerWaitEnv();
+      env.setTime(env.prior.finished_at + HOUR);
+      env.store.setAutoAdvance(WS, false);
+      const before = env.store.snapshot(WS).attempts[env.prior.attempt_id];
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.runner.spawnOrder).toEqual(['S1']);
+      expect(env.store.snapshot(WS).attempts[env.prior.attempt_id]).toEqual(
+        before
+      );
+      env.store.setAutoAdvance(WS, true);
+      await env.scheduler.reconcile(WS);
+      expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+    });
+
+    test.each([0, HOUR])(
+      'leaves a provider wait without resume or timer under an unready policy at %i',
+      async (elapsed) => {
+        const readiness = { ready: true };
+        const env = await providerWaitEnv({
+          workRecoveryPolicy: {
+            ...work_recovery_policy,
+            workRecoveryReady: () => readiness.ready
+          }
+        });
+        readiness.ready = false;
+        env.setTime(env.prior.finished_at + elapsed);
+        await env.scheduler.reconcile(WS);
+
+        expect(env.runner.spawnOrder).toEqual(['S1']);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    );
+
+    test('escalates two timed provider repeats and launches the existing conversation', async () => {
+      const env = await providerWaitEnv();
+      let prior = env.prior;
+      for (const delay of [HOUR, 5 * HOUR]) {
+        env.setTime(prior.finished_at + delay);
+        await env.scheduler.reconcile(WS);
+        env.runner.eventsFor('S1').emit('session_id', 'provider-session');
+        prior = await endSession(env, {
+          success: true,
+          summary: 'provider condition unchanged',
+          terminal_result: { kind: 'recovery_wait', reason: 'provider' }
+        });
+      }
+
+      await env.scheduler.reconcile(WS);
+
+      expect(prior.cause_detail.recovery).toMatchObject({
+        reason: 'no_progress',
+        classification: 'two_no_progress_repeats',
+        no_progress: { count: 2 }
+      });
+      expect(env.onParkedAttempt).toHaveBeenCalledOnce();
+      expect(env.runner.spawnOrder).toHaveLength(3);
+      expect(
+        env.timeline.append.mock.calls.filter(
+          ([entry]) => entry.summary === 'provider 대기 자동 재개 · 2/2'
+        )
+      ).toHaveLength(1);
+    });
+
+    test('returns a changed provider progress key to the first rung', async () => {
+      const env = await providerWaitEnv();
+      env.setTime(env.prior.finished_at + HOUR);
+      await env.scheduler.reconcile(WS);
+      env.runner.eventsFor('S1').emit('session_id', 'provider-session');
+
+      const next = await endSession(env, {
+        success: true,
+        summary: 'new progress key',
+        terminal_result: { kind: 'recovery_wait', reason: 'provider' }
+      });
+
+      expect(next.cause_detail.recovery.no_progress).toBeUndefined();
+      expect(providerWaitResumeSchedule(next)).toMatchObject({
+        at: next.finished_at + HOUR,
+        step: 0
+      });
+    });
+
+    test('derives a one-hour exit for a Codex recovery ending without a hold', async () => {
+      const env = await providerWaitEnv({
+        config: {
+          S1: { status: 'open', runner: 'codex', model: 'sol', effort: 'high' }
+        }
+      });
+
+      const schedule = providerWaitResumeSchedule(env.prior);
+
+      expect(env.prior).toMatchObject({
+        runner: 'codex',
+        status: 'waiting',
+        cause: 'session_recovery_wait',
+        cause_detail: { recovery: { reason: 'provider' } }
+      });
+      expect(env.store.snapshot(WS).provider_hold_members).toEqual({});
+      expect(schedule).toMatchObject({
+        at: env.prior.finished_at + HOUR,
+        step: 0
+      });
+    });
+  });
 
   test.each([
     [
@@ -8209,6 +8599,25 @@ describe('scheduler provider hold and recovery', () => {
     });
     expect(queue.provider_hold.codex.targets).toMatchObject([
       { account: 'codex-two', model: 'astra', attempt_ids: ['waiting-leaf'] }
+    ]);
+  });
+
+  test('lets a same-pass leaf hold win over a due provider wait resume', async () => {
+    const env = waitingLeafRow();
+    env.store.setAutoAdvance(WS, true);
+    env.store.updateAttempt(WS, {
+      attempt_id: 'waiting-leaf',
+      patch: { finished_at: -3600_000 }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(
+      env.store.snapshot(WS).provider_hold_members['waiting-leaf']
+    ).toBeDefined();
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([
+      'waiting-leaf'
     ]);
   });
 

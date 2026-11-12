@@ -68,6 +68,10 @@ export const TIMING_GROUPS = [
       },
       { key: 'provider_outage_backoff_seconds', label: '공급자 장애 재확인' },
       {
+        key: 'provider_wait_resume_delays_seconds',
+        label: 'provider 대기 자동 재개'
+      },
+      {
         key: 'provider_usage_unknown_reset_seconds',
         label: '한도 리셋 시각 미상 재확인'
       },

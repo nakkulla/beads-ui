@@ -14,6 +14,13 @@ const FIELDS = {
     rungs: 3,
     unit: 'minutes'
   },
+  provider_wait_resume_delays_seconds: {
+    default: [3600, 18000],
+    min: 60,
+    max: 21600,
+    rungs: 2,
+    unit: 'minutes'
+  },
   base_moved_retry_seconds: {
     default: 120,
     min: 60,
@@ -38,6 +45,7 @@ function snapshotOf(patch = {}) {
     values: {
       queue_grace_seconds: 20,
       env_retry_delays_seconds: [120, 300, 900],
+      provider_wait_resume_delays_seconds: [3600, 18000],
       base_moved_retry_seconds: 120,
       list_poll_interval_seconds: 30
     },
@@ -117,6 +125,21 @@ beforeEach(() => {
 });
 
 describe('timing section render (UI-ny0h §3.5)', () => {
+  test('draws the provider wait resume ladder in minutes', () => {
+    const { host } = mountSection(async () => ({}));
+
+    const row = host.querySelector(
+      '[data-key="provider_wait_resume_delays_seconds"]'
+    );
+
+    expect(row?.textContent).toContain('provider 대기 자동 재개');
+    expect(inputOf(host, 'provider_wait_resume_delays_seconds', 0).value).toBe(
+      '60'
+    );
+    expect(inputOf(host, 'provider_wait_resume_delays_seconds', 1).value).toBe(
+      '300'
+    );
+  });
   test('draws the note first and the groups in spec order', () => {
     const { host } = mountSection(async () => ({}));
 
@@ -183,7 +206,7 @@ describe('timing section render (UI-ny0h §3.5)', () => {
 
     expect(
       rows.map((row) => !!row.querySelector('[data-action="timing-reset"]'))
-    ).toEqual([true, false, false, false]);
+    ).toEqual([true, false, false, false, false]);
   });
 });
 

@@ -715,7 +715,7 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   recovery wait does not imply prerequisite blockers and does not emit
   `attempt_failed`; its timeline ending is `kind: 'session_ended'` with summary
   `대기 · recovery:<reason> — <original cause>`. Ordinary queue dispatch is
-  fenced by `recovery_wait`; the interactive inquiry owns its disposition.
+  fenced by `recovery_wait`; the recovery reason selects its continuation.
   `retry.migrated: 'unclassified_wait'` marks a policy-classified legacy wait
   loaded as `failed` with `retry.attempts: 0`; declared session recovery waits
   remain waiting. This migration starts no retry and sends no notification.
@@ -737,6 +737,33 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   prerequisite/base-moved waits and matching environment failures are excluded.
   This pass requires both recovery contracts ready and launches the same inquiry
   for a newly reclassified stalled recovery.
+- An unheld `session_recovery_wait` with reason `provider` resumes the recorded
+  session automatically. The latest implementation attempt must be `waiting`,
+  outside every provider hold's members and targets, and free of the retroactive
+  leaf-limit sweep's withdrawal, dismissal, completed-lane, discard, claim,
+  in-flight resume and live/continued sibling exclusions. Session-lane attempts
+  qualify only after their window closes and they settle as `waiting`. The
+  leaf-limit sweep runs first; a hold created in that pass takes precedence. The
+  next time is derived as `finished_at` plus
+  `provider_wait_resume_delays_seconds[cause_detail.recovery.no_progress.count ?? 0]`.
+  The two-rung timing setting defaults to `[3600, 18000]` seconds (each rung
+  60–21600 seconds, displayed in minutes); an absent setting uses those
+  defaults. No new schedule is persisted. Reconcile resumes due rows and arms
+  one in-memory timer per workspace for the earliest future time, including
+  after restart. Recovery policy readiness and `auto_advance` gate both
+  resumption and the timer. Refusals preserve the record and spend no rung. The
+  existing resume path uses `continuation: 'prior_attempt'`,
+  `provider_auto_resume: true` and `auto_resume_kind: 'provider_wait'`
+  (preserved across queue save/reload), with ordinary resume account resolution,
+  no account override, switch origin, hold receipt consumption or
+  `conversation_return`. `resumed_from` preserves the existing same-cause count:
+  two identical repeats become `no_progress` and open the existing human
+  conversation; a changed progress key resets the count. `provider` remains
+  outside the conversation reason set. Each successful resume records
+  `provider 대기 자동 재개 · 1/2` (then `2/2`) on the timeline without a Discord
+  notification. Its card derives `next_check_at`, says it will resume
+  automatically, and stays `normal` even past due; session continuation and
+  discard actions stay available.
 - Recovery waits requiring a decision use `worker-resolve-in-session` to select
   the live inquiry pane or fork the recorded session; discard remains available.
   `worker-attempt-resume` refuses a recovery wait with

@@ -10,7 +10,9 @@ import {
   WAIT_THRESHOLDS,
   conversationVerdict,
   externalJobHeadline,
-  judgeWaitReasons
+  judgeWaitReasons,
+  providerWaitResumeCandidate,
+  providerWaitResumeSchedule
 } from './wait-judgment.js';
 
 const NOW = new Date(2026, 8, 15, 12, 0).getTime();
@@ -473,6 +475,188 @@ function provider(target = {}) {
 }
 
 describe('recovery wait judgment', () => {
+  afterEach(() => {
+    __resetTimingSettingsForTest();
+  });
+  /** @param {Record<string, any>} [patch] */
+  function providerWait(patch = {}) {
+    return recoveryAttempt('provider', {
+      cause: 'session_recovery_wait',
+      provider_leaf_checked_at: NOW,
+      ...patch
+    });
+  }
+
+  test('selects an unheld provider wait even after its leaf judgment', () => {
+    const attempt = providerWait();
+
+    const candidate = providerWaitResumeCandidate(
+      queue({ attempts: { a: attempt } }),
+      attempt
+    );
+
+    expect(candidate).toBe(true);
+  });
+
+  test.each([
+    'hold_member',
+    'hold_target',
+    'withdrawn',
+    'dismissed',
+    'discard',
+    'running_sibling',
+    'pending_sibling',
+    'continued_sibling',
+    'no_progress',
+    'done',
+    'newer',
+    'live_session_lane'
+  ])('excludes a provider wait with %s', (exclusion) => {
+    const attempt = providerWait({
+      ...(exclusion === 'withdrawn' ? { withdrawn: { at: NOW } } : {}),
+      ...(exclusion === 'dismissed' ? { dismissed_at: NOW } : {}),
+      ...(exclusion === 'live_session_lane'
+        ? { status: 'running', exec: 'session' }
+        : {}),
+      ...(exclusion === 'no_progress'
+        ? { cause_detail: { recovery: { reason: 'no_progress' } } }
+        : {})
+    });
+    const material = queue({ attempts: { a: attempt } });
+    if (exclusion === 'hold_member') {
+      material.provider_hold_members = { a: { target_id: 'target' } };
+    }
+    if (exclusion === 'hold_target') {
+      material.provider_hold = { codex: { targets: [{ attempt_ids: ['a'] }] } };
+    }
+    if (exclusion === 'discard') {
+      material.discard_operations = {
+        discard: { bead_id: attempt.bead_id, phase: 'archiving' }
+      };
+    }
+    if (exclusion === 'done') {
+      material.done = [{ bead_id: attempt.bead_id }];
+    }
+    if (
+      [
+        'running_sibling',
+        'pending_sibling',
+        'continued_sibling',
+        'newer'
+      ].includes(exclusion)
+    ) {
+      material.attempts.sibling = {
+        attempt_id: 'sibling',
+        bead_id: attempt.bead_id,
+        status:
+          exclusion === 'running_sibling'
+            ? 'running'
+            : exclusion === 'pending_sibling'
+              ? 'pending'
+              : 'failed',
+        started_at: exclusion === 'newer' ? NOW + 1 : NOW - 2 * MINUTE,
+        ...(exclusion === 'continued_sibling' ? { resumed_from: 'a' } : {})
+      };
+    }
+
+    const candidate = providerWaitResumeCandidate(material, attempt);
+
+    expect(candidate).toBe(false);
+  });
+
+  test.each(['claimed', 'resume_in_flight', 'running', 'settling'])(
+    'excludes runtime ownership in %s',
+    (owner) => {
+      const attempt = providerWait();
+      const key = owner === 'claimed' ? attempt.bead_id : attempt.attempt_id;
+      const runtime = {
+        [owner]: owner === 'running' ? new Map([[key, {}]]) : new Set([key])
+      };
+
+      const candidate = providerWaitResumeCandidate(
+        queue({ attempts: { a: attempt } }),
+        attempt,
+        runtime
+      );
+
+      expect(candidate).toBe(false);
+    }
+  );
+
+  test('selects a session-lane provider wait after its window settled', () => {
+    const attempt = providerWait({ exec: 'session' });
+
+    const candidate = providerWaitResumeCandidate(
+      queue({ attempts: { a: attempt } }),
+      attempt
+    );
+
+    expect(candidate).toBe(true);
+  });
+
+  test.each([
+    [0, 3600],
+    [1, 18000]
+  ])('derives rung %i from the repeat count', (count, seconds) => {
+    const attempt = providerWait({
+      cause_detail: { recovery: { no_progress: { count } } }
+    });
+
+    const schedule = providerWaitResumeSchedule(attempt);
+
+    expect(schedule).toEqual({
+      at: NOW + seconds * 1000,
+      step: count,
+      total: 2
+    });
+  });
+
+  test('reads a changed provider wait timing ladder at the next derivation', () => {
+    const attempt = providerWait();
+    __setTimingOverridesForTest({
+      provider_wait_resume_delays_seconds: [60, 120]
+    });
+
+    const schedule = providerWaitResumeSchedule(attempt);
+
+    expect(schedule?.at).toBe(NOW + MINUTE);
+  });
+
+  test.each([0, 8 * 60 * MINUTE])(
+    'shows a normal automatic resume clock after %i ms',
+    (elapsed) => {
+      const attempt = providerWait();
+
+      const result = run({
+        queue: queue({ attempts: { a: attempt } }),
+        now: NOW + elapsed
+      }).wait_reasons[0];
+
+      expect(result).toMatchObject({
+        next_check_at: NOW + 60 * MINUTE,
+        verdict: 'normal',
+        release:
+          '공급자·사용량 조건 해제를 기다리며, 예정 시각에 자동으로 이어갑니다(1/2).'
+      });
+      expect(
+        result.actions.map((/** @type {any} */ action) => action.op)
+      ).toEqual(['worker-resolve-in-session', 'worker-discard']);
+    }
+  );
+
+  test('shows the second provider wait rung on its card', () => {
+    const attempt = providerWait({
+      cause_detail: {
+        recovery: { reason: 'provider', no_progress: { count: 1 } }
+      }
+    });
+
+    const result = run({ queue: queue({ attempts: { a: attempt } }) })
+      .wait_reasons[0];
+
+    expect(result.next_check_at).toBe(NOW + 300 * MINUTE);
+    expect(result.release).toContain('(2/2)');
+  });
   /**
    * @param {string} reason
    * @param {Record<string, any>} [patch]

@@ -175,6 +175,17 @@ export const RECOVERY_WAIT_SENTENCES = Object.freeze({
 });
 
 /**
+ * The scheduled provider wait's release sentence, with its current rung.
+ *
+ * @param {number} step - Zero-based repeat count.
+ * @param {number} total - Number of delay rungs.
+ * @returns {string}
+ */
+export function providerWaitResumeSentence(step, total) {
+  return `공급자·사용량 조건 해제를 기다리며, 예정 시각에 자동으로 이어갑니다(${step + 1}/${total}).`;
+}
+
+/**
  * Contract token → the sentence that says WHAT TO DO FIRST (UI-kyky §4.2).
  *
  * Separate from {@link FAILURE_SENTENCES} because the two answer different

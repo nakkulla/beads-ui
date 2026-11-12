@@ -52,12 +52,19 @@ afterEach(() => {
 });
 
 describe('timing settings table', () => {
-  test('lists the fifteen keys with ladder rung counts', () => {
-    expect(Object.keys(TIMING_FIELDS)).toHaveLength(15);
+  test('lists the sixteen keys with ladder rung counts', () => {
+    expect(Object.keys(TIMING_FIELDS)).toHaveLength(16);
     expect(TIMING_FIELDS.env_retry_delays_seconds.rungs).toBe(3);
     expect(TIMING_FIELDS.completion_retry_delays_seconds.rungs).toBe(3);
     expect(TIMING_FIELDS.auto_resume_retry_delays_seconds.rungs).toBe(4);
     expect(TIMING_FIELDS.provider_outage_backoff_seconds.rungs).toBe(6);
+    expect(TIMING_FIELDS.provider_wait_resume_delays_seconds).toEqual({
+      default: [3600, 18000],
+      min: 60,
+      max: 21600,
+      rungs: 2,
+      unit: 'minutes'
+    });
   });
 
   test('gives only the list poll key an off value', () => {
@@ -85,6 +92,7 @@ describe('timing settings reads', () => {
       base_moved_retry_seconds: 120,
       completion_retry_delays_seconds: [60, 300, 900],
       auto_resume_retry_delays_seconds: [300, 900, 1800, 3600],
+      provider_wait_resume_delays_seconds: [3600, 18000],
       provider_outage_backoff_seconds: [60, 120, 240, 480, 900, 3600],
       provider_usage_unknown_reset_seconds: 900,
       provider_usage_reset_grace_seconds: 60,
@@ -107,6 +115,14 @@ describe('timing settings reads', () => {
       default: 0,
       off_value: 0
     });
+  });
+
+  test('defaults the provider wait ladder when an older settings file omits it', () => {
+    writeFile({ revision: 1, overrides: { queue_grace_seconds: 45 } });
+
+    const values = makeStore().snapshot().values;
+
+    expect(values.provider_wait_resume_delays_seconds).toEqual([3600, 18000]);
   });
 
   test('reads defaults and warns once for a corrupt file', () => {
@@ -212,7 +228,22 @@ describe('timing settings writes', () => {
       { provider_outage_backoff_seconds: [60, 120, 240, 480, 900, 30000] },
       'provider_outage_backoff_seconds'
     ],
-    ['an unknown key', { nope_seconds: 5 }, 'nope_seconds']
+    ['an unknown key', { nope_seconds: 5 }, 'nope_seconds'],
+    [
+      'a provider wait ladder below range',
+      { provider_wait_resume_delays_seconds: [0, 18000] },
+      'provider_wait_resume_delays_seconds'
+    ],
+    [
+      'a provider wait ladder above range',
+      { provider_wait_resume_delays_seconds: [3600, 21660] },
+      'provider_wait_resume_delays_seconds'
+    ],
+    [
+      'a provider wait ladder with extra rungs',
+      { provider_wait_resume_delays_seconds: [60, 120, 180] },
+      'provider_wait_resume_delays_seconds'
+    ]
   ])('rejects %s and writes nothing', (_name, values, key) => {
     const store = makeStore();
 

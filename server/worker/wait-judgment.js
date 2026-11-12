@@ -2,7 +2,12 @@ import {
   isImplementationAttempt,
   latestImplementationAttempts
 } from '../../app/utils/active-attempts.js';
-import { RECOVERY_WAIT_SENTENCES } from '../../app/utils/failure-sentences.js';
+import {
+  RECOVERY_WAIT_SENTENCES,
+  providerWaitResumeSentence
+} from '../../app/utils/failure-sentences.js';
+import { timingLadder } from '../timing-settings.js';
+import { discardOperationActive } from './discard-phase.js';
 import {
   effectiveObservation,
   jobIntervalSeconds
@@ -121,6 +126,78 @@ const TAKEOVER_SESSION_TITLE =
 
 const LIVE_ANSWER_SESSION_TITLE =
   '열린 대화 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다';
+
+/**
+ * The shared unheld provider-wait predicate for leaf-limit judgment, timed
+ * continuation and card clocks. Runtime ownership supplements persisted state.
+ *
+ * @param {Record<string, any>} q
+ * @param {Record<string, any>} attempt
+ * @param {{ claimed?: Set<string>, resume_in_flight?: Set<string>, running?: Map<string, any>, settling?: Set<string> }} [runtime]
+ * @returns {boolean}
+ */
+export function providerWaitResumeCandidate(q, attempt, runtime = {}) {
+  const { attempt_id, bead_id } = attempt;
+  return (
+    attempt.status === 'waiting' &&
+    attempt.cause === 'session_recovery_wait' &&
+    attempt.cause_detail?.recovery?.reason === 'provider' &&
+    !attempt.withdrawn &&
+    attempt.dismissed_at == null &&
+    latestImplementationAttempts(q.attempts || {}).get(bead_id)?.attempt_id ===
+      attempt_id &&
+    !(q.done || []).some(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    ) &&
+    !Object.hasOwn(q.provider_hold_members || {}, attempt_id) &&
+    !Object.values(q.provider_hold || {}).some((/** @type {any} */ hold) =>
+      (hold.targets || []).some((/** @type {any} */ target) =>
+        target.attempt_ids.includes(attempt_id)
+      )
+    ) &&
+    !Object.values(q.discard_operations || {}).some(
+      (/** @type {any} */ operation) =>
+        discardOperationActive(operation) &&
+        (operation.bead_id === bead_id || operation.attempt_id === attempt_id)
+    ) &&
+    !runtime.claimed?.has(bead_id) &&
+    !runtime.resume_in_flight?.has(attempt_id) &&
+    !Object.values(q.attempts || {}).some(
+      (/** @type {any} */ sibling) =>
+        sibling.resumed_from === attempt_id ||
+        (sibling.bead_id === bead_id &&
+          (['running', 'pending'].includes(sibling.status) ||
+            runtime.running?.has(sibling.attempt_id) ||
+            runtime.settling?.has(sibling.attempt_id)))
+    )
+  );
+}
+
+/**
+ * Derive a provider wait's next continuation from its existing ending only.
+ * Read the ladder on each judgment so settings changes reach saved waits.
+ *
+ * @param {Record<string, any>} attempt
+ * @returns {{ at: number, step: number, total: number }|null}
+ */
+export function providerWaitResumeSchedule(attempt) {
+  const step = attempt.cause_detail?.recovery?.no_progress?.count ?? 0;
+  const ladder = timingLadder('provider_wait_resume_delays_seconds');
+  if (
+    !Number.isInteger(step) ||
+    step < 0 ||
+    step >= ladder.length ||
+    typeof attempt.finished_at !== 'number' ||
+    !Number.isFinite(attempt.finished_at)
+  ) {
+    return null;
+  }
+  return {
+    at: attempt.finished_at + ladder[step] * 1000,
+    step,
+    total: ladder.length
+  };
+}
 
 /**
  * A row's slurm job whose takeover marker outlived the settle window
@@ -847,7 +924,19 @@ export function judgeWaitReasons(input) {
           ? RECOVERY_WAIT_SENTENCES[token]
           : token
       );
-      addClocks(result, { since: attempt.finished_at });
+      const schedule = providerWaitResumeCandidate(queue, attempt)
+        ? providerWaitResumeSchedule(attempt)
+        : null;
+      if (schedule !== null) {
+        result.release = providerWaitResumeSentence(
+          schedule.step,
+          schedule.total
+        );
+      }
+      addClocks(result, {
+        since: attempt.finished_at,
+        next_check_at: schedule?.at
+      });
       if (isSessionStalledRecovery(recovery, recovery_blockers)) {
         judgeStalledSession(result, queue, bead_id, attempt);
       } else {

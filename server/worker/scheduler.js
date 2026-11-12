@@ -211,6 +211,10 @@ import {
   SESSION_LANE_PANE_MARKER
 } from './tmux-launcher.js';
 import * as default_usage_receipts from './usage-receipts.js';
+import {
+  providerWaitResumeCandidate,
+  providerWaitResumeSchedule
+} from './wait-judgment.js';
 import * as default_work_recovery_policy from './work-recovery-policy.js';
 import { publishWorkspaceActivity } from './workspace-activity.js';
 import { branchForBead, readRebaseBranch } from './worktree.js';
@@ -1555,7 +1559,7 @@ export function interactiveTurnState(running, attention) {
  *   sweepStalledContinuations: (workspace: string) => { rearmed: string[], restored: string[] },
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<ProviderAutoResumeOutcome>,
  *   reevaluateProviderSwitches: (workspace: string, catalog_accounts?: import('./account-catalog.js').Account[]) => Promise<void>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
@@ -1564,7 +1568,7 @@ export function interactiveTurnState(running, attention) {
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -10786,6 +10790,7 @@ export function createScheduler(deps) {
       await settleStaleWorkerClaims(workspace);
       await settleExternalWaitReservations(workspace);
       await reconcileInteractiveSessions(workspace);
+      await resumeDueProviderWaits(workspace);
       startConditionRechecks(workspace);
     } finally {
       reconciling.delete(workspace);
@@ -13822,46 +13827,150 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Whether one row is a provider recovery wait the retroactive leaf-limit
-   * judgment (UI-gggh §3.4) may still read: waiting on `recovery:provider`,
-   * never judged, bound to no hold, and free of the exclusions the
-   * preserved-failure sweep keeps — a completed lane, a Bead claim, a
-   * discard, a resume or a live sibling, a withdrawal or a dismissal.
+   * The shared provider-wait predicate with this scheduler's live ownership.
+   *
+   * @param {any} q
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function unheldProviderWaitCandidate(q, attempt) {
+    return providerWaitResumeCandidate(q, attempt, {
+      claimed,
+      resume_in_flight,
+      running,
+      settling
+    });
+  }
+
+  /**
+   * Refuse an automatic provider wait continuation without changing its row.
+   * An unsettled interactive window owns the Bead until reconcile closes it.
+   *
+   * @param {any} q
+   * @param {any} attempt
+   * @returns {string|null}
+   */
+  function providerWaitResumeRefusal(q, attempt) {
+    if (!work_recovery_policy.workRecoveryReady() || q.auto_advance !== true) {
+      return 'automatic_resume_disabled';
+    }
+    if (!attempt || !unheldProviderWaitCandidate(q, attempt)) {
+      return 'not_provider_wait';
+    }
+    if (
+      Object.values(q.interactive_sessions || {}).some(
+        (/** @type {any} */ record) =>
+          record.bead_id === attempt.bead_id && record.settled_at === null
+      )
+    ) {
+      return 'bead_running';
+    }
+    return null;
+  }
+
+  /**
+   * The retroactive leaf judgment reads each eligible wait only once.
    *
    * @param {any} q
    * @param {any} attempt
    * @returns {boolean}
    */
   function leafLimitSweepCandidate(q, attempt) {
-    const { attempt_id, bead_id } = attempt;
     return (
-      attempt.status === 'waiting' &&
-      attempt.cause === 'session_recovery_wait' &&
-      attempt.cause_detail?.recovery?.reason === 'provider' &&
       typeof attempt.provider_leaf_checked_at !== 'number' &&
-      !attempt.withdrawn &&
-      attempt.dismissed_at == null &&
-      !(q.done || []).some(
-        (/** @type {any} */ entry) => entry.bead_id === bead_id
-      ) &&
-      !Object.hasOwn(q.provider_hold_members || {}, attempt_id) &&
-      !Object.values(q.provider_hold || {}).some((/** @type {any} */ hold) =>
-        (hold.targets || []).some((/** @type {any} */ target) =>
-          target.attempt_ids.includes(attempt_id)
-        )
-      ) &&
-      !discardActive(q, { bead_id, attempt_id }) &&
-      !claimed.has(bead_id) &&
-      !resume_in_flight.has(attempt_id) &&
-      !Object.values(q.attempts).some(
-        (/** @type {any} */ sibling) =>
-          sibling.resumed_from === attempt_id ||
-          (sibling.bead_id === bead_id &&
-            (['running', 'pending'].includes(sibling.status) ||
-              running.has(sibling.attempt_id) ||
-              settling.has(sibling.attempt_id)))
-      )
+      unheldProviderWaitCandidate(q, attempt)
     );
+  }
+
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const provider_wait_resume_timers = new Map();
+
+  onTimingSettingsChanged((snapshot, previous) => {
+    if (
+      JSON.stringify(snapshot.values.provider_wait_resume_delays_seconds) ===
+      JSON.stringify(previous.provider_wait_resume_delays_seconds)
+    ) {
+      return;
+    }
+    for (const workspace of provider_wait_resume_timers.keys()) {
+      reconcile(workspace).catch((err) => {
+        log('provider wait timing recheck failed for %s: %o', workspace, err);
+      });
+    }
+  });
+
+  /**
+   * Resume due unheld provider waits after the leaf-limit pass. Only future
+   * times arm a wake-up: a refusal waits for the next ordinary reconcile.
+   *
+   * @param {string} workspace
+   */
+  async function resumeDueProviderWaits(workspace) {
+    const timer = provider_wait_resume_timers.get(workspace);
+    if (timer) {
+      clearTimeout(timer);
+      provider_wait_resume_timers.delete(workspace);
+    }
+    if (
+      !work_recovery_policy.workRecoveryReady() ||
+      deps.store.snapshot(workspace).auto_advance !== true
+    ) {
+      return;
+    }
+    const attempts = latestImplementationAttempts(
+      deps.store.snapshot(workspace).attempts
+    );
+    for (const { attempt_id } of attempts.values()) {
+      const q = deps.store.snapshot(workspace);
+      const attempt = q.attempts[attempt_id];
+      if (
+        !work_recovery_policy.workRecoveryReady() ||
+        q.auto_advance !== true
+      ) {
+        return;
+      }
+      if (!attempt || !unheldProviderWaitCandidate(q, attempt)) {
+        continue;
+      }
+      const schedule = providerWaitResumeSchedule(attempt);
+      if (schedule === null || schedule.at > now()) {
+        continue;
+      }
+      await resume(workspace, attempt_id, {
+        continuation: 'prior_attempt',
+        provider_auto_resume: true,
+        auto_resume_kind: 'provider_wait'
+      });
+    }
+    const q = deps.store.snapshot(workspace);
+    if (!work_recovery_policy.workRecoveryReady() || q.auto_advance !== true) {
+      return;
+    }
+    /** @type {number|null} */
+    let earliest = null;
+    for (const attempt of latestImplementationAttempts(q.attempts).values()) {
+      if (!unheldProviderWaitCandidate(q, attempt)) {
+        continue;
+      }
+      const schedule = providerWaitResumeSchedule(attempt);
+      if (schedule !== null && schedule.at > now()) {
+        earliest =
+          earliest === null ? schedule.at : Math.min(earliest, schedule.at);
+      }
+    }
+    if (earliest !== null) {
+      const wake = setTimeout(
+        () => {
+          provider_wait_resume_timers.delete(workspace);
+          reconcile(workspace).catch((err) => {
+            log('provider wait resume failed for %s: %o', workspace, err);
+          });
+        },
+        Math.max(0, earliest - now())
+      );
+      wake.unref?.();
+      provider_wait_resume_timers.set(workspace, wake);
+    }
   }
 
   /**
@@ -13906,10 +14015,7 @@ export function createScheduler(deps) {
         if (
           !classified ||
           !current ||
-          !leafLimitSweepCandidate(fresh, {
-            ...current,
-            provider_leaf_checked_at: undefined
-          })
+          !unheldProviderWaitCandidate(fresh, current)
         ) {
           continue;
         }
@@ -15672,7 +15778,10 @@ export function createScheduler(deps) {
       window.tmux_session,
       window.tmux_window
     );
-    if (input.auto_resume_origin !== 'live_preempt') {
+    if (
+      input.auto_resume_origin !== 'live_preempt' &&
+      !input.provider_wait_resume
+    ) {
       notifyLifecycle('attemptStarted', {
         bead_id,
         title: input.title ?? null,
@@ -15693,7 +15802,9 @@ export function createScheduler(deps) {
       attempt_id,
       kind: 'dispatched',
       seq: input.launch_kind ?? 'dispatch',
-      summary: `${dispatchSummary(runner_name, model, effort, base_oid)} · 세션 레인 ${window.tmux_session}:${window.tmux_window}`
+      summary: input.provider_wait_resume
+        ? providerWaitResumeSummary(input.provider_wait_resume)
+        : `${dispatchSummary(runner_name, model, effort, base_oid)} · 세션 레인 ${window.tmux_session}:${window.tmux_window}`
     });
     deps.store.clearAdmission(workspace, bead_id);
     // The slot is held from here by the durable `running` attempt and its
@@ -15733,6 +15844,7 @@ export function createScheduler(deps) {
    *   account_sources?: AccountSources,
    *   preempt?: { from: string, to: string, window: string, pct: number, held?: boolean },
    *   auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin,
+   *   provider_wait_resume?: { step: number, total: number }|null,
    *   prior_wf: string|null,
    *   stamped_keys: string[],
    *   wt_path: string,
@@ -16110,7 +16222,10 @@ export function createScheduler(deps) {
       speed
     );
 
-    if (input.auto_resume_origin !== 'live_preempt') {
+    if (
+      input.auto_resume_origin !== 'live_preempt' &&
+      !input.provider_wait_resume
+    ) {
       notifyLifecycle('attemptStarted', {
         bead_id,
         title: input.title ?? null,
@@ -16138,7 +16253,9 @@ export function createScheduler(deps) {
       // different fact, and there is exactly one of each per attempt. A replay
       // of the same launch therefore re-appends one id the reader dedupes.
       seq: input.launch_kind ?? 'dispatch',
-      summary: dispatchSummary(runner_name, model, effort, base_oid),
+      summary: input.provider_wait_resume
+        ? providerWaitResumeSummary(input.provider_wait_resume)
+        : dispatchSummary(runner_name, model, effort, base_oid),
       ...(typeof settings.log_path === 'string' && settings.log_path.length > 0
         ? { log_path: settings.log_path }
         : {})
@@ -16540,9 +16657,11 @@ export function createScheduler(deps) {
     const opening =
       prior_status === 'paused'
         ? `이전 무인 세션이 사용자 요청으로 일시정지되었다(bead ${bead_id}).`
-        : prior_status === 'prerequisite_return'
-          ? `이전 무인 세션이 선행 대기(blocks)로 끝났고 그 선행이 닫혔다(bead ${bead_id}).`
-          : `이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead ${bead_id}).`;
+        : prior_status === 'provider_wait'
+          ? `이전 무인 세션이 대기 · recovery:provider로 끝났고 예약된 대기 시간이 지났다(bead ${bead_id}). 공급자·사용량 조건이 풀렸는지 먼저 확인하라. 여전히 막혀 있으면 같은 결과 줄 대기 · recovery:provider로 끝내라.`
+          : prior_status === 'prerequisite_return'
+            ? `이전 무인 세션이 선행 대기(blocks)로 끝났고 그 선행이 닫혔다(bead ${bead_id}).`
+            : `이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead ${bead_id}).`;
     const ancestor = facts
       ? [
           `이전 attempt ${facts.prior_attempt_id}는 ${facts.cause}로 끝났다(exec_receipt=${facts.exec_receipt ?? '없음'}, impl_review=${facts.impl_review ?? '없음'}).`,
@@ -16562,6 +16681,14 @@ export function createScheduler(deps) {
       '같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라.',
       '이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.'
     ].join(' ');
+  }
+
+  /**
+   * @param {{ step: number, total: number }} schedule
+   * @returns {string}
+   */
+  function providerWaitResumeSummary(schedule) {
+    return `provider 대기 자동 재개 · ${schedule.step + 1}/${schedule.total}`;
   }
 
   /**
@@ -17490,7 +17617,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }} [continuation]
    * `conversation_return` is the UI-nuwy §3.4 handoff: it alone admits a
    * `parked` prior, skips only admission's `awaiting_user` presence refusal,
    * and puts the `## 대화 결과` block at the head of the resume prompt.
@@ -17550,6 +17677,15 @@ export function createScheduler(deps) {
       prior.cause_detail.recovery.no_progress?.count >= 2
     ) {
       return { ok: false, reason: 'no_progress' };
+    }
+    const provider_wait_resume =
+      continuation.provider_auto_resume === true &&
+      continuation.auto_resume_kind === 'provider_wait';
+    if (provider_wait_resume) {
+      const refusal = providerWaitResumeRefusal(q, prior);
+      if (refusal !== null) {
+        return { ok: false, reason: refusal };
+      }
     }
 
     // not_failed: no such attempt, or not in a resumable state.
@@ -17767,7 +17903,7 @@ export function createScheduler(deps) {
     // is the exception: that is the earlier attempt's own claim, which every
     // session continuation resumes under, so refusing it would park the rung
     // for good on the claim it is meant to carry on.
-    if (continuation.retry) {
+    if (continuation.retry || provider_wait_resume) {
       if ((!snap.ready || snap.blocked) && snap.status !== 'in_progress') {
         if (dequeueIfClosed(workspace, bead_id, snap)) {
           return { ok: false, reason: notReadyReason(snap) };
@@ -17791,7 +17927,9 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'provider_gate' };
       }
     }
-    const lane_mismatch = refuseLaneMismatch(workspace, prior, snap);
+    const lane_mismatch = provider_wait_resume
+      ? laneMismatchOf(prior, snap)
+      : refuseLaneMismatch(workspace, prior, snap);
     if (lane_mismatch) {
       return lane_mismatch;
     }
@@ -17879,7 +18017,11 @@ export function createScheduler(deps) {
     const prompt = (_attempt_id, resolved) => {
       const base_prompt = resumePrompt(
         bead_id,
-        prerequisite_return ? 'prerequisite_return' : (prior.status ?? null),
+        continuation.auto_resume_kind === 'provider_wait'
+          ? 'provider_wait'
+          : prerequisite_return
+            ? 'prerequisite_return'
+            : (prior.status ?? null),
         ancestor_facts && resolved.handoff_instructions
           ? { ...ancestor_facts, prior_final_message: null }
           : ancestor_facts
@@ -19528,6 +19670,11 @@ export function createScheduler(deps) {
     const ladder_retry = !!options.retry;
     const recovery_wait =
       prior.status === 'waiting' && !!prior.cause_detail?.recovery;
+    const provider_wait_resume =
+      provider_auto_resume &&
+      options.auto_resume_kind === 'provider_wait' &&
+      recovery_wait &&
+      prior.cause_detail.recovery.reason === 'provider';
     const strict_preserved = baseMovedLineage(workspace, prior) !== null;
     // `prior_attempt` (UI-qce9 §5): the recorded attempt's session AND its
     // recorded execution tuple, verbatim. It reuses the provider auto-resume's
@@ -19567,7 +19714,9 @@ export function createScheduler(deps) {
       // `account_missing` is the record's last check, so the session and
       // tuple checks before it still hold.
       const record_usable =
-        record.eligible || (wait_receipt && record.code === 'account_missing');
+        record.eligible ||
+        ((wait_receipt || provider_wait_resume) &&
+          record.code === 'account_missing');
       // A provider auto-resume of a `prior_attempt` child continues the SAME
       // choice from whatever resumable state the outage left it in (§5.3); a
       // user restart is only ever the exit of a completed durable pause.
@@ -19575,7 +19724,11 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'prior_session_unavailable' };
       }
       if (
-        !(await priorExecutionUsable(prior, { account_free: wait_receipt }))
+        !(await priorExecutionUsable(prior, {
+          account_free:
+            wait_receipt ||
+            (provider_wait_resume && activeAccountOf(prior) === null)
+        }))
       ) {
         return { ok: false, reason: 'prior_session_unavailable' };
       }
@@ -19588,7 +19741,9 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'bd_snapshot_failed' };
       }
     }
-    const lane_mismatch = refuseLaneMismatch(workspace, prior, bead_snapshot);
+    const lane_mismatch = provider_wait_resume
+      ? laneMismatchOf(prior, bead_snapshot)
+      : refuseLaneMismatch(workspace, prior, bead_snapshot);
     if (lane_mismatch) {
       return lane_mismatch;
     }
@@ -20279,6 +20434,15 @@ export function createScheduler(deps) {
       serial_lease.release();
       return { ok: false, reason: 'withdrawn' };
     }
+    if (options.auto_resume_kind === 'provider_wait') {
+      const q = deps.store.snapshot(workspace);
+      const current = q.attempts[attempt_id];
+      const refusal = providerWaitResumeRefusal(q, current);
+      if (refusal !== null) {
+        serial_lease.release();
+        return { ok: false, reason: refusal };
+      }
+    }
     continuation.expected_revision = revalidated.expected_revision;
     const prior_wf =
       typeof bead_snapshot.workflow_mode === 'string'
@@ -20551,6 +20715,10 @@ export function createScheduler(deps) {
       wt_path,
       attempt_facts: relaunch_facts,
       auto_resume_origin: options.auto_resume_origin,
+      provider_wait_resume:
+        options.auto_resume_kind === 'provider_wait'
+          ? providerWaitResumeSchedule(prior)
+          : null,
       launch_kind: options.disposition
         ? 'disposition'
         : options.conversation_return === true
@@ -20750,7 +20918,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {

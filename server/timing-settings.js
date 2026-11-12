@@ -90,6 +90,13 @@ export const TIMING_FIELDS = Object.freeze({
     rungs: 4,
     unit: 'minutes'
   },
+  provider_wait_resume_delays_seconds: {
+    default: [3600, 18000],
+    min: 60,
+    max: 21600,
+    rungs: 2,
+    unit: 'minutes'
+  },
   provider_outage_backoff_seconds: {
     default: [60, 120, 240, 480, 900, 3600],
     min: 60,
