@@ -2191,7 +2191,7 @@ describe('worker/worktree dispatch-time dependency install (spec D3)', () => {
     });
     commit(created.path, 'delivered.txt', 'delivered');
     const branch_head = headOf(created.path);
-    git(['cherry-pick', branch_head], repo);
+    git(['merge', '--ff-only', branch_head], repo);
     const delivered_sha = headOf(repo);
     topologyLock.mockClear();
 
