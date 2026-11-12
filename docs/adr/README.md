@@ -5,7 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
-| UI-2mvi | [실행 프리셋 키 집합과 실행 하위 탭](UI-2mvi-execution-preset-keys-and-subtabs.md) | 2026-11-12 | 실행 프리셋은 두 계열 모두 오케스트레이션·구현·구현 리뷰 11키만 담고 사양·계획 리뷰는 프리셋 밖 저장소 값이며, 설정 창 실행 탭은 워커·quick fix·세션 리뷰 하위 탭이고 quick fix 구현 리뷰는 dotfiles가 정의한 quick fix 전용 kv 키로 저장한다 — 나머지 조항은 UI-7gv4 그대로다 |
+| UI-v4cc | [보류 없는 provider 대기의 예정 시각 자동 재개](UI-v4cc-provider-wait-timed-resume.md) | 2026-11-12 | 공급자 보류로 바뀌지 않은 세션 선언 provider 대기는 Worker가 같은 세션을 1시간·5시간 뒤 두 번 자동 재개하고 같은 결말이 두 번 반복되면 기존 no_progress 대화로 넘기며, 대화 대상 사유 집합과 공급자 보류 해제 규칙은 그대로다 — 나머지 조항은 UI-2mvi 그대로다 |
 | UI-y7h1 | [auto 구현 리프 후보는 beads-ui 서버 전역 설정이다](UI-y7h1-auto-pool-server-global-setting.md) | 2026-11-11 | auto 구현 리프의 후보 모델과 effort 범위는 beads-ui 서버 전역 설정이 정본이고 저장소별 값 없이 dotfiles가 GET /api/auto-pool로만 읽으며, 빠진 런타임은 dotfiles 출하 기본값을 따른다 |
 | UI-jlov | [dotfiles 계약 소비와 설치본 체커 소비](UI-jlov-dotfiles-contract-and-checker-consumption.md) | 2026-11-11 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호와 Worker 착지 알림의 보호 경로 표시는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며, 보호 경로 판정 실패는 생략하지 않고 확인 못 함으로 적는다 |
 | UI-d9c1 | [한도 대응 저장소 정책·활성 계정 자동 전환과 한도 미만 후보](UI-d9c1-limit-policy-under-limit-candidates.md) | 2026-11-11 | 자동 전환 후보 거름에서 건강 임계(5h 80%·그 밖의 창 90%)를 없앤다 — Claude·Codex 수신 계정은 보고된 모든 창이 100% 미만(선제 전환이면 preempt_pct 미만)이면 되고, 수동 재개 대화상자도 같은 기준이며, 사용자 순서·크레딧 패스 등 나머지 조항은 UI-iopp 그대로다 |
@@ -171,5 +171,6 @@
 | UI-golv | [설정 창·대화 결과 줄과 배치안 순서·카드 포함 체크](history/UI-golv-placement-card-include-check.md) | superseded | [UI-hozk](history/UI-hozk-failure-self-repair-fix-wait.md) |
 | UI-iopp | [한도 대응 저장소 정책·활성 계정 자동 전환과 사용자 순서 후보](history/UI-iopp-limit-policy-user-order-candidates.md) | superseded | [UI-d9c1](UI-d9c1-limit-policy-under-limit-candidates.md) |
 | UI-unf5 | [설정 창·대화 결과 줄과 배치안 순서 자리의 jev 선호](history/UI-unf5-placement-soft-order-jev-prefer.md) | superseded | [UI-golv](history/UI-golv-placement-card-include-check.md) |
-| UI-7gv4 | [Worker 주소는 공통 설정 하나](history/UI-7gv4-worker-url-common-only.md) | superseded | [UI-2mvi](UI-2mvi-execution-preset-keys-and-subtabs.md) |
+| UI-2mvi | [실행 프리셋 키 집합과 실행 하위 탭](history/UI-2mvi-execution-preset-keys-and-subtabs.md) | superseded | [UI-v4cc](UI-v4cc-provider-wait-timed-resume.md) |
+| UI-7gv4 | [Worker 주소는 공통 설정 하나](history/UI-7gv4-worker-url-common-only.md) | superseded | [UI-2mvi](history/UI-2mvi-execution-preset-keys-and-subtabs.md) |
 | UI-hozk | [대화 결과 줄 수정 대기와 실패 자가 수리 재실행](history/UI-hozk-failure-self-repair-fix-wait.md) | superseded | [UI-7gv4](history/UI-7gv4-worker-url-common-only.md) |
