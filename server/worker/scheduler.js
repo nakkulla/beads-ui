@@ -19850,15 +19850,51 @@ export function createScheduler(deps) {
         resume_runner,
         accounts
       );
+      let return_blocked = gate.held;
+      const policy = providerLimitPolicyOf(workspace, resume_runner);
+      const preempt_pct = policy.preempt_pct;
+      if (
+        !return_blocked &&
+        switched_source === 'live_switch' &&
+        policy.mode === 'switch' &&
+        policy.accounts.length > 0 &&
+        preempt_pct !== null
+      ) {
+        const list =
+          resume_runner === 'codex'
+            ? deps.accountCatalog?.listCodex
+            : deps.accountCatalog?.listClaude;
+        try {
+          const listed =
+            typeof list === 'function'
+              ? await list.call(deps.accountCatalog)
+              : null;
+          const default_account = account.value ?? listed?.active_key;
+          const row = listed?.ok
+            ? listed.accounts.find(
+                (/** @type {any} */ row) => row.key === default_account
+              )
+            : null;
+          // Missing usage preserves the hold-only return decision.
+          return_blocked =
+            Array.isArray(row?.windows) &&
+            row.windows.some(
+              (/** @type {any} */ window) =>
+                typeof window?.pct === 'number' && window.pct >= preempt_pct
+            );
+        } catch {
+          // An unavailable catalog is no evidence for blocking a return.
+        }
+      }
       resolved.accounts = {
         ...resolved.accounts,
-        [resume_runner]: gate.held
+        [resume_runner]: return_blocked
           ? base_resolved.accounts[resume_runner]
           : account.value
       };
       resolved.account_sources = {
         ...resolved.account_sources,
-        [resume_runner]: gate.held ? switched_source : account.source
+        [resume_runner]: return_blocked ? switched_source : account.source
       };
     }
     if (

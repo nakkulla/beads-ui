@@ -15033,8 +15033,9 @@ describe('scheduler resume (spec §1)', () => {
   /**
    * @param {'claude'|'codex'} runner
    * @param {string} source
+   * @param {Record<string, any>} [extra]
    */
-  function switchedResumeEnv(runner, source) {
+  function switchedResumeEnv(runner, source, extra = {}) {
     const model = runner === 'codex' ? 'sol' : 'opus';
     const env = setup({
       config: { B1: { model } },
@@ -15047,7 +15048,8 @@ describe('scheduler resume (spec §1)', () => {
           codex_account: 'default-codex'
         }
       })),
-      ...accountDeps()
+      ...accountDeps(),
+      ...extra
     });
     seedAttempt(
       env.store,
@@ -15149,6 +15151,126 @@ describe('scheduler resume (spec §1)', () => {
         account_sources: { [runner]: 'workspace_default' }
       });
       expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+    }
+  );
+
+  describe.each(/** @type {const} */ (['claude', 'codex']))(
+    '%s live-switch return usage',
+    (runner) => {
+      const default_account =
+        runner === 'codex' ? 'default-codex' : 'default@example.com';
+      const switched_account =
+        runner === 'codex' ? 'switched-codex' : 'switched@example.com';
+
+      test.each(
+        ['conversation', 'provider'].flatMap((resume_kind) =>
+          [79, 80, 85, null].map((pct) => ({ resume_kind, pct }))
+        )
+      )(
+        'checks the default threshold on $resume_kind return with usage $pct',
+        async ({ resume_kind, pct }) => {
+          const env = switchedResumeEnv(runner, 'live_switch', {
+            accountCatalog: {
+              ...accountDeps().accountCatalog,
+              [runner === 'codex' ? 'listCodex' : 'listClaude']: vi.fn(
+                async () => ({
+                  ok: true,
+                  active_key: default_account,
+                  accounts: [
+                    {
+                      key: default_account,
+                      status: 'ok',
+                      windows:
+                        pct === null
+                          ? []
+                          : [
+                              { key: '5h', pct: 5, resetsAt: null },
+                              { key: '7d', pct, resetsAt: null }
+                            ]
+                    }
+                  ]
+                })
+              )
+            }
+          });
+          env.store.setProviderLimitPolicy(WS, {
+            expected_revision: env.store.snapshot(WS).revision,
+            runner,
+            patch: {
+              mode: 'switch',
+              accounts: [switched_account],
+              preempt_pct: 80
+            }
+          });
+          if (resume_kind === 'provider') {
+            releaseSwitchedProvider(env, runner, true);
+          }
+
+          if (resume_kind === 'provider') {
+            const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+            expect(result.resumed_beads).toEqual(['B1']);
+          } else {
+            const result = await env.scheduler.resume(WS, 'switched', {
+              conversation_return: {
+                line: '인계 · 계속 진행',
+                source: 'button'
+              }
+            });
+
+            expect(result.ok).toBe(true);
+          }
+          const stays_switched = pct !== null && pct >= 80;
+          expect(
+            Object.values(env.store.snapshot(WS).attempts).at(-1)
+          ).toMatchObject({
+            [`${runner}_account`]: stays_switched
+              ? switched_account
+              : default_account,
+            account_sources: {
+              [runner]: stays_switched ? 'live_switch' : 'workspace_default'
+            }
+          });
+          expect(env.store.snapshot(WS).provider_hold).toEqual({});
+          expect(env.runner.settingsFor('B1').resume_session_id).toBe(
+            'sid-abc'
+          );
+        }
+      );
+
+      test('returns to the default when the usage catalog fails', async () => {
+        const env = switchedResumeEnv(runner, 'live_switch', {
+          accountCatalog: {
+            ...accountDeps().accountCatalog,
+            [runner === 'codex' ? 'listCodex' : 'listClaude']: vi.fn(
+              async () => {
+                throw new Error('catalog unavailable');
+              }
+            )
+          }
+        });
+        env.store.setProviderLimitPolicy(WS, {
+          expected_revision: env.store.snapshot(WS).revision,
+          runner,
+          patch: {
+            mode: 'switch',
+            accounts: [switched_account],
+            preempt_pct: 80
+          }
+        });
+
+        const result = await env.scheduler.resume(WS, 'switched', {
+          conversation_return: { line: '인계 · 계속 진행', source: 'button' }
+        });
+
+        expect(result.ok).toBe(true);
+        expect(
+          Object.values(env.store.snapshot(WS).attempts).at(-1)
+        ).toMatchObject({
+          [`${runner}_account`]: default_account,
+          account_sources: { [runner]: 'workspace_default' }
+        });
+      });
     }
   );
 
