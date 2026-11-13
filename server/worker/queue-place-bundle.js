@@ -160,7 +160,9 @@ export function placeBundleShapeOf(payload) {
 export async function placeBundleInQueue(workspace_key, input) {
   const { lane, binds, steps, expected_revision } = input;
   const before = queueStore().snapshot(workspace_key);
-  if (before.revision !== expected_revision) {
+  if (
+    !queueStore().placementRevisionMatches(workspace_key, expected_revision)
+  ) {
     return { applied: false, conflict: true, queue: before };
   }
   /** @type {Array<{ id: string, admission: AdmissionResult }>} */

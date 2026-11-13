@@ -6824,6 +6824,66 @@ function terminalEventFor(attempt) {
 }
 
 /**
+ * Project only queue-owned placement premises, preserving meaningful row order.
+ *
+ * @param {Queue} queue
+ * @returns {string}
+ */
+export function placementFingerprint(queue) {
+  return JSON.stringify({
+    queue: queue.queue.map((entry) => ({
+      bead_id: entry.bead_id,
+      added_at: entry.added_at,
+      serial_lane_id: entry.serial_lane_id,
+      external: entry.external
+    })),
+    serial_lane_count: queue.serial_lane_count,
+    serial_lanes: queue.serial_lanes.map((lane) => ({
+      id: lane.id,
+      entries: lane.entries.map((entry) => ({
+        bead_id: entry.bead_id,
+        added_at: entry.added_at
+      }))
+    })),
+    done: queue.done.map((entry) => ({
+      bead_id: entry.bead_id,
+      added_at: entry.added_at
+    })),
+    pr_wait: queue.pr_wait.map((entry) => ({
+      bead_id: entry.bead_id,
+      serial_lane_id: entry.serial_lane_id
+    })),
+    merge_shelved: Object.keys(queue.merge_shelved).sort(),
+    merge_queue: queue.merge_queue.map((entry) => entry.bead_id),
+    attempts: Object.values(queue.attempts).map((attempt) => ({
+      attempt_id: attempt.attempt_id,
+      bead_id: attempt.bead_id,
+      kind: attempt.kind,
+      status: attempt.status,
+      serial_lane_id: attempt.serial_lane_id,
+      resumed_from: attempt.resumed_from,
+      completion_root_id: attempt.completion_root_id,
+      started_at: attempt.started_at,
+      finished_at: attempt.finished_at,
+      session_id: attempt.session_id,
+      bead_session_ref: attempt.bead_session_ref,
+      external_conflict: attempt.external_conflict,
+      withdrawn: Boolean(attempt.withdrawn),
+      dismissed_at: typeof attempt.dismissed_at === 'number'
+    })),
+    discard_operations: Object.values(queue.discard_operations)
+      .filter(discardOperationActive)
+      .map((operation) =>
+        JSON.stringify([operation.bead_id, operation.attempt_id])
+      )
+      .sort(),
+    interactive_sessions: Object.values(queue.interactive_sessions)
+      .map((record) => JSON.stringify([record.bead_id, record.session_id]))
+      .sort()
+  });
+}
+
+/**
  * Create a Worker queue store. A single instance is shared server-wide so all
  * connections (and thus all clients dragging concurrently) observe one coherent
  * in-memory revision, making the CAS authoritative in-process.
@@ -6906,6 +6966,57 @@ export function createQueueStore(options = {}) {
 
   /** @type {Map<string, Queue>} */
   const cache = new Map();
+  /** @type {Map<string, Map<number, string>>} */
+  const placement_fingerprints = new Map();
+
+  /**
+   * Remember only the latest 1024 revisions, including gaps on projection failure.
+   *
+   * @param {string} workspace
+   * @param {Queue} queue
+   */
+  function rememberPlacementFingerprint(workspace, queue) {
+    const key = keyFor(workspace);
+    /** @type {Map<number, string>} */
+    const history = placement_fingerprints.get(key) || new Map();
+    placement_fingerprints.set(key, history);
+    try {
+      history.set(queue.revision, placementFingerprint(queue));
+    } catch {
+      // A failed projection leaves this revision eligible only for exact CAS.
+    }
+    for (const revision of history.keys()) {
+      if (revision <= queue.revision - 1024) {
+        history.delete(revision);
+      }
+    }
+  }
+
+  /**
+   * Accept a remembered revision only when its placement premise still holds.
+   *
+   * @param {string} workspace
+   * @param {number} expected_revision
+   * @returns {boolean}
+   */
+  function placementRevisionMatches(workspace, expected_revision) {
+    const current = ensureLoaded(workspace);
+    if (
+      !Number.isInteger(expected_revision) ||
+      expected_revision > current.revision
+    ) {
+      return false;
+    }
+    if (expected_revision === current.revision) {
+      return true;
+    }
+    const history = placement_fingerprints.get(keyFor(workspace));
+    const expected = history?.get(expected_revision);
+    return (
+      expected !== undefined && expected === history?.get(current.revision)
+    );
+  }
+
   /**
    * Repair-lane sagas this process's cold load withheld, per workspace
    * (UI-8w4t §2). In memory only, and emptied one root at a time by
@@ -7001,6 +7112,7 @@ export function createQueueStore(options = {}) {
     // Restart safety defaults OFF; only the verified self-deploy path may restore it.
     q.auto_advance = false;
     cache.set(key, q);
+    rememberPlacementFingerprint(workspace, q);
     return q;
   }
 
@@ -7686,11 +7798,21 @@ export function createQueueStore(options = {}) {
    * @param {string} workspace
    * @param {number} expected_revision
    * @param {(next: Queue) => boolean} mutate - Returns false to reject.
+   * @param {boolean} [placement] - Compare placement premises instead of exact revisions.
    * @returns {QueueOpResult}
    */
-  function applyMutation(workspace, expected_revision, mutate) {
+  function applyMutation(
+    workspace,
+    expected_revision,
+    mutate,
+    placement = false
+  ) {
     const cur = ensureLoaded(workspace);
-    if (expected_revision !== cur.revision) {
+    if (
+      placement
+        ? !placementRevisionMatches(workspace, expected_revision)
+        : expected_revision !== cur.revision
+    ) {
       return { ok: false, conflict: true, queue: exportQueue(workspace, cur) };
     }
     const next = clone(cur);
@@ -7701,7 +7823,18 @@ export function createQueueStore(options = {}) {
     transferProcessedAttempts(workspace, next);
     persist(workspace, next);
     cache.set(keyFor(workspace), next);
+    rememberPlacementFingerprint(workspace, next);
     return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {number} expected_revision
+   * @param {(next: Queue) => boolean} mutate
+   * @returns {QueueOpResult}
+   */
+  function applyPlacement(workspace, expected_revision, mutate) {
+    return applyMutation(workspace, expected_revision, mutate, true);
   }
 
   /**
@@ -7724,6 +7857,7 @@ export function createQueueStore(options = {}) {
     transferProcessedAttempts(workspace, next);
     persist(workspace, next);
     cache.set(keyFor(workspace), next);
+    rememberPlacementFingerprint(workspace, next);
     return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
   }
 
@@ -7925,6 +8059,8 @@ export function createQueueStore(options = {}) {
   }
 
   return {
+    placementRevisionMatches,
+
     /**
      * The server-global provider-hold source this store projects from (UI-3v1h
      * §5.1); the probe controller releases targets through it.
@@ -8482,7 +8618,7 @@ export function createQueueStore(options = {}) {
      */
     place(workspace, input) {
       const { expected_revision, bead_id, lane, index } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
+      return applyPlacement(workspace, expected_revision, (next) => {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
         }
@@ -8521,7 +8657,7 @@ export function createQueueStore(options = {}) {
      */
     reorder(workspace, input) {
       const { expected_revision, bead_id, lane, to_index } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
+      return applyPlacement(workspace, expected_revision, (next) => {
         if (hasActiveDiscardOperation(next, bead_id)) {
           return false;
         }
@@ -8552,7 +8688,7 @@ export function createQueueStore(options = {}) {
      */
     setSerialLaneCount(workspace, input) {
       const { expected_revision, count } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
+      return applyPlacement(workspace, expected_revision, (next) => {
         const value = normalizeSerialLaneCount(count);
         if (value === null) {
           return false;
@@ -8660,7 +8796,7 @@ export function createQueueStore(options = {}) {
       const { expected_revision, lane, ordered_bead_ids } = input;
       /** @type {string|null} */
       let reason = null;
-      const result = applyMutation(workspace, expected_revision, (next) => {
+      const result = applyPlacement(workspace, expected_revision, (next) => {
         const index = serialLaneIndex(lane);
         if (index === null || index >= next.serial_lane_count) {
           reason = 'lane_invalid';
@@ -8746,7 +8882,7 @@ export function createQueueStore(options = {}) {
       const { expected_revision, lane } = input;
       /** @type {string|null} */
       let reason = null;
-      const result = applyMutation(workspace, expected_revision, (next) => {
+      const result = applyPlacement(workspace, expected_revision, (next) => {
         const index = serialLaneIndex(lane);
         if (index === null || index >= next.serial_lane_count) {
           reason = 'lane_invalid';
@@ -10056,7 +10192,7 @@ export function createQueueStore(options = {}) {
     remove(workspace, input) {
       const { expected_revision, bead_id } = input;
       let not_found = false;
-      const result = applyMutation(workspace, expected_revision, (next) => {
+      const result = applyPlacement(workspace, expected_revision, (next) => {
         if (hasActiveDiscardOperation(next, bead_id)) {
           return false;
         }

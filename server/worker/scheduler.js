@@ -13669,15 +13669,17 @@ export function createScheduler(deps) {
         pane_row.agent_running,
         pane_row.agent_attention
       );
-      update(key, record, {
-        last_seen_alive_at: now(),
+      const observation_patch = {
         ...(turn_state !== record.turn_state
           ? { turn_state, turn_state_since: now() }
           : {}),
         ...(record.session_id !== null
           ? interactiveLastMessagePatch(key, record, record.session_id)
           : {})
-      });
+      };
+      if (Object.keys(observation_patch).length > 0) {
+        update(key, record, observation_patch);
+      }
       if (record.session_id === null) {
         const session = await launcher.readPaneOption(
           record.pane_id,

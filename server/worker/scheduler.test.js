@@ -260,7 +260,7 @@ describe('interactive session reconciliation', () => {
     expect(h.current()).toMatchObject({
       turn_state: 'running',
       turn_state_since: 1000,
-      last_seen_alive_at: 31_000
+      last_seen_alive_at: 10
     });
   });
 
@@ -277,6 +277,22 @@ describe('interactive session reconciliation', () => {
       turn_state: 'question',
       turn_state_since: 31_000
     });
+  });
+
+  test('skips queue writes and notifications when a live observation is unchanged', async () => {
+    const h = interactiveFixture({ session_id: 'sid' });
+    Object.assign(h.pane, { agent_running: '1', agent_attention: '' });
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    const before = h.store.snapshot(WS);
+    const update = vi.spyOn(h.store, 'updateInteractiveSession');
+    h.changed.mockClear();
+    h.setTime(31_000);
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS)).toEqual(before);
+    expect(h.changed).not.toHaveBeenCalled();
   });
 
   test('leaves turn state null before the first pass', () => {
@@ -430,7 +446,7 @@ describe('interactive session reconciliation', () => {
 
     expect(
       h.store.snapshot(WS).interactive_sessions['B1:external_resume']
-    ).toMatchObject({ state: 'live', last_seen_alive_at: 1000 });
+    ).toMatchObject({ state: 'live', last_seen_alive_at: 10 });
     expect(h.timeline.append).toHaveBeenCalledWith(
       expect.objectContaining({
         seq: 'external_resume:10:started',
@@ -469,7 +485,7 @@ describe('interactive session reconciliation', () => {
     expect(h.current()).toMatchObject({
       session_id: 'sid',
       session_id_source: 'pane_option',
-      last_seen_alive_at: 1000
+      last_seen_alive_at: 10
     });
   });
 
