@@ -233,7 +233,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     ).toContain('스펙 5.6-sol/xhigh · 계획 5.6-sol/xhigh · 구현 5.6-sol/xhigh');
   });
 
-  test('groups three core keys above thirteen advanced keys', () => {
+  test('groups core keys above the supported advanced keys', () => {
     const mount = mountTemplate();
 
     expect(
@@ -247,7 +247,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
           '[data-exec-settings-group="worker-detail"] select[data-key]'
         )
       ).map((select) => select.getAttribute('data-key'))
-    ).toEqual(['orchestration_effort', 'orchestration_speed']);
+    ).toEqual(['orchestration_effort']);
     expect(
       Array.from(
         mount.querySelectorAll(
@@ -274,7 +274,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     ]);
     expect(
       mount.querySelectorAll('[data-exec-settings-advanced] select[data-key]')
-    ).toHaveLength(13);
+    ).toHaveLength(12);
     expect(EXEC_KEYS).toHaveLength(15);
     expect(
       EXEC_ADVANCED_GROUPS.find((group) => group.id === 'review')?.keys
@@ -300,8 +300,8 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     ).toContain('고급 설정 — 2개 변경됨');
   });
 
-  test('renders the 15 exec keys plus workflow_mode and drops review_model', () => {
-    const mount = mountTemplate();
+  test('renders supported exec keys plus workflow_mode and drops review_model', () => {
+    const mount = mountTemplate({ orchestration_model: 'sol' });
 
     for (const key of [
       'orchestration_model',
@@ -342,7 +342,6 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
       { label: '구현 runtime', key: 'impl_runtime' },
       { label: '워커 실행 모델', key: 'orchestration_model' },
       { label: '워커 reasoning effort', key: 'orchestration_effort' },
-      { label: '워커 실행 속도', key: 'orchestration_speed' },
       { label: '구현 모델', key: 'impl_model' },
       { label: '구현 reasoning effort', key: 'impl_effort' },
       { label: '스펙 리뷰어', key: 'spec_review_model' },
@@ -567,13 +566,7 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
 
   test('narrows speed options to the selected model and labels them', () => {
     const claude = mountTemplate({ orchestration_model: 'opus' });
-    expect(optionValues(selectFor(claude, 'orchestration_speed'))).toEqual([
-      '',
-      'default'
-    ]);
-    expect(
-      selectFor(claude, 'orchestration_speed').options[1].textContent?.trim()
-    ).toBe('Standard');
+    expect(selectFor(claude, 'orchestration_speed')).toBeNull();
 
     document.body.innerHTML = '<div id="m"></div>';
     const codex = mountTemplate({ orchestration_model: 'sol' });
@@ -618,26 +611,20 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
       impl_review_speed: 'fast'
     });
 
-    expect(selectFor(gated, 'spec_review_speed').disabled).toBe(true);
-    expect(selectFor(gated, 'plan_review_speed').disabled).toBe(true);
-    expect(selectFor(gated, 'impl_review_speed').disabled).toBe(true);
-    expect(selectFor(gated, 'impl_review_speed').value).toBe('fast');
-    expect(
-      selectFor(gated, 'impl_review_speed').options[
-        selectFor(gated, 'impl_review_speed').selectedIndex
-      ].textContent?.trim()
-    ).toBe('Fast (비호환)');
+    expect(selectFor(gated, 'spec_review_speed')).toBeNull();
+    expect(selectFor(gated, 'plan_review_speed')).toBeNull();
+    expect(selectFor(gated, 'impl_review_speed')).toBeNull();
 
     document.body.innerHTML = '<div id="m"></div>';
     const skipped = mountTemplate({ plan_review_model: 'skip' });
 
-    expect(selectFor(skipped, 'plan_review_speed').disabled).toBe(true);
+    expect(selectFor(skipped, 'plan_review_speed')).toBeNull();
   });
 
-  test('disables review speed for incompatible and unavailable reviewers', () => {
+  test('hides review speed for incompatible and unavailable reviewers', () => {
     const incompatible = mountTemplate({ spec_review_model: 'removed' });
 
-    expect(selectFor(incompatible, 'spec_review_speed').disabled).toBe(true);
+    expect(selectFor(incompatible, 'spec_review_speed')).toBeNull();
 
     document.body.innerHTML = '<div id="m"></div>';
     const unavailable_mount = /** @type {HTMLElement} */ (
@@ -655,35 +642,29 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
       unavailable_mount
     );
 
-    expect(selectFor(unavailable_mount, 'spec_review_speed').disabled).toBe(
-      true
-    );
+    expect(selectFor(unavailable_mount, 'spec_review_speed')).toBeNull();
   });
 
   test('does not borrow Sol speed tiers for Astra review', () => {
     const mount = mountTemplate({ spec_review_model: 'astra' });
     const speed = selectFor(mount, 'spec_review_speed');
 
-    expect(optionValues(speed)).toEqual(['']);
-    expect(speed.disabled).toBe(true);
+    expect(speed).toBeNull();
   });
 
-  test('keeps a stale speed value selected as incompatible', () => {
+  test('hides a stale fast value for a Claude model', () => {
     const mount = mountTemplate({
       orchestration_model: 'opus',
       orchestration_speed: 'fast'
     });
 
     const speed = selectFor(mount, 'orchestration_speed');
-    expect(speed.value).toBe('fast');
-    expect(speed.options[speed.selectedIndex].textContent?.trim()).toBe(
-      'Fast (비호환)'
-    );
+    expect(speed).toBeNull();
   });
 
   test('preserves an unknown stale speed label verbatim', () => {
     const mount = mountTemplate({
-      orchestration_model: 'opus',
+      orchestration_model: 'sol',
       orchestration_speed: 'turbo'
     });
 
@@ -800,7 +781,6 @@ describe('views/detail-panel/exec-settings projected default labels', () => {
     const expected = [
       ['orchestration_model', '기본값 사용 — opus'],
       ['orchestration_effort', '기본값 사용 — CLI 기본 (미지정)'],
-      ['orchestration_speed', '기본값 사용 — default (일반)'],
       ['spec_review_model', '기본값 사용 — 5.6-sol'],
       ['impl_review_model', '기본값 사용 — 5.6-sol'],
       ['plan_review_model', '기본값 사용 — 5.6-sol'],

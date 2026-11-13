@@ -138,6 +138,32 @@ beforeEach(() => {
 });
 
 describe('conversation section load (UI-jbl1 §3.4)', () => {
+  test('renders conflict settings below conversations and saves with the shared revision', async () => {
+    const snapshot = /** @type {any} */ (snapshotOf());
+    for (const runner of ['claude', 'codex']) {
+      for (const axis of ['model', 'effort']) {
+        const key = `conflict_${runner}_${axis}`;
+        snapshot.fields[key] = { ...snapshot.fields[`${runner}_${axis}`] };
+        snapshot.values[key] = null;
+      }
+    }
+    const { host, send } = mountSection(serving(snapshot));
+    await settle();
+
+    choose(selectOf(host, 'conflict_claude_model'), 'opus');
+    await settle();
+
+    expect(
+      Array.from(host.querySelectorAll('.settings-dialog__group-title'), (el) =>
+        el.textContent?.trim()
+      )
+    ).toEqual(['대화 세션', '충돌 해소 세션']);
+    expect(send).toHaveBeenLastCalledWith('conversation-settings-set', {
+      expected_revision: 4,
+      values: { conflict_claude_model: 'opus' }
+    });
+  });
+
   test('requests the snapshot once on mount', async () => {
     const { send } = mountSection(serving(snapshotOf()));
 

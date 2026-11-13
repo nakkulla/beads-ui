@@ -26,7 +26,11 @@ import {
 } from '../session-defaults.js';
 import { commonSet, resolveWorkerUrl } from '../worker-url.js';
 import { tickWorkerQueue } from '../worker/attach.js';
-import { APPLIES_TO_VALUES } from '../worker/exec-enums.js';
+import {
+  APPLIES_TO_VALUES,
+  QUICK_FIX_LANE_MAP,
+  validateExecSpeeds
+} from '../worker/exec-enums.js';
 import { APPLIED_PRESET_FIELDS } from '../worker/queue-store.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
@@ -224,6 +228,27 @@ export async function handleSetSessionDefaults(ws, req) {
   }
   const next = mergeSessionDefaults(before.raw, validated.patch);
   const planned = normalizeSessionDefaults(next);
+  const general_speed = validateExecSpeeds(planned.values);
+  const quick_fix_values = { ...planned.values };
+  for (const [key, storage_key] of Object.entries(QUICK_FIX_LANE_MAP)) {
+    if (Object.hasOwn(planned.values, storage_key)) {
+      quick_fix_values[key] = planned.values[storage_key];
+    }
+  }
+  const quick_fix_speed = validateExecSpeeds(quick_fix_values);
+  if (!general_speed.ok || !quick_fix_speed.ok) {
+    const invalid = !general_speed.ok ? general_speed : quick_fix_speed;
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          /** @type {{ reason: string }} */ (invalid).reason
+        )
+      )
+    );
+    return;
+  }
   try {
     const runtime = getWorkerRuntime();
     for (let attempt = 0; attempt < 2; attempt++) {

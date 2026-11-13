@@ -5415,7 +5415,7 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     const r = store.setOrchestrationDefaults(WS, {
       expected_revision: 0,
       values: {
-        orchestration_model: 'sonnet',
+        orchestration_model: 'sol',
         orchestration_effort: 'high',
         orchestration_speed: 'fast',
         quick_fix_orchestration_model: 'sol',
@@ -5425,12 +5425,107 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     });
 
     expect(r.ok).toBe(true);
-    expect(r.queue.orchestration_model).toBe('sonnet');
+    expect(r.queue.orchestration_model).toBe('sol');
     expect(r.queue.orchestration_effort).toBe('high');
     expect(r.queue.orchestration_speed).toBe('fast');
     expect(r.queue.quick_fix_orchestration_model).toBe('sol');
     expect(r.queue.quick_fix_orchestration_effort).toBe('xhigh');
     expect(r.queue.quick_fix_orchestration_speed).toBe('default');
+  });
+
+  test.each(['orchestration', 'quick_fix_orchestration'])(
+    'rejects fast against a stored %s Claude model without changing the revision',
+    (prefix) => {
+      const store = createQueueStore();
+      const before = store.setOrchestrationDefaults(WS, {
+        expected_revision: 0,
+        values: { [`${prefix}_model`]: 'opus' }
+      }).queue;
+
+      const result = store.setOrchestrationDefaults(WS, {
+        expected_revision: before.revision,
+        values: { [`${prefix}_speed`]: 'fast' }
+      });
+
+      expect(result.ok).toBe(false);
+      expect(store.snapshot(WS)).toEqual(before);
+    }
+  );
+
+  test('rejects a quick fix fast speed inherited by a Claude orchestration model', () => {
+    const store = createQueueStore();
+
+    const result = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: {
+        orchestration_model: 'opus',
+        quick_fix_orchestration_speed: 'fast'
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(0);
+  });
+
+  test.each(['orchestration', 'quick_fix_orchestration'])(
+    'rejects %s fast when the model resolves to the final fallback',
+    (prefix) => {
+      const store = createQueueStore();
+      const before = store.snapshot(WS);
+
+      const result = store.setOrchestrationDefaults(WS, {
+        expected_revision: before.revision,
+        values: { [`${prefix}_speed`]: 'fast' }
+      });
+
+      expect(result.ok).toBe(false);
+      expect(store.snapshot(WS)).toEqual(before);
+    }
+  );
+
+  test.each([
+    ['orchestration', null],
+    ['orchestration', ''],
+    ['quick_fix_orchestration', null],
+    ['quick_fix_orchestration', '']
+  ])(
+    'rejects clearing %s model with %s while fast remains enabled',
+    (prefix, cleared_value) => {
+      const store = createQueueStore();
+      const before = store.setOrchestrationDefaults(WS, {
+        expected_revision: 0,
+        values: { [`${prefix}_model`]: 'sol', [`${prefix}_speed`]: 'fast' }
+      }).queue;
+
+      const result = store.setOrchestrationDefaults(WS, {
+        expected_revision: before.revision,
+        values: { [`${prefix}_model`]: cleared_value }
+      });
+
+      expect(result.ok).toBe(false);
+      expect(store.snapshot(WS)).toEqual(before);
+    }
+  );
+
+  test('allows clearing the quick fix model when fast inherits a compatible general model', () => {
+    const store = createQueueStore();
+    const before = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: {
+        orchestration_model: 'sol',
+        quick_fix_orchestration_model: 'sol',
+        quick_fix_orchestration_speed: 'fast'
+      }
+    }).queue;
+
+    const result = store.setOrchestrationDefaults(WS, {
+      expected_revision: before.revision,
+      values: { quick_fix_orchestration_model: null }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.quick_fix_orchestration_model).toBeNull();
+    expect(result.queue.quick_fix_orchestration_speed).toBe('fast');
   });
 
   test('setOrchestrationDefaults clears a key given null', () => {
@@ -5451,7 +5546,7 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
   test('setOrchestrationDefaults clears all six keys together', () => {
     const store = createQueueStore();
     const values = {
-      orchestration_model: 'sonnet',
+      orchestration_model: 'sol',
       orchestration_effort: 'high',
       orchestration_speed: 'fast',
       quick_fix_orchestration_model: 'sol',

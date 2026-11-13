@@ -64,6 +64,10 @@ import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { createTranscriptReducer } from '../../app/utils/transcript-lines.js';
 import { execLaneOf } from '../../app/utils/worker-eligibility.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
+import {
+  conflictLaunchSettings,
+  getConversationSettings
+} from '../conversation-settings.js';
 import { normalizeProviderLimitPolicyEntry } from '../limit-policy-settings.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
@@ -19592,11 +19596,25 @@ export function createScheduler(deps) {
       return { ok: false, reason: exec.invalid_reason };
     }
     runner_name = exec.runner;
-    launch_model = exec.orchestration_model ?? null;
-    launch_effort = exec.orchestration_effort ?? null;
-    launch_speed = exec.orchestration_speed ?? 'default';
+    const conflict_launch = conflictLaunchSettings(
+      runner_name,
+      {
+        model: exec.orchestration_model ?? null,
+        effort: exec.orchestration_effort ?? null,
+        speed: exec.orchestration_speed ?? 'default'
+      },
+      getConversationSettings()
+    );
+    launch_model = conflict_launch.model;
+    launch_effort = conflict_launch.effort;
+    launch_speed = conflict_launch.speed;
     stamped_keys = exec.stamped_keys;
-    exec_values = execValuesFor(exec);
+    exec_values = execValuesFor({
+      ...exec,
+      orchestration_model: launch_model,
+      orchestration_effort: launch_effort,
+      orchestration_speed: launch_speed
+    });
     // The first observed conflict on an external row (UI-p206 §5.2). The bead
     // was implemented by an interactive session whose judgments — which review
     // points were taken and which were refused, and why — never all reach the
@@ -20126,6 +20144,10 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'bad_request' };
     }
     const current_exec_values = execValuesFor(resolved.exec);
+    const conflict_settings =
+      options.conflict_resolution === true && !override_result.applied
+        ? getConversationSettings()
+        : null;
     let current_exec_preset = resolved.exec_preset ?? null;
     if (provider_auto_resume && override_result.applied) {
       try {
@@ -20149,6 +20171,14 @@ export function createScheduler(deps) {
       preset_id: resolved.preset_id,
       preset_revision: resolved.preset_revision,
       effective_exec_digest: continuationDigest({
+        ...(conflict_settings
+          ? {
+              conflict_claude_model: conflict_settings.conflict_claude_model,
+              conflict_claude_effort: conflict_settings.conflict_claude_effort,
+              conflict_codex_model: conflict_settings.conflict_codex_model,
+              conflict_codex_effort: conflict_settings.conflict_codex_effort
+            }
+          : {}),
         runner: resolved.exec.runner,
         model: resolved.exec.orchestration_model ?? null,
         effort: resolved.exec.orchestration_effort ?? null,
@@ -20280,16 +20310,31 @@ export function createScheduler(deps) {
         continuation_mismatch: mismatch()
       };
     }
-    const launch_model = use_prior
+    const base_model = use_prior
       ? (prior.model ?? null)
       : (resolved.exec.orchestration_model ?? null);
-    const launch_effort = use_prior
+    const base_effort = use_prior
       ? (prior.effort ?? null)
       : (resolved.exec.orchestration_effort ?? null);
-    const launch_speed = use_prior
+    const base_speed = use_prior
       ? (prior.speed ?? 'default')
       : (resolved.exec.orchestration_speed ?? 'default');
-    const exec_values = use_prior ? prior.exec_values : current_exec_values;
+    const launch = conflict_settings
+      ? conflictLaunchSettings(
+          runner_name,
+          { model: base_model, effort: base_effort, speed: base_speed },
+          conflict_settings
+        )
+      : { model: base_model, effort: base_effort, speed: base_speed };
+    const launch_model = launch.model;
+    const launch_effort = launch.effort;
+    const launch_speed = launch.speed;
+    const exec_values = {
+      ...(use_prior ? prior.exec_values : current_exec_values),
+      orchestration_model: launch_model,
+      orchestration_effort: launch_effort,
+      orchestration_speed: launch_speed
+    };
     if (options.capture_restore === false) {
       return {
         ok: true,

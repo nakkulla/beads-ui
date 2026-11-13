@@ -1317,10 +1317,12 @@ import {
   ORCHESTRATION_KEYS,
   QUICK_FIX_ORCHESTRATION_KEYS,
   execSettingEnums,
-  normalizeAppliesTo
+  normalizeAppliesTo,
+  validateExecSpeeds
 } from './exec-enums.js';
 import { foreignHandoffRearmCause } from './foreign-handoff.js';
 import { orderLaneByBlocks } from './lane-order.js';
+import { ORCHESTRATION_MODEL_FALLBACK } from './policy.js';
 import {
   createProviderHoldStore,
   effectiveProviderHolds,
@@ -12724,6 +12726,23 @@ export function createQueueStore(options = {}) {
         }
         for (const [key, value] of Object.entries(normalized)) {
           stored[key] = value;
+        }
+        if (
+          !validateExecSpeeds({
+            ...stored,
+            orchestration_model:
+              stored.orchestration_model ?? ORCHESTRATION_MODEL_FALLBACK
+          }).ok ||
+          !validateExecSpeeds({
+            orchestration_model:
+              stored.quick_fix_orchestration_model ??
+              stored.orchestration_model ??
+              ORCHESTRATION_MODEL_FALLBACK,
+            orchestration_speed:
+              stored.quick_fix_orchestration_speed ?? stored.orchestration_speed
+          }).ok
+        ) {
+          return false;
         }
         for (const field of Object.values(APPLIED_PRESET_FIELDS)) {
           if (Object.hasOwn(input, field)) {

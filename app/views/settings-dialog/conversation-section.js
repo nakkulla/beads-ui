@@ -1,5 +1,5 @@
 /**
- * The settings dialog `운영` tab's `대화 세션` group (UI-jbl1 §3.4).
+ * The execution tab's conversation and conflict-resolution session groups.
  *
  * Server-global launch settings of every Worker session conversation, read
  * from and written to the `conversation-settings` request pair: the ONE
@@ -61,6 +61,18 @@ export const CONVERSATION_ROWS = [
     key: 'codex_effort',
     label: 'Codex effort',
     note: '모델·effort는 그 런타임으로 여는 모든 대화(클릭·자동, 멈춤·실패·외부 작업 완료)에 붙습니다. 따름이면 플래그를 붙이지 않습니다.'
+  }
+];
+
+/** Conflict settings share the same snapshot and revision as conversations. */
+export const CONFLICT_ROWS = [
+  { key: 'conflict_claude_model', label: 'Claude 모델' },
+  { key: 'conflict_claude_effort', label: 'Claude effort' },
+  { key: 'conflict_codex_model', label: 'Codex 모델' },
+  {
+    key: 'conflict_codex_effort',
+    label: 'Codex effort',
+    note: 'PR 충돌을 해소할 때 씁니다. 따름이면 원래 세션이나 실행 설정을 따릅니다.'
   }
 ];
 
@@ -316,10 +328,16 @@ export function createConversationSection(host, options) {
     const current = state;
     render(
       html`<section class="settings-dialog__group" data-group="conversation">
-        <div class="settings-dialog__group-title">대화 세션</div>
-        ${CONVERSATION_ROWS.map((row) => rowTemplate(current, row))}
-        ${error ? html`<p class="settings-chips__error">${error}</p>` : ''}
-      </section>`,
+          <div class="settings-dialog__group-title">대화 세션</div>
+          ${CONVERSATION_ROWS.map((row) => rowTemplate(current, row))}
+          ${error ? html`<p class="settings-chips__error">${error}</p>` : ''}
+        </section>
+        ${CONFLICT_ROWS.some((row) => current.fields[row.key])
+          ? html`<section class="settings-dialog__group" data-group="conflict">
+              <div class="settings-dialog__group-title">충돌 해소 세션</div>
+              ${CONFLICT_ROWS.map((row) => rowTemplate(current, row))}
+            </section>`
+          : ''}`,
       host
     );
   }

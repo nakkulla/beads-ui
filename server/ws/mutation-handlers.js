@@ -4,6 +4,11 @@
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
+import { resolveExecutionSettings } from '../../app/utils/execution-defaults.js';
+import {
+  SESSION_DEFAULTS_KV_KEY,
+  normalizeSessionDefaults
+} from '../session-defaults.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import { beadDeferLockKey } from '../worker/bead-defer.js';
 import {
@@ -11,12 +16,16 @@ import {
   AUTO_LITERAL,
   execSettingEnums,
   sessionDefaultEnums,
+  validateExecSpeeds,
   validateImplSettings
 } from '../worker/exec-enums.js';
+import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import { emitQueueChanged } from '../worker/queue-events.js';
+import { runtimeCatalog } from '../worker/runner/index.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   getGitUserNameInWorkspace,
+  kvGetJsonInWorkspace,
   log,
   readbackFailureDetail,
   runBdInWorkspace,
@@ -370,6 +379,64 @@ function exactImplValues(target) {
 }
 
 /**
+ * Check the effective tuple before a Bead model or speed write.
+ *
+ * @param {WebSocket} ws
+ * @param {string} id
+ * @param {Record<string, string>} patch
+ * @returns {Promise<string|null>}
+ */
+async function beadSpeedWriteError(ws, id, patch) {
+  let before;
+  try {
+    before = await runBdJsonProjectedInWorkspace(
+      ws,
+      'show',
+      ['show', id, '--json'],
+      { expected_id: id }
+    );
+  } catch {
+    return 'failed to read execution settings';
+  }
+  if (!before.ok) {
+    return 'failed to read execution settings';
+  }
+  const metadata = { ...before.data.metadata };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value) {
+      metadata[key] = value;
+    } else {
+      delete metadata[key];
+    }
+  }
+  const root_dir = targetWorkspaceOf(ws, {});
+  const global = root_dir
+    ? await kvGetJsonInWorkspace(ws, SESSION_DEFAULTS_KV_KEY)
+    : { ok: true, value: undefined };
+  if (!global.ok) {
+    return 'failed to read execution defaults';
+  }
+  const queue = root_dir
+    ? getWorkerRuntime().queueStore.snapshot(root_dir)
+    : {};
+  const catalog = runtimeCatalog();
+  const rows = resolveExecutionSettings({
+    pin: metadata,
+    global: { ...normalizeSessionDefaults(global.value).values, ...queue },
+    runner_catalog: catalog,
+    execution_defaults: projectExecutionDefaults(catalog),
+    route: metadata.route || null
+  });
+  const result = validateExecSpeeds(
+    Object.fromEntries(
+      Object.entries(rows).map(([name, row]) => [name, row.value])
+    ),
+    catalog
+  );
+  return result.ok ? null : result.reason;
+}
+
+/**
  * Set or unset one of the 12 exec-preference metadata keys (+ workflow_mode) via
  * `bd update --set-metadata` / `--unset-metadata`. Selecting `standard` (or
  * clearing a value) removes the key rather than storing a literal.
@@ -401,6 +468,17 @@ export async function handleUpdateExecSettings(ws, req) {
   if (invalid) {
     ws.send(JSON.stringify(makeError(req, 'bad_request', invalid)));
     return;
+  }
+  if (
+    /^(orchestration|impl|spec_review|plan_review|impl_review)_(model|runtime|speed)$/.test(
+      key
+    )
+  ) {
+    const speed_error = await beadSpeedWriteError(ws, id, { [key]: value });
+    if (speed_error) {
+      ws.send(JSON.stringify(makeError(req, 'bad_request', speed_error)));
+      return;
+    }
   }
   const res = await runBdInWorkspace(ws, buildExecSettingsArgs(id, key, value));
   if (res.code !== 0) {
@@ -481,6 +559,15 @@ export async function handleUpdateImplTarget(ws, req) {
   );
   if (!coherence.ok) {
     ws.send(JSON.stringify(makeError(req, 'bad_request', coherence.reason)));
+    return;
+  }
+  const speed_error = await beadSpeedWriteError(ws, id, {
+    impl_runtime,
+    impl_model,
+    impl_effort
+  });
+  if (speed_error) {
+    ws.send(JSON.stringify(makeError(req, 'bad_request', speed_error)));
     return;
   }
   const res = await runBdInWorkspace(

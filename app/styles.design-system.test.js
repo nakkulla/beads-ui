@@ -2244,10 +2244,9 @@ describe('dialogs use parts (§3.4 check 3)', () => {
 
   test.each(
     ['single', 'monitor'].flatMap((scope) =>
-      ['worker', 'quick_fix', 'session_review', 'hermes'].map((tab) => [
-        scope,
-        tab
-      ])
+      ['worker', 'quick_fix', 'session_review', 'hermes', 'resolution'].map(
+        (tab) => [scope, tab]
+      )
     )
   )(
     'draws every execution sub tab control with a part (%s %s)',
@@ -2260,7 +2259,7 @@ describe('dialogs use parts (§3.4 check 3)', () => {
       await settle();
 
       expect(dialog.querySelectorAll('[data-execution-subtab]')).toHaveLength(
-        4
+        5
       );
       expect(
         dialog

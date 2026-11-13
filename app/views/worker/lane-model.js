@@ -550,10 +550,10 @@ const DONE_KIND_LABELS = {
  */
 
 /**
- * Shared serial occupancy row, including its mutation workspace and revision.
+ * Shared occupancy row, including its mutation workspace and revision.
  *
  * @param {MonitorOccupant} occupant
- * @param {MonitorSerialSublane['id']} lane
+ * @param {LaneItem['lane']} lane
  * @param {Pick<LaneQueueGroup, 'root_dir'|'revision'>} group
  * @returns {LaneItem}
  */
@@ -602,6 +602,7 @@ export function occupantRowInput(occupant, lane, group) {
  * @property {Record<string, any>} runner_catalog
  * @property {LaneItem[]} items
  * @property {{ parallel: LaneItem[], serial: MonitorSerialSublane[] }} sublanes
+ * @property {MonitorOccupant[]} [parallel_occupants] - Running parallel-slot users.
  * @property {number} serial_lane_count
  * @property {MonitorSerialSublane[]} [configured_serial] - Every serial lane
  * below {@link serial_lane_count}, an empty one included, plus a lane past it
@@ -5102,11 +5103,26 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // (UI-0a2m) 세지 않고, 일시정지·실패 타일도 슬롯을 놓아 준 상태다.
   /** @type {Map<string, number>} */
   const live_by_root = new Map();
+  /** @type {Map<string, MonitorOccupant[]>} */
+  const parallel_occupants_by_root = new Map();
   for (const item of running) {
-    if (item.kind === 'session' || item.run_state !== 'running') {
+    if (
+      item.kind === 'session' ||
+      item.non_occupying ||
+      item.run_state !== 'running'
+    ) {
       continue;
     }
     live_by_root.set(item.root_dir, (live_by_root.get(item.root_dir) || 0) + 1);
+    if (item.lane_origin?.kind === 'parallel') {
+      const occupants = parallel_occupants_by_root.get(item.root_dir) || [];
+      occupants.push({
+        id: item.id,
+        title: item.title,
+        badge: '실행 중 · 점유'
+      });
+      parallel_occupants_by_root.set(item.root_dir, occupants);
+    }
   }
   /** @type {Map<string, LaneItem[]>} */
   const done_by_root = new Map();
@@ -5166,6 +5182,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       runner_catalog: objectOf(source.runner_catalog),
       items: parallel,
       sublanes: { parallel, serial },
+      parallel_occupants: parallel_occupants_by_root.get(source.root_dir) || [],
       serial_lane_count: serial_count_by_root.get(source.root_dir) || 0,
       configured_serial:
         configured_serial_by_root.get(source.root_dir) || serial,

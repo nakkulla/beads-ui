@@ -30,6 +30,10 @@
  * @property {string|null} claude_effort
  * @property {string|null} codex_model
  * @property {string|null} codex_effort
+ * @property {string|null} [conflict_claude_model]
+ * @property {string|null} [conflict_claude_effort]
+ * @property {string|null} [conflict_codex_model]
+ * @property {string|null} [conflict_codex_effort]
  * @typedef {Object} ConversationSettingFieldWire
  * @property {'boolean'|'choice'|'model'|'effort'} kind
  * @property {boolean|string|null} default
@@ -72,7 +76,11 @@ export const CONVERSATION_SETTINGS_FIELDS = Object.freeze({
   claude_model: { kind: 'model', runner: 'claude', default: null },
   claude_effort: { kind: 'effort', runner: 'claude', default: null },
   codex_model: { kind: 'model', runner: 'codex', default: null },
-  codex_effort: { kind: 'effort', runner: 'codex', default: null }
+  codex_effort: { kind: 'effort', runner: 'codex', default: null },
+  conflict_claude_model: { kind: 'model', runner: 'claude', default: null },
+  conflict_claude_effort: { kind: 'effort', runner: 'claude', default: null },
+  conflict_codex_model: { kind: 'model', runner: 'codex', default: null },
+  conflict_codex_effort: { kind: 'effort', runner: 'codex', default: null }
 });
 
 /**
@@ -140,7 +148,9 @@ function effortChoices(catalog, runner, model) {
  */
 function pairedModel(key, overrides) {
   const field = CONVERSATION_SETTINGS_FIELDS[key];
-  return field.kind === 'effort' ? overrides[`${field.runner}_model`] : null;
+  return field.kind === 'effort'
+    ? overrides[key.replace(/_effort$/, '_model')]
+    : null;
 }
 
 /**
@@ -404,7 +414,11 @@ export function createConversationSettingsStore(options = {}) {
       claude_model: overrides.claude_model ?? null,
       claude_effort: overrides.claude_effort ?? null,
       codex_model: overrides.codex_model ?? null,
-      codex_effort: overrides.codex_effort ?? null
+      codex_effort: overrides.codex_effort ?? null,
+      conflict_claude_model: overrides.conflict_claude_model ?? null,
+      conflict_claude_effort: overrides.conflict_claude_effort ?? null,
+      conflict_codex_model: overrides.conflict_codex_model ?? null,
+      conflict_codex_effort: overrides.conflict_codex_effort ?? null
     };
   }
 
@@ -607,6 +621,55 @@ export function conversationSettingsStore() {
  */
 export function getConversationSettings() {
   return conversationSettingsStore().effective();
+}
+
+/**
+ * Resolve conflict-only overrides against the model this launch really runs.
+ *
+ * @param {string} runner
+ * @param {{ model: string|null, effort: string|null, speed: string }} base
+ * @param {ConversationSettingValues} [values]
+ * @param {import('./worker/runner-catalog.js').ResolvedCatalog} [catalog]
+ */
+export function conflictLaunchSettings(
+  runner,
+  base,
+  values = getConversationSettings(),
+  catalog = runtimeCatalog()
+) {
+  const model =
+    runner === 'claude'
+      ? values.conflict_claude_model
+      : values.conflict_codex_model;
+  const effort =
+    runner === 'claude'
+      ? values.conflict_claude_effort
+      : values.conflict_codex_effort;
+  if (!model && !effort) {
+    return base;
+  }
+  const launch_model = model || base.model;
+  const models = catalog.runners[runner]?.models || {};
+  const model_key =
+    launch_model &&
+    (Object.hasOwn(models, launch_model)
+      ? launch_model
+      : Object.keys(models).find((key) => models[key].id === launch_model));
+  const entry = model_key ? models[model_key] : null;
+  const allowed = entry ? effortChoices(catalog, runner, model_key) : [];
+  return {
+    model: launch_model,
+    effort:
+      effort && allowed.includes(effort)
+        ? effort
+        : model && base.effort && !allowed.includes(base.effort)
+          ? null
+          : base.effort,
+    speed:
+      model && !(entry?.speed_tiers || ['default']).includes(base.speed)
+        ? 'default'
+        : base.speed
+  };
 }
 
 /**

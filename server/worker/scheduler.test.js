@@ -6,6 +6,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execLaneOf } from '../../app/utils/worker-eligibility.js';
+import * as conversationSettings from '../conversation-settings.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import {
   __resetLimitPolicySettingsForTest,
@@ -29775,6 +29776,123 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
 });
 
 describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () => {
+  /** @param {'claude'|'codex'} runner */
+  function conflictPreferences(runner) {
+    vi.spyOn(conversationSettings, 'getConversationSettings').mockReturnValue({
+      auto_launch: false,
+      fresh_runtime: 'inherit',
+      claude_model: null,
+      claude_effort: null,
+      codex_model: null,
+      codex_effort: null,
+      ...(runner === 'claude'
+        ? { conflict_claude_model: 'sonnet', conflict_claude_effort: 'high' }
+        : { conflict_codex_model: 'luna', conflict_codex_effort: 'high' })
+    });
+  }
+
+  test.each(/** @type {const} */ (['claude', 'codex']))(
+    'uses %s conflict settings for a source-less external PR',
+    async (runner) => {
+      conflictPreferences(runner);
+      const env = extRunnerEnv({
+        model: runner === 'claude' ? 'opus' : 'sol',
+        effort: 'low'
+      });
+
+      const result = await env.scheduler.dispatchExternalConflict(
+        WS,
+        'X1',
+        'main'
+      );
+
+      expect(result.ok).toBe(true);
+      const expected = {
+        model: runner === 'claude' ? 'sonnet' : 'luna',
+        effort: 'high'
+      };
+      expect(env.runner.settingsFor('X1')).toMatchObject(expected);
+      const attempt =
+        env.store.snapshot(WS).attempts[String(result.attempt_id)];
+      expect(attempt).toMatchObject(expected);
+      expect(attempt.exec_values).toMatchObject({
+        orchestration_model: expected.model,
+        orchestration_effort: expected.effort
+      });
+    }
+  );
+
+  test.each(/** @type {const} */ (['claude', 'codex']))(
+    'uses %s conflict settings when resuming a prior resolver',
+    async (runner) => {
+      conflictPreferences(runner);
+      const model = runner === 'claude' ? 'opus' : 'sol';
+      const env = extRunnerEnv({ model, effort: 'low' });
+      seedSettledAttempt(env.store, 'prior-conflict', {
+        runner,
+        model,
+        effort: 'low',
+        session_id: 'sid-conflict',
+        conflict_resolution: true,
+        external_conflict: true
+      });
+
+      const result = await env.scheduler.dispatchExternalConflict(
+        WS,
+        'X1',
+        'main'
+      );
+
+      expect(result.ok).toBe(true);
+      expect(env.runner.settingsFor('X1')).toMatchObject({
+        model: runner === 'claude' ? 'sonnet' : 'luna',
+        effort: 'high',
+        resume_session_id: 'sid-conflict'
+      });
+      expect(
+        env.store.snapshot(WS).attempts[String(result.attempt_id)]
+      ).toMatchObject({
+        model: runner === 'claude' ? 'sonnet' : 'luna',
+        effort: 'high'
+      });
+    }
+  );
+
+  test('keeps an explicit resolver execution override ahead of conflict preferences', async () => {
+    conflictPreferences('claude');
+    const env = setup({
+      config: { B1: { model: 'opus', effort: 'low' } },
+      slots: 1
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'resolver', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'resolver',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'claude',
+        session_id: 'sid-conflict',
+        model: 'opus',
+        effort: 'low',
+        conflict_resolution: true
+      }
+    });
+
+    const result = await env.scheduler.resume(WS, 'resolver', {
+      exec_override: { model: 'opus', effort: 'low' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      model: 'opus',
+      effort: 'low'
+    });
+  });
+
   /**
    * The external-conflict environment: the bead is an external row, blocked and
    * not ready, so only the click path can dispatch it.

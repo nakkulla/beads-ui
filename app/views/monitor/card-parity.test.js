@@ -979,6 +979,48 @@ const SHARED_BEADS = [
 ];
 
 describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () => {
+  test('projects parallel running occupants before waiting rows without changing drop coordinates', async () => {
+    const raw = rawQueue();
+    raw.attempts['att-r1'].serial_lane_id = null;
+    const { worker, monitor } = await drawBothTabs(undefined, {
+      attempts: raw.attempts
+    });
+
+    const cards = [worker, monitor].map((mount) => {
+      const ghost = /** @type {HTMLElement} */ (
+        mount.querySelector('.worker-mini--ghost[data-bead-id="R-1"]')
+      );
+      const lane = /** @type {HTMLElement} */ (
+        ghost?.closest('.worker-wait__area--parallel, .worker-wait__lane')
+      );
+      expect(ghost).not.toBeNull();
+      expect(ghost.textContent).toContain('실행 중 · 점유');
+      expect(ghost.classList.contains('worker-mini--held')).toBe(false);
+      expect(ghost.getAttribute('draggable')).toBe('false');
+      expect(
+        ghost.querySelector('[data-queue-index], [data-resume]')
+      ).toBeNull();
+      expect(ghost.closest('[data-row-index]')).toBeNull();
+      expect(
+        lane
+          .querySelector('.worker-pane__count, .worker-wait__area-count')
+          ?.textContent?.trim()
+      ).toBe('4');
+      expect(
+        Array.from(lane.querySelectorAll('[data-row-index]'), (el) =>
+          el.getAttribute('data-row-index')
+        )
+      ).toEqual(['0', '1']);
+      expect(
+        lane.querySelector('[data-bead-id]')?.getAttribute('data-bead-id')
+      ).toBe('R-1');
+      expect(mount.querySelector('.rtile[data-bead-id="R-1"]')).not.toBeNull();
+      return partsOf(ghost);
+    });
+
+    expect(cards[0]).toEqual(cards[1]);
+  });
+
   test('offers the same discard on a withdrawn candidate in both tabs', async () => {
     const { worker, monitor } = await drawBothTabs(undefined, {
       attempts: {

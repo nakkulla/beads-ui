@@ -52,6 +52,7 @@ import {
 } from './active-login-status.js';
 import { appliedPresetFieldFor } from './bulk-observation.js';
 import { createCodexCreditControls } from './codex-credit-controls.js';
+import { createConversationSection } from './conversation-section.js';
 import {
   SESSION_REVIEW_NOTICE,
   executionSubtabs
@@ -207,6 +208,12 @@ export function createExecutionPane(mount_element, binding) {
   const relay_section = createRelayDefaultsSection(relay_host, {
     transport: binding.transport,
     modelVisibilityStore: binding.modelVisibilityStore
+  });
+  const resolution_host = document.createElement('div');
+  const resolution_section = createConversationSection(resolution_host, {
+    transport,
+    modelVisibilityStore: binding.modelVisibilityStore,
+    toast: (message) => showToast(message, 'warning')
   });
 
   /** Values last read from the server; the diff baseline. */
@@ -2244,6 +2251,10 @@ export function createExecutionPane(mount_element, binding) {
       relay_section.render();
       return html`${subtabs}${relay_host}`;
     }
+    if (execution_subtab === 'resolution') {
+      resolution_section.render();
+      return html`${subtabs}${resolution_host}`;
+    }
     if (session_loading) {
       return html`<div class="settings-dialog__empty">불러오는 중…</div>`;
     }
@@ -2444,6 +2455,7 @@ export function createExecutionPane(mount_element, binding) {
     destroy() {
       destroyed = true;
       relay_section.destroy();
+      resolution_section.destroy();
       ++generation;
       codex_credit_controls.destroy();
       unsubscribe_limit_policy?.();

@@ -2779,24 +2779,30 @@ export function createWorkerView(mount_element, options = {}) {
     const parallel_rows = waitingRows(m);
     const root_dir = rootDir();
     const group = groupOf(m);
+    const parallel_ghosts = (group.parallel_occupants || []).map((occupant) =>
+      occupantRowInput(occupant, 'queue', group)
+    );
     // 추천 자리의 점선 카드는 행 사이의 덧그림이다 (UI-izba §4.7) — 드래그 좌표
     // (`data-row-index`)를 갖지 않으므로 드롭 인덱스를 밀지 않는다.
     const preview_plan = placement_preview.activePlan();
     return waitBody({
       parallel: {
-        rows: placement_preview.laneRows(
-          parallel_rows.map((/** @type {any} */ it, index) => ({
-            id: it.id,
-            template: dragRow(it, {
-              kind: 'parallel',
-              root_dir,
-              row_index: index
-            })
-          })),
-          'parallel',
-          preview_plan
-        ),
-        count: parallel_rows.length,
+        rows: [
+          ...parallel_ghosts.map((it) => miniRow(it)),
+          ...placement_preview.laneRows(
+            parallel_rows.map((/** @type {any} */ it, index) => ({
+              id: it.id,
+              template: dragRow(it, {
+                kind: 'parallel',
+                root_dir,
+                row_index: index
+              })
+            })),
+            'parallel',
+            preview_plan
+          )
+        ],
+        count: parallel_ghosts.length + parallel_rows.length,
         slots:
           parallel_rows.length > 0 || group.live_count >= 1 || group.over_cap
             ? [

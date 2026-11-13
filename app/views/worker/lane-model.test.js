@@ -29,6 +29,40 @@ const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
 describe('recorded lane origin (UI-us7l)', () => {
+  test.each([
+    ['running', null, false, 1],
+    ['running', 's1', false, 0],
+    ['running', undefined, false, 0],
+    ['paused', null, false, 0],
+    ['failed', null, false, 0],
+    ['running', null, true, 0]
+  ])(
+    'projects %s origin=%s non_occupying=%s into parallel occupants',
+    (status, serial_lane_id, review, expected) => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            attempts: {
+              live: {
+                attempt_id: 'live',
+                bead_id: 'A-1',
+                status,
+                started_at: 2,
+                ...(serial_lane_id === undefined ? {} : { serial_lane_id }),
+                ...(review ? { kind: 'review_session' } : {})
+              }
+            }
+          })
+        ],
+        [state()]
+      );
+
+      expect(lanes.groups_by_root.get(WS_A)?.parallel_occupants).toHaveLength(
+        expected
+      );
+    }
+  );
+
   test('prefers the durable PR wait entry lane over the last implementation attempt', () => {
     const last_impl_by_bead = new Map([
       ['A-1', { attempt_id: 'impl', bead_id: 'A-1', serial_lane_id: null }]

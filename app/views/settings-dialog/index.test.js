@@ -1593,7 +1593,7 @@ describe('createSettingsDialog server-wide tabs (UI-32oq §4.4)', () => {
     ).toBe('active_account');
   });
 
-  test('draws Worker 주소, 대기·주기, 외부 작업 and 대화 세션 in order on 운영', async () => {
+  test('keeps operations groups on 운영 and moves conversations to 해소 세션', async () => {
     const { root, dialog, transport } = mount({
       timingSettings: TIMING,
       externalWaitSettings: EXTERNAL_WAIT,
@@ -1608,9 +1608,15 @@ describe('createSettingsDialog server-wide tabs (UI-32oq §4.4)', () => {
     expect(titlesOf(root, 'operations')).toEqual([
       'Worker 주소',
       '대기·주기',
-      '외부 작업',
-      '대화 세션'
+      '외부 작업'
     ]);
+    expect(root.querySelector('[data-group="conversation"]')).toBeNull();
+    await openTab(root, 'execution');
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-execution-subtab="resolution"]')
+    ).click();
+    await settle();
+    expect(root.querySelector('[data-group="conversation"]')).not.toBeNull();
     expect(transport).toHaveBeenCalledWith('conversation-settings-get', {});
   });
 
@@ -1649,10 +1655,13 @@ describe('createSettingsDialog server-wide tabs (UI-32oq §4.4)', () => {
     ).toBe(REPO_B);
   });
 
-  test('shows the config.toml fallback of the 대화 자동 기동 switch on 운영', async () => {
+  test('shows the conversation config fallback on 해소 세션', async () => {
     const { root, dialog } = mount({ conversationSettings: CONVERSATION });
-    dialog.open('operations');
+    dialog.open('execution');
     await settle();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-execution-subtab="resolution"]')
+    ).click();
     await settle();
 
     expect(

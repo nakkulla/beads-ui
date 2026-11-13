@@ -46,6 +46,41 @@ import {
 import { resolveCatalog } from './runner-catalog.js';
 
 describe('validateOrchestrationPin', () => {
+  test.each(['general', 'quick_fix'])(
+    'rejects Claude fast and accepts Codex fast in the %s preset',
+    (applies_to) => {
+      const claude = validateImplPresetSettings(
+        { orchestration_model: 'opus', orchestration_speed: 'fast' },
+        { applies_to }
+      );
+      const codex = validateImplPresetSettings(
+        { orchestration_model: 'sol', orchestration_speed: 'fast' },
+        { applies_to }
+      );
+
+      expect(claude).toEqual({
+        ok: false,
+        reason: 'orchestration_speed_unsupported'
+      });
+      expect(codex).toEqual({ ok: true });
+    }
+  );
+
+  test.each(['spec_review', 'plan_review', 'impl_review'])(
+    'rejects Claude fast on the %s leg',
+    (prefix) => {
+      const result = validateExecSettings({
+        [`${prefix}_model`]: 'fable',
+        [`${prefix}_speed`]: 'fast'
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        reason: `${prefix}_speed_unsupported`
+      });
+    }
+  );
+
   test.each([
     [{}, { ok: true }],
     [
@@ -522,13 +557,13 @@ describe('worker/exec-enums preset profiles', () => {
     expect(result).toEqual({ ok: true });
   });
 
-  test('leaves a general implementation speed unchecked against its runner', () => {
+  test('rejects a general fast implementation on Claude', () => {
     const result = validateImplPresetSettings({
       impl_runtime: 'claude',
       impl_speed: 'fast'
     });
 
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: false, reason: 'impl_speed_unsupported' });
   });
 
   test('rejects a fast orchestration speed when the chosen model lacks that tier', () => {
@@ -546,13 +581,16 @@ describe('worker/exec-enums preset profiles', () => {
     });
   });
 
-  test('leaves a general orchestration speed unchecked against its model', () => {
+  test('rejects a general fast orchestration on Claude', () => {
     const result = validateImplPresetSettings({
       orchestration_model: 'opus',
       orchestration_speed: 'fast'
     });
 
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'orchestration_speed_unsupported'
+    });
   });
 
   test('validates review speed without a missing enum crash', () => {
@@ -573,7 +611,15 @@ describe('worker/exec-enums preset profiles', () => {
   test('reuses the exec-setting orchestration enums in both profiles', () => {
     const catalog = resolveCatalog({
       overrides: {
-        codex: { models: { nova: { id: 'gpt-5.7-nova', efforts: ['ultra'] } } }
+        codex: {
+          models: {
+            nova: {
+              id: 'gpt-5.7-nova',
+              efforts: ['ultra'],
+              speed_tiers: ['default', 'fast']
+            }
+          }
+        }
       },
       warn: () => {}
     });
@@ -604,7 +650,15 @@ describe('worker/exec-enums preset profiles', () => {
   test('validates orchestration values from the injected catalog', () => {
     const catalog = resolveCatalog({
       overrides: {
-        codex: { models: { nova: { id: 'gpt-5.7-nova', efforts: ['ultra'] } } }
+        codex: {
+          models: {
+            nova: {
+              id: 'gpt-5.7-nova',
+              efforts: ['ultra'],
+              speed_tiers: ['default', 'fast']
+            }
+          }
+        }
       },
       warn: () => {}
     });

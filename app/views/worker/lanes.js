@@ -2325,8 +2325,7 @@ export function interactiveSessionClosingTemplate(views) {
  * (UI-3pu9 §4.1). `true`면 유예 칩과 유예로 서는 `[지금 시작]`을 그리지 않는다 —
  * 스케줄러가 자동 출발을 하지 않아 "남은 시간 동안 미뤄진다"가 사실이 아니다.
  * 대기 행이 아니거나 워크스페이스 상태를 읽지 못하면 `false`다.
- * @property {boolean} [ghost] - Serial-lane occupancy row (UI-04vo §4): the
- * lineage holding the lane, drawn dimmed and never draggable.
+ * @property {boolean} [ghost] - Occupancy row, drawn dimmed and never draggable.
  * @property {number} [seq] - 1-based execution order number in a serial lane.
  * @property {boolean} [rereview_required] - An admitted stale receipt needs re-review.
  * @property {LaneExecChips|null} [exec_chips] -

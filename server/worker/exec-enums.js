@@ -31,6 +31,7 @@
  *
  * @import { ResolvedCatalog } from './runner-catalog.js'
  */
+import { loadExecutionDefaults } from './execution-defaults.js';
 import {
   catalogEfforts,
   catalogOrchestrationEfforts,
@@ -477,6 +478,52 @@ function runnerSupportsSpeed(catalog, runtime, speed) {
 }
 
 /**
+ * Reject fast only when a resolved execution target cannot accept it.
+ *
+ * @param {Record<string, unknown>} settings
+ * @param {ResolvedCatalog} [catalog]
+ * @returns {{ ok: true }|{ ok: false, reason: string }}
+ */
+export function validateExecSpeeds(settings, catalog = runtimeCatalog()) {
+  const reviewers = loadExecutionDefaults().session?.review?.reviewers;
+  for (const prefix of [
+    'orchestration',
+    'impl',
+    'spec_review',
+    'plan_review',
+    'impl_review'
+  ]) {
+    if (settings[`${prefix}_speed`] !== 'fast') {
+      continue;
+    }
+    const token = settings[`${prefix}_model`];
+    if (token === 'self' || token === 'skip') {
+      return { ok: false, reason: `${prefix}_speed_unsupported` };
+    }
+    const model =
+      prefix.endsWith('_review') && typeof token === 'string'
+        ? (reviewers?.[token]?.model ?? token)
+        : token;
+    const runtime =
+      modelRunner(catalog, model) ||
+      (prefix === 'impl' &&
+      typeof settings.impl_runtime === 'string' &&
+      settings.impl_runtime !== 'auto'
+        ? settings.impl_runtime
+        : null);
+    if (
+      runtime &&
+      !(modelRunner(catalog, model)
+        ? modelSpeedTiers(catalog, model).includes('fast')
+        : runnerSupportsSpeed(catalog, runtime, 'fast'))
+    ) {
+      return { ok: false, reason: `${prefix}_speed_unsupported` };
+    }
+  }
+  return { ok: true };
+}
+
+/**
  * Validate one execution preset's sparse settings against its profile.
  *
  * The `auto` literal is a SELECTOR STATE, not a catalog model or effort, so it
@@ -490,12 +537,8 @@ function runnerSupportsSpeed(catalog, runtime, speed) {
  * `impl_model` is judged by one check, so there is nothing to disambiguate
  * (design §3.2).
  *
- * The two `fast` speed checks are the QUICK_FIX profile's alone, as they were
- * when they read the prefixed keys: the general profile stored a `fast` speed
- * unchecked before the split and still does. Each runs against whichever
- * runner that profile resolves, and stays silent when no runner is resolvable
- * at all — an `auto` target names no provider, so its speed tier is unknowable
- * rather than unsupported. The orchestration leg already read that way.
+ * Speed capabilities apply to both profiles and every execution leg. An auto
+ * target with no model names no provider and stays unresolved here.
  *
  * @param {Record<string, unknown>} settings
  * @param {{ catalog?: ResolvedCatalog, applies_to?: unknown }} [options]
@@ -533,27 +576,7 @@ export function validateImplPresetSettings(settings, options = {}) {
     }
   }
 
-  if (applies_to === 'quick_fix' && settings.impl_speed === 'fast') {
-    const runtime =
-      impl_target.impl_runtime ?? modelRunner(catalog, impl_target.impl_model);
-    if (
-      typeof runtime === 'string' &&
-      !runnerSupportsSpeed(catalog, runtime, 'fast')
-    ) {
-      return { ok: false, reason: 'impl_speed_unsupported' };
-    }
-  }
-
-  if (applies_to === 'quick_fix' && settings.orchestration_speed === 'fast') {
-    const orchestration_model = settings.orchestration_model;
-    if (typeof orchestration_model === 'string') {
-      const runtime = modelRunner(catalog, orchestration_model);
-      if (!runnerSupportsSpeed(catalog, runtime, 'fast')) {
-        return { ok: false, reason: 'orchestration_speed_unsupported' };
-      }
-    }
-  }
-  return { ok: true };
+  return validateExecSpeeds(settings, catalog);
 }
 
 /**
@@ -731,7 +754,10 @@ export function validateExecSettings(settings, options = {}) {
     }
     return { ok: false, reason: `invalid_${key}` };
   }
-  return validateImplSettings(settings, { ...options, catalog });
+  const speed_check = validateExecSpeeds(settings, catalog);
+  return speed_check.ok
+    ? validateImplSettings(settings, { ...options, catalog })
+    : speed_check;
 }
 
 /**

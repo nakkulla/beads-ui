@@ -10850,7 +10850,9 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
    */
   function card(mount) {
     return /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+      mount.querySelector(
+        '.worker-pane--lane-pr_wait .worker-mini[data-bead-id="RD-1"]'
+      )
     );
   }
 

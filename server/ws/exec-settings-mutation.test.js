@@ -143,6 +143,37 @@ describe('handleUpdateExecSettings', () => {
     );
   });
 
+  test.each(['orchestration', 'impl_review', 'impl'])(
+    'rejects a fast write governed by a Claude %s target',
+    async (prefix) => {
+      runBdJsonProjectedInWorkspace.mockResolvedValue(
+        projectedResponse(null, {
+          code: 0,
+          stdoutJson: {
+            id: 'UI-1',
+            metadata: {
+              [`${prefix}_model`]: prefix === 'impl_review' ? 'fable' : 'opus',
+              ...(prefix === 'impl' ? { impl_runtime: 'claude' } : {})
+            }
+          }
+        })
+      );
+      const { ws, sent } = fakeWs();
+
+      await handleUpdateExecSettings(ws, {
+        id: 'speed',
+        type: 'update-exec-settings',
+        payload: { id: 'UI-1', key: `${prefix}_speed`, value: 'fast' }
+      });
+
+      expect(sent[0]).toMatchObject({
+        ok: false,
+        error: { code: 'bad_request', message: `${prefix}_speed_unsupported` }
+      });
+      expect(runBdInWorkspace).not.toHaveBeenCalled();
+    }
+  );
+
   test('standard workflow_mode calls bd with --set-metadata (argv capture)', async () => {
     const { ws, sent } = fakeWs();
     await handleUpdateExecSettings(ws, {
@@ -453,7 +484,7 @@ describe('handleUpdateImplTarget', () => {
         impl_effort: 'high'
       })
     );
-    expect(runBdJsonProjectedInWorkspace).toHaveBeenCalledTimes(1);
+    expect(runBdJsonProjectedInWorkspace).toHaveBeenCalledTimes(2);
     expect(sent[0].ok).toBe(true);
   });
 
@@ -553,7 +584,14 @@ describe('handleUpdateImplTarget', () => {
     'refreshes and reports readback failure when bd show %s',
     async (_, readback) => {
       const { ws, sent } = fakeWs();
-      runBdJsonProjectedInWorkspace.mockImplementation(readback);
+      runBdJsonProjectedInWorkspace
+        .mockResolvedValueOnce(
+          projectedResponse(null, {
+            code: 0,
+            stdoutJson: { id: 'UI-1', metadata: {} }
+          })
+        )
+        .mockImplementationOnce(readback);
 
       await handleUpdateImplTarget(ws, {
         id: 'target-readback',
@@ -704,6 +742,32 @@ describe('handleSetSessionDefaults', () => {
     kvGetJsonInWorkspace.mockReset();
     kvSetJsonInWorkspace.mockReset();
   });
+
+  test.each(['impl', 'quick_fix_impl', 'impl_review', 'quick_fix_impl_review'])(
+    'rejects fast against the stored %s Claude target before writing',
+    async (prefix) => {
+      const { ws, sent } = fakeWs();
+      kvGetJsonInWorkspace.mockResolvedValue({
+        ok: true,
+        value: {
+          schema: 1,
+          [`${prefix}_model`]: prefix.endsWith('review') ? 'fable' : 'opus'
+        }
+      });
+
+      await handleSetSessionDefaults(ws, {
+        id: 'stored-fast',
+        type: 'set-session-defaults',
+        payload: { values: { [`${prefix}_speed`]: 'fast' } }
+      });
+
+      expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+      expect(sent[0].error).toMatchObject({
+        code: 'bad_request',
+        message: `${prefix.replace(/^quick_fix_/, '')}_speed_unsupported`
+      });
+    }
+  );
 
   test('writes a valid patch and replies with the readback values', async () => {
     const { ws, sent } = fakeWs();

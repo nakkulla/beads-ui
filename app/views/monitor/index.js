@@ -1911,7 +1911,7 @@ export function createMonitorView(mount_element, options) {
    * 투명하다 — 점유자는 서버 레인 entries의 구성원이 아니다.
    *
    * @param {MonitorOccupant} occupant
-   * @param {MonitorSerialSublane} lane
+   * @param {{ id: LaneItem['lane'] }} lane
    * @param {LaneQueueGroup} group
    * @returns {import('lit-html').TemplateResult}
    */
@@ -2026,21 +2026,27 @@ export function createMonitorView(mount_element, options) {
    */
   function parallelLaneModel(group, plan, titleOf, include) {
     const items = group.sublanes.parallel;
+    const occupants = group.parallel_occupants || [];
     return {
       id: 'parallel',
       pane_id: '',
       title: '병렬',
-      rows: interleavePreview(
-        items.map((item, index) => ({
-          id: item.id,
-          template: parallelRow(item, index)
-        })),
-        'parallel',
-        plan,
-        titleOf,
-        include
-      ),
-      count: items.length,
+      rows: [
+        ...occupants.map((occupant) =>
+          occupantRow(occupant, { id: 'queue' }, group)
+        ),
+        ...interleavePreview(
+          items.map((item, index) => ({
+            id: item.id,
+            template: parallelRow(item, index)
+          })),
+          'parallel',
+          plan,
+          titleOf,
+          include
+        )
+      ],
+      count: occupants.length + items.length,
       empty: false,
       drop: {
         drop: 'parallel',
@@ -2092,6 +2098,7 @@ export function createMonitorView(mount_element, options) {
     const serial = group.configured_serial || group.sublanes.serial;
     const waiting =
       group.sublanes.parallel.length +
+      (group.parallel_occupants || []).length +
       serial.reduce((sum, lane) => sum + lane.items.length, 0);
     const occupied = serial.some((lane) => lane.occupants.length > 0);
     // 배치안 줄(추천할 후보 없음 접힘·적용 결과 줄 포함)이 서는 레포는 배치안이

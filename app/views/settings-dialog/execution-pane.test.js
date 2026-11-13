@@ -203,7 +203,7 @@ describe('execution sub tabs', () => {
       Array.from(root.querySelectorAll('[data-execution-subtab]'), (button) =>
         button.textContent?.trim()
       )
-    ).toEqual(['워커', 'quick fix', '세션 리뷰', 'Hermes 세션']);
+    ).toEqual(['워커', 'quick fix', '세션 리뷰', 'Hermes 세션', '해소 세션']);
     expect(
       el(root, '[data-execution-subtab="worker"]').getAttribute('aria-pressed')
     ).toBe('true');

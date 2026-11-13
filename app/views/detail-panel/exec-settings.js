@@ -552,7 +552,7 @@ export function execSettingRows(input) {
       ? requested_runtime
       : null;
 
-  return EXEC_KEYS.map((key) => {
+  return EXEC_KEYS.flatMap((key) => {
     const selected = selectedOf(key);
     /** @type {SelectGroup[]} */
     let groups;
@@ -575,10 +575,11 @@ export function execSettingRows(input) {
         selected
       );
     } else if (key === 'orchestration_speed') {
-      groups = speedGroups(
-        speedTiersForModel(runner_catalog, orchestration_model),
-        selected
-      );
+      const tiers = speedTiersForModel(runner_catalog, orchestration_model);
+      if (!tiers.includes('fast')) {
+        return [];
+      }
+      groups = speedGroups(tiers, selected);
     } else if (key === 'impl_effort') {
       groups = valueGroups(
         impl_model && impl_model !== 'auto'
@@ -606,6 +607,9 @@ export function execSettingRows(input) {
             runner_catalog,
             model_row?.full_value || effectiveOf(model_key)
           );
+      if (!speed_tiers.includes('fast')) {
+        return [];
+      }
       groups = speedGroups(speed_tiers, selected);
       disabled = speed_tiers.length < 2;
     } else if (Object.hasOwn(REVIEW_EFFORT_PAIR, key)) {

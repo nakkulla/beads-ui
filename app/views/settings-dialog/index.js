@@ -33,7 +33,6 @@ import { createActiveLoginStatus } from './active-login-status.js';
 import { createAutoPoolSection } from './auto-pool-section.js';
 import { createBulkPane } from './bulk-pane.js';
 import { createChipBindingsTab } from './chip-bindings-tab.js';
-import { createConversationSection } from './conversation-section.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
 import { createExternalWaitSection } from './external-wait-section.js';
@@ -267,20 +266,12 @@ export function createSettingsDialog(mount_element, options) {
   let timing_section = null;
   /** @type {ReturnType<typeof createExternalWaitSection>|null} */
   let external_wait_section = null;
-  /** @type {ReturnType<typeof createConversationSection>|null} */
-  let conversation_section = null;
-  /** The `운영` tab's host: Worker address, waits, external jobs, sessions. */
+  /** The `운영` tab's host: Worker address, waits, and external jobs. */
   const operations_host = makeHost();
   const worker_url_host = document.createElement('div');
   const timing_host = document.createElement('div');
   const external_wait_host = document.createElement('div');
-  const conversation_host = document.createElement('div');
-  operations_host.append(
-    worker_url_host,
-    timing_host,
-    external_wait_host,
-    conversation_host
-  );
+  operations_host.append(worker_url_host, timing_host, external_wait_host);
 
   /** @returns {Array<Record<string, any>>} */
   function monitorRows() {
@@ -544,14 +535,6 @@ export function createSettingsDialog(mount_element, options) {
       });
     }
     external_wait_section.render();
-    if (!conversation_section) {
-      conversation_section = createConversationSection(conversation_host, {
-        transport,
-        modelVisibilityStore: options.modelVisibilityStore,
-        toast
-      });
-    }
-    conversation_section.render();
   }
 
   /** Tear down the panes bound to the target, dropping their unsaved input. */
@@ -592,8 +575,6 @@ export function createSettingsDialog(mount_element, options) {
     timing_section = null;
     external_wait_section?.destroy();
     external_wait_section = null;
-    conversation_section?.destroy();
-    conversation_section = null;
     operations_host.remove();
   }
 

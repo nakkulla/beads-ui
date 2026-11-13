@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  conflictLaunchSettings,
   conversationLaunchFlags,
   createConversationSettingsStore,
   freshConversationRuntime
@@ -56,6 +57,95 @@ function writeFile(body) {
 }
 
 describe('conversation settings store (UI-jbl1 §3.4)', () => {
+  test('persists conflict overrides independently of conversation models', () => {
+    const store = makeStore();
+
+    const result = store.set({
+      expected_revision: 0,
+      values: {
+        codex_model: 'sol',
+        codex_effort: 'low',
+        conflict_codex_model: 'sol',
+        conflict_codex_effort: 'xhigh'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(makeStore().effective()).toMatchObject({
+      codex_effort: 'low',
+      conflict_codex_model: 'sol',
+      conflict_codex_effort: 'xhigh'
+    });
+    expect(result.snapshot.fields.conflict_codex_effort.choices).toEqual([
+      'low',
+      'xhigh'
+    ]);
+  });
+
+  test('rejects an effort outside the conflict model capabilities', () => {
+    const store = makeStore();
+
+    const result = store.set({
+      expected_revision: 0,
+      values: {
+        conflict_codex_model: 'sol',
+        conflict_codex_effort: 'high'
+      }
+    });
+
+    expect(result).toMatchObject({ ok: false, key: 'conflict_codex_effort' });
+    expect(store.snapshot().revision).toBe(0);
+  });
+
+  test('skips an effort-only override incompatible with the launch model', () => {
+    const values = {
+      ...makeStore().effective(),
+      conflict_codex_effort: 'minimal'
+    };
+    const base = { model: 'sol', effort: 'low', speed: 'default' };
+
+    const result = conflictLaunchSettings(
+      'codex',
+      base,
+      values,
+      /** @type {any} */ (CATALOG)
+    );
+
+    expect(result).toEqual(base);
+  });
+
+  test('clears an inherited effort incompatible with a changed conflict model', () => {
+    const values = { ...makeStore().effective(), conflict_codex_model: 'sol' };
+
+    const result = conflictLaunchSettings(
+      'codex',
+      { model: null, effort: 'minimal', speed: 'default' },
+      values,
+      /** @type {any} */ (CATALOG)
+    );
+
+    expect(result).toEqual({ model: 'sol', effort: null, speed: 'default' });
+  });
+
+  test.each(['sol', 'gpt-6-sol'])(
+    'validates an effort-only override against the actual %s model',
+    (model) => {
+      const values = {
+        ...makeStore().effective(),
+        conflict_codex_effort: 'xhigh'
+      };
+
+      const result = conflictLaunchSettings(
+        'codex',
+        { model, effort: 'low', speed: 'default' },
+        values,
+        /** @type {any} */ (CATALOG)
+      );
+
+      expect(result).toEqual({ model, effort: 'xhigh', speed: 'default' });
+    }
+  );
+
   test('reads config.toml, claude and "따름" without a file', () => {
     const store = makeStore({ config: true });
 
@@ -67,7 +157,11 @@ describe('conversation settings store (UI-jbl1 §3.4)', () => {
       claude_model: null,
       claude_effort: null,
       codex_model: null,
-      codex_effort: null
+      codex_effort: null,
+      conflict_claude_model: null,
+      conflict_claude_effort: null,
+      conflict_codex_model: null,
+      conflict_codex_effort: null
     });
   });
 
