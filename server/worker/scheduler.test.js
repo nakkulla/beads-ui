@@ -338,6 +338,97 @@ describe('interactive session reconciliation', () => {
     expect(h.reader).toHaveBeenCalledTimes(1);
   });
 
+  test.each([false, true])(
+    'skips queue writes when transcript activity repeats the same message with conversation=%s',
+    async (conversation) => {
+      const h = interactiveFixture({
+        session_id: 'S1',
+        conversation: conversation ? { stop: 'recovery:authority' } : null
+      });
+      const message = {
+        text: '같은 답변',
+        at: 900,
+        first_line: '같은 답변의 첫 줄',
+        excerpt: '같은 답변의 요약'
+      };
+      h.reader.mockReturnValue(message);
+      Object.assign(h.pane, { agent_running: '1', agent_attention: '' });
+      h.transcript.location = {
+        locality: 'local',
+        file: '/sessions/S1.jsonl',
+        last_event_at: 1000
+      };
+      await h.scheduler.reconcileInteractiveSessions(WS);
+      const before = h.store.snapshot(WS);
+      const update = vi.spyOn(h.store, 'updateInteractiveSession');
+      h.changed.mockClear();
+      h.transcript.location.last_event_at = 2000;
+      h.setTime(2000);
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(update).not.toHaveBeenCalled();
+      expect(h.store.snapshot(WS)).toEqual(before);
+      expect(h.changed).not.toHaveBeenCalled();
+    }
+  );
+
+  test('skips another transcript read at the mtime of an identical message', async () => {
+    const h = interactiveFixture({ session_id: 'S1' });
+    h.transcript.location = {
+      locality: 'local',
+      file: '/sessions/S1.jsonl',
+      last_event_at: 1000
+    };
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    h.transcript.location.last_event_at = 2000;
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    h.reader.mockClear();
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.reader).not.toHaveBeenCalled();
+  });
+
+  test.each(['text', 'at', 'first_line', 'excerpt'])(
+    'persists a conversation message when its %s changes',
+    async (field) => {
+      const h = interactiveFixture({
+        session_id: 'S1',
+        conversation: { stop: 'recovery:authority' }
+      });
+      const message = {
+        text: '기존 답변',
+        at: 900,
+        first_line: '기존 첫 줄',
+        excerpt: '기존 요약'
+      };
+      h.reader.mockReturnValue(message);
+      Object.assign(h.pane, { agent_running: '1', agent_attention: '' });
+      h.transcript.location = {
+        locality: 'local',
+        file: '/sessions/S1.jsonl',
+        last_event_at: 1000
+      };
+      await h.scheduler.reconcileInteractiveSessions(WS);
+      const update = vi.spyOn(h.store, 'updateInteractiveSession');
+      h.transcript.location.last_event_at = 2000;
+      const changed_message = {
+        ...message,
+        [field]: field === 'at' ? 1900 : '변경된 답변'
+      };
+      h.reader.mockReturnValue(changed_message);
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(update).toHaveBeenCalledOnce();
+      expect(h.current()).toMatchObject({
+        last_message: changed_message,
+        last_message_read_at: 2000
+      });
+    }
+  );
+
   test('keeps the previous message when the transcript read fails', async () => {
     const h = interactiveFixture({ session_id: 'S1' });
     h.transcript.location = {

@@ -11086,6 +11086,8 @@ export function createScheduler(deps) {
 
   /** @type {Map<string, Promise<unknown>>} */
   const interactive_passes = new Map();
+  /** @type {Map<string, { pane_id: string, launched_at: number, session_id: string, read_at: number }>} */
+  const interactive_message_reads = new Map();
 
   /**
    * Failure-handoff exits this process started and has not settled, keyed by
@@ -13024,6 +13026,7 @@ export function createScheduler(deps) {
         summary: `${INTERACTIVE_KIND_LABELS[record.kind]} 세션 종료 · ${reason}`
       });
       if (deps.store.removeInteractiveSession(workspace, key).ok) {
+        interactive_message_reads.delete(JSON.stringify([workspace, key]));
         notifyChanged(workspace);
       }
     }
@@ -13475,6 +13478,19 @@ export function createScheduler(deps) {
               deps.store.snapshot(workspace).attempts?.[record.attempt_id]
             )
           : null;
+      const read_key = JSON.stringify([workspace, key]);
+      const observed = interactive_message_reads.get(read_key);
+      const observed_at =
+        observed &&
+        observed.pane_id === record.pane_id &&
+        observed.launched_at === record.launched_at &&
+        observed.session_id === session_id
+          ? observed.read_at
+          : null;
+      const read_at = Math.max(
+        record.last_message_read_at ?? -Infinity,
+        observed_at ?? -Infinity
+      );
       try {
         const location = resolver(
           {
@@ -13493,8 +13509,7 @@ export function createScheduler(deps) {
           location.locality !== 'local' ||
           location.file === null ||
           location.last_event_at === null ||
-          (record.last_message_read_at !== null &&
-            location.last_event_at <= record.last_message_read_at)
+          location.last_event_at <= read_at
         ) {
           return {};
         }
@@ -13504,6 +13519,26 @@ export function createScheduler(deps) {
         });
         if (message === null) {
           return { last_message_read_at: location.last_event_at };
+        }
+        const previous = record.last_message;
+        if (
+          message.at !== null &&
+          message.at > record.launched_at &&
+          previous !== null &&
+          message.at === previous.at &&
+          message.text === previous.text &&
+          (!record.conversation ||
+            ((message.first_line ?? message.text) === previous.first_line &&
+              (message.excerpt ?? message.text) === previous.excerpt))
+        ) {
+          // Remember transcript-only activity without another durable queue write.
+          interactive_message_reads.set(read_key, {
+            pane_id: record.pane_id,
+            launched_at: record.launched_at,
+            session_id,
+            read_at: location.last_event_at
+          });
+          return {};
         }
         // Only a conversation keeps the uncut first line, the excerpt, and
         // the transcript mtime as the message identity (UI-nuwy §3.3); a
