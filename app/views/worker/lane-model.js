@@ -1745,19 +1745,33 @@ function providerTargetScope(target) {
  * its account, and an unresolvable account draws nothing — the server's
  * admission is the truth and this chip only states it in advance, so it may
  * only err by saying less.
+ * Account switching may choose another account at launch, so only admission
+ * records can assert an account usage gate when a nonempty switch policy stands.
  *
  * @param {string|null} runner - 이 행이 launch될 러너 이름, 못 도출하면 null.
  * @param {string|null} account - 이 행이 쓸 계정 email, 모르면 null.
  * @param {Record<string, any>} provider_hold
  * @param {Record<string, any>} account_catalog
+ * @param {Record<string, any>} provider_limit_policy
  * @returns {LaneGate|null}
  */
-function providerGate(runner, account, provider_hold, account_catalog) {
+function providerGate(
+  runner,
+  account,
+  provider_hold,
+  account_catalog,
+  provider_limit_policy
+) {
   if (runner === null) {
     return null;
   }
   const entry = objectOf(objectOf(provider_hold)[runner]);
   const targets = Array.isArray(entry.targets) ? entry.targets : [];
+  const policy = objectOf(provider_limit_policy[runner]);
+  const switches =
+    policy.mode === 'switch' &&
+    Array.isArray(policy.accounts) &&
+    policy.accounts.length > 0;
   const outage = targets.find(
     (/** @type {any} */ target) =>
       target &&
@@ -1770,6 +1784,11 @@ function providerGate(runner, account, provider_hold, account_catalog) {
         (/** @type {any} */ target) =>
           target &&
           (target.kind === 'usage_limit' || target.kind === 'outage') &&
+          !(
+            switches &&
+            target.kind === 'usage_limit' &&
+            providerTargetScope(target) === 'account'
+          ) &&
           (providerTargetScope(target) === 'unresolved' ||
             (account !== null && target.account === account))
       );
@@ -3311,7 +3330,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 막힌 대기 행을 판정할 저장소별 재료 (UI-01wh §3.1). 행 투영이 끝난 뒤
   // 한 번에 얹는다 — 러너·계정 해석에 오버레이 metadata가 필요하고 그것은
   // 이 루프보다 뒤에서 채워진다.
-  /** @type {Map<string, { provider_hold: Record<string, any>, account_catalog: Record<string, any>, workspace_account_defaults: Record<string, any>, admission: Record<string, any> }>} */
+  /** @type {Map<string, { provider_hold: Record<string, any>, provider_limit_policy: Record<string, any>, account_catalog: Record<string, any>, workspace_account_defaults: Record<string, any>, admission: Record<string, any> }>} */
   const gate_input_by_root = new Map();
   // 선언 scope 사실 (UI-qm12 §5.2). 겹침은 레포 안에서만 정의되므로 레포별로
   // 모으고, 실행가능 항목의 scope는 큐 장식이 아니라 자기 행이 싣고 온다.
@@ -3588,6 +3607,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     });
     gate_input_by_root.set(root_dir, {
       provider_hold: objectOf(workspace.provider_hold),
+      provider_limit_policy: objectOf(workspace.provider_limit_policy),
       account_catalog: objectOf(workspace.account_catalog),
       workspace_account_defaults: objectOf(
         workspace.workspace_account_defaults
@@ -4989,7 +5009,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
         runner,
         account,
         gate_input.provider_hold,
-        gate_input.account_catalog
+        gate_input.account_catalog,
+        gate_input.provider_limit_policy
       );
     if (gate) {
       item.gate = gate;

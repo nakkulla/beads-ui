@@ -6481,7 +6481,9 @@ export async function handleWorkerAttemptResume(ws, req) {
   try {
     const attempt = current.attempts?.[p.attempt_id];
     result =
-      attempt?.status === 'waiting' && attempt.cause_detail?.recovery
+      attempt?.status === 'waiting' &&
+      attempt.cause_detail?.recovery &&
+      attempt.cause_detail.recovery.reason !== 'provider'
         ? { ok: false, reason: 'recovery_requires_inquiry' }
         : await resumeWorkerAttempt(key, p.attempt_id, {
             continuation: p.continuation,

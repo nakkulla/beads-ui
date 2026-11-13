@@ -2993,6 +2993,52 @@ describe('views/worker', () => {
     expect(message).toBe('이미 열려 있습니다 · dev:resolve-X1');
   });
 
+  test('resumes a provider recovery from its Worker exit without a conversation handoff', async () => {
+    const transport = vi.fn().mockResolvedValue({ resumed: true });
+    const mount = mountAttemptTiles(
+      {
+        revision: 7,
+        attempts: {
+          recovery: {
+            attempt_id: 'recovery',
+            bead_id: 'WAIT',
+            status: 'waiting',
+            session_id: 'saved',
+            cause: 'session_recovery_wait',
+            cause_detail: { recovery: { reason: 'provider' } }
+          }
+        },
+        wait_reasons: [
+          {
+            kind: 'recovery',
+            subject: { bead_id: 'WAIT', root_dir: '' },
+            actions: [
+              {
+                op: 'worker-attempt-resume',
+                label: '[워커로 이어가기]',
+                payload: { attempt_id: 'recovery' }
+              }
+            ]
+          }
+        ]
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__handoff')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledExactlyOnceWith('worker-attempt-resume', {
+      attempt_id: 'recovery',
+      expected_revision: 7
+    });
+  });
+
   test('hands a conversation stop back to the Worker from its tile', async () => {
     const transport = vi.fn().mockResolvedValue({
       ok: true,

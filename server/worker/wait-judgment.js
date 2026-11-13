@@ -941,6 +941,14 @@ export function judgeWaitReasons(input) {
         judgeStalledSession(result, queue, bead_id, attempt);
       } else {
         sessionActions(result, attempt.attempt_id);
+        if (token === 'provider') {
+          result.actions.splice(1, 0, {
+            op: 'worker-attempt-resume',
+            label: '[워커로 이어가기]',
+            title: '보존된 작업 공간에서 Worker가 같은 세션을 이어갑니다',
+            payload: { ...result.subject, attempt_id: attempt.attempt_id }
+          });
+        }
       }
       wait_reasons.push(result);
       continue;

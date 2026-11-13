@@ -2247,6 +2247,7 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {boolean} [handoff_enabled] - false while this row's click waits.
  * @property {string} [handoff_title] - Tooltip.
  * @property {string|null} [handoff_attempt_id] - The stopped attempt handed back.
+ * @property {string} [handoff_op] - The server-projected recovery resume operation.
  * @property {'handoff'|'merge'|'discard'|'external'|null} [pair_anchor] -
  * Which button is this row's [워커로 이어가기] (UI-18a5 §3.2); the session
  * button stands right in front of it. Set by `tileResolveFields` only.
@@ -4331,6 +4332,7 @@ export function miniRow(item, options = {}) {
         class="op-btn worker-mini__handoff"
         data-bead-id=${item.id}
         data-attempt-id=${item.handoff_attempt_id || ''}
+        data-handoff-op=${item.handoff_op || ''}
         ?disabled=${item.handoff_enabled === false}
         title=${item.handoff_title ||
         '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어갑니다'}

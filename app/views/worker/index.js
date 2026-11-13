@@ -1345,14 +1345,19 @@ export function createWorkerView(mount_element, options = {}) {
    *
    * @param {string} bead_id
    * @param {string} attempt_id
+   * @param {string} [op]
    */
-  async function handoffToWorker(bead_id, attempt_id) {
+  async function handoffToWorker(bead_id, attempt_id, op) {
     if (!transport || !bead_id || handoff_pending.has(bead_id)) {
       return;
     }
     handoff_pending.add(bead_id);
     doRender();
     try {
+      if (op === 'worker-attempt-resume') {
+        await resumeAttempt(attempt_id);
+        return;
+      }
       const res = /** @type {any} */ (
         await transport('worker-conversation-handoff', {
           bead_id,
@@ -4112,7 +4117,8 @@ export function createWorkerView(mount_element, options = {}) {
       );
       void handoffToWorker(
         handoffBtn.dataset.beadId || tile?.dataset.beadId || '',
-        handoffBtn.dataset.attemptId || ''
+        handoffBtn.dataset.attemptId || '',
+        handoffBtn.dataset.handoffOp
       );
       return;
     }

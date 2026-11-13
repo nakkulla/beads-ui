@@ -1408,14 +1408,19 @@ export function createMonitorView(mount_element, options) {
    * @param {string} attempt_id
    * @param {string} root_dir
    * @param {number} revision
+   * @param {string} [op]
    */
-  async function handoffToWorker(bead_id, attempt_id, root_dir, revision) {
+  async function handoffToWorker(bead_id, attempt_id, root_dir, revision, op) {
     if (!bead_id || handoff_pending.has(bead_id)) {
       return;
     }
     handoff_pending.add(bead_id);
     doRender();
     try {
+      if (op === 'worker-attempt-resume') {
+        await resumeAttempt(bead_id, attempt_id, root_dir, 'session');
+        return;
+      }
       const res = await sendCas(
         'worker-conversation-handoff',
         { bead_id, attempt_id: attempt_id || null },
@@ -3128,6 +3133,7 @@ export function createMonitorView(mount_element, options) {
    * @param {string} root_dir
    * @param {'session'|'settlement'} resume_kind
    * @param {Record<string, unknown>} [base_payload]
+   * @returns {Promise<any|null>}
    */
   function resumeAttempt(
     bead_id,
@@ -3137,7 +3143,7 @@ export function createMonitorView(mount_element, options) {
     base_payload = {}
   ) {
     const item = item_by_bead.get(bead_id) || null;
-    void runResumeFlow({
+    return runResumeFlow({
       context: {
         bead_id,
         kind: resume_kind,
@@ -3439,7 +3445,8 @@ export function createMonitorView(mount_element, options) {
         bead_id,
         button.dataset.attemptId || '',
         root_dir,
-        exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision
+        exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision,
+        button.dataset.handoffOp
       );
       return;
     }

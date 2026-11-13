@@ -8055,6 +8055,140 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     ]);
   });
 
+  test.each(['claude', 'codex'])(
+    'omits predicted account usage holds when %s can switch accounts',
+    (runner) => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-2' }] }],
+            bead_overlay: Object.fromEntries(
+              ['A-1', 'A-2'].map((id) => [
+                id,
+                {
+                  metadata: {
+                    orchestration_model: runner === 'codex' ? 'sol' : 'sonnet'
+                  }
+                }
+              ])
+            ),
+            account_catalog: {
+              [runner]: [
+                { email: 'a@example.com', key: 'a@example.com', active: true }
+              ]
+            },
+            provider_limit_policy: {
+              [runner]: { mode: 'switch', accounts: ['b@example.com'] }
+            },
+            provider_hold: {
+              [runner]: {
+                targets: [{ kind: 'usage_limit', account: 'a@example.com' }]
+              }
+            }
+          })
+        ],
+        [gateState()]
+      );
+
+      expect(lanes.queue.map((row) => row.gate)).toEqual([
+        undefined,
+        undefined
+      ]);
+    }
+  );
+
+  test.each([
+    ['missing policy', undefined],
+    ['hold mode', { claude: { mode: 'hold', accounts: ['b@example.com'] } }],
+    ['empty switch accounts', { claude: { mode: 'switch', accounts: [] } }],
+    [
+      'another runner policy',
+      { codex: { mode: 'switch', accounts: ['b@example.com'] } }
+    ]
+  ])('keeps the predicted usage gate with %s', (_name, policy) => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: {
+            'A-1': { metadata: { claude_account: 'a@example.com' } }
+          },
+          provider_limit_policy: policy,
+          provider_hold: {
+            claude: {
+              targets: [{ kind: 'usage_limit', account: 'a@example.com' }]
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.queue[0].gate?.kind).toBe('provider_usage');
+  });
+
+  test.each([
+    [{ kind: 'usage_limit', account: null }, 'provider_usage'],
+    [{ kind: 'outage', account: null }, 'provider_outage'],
+    [
+      { kind: 'outage', detail: 'credential', account: 'a@example.com' },
+      'provider_outage'
+    ]
+  ])('keeps non-switchable target %j visible', (target, kind) => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: {
+            'A-1': { metadata: { claude_account: 'a@example.com' } }
+          },
+          provider_limit_policy: {
+            claude: { mode: 'switch', accounts: ['b@example.com'] }
+          },
+          provider_hold: { claude: { targets: [target] } }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.queue[0].gate?.kind).toBe(kind);
+  });
+
+  test('keeps the server admission gate when account switching found no candidate', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: {
+            'A-1': { metadata: { claude_account: 'a@example.com' } }
+          },
+          provider_limit_policy: {
+            claude: { mode: 'switch', accounts: ['b@example.com'] }
+          },
+          provider_hold: {
+            claude: {
+              targets: [{ kind: 'usage_limit', account: 'a@example.com' }]
+            }
+          },
+          admission: {
+            'A-1': {
+              reason: 'provider_gate',
+              gate: {
+                runner: 'claude',
+                kind: 'usage_limit',
+                account: 'a@example.com'
+              }
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.queue[0].gate?.kind).toBe('provider_usage');
+  });
+
   // 계정은 칩을 떠나 팝업에만 남는다 (UI-pw2g §3.3): 칩은 리셋 시각까지고 어느
   // 계정의 보류인지는 그 칩이 여는 팝업이 계속 말한다.
   test('keeps the account out of the usage gate label but inside its popup lines', () => {

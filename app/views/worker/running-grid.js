@@ -174,6 +174,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {string} [handoff_title] - hover 문구.
  * @property {string|null} [handoff_attempt_id] - The stopped attempt the click
  * hands back.
+ * @property {string} [handoff_op] - The server-projected recovery resume operation.
  * @property {string} [id] - 이 타일이 그리는 bead의 id. 판정 칩이 `data-bead-id`로
  * 싣는 값이라 `bead_id`와 같되, 두 탭이 같은 칩 렌더러를 쓰므로 레인 항목과 같은
  * 이름으로도 읽힌다 (UI-wg68 §5.3).
@@ -1458,6 +1459,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         type="button"
         class="op-btn rtile__handoff"
         data-attempt-id=${tile.handoff_attempt_id || ''}
+        data-handoff-op=${tile.handoff_op || ''}
         ?disabled=${tile.handoff_enabled === false}
         title=${tile.handoff_title ||
         '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어갑니다'}

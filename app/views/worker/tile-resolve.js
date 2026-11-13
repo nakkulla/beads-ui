@@ -170,13 +170,17 @@ const HANDBACK_TITLE =
  * The `[워커로 이어가기]` of an item, if any: the server-projected action
  * (UI-nuwy §3.6), else a live takeover conversation the server marked
  * `handback_allowed` (UI-3713 §3.3). The server decides when either stands;
- * this only finds it.
+ * this only finds it. A provider recovery's projected `worker-attempt-resume`
+ * occupies the same slot, carrying its op through to the click handler.
  *
  * @param {any} item
- * @returns {{ attempt_id: string|null, title: string|null }|null}
+ * @returns {{ attempt_id: string|null, title: string|null, op?: string }|null}
  */
 function handoffAction(item) {
-  const action = projectedAction(item, CONVERSATION_HANDOFF_OP);
+  const resume = holdsConversationOutcome(item.interactive_sessions)
+    ? null
+    : projectedAction(item, 'worker-attempt-resume', 'recovery');
+  const action = projectedAction(item, CONVERSATION_HANDOFF_OP) || resume;
   if (!action) {
     const handback = handbackConversation(item.interactive_sessions);
     return handback
@@ -190,6 +194,7 @@ function handoffAction(item) {
       : null;
   }
   return {
+    ...(action.op === 'worker-attempt-resume' ? { op: action.op } : {}),
     attempt_id:
       typeof action.payload?.attempt_id === 'string'
         ? action.payload.attempt_id
@@ -306,7 +311,7 @@ function failureRow(item) {
  * or a PR 대기 row (`failure_material`, `merge_action`).
  * @param {boolean} [resolve_pending]
  * @param {boolean} [handoff_pending]
- * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string, handoff_action?: boolean, handoff_enabled?: boolean, handoff_title?: string, handoff_attempt_id?: string|null, pair_anchor?: 'handoff'|'merge'|'discard'|'external'|null, pair_held?: boolean, discard?: any, discard_action?: boolean, merge_action?: boolean }}
+ * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string, handoff_action?: boolean, handoff_enabled?: boolean, handoff_title?: string, handoff_attempt_id?: string|null, handoff_op?: string, pair_anchor?: 'handoff'|'merge'|'discard'|'external'|null, pair_held?: boolean, discard?: any, discard_action?: boolean, merge_action?: boolean }}
  */
 export function tileResolveFields(
   item,
@@ -338,7 +343,8 @@ export function tileResolveFields(
           ? 'Worker로 넘기는 중 — 서버 응답을 기다립니다'
           : handoff.title ||
             '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어갑니다',
-        handoff_attempt_id: handoff.attempt_id
+        handoff_attempt_id: handoff.attempt_id,
+        ...(handoff.op ? { handoff_op: handoff.op } : {})
       }
     : {};
   const external = projectedAction(item, SESSION_CONTINUE_OP, 'external_job');

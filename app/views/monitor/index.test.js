@@ -2523,6 +2523,52 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     );
   });
 
+  test('resumes a provider recovery from its Monitor exit with the repository coordinate', async () => {
+    const { mount, view, sent } = setup({
+      transport: async () => ({ resumed: true }),
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'waiting',
+              session_id: 'saved',
+              cause: 'session_recovery_wait',
+              cause_detail: { recovery: { reason: 'provider' } }
+            }
+          },
+          wait_reasons: [
+            {
+              kind: 'recovery',
+              subject: { bead_id: 'A-1', root_dir: WS_A },
+              actions: [
+                {
+                  op: 'worker-attempt-resume',
+                  label: '[워커로 이어가기]',
+                  payload: { attempt_id: 't1' }
+                }
+              ]
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__handoff');
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    expect(sent[0]).toEqual({
+      type: 'worker-attempt-resume',
+      payload: { attempt_id: 't1', root_dir: WS_A, expected_revision: 1 }
+    });
+  });
+
   test('hands a conversation stop back to the Worker from the monitor tile', async () => {
     const { mount, view, sent } = setup({
       transport: async () => ({ resumed: true, pending: true, reason: null }),

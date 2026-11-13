@@ -763,11 +763,14 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `provider 대기 자동 재개 · 1/2` (then `2/2`) on the timeline without a Discord
   notification. Its card derives `next_check_at`, says it will resume
   automatically, and stays `normal` even past due; session continuation and
-  discard actions stay available.
+  discard actions stay available. Provider recovery also projects
+  `[워커로 이어가기]` using `worker-attempt-resume` with the preserved attempt
+  ID; both tabs carry that operation through `tileResolveFields` to the shared
+  continuation flow. Other recovery reasons gain no direct resume action.
 - Recovery waits requiring a decision use `worker-resolve-in-session` to select
   the live inquiry pane or fork the recorded session; discard remains available.
-  `worker-attempt-resume` refuses a recovery wait with
-  `reason: 'recovery_requires_inquiry'`.
+  `worker-attempt-resume` refuses recovery waits whose reason is not `provider`
+  with `reason: 'recovery_requires_inquiry'`.
 - Automatic inquiries use the parking launch gate and one-pane-per-Bead guard.
   The shared predicate selects `authority`, `verification`, `no_progress`,
   `reconcile`, session-declared `unclassified` (classification

@@ -640,7 +640,11 @@ describe('recovery wait judgment', () => {
       });
       expect(
         result.actions.map((/** @type {any} */ action) => action.op)
-      ).toEqual(['worker-resolve-in-session', 'worker-discard']);
+      ).toEqual([
+        'worker-resolve-in-session',
+        'worker-attempt-resume',
+        'worker-discard'
+      ]);
     }
   );
 
@@ -811,6 +815,7 @@ describe('recovery wait judgment', () => {
     expect(result.verdict).toBe('normal');
     expect(result.actions.map((/** @type {any} */ a) => a.op)).toEqual([
       'worker-resolve-in-session',
+      'worker-attempt-resume',
       'worker-discard'
     ]);
   });
@@ -1128,6 +1133,40 @@ describe('recovery wait judgment', () => {
     }).wait_reasons[0];
 
     expect(result.verdict).toBe('normal');
+  });
+
+  test('projects a direct Worker resume between provider session and discard actions', () => {
+    const result = run({
+      queue: queue({ attempts: { a: recoveryAttempt('provider') } })
+    }).wait_reasons[0];
+
+    expect(result.actions.map((action) => action.op)).toEqual([
+      'worker-resolve-in-session',
+      'worker-attempt-resume',
+      'worker-discard'
+    ]);
+    expect(result.actions[1]).toMatchObject({
+      label: '[워커로 이어가기]',
+      payload: { root_dir: ROOT, bead_id: 'UI-consumer', attempt_id: 'a' }
+    });
+  });
+
+  test.each([
+    'authority',
+    'credential',
+    'no_progress',
+    'verification',
+    'reconcile',
+    'unclassified',
+    'prerequisite'
+  ])('omits direct Worker resume for %s recovery', (token) => {
+    const result = run({
+      queue: queue({ attempts: { a: recoveryAttempt(token) } })
+    }).wait_reasons[0];
+
+    expect(
+      result.actions.some((action) => action.op === 'worker-attempt-resume')
+    ).toBe(false);
   });
 
   test('requires a session conversation for credential recovery', () => {

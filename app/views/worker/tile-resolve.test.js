@@ -550,6 +550,71 @@ describe('tileResolveFields pair anchor (UI-18a5 §3.2)', () => {
 });
 
 describe('tileResolveFields conversation handoff', () => {
+  test('uses the projected recovery resume in the existing Worker exit slot', () => {
+    const fields = tileResolveFields({
+      id: 'UI-1',
+      wait_reasons: [
+        {
+          kind: 'recovery',
+          actions: [
+            {
+              op: 'worker-attempt-resume',
+              title: '보존 작업 재개',
+              payload: { attempt_id: 'a1' }
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(fields).toMatchObject({
+      resolve_action: true,
+      handoff_action: true,
+      handoff_op: 'worker-attempt-resume',
+      handoff_attempt_id: 'a1',
+      handoff_title: '보존 작업 재개',
+      pair_anchor: 'handoff'
+    });
+  });
+
+  test('hides the recovery resume while a conversation outcome holds the pair', () => {
+    const fields = tileResolveFields({
+      id: 'UI-1',
+      wait_reasons: [
+        {
+          kind: 'recovery',
+          actions: [
+            { op: 'worker-attempt-resume', payload: { attempt_id: 'a1' } }
+          ]
+        }
+      ],
+      interactive_sessions: [
+        session('resolve', { conversation: { handoff: { reserved_at: 1 } } })
+      ]
+    });
+
+    expect(fields.resolve_action).toBeUndefined();
+    expect(fields.handoff_action).toBeUndefined();
+    expect(fields.pair_held).toBe(true);
+  });
+
+  test('omits the projected recovery resume on a Worker-ineligible card', () => {
+    const fields = tileResolveFields({
+      id: 'UI-1',
+      labels: ['worker-ineligible'],
+      wait_reasons: [
+        {
+          kind: 'recovery',
+          actions: [
+            { op: 'worker-attempt-resume', payload: { attempt_id: 'a1' } }
+          ]
+        }
+      ]
+    });
+
+    expect(fields.handoff_action).toBeUndefined();
+  });
+
   /**
    * @param {Record<string, any>} [over]
    */

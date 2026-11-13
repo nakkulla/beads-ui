@@ -34,7 +34,7 @@ vi.mock('../worker/attach.js', () => ({
   readBeadTimeline: () => [],
   reconcileWorkerRepoOperations: () => Promise.resolve(),
   refreshWorkerExternalPrs: () => Promise.resolve(false),
-  resumeWorkerAttempt: () => Promise.resolve({ ok: true }),
+  resumeWorkerAttempt: vi.fn(() => Promise.resolve({ ok: true })),
   retryWorkerCleanup: () => Promise.resolve({ ok: true }),
   reviseApproveWorkerBead: () => Promise.resolve({ ok: true }),
   reviseFixWorkerBead: () => Promise.resolve({ ok: true }),
@@ -52,6 +52,7 @@ vi.mock('../worker/attach.js', () => ({
 
 const { setConnWorkspace } = await import('./context.js');
 const { getWorkerRuntime } = await import('../worker/runtime.js');
+const { resumeWorkerAttempt } = await import('../worker/attach.js');
 const handlers = await import('./worker-handlers.js');
 
 const WS = '/tmp/example/queue-hold-ws';
@@ -112,6 +113,7 @@ beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-queue-hold-'));
   process.env.XDG_STATE_HOME = tmp_state;
   handlers.__resetWorkerQueueForTest();
+  vi.mocked(resumeWorkerAttempt).mockClear();
   inquiry_calls = [];
   original_direction_inquiry = getWorkerRuntime().directionInquiry;
   getWorkerRuntime().directionInquiry = {
@@ -187,7 +189,7 @@ describe('parked tile resolution (UI-gjp2 §3.3)', () => {
     expect(reply.payload.session).toBe('already_running');
   });
 
-  test('refuses Worker resume requests for recovery attempts', async () => {
+  test('routes provider recovery resume requests to the existing attempt flow', async () => {
     const store = getWorkerRuntime().queueStore;
     store.appendAttempt(WS, {
       expected_revision: store.snapshot(WS).revision,
@@ -196,7 +198,54 @@ describe('parked tile resolution (UI-gjp2 §3.3)', () => {
         bead_id: 'UI-1',
         status: 'waiting',
         repo: '/repo',
-        cause_detail: { recovery: { reason: 'authority' } }
+        cause_detail: { recovery: { reason: 'provider' } }
+      }
+    });
+
+    const { reply } = await dispatch(
+      handlers.handleWorkerAttemptResume,
+      'worker-attempt-resume',
+      {
+        attempt_id: 'recovery',
+        expected_revision: store.snapshot(WS).revision,
+        continuation: 'prior_attempt',
+        instructions: '  이어서 진행  '
+      }
+    );
+
+    expect(resumeWorkerAttempt).toHaveBeenCalledExactlyOnceWith(
+      WS,
+      'recovery',
+      {
+        continuation: 'prior_attempt',
+        decision_token: undefined,
+        instructions: '이어서 진행',
+        exec_override: undefined
+      }
+    );
+    expect(reply.payload).toMatchObject({ resumed: true, reason: null });
+    expect(inquiry_calls).toEqual([]);
+  });
+
+  test.each([
+    'authority',
+    'credential',
+    'no_progress',
+    'verification',
+    'reconcile',
+    'unclassified',
+    'prerequisite',
+    'unknown'
+  ])('refuses Worker resume requests for %s recovery', async (reason) => {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'recovery',
+        bead_id: 'UI-1',
+        status: 'waiting',
+        repo: '/repo',
+        cause_detail: { recovery: { reason } }
       }
     });
 
@@ -211,6 +260,7 @@ describe('parked tile resolution (UI-gjp2 §3.3)', () => {
       reason: 'recovery_requires_inquiry'
     });
     expect(inquiry_calls).toEqual([]);
+    expect(resumeWorkerAttempt).not.toHaveBeenCalled();
   });
   test('routes the parked tile click to worker-resolve-in-session', async () => {
     const store = getWorkerRuntime().queueStore;
