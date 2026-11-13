@@ -634,6 +634,53 @@ describe('failure conversation entry block (UI-18a5 §3.3)', () => {
 });
 
 describe('failureHandoffTarget (UI-18a5 §3.4)', () => {
+  test('targets a condition wait tip without terminal failure records', () => {
+    const queue = {
+      repo_operations: {
+        'deploy-tip': {
+          kind: 'deploy',
+          state: 'failed',
+          subjects: [{ bead_id: BEAD }],
+          finished_at: 77,
+          failure: { code: 'condition_wait' }
+        }
+      }
+    };
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target).toEqual({
+      kind: 'condition_wait',
+      identity: 'condition_wait:deploy-tip'
+    });
+  });
+
+  test.each([
+    { source: 'manual' },
+    { dismissed: true },
+    { superseded_by: 'successor' },
+    { state: 'running' },
+    { failure: { code: 'script_failed' } },
+    { subjects: [{ bead_id: 'other' }] }
+  ])('ignores an ineligible condition wait tip: %j', (patch) => {
+    const queue = {
+      repo_operations: {
+        'deploy-tip': {
+          kind: 'deploy',
+          state: 'failed',
+          subjects: [{ bead_id: BEAD }],
+          finished_at: 77,
+          failure: { code: 'condition_wait' },
+          ...patch
+        }
+      }
+    };
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target).toBeNull();
+  });
+
   test('targets a stopped cleanup with its step and record time', () => {
     const queue = {
       cleanup_failed: { [BEAD]: { step: 'post_merge_jobs', at: 77 } }

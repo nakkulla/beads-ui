@@ -597,7 +597,7 @@
  * whether the exit already settled it.
  *
  * @typedef {Object} ConversationHandoffTarget
- * @property {'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue'} kind
+ * @property {'cleanup'|'condition_wait'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue'} kind
  * @property {string} identity
  */
 /**
@@ -3809,6 +3809,7 @@ function normalizeConversation(raw) {
   const target =
     isRecord(target_raw) &&
     (target_raw.kind === 'cleanup' ||
+      target_raw.kind === 'condition_wait' ||
       target_raw.kind === 'discard' ||
       target_raw.kind === 'verify_hold' ||
       target_raw.kind === 'merge_gate' ||

@@ -4515,7 +4515,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
    * extra snapshot material layered on), one `resolve` pane, a transcript the
    * test moves, and the three Worker exits as spies.
    *
-   * @param {{ patch?: () => Record<string, any>, exits?: Record<string, any> }} [options]
+   * @param {{ patch?: () => Record<string, any>, exits?: Record<string, any>, quickfixLanding?: any }} [options]
    */
   function failureEnv(options = {}) {
     let at = 1000;
@@ -4587,6 +4587,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       store,
       timeline,
       notify,
+      quickfixLanding: options.quickfixLanding,
       now: () => at,
       resolveSessionFile: () => transcript.location,
       ...{
@@ -4653,6 +4654,163 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
 
   /** @param {ReturnType<typeof failureEnv>} env */
   const record = (env) => env.real.snapshot(WS).interactive_sessions[KEY];
+
+  /**
+   * @param {ReturnType<typeof failureEnv>} env
+   * @param {string} operation_id
+   * @param {string} [retry_of]
+   * @param {boolean} [settled]
+   */
+  function recordConditionWait(env, operation_id, retry_of, settled = true) {
+    env.real.ensureRepoOperation(WS, {
+      operation_id,
+      repo_id: '/repo',
+      kind: 'deploy',
+      subjects: [{ bead_id: BEAD, merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'a'.repeat(40),
+      target_base: 'main',
+      target_sha: 'a'.repeat(40),
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      ...(retry_of ? { retry_of } : {})
+    });
+    if (retry_of) {
+      env.real.supersedeRepoOperation(WS, {
+        operation_id: retry_of,
+        successor_id: operation_id
+      });
+    }
+    if (settled) {
+      const operation = env.real.snapshot(WS).repo_operations[operation_id];
+      env.real.settleRepoOperation(WS, {
+        operation_id,
+        attempt_id: operation.attempt_id,
+        exit_code: 75,
+        signal: null,
+        finished_at: retry_of ? 1100 : 800,
+        failure: {
+          code: 'condition_wait',
+          fingerprint: 'wait',
+          detail: '',
+          interrupted: false
+        }
+      });
+    }
+  }
+
+  test('hands a condition wait tip to the human cleanup retry once', async () => {
+    const env = failureEnv({
+      exits: {
+        retryCleanup: vi.fn(async () => {
+          recordConditionWait(env, 'wait-next', 'wait-tip');
+          return { ok: false, reason: 'condition_wait' };
+        })
+      }
+    });
+    env.real.clearCleanupFailure(WS, BEAD);
+    recordConditionWait(env, 'wait-tip');
+    openFailureConversation(env);
+    say(env, '워커가 이어감 · 배포 다시');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const reserved = record(env)?.conversation?.handoff?.target;
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(reserved).toEqual({
+      kind: 'condition_wait',
+      identity: 'condition_wait:wait-tip'
+    });
+    expect(env.exits.retryCleanup).toHaveBeenCalledExactlyOnceWith(WS, BEAD);
+    expect(
+      Object.values(env.real.snapshot(WS).repo_operations).filter(
+        (operation) => operation.retry_of === 'wait-tip'
+      )
+    ).toHaveLength(1);
+    expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+    expect(env.notify.conversationResumed).toHaveBeenCalledWith({
+      bead_id: BEAD,
+      decision: '워커가 이어감 · 배포 다시',
+      action: '정리 재시도',
+      repo: WS
+    });
+  });
+
+  test('resumes a quick_fix condition wait through its human settlement exit', async () => {
+    const settle = vi.fn(async () => {
+      recordConditionWait(env, 'wait-next', 'wait-tip');
+      return { ok: false, reason: 'condition_wait', step: 'repo_operations' };
+    });
+    const env = failureEnv({ quickfixLanding: { settle } });
+    env.real.clearCleanupFailure(WS, BEAD);
+    recordConditionWait(env, 'wait-tip');
+    seedQueue(env.real, [BEAD]);
+    env.real.appendAttempt(WS, {
+      expected_revision: env.real.snapshot(WS).revision,
+      attempt: { attempt_id: 'quickfix-wait', bead_id: BEAD }
+    });
+    env.real.updateAttempt(WS, {
+      attempt_id: 'quickfix-wait',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: 'a'.repeat(40),
+          reason: 'condition_wait'
+        },
+        cause: 'quickfix_landing_failed:condition_wait'
+      }
+    });
+    openFailureConversation(env);
+    say(env, '워커가 이어감 · 배포 다시');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(settle).toHaveBeenCalledExactlyOnceWith({
+      attempt_id: 'quickfix-wait',
+      bead_id: BEAD,
+      target_base: 'main',
+      job_retry: true
+    });
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(
+      Object.values(env.real.snapshot(WS).repo_operations).filter(
+        (operation) => operation.retry_of === 'wait-tip'
+      )
+    ).toHaveLength(1);
+    expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+  });
+
+  test.each([false, true])(
+    'rejects a condition wait handoff after its successor appears (settled=%s)',
+    async (settled) => {
+      const env = failureEnv();
+      env.real.clearCleanupFailure(WS, BEAD);
+      recordConditionWait(env, 'wait-tip');
+      openFailureConversation(env);
+      say(env, '워커가 이어감 · 배포 다시');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      recordConditionWait(env, 'wait-next', 'wait-tip', settled);
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+      expect(env.real.snapshot(WS).conversation_refusals[BEAD]).toMatchObject({
+        reason: '이미 정산됨'
+      });
+    }
+  );
 
   test('accepts a fix wait without a user answer from a failure conversation', async () => {
     const env = failureEnv();

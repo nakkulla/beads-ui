@@ -1433,10 +1433,11 @@ const INTERACTIVE_KIND_LABELS = {
  * (UI-18a5 §3.4 인계 표), in the `↪ Worker가 이어감` push's `실행:` words.
  * `merge_gate` has none: only a person's `[머지]` waives that hold.
  *
- * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'repo_operation'|'stale_residue', string>>}
+ * @type {Readonly<Record<'cleanup'|'condition_wait'|'discard'|'verify_hold'|'repo_operation'|'stale_residue', string>>}
  */
 const FAILURE_HANDOFF_ACTIONS = Object.freeze({
   cleanup: '정리 재시도',
+  condition_wait: '정리 재시도',
   discard: '폐기 재시도',
   verify_hold: '머지 큐 재등록',
   repo_operation: '수동 배포 재실행',
@@ -1446,10 +1447,11 @@ const FAILURE_HANDOFF_ACTIONS = Object.freeze({
 /**
  * The `<행 종류>` word of the `Worker로 넘김 · <행 종류> · <결과 줄>` timeline line.
  *
- * @type {Readonly<Record<'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue', string>>}
+ * @type {Readonly<Record<'cleanup'|'condition_wait'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue', string>>}
  */
 const FAILURE_HANDOFF_ROWS = Object.freeze({
   cleanup: '실패 — 머지 후 정리',
+  condition_wait: '배포 조건 대기',
   discard: '실패 — 폐기',
   verify_hold: '실패 — 머지 전 검증 보류',
   merge_gate: '실패 — 머지 게이트',
@@ -12146,19 +12148,33 @@ export function createScheduler(deps) {
       /** @type {{ ok: boolean, reason?: string|null }} */
       let result;
       try {
+        // A quick_fix condition wait has no PR cleanup row. Its human
+        // [정리 재시도] resumes the landing settlement on the same attempt.
+        const attempt =
+          target.kind === 'condition_wait'
+            ? latestImplementationAttempt(
+                deps.store.snapshot(workspace),
+                bead_id
+              )
+            : null;
         result =
-          target.kind === 'cleanup'
-            ? await exits.retryCleanup(workspace, bead_id)
-            : target.kind === 'discard'
-              ? await exits.retryDiscard(
-                  workspace,
-                  /** @type {{ operation_id: string }} */ (discard).operation_id
-                )
-              : target.kind === 'repo_operation'
-                ? await /** @type {NonNullable<typeof exits.rerunManualDeploy>} */ (
-                    exits.rerunManualDeploy
-                  )(workspace)
-                : await exits.enqueueMerge(workspace, bead_id);
+          attempt?.quickfix_lane === true
+            ? await resume(workspace, attempt.attempt_id, {
+                job_retry_authorized: true
+              })
+            : target.kind === 'cleanup' || target.kind === 'condition_wait'
+              ? await exits.retryCleanup(workspace, bead_id)
+              : target.kind === 'discard'
+                ? await exits.retryDiscard(
+                    workspace,
+                    /** @type {{ operation_id: string }} */ (discard)
+                      .operation_id
+                  )
+                : target.kind === 'repo_operation'
+                  ? await /** @type {NonNullable<typeof exits.rerunManualDeploy>} */ (
+                      exits.rerunManualDeploy
+                    )(workspace)
+                  : await exits.enqueueMerge(workspace, bead_id);
       } catch (err) {
         log('conversation handoff exit failed for %s: %o', bead_id, err);
         result = { ok: false, reason: 'error' };

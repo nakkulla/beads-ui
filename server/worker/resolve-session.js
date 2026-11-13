@@ -52,7 +52,9 @@ import {
   foreignHandoffReason
 } from './foreign-handoff.js';
 import { holdsHandoffReservation } from './queue-store.js';
+import { conditionWaitPolicy } from './repo-operation-policy.js';
 import {
+  conditionWaitTipFor,
   operationIncidentFingerprint,
   selfRepairFailureIdentity
 } from './resolution-ladder.js';
@@ -773,6 +775,9 @@ export function takeoverCleanupRules(takeover) {
  *     merge-queue re-enqueue, which issues a new authority.
  *   - `cleanup`: a stopped post-merge cleanup (a needs-human post-merge
  *     terminal keeps its cleanup record) — the exit is the cleanup retry.
+ *   - `condition_wait`: a deploy condition-wait tip without a terminal
+ *     failure record — the exit is the row's human cleanup retry, and the
+ *     identity is the tip operation id.
  *   - `merge_gate`: any other needs-human terminal, the merge gate's forged
  *     receipts above all (`receipt_hold`) — no exit; only a person's `[머지]`
  *     waives it.
@@ -788,7 +793,7 @@ export function takeoverCleanupRules(takeover) {
  *
  * @param {any} queue - Queue snapshot.
  * @param {string} bead_id - The row key: a Bead id, or `repo-op:<id>`.
- * @returns {{ kind: 'cleanup'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue', identity: string }|null}
+ * @returns {import('./queue-store.js').ConversationHandoffTarget|null}
  */
 export function failureHandoffTarget(queue, bead_id) {
   const operation_id = repoOperationIdOf(bead_id);
@@ -848,6 +853,17 @@ export function failureHandoffTarget(queue, bead_id) {
     return {
       kind: 'stale_residue',
       identity: `stale_residue:${stale.attempt_id}`
+    };
+  }
+  const wait = conditionWaitTipFor(
+    queue?.repo_operations || {},
+    bead_id,
+    conditionWaitPolicy()
+  );
+  if (wait !== null) {
+    return {
+      kind: 'condition_wait',
+      identity: `condition_wait:${wait.tip_id}`
     };
   }
   return null;
