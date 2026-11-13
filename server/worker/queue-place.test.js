@@ -48,6 +48,7 @@ const {
 const { __resetWorkerRuntimeForTest, getWorkerRuntime } =
   await import('./runtime.js');
 const { placeBeadInQueue } = await import('./queue-place.js');
+const { placeBundleInQueue } = await import('./queue-place-bundle.js');
 const { createScheduler } = await import('./scheduler.js');
 const { __setTimingOverridesForTest } = await import('../timing-settings.js');
 
@@ -81,6 +82,76 @@ afterEach(() => {
 function snapshot() {
   return getWorkerRuntime().queueStore.snapshot(WS);
 }
+
+test('admits a bundle with a stale revision after an unrelated write', async () => {
+  const store = getWorkerRuntime().queueStore;
+  store.load(WS);
+  store.setAutoAdvance(WS, true);
+
+  const outcome = await placeBundleInQueue(WS, {
+    expected_revision: 0,
+    lane: 's1',
+    binds: [],
+    steps: [{ bead_id: 'UI-a', index: 0 }]
+  });
+
+  expect(outcome).toMatchObject({
+    applied: true,
+    conflict: false,
+    queue: { revision: 2 }
+  });
+});
+
+test('applies a bundle after an unrelated write during admission', async () => {
+  const store = getWorkerRuntime().queueStore;
+  __setUnattachedAdmissionCheckForTest(async () => {
+    await Promise.resolve();
+    store.setAutoAdvance(WS, true);
+    return { ok: true };
+  });
+
+  const outcome = await placeBundleInQueue(WS, {
+    expected_revision: 0,
+    lane: 's1',
+    binds: [],
+    steps: [{ bead_id: 'UI-a', index: 0 }]
+  });
+
+  expect(outcome).toMatchObject({
+    applied: true,
+    conflict: false,
+    queue: { revision: 2, auto_advance: true }
+  });
+  expect(
+    snapshot().serial_lanes[0].entries.map((entry) => entry.bead_id)
+  ).toEqual(['UI-a']);
+});
+
+test('rejects a bundle when another row enters its lane during admission', async () => {
+  const store = getWorkerRuntime().queueStore;
+  __setUnattachedAdmissionCheckForTest(async () => {
+    await Promise.resolve();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-b', lane: 's1' });
+    return { ok: true };
+  });
+
+  const outcome = await placeBundleInQueue(WS, {
+    expected_revision: 0,
+    lane: 's1',
+    binds: [],
+    steps: [{ bead_id: 'UI-a', index: 0 }]
+  });
+
+  expect(outcome).toMatchObject({
+    applied: false,
+    conflict: true,
+    queue: { revision: 1 }
+  });
+  expect(
+    snapshot().serial_lanes[0].entries.map((entry) => entry.bead_id)
+  ).toEqual(['UI-b']);
+  expect(state.fanout_calls).toEqual([]);
+});
 
 test('records the refusal and leaves every lane untouched on admission refusal', async () => {
   __setUnattachedAdmissionCheckForTest(async () => ({
@@ -192,7 +263,7 @@ test('reports the seat an explicit index produced', async () => {
   ]);
 });
 
-test('returns a stale revision when the placement tick records grace without moving the seat', async () => {
+test('accepts a stale revision when the placement tick records grace without moving the seat', async () => {
   vi.useFakeTimers();
   __setTimingOverridesForTest({ queue_grace_seconds: 20 });
   const store = getWorkerRuntime().queueStore;
@@ -222,7 +293,7 @@ test('returns a stale revision when the placement tick records grace without mov
   expect(latest.revision).toBeGreaterThan(outcome.queue.revision);
   expect(latest.admission['UI-a']).toMatchObject({ reason: 'grace_period' });
   expect(latest.serial_lanes).toEqual(outcome.queue.serial_lanes);
-  expect(next).toMatchObject({ applied: false, conflict: true });
+  expect(next).toMatchObject({ applied: true, lane: 's1', index: 1 });
 });
 
 test('clears a prior refusal when the placement is admitted', async () => {

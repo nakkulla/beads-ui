@@ -257,7 +257,9 @@ export async function placePlanInQueue(workspace_key, input) {
   // A stale view is refused before any admission work: the store would reject
   // the write at its own CAS anyway, and a git-backed check per member is the
   // expensive part.
-  if (queueStore().snapshot(workspace_key).revision !== expected_revision) {
+  if (
+    !queueStore().placementRevisionMatches(workspace_key, expected_revision)
+  ) {
     return {
       applied: false,
       conflict: true,

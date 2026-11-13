@@ -805,6 +805,32 @@ test('rejects a place-bundle without expected_revision', async () => {
   expect(body).toEqual({ ok: false, error: 'bad_request' });
 });
 
+test('applies an HTTP bundle with a stale revision after an unrelated write', async () => {
+  const store = getWorkerRuntime().queueStore;
+  const before = store.load(workspace);
+  store.recordAdmission(workspace, { bead_id: 'UI-a', reason: 'grace_period' });
+
+  const { status, body } = await postPlaceBundle({
+    root_dir: workspace,
+    lane: 's1',
+    binds: [],
+    steps: [{ bead_id: 'UI-a', index: 0 }],
+    expected_revision: before.revision
+  });
+
+  expect(status).toBe(200);
+  expect(body).toEqual({
+    ok: true,
+    applied: true,
+    revision: store.snapshot(workspace).revision
+  });
+  expect(
+    store
+      .snapshot(workspace)
+      .serial_lanes[0].entries.map((entry) => entry.bead_id)
+  ).toEqual(['UI-a']);
+});
+
 test('places a bundle into the lane and reports the new revision', async () => {
   seedQueueFile({ revision: 3, queue: [{ bead_id: 'UI-x', added_at: 1 }] });
 
