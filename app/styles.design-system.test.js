@@ -2672,7 +2672,7 @@ describe('compare tab controls use parts (§3.4 check 3)', () => {
 
     const selects = Array.from(mount.querySelectorAll('.cmp-filter__select'));
 
-    expect(selects.length).toBe(4);
+    expect(selects.length).toBe(3);
     expect(
       selects.every((el) => el.classList.contains('ui-select--bare'))
     ).toBe(true);

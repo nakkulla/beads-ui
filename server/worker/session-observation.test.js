@@ -9,7 +9,8 @@ import {
   createSessionObservationStore,
   createWorkerSessionObservationStore,
   foldCodexAttemptUsage,
-  foldSessionObservation
+  foldSessionObservation,
+  readTerminalObservation
 } from './session-observation.js';
 import { readSessionSnapshot } from './session-ref.js';
 
@@ -17,6 +18,80 @@ const FIXTURE = new URL(
   './__fixtures__/codex-native-child-rollout.jsonl',
   import.meta.url
 );
+
+describe('terminal transcript folding', () => {
+  test('reuses the Claude fold for root segments and child legs', () => {
+    const file = new URL(
+      './__fixtures__/claude-subagent.jsonl',
+      import.meta.url
+    );
+
+    const result = readTerminalObservation(
+      { runner: 'claude', session_id: 'terminal-session' },
+      { file: file.pathname }
+    );
+
+    expect(result.cause).toBeNull();
+    expect(result.patch.usage_segments.length).toBeGreaterThan(0);
+    expect(
+      result.patch.usage_legs.some(
+        (/** @type {any} */ leg) => leg.role === 'subagent'
+      )
+    ).toBe(true);
+  });
+
+  test('keeps child legs from the interactive project transcript shape', () => {
+    const source = new URL(
+      './__fixtures__/claude-subagent.jsonl',
+      import.meta.url
+    );
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-transcript-'));
+    const file = path.join(dir, 'terminal-session.jsonl');
+    const project_lines = fs
+      .readFileSync(source, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => {
+        const { tool_use_result, ...record } = JSON.parse(line);
+        return JSON.stringify(
+          tool_use_result
+            ? { ...record, toolUseResult: tool_use_result }
+            : record
+        );
+      });
+    fs.writeFileSync(file, project_lines.join('\n'));
+
+    const result = readTerminalObservation(
+      { runner: 'claude', session_id: 'terminal-session' },
+      { file }
+    );
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    expect(
+      result.patch.usage_legs.find(
+        (/** @type {any} */ leg) => leg.role === 'subagent'
+      )
+    ).toMatchObject({ model: 'claude-sonnet-4-5-20250929' });
+  });
+
+  test('reports missing local transcripts without inventing observations', () => {
+    const result = readTerminalObservation(
+      { runner: 'claude', session_id: 'missing-transcript' },
+      { home_dir: '/nonexistent-home' }
+    );
+
+    expect(result).toEqual({ patch: {}, cause: 'file_missing' });
+  });
+
+  test('reports transcript read failures separately from absence', () => {
+    const result = readTerminalObservation(
+      { runner: 'claude', session_id: 'unreadable-transcript' },
+      { file: '/nonexistent-transcript' }
+    );
+
+    expect(result).toEqual({ patch: {}, cause: 'read_failure' });
+  });
+});
 
 describe('historical observation retention', () => {
   /** @type {string} */

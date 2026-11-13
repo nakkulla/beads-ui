@@ -45,11 +45,13 @@ import {
   createScheduler,
   quickFixSelfReviewBlock,
   requestStartNow,
+  resolveExecProfile,
   staleFailureTier,
   withQuickFixSelfReview
 } from './scheduler.js';
 import { createSessionLog, stderrPathOf } from './session-log.js';
 import {
+  attemptRecordPath,
   beadSessionLogPath,
   beadSessionStderrPath,
   codexAttemptHomeDir,
@@ -1078,6 +1080,266 @@ let tmp_state;
 beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-sched-'));
   process.env.XDG_STATE_HOME = tmp_state;
+});
+
+describe('scheduler execution profile recording', () => {
+  test.each([
+    [
+      { route: 'quick_fix', impl_model: 'opus' },
+      { quick_fix_impl_model: 'sonnet', impl_model: 'sol' },
+      'opus'
+    ],
+    [
+      { route: 'quick_fix' },
+      { quick_fix_impl_model: 'sonnet', impl_model: 'sol' },
+      'sonnet'
+    ],
+    [
+      { route: 'quick_fix' },
+      { quick_fix_impl_model: '', impl_model: 'sol' },
+      'sol'
+    ],
+    [
+      { route: 'spec_backed' },
+      { quick_fix_impl_model: 'sonnet', impl_model: 'sol' },
+      'sol'
+    ]
+  ])('records the highest available model layer %j', (bead, kv, impl_model) => {
+    const profile = resolveExecProfile(bead, kv);
+
+    expect(profile?.impl_model).toBe(impl_model);
+  });
+
+  test('falls through empty quick fix reviewer defaults', () => {
+    const profile = resolveExecProfile(
+      { route: 'quick_fix' },
+      { quick_fix_impl_review_model: '', impl_review_model: 'astra' }
+    );
+
+    expect(profile?.impl_review_model).toBe('astra');
+  });
+
+  test('ignores the forbidden general dispatch kv layer', () => {
+    const profile = resolveExecProfile(
+      { route: 'spec_backed' },
+      { impl_dispatch: 'main', quick_fix_impl_dispatch: 'main' }
+    );
+
+    expect(profile?.impl_dispatch).toBeNull();
+  });
+
+  test('records quick fix dispatch independently of the general layer', () => {
+    const profile = resolveExecProfile(
+      { route: 'quick_fix' },
+      { quick_fix_impl_dispatch: 'main', impl_dispatch: 'delegated' }
+    );
+
+    expect(profile?.impl_dispatch).toBe('main');
+  });
+
+  test('keeps unreadable kv profiles null even with Bead pins', () => {
+    const profile = resolveExecProfile({ impl_model: 'opus' }, null);
+
+    expect(profile).toBeNull();
+  });
+
+  test('records Bead pins when the session defaults key is absent', async () => {
+    const env = setup({
+      config: { A1: { impl_model: 'opus' } },
+      kvGet: async () => ({ ok: true, found: false, value: undefined })
+    });
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(
+      Object.values(env.store.snapshot(WS).attempts)[0].exec_profile
+    ).toMatchObject({ impl_model: 'opus', impl_review_model: null });
+  });
+
+  test('persists the dispatch profile on the launched attempt', async () => {
+    const env = setup({
+      config: { A1: { impl_model: 'opus' } },
+      kvGet: async () => ({
+        ok: true,
+        value: { schema: 1, impl_model: 'sol', impl_review_model: 'astra' }
+      })
+    });
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(
+      Object.values(env.store.snapshot(WS).attempts)[0].exec_profile
+    ).toMatchObject({ impl_model: 'opus', impl_review_model: 'astra' });
+  });
+
+  test('rechecks the serial head after reading session defaults', async () => {
+    /** @type {any} */
+    let env;
+    let moved = false;
+    env = setup({
+      config: { A: {}, B: {} },
+      slots: 2,
+      kvGet: async (
+        /** @type {string} */ _workspace,
+        /** @type {string} */ key
+      ) => {
+        if (key === 'workflow_session_defaults' && !moved) {
+          moved = true;
+          env.store.place(WS, {
+            expected_revision: env.store.snapshot(WS).revision,
+            bead_id: 'B',
+            lane: 's1',
+            index: 0
+          });
+        }
+        return { ok: true, value: null };
+      }
+    });
+    seedLanes(env.store, { s1: ['A'] });
+
+    await env.scheduler.tick(WS);
+
+    expect(moved).toBe(true);
+    expect(env.runner.spawnOrder).not.toContain('A');
+  });
+
+  test('continues dispatch when session defaults cannot be read', async () => {
+    const env = setup({
+      config: { A1: {} },
+      kvGet: async (
+        /** @type {string} */ _workspace,
+        /** @type {string} */ key
+      ) =>
+        key === 'workflow_session_defaults'
+          ? { ok: false }
+          : { ok: true, value: null }
+    });
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A1']);
+    expect(
+      Object.values(env.store.snapshot(WS).attempts)[0].exec_profile
+    ).toBeNull();
+  });
+
+  test('backfills a finished transcript durably and skips its next pass', async () => {
+    const home = path.join(tmp_state, 'observation-home');
+    const directory = path.join(home, '.claude', 'projects', 'repo');
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, 'backfill-session.jsonl');
+    fs.copyFileSync(
+      new URL('./__fixtures__/claude-subagent.jsonl', import.meta.url),
+      file
+    );
+    const home_spy = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    const env = setup({ config: {} });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'backfill',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'backfill-session',
+        started_at: 0,
+        finished_at: Number.MAX_SAFE_INTEGER,
+        status: 'done'
+      }
+    });
+    try {
+      await env.scheduler.reconcile(WS);
+      const original = env.store.snapshot(WS).attempts.backfill.usage_legs;
+      fs.writeFileSync(file, '');
+      await env.scheduler.reconcile(WS);
+
+      const saved = makeQueueStore().load(WS).attempts.backfill;
+      expect(original.length).toBeGreaterThan(0);
+      expect(saved.usage_legs).toEqual(original);
+      expect(saved.observation_checked).toBe(true);
+    } finally {
+      home_spy.mockRestore();
+    }
+  });
+
+  test('marks absent historical transcripts checked without re-reading', async () => {
+    const env = setup({ config: {} });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'absent',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'never-existed',
+        status: 'done'
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts.absent.usage_legs).toEqual([]);
+    expect(env.store.snapshot(WS).attempts.absent.observation_checked).toBe(
+      true
+    );
+  });
+
+  test('backfills transferred records from the reconcile pass', async () => {
+    const env = setup({ config: {} });
+    const record_file = attemptRecordPath(WS, 'B1', 'moved');
+    fs.mkdirSync(path.dirname(record_file), { recursive: true });
+    fs.writeFileSync(
+      record_file,
+      JSON.stringify({
+        attempt_id: 'moved',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'moved-session-absent',
+        status: 'done'
+      })
+    );
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.readAttempt(WS, 'B1', 'moved')?.observation_checked).toBe(
+      true
+    );
+  });
+
+  test('passes a backfill read failure on as the missing-observation cause', async () => {
+    const home = path.join(tmp_state, 'unreadable-observation-home');
+    fs.mkdirSync(
+      path.join(home, '.claude', 'projects', 'repo', 'unreadable.jsonl'),
+      { recursive: true }
+    );
+    const home_spy = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    const env = setup({ config: {} });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'unreadable',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'unreadable',
+        status: 'done'
+      }
+    });
+    const update_spy = vi.spyOn(env.store, 'updateAttempt');
+    try {
+      await env.scheduler.reconcile(WS);
+
+      expect(update_spy).toHaveBeenCalledWith(
+        WS,
+        expect.objectContaining({
+          attempt_id: 'unreadable',
+          observation_cause: 'read_failure'
+        })
+      );
+    } finally {
+      home_spy.mockRestore();
+    }
+  });
 });
 
 describe('scheduler retired cleanup diagnosis compatibility (UI-ckgr)', () => {
@@ -2279,6 +2541,30 @@ describe('scheduler work recovery waits', () => {
         )
       ).toHaveLength(1);
       expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
+
+    test('inherits the recorded execution profile on a prior-settings resume', async () => {
+      const env = await providerWaitEnv();
+      const exec_profile = {
+        impl_dispatch: 'delegated',
+        impl_runtime: 'codex',
+        impl_model: 'sol',
+        impl_effort: 'high',
+        impl_review_model: 'astra',
+        impl_review_effort: 'xhigh'
+      };
+      env.store.updateAttempt(WS, {
+        attempt_id: env.prior.attempt_id,
+        patch: { exec_profile }
+      });
+      env.setTime(env.prior.finished_at + HOUR);
+
+      await env.scheduler.reconcile(WS);
+
+      const child = Object.values(env.store.snapshot(WS).attempts).find(
+        (attempt) => attempt.resumed_from === env.prior.attempt_id
+      );
+      expect(child?.exec_profile).toEqual(exec_profile);
     });
 
     test('opens the provider wait resume prompt with the elapsed wait', async () => {

@@ -31,7 +31,7 @@ import { beadTimelinePath } from './state-paths.js';
 const log = debug('worker:bead-timeline');
 
 /**
- * @typedef {'dispatched'|'stale_work_auto'|'guard_warning'|'guard_denied'|'session_ended'|'attempt_failed'|'attempt_retry'|'queue_hold'|'queue_resume'|'provider_hold'|'provider_recovered'|'provider_hold_released'|'landing_step'|'merge_step'|'operation_failed'|'operation_recovery'|'repair_handoff'|'needs_human'|'user_action'|'interactive_session'} TimelineKind
+ * @typedef {'dispatched'|'stale_work_auto'|'guard_warning'|'guard_denied'|'session_ended'|'attempt_failed'|'attempt_retry'|'queue_hold'|'queue_resume'|'provider_hold'|'provider_recovered'|'provider_hold_released'|'landing_step'|'merge_step'|'operation_failed'|'operation_recovery'|'repair_handoff'|'needs_human'|'user_action'|'interactive_session'|'observation_missing'} TimelineKind
  */
 
 /**
@@ -49,6 +49,7 @@ export const TIMELINE_KINDS = Object.freeze(
     'guard_warning',
     'guard_denied',
     'session_ended',
+    'observation_missing',
     'interactive_session',
     'attempt_failed',
     'attempt_retry',
@@ -177,7 +178,11 @@ function buildEvent(input, now) {
   if (account.length > 0) {
     event.account = account;
   }
-  if (kind === 'guard_denied' || kind === 'guard_warning') {
+  if (
+    kind === 'guard_denied' ||
+    kind === 'guard_warning' ||
+    kind === 'observation_missing'
+  ) {
     if (typeof input.runner === 'string') {
       event.runner = input.runner;
     }

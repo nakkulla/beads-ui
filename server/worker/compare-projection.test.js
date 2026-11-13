@@ -15,6 +15,7 @@ import {
   compareIssueIndex,
   compareSnapshot,
   compareVerifyReceipts,
+  executedOf,
   implActorOf,
   isRetryAttempt,
   medianOf,
@@ -22,7 +23,8 @@ import {
   passCaret,
   prepareCompareSnapshot,
   presetMatch,
-  retryKindOf
+  retryKindOf,
+  settingsOf
 } from './compare-projection.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
@@ -500,9 +502,8 @@ describe('worker/compare-projection preset inference', () => {
       deviated_keys: ['impl_model']
     });
     expect(model.groups[0]).toMatchObject({
-      key: 'preset:p1',
-      name: '기본',
-      badge: 'preset'
+      name: 'other · high → 리프 고정 sol',
+      aliases: [{ name: '기본', count: 1 }]
     });
   });
 
@@ -550,7 +551,7 @@ describe('worker/compare-projection preset inference', () => {
     expect(model.rows[0]).not.toHaveProperty('preset_candidates');
   });
 
-  test('keeps ambiguous candidate names on unmatched rows', () => {
+  test('omits ambiguous candidate names from unmatched rows', () => {
     const model = buildCompareModel({
       catalog: CATALOG,
       presets: [makePreset(), { ...makePreset(), id: 'p2', name: '둘째' }],
@@ -558,8 +559,8 @@ describe('worker/compare-projection preset inference', () => {
     });
 
     expect(model.rows[0].preset).toBeNull();
-    expect(model.rows[0].preset_candidates).toEqual(['기본', '둘째']);
-    expect(model.groups[0].badge).toBe('unmatched');
+    expect(model.rows[0]).not.toHaveProperty('preset_candidates');
+    expect(model.groups[0]).not.toHaveProperty('badge');
   });
 
   test('disables even recorded matches when the preset store is unreadable', () => {
@@ -583,7 +584,7 @@ describe('worker/compare-projection preset inference', () => {
     });
 
     expect(model.rows[0].preset).toBeNull();
-    expect(model.rows[0].preset_candidates).toEqual([]);
+    expect(model.rows[0]).not.toHaveProperty('preset_candidates');
     expect(model.warnings).toEqual(['preset_store_unreadable']);
   });
 });
@@ -1378,6 +1379,33 @@ describe('worker/compare-projection review attribution', () => {
 });
 
 describe('worker/compare-projection filters', () => {
+  test('reuses a durably folded observation without reading its transcript again', async () => {
+    const prepareHistorical = vi.fn(async () => null);
+    const attempt = makeAttempt({
+      runner: 'codex',
+      observation_checked: true,
+      usage_segments: [
+        { model: 'sol', usage: { input_tokens: 40, output_tokens: 4 } }
+      ]
+    });
+
+    const model = await prepareCompareSnapshot(
+      {},
+      {
+        workspaces: [makeWorkspace({ attempts: [attempt] })],
+        observations: /** @type {any} */ ({
+          prepareHistorical,
+          get: () => ({ usage_segments: [] })
+        }),
+        presets: [],
+        catalog: null
+      }
+    );
+
+    expect(prepareHistorical).not.toHaveBeenCalled();
+    expect(model.rows[0].usage.tokens).toBe(44);
+  });
+
   test('prepares ended attempts before projecting comparison rows', async () => {
     const attempt = makeAttempt({
       runner: 'codex',
@@ -2220,21 +2248,428 @@ describe('worker/compare-projection human attribution', () => {
 
 describe('worker/compare-projection grouping and summary', () => {
   test.each([
-    ['preset', 'sig:claude-opus-5/high → gpt-5.6-sol/high', 'unmatched'],
-    ['orchestration', 'claude-opus-5/high', 'none'],
-    ['impl_actor', 'gpt-5.6-sol/high', 'none']
-  ])('keys the %s grouping axis', (group_by, key, badge) => {
-    const model = projectAttempts([makeAttempt()], {}, { group_by });
+    [
+      'claude',
+      [
+        {
+          provider: 'claude',
+          agent_type: 'impl-high',
+          model: 'claude-opus-5-5'
+        }
+      ],
+      'opus',
+      'high'
+    ],
+    [
+      'codex',
+      [
+        {
+          provider: 'codex',
+          role: 'implementation',
+          model: 'gpt-5.6-sol',
+          effort: 'medium'
+        }
+      ],
+      'sol',
+      'medium'
+    ]
+  ])(
+    'extracts %s implementation legs',
+    (_runtime, usage_legs, model, effort) => {
+      const executed = executedOf({ usage_legs });
 
-    expect(model.groups[0]).toMatchObject({ key, badge });
-    expect(model.rows[0].composition).toBe(
-      'claude-opus-5/high → gpt-5.6-sol/high'
-    );
+      expect(executed.leaves).toMatchObject([{ model, effort }]);
+    }
+  );
+
+  test('excludes transport and general agents from implementation leaves', () => {
+    const executed = executedOf({
+      usage_legs: [
+        { agent_type: 'codex-runner', model: 'opus' },
+        { agent_type: 'general-purpose', model: 'sonnet' }
+      ]
+    });
+
+    expect(executed.leaves).toEqual([]);
+  });
+
+  test('extracts implementation paths and excludes review paths from native children', () => {
+    const executed = executedOf({
+      codex_children: [
+        {
+          agent_path: '/root/implement-01',
+          model: 'gpt-6.1-sol',
+          effort: 'high'
+        },
+        { agent_path: '/root/review-impl', model: 'astra', effort: 'xhigh' },
+        { agent_path: '/root/review-spec', model: 'terra' }
+      ]
+    });
+
+    expect(executed.leaves).toMatchObject([
+      { runtime: 'codex', model: 'sol', effort: 'high' }
+    ]);
+    expect(executed.reviewers).toEqual([{ model: 'astra', effort: 'xhigh' }]);
+  });
+
+  test('extracts gate reviewers and excludes spec and plan receipt IDs', () => {
+    const executed = executedOf({
+      usage_legs: [
+        {
+          role: 'review-consult',
+          receipt_id: 'impl-review:1',
+          model: 'sol',
+          effort: 'high'
+        },
+        { role: 'review-consult', receipt_id: 'spec-review:1', model: 'astra' },
+        { role: 'review-consult', receipt_id: 'plan-review:1', model: 'terra' },
+        { agent_type: 'advisor-high', model: 'opus', effort: 'high' }
+      ]
+    });
+
+    expect(executed.reviewers).toEqual([
+      { model: 'sol', effort: 'high' },
+      { model: 'opus', effort: 'high' }
+    ]);
   });
 
   test.each([
-    [null, '미기록'],
-    [{ checks: { exec_receipt: { kind: 'main', actor: 'bead' } } }, 'main']
+    [
+      [
+        { provider: 'claude', agent_type: 'impl-high', model: 'opus' },
+        { provider: 'claude', agent_type: 'impl-medium', model: 'sonnet' }
+      ],
+      'claude auto'
+    ],
+    [
+      [
+        { provider: 'codex', role: 'implementation', model: 'sol' },
+        { provider: 'codex', role: 'implementation', model: 'terra' }
+      ],
+      'codex auto'
+    ],
+    [
+      [
+        { provider: 'claude', agent_type: 'impl-high', model: 'opus' },
+        { provider: 'codex', role: 'implementation', model: 'sol' }
+      ],
+      '모든 런타임 auto'
+    ],
+    [
+      [
+        { provider: 'codex', role: 'implementation', model: 'gpt-5.6-sol' },
+        { provider: 'codex', role: 'implementation', model: 'sol' }
+      ],
+      'sol'
+    ],
+    [[{ agent_type: 'general-purpose' }], '직접 구현'],
+    [[], '관측 기록 없음']
+  ])('groups observed leaves as %s', (usage_legs, name) => {
+    const model = projectAttempts(
+      [makeAttempt({ usage_legs, status: 'failed' })],
+      {},
+      { group_by: 'impl_actor' }
+    );
+
+    expect(model.groups[0].name).toBe(name);
+    expect(model.groups[0].n).toBe(1);
+  });
+
+  test.each([
+    [[{ role: 'review-consult', model: 'sol', effort: 'high' }], 'sol · high'],
+    [
+      [
+        { role: 'review-consult', model: 'sol', effort: 'high' },
+        { role: 'review-consult', model: 'opus', effort: 'high' }
+      ],
+      '여러 리뷰어'
+    ],
+    [[{ agent_type: 'general-purpose' }], '외부 리뷰 없음'],
+    [[], '관측 기록 없음']
+  ])(
+    'groups actual reviewers as %s without reading self receipts',
+    (usage_legs, name) => {
+      const model = projectAttempts(
+        [
+          makeAttempt({
+            usage_legs,
+            receipt_check: { checks: { impl_review: 'self@abc' } }
+          })
+        ],
+        {},
+        { group_by: 'reviewer' }
+      );
+
+      expect(model.groups[0].name).toBe(name);
+    }
+  );
+
+  test.each([
+    [
+      {
+        exec_profile: { impl_model: 'sol' },
+        exec_values: { impl_model: 'opus' }
+      },
+      { settings: { impl_model: 'sonnet' } },
+      'recorded',
+      'fixed'
+    ],
+    [
+      { exec_values: { impl_model: 'opus' } },
+      { settings: { impl_model: 'sonnet' } },
+      'pinned',
+      'fixed'
+    ],
+    [{}, { settings: { impl_model: 'sonnet' } }, 'preset_current', 'fixed'],
+    [{}, { settings: {} }, 'unknown', 'unknown'],
+    [
+      {
+        exec_profile: {
+          impl_dispatch: null,
+          impl_runtime: null,
+          impl_model: null
+        }
+      },
+      { settings: { impl_model: 'sonnet' } },
+      'recorded',
+      'default'
+    ],
+    [{ exec_profile: { impl_dispatch: 'main' } }, null, 'recorded', 'direct'],
+    [
+      { exec_profile: { impl_runtime: 'claude', impl_model: null } },
+      null,
+      'recorded',
+      'auto'
+    ],
+    [{ exec_profile: { impl_model: 'auto' } }, null, 'recorded', 'auto']
+  ])(
+    'resolves setting evidence %j before lower layers',
+    (attempt, preset, basis, mode) => {
+      const settings = settingsOf(attempt, preset);
+
+      expect(settings.leaf_setting).toMatchObject({ basis, mode });
+    }
+  );
+
+  test('keeps recorded null reviewer settings ahead of pins', () => {
+    const settings = settingsOf(
+      {
+        exec_profile: { impl_review_model: null },
+        exec_values: { impl_review_model: 'sol' }
+      },
+      { settings: { impl_review_model: 'opus' } }
+    );
+
+    expect(settings.reviewer_setting).toEqual({
+      model: null,
+      effort: null,
+      basis: 'recorded'
+    });
+  });
+
+  test('merges preset aliases while splitting actual reviewers below a setting', () => {
+    const attempts = ['sol', 'astra'].map((model, index) =>
+      makeAttempt({
+        attempt_id: `a${index}`,
+        bead_id: `B${index}`,
+        exec_profile: { impl_model: 'auto', impl_runtime: 'claude' },
+        exec_preset: { id: `p${index}`, name: model },
+        usage_legs: [{ role: 'review-consult', model, effort: 'high' }]
+      })
+    );
+    const result = projectAttempts(attempts, {
+      issues: {
+        B0: makeIssue({ route: 'spec_backed' }),
+        B1: makeIssue({ route: 'full_plan' })
+      }
+    });
+
+    expect(result.groups).toHaveLength(1);
+    expect(
+      result.groups[0].children
+        .map((/** @type {any} */ child) => child.name)
+        .sort()
+    ).toEqual(['astra · high', 'sol · high']);
+    expect(result.groups[0].aliases).toHaveLength(2);
+  });
+
+  test('ignores leaf settings in quick fix setting keys', () => {
+    const result = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'a', exec_profile: { impl_model: 'sol' } }),
+        makeAttempt({ attempt_id: 'b', exec_profile: { impl_model: 'opus' } })
+      ],
+      { issues: { 'UI-1': makeIssue({ route: 'quick_fix' }) } }
+    );
+
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].name).toBe('opus · high');
+  });
+
+  test('splits leaf effort and selection mode into child details', () => {
+    const result = projectAttempts(
+      ['auto', 'sol'].map((impl_model, index) =>
+        makeAttempt({
+          attempt_id: `a${index}`,
+          exec_profile: { impl_model },
+          usage_legs: [
+            {
+              provider: 'codex',
+              role: 'implementation',
+              model: 'sol',
+              effort: index ? 'high' : 'medium'
+            }
+          ]
+        })
+      ),
+      {},
+      { group_by: 'impl_actor' }
+    );
+
+    expect(result.groups[0].name).toBe('sol');
+    expect(result.groups[0].children).toHaveLength(2);
+    expect(result.groups[0].leaf_modes).toEqual({
+      auto: 1,
+      fixed: 1,
+      unknown: 0
+    });
+  });
+
+  test('reports period boundaries and observed leaf distribution', () => {
+    const result = projectAttempts([
+      makeAttempt({
+        attempt_id: 'a',
+        finished_at: 20,
+        usage_legs: [{ role: 'implementation', model: 'sol' }]
+      }),
+      makeAttempt({ attempt_id: 'b', finished_at: 40 })
+    ]);
+
+    expect(result.summary).toMatchObject({
+      first_finished_at: 20,
+      last_finished_at: 40,
+      unobserved_count: 1,
+      actual_leaves: [
+        { name: 'sol', count: 1 },
+        { name: '관측 기록 없음', count: 1 }
+      ]
+    });
+  });
+
+  test('averages review rounds only across representative attempts', () => {
+    const result = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'a' }),
+        makeAttempt({ attempt_id: 'b', finished_at: 90_000 })
+      ],
+      {
+        issues: {
+          'UI-1': makeIssue({
+            impl_review_stats: { round: 4, blocking: 1, minor: 0 }
+          })
+        }
+      }
+    );
+
+    expect(result.summary.review_rounds_mean).toBe(4);
+  });
+
+  test.each([4, 5])('marks sample eligibility at n=%s', (n) => {
+    const result = projectAttempts(
+      Array.from({ length: n }, (_, index) =>
+        makeAttempt({
+          attempt_id: `a${index}`,
+          exec_profile: {},
+          usage_segments: [{ model: 'opus' }]
+        })
+      )
+    );
+
+    expect(result.groups[0]).toMatchObject({
+      small_sample: n < 5,
+      eligible: n >= 5
+    });
+  });
+
+  test('excludes unknown leaf settings from eligibility with enough observations', () => {
+    const result = projectAttempts(
+      Array.from({ length: 5 }, (_, index) =>
+        makeAttempt({
+          attempt_id: `a${index}`,
+          usage_segments: [{ model: 'opus' }]
+        })
+      ),
+      { issues: { 'UI-1': makeIssue({ route: 'spec_backed' }) } }
+    );
+
+    expect(result.groups[0].eligible).toBe(false);
+  });
+
+  test('normalizes preset as the setting alias', () => {
+    const attempts = [makeAttempt()];
+
+    expect(
+      projectAttempts(attempts, {}, { group_by: 'preset' }).groups
+    ).toEqual(projectAttempts(attempts, {}, { group_by: 'setting' }).groups);
+  });
+
+  test('separates work type baselines over the same attempt set', () => {
+    const attempts = Array.from({ length: 10 }, (_, index) =>
+      makeAttempt({
+        attempt_id: `a${index}`,
+        bead_id: `B${index}`,
+        started_at: 0,
+        finished_at: index < 5 ? 100 : 1000,
+        usage: { input_tokens: 1, total_cost_usd: index < 5 ? 1 : 10 }
+      })
+    );
+    const issues = Object.fromEntries(
+      attempts.map((attempt, index) => [
+        attempt.bead_id,
+        makeIssue({ route: index < 5 ? 'quick_fix' : 'spec_backed' })
+      ])
+    );
+
+    const quick = projectAttempts(
+      attempts,
+      { issues },
+      { routes: ['quick_fix'] }
+    );
+    const general = projectAttempts(
+      attempts,
+      { issues },
+      { routes: ['spec_backed', 'full_plan'] }
+    );
+
+    expect(quick.criteria.baselines).toMatchObject({
+      duration_ms: { median: 100 },
+      cost_usd: { median: 1 }
+    });
+    expect(general.criteria.baselines).toMatchObject({
+      duration_ms: { median: 1000 },
+      cost_usd: { median: 10 }
+    });
+  });
+  test.each([
+    [
+      'preset',
+      'setting:opus · high → 리프 설정 모름:["unknown",null,null,null]'
+    ],
+    ['orchestration', 'orchestration:opus · high'],
+    ['impl_actor', 'impl_actor:관측 기록 없음']
+  ])('keys the %s grouping axis', (group_by, key) => {
+    const model = projectAttempts([makeAttempt()], {}, { group_by });
+
+    expect(model.groups[0]).toMatchObject({ key });
+    expect(model.rows[0].composition).toBe('opus · high → 관측 기록 없음');
+  });
+
+  test.each([
+    [null, 'impl_actor:관측 기록 없음'],
+    [
+      { checks: { exec_receipt: { kind: 'main', actor: 'bead' } } },
+      'impl_actor:관측 기록 없음'
+    ]
   ])(
     'groups an absent or main executor without inventing a model: %j',
     (receipt_check, key) => {
@@ -2248,16 +2683,24 @@ describe('worker/compare-projection grouping and summary', () => {
     }
   );
 
-  test('splits mixed rows whose unit compositions differ', () => {
+  test('groups multiple leaf models by runtime rather than composition', () => {
     const model = projectAttempts(
       [
         makeAttempt({
           attempt_id: 'at-1',
-          receipt_check: mixedReceipt(['sol', 'terra'])
+          receipt_check: mixedReceipt(['sol', 'terra']),
+          usage_legs: [
+            { provider: 'codex', role: 'implementation', model: 'sol' },
+            { provider: 'codex', role: 'implementation', model: 'terra' }
+          ]
         }),
         makeAttempt({
           attempt_id: 'at-2',
-          receipt_check: mixedReceipt(['sol', 'opus'])
+          receipt_check: mixedReceipt(['sol', 'opus']),
+          usage_legs: [
+            { provider: 'codex', role: 'implementation', model: 'sol' },
+            { provider: 'claude', agent_type: 'impl-high', model: 'opus' }
+          ]
         })
       ],
       {},
@@ -2265,21 +2708,29 @@ describe('worker/compare-projection grouping and summary', () => {
     );
 
     expect(model.groups.map((group) => group.key).sort()).toEqual([
-      'mixed:opus/high+sol/high',
-      'mixed:sol/high+terra/high'
+      'impl_actor:codex auto',
+      'impl_actor:모든 런타임 auto'
     ]);
   });
 
-  test('joins mixed rows sharing one unit composition', () => {
+  test('joins different model orders in the same runtime auto group', () => {
     const model = projectAttempts(
       [
         makeAttempt({
           attempt_id: 'at-1',
-          receipt_check: mixedReceipt(['sol', 'terra'])
+          receipt_check: mixedReceipt(['sol', 'terra']),
+          usage_legs: [
+            { provider: 'codex', role: 'implementation', model: 'sol' },
+            { provider: 'codex', role: 'implementation', model: 'terra' }
+          ]
         }),
         makeAttempt({
           attempt_id: 'at-2',
-          receipt_check: mixedReceipt(['terra', 'sol'])
+          receipt_check: mixedReceipt(['terra', 'sol']),
+          usage_legs: [
+            { provider: 'codex', role: 'implementation', model: 'terra' },
+            { provider: 'codex', role: 'implementation', model: 'sol' }
+          ]
         })
       ],
       {},
@@ -2288,8 +2739,8 @@ describe('worker/compare-projection grouping and summary', () => {
 
     expect(model.groups).toHaveLength(1);
     expect(model.groups[0]).toMatchObject({
-      key: 'mixed:sol/high+terra/high',
-      name: '혼합 2종',
+      key: 'impl_actor:codex auto',
+      name: 'codex auto',
       n: 2
     });
   });
@@ -2301,7 +2752,7 @@ describe('worker/compare-projection grouping and summary', () => {
       { group_by: 'orchestration' }
     );
 
-    expect(model.groups[0].key).toBe('미기록/미기록');
+    expect(model.groups[0].key).toBe('orchestration:관측 기록 없음');
   });
 
   test('drops reviewer-only differences from composition grouping', () => {
@@ -2391,7 +2842,7 @@ describe('worker/compare-projection grouping and summary', () => {
     });
   });
 
-  test('aggregates composition counts in descending order inside one recorded preset', () => {
+  test('splits a recorded preset when its actual orchestrator changes', () => {
     const exec_preset = {
       id: 'p1',
       name: '기록',
@@ -2405,8 +2856,10 @@ describe('worker/compare-projection grouping and summary', () => {
     ]);
 
     expect(model.groups[0].compositions).toEqual([
-      { composition: 'z/high → gpt-5.6-sol/high', count: 2 },
-      { composition: 'a/high → gpt-5.6-sol/high', count: 1 }
+      { composition: 'z · high → 관측 기록 없음', count: 2 }
+    ]);
+    expect(model.groups[1].compositions).toEqual([
+      { composition: 'a · high → 관측 기록 없음', count: 1 }
     ]);
   });
 
@@ -2465,26 +2918,27 @@ describe('worker/compare-projection grouping and summary', () => {
     const model = projectAttempts(attempts, {}, { group_by: 'orchestration' });
 
     expect(model.groups.map((group) => group.name)).toEqual([
-      'cheap/high',
-      'expensive/high',
-      'missing/high',
-      'unknown/high'
+      'cheap · high',
+      'expensive · high',
+      'missing · high',
+      'unknown · high'
     ]);
   });
 
-  test('marks all measurable best metrics for the sole eligible group', () => {
+  test('withholds best metrics for a sole eligible group', () => {
     const model = projectAttempts(
-      Array.from({ length: 3 }, (_, index) =>
+      Array.from({ length: 5 }, (_, index) =>
         makeAttempt({
           attempt_id: `a${index}`,
           bead_id: `B${index}`,
           done_kind: 'no_delta',
+          usage_segments: [{ model: 'opus', usage: { input_tokens: 1 } }],
           usage: { input_tokens: 1, total_cost_usd: 1 }
         })
       )
     );
 
-    expect(model.groups[0].best).toEqual(['landing', 'duration', 'cost']);
+    expect(model.groups[0].best).toEqual([]);
   });
 
   test.each([2, 3])(
@@ -2507,13 +2961,14 @@ describe('worker/compare-projection grouping and summary', () => {
 
   test('withholds tied metrics but selects a unique shortest eligible group', () => {
     const attempts = ['slow', 'fast'].flatMap((name) =>
-      Array.from({ length: 3 }, (_, index) =>
+      Array.from({ length: 5 }, (_, index) =>
         makeAttempt({
           attempt_id: `${name}${index}`,
           bead_id: `${name}${index}`,
           model: name,
           started_at: 0,
           finished_at: name === 'slow' ? 20 : 10,
+          usage_segments: [{ model: name, usage: { input_tokens: 1 } }],
           done_kind: 'no_delta',
           usage: { input_tokens: 1, total_cost_usd: 1 }
         })
@@ -2523,10 +2978,10 @@ describe('worker/compare-projection grouping and summary', () => {
     const model = projectAttempts(attempts, {}, { group_by: 'orchestration' });
 
     expect(
-      model.groups.find((group) => group.name === 'fast/high')?.best
+      model.groups.find((group) => group.name === 'fast · high')?.best
     ).toEqual(['duration']);
     expect(
-      model.groups.find((group) => group.name === 'slow/high')?.best
+      model.groups.find((group) => group.name === 'slow · high')?.best
     ).toEqual([]);
   });
 
@@ -2810,7 +3265,7 @@ describe('worker/compare-projection collection', () => {
         } else {
           expect(model.warnings).toEqual(['preset_store_unreadable']);
           expect(model.rows[0].preset).toBeNull();
-          expect(model.rows[0].preset_candidates).toEqual([]);
+          expect(model.rows[0]).not.toHaveProperty('preset_candidates');
         }
       } finally {
         runtime_spy.mockRestore();
@@ -2842,7 +3297,7 @@ describe('worker/compare-projection collection', () => {
 
       expect(model.warnings).toEqual(['preset_store_unreadable']);
       expect(model.rows[0].preset).toBeNull();
-      expect(model.rows[0].preset_candidates).toEqual([]);
+      expect(model.rows[0]).not.toHaveProperty('preset_candidates');
     } finally {
       runtime_spy.mockRestore();
     }

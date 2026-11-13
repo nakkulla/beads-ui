@@ -11,7 +11,10 @@
  */
 import { compareRangeSince } from '../../app/data/closed-range.js';
 import { makeError } from '../../app/protocol.js';
-import { prepareCompareSnapshot } from '../worker/compare-projection.js';
+import {
+  normalizeCompareFilters,
+  prepareCompareSnapshot
+} from '../worker/compare-projection.js';
 import { log } from './context.js';
 
 export { compareRangeSince };
@@ -53,11 +56,7 @@ export async function handleGetCompare(ws, req, seams = {}) {
   try {
     model = await build({
       root_dirs: payload.root_dirs,
-      group_by:
-        payload.group_by === 'orchestration' ||
-        payload.group_by === 'impl_actor'
-          ? payload.group_by
-          : 'preset',
+      group_by: normalizeCompareFilters(payload).group_by,
       routes: payload.routes,
       problem_criteria: payload.problem_criteria,
       since: bounds.since,

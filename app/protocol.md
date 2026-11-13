@@ -1898,91 +1898,88 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
 - A legacy server answers `unknown_type`; the client treats that as a failed
   search.
 
-## Preset comparison channel (preset-compare §3.5)
+## Execution settings comparison channel
 
-- `get-compare` payload:
-  `{ range?, since?, until?, root_dirs?, routes?, group_by?, problem_criteria? }`
-  — replies with a `compare-snapshot` envelope carrying
-  `{ summary, groups, rows, workspaces, warnings, criteria }`.
-  `problem_criteria` may be a partial object; malformed or absent values are
-  normalized to server defaults without a `bad_request`. This request/response
-  pair reads attempts, workspace issue snapshots and one timeline per bead on
-  demand; it does not subscribe or push updates.
-- `range` bounds `finished_at` with a `COMPARE_RANGE_OPTIONS` value (default
-  `30d`); unknown values mean all history. With `custom`, `since` is an
-  inclusive lower bound and `until` is an exclusive upper bound in epoch ms; an
-  absent or non-finite boundary is unrestricted. The client converts chosen
-  dates at local midnight and sends the midnight after the end date as `until`.
-  Preset ranges ignore carried `since` and `until` values. `root_dirs` are
-  absolute registry paths, and `routes` restricts routes. Legacy `issue_types`
-  is accepted and ignored. `group_by` is `preset` (default, also for invalid
-  values), `orchestration`, or `impl_actor`.
-- One `rows[]` entry is one terminal implementation attempt, excluding review
-  sessions and retired kinds. It retains identity, issue, route, status, cause,
-  `verify`, `review`, `usage`, `duration_ms`, `is_retry`, `started_at` and
-  `finished_at`. It adds:
-  - `outcome: { kind, evidence, head_sha?, pr_url? }`, where kind is
-    `landed|failed|aborted|parked|superseded|waiting|unknown|in_flight`.
-    Failed/orphaned and aborted statuses take precedence; earlier done attempts
-    are superseded. The latest done (finish time, then greatest attempt id)
-    lands through no-change evidence, a successful quick-fix push, or a closed
-    issue. A missing issue is unknown; an otherwise open issue is in flight.
-    Review and merge verification facts attach only to that representative.
-  - `retry_kind: 'env_ladder'|'auto_resume'|'resume'|null` and
-    `problems: { failed, retry, review, human, verify, duration, cost, pin, evidence }`.
-    The eight booleans are judged only by the normalized request criteria.
-    Evidence carries the outcome cause/status, retry origin/kind/cause, review
-    counts, selected event summaries, verify source, duration/cost value and
-    baseline, and deviated preset keys. Any true key makes one problem session.
-    Environment retries and events are excluded by default and included only by
-    their toggles.
-  - `preset: { id, name, basis, deviated_keys }|null`; basis is `recorded` or
-    `inferred`. Recorded ids use the current name, or the recorded name plus
-    `(삭제됨)` when deleted, and `deviated_keys` walks the key set of the
-    recorded preset's own profile. Inference compares the orchestration and
-    delegated executor axes by the preset's CANONICAL keys, using
-    catalog-normalized model names, and no candidate is filtered by profile.
-    Equally specific matches remain null. Unmatched rows additionally carry
-    `preset_candidates: string[]`.
-  - `orchestration: { model, effort }`,
-    `impl_actor: { kind, label, model, effort, parts? }` with `kind` one of
-    `delegated`, `main`, `missing` or `mixed` and `parts` present only on
-    `mixed`, and `composition: "<model>/<effort> → <impl_actor.label>"` with
-    missing axes labeled `미기록`. Main rows omit `signature`, `signature_parts`
-    and `verify_source`.
-- Groups use `preset:<id>` or `sig:<composition>` keys on the preset axis,
-  `<model>/<effort>` on orchestration, and `main`, executor label, `미기록`, or
-  `mixed:<distinct unit executor labels sorted and joined with +>` on
-  implementation — the mixed group's `name` is the mixed label, so two cards can
-  share a name while their keys differ. Each contains `key`, `name`,
-  `badge: 'preset'|'unmatched'|'none'`, `n`, `issue_count`,
-  `compositions: { composition, count }[]` (count descending), `landed`,
-  `judged`, `in_flight`, `landing_rate`, `problem_count`, `problem_rate`,
-  `problems: { failed, retry, review, human, verify, duration, cost, pin }`
-  (counts), `duration_ms`, `cost_usd`, `tokens`, `best`, and `attempt_ids`.
-  Landing rate is landed / (landed + failed + aborted), null with no judged
-  sample. In-flight count includes in-flight, waiting and parked only. Problem
-  rate is problem sessions / n, null for an empty summary or when every
-  criterion is off. Numeric aggregates carry `{ mean, median, sample, total }`;
-  absent values do not enter the sample, and empty samples have null
-  mean/median. Cost additionally carries `partial_count`.
-- `summary` aggregates the entire filtered row set with the same statistics (no
-  group identity or `best`). A group with n ≥ 3 and judged ≥ 3 can earn
-  `best: ('landing'|'duration'|'cost')[]` for unique highest landing rate,
-  lowest mean duration or lowest mean cost; ties earn nothing. Groups arrive
-  sorted by descending landing rate (null last), then ascending mean cost (null
-  last). Other sorts are client-owned. The main groups omit the former
-  success-rate, verification-sample, pass-caret, failure/retry-count and
-  review-stat aggregate fields.
-- Missing timeline, receipt or usage evidence fails quiet. An unreadable preset
-  store yields `warnings: ['preset_store_unreadable']`, all presets null and
-  empty candidate lists; a readable store yields `warnings: []`. Projection
-  failure retains the existing error reply and refresh flow.
-- `criteria` is `{ effective, is_default, baselines }`. `effective` is the full
-  normalized criteria used by the projection. `baselines` is
-  `{ duration_ms: { median, sample, active }, cost_usd: { median, sample, active, partial_count } }`;
-  both medians use the filtered main rows and become active at five
-  value-bearing rows.
+- `get-compare` → `compare-snapshot` is a request/response pair, with no push.
+  Payload:
+  `{ range?, since?, until?, root_dirs?, routes?, group_by?, problem_criteria? }`.
+  Response: `{ summary, groups, rows, workspaces, warnings, criteria }`.
+- `group_by`: `setting` (default, including invalid values), `orchestration`,
+  `impl_actor`, or `reviewer`. Legacy `preset` aliases `setting`. The client
+  selects general work with `routes: ['spec_backed', 'full_plan']` or quick
+  fixes with `['quick_fix']`; attempts without a route belong to neither.
+- `range` uses `COMPARE_RANGE_OPTIONS` (default `30d`); unknown values mean all
+  history. Custom ranges use inclusive epoch-ms `since` and exclusive `until`.
+  Missing/non-finite bounds are unrestricted. The client sends local midnight
+  after the chosen end date as `until`. Preset ranges ignore explicit bounds.
+  `root_dirs` restricts absolute registry paths; legacy `issue_types` is
+  ignored.
+- Each row is a terminal implementation attempt, excluding review sessions and
+  retired kinds. Identity, issue, route, status, cause, timestamps, duration,
+  usage, verify, review, retry_kind and problem evidence retain their meanings.
+  `outcome.kind` is
+  `landed|failed|aborted|parked|superseded|waiting|unknown|in_flight`.
+  Failed/orphaned/aborted statuses take precedence. The latest done attempt
+  (finish time, then greatest attempt ID) is representative: no-change evidence,
+  successful quick-fix push or a closed issue proves landing. Review stats and
+  merge verification attach only to that representative.
+- Rows additionally carry:
+  - `executed: { orchestrator: { model, effort, fast }, leaves: [{ runtime, model, effort, cost_usd }], reviewers: [{ model, effort }], observed }`.
+    Model names are catalog-normalized. Leaves and reviewers come from attempt
+    usage legs and Codex children, never receipt prefixes. Transport/general
+    agents and spec/plan reviewers are excluded. Any segments, legs or children
+    constitute observation; an observed run without leaves is direct
+    implementation.
+  - `leaf_setting: { mode, model, effort, runtime, basis }`, with modes
+    `auto|fixed|direct|default|unknown`, and
+    `reviewer_setting: { model, effort, basis }`. Basis priority is recorded
+    `exec_profile`, pinned `exec_values`, `preset_current`, then `unknown`.
+    Recorded null means harness default; absent preset keys supply no evidence.
+  - `preset: { id, name, basis, deviated_keys }|null`, where preset basis is
+    `recorded|inferred`. Recorded IDs use the current name, or the recorded name
+    with `(삭제됨)` if deleted. Ambiguous inference stays null. `composition`
+    describes actual orchestrator → leaves using display names. Rows omit
+    `impl_actor`, `preset_candidates` and private attempt evidence.
+- Groups carry `key`, `name`, `aliases: [{ name, count }]`, `children`, `best`,
+  `small_sample`, `eligible`, `inferred_count` and the shared aggregates: `n`,
+  `issue_count`, `landed`, `judged`, `in_flight`, `landing_rate`,
+  `problem_count`, `problem_rate`, `problems`, `duration_ms`, `cost_usd`,
+  `tokens`, `compositions`, `attempt_ids`, `review_rounds_mean`,
+  `first_finished_at`, `last_finished_at`, `actual_leaves: [{ name, count }]`,
+  `unobserved_count`, and `leaf_modes: { auto, fixed, unknown }`. Children carry
+  the same fields. There is no `badge`.
+  `summary.work_type_counts: { general, quick_fix }` counts both work types
+  under the other active filters, before applying `routes`.
+- Setting groups combine actual orchestrator and leaf setting, ignoring reviewer
+  and preset name; quick fixes use only orchestrator. Setting children split by
+  actual reviewer when more than one exists. Orchestration/reviewer children
+  split by setting. Implementation groups use actual leaf model, or
+  `claude auto|codex auto|모든 런타임 auto` for multiple models; children split
+  by effort, mode and model composition. Observed empty leaf/review sets are
+  `직접 구현` / `외부 리뷰 없음`; missing observation is `관측 기록 없음`.
+  Receipt actor names never define these groups.
+- Numeric aggregates contain `{ mean, median, sample, total }`; absent values
+  are excluded and empty samples have null mean/median. Cost also has
+  `partial_count`. Landing is landed/judged, null without judged rows. Problems
+  count each session once while each enabled problem key counts independently.
+  Problem rate is null when every criterion is off. Review rounds average the
+  representative attempts only. Aliases and actual leaf distributions are sorted
+  by descending count.
+- Comparison units are setting children when present, otherwise groups. Other
+  views compare groups. Eligible units have n ≥ 5, exclude unknown settings and
+  missing observation; landing additionally needs judged ≥ 3.
+  `best: ('landing'|'problem'|'duration'|'cost')[]` marks unique optima among at
+  least two eligible units. Ties earn nothing. n < 5 sets `small_sample`.
+  Default ordering is descending n with small samples last; client sorting
+  retains that rule. `inferred_count` counts rows using current preset settings.
+- `summary` aggregates all filtered rows.
+  `criteria: { effective, is_default, baselines }` normalizes partial/malformed
+  criteria to defaults. Baselines are
+  `{ duration_ms: { median, sample, active }, cost_usd: { median, sample, active, partial_count } }`,
+  computed from those same filtered rows and active at five value-bearing rows.
+- Unreadable preset storage gives `warnings: ['preset_store_unreadable']`;
+  missing catalog, kv or transcript evidence fails quiet with unknown values.
+  Projection errors retain the existing error envelope and refresh flow.
 
 ## Removed (historical)
 

@@ -56,7 +56,7 @@ export const VERIFY_UNKNOWN = '미상';
 /**
  * @typedef {Object} CompareFilters
  * @property {string[]} root_dirs - Empty means every workspace.
- * @property {'preset'|'orchestration'|'impl_actor'} group_by
+ * @property {'setting'|'orchestration'|'impl_actor'|'reviewer'} group_by
  * @property {string[]} routes - Empty means every route.
  * @property {number|null} since - Lower bound on `finished_at`, or null.
  * @property {number|null} until - Exclusive upper bound on `finished_at`, or null.
@@ -557,9 +557,11 @@ export function normalizeCompareFilters(raw) {
   return {
     root_dirs: stringList(input.root_dirs).map((value) => path.resolve(value)),
     group_by:
-      input.group_by === 'orchestration' || input.group_by === 'impl_actor'
+      input.group_by === 'orchestration' ||
+      input.group_by === 'impl_actor' ||
+      input.group_by === 'reviewer'
         ? input.group_by
-        : 'preset',
+        : 'setting',
     routes: stringList(input.routes),
     since: num(input.since),
     until: num(input.until),
@@ -1068,7 +1070,6 @@ function meanAndMedian(values) {
 /**
  * @param {Array<Record<string, any>>} rows
  * @param {ReturnType<typeof normalizeProblemCriteria>} criteria
- * @returns {Record<string, any>}
  */
 function aggregateRows(rows, criteria) {
   const landed = rows.filter((row) => row.outcome.kind === 'landed').length;
@@ -1083,6 +1084,9 @@ function aggregateRows(rows, criteria) {
   );
   /** @type {Map<string, number>} */
   const compositions = new Map();
+  const finished_dates = rows
+    .map((row) => row.finished_at)
+    .filter(Number.isFinite);
   for (const row of rows) {
     compositions.set(
       row.composition,
@@ -1091,6 +1095,32 @@ function aggregateRows(rows, criteria) {
   }
   return {
     n: rows.length,
+    review_rounds_mean: meanAndMedian(
+      rows
+        .filter((row) => row.representative)
+        .map((row) => row.review?.round ?? null)
+    ).mean,
+    first_finished_at:
+      finished_dates.length > 0 ? Math.min(...finished_dates) : null,
+    last_finished_at:
+      finished_dates.length > 0 ? Math.max(...finished_dates) : null,
+    actual_leaves: countNames(rows.map((row) => leafLabel(row.executed))),
+    aliases: countNames(
+      rows.map((row) => row.preset?.name || '프리셋 기록 없음')
+    ),
+    unobserved_count: rows.filter((row) => !row.executed.observed).length,
+    inferred_count: rows.filter(
+      (row) =>
+        row.leaf_setting.basis === 'preset_current' ||
+        row.reviewer_setting.basis === 'preset_current'
+    ).length,
+    leaf_modes: {
+      auto: rows.filter((row) => row.leaf_setting.mode === 'auto').length,
+      fixed: rows.filter((row) => row.leaf_setting.mode === 'fixed').length,
+      unknown: rows.filter(
+        (row) => !['auto', 'fixed'].includes(row.leaf_setting.mode)
+      ).length
+    },
     issue_count: new Set(
       rows.map((row) => JSON.stringify([row.root_dir, row.bead_id]))
     ).size,
@@ -1129,66 +1159,280 @@ function aggregateRows(rows, criteria) {
 }
 
 /**
+ * @typedef {ReturnType<typeof aggregateRows> & { key: string, name: string, small_sample: boolean, eligible: boolean, best: string[], children: CompareGroup[] }} CompareGroup
+ */
+
+/**
  * @param {Record<string, any>} row
  * @param {CompareFilters['group_by']} group_by
  */
 function groupIdentity(row, group_by) {
-  if (group_by === 'orchestration') {
-    const key = `${row.orchestration.model ?? UNRECORDED}/${row.orchestration.effort ?? UNRECORDED}`;
-    return { key, name: key, badge: 'none' };
+  const name =
+    group_by === 'orchestration'
+      ? executionLabel(row.executed.orchestrator)
+      : group_by === 'impl_actor'
+        ? leafLabel(row.executed)
+        : group_by === 'reviewer'
+          ? reviewerLabel(row.executed)
+          : settingLabel(row);
+  const setting_key =
+    group_by === 'setting' && row.route !== 'quick_fix'
+      ? `:${JSON.stringify([row.leaf_setting.mode, row.leaf_setting.runtime, row.leaf_setting.model, row.leaf_setting.effort])}`
+      : '';
+  return { key: `${group_by}:${name}${setting_key}`, name };
+}
+
+/** @param {string[]} names */
+function countNames(names) {
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  for (const name of names) {
+    counts.set(name, (counts.get(name) || 0) + 1);
   }
-  if (group_by === 'impl_actor') {
-    if (row.impl_actor.kind === 'mixed') {
-      // `혼합 n종` repeats across different compositions, so the key carries the
-      // composition signature while the card keeps the short label (§2.3).
-      const labels = [
-        ...new Set(
-          (row.impl_actor.parts || []).map(
-            (/** @type {{ label: string }} */ part) => part.label
-          )
-        )
-      ].sort();
-      return {
-        key: `mixed:${labels.join('+')}`,
-        name: row.impl_actor.label,
-        badge: 'none'
-      };
+  return [...counts]
+    .map(([name, count]) => ({ name, count }))
+    .sort(
+      (left, right) =>
+        right.count - left.count || left.name.localeCompare(right.name)
+    );
+}
+
+/**
+ * @param {any[]} rows
+ * @param {ReturnType<typeof normalizeProblemCriteria>} criteria
+ * @param {string} name
+ * @param {string} key
+ * @returns {CompareGroup}
+ */
+function comparisonUnit(rows, criteria, name, key) {
+  const unknown =
+    name.includes('리프 설정 모름') ||
+    name.includes('관측 기록 없음') ||
+    rows.some((row) => !row.executed.observed);
+  return {
+    key,
+    name,
+    ...aggregateRows(rows, criteria),
+    small_sample: rows.length < 5,
+    eligible: rows.length >= 5 && !unknown,
+    best: /** @type {string[]} */ ([]),
+    children: /** @type {CompareGroup[]} */ ([])
+  };
+}
+
+/**
+ * @param {string|null} model
+ * @param {ResolvedCatalog|null} catalog
+ */
+function executionModel(model, catalog) {
+  const token = modelToken(model, catalog);
+  if (token === null) {
+    return null;
+  }
+  return token
+    .replace(/^(claude|codex):/, '')
+    .replace(/^claude-(opus|sonnet|haiku)(?:-[\d-]+)?$/, '$1')
+    .replace(/^gpt-[\d.]+-(sol|astra|terra|luna)$/, '$1');
+}
+
+/** @param {any} part */
+function executionLabel(part) {
+  if (!part.model) {
+    return '관측 기록 없음';
+  }
+  return (
+    [part.model, part.effort, part.fast ? 'fast' : null]
+      .filter(Boolean)
+      .join(' · ') || '관측 기록 없음'
+  );
+}
+
+/**
+ * @param {Record<string, any>} attempt
+ * @param {ResolvedCatalog|null} catalog
+ */
+export function executedOf(attempt, catalog = null) {
+  /** @type {any[]} */
+  const leaves = [];
+  /** @type {any[]} */
+  const reviewers = [];
+  for (const leg of attempt.usage_legs || []) {
+    const agent_type = str(leg.agent_type) || '';
+    const part = {
+      runtime: leg.provider,
+      model: executionModel(str(leg.model), catalog),
+      effort:
+        str(leg.effort) ||
+        (agent_type.startsWith('impl-') ? agent_type.slice(5) : null),
+      cost_usd: num(leg.usage?.total_cost_usd)
+    };
+    if (/^impl-/.test(agent_type) || leg.role === 'implementation') {
+      leaves.push(part);
+    } else if (
+      (leg.role === 'review-consult' &&
+        !/(?:^|[-_:/])(spec|plan)(?:[-_:/]|$)/i.test(leg.receipt_id || '')) ||
+      /^advisor(?:-|$)/.test(agent_type)
+    ) {
+      reviewers.push({ model: part.model, effort: part.effort });
     }
-    const key =
-      row.impl_actor.kind === 'main'
-        ? 'main'
-        : row.impl_actor.kind === 'missing'
-          ? UNRECORDED
-          : row.impl_actor.label;
-    return { key, name: key, badge: 'none' };
   }
-  return row.preset === null
-    ? {
-        key: `sig:${row.composition}`,
-        name: row.composition,
-        badge: 'unmatched'
-      }
-    : {
-        key: `preset:${row.preset.id}`,
-        name: row.preset.name,
-        badge: 'preset'
-      };
+  for (const child of attempt.codex_children || []) {
+    const agent_path = str(child.agent_path) || '';
+    const part = {
+      runtime: 'codex',
+      model: executionModel(str(child.model), catalog),
+      effort: str(child.effort),
+      cost_usd: num(child.usage?.total_cost_usd)
+    };
+    if (/review/i.test(agent_path) && !/spec|plan/i.test(agent_path)) {
+      reviewers.push({ model: part.model, effort: part.effort });
+    } else if (
+      /implement|(?:^|\/)impl(?:[-/]|$)/i.test(agent_path) &&
+      !/review/i.test(agent_path)
+    ) {
+      leaves.push(part);
+    }
+  }
+  return {
+    orchestrator: {
+      model: executionModel(str(attempt.model), catalog),
+      effort: str(attempt.effort),
+      fast: attempt.exec_values?.orchestration_speed === 'fast'
+    },
+    leaves,
+    reviewers,
+    observed: ['usage_segments', 'usage_legs', 'codex_children'].some(
+      (key) => Array.isArray(attempt[key]) && attempt[key].length > 0
+    )
+  };
+}
+
+/** @param {any} executed */
+function leafLabel(executed) {
+  if (!executed.observed) {
+    return '관측 기록 없음';
+  }
+  const models = [
+    ...new Set(executed.leaves.map((/** @type {any} */ leaf) => leaf.model))
+  ];
+  if (models.length === 0) {
+    return '직접 구현';
+  }
+  if (models.length === 1) {
+    return models[0] || '관측 기록 없음';
+  }
+  const runtimes = [
+    ...new Set(executed.leaves.map((/** @type {any} */ leaf) => leaf.runtime))
+  ];
+  return `${runtimes.length === 1 ? runtimes[0] : '모든 런타임'} auto`;
+}
+
+/** @param {any} executed */
+function reviewerLabel(executed) {
+  if (!executed.observed) {
+    return '관측 기록 없음';
+  }
+  const labels = [...new Set(executed.reviewers.map(executionLabel))];
+  return labels.length > 1 ? '여러 리뷰어' : labels[0] || '외부 리뷰 없음';
+}
+
+/** @param {any} row */
+function settingLabel(row) {
+  const orch = executionLabel(row.executed.orchestrator);
+  if (row.route === 'quick_fix') {
+    return orch;
+  }
+  const leaf = row.leaf_setting;
+  const name =
+    leaf.mode === 'direct'
+      ? '직접 구현'
+      : leaf.mode === 'auto'
+        ? `리프 자동${leaf.runtime && leaf.runtime !== 'auto' ? ` · ${leaf.runtime}` : ''}`
+        : leaf.mode === 'fixed'
+          ? `리프 고정 ${executionLabel(leaf)}`
+          : leaf.mode === 'default'
+            ? '리프 기본값'
+            : '리프 설정 모름';
+  return `${orch} → ${name}`;
+}
+
+/**
+ * @param {any} attempt
+ * @param {any} preset
+ */
+export function settingsOf(attempt, preset) {
+  /** @param {string[]} keys */
+  function layer(keys) {
+    if (isRecord(attempt.exec_profile)) {
+      return { values: attempt.exec_profile, basis: 'recorded' };
+    }
+    if (keys.some((key) => str(attempt.exec_values?.[key]) !== null)) {
+      return { values: attempt.exec_values, basis: 'pinned' };
+    }
+    if (keys.some((key) => str(preset?.settings?.[key]) !== null)) {
+      return { values: preset.settings, basis: 'preset_current' };
+    }
+    return { values: {}, basis: 'unknown' };
+  }
+  const leaf = layer([
+    'impl_dispatch',
+    'impl_runtime',
+    'impl_model',
+    'impl_effort'
+  ]);
+  const review = layer(['impl_review_model', 'impl_review_effort']);
+  const model = str(leaf.values.impl_model);
+  const runtime = str(leaf.values.impl_runtime);
+  const dispatch = str(leaf.values.impl_dispatch);
+  const mode =
+    leaf.basis === 'unknown'
+      ? 'unknown'
+      : dispatch === 'main'
+        ? 'direct'
+        : model === 'auto' || (model === null && runtime !== null)
+          ? 'auto'
+          : model !== null
+            ? 'fixed'
+            : 'default';
+  return {
+    leaf_setting: {
+      mode,
+      model,
+      runtime,
+      effort: str(leaf.values.impl_effort),
+      basis: leaf.basis
+    },
+    reviewer_setting: {
+      model: str(review.values.impl_review_model),
+      effort: str(review.values.impl_review_effort),
+      basis: review.basis
+    }
+  };
 }
 
 /**
  * @param {Array<Record<string, any>>} groups
  */
 function markBest(groups) {
-  const eligible = groups.filter((group) => group.n >= 3 && group.judged >= 3);
-  for (const metric of ['landing', 'duration', 'cost']) {
+  const eligible = groups.filter((group) => group.eligible);
+  for (const metric of ['landing', 'problem', 'duration', 'cost']) {
     /** @param {Record<string, any>} group */
     const metricValue = (group) =>
       metric === 'landing'
         ? group.landing_rate
-        : metric === 'duration'
-          ? group.duration_ms.mean
-          : group.cost_usd.mean;
-    const candidates = eligible.filter((group) => metricValue(group) !== null);
+        : metric === 'problem'
+          ? group.problem_rate
+          : metric === 'duration'
+            ? group.duration_ms.mean
+            : group.cost_usd.mean;
+    const candidates = eligible.filter(
+      (group) =>
+        metricValue(group) !== null &&
+        (metric !== 'landing' || group.judged >= 3)
+    );
+    if (candidates.length < 2) {
+      continue;
+    }
     const values = candidates.map(metricValue);
     const best =
       metric === 'landing' ? Math.max(...values) : Math.min(...values);
@@ -1244,6 +1488,8 @@ function wireRows(rows) {
     delete rest.human_summaries;
     delete rest.representative;
     delete rest.verify_source;
+    delete rest.impl_actor;
+    delete rest.preset_candidates;
     return rest;
   });
 }
@@ -1260,6 +1506,7 @@ export function buildCompareModel(input) {
   const presets = Array.isArray(input?.presets) ? input.presets : [];
   const catalog = input?.catalog ?? null;
   const warnings = input.warnings || [];
+  const work_type_counts = { general: 0, quick_fix: 0 };
   /** @type {Array<Record<string, any>>} */
   const rows = [];
   for (const workspace of Array.isArray(input?.workspaces)
@@ -1301,6 +1548,23 @@ export function buildCompareModel(input) {
       if (row.preset !== null) {
         delete row.preset_candidates;
       }
+      row.executed = executedOf(row.attempt, catalog);
+      Object.assign(
+        row,
+        settingsOf(
+          row.attempt,
+          presets.find((preset) => preset.id === row.preset?.id)
+        )
+      );
+      const leaf_name = leafLabel(row.executed);
+      row.composition = `${executionLabel(row.executed.orchestrator)} → ${leaf_name === '직접 구현' || leaf_name === '관측 기록 없음' || leaf_name.includes('auto') ? leaf_name : [...new Set(row.executed.leaves.map(executionLabel))].join(', ')}`;
+      if (rowPassesFilters(row, { ...filters, routes: [] })) {
+        if (row.route === 'quick_fix') {
+          work_type_counts.quick_fix += 1;
+        } else if (row.route === 'spec_backed' || row.route === 'full_plan') {
+          work_type_counts.general += 1;
+        }
+      }
       if (rowPassesFilters(row, filters)) {
         rows.push(row);
       }
@@ -1323,17 +1587,67 @@ export function buildCompareModel(input) {
     list.push(row);
     by_group.set(key, list);
   }
-  const groups = [...by_group.values()].map((group_rows) => ({
-    ...groupIdentity(group_rows[0], filters.group_by),
-    ...aggregateRows(group_rows, criteria),
-    best: []
-  }));
-  markBest(groups);
-  groups.sort(compareGroups);
+  const groups = [...by_group.values()].map((group_rows) => {
+    const identity = groupIdentity(group_rows[0], filters.group_by);
+    const group = comparisonUnit(
+      group_rows,
+      criteria,
+      identity.name,
+      identity.key
+    );
+    /** @type {Map<string, any[]>} */
+    const by_child = new Map();
+    for (const row of group_rows) {
+      const name =
+        filters.group_by === 'setting'
+          ? reviewerLabel(row.executed)
+          : filters.group_by === 'impl_actor'
+            ? `${row.executed.leaves.map(executionLabel).sort().join(', ') || leafLabel(row.executed)} · ${row.leaf_setting.mode}`
+            : settingLabel(row);
+      const child_key = ['orchestration', 'reviewer'].includes(filters.group_by)
+        ? groupIdentity(row, 'setting').key
+        : name;
+      const members = by_child.get(child_key) || [];
+      members.push(row);
+      by_child.set(child_key, members);
+    }
+    if (by_child.size > 1) {
+      group.children = [...by_child].map(([key, members]) => {
+        const name = ['orchestration', 'reviewer'].includes(filters.group_by)
+          ? settingLabel(members[0])
+          : key;
+        const child = comparisonUnit(
+          members,
+          criteria,
+          name,
+          `${group.key}/${key}`
+        );
+        child.eligible =
+          child.eligible &&
+          !group.name.includes('리프 설정 모름') &&
+          child.unobserved_count === 0;
+        return child;
+      });
+    }
+    return group;
+  });
+  markBest(
+    groups.flatMap((group) =>
+      filters.group_by === 'setting' && group.children.length > 0
+        ? group.children
+        : [group]
+    )
+  );
+  groups.sort(
+    (left, right) =>
+      Number(left.small_sample) - Number(right.small_sample) ||
+      right.n - left.n ||
+      compareGroups(left, right)
+  );
   return {
     rows: wireRows(rows),
     groups,
-    summary: aggregateRows(rows, criteria),
+    summary: { ...aggregateRows(rows, criteria), work_type_counts },
     warnings,
     criteria: {
       effective: criteria,
@@ -1685,6 +1999,7 @@ export async function prepareCompareSnapshot(filters, seams = {}) {
         .filter((attempt) => {
           const issue = workspace.issues?.[attempt.bead_id];
           return (
+            attempt.observation_checked !== true &&
             (normalized.root_dirs.length === 0 ||
               normalized.root_dirs.includes(
                 path.resolve(workspace.root_dir)
@@ -1707,6 +2022,9 @@ export async function prepareCompareSnapshot(filters, seams = {}) {
   const prepared = workspaces.map((workspace) => ({
     ...workspace,
     attempts: workspace.attempts.map((attempt) => {
+      if (attempt.observation_checked === true) {
+        return attempt;
+      }
       const value = observations.get(workspace.root_dir, attempt.attempt_id);
       return value ? { ...attempt, ...value } : attempt;
     })
