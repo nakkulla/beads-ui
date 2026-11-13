@@ -101,7 +101,12 @@ import {
 import * as default_delegation_monitor from './delegation-monitor.js';
 import { discardOperationActive } from './discard-phase.js';
 import { errorDetail } from './error-detail.js';
-import { EXEC_SETTING_KEYS } from './exec-enums.js';
+import {
+  BEAD_APPLY_KEYS,
+  EXEC_SETTING_KEYS,
+  QUICK_FIX_LANE_MAP,
+  WORKSPACE_KV_KEYS
+} from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import { externalWaitCompletionPrompt } from './external-wait/completion-prompt.js';
 import { createExternalWaitSessionResume } from './external-wait/session-resume.js';
@@ -191,6 +196,10 @@ import {
 import { sessionLaunchAccountOptions } from './session-launch-accounts.js';
 import { stderrPathOf } from './session-log.js';
 import {
+  hasSessionObservation,
+  readTerminalObservation
+} from './session-observation.js';
+import {
   resolveSessionFile as defaultResolveSessionFile,
   parseSessionRef,
   qualifySessionEntry,
@@ -224,6 +233,38 @@ const log = debug('worker:scheduler');
 const WAITING_RESCAN_COVER_MS = 2_000;
 const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
 export const INTERACTIVE_EXIT_GRACE_MS = 90_000;
+
+/**
+ * Resolve the recorded profile using the contract registry's storage names.
+ *
+ * @param {Record<string, any>} bead
+ * @param {Record<string, any>|null} kv
+ * @returns {Record<string, string|null>|null}
+ */
+export function resolveExecProfile(bead, kv) {
+  if (kv === null) {
+    return null;
+  }
+  const keys = BEAD_APPLY_KEYS.filter(
+    (key) => key.startsWith('impl_') && !key.endsWith('_speed')
+  );
+  return Object.fromEntries(
+    keys.map((key) => {
+      const quick_key = QUICK_FIX_LANE_MAP[key];
+      const candidates = [
+        bead[key],
+        ...(bead.route === 'quick_fix' ? [kv[quick_key]] : []),
+        ...(WORKSPACE_KV_KEYS.includes(key) ? [kv[key]] : [])
+      ];
+      return [
+        key,
+        candidates.find(
+          (value) => typeof value === 'string' && value.trim().length > 0
+        ) ?? null
+      ];
+    })
+  );
+}
 export const INTERACTIVE_EXIT_DEFER_MAX_MS = 1_800_000;
 const INTERACTIVE_UNREADABLE_GRACE_MS = 30_000;
 const INTERACTIVE_UNREADABLE_MESSAGE =
@@ -3601,6 +3642,20 @@ export function createScheduler(deps) {
     for (let offset = 0; offset < limit; offset += 1) {
       const [attempt_id, attempt] =
         candidates[(start + offset) % candidates.length];
+      // One-time backfill: a missing transcript is not re-read on later passes.
+      if (
+        !attempt.observation_checked &&
+        typeof attempt.session_id === 'string' &&
+        TERMINAL_ATTEMPT_STATUSES.has(attempt.status) &&
+        !hasSessionObservation(attempt)
+      ) {
+        const observed = readTerminalObservation(attempt);
+        const result = deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: { ...observed.patch, observation_checked: true }
+        });
+        changed = changed || !!result?.ok;
+      }
       let receipt_arrived = false;
       /** @type {import('./queue-store.js').DelegationSession[]|null} */
       let recovered_sessions = null;
@@ -5969,6 +6024,27 @@ export function createScheduler(deps) {
     try {
       const result = await deps.kvGet(workspace, 'workflow_session_defaults');
       return result?.ok === true && result.value ? result.value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Capture selector inputs without coupling dispatch to optional kv storage.
+   *
+   * @param {string} workspace
+   * @param {any} bead
+   */
+  async function dispatchProfile(workspace, bead) {
+    if (typeof deps.kvGet !== 'function') {
+      return null;
+    }
+    try {
+      const result = await deps.kvGet(workspace, 'workflow_session_defaults');
+      // An absent key is a successful read: Bead pins still resolve.
+      return result?.ok === true
+        ? resolveExecProfile(bead, result.value || {})
+        : null;
     } catch {
       return null;
     }
@@ -14692,6 +14768,7 @@ export function createScheduler(deps) {
           workflow_mode_source_prior: prior_source,
           receipt_baseline,
           exec_preset: resolved_exec.exec_preset ?? null,
+          exec_profile: await dispatchProfile(workspace, final_snap),
           exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
           exec_values,
           exec_restore_values,
@@ -17486,6 +17563,7 @@ export function createScheduler(deps) {
           exec_stamped_keys: stamped_keys,
           exec_restore_values: restore.values,
           exec_preset: resolved.exec_preset ?? null,
+          exec_profile: await dispatchProfile(workspace, snap),
           receipt_baseline,
           quickfix_lane,
           forked_from_session_id: resume_session_id,
@@ -19509,6 +19587,7 @@ export function createScheduler(deps) {
         workflow_mode_source_prior: snap.workflow_mode_source ?? null,
         receipt_baseline,
         exec_preset: resolved_exec.exec_preset ?? null,
+        exec_profile: await dispatchProfile(workspace, snap),
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values,
         exec_restore_values,
@@ -20196,6 +20275,9 @@ export function createScheduler(deps) {
       exec_preset: use_prior
         ? (prior.exec_preset ?? null)
         : current_exec_preset,
+      exec_profile: use_prior
+        ? (prior.exec_profile ?? null)
+        : await dispatchProfile(workspace, bead_snapshot),
       preset_id: use_prior
         ? (prior.exec_default_preset_id ?? null)
         : resolved.preset_id,
@@ -20383,6 +20465,7 @@ export function createScheduler(deps) {
       exec_restore_values,
       stamped_keys,
       exec_preset,
+      exec_profile,
       continuation_mode,
       continuation_choice,
       resume_fallback,
@@ -20510,6 +20593,7 @@ export function createScheduler(deps) {
       workflow_mode_source_prior: prior_wf_source,
       receipt_baseline,
       exec_preset,
+      exec_profile,
       exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
       exec_values,
       exec_restore_values,
@@ -21612,6 +21696,7 @@ export function createScheduler(deps) {
       preset_id: prior.exec_default_preset_id ?? null,
       preset_revision: prior.exec_default_preset_revision ?? null,
       exec_preset: prior.exec_preset ?? null,
+      exec_profile: prior.exec_profile ?? null,
       exec: {
         ...(prior.exec_values || {}),
         runner: prior.runner,

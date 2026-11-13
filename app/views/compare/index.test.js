@@ -340,9 +340,7 @@ describe('compare group cards', () => {
     expect(
       root.querySelector('[data-metric="problem"]')?.textContent
     ).toContain('기준 조정됨');
-    expect(root.querySelector('.cmp-problems')?.textContent).not.toContain(
-      '실패·폐기'
-    );
+    expect(root.querySelector('.cmp-segment--failed')).toBeNull();
   });
 
   test('stores a checkbox change and sends criteria on the next request', async () => {
@@ -723,7 +721,7 @@ describe('compare group cards', () => {
     await view.refresh();
 
     const card = /** @type {HTMLElement} */ (root.querySelector('.cmp-card'));
-    expect(card.querySelector('.cmp-badge')?.textContent).toBe('프리셋');
+    expect(card.querySelector('.cmp-badge')).toBeNull();
     expect(
       card.querySelector('[data-metric="landing"]')?.textContent
     ).toContain('67%');
@@ -742,10 +740,9 @@ describe('compare group cards', () => {
       )
     ).toEqual(['landing', 'duration', 'cost']);
     expect(card.querySelectorAll('.cmp-best')).toHaveLength(3);
-    expect(card.querySelector('.cmp-chip.is-zero')?.textContent).toContain(
-      '리뷰 지적 0'
+    expect(root.querySelector('.cmp-table-head')?.textContent).toContain(
+      '평균 비용'
     );
-    expect(root.querySelector('table')).toBeNull();
   });
 
   test('keeps a null landing rate unjudged and without a bar', async () => {
@@ -765,22 +762,22 @@ describe('compare group cards', () => {
     expect(root.querySelector('.cmp-card .is-best')).toBeNull();
   });
 
-  test('renders all five summary tiles and the selected workspace heading', async () => {
+  test('renders the baseline sentence and the selected workspace heading', async () => {
     const { root, view } = mountComparison();
 
     await view.refresh();
     changeSelect(root, '저장소', '/repo');
     await settle();
 
-    expect(root.querySelectorAll('.cmp-summary > .cmp-kpi')).toHaveLength(5);
+    expect(root.querySelectorAll('.cmp-summary > .cmp-kpi')).toHaveLength(0);
     expect(
       root
         .querySelector('.cmp-head__summary')
         ?.textContent?.replace(/\s+/g, ' ')
     ).toContain('최근 30일 · 저장소 A · 세션 4건 · 이슈 3건');
     expect(
-      root.querySelector('.cmp-summary [data-metric="sessions"]')?.textContent
-    ).toContain('이슈 3 · 진행 중 1');
+      root.querySelector('.cmp-baseline')?.textContent?.replace(/\s+/gu, ' ')
+    ).toContain('이슈 3건 · 진행 중 1건');
   });
 
   test('keeps expanded group keys across refresh and regrouping', async () => {
@@ -875,11 +872,11 @@ describe('compare group cards', () => {
       {
         range: '30d',
         root_dirs: [],
-        routes: [],
-        group_by: 'preset'
+        routes: ['spec_backed', 'full_plan'],
+        group_by: 'setting'
       }
     ]);
-    expect(root.querySelectorAll('.cmp-filters select')).toHaveLength(4);
+    expect(root.querySelectorAll('.cmp-filters select')).toHaveLength(3);
   });
 
   test('opens the issue deep link from a session row', async () => {
@@ -1002,7 +999,7 @@ describe('compare group cards', () => {
     expect(root.querySelector('.cmp-session__composition')).toBeNull();
   });
 
-  test('titles a mixed session composition with its per-unit executors', async () => {
+  test('titles a session composition with its observed leaves', async () => {
     const { root, view } = mountComparison({
       rows: [
         {
@@ -1010,14 +1007,10 @@ describe('compare group cards', () => {
           bead_id: 'UI-one',
           outcome: { kind: 'unknown' },
           composition: 'claude-opus-5/high → 혼합 2종',
-          impl_actor: {
-            kind: 'mixed',
-            label: '혼합 2종',
-            model: null,
-            effort: null,
-            parts: [
-              { unit: 'u1', label: 'sol/high' },
-              { unit: 'u2', label: 'main' }
+          executed: {
+            leaves: [
+              { runtime: 'codex', model: 'sol', effort: 'high' },
+              { runtime: 'claude', model: 'opus', effort: 'medium' }
             ]
           }
         }
@@ -1031,14 +1024,19 @@ describe('compare group cards', () => {
 
     expect(
       root.querySelector('.cmp-session__composition')?.getAttribute('title')
-    ).toBe('u1: sol/high\nu2: main');
+    ).toBe('codex: sol · high\nclaude: opus · medium');
   });
 
-  test('joins sorted unique unmatched candidates after the composition', async () => {
+  test('shows preset aliases and actual leaf counts below the setting name', async () => {
     const { root, view } = mountComparison({
       groups: [
         comparisonGroup({
           badge: 'unmatched',
+          aliases: [
+            { name: '프리셋 A', count: 3 },
+            { name: '프리셋 B', count: 1 }
+          ],
+          actual_leaves: [{ name: 'sol', count: 4 }],
           attempt_ids: ['x', 'y'],
           compositions: [
             { composition: 'A → B', count: 3 },
@@ -1054,24 +1052,24 @@ describe('compare group cards', () => {
 
     await view.refresh();
 
-    expect(root.querySelector('.cmp-badge')?.textContent).toBe('미대조');
+    expect(root.querySelector('.cmp-badge')).toBeNull();
     expect(root.querySelector('.cmp-composition')?.textContent?.trim()).toBe(
-      'A → B 외 1 · 프리셋 미확정 — A·Z 중 판별 불가'
+      '프리셋 A 3 · 프리셋 B 1'
     );
-    expect(root.querySelector('.cmp-composition')?.getAttribute('title')).toBe(
-      'A → B 3건\nA → C 1건'
+    expect(root.textContent?.replace(/\s+/gu, ' ')).toContain(
+      '실제 리프 sol 4'
     );
   });
 
-  test('names an unmatched group with no candidates', async () => {
+  test('marks an unknown leaf setting with a dotted chip', async () => {
     const { root, view } = mountComparison({
-      groups: [comparisonGroup({ badge: 'unmatched' })]
+      groups: [comparisonGroup({ name: 'opus → 리프 설정 모름' })]
     });
 
     await view.refresh();
 
-    expect(root.querySelector('.cmp-composition')?.textContent).toContain(
-      '일치하는 프리셋 없음'
+    expect(root.querySelector('.cmp-unknown')?.textContent).toContain(
+      '프리셋 기록 없음'
     );
   });
 
@@ -1085,7 +1083,7 @@ describe('compare group cards', () => {
     expect(root.querySelector('.cmp-badge')).toBeNull();
   });
 
-  test('places the known store warning immediately before the grid', async () => {
+  test('places the known store warning above the comparison table', async () => {
     const { root, view } = mountComparison({
       warnings: ['preset_store_unreadable', 'future_warning']
     });
@@ -1097,8 +1095,12 @@ describe('compare group cards', () => {
       '프리셋 저장소를 읽지 못해 프리셋 대조를 건너뛰었습니다'
     );
     expect(
-      root.querySelector('.cmp-grid')?.previousElementSibling?.className
-    ).toBe('cmp-warning');
+      /** @type {HTMLElement} */ (
+        root.querySelector('.cmp-warning')
+      ).compareDocumentPosition(
+        /** @type {HTMLElement} */ (root.querySelector('.cmp-grid'))
+      ) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
   });
 
   test('ignores unknown warnings', async () => {
@@ -1109,13 +1111,220 @@ describe('compare group cards', () => {
     expect(root.querySelector('.cmp-warning')).toBeNull();
   });
 
-  test('ends the view with the legend', async () => {
+  test('ends the view with a collapsed glossary', async () => {
     const { root, view } = mountComparison();
 
     await view.refresh();
 
     expect(root.querySelector('.cmp')?.lastElementChild?.className).toBe(
-      'cmp-legend'
+      'cmp-glossary'
+    );
+    expect(
+      /** @type {HTMLDetailsElement} */ (root.querySelector('.cmp-glossary'))
+        .open
+    ).toBe(false);
+  });
+
+  test('switches work types by requesting their routes and saving the choice', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelectorAll('.cmp-work-types button')[1]
+    ).click();
+    await settle();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({ routes: ['quick_fix'] })
+    );
+    expect(localStorage.getItem('bdui.compare.work_type')).toBe('quick_fix');
+  });
+
+  test('restores the saved work type and limits quick fix views', async () => {
+    localStorage.setItem('bdui.compare.work_type', 'quick_fix');
+    const { root, view, transport } = mountComparison();
+
+    await view.refresh();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({ routes: ['quick_fix'] })
+    );
+    expect(
+      Array.from(root.querySelectorAll('.cmp-group-by button')).map((button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual(['설정', '리뷰어']);
+  });
+
+  test('shows both work type counts from the filtered snapshot', async () => {
+    const { root, view } = mountComparison({
+      summary: comparisonGroup({
+        work_type_counts: { general: 12, quick_fix: 7 }
+      })
+    });
+
+    await view.refresh();
+
+    expect(root.querySelector('.cmp-work-types')?.textContent).toContain(
+      '일반 작업 12'
+    );
+    expect(root.querySelector('.cmp-work-types')?.textContent).toContain(
+      'quick fix 7'
+    );
+  });
+
+  test('keeps small samples below ordinary rows when reversing a header sort', async () => {
+    const { root, view } = mountComparison({
+      groups: [
+        comparisonGroup({ key: 'small', n: 2, small_sample: true }),
+        comparisonGroup({ key: 'large', n: 9 }),
+        comparisonGroup({ key: 'middle', n: 5 })
+      ]
+    });
+    await view.refresh();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[aria-label="세션 정렬"]')
+    ).click();
+
+    expect(
+      Array.from(root.querySelectorAll('.cmp-card')).map((row) =>
+        row.getAttribute('data-group-key')
+      )
+    ).toEqual(['middle', 'large', 'small']);
+    expect(root.querySelector('.cmp-card.is-small')?.textContent).toContain(
+      '표본 적음'
+    );
+  });
+
+  test('marks missing execution records with a dotted chip', async () => {
+    const { root, view } = mountComparison({
+      groups: [
+        comparisonGroup({ name: '관측 기록 없음', best: [], eligible: false })
+      ]
+    });
+
+    await view.refresh();
+
+    expect(root.querySelector('.cmp-unknown')?.textContent).toBe(
+      '실행 기록 없음'
+    );
+    expect(root.querySelector('.is-best')).toBeNull();
+  });
+
+  test('keeps reviewer subrows visible with signed deltas from their parent', async () => {
+    const { root, view } = mountComparison({
+      groups: [
+        comparisonGroup({
+          children: [
+            comparisonGroup({
+              key: 'child-a',
+              name: 'astra',
+              cost_usd: { mean: 1, median: 1 },
+              problem_rate: 0.4,
+              duration_ms: { mean: 60000, median: 60000 }
+            }),
+            comparisonGroup({
+              key: 'child-b',
+              name: 'sol',
+              cost_usd: { mean: 3, median: 3 }
+            })
+          ]
+        })
+      ]
+    });
+
+    await view.refresh();
+
+    expect(root.querySelectorAll('.cmp-children .cmp-card')).toHaveLength(2);
+    expect(
+      root.querySelector('.cmp-children .cmp-delta.is-better')?.textContent
+    ).toContain('−10.0p');
+    expect(
+      root.querySelector('.cmp-children [data-metric="cost"] .cmp-delta')
+        ?.textContent
+    ).toBe('−$1.00');
+  });
+
+  test('retains landing rate and adds selection mode counts in the leaf view', async () => {
+    const { root, view } = mountComparison({
+      groups: [
+        comparisonGroup({ leaf_modes: { auto: 3, fixed: 1, unknown: 0 } })
+      ]
+    });
+    await view.refresh();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelectorAll('.cmp-group-by button')[2]
+    ).click();
+    await settle();
+
+    expect(root.querySelector('[data-metric="landing"]')).not.toBeNull();
+    expect(
+      root.querySelector('.cmp-extra')?.textContent?.replace(/\s+/gu, ' ')
+    ).toContain('리프를 고른 방식');
+    expect(
+      root.querySelector('.cmp-extra')?.textContent?.replace(/\s+/gu, ' ')
+    ).toContain('자동 3 · 고정 1 · 모름 0');
+  });
+
+  test('limits the problem bar to its rate while drawing all enabled key slices', async () => {
+    const problems = {
+      failed: 1,
+      retry: 1,
+      review: 1,
+      human: 1,
+      verify: 1,
+      duration: 1,
+      cost: 1,
+      pin: 1
+    };
+    const effective = Object.fromEntries(
+      Object.entries(DEFAULT_PROBLEM_CRITERIA).map(([key, value]) => [
+        key,
+        { ...value, on: true }
+      ])
+    );
+    const { root, view } = mountComparison({
+      groups: [
+        comparisonGroup({ problem_rate: 0.5, problem_count: 2, problems })
+      ],
+      criteria: { effective, is_default: false, baselines: {} }
+    });
+
+    await view.refresh();
+
+    const bar = /** @type {HTMLElement} */ (
+      root.querySelector('[data-metric="problem"] .cmp-bar__fill')
+    );
+    expect(bar.style.width).toBe('50%');
+    expect(bar.querySelectorAll('.cmp-segment')).toHaveLength(8);
+    expect(
+      Array.from(bar.querySelectorAll('.cmp-segment')).every(
+        (slice) => /** @type {HTMLElement} */ (slice).style.width === '12.5%'
+      )
+    ).toBe(true);
+    expect(bar.parentElement?.title).toContain(
+      '한 세션이 여러 종류에 걸릴 수 있음'
+    );
+  });
+
+  test('explains empty comparison data and retains the glossary', async () => {
+    const { root, view } = mountComparison({
+      groups: [],
+      rows: [],
+      summary: null
+    });
+
+    await view.refresh();
+
+    expect(root.querySelector('.cmp-empty')?.textContent).toContain(
+      '실행 기록이 없어'
+    );
+    expect(root.querySelector('.cmp-glossary')?.textContent).toContain(
+      '직접 구현'
     );
   });
 });

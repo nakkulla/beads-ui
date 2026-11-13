@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { activeAttemptStates } from '../../app/utils/active-attempts.js';
 import {
   __resetLimitPolicySettingsForTest,
@@ -28,6 +28,7 @@ import {
 import { activeLaneLineages } from './scheduler.js';
 import {
   attemptRecordPath,
+  beadTimelinePath,
   delegationMonitorDir,
   deployLogDir,
   providerHoldsFilePath,
@@ -851,6 +852,167 @@ const RESOLUTION_DISPATCH_HEAD = 'd'.repeat(40);
 beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-queue-'));
   process.env.XDG_STATE_HOME = tmp_state;
+});
+
+describe('attempt execution profiles and terminal observations', () => {
+  test('reads legacy attempts with a null execution profile', () => {
+    const attempt = makeAttempt({ attempt_id: 'old', bead_id: 'B1' });
+
+    expect(attempt.exec_profile).toBeNull();
+  });
+
+  test('normalizes profile keys to strings or null', () => {
+    const attempt = makeAttempt({
+      attempt_id: 'profile',
+      bead_id: 'B1',
+      exec_profile: {
+        impl_model: 'sol',
+        impl_effort: 'high',
+        unexpected: 'ignored'
+      }
+    });
+
+    expect(attempt.exec_profile).toEqual({
+      impl_dispatch: null,
+      impl_runtime: null,
+      impl_model: 'sol',
+      impl_effort: 'high',
+      impl_review_model: null,
+      impl_review_effort: null
+    });
+  });
+
+  test.each(['done', 'failed', 'stopped', 'parked'])(
+    'persists interactive transcript observation on %s',
+    (status) => {
+      const home = path.join(tmp_state, 'home');
+      const directory = path.join(home, '.claude', 'projects', 'repo');
+      fs.mkdirSync(directory, { recursive: true });
+      fs.copyFileSync(
+        new URL('./__fixtures__/claude-subagent.jsonl', import.meta.url),
+        path.join(directory, 'terminal-session.jsonl')
+      );
+      const home_spy = vi.spyOn(os, 'homedir').mockReturnValue(home);
+      const store = createQueueStore();
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'terminal',
+          bead_id: 'B1',
+          runner: 'claude',
+          exec: 'session',
+          interactive: {
+            pane_id: '%1',
+            tmux_session: 'session',
+            tmux_window: '1'
+          },
+          session_id: 'terminal-session',
+          status: 'running',
+          started_at: 0
+        }
+      });
+      try {
+        store.updateAttempt(WS, {
+          attempt_id: 'terminal',
+          patch: { status, finished_at: Number.MAX_SAFE_INTEGER }
+        });
+
+        const durable = createQueueStore().load(WS).attempts.terminal;
+        expect(durable.usage_segments.length).toBeGreaterThan(0);
+        expect(durable.usage_legs.some((leg) => leg.role === 'subagent')).toBe(
+          true
+        );
+        expect(durable.observation_checked).toBe(true);
+      } finally {
+        home_spy.mockRestore();
+      }
+    }
+  );
+
+  test('records one missing-observation event across repeated terminal settlements', () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const store = createQueueStore({ timeline });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'missing-observation',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'missing-observation-file',
+        exec: 'session',
+        interactive: {
+          pane_id: '%1',
+          tmux_session: 'session',
+          tmux_window: '1'
+        },
+        status: 'running'
+      }
+    });
+
+    store.updateAttempt(WS, {
+      attempt_id: 'missing-observation',
+      patch: { status: 'failed', finished_at: 100 }
+    });
+    store.updateAttempt(WS, { attempt_id: 'missing-observation', patch: {} });
+
+    const raw_lines = fs
+      .readFileSync(beadTimelinePath(WS, 'B1'), 'utf8')
+      .split('\n')
+      .filter((line) => line.includes('"observation_missing"'));
+    expect(raw_lines).toHaveLength(1);
+    expect(
+      timeline
+        .readTimeline('B1')
+        .filter((event) => event.kind === 'observation_missing')
+    ).toMatchObject([{ reason: 'file_missing' }]);
+  });
+
+  test('records a transcript read failure as the missing-observation cause', () => {
+    const home = path.join(tmp_state, 'unreadable-home');
+    fs.mkdirSync(
+      path.join(
+        home,
+        '.claude',
+        'projects',
+        'repo',
+        'unreadable-session.jsonl'
+      ),
+      { recursive: true }
+    );
+    const home_spy = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const store = createQueueStore({ timeline });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'unreadable',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'unreadable-session',
+        exec: 'session',
+        interactive: {
+          pane_id: '%1',
+          tmux_session: 'session',
+          tmux_window: '1'
+        },
+        status: 'running'
+      }
+    });
+    try {
+      store.updateAttempt(WS, {
+        attempt_id: 'unreadable',
+        patch: { status: 'failed', finished_at: 100 }
+      });
+
+      expect(
+        timeline
+          .readTimeline('B1')
+          .filter((event) => event.kind === 'observation_missing')
+      ).toMatchObject([{ reason: 'read_failure' }]);
+    } finally {
+      home_spy.mockRestore();
+    }
+  });
 });
 
 describe('worker/queue-store remove', () => {

@@ -9,7 +9,8 @@ import {
   createSessionObservationStore,
   createWorkerSessionObservationStore,
   foldCodexAttemptUsage,
-  foldSessionObservation
+  foldSessionObservation,
+  readTerminalObservation
 } from './session-observation.js';
 import { readSessionSnapshot } from './session-ref.js';
 
@@ -17,6 +18,46 @@ const FIXTURE = new URL(
   './__fixtures__/codex-native-child-rollout.jsonl',
   import.meta.url
 );
+
+describe('terminal transcript folding', () => {
+  test('reuses the Claude fold for root segments and child legs', () => {
+    const file = new URL(
+      './__fixtures__/claude-subagent.jsonl',
+      import.meta.url
+    );
+
+    const result = readTerminalObservation(
+      { runner: 'claude', session_id: 'terminal-session' },
+      { file: file.pathname }
+    );
+
+    expect(result.cause).toBeNull();
+    expect(result.patch.usage_segments.length).toBeGreaterThan(0);
+    expect(
+      result.patch.usage_legs.some(
+        (/** @type {any} */ leg) => leg.role === 'subagent'
+      )
+    ).toBe(true);
+  });
+
+  test('reports missing local transcripts without inventing observations', () => {
+    const result = readTerminalObservation(
+      { runner: 'claude', session_id: 'missing-transcript' },
+      { home_dir: '/nonexistent-home' }
+    );
+
+    expect(result).toEqual({ patch: {}, cause: 'file_missing' });
+  });
+
+  test('reports transcript read failures separately from absence', () => {
+    const result = readTerminalObservation(
+      { runner: 'claude', session_id: 'unreadable-transcript' },
+      { file: '/nonexistent-transcript' }
+    );
+
+    expect(result).toEqual({ patch: {}, cause: 'read_failure' });
+  });
+});
 
 describe('historical observation retention', () => {
   /** @type {string} */

@@ -54,7 +54,7 @@ describe('ws/compare-handlers', () => {
     const passed = /** @type {any} */ (snapshot.mock.calls[0])[0];
     expect(passed.root_dirs).toEqual(['/repo/one']);
     expect(passed).not.toHaveProperty('issue_types');
-    expect(passed.group_by).toBe('preset');
+    expect(passed.group_by).toBe('setting');
     expect(passed.problem_criteria).toEqual({ failed: { on: false } });
     expect(typeof passed.since).toBe('number');
     expect(passed.until).toBeNull();
@@ -155,12 +155,14 @@ describe('ws/compare-handlers', () => {
   });
 
   test.each([
-    ['preset', 'preset'],
+    ['preset', 'setting'],
+    ['setting', 'setting'],
+    ['reviewer', 'reviewer'],
     ['orchestration', 'orchestration'],
     ['impl_actor', 'impl_actor'],
-    ['unknown', 'preset'],
-    [null, 'preset'],
-    [undefined, 'preset']
+    ['unknown', 'setting'],
+    [null, 'setting'],
+    [undefined, 'setting']
   ])('normalizes group_by %s to %s', async (group_by, expected) => {
     const ws = makeSocket();
     const snapshot = vi.fn(() => ({}));

@@ -300,6 +300,8 @@
  * not re-discover an empty `node_modules` with an `npm ls` round trip. Null
  * when the attempt adopted an existing worktree and nothing was installed.
  * @property {ExecPresetRecord|null} [exec_preset] - Observed dispatch preset, independent of workflow receipts.
+ * @property {Record<string, string|null>|null} exec_profile - Recorded selector inputs at dispatch.
+ * @property {boolean} observation_checked - A terminal transcript fold already ran successfully.
  * @property {{ cursor: 'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_backup?: { path: string, manifest_sha256: string, file_count: number }, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: { path: string, manifest_sha256: string, file_count: number } } }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
@@ -1311,6 +1313,7 @@ import {
 import { discardOperationActive } from './discard-phase.js';
 import { errorDetail } from './error-detail.js';
 import {
+  BEAD_APPLY_KEYS,
   ORCHESTRATION_KEYS,
   QUICK_FIX_ORCHESTRATION_KEYS,
   execSettingEnums,
@@ -1335,6 +1338,10 @@ import {
   isOpenInquiry,
   normalizeSessionInquiries
 } from './session-inquiry/contract.js';
+import {
+  hasSessionObservation,
+  readTerminalObservation
+} from './session-observation.js';
 import { attemptRecordPath, queueFilePath } from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
@@ -4482,6 +4489,22 @@ export function makeAttempt(fields) {
         ? fields.worktree_setup
         : null,
     exec_preset: normalizeExecPresetRecord(fields.exec_preset),
+    observation_checked: fields.observation_checked === true,
+    exec_profile:
+      fields.exec_profile &&
+      typeof fields.exec_profile === 'object' &&
+      !Array.isArray(fields.exec_profile)
+        ? Object.fromEntries(
+            BEAD_APPLY_KEYS.filter(
+              (key) => key.startsWith('impl_') && !key.endsWith('_speed')
+            ).map((key) => [
+              key,
+              typeof fields.exec_profile?.[key] === 'string'
+                ? fields.exec_profile[key]
+                : null
+            ])
+          )
+        : null,
     quickfix_landing: normalizeQuickfixLanding(fields.quickfix_landing),
     external_conflict: fields.external_conflict === true,
     cleanup_diagnosis: fields.cleanup_diagnosis === true,
@@ -7750,6 +7773,22 @@ export function createQueueStore(options = {}) {
     if (!current) {
       return { patch, files: [] };
     }
+    // Every later update of a terminal attempt re-enters this function, so the
+    // transcript fold and the missing-observation event run on the first
+    // terminal settle only, and `observation_checked` records that they ran.
+    const observation_pass =
+      !current.observation_checked &&
+      TERMINAL_ATTEMPT_STATUSES.has(patch.status ?? current.status ?? '');
+    /** @type {string|null} */
+    let observation_cause = null;
+    if (observation_pass) {
+      if (current.interactive && patch.observation_checked !== true) {
+        const observed = readTerminalObservation({ ...current, ...patch });
+        patch = { ...patch, ...observed.patch };
+        observation_cause = observed.cause;
+      }
+      patch = { ...patch, observation_checked: true };
+    }
     /** @type {{ legs: UsageLeg[], files: string[], warnings: string[] }} */
     let scanned_receipts = { legs: [], files: [], warnings: [] };
     let receipts_read = false;
@@ -7795,17 +7834,36 @@ export function createQueueStore(options = {}) {
     } catch {
       // Terminal settlement still persists without optional child evidence.
     }
+    if (
+      observation_pass &&
+      !hasSessionObservation({ ...current, ...patch }) &&
+      scanned_receipts.legs.length === 0 &&
+      live_delegations.legs.length === 0 &&
+      native_children.length === 0
+    ) {
+      appendTimeline(workspace, {
+        seq: 0,
+        bead_id: current.bead_id,
+        attempt_id,
+        kind: 'observation_missing',
+        summary: '실행 관측 기록 없음',
+        reason: observation_cause || 'file_missing'
+      });
+    }
     return {
       ...(delegation_store ? { drain: { workspace, attempt_id } } : {}),
       patch: {
         ...patch,
-        ...(receipts_read || live_delegations.legs.length > 0
+        ...(receipts_read ||
+        live_delegations.legs.length > 0 ||
+        (patch.usage_legs || []).length > 0
           ? {
               usage_legs: normalizeUsageLegs([
                 ...(Array.isArray(current.usage_legs)
                   ? current.usage_legs
                   : []),
                 ...scanned_receipts.legs,
+                ...(patch.usage_legs || []),
                 ...live_delegations.legs
               ])
             }

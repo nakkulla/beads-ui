@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { findClaudeSessionFile } from './claude-effort-observer.js';
 import { accumulateCodexChildren } from './codex-children/accumulate.js';
 import {
   codexSessionsRootFor,
@@ -28,6 +29,86 @@ import {
 import { createTailReader } from './runner/tail-reader.js';
 import { readSessionSnapshot, uuidV7StartedAt } from './session-ref.js';
 import { createUsageStore } from './usage-store.js';
+
+/**
+ * Fold a local terminal conversation using the same grammar as live observation.
+ *
+ * @param {any} attempt
+ * @param {{ home_dir?: string, file?: string }} [options]
+ * @returns {{ patch: Record<string, any>, cause: string|null }}
+ */
+export function readTerminalObservation(attempt, options = {}) {
+  if (
+    typeof attempt.session_id !== 'string' ||
+    !/^[\w-]+$/.test(attempt.session_id)
+  ) {
+    return { patch: {}, cause: 'file_missing' };
+  }
+  try {
+    if (attempt.runner === 'codex') {
+      const store = createWorkerSessionObservationStore();
+      const value = store.observe(
+        '',
+        {
+          ...attempt,
+          finished_at: Number.isFinite(attempt.finished_at)
+            ? attempt.finished_at
+            : Date.now()
+        },
+        { parent_terminated: true }
+      );
+      store.clear();
+      return { patch: value || {}, cause: value ? null : 'file_missing' };
+    }
+    const file =
+      options.file || findClaudeSessionFile(attempt.session_id, options);
+    if (!file) {
+      return { patch: {}, cause: 'file_missing' };
+    }
+    const lines = fs
+      .readFileSync(file, 'utf8')
+      .split(/\r?\n/)
+      .filter((line) => {
+        try {
+          const record = JSON.parse(line);
+          const at = Date.parse(record.timestamp);
+          return (
+            !Number.isFinite(at) ||
+            ((!Number.isFinite(attempt.started_at) ||
+              at >= attempt.started_at) &&
+              (!Number.isFinite(attempt.finished_at) ||
+                at <= attempt.finished_at))
+          );
+        } catch {
+          return false;
+        }
+      });
+    const value = foldSessionObservation('claude', lines.join('\n'), {
+      session_id: attempt.session_id
+    });
+    return {
+      patch: {
+        usage: value.usage,
+        usage_segments: value.usage_legs.filter(
+          (leg) => leg.role === 'orchestrator'
+        ),
+        usage_legs: value.usage_legs.filter(
+          (leg) => leg.role !== 'orchestrator'
+        )
+      },
+      cause: null
+    };
+  } catch {
+    return { patch: {}, cause: 'read_failure' };
+  }
+}
+
+/** @param {any} attempt */
+export function hasSessionObservation(attempt) {
+  return ['usage_segments', 'usage_legs', 'codex_children'].some(
+    (key) => Array.isArray(attempt[key]) && attempt[key].length > 0
+  );
+}
 
 /** Prepared asynchronous observations consumed by synchronous queue projection. */
 /** @param {{ createReader?: typeof createTailReader, readSnapshot?: typeof readSessionSnapshot, sessionsRootFor?: (attempt: any) => string, historicalTtlMs?: number }} [options] */

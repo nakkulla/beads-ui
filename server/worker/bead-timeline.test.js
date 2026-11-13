@@ -306,6 +306,7 @@ describe('TIMELINE_KINDS', () => {
       'guard_warning',
       'guard_denied',
       'session_ended',
+      'observation_missing',
       'interactive_session',
       'attempt_failed',
       'attempt_retry',
