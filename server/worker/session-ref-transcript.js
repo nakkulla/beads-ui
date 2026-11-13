@@ -214,14 +214,108 @@ function projectCodexResponseItem(payload, pending_commands) {
 }
 
 /**
+ * @param {Record<string, unknown>} raw
+ * @returns {unknown[]}
+ */
+function projectHermesMessage(raw) {
+  if (raw._compressed_summary === 1 || raw.display_kind === 'hidden') {
+    return [];
+  }
+  if (typeof raw.display_metadata === 'string') {
+    try {
+      const metadata = JSON.parse(raw.display_metadata);
+      if (isObject(metadata) && metadata.model_only === true) {
+        return [];
+      }
+    } catch {
+      return [];
+    }
+  }
+  let content = raw.content;
+  if (typeof content === 'string' && content.startsWith('\u0000json:')) {
+    try {
+      content = JSON.parse(content.slice(6));
+    } catch {
+      return [];
+    }
+  }
+  const text = typeof content === 'string' ? content : outputText(content);
+  if (raw.role === 'user') {
+    return text ? [{ type: 'user', message: { content: text } }] : [];
+  }
+  if (raw.role === 'tool' && typeof raw.tool_call_id === 'string') {
+    return [
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: raw.tool_call_id,
+              content: text
+            }
+          ]
+        }
+      }
+    ];
+  }
+  if (raw.role !== 'assistant') {
+    return [];
+  }
+  /** @type {unknown[]} */
+  const parts = text ? [{ type: 'text', text }] : [];
+  /** @type {unknown} */
+  let calls = raw.tool_calls;
+  if (typeof calls === 'string') {
+    try {
+      calls = JSON.parse(calls);
+    } catch {
+      calls = [];
+    }
+  }
+  if (Array.isArray(calls)) {
+    for (const call of calls) {
+      if (
+        !isObject(call) ||
+        !isObject(call.function) ||
+        typeof call.id !== 'string' ||
+        typeof call.function.name !== 'string'
+      ) {
+        continue;
+      }
+      /** @type {unknown} */
+      let input = call.function.arguments;
+      if (typeof input === 'string') {
+        try {
+          input = JSON.parse(input);
+        } catch {
+          input = { arguments: input };
+        }
+      }
+      parts.push({
+        type: 'tool_use',
+        id: call.id,
+        name: call.function.name,
+        input
+      });
+    }
+  }
+  return parts.length > 0
+    ? [{ type: 'assistant', message: { content: parts } }]
+    : [];
+}
+
+/**
  * Create one subscription's transcript adapter.
  *
- * @param {'claude'|'codex'} provider
+ * @param {'claude'|'codex'|'hermes'} provider
  * @returns {{ project: (line: string) => unknown[] }}
  */
 export function createSessionRefTranscript(provider) {
   /** @type {Map<string, string>} */
   const pending_commands = new Map();
+  /** @type {Set<string>} */
+  const seen_messages = new Set();
 
   /**
    * @param {string} line - One raw JSONL line of the session file.
@@ -241,6 +335,25 @@ export function createSessionRefTranscript(provider) {
     }
     if (!isObject(raw)) {
       return [];
+    }
+    if (provider === 'hermes') {
+      // Compression copies the handoff tail, preserving its message identity
+      // (or timestamp on older rows). Keep one display turn across that edge.
+      const identity =
+        typeof raw.message_uid === 'string' && raw.message_uid
+          ? raw.message_uid
+          : JSON.stringify([
+              raw.timestamp,
+              raw.role,
+              raw.content,
+              raw.tool_call_id,
+              raw.tool_calls
+            ]);
+      if (seen_messages.has(identity)) {
+        return [];
+      }
+      seen_messages.add(identity);
+      return projectHermesMessage(raw);
     }
     if (provider === 'claude') {
       if (typeof raw.type !== 'string' || !CLAUDE_PASS_TYPES.has(raw.type)) {

@@ -1546,6 +1546,43 @@ describe('transcript drawer session_ref 변형 (UI-4xzk §6.2)', () => {
     drawer.destroy();
   });
 
+  test.each(['snapshot', 'append'])(
+    'ends a Hermes %s despite the running card metadata',
+    (delivery) => {
+      vi.useFakeTimers();
+      const attempt_id = 'session:hermes:chat';
+      const key = `session-log:${attempt_id}`;
+      store.set(
+        key,
+        delivery === 'snapshot' ? [TEXT_EVENT, RESULT_EVENT] : [TEXT_EVENT]
+      );
+      const drawer = createTranscriptDrawer(mount, {
+        transport: mockTransport(),
+        sessionLogStore: store
+      });
+
+      drawer.open({
+        attempt_id,
+        session_ref: {
+          bead_id: 'UI-1',
+          provider: 'hermes',
+          session_id: 'chat'
+        },
+        meta: { status: 'running' }
+      });
+      if (delivery === 'append') {
+        expect(mount.querySelector('.sv__live-dot')).not.toBeNull();
+        store.append(key, RESULT_EVENT);
+      }
+
+      expect(mount.querySelector('.sv__live-dot')).toBeNull();
+      expect(mount.querySelector('.sv__state--done')).not.toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+      drawer.destroy();
+      vi.useRealTimers();
+    }
+  );
+
   test('refuses to open when a launch_id arrives with a session_ref', () => {
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),

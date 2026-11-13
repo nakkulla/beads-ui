@@ -944,7 +944,7 @@ export function createRunnableCache(options = {}) {
       }
       const refs = parseSessionRef(metadataOf(entry.row).session_ref);
       const current = refs[refs.length - 1];
-      if (!current) {
+      if (!current || current.provider === 'hermes') {
         continue;
       }
       const location = resolveSessionFile(current);

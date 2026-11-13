@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import {
   afterAll,
   afterEach,
@@ -174,6 +175,7 @@ beforeEach(() => {
   interactive.attempts = {};
   vi.stubEnv('XDG_STATE_HOME', path.join(home_dir, 'state'));
   vi.stubEnv('CODEX_HOME', path.join(home_dir, 'codex-default'));
+  vi.stubEnv('HERMES_HOME', path.join(home_dir, '.hermes'));
 });
 
 afterEach(() => {
@@ -181,6 +183,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   fs.rmSync(path.join(home_dir, '.claude'), { recursive: true, force: true });
   fs.rmSync(path.join(home_dir, 'state'), { recursive: true, force: true });
+  fs.rmSync(path.join(home_dir, '.hermes'), { recursive: true, force: true });
   fs.rmSync(path.join(home_dir, 'codex-default'), {
     recursive: true,
     force: true
@@ -194,6 +197,143 @@ afterAll(() => {
   } else {
     process.env.HOME = original_home;
   }
+});
+
+describe('Hermes session-ref subscriptions', () => {
+  /** @type {any} */
+  let socket;
+
+  /** @param {string} sql */
+  function writeHermes(sql) {
+    const dir = path.join(home_dir, '.hermes');
+    fs.mkdirSync(dir, { recursive: true });
+    const db = new DatabaseSync(path.join(dir, 'state.db'));
+    try {
+      db.exec(`CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY, source TEXT, parent_session_id TEXT, ended_at REAL, end_reason TEXT, model_config TEXT
+      ); CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT,
+        content TEXT, tool_calls TEXT, tool_call_id TEXT, timestamp REAL,
+        active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0
+      ); ${sql}`);
+    } finally {
+      db.close();
+    }
+  }
+
+  async function subscribeHermes() {
+    await handleSubscribeSessionLog(
+      socket,
+      subscribeRequest({
+        id: 'h1',
+        attempt_id: `session:hermes:${SESSION_ID}`,
+        session_ref: {
+          bead_id: 'UI-1',
+          provider: 'hermes',
+          session_id: SESSION_ID
+        }
+      })
+    );
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    socket = fakeSocket();
+    bdShows({ session_ref: `hermes:${SESSION_ID}@${HOST}` });
+  });
+
+  afterEach(() => {
+    detachSessionLog(socket);
+    vi.useRealTimers();
+  });
+
+  test('snapshots Hermes rows and appends a new message within five seconds once', async () => {
+    writeHermes(`INSERT INTO sessions(id, source) VALUES ('${SESSION_ID}', 'telegram');
+      INSERT INTO messages(session_id, role, content, timestamp) VALUES ('${SESSION_ID}', 'user', 'hello', 1);`);
+    await subscribeHermes();
+
+    writeHermes(
+      `INSERT INTO messages(session_id, role, content, timestamp) VALUES ('${SESSION_ID}', 'assistant', 'reply', 2);`
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(pushOf(socket, 'session-log-snapshot').payload).toMatchObject({
+      last_event_at: 1000,
+      lines: [{ type: 'user', message: { content: 'hello' } }]
+    });
+    const appends = messages(socket).filter(
+      (message) => message.type === 'session-log-append'
+    );
+    expect(appends).toHaveLength(1);
+    expect(appends[0].payload.event).toEqual({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'reply' }] }
+    });
+    expect(tail.inputs).toHaveLength(0);
+  });
+
+  test('follows a compression child then stops at its reset boundary', async () => {
+    writeHermes(
+      `INSERT INTO sessions(id, source) VALUES ('${SESSION_ID}', 'cli');`
+    );
+    await subscribeHermes();
+
+    writeHermes(`UPDATE sessions SET ended_at = 1, end_reason = 'compression';
+      INSERT INTO sessions(id, source, parent_session_id, ended_at, end_reason) VALUES ('child', 'cli', '${SESSION_ID}', 3, 'session_reset');
+      INSERT INTO sessions(id, source, parent_session_id, ended_at, end_reason) VALUES ('reset', 'cli', 'child', NULL, NULL);
+      INSERT INTO messages(session_id, role, content, timestamp) VALUES ('child', 'assistant', 'continued', 2), ('reset', 'user', 'excluded', 4);`);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    const events = messages(socket)
+      .filter((message) => message.type === 'session-log-append')
+      .map((message) => message.payload.event);
+    expect(events).toMatchObject([
+      { type: 'assistant', message: { content: [{ text: 'continued' }] } },
+      { type: 'result', result: '대화 종료' }
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('ends a finished snapshot without starting a poller', async () => {
+    writeHermes(
+      `INSERT INTO sessions(id, source, parent_session_id, ended_at, end_reason) VALUES ('${SESSION_ID}', 'telegram', NULL, 2, 'session_reset');`
+    );
+
+    await subscribeHermes();
+
+    expect(pushOf(socket, 'session-log-snapshot').payload.lines).toMatchObject([
+      { type: 'result', result: '대화 종료' }
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('stops polling on unsubscribe', async () => {
+    writeHermes(
+      `INSERT INTO sessions(id, source) VALUES ('${SESSION_ID}', 'cli');`
+    );
+    await subscribeHermes();
+
+    await handleUnsubscribeSessionLog(socket, {
+      id: 'off',
+      type: 'unsubscribe-session-log',
+      payload: { id: 'h1' }
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('refuses a conversation absent from the Bead metadata', async () => {
+    bdShows({ session_ref: `hermes:other@${HOST}` });
+    writeHermes(
+      `INSERT INTO sessions(id, source) VALUES ('${SESSION_ID}', 'cli');`
+    );
+
+    await subscribeHermes();
+
+    expect(pushOf(socket, 'session-log-snapshot').payload.lines).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe('subscribe-session-log session_ref validation', () => {

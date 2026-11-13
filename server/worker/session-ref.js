@@ -19,6 +19,7 @@ import {
   codexRolloutDateDirs,
   codexRolloutFilePath
 } from './codex-effort-observer.js';
+import { locateHermesSession } from './hermes-session.js';
 
 const log = debug('worker:session-ref');
 
@@ -29,7 +30,7 @@ const log = debug('worker:session-ref');
  *
  * @typedef {Object} SessionRefEntry
  * @property {number} index
- * @property {'claude'|'codex'} provider
+ * @property {'claude'|'codex'|'hermes'} provider
  * @property {string} session_id
  * @property {string} host
  */
@@ -39,7 +40,7 @@ const log = debug('worker:session-ref');
  *
  * @typedef {Object} SessionRefView
  * @property {number} index
- * @property {'claude'|'codex'} provider
+ * @property {'claude'|'codex'|'hermes'} provider
  * @property {string} session_id
  * @property {string} host
  * @property {boolean} current - Last valid item of the value.
@@ -64,7 +65,7 @@ const log = debug('worker:session-ref');
  *
  * @type {RegExp}
  */
-const ITEM_RE = /^(claude|codex):([^:@;\s]+)@(\S+)$/;
+const ITEM_RE = /^(claude|codex|hermes):([^:@;\s]+)@(\S+)$/;
 
 /**
  * Narrower id grammar for anything that leaves this process as a path segment
@@ -120,7 +121,7 @@ export function parseSessionRef(value) {
     }
     entries.push({
       index,
-      provider: /** @type {'claude'|'codex'} */ (match[1]),
+      provider: /** @type {SessionRefEntry['provider']} */ (match[1]),
       session_id: match[2],
       host: match[3]
     });
@@ -202,7 +203,7 @@ function scanCodexRollout(session_id, input) {
  * Locate one item's transcript file on this machine.
  *
  * @param {SessionRefEntry} entry
- * @param {{ home_dir?: string, hostname?: string, sessions_root?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
+ * @param {{ home_dir?: string, hostname?: string, sessions_root?: string, hermes_home?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
  * @returns {SessionRefLocation}
  */
 export function resolveSessionFile(entry, options = {}) {
@@ -223,6 +224,13 @@ export function resolveSessionFile(entry, options = {}) {
   const host_matches = firstLabel(entry.host) === firstLabel(hostname);
   const file_system = options.fs || fs;
   const home_dir = options.home_dir || os.homedir();
+  if (entry.provider === 'hermes') {
+    if (!host_matches) {
+      return { locality: 'remote', file: null, last_event_at: null };
+    }
+    const located = locateHermesSession(entry.session_id, options);
+    return located === null ? absent : { locality: 'local', ...located };
+  }
   /** @type {string|null} */
   let file;
   if (entry.provider === 'claude') {
@@ -292,6 +300,7 @@ export function resolveSessionFile(entry, options = {}) {
  */
 export function sessionResumeCommand(entry) {
   if (
+    entry.provider === 'hermes' ||
     !SAFE_SESSION_ID_RE.test(entry.session_id) ||
     entry.session_id.startsWith('-')
   ) {
@@ -327,7 +336,9 @@ export function recordedSessionProvider(metadata) {
     metadata && typeof metadata === 'object' ? metadata.session_ref : null
   );
   const current = entries[entries.length - 1];
-  return current === undefined ? null : current.provider;
+  return current === undefined || current.provider === 'hermes'
+    ? null
+    : current.provider;
 }
 
 /**
@@ -449,8 +460,8 @@ export function qualifyInteractiveForkSource({
  * (`resolved.exec.runner`); a different CLI cannot fork this session at all.
  * `null` means the CALLER follows the recorded provider instead of pinning one
  * (codex-orchestration-parity §4.1) — the qualification then reports which
- * provider it qualified, and the caller launches with that. The item grammar
- * already admits only `claude`/`codex`, so no unknown runner can enter here.
+ * provider it qualified, and the caller launches with that. Display-only Hermes
+ * entries take the no-source fallback before any runner is selected.
  * @param {{ home_dir?: string, hostname?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
  * @returns {SessionForkQualification}
  */
@@ -478,6 +489,9 @@ export function qualifySessionFork(metadata, runner_name, options = {}) {
  * @returns {SessionForkQualification}
  */
 export function qualifySessionEntry(current, runner_name, options = {}) {
+  if (current.provider === 'hermes') {
+    return { ok: false, reason: 'no_session_ref' };
+  }
   if (
     !isSafeSessionId(current.session_id) ||
     current.session_id.startsWith('-')

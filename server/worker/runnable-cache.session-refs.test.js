@@ -5,13 +5,19 @@ const WS = '/tmp/example/repo-session-refs';
 const state = vi.hoisted(() => ({
   projection_throws: false,
   reconciles: 0,
-  clears: 0
+  clears: 0,
+  targets: /** @type {any[]} */ ([])
 }));
 
 vi.mock('./session-observation.js', () => ({
   createSessionObservationStore: () => ({
-    reconcile() {
+    /**
+     * @param {string} _workspace
+     * @param {any[]} targets
+     */
+    reconcile(_workspace, targets) {
       state.reconciles += 1;
+      state.targets = targets;
     },
     clear() {
       state.clears += 1;
@@ -26,6 +32,11 @@ vi.mock('./session-ref.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
   return {
     ...actual,
+    /** @param {any} entry */
+    resolveSessionFile: (entry) =>
+      entry.provider === 'hermes'
+        ? { locality: 'local', file: '/hermes/state.db', last_event_at: 1000 }
+        : actual.resolveSessionFile(entry),
     /**
      * @param {any} metadata
      * @param {any} [options]
@@ -128,6 +139,20 @@ async function sessionBucket(rows) {
 }
 
 describe('session_active[].session_refs (UI-4xzk §4.1)', () => {
+  test('withholds Hermes databases from usage observation', async () => {
+    state.targets = [{ provider: 'codex' }];
+
+    const out = await sessionBucket([
+      sessionRow({ session_ref: 'hermes:chat@far-away-box' })
+    ]);
+
+    expect(out[0].session_refs[0]).toMatchObject({
+      provider: 'hermes',
+      current: true
+    });
+    expect(state.targets).toEqual([]);
+    expect(out[0].session_observation).toBeUndefined();
+  });
   test('does not reconnect observation after the final subscriber leaves', async () => {
     let resolve_snapshot = () => {};
     const requestSnapshot = vi.fn(

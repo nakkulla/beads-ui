@@ -117,6 +117,7 @@ import {
   onForeignBlockerResolved,
   ownerRootsForBlockerIds
 } from '../worker/foreign-blocker-status.js';
+import { HERMES_POLL_MS, readHermesSession } from '../worker/hermes-session.js';
 import { observationVerifyPolicy } from '../worker/merge-candidates.js';
 import {
   evaluateMergeGate,
@@ -4213,7 +4214,7 @@ async function beadMetadataOf(ws, key, bead_id) {
  * @param {unknown} raw
  * @param {string} attempt_id
  * @param {boolean} has_launch_id
- * @returns {{ bead_id: string, provider: 'claude'|'codex', session_id: string }|null}
+ * @returns {{ bead_id: string, provider: 'claude'|'codex'|'hermes', session_id: string }|null}
  */
 function normalizeSessionRefRequest(raw, attempt_id, has_launch_id) {
   if (has_launch_id || !raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -4226,7 +4227,7 @@ function normalizeSessionRefRequest(raw, attempt_id, has_launch_id) {
     typeof value.session_id === 'string' ? value.session_id : '';
   if (
     bead_id.length === 0 ||
-    (provider !== 'claude' && provider !== 'codex') ||
+    (provider !== 'claude' && provider !== 'codex' && provider !== 'hermes') ||
     !isSafeSessionId(session_id)
   ) {
     return null;
@@ -4246,7 +4247,7 @@ function normalizeSessionRefRequest(raw, attempt_id, has_launch_id) {
  * filesystem access at all, so the reply cannot report a file's existence.
  *
  * @param {WebSocket} ws
- * @param {{ key: string, client_id: string, attempt_id: string, session_ref: { bead_id: string, provider: 'claude'|'codex', session_id: string } }} input
+ * @param {{ key: string, client_id: string, attempt_id: string, session_ref: { bead_id: string, provider: 'claude'|'codex'|'hermes', session_id: string } }} input
  */
 async function followSessionRefLog(ws, input) {
   const { attempt_id, client_id, key, session_ref } = input;
@@ -4326,6 +4327,59 @@ async function followSessionRefLog(ws, input) {
   );
   if (located.locality !== 'local' || located.file === null) {
     giveUp();
+    return;
+  }
+  if (entry.provider === 'hermes') {
+    const snapshot = readHermesSession(located.file, entry.session_id);
+    if (snapshot === null) {
+      giveUp();
+      return;
+    }
+    const adapter = createSessionRefTranscript('hermes');
+    const ended_event = {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: '대화 종료'
+    };
+    const lines = snapshot.rows.flatMap((row) =>
+      adapter.project(JSON.stringify(row))
+    );
+    if (snapshot.ended) {
+      lines.push(ended_event);
+    }
+    emitSessionLogSnapshot(
+      ws,
+      client_id,
+      attempt_id,
+      lines,
+      snapshot.last_event_at
+    );
+    if (snapshot.ended) {
+      SESSION_LOG_SUBS.delete(sub);
+      return;
+    }
+    let cursor = snapshot.cursor;
+    const file = located.file;
+    const session_id = entry.session_id;
+    const timer = setInterval(() => {
+      const next = readHermesSession(file, session_id, cursor);
+      if (next === null) {
+        return;
+      }
+      cursor = next.cursor;
+      for (const row of next.rows) {
+        for (const event of adapter.project(JSON.stringify(row))) {
+          emitSessionLogAppend(ws, client_id, attempt_id, event);
+        }
+      }
+      if (next.ended) {
+        emitSessionLogAppend(ws, client_id, attempt_id, ended_event);
+        clearInterval(timer);
+        SESSION_LOG_SUBS.delete(sub);
+      }
+    }, HERMES_POLL_MS);
+    sub.off = () => clearInterval(timer);
     return;
   }
   const snapshot = readSessionSnapshot(located.file);
@@ -4513,7 +4567,7 @@ export async function handleSubscribeSessionLog(ws, req) {
         makeError(
           req,
           'bad_request',
-          'payload.session_ref requires { bead_id, provider: claude|codex, session_id } with attempt_id "session:<provider>:<session_id>" and no launch_id'
+          'payload.session_ref requires { bead_id, provider: claude|codex|hermes, session_id } with attempt_id "session:<provider>:<session_id>" and no launch_id'
         )
       )
     );

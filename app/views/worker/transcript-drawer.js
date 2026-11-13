@@ -664,7 +664,13 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   }
 
   function isLive() {
-    return meta.status === 'running';
+    return (
+      meta.status === 'running' &&
+      !(
+        session_ref?.provider === 'hermes' &&
+        finishedState(currentLines(), meta.status) !== null
+      )
+    );
   }
 
   /**

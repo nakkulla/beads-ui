@@ -1,5 +1,98 @@
 import { describe, expect, test } from 'vitest';
+import { parseTranscript } from '../../app/utils/transcript-lines.js';
 import { createSessionRefTranscript } from './session-ref-transcript.js';
+
+describe('Hermes message projection', () => {
+  test('projects user text and assistant tool calls with their paired output', () => {
+    const adapter = createSessionRefTranscript('hermes');
+    const rows = [
+      { id: 1, timestamp: 1, role: 'user', content: 'inspect this' },
+      {
+        id: 2,
+        timestamp: 2,
+        role: 'assistant',
+        content: 'Checking',
+        tool_calls: JSON.stringify([
+          {
+            id: 'call1',
+            type: 'function',
+            function: { name: 'terminal', arguments: '{"command":"pwd"}' }
+          }
+        ])
+      },
+      {
+        id: 3,
+        timestamp: 3,
+        role: 'tool',
+        tool_call_id: 'call1',
+        content: '/repo'
+      }
+    ];
+
+    const lines = parseTranscript(
+      rows.flatMap((row) => adapter.project(JSON.stringify(row)))
+    );
+
+    expect(lines).toMatchObject([
+      { kind: 'user', text: 'inspect this' },
+      { kind: 'assistant', text: 'Checking' },
+      {
+        kind: 'tool',
+        tool: 'terminal',
+        input: { command: 'pwd' },
+        output: '/repo'
+      }
+    ]);
+  });
+
+  test('decodes structured text content without rendering images', () => {
+    const adapter = createSessionRefTranscript('hermes');
+    const row = {
+      role: 'user',
+      content:
+        '\u0000json:[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"private"}}]'
+    };
+
+    const lines = parseTranscript(adapter.project(JSON.stringify(row)));
+
+    expect(lines).toEqual([{ kind: 'user', text: 'hi' }]);
+  });
+
+  test('drops copied handoff messages while retaining distinct repeated turns', () => {
+    const adapter = createSessionRefTranscript('hermes');
+    const original = {
+      message_uid: 'u1',
+      timestamp: 1,
+      role: 'user',
+      content: 'again'
+    };
+
+    const result = [
+      original,
+      { ...original, id: 9 },
+      { ...original, message_uid: 'u2', timestamp: 2 }
+    ].flatMap((row) => adapter.project(JSON.stringify(row)));
+
+    expect(result).toHaveLength(2);
+  });
+
+  test.each([
+    { role: 'system', content: 'system prompt' },
+    { role: 'assistant', content: 'summary', _compressed_summary: 1 },
+    { role: 'user', content: 'hidden input', display_kind: 'hidden' },
+    { role: 'assistant', content: 'unpublished reply', display_kind: 'hidden' },
+    {
+      role: 'user',
+      content: 'model context',
+      display_metadata: '{"model_only":true}'
+    },
+    { role: 'assistant', content: null, tool_calls: 'invalid' }
+  ])('omits non-display data %j', (row) => {
+    expect(
+      createSessionRefTranscript('hermes').project(JSON.stringify(row))
+    ).toEqual([]);
+  });
+});
 
 /**
  * @param {'claude'|'codex'} provider
