@@ -1013,6 +1013,79 @@ describe('attempt execution profiles and terminal observations', () => {
       home_spy.mockRestore();
     }
   });
+
+  test('backfills a transferred record once and drops it from the pending list', () => {
+    const home = path.join(tmp_state, 'transferred-home');
+    const directory = path.join(home, '.claude', 'projects', 'repo');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.copyFileSync(
+      new URL('./__fixtures__/claude-subagent.jsonl', import.meta.url),
+      path.join(directory, 'transferred-session.jsonl')
+    );
+    const record_file = attemptRecordPath(WS, 'B1', 'transferred');
+    fs.mkdirSync(path.dirname(record_file), { recursive: true });
+    fs.writeFileSync(
+      record_file,
+      JSON.stringify({
+        attempt_id: 'transferred',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'transferred-session',
+        status: 'done',
+        started_at: 0,
+        finished_at: Number.MAX_SAFE_INTEGER
+      })
+    );
+    const home_spy = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    const store = createQueueStore();
+    try {
+      const pending = store.transferredObservationBackfill(WS);
+      const written = store.backfillTransferredObservation(WS, pending[0]);
+
+      const saved = /** @type {any} */ (
+        store.readAttempt(WS, 'B1', 'transferred')
+      );
+      expect(pending).toEqual([{ bead_id: 'B1', attempt_id: 'transferred' }]);
+      expect(written).toBe(true);
+      expect(
+        saved.usage_legs.some(
+          (/** @type {any} */ leg) => leg.role === 'subagent'
+        )
+      ).toBe(true);
+      expect(saved.observation_checked).toBe(true);
+      expect(store.transferredObservationBackfill(WS)).toEqual([]);
+    } finally {
+      home_spy.mockRestore();
+    }
+  });
+
+  test('keeps the cause of a transcript read the caller already ran', () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const store = createQueueStore({ timeline });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'backfilled',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'backfilled-session',
+        status: 'failed',
+        finished_at: 100
+      }
+    });
+
+    store.updateAttempt(WS, {
+      attempt_id: 'backfilled',
+      patch: { observation_checked: true },
+      observation_cause: 'read_failure'
+    });
+
+    expect(
+      timeline
+        .readTimeline('B1')
+        .filter((event) => event.kind === 'observation_missing')
+    ).toMatchObject([{ reason: 'read_failure' }]);
+  });
 });
 
 describe('worker/queue-store remove', () => {

@@ -40,6 +40,40 @@ describe('terminal transcript folding', () => {
     ).toBe(true);
   });
 
+  test('keeps child legs from the interactive project transcript shape', () => {
+    const source = new URL(
+      './__fixtures__/claude-subagent.jsonl',
+      import.meta.url
+    );
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-transcript-'));
+    const file = path.join(dir, 'terminal-session.jsonl');
+    const project_lines = fs
+      .readFileSync(source, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => {
+        const { tool_use_result, ...record } = JSON.parse(line);
+        return JSON.stringify(
+          tool_use_result
+            ? { ...record, toolUseResult: tool_use_result }
+            : record
+        );
+      });
+    fs.writeFileSync(file, project_lines.join('\n'));
+
+    const result = readTerminalObservation(
+      { runner: 'claude', session_id: 'terminal-session' },
+      { file }
+    );
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    expect(
+      result.patch.usage_legs.find(
+        (/** @type {any} */ leg) => leg.role === 'subagent'
+      )
+    ).toMatchObject({ model: 'claude-sonnet-4-5-20250929' });
+  });
+
   test('reports missing local transcripts without inventing observations', () => {
     const result = readTerminalObservation(
       { runner: 'claude', session_id: 'missing-transcript' },

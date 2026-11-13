@@ -1342,7 +1342,11 @@ import {
   hasSessionObservation,
   readTerminalObservation
 } from './session-observation.js';
-import { attemptRecordPath, queueFilePath } from './state-paths.js';
+import {
+  attemptRecordPath,
+  beadsRootDir,
+  queueFilePath
+} from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
   normalizeUsageLegs,
@@ -7766,9 +7770,15 @@ export function createQueueStore(options = {}) {
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {Partial<Attempt>} patch
+   * @param {string|null} [given_cause] - Cause of a transcript read the caller already ran.
    * @returns {{ patch: Partial<Attempt>, files: string[], drain?: { workspace: string, attempt_id: string } }}
    */
-  function terminalReceiptPatch(workspace, attempt_id, patch) {
+  function terminalReceiptPatch(
+    workspace,
+    attempt_id,
+    patch,
+    given_cause = null
+  ) {
     const current = ensureLoaded(workspace).attempts[attempt_id];
     if (!current) {
       return { patch, files: [] };
@@ -7780,7 +7790,7 @@ export function createQueueStore(options = {}) {
       !current.observation_checked &&
       TERMINAL_ATTEMPT_STATUSES.has(patch.status ?? current.status ?? '');
     /** @type {string|null} */
-    let observation_cause = null;
+    let observation_cause = given_cause;
     if (observation_pass) {
       if (current.interactive && patch.observation_checked !== true) {
         const observed = readTerminalObservation({ ...current, ...patch });
@@ -8356,6 +8366,88 @@ export function createQueueStore(options = {}) {
           left_at - right_at || left.attempt_id.localeCompare(right.attempt_id)
         );
       });
+    },
+
+    /**
+     * Transferred records the one-time observation backfill still owes a
+     * transcript read: terminal, unchecked, with a session id, no observation,
+     * and no live queue row (the live row is the backfill's other half).
+     *
+     * @param {string} workspace
+     * @returns {Array<{ bead_id: string, attempt_id: string }>}
+     */
+    transferredObservationBackfill(workspace) {
+      /** @type {string[]} */
+      let bead_ids = [];
+      try {
+        bead_ids = fs
+          .readdirSync(beadsRootDir(workspace), { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+          .map((entry) => entry.name);
+      } catch {
+        return [];
+      }
+      const live = ensureLoaded(workspace).attempts;
+      /** @type {Array<{ bead_id: string, attempt_id: string }>} */
+      const out = [];
+      for (const bead_id of bead_ids) {
+        for (const record of readTransferredAttempts(workspace, bead_id)) {
+          if (
+            !live[record.attempt_id] &&
+            !record.observation_checked &&
+            typeof record.session_id === 'string' &&
+            typeof record.status === 'string' &&
+            TERMINAL_ATTEMPT_STATUSES.has(record.status) &&
+            !hasSessionObservation(record)
+          ) {
+            out.push({ bead_id, attempt_id: record.attempt_id });
+          }
+        }
+      }
+      return out;
+    },
+
+    /**
+     * Run the one-time transcript backfill on one transferred record and write
+     * it back with `observation_checked`, recording `observation_missing` once
+     * when the transcript yields nothing.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string }} input
+     * @returns {boolean} Whether the record was rewritten.
+     */
+    backfillTransferredObservation(workspace, input) {
+      const { bead_id, attempt_id } = input;
+      const record = readTransferredAttempt(workspace, bead_id, attempt_id);
+      if (
+        !record ||
+        ensureLoaded(workspace).attempts[attempt_id] ||
+        record.observation_checked
+      ) {
+        return false;
+      }
+      const observed = readTerminalObservation(record);
+      const next = makeAttempt({
+        ...record,
+        ...observed.patch,
+        observation_checked: true,
+        attempt_id,
+        bead_id
+      });
+      if (!writeAttemptRecord(workspace, next)) {
+        return false;
+      }
+      if (!hasSessionObservation(next)) {
+        appendTimeline(workspace, {
+          seq: 0,
+          bead_id,
+          attempt_id,
+          kind: 'observation_missing',
+          summary: '실행 관측 기록 없음',
+          reason: observed.cause || 'file_missing'
+        });
+      }
+      return true;
     },
 
     /**
@@ -10190,7 +10282,7 @@ export function createQueueStore(options = {}) {
      * Fills runtime fields at dispatch / termination (spec §5.2).
      *
      * @param {string} workspace
-     * @param {{ attempt_id: string, patch: Partial<Attempt> }} input
+     * @param {{ attempt_id: string, patch: Partial<Attempt>, observation_cause?: string|null }} input
      * @returns {QueueOpResult}
      */
     updateAttempt(workspace, input) {
@@ -10203,7 +10295,12 @@ export function createQueueStore(options = {}) {
         current_status === 'paused' ||
         TERMINAL_ATTEMPT_STATUSES.has(current_status ?? '');
       const prepared = terminal
-        ? terminalReceiptPatch(workspace, attempt_id, patch)
+        ? terminalReceiptPatch(
+            workspace,
+            attempt_id,
+            patch,
+            input.observation_cause ?? null
+          )
         : { patch, files: [], drain: undefined };
       const result = applyUnconditional(workspace, (next) => {
         const cur = next.attempts[attempt_id];

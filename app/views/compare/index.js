@@ -697,6 +697,7 @@ export function createCompareView(root, options = {}) {
   /**
    * @param {any} group
    * @param {any} [parent]
+   * @returns {import('lit-html').TemplateResult}
    */
   function groupCardTemplate(group, parent = null) {
     const open = expanded.has(group.key);
@@ -788,7 +789,7 @@ export function createCompareView(root, options = {}) {
         : null}
       ${(group_by === 'setting' || open) && group.children?.length
         ? html`<div class="cmp-children">
-            ${group.children.map((/** @type {any} */ child) =>
+            ${sortedUnits(group.children).map((/** @type {any} */ child) =>
               groupCardTemplate(child, group)
             )}
           </div>`
@@ -1119,8 +1120,14 @@ export function createCompareView(root, options = {}) {
     return descending ? right - left : left - right;
   }
 
-  function sortedGroups() {
-    return [...model.groups].sort((left, right) => {
+  /**
+   * Order units by the selected column; small samples always sink (false
+   * keeps their own order otherwise).
+   *
+   * @param {any[]} units
+   */
+  function sortedUnits(units) {
+    return [...units].sort((left, right) => {
       if (Boolean(left.small_sample) !== Boolean(right.small_sample)) {
         return left.small_sample ? 1 : -1;
       }
@@ -1181,11 +1188,13 @@ export function createCompareView(root, options = {}) {
       </div>`;
     }
     return html`
-      ${model.groups.some(
-        (group) =>
-          group.eligible ||
-          group.children?.some((/** @type {any} */ child) => child.eligible)
-      )
+      ${model.groups
+        .flatMap((group) =>
+          group_by === 'setting' && group.children?.length
+            ? group.children
+            : [group]
+        )
+        .some((/** @type {any} */ unit) => unit.eligible)
         ? null
         : html`<p class="cmp-empty">
             표본이 5건 이상이고 설정·실행 기록이 있는 비교 단위가 없습니다. 아래
@@ -1234,7 +1243,7 @@ export function createCompareView(root, options = {}) {
               ? html`<span>리뷰 라운드</span>`
               : null}
         </div>
-        ${sortedGroups().map((group) => groupCardTemplate(group))}
+        ${sortedUnits(model.groups).map((group) => groupCardTemplate(group))}
       </section>
     `;
   }
@@ -1338,6 +1347,15 @@ export function createCompareView(root, options = {}) {
         ${bodyTemplate()}
         <p class="cmp-legend">
           초록 칸은 표본이 충분한 비교 단위 중 유일한 최고 값입니다.
+          ${PROBLEM_KEYS.filter((key) => model.criteria.effective[key]?.on).map(
+            (key) =>
+              html`<span class="cmp-legend__item"
+                ><span
+                  class=${`cmp-segment cmp-segment--${key} cmp-legend__swatch`}
+                ></span
+                >${PROBLEM_LABELS[key]}</span
+              >`
+          )}
           ${formatCriteriaLegend(
             model.criteria.effective,
             model.criteria.baselines

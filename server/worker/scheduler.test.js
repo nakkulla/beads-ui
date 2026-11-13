@@ -51,6 +51,7 @@ import {
 } from './scheduler.js';
 import { createSessionLog, stderrPathOf } from './session-log.js';
 import {
+  attemptRecordPath,
   beadSessionLogPath,
   beadSessionStderrPath,
   codexAttemptHomeDir,
@@ -1173,6 +1174,37 @@ describe('scheduler execution profile recording', () => {
     ).toMatchObject({ impl_model: 'opus', impl_review_model: 'astra' });
   });
 
+  test('rechecks the serial head after reading session defaults', async () => {
+    /** @type {any} */
+    let env;
+    let moved = false;
+    env = setup({
+      config: { A: {}, B: {} },
+      slots: 2,
+      kvGet: async (
+        /** @type {string} */ _workspace,
+        /** @type {string} */ key
+      ) => {
+        if (key === 'workflow_session_defaults' && !moved) {
+          moved = true;
+          env.store.place(WS, {
+            expected_revision: env.store.snapshot(WS).revision,
+            bead_id: 'B',
+            lane: 's1',
+            index: 0
+          });
+        }
+        return { ok: true, value: null };
+      }
+    });
+    seedLanes(env.store, { s1: ['A'] });
+
+    await env.scheduler.tick(WS);
+
+    expect(moved).toBe(true);
+    expect(env.runner.spawnOrder).not.toContain('A');
+  });
+
   test('continues dispatch when session defaults cannot be read', async () => {
     const env = setup({
       config: { A1: {} },
@@ -1251,6 +1283,62 @@ describe('scheduler execution profile recording', () => {
     expect(env.store.snapshot(WS).attempts.absent.observation_checked).toBe(
       true
     );
+  });
+
+  test('backfills transferred records from the reconcile pass', async () => {
+    const env = setup({ config: {} });
+    const record_file = attemptRecordPath(WS, 'B1', 'moved');
+    fs.mkdirSync(path.dirname(record_file), { recursive: true });
+    fs.writeFileSync(
+      record_file,
+      JSON.stringify({
+        attempt_id: 'moved',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'moved-session-absent',
+        status: 'done'
+      })
+    );
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.readAttempt(WS, 'B1', 'moved')?.observation_checked).toBe(
+      true
+    );
+  });
+
+  test('passes a backfill read failure on as the missing-observation cause', async () => {
+    const home = path.join(tmp_state, 'unreadable-observation-home');
+    fs.mkdirSync(
+      path.join(home, '.claude', 'projects', 'repo', 'unreadable.jsonl'),
+      { recursive: true }
+    );
+    const home_spy = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    const env = setup({ config: {} });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'unreadable',
+        bead_id: 'B1',
+        runner: 'claude',
+        session_id: 'unreadable',
+        status: 'done'
+      }
+    });
+    const update_spy = vi.spyOn(env.store, 'updateAttempt');
+    try {
+      await env.scheduler.reconcile(WS);
+
+      expect(update_spy).toHaveBeenCalledWith(
+        WS,
+        expect.objectContaining({
+          attempt_id: 'unreadable',
+          observation_cause: 'read_failure'
+        })
+      );
+    } finally {
+      home_spy.mockRestore();
+    }
   });
 });
 

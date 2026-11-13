@@ -1659,6 +1659,13 @@ export function createScheduler(deps) {
     deps.observeCodexEffort || defaultObserveCodexEffort;
   /** @type {Map<string, number>} */
   const receipt_recovery_cursor = new Map();
+  /**
+   * Transferred records still owed the one-time observation backfill, listed
+   * once per workspace per process and drained a few per reconcile pass.
+   *
+   * @type {Map<string, Array<{ bead_id: string, attempt_id: string }>>}
+   */
+  const transferred_backfill = new Map();
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
@@ -3616,6 +3623,41 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Drain a bounded slice of the transferred-record observation backfill.
+   *
+   * @param {string} workspace
+   */
+  function backfillTransferredObservations(workspace) {
+    const store = /** @type {any} */ (deps.store);
+    if (
+      typeof store.transferredObservationBackfill !== 'function' ||
+      typeof store.backfillTransferredObservation !== 'function'
+    ) {
+      return;
+    }
+    let pending = transferred_backfill.get(workspace);
+    if (!pending) {
+      try {
+        pending = store.transferredObservationBackfill(workspace);
+      } catch (err) {
+        log('observation backfill listing failed for %s: %o', workspace, err);
+        pending = [];
+      }
+      transferred_backfill.set(workspace, /** @type {any[]} */ (pending));
+    }
+    for (const target of /** @type {any[]} */ (pending).splice(
+      0,
+      TERMINAL_RECEIPT_RECOVERY_MAX
+    )) {
+      try {
+        store.backfillTransferredObservation(workspace, target);
+      } catch (err) {
+        log('observation backfill failed for %s: %o', target.attempt_id, err);
+      }
+    }
+  }
+
+  /**
    * Re-scan terminal/history-only attempts after a restart. These attempts have
    * no live handle left to perform another terminal mutation, so a receipt that
    * landed after pause/stop would otherwise remain stranded indefinitely.
@@ -3652,7 +3694,8 @@ export function createScheduler(deps) {
         const observed = readTerminalObservation(attempt);
         const result = deps.store.updateAttempt(workspace, {
           attempt_id,
-          patch: { ...observed.patch, observation_checked: true }
+          patch: { ...observed.patch, observation_checked: true },
+          observation_cause: observed.cause
         });
         changed = changed || !!result?.ok;
       }
@@ -10768,6 +10811,7 @@ export function createScheduler(deps) {
         notifyChanged(workspace);
       }
       gcUsageReceiptInboxes(workspace);
+      backfillTransferredObservations(workspace);
       /** @type {Array<{ attempt_id: string, attempt: any }>} */
       const dead = [];
       /** @type {string[]} */
@@ -14725,6 +14769,9 @@ export function createScheduler(deps) {
         recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
         return;
       }
+      // The last await before launch: the head check below through the
+      // pre-record must stay one synchronous stretch.
+      const exec_profile = await dispatchProfile(workspace, final_snap);
       const final_head = serialHeadOf(deps.store.snapshot(workspace), bead_id);
       if (!final_head.ok || !final_snap.ready || final_snap.blocked) {
         await abortPreparedLaunch(
@@ -14768,7 +14815,7 @@ export function createScheduler(deps) {
           workflow_mode_source_prior: prior_source,
           receipt_baseline,
           exec_preset: resolved_exec.exec_preset ?? null,
-          exec_profile: await dispatchProfile(workspace, final_snap),
+          exec_profile,
           exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
           exec_values,
           exec_restore_values,
@@ -17513,9 +17560,10 @@ export function createScheduler(deps) {
           await prepareFreshWorktree(null);
         }
       }
-      // The fresh-mode preparation above awaits, so the Bead may have moved
-      // lanes since the acquire; re-read synchronously and revalidate the
-      // held reservation before the first durable write.
+      const exec_profile = await dispatchProfile(workspace, snap);
+      // The awaits above may have moved the Bead's lane since the acquire;
+      // re-read synchronously and revalidate the held reservation before the
+      // first durable write.
       const final_lane_id = dispatchLaneOf(
         deps.store.snapshot(workspace),
         bead_id
@@ -17563,7 +17611,7 @@ export function createScheduler(deps) {
           exec_stamped_keys: stamped_keys,
           exec_restore_values: restore.values,
           exec_preset: resolved.exec_preset ?? null,
-          exec_profile: await dispatchProfile(workspace, snap),
+          exec_profile,
           receipt_baseline,
           quickfix_lane,
           forked_from_session_id: resume_session_id,
@@ -19533,6 +19581,9 @@ export function createScheduler(deps) {
       serial_lease.release();
       return { ok: false, reason: 'bd_snapshot_failed' };
     }
+    // The last await before launch: the revalidation below through the
+    // pre-record must stay one synchronous stretch.
+    const exec_profile = await dispatchProfile(workspace, snap);
     const revalidated = serial_lease.revalidate({
       bead_id,
       lineage_id: bead_id,
@@ -19587,7 +19638,7 @@ export function createScheduler(deps) {
         workflow_mode_source_prior: snap.workflow_mode_source ?? null,
         receipt_baseline,
         exec_preset: resolved_exec.exec_preset ?? null,
-        exec_profile: await dispatchProfile(workspace, snap),
+        exec_profile,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values,
         exec_restore_values,

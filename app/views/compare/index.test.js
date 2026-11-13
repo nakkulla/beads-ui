@@ -1248,6 +1248,75 @@ describe('compare group cards', () => {
     ).toBe('−$1.00');
   });
 
+  test('sorts setting subrows with small samples last', async () => {
+    const { root, view } = mountComparison({
+      groups: [
+        comparisonGroup({
+          n: 20,
+          children: [
+            comparisonGroup({ key: 'child-small', n: 2, small_sample: true }),
+            comparisonGroup({ key: 'child-few', n: 6 }),
+            comparisonGroup({ key: 'child-many', n: 12 })
+          ]
+        })
+      ]
+    });
+
+    await view.refresh();
+
+    expect(
+      Array.from(root.querySelectorAll('.cmp-children .cmp-card')).map((row) =>
+        row.getAttribute('data-group-key')
+      )
+    ).toEqual(['child-many', 'child-few', 'child-small']);
+  });
+
+  test('explains a missing comparison when only the parent of setting subrows is eligible', async () => {
+    const { root, view } = mountComparison({
+      groups: [
+        comparisonGroup({
+          n: 20,
+          eligible: true,
+          children: [
+            comparisonGroup({ key: 'child-a', eligible: false }),
+            comparisonGroup({ key: 'child-b', eligible: false })
+          ]
+        })
+      ]
+    });
+
+    await view.refresh();
+
+    expect(root.querySelector('p.cmp-empty')?.textContent).toContain(
+      '비교 단위가 없습니다'
+    );
+  });
+
+  test('names each enabled problem kind with its bar color in the legend', async () => {
+    const effective = Object.fromEntries(
+      Object.entries(DEFAULT_PROBLEM_CRITERIA).map(([key, value]) => [
+        key,
+        { ...value, on: key === 'failed' || key === 'review' }
+      ])
+    );
+    const { root, view } = mountComparison({
+      groups: [comparisonGroup()],
+      criteria: { effective, is_default: false, baselines: {} }
+    });
+
+    await view.refresh();
+
+    expect(
+      Array.from(root.querySelectorAll('.cmp-legend__item')).map((item) => [
+        item.textContent?.trim(),
+        item.querySelector('.cmp-legend__swatch')?.className
+      ])
+    ).toEqual([
+      ['실패·폐기', 'cmp-segment cmp-segment--failed cmp-legend__swatch'],
+      ['리뷰 지적', 'cmp-segment cmp-segment--review cmp-legend__swatch']
+    ]);
+  });
+
   test('retains landing rate and adds selection mode counts in the leaf view', async () => {
     const { root, view } = mountComparison({
       groups: [

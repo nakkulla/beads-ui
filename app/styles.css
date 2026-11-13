@@ -10853,6 +10853,18 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 .cmp-legend {
   margin: var(--sp-4) 0;
 }
+.cmp-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-right: var(--sp-8);
+  white-space: nowrap;
+}
+.cmp-legend__swatch {
+  display: inline-block;
+  width: var(--sp-8);
+  height: var(--sp-8);
+}
 
 .cmp-work-types,
 .cmp-controls,

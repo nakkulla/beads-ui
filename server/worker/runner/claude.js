@@ -479,10 +479,11 @@ export function liftDelegation(raw) {
       if (!launch_id) {
         continue;
       }
+      // stream-json names it `tool_use_result`; the interactive project
+      // transcript names the same object `toolUseResult`.
+      const raw_result = raw.tool_use_result ?? raw.toolUseResult;
       const result =
-        raw.tool_use_result && typeof raw.tool_use_result === 'object'
-          ? raw.tool_use_result
-          : {};
+        raw_result && typeof raw_result === 'object' ? raw_result : {};
       // A `run_in_background: true` launch is acknowledged IMMEDIATELY with a
       // `tool_result` (§1.1). Reading it as an end closes the session before
       // the subagent has done anything, so it is lifted as its own signal.
