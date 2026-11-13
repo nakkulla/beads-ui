@@ -5,6 +5,8 @@ scope:
   - server/worker/tmux-launcher.js
   - server/worker/queue-store.js
   - server/worker/notify.js
+  - server/ws/worker-handlers.js
+  - server/ws/connection.js
   - app/views/worker/lanes.js
   - app/views/worker/gate-labels.js
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
@@ -35,6 +37,7 @@ dotfiles 계약 `needs_human_reentry.conversation_auto_launch.prerequisite_spec_
 - 행 게이트는 살아 있는 대화가 있는 행에서 기동을 거부한다 — `server/worker/resolve-session.js:1434`
 - 멈춤·실패 대화가 함께 쓰는 자동 기동 스위치는 하나다 — `server/conversation-settings.js:7`
 - 확인 필요 알림 경로가 있다 — `server/worker/notify.js:680`
+- 기존 `[세션에서 이어가기]` 처리기(`worker-resolve-in-session`)는 attempt·실패 기록이 없는 Bead를 `no_terminal_failure`로 거부한다 — `server/ws/worker-handlers.js:8296-8302`, `server/ws/connection.js:754`
 - 후보 카드는 스펙이 발행되지 않으면 slot 4a에 `스펙 미발행`을 단다 — `app/views/worker/lanes.js:1005-1007`
 - 카드의 새 요소는 그 요소가 답하는 질문으로 슬롯이 정해지고, 스펙 갱신이 먼저다 — `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md:249-252`, `AGENTS.md:29-35`
 - 같은 Bead의 카드는 Worker 탭과 모니터 탭에서 같은 재료로 그린다 — `AGENTS.md:42-47`
@@ -70,6 +73,7 @@ dotfiles 계약 `needs_human_reentry.conversation_auto_launch.prerequisite_spec_
 
 - 두 번째 상태는 대화가 열리지 않고 표시만 한다. 스펙 발행 뒤 구현 진입 질문에 답이 오지 않아 다시 소리 없이 멈추는 것을 드러내려는 것이다.
 - B 카드(후보 카드)의 slot 6, 그리고 원 Bead 카드의 slot 6에 `[스펙 작성 세션]` 버튼을 둔다. 버튼은 B의 대화를 연다. 대화가 살아 있으면 기존 "대화 중" 표시로 바꾼다.
+- 버튼은 새 WebSocket 요청(예: `worker-spec-authoring-session`, payload `{ bead_id, expected_revision }`)을 보낸다. 서버 처리기는 B가 3.1 대상(또는 3.3의 두 번째 상태)인지 다시 판정한 뒤 `spec_authoring` 런처로 사용자 tmux 세션에 연다. attempt·실패 기록을 요구하지 않고, 스위치와 B당 자동 기동 기록에 상관없이 연다. 행 게이트(살아 있는 대화)와 tmux 부재 거부는 그대로다. 기존 `worker-resolve-in-session`의 거부 규칙은 바꾸지 않는다.
 - Worker 탭과 모니터 탭은 같은 공유 함수로 그린다. 카드 배치 문법 스펙 §5.1 슬롯 표에 새 배지·칩·버튼 행을 먼저 더한다.
 
 결정: 머리 배지는 B 카드 slot 1에 둔다 (대안: slot 4a 칩만 둠; 이유: 사용자가 "앞에 다른 이모지로" 사람이 확정할 자리를 표시해 달라고 했고, slot 1은 머리 상태 배지 자리다).
@@ -89,6 +93,7 @@ dotfiles 계약 `needs_human_reentry.conversation_auto_launch.prerequisite_spec_
 - 대상 판정 단위 시험: 네 조건을 하나씩 어긴 경우와 모두 만족한 경우.
 - 한 번 규칙: 두 판정 시점에서 겹친 경우와 재시작을 모사한 경우.
 - 스위치 꺼짐 경로, 기동 실패 경로.
+- 버튼 처리기: 스위치 OFF이고 B에 attempt가 없을 때 클릭으로 열림, 자동 기동 기록이 있어도 클릭으로 열림, 살아 있는 대화가 있으면 거부, 대상이 아닌 Bead는 거부.
 - 진입 블록 다이제스트 고정.
 - 카드 렌더: 두 상태, 두 탭 동일성(기존 카드 동일성 시험).
 
@@ -100,5 +105,5 @@ dotfiles 계약 `needs_human_reentry.conversation_auto_launch.prerequisite_spec_
 ## 7. 결정 (ADR 후보)
 
 - 전제: ADR UI-jlov — 계약 subset을 코드 registry로 복제하고, 계약 키가 없으면 fail-quiet로 표시를 생략한다.
-- 스펙 작성 대화 기동 규칙 — 결정의 소비자 집합은 dotfiles 계약(dotfiles-hid4r ADR 후보)이 정하고, 이 저장소는 그것을 복제해 쓸 뿐이다(소비자는 dotfiles 계약 정본 쪽) → ADR 아님
+- 스펙 작성 대화 종류·B당 영속 기동 기록·버튼 처리기 — 이 저장소의 소비자(`scheduler.js`·`queue-store.js`·`tmux-launcher.js`·`direction-inquiry.js`·`worker-handlers.js`·`lanes.js`)가 함께 바뀌어 되돌리기는 어렵지만, 맥락 없이 의외 아님에서 실패한다: 왜 이 대화를 여는지·왜 막는 선행만인지는 ADR dotfiles/dotfiles-hid4r(ADR dotfiles/dotfiles-6sc5i 교체 후보)가 기록하고, 이 저장소는 ADR UI-jlov대로 그 계약을 복제한다 → ADR 아님
 - `✍️` 배지·칩·버튼의 자리와 문구 — UI 배치·라벨·버튼(기본 제외 목록) → ADR 아님
