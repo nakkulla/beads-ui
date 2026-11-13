@@ -50,13 +50,13 @@ scope:
 - `group_by`는 `preset`·`orchestration`·`impl_actor` 셋이다 — server/worker/compare-projection.js:559-561
 - 이슈 색인은 스냅샷 metadata에서 `impl_review_stats`를 이미 읽는다 — server/worker/compare-projection.js:1413-1421
 - attempt의 기록된 프리셋은 `exec_preset`이고, 없으면 `presetMatch`로 추론한다 — server/worker/compare-projection.js:1272-1300, 310
-- dispatch는 `exec_preset`을 attempt에 찍고, 이전 설정을 잇는 재개는 그것을 승계한다 — server/worker/scheduler.js:14587, 17360, 19368, 20004-20005
-- scheduler는 dispatch 때 `workflow_session_defaults` kv를 이미 fail-quiet로 읽는다 — server/worker/scheduler.js:5974-5984
+- dispatch는 `exec_preset`을 attempt에 찍고, 이전 설정을 잇는 재개는 그것을 승계한다 — server/worker/scheduler.js:14694, 17488, 19511, 20196-20197
+- scheduler는 dispatch 때 `workflow_session_defaults` kv를 이미 fail-quiet로 읽는다 — server/worker/scheduler.js:5965-5975
 - attempt `exec_values`의 구현·리뷰 키는 Bead 핀 층만 담는다. kv 프로필 값은 들어가지 않는다 — server/worker/policy.js:309-330
 - quick fix 전용 kv 키(`quick_fix_impl_review_model` 등)는 비어 있으면 같은 이름의 일반 키로 내려간다. 예외로 `quick_fix_impl_dispatch`는 일반 kv 층이 없다(kv `impl_dispatch` 금지) — server/worker/exec-enums.js:152-174
 - 실행 영수증(`exec_receipt`)은 push 직전 최종 head에서 한 번 쓴다. 그래서 push까지 못 간 attempt에는 실행자가 남지 않는다 — dotfiles workflow 스킬 SKILL.md `## Execution`(`write-exec-receipt.py` 단락)
-- attempt는 실제로 돈 하위 실행을 durable하게 남긴다: `usage_segments`(오케스트레이터 모델 조각), `usage_legs`(Claude 하위 에이전트는 `agent_type`·`model`·`effort`, Codex 레그는 `role: implementation|review-consult`·`model`·`effort`), `codex_children`(Codex 네이티브 하위 세션의 `agent_path`·`model`·`effort`) — server/worker/queue-store.js:176-188, 432-460; server/worker/usage-receipts.js:149-226; server/worker/codex-children/normalize.js:103
-- 레그는 Worker가 붙잡은 세션 스트림과 attempt별 사용량 영수증 파일에서 모인다 — server/worker/scheduler.js:3330-3375, 3585-3615
+- attempt는 실제로 돈 하위 실행을 durable하게 남긴다: `usage_segments`(오케스트레이터 모델 조각), `usage_legs`(Claude 하위 에이전트는 `agent_type`·`model`·`effort`, Codex 레그는 `role: implementation|review-consult`·`model`·`effort`), `codex_children`(Codex 네이티브 하위 세션의 `agent_path`·`model`·`effort`) — server/worker/queue-store.js:177-189, 433-461; server/worker/usage-receipts.js:149-226; server/worker/codex-children/normalize.js:103
+- 레그는 Worker가 붙잡은 세션 스트림과 attempt별 사용량 영수증 파일에서 모인다 — server/worker/scheduler.js:3336-3381, 3591-3621
 - 실측(attempt 기록 스캔, 최근 구현 attempt): Claude 오케스트레이터 `done` 336건 중 구현 리뷰 레그 324건·`impl-<effort>` 리프 레그 160건(나머지는 직접 구현), Codex 오케스트레이터 `done` 208건 중 `codex_children` 202건. 비교 투영은 이 기록을 읽지 않고 `exec_receipt`·프리셋 추정만 본다 — server/worker/compare-projection.js:164-216, 1272-1300
 - 실측(30일 417건): attempt 대화 기록이 Worker 세션 폴더에 없는 17건 중 대부분이 tmux 대화형 attempt(`interactive` 필드)이고, 그 대화 파일은 `~/.claude/projects/<cwd>/<session_id>.jsonl`에 남아 있지만 `usage_segments`·`usage_legs`가 비어 있다. 대화형 경로는 종료 때 레그를 모으지 않는다.
 - 구현 리뷰 영수증의 `self@`는 수정 뒤 후속 리뷰가 앞 리뷰어 토큰을 덮어쓴 것이라, 영수증 접두어로는 처음 리뷰어를 알 수 없다 — dotfiles docs/contracts/workflow-contract.md:76
@@ -370,11 +370,11 @@ dispatch 지점에서 `exec_profile`을 durable 필드로 더한다.
   `app/views/compare/`가 함께 움직이며, 쌓인 기록은 지울 수 없다). 맥락 없이 놀라움: 성립(실행
   영수증·리뷰 영수증이 아니라 사용량 레그가 실행자의 정본인 이유, 여러 리프가 `auto` 묶음이 되는
   이유, 같은 프리셋 이름이 시점에 따라 다른 그룹에 드는 이유). 실제 트레이드오프: 성립(정확한
-  기록 vs dispatch·종료 경로 확장; 레그 분류 규칙의 유지 비용). UI-2mvi가 승계한 "dispatch가
+  기록 vs dispatch·종료 경로 확장; 레그 분류 규칙의 유지 비용). UI-v4cc가 UI-2mvi에서 그대로 승계한 "dispatch가
   attempt에 적용 프리셋을 기록한다"(`dispatchPreset`·attempt 기록) 조항과 소비자를 공유하므로
   그 ADR을 다시 쓴다. 뒤집는 조항은 없고 기록 필드와 비교 읽기 규칙을 더한다.
-  `summary`: "비교의 오케스트레이터·구현 리프·리뷰어 모델·effort는 attempt가 남긴 실제 실행 레그로 읽고 대화형 attempt도 종료 때 같은 레그를 남기며, 자동/고정 같은 설정만 dispatch가 기록한 exec_profile → Bead 핀 → 프리셋의 지금 설정 순으로 읽는다 — 나머지 조항은 UI-2mvi 그대로다"
-  → ADR, supersede UI-2mvi
+  `summary`: "비교의 오케스트레이터·구현 리프·리뷰어 모델·effort는 attempt가 남긴 실제 실행 레그로 읽고 대화형 attempt도 종료 때 같은 레그를 남기며, 자동/고정 같은 설정만 dispatch가 기록한 exec_profile → Bead 핀 → 프리셋의 지금 설정 순으로 읽는다 — 나머지 조항은 UI-v4cc 그대로다"
+  → ADR, supersede UI-v4cc
 - 작업 종류 분리와 종류별 기준선, 리뷰어를 뺀 설정 묶기와 리뷰어 하위 줄, 비교 표 배치,
   `n ≥ 5` 표본 규칙, 용어 변경, 찾은 차이 문장 — 표시 정의이며 언제든 되돌릴 수 있다 → ADR 아님
 
