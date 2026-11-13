@@ -987,10 +987,11 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
  * leaves the engine on its stdout-pipe fallback, which is what fixture-driven
  * tests want.
- * @property {{ stop: (workspace: string, attempt_id: string) => boolean }} [sessionMonitors]
+ * @property {{ stop: (workspace: string, attempt_id: string) => boolean, observe?: (workspace: string, attempt_id: string, options?: { parent_terminated?: boolean }) => void }} [sessionMonitors]
  * Detached-session monitors (UI-o2yt §3.3). Present in the live wiring only: a
  * dead attempt's monitor is stopped — draining its log to EOF — before the
  * disposition reads the guard evidence and lifts the terminal usage tally.
+ * Scheduler-owned attempts reuse its native observation without a parent tail.
  * @property {ReturnType<typeof import('./usage-store.js').createUsageStore>} [usage]
  * @property {ReturnType<typeof import('./session-observation.js').createWorkerSessionObservationStore>} [workerSessionObservations]
  * Live token-usage tally for running attempts (UI-raqh §1). Absent wiring
@@ -3547,6 +3548,7 @@ export function createScheduler(deps) {
           clearDelegationPolling(attempt_id);
           return;
         }
+        deps.sessionMonitors?.observe?.(workspace, attempt_id);
         const scanned = delegation_monitor.readAttemptDelegationStreams(
           workspace,
           attempt_id,
@@ -3790,6 +3792,22 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Release volatile observations without writing a cancelled review record.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   */
+  function clearCancelledReviewObservations(workspace, attempt_id) {
+    clearUsageReceiptPolling(attempt_id);
+    clearDelegationPolling(attempt_id);
+    if (running.size === 0) {
+      clearUsageFanout(workspace);
+    }
+    deps.usage?.clearAttempt(workspace, attempt_id);
+    deps.workerSessionObservations?.delete(workspace, attempt_id);
+  }
+
+  /**
    * The terminal usage patch for an attempt: the live tally, lifted out of the
    * store so the record carries it after the process is gone. Returns an empty
    * patch when nothing was tallied, which keeps `usage: null` on an attempt
@@ -3800,6 +3818,15 @@ export function createScheduler(deps) {
    * @returns {{ usage?: any, usage_segments?: any[], session_cost_usd?: number }}
    */
   function usagePatch(workspace, attempt_id) {
+    if (delegation_tail_states.has(attempt_id)) {
+      try {
+        deps.sessionMonitors?.observe?.(workspace, attempt_id, {
+          parent_terminated: true
+        });
+      } catch (err) {
+        log('final native observation failed for %s: %o', attempt_id, err);
+      }
+    }
     const prepared = deps.workerSessionObservations?.get(workspace, attempt_id);
     let usage =
       prepared?.usage ??
@@ -7888,6 +7915,9 @@ export function createScheduler(deps) {
             attempt_id,
             patch: { exit: verdict.exit, ...usagePatch(workspace, attempt_id) }
           });
+        } else {
+          deps.sessionMonitors?.stop(workspace, attempt_id);
+          clearCancelledReviewObservations(workspace, attempt_id);
         }
         notifyChanged(workspace);
         return;
@@ -10735,6 +10765,8 @@ export function createScheduler(deps) {
           attempt_id,
           patch: { exit: null, ...usagePatch(workspace, attempt_id) }
         });
+      } else {
+        clearCancelledReviewObservations(workspace, attempt_id);
       }
     } finally {
       settling.delete(attempt_id);
@@ -24309,10 +24341,12 @@ export function createScheduler(deps) {
     const entry = running.get(attempt_id);
     if (!entry) {
       deps.sessionMonitors?.stop(workspace, attempt_id);
+      clearCancelledReviewObservations(workspace, attempt_id);
       return false;
     }
     teardownLiveSession(attempt_id, entry);
     deps.sessionMonitors?.stop(workspace, attempt_id);
+    clearCancelledReviewObservations(workspace, attempt_id);
     notifyChanged(workspace);
     // The slot this session held is free now, so the ordinary lane may fill it.
     await tick(workspace);

@@ -10,6 +10,7 @@ import {
   normalizeBdReadyRows
 } from '../bd-json.js';
 import { notifyAccountSwitched } from '../routes/account-switch.js';
+import { attemptsWithUsage } from '../ws/worker-handlers.js';
 import {
   RECONCILE_INTERVAL_SECONDS,
   __registerWorkerAttachmentForTest,
@@ -43,6 +44,7 @@ import {
   getWorkerRuntime
 } from './runtime.js';
 import { requestStartNow } from './scheduler.js';
+import { createWorkerSessionObservationStore } from './session-observation.js';
 import {
   queueFilePath,
   sessionLogPath,
@@ -1002,6 +1004,197 @@ function asProjected(fake) {
 }
 
 describe('worker/attach construction + live loop (F1)', () => {
+  for (const { name, review, stop_review } of [
+    {
+      name: 'projects fresh Codex children and usage while the parent stream is idle',
+      review: false,
+      stop_review: false
+    },
+    {
+      name: 'releases cancelled Codex review observations without rewriting usage',
+      review: true,
+      stop_review: true
+    },
+    {
+      name: 'releases Codex observations when a review loses its binding',
+      review: true,
+      stop_review: false
+    }
+  ]) {
+    test(name, async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-13T00:00:00Z'));
+      const runtime = createWorkerRuntime();
+      const original_observations = runtime.workerSessionObservations;
+      const sessions_root = path.join(tmp_state, 'sessions');
+      const rollout_dir = path.join(sessions_root, '2026', '11', '13');
+      fs.mkdirSync(rollout_dir, { recursive: true });
+      const observations = createWorkerSessionObservationStore({
+        sessionsRootFor: () => sessions_root
+      });
+      runtime.workerSessionObservations = observations;
+      const projection_observations = vi
+        .spyOn(getWorkerRuntime().workerSessionObservations, 'get')
+        .mockImplementation((workspace, attempt_id) =>
+          observations.get(workspace, attempt_id)
+        );
+      const events = new EventEmitter();
+      /** @type {(verdict: any) => void} */
+      let finish = () => {};
+      const done = new Promise((resolve) => {
+        finish = resolve;
+      });
+      const att = createWorkerAttachment(WS, {
+        runtime,
+        bd: fakeBd({ 'UI-live': { runner: 'codex', model: 'sol', repo: WS } }),
+        worktree: fakeWorktree,
+        verify: okVerify,
+        admission: { validate: async () => ({ ok: true }) },
+        resolveBase: okBase('main'),
+        kvGet: noAccountDefaults,
+        makeRunner: () => ({
+          name: 'codex',
+          spawn: () => ({ pid: 4242, events, done, kill: vi.fn() })
+        })
+      });
+      __registerWorkerAttachmentForTest(WS, att);
+      /**
+       * @param {string} id
+       * @param {Array<Record<string, any>>} records
+       */
+      const writeRollout = (id, records) => {
+        fs.writeFileSync(
+          path.join(rollout_dir, `rollout-${id}.jsonl`),
+          `${records.map((record) => JSON.stringify(record)).join('\n')}\n`
+        );
+      };
+
+      try {
+        let tick_result;
+        if (review) {
+          runtime.queueStore.upsertReviewSessionAttempt(WS, {
+            attempt_id: 'review-live',
+            patch: {
+              bead_id: 'UI-live',
+              kind: 'review_session',
+              status: 'pending',
+              target_base: 'main'
+            }
+          });
+          tick_result = await att.scheduler.dispatchReviewSession(WS, {
+            bead_id: 'UI-live',
+            attempt_id: 'review-live',
+            prompt: 'Review the candidate'
+          });
+          expect(tick_result).toMatchObject({ ok: true });
+        } else {
+          runtime.queueStore.place(WS, {
+            expected_revision: runtime.queueStore.snapshot(WS).revision,
+            bead_id: 'UI-live'
+          });
+          runtime.queueStore.setAutoAdvance(WS, true);
+          requestStartNow(WS, 'UI-live', Date.now());
+          tick_result = await att.scheduler.tick(WS);
+        }
+        expect(
+          Object.keys(runtime.queueStore.snapshot(WS).attempts),
+          JSON.stringify(tick_result)
+        ).toHaveLength(1);
+        events.emit('session_id', 'live-root');
+        writeRollout('live-root', [
+          { type: 'session_meta', payload: { id: 'live-root' } },
+          {
+            timestamp: '2026-11-13T00:00:01Z',
+            type: 'turn_context',
+            payload: { turn_id: 'root-turn', model: 'gpt-6.1-sol' }
+          },
+          {
+            timestamp: '2026-11-13T00:00:02Z',
+            type: 'token_usage_record',
+            payload: {
+              thread_id: 'live-root',
+              turn_id: 'root-turn',
+              turn_token_usage: { input_tokens: 100, output_tokens: 10 }
+            }
+          }
+        ]);
+        writeRollout('live-child', [
+          {
+            timestamp: '2026-11-13T00:00:01Z',
+            type: 'session_meta',
+            payload: {
+              id: 'live-child',
+              parent_thread_id: 'live-root',
+              thread_source: 'subagent',
+              agent_path: '/root/implement'
+            }
+          },
+          {
+            timestamp: '2026-11-13T00:00:02Z',
+            type: 'turn_context',
+            payload: { model: 'gpt-6.1-sol', effort: 'high' }
+          }
+        ]);
+        await vi.advanceTimersByTimeAsync(3100);
+        const queue = runtime.queueStore.snapshot(WS);
+        const attempt = Object.values(queue.attempts)[0];
+        const projected = /** @type {any} */ (
+          attemptsWithUsage(queue, WS)[attempt.attempt_id]
+        );
+
+        expect(projected).toMatchObject({
+          status: 'running',
+          usage: { input_tokens: 100, output_tokens: 10 },
+          codex_children: [
+            {
+              thread_id: 'live-child',
+              agent_path: '/root/implement',
+              model: 'gpt-6.1-sol',
+              effort: 'high',
+              status: 'running'
+            }
+          ]
+        });
+        expect(attempt.usage).toBeNull();
+        expect(att.sessionMonitors.size()).toBe(0);
+        if (review) {
+          const cancelled = runtime.queueStore.setMergeShelved(WS, {
+            expected_revision: queue.revision,
+            bead_id: 'UI-live',
+            on: true,
+            overlay: true
+          });
+          expect(cancelled.cancelled_attempt_ids).toEqual(['review-live']);
+          const cancelled_attempt =
+            runtime.queueStore.snapshot(WS).attempts['review-live'];
+
+          if (stop_review) {
+            await att.scheduler.stopReviewSessionProcess(WS, 'review-live');
+          }
+          finish({ success: false, reason: 'cancelled', exit: 1 });
+          await vi.advanceTimersByTimeAsync(0);
+
+          expect(observations.get(WS, 'review-live')).toBeNull();
+          expect(
+            runtime.queueStore.snapshot(WS).attempts['review-live']
+          ).toEqual(cancelled_attempt);
+          await observations.prepareHistorical(WS, cancelled_attempt);
+          expect(
+            observations.prepareHistorical(WS, cancelled_attempt)
+          ).toBeNull();
+        }
+      } finally {
+        finish({ success: false, reason: 'test_cleanup', exit: 1 });
+        await vi.advanceTimersByTimeAsync(0);
+        att.sessionMonitors.stopAll();
+        observations.clear();
+        projection_observations.mockRestore();
+        runtime.workerSessionObservations = original_observations;
+        vi.useRealTimers();
+      }
+    });
+  }
+
   test('does not expose the retired cleanup diagnosis attachment action', () => {
     expect(
       /** @type {any} */ (attachModule).diagnoseWorkerCleanup

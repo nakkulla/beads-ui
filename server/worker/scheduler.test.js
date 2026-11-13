@@ -25213,15 +25213,12 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
       exit: null,
       usage: { input_tokens: 12, output_tokens: 3 }
     });
-    // A record that is already someone else's takes nothing from this session,
-    // so the tally is never even lifted out of the usage store.
+    // The durable record belongs to the cancel; only its volatile tally is freed.
     expect(
       gone_ref.store.snapshot(WS).attempts['review:authority-1:aaa'].usage ??
         null
     ).toBe(null);
-    expect(gone_ref.usage.get(WS, 'review:authority-1:aaa')).toMatchObject({
-      input_tokens: 12
-    });
+    expect(gone_ref.usage.get(WS, 'review:authority-1:aaa')).toBeNull();
   });
 
   test('disposes a dead review session that never got a pid', async () => {

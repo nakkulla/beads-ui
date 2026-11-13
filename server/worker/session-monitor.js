@@ -987,8 +987,7 @@ export function createSessionMonitors(deps) {
         })
       );
       entry.reader.start();
-      // Independent of the parent stream, and for a NEW launch as much as a
-      // re-attach: the children are observed from files Codex writes itself.
+      // Recovered attempts observe children independently of the parent stream.
       if (entry.codex) {
         try {
           deps.workerSessionObservations?.observe(workspace, attempt);
@@ -1005,6 +1004,33 @@ export function createSessionMonitors(deps) {
     },
 
     /**
+     * Observe scheduler-owned attempts without a second parent-log reader.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @param {{ parent_terminated?: boolean }} [options]
+     */
+    observe(workspace, attempt_id, options = {}) {
+      const key = keyOf(workspace, attempt_id);
+      const attempt = attemptOf(workspace, attempt_id);
+      if (
+        monitors.has(key) ||
+        attempt?.runner !== 'codex' ||
+        typeof attempt.session_id !== 'string' ||
+        !attempt.session_id
+      ) {
+        return;
+      }
+      scanChildren(
+        { workspace, attempt_id, codex: true },
+        options.parent_terminated === true
+      );
+      if (options.parent_terminated) {
+        child_identities.delete(key);
+      }
+    },
+
+    /**
      * Stop one monitor, draining the file to EOF first so the lines written
      * between the last poll and the process's death are still processed — that
      * drain is what makes the caller's terminal usage patch complete (§3.3).
@@ -1017,6 +1043,7 @@ export function createSessionMonitors(deps) {
       const key = keyOf(workspace, attempt_id);
       const entry = monitors.get(key);
       if (!entry) {
+        child_identities.delete(key);
         return false;
       }
       monitors.delete(key);
