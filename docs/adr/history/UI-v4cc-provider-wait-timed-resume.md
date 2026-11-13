@@ -1,12 +1,13 @@
 ---
 id: UI-v4cc
 title: 보류 없는 provider 대기의 예정 시각 자동 재개
-status: accepted
+status: superseded
 date: 2026-11-12
 summary: "공급자 보류로 바뀌지 않은 세션 선언 provider 대기는 Worker가 같은 세션을 1시간·5시간 뒤 두 번 자동 재개하고 같은 결말이 두 번 반복되면 기존 no_progress 대화로 넘기며, 대화 대상 사유 집합과 공급자 보류 해제 규칙은 그대로다 — 나머지 조항은 UI-2mvi 그대로다"
 supersedes: ["UI-2mvi"]
 spec: docs/superpowers/specs/2026-11-12-provider-wait-timed-resume-design.md
 bead: UI-v4cc
+superseded_by: 'UI-6xw7'
 ---
 
 # 보류 없는 provider 대기의 예정 시각 자동 재개
