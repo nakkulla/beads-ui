@@ -1096,6 +1096,47 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     expect(tile).not.toContain('class="stp"');
   });
 
+  test('renders command intent and result with the raw command in a tooltip', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const command = '/bin/zsh -lc "git log --oneline abc..def"';
+
+    render(
+      runningTile(tileInput(), 5000, null, {
+        monitor: {
+          last_activity: { at: 4000, kind: 'tool', command, result: 'exit 0' }
+        }
+      }),
+      mount
+    );
+
+    const line = mount.querySelector('.rtile__activity-text');
+    expect(line?.textContent).toBe('커밋 기록 확인 · git log abc..def · 완료');
+    expect(line?.getAttribute('title')).toBe(`${command}\nexit 0`);
+  });
+
+  test('renders delegated search exits in warning tone', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(tileInput(), 5000, null, {
+        monitor: {
+          last_activity: {
+            kind: 'tool',
+            tool: '명령 실행 · 실패',
+            result: 'search app foo · exit 1',
+            delegated: true
+          }
+        }
+      }),
+      mount
+    );
+
+    const line = mount.querySelector('.rtile__activity-text');
+    expect(line?.textContent).toBe('↳ 위임 · 검색 · app foo · 종료 코드 1');
+    expect(line?.classList.contains('rtile__activity-text--warn')).toBe(true);
+    expect(line?.classList.contains('rtile__activity-text--error')).toBe(false);
+  });
+
   test('spells out live delegations and folds finished ones into one chip', () => {
     const tile = shape(
       runningTile(tileInput(), 5000, null, {

@@ -7779,6 +7779,14 @@ summary.repo-ops-log-viewer__attempt-head {
   color: var(--text-dim);
 }
 
+.rtile__activity-text--warn {
+  color: var(--accent-warn);
+}
+
+.rtile__activity-text--error {
+  color: var(--accent-danger);
+}
+
 .rtile__legs {
   display: flex;
   flex-wrap: wrap;

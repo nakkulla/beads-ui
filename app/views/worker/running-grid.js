@@ -29,6 +29,7 @@ import {
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { execReceiptActor, formatExecReceipt } from '../exec-format.js';
 import { timeSpan } from '../time-text.js';
+import { activityLabel } from './activity-label.js';
 import {
   failureCategory,
   failureNextAction,
@@ -187,7 +188,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {string} [complex_reason] -
  * 복잡 판정 (UI-7nhi §3), 레인 행·후보 카드와 같은 칩·같은 툴팁. 라벨 `complex`와
  * `complex_reason`이 함께 성립할 때의 신호 문자열이고 표시 전용이다.
- * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
+ * @property {import('./activity-label.js').Activity|null} [last_activity] -
  * 이 attempt의 마지막 비-thinking 전사 한 줄 (UI-4tud §4.3). 타일이 직접 싣는다 —
  * 조립이 타일 밖 `Map`으로 같은 재료를 두 번 나르지 않는다.
  * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean, usage_included?: boolean }>} [legs] -
@@ -693,7 +694,7 @@ function failurePopoverTemplate(failure, now) {
  * @property {string} [repo] - Owning workspace identity in the Monitor header;
  * clicking it goes to that repo's Worker tab (UI-eey2 §7, UI-us7l).
  * @property {string} [root_dir] - The badge's tooltip.
- * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
+ * @property {import('./activity-label.js').Activity|null} [last_activity] -
  * The attempt's last non-thinking transcript line (§9.3).
  * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean, usage_included?: boolean }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
@@ -758,8 +759,10 @@ function monitorTileBody(monitor, now, paused, session = null) {
     return '';
   }
   const activity = monitor.last_activity || null;
-  const activity_text =
-    activity && typeof activity.text === 'string' ? activity.text : '';
+  const activity_label = activityLabel(activity);
+  const activity_text = [activity_label.label, activity_label.detail]
+    .filter(Boolean)
+    .join(' · ');
   const activity_at =
     activity && typeof activity.at === 'number' ? activity.at : null;
   const legs = (Array.isArray(monitor.legs) ? monitor.legs : []).filter(
@@ -799,7 +802,11 @@ function monitorTileBody(monitor, now, paused, session = null) {
   return html`${activity_text
     ? html`<div class="rtile__activity${paused ? ' is-paused' : ''}">
         <span class="rtile__activity-dot" aria-hidden="true"></span>
-        <span class="rtile__activity-text">${activity_text}</span>
+        <span
+          class="rtile__activity-text rtile__activity-text--${activity_label.tone}"
+          title=${activity_label.title}
+          >${activity_text}</span
+        >
         ${activity_at !== null
           ? timeSpan(activity_at, 'rel', now, { cls: 'rtile__activity-age' })
           : ''}

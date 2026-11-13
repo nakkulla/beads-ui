@@ -441,8 +441,91 @@ describe('worker/session-log lastActivity (UI-eey2 §9.3)', () => {
 
     expect(log.lastActivity(WS, 'a1')).toMatchObject({
       kind: 'tool',
-      tool: '명령 실행 · 완료'
+      tool: '명령 실행 · 완료',
+      delegated: true
     });
+  });
+
+  test('carries v2 delegation details and their stream identity', () => {
+    const log = createSessionLog({ now: () => 9, emitChanged: () => {} });
+
+    log.publish(
+      WS,
+      'a1',
+      {
+        schema: 'codex-delegation-monitor-v2',
+        event: {
+          type: 'item.completed',
+          item: {
+            id: 'i1',
+            kind: 'activity',
+            activity: 'command_execution',
+            status: 'failed',
+            parsed_cmd: [{ type: 'search', path: 'app', name: 'foo' }],
+            exit_code: 1
+          }
+        }
+      },
+      'launch-1'
+    );
+
+    expect(log.lastActivity(WS, 'a1')).toMatchObject({
+      delegated: true,
+      result: 'search app foo · exit 1'
+    });
+  });
+
+  test('clears delegation identity when the main stream resumes', () => {
+    const log = createSessionLog({ now: () => 9, emitChanged: () => {} });
+    log.publish(
+      WS,
+      'a1',
+      {
+        type: 'item.completed',
+        item: { type: 'agent_message', text: '위임 작업' }
+      },
+      'launch-1'
+    );
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: { type: 'agent_message', text: '주 세션 작업' }
+    });
+
+    expect(log.lastActivity(WS, 'a1')).not.toHaveProperty('delegated');
+  });
+
+  test('carries a paired tool error into the activity projection', () => {
+    const log = createSessionLog({ emitChanged: () => {} });
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'Bash',
+            input: { command: 'rg foo' }
+          }
+        ]
+      }
+    });
+
+    log.publish(WS, 'a1', {
+      type: 'user',
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 't1',
+            is_error: true,
+            content: 'no match'
+          }
+        ]
+      }
+    });
+
+    expect(log.lastActivity(WS, 'a1')).toMatchObject({ is_error: true });
   });
 
   test('ignores thinking lines', () => {

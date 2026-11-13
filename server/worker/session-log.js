@@ -256,6 +256,8 @@ export const LAST_ACTIVITY_TEXT_LIMIT = 160;
  * @property {string} [command]
  * @property {string} [path]
  * @property {string} [result]
+ * @property {boolean} [delegated]
+ * @property {boolean} [is_error]
  */
 
 /**
@@ -333,9 +335,10 @@ function isObject(value) {
  *
  * @param {any} line
  * @param {number} at
+ * @param {boolean} delegated
  * @returns {LastActivity}
  */
-function activityOf(line, at) {
+function activityOf(line, at, delegated) {
   const tool = typeof line.tool === 'string' ? line.tool : '';
   const command = typeof line.command === 'string' ? line.command : '';
   const file_path = typeof line.path === 'string' ? line.path : '';
@@ -353,7 +356,9 @@ function activityOf(line, at) {
     ...(tool.length > 0 ? { tool } : {}),
     ...(command.length > 0 ? { command } : {}),
     ...(file_path.length > 0 ? { path: file_path } : {}),
-    ...(result.length > 0 ? { result } : {})
+    ...(result.length > 0 ? { result } : {}),
+    ...(delegated ? { delegated: true } : {}),
+    ...(typeof line.is_error === 'boolean' ? { is_error: line.is_error } : {})
   };
 }
 
@@ -435,7 +440,7 @@ export function createSessionLog(options = {}) {
    * line learns its result summary when the later `tool_result` back-fills it in
    * place, and projecting at read time is what lets that update show.
    *
-   * @type {Map<string, { at: number, line: any }>}
+   * @type {Map<string, { at: number, line: any, delegated: boolean }>}
    */
   const last_activity = new Map();
   /**
@@ -571,7 +576,8 @@ export function createSessionLog(options = {}) {
       if (line && line.kind !== 'thinking') {
         last_activity.set(keyOf(workspace, attempt_id), {
           at: now(),
-          line
+          line,
+          delegated: typeof launch_id === 'string' && launch_id.length > 0
         });
         return;
       }
@@ -1001,7 +1007,7 @@ export function createSessionLog(options = {}) {
         return null;
       }
       try {
-        return activityOf(hit.line, hit.at);
+        return activityOf(hit.line, hit.at, hit.delegated);
       } catch {
         return null;
       }
