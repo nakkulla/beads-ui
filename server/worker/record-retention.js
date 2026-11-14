@@ -32,6 +32,7 @@ import node_fs from 'node:fs';
 import path from 'node:path';
 import node_zlib from 'node:zlib';
 import { debug } from '../logging.js';
+import { writeAttemptPrompts } from './attempt-prompts.js';
 import { errorDetail } from './error-detail.js';
 import { transferableAttempts } from './queue-store.js';
 import {
@@ -738,7 +739,17 @@ export function createRecordRetention(deps) {
         continue;
       }
       try {
-        writeAtomic(file, JSON.stringify(attempt, null, 2));
+        if (
+          (Object.hasOwn(attempt, 'system_prompt') ||
+            Object.hasOwn(attempt, 'task_prompt')) &&
+          !writeAttemptPrompts(workspace_root, attempt, { if_missing: true })
+        ) {
+          throw new Error('attempt prompt write failed');
+        }
+        const record = { ...attempt };
+        delete record.system_prompt;
+        delete record.task_prompt;
+        writeAtomic(file, JSON.stringify(record, null, 2));
         const readback = JSON.parse(fs.readFileSync(file, 'utf8'));
         if (!isRecord(readback) || readback.attempt_id !== attempt.attempt_id) {
           throw new Error('readback did not return the record just written');

@@ -81,6 +81,7 @@ import {
   normalizeWorkspaceAccounts
 } from '../workspace-accounts.js';
 import { buildAttemptFacts } from './attempt-facts.js';
+import { writeAttemptPrompts } from './attempt-prompts.js';
 import { observeBaseDrift } from './base-drift.js';
 import {
   observeClaudeEffort as defaultObserveClaudeEffort,
@@ -11514,9 +11515,14 @@ export function createScheduler(deps) {
       ) {
         continue;
       }
-      patchInteractiveRecord(workspace, key, record, {
-        conversation: { ...record.conversation, handback_allowed: allowed }
-      });
+      patchInteractiveRecord(
+        workspace,
+        key,
+        { ...record },
+        {
+          conversation: { ...record.conversation, handback_allowed: allowed }
+        }
+      );
     }
     const attempt = closedTakeoverAttempt(q, bead_id);
     const ended = attempt?.cause_detail?.conversation;
@@ -11849,10 +11855,11 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} key
-   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} source_record
    * @returns {Promise<{ ok: boolean, reason: string|null, pending?: boolean }>}
    */
-  async function reserveButtonHandoff(workspace, key, record) {
+  async function reserveButtonHandoff(workspace, key, source_record) {
+    const record = { ...source_record };
     const at = now();
     const conversation = {
       ...record.conversation,
@@ -13661,7 +13668,9 @@ export function createScheduler(deps) {
         }
       }
     }
-    for (const [key, record] of Object.entries(records)) {
+    for (const [key, source_record] of Object.entries(records)) {
+      // Same-pass observations update this local record after durable writes.
+      const record = { ...source_record };
       // A failure handoff whose exit is still running belongs to that exit
       // until it returns — even after the exit settled the row.
       if (
@@ -15932,6 +15941,13 @@ export function createScheduler(deps) {
       tmux_session: outcome.tmux_session,
       tmux_window: outcome.tmux_window
     };
+    writeAttemptPrompts(workspace, {
+      bead_id,
+      attempt_id,
+      started_at,
+      system_prompt,
+      task_prompt
+    });
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
@@ -15949,9 +15965,7 @@ export function createScheduler(deps) {
         claude_account: account_settings.claude_account,
         codex_account: account_settings.codex_account,
         account_sources,
-        ...(input.preempt ? { account_switched_from: input.preempt.from } : {}),
-        system_prompt,
-        task_prompt
+        ...(input.preempt ? { account_switched_from: input.preempt.from } : {})
       }
     });
     deps.store.recordInteractiveSession(workspace, {
@@ -16363,25 +16377,17 @@ export function createScheduler(deps) {
     // there is no per-shape recording to keep in sync either. An adapter that
     // exposes no prompts writes nothing rather than a placeholder.
     const prompts = handle.prompts || {};
-    /** @type {Record<string, string>} */
-    const prompt_patch = {};
-    if (typeof prompts.system_prompt === 'string') {
-      prompt_patch.system_prompt = prompts.system_prompt;
-    }
-    if (typeof prompts.task_prompt === 'string') {
-      prompt_patch.task_prompt = prompts.task_prompt;
-    }
-    // The same lift, for the same reason (guard-hook-bypass-result-judgment
-    // §2): the probe ran on the environment this spawn actually used, and the
-    // restart monitor has to read that value rather than re-probe a server
-    // environment that is not the child's.
     if (
-      handle.guard_mirror === 'verified' ||
-      handle.guard_mirror === 'absent'
+      typeof prompts.system_prompt === 'string' ||
+      typeof prompts.task_prompt === 'string'
     ) {
-      prompt_patch.guard_mirror = handle.guard_mirror;
+      writeAttemptPrompts(workspace, {
+        bead_id,
+        attempt_id,
+        started_at,
+        ...prompts
+      });
     }
-
     // Fill the runtime snapshot now that the process exists (spec §5.2). The
     // durable fields (repo/base_oid/exec_stamped_keys) were pre-recorded above;
     // here we add the spawn-time facts + resolved exec values.
@@ -16408,7 +16414,12 @@ export function createScheduler(deps) {
         codex_account: account_settings.codex_account,
         account_sources,
         ...(input.preempt ? { account_switched_from: input.preempt.from } : {}),
-        ...prompt_patch
+        // Keep the spawn's guard verdict for restart recovery; the server's
+        // environment cannot stand in for the child's probe.
+        ...(handle.guard_mirror === 'verified' ||
+        handle.guard_mirror === 'absent'
+          ? { guard_mirror: handle.guard_mirror }
+          : {})
       }
     });
     log(

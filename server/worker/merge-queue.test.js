@@ -4241,7 +4241,7 @@ describe('worker/merge-queue — 보관 방어 (UI-sd12 §3.3)', () => {
    * @param {string} bead_id
    */
   function shelveOnDisk(store, bead_id) {
-    const raw = store.snapshot(WS);
+    const raw = store.snapshot(WS, { copy: true });
     raw.merge_shelved = { [bead_id]: { at: 1 } };
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
     return createQueueStore();

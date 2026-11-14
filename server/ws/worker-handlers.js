@@ -93,6 +93,10 @@ import {
   workerWorktreePath
 } from '../worker/attach.js';
 import {
+  findAttemptPrompts,
+  readAttemptPrompts
+} from '../worker/attempt-prompts.js';
+import {
   applyDefer,
   applyRevive,
   beadDeferLockKey,
@@ -214,6 +218,7 @@ import {
   runBdInWorkspace,
   runBdJsonProjectedInWorkspace
 } from './context.js';
+import { overlayExternalPrWait } from './external-pr-overlay.js';
 import {
   laneBeadIds,
   sessionExcludedBeadIds,
@@ -878,99 +883,20 @@ export function withExternalPrWait(workspace_key, queue) {
   } catch {
     rows = [];
   }
-  const merge_queue = Array.isArray(queue.merge_queue)
-    ? /** @type {any[]} */ (queue.merge_queue)
-    : [];
-  // Both synthetic sources empty — nothing to overlay, so the caller keeps the
-  // exact snapshot object it passed in.
-  if (rows.length === 0 && merge_queue.length === 0) {
+  const overlaid = overlayExternalPrWait(queue, rows);
+  if (overlaid === queue) {
     return queue;
   }
   const lane = Array.isArray(queue.pr_wait)
     ? /** @type {any[]} */ (queue.pr_wait)
     : [];
-  const done_lane = Array.isArray(queue.done)
-    ? /** @type {any[]} */ (queue.done)
-    : [];
-  const queue_lane = Array.isArray(queue.queue)
-    ? /** @type {any[]} */ (queue.queue)
-    : [];
-  const durable = new Set(
-    [...lane, ...done_lane, ...queue_lane].map((e) => e && e.bead_id)
-  );
-  /** @type {Set<string>} */
-  const emitted = new Set();
-  /** @type {Array<{ bead_id: string, added_at: number|null, external: true, wt_present: boolean, foreign?: boolean, repo_slug?: string, pr_url?: string, pr_number?: number, foreign_target?: { slug: string, repo_name: string } }>} */
-  const overlay = [];
-  for (const row of rows) {
-    if (durable.has(row.bead_id) || emitted.has(row.bead_id)) {
-      continue;
-    }
-    emitted.add(row.bead_id);
-    overlay.push({
-      bead_id: row.bead_id,
-      added_at: row.added_at,
-      external: true,
-      wt_present: externalWorktreePresent(workspace_key, row.bead_id),
-      // The registry's own four PR facts (UI-kyky §6.1). `foreign` is what the
-      // screen needs to say this workspace neither observes nor merges the row,
-      // and `pr_url`/`pr_number` are the only honest reference such a row has —
-      // the PR poller reads foreign urls as `pr_repo_foreign` and records no
-      // observation at all. Each field travels ONLY when the registry actually
-      // holds it: an absent value stays absent rather than becoming a default
-      // the client would render as fact.
-      ...(row.foreign === true ? { foreign: true } : {}),
-      ...(typeof row.repo_slug === 'string' && row.repo_slug.length > 0
-        ? { repo_slug: row.repo_slug }
-        : {}),
-      ...(typeof row.pr_url === 'string' && row.pr_url.length > 0
-        ? { pr_url: row.pr_url }
-        : {}),
-      ...(typeof row.pr_number === 'number' && Number.isFinite(row.pr_number)
-        ? { pr_number: row.pr_number }
-        : {}),
-      // A pinned foreign PR target (UI-k467 §3.8): the card names the target
-      // repository before the first observation does.
-      ...(row.foreign_target
-        ? {
-            foreign_target: {
-              slug: row.foreign_target.slug,
-              repo_name: row.foreign_target.repo_name
-            }
-          }
-        : {})
-    });
-  }
-  for (const entry of merge_queue) {
-    const bead_id = entry && entry.bead_id;
-    if (
-      typeof bead_id !== 'string' ||
-      bead_id.length === 0 ||
-      durable.has(bead_id) ||
-      emitted.has(bead_id)
-    ) {
-      continue;
-    }
-    emitted.add(bead_id);
-    const granted_at = entry.authority && entry.authority.granted_at;
-    // NO PR fields here (§6.1): a merge-queue item carries no registry row, so
-    // inventing `foreign`/`repo_slug`/`pr_url` for it would be a guess.
-    overlay.push({
-      bead_id,
-      // The queue item carries no `added_at` of its own; the authority's grant
-      // is the only time it can honestly report.
-      added_at:
-        typeof granted_at === 'number' && Number.isFinite(granted_at)
-          ? granted_at
-          : null,
-      external: true,
-      wt_present: externalWorktreePresent(workspace_key, bead_id)
-    });
-  }
-  if (overlay.length === 0) {
-    return queue;
-  }
-  return { ...queue, pr_wait: [...lane, ...overlay] };
+  const overlay = /** @type {any[]} */ (overlaid.pr_wait)
+    .slice(lane.length)
+    .map((row) => ({
+      ...row,
+      wt_present: externalWorktreePresent(workspace_key, row.bead_id)
+    }));
+  return { ...overlaid, pr_wait: [...lane, ...overlay] };
 }
 
 /**
@@ -3754,7 +3680,9 @@ export function decorateQueue(workspace_key, raw_queue) {
           // 이관 보충 기록도 큐에 남은 종료 attempt와 같은 장식을 거친다
           // (UI-ys18 §5.1) — 두 입력이 다른 답을 하면 같은 완료 행이 어느
           // 파일에 기록이 남았는지에 따라 다른 칩을 말한다.
-          transferredAttemptsFor(workspace_key, bead_id).map(withImplActor)
+          transferredAttemptsFor(workspace_key, bead_id).map((attempt) =>
+            withImplActor(stripPrompts(attempt))
+          )
       }
     );
     public_queue.done = trimmed.done;
@@ -4773,12 +4701,22 @@ const PREVIEW_TARGET_BASE = '<target_base>';
  * UI-rxp3 carries neither field, which is a fact about the record rather than
  * an error — the reader shows "기록 없음" (fail-quiet contract consumption).
  *
+ * @param {string} workspace
  * @param {any} attempt
  * @returns {{ attempt_id: string, system_prompt: string|null, task_prompt: string|null, recorded_at: number|null }|{ missing: true }}
  */
-function promptRecordOf(attempt) {
+function promptRecordOf(workspace, attempt) {
   if (!attempt || typeof attempt !== 'object') {
     return { missing: true };
+  }
+  const file =
+    typeof attempt.bead_id === 'string'
+      ? readAttemptPrompts(workspace, attempt.bead_id, attempt.attempt_id)
+      : null;
+  if (file) {
+    return file.system_prompt === null && file.task_prompt === null
+      ? { missing: true }
+      : file;
   }
   const system_prompt =
     typeof attempt.system_prompt === 'string' ? attempt.system_prompt : null;
@@ -4835,8 +4773,30 @@ export function handleGetAttemptPrompt(ws, req) {
     );
     return;
   }
-  const attempt = queueStore().snapshot(key).attempts[attempt_id];
-  ws.send(JSON.stringify(makeOk(req, promptRecordOf(attempt))));
+  let attempt = queueStore().snapshot(key).attempts[attempt_id];
+  if (!attempt) {
+    const file = findAttemptPrompts(key, attempt_id);
+    if (file) {
+      ws.send(
+        JSON.stringify(
+          makeOk(
+            req,
+            file.system_prompt === null && file.task_prompt === null
+              ? { missing: true }
+              : file
+          )
+        )
+      );
+      return;
+    }
+    const bead_id = beadOfTransferredAttempt(key, attempt_id);
+    if (bead_id !== null) {
+      attempt = transferredAttemptsFor(key, bead_id).find(
+        (row) => row.attempt_id === attempt_id
+      );
+    }
+  }
+  ws.send(JSON.stringify(makeOk(req, promptRecordOf(key, attempt))));
 }
 
 /**
@@ -4863,7 +4823,16 @@ export function handleGetBeadPrompt(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  const attempts = Object.values(queueStore().snapshot(key).attempts).filter(
+  const by_id = new Map(
+    transferredAttemptsFor(key, bead_id).map((attempt) => [
+      attempt.attempt_id,
+      attempt
+    ])
+  );
+  for (const attempt of Object.values(queueStore().snapshot(key).attempts)) {
+    by_id.set(attempt.attempt_id, attempt);
+  }
+  const attempts = [...by_id.values()].filter(
     // The panel asks what the bead's own dispatch was told to do; a review
     // session's prompt is a different question the same bead id would answer
     // (UI-hk74 §7).
@@ -4878,7 +4847,7 @@ export function handleGetBeadPrompt(ws, req) {
       (typeof a.started_at === 'number' ? a.started_at : 0)
   );
   for (const attempt of attempts) {
-    const record = promptRecordOf(attempt);
+    const record = promptRecordOf(key, attempt);
     if (!(/** @type {any} */ (record).missing)) {
       ws.send(JSON.stringify(makeOk(req, record)));
       return;
@@ -4963,7 +4932,7 @@ export async function handleGetBeadTimeline(ws, req) {
         events,
         attempts: attempts.map((attempt) => {
           const prepared = observations.get(key, attempt.attempt_id);
-          return prepared ? { ...attempt, ...prepared } : attempt;
+          return stripPrompts(prepared ? { ...attempt, ...prepared } : attempt);
         })
       })
     )

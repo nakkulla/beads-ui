@@ -48,7 +48,7 @@ function fingerprintFixture() {
       source_snapshot: {}
     }
   });
-  const queue = store.snapshot(WS);
+  const queue = store.snapshot(WS, { copy: true });
   queue.queue = [
     { bead_id: 'Q1', added_at: 1 },
     { bead_id: 'Q2', added_at: 2 }

@@ -379,16 +379,10 @@
  * @property {string|null} disposition_prompt - The task prompt this disposition
  * was launched with. Durable so the substitute session can be launched with the
  * identical instruction without re-deriving it — and so a restart can too.
- * @property {string|null} system_prompt - The contract this attempt was sent on
- * the `--append-system-prompt` channel (UI-rxp3 §3), verbatim. Written at spawn
- * from the same `buildArgv` result the argv came from, so it is what the process
- * received rather than a reconstruction. Null on every attempt recorded before
- * the field existed — the reader treats that as "기록 없음", never as empty.
- * @property {string|null} task_prompt - The positional task prompt of the same
- * spawn, on the same terms. Distinct from {@link Attempt.disposition_prompt},
- * which is the disposition lane's own relaunch input and is kept for that.
- * NEITHER field rides the worker-state push: the projection strips both
- * (`worker-handlers.js`), and the UI fetches them on demand.
+ * @property {string|null} [system_prompt] - Legacy send retained only until
+ * startup migration succeeds. New sends live in per-attempt prompt files.
+ * @property {string|null} [task_prompt] - Legacy positional task prompt, kept
+ * for migration and fallback reads of pre-existing transferred records.
  * @property {string|null} completion_root_id - Root completion intent that
  * owns this attempt; null for ordinary sessions.
  * @property {boolean} worker_serial - RETIRED legacy flag from the global
@@ -1296,6 +1290,7 @@ import {
 } from '../limit-policy-settings.js';
 import { debug } from '../logging.js';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
+import { writeAttemptPrompts } from './attempt-prompts.js';
 import { normalizeCodexChildren } from './codex-children/normalize.js';
 import { observeCodexChildren } from './codex-children/reader.js';
 // The `needs_human` vocabulary is the KERNEL's (UI-5ym8 §7), so the store
@@ -3362,8 +3357,7 @@ function sameDecisionToken(left, right) {
 }
 
 /**
- * Deep clone via JSON — queue state is plain data, so this is safe and keeps
- * returned snapshots isolated from the in-memory cache.
+ * Deep clone via JSON for writable mutations and explicit consumer copies.
  *
  * @template T
  * @param {T} value
@@ -3371,6 +3365,23 @@ function sameDecisionToken(left, right) {
  */
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+/**
+ * Freeze plain queue data once, before installing it in the cache.
+ *
+ * @template T
+ * @param {T} value
+ * @returns {T}
+ */
+function deepFreeze(value) {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+    Object.freeze(value);
+  }
+  return value;
 }
 
 /**
@@ -4540,8 +4551,12 @@ export function makeAttempt(fields) {
     disposition_receipt: fields.disposition_receipt ?? null,
     disposition_resume: fields.disposition_resume === true,
     disposition_prompt: fields.disposition_prompt ?? null,
-    system_prompt: fields.system_prompt ?? null,
-    task_prompt: fields.task_prompt ?? null,
+    ...(Object.hasOwn(fields, 'system_prompt')
+      ? { system_prompt: fields.system_prompt ?? null }
+      : {}),
+    ...(Object.hasOwn(fields, 'task_prompt')
+      ? { task_prompt: fields.task_prompt ?? null }
+      : {}),
     completion_root_id:
       typeof fields.completion_root_id === 'string'
         ? fields.completion_root_id
@@ -6968,6 +6983,8 @@ export function createQueueStore(options = {}) {
 
   /** @type {Map<string, Queue>} */
   const cache = new Map();
+  /** @type {WeakMap<Queue, { holds_key: string, queue: Queue }>} */
+  const exports = new WeakMap();
   /** @type {Map<string, Map<number, string>>} */
   const placement_fingerprints = new Map();
 
@@ -7113,7 +7130,7 @@ export function createQueueStore(options = {}) {
     auto_advance_at_shutdown.set(key, persisted_auto_advance);
     // Restart safety defaults OFF; only the verified self-deploy path may restore it.
     q.auto_advance = false;
-    cache.set(key, q);
+    cache.set(key, deepFreeze(q));
     rememberPlacementFingerprint(workspace, q);
     return q;
   }
@@ -7432,7 +7449,7 @@ export function createQueueStore(options = {}) {
   }
 
   /**
-   * Clone a queue for a consumer outside the store. `provider_hold` leaves as
+   * Share a frozen queue with consumers. `provider_hold` leaves as
    * the workspace's effective hold (UI-3v1h §5.5), so the gate, the wait
    * judge, and every screen read one projection; the raw field stays on disk.
    *
@@ -7441,8 +7458,14 @@ export function createQueueStore(options = {}) {
    * @returns {Queue}
    */
   function exportQueue(workspace, q) {
-    const out = clone(q);
-    out.provider_hold = effectiveHoldsOf(q);
+    const holds = effectiveHoldsOf(q);
+    const holds_key = JSON.stringify(holds);
+    const prior = exports.get(q);
+    if (prior && prior.holds_key === holds_key) {
+      return prior.queue;
+    }
+    const out = Object.freeze({ ...q, provider_hold: deepFreeze(holds) });
+    exports.set(q, { holds_key, queue: out });
     return out;
   }
 
@@ -7621,9 +7644,19 @@ export function createQueueStore(options = {}) {
       attempt.attempt_id
     );
     try {
+      if (
+        (Object.hasOwn(attempt, 'system_prompt') ||
+          Object.hasOwn(attempt, 'task_prompt')) &&
+        !writeAttemptPrompts(workspace, attempt, { if_missing: true })
+      ) {
+        return false;
+      }
+      const record = { ...attempt };
+      delete record.system_prompt;
+      delete record.task_prompt;
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const tmp = `${file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(attempt, null, 2));
+      fs.writeFileSync(tmp, JSON.stringify(record, null, 2));
       fs.renameSync(tmp, file);
       const readback = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (!isRecord(readback) || readback.attempt_id !== attempt.attempt_id) {
@@ -7824,7 +7857,7 @@ export function createQueueStore(options = {}) {
     next.revision = cur.revision + 1;
     transferProcessedAttempts(workspace, next);
     persist(workspace, next);
-    cache.set(keyFor(workspace), next);
+    cache.set(keyFor(workspace), deepFreeze(next));
     rememberPlacementFingerprint(workspace, next);
     return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
   }
@@ -7858,7 +7891,7 @@ export function createQueueStore(options = {}) {
     next.revision = cur.revision + 1;
     transferProcessedAttempts(workspace, next);
     persist(workspace, next);
-    cache.set(keyFor(workspace), next);
+    cache.set(keyFor(workspace), deepFreeze(next));
     rememberPlacementFingerprint(workspace, next);
     return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
   }
@@ -8080,12 +8113,42 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Move legacy queue prompts before ordinary startup drivers run. One
+     * mutation removes only fields whose separate file is already durable.
+     *
+     * @param {string} workspace
+     * @returns {QueueOpResult}
+     */
+    migrateAttemptPrompts(workspace) {
+      return applyUnconditional(workspace, (next) => {
+        let changed = false;
+        for (const attempt of Object.values(next.attempts)) {
+          if (
+            !Object.hasOwn(attempt, 'system_prompt') &&
+            !Object.hasOwn(attempt, 'task_prompt')
+          ) {
+            continue;
+          }
+          if (!writeAttemptPrompts(workspace, attempt, { if_missing: true })) {
+            continue;
+          }
+          delete attempt.system_prompt;
+          delete attempt.task_prompt;
+          changed = true;
+        }
+        return changed;
+      });
+    },
+
+    /**
      * Current in-memory snapshot (loads on first access). With `strict`, a
      * workspace whose cold load could not read its queue file throws instead
      * of answering with the empty queue it started from.
      *
+     * Use `copy` only when the caller needs a writable, isolated queue.
+     *
      * @param {string} workspace
-     * @param {{ strict?: boolean }} [options]
+     * @param {{ strict?: boolean, copy?: boolean }} [options]
      * @returns {Queue}
      */
     snapshot(workspace, options = {}) {
@@ -8093,7 +8156,8 @@ export function createQueueStore(options = {}) {
       if (options.strict && load_failures.has(keyFor(workspace))) {
         throw new Error('queue_unreadable');
       }
-      return exportQueue(workspace, q);
+      const snapshot = exportQueue(workspace, q);
+      return options.copy ? clone(snapshot) : snapshot;
     },
 
     /**
@@ -9038,7 +9102,7 @@ export function createQueueStore(options = {}) {
         return {
           ok: false,
           conflict: false,
-          queue: clone(current),
+          queue: exportQueue(workspace, current),
           reason: 'lane_invalid',
           changed: false,
           cycle: false
@@ -9055,7 +9119,7 @@ export function createQueueStore(options = {}) {
         return {
           ok: true,
           conflict: false,
-          queue: clone(current),
+          queue: exportQueue(workspace, current),
           changed: false,
           cycle: true
         };
@@ -9067,7 +9131,7 @@ export function createQueueStore(options = {}) {
         return {
           ok: true,
           conflict: false,
-          queue: clone(current),
+          queue: exportQueue(workspace, current),
           changed: false,
           cycle: false
         };
@@ -9145,6 +9209,27 @@ export function createQueueStore(options = {}) {
           [input.kind]: input.opted_out
         };
         return true;
+      });
+    },
+
+    /**
+     * Remove records already appended to the repo-operation archive in one persist.
+     * The archive pass selects and appends synchronously before calling this method.
+     *
+     * @param {string} workspace
+     * @param {{ operation_ids: string[] }} input
+     * @returns {QueueOpResult}
+     */
+    removeArchivedRepoOperations(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        let changed = false;
+        for (const operation_id of input.operation_ids) {
+          if (next.repo_operations[operation_id]?.state === 'succeeded') {
+            delete next.repo_operations[operation_id];
+            changed = true;
+          }
+        }
+        return changed;
       });
     },
 
@@ -11795,7 +11880,7 @@ export function createQueueStore(options = {}) {
         return {
           ok: false,
           conflict: true,
-          queue: clone(current)
+          queue: exportQueue(workspace, current)
         };
       }
       const existing = Object.values(current.discard_operations).find(
@@ -11808,7 +11893,7 @@ export function createQueueStore(options = {}) {
           conflict: false,
           reused: true,
           operation: clone(existing),
-          queue: clone(current)
+          queue: exportQueue(workspace, current)
         };
       }
       const normalized = normalizeDiscardOperation(
@@ -11830,7 +11915,7 @@ export function createQueueStore(options = {}) {
           ok: false,
           conflict: false,
           reason: 'operation_invalid',
-          queue: clone(current)
+          queue: exportQueue(workspace, current)
         };
       }
       const result = applyMutation(workspace, expected_revision, (next) => {

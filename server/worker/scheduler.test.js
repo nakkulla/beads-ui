@@ -52,6 +52,7 @@ import {
 } from './scheduler.js';
 import { createSessionLog, stderrPathOf } from './session-log.js';
 import {
+  attemptPromptPath,
   attemptRecordPath,
   beadSessionLogPath,
   beadSessionStderrPath,
@@ -76,6 +77,23 @@ import {
   providerWaitResumeSchedule
 } from './wait-judgment.js';
 import * as work_recovery_policy from './work-recovery-policy.js';
+
+/**
+ * Read the launch record while checking the queue carries no prompt text.
+ *
+ * @param {any} attempt
+ * @returns {any}
+ */
+function recordedPrompts(attempt) {
+  expect(attempt).not.toHaveProperty('system_prompt');
+  expect(attempt).not.toHaveProperty('task_prompt');
+  return JSON.parse(
+    fs.readFileSync(
+      attemptPromptPath(WS, attempt.bead_id, attempt.attempt_id),
+      'utf8'
+    )
+  );
+}
 
 // foreign blocker 조회의 양성 경로 seam (UI-d3i1 §12): 기본은 원 구현이고, 한
 // 테스트가 `fn`을 채우면 그 테스트 동안만 그 답을 돌려준다.
@@ -29559,9 +29577,9 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
 
     const sent = sentPrompts(recorder.calls[0].args);
     const attempt = latestAttempt(env.store, 'B1');
-    expect(attempt.system_prompt).toBe(sent.system_prompt);
-    expect(attempt.task_prompt).toBe(sent.task_prompt);
-    expect(attempt.system_prompt).toContain('## 가드 계약');
+    expect(recordedPrompts(attempt).system_prompt).toBe(sent.system_prompt);
+    expect(recordedPrompts(attempt).task_prompt).toBe(sent.task_prompt);
+    expect(recordedPrompts(attempt).system_prompt).toContain('## 가드 계약');
   });
 
   test('records the stale-dispatch task prompt, not the default one', async () => {
@@ -29586,9 +29604,11 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
 
     const sent = sentPrompts(recorder.calls[0].args);
     const attempt = latestAttempt(env.store, 'B1');
-    expect(attempt.task_prompt).toBe(sent.task_prompt);
-    expect(attempt.task_prompt).toContain('stale spec_review 관측');
-    expect(attempt.system_prompt).toBe(sent.system_prompt);
+    expect(recordedPrompts(attempt).task_prompt).toBe(sent.task_prompt);
+    expect(recordedPrompts(attempt).task_prompt).toContain(
+      'stale spec_review 관측'
+    );
+    expect(recordedPrompts(attempt).system_prompt).toBe(sent.system_prompt);
   });
 
   test('records the resume prompts on the child attempt', async () => {
@@ -29606,9 +29626,9 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     const sent = sentPrompts(recorder.calls[0].args);
     const attempt =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    expect(attempt.task_prompt).toBe(sent.task_prompt);
-    expect(attempt.task_prompt).toContain('이전 무인 세션');
-    expect(attempt.system_prompt).toBe(sent.system_prompt);
+    expect(recordedPrompts(attempt).task_prompt).toBe(sent.task_prompt);
+    expect(recordedPrompts(attempt).task_prompt).toContain('이전 무인 세션');
+    expect(recordedPrompts(attempt).system_prompt).toBe(sent.system_prompt);
   });
 
   test('records the conflict-resolution prompts', async () => {
@@ -29630,9 +29650,11 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     const sent = sentPrompts(recorder.calls[0].args);
     const attempt =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    expect(attempt.task_prompt).toBe(sent.task_prompt);
-    expect(attempt.task_prompt).toContain('git merge origin/main');
-    expect(attempt.system_prompt).toBe(sent.system_prompt);
+    expect(recordedPrompts(attempt).task_prompt).toBe(sent.task_prompt);
+    expect(recordedPrompts(attempt).task_prompt).toContain(
+      'git merge origin/main'
+    );
+    expect(recordedPrompts(attempt).system_prompt).toBe(sent.system_prompt);
   });
 
   test('prerecords the resolver and merge wait before launch', async () => {
@@ -29753,25 +29775,65 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     const sent = sentPrompts(recorder.calls[0].args);
     const attempt =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    expect(attempt.task_prompt).toBe(sent.task_prompt);
-    expect(attempt.task_prompt).toBe('처분 프롬프트');
-    expect(attempt.system_prompt).toBe(sent.system_prompt);
+    expect(recordedPrompts(attempt).task_prompt).toBe(sent.task_prompt);
+    expect(recordedPrompts(attempt).task_prompt).toBe('처분 프롬프트');
+    expect(recordedPrompts(attempt).system_prompt).toBe(sent.system_prompt);
     // The disposition variant: no PR-submit directive, no base-push refusal.
-    expect(attempt.system_prompt).not.toContain(
+    expect(recordedPrompts(attempt).system_prompt).not.toContain(
       '저장소가 요구하는 검증과 리뷰'
     );
-    expect(attempt.system_prompt).toContain('REVISE 처분 세션');
+    expect(recordedPrompts(attempt).system_prompt).toContain(
+      'REVISE 처분 세션'
+    );
   });
 
-  test('leaves the fields null for a runner that exposes no prompts', async () => {
+  test('omits prompt fields for a runner that exposes no prompts', async () => {
     const env = setup({ config: { B1: {} }, slots: 1 });
     seedQueue(env.store, ['B1']);
 
     await env.scheduler.tick(WS);
 
     const attempt = latestAttempt(env.store, 'B1');
-    expect(attempt.system_prompt).toBeNull();
-    expect(attempt.task_prompt).toBeNull();
+    expect(attempt).not.toHaveProperty('system_prompt');
+    expect(attempt).not.toHaveProperty('task_prompt');
+    expect(
+      fs.existsSync(attemptPromptPath(WS, attempt.bead_id, attempt.attempt_id))
+    ).toBe(false);
+  });
+
+  test('continues the run when the prompt file write fails', async () => {
+    const recorder = makeRecordingClaudeRunner();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      makeRunner: recorder.factory
+    });
+    seedQueue(env.store, ['B1']);
+    const write = fs.writeFileSync;
+    const spy = vi
+      .spyOn(fs, 'writeFileSync')
+      .mockImplementation((file, ...args) => {
+        if (String(file).includes('/prompts/')) {
+          throw new Error('EACCES');
+        }
+        return write(file, ...args);
+      });
+
+    try {
+      await env.scheduler.tick(WS);
+
+      const attempt = latestAttempt(env.store, 'B1');
+      expect(attempt.status).toBe('running');
+      expect(attempt).not.toHaveProperty('system_prompt');
+      expect(attempt).not.toHaveProperty('task_prompt');
+      expect(
+        fs.existsSync(
+          attemptPromptPath(WS, attempt.bead_id, attempt.attempt_id)
+        )
+      ).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -34957,8 +35019,8 @@ describe('scheduler records the guard mirror and its deferrals (guard-hook-bypas
 
     const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
     expect(attempt.guard_mirror).toBe('verified');
-    expect(attempt.system_prompt).toBe('sys');
-    expect(attempt.task_prompt).toBe('task');
+    expect(recordedPrompts(attempt).system_prompt).toBe('sys');
+    expect(recordedPrompts(attempt).task_prompt).toBe('task');
   });
 
   test('leaves guard_mirror null when the runner reports none', async () => {
@@ -35606,7 +35668,9 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
 
       await env.scheduler.tick(WS);
 
-      const prompt = newestAttempt(env.store, 'S1').system_prompt;
+      const prompt = recordedPrompts(
+        newestAttempt(env.store, 'S1')
+      ).system_prompt;
       expect(prompt).toContain('## 시도 사실');
       expect(prompt).toContain('bead=S1');
       expect(prompt).toContain('workflow_mode=fast_track');
@@ -35627,9 +35691,9 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
 
       await env.scheduler.tick(WS);
 
-      expect(newestAttempt(env.store, 'S1').system_prompt).toContain(
-        '- status=in_progress(선점: 없음)'
-      );
+      expect(
+        recordedPrompts(newestAttempt(env.store, 'S1')).system_prompt
+      ).toContain('- status=in_progress(선점: 없음)');
     });
 
     test('delivers the facts card on a manual resume without install lines', async () => {
@@ -35663,7 +35727,9 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
       const res = await env.scheduler.resume(WS, 'prior-1');
 
       expect(res.ok).toBe(true);
-      const prompt = newestAttempt(env.store, 'S1').system_prompt;
+      const prompt = recordedPrompts(
+        newestAttempt(env.store, 'S1')
+      ).system_prompt;
       expect(prompt).toContain('## 시도 사실');
       expect(prompt).toContain('bead=S1');
       expect(prompt).toContain('- status=open(선점: 없음)');
@@ -35682,7 +35748,9 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
 
       await env.scheduler.tick(WS);
 
-      const prompt = newestAttempt(env.store, 'S1').system_prompt;
+      const prompt = recordedPrompts(
+        newestAttempt(env.store, 'S1')
+      ).system_prompt;
       expect(prompt).not.toContain('dotfiles_root=');
       expect(prompt).not.toContain('workflow_python=');
     });
@@ -35705,7 +35773,9 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
 
       await env.scheduler.tick(WS);
 
-      const prompt = newestAttempt(env.store, 'S1').system_prompt;
+      const prompt = recordedPrompts(
+        newestAttempt(env.store, 'S1')
+      ).system_prompt;
       expect(prompt).toContain('impl_model=sol (source=bead)');
       expect(prompt).toContain('impl_speed=fast (source=workspace_kv)');
       expect(prompt).toContain('impl_dispatch=없음 (source=없음)');
@@ -38685,7 +38755,9 @@ describe('session lane (UI-lbm5)', () => {
       ]) {
         expect(system_prompt).not.toContain(block);
       }
-      expect(env.laneAttempt('S1').system_prompt).toBe(system_prompt);
+      expect(recordedPrompts(env.laneAttempt('S1')).system_prompt).toBe(
+        system_prompt
+      );
     });
 
     test('names the quick_fix lane as the end of a quick_fix session lane', async () => {

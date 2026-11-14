@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  attemptPromptPath,
   attemptRecordPath,
   autoPoolFilePath,
   beadArchivePath,
@@ -21,6 +22,7 @@ import {
   guardHookDir,
   modelVisibilityFilePath,
   recordMigrationMarkerPath,
+  repoOperationArchivePath,
   retentionPolicyPath,
   sessionLogPath,
   timingSettingsFilePath,
@@ -35,6 +37,15 @@ test('places external waits beside the workspace queue', () => {
   const file = externalWaitFilePath(WS);
 
   expect(file).toBe(path.join(workspaceStateDir(WS), 'external-wait.json'));
+});
+
+test('places repo-operation archives beside each workspace queue', () => {
+  const file = repoOperationArchivePath(WS);
+
+  expect(file).toBe(
+    path.join(workspaceStateDir(WS), 'repo-operations-archive.jsonl')
+  );
+  expect(file).not.toBe(repoOperationArchivePath(`${WS}-other`));
 });
 
 /** @type {string | undefined} */
@@ -207,6 +218,16 @@ describe('codexAttemptHomeDir', () => {
 });
 
 describe('bead-scoped record paths', () => {
+  test('places prompts under safe bead and attempt segments', () => {
+    const file = attemptPromptPath(WS, '../bead', '../attempt');
+
+    expect(file).toBe(
+      path.join(beadStateDir(WS, '../bead'), 'prompts', '.._attempt.json')
+    );
+    expect(attemptPromptPath(WS, 'B1', 'a1')).toBe(
+      path.join(beadStateDir(WS, 'B1'), 'prompts', 'a1.json')
+    );
+  });
   test('lays the bead record tree out under beads/<bead_id>', () => {
     const dir = beadStateDir(WS, 'UI-8wpb');
 

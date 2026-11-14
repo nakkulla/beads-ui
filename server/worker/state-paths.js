@@ -105,6 +105,17 @@ export function queueFilePath(workspace_root) {
 
 /**
  * @param {string} workspace_root
+ * @returns {string} Per-workspace append-only repo-operation archive.
+ */
+export function repoOperationArchivePath(workspace_root) {
+  return path.join(
+    workspaceStateDir(workspace_root),
+    'repo-operations-archive.jsonl'
+  );
+}
+
+/**
+ * @param {string} workspace_root
  * @returns {string} Per-workspace external wait ledger path.
  */
 export function externalWaitFilePath(workspace_root) {
@@ -512,6 +523,22 @@ export function attemptRecordPath(workspace_root, bead_id, attempt_id) {
   return path.join(
     beadStateDir(workspace_root, bead_id),
     'attempts',
+    `${safeSegment(attempt_id, 'attempt')}.json`
+  );
+}
+
+/**
+ * Absolute path to the prompts sent to one attempt.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @param {string} attempt_id
+ * @returns {string}
+ */
+export function attemptPromptPath(workspace_root, bead_id, attempt_id) {
+  return path.join(
+    beadStateDir(workspace_root, bead_id),
+    'prompts',
     `${safeSegment(attempt_id, 'attempt')}.json`
   );
 }

@@ -416,6 +416,36 @@ afterEach(() => {
 });
 
 describe('queue defaults preset identity', () => {
+  test('strips prompts from transferred attempts added to the queue push', () => {
+    const archived = {
+      attempt_id: 'archived',
+      bead_id: 'UI-1',
+      status: 'done',
+      system_prompt: 'system',
+      task_prompt: 'task',
+      disposition_prompt: 'relaunch'
+    };
+    vi.spyOn(
+      getWorkerRuntime().queueStore,
+      'readAttemptsForBead'
+    ).mockReturnValue([/** @type {any} */ (archived)]);
+
+    const out = /** @type {any} */ (
+      decorateQueue(WS, {
+        queue: [{ bead_id: 'UI-1', added_at: Date.now() }],
+        attempts: {}
+      })
+    );
+
+    expect(out.attempts.archived).toMatchObject({
+      attempt_id: 'archived',
+      bead_id: 'UI-1'
+    });
+    expect(out.attempts.archived).not.toHaveProperty('system_prompt');
+    expect(out.attempts.archived).not.toHaveProperty('task_prompt');
+    expect(out.attempts.archived).not.toHaveProperty('disposition_prompt');
+    expect(archived.task_prompt).toBe('task');
+  });
   test.each([true, false])(
     'projects an interactive Discord link when available: %s',
     (available) => {

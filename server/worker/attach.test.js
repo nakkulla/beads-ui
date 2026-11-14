@@ -13,6 +13,7 @@ import { notifyAccountSwitched } from '../routes/account-switch.js';
 import { attemptsWithUsage } from '../ws/worker-handlers.js';
 import {
   RECONCILE_INTERVAL_SECONDS,
+  RECORD_RETENTION_INTERVAL_SECONDS,
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest,
   bindExternalWaitHooks,
@@ -29,6 +30,7 @@ import {
   workerSessionOwnerRefusal
 } from './attach.js';
 import * as attachModule from './attach.js';
+import { readAttemptPrompts } from './attempt-prompts.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import { prefixOfBeadId } from './foreign-blocker-status.js';
 import {
@@ -2264,13 +2266,17 @@ describe('worker/attach construction + live loop (F1)', () => {
       }),
       sweep: vi.fn(async () => ({ archived: 0, deleted: 0, closed: 0 }))
     };
+    const repo_operation_archive = {
+      sweep: vi.fn(() => ({ archived: 0 }))
+    };
     const att = createWorkerAttachment(WS, {
       runtime,
       bd: fakeBd(),
       worktree: fakeWorktree,
       verify: okVerify,
       spawn_impl: makeFixtureSpawn({ lines: [] }),
-      recordRetention
+      recordRetention,
+      repoOperationArchive: repo_operation_archive
     });
     __registerWorkerAttachmentForTest(WS, att);
 
@@ -2278,7 +2284,127 @@ describe('worker/attach construction + live loop (F1)', () => {
     await waitFor(() => recordRetention.sweep.mock.calls.length > 0);
 
     expect(recordRetention.migrate).toHaveBeenCalledTimes(1);
+    expect(repo_operation_archive.sweep).toHaveBeenCalledTimes(1);
+    expect(recordRetention.migrate.mock.invocationCallOrder[0]).toBeLessThan(
+      repo_operation_archive.sweep.mock.invocationCallOrder[0]
+    );
     expect(runtime.queueStore.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('archives repo operations every day even when transcript retention fails', async () => {
+    vi.useFakeTimers();
+    const record_retention = {
+      policy: () => ({ archive_days: 30, delete_days: 180 }),
+      migrate: () => ({
+        ok: true,
+        skipped: true,
+        records: 0,
+        moved: 0,
+        events: 0
+      }),
+      sweep: vi.fn(async () => {
+        throw new Error('retention unavailable');
+      })
+    };
+    const repo_operation_archive = { sweep: vi.fn(() => ({ archived: 0 })) };
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      recordRetention: record_retention,
+      repoOperationArchive: repo_operation_archive,
+      getSubscriberCount: () => 0
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+    try {
+      att.recordRetentionPoller.start();
+
+      await vi.advanceTimersByTimeAsync(
+        RECORD_RETENTION_INTERVAL_SECONDS * 1000 - 1
+      );
+      expect(repo_operation_archive.sweep).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(
+        RECORD_RETENTION_INTERVAL_SECONDS * 1000
+      );
+
+      expect(repo_operation_archive.sweep).toHaveBeenCalledTimes(2);
+      expect(record_retention.sweep).toHaveBeenCalledTimes(2);
+    } finally {
+      att.recordRetentionPoller.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  test('reads the workspace external PR registry on every archive pass', () => {
+    const runtime = createWorkerRuntime();
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    const list = vi.spyOn(runtime.externalPrs, 'list').mockReturnValue([]);
+
+    att.repoOperationArchive.sweep();
+    att.repoOperationArchive.sweep();
+
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenNthCalledWith(1, path.resolve(WS));
+    expect(list).toHaveBeenNthCalledWith(2, path.resolve(WS));
+  });
+
+  test('migrates legacy queue prompts before startup recovery runs', async () => {
+    const runtime = createWorkerRuntime();
+    const store = runtime.queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'legacy-prompts',
+        bead_id: 'UI-1',
+        system_prompt: 'saved system',
+        task_prompt: 'saved task'
+      }
+    });
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      recordRetention: {
+        policy: () => ({ archive_days: 30, delete_days: 180 }),
+        migrate: () => ({
+          ok: true,
+          skipped: true,
+          records: 0,
+          moved: 0,
+          events: 0
+        }),
+        sweep: async () => ({ archived: 0, deleted: 0, closed: 0 })
+      }
+    });
+    const recover = vi
+      .spyOn(att.scheduler, 'recoverControls')
+      .mockImplementation(async () => {
+        expect(
+          store.snapshot(WS).attempts['legacy-prompts']
+        ).not.toHaveProperty('task_prompt');
+        expect(
+          readAttemptPrompts(WS, 'UI-1', 'legacy-prompts')?.task_prompt
+        ).toBe('saved task');
+      });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => recover.mock.calls.length > 0);
+
+    expect(store.snapshot(WS).attempts['legacy-prompts']).not.toHaveProperty(
+      'system_prompt'
+    );
   });
 
   test('starts no queue reader when the record migration did not finish', async () => {
