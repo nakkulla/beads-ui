@@ -286,6 +286,49 @@ export function resolveSessionFile(entry, options = {}) {
 }
 
 /**
+ * Read only the Codex metadata header; an unavailable directory uses the caller's checkout.
+ *
+ * @param {string} session_id
+ * @param {{ home_dir?: string, hostname?: string, sessions_root?: string, fs?: any, now?: () => number }} [options]
+ * @returns {string|null}
+ */
+export function codexSessionDirectory(session_id, options = {}) {
+  const located = resolveSessionFile(
+    {
+      index: 0,
+      provider: 'codex',
+      session_id,
+      host: options.hostname || os.hostname()
+    },
+    options
+  );
+  if (located.file === null) {
+    return null;
+  }
+  const file_system = options.fs || fs;
+  try {
+    const fd = file_system.openSync(located.file, 'r');
+    const buffer = Buffer.alloc(64 * 1024);
+    let bytes;
+    try {
+      bytes = file_system.readSync(fd, buffer, 0, buffer.length, 0);
+    } finally {
+      file_system.closeSync(fd);
+    }
+    const first = buffer.subarray(0, bytes).toString('utf8').split('\n')[0];
+    const meta = JSON.parse(first);
+    const cwd = meta.type === 'session_meta' ? meta.payload?.cwd : null;
+    return typeof cwd === 'string' &&
+      path.isAbsolute(cwd) &&
+      file_system.statSync(cwd).isDirectory()
+      ? cwd
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The command that reattaches a terminal to one session, or null when the id
  * cannot be a safe single argument.
  *

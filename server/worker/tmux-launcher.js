@@ -559,6 +559,11 @@ export function createTmuxLauncher(deps = {}) {
     };
   }
 
+  /** @param {string} pane_id */
+  async function capturePaneText(pane_id) {
+    return runChecked(['capture-pane', '-p', '-t', pane_id]);
+  }
+
   /**
    * Every pane the tmux server knows about, projected onto ONE marker.
    * `ok: false` covers an absent server, a non-zero tmux, and a runner that
@@ -923,6 +928,7 @@ export function createTmuxLauncher(deps = {}) {
     sendExit,
     killWindow,
     capturePaneTail,
+    capturePaneText,
     readBridgeThreads,
     launch,
     focusRunning,

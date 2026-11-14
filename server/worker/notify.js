@@ -147,7 +147,7 @@ const TITLE_MAX = 60;
  * by the call site because only it knows which buttons that row draws.
  * @property {string|null} [pr_url]
  * @property {string|null} [repo]
- * @property {{ session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null }|null} [conversation] -
+ * @property {{ session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null, startup?: { state: 'confirmed'|'unconfirmed', reason: string|null } }|null} [conversation] -
  * The automatic failure conversation's launch outcome (UI-jbl1 §3.1). Absent
  * or not launched prints the fallback line; only the `needsHuman` push reads it.
  */
@@ -411,7 +411,9 @@ function failureConversationLine(conversation) {
     ]
       .filter(Boolean)
       .join(':');
-    return `대화: Discord 스레드 · tmux ${place || '?'}`;
+    return conversation.startup?.state === 'unconfirmed'
+      ? `대화: 시작 확인 못함 · ${conversation.startup.reason} · tmux ${place || '?'}`
+      : `대화: Discord 스레드 · tmux ${place || '?'}`;
   }
   return FAILURE_CONVERSATION_FALLBACK;
 }

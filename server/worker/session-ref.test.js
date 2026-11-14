@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   CODEX_SCAN_DAYS,
+  codexSessionDirectory,
   parseSessionRef,
   qualifyInteractiveForkSource,
   qualifySessionFork,
@@ -10,6 +11,62 @@ import {
 
 const V7_ID = '01a035fc-4659-7220-aa50-e57904d303f3';
 const V7_STARTED_AT = 1787612120665;
+
+describe('codexSessionDirectory (UI-qyr9)', () => {
+  test.each([
+    [
+      'directory',
+      { type: 'session_meta', payload: { cwd: '/original' } },
+      true,
+      '/original'
+    ],
+    [
+      'removed directory',
+      { type: 'session_meta', payload: { cwd: '/original' } },
+      false,
+      null
+    ],
+    [
+      'relative directory',
+      { type: 'session_meta', payload: { cwd: 'relative' } },
+      true,
+      null
+    ],
+    ['missing cwd', { type: 'session_meta', payload: {} }, true, null],
+    [
+      'wrong record',
+      { type: 'event_msg', payload: { cwd: '/original' } },
+      true,
+      null
+    ]
+  ])(
+    'reads only the source header for a %s',
+    (_name, meta, is_directory, expected) => {
+      const file = `/account/sessions/2026/08/25/rollout-2026-08-25T00-00-00-${V7_ID}.jsonl`;
+      const closeSync = vi.fn();
+      const file_system = {
+        readdirSync: () => [file.split('/').at(-1)],
+        statSync: () => ({ mtimeMs: 1, isDirectory: () => is_directory }),
+        openSync: vi.fn(() => 42),
+        readSync: vi.fn(
+          (/** @type {number} */ _fd, /** @type {Buffer} */ buffer) =>
+            buffer.write(JSON.stringify(meta) + '\nprivate transcript')
+        ),
+        closeSync
+      };
+
+      const result = codexSessionDirectory(V7_ID, {
+        sessions_root: '/account/sessions',
+        fs: file_system
+      });
+
+      expect(result).toBe(expected);
+      expect(file_system.openSync).toHaveBeenCalledWith(file, 'r');
+      expect(file_system.readSync.mock.calls[0][1]).toHaveLength(64 * 1024);
+      expect(closeSync).toHaveBeenCalledWith(42);
+    }
+  );
+});
 
 describe('qualifyInteractiveForkSource', () => {
   const options = {

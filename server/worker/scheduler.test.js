@@ -41468,6 +41468,51 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
     expect(env.notify.attemptFailed).not.toHaveBeenCalled();
   });
 
+  test('UI-qyr9 keeps other deployment rechecks running while a fix-wait conversation confirms startup', async () => {
+    const clock = { now: 51_000 };
+    const env = waitEnv({ now: () => clock.now });
+    seedConditionWait(env.store, 'head', 50_000);
+    seedLandingWait(env.store);
+    env.worktree.exists.mockReturnValue(false);
+    env.store.recordCleanupFailure(WS, {
+      bead_id: 'F1',
+      step: 'post_merge_jobs',
+      reason: 'post_merge_job_failed'
+    });
+    env.store.recordFixWait(WS, 'F1', {
+      bead_id: 'UI-fix',
+      rig: WS,
+      entered_at: clock.now - 48 * 3600000,
+      failure_identity: 'test-failure',
+      state: 'waiting',
+      chain_head: null,
+      attempt_id: null,
+      exhausted_reason: null,
+      used_identities: ['test-failure']
+    });
+    /** @type {(value: { session: string }) => void} */
+    let releaseLaunch = () => {};
+    /** @type {Promise<{ session: string }>} */
+    const launch_result = new Promise((resolve) => {
+      releaseLaunch = resolve;
+    });
+    env.failureConversation.launchForBead.mockReturnValue(launch_result);
+
+    try {
+      const reconcile = env.scheduler.reconcile(WS);
+      await settleRecheck();
+
+      expect(env.failureConversation.launchForBead).toHaveBeenCalledTimes(1);
+      expect(env.settle).toHaveBeenCalledTimes(1);
+      await reconcile;
+      await env.scheduler.reconcile(WS);
+      expect(env.failureConversation.launchForBead).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseLaunch({ session: 'launched' });
+      await settleRecheck();
+    }
+  });
+
   test('records an exhausted early repair failure at its actual exhaustion time', async () => {
     const exhausted_at = Date.UTC(2026, 10, 12);
     const env = waitEnv({ now: () => exhausted_at + 1 });

@@ -294,6 +294,8 @@ export function createWorkerRuntime() {
     resolveSessionAccounts,
     getConfig,
     store: {
+      recordTimelineEvent: (ws, input) =>
+        queueStore.recordTimelineEvent(ws, input),
       recordInteractiveSession: (ws, rec) =>
         /** @type {typeof queueStore & { recordInteractiveSession?: (workspace: string, record: any) => void }} */ (
           queueStore

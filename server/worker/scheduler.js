@@ -13011,10 +13011,15 @@ export function createScheduler(deps) {
           });
         }
       } else {
-        await deps.failureConversation?.launchForBead({
-          workspace,
-          repo: workspace,
-          bead_id
+        const run = async () => {
+          await deps.failureConversation?.launchForBead({
+            workspace,
+            repo: workspace,
+            bead_id
+          });
+        };
+        run().catch((err) => {
+          log('fix wait conversation failed for %s: %o', bead_id, err);
         });
       }
     }

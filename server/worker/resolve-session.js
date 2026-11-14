@@ -60,7 +60,11 @@ import {
 } from './resolution-ladder.js';
 import { sessionInquiryIdOf } from './session-inquiry/contract.js';
 import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
-import { qualifyInteractiveForkSource } from './session-ref.js';
+import {
+  codexSessionDirectory,
+  isSafeSessionId,
+  qualifyInteractiveForkSource
+} from './session-ref.js';
 import {
   RESOLVE_PANE_MARKER,
   createTmuxLauncher,
@@ -81,11 +85,12 @@ const default_log = debug('worker:resolve-session');
  * @param {string} session_id
  * @param {string} prompt
  * @param {string|null} launch_session_id
+ * @param {string} cwd
  * @returns {string[]}
  */
-function forkArgs(runner, session_id, prompt, launch_session_id) {
+function forkArgs(runner, session_id, prompt, launch_session_id, cwd) {
   return runner === 'codex'
-    ? ['fork', session_id, prompt]
+    ? ['fork', '-C', cwd, session_id, prompt]
     : [
         '--resume',
         session_id,
@@ -103,11 +108,12 @@ function forkArgs(runner, session_id, prompt, launch_session_id) {
  * @param {'claude'|'codex'} runner
  * @param {string} session_id
  * @param {string|null} launch_session_id
+ * @param {string} cwd
  * @returns {string}
  */
-function forkCommand(runner, session_id, launch_session_id) {
+function forkCommand(runner, session_id, launch_session_id, cwd) {
   return runner === 'codex'
-    ? `codex fork ${shellQuote(session_id)}`
+    ? `codex fork -C ${shellQuote(cwd)} ${shellQuote(session_id)}`
     : `claude --resume ${shellQuote(session_id)} --fork-session --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`;
 }
 
@@ -909,7 +915,7 @@ export function failedDiscardOperation(queue, bead_id) {
  * @property {(runner: string) => string|null} [resolveRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
  * @property {() => number} [now]
- * @property {{ recordInteractiveSession: (workspace: string, record: any) => void }} [store]
+ * @property {{ recordInteractiveSession: (workspace: string, record: any) => void, recordTimelineEvent?: (workspace: string, input: import('./bead-timeline.js').TimelineAppendInput) => void }} [store]
  * @property {(...args: any[]) => void} [log]
  * @property {string} [heartbeatPath]
  * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
@@ -947,6 +953,7 @@ export function failedDiscardOperation(queue, bead_id) {
  * Where the launcher opened or found the window; null when not launched.
  * @property {string|null} tmux_session
  * @property {string|null} tmux_window
+ * @property {{ state: 'confirmed'|'unconfirmed', reason: string|null }} [startup]
  */
 
 /**
@@ -1043,6 +1050,91 @@ export function createResolveSession(deps) {
       });
     } catch (err) {
       log('interactive session record failed for %s: %o', row_key, err);
+    }
+  }
+
+  /**
+   * Confirm the new Codex identity without delaying the scheduler's queue pass.
+   * Terminal callers already run the launch-and-notify task asynchronously.
+   *
+   * @param {{ pane_id: string, session_id: string }} input
+   * @returns {Promise<{ state: 'confirmed'|'unconfirmed', reason: string|null }>}
+   */
+  async function confirmStartup(input) {
+    let stopped = false;
+    /** @type {ReturnType<typeof setTimeout>|undefined} */
+    let timer;
+    /** @type {ReturnType<typeof setTimeout>|undefined} */
+    let poll_timer;
+    /** @param {string} reason */
+    const unconfirmed = (reason) => ({
+      state: /** @type {const} */ ('unconfirmed'),
+      reason
+    });
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(unconfirmed('timeout')), 60_000);
+    });
+    const observe = async () => {
+      while (!stopped) {
+        const session = await launcher.readPaneOption(
+          input.pane_id,
+          '@agent_session'
+        );
+        if (stopped) {
+          break;
+        }
+        if (!session.ok) {
+          return unconfirmed('observation_failed');
+        }
+        if (
+          session.value &&
+          session.value !== input.session_id &&
+          isSafeSessionId(session.value)
+        ) {
+          return { state: /** @type {const} */ ('confirmed'), reason: null };
+        }
+        const tail = await launcher.capturePaneText(input.pane_id);
+        if (stopped) {
+          break;
+        }
+        if (!tail.ok) {
+          return unconfirmed('observation_failed');
+        }
+        if (
+          /Working directory\s*·\s*fork|Do you trust (?:the|this)|Enable hooks/i.test(
+            tail.stdout
+          )
+        ) {
+          return unconfirmed('startup_question');
+        }
+        const panes = await launcher.listPanes(RESOLVE_PANE_MARKER);
+        if (stopped) {
+          break;
+        }
+        if (!panes.ok) {
+          return unconfirmed('observation_failed');
+        }
+        if (
+          !panes.rows.some(
+            (row) => row.pane === input.pane_id && row.dead === '0'
+          )
+        ) {
+          return unconfirmed('pane_gone');
+        }
+        await new Promise((resolve) => {
+          poll_timer = setTimeout(resolve, 1_000);
+        });
+      }
+      return unconfirmed('timeout');
+    };
+    try {
+      return /** @type {{ state: 'confirmed'|'unconfirmed', reason: string|null }} */ (
+        await Promise.race([observe(), deadline])
+      );
+    } finally {
+      stopped = true;
+      clearTimeout(timer);
+      clearTimeout(poll_timer);
     }
   }
 
@@ -1145,6 +1237,11 @@ export function createResolveSession(deps) {
       // takes the configured one (UI-jbl1 §3.4).
       const runner =
         session_id === null ? freshRunner(target.runner) : target.runner;
+      const cwd =
+        runner === 'codex' && session_id !== null
+          ? (codexSessionDirectory(session_id, deps.sessionRefOptions) ??
+            checkout)
+          : checkout;
       const row_worktree = path.join(checkout, '.worktrees', input.bead_id);
       const prompt = buildFailureEntry({
         failure: input.failure,
@@ -1165,7 +1262,7 @@ export function createResolveSession(deps) {
                 prompt
               ]
             : [prompt]
-          : forkArgs(runner, session_id, prompt, launch_session_id);
+          : forkArgs(runner, session_id, prompt, launch_session_id, cwd);
       const outcome = await launcher.launch({
         ...(await resolveSessionLaunchOptions(
           deps.resolveSessionAccounts,
@@ -1177,7 +1274,7 @@ export function createResolveSession(deps) {
         key: input.bead_id,
         tmux_session: tmuxSessionName(),
         window_name: `resolve-${input.bead_id}`,
-        cwd: checkout,
+        cwd,
         commandArgs: command_args,
         runner,
         placement: input.placement === 'inquiry' ? 'inquiry' : 'user'
@@ -1196,11 +1293,38 @@ export function createResolveSession(deps) {
           tmux_session: outcome.tmux_session,
           tmux_window: outcome.tmux_window,
           pane_id: outcome.pane_id,
-          cwd: checkout,
+          cwd,
           conversation: newConversation(input.failure)
         });
       }
+      const startup =
+        runner === 'codex' &&
+        session_id !== null &&
+        input.placement === 'inquiry'
+          ? outcome.session === 'launched'
+            ? await confirmStartup({ pane_id: outcome.pane_id, session_id })
+            : {
+                state: /** @type {const} */ ('unconfirmed'),
+                reason:
+                  outcome.session === 'already_running'
+                    ? 'already_running_unverified'
+                    : 'launch_failed'
+              }
+          : undefined;
+      if (startup?.state === 'unconfirmed') {
+        try {
+          deps.store?.recordTimelineEvent?.(input.workspace, {
+            bead_id: input.bead_id,
+            kind: 'interactive_session',
+            seq: `resolve:${deps.now ? deps.now() : Date.now()}:${outcome.session === 'launched' ? outcome.pane_id : ''}:startup`,
+            summary: `해결 세션 시작 확인 못함 · ${startup.reason} · tmux ${outcome.session === 'launched' ? `${outcome.tmux_session}:${outcome.tmux_window}` : ''}`
+          });
+        } catch (err) {
+          log('startup history write failed for %s: %o', input.bead_id, err);
+        }
+      }
       return {
+        ...(startup ? { startup } : {}),
         launched: outcome.session === 'launched',
         session: outcome.session,
         reason: outcome.session === 'not_launched' ? outcome.reason : null,
@@ -1214,7 +1338,7 @@ export function createResolveSession(deps) {
             ? runner === 'claude'
               ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
               : runner
-            : forkCommand(runner, session_id, launch_session_id),
+            : forkCommand(runner, session_id, launch_session_id, cwd),
         bridge_active: launcher.bridgeActive(),
         placement:
           outcome.session === 'not_launched'
@@ -1356,7 +1480,7 @@ function newConversation(failure) {
 }
 
 /**
- * @typedef {Pick<ResolveSessionOutcome, 'session'|'reason'|'tmux_session'|'tmux_window'>} AutoLaunchOutcome
+ * @typedef {Pick<ResolveSessionOutcome, 'session'|'reason'|'tmux_session'|'tmux_window'|'startup'>} AutoLaunchOutcome
  */
 
 /**
@@ -1463,7 +1587,17 @@ export function createFailureConversationLauncher(deps) {
           session: 'already_running',
           reason: null,
           tmux_session: live.tmux_session ?? null,
-          tmux_window: live.tmux_window ?? null
+          tmux_window: live.tmux_window ?? null,
+          ...(live.provider === 'codex' &&
+          live.mode === 'fork' &&
+          live.session_id === null
+            ? {
+                startup: {
+                  state: /** @type {const} */ ('unconfirmed'),
+                  reason: 'already_running_unverified'
+                }
+              }
+            : {})
         }
       : null;
   }
@@ -1478,6 +1612,7 @@ export function createFailureConversationLauncher(deps) {
       const outcome = await launch();
       return {
         session: outcome.session,
+        ...(outcome.startup ? { startup: outcome.startup } : {}),
         reason: outcome.reason ?? null,
         tmux_session: outcome.tmux_session ?? null,
         tmux_window: outcome.tmux_window ?? null

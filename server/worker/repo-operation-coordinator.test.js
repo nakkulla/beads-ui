@@ -7559,6 +7559,49 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
         harness.store.snapshot(root).repo_operations[head].failure_notice
           ?.consumed_at
       ).toBeNull();
+      expect(harness.notify.needsHuman).not.toHaveBeenCalled();
+    });
+
+    test('UI-qyr9 reports an unconfirmed early diagnosis once while other rechecks continue', async () => {
+      /** @type {(value: any) => void} */
+      let finish = () => {};
+      const launch = new Promise((resolve) => {
+        finish = resolve;
+      });
+      const launcher = {
+        autoLaunchEnabled: () => true,
+        launchForBead: vi.fn(() => launch)
+      };
+      const harness = waitHarness({ failureConversation: launcher });
+      const head = await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+
+      await settleRun(harness, 75);
+      harness.clock.now += POLICY.interval_ms;
+      await settleRun(harness, 75);
+      finish({
+        session: 'launched',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'resolve-UI-7',
+        startup: { state: 'unconfirmed', reason: 'timeout' }
+      });
+      await harness.coordinator.reconcile(root);
+      await harness.coordinator.reconcile(root);
+
+      expect(launcher.launchForBead).toHaveBeenCalledTimes(1);
+      expect(harness.notify.needsHuman).toHaveBeenCalledTimes(1);
+      expect(harness.notify.needsHuman).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: '시작 확인 못함',
+          conversation: expect.objectContaining({
+            startup: { state: 'unconfirmed', reason: 'timeout' }
+          })
+        })
+      );
+      expect(
+        harness.store.snapshot(root).repo_operations[head].failure_notice
+          ?.consumed_at
+      ).toBeNull();
     });
 
     test('keeps early diagnosis off with the shared launch switch', async () => {

@@ -919,6 +919,7 @@ export function createRepoOperationCoordinator(deps) {
     ) {
       return;
     }
+    const launchForBead = launcher.launchForBead;
     const queue = deps.store.snapshot(workspace);
     const schedule = conditionWaitSchedule(
       queue.repo_operations,
@@ -944,12 +945,25 @@ export function createRepoOperationCoordinator(deps) {
       return;
     }
     try {
-      await launcher.launchForBead({
-        workspace,
-        repo: deps.repo,
-        bead_id,
-        early_diagnosis: operation_id
-      });
+      const run = async () => {
+        const conversation = await launchForBead({
+          workspace,
+          repo: deps.repo,
+          bead_id,
+          early_diagnosis: operation_id
+        });
+        if (conversation?.startup?.state === 'unconfirmed') {
+          await notify?.needsHuman({
+            bead_id,
+            failure_class: '배포 조기 진단',
+            reason: '시작 확인 못함',
+            next_action: '[세션에서 이어가기]',
+            conversation,
+            repo: deps.repo
+          });
+        }
+      };
+      run().catch((err) => log('early diagnosis launch failed: %o', err));
     } catch (err) {
       log('early diagnosis launch failed: %o', err);
     }

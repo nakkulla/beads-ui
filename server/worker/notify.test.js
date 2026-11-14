@@ -1592,6 +1592,28 @@ describe('worker/notify needs_human transition', () => {
     );
   });
 
+  test('UI-qyr9 keeps an unconfirmed startup in the one terminal failure notification', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.needsHuman({
+      bead_id: 'UI-7',
+      failure_class: '배포 실패',
+      conversation: {
+        session: 'launched',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'resolve-UI-7',
+        startup: { state: 'unconfirmed', reason: 'timeout' }
+      }
+    });
+
+    expect(spawn.calls).toHaveLength(1);
+    expect(messageOf(spawn.last())).toContain(
+      '대화: 시작 확인 못함 · timeout · tmux bdui-inquiry:resolve-UI-7'
+    );
+    expect(messageOf(spawn.last())).not.toContain('Discord 스레드');
+  });
+
   test('prints the fallback line when the conversation did not open', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });

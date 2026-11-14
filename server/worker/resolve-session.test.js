@@ -37,6 +37,7 @@ beforeEach(() => {
   vi.stubEnv('CODEX_HOME', codex_home);
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   fs.rmSync(codex_home, { recursive: true, force: true });
 });
@@ -133,6 +134,9 @@ function makeFs(options = {}) {
     },
     /** @param {string} p */
     statSync(p) {
+      if (p === '/tmp/original-attempt') {
+        return { isDirectory: () => true };
+      }
       if (options.present !== false && p === file) {
         return { mtimeMs: 1_700_000_000_000 };
       }
@@ -140,7 +144,23 @@ function makeFs(options = {}) {
         return { mtimeMs: 1_700_000_000_000 };
       }
       throw new Error(`ENOENT ${p}`);
-    }
+    },
+    openSync() {
+      return 42;
+    },
+    /**
+     * @param {number} _fd
+     * @param {Buffer} buffer
+     */
+    readSync(_fd, buffer) {
+      return buffer.write(
+        JSON.stringify({
+          type: 'session_meta',
+          payload: { cwd: '/tmp/original-attempt' }
+        }) + '\n'
+      );
+    },
+    closeSync() {}
   };
 }
 
@@ -174,7 +194,7 @@ const FLAG_CATALOG = {
 };
 
 /**
- * @param {{ resolveSessionAccounts?: import('./session-launch-accounts.js').ResolveSessionAccounts, tmux?: ReturnType<typeof makeHub>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
+ * @param {{ resolveSessionAccounts?: import('./session-launch-accounts.js').ResolveSessionAccounts, tmux?: ReturnType<typeof makeHub>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, sessionRefFs?: any, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
  */
 function makeLauncher(input = {}) {
   // Each test states the settings it is about; the default keeps every
@@ -210,10 +230,11 @@ function makeLauncher(input = {}) {
       home_dir: HOME,
       hostname: HOST,
       fs: /** @type {any} */ (
-        makeFs({
-          present: input.present !== false,
-          codex: input.codex === true
-        })
+        input.sessionRefFs ??
+          makeFs({
+            present: input.present !== false,
+            codex: input.codex === true
+          })
       )
     }
   });
@@ -783,6 +804,227 @@ describe('failureHandoffTarget (UI-18a5 §3.4)', () => {
 });
 
 describe('createResolveSession (UI-jw27 §4)', () => {
+  test('UI-qyr9 explicitly uses the checkout when the source directory is unavailable', async () => {
+    const file_system = makeFs({ codex: true });
+    const { resolver, tmux } = makeLauncher({
+      codex: true,
+      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+      sessionRefFs: {
+        ...file_system,
+        statSync: (/** @type {string} */ file) => {
+          if (file === '/tmp/original-attempt') {
+            throw new Error('ENOENT');
+          }
+          return file_system.statSync(file);
+        }
+      }
+    });
+
+    await resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect(hubCommand(tmux.calls)).toContain(`'fork' '-C' '${REPO}'`);
+  });
+
+  test.each([
+    [
+      'new identity',
+      'child-session',
+      '',
+      'bdui-inquiry:%9:0:UI-jw27',
+      'confirmed',
+      null
+    ],
+    [
+      'startup question',
+      '',
+      'Working directory · fork\nprivate prompt',
+      'bdui-inquiry:%9:0:UI-jw27',
+      'unconfirmed',
+      'startup_question'
+    ],
+    ['gone pane', '', '', '', 'unconfirmed', 'pane_gone']
+  ])(
+    'UI-qyr9 observes %s without saving terminal text',
+    async (_name, identity, screen, panes, state, reason) => {
+      const recordTimelineEvent = vi.fn();
+      const tmux = makeHub();
+      const runTmux = vi.fn(async (/** @type {string[]} */ args) => ({
+        code: 0,
+        stderr: '',
+        stdout:
+          args[0] === 'show-options'
+            ? identity
+            : args[0] === 'capture-pane'
+              ? screen
+              : panes
+      }));
+      const { resolver } = makeLauncher({
+        codex: true,
+        metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+        tmux: { ...tmux, runTmux },
+        store: { recordInteractiveSession: vi.fn(), recordTimelineEvent }
+      });
+
+      const outcome = await resolver.resolve({
+        workspace: REPO,
+        bead_id: BEAD,
+        failure: FAILURE,
+        placement: 'inquiry'
+      });
+
+      expect(outcome.startup).toEqual({ state, reason });
+      expect(JSON.stringify(recordTimelineEvent.mock.calls)).not.toContain(
+        'private prompt'
+      );
+      expect(recordTimelineEvent).toHaveBeenCalledTimes(
+        state === 'confirmed' ? 0 : 1
+      );
+      expect(
+        runTmux.mock.calls.some(([args]) =>
+          ['kill-window', 'send-keys'].includes(args[0])
+        )
+      ).toBe(false);
+    }
+  );
+
+  test('UI-qyr9 confirms a new identity before sixty seconds and ignores the source identity', async () => {
+    vi.useFakeTimers();
+    let identity = SESSION_ID;
+    const tmux = makeHub();
+    const { resolver } = makeLauncher({
+      codex: true,
+      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+      tmux: {
+        ...tmux,
+        runTmux: async (args) => ({
+          code: 0,
+          stderr: '',
+          stdout:
+            args[0] === 'show-options'
+              ? identity
+              : args[0] === 'list-panes'
+                ? 'bdui-inquiry:%9:0:UI-jw27'
+                : ''
+        })
+      }
+    });
+
+    const launch = resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE,
+      placement: 'inquiry'
+    });
+    await vi.advanceTimersByTimeAsync(58_000);
+    identity = 'child-session';
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect((await launch).startup).toEqual({
+      state: 'confirmed',
+      reason: null
+    });
+  });
+
+  test.each(['missing identity', 'hung observation'])(
+    'UI-qyr9 bounds %s to sixty seconds without blocking another launch',
+    async (mode) => {
+      vi.useFakeTimers();
+      const tmux = makeHub();
+      const { resolver } = makeLauncher({
+        codex: true,
+        metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+        tmux: {
+          ...tmux,
+          runTmux: async (args) =>
+            mode === 'hung observation'
+              ? new Promise(() => {})
+              : {
+                  code: 0,
+                  stderr: '',
+                  stdout:
+                    args[0] === 'list-panes' ? 'bdui-inquiry:%9:0:UI-jw27' : ''
+                }
+        }
+      });
+
+      const launch = resolver.resolve({
+        workspace: REPO,
+        bead_id: BEAD,
+        failure: FAILURE,
+        placement: 'inquiry'
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const duplicate = await resolver.resolve({
+        workspace: REPO,
+        bead_id: BEAD,
+        failure: FAILURE,
+        placement: 'inquiry'
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect((await launch).startup).toEqual({
+        state: 'unconfirmed',
+        reason: 'timeout'
+      });
+      expect(duplicate.session).toBe('already_running');
+      expect(tmux.calls.filter((args) => args[0] === 'open')).toHaveLength(1);
+    }
+  );
+
+  test('UI-qyr9 pins the original Codex directory in argv and the launch record', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { resolver, tmux } = makeLauncher({
+      codex: true,
+      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+      store: { recordInteractiveSession }
+    });
+
+    await resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect(hubCommand(tmux.calls)).toContain(
+      "'fork' '-C' '/tmp/original-attempt'"
+    );
+    expect(tmux.calls.find((call) => call[0] === 'open')).toContain(
+      '/tmp/original-attempt'
+    );
+    expect(recordInteractiveSession.mock.calls[0][1].cwd).toBe(
+      '/tmp/original-attempt'
+    );
+    expect(recordInteractiveSession.mock.calls[0][1].session_id).toBeNull();
+  });
+
+  test('UI-qyr9 reports a startup observation error without treating it as a dead process', async () => {
+    const { resolver } = makeLauncher({
+      codex: true,
+      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+      tmux: {
+        ...makeHub(),
+        runTmux: async () => ({ code: 1, stdout: '', stderr: 'private screen' })
+      }
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE,
+      placement: 'inquiry'
+    });
+
+    expect(outcome).toMatchObject({
+      session: 'launched',
+      startup: { state: 'unconfirmed', reason: 'observation_failed' }
+    });
+    expect(JSON.stringify(outcome)).not.toContain('private screen');
+  });
+
   test.each(['bead', 'repo-operation'])(
     'launches the %s conversation through its current Claude account',
     async (kind) => {
@@ -1025,7 +1267,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       expect(wrapper).not.toContain('--session-id');
       expect(wrapper).toContain(
         fork
-          ? `exec '/usr/local/bin/codex' 'fork' '${SESSION_ID}'`
+          ? `exec '/usr/local/bin/codex' 'fork' '-C' '/tmp/original-attempt' '${SESSION_ID}'`
           : `exec '/usr/local/bin/codex' '이 세션은 Worker 작업이`
       );
     }
@@ -1305,7 +1547,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
 
     const wrapper = hubCommand(tmux.calls);
     expect(wrapper).toContain(
-      `exec '/usr/local/bin/codex' 'fork' '${SESSION_ID}'`
+      `exec '/usr/local/bin/codex' 'fork' '-C' '/tmp/original-attempt' '${SESSION_ID}'`
     );
   });
 
@@ -1588,7 +1830,7 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
 
     expect([outcome.mode, outcome.runner]).toEqual(['fork', 'codex']);
     expect(launchedWrapper(tmux)).toContain(
-      `exec '/usr/local/bin/codex' 'fork' '-m' 'gpt-6-sol' '-c' 'model_reasoning_effort=xhigh' '${SESSION_ID}'`
+      `exec '/usr/local/bin/codex' 'fork' '-m' 'gpt-6-sol' '-c' 'model_reasoning_effort=xhigh' '-C' '/tmp/original-attempt' '${SESSION_ID}'`
     );
   });
 
@@ -1897,6 +2139,36 @@ describe('automatic failure conversation (UI-jbl1 §3.1)', () => {
     expect(outcome).toMatchObject({
       session: 'already_running',
       tmux_window: BEAD
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  test('UI-qyr9 keeps a restored Codex fork unconfirmed until its own identity is observed', async () => {
+    const { auto, resolve } = makeAuto({
+      queue: {
+        interactive_sessions: {
+          [`${BEAD}:resolve`]: {
+            bead_id: BEAD,
+            provider: 'codex',
+            mode: 'fork',
+            session_id: null,
+            state: 'live',
+            settled_at: null,
+            tmux_session: 'bdui-inquiry',
+            tmux_window: BEAD
+          }
+        }
+      }
+    });
+
+    const outcome = await auto.launchForBead({
+      workspace: REPO,
+      bead_id: BEAD
+    });
+
+    expect(outcome).toMatchObject({
+      session: 'already_running',
+      startup: { state: 'unconfirmed', reason: 'already_running_unverified' }
     });
     expect(resolve).not.toHaveBeenCalled();
   });
