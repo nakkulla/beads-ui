@@ -57,6 +57,7 @@ import {
   WAIT_KINDS,
   externalJobRows,
   externalSpawnedSummary,
+  externalWaitFeedbackText,
   representativeWaitReason,
   waitBadgeText,
   waitKindRow,
@@ -3304,6 +3305,35 @@ export function waitReasonLines(reason, options = {}) {
     }
     return '';
   });
+  const feedback = record?.feedback;
+  if (
+    record &&
+    feedback &&
+    ['owner_alive', 'owner_unverified', 'session_ref_changed'].includes(
+      feedback.reason
+    )
+  ) {
+    const ownerAction = (
+      /** @type {'focus'|'recheck'} */ action,
+      /** @type {string} */ text
+    ) =>
+      html`<button
+        type="button"
+        class="op-btn external-wait__action"
+        data-external-wait-op="external_wait_check"
+        data-root-dir=${record.root_dir}
+        data-bead-id=${record.bead_id}
+        data-wait-id=${record.wait_id}
+        data-version=${feedback.version}
+        data-feedback-action=${action}
+      >
+        ${text}
+      </button>`;
+    if (feedback.reason === 'owner_alive' && feedback.owner_tmux) {
+      actions.push(ownerAction('focus', '원래 창으로 이동'));
+    }
+    actions.push(ownerAction('recheck', '원래 세션 다시 확인'));
+  }
   return {
     badge: label
       ? html`<details class="wait-verdict" @click=${stopWaitClick}>
@@ -3319,7 +3349,11 @@ export function waitReasonLines(reason, options = {}) {
     // 슬롯 3은 headline 한 줄이다 (§6.3): `release`와 안내문은 배지 팝업이 싣는다.
     // 외부 작업 카드는 headline 대신 잡 줄이다 (UI-a119 §3.4).
     body: card_external
-      ? externalJobLinesTemplate(reason, record, now_ms)
+      ? html`${externalJobLinesTemplate(
+          reason,
+          record,
+          now_ms
+        )}${externalWaitFeedbackTemplate(record)}`
       : reason.headline || (external && (reason.release || reason.error))
         ? html`<div class="wait-reason__lines">
             ${reason.headline
@@ -3359,6 +3393,22 @@ export function waitReasonLines(reason, options = {}) {
         </div>`
       : ''
   };
+}
+
+/**
+ * Same visible sentence for Worker, Monitor and detail external jobs.
+ *
+ * @param {import('../../protocol.js').ExternalWaitObservation|undefined} record
+ */
+export function externalWaitFeedbackTemplate(record) {
+  const feedback = record?.feedback;
+  const text = externalWaitFeedbackText(feedback);
+  return text && feedback
+    ? html`<div class="external-wait__feedback">
+        ${text}
+        <div>마지막 확인 ${formatTimestampLocal(feedback.at)}</div>
+      </div>`
+    : '';
 }
 
 /** 선행 대기의 두 종류. 막힘 집계의 간접 선행 규칙이 읽는다 (UI-0bvr §6.2). */
@@ -3992,28 +4042,33 @@ export function queueRowOps(item, options = {}) {
   }
   /** @type {Set<string>} */
   const action_keys = new Set();
-  const wait_actions = (item.wait_reasons || []).map(
-    (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
-      waitReasonLines(
-        {
-          ...reason,
-          actions: reason.actions.filter((action) => {
-            // `probe_now`는 이 슬롯을 떠났다 (UI-pw2g §3.4): 대기 행의 출구는 슬롯
-            // 4a 게이트 칩 팝업이고, 여기 남기면 같은 조작이 두 자리에 선다.
-            if (action.op === 'probe_now') {
-              return false;
-            }
-            const key = `${action.op}:${action.payload.wait_id || action.payload.runner || ''}:${action.payload.mode || ''}`;
-            if (action_keys.has(key)) {
-              return false;
-            }
-            action_keys.add(key);
-            return true;
-          })
-        },
-        { item }
-      ).actions
-  );
+  const wait_actions = (item.wait_reasons || [])
+    .filter(
+      (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+        reason.kind !== 'external_job'
+    )
+    .map(
+      (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+        waitReasonLines(
+          {
+            ...reason,
+            actions: reason.actions.filter((action) => {
+              // `probe_now`는 이 슬롯을 떠났다 (UI-pw2g §3.4): 대기 행의 출구는 슬롯
+              // 4a 게이트 칩 팝업이고, 여기 남기면 같은 조작이 두 자리에 선다.
+              if (action.op === 'probe_now') {
+                return false;
+              }
+              const key = `${action.op}:${action.payload.wait_id || action.payload.runner || ''}:${action.payload.mode || ''}`;
+              if (action_keys.has(key)) {
+                return false;
+              }
+              action_keys.add(key);
+              return true;
+            })
+          },
+          { item }
+        ).actions
+    );
   // 순서는 넓은 것(큐 전체) → 좁은 것(이 행) → 자리 조작 → 빼기다 (UI-01wh §3.3).
   return html`<span class="worker-mini__rowops">
     ${startNowButtonTemplate(item)}${wait_actions}${options.nudgeable === true

@@ -160,7 +160,7 @@ describe('external wait hook wiring', () => {
     expect(env.scheduler.resumeExternalWait).toHaveBeenLastCalledWith(
       '/repo',
       record.wait_id,
-      { mode: 'fork' }
+      { mode: 'fork', automatic: true }
     );
   });
 
@@ -1264,7 +1264,8 @@ describe('worker/attach construction + live loop (F1)', () => {
 
     expect(resume).toHaveBeenCalledTimes(2);
     expect(resume).toHaveBeenLastCalledWith(WS, record.wait_id, {
-      mode: 'fork'
+      mode: 'fork',
+      automatic: true
     });
   });
 

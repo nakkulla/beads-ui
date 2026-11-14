@@ -11840,6 +11840,13 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   gap: var(--sp-5);
 }
 
+/* 마지막 재개·인계 거절 문장 (UI-mdep §5.1): 긴 tmux 위치·reason도 좁은 폭에서 줄바꿈한다. */
+.external-wait__feedback {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .external-wait__gate,
 .external-wait__consumer-link,
 .external-wait__title-link {

@@ -146,6 +146,72 @@ function renderExternalDetail(options = {}) {
   return { mount, panel };
 }
 
+test('shows both owner actions beside completing external feedback', () => {
+  const { mount, panel } = renderExternalDetail({
+    record_patch: {
+      stage: 'completing',
+      owner_kind: 'session',
+      feedback: {
+        bead_id: 'A-1',
+        kind: 'session_resume',
+        reason: 'owner_alive',
+        at: 123,
+        version: 7,
+        session_ref: 'claude:s1@host',
+        owner_tmux: 'dev:@1.%7'
+      }
+    }
+  });
+
+  const feedback = mount.querySelector('.external-wait__feedback');
+  const buttons = Array.from(mount.querySelectorAll('[data-feedback-action]'));
+
+  expect(feedback?.textContent).toContain(
+    '원래 세션이 열려 있어 새로 열지 않았습니다'
+  );
+  expect(feedback?.textContent).toContain('tmux dev:@1.%7');
+  expect(feedback?.textContent).toContain('마지막 확인');
+  expect(buttons.map((button) => button.textContent?.trim())).toEqual([
+    '원래 창으로 이동',
+    '원래 세션 다시 확인'
+  ]);
+  expect(buttons.every((button) => button.classList.contains('op-btn'))).toBe(
+    true
+  );
+  panel.destroy();
+});
+
+test('keeps external refusal feedback visible after the job table', () => {
+  const { mount, panel } = renderExternalDetail({
+    record_patch: {
+      stage: 'completing',
+      feedback: {
+        bead_id: 'A-1',
+        kind: 'conversation_handoff',
+        reason: 'serial_lane_not_head',
+        at: 123,
+        version: 1,
+        session_ref: null,
+        owner_tmux: null
+      }
+    }
+  });
+
+  const feedback = mount.querySelector('.external-wait__feedback');
+
+  expect(feedback?.textContent).toContain(
+    'Worker로 넘기지 못했습니다 · 직렬 대기줄 순서 때문에 시작하지 못했습니다 (serial_lane_not_head)'
+  );
+  expect(feedback?.textContent).toContain('마지막 확인');
+  expect(
+    (mount
+      .querySelector('.detail-external-wait__jobs')
+      ?.compareDocumentPosition(/** @type {Node} */ (feedback)) || 0) &
+      Node.DOCUMENT_POSITION_FOLLOWING
+  ).toBeTruthy();
+  panel.destroy();
+});
+
 /**
  * Render the external-wait detail with an action_required reason and an
  * optional live conversation record (ASCII token: false for no record).

@@ -124,6 +124,9 @@ scope:
 
 ### 3.2 적용 대상
 
+UI-mdep: 외부 작업 슬롯 6의 `원래 창으로 이동`·`원래 세션 다시 확인`은
+`op-btn external-wait__action`을 사용한다. 기존 이어가기 옆에 두며 Worker·Monitor·상세가 공유한다.
+
 | 표면 | 버튼 | 클래스 | 비고 |
 |---|---|---|---|
 | 후보 카드 foot | `↴ 대기로` | `op-btn op-btn--primary worker-card__place` | 문구가 `대기로 ↴`에서 아이콘 앞으로 바뀐다 |

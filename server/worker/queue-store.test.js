@@ -45,6 +45,67 @@ let tmp_state;
 const WS = '/tmp/example-workspace/project-a';
 
 describe('interactive session persistence', () => {
+  test('preserves external feedback through cold reload without private payloads', () => {
+    const store = createQueueStore();
+    store.recordExternalWaitFeedback(WS, 'w-0123456789ab', {
+      bead_id: 'B1',
+      kind: 'session_resume',
+      reason: 'owner_alive',
+      at: 123,
+      session_ref: 'claude:s1@host',
+      owner_tmux: 'dev:@1.%2'
+    });
+
+    const feedback = createQueueStore().load(WS).external_wait_feedback;
+
+    expect(feedback['w-0123456789ab']).toEqual({
+      bead_id: 'B1',
+      kind: 'session_resume',
+      reason: 'owner_alive',
+      at: 123,
+      session_ref: 'claude:s1@host',
+      owner_tmux: 'dev:@1.%2',
+      version: 1
+    });
+  });
+
+  test('rejects a stale external feedback replacement', () => {
+    const store = createQueueStore();
+    const input = {
+      bead_id: 'B1',
+      kind: /** @type {const} */ ('worker_resume'),
+      reason: 'unknown_reason',
+      at: 123,
+      session_ref: null,
+      owner_tmux: null
+    };
+    store.recordExternalWaitFeedback(WS, 'w-0123456789ab', input);
+    const first = store.snapshot(WS).external_wait_feedback['w-0123456789ab'];
+    store.recordExternalWaitFeedback(WS, 'w-0123456789ab', {
+      ...input,
+      reason: 'new_refusal'
+    });
+
+    const result = store.recordExternalWaitFeedback(
+      WS,
+      'w-0123456789ab',
+      input,
+      first.version
+    );
+
+    expect(result.ok).toBe(false);
+    expect(
+      store.snapshot(WS).external_wait_feedback['w-0123456789ab'].reason
+    ).toBe('new_refusal');
+  });
+
+  test('reads absent external feedback as an empty map', () => {
+    const store = createQueueStore();
+
+    const queue = store.load(WS);
+
+    expect(queue.external_wait_feedback).toEqual({});
+  });
   test('preserves the provider wait resume kind through save and cold reload', () => {
     const store = createQueueStore();
     store.appendAttempt(WS, {

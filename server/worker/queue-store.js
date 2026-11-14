@@ -643,6 +643,7 @@
  */
 /**
  * @typedef {Object} Queue
+ * @property {Record<string, import('../../app/protocol.js').ExternalWaitFeedback>} external_wait_feedback
  * @property {Record<string, { at: number, session: string, reason: string|null }>} spec_authoring_launches - Per-blocker automatic opening, retained after failure or restart.
  * @property {Record<string, FixWait>} fix_waits - Durable self-repair attempts, including exhausted identities.
  * @property {Record<string, InteractiveSession>} interactive_sessions - Live interactive panes, keyed by bead and kind.
@@ -2802,6 +2803,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'interactive_sessions',
   'fix_waits',
   'conversation_refusals',
+  'external_wait_feedback',
   'spec_authoring_launches',
   'session_inquiries',
   'merge_policy',
@@ -2873,6 +2875,7 @@ function emptyQueue() {
     interactive_sessions: {},
     fix_waits: {},
     conversation_refusals: {},
+    external_wait_feedback: {},
     spec_authoring_launches: {},
     session_inquiries: {},
     repo_ops_opt_out: { verify: false, deploy: false },
@@ -6037,6 +6040,38 @@ function normalizeQueue(raw) {
   q.conversation_refusals = normalizeConversationRefusals(
     raw.conversation_refusals
   );
+  if (isRecord(raw.external_wait_feedback)) {
+    for (const [wait_id, value] of Object.entries(raw.external_wait_feedback)) {
+      if (
+        isRecord(value) &&
+        typeof value.bead_id === 'string' &&
+        ['session_resume', 'worker_resume', 'conversation_handoff'].includes(
+          String(value.kind)
+        ) &&
+        typeof value.reason === 'string' &&
+        Number.isFinite(value.at) &&
+        Number.isInteger(value.version) &&
+        Number(value.version) > 0
+      ) {
+        q.external_wait_feedback[wait_id] = {
+          bead_id: value.bead_id,
+          kind: /** @type {import('../../app/protocol.js').ExternalWaitFeedback['kind']} */ (
+            value.kind
+          ),
+          reason: value.reason,
+          at: Number(value.at),
+          version: Number(value.version),
+          session_ref:
+            typeof value.session_ref === 'string' ? value.session_ref : null,
+          owner_tmux:
+            typeof value.owner_tmux === 'string' ? value.owner_tmux : null,
+          ...(typeof value.focus_error === 'string'
+            ? { focus_error: value.focus_error }
+            : {})
+        };
+      }
+    }
+  }
   if (isRecord(raw.spec_authoring_launches)) {
     for (const [bead_id, value] of Object.entries(
       raw.spec_authoring_launches
@@ -8275,6 +8310,44 @@ export function createQueueStore(options = {}) {
           at: now(),
           kind: input.kind
         };
+        return true;
+      });
+    },
+
+    /**
+     * Persist display-only feedback independently of the external-wait contract.
+     *
+     * @param {string} workspace
+     * @param {string} wait_id
+     * @param {Omit<import('../../app/protocol.js').ExternalWaitFeedback, 'version'>|null} input
+     * @param {number} [expected_version]
+     */
+    recordExternalWaitFeedback(workspace, wait_id, input, expected_version) {
+      return applyUnconditional(workspace, (next) => {
+        const prior = next.external_wait_feedback[wait_id];
+        if (
+          expected_version !== undefined &&
+          prior?.version !== expected_version
+        ) {
+          return false;
+        }
+        if (input === null) {
+          if (!prior) {
+            return false;
+          }
+          delete next.external_wait_feedback[wait_id];
+        } else {
+          next.external_wait_feedback[wait_id] = {
+            bead_id: input.bead_id,
+            kind: input.kind,
+            reason: input.reason,
+            at: input.at,
+            session_ref: input.session_ref,
+            owner_tmux: input.owner_tmux,
+            version: next.revision + 1,
+            ...(input.focus_error ? { focus_error: input.focus_error } : {})
+          };
+        }
         return true;
       });
     },

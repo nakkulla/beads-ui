@@ -243,6 +243,56 @@ describe('session resume qualification', () => {
 });
 
 describe('session resume owner liveness', () => {
+  test('drops a reused registry pane from the movable location', async () => {
+    writeRegistry('owner.json', {
+      pid: 123,
+      sessionId: SESSION,
+      procStart: PROC_START,
+      tmux: 'dev:@1.%7'
+    });
+    const env = fixture({
+      run: async (/** @type {string[]} */ argv) => ({
+        code: 0,
+        stderr: '',
+        stdout:
+          argv[0] === 'env'
+            ? PROC_START
+            : argv[0] === 'tmux'
+              ? 'other:@9.%7 999 0'
+              : '1'
+      })
+    });
+
+    const result = await env.resumer.ownerLocation('claude', SESSION);
+
+    expect(result).toEqual({ state: 'alive', owner_tmux: null });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('rejects an unrelated process in the same registry pane', async () => {
+    writeRegistry('owner.json', {
+      pid: 123,
+      sessionId: SESSION,
+      procStart: PROC_START,
+      tmux: 'dev:@1.%7'
+    });
+    const env = fixture({
+      run: async (/** @type {string[]} */ argv) => ({
+        code: 0,
+        stderr: '',
+        stdout:
+          argv[0] === 'env'
+            ? PROC_START
+            : argv[0] === 'tmux'
+              ? 'dev:@1.%7 999 0'
+              : '1'
+      })
+    });
+
+    const result = await env.resumer.ownerLocation('claude', SESSION);
+
+    expect(result.owner_tmux).toBeNull();
+  });
   test('returns the command without launching when the owner is alive', async () => {
     writeRegistry('61128.json', {
       pid: 61128,

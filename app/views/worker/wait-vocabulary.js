@@ -905,3 +905,54 @@ export const SUMMARY_CHIPS = Object.freeze([
       'scope=bead 사유가 하나라도 있는 원래 이슈 수 — external_job은 원래 이슈로 한 번만 세고, 보류된 attempt의 provider_hold도 포함한다'
   })
 ]);
+/**
+ * Plain refusal reasons shared by cards, detail and transient replies.
+ *
+ * @param {string} reason
+ */
+export function externalWaitRefusalText(reason) {
+  /** @type {Record<string, string>} */
+  const labels = {
+    serial_lane_not_head: '직렬 대기줄 순서 때문에 시작하지 못했습니다',
+    bead_running: '이 작업이 이미 실행 중입니다',
+    origin_running: '원래 Worker가 아직 실행 중입니다',
+    origin_not_waiting: '원래 Worker의 대기 상태를 확인하세요',
+    resume_reserved: '이미 이어가기를 처리하고 있습니다',
+    resume_in_progress: '이미 이어가기를 처리하고 있습니다',
+    worktree_missing: '작업 폴더를 찾지 못했습니다',
+    transcript_missing: '세션 기록을 찾지 못했습니다',
+    no_session_ref: '원래 세션 정보가 없습니다',
+    not_local: '이 서버에서 원래 세션을 찾지 못했습니다',
+    owner_location_unverified: '원래 창 위치를 확인하지 못했습니다',
+    owner_lookup_failed: '원래 세션 조회에 실패했습니다',
+    session_ref_changed: '원래 세션 정보가 바뀌었습니다',
+    feedback_changed: '표시 상태가 바뀌었습니다. 다시 확인하세요'
+  };
+  return `${labels[reason] || '상태를 확인한 뒤 다시 시도하세요'} (${reason})`;
+}
+
+/**
+ * Display-only feedback never participates in failure badge judgment.
+ *
+ * @param {import('../../protocol.js').ExternalWaitFeedback|null|undefined} feedback
+ */
+export function externalWaitFeedbackText(feedback) {
+  if (!feedback) {
+    return '';
+  }
+  let text;
+  if (feedback.reason === 'owner_alive') {
+    text = `원래 세션이 열려 있어 새로 열지 않았습니다 · ${feedback.owner_tmux ? `tmux ${feedback.owner_tmux}` : '원래 창 위치를 확인하지 못했습니다'}`;
+  } else if (feedback.reason === 'owner_unverified') {
+    text = `원래 세션이 열려 있는지 확인하지 못해 새로 열지 않았습니다 · ${feedback.session_ref?.startsWith('codex:') ? 'Codex 생존 확인을 지원하지 않습니다' : '생존 조회 결과를 확인하지 못했습니다'}`;
+  } else if (feedback.reason === 'owner_dead') {
+    text = '원래 세션 종료 확인 · 다시 이어갈 수 있습니다';
+  } else if (feedback.reason === 'session_ref_changed') {
+    text = '원래 세션 정보가 바뀌었습니다 · 다시 확인하세요';
+  } else {
+    text = `${feedback.kind === 'conversation_handoff' ? 'Worker로 넘기지 못했습니다' : '이어가지 못했습니다'} · ${externalWaitRefusalText(feedback.reason)}`;
+  }
+  return feedback.focus_error
+    ? `${text} · 원래 창으로 이동하지 못했습니다 · ${externalWaitRefusalText(feedback.focus_error)}`
+    : text;
+}

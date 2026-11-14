@@ -25,7 +25,7 @@
  */
 
 /**
- * @typedef {Record<string, unknown> & { external_waits?: ExternalWaitObservation[], wait_reasons?: WaitReason[] }} WorkerQueueSnapshot
+ * @typedef {Record<string, unknown> & { external_waits?: ExternalWaitObservation[], external_wait_feedback?: Record<string, ExternalWaitFeedback>, wait_reasons?: WaitReason[] }} WorkerQueueSnapshot
  */
 
 /**
@@ -71,11 +71,24 @@
  */
 
 /**
+ * @typedef {Object} ExternalWaitFeedback
+ * @property {string} bead_id
+ * @property {'session_resume'|'worker_resume'|'conversation_handoff'} kind
+ * @property {string} reason
+ * @property {number} at
+ * @property {string|null} session_ref
+ * @property {string|null} owner_tmux
+ * @property {number} version
+ * @property {string|null} [focus_error]
+ */
+
+/**
  * Public projection of a consumer Bead's external-wait record.
  * Logs and expected artifact contents never cross this boundary.
  *
  * @typedef {Object} ExternalWaitObservation
  * @property {string} wait_id
+ * @property {ExternalWaitFeedback|null} [feedback]
  * @property {string} root_dir
  * @property {string} bead_id
  * @property {'worker'|'session'} owner_kind
@@ -262,7 +275,8 @@ const EXTERNAL_WAIT_FIELDS = new Set([
   'last_error',
   'jobs',
   'completion',
-  'resume'
+  'resume',
+  'feedback'
 ]);
 
 /**

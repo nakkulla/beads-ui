@@ -52,7 +52,10 @@ import { createRuntimeIdentity } from '../runtime-identity.js';
 import { resolveSpecId } from '../spec-id.js';
 import { watchDb } from '../watcher.js';
 import { parsePrNumber } from '../workflow-enrich.js';
-import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
+import {
+  peekWorkspaceSnapshot,
+  requestWorkspaceSnapshot
+} from '../workspace-snapshot-runtime.js';
 import { overlayExternalPrWait } from '../ws/external-pr-overlay.js';
 import { createAccountCatalog } from './account-catalog.js';
 import { validateAdmission } from './admission.js';
@@ -147,9 +150,43 @@ const log = debug('worker:attach');
  * Project public job coordinates and observations without owner session data.
  *
  * @param {import('./external-wait/store.js').WaitRecord} record
+ * @param {Pick<import('./queue-store.js').Queue, 'external_wait_feedback'|'conversation_refusals'|'interactive_sessions'>} [queue]
+ * @param {unknown} [metadata]
  */
-export function projectExternalWait(record) {
+export function projectExternalWait(record, queue, metadata) {
+  let stored = queue?.external_wait_feedback?.[record.wait_id];
+  const current_ref =
+    typeof metadata === 'object' &&
+    metadata !== null &&
+    'session_ref' in metadata
+      ? metadata.session_ref
+      : null;
+  if (stored && metadata && stored.session_ref !== (current_ref ?? null)) {
+    stored = { ...stored, reason: 'session_ref_changed', owner_tmux: null };
+  }
+  const refusal = queue?.conversation_refusals?.[record.bead_id];
+  const legacy_matches = Object.values(queue?.interactive_sessions || {}).some(
+    (session) =>
+      session.bead_id === record.bead_id &&
+      session.kind === 'external_resume' &&
+      session.conversation?.wait_id === record.wait_id
+  );
+  const legacy =
+    refusal?.kind === 'external_resume' && legacy_matches
+      ? {
+          bead_id: record.bead_id,
+          kind: /** @type {const} */ ('conversation_handoff'),
+          reason: refusal.reason,
+          at: refusal.at,
+          version: 0,
+          session_ref: null,
+          owner_tmux: null
+        }
+      : null;
   return {
+    ...(record.stage === 'completing' && (stored || legacy)
+      ? { feedback: stored || legacy }
+      : {}),
     wait_id: record.wait_id,
     root_dir: record.root_dir,
     bead_id: record.bead_id,
@@ -301,7 +338,13 @@ export function createWaitJudge(deps) {
         rerun = true;
         return;
       }
-      const external_waits = records.map(projectExternalWait);
+      const external_waits = records.map((record) =>
+        projectExternalWait(
+          record,
+          queue,
+          material.snapshot?.id_index?.get(record.bead_id)?.metadata
+        )
+      );
       const result = judgeWaitReasons({
         root_dir: deps.workspace,
         queue,
@@ -2690,7 +2733,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
  */
 const ATTACHMENTS = new Map();
 
-/** @type {WeakMap<object, Map<string, { onRecordChanged: () => Promise<void>, onCompletion: (record: import('./external-wait/store.js').WaitRecord) => Promise<void>, resume: import('./external-wait/service.js').ResumeHook, stop: () => void }>>} */
+/** @type {WeakMap<object, Map<string, { onRecordChanged: (record?: import('./external-wait/store.js').WaitRecord) => Promise<void>, onCompletion: (record: import('./external-wait/store.js').WaitRecord) => Promise<void>, resume: import('./external-wait/service.js').ResumeHook, stop: () => void }>>} */
 const EXTERNAL_WAIT_HOOKS = new WeakMap();
 
 /**
@@ -2747,7 +2790,15 @@ export function bindExternalWaitHooks({
   /** @type {Map<string, () => void>} */
   const subscriptions = new Map();
   const binding = {
-    async onRecordChanged() {
+    /** @param {import('./external-wait/store.js').WaitRecord} [record] */
+    async onRecordChanged(record) {
+      if (record && ['resumed', 'stopped', 'done'].includes(record.stage)) {
+        runtime.queueStore.recordExternalWaitFeedback(
+          workspace,
+          record.wait_id,
+          null
+        );
+      }
       await refreshWorkerWaitReasons(workspace);
     },
     /** @param {import('./external-wait/store.js').WaitRecord} record */
@@ -2777,7 +2828,7 @@ export function bindExternalWaitHooks({
           const result = await scheduler.resumeExternalWait(
             workspace,
             record.wait_id,
-            { mode: 'fork' }
+            { mode: 'fork', automatic: true }
           );
           if (result.ok || result.reason !== 'origin_running') {
             subscriptions.get(record.wait_id)?.();
@@ -2824,8 +2875,8 @@ export function bindExternalWaitHooks({
   bindings.set(workspace, binding);
   const by_workspace = bindings;
   runtime.setExternalWaitHooks({
-    onRecordChanged: async (ws) => {
-      await by_workspace.get(ws)?.onRecordChanged();
+    onRecordChanged: async (ws, record) => {
+      await by_workspace.get(ws)?.onRecordChanged(record);
     },
     onCompletion: async (ws, record) => {
       await by_workspace.get(ws)?.onCompletion(record);
@@ -4277,8 +4328,36 @@ export function workerWaitState(workspace_root) {
     wait_reasons: att?.waitJudge ? att.waitJudge.get().wait_reasons : [],
     external_waits: getWorkerRuntime()
       .externalWaitStore.list(key)
-      .map(projectExternalWait)
+      .map((record) =>
+        projectExternalWait(
+          record,
+          getWorkerRuntime().queueStore.snapshot(key),
+          peekWorkspaceSnapshot(key)?.id_index.get(record.bead_id)?.metadata
+        )
+      )
   };
+}
+
+/**
+ * Explicit owner check/focus shared by all card surfaces.
+ *
+ * @param {string} workspace_root
+ * @param {string} wait_id
+ * @param {{ bead_id: string, version: number, action: 'recheck'|'focus' }} input
+ */
+export async function inspectWorkerExternalWaitOwner(
+  workspace_root,
+  wait_id,
+  input
+) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  return att
+    ? att.scheduler.inspectExternalWaitOwner(
+        keyFor(workspace_root),
+        wait_id,
+        input
+      )
+    : { ok: false, reason: 'workspace_unattached' };
 }
 
 /**

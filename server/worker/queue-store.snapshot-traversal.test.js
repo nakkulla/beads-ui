@@ -149,6 +149,17 @@ function seedCollections() {
     conversation_refusals: {
       SESSION: { reason: 'refused', at: 1, kind: 'resolve' }
     },
+    external_wait_feedback: {
+      'w-0123456789ab': {
+        bead_id: 'SESSION',
+        kind: 'session_resume',
+        reason: 'owner_alive',
+        at: 1,
+        version: 1,
+        session_ref: 'claude:session@host',
+        owner_tmux: 'dev:@1.%1'
+      }
+    },
     spec_authoring_launches: {
       SPEC: { at: 1, session: 'not_launched', reason: 'disabled' }
     },
