@@ -960,7 +960,7 @@ describe('direction-inquiry click', () => {
 
     expect(resolveSessionAccounts).toHaveBeenCalledWith('/ws', BEAD, 'claude');
     expect(tmux.wrapper()).toContain(
-      "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '/opt/homebrew/bin/claude'"
+      "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '--allow-dangerously-skip-permissions' '--resume' 'claude-sid'"
     );
   });
 

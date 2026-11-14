@@ -20,12 +20,18 @@ const KEY = 'fixture-key-not-real';
 /** @type {string} */
 let dir;
 
+/** @type {ReturnType<typeof createPairCache>[]} */
+const pair_caches = [];
+
 beforeEach(() => {
   vi.useFakeTimers();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-placement-service-'));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const cache of pair_caches.splice(0)) {
+    await cache.flush();
+  }
   vi.useRealTimers();
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -101,6 +107,7 @@ function serviceWith(options = {}) {
   const pairCache = createPairCache({
     file: options.file || path.join(dir, 'cache.json')
   });
+  pair_caches.push(pairCache);
   pairCache.load();
   const callLog = { append: vi.fn(async () => {}) };
   const keys =

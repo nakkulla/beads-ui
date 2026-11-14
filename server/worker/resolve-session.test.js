@@ -812,7 +812,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
         'claude'
       );
       expect(hubCommand(tmux.calls)).toContain(
-        "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '/usr/local/bin/claude'"
+        "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '--allow-dangerously-skip-permissions' '--session-id'"
       );
     }
   );

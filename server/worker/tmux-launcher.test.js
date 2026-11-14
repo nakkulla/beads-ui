@@ -914,7 +914,7 @@ describe('tmux-launcher session-lane launch input (UI-lbm5 §4.3)', () => {
     );
   });
 
-  test('runs claude through the account wrapper with its flag after claude', async () => {
+  test('passes claude arguments directly to the account wrapper', async () => {
     const hub = recordingHub();
     const launcher = createTmuxLauncher({
       runSessionHub: hub.runSessionHub,
@@ -945,7 +945,6 @@ describe('tmux-launcher session-lane launch input (UI-lbm5 §4.3)', () => {
       'me@example.com',
       '--share-history',
       '--',
-      '/usr/bin/claude',
       '--allow-dangerously-skip-permissions',
       '--session-id',
       'sid',

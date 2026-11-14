@@ -101,8 +101,8 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  * `CODEX_HOME` here is also the home the codex project trust is written to.
  * @property {{ executable: string, args: string[] }} [wrapper] - Run the
  * runner THROUGH this executable (the claude account's `cswap run <account>
- * --share-history --`): the argv becomes wrapper, its args, the runner
- * executable, then the runner's own arguments.
+ * --share-history --`): the wrapper starts the runner, so its args are
+ * followed directly by the runner's own arguments without its executable.
  */
 
 /**
@@ -836,8 +836,7 @@ export function createTmuxLauncher(deps = {}) {
       '--',
       ...(input.wrapper
         ? [input.wrapper.executable, ...input.wrapper.args]
-        : []),
-      executable,
+        : [executable]),
       ...(runner === 'claude' ? ['--allow-dangerously-skip-permissions'] : []),
       ...withLaunchFlags(
         runner,
