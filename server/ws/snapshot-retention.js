@@ -1,9 +1,8 @@
 /**
  * Push-projection retention for the worker/monitor snapshots (UI-qbbg §4).
  *
- * Pure rules, no I/O: the persisted `queue.json` keeps every record it ever
- * held, and only what travels on the wire is bounded here. The judgment input
- * is ALWAYS the full overlaid raw snapshot — a rule that read its own trimmed
+ * Pure rules, no I/O: only what travels on the wire is bounded here. The
+ * judgment input is ALWAYS the full overlaid raw snapshot — a rule that read its own trimmed
  * output would resurrect old failures the moment a done row fell out of the
  * window, which is exactly the disagreement `workspaces_state.counts` (computed
  * from raw) would then expose.
@@ -253,7 +252,7 @@ function retainedOperationIds(raw, retained_beads) {
  * @param {number} now
  * @returns {{ beads: Set<string>, operations: Set<string> }}
  */
-function retainedSets(raw, now) {
+export function retainedSets(raw, now) {
   const beads = seedRetainedBeadIds(raw, now);
   const attempts = asRecord(raw.attempts);
   const operations = asRecord(raw.repo_operations);

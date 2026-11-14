@@ -22,6 +22,7 @@ import {
   guardHookDir,
   modelVisibilityFilePath,
   recordMigrationMarkerPath,
+  repoOperationArchivePath,
   retentionPolicyPath,
   sessionLogPath,
   timingSettingsFilePath,
@@ -36,6 +37,15 @@ test('places external waits beside the workspace queue', () => {
   const file = externalWaitFilePath(WS);
 
   expect(file).toBe(path.join(workspaceStateDir(WS), 'external-wait.json'));
+});
+
+test('places repo-operation archives beside each workspace queue', () => {
+  const file = repoOperationArchivePath(WS);
+
+  expect(file).toBe(
+    path.join(workspaceStateDir(WS), 'repo-operations-archive.jsonl')
+  );
+  expect(file).not.toBe(repoOperationArchivePath(`${WS}-other`));
 });
 
 /** @type {string | undefined} */

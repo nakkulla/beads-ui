@@ -105,6 +105,17 @@ export function queueFilePath(workspace_root) {
 
 /**
  * @param {string} workspace_root
+ * @returns {string} Per-workspace append-only repo-operation archive.
+ */
+export function repoOperationArchivePath(workspace_root) {
+  return path.join(
+    workspaceStateDir(workspace_root),
+    'repo-operations-archive.jsonl'
+  );
+}
+
+/**
+ * @param {string} workspace_root
  * @returns {string} Per-workspace external wait ledger path.
  */
 export function externalWaitFilePath(workspace_root) {

@@ -107,6 +107,7 @@ import {
   createRecordRetention
 } from './record-retention.js';
 import { createRecoveryArchive } from './recovery-archive.js';
+import { createRepoOperationArchive } from './repo-operation-archive.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationMigration } from './repo-operation-migration.js';
 import {
@@ -917,6 +918,7 @@ export function defaultProbePid(pid) {
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   timeline?: ReturnType<typeof createBeadTimeline>,
  *   recordRetention?: ReturnType<typeof createRecordRetention>,
+ *   repoOperationArchive?: ReturnType<typeof createRepoOperationArchive>,
  *   providerHealth?: ReturnType<typeof createProviderHealth>,
  *   repoOperationMigration?: { run: () => Promise<any> },
  *   autoAdvanceRestore?: ReturnType<typeof createAutoAdvanceRestoreController>,
@@ -1024,6 +1026,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       timeline,
       readStatus: (/** @type {string} */ bead_id) => bd.readStatus(bead_id)
     });
+  const repo_operation_archive =
+    options.repoOperationArchive ||
+    createRepoOperationArchive({ workspace_root, store: runtime.queueStore });
 
   // The daily retention pass. Like the reconciler this uses `createPoller` for
   // its unref'd interval and double-start guard with a constant client count:
@@ -1033,6 +1038,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     intervalSeconds: RECORD_RETENTION_INTERVAL_SECONDS,
     getClientCount: () => 1,
     onTick: () => {
+      repo_operation_archive.sweep();
       Promise.resolve(recordRetention.sweep()).catch((err) => {
         log('record retention pass failed for %s: %o', workspace_root, err);
       });
@@ -2653,6 +2659,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repoOperationCoordinator,
     repoOperationMigration,
     recordRetention,
+    repoOperationArchive: repo_operation_archive,
     recordRetentionPoller,
     providerHealth,
     stopProviderHoldFanout,
@@ -3372,6 +3379,9 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   // The startup retention pass and its daily timer (§8.2). Fire-and-forget:
   // archiving a month-old transcript is never on the path of anything a client
   // is waiting for, and a failed pass simply runs again tomorrow.
+  // A sibling pass shares the cadence without waiting on per-bead bd reads or
+  // letting transcript retention failure block queue compaction.
+  att.repoOperationArchive?.sweep();
   Promise.resolve(att.recordRetention?.sweep()).catch((err) => {
     log('startup record retention pass failed for %s: %o', key, err);
   });

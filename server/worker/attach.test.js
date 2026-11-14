@@ -13,6 +13,7 @@ import { notifyAccountSwitched } from '../routes/account-switch.js';
 import { attemptsWithUsage } from '../ws/worker-handlers.js';
 import {
   RECONCILE_INTERVAL_SECONDS,
+  RECORD_RETENTION_INTERVAL_SECONDS,
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest,
   bindExternalWaitHooks,
@@ -2265,13 +2266,17 @@ describe('worker/attach construction + live loop (F1)', () => {
       }),
       sweep: vi.fn(async () => ({ archived: 0, deleted: 0, closed: 0 }))
     };
+    const repo_operation_archive = {
+      sweep: vi.fn(() => ({ archived: 0 }))
+    };
     const att = createWorkerAttachment(WS, {
       runtime,
       bd: fakeBd(),
       worktree: fakeWorktree,
       verify: okVerify,
       spawn_impl: makeFixtureSpawn({ lines: [] }),
-      recordRetention
+      recordRetention,
+      repoOperationArchive: repo_operation_archive
     });
     __registerWorkerAttachmentForTest(WS, att);
 
@@ -2279,7 +2284,58 @@ describe('worker/attach construction + live loop (F1)', () => {
     await waitFor(() => recordRetention.sweep.mock.calls.length > 0);
 
     expect(recordRetention.migrate).toHaveBeenCalledTimes(1);
+    expect(repo_operation_archive.sweep).toHaveBeenCalledTimes(1);
+    expect(recordRetention.migrate.mock.invocationCallOrder[0]).toBeLessThan(
+      repo_operation_archive.sweep.mock.invocationCallOrder[0]
+    );
     expect(runtime.queueStore.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('archives repo operations every day even when transcript retention fails', async () => {
+    vi.useFakeTimers();
+    const record_retention = {
+      policy: () => ({ archive_days: 30, delete_days: 180 }),
+      migrate: () => ({
+        ok: true,
+        skipped: true,
+        records: 0,
+        moved: 0,
+        events: 0
+      }),
+      sweep: vi.fn(async () => {
+        throw new Error('retention unavailable');
+      })
+    };
+    const repo_operation_archive = { sweep: vi.fn(() => ({ archived: 0 })) };
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      recordRetention: record_retention,
+      repoOperationArchive: repo_operation_archive,
+      getSubscriberCount: () => 0
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+    try {
+      att.recordRetentionPoller.start();
+
+      await vi.advanceTimersByTimeAsync(
+        RECORD_RETENTION_INTERVAL_SECONDS * 1000 - 1
+      );
+      expect(repo_operation_archive.sweep).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(
+        RECORD_RETENTION_INTERVAL_SECONDS * 1000
+      );
+
+      expect(repo_operation_archive.sweep).toHaveBeenCalledTimes(2);
+      expect(record_retention.sweep).toHaveBeenCalledTimes(2);
+    } finally {
+      att.recordRetentionPoller.stop();
+      vi.useRealTimers();
+    }
   });
 
   test('migrates legacy queue prompts before startup recovery runs', async () => {

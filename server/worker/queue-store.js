@@ -9213,6 +9213,27 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Remove records already appended to the repo-operation archive in one persist.
+     * The archive pass selects and appends synchronously before calling this method.
+     *
+     * @param {string} workspace
+     * @param {{ operation_ids: string[] }} input
+     * @returns {QueueOpResult}
+     */
+    removeArchivedRepoOperations(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        let changed = false;
+        for (const operation_id of input.operation_ids) {
+          if (next.repo_operations[operation_id]?.state === 'succeeded') {
+            delete next.repo_operations[operation_id];
+            changed = true;
+          }
+        }
+        return changed;
+      });
+    },
+
+    /**
      * Create or adopt a durable queued operation. This is the write-ahead
      * record the coordinator must receive before it asks the runner to spawn.
      *
