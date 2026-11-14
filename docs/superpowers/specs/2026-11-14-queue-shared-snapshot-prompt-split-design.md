@@ -64,9 +64,23 @@ scope:
   server/worker/scheduler.js:5758, server/worker/scheduler.js:13937,
   server/worker/wait-judgment.js:149, server/worker/attempt-failure.js:32,
   server/worker/pr-poller.js:115
-- 배포 기록 전체를 훑는 조회 중 성공 기록에 기대는 것은 두 가지다: 수정 대기의
-  착지 판정, 저장소별 최신 수동 배포 — server/worker/scheduler.js:12788,
-  server/worker/scheduler.js:12671, server/worker/resolution-ladder.js:46
+- 배포 기록 전체를 훑는 조회 중 성공 기록에 기대는 것은 네 가지다: 수정 대기의
+  착지 판정, 저장소별 최신 수동 배포, 재시도 사슬의 끝 찾기(`retry_of`), 실패를
+  덮는 성공 찾기(커버리지 정리) — server/worker/scheduler.js:12788,
+  server/worker/scheduler.js:12671, server/worker/resolution-ladder.js:46,
+  server/worker/repo-operation-coordinator.js:257,
+  server/worker/repo-operation-coordinator.js:3500,
+  server/worker/repo-operation-coordinator.js:598,
+  server/worker/repo-operation-coordinator.js:682
+- 커버리지 정리는 기록이 끝날 때와 서버 시작 때 돈다 —
+  server/worker/repo-operation-coordinator.js:1156,
+  server/worker/repo-operation-coordinator.js:3982
+- `paused`·`stopped`·`waiting`·처리 안 된 `failed`는 처리 끝난 기록이 아니어서
+  큐에 남는다 — server/worker/queue-store.js:6627, server/worker/queue-store.js:6646
+- 기존 기록 보관 점검은 서버 시작 때와 24시간마다 돈다 —
+  server/worker/attach.js:436, server/worker/attach.js:1032
+- 화면 푸시는 남기는 Bead마다 이관 attempt 기록 디렉터리를 동기로 다시 읽는다 —
+  server/ws/worker-handlers.js:3757, server/worker/queue-store.js:7758
 - 얼린 실제 큐 세 개로 화면 투영 규칙을 돌려도 예외가 없다 — 명령:
   `Object.freeze`를 재귀 적용한 `queue.json`에 `trimQueueProjection`·`doneAtByBead`
   실행(beads-ui, dotfiles, Cortex)
@@ -90,7 +104,8 @@ scope:
 비목표:
 
 - 완료 목록(`done`) 정리. 서버 판정이 착지 증거로 읽고 크기도 약 77KB다.
-- `paused`·`failed`·`waiting` attempt 정리. 화면에 보이는 재개 가능한 상태다.
+- `paused`·`failed`·`waiting` attempt 정리. 처리 끝난 기록이 아니어서 화면과
+  재개 판정이 계속 읽는다.
 - 재전송 횟수 줄이기와 `decorateQueue` 내부 비용. 배포 뒤 다시 재어 판단한다.
 - 프롬프트 파일의 수명 규칙.
 - UI-j8r7의 무한 재전송 수리(`dc18903c`로 착지).
@@ -141,6 +156,13 @@ scope:
     착지 판정이 여기에 든다.
   - 저장소·종류·출처 조합마다 가장 최근 기록. 최신 수동 배포 조회가 여기에 든다.
   - `recovery` 기록이 붙은 기록.
+  - 같은 저장소·종류에 대체되지 않고 처리되지 않은 `failed` 기록이 하나라도 있으면,
+    그 저장소·종류의 성공 기록 전부. 커버리지 정리가 그 실패를 덮을 성공을 찾을 수
+    있어야 한다.
+- 결정: 연결된 기록은 함께 남거나 함께 옮긴다. 남기는 기록과 `retry_of` 또는
+  `superseded_by`로 어느 방향이든 이어진 기록은 남기고, 이 규칙을 더 늘어나지
+  않을 때까지 반복 적용한다 — 오래된 `실패 A → 성공 재시도 B`에서 B만 옮기면
+  재시도 사슬의 끝이 A의 실패로 바뀐다.
 - 옮길 기록은 워크스페이스별 보관 파일에 한 줄씩 덧붙인 뒤(예:
   `repo-operations-archive.jsonl`), 한 번의 큐 변이로 뺀다. 덧붙이기가 실패하면
   빼지 않는다. 중간에 죽어 같은 기록이 두 번 덧붙어도 id로 구분된다.
@@ -173,8 +195,11 @@ scope:
 - 이관: 필드가 남은 큐를 적재하면 파일이 생기고 필드가 사라진다. 다시 돌려도
   결과가 같다. 파일 쓰기가 실패한 attempt는 필드가 남는다.
 - 타임라인 응답과 큐 푸시에 두 필드가 없다.
-- 보관: 30일 지난 성공 기록만 빠지고, 4.3의 보존 조건 다섯 가지 각각이 기록을
+- 보관: 30일 지난 성공 기록만 빠지고, 4.3의 보존 조건 여섯 가지 각각이 기록을
   남긴다. 덧붙이기 실패 때 큐가 그대로다.
+- 보관 전후로 재시도 사슬의 끝(`currentTipOf`·`verifyReceipt`)과 커버리지 정리
+  결과가 같다: 오래된 `실패 A → 성공 재시도 B`, 오래된 성공이 덮는 미처리 실패,
+  `superseded_by`로 이어진 오래된 쌍.
 - 기존 전체 테스트 묶음이 얼린 스냅샷으로 통과한다.
 
 ## 7. 수용 기준
