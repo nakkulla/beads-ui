@@ -12751,6 +12751,52 @@ describe('worker/queue-store — external OPEN PR 레인 reconcile (UI-75xw)', (
     expect(result.queue.pr_wait[0].serial_lane_id).toBeUndefined();
   });
 
+  test.each(['parallel', 's1'])(
+    'preserves other members of %s when reconciling its middle row',
+    (lane) => {
+      const store = createQueueStore();
+      for (const bead_id of ['A', 'UI-ext', 'B']) {
+        store.place(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          bead_id,
+          lane
+        });
+      }
+
+      const result = reconcile(store);
+
+      expect(result.ok).toBe(true);
+      const entries =
+        lane === 'parallel'
+          ? result.queue.queue
+          : result.queue.serial_lanes[0].entries;
+      expect(entries.map((entry) => entry.bead_id)).toEqual(['A', 'B']);
+      expect(result.queue.pr_wait[0]).toMatchObject({
+        bead_id: 'UI-ext',
+        pr_url: 'https://github.com/o/r/pull/75',
+        head_ref: 'UI-ext'
+      });
+    }
+  );
+
+  test.each([...TERMINAL_ATTEMPT_STATUSES])(
+    'reconciles a waiting member after a %s attempt',
+    (status) => {
+      const store = createQueueStore();
+      placeExternal(store);
+      appendExternalAttempt(store, status);
+
+      const result = reconcile(store);
+
+      expect(result.ok).toBe(true);
+      expect(result.queue.pr_wait[0]).toMatchObject({
+        bead_id: 'UI-ext',
+        serial_lane_id: 's1'
+      });
+      expect(result.queue.attempts[`attempt-${status}`].status).toBe(status);
+    }
+  );
+
   test('does not move a nonmember', () => {
     const store = createQueueStore();
 

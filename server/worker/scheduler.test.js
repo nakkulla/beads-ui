@@ -18511,7 +18511,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
    * An external bead as bd really holds it: `resolved`, hence blocked and not
    * ready — the two verdicts this dispatch must NOT consult.
    *
-   * @param {{ bead?: Record<string, any>, registry?: boolean, defaults?: Record<string, string>, store?: any, execPresetCoordinator?: any, notify?: any, homeDir?: string }} [over]
+   * @param {{ bead?: Record<string, any>, registry?: boolean, externalPrs?: Record<string, any>, defaults?: Record<string, string>, store?: any, execPresetCoordinator?: any, notify?: any, homeDir?: string, guardHook?: any, makeRunner?: (name: string) => any }} [over]
    */
   function extEnv(over = {}) {
     const env = setup({
@@ -18530,7 +18530,12 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
       notify: over.notify,
       homeDir: over.homeDir,
       execPresetCoordinator: over.execPresetCoordinator,
-      externalPrs: over.registry === false ? undefined : { X1: EXT_ROW }
+      guardHook: over.guardHook,
+      makeRunner: over.makeRunner,
+      externalPrs:
+        over.registry === false
+          ? undefined
+          : over.externalPrs || { X1: EXT_ROW }
     });
     if (over.defaults) {
       seedExecDefaults(env.store, over.defaults);
@@ -18551,6 +18556,738 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     });
     store.updateAttempt(WS, { attempt_id: 'prev-1', patch });
   }
+
+  /**
+   * Use the real store for both fresh and attempt-derived external launches.
+   *
+   * @param {boolean} [repeated]
+   * @param {Parameters<typeof extEnv>[0]} [over]
+   */
+  function reconcileEnv(repeated = false, over = {}) {
+    /** @type {Record<string, any>} */
+    const external_prs = { X1: { ...EXT_ROW } };
+    const guard_hook = {
+      install: vi.fn(() => ({ ok: true })),
+      envFor: vi.fn(() => ({})),
+      remove: vi.fn()
+    };
+    const env = extEnv({
+      externalPrs: external_prs,
+      guardHook: guard_hook,
+      ...over
+    });
+    if (repeated) {
+      seedRunningAttempt(env.store, {
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'claude',
+        model: 'opus',
+        effort: 'high',
+        session_id: 'prior-external-session',
+        external_conflict: true,
+        finished_at: 50
+      });
+    }
+    return {
+      ...env,
+      external_prs,
+      guard_hook,
+      /** @param {string|null} [head_ref] */
+      launch(head_ref = 'observed-head') {
+        return env.scheduler.dispatchExternalConflict(
+          WS,
+          'X1',
+          'main',
+          null,
+          {},
+          head_ref
+        );
+      }
+    };
+  }
+
+  /**
+   * Assert a refused dispatch made no execution changes.
+   *
+   * @param {ReturnType<typeof reconcileEnv>} env
+   * @param {import('./queue-store.js').Queue} before
+   */
+  function expectReconcileRefusal(env, before) {
+    expect(env.store.snapshot(WS)).toEqual(before);
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.guard_hook.install).not.toHaveBeenCalled();
+    expect(env.bd.calls).toEqual([]);
+  }
+
+  describe.each([false, true])(
+    'waiting-lane reconciliation repeated=%s',
+    (repeated) => {
+      test.each([
+        ['s1', ['X1', 'A', 'B']],
+        ['s1', ['A', 'X1', 'B']],
+        ['parallel', ['A', 'X1', 'B']]
+      ])('moves %s %j to pr_wait before launching once', async (lane, ids) => {
+        const env = reconcileEnv(repeated);
+        seedLanes(env.store, { [lane]: ids, s2: ['C', 'D'] });
+        const before = env.store.snapshot(WS);
+        const reconcile = vi.spyOn(env.store, 'reconcileExternalPrWait');
+
+        const result = await env.launch();
+
+        expect(result.ok).toBe(true);
+        const q = env.store.snapshot(WS);
+        expect(q.queue.map((entry) => entry.bead_id)).toEqual(
+          lane === 'parallel' ? ['A', 'B'] : []
+        );
+        expect(q.serial_lanes[0].entries.map((entry) => entry.bead_id)).toEqual(
+          lane === 's1' ? ['A', 'B'] : []
+        );
+        expect(q.serial_lanes[1]).toEqual(before.serial_lanes[1]);
+        expect(q.pr_wait).toEqual([
+          expect.objectContaining({
+            bead_id: 'X1',
+            pr_url: EXT_ROW.pr_url,
+            head_ref: 'observed-head',
+            ...(lane === 's1' ? { serial_lane_id: 's1' } : {})
+          })
+        ]);
+        expect(q.merge_queue).toEqual(before.merge_queue);
+        expect(q.merge_shelved).toEqual(before.merge_shelved);
+        expect(q.attempts[String(result.attempt_id)].serial_lane_id).toBe(
+          lane === 's1' ? 's1' : null
+        );
+        expect(Object.keys(q.attempts)).toHaveLength(repeated ? 2 : 1);
+        expect(reconcile).toHaveBeenCalledOnce();
+        expect(env.runner.spawnOrder).toEqual(['X1']);
+        if (repeated) {
+          expect(q.attempts[String(result.attempt_id)]).toMatchObject({
+            resumed_from: 'prev-1',
+            continuation_mode: 'session'
+          });
+          expect(env.runner.settingsFor('X1').resume_session_id).toBe(
+            'prior-external-session'
+          );
+        }
+      });
+
+      test.each(['running', 'paused', 'pending', null])(
+        'preserves a waiting row owned by a %s attempt',
+        async (status) => {
+          const env = reconcileEnv(repeated);
+          seedLanes(env.store, { s1: ['A', 'X1', 'B'] });
+          env.store.appendAttempt(WS, {
+            expected_revision: env.store.snapshot(WS).revision,
+            attempt: { attempt_id: 'active', bead_id: 'X1', status }
+          });
+          const before = env.store.snapshot(WS);
+
+          const result = await env.launch();
+
+          expect(result).toEqual({
+            ok: false,
+            reason:
+              status === 'running'
+                ? 'bead_running'
+                : 'external_pr_attempt_not_terminal'
+          });
+          expectReconcileRefusal(env, before);
+        }
+      );
+
+      test.each(['pr_wait', 'none', 'poller'])(
+        'launches from %s without requiring a successful reconcile boolean',
+        async (placement) => {
+          const env = reconcileEnv(repeated);
+          const reconcile = env.store.reconcileExternalPrWait.bind(env.store);
+          if (placement !== 'none') {
+            seedLanes(env.store, { s1: ['X1'] });
+          }
+          if (placement === 'pr_wait') {
+            reconcile(WS, {
+              bead_id: 'X1',
+              pr_url: EXT_ROW.pr_url,
+              head_ref: 'observed-head'
+            });
+          }
+          const move = vi
+            .spyOn(env.store, 'reconcileExternalPrWait')
+            .mockImplementation((workspace, input) => {
+              reconcile(workspace, input);
+              return reconcile(workspace, input);
+            });
+
+          const result = await env.launch();
+
+          expect(result.ok).toBe(true);
+          expect(env.runner.spawnOrder).toEqual(['X1']);
+          expect(move).toHaveBeenCalledTimes(placement === 'poller' ? 1 : 0);
+          if (placement === 'poller') {
+            expect(move.mock.results[0].value.ok).toBe(false);
+            expect(env.store.snapshot(WS).pr_wait[0].bead_id).toBe('X1');
+          }
+        }
+      );
+
+      test.each([
+        ['pr_wait', 'withdrawn'],
+        ['pr_wait', 'resumed'],
+        ['none', 'withdrawn'],
+        ['none', 'resumed']
+      ])(
+        'launches from %s with a pre-existing %s paused attempt',
+        async (placement, history) => {
+          const env = reconcileEnv(repeated);
+          if (placement === 'pr_wait') {
+            seedLanes(env.store, { s1: ['X1'] });
+            env.store.reconcileExternalPrWait(WS, {
+              bead_id: 'X1',
+              pr_url: EXT_ROW.pr_url,
+              head_ref: 'observed-head'
+            });
+          }
+          env.store.appendAttempt(WS, {
+            expected_revision: env.store.snapshot(WS).revision,
+            attempt: {
+              attempt_id: 'paused-history',
+              bead_id: 'X1',
+              status: 'paused',
+              ...(history === 'withdrawn'
+                ? {
+                    cause: 'withdrawn',
+                    withdrawn: {
+                      at: 1,
+                      from_status: 'running',
+                      from_cause: null
+                    }
+                  }
+                : {})
+            }
+          });
+          if (history === 'resumed') {
+            env.store.appendAttempt(WS, {
+              expected_revision: env.store.snapshot(WS).revision,
+              attempt: {
+                attempt_id: 'history-child',
+                bead_id: 'X1',
+                status: 'done',
+                resumed_from: 'paused-history'
+              }
+            });
+          }
+          const before = env.store.snapshot(WS);
+          const reconcile = vi.spyOn(env.store, 'reconcileExternalPrWait');
+
+          const result = await env.launch();
+
+          expect(result.ok).toBe(true);
+          const q = env.store.snapshot(WS);
+          expect(q.pr_wait).toEqual(before.pr_wait);
+          expect(q.attempts['paused-history']).toEqual(
+            before.attempts['paused-history']
+          );
+          expect(Object.keys(q.attempts)).toHaveLength(
+            Object.keys(before.attempts).length + 1
+          );
+          expect(q.attempts[String(result.attempt_id)].resumed_from).toBe(
+            repeated ? 'prev-1' : null
+          );
+          expect(reconcile).not.toHaveBeenCalled();
+          expect(env.runner.spawnOrder).toEqual(['X1']);
+        }
+      );
+
+      test.each([
+        'discard',
+        'done',
+        'registry',
+        'head_ref',
+        'pr_url',
+        'throw',
+        'no_move'
+      ])('refuses %s before recording any execution', async (cause) => {
+        const env = reconcileEnv(repeated);
+        seedLanes(env.store, { s1: ['A', 'X1', 'B'] });
+        if (cause === 'discard') {
+          seedActiveDiscard(env.store, 'X1');
+        } else if (cause === 'done') {
+          env.store.moveToDone(WS, { bead_id: 'X1' });
+        } else if (cause === 'registry') {
+          delete env.external_prs.X1;
+        } else if (cause === 'pr_url') {
+          env.external_prs.X1.pr_url = '';
+        } else if (cause === 'throw') {
+          vi.spyOn(env.store, 'reconcileExternalPrWait').mockImplementation(
+            () => {
+              throw new Error('store unavailable');
+            }
+          );
+        } else if (cause === 'no_move') {
+          vi.spyOn(env.store, 'reconcileExternalPrWait').mockImplementation(
+            () => ({ ok: true, conflict: false, queue: env.store.snapshot(WS) })
+          );
+        }
+        const before = env.store.snapshot(WS);
+
+        const result = await env.launch(
+          cause === 'head_ref' ? null : 'observed-head'
+        );
+
+        expect(result).toEqual({
+          ok: false,
+          reason:
+            cause === 'discard'
+              ? 'discard_in_progress'
+              : cause === 'done'
+                ? 'external_pr_already_done'
+                : cause === 'registry'
+                  ? 'not_external'
+                  : 'external_pr_reconcile_failed'
+        });
+        expectReconcileRefusal(env, before);
+      });
+
+      test.each([
+        'running',
+        'paused',
+        'discard',
+        'registry',
+        'done',
+        'waiting_refused'
+      ])(
+        'fences %s introduced after acquiring the launch lease',
+        async (cause) => {
+          const env = reconcileEnv(repeated);
+          seedLanes(env.store, { s1: ['A', 'X1', 'B'] });
+          const snapshotBead = env.bd.snapshotBead.bind(env.bd);
+          let reads = 0;
+          let injected = env.store.snapshot(WS);
+          vi.spyOn(env.bd, 'snapshotBead').mockImplementation(
+            async (bead_id) => {
+              const snap = await snapshotBead(bead_id);
+              reads += 1;
+              if (reads === 2) {
+                if (cause === 'running' || cause === 'paused') {
+                  env.store.appendAttempt(WS, {
+                    expected_revision: env.store.snapshot(WS).revision,
+                    attempt: {
+                      attempt_id: 'racing',
+                      bead_id: 'X1',
+                      status: cause
+                    }
+                  });
+                } else if (cause === 'discard') {
+                  seedActiveDiscard(env.store, 'X1');
+                } else if (cause === 'registry') {
+                  delete env.external_prs.X1;
+                } else if (cause === 'done') {
+                  env.store.moveToDone(WS, { bead_id: 'X1' });
+                } else {
+                  const placed = env.store.place(WS, {
+                    expected_revision: env.store.snapshot(WS).revision,
+                    bead_id: 'X1',
+                    lane: 's1',
+                    index: 1
+                  });
+                  expect(placed.ok).toBe(true);
+                  vi.spyOn(
+                    env.store,
+                    'reconcileExternalPrWait'
+                  ).mockImplementation(() => ({
+                    ok: false,
+                    conflict: false,
+                    queue: env.store.snapshot(WS)
+                  }));
+                }
+                injected = env.store.snapshot(WS);
+              }
+              return snap;
+            }
+          );
+
+          const result = await env.launch();
+
+          expect(reads).toBe(2);
+          expect(result).toEqual({
+            ok: false,
+            reason:
+              cause === 'running'
+                ? 'bead_running'
+                : cause === 'paused'
+                  ? 'external_pr_attempt_not_terminal'
+                  : cause === 'discard'
+                    ? 'discard_in_progress'
+                    : cause === 'registry'
+                      ? 'not_external'
+                      : cause === 'done'
+                        ? 'external_pr_already_done'
+                        : 'external_pr_reconcile_failed'
+          });
+          expectReconcileRefusal(env, injected);
+        }
+      );
+
+      test.each([false, true])(
+        'reconciles a late placement with initial membership=%s and records its final lane',
+        async (initial_waiting) => {
+          const env = reconcileEnv(repeated);
+          seedLanes(env.store, {
+            s1: initial_waiting ? ['X1'] : [],
+            s2: ['A', 'B']
+          });
+          const snapshotBead = env.bd.snapshotBead.bind(env.bd);
+          let reads = 0;
+          vi.spyOn(env.bd, 'snapshotBead').mockImplementation(
+            async (bead_id) => {
+              const snap = await snapshotBead(bead_id);
+              reads += 1;
+              if (reads === 2) {
+                expect(
+                  env.store.place(WS, {
+                    expected_revision: env.store.snapshot(WS).revision,
+                    bead_id: 'X1',
+                    lane: 's2',
+                    index: 1
+                  }).ok
+                ).toBe(true);
+              }
+              return snap;
+            }
+          );
+
+          const result = await env.launch();
+
+          expect(result.ok).toBe(true);
+          const q = env.store.snapshot(WS);
+          expect(q.serial_lanes[0].entries).toEqual([]);
+          expect(
+            q.serial_lanes[1].entries.map((entry) => entry.bead_id)
+          ).toEqual(['A', 'B']);
+          expect(q.pr_wait[0]).toMatchObject({
+            bead_id: 'X1',
+            serial_lane_id: 's2'
+          });
+          expect(q.attempts[String(result.attempt_id)].serial_lane_id).toBe(
+            's2'
+          );
+          expect(env.runner.spawnOrder).toEqual(['X1']);
+        }
+      );
+
+      test('keeps the reconciled PR-wait entry when settings refuse execution', async () => {
+        const env = reconcileEnv(repeated, {
+          execPresetCoordinator: {
+            resolveForDispatch: vi.fn(() => ({
+              ok: false,
+              reason: 'default_exec_preset_missing'
+            }))
+          }
+        });
+        seedLanes(env.store, { s1: ['A', 'X1', 'B'] });
+        const before = env.store.snapshot(WS);
+
+        const result = await env.launch();
+
+        expect(result).toEqual({
+          ok: false,
+          reason: 'default_exec_preset_missing'
+        });
+        const q = env.store.snapshot(WS);
+        expect(q.pr_wait[0]).toMatchObject({
+          bead_id: 'X1',
+          serial_lane_id: 's1'
+        });
+        expect(q.attempts).toEqual(before.attempts);
+        expect(env.guard_hook.install).not.toHaveBeenCalled();
+        expect(env.bd.calls).toEqual([]);
+        expect(env.runner.spawnOrder).toEqual([]);
+      });
+
+      test('launches exactly once for two simultaneous clicks', async () => {
+        const env = reconcileEnv(repeated);
+        seedLanes(env.store, { s1: ['A', 'X1', 'B'] });
+        const append = vi.spyOn(env.store, 'appendAttempt');
+
+        const results = await Promise.all([env.launch(), env.launch()]);
+
+        expect(results.filter((result) => result.ok)).toHaveLength(1);
+        expect(results.find((result) => !result.ok)).toEqual({
+          ok: false,
+          reason: 'bead_running'
+        });
+        expect(env.runner.spawnOrder).toEqual(['X1']);
+        expect(append).toHaveBeenCalledOnce();
+        expect(Object.keys(env.store.snapshot(WS).attempts)).toHaveLength(
+          repeated ? 2 : 1
+        );
+      });
+
+      test('refuses a concurrent click while a launch reservation is live', async () => {
+        const env = reconcileEnv(repeated);
+        seedLanes(env.store, { s1: ['X1'] });
+        const snapshotBead = env.bd.snapshotBead.bind(env.bd);
+        /** @type {() => void} */
+        let release = () => {};
+        const gate = new Promise((resolve) => {
+          release = () => resolve(undefined);
+        });
+        let reads = 0;
+        vi.spyOn(env.bd, 'snapshotBead').mockImplementation(async (bead_id) => {
+          reads += 1;
+          if (reads === 2) {
+            await gate;
+          }
+          return snapshotBead(bead_id);
+        });
+        const first = env.launch();
+        await flush();
+        const before = env.store.snapshot(WS);
+
+        const second = await env.launch();
+        release();
+        const result = await first;
+
+        expect(second).toEqual({ ok: false, reason: 'bead_running' });
+        expect(Object.keys(before.attempts)).toHaveLength(repeated ? 1 : 0);
+        expect(result.ok).toBe(true);
+        expect(env.runner.spawnOrder).toEqual(['X1']);
+      });
+
+      test.each(['guard', 'record', 'runner'])(
+        'keeps pr_wait and permits retry after %s failure',
+        async (failure) => {
+          const runner_factory = vi.fn();
+          const env = reconcileEnv(
+            repeated,
+            failure === 'runner' ? { makeRunner: runner_factory } : {}
+          );
+          seedLanes(env.store, { s1: ['A', 'X1', 'B'] });
+          if (failure === 'guard') {
+            env.guard_hook.install.mockReturnValueOnce({ ok: false });
+          } else if (failure === 'record') {
+            vi.spyOn(env.store, 'appendAttempt').mockImplementationOnce(
+              (workspace) => ({
+                ok: false,
+                conflict: false,
+                queue: env.store.snapshot(workspace)
+              })
+            );
+          } else {
+            runner_factory
+              .mockImplementation((/** @type {string} */ name) =>
+                env.runner.factory(name)
+              )
+              .mockReturnValueOnce({
+                name: 'claude',
+                spawn: () => {
+                  throw new Error('runner unavailable');
+                }
+              });
+          }
+
+          const result = await env.launch();
+
+          expect(result).toMatchObject({ ok: false });
+          expect(env.store.snapshot(WS).pr_wait[0]).toMatchObject({
+            bead_id: 'X1',
+            serial_lane_id: 's1'
+          });
+          const retry = await env.launch();
+          expect(retry.ok).toBe(true);
+          expect(env.runner.spawnOrder).toEqual(['X1']);
+        }
+      );
+    }
+  );
+
+  test('keeps the repeated launch CAS after a queue write preceding its final fence', async () => {
+    const env = reconcileEnv(true);
+    const before = env.store.snapshot(WS);
+    const snapshot = env.store.snapshot.bind(env.store);
+    const snapshotBead = env.bd.snapshotBead.bind(env.bd);
+    let reads = 0;
+    let injected = false;
+    /** @type {number|null} */
+    let observed_revision = null;
+    vi.spyOn(env.bd, 'snapshotBead').mockImplementation(async (bead_id) => {
+      const snap = await snapshotBead(bead_id);
+      reads += 1;
+      return snap;
+    });
+    vi.spyOn(env.store, 'snapshot').mockImplementation((workspace) => {
+      const q = snapshot(workspace);
+      if (reads !== 2 || injected) {
+        return q;
+      }
+      const revision = q.revision;
+      // Race immediately after the continuation observes its CAS revision.
+      return Object.defineProperty({ ...q }, 'revision', {
+        get: () => {
+          if (!injected) {
+            injected = true;
+            observed_revision = revision;
+            env.store.setAutoAdvance(WS, false);
+          }
+          return revision;
+        }
+      });
+    });
+    const reconcile = vi.spyOn(env.store, 'reconcileExternalPrWait');
+    const append = vi.spyOn(env.store, 'appendAttempt');
+
+    const result = await env.launch();
+
+    expect(reads).toBe(2);
+    expect(injected).toBe(true);
+    expect(result).toEqual({ ok: false, reason: 'attempt_prerecord_failed' });
+    expect(append).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ expected_revision: observed_revision })
+    );
+    expect(env.store.snapshot(WS).revision).toBe(Number(observed_revision) + 1);
+    expect(env.store.snapshot(WS).attempts).toEqual(before.attempts);
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.bd.calls).toEqual([]);
+  });
+
+  test.each([false, true])(
+    'inherits a terminal ordinary attempt seat with occupied=%s',
+    async (occupied) => {
+      const env = reconcileEnv();
+      seedRunningAttempt(env.store, { status: 'failed', serial_lane_id: 's1' });
+      if (occupied) {
+        env.store.appendAttempt(WS, {
+          expected_revision: env.store.snapshot(WS).revision,
+          attempt: {
+            attempt_id: 'other',
+            bead_id: 'OTHER',
+            status: 'failed',
+            serial_lane_id: 's1'
+          }
+        });
+      }
+
+      const result = await env.launch();
+
+      if (occupied) {
+        expect(result).toEqual({ ok: false, reason: 'serial_lane_occupied' });
+        expect(env.runner.spawnOrder).toEqual([]);
+      } else {
+        expect(result.ok).toBe(true);
+        expect(
+          env.store.snapshot(WS).attempts[String(result.attempt_id)]
+            .serial_lane_id
+        ).toBe('s1');
+      }
+    }
+  );
+
+  test.each([false, true])(
+    'reads another PR-wait origin with shelved=%s after reconciliation',
+    async (shelved) => {
+      const env = reconcileEnv();
+      seedLanes(env.store, { s1: ['OTHER', 'X1'] });
+      env.store.reconcileExternalPrWait(WS, {
+        bead_id: 'OTHER',
+        pr_url: 'https://example.test/pr/2',
+        head_ref: 'other-head'
+      });
+      if (shelved) {
+        env.store.setMergeShelved(WS, {
+          expected_revision: env.store.snapshot(WS).revision,
+          bead_id: 'OTHER',
+          on: true
+        });
+      }
+      const before = env.store.snapshot(WS);
+
+      const result = await env.launch();
+
+      const q = env.store.snapshot(WS);
+      expect(q.pr_wait.find((entry) => entry.bead_id === 'X1')).toMatchObject({
+        serial_lane_id: 's1'
+      });
+      expect(q.merge_shelved).toEqual(before.merge_shelved);
+      if (shelved) {
+        expect(result.ok).toBe(true);
+        expect(env.runner.spawnOrder).toEqual(['X1']);
+      } else {
+        expect(result).toEqual({ ok: false, reason: 'serial_lane_occupied' });
+        expect(env.guard_hook.install).not.toHaveBeenCalled();
+        expect(env.runner.spawnOrder).toEqual([]);
+      }
+    }
+  );
+
+  test.each([false, true])(
+    'preserves the repeated attempt lane over its reconciled origin with occupied=%s',
+    async (occupied) => {
+      const env = reconcileEnv(true);
+      seedLanes(env.store, { s1: ['X1'], s2: ['A'] });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'prev-1',
+        patch: { serial_lane_id: 's2' }
+      });
+      if (occupied) {
+        env.store.appendAttempt(WS, {
+          expected_revision: env.store.snapshot(WS).revision,
+          attempt: {
+            attempt_id: 'other',
+            bead_id: 'OTHER',
+            status: 'failed',
+            serial_lane_id: 's2'
+          }
+        });
+      }
+
+      const result = await env.launch();
+
+      const q = env.store.snapshot(WS);
+      expect(q.pr_wait[0]).toMatchObject({
+        bead_id: 'X1',
+        serial_lane_id: 's1'
+      });
+      if (occupied) {
+        expect(result).toEqual({ ok: false, reason: 'serial_lane_occupied' });
+        expect(env.runner.spawnOrder).toEqual([]);
+      } else {
+        expect(result.ok).toBe(true);
+        expect(q.attempts[String(result.attempt_id)]).toMatchObject({
+          resumed_from: 'prev-1',
+          serial_lane_id: 's2',
+          continuation_mode: 'session'
+        });
+        expect(env.runner.settingsFor('X1').resume_session_id).toBe(
+          'prior-external-session'
+        );
+      }
+    }
+  );
+
+  test('keeps a shelved external PR lane-free without clearing its origin', async () => {
+    const env = reconcileEnv();
+    seedLanes(env.store, { s1: ['X1'] });
+    env.store.reconcileExternalPrWait(WS, {
+      bead_id: 'X1',
+      pr_url: EXT_ROW.pr_url,
+      head_ref: 'observed-head'
+    });
+    env.store.setMergeShelved(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'X1',
+      on: true
+    });
+    const before = env.store.snapshot(WS);
+
+    const result = await env.launch();
+
+    expect(result.ok).toBe(true);
+    const q = env.store.snapshot(WS);
+    expect(q.pr_wait).toEqual(before.pr_wait);
+    expect(q.merge_shelved).toEqual(before.merge_shelved);
+    expect(q.attempts[String(result.attempt_id)].serial_lane_id).toBe(null);
+  });
 
   test('refuses an incompatible selected preset before external metadata mutation', async () => {
     const resolveForDispatch = vi.fn(() => ({
