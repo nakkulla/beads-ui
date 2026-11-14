@@ -18,14 +18,14 @@ import {
 /**
  * Digest of the fenced `text` block under `## Worker 세션 대화` in dotfiles
  * `src/shared/skills/flow/workflow/references/execution-common.md` at commit
- * `0b75f47718a394bc507a2b9c09833cb69af061cc` (dotfiles-6sc5i, UI-hozk),
- * taken over the block's inner content WITHOUT a trailing newline (8796
+ * `26f77f99207b59aed0fcd010ec7085bbf93d405a` (dotfiles-zoecz, UI-mmov),
+ * taken over the block's inner content WITHOUT a trailing newline (10417
  * bytes). The two repositories are deliberately NOT compared at runtime: the
  * Worker `[verify]` checkout has no dotfiles path, so a cross-repo read would
  * be a test that never runs.
  */
 const ENTRY_BLOCK_DIGEST =
-  '155f79b9f9cb2c89fa6c055d2c183a602d13b53c07baa2f1fa9a96538f46ae77';
+  'af6a260d0f1fa8c8c52a9d03ebad1ca8619b5c41fedc0dea684f0055cc6709c2';
 
 const BEAD = 'UI-7uid';
 const AWAITING = 'spec_review_stale:revise';
@@ -346,7 +346,7 @@ describe('direction-inquiry entry block', () => {
   test('carries no trailing newline', () => {
     const bytes = Buffer.byteLength(CONVERSATION_ENTRY_BLOCK, 'utf8');
 
-    expect(bytes).toBe(8796);
+    expect(bytes).toBe(10417);
     expect(CONVERSATION_ENTRY_BLOCK.endsWith('\n')).toBe(false);
   });
 
