@@ -11,6 +11,7 @@ import {
   readRetentionPolicy
 } from './record-retention.js';
 import {
+  attemptPromptPath,
   attemptRecordPath,
   beadArchivePath,
   beadSessionLogPath,
@@ -350,6 +351,20 @@ describe('retention sweep across both session locations', () => {
 });
 
 describe('retention sweep eligibility', () => {
+  test('preserves prompt files past the transcript deletion horizon', async () => {
+    const file = attemptPromptPath(WS, 'UI-a', 'UI-a-1');
+    writeFile(file, JSON.stringify({ task_prompt: 'permanent prompt' }));
+    const { retention, timeline } = makeRetention({
+      statuses: { 'UI-a': 'closed' }
+    });
+    recordEvent(timeline, 'UI-a', NOW - 200 * DAY_MS);
+
+    await retention.sweep();
+
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({
+      task_prompt: 'permanent prompt'
+    });
+  });
   test('excludes a bead bd does not report closed', async () => {
     const { retention, timeline } = makeRetention({
       statuses: { 'UI-a': 'in_progress' }

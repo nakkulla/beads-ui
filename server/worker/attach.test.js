@@ -29,6 +29,7 @@ import {
   workerSessionOwnerRefusal
 } from './attach.js';
 import * as attachModule from './attach.js';
+import { readAttemptPrompts } from './attempt-prompts.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import { prefixOfBeadId } from './foreign-blocker-status.js';
 import {
@@ -2279,6 +2280,56 @@ describe('worker/attach construction + live loop (F1)', () => {
 
     expect(recordRetention.migrate).toHaveBeenCalledTimes(1);
     expect(runtime.queueStore.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('migrates legacy queue prompts before startup recovery runs', async () => {
+    const runtime = createWorkerRuntime();
+    const store = runtime.queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'legacy-prompts',
+        bead_id: 'UI-1',
+        system_prompt: 'saved system',
+        task_prompt: 'saved task'
+      }
+    });
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      recordRetention: {
+        policy: () => ({ archive_days: 30, delete_days: 180 }),
+        migrate: () => ({
+          ok: true,
+          skipped: true,
+          records: 0,
+          moved: 0,
+          events: 0
+        }),
+        sweep: async () => ({ archived: 0, deleted: 0, closed: 0 })
+      }
+    });
+    const recover = vi
+      .spyOn(att.scheduler, 'recoverControls')
+      .mockImplementation(async () => {
+        expect(
+          store.snapshot(WS).attempts['legacy-prompts']
+        ).not.toHaveProperty('task_prompt');
+        expect(
+          readAttemptPrompts(WS, 'UI-1', 'legacy-prompts')?.task_prompt
+        ).toBe('saved task');
+      });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => recover.mock.calls.length > 0);
+
+    expect(store.snapshot(WS).attempts['legacy-prompts']).not.toHaveProperty(
+      'system_prompt'
+    );
   });
 
   test('starts no queue reader when the record migration did not finish', async () => {

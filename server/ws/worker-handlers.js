@@ -93,6 +93,10 @@ import {
   workerWorktreePath
 } from '../worker/attach.js';
 import {
+  findAttemptPrompts,
+  readAttemptPrompts
+} from '../worker/attempt-prompts.js';
+import {
   applyDefer,
   applyRevive,
   beadDeferLockKey,
@@ -3754,7 +3758,9 @@ export function decorateQueue(workspace_key, raw_queue) {
           // 이관 보충 기록도 큐에 남은 종료 attempt와 같은 장식을 거친다
           // (UI-ys18 §5.1) — 두 입력이 다른 답을 하면 같은 완료 행이 어느
           // 파일에 기록이 남았는지에 따라 다른 칩을 말한다.
-          transferredAttemptsFor(workspace_key, bead_id).map(withImplActor)
+          transferredAttemptsFor(workspace_key, bead_id).map((attempt) =>
+            withImplActor(stripPrompts(attempt))
+          )
       }
     );
     public_queue.done = trimmed.done;
@@ -4773,12 +4779,22 @@ const PREVIEW_TARGET_BASE = '<target_base>';
  * UI-rxp3 carries neither field, which is a fact about the record rather than
  * an error — the reader shows "기록 없음" (fail-quiet contract consumption).
  *
+ * @param {string} workspace
  * @param {any} attempt
  * @returns {{ attempt_id: string, system_prompt: string|null, task_prompt: string|null, recorded_at: number|null }|{ missing: true }}
  */
-function promptRecordOf(attempt) {
+function promptRecordOf(workspace, attempt) {
   if (!attempt || typeof attempt !== 'object') {
     return { missing: true };
+  }
+  const file =
+    typeof attempt.bead_id === 'string'
+      ? readAttemptPrompts(workspace, attempt.bead_id, attempt.attempt_id)
+      : null;
+  if (file) {
+    return file.system_prompt === null && file.task_prompt === null
+      ? { missing: true }
+      : file;
   }
   const system_prompt =
     typeof attempt.system_prompt === 'string' ? attempt.system_prompt : null;
@@ -4835,8 +4851,30 @@ export function handleGetAttemptPrompt(ws, req) {
     );
     return;
   }
-  const attempt = queueStore().snapshot(key).attempts[attempt_id];
-  ws.send(JSON.stringify(makeOk(req, promptRecordOf(attempt))));
+  let attempt = queueStore().snapshot(key).attempts[attempt_id];
+  if (!attempt) {
+    const file = findAttemptPrompts(key, attempt_id);
+    if (file) {
+      ws.send(
+        JSON.stringify(
+          makeOk(
+            req,
+            file.system_prompt === null && file.task_prompt === null
+              ? { missing: true }
+              : file
+          )
+        )
+      );
+      return;
+    }
+    const bead_id = beadOfTransferredAttempt(key, attempt_id);
+    if (bead_id !== null) {
+      attempt = transferredAttemptsFor(key, bead_id).find(
+        (row) => row.attempt_id === attempt_id
+      );
+    }
+  }
+  ws.send(JSON.stringify(makeOk(req, promptRecordOf(key, attempt))));
 }
 
 /**
@@ -4863,7 +4901,16 @@ export function handleGetBeadPrompt(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  const attempts = Object.values(queueStore().snapshot(key).attempts).filter(
+  const by_id = new Map(
+    transferredAttemptsFor(key, bead_id).map((attempt) => [
+      attempt.attempt_id,
+      attempt
+    ])
+  );
+  for (const attempt of Object.values(queueStore().snapshot(key).attempts)) {
+    by_id.set(attempt.attempt_id, attempt);
+  }
+  const attempts = [...by_id.values()].filter(
     // The panel asks what the bead's own dispatch was told to do; a review
     // session's prompt is a different question the same bead id would answer
     // (UI-hk74 §7).
@@ -4878,7 +4925,7 @@ export function handleGetBeadPrompt(ws, req) {
       (typeof a.started_at === 'number' ? a.started_at : 0)
   );
   for (const attempt of attempts) {
-    const record = promptRecordOf(attempt);
+    const record = promptRecordOf(key, attempt);
     if (!(/** @type {any} */ (record).missing)) {
       ws.send(JSON.stringify(makeOk(req, record)));
       return;
@@ -4963,7 +5010,7 @@ export async function handleGetBeadTimeline(ws, req) {
         events,
         attempts: attempts.map((attempt) => {
           const prepared = observations.get(key, attempt.attempt_id);
-          return prepared ? { ...attempt, ...prepared } : attempt;
+          return stripPrompts(prepared ? { ...attempt, ...prepared } : attempt);
         })
       })
     )

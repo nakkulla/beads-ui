@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  attemptPromptPath,
   attemptRecordPath,
   autoPoolFilePath,
   beadArchivePath,
@@ -207,6 +208,16 @@ describe('codexAttemptHomeDir', () => {
 });
 
 describe('bead-scoped record paths', () => {
+  test('places prompts under safe bead and attempt segments', () => {
+    const file = attemptPromptPath(WS, '../bead', '../attempt');
+
+    expect(file).toBe(
+      path.join(beadStateDir(WS, '../bead'), 'prompts', '.._attempt.json')
+    );
+    expect(attemptPromptPath(WS, 'B1', 'a1')).toBe(
+      path.join(beadStateDir(WS, 'B1'), 'prompts', 'a1.json')
+    );
+  });
   test('lays the bead record tree out under beads/<bead_id>', () => {
     const dir = beadStateDir(WS, 'UI-8wpb');
 

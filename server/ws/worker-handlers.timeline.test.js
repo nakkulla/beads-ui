@@ -111,6 +111,31 @@ function event(event_id, at) {
 }
 
 describe('get-bead-timeline (record-timeline-retention §9)', () => {
+  test('strips legacy prompt text from transferred timeline records', async () => {
+    state.bead_attempts = {
+      'UI-1': [
+        {
+          attempt_id: 'old',
+          bead_id: 'UI-1',
+          system_prompt: 'private system',
+          task_prompt: 'private task',
+          disposition_prompt: 'relaunch'
+        }
+      ]
+    };
+    const sock = fakeSocket();
+
+    await handleGetBeadTimeline(sock, {
+      id: 'r1',
+      type: 'get-bead-timeline',
+      payload: { bead_id: 'UI-1' }
+    });
+
+    expect(lastPayload(sock).attempts).toEqual([
+      { attempt_id: 'old', bead_id: 'UI-1' }
+    ]);
+    expect(state.bead_attempts['UI-1'][0].task_prompt).toBe('private task');
+  });
   test("returns a bead's whole timeline newest first", async () => {
     state.timelines = { 'UI-1': [event('e1', 1000), event('e2', 2000)] };
     const sock = fakeSocket();

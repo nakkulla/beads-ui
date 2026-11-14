@@ -3273,6 +3273,14 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   } catch (err) {
     log('provider hold migration failed for %s: %o', key, err);
   }
+  // After both migrations above (the layout one writes queue.json directly,
+  // the hold one must see the raw holds first) and before recovery can
+  // transfer or launch any attempt. Uses the store mutation path.
+  try {
+    att.runtime.queueStore.migrateAttemptPrompts(key);
+  } catch (err) {
+    log('prompt migration failed for %s: %o', key, err);
+  }
   await retireRepairLanes(att, key);
   await retireKindAttempts(att, key);
   try {

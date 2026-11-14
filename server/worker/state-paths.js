@@ -517,6 +517,22 @@ export function attemptRecordPath(workspace_root, bead_id, attempt_id) {
 }
 
 /**
+ * Absolute path to the prompts sent to one attempt.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @param {string} attempt_id
+ * @returns {string}
+ */
+export function attemptPromptPath(workspace_root, bead_id, attempt_id) {
+  return path.join(
+    beadStateDir(workspace_root, bead_id),
+    'prompts',
+    `${safeSegment(attempt_id, 'attempt')}.json`
+  );
+}
+
+/**
  * Absolute path to the bead-scoped session-log jsonl for one attempt — the
  * destination the legacy flat {@link sessionLogPath} file is renamed to (§4).
  *

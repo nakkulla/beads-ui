@@ -2,12 +2,18 @@
  * Prompt inspection (UI-rxp3 §3/§5): the queue push must NOT carry the recorded
  * prompts, and the three on-demand requests are the only way to read them.
  */
-import { describe, expect, test, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { writeAttemptPrompts } from '../worker/attempt-prompts.js';
+import { attemptPromptPath, attemptRecordPath } from '../worker/state-paths.js';
 
 const state = vi.hoisted(
   () =>
-    /** @type {{ attempts: Record<string, any>, prepared: any }} */ ({
+    /** @type {{ attempts: Record<string, any>, transferred: any[], prepared: any }} */ ({
       attempts: {},
+      transferred: [],
       prepared: null
     })
 );
@@ -15,7 +21,8 @@ const state = vi.hoisted(
 vi.mock('../worker/runtime.js', () => ({
   getWorkerRuntime: () => ({
     queueStore: {
-      snapshot: () => ({ revision: 1, attempts: state.attempts })
+      snapshot: () => ({ revision: 1, attempts: state.attempts }),
+      readAttemptsForBead: () => state.transferred
     },
     usageStore: { get: () => null },
     sessionLog: { lastEventAt: () => null },
@@ -38,6 +45,20 @@ const { applyPreamble, defaultTaskPrompt } =
   await import('../worker/runner/preamble.js');
 
 const WS = '/tmp/example-workspace/project-a';
+/** @type {string} */
+let tmp_state;
+
+beforeEach(() => {
+  tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-prompt-view-'));
+  vi.stubEnv('XDG_STATE_HOME', tmp_state);
+  state.transferred = [];
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  fs.rmSync(tmp_state, { recursive: true, force: true });
+});
 
 /**
  * @returns {any}
@@ -217,6 +238,110 @@ describe('worker-state push prompt stripping (UI-rxp3 §3)', () => {
 });
 
 describe('get-attempt-prompt (UI-rxp3 §5)', () => {
+  test('prefers the prompt file over legacy fields in both views', () => {
+    state.attempts = { a1: recordedAttempt() };
+    writeAttemptPrompts(WS, {
+      ...recordedAttempt(),
+      system_prompt: 'file system',
+      task_prompt: 'file task'
+    });
+    const sock = fakeSocket();
+
+    handleGetAttemptPrompt(sock, {
+      id: 'r1',
+      type: 'get-attempt-prompt',
+      payload: { attempt_id: 'a1' }
+    });
+    const attempt_answer = lastPayload(sock);
+    handleGetBeadPrompt(sock, {
+      id: 'r2',
+      type: 'get-bead-prompt',
+      payload: { bead_id: 'UI-1' }
+    });
+
+    expect(attempt_answer).toMatchObject({
+      system_prompt: 'file system',
+      task_prompt: 'file task'
+    });
+    expect(lastPayload(sock)).toEqual(attempt_answer);
+  });
+
+  test('reads a transferred attempt whose prompts exist only in a file', () => {
+    state.attempts = {};
+    state.transferred = [
+      { attempt_id: 'archived', bead_id: 'UI-1', started_at: 200 }
+    ];
+    writeAttemptPrompts(WS, {
+      ...state.transferred[0],
+      system_prompt: 'saved system',
+      task_prompt: 'saved task'
+    });
+    const sock = fakeSocket();
+
+    handleGetAttemptPrompt(sock, {
+      id: 'r1',
+      type: 'get-attempt-prompt',
+      payload: { attempt_id: 'archived' }
+    });
+    const attempt_answer = lastPayload(sock);
+    handleGetBeadPrompt(sock, {
+      id: 'r2',
+      type: 'get-bead-prompt',
+      payload: { bead_id: 'UI-1' }
+    });
+
+    expect(attempt_answer).toEqual({
+      attempt_id: 'archived',
+      system_prompt: 'saved system',
+      task_prompt: 'saved task',
+      recorded_at: 200
+    });
+    expect(lastPayload(sock)).toEqual(attempt_answer);
+  });
+
+  test.each(['corrupt', 'unreadable'])(
+    'falls back to legacy fields when a prompt file is %s',
+    (failure) => {
+      state.attempts = { a1: recordedAttempt() };
+      writeAttemptPrompts(WS, recordedAttempt());
+      fs.writeFileSync(attemptPromptPath(WS, 'UI-1', 'a1'), '{broken');
+      if (failure === 'unreadable') {
+        vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
+          throw new Error('EACCES');
+        });
+      }
+      const sock = fakeSocket();
+
+      handleGetAttemptPrompt(sock, {
+        id: 'r1',
+        type: 'get-attempt-prompt',
+        payload: { attempt_id: 'a1' }
+      });
+
+      expect(lastPayload(sock).task_prompt).toBe(state.attempts.a1.task_prompt);
+    }
+  );
+
+  test('reads legacy fields from an unchanged transferred record', () => {
+    state.attempts = {};
+    state.transferred = [recordedAttempt()];
+    const file = attemptRecordPath(WS, 'UI-1', 'a1');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const original = JSON.stringify(recordedAttempt());
+    fs.writeFileSync(file, original);
+    const sock = fakeSocket();
+
+    handleGetAttemptPrompt(sock, {
+      id: 'r1',
+      type: 'get-attempt-prompt',
+      payload: { attempt_id: 'a1' }
+    });
+
+    expect(lastPayload(sock).task_prompt).toBe(
+      state.transferred[0].task_prompt
+    );
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+  });
   test('returns the recorded send for a known attempt', () => {
     state.attempts = { a1: recordedAttempt() };
     const sock = fakeSocket();

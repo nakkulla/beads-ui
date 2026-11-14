@@ -379,16 +379,10 @@
  * @property {string|null} disposition_prompt - The task prompt this disposition
  * was launched with. Durable so the substitute session can be launched with the
  * identical instruction without re-deriving it — and so a restart can too.
- * @property {string|null} system_prompt - The contract this attempt was sent on
- * the `--append-system-prompt` channel (UI-rxp3 §3), verbatim. Written at spawn
- * from the same `buildArgv` result the argv came from, so it is what the process
- * received rather than a reconstruction. Null on every attempt recorded before
- * the field existed — the reader treats that as "기록 없음", never as empty.
- * @property {string|null} task_prompt - The positional task prompt of the same
- * spawn, on the same terms. Distinct from {@link Attempt.disposition_prompt},
- * which is the disposition lane's own relaunch input and is kept for that.
- * NEITHER field rides the worker-state push: the projection strips both
- * (`worker-handlers.js`), and the UI fetches them on demand.
+ * @property {string|null} [system_prompt] - Legacy send retained only until
+ * startup migration succeeds. New sends live in per-attempt prompt files.
+ * @property {string|null} [task_prompt] - Legacy positional task prompt, kept
+ * for migration and fallback reads of pre-existing transferred records.
  * @property {string|null} completion_root_id - Root completion intent that
  * owns this attempt; null for ordinary sessions.
  * @property {boolean} worker_serial - RETIRED legacy flag from the global
@@ -1296,6 +1290,7 @@ import {
 } from '../limit-policy-settings.js';
 import { debug } from '../logging.js';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
+import { writeAttemptPrompts } from './attempt-prompts.js';
 import { normalizeCodexChildren } from './codex-children/normalize.js';
 import { observeCodexChildren } from './codex-children/reader.js';
 // The `needs_human` vocabulary is the KERNEL's (UI-5ym8 §7), so the store
@@ -4556,8 +4551,12 @@ export function makeAttempt(fields) {
     disposition_receipt: fields.disposition_receipt ?? null,
     disposition_resume: fields.disposition_resume === true,
     disposition_prompt: fields.disposition_prompt ?? null,
-    system_prompt: fields.system_prompt ?? null,
-    task_prompt: fields.task_prompt ?? null,
+    ...(Object.hasOwn(fields, 'system_prompt')
+      ? { system_prompt: fields.system_prompt ?? null }
+      : {}),
+    ...(Object.hasOwn(fields, 'task_prompt')
+      ? { task_prompt: fields.task_prompt ?? null }
+      : {}),
     completion_root_id:
       typeof fields.completion_root_id === 'string'
         ? fields.completion_root_id
@@ -7645,9 +7644,19 @@ export function createQueueStore(options = {}) {
       attempt.attempt_id
     );
     try {
+      if (
+        (Object.hasOwn(attempt, 'system_prompt') ||
+          Object.hasOwn(attempt, 'task_prompt')) &&
+        !writeAttemptPrompts(workspace, attempt, { if_missing: true })
+      ) {
+        return false;
+      }
+      const record = { ...attempt };
+      delete record.system_prompt;
+      delete record.task_prompt;
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const tmp = `${file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(attempt, null, 2));
+      fs.writeFileSync(tmp, JSON.stringify(record, null, 2));
       fs.renameSync(tmp, file);
       const readback = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (!isRecord(readback) || readback.attempt_id !== attempt.attempt_id) {
@@ -8101,6 +8110,34 @@ export function createQueueStore(options = {}) {
      */
     load(workspace) {
       return exportQueue(workspace, ensureLoaded(workspace));
+    },
+
+    /**
+     * Move legacy queue prompts before ordinary startup drivers run. One
+     * mutation removes only fields whose separate file is already durable.
+     *
+     * @param {string} workspace
+     * @returns {QueueOpResult}
+     */
+    migrateAttemptPrompts(workspace) {
+      return applyUnconditional(workspace, (next) => {
+        let changed = false;
+        for (const attempt of Object.values(next.attempts)) {
+          if (
+            !Object.hasOwn(attempt, 'system_prompt') &&
+            !Object.hasOwn(attempt, 'task_prompt')
+          ) {
+            continue;
+          }
+          if (!writeAttemptPrompts(workspace, attempt, { if_missing: true })) {
+            continue;
+          }
+          delete attempt.system_prompt;
+          delete attempt.task_prompt;
+          changed = true;
+        }
+        return changed;
+      });
     },
 
     /**
