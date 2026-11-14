@@ -160,7 +160,7 @@ describe('external wait hook wiring', () => {
     expect(env.scheduler.resumeExternalWait).toHaveBeenLastCalledWith(
       '/repo',
       record.wait_id,
-      { mode: 'fork' }
+      { mode: 'fork', automatic: true }
     );
   });
 
@@ -176,6 +176,20 @@ describe('external wait hook wiring', () => {
 
     expect(env.notifier.externalWaitCompleted).toHaveBeenCalledOnce();
     expect(env.scheduler.resumeExternalWait).not.toHaveBeenCalled();
+  });
+
+  test('forwards a service refusal marker without changing its resume mode', async () => {
+    const env = hooksFixture();
+
+    await env.hooks().resume('/repo', 'w-0123456789ab', 'session', {
+      refused: 'resume_reserved'
+    });
+
+    expect(env.scheduler.resumeExternalWait).toHaveBeenCalledExactlyOnceWith(
+      '/repo',
+      'w-0123456789ab',
+      { mode: 'session', refused: 'resume_reserved' }
+    );
   });
 
   test('routes manual resume to the matching workspace after another attaches', async () => {
@@ -1264,7 +1278,8 @@ describe('worker/attach construction + live loop (F1)', () => {
 
     expect(resume).toHaveBeenCalledTimes(2);
     expect(resume).toHaveBeenLastCalledWith(WS, record.wait_id, {
-      mode: 'fork'
+      mode: 'fork',
+      automatic: true
     });
   });
 

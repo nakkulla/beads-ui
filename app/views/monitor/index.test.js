@@ -5684,7 +5684,7 @@ describe('views/monitor external wait confirm and session resume (UI-r6xq §4.4)
     );
   });
 
-  test('copies the resume command when the owner session is alive', async () => {
+  test('keeps the clipboard untouched when the owner session is alive', async () => {
     const writeText = vi.fn(() => Promise.resolve());
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText },
@@ -5719,9 +5719,9 @@ describe('views/monitor external wait confirm and session resume (UI-r6xq §4.4)
     click(mount, '[data-external-wait-op]');
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(writeText).toHaveBeenCalledWith('claude --resume s-1');
+    expect(writeText).not.toHaveBeenCalled();
     expect(document.querySelector('.toast')?.textContent).toBe(
-      '원래 세션이 살아 있어 열지 않았습니다 · 재개 명령을 복사했습니다 · tmux main:2'
+      '원래 세션이 열려 있어 새로 열지 않았습니다 · tmux main:2'
     );
   });
 });

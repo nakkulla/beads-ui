@@ -65,6 +65,7 @@ import {
   dismissWorkerRepoOperation,
   enqueueWorkerManualMerge,
   enrollWorkerMergeCandidates,
+  inspectWorkerExternalWaitOwner,
   kickWorkerMergeQueue,
   observeWorkerPrs,
   pauseWorkerAttempt,
@@ -5809,7 +5810,12 @@ export async function handleWorkerExternalWait(ws, req) {
         !p.bead_id ||
         p.bead_id.startsWith('-'))) ||
     (req.type === 'external_wait_resume' &&
-      !['fork', 'fresh', 'session'].includes(p.mode))
+      !['fork', 'fresh', 'session'].includes(p.mode)) ||
+    (p.feedback_action !== undefined &&
+      (req.type !== 'external_wait_check' ||
+        !['focus', 'recheck'].includes(p.feedback_action) ||
+        !Number.isInteger(p.version) ||
+        typeof p.bead_id !== 'string'))
   ) {
     ws.send(
       JSON.stringify(
@@ -5829,17 +5835,21 @@ export async function handleWorkerExternalWait(ws, req) {
   const service = getWorkerRuntime().externalWait;
   const record = service.get(key, p.wait_id);
   const label =
-    req.type === 'external_wait_check'
-      ? '[지금 확인]'
-      : req.type === 'external_wait_stop'
-        ? 'stage' in record && record.stage === 'completing'
-          ? '[대기 해제]'
-          : '[관찰 중단]'
-        : p.mode === 'fresh'
-          ? '[새 세션으로]'
-          : p.mode === 'session'
-            ? '[세션에서 이어가기]'
-            : '[워커로 이어가기]';
+    p.feedback_action === 'focus'
+      ? '[원래 창으로 이동]'
+      : p.feedback_action === 'recheck'
+        ? '[원래 세션 다시 확인]'
+        : req.type === 'external_wait_check'
+          ? '[지금 확인]'
+          : req.type === 'external_wait_stop'
+            ? 'stage' in record && record.stage === 'completing'
+              ? '[대기 해제]'
+              : '[관찰 중단]'
+            : p.mode === 'fresh'
+              ? '[새 세션으로]'
+              : p.mode === 'session'
+                ? '[세션에서 이어가기]'
+                : '[워커로 이어가기]';
   if ('bead_id' in record) {
     queueStore().recordTimelineEvent(key, {
       bead_id: record.bead_id,
@@ -5849,8 +5859,13 @@ export async function handleWorkerExternalWait(ws, req) {
     });
   }
   try {
-    const result =
-      req.type === 'external_wait_check'
+    const result = p.feedback_action
+      ? await inspectWorkerExternalWaitOwner(key, p.wait_id, {
+          bead_id: p.bead_id,
+          version: p.version,
+          action: p.feedback_action
+        })
+      : req.type === 'external_wait_check'
         ? await service.check(key, p.wait_id)
         : req.type === 'external_wait_stop'
           ? await service.stop(

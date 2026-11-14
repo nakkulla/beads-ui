@@ -1614,8 +1614,9 @@ export function interactiveTurnState(running, attention) {
  *   withdraw: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, already_settled?: boolean }>,
  *   retryNow: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   sweepStalledContinuations: (workspace: string) => { rearmed: string[], restored: string[] },
- *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
+ *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session', automatic?: boolean, refused?: 'resume_reserved' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
+ *   inspectExternalWaitOwner: (workspace: string, wait_id: string, input: { bead_id: string, version: number, action: 'recheck'|'focus' }) => Promise<{ ok: boolean, reason: string, focus_error?: string|null }>,
  *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<ProviderAutoResumeOutcome>,
  *   reevaluateProviderSwitches: (workspace: string, catalog_accounts?: import('./account-catalog.js').Account[]) => Promise<void>,
@@ -17224,6 +17225,7 @@ export function createScheduler(deps) {
     store.update(workspace, record.wait_id, (current) => {
       current.stage = 'resumed';
     });
+    deps.store.recordExternalWaitFeedback(workspace, record.wait_id, null);
     notifyChanged(workspace);
   }
 
@@ -17238,6 +17240,9 @@ export function createScheduler(deps) {
       return;
     }
     for (const record of store.list(workspace)) {
+      if (['resumed', 'stopped', 'done'].includes(record.stage)) {
+        deps.store.recordExternalWaitFeedback(workspace, record.wait_id, null);
+      }
       if (
         record.stage !== 'completing' ||
         external_wait_resumes.has(JSON.stringify([workspace, record.wait_id]))
@@ -17246,6 +17251,13 @@ export function createScheduler(deps) {
       }
       if (record.resume?.mode === 'session') {
         await externalWaitSessionResume()?.settleReservation(workspace, record);
+        if (store.get(workspace, record.wait_id)?.stage === 'resumed') {
+          deps.store.recordExternalWaitFeedback(
+            workspace,
+            record.wait_id,
+            null
+          );
+        }
         continue;
       }
       if (record.resume?.attempt_id) {
@@ -17313,10 +17325,10 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} wait_id
-   * @param {{ mode: 'fork'|'fresh'|'session', conversation?: ExternalConversationDispatch, retry?: any, preclaimed?: boolean }} options
+   * @param {{ mode: 'fork'|'fresh'|'session', conversation?: ExternalConversationDispatch, retry?: any, preclaimed?: boolean, automatic?: boolean }} options
    * @returns {Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>}
    */
-  async function resumeExternalWait(
+  async function executeExternalWaitResume(
     workspace,
     wait_id,
     { mode, conversation, retry, preclaimed }
@@ -17522,6 +17534,212 @@ export function createScheduler(deps) {
       return { ok: false, reason };
     } finally {
       external_wait_resumes.delete(key);
+    }
+  }
+
+  /**
+   * Both HTTP and WebSocket resume replies persist refusals before notifying.
+   *
+   * @param {string} workspace
+   * @param {string} wait_id
+   * @param {Parameters<typeof executeExternalWaitResume>[2] & { refused?: 'resume_reserved' }} options
+   */
+  async function resumeExternalWait(workspace, wait_id, options) {
+    const previous =
+      deps.store.snapshot(workspace).external_wait_feedback[wait_id];
+    const result = options.refused
+      ? { ok: /** @type {const} */ (false), reason: options.refused }
+      : await executeExternalWaitResume(workspace, wait_id, options);
+    const record = deps.externalWait?.get(workspace, wait_id);
+    if (!record) {
+      return result;
+    }
+    // The origin-settlement subscription also observes feedback notifications.
+    // An unchanged automatic refusal must not generate another notification.
+    if (
+      options.automatic &&
+      'reason' in result &&
+      previous?.reason === result.reason
+    ) {
+      return result;
+    }
+    if (['resumed', 'stopped', 'done'].includes(record.stage)) {
+      deps.store.recordExternalWaitFeedback(workspace, wait_id, null);
+    } else if (
+      record.stage === 'completing' &&
+      'reason' in result &&
+      result.reason
+    ) {
+      const snap = await deps.bd.snapshotBead(record.bead_id);
+      const observed_ref =
+        'observed_session_ref' in result
+          ? (result.observed_session_ref ?? null)
+          : typeof snap.session_ref === 'string'
+            ? snap.session_ref
+            : null;
+      const qualified = qualifySessionFork(
+        { session_ref: snap.session_ref },
+        null,
+        { home_dir: deps.homeDir }
+      );
+      const location =
+        result.reason === 'owner_alive' &&
+        qualified.ok &&
+        observed_ref === snap.session_ref
+          ? await externalWaitSessionResume()?.ownerLocation(
+              qualified.provider,
+              qualified.session_id
+            )
+          : null;
+      if (
+        deps.externalWait?.get(workspace, wait_id)?.stage !== 'completing' ||
+        deps.store.snapshot(workspace).external_wait_feedback[wait_id]
+          ?.version !== previous?.version
+      ) {
+        return result;
+      }
+      deps.store.recordExternalWaitFeedback(workspace, wait_id, {
+        bead_id: record.bead_id,
+        kind: options.conversation
+          ? 'conversation_handoff'
+          : options.mode === 'session'
+            ? 'session_resume'
+            : 'worker_resume',
+        reason: result.reason,
+        at: now(),
+        session_ref: observed_ref,
+        owner_tmux: location?.owner_tmux ?? null
+      });
+    }
+    notifyChanged(workspace);
+    return result;
+  }
+
+  /**
+   * Recheck or focus only the original owner; never enters a launch path.
+   *
+   * @param {string} workspace
+   * @param {string} wait_id
+   * @param {{ bead_id: string, version: number, action: 'recheck'|'focus' }} input
+   */
+  async function inspectExternalWaitOwner(workspace, wait_id, input) {
+    const read = () =>
+      deps.store.snapshot(workspace).external_wait_feedback[wait_id];
+    const record = deps.externalWait?.get(workspace, wait_id);
+    const feedback = read();
+    if (
+      !record ||
+      record.stage !== 'completing' ||
+      record.bead_id !== input.bead_id ||
+      !feedback ||
+      feedback.version !== input.version
+    ) {
+      return { ok: false, reason: 'feedback_changed' };
+    }
+    let saving = false;
+    try {
+      const snap = await deps.bd.snapshotBead(record.bead_id);
+      const session_ref =
+        typeof snap.session_ref === 'string' ? snap.session_ref : null;
+      const resumer = externalWaitSessionResume();
+      const qualified = qualifySessionFork({ session_ref }, null, {
+        home_dir: deps.homeDir
+      });
+      const changed = feedback.session_ref !== session_ref;
+      const liveness =
+        !resumer || !qualified.ok
+          ? { state: 'unverified', owner_tmux: null }
+          : await resumer.ownerLocation(
+              qualified.provider,
+              qualified.session_id
+            );
+      const latest_snap = await deps.bd.snapshotBead(record.bead_id);
+      const current = deps.externalWait?.get(workspace, wait_id);
+      if (
+        !current ||
+        current.stage !== 'completing' ||
+        current.bead_id !== record.bead_id ||
+        read()?.version !== input.version ||
+        latest_snap.session_ref !== snap.session_ref
+      ) {
+        return { ok: false, reason: 'feedback_changed' };
+      }
+      let focus_error = null;
+      if (input.action === 'focus') {
+        if (changed) {
+          focus_error = 'session_ref_changed';
+        } else if (liveness.state !== 'alive' || !liveness.owner_tmux) {
+          focus_error = 'owner_location_unverified';
+        } else {
+          const focused = await deps.interactiveLauncher?.focusRegistryPane(
+            liveness.owner_tmux
+          );
+          if (!focused?.ok) {
+            focus_error = focused?.error || 'focus_unwired';
+          }
+        }
+      }
+      const final_snap = await deps.bd.snapshotBead(record.bead_id);
+      const final_record = deps.externalWait?.get(workspace, wait_id);
+      if (
+        !final_record ||
+        final_record.stage !== 'completing' ||
+        final_record.bead_id !== record.bead_id ||
+        read()?.version !== input.version ||
+        final_snap.session_ref !== snap.session_ref
+      ) {
+        return { ok: false, reason: 'feedback_changed' };
+      }
+      const reason =
+        changed && input.action === 'focus'
+          ? 'session_ref_changed'
+          : `owner_${liveness.state}`;
+      saving = true;
+      deps.store.recordExternalWaitFeedback(
+        workspace,
+        wait_id,
+        {
+          ...feedback,
+          session_ref,
+          reason,
+          at: now(),
+          owner_tmux: reason === 'owner_alive' ? liveness.owner_tmux : null,
+          focus_error
+        },
+        input.version
+      );
+      notifyChanged(workspace);
+      return { ok: !focus_error, reason, focus_error };
+    } catch (error) {
+      if (saving) {
+        throw error;
+      }
+      const current = deps.externalWait?.get(workspace, wait_id);
+      if (
+        current?.stage !== 'completing' ||
+        read()?.version !== input.version
+      ) {
+        return { ok: false, reason: 'feedback_changed' };
+      }
+      log('external wait owner lookup failed: %o', error);
+      deps.store.recordExternalWaitFeedback(
+        workspace,
+        wait_id,
+        {
+          ...feedback,
+          reason: 'owner_unverified',
+          owner_tmux: null,
+          at: now(),
+          focus_error: input.action === 'focus' ? 'owner_lookup_failed' : null
+        },
+        input.version
+      );
+      notifyChanged(workspace);
+      return {
+        ok: false,
+        reason: 'owner_lookup_failed',
+        focus_error: input.action === 'focus' ? 'owner_lookup_failed' : null
+      };
     }
   }
 
@@ -24488,6 +24706,7 @@ export function createScheduler(deps) {
     sweepStalledContinuations,
     resume,
     resumeExternalWait,
+    inspectExternalWaitOwner,
     settleExternalWaitReservations,
     consumeProviderAutoResume,
     reevaluateProviderSwitches,

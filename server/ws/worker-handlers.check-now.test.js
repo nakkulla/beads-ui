@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { __resetWorkerAttachmentsForTest } from '../worker/attach.js';
+import {
+  __registerWorkerAttachmentForTest,
+  __resetWorkerAttachmentsForTest
+} from '../worker/attach.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { setConnWorkspace } from './context.js';
 import {
@@ -48,6 +51,45 @@ async function request(type, patch = {}) {
 }
 
 describe('external wait operations', () => {
+  test('routes explicit owner checks separately from job observation', async () => {
+    const runtime = getWorkerRuntime();
+    vi.spyOn(runtime.externalWait, 'get').mockReturnValue(
+      /** @type {any} */ ({ bead_id: 'A-1', stage: 'completing' })
+    );
+    const check = vi.spyOn(runtime.externalWait, 'check');
+    const inspectExternalWaitOwner = vi.fn(async () => ({
+      ok: true,
+      reason: 'owner_dead'
+    }));
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({ scheduler: { inspectExternalWaitOwner } })
+    );
+
+    const reply = await request('external_wait_check', {
+      bead_id: 'A-1',
+      feedback_action: 'recheck',
+      version: 7,
+      tmux_target: '%999'
+    });
+
+    expect(reply.payload.reason).toBe('owner_dead');
+    expect(check).not.toHaveBeenCalled();
+    expect(inspectExternalWaitOwner).toHaveBeenCalledExactlyOnceWith(
+      WS,
+      'w-0123456789ab',
+      { bead_id: 'A-1', action: 'recheck', version: 7 }
+    );
+  });
+
+  test('rejects an owner action without a record version', async () => {
+    const reply = await request('external_wait_check', {
+      bead_id: 'A-1',
+      feedback_action: 'focus'
+    });
+
+    expect(reply.error.code).toBe('bad_request');
+  });
   test.each(
     /** @type {const} */ ([
       ['external_wait_check', 'check', undefined, '[지금 확인] 클릭'],

@@ -84,6 +84,7 @@ export function externalConversationEntry(record) {
  * @property {string|null} reason
  * @property {string|null} command
  * @property {string|null} owner_tmux
+ * @property {string|null} [observed_session_ref]
  * @property {import('../tmux-launcher.js').LaunchPlacement|null} placement -
  * Where the launcher actually opened (or found) the window; null when unknown.
  * @property {string|null} tmux_session
@@ -387,6 +388,10 @@ export function createExternalWaitSessionResume(deps) {
       reason,
       command: extra.command ?? null,
       owner_tmux: extra.owner_tmux ?? null,
+      observed_session_ref:
+        typeof bead_metadata?.session_ref === 'string'
+          ? bead_metadata.session_ref
+          : null,
       placement: null,
       tmux_session: null,
       tmux_window: null,
@@ -634,5 +639,86 @@ export function createExternalWaitSessionResume(deps) {
     });
   }
 
-  return { resume, ownerLiveness, settleReservation };
+  /**
+   * Validate registry coordinates against a live pane and its process ancestry.
+   * A stale registry pane must never select a window reused by another session.
+   *
+   * @param {'claude'|'codex'} provider
+   * @param {string} session_id
+   * @returns {Promise<OwnerLiveness>}
+   */
+  async function ownerLocation(provider, session_id) {
+    const live = await ownerLiveness(provider, session_id);
+    if (live.state !== 'alive' || !live.owner_tmux) {
+      return live;
+    }
+    const unknown_location = {
+      state: /** @type {const} */ ('alive'),
+      owner_tmux: null
+    };
+    const match = /^([^:]+):([^.]+)\.(%\d+)$/.exec(live.owner_tmux);
+    if (!match) {
+      return unknown_location;
+    }
+    try {
+      const pane = await run(
+        [
+          'tmux',
+          'display-message',
+          '-p',
+          '-t',
+          match[3],
+          '#{session_name}:#{window_id}.#{pane_id} #{pane_pid} #{pane_dead}'
+        ],
+        { timeout_ms: 5000 }
+      );
+      const parts = pane.stdout.trim().split(' ');
+      if (
+        pane.code !== 0 ||
+        parts[0] !== live.owner_tmux ||
+        parts[2] !== '0' ||
+        !/^\d+$/.test(parts[1])
+      ) {
+        return unknown_location;
+      }
+      const entries = fs
+        .readdirSync(sessions_dir)
+        .map(String)
+        .filter((name) => name.endsWith('.json'))
+        .map((name) =>
+          JSON.parse(
+            String(fs.readFileSync(path.join(sessions_dir, name), 'utf8'))
+          )
+        );
+      const entry = entries.find(
+        (value) =>
+          value.sessionId === session_id && value.tmux === live.owner_tmux
+      );
+      if (!entry) {
+        return unknown_location;
+      }
+      let pid = Number(entry.pid);
+      for (let depth = 0; depth < 32 && pid > 1; depth += 1) {
+        if (pid === Number(parts[1])) {
+          const confirmed = await ownerLiveness(provider, session_id);
+          return confirmed.state === 'alive' &&
+            confirmed.owner_tmux === live.owner_tmux
+            ? live
+            : unknown_location;
+        }
+        const parent = await run(['ps', '-p', String(pid), '-o', 'ppid='], {
+          timeout_ms: 5000
+        });
+        if (parent.code !== 0 || !/^\d+$/.test(parent.stdout.trim())) {
+          return unknown_location;
+        }
+        pid = Number(parent.stdout.trim());
+      }
+    } catch (error) {
+      log('owner location lookup failed: %o', error);
+    }
+    return unknown_location;
+  }
+
+  return { resume, ownerLiveness, ownerLocation, settleReservation };
 }

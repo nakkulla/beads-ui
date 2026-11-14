@@ -35,6 +35,7 @@ import { openDeferDialog } from '../worker/defer-dialog.js';
 import { runExternalWaitAction } from '../worker/external-wait-action.js';
 import {
   externalJobNotesTemplate,
+  externalWaitFeedbackTemplate,
   formatElapsed,
   placeMenuList,
   waitReasonLines
@@ -2729,7 +2730,9 @@ export function createDetailPanel(mount_element, options) {
           )}
         </tbody>
       </table>
-      ${externalJobNotesTemplate(externalDetailNotes(record))}
+      ${externalJobNotesTemplate(
+        externalDetailNotes(record)
+      )}${externalWaitFeedbackTemplate(record)}
       ${lines.actions
         ? html`<div
             class="detail-external-wait__ops"

@@ -528,6 +528,13 @@ function externalWaitRecord() {
 function seedExternalWait(raw_queue, takeover_blocker, judged_beads = []) {
   vi.mocked(workerWaitState).mockImplementation((root) => {
     const external_waits = root === WS ? [externalWaitRecord()] : [];
+    const feedback = raw_queue.external_wait_feedback?.['w-0123456789ab'];
+    if (feedback && external_waits.length > 0) {
+      external_waits[0].stage = 'completing';
+      external_waits[0].owner_kind = 'session';
+      external_waits[0].feedback = feedback;
+      external_waits[0].jobs[0].state = 'COMPLETED';
+    }
     if (takeover_blocker && external_waits.length > 0) {
       external_waits[0].jobs[0].capacity.takeover_blocker = takeover_blocker;
     }
@@ -536,6 +543,9 @@ function seedExternalWait(raw_queue, takeover_blocker, judged_beads = []) {
         root_dir: root,
         queue: raw_queue,
         external_waits,
+        blocker_facts: feedback
+          ? { 'E-1': { external_wait: 'w-0123456789ab' } }
+          : {},
         now: NOW
       })
     );
@@ -1341,6 +1351,35 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
 
     for (const text of texts) {
       expect(text).toContain('외부 PR 사람 처리 필요');
+    }
+  });
+
+  test('draws the same persisted refusal and owner actions on both tabs', async () => {
+    const { worker, monitor } = await drawBothTabs(undefined, {
+      external_wait_feedback: {
+        'w-0123456789ab': {
+          bead_id: 'E-1',
+          kind: 'session_resume',
+          reason: 'owner_alive',
+          at: NOW,
+          version: 7,
+          session_ref: 'claude:s1@host',
+          owner_tmux: 'dev:@1.%7'
+        }
+      }
+    });
+
+    const cards = [worker, monitor].map(
+      (mount) => /** @type {HTMLElement} */ (cardsByBead(mount).get('E-1'))
+    );
+
+    expect(partsOf(cards[0])).toEqual(partsOf(cards[1]));
+    for (const card of cards) {
+      expect(card.textContent).toContain('외부 작업 완료');
+      expect(
+        card.querySelector('.external-wait__feedback')?.textContent
+      ).toContain('원래 세션이 열려 있어 새로 열지 않았습니다');
+      expect(card.querySelectorAll('[data-feedback-action]')).toHaveLength(2);
     }
   });
 

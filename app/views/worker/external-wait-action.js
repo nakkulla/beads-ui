@@ -1,9 +1,12 @@
-import { copyToClipboard } from '../../utils/clipboard.js';
 import { showToast } from '../../utils/toast.js';
 import {
   openTakeoverDialog,
   takeoverMaterialOf
 } from './external-wait-takeover-dialog.js';
+import {
+  externalWaitFeedbackText,
+  externalWaitRefusalText
+} from './wait-vocabulary.js';
 
 /**
  * Shared click rule for `data-external-wait-op` buttons on the Worker tab,
@@ -77,11 +80,10 @@ export function resolveLaunchText(res) {
 /**
  * Toast text for a `mode: 'session'` resume response — the detail panel's
  * external op and an 외부 작업 완료 row's `[세션에서 이어가기]` reply alike
- * (UI-18a5 §3.2). The `not_launched` owner cases copy the resume command
- * first.
+ * (UI-18a5 §3.2). Owner refusals never copy commands automatically.
  *
  * @param {Record<string, any>} res
- * @returns {Promise<{ text: string, variant: 'success'|'error' }>}
+ * @returns {Promise<{ text: string, variant: 'success'|'error'|'info'|'warning' }>}
  */
 export async function sessionResumeToast(res) {
   if (res.session === 'launched') {
@@ -94,22 +96,17 @@ export async function sessionResumeToast(res) {
     return { text: String(sessionWindowText(res)), variant: 'success' };
   }
   if (res.reason === 'owner_alive' || res.reason === 'owner_unverified') {
-    const copied =
-      typeof res.command === 'string' && res.command.length > 0
-        ? await copyToClipboard(res.command)
-        : false;
-    const copy_text = copied
-      ? '재개 명령을 복사했습니다'
-      : '재개 명령을 복사하지 못했습니다';
-    if (res.reason === 'owner_alive') {
-      return {
-        text: `원래 세션이 살아 있어 열지 않았습니다 · ${copy_text}${res.owner_tmux ? ` · tmux ${res.owner_tmux}` : ''}`,
-        variant: 'success'
-      };
-    }
     return {
-      text: `원래 세션이 살아 있는지 확인하지 못해 열지 않았습니다 · ${copy_text}`,
-      variant: 'success'
+      text: externalWaitFeedbackText({
+        bead_id: '',
+        kind: 'session_resume',
+        reason: res.reason,
+        at: 0,
+        version: 0,
+        session_ref: res.observed_session_ref || null,
+        owner_tmux: res.owner_tmux || null
+      }),
+      variant: res.reason === 'owner_alive' ? 'info' : 'warning'
     };
   }
   return {
@@ -157,10 +154,28 @@ export async function runExternalWaitAction(button, deps) {
       root_dir: button.dataset.rootDir || '',
       wait_id: button.dataset.waitId || '',
       ...(button.dataset.mode ? { mode: button.dataset.mode } : {}),
+      ...(button.dataset.feedbackAction
+        ? {
+            feedback_action: button.dataset.feedbackAction,
+            version: Number(button.dataset.version)
+          }
+        : {}),
       ...(button.dataset.beadId ? { bead_id: button.dataset.beadId } : {})
     });
     if (deps.adopt) {
       deps.adopt(res);
+    }
+    if (button.dataset.feedbackAction) {
+      showToast(
+        res?.ok === false
+          ? `${button.dataset.feedbackAction === 'focus' ? '원래 창으로 이동하지 못했습니다' : '원래 세션을 확인하지 못했습니다'} · ${externalWaitRefusalText(res.focus_error || res.reason || 'unknown')}`
+          : button.dataset.feedbackAction === 'focus'
+            ? '원래 창으로 이동했습니다'
+            : '원래 세션 상태를 확인했습니다',
+        res?.ok === false ? 'warning' : 'info',
+        4000
+      );
+      return true;
     }
     if (res?.ok !== false && res?.mode === 'session') {
       const toast = await sessionResumeToast(res);
@@ -169,9 +184,9 @@ export async function runExternalWaitAction(button, deps) {
     }
     showToast(
       res?.ok === false
-        ? '외부 작업 요청에 실패했습니다'
+        ? `이어가지 못했습니다 · ${externalWaitRefusalText(res.reason || 'unknown')}`
         : '외부 작업 상태를 갱신했습니다',
-      res?.ok === false ? 'error' : 'success',
+      res?.ok === false ? 'warning' : 'success',
       4000
     );
   } catch {

@@ -18554,7 +18554,7 @@ describe('external wait confirm and session resume (UI-r6xq §4.4)', () => {
     }
   );
 
-  test('copies the resume command when the owner session is unverified', async () => {
+  test('keeps the clipboard untouched when the owner session is unverified', async () => {
     const writeText = vi.fn(() => Promise.resolve());
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText },
@@ -18590,9 +18590,9 @@ describe('external wait confirm and session resume (UI-r6xq §4.4)', () => {
     ).click();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(writeText).toHaveBeenCalledWith('codex resume s-1');
+    expect(writeText).not.toHaveBeenCalled();
     expect(document.querySelector('.toast')?.textContent).toBe(
-      '원래 세션이 살아 있는지 확인하지 못해 열지 않았습니다 · 재개 명령을 복사했습니다'
+      '원래 세션이 열려 있는지 확인하지 못해 새로 열지 않았습니다 · 생존 조회 결과를 확인하지 못했습니다'
     );
     view.destroy();
   });

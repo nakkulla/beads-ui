@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createExternalWaitService } from './external-wait/service.js';
 import { createExternalWaitStore } from './external-wait/store.js';
 import { resolveExecSettings } from './policy.js';
 import { createQueueStore } from './queue-store.js';
@@ -1309,6 +1310,11 @@ function sessionFixture(options = {}) {
   const worktree_dir = path.join(root, 'wt');
   fs.mkdirSync(worktree_dir, { recursive: true });
   const launcher = {
+    focusRegistryPane: vi.fn(async () => ({
+      ok: true,
+      tmux_session: 'dev',
+      tmux_window: '@1'
+    })),
     launch: vi.fn(
       async () =>
         options.launch || {
@@ -1346,6 +1352,395 @@ function sessionFixture(options = {}) {
 }
 
 describe('external wait session resume', () => {
+  test.each([
+    [2, 'focus'],
+    [3, 'recheck']
+  ])(
+    'discards %s snapshot results when the wait stops during %s verification',
+    async (snapshot_number, action) => {
+      const run = vi.fn(async (/** @type {string[]} */ argv) => ({
+        code: 0,
+        stderr: '',
+        stdout:
+          argv[0] === 'env'
+            ? 'start'
+            : argv[0] === 'tmux'
+              ? 'dev:@1.%7 123 0'
+              : ''
+      }));
+      const env = sessionFixture({
+        deps: { externalWaitSessionResume: { run } }
+      });
+      fs.writeFileSync(
+        path.join(root, '.claude', 'sessions', 'owner.json'),
+        JSON.stringify({
+          sessionId: 'user-session',
+          pid: 123,
+          procStart: 'start',
+          tmux: 'dev:@1.%7'
+        })
+      );
+      env.store.recordExternalWaitFeedback(WS, WAIT, {
+        bead_id: 'B1',
+        kind: 'session_resume',
+        reason: 'owner_alive',
+        at: 1,
+        session_ref: 'claude:user-session@host',
+        owner_tmux: 'dev:@1.%7'
+      });
+      const feedback = env.store.snapshot(WS).external_wait_feedback[WAIT];
+      const save = vi.spyOn(env.store, 'recordExternalWaitFeedback');
+      const snap = await env.bd.snapshotBead();
+      let snapshots = 0;
+      env.bd.snapshotBead.mockImplementation(async () => {
+        await Promise.resolve();
+        snapshots += 1;
+        if (snapshots === snapshot_number) {
+          env.externalWait.update(WS, WAIT, (record) => {
+            record.stage = 'stopped';
+          });
+        }
+        return snap;
+      });
+
+      const result = await env.scheduler.inspectExternalWaitOwner(WS, WAIT, {
+        bead_id: 'B1',
+        version: feedback.version,
+        action: /** @type {'focus'|'recheck'} */ (action)
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'feedback_changed' });
+      expect(env.launcher.focusRegistryPane).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS).external_wait_feedback[WAIT]).toEqual(
+        feedback
+      );
+      expect(env.metadata.external_wait).toBe(WAIT);
+    }
+  );
+
+  test('skips execution for a service refusal even after the reservation clears', async () => {
+    const env = sessionFixture();
+    const before = JSON.stringify(recordOf(env));
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'session',
+      refused: 'resume_reserved'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'resume_reserved' });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(env.launches).toEqual([]);
+    expect(JSON.stringify(recordOf(env))).toBe(before);
+  });
+
+  test('records a service reservation refusal without executing a resume', async () => {
+    const env = sessionFixture({
+      record: {
+        resume: {
+          mode: 'session',
+          attempt_id: null,
+          reserved_at: AT,
+          launched_at: null,
+          session_id: 'user-session',
+          error: null
+        }
+      }
+    });
+    const service = createExternalWaitService({
+      store: env.externalWait,
+      observer: { observeRecord: vi.fn(), withOperationLock: vi.fn() },
+      bd: { setExternalWait: vi.fn(), unsetExternalWait: vi.fn() },
+      resume: (workspace, wait_id, mode, refusal) =>
+        env.scheduler.resumeExternalWait(workspace, wait_id, {
+          mode,
+          ...refusal
+        })
+    });
+    const before = JSON.stringify(recordOf(env));
+    env.admission.validate.mockClear();
+
+    const result = await service.resume(WS, WAIT, 'session');
+
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      error: 'resume_reserved'
+    });
+    expect(env.store.snapshot(WS).external_wait_feedback[WAIT]).toMatchObject({
+      bead_id: 'B1',
+      kind: 'session_resume',
+      reason: 'resume_reserved'
+    });
+    expect(env.admission.validate).not.toHaveBeenCalled();
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(env.launches).toEqual([]);
+    expect(JSON.stringify(recordOf(env))).toBe(before);
+  });
+
+  test('focuses only a verified current original pane without releasing the wait', async () => {
+    const run = vi.fn(async (/** @type {string[]} */ argv) => ({
+      code: 0,
+      stderr: '',
+      stdout:
+        argv[0] === 'env'
+          ? 'start'
+          : argv[0] === 'tmux'
+            ? 'dev:@1.%7 100 0'
+            : '100'
+    }));
+    const env = sessionFixture({
+      deps: { externalWaitSessionResume: { run } }
+    });
+    fs.writeFileSync(
+      path.join(root, '.claude', 'sessions', 'owner.json'),
+      JSON.stringify({
+        sessionId: 'user-session',
+        pid: 123,
+        procStart: 'start',
+        tmux: 'dev:@1.%7'
+      })
+    );
+    await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'session' });
+    const version = env.store.snapshot(WS).external_wait_feedback[WAIT].version;
+
+    const result = await env.scheduler.inspectExternalWaitOwner(WS, WAIT, {
+      bead_id: 'B1',
+      version,
+      action: 'focus'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.launcher.focusRegistryPane).toHaveBeenCalledExactlyOnceWith(
+      'dev:@1.%7'
+    );
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(recordOf(env)?.stage).toBe('completing');
+    expect(env.store.snapshot(WS).external_wait_feedback[WAIT].reason).toBe(
+      'owner_alive'
+    );
+  });
+
+  test('keeps tmux focus failures on the same card', async () => {
+    const run = vi.fn(async (/** @type {string[]} */ argv) => ({
+      code: 0,
+      stderr: '',
+      stdout:
+        argv[0] === 'env'
+          ? 'start'
+          : argv[0] === 'tmux'
+            ? 'dev:@1.%7 123 0'
+            : ''
+    }));
+    const env = sessionFixture({
+      deps: { externalWaitSessionResume: { run } }
+    });
+    fs.writeFileSync(
+      path.join(root, '.claude', 'sessions', 'owner.json'),
+      JSON.stringify({
+        sessionId: 'user-session',
+        pid: 123,
+        procStart: 'start',
+        tmux: 'dev:@1.%7'
+      })
+    );
+    await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'session' });
+    env.launcher.focusRegistryPane.mockResolvedValue(
+      /** @type {any} */ ({ ok: false, error: 'select_failed' })
+    );
+    const version = env.store.snapshot(WS).external_wait_feedback[WAIT].version;
+
+    await env.scheduler.inspectExternalWaitOwner(WS, WAIT, {
+      bead_id: 'B1',
+      version,
+      action: 'focus'
+    });
+
+    expect(
+      env.store.snapshot(WS).external_wait_feedback[WAIT].focus_error
+    ).toBe('select_failed');
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('discards a delayed recheck after the wait ends', async () => {
+    const env = sessionFixture();
+    env.store.recordExternalWaitFeedback(WS, WAIT, {
+      bead_id: 'B1',
+      kind: 'session_resume',
+      reason: 'owner_alive',
+      at: 1,
+      session_ref: 'claude:user-session@host',
+      owner_tmux: 'dev:@1.%7'
+    });
+    const version = env.store.snapshot(WS).external_wait_feedback[WAIT].version;
+    /** @type {(value: any) => void} */
+    let finish = () => {};
+    env.bd.snapshotBead.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    const pending = env.scheduler.inspectExternalWaitOwner(WS, WAIT, {
+      bead_id: 'B1',
+      version,
+      action: 'recheck'
+    });
+    env.externalWait.update(WS, WAIT, (record) => {
+      record.stage = 'stopped';
+    });
+    env.store.recordExternalWaitFeedback(WS, WAIT, null);
+
+    finish({ session_ref: 'claude:user-session@host' });
+    const result = await pending;
+
+    expect(result.reason).toBe('feedback_changed');
+    expect(env.store.snapshot(WS).external_wait_feedback).toEqual({});
+  });
+  test('persists an unverified owner refusal without changing the wait bytes', async () => {
+    const env = sessionFixture({
+      deps: {
+        externalWaitSessionResume: {
+          sessionsDir: path.join(root, 'missing-registry')
+        }
+      }
+    });
+    const before = JSON.stringify(recordOf(env));
+
+    await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'session' });
+
+    expect(JSON.stringify(recordOf(env))).toBe(before);
+    expect(
+      createQueueStore().load(WS).external_wait_feedback[WAIT]
+    ).toMatchObject({
+      bead_id: 'B1',
+      kind: 'session_resume',
+      reason: 'owner_unverified',
+      session_ref: 'claude:user-session@host',
+      owner_tmux: null
+    });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(env.metadata.external_wait).toBe(WAIT);
+  });
+
+  test('reports a feedback persistence failure without retrying execution', async () => {
+    const env = sessionFixture({
+      deps: {
+        externalWaitSessionResume: {
+          sessionsDir: path.join(root, 'missing-registry')
+        }
+      }
+    });
+    vi.spyOn(env.store, 'recordExternalWaitFeedback').mockImplementation(() => {
+      throw new Error('disk_full');
+    });
+
+    const result = env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'session'
+    });
+
+    await expect(result).rejects.toThrow('disk_full');
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('rechecks an ended owner without launching a session', async () => {
+    const env = sessionFixture();
+    env.store.recordExternalWaitFeedback(WS, WAIT, {
+      bead_id: 'B1',
+      kind: 'session_resume',
+      reason: 'owner_alive',
+      at: 1,
+      session_ref: 'claude:user-session@host',
+      owner_tmux: 'dev:@1.%7'
+    });
+    const feedback = env.store.snapshot(WS).external_wait_feedback[WAIT];
+
+    await env.scheduler.inspectExternalWaitOwner(WS, WAIT, {
+      bead_id: 'B1',
+      version: feedback.version,
+      action: 'recheck'
+    });
+
+    expect(env.store.snapshot(WS).external_wait_feedback[WAIT].reason).toBe(
+      'owner_dead'
+    );
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(recordOf(env)?.stage).toBe('completing');
+    expect(env.metadata.external_wait).toBe(WAIT);
+  });
+
+  test('rejects a stale owner recheck after another refusal', async () => {
+    const env = sessionFixture();
+    const feedback = {
+      bead_id: 'B1',
+      kind: /** @type {const} */ ('session_resume'),
+      reason: 'owner_alive',
+      at: 1,
+      session_ref: 'claude:user-session@host',
+      owner_tmux: 'dev:@1.%7'
+    };
+    env.store.recordExternalWaitFeedback(WS, WAIT, feedback);
+    const old_version =
+      env.store.snapshot(WS).external_wait_feedback[WAIT].version;
+    env.store.recordExternalWaitFeedback(WS, WAIT, {
+      ...feedback,
+      reason: 'owner_unverified'
+    });
+
+    const result = await env.scheduler.inspectExternalWaitOwner(WS, WAIT, {
+      bead_id: 'B1',
+      version: old_version,
+      action: 'recheck'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'feedback_changed' });
+    expect(env.store.snapshot(WS).external_wait_feedback[WAIT].reason).toBe(
+      'owner_unverified'
+    );
+  });
+
+  test('keeps feedback when original window movement cannot verify a pane', async () => {
+    const env = sessionFixture();
+    env.store.recordExternalWaitFeedback(WS, WAIT, {
+      bead_id: 'B1',
+      kind: 'session_resume',
+      reason: 'owner_alive',
+      at: 1,
+      session_ref: 'claude:user-session@host',
+      owner_tmux: 'dev:@1.%7'
+    });
+    const version = env.store.snapshot(WS).external_wait_feedback[WAIT].version;
+
+    const result = await env.scheduler.inspectExternalWaitOwner(WS, WAIT, {
+      bead_id: 'B1',
+      version,
+      action: 'focus'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(
+      env.store.snapshot(WS).external_wait_feedback[WAIT].focus_error
+    ).toBe('owner_location_unverified');
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(recordOf(env)?.stage).toBe('completing');
+  });
+
+  test('removes feedback only after the launch and key settlement succeed', async () => {
+    const env = sessionFixture();
+    env.store.recordExternalWaitFeedback(WS, WAIT, {
+      bead_id: 'B1',
+      kind: 'session_resume',
+      reason: 'owner_dead',
+      at: 1,
+      session_ref: 'claude:user-session@host',
+      owner_tmux: null
+    });
+
+    await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'session' });
+
+    expect(recordOf(env)?.stage).toBe('resumed');
+    expect(env.store.snapshot(WS).external_wait_feedback).toEqual({});
+  });
   test('launches the preserved session without an attempt or admission', async () => {
     const env = sessionFixture();
 

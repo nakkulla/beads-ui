@@ -296,6 +296,36 @@ test('delegates a manual external wait resume through the runtime hook', async (
   expect(resume).toHaveBeenCalledWith(workspace, record.wait_id, 'fresh');
 });
 
+test('reports HTTP feedback persistence errors without retrying the resume hook', async () => {
+  const runtime = getWorkerRuntime();
+  const resume = vi.fn(async () => {
+    throw new Error('feedback_write_failed');
+  });
+  runtime.setExternalWaitHooks({ resume });
+  const record = runtime.externalWaitStore.insert(workspace, {
+    ...waitInput(),
+    stage: 'completing'
+  });
+
+  const result = await externalWaitRequest(`/${record.wait_id}/resume`, {
+    root_dir: workspace,
+    mode: 'session'
+  });
+
+  expect(result).toMatchObject({
+    status: 500,
+    body: { ok: false, error: 'internal_error' }
+  });
+  expect(resume).toHaveBeenCalledExactlyOnceWith(
+    workspace,
+    record.wait_id,
+    'session'
+  );
+  expect(runtime.externalWaitStore.get(workspace, record.wait_id)?.stage).toBe(
+    'completing'
+  );
+});
+
 /**
  * Write a `queue.json` the store has not loaded yet.
  *
