@@ -979,6 +979,179 @@ const SHARED_BEADS = [
 ];
 
 describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () => {
+  test.each([
+    ['spec_needed', 'admission'],
+    ['entry_needed', 'admission'],
+    ['spec_needed', 'waiting'],
+    ['entry_needed', 'waiting']
+  ])(
+    'renders %s from %s on the blocker and original identically in both tabs',
+    async (state, evidence) => {
+      const blocker = 'P-spec';
+      const original = 'P-original';
+      extra_rows = [
+        row(blocker, {
+          metadata: {
+            route: 'spec_backed',
+            ...(state === 'entry_needed'
+              ? { spec_review: `self@${'a'.repeat(40)}` }
+              : {})
+          },
+          ...(state === 'entry_needed' ? { spec_id: 'docs/spec.md' } : {})
+        }),
+        row(original, {
+          dependencies: [
+            { issue_id: original, depends_on_id: blocker, type: 'blocks' }
+          ]
+        })
+      ];
+
+      const { worker, monitor } = await drawBothTabs(undefined, {
+        queue: [{ bead_id: original, added_at: NOW }],
+        ...(evidence === 'admission'
+          ? {
+              admission: {
+                [original]: {
+                  reason: 'prerequisite_unmet',
+                  blockers: [{ id: blocker, rig: null, status: 'open' }]
+                }
+              }
+            }
+          : {
+              attempts: {
+                ...rawQueue().attempts,
+                'att-original': makeAttempt({
+                  attempt_id: 'att-original',
+                  bead_id: original,
+                  status: 'waiting',
+                  started_at: NOW - HOUR,
+                  finished_at: NOW - HOUR / 2,
+                  cause: 'prerequisite_unmet',
+                  cause_detail: {
+                    blockers: [{ id: blocker, rig: null, status: 'open' }]
+                  }
+                })
+              }
+            })
+      });
+
+      for (const id of [blocker, original]) {
+        const cards = [worker, monitor].map(
+          (mount) => /** @type {HTMLElement} */ (cardsByBead(mount).get(id))
+        );
+        expect(cards[0]).toBeDefined();
+        expect(cards[1]).toBeDefined();
+        expect(partsOf(cards[0])).toEqual(partsOf(cards[1]));
+        for (const card of cards) {
+          expect(
+            card
+              .querySelector(
+                '.worker-card__foot .worker-spec-authoring, .worker-mini__foot .worker-spec-authoring, .rtile__foot .worker-spec-authoring'
+              )
+              ?.textContent?.trim()
+          ).toBe('스펙 작성 세션');
+          expect(
+            card
+              .querySelector('.worker-spec-authoring')
+              ?.getAttribute('data-bead-id')
+          ).toBe(blocker);
+          if (id === blocker) {
+            expect(
+              card.querySelector('[class$="__head"]')?.textContent
+            ).toContain(
+              state === 'spec_needed'
+                ? '✍️ 스펙 확정 필요'
+                : '✍️ 구현 진입 답 필요'
+            );
+          } else {
+            expect(
+              card.querySelector('.worker-dep--pred')?.textContent
+            ).toContain(`⛓ ${blocker} ✍️`);
+          }
+        }
+      }
+    }
+  );
+
+  test.each(['queued', 'in_progress'])(
+    'removes spec authoring displays when B becomes %s in both tabs',
+    async (state) => {
+      const blocker = 'P-spec';
+      const original = 'P-original';
+      extra_rows = [
+        row(blocker, {
+          status: state === 'in_progress' ? state : 'open',
+          metadata: { route: 'spec_backed' }
+        }),
+        row(original, {
+          dependencies: [
+            { issue_id: original, depends_on_id: blocker, type: 'blocks' }
+          ]
+        })
+      ];
+
+      const { worker, monitor } = await drawBothTabs(undefined, {
+        queue: [
+          { bead_id: original, added_at: NOW },
+          ...(state === 'queued' ? [{ bead_id: blocker, added_at: NOW }] : [])
+        ],
+        admission: {
+          [original]: {
+            reason: 'prerequisite_unmet',
+            blockers: [{ id: blocker, rig: null, status: 'open' }]
+          }
+        }
+      });
+
+      for (const mount of [worker, monitor]) {
+        expect(mount.querySelector('.worker-spec-authoring')).toBeNull();
+        expect(mount.textContent).not.toContain('✍️ 스펙 확정 필요');
+        expect(mount.textContent).not.toContain('✍️ 구현 진입 답 필요');
+      }
+    }
+  );
+
+  test('shows a live spec conversation on both original cards without another launch action', async () => {
+    const blocker = 'P-spec';
+    const original = 'P-original';
+    extra_rows = [
+      row(blocker, { metadata: { route: 'spec_backed' } }),
+      row(original)
+    ];
+
+    const { worker, monitor } = await drawBothTabs(undefined, {
+      queue: [{ bead_id: original, added_at: NOW }],
+      admission: {
+        [original]: {
+          reason: 'prerequisite_unmet',
+          blockers: [{ id: blocker, rig: null, status: 'open' }]
+        }
+      },
+      interactive_sessions: {
+        [`${blocker}:spec_authoring`]: {
+          bead_id: blocker,
+          kind: 'spec_authoring',
+          provider: 'claude',
+          state: 'live',
+          settled_at: null,
+          pane_id: '%1',
+          tmux_session: 'inquiry',
+          tmux_window: blocker,
+          launched_at: NOW
+        }
+      }
+    });
+
+    for (const mount of [worker, monitor]) {
+      const button = /** @type {HTMLButtonElement} */ (
+        cardsByBead(mount)
+          .get(original)
+          ?.querySelector('.worker-spec-authoring')
+      );
+      expect(button.textContent?.trim()).toBe('대화 중');
+      expect(button.disabled).toBe(true);
+    }
+  });
   test('projects parallel running occupants before waiting rows without changing drop coordinates', async () => {
     const raw = rawQueue();
     raw.attempts['att-r1'].serial_lane_id = null;

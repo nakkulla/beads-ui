@@ -211,6 +211,11 @@ import {
   qualifySessionFork
 } from './session-ref.js';
 import { isSessionStalledRecovery } from './session-stall.js';
+import {
+  createSpecAuthoring,
+  readSpecAuthoringIssue,
+  readSpecAuthoringReady
+} from './spec-authoring.js';
 import { staleResidueIntact } from './stale-work.js';
 import {
   codexAttemptHomeDir,
@@ -222,7 +227,8 @@ import {
   EXTERNAL_RESUME_PANE_MARKER,
   INQUIRY_PANE_MARKER,
   RESOLVE_PANE_MARKER,
-  SESSION_LANE_PANE_MARKER
+  SESSION_LANE_PANE_MARKER,
+  SPEC_AUTHORING_PANE_MARKER
 } from './tmux-launcher.js';
 import * as default_usage_receipts from './usage-receipts.js';
 import {
@@ -1035,6 +1041,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   awaitingUser?: (i: any) => void,
  *   conversationTakeover?: (i: any) => void,
  *   conversationResumed?: (i: any) => void,
+ *   conversationConfirm?: (i: import('./notify.js').ConversationConfirmInput) => Promise<boolean>,
  *   providerHoldEntered?: (i: any) => void,
  *   providerRecovered?: (i: any) => void,
  *   providerAutoResumeDisarmed?: (i: any) => void,
@@ -1459,7 +1466,8 @@ const INTERACTIVE_KIND_LABELS = {
   resolve: '대화',
   inquiry: '대화',
   external_resume: '대화',
-  session_lane: '세션 레인'
+  session_lane: '세션 레인',
+  spec_authoring: '스펙 작성'
 };
 
 /**
@@ -1687,6 +1695,40 @@ export function createScheduler(deps) {
   const wait_retry_timers = new Map();
   /** @type {ReturnType<typeof createExternalWaitSessionResume>|null} */
   let external_wait_session_resume = null;
+
+  /**
+   * Bind the local rig reader; foreign prerequisites use their owning rig.
+   *
+   * @param {string} workspace
+   * @param {Array<{ id: string, rig: string|null, status: string }>} blockers
+   */
+  async function observePrerequisiteSpecs(workspace, blockers) {
+    const authoring = createSpecAuthoring({
+      store: deps.store,
+      launcher: deps.interactiveLauncher,
+      ...(deps.notify?.conversationConfirm
+        ? { notifier: { conversationConfirm: deps.notify.conversationConfirm } }
+        : {}),
+      readIssue: (root, bead_id) =>
+        root === workspace
+          ? deps.bd.readIssue?.(bead_id) || Promise.resolve(null)
+          : readSpecAuthoringIssue(root, bead_id),
+      readReady: async (root, bead_id) =>
+        root === workspace
+          ? ((await deps.bd.readyBeadIds?.())?.has(bead_id) ?? null)
+          : readSpecAuthoringReady(root, bead_id),
+      currentRunner: (root, issue) => {
+        const resolved = deps.execPresetCoordinator.resolveForDispatch(
+          root,
+          issue
+        );
+        return resolved.ok ? resolved.exec.runner : null;
+      },
+      resolveSessionAccounts,
+      now
+    });
+    await authoring.observe({ workspace, blockers });
+  }
 
   /**
    * The `[세션에서 이어가기]` launcher, built on first use; null without an
@@ -7431,6 +7473,16 @@ export function createScheduler(deps) {
     // point of a park is that the USER's own session picks the bead up, and it
     // cannot while the worker still holds the claim (spec §3.1).
     await releaseBeadClaim(bead_id, { workspace, attempt_id });
+    const settled = deps.store.snapshot(workspace).attempts[attempt_id];
+    if (
+      settled?.status === 'waiting' &&
+      settled.cause === 'prerequisite_unmet'
+    ) {
+      await observePrerequisiteSpecs(
+        workspace,
+        settled.cause_detail?.blockers || []
+      );
+    }
   }
 
   /**
@@ -8704,6 +8756,7 @@ export function createScheduler(deps) {
     const blockers = await prerequisiteBlockersOf(workspace, bead_id, snap);
     if (blockers !== null && blockers.length > 0) {
       recordSkipReason(workspace, bead_id, 'prerequisite_unmet', { blockers });
+      await observePrerequisiteSpecs(workspace, blockers);
       return true;
     }
     recordSkipReason(workspace, bead_id, notReadyReason(snap));
@@ -12587,10 +12640,12 @@ export function createScheduler(deps) {
       q.conversation_refusals || {}
     )) {
       const stands =
-        refusal.kind === 'resolve'
-          ? failureHandoffTarget(q, bead_id) !== null
-          : deps.externalWait?.findByBead(workspace, bead_id)?.stage ===
-            'completing';
+        refusal.kind === 'spec_authoring'
+          ? Object.hasOwn(q.spec_authoring_launches || {}, bead_id)
+          : refusal.kind === 'resolve'
+            ? failureHandoffTarget(q, bead_id) !== null
+            : deps.externalWait?.findByBead(workspace, bead_id)?.stage ===
+              'completing';
       if (
         !stands &&
         deps.store.clearConversationRefusal?.(workspace, bead_id)?.ok
@@ -12981,12 +13036,14 @@ export function createScheduler(deps) {
       resolve_panes,
       inquiry_panes,
       external_resume_panes,
-      session_lane_panes
+      session_lane_panes,
+      spec_authoring_panes
     ] = await Promise.all([
       launcher.listPanesExtended(RESOLVE_PANE_MARKER),
       launcher.listPanesExtended(INQUIRY_PANE_MARKER),
       launcher.listPanesExtended(EXTERNAL_RESUME_PANE_MARKER),
-      launcher.listPanesExtended(SESSION_LANE_PANE_MARKER)
+      launcher.listPanesExtended(SESSION_LANE_PANE_MARKER),
+      launcher.listPanesExtended(SPEC_AUTHORING_PANE_MARKER)
     ]);
     // A partial tmux observation cannot prove either absence or safe recovery.
     // That includes the session-lane liveness below (UI-lbm5 §5): a pass whose
@@ -12995,15 +13052,17 @@ export function createScheduler(deps) {
       !resolve_panes.ok ||
       !inquiry_panes.ok ||
       !external_resume_panes.ok ||
-      !session_lane_panes.ok
+      !session_lane_panes.ok ||
+      !spec_authoring_panes.ok
     ) {
       log(
-        'interactive pane observation failed for %s: %o %o %o %o',
+        'interactive pane observation failed for %s: %o %o %o %o %o',
         workspace,
         resolve_panes,
         inquiry_panes,
         external_resume_panes,
-        session_lane_panes
+        session_lane_panes,
+        spec_authoring_panes
       );
       return;
     }
@@ -13011,7 +13070,8 @@ export function createScheduler(deps) {
       resolve: resolve_panes.rows,
       inquiry: inquiry_panes.rows,
       external_resume: external_resume_panes.rows,
-      session_lane: session_lane_panes.rows
+      session_lane: session_lane_panes.rows,
+      spec_authoring: spec_authoring_panes.rows
     };
     observeSessionLaneAttempts(
       workspace,
@@ -13870,7 +13930,8 @@ export function createScheduler(deps) {
       'resolve',
       'inquiry',
       'external_resume',
-      'session_lane'
+      'session_lane',
+      'spec_authoring'
     ])) {
       for (const pane of panes[kind]) {
         const key = `${pane.key}:${kind}`;

@@ -1159,6 +1159,21 @@ describe('worker/notify fail-quiet', () => {
 });
 
 describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
+  test('sends the prerequisite spec headline through the confirm path', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conversationConfirm({
+      bead_id: 'UI-spec',
+      spec_authoring: { originals: ['UI-one', 'UI-two'] },
+      session: 'not_launched',
+      reason: 'disabled'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      '🙋 스펙 확정 필요 — UI-spec (막힌: UI-one, UI-two)\n대화를 열지 못함 · disabled — Worker 탭 [스펙 작성 세션]'
+    );
+  });
   test('sends the confirm push with the reason, sentence, window and repo', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });

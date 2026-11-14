@@ -58,6 +58,8 @@ import {
   sessionLaneChipTemplate,
   sessionLaneDiscordTemplate,
   sessionLaneProgressTemplate,
+  specAuthoringActionsTemplate,
+  specAuthoringChips,
   timesMeta,
   waitReasonLines,
   waitStatusBadge
@@ -72,6 +74,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
 
 /**
  * @typedef {Object} RunningTile
+ * @property {any[]} [spec_authoring_actions]
  * @property {string} bead_id
  * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
  * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
@@ -1240,7 +1243,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   );
   // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 landing 진행이
   // 모두 슬롯 3이므로 그 뒤에 선다.
-  const monitor_relations = dependencyChipsTemplate(monitor?.dependency_chips);
+  const monitor_relations = dependencyChipsTemplate(
+    specAuthoringChips(monitor?.dependency_chips, tile.spec_authoring_actions)
+  );
   const monitor_body = monitorTileBody(
     monitor,
     now,
@@ -1760,8 +1765,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
     ${(held || failed) && lane_chip
       ? html`<div class="worker-chips worker-chips--coords">${lane_chip}</div>`
-      : ''}${failed && !held && !external_wait
-      ? pair_foot
+      : ''}${failed && !held && !external_wait ? pair_foot : ''}${tile
+      .spec_authoring_actions?.length
+      ? html`<div class="rtile__foot">
+          ${specAuthoringActionsTemplate(tile)}
+        </div>`
       : ''}${refusal_times || wait_body_lines.times}${failurePopoverTemplate(
       failure,
       now

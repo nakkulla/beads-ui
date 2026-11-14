@@ -190,13 +190,19 @@ import {
   resolveSessionFile,
   sessionRefViews
 } from '../worker/session-ref.js';
+import {
+  createSpecAuthoring,
+  projectSpecAuthoring,
+  specAuthoringRoots
+} from '../worker/spec-authoring.js';
 import { codexSessionsRoot } from '../worker/state-paths.js';
 import { readDeclaredBase } from '../worker/target-base.js';
 import {
   EXTERNAL_RESUME_PANE_MARKER,
   INQUIRY_PANE_MARKER,
   RESOLVE_PANE_MARKER,
-  SESSION_LANE_PANE_MARKER
+  SESSION_LANE_PANE_MARKER,
+  SPEC_AUTHORING_PANE_MARKER
 } from '../worker/tmux-launcher.js';
 import {
   normalizeUsageLegs,
@@ -3832,8 +3838,27 @@ export function decorateQueue(workspace_key, raw_queue) {
   const bead_dependents = beadDependentsFor(workspace_key, queue);
   const bead_plan_groups = beadPlanGroupsFor(workspace_key, queue);
   const withdrawn_beads = withdrawnBeadsFor(workspace_key, overlaid.attempts);
+  const spec_authoring = projectSpecAuthoring({
+    workspace: workspace_key,
+    roots: specAuthoringRoots(),
+    snapshot: (root) =>
+      root === workspace_key ? queue : queueStore().snapshot(root),
+    issue: (root, id) => peekWorkspaceSnapshot(root)?.id_index.get(id),
+    ready: (root, id) => {
+      const snapshot = peekWorkspaceSnapshot(root);
+      return snapshot
+        ? snapshot.ready_explain.ready.some((row) => row.id === id)
+        : null;
+    },
+    owner: (root, blocker) =>
+      !blocker.rig
+        ? root
+        : ownerRootsForBlockerIds(new Set([blocker.id]), root)[blocker.id] ||
+          null
+  });
   return {
     ...queue,
+    spec_authoring,
     // The manual-continuation capability (UI-58w8 §8): a read-only projection
     // of the queue schema's own constant, independent of the `auto_merge`
     // boolean the queue itself carries — the snapshot never authors a second
@@ -8455,14 +8480,83 @@ export async function handleWorkerResolveInSession(ws, req) {
  * session-lane window (UI-lbm5 §4.6) answers the same click: its
  * `[세션에서 이어가기]` brings the running window forward.
  *
- * @type {Readonly<Record<'inquiry'|'resolve'|'external_resume'|'session_lane', string>>}
+ * @type {Readonly<Record<import('../worker/queue-store.js').InteractiveSession['kind'], string>>}
  */
 const CONVERSATION_PANE_MARKERS = Object.freeze({
   inquiry: INQUIRY_PANE_MARKER,
   resolve: RESOLVE_PANE_MARKER,
   external_resume: EXTERNAL_RESUME_PANE_MARKER,
-  session_lane: SESSION_LANE_PANE_MARKER
+  session_lane: SESSION_LANE_PANE_MARKER,
+  spec_authoring: SPEC_AUTHORING_PANE_MARKER
 });
+
+/**
+ * Open a fresh prerequisite spec conversation, independent of attempt history.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerSpecAuthoringSession(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.trim().length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const current = queueStore().snapshot(key);
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          launched: false,
+          conflict: true,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  const runtime = getWorkerRuntime();
+  const authoring = createSpecAuthoring({
+    store: queueStore(),
+    launcher: runtime.interactiveLauncher,
+    currentRunner: (root, issue) => {
+      const resolved = runtime.execPresetCoordinator.resolveForDispatch(
+        root,
+        issue
+      );
+      return resolved.ok ? resolved.exec.runner : null;
+    },
+    resolveSessionAccounts: async (root, id, runner) =>
+      runtime.session_account_resolvers.get(root)?.(root, id, runner) ?? null
+  });
+  const result = await authoring.launchForClick({
+    workspace: key,
+    bead_id: p.bead_id
+  });
+  const latest = queueStore().snapshot(key);
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        conflict: false,
+        ...result,
+        queue: decorateQueue(key, latest)
+      })
+    )
+  );
+  if (result.launched) {
+    fanout(key, latest);
+  }
+}
 
 /**
  * Focus the window of the Bead's live conversation, whatever its kind, the

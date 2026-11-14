@@ -149,6 +149,9 @@ function seedCollections() {
     conversation_refusals: {
       SESSION: { reason: 'refused', at: 1, kind: 'resolve' }
     },
+    spec_authoring_launches: {
+      SPEC: { at: 1, session: 'not_launched', reason: 'disabled' }
+    },
     session_inquiries: {
       'si-012345abcdef': {
         repo: WS,

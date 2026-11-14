@@ -23,6 +23,9 @@ const default_log = debug('worker:tmux-launcher');
  */
 export const INQUIRY_PANE_MARKER = '@bdui_inquiry_bead';
 
+/** Fresh prerequisite spec-authoring windows, keyed by the blocker Bead. */
+export const SPEC_AUTHORING_PANE_MARKER = '@bdui_spec_authoring_bead';
+
 /**
  * The pane option a `[세션에서 해결]` window carries (UI-jw27 §4). Distinct
  * from {@link INQUIRY_PANE_MARKER} on purpose — see the module header.

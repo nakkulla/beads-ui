@@ -51,6 +51,7 @@ import {
   withQuickFixSelfReview
 } from './scheduler.js';
 import { createSessionLog, stderrPathOf } from './session-log.js';
+import * as specAuthoring from './spec-authoring.js';
 import {
   attemptPromptPath,
   attemptRecordPath,
@@ -915,7 +916,8 @@ describe('interactive session reconciliation', () => {
     h.launcher.listPanesExtended.mockImplementation(async (marker) => ({
       ok: true,
       rows:
-        marker === EXTERNAL_RESUME_PANE_MARKER
+        marker === EXTERNAL_RESUME_PANE_MARKER ||
+        marker === '@bdui_spec_authoring_bead'
           ? []
           : [{ ...h.pane, pane: marker === RESOLVE_PANE_MARKER ? '%1' : '%2' }]
     }));
@@ -33708,6 +33710,52 @@ describe('scheduler 방향 질의 세션 훅 (UI-7uid §3.1)', () => {
 });
 
 describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
+  test('observes spec targets after the attempt settlement is durable', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const env = setup({ config, slots: 1 });
+    const observe = vi.fn(async () => {
+      expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+        status: 'waiting',
+        cause: 'prerequisite_unmet'
+      });
+    });
+    const factory = vi
+      .spyOn(specAuthoring, 'createSpecAuthoring')
+      .mockReturnValue(/** @type {any} */ ({ observe }));
+
+    await runRefusedSession(env, config);
+
+    expect(observe).toHaveBeenCalledWith({
+      workspace: WS,
+      blockers: [{ id: 'S9', rig: null, status: 'open' }]
+    });
+    factory.mockRestore();
+  });
+
+  test('observes spec targets after dispatch records a prerequisite skip', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }], {
+      ready: false
+    });
+    const env = setup({ config, slots: 1 });
+    const observe = vi.fn(async () => {
+      expect(env.store.snapshot(WS).admission.S1).toMatchObject({
+        reason: 'prerequisite_unmet',
+        blockers: [{ id: 'S9' }]
+      });
+    });
+    const factory = vi
+      .spyOn(specAuthoring, 'createSpecAuthoring')
+      .mockReturnValue(/** @type {any} */ ({ observe }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(observe).toHaveBeenCalledWith({
+      workspace: WS,
+      blockers: [{ id: 'S9', rig: null, status: 'open' }]
+    });
+    factory.mockRestore();
+  });
   /**
    * A quick_fix bead whose session will end without pushing. `dependencies` is
    * what `readIssue` answers with, and `status` seeds both the live bd status

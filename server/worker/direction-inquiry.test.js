@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { hubCommand, hubReply } from '../../test/session-hub.js';
 import {
   CONVERSATION_ENTRY_BLOCK,
+  SPEC_AUTHORING_ENTRY_BLOCK,
   createDirectionInquiry,
   fillConversationEntry,
+  fillSpecAuthoringEntry,
   inquiryWrapper,
   parkSentence,
   recoverySentence,
@@ -335,6 +337,26 @@ function recoveryInput(over = {}) {
 }
 
 describe('direction-inquiry entry block', () => {
+  test('pins the exact dotfiles spec authoring block without a trailing newline', () => {
+    const digest = createHash('sha256')
+      .update(SPEC_AUTHORING_ENTRY_BLOCK)
+      .digest('hex');
+
+    expect(digest).toBe(
+      '0d5618f67cd2f7e5d5286295da1996eae106656ea8f2b367ab62d8d79e0ad2ae'
+    );
+    expect(SPEC_AUTHORING_ENTRY_BLOCK.endsWith('\n')).toBe(false);
+  });
+
+  test('fills absent spec authoring input slots without rescanning values', () => {
+    const block = fillSpecAuthoringEntry({ bead_id: '<원 Bead ID 목록>' });
+
+    expect(block).toContain('- 대상 Bead: <원 Bead ID 목록>');
+    expect(block).toContain('- 막힌 원 Bead: (없음)');
+    expect(block).toContain('- 선행 조건: (없음)');
+    expect(block).toContain('- 원 attempt: (없음)');
+    expect(block).toContain('- 보존 워크트리: (없음)');
+  });
   test('pins the dotfiles entry block digest', () => {
     const digest = createHash('sha256')
       .update(CONVERSATION_ENTRY_BLOCK)

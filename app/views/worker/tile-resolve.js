@@ -11,6 +11,23 @@ export const CONVERSATION_HANDOFF_OP = 'worker-conversation-handoff';
 export const SESSION_CONTINUE_OP = 'worker-resolve-in-session';
 
 /**
+ * Project spec-authoring actions once for all card variants and both tabs.
+ *
+ * @param {any[]} targets
+ * @returns {{ spec_authoring_actions: any[] }}
+ */
+export function specAuthoringFields(targets) {
+  return {
+    spec_authoring_actions: targets.map((target) => ({
+      bead_id: target.bead_id,
+      root_dir: target.root_dir,
+      expected_revision: target.expected_revision,
+      live: hasLiveConversation(target.interactive_sessions)
+    }))
+  };
+}
+
+/**
  * Whether a live Worker session conversation of ANY kind — 멈춤, 실패 or
  * 외부 작업 완료 — already answers the card's `[세션에서 이어가기]` question
  * (UI-ri8n §3.4, UI-18a5 §3.2). A closing session does not count.

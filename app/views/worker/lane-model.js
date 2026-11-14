@@ -95,7 +95,7 @@ import {
   releasedChip,
   resolvedBlockerChip
 } from './queue-blockers.js';
-import { tileResolveFields } from './tile-resolve.js';
+import { specAuthoringFields, tileResolveFields } from './tile-resolve.js';
 import { waitKindRow } from './wait-vocabulary.js';
 
 /**
@@ -444,7 +444,7 @@ const DONE_KIND_LABELS = {
 /**
  * @typedef {Object} InteractiveSessionView
  * @property {string} key
- * @property {'resolve'|'inquiry'|'external_resume'|'session_lane'} kind
+ * @property {'resolve'|'inquiry'|'external_resume'|'session_lane'|'spec_authoring'} kind
  * @property {'claude'|'codex'} provider
  * @property {string|null} session_id
  * @property {'fork'|'fresh'|'resume'|null} mode
@@ -5243,6 +5243,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
   ]) {
     item.interactive_sessions =
       interactive_by_bead.get(`${item.root_dir}\u0000${item.id}`) || [];
+    const workspace = list.find((entry) => entry.root_dir === item.root_dir);
+    const targets =
+      /** @type {any} */ (workspace)?.spec_authoring?.[item.id] || [];
+    Object.assign(item, specAuthoringFields(targets));
+    const self = targets.find(
+      (/** @type {any} */ entry) =>
+        entry.bead_id === item.id && entry.root_dir === item.root_dir
+    );
+    if (self) {
+      item.spec_authoring_state = self.state;
+    }
     const refusal = refusal_by_bead.get(`${item.root_dir}\u0000${item.id}`);
     if (refusal) {
       item.conversation_refusal = refusal;

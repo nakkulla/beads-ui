@@ -64,6 +64,50 @@ const PANE_MARKER = INQUIRY_PANE_MARKER;
 const ABSENT = '(없음)';
 
 /**
+ * Verbatim dotfiles `## 스펙 작성 대화` text block, without a trailing newline,
+ * at 7a70f6fe9a89efcab62d3832c79b118fdd747827. Only the five input slots belong
+ * to beads-ui; the authoring procedure belongs to dotfiles.
+ */
+export const SPEC_AUTHORING_ENTRY_BLOCK = [
+  '이 세션은 Worker 대기열 작업을 막는 스펙 미발행 spec_backed 선행의 스펙을 쓰도록 열린 스펙 작성 대화다. 사용자는 이 tmux 창이나 Discord 스레드에서 답한다.',
+  '- 대상 Bead: <대상 Bead ID>',
+  '- 막힌 원 Bead: <원 Bead ID 목록>',
+  '- 선행 조건: <원 Bead마다 `prerequisite:` notes 줄의 조건 | (없음)>',
+  '- 원 attempt: <원 attempt ID | (없음)>',
+  '- 보존 워크트리: <경로 | (없음)>',
+  '',
+  '절차',
+  '1. 대상 Bead로 workflow 라우터에 들어간다. route는 이미 `spec_backed`로 고정돼 있다.',
+  '2. 질문하기 전에 증거부터 읽어 스펙을 채운다. 증거는 대상과 원 Bead 본문, `prerequisite:` 줄, 보존 워크트리의 diff와 로그다. 값이 `(없음)`이면 대상·원 Bead 본문과 `blocks` 간선을 근거로 작성을 계속한다. 증거로 답할 수 있는 사실은 묻지 않는다.',
+  '3. 설계 선택만 묻는다(brainstorming 순서 그대로).',
+  '4. 스펙 게이트와 구현 진입 질문은 보통의 대화형 세션 규칙을 따른다. 구현 진입 질문의 `Worker 레인에 배치` 답도 포함한다.',
+  '',
+  '금지: 원 Bead의 상태·클레임·Worker 대기열 자리·보존 워크트리를 바꾸지 않는다.'
+].join('\n');
+
+/**
+ * Fill only server-owned slots in one pass, without rescanning inserted text.
+ *
+ * @param {{ bead_id: string, originals?: string|null, prerequisites?: string|null, attempts?: string|null, worktrees?: string|null }} input
+ * @returns {string}
+ */
+export function fillSpecAuthoringEntry(input) {
+  /** @type {Record<string, string>} */
+  const slots = {
+    '<대상 Bead ID>': input.bead_id || ABSENT,
+    '<원 Bead ID 목록>': input.originals || ABSENT,
+    '<원 Bead마다 `prerequisite:` notes 줄의 조건 | (없음)>':
+      input.prerequisites || ABSENT,
+    '<원 attempt ID | (없음)>': input.attempts || ABSENT,
+    '<경로 | (없음)>': input.worktrees || ABSENT
+  };
+  return SPEC_AUTHORING_ENTRY_BLOCK.replace(
+    /<[^>]+>/g,
+    (slot) => slots[slot] ?? slot
+  );
+}
+
+/**
  * The first input of every Worker session conversation — 멈춤, 실패 and
  * 외부 작업 완료 alike (UI-18a5 §3.3) — quoted verbatim from dotfiles
  * `src/shared/skills/flow/workflow/references/execution-common.md`
