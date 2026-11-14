@@ -538,7 +538,7 @@
 /**
  * @typedef {Object} InteractiveSession
  * @property {string} bead_id
- * @property {'resolve'|'inquiry'|'external_resume'|'session_lane'} kind
+ * @property {'resolve'|'inquiry'|'external_resume'|'session_lane'|'spec_authoring'} kind
  * @property {'claude'|'codex'} provider
  * @property {string|null} session_id
  * @property {'launch'|'pane_option'|null} session_id_source
@@ -639,10 +639,11 @@
  * @typedef {Object} ConversationRefusal
  * @property {string} reason
  * @property {number} at
- * @property {'resolve'|'external_resume'} kind
+ * @property {'resolve'|'external_resume'|'spec_authoring'} kind
  */
 /**
  * @typedef {Object} Queue
+ * @property {Record<string, { at: number, session: string, reason: string|null }>} spec_authoring_launches - Per-blocker automatic opening, retained after failure or restart.
  * @property {Record<string, FixWait>} fix_waits - Durable self-repair attempts, including exhausted identities.
  * @property {Record<string, InteractiveSession>} interactive_sessions - Live interactive panes, keyed by bead and kind.
  * @property {Record<string, ConversationRefusal>} conversation_refusals - The
@@ -2801,6 +2802,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'interactive_sessions',
   'fix_waits',
   'conversation_refusals',
+  'spec_authoring_launches',
   'session_inquiries',
   'merge_policy',
   'drift_policy',
@@ -2871,6 +2873,7 @@ function emptyQueue() {
     interactive_sessions: {},
     fix_waits: {},
     conversation_refusals: {},
+    spec_authoring_launches: {},
     session_inquiries: {},
     repo_ops_opt_out: { verify: false, deploy: false },
     repo_operations: {},
@@ -3978,7 +3981,9 @@ function normalizeConversationRefusals(raw) {
       isRecord(value) &&
       stringOrNullValue(value.reason) !== null &&
       finiteOrNull(value.at) !== null &&
-      (value.kind === 'resolve' || value.kind === 'external_resume')
+      (value.kind === 'resolve' ||
+        value.kind === 'external_resume' ||
+        value.kind === 'spec_authoring')
     ) {
       out[bead_id] = {
         reason: String(value.reason),
@@ -4008,9 +4013,13 @@ function normalizeInteractiveSessions(raw) {
       !['bead_id', 'pane_id', 'tmux_session', 'tmux_window'].every(
         (key) => typeof value[key] === 'string' && value[key].trim().length > 0
       ) ||
-      !['resolve', 'inquiry', 'external_resume', 'session_lane'].includes(
-        /** @type {string} */ (value.kind)
-      ) ||
+      ![
+        'resolve',
+        'inquiry',
+        'external_resume',
+        'session_lane',
+        'spec_authoring'
+      ].includes(/** @type {string} */ (value.kind)) ||
       (value.provider !== 'claude' && value.provider !== 'codex') ||
       (value.state !== 'live' && value.state !== 'exiting') ||
       typeof value.launched_at !== 'number' ||
@@ -6028,6 +6037,23 @@ function normalizeQueue(raw) {
   q.conversation_refusals = normalizeConversationRefusals(
     raw.conversation_refusals
   );
+  if (isRecord(raw.spec_authoring_launches)) {
+    for (const [bead_id, value] of Object.entries(
+      raw.spec_authoring_launches
+    )) {
+      if (
+        isRecord(value) &&
+        finiteOrNull(value.at) !== null &&
+        typeof value.session === 'string'
+      ) {
+        q.spec_authoring_launches[bead_id] = {
+          at: Number(value.at),
+          session: value.session,
+          reason: stringOrNullValue(value.reason)
+        };
+      }
+    }
+  }
   q.session_inquiries = normalizeSessionInquiries(raw.session_inquiries);
   for (const [bead_id, value] of Object.entries(
     isRecord(raw.fix_waits) ? raw.fix_waits : {}
@@ -8238,7 +8264,7 @@ export function createQueueStore(options = {}) {
      *
      * @param {string} workspace
      * @param {string} bead_id
-     * @param {{ reason: string, kind: 'resolve'|'external_resume' }} input
+     * @param {{ reason: string, kind: 'resolve'|'external_resume'|'spec_authoring' }} input
      * @returns {QueueOpResult}
      */
     recordConversationRefusal(workspace, bead_id, input) {
@@ -8249,6 +8275,46 @@ export function createQueueStore(options = {}) {
           at: now(),
           kind: input.kind
         };
+        return true;
+      });
+    },
+
+    /**
+     * Reserve the one automatic spec conversation before performing any IO.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {QueueOpResult}
+     */
+    claimSpecAuthoring(workspace, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        if (Object.hasOwn(next.spec_authoring_launches, bead_id)) {
+          return false;
+        }
+        next.spec_authoring_launches[bead_id] = {
+          at: now(),
+          session: 'pending',
+          reason: null
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Preserve the launch outcome without releasing its once reservation.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @param {{ session: string, reason: string|null }} outcome
+     * @returns {QueueOpResult}
+     */
+    finishSpecAuthoring(workspace, bead_id, outcome) {
+      return applyUnconditional(workspace, (next) => {
+        const record = next.spec_authoring_launches[bead_id];
+        if (!record) {
+          return false;
+        }
+        next.spec_authoring_launches[bead_id] = { ...record, ...outcome };
         return true;
       });
     },

@@ -1181,12 +1181,14 @@ export function createMonitorView(mount_element, options) {
    * @param {string} root_dir
    * @param {number} revision
    * @param {Record<string, string>} [payload]
+   * @param {string} [op]
    */
   async function resolveInSession(
     bead_id,
     root_dir,
     revision,
-    payload = { bead_id }
+    payload = { bead_id },
+    op = 'worker-resolve-in-session'
   ) {
     const key = pendingKey(root_dir, bead_id);
     if (resolve_pending.has(key)) {
@@ -1195,13 +1197,7 @@ export function createMonitorView(mount_element, options) {
     resolve_pending.add(key);
     doRender();
     try {
-      const res = await sendCas(
-        'worker-resolve-in-session',
-        payload,
-        root_dir,
-        revision,
-        false
-      );
+      const res = await sendCas(op, payload, root_dir, revision, false);
       // 성공은 언제나 창 자리를 말한다 (UI-a119 §3.3) — Worker 탭과 같은 문장이다.
       // 외부 작업 완료 응답은 세션 재개 응답과 같이 읽는다 (UI-18a5 §3.2).
       if (res?.row === 'external' && res.conflict !== true) {
@@ -3588,6 +3584,22 @@ export function createMonitorView(mount_element, options) {
     const after_drag = lane_drag.consumeClickSuppression();
     const target = /** @type {HTMLElement|null} */ (ev.target);
     if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    const spec_button = /** @type {HTMLButtonElement|null} */ (
+      target.closest('.worker-spec-authoring')
+    );
+    if (spec_button) {
+      if (!spec_button.disabled) {
+        const bead_id = spec_button.dataset.beadId || '';
+        void resolveInSession(
+          bead_id,
+          spec_button.dataset.rootDir || '',
+          Number(spec_button.dataset.expectedRevision),
+          { bead_id },
+          'worker-spec-authoring-session'
+        );
+      }
       return;
     }
     // `[로그 보기]`는 자기 클릭만 쓴다 (UI-i8cy §5.5): 서랍 분기와 행 버튼

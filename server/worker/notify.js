@@ -165,6 +165,7 @@ const TITLE_MAX = 60;
  * the automatic conversation launch was attempted.
  *
  * @typedef {Object} ConversationConfirmInput
+ * @property {{ originals: string[] }} [spec_authoring]
  * @property {string} bead_id
  * @property {string|null} [title]
  * @property {string|null} [stop] - The stop label the entry block printed.
@@ -679,6 +680,14 @@ export function createNotifier(deps) {
   return {
     conversationConfirm(input) {
       return sendConversation('conversationConfirm', async () => {
+        if (input.spec_authoring) {
+          return [
+            `🙋 스펙 확정 필요 — ${input.bead_id} (막힌: ${input.spec_authoring.originals.join(', ')})`,
+            input.session === 'launched'
+              ? `대화: Discord 스레드 · tmux ${input.tmux_session}:${input.tmux_window}`
+              : `대화를 열지 못함 · ${input.reason || 'unknown'} — Worker 탭 [스펙 작성 세션]`
+          ];
+        }
         const bead_title =
           text(input.title) ?? (await lookupTitle(input.bead_id));
         const lines = [

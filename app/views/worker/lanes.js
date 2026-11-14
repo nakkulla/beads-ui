@@ -1979,7 +1979,9 @@ export function interactiveSessionBadgesTemplate(views, options) {
             ? '실패'
             : view.kind === 'external_resume'
               ? '외부 작업 완료'
-              : '확인 필요';
+              : view.kind === 'spec_authoring'
+                ? '스펙 작성'
+                : '확인 필요';
       const title = [
         row_word,
         resumed
@@ -2165,6 +2167,62 @@ export function resolveSessionButton(item, cls) {
 }
 
 /**
+ * Shared slot-6 action for a blocker and every original it blocks.
+ *
+ * @param {{ spec_authoring_actions?: any[] }} item
+ */
+export function specAuthoringActionsTemplate(item) {
+  return (item.spec_authoring_actions || []).map(
+    (action) =>
+      html`<button
+        type="button"
+        class="op-btn worker-spec-authoring"
+        data-bead-id=${action.bead_id}
+        data-root-dir=${action.root_dir}
+        data-expected-revision=${action.expected_revision}
+        ?disabled=${action.live}
+        title=${`${action.bead_id} — ${action.live ? '열린 대화에서 답을 기다립니다' : '저장소 루트에서 새 스펙 작성 대화를 엽니다'}`}
+      >
+        ${action.live ? '대화 중' : '스펙 작성 세션'}
+      </button>`
+  );
+}
+
+/**
+ * Decorate the final predecessor vocabulary shared renderers receive.
+ *
+ * @param {DependencyChips|null|undefined} chips
+ * @param {any[]|undefined} actions
+ */
+export function specAuthoringChips(chips, actions) {
+  if (!chips || !actions?.length) {
+    return chips;
+  }
+  return {
+    ...chips,
+    predecessors: (chips.predecessors || []).map((chip) => ({
+      ...chip,
+      label: `${chip.label}${actions.some((entry) => entry.bead_id === chip.id) ? ' ✍️' : ''}`
+    }))
+  };
+}
+
+/**
+ * The blocker card's slot-1 state; the server owns the judgment.
+ *
+ * @param {{ spec_authoring_state?: string }} item
+ */
+export function specAuthoringBadgeTemplate(item) {
+  const label =
+    item.spec_authoring_state === 'spec_needed'
+      ? '✍️ 스펙 확정 필요'
+      : item.spec_authoring_state === 'entry_needed'
+        ? '✍️ 구현 진입 답 필요'
+        : '';
+  return label ? html`<span class="worker-card__badge">${label}</span>` : '';
+}
+
+/**
  * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
  */
 export function interactiveSessionClosingTemplate(views) {
@@ -2175,6 +2233,8 @@ export function interactiveSessionClosingTemplate(views) {
 
 /**
  * @typedef {Object} MiniItem
+ * @property {string} [spec_authoring_state]
+ * @property {any[]} [spec_authoring_actions]
  * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
  * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
  * @property {string} id - Bead id.
@@ -4434,7 +4494,10 @@ export function miniRow(item, options = {}) {
   // 줄 안에 서고, 자리는 줄의 끝이다 (§3.2 순서: 게이트 → 선행 → 후속 →
   // 유예). 게이트 칩은 같은 줄의 맨 앞이고 그 팝업은 칩 바로 뒤에 붙는다.
   const deps_el = dependencyChipsTemplate(
-    chipsWithBlockerStatus(item.dependency_chips, wait_reasons),
+    specAuthoringChips(
+      chipsWithBlockerStatus(item.dependency_chips, wait_reasons),
+      item.spec_authoring_actions
+    ),
     '',
     gate_el === ''
       ? ''
@@ -4449,6 +4512,7 @@ export function miniRow(item, options = {}) {
       ? ''
       : external.actions;
   const has_foot = !!(
+    item.spec_authoring_actions?.length ||
     external_foot_el ||
     merging ||
     item.merge_action ||
@@ -4520,7 +4584,9 @@ export function miniRow(item, options = {}) {
             ${timesMeta(item)}
           </div>`
       : html`<div class="worker-mini__head">
-            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${withdrawn_el}${attrs_el}${pr_el}${foreign_repo_el}${badge_els}${interactive_badges}${wait_badge}${interactive_closing}${interactive_discord}${actions_el}
+            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${withdrawn_el}${attrs_el}${pr_el}${foreign_repo_el}${badge_els}${specAuthoringBadgeTemplate(
+              item
+            )}${interactive_badges}${wait_badge}${interactive_closing}${interactive_discord}${actions_el}
           </div>
           ${reason_el
             ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
@@ -4530,7 +4596,7 @@ export function miniRow(item, options = {}) {
             item.interactive_sessions
           )}${deps_el}${coords_el}${run_el}${has_foot
             ? html`<div class="worker-mini__foot">
-                ${merge_step_el}
+                ${merge_step_el}${specAuthoringActionsTemplate(item)}
                 <span class="worker-mini__actions"
                   >${session_before(
                     'external'
@@ -5352,7 +5418,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
     ? judgementPopover(item)
     : ''}${readiness_el}${readiness_open ? judgementPopover(item) : ''}`;
   const deps_el = dependencyChipsTemplate(
-    item.dependency_chips,
+    specAuthoringChips(item.dependency_chips, item.spec_authoring_actions),
     spec_after_blocker_el === '' && readiness_el === '' ? '' : slot4_el
   );
   // Repo identity belongs in slot 1; coordinates and execution use 5a/5b.
@@ -5399,7 +5465,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
         : ''}
       ${repo_el}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
-      >${priorityBadgeTemplate(item.priority)}${withdrawnChipTemplate(
+      >${specAuthoringBadgeTemplate(item)}${priorityBadgeTemplate(
+        item.priority
+      )}${withdrawnChipTemplate(
         item,
         chipOpen(item, 'withdrawn')
       )}${item.rereview_required === true
@@ -5453,7 +5521,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
               ? ''
               : ' worker-card__foot--actions-only'}"
           >
-            ${item.reason
+            ${specAuthoringActionsTemplate(item)}${item.reason
               ? html`<span class="worker-card__reason">${item.reason}</span>`
               : ''}${external.badge
               ? html`${external_session_el}${external.actions}`
@@ -5474,7 +5542,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
             ? ''
             : ' worker-card__foot--actions-only'}"
         >
-          ${menu_open
+          ${specAuthoringActionsTemplate(item)}${menu_open
             ? html`<div class="worker-card__place-menu">
                 ${placeMenuList(place_menu.lanes, item.id)}
                 <button

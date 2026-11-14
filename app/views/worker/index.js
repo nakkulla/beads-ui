@@ -1315,8 +1315,17 @@ export function createWorkerView(mount_element, options = {}) {
    *
    * @param {string} bead_id - The Bead id, or a repo-operation row key.
    * @param {Record<string, string>} [payload]
+   * @param {string} [op]
+   * @param {string} [root_dir]
+   * @param {number} [revision]
    */
-  async function resolveInSession(bead_id, payload = { bead_id }) {
+  async function resolveInSession(
+    bead_id,
+    payload = { bead_id },
+    op = 'worker-resolve-in-session',
+    root_dir,
+    revision = currentRevision()
+  ) {
     if (!transport || !bead_id || resolve_pending.has(bead_id)) {
       return;
     }
@@ -1324,12 +1333,13 @@ export function createWorkerView(mount_element, options = {}) {
     doRender();
     try {
       const res = /** @type {any} */ (
-        await transport('worker-resolve-in-session', {
+        await transport(op, {
           ...payload,
-          expected_revision: currentRevision()
+          ...(root_dir ? { root_dir } : {}),
+          expected_revision: revision
         })
       );
-      adopt(res);
+      adopt(res, root_dir);
       await showResolveToast(res);
     } finally {
       resolve_pending.delete(bead_id);
@@ -3583,6 +3593,22 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
+    const spec_button = /** @type {HTMLButtonElement|null} */ (
+      target.closest('.worker-spec-authoring')
+    );
+    if (spec_button) {
+      if (!spec_button.disabled) {
+        const bead_id = spec_button.dataset.beadId || '';
+        void resolveInSession(
+          bead_id,
+          { bead_id },
+          'worker-spec-authoring-session',
+          spec_button.dataset.rootDir,
+          Number(spec_button.dataset.expectedRevision)
+        );
+      }
+      return;
+    }
     if (target.closest('a.interactive-session-discord')) {
       return;
     }

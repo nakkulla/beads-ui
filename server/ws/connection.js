@@ -169,7 +169,8 @@ import {
   handleWorkerRepoOpsOptOutToggle,
   handleWorkerResolveInSession,
   handleWorkerReviseApprove,
-  handleWorkerReviseFix
+  handleWorkerReviseFix,
+  handleWorkerSpecAuthoringSession
 } from './worker-handlers.js';
 import {
   handleGetWorkspace,
@@ -753,6 +754,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-resolve-in-session':
       await handleWorkerResolveInSession(ws, req);
+      return;
+    case 'worker-spec-authoring-session':
+      await handleWorkerSpecAuthoringSession(ws, req);
       return;
     case 'worker-conversation-handoff':
       await handleWorkerConversationHandoff(ws, req);
