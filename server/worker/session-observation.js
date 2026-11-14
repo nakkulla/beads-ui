@@ -521,10 +521,10 @@ export function createWorkerSessionObservationStore(options = {}) {
           ) {
             return null;
           }
+          historical_completed.add(key);
           if (observers.has(key)) {
             return value;
           }
-          historical_completed.add(key);
           if (value) {
             historical_keys.add(key);
             values.set(key, { ...(values.get(key) || {}), ...value });

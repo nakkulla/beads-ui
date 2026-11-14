@@ -22,6 +22,7 @@ import {
   __setScopeCacheForTest,
   createScopeCache
 } from '../worker/scope-cache.js';
+import { createWorkerSessionObservationStore } from '../worker/session-observation.js';
 import {
   __resetWorkspaceSnapshotRuntimeForTest,
   __setWorkspaceSnapshotCoordinatorFactoryForTest,
@@ -243,6 +244,75 @@ function mockSessionRows(rows) {
 }
 
 describe('historical usage projection', () => {
+  test('settles queue fanout for an ended attempt with an attached observer', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-history-fanout-'));
+    const dir = path.join(root, '2026', '09', '15');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'rollout-history-session.jsonl'),
+      `${JSON.stringify({ timestamp: '2026-09-15T00:00:01Z', type: 'turn_context', payload: { turn_id: 't1', model: 'astra' } })}\n${JSON.stringify({ timestamp: '2026-09-15T00:00:02Z', type: 'token_usage_record', payload: { thread_id: 'history-session', turn_id: 't1', response_id: 'r1', usage: { input_tokens: 40, output_tokens: 4 } } })}\n`
+    );
+    const observations = createWorkerSessionObservationStore({
+      sessionsRootFor: () => root,
+      createReader: () => ({
+        start() {},
+        pump() {},
+        drain() {},
+        stop() {},
+        offset: () => 0
+      })
+    });
+    const running = {
+      attempt_id: 'history',
+      runner: 'codex',
+      session_id: 'history-session',
+      status: 'running',
+      started_at: Date.parse('2026-09-15T00:00:00Z')
+    };
+    observations.observe(WS, running);
+    const queue = {
+      attempts: {
+        history: {
+          ...running,
+          status: 'done',
+          finished_at: Date.parse('2026-09-15T00:01:00Z')
+        }
+      }
+    };
+    const runtime = getWorkerRuntime();
+    const preparations = vi
+      .spyOn(runtime.workerSessionObservations, 'prepareHistorical')
+      .mockImplementation((workspace, attempt) => {
+        // Bound a regression so runaway microtasks cannot starve the test timer.
+        if (preparations.mock.calls.length > 4) {
+          return null;
+        }
+        return observations.prepareHistorical(workspace, attempt);
+      });
+    vi.spyOn(runtime.workerSessionObservations, 'get').mockImplementation(
+      observations.get
+    );
+    vi.spyOn(runtime.queueStore, 'snapshot').mockReturnValue(
+      /** @type {any} */ (queue)
+    );
+    const listener = vi.fn();
+    const unsubscribe = onWorkerSnapshotRefresh(listener);
+
+    try {
+      attemptsWithUsage(queue, WS);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(listener).toHaveBeenCalled();
+      expect(
+        preparations.mock.results.filter((result) => result.value !== null)
+      ).toHaveLength(1);
+    } finally {
+      unsubscribe();
+      observations.clear();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test.each([false, true])(
     'fans out only changed historical values (changed=%s)',
     async (changed) => {

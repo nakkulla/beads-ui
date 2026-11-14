@@ -167,6 +167,49 @@ describe('historical observation retention', () => {
     expect(sessionsRootFor).toHaveBeenCalledTimes(1);
   });
 
+  test.each(['before', 'during'])(
+    'settles ended preparation when a live observer attaches %s preparation',
+    async (timing) => {
+      const running = { ...attempt, status: 'running' };
+      if (timing === 'before') {
+        store.observe('/workspace', running);
+      }
+      const pending = store.prepareHistorical('/workspace', ended);
+      if (timing === 'during') {
+        store.observe('/workspace', running);
+      }
+      const live_value = store.get('/workspace', attempt.attempt_id);
+      sessionsRootFor.mockClear();
+
+      const value = await pending;
+      const retry = store.prepareHistorical('/workspace', ended);
+      await retry;
+
+      expect(value?.usage).toMatchObject({ input_tokens: 40 });
+      expect(store.get('/workspace', attempt.attempt_id)).toBe(live_value);
+      expect(retry).toBeNull();
+      expect(sessionsRootFor).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('refreshes live usage after an ended preparation settles', async () => {
+    store = createWorkerSessionObservationStore({ sessionsRootFor });
+    const running = { ...attempt, status: 'running' };
+    store.observe('/workspace', running);
+    await store.prepareHistorical('/workspace', ended);
+    fs.appendFileSync(
+      path.join(root, '2026', '09', '15', 'rollout-history-session.jsonl'),
+      `${JSON.stringify({ timestamp: '2026-09-15T00:00:03Z', type: 'token_usage_record', payload: { thread_id: 'history-session', turn_id: 't1', response_id: 'r2', usage: { input_tokens: 20, output_tokens: 2 } } })}\n`
+    );
+
+    const refreshed = store.observe('/workspace', running);
+
+    expect(refreshed?.usage).toMatchObject({
+      input_tokens: 60,
+      output_tokens: 6
+    });
+  });
+
   test('keeps the last paused observation while allowing a TTL refresh', async () => {
     const value = await store.prepareHistorical('/workspace', attempt);
 
