@@ -19,11 +19,11 @@ import {
 
 /**
  * The dotfiles entry block digest the failure conversation opens with
- * (`26f77f99207b59aed0fcd010ec7085bbf93d405a`, 10417 bytes without a trailing
+ * (`d73b92c251a9392c4eb285e0a93793fb2b030596`, 12639 bytes without a trailing
  * newline) — the same pin `direction-inquiry.test.js` holds (UI-18a5 §3.3).
  */
 const ENTRY_BLOCK_DIGEST =
-  'af6a260d0f1fa8c8c52a9d03ebad1ca8619b5c41fedc0dea684f0055cc6709c2';
+  'a4830241b683aea4eabdb46a96c0ec24a853c35c726b495b1c2634a0918f1c4e';
 
 const BEAD = 'UI-jw27';
 const REPO = '/tmp/example-workspace/project-a';
