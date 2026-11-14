@@ -1055,6 +1055,7 @@ function fakeTmux(options = {}) {
     next: 1,
     screen: '',
     dead: false,
+    exit_status: 0,
     stubborn: false
   };
   /**
@@ -1086,6 +1087,14 @@ function fakeTmux(options = {}) {
     }
     if (command === 'capture-pane') {
       return commandResult(0, state.screen);
+    }
+    if (command === 'respawn-pane') {
+      state.screen = '';
+      state.dead = false;
+      return commandResult(0);
+    }
+    if (command === 'display-message') {
+      return commandResult(0, `${state.exit_status}\n`);
     }
     if (command === 'kill-window') {
       if (!state.stubborn) {
@@ -1442,7 +1451,7 @@ describe('claude login result', () => {
     });
   });
 
-  test('reports added for a cswap login --new that made a slot', async () => {
+  test('keeps the added slot while starting session login in the same window', async () => {
     const h = claudeHarness();
     const login_id = await startClaudeToUrl(h, { mode: 'add' });
     await h.manager.submitCode(login_id, CLAUDE_CODE);
@@ -1455,6 +1464,15 @@ describe('claude login result', () => {
       email: 'new@example.com',
       number: 5
     });
+    expect(h.manager.status(login_id)).toMatchObject({
+      phase: 'session',
+      state: 'starting',
+      needs_code: false
+    });
+    expect(h.tmux.state.windows.size).toBe(1);
+    expect(
+      h.tmux.calls.filter((args) => args[0] === 'respawn-pane')[1]
+    ).toEqual(expect.arrayContaining(['%1', 'session', 'login', '5']));
   });
 
   test('drops the claude usage cache and re-reads the list under the switch lock', async () => {
@@ -1527,6 +1545,147 @@ describe('claude login result', () => {
     );
 
     expect(parsed).toMatchObject({ ok: true, outcome: 'updated', number: 2 });
+  });
+});
+
+/**
+ * Reach the second authentication without granting it an own-login marker.
+ *
+ * @param {ReturnType<typeof claudeHarness>} h
+ */
+async function startClaudeSessionToUrl(h) {
+  const login_id = await startClaudeToUrl(h, { mode: 'add' });
+  await h.manager.submitCode(login_id, CLAUDE_CODE);
+  await endClaudePane(h, CSWAP_LOGIN_ADDED);
+  h.tmux.state.screen = CLAUDE_SCREEN.replace(
+    CLAUDE_URL,
+    `${CLAUDE_URL}-second`
+  );
+  await vi.advanceTimersByTimeAsync(1_000);
+  return login_id;
+}
+
+describe('claude added account session login', () => {
+  test('accepts a second code and verifies exit zero and the fresh own-login marker', async () => {
+    const h = claudeHarness();
+    const login_id = await startClaudeSessionToUrl(h);
+    h.listClaude.mockImplementation(async () => {
+      h.lock_seen.push(['list', isSwitchInFlight('claude')]);
+      return {
+        ok: true,
+        accounts: [
+          Object.assign(
+            {
+              key: 'new@example.com',
+              email: 'new@example.com',
+              number: 5,
+              active: false
+            },
+            { sessionLoginOwn: true }
+          )
+        ],
+        active_key: 'one@example.com'
+      };
+    });
+    h.lock_seen.length = 0;
+
+    const submitted = await h.manager.submitCode(login_id, 'second-code');
+    await endClaudePane(h, 'Session login complete');
+
+    expect(submitted).toMatchObject({ ok: true, state: 'verifying' });
+    expect(h.manager.status(login_id)).toMatchObject({
+      phase: 'session',
+      state: 'done',
+      result: { outcome: 'added', number: 5 }
+    });
+    expect(h.lock_seen).toEqual([
+      ['invalidate', true],
+      ['list', true]
+    ]);
+    expect(h.tmux.state.windows.size).toBe(0);
+  });
+
+  test('shows the second URL with the switch lock free', async () => {
+    const h = claudeHarness();
+
+    const login_id = await startClaudeSessionToUrl(h);
+
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'awaiting_user',
+      url: `${CLAUDE_URL}-second`,
+      needs_code: true
+    });
+    expect(isSwitchInFlight('claude')).toBe(false);
+  });
+
+  test('preserves the added account when the second process fails', async () => {
+    const h = claudeHarness();
+    const login_id = await startClaudeSessionToUrl(h);
+    h.tmux.state.exit_status = 1;
+
+    await endClaudePane(h, 'Authentication failed');
+
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'failed',
+      result: { outcome: 'added', number: 5 },
+      message: '세션 로그인 미완료 — cswap session login 5'
+    });
+  });
+
+  test('rejects exit zero without the added slot own-login marker', async () => {
+    const h = claudeHarness();
+    const login_id = await startClaudeSessionToUrl(h);
+    h.listClaude.mockResolvedValue({
+      ok: true,
+      accounts: [
+        Object.assign(
+          {
+            key: 'new@example.com',
+            email: 'new@example.com',
+            number: 5,
+            active: false
+          },
+          { sessionLoginOwn: false }
+        )
+      ],
+      active_key: 'one@example.com'
+    });
+
+    await endClaudePane(h, 'Session login complete');
+
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'failed',
+      result: { outcome: 'added', number: 5 },
+      message: '세션 로그인 미완료 — cswap session login 5'
+    });
+  });
+
+  test('preserves the added account when session login is cancelled', async () => {
+    const h = claudeHarness();
+    const login_id = await startClaudeSessionToUrl(h);
+
+    const cancelled = await h.manager.cancel(login_id);
+
+    expect(cancelled).toMatchObject({
+      state: 'cancelled',
+      phase: 'session',
+      result: { outcome: 'added', number: 5 },
+      message: '세션 로그인 미완료 — cswap session login 5'
+    });
+    expect(h.tmux.state.windows.size).toBe(0);
+  });
+
+  test('preserves the added account when session login expires', async () => {
+    const h = claudeHarness();
+    const login_id = await startClaudeSessionToUrl(h);
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'expired',
+      result: { outcome: 'added', number: 5 },
+      message: '세션 로그인 미완료 — cswap session login 5'
+    });
   });
 });
 
@@ -1900,6 +2059,7 @@ describe('login routes', () => {
       login_id,
       provider: 'codex',
       mode: 'add',
+      phase: 'account',
       number: null,
       state: 'awaiting_user',
       url: DEVICE_URL,

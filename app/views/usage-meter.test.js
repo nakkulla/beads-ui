@@ -3163,6 +3163,123 @@ describe('usage meter account login and removal (UI-xm29 §4.5)', () => {
     meter.destroy();
   });
 
+  test('clears the first code and shows the session login phase and URL', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [
+          { ...CLAUDE_AWAITING, mode: 'add', phase: 'account', number: null },
+          {
+            ...CLAUDE_AWAITING,
+            mode: 'add',
+            phase: 'session',
+            number: 5,
+            url: 'https://claude.ai/oauth/authorize?second=1'
+          }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+    el('.usage-meter__add').click();
+    await flush();
+    const input = /** @type {HTMLInputElement} */ (
+      el('.usage-meter__login-input')
+    );
+    input.value = 'first-code';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(text('.usage-meter__login-title')).toBe(
+      'Claude 계정 추가 · 2/2 세션 로그인'
+    );
+    expect(el('.usage-meter__login-link').getAttribute('href')).toBe(
+      'https://claude.ai/oauth/authorize?second=1'
+    );
+    expect(
+      /** @type {HTMLInputElement} */ (el('.usage-meter__login-input')).value
+    ).toBe('');
+    meter.destroy();
+  });
+
+  test.each(['failed', 'cancelled', 'expired'])(
+    'keeps the added row and retry command after session login ends %s',
+    async (state) => {
+      vi.useFakeTimers();
+      const mount = mountMeter();
+      stubAccountApi({
+        claude: TWO_CLAUDE,
+        routes: {
+          'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+          'GET /api/account-login/L1': [
+            {
+              ...CLAUDE_AWAITING,
+              mode: 'add',
+              phase: 'session',
+              state,
+              result: {
+                outcome: 'added',
+                key: 'two@example.com',
+                email: 'two@example.com',
+                number: 2
+              }
+            }
+          ]
+        }
+      });
+      const meter = createUsageMeter(mount);
+      await openFakeCard(mount);
+
+      el('.usage-meter__add').click();
+      await flush();
+
+      expect(text('.usage-meter__account-message--warn')).toBe(
+        '계정 추가됨 · 세션 로그인 미완료 — cswap session login 2'
+      );
+      expect(document.querySelector('.usage-meter__login')).toBeNull();
+      meter.destroy();
+    }
+  );
+
+  test('reports both authentications complete on the added row', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubAccountApi({
+      claude: TWO_CLAUDE,
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [
+          {
+            ...CLAUDE_AWAITING,
+            mode: 'add',
+            phase: 'session',
+            state: 'done',
+            result: {
+              outcome: 'added',
+              key: 'two@example.com',
+              email: 'two@example.com',
+              number: 2
+            }
+          }
+        ]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+
+    el('.usage-meter__add').click();
+    await flush();
+
+    expect(text('.usage-meter__account-message--ok')).toBe(
+      '추가됨 · 세션 로그인 완료 — two@example.com'
+    );
+    meter.destroy();
+  });
+
   test('shows the signed-in email when a relogin reaches another account', async () => {
     vi.useFakeTimers();
     const mount = mountMeter();

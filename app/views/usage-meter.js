@@ -21,6 +21,7 @@ import { showToast } from '../utils/toast.js';
  * @typedef {{
  *   provider: string,
  *   mode: 'relogin' | 'add',
+ *   phase: 'account' | 'session',
  *   number: number | null,
  *   login_id: string | null,
  *   state: string,
@@ -169,6 +170,19 @@ export function loginFailureText(provider, body) {
  * @returns {RowMessage}
  */
 function loginEndMessage(provider, status, name) {
+  if (
+    provider.key === 'claude' &&
+    status.phase === 'session' &&
+    status.result?.outcome === 'added'
+  ) {
+    if (status.state === 'done') {
+      return { kind: 'ok', text: `추가됨 · 세션 로그인 완료 — ${name}` };
+    }
+    return {
+      kind: 'warn',
+      text: `계정 추가됨 · 세션 로그인 미완료 — cswap session login ${status.result.number}`
+    };
+  }
   if (status.state === 'done') {
     const added = status.result?.outcome === 'added';
     return { kind: 'ok', text: `${added ? '추가됨' : '로그인됨'} — ${name}` };
@@ -1277,6 +1291,12 @@ export function createUsageMeter(mount_element, options = {}) {
     // The session names its account; a 409 jump from a row's [재로그인]
     // into a running add must not keep the clicked row's number.
     panel.number = Number.isInteger(status.number) ? status.number : null;
+    const phase = status.phase === 'session' ? 'session' : 'account';
+    if (panel.phase !== phase) {
+      panel.code = '';
+      panel.error_text = null;
+    }
+    panel.phase = phase;
     if (typeof status.state === 'string') {
       panel.state = status.state;
     }
@@ -1338,7 +1358,7 @@ export function createUsageMeter(mount_element, options = {}) {
     }
     login_panels.delete(panel.provider);
     const provider = providerOf(panel.provider);
-    if (status.state === 'done') {
+    if (status.state === 'done' || status.result?.outcome === 'added') {
       renderProviders();
       await refresh();
       if (destroyed) {
@@ -1388,6 +1408,7 @@ export function createUsageMeter(mount_element, options = {}) {
     const panel = {
       provider: provider.key,
       mode,
+      phase: 'account',
       number: account_number,
       login_id: null,
       state: 'starting',
@@ -1499,6 +1520,7 @@ export function createUsageMeter(mount_element, options = {}) {
     panel.busy = false;
     if (body && body.ok === true) {
       await finishLogin(panel, {
+        ...body,
         state: typeof body.state === 'string' ? body.state : 'cancelled',
         error: body.error
       });
@@ -2028,7 +2050,9 @@ export function createUsageMeter(mount_element, options = {}) {
         : undefined;
     const title =
       panel.mode === 'add'
-        ? `${provider.label} 계정 추가`
+        ? panel.phase === 'session'
+          ? `${provider.label} 계정 추가 · 2/2 세션 로그인`
+          : `${provider.label} 계정 추가`
         : `재로그인 — ${
             target_row === undefined
               ? panel.number === null

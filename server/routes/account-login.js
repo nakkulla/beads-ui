@@ -48,7 +48,7 @@ import {
  * @typedef {{ setEncoding?: (encoding: BufferEncoding) => unknown, on: (event: string, listener: (...args: any[]) => void) => unknown }} LoginStream
  * @typedef {{ pid?: number, stdout: LoginStream | null, stderr: LoginStream | null, on: (event: string, listener: (...args: any[]) => void) => unknown }} LoginChild
  * @typedef {(command: string, args: string[], options: { shell: false, windowsHide: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: NodeJS.ProcessEnv }) => LoginChild} SpawnLogin
- * @typedef {{ key: string, number: number, email: string, active: boolean }} ListedAccount
+ * @typedef {{ key: string, number: number, email: string, active: boolean, sessionLoginOwn?: boolean }} ListedAccount
  * @typedef {{ ok: true, accounts: ListedAccount[], active_key: string|null } | { ok: false, error: string }} AccountListRead
  * @typedef {{ state: 'done'|'failed'|'cancelled'|'expired', result?: LoginResult|null, error?: string|null, message?: string|null, logged_in_email?: string|null }} LoginEnd
  */
@@ -80,6 +80,7 @@ import {
  * @property {string} id
  * @property {LoginProvider} provider
  * @property {LoginMode} mode
+ * @property {'account'|'session'} phase
  * @property {number|null} number
  * @property {string|null} pinned_key
  * @property {LoginState} state
@@ -739,7 +740,7 @@ function sleep(ms) {
  * because `cswap login` refuses a session-profile `CLAUDE_CONFIG_DIR`.
  *
  * @param {string} cswap_path
- * @param {{ mode: LoginMode, number: number|null }} session
+ * @param {{ mode: LoginMode, number: number|null, phase?: 'account'|'session' }} session
  * @param {NodeJS.ProcessEnv} env
  * @returns {string[]}
  */
@@ -767,9 +768,9 @@ export function claudeLoginArgv(cswap_path, session, env) {
     ...unset,
     ...assign,
     cswap_path,
-    'login',
-    ...target,
-    '--json'
+    ...(session.phase === 'session'
+      ? ['session', 'login', String(session.number)]
+      : ['login', ...target, '--json'])
   ];
 }
 
@@ -883,9 +884,13 @@ export function createAccountLoginManager(options = {}) {
       return false;
     }
     session.state = end.state;
-    session.result = end.result ?? null;
+    session.result =
+      end.result ?? (session.phase === 'session' ? session.result : null);
     session.error = end.error ?? null;
     session.message = cutMessage(end.message);
+    if (session.phase === 'session' && session.result && end.state !== 'done') {
+      session.message = `세션 로그인 미완료 — cswap session login ${session.result.number}`;
+    }
     session.logged_in_email = end.logged_in_email ?? null;
     // The link, the code and the tool output are of no use once the login
     // ended; they are not kept for the five minutes the end stays readable.
@@ -1564,18 +1569,91 @@ export function createAccountLoginManager(options = {}) {
       /** @type {string} */ (session.pane_id)
     ]);
     const line = captured.code === 0 ? lastJsonObjectOf(captured.stdout) : null;
-    const closed = await closeWindow(session);
+    // An add reuses this window for the second authentication.
+    const closed =
+      session.mode === 'relogin' ? await closeWindow(session) : true;
     /** @type {LoginEnd} */
     let end;
     try {
-      end = await settleClaudeLogin(line);
+      end =
+        session.phase === 'session'
+          ? await settleClaudeSessionLogin(session)
+          : await settleClaudeLogin(line);
+      if (
+        session.phase === 'account' &&
+        session.mode === 'add' &&
+        end.state === 'done' &&
+        end.result?.outcome === 'added'
+      ) {
+        session.result = end.result;
+        session.number = end.result.number;
+        session.phase = 'session';
+        session.state = 'starting';
+        session.url = null;
+        session.code_sent = false;
+        const cswap_path = resolveCswap();
+        if (!cswap_path || !(await startCswapInWindow(session, cswap_path))) {
+          await stop(session, { state: 'failed', error: 'tmux_failed' });
+          return;
+        }
+        session.finishing = false;
+        later(session, LOGIN_TIMEOUT_MS, () => expire(session));
+        session.deadline_timer = later(session, CODE_DEADLINE_MS, () => {
+          if (session.state === 'starting' && !session.finishing) {
+            void stop(session, { state: 'failed', error: 'login_url_missing' });
+          }
+        });
+        later(session, POLL_MS, () => void pollClaude(session));
+        return;
+      }
     } catch {
       end = { state: 'failed', error: 'login_failed' };
     }
+    const cleaned =
+      session.mode === 'add' ? await closeWindow(session) : closed;
     finish(
       session,
-      closed ? end : { state: 'failed', error: 'cleanup_incomplete' }
+      cleaned ? end : { state: 'failed', error: 'cleanup_incomplete' }
     );
+  }
+
+  /**
+   * Session login emits no JSON; require its exit status and the same slot's
+   * fresh sessionLoginOwn flag, without locking while authentication waits.
+   *
+   * @param {LoginSession} session
+   * @returns {Promise<LoginEnd>}
+   */
+  async function settleClaudeSessionLogin(session) {
+    const exited = await runTmux([
+      'display-message',
+      '-p',
+      '-t',
+      /** @type {string} */ (session.pane_id),
+      '#{pane_dead_status}'
+    ]);
+    if (exited.code !== 0 || exited.stdout.trim() !== '0') {
+      return { state: 'failed', error: 'login_incomplete' };
+    }
+    if (!(await takeSwitchLock('claude'))) {
+      return { state: 'failed', error: 'switch_in_flight' };
+    }
+    try {
+      invalidateUsageCache.claude();
+      const listed = await listAccounts.claude();
+      const row = listed.ok
+        ? listed.accounts.find(
+            (account) =>
+              account.number === session.number &&
+              account.key === session.result?.key
+          )
+        : undefined;
+      return row?.sessionLoginOwn === true
+        ? { state: 'done', result: session.result }
+        : { state: 'failed', error: 'login_incomplete' };
+    } finally {
+      releaseLock('claude');
+    }
   }
 
   /**
@@ -1688,6 +1766,7 @@ export function createAccountLoginManager(options = {}) {
       id: randomId(),
       provider: input.provider,
       mode: input.mode,
+      phase: 'account',
       number: input.number,
       pinned_key: null,
       state: 'starting',
@@ -1809,6 +1888,7 @@ export function createAccountLoginManager(options = {}) {
       login_id: session.id,
       provider: session.provider,
       mode: session.mode,
+      phase: session.phase,
       number: session.number,
       state: session.state,
       url: session.url,
@@ -1876,7 +1956,7 @@ export function createAccountLoginManager(options = {}) {
    * its end; one whose server-side finish already runs is refused.
    *
    * @param {string} login_id
-   * @returns {Promise<{ ok: true, state: LoginState, error: string|null } | { ok: false, error: string, state?: LoginState }>}
+   * @returns {Promise<{ ok: true, state: LoginState, error: string|null, phase?: 'session', result?: LoginResult|null, message?: string|null } | { ok: false, error: string, state?: LoginState }>}
    */
   async function cancel(login_id) {
     const session = sessions.get(login_id);
@@ -1889,7 +1969,18 @@ export function createAccountLoginManager(options = {}) {
       }
       await stop(session, { state: 'cancelled' });
     }
-    return { ok: true, state: session.state, error: session.error };
+    return {
+      ok: true,
+      state: session.state,
+      error: session.error,
+      ...(session.phase === 'session'
+        ? {
+            phase: /** @type {const} */ ('session'),
+            result: session.result,
+            message: session.message
+          }
+        : {})
+    };
   }
 
   /**

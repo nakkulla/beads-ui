@@ -1,14 +1,18 @@
 ---
-id: UI-xm29
-title: 화면 로그인·계정 추가는 격리 로그인
-status: accepted
-date: 2026-11-10
-summary: "화면 로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이다 — Codex는 beads-ui가 임시 CODEX_HOME에서 기기 코드 로그인 뒤 codex-auth import로 넣고 대상이 활성 계정일 때만 전역 auth.json을 같은 계정의 새 자격으로 원자 교체하며, Claude는 claude-swap의 cswap login이 격리·신원 확인·저장을 맡고 beads-ui는 tmux로 URL을 보이고 코드를 넣기만 하며, 계정 목록에 쓰는 단계만 러너별 전환 잠금을 잡는다"
-spec: docs/superpowers/specs/2026-11-10-account-login-add-remove-buttons-design.md
-bead: UI-xm29
+id: 'UI-xj50'
+title: 'Claude 계정 추가와 세션 전용 로그인'
+date: '2026-11-15'
+summary: '화면 로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이고, Claude 계정 추가는 cswap login 뒤 같은 창에서 cswap session login까지 이어 세션 전용 로그인을 만들며 그 성공은 종료 코드와 계정 목록의 sessionLoginOwn으로 확인한다 — 나머지 조항은 UI-xm29 그대로다'
+status: 'accepted'
+bead: 'UI-xj50'
+supersedes: ['UI-xm29']
 ---
 
-# 화면 로그인·계정 추가는 격리 로그인
+# Claude 계정 추가와 세션 전용 로그인
+
+## Status
+
+Accepted (quick_fix Bead `UI-xj50`)
 
 ## Context
 
@@ -29,6 +33,12 @@ bead: UI-xm29
 짝 결정: claude-swap 쪽 계약(`cswap login`·`cswap remove --yes --json`)은 형제 Bead claude-swap-3uj의
 스펙이 정하고, 이 ADR은 beads-ui 쪽 소비자에서 같은 결정을 기록한다.
 
+UI-xm29: Claude 조항에 계정 추가의 두 번째 인증을 더하고, 그 단계가 미완료일 때 추가 결과를 보존하는
+조항을 신설한다. Codex 격리·활성 로그인 유지·전환 잠금·공급자 보류 조항은 유지한다.
+
+2026-11-12 사용자는 화면의 계정 추가가 세션 전용 로그인까지 이어지도록 결정했다. 세션 전용 로그인이
+없던 새 계정은 Worker가 사용 중일 때 전역 자동 전환 후보에서 빠져, 소진 계정에 머무르는 원인이 되었다.
+
 ## Decision
 
 - 화면에서 하는 재로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이다. 실행 중 세션과 Worker가
@@ -37,13 +47,17 @@ bead: UI-xm29
   `id_token`의 신원으로 계정 키를 만들어 확인한 뒤 `codex-auth import`로 넣는다. 로그인한 계정이 그때의 활성
   계정일 때만 전역 `auth.json`을 같은 계정의 새 자격으로 원자 교체한다(같은 폴더 임시 파일 + rename).
   활성 계정이 아니면 전역 `auth.json`을 건드리지 않고 사후 `switch`로 되돌리는 경로도 두지 않는다.
-- Claude: 격리 프로필에서의 로그인, 신원 확인, 슬롯 저장은 claude-swap의 `cswap login`이 소유한다.
+- Claude (변경): 격리 프로필에서의 로그인, 신원 확인, 슬롯 저장은 claude-swap의 `cswap login`이 소유한다.
   beads-ui는 그 명령을 서버 전용 tmux 창에 띄우고 인증 URL을 화면에 보이고 사용자가 붙여 넣은 코드를 창에
-  넣고 마지막 JSON 줄을 읽을 뿐이다.
+  넣고 마지막 JSON 줄을 읽는다. 추가 모드는 `cswap login --new --json`의 added 결과와 번호를 받은 뒤
+  같은 tmux 창에서 `cswap session login <번호>`를 이어 실행한다. 성공은 두 번째 명령의 종료 코드 0과
+  다시 읽은 같은 계정의 `sessionLoginOwn` true가 함께 확인될 때다.
 - 잠금: 사용자를 기다리는 동안에는 전환 잠금을 잡지 않는다. 계정 목록에 쓰는 단계(Codex의 활성 키 확인·
   `import`·전역 `auth.json` 교체·목록 재읽기, Claude의 캐시 비우기·목록 재읽기)만 러너별 전환 잠금
   (`acquireSwitchLock`)을 잡아 수동 전환·자동 복귀와 겹치지 않게 한다.
 - 로그인 세션은 공급자 보류를 직접 풀지 않는다. 보류 해제는 기존 프로브가 판정한다.
+- 추가된 계정은 두 번째 인증의 실패·취소·시간 초과에도 유지한다. 결과는 세션 로그인 미완료와
+  `cswap session login <번호>` 재시도 명령을 함께 보여 준다. (신설)
 
 ## Consequences
 
@@ -56,3 +70,7 @@ bead: UI-xm29
 - 로그인 세션 모듈은 Express 없이 부를 수 있게 두어, 보류 중인 credential 자동 재로그인 흐름(UI-s4g1)이
   나중에 재사용할 수 있다.
 - 시간 제한·폴링 간격 같은 값은 `server/routes/account-login.js`의 상수가 소유한다.
+- Claude 계정 추가는 브라우저 인증을 두 번 받는다. 인증을 한 번 더 받는 대신 새 계정이 세션 전용 로그인을
+  갖춰, 실행 중 작업이 그 계정을 쓰고 있어도 전역 자동 전환 후보가 된다. 계정 줄에 경고와 별도 버튼만
+  붙이는 대안은 인증을 빠뜨릴 수 있어 채택하지 않는다.
+- 함께 움직이는 명령에는 claude-swap의 `cswap session login`과 계정 목록의 `sessionLoginOwn`도 포함된다.
