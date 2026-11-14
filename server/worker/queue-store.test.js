@@ -4417,7 +4417,7 @@ describe('worker/queue-store', () => {
     'refuses a hold from phase %s',
     (phase) => {
       const store = storeWithCompletionIntent();
-      const raw = store.snapshot(WS);
+      const raw = store.snapshot(WS, { copy: true });
       raw.completion_intents['UI-root'].phase = /** @type {any} */ (phase);
       if (phase === 'needs_human') {
         raw.completion_intents['UI-root'].terminal_reason = {
@@ -4580,7 +4580,7 @@ describe('worker/queue-store', () => {
     'normalizes a non-object hold %j to null',
     (hold) => {
       const store = storeWithCompletionIntent();
-      const raw = store.snapshot(WS);
+      const raw = store.snapshot(WS, { copy: true });
       raw.completion_intents['UI-root'].hold = /** @type {any} */ (hold);
       fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
 
@@ -19000,7 +19000,7 @@ describe('worker/queue-store red-base follow-up wait (UI-ty6k)', () => {
   test('fails a waiting intent without its wait record closed on cold load', () => {
     const store = storeWithIntent();
     beginWait(store);
-    const raw = store.snapshot(WS);
+    const raw = store.snapshot(WS, { copy: true });
     delete raw.completion_intents['UI-root'].followup_wait;
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
 

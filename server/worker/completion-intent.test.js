@@ -2168,7 +2168,7 @@ describe('worker/completion-intent action driver', () => {
   test('does not adopt a malformed historical timeout', async () => {
     const store = seededCompletionStore();
     terminalizeResolutionTimeout(store);
-    const queue = store.snapshot(DRIVER_WS);
+    const queue = store.snapshot(DRIVER_WS, { copy: true });
     queue.completion_intents['UI-root'] = /** @type {any} */ ({
       phase: 'needs_human',
       subject: null,

@@ -3362,8 +3362,7 @@ function sameDecisionToken(left, right) {
 }
 
 /**
- * Deep clone via JSON — queue state is plain data, so this is safe and keeps
- * returned snapshots isolated from the in-memory cache.
+ * Deep clone via JSON for writable mutations and explicit consumer copies.
  *
  * @template T
  * @param {T} value
@@ -3371,6 +3370,23 @@ function sameDecisionToken(left, right) {
  */
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+/**
+ * Freeze plain queue data once, before installing it in the cache.
+ *
+ * @template T
+ * @param {T} value
+ * @returns {T}
+ */
+function deepFreeze(value) {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+    Object.freeze(value);
+  }
+  return value;
 }
 
 /**
@@ -6968,6 +6984,8 @@ export function createQueueStore(options = {}) {
 
   /** @type {Map<string, Queue>} */
   const cache = new Map();
+  /** @type {WeakMap<Queue, { holds_key: string, queue: Queue }>} */
+  const exports = new WeakMap();
   /** @type {Map<string, Map<number, string>>} */
   const placement_fingerprints = new Map();
 
@@ -7113,7 +7131,7 @@ export function createQueueStore(options = {}) {
     auto_advance_at_shutdown.set(key, persisted_auto_advance);
     // Restart safety defaults OFF; only the verified self-deploy path may restore it.
     q.auto_advance = false;
-    cache.set(key, q);
+    cache.set(key, deepFreeze(q));
     rememberPlacementFingerprint(workspace, q);
     return q;
   }
@@ -7432,7 +7450,7 @@ export function createQueueStore(options = {}) {
   }
 
   /**
-   * Clone a queue for a consumer outside the store. `provider_hold` leaves as
+   * Share a frozen queue with consumers. `provider_hold` leaves as
    * the workspace's effective hold (UI-3v1h §5.5), so the gate, the wait
    * judge, and every screen read one projection; the raw field stays on disk.
    *
@@ -7441,8 +7459,14 @@ export function createQueueStore(options = {}) {
    * @returns {Queue}
    */
   function exportQueue(workspace, q) {
-    const out = clone(q);
-    out.provider_hold = effectiveHoldsOf(q);
+    const holds = effectiveHoldsOf(q);
+    const holds_key = JSON.stringify(holds);
+    const prior = exports.get(q);
+    if (prior && prior.holds_key === holds_key) {
+      return prior.queue;
+    }
+    const out = Object.freeze({ ...q, provider_hold: deepFreeze(holds) });
+    exports.set(q, { holds_key, queue: out });
     return out;
   }
 
@@ -7824,7 +7848,7 @@ export function createQueueStore(options = {}) {
     next.revision = cur.revision + 1;
     transferProcessedAttempts(workspace, next);
     persist(workspace, next);
-    cache.set(keyFor(workspace), next);
+    cache.set(keyFor(workspace), deepFreeze(next));
     rememberPlacementFingerprint(workspace, next);
     return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
   }
@@ -7858,7 +7882,7 @@ export function createQueueStore(options = {}) {
     next.revision = cur.revision + 1;
     transferProcessedAttempts(workspace, next);
     persist(workspace, next);
-    cache.set(keyFor(workspace), next);
+    cache.set(keyFor(workspace), deepFreeze(next));
     rememberPlacementFingerprint(workspace, next);
     return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
   }
@@ -8084,8 +8108,10 @@ export function createQueueStore(options = {}) {
      * workspace whose cold load could not read its queue file throws instead
      * of answering with the empty queue it started from.
      *
+     * Use `copy` only when the caller needs a writable, isolated queue.
+     *
      * @param {string} workspace
-     * @param {{ strict?: boolean }} [options]
+     * @param {{ strict?: boolean, copy?: boolean }} [options]
      * @returns {Queue}
      */
     snapshot(workspace, options = {}) {
@@ -8093,7 +8119,8 @@ export function createQueueStore(options = {}) {
       if (options.strict && load_failures.has(keyFor(workspace))) {
         throw new Error('queue_unreadable');
       }
-      return exportQueue(workspace, q);
+      const snapshot = exportQueue(workspace, q);
+      return options.copy ? clone(snapshot) : snapshot;
     },
 
     /**
@@ -9038,7 +9065,7 @@ export function createQueueStore(options = {}) {
         return {
           ok: false,
           conflict: false,
-          queue: clone(current),
+          queue: exportQueue(workspace, current),
           reason: 'lane_invalid',
           changed: false,
           cycle: false
@@ -9055,7 +9082,7 @@ export function createQueueStore(options = {}) {
         return {
           ok: true,
           conflict: false,
-          queue: clone(current),
+          queue: exportQueue(workspace, current),
           changed: false,
           cycle: true
         };
@@ -9067,7 +9094,7 @@ export function createQueueStore(options = {}) {
         return {
           ok: true,
           conflict: false,
-          queue: clone(current),
+          queue: exportQueue(workspace, current),
           changed: false,
           cycle: false
         };
@@ -11795,7 +11822,7 @@ export function createQueueStore(options = {}) {
         return {
           ok: false,
           conflict: true,
-          queue: clone(current)
+          queue: exportQueue(workspace, current)
         };
       }
       const existing = Object.values(current.discard_operations).find(
@@ -11808,7 +11835,7 @@ export function createQueueStore(options = {}) {
           conflict: false,
           reused: true,
           operation: clone(existing),
-          queue: clone(current)
+          queue: exportQueue(workspace, current)
         };
       }
       const normalized = normalizeDiscardOperation(
@@ -11830,7 +11857,7 @@ export function createQueueStore(options = {}) {
           ok: false,
           conflict: false,
           reason: 'operation_invalid',
-          queue: clone(current)
+          queue: exportQueue(workspace, current)
         };
       }
       const result = applyMutation(workspace, expected_revision, (next) => {

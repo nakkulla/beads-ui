@@ -11514,9 +11514,14 @@ export function createScheduler(deps) {
       ) {
         continue;
       }
-      patchInteractiveRecord(workspace, key, record, {
-        conversation: { ...record.conversation, handback_allowed: allowed }
-      });
+      patchInteractiveRecord(
+        workspace,
+        key,
+        { ...record },
+        {
+          conversation: { ...record.conversation, handback_allowed: allowed }
+        }
+      );
     }
     const attempt = closedTakeoverAttempt(q, bead_id);
     const ended = attempt?.cause_detail?.conversation;
@@ -11849,10 +11854,11 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} key
-   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} source_record
    * @returns {Promise<{ ok: boolean, reason: string|null, pending?: boolean }>}
    */
-  async function reserveButtonHandoff(workspace, key, record) {
+  async function reserveButtonHandoff(workspace, key, source_record) {
+    const record = { ...source_record };
     const at = now();
     const conversation = {
       ...record.conversation,
@@ -13661,7 +13667,9 @@ export function createScheduler(deps) {
         }
       }
     }
-    for (const [key, record] of Object.entries(records)) {
+    for (const [key, source_record] of Object.entries(records)) {
+      // Same-pass observations update this local record after durable writes.
+      const record = { ...source_record };
       // A failure handoff whose exit is still running belongs to that exit
       // until it returns — even after the exit settled the row.
       if (
