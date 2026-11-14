@@ -311,10 +311,8 @@ export function createSpecAuthoring(deps) {
   /**
    * @param {string} root
    * @param {string} bead_id
-   * @param {NonNullable<Awaited<ReturnType<typeof targetOf>>>} target
-   * @param {boolean} automatic
    */
-  async function launch(root, bead_id, target, automatic) {
+  async function conversationGate(root, bead_id) {
     const live = Object.values(
       deps.store.snapshot(root).interactive_sessions || {}
     ).some(
@@ -330,6 +328,16 @@ export function createSpecAuthoring(deps) {
     if (panes.rows.some((pane) => pane.key === bead_id && pane.dead === '0')) {
       return refused('live_conversation');
     }
+    return null;
+  }
+
+  /**
+   * @param {string} root
+   * @param {string} bead_id
+   * @param {NonNullable<Awaited<ReturnType<typeof targetOf>>>} target
+   * @param {boolean} automatic
+   */
+  async function launch(root, bead_id, target, automatic) {
     const inherited = deps.currentRunner?.(root, target.issue);
     const runner = freshConversationRuntime(
       (deps.conversationSettings || getConversationSettings)(),
@@ -471,11 +479,20 @@ export function createSpecAuthoring(deps) {
           in_flight.add(key);
           try {
             const target = await targetOf(root, blocker.id);
-            if (
-              !target ||
-              target.state !== 'spec_needed' ||
-              !deps.store.claimSpecAuthoring(root, blocker.id).ok
-            ) {
+            if (!target || target.state !== 'spec_needed') {
+              continue;
+            }
+            /** @type {Awaited<ReturnType<typeof conversationGate>>} */
+            let gate;
+            try {
+              gate = await conversationGate(root, blocker.id);
+            } catch {
+              gate = refused('error');
+            }
+            if (gate?.reason === 'live_conversation') {
+              continue;
+            }
+            if (!deps.store.claimSpecAuthoring(root, blocker.id).ok) {
               continue;
             }
             let outcome;
@@ -487,7 +504,7 @@ export function createSpecAuthoring(deps) {
                   ?.enabled === true
               );
               outcome = enabled
-                ? await launch(root, blocker.id, target, true)
+                ? (gate ?? (await launch(root, blocker.id, target, true)))
                 : refused('disabled');
             } catch {
               outcome = refused('error');
@@ -535,9 +552,13 @@ export function createSpecAuthoring(deps) {
       in_flight.add(key);
       try {
         const target = await targetOf(input.workspace, input.bead_id);
-        return target
-          ? await launch(input.workspace, input.bead_id, target, false)
-          : refused('not_target');
+        if (!target) {
+          return refused('not_target');
+        }
+        const gate = await conversationGate(input.workspace, input.bead_id);
+        return (
+          gate ?? (await launch(input.workspace, input.bead_id, target, false))
+        );
       } catch {
         return refused('error');
       } finally {

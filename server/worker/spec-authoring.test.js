@@ -221,6 +221,60 @@ describe('automatic prerequisite spec conversations', () => {
     );
   });
 
+  test.each([
+    { source: 'row', enabled: true },
+    { source: 'pane', enabled: true },
+    { source: 'row', enabled: false },
+    { source: 'pane', enabled: false }
+  ])(
+    'silently skips a live $source conversation with auto launch $enabled',
+    async ({ source, enabled }) => {
+      const h = fixture({ autoLaunchEnabled: () => enabled });
+      if (source === 'row') {
+        h.store.recordInteractiveSession(ROOT, {
+          bead_id: B,
+          kind: 'inquiry',
+          provider: 'claude',
+          pane_id: '%2',
+          tmux_session: 'user',
+          tmux_window: B,
+          launched_at: 10,
+          state: 'live'
+        });
+      } else {
+        h.launcher.listPanes.mockResolvedValue(
+          /** @type {any} */ ({
+            ok: true,
+            rows: [{ key: B, dead: '0' }]
+          })
+        );
+      }
+
+      await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+      expect(h.store.snapshot(ROOT).spec_authoring_launches).toEqual({});
+      expect(h.store.snapshot(ROOT).conversation_refusals).toEqual({});
+      expect(h.launcher.launch).not.toHaveBeenCalled();
+      expect(h.notifier.conversationConfirm).not.toHaveBeenCalled();
+    }
+  );
+
+  test('launches on a later observation after the live pane disappears', async () => {
+    const h = fixture();
+    h.launcher.listPanes.mockResolvedValueOnce(
+      /** @type {any} */ ({ ok: true, rows: [{ key: B, dead: '0' }] })
+    );
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+    await h.create().observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.launcher.launch).toHaveBeenCalledTimes(1);
+    expect(h.notifier.conversationConfirm).toHaveBeenCalledTimes(1);
+    expect(h.store.snapshot(ROOT).spec_authoring_launches[B]).toMatchObject({
+      session: 'launched'
+    });
+  });
+
   test.each(['tmux_unavailable', 'error'])(
     'retains a failed %s launch without an automatic retry',
     async (reason) => {
