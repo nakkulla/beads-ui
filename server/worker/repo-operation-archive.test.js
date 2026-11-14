@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { overlayExternalPrWait } from '../ws/external-pr-overlay.js';
 import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
 import { createRepoOperationArchive } from './repo-operation-archive.js';
@@ -220,6 +221,63 @@ describe('repo-operation archive', () => {
       'retained'
     );
     expect(archivedRecords(env.workspace)[0].operation_id).toBe('unused');
+  });
+
+  test('keeps an old success whose subject appears only in an external PR row', () => {
+    const env = fixture({
+      external: operation('external'),
+      unused: operation('unused')
+    });
+    const archive = createRepoOperationArchive({
+      workspace_root: env.workspace,
+      store: env.store,
+      now: () => NOW,
+      overlay: (queue) =>
+        overlayExternalPrWait(queue, [
+          {
+            bead_id: 'UI-external',
+            added_at: OLD,
+            pr_url: 'https://github.com/o/r/pull/7',
+            pr_number: 7,
+            repo_slug: 'o/r',
+            foreign: false,
+            receipt_key: null,
+            receipt_check: null
+          }
+        ])
+    });
+
+    const result = archive.sweep();
+
+    expect(result).toEqual({ archived: 1 });
+    expect(env.store.snapshot(env.workspace).repo_operations).toHaveProperty(
+      'external'
+    );
+    expect(
+      archivedRecords(env.workspace).map((row) => row.operation_id)
+    ).toEqual(['unused']);
+    expect(env.store.snapshot(env.workspace).pr_wait).toEqual([]);
+  });
+
+  test('skips archiving when the external PR overlay cannot be read', () => {
+    const env = fixture({ old: operation('old') });
+    const before = env.store.snapshot(env.workspace);
+    const persisted = fs.readFileSync(env.file, 'utf8');
+    const archive = createRepoOperationArchive({
+      workspace_root: env.workspace,
+      store: env.store,
+      now: () => NOW,
+      overlay: () => {
+        throw new Error('external PR registry unavailable');
+      }
+    });
+
+    const result = archive.sweep();
+
+    expect(result).toEqual({ archived: 0 });
+    expect(env.store.snapshot(env.workspace)).toBe(before);
+    expect(fs.readFileSync(env.file, 'utf8')).toBe(persisted);
+    expect(fs.existsSync(repoOperationArchivePath(env.workspace))).toBe(false);
   });
 
   test('keeps operation ids stored as nested values in another collection', () => {

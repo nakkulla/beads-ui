@@ -218,6 +218,7 @@ import {
   runBdInWorkspace,
   runBdJsonProjectedInWorkspace
 } from './context.js';
+import { overlayExternalPrWait } from './external-pr-overlay.js';
 import {
   laneBeadIds,
   sessionExcludedBeadIds,
@@ -882,99 +883,20 @@ export function withExternalPrWait(workspace_key, queue) {
   } catch {
     rows = [];
   }
-  const merge_queue = Array.isArray(queue.merge_queue)
-    ? /** @type {any[]} */ (queue.merge_queue)
-    : [];
-  // Both synthetic sources empty — nothing to overlay, so the caller keeps the
-  // exact snapshot object it passed in.
-  if (rows.length === 0 && merge_queue.length === 0) {
+  const overlaid = overlayExternalPrWait(queue, rows);
+  if (overlaid === queue) {
     return queue;
   }
   const lane = Array.isArray(queue.pr_wait)
     ? /** @type {any[]} */ (queue.pr_wait)
     : [];
-  const done_lane = Array.isArray(queue.done)
-    ? /** @type {any[]} */ (queue.done)
-    : [];
-  const queue_lane = Array.isArray(queue.queue)
-    ? /** @type {any[]} */ (queue.queue)
-    : [];
-  const durable = new Set(
-    [...lane, ...done_lane, ...queue_lane].map((e) => e && e.bead_id)
-  );
-  /** @type {Set<string>} */
-  const emitted = new Set();
-  /** @type {Array<{ bead_id: string, added_at: number|null, external: true, wt_present: boolean, foreign?: boolean, repo_slug?: string, pr_url?: string, pr_number?: number, foreign_target?: { slug: string, repo_name: string } }>} */
-  const overlay = [];
-  for (const row of rows) {
-    if (durable.has(row.bead_id) || emitted.has(row.bead_id)) {
-      continue;
-    }
-    emitted.add(row.bead_id);
-    overlay.push({
-      bead_id: row.bead_id,
-      added_at: row.added_at,
-      external: true,
-      wt_present: externalWorktreePresent(workspace_key, row.bead_id),
-      // The registry's own four PR facts (UI-kyky §6.1). `foreign` is what the
-      // screen needs to say this workspace neither observes nor merges the row,
-      // and `pr_url`/`pr_number` are the only honest reference such a row has —
-      // the PR poller reads foreign urls as `pr_repo_foreign` and records no
-      // observation at all. Each field travels ONLY when the registry actually
-      // holds it: an absent value stays absent rather than becoming a default
-      // the client would render as fact.
-      ...(row.foreign === true ? { foreign: true } : {}),
-      ...(typeof row.repo_slug === 'string' && row.repo_slug.length > 0
-        ? { repo_slug: row.repo_slug }
-        : {}),
-      ...(typeof row.pr_url === 'string' && row.pr_url.length > 0
-        ? { pr_url: row.pr_url }
-        : {}),
-      ...(typeof row.pr_number === 'number' && Number.isFinite(row.pr_number)
-        ? { pr_number: row.pr_number }
-        : {}),
-      // A pinned foreign PR target (UI-k467 §3.8): the card names the target
-      // repository before the first observation does.
-      ...(row.foreign_target
-        ? {
-            foreign_target: {
-              slug: row.foreign_target.slug,
-              repo_name: row.foreign_target.repo_name
-            }
-          }
-        : {})
-    });
-  }
-  for (const entry of merge_queue) {
-    const bead_id = entry && entry.bead_id;
-    if (
-      typeof bead_id !== 'string' ||
-      bead_id.length === 0 ||
-      durable.has(bead_id) ||
-      emitted.has(bead_id)
-    ) {
-      continue;
-    }
-    emitted.add(bead_id);
-    const granted_at = entry.authority && entry.authority.granted_at;
-    // NO PR fields here (§6.1): a merge-queue item carries no registry row, so
-    // inventing `foreign`/`repo_slug`/`pr_url` for it would be a guess.
-    overlay.push({
-      bead_id,
-      // The queue item carries no `added_at` of its own; the authority's grant
-      // is the only time it can honestly report.
-      added_at:
-        typeof granted_at === 'number' && Number.isFinite(granted_at)
-          ? granted_at
-          : null,
-      external: true,
-      wt_present: externalWorktreePresent(workspace_key, bead_id)
-    });
-  }
-  if (overlay.length === 0) {
-    return queue;
-  }
-  return { ...queue, pr_wait: [...lane, ...overlay] };
+  const overlay = /** @type {any[]} */ (overlaid.pr_wait)
+    .slice(lane.length)
+    .map((row) => ({
+      ...row,
+      wt_present: externalWorktreePresent(workspace_key, row.bead_id)
+    }));
+  return { ...overlaid, pr_wait: [...lane, ...overlay] };
 }
 
 /**

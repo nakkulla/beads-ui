@@ -53,6 +53,7 @@ import { resolveSpecId } from '../spec-id.js';
 import { watchDb } from '../watcher.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
+import { overlayExternalPrWait } from '../ws/external-pr-overlay.js';
 import { createAccountCatalog } from './account-catalog.js';
 import { validateAdmission } from './admission.js';
 import { resolveDotfilesRoot, resolveWorkflowPython } from './attempt-facts.js';
@@ -1028,7 +1029,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     });
   const repo_operation_archive =
     options.repoOperationArchive ||
-    createRepoOperationArchive({ workspace_root, store: runtime.queueStore });
+    createRepoOperationArchive({
+      workspace_root,
+      store: runtime.queueStore,
+      overlay: (queue) =>
+        overlayExternalPrWait(
+          queue,
+          runtime.externalPrs.list(keyFor(workspace_root))
+        )
+    });
 
   // The daily retention pass. Like the reconciler this uses `createPoller` for
   // its unref'd interval and double-start guard with a constant client count:

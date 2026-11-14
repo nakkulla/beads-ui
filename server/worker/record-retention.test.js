@@ -443,6 +443,78 @@ describe('record migration step 1 — attempt records', () => {
     expect(exists(attemptRecordPath(WS, 'UI-b', 'UI-b-1'))).toBe(false);
   });
 
+  test('saves legacy prompts before migrating a record without their fields', () => {
+    const { retention } = makeRetention();
+    const legacy = {
+      ...attempt({ status: 'done' }),
+      system_prompt: 'saved system',
+      task_prompt: 'saved task',
+      disposition_prompt: 'relaunch'
+    };
+    writeQueue({ 'UI-a-1': legacy });
+
+    const result = retention.migrate();
+
+    expect(result).toMatchObject({ ok: true, records: 1 });
+    const record = JSON.parse(
+      fs.readFileSync(attemptRecordPath(WS, 'UI-a', 'UI-a-1'), 'utf8')
+    );
+    expect(record).not.toHaveProperty('system_prompt');
+    expect(record).not.toHaveProperty('task_prompt');
+    expect(record.disposition_prompt).toBe('relaunch');
+    expect(
+      JSON.parse(
+        fs.readFileSync(attemptPromptPath(WS, 'UI-a', 'UI-a-1'), 'utf8')
+      )
+    ).toEqual({
+      attempt_id: legacy.attempt_id,
+      system_prompt: legacy.system_prompt,
+      task_prompt: legacy.task_prompt,
+      recorded_at: legacy.started_at
+    });
+  });
+
+  test('leaves the record unwritten and the queue intact when prompt saving fails', () => {
+    const { retention } = makeRetention();
+    const queue = writeQueue({
+      'UI-a-1': {
+        ...attempt({ status: 'done' }),
+        system_prompt: 'saved system',
+        task_prompt: 'saved task'
+      }
+    });
+    writeFile(path.dirname(attemptPromptPath(WS, 'UI-a', 'UI-a-1')), 'blocked');
+
+    const result = retention.migrate();
+
+    expect(result).toMatchObject({ ok: false, records: 0 });
+    expect(exists(attemptRecordPath(WS, 'UI-a', 'UI-a-1'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'))).toEqual(
+      queue
+    );
+    expect(exists(recordMigrationMarkerPath(WS))).toBe(false);
+  });
+
+  test('preserves an existing prompt file when migrating legacy fields', () => {
+    const { retention } = makeRetention();
+    writeQueue({
+      'UI-a-1': { ...attempt({ status: 'done' }), task_prompt: 'legacy task' }
+    });
+    const file = attemptPromptPath(WS, 'UI-a', 'UI-a-1');
+    const saved = '{"attempt_id":"UI-a-1","task_prompt":"already saved"}';
+    writeFile(file, saved);
+
+    const result = retention.migrate();
+
+    expect(result).toMatchObject({ ok: true, records: 1 });
+    expect(fs.readFileSync(file, 'utf8')).toBe(saved);
+    expect(
+      JSON.parse(
+        fs.readFileSync(attemptRecordPath(WS, 'UI-a', 'UI-a-1'), 'utf8')
+      )
+    ).not.toHaveProperty('task_prompt');
+  });
+
   test('transfers the processed prefix ahead of an undismissed failure', () => {
     const { retention } = makeRetention();
     writeQueue({
@@ -484,6 +556,25 @@ describe('record migration step 1 — attempt records', () => {
     expect(
       fs.readFileSync(attemptRecordPath(WS, 'UI-a', 'UI-a-1'), 'utf8')
     ).toBe('{"attempt_id":"UI-a-1","bead_id":"UI-a","status":"done"}');
+  });
+
+  test('leaves prompts in an already-existing legacy record unchanged', () => {
+    const { retention } = makeRetention();
+    const legacy = {
+      ...attempt({ status: 'done' }),
+      system_prompt: 'saved system',
+      task_prompt: 'saved task'
+    };
+    writeQueue({ 'UI-a-1': legacy });
+    const file = attemptRecordPath(WS, 'UI-a', 'UI-a-1');
+    const saved = JSON.stringify(legacy);
+    writeFile(file, saved);
+
+    const result = retention.migrate();
+
+    expect(result).toMatchObject({ ok: true, records: 1 });
+    expect(fs.readFileSync(file, 'utf8')).toBe(saved);
+    expect(exists(attemptPromptPath(WS, 'UI-a', 'UI-a-1'))).toBe(false);
   });
 });
 

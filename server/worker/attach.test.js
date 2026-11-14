@@ -2338,6 +2338,25 @@ describe('worker/attach construction + live loop (F1)', () => {
     }
   });
 
+  test('reads the workspace external PR registry on every archive pass', () => {
+    const runtime = createWorkerRuntime();
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    const list = vi.spyOn(runtime.externalPrs, 'list').mockReturnValue([]);
+
+    att.repoOperationArchive.sweep();
+    att.repoOperationArchive.sweep();
+
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenNthCalledWith(1, path.resolve(WS));
+    expect(list).toHaveBeenNthCalledWith(2, path.resolve(WS));
+  });
+
   test('migrates legacy queue prompts before startup recovery runs', async () => {
     const runtime = createWorkerRuntime();
     const store = runtime.queueStore;

@@ -47,12 +47,13 @@ function isCandidate(operation, cutoff) {
  * supersede links. Non-candidates remain in the queue and seed that closure too.
  *
  * @param {Queue} queue
+ * @param {Record<string, unknown>} retention_queue
  * @param {number} at
  * @returns {string[]}
  */
-function archiveOperationIds(queue, at) {
+function archiveOperationIds(queue, retention_queue, at) {
   const entries = Object.entries(queue.repo_operations);
-  const retained = retainedSets(queue, at).operations;
+  const retained = retainedSets(retention_queue, at).operations;
   /** @type {Set<string>} */
   const operation_values = new Set();
   /** @type {Set<string>} */
@@ -143,7 +144,7 @@ function archiveOperationIds(queue, at) {
  * A failed append or queue persist keeps the queue for the next daily retry;
  * duplicate archive lines after an interrupted pass are identified by operation_id.
  *
- * @param {{ workspace_root: string, store: Pick<ReturnType<typeof import('./queue-store.js').createQueueStore>, 'snapshot'|'removeArchivedRepoOperations'>, fs?: Pick<typeof nodeFs, 'mkdirSync'|'appendFileSync'>, now?: () => number }} deps
+ * @param {{ workspace_root: string, store: Pick<ReturnType<typeof import('./queue-store.js').createQueueStore>, 'snapshot'|'removeArchivedRepoOperations'>, overlay?: (queue: Queue) => Record<string, unknown>, fs?: Pick<typeof nodeFs, 'mkdirSync'|'appendFileSync'>, now?: () => number }} deps
  */
 export function createRepoOperationArchive(deps) {
   const { workspace_root, store } = deps;
@@ -153,7 +154,12 @@ export function createRepoOperationArchive(deps) {
     sweep() {
       try {
         const queue = store.snapshot(workspace_root);
-        const operation_ids = archiveOperationIds(queue, now());
+        const retention_queue = deps.overlay ? deps.overlay(queue) : queue;
+        const operation_ids = archiveOperationIds(
+          queue,
+          retention_queue,
+          now()
+        );
         if (operation_ids.length === 0) {
           return { archived: 0 };
         }
