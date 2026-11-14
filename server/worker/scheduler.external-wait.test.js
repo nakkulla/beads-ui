@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createExternalWaitService } from './external-wait/service.js';
 import { createExternalWaitStore } from './external-wait/store.js';
 import { resolveExecSettings } from './policy.js';
 import { createQueueStore } from './queue-store.js';
@@ -1351,6 +1352,132 @@ function sessionFixture(options = {}) {
 }
 
 describe('external wait session resume', () => {
+  test.each([
+    [2, 'focus'],
+    [3, 'recheck']
+  ])(
+    'discards %s snapshot results when the wait stops during %s verification',
+    async (snapshot_number, action) => {
+      const run = vi.fn(async (/** @type {string[]} */ argv) => ({
+        code: 0,
+        stderr: '',
+        stdout:
+          argv[0] === 'env'
+            ? 'start'
+            : argv[0] === 'tmux'
+              ? 'dev:@1.%7 123 0'
+              : ''
+      }));
+      const env = sessionFixture({
+        deps: { externalWaitSessionResume: { run } }
+      });
+      fs.writeFileSync(
+        path.join(root, '.claude', 'sessions', 'owner.json'),
+        JSON.stringify({
+          sessionId: 'user-session',
+          pid: 123,
+          procStart: 'start',
+          tmux: 'dev:@1.%7'
+        })
+      );
+      env.store.recordExternalWaitFeedback(WS, WAIT, {
+        bead_id: 'B1',
+        kind: 'session_resume',
+        reason: 'owner_alive',
+        at: 1,
+        session_ref: 'claude:user-session@host',
+        owner_tmux: 'dev:@1.%7'
+      });
+      const feedback = env.store.snapshot(WS).external_wait_feedback[WAIT];
+      const save = vi.spyOn(env.store, 'recordExternalWaitFeedback');
+      const snap = await env.bd.snapshotBead();
+      let snapshots = 0;
+      env.bd.snapshotBead.mockImplementation(async () => {
+        await Promise.resolve();
+        snapshots += 1;
+        if (snapshots === snapshot_number) {
+          env.externalWait.update(WS, WAIT, (record) => {
+            record.stage = 'stopped';
+          });
+        }
+        return snap;
+      });
+
+      const result = await env.scheduler.inspectExternalWaitOwner(WS, WAIT, {
+        bead_id: 'B1',
+        version: feedback.version,
+        action: /** @type {'focus'|'recheck'} */ (action)
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'feedback_changed' });
+      expect(env.launcher.focusRegistryPane).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS).external_wait_feedback[WAIT]).toEqual(
+        feedback
+      );
+      expect(env.metadata.external_wait).toBe(WAIT);
+    }
+  );
+
+  test('skips execution for a service refusal even after the reservation clears', async () => {
+    const env = sessionFixture();
+    const before = JSON.stringify(recordOf(env));
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'session',
+      refused: 'resume_reserved'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'resume_reserved' });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(env.launches).toEqual([]);
+    expect(JSON.stringify(recordOf(env))).toBe(before);
+  });
+
+  test('records a service reservation refusal without executing a resume', async () => {
+    const env = sessionFixture({
+      record: {
+        resume: {
+          mode: 'session',
+          attempt_id: null,
+          reserved_at: AT,
+          launched_at: null,
+          session_id: 'user-session',
+          error: null
+        }
+      }
+    });
+    const service = createExternalWaitService({
+      store: env.externalWait,
+      observer: { observeRecord: vi.fn(), withOperationLock: vi.fn() },
+      bd: { setExternalWait: vi.fn(), unsetExternalWait: vi.fn() },
+      resume: (workspace, wait_id, mode, refusal) =>
+        env.scheduler.resumeExternalWait(workspace, wait_id, {
+          mode,
+          ...refusal
+        })
+    });
+    const before = JSON.stringify(recordOf(env));
+    env.admission.validate.mockClear();
+
+    const result = await service.resume(WS, WAIT, 'session');
+
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      error: 'resume_reserved'
+    });
+    expect(env.store.snapshot(WS).external_wait_feedback[WAIT]).toMatchObject({
+      bead_id: 'B1',
+      kind: 'session_resume',
+      reason: 'resume_reserved'
+    });
+    expect(env.admission.validate).not.toHaveBeenCalled();
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(env.launches).toEqual([]);
+    expect(JSON.stringify(recordOf(env))).toBe(before);
+  });
+
   test('focuses only a verified current original pane without releasing the wait', async () => {
     const run = vi.fn(async (/** @type {string[]} */ argv) => ({
       code: 0,

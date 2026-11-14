@@ -9,7 +9,7 @@ import { requestTakeover, sjobLocalJob, takeoverTarget } from './takeover.js';
 /**
  * @typedef {import('./store.js').WaitRecord} WaitRecord
  * @typedef {{ok:true, mode:'session', session:'launched'|'already_running'|'not_launched', reason:string|null, command:string|null, owner_tmux:string|null, tmux_session:string|null, tmux_window:string|null, pane_id:string|null, bridge_active:boolean}} SessionResumeResult
- * @typedef {(workspace:string, wait_id:string, mode:'fork'|'fresh'|'session')=>Promise<{ok:true, attempt_id:string}|SessionResumeResult|{ok:false, reason:string}>} ResumeHook
+ * @typedef {(workspace:string, wait_id:string, mode:'fork'|'fresh'|'session', refusal?:{refused:'resume_reserved'})=>Promise<{ok:true, attempt_id:string}|SessionResumeResult|{ok:false, reason:string}>} ResumeHook
  * @typedef {{setExternalWait:(workspace:string, bead_id:string, wait_id:string)=>Promise<void>, unsetExternalWait:(workspace:string, bead_id:string)=>Promise<void>, readExternalWait?:(workspace:string, bead_id:string)=>Promise<unknown>}} BeadWriter
  */
 
@@ -463,10 +463,11 @@ export function createExternalWaitService({
     ) {
       return failure(409, 'resume_not_allowed');
     }
-    if (resumeBlocked(record.resume, mode)) {
-      return failure(409, 'resume_reserved');
-    }
     try {
+      if (resumeBlocked(record.resume, mode)) {
+        await resume(workspace, wait_id, mode, { refused: 'resume_reserved' });
+        return failure(409, 'resume_reserved');
+      }
       const result = await resume(workspace, wait_id, mode);
       return result.ok ? result : failure(409, result.reason);
     } finally {

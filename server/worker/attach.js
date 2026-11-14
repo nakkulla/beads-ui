@@ -165,12 +165,14 @@ export function projectExternalWait(record, queue, metadata) {
     stored = { ...stored, reason: 'session_ref_changed', owner_tmux: null };
   }
   const refusal = queue?.conversation_refusals?.[record.bead_id];
-  const legacy_matches = Object.values(queue?.interactive_sessions || {}).some(
-    (session) =>
-      session.bead_id === record.bead_id &&
-      session.kind === 'external_resume' &&
-      session.conversation?.wait_id === record.wait_id
-  );
+  const legacy_matches =
+    Object.values(queue?.interactive_sessions || {}).some(
+      (session) =>
+        session.bead_id === record.bead_id &&
+        session.kind === 'external_resume' &&
+        session.conversation?.wait_id === record.wait_id
+    ) ||
+    (refusal && refusal.at >= Date.parse(record.registered_at));
   const legacy =
     refusal?.kind === 'external_resume' && legacy_matches
       ? {
@@ -2861,9 +2863,10 @@ export function bindExternalWaitHooks({
      * @param {string} ws
      * @param {string} wait_id
      * @param {'fork'|'fresh'|'session'} mode
+     * @param {{ refused: 'resume_reserved' }} [refusal]
      */
-    resume(ws, wait_id, mode) {
-      return scheduler.resumeExternalWait(ws, wait_id, { mode });
+    resume(ws, wait_id, mode, refusal) {
+      return scheduler.resumeExternalWait(ws, wait_id, { mode, ...refusal });
     },
     stop() {
       for (const unsubscribe of subscriptions.values()) {
@@ -2881,8 +2884,8 @@ export function bindExternalWaitHooks({
     onCompletion: async (ws, record) => {
       await by_workspace.get(ws)?.onCompletion(record);
     },
-    resume: (ws, wait_id, mode) =>
-      by_workspace.get(ws)?.resume(ws, wait_id, mode) ||
+    resume: (ws, wait_id, mode, refusal) =>
+      by_workspace.get(ws)?.resume(ws, wait_id, mode, refusal) ||
       Promise.resolve({ ok: false, reason: 'workspace_not_attached' })
   });
   return () => {

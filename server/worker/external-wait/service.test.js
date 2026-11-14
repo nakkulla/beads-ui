@@ -548,7 +548,14 @@ test.each([
     const result = await service.resume(WORKSPACE, record.wait_id, mode);
 
     expect('status' in result ? result.status : 200).toBe(status);
-    expect(resume).toHaveBeenCalledTimes(status === 200 ? 1 : 0);
+    expect(resume).toHaveBeenCalledTimes(
+      status === 200 || reservation === 'pending' ? 1 : 0
+    );
+    if (reservation === 'pending') {
+      expect(resume).toHaveBeenCalledWith(WORKSPACE, record.wait_id, mode, {
+        refused: 'resume_reserved'
+      });
+    }
     if (status === 200) {
       expect(resume).toHaveBeenCalledWith(WORKSPACE, record.wait_id, mode);
       expect(result).toEqual({ ok: true, attempt_id: 'attempt-resumed' });
@@ -579,7 +586,12 @@ test.each(['fork', 'fresh', 'session'])(
       status: 409,
       error: 'resume_reserved'
     });
-    expect(resume).not.toHaveBeenCalled();
+    expect(resume).toHaveBeenCalledExactlyOnceWith(
+      WORKSPACE,
+      record.wait_id,
+      mode,
+      { refused: 'resume_reserved' }
+    );
   }
 );
 

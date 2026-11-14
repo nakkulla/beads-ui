@@ -79,6 +79,43 @@ test('reads a legacy external handoff refusal only for its confirmed wait', () =
   expect(source.external_wait_feedback).toEqual({});
 });
 
+test.each([123, 124])(
+  'reads an ended legacy handoff refusal at %i after wait registration',
+  (at) => {
+    const source = queue({
+      external_wait_feedback: {},
+      conversation_refusals: {
+        B1: { kind: 'external_resume', reason: 'serial_lane_not_head', at }
+      }
+    });
+    const before = JSON.stringify(source);
+
+    const projected = projectExternalWait(
+      record({ registered_at: new Date(123).toISOString() }),
+      source
+    );
+
+    expect(projected.feedback?.reason).toBe('serial_lane_not_head');
+    expect(JSON.stringify(source)).toBe(before);
+  }
+);
+
+test('hides an ended legacy refusal from before the current wait', () => {
+  const source = queue({
+    external_wait_feedback: {},
+    conversation_refusals: {
+      B1: { kind: 'external_resume', reason: 'serial_lane_not_head', at: 122 }
+    }
+  });
+
+  const projected = projectExternalWait(
+    record({ registered_at: new Date(123).toISOString() }),
+    source
+  );
+
+  expect(projected.feedback).toBeUndefined();
+});
+
 test('prefers the new wait feedback over legacy conversation refusals', () => {
   const source = queue({
     conversation_refusals: {

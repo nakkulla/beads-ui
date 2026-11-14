@@ -1614,7 +1614,7 @@ export function interactiveTurnState(running, attention) {
  *   withdraw: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, already_settled?: boolean }>,
  *   retryNow: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   sweepStalledContinuations: (workspace: string) => { rearmed: string[], restored: string[] },
- *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session', automatic?: boolean }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
+ *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session', automatic?: boolean, refused?: 'resume_reserved' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
  *   inspectExternalWaitOwner: (workspace: string, wait_id: string, input: { bead_id: string, version: number, action: 'recheck'|'focus' }) => Promise<{ ok: boolean, reason: string, focus_error?: string|null }>,
  *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
@@ -17542,12 +17542,14 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} wait_id
-   * @param {Parameters<typeof executeExternalWaitResume>[2]} options
+   * @param {Parameters<typeof executeExternalWaitResume>[2] & { refused?: 'resume_reserved' }} options
    */
   async function resumeExternalWait(workspace, wait_id, options) {
     const previous =
       deps.store.snapshot(workspace).external_wait_feedback[wait_id];
-    const result = await executeExternalWaitResume(workspace, wait_id, options);
+    const result = options.refused
+      ? { ok: /** @type {const} */ (false), reason: options.refused }
+      : await executeExternalWaitResume(workspace, wait_id, options);
     const record = deps.externalWait?.get(workspace, wait_id);
     if (!record) {
       return result;
@@ -17651,8 +17653,8 @@ export function createScheduler(deps) {
               qualified.provider,
               qualified.session_id
             );
-      const current = deps.externalWait?.get(workspace, wait_id);
       const latest_snap = await deps.bd.snapshotBead(record.bead_id);
+      const current = deps.externalWait?.get(workspace, wait_id);
       if (
         !current ||
         current.stage !== 'completing' ||
@@ -17677,11 +17679,12 @@ export function createScheduler(deps) {
           }
         }
       }
-      const final_record = deps.externalWait?.get(workspace, wait_id);
       const final_snap = await deps.bd.snapshotBead(record.bead_id);
+      const final_record = deps.externalWait?.get(workspace, wait_id);
       if (
         !final_record ||
         final_record.stage !== 'completing' ||
+        final_record.bead_id !== record.bead_id ||
         read()?.version !== input.version ||
         final_snap.session_ref !== snap.session_ref
       ) {
