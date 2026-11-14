@@ -147,6 +147,7 @@ import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
   DEFAULT_SLOTS,
   MIN_SLOTS,
+  TERMINAL_ATTEMPT_STATUSES as STORE_TERMINAL_ATTEMPT_STATUSES,
   activeLaneLineages,
   heldSerialLaneOf,
   holdsHandoffReservation,
@@ -6511,8 +6512,7 @@ export function createScheduler(deps) {
     const lane_id = input.serial_lane_id;
     const waiting = waitingEntryOf(q, input.bead_id) !== null;
     // The launch's lane must be the one dispatch resolves (UI-blx2 §3.5). A
-    // bead with no waiting row may still launch lane-free, as the external-PR
-    // resolution always has.
+    // bead with no waiting row may still launch lane-free.
     if (
       input.continuation !== true &&
       lane_id !== dispatchLaneOf(q, input.bead_id) &&
@@ -19743,6 +19743,144 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Judge external-resolution ownership before reconciling or recording work.
+   * A held launch lease excludes its own reservation; its revalidation fences
+   * other reservations in the same synchronous stretch.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').Queue} q
+   * @param {Set<string>} baseline_attempt_ids
+   * @param {boolean} launch_reserved
+   * @returns {string|null}
+   */
+  function externalConflictRefusal(
+    workspace,
+    bead_id,
+    q,
+    baseline_attempt_ids,
+    launch_reserved
+  ) {
+    if (discardActive(q, { bead_id })) {
+      return 'discard_in_progress';
+    }
+    const attempts = Object.values(q.attempts).filter(
+      (attempt) => attempt.bead_id === bead_id
+    );
+    if (
+      claimed.has(bead_id) ||
+      attempts.some((attempt) => attempt.status === 'running') ||
+      (!launch_reserved &&
+        [...serialCoordinator(workspace).launches.values()].some(
+          (launch) => launch.bead_id === bead_id
+        ))
+    ) {
+      return 'bead_running';
+    }
+    if (!deps.externalPrs || !deps.externalPrs.get(workspace, bead_id)) {
+      return 'not_external';
+    }
+    if (q.done.some((entry) => entry.bead_id === bead_id)) {
+      return 'external_pr_already_done';
+    }
+    if (
+      attempts.some(
+        (attempt) =>
+          !STORE_TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status)) &&
+          (waitingEntryOf(q, bead_id) !== null ||
+            (launch_reserved && !baseline_attempt_ids.has(attempt.attempt_id)))
+      )
+    ) {
+      return 'external_pr_attempt_not_terminal';
+    }
+    return null;
+  }
+
+  /**
+   * Reconcile a waiting external PR with the store's single atomic lane move.
+   * The fresh snapshot, rather than the operation's boolean, proves the move:
+   * a poller may have already made it before this call reaches the store.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null} head_ref
+   * @param {Set<string>} baseline_attempt_ids
+   * @param {boolean} [launch_reserved]
+   * @returns {{ ok: true }|{ ok: false, reason: string }}
+   */
+  function prepareExternalConflict(
+    workspace,
+    bead_id,
+    head_ref,
+    baseline_attempt_ids,
+    launch_reserved = false
+  ) {
+    /** @type {import('./queue-store.js').Queue} */
+    let q = deps.store.snapshot(workspace);
+    const refusal = externalConflictRefusal(
+      workspace,
+      bead_id,
+      q,
+      baseline_attempt_ids,
+      launch_reserved
+    );
+    if (refusal) {
+      return { ok: false, reason: refusal };
+    }
+    if (waitingEntryOf(q, bead_id) === null) {
+      return { ok: true };
+    }
+    const row = deps.externalPrs?.get(workspace, bead_id);
+    if (!row) {
+      return { ok: false, reason: 'not_external' };
+    }
+    if (
+      typeof row.pr_url !== 'string' ||
+      row.pr_url.length === 0 ||
+      typeof head_ref !== 'string' ||
+      head_ref.length === 0
+    ) {
+      log(
+        'external PR reconcile failed for %s: missing pr_url or head_ref',
+        bead_id
+      );
+      return { ok: false, reason: 'external_pr_reconcile_failed' };
+    }
+    try {
+      deps.store.reconcileExternalPrWait(workspace, {
+        bead_id,
+        pr_url: row.pr_url,
+        head_ref
+      });
+    } catch (err) {
+      log('external PR reconcile failed for %s: %o', bead_id, err);
+      return { ok: false, reason: 'external_pr_reconcile_failed' };
+    }
+    q = deps.store.snapshot(workspace);
+    const moved_refusal = externalConflictRefusal(
+      workspace,
+      bead_id,
+      q,
+      baseline_attempt_ids,
+      launch_reserved
+    );
+    if (moved_refusal) {
+      return { ok: false, reason: moved_refusal };
+    }
+    if (
+      waitingEntryOf(q, bead_id) !== null ||
+      !q.pr_wait.some((entry) => entry.bead_id === bead_id)
+    ) {
+      log(
+        'external PR reconcile failed for %s: waiting-to-pr_wait move absent',
+        bead_id
+      );
+      return { ok: false, reason: 'external_pr_reconcile_failed' };
+    }
+    return { ok: true };
+  }
+
+  /**
    * Dispatch a conflict-resolution session for an EXTERNAL PR row (UI-w0hi §1):
    * a bead an ordinary session delivered a PR for, which the durable lanes and
    * the attempt registry never held.
@@ -19795,22 +19933,19 @@ export function createScheduler(deps) {
     ) {
       return { ok: false, reason: 'worker_sessions_busy' };
     }
-    const q = deps.store.snapshot(workspace);
-    if (discardActive(q, { bead_id })) {
-      return { ok: false, reason: 'discard_in_progress' };
-    }
-    if (claimed.has(bead_id)) {
-      return { ok: false, reason: 'bead_running' };
-    }
-    for (const a of Object.values(q.attempts || {})) {
-      if (a && a.bead_id === bead_id && a.status === 'running') {
-        return { ok: false, reason: 'bead_running' };
-      }
-    }
-    // The registry IS the evidence that this bead is an external row. Without
-    // the dep there is no evidence at all, which is a refusal, not a pass.
-    if (!deps.externalPrs || !deps.externalPrs.get(workspace, bead_id)) {
-      return { ok: false, reason: 'not_external' };
+    const baseline_attempt_ids = new Set(
+      Object.values(deps.store.snapshot(workspace).attempts)
+        .filter((attempt) => attempt.bead_id === bead_id)
+        .map((attempt) => attempt.attempt_id)
+    );
+    const prepared = prepareExternalConflict(
+      workspace,
+      bead_id,
+      head_ref,
+      baseline_attempt_ids
+    );
+    if (!prepared.ok) {
+      return prepared;
     }
     /** @type {BeadSnapshot} */
     let snap;
@@ -19858,7 +19993,15 @@ export function createScheduler(deps) {
           typeof prior_attempt.session_id === 'string' &&
           prior_attempt.session_id.length > 0,
         continuation: continuation.continuation,
-        decision_token: continuation.decision_token
+        decision_token: continuation.decision_token,
+        before_launch: (/** @type {boolean} */ launch_reserved) =>
+          prepareExternalConflict(
+            workspace,
+            bead_id,
+            head_ref,
+            baseline_attempt_ids,
+            launch_reserved
+          )
       });
     }
     /** @type {string} */
@@ -19941,12 +20084,21 @@ export function createScheduler(deps) {
     const receipt_baseline = await captureReceiptBaseline(bead_id);
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
-    // External-PR resolution work owns no waiting-lane entry, so it launches
-    // lane-free: only the bead_running fence applies.
+    const launch_prepared = prepareExternalConflict(
+      workspace,
+      bead_id,
+      head_ref,
+      baseline_attempt_ids
+    );
+    if (!launch_prepared.ok) {
+      return launch_prepared;
+    }
+    // The waiting row is gone, but its PR-wait origin or a terminal attempt
+    // can still hold this lineage's serial seat.
     const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
       lineage_id: bead_id,
-      serial_lane_id: null
+      serial_lane_id: dispatchLaneOf(deps.store.snapshot(workspace), bead_id)
     });
     if (!serial_launch.ok) {
       return { ok: false, reason: serial_launch.reason };
@@ -19961,10 +20113,25 @@ export function createScheduler(deps) {
     // The last await before launch: the revalidation below through the
     // pre-record must stay one synchronous stretch.
     const exec_profile = await dispatchProfile(workspace, snap);
+    const fenced = prepareExternalConflict(
+      workspace,
+      bead_id,
+      head_ref,
+      baseline_attempt_ids,
+      true
+    );
+    if (!fenced.ok) {
+      serial_lease.release();
+      return fenced;
+    }
+    const final_lane_id = dispatchLaneOf(
+      deps.store.snapshot(workspace),
+      bead_id
+    );
     const revalidated = serial_lease.revalidate({
       bead_id,
       lineage_id: bead_id,
-      serial_lane_id: null
+      serial_lane_id: final_lane_id
     });
     if (!revalidated.ok) {
       serial_lease.release();
@@ -20019,6 +20186,7 @@ export function createScheduler(deps) {
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values,
         exec_restore_values,
+        serial_lane_id: final_lane_id,
         conflict_resolution: true,
         external_conflict: true,
         // Written HERE rather than at the init event (UI-p206 §5.3): the id
@@ -20952,6 +21120,12 @@ export function createScheduler(deps) {
     // row's `pr_wait` entry only, and `moveToPrWait` re-stamps that entry from
     // THIS attempt when it lands again.
     const lineage_id = serialLineageId(prior) || bead_id;
+    if (typeof options.before_launch === 'function') {
+      const prepared = options.before_launch(false);
+      if (!prepared.ok) {
+        return prepared;
+      }
+    }
     const serial_lane_id =
       prior.serial_lane_id ??
       heldSerialLaneOf(deps.store.snapshot(workspace), bead_id, lineage_id);
@@ -20985,7 +21159,7 @@ export function createScheduler(deps) {
     // may have bound this lineage to a lane since the acquire: re-read
     // synchronously and revalidate the held reservation with the lane the
     // child records (the dispatch path's `final_lane_id` fence).
-    const final_lane_id =
+    let final_lane_id =
       prior.serial_lane_id ??
       heldSerialLaneOf(deps.store.snapshot(workspace), bead_id, lineage_id);
     const final_launch = serial_lease.revalidate({
@@ -20997,6 +21171,35 @@ export function createScheduler(deps) {
     if (!final_launch.ok) {
       serial_lease.release();
       return { ok: false, reason: final_launch.reason };
+    }
+    if (typeof options.before_launch === 'function') {
+      const before_fence_revision = deps.store.snapshot(workspace).revision;
+      const fenced = options.before_launch(true);
+      if (!fenced.ok) {
+        serial_lease.release();
+        return fenced;
+      }
+      const q = deps.store.snapshot(workspace);
+      final_lane_id =
+        prior.serial_lane_id ?? heldSerialLaneOf(q, bead_id, lineage_id);
+      const fenced_launch = serial_lease.revalidate({
+        bead_id,
+        lineage_id,
+        serial_lane_id: final_lane_id,
+        continuation: true
+      });
+      if (!fenced_launch.ok) {
+        serial_lease.release();
+        return { ok: false, reason: fenced_launch.reason };
+      }
+      // Only the fence's own reconciliation can advance an otherwise current
+      // prerecord revision; earlier queue writes must still fail the CAS.
+      if (
+        before_fence_revision === revalidated.expected_revision &&
+        q.revision !== before_fence_revision
+      ) {
+        revalidated.expected_revision = q.revision;
+      }
     }
     // Same window: a ✕ recorded while an AUTOMATIC continuation — a provider
     // auto-resume receipt or a retry rung — was under way took the attempt

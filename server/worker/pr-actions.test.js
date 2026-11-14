@@ -3925,13 +3925,18 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     expect(env.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
-  test('reports a refused external dispatch on the same result channel', async () => {
+  test.each([
+    'worktree_missing',
+    'external_pr_attempt_not_terminal',
+    'external_pr_already_done',
+    'external_pr_reconcile_failed'
+  ])('reports external dispatch refusal %s unchanged', async (reason) => {
     const env = makeActions(
       externalOptions({
         details: [
           prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })
         ],
-        externalConflictResult: { ok: false, reason: 'worktree_missing' }
+        externalConflictResult: { ok: false, reason }
       })
     );
 
@@ -3940,7 +3945,7 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     expect(r).toMatchObject({
       ok: false,
       action: 'conflict_resolution',
-      reason: 'worktree_missing',
+      reason,
       attempt_id: null
     });
   });
