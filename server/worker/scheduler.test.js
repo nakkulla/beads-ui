@@ -39,6 +39,7 @@ import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { runSession, terminalResultOf } from './runner/session.js';
 import {
+  BASE_FETCH_RETRY_MS,
   INTERACTIVE_EXIT_DEFER_MAX_MS,
   INTERACTIVE_EXIT_GRACE_MS,
   QUEUE_GRACE_MS,
@@ -28020,6 +28021,128 @@ describe('scheduler dispatch-time base resolution (worker-base-scope-alignment �
       'base_unresolved:git_error'
     );
     expect(worktree.add).not.toHaveBeenCalled();
+  });
+
+  test('retries a fetch-refused dispatch after the retry delay', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      /** @type {import('vitest').Mock<() => Promise<any>>} */
+      const resolveBase = vi.fn(async () => ({
+        ok: true,
+        base: 'main',
+        declared: false,
+        remote: 'origin',
+        remote_ref: 'refs/remotes/origin/main',
+        base_oid: 'b'.repeat(40),
+        local_only: false
+      }));
+      resolveBase.mockImplementationOnce(async () => ({
+        ok: false,
+        step: 'fetch',
+        base: 'main',
+        detail: 'remote:origin;attempts:3;exit:128;category:network'
+      }));
+      const { store, scheduler } = setup({
+        config: { 'UI-1': { repo: '/repo', target_base: 'main' } },
+        admission: { validate: async () => ({ ok: true }) },
+        resolveBase
+      });
+      seedQueue(store, ['UI-1']);
+      await scheduler.tick(WS);
+
+      await vi.advanceTimersByTimeAsync(BASE_FETCH_RETRY_MS);
+
+      expect(resolveBase).toHaveBeenCalledTimes(2);
+      expect(scheduler.isRunning('UI-1')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('re-arms the fetch retry when the retry pass stops at admission', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      /** @type {import('vitest').Mock<() => Promise<any>>} */
+      const resolveBase = vi.fn(async () => ({
+        ok: true,
+        base: 'main',
+        declared: false,
+        remote: 'origin',
+        remote_ref: 'refs/remotes/origin/main',
+        base_oid: 'b'.repeat(40),
+        local_only: false
+      }));
+      resolveBase.mockImplementationOnce(async () => ({
+        ok: false,
+        step: 'fetch',
+        base: 'main',
+        detail: 'remote:origin;attempts:3;exit:128;category:network'
+      }));
+      /** @type {import('vitest').Mock<() => Promise<any>>} */
+      const validate = vi.fn(async () => ({ ok: true }));
+      const { store, scheduler } = setup({
+        config: { 'UI-1': { repo: '/repo', target_base: 'main' } },
+        admission: { validate },
+        resolveBase
+      });
+      seedQueue(store, ['UI-1']);
+      await scheduler.tick(WS);
+      // 실제 연결의 scan도 같은 base를 판정한다: 첫 재시도는 admission에서
+      // fetch 실패로 멈춘다.
+      validate.mockImplementationOnce(async () => ({
+        ok: false,
+        reason: 'base_unresolved:fetch'
+      }));
+      await vi.advanceTimersByTimeAsync(BASE_FETCH_RETRY_MS);
+
+      await vi.advanceTimersByTimeAsync(BASE_FETCH_RETRY_MS);
+
+      expect(scheduler.isRunning('UI-1')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('keeps other refusals fenced when the fetch retry fires', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      /** @type {string[]} */
+      const calls = [];
+      const { store, scheduler } = setup({
+        config: {
+          'UI-1': { repo: '/repo', target_base: 'main' },
+          'UI-2': { repo: '/repo', target_base: 'ilsun/dv' }
+        },
+        admission: { validate: async () => ({ ok: true }) },
+        resolveBase: async () => {
+          calls.push('resolve');
+          return calls.length === 1
+            ? {
+                ok: false,
+                step: 'fetch',
+                base: 'main',
+                detail: 'remote:origin;attempts:3;exit:128;category:network'
+              }
+            : {
+                ok: false,
+                step: 'ref',
+                base: 'ilsun/dv',
+                detail: 'refs/remotes/origin/ilsun/dv'
+              };
+        }
+      });
+      seedQueue(store, ['UI-1', 'UI-2']);
+      await scheduler.tick(WS);
+      const before = calls.length;
+
+      await vi.advanceTimersByTimeAsync(BASE_FETCH_RETRY_MS);
+
+      // 재시도는 fetch로 거부된 UI-1만 다시 판정한다 — ref 거부(UI-2)는 사람
+      // 조작이나 외부 tick 전까지 울타리 안에 남는다.
+      expect(calls.length - before).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

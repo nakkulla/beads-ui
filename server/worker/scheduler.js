@@ -245,6 +245,13 @@ const log = debug('worker:scheduler');
 const WAITING_RESCAN_COVER_MS = 2_000;
 const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
 export const INTERACTIVE_EXIT_GRACE_MS = 90_000;
+/**
+ * How long a dispatch refused at `base_unresolved:fetch` waits before its fence
+ * is lifted for one more pass. Long enough that a failing remote is not hammered
+ * (each pass already runs the resolver's own fetch retries), short enough that
+ * a transient failure clears without a human.
+ */
+export const BASE_FETCH_RETRY_MS = 60_000;
 
 /**
  * Resolve the recorded profile using the contract registry's storage names.
@@ -2081,6 +2088,17 @@ export function createScheduler(deps) {
    * @type {Map<string, number>}
    */
   const grace_refused = new Map();
+  /**
+   * Live wake-ups for beads refused because the dispatch-time base fetch
+   * failed, keyed by bead. A fetch failure is often transient (network, auth
+   * refresh), yet the `dispatch_refused` fence it leaves lifts only at the next
+   * externally-initiated tick, which a quiet queue may never get. Each entry
+   * lifts that one fence after {@link BASE_FETCH_RETRY_MS} and runs a pass;
+   * other refusal reasons need a human fix, so they get no timer.
+   *
+   * @type {Map<string, ReturnType<typeof setTimeout>>}
+   */
+  const fetch_retry_timers = new Map();
   /**
    * The in-flight dispatch drain, or `null` when no pass is running. Overlapping
    * passes are what let two sessions take the same bead: the scan spans awaits
@@ -3966,6 +3984,12 @@ export function createScheduler(deps) {
     const blockers = extra?.blockers;
     const gate = extra?.gate;
     noteRetrySkip(bead_id, reason);
+    // Armed here rather than at one call site: the scan's admission check
+    // reads the same base resolution, so a retry pass can stop on a fetch
+    // failure there too, and that refusal must re-arm the wake-up as well.
+    if (reason === 'base_unresolved:fetch') {
+      armFetchRetry(workspace, bead_id);
+    }
     const result = deps.store.recordAdmission(workspace, {
       bead_id,
       reason,
@@ -14586,6 +14610,15 @@ export function createScheduler(deps) {
           return;
         }
         if (!resolved.ok) {
+          // The badge carries only the step; the resolver's detail (for a
+          // fetch: remote, attempts, exit and category) is the one place the
+          // cause survives, so it goes to the server log.
+          log(
+            'dispatch base unresolved for %s (%s): %s',
+            bead_id,
+            resolved.step,
+            resolved.detail
+          );
           refuseDispatch(
             workspace,
             bead_id,
@@ -22298,6 +22331,45 @@ export function createScheduler(deps) {
       }
     }
     return lifted;
+  }
+
+  /**
+   * Arm the one wake-up that retries a bead refused for `base_unresolved:fetch`
+   * (see {@link fetch_retry_timers}). When it fires, the fence is lifted only if
+   * the bead's recorded reason is STILL that fetch refusal: an external tick in
+   * between may have refused it for a reason a timer must not retry, dispatched
+   * it, or the bead may have left the queue. A retry that fails again re-arms
+   * through this same path, and the badge keeps its reason meanwhile.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   */
+  function armFetchRetry(workspace, bead_id) {
+    if (fetch_retry_timers.has(bead_id)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      fetch_retry_timers.delete(bead_id);
+      /** @type {string|undefined} */
+      let reason;
+      try {
+        reason = deps.store.snapshot(workspace).admission?.[bead_id]?.reason;
+      } catch (err) {
+        log('fetch retry snapshot failed for %s: %o', workspace, err);
+        return;
+      }
+      if (reason !== 'base_unresolved:fetch') {
+        return;
+      }
+      dispatch_refused.delete(bead_id);
+      tickPass(workspace).catch((err) => {
+        log('fetch retry dispatch failed for %s: %o', workspace, err);
+      });
+    }, BASE_FETCH_RETRY_MS);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    fetch_retry_timers.set(bead_id, timer);
   }
 
   /**
