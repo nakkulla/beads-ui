@@ -64,6 +64,7 @@ import {
   createBulkWorkerForm
 } from './bulk-worker-form.js';
 import { createCodexCreditControls } from './codex-credit-controls.js';
+import { createConversationSection } from './conversation-section.js';
 import {
   SESSION_REVIEW_NOTICE,
   executionSubtabs
@@ -195,6 +196,12 @@ export function createBulkPane(host, options) {
   const relay_section = createRelayDefaultsSection(relay_host, {
     transport: options.transport,
     modelVisibilityStore: options.modelVisibilityStore
+  });
+  const resolution_host = document.createElement('div');
+  const resolution_section = createConversationSection(resolution_host, {
+    transport: options.transport,
+    modelVisibilityStore: options.modelVisibilityStore,
+    toast: (message) => showToast(message, 'warning')
   });
   /** @type {'execution'|'account'} */
   let section = 'execution';
@@ -1734,6 +1741,14 @@ export function createBulkPane(host, options) {
    * @returns {TemplateResult}
    */
   function executionTemplate() {
+    if (execution_subtab === 'resolution') {
+      resolution_section.render();
+      return html`${executionSubtabs(execution_subtab, (tab) => {
+        execution_subtab = tab;
+        options.onExecutionSubtabChange?.(tab);
+        doRender();
+      })}${resolution_host}`;
+    }
     if (execution_subtab === 'hermes') {
       relay_section.render();
       return html`${executionSubtabs(execution_subtab, (tab) => {
@@ -1830,6 +1845,7 @@ export function createBulkPane(host, options) {
     destroy() {
       destroyed = true;
       relay_section.destroy();
+      resolution_section.destroy();
       cancelRun();
       codex_credit_controls.destroy();
       if (unsubscribe_rows) {

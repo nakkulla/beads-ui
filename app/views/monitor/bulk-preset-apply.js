@@ -76,7 +76,11 @@ export const ORCHESTRATION_OP = 'worker-queue-set-orchestration-defaults';
 const PRESET_QUEUE_UNAPPLIED = '오케스트레이션 값 미적용';
 
 /** 폼 경로에서 kv만 반영된 저장소의 사유 (§4.2). */
-const FORM_QUEUE_UNAPPLIED = '큐 충돌, 실행 설정만 저장';
+const FORM_QUEUE_UNAPPLIED = '오케스트레이션 값 미적용, 실행 설정만 저장';
+/** Only a confirmed revision conflict gets conflict copy. */
+const FORM_QUEUE_CONFLICT = '큐 충돌, 실행 설정만 저장';
+/** The queue rejected the submitted values rather than its revision. */
+const FORM_QUEUE_REJECTED = '서버가 값 조합을 거부, 실행 설정만 저장';
 
 /** 서버가 아무 말도 하지 않은 응답(no reply)의 실패 사유. */
 const NO_REPLY = '요청이 처리되지 않았습니다';
@@ -596,7 +600,12 @@ async function runFormTarget(target, send, adopt, isCancelled) {
     adoptQueue(adopt, target.root_dir, res);
     if (isCancelled?.() === true) {
       cancelled = true;
-    } else if (!isError(res) && isRecord(res) && res.applied === false) {
+    } else if (
+      !isError(res) &&
+      isRecord(res) &&
+      res.applied === false &&
+      res.conflict === true
+    ) {
       res = await send(ORCHESTRATION_OP, {
         ...queue_payload,
         expected_revision: freshRevision(res, queue_payload.expected_revision)
@@ -606,6 +615,14 @@ async function runFormTarget(target, send, adopt, isCancelled) {
     if (!isError(res) && isRecord(res) && res.applied === true) {
       state.queue = true;
       state.detail = '';
+    } else if (isError(res)) {
+      state.detail = messageOf(res);
+    } else if (isRecord(res) && res.applied === false) {
+      if (res.conflict === true) {
+        state.detail = FORM_QUEUE_CONFLICT;
+      } else if (res.conflict === false) {
+        state.detail = FORM_QUEUE_REJECTED;
+      }
     }
   } catch (err) {
     state.detail = messageOf(err);

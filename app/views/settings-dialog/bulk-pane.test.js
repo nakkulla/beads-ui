@@ -1240,6 +1240,77 @@ describe('createBulkPane 관측 (UI-e1ta §3)', () => {
 });
 
 describe('createBulkPane 실행 tab (UI-32oq §4.4)', () => {
+  test('renders server-global conversation groups in the resolution tab', async () => {
+    const { host, pane, calls } = setup({
+      transport: () => ({
+        snapshot: {
+          revision: 4,
+          values: { claude_model: 'opus', conflict_claude_effort: 'high' },
+          overrides: {},
+          fields: {
+            claude_model: {
+              kind: 'model',
+              runner: 'claude',
+              default: null,
+              choices: ['opus']
+            },
+            conflict_claude_effort: {
+              kind: 'effort',
+              runner: 'claude',
+              default: null,
+              choices: ['low', 'high']
+            }
+          }
+        }
+      })
+    });
+    pane.render('execution');
+
+    click(host, '[data-execution-subtab="resolution"]');
+    await settle();
+
+    expect(host.querySelector('[data-group="conversation"]')).not.toBeNull();
+    expect(host.querySelector('[data-group="conflict"]')).not.toBeNull();
+    expect(el(host, '[data-key="claude_model"] select').value).toBe('opus');
+    expect(el(host, '[data-key="conflict_claude_effort"] select').value).toBe(
+      'high'
+    );
+    expect(host.querySelector('[data-bulk-block="session_review"]')).toBeNull();
+    expect(payloadsOf(calls, 'conversation-settings-get')).toEqual([{}]);
+  });
+
+  test('saves resolution settings independently of the repository selection', async () => {
+    const { host, pane, calls } = setup({
+      transport: () => ({
+        snapshot: {
+          revision: 4,
+          values: { claude_model: null },
+          overrides: {},
+          fields: {
+            claude_model: {
+              kind: 'model',
+              runner: 'claude',
+              default: null,
+              choices: ['opus']
+            }
+          }
+        }
+      })
+    });
+    pane.render('execution');
+    tick(host, `[data-bulk-repo="${WS_A}"]`, false);
+    tick(host, `[data-bulk-repo="${WS_B}"]`, false);
+    click(host, '[data-execution-subtab="resolution"]');
+    await settle();
+
+    choose(host, '[data-key="claude_model"] select', 'opus');
+    await settle();
+
+    expect(payloadsOf(calls, 'conversation-settings-set')).toEqual([
+      { expected_revision: 4, values: { claude_model: 'opus' } }
+    ]);
+  });
+
   test('applies session review rows without writing a preset or queue value', async () => {
     const { host, pane, calls } = setup({
       transport: () => ({ values: {}, warnings: [] })

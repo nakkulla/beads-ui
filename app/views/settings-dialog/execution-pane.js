@@ -854,7 +854,11 @@ export function createExecutionPane(mount_element, binding) {
         }
       );
       if (res && res.applied === false) {
-        notify('Worker 설정 저장 실패: 다른 클라이언트와 충돌');
+        notify(
+          res.conflict === true
+            ? 'Worker 설정 저장 실패: 다른 클라이언트와 충돌'
+            : 'Worker 설정 저장 실패: 서버가 값 조합을 거부'
+        );
         return;
       }
       worker_draft = {};

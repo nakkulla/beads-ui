@@ -225,6 +225,10 @@ export function createBulkWorkerForm({
   /** @type {Set<string>} */
   const edited = new Set();
 
+  /** Speed clears caused by target edits, rather than direct speed edits. */
+  /** @type {Set<string>} */
+  const cleared_speeds = new Set();
+
   /** The last observation per key, `null` for a key nothing observes. */
   /** @type {Record<string, import('./bulk-observation.js').Observation|null>} */
   const observations = {};
@@ -277,7 +281,7 @@ export function createBulkWorkerForm({
       }
       const observation = observeKey(list, key, layer);
       observations[key] = observation;
-      if (edited.has(key)) {
+      if (edited.has(key) || cleared_speeds.has(key)) {
         continue;
       }
       writeValue(key, observation.state === 'same' ? observation.value : null);
@@ -302,7 +306,9 @@ export function createBulkWorkerForm({
    * @returns {'mixed'|'pending'|null}
    */
   function holdStateOf(key) {
-    return edited.has(key) ? null : holdOptionOf(key);
+    return edited.has(key) || cleared_speeds.has(key)
+      ? null
+      : holdOptionOf(key);
   }
 
   /**
@@ -477,11 +483,24 @@ export function createBulkWorkerForm({
     };
   }
 
-  /** Drop every 속도 value whose row just left the screen (UI-7yh2 §3.4). */
-  function pruneHiddenSpeeds() {
+  /**
+   * Drop hidden speed values, releasing a hold only for an edited target.
+   *
+   * @param {string} [changed_key] - The model or runtime the user edited.
+   */
+  function pruneHiddenSpeeds(changed_key) {
     for (const [key, visible] of Object.entries(speedVisibility())) {
-      if (!visible && typeof values[key] === 'string') {
+      if (!visible) {
         delete values[key];
+        const target = key.slice(0, -'_speed'.length);
+        if (
+          changed_key === `${target}_model` ||
+          changed_key === `${target}_runtime`
+        ) {
+          if (!edited.has(key)) {
+            cleared_speeds.add(key);
+          }
+        }
       }
     }
   }
@@ -523,11 +542,30 @@ export function createBulkWorkerForm({
    */
   function releaseEdit(key) {
     edited.delete(key);
+    cleared_speeds.delete(key);
     const observation = observationOf(key);
     writeValue(
       key,
       observation && observation.state === 'same' ? observation.value : null
     );
+    for (const speed_key of cleared_speeds) {
+      const target = speed_key.slice(0, -'_speed'.length);
+      if (
+        edited.has(`${target}_model`) ||
+        edited.has(`${target}_runtime`) ||
+        (target === 'orchestration' && runtime_pick !== null)
+      ) {
+        continue;
+      }
+      cleared_speeds.delete(speed_key);
+      const speed_observation = observationOf(speed_key);
+      writeValue(
+        speed_key,
+        speed_observation && speed_observation.state === 'same'
+          ? speed_observation.value
+          : null
+      );
+    }
     pruneHiddenSpeeds();
     notifyChange();
   }
@@ -543,9 +581,10 @@ export function createBulkWorkerForm({
       releaseEdit(key);
       return;
     }
+    cleared_speeds.delete(key);
     edited.add(key);
     writeValue(key, value === UNSET ? undefined : value);
-    pruneHiddenSpeeds();
+    pruneHiddenSpeeds(key);
     notifyChange();
   }
 
@@ -590,7 +629,7 @@ export function createBulkWorkerForm({
     for (const coupled of coupled_keys) {
       writeValue(coupled, narrowed[coupled]);
     }
-    pruneHiddenSpeeds();
+    pruneHiddenSpeeds(key);
     notifyChange();
   }
 
@@ -624,7 +663,7 @@ export function createBulkWorkerForm({
       delete values.orchestration_effort;
       edited.add('orchestration_effort');
     }
-    pruneHiddenSpeeds();
+    pruneHiddenSpeeds('orchestration_runtime');
     notifyChange();
   }
 
@@ -660,6 +699,7 @@ export function createBulkWorkerForm({
    */
   function applyPreset(settings) {
     const source = isRecord(settings) ? settings : {};
+    cleared_speeds.clear();
     for (const key of row_keys) {
       writeValue(key, storedValue(source[canonicalKeyOf(key)]) ?? undefined);
       edited.add(key);
@@ -796,7 +836,7 @@ export function createBulkWorkerForm({
         >${PRESET_ONLY_BADGE}</span
       >`;
     }
-    if (edited.has(key)) {
+    if (edited.has(key) || cleared_speeds.has(key)) {
       return html`<span
         class="settings-dialog__obs settings-dialog__obs--edited"
         data-bulk-badge=${key}

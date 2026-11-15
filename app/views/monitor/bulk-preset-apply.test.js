@@ -722,8 +722,16 @@ describe('runBulkApply form path (UI-628r §4.2)', () => {
     const send = vi
       .fn()
       .mockResolvedValueOnce(KV_OK)
-      .mockResolvedValueOnce({ applied: false, queue: { revision: 9 } })
-      .mockResolvedValueOnce({ applied: false, queue: { revision: 11 } });
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        queue: { revision: 9 }
+      })
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        queue: { revision: 11 }
+      });
 
     await runBulkApply({
       targets: [formTarget('/repo/a', 'a')],
@@ -739,7 +747,11 @@ describe('runBulkApply form path (UI-628r §4.2)', () => {
     const send = vi
       .fn()
       .mockResolvedValueOnce(KV_OK)
-      .mockResolvedValue({ applied: false, queue: { revision: 9 } });
+      .mockResolvedValue({
+        applied: false,
+        conflict: true,
+        queue: { revision: 9 }
+      });
 
     const results = await runBulkApply({
       targets: [formTarget('/repo/a', 'a')],
@@ -769,6 +781,76 @@ describe('runBulkApply form path (UI-628r §4.2)', () => {
 
     expect(results[0].state).toBe('applied');
   });
+
+  test('reports rejected queue values without retrying them', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(KV_OK)
+      .mockResolvedValue({
+        applied: false,
+        conflict: false,
+        queue: { revision: 9 }
+      });
+
+    const results = await runBulkApply({
+      targets: [formTarget('/repo/a', 'a')],
+      send,
+      adopt: vi.fn()
+    });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(results[0]).toMatchObject({
+      state: 'partial',
+      detail: '서버가 값 조합을 거부, 실행 설정만 저장'
+    });
+  });
+
+  test('reports a value rejection after the single conflict retry', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(KV_OK)
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        queue: { revision: 9 }
+      })
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: false,
+        queue: { revision: 9 }
+      });
+
+    const results = await runBulkApply({
+      targets: [formTarget('/repo/a', 'a')],
+      send,
+      adopt: vi.fn()
+    });
+
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(results[0].detail).toBe('서버가 값 조합을 거부, 실행 설정만 저장');
+  });
+
+  test.each([
+    [{ error: '요청 거부됨' }, '요청 거부됨'],
+    [null, '오케스트레이션 값 미적용, 실행 설정만 저장']
+  ])(
+    'reports an unconfirmed queue response without calling it a conflict: %j',
+    async (response, detail) => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce(KV_OK)
+        .mockResolvedValueOnce(response);
+
+      const results = await runBulkApply({
+        targets: [formTarget('/repo/a', 'a')],
+        send,
+        adopt: vi.fn()
+      });
+
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(results[0]).toMatchObject({ state: 'partial', detail });
+    }
+  );
 
   test('sends no queue write once the kv write is refused', async () => {
     const send = vi.fn().mockResolvedValueOnce({ error: '거부됨' });

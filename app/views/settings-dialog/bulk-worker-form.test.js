@@ -531,6 +531,120 @@ describe('createBulkWorkerForm quick_fix observation (UI-uohc §6.2)', () => {
 });
 
 describe('createBulkWorkerForm holds (UI-e1ta §3.1, §3.2)', () => {
+  test.each(['opus', ''])(
+    'clears a mixed quick fix speed after selecting model %j',
+    (model) => {
+      const { quick_fix_host, quick_fix_form } = mountPair([
+        row({
+          quick_fix_orchestration_model: 'sol',
+          quick_fix_orchestration_speed: 'fast'
+        }),
+        row({ root_dir: '/tmp/example/repo-b' })
+      ]);
+      quick_fix_form.observe();
+
+      choose(quick_fix_host, 'quick_fix_orchestration_model', model);
+      quick_fix_form.observe();
+
+      expect(
+        quick_fix_host.querySelector(
+          '[data-bulk-key="quick_fix_orchestration_speed"]'
+        )
+      ).toBeNull();
+      expect(quick_fix_form.queueValues()).toMatchObject({
+        quick_fix_orchestration_model: model || null,
+        quick_fix_orchestration_speed: null
+      });
+    }
+  );
+
+  test('preserves a held speed when only an unrelated effort is edited', () => {
+    const { quick_fix_host, quick_fix_form } = mountPair([
+      row({
+        quick_fix_orchestration_model: 'sol',
+        quick_fix_orchestration_speed: 'fast'
+      }),
+      row({ root_dir: '/tmp/example/repo-b' })
+    ]);
+    quick_fix_form.observe();
+
+    choose(quick_fix_host, 'quick_fix_orchestration_effort', 'high');
+
+    expect(quick_fix_form.queueValues()).not.toHaveProperty(
+      'quick_fix_orchestration_speed'
+    );
+  });
+
+  test('clears a mixed orchestration speed after selecting its runtime', () => {
+    const { host, form } = mount([
+      row({ orchestration_model: 'sol', orchestration_speed: 'fast' }),
+      row({ root_dir: '/tmp/example/repo-b', orchestration_model: 'sol' })
+    ]);
+    form.observe();
+
+    choose(host, 'orchestration_runtime', 'claude');
+
+    expect(form.queueValues().orchestration_speed).toBeNull();
+  });
+
+  test('restores the speed hold when its model edit is withdrawn', () => {
+    const { quick_fix_host, quick_fix_form } = mountPair([
+      row({
+        quick_fix_orchestration_model: 'sol',
+        quick_fix_orchestration_speed: 'fast'
+      }),
+      row({ root_dir: '/tmp/example/repo-b' })
+    ]);
+    quick_fix_form.observe();
+    choose(quick_fix_host, 'quick_fix_orchestration_model', 'opus');
+
+    choose(quick_fix_host, 'quick_fix_orchestration_model', '__bulk_hold__');
+    quick_fix_form.observe();
+
+    const queue = quick_fix_form.queueValues();
+    expect(queue).not.toHaveProperty('quick_fix_orchestration_model');
+    expect(queue).not.toHaveProperty('quick_fix_orchestration_speed');
+  });
+
+  test('keeps a direct speed edit when its model edit is withdrawn', () => {
+    const { quick_fix_host, quick_fix_form } = mountPair([
+      row({
+        quick_fix_orchestration_model: 'sol',
+        quick_fix_orchestration_speed: 'fast'
+      }),
+      row({ root_dir: '/tmp/example/repo-b' })
+    ]);
+    quick_fix_form.observe();
+    choose(quick_fix_host, 'quick_fix_orchestration_model', 'sol');
+    choose(quick_fix_host, 'quick_fix_orchestration_speed', '');
+    choose(quick_fix_host, 'quick_fix_orchestration_model', 'opus');
+
+    choose(quick_fix_host, 'quick_fix_orchestration_model', '__bulk_hold__');
+
+    expect(
+      quick_fix_form.queueValues().quick_fix_orchestration_speed
+    ).toBeNull();
+  });
+
+  test('clears an unread implementation speed after selecting its runtime', () => {
+    const { host, form } = mount([
+      row({
+        session_defaults_state: 'ready',
+        session_defaults: { impl_speed: 'fast' }
+      }),
+      row({
+        root_dir: '/tmp/example/repo-b',
+        session_defaults_state: 'unreadable'
+      })
+    ]);
+    form.observe();
+
+    choose(host, 'impl_runtime', 'claude');
+    form.observe();
+
+    expect(form.kvValues().impl_speed).toBeNull();
+  });
+
   /**
    * Two ticked repos that disagree about `impl_model`, so that row observes
    * `갈림` while the rest observe `비어 있음`. Both carry `ready`.

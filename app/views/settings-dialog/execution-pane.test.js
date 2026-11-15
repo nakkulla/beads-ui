@@ -349,6 +349,31 @@ describe('createExecutionPane unbound (root_dir null)', () => {
       1
     );
   });
+
+  test.each([
+    [false, '서버가 값 조합을 거부'],
+    [true, '다른 클라이언트와 충돌']
+  ])(
+    'reports the orchestration refusal with conflict=%s',
+    async (conflict, reason) => {
+      const { root, pane, notify } = mount({
+        transport: async (/** @type {string} */ type) =>
+          type === 'get-session-defaults'
+            ? { values: {}, warnings: [] }
+            : { applied: false, conflict, queue: queueRow() }
+      });
+      await pane.load();
+
+      const select = /** @type {HTMLSelectElement} */ (
+        el(root, 'select[data-key="orchestration_model"]')
+      );
+      select.value = 'opus';
+      select.dispatchEvent(new Event('change'));
+      await settle();
+
+      expect(notify).toHaveBeenCalledWith(`Worker 설정 저장 실패: ${reason}`);
+    }
+  );
 });
 
 describe('createExecutionPane model visibility (UI-ooc0 §4.2)', () => {
