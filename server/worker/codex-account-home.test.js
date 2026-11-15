@@ -71,6 +71,7 @@ test.each([false, true])(
       expect((await prepareCodexAccountHome(paths.input)).ok).toBe(true);
     }
     const base_home = account ? paths.home_dir : paths.codex_root;
+    const base_config = await fs.readFile(source_config, 'utf8');
 
     const result = await prepareCodexGuardHome({
       base_home,
@@ -108,7 +109,7 @@ test.each([false, true])(
         await fs.lstat(path.join(result.home_dir, 'config.toml'))
       ).isSymbolicLink()
     ).toBe(false);
-    expect(await fs.readFile(source_config, 'utf8')).toBe(prior_config);
+    expect(await fs.readFile(source_config, 'utf8')).toBe(base_config);
     expect(JSON.parse(await fs.readFile(source_hooks, 'utf8'))).toEqual(
       prior_hooks
     );
@@ -411,6 +412,153 @@ describe('worker/codex-account-home', () => {
       });
     }
   );
+
+  test('mirrors base hook trust into the account home keys', async () => {
+    const paths = await fixture();
+    const base_hooks = path.join(paths.codex_root, 'hooks.json');
+    const home_hooks = path.join(paths.home_dir, 'hooks.json');
+    const other_hooks = path.join(paths.root, 'other-home', 'hooks.json');
+    await fs.writeFile(base_hooks, '{"hooks":{}}');
+    const table = (/** @type {string} */ key) =>
+      `[hooks.state.${JSON.stringify(key)}]`;
+    const prior_config = [
+      '# keep this comment',
+      'model   =  "sol"',
+      '',
+      '[hooks.state]',
+      '',
+      table(`${base_hooks}:pre_tool_use:0:0`),
+      'trusted_hash = "sha256:base-pre"',
+      'enabled = true',
+      '',
+      table(`${base_hooks}:stop:0:0`),
+      'trusted_hash = "sha256:base-stop"',
+      'enabled = false',
+      '',
+      table(`${home_hooks}:pre_tool_use:0:0`),
+      'trusted_hash = "sha256:stale"',
+      '',
+      table(`${home_hooks}:session_start:9:0`),
+      'trusted_hash = "sha256:removed"',
+      '',
+      table(`${other_hooks}:pre_tool_use:0:0`),
+      'trusted_hash  =  "sha256:other"',
+      '',
+      '[projects."/repo"]',
+      'trust_level = "trusted"',
+      ''
+    ].join('\n');
+    const config_path = path.join(paths.codex_root, 'config.toml');
+    await fs.writeFile(config_path, prior_config);
+    await fs.chmod(config_path, 0o600);
+
+    const result = await prepareCodexAccountHome(paths.input);
+
+    expect(result).toEqual({ ok: true, home_dir: paths.home_dir });
+    const text = await fs.readFile(config_path, 'utf8');
+    const config = /** @type {any} */ (parse(text));
+    const home_keys = Object.fromEntries(
+      Object.entries(config.hooks.state).filter(([key]) =>
+        key.startsWith(`${home_hooks}:`)
+      )
+    );
+    expect(home_keys).toEqual({
+      [`${home_hooks}:pre_tool_use:0:0`]: {
+        trusted_hash: 'sha256:base-pre',
+        enabled: true
+      },
+      [`${home_hooks}:stop:0:0`]: {
+        trusted_hash: 'sha256:base-stop',
+        enabled: false
+      }
+    });
+    const untouched_head = prior_config.slice(
+      0,
+      prior_config.indexOf(table(`${home_hooks}:pre_tool_use:0:0`))
+    );
+    expect(text.startsWith(untouched_head)).toBe(true);
+    expect(text).toContain(
+      `${table(`${other_hooks}:pre_tool_use:0:0`)}\ntrusted_hash  =  "sha256:other"\n\n[projects."/repo"]\ntrust_level = "trusted"\n`
+    );
+    expect(text).toContain('# keep this comment\nmodel   =  "sol"\n');
+    expect(
+      (
+        await fs.lstat(path.join(paths.home_dir, 'config.toml'))
+      ).isSymbolicLink()
+    ).toBe(true);
+    expect((await fs.stat(config_path)).mode & 0o777).toBe(0o600);
+  });
+
+  test('leaves the base config untouched when the trust is already mirrored', async () => {
+    const paths = await fixture();
+    const base_hooks = path.join(paths.codex_root, 'hooks.json');
+    const config_path = path.join(paths.codex_root, 'config.toml');
+    await fs.writeFile(base_hooks, '{"hooks":{}}');
+    await fs.writeFile(
+      config_path,
+      `[hooks.state.${JSON.stringify(`${base_hooks}:stop:0:0`)}]\ntrusted_hash = "sha256:base"\n`
+    );
+    expect((await prepareCodexAccountHome(paths.input)).ok).toBe(true);
+    const mirrored = await fs.readFile(config_path, 'utf8');
+    const mirrored_ino = (await fs.stat(config_path)).ino;
+
+    const result = await prepareCodexAccountHome(paths.input);
+
+    expect(result.ok).toBe(true);
+    expect(await fs.readFile(config_path, 'utf8')).toBe(mirrored);
+    expect((await fs.stat(config_path)).ino).toBe(mirrored_ino);
+  });
+
+  test('replaces inline account trust entries', async () => {
+    const paths = await fixture();
+    const base_hooks = path.join(paths.codex_root, 'hooks.json');
+    const config_path = path.join(paths.codex_root, 'config.toml');
+    const home_key = `${path.join(paths.home_dir, 'hooks.json')}:stop:0:0`;
+    const base_line = `${JSON.stringify(`${base_hooks}:stop:0:0`)} = { trusted_hash = "sha256:base" }`;
+    await fs.writeFile(
+      config_path,
+      `[hooks.state]\n${base_line}\n${JSON.stringify(home_key)} = { trusted_hash = "sha256:stale" }\n`
+    );
+
+    const result = await prepareCodexAccountHome(paths.input);
+
+    expect(result).toEqual({ ok: true, home_dir: paths.home_dir });
+    const text = await fs.readFile(config_path, 'utf8');
+    expect(text.startsWith(`[hooks.state]\n${base_line}\n`)).toBe(true);
+    expect(/** @type {any} */ (parse(text)).hooks.state[home_key]).toEqual({
+      trusted_hash: 'sha256:base'
+    });
+  });
+
+  test('drops the account trust once the base trust is withdrawn', async () => {
+    const paths = await fixture();
+    const config_path = path.join(paths.codex_root, 'config.toml');
+    const home_key = `${path.join(paths.home_dir, 'hooks.json')}:stop:0:0`;
+    await fs.writeFile(
+      config_path,
+      `model = "sol"\n\n[hooks.state.${JSON.stringify(home_key)}]\ntrusted_hash = "sha256:stale"\n\n# project trust\n[projects."/repo"]\ntrust_level = "trusted"\n`
+    );
+
+    const result = await prepareCodexAccountHome(paths.input);
+
+    expect(result.ok).toBe(true);
+    expect(await fs.readFile(config_path, 'utf8')).toBe(
+      'model = "sol"\n\n# project trust\n[projects."/repo"]\ntrust_level = "trusted"\n'
+    );
+  });
+
+  test('keeps the account usable when the base config cannot be edited safely', async () => {
+    const paths = await fixture();
+    const base_hooks = path.join(paths.codex_root, 'hooks.json');
+    const config_path = path.join(paths.codex_root, 'config.toml');
+    const inline_config = `hooks = { state = { ${JSON.stringify(`${base_hooks}:stop:0:0`)} = { trusted_hash = "sha256:base" } } }\n`;
+    await fs.writeFile(config_path, inline_config);
+
+    const result = await prepareCodexAccountHome(paths.input);
+
+    expect(result).toEqual({ ok: true, home_dir: paths.home_dir });
+    expect(await fs.readFile(config_path, 'utf8')).toBe(inline_config);
+  });
 
   test('accepts EEXIST from a concurrent mirror creator', async () => {
     const paths = await fixture();

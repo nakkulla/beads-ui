@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
+import fs_sync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { parse, stringify } from 'smol-toml';
 import { preToolHookGroup } from './guard-hook.js';
 
@@ -273,6 +275,152 @@ async function replaceAuthLink(auth_path, auth_file) {
 }
 
 /**
+ * The `hooks.state` keys one line defines under the table header in force: a
+ * header names its own key, and an inline or dotted entry names its key. A
+ * line that does not parse on its own (part of a multi-line value) names none.
+ *
+ * @param {string} header - The table header in force; '' at the root.
+ * @param {string} line
+ * @returns {string[]|null} null when the text does not parse.
+ */
+function hookStateKeys(header, line) {
+  try {
+    const doc = /** @type {any} */ (parse(`${header}\n${line}`));
+    return Object.keys(doc.hooks?.state ?? {});
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The document without its `hooks.state` table, treating an emptied implicit
+ * `hooks` parent as absent.
+ *
+ * @param {any} doc
+ */
+function withoutHookStates(doc) {
+  const rest = { ...doc };
+  const hooks = { ...(doc.hooks ?? {}) };
+  delete rest.hooks;
+  delete hooks.state;
+  if (Object.keys(hooks).length > 0) {
+    rest.hooks = hooks;
+  }
+  return rest;
+}
+
+/**
+ * Codex keys hook trust by the `CODEX_HOME` path it loaded `hooks.json` from,
+ * so an account home that links the base files still needs its own keys. Copy
+ * the base `hooks.json` entries to this home's keys and drop this home's keys
+ * the base no longer has. The shared `config.toml` keeps every other byte;
+ * read, edit and rename stay synchronous so concurrent preparations in this
+ * process cannot interleave. An edit that cannot be proven safe is skipped.
+ *
+ * @param {string} codex_root
+ * @param {string} home_dir
+ */
+function mirrorHookTrust(codex_root, home_dir) {
+  const base_config = path.join(codex_root, 'config.toml');
+  if (
+    fs_sync.readlinkSync(path.join(home_dir, 'config.toml')) !== base_config
+  ) {
+    return;
+  }
+  const config_path = fs_sync.realpathSync(base_config);
+  const text = fs_sync.readFileSync(config_path, 'utf8');
+  const states = /** @type {any} */ (parse(text)).hooks?.state ?? {};
+  const base_hooks = path.join(codex_root, 'hooks.json');
+  const sources = [base_hooks];
+  try {
+    sources.push(
+      path.resolve(codex_root, fs_sync.readlinkSync(base_hooks)),
+      fs_sync.realpathSync(base_hooks)
+    );
+  } catch {
+    // A regular or missing base hooks.json has only its literal path.
+  }
+  const target = path.join(home_dir, 'hooks.json');
+  /** @param {string} key */
+  const isTarget = (key) => key.startsWith(`${target}:`);
+  /** @type {Record<string, any>} */
+  const desired = {};
+  for (const source of sources) {
+    for (const [key, value] of Object.entries(states)) {
+      const target_key = `${target}${key.slice(source.length)}`;
+      if (key.startsWith(`${source}:`) && !(target_key in desired)) {
+        desired[target_key] = value;
+      }
+    }
+  }
+  /** @param {Record<string, any>} all */
+  const targetStates = (all) =>
+    Object.fromEntries(Object.entries(all).filter(([key]) => isTarget(key)));
+  /** @param {Record<string, any>} all */
+  const otherStates = (all) =>
+    Object.fromEntries(Object.entries(all).filter(([key]) => !isTarget(key)));
+  if (isDeepStrictEqual(targetStates(states), desired)) {
+    return;
+  }
+
+  /** @type {string[]} */
+  const kept = [];
+  let header = '';
+  let removing = false;
+  for (const line of text.split('\n')) {
+    const header_keys = /^\s*\[/.test(line) ? hookStateKeys('', line) : null;
+    if (header_keys !== null) {
+      header = line;
+      removing = header_keys.some(isTarget);
+      if (!removing) {
+        kept.push(line);
+      }
+    } else if (removing) {
+      // A comment here usually introduces the next table; keep it.
+      if (/^\s*#/.test(line)) {
+        kept.push(line);
+      }
+    } else if (!(hookStateKeys(header, line) ?? []).some(isTarget)) {
+      kept.push(line);
+    }
+  }
+  let next = kept.join('\n');
+  if (next.length > 0 && !next.endsWith('\n')) {
+    next += '\n';
+  }
+  next += Object.entries(desired)
+    .map(
+      ([key, value]) =>
+        `\n[hooks.state.${JSON.stringify(key)}]\n${stringify(value)}`
+    )
+    .join('');
+  const before = withoutHookStates(parse(text));
+  const parsed_next = /** @type {any} */ (parse(next));
+  const after = withoutHookStates(parsed_next);
+  const after_states = parsed_next.hooks?.state ?? {};
+  if (
+    !isDeepStrictEqual(targetStates(after_states), desired) ||
+    !isDeepStrictEqual(otherStates(after_states), otherStates(states))
+  ) {
+    return;
+  }
+  if (!isDeepStrictEqual(after, before)) {
+    return;
+  }
+
+  const mode = fs_sync.statSync(config_path).mode & 0o777;
+  const temp_path = `${config_path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs_sync.writeFileSync(temp_path, next, { mode });
+    fs_sync.chmodSync(temp_path, mode);
+    fs_sync.renameSync(temp_path, config_path);
+  } catch (error) {
+    fs_sync.rmSync(temp_path, { force: true });
+    throw error;
+  }
+}
+
+/**
  * Prepare one fail-closed Codex account HOME mirror.
  *
  * @param {{ key: string, auth_file: string, codex_root: string, home_dir: string }} input
@@ -337,6 +485,12 @@ export async function prepareCodexAccountHome(input) {
     }
     if (!mirrored_auth || !(await linkMatches(auth_path, auth_file))) {
       await replaceAuthLink(auth_path, auth_file);
+    }
+    try {
+      mirrorHookTrust(codex_root, home_dir);
+    } catch {
+      // A trust copy that cannot land costs a hook review screen, not the
+      // account launch: the home stays usable as it was before this step.
     }
     return { ok: true, home_dir };
   } catch (error) {
