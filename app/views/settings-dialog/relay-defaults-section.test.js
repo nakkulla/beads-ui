@@ -80,7 +80,7 @@ describe('Hermes session defaults section', () => {
         option.textContent?.trim()
       ])
     ).toEqual([
-      ['', '따름'],
+      ['', '허브 기본값'],
       ['gpt-6.1-sol', 'sol']
     ]);
   });

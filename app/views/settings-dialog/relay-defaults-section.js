@@ -6,6 +6,9 @@ import {
   visibleModelChoices
 } from '../../utils/model-visibility.js';
 
+/** The option label that clears an override and leaves the value to the hub. */
+export const HUB_DEFAULT_LABEL = '허브 기본값';
+
 const ROWS = [
   ['claude.model', 'Claude 모델'],
   ['claude.effort', 'Claude effort'],
@@ -95,7 +98,7 @@ export function createRelayDefaultsSection(host, options) {
    */
   function choicesOf(key) {
     /** @type {Array<{ value: string, label: string }>} */
-    const choices = [{ value: '', label: '따름' }];
+    const choices = [{ value: '', label: HUB_DEFAULT_LABEL }];
     if (key === 'codex.model') {
       const names = visibleModelChoices(
         Object.keys(codex_models),
@@ -173,7 +176,8 @@ export function createRelayDefaultsSection(host, options) {
         <div class="settings-dialog__group-title">Hermes 세션</div>
         <p class="settings-dialog__hint-block">
           모든 저장소에 공통으로 적용됩니다. 다음에 Hermes로 여는 세션부터
-          씁니다. 따름을 고르면 허브 기본값을 씁니다.
+          씁니다. 허브 기본값을 고르면 값을 따로 정하지 않고 허브가 정한 값을
+          씁니다.
         </p>
         ${state
           ? ROWS.map(rowTemplate)

@@ -27,8 +27,11 @@ import {
 export const CONVERSATION_CONFLICT_TOAST =
   '다른 곳에서 먼저 바뀌어 다시 불러왔습니다';
 
-/** The option label of a model or effort left to the CLI's own default. */
-export const FOLLOW_LABEL = '따름';
+/** The option label of a conversation model or effort left to the CLI's own default. */
+export const FOLLOW_LABEL = 'CLI 기본값';
+
+/** The option label of a conflict model or effort left to the session or execution settings. */
+export const CONFLICT_FOLLOW_LABEL = '원래 세션·실행 설정';
 
 /** The fresh-runtime option labels. */
 const RUNTIME_LABELS = /** @type {Record<string, string>} */ ({
@@ -41,30 +44,38 @@ const RUNTIME_LABELS = /** @type {Record<string, string>} */ ({
  * The rows in display order. A key the server table lacks draws no row
  * (fail-quiet).
  *
- * @type {ReadonlyArray<{ key: string, label: string, note?: string }>}
+ * @type {ReadonlyArray<{ key: string, label: string, note?: string, lead?: string }>}
  */
 export const CONVERSATION_ROWS = [
   {
     key: 'auto_launch',
     label: '대화 자동 기동',
-    note: '멈춤과 실패에 함께 쓰는 스위치입니다. 켜 두면 사람 판단 멈춤과 종단 실패(배포·post-merge 잡 실패, 정리 중단, 머지 게이트 보류, 머지 전 검증 실패, 폐기 실패, 수동 배포 실패)에서 대화 세션을 분리 창에 한 번 띄우고, 답을 기다리던 해소 세션이 종료되면 그 세션을 한 번 다시 엽니다(해소 세션 재개). 실패 대화는 답을 받기 전에는 읽기 전용 진단만 합니다. 저장값이 없으면 config.toml [worker.direction_inquiry] enabled를 따릅니다.'
+    note: '끄면 카드 버튼을 눌렀을 때만 대화가 열립니다. 멈춤과 실패에 함께 쓰는 스위치입니다. 켜 두면 사람 판단 멈춤과 종단 실패(배포·post-merge 잡 실패, 정리 중단, 머지 게이트 보류, 머지 전 검증 실패, 폐기 실패, 수동 배포 실패)에서 대화 세션을 분리 창에 한 번 띄우고, 답을 기다리던 해소 세션이 종료되면 그 세션을 한 번 다시 엽니다(해소 세션 재개). 실패 대화는 답을 받기 전에는 읽기 전용 진단만 합니다. 저장값이 없으면 config.toml [worker.direction_inquiry] enabled를 따릅니다.'
   },
   {
     key: 'fresh_runtime',
     label: '새 세션 런타임',
     note: '새 세션으로 여는 대화에만 씁니다. 원래 세션을 이어 쓰거나 fork하는 대화는 원래 세션의 런타임으로 엽니다.'
   },
-  { key: 'claude_model', label: 'Claude 모델' },
+  {
+    key: 'claude_model',
+    label: 'Claude 모델',
+    lead: '이어받는 대화는 원래 세션의 런타임을 쓰므로 Claude·Codex 값을 모두 둡니다.'
+  },
   { key: 'claude_effort', label: 'Claude effort' },
   { key: 'codex_model', label: 'Codex 모델' },
   {
     key: 'codex_effort',
     label: 'Codex effort',
-    note: '모델·effort는 그 런타임으로 여는 모든 대화(클릭·자동, 멈춤·실패·외부 작업 완료)에 붙습니다. 따름이면 플래그를 붙이지 않습니다.'
+    note: '모델·effort는 그 런타임으로 여는 모든 대화(클릭·자동, 멈춤·실패·외부 작업 완료)에 붙습니다. CLI 기본값이면 플래그를 붙이지 않습니다.'
   }
 ];
 
-/** Conflict settings share the same snapshot and revision as conversations. */
+/**
+ * Conflict settings share the same snapshot and revision as conversations.
+ *
+ * @type {ReadonlyArray<{ key: string, label: string, note?: string, lead?: string }>}
+ */
 export const CONFLICT_ROWS = [
   { key: 'conflict_claude_model', label: 'Claude 모델' },
   { key: 'conflict_claude_effort', label: 'Claude effort' },
@@ -72,7 +83,7 @@ export const CONFLICT_ROWS = [
   {
     key: 'conflict_codex_effort',
     label: 'Codex effort',
-    note: 'PR 충돌을 해소할 때 씁니다. 따름이면 원래 세션이나 실행 설정을 따릅니다.'
+    note: 'PR 충돌을 해소할 때 씁니다. 원래 세션·실행 설정이면 원래 세션의 값이나 실행 설정을 따릅니다.'
   }
 ];
 
@@ -195,9 +206,10 @@ export function createConversationSection(host, options) {
    *
    * @param {ConversationFieldWire} field
    * @param {unknown} value
+   * @param {string} follow_label
    * @returns {Array<{ value: string, label: string }>}
    */
-  function optionsOf(field, value) {
+  function optionsOf(field, value, follow_label) {
     const choices = Array.isArray(field.choices) ? field.choices : [];
     if (field.kind === 'choice') {
       return choices.map((choice) => ({
@@ -214,7 +226,7 @@ export function createConversationSection(host, options) {
         : [...choices];
     /** @type {Array<{ value: string, label: string }>} */
     const out = [
-      { value: '', label: FOLLOW_LABEL },
+      { value: '', label: follow_label },
       ...shown.map((choice) => ({ value: choice, label: choice }))
     ];
     if (typeof value === 'string' && value && !shown.includes(value)) {
@@ -226,9 +238,10 @@ export function createConversationSection(host, options) {
   /**
    * @param {ConversationSettingsState} current
    * @param {(typeof CONVERSATION_ROWS)[number]} row
+   * @param {string} follow_label
    * @returns {TemplateResult|''}
    */
-  function rowTemplate(current, row) {
+  function rowTemplate(current, row, follow_label) {
     const field = current.fields[row.key];
     if (!field) {
       return '';
@@ -265,7 +278,7 @@ export function createConversationSection(host, options) {
                 );
               }}
             >
-              ${optionsOf(field, value).map(
+              ${optionsOf(field, value, follow_label).map(
                 (option) =>
                   html`<option
                     value=${option.value}
@@ -281,28 +294,33 @@ export function createConversationSection(host, options) {
         ? `config.toml ${field.default === true ? '켜짐' : '꺼짐'}`
         : field.kind === 'choice'
           ? `기본 ${RUNTIME_LABELS[String(field.default)] ?? field.default}`
-          : `기본 ${FOLLOW_LABEL}`;
-    return html`<div class="settings-timing__row" data-key=${row.key}>
-      <div class="settings-timing__line">
-        <span class="settings-timing__name">${row.label}</span>
-        ${control}
-        <span class="settings-timing__default">${default_text}</span>
-        ${overridden
-          ? html`<button
-              type="button"
-              class="op-btn settings-timing__reset"
-              data-action="conversation-reset"
-              ?disabled=${busy}
-              @click=${() => void submit(row.key, null)}
-            >
-              기본값
-            </button>`
-          : ''}
-      </div>
-      ${row.note
-        ? html`<p class="settings-dialog__hint-block">${row.note}</p>`
+          : `기본 ${follow_label}`;
+    return html`${row.lead
+        ? html`<p class="settings-dialog__hint-block" data-lead=${row.key}>
+            ${row.lead}
+          </p>`
         : ''}
-    </div>`;
+      <div class="settings-timing__row" data-key=${row.key}>
+        <div class="settings-timing__line">
+          <span class="settings-timing__name">${row.label}</span>
+          ${control}
+          <span class="settings-timing__default">${default_text}</span>
+          ${overridden
+            ? html`<button
+                type="button"
+                class="op-btn settings-timing__reset"
+                data-action="conversation-reset"
+                ?disabled=${busy}
+                @click=${() => void submit(row.key, null)}
+              >
+                기본값
+              </button>`
+            : ''}
+        </div>
+        ${row.note
+          ? html`<p class="settings-dialog__hint-block">${row.note}</p>`
+          : ''}
+      </div>`;
   }
 
   function doRender() {
@@ -329,13 +347,17 @@ export function createConversationSection(host, options) {
     render(
       html`<section class="settings-dialog__group" data-group="conversation">
           <div class="settings-dialog__group-title">대화 세션</div>
-          ${CONVERSATION_ROWS.map((row) => rowTemplate(current, row))}
+          ${CONVERSATION_ROWS.map((row) =>
+            rowTemplate(current, row, FOLLOW_LABEL)
+          )}
           ${error ? html`<p class="settings-chips__error">${error}</p>` : ''}
         </section>
         ${CONFLICT_ROWS.some((row) => current.fields[row.key])
           ? html`<section class="settings-dialog__group" data-group="conflict">
               <div class="settings-dialog__group-title">충돌 해소 세션</div>
-              ${CONFLICT_ROWS.map((row) => rowTemplate(current, row))}
+              ${CONFLICT_ROWS.map((row) =>
+                rowTemplate(current, row, CONFLICT_FOLLOW_LABEL)
+              )}
             </section>`
           : ''}`,
       host

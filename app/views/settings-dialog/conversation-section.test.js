@@ -214,6 +214,47 @@ describe('conversation section load (UI-jbl1 §3.4)', () => {
     expect(note).toContain('해소 세션 재개');
   });
 
+  test('opens the switch note with what turning it off does', async () => {
+    const { host } = mountSection(serving(snapshotOf()));
+
+    await settle();
+
+    const note =
+      rowOf(host, 'auto_launch').querySelector('.settings-dialog__hint-block')
+        ?.textContent ?? '';
+    expect(
+      note.startsWith('끄면 카드 버튼을 눌렀을 때만 대화가 열립니다.')
+    ).toBe(true);
+  });
+
+  test('explains both runtime rows right above the Claude model row', async () => {
+    const { host } = mountSection(serving(snapshotOf()));
+
+    await settle();
+
+    const lead = host.querySelector('[data-lead="claude_model"]');
+    expect(lead?.textContent?.trim()).toBe(
+      '이어받는 대화는 원래 세션의 런타임을 쓰므로 Claude·Codex 값을 모두 둡니다.'
+    );
+    expect(lead?.nextElementSibling?.getAttribute('data-key')).toBe(
+      'claude_model'
+    );
+  });
+
+  test('labels an unset conflict model as the session or execution settings', async () => {
+    const snapshot = /** @type {any} */ (snapshotOf());
+    snapshot.fields.conflict_claude_model = { ...snapshot.fields.claude_model };
+    snapshot.values.conflict_claude_model = null;
+    const { host } = mountSection(serving(snapshot));
+
+    await settle();
+
+    const select = selectOf(host, 'conflict_claude_model');
+    expect(select.options[select.selectedIndex].textContent?.trim()).toBe(
+      '원래 세션·실행 설정'
+    );
+  });
+
   test('shows the stored values in the controls', async () => {
     const { host } = mountSection(
       serving(
@@ -279,7 +320,7 @@ describe('conversation section load (UI-jbl1 §3.4)', () => {
     ).toBe('config.toml 꺼짐');
   });
 
-  test('labels an unset model and effort as 따름 with a 따름 default', async () => {
+  test('labels an unset model and effort as the CLI default', async () => {
     const { host } = mountSection(serving(snapshotOf()));
 
     await settle();
@@ -287,12 +328,12 @@ describe('conversation section load (UI-jbl1 §3.4)', () => {
     const select = selectOf(host, 'claude_model');
     expect(select.value).toBe('');
     expect(select.options[select.selectedIndex].textContent?.trim()).toBe(
-      '따름'
+      'CLI 기본값'
     );
     expect(
       rowOf(host, 'codex_effort').querySelector('.settings-timing__default')
         ?.textContent
-    ).toBe('기본 따름');
+    ).toBe('기본 CLI 기본값');
   });
 
   test('labels the default fresh runtime from the server table', async () => {
@@ -322,7 +363,7 @@ describe('conversation section load (UI-jbl1 §3.4)', () => {
     const labels = Array.from(selectOf(host, 'claude_model').options).map(
       (option) => option.textContent?.trim()
     );
-    expect(labels).toEqual(['따름', 'opus', 'opus-4.8 (비활성)']);
+    expect(labels).toEqual(['CLI 기본값', 'opus', 'opus-4.8 (비활성)']);
   });
 
   test('draws no row for a field the server table lacks', async () => {

@@ -13,7 +13,7 @@ export function executionSubtabs(selected, onSelect) {
     ['quick_fix', 'quick fix'],
     ['session_review', '세션 리뷰'],
     ['hermes', 'Hermes 세션'],
-    ['resolution', '해소 세션']
+    ['resolution', '대화·충돌 해소']
   ];
   return html`<div
     class="settings-dialog__seg"
