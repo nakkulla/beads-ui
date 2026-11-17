@@ -62,7 +62,7 @@
   증거이고, 직접 만든 워크트리는 `npm ci`한다(다른 체크아웃의 `node_modules`
   차용·심링크 금지 — 소스맵이 경로 독립적이어야 한다).
 - `npm run tsc`, `npm run lint`, `npx prettier --write <변경 파일>`,
-  `npx vitest run --reporter=dot`(timeout 120초; fork-pool이 드물게 교착하면
+  `npx vitest run --reporter=dot`(timeout 300초; fork-pool이 드물게 교착하면
   죽이고 재실행; `| tail`로 진행을 가리지 않는다).
 - 번들은 tracked가 아니다(`.gitignore`); 로컬 정적 모드 확인이 필요하면
   `npm run build`.
