@@ -14,8 +14,10 @@
  * positional prompt — the pair still rides back out on the build result so the
  * recording path reads the SAME assembly the argv carries (UI-rxp3 §3). Second,
  * codex reports an execution twice (`item.started` then `item.completed`); the
- * adapter reacts to `started` only, which is both the earliest point a guard can
- * act and the only way one execution stays one event.
+ * adapter's events react to `started` only, which is both the earliest point a
+ * guard can act and the only way one execution stays one event. The `completed`
+ * twin is read by exactly one consumer, {@link isShellCompletion}: the guard
+ * hook's load is judged when the first command has finished (UI-zoig §3.4).
  *
  * Success is the LAST terminal turn event: `turn.completed` passes,
  * `turn.failed` fails, and a stream with neither is `no_result`.
@@ -191,18 +193,10 @@ function normalize(raw) {
   if (!raw || typeof raw !== 'object') {
     return null;
   }
-  // The observed exec JSONL thread.started event contains only thread_id.
-  // Neither it nor the documented hook output proves startup loading. Keep
-  // this diagnostic until a CLI version supplies verifiable loading evidence.
-  if (raw.type === 'thread.started') {
-    return {
-      kind: 'error',
-      reason: 'codex_hook_not_loaded',
-      message: 'Codex 시작 이벤트에서 가드 훅 로드를 확인할 수 없습니다.',
-      guard_warning: { reason: 'codex_hook_not_loaded', command: null },
-      raw
-    };
-  }
+  // `thread.started` carries only the thread id (read by `extractSessionId`)
+  // and no hook loading evidence. Whether the guard hook loaded is judged from
+  // the hook's own invoked marker at the first completed shell command
+  // (UI-zoig §3.4, `judgeCodexHookLoad`), not from this event.
   if (raw.type === 'item.started') {
     const item = itemOf(raw);
     if (item && item.type === 'command_execution') {
@@ -246,6 +240,23 @@ function normalize(raw) {
     return { kind: 'result', usage: liftUsage(raw)?.usage, raw };
   }
   return null;
+}
+
+/**
+ * Whether one codex jsonl line reports a COMPLETED shell command — the moment
+ * the guard hook's invoked marker must already exist if the hook ran, because
+ * the hook runs synchronously before the command (UI-zoig §3.4).
+ *
+ * @param {any} raw
+ * @returns {boolean}
+ */
+export function isShellCompletion(raw) {
+  return (
+    !!raw &&
+    typeof raw === 'object' &&
+    raw.type === 'item.completed' &&
+    itemOf(raw)?.type === 'command_execution'
+  );
 }
 
 /**
@@ -523,6 +534,7 @@ export function codexSpec(catalog_entry, options = {}) {
     detectQuestion,
     extractShellCommand,
     extractSessionId,
+    isShellCompletion,
     classifyProviderOutage,
     verdict
   };

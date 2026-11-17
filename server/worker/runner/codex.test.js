@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
 import { workRecoveryReadinessEnv } from '../work-recovery-policy.js';
-import { codexSpec, spawnCodex } from './codex.js';
+import { codexSpec, isShellCompletion, spawnCodex } from './codex.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
 import { defaultTaskPrompt } from './preamble.js';
 
@@ -558,16 +558,62 @@ describe('runner/codex event normalization', () => {
     expect(spec.normalize({ type: 'turn.started' })).toBeNull();
   });
 
-  test('warns when the start event supplies no hook loading evidence', () => {
+  test('emits no warning for the start event', () => {
     const event = codexSpec().normalize({
       type: 'thread.started',
       thread_id: 'x'
     });
 
-    expect(event).toMatchObject({
-      kind: 'error',
-      guard_warning: { reason: 'codex_hook_not_loaded', command: null }
-    });
+    expect(event).toBeNull();
+  });
+});
+
+describe('runner/codex shell completion (UI-zoig §3.4)', () => {
+  test('recognizes a completed command execution', () => {
+    const raw = {
+      type: 'item.completed',
+      item: {
+        id: 'item_1',
+        type: 'command_execution',
+        command: "/bin/zsh -lc 'cat x'",
+        aggregated_output: 'x',
+        exit_code: 0,
+        status: 'completed'
+      }
+    };
+
+    expect(isShellCompletion(raw)).toBe(true);
+  });
+
+  test('rejects the started twin of a command execution', () => {
+    const raw = {
+      type: 'item.started',
+      item: {
+        id: 'item_1',
+        type: 'command_execution',
+        command: "/bin/zsh -lc 'cat x'",
+        aggregated_output: '',
+        exit_code: null,
+        status: 'in_progress'
+      }
+    };
+
+    expect(isShellCompletion(raw)).toBe(false);
+  });
+
+  test('rejects a completed item that is not a command execution', () => {
+    const raw = {
+      type: 'item.completed',
+      item: { id: 'item_2', type: 'agent_message', text: 'done' }
+    };
+
+    expect(isShellCompletion(raw)).toBe(false);
+  });
+
+  test('exposes the predicate on the adapter spec', () => {
+    const spec = codexSpec();
+
+    expect(spec.isShellCompletion).toBe(isShellCompletion);
   });
 });
 

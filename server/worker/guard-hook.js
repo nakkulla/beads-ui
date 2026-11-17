@@ -81,20 +81,37 @@ export function guardEventLogPath(workspace, attempt_id) {
 }
 
 /**
+ * The invoked marker the pre-tool script creates on its first run (UI-zoig
+ * §3.1). It sits beside the event log so the script derives it from the
+ * `log_path` argument it already receives, and an older installed hook script
+ * keeps working unchanged.
+ *
+ * @param {string} workspace
+ * @param {string} attempt_id
+ * @returns {string}
+ */
+export function guardInvokedMarkerPath(workspace, attempt_id) {
+  return path.join(guardHookDir(workspace, attempt_id), 'invoked');
+}
+
+/**
+ * The PreToolUse group that runs the guard script. Claude keeps the `Bash`
+ * matcher; the Codex group carries no matcher (UI-zoig §3.2) — the observed
+ * matcher-less dotfiles groups fire on every Codex shell command, while a
+ * `Bash` matcher was never shown to match the Codex shell tool.
+ *
  * @param {string} hook_path
  * @param {'claude'|'codex'} runner
  */
 export function preToolHookGroup(hook_path, runner) {
-  return {
-    matcher: 'Bash',
-    hooks: [
-      {
-        type: 'command',
-        command: `${shellLiteral(hook_path)} ${runner}`,
-        timeout: 10
-      }
-    ]
-  };
+  const hooks = [
+    {
+      type: 'command',
+      command: `${shellLiteral(hook_path)} ${runner}`,
+      timeout: 10
+    }
+  ];
+  return runner === 'codex' ? { hooks } : { matcher: 'Bash', hooks };
 }
 
 /**

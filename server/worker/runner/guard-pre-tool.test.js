@@ -2,9 +2,15 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from '../bead-timeline.js';
-import { guardEventLogPath, install, preToolHookPath } from '../guard-hook.js';
+import {
+  guardEventLogPath,
+  guardInvokedMarkerPath,
+  install,
+  preToolHookPath
+} from '../guard-hook.js';
 import { createQueueStore } from '../queue-store.js';
 import { monitorGuardEvents } from './guard-events.js';
 
@@ -176,4 +182,90 @@ test('records hook denials once across a monitor restart', () => {
     reason: 'merge_to_base_blocked',
     command: 'gh pr merge 42'
   });
+});
+
+test('creates the invoked marker on the first invocation', () => {
+  const marker = guardInvokedMarkerPath(root, input.attempt_id);
+
+  const result = runHook('git status', 'codex');
+
+  expect(result.status).toBe(0);
+  expect(JSON.parse(fs.readFileSync(marker, 'utf8'))).toMatchObject({
+    runner: 'codex',
+    at: expect.any(Number)
+  });
+});
+
+test('leaves an existing invoked marker untouched', () => {
+  const marker = guardInvokedMarkerPath(root, input.attempt_id);
+  fs.writeFileSync(marker, 'first\n');
+
+  const result = runHook('git status', 'codex');
+
+  expect(result.status).toBe(0);
+  expect(fs.readFileSync(marker, 'utf8')).toBe('first\n');
+});
+
+test('exits normally when the marker location is unwritable', () => {
+  const module_path = fileURLToPath(
+    new URL('./guard-pre-tool.js', import.meta.url)
+  );
+  const log_path = path.join(root, 'missing-dir', 'guard-events.jsonl');
+
+  const result = spawnSync(
+    process.execPath,
+    [module_path, root, 'release/main', log_path, 'codex'],
+    {
+      input: JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'gh pr merge 42' }
+      }),
+      encoding: 'utf8'
+    }
+  );
+
+  expect(result.status).toBe(0);
+  expect(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision).toBe(
+    'deny'
+  );
+  expect(fs.existsSync(path.join(root, 'missing-dir'))).toBe(false);
+});
+
+test('keeps the denial output unchanged beside the marker', () => {
+  const result = runHook('gh pr merge 42', 'codex');
+
+  expect(JSON.parse(result.stdout)).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason:
+        'landing on the base branch is never permitted: gh pr merge 42'
+    }
+  });
+  expect(fs.existsSync(guardInvokedMarkerPath(root, input.attempt_id))).toBe(
+    true
+  );
+});
+
+test('marks and allows an input without a command', () => {
+  const result = spawnSync(
+    '/bin/sh',
+    [preToolHookPath(root, input.attempt_id), 'codex'],
+    {
+      input: JSON.stringify({
+        tool_name: 'apply_patch',
+        tool_input: { patch: '*** Begin Patch' }
+      }),
+      encoding: 'utf8'
+    }
+  );
+
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe('');
+  expect(fs.existsSync(guardInvokedMarkerPath(root, input.attempt_id))).toBe(
+    true
+  );
+  expect(
+    fs.readFileSync(guardEventLogPath(root, input.attempt_id), 'utf8')
+  ).toBe('');
 });

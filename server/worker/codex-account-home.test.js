@@ -92,7 +92,6 @@ test.each([false, true])(
     );
     expect(hooks.hooks.PreToolUse[0]).toEqual(prior_hooks.hooks.PreToolUse[0]);
     expect(hooks.hooks.PreToolUse[1]).toEqual({
-      matcher: 'Bash',
       hooks: [{ type: 'command', command: `'${hook_path}' codex`, timeout: 10 }]
     });
     expect(config.hooks.state[`${hooks_path}:pre_tool_use:0:0`]).toEqual({
@@ -137,6 +136,34 @@ test('matches the Codex v0.155.1 trusted hook fingerprint', () => {
   expect(actual).toBe(
     'sha256:6d92c9d6a6eb6c7896cfe580a6188d5e29f1720fd9e5cf4a4870c950d766b92a'
   );
+});
+
+test('registers the Codex guard group without a matcher and trusts that group', async () => {
+  const paths = await fixture();
+  const hook_path = path.join(paths.root, 'pre-tool-use');
+
+  const result = await prepareCodexGuardHome({
+    base_home: paths.codex_root,
+    home_dir: path.join(paths.root, 'attempt'),
+    hook_path
+  });
+
+  if (!result.ok) {
+    throw new Error('attempt HOME missing');
+  }
+  const hooks_path = path.join(result.home_dir, 'hooks.json');
+  const group = JSON.parse(await fs.readFile(hooks_path, 'utf8')).hooks
+    .PreToolUse[0];
+  const config = /** @type {any} */ (
+    parse(await fs.readFile(path.join(result.home_dir, 'config.toml'), 'utf8'))
+  );
+  expect(Object.hasOwn(group, 'matcher')).toBe(false);
+  expect(config.hooks.state[`${hooks_path}:pre_tool_use:0:0`]).toEqual({
+    trusted_hash: codexHookHash('pre_tool_use', {
+      hooks: [{ type: 'command', command: `'${hook_path}' codex`, timeout: 10 }]
+    }),
+    enabled: true
+  });
 });
 
 test('fingerprints normalized handlers and sorted JSON keys', () => {

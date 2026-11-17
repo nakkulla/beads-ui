@@ -26,7 +26,10 @@ import {
   guardEffect,
   guardWarningMessage
 } from './runner/command-guard.js';
-import { monitorGuardEvents } from './runner/guard-events.js';
+import {
+  judgeCodexHookLoad,
+  monitorGuardEvents
+} from './runner/guard-events.js';
 import { resolveGuardPending } from './runner/guard-mirror.js';
 import { adapterSpec } from './runner/index.js';
 import { createTailReader } from './runner/tail-reader.js';
@@ -43,6 +46,22 @@ const log = debug('worker:session-monitor');
  * @type {number}
  */
 export const MONITOR_USAGE_FANOUT_MS = 3000;
+
+/**
+ * Bytes read per step when a reattach scans the past log for a completed shell
+ * command (UI-zoig §3.5).
+ *
+ * @type {number}
+ */
+const SCAN_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * A byte prefilter for that scan: only a line naming `command_execution` can be
+ * a completed Codex shell command, so every other line skips `JSON.parse`.
+ *
+ * @type {string}
+ */
+const SHELL_COMPLETION_HINT = 'command_execution';
 
 /**
  * @typedef {Object} SessionMonitorDeps
@@ -89,7 +108,7 @@ export function createSessionMonitors(deps) {
   const fs = deps.fs || nodeFs;
 
   /**
-   * @type {Map<string, { workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean, reader: ReturnType<typeof createTailReader> }>}
+   * @type {Map<string, { workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, hook_judged: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean, reader: ReturnType<typeof createTailReader> }>}
    */
   const monitors = new Map();
   /** @type {Map<string, ReturnType<typeof monitorGuardEvents>>} */
@@ -558,6 +577,114 @@ export function createSessionMonitors(deps) {
   }
 
   /**
+   * Whether the session log holds a completed shell command in `[0, end)`
+   * (UI-zoig §3.5). Reads in chunks, splits on the newline byte so a multibyte
+   * character never straddles a decode, and stops at the first hit. A trailing
+   * partial line at `end` is left to the tail that owns the bytes after it. A
+   * read fault answers false: no evidence, no judgment.
+   *
+   * @param {string} file
+   * @param {number} end
+   * @param {(raw: any) => boolean} isCompletion
+   * @returns {boolean}
+   */
+  function logHasShellCompletion(file, end, isCompletion) {
+    if (!(end > 0)) {
+      return false;
+    }
+    /** @type {number|null} */
+    let fd = null;
+    try {
+      fd = fs.openSync(file, 'r');
+      /** @type {Buffer} */
+      let rest = Buffer.alloc(0);
+      let offset = 0;
+      while (offset < end) {
+        const want = Math.min(SCAN_CHUNK_BYTES, end - offset);
+        const chunk = Buffer.allocUnsafe(want);
+        const read = fs.readSync(fd, chunk, 0, want, offset);
+        if (read <= 0) {
+          break;
+        }
+        offset += read;
+        let buf = Buffer.concat([rest, chunk.subarray(0, read)]);
+        let nl = buf.indexOf(0x0a);
+        while (nl >= 0) {
+          const line = buf.subarray(0, nl);
+          buf = buf.subarray(nl + 1);
+          if (line.includes(SHELL_COMPLETION_HINT)) {
+            try {
+              if (isCompletion(JSON.parse(line.toString('utf8')))) {
+                return true;
+              }
+            } catch {
+              // A malformed line is not evidence either way.
+            }
+          }
+          nl = buf.indexOf(0x0a);
+        }
+        rest = Buffer.from(buf);
+      }
+      return false;
+    } catch (err) {
+      log('shell-completion scan failed for %s: %o', file, err);
+      return false;
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  /**
+   * Judge an unjudged Codex attempt's guard hook load from the log a prior
+   * process wrote (UI-zoig §3.5): a completed shell command in `[0, end)` makes
+   * the judgment, exactly as the live path would have at that line.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {import('./runner/session.js').AdapterSpec} spec
+   * @param {string} file
+   * @param {number} end
+   * @returns {boolean} Whether the judgment ran.
+   */
+  function judgeFromLog(workspace, attempt_id, spec, file, end) {
+    const isCompletion = spec.isShellCompletion;
+    if (
+      typeof isCompletion !== 'function' ||
+      !logHasShellCompletion(file, end, isCompletion)
+    ) {
+      return false;
+    }
+    judgeCodexHookLoad({
+      workspace,
+      attempt_id,
+      store: deps.store,
+      fs,
+      now
+    });
+    return true;
+  }
+
+  /**
+   * The current byte size of a log, or 0 when it cannot be read.
+   *
+   * @param {string} file
+   * @returns {number}
+   */
+  function logSizeOf(file) {
+    try {
+      return fs.statSync(file).size;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
    * Re-pair the verdicts a dead process left held against the log it already
    * wrote (§3 re-attach). Reads only the bytes between the earliest held
    * `log_offset` and the handoff boundary the tail starts at, so the two
@@ -744,7 +871,7 @@ export function createSessionMonitors(deps) {
    * Feed one tailed line through the drawer broker, the usage tally, and the
    * fail-closed guards — the live engine's `onLine` pipeline minus the verdict.
    *
-   * @param {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean }} entry
+   * @param {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, hook_judged: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean }} entry
    * @param {string} line
    * @param {number} [end_offset] - Byte offset just past this line, recorded
    * with a held verdict so a later re-attach can backfill from it (§3).
@@ -802,6 +929,17 @@ export function createSessionMonitors(deps) {
         }
         scheduleUsageFanout(workspace);
       }
+    }
+
+    // The Codex guard hook's load, judged once at the first completed shell
+    // command the tail sees (UI-zoig §3.4).
+    if (
+      entry.codex &&
+      !entry.hook_judged &&
+      entry.spec.isShellCompletion?.(obj) === true
+    ) {
+      entry.hook_judged = true;
+      judgeCodexHookLoad({ workspace, attempt_id, store: deps.store, fs, now });
     }
 
     const question_reason = entry.spec.detectQuestion(obj);
@@ -895,6 +1033,22 @@ export function createSessionMonitors(deps) {
         return false;
       }
       if (!pidStillOurs(attempt)) {
+        // Judged before the guard-events drain below, so the warning line the
+        // judge appends is consumed by that same drain (UI-zoig §3.5).
+        if (
+          attempt.runner === 'codex' &&
+          attempt.exec !== 'session' &&
+          attempt.guard_hook_judged !== true
+        ) {
+          const file = logFileOf(workspace, attempt);
+          judgeFromLog(
+            workspace,
+            attempt_id,
+            specForAttempt(attempt),
+            file,
+            logSizeOf(file)
+          );
+        }
         monitorGuardEvents({
           workspace,
           attempt_id: attempt.attempt_id,
@@ -905,11 +1059,12 @@ export function createSessionMonitors(deps) {
         settleDeadPending(workspace, attempt, options);
         return false;
       }
-      /** @type {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean, reader: any }} */
+      /** @type {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, hook_judged: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean, reader: any }} */
       const entry = {
         workspace,
         attempt_id,
         codex: attempt.runner === 'codex',
+        hook_judged: attempt.guard_hook_judged === true,
         spec: specForAttempt(attempt),
         repo: typeof attempt.repo === 'string' ? attempt.repo : null,
         target_base:
@@ -946,6 +1101,26 @@ export function createSessionMonitors(deps) {
         reader: null
       };
       const log_file = logFileOf(workspace, attempt);
+      // A first command that completed while no server watched (UI-zoig §3.5):
+      // the tail starts at the handoff boundary, so the range before it is
+      // scanned once here. Judged before the guard-events reader starts, whose
+      // replay from offset 0 then consumes any warning line the judge appends.
+      if (
+        entry.codex &&
+        !entry.hook_judged &&
+        attempt.exec !== 'session' &&
+        typeof options.start_offset === 'number' &&
+        options.start_offset > 0 &&
+        judgeFromLog(
+          workspace,
+          attempt_id,
+          entry.spec,
+          log_file,
+          options.start_offset
+        )
+      ) {
+        entry.hook_judged = true;
+      }
       if (entry.guard_pending.length > 0) {
         // Before the tail, and over the range the tail will NOT read (§3).
         backfillGuardPending(
@@ -1047,8 +1222,6 @@ export function createSessionMonitors(deps) {
         return false;
       }
       monitors.delete(key);
-      guard_readers.get(key)?.stop();
-      guard_readers.delete(key);
       try {
         deps.workerSessionObservations?.drain(workspace, attempt_id);
         const attempt = attemptOf(workspace, attempt_id);
@@ -1068,6 +1241,11 @@ export function createSessionMonitors(deps) {
       } catch {
         /* ignore */
       }
+      // After the tail's drain: a first completed command read only by that
+      // drain makes the hook-load judge append its warning line (UI-zoig §3.4),
+      // and this reader's own drain is what consumes it.
+      guard_readers.get(key)?.stop();
+      guard_readers.delete(key);
       // The same drain contract the tail has: the settlement about to run reads
       // the durable record, so the last native-child observation is taken here,
       // with the parent already ending — a child with no terminal evidence is
