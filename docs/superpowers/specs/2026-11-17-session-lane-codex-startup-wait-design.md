@@ -35,7 +35,8 @@ Bead 본문의 권고 방향("`session-hub open` 응답의 `dialog`·`startup_ki
 - 비중계 `open` 응답은 `status`·`session_id`·`tmux_session`·`window`·`pane`·`pid`·`server_started`·`placement`·`note`뿐이고 `dialog`가 없다 — dotfiles `src/shell/lib/session_hub/launch.py:391-399`, `src/shell/lib/session_hub/cli.py:222-246`
 - `--agent codex`는 중계 모드에서만 허용되고, 중계 모드는 `--marker-option`을 거부한다 — dotfiles `src/shell/lib/session_hub/cli.py:226`, `:330`
 - 허브의 `codex_screen.startup()`은 SessionStart 이전 화면을 `dialog=startup|trust|unknown_screen`으로 나누고, `startup`에는 `startup_kind=hooks|update|model|login|unknown`을 붙인다. 입력 프롬프트가 보이면 `None`이다 — dotfiles `src/shell/lib/session_hub/codex_screen.py:128-170`
-- 선택지 형식이 아닌 화면은 모두 `unknown_screen`이다(첫 선택 화면 전 기동 중 화면 포함) — dotfiles `src/shell/lib/session_hub/codex_screen.py:148-152`
+- 선택지 형식이 아닌 화면은 로그인 문구가 보이는 경우(`startup/login`)를 빼고 모두 `unknown_screen`이다(첫 선택 화면 전 기동 중 화면 포함) — dotfiles `src/shell/lib/session_hub/codex_screen.py:147-154`, `:166-168`
+- 재개 기동은 실행 전에 `resume_session_id`를 레코드 `session_id`(`session_id_source=launch`)에 적으므로, 레코드 `session_id`의 유무로는 SessionStart 통과를 알 수 없다 — `server/worker/scheduler.js:15982-15983`, `:16076-16081`
 - 중계 모드의 시작 화면 관측은 화면을 답한 뒤 다음 화면이 뜰 때까지 다시 관측한다. 시작 화면은 연달아 뜰 수 있다 — dotfiles `src/shell/lib/session_hub/codex_startup.py:176-246`
 - 허브는 `alive --pane --marker-option --marker-value`로 마커를 확인하며 창 하나의 생존을 답한다 — dotfiles `src/shell/lib/session_hub/cli.py:110-115`, `:256-275`
 - beads-ui는 대화형 세션 점검을 30초마다 돌리고, 그때 창의 `@agent_running`·`@agent_attention`으로 `turn_state`를 정한다. 두 옵션이 비면 `idle`이다 — `server/worker/attach.js:470`, `server/worker/scheduler.js:1588-1599`, `:13842-13855`
@@ -69,9 +70,12 @@ Bead 본문의 권고 방향("`session-hub open` 응답의 `dialog`·`startup_ki
 
 ### 3.2 관측 (beads-ui)
 
-- 대상: 세션 레인 대화형 레코드 가운데 `provider=codex`, `state=live`, 창이 살아
-  있고 `session_id`가 아직 없는 것. `@agent_session`이 채워지면 SessionStart를 지난
-  것이므로 조회를 멈추고 대기 표시를 지운다.
+- 대상: 세션 레인 대화형 레코드 가운데 `provider=codex`, `state=live`이고 창이 살아
+  있으며, 그 창의 `@agent_session` 옵션이 아직 비어 있는 것. 새 세션이든 재개
+  세션이든 같다.
+  결정: 종료 조건은 레코드 `session_id`가 아니라 현재 창의 `@agent_session`이다 — 재개 기동은 레코드 `session_id`를 미리 채워 두므로(§2) 그것으로 판정하면 재개 중 시작 화면을 놓친다.
+- 창 옵션이 채워지면 SessionStart를 지난 것이므로 조회를 멈추고 대기 표시를 지운다.
+  레코드에 이 통과 사실을 남겨 같은 창에서 다시 조회하지 않는다.
 - 시점: 기존 대화형 세션 점검(30초)에서 `turn_state` 관측 다음에 부른다. 새 타이머는
   만들지 않는다. 시작 화면이 연달아 뜰 수 있어 기동 때 한 번만 보지 않는다.
 - 해석: `dialog=startup`이면 종류는 `startup_kind`, `dialog=trust`이면 `trust`다.
@@ -123,11 +127,12 @@ Bead 본문의 권고 방향("`session-hub open` 응답의 `dialog`·`startup_ki
 1. 허브 명령은 시작 화면이 떠 있는 Codex 창에서 `dialog`·`startup_kind`·`fingerprint`를,
    프롬프트가 보이는 창에서 `screen: null`을, 마커가 다른 창에서 `alive`가 `alive`가
    아닌 값을 낸다. 응답에 화면 글자가 없다.
-2. `session_id`가 없는 세션 레인 Codex 레코드에서 허브가 `startup/hooks`를 답하면 다음
-   점검 뒤 레코드와 `attempt.interactive`에 `startup_wait.kind=hooks`가 생기고, 이벤트
-   `세션 레인 시작 화면 대기 · 훅 확인`이 하나 남는다.
-3. `@agent_session`이 채워지면 `startup_wait`가 지워지고 `세션 레인 시작 화면 통과`가
-   남으며, 이후 점검은 허브 조회를 부르지 않는다.
+2. 창 `@agent_session`이 빈 세션 레인 Codex 레코드에서 허브가 `startup/hooks`를 답하면
+   다음 점검 뒤 레코드와 `attempt.interactive`에 `startup_wait.kind=hooks`가 생기고,
+   이벤트 `세션 레인 시작 화면 대기 · 훅 확인`이 하나 남는다. 레코드 `session_id`가
+   미리 채워진 재개 기동(`mode=resume`)도 같다.
+3. 창 `@agent_session`이 채워지면 `startup_wait`가 지워지고 `세션 레인 시작 화면 통과`가
+   남으며, 이후 점검은 그 창에 허브 조회를 부르지 않는다.
 4. `unknown_screen`·허브 실패·Claude 레코드는 `startup_wait`를 만들지 않는다. 허브
    실패는 이전 값을 바꾸지 않는다.
 5. 실행 중 세션 레인 타일 진행 줄에 `시작 화면 대기 · 훅 확인 <경과>`가 서고, 같은
@@ -140,7 +145,7 @@ Bead 본문의 권고 방향("`session-hub open` 응답의 `dialog`·`startup_ki
 
 - dotfiles: `codex-startup` 명령의 훅 확인·업데이트 안내·프롬프트·마커 불일치 사례(기존
   `codex_screen` 고정 화면 재사용), 응답에 화면 글자가 없음.
-- `server/worker/scheduler.test.js`: 수락 2·3·4·6(가짜 launcher, 시계 주입).
+- `server/worker/scheduler.test.js`: 수락 2(새 세션·재개 세션)·3·4·6(가짜 launcher, 시계 주입).
 - `server/worker/queue-store.test.js`: `startup_wait` 정규화(목록 밖 `kind`는 `null`).
 - `server/worker/tmux-launcher.test.js`: 허브 응답 해석과 실패 처리.
 - `app/views/worker/lanes.test.js`: 진행 줄 낱말·경과·툴팁, 재료 없음이면 빈 줄.
