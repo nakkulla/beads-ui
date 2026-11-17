@@ -82,6 +82,8 @@ Bead: `UI-6kj0` · 날짜: 2026-11-17 · 출처: 사용자 요청(모니터 모�
 - 대화 카드의 Discord 링크는 기동 경로와 상관없이 브리지의 세션별 스레드 기록에서
   붙고, 브리지가 살아 있으면 링크 전에는 준비 중으로 보인다 —
   server/ws/worker-handlers.js:3640-3667
+- 마무리 뒤 되돌리기는 클릭 때 Bead 상태를 읽어 `open`이 아니면 거절한다 —
+  server/worker/scheduler.js:12047-12056
 - 대화 진행 줄(`대화 중`·`답 대기`)은 파킹·대기 타일에만 그린다 —
   app/views/worker/running-grid.js:1699-1700
 - 답 대기 중 `[워커로 이어가기]`는 서버가 파킹·복구 대기 행의 대기 사유에 실어
@@ -91,7 +93,7 @@ Bead: `UI-6kj0` · 날짜: 2026-11-17 · 출처: 사용자 요청(모니터 모�
 - dotfiles 진입 블록 절의 머리말은 블록이 세 종류의 대화를 섬기고 멈춤은 무인
   Worker 세션이 사람 때문에 멈춘 경우라고 적는다 — dotfiles
   `src/shared/skills/flow/workflow/references/execution-common.md`:13-21
-- dotfiles의 Worker 세션 대화 현행 ADR은 `dotfiles-724yw`이고 승계한 사람 멈춤
+- dotfiles의 Worker 세션 대화 현행 ADR은 `ADR dotfiles/dotfiles-724yw`이고 승계한 사람 멈춤
   조항을 본문에 갖고 있다 — dotfiles `docs/adr/README.md`:10,
   `docs/adr/dotfiles-724yw-worker-conversation-adr-approval.md`:9, 493
 - 미확인: `이 대화에서 마무리`로 넘어간 세션이 Bead를 끝냈을 때 멈춰 있던
@@ -155,6 +157,12 @@ Bead: `UI-6kj0` · 날짜: 2026-11-17 · 출처: 사용자 요청(모니터 모�
   있으면 재개 요청을 `conversation_live`로 거절한다. 인계 정산이 부르는 재개만
   예외다 — 한 세션에 프로세스가 둘 붙으면 안 된다. 다른 상태의 재개 경로는
   바꾸지 않는다.
+- 결정: 일시정지 행의 대화 기동과 `paused` 재개는 Bead 단위 예약 하나를
+  공유한다. 기동은 창을 띄우기 전에 예약을 잡아 대화 레코드를 저장할 때까지
+  쥐고, 재개는 attempt를 실행 상태로 바꾸기 전에 같은 예약을 잡는다. 예약이
+  이미 잡혀 있으면 뒤에 온 쪽이 거절된다(재개는 `conversation_live`, 기동은
+  기존 진행 중 거절). 레코드가 저장되기 전의 틈에 두 경로가 함께 통과하지 않게
+  하기 위해서다.
 - 지시 재시작처럼 곧 재개되는 일시정지에서 눌린 클릭은 러너 생존 가드나 위
   거절 중 하나로 끝나 한쪽만 선다.
 - 휴대폰에서는 대화 타일의 `↗ Discord`로 스레드에 들어가 답한다. 링크는 다른
@@ -213,8 +221,9 @@ Bead: `UI-6kj0` · 날짜: 2026-11-17 · 출처: 사용자 요청(모니터 모�
    행에는 이 변경으로 생기는 버튼이 없다.
 2. 클릭하면 그 attempt의 세션이 사람의 tmux 세션에서 열리고 첫 입력의 `대화
    사유`가 `멈춤 paused`다. 일시정지만으로는 대화도 알림도 생기지 않는다.
-3. 대화가 살아 있는 동안 재개 요청은 `conversation_live`로 거절되고, 한 세션
-   ID에 러너 프로세스가 둘 붙지 않는다.
+3. 대화가 살아 있거나 기동 중인 동안 `paused` 재개 요청은 `conversation_live`로
+   거절되고, 재개가 진행 중이면 대화 기동이 거절되어, 한 세션 ID에 러너
+   프로세스가 둘 붙지 않는다.
 4. 답 대기 중 `▶ 재개` 또는 `워커가 이어감 ·` 뒤 Worker가 같은 세션으로 한 번
    재개하고, 재개 프롬프트에 `## 대화 결과` 블록이 있다.
 5. `나중에 ·`나 결과 줄 없는 창 닫힘 뒤 타일은 일시정지 그대로이고 두 버튼이
@@ -234,13 +243,16 @@ Bead: `UI-6kj0` · 날짜: 2026-11-17 · 출처: 사용자 요청(모니터 모�
   넷), 행 순서, 대화 없음·답 대기·턴 진행·마무리 네 상태의 `▶ 재개` 재료.
 - `app/views/worker/running-grid` 시험 — foot의 세션 버튼, `▶ 재개`의 세 상태,
   대화 진행 줄.
-- `app/views/monitor/card-parity.test.js` — 일시정지 타일 동일성.
+- `app/views/monitor/card-parity.test.js` — 대화 없는 일시정지 fixture에서 두
+  탭의 슬롯 6에 세션 버튼이 있음을 먼저 확인한 뒤 타일 동일성을 비교한다.
 - `app/views/worker/index.test.js`, `app/views/monitor/index.test.js` — 대화가
   답을 기다릴 때 `▶ 재개` 클릭이 대화상자 없이 대화 인계를 보낸다.
 - `server/ws/worker-handlers.resolve-session.test.js` — 일시정지 행 라우팅과
   비대상 거절.
 - `server/worker/direction-inquiry.test.js` — 일시정지 기동의 첫 입력과 레코드,
   사본 sha256.
+- 경합 시험 — 대화 기동이 레코드를 저장하기 전에 들어온 재개가 거절되고,
+  재개가 진행 중일 때 들어온 대화 기동이 거절된다(양방향).
 - scheduler 시험 — 인계가 `paused` attempt를 재개, 대화 중 `paused` 재개 거절,
   결과 줄 없는 종료 뒤 일시정지 유지, 마무리 세션이 Bead를 끝낸 뒤 자리 해제.
 - `server/worker/wait-judgment.test.js` — 일시정지 행의 대화 인계 조작 투영.
@@ -249,7 +261,8 @@ Bead: `UI-6kj0` · 날짜: 2026-11-17 · 출처: 사용자 요청(모니터 모�
 
 - 크로스 리포 unit: dotfiles — §3.5의 진입 블록 변경과 그 시험. beads-ui 구현
   진입 전에 착지해야 하는 선행이다. 처분은 dotfiles rig의 quick_fix Bead이고
-  (ADR 절이 `supersede dotfiles-724yw`를 지명한다) 이 스펙의 게이트를 닫는
+  (그 Bead의 ADR 절이 `ADR dotfiles/dotfiles-724yw`를 supersede 대상으로
+  지명한다) 이 스펙의 게이트를 닫는
   세션이 만들며, `UI-6kj0`에서 foreign `blocks` 엣지를 건다.
 - 관찰: 내려온 일시정지 attempt의 후보 카드 — 실행 중 자리가 없고 사용자 요청
   범위 밖이라 다루지 않는다.
