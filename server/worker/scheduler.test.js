@@ -15274,6 +15274,78 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
   });
 });
 
+describe('scheduler Codex hook-load judgment (UI-zoig §3.4)', () => {
+  /**
+   * @param {'item.started'|'item.completed'} type
+   */
+  function commandRaw(type) {
+    return {
+      type,
+      item: {
+        id: 'item_1',
+        type: 'command_execution',
+        command: "/bin/zsh -lc 'cat x'",
+        aggregated_output: '',
+        exit_code: type === 'item.completed' ? 0 : null,
+        status: type === 'item.completed' ? 'completed' : 'in_progress'
+      }
+    };
+  }
+
+  test('judges a Codex attempt at its first completed command', async () => {
+    const env = setup({ config: { B1: { model: 'sol' } }, ...accountDeps() });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('B1');
+
+    events.emit('raw', commandRaw('item.started'));
+    const before = env.store.snapshot(WS).attempts['B1-1000-1'];
+    events.emit('raw', commandRaw('item.completed'));
+
+    expect(before.guard_hook_judged).toBe(false);
+    expect(env.store.snapshot(WS).attempts['B1-1000-1'].guard_hook_judged).toBe(
+      true
+    );
+  });
+
+  test('never judges a Claude attempt', async () => {
+    const env = setup({ config: { A1: { model: 'opus' } } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+
+    events.emit('raw', commandRaw('item.completed'));
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.runner).toBe('claude');
+    expect(attempt.guard_hook_judged).toBe(false);
+  });
+
+  test('marks a failed home preparation as the judgment with one warning', async () => {
+    const env = setup({
+      config: { B1: { model: 'sol' } },
+      ...accountDeps(),
+      prepareCodexGuardHome: vi.fn(async () => ({
+        ok: false,
+        reason: 'codex_hook_not_loaded'
+      }))
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('B1').emit('raw', commandRaw('item.completed'));
+
+    const attempt = env.store.snapshot(WS).attempts['B1-1000-1'];
+    expect(attempt.guard_hook_judged).toBe(true);
+    expect(
+      (attempt.guard_warnings || []).filter(
+        (/** @type {any} */ warning) =>
+          warning.reason === 'codex_hook_not_loaded'
+      )
+    ).toHaveLength(1);
+  });
+});
+
 describe('scheduler launch account pins', () => {
   test.each([null, 'codex-key'])(
     'delivers a private guard HOME to Codex (account=%s)',

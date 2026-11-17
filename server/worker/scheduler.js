@@ -184,7 +184,11 @@ import {
   liftDelegation,
   observeClaudeLaunch
 } from './runner/claude.js';
-import { monitorGuardEvents } from './runner/guard-events.js';
+import { isShellCompletion } from './runner/codex.js';
+import {
+  judgeCodexHookLoad,
+  monitorGuardEvents
+} from './runner/guard-events.js';
 import { RUNNERS, adapterSpec, runtimeCatalog } from './runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from './runner/preamble.js';
 import { terminalResultOf } from './runner/session.js';
@@ -16424,6 +16428,16 @@ export function createScheduler(deps) {
           reason: prepared.reason,
           command: null
         });
+        // The preparation warning IS this attempt's hook-load judgment
+        // (UI-zoig §3.4): the first completed command must not add another.
+        try {
+          deps.store.updateAttempt(workspace, {
+            attempt_id,
+            patch: { guard_hook_judged: true }
+          });
+        } catch (err) {
+          log('guard-hook judged flag failed for %s: %o', attempt_id, err);
+        }
       }
     }
 
@@ -16588,7 +16602,17 @@ export function createScheduler(deps) {
     let init_cwd = wt_path;
     let session_effort_attempted = false;
     let session_effort_retries = 0;
+    let hook_judged = runner_name !== 'codex';
     handle.events.on('raw', (raw) => {
+      // The Codex guard hook's load, judged once at the first completed shell
+      // command (UI-zoig §3.4). The guard-events reader above is still alive
+      // here — it stops on `handle.done`, after the close-time drain emitted
+      // every remaining line — so the warning line the judge appends is
+      // consumed like any hook-written one.
+      if (!hook_judged && isShellCompletion(raw)) {
+        hook_judged = true;
+        judgeCodexHookLoad({ workspace, attempt_id, store: deps.store });
+      }
       // Claude subagent sessions and their terminal receipts (UI-2mpn §5.4).
       // The RAW line is the subject, not the normalized event: a subagent's
       // `end` rides a `user` turn, which `normalize()` produces no event for,

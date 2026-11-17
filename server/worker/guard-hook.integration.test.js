@@ -11,7 +11,13 @@ import {
   test,
   vi
 } from 'vitest';
-import { envFor, install, readPushLog } from './guard-hook.js';
+import {
+  envFor,
+  guardInvokedMarkerPath,
+  install,
+  preToolHookPath,
+  readPushLog
+} from './guard-hook.js';
 
 // This file drives REAL child processes (git, a shell, node), so its wall time
 // is process startup, not product work. Measured against the whole suite running
@@ -217,6 +223,21 @@ describe('guard hook — prevention layer (UI-8mvc §2)', () => {
     const stat = fs.statSync(hook);
 
     expect(stat.mode & 0o111).toBe(0o111);
+  });
+
+  test('creates the invoked marker when the installed pre-tool hook runs', () => {
+    const result = spawnSync(preToolHookPath(repo, ATTEMPT), ['codex'], {
+      input: JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'git status' }
+      }),
+      encoding: 'utf8'
+    });
+
+    expect(result.status).toBe(0);
+    expect(
+      JSON.parse(fs.readFileSync(guardInvokedMarkerPath(repo, ATTEMPT), 'utf8'))
+    ).toMatchObject({ runner: 'codex' });
   });
 
   test('refuses a push that lands on the attempt base', () => {

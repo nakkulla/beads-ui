@@ -2,13 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { guardInvokedMarkerPath } from './guard-hook.js';
 import { createQueueStore } from './queue-store.js';
 import { createSessionLog } from './session-log.js';
 import {
   MONITOR_USAGE_FANOUT_MS,
   createSessionMonitors
 } from './session-monitor.js';
-import { beadSessionLogPath } from './state-paths.js';
+import { beadSessionLogPath, guardHookDir } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
 /** @type {string} */
@@ -1065,5 +1066,171 @@ describe('worker/session-monitor re-attach backfill (§3)', () => {
     env.monitors.stop(WS, 'att-1');
 
     expect(env.kill_impl).not.toHaveBeenCalled();
+  });
+});
+
+describe('worker/session-monitor Codex hook-load judgment (UI-zoig §3.4-3.5)', () => {
+  /**
+   * @param {'item.started'|'item.completed'} type
+   * @returns {string}
+   */
+  function codexCommandLine(type) {
+    const completed = type === 'item.completed';
+    return `${JSON.stringify({
+      type,
+      item: {
+        id: 'item_1',
+        type: 'command_execution',
+        command: "/bin/zsh -lc 'cat x'",
+        aggregated_output: completed ? 'x' : '',
+        exit_code: completed ? 0 : null,
+        status: completed ? 'completed' : 'in_progress'
+      }
+    })}\n`;
+  }
+
+  /**
+   * The attempt's guard hook folder, as an installed hook leaves it.
+   *
+   * @param {boolean} invoked - Whether the hook ran and left its marker.
+   */
+  function seedGuardDir(invoked) {
+    fs.mkdirSync(guardHookDir(WS, 'att-1'), { recursive: true });
+    if (invoked) {
+      fs.writeFileSync(guardInvokedMarkerPath(WS, 'att-1'), '{}\n');
+    }
+  }
+
+  /**
+   * @param {any} env
+   */
+  function hookWarnings(env) {
+    return (
+      env.store.snapshot(WS).attempts['att-1'].guard_warnings || []
+    ).filter(
+      (/** @type {any} */ warning) => warning.reason === 'codex_hook_not_loaded'
+    );
+  }
+
+  test('judges at the first completed command the live tail reads', () => {
+    const env = setup();
+    seedGuardDir(false);
+    const attempt = seedRunningAttempt(env.store, { runner: 'codex' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, codexCommandLine('item.completed'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(hookWarnings(env)).toEqual([
+      { reason: 'codex_hook_not_loaded', command: null, at: 5000 }
+    ]);
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_hook_judged).toBe(
+      true
+    );
+  });
+
+  test('does not judge a session whose command has only started', () => {
+    const env = setup();
+    seedGuardDir(false);
+    const attempt = seedRunningAttempt(env.store, { runner: 'codex' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, codexCommandLine('item.started'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(hookWarnings(env)).toEqual([]);
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_hook_judged).toBe(
+      false
+    );
+  });
+
+  test('judges a command completed only before the handoff boundary on start', () => {
+    const env = setup();
+    seedGuardDir(false);
+    sessionWrites(env.session_log, codexCommandLine('item.started'));
+    sessionWrites(env.session_log, codexCommandLine('item.completed'));
+    const attempt = seedRunningAttempt(env.store, { runner: 'codex' });
+
+    startAtBoundary(env, attempt);
+    env.monitors.stop(WS, 'att-1');
+
+    expect(hookWarnings(env)).toHaveLength(1);
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_hook_judged).toBe(
+      true
+    );
+  });
+
+  test('records no warning before the boundary when the marker exists', () => {
+    const env = setup();
+    seedGuardDir(true);
+    sessionWrites(env.session_log, codexCommandLine('item.completed'));
+    const attempt = seedRunningAttempt(env.store, { runner: 'codex' });
+
+    startAtBoundary(env, attempt);
+    env.monitors.stop(WS, 'att-1');
+
+    expect(hookWarnings(env)).toEqual([]);
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_hook_judged).toBe(
+      true
+    );
+  });
+
+  test('judges a dead process from its whole log', () => {
+    const env = setup({ probe: { alive: false, started_at: null } });
+    seedGuardDir(false);
+    sessionWrites(env.session_log, assistantText('noise'));
+    sessionWrites(env.session_log, codexCommandLine('item.completed'));
+    const attempt = seedRunningAttempt(env.store, { runner: 'codex' });
+
+    const started = startAtBoundary(env, attempt);
+
+    expect(started).toBe(false);
+    expect(hookWarnings(env)).toHaveLength(1);
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_hook_judged).toBe(
+      true
+    );
+  });
+
+  test('judges a dead attempt settled by another recovery path', () => {
+    const env = setup();
+    seedGuardDir(false);
+    sessionWrites(env.session_log, codexCommandLine('item.completed'));
+    const attempt = seedRunningAttempt(env.store, { runner: 'codex' });
+
+    env.monitors.settleDead(WS, attempt);
+    env.monitors.settleDead(WS, env.store.snapshot(WS).attempts['att-1']);
+
+    expect(hookWarnings(env)).toHaveLength(1);
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_hook_judged).toBe(
+      true
+    );
+  });
+
+  test('keeps one warning across two reattaches', () => {
+    const env = setup();
+    seedGuardDir(false);
+    sessionWrites(env.session_log, codexCommandLine('item.completed'));
+    startAtBoundary(env, seedRunningAttempt(env.store, { runner: 'codex' }));
+    env.monitors.stop(WS, 'att-1');
+
+    startAtBoundary(env, env.store.snapshot(WS).attempts['att-1']);
+    env.monitors.stop(WS, 'att-1');
+
+    expect(hookWarnings(env)).toHaveLength(1);
+  });
+
+  test('never judges a Claude attempt', () => {
+    const env = setup();
+    seedGuardDir(false);
+    const attempt = seedRunningAttempt(env.store, { runner: 'claude' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, codexCommandLine('item.completed'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(hookWarnings(env)).toEqual([]);
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_hook_judged).toBe(
+      false
+    );
   });
 });

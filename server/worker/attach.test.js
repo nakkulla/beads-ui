@@ -5324,6 +5324,10 @@ describe('worker/attach — review-session restart recovery (UI-d7fy §5)', () =
     const sessionMonitors = {
       start: vi.fn(() => true),
       stop: vi.fn(),
+      settleDead: vi.fn(
+        (/** @type {string} */ workspace, /** @type {any} */ a) =>
+          runtime.queueStore.snapshot(workspace).attempts[a.attempt_id].status
+      ),
       stopAll: vi.fn()
     };
     const att = createWorkerAttachment(WS, {
@@ -5403,6 +5407,45 @@ describe('worker/attach — review-session restart recovery (UI-d7fy §5)', () =
       status: 'failed',
       cause: 'session_lost:process_gone'
     });
+  });
+
+  test('settles the guard evidence of a launched session while it is still running', async () => {
+    seedReviewSessionQueue({
+      status: 'running',
+      runner: 'codex',
+      pid: 4242,
+      started_at: 1000,
+      process_identity: { pid: 4242, pgid: 4242, started_at: 1000 }
+    });
+    const { runtime, sessionMonitors } = attachWith({ state: 'gone' });
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(
+      () =>
+        runtime.queueStore.snapshot(WS).attempts['review:1'].status !==
+        'running'
+    );
+
+    expect(sessionMonitors.settleDead).toHaveBeenCalledTimes(1);
+    expect(
+      /** @type {any} */ (sessionMonitors.settleDead.mock.calls[0])[1]
+        .attempt_id
+    ).toBe('review:1');
+    expect(sessionMonitors.settleDead.mock.results[0].value).toBe('running');
+  });
+
+  test('settles no guard evidence for a session that never launched', async () => {
+    seedReviewSessionQueue({ status: 'pending', runner: 'codex' });
+    const { runtime, sessionMonitors } = attachWith({ state: 'gone' });
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(
+      () =>
+        runtime.queueStore.snapshot(WS).attempts['review:1'].status !==
+        'pending'
+    );
+
+    expect(sessionMonitors.settleDead).not.toHaveBeenCalled();
   });
 
   test('exhausts the claim of an orphaned automatic attempt', async () => {

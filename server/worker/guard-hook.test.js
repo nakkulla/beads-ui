@@ -4,7 +4,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   envFor,
+  guardEventLogPath,
+  guardInvokedMarkerPath,
   install,
+  preToolHookGroup,
   pushLogPath,
   readPushLog,
   remove,
@@ -592,5 +595,37 @@ describe('guard-hook remove', () => {
     expect(
       remove({ workspace: WS, attempt_id: ATTEMPT }, { fs: fake_fs })
     ).toBe(false);
+  });
+});
+
+describe('guard-hook pre-tool group (UI-zoig §3.2)', () => {
+  test('keeps the Bash matcher on the Claude group', () => {
+    const group = preToolHookGroup('/hooks/pre-tool-use', 'claude');
+
+    expect(group).toEqual({
+      matcher: 'Bash',
+      hooks: [
+        {
+          type: 'command',
+          command: "'/hooks/pre-tool-use' claude",
+          timeout: 10
+        }
+      ]
+    });
+  });
+
+  test('omits the matcher on the Codex group', () => {
+    const group = preToolHookGroup('/hooks/pre-tool-use', 'codex');
+
+    expect(Object.hasOwn(group, 'matcher')).toBe(false);
+  });
+
+  test('places the invoked marker beside the guard event log', () => {
+    const marker = guardInvokedMarkerPath(WS, ATTEMPT);
+
+    expect(path.dirname(marker)).toBe(
+      path.dirname(guardEventLogPath(WS, ATTEMPT))
+    );
+    expect(path.basename(marker)).toBe('invoked');
   });
 });

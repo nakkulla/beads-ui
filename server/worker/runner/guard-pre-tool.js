@@ -1,6 +1,23 @@
 import fs from 'node:fs';
+import path from 'node:path';
 
 const [repo, target_base, log_path, runner] = process.argv.slice(2);
+
+// Load evidence before any judgment (UI-zoig §3.1): the first invocation
+// creates the invoked marker beside the event log, exclusively, so a later or
+// concurrent call leaves the first one's marker as it is. The path derives
+// from `log_path` rather than a new argument because hook scripts installed by
+// an older server keep calling this module with the same argv layout. Any
+// failure is swallowed: the marker must never block a tool call.
+try {
+  fs.writeFileSync(
+    path.join(path.dirname(log_path), 'invoked'),
+    `${JSON.stringify({ runner, at: Date.now() })}\n`,
+    { flag: 'wx' }
+  );
+} catch {
+  // An existing marker, or an unwritable location, changes no verdict.
+}
 
 /**
  * Leave append-only evidence for the session monitor without blocking a tool

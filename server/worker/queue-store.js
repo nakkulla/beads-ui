@@ -358,6 +358,11 @@
  * characters of command) so a chatty session cannot grow `queue.json` without
  * limit. Null on an attempt that drew none and on every record written before
  * the field existed.
+ * @property {boolean} guard_hook_judged - Whether this Codex attempt's guard
+ * hook load has been judged (UI-zoig §3.4): set once, at the first completed
+ * shell command or when home preparation already recorded
+ * `codex_hook_not_loaded`, so a restart replay never judges — or warns — twice.
+ * Defaults false; Claude and session-lane attempts never set it.
  * @property {boolean} spec_review_stale - Whether this attempt was dispatched
  * with a stale spec_review receipt (UI-dlim §3.2), i.e. the session was asked
  * to run the contract's in-session re-review lane before implementing. Recorded
@@ -4558,6 +4563,7 @@ export function makeAttempt(fields) {
           boundGuardWarnings(fields.guard_warnings)
         )
       : null,
+    guard_hook_judged: fields.guard_hook_judged === true,
     spec_review_stale: fields.spec_review_stale === true,
     disposition: fields.disposition ?? null,
     disposition_receipt: fields.disposition_receipt ?? null,
