@@ -86,7 +86,7 @@ function judgingProgress(queue) {
 
 /**
  * The folded line's per-state counts of a repository with no recommendable
- * candidate — `jev 판정 중 2 · 비교할 이슈 없음 1`, in first-seen row order.
+ * candidate — `jev 판정 중 2 · jev 키 없음 1`, in first-seen row order.
  *
  * @param {Record<string, PlacementStatus>} status
  * @param {string[]} rows

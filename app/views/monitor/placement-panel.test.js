@@ -487,7 +487,7 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
         placement_status: {
           'C-1': { state: 'pending', reason: 'judging', done: 0, total: 1 },
           'C-2': { state: 'pending', reason: 'judging', done: 0, total: 1 },
-          'C-3': { state: 'no_counterpart' }
+          'C-3': { state: 'unavailable', reason: 'key_missing' }
         }
       })
     ]);
@@ -496,7 +496,7 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
 
     expect(
       text(mount.querySelector('details.mon-plan__repo--folded > summary'))
-    ).toBe('배치안 · 추천할 후보 없음 — jev 판정 중 2 · 비교할 이슈 없음 1');
+    ).toBe('배치안 · 추천할 후보 없음 — jev 판정 중 2 · jev 키 없음 1');
   });
 
   test('keeps open the repo group of a repository with only a folded block', () => {
@@ -504,7 +504,9 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
       repo('A', 'repo-a', WS_A),
       repo('C', 'repo-c', WS_C, {
         queue: [],
-        placement_status: { 'C-3': { state: 'no_counterpart' } }
+        placement_status: {
+          'C-3': { state: 'unavailable', reason: 'key_missing' }
+        }
       })
     ]);
 
@@ -515,6 +517,34 @@ describe('monitor placement panel (UI-hf8v §3.3, UI-5cmo §3.3)', () => {
         `#monitor-queue .mon2-sec[data-root-dir="${WS_C}"] details.mon-plan__repo--folded`
       )
     ).not.toBeNull();
+  });
+
+  test('draws a lone candidate without a counterpart as a card in a counted repository (UI-gmww)', () => {
+    const { mount } = setup([
+      repo('C', 'repo-c', WS_C, {
+        queue: [],
+        placement_status: { 'C-3': { state: 'no_counterpart' } },
+        placement_relations: {}
+      })
+    ]);
+
+    click(mount, '.mon-plan__open');
+
+    expect({
+      head: text(mount.querySelector('.mon-plan__open')),
+      folded: Boolean(mount.querySelector('details.mon-plan__repo--folded')),
+      parallel: Boolean(
+        mount.querySelector(
+          `[data-drop="parallel"][data-root-dir="${WS_C}"] [data-preview-id="C-3"]`
+        )
+      ),
+      total: text(mount.querySelector('.mon-plan__total'))
+    }).toEqual({
+      head: '전체 배치안 · 1개 레포',
+      folded: false,
+      parallel: true,
+      total: '1건 · 1개 레포 — repo-c 1'
+    });
   });
 
   test('stands a repo group with its head line for a repository the lane model leaves out', () => {

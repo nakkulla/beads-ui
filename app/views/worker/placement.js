@@ -367,19 +367,23 @@ export function placeLaneLabel(lane) {
 }
 
 /**
- * Whether a candidate state can be recommended: `ready`, and `fixed_only`
- * since a shared file became a fixed condition (UI-lsr4 §3.1).
+ * Whether a candidate state can be recommended: `ready`, `fixed_only` since a
+ * shared file became a fixed condition (UI-lsr4 §3.1), and `no_counterpart`
+ * since a lone candidate takes the parallel lane's waiting end without a jev
+ * call (UI-gmww).
  *
  * @param {string|undefined} state
  * @returns {boolean}
  */
 export function isRecommendableState(state) {
-  return state === 'ready' || state === 'fixed_only';
+  return (
+    state === 'ready' || state === 'fixed_only' || state === 'no_counterpart'
+  );
 }
 
 /**
- * `[추천 배치]`의 켜짐과 title (UI-izba §4.7). `ready`와 `fixed_only`일 때 켜진다
- * (UI-lsr4 §3.1).
+ * `[추천 배치]`의 켜짐과 title (UI-izba §4.7). `ready`·`fixed_only`(UI-lsr4
+ * §3.1)·`no_counterpart`(UI-gmww)일 때 켜지고, 알 수 없는 상태는 꺼진 채 둔다.
  *
  * @param {PlacementStatus} status
  * @returns {{ enabled: boolean, title: string }}
@@ -396,6 +400,11 @@ export function recommendButtonState(status) {
         enabled: true,
         title: '고정 조건으로 계산한 자리를 대기 열에 미리 보입니다'
       };
+    case 'no_counterpart':
+      return {
+        enabled: true,
+        title: '비교할 이슈가 없어 병렬 레인 대기 끝 자리를 미리 보입니다'
+      };
     case 'pending':
       return {
         enabled: false,
@@ -410,7 +419,7 @@ export function recommendButtonState(status) {
         title: status.reason === 'key_missing' ? 'jev 키 없음' : 'jev 응답 없음'
       };
     default:
-      return { enabled: false, title: '비교할 이슈 없음' };
+      return { enabled: false, title: '알 수 없는 상태' };
   }
 }
 
@@ -637,7 +646,7 @@ export function outsideLineText(line) {
 /**
  * The short state word of a candidate that cannot be recommended — the
  * `recommendButtonState` title without the pending pair count (`jev 판정 중`,
- * `jev 키 없음`, `jev 응답 없음`, `비교할 이슈 없음`). The monitor's folded
+ * `jev 키 없음`, `jev 응답 없음`, `알 수 없는 상태`). The monitor's folded
  * repository line counts candidates by it (UI-hf8v §3.3).
  *
  * @param {PlacementStatus} status
@@ -671,8 +680,8 @@ export function latestJudgedAt(queue) {
 }
 
 /**
- * The recommendable candidates of a snapshot: `ready` and `fixed_only`
- * (UI-lsr4 §3.1). Empty without `placement_status`.
+ * The recommendable candidates of a snapshot: `ready`, `fixed_only`
+ * (UI-lsr4 §3.1) and `no_counterpart` (UI-gmww). Empty without `placement_status`.
  *
  * @param {any} queue
  * @returns {string[]}
@@ -778,7 +787,7 @@ export function placementRecompute(order) {
 
 /**
  * The full plan of one snapshot: every recommendable candidate (`ready`,
- * `fixed_only`) starts checked — warnings and low-confidence rows included,
+ * `fixed_only`, `no_counterpart`) starts checked — warnings and low-confidence rows included,
  * since the cards and rows show them and a person presses the apply button — the
  * reader's `checks` override that, and the plan itself is computed with the
  * checked set only. `base` is the plan of every recommendable candidate: an

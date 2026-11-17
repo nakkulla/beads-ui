@@ -302,7 +302,7 @@ describe('[추천 배치] button', () => {
     ],
     [{ state: 'unavailable', reason: 'key_missing' }, 'jev 키 없음'],
     [{ state: 'unavailable', reason: 'timeout' }, 'jev 응답 없음'],
-    [{ state: 'no_counterpart' }, '비교할 이슈 없음']
+    [{ state: 'mystery' }, '알 수 없는 상태']
   ])('is disabled with its reason for %o', (status, title) => {
     const { mount } = mountView(
       vi.fn(),
@@ -313,6 +313,92 @@ describe('[추천 배치] button', () => {
 
     expect(button?.disabled).toBe(true);
     expect(button?.title).toBe(title);
+  });
+});
+
+describe('a lone candidate without a counterpart (UI-gmww)', () => {
+  /**
+   * An empty queue and lanes with one candidate the server could not compare.
+   *
+   * @returns {any}
+   */
+  function loneQueue() {
+    return queueOf({
+      queue: [],
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] }
+      ],
+      lane_states: {},
+      placement_status: { 'RD-1': { state: 'no_counterpart' } },
+      placement_relations: {}
+    });
+  }
+
+  test('enables [추천 배치] with the parallel waiting-end title', () => {
+    const { mount } = mountView(vi.fn(), loneQueue());
+
+    const button = recommendButton(mount, 'RD-1');
+
+    expect(button?.disabled).toBe(false);
+    expect(button?.title).toBe(
+      '비교할 이슈가 없어 병렬 레인 대기 끝 자리를 미리 보입니다'
+    );
+  });
+
+  test('enables [전체 배치안]', () => {
+    const { mount } = mountView(vi.fn(), loneQueue());
+
+    const open = /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('.worker-plan__open')
+    );
+
+    expect(open?.disabled).toBe(false);
+  });
+
+  test('draws one checked dotted card in the parallel area and no reason box', () => {
+    const { mount } = mountView(vi.fn(), loneQueue());
+
+    click(mount.querySelector('.worker-plan__open'));
+
+    const cards = Array.from(mount.querySelectorAll('.worker-card--preview'));
+    const box = /** @type {HTMLInputElement|null} */ (
+      previewCard(mount, 'RD-1')?.querySelector('.worker-plan__include')
+    );
+    expect({
+      cards: cards.map((card) => card.getAttribute('data-preview-id')),
+      parallel: Boolean(cards[0]?.closest('[data-area="parallel"]')),
+      checked: box?.checked,
+      lines: previewCard(mount, 'RD-1')?.querySelectorAll('.worker-plan__line')
+        .length,
+      rows: mount.querySelectorAll('.worker-plan__row').length
+    }).toEqual({
+      cards: ['RD-1'],
+      parallel: true,
+      checked: true,
+      lines: 0,
+      rows: 0
+    });
+  });
+
+  test('sends the candidate to the parallel waiting end on [전체 적용]', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      queue: { ...loneQueue(), revision: 6, placement_status: {} }
+    });
+    const { mount } = mountView(transport, loneQueue());
+    click(mount.querySelector('.worker-plan__open'));
+
+    click(mount.querySelector('.worker-plan__apply'));
+    await flush();
+
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-queue-place',
+        { bead_id: 'RD-1', lane: 'parallel', index: 0, expected_revision: 5 }
+      ]
+    ]);
   });
 });
 
