@@ -3026,7 +3026,7 @@ function recoverRunningAttempts(att, key) {
  */
 function recoverReviewSessions(att, key) {
   const store = att.runtime.queueStore;
-  /** @type {Array<{ attempt_id: string, cause: string }>} */
+  /** @type {Array<{ attempt_id: string, cause: string, attempt: any }>} */
   const doomed = [];
   try {
     const q = store.snapshot(key);
@@ -3042,7 +3042,11 @@ function recoverReviewSessions(att, key) {
         continue;
       }
       if (a.status === 'pending') {
-        doomed.push({ attempt_id, cause: 'session_lost:never_launched' });
+        doomed.push({
+          attempt_id,
+          cause: 'session_lost:never_launched',
+          attempt: a
+        });
         continue;
       }
       const identity = attemptProcessIdentity(a);
@@ -3051,7 +3055,11 @@ function recoverReviewSessions(att, key) {
           ? att.processController.probe(identity).state
           : 'gone';
       if (state === 'gone' || state === 'recycled') {
-        doomed.push({ attempt_id, cause: 'session_lost:process_gone' });
+        doomed.push({
+          attempt_id,
+          cause: 'session_lost:process_gone',
+          attempt: a
+        });
       }
     }
   } catch (err) {
@@ -3070,6 +3078,11 @@ function recoverReviewSessions(att, key) {
         plan.attempt_id,
         err
       );
+    }
+    // A launched session's guard evidence, settled before the record leaves
+    // `running` — no monitor reattaches to it below (UI-zoig §3.5).
+    if (plan.cause === 'session_lost:process_gone') {
+      att.sessionMonitors?.settleDead?.(key, plan.attempt);
     }
     try {
       const settled = store.settleReviewSession(key, {

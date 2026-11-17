@@ -671,6 +671,39 @@ export function createSessionMonitors(deps) {
   }
 
   /**
+   * Settle the guard evidence of an attempt whose process died while no
+   * monitor watched it (UI-zoig §3.5): an unjudged Codex attempt is judged from
+   * its whole log first, so the warning line the judge appends is consumed by
+   * the guard-events drain that follows.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   */
+  function settleDeadGuard(workspace, attempt) {
+    if (
+      attempt.runner === 'codex' &&
+      attempt.exec !== 'session' &&
+      attempt.guard_hook_judged !== true
+    ) {
+      const file = logFileOf(workspace, attempt);
+      judgeFromLog(
+        workspace,
+        attempt.attempt_id,
+        specForAttempt(attempt),
+        file,
+        logSizeOf(file)
+      );
+    }
+    monitorGuardEvents({
+      workspace,
+      attempt_id: attempt.attempt_id,
+      store: deps.store,
+      sessionLog: deps.sessionLog,
+      fs
+    }).stop();
+  }
+
+  /**
    * The current byte size of a log, or 0 when it cannot be read.
    *
    * @param {string} file
@@ -1033,29 +1066,7 @@ export function createSessionMonitors(deps) {
         return false;
       }
       if (!pidStillOurs(attempt)) {
-        // Judged before the guard-events drain below, so the warning line the
-        // judge appends is consumed by that same drain (UI-zoig §3.5).
-        if (
-          attempt.runner === 'codex' &&
-          attempt.exec !== 'session' &&
-          attempt.guard_hook_judged !== true
-        ) {
-          const file = logFileOf(workspace, attempt);
-          judgeFromLog(
-            workspace,
-            attempt_id,
-            specForAttempt(attempt),
-            file,
-            logSizeOf(file)
-          );
-        }
-        monitorGuardEvents({
-          workspace,
-          attempt_id: attempt.attempt_id,
-          store: deps.store,
-          sessionLog: deps.sessionLog,
-          fs
-        }).stop();
+        settleDeadGuard(workspace, attempt);
         settleDeadPending(workspace, attempt, options);
         return false;
       }
@@ -1259,6 +1270,28 @@ export function createSessionMonitors(deps) {
       child_identities.delete(key);
       settleGuardPending(entry);
       return true;
+    },
+
+    /**
+     * Settle the guard evidence of a dead attempt another recovery path
+     * terminalizes before any monitor could start on it — the orphaned
+     * `review_session` (UI-zoig §3.5). Never throws.
+     *
+     * @param {string} workspace
+     * @param {any} attempt
+     */
+    settleDead(workspace, attempt) {
+      if (!attempt || typeof attempt.attempt_id !== 'string') {
+        return;
+      }
+      if (monitors.has(keyOf(workspace, attempt.attempt_id))) {
+        return;
+      }
+      try {
+        settleDeadGuard(workspace, attempt);
+      } catch (err) {
+        log('dead guard settlement failed for %s: %o', attempt.attempt_id, err);
+      }
     },
 
     /**

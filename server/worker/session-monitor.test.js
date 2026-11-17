@@ -1191,6 +1191,21 @@ describe('worker/session-monitor Codex hook-load judgment (UI-zoig §3.4-3.5)', 
     );
   });
 
+  test('judges a dead attempt settled by another recovery path', () => {
+    const env = setup();
+    seedGuardDir(false);
+    sessionWrites(env.session_log, codexCommandLine('item.completed'));
+    const attempt = seedRunningAttempt(env.store, { runner: 'codex' });
+
+    env.monitors.settleDead(WS, attempt);
+    env.monitors.settleDead(WS, env.store.snapshot(WS).attempts['att-1']);
+
+    expect(hookWarnings(env)).toHaveLength(1);
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_hook_judged).toBe(
+      true
+    );
+  });
+
   test('keeps one warning across two reattaches', () => {
     const env = setup();
     seedGuardDir(false);
