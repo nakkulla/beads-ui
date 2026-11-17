@@ -19,6 +19,69 @@ const FIXTURE = new URL(
   import.meta.url
 );
 
+/**
+ * The interactive transcript line that launches a backgrounded `Agent`.
+ *
+ * @param {string} launch_id
+ */
+function backgroundAgentLaunch(launch_id) {
+  return {
+    type: 'assistant',
+    timestamp: '2026-11-17T06:49:00.000Z',
+    message: {
+      id: 'm-launch',
+      model: 'claude-opus-4-8',
+      content: [
+        {
+          type: 'tool_use',
+          name: 'Agent',
+          id: launch_id,
+          input: { subagent_type: 'codex-runner', run_in_background: true }
+        }
+      ]
+    }
+  };
+}
+
+/**
+ * The immediate `async_launched` tool_result the interactive transcript records.
+ *
+ * @param {string} launch_id
+ */
+function backgroundAgentAck(launch_id) {
+  return {
+    type: 'user',
+    timestamp: '2026-11-17T06:49:01.000Z',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: launch_id, content: 'started' }
+      ]
+    },
+    toolUseResult: { isAsync: true, status: 'async_launched' }
+  };
+}
+
+/**
+ * The queued `task-notification` attachment that ends a backgrounded task.
+ *
+ * @param {string} launch_id
+ * @param {string} status
+ */
+function transcriptTaskNotification(launch_id, status) {
+  return {
+    type: 'attachment',
+    isSidechain: false,
+    timestamp: '2026-11-17T06:57:40.645Z',
+    attachment: {
+      type: 'queued_command',
+      commandMode: 'task-notification',
+      prompt: `<task-notification>\n<task-id>ab79adc9c0591c7b1</task-id>\n<tool-use-id>${launch_id}</tool-use-id>\n<status>${status}</status>\n</task-notification>`,
+      usage: { totalTokens: 42770, toolUses: 4, durationMs: 516358 }
+    }
+  };
+}
+
 describe('terminal transcript folding', () => {
   test('reuses the Claude fold for root segments and child legs', () => {
     const file = new URL(
@@ -1117,6 +1180,47 @@ describe('worker/session-observation', () => {
     expect(
       /** @type {any} */ (observed.delegations[0]).usage.input_tokens
     ).toBe(10);
+  });
+
+  test('closes a backgrounded Agent on its transcript task-notification attachment', () => {
+    const rows = [
+      backgroundAgentLaunch('toolu_bg'),
+      backgroundAgentAck('toolu_bg'),
+      transcriptTaskNotification('toolu_bg', 'completed')
+    ];
+
+    const observed = foldSessionObservation(
+      'claude',
+      `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`,
+      { session_id: 'root' }
+    );
+
+    expect(observed.delegations).toHaveLength(1);
+    expect(observed.delegations[0]).toMatchObject({
+      launch_id: 'toolu_bg',
+      status: 'done',
+      completed_at: Date.parse('2026-11-17T06:57:40.645Z'),
+      usage: { total_tokens: 42770 }
+    });
+  });
+
+  test('ignores a transcript task-notification for a launch it never saw start', () => {
+    const rows = [
+      backgroundAgentLaunch('toolu_bg'),
+      backgroundAgentAck('toolu_bg'),
+      transcriptTaskNotification('toolu_bash', 'completed')
+    ];
+
+    const observed = foldSessionObservation(
+      'claude',
+      `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`,
+      { session_id: 'root' }
+    );
+
+    expect(observed.delegations.map((row) => row.launch_id)).toEqual([
+      'toolu_bg'
+    ]);
+    expect(observed.delegations[0]).toMatchObject({ status: 'running' });
   });
 
   test('keeps sidechain-only Claude records out of root usage and model', () => {

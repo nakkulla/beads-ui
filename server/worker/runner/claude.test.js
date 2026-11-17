@@ -206,6 +206,41 @@ function asyncLaunchLine(result) {
 }
 
 /**
+ * The queued `task-notification` attachment an interactive project transcript
+ * records when a backgrounded `Agent` stops (shape copied from a real
+ * transcript, prompt trimmed).
+ *
+ * @param {{ status?: string, tool_use_id?: string|null }} over
+ * @returns {any}
+ */
+function transcriptNotificationLine(over) {
+  const tool_use_id =
+    over.tool_use_id === undefined
+      ? 'toolu_012ZVqhPDyiedsAVxBJoGZQe'
+      : over.tool_use_id;
+  return {
+    type: 'attachment',
+    isSidechain: false,
+    timestamp: '2026-11-17T06:57:40.645Z',
+    attachment: {
+      type: 'queued_command',
+      commandMode: 'task-notification',
+      origin: { kind: 'task-notification', producer: 'session-task' },
+      prompt: [
+        '<task-notification>',
+        '<task-id>ab79adc9c0591c7b1</task-id>',
+        ...(tool_use_id ? [`<tool-use-id>${tool_use_id}</tool-use-id>`] : []),
+        `<status>${over.status ?? 'completed'}</status>`,
+        '<summary>Agent "review" finished</summary>',
+        '<usage><subagent_tokens>42770</subagent_tokens></usage>',
+        '</task-notification>'
+      ].join('\n'),
+      usage: { totalTokens: 42770, toolUses: 4, durationMs: 516358 }
+    }
+  };
+}
+
+/**
  * The parent `user` line whose `tool_result` closes one tool id.
  *
  * @param {string} tool_use_id
@@ -1591,6 +1626,47 @@ describe('runner/claude liftDelegation (UI-2mpn §5.1)', () => {
       patch: { status: 'completed', end_time: 1787626311813 },
       uuid: 'u-updated'
     };
+
+    expect(liftDelegation(raw)).toBe(null);
+  });
+
+  test('lifts a dated notification end from an interactive transcript attachment', () => {
+    const raw = transcriptNotificationLine({ status: 'completed' });
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toEqual({
+      kind: 'end',
+      source: 'notification',
+      launch_id: 'toolu_012ZVqhPDyiedsAVxBJoGZQe',
+      is_error: false,
+      result_status: 'completed',
+      agent_id: 'ab79adc9c0591c7b1',
+      agent_type: null,
+      model: null,
+      usage: null,
+      total_tokens: 42770,
+      at: Date.parse('2026-11-17T06:57:40.645Z')
+    });
+  });
+
+  test('carries a killed status from a transcript attachment', () => {
+    const raw = transcriptNotificationLine({ status: 'killed' });
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toMatchObject({ kind: 'end', result_status: 'killed' });
+  });
+
+  test('returns null for a transcript attachment naming no tool-use-id', () => {
+    const raw = transcriptNotificationLine({ tool_use_id: null });
+
+    expect(liftDelegation(raw)).toBe(null);
+  });
+
+  test('returns null for a queued_command that is not a task-notification', () => {
+    const raw = transcriptNotificationLine({ status: 'completed' });
+    raw.attachment.commandMode = 'prompt';
 
     expect(liftDelegation(raw)).toBe(null);
   });

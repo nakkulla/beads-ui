@@ -331,6 +331,19 @@ function epochOf(value) {
 }
 
 /**
+ * The trimmed text of one `<tag>` element in a `<task-notification>` prompt,
+ * or null when the tag is absent or empty.
+ *
+ * @param {string} prompt
+ * @param {'tool-use-id'|'task-id'|'status'} tag
+ * @returns {string|null}
+ */
+function notificationTag(prompt, tag) {
+  const match = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(prompt);
+  return match ? nonEmpty(match[1].trim()) : null;
+}
+
+/**
  * The subagent usage block of a terminal `tool_use_result`, or null when it is
  * absent or not four integers.
  *
@@ -409,6 +422,45 @@ export function liftDelegation(raw) {
       // §2.1: the line carries no `timestamp`, and the receive clock would make
       // the live tail and the replay disagree about the same line.
       at: null
+    };
+  }
+  // The interactive project transcript records the same termination as a
+  // queued `task-notification` command instead of a `system` line. Only this
+  // line carries the launch id, task id, status, token total and a timestamp
+  // together; its `queue-operation` twin needs enqueue/remove pairing and the
+  // peer hand-back `user` line names no launch id.
+  if (
+    raw.type === 'attachment' &&
+    raw.attachment &&
+    typeof raw.attachment === 'object' &&
+    raw.attachment.type === 'queued_command' &&
+    raw.attachment.commandMode === 'task-notification'
+  ) {
+    const prompt = nonEmpty(raw.attachment.prompt) ?? '';
+    const launch_id = notificationTag(prompt, 'tool-use-id');
+    if (!launch_id) {
+      return null;
+    }
+    const notified_usage =
+      raw.attachment.usage && typeof raw.attachment.usage === 'object'
+        ? raw.attachment.usage
+        : {};
+    return {
+      kind: 'end',
+      source: 'notification',
+      launch_id,
+      is_error: false,
+      result_status: notificationTag(prompt, 'status'),
+      agent_id: notificationTag(prompt, 'task-id'),
+      agent_type: null,
+      model: null,
+      usage: null,
+      total_tokens:
+        Number.isInteger(notified_usage.totalTokens) &&
+        notified_usage.totalTokens >= 0
+          ? notified_usage.totalTokens
+          : null,
+      at
     };
   }
   const parent_tool_use_id = nonEmpty(raw.parent_tool_use_id);
