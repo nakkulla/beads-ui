@@ -545,6 +545,43 @@ function staleResidueAttempt(patch = {}) {
   };
 }
 
+/**
+ * A quick_fix landing of `BEAD` stopped on a terminal deploy failure
+ * (UI-1fss §4.2): the failed attempt names the failed run `dep-1`.
+ *
+ * @param {{ attempt?: Record<string, any>, operation?: Record<string, any> }} [patch]
+ * @returns {Record<string, any>}
+ */
+function landingDeployQueue(patch = {}) {
+  return {
+    attempts: {
+      land: {
+        attempt_id: 'land',
+        bead_id: BEAD,
+        status: 'failed',
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: 'a'.repeat(40),
+          reason: 'script_failed',
+          deploy_operation_id: 'dep-1'
+        },
+        ...patch.attempt
+      }
+    },
+    repo_operations: {
+      'dep-1': {
+        kind: 'deploy',
+        state: 'failed',
+        subjects: [{ bead_id: BEAD }],
+        log_path: '/logs/deploy.log',
+        failure: { code: 'script_failed', summary: 'restart failed' },
+        ...patch.operation
+      }
+    }
+  };
+}
+
 describe('failure conversation entry block (UI-18a5 §3.3)', () => {
   test('opens on the pinned dotfiles entry block', () => {
     const digest = createHash('sha256')
@@ -791,6 +828,65 @@ describe('failureHandoffTarget (UI-18a5 §3.4)', () => {
     const target = failureHandoffTarget(queue, BEAD);
 
     expect(target).toBeNull();
+  });
+
+  test('targets a quick_fix landing deploy failure by its failed run', () => {
+    const queue = landingDeployQueue();
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target).toEqual({
+      kind: 'quickfix_landing',
+      identity: 'quickfix_landing:dep-1'
+    });
+  });
+
+  test.each([
+    { operation: { superseded_by: 'dep-2' } },
+    { operation: { dismissed: true } },
+    { operation: { state: 'running' } },
+    { operation: { failure: { code: 'condition_wait' } } },
+    {
+      attempt: {
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: 'a'.repeat(40),
+          reason: 'script_failed'
+        }
+      }
+    },
+    {
+      attempt: {
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: 'a'.repeat(40),
+          reason: 'head_mismatch',
+          deploy_operation_id: 'dep-1'
+        }
+      }
+    },
+    { attempt: { quickfix_lane: false } }
+  ])('targets no ineligible landing deploy failure: %j', (patch) => {
+    const queue = landingDeployQueue(patch);
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target?.kind).not.toBe('quickfix_landing');
+  });
+
+  test('carries the landing exit line in the landing failure context', () => {
+    const queue = landingDeployQueue();
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context).toMatchObject({
+      failure_class: '착지 실패',
+      reason: 'script_failed',
+      stage: 'repo_operations',
+      detail:
+        'restart failed · 워커가 이어감이면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행한다',
+      log_path: '/logs/deploy.log'
+    });
   });
 });
 

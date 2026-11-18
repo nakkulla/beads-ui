@@ -1313,6 +1313,33 @@ test('propagates terminal deployment failure', async () => {
   });
 });
 
+test('records the failed deploy run on the landing failure', async () => {
+  const { landing, store } = makeLanding({
+    config: { ok: true, present: true },
+    deploy: {
+      ok: true,
+      inert: false,
+      operation_id: 'deploy-1',
+      timeout_ms: 500
+    },
+    evidence: {
+      state: 'failed',
+      operation_id: 'deploy-2',
+      code: 'deploy_script_failed'
+    }
+  });
+
+  await settle(landing);
+
+  expect(
+    store.updateAttempt.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toMatchObject({
+    cursor: 'repo_operations',
+    reason: 'deploy_script_failed',
+    deploy_operation_id: 'deploy-2'
+  });
+});
+
 const FAILED_DEPLOY_PROGRESS = Object.freeze({
   cursor: 'repo_operations',
   head_sha: HEAD_SHA,
