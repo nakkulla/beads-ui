@@ -31,23 +31,23 @@ Bead 본문의 권고 방향("`session-hub open` 응답의 `dialog`·`startup_ki
 
 ## 2. 검증된 전제
 
-- beads-ui 세션 레인 창은 비중계 `session-hub open --marker-option … -- <codex>`로 열리고, 응답에서 `status`·`pane`·`tmux_session`만 읽는다 — `server/worker/tmux-launcher.js:821-899`
+- beads-ui 세션 레인 창은 비중계 `session-hub open --marker-option … -- <codex>`로 열리고, 응답에서 `status`·`pane`·`tmux_session`만 읽는다 — `server/worker/tmux-launcher.js:824-892`
 - 비중계 `open` 응답은 `status`·`session_id`·`tmux_session`·`window`·`pane`·`pid`·`server_started`·`placement`·`note`뿐이고 `dialog`가 없다 — dotfiles `src/shell/lib/session_hub/launch.py:391-399`, `src/shell/lib/session_hub/cli.py:222-246`
 - `--agent codex`는 중계 모드에서만 허용되고, 중계 모드는 `--marker-option`을 거부한다 — dotfiles `src/shell/lib/session_hub/cli.py:226`, `:330`
 - 허브의 `codex_screen.startup()`은 SessionStart 이전 화면을 `dialog=startup|trust|unknown_screen`으로 나누고, `startup`에는 `startup_kind=hooks|update|model|login|unknown`을 붙인다. 입력 프롬프트가 보이면 `None`이다 — dotfiles `src/shell/lib/session_hub/codex_screen.py:128-170`
 - 선택지 형식이 아닌 화면은 로그인 문구가 보이는 경우(`startup/login`)를 빼고 모두 `unknown_screen`이다(첫 선택 화면 전 기동 중 화면 포함) — dotfiles `src/shell/lib/session_hub/codex_screen.py:147-154`, `:166-168`
-- 재개 기동은 실행 전에 `resume_session_id`를 레코드 `session_id`(`session_id_source=launch`)에 적으므로, 레코드 `session_id`의 유무로는 SessionStart 통과를 알 수 없다 — `server/worker/scheduler.js:15982-15983`, `:16076-16081`
+- 재개 기동은 실행 전에 `resume_session_id`를 레코드 `session_id`(`session_id_source=launch`)에 적으므로, 레코드 `session_id`의 유무로는 SessionStart 통과를 알 수 없다 — `server/worker/scheduler.js:16435-16436`, `:16529-16534`
 - 중계 모드의 시작 화면 관측은 화면을 답한 뒤 다음 화면이 뜰 때까지 다시 관측한다. 시작 화면은 연달아 뜰 수 있다 — dotfiles `src/shell/lib/session_hub/codex_startup.py:176-246`
 - 허브는 `alive --pane --marker-option --marker-value`로 마커를 확인하며 창 하나의 생존을 답한다 — dotfiles `src/shell/lib/session_hub/cli.py:110-115`, `:256-275`
-- beads-ui는 대화형 세션 점검을 30초마다 돌리고, 그때 창의 `@agent_running`·`@agent_attention`으로 `turn_state`를 정한다. 두 옵션이 비면 `idle`이다 — `server/worker/attach.js:470`, `server/worker/scheduler.js:1588-1599`, `:13842-13855`
-- `session_id`가 없으면 같은 점검이 창 옵션 `@agent_session`을 읽어 채운다. Codex 쪽은 알림 훅이 이 옵션을 쓴다 — `server/worker/scheduler.js:13856-13878`, dotfiles `src/codex/hooks/codex-notifier-service.py:1207`
-- 세션 레인 창의 turn 사실은 시도 기록 `attempt.interactive`로 옮겨 적힌다 — `server/worker/scheduler.js:11441-11475`
-- 실행 중 세션 레인 타일의 슬롯 3 진행 줄은 `interactiveTurnWord`가 고른 낱말(`대화 중`·`답 대기`)과 마지막 발췌를 그린다. `idle`에 처리한 메시지가 없으면 낱말이 비어 줄이 사라진다 — `app/views/worker/lanes.js:1864-1882`, `:2091-2115`
+- beads-ui는 대화형 세션 점검을 30초마다 돌리고, 그때 창의 `@agent_running`·`@agent_attention`으로 `turn_state`를 정한다. 두 옵션이 비면 `idle`이다 — `server/worker/attach.js:470`, `server/worker/scheduler.js:1639-1650`, `:14144-14157`
+- `session_id`가 없으면 같은 점검이 창 옵션 `@agent_session`을 읽어 채운다. Codex 쪽은 알림 훅이 이 옵션을 쓴다 — `server/worker/scheduler.js:14158-14180`, dotfiles `src/codex/hooks/codex-notifier-service.py:1207`
+- 세션 레인 창의 turn 사실은 시도 기록 `attempt.interactive`로 옮겨 적힌다 — `server/worker/scheduler.js:11532-11566`
+- 실행 중 세션 레인 타일의 슬롯 3 진행 줄은 `interactiveTurnWord`가 고른 낱말(`대화 중`·`답 대기`)과 마지막 발췌를 그린다. `idle`에 처리한 메시지가 없으면 낱말이 비어 줄이 사라진다 — `app/views/worker/lanes.js:1938-1956`, `:2165-2189`
 - 카드 문법 슬롯 3 행에는 `세션 레인 대화 상태 줄(`대화 중 <경과>`·`답 대기` + 발췌)`이 있다 — `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md:272`
 - 세션 레인 기동 알림은 기동할 때 한 번만 보내고, 그 뒤 답 대기는 beads-ui가 보내지 않는다 — `server/worker/notify.js:795-808`
-- 현행 결정에 따라 대기 판정 사유 알림(`action_required`·`overdue`)은 꺼져 있다 — `docs/adr/UI-6xw7-compare-executed-legs-exec-profile.md:474`
-- 실행 중 세션 레인 타일에는 `[세션에서 이어가기]`·`[워커로 이어가기]`가 서지 않는다 — `app/views/worker/tile-resolve.js:338-346`
-- 이벤트 기록은 기동 때 `<라벨> 세션 시작 · <출처>` 한 줄을 남긴다 — `server/worker/scheduler.js:13798-13804`
+- 현행 결정(ADR UI-1fss가 UI-6xw7에서 승계한 조항)에 따라 대기 판정 사유 알림(`action_required`·`overdue`)은 꺼져 있다 — `docs/adr/UI-1fss-quickfix-landing-failure-conversation.md:1186`
+- 실행 중 세션 레인 타일에는 `[세션에서 이어가기]`·`[워커로 이어가기]`가 서지 않는다 — `app/views/worker/tile-resolve.js:347-355`
+- 이벤트 기록은 기동 때 `<라벨> 세션 시작 · <출처>` 한 줄을 남긴다 — `server/worker/scheduler.js:14100-14106`
 
 ## 3. 설계
 
@@ -118,7 +118,7 @@ Bead 본문의 권고 방향("`session-hub open` 응답의 `dialog`·`startup_ki
   `tmux 창에서 선택해야 시작됩니다`. 기존 `worker_notify` 설정을 따르고, 꺼져 있으면
   보내지 않는다.
 - 시작 화면 대기는 대기 판정(`wait-judgment.js`) 사유가 아니라 실행 중 세션을 관측한
-  사실이다. 그래서 UI-6xw7의 "대기 사유 알림은 끈다" 조항을 뒤집지 않는다.
+  사실이다. 그래서 ADR UI-1fss가 승계한 "대기 사유 알림은 끈다" 조항을 뒤집지 않는다.
 - 대화 자동 기동과의 관계: 이 세션이 이미 사람이 답할 창이므로 문의·해결 대화를
   따로 띄우지 않는다. 시작 화면에 키를 대신 누르지도 않는다.
 
@@ -166,5 +166,5 @@ Bead 본문의 권고 방향("`session-hub open` 응답의 `dialog`·`startup_ki
 
 - 전제: ADR UI-jlov — dotfiles가 소유한 규칙은 설치본 CLI의 JSON을 소비하고 JS로 복제하지 않는다. 시작 화면 분류를 허브 명령으로 받는 근거다.
 - 세션 레인 시작 화면 대기 관측과 `startup_wait` 기록 — 관측 호출 하나와 레코드 필드 하나라 같은 저장소 안에서 되돌리기 쉽다 → ADR 아님
-- 시작 화면 대기 5분 단일 알림 — 알림 호출 하나를 지우면 되돌아가고, 대기 판정 사유 알림 조항(UI-6xw7)을 바꾸지 않는다 → ADR 아님
+- 시작 화면 대기 5분 단일 알림 — 알림 호출 하나를 지우면 되돌아가고, 대기 판정 사유 알림 조항(ADR UI-1fss 승계분)을 바꾸지 않는다 → ADR 아님
 - 진행 줄 낱말 `시작 화면 대기 · <라벨>`의 자리와 문구 — UI 배치·라벨(기본 제외 목록) → ADR 아님
