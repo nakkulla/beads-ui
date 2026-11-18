@@ -1340,6 +1340,27 @@ test('records the failed deploy run on the landing failure', async () => {
   });
 });
 
+test('records the deploy run a pre-spawn failure settled on the landing failure', async () => {
+  const { landing, store } = makeLanding({
+    config: { ok: true, present: true },
+    deploy: {
+      ok: false,
+      code: 'repo_ops_worktree_align_failed',
+      operation_id: 'deploy-1'
+    }
+  });
+
+  await settle(landing);
+
+  expect(
+    store.updateAttempt.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toMatchObject({
+    cursor: 'repo_operations',
+    reason: 'repo_ops_worktree_align_failed',
+    deploy_operation_id: 'deploy-1'
+  });
+});
+
 const FAILED_DEPLOY_PROGRESS = Object.freeze({
   cursor: 'repo_operations',
   head_sha: HEAD_SHA,

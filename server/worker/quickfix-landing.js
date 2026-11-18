@@ -1644,12 +1644,20 @@ export function createQuickfixLanding(deps) {
           );
         }
         if (!deployed.ok) {
+          // A pre-spawn failure settles its prerecorded run and names it; that
+          // run is this row's handoff target like a script failure (UI-1fss
+          // §4.1-4.2), and the reader re-checks that it is a failed tip.
+          const failed_run = /** @type {{ operation_id?: unknown }} */ (
+            deployed
+          ).operation_id;
           return fail(
             attempt_id,
             deployed.code || 'repo_operation_failed',
             'repo_operations',
             head_sha,
-            landing_extra,
+            typeof failed_run === 'string'
+              ? { ...landing_extra, deploy_operation_id: failed_run }
+              : landing_extra,
             bound
           );
         }
