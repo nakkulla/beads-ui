@@ -30,6 +30,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import {
   conversationAutoLaunchEnabled,
@@ -161,6 +162,67 @@ export const MANUAL_DEPLOY_FAILURE_CLASS = '수동 배포 실패';
  * §3.2, dotfiles `Worker 세션 대화` 「실패」 목록).
  */
 export const STALE_RESIDUE_FAILURE_CLASS = '잔재 처분 실패';
+
+/** The `클래스:` word of a quick_fix landing deploy failure (UI-1fss §4.1). */
+export const LANDING_FAILURE_CLASS = '착지 실패';
+
+/**
+ * The exit a quick_fix landing deploy failure's `상황` diagnosis names
+ * (UI-1fss §4.2): what `인계` makes the Worker do.
+ */
+export const LANDING_FAILURE_EXIT_LINE =
+  '워커가 이어감이면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행한다';
+
+/**
+ * The Bead's quick_fix landing that stopped on a terminal deploy failure
+ * (UI-1fss §4.1-4.2): its latest implementation attempt is a failed quick_fix
+ * lane whose landing record names, at `repo_operations`, the deploy run that
+ * failed (`deploy_operation_id`), and whose failure a settlement rerun can
+ * clear. That run is still the failed, unanswered tip — not superseded by a
+ * rerun, not dismissed — and its failure is not a condition wait, which has
+ * its own deadline conversation. A landing written before the id existed
+ * names no run and is not one.
+ *
+ * @param {any} queue - Queue snapshot.
+ * @param {string} bead_id
+ * @returns {{ attempt: any, operation_id: string, operation: any }|null}
+ */
+export function landingDeployFailure(queue, bead_id) {
+  /** @type {any} */
+  let latest = null;
+  for (const attempt of Object.values(queue?.attempts || {})) {
+    const record = /** @type {any} */ (attempt);
+    if (record?.bead_id === bead_id && isImplementationAttempt(record)) {
+      latest = record;
+    }
+  }
+  const landing = latest?.quickfix_landing;
+  if (
+    !latest ||
+    latest.status !== 'failed' ||
+    latest.quickfix_lane !== true ||
+    landing?.cursor !== 'repo_operations' ||
+    typeof landing.deploy_operation_id !== 'string' ||
+    landing.deploy_operation_id.length === 0 ||
+    resumeKindOf(landing) !== 'settlement'
+  ) {
+    return null;
+  }
+  const operation_id = landing.deploy_operation_id;
+  const operation = queue?.repo_operations?.[operation_id];
+  if (
+    !operation ||
+    typeof operation !== 'object' ||
+    operation.kind !== 'deploy' ||
+    operation.state !== 'failed' ||
+    operation.failure?.code === 'condition_wait' ||
+    operation.superseded_by ||
+    operation.dismissed
+  ) {
+    return null;
+  }
+  return { attempt: latest, operation_id, operation };
+}
 
 /**
  * The Bead's terminal dispatch residue disposition failure (UI-68r5 §3.2):
@@ -506,6 +568,41 @@ export function resolveFailureContext(queue, bead_id, foreign = null) {
 }
 
 /**
+ * The identity of the Bead's failure row (UI-1fss §4.3): its class, cause and
+ * stage, its Worker exit's identity, and the Bead's latest implementation
+ * attempt — or null while no failure row stands. A
+ * `이 행에는 Worker 출구 없음` refusal stands only while this stays the same,
+ * so a row replaced by another failure, one with a Worker exit included,
+ * drops it. The self-repair verdict `repairFailureContext` adds later is left
+ * out: it changes what the row says, not which row it is.
+ *
+ * @param {any} queue - Queue snapshot.
+ * @param {string} bead_id - The row key.
+ * @returns {string|null}
+ */
+export function failureRowIdentity(queue, bead_id) {
+  const context = baseFailureContext(queue, bead_id, null);
+  if (context === null) {
+    return null;
+  }
+  /** @type {string|null} */
+  let latest = null;
+  for (const [attempt_id, attempt] of Object.entries(queue?.attempts || {})) {
+    const record = /** @type {any} */ (attempt);
+    if (record.bead_id === bead_id && isImplementationAttempt(record)) {
+      latest = attempt_id;
+    }
+  }
+  return JSON.stringify([
+    context.failure_class,
+    context.reason,
+    context.stage ?? null,
+    failureHandoffTarget(queue, bead_id)?.identity ?? null,
+    latest
+  ]);
+}
+
+/**
  * @param {any} queue
  * @param {string} bead_id
  * @param {any} foreign
@@ -570,6 +667,29 @@ function baseFailureContext(queue, bead_id, foreign) {
       log_path:
         typeof terminal?.log_path === 'string' && terminal.log_path.length > 0
           ? terminal.log_path
+          : null
+    };
+  }
+  const landing = landingDeployFailure(queue, bead_id);
+  if (landing) {
+    const failure = landing.operation.failure || {};
+    return {
+      failure_class: LANDING_FAILURE_CLASS,
+      reason:
+        typeof failure.code === 'string' && failure.code.length > 0
+          ? failure.code
+          : '원인 미상',
+      stage: 'repo_operations',
+      detail: [
+        typeof failure.summary === 'string' ? failure.summary : '',
+        LANDING_FAILURE_EXIT_LINE
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      log_path:
+        typeof landing.operation.log_path === 'string' &&
+        landing.operation.log_path.length > 0
+          ? landing.operation.log_path
           : null
     };
   }
@@ -796,6 +916,10 @@ export function takeoverCleanupRules(takeover) {
  *     reruns the Bead's dispatch once through the same disposition check;
  *     the identity is the failed attempt, so a rerun that fails again is a
  *     new one.
+ *   - `quickfix_landing`: a quick_fix landing stopped on a terminal deploy
+ *     failure (UI-1fss §4.2), after a residue failure and before a condition
+ *     wait — the exit is one settlement rerun with the click's authority; the
+ *     identity is the failed deploy run, which the rerun supersedes.
  *
  * @param {any} queue - Queue snapshot.
  * @param {string} bead_id - The row key: a Bead id, or `repo-op:<id>`.
@@ -859,6 +983,13 @@ export function failureHandoffTarget(queue, bead_id) {
     return {
       kind: 'stale_residue',
       identity: `stale_residue:${stale.attempt_id}`
+    };
+  }
+  const landing = landingDeployFailure(queue, bead_id);
+  if (landing) {
+    return {
+      kind: 'quickfix_landing',
+      identity: `quickfix_landing:${landing.operation_id}`
     };
   }
   const wait = conditionWaitTipFor(

@@ -536,6 +536,24 @@ describe('tileResolveFields pair anchor (UI-18a5 §3.2)', () => {
     expect(fields.pair_anchor).toBe('discard');
   });
 
+  test('draws [세션에서 이어가기] on a landing deploy failure tile without a pair anchor', () => {
+    const item = {
+      id: 'UI-1',
+      run_state: 'failed',
+      failure: { cause: 'quickfix_landing_failed:script_failed' },
+      landing_deploy_failure: true
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields).toEqual({
+      resolve_action: true,
+      resolve_enabled: true,
+      resolve_title:
+        '대화 세션을 엽니다 — 착지 배포 실패의 원인을 정리하고, Worker로 넘기면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행합니다'
+    });
+  });
+
   test('draws no [세션에서 이어가기] on an ordinary failure tile', () => {
     const item = {
       id: 'UI-1',

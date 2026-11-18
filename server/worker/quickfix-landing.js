@@ -194,9 +194,10 @@ function isSelfImprovementAuto(issue) {
  * names the Worker's own evidence-based resolve (§5.3) so a reader can tell it
  * from a session's status write; `cleanup_backup` keeps where a cleanup's
  * backup went (UI-w2ou §3.4), so a rerun whose worktree is already gone does
- * not lose it.
+ * not lose it. `deploy_operation_id` is set only on the write that records a
+ * terminal deploy failure: the failed run's id (UI-1fss §4.2).
  *
- * @typedef {{ resolved_by?: string, cleanup_backup?: CleanupBackupReceipt, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt } }|null|undefined} LandingExtra
+ * @typedef {{ resolved_by?: string, cleanup_backup?: CleanupBackupReceipt, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt }, deploy_operation_id?: string }|null|undefined} LandingExtra
  */
 
 /**
@@ -1643,12 +1644,20 @@ export function createQuickfixLanding(deps) {
           );
         }
         if (!deployed.ok) {
+          // A pre-spawn failure settles its prerecorded run and names it; that
+          // run is this row's handoff target like a script failure (UI-1fss
+          // §4.1-4.2), and the reader re-checks that it is a failed tip.
+          const failed_run = /** @type {{ operation_id?: unknown }} */ (
+            deployed
+          ).operation_id;
           return fail(
             attempt_id,
             deployed.code || 'repo_operation_failed',
             'repo_operations',
             head_sha,
-            landing_extra,
+            typeof failed_run === 'string'
+              ? { ...landing_extra, deploy_operation_id: failed_run }
+              : landing_extra,
             bound
           );
         }
@@ -1675,12 +1684,19 @@ export function createQuickfixLanding(deps) {
             );
           }
           if (evidence?.state === 'failed') {
+            // The failed run's id names this row's handoff target and its
+            // once-only conversation (UI-1fss §4.1-4.2); a rerun rewrites it.
             return fail(
               attempt_id,
               evidence.code || 'repo_operation_failed',
               'repo_operations',
               head_sha,
-              landing_extra,
+              typeof evidence.operation_id === 'string'
+                ? {
+                    ...landing_extra,
+                    deploy_operation_id: evidence.operation_id
+                  }
+                : landing_extra,
               bound
             );
           }

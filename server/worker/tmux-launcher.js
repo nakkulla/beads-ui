@@ -70,10 +70,13 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  */
 
 /**
- * Where a window opens (UI-a119 §3.1). `user` is a person's click: the most
- * recently attached user tmux session with an attached client, as its current window.
- * `inquiry` is the configured inquiry session, in the background — every
- * automatic launch, and the click's fallback when no user session qualifies.
+ * Who asked for a window (UI-1fss §4.4, superseding UI-a119 §3.1's user
+ * session first). Every NEW window opens in the configured inquiry session;
+ * `user` is a person's click, which also selects that window as the session's
+ * current window, while `inquiry` (every automatic launch) leaves it in the
+ * background. A window already alive in a user's own session is found and
+ * focused where it is, never moved. As an OUTCOME, the value names where the
+ * window is: `inquiry` for the configured session, `user` for any other.
  *
  * @typedef {'user'|'inquiry'} LaunchPlacement
  */
@@ -88,8 +91,8 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  * @typedef {Object} LaunchInput
  * @property {string} marker
  * @property {string} key
- * @property {string} tmux_session - The configured inquiry session: the
- * `inquiry` placement's target, and the one name a `user` placement never picks.
+ * @property {string} tmux_session - The configured inquiry session, where
+ * every new window opens.
  * @property {string} window_name
  * @property {string} cwd
  * @property {string[]} commandArgs - The arguments AFTER the resolved
@@ -828,15 +831,8 @@ export function createTmuxLauncher(deps = {}) {
       input.marker,
       '--marker-value',
       input.key,
-      ...(input.placement === 'user'
-        ? [
-            '--attached',
-            '--exclude-session',
-            input.tmux_session,
-            '--fallback-session',
-            input.tmux_session
-          ]
-        : ['--session', input.tmux_session]),
+      '--session',
+      input.tmux_session,
       ...Object.entries(extra_env)
         .filter(([name]) => name !== 'CODEX_HOME' || codex_home === null)
         .flatMap(([name, value]) => ['--env', `${name}=${value}`]),
@@ -886,12 +882,9 @@ export function createTmuxLauncher(deps = {}) {
     /** @type {LaunchPlacement} */
     const placement =
       value.tmux_session === input.tmux_session ? 'inquiry' : 'user';
-    // Focus only after the hub reports placement: --focus on open would also
-    // select a fallback inquiry window, which must stay in the background.
-    if (
-      input.placement === 'user' &&
-      (placement === 'user' || value.status === 'exists')
-    ) {
+    // Where the window opens and whether it is selected are independent
+    // (§4.4): only a click selects, and only after the hub confirmed the pane.
+    if (input.placement === 'user') {
       await focusPane(value.pane, input.key);
     }
     return {

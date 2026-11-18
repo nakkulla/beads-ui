@@ -33,7 +33,11 @@ import {
 import { resolveExecSettings } from './policy.js';
 import { createProviderHealth } from './provider-health.js';
 import { RETRY_DELAYS_MS } from './queue-hold.js';
-import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
+import {
+  TERMINAL_ATTEMPT_STATUSES,
+  beadHoldsHandoffReservation,
+  createQueueStore
+} from './queue-store.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
 import * as operationPolicy from './repo-operation-policy.js';
@@ -4936,7 +4940,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
    * extra snapshot material layered on), one `resolve` pane, a transcript the
    * test moves, and the three Worker exits as spies.
    *
-   * @param {{ patch?: () => Record<string, any>, exits?: Record<string, any>, quickfixLanding?: any }} [options]
+   * @param {{ patch?: () => Record<string, any>, exits?: Record<string, any>, quickfixLanding?: any, failureConversation?: any, needsHuman?: any }} [options]
    */
   function failureEnv(options = {}) {
     let at = 1000;
@@ -5000,7 +5004,8 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       attemptFailed: vi.fn(),
       prWaitEntered: vi.fn(),
       conversationTakeover: vi.fn(),
-      conversationResumed: vi.fn()
+      conversationResumed: vi.fn(),
+      ...(options.needsHuman ? { needsHuman: options.needsHuman } : {})
     };
     const timeline = { append: vi.fn() };
     const env = setup({
@@ -5014,7 +5019,10 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       ...{
         interactiveLauncher: launcher,
         readLastAssistantMessage: () => message.current,
-        conversationExits: exits
+        conversationExits: exits,
+        ...(options.failureConversation
+          ? { failureConversation: options.failureConversation }
+          : {})
       }
     });
     return {
@@ -5232,6 +5240,434 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       });
     }
   );
+
+  describe('quick_fix landing deploy handoff (UI-1fss §4.2-4.3)', () => {
+    const LANDING_TARGET = {
+      kind: 'quickfix_landing',
+      identity: 'quickfix_landing:dep-1'
+    };
+
+    /**
+     * Record one terminal deploy failure of F1 carrying its once-mark,
+     * optionally as the rerun of an earlier run.
+     *
+     * @param {ReturnType<typeof failureEnv>} env
+     * @param {string} operation_id
+     * @param {{ retry_of?: string, summary?: string, ok?: boolean }} [input]
+     */
+    function recordDeployRun(env, operation_id, input = {}) {
+      env.real.ensureRepoOperation(WS, {
+        operation_id,
+        repo_id: '/repo',
+        kind: 'deploy',
+        subjects: [{ bead_id: BEAD, merged_sha: 'a'.repeat(40) }],
+        effective_base_sha: 'a'.repeat(40),
+        target_base: 'main',
+        target_sha: 'a'.repeat(40),
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40),
+        ...(input.retry_of ? { retry_of: input.retry_of } : {})
+      });
+      if (input.retry_of) {
+        env.real.supersedeRepoOperation(WS, {
+          operation_id: input.retry_of,
+          successor_id: operation_id
+        });
+      }
+      const operation = env.real.snapshot(WS).repo_operations[operation_id];
+      env.real.settleRepoOperation(WS, {
+        operation_id,
+        attempt_id: operation.attempt_id,
+        exit_code: input.ok ? 0 : 1,
+        signal: null,
+        finished_at: 800,
+        ...(input.ok
+          ? {}
+          : {
+              conversation_target: true,
+              failure: {
+                code: 'script_failed',
+                fingerprint: 'deploy',
+                detail: '',
+                interrupted: false,
+                summary: input.summary ?? 'restart failed'
+              }
+            })
+      });
+    }
+
+    /**
+     * Write the failed landing the quick_fix attempt keeps, naming its run.
+     *
+     * @param {ReturnType<typeof failureEnv>} env
+     * @param {string} operation_id
+     */
+    function writeLanding(env, operation_id) {
+      env.real.updateAttempt(WS, {
+        attempt_id: 'quickfix-land',
+        patch: {
+          status: 'failed',
+          repo: '/repo',
+          target_base: 'main',
+          quickfix_lane: true,
+          quickfix_landing: {
+            cursor: 'repo_operations',
+            head_sha: 'a'.repeat(40),
+            reason: 'script_failed',
+            deploy_operation_id: operation_id
+          },
+          cause: 'quickfix_landing_failed:script_failed'
+        }
+      });
+    }
+
+    /**
+     * A quick_fix landing of F1 stopped on the failed run `dep-1`, whose
+     * once-mark its first announcement already spent.
+     *
+     * @param {ReturnType<typeof failureEnv>} env
+     */
+    function seedLandingFailure(env) {
+      env.real.clearCleanupFailure(WS, BEAD);
+      recordDeployRun(env, 'dep-1');
+      env.real.consumeRepoOperationFailureNotice(WS, {
+        operation_id: 'dep-1'
+      });
+      seedQueue(env.real, [BEAD]);
+      env.real.appendAttempt(WS, {
+        expected_revision: env.real.snapshot(WS).revision,
+        attempt: { attempt_id: 'quickfix-land', bead_id: BEAD }
+      });
+      writeLanding(env, 'dep-1');
+    }
+
+    /**
+     * The settlement rerun as the landing runs it: a successor of `dep-1`
+     * that succeeds, or fails with the given summary.
+     *
+     * @param {ReturnType<typeof failureEnv>} env
+     * @param {{ ok?: boolean, summary?: string }} outcome
+     */
+    function rerunLanding(env, outcome) {
+      recordDeployRun(env, 'dep-2', { retry_of: 'dep-1', ...outcome });
+      if (outcome.ok) {
+        env.real.updateAttempt(WS, {
+          attempt_id: 'quickfix-land',
+          patch: { status: 'done' }
+        });
+        return { ok: true };
+      }
+      writeLanding(env, 'dep-2');
+      return { ok: false, reason: 'script_failed', step: 'repo_operations' };
+    }
+
+    /**
+     * A failure env whose landing settlement reruns as `outcome`, with the
+     * shared launcher over a `resolve` spy and a needs-human spy.
+     *
+     * @param {{ ok?: boolean, summary?: string }} outcome
+     */
+    function landingEnv(outcome) {
+      const resolve = vi.fn(async () => ({
+        launched: true,
+        session: 'launched',
+        reason: null,
+        tmux_session: 'bdui-inquiry',
+        tmux_window: `resolve-${BEAD}`
+      }));
+      /** @type {any} */
+      let store_ref = null;
+      const failureConversation = createFailureConversationLauncher({
+        resolveSession: /** @type {any} */ ({
+          resolve,
+          resolveRepoOperation: vi.fn()
+        }),
+        snapshot: (ws) => store_ref.snapshot(ws),
+        getConfig: () => ({}),
+        autoLaunchEnabled: () => true
+      });
+      const settle = vi.fn(async () => rerunLanding(env, outcome));
+      const needsHuman = vi.fn(async () => {});
+      const env = failureEnv({
+        quickfixLanding: { settle },
+        failureConversation,
+        needsHuman
+      });
+      store_ref = env.real;
+      /** @type {boolean[]} */
+      const held_at_consume = [];
+      const consume = env.real.consumeRepoOperationFailureNotice.bind(env.real);
+      vi.spyOn(
+        env.real,
+        'consumeRepoOperationFailureNotice'
+      ).mockImplementation((ws, input) => {
+        held_at_consume.push(
+          beadHoldsHandoffReservation(
+            env.real.snapshot(WS).interactive_sessions,
+            BEAD
+          )
+        );
+        return consume(ws, input);
+      });
+      seedLandingFailure(env);
+      held_at_consume.length = 0;
+      return { ...env, resolve, settle, needsHuman, held_at_consume };
+    }
+
+    /**
+     * Reserve the handoff in a live conversation, then let its window go
+     * and the rerun settle.
+     *
+     * @param {ReturnType<typeof landingEnv>} env
+     */
+    async function handOff(env) {
+      openFailureConversation(env);
+      say(env, '워커가 이어감 · 배포 다시');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      const reserved = record(env)?.conversation?.handoff?.target;
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      await flush();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      return reserved;
+    }
+
+    /**
+     * The restarted state of a handoff whose rerun already failed: the
+     * reservation started, and `dep-2` failed unannounced.
+     *
+     * @param {ReturnType<typeof landingEnv>} env
+     * @param {string} summary
+     */
+    function restartAfterRerun(env, summary) {
+      openFailureConversation(env, {
+        conversation: reservedHandoff(env, {
+          target: LANDING_TARGET,
+          started_at: 960
+        })
+      });
+      rerunLanding(env, { summary });
+      env.panes.rows = [];
+    }
+
+    test('reserves a landing deploy failure handoff on its failed run', async () => {
+      const env = landingEnv({ ok: true });
+
+      const reserved = await handOff(env);
+
+      expect(reserved).toEqual(LANDING_TARGET);
+    });
+
+    test('reruns the landing settlement once with the click authority', async () => {
+      const env = landingEnv({ ok: true });
+
+      await handOff(env);
+
+      expect(env.settle).toHaveBeenCalledExactlyOnceWith({
+        attempt_id: 'quickfix-land',
+        bead_id: BEAD,
+        target_base: 'main',
+        job_retry: true
+      });
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+      expect(
+        Object.values(env.real.snapshot(WS).repo_operations).filter(
+          (operation) => operation.retry_of === 'dep-1'
+        )
+      ).toHaveLength(1);
+      expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+    });
+
+    test('never reruns a landing handoff a restart left after its start', async () => {
+      const env = landingEnv({ ok: true });
+      openFailureConversation(env, {
+        conversation: reservedHandoff(env, {
+          target: LANDING_TARGET,
+          started_at: 960
+        })
+      });
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.settle).not.toHaveBeenCalled();
+      expect(env.real.snapshot(WS).conversation_refusals[BEAD]?.reason).toBe(
+        '결과 미상'
+      );
+    });
+
+    test('spends the rerun failure mark only once the reservation is gone', async () => {
+      const env = landingEnv({ summary: 'port busy' });
+
+      await handOff(env);
+
+      expect(env.held_at_consume).toEqual([false]);
+      expect(
+        env.real.snapshot(WS).repo_operations['dep-2'].failure_notice
+      ).toMatchObject({ consumed_at: expect.any(Number) });
+    });
+
+    test('opens no conversation for a rerun that fails for the same cause', async () => {
+      const env = landingEnv({ summary: 'restart failed' });
+
+      await handOff(env);
+
+      expect(env.resolve).not.toHaveBeenCalled();
+      expect(env.needsHuman).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          failure_class: '착지 실패',
+          conversation: expect.objectContaining({
+            session: 'not_launched',
+            reason: 'same_failure'
+          })
+        })
+      );
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
+
+    test('opens one conversation for a rerun that fails for another cause', async () => {
+      const env = landingEnv({ summary: 'port busy' });
+
+      await handOff(env);
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.resolve).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          bead_id: BEAD,
+          placement: 'inquiry',
+          failure: expect.objectContaining({ failure_class: '착지 실패' })
+        })
+      );
+      expect(env.needsHuman).toHaveBeenCalledOnce();
+    });
+
+    test('opens no conversation after a restart for a same-cause rerun failure', async () => {
+      const env = landingEnv({});
+      restartAfterRerun(env, 'restart failed');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.settle).not.toHaveBeenCalled();
+      expect(env.resolve).not.toHaveBeenCalled();
+      expect(env.needsHuman).toHaveBeenCalledOnce();
+    });
+
+    test('opens one conversation after a restart for another-cause rerun failure', async () => {
+      const env = landingEnv({});
+      restartAfterRerun(env, 'port busy');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.settle).not.toHaveBeenCalled();
+      expect(env.resolve).toHaveBeenCalledOnce();
+      expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+    });
+  });
+
+  test('refuses a handoff reserved without a Worker exit as having none', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, {
+      conversation: reservedHandoff(env, { target: null })
+    });
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).conversation_refusals[BEAD]).toMatchObject({
+      reason: '이 행에는 Worker 출구 없음',
+      kind: 'resolve'
+    });
+  });
+
+  test('refuses a 워커가 이어감 line on a parked row as having no Worker exit', async () => {
+    const env = failureEnv();
+    env.real.clearCleanupFailure(WS, BEAD);
+    seedQueue(env.real, [BEAD]);
+    env.real.appendAttempt(WS, {
+      expected_revision: env.real.snapshot(WS).revision,
+      attempt: { attempt_id: 'parked-1', bead_id: BEAD }
+    });
+    env.real.updateAttempt(WS, {
+      attempt_id: 'parked-1',
+      patch: {
+        status: 'parked',
+        cause_detail: { awaiting_user: 'scope_question', summary: 'ask' }
+      }
+    });
+    openFailureConversation(env);
+    say(env, '워커가 이어감 · 다시');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const reserved = record(env)?.conversation?.handoff;
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(reserved?.target).toBeNull();
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).conversation_refusals[BEAD]).toMatchObject({
+      reason: '이 행에는 Worker 출구 없음',
+      kind: 'resolve'
+    });
+  });
+
+  test('keeps the no-exit refusal through the next pass while its row stands', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, {
+      conversation: reservedHandoff(env, { target: null })
+    });
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.real.snapshot(WS).conversation_refusals[BEAD]?.reason).toBe(
+      '이 행에는 Worker 출구 없음'
+    );
+  });
+
+  test('drops the no-exit refusal once another failure replaces its row', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, {
+      conversation: reservedHandoff(env, { target: null })
+    });
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.setTime(2000);
+    env.real.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'repo_operations',
+      reason: 'repo_operation_failed'
+    });
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+  });
+
+  test('drops the no-exit refusal once its row is gone', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, {
+      conversation: reservedHandoff(env, { target: null })
+    });
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.real.clearCleanupFailure(WS, BEAD);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+  });
 
   test('accepts a fix wait without a user answer from a failure conversation', async () => {
     const env = failureEnv();
@@ -42100,6 +42536,550 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
     await settleRecheck();
 
     expect(env.failureConversation.launchForBead).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduler quick_fix landing deploy failure (UI-1fss §4.1-4.2)', () => {
+  const HEAD_SHA = 'a'.repeat(40);
+  const LAUNCHED = {
+    launched: true,
+    session: 'launched',
+    reason: null,
+    tmux_session: 'bdui-inquiry',
+    tmux_window: 'resolve-S1'
+  };
+
+  /**
+   * Record one settled deploy run of S1 carrying its once-mark: a failure
+   * with `code`/`summary`, or a success, optionally re-running `retry_of`.
+   *
+   * @param {any} store
+   * @param {string} operation_id
+   * @param {{ retry_of?: string, code?: string, summary?: string, ok?: boolean }} [input]
+   */
+  function recordDeployRun(store, operation_id, input = {}) {
+    store.ensureRepoOperation(WS, {
+      operation_id,
+      repo_id: '/repo',
+      kind: 'deploy',
+      subjects: [{ bead_id: 'S1', merged_sha: HEAD_SHA }],
+      effective_base_sha: HEAD_SHA,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      target_sha: HEAD_SHA,
+      ...(input.retry_of ? { retry_of: input.retry_of } : {})
+    });
+    if (input.retry_of) {
+      store.supersedeRepoOperation(WS, {
+        operation_id: input.retry_of,
+        successor_id: operation_id
+      });
+    }
+    const operation = store.snapshot(WS).repo_operations[operation_id];
+    const code = input.code ?? 'script_failed';
+    store.settleRepoOperation(WS, {
+      operation_id,
+      attempt_id: operation.attempt_id,
+      exit_code: input.ok ? 0 : code === 'condition_wait' ? 75 : 1,
+      signal: null,
+      finished_at: 50_000,
+      ...(input.ok
+        ? {}
+        : {
+            conversation_target: true,
+            failure: {
+              code,
+              fingerprint: 'f',
+              detail: '',
+              interrupted: false,
+              summary: input.summary ?? 'restart failed'
+            }
+          })
+    });
+  }
+
+  /**
+   * A failed quick_fix landing attempt of S1, stopped at the deploy step and
+   * naming `operation_id` when given.
+   *
+   * @param {any} store
+   * @param {{ reason?: string, operation_id?: string }} [input]
+   */
+  function seedLanding(store, input = {}) {
+    seedQueue(store, ['S1']);
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'quickfix-land', bead_id: 'S1' }
+    });
+    writeLanding(store, input.reason ?? 'repo_operation_failed', input);
+  }
+
+  /**
+   * @param {any} store
+   * @param {string} reason
+   * @param {{ operation_id?: string }} input
+   */
+  function writeLanding(store, reason, input) {
+    store.updateAttempt(WS, {
+      attempt_id: 'quickfix-land',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        workflow_mode_prior: null,
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: HEAD_SHA,
+          reason,
+          ...(input.operation_id
+            ? { deploy_operation_id: input.operation_id }
+            : {})
+        },
+        cause: `quickfix_landing_failed:${reason}`
+      }
+    });
+  }
+
+  /**
+   * The landing settlement as it ends on a deploy run: it records the run
+   * and writes the landing that names it.
+   *
+   * @param {any} store
+   * @param {string} operation_id
+   * @param {{ retry_of?: string, code?: string, summary?: string, ok?: boolean }} [input]
+   */
+  function landDeploy(store, operation_id, input = {}) {
+    recordDeployRun(store, operation_id, input);
+    if (input.ok) {
+      store.updateAttempt(WS, {
+        attempt_id: 'quickfix-land',
+        patch: { status: 'done' }
+      });
+      return { ok: true };
+    }
+    const code = input.code ?? 'script_failed';
+    writeLanding(store, code, { operation_id });
+    return { ok: false, reason: code, step: 'repo_operations' };
+  }
+
+  /**
+   * @param {{ now: () => number, settle?: (store: any) => any, enabled?: boolean, store?: any }} input
+   */
+  function landEnv(input) {
+    const notify = {
+      attemptFailed: vi.fn(),
+      needsHuman: vi.fn(async () => {})
+    };
+    const timeline = { append: vi.fn() };
+    const resolve = vi.fn(async () => LAUNCHED);
+    /** @type {any} */
+    let store_ref = null;
+    const failureConversation = createFailureConversationLauncher({
+      resolveSession: /** @type {any} */ ({
+        resolve,
+        resolveRepoOperation: vi.fn()
+      }),
+      snapshot: (ws) => store_ref.snapshot(ws),
+      getConfig: () => ({}),
+      autoLaunchEnabled: () => input.enabled !== false
+    });
+    const settle = vi.fn(async () =>
+      (input.settle || ((store) => landDeploy(store, 'dep-1')))(store_ref)
+    );
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      notify,
+      timeline,
+      quickfixLanding: { settle },
+      now: input.now,
+      ...(input.store ? { store: input.store } : {}),
+      .../** @type {any} */ ({
+        conditionWaitPolicy: () => ({
+          failure_code: 'condition_wait',
+          interval_ms: 1_000,
+          deadline_ms: 10_000
+        }),
+        failureConversation
+      })
+    });
+    store_ref = env.store;
+    env.worktree.exists.mockReturnValue(false);
+    return { ...env, notify, timeline, settle, resolve };
+  }
+
+  /**
+   * Let the off-pass work a resume or reconcile started run to its end.
+   */
+  async function settleAll() {
+    for (let index = 0; index < 6; index += 1) {
+      await flush();
+    }
+  }
+
+  /**
+   * Re-run the landing settlement the way `↻ 정리 재시도` does.
+   *
+   * @param {ReturnType<typeof landEnv>} env
+   */
+  async function rerun(env) {
+    await env.scheduler.resume(WS, 'quickfix-land', {
+      job_retry_authorized: true
+    });
+    await settleAll();
+  }
+
+  test('opens the landing failure conversation once in the configured session', async () => {
+    const env = landEnv({ now: () => 50_000 });
+    seedLanding(env.store);
+
+    await rerun(env);
+
+    expect(env.resolve).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        bead_id: 'S1',
+        placement: 'inquiry',
+        failure: expect.objectContaining({
+          failure_class: '착지 실패',
+          detail:
+            'restart failed · 워커가 이어감이면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행한다'
+        })
+      })
+    );
+  });
+
+  test('sends one needs-human notification and no attemptFailed', async () => {
+    const env = landEnv({ now: () => 50_000 });
+    seedLanding(env.store);
+
+    await rerun(env);
+
+    expect(env.notify.needsHuman).toHaveBeenCalledExactlyOnceWith({
+      bead_id: 'S1',
+      failure_class: '착지 실패',
+      reason: 'script_failed',
+      reason_detail: 'restart failed',
+      next_action: '[세션에서 이어가기]·[↻ 정리 재시도]',
+      conversation: {
+        session: 'launched',
+        reason: null,
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'resolve-S1'
+      },
+      repo: '/repo'
+    });
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+  });
+
+  test('launches nothing while the conversation switch is off', async () => {
+    const env = landEnv({ now: () => 50_000, enabled: false });
+    seedLanding(env.store);
+
+    await rerun(env);
+
+    expect(env.resolve).not.toHaveBeenCalled();
+    expect(env.notify.needsHuman).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        conversation: expect.objectContaining({
+          session: 'not_launched',
+          reason: 'disabled'
+        })
+      })
+    );
+  });
+
+  test('launches nothing while a conversation of the row is live', async () => {
+    const env = landEnv({ now: () => 50_000 });
+    seedLanding(env.store);
+    env.store.recordInteractiveSession(WS, {
+      bead_id: 'S1',
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%7',
+      tmux_session: 'dev',
+      tmux_window: 'resolve-S1',
+      cwd: WS,
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'fork',
+      source: 'attempt',
+      session_id: 'fork-session',
+      session_id_source: 'launch'
+    });
+
+    await rerun(env);
+
+    expect(env.resolve).not.toHaveBeenCalled();
+    expect(env.notify.needsHuman).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        conversation: expect.objectContaining({ session: 'already_running' })
+      })
+    );
+  });
+
+  test('leaves a condition wait to its own deadline conversation', async () => {
+    const env = landEnv({
+      now: () => 50_000,
+      settle: (store) =>
+        landDeploy(store, 'head', {
+          code: 'condition_wait',
+          summary: 'live checkout has uncommitted edits'
+        })
+    });
+    seedLanding(env.store);
+
+    await rerun(env);
+
+    expect(env.resolve).not.toHaveBeenCalled();
+    expect(env.notify.needsHuman).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).repo_operations.head.failure_notice
+    ).toMatchObject({ consumed_at: null });
+  });
+
+  test('never relaunches the same failed run after a reconcile or restart', async () => {
+    const env = landEnv({ now: () => 50_000 });
+    seedLanding(env.store);
+    await rerun(env);
+    const restarted = landEnv({ now: () => 60_000, store: env.store });
+
+    await env.scheduler.reconcile(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await restarted.scheduler.reconcile(WS);
+    await restarted.scheduler.reconcileInteractiveSessions(WS);
+    await settleAll();
+
+    expect(env.resolve).toHaveBeenCalledOnce();
+    expect(env.notify.needsHuman).toHaveBeenCalledOnce();
+    expect(restarted.resolve).not.toHaveBeenCalled();
+    expect(restarted.notify.needsHuman).not.toHaveBeenCalled();
+  });
+
+  test('announces a failure whose mark a crash left unconsumed on the next pass', async () => {
+    const env = landEnv({ now: () => 50_000 });
+    seedLanding(env.store);
+    landDeploy(env.store, 'dep-1');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await settleAll();
+
+    expect(env.resolve).toHaveBeenCalledOnce();
+    expect(env.notify.needsHuman).toHaveBeenCalledOnce();
+  });
+
+  describe('a fix wait on a landing deploy failure', () => {
+    /**
+     * A landing stopped on the failed run `dep-1`, its mark spent by the
+     * first announcement, waiting on the landed fix `UI-fix`.
+     *
+     * @param {ReturnType<typeof landEnv>} env
+     */
+    function seedFixWait(env) {
+      seedLanding(env.store);
+      landDeploy(env.store, 'dep-1');
+      env.store.consumeRepoOperationFailureNotice(WS, {
+        operation_id: 'dep-1'
+      });
+      const sha = 'c'.repeat(40);
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'fix', bead_id: 'UI-fix' }
+      });
+      env.store.moveToPrWait(WS, {
+        bead_id: 'UI-fix',
+        attempt_id: 'fix',
+        patch: { status: 'done' }
+      });
+      env.store.setCleanupCursor(WS, {
+        bead_id: 'UI-fix',
+        cursor: 'base_containment',
+        merge_sha: sha
+      });
+      env.store.moveToDone(WS, { bead_id: 'UI-fix' });
+      env.store.ensureRepoOperation(WS, {
+        operation_id: 'fix-deploy',
+        repo_id: WS,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-fix', merged_sha: sha }],
+        effective_base_sha: sha,
+        target_base: 'main',
+        target_sha: sha,
+        script_mode: '100755',
+        script_blob_sha: sha
+      });
+      const deploy = env.store.snapshot(WS).repo_operations['fix-deploy'];
+      env.store.settleRepoOperation(WS, {
+        operation_id: 'fix-deploy',
+        attempt_id: deploy.attempt_id,
+        exit_code: 0,
+        signal: null
+      });
+      env.bd.readIssue = async () => ({
+        id: 'UI-fix',
+        status: 'closed',
+        close_reason: 'merged'
+      });
+      const identity = String(
+        selfRepairFailureIdentity(env.store.snapshot(WS), 'S1', WS)
+      );
+      env.store.recordFixWait(WS, 'S1', {
+        bead_id: 'UI-fix',
+        rig: WS,
+        entered_at: 50_000,
+        failure_identity: identity,
+        state: 'waiting',
+        chain_head: null,
+        attempt_id: 'quickfix-land',
+        exhausted_reason: null,
+        used_identities: [identity]
+      });
+    }
+
+    /**
+     * Run the fix wait's rerun, then the pass that judges its record.
+     *
+     * @param {ReturnType<typeof landEnv>} env
+     */
+    async function rerunAndJudge(env) {
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await settleAll();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await settleAll();
+    }
+
+    test('reruns the landing settlement once into a successor run', async () => {
+      const env = landEnv({
+        now: () => 50_001,
+        settle: (store) =>
+          landDeploy(store, 'dep-2', { retry_of: 'dep-1', ok: true })
+      });
+      seedFixWait(env);
+
+      await rerunAndJudge(env);
+
+      expect(env.settle).toHaveBeenCalledExactlyOnceWith({
+        attempt_id: 'quickfix-land',
+        bead_id: 'S1',
+        target_base: 'main',
+        job_retry: true
+      });
+      expect(env.store.snapshot(WS).repo_operations['dep-2']).toMatchObject({
+        retry_of: 'dep-1',
+        state: 'succeeded'
+      });
+    });
+
+    test('passes the wait without a conversation when the successor succeeds', async () => {
+      const env = landEnv({
+        now: () => 50_001,
+        settle: (store) =>
+          landDeploy(store, 'dep-2', { retry_of: 'dep-1', ok: true })
+      });
+      seedFixWait(env);
+
+      await rerunAndJudge(env);
+
+      expect(env.store.snapshot(WS).fix_waits.S1.state).toBe('passed');
+      expect(env.resolve).not.toHaveBeenCalled();
+      expect(env.notify.needsHuman).not.toHaveBeenCalled();
+    });
+
+    test('exhausts the wait into the asking conversation on the same cause', async () => {
+      const env = landEnv({
+        now: () => 50_001,
+        settle: (store) => landDeploy(store, 'dep-2', { retry_of: 'dep-1' })
+      });
+      seedFixWait(env);
+
+      await rerunAndJudge(env);
+
+      expect(env.store.snapshot(WS).fix_waits.S1).toMatchObject({
+        state: 'exhausted',
+        exhausted_reason: '같은 실패 재발'
+      });
+      expect(env.resolve).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          failure: expect.objectContaining({
+            self_repair_exhausted: '같은 실패 재발'
+          })
+        })
+      );
+      expect(
+        env.store.snapshot(WS).repo_operations['dep-2'].failure_notice
+      ).toMatchObject({ consumed_at: expect.any(Number) });
+    });
+
+    test('sends the landing needs-human push carrying the exhaustion on the same cause', async () => {
+      const env = landEnv({
+        now: () => 50_001,
+        settle: (store) => landDeploy(store, 'dep-2', { retry_of: 'dep-1' })
+      });
+      seedFixWait(env);
+
+      await rerunAndJudge(env);
+
+      expect(env.notify.needsHuman).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          bead_id: 'S1',
+          failure_class: '착지 실패',
+          reason: 'script_failed',
+          reason_detail: '자가 수리: 소진 — 같은 실패 재발',
+          next_action: '[세션에서 이어가기]·[↻ 정리 재시도]'
+        })
+      );
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
+
+    test('records a refused rerun when a later deploy success covered the failed run', async () => {
+      const env = landEnv({
+        now: () => 50_001,
+        settle: (store) => {
+          recordDeployRun(store, 'dep-later', { ok: true });
+          store.supersedeRepoOperation(WS, {
+            operation_id: 'dep-1',
+            successor_id: 'dep-later'
+          });
+          return { ok: false, reason: 'head_mismatch', step: 'head_mismatch' };
+        }
+      });
+      seedFixWait(env);
+
+      await rerunAndJudge(env);
+
+      expect(env.store.snapshot(WS).fix_waits.S1).toMatchObject({
+        state: 'exhausted',
+        exhausted_reason: '재실행 거절'
+      });
+    });
+
+    test('opens the new failure flow once on another cause', async () => {
+      const env = landEnv({
+        now: () => 50_001,
+        settle: (store) =>
+          landDeploy(store, 'dep-2', {
+            retry_of: 'dep-1',
+            summary: 'port busy'
+          })
+      });
+      seedFixWait(env);
+
+      await rerunAndJudge(env);
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await settleAll();
+
+      expect(env.store.snapshot(WS).fix_waits.S1.state).toBe('passed');
+      expect(env.resolve).toHaveBeenCalledOnce();
+      expect(env.notify.needsHuman).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          failure_class: '착지 실패',
+          reason_detail: 'port busy'
+        })
+      );
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
   });
 });
 

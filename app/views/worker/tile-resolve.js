@@ -224,7 +224,7 @@ function handoffAction(item) {
  * The row kinds a `[세션에서 이어가기]` stands on (UI-18a5 §3.1), told apart
  * so the tooltip can say what this row's `인계` will do.
  *
- * @typedef {'stop'|'cleanup'|'verify_hold'|'merge_gate'|'discard'|'external'|'takeover'|'foreign_handoff'|'stale_residue'} ContinueRow
+ * @typedef {'stop'|'cleanup'|'verify_hold'|'merge_gate'|'discard'|'external'|'takeover'|'foreign_handoff'|'stale_residue'|'quickfix_landing'} ContinueRow
  */
 
 /**
@@ -255,7 +255,12 @@ const SESSION_TITLES = Object.freeze({
   // 잔재 처분 실패 (UI-68r5 §3.2): 인계는 같은 잔재 처분 검사로 디스패치를 한
   // 번 다시 돌린다 — 대화는 원인을 정리할 뿐 검사를 대신하지 않는다.
   stale_residue:
-    '대화 세션을 엽니다 — 잔재 처분 실패의 원인을 정리하고, Worker로 넘기면 Worker가 같은 잔재 처분 검사로 디스패치를 한 번 다시 돌립니다'
+    '대화 세션을 엽니다 — 잔재 처분 실패의 원인을 정리하고, Worker로 넘기면 Worker가 같은 잔재 처분 검사로 디스패치를 한 번 다시 돌립니다',
+  // 착지 배포 실패 (UI-1fss §4.2): 인계는 실패한 착지 단계(배포)부터 정산을
+  // 한 번 다시 돌린다 — 같은 원인으로 다시 실패해 대화가 열리지 않았어도 이
+  // 버튼이 남는다.
+  quickfix_landing:
+    '대화 세션을 엽니다 — 착지 배포 실패의 원인을 정리하고, Worker로 넘기면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행합니다'
 });
 
 /** The tooltip while the click only focuses a live conversation's window. */
@@ -265,9 +270,10 @@ const FOCUS_TITLE =
 /**
  * Which failure, if any, makes this item a 실패 row: the PR 대기 row's own
  * material (`failure_material`, UI-f2sy shared projection), a failed
- * discard on any card, or a terminal dispatch residue disposition failure on
- * a 실패 tile (UI-68r5 §3.2). The newest-most-terminal one names the row, in
- * the server's order (`resolveFailureContext`).
+ * discard on any card, a terminal dispatch residue disposition failure on a
+ * 실패 tile (UI-68r5 §3.2), or a quick_fix landing deploy failure the server
+ * judged (`landing_deploy_failure`, UI-1fss §4.2). The newest-most-terminal
+ * one names the row, in the server's order (`resolveFailureContext`).
  *
  * @param {any} item
  * @returns {ContinueRow|null}
@@ -294,6 +300,9 @@ function failureRow(item) {
     item.failure?.cause === 'stale_work_unresolved'
   ) {
     return 'stale_residue';
+  }
+  if (item.run_state === 'failed' && item.landing_deploy_failure === true) {
+    return 'quickfix_landing';
   }
   return null;
 }

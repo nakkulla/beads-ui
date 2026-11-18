@@ -45,7 +45,7 @@ afterEach(() => {
 /**
  * Hub JSON fixture that distinguishes the callers' marker namespaces.
  *
- * @param {{ panes?: Array<{ session?: string, pane?: string, marker?: string, key?: string, dead?: string }>, attached_session?: string, open_error?: string }} [script]
+ * @param {{ panes?: Array<{ session?: string, pane?: string, marker?: string, key?: string, dead?: string }>, open_error?: string }} [script]
  */
 function makeHub(script = {}) {
   /** @type {string[][]} */
@@ -88,16 +88,7 @@ function makeHub(script = {}) {
     if (script.open_error) {
       return hubReply({ code: script.open_error }, 2);
     }
-    const attached = args.includes('--attached')
-      ? script.attached_session
-      : undefined;
-    const session =
-      attached ??
-      args[
-        args.indexOf(
-          args.includes('--attached') ? '--fallback-session' : '--session'
-        ) + 1
-      ];
+    const session = args[args.indexOf('--session') + 1];
     panes.push({ session, pane: '%9', marker, key, dead: '0' });
     return hubReply({
       status: 'launched',
@@ -554,6 +545,43 @@ function staleResidueAttempt(patch = {}) {
   };
 }
 
+/**
+ * A quick_fix landing of `BEAD` stopped on a terminal deploy failure
+ * (UI-1fss §4.2): the failed attempt names the failed run `dep-1`.
+ *
+ * @param {{ attempt?: Record<string, any>, operation?: Record<string, any> }} [patch]
+ * @returns {Record<string, any>}
+ */
+function landingDeployQueue(patch = {}) {
+  return {
+    attempts: {
+      land: {
+        attempt_id: 'land',
+        bead_id: BEAD,
+        status: 'failed',
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: 'a'.repeat(40),
+          reason: 'script_failed',
+          deploy_operation_id: 'dep-1'
+        },
+        ...patch.attempt
+      }
+    },
+    repo_operations: {
+      'dep-1': {
+        kind: 'deploy',
+        state: 'failed',
+        subjects: [{ bead_id: BEAD }],
+        log_path: '/logs/deploy.log',
+        failure: { code: 'script_failed', summary: 'restart failed' },
+        ...patch.operation
+      }
+    }
+  };
+}
+
 describe('failure conversation entry block (UI-18a5 §3.3)', () => {
   test('opens on the pinned dotfiles entry block', () => {
     const digest = createHash('sha256')
@@ -800,6 +828,83 @@ describe('failureHandoffTarget (UI-18a5 §3.4)', () => {
     const target = failureHandoffTarget(queue, BEAD);
 
     expect(target).toBeNull();
+  });
+
+  test('targets a quick_fix landing deploy failure by its failed run', () => {
+    const queue = landingDeployQueue();
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target).toEqual({
+      kind: 'quickfix_landing',
+      identity: 'quickfix_landing:dep-1'
+    });
+  });
+
+  test.each([
+    { operation: { superseded_by: 'dep-2' } },
+    { operation: { dismissed: true } },
+    { operation: { state: 'running' } },
+    { operation: { failure: { code: 'condition_wait' } } },
+    {
+      attempt: {
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: 'a'.repeat(40),
+          reason: 'script_failed'
+        }
+      }
+    },
+    {
+      attempt: {
+        quickfix_landing: {
+          cursor: 'repo_operations',
+          head_sha: 'a'.repeat(40),
+          reason: 'head_mismatch',
+          deploy_operation_id: 'dep-1'
+        }
+      }
+    },
+    { attempt: { quickfix_lane: false } }
+  ])('targets no ineligible landing deploy failure: %j', (patch) => {
+    const queue = landingDeployQueue(patch);
+
+    const target = failureHandoffTarget(queue, BEAD);
+
+    expect(target?.kind).not.toBe('quickfix_landing');
+  });
+
+  test('carries the landing exit line in the landing failure context', () => {
+    const queue = landingDeployQueue();
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context).toMatchObject({
+      failure_class: '착지 실패',
+      reason: 'script_failed',
+      stage: 'repo_operations',
+      detail:
+        'restart failed · 워커가 이어감이면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행한다',
+      log_path: '/logs/deploy.log'
+    });
+  });
+
+  test('prints the landing exit line in the conversation entry', () => {
+    const failure = resolveFailureContext(landingDeployQueue(), BEAD);
+
+    const entry = buildFailureEntry({
+      failure: /** @type {any} */ (failure),
+      worktree: null,
+      checkout: REPO
+    });
+
+    expect(entry).toContain('- 대화 사유: 실패 착지 실패 · script_failed\n');
+    expect(entry).toContain(
+      '진단 restart failed · 워커가 이어감이면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행한다'
+    );
+    expect(
+      entry.endsWith(CONVERSATION_ENTRY_BLOCK.split('\n').at(-1) || '')
+    ).toBe(true);
   });
 });
 
@@ -1624,9 +1729,9 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     expect(tmux.names()).toEqual(['find', 'select-window']);
   });
 
-  test('opens the resolution window in the most recently attached user session', async () => {
+  test('opens the clicked resolution window in the inquiry session as its current window', async () => {
     const { tmux, resolver } = makeLauncher({
-      tmux: makeHub({ attached_session: 'dev' })
+      tmux: makeHub()
     });
 
     const outcome = await resolver.resolve({
@@ -1637,13 +1742,12 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     });
 
     const args = tmux.calls.find((call) => call[0] === 'open') || [];
-    expect(args).toContain('--attached');
+    expect(args[args.indexOf('--session') + 1]).toBe('bdui-inquiry');
+    expect(args).not.toContain('--attached');
     expect(tmux.calls).toContainEqual(['select-window', '-t', '%9']);
-    expect(args).not.toContain('--focus');
     expect(outcome).toMatchObject({
       launched: true,
-      placement: 'user',
-      tmux_session: 'dev',
+      tmux_session: 'bdui-inquiry',
       tmux_window: `resolve-${BEAD}`
     });
   });
@@ -1857,7 +1961,7 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
   test('opens the automatic placement in the detached inquiry session', async () => {
     const { resolver, tmux } = makeLauncher({
       metadata: {},
-      tmux: makeHub({ attached_session: 'dev' })
+      tmux: makeHub()
     });
 
     const outcome = await resolver.resolve({

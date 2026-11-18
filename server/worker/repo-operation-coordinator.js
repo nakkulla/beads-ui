@@ -1159,8 +1159,11 @@ export function createRepoOperationCoordinator(deps) {
       // (dotfiles-rnyd9 `condition_wait_chain`), so its once-per-chain
       // announcement waits: the same durable mark a manual failure carries is
       // left unconsumed here, and the chain head's mark is the one spent when
-      // the deadline passes.
-      conversation_target: isManualRun(current) || condition_wait
+      // the deadline passes. Every automatic `[deploy]` terminal failure
+      // carries the mark too (UI-1fss §4.1): a quick_fix landing spends it
+      // once, before its one notification and automatic conversation.
+      conversation_target:
+        isManualRun(current) || condition_wait || current.kind === 'deploy'
     });
     if (condition_wait) {
       announceConditionWait(workspace, operation_id);
@@ -1196,7 +1199,8 @@ export function createRepoOperationCoordinator(deps) {
     });
     const result = deps.store.settleConsumedRepoOperationRetry(workspace, {
       ...input,
-      conversation_target: isManualRun(operation),
+      conversation_target:
+        isManualRun(operation) || operation?.kind === 'deploy',
       ...(classification
         ? {
             recovery: {

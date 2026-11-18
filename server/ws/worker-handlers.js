@@ -164,6 +164,7 @@ import {
 import { normalizeScriptRetry } from '../worker/resolution-ladder.js';
 import {
   failedManualDeploy,
+  landingDeployFailure,
   repoOperationFailureContext,
   repoOperationRowKey,
   resolveFailureContext
@@ -3592,6 +3593,36 @@ function attemptsWithImplActor(attempts) {
 }
 
 /**
+ * The quick_fix landing deploy failures the server judges (UI-1fss §4.2),
+ * keyed by Bead, naming the failed deploy run: the one judgment
+ * (`landingDeployFailure`) the card's `[세션에서 이어가기]` reads, so neither
+ * tab re-derives it from the trimmed attempts and operations. Read from the
+ * untrimmed raw queue.
+ *
+ * @param {Record<string, any>} raw_queue
+ * @returns {Record<string, string>}
+ */
+function landingDeployFailuresOf(raw_queue) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const attempt of Object.values(raw_queue.attempts || {})) {
+    const bead_id = /** @type {any} */ (attempt)?.bead_id;
+    if (
+      typeof bead_id !== 'string' ||
+      /** @type {any} */ (attempt).quickfix_lane !== true ||
+      Object.hasOwn(out, bead_id)
+    ) {
+      continue;
+    }
+    const failure = landingDeployFailure(raw_queue, bead_id);
+    if (failure) {
+      out[bead_id] = failure.operation_id;
+    }
+  }
+  return out;
+}
+
+/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the pinned repository-operation declaration used by the merge gate,
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
@@ -3724,6 +3755,7 @@ export function decorateQueue(workspace_key, raw_queue) {
   );
   public_queue.repo_operation_policy = projectRepoOperationPolicy();
   public_queue.cleanup_failed = overlaid.cleanup_failed || {};
+  public_queue.landing_deploy_failures = landingDeployFailuresOf(overlaid);
   // Session-owned human-needed rows (UI-gske §3.1): an unattached workspace
   // stores them only, so its snapshot carries none.
   public_queue.session_inquiries = projectSessionInquiries(

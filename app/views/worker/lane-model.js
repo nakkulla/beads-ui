@@ -3237,6 +3237,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const interactive_by_bead = new Map();
   /** @type {Map<string, string>} */
   const refusal_by_bead = new Map();
+  /** @type {Set<string>} */
+  const landing_failure_beads = new Set();
   const states = Array.isArray(workspaces_state) ? workspaces_state : [];
   const done_since =
     options && typeof options.done_since === 'number'
@@ -3384,6 +3386,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (typeof reason === 'string' && reason.length > 0) {
         refusal_by_bead.set(`${root_dir}\u0000${bead_id}`, reason);
       }
+    }
+    // 서버가 판정한 quick_fix 착지 배포 실패 (UI-1fss §4.2). 키가 없는 구서버
+    // 스냅샷은 실패가 없는 것으로 읽는다 (fail-quiet).
+    for (const bead_id of Object.keys(
+      objectOf(/** @type {any} */ (workspace).landing_deploy_failures)
+    )) {
+      landing_failure_beads.add(`${root_dir}\u0000${bead_id}`);
     }
     for (const [key, record] of Object.entries(
       objectOf(workspace.interactive_sessions)
@@ -5257,6 +5266,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const refusal = refusal_by_bead.get(`${item.root_dir}\u0000${item.id}`);
     if (refusal) {
       item.conversation_refusal = refusal;
+    }
+    if (landing_failure_beads.has(`${item.root_dir}\u0000${item.id}`)) {
+      item.landing_deploy_failure = true;
     }
   }
 

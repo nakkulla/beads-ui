@@ -302,7 +302,7 @@
  * @property {ExecPresetRecord|null} [exec_preset] - Observed dispatch preset, independent of workflow receipts.
  * @property {Record<string, string|null>|null} exec_profile - Recorded selector inputs at dispatch.
  * @property {boolean} observation_checked - A terminal transcript fold already ran successfully.
- * @property {{ cursor: 'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_backup?: { path: string, manifest_sha256: string, file_count: number }, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: { path: string, manifest_sha256: string, file_count: number } } }|null} quickfix_landing -
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_backup?: { path: string, manifest_sha256: string, file_count: number }, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: { path: string, manifest_sha256: string, file_count: number } }, deploy_operation_id?: string }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
  * contract no-change close (`refuted:`·`no-delta:`) settled without a delta
@@ -312,6 +312,8 @@
  * is the receipt of the backup a cleanup made of leftover worktree content
  * (UI-w2ou §3.4). Its shape is directly
  * consumable by the existing `prWaitProgress` projection.
+ * `deploy_operation_id` names the deploy run whose terminal failure this
+ * record wrote (UI-1fss §4.2); absent on every other write.
  * @property {boolean} external_conflict - Whether this resolution attempt was
  * dispatched for an EXTERNAL PR row (UI-w0hi §1) — a bead a normal session
  * delivered, which the durable lanes never held. It is what routes the two
@@ -598,7 +600,7 @@
  * whether the exit already settled it.
  *
  * @typedef {Object} ConversationHandoffTarget
- * @property {'cleanup'|'condition_wait'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue'} kind
+ * @property {'cleanup'|'condition_wait'|'discard'|'verify_hold'|'merge_gate'|'repo_operation'|'foreign_handoff'|'stale_residue'|'quickfix_landing'} kind
  * @property {string} identity
  */
 /**
@@ -645,6 +647,9 @@
  * @property {string} reason
  * @property {number} at
  * @property {'resolve'|'external_resume'|'spec_authoring'} kind
+ * @property {string} [row_identity] - The failure row a no-Worker-exit
+ * refusal was said about (UI-1fss §4.3); the refusal stands only while that
+ * same row does.
  */
 /**
  * @typedef {Object} Queue
@@ -987,6 +992,10 @@
  * as already consumed. An automatic `[deploy]` record that settled on the
  * exit-75 `condition_wait` carries the same mark (dotfiles-rnyd9): the chain
  * head's is the once-per-chain mark spent when the recheck deadline passes.
+ * Every other terminal `[deploy]` failure carries it as well (UI-1fss §4.1):
+ * a quick_fix landing whose deploy failed spends it before its one
+ * notification and automatic conversation. `incidents.js` also reads an
+ * unconsumed mark as "no person was asked" when it judges a run transient.
  * @property {number} [wait_notice_at] - When the one wait notification of a
  * `condition_wait` chain was claimed (dotfiles-rnyd9
  * `first_exit_75_notification`), on the chain head. Absent until then, so a
@@ -3850,7 +3859,8 @@ function normalizeConversation(raw) {
       target_raw.kind === 'merge_gate' ||
       target_raw.kind === 'repo_operation' ||
       target_raw.kind === 'foreign_handoff' ||
-      target_raw.kind === 'stale_residue') &&
+      target_raw.kind === 'stale_residue' ||
+      target_raw.kind === 'quickfix_landing') &&
     typeof target_raw.identity === 'string'
       ? { kind: target_raw.kind, identity: target_raw.identity }
       : null;
@@ -3895,6 +3905,9 @@ function normalizeConversation(raw) {
  * @property {number} [exhausted_at]
  * @property {string} [rerun_operation_id]
  * @property {number} [rerun_manual_run_id]
+ * @property {string} [rerun_from_operation_id] - The failed deploy run a
+ * landing rerun re-runs (UI-1fss §4.2): its verdict is read from the run whose
+ * `retry_of` names this one.
  * @property {string[]} used_identities
  */
 
@@ -3936,6 +3949,9 @@ function normalizeFixWait(value) {
     ...(Number.isSafeInteger(value.rerun_manual_run_id) &&
     Number(value.rerun_manual_run_id) > 0
       ? { rerun_manual_run_id: Number(value.rerun_manual_run_id) }
+      : {}),
+    ...(stringOrNullValue(value.rerun_from_operation_id)
+      ? { rerun_from_operation_id: String(value.rerun_from_operation_id) }
       : {}),
     used_identities: Array.isArray(value.used_identities)
       ? value.used_identities.filter((id) => typeof id === 'string')
@@ -3996,7 +4012,10 @@ function normalizeConversationRefusals(raw) {
       out[bead_id] = {
         reason: String(value.reason),
         at: /** @type {number} */ (value.at),
-        kind: value.kind
+        kind: value.kind,
+        ...(stringOrNullValue(value.row_identity)
+          ? { row_identity: String(value.row_identity) }
+          : {})
       };
     }
   }
@@ -8305,7 +8324,7 @@ export function createQueueStore(options = {}) {
      *
      * @param {string} workspace
      * @param {string} bead_id
-     * @param {{ reason: string, kind: 'resolve'|'external_resume'|'spec_authoring' }} input
+     * @param {{ reason: string, kind: 'resolve'|'external_resume'|'spec_authoring', row_identity?: string|null }} input
      * @returns {QueueOpResult}
      */
     recordConversationRefusal(workspace, bead_id, input) {
@@ -8314,7 +8333,10 @@ export function createQueueStore(options = {}) {
         next.conversation_refusals[bead_id] = {
           reason: input.reason,
           at: now(),
-          kind: input.kind
+          kind: input.kind,
+          ...(typeof input.row_identity === 'string'
+            ? { row_identity: input.row_identity }
+            : {})
         };
         return true;
       });

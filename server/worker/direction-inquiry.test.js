@@ -52,7 +52,6 @@ afterEach(() => {
  *   panes_seq?: string[][][],
  *   list_code?: number,
  *   open_error?: string,
- *   attached_session?: string,
  *   throw_on?: string
  * }} [script]
  */
@@ -120,20 +119,11 @@ function makeHub(script = {}) {
     if (script.open_error) {
       return hubReply({ code: script.open_error }, 2);
     }
-    const attached = args.includes('--attached')
-      ? script.attached_session
-      : undefined;
     return hubReply({
       status: 'launched',
       pane: '%9',
       window: args[args.indexOf('--window-name') + 1],
-      tmux_session:
-        attached ??
-        args[
-          args.indexOf(
-            args.includes('--attached') ? '--fallback-session' : '--session'
-          ) + 1
-        ]
+      tmux_session: args[args.indexOf('--session') + 1]
     });
   };
   return {
@@ -1081,30 +1071,27 @@ describe('direction-inquiry click', () => {
     expect(readIssue).not.toHaveBeenCalled();
   });
 
-  test('opens a clicked conversation as the user session current window', async () => {
+  test('opens a clicked conversation in the inquiry session as its current window', async () => {
     const tmux = makeHub({
-      attached_session: 'dev',
-      panes_seq: [[], [], [['dev', '%9', BEAD, '0']]]
+      panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
     });
     const { inquiry } = makeInquiry({ tmux });
 
     const outcome = await inquiry.launchForClick(parkedInput());
 
     const args = tmux.calls.find((call) => call[0] === 'open') || [];
-    expect(args).toContain('--attached');
+    expect(args[args.indexOf('--session') + 1]).toBe('bdui-inquiry');
+    expect(args).not.toContain('--attached');
     expect(tmux.calls).toContainEqual(['select-window', '-t', '%9']);
-    expect(args).not.toContain('--focus');
     expect(outcome).toMatchObject({
       session: 'launched',
-      placement: 'user',
-      tmux_session: 'dev',
+      tmux_session: 'bdui-inquiry',
       tmux_window: BEAD
     });
   });
 
   test('keeps the automatic conversation in the inquiry session background', async () => {
     const tmux = makeHub({
-      attached_session: 'dev',
       panes: [['bdui-inquiry', '%1', '', '0']],
       panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
     });

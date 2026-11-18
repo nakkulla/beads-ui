@@ -2403,6 +2403,9 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {string|null} [conversation_refusal] - Why the last failure or
  * 외부 작업 완료 conversation handoff of this Bead was refused (UI-18a5
  * §3.4), from the snapshot's `conversation_refusals`.
+ * @property {boolean} [landing_deploy_failure] - The server judged this
+ * Bead's quick_fix landing stopped on a terminal deploy failure (UI-1fss
+ * §4.2), from the snapshot's `landing_deploy_failures`.
  * @property {ReturnType<typeof discardProjection>} [discard] - Shared durable
  * discard eligibility, phase, error, archive, and PR-receipt projection.
  * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.

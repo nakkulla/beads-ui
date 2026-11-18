@@ -2966,7 +2966,7 @@ describe('views/worker', () => {
     expect(message).toBe('dev:PARKED에 열었습니다 · 활성 창');
   });
 
-  test('says the resolve window fell back to the inquiry session', () => {
+  test('says the resolve window opened active in the configured session', () => {
     const message = resolveSessionToast({
       launched: true,
       session: 'launched',
@@ -2976,9 +2976,7 @@ describe('views/worker', () => {
       tmux_window: 'resolve-X1'
     });
 
-    expect(message).toBe(
-      'bdui-inquiry:resolve-X1에 열었습니다 · 사용자 tmux 세션을 찾지 못함'
-    );
+    expect(message).toBe('bdui-inquiry:resolve-X1에 열었습니다 · 활성 창');
   });
 
   test('names the session of an already open resolve window', () => {
@@ -18510,11 +18508,7 @@ describe('external wait confirm and session resume (UI-r6xq §4.4)', () => {
 
   test.each([
     ['user', 'dev', 'dev:A-1에 열었습니다 · 활성 창'],
-    [
-      'inquiry',
-      'bdui-inquiry',
-      'bdui-inquiry:A-1에 열었습니다 · 사용자 tmux 세션을 찾지 못함'
-    ]
+    ['inquiry', 'bdui-inquiry', 'bdui-inquiry:A-1에 열었습니다 · 활성 창']
   ])(
     'says where a %s-placed session resume window opened',
     async (placement, tmux_session, text) => {
