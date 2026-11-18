@@ -5,7 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
-| UI-1fss | [착지 배포 실패 자동 대화와 설정 세션 창](UI-1fss-quickfix-landing-failure-conversation.md) | 2026-11-18 | quick_fix 착지의 배포 종단 실패도 실패 실행당 한 번 해결 세션을 자동으로 열고 인계와 자가 수리 뒤 재실행은 정리 재시도 한 번이며 같은 원인의 재실패는 다시 열지 않고, 대화 창은 자동이든 클릭이든 설정 세션에 열며, 출구 없는 행의 인계 거절은 제 사유를 말한다 — 나머지 조항은 UI-gmww 그대로다 |
+| UI-6kj0 | [일시정지 타일의 세션 이어가기](UI-6kj0-paused-tile-session-continue.md) | 2026-11-19 | [세션에서 이어가기]가 서는 행에 사용자가 멈춘 Worker attempt의 일시정지 타일을 더해 문의 런처가 같은 세션 대화로 열고, 자동 기동·알림 없이 클릭으로만 열리며, 그 행의 Worker 출구는 ▶ 재개이고 대화가 살아 있는 동안의 재개는 답 대기 중 대화 인계로만 간다 — 나머지 조항은 UI-1fss 그대로다 |
 | UI-xj50 | [Claude 계정 추가와 세션 전용 로그인](UI-xj50-claude-add-session-login.md) | 2026-11-15 | 화면 로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이고, Claude 계정 추가는 cswap login 뒤 같은 창에서 cswap session login까지 이어 세션 전용 로그인을 만들며 그 성공은 종료 코드와 계정 목록의 sessionLoginOwn으로 확인한다 — 나머지 조항은 UI-xm29 그대로다 |
 | UI-y7h1 | [auto 구현 리프 후보는 beads-ui 서버 전역 설정이다](UI-y7h1-auto-pool-server-global-setting.md) | 2026-11-11 | auto 구현 리프의 후보 모델과 effort 범위는 beads-ui 서버 전역 설정이 정본이고 저장소별 값 없이 dotfiles가 GET /api/auto-pool로만 읽으며, 빠진 런타임은 dotfiles 출하 기본값을 따른다 |
 | UI-jlov | [dotfiles 계약 소비와 설치본 체커 소비](UI-jlov-dotfiles-contract-and-checker-consumption.md) | 2026-11-11 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호와 Worker 착지 알림의 보호 경로 표시는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며, 보호 경로 판정 실패는 생략하지 않고 확인 못 함으로 적는다 |
@@ -177,4 +177,5 @@
 | UI-hozk | [대화 결과 줄 수정 대기와 실패 자가 수리 재실행](history/UI-hozk-failure-self-repair-fix-wait.md) | superseded | [UI-7gv4](history/UI-7gv4-worker-url-common-only.md) |
 | UI-v4cc | [보류 없는 provider 대기의 예정 시각 자동 재개](history/UI-v4cc-provider-wait-timed-resume.md) | superseded | [UI-6xw7](history/UI-6xw7-compare-executed-legs-exec-profile.md) |
 | UI-6xw7 | [비교 축은 실제 실행 레그, 설정은 exec_profile로](history/UI-6xw7-compare-executed-legs-exec-profile.md) | superseded | [UI-gmww](history/UI-gmww-lone-candidate-recommendable.md) |
-| UI-gmww | [비교 상대 없는 후보도 추천 배치](history/UI-gmww-lone-candidate-recommendable.md) | superseded | [UI-1fss](UI-1fss-quickfix-landing-failure-conversation.md) |
+| UI-gmww | [비교 상대 없는 후보도 추천 배치](history/UI-gmww-lone-candidate-recommendable.md) | superseded | [UI-1fss](history/UI-1fss-quickfix-landing-failure-conversation.md) |
+| UI-1fss | [착지 배포 실패 자동 대화와 설정 세션 창](history/UI-1fss-quickfix-landing-failure-conversation.md) | superseded | [UI-6kj0](UI-6kj0-paused-tile-session-continue.md) |
