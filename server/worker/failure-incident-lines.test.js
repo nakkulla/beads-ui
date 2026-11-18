@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'vitest';
-import { failureIncidentLines } from './failure-incident-lines.js';
+import {
+  failureIncidentLines,
+  repoOperationFacts
+} from './failure-incident-lines.js';
 
 /**
  * @param {number} at
@@ -194,5 +197,118 @@ describe('failureIncidentLines', () => {
 
     expect(result).not.toHaveProperty('failure_operation');
     expect(result).not.toHaveProperty('failure_recovery');
+  });
+
+  test('places the made-up failure line at the attempt finish among later lines', () => {
+    const events = [event(1), event(5), event(2000)];
+
+    const { incidents } = failureIncidentLines(events, {
+      attempt_id: 'A',
+      cause: 'session_exited',
+      finished_at: 999
+    });
+
+    expect(incidents.map((line) => line.at)).toEqual([1, 5, 999, 2000]);
+    expect(incidents[2].failure).toBe(true);
+  });
+
+  test('adopts no earlier failure of the same attempt when the named incident is missing', () => {
+    const events = [
+      event(10, {
+        event_id: 'attempt_failed:A:failed:old',
+        kind: 'attempt_failed',
+        summary: '세션 실패 — 예전 정리 실패',
+        code: 'quickfix_landing_failed:script_failed',
+        incident: 'old'
+      })
+    ];
+
+    const { incidents } = failureIncidentLines(events, {
+      ...ATTEMPT,
+      quickfix_landing: { incident: 'dep-9' }
+    });
+
+    expect(incidents.map((line) => [line.at, line.failure === true])).toEqual([
+      [10, false],
+      [999, true]
+    ]);
+  });
+
+  test('fills the failure operation facts from the stored record when history has none', () => {
+    const repo_operations = {
+      'dep-1': {
+        kind: 'deploy',
+        exit_code: 3,
+        failure: { code: 'script_failed', summary: 'Error: boom' }
+      }
+    };
+
+    const result = failureIncidentLines(
+      [event(1)],
+      {
+        ...ATTEMPT,
+        quickfix_landing: { incident: 'dep-1', deploy_operation_id: 'dep-1' }
+      },
+      repo_operations
+    );
+
+    expect(result.failure_operation).toEqual({
+      kind: 'deploy',
+      exit_code: 3,
+      summary: 'Error: boom'
+    });
+  });
+
+  test('fills the facts of an operation line that carries none from the stored record', () => {
+    const events = deployFailure(10, 'dep-1').map((record) => {
+      const copy = { ...record };
+      delete copy.operation;
+      return copy;
+    });
+    const repo_operations = {
+      'dep-1': {
+        kind: 'deploy',
+        exit_code: 1,
+        failure: { code: 'script_failed' }
+      }
+    };
+
+    const result = failureIncidentLines(events, ATTEMPT, repo_operations);
+
+    expect(result.failure_operation).toEqual({ kind: 'deploy', exit_code: 1 });
+  });
+});
+
+describe('repoOperationFacts', () => {
+  test('drops a summary that is only the failure code', () => {
+    const facts = repoOperationFacts(
+      { kind: 'deploy' },
+      { code: 'script_failed', summary: 'script_failed' },
+      2
+    );
+
+    expect(facts).toEqual({ kind: 'deploy', exit_code: 2 });
+  });
+
+  test('says the same error only when both runs confirmed their evidence', () => {
+    const operation = {
+      kind: 'deploy',
+      retry: {
+        consumed_key: ['k'],
+        first_failure: { fingerprint: 'f', evidence_confirmed: true }
+      }
+    };
+
+    const facts = repoOperationFacts(
+      operation,
+      { code: 'script_failed', fingerprint: 'f' },
+      2
+    );
+
+    expect(facts).toEqual({
+      kind: 'deploy',
+      exit_code: 2,
+      retry_exhausted: true
+    });
   });
 });

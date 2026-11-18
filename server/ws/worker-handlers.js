@@ -1291,22 +1291,39 @@ const TIMELINE_TILE_STATUSES = new Set(['failed', 'orphaned', 'parked']);
  * the failed tile, grouped and picked by {@link failureIncidentLines} — plus
  * the failure incident's `failure_operation` facts and `failure_recovery`
  * words when its records hold them. Such a bead is never omitted: its 경위
- * always has at least the failure line.
+ * always has at least the failure line. The attempt is the one the failed
+ * tile shows — the bead's latest implementation attempt
+ * ({@link latestImplementationAttempts}), the same rule the card uses — so the
+ * 경위 and the card can never describe two different runs. A failure's facts
+ * missing from its history are read off `repo_operations`, the stored repo
+ * operation records (not the trimmed card projection).
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
+ * @param {Record<string, any>|null} [repo_operations]
  * @returns {Record<string, BeadTileTimeline>}
  */
-export function beadTimelinesFor(workspace_key, queue) {
+export function beadTimelinesFor(workspace_key, queue, repo_operations = null) {
   const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
   /** @type {Map<string, any>} */
   const newest_by_bead = new Map();
+  for (const [bead_id, attempt] of latestImplementationAttempts(attempts)) {
+    if (
+      bead_id.length > 0 &&
+      attempt.status !== 'parked' &&
+      TIMELINE_TILE_STATUSES.has(attempt.status)
+    ) {
+      newest_by_bead.set(bead_id, attempt);
+    }
+  }
   for (const attempt of Object.values(attempts)) {
     if (
       !attempt ||
       typeof attempt.bead_id !== 'string' ||
       attempt.bead_id.length === 0 ||
-      !TIMELINE_TILE_STATUSES.has(attempt.status)
+      attempt.status !== 'parked' ||
+      newest_by_bead.get(attempt.bead_id)?.status === 'failed' ||
+      newest_by_bead.get(attempt.bead_id)?.status === 'orphaned'
     ) {
       continue;
     }
@@ -1331,7 +1348,7 @@ export function beadTimelinesFor(workspace_key, queue) {
     const incidents =
       attempt.status === 'parked'
         ? null
-        : failureIncidentLines(history, attempt);
+        : failureIncidentLines(history, attempt, repo_operations);
     /** @type {import('../worker/session-log.js').SessionLogLocation} */
     let located;
     try {
@@ -3975,8 +3992,13 @@ export function decorateQueue(workspace_key, raw_queue) {
     // 실패·파킹 타일이 읽는 최근 이력 5줄 + 로그 경로
     // (record-timeline-retention §9). Non-persisted like the decorations
     // above, and present only for the beads whose card actually shows a
-    // failure or a park.
-    bead_timelines: beadTimelinesFor(workspace_key, queue),
+    // failure or a park. A failure's operation facts its history lacks come
+    // from the stored records, which the card projection above trims.
+    bead_timelines: beadTimelinesFor(
+      workspace_key,
+      queue,
+      /** @type {any} */ (overlaid).repo_operations || null
+    ),
     // Stepper projections for the LANE members (UI-eey2 §9.2) — `queue` ∪ the
     // serial lanes ∪ running attempts ∪ `pr_wait` ∪ `done`. Same
     // partial-cache contract as the three decorations above. `done` rides here

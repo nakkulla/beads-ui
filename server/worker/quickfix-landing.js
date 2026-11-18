@@ -183,10 +183,12 @@ function isSelfImprovementAuto(issue) {
  * not lose it. `deploy_operation_id` is set only on the write that records a
  * terminal deploy failure: the failed run's id (UI-1fss §4.2). `incident` is
  * set only by a failing write: the id that ties this failure's timeline lines
- * into one 경위 line (UI-lx9o §4.2) — the deploy operation's id when one ran,
- * else one fresh per settlement run.
+ * into one 경위 line (UI-lx9o §4.2) — the failed repo operation's id when one
+ * ran (the deploy, or the post-merge job run), else one fresh per settlement
+ * run. `failed_step` is set only by a failing write too: the step the landing
+ * actually stopped at, which the head-bound `cursor` may not name.
  *
- * @typedef {{ resolved_by?: string, cleanup_backup?: CleanupBackupReceipt, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt }, deploy_operation_id?: string, incident?: string }|null|undefined} LandingExtra
+ * @typedef {{ resolved_by?: string, cleanup_backup?: CleanupBackupReceipt, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt }, deploy_operation_id?: string, incident?: string, failed_step?: string }|null|undefined} LandingExtra
  */
 
 /**
@@ -589,21 +591,28 @@ export function createQuickfixLanding(deps) {
     extra = null,
     bound = null
   ) {
-    // One incident per failure (UI-lx9o §4.2): a deploy failure joins its
-    // repo operation's lines through the operation id; any other failure gets
-    // an id of its own for this settlement run.
+    // One incident per failure (UI-lx9o §4.2): a failure a repo operation
+    // settled — a post-merge job run, a deploy — joins that operation's lines
+    // through its id; any other failure gets an id of its own for this
+    // settlement run.
     const incident =
-      typeof extra?.deploy_operation_id === 'string' &&
-      extra.deploy_operation_id.length > 0
-        ? extra.deploy_operation_id
-        : `${attempt_id}:landing:${now()}`;
+      typeof extra?.incident === 'string' && extra.incident.length > 0
+        ? extra.incident
+        : typeof extra?.deploy_operation_id === 'string' &&
+            extra.deploy_operation_id.length > 0
+          ? extra.deploy_operation_id
+          : `${attempt_id}:landing:${now()}`;
     // Existing needs_human/attemptFailed lanes own failure notifications.
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
         quickfix_landing: landingRecord(
           { ...storedPosition(step, head_sha, bound), reason },
-          { ...(extra || {}), incident }
+          {
+            ...(extra || {}),
+            incident,
+            ...(step === null ? {} : { failed_step: step })
+          }
         )
       }
     });
@@ -1738,14 +1747,18 @@ export function createQuickfixLanding(deps) {
           base: target_base
         }),
         // The landing record has no log field; a failing run's log stays on
-        // its own repo operation record.
-        onFailure: (reason) =>
+        // its own repo operation record, whose id is this failure's incident
+        // so the job's failure line and the landing's are one 경위 line.
+        onFailure: (reason, evidence) =>
           fail(
             attempt_id,
             reason,
             'post_merge_jobs',
             head_sha,
-            landing_extra,
+            typeof evidence.operation_id === 'string' &&
+              evidence.operation_id.length > 0
+              ? { ...(landing_extra || {}), incident: evidence.operation_id }
+              : landing_extra,
             bound
           ),
         // A live run this pass must not duplicate stops exactly like a

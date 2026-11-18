@@ -58,9 +58,10 @@ export const POST_MERGE_JOB_DIR = 'repo-ops/post-merge.d';
  * @property {boolean} job_retry - A person's authority to re-run an
  * outcome-unknown job (`started` without terminal success). Only a human
  * retry of this step may carry it.
- * @property {(reason: string, evidence: { log_path?: string }) => Promise<T>|T} onFailure
+ * @property {(reason: string, evidence: { log_path?: string, operation_id?: string }) => Promise<T>|T} onFailure
  * - Record the step's stop under `reason`; `log_path` is the failing run's
- * preserved log, when one exists.
+ * preserved log, when one exists, and `operation_id` the failed job run's
+ * repo operation, whose id is the failure's incident (UI-lx9o §4.2).
  * @property {() => Promise<T>|T} onPending - Report a live run this pass must
  * not duplicate.
  */
@@ -75,7 +76,7 @@ export const POST_MERGE_JOB_DIR = 'repo-ops/post-merge.d';
  * was resolved at; null resolves each entry that needs a run.
  * @property {string|null} origin_key - The landed-tree key a resolved revision
  * runs for, so a moved-target stop names the key the next judgment re-judges.
- * @property {(reason: string, evidence?: { log_path?: string }) => Promise<unknown>} fail
+ * @property {(reason: string, evidence?: { log_path?: string, operation_id?: string }) => Promise<unknown>} fail
  * @property {() => Promise<unknown>} pending
  */
 
@@ -248,7 +249,7 @@ export function createPostMergeJobRunner(deps) {
   async function run(input) {
     /**
      * @param {string} reason
-     * @param {{ log_path?: string }} [evidence]
+     * @param {{ log_path?: string, operation_id?: string }} [evidence]
      */
     const fail = async (reason, evidence = {}) =>
       input.onFailure(reason, evidence);
@@ -472,7 +473,12 @@ export function createPostMergeJobRunner(deps) {
     }
     return await ctx.fail(
       `post_merge_job_repair_failed:${ledger.repair.key}:${judged.code || 'unknown'}`,
-      { log_path: judged.log_path }
+      {
+        log_path: judged.log_path,
+        ...(judged.state === 'failed'
+          ? { operation_id: ledger.repair.operation_id }
+          : {})
+      }
     );
   }
 
@@ -691,7 +697,8 @@ export function createPostMergeJobRunner(deps) {
     }
     if (evidence.state === 'failed') {
       return await ctx.fail(evidence.code || 'post_merge_job_failed', {
-        log_path: evidence.log_path
+        log_path: evidence.log_path,
+        operation_id: prepared.operation_id
       });
     }
     if (evidence.state === 'unknown') {

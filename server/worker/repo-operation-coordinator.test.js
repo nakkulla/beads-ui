@@ -700,6 +700,61 @@ describe('repo operation after-ladder recovery', () => {
     });
   });
 
+  test('says no same error on the operation line when the first run evidence was not confirmed', async () => {
+    const timeline = { append: vi.fn() };
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: same failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({
+      runner,
+      repairHandoff: adapter(),
+      timeline
+    });
+    const defer = harness.store.deferRepoOperationRetry.bind(harness.store);
+    vi.spyOn(harness.store, 'deferRepoOperationRetry').mockImplementation(
+      (workspace, input) => {
+        const legacy = { ...input.failure };
+        delete legacy.evidence_confirmed;
+        return defer(workspace, { ...input, failure: legacy });
+      }
+    );
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const failed = timeline.append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.kind === 'operation_failed');
+    expect(failed.at(-1).operation).toMatchObject({ retry_exhausted: true });
+    expect(failed.at(-1).operation).not.toHaveProperty('retry_same_error');
+  });
+
+  test('writes no bare failure code as the summary of the operation line', async () => {
+    const timeline = { append: vi.fn() };
+    const runner = retryRunner({
+      first_output: 'script_failed\n',
+      second_text: framedAttempt(SECOND_AT, 'script_failed\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({
+      runner,
+      repairHandoff: adapter(),
+      timeline
+    });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const line = timeline.append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.kind === 'operation_failed')
+      .at(-1);
+    expect(line.summary).not.toContain('script_failed');
+    expect(line.operation).not.toHaveProperty('summary');
+  });
+
   test('matches the two fingerprints from each attempt output alone', async () => {
     const repairHandoff = adapter();
     const runner = retryRunner({

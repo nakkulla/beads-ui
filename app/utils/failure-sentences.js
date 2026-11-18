@@ -603,6 +603,91 @@ export function isFailureCodeOnly(text) {
 }
 
 /**
+ * The token sentence the classifier falls back to when a failure has no text
+ * of its own (`failure-class.js` `failureTokenSummary`): the last segment's
+ * {@link FAILURE_SENTENCES} entry, with the raw detail token appended in
+ * parentheses when the sentence does not already name it. `null` when no
+ * segment has a sentence. It is a code said by a machine, never output a
+ * script wrote.
+ *
+ * @param {unknown} code
+ * @returns {string|null}
+ */
+export function failureTokenSentence(code) {
+  const segments = failureSegments(code);
+  /** @type {string|null} */
+  let sentence = null;
+  /** @type {string|null} */
+  let sentence_segment = null;
+  for (const segment of segments) {
+    if (Object.hasOwn(FAILURE_SENTENCES, segment)) {
+      sentence = FAILURE_SENTENCES[segment];
+      sentence_segment = segment;
+    }
+  }
+  if (sentence === null) {
+    return null;
+  }
+  const detail_token = segments[segments.length - 1];
+  return detail_token === sentence_segment
+    ? sentence
+    : `${sentence} (${detail_token})`;
+}
+
+/**
+ * The longest token sentence an attempt record keeps (`failure-class.js`
+ * `SUMMARY_MAX_CHARS`), so a cut sentence is still recognized as one.
+ *
+ * @type {number}
+ */
+const TOKEN_SENTENCE_MAX_CHARS = 200;
+
+/**
+ * @type {ReadonlySet<string>}
+ */
+const KNOWN_SENTENCES = new Set(Object.values(FAILURE_SENTENCES));
+
+/**
+ * The summary a failure record reports, when it is real output rather than
+ * the code itself (UI-lx9o §4.2): `''` for an empty value, the code, a value
+ * holding only a code, or a sentence the classifier made from a code — the
+ * code's token sentence, or any dictionary sentence followed by a raw token
+ * in parentheses such as `(foreign_path)`. Those are codes and read in
+ * dictionary words instead; only what remains is shown as the error summary.
+ *
+ * @param {unknown} summary
+ * @param {unknown} [code] - The failure code the summary belongs to.
+ * @returns {string}
+ */
+export function reportedFailureSummary(summary, code) {
+  if (typeof summary !== 'string') {
+    return '';
+  }
+  const trimmed = summary.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed === code ||
+    isFailureCodeOnly(trimmed) ||
+    KNOWN_SENTENCES.has(trimmed)
+  ) {
+    return '';
+  }
+  const token_sentence = failureTokenSentence(code);
+  if (
+    token_sentence !== null &&
+    (trimmed === token_sentence ||
+      trimmed === token_sentence.slice(0, TOKEN_SENTENCE_MAX_CHARS))
+  ) {
+    return '';
+  }
+  const suffixed = /^(.+) \(([a-z0-9_.:-]+)\)$/.exec(trimmed);
+  if (suffixed && KNOWN_SENTENCES.has(suffixed[1])) {
+    return '';
+  }
+  return trimmed;
+}
+
+/**
  * The sentence for a repo-operation script that exited nonzero, naming which
  * script it was when the kind is known (UI-lx9o §4.1).
  *

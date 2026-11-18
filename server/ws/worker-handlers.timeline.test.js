@@ -384,6 +384,68 @@ describe('bead_timelines snapshot decoration (§9)', () => {
     expect(out['UI-1'].incidents?.[0].failure).toBe(true);
   });
 
+  test('reads the 경위 of the latest implementation attempt, not the last one to finish', () => {
+    state.timelines = {};
+    state.existing_logs = new Set();
+    state.attempts = {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        status: 'failed',
+        cause: 'session_exited',
+        started_at: 100,
+        finished_at: 900
+      },
+      a2: {
+        attempt_id: 'a2',
+        bead_id: 'UI-1',
+        status: 'failed',
+        cause: 'session_exited',
+        started_at: 200,
+        finished_at: 500
+      }
+    };
+
+    const out = beadTimelinesFor(WS, { attempts: state.attempts });
+
+    expect(out['UI-1'].incidents?.at(-1)?.event_id).toBe(
+      'attempt_failed:a2:synthesized'
+    );
+  });
+
+  test('reads the failure operation facts off the stored repo operations', () => {
+    state.timelines = {};
+    state.existing_logs = new Set();
+    state.attempts = {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        status: 'failed',
+        cause: 'quickfix_landing_failed:script_failed',
+        finished_at: 50,
+        quickfix_landing: { incident: 'dep-1', deploy_operation_id: 'dep-1' }
+      }
+    };
+    const repo_operations = {
+      'dep-1': {
+        kind: 'deploy',
+        exit_code: 1,
+        failure: { code: 'script_failed' }
+      }
+    };
+
+    const out = beadTimelinesFor(
+      WS,
+      { attempts: state.attempts },
+      repo_operations
+    );
+
+    expect(out['UI-1'].failure_operation).toEqual({
+      kind: 'deploy',
+      exit_code: 1
+    });
+  });
+
   test('gives a parked bead no incident lines', () => {
     state.timelines = { 'UI-1': [event('e1', 1000)] };
     state.existing_logs = new Set();

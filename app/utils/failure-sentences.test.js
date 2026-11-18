@@ -13,6 +13,7 @@ import {
   isFailureCodeOnly,
   providerWaitResumeSentence,
   recoveryWords,
+  reportedFailureSummary,
   scriptExitSentence
 } from './failure-sentences.js';
 
@@ -176,4 +177,22 @@ test('gives the default sentence for a cause no dictionary knows', () => {
 
 test('gives no sentence without a cause', () => {
   expect(failureCauseSentence(null)).toBe('');
+});
+
+test('reports no summary a classifier made from another code with a raw token', () => {
+  const summary = reportedFailureSummary(
+    '원격 base 브랜치를 fetch하지 못했습니다. (foreign_path)',
+    'quickfix_landing_failed:script_failed'
+  );
+
+  expect(summary).toBe('');
+});
+
+test('reports the script output a failure record carries', () => {
+  const summary = reportedFailureSummary(
+    '  Error: deploy target missing  ',
+    'script_failed'
+  );
+
+  expect(summary).toBe('Error: deploy target missing');
 });

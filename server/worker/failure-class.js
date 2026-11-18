@@ -20,9 +20,9 @@
 // direction `completion-intent.js` already takes: the map is pure data shared
 // by both runtimes, so reading it here keeps this module pure.
 import {
-  FAILURE_SENTENCES,
   failureSummaryWords,
-  isFailureCodeOnly
+  failureTokenSentence,
+  reportedFailureSummary
 } from '../../app/utils/failure-sentences.js';
 import { timingLadder, timingSeconds } from '../timing-settings.js';
 import { EXTERNAL_WAIT_CAUSE } from './external-wait/contract.js';
@@ -309,36 +309,16 @@ export function guardKillMessage(detail) {
  * @returns {string | null}
  */
 export function failureTokenSummary(cause) {
-  if (typeof cause !== 'string' || cause.length === 0) {
-    return null;
-  }
-  const segments = cause.split(':').filter((segment) => segment.length > 0);
-  /** @type {string | null} */
-  let sentence = null;
-  /** @type {string | null} */
-  let sentence_segment = null;
-  for (const segment of segments) {
-    if (Object.hasOwn(FAILURE_SENTENCES, segment)) {
-      sentence = FAILURE_SENTENCES[segment];
-      sentence_segment = segment;
-    }
-  }
-  if (sentence === null) {
-    return null;
-  }
-  const detail_token = segments[segments.length - 1];
-  const text =
-    detail_token === sentence_segment
-      ? sentence
-      : `${sentence} (${detail_token})`;
-  return text.slice(0, SUMMARY_MAX_CHARS);
+  const text = failureTokenSentence(cause);
+  return text === null ? null : text.slice(0, SUMMARY_MAX_CHARS);
 }
 
 /**
  * The words of an `attempt_failed` line (UI-lx9o §4.3): the classifier's own
  * summary when it is a real sentence, otherwise the code in dictionary words.
- * A summary that is only the code, or only the code's token sentence (which
- * appends a raw detail token the dictionary does not know), is a code.
+ * A summary that is only the code, the code's token sentence, or any
+ * dictionary sentence carrying a raw token the dictionary does not know, is a
+ * code ({@link reportedFailureSummary}).
  *
  * @param {{ cause?: string|null, summary?: string|null }} classification
  * @returns {string}
@@ -346,19 +326,8 @@ export function failureTokenSummary(cause) {
 export function failedEventWords(classification) {
   const cause =
     typeof classification.cause === 'string' ? classification.cause : '';
-  const summary =
-    typeof classification.summary === 'string'
-      ? classification.summary.trim()
-      : '';
-  if (
-    summary.length > 0 &&
-    summary !== cause &&
-    !isFailureCodeOnly(summary) &&
-    summary !== failureTokenSummary(cause)
-  ) {
-    return summary;
-  }
-  return failureSummaryWords(cause);
+  const summary = reportedFailureSummary(classification.summary, cause);
+  return summary.length > 0 ? summary : failureSummaryWords(cause);
 }
 
 /**

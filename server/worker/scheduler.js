@@ -9490,8 +9490,13 @@ export function createScheduler(deps) {
         bead_id,
         err
       );
-      const landing =
-        deps.store.snapshot(workspace).attempts[attempt_id]?.quickfix_landing;
+      // An earlier landing failure's step and incident are not this stop's:
+      // the revert failed before any landing step ran (UI-lx9o §4.2).
+      const landing = {
+        ...deps.store.snapshot(workspace).attempts[attempt_id]?.quickfix_landing
+      };
+      delete landing.failed_step;
+      delete landing.incident;
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {

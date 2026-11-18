@@ -1924,6 +1924,7 @@ test('preserves non-discardable residue on a refuted close', async () => {
         head_sha: null,
         reason: 'worktree_remove_failed',
         incident: expect.any(String),
+        failed_step: 'no_change_close',
         cleanup_detail: {
           manager_reason: 'unique',
           worktree_removed: false,
@@ -2138,9 +2139,30 @@ test('keeps the branch_cleanup cursor and stored head when a resume fails its ba
         cursor: 'branch_cleanup',
         head_sha: HEAD_SHA,
         reason: 'containment_unobservable',
-        incident: expect.any(String)
+        incident: expect.any(String),
+        failed_step: 'base_containment'
       }
     }
+  });
+});
+
+test('names the step a resumed landing failed at apart from its resume cursor', async () => {
+  const { landing, store } = makeLanding({
+    fetchCode: 1,
+    landingProgress: {
+      cursor: 'branch_cleanup',
+      head_sha: HEAD_SHA,
+      reason: 'local_branch_delete_failed'
+    }
+  });
+
+  await settle(landing);
+
+  expect(
+    store.updateAttempt.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toMatchObject({
+    cursor: 'branch_cleanup',
+    failed_step: 'base_containment'
   });
 });
 
@@ -2223,7 +2245,8 @@ test('records failure reason without moving attempt to done', async () => {
         cursor: 'base_containment',
         head_sha: HEAD_SHA,
         reason: 'push_not_contained',
-        incident: expect.any(String)
+        incident: expect.any(String),
+        failed_step: 'base_containment'
       }
     }
   });
@@ -2911,8 +2934,23 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
       cursor: 'post_merge_jobs',
       head_sha: HEAD_SHA,
       reason: 'script_failed',
-      incident: expect.any(String)
+      incident: expect.any(String),
+      failed_step: 'post_merge_jobs'
     });
+  });
+
+  test('ties a failed job landing to the job run as the incident', async () => {
+    const { landing, store } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      terminal: { state: 'failed', code: 'script_failed' }
+    });
+
+    const result = /** @type {any} */ (await settleJobs(landing));
+
+    expect(result.incident).toBe('job-1');
+    expect(
+      store.snapshot(WORKSPACE).attempts[ATTEMPT].quickfix_landing
+    ).toMatchObject({ incident: 'job-1' });
   });
 
   test('stops before branch cleanup when a job fails', async () => {
@@ -3102,7 +3140,8 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
       cursor: 'post_merge_jobs',
       head_sha: HEAD_SHA,
       reason: 'containment_unobservable',
-      incident: expect.any(String)
+      incident: expect.any(String),
+      failed_step: 'base_containment'
     });
   });
 
@@ -3183,7 +3222,8 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
       cursor: 'post_merge_jobs',
       head_sha: HEAD_SHA,
       reason: `post_merge_job_outcome_unknown:${JOB_KEY}`,
-      incident: expect.any(String)
+      incident: expect.any(String),
+      failed_step: 'post_merge_jobs'
     });
   });
 

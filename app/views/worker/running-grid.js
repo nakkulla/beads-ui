@@ -17,10 +17,11 @@ import { copyToClipboard } from '../../utils/clipboard.js';
 import {
   LANDING_STEP_LABELS,
   OPERATION_KIND_WORDS,
+  UNKNOWN_FAILURE_TEXT,
   failureCodeWords,
   failureSegments,
-  isFailureCodeOnly,
   mappedFailureCategory,
+  reportedFailureSummary,
   scriptExitSentence
 } from '../../utils/failure-sentences.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
@@ -304,7 +305,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} usage
  * @property {boolean} halted_auto_advance
  * @property {boolean} quickfix_lane
- * @property {{ cursor?: string|null, head_sha?: string|null, reason?: string|null }|null} quickfix_landing
+ * @property {{ cursor?: string|null, head_sha?: string|null, reason?: string|null, failed_step?: string }|null} quickfix_landing
  * @property {boolean} resume_eligible
  * @property {string|null} resume_reason
  * @property {string} [resume_refused_sentence] - Guidance from a refused resume.
@@ -523,9 +524,12 @@ const RESUME_LABELS = Object.freeze({
  * carries an `attempt_id`, so nothing else may be consulted.
  *
  * @param {FailureTile} failure
+ * @param {boolean} [below] - Whether the resume control sits below the text,
+ * as in the popover; a failed tile's detail opens under the header that holds
+ * it, so there the sentence says no direction (UI-lx9o §4.2).
  * @returns {string}
  */
-function failureNextText(failure) {
+function failureNextText(failure, below = true) {
   if (failure.resume_refused_sentence) {
     return failure.resume_refused_sentence;
   }
@@ -535,10 +539,11 @@ function failureNextText(failure) {
   }
   const resume_kind = resumeKindOf(failure.quickfix_landing);
   if (failure.resume_eligible !== false) {
+    const where = below ? '아래 ' : '';
     return `${guidance} ${
       resume_kind === 'settlement'
-        ? '아래 [정리 재시도]를 눌러 실패한 착지 후 절차를 다시 실행하세요.'
-        : '원인을 확인한 뒤 아래 [이어하기]로 같은 세션에서 작업을 계속하세요.'
+        ? `${where}[정리 재시도]를 눌러 실패한 착지 후 절차를 다시 실행하세요.`
+        : `원인을 확인한 뒤 ${where}[이어하기]로 같은 세션에서 작업을 계속하세요.`
     }`;
   }
   const refusal =
@@ -780,8 +785,10 @@ function keptSessionSentence(failure, base) {
 
 /**
  * The `<단계>` of a failed tile's badge (UI-lx9o §4.1): the repo-operation kind
- * word of the failure incident, else the landing step it stopped at. `''`
- * without material, so the badge says the category alone (fail-quiet).
+ * word of the failure incident, else the landing step the failure actually
+ * stopped at (`quickfix_landing.failed_step`) — never the resume `cursor`,
+ * which a head-bound pass leaves on a later step than the one that failed.
+ * `''` without material, so the badge says the category alone (fail-quiet).
  *
  * @param {FailureTile} failure
  * @returns {string}
@@ -791,12 +798,11 @@ function failureStageWord(failure) {
   if (typeof kind === 'string' && Object.hasOwn(OPERATION_KIND_WORDS, kind)) {
     return OPERATION_KIND_WORDS[kind];
   }
-  const cursor = failure.quickfix_lane
-    ? failure.quickfix_landing?.cursor
+  const step = failure.quickfix_lane
+    ? failure.quickfix_landing?.failed_step
     : null;
-  return typeof cursor === 'string' &&
-    Object.hasOwn(LANDING_STEP_LABELS, cursor)
-    ? LANDING_STEP_LABELS[cursor]
+  return typeof step === 'string' && Object.hasOwn(LANDING_STEP_LABELS, step)
+    ? LANDING_STEP_LABELS[step]
     : '';
 }
 
@@ -805,25 +811,36 @@ function failureStageWord(failure) {
  * sentence, then the script's own error summary, then the retry fact. The
  * sentence is the script exit when the failure incident ran one, else the
  * dictionary sentence of the cause — never a raw code. A summary holding only
- * a code is treated as the code and dropped. `''` when nothing is known.
+ * a code, or a sentence the classifier made from a code, is treated as the
+ * code and dropped ({@link reportedFailureSummary}). `''` when nothing is
+ * known. An orphaned tile's badge says only `중단됨`, so here its cause's
+ * category leads the sentence when the cause classifies as one.
  *
  * @param {FailureTile} failure
+ * @param {string|undefined} [status] - The attempt status.
  * @returns {string}
  */
-function failureCauseText(failure) {
+function failureCauseText(failure, status) {
   const operation = failure.operation || null;
+  const classified =
+    status === 'orphaned' ? mappedFailureCategory(failure.cause) : null;
+  const cause_line = failureCauseLine(failure.cause, failure.cause_detail);
   const sentence =
     operation && typeof operation.exit_code === 'number'
       ? scriptExitSentence(operation.kind, operation.exit_code)
       : keptSessionSentence(
           failure,
-          failureCauseLine(failure.cause, failure.cause_detail)
+          classified === null || cause_line.startsWith(classified)
+            ? cause_line
+            : cause_line === UNKNOWN_FAILURE_TEXT || cause_line === ''
+              ? classified
+              : `${classified} — ${cause_line}`
         );
-  const reported = summaryText(operation?.summary || failure.summary);
-  const summary =
-    reported && !isFailureCodeOnly(reported) && reported !== sentence
-      ? reported
-      : '';
+  const reported = summaryText(
+    reportedFailureSummary(operation?.summary, failure.cause) ||
+      reportedFailureSummary(failure.summary, failure.cause)
+  );
+  const summary = reported && reported !== sentence ? reported : '';
   const retry = operation?.retry_same_error
     ? '자동 재시도 1회도 같은 오류'
     : operation?.retry_exhausted
@@ -842,16 +859,14 @@ function failureCauseText(failure) {
  * A failed tile's one status badge text (UI-lx9o §4.1): `⛔ <범주>[ · <단계>]`.
  *
  * @param {FailureTile} failure
- * @param {string|undefined} status - The attempt status; `orphaned` reads
- * `중단됨` when no segment of the cause maps to a category (the generic
- * `실패` would hide that the attempt was cut off).
+ * @param {string|undefined} status - The attempt status; `orphaned` always
+ * reads `중단됨` — the attempt was cut off, and whatever the cause classifies
+ * as is said by the slot-3 cause line, not by the badge.
  * @returns {string}
  */
 function failureBadgeText(failure, status) {
   const category =
-    status === 'orphaned'
-      ? mappedFailureCategory(failure.cause) || '중단됨'
-      : failureCategory(failure.cause) || '실패';
+    status === 'orphaned' ? '중단됨' : failureCategory(failure.cause) || '실패';
   const stage = failureStageWord(failure);
   return `⛔ ${category}${stage ? ` · ${stage}` : ''}`;
 }
@@ -860,9 +875,10 @@ function failureBadgeText(failure, status) {
  * The slot-3 cause line element; nothing without material (fail-quiet).
  *
  * @param {FailureTile} failure
+ * @param {string|undefined} status - The attempt status.
  */
-function failureCauseTemplate(failure) {
-  const text = failureCauseText(failure);
+function failureCauseTemplate(failure, status) {
+  const text = failureCauseText(failure, status);
   return text ? html`<p class="rtile__cause">${text}</p>` : '';
 }
 
@@ -875,13 +891,65 @@ function failureCauseTemplate(failure) {
  */
 
 /**
+ * A control named in a sentence — `[이름]`, or a list of them joined by `, `
+ * and ` 또는 ` — with the particle or `를 눌러` that ties it to the rest.
+ *
+ * @type {RegExp}
+ */
+const CONTROL_RUN =
+  /\[[^\]]+\](?:(?:, | 또는 )\[[^\]]+\])*(?:[를을] 눌러|으로|로|[를을])?/g;
+
+/**
+ * One `다음` sentence of a failed tile's detail with only the controls the card
+ * draws (UI-lx9o §4.2): a control the card does not draw is left out of a list,
+ * and a run naming none of them is dropped with its particle, so the sentence
+ * still says the condition that releases the failure. The shared sentence
+ * itself is never changed; only this rendering of it is. `''` when nothing
+ * but punctuation would remain.
+ *
+ * @param {string} line
+ * @param {Set<string>} on_card
+ * @returns {string}
+ */
+function withOnCardControls(line, on_card) {
+  const text = line.replace(CONTROL_RUN, (run) => {
+    const names = [...run.matchAll(/\[([^\]]+)\]/g)].map((match) =>
+      match[1].trim()
+    );
+    const kept = names.filter((name) => on_card.has(name));
+    if (kept.length === names.length) {
+      return run;
+    }
+    if (kept.length === 0) {
+      return '';
+    }
+    const tail = run.slice(run.lastIndexOf(']') + 1);
+    const listed = kept.map((name) => `[${name}]`);
+    return `${
+      listed.length === 1
+        ? listed[0]
+        : `${listed.slice(0, -1).join(', ')} 또는 ${listed[listed.length - 1]}`
+    }${tail}`;
+  });
+  const tidy = text
+    .replace(/ {2,}/g, ' ')
+    .replace(/ ([.,])/g, '$1')
+    .replace(/(?:,| 또는)(?= [—·]|$)/g, '')
+    .replace(/^[\s—·]+|[\s—·]+$/g, '')
+    .trim();
+  return /[가-힣A-Za-z0-9]/.test(tidy) ? tidy : '';
+}
+
+/**
  * The `다음` lines of a failed tile's detail (UI-lx9o §4.2): the live
- * conversation's guidance or the 해결 sentence first, then the failure's own
+ * conversation's guidance first whenever a conversation is live (during a
+ * handoff or takeover too), else the 해결 sentence, then the failure's own
  * next step, the verdict reason, the release, the other reasons and the wait
  * clocks — what the wait popup carried, which a failed tile no longer draws.
  * The shared sentences stay as they are: only here a `검증 실패` that is not
- * this failure's category reads the category, and a line naming a control the
- * card does not draw is left out.
+ * this failure's category reads the category, and a control the card does not
+ * draw is left out of the sentence ({@link withOnCardControls}) rather than
+ * the sentence being dropped.
  *
  * @param {FailureTile} failure
  * @param {FailureDetailMaterial} material
@@ -906,11 +974,6 @@ function failureNextLines(failure, material, now) {
     category && category !== '검증 실패'
       ? line.replaceAll('검증 실패', category)
       : line;
-  /** @param {string} line */
-  const names_on_card = (line) =>
-    [...line.matchAll(/\[([^\]]+)\]/g)].every((match) =>
-      material.on_card.has(match[1].trim())
-    );
   /**
    * @param {string[]} lines
    * @param {boolean} shared - Shared wait sentences, which alone get `said`.
@@ -918,19 +981,23 @@ function failureNextLines(failure, material, now) {
   const kept = (lines, shared) =>
     lines
       .filter((line) => typeof line === 'string' && line.length > 0)
-      .map((line) => (shared ? said(line) : line))
-      .filter(names_on_card);
+      .map((line) =>
+        withOnCardControls(shared ? said(line) : line, material.on_card)
+      )
+      .filter((line) => line.length > 0);
   const others = kept(parts ? parts.others : [], true);
+  // A live conversation's guidance leads even when a handoff or takeover
+  // keeps the wait sentences from naming it.
+  const live = liveConversationResolution(material.interactive_sessions);
   const lines = [
     ...kept(
       [
-        parts?.resolution ||
-          liveConversationResolution(material.interactive_sessions),
+        live ? `해결 — ${live}` : parts ? parts.resolution : '',
         parts ? parts.inquiry : ''
       ],
       true
     ),
-    ...kept([failureNextText(failure)], false),
+    ...kept([failureNextText(failure, false)], false),
     ...kept(
       [parts ? parts.verdict_reason : '', parts ? parts.release : ''],
       true
@@ -2183,7 +2250,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${failure_tile
-      ? failureCauseTemplate(failure)
+      ? failureCauseTemplate(failure, tile.status)
       : wait_body_lines.body}${parked || waiting || paused
       ? interactiveProgressLineTemplate(tile.interactive_sessions, now)
       : ''}${external_wait

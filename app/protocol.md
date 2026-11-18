@@ -582,26 +582,37 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   its own rows would be a second assembly path for the same tile. The WHOLE
   timeline is a different question, answered by `get-bead-timeline`. UI-lx9o
   §4.2/§4.3: a timeline event's `summary` is dictionary words; a failure record
-  also carries the raw `code` and an `incident` — the repo operation id, a
-  quick_fix landing's per-settlement id (`<attempt_id>:landing:<at>`), or the
-  attempt id for a session failure. `operation_failed` also carries `operation`
+  also carries the raw `code` and an `incident` — the repo operation id (a
+  deploy, or the post-merge job run a quick_fix landing stopped at), a quick_fix
+  landing's per-settlement id (`<attempt_id>:landing:<at>`), or the attempt id
+  for a session failure. `operation_failed` also carries `operation`
   (`{ kind: 'deploy'|'verify'|'job', exit_code?, summary?, retry_exhausted?, retry_same_error? }`);
-  every absent fact is an absent key. For a `failed`/`orphaned` attempt the
-  entry also carries `incidents`, the failed tile's 경위 picked from the WHOLE
-  timeline, oldest first: records sharing one `incident` fold into one line
-  (`operation_failed` > `landing_step` > `attempt_failed` > `operation_recovery`
-  speaks for it), a record without one — every line written before this change —
-  stands alone, and the line set is the failure incident, the three incidents
-  just before it and the three most recent after it. Each line is
+  `summary` is the script's own error output, never a code or a sentence made
+  from one, and `retry_same_error` needs both runs' log evidence confirmed.
+  Every absent fact is an absent key. For a `failed`/`orphaned` attempt — the
+  bead's latest implementation attempt, the one its card shows — the entry also
+  carries `incidents`, the failed tile's 경위 picked from the WHOLE timeline:
+  records sharing one `incident` fold into one line (`operation_failed` >
+  `landing_step` > `attempt_failed` > `operation_recovery` speaks for it), a
+  record without one — every line written before this change — stands alone,
+  lines are ordered by time (a line without one keeps its place), and the line
+  set is the failure incident, the three incidents just before it and the three
+  most recent after it. Each line is
   `{ event_id, at, kind, summary, failure? }`; `failure: true` marks the
   incident the attempt's `quickfix_landing.incident` (else its
   `deploy_operation_id`) names, else the latest one holding this attempt's
-  `attempt_failed`. With no such record the server makes that line from the
-  attempt's `cause` and `finished_at`, so such a bead is never omitted.
+  `attempt_failed` — when the landing names an incident the timeline lacks, only
+  an `attempt_failed` not older than the attempt's `finished_at`. With no such
+  record the server makes that line from the attempt's `cause` and `finished_at`
+  and places it at that time, so such a bead is never omitted.
   `failure_operation` and `failure_recovery` are the failure incident's
-  `operation` and latest `operation_recovery` line, each absent without a
-  record. `events` (the last five lines) is unchanged for the parked tile and
-  the 확인 필요 tile.
+  `operation` and latest `operation_recovery` line; when no line carries
+  `operation`, `failure_operation` is read from the stored repo operation record
+  the incident (else the landing) names. Each is absent without a record.
+  `events` (the last five lines) is unchanged for the parked tile and the 확인
+  필요 tile. A failing quick_fix landing write also stores
+  `quickfix_landing.failed_step`, the step it actually stopped at, which the
+  failed tile's badge reads as its `<단계>` (the resume `cursor` is not one).
 - Timeline kind `guard_denied` records a tool command refused before execution,
   with `runner`, `reason`, and `command`. The session continues. Hook failures
   remain `guard_warning` (`guard_hook_error` or `codex_hook_not_loaded`).
