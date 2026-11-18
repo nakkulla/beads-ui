@@ -5792,6 +5792,56 @@ describe('failed tile with one status badge and one cause line (UI-lx9o)', () =>
     ).not.toBeNull();
   });
 
+  test('folds the cost into the 실행 row of the details', () => {
+    const tile = failedTile({
+      open: true,
+      usage: /** @type {any} */ ({ total_cost_usd: 2.618 })
+    });
+
+    const run = Array.from(
+      tile.querySelectorAll('.rtile__failure-more .rtile__failure-kv > div')
+    ).find((row) => row.querySelector('dt')?.textContent?.trim() === '실행');
+
+    expect(run?.querySelector('dd')?.textContent?.trim()).toBe(
+      'claude · opus · high · default · $2.62'
+    );
+  });
+
+  test('keeps the failed discard pair and its abandon exit, without ✕, on a failed tile', () => {
+    const tile = failedTile(
+      { cause: 'base_fetch_failed' },
+      {
+        discard: /** @type {any} */ ({
+          action: true,
+          enabled: true,
+          label: '워커로 이어가기',
+          title: '폐기 실패: dirty_submodule — 정리 후 재시도하세요',
+          error: 'dirty_submodule',
+          operation: {
+            operation_id: 'op-1',
+            phase: 'requested',
+            kind: 'discard'
+          },
+          abandon: {
+            action: true,
+            label: '폐기 포기',
+            title: '실패한 폐기 작업을 포기합니다'
+          }
+        }),
+        resolve_action: true,
+        resolve_enabled: true,
+        pair_anchor: /** @type {const} */ ('discard')
+      }
+    );
+
+    const foot = Array.from(tile.querySelectorAll('.rtile__foot button')).map(
+      (el) => el.textContent?.trim()
+    );
+
+    expect(foot).toEqual(['세션에서 이어가기', '워커로 이어가기', '폐기 포기']);
+    expect(tile.querySelector('.rtile__withdraw')).toBeNull();
+  });
+
   test('drops the report, cause, failure time and resume rows', () => {
     const tile = failedTile({ open: true, summary: 'API Error: 529' });
 
