@@ -680,6 +680,10 @@ export function createLiveBd(config) {
       const quick_fix_review = Object.hasOwn(md, 'quick_fix_review')
         ? md.quick_fix_review
         : undefined;
+      // The ADR candidate section approval rides the same judgement (UI-yylj).
+      const adr_approval = Object.hasOwn(md, 'adr_approval')
+        ? md.adr_approval
+        : undefined;
       // The interactive session that implemented this bead (UI-p206 §5.1). Same
       // presence rule: the fork qualification has to see a malformed value as
       // present-and-invalid so it rejects with a reason instead of reading as a
@@ -799,6 +803,7 @@ export function createLiveBd(config) {
         last_checked_sha,
         issue_type,
         quick_fix_review,
+        adr_approval,
         session_ref,
         // The issue's OWN preset identity (UI-wg68 §7). A chip apply writes it
         // onto the Bead, so `dispatchPreset` can record the attempt under the

@@ -23,6 +23,12 @@ import {
   laneMemberIds
 } from '../ws/worker-handlers.js';
 import { checkWorkerQueueAdmission, tickWorkerQueue } from './attach.js';
+import {
+  holdPlacementApproval,
+  readPlacementApproval,
+  releasePlacementApproval,
+  settlePlacementApprovals
+} from './placement-adr-approval.js';
 import { getWorkerRuntime } from './runtime.js';
 
 const log = debug('worker:queue-place');
@@ -125,13 +131,26 @@ function settleAdmission(workspace_key, bead_id, admission) {
  * snapshot out exactly once, so an HTTP caller reaches Worker-tab subscribers
  * on the same terms a WS caller does.
  *
+ * `ui_placement` marks the on-screen WebSocket placement: a bead it newly puts
+ * into a waiting area gets the ADR section approval record (UI-yylj), and is
+ * held from dispatch until that attempt settles.
+ *
  * @param {string} workspace_key
- * @param {{ bead_id: string, lane?: string, index?: number, expected_revision: number }} input
+ * @param {{ bead_id: string, lane?: string, index?: number, expected_revision: number, ui_placement?: boolean }} input
  * @returns {Promise<PlaceOutcome>}
  */
 export async function placeBeadInQueue(workspace_key, input) {
   const { bead_id } = input;
-  const admission = await admitBead(workspace_key, bead_id);
+  // The section digest the person saw is read before the queue changes, in
+  // parallel with admission, so a later edit is never approved (UI-yylj). A
+  // move skips the read; a row that leaves its seat meanwhile records nothing.
+  const [admission, seen] = await Promise.all([
+    admitBead(workspace_key, bead_id),
+    input.ui_placement === true &&
+    waitingSeatOf(queueStore().snapshot(workspace_key), bead_id) === null
+      ? readPlacementApproval(workspace_key, bead_id)
+      : Promise.resolve(null)
+  ]);
   if (!admission.ok) {
     const reason = admission.reason || 'git_error';
     // Persist the refusal so the candidate badge renders it for EVERY client
@@ -164,50 +183,74 @@ export async function placeBeadInQueue(workspace_key, input) {
     typeof input.lane === 'string' && /^s[1-5]$/.test(input.lane)
       ? input.lane
       : undefined;
-  let result = queueStore().place(workspace_key, {
-    expected_revision: input.expected_revision,
-    bead_id,
-    lane: place_lane,
-    index: typeof input.index === 'number' ? input.index : undefined,
-    blocks_edges: laneBlocksEdges(
-      workspace_key,
-      queueStore().snapshot(workspace_key),
-      place_lane,
-      bead_id
-    )
-  });
-  if (!result.ok) {
+  const records_approval =
+    input.ui_placement === true &&
+    waitingSeatOf(queueStore().snapshot(workspace_key), bead_id) === null;
+  if (records_approval) {
+    holdPlacementApproval(workspace_key, [bead_id]);
+  }
+  // Every exit settles the hold: an unapplied queue change releases it, an
+  // applied one hands it to the record attempt even if a later step throws.
+  let placed = false;
+  try {
+    let result = queueStore().place(workspace_key, {
+      expected_revision: input.expected_revision,
+      bead_id,
+      lane: place_lane,
+      index: typeof input.index === 'number' ? input.index : undefined,
+      blocks_edges: laneBlocksEdges(
+        workspace_key,
+        queueStore().snapshot(workspace_key),
+        place_lane,
+        bead_id
+      )
+    });
+    if (!result.ok) {
+      return {
+        applied: false,
+        conflict: result.conflict,
+        ...(result.conflict ? {} : { reason: 'rejected' }),
+        queue: result.queue
+      };
+    }
+    placed = true;
+    // A successful (admission-passed) placement clears any prior refusal —
+    // unless the pass itself observed a stale receipt (UI-dlim §3.2), in which
+    // case the placement REPLACES the refusal with the non-blocking stale mark
+    // so the queued row announces the in-session re-review from the moment it
+    // enters the lane.
+    const applied = settleAdmission(workspace_key, bead_id, admission);
+    if (applied.ok) {
+      result = { ...result, queue: applied.queue };
+    }
+    fanout(workspace_key, result.queue);
+    // A placement is the OTHER thing that can fill a free slot, and it is the
+    // only dispatch path a discarded bead has (discard spec §1): without this
+    // kick an auto_advance-ON queue would sit idle until the next attempt
+    // finished. Same fire-and-forget pattern as the toggle-ON tick.
+    Promise.resolve(tickWorkerQueue(workspace_key)).catch((err) => {
+      log('worker tick after place failed for %s: %o', workspace_key, err);
+    });
+    const seat = waitingSeatOf(result.queue, bead_id);
     return {
-      applied: false,
-      conflict: result.conflict,
-      ...(result.conflict ? {} : { reason: 'rejected' }),
+      applied: true,
+      conflict: false,
+      ...(seat ? { lane: seat.lane, index: seat.index } : {}),
       queue: result.queue
     };
+  } finally {
+    if (records_approval) {
+      if (placed) {
+        void settlePlacementApprovals(
+          workspace_key,
+          [{ bead_id, seen }],
+          tickWorkerQueue
+        );
+      } else {
+        releasePlacementApproval(workspace_key, [bead_id]);
+      }
+    }
   }
-  // A successful (admission-passed) placement clears any prior refusal —
-  // unless the pass itself observed a stale receipt (UI-dlim §3.2), in which
-  // case the placement REPLACES the refusal with the non-blocking stale mark
-  // so the queued row announces the in-session re-review from the moment it
-  // enters the lane.
-  const applied = settleAdmission(workspace_key, bead_id, admission);
-  if (applied.ok) {
-    result = { ...result, queue: applied.queue };
-  }
-  fanout(workspace_key, result.queue);
-  // A placement is the OTHER thing that can fill a free slot, and it is the
-  // only dispatch path a discarded bead has (discard spec §1): without this
-  // kick an auto_advance-ON queue would sit idle until the next attempt
-  // finished. Same fire-and-forget pattern as the toggle-ON tick.
-  Promise.resolve(tickWorkerQueue(workspace_key)).catch((err) => {
-    log('worker tick after place failed for %s: %o', workspace_key, err);
-  });
-  const seat = waitingSeatOf(result.queue, bead_id);
-  return {
-    applied: true,
-    conflict: false,
-    ...(seat ? { lane: seat.lane, index: seat.index } : {}),
-    queue: result.queue
-  };
 }
 
 /**

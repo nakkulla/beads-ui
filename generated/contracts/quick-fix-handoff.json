@@ -169,9 +169,10 @@
       "adr_section": {
         "valid_key": "no_question",
         "absent_or_stale_key_interactive": {
-          "ask": "one_prose_sentence_with_whole_section_then_end_turn",
+          "ask": "approval_question_then_end_turn",
           "before_answer": "no_placement",
           "approved": "write_key_in_answer_turn_then_continue_handoff",
+          "hold": "no_write_no_placement_bead_open",
           "refused": "repin_spec_backed"
         },
         "no_human_answer_session": "pin_spec_backed"

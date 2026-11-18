@@ -1,8 +1,8 @@
 {
   "source_repo": "dotfiles",
   "source_path": "generated/contracts/quick-fix-handoff.json",
-  "source_commit": "8c338d4f6ba3f5b68627646571f83f31c80bffb2",
-  "source_blob_sha": "67dba0f1ae42285dd5a5644cd3cfaf79ab1e7dca",
-  "sha256": "95309dcee2982feff9ec4a8ed9cbfa66bfba664fd6c7200ee4af0cf26e2f3337",
-  "bytes": 11548
+  "source_commit": "55b0dd7861e27463c04eca7a091125f39bce79c0",
+  "source_blob_sha": "0bf19e40237f6da0039dd8ed2d8c4982e7d6fbae",
+  "sha256": "46eb5248b7054b1481c32d60e4f6009d4b9a142502111823bd83f4e11011dac3",
+  "bytes": 11581
 }

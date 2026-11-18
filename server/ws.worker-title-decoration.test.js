@@ -9,6 +9,10 @@ import {
   __setUnattachedAdmissionCheckForTest
 } from './worker/attach.js';
 import {
+  __resetPlacementApprovalForTest,
+  __setPlacementApprovalBdForTest
+} from './worker/placement-adr-approval.js';
+import {
   __resetRegistriesForTest,
   __resetWorkerQueueForTest,
   attachWsServer,
@@ -132,11 +136,20 @@ beforeEach(() => {
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
   __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
+  // The on-screen placement's ADR approval record reads bd (UI-yylj); these
+  // beads carry no quick_fix route, so a stand-in keeps the live binary out.
+  __setPlacementApprovalBdForTest(() => ({
+    readIssue: async (bead_id) => ({ id: bead_id, metadata: {} }),
+    setMetadata: async () => {},
+    unsetMetadata: async () => {},
+    readMetadata: async () => null
+  }));
   vi.mocked(runBdJsonProjected).mockReset();
   attachWsServer(createServer(), { path: '/ws' });
 });
 
 afterEach(() => {
+  __resetPlacementApprovalForTest();
   delete process.env.XDG_STATE_HOME;
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();

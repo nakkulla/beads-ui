@@ -141,6 +141,7 @@ import {
   readLastAssistantMessage as defaultReadLastAssistantMessage,
   parseConversationResult
 } from './interactive-progress.js';
+import { placementApprovalPending } from './placement-adr-approval.js';
 import { NO_PROGRESS_RELEASE_SUFFIX } from './provider-health.js';
 import { providerTargetScope } from './provider-holds.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
@@ -749,10 +750,16 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @returns {string|null}
  */
 export function quickFixSelfReviewBlock(judgement, receipt) {
-  if (
-    !judgement ||
-    (judgement.state !== 'stale' && judgement.state !== 'unreviewed')
-  ) {
+  if (!judgement) {
+    return null;
+  }
+  const delta = judgement.state === 'stale' || judgement.state === 'unreviewed';
+  // A reviewed receipt does not prove the ADR section approval (UI-yylj).
+  const adr_open =
+    judgement.state === 'reviewed' &&
+    Boolean(judgement.adr) &&
+    judgement.adr?.state !== 'approved';
+  if (!delta && !adr_open) {
     return null;
   }
   const receipt_text =
@@ -766,7 +773,9 @@ export function quickFixSelfReviewBlock(judgement, receipt) {
       `${judgement.state} quick_fix_review 관측 — 영수증 ${receipt_text}, 현재 본문 digest ${digest_text}.`,
       `누락: ${judgement.missing.join(', ') || '(없음)'}`
     ].join('\n'),
-    '구현에 들어가기 전에 workflow 계약의 quick_fix delta self-review 레인을 먼저 수행하라.'
+    delta
+      ? '구현에 들어가기 전에 workflow 계약의 quick_fix delta self-review 레인을 먼저 수행하라.'
+      : '구현에 들어가기 전에 workflow 계약의 quick_fix ADR 절 승인(Quick_fix ADR actions)을 먼저 확인하라.'
   ].join('\n\n');
 }
 
@@ -850,6 +859,8 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * `undefined`, any present value reaches the judge unflattened.
  * @property {unknown} [quick_fix_review] - Raw quick_fix self-review receipt
  * metadata, under the same presence rule.
+ * @property {unknown} [adr_approval] - Raw quick_fix ADR candidate section
+ * approval metadata, under the same presence rule (UI-yylj).
  * @property {unknown} [awaiting_user] - Raw `awaiting_user` contract value.
  * Carried by PRESENCE, not value: the key exists only while a user decision is
  * outstanding, so `snapshotBead` omits the property entirely when the bead
@@ -15256,6 +15267,23 @@ export function createScheduler(deps) {
         );
         return;
       }
+      if (placementApprovalPending(workspace, bead_id)) {
+        // A placement began recording its ADR approval after the scan
+        // (UI-yylj). Back off without a refusal badge: the record's settle
+        // kicks the Worker again once the attempt is done.
+        reservation?.release();
+        removeGuardHook(workspace, attempt_id);
+        if (!stale_context) {
+          try {
+            await deps.worktree.remove({ repo: snap.repo, bead_id });
+          } catch {
+            // The next dispatch re-observes the worktree.
+          }
+        }
+        claimed.delete(bead_id);
+        requestRescan();
+        return;
+      }
       const final_launch = reservation.revalidate({
         bead_id,
         lineage_id: bead_id,
@@ -15419,7 +15447,8 @@ export function createScheduler(deps) {
           description: snap.description,
           metadata: {
             route: snap.route,
-            quick_fix_review: snap.quick_fix_review
+            quick_fix_review: snap.quick_fix_review,
+            adr_approval: snap.adr_approval
           }
         }),
         snap.quick_fix_review
@@ -23872,7 +23901,10 @@ export function createScheduler(deps) {
         claimed.has(entry.bead_id) ||
         dispatch_refused.has(entry.bead_id) ||
         paused_beads.has(entry.bead_id) ||
-        active_beads.has(entry.bead_id)
+        active_beads.has(entry.bead_id) ||
+        // A person's placement is still recording its ADR approval (UI-yylj);
+        // the settle tick picks the row up once the attempt is done.
+        placementApprovalPending(workspace, entry.bead_id)
       ) {
         stopSerialLane();
         continue;
@@ -23967,7 +23999,8 @@ export function createScheduler(deps) {
       (d) =>
         live_queue.has(d.bead_id) &&
         !claimed.has(d.bead_id) &&
-        !live_active.has(d.bead_id)
+        !live_active.has(d.bead_id) &&
+        !placementApprovalPending(workspace, d.bead_id)
     );
     /** @type {Array<{ bead_id: string, lease: LaneLaunchLease }>} */
     const launches = [];

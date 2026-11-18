@@ -47,6 +47,11 @@ const {
 } = await import('./attach.js');
 const { __resetWorkerRuntimeForTest, getWorkerRuntime } =
   await import('./runtime.js');
+const {
+  __resetPlacementApprovalForTest,
+  __setPlacementApprovalBdForTest,
+  placementApprovalPending
+} = await import('./placement-adr-approval.js');
 const { placeBeadInQueue } = await import('./queue-place.js');
 const { placeBundleInQueue } = await import('./queue-place-bundle.js');
 const { createScheduler } = await import('./scheduler.js');
@@ -67,6 +72,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  __resetPlacementApprovalForTest();
   __resetWorkerAttachmentsForTest();
   __setTimingOverridesForTest({});
   vi.useRealTimers();
@@ -369,4 +376,390 @@ test('reports rejected when the store refuses a lane beyond the configured count
     reason: 'rejected'
   });
   expect(state.fanout_calls).toEqual([]);
+});
+
+const ADR_SECTION =
+  '## 결정 (ADR 후보)\n- 승인 기록은 화면 통로에서만 쓴다 → ADR\n\n## scope\n- server/x.js\n';
+const ADR_DIGEST = '283f1b8707c5';
+
+/** @type {{ unsets: Array<{ bead_id: string, key: string }>, metadata: Record<string, Record<string, string>> }} */
+let fake_bd = { unsets: [], metadata: {} };
+
+/**
+ * A bd stand-in for the approval record. `gate` holds the post-placement read
+ * (the pre-placement read runs first and is never gated); `edited` replaces a
+ * body right after its pre-placement read; `readback` makes the confirming
+ * read throw (`'once'`/`'always'`) or return another writer's value.
+ *
+ * @param {Record<string, { route?: string, description: string, adr_approval?: string }>} beads
+ * @param {{ fail?: boolean, gate?: Promise<void>, edited?: Record<string, string>, readback?: 'once'|'always'|'foreign' }} [options]
+ */
+function fakeApprovalBd(beads, options = {}) {
+  /** @type {Array<{ bead_id: string, key: string, value: string }>} */
+  const writes = [];
+  /** @type {Array<{ bead_id: string, key: string }>} */
+  const unsets = [];
+  /** @type {Record<string, Record<string, string>>} */
+  const metadata = {};
+  /** @type {Record<string, number>} */
+  const reads = {};
+  let readback_failures = 0;
+  for (const [bead_id, bead] of Object.entries(beads)) {
+    metadata[bead_id] = {
+      route: bead.route ?? 'quick_fix',
+      ...(bead.adr_approval ? { adr_approval: bead.adr_approval } : {})
+    };
+  }
+  __setPlacementApprovalBdForTest(() => ({
+    /** @param {string} bead_id */
+    async readIssue(bead_id) {
+      reads[bead_id] = (reads[bead_id] ?? 0) + 1;
+      if (options.gate && reads[bead_id] > 1) {
+        await options.gate;
+      }
+      if (options.fail) {
+        throw new Error('bd down');
+      }
+      const issue = {
+        id: bead_id,
+        description: beads[bead_id].description,
+        metadata: { ...metadata[bead_id] }
+      };
+      if (options.edited?.[bead_id] !== undefined && reads[bead_id] === 1) {
+        beads[bead_id].description = options.edited[bead_id];
+      }
+      return issue;
+    },
+    /**
+     * @param {string} bead_id
+     * @param {string} key
+     * @param {string} value
+     */
+    async setMetadata(bead_id, key, value) {
+      writes.push({ bead_id, key, value });
+      metadata[bead_id][key] = value;
+    },
+    /**
+     * @param {string} bead_id
+     * @param {string} key
+     */
+    async unsetMetadata(bead_id, key) {
+      unsets.push({ bead_id, key });
+      delete metadata[bead_id][key];
+    },
+    /**
+     * @param {string} bead_id
+     * @param {string} key
+     */
+    async readMetadata(bead_id, key) {
+      if (
+        options.readback === 'always' ||
+        (options.readback === 'once' && readback_failures++ === 0)
+      ) {
+        throw new Error('bd show failed');
+      }
+      if (options.readback === 'foreign') {
+        metadata[bead_id][key] = `user@${'f'.repeat(12)}`;
+      }
+      return metadata[bead_id][key] ?? null;
+    }
+  }));
+  fake_bd = { unsets, metadata };
+  return writes;
+}
+
+/** Let the fire-and-forget approval record settle. */
+async function settled() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+test('records the current section digest for a fresh on-screen placement', async () => {
+  const writes = fakeApprovalBd({ 'UI-a': { description: ADR_SECTION } });
+
+  await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    expected_revision: 0,
+    ui_placement: true
+  });
+  await settled();
+
+  expect(writes).toEqual([
+    { bead_id: 'UI-a', key: 'adr_approval', value: `user@${ADR_DIGEST}` }
+  ]);
+});
+
+test('judges each bead a bundle placement newly adds', async () => {
+  const writes = fakeApprovalBd({
+    'UI-a': { description: ADR_SECTION },
+    'UI-b': { description: '## scope\n- server/y.js\n' },
+    'UI-c': {
+      description: ADR_SECTION,
+      adr_approval: `user@${'0'.repeat(12)}`
+    }
+  });
+
+  await placeBundleInQueue(WS, {
+    expected_revision: 0,
+    lane: 's1',
+    binds: [],
+    steps: [
+      { bead_id: 'UI-a', index: 0 },
+      { bead_id: 'UI-b', index: 1 },
+      { bead_id: 'UI-c', index: 2 }
+    ],
+    ui_placement: true
+  });
+  await settled();
+
+  expect(writes.map((write) => [write.bead_id, write.value])).toEqual([
+    ['UI-a', `user@${ADR_DIGEST}`],
+    ['UI-c', `user@${ADR_DIGEST}`]
+  ]);
+});
+
+test('writes nothing for a placement without the on-screen mark', async () => {
+  const writes = fakeApprovalBd({ 'UI-a': { description: ADR_SECTION } });
+
+  await placeBeadInQueue(WS, { bead_id: 'UI-a', expected_revision: 0 });
+  await settled();
+
+  expect(writes).toEqual([]);
+});
+
+test('writes nothing when the on-screen placement only moves a waiting bead', async () => {
+  const writes = fakeApprovalBd({ 'UI-a': { description: ADR_SECTION } });
+  await placeBeadInQueue(WS, { bead_id: 'UI-a', expected_revision: 0 });
+
+  await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    lane: 's1',
+    expected_revision: snapshot().revision,
+    ui_placement: true
+  });
+  await settled();
+
+  expect(writes).toEqual([]);
+});
+
+test('writes nothing and holds nothing when the store rejects the placement', async () => {
+  const writes = fakeApprovalBd({ 'UI-a': { description: ADR_SECTION } });
+
+  const outcome = await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    lane: 's5',
+    expected_revision: 0,
+    ui_placement: true
+  });
+  await settled();
+
+  expect(outcome.applied).toBe(false);
+  expect(writes).toEqual([]);
+  expect(placementApprovalPending(WS, 'UI-a')).toBe(false);
+});
+
+test.each([
+  ['a valid approval', { adr_approval: `user@${ADR_DIGEST}` }],
+  ['no section', { description: '## scope\n- server/x.js\n' }],
+  [
+    'two sections',
+    {
+      description: ADR_SECTION.replace(
+        '## scope',
+        '## 두 번째 결정 (ADR 후보)\n- 둘째\n\n## scope'
+      )
+    }
+  ],
+  ['a spec_backed route', { route: 'spec_backed' }]
+])('writes nothing for a bead with %s', async (_label, overrides) => {
+  const writes = fakeApprovalBd({
+    'UI-a': { description: ADR_SECTION, ...overrides }
+  });
+
+  await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    expected_revision: 0,
+    ui_placement: true
+  });
+  await settled();
+
+  expect(writes).toEqual([]);
+});
+
+test('keeps the placement outcome and releases the hold when bd fails', async () => {
+  fakeApprovalBd({ 'UI-a': { description: ADR_SECTION } }, { fail: true });
+
+  const outcome = await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    expected_revision: 0,
+    ui_placement: true
+  });
+  await settled();
+
+  expect(outcome).toMatchObject({ applied: true, conflict: false });
+  expect(placementApprovalPending(WS, 'UI-a')).toBe(false);
+});
+
+test('holds the placed row from dispatch until the record attempt settles', async () => {
+  /** @type {() => void} */
+  let open_gate = () => {};
+  const gate = new Promise((resolve) => {
+    open_gate = () => resolve(undefined);
+  });
+  fakeApprovalBd({ 'UI-a': { description: ADR_SECTION } }, { gate });
+
+  await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    expected_revision: 0,
+    ui_placement: true
+  });
+  const pending_before = placementApprovalPending(WS, 'UI-a');
+  open_gate();
+  await settled();
+
+  expect(pending_before).toBe(true);
+  expect(placementApprovalPending(WS, 'UI-a')).toBe(false);
+});
+
+test('writes nothing when the section changed after the person placed it', async () => {
+  const writes = fakeApprovalBd(
+    { 'UI-a': { description: ADR_SECTION } },
+    {
+      edited: {
+        'UI-a': ADR_SECTION.replace('화면 통로에서만', '어느 통로에서나')
+      }
+    }
+  );
+
+  const outcome = await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    expected_revision: 0,
+    ui_placement: true
+  });
+  await settled();
+
+  expect(outcome.applied).toBe(true);
+  expect(writes).toEqual([]);
+  expect(placementApprovalPending(WS, 'UI-a')).toBe(false);
+});
+
+test('writes nothing for a bundle step whose section changed after the read', async () => {
+  const writes = fakeApprovalBd(
+    {
+      'UI-a': { description: ADR_SECTION },
+      'UI-b': { description: ADR_SECTION }
+    },
+    { edited: { 'UI-b': ADR_SECTION.replace('화면', '모든') } }
+  );
+
+  await placeBundleInQueue(WS, {
+    expected_revision: 0,
+    lane: 's1',
+    binds: [],
+    steps: [
+      { bead_id: 'UI-a', index: 0 },
+      { bead_id: 'UI-b', index: 1 }
+    ],
+    ui_placement: true
+  });
+  await settled();
+
+  expect(writes.map((write) => write.bead_id)).toEqual(['UI-a']);
+});
+
+test.each([
+  ['an absent prior', undefined, 'once'],
+  ['a stale prior', `user@${'0'.repeat(12)}`, 'always']
+])(
+  'restores %s when the confirming readback fails',
+  async (_label, adr_approval, readback) => {
+    fakeApprovalBd(
+      { 'UI-a': { description: ADR_SECTION, adr_approval } },
+      { readback: /** @type {'once'|'always'} */ (readback) }
+    );
+
+    await placeBeadInQueue(WS, {
+      bead_id: 'UI-a',
+      expected_revision: 0,
+      ui_placement: true
+    });
+    await settled();
+
+    expect(fake_bd.metadata['UI-a'].adr_approval).toBe(adr_approval);
+    expect(placementApprovalPending(WS, 'UI-a')).toBe(false);
+  }
+);
+
+test('leaves another writer value that the readback observes', async () => {
+  fakeApprovalBd(
+    { 'UI-a': { description: ADR_SECTION } },
+    { readback: 'foreign' }
+  );
+
+  await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    expected_revision: 0,
+    ui_placement: true
+  });
+  await settled();
+
+  expect(fake_bd.unsets).toEqual([]);
+  expect(fake_bd.metadata['UI-a'].adr_approval).toBe(`user@${'f'.repeat(12)}`);
+});
+
+test('releases the hold when the store write throws', async () => {
+  fakeApprovalBd({ 'UI-a': { description: ADR_SECTION } });
+  vi.spyOn(getWorkerRuntime().queueStore, 'place').mockImplementation(() => {
+    throw new Error('disk full');
+  });
+
+  const placing = placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    expected_revision: 0,
+    ui_placement: true
+  });
+
+  await expect(placing).rejects.toThrow('disk full');
+  expect(placementApprovalPending(WS, 'UI-a')).toBe(false);
+});
+
+test('releases the bundle hold when the store write throws', async () => {
+  fakeApprovalBd({ 'UI-a': { description: ADR_SECTION } });
+  vi.spyOn(getWorkerRuntime().queueStore, 'placeBundle').mockImplementation(
+    () => {
+      throw new Error('disk full');
+    }
+  );
+
+  const placing = placeBundleInQueue(WS, {
+    expected_revision: 0,
+    lane: 's1',
+    binds: [],
+    steps: [{ bead_id: 'UI-a', index: 0 }],
+    ui_placement: true
+  });
+
+  await expect(placing).rejects.toThrow('disk full');
+  expect(placementApprovalPending(WS, 'UI-a')).toBe(false);
+});
+
+test('still records and releases when a step after the queue write throws', async () => {
+  const writes = fakeApprovalBd({ 'UI-a': { description: ADR_SECTION } });
+  vi.spyOn(getWorkerRuntime().queueStore, 'clearAdmission').mockImplementation(
+    () => {
+      throw new Error('admission store broke');
+    }
+  );
+
+  const placing = placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    expected_revision: 0,
+    ui_placement: true
+  });
+
+  await expect(placing).rejects.toThrow('admission store broke');
+  await settled();
+  expect(writes).toEqual([
+    { bead_id: 'UI-a', key: 'adr_approval', value: `user@${ADR_DIGEST}` }
+  ]);
+  expect(placementApprovalPending(WS, 'UI-a')).toBe(false);
 });

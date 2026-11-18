@@ -3719,6 +3719,37 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.quick_fix_review).toBe(`self@${'a'.repeat(12)}`);
   });
 
+  test('snapshotBead carries the adr_approval judgement input', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-7',
+              status: 'open',
+              metadata: {
+                route: 'quick_fix',
+                adr_approval: `user@${'b'.repeat(12)}`
+              }
+            }
+          ]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-7' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-7');
+
+    expect(snap.adr_approval).toBe(`user@${'b'.repeat(12)}`);
+  });
+
   test('snapshotBead leaves both quick_fix judgement inputs undefined when absent', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {
