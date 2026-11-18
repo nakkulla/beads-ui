@@ -25921,6 +25921,43 @@ describe('scheduler quick_fix landing settlement', () => {
     }
   );
 
+  test('names no earlier landing failure on a workflow mode revert failure', async () => {
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      quickfixLanding: { settle }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.store.updateAttempt(WS, {
+      attempt_id: 'S1-1000-1',
+      patch: {
+        quickfix_landing: /** @type {any} */ ({
+          cursor: 'repo_operations',
+          head_sha: 'a'.repeat(40),
+          reason: 'script_failed',
+          deploy_operation_id: 'deploy-old',
+          incident: 'deploy-old',
+          failed_step: 'repo_operations'
+        })
+      }
+    });
+    vi.spyOn(env.bd, 'unsetMetadata').mockRejectedValueOnce(
+      new Error('bd capability probe timed out')
+    );
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    const landing = /** @type {any} */ (
+      env.store.snapshot(WS).attempts['S1-1000-1'].quickfix_landing
+    );
+    expect(landing.incident).toMatch(/^S1-1000-1:landing:/);
+    expect(landing).not.toHaveProperty('failed_step');
+  });
+
   test('retries workflow mode restoration on the same landing attempt', async () => {
     /** @type {ReturnType<typeof setup>} */
     let env;

@@ -9491,12 +9491,13 @@ export function createScheduler(deps) {
         err
       );
       // An earlier landing failure's step and incident are not this stop's:
-      // the revert failed before any landing step ran (UI-lx9o §4.2).
+      // the revert failed before any landing step ran, so the stop gets an
+      // incident of its own — a kept deploy run id must not name it either
+      // (UI-lx9o §4.2).
       const landing = {
         ...deps.store.snapshot(workspace).attempts[attempt_id]?.quickfix_landing
       };
       delete landing.failed_step;
-      delete landing.incident;
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
@@ -9504,7 +9505,8 @@ export function createScheduler(deps) {
             cursor: null,
             head_sha: null,
             ...landing,
-            reason: 'workflow_mode_revert_failed'
+            reason: 'workflow_mode_revert_failed',
+            incident: `${attempt_id}:landing:${now()}`
           }
         }
       });

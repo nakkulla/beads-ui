@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from './bead-timeline.js';
+import { failureIncidentLines } from './failure-incident-lines.js';
 import { writeForeignCandidateOwner } from './foreign-target.js';
 import { createLockManager } from './locks.js';
 import { createNotifier } from './notify.js';
@@ -698,6 +699,34 @@ describe('repo operation after-ladder recovery', () => {
       retry_exhausted: true,
       retry_same_error: true
     });
+  });
+
+  test('reads the same facts off the settled record as its operation line carries', async () => {
+    const timeline = { append: vi.fn() };
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: same failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({
+      runner,
+      repairHandoff: adapter(),
+      timeline
+    });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const line = timeline.append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.kind === 'operation_failed')
+      .at(-1);
+    const { failure_operation } = failureIncidentLines(
+      [],
+      { attempt_id: 'A', quickfix_landing: { deploy_operation_id: 'op-1' } },
+      harness.store.snapshot(root).repo_operations
+    );
+    expect(failure_operation).toEqual(line.operation);
   });
 
   test('says no same error on the operation line when the first run evidence was not confirmed', async () => {
