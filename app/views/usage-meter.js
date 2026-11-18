@@ -1,5 +1,6 @@
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { repeat } from 'lit-html/directives/repeat.js';
 import {
   departuresOf,
   isLimitPolicySnapshot,
@@ -638,6 +639,51 @@ function rowKey(provider_key, account_number) {
 }
 
 /**
+ * Order one provider's account rows the way the settings dialog orders its
+ * switch list: the default account first, then the `accounts` allow list in
+ * its order, then the rest by number. The active account keeps its place, so
+ * a switch never moves a row. Without a settings entry the server order stays.
+ *
+ * @param {UsageAccount[]} accounts
+ * @param {{ default_account?: string|null, accounts?: unknown }|null} entry
+ * @returns {UsageAccount[]}
+ */
+function orderAccounts(accounts, entry) {
+  if (!entry) {
+    return accounts;
+  }
+  /** @type {Map<string, number>} */
+  const rank = new Map();
+  if (
+    typeof entry.default_account === 'string' &&
+    entry.default_account !== ''
+  ) {
+    rank.set(entry.default_account, 0);
+  }
+  if (Array.isArray(entry.accounts)) {
+    for (const key of entry.accounts) {
+      if (typeof key === 'string' && !rank.has(key)) {
+        rank.set(key, rank.size);
+      }
+    }
+  }
+  return [...accounts].sort((a, b) => {
+    const rank_a = rank.get(a.key);
+    const rank_b = rank.get(b.key);
+    if (rank_a !== undefined && rank_b !== undefined && rank_a !== rank_b) {
+      return rank_a - rank_b;
+    }
+    if (rank_a !== undefined && rank_b === undefined) {
+      return -1;
+    }
+    if (rank_a === undefined && rank_b !== undefined) {
+      return 1;
+    }
+    return a.number - b.number;
+  });
+}
+
+/**
  * Render and poll independent provider usage snapshots.
  *
  * With the active-login settings bound (at creation or later through
@@ -668,6 +714,10 @@ export function createUsageMeter(mount_element, options = {}) {
   // globally, so a Codex switch must not be swallowed while Claude switches.
   /** @type {Map<string, number>} */
   const switching_rows = new Map();
+  // provider key -> how many switches have started; a ★ save that answers
+  // after a newer switch leaves that switch alone.
+  /** @type {Map<string, number>} */
+  const switch_starts = new Map();
   /** @type {ReturnType<typeof setInterval> | null} */
   let interval_id = null;
   /** @type {Map<string, ProviderSnapshot>} */
@@ -860,6 +910,7 @@ export function createUsageMeter(mount_element, options = {}) {
     }
     const row_key = rowKey(provider.key, account_number);
     switching_rows.set(provider.key, account_number);
+    switch_starts.set(provider.key, (switch_starts.get(provider.key) ?? 0) + 1);
     row_messages.delete(row_key);
     renderProviders();
 
@@ -990,12 +1041,13 @@ export function createUsageMeter(mount_element, options = {}) {
    *
    * @param {string} provider_key
    * @param {string|null} next
+   * @returns {Promise<boolean>} Whether the write was saved; false when it was refused, failed or never sent.
    */
   async function setDefaultAccount(provider_key, next) {
     const binding = limit_policy;
     const state = limitPolicyState();
     if (!binding || !state || default_saving.has(provider_key)) {
-      return;
+      return false;
     }
     default_saving.add(provider_key);
     renderProviders();
@@ -1011,16 +1063,50 @@ export function createUsageMeter(mount_element, options = {}) {
             ? 'default 계정 저장 실패: 다른 곳에서 먼저 바꿨습니다 — 최신 값으로 다시 그렸습니다'
             : `default 계정 저장 실패: ${res.message ?? res.code}`
         );
+        return false;
       }
+      return true;
     } catch (err) {
       adoptLimitPolicy(/** @type {any} */ (err)?.details?.snapshot);
       limitPolicyToast(`default 계정 저장 실패: ${errorText(err)}`);
+      return false;
     } finally {
       default_saving.delete(provider_key);
       if (!destroyed) {
         renderProviders();
       }
     }
+  }
+
+  /**
+   * A ★ click: save the default, and once a new default is saved switch to
+   * that account through the same path as its [전환] button, so the in-use
+   * confirm and the row messages apply. Clearing the default, a refused or
+   * failed save, and an account that is already active switch nothing; nor
+   * does a save that answers after a switch started while it was in flight,
+   * since that switch was the user's newer choice.
+   *
+   * @param {ProviderDescriptor} provider
+   * @param {UsageAccount} account - The clicked row.
+   * @param {boolean} is_default - The row already is the default (clear).
+   */
+  async function onDefaultStarClick(provider, account, is_default) {
+    const next = is_default ? null : account.key;
+    const switches_before = switch_starts.get(provider.key) ?? 0;
+    const saved = await setDefaultAccount(provider.key, next);
+    if (!saved || next === null || account.active || destroyed) {
+      return;
+    }
+    if ((switch_starts.get(provider.key) ?? 0) !== switches_before) {
+      return;
+    }
+    const target = accountsOf(provider.key).find(
+      (row) => row.key === next && row.number === account.number
+    );
+    if (target === undefined || target.active) {
+      return;
+    }
+    await switchAccount(provider, target.number);
   }
 
   /**
@@ -1049,8 +1135,7 @@ export function createUsageMeter(mount_element, options = {}) {
       title=${label}
       data-default-account=${account.key}
       ?disabled=${default_saving.has(provider.key)}
-      @click=${() =>
-        void setDefaultAccount(provider.key, is_default ? null : account.key)}
+      @click=${() => void onDefaultStarClick(provider, account, is_default)}
     >
       ${is_default ? '★' : '☆'}
     </button>`;
@@ -2204,8 +2289,13 @@ export function createUsageMeter(mount_element, options = {}) {
           >
             ${section_message.text}
           </p>`}
-      ${snapshot.accounts.map((account) =>
-        renderAccount(provider, account, snapshot.accounts, now_ms)
+      ${repeat(
+        orderAccounts(snapshot.accounts, limitEntryOf(provider.key)),
+        // Keyed by account so a row never reuses another account's nodes: a
+        // mobile browser that wraps the email text in a link leaves the old
+        // email behind when lit only updates that text in place.
+        (account) => `${provider.key}:${account.number}:${account.key}`,
+        (account) => renderAccount(provider, account, snapshot.accounts, now_ms)
       )}
     </section>`;
   }

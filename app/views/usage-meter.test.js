@@ -1976,6 +1976,337 @@ describe('usage meter default account (UI-32oq §4.4)', () => {
     meter.destroy();
   });
 
+  /**
+   * Serve the Claude list the getter returns at each read, and answer every
+   * switch with `switch_payload`.
+   *
+   * @param {() => unknown} claude_payload
+   * @param {unknown} [switch_payload]
+   */
+  function serveClaudeWithSwitch(
+    claude_payload,
+    switch_payload = { ok: true, switched: true, warnings: [] }
+  ) {
+    const fetchMock = vi.fn((/** @type {string} */ url) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            url === '/api/claude-account/switch'
+              ? switch_payload
+              : url === '/api/claude-usage'
+                ? claude_payload()
+                : { available: false }
+          )
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  /**
+   * Four Claude accounts; `active_number` is the active one.
+   *
+   * @param {number} active_number
+   */
+  function fourClaudeAccounts(active_number) {
+    return {
+      available: false,
+      accounts: [1, 2, 3, 4].map((number) =>
+        accountRow({
+          number,
+          email: `account-${number}@example.com`,
+          active: number === active_number
+        })
+      )
+    };
+  }
+
+  function rowLabels() {
+    return Array.from(
+      document.querySelectorAll('.usage-meter__account-label'),
+      (el) => el.textContent?.trim()
+    );
+  }
+
+  /**
+   * @param {any} fetchMock
+   */
+  function switchCalls(fetchMock) {
+    return fetchMock.mock.calls.filter(
+      (/** @type {any[]} */ call) => call[0] === '/api/claude-account/switch'
+    );
+  }
+
+  test('orders the rows default first, then the allow list, then by number', async () => {
+    const mount = mountMeter();
+    serveClaudeWithSwitch(() => fourClaudeAccounts(1));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: settingsStore({
+          default_account: 'account-3@example.com',
+          accounts: ['account-4@example.com', 'account-3@example.com']
+        }),
+        transport: vi.fn()
+      }
+    });
+
+    await openCard(mount);
+
+    await vi.waitFor(() =>
+      expect(rowLabels()).toEqual([
+        'account-3@example.com',
+        'account-4@example.com',
+        'account-1@example.com',
+        'account-2@example.com'
+      ])
+    );
+    meter.destroy();
+  });
+
+  test('keeps the server order without a settings snapshot', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [
+        accountRow({ number: 3, email: 'three@example.com', active: true }),
+        accountRow({ number: 1, email: 'one@example.com' }),
+        accountRow({ number: 2, email: 'two@example.com' })
+      ]
+    });
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: createLimitPolicySettingsStore(),
+        transport: vi.fn()
+      }
+    });
+
+    await openCard(mount);
+
+    await vi.waitFor(() =>
+      expect(rowLabels()).toEqual([
+        'three@example.com',
+        'one@example.com',
+        'two@example.com'
+      ])
+    );
+    meter.destroy();
+  });
+
+  test('keeps the row order when the active account changes', async () => {
+    const mount = mountMeter();
+    let active_number = 1;
+    serveClaudeWithSwitch(() => fourClaudeAccounts(active_number));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: settingsStore({ default_account: 'account-2@example.com' }),
+        transport: vi.fn()
+      }
+    });
+    await openCard(mount);
+    await vi.waitFor(() =>
+      expect(rowLabels()).toEqual([
+        'account-2@example.com',
+        'account-1@example.com',
+        'account-3@example.com',
+        'account-4@example.com'
+      ])
+    );
+
+    active_number = 4;
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.usage-meter__switch')[2]
+    ).click();
+
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector(
+          '.usage-meter__account--active .usage-meter__account-label'
+        )?.textContent
+      ).toBe('account-4@example.com')
+    );
+    expect(rowLabels()).toEqual([
+      'account-2@example.com',
+      'account-1@example.com',
+      'account-3@example.com',
+      'account-4@example.com'
+    ]);
+    meter.destroy();
+  });
+
+  test('switches to an inactive account once its star is saved', async () => {
+    const mount = mountMeter();
+    const fetchMock = serveClaudeWithSwitch(() => fourClaudeAccounts(1));
+    const transport = vi.fn(async () => ({ ok: true }));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store: settingsStore(), transport }
+    });
+    await openCard(mount);
+    await vi.waitFor(() =>
+      expect(star('account-3@example.com')).not.toBeNull()
+    );
+
+    star('account-3@example.com').click();
+
+    await vi.waitFor(() => expect(switchCalls(fetchMock)).toHaveLength(1));
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/claude-account/switch',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ number: 3 })
+      })
+    );
+    meter.destroy();
+  });
+
+  test('leaves a switch made while the star save was in flight alone', async () => {
+    const mount = mountMeter();
+    const fetchMock = serveClaudeWithSwitch(() => fourClaudeAccounts(1));
+    /** @type {(value: unknown) => void} */
+    let answerSave = () => {};
+    const transport = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          answerSave = resolve;
+        })
+    );
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store: settingsStore(), transport }
+    });
+    await openCard(mount);
+    await vi.waitFor(() =>
+      expect(star('account-3@example.com')).not.toBeNull()
+    );
+    star('account-3@example.com').click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.usage-meter__switch')[0]
+    ).click();
+    await vi.waitFor(() => expect(switchCalls(fetchMock)).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(
+        /** @type {HTMLButtonElement} */ (
+          document.querySelector('.usage-meter__switch')
+        ).disabled
+      ).toBe(false)
+    );
+
+    answerSave({ ok: true });
+
+    await vi.waitFor(() =>
+      expect(star('account-3@example.com').disabled).toBe(false)
+    );
+    expect(switchCalls(fetchMock)).toHaveLength(1);
+    expect(switchCalls(fetchMock)[0][1].body).toBe(
+      JSON.stringify({ number: 2 })
+    );
+    meter.destroy();
+  });
+
+  test('switches nothing when the star save is refused', async () => {
+    const mount = mountMeter();
+    const fetchMock = serveClaudeWithSwitch(() => fourClaudeAccounts(1));
+    const transport = vi.fn(async () => ({
+      ok: false,
+      code: 'conflict',
+      message: 'stale',
+      snapshot: null
+    }));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store: settingsStore(), transport, toast: vi.fn() }
+    });
+    await openCard(mount);
+    await vi.waitFor(() =>
+      expect(star('account-3@example.com')).not.toBeNull()
+    );
+
+    star('account-3@example.com').click();
+
+    await vi.waitFor(() =>
+      expect(star('account-3@example.com').disabled).toBe(false)
+    );
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(switchCalls(fetchMock)).toHaveLength(0);
+    meter.destroy();
+  });
+
+  test('switches nothing when the star save throws', async () => {
+    const mount = mountMeter();
+    const fetchMock = serveClaudeWithSwitch(() => fourClaudeAccounts(1));
+    const transport = vi.fn(async () => {
+      throw new Error('offline');
+    });
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store: settingsStore(), transport, toast: vi.fn() }
+    });
+    await openCard(mount);
+    await vi.waitFor(() =>
+      expect(star('account-3@example.com')).not.toBeNull()
+    );
+
+    star('account-3@example.com').click();
+
+    await vi.waitFor(() =>
+      expect(star('account-3@example.com').disabled).toBe(false)
+    );
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(switchCalls(fetchMock)).toHaveLength(0);
+    meter.destroy();
+  });
+
+  test('switches nothing when the star clears the default', async () => {
+    const mount = mountMeter();
+    const fetchMock = serveClaudeWithSwitch(() => fourClaudeAccounts(1));
+    const transport = vi.fn(async () => ({ ok: true }));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: {
+        store: settingsStore({ default_account: 'account-3@example.com' }),
+        transport
+      }
+    });
+    await openCard(mount);
+    await vi.waitFor(() =>
+      expect(star('account-3@example.com')).not.toBeNull()
+    );
+
+    star('account-3@example.com').click();
+
+    await vi.waitFor(() =>
+      expect(star('account-3@example.com').disabled).toBe(false)
+    );
+    expect(transport).toHaveBeenCalledWith('limit-policy-settings-set', {
+      expected_revision: 5,
+      runners: { claude: { default_account: null } }
+    });
+    expect(switchCalls(fetchMock)).toHaveLength(0);
+    meter.destroy();
+  });
+
+  test('switches nothing when the starred account is already active', async () => {
+    const mount = mountMeter();
+    const fetchMock = serveClaudeWithSwitch(() => fourClaudeAccounts(1));
+    const transport = vi.fn(async () => ({ ok: true }));
+    const meter = createUsageMeter(mount, {
+      limitPolicy: { store: settingsStore(), transport }
+    });
+    await openCard(mount);
+    await vi.waitFor(() =>
+      expect(star('account-1@example.com')).not.toBeNull()
+    );
+
+    star('account-1@example.com').click();
+
+    await vi.waitFor(() =>
+      expect(star('account-1@example.com').disabled).toBe(false)
+    );
+    expect(transport).toHaveBeenCalledWith('limit-policy-settings-set', {
+      expected_revision: 5,
+      runners: { claude: { default_account: 'account-1@example.com' } }
+    });
+    expect(switchCalls(fetchMock)).toHaveLength(0);
+    meter.destroy();
+  });
+
   test('redraws the open card when the settings store changes', async () => {
     const mount = mountMeter();
     serveTwoClaudeAccounts();
