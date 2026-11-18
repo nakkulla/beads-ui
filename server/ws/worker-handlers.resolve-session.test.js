@@ -558,6 +558,73 @@ describe('worker-resolve-in-session picks the launcher by row (UI-18a5 §3.2)', 
     expect(reply.payload.row).toBe('stop');
   });
 
+  test('opens the paused conversation through the inquiry launcher (UI-6kj0)', async () => {
+    getWorkerRuntime().queueStore.appendAttempt(WS, {
+      expected_revision: revision(),
+      attempt: {
+        attempt_id: 'a-paused',
+        bead_id: BEAD,
+        repo: '/repo',
+        status: 'paused'
+      }
+    });
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(inquiry_launches).toEqual([
+      {
+        workspace: WS,
+        bead_id: BEAD,
+        attempt_id: 'a-paused',
+        repo: '/repo',
+        awaiting_user: null,
+        paused: true
+      }
+    ]);
+    expect(launches).toEqual([]);
+    expect(reply.payload).toMatchObject({
+      row: 'paused',
+      failure_class: '일시정지'
+    });
+  });
+
+  test.each([
+    ['a provider outage hold', { cause: 'provider_outage:outage' }],
+    ['an account preempt hold', { cause: 'account_preempt:switch' }],
+    ['a withdrawn run', { withdrawn: { at: 1, from_status: 'running' } }],
+    ['a session lane run', { exec: 'session' }]
+  ])('refuses %s as no terminal failure (UI-6kj0)', async (_label, over) => {
+    /** @type {any} */
+    const attempt = {
+      attempt_id: 'a-paused',
+      bead_id: BEAD,
+      status: 'paused',
+      ...over
+    };
+    getWorkerRuntime().queueStore.appendAttempt(WS, {
+      expected_revision: revision(),
+      attempt
+    });
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(reply.payload).toMatchObject({ reason: 'no_terminal_failure' });
+    expect(inquiry_launches).toEqual([]);
+  });
+
+  test('lets a failed cleanup win over the paused row (UI-6kj0)', async () => {
+    getWorkerRuntime().queueStore.appendAttempt(WS, {
+      expected_revision: revision(),
+      attempt: { attempt_id: 'a-paused', bead_id: BEAD, status: 'paused' }
+    });
+    recordCleanupStop();
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(reply.payload.row).toBe('failure');
+    expect(inquiry_launches).toEqual([]);
+  });
+
   test('opens the failure conversation for a stopped cleanup', async () => {
     recordCleanupStop();
 

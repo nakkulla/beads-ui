@@ -53,6 +53,7 @@ import path from 'node:path';
 import { accountDisplayName } from '../../app/utils/account-display-name.js';
 import {
   isImplementationAttempt,
+  isUserPausedAttempt,
   isWithdrawnAttempt,
   sessionOwnerRefusal as judgeSessionOwnerRefusal,
   latestImplementationAttempts,
@@ -991,7 +992,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * ends with would fail it as `no_pr`; this dep judges the disposition's own
  * durable result instead. Absent wiring simply means no disposition can be
  * dispatched (the entry point refuses).
- * @property {{ onParkedAttempt: (input: { workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null, recovery?: any, confirm?: boolean }) => Promise<any> }} [directionInquiry]
+ * @property {{ onParkedAttempt: (input: { workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null, recovery?: any, confirm?: boolean }) => Promise<any>, isInFlight?: (bead_id: string) => boolean, reserve?: (bead_id: string) => boolean, release?: (bead_id: string) => void }} [directionInquiry]
  * @property {(identity: StaleWorkIdentity, input: { bead_id: string }) => Promise<any>} [backupFreshResidue]
  * Direction-conflict park trigger (UI-7uid §3.1). Called fire-and-forget right
  * after a `parked` record whose attempt came from the stale re-review lane.
@@ -5633,6 +5634,16 @@ export function createScheduler(deps) {
       return false;
     }
     if (leafPausedBeads(q).has(bead_id)) {
+      // A paused run's conversation may still be writing in the attempt's
+      // worktree, so its residue settlement waits until reconciliation
+      // observes the window gone — as a closed recovery wait does (UI-6kj0).
+      if (
+        Object.values(q.interactive_sessions || {}).some(
+          (record) => record.bead_id === bead_id && record.kind === 'inquiry'
+        )
+      ) {
+        return false;
+      }
       retiring.add(bead_id);
       void retirePausedBead(
         workspace,
@@ -11685,7 +11696,8 @@ export function createScheduler(deps) {
       attempt.cause_detail?.conversation?.ended_by !== 'takeover' ||
       !(
         attempt.status === 'parked' ||
-        (attempt.status === 'waiting' && !!attempt.cause_detail?.recovery)
+        (attempt.status === 'waiting' && !!attempt.cause_detail?.recovery) ||
+        isUserPausedAttempt(attempt)
       ) ||
       isOpenConversation(q.interactive_sessions?.[`${bead_id}:inquiry`])
     ) {
@@ -11979,7 +11991,10 @@ export function createScheduler(deps) {
       !!attempt &&
       latestImplementationAttempt(q, bead_id)?.attempt_id === attempt_id &&
       ((attempt.status === 'waiting' && !!attempt.cause_detail?.recovery) ||
-        attempt.status === 'parked');
+        attempt.status === 'parked' ||
+        // A person's own pause (UI-6kj0 §3.4) follows the same one-shot
+        // rule: `spent()` above already refused a pause a child carries.
+        isUserPausedAttempt(attempt));
     if (!resumable) {
       return refuse('not_resumable');
     }
@@ -18825,7 +18840,7 @@ export function createScheduler(deps) {
    * click is refused first when a newer session owns the Bead (UI-68r5 §3.4).
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
-  async function resume(workspace, attempt_id, continuation = {}) {
+  async function resumeAttempt(workspace, attempt_id, continuation = {}) {
     if (continuation.job_retry_authorized === true) {
       // `↻ 이어하기` — the person's click — changes nothing on a failure a
       // newer session took over (UI-68r5 §3.4·§3.5).
@@ -19278,6 +19293,55 @@ export function createScheduler(deps) {
       }
     }
     return result;
+  }
+
+  /**
+   * `resumeAttempt` behind the paused-conversation guard (UI-6kj0 §3.3). A
+   * person's own pause (`isUserPausedAttempt`) may be reopened as a
+   * same-session conversation, and one session id must never have two
+   * writers: while that Bead's inquiry record is unsettled, or the inquiry
+   * launcher holds its reservation, the resume is refused `conversation_live`.
+   * Otherwise the resume takes that SAME reservation (`directionInquiry`
+   * `reserve`) synchronously — before any `await` — and holds it until the
+   * child attempt is minted, so a launch arriving meanwhile is refused
+   * `inquiry_in_flight`. Only the handoff settlement's `conversation_return`
+   * passes through: it continues the conversation that just ended. Resumes of
+   * every other status are untouched.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {Parameters<typeof resumeAttempt>[2]} [continuation]
+   * @returns {ReturnType<typeof resumeAttempt>}
+   */
+  async function resume(workspace, attempt_id, continuation = {}) {
+    if (continuation.conversation_return) {
+      return resumeAttempt(workspace, attempt_id, continuation);
+    }
+    const q = deps.store.snapshot(workspace);
+    const prior = q.attempts?.[attempt_id];
+    if (!isUserPausedAttempt(prior)) {
+      return resumeAttempt(workspace, attempt_id, continuation);
+    }
+    const bead_id = /** @type {string} */ (prior.bead_id);
+    const record = q.interactive_sessions?.[`${bead_id}:inquiry`];
+    const inquiry = deps.directionInquiry;
+    if (
+      (!!record && record.settled_at === null) ||
+      inquiry?.isInFlight?.(bead_id) === true
+    ) {
+      return { ok: false, reason: 'conversation_live' };
+    }
+    if (!inquiry?.reserve || !inquiry.release) {
+      return resumeAttempt(workspace, attempt_id, continuation);
+    }
+    if (!inquiry.reserve(bead_id)) {
+      return { ok: false, reason: 'conversation_live' };
+    }
+    try {
+      return await resumeAttempt(workspace, attempt_id, continuation);
+    } finally {
+      inquiry.release(bead_id);
+    }
   }
 
   /**

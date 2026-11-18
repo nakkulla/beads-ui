@@ -247,6 +247,7 @@ const INHERIT_SETTINGS = {
  *   existsSync?: (file_path: string) => boolean,
  *   now?: () => number,
  *   handoffPending?: (workspace: string, bead_id: string) => boolean,
+ *   attemptSpent?: (workspace: string, attempt_id: string) => boolean,
  *   autoLaunchEnabled?: (config_enabled: boolean) => boolean,
  *   conversationSettings?: () => any,
  *   launchFlags?: (runner: string) => string[]
@@ -287,6 +288,7 @@ function makeInquiry(over = {}) {
     observeProcess: over.observeProcess,
     existsSync: over.existsSync || (() => true),
     handoffPending: over.handoffPending,
+    attemptSpent: over.attemptSpent,
     // The shared switch and the launch settings default to config.toml and
     // "원래 세션 따름" here, so each test states the setting it is about.
     autoLaunchEnabled:
@@ -1509,5 +1511,146 @@ describe('direction-inquiry wrapper', () => {
       `tmux set-option -p -t "$TMUX_PANE" @bdui_inquiry_bead 'UI-7uid' && ` +
         "exec '/opt/homebrew/bin/claude' '프롬프트'"
     );
+  });
+});
+
+describe('direction-inquiry paused conversation (UI-6kj0)', () => {
+  /**
+   * @param {Record<string, any>} [over]
+   * @returns {any}
+   */
+  function pausedInput(over = {}) {
+    return parkedInput({ awaiting_user: null, paused: true, ...over });
+  }
+
+  /** A hub whose click launch confirms the new pane on the third read. */
+  const clickHub = () =>
+    makeHub({ panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]] });
+
+  /** A paused attempt as the queue store holds it. */
+  const pausedAttempt = async () =>
+    attempt({ bead_id: BEAD, status: 'paused', cause: null });
+
+  test('fills the paused stop and situation into the first input', async () => {
+    const tmux = clickHub();
+    const { inquiry } = makeInquiry({ tmux, readAttempt: pausedAttempt });
+
+    await inquiry.launchForClick(pausedInput());
+
+    const expected = fillConversationEntry({
+      reason: '멈춤 paused',
+      situation:
+        '사용자가 Worker 실행을 일시정지했다 — 세션이 묻던 질문은 없다',
+      worktree: WORKTREE,
+      checkout: '/repo'
+    });
+    expect(tmux.wrapper().endsWith(shellQuote(expected))).toBe(true);
+  });
+
+  test('records the paused conversation as an inquiry with its stop label', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      tmux: clickHub(),
+      readAttempt: pausedAttempt,
+      store: { recordInteractiveSession }
+    });
+
+    await inquiry.launchForClick(pausedInput());
+
+    expect(recordInteractiveSession).toHaveBeenCalledExactlyOnceWith(
+      '/ws',
+      expect.objectContaining({
+        bead_id: BEAD,
+        kind: 'inquiry',
+        mode: 'resume',
+        session_id: 'codex-sid',
+        attempt_id: 'a1',
+        conversation: expect.objectContaining({ stop: '멈춤 paused' })
+      })
+    );
+  });
+
+  test('opens the paused conversation with the click placement', async () => {
+    const tmux = clickHub();
+    const { inquiry } = makeInquiry({ tmux, readAttempt: pausedAttempt });
+
+    const outcome = await inquiry.launchForClick(pausedInput());
+
+    expect(tmux.calls).toContainEqual(['select-window', '-t', '%9']);
+    expect(outcome).toMatchObject({
+      session: 'launched',
+      tmux_session: 'bdui-inquiry'
+    });
+  });
+
+  test('ignores the paused flag on the automatic path', async () => {
+    const tmux = launchingHub();
+    const { inquiry } = makeInquiry({ tmux, readAttempt: pausedAttempt });
+
+    const outcome = await inquiry.onParkedAttempt(pausedInput());
+
+    expect(outcome).toBeUndefined();
+    expect(tmux.names()).not.toContain('open');
+  });
+
+  test('refuses a paused click once a resume spent the pause', async () => {
+    const tmux = launchingHub();
+    const { inquiry } = makeInquiry({
+      tmux,
+      readAttempt: pausedAttempt,
+      attemptSpent: () => true
+    });
+
+    const outcome = await inquiry.launchForClick(pausedInput());
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'not_paused'
+    });
+    expect(tmux.names()).not.toContain('open');
+  });
+
+  test('refuses a paused click on an attempt that is no longer paused', async () => {
+    const tmux = launchingHub();
+    const { inquiry } = makeInquiry({
+      tmux,
+      readAttempt: async () => attempt({ bead_id: BEAD, status: 'running' })
+    });
+
+    const outcome = await inquiry.launchForClick(pausedInput());
+
+    expect(outcome.reason).toBe('not_paused');
+  });
+
+  test('refuses a click while a resume holds the reservation', async () => {
+    const tmux = launchingHub();
+    const { inquiry } = makeInquiry({ tmux, readAttempt: pausedAttempt });
+    inquiry.reserve(BEAD);
+
+    const outcome = await inquiry.launchForClick(pausedInput());
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'inquiry_in_flight'
+    });
+  });
+
+  test('refuses a second reservation of the same bead', () => {
+    const { inquiry } = makeInquiry();
+    inquiry.reserve(BEAD);
+
+    const second = inquiry.reserve(BEAD);
+
+    expect(second).toBe(false);
+    expect(inquiry.isInFlight(BEAD)).toBe(true);
+  });
+
+  test('frees the bead when the reservation is released', () => {
+    const { inquiry } = makeInquiry();
+    inquiry.reserve(BEAD);
+
+    inquiry.release(BEAD);
+
+    expect(inquiry.isInFlight(BEAD)).toBe(false);
   });
 });

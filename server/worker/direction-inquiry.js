@@ -31,6 +31,7 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isUserPausedAttempt } from '../../app/utils/active-attempts.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import {
   conversationAutoLaunchEnabled,
@@ -246,6 +247,13 @@ export function parkSentence(notes, awaiting_user) {
 }
 
 /**
+ * The `상황` of a person's own pause (UI-6kj0 §3.3): the session asked
+ * nothing, so beads-ui states the one fact it knows. Exported for tests.
+ */
+export const PAUSED_SITUATION =
+  '사용자가 Worker 실행을 일시정지했다 — 세션이 묻던 질문은 없다';
+
+/**
  * The blocker sentence a recovery wait left: the summary's first line without
  * its leading `blocker:`.
  *
@@ -326,6 +334,7 @@ export function inquiryWrapper(input) {
  * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
  * @property {(workspace: string, attempt_id: string) => any|Promise<any>} [readAttempt] - Injected queue-store lookup; omission reads as unavailable rather than importing the runtime back through a cycle.
  * @property {(workspace: string, bead_id: string) => boolean} [handoffPending] - Injected queue-store judgment (`holdsHandoffReservation`): whether this Bead's inquiry record still holds an unsettled handoff reservation. Omission reads as none pending; the store's own write guard still refuses the overwrite.
+ * @property {(workspace: string, attempt_id: string) => boolean} [attemptSpent] - Injected queue-store judgment: whether a child attempt already carries this one as `resumed_from`. A paused conversation (UI-6kj0 §3.3) opens only on an unspent pause; omission reads as unspent.
  * @property {(pid: number) => { ok: true, identity: { pid: number, process_started_at: number } }|{ ok: false, reason: string }} [observeProcess]
  * @property {(file_path: string) => boolean} [existsSync]
  * @property {(config_enabled: boolean) => boolean} [autoLaunchEnabled] - The
@@ -361,7 +370,9 @@ export function createDirectionInquiry(deps) {
     deps.autoLaunchEnabled || conversationAutoLaunchEnabled;
   // Reserve a bead synchronously before either public entry reaches its first
   // `await`. Otherwise two calls in one tick both observe no owner and launch
-  // duplicate panes before either can publish its marker.
+  // duplicate panes before either can publish its marker. A paused attempt's
+  // resume takes this SAME reservation (UI-6kj0 §3.3) through `reserve`, so a
+  // launch and a resume of one Bead can never both proceed.
   /** @type {Set<string>} */
   const in_flight = new Set();
 
@@ -580,18 +591,24 @@ export function createDirectionInquiry(deps) {
       typeof input.repo === 'string' && input.repo.length > 0
         ? input.repo
         : workspace;
+    // A person's own pause opens only from a click (UI-6kj0 §3.3): pausing
+    // launches nothing, so the automatic path never reads this flag.
+    const paused = !automatic && input.paused === true;
     const attempt = await readAttempt(workspace, attempt_id);
-    const recovery = input.recovery ?? attempt?.cause_detail?.recovery ?? null;
-    const stop =
-      conversationStopLabel({
-        awaiting_user,
-        recovery,
-        blockers: attempt?.cause_detail?.blockers || []
-      }) ??
-      // A click may open any recovery wait; its label names the reason as is.
-      (typeof recovery?.reason === 'string'
-        ? `recovery:${recovery.reason}`
-        : null);
+    const recovery = paused
+      ? null
+      : (input.recovery ?? attempt?.cause_detail?.recovery ?? null);
+    const stop = paused
+      ? conversationStopLabel({ paused: true })
+      : (conversationStopLabel({
+          awaiting_user,
+          recovery,
+          blockers: attempt?.cause_detail?.blockers || []
+        }) ??
+        // A click may open any recovery wait; its label names the reason as is.
+        (typeof recovery?.reason === 'string'
+          ? `recovery:${recovery.reason}`
+          : null));
     /** @type {any} */
     let issue = null;
     try {
@@ -599,9 +616,11 @@ export function createDirectionInquiry(deps) {
     } catch (err) {
       log('bd read failed for %s: %o', bead_id, err);
     }
-    const sentence = awaiting_user
-      ? parkSentence(issue?.notes, awaiting_user)
-      : recoverySentence(attempt?.cause_detail?.summary);
+    const sentence = paused
+      ? PAUSED_SITUATION
+      : awaiting_user
+        ? parkSentence(issue?.notes, awaiting_user)
+        : recoverySentence(attempt?.cause_detail?.summary);
     const facts = { stop, sentence };
     if (!issue || typeof issue !== 'object') {
       return {
@@ -623,6 +642,16 @@ export function createDirectionInquiry(deps) {
         repo,
         stop
       };
+    }
+    // Read under the reservation: a resume that minted its child before this
+    // click reserved has spent the pause, and a resume racing it now is
+    // refused by that same reservation (UI-6kj0 §3.3).
+    if (
+      paused &&
+      (!isUserPausedAttempt(attempt) ||
+        deps.attemptSpent?.(workspace, attempt_id) === true)
+    ) {
+      return { outcome: refusal('not_paused', facts), title, repo, stop };
     }
     const worktree = path.join(attempt_repo, '.worktrees', bead_id);
     const checkout = attempt_repo;
@@ -844,7 +873,11 @@ export function createDirectionInquiry(deps) {
      * end in a refusal, so answering `already_running` from it would name a
      * window nobody opened.
      *
-     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, awaiting_user: string|null, recovery?: { reason: string } }} input
+     * A `paused` input is a person's own pause (UI-6kj0 §3.3): no question,
+     * the stop label `paused`, and the attempt must still be that unspent
+     * pause when read under the reservation.
+     *
+     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, awaiting_user: string|null, recovery?: { reason: string }, paused?: boolean }} input
      * @returns {Promise<InquiryOutcome>}
      */
     async launchForClick(input) {
@@ -856,7 +889,9 @@ export function createDirectionInquiry(deps) {
           : '';
       if (
         bead_id.length === 0 ||
-        (awaiting_user.length === 0 && !input.recovery?.reason)
+        (awaiting_user.length === 0 &&
+          !input.recovery?.reason &&
+          input.paused !== true)
       ) {
         return refusal('invalid_park');
       }
@@ -896,6 +931,39 @@ export function createDirectionInquiry(deps) {
       } finally {
         in_flight.delete(bead_id);
       }
+    },
+
+    /**
+     * Whether a launch (or a paused resume) holds this Bead's reservation.
+     *
+     * @param {string} bead_id
+     */
+    isInFlight(bead_id) {
+      return in_flight.has(bead_id);
+    },
+
+    /**
+     * Take this Bead's reservation synchronously for a paused attempt's
+     * resume (UI-6kj0 §3.3). False when a launch or another resume holds it;
+     * the caller must `release` exactly what it took.
+     *
+     * @param {string} bead_id
+     */
+    reserve(bead_id) {
+      if (in_flight.has(bead_id)) {
+        return false;
+      }
+      in_flight.add(bead_id);
+      return true;
+    },
+
+    /**
+     * Give back a reservation `reserve` took.
+     *
+     * @param {string} bead_id
+     */
+    release(bead_id) {
+      in_flight.delete(bead_id);
     },
 
     /** Probe the configured tmux socket at startup. */

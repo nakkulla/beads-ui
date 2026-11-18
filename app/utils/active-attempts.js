@@ -60,6 +60,32 @@ export function isWithdrawnAttempt(attempt) {
 }
 
 /**
+ * Whether a person paused this Worker run with ⏸ and nothing else stopped it
+ * (UI-6kj0 §3.1): `paused` with no `cause`, not withdrawn, and not a session
+ * lane run. A provider-outage or account-preempt hold and a PR-wait pause each
+ * carry a `cause`, so they are no such row. The paused tile's
+ * `[세션에서 이어가기]` row and the server's click routing read this ONE
+ * predicate, so the two never disagree on which tile carries it.
+ *
+ * @param {unknown} attempt
+ */
+export function isUserPausedAttempt(attempt) {
+  if (!attempt || typeof attempt !== 'object') {
+    return false;
+  }
+  const record = /** @type {Record<string, unknown>} */ (attempt);
+  return (
+    record.status === 'paused' &&
+    (record.cause === undefined ||
+      record.cause === null ||
+      record.cause === '') &&
+    !isWithdrawnAttempt(attempt) &&
+    record.exec !== 'session' &&
+    isImplementationAttempt(attempt)
+  );
+}
+
+/**
  * Select each bead's latest implementation independently of snapshot key order.
  *
  * @param {Record<string, any>} attempts
