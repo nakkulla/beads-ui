@@ -41,6 +41,7 @@ import {
   repoOpsStripModel,
   reviewSessionRowState,
   routeChipTemplate,
+  sessionLaneProgressTemplate,
   setChipPresetContext,
   shelveReplyToast,
   shelvedSectionTemplate,
@@ -103,6 +104,90 @@ function interactiveView(patch = {}) {
     ...patch
   };
 }
+
+describe('session-lane startup wait line (UI-ahzh)', () => {
+  const STARTED = 1_000_000;
+
+  /**
+   * @param {Partial<import('./lane-model.js').InteractiveSessionView>} [patch]
+   */
+  function laneView(patch = {}) {
+    return interactiveView({
+      key: 'UI-x1:session_lane',
+      kind: 'session_lane',
+      provider: 'codex',
+      session_id: null,
+      mode: 'fresh',
+      turn_state: 'running',
+      turn_state_since: STARTED,
+      conversation: { processed_message_at: null, result: null },
+      ...patch
+    });
+  }
+
+  test('draws the startup wait word with its elapsed since the screen', () => {
+    const view = laneView({
+      startup_wait: {
+        kind: 'hooks',
+        fingerprint: 'fp',
+        since: STARTED,
+        notified_at: null
+      }
+    });
+
+    render(sessionLaneProgressTemplate([view], STARTED + 6 * MINUTE), mount);
+
+    expect(
+      mount.querySelector('.rtile__activity--session-lane')?.textContent?.trim()
+    ).toBe('▤ 시작 화면 대기 · 훅 확인 6분');
+  });
+
+  test('titles the startup wait line with where to choose', () => {
+    const view = laneView({
+      startup_wait: {
+        kind: 'trust',
+        fingerprint: 'fp',
+        since: STARTED,
+        notified_at: null
+      }
+    });
+
+    render(sessionLaneProgressTemplate([view], STARTED + MINUTE), mount);
+
+    expect(
+      mount
+        .querySelector('.rtile__activity--session-lane')
+        ?.getAttribute('title')
+    ).toBe('tmux 창에서 선택해야 세션이 시작됩니다');
+  });
+
+  test('draws the conversation word when there is no startup wait', () => {
+    const view = laneView({ startup_wait: null });
+
+    render(sessionLaneProgressTemplate([view], STARTED + 2 * MINUTE), mount);
+
+    expect(
+      mount.querySelector('.rtile__activity--session-lane')?.textContent?.trim()
+    ).toBe('▤ 대화 중 2분');
+  });
+
+  test('draws nothing without a live session-lane window', () => {
+    const view = laneView({
+      state: 'exiting',
+      closing: true,
+      startup_wait: {
+        kind: 'hooks',
+        fingerprint: 'fp',
+        since: STARTED,
+        notified_at: null
+      }
+    });
+
+    render(sessionLaneProgressTemplate([view], STARTED + MINUTE), mount);
+
+    expect(mount.innerHTML.replace(/<!--.*?-->/g, '').trim()).toBe('');
+  });
+});
 
 describe('interactive session badges', () => {
   // 종류 이름은 `대화 세션` 하나이고 무엇에서 열렸는지와 fork·같은 세션·새

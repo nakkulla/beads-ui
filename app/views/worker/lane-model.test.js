@@ -756,7 +756,8 @@ describe('interactive session projection', () => {
     turn_state: null,
     turn_state_since: null,
     last_message: null,
-    conversation: null
+    conversation: null,
+    startup_wait: null
   };
   const record = {
     bead_id: 'A-1',
