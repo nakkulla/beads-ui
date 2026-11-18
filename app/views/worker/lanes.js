@@ -2111,12 +2111,15 @@ function discordLinkButton(url) {
  * the link button once the bridge made the thread, a disabled
  * `Discord 준비 중` while the server marks it `discord_pending`, nothing
  * otherwise (fail-quiet). A session-lane window speaks through
- * `sessionLaneDiscordTemplate` instead.
+ * `sessionLaneDiscordTemplate` instead. A failed tile passes `pending: false`:
+ * its detail box already says the thread is on its way (UI-lx9o §4.1).
  *
  * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @param {{ pending?: boolean }} [options] - `pending: false` drops the
+ * disabled button.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function interactiveSessionDiscordTemplate(views) {
+export function interactiveSessionDiscordTemplate(views, options = {}) {
   const live = (views || []).filter(
     (view) =>
       !!view &&
@@ -2130,7 +2133,8 @@ export function interactiveSessionDiscordTemplate(views) {
   if (url) {
     return discordLinkButton(url);
   }
-  return live.some((view) => view.discord_pending === true)
+  return options.pending !== false &&
+    live.some((view) => view.discord_pending === true)
     ? html`<button
         type="button"
         class="op-btn interactive-session-discord-pending"
@@ -2920,7 +2924,7 @@ export function waitVerdictLabel(reason, clocks = {}) {
  * @param {string} anchor_id - The vocabulary row `id` this card drew.
  * @returns {import('lit-html').TemplateResult}
  */
-function legendLinkTemplate(anchor_id) {
+export function legendLinkTemplate(anchor_id) {
   return html`<button
     type="button"
     class="op-btn op-btn--ghost wait-verdict__legend"
@@ -3002,6 +3006,139 @@ function heldRowId(material) {
 }
 
 /**
+ * Which vocabulary row and reason a card's wait badge stands for, and the
+ * other bead-scope reasons its popup lists — the one choice the badge and a
+ * failed tile's `다음` (UI-lx9o §4.2) both read. `null` when no row applies.
+ *
+ * @param {WaitBadgeMaterial} material
+ * @param {import('../../protocol.js').WaitReason[]} reasons - The card's
+ * bead-scope reasons.
+ * @returns {{ row: import('./wait-vocabulary.js').WaitKindRow, reason: import('../../protocol.js').WaitReason|null, others: import('../../protocol.js').WaitReason[] }|null}
+ */
+function waitBadgeChoice(material, reasons) {
+  const held_row_id = heldRowId(material);
+  const held_row = held_row_id ? waitKindRow({ kind: held_row_id }) : null;
+  /** @type {import('../../protocol.js').WaitReason|null} */
+  let reason = null;
+  /** @type {import('./wait-vocabulary.js').WaitKindRow|null} */
+  let badge_row = held_row;
+  if (held_row) {
+    const same_kind = reasons.filter(
+      (entry) => waitKindRow(entry) === held_row
+    );
+    reason = /** @type {import('../../protocol.js').WaitReason|null} */ (
+      representativeWaitReason(same_kind)
+    );
+  } else {
+    reason = /** @type {import('../../protocol.js').WaitReason|null} */ (
+      representativeWaitReason(reasons)
+    );
+    badge_row = waitKindRow(reason);
+  }
+  if (!badge_row) {
+    return null;
+  }
+  return {
+    row: badge_row,
+    reason,
+    others: reasons.filter((entry) => entry !== reason)
+  };
+}
+
+/**
+ * @typedef {Object} WaitDetailParts
+ * @property {string} anchor - The vocabulary row `id` for the legend link.
+ * @property {string} resolution - The finished `해결 — …` line, or `''`.
+ * @property {string} verdict_reason
+ * @property {string} inquiry - The live inquiry's `대화 세션 …` line.
+ * @property {string} release
+ * @property {string[]} others - One line per other bead-scope reason; the
+ * caller heads them with `다른 사유 n` after its own filtering.
+ * @property {string[]} clocks - `대기 시작`, `다음 확인`, `리셋` lines.
+ */
+
+/**
+ * The facts the wait badge's popup would carry, apart — for a failed tile,
+ * which draws no wait badge and puts these into its detail's `다음` in its own
+ * order (UI-lx9o §4.2). The badge's popup is unchanged. `null` when the card
+ * carries no wait row (fail-quiet).
+ *
+ * @param {WaitBadgeMaterial} material
+ * @returns {WaitDetailParts|null}
+ */
+export function waitDetailParts(material) {
+  const now = typeof material.now === 'number' ? material.now : Date.now();
+  const reasons = (material.wait_reasons || []).filter(
+    (reason) => waitScopeOf(reason.kind) === 'bead'
+  );
+  const choice = waitBadgeChoice(material, reasons);
+  if (!choice) {
+    return null;
+  }
+  const { row, reason, others } = choice;
+  return {
+    anchor: row.id,
+    resolution: reason
+      ? waitResolutionLine(reason, material.interactive_sessions)
+      : '',
+    verdict_reason:
+      reason && reason.verdict !== 'normal'
+        ? reason.verdict_reason?.message || ''
+        : '',
+    inquiry: inquiryLine(liveInquiryView(material.interactive_sessions), now),
+    release: (reason ? reason.release : '') || row.release || '',
+    others: otherReasonLines(others),
+    clocks: reason
+      ? [
+          reason.since
+            ? `대기 시작 ${formatClockLocal(reason.since, now)}`
+            : '',
+          reason.next_check_at
+            ? `다음 확인 ${formatClockLocal(reason.next_check_at, now)}`
+            : '',
+          reason.resets_at
+            ? `리셋 ${formatClockLocal(reason.resets_at, now)}`
+            : ''
+        ].filter(Boolean)
+      : []
+  };
+}
+
+/**
+ * One popup line per other bead-scope reason: `<글리프> <라벨> — <headline>`.
+ *
+ * @param {import('../../protocol.js').WaitReason[]} others
+ * @returns {string[]}
+ */
+function otherReasonLines(others) {
+  return others
+    .map((entry) => {
+      const other_row = waitKindRow(entry);
+      if (!other_row) {
+        return '';
+      }
+      return `${[other_row.glyph, other_row.label].filter(Boolean).join(' ')} — ${entry.headline}`;
+    })
+    .filter(Boolean);
+}
+
+/**
+ * The popup line of a live conversation already answering this wait
+ * (UI-ri8n §3.3); the kind name is `대화 세션` alone (UI-18a5 §3.5).
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView|null} inquiry
+ * @param {number} now
+ * @returns {string}
+ */
+function inquiryLine(inquiry, now) {
+  if (!inquiry) {
+    return '';
+  }
+  const inquiry_tail = interactiveTurnTail(inquiry, now);
+  return `대화 세션 ${inquiry.tmux_session}:${inquiry.tmux_window}${inquiry_tail ? ` · ${inquiry_tail}` : ''}`;
+}
+
+/**
  * The ONE slot-1 wait badge of a card (§6.2). The kind label comes from the
  * held projection when there is one, and the verdict from the reason of that
  * same kind — a missing reason draws the kind alone, because absence is not
@@ -3027,28 +3164,11 @@ export function waitStatusBadge(material) {
         })
       : '';
   }
-  const held_row_id = heldRowId(material);
-  const held_row = held_row_id ? waitKindRow({ kind: held_row_id }) : null;
-  /** @type {import('../../protocol.js').WaitReason|null} */
-  let reason = null;
-  /** @type {import('./wait-vocabulary.js').WaitKindRow|null} */
-  let badge_row = held_row;
-  if (held_row) {
-    const same_kind = reasons.filter(
-      (entry) => waitKindRow(entry) === held_row
-    );
-    reason = /** @type {import('../../protocol.js').WaitReason|null} */ (
-      representativeWaitReason(same_kind)
-    );
-  } else {
-    reason = /** @type {import('../../protocol.js').WaitReason|null} */ (
-      representativeWaitReason(reasons)
-    );
-    badge_row = waitKindRow(reason);
-  }
-  if (!badge_row) {
+  const choice = waitBadgeChoice(material, reasons);
+  if (!choice) {
     return '';
   }
+  const { row: badge_row, reason, others } = choice;
   // 사유 없는 `⛔` 배지는 자동 재개 거부뿐이다 (stall-reconcile D5): 그 해결
   // 문장은 같은 보류 재료에서 읽는다 (UI-9w5l §3.2).
   const refusal =
@@ -3062,7 +3182,7 @@ export function waitStatusBadge(material) {
   return waitBadgeTemplate(
     badge_row,
     reason,
-    reasons.filter((entry) => entry !== reason),
+    others,
     material.hold || null,
     now,
     {
@@ -3140,15 +3260,7 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
   if (!text) {
     return '';
   }
-  const other_lines = others
-    .map((entry) => {
-      const other_row = waitKindRow(entry);
-      if (!other_row) {
-        return '';
-      }
-      return `${[other_row.glyph, other_row.label].filter(Boolean).join(' ')} — ${entry.headline}`;
-    })
-    .filter(Boolean);
+  const other_lines = otherReasonLines(others);
   // 공급자 보류의 상세는 배지에서 팝업으로 내려왔다 (§5.2 정정) — 종전 별도
   // 팝오버가 싣던 사실을 하나도 잃지 않는다.
   const provider_lines =
@@ -3177,13 +3289,8 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
           typeof hold.log_path === 'string' ? hold.log_path : ''
         ].filter(Boolean)
       : [];
-  const inquiry = overrides.inquiry || null;
-  const inquiry_tail = inquiry ? interactiveTurnTail(inquiry, now) : '';
-  // 살아 있는 대화 세션이 이 대기에 이미 답하고 있다 (UI-ri8n §3.3). 종류
-  // 이름은 `대화 세션` 하나다 (UI-18a5 §3.5).
-  const inquiry_line = inquiry
-    ? `대화 세션 ${inquiry.tmux_session}:${inquiry.tmux_window}${inquiry_tail ? ` · ${inquiry_tail}` : ''}`
-    : '';
+  // 살아 있는 대화 세션이 이 대기에 이미 답하고 있다 (UI-ri8n §3.3).
+  const inquiry_line = inquiryLine(overrides.inquiry || null, now);
   const resolution_line = overrides.resolution || '';
   const lines = reason
     ? [
@@ -3267,6 +3374,42 @@ function waitTimesText(reason, now_ms) {
     post: ` ${row.elapsed_word}`
   });
   return tail ? html`${elapsed_el} · ${tail}` : elapsed_el;
+}
+
+const EXTERNAL_WAIT_OPS = [
+  'external_wait_check',
+  'external_wait_takeover',
+  'external_wait_stop',
+  'external_wait_resume'
+];
+
+/**
+ * Whether {@link waitReasonLines} draws this action as an external-wait button.
+ *
+ * @param {import('../../protocol.js').WaitReason['actions'][number]} action
+ * @returns {boolean}
+ */
+function isExternalWaitButton(action) {
+  return (
+    EXTERNAL_WAIT_OPS.includes(action.op) &&
+    !!action.payload.wait_id &&
+    !!action.payload.root_dir
+  );
+}
+
+/**
+ * The bare labels of the external-wait buttons a reason draws on the card,
+ * for a line that names a control only when the card draws it (UI-lx9o §4.2).
+ *
+ * @param {import('../../protocol.js').WaitReason} reason
+ * @returns {string[]}
+ */
+export function cardExternalWaitLabels(reason) {
+  return (reason.actions || [])
+    .filter(
+      (action) => action.placement !== 'detail' && isExternalWaitButton(action)
+    )
+    .map((action) => action.label.replace(/^\[|\]$/g, ''));
 }
 
 /**
@@ -3357,16 +3500,7 @@ export function waitReasonLines(reason, options = {}) {
   );
   const actions = visible_actions.map((action) => {
     const payload = action.payload;
-    if (
-      [
-        'external_wait_check',
-        'external_wait_takeover',
-        'external_wait_stop',
-        'external_wait_resume'
-      ].includes(action.op) &&
-      payload.wait_id &&
-      payload.root_dir
-    ) {
+    if (isExternalWaitButton(action)) {
       // `session-preferred` Bead는 세션에서 잇는 쪽이 1순위다 (UI-l48z §4.3, UI-r6xq §4.1).
       const primary =
         action.op === 'external_wait_resume' &&

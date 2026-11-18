@@ -11,6 +11,7 @@ import {
   claudeSummary,
   codexSummary,
   extractSummary,
+  failedEventWords,
   failureTokenSummary,
   guardKillMessage,
   matchEnvPattern,
@@ -789,6 +790,17 @@ describe('worker landing failure summary', () => {
     );
 
     expect(result.summary).toEqual('npm ERR! code ELIFECYCLE');
+  });
+});
+
+describe('worker failed event words', () => {
+  test('says the code in words instead of a sentence made from another code', () => {
+    const words = failedEventWords({
+      cause: 'session_exited',
+      summary: '원격 base 브랜치를 fetch하지 못했습니다. (foreign_path)'
+    });
+
+    expect(words).not.toContain('foreign_path');
   });
 });
 

@@ -6,7 +6,15 @@ import {
   FAILURE_NEXT_ACTIONS,
   FAILURE_SENTENCES,
   RECOVERY_WAIT_SENTENCES,
-  providerWaitResumeSentence
+  UNKNOWN_FAILURE_TEXT,
+  failureCauseSentence,
+  failureCodeWords,
+  failureSummaryWords,
+  isFailureCodeOnly,
+  providerWaitResumeSentence,
+  recoveryWords,
+  reportedFailureSummary,
+  scriptExitSentence
 } from './failure-sentences.js';
 
 test.each([0, 1])(
@@ -92,9 +100,99 @@ test('keeps the session decision in the recovery release sentence', () => {
   expect(RECOVERY_WAIT_SENTENCES.unclassified).toContain('세션에서');
 });
 
-test('directs script_failed recovery to a successful manual deployment', () => {
+test('names no control outside the card in the script_failed next action', () => {
   const guidance = FAILURE_NEXT_ACTIONS.script_failed;
 
-  expect(guidance).toMatch(/자동 재시도.*이미/);
-  expect(guidance).toMatch(/원인.*Worker 설정의 \[배포 실행\].*base tip.*성공/);
+  expect(guidance).not.toMatch(/\[배포 실행\]|Worker 설정/);
+});
+
+test.each([
+  [
+    'quickfix_landing_failed:script_failed',
+    '스크립트가 0이 아닌 코드로 끝났습니다'
+  ],
+  ['quickfix_landing_failed:mystery_token', '착지 실패'],
+  ['mystery_token', UNKNOWN_FAILURE_TEXT],
+  ['', UNKNOWN_FAILURE_TEXT],
+  [null, UNKNOWN_FAILURE_TEXT]
+])('says the failure code %j in dictionary words only', (code, words) => {
+  const result = failureSummaryWords(code);
+
+  expect(result).toBe(words);
+});
+
+test('reads a composite code segment by segment for the detail row', () => {
+  const words = failureCodeWords('quickfix_landing_failed:script_failed');
+
+  expect(words).toBe('착지 실패 › 스크립트가 0이 아닌 코드로 끝났습니다');
+});
+
+test('reads an unknown code segment as the unknown words', () => {
+  const words = failureCodeWords('quickfix_landing_failed:mystery_token');
+
+  expect(words).toBe(`착지 실패 › ${UNKNOWN_FAILURE_TEXT}`);
+});
+
+test.each([
+  ['script_failed', true],
+  ['quickfix_landing_failed:script_failed', true],
+  ['API Error: 529', false],
+  ['restart', false],
+  ['', false]
+])('tells whether the summary %j holds only a code', (text, code_only) => {
+  const result = isFailureCodeOnly(text);
+
+  expect(result).toBe(code_only);
+});
+
+test('names which script exited and its exit code', () => {
+  const sentence = scriptExitSentence('deploy', 2);
+
+  expect(sentence).toBe('배포 스크립트가 exit 2로 끝났습니다.');
+});
+
+test('says a recovery classification as its disposition and reason words', () => {
+  const words = recoveryWords('wait', 'provider');
+
+  expect(words).toBe('대기 · 공급자·사용량');
+});
+
+test('says an unknown recovery disposition as unclassified', () => {
+  const words = recoveryWords('mystery', 'mystery');
+
+  expect(words).toBe('미분류');
+});
+
+test('gives the last known segment sentence of a composite cause', () => {
+  expect(failureCauseSentence('quickfix_landing_failed:script_failed')).toBe(
+    '스크립트가 0이 아닌 코드로 끝났습니다.'
+  );
+});
+
+test('gives the default sentence for a cause no dictionary knows', () => {
+  expect(failureCauseSentence('quickfix_landing_failed:mystery_token')).toBe(
+    UNKNOWN_FAILURE_TEXT
+  );
+});
+
+test('gives no sentence without a cause', () => {
+  expect(failureCauseSentence(null)).toBe('');
+});
+
+test('reports no summary a classifier made from another code with a raw token', () => {
+  const summary = reportedFailureSummary(
+    '원격 base 브랜치를 fetch하지 못했습니다. (foreign_path)',
+    'quickfix_landing_failed:script_failed'
+  );
+
+  expect(summary).toBe('');
+});
+
+test('reports the script output a failure record carries', () => {
+  const summary = reportedFailureSummary(
+    '  Error: deploy target missing  ',
+    'script_failed'
+  );
+
+  expect(summary).toBe('Error: deploy target missing');
 });

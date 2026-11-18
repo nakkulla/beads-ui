@@ -2392,6 +2392,32 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     expect(mount.querySelector('.rtile__failure-pop')).toBeNull();
   });
 
+  test('keeps failed detail open and the card shut on a 세부 click (UI-lx9o)', () => {
+    const { mount, view, gotoIssue } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'runner_exit',
+              session_id: 's'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+    view.load();
+    click(mount, '.rtile__failure-badge');
+
+    click(mount, '.rtile__failure-more > summary');
+
+    expect(mount.querySelector('.rtile__failure-pop')).not.toBeNull();
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
   test('uses the failed projection confirmation for discard', () => {
     const confirmFn = vi.fn(() => false);
     const { mount, view, sent } = setup({

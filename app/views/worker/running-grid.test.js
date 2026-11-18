@@ -10,6 +10,7 @@ import {
   runningTile,
   runningTileInput
 } from './running-grid.js';
+import { tileResolveFields } from './tile-resolve.js';
 
 describe('worker failed running tile template', () => {
   beforeEach(() => {
@@ -167,7 +168,7 @@ describe('worker failed running tile template', () => {
 
     expect(tile.classList.contains('rtile--failed')).toBe(true);
     expect(tile.classList.contains('rtile--compact')).toBe(true);
-    expect(tile.querySelector('.rtile__elapsed')?.textContent).toBe('실패');
+    expect(tile.querySelector('.rtile__elapsed')).toBeNull();
     expect(tile.querySelector('.rtile__failure-badge')?.textContent).toContain(
       '⛔ 착지 실패'
     );
@@ -220,7 +221,7 @@ describe('worker failed running tile template', () => {
       mount
     );
 
-    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe('중단됨');
+    expect(mount.querySelector('.rtile__elapsed')).toBeNull();
     expect(mount.querySelector('.rtile__auto-halted')?.textContent).toContain(
       '자동 진행 꺼짐'
     );
@@ -391,7 +392,7 @@ describe('worker failed running tile template', () => {
     });
 
     expect(text).toContain('실패한 명령과 그 출력을 확인하고');
-    expect(text).toContain('아래 [정리 재시도]를 눌러');
+    expect(text).toContain('[정리 재시도]를 눌러');
   });
 
   test('points a resumable session failure at the continuation button', () => {
@@ -402,10 +403,21 @@ describe('worker failed running tile template', () => {
     });
 
     expect(text).toContain('원격 연결과 관측 상태를 확인하는 것이 먼저입니다.');
-    expect(text).toContain('아래 [이어하기]로 같은 세션에서');
+    expect(text).toContain('[이어하기]로 같은 세션에서');
   });
 
-  test('guides script_failed landing recovery through deployment before cleanup retry', () => {
+  test('says no direction for the resume button in a failed tile detail', () => {
+    const text = failurePopoverText({
+      cause: 'quickfix_landing_failed:script_failed',
+      quickfix_lane: true,
+      quickfix_landing: { reason: 'script_failed' }
+    });
+
+    expect(text).toContain('[정리 재시도]를 눌러');
+    expect(text).not.toContain('아래 [');
+  });
+
+  test('guides script_failed landing recovery to the cause and the cleanup retry on the card', () => {
     failurePopoverText({
       cause: 'quickfix_landing_failed:script_failed',
       landed: true,
@@ -417,22 +429,35 @@ describe('worker failed running tile template', () => {
       document.querySelectorAll('.rtile__failure-kv > div')
     ).find((row) => row.querySelector('dt')?.textContent === '다음');
 
-    expect(next_row?.querySelector('dd')?.textContent).toMatch(
-      /Worker 설정의 \[배포 실행\][\s\S]*성공[\s\S]*아래 \[정리 재시도\]/
-    );
+    const next = next_row?.querySelector('dd')?.textContent ?? '';
+    expect(next).toMatch(/원인[\s\S]*\[정리 재시도\]/);
+    expect(next).not.toContain('[배포 실행]');
   });
 
   test('replaces continuation guidance with the route refusal sentence', () => {
     const sentence =
       '승인된 작업 방식이 quick_fix에서 spec_backed로 바뀌어 이전 세션을 이어갈 수 없습니다. [폐기] 뒤 후보에서 대기열에 다시 배치하면 현재 방식으로 새로 시작됩니다.';
 
-    const text = failurePopoverText({
-      cause: 'base_fetch_failed',
-      resume_refused_sentence: sentence
-    });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        tileInput({
+          failed: true,
+          failure: failureInput({
+            open: true,
+            cause: 'base_fetch_failed',
+            resume_refused_sentence: sentence
+          }),
+          discard: discardInput()
+        }),
+        5000
+      ),
+      mount
+    );
 
+    const text = mount.querySelector('.rtile__failure-pop')?.textContent || '';
     expect(text).toContain(sentence);
-    expect(text).not.toContain('아래 [이어하기]로 같은 세션에서');
+    expect(text).not.toContain('[이어하기]로 같은 세션에서');
     expect(
       document.querySelector('.rtile__resume')?.hasAttribute('disabled')
     ).toBe(false);
@@ -469,7 +494,7 @@ describe('worker failed running tile template', () => {
     expect(text).not.toContain('다음');
   });
 
-  test('says the resume row and the landed line with the button name', () => {
+  test('says the landed line with the button name', () => {
     const text = failurePopoverText({
       cause: 'verify_red',
       landed: true,
@@ -477,7 +502,6 @@ describe('worker failed running tile template', () => {
       quickfix_landing: { reason: 'containment_unobservable' }
     });
 
-    expect(text).toContain('정리 재시도 가능');
     expect(text).toContain(
       '이미 base에 착지됨 — 정리 재시도로 배포·정리를 재개'
     );
@@ -3682,15 +3706,14 @@ describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
     return mount;
   }
 
-  test('leads the popover with the session summary', () => {
+  test('carries the session summary on the card cause line, not a report row', () => {
     const mount = mountOpenPopover({ summary: 'API Error: 529 Overloaded' });
 
-    const rows = Array.from(
-      mount.querySelectorAll('.rtile__failure-kv > div')
-    ).map((row) => row.textContent || '');
+    const cause = mount.querySelector('.rtile__cause')?.textContent || '';
+    const pop = mount.querySelector('.rtile__failure-pop')?.textContent || '';
 
-    expect(rows[0]).toContain('보고');
-    expect(rows[0]).toContain('API Error: 529 Overloaded');
+    expect(cause).toContain('API Error: 529 Overloaded');
+    expect(pop).not.toContain('보고');
   });
 
   test('reports how many automatic retries preceded the failure', () => {
@@ -3708,8 +3731,18 @@ describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
     );
   });
 
-  test('renders the five most recent timeline lines newest first', () => {
+  test('renders the incident lines oldest first with the failure line marked', () => {
     const mount = mountOpenPopover({
+      incidents: [
+        { event_id: 'e1', kind: 'dispatched', summary: '디스패치', at: 1000 },
+        {
+          event_id: 'e2',
+          kind: 'attempt_failed',
+          summary: '세션 실패 — API 오류',
+          at: 5000,
+          failure: true
+        }
+      ],
       timeline: [
         {
           event_id: 'e5',
@@ -3746,15 +3779,22 @@ describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
     });
 
     const rows = Array.from(
-      mount.querySelectorAll('[data-seam="tile-timeline"] li')
+      mount.querySelectorAll('[data-seam="tile-incidents"] li')
     );
 
-    expect(rows).toHaveLength(5);
-    expect(rows[0].textContent).toContain('세션 실패 — 529');
-    expect(rows[4].textContent).toContain('claude opus 디스패치');
+    expect(
+      rows.map((row) => [
+        row.textContent?.replace(/\s+/g, ' ').trim(),
+        row.classList.contains('rtile__incident--failure')
+      ])
+    ).toEqual([
+      [expect.stringContaining('디스패치'), false],
+      [expect.stringContaining('세션 실패 — API 오류'), true]
+    ]);
+    expect(mount.querySelector('[data-seam="tile-timeline"]')).toBeNull();
   });
 
-  test('puts the log path after the timeline lines', () => {
+  test('puts the log path inside the collapsed details', () => {
     const mount = mountOpenPopover({
       timeline: [
         { event_id: 'e1', kind: 'dispatched', summary: '디스패치', at: 1000 }
@@ -3762,9 +3802,6 @@ describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
       log_path: '/w/beads/UI-f1/sessions/attempt-f1.jsonl'
     });
 
-    const list = /** @type {HTMLElement} */ (
-      mount.querySelector('[data-seam="tile-timeline"]')
-    );
     const log = /** @type {HTMLElement} */ (
       mount.querySelector('[data-seam="tile-log-path"]')
     );
@@ -3772,9 +3809,7 @@ describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
     expect(log.textContent).toContain(
       '/w/beads/UI-f1/sessions/attempt-f1.jsonl'
     );
-    expect(
-      list.compareDocumentPosition(log) & Node.DOCUMENT_POSITION_FOLLOWING
-    ).toBeTruthy();
+    expect(log.closest('details.rtile__failure-more')).not.toBeNull();
   });
 
   test('renders 만료됨 for a log the retention policy deleted', () => {
@@ -4176,11 +4211,11 @@ describe('지시 재시작 조작 (UI-qce9 §3.1)', () => {
       mount
     );
 
-    const popover = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile__failure-pop')
+    const cause = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__cause')
     );
 
-    expect(popover.textContent).toContain(
+    expect(cause.textContent).toContain(
       '이어갈 세션 기록이 없습니다. 새 세션을 자동으로 시작하지 않았습니다.'
     );
   });
@@ -4205,14 +4240,14 @@ describe('지시 재시작 조작 (UI-qce9 §3.1)', () => {
       mount
     );
 
-    const popover = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile__failure-pop')
+    const cause = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__cause')
     );
 
-    expect(popover.textContent).toContain(
+    expect(cause.textContent).toContain(
       '새 세션을 자동으로 시작하지 않았습니다.'
     );
-    expect(popover.textContent).not.toContain('이어갈 세션 기록이 없습니다.');
+    expect(cause.textContent).not.toContain('이어갈 세션 기록이 없습니다.');
   });
 });
 
@@ -5415,4 +5450,759 @@ describe('일시정지 타일의 이어가기 (UI-6kj0 §3.2)', () => {
 
     expect(mount.querySelector('.rtile__hd .wait-verdict')).toBeNull();
   });
+});
+
+describe('failed tile with one status badge and one cause line (UI-lx9o)', () => {
+  const NOW = new Date(2026, 10, 18, 15, 0).getTime();
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function reasonInput(patch = {}) {
+    return {
+      kind: 'awaiting_user',
+      subject: { bead_id: 'UI-t1', root_dir: '/repo' },
+      headline: 'session_failed:is_error 응답 대기',
+      release: '답하면 대기가 풀린다',
+      verdict: 'action_required',
+      verdict_reason: { code: 'awaiting', message: '검증 실패로 멈춤' },
+      resolution: '[이어하기]로 같은 세션에서 다시 이어간다',
+      since: NOW - 60 * 60 * 1000,
+      next_check_at: NOW + 10 * 60 * 1000,
+      targets: [],
+      actions: [],
+      ...patch
+    };
+  }
+
+  /**
+   * @param {Partial<import('./running-grid.js').FailureTile>} [failure_patch]
+   * @param {Partial<import('./running-grid.js').RunningTile>} [tile_patch]
+   * @returns {HTMLElement}
+   */
+  function failedTile(failure_patch = {}, tile_patch = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        tileInput({
+          started_at: null,
+          failed: true,
+          status: 'failed',
+          failure: failureInput(failure_patch),
+          ...tile_patch
+        }),
+        NOW
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  /**
+   * The card text a reader sees with the detail box closed.
+   *
+   * @param {HTMLElement} tile
+   * @returns {string}
+   */
+  function collapsedText(tile) {
+    const copy = /** @type {HTMLElement} */ (tile.cloneNode(true));
+    copy.querySelector('.rtile__failure-pop')?.remove();
+    return copy.textContent || '';
+  }
+
+  /**
+   * @param {HTMLElement} tile
+   * @returns {string[]}
+   */
+  function nextLines(tile) {
+    return Array.from(tile.querySelectorAll('.rtile__failure-next li')).map(
+      (li) => (li.textContent || '').trim()
+    );
+  }
+
+  test('draws exactly one status badge with the operation stage', () => {
+    const tile = failedTile(
+      {
+        cause: 'quickfix_landing_failed:script_failed',
+        operation: { kind: 'deploy', exit_code: 1 }
+      },
+      { wait_reasons: [reasonInput()] }
+    );
+
+    const badges = Array.from(
+      tile.querySelectorAll('.rtile__hd .rtile__failure-badge, .wait-verdict')
+    ).map((el) => el.textContent?.replace(/\s+/g, ' ').trim());
+
+    expect(badges).toEqual(['⛔ 착지 실패 · 배포']);
+  });
+
+  test('names the landing step on the badge when no operation is recorded', () => {
+    const tile = failedTile({
+      cause: 'quickfix_landing_failed:script_failed',
+      quickfix_lane: true,
+      quickfix_landing: {
+        cursor: 'branch_cleanup',
+        failed_step: 'branch_cleanup'
+      }
+    });
+
+    expect(
+      tile.querySelector('.rtile__failure-badge')?.textContent?.trim()
+    ).toBe('⛔ 착지 실패 · 브랜치 정리');
+  });
+
+  test('names the step the landing failed at, not its resume cursor, on the badge', () => {
+    const tile = failedTile({
+      cause: 'quickfix_landing_failed:base_not_contained',
+      quickfix_lane: true,
+      quickfix_landing: {
+        cursor: 'branch_cleanup',
+        failed_step: 'base_containment'
+      }
+    });
+
+    expect(
+      tile.querySelector('.rtile__failure-badge')?.textContent?.trim()
+    ).toBe('⛔ 착지 실패 · base 포함 확인');
+  });
+
+  test('omits the stage from the badge when the landing names only its cursor', () => {
+    const tile = failedTile({
+      cause: 'quickfix_landing_failed:script_failed',
+      quickfix_lane: true,
+      quickfix_landing: { cursor: 'branch_cleanup' }
+    });
+
+    expect(
+      tile.querySelector('.rtile__failure-badge')?.textContent?.trim()
+    ).toBe('⛔ 착지 실패');
+  });
+
+  test('shows no summary the classifier made from a code on the collapsed card', () => {
+    const tile = failedTile({
+      cause: 'base_fetch_failed',
+      summary: '원격 base 브랜치를 fetch하지 못했습니다. (foreign_path)'
+    });
+
+    expect(collapsedText(tile)).not.toContain('(foreign_path)');
+  });
+
+  test('reads 중단됨 on the badge of an orphaned tile without a category', () => {
+    const tile = failedTile({ cause: null }, { status: 'orphaned' });
+
+    expect(
+      tile.querySelector('.rtile__failure-badge')?.textContent?.trim()
+    ).toBe('⛔ 중단됨');
+  });
+
+  test('draws no elapsed word and keeps auto-advance-off', () => {
+    const tile = failedTile({ halted_auto_advance: true });
+
+    expect(tile.querySelector('.rtile__elapsed')).toBeNull();
+    expect(tile.querySelector('.rtile__auto-halted')?.textContent).toContain(
+      '자동 진행 꺼짐'
+    );
+  });
+
+  test('draws no wait headline or Discord-pending button on a failed tile', () => {
+    const tile = failedTile(
+      {},
+      {
+        wait_reasons: [reasonInput()],
+        interactive_sessions: /** @type {any} */ ([
+          {
+            key: 'UI-t1:resolve',
+            kind: 'resolve',
+            provider: 'claude',
+            session_id: 'sid',
+            mode: 'resume',
+            source: 'session_ref',
+            attempt_id: 'a1',
+            fallback_reason: null,
+            tmux_session: 'dev',
+            tmux_window: 'UI-t1',
+            state: 'live',
+            settled_at: null,
+            launched_at: 1,
+            discord_url: null,
+            discord_pending: true,
+            closing: false
+          }
+        ])
+      }
+    );
+
+    expect(collapsedText(tile)).not.toContain('응답 대기');
+    expect(collapsedText(tile)).not.toContain('Discord 준비 중');
+  });
+
+  test('keeps the same operations as before on a failed tile with a wait reason', () => {
+    const tile = failedTile(
+      {},
+      { wait_reasons: [reasonInput()], discard: discardInput() }
+    );
+
+    const ops = Array.from(tile.querySelectorAll('.rtile__hd-actions button'))
+      .map((button) => button.getAttribute('aria-label'))
+      .filter(Boolean);
+
+    expect(ops).toEqual([
+      '이어하기',
+      '폐기',
+      'Worker에서 내리기 — 작업은 보존'
+    ]);
+  });
+
+  test('says a known code with its dictionary sentence', () => {
+    const tile = failedTile({ cause: 'base_fetch_failed' });
+
+    expect(tile.querySelector('.rtile__cause')?.textContent?.trim()).toBe(
+      '원격 base 브랜치를 fetch하지 못했습니다.'
+    );
+  });
+
+  test('says an unknown code with the default sentence, never the code', () => {
+    const tile = failedTile({ cause: 'surprise_new_token' });
+
+    expect(tile.querySelector('.rtile__cause')?.textContent?.trim()).toBe(
+      '알 수 없는 오류로 끝남'
+    );
+    expect(collapsedText(tile)).not.toContain('surprise_new_token');
+  });
+
+  test('drops a summary that holds only a code', () => {
+    const tile = failedTile({
+      cause: 'base_fetch_failed',
+      summary: 'session_failed:is_error'
+    });
+
+    expect(tile.querySelector('.rtile__cause')?.textContent?.trim()).toBe(
+      '원격 base 브랜치를 fetch하지 못했습니다.'
+    );
+  });
+
+  test('draws no cause line without material', () => {
+    const tile = failedTile({ cause: null, summary: null });
+
+    expect(tile.querySelector('.rtile__cause')).toBeNull();
+  });
+
+  test('joins the script exit, its own summary and the retry fact', () => {
+    const tile = failedTile({
+      cause: 'quickfix_landing_failed:script_failed',
+      operation: {
+        kind: 'deploy',
+        exit_code: 1,
+        summary: 'npm ERR! missing script: deploy',
+        retry_exhausted: true
+      }
+    });
+
+    expect(tile.querySelector('.rtile__cause')?.textContent?.trim()).toBe(
+      '배포 스크립트가 exit 1로 끝났습니다. npm ERR! missing script: deploy · 자동 재시도 1회도 실패'
+    );
+  });
+
+  test('says how many automatic retries met the same error', () => {
+    const tile = failedTile({
+      cause: 'base_fetch_failed',
+      retry: {
+        cause: 'base_fetch_failed',
+        attempts: 2,
+        max: 3,
+        next_at: null
+      }
+    });
+
+    expect(tile.querySelector('.rtile__cause')?.textContent?.trim()).toBe(
+      '원격 base 브랜치를 fetch하지 못했습니다. · 자동 재시도 2회도 같은 오류'
+    );
+  });
+
+  test('keeps raw codes off the card and the incidents but in the details', () => {
+    const tile = failedTile({
+      open: true,
+      cause: 'quickfix_landing_failed:mystery_token',
+      incidents: [
+        {
+          event_id: 'attempt_failed:a1:synthesized',
+          kind: 'attempt_failed',
+          summary: '세션 실패 — 착지 실패',
+          at: 4000,
+          failure: true
+        }
+      ]
+    });
+
+    const incidents =
+      tile.querySelector('[data-seam="tile-incidents"]')?.textContent || '';
+    const more = tile.querySelector('.rtile__failure-more')?.textContent || '';
+
+    expect(collapsedText(tile)).not.toContain('mystery_token');
+    expect(incidents).not.toContain('mystery_token');
+    expect(more).toContain('착지 실패 › 알 수 없는 오류로 끝남');
+    expect(more).toContain('quickfix_landing_failed:mystery_token');
+  });
+
+  test('orders 다음 as guidance, next step, verdict, release, others, clocks', () => {
+    const tile = failedTile(
+      { open: true, cause: 'base_fetch_failed' },
+      {
+        wait_reasons: [
+          reasonInput(),
+          reasonInput({
+            kind: 'prerequisite',
+            headline: 'A-2 완료를 기다림',
+            verdict: 'normal',
+            verdict_reason: undefined,
+            resolution: undefined
+          })
+        ]
+      }
+    );
+
+    expect(nextLines(tile)).toEqual([
+      '해결 — [이어하기]로 같은 세션에서 다시 이어간다',
+      expect.stringContaining(
+        '원격 연결과 관측 상태를 확인하는 것이 먼저입니다.'
+      ),
+      '실패로 멈춤',
+      '답하면 대기가 풀린다',
+      '다른 사유 1',
+      expect.stringContaining('A-2 완료를 기다림'),
+      `대기 시작 ${formatClockLocal(NOW - 60 * 60 * 1000, NOW)}`,
+      `다음 확인 ${formatClockLocal(NOW + 10 * 60 * 1000, NOW)}`
+    ]);
+  });
+
+  test('calls a 검증 실패 by the failure category in 다음 only', () => {
+    const tile = failedTile(
+      { open: true, cause: 'quickfix_landing_failed:script_failed' },
+      { wait_reasons: [reasonInput()] }
+    );
+
+    expect(nextLines(tile)).toContain('착지 실패로 멈춤');
+    expect(nextLines(tile)).not.toContain('검증 실패로 멈춤');
+  });
+
+  test('names no control the card does not draw in 다음', () => {
+    const tile = failedTile(
+      { open: true, cause: 'base_fetch_failed' },
+      {
+        wait_reasons: [
+          reasonInput({
+            resolution: '[새 세션으로] 또는 [워커로 이어가기]로 다시 이어간다'
+          })
+        ]
+      }
+    );
+
+    expect(nextLines(tile).join('\n')).not.toMatch(
+      /\[새 세션으로\]|\[워커로 이어가기\]/
+    );
+  });
+
+  test('keeps the condition of a sentence naming an off-card control in 다음', () => {
+    const tile = failedTile(
+      { open: true, cause: 'quickfix_landing_failed:script_failed' },
+      {
+        wait_reasons: [
+          reasonInput({
+            kind: 'recovery',
+            release:
+              '검증 실패를 세션에서 고친 뒤 [워커로 이어가기] — 이어갈 지시 또는 폐기를 결정합니다.'
+          })
+        ]
+      }
+    );
+
+    expect(nextLines(tile)).toContain(
+      '착지 실패를 세션에서 고친 뒤 — 이어갈 지시 또는 폐기를 결정합니다.'
+    );
+  });
+
+  test('drops the panel naming an off-card control with it in 다음', () => {
+    const tile = failedTile(
+      { open: true, cause: 'base_fetch_failed' },
+      {
+        wait_reasons: [
+          reasonInput({
+            resolution: '상세 패널의 [대기 해제]로 어긋난 대기를 정리한다'
+          })
+        ]
+      }
+    );
+
+    expect(nextLines(tile)).toContain('해결 — 어긋난 대기를 정리한다');
+  });
+
+  test('carries the run facts, attempt copy, session record and legend in the details', () => {
+    const tile = failedTile({
+      open: true,
+      cause: 'quickfix_landing_failed:script_failed',
+      quickfix_lane: true,
+      quickfix_landing: {
+        cursor: 'repo_operations',
+        head_sha: 'c'.repeat(40),
+        reason: 'script_failed'
+      }
+    });
+
+    const rows = Object.fromEntries(
+      Array.from(
+        tile.querySelectorAll('.rtile__failure-more .rtile__failure-kv > div')
+      ).map((row) => [
+        row.querySelector('dt')?.textContent?.trim(),
+        row.querySelector('dd')?.textContent?.replace(/\s+/g, ' ').trim()
+      ])
+    );
+
+    expect(rows['착지 단계']).toBe(`배포 실행 · ${'c'.repeat(7)}`);
+    expect(rows['실행']).toBe('claude · opus · high · default');
+    expect(rows['attempt id']).toContain('a1');
+    expect(
+      tile.querySelector('.rtile__failure-more .rtile__attempt-copy')
+    ).not.toBeNull();
+    expect(
+      tile.querySelector('.rtile__failure-tools .rtile__session')?.textContent
+    ).toContain('▤ 세션 기록');
+    expect(
+      tile.querySelector('.rtile__failure-tools [data-help-anchor]')
+    ).not.toBeNull();
+  });
+
+  test('folds the cost into the 실행 row of the details', () => {
+    const tile = failedTile({
+      open: true,
+      usage: /** @type {any} */ ({ total_cost_usd: 2.618 })
+    });
+
+    const run = Array.from(
+      tile.querySelectorAll('.rtile__failure-more .rtile__failure-kv > div')
+    ).find((row) => row.querySelector('dt')?.textContent?.trim() === '실행');
+
+    expect(run?.querySelector('dd')?.textContent?.trim()).toBe(
+      'claude · opus · high · default · $2.62'
+    );
+  });
+
+  test('keeps the failed discard pair and its abandon exit, without ✕, on a failed tile', () => {
+    const tile = failedTile(
+      { cause: 'base_fetch_failed' },
+      {
+        discard: /** @type {any} */ ({
+          action: true,
+          enabled: true,
+          label: '워커로 이어가기',
+          title: '폐기 실패: dirty_submodule — 정리 후 재시도하세요',
+          error: 'dirty_submodule',
+          operation: {
+            operation_id: 'op-1',
+            phase: 'requested',
+            kind: 'discard'
+          },
+          abandon: {
+            action: true,
+            label: '폐기 포기',
+            title: '실패한 폐기 작업을 포기합니다'
+          }
+        }),
+        resolve_action: true,
+        resolve_enabled: true,
+        pair_anchor: /** @type {const} */ ('discard')
+      }
+    );
+
+    const foot = Array.from(tile.querySelectorAll('.rtile__foot button')).map(
+      (el) => el.textContent?.trim()
+    );
+
+    expect(foot).toEqual(['세션에서 이어가기', '워커로 이어가기', '폐기 포기']);
+    expect(tile.querySelector('.rtile__withdraw')).toBeNull();
+  });
+
+  test('drops the report, cause, failure time and resume rows', () => {
+    const tile = failedTile({ open: true, summary: 'API Error: 529' });
+
+    const terms = Array.from(
+      tile.querySelectorAll('.rtile__failure-pop dt')
+    ).map((dt) => dt.textContent?.trim());
+
+    expect(terms).not.toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^(보고|원인|실패 시각|재개)$/)
+      ])
+    );
+  });
+
+  /**
+   * A live resolve conversation of the failed Bead.
+   *
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function conversation(patch = {}) {
+    return {
+      key: 'UI-t1:resolve',
+      kind: 'resolve',
+      provider: 'claude',
+      session_id: 'sid',
+      mode: 'resume',
+      source: 'session_ref',
+      attempt_id: 'a1',
+      fallback_reason: null,
+      tmux_session: 'dev',
+      tmux_window: 'UI-t1',
+      state: 'live',
+      settled_at: null,
+      launched_at: 1,
+      discord_url: null,
+      discord_pending: false,
+      closing: false,
+      ...patch
+    };
+  }
+
+  test('reads 중단됨 on an orphaned tile whose cause maps to no category', () => {
+    const tile = failedTile({ cause: 'binding_gone' }, { status: 'orphaned' });
+
+    expect(
+      tile.querySelector('.rtile__failure-badge')?.textContent?.trim()
+    ).toBe('⛔ 중단됨');
+  });
+
+  test('reads 중단됨 on an orphaned tile whose cause maps to a category', () => {
+    const tile = failedTile(
+      { cause: 'session_exited' },
+      { status: 'orphaned' }
+    );
+
+    expect(
+      tile.querySelector('.rtile__failure-badge')?.textContent?.trim()
+    ).toBe('⛔ 중단됨');
+  });
+
+  test('says the classified cause of an orphaned tile in the slot-3 line', () => {
+    const tile = failedTile(
+      { cause: 'session_exited' },
+      { status: 'orphaned' }
+    );
+
+    expect(tile.querySelector('.rtile__cause')?.textContent?.trim()).toBe(
+      '세션 실패'
+    );
+  });
+
+  test('calls the repair release of a deploy failure by its category', () => {
+    const tile = failedTile(
+      {
+        open: true,
+        cause: 'quickfix_landing_failed:script_failed',
+        operation: { kind: 'deploy', exit_code: 1 }
+      },
+      {
+        handoff_action: true,
+        handoff_enabled: true,
+        handoff_attempt_id: 'a1',
+        wait_reasons: [
+          reasonInput({
+            kind: 'recovery',
+            release:
+              '검증 실패를 세션에서 고친 뒤 [워커로 이어가기] — 이어갈 지시 또는 폐기를 결정합니다.'
+          })
+        ]
+      }
+    );
+
+    expect(nextLines(tile)).toContain(
+      '착지 실패를 세션에서 고친 뒤 [워커로 이어가기] — 이어갈 지시 또는 폐기를 결정합니다.'
+    );
+  });
+
+  test('keeps 검증 실패 in 다음 when the failed operation is a verify', () => {
+    const tile = failedTile(
+      {
+        open: true,
+        cause: 'quickfix_landing_failed:script_failed',
+        operation: { kind: 'verify', exit_code: 1 }
+      },
+      { wait_reasons: [reasonInput()] }
+    );
+
+    expect(nextLines(tile)).toContain('검증 실패로 멈춤');
+  });
+
+  test('names an external-wait button the card draws in 다음', () => {
+    const tile = failedTile(
+      { open: true, cause: 'base_fetch_failed' },
+      {
+        wait_reasons: [
+          reasonInput({
+            resolution: '[다시 확인]으로 작업 상태를 다시 읽는다',
+            actions: [
+              {
+                op: 'external_wait_check',
+                label: '[다시 확인]',
+                payload: { wait_id: 'w1', root_dir: '/repo' }
+              }
+            ]
+          })
+        ]
+      }
+    );
+
+    expect(nextLines(tile)[0]).toBe(
+      '해결 — [다시 확인]으로 작업 상태를 다시 읽는다'
+    );
+    expect(
+      tile.querySelector('.external-wait__action')?.textContent?.trim()
+    ).toBe('다시 확인');
+  });
+
+  test('says the landing card of the spec with only its own controls in 다음', () => {
+    const wait_reasons = [
+      reasonInput({
+        kind: 'recovery',
+        verdict_reason: { code: 'awaiting', message: '사용자의 답변이 필요함' },
+        resolution: undefined,
+        release:
+          '검증 실패를 세션에서 고친 뒤 [워커로 이어가기] — 이어갈 지시 또는 폐기를 결정합니다.'
+      })
+    ];
+    const interactive_sessions = [conversation({ discord_pending: true })];
+    /** @type {Partial<import('./running-grid.js').FailureTile>} */
+    const failure = {
+      open: true,
+      cause: 'quickfix_landing_failed:script_failed',
+      quickfix_lane: true,
+      quickfix_landing: { cursor: 'repo_operations', reason: 'script_failed' },
+      operation: { kind: 'deploy', exit_code: 1 }
+    };
+    const fields = tileResolveFields({
+      id: 'UI-t1',
+      run_state: 'failed',
+      landing_deploy_failure: true,
+      failure,
+      failure_material: { cleanup_retry: true },
+      wait_reasons,
+      interactive_sessions
+    });
+
+    const tile = failedTile(failure, {
+      ...fields,
+      wait_reasons,
+      interactive_sessions
+    });
+
+    expect(nextLines(tile)).toEqual([
+      '해결 — Discord 스레드 준비 중 — 세션의 첫 답 뒤 생긴다',
+      '실패한 스크립트의 출력에서 원인을 확인하고 고치는 것이 먼저입니다. [정리 재시도]를 눌러 실패한 착지 후 절차를 다시 실행하세요.',
+      '사용자의 답변이 필요함',
+      '착지 실패를 세션에서 고친 뒤 — 이어갈 지시 또는 폐기를 결정합니다.',
+      `대기 시작 ${formatClockLocal(NOW - 60 * 60 * 1000, NOW)}`,
+      `다음 확인 ${formatClockLocal(NOW + 10 * 60 * 1000, NOW)}`
+    ]);
+  });
+
+  test.each([
+    [
+      'a tmux window',
+      conversation(),
+      { resolve_action: true, resolve_enabled: true },
+      '해결 — [세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
+    ],
+    [
+      'a Discord link',
+      conversation({ discord_url: 'https://discord.com/channels/1/2' }),
+      {},
+      '해결 — ↗ Discord에서 대화를 이어간다'
+    ],
+    [
+      'a pending Discord thread',
+      conversation({ discord_pending: true }),
+      { resolve_action: true, resolve_enabled: true },
+      '해결 — Discord 스레드 준비 중 — 세션의 첫 답 뒤 생긴다'
+    ],
+    [
+      'a tmux window during a handoff',
+      conversation({ conversation: { handoff: { at: 1 }, result: null } }),
+      { pair_anchor: /** @type {const} */ ('handoff'), pair_held: true },
+      '해결 — 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
+    ]
+  ])('leads 다음 with the guidance of %s', (_name, view, fields, guidance) => {
+    const tile = failedTile(
+      { open: true, cause: 'base_fetch_failed' },
+      {
+        ...fields,
+        interactive_sessions: [view],
+        wait_reasons: [reasonInput()]
+      }
+    );
+
+    const lines = nextLines(tile);
+
+    expect(lines[0]).toBe(guidance);
+  });
+
+  test.each([
+    [
+      'no conversation',
+      undefined,
+      {
+        resolve_action: true,
+        resolve_enabled: true,
+        handoff_action: true,
+        handoff_enabled: true
+      },
+      ['세션에서 이어가기', '워커로 이어가기']
+    ],
+    [
+      'a conversation without a link',
+      [conversation()],
+      {
+        resolve_action: true,
+        resolve_enabled: true,
+        handoff_action: true,
+        handoff_enabled: true
+      },
+      ['세션에서 이어가기', '워커로 이어가기']
+    ],
+    [
+      'a conversation with a link',
+      [conversation({ discord_url: 'https://discord.com/channels/1/2' })],
+      { handoff_action: true, handoff_enabled: true },
+      ['↗ Discord', '워커로 이어가기']
+    ],
+    [
+      'a handoff in progress',
+      [
+        conversation({
+          conversation: { handoff: { at: 1 }, result: null }
+        })
+      ],
+      { pair_anchor: /** @type {const} */ ('handoff'), pair_held: true },
+      []
+    ]
+  ])(
+    'keeps the slot-6 pair of a failed tile with %s',
+    (_name, views, fields, expected) => {
+      const tile = failedTile(
+        { cause: 'base_fetch_failed' },
+        { ...fields, interactive_sessions: views }
+      );
+
+      const pair = Array.from(
+        tile.querySelectorAll(
+          '.rtile__resolve, .rtile__handoff, .interactive-session-discord'
+        )
+      ).map((el) => el.textContent?.trim());
+
+      expect(pair).toEqual(expected);
+    }
+  );
 });

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from './bead-timeline.js';
+import { failureIncidentLines } from './failure-incident-lines.js';
 import { writeForeignCandidateOwner } from './foreign-target.js';
 import { createLockManager } from './locks.js';
 import { createNotifier } from './notify.js';
@@ -675,6 +676,114 @@ describe('repo operation after-ladder recovery', () => {
     });
   });
 
+  test('marks a retried failure that reproduced the same error on its operation line', async () => {
+    const timeline = { append: vi.fn() };
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: same failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const { coordinator, store } = coordinatorFor({
+      runner,
+      repairHandoff: adapter(),
+      timeline
+    });
+    seedRunning(store);
+
+    await runThroughRetry({ coordinator });
+
+    const failed = timeline.append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.kind === 'operation_failed');
+    expect(failed.at(-1).operation).toMatchObject({
+      retry_exhausted: true,
+      retry_same_error: true
+    });
+  });
+
+  test('reads the same facts off the settled record as its operation line carries', async () => {
+    const timeline = { append: vi.fn() };
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: same failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({
+      runner,
+      repairHandoff: adapter(),
+      timeline
+    });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const line = timeline.append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.kind === 'operation_failed')
+      .at(-1);
+    const { failure_operation } = failureIncidentLines(
+      [],
+      { attempt_id: 'A', quickfix_landing: { deploy_operation_id: 'op-1' } },
+      harness.store.snapshot(root).repo_operations
+    );
+    expect(failure_operation).toEqual(line.operation);
+  });
+
+  test('says no same error on the operation line when the first run evidence was not confirmed', async () => {
+    const timeline = { append: vi.fn() };
+    const runner = retryRunner({
+      first_output: 'Error: same failure\n',
+      second_text: framedAttempt(SECOND_AT, 'Error: same failure\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({
+      runner,
+      repairHandoff: adapter(),
+      timeline
+    });
+    const defer = harness.store.deferRepoOperationRetry.bind(harness.store);
+    vi.spyOn(harness.store, 'deferRepoOperationRetry').mockImplementation(
+      (workspace, input) => {
+        const legacy = { ...input.failure };
+        delete legacy.evidence_confirmed;
+        return defer(workspace, { ...input, failure: legacy });
+      }
+    );
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const failed = timeline.append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.kind === 'operation_failed');
+    expect(failed.at(-1).operation).toMatchObject({ retry_exhausted: true });
+    expect(failed.at(-1).operation).not.toHaveProperty('retry_same_error');
+  });
+
+  test('writes no bare failure code as the summary of the operation line', async () => {
+    const timeline = { append: vi.fn() };
+    const runner = retryRunner({
+      first_output: 'script_failed\n',
+      second_text: framedAttempt(SECOND_AT, 'script_failed\n'),
+      second_marker: { exit_code: 2, started_at: SECOND_AT }
+    });
+    const harness = coordinatorFor({
+      runner,
+      repairHandoff: adapter(),
+      timeline
+    });
+    seedRunning(harness.store);
+
+    await runThroughRetry(harness);
+
+    const line = timeline.append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.kind === 'operation_failed')
+      .at(-1);
+    expect(line.summary).not.toContain('script_failed');
+    expect(line.operation).not.toHaveProperty('summary');
+  });
+
   test('matches the two fingerprints from each attempt output alone', async () => {
     const repairHandoff = adapter();
     const runner = retryRunner({
@@ -1011,6 +1120,25 @@ describe('repo operation after-ladder recovery', () => {
     // Reconcile re-enters every failed operation each pass; the timeline file
     // is append-only, so an unchanged classification writes no second line.
     expect(timeline.append).not.toHaveBeenCalled();
+  });
+
+  test('says the recovery classification in words and keeps the codes apart', async () => {
+    const timeline = { append: vi.fn() };
+    const { coordinator, store } = coordinatorFor({
+      repairHandoff: adapter(),
+      timeline
+    });
+    seedFailed(store);
+
+    await coordinator.reconcile(root);
+
+    const line = timeline.append.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.kind === 'operation_recovery');
+    expect(line.summary).toMatch(/^복구 분류 — /);
+    expect(line.summary).not.toMatch(/[a-z]+_[a-z]+/);
+    expect(line.code).toMatch(/^[a-z_]+:[a-z_]+ · [a-z_]+$/);
+    expect(line.incident).toBe('op-1');
   });
 
   test('appends a recovery event again when the classification changes', async () => {
@@ -5326,6 +5454,25 @@ describe('repo-operation bead timeline (record-timeline-retention §5)', () => {
     expect(timeline.events[0].summary).toContain('배포 실패 —');
   });
 
+  test('says the operation failure in words and carries its code, incident and facts', async () => {
+    const timeline = recorder();
+
+    await failOneDeploy([{ bead_id: 'UI-1', merged_sha: HEAD }], timeline);
+
+    const line = timeline.events.find(
+      (event) => event.kind === 'operation_failed'
+    );
+    expect(line).toMatchObject({
+      code: 'script_failed',
+      incident: 'deploy-1',
+      operation: { kind: 'deploy', exit_code: 2 }
+    });
+    expect(line.summary).toBe(
+      '배포 실패 — 스크립트가 0이 아닌 코드로 끝났습니다 · exit 2'
+    );
+    expect(line.operation).not.toHaveProperty('retry_exhausted');
+  });
+
   test('records the failure once per bead a coalesced deploy carried', async () => {
     const timeline = recorder();
 
@@ -7815,7 +7962,8 @@ describe('cleanup retry successor (UI-btsr §3.2)', () => {
         'operation_failed',
         'operation_recovery'
       ]);
-      expect(lines[0].summary).toMatch(/^배포 조건 대기 — condition_wait/);
+      expect(lines[0].summary).toMatch(/^배포 조건 대기 — 배포 스크립트가/);
+      expect(lines[0].code).toBe('condition_wait');
     });
 
     test('pushes one wait notification at the first exit 75 of a chain', async () => {

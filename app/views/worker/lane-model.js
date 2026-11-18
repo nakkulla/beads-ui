@@ -1349,7 +1349,7 @@ function routeChangeOf(resume_refused) {
  * empty 이력 block for every bead whose timeline predates this spec.
  *
  * @param {any} history - One `bead_timelines` entry, or undefined.
- * @returns {{ timeline?: import('./running-grid.js').TimelineRow[], log_path?: string, log_expired?: boolean, log_unreadable?: boolean }}
+ * @returns {{ timeline?: import('./running-grid.js').TimelineRow[], log_path?: string, log_expired?: boolean, log_unreadable?: boolean, incidents?: import('./running-grid.js').IncidentRow[], operation?: import('./running-grid.js').FailureOperation, recovery_line?: { summary: string, code?: string } }}
  */
 function timelineFields(history) {
   if (!history || typeof history !== 'object') {
@@ -1379,11 +1379,88 @@ function timelineFields(history) {
     typeof history.log_path === 'string' && history.log_path.length > 0
       ? history.log_path
       : null;
+  const incidents = incidentRows(history.incidents);
+  const operation = failureOperation(history.failure_operation);
+  const recovery = history.failure_recovery;
   return {
     ...(rows.length > 0 ? { timeline: rows } : {}),
     ...(log_path === null ? {} : { log_path }),
     ...(history.log_expired === true ? { log_expired: true } : {}),
-    ...(history.log_unreadable === true ? { log_unreadable: true } : {})
+    ...(history.log_unreadable === true ? { log_unreadable: true } : {}),
+    ...(incidents.length > 0 ? { incidents } : {}),
+    ...(operation === null ? {} : { operation }),
+    ...(recovery &&
+    typeof recovery === 'object' &&
+    typeof recovery.summary === 'string' &&
+    recovery.summary.length > 0
+      ? {
+          recovery_line: {
+            summary: recovery.summary,
+            ...(typeof recovery.code === 'string' && recovery.code.length > 0
+              ? { code: recovery.code }
+              : {})
+          }
+        }
+      : {})
+  };
+}
+
+/**
+ * The failed tile's 경위 lines as the server grouped and picked them
+ * (UI-lx9o §4.2), kept oldest first: the server already chose the order.
+ *
+ * @param {unknown} lines
+ * @returns {import('./running-grid.js').IncidentRow[]}
+ */
+function incidentRows(lines) {
+  /** @type {import('./running-grid.js').IncidentRow[]} */
+  const rows = [];
+  for (const line of Array.isArray(lines) ? lines : []) {
+    if (
+      !line ||
+      typeof line !== 'object' ||
+      typeof line.summary !== 'string' ||
+      line.summary.length === 0
+    ) {
+      continue;
+    }
+    rows.push({
+      event_id: typeof line.event_id === 'string' ? line.event_id : '',
+      kind: typeof line.kind === 'string' ? line.kind : '',
+      summary: line.summary,
+      at: typeof line.at === 'number' ? line.at : null,
+      ...(line.failure === true ? { failure: true } : {})
+    });
+  }
+  return rows;
+}
+
+/**
+ * The failure incident's repo-operation facts (UI-lx9o §4.3); null when the
+ * record has none, and each absent fact stays an absent key.
+ *
+ * @param {unknown} value
+ * @returns {import('./running-grid.js').FailureOperation|null}
+ */
+function failureOperation(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const facts = /** @type {Record<string, unknown>} */ (value);
+  const kind = facts.kind;
+  if (kind !== 'deploy' && kind !== 'verify' && kind !== 'job') {
+    return null;
+  }
+  return {
+    kind,
+    ...(Number.isInteger(facts.exit_code)
+      ? { exit_code: /** @type {number} */ (facts.exit_code) }
+      : {}),
+    ...(typeof facts.summary === 'string' && facts.summary.length > 0
+      ? { summary: facts.summary }
+      : {}),
+    ...(facts.retry_exhausted === true ? { retry_exhausted: true } : {}),
+    ...(facts.retry_same_error === true ? { retry_same_error: true } : {})
   };
 }
 

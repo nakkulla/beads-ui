@@ -68,6 +68,7 @@ afterEach(() => {
  *   resolveWriteSticks?: boolean,
  *   readIssueThrows?: boolean,
  *   timeline?: any,
+ *   now?: () => number,
  *   notifier?: { quickfixLanded: (input: any) => Promise<void> }|null,
  *   baseSync?: { syncBase: (target_base: string, candidate_sha?: string|null) => Promise<any> },
  *   readMetadataThrows?: boolean,
@@ -365,7 +366,7 @@ function makeLanding(options = {}) {
     notifier: options.notifier,
     baseSync: options.baseSync,
     notifyChanged: () => calls.push('notify'),
-    now: () => 1234
+    now: options.now || (() => 1234)
   });
 
   return {
@@ -439,9 +440,43 @@ test('names the step a landing failure stopped at', async () => {
   expect(timeline.events.at(-1)).toMatchObject({
     bead_id: BEAD,
     kind: 'landing_step',
-    seq: 'base_containment:failed'
+    seq: expect.stringMatching(/^base_containment:failed:/)
   });
   expect(timeline.events.at(-1).summary).toContain('착지 실패');
+});
+
+test('says a landing failure in words and carries its code and incident', async () => {
+  const timeline = timelineRecorder();
+  const { landing } = makeLanding({ timeline, containmentCode: 1 });
+
+  const result = await settle(landing);
+
+  const event = timeline.events.at(-1);
+  expect(event).toMatchObject({
+    code: 'push_not_contained',
+    incident: /** @type {any} */ (result).incident
+  });
+  expect(event.summary).not.toContain('push_not_contained');
+});
+
+test('gives each failed settlement run of one attempt its own incident line', async () => {
+  const timeline = timelineRecorder();
+  let clock = 1000;
+  const { landing } = makeLanding({
+    timeline,
+    containmentCode: 1,
+    now: () => clock
+  });
+  const first = /** @type {any} */ (await settle(landing));
+  clock = 2000;
+
+  const second = /** @type {any} */ (await settle(landing));
+
+  const failed = timeline.events.filter((event) =>
+    String(event.seq).startsWith('base_containment:failed')
+  );
+  expect(first.incident).not.toBe(second.incident);
+  expect(new Set(failed.map((event) => event.seq)).size).toBe(2);
 });
 
 test('reads one event back when a restart replays the same landing', async () => {
@@ -530,6 +565,7 @@ test('does not announce a failed landing', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'push_not_contained',
     step: 'base_containment'
   });
@@ -932,6 +968,7 @@ test.each([
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'invalid_impl_review',
     step: null
   });
@@ -944,6 +981,7 @@ test('rejects absent review receipt', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'invalid_impl_review',
     step: null
   });
@@ -954,7 +992,12 @@ test('records an impl_review read outage as bd_read_failed, not as a malformed r
 
   const result = await settle(landing);
 
-  expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
+  expect(result).toEqual({
+    ok: false,
+    reason: 'bd_read_failed',
+    step: null,
+    incident: expect.any(String)
+  });
   expect(calls).toContain('store:update:null:bd_read_failed');
   expect(store.updateAttempt).toHaveBeenCalledWith(WORKSPACE, {
     attempt_id: ATTEMPT,
@@ -962,7 +1005,8 @@ test('records an impl_review read outage as bd_read_failed, not as a malformed r
       quickfix_landing: {
         cursor: null,
         head_sha: null,
-        reason: 'bd_read_failed'
+        reason: 'bd_read_failed',
+        incident: expect.any(String)
       }
     }
   });
@@ -976,7 +1020,12 @@ test('records an impl_review read outage on the evidence path as bd_read_failed'
 
   const result = await settle(landing);
 
-  expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
+  expect(result).toEqual({
+    ok: false,
+    reason: 'bd_read_failed',
+    step: null,
+    incident: expect.any(String)
+  });
 });
 
 test('accepts a skipped review receipt without a feature flag', async () => {
@@ -994,7 +1043,12 @@ test('reports an unreadable Bead as a read failure, not as an unresolved one', a
 
   const result = await settle(landing);
 
-  expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
+  expect(result).toEqual({
+    ok: false,
+    reason: 'bd_read_failed',
+    step: null,
+    incident: expect.any(String)
+  });
 });
 
 test('resolves an unresolved Bead from push evidence and completes landing', async () => {
@@ -1095,6 +1149,7 @@ test.each([
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'delivery_unproven:push_log_absent',
     step: null
   });
@@ -1108,6 +1163,7 @@ test('reports delivery unproven when the review receipt is absent', async () => 
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'delivery_unproven:impl_review_missing',
     step: null
   });
@@ -1126,6 +1182,7 @@ test.each(['reviewer', 'skipped'])(
 
     expect(result).toEqual({
       ok: false,
+      incident: expect.any(String),
       reason: 'delivery_unproven:impl_review_sha_mismatch',
       step: null
     });
@@ -1182,6 +1239,7 @@ test('reports a record failure when the Worker resolve does not read back', asyn
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'bd_record_failed',
     step: null
   });
@@ -1240,6 +1298,7 @@ test('rejects reviewed head absent from fetched base', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'push_not_contained',
     step: 'base_containment'
   });
@@ -1308,6 +1367,7 @@ test('propagates terminal deployment failure', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'deploy_script_failed',
     step: 'repo_operations'
   });
@@ -1337,6 +1397,38 @@ test('records the failed deploy run on the landing failure', async () => {
     cursor: 'repo_operations',
     reason: 'deploy_script_failed',
     deploy_operation_id: 'deploy-2'
+  });
+});
+
+test('ties a deploy landing failure to its repo operation as the incident', async () => {
+  const timeline = timelineRecorder();
+  const { landing, store } = makeLanding({
+    timeline,
+    config: { ok: true, present: true },
+    deploy: {
+      ok: true,
+      inert: false,
+      operation_id: 'deploy-1',
+      timeout_ms: 500
+    },
+    evidence: {
+      state: 'failed',
+      operation_id: 'deploy-2',
+      code: 'script_failed'
+    }
+  });
+
+  const result = /** @type {any} */ (await settle(landing));
+
+  expect(result.incident).toBe('deploy-2');
+  expect(
+    store.updateAttempt.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toMatchObject({ incident: 'deploy-2' });
+  expect(timeline.events.at(-1)).toMatchObject({
+    seq: 'repo_operations:failed:deploy-2',
+    code: 'script_failed',
+    incident: 'deploy-2',
+    summary: '착지 실패 — 스크립트가 0이 아닌 코드로 끝났습니다 (배포 실행)'
   });
 });
 
@@ -1512,6 +1604,7 @@ describe('deploy condition wait recheck (dotfiles-rnyd9)', () => {
 
     expect(result).toEqual({
       ok: false,
+      incident: expect.any(String),
       reason: 'condition_wait',
       step: 'repo_operations'
     });
@@ -1650,6 +1743,7 @@ test('fails closed when the owned worktree holds unique work', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'worktree_remove_failed',
     step: 'branch_cleanup',
     detail: {
@@ -1667,6 +1761,7 @@ test('records premature close without rewriting Bead status', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'premature_close',
     step: null
   });
@@ -1743,7 +1838,12 @@ test('rejects a no-delta close_reason without a space after the prefix', async (
 
   const result = await settle(landing);
 
-  expect(result).toEqual({ ok: false, reason: 'premature_close', step: null });
+  expect(result).toEqual({
+    ok: false,
+    reason: 'premature_close',
+    step: null,
+    incident: expect.any(String)
+  });
 });
 
 test('rejects multi-line no-delta close_reason', async () => {
@@ -1754,7 +1854,12 @@ test('rejects multi-line no-delta close_reason', async () => {
 
   const result = await settle(landing);
 
-  expect(result).toEqual({ ok: false, reason: 'premature_close', step: null });
+  expect(result).toEqual({
+    ok: false,
+    reason: 'premature_close',
+    step: null,
+    incident: expect.any(String)
+  });
 });
 
 test('rejects closed Bead whose close_reason is not the contract refuted form', async () => {
@@ -1767,6 +1872,7 @@ test('rejects closed Bead whose close_reason is not the contract refuted form', 
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'premature_close',
     step: null
   });
@@ -1782,7 +1888,12 @@ test('rejects multi-line refuted close_reason', async () => {
 
   const result = await settle(landing);
 
-  expect(result).toEqual({ ok: false, reason: 'premature_close', step: null });
+  expect(result).toEqual({
+    ok: false,
+    reason: 'premature_close',
+    step: null,
+    incident: expect.any(String)
+  });
 });
 
 test('preserves non-discardable residue on a refuted close', async () => {
@@ -1796,6 +1907,7 @@ test('preserves non-discardable residue on a refuted close', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'worktree_remove_failed',
     step: 'no_change_close',
     detail: {
@@ -1811,6 +1923,8 @@ test('preserves non-discardable residue on a refuted close', async () => {
         cursor: 'no_change_close',
         head_sha: null,
         reason: 'worktree_remove_failed',
+        incident: expect.any(String),
+        failed_step: 'no_change_close',
         cleanup_detail: {
           manager_reason: 'unique',
           worktree_removed: false,
@@ -1839,6 +1953,7 @@ test('preserves partial no-change cleanup progress when branch deletion fails', 
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'local_branch_delete_failed',
     step: 'no_change_close',
     detail: {
@@ -1870,6 +1985,7 @@ test('fails refuted close observably when base cannot be fetched', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'containment_unobservable',
     step: 'no_change_close'
   });
@@ -1992,6 +2108,7 @@ test('rejects receipt mismatch against durable branch cleanup head', async () =>
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'head_mismatch',
     step: null
   });
@@ -2011,6 +2128,7 @@ test('keeps the branch_cleanup cursor and stored head when a resume fails its ba
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'containment_unobservable',
     step: 'base_containment'
   });
@@ -2020,9 +2138,31 @@ test('keeps the branch_cleanup cursor and stored head when a resume fails its ba
       quickfix_landing: {
         cursor: 'branch_cleanup',
         head_sha: HEAD_SHA,
-        reason: 'containment_unobservable'
+        reason: 'containment_unobservable',
+        incident: expect.any(String),
+        failed_step: 'base_containment'
       }
     }
+  });
+});
+
+test('names the step a resumed landing failed at apart from its resume cursor', async () => {
+  const { landing, store } = makeLanding({
+    fetchCode: 1,
+    landingProgress: {
+      cursor: 'branch_cleanup',
+      head_sha: HEAD_SHA,
+      reason: 'local_branch_delete_failed'
+    }
+  });
+
+  await settle(landing);
+
+  expect(
+    store.updateAttempt.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toMatchObject({
+    cursor: 'branch_cleanup',
+    failed_step: 'base_containment'
   });
 });
 
@@ -2065,7 +2205,8 @@ test('keeps the branch_cleanup cursor and stored head on a head_mismatch stop', 
       quickfix_landing: {
         cursor: 'branch_cleanup',
         head_sha: 'b'.repeat(40),
-        reason: 'head_mismatch'
+        reason: 'head_mismatch',
+        incident: expect.any(String)
       }
     }
   });
@@ -2103,7 +2244,9 @@ test('records failure reason without moving attempt to done', async () => {
       quickfix_landing: {
         cursor: 'base_containment',
         head_sha: HEAD_SHA,
-        reason: 'push_not_contained'
+        reason: 'push_not_contained',
+        incident: expect.any(String),
+        failed_step: 'base_containment'
       }
     }
   });
@@ -2326,6 +2469,7 @@ test('reports an unpinned foreign key by name instead of an unobservable contain
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'foreign_landing_unpinned:foreign_path',
     step: 'base_containment'
   });
@@ -2360,6 +2504,7 @@ test.each([
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: `foreign_landing_unpinned:${key}`,
     step: 'base_containment'
   });
@@ -2377,6 +2522,7 @@ test('fails when no remote of the foreign checkout carries the pinned URL', asyn
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'foreign_checkout_unavailable',
     step: 'base_containment'
   });
@@ -2391,6 +2537,7 @@ test('fails when the pinned foreign path is not a git checkout', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'foreign_checkout_unavailable',
     step: 'base_containment'
   });
@@ -2405,6 +2552,7 @@ test('reports push_not_contained from the foreign checkout', async () => {
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'push_not_contained',
     step: 'base_containment'
   });
@@ -2423,6 +2571,7 @@ test('fails closed when the foreign target declares a deploy handler', async () 
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'foreign_deploy_unsupported',
     step: 'repo_operations'
   });
@@ -2451,6 +2600,7 @@ test('reports an unparsable foreign config as invalid, never as undeclared', asy
 
   expect(result).toEqual({
     ok: false,
+    incident: expect.any(String),
     reason: 'repo_ops_config_invalid',
     step: 'repo_operations'
   });
@@ -2774,6 +2924,7 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     expect(result).toEqual({
       ok: false,
+      incident: expect.any(String),
       reason: 'script_failed',
       step: 'post_merge_jobs'
     });
@@ -2782,8 +2933,24 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
     ).toEqual({
       cursor: 'post_merge_jobs',
       head_sha: HEAD_SHA,
-      reason: 'script_failed'
+      reason: 'script_failed',
+      incident: expect.any(String),
+      failed_step: 'post_merge_jobs'
     });
+  });
+
+  test('ties a failed job landing to the job run as the incident', async () => {
+    const { landing, store } = makeJobLanding({
+      jobs: [{ name: JOB_NAME, sha: JOB_BLOB }],
+      terminal: { state: 'failed', code: 'script_failed' }
+    });
+
+    const result = /** @type {any} */ (await settleJobs(landing));
+
+    expect(result.incident).toBe('job-1');
+    expect(
+      store.snapshot(WORKSPACE).attempts[ATTEMPT].quickfix_landing
+    ).toMatchObject({ incident: 'job-1' });
   });
 
   test('stops before branch cleanup when a job fails', async () => {
@@ -2807,6 +2974,7 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     expect(result).toEqual({
       ok: false,
+      incident: expect.any(String),
       reason: 'repo_operation_pending',
       step: 'post_merge_jobs'
     });
@@ -2822,6 +2990,7 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     expect(result).toEqual({
       ok: false,
+      incident: expect.any(String),
       reason: 'repo_operations_unavailable',
       step: 'post_merge_jobs'
     });
@@ -2857,6 +3026,7 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     expect(result).toEqual({
       ok: false,
+      incident: expect.any(String),
       reason: `post_merge_job_outcome_unknown:${JOB_KEY}`,
       step: 'post_merge_jobs'
     });
@@ -2901,6 +3071,7 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     expect(result).toEqual({
       ok: false,
+      incident: expect.any(String),
       reason: `post_merge_job_outcome_unknown:${JOB_KEY}`,
       step: 'post_merge_jobs'
     });
@@ -2937,7 +3108,12 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     const result = await settleJobs(landing, true);
 
-    expect(result).toEqual({ ok: false, reason: 'head_mismatch', step: null });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'head_mismatch',
+      step: null,
+      incident: expect.any(String)
+    });
     expect(calls.some((call) => call.startsWith('git:ls-tree'))).toBe(false);
     expect(repoOperations.prepareJob).not.toHaveBeenCalled();
   });
@@ -2954,6 +3130,7 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     expect(result).toEqual({
       ok: false,
+      incident: expect.any(String),
       reason: 'containment_unobservable',
       step: 'base_containment'
     });
@@ -2962,7 +3139,9 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
     ).toEqual({
       cursor: 'post_merge_jobs',
       head_sha: HEAD_SHA,
-      reason: 'containment_unobservable'
+      reason: 'containment_unobservable',
+      incident: expect.any(String),
+      failed_step: 'base_containment'
     });
   });
 
@@ -2981,7 +3160,12 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     const result = await settleJobs(landing, true);
 
-    expect(result).toEqual({ ok: false, reason: 'head_mismatch', step: null });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'head_mismatch',
+      step: null,
+      incident: expect.any(String)
+    });
     expect(calls.some((call) => call.startsWith('git:ls-tree'))).toBe(false);
     expect(repoOperations.prepareJob).not.toHaveBeenCalled();
     expect(
@@ -2989,7 +3173,8 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
     ).toEqual({
       cursor: 'post_merge_jobs',
       head_sha: HEAD_SHA,
-      reason: 'head_mismatch'
+      reason: 'head_mismatch',
+      incident: expect.any(String)
     });
   });
 
@@ -3007,7 +3192,12 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     const result = await settleJobs(landing);
 
-    expect(result).toEqual({ ok: false, reason: 'head_mismatch', step: null });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'head_mismatch',
+      step: null,
+      incident: expect.any(String)
+    });
     expect(calls.some((call) => call.startsWith('git:ls-tree'))).toBe(false);
     expect(repoOperations.prepareJob).not.toHaveBeenCalled();
   });
@@ -3031,7 +3221,9 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
     ).toEqual({
       cursor: 'post_merge_jobs',
       head_sha: HEAD_SHA,
-      reason: `post_merge_job_outcome_unknown:${JOB_KEY}`
+      reason: `post_merge_job_outcome_unknown:${JOB_KEY}`,
+      incident: expect.any(String),
+      failed_step: 'post_merge_jobs'
     });
   });
 
@@ -3070,7 +3262,7 @@ describe('post_merge_jobs step (UI-1eag §3.1)', () => {
 
     expect(timeline.events.at(-1)).toMatchObject({
       kind: 'landing_step',
-      seq: 'base_containment:failed'
+      seq: expect.stringMatching(/^base_containment:failed:/)
     });
   });
 

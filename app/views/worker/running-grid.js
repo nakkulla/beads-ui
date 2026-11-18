@@ -14,6 +14,16 @@ import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
+import {
+  LANDING_STEP_LABELS,
+  OPERATION_KIND_WORDS,
+  UNKNOWN_FAILURE_TEXT,
+  failureCodeWords,
+  failureSegments,
+  mappedFailureCategory,
+  reportedFailureSummary,
+  scriptExitSentence
+} from '../../utils/failure-sentences.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import {
   formatClockLocal,
@@ -32,6 +42,7 @@ import { timeSpan } from '../time-text.js';
 import { activityLabel } from './activity-label.js';
 import {
   failureCategory,
+  failureCauseLine,
   failureNextAction,
   failureSentence,
   failureText,
@@ -41,6 +52,7 @@ import { autoResumeRefusalBadge } from './gate-labels.js';
 import {
   attributeChipsTemplate,
   attributePopoverOpen,
+  cardExternalWaitLabels,
   creationSourceChipsTemplate,
   dependencyChipsTemplate,
   discardReceiptTemplate,
@@ -51,6 +63,7 @@ import {
   interactiveSessionClosingTemplate,
   interactiveSessionDiscordTemplate,
   laneOriginChipTemplate,
+  legendLinkTemplate,
   planChipTemplate,
   priorityBadgeTemplate,
   routeCardTone,
@@ -61,11 +74,15 @@ import {
   specAuthoringActionsTemplate,
   specAuthoringChips,
   timesMeta,
+  waitDetailParts,
   waitReasonLines,
   waitStatusBadge
 } from './lanes.js';
 import { logPathTemplate } from './log-path.js';
-import { tileResolveFields } from './tile-resolve.js';
+import {
+  liveConversationResolution,
+  tileResolveFields
+} from './tile-resolve.js';
 import { representativeWaitReason } from './wait-vocabulary.js';
 
 /**
@@ -288,7 +305,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} usage
  * @property {boolean} halted_auto_advance
  * @property {boolean} quickfix_lane
- * @property {{ cursor?: string|null, head_sha?: string|null, reason?: string|null }|null} quickfix_landing
+ * @property {{ cursor?: string|null, head_sha?: string|null, reason?: string|null, failed_step?: string }|null} quickfix_landing
  * @property {boolean} resume_eligible
  * @property {string|null} resume_reason
  * @property {string} [resume_refused_sentence] - Guidance from a refused resume.
@@ -306,7 +323,30 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * 없다는 것과 다른 대답이므로 자기 키를 갖는다.
  * @property {boolean} [log_unreadable] - 해석 사다리가 저장소 오류를 만났다
  * (§4). 삭제된 것이 아니므로 만료됨과 다른 문구를 쓴다.
+ * @property {IncidentRow[]} [incidents] - 실패 상세 경위 (UI-lx9o §4.2):
+ * 서버가 사건 단위로 묶고 고른 줄, 오래된 것이 위. 실패 사건 줄은 `failure`.
+ * @property {FailureOperation} [operation] - 실패 사건의 저장소 작업 사실
+ * (UI-lx9o §4.3). 기록이 없으면 키가 없다.
+ * @property {{ summary: string, code?: string }} [recovery_line] - The last
+ * `operation_recovery` line of the failure incident: the 세부 `복구 판정` row.
  * @property {boolean} [open] - Ephemeral view state for this attempt's detail.
+ */
+
+/**
+ * The repo-operation facts of a failure incident (UI-lx9o §4.3).
+ *
+ * @typedef {Object} FailureOperation
+ * @property {'deploy'|'verify'|'job'} kind
+ * @property {number} [exit_code]
+ * @property {string} [summary] - The script's own error summary.
+ * @property {boolean} [retry_exhausted]
+ * @property {boolean} [retry_same_error]
+ */
+
+/**
+ * One incident line of a failed tile's 경위 (UI-lx9o §4.2).
+ *
+ * @typedef {TimelineRow & { failure?: boolean }} IncidentRow
  */
 
 /**
@@ -403,27 +443,42 @@ function historyBlockTemplate(tile) {
             </li>`
         )}
       </ol>`
-    : ''}${unreadable
-    ? html`<p
-        class="rtile__history-log"
-        data-seam="tile-log-path"
-        title="로그 파일을 읽을 수 없습니다 — 삭제된 것이 아닙니다"
-      >
-        읽기 실패
+    : ''}${logStateTemplate(tile)}`;
+}
+
+/**
+ * The log line of a history block or a failed tile's 세부: the path, or why
+ * there is none — 만료됨 (the retention policy deleted it) and 읽기 실패 (a fault,
+ * not a deletion) are different answers. No material draws nothing.
+ *
+ * @param {FailureTile} tile
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function logStateTemplate(tile) {
+  const log_path = typeof tile.log_path === 'string' ? tile.log_path : '';
+  if (tile.log_unreadable === true) {
+    return html`<p
+      class="rtile__history-log"
+      data-seam="tile-log-path"
+      title="로그 파일을 읽을 수 없습니다 — 삭제된 것이 아닙니다"
+    >
+      읽기 실패
+    </p>`;
+  }
+  if (tile.log_expired === true) {
+    return html`<p
+      class="rtile__history-log"
+      data-seam="tile-log-path"
+      title="180일 보존 정책으로 삭제됨"
+    >
+      만료됨
+    </p>`;
+  }
+  return log_path.length > 0
+    ? html`<p class="rtile__history-log" data-seam="tile-log-path">
+        ${logPathTemplate(log_path)}
       </p>`
-    : expired
-      ? html`<p
-          class="rtile__history-log"
-          data-seam="tile-log-path"
-          title="180일 보존 정책으로 삭제됨"
-        >
-          만료됨
-        </p>`
-      : log_path.length > 0
-        ? html`<p class="rtile__history-log" data-seam="tile-log-path">
-            ${logPathTemplate(log_path)}
-          </p>`
-        : ''}`;
+    : '';
 }
 
 /**
@@ -469,9 +524,12 @@ const RESUME_LABELS = Object.freeze({
  * carries an `attempt_id`, so nothing else may be consulted.
  *
  * @param {FailureTile} failure
+ * @param {boolean} [below] - Whether the resume control sits below the text,
+ * as in the popover; a failed tile's detail opens under the header that holds
+ * it, so there the sentence says no direction (UI-lx9o §4.2).
  * @returns {string}
  */
-function failureNextText(failure) {
+function failureNextText(failure, below = true) {
   if (failure.resume_refused_sentence) {
     return failure.resume_refused_sentence;
   }
@@ -481,10 +539,11 @@ function failureNextText(failure) {
   }
   const resume_kind = resumeKindOf(failure.quickfix_landing);
   if (failure.resume_eligible !== false) {
+    const where = below ? '아래 ' : '';
     return `${guidance} ${
       resume_kind === 'settlement'
-        ? '아래 [정리 재시도]를 눌러 실패한 착지 후 절차를 다시 실행하세요.'
-        : '원인을 확인한 뒤 아래 [이어하기]로 같은 세션에서 작업을 계속하세요.'
+        ? `${where}[정리 재시도]를 눌러 실패한 착지 후 절차를 다시 실행하세요.`
+        : `원인을 확인한 뒤 ${where}[이어하기]로 같은 세션에서 작업을 계속하세요.`
     }`;
   }
   const refusal =
@@ -698,6 +757,474 @@ function failurePopoverTemplate(failure, now) {
           이미 base에 착지됨 — ${popover_resume_label}로 배포·정리를 재개
         </p>`
       : ''}
+  </div>`;
+}
+
+/**
+ * The words a kept-session failure adds (UI-qce9 §5.3): this child started
+ * by choosing the recorded session alone, so a resume failure must not say it
+ * fell back to a new session — it did not.
+ *
+ * @param {FailureTile} failure
+ * @param {string} base - The sentence the dictionary gives the cause.
+ * @returns {string}
+ */
+function keptSessionSentence(failure, base) {
+  const kept_session_failure =
+    failure.continuation_choice === 'prior_attempt' &&
+    typeof failure.cause === 'string' &&
+    (failure.cause.startsWith('resume_failed') ||
+      failure.cause.startsWith('session_failed'));
+  if (!kept_session_failure) {
+    return base;
+  }
+  return failure.cause === 'resume_failed:transcript_missing'
+    ? '이어갈 세션 기록이 없습니다. 새 세션을 자동으로 시작하지 않았습니다.'
+    : `${base} 새 세션을 자동으로 시작하지 않았습니다.`;
+}
+
+/**
+ * The `<단계>` of a failed tile's badge (UI-lx9o §4.1): the repo-operation kind
+ * word of the failure incident, else the landing step the failure actually
+ * stopped at (`quickfix_landing.failed_step`) — never the resume `cursor`,
+ * which a head-bound pass leaves on a later step than the one that failed.
+ * `''` without material, so the badge says the category alone (fail-quiet).
+ *
+ * @param {FailureTile} failure
+ * @returns {string}
+ */
+function failureStageWord(failure) {
+  const kind = failure.operation?.kind;
+  if (typeof kind === 'string' && Object.hasOwn(OPERATION_KIND_WORDS, kind)) {
+    return OPERATION_KIND_WORDS[kind];
+  }
+  const step = failure.quickfix_lane
+    ? failure.quickfix_landing?.failed_step
+    : null;
+  return typeof step === 'string' && Object.hasOwn(LANDING_STEP_LABELS, step)
+    ? LANDING_STEP_LABELS[step]
+    : '';
+}
+
+/**
+ * A failed tile's slot-3 cause line (UI-lx9o §4.1): what happened in one
+ * sentence, then the script's own error summary, then the retry fact. The
+ * sentence is the script exit when the failure incident ran one, else the
+ * dictionary sentence of the cause — never a raw code. A summary holding only
+ * a code, or a sentence the classifier made from a code, is treated as the
+ * code and dropped ({@link reportedFailureSummary}). `''` when nothing is
+ * known. An orphaned tile's badge says only `중단됨`, so here its cause's
+ * category leads the sentence when the cause classifies as one.
+ *
+ * @param {FailureTile} failure
+ * @param {string|undefined} [status] - The attempt status.
+ * @returns {string}
+ */
+function failureCauseText(failure, status) {
+  const operation = failure.operation || null;
+  const classified =
+    status === 'orphaned' ? mappedFailureCategory(failure.cause) : null;
+  const cause_line = failureCauseLine(failure.cause, failure.cause_detail);
+  const sentence =
+    operation && typeof operation.exit_code === 'number'
+      ? scriptExitSentence(operation.kind, operation.exit_code)
+      : keptSessionSentence(
+          failure,
+          classified === null || cause_line.startsWith(classified)
+            ? cause_line
+            : cause_line === UNKNOWN_FAILURE_TEXT || cause_line === ''
+              ? classified
+              : `${classified} — ${cause_line}`
+        );
+  const reported = summaryText(
+    reportedFailureSummary(operation?.summary, failure.cause) ||
+      reportedFailureSummary(failure.summary, failure.cause)
+  );
+  const summary = reported && reported !== sentence ? reported : '';
+  const retry = operation?.retry_same_error
+    ? '자동 재시도 1회도 같은 오류'
+    : operation?.retry_exhausted
+      ? '자동 재시도 1회도 실패'
+      : failure.retry && failure.retry.attempts > 0
+        ? `자동 재시도 ${failure.retry.attempts}회도 같은 오류`
+        : '';
+  const head =
+    sentence && summary
+      ? `${sentence.endsWith('.') ? sentence : `${sentence}.`} ${summary}`
+      : sentence || summary;
+  return [head, retry].filter((part) => part.length > 0).join(' · ');
+}
+
+/**
+ * A failed tile's one status badge text (UI-lx9o §4.1): `⛔ <범주>[ · <단계>]`.
+ *
+ * @param {FailureTile} failure
+ * @param {string|undefined} status - The attempt status; `orphaned` always
+ * reads `중단됨` — the attempt was cut off, and whatever the cause classifies
+ * as is said by the slot-3 cause line, not by the badge.
+ * @returns {string}
+ */
+function failureBadgeText(failure, status) {
+  const category =
+    status === 'orphaned' ? '중단됨' : failureCategory(failure.cause) || '실패';
+  const stage = failureStageWord(failure);
+  return `⛔ ${category}${stage ? ` · ${stage}` : ''}`;
+}
+
+/**
+ * The slot-3 cause line element; nothing without material (fail-quiet).
+ *
+ * @param {FailureTile} failure
+ * @param {string|undefined} status - The attempt status.
+ */
+function failureCauseTemplate(failure, status) {
+  const text = failureCauseText(failure, status);
+  return text ? html`<p class="rtile__cause">${text}</p>` : '';
+}
+
+/**
+ * @typedef {Object} FailureDetailMaterial
+ * @property {import('../../protocol.js').WaitReason[]} wait_reasons
+ * @property {import('./lane-model.js').InteractiveSessionView[]|undefined} interactive_sessions
+ * @property {Set<string>} on_card - The labels of the controls this card
+ * draws right now; `다음` names no other control.
+ */
+
+/**
+ * A control named in a sentence — `[이름]`, or a list of them joined by `, `
+ * and ` 또는 ` — with the panel it sits in (`상세 패널의 `) and the particle or
+ * `를 눌러` that ties it to the rest.
+ *
+ * @type {RegExp}
+ */
+const CONTROL_RUN =
+  /(?:[가-힣]+ 패널의 )?\[[^\]]+\](?:(?:, | 또는 )\[[^\]]+\])*(?:[를을] 눌러|으로|로|[를을])?/g;
+
+/**
+ * One `다음` sentence of a failed tile's detail with only the controls the card
+ * draws (UI-lx9o §4.2): a control the card does not draw is left out of a list,
+ * and a run naming none of them is dropped with its particle, so the sentence
+ * still says the condition that releases the failure. The shared sentence
+ * itself is never changed; only this rendering of it is. `''` when nothing
+ * but punctuation would remain.
+ *
+ * @param {string} line
+ * @param {Set<string>} on_card
+ * @returns {string}
+ */
+function withOnCardControls(line, on_card) {
+  const text = line.replace(CONTROL_RUN, (run) => {
+    const names = [...run.matchAll(/\[([^\]]+)\]/g)].map((match) =>
+      match[1].trim()
+    );
+    const kept = names.filter((name) => on_card.has(name));
+    if (kept.length === names.length) {
+      return run;
+    }
+    if (kept.length === 0) {
+      return '';
+    }
+    const panel = run.slice(0, run.indexOf('['));
+    const tail = run.slice(run.lastIndexOf(']') + 1);
+    const listed = kept.map((name) => `[${name}]`);
+    return `${panel}${
+      listed.length === 1
+        ? listed[0]
+        : `${listed.slice(0, -1).join(', ')} 또는 ${listed[listed.length - 1]}`
+    }${tail}`;
+  });
+  const tidy = text
+    .replace(/ {2,}/g, ' ')
+    .replace(/ ([.,])/g, '$1')
+    .replace(/(?:,| 또는)(?= [—·]|$)/g, '')
+    .replace(/^[\s—·]+|[\s—·]+$/g, '')
+    .trim();
+  return /[가-힣A-Za-z0-9]/.test(tidy) ? tidy : '';
+}
+
+/**
+ * The `다음` lines of a failed tile's detail (UI-lx9o §4.2): the live
+ * conversation's guidance first whenever a conversation is live (during a
+ * handoff or takeover too), else the 해결 sentence, then the failure's own
+ * next step, the verdict reason, the release, the other reasons and the wait
+ * clocks — what the wait popup carried, which a failed tile no longer draws.
+ * The shared sentences stay as they are: only here a `검증 실패` that is not
+ * this failure's category reads the category, and a control the card does not
+ * draw is left out of the sentence ({@link withOnCardControls}) rather than
+ * the sentence being dropped.
+ *
+ * @param {FailureTile} failure
+ * @param {FailureDetailMaterial} material
+ * @param {number} now
+ * @returns {{ lines: string[], anchor: string }}
+ */
+function failureNextLines(failure, material, now) {
+  const parts = waitDetailParts({
+    held_kind: null,
+    wait_reasons: material.wait_reasons,
+    interactive_sessions: material.interactive_sessions,
+    now
+  });
+  // The shared wait sentences call every repair a `검증 실패`; only a failed
+  // verify operation is one, so the others read this failure's category.
+  const category =
+    failure.operation?.kind === 'verify'
+      ? ''
+      : failureCategory(failure.cause) || '';
+  /** @param {string} line */
+  const said = (line) =>
+    category && category !== '검증 실패'
+      ? line.replaceAll('검증 실패', category)
+      : line;
+  /**
+   * @param {string[]} lines
+   * @param {boolean} shared - Shared wait sentences, which alone get `said`.
+   */
+  const kept = (lines, shared) =>
+    lines
+      .filter((line) => typeof line === 'string' && line.length > 0)
+      .map((line) =>
+        withOnCardControls(shared ? said(line) : line, material.on_card)
+      )
+      .filter((line) => line.length > 0);
+  const others = kept(parts ? parts.others : [], true);
+  // A live conversation's guidance leads even when a handoff or takeover
+  // keeps the wait sentences from naming it.
+  const live = liveConversationResolution(material.interactive_sessions);
+  const lines = [
+    ...kept(
+      [
+        live ? `해결 — ${live}` : parts ? parts.resolution : '',
+        parts ? parts.inquiry : ''
+      ],
+      true
+    ),
+    ...kept([failureNextText(failure, false)], false),
+    ...kept(
+      [parts ? parts.verdict_reason : '', parts ? parts.release : ''],
+      true
+    ),
+    ...(others.length > 0 ? [`다른 사유 ${others.length}`, ...others] : []),
+    ...(parts ? parts.clocks : [])
+  ];
+  return { lines: [...new Set(lines)], anchor: parts ? parts.anchor : '' };
+}
+
+/**
+ * The raw codes of the `실패 코드` row: the cause, and the landing reason when
+ * the cause does not already carry it as a segment.
+ *
+ * @param {FailureTile} failure
+ * @returns {string[]}
+ */
+function failureRawCodes(failure) {
+  const cause = typeof failure.cause === 'string' ? failure.cause : '';
+  const reason =
+    failure.quickfix_lane &&
+    typeof failure.quickfix_landing?.reason === 'string'
+      ? failure.quickfix_landing.reason
+      : '';
+  return [
+    cause,
+    reason && !failureSegments(cause).includes(reason) && reason !== cause
+      ? reason
+      : ''
+  ].filter((code) => code.length > 0);
+}
+
+/**
+ * The ONE detail box of a failed tile (UI-lx9o §4.2), opened by its status
+ * badge: 경위 (incident lines, oldest first), 다음, and the collapsed 세부 that
+ * alone holds raw codes. A `[deploy]` condition wait keeps
+ * {@link failurePopoverTemplate}.
+ *
+ * @param {FailureTile|null} failure
+ * @param {FailureDetailMaterial} material
+ * @param {number} now
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function failureDetailTemplate(failure, material, now) {
+  if (!failure || failure.open !== true) {
+    return '';
+  }
+  const incidents = Array.isArray(failure.incidents) ? failure.incidents : [];
+  const next = failureNextLines(failure, material, now);
+  const resume_label = RESUME_LABELS[resumeKindOf(failure.quickfix_landing)];
+  const codes = failureRawCodes(failure);
+  const recovery = failure.recovery_line || null;
+  const landing =
+    failure.quickfix_lane && failure.quickfix_landing
+      ? failure.quickfix_landing
+      : null;
+  const landing_text = landing
+    ? [
+        typeof landing.cursor === 'string'
+          ? Object.hasOwn(LANDING_STEP_LABELS, landing.cursor)
+            ? LANDING_STEP_LABELS[landing.cursor]
+            : landing.cursor
+          : null,
+        typeof landing.head_sha === 'string'
+          ? landing.head_sha.slice(0, 7)
+          : null
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+  const cost = failure.usage?.total_cost_usd;
+  const execution_text = [
+    failure.runner,
+    failure.model,
+    failure.observed_effort ?? failure.effort,
+    failure.speed,
+    typeof cost === 'number' && Number.isFinite(cost)
+      ? `$${cost.toFixed(2)}`
+      : null
+  ]
+    .filter((value) => typeof value === 'string' && value.length > 0)
+    .join(' · ');
+  const log_line = logStateTemplate(failure);
+  const detail = failure.cause_detail;
+  const retry_history =
+    failure.retry && failure.retry.attempts > 0
+      ? `자동 재시도 ${failure.retry.attempts}회 — 같은 오류`
+      : '';
+  return html`<div
+    class="rtile__failure-pop"
+    role="dialog"
+    aria-label="실패 상세"
+  >
+    <dl class="rtile__failure-kv">
+      ${incidents.length > 0
+        ? html`<div>
+            <dt>경위</dt>
+            <dd>
+              <ol class="rtile__history" data-seam="tile-incidents">
+                ${incidents.map(
+                  (row) =>
+                    html`<li
+                      class="rtile__history-row${row.failure === true
+                        ? ' rtile__incident--failure'
+                        : ''}"
+                    >
+                      ${historyTimeText(row.at)
+                        ? html`<span class="rtile__history-at"
+                            >${historyTimeText(row.at)}</span
+                          >`
+                        : ''}<span class="rtile__history-summary"
+                        >${row.summary}</span
+                      >
+                    </li>`
+                )}
+              </ol>
+            </dd>
+          </div>`
+        : ''}
+      ${next.lines.length > 0
+        ? html`<div>
+            <dt>다음</dt>
+            <dd>
+              <ul class="rtile__failure-next">
+                ${next.lines.map((line) => html`<li>${line}</li>`)}
+              </ul>
+            </dd>
+          </div>`
+        : ''}
+    </dl>
+    ${failure.landed
+      ? html`<p class="rtile__failure-landed">
+          이미 base에 착지됨 — ${resume_label}로 배포·정리를 재개
+        </p>`
+      : ''}
+    <details class="rtile__failure-more">
+      <summary>세부</summary>
+      <dl class="rtile__failure-kv">
+        ${codes.length > 0
+          ? html`<div>
+              <dt>실패 코드</dt>
+              <dd>
+                <div>${failureCodeWords(failure.cause)}</div>
+                ${codes.map((code) => html`<div><code>${code}</code></div>`)}
+              </dd>
+            </div>`
+          : ''}
+        ${recovery
+          ? html`<div>
+              <dt>복구 판정</dt>
+              <dd>
+                <div>${recovery.summary}</div>
+                ${recovery.code
+                  ? html`<div><code>${recovery.code}</code></div>`
+                  : ''}
+              </dd>
+            </div>`
+          : ''}
+        ${landing_text
+          ? html`<div>
+              <dt>착지 단계</dt>
+              <dd>${landing_text}</dd>
+            </div>`
+          : ''}
+        ${execution_text
+          ? html`<div>
+              <dt>실행</dt>
+              <dd>${execution_text}</dd>
+            </div>`
+          : ''}
+        ${failure.attempt_id
+          ? html`<div>
+              <dt>attempt id</dt>
+              <dd>
+                <code>${failure.attempt_id}</code>
+                <button
+                  type="button"
+                  class="op-btn op-btn--icon op-btn--ghost rtile__attempt-copy"
+                  data-attempt-id=${failure.attempt_id}
+                  title="attempt id 복사"
+                  aria-label="attempt id 복사"
+                >
+                  ⧉
+                </button>
+              </dd>
+            </div>`
+          : ''}
+        ${log_line
+          ? html`<div>
+              <dt>로그</dt>
+              <dd>${log_line}</dd>
+            </div>`
+          : ''}
+        ${detail?.reason
+          ? html`<div>
+              <dt>가드/원인</dt>
+              <dd>${detail.reason}</dd>
+            </div>`
+          : ''}
+        ${detail?.command
+          ? html`<div>
+              <dt>명령</dt>
+              <dd><code>${detail.command}</code></dd>
+            </div>`
+          : ''}
+        ${retry_history
+          ? html`<div>
+              <dt>재시도 이력</dt>
+              <dd>${retry_history}</dd>
+            </div>`
+          : ''}
+      </dl>
+      <div class="rtile__failure-tools">
+        ${failure.attempt_id
+          ? html`<button
+              type="button"
+              class="op-btn rtile__session"
+              title="실패 세션 기록 열기"
+              aria-label="세션 기록"
+            >
+              ▤ 세션 기록
+            </button>`
+          : ''}${legendLinkTemplate(next.anchor)}
+      </div>
+    </details>
   </div>`;
 }
 
@@ -1138,6 +1665,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // A `[deploy]` condition wait (dotfiles-rnyd9) keeps the failure slot and
   // popover — its exits are the failure's — but is not drawn as a failure.
   const condition_wait = failure !== null && isConditionWait(failure.cause);
+  // 실패 타일은 상태를 배지 하나, 원인을 문장 하나로 말한다 (UI-lx9o §4.1):
+  // 대기 배지·대기 본문·경과 낱말은 같은 사실의 두 번째 표기라 그리지 않는다.
+  const failure_tile = failure !== null && !condition_wait;
   // 파킹·backoff 대기는 실패가 아니다 (UI-5ym8 §2): 같은 투영을 읽지만 실패
   // 뱃지도 팝오버도 얻지 않고, 큐가 계속 간다는 사실이 색으로도 보여야 한다.
   const parked = tile.parked === true && !failed;
@@ -1196,12 +1726,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const paused = !!tile.paused;
   // 대기 중인 타일에 시계를 돌리면 멈춰 있는 것이 일하는 것처럼 읽힌다.
   // held 타일의 경과/상태 라벨은 그리지 않는다 (§6.2) — 슬롯 1 배지가 이미 그
-  // 종류와 판정을 말한다. 실패 타일의 `실패`·`중단됨`은 그대로다.
+  // 종류와 판정을 말한다. 실패 타일도 같다 (UI-lx9o §4.1): `⛔ <범주>` 배지가
+  // `실패`·`중단됨`을 이미 말한다.
   const clock_live =
     !failed && !held && !paused && typeof tile.started_at === 'number';
   const elapsed =
     failed || held
-      ? held
+      ? held || failure_tile
         ? ''
         : tile.status_label || (tile.status === 'orphaned' ? '중단됨' : '실패')
       : paused
@@ -1392,7 +1923,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           aria-expanded=${failure.open === true ? 'true' : 'false'}
           aria-label=${condition_wait ? '대기 상세' : '실패 상세'}
         >
-          ${`${condition_wait ? '⏳' : '⛔'} ${failureCategory(failure.cause) || '실패'}`}
+          ${condition_wait
+            ? `⏳ ${failureCategory(failure.cause) || '실패'}`
+            : failureBadgeText(failure, tile.status)}
         </button>
         ${failure.halted_auto_advance
           ? html`<span class="rtile__auto-halted">자동 진행 꺼짐</span>`
@@ -1403,35 +1936,36 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const refusal_badge = provider_hold ? autoResumeRefusalBadge(hold) : null;
   // 판정 칩 슬롯은 하나다 (카드 문법 §5.1): 실패 뱃지가 서는 그 자리에 파킹과
   // backoff·선행·공급자 대기가 선다. 다섯은 배타적이라 폭이 늘지 않는다.
-  const wait_status_badge =
-    external.badge ||
-    waitStatusBadge({
-      held_kind: parked
-        ? 'parked'
-        : retry_wait
-          ? 'retry_wait'
-          : waiting
-            ? 'waiting'
-            : provider_hold
-              ? 'provider_hold'
-              : null,
-      held: wait,
-      hold,
-      wait_reasons,
-      interactive_sessions: tile.interactive_sessions,
-      now,
-      // 재시도 대기 라벨은 회차와 예약 시각까지 말한다 (§5.2 "기존 문구").
-      ...(retry_wait
-        ? { label: retryWaitBadgeText(tile.retry).replace('↻ ', '') }
-        : {}),
-      ...(refusal_badge
-        ? {
-            text: refusal_badge.text,
-            verdict: refusal_badge.verdict,
-            release: refusal_badge.release
-          }
-        : {})
-    });
+  const wait_status_badge = failure_tile
+    ? ''
+    : external.badge ||
+      waitStatusBadge({
+        held_kind: parked
+          ? 'parked'
+          : retry_wait
+            ? 'retry_wait'
+            : waiting
+              ? 'waiting'
+              : provider_hold
+                ? 'provider_hold'
+                : null,
+        held: wait,
+        hold,
+        wait_reasons,
+        interactive_sessions: tile.interactive_sessions,
+        now,
+        // 재시도 대기 라벨은 회차와 예약 시각까지 말한다 (§5.2 "기존 문구").
+        ...(retry_wait
+          ? { label: retryWaitBadgeText(tile.retry).replace('↻ ', '') }
+          : {}),
+        ...(refusal_badge
+          ? {
+              text: refusal_badge.text,
+              verdict: refusal_badge.verdict,
+              release: refusal_badge.release
+            }
+          : {})
+      });
   // 재시도 중인 거절은 슬롯 7에 다음 시도 시각을 둔다 (D5). 시각 줄은 카드당
   // 하나이고, 이 배지가 카드를 대표하므로 다른 사유의 시각보다 앞선다.
   const refusal_times =
@@ -1647,7 +2181,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       <div class="rtile__hd-actions">
         ${interactiveSessionClosingTemplate(
           tile.interactive_sessions
-        )}${interactiveSessionDiscordTemplate(tile.interactive_sessions)}
+        )}${interactiveSessionDiscordTemplate(tile.interactive_sessions, {
+          pending: !failure_tile
+        })}
         ${wait_lines.map((line) => line.actions)}${session
           ? html`${typeof tile.started_at === 'number' && !external_wait
               ? elapsed_el
@@ -1715,7 +2251,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ${head_popover}
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${wait_body_lines.body}${parked || waiting || paused
+    ${failure_tile
+      ? failureCauseTemplate(failure, tile.status)
+      : wait_body_lines.body}${parked || waiting || paused
       ? interactiveProgressLineTemplate(tile.interactive_sessions, now)
       : ''}${external_wait
       ? // 세션 소유 외부 대기 타일 (UI-l48z §4.1): 활동 줄 없이 4a·4b·5 재료와
@@ -1789,10 +2327,26 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? html`<div class="rtile__foot">
           ${specAuthoringActionsTemplate(tile)}
         </div>`
-      : ''}${refusal_times || wait_body_lines.times}${failurePopoverTemplate(
-      failure,
-      now
-    )}
+      : ''}${refusal_times || wait_body_lines.times}${failure_tile
+      ? failureDetailTemplate(
+          failure,
+          {
+            wait_reasons,
+            interactive_sessions: tile.interactive_sessions,
+            on_card: new Set(
+              [
+                session ? '' : resume_label,
+                discard_button ? tile.discard?.label : '',
+                abandon_button ? tile.discard?.abandon?.label : '',
+                resolve_only ? '세션에서 이어가기' : '',
+                handoff_button ? '워커로 이어가기' : '',
+                ...wait_reasons.flatMap(cardExternalWaitLabels)
+              ].filter((label) => typeof label === 'string' && label !== '')
+            )
+          },
+          now
+        )
+      : failurePopoverTemplate(failure, now)}
   </div>`;
 }
 

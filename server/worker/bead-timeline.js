@@ -98,6 +98,21 @@ const SUMMARY_MAX = 200;
  * @property {string} [account] - Runner account the event is about, when the
  * event's meaning is account-scoped (a `provider_recovered` that switched pools
  * reads as the wrong fact without it).
+ * @property {string} [code] - The raw failure code a failure line is about
+ * (UI-lx9o §4.3): the summary says it in words, this keeps the value.
+ * @property {string} [incident] - The id that ties one failure's lines into
+ * one 경위 line (UI-lx9o §4.2): the repo operation id, or a per-settlement id.
+ * @property {TimelineOperation} [operation] - The repo operation facts of an
+ * `operation_failed` line (UI-lx9o §4.3).
+ */
+
+/**
+ * @typedef {Object} TimelineOperation
+ * @property {string} kind
+ * @property {number} [exit_code]
+ * @property {string} [summary]
+ * @property {boolean} [retry_exhausted]
+ * @property {boolean} [retry_same_error]
  */
 
 /**
@@ -117,6 +132,9 @@ const SUMMARY_MAX = 200;
  * @property {string|null} [command]
  * @property {string} [log_path]
  * @property {string} [account]
+ * @property {string} [code]
+ * @property {string} [incident]
+ * @property {TimelineOperation} [operation]
  * @property {number} [at] - Epoch ms; defaults to the injected clock.
  */
 
@@ -178,6 +196,18 @@ function buildEvent(input, now) {
   if (account.length > 0) {
     event.account = account;
   }
+  const code = String(input?.code ?? '').trim();
+  if (code.length > 0) {
+    event.code = code.slice(0, SUMMARY_MAX);
+  }
+  const incident = String(input?.incident ?? '').trim();
+  if (incident.length > 0) {
+    event.incident = incident;
+  }
+  const operation = timelineOperation(input?.operation);
+  if (operation !== null) {
+    event.operation = operation;
+  }
   if (
     kind === 'guard_denied' ||
     kind === 'guard_warning' ||
@@ -194,6 +224,38 @@ function buildEvent(input, now) {
     }
   }
   return { ok: true, event };
+}
+
+/**
+ * Keep only the well-formed repo operation facts; a key without a value is
+ * left out rather than carried empty.
+ *
+ * @param {unknown} value
+ * @returns {TimelineOperation|null}
+ */
+function timelineOperation(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const input = /** @type {Record<string, unknown>} */ (value);
+  if (typeof input.kind !== 'string' || input.kind.length === 0) {
+    return null;
+  }
+  /** @type {TimelineOperation} */
+  const operation = { kind: input.kind };
+  if (Number.isInteger(input.exit_code)) {
+    operation.exit_code = /** @type {number} */ (input.exit_code);
+  }
+  if (typeof input.summary === 'string' && input.summary.trim().length > 0) {
+    operation.summary = input.summary.trim().slice(0, SUMMARY_MAX);
+  }
+  if (input.retry_exhausted === true) {
+    operation.retry_exhausted = true;
+  }
+  if (input.retry_same_error === true) {
+    operation.retry_same_error = true;
+  }
+  return operation;
 }
 
 /** @type {number} */

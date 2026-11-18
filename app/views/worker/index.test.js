@@ -7419,6 +7419,28 @@ describe('worker view — failed tile decision surface (UI-rj02)', () => {
     expect(second).not.toBeNull();
   });
 
+  test('keeps the detail open and the drawer shut on a 세부 click (UI-lx9o)', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        cause: 'runner_exit'
+      }
+    });
+    const pop = openFailure(mount);
+
+    /** @type {HTMLElement} */ (
+      pop.querySelector('.rtile__failure-more > summary')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.rtile__failure-pop')).not.toBeNull();
+    const overlay = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.worker-drawer-overlay')
+    );
+    expect(overlay === null || overlay.hidden).toBe(true);
+  });
+
   test('uses the failure projection confirmation for discard', () => {
     const transport = vi.fn(async () => ({}));
     const confirm = vi.fn(() => false);

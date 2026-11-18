@@ -3192,6 +3192,44 @@ describe('scheduler work recovery waits', () => {
     }
   );
 
+  test('says an exhausted session failure in words with its code and incident', async () => {
+    const env = recoveryEnv();
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    for (let rung = 0; rung < 3; rung += 1) {
+      env.store.applyRetryEvent(WS, {
+        event: {
+          kind: 'retry_scheduled',
+          bead_id: 'S1',
+          attempt_id,
+          cause: 'session_failed:is_error:api',
+          at: 1000,
+          origin_attempt_id: attempt_id
+        },
+        now: 1000
+      });
+    }
+
+    const attempt = await endSession(env, {
+      success: false,
+      reason: 'is_error',
+      exit: 1,
+      summary: 'session_failed:is_error'
+    });
+
+    const failed = env.timeline.append.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.kind === 'attempt_failed');
+    expect(failed).toMatchObject({
+      code: 'session_failed:is_error',
+      incident: attempt.attempt_id,
+      seq: 'failed'
+    });
+    expect(failed.summary).toMatch(/^세션 실패 — /);
+    expect(failed.summary).not.toContain('session_failed');
+  });
+
   test('keeps unsupported policy on the legacy failed path', async () => {
     const env = recoveryEnv({
       workRecoveryPolicy: {
@@ -25883,6 +25921,43 @@ describe('scheduler quick_fix landing settlement', () => {
     }
   );
 
+  test('names no earlier landing failure on a workflow mode revert failure', async () => {
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      quickfixLanding: { settle }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.store.updateAttempt(WS, {
+      attempt_id: 'S1-1000-1',
+      patch: {
+        quickfix_landing: /** @type {any} */ ({
+          cursor: 'repo_operations',
+          head_sha: 'a'.repeat(40),
+          reason: 'script_failed',
+          deploy_operation_id: 'deploy-old',
+          incident: 'deploy-old',
+          failed_step: 'repo_operations'
+        })
+      }
+    });
+    vi.spyOn(env.bd, 'unsetMetadata').mockRejectedValueOnce(
+      new Error('bd capability probe timed out')
+    );
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    const landing = /** @type {any} */ (
+      env.store.snapshot(WS).attempts['S1-1000-1'].quickfix_landing
+    );
+    expect(landing.incident).toMatch(/^S1-1000-1:landing:/);
+    expect(landing).not.toHaveProperty('failed_step');
+  });
+
   test('retries workflow mode restoration on the same landing attempt', async () => {
     /** @type {ReturnType<typeof setup>} */
     let env;
@@ -25958,6 +26033,40 @@ describe('scheduler quick_fix landing settlement', () => {
     expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
       'quickfix_landing_unavailable'
     );
+  });
+
+  test('ties a failed quick_fix landing line to the incident the landing named', async () => {
+    const timeline = { append: vi.fn() };
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'base_contains_tip',
+      step: 'base_containment',
+      incident: 'S1-1000-1:landing:1000'
+    }));
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      quickfixLanding: { settle },
+      timeline
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    const failed = timeline.append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.kind === 'attempt_failed');
+    expect(failed).toMatchObject([
+      {
+        seq: 'failed:S1-1000-1:landing:1000',
+        incident: 'S1-1000-1:landing:1000',
+        code: 'quickfix_landing_failed:base_contains_tip'
+      }
+    ]);
+    expect(failed[0].summary).not.toContain('quickfix_landing_failed');
   });
 
   test('does not settle a failed quick_fix session', async () => {

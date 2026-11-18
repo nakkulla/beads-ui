@@ -302,7 +302,7 @@
  * @property {ExecPresetRecord|null} [exec_preset] - Observed dispatch preset, independent of workflow receipts.
  * @property {Record<string, string|null>|null} exec_profile - Recorded selector inputs at dispatch.
  * @property {boolean} observation_checked - A terminal transcript fold already ran successfully.
- * @property {{ cursor: 'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_backup?: { path: string, manifest_sha256: string, file_count: number }, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: { path: string, manifest_sha256: string, file_count: number } }, deploy_operation_id?: string }|null} quickfix_landing -
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_backup?: { path: string, manifest_sha256: string, file_count: number }, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: { path: string, manifest_sha256: string, file_count: number } }, deploy_operation_id?: string, incident?: string, failed_step?: string }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
  * contract no-change close (`refuted:`·`no-delta:`) settled without a delta
@@ -313,7 +313,10 @@
  * (UI-w2ou §3.4). Its shape is directly
  * consumable by the existing `prWaitProgress` projection.
  * `deploy_operation_id` names the deploy run whose terminal failure this
- * record wrote (UI-1fss §4.2); absent on every other write.
+ * record wrote (UI-1fss §4.2); absent on every other write. `incident` and
+ * `failed_step` are written by a failing write only: the failure's incident id
+ * and the step it actually stopped at (UI-lx9o §4.2), which a head-bound
+ * `cursor` need not name.
  * @property {boolean} external_conflict - Whether this resolution attempt was
  * dispatched for an EXTERNAL PR row (UI-w0hi §1) — a bead a normal session
  * delivered, which the durable lanes never held. It is what routes the two
@@ -1339,6 +1342,7 @@ import {
   normalizeAppliesTo,
   validateExecSpeeds
 } from './exec-enums.js';
+import { failedEventWords } from './failure-class.js';
 import { foreignHandoffRearmCause } from './foreign-handoff.js';
 import { orderLaneByBlocks } from './lane-order.js';
 import { ORCHESTRATION_MODEL_FALLBACK } from './policy.js';
@@ -6914,22 +6918,46 @@ export function transferableAttempts(q) {
  * ending has to be able to recognize it unambiguously. A `user_action` line can
  * be any click.
  *
+ * A failed attempt's line says its cause in dictionary words and carries the
+ * raw code and the failure incident as fields (UI-lx9o §4.3): the landing's
+ * incident when one was recorded, else the attempt itself.
+ *
  * @param {Attempt} attempt
- * @returns {{ kind: string, summary: string }}
+ * @returns {{ kind: string, summary: string, code?: string, incident?: string }}
  */
 function terminalEventFor(attempt) {
   if (attempt.status === 'failed') {
-    const summary =
-      (typeof attempt.cause_detail?.summary === 'string' &&
-      attempt.cause_detail.summary.trim().length > 0
-        ? attempt.cause_detail.summary.trim()
-        : null) ||
-      (typeof attempt.cause === 'string' && attempt.cause.length > 0
+    const cause =
+      typeof attempt.cause === 'string' && attempt.cause.length > 0
         ? attempt.cause
-        : null);
+        : null;
+    const landing = /** @type {any} */ (attempt.quickfix_landing);
+    const incident =
+      typeof landing?.incident === 'string' && landing.incident.length > 0
+        ? landing.incident
+        : typeof landing?.deploy_operation_id === 'string' &&
+            landing.deploy_operation_id.length > 0
+          ? landing.deploy_operation_id
+          : attempt.attempt_id;
     return {
       kind: 'attempt_failed',
-      summary: `세션 실패 — ${summary || '원인 미상'}`
+      summary: `세션 실패 — ${
+        cause === null &&
+        !(
+          typeof attempt.cause_detail?.summary === 'string' &&
+          attempt.cause_detail.summary.trim().length > 0
+        )
+          ? '원인 미상'
+          : failedEventWords({
+              cause,
+              summary:
+                typeof attempt.cause_detail?.summary === 'string'
+                  ? attempt.cause_detail.summary
+                  : null
+            })
+      }`,
+      ...(cause === null ? {} : { code: cause }),
+      incident
     };
   }
   if (attempt.status === 'discarded') {
@@ -7710,6 +7738,8 @@ export function createQueueStore(options = {}) {
       attempt_id: attempt.attempt_id,
       kind: terminal.kind,
       summary: terminal.summary,
+      ...(terminal.code ? { code: terminal.code } : {}),
+      ...(terminal.incident ? { incident: terminal.incident } : {}),
       // One ending per attempt, so the id is fixed rather than sequenced: a
       // retry after a failed write re-appends the same line and the reader
       // keeps one.
