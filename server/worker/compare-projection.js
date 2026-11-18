@@ -1129,7 +1129,7 @@ function aggregateRows(rows, criteria) {
       .sort(
         (left, right) =>
           right.count - left.count ||
-          left.composition.localeCompare(right.composition)
+          left.composition.localeCompare(right.composition, 'en')
       ),
     landed,
     judged,
@@ -1193,7 +1193,7 @@ function countNames(names) {
     .map(([name, count]) => ({ name, count }))
     .sort(
       (left, right) =>
-        right.count - left.count || left.name.localeCompare(right.name)
+        right.count - left.count || left.name.localeCompare(right.name, 'en')
     );
 }
 
@@ -1473,7 +1473,7 @@ function compareGroups(left, right) {
     }
     return left_cost - right_cost;
   }
-  return String(left.key).localeCompare(String(right.key));
+  return String(left.key).localeCompare(String(right.key), 'en');
 }
 
 /**
