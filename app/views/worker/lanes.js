@@ -3376,6 +3376,42 @@ function waitTimesText(reason, now_ms) {
   return tail ? html`${elapsed_el} · ${tail}` : elapsed_el;
 }
 
+const EXTERNAL_WAIT_OPS = [
+  'external_wait_check',
+  'external_wait_takeover',
+  'external_wait_stop',
+  'external_wait_resume'
+];
+
+/**
+ * Whether {@link waitReasonLines} draws this action as an external-wait button.
+ *
+ * @param {import('../../protocol.js').WaitReason['actions'][number]} action
+ * @returns {boolean}
+ */
+function isExternalWaitButton(action) {
+  return (
+    EXTERNAL_WAIT_OPS.includes(action.op) &&
+    !!action.payload.wait_id &&
+    !!action.payload.root_dir
+  );
+}
+
+/**
+ * The bare labels of the external-wait buttons a reason draws on the card,
+ * for a line that names a control only when the card draws it (UI-lx9o §4.2).
+ *
+ * @param {import('../../protocol.js').WaitReason} reason
+ * @returns {string[]}
+ */
+export function cardExternalWaitLabels(reason) {
+  return (reason.actions || [])
+    .filter(
+      (action) => action.placement !== 'detail' && isExternalWaitButton(action)
+    )
+    .map((action) => action.label.replace(/^\[|\]$/g, ''));
+}
+
 /**
  * Separate WaitReason fragments by the shared card slots. Existing operations
  * need their original projection; missing operation material stays absent.
@@ -3464,16 +3500,7 @@ export function waitReasonLines(reason, options = {}) {
   );
   const actions = visible_actions.map((action) => {
     const payload = action.payload;
-    if (
-      [
-        'external_wait_check',
-        'external_wait_takeover',
-        'external_wait_stop',
-        'external_wait_resume'
-      ].includes(action.op) &&
-      payload.wait_id &&
-      payload.root_dir
-    ) {
+    if (isExternalWaitButton(action)) {
       // `session-preferred` Bead는 세션에서 잇는 쪽이 1순위다 (UI-l48z §4.3, UI-r6xq §4.1).
       const primary =
         action.op === 'external_wait_resume' &&

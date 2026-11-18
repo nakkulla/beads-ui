@@ -5804,4 +5804,205 @@ describe('failed tile with one status badge and one cause line (UI-lx9o)', () =>
       ])
     );
   });
+
+  /**
+   * A live resolve conversation of the failed Bead.
+   *
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function conversation(patch = {}) {
+    return {
+      key: 'UI-t1:resolve',
+      kind: 'resolve',
+      provider: 'claude',
+      session_id: 'sid',
+      mode: 'resume',
+      source: 'session_ref',
+      attempt_id: 'a1',
+      fallback_reason: null,
+      tmux_session: 'dev',
+      tmux_window: 'UI-t1',
+      state: 'live',
+      settled_at: null,
+      launched_at: 1,
+      discord_url: null,
+      discord_pending: false,
+      closing: false,
+      ...patch
+    };
+  }
+
+  test('reads 중단됨 on an orphaned tile whose cause maps to no category', () => {
+    const tile = failedTile({ cause: 'binding_gone' }, { status: 'orphaned' });
+
+    expect(
+      tile.querySelector('.rtile__failure-badge')?.textContent?.trim()
+    ).toBe('⛔ 중단됨');
+  });
+
+  test('keeps a mapped category on the badge of an orphaned tile', () => {
+    const tile = failedTile(
+      { cause: 'session_exited' },
+      { status: 'orphaned' }
+    );
+
+    expect(
+      tile.querySelector('.rtile__failure-badge')?.textContent?.trim()
+    ).toBe('⛔ 세션 실패');
+  });
+
+  test('calls the repair release of a deploy failure by its category', () => {
+    const tile = failedTile(
+      {
+        open: true,
+        cause: 'quickfix_landing_failed:script_failed',
+        operation: { kind: 'deploy', exit_code: 1 }
+      },
+      {
+        handoff_action: true,
+        handoff_enabled: true,
+        handoff_attempt_id: 'a1',
+        wait_reasons: [
+          reasonInput({
+            kind: 'recovery',
+            release:
+              '검증 실패를 세션에서 고친 뒤 [워커로 이어가기] — 이어갈 지시 또는 폐기를 결정합니다.'
+          })
+        ]
+      }
+    );
+
+    expect(nextLines(tile)).toContain(
+      '착지 실패를 세션에서 고친 뒤 [워커로 이어가기] — 이어갈 지시 또는 폐기를 결정합니다.'
+    );
+  });
+
+  test('keeps 검증 실패 in 다음 when the failed operation is a verify', () => {
+    const tile = failedTile(
+      {
+        open: true,
+        cause: 'quickfix_landing_failed:script_failed',
+        operation: { kind: 'verify', exit_code: 1 }
+      },
+      { wait_reasons: [reasonInput()] }
+    );
+
+    expect(nextLines(tile)).toContain('검증 실패로 멈춤');
+  });
+
+  test('names an external-wait button the card draws in 다음', () => {
+    const tile = failedTile(
+      { open: true, cause: 'base_fetch_failed' },
+      {
+        wait_reasons: [
+          reasonInput({
+            resolution: '[다시 확인]으로 작업 상태를 다시 읽는다',
+            actions: [
+              {
+                op: 'external_wait_check',
+                label: '[다시 확인]',
+                payload: { wait_id: 'w1', root_dir: '/repo' }
+              }
+            ]
+          })
+        ]
+      }
+    );
+
+    expect(nextLines(tile)[0]).toBe(
+      '해결 — [다시 확인]으로 작업 상태를 다시 읽는다'
+    );
+  });
+
+  test.each([
+    [
+      'a tmux window',
+      conversation(),
+      { resolve_action: true, resolve_enabled: true },
+      '해결 — [세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
+    ],
+    [
+      'a Discord link',
+      conversation({ discord_url: 'https://discord.com/channels/1/2' }),
+      {},
+      '해결 — ↗ Discord에서 대화를 이어간다'
+    ],
+    [
+      'a pending Discord thread',
+      conversation({ discord_pending: true }),
+      { resolve_action: true, resolve_enabled: true },
+      '해결 — Discord 스레드 준비 중 — 세션의 첫 답 뒤 생긴다'
+    ]
+  ])('leads 다음 with the guidance of %s', (_name, view, fields, guidance) => {
+    const tile = failedTile(
+      { open: true, cause: 'base_fetch_failed' },
+      {
+        ...fields,
+        interactive_sessions: [view],
+        wait_reasons: [reasonInput()]
+      }
+    );
+
+    const lines = nextLines(tile);
+
+    expect(lines[0]).toBe(guidance);
+  });
+
+  test.each([
+    [
+      'no conversation',
+      undefined,
+      {
+        resolve_action: true,
+        resolve_enabled: true,
+        handoff_action: true,
+        handoff_enabled: true
+      },
+      ['세션에서 이어가기', '워커로 이어가기']
+    ],
+    [
+      'a conversation without a link',
+      [conversation()],
+      {
+        resolve_action: true,
+        resolve_enabled: true,
+        handoff_action: true,
+        handoff_enabled: true
+      },
+      ['세션에서 이어가기', '워커로 이어가기']
+    ],
+    [
+      'a conversation with a link',
+      [conversation({ discord_url: 'https://discord.com/channels/1/2' })],
+      { handoff_action: true, handoff_enabled: true },
+      ['↗ Discord', '워커로 이어가기']
+    ],
+    [
+      'a handoff in progress',
+      [
+        conversation({
+          conversation: { handoff: { at: 1 }, result: null }
+        })
+      ],
+      { pair_anchor: /** @type {const} */ ('handoff'), pair_held: true },
+      []
+    ]
+  ])(
+    'keeps the slot-6 pair of a failed tile with %s',
+    (_name, views, fields, expected) => {
+      const tile = failedTile(
+        { cause: 'base_fetch_failed' },
+        { ...fields, interactive_sessions: views }
+      );
+
+      const pair = Array.from(
+        tile.querySelectorAll(
+          '.rtile__resolve, .rtile__handoff, .interactive-session-discord'
+        )
+      ).map((el) => el.textContent?.trim());
+
+      expect(pair).toEqual(expected);
+    }
+  );
 });

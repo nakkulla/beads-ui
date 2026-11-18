@@ -20,6 +20,7 @@ import {
   failureCodeWords,
   failureSegments,
   isFailureCodeOnly,
+  mappedFailureCategory,
   scriptExitSentence
 } from '../../utils/failure-sentences.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
@@ -50,6 +51,7 @@ import { autoResumeRefusalBadge } from './gate-labels.js';
 import {
   attributeChipsTemplate,
   attributePopoverOpen,
+  cardExternalWaitLabels,
   creationSourceChipsTemplate,
   dependencyChipsTemplate,
   discardReceiptTemplate,
@@ -841,13 +843,15 @@ function failureCauseText(failure) {
  *
  * @param {FailureTile} failure
  * @param {string|undefined} status - The attempt status; `orphaned` reads
- * `중단됨` when the cause has no category.
+ * `중단됨` when no segment of the cause maps to a category (the generic
+ * `실패` would hide that the attempt was cut off).
  * @returns {string}
  */
 function failureBadgeText(failure, status) {
   const category =
-    failureCategory(failure.cause) ||
-    (status === 'orphaned' ? '중단됨' : '실패');
+    status === 'orphaned'
+      ? mappedFailureCategory(failure.cause) || '중단됨'
+      : failureCategory(failure.cause) || '실패';
   const stage = failureStageWord(failure);
   return `⛔ ${category}${stage ? ` · ${stage}` : ''}`;
 }
@@ -891,7 +895,12 @@ function failureNextLines(failure, material, now) {
     interactive_sessions: material.interactive_sessions,
     now
   });
-  const category = failureCategory(failure.cause) || '';
+  // The shared wait sentences call every repair a `검증 실패`; only a failed
+  // verify operation is one, so the others read this failure's category.
+  const category =
+    failure.operation?.kind === 'verify'
+      ? ''
+      : failureCategory(failure.cause) || '';
   /** @param {string} line */
   const said = (line) =>
     category && category !== '검증 실패'
@@ -902,22 +911,30 @@ function failureNextLines(failure, material, now) {
     [...line.matchAll(/\[([^\]]+)\]/g)].every((match) =>
       material.on_card.has(match[1].trim())
     );
-  /** @param {string[]} lines */
-  const kept = (lines) =>
+  /**
+   * @param {string[]} lines
+   * @param {boolean} shared - Shared wait sentences, which alone get `said`.
+   */
+  const kept = (lines, shared) =>
     lines
       .filter((line) => typeof line === 'string' && line.length > 0)
-      .map(said)
+      .map((line) => (shared ? said(line) : line))
       .filter(names_on_card);
-  const others = kept(parts ? parts.others : []);
+  const others = kept(parts ? parts.others : [], true);
   const lines = [
-    ...kept([
-      parts?.resolution ||
-        liveConversationResolution(material.interactive_sessions),
-      parts ? parts.inquiry : '',
-      failureNextText(failure),
-      parts ? parts.verdict_reason : '',
-      parts ? parts.release : ''
-    ]),
+    ...kept(
+      [
+        parts?.resolution ||
+          liveConversationResolution(material.interactive_sessions),
+        parts ? parts.inquiry : ''
+      ],
+      true
+    ),
+    ...kept([failureNextText(failure)], false),
+    ...kept(
+      [parts ? parts.verdict_reason : '', parts ? parts.release : ''],
+      true
+    ),
     ...(others.length > 0 ? [`다른 사유 ${others.length}`, ...others] : []),
     ...(parts ? parts.clocks : [])
   ];
@@ -2253,7 +2270,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 discard_button ? tile.discard?.label : '',
                 abandon_button ? tile.discard?.abandon?.label : '',
                 resolve_only ? '세션에서 이어가기' : '',
-                handoff_button ? '워커로 이어가기' : ''
+                handoff_button ? '워커로 이어가기' : '',
+                ...wait_reasons.flatMap(cardExternalWaitLabels)
               ].filter((label) => typeof label === 'string' && label !== '')
             )
           },
