@@ -3100,6 +3100,87 @@ describe('views/worker', () => {
     view.destroy();
   });
 
+  test('hands an awaiting paused-row conversation to Worker from ▶ 재개 without the dialog (UI-6kj0 §3.2)', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      ok: true,
+      resumed: true,
+      pending: false,
+      conflict: false,
+      reason: null
+    });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          paused: {
+            attempt_id: 'paused',
+            bead_id: 'PAUSED',
+            status: 'paused',
+            session_id: 'sid-paused'
+          }
+        },
+        interactive_sessions: {
+          'PAUSED:inquiry': {
+            bead_id: 'PAUSED',
+            kind: 'inquiry',
+            provider: 'claude',
+            session_id: 'sid-paused',
+            mode: 'resume',
+            source: 'attempt',
+            attempt_id: 'paused',
+            tmux_session: 'bdui-inquiry',
+            tmux_window: 'PAUSED',
+            state: 'live',
+            settled_at: null,
+            launched_at: 1,
+            turn_state: 'question',
+            turn_state_since: 1
+          }
+        },
+        wait_reasons: [
+          {
+            kind: 'awaiting_user',
+            subject: { bead_id: 'PAUSED', root_dir: '/repo' },
+            headline: '일시정지한 세션의 대화가 답을 기다림',
+            release: '',
+            verdict: 'action_required',
+            targets: [],
+            actions: [
+              {
+                op: 'worker-conversation-handoff',
+                label: '[워커로 이어가기]',
+                payload: {
+                  bead_id: 'PAUSED',
+                  root_dir: '/repo',
+                  attempt_id: 'paused'
+                }
+              }
+            ]
+          }
+        ]
+      })
+    );
+    const view = createWorkerView(mount, {
+      queueStore,
+      getWorkspacePath: () => '/repo',
+      transport
+    });
+
+    mount
+      .querySelector('.rtile[data-attempt-id="paused"] .rtile__resume')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(document.querySelector('.resume-instructions-dialog')).toBeNull();
+    expect(transport).toHaveBeenCalledWith('worker-conversation-handoff', {
+      bead_id: 'PAUSED',
+      attempt_id: 'paused',
+      expected_revision: 1
+    });
+    view.destroy();
+  });
+
   test('renders a retry_wait attempt as a countdown badge with no actions', () => {
     const next_at = new Date(2026, 7, 28, 11, 20).getTime();
     const mount = mountAttemptTiles({

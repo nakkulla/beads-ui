@@ -1036,3 +1036,237 @@ describe('tileResolveFields session lane (UI-lbm5 §4.5-§4.6)', () => {
     expect(fields.resolve_action).toBe(true);
   });
 });
+
+describe('tileResolveFields paused row (UI-6kj0 §3.1-§3.2)', () => {
+  const PAUSED_TITLE =
+    '일시정지한 세션을 같은 세션 그대로 대화로 다시 엽니다 — 대화하며 작업을 잇고, Worker로 넘기면 Worker가 이어갑니다';
+
+  /**
+   * A paused row as lane-model builds it from `isUserPausedAttempt`.
+   *
+   * @param {Record<string, any>} [over]
+   * @returns {Record<string, any>}
+   */
+  function paused(over = {}) {
+    return {
+      id: 'UI-1',
+      attempt_id: 'a1',
+      run_state: 'paused',
+      status: 'paused',
+      user_paused: true,
+      interactive_sessions: [],
+      ...over
+    };
+  }
+
+  /** The server's paused-row projection while the conversation awaits. */
+  const AWAITING_REASON = {
+    kind: 'awaiting_user',
+    actions: [
+      { op: 'worker-resolve-in-session', payload: {} },
+      {
+        op: 'worker-conversation-handoff',
+        label: '[워커로 이어가기]',
+        title: '서버가 정한 설명',
+        payload: { bead_id: 'UI-1', root_dir: '/r', attempt_id: 'a1' }
+      },
+      { op: 'worker-discard', payload: {} }
+    ]
+  };
+
+  test('stands [세션에서 이어가기] alone on a paused row', () => {
+    const item = paused();
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      resolve_action: true,
+      resolve_enabled: true,
+      resolve_title: PAUSED_TITLE,
+      pair_anchor: 'resume'
+    });
+    expect(fields.handoff_action).toBeUndefined();
+  });
+
+  test.each([
+    ['a provider hold', { id: 'UI-1', run_state: 'provider_hold' }],
+    [
+      'a session-lane pause',
+      { id: 'UI-1', run_state: 'paused', status: 'paused', exec: 'session' }
+    ],
+    [
+      'a pause the shared predicate rejected (withdrawn, account preempt)',
+      { id: 'UI-1', run_state: 'paused', status: 'paused' }
+    ],
+    [
+      'a PR 대기 auto-advance pause',
+      {
+        id: 'UI-1',
+        failure_material: {
+          cleanup: false,
+          cleanup_retry: false,
+          completion_phase: null
+        },
+        merge_action: true
+      }
+    ]
+  ])('draws no paused-row button on %s', (_label, item) => {
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields.resolve_action).toBeUndefined();
+    expect(fields.pause_resume_mode).toBeUndefined();
+  });
+
+  test('ranks a failed discard ahead of the paused row', () => {
+    const item = paused({
+      discard: { error: 'dirty_worktree', action: true }
+    });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      resolve_title:
+        '기록된 세션을 대화로 엽니다 — Worker로 넘기면 Worker가 실패한 폐기를 다시 시도합니다',
+      pair_anchor: 'discard'
+    });
+    expect(fields.pause_resume_mode).toBeUndefined();
+  });
+
+  test('names a refused handoff ahead of the paused title', () => {
+    const item = paused({ conversation_refusal: 'bd_unavailable' });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields.resolve_title).toBe(
+      `이어가기 거절: bd_unavailable — ${PAUSED_TITLE}`
+    );
+  });
+
+  test('opens the resume dialog from ▶ 재개 without a conversation', () => {
+    const item = paused();
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      pause_resume_mode: 'dialog',
+      pause_resume_title:
+        '같은 세션으로 이어서 재개 — 바로 재개하거나 지시를 입력할 수 있음'
+    });
+  });
+
+  test('hands the conversation to Worker from ▶ 재개 while it awaits the answer', () => {
+    const item = paused({
+      wait_reasons: [AWAITING_REASON],
+      interactive_sessions: [session('inquiry', { turn_state: 'question' })]
+    });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      pause_resume_mode: 'handoff',
+      pause_resume_attempt_id: 'a1',
+      pair_anchor: 'resume'
+    });
+    expect(fields.handoff_action).toBeUndefined();
+  });
+
+  test('disables ▶ 재개 while the conversation runs a turn', () => {
+    const item = paused({
+      interactive_sessions: [session('inquiry', { turn_state: 'running' })]
+    });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      pause_resume_mode: 'disabled',
+      pause_resume_title:
+        '대화가 턴을 진행 중 — 세션의 답을 기다린 뒤 Worker로 넘길 수 있습니다'
+    });
+  });
+
+  test('turns ▶ 재개 into the handback of a takeover the server allows back', () => {
+    const item = paused({
+      interactive_sessions: [
+        session('inquiry', {
+          attempt_id: 'a1',
+          conversation: {
+            handoff: null,
+            result: { kind: 'takeover' },
+            handback_allowed: true
+          }
+        })
+      ]
+    });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      pause_resume_mode: 'handoff',
+      pause_resume_attempt_id: 'a1',
+      pair_held: true
+    });
+    expect(fields.resolve_action).toBeUndefined();
+  });
+
+  test('disables ▶ 재개 on a takeover that may not go back', () => {
+    const item = paused({
+      interactive_sessions: [
+        session('inquiry', {
+          attempt_id: 'a1',
+          conversation: { handoff: null, result: { kind: 'takeover' } }
+        })
+      ]
+    });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields.pause_resume_mode).toBe('disabled');
+    expect(fields.resolve_action).toBeUndefined();
+  });
+
+  test('locks ▶ 재개 while its handoff request is pending', () => {
+    const item = paused({
+      wait_reasons: [AWAITING_REASON],
+      interactive_sessions: [session('inquiry', { turn_state: 'question' })]
+    });
+
+    const fields = tileResolveFields(item, false, true);
+
+    expect(fields.pause_resume_mode).toBe('disabled');
+  });
+
+  test('turns ▶ 재개 into the handback after a closed takeover window', () => {
+    const item = paused({ paused_handback: 'allowed' });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      pause_resume_mode: 'handoff',
+      pause_resume_title:
+        '이 대화에서 마무리한 일시정지 행을 Worker로 되돌립니다 — 대화 창을 닫고 Worker가 같은 세션을 이어갑니다',
+      pause_resume_attempt_id: 'a1'
+    });
+  });
+
+  test('disables ▶ 재개 after a closed takeover that may not go back', () => {
+    const item = paused({ paused_handback: 'refused' });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      pause_resume_mode: 'disabled',
+      pause_resume_title:
+        '이 대화에서 마무리 중 — Bead가 open이 아니라 Worker로 되돌릴 수 없습니다'
+    });
+  });
+
+  test('names the paused conversation refusal ahead of the paused title', () => {
+    const item = paused({ paused_refusal: 'bd_unavailable' });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields.resolve_title).toBe(
+      `이어가기 거절: bd_unavailable — ${PAUSED_TITLE}`
+    );
+  });
+});

@@ -224,7 +224,7 @@ function handoffAction(item) {
  * The row kinds a `[세션에서 이어가기]` stands on (UI-18a5 §3.1), told apart
  * so the tooltip can say what this row's `인계` will do.
  *
- * @typedef {'stop'|'cleanup'|'verify_hold'|'merge_gate'|'discard'|'external'|'takeover'|'foreign_handoff'|'stale_residue'|'quickfix_landing'} ContinueRow
+ * @typedef {'stop'|'cleanup'|'verify_hold'|'merge_gate'|'discard'|'external'|'takeover'|'foreign_handoff'|'stale_residue'|'quickfix_landing'|'paused'} ContinueRow
  */
 
 /**
@@ -260,8 +260,114 @@ const SESSION_TITLES = Object.freeze({
   // 한 번 다시 돌린다 — 같은 원인으로 다시 실패해 대화가 열리지 않았어도 이
   // 버튼이 남는다.
   quickfix_landing:
-    '대화 세션을 엽니다 — 착지 배포 실패의 원인을 정리하고, Worker로 넘기면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행합니다'
+    '대화 세션을 엽니다 — 착지 배포 실패의 원인을 정리하고, Worker로 넘기면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행합니다',
+  // 일시정지 (UI-6kj0 §3.2): 이 행의 Worker 출구는 따로 선 버튼이 아니라
+  // 슬롯 1의 `▶ 재개`다.
+  paused:
+    '일시정지한 세션을 같은 세션 그대로 대화로 다시 엽니다 — 대화하며 작업을 잇고, Worker로 넘기면 Worker가 이어갑니다'
 });
+
+/** The paused row's `▶ 재개` tooltips, one per state (UI-6kj0 §3.2). */
+const PAUSE_RESUME_TITLES = Object.freeze({
+  dialog: '같은 세션으로 이어서 재개 — 바로 재개하거나 지시를 입력할 수 있음',
+  handoff:
+    '대화가 답을 기다리는 중 — 대화 창을 닫고 Worker가 같은 세션을 이어갑니다',
+  handback:
+    '이 대화에서 마무리한 일시정지 행을 Worker로 되돌립니다 — 대화 창을 닫고 Worker가 같은 세션을 이어갑니다',
+  turn: '대화가 턴을 진행 중 — 세션의 답을 기다린 뒤 Worker로 넘길 수 있습니다',
+  takeover:
+    '이 대화에서 마무리 중 — Bead가 open이 아니라 Worker로 되돌릴 수 없습니다',
+  reserved:
+    'Worker로 넘기는 중 — 대화 창이 닫히면 Worker가 같은 세션을 이어갑니다',
+  closing: '대화 창을 정리하는 중 — 정리되면 다시 재개할 수 있습니다',
+  pending: 'Worker로 넘기는 중 — 서버 응답을 기다립니다'
+});
+
+/**
+ * The `▶ 재개` material of a paused row (UI-6kj0 §3.2, §3.4): the row's one
+ * Worker exit. Without a conversation it opens the resume dialog; a
+ * conversation awaiting the answer (the server-projected handoff) or a
+ * takeover the server marked `handback_allowed` sends the conversation
+ * handoff with no dialog; a turn in progress, a held handoff and a takeover
+ * that may not go back disable it. Renderers draw `pause_resume_*` as is.
+ *
+ * @param {any} item
+ * @param {{ attempt_id: string|null, title: string|null, op?: string }|null} handoff
+ * @param {boolean} handoff_pending
+ * @returns {{ pause_resume_mode: 'dialog'|'handoff'|'disabled', pause_resume_title: string, pause_resume_attempt_id?: string|null }}
+ */
+function pauseResumeFields(item, handoff, handoff_pending) {
+  const views = Array.isArray(item.interactive_sessions)
+    ? item.interactive_sessions
+    : [];
+  if (handoff_pending) {
+    return {
+      pause_resume_mode: 'disabled',
+      pause_resume_title: PAUSE_RESUME_TITLES.pending
+    };
+  }
+  if (handoff && !handoff.op) {
+    return {
+      pause_resume_mode: 'handoff',
+      pause_resume_title:
+        projectedAction(item, CONVERSATION_HANDOFF_OP) !== null
+          ? PAUSE_RESUME_TITLES.handoff
+          : PAUSE_RESUME_TITLES.handback,
+      pause_resume_attempt_id: handoff.attempt_id
+    };
+  }
+  if (holdsConversationOutcome(views)) {
+    const takeover = views.some(
+      (/** @type {any} */ view) =>
+        !!view?.conversation &&
+        !view.conversation.handoff &&
+        view.conversation.result?.kind === 'takeover'
+    );
+    return {
+      pause_resume_mode: 'disabled',
+      pause_resume_title: takeover
+        ? PAUSE_RESUME_TITLES.takeover
+        : PAUSE_RESUME_TITLES.reserved
+    };
+  }
+  // A conversation not yet settled, mid-turn or closing, keeps the session
+  // its own: the server refuses a paused resume with `conversation_live`.
+  if (views.some((/** @type {any} */ view) => !!view)) {
+    return {
+      pause_resume_mode: 'disabled',
+      pause_resume_title: hasLiveConversation(views)
+        ? PAUSE_RESUME_TITLES.turn
+        : PAUSE_RESUME_TITLES.closing
+    };
+  }
+  // A `이 대화에서 마무리` window that closed (§3.4): `▶ 재개` is the
+  // handback while the server last read the Bead `open`, else disabled.
+  if (item.paused_handback === 'allowed') {
+    return {
+      pause_resume_mode: 'handoff',
+      pause_resume_title: PAUSE_RESUME_TITLES.handback,
+      pause_resume_attempt_id:
+        typeof item.attempt_id === 'string' ? item.attempt_id : null
+    };
+  }
+  if (item.paused_handback === 'refused') {
+    return {
+      pause_resume_mode: 'disabled',
+      pause_resume_title: PAUSE_RESUME_TITLES.takeover
+    };
+  }
+  return {
+    pause_resume_mode: 'dialog',
+    pause_resume_title: PAUSE_RESUME_TITLES.dialog
+  };
+}
+
+/**
+ * Which button is a row's `[워커로 이어가기]`; `resume` is a paused row's
+ * slot-1 `▶ 재개` (UI-6kj0 §3.2).
+ *
+ * @typedef {'handoff'|'merge'|'discard'|'external'|'resume'|null} PairAnchor
+ */
 
 /** The tooltip while the click only focuses a live conversation's window. */
 const FOCUS_TITLE =
@@ -331,13 +437,19 @@ function failureRow(item) {
  *     other operations stay. The discard and merge fields come back already
  *     masked, so a renderer has nothing to re-judge. A takeover's handback
  *     (`handoff_*`) still stands beside a held pair.
+ *   - `pause_resume_*`: a paused row's (UI-6kj0 §3.2) Worker exit is the
+ *     slot-1 `▶ 재개` (`pair_anchor` `resume`), so its handoff and handback
+ *     come out as that button's mode, tooltip and attempt, never as
+ *     `handoff_*`.
  *
- * @param {any} item - A lane-model item (`id`, `run_state`, `wait`,
- * `wait_reasons`, `discard`, `interactive_sessions`, `conversation_refusal`)
- * or a PR 대기 row (`failure_material`, `merge_action`).
+ * @param {any} item - A lane-model item (`id`, `run_state`, `user_paused`,
+ * `paused_refusal`, `paused_handback`, `wait`, `wait_reasons`, `discard`,
+ * `interactive_sessions`,
+ * `conversation_refusal`) or a PR 대기 row (`failure_material`,
+ * `merge_action`).
  * @param {boolean} [resolve_pending]
  * @param {boolean} [handoff_pending]
- * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string, handoff_action?: boolean, handoff_enabled?: boolean, handoff_title?: string, handoff_attempt_id?: string|null, handoff_op?: string, pair_anchor?: 'handoff'|'merge'|'discard'|'external'|null, pair_held?: boolean, discard?: any, discard_action?: boolean, merge_action?: boolean }}
+ * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string, handoff_action?: boolean, handoff_enabled?: boolean, handoff_title?: string, handoff_attempt_id?: string|null, handoff_op?: string, pair_anchor?: PairAnchor, pair_held?: boolean, discard?: any, discard_action?: boolean, merge_action?: boolean, pause_resume_mode?: 'dialog'|'handoff'|'disabled', pause_resume_title?: string, pause_resume_attempt_id?: string|null }}
  */
 export function tileResolveFields(
   item,
@@ -361,18 +473,6 @@ export function tileResolveFields(
   // A `worker-ineligible` Bead never continues headless (UI-lbm5 §4.5): its
   // failure rows carry no `[워커로 이어가기]`.
   const handoff = isWorkerIneligible(item.labels) ? null : handoffAction(item);
-  const handoff_fields = handoff
-    ? {
-        handoff_action: true,
-        handoff_enabled: !handoff_pending,
-        handoff_title: handoff_pending
-          ? 'Worker로 넘기는 중 — 서버 응답을 기다립니다'
-          : handoff.title ||
-            '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어갑니다',
-        handoff_attempt_id: handoff.attempt_id,
-        ...(handoff.op ? { handoff_op: handoff.op } : {})
-      }
-    : {};
   const external = projectedAction(item, SESSION_CONTINUE_OP, 'external_job');
   const reasons = Array.isArray(item.wait_reasons) ? item.wait_reasons : [];
   const recovery =
@@ -393,8 +493,9 @@ export function tileResolveFields(
   const failure = failureRow(item);
   // The server's routing order (`handleWorkerResolveInSession`): a recovery
   // wait, then an unresolved takeover, then an 외부 작업 완료 row, then a
-  // failure — a failed discard ahead of the park it sits on — and last the
-  // park.
+  // failure — a failed discard ahead of the park it sits on — then the park,
+  // and last a person's own pause (UI-6kj0 §3.1, `user_paused` from the
+  // shared `isUserPausedAttempt`).
   /** @type {ContinueRow|null} */
   const row = recovery
     ? 'stop'
@@ -402,7 +503,30 @@ export function tileResolveFields(
       ? 'takeover'
       : external
         ? 'external'
-        : (failure ?? (item.run_state === 'parked' ? 'stop' : null));
+        : (failure ??
+          (item.run_state === 'parked'
+            ? 'stop'
+            : item.run_state === 'paused' && item.user_paused === true
+              ? 'paused'
+              : null));
+  // The paused row's Worker exit is its `▶ 재개` (UI-6kj0 §3.2): no separate
+  // `[워커로 이어가기]` stands, so the handoff reaches the tile only as
+  // `pause_resume_*` material.
+  const resume_fields =
+    row === 'paused' ? pauseResumeFields(item, handoff, handoff_pending) : {};
+  const handoff_fields =
+    handoff && row !== 'paused'
+      ? {
+          handoff_action: true,
+          handoff_enabled: !handoff_pending,
+          handoff_title: handoff_pending
+            ? 'Worker로 넘기는 중 — 서버 응답을 기다립니다'
+            : handoff.title ||
+              '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어갑니다',
+          handoff_attempt_id: handoff.attempt_id,
+          ...(handoff.op ? { handoff_op: handoff.op } : {})
+        }
+      : {};
   const stale_backup =
     item.discard?.operation?.kind === 'stale_work_backup_fresh';
   // A takeover row's handback button (UI-3713 §3.3) stands in the
@@ -419,9 +543,13 @@ export function tileResolveFields(
         : external
           ? 'external'
           : null;
-  const anchor = native_anchor ?? (handoff ? 'handoff' : null);
+  /** @type {PairAnchor} */
+  const anchor =
+    row === 'paused'
+      ? 'resume'
+      : (native_anchor ?? (handoff ? 'handoff' : null));
   const held = holdsConversationOutcome(item.interactive_sessions);
-  /** @type {{ pair_anchor?: 'handoff'|'merge'|'discard'|'external'|null, pair_held?: boolean, discard?: any, discard_action?: boolean, merge_action?: boolean }} */
+  /** @type {{ pair_anchor?: PairAnchor, pair_held?: boolean, discard?: any, discard_action?: boolean, merge_action?: boolean }} */
   const pair =
     anchor === null && !held ? {} : { pair_anchor: anchor, pair_held: held };
   if (held && anchor === 'discard') {
@@ -439,12 +567,17 @@ export function tileResolveFields(
   const discord = hasDiscordConversation(item.interactive_sessions);
   const focus = !discord && hasLiveConversation(item.interactive_sessions);
   if ((row === null && !focus) || held || discord) {
-    return { ...handoff_fields, ...pair };
+    return { ...handoff_fields, ...pair, ...resume_fields };
   }
+  // A paused row's refused handoff is also stamped on its attempt (UI-6kj0
+  // §3.4); the snapshot's `conversation_refusal` stays the fallback.
+  const refusal_reason =
+    row === 'paused' && typeof item.paused_refusal === 'string'
+      ? item.paused_refusal
+      : item.conversation_refusal;
   const refusal =
-    typeof item.conversation_refusal === 'string' &&
-    item.conversation_refusal.length > 0
-      ? `이어가기 거절: ${item.conversation_refusal} — `
+    typeof refusal_reason === 'string' && refusal_reason.length > 0
+      ? `이어가기 거절: ${refusal_reason} — `
       : '';
   return {
     resolve_action: true,
@@ -460,7 +593,8 @@ export function tileResolveFields(
               : SESSION_TITLES[/** @type {ContinueRow} */ (row)]
           }`,
     ...handoff_fields,
-    ...pair
+    ...pair,
+    ...resume_fields
   };
 }
 

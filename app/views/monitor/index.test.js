@@ -2620,6 +2620,75 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
   });
 
+  test('hands an awaiting paused-row conversation to Worker from ▶ 재개 without the dialog (UI-6kj0 §3.2)', async () => {
+    const { mount, view, sent } = setup({
+      transport: async () => ({ resumed: true, pending: true, reason: null }),
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'paused',
+              session_id: 'sid-t1'
+            }
+          },
+          interactive_sessions: {
+            'A-1:inquiry': {
+              bead_id: 'A-1',
+              kind: 'inquiry',
+              provider: 'claude',
+              session_id: 'sid-t1',
+              mode: 'resume',
+              source: 'attempt',
+              attempt_id: 't1',
+              tmux_session: 'bdui-inquiry',
+              tmux_window: 'A-1',
+              state: 'live',
+              settled_at: null,
+              launched_at: NOW,
+              turn_state: 'question',
+              turn_state_since: NOW
+            }
+          },
+          wait_reasons: [
+            {
+              kind: 'awaiting_user',
+              subject: { bead_id: 'A-1', root_dir: WS_A },
+              headline: '일시정지한 세션의 대화가 답을 기다림',
+              release: '',
+              verdict: 'action_required',
+              targets: [],
+              actions: [
+                {
+                  op: 'worker-conversation-handoff',
+                  label: '[워커로 이어가기]',
+                  payload: { bead_id: 'A-1', root_dir: WS_A, attempt_id: 't1' }
+                }
+              ]
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__resume');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    expect(document.querySelector('.resume-instructions-dialog')).toBeNull();
+    expect(sent[0]).toMatchObject({
+      type: 'worker-conversation-handoff',
+      payload: {
+        bead_id: 'A-1',
+        attempt_id: 't1',
+        root_dir: WS_A,
+        expected_revision: 1
+      }
+    });
+  });
+
   test('badges a retry_wait attempt with its backoff counts', () => {
     const { mount, view } = setup({
       workspaces: [

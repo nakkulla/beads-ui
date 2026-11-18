@@ -58,14 +58,19 @@ function isLegacyStalledRecovery(recovery, blockers) {
  * The stop label of one conversation target, as the entry block's
  * `멈춤 사유` slot spells it: `awaiting_user=<값>` for a park,
  * `recovery:<reason>` for a current recovery, and `recovery:<reason> (옛 기록)`
- * for a read-compatible legacy one. Null when the input is no target.
+ * for a read-compatible legacy one, and `paused` for a person's own pause
+ * (UI-6kj0 §3.3) — that stop carries no question. Null when the input is no
+ * target.
  *
- * @param {{ awaiting_user?: string|null, recovery?: { reason?: string|null, classification?: string }|null, blockers?: unknown[] }} input
+ * @param {{ awaiting_user?: string|null, recovery?: { reason?: string|null, classification?: string }|null, blockers?: unknown[], paused?: boolean }} input
  * @returns {string|null}
  */
 export function conversationStopLabel(input) {
   if (typeof input.awaiting_user === 'string' && input.awaiting_user) {
     return `awaiting_user=${input.awaiting_user}`;
+  }
+  if (input.paused === true) {
+    return 'paused';
   }
   const recovery = input.recovery;
   if (!recovery || typeof recovery.reason !== 'string') {

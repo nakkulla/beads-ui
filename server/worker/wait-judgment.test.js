@@ -2928,6 +2928,25 @@ describe('action_required invariant (UI-9w5l §3.1)', () => {
       }
     ],
     [
+      'paused run conversation waiting for the answer',
+      {
+        queue: queue({
+          attempts: {
+            a: waiting({ status: 'paused', cause: null, cause_detail: null })
+          },
+          interactive_sessions: liveInquiry({
+            turn_state: 'question',
+            conversation: {
+              stop: 'paused',
+              processed_message_at: null,
+              result: null,
+              handoff: null
+            }
+          })
+        })
+      }
+    ],
+    [
       'operation recovery decision',
       {
         queue: queue({
@@ -3132,5 +3151,131 @@ describe('session-inquiry rows (UI-gske §3.3)', () => {
     const reasons = judgeRow({ state: 'closed', closed_reason: 'ref_absent' });
 
     expect(reasons).toEqual([]);
+  });
+});
+
+describe('paused row conversation handoff (UI-6kj0 §3.2)', () => {
+  /**
+   * One user-paused attempt, optionally patched into another pause.
+   *
+   * @param {Record<string, any>} [patch]
+   */
+  function pausedAttempt(patch = {}) {
+    return {
+      attempt_id: 'a',
+      bead_id: 'UI-consumer',
+      kind: 'implementation',
+      status: 'paused',
+      session_id: 's-1',
+      finished_at: NOW - 30 * MINUTE,
+      ...patch
+    };
+  }
+
+  /**
+   * A paused queue with the paused conversation record of `record`.
+   *
+   * @param {Record<string, any>} [record]
+   * @param {Record<string, any>} [attempt]
+   */
+  function pausedQueue(record, attempt = {}) {
+    return queue({
+      attempts: { a: pausedAttempt(attempt) },
+      ...(record
+        ? {
+            interactive_sessions: {
+              'UI-consumer:inquiry': {
+                bead_id: 'UI-consumer',
+                attempt_id: 'a',
+                kind: 'inquiry',
+                mode: 'resume',
+                state: 'live',
+                settled_at: null,
+                launched_at: NOW - 10 * MINUTE,
+                turn_state: 'idle',
+                conversation: {
+                  stop: 'paused',
+                  processed_message_at: NOW - MINUTE,
+                  message_excerpt: '어디까지 했는지 정리했습니다',
+                  result: null,
+                  handoff: null,
+                  takeover_notified_at: null
+                },
+                ...record
+              }
+            }
+          }
+        : {})
+    });
+  }
+
+  /** @param {any} result */
+  const ops = (result) =>
+    result.actions.map((/** @type {any} */ action) => action.op);
+
+  test('projects the conversation handoff while the paused conversation awaits an answer', () => {
+    const material = pausedQueue({});
+
+    const [result] = run({ queue: material }).wait_reasons;
+
+    expect(result).toMatchObject({
+      kind: 'awaiting_user',
+      verdict: 'action_required',
+      subject: { bead_id: 'UI-consumer', root_dir: ROOT }
+    });
+    expect(ops(result)).toEqual([
+      'worker-resolve-in-session',
+      'worker-conversation-handoff',
+      'worker-discard'
+    ]);
+    expect(result.actions[1].payload.attempt_id).toBe('a');
+  });
+
+  test('projects nothing for a pause without a conversation', () => {
+    const material = pausedQueue(undefined);
+
+    const { wait_reasons } = run({ queue: material });
+
+    expect(wait_reasons).toEqual([]);
+  });
+
+  test('projects nothing while the paused conversation runs a turn', () => {
+    const material = pausedQueue({ turn_state: 'running' });
+
+    const { wait_reasons } = run({ queue: material });
+
+    expect(wait_reasons).toEqual([]);
+  });
+
+  test('projects nothing once the paused conversation ended in a takeover', () => {
+    const material = pausedQueue({
+      conversation: {
+        stop: 'paused',
+        processed_message_at: NOW - MINUTE,
+        result: { kind: 'takeover', line: '이 대화에서 마무리 · x', at: 1 },
+        handoff: null
+      }
+    });
+
+    const { wait_reasons } = run({ queue: material });
+
+    expect(wait_reasons).toEqual([]);
+  });
+
+  test.each([
+    ['a provider outage', { cause: 'provider_outage:claude' }],
+    ['an account preempt', { cause: 'account_preempt:x' }],
+    ['a withdrawn attempt', { withdrawn: { at: NOW - MINUTE } }],
+    ['a session-lane run', { exec: 'session' }]
+  ])('projects nothing for %s', (_label, patch) => {
+    const material = pausedQueue({}, patch);
+
+    const { wait_reasons } = run({ queue: material });
+
+    expect(
+      wait_reasons.filter(
+        (/** @type {any} */ reason) => reason.kind === 'awaiting_user'
+      )
+    ).toEqual([]);
   });
 });

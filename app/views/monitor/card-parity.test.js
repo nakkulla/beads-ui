@@ -1237,6 +1237,35 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
     }
   });
 
+  test('stands [세션에서 이어가기] in the foot of a paused tile on both tabs (UI-6kj0 §3.2)', async () => {
+    extra_rows = [row('P-1', { status: 'in_progress' })];
+    const { worker, monitor } = await drawBothTabs(undefined, {
+      attempts: {
+        ...rawQueue().attempts,
+        'att-p1': makeAttempt({
+          attempt_id: 'att-p1',
+          bead_id: 'P-1',
+          status: 'paused',
+          started_at: NOW - HOUR,
+          session_id: 'sid-p1'
+        })
+      }
+    });
+    const worker_tile = /** @type {HTMLElement} */ (
+      cardsByBead(worker).get('P-1')
+    );
+    const monitor_tile = /** @type {HTMLElement} */ (
+      cardsByBead(monitor).get('P-1')
+    );
+
+    for (const tile of [worker_tile, monitor_tile]) {
+      expect(
+        tile.querySelector('.rtile__foot .op-btn.rtile__resolve')
+      ).not.toBeNull();
+    }
+    expect(partsOf(monitor_tile)).toEqual(partsOf(worker_tile));
+  });
+
   test('stands every lane bead of the fixture on both tabs', async () => {
     const { worker, monitor } = await drawBothTabs();
 

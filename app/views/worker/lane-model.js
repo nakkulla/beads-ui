@@ -26,6 +26,7 @@ import { accountDisplayName } from '../../utils/account-display-name.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
+  isUserPausedAttempt,
   latestImplementationAttempts,
   reviewSessionAttemptStates,
   sessionOwnershipMap
@@ -484,6 +485,9 @@ const DONE_KIND_LABELS = {
  *   status_label?: string,
  *   can_pause?: boolean,
  *   can_resume?: boolean,
+ *   user_paused?: boolean,
+ *   paused_refusal?: string,
+ *   paused_handback?: 'allowed'|'refused',
  *   started_at?: number|null,
  *   last_event_at?: number|null,
  *   last_activity?: Record<string, any>|null,
@@ -880,6 +884,33 @@ function prerequisiteWaitDrawsTile(attempt, input) {
 }
 
 /**
+ * The paused row's ended-conversation material (UI-6kj0 §3.4): the server stamps the ended
+ * conversation on the attempt (`cause_detail.conversation`), so the card reads
+ * a refused handoff and a closed `이 대화에서 마무리` window from there.
+ *
+ * @param {any} attempt
+ * @returns {{ paused_refusal?: string, paused_handback?: 'allowed'|'refused' }}
+ */
+function pausedConversationEnd(attempt) {
+  const ended = attempt.cause_detail?.conversation;
+  if (!ended || typeof ended !== 'object') {
+    return {};
+  }
+  return {
+    ...(typeof ended.refusal === 'string' && ended.refusal.length > 0
+      ? { paused_refusal: ended.refusal }
+      : {}),
+    ...(ended.ended_by === 'takeover'
+      ? {
+          paused_handback: /** @type {'allowed'|'refused'} */ (
+            ended.handback_allowed === true ? 'allowed' : 'refused'
+          )
+        }
+      : {})
+  };
+}
+
+/**
  * Fold one repo's UNFINISHED attempts onto the beads they belong to.
  *
  * 실행중 레인은 `running` attempt만이 아니라 leaf paused와 아직 처리되지 않은
@@ -951,6 +982,11 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       ...liveAttemptFields(a, attempts, run_state, input.runner_catalog),
       started_at,
       ...(failure ? { failure } : {}),
+      // 일시정지 행 (UI-6kj0 §3.1): the server's click routing reads the same
+      // shared predicate, so the card and the click never disagree.
+      ...(run_state === 'paused' && isUserPausedAttempt(a)
+        ? { user_paused: true, ...pausedConversationEnd(a) }
+        : {}),
       // A session-lane attempt has no pause (UI-lbm5 §4.5): its tile draws
       // neither `⏸` nor `▶`.
       can_pause: run_state === 'running' && has_session && a.exec !== 'session',
@@ -3922,6 +3958,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         can_pause: live.can_pause,
         can_resume: live.can_resume,
+        ...(live.user_paused === true
+          ? {
+              user_paused: true,
+              ...(live.paused_refusal
+                ? { paused_refusal: live.paused_refusal }
+                : {}),
+              ...(live.paused_handback
+                ? { paused_handback: live.paused_handback }
+                : {})
+            }
+          : {}),
         started_at: live.started_at,
         last_event_at: live.last_event_at,
         last_activity: live.last_activity,

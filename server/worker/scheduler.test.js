@@ -6,6 +6,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execLaneOf } from '../../app/utils/worker-eligibility.js';
+import { hubReply } from '../../test/session-hub.js';
 import * as conversationSettings from '../conversation-settings.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import {
@@ -18,6 +19,7 @@ import {
 } from '../timing-settings.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { selectCodexSwitchCandidate } from './codex-switch-candidate.js';
+import { createDirectionInquiry } from './direction-inquiry.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
@@ -3690,7 +3692,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
   });
 
   /**
-   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any, kind?: 'inquiry'|'resolve'|'external_resume', provider?: 'claude'|'codex' }} [options]
+   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any, kind?: 'inquiry'|'resolve'|'external_resume', provider?: 'claude'|'codex', directionInquiry?: any }} [options]
    */
   function conversationEnv(options = {}) {
     let at = 1000;
@@ -3758,7 +3760,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
       notify,
       timeline: options.timeline || { append: vi.fn() },
       admission: options.admission,
-      directionInquiry: {
+      directionInquiry: options.directionInquiry || {
         onParkedAttempt: vi.fn(async () => ({
           session: 'not_launched',
           reason: 'disabled'
@@ -4537,6 +4539,368 @@ describe('same-session conversation return (UI-nuwy)', () => {
         ended_by: 'takeover',
         refusal: null,
         handback_allowed: true
+      });
+    });
+  });
+
+  describe('paused run conversation (UI-6kj0)', () => {
+    /**
+     * Run S1 and pause it with ⏸, the way a person stops a Worker run.
+     *
+     * @param {ReturnType<typeof conversationEnv>} env
+     * @returns {Promise<any>}
+     */
+    async function pauseForConversation(env) {
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.eventsFor('S1').emit('session_id', 'session-original');
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      await env.scheduler.pause(WS, attempt_id);
+      env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+      await flush();
+      await flush();
+      return env.store.snapshot(WS).attempts[attempt_id];
+    }
+
+    /**
+     * @param {ReturnType<typeof conversationEnv>} env
+     * @param {any} prior
+     */
+    function openPausedConversation(env, prior) {
+      openConversation(env, prior, { conversation: { stop: '멈춤 paused' } });
+    }
+
+    /**
+     * A paused conversation whose session took the work over, with its
+     * window still open and the Bead `open`.
+     */
+    async function takenOverPause() {
+      const env = conversationEnv();
+      const prior = await pauseForConversation(env);
+      await env.bd.setStatus('S1', 'open');
+      openPausedConversation(env, prior);
+      say(env, '이 대화에서 마무리 · 여기서 끝까지 해');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      return { env, prior };
+    }
+
+    test('resumes a paused run with the conversation result after its handoff window closes', async () => {
+      const env = conversationEnv();
+      const prior = await pauseForConversation(env);
+      openPausedConversation(env, prior);
+      say(env, '워커가 이어감 · 범위 확장 승인');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(children(env, prior.attempt_id)).toHaveLength(1);
+      const prompt = String(env.runner.spawnedBead('S1').prompt);
+      expect(prompt).toContain('## 대화 결과');
+      expect(prompt).toContain('워커가 이어감 · 범위 확장 승인');
+    });
+
+    test('spends a paused run on its first handoff resume', async () => {
+      const env = conversationEnv();
+      const prior = await pauseForConversation(env);
+      openPausedConversation(env, prior);
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id
+      });
+
+      const second = await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id
+      });
+
+      expect(second.ok).toBe(false);
+      expect(children(env, prior.attempt_id)).toHaveLength(1);
+    });
+
+    test('continues a paused run from the button after its window vanished', async () => {
+      const env = conversationEnv();
+      const prior = await pauseForConversation(env);
+      openPausedConversation(env, prior);
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id
+      });
+
+      expect(result).toEqual({ ok: true, reason: null });
+      expect(children(env, prior.attempt_id)).toHaveLength(1);
+      expect(String(env.runner.spawnedBead('S1').prompt)).toContain(
+        '- 이번 대화의 결과 줄: 사용자가 [워커로 이어가기]로 넘김'
+      );
+    });
+
+    test('keeps a paused run paused when its window vanished with no result line', async () => {
+      const env = conversationEnv();
+      const prior = await pauseForConversation(env);
+      openPausedConversation(env, prior);
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      const current = attemptOf(env, prior.attempt_id);
+      expect(current.status).toBe('paused');
+      expect(current.cause_detail.conversation.ended_by).toBe('pane_gone');
+      expect(children(env, prior.attempt_id)).toHaveLength(0);
+    });
+
+    test('keeps a paused run paused when its handoff is refused before running', async () => {
+      const env = conversationEnv();
+      const prior = await pauseForConversation(env);
+      openPausedConversation(env, prior);
+      say(env, '워커가 이어감 · 범위 확장 승인');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.panes.rows = [];
+      env.worktree.exists.mockReturnValue(false);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      const current = attemptOf(env, prior.attempt_id);
+      expect(current.status).toBe('paused');
+      expect(current.cause_detail.conversation).toMatchObject({
+        ended_by: 'handoff',
+        refusal: 'worktree_missing'
+      });
+      expect(children(env, prior.attempt_id)).toHaveLength(0);
+    });
+
+    test('refuses a paused resume while its conversation is live', async () => {
+      const env = conversationEnv();
+      const prior = await pauseForConversation(env);
+      openPausedConversation(env, prior);
+
+      const result = await env.scheduler.resume(WS, prior.attempt_id, {});
+
+      expect(result).toEqual({ ok: false, reason: 'conversation_live' });
+      expect(children(env, prior.attempt_id)).toHaveLength(0);
+    });
+
+    test('resumes a paused run once its conversation window is gone', async () => {
+      const env = conversationEnv();
+      const prior = await pauseForConversation(env);
+      openPausedConversation(env, prior);
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      const result = await env.scheduler.resume(WS, prior.attempt_id, {});
+
+      expect(result.ok).toBe(true);
+      expect(children(env, prior.attempt_id)).toHaveLength(1);
+    });
+
+    test('allows a takeover revert on a paused run while the Bead is open', async () => {
+      const { env, prior } = await takenOverPause();
+
+      const result = await env.scheduler.conversationHandoff(WS, {
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id
+      });
+
+      expect(result).toEqual({ ok: true, reason: null, pending: true });
+      expect(env.launcher.sendExit).toHaveBeenCalledOnce();
+    });
+
+    test('marks a live paused takeover handback_allowed while the Bead is open', async () => {
+      const { env } = await takenOverPause();
+
+      const flag = record(env).conversation.handback_allowed;
+
+      expect(flag).toBe(true);
+    });
+
+    test('keeps a paused seat while its takeover window is still open', async () => {
+      const { env, prior } = await takenOverPause();
+      await env.bd.setStatus('S1', 'closed');
+
+      env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+      await flush();
+
+      expect(env.store.snapshot(WS).done).toHaveLength(0);
+      expect(attemptOf(env, prior.attempt_id).status).toBe('paused');
+    });
+
+    test('releases the slot when a takeover session closes the bead', async () => {
+      const { env, prior } = await takenOverPause();
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await env.bd.setStatus('S1', 'closed');
+
+      env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+      await vi.waitFor(() => {
+        expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual([
+          'S1'
+        ]);
+      });
+      expect(attemptOf(env, prior.attempt_id)).toMatchObject({
+        status: 'stopped',
+        cause: 'bead_closed'
+      });
+    });
+
+    describe('one reservation for a launch and a resume', () => {
+      /**
+       * A conversation env whose scheduler and paused click share one real
+       * inquiry launcher, with the click's bd read held until `open_gate`.
+       */
+      function racingEnv() {
+        /** @type {{ current: any }} */
+        const real = { current: null };
+        /** @type {() => void} */
+        let open_gate = () => {};
+        const gate = new Promise((resolve) => {
+          open_gate = () => resolve(undefined);
+        });
+        const env = conversationEnv({
+          directionInquiry: {
+            onParkedAttempt: vi.fn(async () => undefined),
+            isInFlight: (/** @type {string} */ id) =>
+              real.current.isInFlight(id),
+            reserve: (/** @type {string} */ id) => real.current.reserve(id),
+            release: (/** @type {string} */ id) => real.current.release(id)
+          }
+        });
+        real.current = createDirectionInquiry({
+          getConfig: () => ({
+            worker_direction_inquiry: {
+              enabled: true,
+              tmux_session: 'bdui-inquiry'
+            }
+          }),
+          bd: {
+            readIssue: async () => {
+              await gate;
+              return { id: 'S1', title: 'paused run', notes: '' };
+            }
+          },
+          notifier: { conversationConfirm: vi.fn(async () => true) },
+          runTmux: async () => ({ code: 0, stdout: '', stderr: '' }),
+          runSessionHub: async (/** @type {string[]} */ args) => {
+            if (args[0] === 'find') {
+              return hubReply({ found: false });
+            }
+            if (args[0] === 'alive') {
+              return hubReply({ alive: 'alive' });
+            }
+            return hubReply({
+              status: 'launched',
+              pane: '%9',
+              window: 'S1',
+              tmux_session: 'bdui-inquiry'
+            });
+          },
+          resolveClaude: () => '/bin/claude',
+          resolveRunner: () => '/bin/claude',
+          statFile: () => ({ mtimeMs: 1000 }),
+          now: () => 2000,
+          store: env.store,
+          readAttempt: (
+            /** @type {string} */ workspace,
+            /** @type {string} */ attempt_id
+          ) => env.store.snapshot(workspace).attempts[attempt_id],
+          attemptSpent: (
+            /** @type {string} */ workspace,
+            /** @type {string} */ attempt_id
+          ) =>
+            Object.values(env.store.snapshot(workspace).attempts).some(
+              (attempt) => attempt.resumed_from === attempt_id
+            ),
+          existsSync: () => true,
+          autoLaunchEnabled: (/** @type {boolean} */ value) => value,
+          launchFlags: () => [],
+          log: () => {}
+        });
+        return { env, inquiry: real.current, open_gate };
+      }
+
+      /**
+       * @param {any} prior
+       * @returns {any}
+       */
+      const pausedClick = (prior) => ({
+        workspace: WS,
+        bead_id: 'S1',
+        attempt_id: prior.attempt_id,
+        repo: WS,
+        awaiting_user: null,
+        paused: true
+      });
+
+      test('refuses the paused click while a resume holds the bead', async () => {
+        const { env, inquiry, open_gate } = racingEnv();
+        const prior = await pauseForConversation(env);
+        open_gate();
+
+        const resuming = env.scheduler.resume(WS, prior.attempt_id, {});
+        const outcome = await inquiry.launchForClick(pausedClick(prior));
+        await resuming;
+
+        expect(outcome).toMatchObject({
+          session: 'not_launched',
+          reason: 'inquiry_in_flight'
+        });
+        expect(record(env)).toBeUndefined();
+      });
+
+      test('refuses the paused resume while a click launch holds the bead', async () => {
+        const { env, inquiry, open_gate } = racingEnv();
+        const prior = await pauseForConversation(env);
+
+        const clicking = inquiry.launchForClick(pausedClick(prior));
+        await vi.waitFor(() => {
+          expect(inquiry.isInFlight('S1')).toBe(true);
+        });
+        const result = await env.scheduler.resume(WS, prior.attempt_id, {});
+        open_gate();
+        await clicking;
+
+        expect(result).toEqual({ ok: false, reason: 'conversation_live' });
+        expect(children(env, prior.attempt_id)).toHaveLength(0);
+      });
+
+      test('refuses a paused handoff return while a click launch holds the bead', async () => {
+        const { env, inquiry, open_gate } = racingEnv();
+        const prior = await pauseForConversation(env);
+
+        const clicking = inquiry.launchForClick(pausedClick(prior));
+        await vi.waitFor(() => {
+          expect(inquiry.isInFlight('S1')).toBe(true);
+        });
+        const result = await env.scheduler.resume(WS, prior.attempt_id, {
+          conversation_return: { line: '인계 · 계속 진행', source: 'button' }
+        });
+        open_gate();
+        await clicking;
+
+        expect(result).toEqual({ ok: false, reason: 'conversation_live' });
+        expect(children(env, prior.attempt_id)).toHaveLength(0);
+      });
+
+      test('defers the paused residue settlement while a click launch holds the bead', async () => {
+        const { env, inquiry, open_gate } = racingEnv();
+        const prior = await pauseForConversation(env);
+        const clicking = inquiry.launchForClick(pausedClick(prior));
+        await vi.waitFor(() => {
+          expect(inquiry.isInFlight('S1')).toBe(true);
+        });
+        await env.bd.setStatus('S1', 'closed');
+
+        env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+        await flush();
+        open_gate();
+        await clicking;
+
+        expect(env.store.snapshot(WS).done).toHaveLength(0);
+        expect(attemptOf(env, prior.attempt_id).status).toBe('paused');
       });
     });
   });

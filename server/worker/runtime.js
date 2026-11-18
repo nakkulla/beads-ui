@@ -267,6 +267,10 @@ export function createWorkerRuntime() {
     },
     readAttempt: (workspace, attempt_id) =>
       queueStore.snapshot(workspace).attempts?.[attempt_id] ?? null,
+    attemptSpent: (workspace, attempt_id) =>
+      Object.values(queueStore.snapshot(workspace).attempts ?? {}).some(
+        (attempt) => attempt?.resumed_from === attempt_id
+      ),
     handoffPending: (workspace, bead_id) =>
       holdsHandoffReservation(
         queueStore.snapshot(workspace).interactive_sessions?.[

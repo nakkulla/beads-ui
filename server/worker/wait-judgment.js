@@ -1,5 +1,6 @@
 import {
   isImplementationAttempt,
+  isUserPausedAttempt,
   latestImplementationAttempts
 } from '../../app/utils/active-attempts.js';
 import {
@@ -1044,6 +1045,28 @@ export function judgeWaitReasons(input) {
         addClocks(result, { since: attempt.finished_at });
         wait_reasons.push(result);
       }
+    }
+    // A paused row's conversation (UI-6kj0 §3.2) carries its Worker exit only
+    // while it waits for the person's answer: that is when the tile's
+    // `▶ 재개` sends this handoff instead of opening the resume dialog. A
+    // pause alone or a working turn projects nothing — the tile reads the
+    // conversation record for those.
+    if (
+      isUserPausedAttempt(attempt) &&
+      conversationVerdict(
+        queue.interactive_sessions?.[`${bead_id}:inquiry`]
+      ) === 'answer'
+    ) {
+      const result = reason(
+        'awaiting_user',
+        bead_id,
+        root_dir,
+        '일시정지한 세션의 대화가 답을 기다림',
+        '대화에서 답하거나 ▶ 재개로 Worker에 넘기면 Worker가 같은 세션을 이어간다'
+      );
+      judgeStalledSession(result, queue, bead_id, attempt);
+      addClocks(result, { since: attempt.finished_at });
+      wait_reasons.push(result);
     }
     if (
       attempt?.status === 'retry_wait' ||

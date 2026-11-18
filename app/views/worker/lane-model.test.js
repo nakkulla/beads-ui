@@ -9999,3 +9999,66 @@ describe('구현 도중 선행 대기 타일 (UI-ey6v §3.3)', () => {
     expect([[...open], [...closed]]).toEqual([['A-1'], []]);
   });
 });
+
+describe('paused row material (UI-6kj0 §3.1)', () => {
+  /**
+   * @param {Record<string, any>} [over]
+   * @returns {Record<string, any>}
+   */
+  function pausedAttempts(over = {}) {
+    return {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        status: 'paused',
+        started_at: 5,
+        session_id: 's',
+        ...over
+      }
+    };
+  }
+
+  test("marks a person's own pause as the paused row", () => {
+    const map = activeByBead(pausedAttempts(), new Map());
+
+    expect(map.get('A-1')?.user_paused).toBe(true);
+  });
+
+  test.each([
+    ['an account preempt', { cause: 'account_preempt:one@example.com' }],
+    ['a session-lane run', { exec: 'session' }]
+  ])('leaves %s off the paused row', (_label, over) => {
+    const map = activeByBead(pausedAttempts(over), new Map());
+
+    expect(map.get('A-1')?.run_state).toBe('paused');
+    expect(map.get('A-1')?.user_paused).toBeUndefined();
+  });
+
+  test.each([
+    [true, 'allowed'],
+    [false, 'refused']
+  ])(
+    'projects a closed takeover with handback_allowed %s as %s',
+    (handback_allowed, expected) => {
+      const attempts = pausedAttempts({
+        cause_detail: {
+          conversation: { ended_by: 'takeover', handback_allowed }
+        }
+      });
+
+      const map = activeByBead(attempts, new Map());
+
+      expect(map.get('A-1')?.paused_handback).toBe(expected);
+    }
+  );
+
+  test('carries the paused conversation refusal onto the row', () => {
+    const attempts = pausedAttempts({
+      cause_detail: { conversation: { refusal: 'bd_unavailable' } }
+    });
+
+    const map = activeByBead(attempts, new Map());
+
+    expect(map.get('A-1')?.paused_refusal).toBe('bd_unavailable');
+  });
+});

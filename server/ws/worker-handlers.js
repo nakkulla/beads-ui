@@ -33,6 +33,7 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
+  isUserPausedAttempt,
   isWithdrawnAttempt,
   latestImplementationAttempts,
   sessionGuardedBeadIds,
@@ -8336,10 +8337,19 @@ export async function handleWorkerResolveInSession(ws, req) {
             getWorkerRuntime().prObservations.get(key, p.bead_id)?.foreign ??
               null
           );
+  // 일시정지 (UI-6kj0 §3.1): a person's own pause with nothing else in front
+  // of it — the last row, so a failed discard on the same tile wins. The same
+  // shared predicate draws the card's button (`tileResolveFields`).
+  const paused =
+    failure === null &&
+    completing === null &&
+    isUserPausedAttempt(latest_attempt)
+      ? latest_attempt
+      : null;
   // A handoff reservation of any kind is an operation in progress for this
   // Bead (UI-18a5 §3.4): only the pass that settles it may end it.
   const refusal =
-    failure === null && completing === null
+    failure === null && completing === null && paused === null
       ? 'no_terminal_failure'
       : beadHoldsHandoffReservation(current.interactive_sessions, p.bead_id)
         ? 'handoff_pending'
@@ -8366,17 +8376,19 @@ export async function handleWorkerResolveInSession(ws, req) {
   /** @type {any} */
   let result;
   // Row order mirrors `tileResolveFields`: recovery, takeover, 외부 작업
-  // 완료, then a failure or the park.
-  /** @type {'stop'|'failure'|'external'|'takeover'} */
+  // 완료, then a failure or the park, and last a person's own pause.
+  /** @type {'stop'|'failure'|'external'|'takeover'|'paused'} */
   const row = recovery
     ? 'stop'
     : takeover_job
       ? 'takeover'
       : completing
         ? 'external'
-        : failure?.failure_class === '파킹'
-          ? 'stop'
-          : 'failure';
+        : paused
+          ? 'paused'
+          : failure?.failure_class === '파킹'
+            ? 'stop'
+            : 'failure';
   // A newer session owns the Bead its failed attempt sits on (UI-68r5 §3.4):
   // no failure conversation is opened on that failure, whatever a stale screen
   // drew. Only the failure row is judged — a successor session's own 외부
@@ -8459,6 +8471,20 @@ export async function handleWorkerResolveInSession(ws, req) {
         awaiting_user: attempt?.cause_detail?.awaiting_user ?? null,
         ...(recovery ? { recovery } : {})
       });
+    } else if (row === 'paused') {
+      // The same inquiry launcher and click placement as a park (UI-6kj0
+      // §3.3); only the stop reason differs.
+      result = await getWorkerRuntime().directionInquiry.launchForClick({
+        workspace: key,
+        bead_id: p.bead_id,
+        attempt_id: String(paused.attempt_id ?? ''),
+        repo:
+          typeof paused.repo === 'string' && paused.repo.length > 0
+            ? paused.repo
+            : key,
+        awaiting_user: null,
+        paused: true
+      });
     } else {
       result = await getWorkerRuntime().resolveSession.resolve({
         workspace: key,
@@ -8517,7 +8543,11 @@ export async function handleWorkerResolveInSession(ws, req) {
         ...(row === 'external'
           ? { owner_tmux: result.owner_tmux || null }
           : {}),
-        failure_class: failure ? failure.failure_class : '외부 작업 완료',
+        failure_class: failure
+          ? failure.failure_class
+          : paused
+            ? '일시정지'
+            : '외부 작업 완료',
         queue: decorateQueue(key, latest)
       })
     )
