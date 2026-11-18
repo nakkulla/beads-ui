@@ -132,7 +132,7 @@ UI-mdep: 외부 작업 슬롯 6의 `원래 창으로 이동`·`원래 세션 다
 | 후보 카드 foot | `↴ 대기로` | `op-btn op-btn--primary worker-card__place` | 문구가 `대기로 ↴`에서 아이콘 앞으로 바뀐다 |
 | 후보 카드 레인 메뉴 | `✕` | `op-btn op-btn--icon worker-card__place-cancel` | |
 | 대기 행 (Worker·Monitor) | `↑` `↓` `✕` | `op-btn op-btn--icon worker-mini__rowops-*` | §4 |
-| 실행 타일 헤더 | `↻ 이어하기` · `↻ 정리 재시도` · `▶ 재개` | `op-btn rtile__resume` | `▶`에 라벨 `재개`가 붙는다. `base_moved` 반영 대기는 기존 `↻ 이어하기`로 같은 세션을 재개한다 |
+| 실행 타일 헤더 | `↻ 이어하기` · `↻ 정리 재시도` · `▶ 재개` | `op-btn rtile__resume` | `▶`에 라벨 `재개`가 붙는다. `base_moved` 반영 대기는 기존 `↻ 이어하기`로 같은 세션을 재개한다. 정정(UI-6kj0) — 사람이 멈춘 일시정지 타일의 `▶ 재개`는 같은 세션 대화가 답을 기다리면 재개 대화상자 없이 그 대화를 Worker로 넘기고(`worker-conversation-handoff`), 대화가 턴을 진행 중이거나 창을 정리하는 중이거나 대화 결과가 행을 쥐고 있으면 비활성이다(사유는 툴팁). 대화가 없으면 종전대로 재개 대화상자다 |
 | 상세 세션 이력 행 | `↻ 이어하기` · 재개 명령 복사 | `op-btn detail-session__resume` · `op-btn detail-session__resume-cmd` | |
 | 대기 행 (Worker·Monitor) | `▶ 재개` | `op-btn worker-mini__hold-resume` | UI-01wh — 체계적 정지에 막힌 행에만; `[지금 시작]` 앞 |
 | 대기 행 (Worker·Monitor) | `↻ 지금 프로브` | `op-btn worker-mini__provider-probe` | UI-o5ll — 공급자 보류에 막힌 행에만; `▶ 재개`와 `[지금 시작]` 사이 |

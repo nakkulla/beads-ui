@@ -759,6 +759,16 @@ ADR UI-golv다.
 세션 레인 기록에서 뷰 투영(`lane-model.js`)을 거쳐 두 탭에 같게 흐른다. 근거는
 `2026-11-17-session-lane-codex-startup-wait-design.md` §3.4가 소유한다.
 
+**정정(UI-6kj0).** 사람이 `⏸`로 멈춘 일시정지 타일(공용 술어
+`isUserPausedAttempt`)이 두 요소를 더한다. 슬롯 6 foot에 `[세션에서 이어가기]`가
+홀로 선다 — 그 행의 Worker 출구는 슬롯 1의 `▶ 재개`이므로 `[워커로 이어가기]`는
+따로 서지 않는다. 같은 세션 대화가 열려 있으면 슬롯 3에 파킹 타일과 같은 대화 진행
+줄(`▤ <마지막 메시지>`)이 선다. 대화가 답을 기다리는 동안 서버가 내는 `awaiting_user`
+사유는 `▶ 재개`의 인계 재료일 뿐이라 슬롯 1 대기 판정 배지·본문·시각 줄을 만들지
+않는다. 공급자 보류·세션 레인·내려온 attempt·계정 선점 등 다른 일시정지에는 아무것도
+더하지 않는다(fail-quiet). 두 탭은 같은 `tileResolveFields`로 그린다. 근거는
+`2026-11-17-paused-tile-session-continue-design.md` §3.2가 소유한다.
+
 ### 5.2 `AGENTS.md`에 남길 규칙
 
 - 워커·모니터 카드(`candidateCard` · `miniRow` · `runningTile`)의 줄 순서는 §2

@@ -502,17 +502,23 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   wait the session resume, a hold/detached external wait whose takeover marker
   outlived `TAKEOVER_SETTLE_MS` the failure conversation with
   `failure_class: '확인 필요'` and `reason: 'takeover_unresolved'` (UI-9w5l
-  §3.4), any other failure row the failure conversation. Before choosing a row,
-  a live `interactive_sessions` record of the Bead (any kind) whose window is
-  alive is focused with that kind's pane marker and the reply is
-  `session: 'already_running'`, `row: 'conversation'` — nothing launches and no
-  record or wait state changes (UI-9w5l §3.5); a record without a live window
-  falls through to the row choice. The response adds
-  `row: 'stop'|'failure'|'external'|'takeover'|'conversation'`; an `external`
-  reply carries `mode: 'session'` and `owner_tmux`, and its `command` is the
-  resume command the client copies on `owner_alive`/`owner_unverified`. A Bead
-  whose conversation still holds a handoff reservation of any kind is refused
-  `handoff_pending`.
+  §3.4), any other failure row the failure conversation, and last a person's own
+  pause (UI-6kj0 §3.1: `isUserPausedAttempt` — status `paused`, no `cause`, not
+  withdrawn, not the session lane, an implementation attempt, with no failure or
+  completing external wait in front of it) the same-session `inquiry`
+  conversation with stop reason `paused`; the reply carries `row: 'paused'` and
+  `failure_class: '일시정지'`, and a click on a pause already spent is refused
+  `not_paused`. A pause alone never launches a conversation automatically.
+  Before choosing a row, a live `interactive_sessions` record of the Bead (any
+  kind) whose window is alive is focused with that kind's pane marker and the
+  reply is `session: 'already_running'`, `row: 'conversation'` — nothing
+  launches and no record or wait state changes (UI-9w5l §3.5); a record without
+  a live window falls through to the row choice. The response adds
+  `row: 'stop'|'failure'|'external'|'takeover'|'paused'|'conversation'`; an
+  `external` reply carries `mode: 'session'` and `owner_tmux`, and its `command`
+  is the resume command the client copies on `owner_alive`/`owner_unverified`. A
+  Bead whose conversation still holds a handoff reservation of any kind is
+  refused `handoff_pending`.
 - `interactive_sessions` records of every kind (`resolve`, `inquiry`,
   `external_resume`) launched since UI-18a5 carry `conversation`
   (`{ stop, wait_id, processed_message_at, message_excerpt, result, handoff, takeover_notified_at }`);
@@ -1026,13 +1032,18 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `action_required/decision`, with the first `cause_detail.summary` line after
   `blocker:` as the headline (fallback: recovery release sentence or reason
   token). Their only actions are `worker-resolve-in-session` and
-  `worker-discard`, matching parked sessions. Prerequisite waits are always
-  `normal`, whatever the blocker's status or labels (UI-9w5l §3.2). Remaining
-  verdict codes are `reset_passed`, `probe_stalled`, `retry_stalled`,
-  `decision`, plus external-job codes `check_overdue`, `settle_overdue`,
-  `observe_failing`, `service_down`, `monitor_stopped`, `resume_failed`,
-  `wait_key_missing`, `wait_record_missing`, and `takeover_unresolved`. The
-  retry grace is five minutes; recovery never emits `settle_overdue`.
+  `worker-discard`, matching parked sessions. A person's own pause (UI-6kj0
+  §3.2) gets an `awaiting_user` reason only while its `${bead_id}:inquiry`
+  conversation awaits the answer; its actions are `worker-resolve-in-session`,
+  `worker-conversation-handoff` and `worker-discard`. The card draws no verdict
+  chip or body from it: the handoff is the paused tile's `▶ 재개`, disabled
+  while the conversation runs a turn. Prerequisite waits are always `normal`,
+  whatever the blocker's status or labels (UI-9w5l §3.2). Remaining verdict
+  codes are `reset_passed`, `probe_stalled`, `retry_stalled`, `decision`, plus
+  external-job codes `check_overdue`, `settle_overdue`, `observe_failing`,
+  `service_down`, `monitor_stopped`, `resume_failed`, `wait_key_missing`,
+  `wait_record_missing`, and `takeover_unresolved`. The retry grace is five
+  minutes; recovery never emits `settle_overdue`.
 - `completion_status[bead_id].hold.reason` preserves verification failures:
   `verify_cmd_spawn_error` and `verify_cmd_timeout` display 검증 명령 실패 —
   환경 확인; ordinary verification failures display 검증 실패 — 수정 push 대기.
@@ -1134,7 +1145,13 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `exec_override` with `bad_request`, never falls back to a fresh session when
   the transcript is gone, and refuses with `prior_session_unavailable` when the
   recorded runner/account cannot run here. It has no UI entry point since
-  UI-6icf; the dialog's two branches both send the ordinary `auto` path.
+  UI-6icf; the dialog's two branches both send the ordinary `auto` path. A
+  person's own pause (UI-6kj0 §3.3) is refused `conversation_live` while that
+  Bead's `inquiry` record is unsettled or the inquiry launcher holds its
+  reservation; otherwise the resume takes that same reservation until the child
+  attempt exists, so a concurrent conversation launch is refused
+  `inquiry_in_flight`. Only the conversation handoff's own settlement resume
+  passes through.
 - `worker-merge-queue-add` payload:
   `{ bead_id, expected_revision, continuation?, decision_token? }` — the
   `[머지]` click (UI-5v7d §3). It QUEUES rather than merges: the durable
