@@ -41952,3 +41952,155 @@ describe('scheduler quick_fix deploy condition wait (dotfiles-rnyd9)', () => {
     expect(env.failureConversation.launchForBead).not.toHaveBeenCalled();
   });
 });
+
+describe('reconcile during durable pause', () => {
+  /**
+   * @param {{ config: Record<string, any>, quickfixLanding?: any }} opts
+   */
+  function pauseRaceEnv(opts) {
+    /** @type {any} */
+    let env;
+    const processController = {
+      terminate: vi.fn(async () => {
+        env.runner.finish('S1', {
+          success: false,
+          reason: 'killed',
+          exit: null
+        });
+        for (let i = 0; i < 20; i++) {
+          await flush();
+        }
+        await env.scheduler.reconcile(WS);
+        for (let i = 0; i < 20; i++) {
+          await flush();
+        }
+        return { ok: true, state: 'gone' };
+      }),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    env = setup({
+      config: opts.config,
+      slots: 1,
+      processController,
+      quickfixLanding: opts.quickfixLanding,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    return env;
+  }
+
+  /**
+   * @param {any} env
+   */
+  async function pauseInsideTermGrace(env) {
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, attempt_id);
+    return attempt_id;
+  }
+
+  test('a reconcile pass inside the TERM grace leaves the paused quick_fix attempt paused', async () => {
+    const env = pauseRaceEnv({
+      config: { S1: { route: 'quick_fix' } },
+      quickfixLanding: {
+        settle: vi.fn(async () => ({
+          ok: false,
+          reason: 'delivery_unproven:push_log_absent',
+          step: null
+        }))
+      }
+    });
+
+    const attempt_id = await pauseInsideTermGrace(env);
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('paused');
+  });
+
+  test('a reconcile pass inside the TERM grace does not settle the paused PR attempt', async () => {
+    const env = pauseRaceEnv({ config: { S1: {} } });
+
+    const attempt_id = await pauseInsideTermGrace(env);
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('paused');
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('a pause started while an earlier candidate settles keeps the later candidate out of the pass', async () => {
+    /** @type {(value: any) => void} */
+    let releaseVerify = () => {};
+    /** @type {(value: any) => void} */
+    let releaseTerminate = () => {};
+    const verify = {
+      verifyPrSubmitted: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            releaseVerify = resolve;
+          })
+      )
+    };
+    const processController = {
+      terminate: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            releaseTerminate = resolve;
+          })
+      ),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    const env = setup({
+      config: { S1: {}, S2: {} },
+      slots: 2,
+      verify,
+      processController,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    /** @type {Array<[string, string, number]>} */
+    const seeds = [
+      ['dead-a', 'S1', 4241],
+      ['dead-b', 'S2', 4242]
+    ];
+    for (const [attempt_id, bead_id, pid] of seeds) {
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id, bead_id }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id,
+        patch: {
+          status: 'running',
+          session_id: `sid-${bead_id}`,
+          repo: '/repo',
+          workflow_mode_prior: null,
+          pid,
+          started_at: 1_000,
+          process_identity: { pid, pgid: pid, started_at: 1_000 }
+        }
+      });
+    }
+
+    const pass = env.scheduler.reconcile(WS);
+    for (
+      let i = 0;
+      i < 20 && verify.verifyPrSubmitted.mock.calls.length === 0;
+      i++
+    ) {
+      await flush();
+    }
+    const pausing = env.scheduler.pause(WS, 'dead-b');
+    for (
+      let i = 0;
+      i < 20 && processController.terminate.mock.calls.length === 0;
+      i++
+    ) {
+      await flush();
+    }
+    releaseVerify({ ok: false, reason: 'no_pr', pr_url: null });
+    await pass;
+    releaseTerminate({ ok: true, state: 'gone' });
+    await pausing;
+
+    expect(verify.verifyPrSubmitted).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).attempts['dead-b'].status).toBe('paused');
+  });
+});

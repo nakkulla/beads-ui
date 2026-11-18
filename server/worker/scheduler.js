@@ -2146,6 +2146,17 @@ export function createScheduler(deps) {
    * @type {Map<string, Promise<RunnerVerdict>>}
    */
   const paused_done = new Map();
+  /**
+   * In-flight {@link drivePauseControl} calls, counted per attempt_id. The
+   * killed session's whole settlement chain — and with it `running`,
+   * `settling`, `stopped` and `paused_done` — can finish while the drive is
+   * still awaiting `terminate`, leaving a durably `running` record with a dead
+   * pid and no in-memory owner until `completeAttemptControl` lands. This is
+   * the fence `reconcile` reads for that window.
+   *
+   * @type {Map<string, number>}
+   */
+  const pausing = new Map();
   /** @type {Set<string>} */
   const retiring = new Set();
   /**
@@ -9891,6 +9902,7 @@ export function createScheduler(deps) {
       running.has(attempt_id) ||
       settling.has(attempt_id) ||
       paused_done.has(attempt_id) ||
+      pausing.has(attempt_id) ||
       claimed.has(attempt.bead_id)
     ) {
       return false;
@@ -10871,13 +10883,15 @@ export function createScheduler(deps) {
    * (worker-detached-session-reconcile §1). Both entry points — server startup
    * and the periodic timer — share this one routine.
    *
-   * ONLY attempts no part of THIS process owns are candidates, behind four
+   * ONLY attempts no part of THIS process owns are candidates, behind five
    * fences, because a durable `running` record is not by itself evidence of a
    * detached session:
    *
    *   - `running` — a live session handle: `onSessionDone` is its authority.
    *   - `settling` — a settlement is mid-flight for it: the handler already
    *     dropped the handle but has not written the terminal status yet.
+   *   - `pausing` — a ⏸ drive is mid-flight for it: the killed session may
+   *     have settled already, but the drive has not written `paused` yet.
    *   - `claimed` (by BEAD) — a dispatch or relaunch is in flight. Between the
    *     durable pre-record (`status:'running'`, `pid:null`) and `running.set`
    *     at spawn, the attempt looks exactly like a dead one — `pid == null` —
@@ -10893,7 +10907,7 @@ export function createScheduler(deps) {
    *     the DURABLE one: unlike the scheduler-local `stopped` set it survives a
    *     restart, and the operation record exists before the fence is raised. It
    *     is checked FIRST because it also has to cover the legacy-diagnosis
-   *     retirement branch, which the other three fences sit behind.
+   *     retirement branch, which the other four fences sit behind.
    *
    * @param {string} workspace
    */
@@ -10943,7 +10957,7 @@ export function createScheduler(deps) {
         if (a.status === 'running') {
           startDelegationPolling(workspace, attempt_id);
         }
-        // AHEAD of the legacy-retirement branch, not beside the other three:
+        // AHEAD of the legacy-retirement branch, not beside the other four:
         // retirement is a durable terminal write of its own, so a discard that
         // owns a legacy diagnosis attempt must fence that branch too.
         if (discardActive(q, { bead_id: a.bead_id, attempt_id })) {
@@ -10959,6 +10973,7 @@ export function createScheduler(deps) {
         if (
           running.has(attempt_id) ||
           settling.has(attempt_id) ||
+          pausing.has(attempt_id) ||
           claimed.has(a.bead_id)
         ) {
           continue;
@@ -10973,7 +10988,8 @@ export function createScheduler(deps) {
       for (const d of dead) {
         // Re-checked per iteration, not just at selection: each disposition
         // ends in a `tick`, so an earlier one in this same pass may already
-        // have re-dispatched the bead of a later candidate. The discard fence
+        // have re-dispatched the bead of a later candidate, or a ⏸ may have
+        // started driving a later candidate's pause. The discard fence
         // and the attempt's own status are re-read off a FRESH snapshot for the
         // same reason plus one more — a discard that lands after this pass
         // selected its candidates is exactly the race that produced the stale
@@ -10984,7 +11000,7 @@ export function createScheduler(deps) {
         // durable status is what catches the second, so the candidate is
         // disposed only while it is still `running`, and off the CURRENT
         // record rather than the one selection captured.
-        if (claimed.has(d.attempt.bead_id)) {
+        if (claimed.has(d.attempt.bead_id) || pausing.has(d.attempt_id)) {
           continue;
         }
         const fresh = deps.store.snapshot(workspace);
@@ -23723,13 +23739,35 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Drive a persisted pause from any restart-safe phase.
+   * Drive a persisted pause from any restart-safe phase, under the `pausing`
+   * fence so a reconcile pass cannot settle the attempt mid-drive.
    *
    * @param {string} workspace
    * @param {string} attempt_id
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
   async function drivePauseControl(workspace, attempt_id) {
+    pausing.set(attempt_id, (pausing.get(attempt_id) ?? 0) + 1);
+    try {
+      return await drivePauseControlFenced(workspace, attempt_id);
+    } finally {
+      const remaining = (pausing.get(attempt_id) ?? 1) - 1;
+      if (remaining > 0) {
+        pausing.set(attempt_id, remaining);
+      } else {
+        pausing.delete(attempt_id);
+      }
+    }
+  }
+
+  /**
+   * The body of {@link drivePauseControl}; see its contract.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function drivePauseControlFenced(workspace, attempt_id) {
     const process_controller = deps.processController;
     if (!process_controller) {
       return { ok: false, reason: 'process_controller_missing' };
