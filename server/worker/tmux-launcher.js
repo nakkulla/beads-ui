@@ -959,18 +959,16 @@ export function createTmuxLauncher(deps = {}) {
         screen.dialog !== 'trust' &&
         screen.dialog !== 'unknown_screen') ||
       typeof screen.fingerprint !== 'string' ||
-      screen.fingerprint.length === 0
+      !/^[0-9a-f]+$/.test(screen.fingerprint) ||
+      (screen.dialog === 'startup' &&
+        (typeof screen.startup_kind !== 'string' ||
+          screen.startup_kind.length === 0))
     ) {
       return invalid;
     }
-    // Only a `startup` dialog names its kind; a missing or unusable kind
-    // reads as null, which the caller shows as the other startup screen.
+    // Only a `startup` dialog names its kind.
     const startup_kind =
-      screen.dialog === 'startup' &&
-      typeof screen.startup_kind === 'string' &&
-      screen.startup_kind.length > 0
-        ? screen.startup_kind
-        : null;
+      screen.dialog === 'startup' ? String(screen.startup_kind) : null;
     return {
       ok: true,
       alive: 'alive',

@@ -439,6 +439,7 @@ function failureConversationLine(conversation) {
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   providerLivePreempt: (input: { bead_id: string, runner: string, from: string, to: string, window: string, pct: number, repo?: string|null }) => Promise<void>,
+ *   enabled: () => boolean,
  *   sessionLaneStartupWait: (input: { bead_id: string, title?: string|null, label: string, tmux_session?: string|null, tmux_window?: string|null, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
  *   hold: (input: NeedsHumanInput) => Promise<void>,
@@ -1080,6 +1081,12 @@ export function createNotifier(deps) {
       } catch (err) {
         log('providerLivePreempt failed: %o', err);
       }
+    },
+
+    // Whether a push would go out now; a caller that stamps a once-only
+    // push as sent asks this first so a disabled notifier stamps nothing.
+    enabled() {
+      return resolveCmd() !== null;
     },
 
     async sessionLaneStartupWait(input) {

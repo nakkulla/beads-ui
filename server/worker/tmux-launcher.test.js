@@ -1033,7 +1033,11 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
     const { launcher } = startupLauncher(async () =>
       hubReply({
         alive: 'alive',
-        screen: { dialog: 'startup', startup_kind: 'hooks', fingerprint: 'fp' }
+        screen: {
+          dialog: 'startup',
+          startup_kind: 'hooks',
+          fingerprint: 'a1b2c3'
+        }
       })
     );
 
@@ -1042,7 +1046,11 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
     expect(result).toEqual({
       ok: true,
       alive: 'alive',
-      screen: { dialog: 'startup', startup_kind: 'hooks', fingerprint: 'fp' }
+      screen: {
+        dialog: 'startup',
+        startup_kind: 'hooks',
+        fingerprint: 'a1b2c3'
+      }
     });
   });
 
@@ -1050,7 +1058,11 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
     const { launcher } = startupLauncher(async () =>
       hubReply({
         alive: 'alive',
-        screen: { dialog: 'trust', startup_kind: 'hooks', fingerprint: 'fp' }
+        screen: {
+          dialog: 'trust',
+          startup_kind: 'hooks',
+          fingerprint: 'a1b2c3'
+        }
       })
     );
 
@@ -1059,7 +1071,7 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
     expect(result).toEqual({
       ok: true,
       alive: 'alive',
-      screen: { dialog: 'trust', startup_kind: null, fingerprint: 'fp' }
+      screen: { dialog: 'trust', startup_kind: null, fingerprint: 'a1b2c3' }
     });
   });
 
@@ -1067,7 +1079,7 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
     const { launcher } = startupLauncher(async () =>
       hubReply({
         alive: 'alive',
-        screen: { dialog: 'trust', fingerprint: 'fp' }
+        screen: { dialog: 'trust', fingerprint: 'a1b2c3' }
       })
     );
 
@@ -1076,7 +1088,7 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
     expect(result).toEqual({
       ok: true,
       alive: 'alive',
-      screen: { dialog: 'trust', startup_kind: null, fingerprint: 'fp' }
+      screen: { dialog: 'trust', startup_kind: null, fingerprint: 'a1b2c3' }
     });
   });
 
@@ -1095,7 +1107,7 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
       'an unknown dialog',
       {
         alive: 'alive',
-        screen: { dialog: 'boot', startup_kind: null, fingerprint: 'fp' }
+        screen: { dialog: 'boot', startup_kind: null, fingerprint: 'a1b2c3' }
       }
     ],
     [
@@ -1105,12 +1117,26 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
         screen: { dialog: 'startup', startup_kind: 'hooks', fingerprint: '' }
       }
     ],
+    [
+      'a fingerprint that is not hex',
+      {
+        alive: 'alive',
+        screen: { dialog: 'trust', startup_kind: null, fingerprint: 'fp' }
+      }
+    ],
+    [
+      'a startup screen without its kind',
+      {
+        alive: 'alive',
+        screen: { dialog: 'startup', startup_kind: null, fingerprint: 'a1b2c3' }
+      }
+    ],
     ['a missing alive', { screen: null }],
     [
       'a screen on a dead pane',
       {
         alive: 'dead',
-        screen: { dialog: 'trust', startup_kind: null, fingerprint: 'fp' }
+        screen: { dialog: 'trust', startup_kind: null, fingerprint: 'a1b2c3' }
       }
     ]
   ])('refuses a reply with %s', async (_name, value) => {

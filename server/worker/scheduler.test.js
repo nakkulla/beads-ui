@@ -41353,7 +41353,23 @@ describe('session lane (UI-lbm5)', () => {
         }),
         readTimeline: vi.fn(() => events)
       };
-      const env = laneEnv({ config: {}, extra: { timeline } });
+      /** @type {Array<[string, any]>} */
+      const pushes = [];
+      /** @type {{ on: boolean }} */
+      const notify_enabled = { on: true };
+      const notify = new Proxy(
+        {},
+        {
+          get: (_target, key) =>
+            key === 'enabled'
+              ? () => notify_enabled.on
+              : (/** @type {any} */ payload) => {
+                  pushes.push([String(key), payload]);
+                  return Promise.resolve();
+                }
+        }
+      );
+      const env = laneEnv({ config: {}, extra: { timeline, notify } });
       /** @type {{ reply: any }} */
       const hub = { reply: HOOKS_SCREEN };
       /** @type {{ value: string|null }} */
@@ -41420,6 +41436,7 @@ describe('session lane (UI-lbm5)', () => {
         hub,
         agent_session,
         codexStartup,
+        notify_enabled,
         /** The startup lines this window's timeline holds, in order. */
         startupLines() {
           return events
@@ -41428,9 +41445,7 @@ describe('session lane (UI-lbm5)', () => {
         },
         /** The startup-wait pushes sent so far. */
         startupPushes() {
-          return env.pushes.filter(
-            ([name]) => name === 'sessionLaneStartupWait'
-          );
+          return pushes.filter(([name]) => name === 'sessionLaneStartupWait');
         }
       };
     }
@@ -41651,6 +41666,38 @@ describe('session lane (UI-lbm5)', () => {
         '훅 확인',
         '업데이트 안내'
       ]);
+    });
+
+    test('stamps nothing while notifications are off and pushes once they turn on', async () => {
+      const env = startupEnv();
+      env.notify_enabled.on = false;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.clock.at = 1000 + 5 * 60_000 + 1;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      const stamped_while_off = env.laneRecord('C1').startup_wait?.notified_at;
+      env.notify_enabled.on = true;
+      env.clock.at += 30_000;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(stamped_while_off).toBeNull();
+      expect(env.startupPushes()).toHaveLength(1);
+    });
+
+    test('records no wait for a window settled before the hub answers', async () => {
+      const env = startupEnv();
+      env.codexStartup.mockImplementation(async () => {
+        env.store.updateInteractiveSession(WS, 'C1:session_lane', {
+          settled_at: 2000
+        });
+        return HOOKS_SCREEN;
+      });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('C1')?.startup_wait ?? null).toBeNull();
+      expect(env.laneAttempt('C1').interactive.startup_wait).toBeUndefined();
+      expect(env.startupLines()).toEqual([]);
     });
 
     test('pushes nothing when the wait ends before five minutes', async () => {

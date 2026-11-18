@@ -1085,6 +1085,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   providerAutoResumeDisarmed?: (i: any) => void,
  *   providerLivePreempt?: (i: any) => void,
  *   sessionLaneStartupWait?: (i: any) => void,
+ *   enabled?: () => boolean,
  *   prWaitEntered: (i: any) => void,
  *   needsHuman?: (i: import('./notify.js').NeedsHumanInput) => Promise<void>|void
  * }} [notify]
@@ -13472,6 +13473,21 @@ export function createScheduler(deps) {
       }
     }
     /**
+     * Whether the stored record is still the same live, unsettled window; a
+     * settlement written earlier in this pass is not on the pass-start copy.
+     *
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession} record
+     */
+    function awaitingStart(key, record) {
+      const current = deps.store.snapshot(workspace).interactive_sessions[key];
+      return (
+        isCurrent(key, record) &&
+        current.state === 'live' &&
+        current.settled_at === null
+      );
+    }
+    /**
      * Observe one live codex session-lane window that has not yet started
      * (UI-ahzh §3.2): a filled `@agent_session` is the pass and ends the
      * observation for good; otherwise the hub's read-only `codex-startup`
@@ -13483,6 +13499,9 @@ export function createScheduler(deps) {
      * @param {string|null} agent_session
      */
     async function observeCodexStartup(key, record, agent_session) {
+      if (!awaitingStart(key, record)) {
+        return;
+      }
       const wait_prefix = `interactive_session:${record.bead_id}:${record.kind}:${record.launched_at}:startup_wait:`;
       if (agent_session) {
         const waited =
@@ -13534,6 +13553,10 @@ export function createScheduler(deps) {
       if (read.alive !== 'alive') {
         return;
       }
+      // The Bead can settle while the hub read is in flight.
+      if (!awaitingStart(key, record)) {
+        return;
+      }
       const screen = read.screen;
       const current = normalizeStartupWait(record.startup_wait);
       // No startup screen (the prompt, or a declined hook) and an
@@ -13572,8 +13595,12 @@ export function createScheduler(deps) {
           summary: `세션 레인 시작 화면 대기 · ${label}`
         });
       }
+      // A disabled notifier sends nothing, so nothing is stamped as sent.
       const notify =
-        next.notified_at === null && at - next.since > STARTUP_WAIT_NOTIFY_MS;
+        next.notified_at === null &&
+        at - next.since > STARTUP_WAIT_NOTIFY_MS &&
+        typeof deps.notify?.sessionLaneStartupWait === 'function' &&
+        (typeof deps.notify.enabled !== 'function' || deps.notify.enabled());
       if (notify) {
         next = { ...next, notified_at: at };
       }
