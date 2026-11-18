@@ -312,8 +312,60 @@ describe('bead_timelines snapshot decoration (§9)', () => {
     expect(out).toEqual({});
   });
 
-  test('omits a failed bead with no events and no log', () => {
+  test('omits a parked bead with no events and no log', () => {
     state.timelines = {};
+    state.existing_logs = new Set();
+    state.attempts = {
+      a1: { attempt_id: 'a1', bead_id: 'UI-1', status: 'parked' }
+    };
+
+    const out = beadTimelinesFor(WS, { attempts: state.attempts });
+
+    expect(out).toEqual({});
+  });
+
+  test('gives a failed bead with no history the failure line made from its attempt', () => {
+    state.timelines = {};
+    state.existing_logs = new Set();
+    state.attempts = {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        status: 'failed',
+        cause: 'quickfix_landing_failed:script_failed',
+        finished_at: 50
+      }
+    };
+
+    const out = beadTimelinesFor(WS, { attempts: state.attempts });
+
+    expect(out['UI-1'].events).toEqual([]);
+    expect(out['UI-1'].incidents).toEqual([
+      {
+        event_id: 'attempt_failed:a1:synthesized',
+        at: 50,
+        kind: 'attempt_failed',
+        summary: '세션 실패 — 스크립트가 0이 아닌 코드로 끝났습니다',
+        failure: true
+      }
+    ]);
+  });
+
+  test('keeps the failure incident in the 경위 after more than five later events', () => {
+    const failed = {
+      ...event('attempt_failed:a1:failed', 1000),
+      attempt_id: 'a1',
+      kind: 'attempt_failed',
+      summary: '세션 실패 — API Error: 529',
+      code: 'session_failed:is_error',
+      incident: 'a1'
+    };
+    state.timelines = {
+      'UI-1': [
+        failed,
+        ...[2, 3, 4, 5, 6, 7].map((n) => event(`e${n}`, n * 1000))
+      ]
+    };
     state.existing_logs = new Set();
     state.attempts = {
       a1: { attempt_id: 'a1', bead_id: 'UI-1', status: 'failed' }
@@ -321,6 +373,26 @@ describe('bead_timelines snapshot decoration (§9)', () => {
 
     const out = beadTimelinesFor(WS, { attempts: state.attempts });
 
-    expect(out).toEqual({});
+    expect(
+      out['UI-1'].events.map((/** @type {any} */ e) => e.event_id)
+    ).toEqual(['e3', 'e4', 'e5', 'e6', 'e7']);
+    expect(
+      (out['UI-1'].incidents ?? []).map(
+        (/** @type {any} */ line) => line.event_id
+      )
+    ).toEqual(['attempt_failed:a1:failed', 'e5', 'e6', 'e7']);
+    expect(out['UI-1'].incidents?.[0].failure).toBe(true);
+  });
+
+  test('gives a parked bead no incident lines', () => {
+    state.timelines = { 'UI-1': [event('e1', 1000)] };
+    state.existing_logs = new Set();
+    state.attempts = {
+      a1: { attempt_id: 'a1', bead_id: 'UI-1', status: 'parked' }
+    };
+
+    const out = beadTimelinesFor(WS, { attempts: state.attempts });
+
+    expect(out['UI-1']).not.toHaveProperty('incidents');
   });
 });

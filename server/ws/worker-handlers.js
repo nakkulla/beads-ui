@@ -118,6 +118,7 @@ import {
 import { discardOperationActive } from '../worker/discard-phase.js';
 import { APPLIES_TO_VALUES } from '../worker/exec-enums.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
+import { failureIncidentLines } from '../worker/failure-incident-lines.js';
 import {
   applyForeignBlockerCleanup,
   onForeignBlockerResolved,
@@ -1242,6 +1243,10 @@ function beadTimesFor(workspace_key, queue) {
 }
 
 /**
+ * @typedef {{ events: import('../worker/bead-timeline.js').TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean } & Partial<import('../worker/failure-incident-lines.js').FailureIncidents>} BeadTileTimeline
+ */
+
+/**
  * How many timeline lines the failure popover / parked tile show
  * (record-timeline-retention §9). The tile answers "무엇이 이 시도를 끝냈나",
  * not "이 bead의 전체 이력" — that question belongs to the issue detail page's
@@ -1282,9 +1287,15 @@ const TIMELINE_TILE_STATUSES = new Set(['failed', 'orphaned', 'parked']);
  * Exported for the §9 transport test, which fixes the omission rules; the
  * snapshot builder is its only production caller.
  *
+ * A failed or orphaned attempt's bead also carries `incidents` — the 경위 of
+ * the failed tile, grouped and picked by {@link failureIncidentLines} — plus
+ * the failure incident's `failure_operation` facts and `failure_recovery`
+ * words when its records hold them. Such a bead is never omitted: its 경위
+ * always has at least the failure line.
+ *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
- * @returns {Record<string, { events: import('../worker/bead-timeline.js').TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean }>}
+ * @returns {Record<string, BeadTileTimeline>}
  */
 export function beadTimelinesFor(workspace_key, queue) {
   const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
@@ -1309,12 +1320,18 @@ export function beadTimelinesFor(workspace_key, queue) {
     }
   }
 
-  /** @type {Record<string, { events: import('../worker/bead-timeline.js').TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean }>} */
+  /** @type {Record<string, BeadTileTimeline>} */
   const out = {};
   for (const [bead_id, attempt] of newest_by_bead) {
-    const events = readBeadTimeline(workspace_key, bead_id, {
-      limit: TILE_TIMELINE_LIMIT
-    });
+    const history = readBeadTimeline(workspace_key, bead_id);
+    const events = history.slice(-TILE_TIMELINE_LIMIT);
+    // A failed tile's 경위 is grouped by incident from the WHOLE history
+    // (UI-lx9o §4.2), so the failure line survives any number of later
+    // events; a parked tile keeps the five-line block alone.
+    const incidents =
+      attempt.status === 'parked'
+        ? null
+        : failureIncidentLines(history, attempt);
     /** @type {import('../worker/session-log.js').SessionLogLocation} */
     let located;
     try {
@@ -1339,6 +1356,7 @@ export function beadTimelinesFor(workspace_key, queue) {
     const log_unreadable = located.status === 'unreadable';
     const log_path = located.status === 'ok' ? located.path : null;
     if (
+      incidents === null &&
       events.length === 0 &&
       log_path === null &&
       !log_expired &&
@@ -1350,7 +1368,8 @@ export function beadTimelinesFor(workspace_key, queue) {
       events,
       log_path,
       log_expired,
-      ...(log_unreadable ? { log_unreadable: true } : {})
+      ...(log_unreadable ? { log_unreadable: true } : {}),
+      ...(incidents ?? {})
     };
   }
   return out;

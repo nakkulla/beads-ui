@@ -306,7 +306,30 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * 없다는 것과 다른 대답이므로 자기 키를 갖는다.
  * @property {boolean} [log_unreadable] - 해석 사다리가 저장소 오류를 만났다
  * (§4). 삭제된 것이 아니므로 만료됨과 다른 문구를 쓴다.
+ * @property {IncidentRow[]} [incidents] - 실패 상세 경위 (UI-lx9o §4.2):
+ * 서버가 사건 단위로 묶고 고른 줄, 오래된 것이 위. 실패 사건 줄은 `failure`.
+ * @property {FailureOperation} [operation] - 실패 사건의 저장소 작업 사실
+ * (UI-lx9o §4.3). 기록이 없으면 키가 없다.
+ * @property {{ summary: string, code?: string }} [recovery_line] - The last
+ * `operation_recovery` line of the failure incident: the 세부 `복구 판정` row.
  * @property {boolean} [open] - Ephemeral view state for this attempt's detail.
+ */
+
+/**
+ * The repo-operation facts of a failure incident (UI-lx9o §4.3).
+ *
+ * @typedef {Object} FailureOperation
+ * @property {'deploy'|'verify'|'job'} kind
+ * @property {number} [exit_code]
+ * @property {string} [summary] - The script's own error summary.
+ * @property {boolean} [retry_exhausted]
+ * @property {boolean} [retry_same_error]
+ */
+
+/**
+ * One incident line of a failed tile's 경위 (UI-lx9o §4.2).
+ *
+ * @typedef {TimelineRow & { failure?: boolean }} IncidentRow
  */
 
 /**

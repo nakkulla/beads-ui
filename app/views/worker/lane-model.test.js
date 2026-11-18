@@ -2430,8 +2430,82 @@ describe('타임라인 투영 (record-timeline-retention §9)', () => {
     expect(failure?.log_expired).toBeUndefined();
   });
 
+  test('carries the incident lines, operation facts and recovery line oldest first', () => {
+    const map = projectFailure({
+      'A-1': {
+        events: [],
+        log_path: null,
+        log_expired: false,
+        incidents: [
+          { event_id: 'e1', at: 1000, kind: 'dispatched', summary: '디스패치' },
+          {
+            event_id: 'e2',
+            at: 2000,
+            kind: 'operation_failed',
+            summary: '배포 실패 — 스크립트가 0이 아닌 코드로 끝났습니다',
+            failure: true
+          }
+        ],
+        failure_operation: {
+          kind: 'deploy',
+          exit_code: 1,
+          summary: 'boom',
+          retry_exhausted: true,
+          retry_same_error: true
+        },
+        failure_recovery: {
+          summary: '복구 분류 — 수리 대상',
+          code: 'repair:repair · script_failed'
+        }
+      }
+    });
+
+    const failure = map.get('A-1')?.failure;
+
+    expect(failure?.incidents).toEqual([
+      { event_id: 'e1', at: 1000, kind: 'dispatched', summary: '디스패치' },
+      {
+        event_id: 'e2',
+        at: 2000,
+        kind: 'operation_failed',
+        summary: '배포 실패 — 스크립트가 0이 아닌 코드로 끝났습니다',
+        failure: true
+      }
+    ]);
+    expect(failure?.operation).toEqual({
+      kind: 'deploy',
+      exit_code: 1,
+      summary: 'boom',
+      retry_exhausted: true,
+      retry_same_error: true
+    });
+    expect(failure?.recovery_line).toEqual({
+      summary: '복구 분류 — 수리 대상',
+      code: 'repair:repair · script_failed'
+    });
+  });
+
+  test('omits each operation fact the record does not hold', () => {
+    const map = projectFailure({
+      'A-1': {
+        events: [],
+        log_path: null,
+        log_expired: false,
+        failure_operation: { kind: 'verify' }
+      }
+    });
+
+    const failure = map.get('A-1')?.failure;
+
+    expect(failure?.operation).toEqual({ kind: 'verify' });
+    expect('incidents' in /** @type {any} */ (failure)).toBe(false);
+    expect('recovery_line' in /** @type {any} */ (failure)).toBe(false);
+  });
+
   test('omits every history key for a bead with no snapshot entry', () => {
     const failure = projectFailure().get('A-1')?.failure;
+
+    expect('operation' in /** @type {any} */ (failure)).toBe(false);
 
     expect('timeline' in /** @type {any} */ (failure)).toBe(false);
     expect('log_path' in /** @type {any} */ (failure)).toBe(false);

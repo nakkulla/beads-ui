@@ -563,12 +563,12 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `cleanup_failed` record whose `reason` is
   `foreign_handoff:foreign_deploy_unsupported`. An absent key reads as a
   workspace PR.
-- `bead_timelines: Record<bead_id, { events: TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean }>`
+- `bead_timelines: Record<bead_id, { events: TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean, incidents?: IncidentLine[], failure_operation?: TimelineOperation, failure_recovery?: { summary: string, code?: string } }>`
   (record-timeline-retention §9) is the 실패 팝오버·파킹 타일 material of the
   beads whose card actually shows a failure or a park — an attempt in
   `failed`/`orphaned`/`parked`. `events` is that bead's LAST FIVE timeline
   lines, oldest first, each
-  `{ event_id, at, bead_id, kind, summary, attempt_id?, detail?, log_path? }`;
+  `{ event_id, at, bead_id, kind, summary, attempt_id?, detail?, log_path?, code?, incident?, operation? }`;
   `log_path` is the §4 read-resolution order's resolved path, and `log_expired`
   is `true` when that order found the transcript in NONE of its locations while
   the record does name one — the 180-day retention policy deleted it, which the
@@ -580,7 +580,28 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   omits the whole key. It rides the snapshot rather than a request because ADR
   14 makes `buildLanes` the only assembler of a card — a renderer that fetched
   its own rows would be a second assembly path for the same tile. The WHOLE
-  timeline is a different question, answered by `get-bead-timeline`.
+  timeline is a different question, answered by `get-bead-timeline`. UI-lx9o
+  §4.2/§4.3: a timeline event's `summary` is dictionary words; a failure record
+  also carries the raw `code` and an `incident` — the repo operation id, a
+  quick_fix landing's per-settlement id (`<attempt_id>:landing:<at>`), or the
+  attempt id for a session failure. `operation_failed` also carries `operation`
+  (`{ kind: 'deploy'|'verify'|'job', exit_code?, summary?, retry_exhausted?, retry_same_error? }`);
+  every absent fact is an absent key. For a `failed`/`orphaned` attempt the
+  entry also carries `incidents`, the failed tile's 경위 picked from the WHOLE
+  timeline, oldest first: records sharing one `incident` fold into one line
+  (`operation_failed` > `landing_step` > `attempt_failed` > `operation_recovery`
+  speaks for it), a record without one — every line written before this change —
+  stands alone, and the line set is the failure incident, the three incidents
+  just before it and the three most recent after it. Each line is
+  `{ event_id, at, kind, summary, failure? }`; `failure: true` marks the
+  incident the attempt's `quickfix_landing.incident` (else its
+  `deploy_operation_id`) names, else the latest one holding this attempt's
+  `attempt_failed`. With no such record the server makes that line from the
+  attempt's `cause` and `finished_at`, so such a bead is never omitted.
+  `failure_operation` and `failure_recovery` are the failure incident's
+  `operation` and latest `operation_recovery` line, each absent without a
+  record. `events` (the last five lines) is unchanged for the parked tile and
+  the 확인 필요 tile.
 - Timeline kind `guard_denied` records a tool command refused before execution,
   with `runner`, `reason`, and `command`. The session continues. Hook failures
   remain `guard_warning` (`guard_hook_error` or `codex_hook_not_loaded`).
