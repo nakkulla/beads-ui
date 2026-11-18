@@ -991,7 +991,8 @@
  * head's is the once-per-chain mark spent when the recheck deadline passes.
  * Every other terminal `[deploy]` failure carries it as well (UI-1fss §4.1):
  * a quick_fix landing whose deploy failed spends it before its one
- * notification and automatic conversation; nothing else reads it.
+ * notification and automatic conversation. `incidents.js` also reads an
+ * unconsumed mark as "no person was asked" when it judges a run transient.
  * @property {number} [wait_notice_at] - When the one wait notification of a
  * `condition_wait` chain was claimed (dotfiles-rnyd9
  * `first_exit_75_notification`), on the chain head. Absent until then, so a
