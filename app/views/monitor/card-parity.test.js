@@ -1796,6 +1796,83 @@ describe('deploy condition wait card parity between the Worker and Monitor tabs 
   });
 });
 
+describe('failed tile card parity between the Worker and Monitor tabs (UI-lx9o §6)', () => {
+  /**
+   * FT-1's quick_fix landing failed at its deploy step: the attempt stays
+   * `failed`, and the card says it with one badge and one cause sentence.
+   *
+   * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
+   */
+  function drawFailedLanding() {
+    extra_rows = [
+      row('FT-1', { status: 'resolved', metadata: { route: 'quick_fix' } })
+    ];
+    const raw = rawQueue();
+    return drawBothTabs(
+      undefined,
+      {
+        queue: [...raw.queue, { bead_id: 'FT-1', added_at: NOW - HOUR }],
+        attempts: {
+          ...raw.attempts,
+          'att-f1': makeAttempt({
+            attempt_id: 'att-f1',
+            bead_id: 'FT-1',
+            status: 'failed',
+            started_at: NOW - 2 * HOUR,
+            finished_at: NOW - HOUR,
+            quickfix_lane: true,
+            quickfix_landing: {
+              cursor: 'repo_operations',
+              head_sha: 'c'.repeat(40),
+              reason: 'script_failed'
+            },
+            cause: 'quickfix_landing_failed:script_failed'
+          })
+        }
+      },
+      undefined,
+      ['FT-1']
+    );
+  }
+
+  test('draws the same failed card on the worker and monitor tabs', async () => {
+    const { worker, monitor } = await drawFailedLanding();
+
+    const worker_card = /** @type {HTMLElement} */ (
+      cardsByBead(worker).get('FT-1')
+    );
+    const monitor_card = /** @type {HTMLElement} */ (
+      cardsByBead(monitor).get('FT-1')
+    );
+
+    expect(partsOf(monitor_card)).toEqual(partsOf(worker_card));
+  });
+
+  test('draws one status badge and the cause sentence on both tabs', async () => {
+    const { worker, monitor } = await drawFailedLanding();
+
+    const cards = [worker, monitor].map((mount) => {
+      const card = /** @type {HTMLElement} */ (
+        mount.querySelector('.rtile[data-bead-id="FT-1"]')
+      );
+      return {
+        badges: Array.from(
+          card.querySelectorAll('.rtile__failure-badge, .wait-verdict')
+        ).map((el) => el.textContent?.replace(/\s+/g, ' ').trim()),
+        cause: card.querySelector('.rtile__cause')?.textContent?.trim(),
+        elapsed: card.querySelector('.rtile__elapsed')
+      };
+    });
+
+    const expected = {
+      badges: ['⛔ 착지 실패 · 배포 실행'],
+      cause: '스크립트가 0이 아닌 코드로 끝났습니다.',
+      elapsed: null
+    };
+    expect(cards).toEqual([expected, expected]);
+  });
+});
+
 describe('prerequisite wait card parity between the Worker and Monitor tabs (UI-ey6v §3.3)', () => {
   /**
    * L-1 stopped mid-implementation on the open blocker L-2 and still has the

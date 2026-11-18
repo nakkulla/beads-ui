@@ -3943,6 +3943,46 @@ summary.repo-ops-log-viewer__attempt-head {
   font-size: var(--fs-small);
 }
 
+/* 실패 타일의 슬롯 3 원인 문장 (UI-lx9o §4.1): 무슨 일이 났는지 한 문장. */
+.rtile__cause {
+  margin: var(--sp-4) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* 실패 상세의 경위·다음·세부 (UI-lx9o §4.2). 경위의 실패 줄만 색이 다르다. */
+.rtile__incident--failure .rtile__history-summary {
+  color: var(--accent-danger);
+}
+
+.rtile__failure-next {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rtile__failure-more > summary {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.rtile__failure-more > .rtile__failure-kv {
+  margin-top: var(--sp-4);
+}
+
+.rtile__failure-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+  margin-top: var(--sp-6);
+}
+
 @media (max-width: 640px) {
   .rtile__failure-pop {
     position: static;

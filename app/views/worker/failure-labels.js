@@ -19,6 +19,7 @@ import {
   EXACT_FAILURE_TEXT,
   FAILURE_NEXT_ACTIONS,
   RECOVERY_WAIT_SENTENCES,
+  failureCauseSentence,
   failureSegments,
   lastFailureSentence,
   mappedFailureCategory
@@ -177,6 +178,19 @@ export function failureText(code, cause_detail) {
     return /** @type {string} */ (category || sentence);
   }
   return typeof code === 'string' ? code : '';
+}
+
+/**
+ * The first sentence of a failed card's cause line (UI-lx9o §4.1): a
+ * provider-outage reading first, then the dictionary sentence, then the
+ * unknown-failure words — never the raw code.
+ *
+ * @param {unknown} code
+ * @param {unknown} [cause_detail]
+ * @returns {string}
+ */
+export function failureCauseLine(code, cause_detail) {
+  return providerOutageText(code, cause_detail) ?? failureCauseSentence(code);
 }
 
 /**

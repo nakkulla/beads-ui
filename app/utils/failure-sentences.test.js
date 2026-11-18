@@ -7,6 +7,7 @@ import {
   FAILURE_SENTENCES,
   RECOVERY_WAIT_SENTENCES,
   UNKNOWN_FAILURE_TEXT,
+  failureCauseSentence,
   failureCodeWords,
   failureSummaryWords,
   isFailureCodeOnly,
@@ -159,4 +160,20 @@ test('says an unknown recovery disposition as unclassified', () => {
   const words = recoveryWords('mystery', 'mystery');
 
   expect(words).toBe('미분류');
+});
+
+test('gives the last known segment sentence of a composite cause', () => {
+  expect(failureCauseSentence('quickfix_landing_failed:script_failed')).toBe(
+    '스크립트가 0이 아닌 코드로 끝났습니다.'
+  );
+});
+
+test('gives the default sentence for a cause no dictionary knows', () => {
+  expect(failureCauseSentence('quickfix_landing_failed:mystery_token')).toBe(
+    UNKNOWN_FAILURE_TEXT
+  );
+});
+
+test('gives no sentence without a cause', () => {
+  expect(failureCauseSentence(null)).toBe('');
 });

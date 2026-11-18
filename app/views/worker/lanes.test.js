@@ -50,6 +50,7 @@ import {
   summaryChipsTemplate,
   tokenChipTemplate,
   waitBody,
+  waitDetailParts,
   waitReasonLines,
   waitStatusBadge
 } from './lanes.js';
@@ -9640,5 +9641,44 @@ describe('quickFixLanded (UI-1eag §3.1)', () => {
     const landed = quickFixLanded(attempt);
 
     expect(landed).toBe(false);
+  });
+});
+
+describe('wait detail parts for a failed tile (UI-lx9o §4.2)', () => {
+  test('carries the popup facts apart with bare other-reason lines', () => {
+    const since = NOW - 60 * 60 * 1000;
+
+    const parts = waitDetailParts({
+      held_kind: null,
+      wait_reasons: [
+        waitReason({
+          kind: 'recovery',
+          verdict: 'action_required',
+          verdict_reason: { code: 'check_overdue', message: '확인 지연' },
+          resolution: '[이어하기]로 다시 이어간다',
+          release: '이어가면 풀린다',
+          since,
+          targets: []
+        }),
+        waitReason()
+      ],
+      now: NOW
+    });
+
+    expect(parts).toEqual({
+      anchor: expect.any(String),
+      resolution: '해결 — [이어하기]로 다시 이어간다',
+      verdict_reason: '확인 지연',
+      inquiry: '',
+      release: '이어가면 풀린다',
+      others: [expect.stringContaining('A-2 완료를 기다림')],
+      clocks: [`대기 시작 ${formatClockLocal(since, NOW)}`]
+    });
+  });
+
+  test('returns null when the card carries no wait row', () => {
+    expect(
+      waitDetailParts({ held_kind: null, wait_reasons: [], now: NOW })
+    ).toBe(null);
   });
 });

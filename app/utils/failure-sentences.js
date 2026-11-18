@@ -487,6 +487,31 @@ export function lastFailureSentence(code) {
 }
 
 /**
+ * The first sentence of a failed card's cause line (UI-lx9o §4.1): an exact
+ * composite text, else the last segment's sentence (the words-only table
+ * included), else {@link UNKNOWN_FAILURE_TEXT}. It never returns the raw code,
+ * nor the category word the card's badge already says; `''` without a code.
+ *
+ * @param {unknown} code
+ * @returns {string}
+ */
+export function failureCauseSentence(code) {
+  const segments = failureSegments(code);
+  if (segments.length === 0) {
+    return '';
+  }
+  if (typeof code === 'string' && Object.hasOwn(EXACT_FAILURE_TEXT, code)) {
+    return EXACT_FAILURE_TEXT[code];
+  }
+  /** @type {string|null} */
+  let sentence = null;
+  for (const segment of segments) {
+    sentence = segmentSentence(segment) ?? sentence;
+  }
+  return sentence ?? UNKNOWN_FAILURE_TEXT;
+}
+
+/**
  * @param {string} sentence
  * @returns {string}
  */

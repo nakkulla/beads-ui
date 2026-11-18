@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   failureCategory,
+  failureCauseLine,
   failureSentence,
   failureText,
   isKnownFailure,
@@ -697,6 +698,26 @@ describe('post-merge 완료 종단 코드 (UI-8w4t §3)', () => {
     expect(failureSentence('completion_future_code')).toBeNull();
     expect(failureText('completion_future_code')).toBe(
       'completion_future_code'
+    );
+  });
+});
+
+describe('failure cause line (UI-lx9o §4.1)', () => {
+  test('says a provider outage with its hold sentence', () => {
+    expect(failureCauseLine('provider_outage:usage_limit', null)).toBe(
+      '계정 사용 한도로 보류'
+    );
+  });
+
+  test('never returns the raw code of an unknown outage detail', () => {
+    expect(
+      failureCauseLine('provider_outage:future_detail', null)
+    ).not.toContain('future_detail');
+  });
+
+  test('says a known code with its dictionary sentence', () => {
+    expect(failureCauseLine('base_fetch_failed', null)).toBe(
+      '원격 base 브랜치를 fetch하지 못했습니다.'
     );
   });
 });
