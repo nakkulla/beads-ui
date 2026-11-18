@@ -1824,7 +1824,8 @@ describe('failed tile card parity between the Worker and Monitor tabs (UI-lx9o Â
             quickfix_landing: {
               cursor: 'repo_operations',
               head_sha: 'c'.repeat(40),
-              reason: 'script_failed'
+              reason: 'script_failed',
+              failed_step: 'repo_operations'
             },
             cause: 'quickfix_landing_failed:script_failed'
           })
