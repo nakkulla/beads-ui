@@ -122,6 +122,7 @@ import {
   causeKey,
   classifyFailure,
   extractSummary,
+  failedEventWords,
   failureTokenSummary,
   guardKillMessage
 } from './failure-class.js';
@@ -969,7 +970,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
- * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string, job_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, step?: string|null, detail?: any }>, observeFailureFacts?: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<Record<string, unknown>> }} [quickfixLanding]
+ * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string, job_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, step?: string|null, incident?: string, detail?: any }>, observeFailureFacts?: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<Record<string, unknown>> }} [quickfixLanding]
  * Worker-dispatched quick_fix landing settlement (design §6). An attachment
  * without this dep fails the landing attempt closed; it never falls back to PR
  * observation.
@@ -1869,24 +1870,37 @@ export function createScheduler(deps) {
    *
    * The summary is the classifier's own `summary` — the identical string
    * `settleFailureTier` writes into `cause_detail.summary` — because §6 makes
-   * that extraction happen once and everything else read it. Deriving a second
-   * sentence here is how the tile and the history would start disagreeing about
-   * the same failure.
+   * that extraction happen once and everything else read it. Only when that
+   * summary is just the code (or the code's own token sentence, which may carry
+   * a raw detail token) does the line say the code in dictionary words instead
+   * (UI-lx9o §4.3); the raw code and the incident ride along as fields.
    *
    * @param {string} bead_id
    * @param {string} attempt_id
    * @param {import('./failure-class.js').FailureClassification} classification
    * @param {number} at
+   * @param {string|null} [incident] - The failure incident this ending belongs
+   * to (UI-lx9o §4.2); a second failure of the same attempt is its own line.
    */
-  function appendFailedEvent(bead_id, attempt_id, classification, at) {
+  function appendFailedEvent(
+    bead_id,
+    attempt_id,
+    classification,
+    at,
+    incident = null
+  ) {
+    const cause =
+      typeof classification.cause === 'string' ? classification.cause : '';
     appendTimeline({
       bead_id,
       attempt_id,
       kind: 'attempt_failed',
-      // One ending per attempt, so the id is fixed rather than sequenced: a
+      // One ending per incident, so the id is fixed rather than sequenced: a
       // replayed settlement re-appends the same line and the reader keeps one.
-      seq: 'failed',
-      summary: `\uc138\uc158 \uc2e4\ud328 \u2014 ${classification.summary || classification.cause || '\uc6d0\uc778 \ubbf8\uc0c1'}`,
+      seq: incident ? `failed:${incident}` : 'failed',
+      summary: `\uc138\uc158 \uc2e4\ud328 \u2014 ${failedEventWords(classification)}`,
+      ...(cause.length > 0 ? { code: cause } : {}),
+      incident: incident || attempt_id,
       at
     });
   }
@@ -7038,7 +7052,7 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {import('./failure-class.js').FailureClassification} classification
    * @param {any} cause_detail
-   * @param {{ moot?: boolean, bead_status?: string|null, awaiting_user?: string|null, repo?: string|null, at?: number, head_oid?: string, condition_wait?: boolean, needs_human?: boolean }} [options]
+   * @param {{ moot?: boolean, bead_status?: string|null, awaiting_user?: string|null, repo?: string|null, at?: number, head_oid?: string, condition_wait?: boolean, needs_human?: boolean, incident?: string }} [options]
    * `head_oid` is the owned worktree HEAD a proven prerequisite wait observed
    * (prerequisite-wait-residue D3); the residue resume matches identity on it.
    * `condition_wait` marks a quick_fix landing stopped on a `[deploy]`
@@ -7342,7 +7356,13 @@ export function createScheduler(deps) {
           repo,
           cause_detail: cause_detail ?? null
         });
-        appendFailedEvent(bead_id, attempt_id, classification, at);
+        appendFailedEvent(
+          bead_id,
+          attempt_id,
+          classification,
+          at,
+          options.incident ?? null
+        );
         postAttemptFailureComment(
           workspace,
           attempt_id,
@@ -7387,7 +7407,8 @@ export function createScheduler(deps) {
         moot: options.moot === true,
         repo,
         at,
-        needs_human: options.needs_human === true
+        needs_human: options.needs_human === true,
+        incident: options.incident ?? null
       }
     );
     if (tier === 'individual') {
@@ -7405,8 +7426,9 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {import('./failure-class.js').FailureClassification} classification
    * @param {any} cause_detail
-   * @param {{ moot: boolean, repo: string|null|undefined, at: number, needs_human?: boolean }} options
-   * `needs_human` leaves the push to the `확인 필요` announcement.
+   * @param {{ moot: boolean, repo: string|null|undefined, at: number, needs_human?: boolean, incident?: string|null }} options
+   * `needs_human` leaves the push to the `확인 필요` announcement; `incident`
+   * is the failure incident the history line joins (UI-lx9o §4.2).
    */
   function announceAttemptFailure(
     workspace,
@@ -7425,7 +7447,13 @@ export function createScheduler(deps) {
         cause_detail: cause_detail ?? null
       });
     }
-    appendFailedEvent(bead_id, attempt_id, classification, at);
+    appendFailedEvent(
+      bead_id,
+      attempt_id,
+      classification,
+      at,
+      options.incident ?? null
+    );
     // A MOOT settlement is dismissed on arrival — its target is already gone —
     // so there is no one to hand it off TO. Commenting on it would put a
     // failure notice on a bead whose work already landed.
@@ -7456,7 +7484,8 @@ export function createScheduler(deps) {
    * @param {{ moot?: boolean, verdict?: any, bead_status?: string|null,
    *   pr_url?: string|null, awaiting_user?: string|null,
    *   tier_hint?: 'waiting', head_oid?: string,
-   *   condition_wait?: boolean, needs_human?: boolean }} [options]
+   *   condition_wait?: boolean, needs_human?: boolean,
+   *   incident?: string }} [options]
    * `verdict`/`bead_status`/`pr_url`/`awaiting_user` are the classifier's
    * inputs (§3.1): without them a successful-but-undelivered ending cannot be
    * told apart from a park, so only the paths that HAVE them pass them.
@@ -7573,7 +7602,10 @@ export function createScheduler(deps) {
           ? { head_oid: options.head_oid }
           : {}),
         ...(options.condition_wait === true ? { condition_wait: true } : {}),
-        ...(options.needs_human === true ? { needs_human: true } : {})
+        ...(options.needs_human === true ? { needs_human: true } : {}),
+        ...(typeof options.incident === 'string' && options.incident.length > 0
+          ? { incident: options.incident }
+          : {})
       }
     );
 
@@ -9563,11 +9595,18 @@ export function createScheduler(deps) {
       prior,
       `quickfix_landing_failed:${reason}`,
       result.detail,
-      condition_wait === 'wait'
-        ? { condition_wait: true }
-        : landing_deploy
-          ? { needs_human: true }
-          : {}
+      {
+        ...(condition_wait === 'wait'
+          ? { condition_wait: true }
+          : landing_deploy
+            ? { needs_human: true }
+            : {}),
+        // The landing's incident id ties this ending to its landing and repo
+        // operation lines (UI-lx9o §4.2).
+        ...(typeof result.incident === 'string' && result.incident.length > 0
+          ? { incident: result.incident }
+          : {})
+      }
     );
     if (landing_deploy) {
       announceLandingDeployFailure(workspace, bead_id);

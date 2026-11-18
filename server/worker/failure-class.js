@@ -19,7 +19,11 @@
 // row 4). Imported from the dependency-free leaf under `app/utils/`, the same
 // direction `completion-intent.js` already takes: the map is pure data shared
 // by both runtimes, so reading it here keeps this module pure.
-import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
+import {
+  FAILURE_SENTENCES,
+  failureSummaryWords,
+  isFailureCodeOnly
+} from '../../app/utils/failure-sentences.js';
 import { timingLadder, timingSeconds } from '../timing-settings.js';
 import { EXTERNAL_WAIT_CAUSE } from './external-wait/contract.js';
 
@@ -328,6 +332,33 @@ export function failureTokenSummary(cause) {
       ? sentence
       : `${sentence} (${detail_token})`;
   return text.slice(0, SUMMARY_MAX_CHARS);
+}
+
+/**
+ * The words of an `attempt_failed` line (UI-lx9o §4.3): the classifier's own
+ * summary when it is a real sentence, otherwise the code in dictionary words.
+ * A summary that is only the code, or only the code's token sentence (which
+ * appends a raw detail token the dictionary does not know), is a code.
+ *
+ * @param {{ cause?: string|null, summary?: string|null }} classification
+ * @returns {string}
+ */
+export function failedEventWords(classification) {
+  const cause =
+    typeof classification.cause === 'string' ? classification.cause : '';
+  const summary =
+    typeof classification.summary === 'string'
+      ? classification.summary.trim()
+      : '';
+  if (
+    summary.length > 0 &&
+    summary !== cause &&
+    !isFailureCodeOnly(summary) &&
+    summary !== failureTokenSummary(cause)
+  ) {
+    return summary;
+  }
+  return failureSummaryWords(cause);
 }
 
 /**

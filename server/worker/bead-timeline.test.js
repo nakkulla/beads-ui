@@ -73,6 +73,48 @@ describe('bead-timeline append', () => {
     expect(timeline.readTimeline(BEAD)[0].kind).toBe('interactive_session');
   });
 
+  test('keeps the failure code, incident and operation facts beside the words', () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+
+    timeline.append(
+      dispatchEvent({
+        kind: 'operation_failed',
+        seq: 'deploy-1',
+        summary: '배포 실패 — 스크립트가 0이 아닌 코드로 끝났습니다 · exit 2',
+        code: 'script_failed',
+        incident: 'deploy-1',
+        operation: {
+          kind: 'deploy',
+          exit_code: 2,
+          summary: 'Error: boom',
+          retry_exhausted: true
+        }
+      })
+    );
+
+    expect(timeline.readTimeline(BEAD)[0]).toMatchObject({
+      code: 'script_failed',
+      incident: 'deploy-1',
+      operation: {
+        kind: 'deploy',
+        exit_code: 2,
+        summary: 'Error: boom',
+        retry_exhausted: true
+      }
+    });
+  });
+
+  test('writes no failure keys for an event that has none', () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+
+    timeline.append(dispatchEvent({ operation: /** @type {any} */ ({}) }));
+
+    const event = timeline.readTimeline(BEAD)[0];
+    expect(event).not.toHaveProperty('code');
+    expect(event).not.toHaveProperty('incident');
+    expect(event).not.toHaveProperty('operation');
+  });
+
   test('persists the live account preempt event kind', () => {
     const timeline = createBeadTimeline({ workspace_root: WS });
 

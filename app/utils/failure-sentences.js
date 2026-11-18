@@ -209,8 +209,10 @@ export const FAILURE_NEXT_ACTIONS = Object.freeze({
     '실패한 명령과 그 출력을 확인하고 원인을 고치는 것이 먼저입니다.',
   deploy_script_failure:
     '실패한 명령과 그 출력을 확인하고 원인을 고치는 것이 먼저입니다.',
+  // UI-lx9o §4.2: the failed card names only the controls standing on it, so
+  // this sentence says what to fix and the renderer adds the button.
   script_failed:
-    '자동 재시도를 이미 사용했습니다. 실패 원인을 확인하고 고친 뒤 Worker 설정의 [배포 실행]으로 원격 base tip을 다시 배포하고 성공을 확인하세요.',
+    '실패한 스크립트의 출력에서 원인을 확인하고 고치는 것이 먼저입니다.',
   verify_red: '실패한 명령과 그 출력을 확인하고 원인을 고치는 것이 먼저입니다.',
   // 원격을 읽지 못한 실패 — 고칠 코드가 아니라 확인할 연결이다.
   base_fetch_failed: '원격 연결과 관측 상태를 확인하는 것이 먼저입니다.',
@@ -282,6 +284,339 @@ export const FAILURE_NEXT_ACTIONS = Object.freeze({
   internal_record_failed: '남아 있는 원인과 실행 기록을 먼저 확인하세요.',
   repair_lane_retired: '남아 있는 원인과 실행 기록을 먼저 확인하세요.'
 });
+
+/**
+ * Contract token → the human category word. Lives in this dependency-free leaf
+ * (UI-lx9o §4.3) so the server's timeline lines say the same word the card
+ * badge does.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const FAILURE_CATEGORIES = Object.freeze({
+  verify_failed: '검증 실패',
+  verify_cmd_failed: '검증 실패',
+  verify_script_failure: '검증 실패',
+  deploy_failed: '배포 실패',
+  deploy_script_failure: '배포 실패',
+  // UI-i60a §4. A post-merge job is not a deployment: it runs once per file,
+  // against the merged tree, and calling its failure 배포 실패 would send a
+  // reader to the deploy script that never ran. The token is derived in THIS
+  // repository (`classifyRepoOperationFailure`), so the word is added here with
+  // it rather than waiting on the pinned policy artifact.
+  job_script_failure: '잡 실패',
+  interrupted_without_terminal_exit: '중단됨',
+  quickfix_landing_failed: '착지 실패',
+  runner_exit: '세션 실패',
+  // UI-5ym8 §3: 파킹은 실패가 아니라 사람의 결정을 기다리는 결말이고, 세션이
+  // 미해소로 정상 종료한 것은 세션 자체의 실패와 다른 사실이다. 둘 다
+  // `session_` 접두 규칙이 '세션 실패'로 뭉뚱그리기 전에 자기 낱말을 얻는다.
+  session_parked: '세션 대기',
+  session_ended_unresolved: '세션 종료',
+  // 선행 대기 계층 §5.3. 실패 팝오버 경로에는 오지 않는다 — 그 타일은 `failure`
+  // 투영을 얻지 않는다 — 그러나 attempt 이력과 로그 줄이 cause를 사람 말로
+  // 바꿀 때 이 낱말을 읽는다.
+  prerequisite_unmet: '선행 대기',
+  base_moved: '반영 대기',
+  // 착지가 실패한 것이 아니라 착지를 증명할 push 기록·영수증이 모자란 것이다
+  // (§5). 합성 코드에서는 앞선 `quickfix_landing_failed`가 먼저 잡히므로 이
+  // 낱말은 토큰이 단독으로 올 때 쓰인다.
+  delivery_unproven: '착지 증거 부족'
+});
+
+/**
+ * Exact composite causes whose suffix alone loses the session outcome.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const EXACT_FAILURE_TEXT = Object.freeze({
+  'session_hard_stop:failure': '세션이 실패를 보고하고 종료',
+  'session_hard_stop:environment': '세션이 환경 오류를 보고하고 종료',
+  'resume_failed:transcript_missing':
+    '이어하기 대상 세션 기록이 없음 — 새 세션으로 대체'
+});
+
+/**
+ * The words a failure line uses for a code the dictionary does not know
+ * (UI-lx9o §4.2): the raw value stays in the detail's `실패 코드` row only.
+ */
+export const UNKNOWN_FAILURE_TEXT = '알 수 없는 오류로 끝남';
+
+/** The category word of a `[deploy]` exit-75 condition wait (dotfiles-rnyd9). */
+export const CONDITION_WAIT_CATEGORY = '배포 조건 대기';
+
+/**
+ * What each landing cursor is called on the bead's timeline
+ * (record-timeline-retention §5) and on the failed card's badge (UI-lx9o
+ * §4.1). The cursor names are the durable vocabulary the resume judgment
+ * already uses, so the history and the record cannot disagree about which step
+ * a landing reached.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const LANDING_STEP_LABELS = Object.freeze({
+  base_containment: 'base 포함 확인',
+  repo_operations: '배포 실행',
+  post_merge_jobs: '머지 후 잡',
+  branch_cleanup: '브랜치 정리',
+  parent_close: 'bead close',
+  no_change_close: '무변경 close'
+});
+
+/**
+ * Repo operation kind → the word the failed card's badge and the timeline use.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const OPERATION_KIND_WORDS = Object.freeze({
+  deploy: '배포',
+  verify: '검증',
+  job: '잡'
+});
+
+/**
+ * Recovery disposition → word (contract `work-recovery-policy.dispositions`).
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const RECOVERY_DISPOSITION_WORDS = Object.freeze({
+  repair: '수리 대상',
+  wait: '대기',
+  reconcile: '대조 필요',
+  fatal: '복구 불가'
+});
+
+/**
+ * Recovery reason → word (contract `work-recovery-policy.wait_reasons`).
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const RECOVERY_REASON_WORDS = Object.freeze({
+  provider: '공급자·사용량',
+  credential: '인증',
+  prerequisite: '선행 작업',
+  authority: '승인·안전 판단',
+  verification: '검증 오류',
+  condition: '배포 조건',
+  no_progress: '진전 없음',
+  unclassified: '미분류',
+  reconcile: '원래 실행 대조'
+});
+
+/**
+ * Sentences only the failed card and the timeline words read (UI-lx9o §4.3).
+ * `script_failed` is the coordinator's raw code for any script that exited
+ * nonzero; kept out of {@link FAILURE_SENTENCES} so the completion comment,
+ * the PR wait row and the operation timeline keep the sentence they say today
+ * (§5 non-goals).
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const WORDS_ONLY_SENTENCES = Object.freeze({
+  script_failed: '스크립트가 0이 아닌 코드로 끝났습니다.'
+});
+
+/**
+ * @param {string} segment
+ * @returns {string|null}
+ */
+function segmentSentence(segment) {
+  if (Object.hasOwn(FAILURE_SENTENCES, segment)) {
+    return FAILURE_SENTENCES[segment];
+  }
+  if (Object.hasOwn(WORDS_ONLY_SENTENCES, segment)) {
+    return WORDS_ONLY_SENTENCES[segment];
+  }
+  return null;
+}
+
+/**
+ * Split a possibly composite code (`verify_failed:gh_observation_failed`) into
+ * its segments. A non-string or empty value yields no segments at all.
+ *
+ * @param {unknown} code
+ * @returns {string[]}
+ */
+export function failureSegments(code) {
+  if (typeof code !== 'string' || code.length === 0) {
+    return [];
+  }
+  return code.split(':').filter((segment) => segment.length > 0);
+}
+
+/**
+ * The mapped category word of a failure code, or null when no segment maps.
+ * A landing or cleanup stopped on a `[deploy]` condition wait is a wait, not
+ * the lane's failure, whichever segment the lane prefix puts first.
+ *
+ * @param {unknown} code
+ * @returns {string|null}
+ */
+export function mappedFailureCategory(code) {
+  const segments = failureSegments(code);
+  if (segments.includes('condition_wait')) {
+    return CONDITION_WAIT_CATEGORY;
+  }
+  for (const segment of segments) {
+    // Own-property only: a token like `constructor` or `toString` would
+    // otherwise match a prototype member and escape the raw-token fallback.
+    if (Object.hasOwn(FAILURE_CATEGORIES, segment)) {
+      return FAILURE_CATEGORIES[segment];
+    }
+    if (segment.startsWith('session_')) {
+      return '세션 실패';
+    }
+  }
+  return null;
+}
+
+/**
+ * The cause sentence of a code: the LAST segment that has one wins.
+ *
+ * @param {unknown} code
+ * @returns {string|null}
+ */
+export function lastFailureSentence(code) {
+  /** @type {string|null} */
+  let found = null;
+  for (const segment of failureSegments(code)) {
+    if (Object.hasOwn(FAILURE_SENTENCES, segment)) {
+      found = FAILURE_SENTENCES[segment];
+    }
+  }
+  return found;
+}
+
+/**
+ * @param {string} sentence
+ * @returns {string}
+ */
+function withoutPeriod(sentence) {
+  return sentence.endsWith('.') ? sentence.slice(0, -1) : sentence;
+}
+
+/**
+ * A failure code said in dictionary words for a timeline line or a card
+ * sentence (UI-lx9o §4.2/§4.3). It NEVER returns the raw code or an unknown
+ * suffix: an exact composite reads its text, then the last segment with a
+ * sentence, then the category word, and anything else reads
+ * {@link UNKNOWN_FAILURE_TEXT}.
+ *
+ * @param {unknown} code
+ * @returns {string}
+ */
+export function failureSummaryWords(code) {
+  if (typeof code === 'string' && Object.hasOwn(EXACT_FAILURE_TEXT, code)) {
+    return EXACT_FAILURE_TEXT[code];
+  }
+  /** @type {string|null} */
+  let sentence = null;
+  for (const segment of failureSegments(code)) {
+    sentence = segmentSentence(segment) ?? sentence;
+  }
+  if (sentence !== null) {
+    return withoutPeriod(sentence);
+  }
+  return mappedFailureCategory(code) ?? UNKNOWN_FAILURE_TEXT;
+}
+
+/**
+ * A failure code said segment by segment for the detail's `실패 코드` row
+ * (UI-lx9o §4.3): `착지 실패 › 스크립트가 0이 아닌 코드로 끝났습니다`. Each
+ * segment reads its category word, else its sentence, else the unknown words —
+ * the raw code is drawn under it by the caller.
+ *
+ * @param {unknown} code
+ * @returns {string}
+ */
+export function failureCodeWords(code) {
+  if (typeof code === 'string' && Object.hasOwn(EXACT_FAILURE_TEXT, code)) {
+    return EXACT_FAILURE_TEXT[code];
+  }
+  const segments = failureSegments(code);
+  if (segments.length === 0) {
+    return '';
+  }
+  return segments
+    .map((segment, index) => {
+      const category =
+        segment === 'condition_wait'
+          ? CONDITION_WAIT_CATEGORY
+          : Object.hasOwn(FAILURE_CATEGORIES, segment)
+            ? FAILURE_CATEGORIES[segment]
+            : segment.startsWith('session_')
+              ? '세션 실패'
+              : null;
+      const raw_sentence = segmentSentence(segment);
+      const sentence =
+        raw_sentence === null ? null : withoutPeriod(raw_sentence);
+      // The prefix names the lane and the last segment what went wrong, so
+      // only the last one prefers its sentence over its category word.
+      const words =
+        index === segments.length - 1
+          ? (sentence ?? category)
+          : (category ?? sentence);
+      return words ?? UNKNOWN_FAILURE_TEXT;
+    })
+    .join(' › ');
+}
+
+/**
+ * Whether a summary string holds only a code (`script_failed`,
+ * `quickfix_landing_failed:script_failed`) rather than a sentence — such a
+ * record is treated as a code (UI-lx9o §4.2). A bare word without `_` or `:`
+ * is not taken for a code.
+ *
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+export function isFailureCodeOnly(text) {
+  if (typeof text !== 'string') {
+    return false;
+  }
+  const trimmed = text.trim();
+  return /^[a-z0-9_]+(?::[a-z0-9_.-]+)*$/.test(trimmed) && /[_:]/.test(trimmed);
+}
+
+/**
+ * The sentence for a repo-operation script that exited nonzero, naming which
+ * script it was when the kind is known (UI-lx9o §4.1).
+ *
+ * @param {unknown} kind - `deploy`/`verify`/`job`.
+ * @param {number} exit_code
+ * @returns {string}
+ */
+export function scriptExitSentence(kind, exit_code) {
+  const word =
+    typeof kind === 'string' && Object.hasOwn(OPERATION_KIND_WORDS, kind)
+      ? `${OPERATION_KIND_WORDS[kind]} `
+      : '';
+  return `${word}스크립트가 exit ${exit_code}로 끝났습니다.`;
+}
+
+/**
+ * A recovery classification in words (UI-lx9o §4.3): the disposition word and,
+ * when it says more than the disposition, the reason word.
+ *
+ * @param {unknown} disposition
+ * @param {unknown} reason
+ * @returns {string}
+ */
+export function recoveryWords(disposition, reason) {
+  const disposition_word =
+    typeof disposition === 'string' &&
+    Object.hasOwn(RECOVERY_DISPOSITION_WORDS, disposition)
+      ? RECOVERY_DISPOSITION_WORDS[disposition]
+      : '미분류';
+  const reason_word =
+    typeof reason === 'string' &&
+    reason !== disposition &&
+    Object.hasOwn(RECOVERY_REASON_WORDS, reason)
+      ? RECOVERY_REASON_WORDS[reason]
+      : null;
+  return reason_word
+    ? `${disposition_word} · ${reason_word}`
+    : disposition_word;
+}
 
 /**
  * Resume refusals with actionable guidance; unknown reasons keep their code.

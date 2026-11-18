@@ -10,6 +10,11 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  OPERATION_KIND_WORDS,
+  failureSummaryWords,
+  recoveryWords
+} from '../../app/utils/failure-sentences.js';
 import { debug } from '../logging.js';
 import { acquireDeployLock } from './deploy-lock.js';
 import { scriptSummary } from './failure-class.js';
@@ -776,16 +781,27 @@ export function createRepoOperationCoordinator(deps) {
    * beads shared the run to find that out.
    *
    * The summary is `logEvidence`'s already-extracted line (spec §6 row 2), the
-   * same string the durable failure record carries. The append result is
-   * ignored: a settled failure is settled whether or not its history line
-   * survived.
+   * same string the durable failure record carries, after the code said in
+   * dictionary words (UI-lx9o §4.3). The raw code, the operation id as the
+   * failure's incident and the operation facts the failed card's cause line
+   * reads ride along as fields. The append result is ignored: a settled
+   * failure is settled whether or not its history line survived.
    *
-   * @param {any} operation - The operation as it stands at settlement.
+   * @param {any} operation - The operation as it stands at settlement, before
+   * this failure was written (its `retry` is the consumed retry, if any).
    * @param {string} operation_id
    * @param {{ code: string, exit_code?: number|null }} failure
    * @param {string|null} summary
+   * @param {string|null} [fingerprint] - This failure's fingerprint, compared
+   * with the consumed retry's first one.
    */
-  function recordOperationFailure(operation, operation_id, failure, summary) {
+  function recordOperationFailure(
+    operation,
+    operation_id,
+    failure,
+    summary,
+    fingerprint = null
+  ) {
     if (!deps.timeline) {
       return;
     }
@@ -806,10 +822,33 @@ export function createRepoOperationCoordinator(deps) {
             : '배포 실패';
     const exit_code = failure.exit_code ?? null;
     const line = [
-      `${failure.code}`,
+      failureSummaryWords(failure.code),
       ...(typeof exit_code === 'number' ? [`exit ${exit_code}`] : []),
       ...(typeof summary === 'string' && summary.length > 0 ? [summary] : [])
     ].join(' · ');
+    const retry_exhausted = Array.isArray(operation?.retry?.consumed_key);
+    const kind =
+      typeof operation?.kind === 'string' &&
+      Object.hasOwn(OPERATION_KIND_WORDS, operation.kind)
+        ? operation.kind
+        : null;
+    const facts =
+      kind === null
+        ? null
+        : {
+            kind,
+            ...(Number.isInteger(exit_code) ? { exit_code } : {}),
+            ...(typeof summary === 'string' && summary.length > 0
+              ? { summary }
+              : {}),
+            ...(retry_exhausted ? { retry_exhausted: true } : {}),
+            ...(retry_exhausted &&
+            typeof fingerprint === 'string' &&
+            fingerprint.length > 0 &&
+            operation.retry.first_fingerprint === fingerprint
+              ? { retry_same_error: true }
+              : {})
+          };
     for (const subject of Array.isArray(operation?.subjects)
       ? operation.subjects
       : []) {
@@ -825,6 +864,9 @@ export function createRepoOperationCoordinator(deps) {
         // re-appends the same id for the same run.
         seq: operation_id,
         summary: `${kind_label} — ${line}`,
+        code: failure.code,
+        incident: operation_id,
+        ...(facts === null ? {} : { operation: facts }),
         ...(typeof operation?.log_path === 'string' &&
         operation.log_path.length > 0
           ? { log_path: operation.log_path }
@@ -1169,7 +1211,13 @@ export function createRepoOperationCoordinator(deps) {
       announceConditionWait(workspace, operation_id);
       await diagnoseConditionWait(workspace, operation_id);
     }
-    recordOperationFailure(current, operation_id, failure, evidence.summary);
+    recordOperationFailure(
+      current,
+      operation_id,
+      failure,
+      evidence.summary,
+      failure_record.fingerprint
+    );
     await sweepDescendantCoverage(workspace, operation_id);
     transition.reclaim(workspace, operation_id);
     await recoverAfterLadder(workspace, operation_id);
@@ -1225,13 +1273,21 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} kind
    * @param {string} seq
    * @param {string} summary
+   * @param {{ code?: string, incident?: string }} [fields] - The raw value
+   * and the failure incident a recovery line carries (UI-lx9o §4.3).
    */
-  function recordRecoveryEvent(operation, kind, seq, summary) {
+  function recordRecoveryEvent(operation, kind, seq, summary, fields = {}) {
     if (!deps.timeline) {
       return;
     }
     for (const subject of operation.subjects) {
-      deps.timeline.append({ bead_id: subject.bead_id, kind, seq, summary });
+      deps.timeline.append({
+        bead_id: subject.bead_id,
+        kind,
+        seq,
+        summary,
+        ...fields
+      });
     }
   }
 
@@ -1317,7 +1373,11 @@ export function createRepoOperationCoordinator(deps) {
         operation,
         'operation_recovery',
         operation_id,
-        `복구 분류 — ${recovery.disposition}:${recovery.reason || recovery.disposition} · ${operation.failure?.code || 'unknown_error'}`
+        `복구 분류 — ${recoveryWords(recovery.disposition, recovery.reason)} · ${failureSummaryWords(operation.failure?.code)}`,
+        {
+          code: `${recovery.disposition}:${recovery.reason || recovery.disposition} · ${operation.failure?.code || 'unknown_error'}`,
+          incident: operation_id
+        }
       );
     }
     const placed_before = !!recovery.handoff?.placement;

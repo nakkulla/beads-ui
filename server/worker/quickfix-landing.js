@@ -35,9 +35,12 @@
  * @import { Attempt } from './queue-store.js'
  */
 import path from 'node:path';
+import {
+  LANDING_STEP_LABELS,
+  failureSummaryWords
+} from '../../app/utils/failure-sentences.js';
 import { debug } from '../logging.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
-import { failureTokenSummary } from './failure-class.js';
 import {
   fetchForeignBase as fetchSharedForeignBase,
   readForeignPins,
@@ -53,23 +56,6 @@ const log = debug('worker:quickfix-landing');
 // Consumed verbatim from dotfiles `workflow-state.yaml no_change_close`
 // (`close_reason.regex`, `lines: single_line_only`); not redefined here.
 const NO_CHANGE_CLOSE_REASON_RE = /^(?:refuted|no-delta): \S/;
-
-/**
- * What each landing cursor is called on the bead's timeline
- * (record-timeline-retention §5). The cursor names are the durable vocabulary
- * the resume judgment already uses, so the history and the record cannot
- * disagree about which step a landing reached.
- *
- * @type {Readonly<Record<string, string>>}
- */
-const LANDING_STEP_LABELS = Object.freeze({
-  base_containment: 'base 포함 확인',
-  repo_operations: '배포 실행',
-  post_merge_jobs: '머지 후 잡',
-  branch_cleanup: '브랜치 정리',
-  parent_close: 'bead close',
-  no_change_close: '무변경 close'
-});
 
 /**
  * The durable cursors bound to the head they recorded (UI-1eag §3.1): a
@@ -195,9 +181,12 @@ function isSelfImprovementAuto(issue) {
  * from a session's status write; `cleanup_backup` keeps where a cleanup's
  * backup went (UI-w2ou §3.4), so a rerun whose worktree is already gone does
  * not lose it. `deploy_operation_id` is set only on the write that records a
- * terminal deploy failure: the failed run's id (UI-1fss §4.2).
+ * terminal deploy failure: the failed run's id (UI-1fss §4.2). `incident` is
+ * set only by a failing write: the id that ties this failure's timeline lines
+ * into one 경위 line (UI-lx9o §4.2) — the deploy operation's id when one ran,
+ * else one fresh per settlement run.
  *
- * @typedef {{ resolved_by?: string, cleanup_backup?: CleanupBackupReceipt, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt }, deploy_operation_id?: string }|null|undefined} LandingExtra
+ * @typedef {{ resolved_by?: string, cleanup_backup?: CleanupBackupReceipt, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt }, deploy_operation_id?: string, incident?: string }|null|undefined} LandingExtra
  */
 
 /**
@@ -471,8 +460,9 @@ export function createQuickfixLanding(deps) {
    * @param {string} attempt_id
    * @param {'base_containment'|'repo_operations'|'post_merge_jobs'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
    * @param {string|null} reason - The failure token, or null for a step reached.
+   * @param {string|null} [incident] - The failure's incident id (UI-lx9o §4.2).
    */
-  function recordLandingStep(attempt_id, step, reason) {
+  function recordLandingStep(attempt_id, step, reason, incident = null) {
     if (!deps.timeline) {
       return;
     }
@@ -483,22 +473,32 @@ export function createQuickfixLanding(deps) {
         return;
       }
       const label = step === null ? null : LANDING_STEP_LABELS[step];
+      const condition_wait = reason === 'condition_wait';
       deps.timeline.append({
         bead_id,
         attempt_id,
         kind: 'landing_step',
         // The STEP is the fact, so a resumed landing that re-runs a step
         // re-appends the same id and the reader keeps one line. A failure is a
-        // different fact than reaching the step, hence the suffix.
-        seq: reason === null ? step : `${step ?? 'precondition'}:failed`,
-        // A `[deploy]` condition wait (dotfiles-rnyd9) is a wait the Worker
-        // rechecks, not a failed landing; its repeats share this one seq.
+        // different fact than reaching the step, hence the suffix; each
+        // failure incident is its own fact, so a cleanup retry that fails
+        // again keeps its own line (UI-lx9o §4.2). A `[deploy]` condition wait
+        // (dotfiles-rnyd9) is a wait the Worker rechecks, not a failed
+        // landing; its repeats share one seq.
+        seq:
+          reason === null
+            ? step
+            : `${step ?? 'precondition'}:failed${
+                condition_wait || incident === null ? '' : `:${incident}`
+              }`,
         summary:
           reason === null
             ? `착지 단계: ${label ?? step}`
-            : `${reason === 'condition_wait' ? '배포 조건 대기' : '착지 실패'} — ${failureTokenSummary(reason) ?? reason}${
+            : `${condition_wait ? '배포 조건 대기' : '착지 실패'} — ${failureSummaryWords(reason)}${
                 label === undefined || label === null ? '' : ` (${label})`
-              }`
+              }`,
+        ...(reason === null ? {} : { code: reason }),
+        ...(reason === null || incident === null ? {} : { incident })
       });
     } catch (err) {
       log(
@@ -579,7 +579,7 @@ export function createQuickfixLanding(deps) {
    * @param {LandingExtra} [extra]
    * @param {BoundPosition|null} [bound] - The head-bound cursor this pass
    * resumed from; see {@link storedPosition}.
-   * @returns {{ ok: false, reason: string, step: string|null, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt } }}
+   * @returns {{ ok: false, reason: string, step: string|null, incident: string, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean, backup?: CleanupBackupReceipt } }}
    */
   function fail(
     attempt_id,
@@ -589,22 +589,31 @@ export function createQuickfixLanding(deps) {
     extra = null,
     bound = null
   ) {
+    // One incident per failure (UI-lx9o §4.2): a deploy failure joins its
+    // repo operation's lines through the operation id; any other failure gets
+    // an id of its own for this settlement run.
+    const incident =
+      typeof extra?.deploy_operation_id === 'string' &&
+      extra.deploy_operation_id.length > 0
+        ? extra.deploy_operation_id
+        : `${attempt_id}:landing:${now()}`;
     // Existing needs_human/attemptFailed lanes own failure notifications.
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
         quickfix_landing: landingRecord(
           { ...storedPosition(step, head_sha, bound), reason },
-          extra
+          { ...(extra || {}), incident }
         )
       }
     });
-    recordLandingStep(attempt_id, step, reason);
+    recordLandingStep(attempt_id, step, reason, incident);
     notifyChanged(workspace);
     return {
       ok: false,
       reason,
       step,
+      incident,
       ...(extra?.cleanup_detail ? { detail: extra.cleanup_detail } : {})
     };
   }

@@ -405,7 +405,7 @@ describe('worker failed running tile template', () => {
     expect(text).toContain('아래 [이어하기]로 같은 세션에서');
   });
 
-  test('guides script_failed landing recovery through deployment before cleanup retry', () => {
+  test('guides script_failed landing recovery to the cause and the cleanup retry on the card', () => {
     failurePopoverText({
       cause: 'quickfix_landing_failed:script_failed',
       landed: true,
@@ -417,9 +417,9 @@ describe('worker failed running tile template', () => {
       document.querySelectorAll('.rtile__failure-kv > div')
     ).find((row) => row.querySelector('dt')?.textContent === '다음');
 
-    expect(next_row?.querySelector('dd')?.textContent).toMatch(
-      /Worker 설정의 \[배포 실행\][\s\S]*성공[\s\S]*아래 \[정리 재시도\]/
-    );
+    const next = next_row?.querySelector('dd')?.textContent ?? '';
+    expect(next).toMatch(/원인[\s\S]*아래 \[정리 재시도\]/);
+    expect(next).not.toContain('[배포 실행]');
   });
 
   test('replaces continuation guidance with the route refusal sentence', () => {

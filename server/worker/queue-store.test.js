@@ -14489,6 +14489,38 @@ describe('worker/queue-store record transfer', () => {
     ]);
   });
 
+  test('says a dismissed code-only failure in words and keeps its code and landing incident', () => {
+    const { store, timeline } = storeWithTimeline();
+    append(store, {
+      attempt_id: 'a-land',
+      bead_id: 'UI-land',
+      status: 'failed',
+      finished_at: 600,
+      cause: 'quickfix_landing_failed:base_contains_tip',
+      cause_detail: { summary: 'quickfix_landing_failed:base_contains_tip' },
+      quickfix_landing: {
+        cursor: 'base_containment',
+        head_sha: 'a'.repeat(40),
+        reason: 'base_contains_tip',
+        incident: 'a-land:landing:550'
+      }
+    });
+
+    store.dismissAttempt(WS, {
+      attempt_id: 'a-land',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    const [line] = timeline.readTimeline('UI-land');
+    expect(line).toMatchObject({
+      kind: 'attempt_failed',
+      code: 'quickfix_landing_failed:base_contains_tip',
+      incident: 'a-land:landing:550'
+    });
+    expect(line.summary).toMatch(/^세션 실패 — /);
+    expect(line.summary).not.toContain('quickfix_landing_failed');
+  });
+
   test('keeps a done attempt whose completion saga still references its bead', () => {
     fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
     fs.writeFileSync(

@@ -16,9 +16,12 @@
 // server's completion failure comment can read the SAME map; this module pulls
 // lit-html through `lanes.js` and therefore cannot be the shared copy.
 import {
+  EXACT_FAILURE_TEXT,
   FAILURE_NEXT_ACTIONS,
-  FAILURE_SENTENCES,
-  RECOVERY_WAIT_SENTENCES
+  RECOVERY_WAIT_SENTENCES,
+  failureSegments,
+  lastFailureSentence,
+  mappedFailureCategory
 } from '../../utils/failure-sentences.js';
 import { formatElapsed } from './lanes.js';
 
@@ -35,56 +38,11 @@ export function recoveryWaitSentence(reason) {
     : null;
 }
 
-/**
- * Contract token → the human category word.
- *
- * @type {Record<string, string>}
- */
-const FAILURE_CATEGORIES = {
-  verify_failed: '검증 실패',
-  verify_cmd_failed: '검증 실패',
-  verify_script_failure: '검증 실패',
-  deploy_failed: '배포 실패',
-  deploy_script_failure: '배포 실패',
-  // UI-i60a §4. A post-merge job is not a deployment: it runs once per file,
-  // against the merged tree, and calling its failure 배포 실패 would send a
-  // reader to the deploy script that never ran. The token is derived in THIS
-  // repository (`classifyRepoOperationFailure`), so the word is added here with
-  // it rather than waiting on the pinned policy artifact.
-  job_script_failure: '잡 실패',
-  interrupted_without_terminal_exit: '중단됨',
-  quickfix_landing_failed: '착지 실패',
-  runner_exit: '세션 실패',
-  // UI-5ym8 §3: 파킹은 실패가 아니라 사람의 결정을 기다리는 결말이고, 세션이
-  // 미해소로 정상 종료한 것은 세션 자체의 실패와 다른 사실이다. 둘 다
-  // `session_` 접두 규칙이 '세션 실패'로 뭉뚱그리기 전에 자기 낱말을 얻는다.
-  session_parked: '세션 대기',
-  session_ended_unresolved: '세션 종료',
-  // 선행 대기 계층 §5.3. 실패 팝오버 경로에는 오지 않는다 — 그 타일은 `failure`
-  // 투영을 얻지 않는다 — 그러나 attempt 이력과 로그 줄이 cause를 사람 말로
-  // 바꿀 때 이 낱말을 읽는다.
-  prerequisite_unmet: '선행 대기',
-  base_moved: '반영 대기',
-  // 착지가 실패한 것이 아니라 착지를 증명할 push 기록·영수증이 모자란 것이다
-  // (§5). 합성 코드에서는 앞선 `quickfix_landing_failed`가 먼저 잡히므로 이
-  // 낱말은 토큰이 단독으로 올 때 쓰인다.
-  delivery_unproven: '착지 증거 부족'
-};
-
 /** Provider-hold detail → display sentence. */
 /** @type {Record<string, string>} */
 const PROVIDER_OUTAGE_SENTENCES = {
   overloaded_529: 'Claude API 과부하(529)로 보류',
   rate_limited_429: 'Claude API 요청 한도(429)로 보류'
-};
-
-/** Exact composite causes whose suffix alone loses the session outcome. */
-/** @type {Record<string, string>} */
-const EXACT_FAILURE_TEXT = {
-  'session_hard_stop:failure': '세션이 실패를 보고하고 종료',
-  'session_hard_stop:environment': '세션이 환경 오류를 보고하고 종료',
-  'resume_failed:transcript_missing':
-    '이어하기 대상 세션 기록이 없음 — 새 세션으로 대체'
 };
 
 /**
@@ -132,23 +90,7 @@ function providerOutageText(code, cause_detail) {
   return http_match ? `Claude API 오류(${http_match[1]})로 보류` : null;
 }
 
-/**
- * Split a possibly composite code (`verify_failed:gh_observation_failed`) into
- * its segments. A non-string or empty value yields no segments at all, which is
- * what keeps every accessor below fail-quiet.
- *
- * @param {unknown} code
- * @returns {string[]}
- */
-function segmentsOf(code) {
-  if (typeof code !== 'string' || code.length === 0) {
-    return [];
-  }
-  return code.split(':').filter((segment) => segment.length > 0);
-}
-
-/** The category word of a `[deploy]` exit-75 condition wait (dotfiles-rnyd9). */
-const CONDITION_WAIT_CATEGORY = '배포 조건 대기';
+const segmentsOf = failureSegments;
 
 /**
  * Whether a failure code — bare or behind a lane prefix such as
@@ -161,31 +103,6 @@ const CONDITION_WAIT_CATEGORY = '배포 조건 대기';
  */
 export function isConditionWait(code) {
   return segmentsOf(code).includes('condition_wait');
-}
-
-/**
- * The mapped category word for a failure code, before the public fallback.
- *
- * @param {unknown} code
- * @returns {string|null}
- */
-function mappedFailureCategory(code) {
-  // A landing or cleanup stopped on a `[deploy]` condition wait is a wait, not
-  // the lane's failure, whichever segment the lane prefix puts first.
-  if (isConditionWait(code)) {
-    return CONDITION_WAIT_CATEGORY;
-  }
-  for (const segment of segmentsOf(code)) {
-    // Own-property only: a token like `constructor` or `toString` would
-    // otherwise match a prototype member and escape the raw-token fallback.
-    if (Object.hasOwn(FAILURE_CATEGORIES, segment)) {
-      return FAILURE_CATEGORIES[segment];
-    }
-    if (segment.startsWith('session_')) {
-      return '세션 실패';
-    }
-  }
-  return null;
 }
 
 /**
@@ -211,14 +128,7 @@ export function failureCategory(code) {
  * @returns {string|null}
  */
 export function failureSentence(code) {
-  /** @type {string|null} */
-  let found = null;
-  for (const segment of segmentsOf(code)) {
-    if (Object.hasOwn(FAILURE_SENTENCES, segment)) {
-      found = FAILURE_SENTENCES[segment];
-    }
-  }
-  return found;
+  return lastFailureSentence(code);
 }
 
 /**
