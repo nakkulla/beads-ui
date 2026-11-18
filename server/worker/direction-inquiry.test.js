@@ -1583,6 +1583,23 @@ describe('direction-inquiry paused conversation (UI-6kj0)', () => {
     });
   });
 
+  test('closes an unrecorded paused window and refuses the click', async () => {
+    const tmux = clickHub();
+    const { inquiry } = makeInquiry({
+      tmux,
+      readAttempt: pausedAttempt,
+      store: { recordInteractiveSession: () => ({ ok: false }) }
+    });
+
+    const outcome = await inquiry.launchForClick(pausedInput());
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'record_failed'
+    });
+    expect(tmux.calls).toContainEqual(expect.arrayContaining(['kill-window']));
+  });
+
   test('ignores the paused flag on the automatic path', async () => {
     const tmux = launchingHub();
     const { inquiry } = makeInquiry({ tmux, readAttempt: pausedAttempt });

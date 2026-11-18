@@ -328,7 +328,7 @@ export function inquiryWrapper(input) {
  * @property {(workspace: string, issue: any) => 'claude'|'codex'|null} [currentRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
  * @property {() => number} [now]
- * @property {{ recordInteractiveSession: (workspace: string, record: any) => void }} [store]
+ * @property {{ recordInteractiveSession: (workspace: string, record: any) => ({ ok: boolean }|void) }} [store]
  * @property {(...args: any[]) => void} [log]
  * @property {string} [heartbeatPath]
  * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
@@ -739,11 +739,12 @@ export function createDirectionInquiry(deps) {
       placement: automatic ? 'inquiry' : 'user'
     });
     if (launched.session === 'launched') {
+      let recorded = true;
       try {
         const launched_at = deps.now ? deps.now() : Date.now();
         const session_id = target.session_id ?? launch_session_id;
         if (deps.store) {
-          deps.store.recordInteractiveSession(workspace, {
+          const stored = deps.store.recordInteractiveSession(workspace, {
             bead_id,
             kind: 'inquiry',
             provider: target.runner,
@@ -776,11 +777,32 @@ export function createDirectionInquiry(deps) {
               takeover_notified_at: null
             }
           });
+          recorded = stored?.ok !== false;
         } else {
           log('interactive session store unavailable for %s', bead_id);
         }
       } catch (err) {
+        recorded = false;
         log('interactive session record failed for %s: %o', bead_id, err);
+      }
+      if (paused && !recorded) {
+        // Once the reservation is released only this record refuses a paused
+        // resume, so a window without one would share its session with that
+        // resume (UI-6kj0 §3.3): close it and report the click refused.
+        try {
+          await launcher.killWindow(
+            launched.tmux_session,
+            launched.tmux_window
+          );
+        } catch (err) {
+          log('unrecorded paused window close failed for %s: %o', bead_id, err);
+        }
+        return {
+          outcome: refusal('record_failed', facts),
+          title,
+          repo,
+          stop
+        };
       }
     }
     return {
@@ -944,7 +966,8 @@ export function createDirectionInquiry(deps) {
 
     /**
      * Take this Bead's reservation synchronously for a paused attempt's
-     * resume (UI-6kj0 §3.3). False when a launch or another resume holds it;
+     * resume or residue settlement (UI-6kj0 §3.3). False when a launch or
+     * another holder has it;
      * the caller must `release` exactly what it took.
      *
      * @param {string} bead_id

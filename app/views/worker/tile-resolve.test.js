@@ -1234,4 +1234,39 @@ describe('tileResolveFields paused row (UI-6kj0 §3.1-§3.2)', () => {
 
     expect(fields.pause_resume_mode).toBe('disabled');
   });
+
+  test('turns ▶ 재개 into the handback after a closed takeover window', () => {
+    const item = paused({ paused_handback: 'allowed' });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      pause_resume_mode: 'handoff',
+      pause_resume_title:
+        '이 대화에서 마무리한 일시정지 행을 Worker로 되돌립니다 — 대화 창을 닫고 Worker가 같은 세션을 이어갑니다',
+      pause_resume_attempt_id: 'a1'
+    });
+  });
+
+  test('disables ▶ 재개 after a closed takeover that may not go back', () => {
+    const item = paused({ paused_handback: 'refused' });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields).toMatchObject({
+      pause_resume_mode: 'disabled',
+      pause_resume_title:
+        '이 대화에서 마무리 중 — Bead가 open이 아니라 Worker로 되돌릴 수 없습니다'
+    });
+  });
+
+  test('names the paused conversation refusal ahead of the paused title', () => {
+    const item = paused({ paused_refusal: 'bd_unavailable' });
+
+    const fields = tileResolveFields(item, false, false);
+
+    expect(fields.resolve_title).toBe(
+      `이어가기 거절: bd_unavailable — ${PAUSED_TITLE}`
+    );
+  });
 });

@@ -4866,6 +4866,42 @@ describe('same-session conversation return (UI-nuwy)', () => {
         expect(result).toEqual({ ok: false, reason: 'conversation_live' });
         expect(children(env, prior.attempt_id)).toHaveLength(0);
       });
+
+      test('refuses a paused handoff return while a click launch holds the bead', async () => {
+        const { env, inquiry, open_gate } = racingEnv();
+        const prior = await pauseForConversation(env);
+
+        const clicking = inquiry.launchForClick(pausedClick(prior));
+        await vi.waitFor(() => {
+          expect(inquiry.isInFlight('S1')).toBe(true);
+        });
+        const result = await env.scheduler.resume(WS, prior.attempt_id, {
+          conversation_return: { line: '인계 · 계속 진행', source: 'button' }
+        });
+        open_gate();
+        await clicking;
+
+        expect(result).toEqual({ ok: false, reason: 'conversation_live' });
+        expect(children(env, prior.attempt_id)).toHaveLength(0);
+      });
+
+      test('defers the paused residue settlement while a click launch holds the bead', async () => {
+        const { env, inquiry, open_gate } = racingEnv();
+        const prior = await pauseForConversation(env);
+        const clicking = inquiry.launchForClick(pausedClick(prior));
+        await vi.waitFor(() => {
+          expect(inquiry.isInFlight('S1')).toBe(true);
+        });
+        await env.bd.setStatus('S1', 'closed');
+
+        env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+        await flush();
+        open_gate();
+        await clicking;
+
+        expect(env.store.snapshot(WS).done).toHaveLength(0);
+        expect(attemptOf(env, prior.attempt_id).status).toBe('paused');
+      });
     });
   });
 

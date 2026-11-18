@@ -5644,13 +5644,20 @@ export function createScheduler(deps) {
       ) {
         return false;
       }
+      // A conversation launch reserved before its record is stored is not in
+      // `interactive_sessions` yet; the settlement takes that same reservation
+      // so the two never overlap in the worktree (UI-6kj0 §3.3).
+      const inquiry = deps.directionInquiry;
+      if (inquiry?.reserve && !inquiry.reserve(bead_id)) {
+        return false;
+      }
       retiring.add(bead_id);
       void retirePausedBead(
         workspace,
         bead_id,
         status,
         context.seq ?? q.revision
-      );
+      ).finally(() => inquiry?.release?.(bead_id));
       return false;
     }
     const result =
@@ -19305,8 +19312,10 @@ export function createScheduler(deps) {
    * `reserve`) synchronously — before any `await` — and holds it until the
    * child attempt is minted, so a launch arriving meanwhile is refused
    * `inquiry_in_flight`. Only the handoff settlement's `conversation_return`
-   * passes through: it continues the conversation that just ended. Resumes of
-   * every other status are untouched.
+   * skips the unsettled-record check — it continues the conversation that
+   * just ended — and it still takes the reservation, so a new conversation
+   * launched meanwhile never shares its session. Resumes of every other
+   * status are untouched.
    *
    * @param {string} workspace
    * @param {string} attempt_id
@@ -19314,9 +19323,6 @@ export function createScheduler(deps) {
    * @returns {ReturnType<typeof resumeAttempt>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
-    if (continuation.conversation_return) {
-      return resumeAttempt(workspace, attempt_id, continuation);
-    }
     const q = deps.store.snapshot(workspace);
     const prior = q.attempts?.[attempt_id];
     if (!isUserPausedAttempt(prior)) {
@@ -19326,7 +19332,9 @@ export function createScheduler(deps) {
     const record = q.interactive_sessions?.[`${bead_id}:inquiry`];
     const inquiry = deps.directionInquiry;
     if (
-      (!!record && record.settled_at === null) ||
+      (!continuation.conversation_return &&
+        !!record &&
+        record.settled_at === null) ||
       inquiry?.isInFlight?.(bead_id) === true
     ) {
       return { ok: false, reason: 'conversation_live' };

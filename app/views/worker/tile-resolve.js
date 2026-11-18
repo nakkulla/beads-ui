@@ -340,6 +340,22 @@ function pauseResumeFields(item, handoff, handoff_pending) {
         : PAUSE_RESUME_TITLES.closing
     };
   }
+  // A `이 대화에서 마무리` window that closed (§3.4): `▶ 재개` is the
+  // handback while the server last read the Bead `open`, else disabled.
+  if (item.paused_handback === 'allowed') {
+    return {
+      pause_resume_mode: 'handoff',
+      pause_resume_title: PAUSE_RESUME_TITLES.handback,
+      pause_resume_attempt_id:
+        typeof item.attempt_id === 'string' ? item.attempt_id : null
+    };
+  }
+  if (item.paused_handback === 'refused') {
+    return {
+      pause_resume_mode: 'disabled',
+      pause_resume_title: PAUSE_RESUME_TITLES.takeover
+    };
+  }
   return {
     pause_resume_mode: 'dialog',
     pause_resume_title: PAUSE_RESUME_TITLES.dialog
@@ -427,7 +443,8 @@ function failureRow(item) {
  *     `handoff_*`.
  *
  * @param {any} item - A lane-model item (`id`, `run_state`, `user_paused`,
- * `wait`, `wait_reasons`, `discard`, `interactive_sessions`,
+ * `paused_refusal`, `paused_handback`, `wait`, `wait_reasons`, `discard`,
+ * `interactive_sessions`,
  * `conversation_refusal`) or a PR 대기 row (`failure_material`,
  * `merge_action`).
  * @param {boolean} [resolve_pending]
@@ -552,10 +569,15 @@ export function tileResolveFields(
   if ((row === null && !focus) || held || discord) {
     return { ...handoff_fields, ...pair, ...resume_fields };
   }
+  // A paused row's refused handoff is also stamped on its attempt (UI-6kj0
+  // §3.4); the snapshot's `conversation_refusal` stays the fallback.
+  const refusal_reason =
+    row === 'paused' && typeof item.paused_refusal === 'string'
+      ? item.paused_refusal
+      : item.conversation_refusal;
   const refusal =
-    typeof item.conversation_refusal === 'string' &&
-    item.conversation_refusal.length > 0
-      ? `이어가기 거절: ${item.conversation_refusal} — `
+    typeof refusal_reason === 'string' && refusal_reason.length > 0
+      ? `이어가기 거절: ${refusal_reason} — `
       : '';
   return {
     resolve_action: true,

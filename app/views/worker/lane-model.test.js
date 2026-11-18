@@ -10033,4 +10033,32 @@ describe('paused row material (UI-6kj0 §3.1)', () => {
     expect(map.get('A-1')?.run_state).toBe('paused');
     expect(map.get('A-1')?.user_paused).toBeUndefined();
   });
+
+  test.each([
+    [true, 'allowed'],
+    [false, 'refused']
+  ])(
+    'projects a closed takeover with handback_allowed %s as %s',
+    (handback_allowed, expected) => {
+      const attempts = pausedAttempts({
+        cause_detail: {
+          conversation: { ended_by: 'takeover', handback_allowed }
+        }
+      });
+
+      const map = activeByBead(attempts, new Map());
+
+      expect(map.get('A-1')?.paused_handback).toBe(expected);
+    }
+  );
+
+  test('carries the paused conversation refusal onto the row', () => {
+    const attempts = pausedAttempts({
+      cause_detail: { conversation: { refusal: 'bd_unavailable' } }
+    });
+
+    const map = activeByBead(attempts, new Map());
+
+    expect(map.get('A-1')?.paused_refusal).toBe('bd_unavailable');
+  });
 });
