@@ -3,6 +3,7 @@
  */
 import { spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createProcessController } from './process-controller.js';
@@ -60,6 +61,7 @@ export function createRepoOperationRunner(deps = {}) {
       REPO_OPS_TARGET_BASE: input.target_base,
       REPO_OPS_REPO_ROOT: input.cwd
     };
+    const operator_name = process.env.USER || os.userInfo().username;
     const child = spawn_impl(
       process.execPath,
       [
@@ -82,6 +84,10 @@ export function createRepoOperationRunner(deps = {}) {
         env: {
           PATH: process.env.PATH || '',
           HOME: process.env.HOME || '',
+          // A launchd-started server may carry no USER, and tools the script
+          // runs (the Claude CLI's keychain lookup) need the account name.
+          USER: operator_name,
+          LOGNAME: operator_name,
           ...protocol_env
         },
         shell: false,

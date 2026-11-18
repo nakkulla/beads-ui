@@ -89,6 +89,8 @@ if (typeof encoded !== 'string') {
     env: {
       PATH: process.env.PATH || '',
       HOME: process.env.HOME || '',
+      ...(process.env.USER ? { USER: process.env.USER } : {}),
+      ...(process.env.LOGNAME ? { LOGNAME: process.env.LOGNAME } : {}),
       ...input.env
     },
     shell: false,

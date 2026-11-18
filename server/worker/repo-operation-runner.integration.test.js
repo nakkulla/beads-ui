@@ -56,6 +56,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   delete process.env.XDG_STATE_HOME;
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -125,12 +126,59 @@ describe('RepoOperation runner', () => {
         .sort()
     ).toEqual([
       'HOME',
+      'LOGNAME',
       'PATH',
       'REPO_OPS_REPO_ROOT',
       'REPO_OPS_TARGET_BASE',
-      'REPO_OPS_TARGET_SHA'
+      'REPO_OPS_TARGET_SHA',
+      'USER'
     ]);
     expect(log).toContain('stderr');
+  });
+
+  test('gives the script the account name when the server has no USER', async () => {
+    const script = path.join(root, 'script.js');
+    fs.writeFileSync(
+      script,
+      `#!${process.execPath}\nconsole.log(JSON.stringify(process.env));\n`
+    );
+    fs.chmodSync(script, 0o755);
+    vi.stubEnv('USER', '');
+    const runner = createRepoOperationRunner({
+      processController: {
+        capture: () => ({
+          ok: true,
+          identity: { pid: 1, pgid: 1, started_at: 1 }
+        }),
+        probe: () => ({ state: 'owned' }),
+        signal: () => ({ ok: true, state: 'owned' }),
+        terminate: async () => ({ ok: true, state: 'gone', forced: false })
+      }
+    });
+
+    const started = await runner.start({
+      workspace: root,
+      operation_id: 'op',
+      attempt_id: 'user',
+      script_path: script,
+      cwd: root,
+      target_sha: 'a'.repeat(40),
+      target_base: 'main',
+      timeout_ms: SCRIPT_BUDGET_MS
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    if (typeof started.log_path !== 'string') return;
+    await eventually(() =>
+      expect(runner.readMarker(root, 'op', 'user')?.exit_code).toBe(0)
+    );
+
+    const log = stripBoundaryLines(fs.readFileSync(started.log_path)).toString(
+      'utf8'
+    );
+    const environment = JSON.parse(log.split('\n')[0]);
+    expect(environment.USER).toBe(os.userInfo().username);
+    expect(environment.LOGNAME).toBe(os.userInfo().username);
   });
 
   test('records exit 124 after killing a timed-out script process group', async () => {
