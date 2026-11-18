@@ -5826,6 +5826,21 @@ describe('failed tile with one status badge and one cause line (UI-lx9o)', () =>
     );
   });
 
+  test('drops the panel naming an off-card control with it in 다음', () => {
+    const tile = failedTile(
+      { open: true, cause: 'base_fetch_failed' },
+      {
+        wait_reasons: [
+          reasonInput({
+            resolution: '상세 패널의 [대기 해제]로 어긋난 대기를 정리한다'
+          })
+        ]
+      }
+    );
+
+    expect(nextLines(tile)).toContain('해결 — 어긋난 대기를 정리한다');
+  });
+
   test('carries the run facts, attempt copy, session record and legend in the details', () => {
     const tile = failedTile({
       open: true,

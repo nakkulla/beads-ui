@@ -892,12 +892,13 @@ function failureCauseTemplate(failure, status) {
 
 /**
  * A control named in a sentence — `[이름]`, or a list of them joined by `, `
- * and ` 또는 ` — with the particle or `를 눌러` that ties it to the rest.
+ * and ` 또는 ` — with the panel it sits in (`상세 패널의 `) and the particle or
+ * `를 눌러` that ties it to the rest.
  *
  * @type {RegExp}
  */
 const CONTROL_RUN =
-  /\[[^\]]+\](?:(?:, | 또는 )\[[^\]]+\])*(?:[를을] 눌러|으로|로|[를을])?/g;
+  /(?:[가-힣]+ 패널의 )?\[[^\]]+\](?:(?:, | 또는 )\[[^\]]+\])*(?:[를을] 눌러|으로|로|[를을])?/g;
 
 /**
  * One `다음` sentence of a failed tile's detail with only the controls the card
@@ -923,9 +924,10 @@ function withOnCardControls(line, on_card) {
     if (kept.length === 0) {
       return '';
     }
+    const panel = run.slice(0, run.indexOf('['));
     const tail = run.slice(run.lastIndexOf(']') + 1);
     const listed = kept.map((name) => `[${name}]`);
-    return `${
+    return `${panel}${
       listed.length === 1
         ? listed[0]
         : `${listed.slice(0, -1).join(', ')} 또는 ${listed[listed.length - 1]}`
