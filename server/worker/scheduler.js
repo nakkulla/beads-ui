@@ -177,10 +177,10 @@ import {
   STALE_RESIDUE_FAILURE_CLASS,
   failedDiscardOperation,
   failureHandoffTarget,
+  failureRowIdentity,
   isBeadlessRowKey,
   landingDeployFailure,
-  repoOperationIdOf,
-  resolveFailureContext
+  repoOperationIdOf
 } from './resolve-session.js';
 import { foreignReviewPromptSection } from './review-session.js';
 import {
@@ -1521,6 +1521,34 @@ const FAILURE_HANDOFF_ACTIONS = Object.freeze({
  * (UI-1fss §4.3): it stays on the card while the failure row stands.
  */
 const NO_WORKER_EXIT_REFUSAL = '이 행에는 Worker 출구 없음';
+
+/**
+ * The run recorded as the retry of `operation_id` — the one whose `retry_of`
+ * names it, the earliest should two exist — or null (UI-btsr §3.2).
+ *
+ * @param {Record<string, any>|undefined} operations
+ * @param {string} operation_id
+ * @returns {string|null}
+ */
+function retrySuccessorRecord(operations, operation_id) {
+  /** @type {string|null} */
+  let found_id = null;
+  for (const [candidate_id, candidate] of Object.entries(operations || {})) {
+    if (candidate?.retry_of !== operation_id) {
+      continue;
+    }
+    const found = found_id === null ? null : operations?.[found_id];
+    if (
+      found === null ||
+      candidate.requested_at < found.requested_at ||
+      (candidate.requested_at === found.requested_at &&
+        candidate_id.localeCompare(String(found_id)) < 0)
+    ) {
+      found_id = candidate_id;
+    }
+  }
+  return found_id;
+}
 
 /**
  * The `<행 종류>` word of the `Worker로 넘김 · <행 종류> · <결과 줄>` timeline line.
@@ -12181,7 +12209,18 @@ export function createScheduler(deps) {
       const written = deps.store.recordConversationRefusal?.(
         workspace,
         record.bead_id,
-        { reason, kind: record.kind }
+        {
+          reason,
+          kind: record.kind,
+          ...(reason === NO_WORKER_EXIT_REFUSAL
+            ? {
+                row_identity: failureRowIdentity(
+                  deps.store.snapshot(workspace),
+                  record.bead_id
+                )
+              }
+            : {})
+        }
       );
       if (written?.ok) {
         notifyChanged(workspace);
@@ -12732,8 +12771,10 @@ export function createScheduler(deps) {
    * Drop the refusal records whose row is gone: a settled failure, or an
    * 외부 작업 완료 row no longer at `completing`. The card reads a refusal
    * only while its row still stands (UI-18a5 §3.4). A failure row without a
-   * Worker exit keeps its {@link NO_WORKER_EXIT_REFUSAL} while the failure
-   * itself stands, not only while a handoff target does (UI-1fss §4.3).
+   * Worker exit keeps its {@link NO_WORKER_EXIT_REFUSAL} while that same row
+   * stands — the identity recorded with the refusal — not only while a
+   * handoff target does; a row replaced by another failure drops it (UI-1fss
+   * §4.3).
    *
    * @param {string} workspace
    */
@@ -12747,7 +12788,8 @@ export function createScheduler(deps) {
           ? Object.hasOwn(q.spec_authoring_launches || {}, bead_id)
           : refusal.kind === 'resolve'
             ? refusal.reason === NO_WORKER_EXIT_REFUSAL
-              ? resolveFailureContext(q, bead_id) !== null
+              ? typeof refusal.row_identity === 'string' &&
+                failureRowIdentity(q, bead_id) === refusal.row_identity
               : failureHandoffTarget(q, bead_id) !== null
             : deps.externalWait?.findByBead(workspace, bead_id)?.stage ===
               'completing';
@@ -12872,6 +12914,10 @@ export function createScheduler(deps) {
         wait = { ...wait, rerun_operation_id: manual_operation[0] };
         deps.store.recordFixWait(workspace, bead_id, wait);
       }
+      const landing_verdict = landingRerunVerdict(workspace, q, bead_id, wait);
+      if (landing_verdict === 'running') {
+        continue;
+      }
       const identity = manual_rerun
         ? manual_operation?.[1].state === 'failed'
           ? operationIncidentFingerprint(workspace, manual_operation[1])
@@ -12895,12 +12941,14 @@ export function createScheduler(deps) {
       /** @type {string|null} */
       let exhausted = null;
       if (
-        passed ||
-        (!wait.exhausted_reason &&
-          identity !== null &&
-          identity !== wait.failure_identity &&
-          !running &&
-          wait.state === 'rerunning')
+        landing_verdict === 'passed' ||
+        (landing_verdict === null &&
+          (passed ||
+            (!wait.exhausted_reason &&
+              identity !== null &&
+              identity !== wait.failure_identity &&
+              !running &&
+              wait.state === 'rerunning')))
       ) {
         deps.store.recordFixWait(workspace, bead_id, {
           ...wait,
@@ -12918,10 +12966,11 @@ export function createScheduler(deps) {
         continue;
       }
       if (wait.state === 'rerunning') {
-        if (running) {
+        if (running && landing_verdict === null) {
           continue;
         }
-        exhausted = wait.exhausted_reason || '같은 실패 재발';
+        exhausted =
+          landing_verdict || wait.exhausted_reason || '같은 실패 재발';
       } else if (now() - wait.entered_at >= FIX_WAIT_LIMIT_MS) {
         exhausted = '48시간 초과';
       } else {
@@ -13002,23 +13051,33 @@ export function createScheduler(deps) {
               continue;
             }
           }
+          // The failed deploy run a landing rerun re-runs, recorded with the
+          // rerun so the verdict reads the run whose `retry_of` names it
+          // (UI-1fss §4.2).
+          const landing_from = wait.attempt_id
+            ? current.attempts[wait.attempt_id]?.quickfix_landing
+                ?.deploy_operation_id
+            : undefined;
+          const rerun_from =
+            typeof landing_from === 'string' &&
+            current.repo_operations?.[landing_from]?.kind === 'deploy' &&
+            current.repo_operations[landing_from].state === 'failed'
+              ? landing_from
+              : null;
           const rerunning = {
             ...wait,
             state: /** @type {const} */ ('rerunning'),
             ...(repoOperationIdOf(bead_id) !== null
               ? { rerun_manual_run_id: current.manual_deploy_seq + 1 }
+              : {}),
+            ...(rerun_from !== null
+              ? { rerun_from_operation_id: rerun_from }
               : {})
           };
           if (!deps.store.recordFixWait(workspace, bead_id, rerunning).ok) {
             continue;
           }
           fix_wait_flights.add(flight);
-          // The deploy run a landing rerun supersedes when it makes a
-          // successor (UI-1fss §4.2).
-          const rerun_from = wait.attempt_id
-            ? current.attempts[wait.attempt_id]?.quickfix_landing
-                ?.deploy_operation_id
-            : undefined;
           // Cleanup exits reconcile conversations themselves; keep the exit
           // outside this pass so that reconciliation never awaits itself.
           const run = async () => {
@@ -13037,9 +13096,11 @@ export function createScheduler(deps) {
               // pass from its record — the same cause exhausts the wait,
               // another passes it — never as a refused rerun (UI-1fss §4.2).
               const successor_ran =
-                typeof rerun_from === 'string' &&
-                !!deps.store.snapshot(workspace).repo_operations?.[rerun_from]
-                  ?.superseded_by;
+                rerun_from !== null &&
+                retrySuccessorRecord(
+                  deps.store.snapshot(workspace).repo_operations,
+                  rerun_from
+                ) !== null;
               if (!result?.ok && !successor_ran) {
                 deps.store.recordFixWait(workspace, bead_id, {
                   ...rerunning,
@@ -13076,17 +13137,26 @@ export function createScheduler(deps) {
       }
       exhaustFixWait(workspace, bead_id, wait, exhausted);
       // The asking conversation below is this landing failure's one launch:
-      // its once-mark is spent with it (UI-1fss §4.1).
+      // its once-mark is spent with it, and its one push is the
+      // `확인 필요 · 착지 실패` sent with that launch (UI-1fss §4.1).
       const exhausted_landing = landingDeployFailure(
         deps.store.snapshot(workspace),
         bead_id
       );
-      if (exhausted_landing) {
+      const landing_mark_spent =
+        !!exhausted_landing &&
         deps.store.consumeRepoOperationFailureNotice?.(workspace, {
           operation_id: exhausted_landing.operation_id
-        });
-      }
-      if (!wait.chain_head) {
+        })?.ok === true;
+      const recovery_exit =
+        !!wait.attempt_id &&
+        !!q.attempts[wait.attempt_id]?.cause_detail?.recovery;
+      const landing_push =
+        landing_mark_spent &&
+        !wait.chain_head &&
+        !recovery_exit &&
+        repoOperationIdOf(bead_id) === null;
+      if (!wait.chain_head && !landing_push) {
         notifyLifecycle('attemptFailed', {
           bead_id,
           cause: exhausted,
@@ -13094,10 +13164,7 @@ export function createScheduler(deps) {
           repo: workspace
         });
       }
-      if (
-        wait.attempt_id &&
-        q.attempts[wait.attempt_id]?.cause_detail?.recovery
-      ) {
+      if (recovery_exit && wait.attempt_id) {
         const attempt = q.attempts[wait.attempt_id];
         deps.store.updateAttempt(workspace, {
           attempt_id: wait.attempt_id,
@@ -13142,23 +13209,140 @@ export function createScheduler(deps) {
           });
         }
       } else {
+        const failure = exhausted_landing?.operation.failure || {};
         const run = async () => {
-          await deps.failureConversation?.launchForBead({
-            workspace,
-            repo: workspace,
-            bead_id
+          /** @type {any} */
+          let conversation = null;
+          try {
+            conversation =
+              (await deps.failureConversation?.launchForBead({
+                workspace,
+                repo: workspace,
+                bead_id
+              })) ?? null;
+          } catch (err) {
+            log('fix wait conversation failed for %s: %o', bead_id, err);
+            conversation = {
+              session: 'not_launched',
+              reason: 'error',
+              tmux_session: null,
+              tmux_window: null
+            };
+          }
+          if (
+            !landing_push ||
+            !deps.notify ||
+            typeof deps.notify.needsHuman !== 'function'
+          ) {
+            return;
+          }
+          await deps.notify.needsHuman({
+            bead_id,
+            failure_class: LANDING_FAILURE_CLASS,
+            reason:
+              typeof failure.code === 'string' && failure.code.length > 0
+                ? failure.code
+                : 'repo_operation_failed',
+            reason_detail: `자가 수리: 소진 — ${exhausted}`,
+            next_action: '[세션에서 이어가기]·[↻ 정리 재시도]',
+            conversation,
+            repo: exhausted_landing?.attempt.repo ?? workspace
           });
         };
         run().catch((err) => {
-          log('fix wait conversation failed for %s: %o', bead_id, err);
+          log('fix wait exhaustion push failed for %s: %o', bead_id, err);
         });
       }
+    }
+  }
+
+  /**
+   * The verdict of a landing fix wait's rerun (UI-1fss §4.2), read from the
+   * deploy run whose `retry_of` names the failed run the rerun re-ran —
+   * never from the Bead's latest failure, nor from that run's
+   * `superseded_by`, which a later deploy's success that covers it also
+   * sets. A successor that succeeded passes the wait; one that failed for the
+   * same cause exhausts it; one that failed for another cause passes it into
+   * that new failure's own flow. A failed successor is never a refused rerun.
+   *
+   * @param {string} workspace
+   * @param {any} q - Queue snapshot.
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').FixWait} wait
+   * @returns {string|null} `running`, `passed`, an exhaustion reason, or
+   * null when no successor is recorded yet — the wait's own exhaustion
+   * reason and the generic judgment then stand.
+   */
+  function landingRerunVerdict(workspace, q, bead_id, wait) {
+    const from_id = wait.rerun_from_operation_id;
+    if (
+      wait.state !== 'rerunning' ||
+      typeof from_id !== 'string' ||
+      wait.exhausted_reason
+    ) {
+      return null;
+    }
+    const successor_id = retrySuccessorRecord(q.repo_operations, from_id);
+    if (successor_id === null) {
+      return null;
+    }
+    const successor = q.repo_operations[successor_id];
+    if (
+      (successor.state !== 'succeeded' && successor.state !== 'failed') ||
+      Object.values(q.attempts).some(
+        (/** @type {any} */ row) =>
+          row.bead_id === bead_id && row.status === 'running'
+      )
+    ) {
+      return 'running';
+    }
+    if (successor.state === 'succeeded') {
+      return 'passed';
+    }
+    const original = q.repo_operations[from_id];
+    return !!original &&
+      operationIncidentFingerprint(workspace, original) ===
+        operationIncidentFingerprint(workspace, successor)
+      ? '같은 실패 재발'
+      : 'passed';
+  }
+
+  /**
+   * Announce every landing deploy failure whose once-mark is still
+   * unconsumed (UI-1fss §4.1): the recovery for a crash between the end of
+   * the reservation or fix wait that deferred the announcement and the
+   * announcement itself. The announcement is idempotent and keeps its own
+   * gates — a standing reservation or fix wait, a run written before the mark
+   * existed — so this opens nothing a direct call would not. A Bead whose
+   * landing settlement is still running is left to that settlement.
+   *
+   * @param {string} workspace
+   */
+  function sweepLandingDeployFailures(workspace) {
+    /** @type {Set<string>} */
+    const beads = new Set();
+    for (const [attempt_id, attempt] of Object.entries(
+      deps.store.snapshot(workspace).attempts || {}
+    )) {
+      if (
+        attempt.quickfix_lane === true &&
+        attempt.status === 'failed' &&
+        typeof attempt.quickfix_landing?.deploy_operation_id === 'string' &&
+        !settling.has(attempt_id) &&
+        !claimed.has(attempt.bead_id)
+      ) {
+        beads.add(attempt.bead_id);
+      }
+    }
+    for (const bead_id of beads) {
+      announceLandingDeployFailure(workspace, bead_id);
     }
   }
 
   /** @param {string} workspace */
   async function reconcileInteractivePass(workspace) {
     await reconcileFixWaits(workspace);
+    sweepLandingDeployFailures(workspace);
     const launcher = deps.interactiveLauncher;
     if (!launcher) {
       return;

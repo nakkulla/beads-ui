@@ -885,6 +885,17 @@ describe('interactive session projection', () => {
     });
   });
 
+  test('marks the item whose landing deploy failure the server judged', () => {
+    const snapshot = workspace({
+      queue: [{ bead_id: 'A-1', added_at: 1 }],
+      landing_deploy_failures: { 'A-1': 'dep-1' }
+    });
+
+    const lanes = buildLanes([snapshot], [state()]);
+
+    expect(lanes.queue[0].landing_deploy_failure).toBe(true);
+  });
+
   test('projects an empty array when the snapshot has no sessions', () => {
     const snapshot = workspace({ queue: [{ bead_id: 'A-1', added_at: 1 }] });
 

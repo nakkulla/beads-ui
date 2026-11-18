@@ -647,6 +647,9 @@
  * @property {string} reason
  * @property {number} at
  * @property {'resolve'|'external_resume'|'spec_authoring'} kind
+ * @property {string} [row_identity] - The failure row a no-Worker-exit
+ * refusal was said about (UI-1fss §4.3); the refusal stands only while that
+ * same row does.
  */
 /**
  * @typedef {Object} Queue
@@ -3902,6 +3905,9 @@ function normalizeConversation(raw) {
  * @property {number} [exhausted_at]
  * @property {string} [rerun_operation_id]
  * @property {number} [rerun_manual_run_id]
+ * @property {string} [rerun_from_operation_id] - The failed deploy run a
+ * landing rerun re-runs (UI-1fss §4.2): its verdict is read from the run whose
+ * `retry_of` names this one.
  * @property {string[]} used_identities
  */
 
@@ -3943,6 +3949,9 @@ function normalizeFixWait(value) {
     ...(Number.isSafeInteger(value.rerun_manual_run_id) &&
     Number(value.rerun_manual_run_id) > 0
       ? { rerun_manual_run_id: Number(value.rerun_manual_run_id) }
+      : {}),
+    ...(stringOrNullValue(value.rerun_from_operation_id)
+      ? { rerun_from_operation_id: String(value.rerun_from_operation_id) }
       : {}),
     used_identities: Array.isArray(value.used_identities)
       ? value.used_identities.filter((id) => typeof id === 'string')
@@ -4003,7 +4012,10 @@ function normalizeConversationRefusals(raw) {
       out[bead_id] = {
         reason: String(value.reason),
         at: /** @type {number} */ (value.at),
-        kind: value.kind
+        kind: value.kind,
+        ...(stringOrNullValue(value.row_identity)
+          ? { row_identity: String(value.row_identity) }
+          : {})
       };
     }
   }
@@ -8312,7 +8324,7 @@ export function createQueueStore(options = {}) {
      *
      * @param {string} workspace
      * @param {string} bead_id
-     * @param {{ reason: string, kind: 'resolve'|'external_resume'|'spec_authoring' }} input
+     * @param {{ reason: string, kind: 'resolve'|'external_resume'|'spec_authoring', row_identity?: string|null }} input
      * @returns {QueueOpResult}
      */
     recordConversationRefusal(workspace, bead_id, input) {
@@ -8321,7 +8333,10 @@ export function createQueueStore(options = {}) {
         next.conversation_refusals[bead_id] = {
           reason: input.reason,
           at: now(),
-          kind: input.kind
+          kind: input.kind,
+          ...(typeof input.row_identity === 'string'
+            ? { row_identity: input.row_identity }
+            : {})
         };
         return true;
       });

@@ -5630,6 +5630,25 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     );
   });
 
+  test('drops the no-exit refusal once another failure replaces its row', async () => {
+    const env = failureEnv();
+    openFailureConversation(env, {
+      conversation: reservedHandoff(env, { target: null })
+    });
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.setTime(2000);
+    env.real.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'repo_operations',
+      reason: 'repo_operation_failed'
+    });
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
+  });
+
   test('drops the no-exit refusal once its row is gone', async () => {
     const env = failureEnv();
     openFailureConversation(env, {
@@ -42689,6 +42708,18 @@ describe('scheduler quick_fix landing deploy failure (UI-1fss §4.1-4.2)', () =>
     expect(restarted.notify.needsHuman).not.toHaveBeenCalled();
   });
 
+  test('announces a failure whose mark a crash left unconsumed on the next pass', async () => {
+    const env = landEnv({ now: () => 50_000 });
+    seedLanding(env.store);
+    landDeploy(env.store, 'dep-1');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await settleAll();
+
+    expect(env.resolve).toHaveBeenCalledOnce();
+    expect(env.notify.needsHuman).toHaveBeenCalledOnce();
+  });
+
   describe('a fix wait on a landing deploy failure', () => {
     /**
      * A landing stopped on the failed run `dep-1`, its mark spent by the
@@ -42829,7 +42860,49 @@ describe('scheduler quick_fix landing deploy failure (UI-1fss §4.1-4.2)', () =>
       expect(
         env.store.snapshot(WS).repo_operations['dep-2'].failure_notice
       ).toMatchObject({ consumed_at: expect.any(Number) });
-      expect(env.notify.needsHuman).not.toHaveBeenCalled();
+    });
+
+    test('sends the landing needs-human push carrying the exhaustion on the same cause', async () => {
+      const env = landEnv({
+        now: () => 50_001,
+        settle: (store) => landDeploy(store, 'dep-2', { retry_of: 'dep-1' })
+      });
+      seedFixWait(env);
+
+      await rerunAndJudge(env);
+
+      expect(env.notify.needsHuman).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          bead_id: 'S1',
+          failure_class: '착지 실패',
+          reason: 'script_failed',
+          reason_detail: '자가 수리: 소진 — 같은 실패 재발',
+          next_action: '[세션에서 이어가기]·[↻ 정리 재시도]'
+        })
+      );
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
+
+    test('records a refused rerun when a later deploy success covered the failed run', async () => {
+      const env = landEnv({
+        now: () => 50_001,
+        settle: (store) => {
+          recordDeployRun(store, 'dep-later', { ok: true });
+          store.supersedeRepoOperation(WS, {
+            operation_id: 'dep-1',
+            successor_id: 'dep-later'
+          });
+          return { ok: false, reason: 'head_mismatch', step: 'head_mismatch' };
+        }
+      });
+      seedFixWait(env);
+
+      await rerunAndJudge(env);
+
+      expect(env.store.snapshot(WS).fix_waits.S1).toMatchObject({
+        state: 'exhausted',
+        exhausted_reason: '재실행 거절'
+      });
     });
 
     test('opens the new failure flow once on another cause', async () => {

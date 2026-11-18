@@ -568,6 +568,41 @@ export function resolveFailureContext(queue, bead_id, foreign = null) {
 }
 
 /**
+ * The identity of the Bead's failure row (UI-1fss §4.3): its class, cause and
+ * stage, its Worker exit's identity, and the Bead's latest implementation
+ * attempt — or null while no failure row stands. A
+ * `이 행에는 Worker 출구 없음` refusal stands only while this stays the same,
+ * so a row replaced by another failure, one with a Worker exit included,
+ * drops it. The self-repair verdict `repairFailureContext` adds later is left
+ * out: it changes what the row says, not which row it is.
+ *
+ * @param {any} queue - Queue snapshot.
+ * @param {string} bead_id - The row key.
+ * @returns {string|null}
+ */
+export function failureRowIdentity(queue, bead_id) {
+  const context = baseFailureContext(queue, bead_id, null);
+  if (context === null) {
+    return null;
+  }
+  /** @type {string|null} */
+  let latest = null;
+  for (const [attempt_id, attempt] of Object.entries(queue?.attempts || {})) {
+    const record = /** @type {any} */ (attempt);
+    if (record.bead_id === bead_id && isImplementationAttempt(record)) {
+      latest = attempt_id;
+    }
+  }
+  return JSON.stringify([
+    context.failure_class,
+    context.reason,
+    context.stage ?? null,
+    failureHandoffTarget(queue, bead_id)?.identity ?? null,
+    latest
+  ]);
+}
+
+/**
  * @param {any} queue
  * @param {string} bead_id
  * @param {any} foreign
