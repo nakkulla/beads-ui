@@ -27,9 +27,11 @@ export function defaultExternalWaitConfirm(message) {
 
 /**
  * Where a click-started session window is (UI-a119 §3.3), in the one sentence
- * the three session clicks share: `dev:7에 열었습니다 · 활성 창`, the inquiry
- * fallback `bdui-inquiry:3에 열었습니다 · 사용자 tmux 세션을 찾지 못함`, and
- * `이미 열려 있습니다 · dev:7`. Any other reply is not a window and answers null.
+ * the session clicks share: `hub:7에 열었습니다 · 활성 창` and
+ * `이미 열려 있습니다 · dev:7`. A click always opens a new window in the
+ * configured session and selects it there (UI-1fss §4.4), so a `launched` reply
+ * with either `placement` is the active window. Any other reply is not a window
+ * and answers null.
  *
  * @param {Record<string, any>} res - A launch reply carrying `session`,
  * `placement`, `tmux_session` and `tmux_window`.
@@ -46,11 +48,8 @@ export function sessionWindowText(res) {
     return null;
   }
   const opened = place ? `${place}에 열었습니다` : '세션을 열었습니다';
-  if (res.placement === 'user') {
+  if (res.placement === 'user' || res.placement === 'inquiry') {
     return `${opened} · 활성 창`;
-  }
-  if (res.placement === 'inquiry') {
-    return `${opened} · 사용자 tmux 세션을 찾지 못함`;
   }
   return opened;
 }

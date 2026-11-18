@@ -695,8 +695,8 @@ export function createDirectionInquiry(deps) {
           ? ['--session-id', /** @type {string} */ (launch_session_id), block]
           : [block];
     const cwd = worktree_present ? worktree : checkout;
-    // A click opens in the person's own tmux session; the automatic trigger
-    // stays in the background inquiry session (UI-a119 §3.1).
+    // Both open in the inquiry session; only a click selects the window
+    // (UI-1fss §4.4).
     const launched = await launcher.launch({
       ...account_options,
       marker: PANE_MARKER,

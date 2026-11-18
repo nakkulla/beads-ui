@@ -18,19 +18,17 @@ describe('session window toast text (UI-a119 §3.3)', () => {
     expect(text).toBe('dev:7에 열었습니다 · 활성 창');
   });
 
-  test('says the inquiry fallback found no user tmux session', () => {
+  test('says a click window in the configured session is the active window', () => {
     const res = {
       session: 'launched',
       placement: 'inquiry',
-      tmux_session: 'bdui-inquiry',
+      tmux_session: 'hub',
       tmux_window: '3'
     };
 
     const text = sessionWindowText(res);
 
-    expect(text).toBe(
-      'bdui-inquiry:3에 열었습니다 · 사용자 tmux 세션을 찾지 못함'
-    );
+    expect(text).toBe('hub:3에 열었습니다 · 활성 창');
   });
 
   test('names the place of an already open window', () => {

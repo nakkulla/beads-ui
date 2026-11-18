@@ -182,14 +182,16 @@ describe('session-hub interactive launch', () => {
     });
   });
 
-  test('delegates attached placement and focuses the returned user pane', async () => {
-    const { launcher, runSessionHub, runTmux } = makeHub({
-      open: { tmux_session: 'dev', placement: 'attached' }
-    });
+  test('opens a click window in the configured session and selects it', async () => {
+    const { launcher, runSessionHub, runTmux } = makeHub();
 
     const result = await launcher.launch({ ...INPUT, placement: 'user' });
 
-    expect(result).toMatchObject({ placement: 'user', tmux_session: 'dev' });
+    expect(result).toMatchObject({
+      session: 'launched',
+      placement: 'inquiry',
+      tmux_session: 'bdui-inquiry'
+    });
     expect(runSessionHub.mock.calls[1][0]).toEqual([
       'open',
       '--cwd',
@@ -200,11 +202,8 @@ describe('session-hub interactive launch', () => {
       INPUT.marker,
       '--marker-value',
       INPUT.key,
-      '--attached',
-      '--exclude-session',
-      'bdui-inquiry',
-      '--fallback-session',
-      'bdui-inquiry',
+      '--session',
+      INPUT.tmux_session,
       '--',
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
@@ -217,16 +216,35 @@ describe('session-hub interactive launch', () => {
     ]);
   });
 
-  test('leaves a fallback inquiry window in the background', async () => {
+  test('leaves an automatic window in the background', async () => {
+    const { launcher, runSessionHub, runTmux } = makeHub();
+
+    const result = await launcher.launch({ ...INPUT, placement: 'inquiry' });
+
+    expect(result).toMatchObject({ session: 'launched', placement: 'inquiry' });
+    expect(runSessionHub.mock.calls[1][0]).toContain('--session');
+    expect(runTmux).not.toHaveBeenCalled();
+  });
+
+  test('finds a click window already open in a user session without moving it', async () => {
     const { launcher, runSessionHub, runTmux } = makeHub({
-      open: { placement: 'fallback' }
+      find: { found: true, ...LOCATION, tmux_session: 'dev' }
     });
 
     const result = await launcher.launch({ ...INPUT, placement: 'user' });
 
-    expect(result).toMatchObject({ session: 'launched', placement: 'inquiry' });
-    expect(runSessionHub.mock.calls[1][0]).not.toContain('--focus');
-    expect(runTmux).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      session: 'already_running',
+      placement: 'user',
+      tmux_session: 'dev',
+      pane_id: '%9'
+    });
+    expect(runSessionHub.mock.calls.map(([args]) => args[0])).toEqual(['find']);
+    expect(runTmux).toHaveBeenCalledExactlyOnceWith([
+      'select-window',
+      '-t',
+      '%9'
+    ]);
   });
 
   test.each([0, 1])(

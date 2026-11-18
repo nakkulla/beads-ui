@@ -45,7 +45,7 @@ afterEach(() => {
 /**
  * Hub JSON fixture that distinguishes the callers' marker namespaces.
  *
- * @param {{ panes?: Array<{ session?: string, pane?: string, marker?: string, key?: string, dead?: string }>, attached_session?: string, open_error?: string }} [script]
+ * @param {{ panes?: Array<{ session?: string, pane?: string, marker?: string, key?: string, dead?: string }>, open_error?: string }} [script]
  */
 function makeHub(script = {}) {
   /** @type {string[][]} */
@@ -88,16 +88,7 @@ function makeHub(script = {}) {
     if (script.open_error) {
       return hubReply({ code: script.open_error }, 2);
     }
-    const attached = args.includes('--attached')
-      ? script.attached_session
-      : undefined;
-    const session =
-      attached ??
-      args[
-        args.indexOf(
-          args.includes('--attached') ? '--fallback-session' : '--session'
-        ) + 1
-      ];
+    const session = args[args.indexOf('--session') + 1];
     panes.push({ session, pane: '%9', marker, key, dead: '0' });
     return hubReply({
       status: 'launched',
@@ -1624,9 +1615,9 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     expect(tmux.names()).toEqual(['find', 'select-window']);
   });
 
-  test('opens the resolution window in the most recently attached user session', async () => {
+  test('opens the clicked resolution window in the inquiry session as its current window', async () => {
     const { tmux, resolver } = makeLauncher({
-      tmux: makeHub({ attached_session: 'dev' })
+      tmux: makeHub()
     });
 
     const outcome = await resolver.resolve({
@@ -1637,13 +1628,12 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     });
 
     const args = tmux.calls.find((call) => call[0] === 'open') || [];
-    expect(args).toContain('--attached');
+    expect(args[args.indexOf('--session') + 1]).toBe('bdui-inquiry');
+    expect(args).not.toContain('--attached');
     expect(tmux.calls).toContainEqual(['select-window', '-t', '%9']);
-    expect(args).not.toContain('--focus');
     expect(outcome).toMatchObject({
       launched: true,
-      placement: 'user',
-      tmux_session: 'dev',
+      tmux_session: 'bdui-inquiry',
       tmux_window: `resolve-${BEAD}`
     });
   });
@@ -1857,7 +1847,7 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
   test('opens the automatic placement in the detached inquiry session', async () => {
     const { resolver, tmux } = makeLauncher({
       metadata: {},
-      tmux: makeHub({ attached_session: 'dev' })
+      tmux: makeHub()
     });
 
     const outcome = await resolver.resolve({
