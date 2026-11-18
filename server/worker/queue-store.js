@@ -15005,6 +15005,57 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Move the linked follow-ups of a live red-base wait out of serial lanes
+     * to the parallel tail (UI-5gf9). The root's `pr_wait` row holds its serial
+     * lane, so a follow-up waiting behind it in that lane could never start
+     * while the root waits for it. Only waiting serial entries move — a
+     * follow-up already parallel, running, in `pr_wait`, being discarded, or
+     * not queued is left as it is — and the entry keeps its own row, so its
+     * `added_at` grace is not restarted. Nothing to move writes nothing.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string }} input
+     * @returns {QueueOpResult & { moved: Array<{ bead_id: string, lane_id: string }> }}
+     */
+    moveFollowupsToParallel(workspace, input) {
+      const { root_bead_id } = input;
+      /** @type {Array<{ bead_id: string, lane_id: string }>} */
+      let moved = [];
+      const result = applyUnconditional(workspace, (next) => {
+        moved = [];
+        const intent = next.completion_intents[root_bead_id];
+        const wait = intent?.followup_wait;
+        if (
+          !intent ||
+          !wait ||
+          intent.phase !== 'waiting_followup' ||
+          intent.auto_resolution?.class !== 'base_red_followup'
+        ) {
+          return false;
+        }
+        const active = activeBeadIds(next);
+        for (const bead_id of wait.links) {
+          if (active.has(bead_id) || hasActiveDiscardOperation(next, bead_id)) {
+            continue;
+          }
+          const lane = next.serial_lanes.find((item) =>
+            item.entries.some((entry) => entry.bead_id === bead_id)
+          );
+          const entry = lane?.entries.find((item) => item.bead_id === bead_id);
+          if (!lane || !entry) {
+            continue;
+          }
+          removeFromLanes(next, bead_id);
+          next.queue.push(entry);
+          rebindLineageLane(next, bead_id, null);
+          moved.push({ bead_id, lane_id: lane.id });
+        }
+        return moved.length > 0;
+      });
+      return { ...result, moved: result.ok ? moved : [] };
+    },
+
+    /**
      * Claim the automatic conversation of one verify-failure hold (UI-gske
      * §3.5) before it launches. One claim per (PR, held head): a pair already
      * on the intent is refused, so the caller launches nothing.

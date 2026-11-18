@@ -5419,6 +5419,17 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
         },
         'OT-x1': { id: 'OT-x1', status: 'open' }
       }
+    ],
+    [
+      'a link of a hyphenated other rig',
+      {
+        'UI-root': {
+          id: 'UI-root',
+          status: 'in_progress',
+          metadata: { base_red_followup: 'UI-sub-x1' }
+        },
+        'UI-sub-x1': { id: 'UI-sub-x1', status: 'open' }
+      }
     ]
   ])('holds without a base-only verify behind %s', async (_label, issues) => {
     const h = waitHarness({ issues });
@@ -5928,6 +5939,98 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
     await coordinator.reconcile();
 
     expect(h.findIssue.mock.calls.map(([id]) => id)).toEqual(['UI-fix1']);
+  });
+
+  /**
+   * The revision 33663 shape (UI-5gf9): the root's `pr_wait` row holds `s1`,
+   * `s2` is empty, and the named beads wait in `s1` in order.
+   *
+   * @param {string[]} serial - Bead ids seated in `s1`.
+   */
+  function serialLaneStore(serial) {
+    const seeded = seededCompletionStore();
+    seeded.setSerialLaneCount(DRIVER_WS, {
+      expected_revision: seeded.snapshot(DRIVER_WS).revision,
+      count: 2
+    });
+    for (const bead_id of serial) {
+      seeded.place(DRIVER_WS, {
+        expected_revision: seeded.snapshot(DRIVER_WS).revision,
+        bead_id,
+        lane: 's1'
+      });
+    }
+    const snapshot = seeded.snapshot(DRIVER_WS, { copy: true });
+    snapshot.attempts['att-root'].serial_lane_id = 's1';
+    snapshot.pr_wait[0].serial_lane_id = 's1';
+    const file = queueFile({
+      ...snapshot,
+      repo_operations: { 'verify-one': failedVerifyOperation() }
+    });
+    return createQueueStore({ filePathFor: () => file });
+  }
+
+  /**
+   * @param {ReturnType<typeof waitHarness>} h
+   */
+  function laneIds(h) {
+    const q = h.store.snapshot(DRIVER_WS);
+    return {
+      parallel: q.queue.map((/** @type {any} */ entry) => entry.bead_id),
+      s1: q.serial_lanes[0].entries.map(
+        (/** @type {any} */ entry) => entry.bead_id
+      )
+    };
+  }
+
+  test('moves a linked follow-up waiting in a serial lane to the parallel lane', async () => {
+    const h = waitHarness({
+      store: serialLaneStore(['UI-a', 'UI-b', 'UI-c', 'UI-fix1'])
+    });
+
+    await driveOnce(h.store, h.driver);
+
+    expect(laneIds(h)).toEqual({
+      parallel: ['UI-fix1'],
+      s1: ['UI-a', 'UI-b', 'UI-c']
+    });
+  });
+
+  test('records the lane move on the root timeline', async () => {
+    const h = waitHarness({
+      store: serialLaneStore(['UI-a', 'UI-fix1'])
+    });
+
+    await driveOnce(h.store, h.driver);
+
+    expect(
+      h.append.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.summary.includes('병렬 레인'))
+        .map(({ summary, detail }) => ({ summary, detail }))
+    ).toEqual([
+      {
+        summary:
+          '머지 대기 — 후속 1건 직렬 레인 → 병렬 레인으로 옮김: UI-fix1(s1)',
+        detail: 'UI-fix1(s1)'
+      }
+    ]);
+  });
+
+  test('moves a follow-up seated in a serial lane after the wait began on a later pass', async () => {
+    const h = waitHarness({ store: serialLaneStore(['UI-a']) });
+    await driveOnce(h.store, h.driver);
+    const coordinator = coordinatorOver(h);
+    await coordinator.reconcile();
+    h.store.place(DRIVER_WS, {
+      expected_revision: h.store.snapshot(DRIVER_WS).revision,
+      bead_id: 'UI-fix1',
+      lane: 's1'
+    });
+
+    await coordinator.reconcile();
+
+    expect(laneIds(h)).toEqual({ parallel: ['UI-fix1'], s1: ['UI-a'] });
   });
 
   test.each([

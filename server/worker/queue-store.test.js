@@ -19218,6 +19218,157 @@ describe('worker/queue-store red-base follow-up wait (UI-ty6k)', () => {
 
     expect(restored.completion_intents['UI-root'].phase).toBe('needs_human');
   });
+
+  /**
+   * A waiting intent whose queue has two serial lanes and `UI-fix1` seated in
+   * `s1` behind `UI-a` and `UI-b`.
+   */
+  function storeWithSerialFollowup() {
+    const store = storeWithIntent();
+    beginWait(store);
+    store.setSerialLaneCount(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      count: 2
+    });
+    for (const bead_id of ['UI-a', 'UI-b', 'UI-fix1']) {
+      store.place(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        bead_id,
+        lane: 's1'
+      });
+    }
+    return store;
+  }
+
+  test('moves a serial-lane follow-up to the parallel tail with its row', () => {
+    const store = storeWithSerialFollowup();
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-p1'
+    });
+    const before = store
+      .snapshot(WS)
+      .serial_lanes[0].entries.find((entry) => entry.bead_id === 'UI-fix1');
+
+    const result = store.moveFollowupsToParallel(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    const q = store.snapshot(WS);
+    expect(result.moved).toEqual([{ bead_id: 'UI-fix1', lane_id: 's1' }]);
+    expect(q.queue).toEqual([
+      expect.objectContaining({ bead_id: 'UI-p1' }),
+      before
+    ]);
+  });
+
+  test('leaves the unlinked entries of the same lane in place', () => {
+    const store = storeWithSerialFollowup();
+
+    store.moveFollowupsToParallel(WS, { root_bead_id: 'UI-root' });
+
+    expect(
+      store.snapshot(WS).serial_lanes[0].entries.map((entry) => entry.bead_id)
+    ).toEqual(['UI-a', 'UI-b']);
+  });
+
+  test('bumps the revision once across two calls', () => {
+    const store = storeWithSerialFollowup();
+    const start = store.snapshot(WS).revision;
+
+    store.moveFollowupsToParallel(WS, { root_bead_id: 'UI-root' });
+    const second = store.moveFollowupsToParallel(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(second).toMatchObject({ ok: false, moved: [] });
+    expect(store.snapshot(WS).revision).toBe(start + 1);
+  });
+
+  test.each([
+    [
+      'already parallel',
+      (/** @type {ReturnType<typeof createQueueStore>} */ store) => {
+        store.place(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          bead_id: 'UI-fix1'
+        });
+      }
+    ],
+    ['not queued', () => {}],
+    [
+      'in pr_wait',
+      (/** @type {ReturnType<typeof createQueueStore>} */ store) => {
+        store.place(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          bead_id: 'UI-fix1',
+          lane: 's1'
+        });
+        store.appendAttempt(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          attempt: { attempt_id: 'att-UI-fix1', bead_id: 'UI-fix1' }
+        });
+        store.moveToPrWait(WS, {
+          bead_id: 'UI-fix1',
+          attempt_id: 'att-UI-fix1',
+          patch: { status: 'done', finished_at: 2 }
+        });
+      }
+    ],
+    [
+      'running',
+      (/** @type {ReturnType<typeof createQueueStore>} */ store) => {
+        store.place(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          bead_id: 'UI-fix1',
+          lane: 's1'
+        });
+        store.appendAttempt(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          attempt: {
+            attempt_id: 'att-UI-fix1',
+            bead_id: 'UI-fix1',
+            status: 'running'
+          }
+        });
+      }
+    ]
+  ])('writes nothing for a follow-up %s', (_label, arrange) => {
+    const store = storeWithIntent();
+    beginWait(store);
+    store.setSerialLaneCount(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      count: 2
+    });
+    arrange(store);
+    const start = store.snapshot(WS).revision;
+
+    const result = store.moveFollowupsToParallel(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result).toMatchObject({ ok: false, moved: [] });
+    expect(store.snapshot(WS).revision).toBe(start);
+  });
+
+  test('writes nothing for an intent that is not waiting on follow-ups', () => {
+    const store = storeWithIntent();
+    store.setSerialLaneCount(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      count: 2
+    });
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-fix1',
+      lane: 's1'
+    });
+
+    const result = store.moveFollowupsToParallel(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result).toMatchObject({ ok: false, moved: [] });
+  });
 });
 
 describe('strict queue snapshot (UI-xm29 §4.4 remove)', () => {

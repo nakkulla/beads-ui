@@ -94,6 +94,13 @@ beads-ui `87953b63734feda5e20e3aa72b96fb5ca25cbf4b`, dotfiles `d157b4c35bbbec461
   넘긴다(그 head는 대기 이력이 있어 다시 대기하지 않는다).
 - 재시작: 대기 기록이 영속이므로 서버가 다시 뜨면 `start()` 직후 결정 3의 패스가 `waiting_followup` 의도를 다시 관찰한다. `base_verifying` 중이던 operation은
   기존 operation 채택 규칙으로 이어 받는다.
+- 직렬 레인 교착 방지(UI-5gf9): 대기 중인 root의 `pr_wait` 행은 자기 직렬 레인을 점유하므로, 같은 레인 뒤에서
+  기다리는 연결 후속은 시작될 수 없다. 대기를 시작할 때와 대기가 살아 있는 동안의 매 정산 패스(프로세스당 한 번 읽기
+  게이트보다 앞)에서 `wait.links`에 있고 직렬 레인 대기 배열에 있는 후속을 병렬 레인 대기 끝으로 옮긴다
+  (`moveFollowupsToParallel`, 한 번의 저장, 대기 행을 그대로 옮겨 `added_at` 유지). 이미 병렬·실행 중·`pr_wait`·폐기
+  중이거나 큐에 없는 후속은 건드리지 않고, 옮길 것이 없으면 쓰지 않는다. 옮기면 root 타임라인에 `merge_step` 한 줄
+  (`후속 <N>건 직렬 레인 → 병렬 레인으로 옮김: <ID>(<레인>), …`, 잘리지 않는 전체 목록은 `detail`)을 남긴다. 점유·선두 판정(`laneHolds`·`laneOccupiedByOther`)은
+  바꾸지 않는다 — ADR UI-gmww가 승계한 UI-ey6v의 선행 병렬 조항과 같은 원칙이다.
 
 ### 4.3 표시
 

@@ -1476,12 +1476,17 @@ export function createCompletionActionDriver(deps) {
    * @param {'merge_step'|'needs_human'} kind
    * @param {string|number} seq
    * @param {string} summary
+   * @param {string} [detail] - The full value a capped summary may cut.
    */
-  function recordTimeline(bead_id, kind, seq, summary) {
+  function recordTimeline(bead_id, kind, seq, summary, detail) {
     if (!deps.timeline || typeof bead_id !== 'string' || bead_id.length === 0) {
       return;
     }
-    deps.timeline.append({ bead_id, kind, seq, summary });
+    deps.timeline.append(
+      detail === undefined
+        ? { bead_id, kind, seq, summary }
+        : { bead_id, kind, seq, summary, detail }
+    );
   }
   /**
    * Serialized best-effort Bead comments. Terminalization is synchronous and
@@ -2976,7 +2981,7 @@ export function createCompletionActionDriver(deps) {
    * @returns {Promise<string[]>}
    */
   async function liveFollowupLinks(root_bead_id, operation) {
-    const rig = root_bead_id.slice(0, root_bead_id.indexOf('-'));
+    const rig = root_bead_id.slice(0, root_bead_id.lastIndexOf('-'));
     /** @type {string[]} */
     const candidates = [];
     /**
@@ -2987,7 +2992,7 @@ export function createCompletionActionDriver(deps) {
         typeof bead_id === 'string' &&
         FOLLOWUP_ID_RE.test(bead_id) &&
         bead_id !== root_bead_id &&
-        bead_id.slice(0, bead_id.indexOf('-')) === rig &&
+        bead_id.slice(0, bead_id.lastIndexOf('-')) === rig &&
         !candidates.includes(bead_id)
       ) {
         candidates.push(bead_id);
@@ -3017,6 +3022,42 @@ export function createCompletionActionDriver(deps) {
       }
     }
     return live;
+  }
+
+  /**
+   * Move a live red-base wait's follow-ups out of serial lanes (UI-5gf9): the
+   * root's `pr_wait` row holds its lane, so a follow-up waiting there could
+   * never start. Idempotent — a wait with nothing to move writes nothing —
+   * so the wait's start and every re-read may call it.
+   *
+   * @param {string} root_bead_id
+   */
+  function moveFollowupsOutOfSerialLanes(root_bead_id) {
+    if (typeof deps.store.moveFollowupsToParallel !== 'function') {
+      return;
+    }
+    const result = deps.store.moveFollowupsToParallel(deps.workspace, {
+      root_bead_id
+    });
+    if (!result.ok || result.moved.length === 0) {
+      return;
+    }
+    const moved = result.moved
+      .map(
+        (/** @type {{ bead_id: string, lane_id: string }} */ item) =>
+          `${item.bead_id}(${item.lane_id})`
+      )
+      .join(', ');
+    // The summary is capped, so the direction and count lead and the full
+    // list also rides in `detail`.
+    recordTimeline(
+      root_bead_id,
+      'merge_step',
+      `lane:${now()}`,
+      `머지 대기 — 후속 ${result.moved.length}건 직렬 레인 → 병렬 레인으로 옮김: ${moved}`,
+      moved
+    );
+    notify();
   }
 
   /**
@@ -3170,6 +3211,7 @@ export function createCompletionActionDriver(deps) {
     }
     followup_pass_checked.delete(root_bead_id);
     notify();
+    moveFollowupsOutOfSerialLanes(root_bead_id);
     const started = await startBaseVerify(
       root_bead_id,
       intent.target_base,
@@ -3313,6 +3355,10 @@ export function createCompletionActionDriver(deps) {
       endWaitInHold(root_bead_id, '대기 상한 48시간');
       return;
     }
+    // Before the once-per-process pass gate: a queue placement draws no bd
+    // event, so a follow-up placed in a serial lane after the wait began is
+    // seen only by a later pass.
+    moveFollowupsOutOfSerialLanes(root_bead_id);
     if (wait.stage === 'base_verifying') {
       await resumeBaseVerify(root_bead_id, queue, intent);
       return;
