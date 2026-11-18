@@ -335,7 +335,7 @@ describe('direction-inquiry entry block', () => {
       .digest('hex');
 
     expect(digest).toBe(
-      '0d5618f67cd2f7e5d5286295da1996eae106656ea8f2b367ab62d8d79e0ad2ae'
+      '1ef91c665762c14dd12dc7eabbe3d9b0efd0fe5b471f0a248e57a37047660534'
     );
     expect(SPEC_AUTHORING_ENTRY_BLOCK.endsWith('\n')).toBe(false);
   });
@@ -348,6 +348,13 @@ describe('direction-inquiry entry block', () => {
     expect(block).toContain('- 선행 조건: (없음)');
     expect(block).toContain('- 원 attempt: (없음)');
     expect(block).toContain('- 보존 워크트리: (없음)');
+  });
+
+  test('fills the target Bead into the close request step', () => {
+    const block = fillSpecAuthoringEntry({ bead_id: 'UI-x1' });
+
+    expect(block).toContain('request-close --bead UI-x1`');
+    expect(block).toContain('<workflow 스킬 디렉터리>');
   });
   test('pins the dotfiles entry block digest', () => {
     const digest = createHash('sha256')
