@@ -12,6 +12,10 @@ import {
 } from './worker/attach.js';
 import { EXEC_SETTING_KEYS } from './worker/exec-enums.js';
 import {
+  __resetPlacementApprovalForTest,
+  __setPlacementApprovalBdForTest
+} from './worker/placement-adr-approval.js';
+import {
   __resetRepoOpsDisplayForTest,
   recordRepoOpsDisplay
 } from './worker/repo-ops-display.js';
@@ -155,6 +159,14 @@ beforeEach(() => {
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
   __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
+  // The on-screen placement's ADR approval record reads bd (UI-yylj); these
+  // beads carry no quick_fix route, so a stand-in keeps the live binary out.
+  __setPlacementApprovalBdForTest(() => ({
+    readIssue: async (bead_id) => ({ id: bead_id, metadata: {} }),
+    setMetadata: async () => {},
+    unsetMetadata: async () => {},
+    readMetadata: async () => null
+  }));
   __resetRepoOpsDisplayForTest();
   const absent_repo_ops = {
     status: 'absent',
@@ -172,6 +184,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetPlacementApprovalForTest();
   delete process.env.XDG_STATE_HOME;
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
@@ -1171,7 +1184,7 @@ describe('ws worker-queue-place-bundle (UI-blx2 §3.4)', () => {
     });
   });
 
-  test('kicks the live tick once after a successful bundle', async () => {
+  test('kicks the live tick once for the bundle and once as its approval record settles', async () => {
     const tick = vi.fn(async () => {});
     __registerWorkerAttachmentForTest(
       process.cwd(),
@@ -1189,9 +1202,11 @@ describe('ws worker-queue-place-bundle (UI-blx2 §3.4)', () => {
       steps: [{ bead_id: 'C', index: 0 }],
       expected_revision: 1
     });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(replyFor(sock, 'm1').payload.applied).toBe(true);
-    expect(tick).toHaveBeenCalledTimes(1);
+    // The fresh row was held until its ADR approval record settled (UI-yylj).
+    expect(tick).toHaveBeenCalledTimes(2);
   });
 });
 

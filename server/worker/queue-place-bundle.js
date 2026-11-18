@@ -19,6 +19,12 @@ import { debug } from '../logging.js';
 // symbols are function declarations called only after both modules load.
 import { fanout, laneBlocksEdges } from '../ws/worker-handlers.js';
 import { checkWorkerQueueAdmission, tickWorkerQueue } from './attach.js';
+import {
+  holdPlacementApproval,
+  readPlacementApproval,
+  releasePlacementApproval,
+  settlePlacementApprovals
+} from './placement-adr-approval.js';
 import { getWorkerRuntime } from './runtime.js';
 
 const log = debug('worker:queue-place-bundle');
@@ -31,6 +37,8 @@ const log = debug('worker:queue-place-bundle');
  * move or add, in order; `index` counts the lane's rows at that moment without
  * the bound bead's own row.
  * @property {number} expected_revision
+ * @property {boolean} [ui_placement] - The on-screen WebSocket placement: each
+ * bead it newly adds gets the ADR section approval record (UI-yylj).
  */
 
 /**
@@ -165,13 +173,20 @@ export async function placeBundleInQueue(workspace_key, input) {
   ) {
     return { applied: false, conflict: true, queue: before };
   }
-  /** @type {Array<{ id: string, admission: AdmissionResult }>} */
+  /** @type {Array<{ id: string, admission: AdmissionResult, seen: import('./placement-adr-approval.js').PlacementApprovalSeen|null }>} */
   const added = [];
   for (const step of steps) {
     if (isWaiting(before, step.bead_id)) {
       continue;
     }
-    const admission = await admitBead(workspace_key, step.bead_id);
+    // The section digest the person saw is read before the queue changes
+    // (UI-yylj), alongside admission.
+    const [admission, seen] = await Promise.all([
+      admitBead(workspace_key, step.bead_id),
+      input.ui_placement === true
+        ? readPlacementApproval(workspace_key, step.bead_id)
+        : Promise.resolve(null)
+    ]);
     if (!admission.ok) {
       return {
         applied: false,
@@ -181,7 +196,7 @@ export async function placeBundleInQueue(workspace_key, input) {
         queue: queueStore().snapshot(workspace_key)
       };
     }
-    added.push({ id: step.bead_id, admission });
+    added.push({ id: step.bead_id, admission, seen });
   }
   const incoming = [...binds, ...steps.map((step) => step.bead_id)];
   const blocks_edges = laneBlocksEdges(
@@ -190,31 +205,59 @@ export async function placeBundleInQueue(workspace_key, input) {
     lane,
     incoming
   );
-  const result = queueStore().placeBundle(workspace_key, {
-    expected_revision,
-    lane,
-    binds,
-    steps,
-    blocks_edges
-  });
-  if (!result.ok) {
-    return {
-      applied: false,
-      conflict: result.conflict,
-      ...(result.conflict ? {} : { reason: result.reason || 'rejected' }),
-      queue: result.queue
-    };
-  }
-  let queue = result.queue;
-  for (const entry of added) {
-    const settled = settleAdmission(workspace_key, entry.id, entry.admission);
-    if (settled.ok) {
-      queue = settled.queue;
+  const approvals =
+    input.ui_placement === true
+      ? added.map((entry) => ({ bead_id: entry.id, seen: entry.seen }))
+      : [];
+  const approval_ids = approvals.map((entry) => entry.bead_id);
+  holdPlacementApproval(workspace_key, approval_ids);
+  // Every exit settles the hold: an unapplied bundle releases it, an applied
+  // one hands it to the record attempts even if a later step throws.
+  let placed = false;
+  try {
+    const result = queueStore().placeBundle(workspace_key, {
+      expected_revision,
+      lane,
+      binds,
+      steps,
+      blocks_edges
+    });
+    if (!result.ok) {
+      return {
+        applied: false,
+        conflict: result.conflict,
+        ...(result.conflict ? {} : { reason: result.reason || 'rejected' }),
+        queue: result.queue
+      };
+    }
+    placed = true;
+    let queue = result.queue;
+    for (const entry of added) {
+      const settled = settleAdmission(workspace_key, entry.id, entry.admission);
+      if (settled.ok) {
+        queue = settled.queue;
+      }
+    }
+    fanout(workspace_key, queue);
+    Promise.resolve(tickWorkerQueue(workspace_key)).catch((err) => {
+      log(
+        'worker tick after bundle place failed for %s: %o',
+        workspace_key,
+        err
+      );
+    });
+    return { applied: true, conflict: false, queue };
+  } finally {
+    if (approvals.length > 0) {
+      if (placed) {
+        void settlePlacementApprovals(
+          workspace_key,
+          approvals,
+          tickWorkerQueue
+        );
+      } else {
+        releasePlacementApproval(workspace_key, approval_ids);
+      }
     }
   }
-  fanout(workspace_key, queue);
-  Promise.resolve(tickWorkerQueue(workspace_key)).catch((err) => {
-    log('worker tick after bundle place failed for %s: %o', workspace_key, err);
-  });
-  return { applied: true, conflict: false, queue };
 }

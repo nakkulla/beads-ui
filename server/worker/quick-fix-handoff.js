@@ -30,11 +30,14 @@ import { parseDescriptionScope } from './artifact-scope.js';
  * `checks.user_decision_reserved.details_key` is also unread: this module
  * never emits per-line detail objects, only the `missing` token.
  *
- * `checks.adr_approval` is read only for `section_heading_suffix`, which the
- * `all_body_lines_trimmed_except_adr_candidate_section` scan needs to find the
- * span it skips. Its approval tokens (`adr_approval_missing`/`_stale`) and the
- * whole `checks.external_deploy` rule are emitted by the dotfiles Python
- * checker only; this module never emits them.
+ * `checks.adr_approval` is read for `section_heading_suffix` (the span the
+ * `all_body_lines_trimmed_except_adr_candidate_section` scan skips), `key`,
+ * `format_regex` and `missing_tokens`: this module emits
+ * `adr_approval_missing`/`_stale` exactly as the dotfiles checker does
+ * (UI-yylj), with the section digest ported from `check-adr-candidates.py`
+ * (ADR UI-jlov — no runtime read of dotfiles). The whole
+ * `checks.external_deploy` rule is emitted by the dotfiles Python checker
+ * only; this module never emits it.
  *
  * Regex translation for `checks.user_decision_reserved.line_regex`: each
  * pattern is compiled with the `u` flag so counted quantifiers advance by
@@ -112,10 +115,21 @@ const FENCE = '```';
  * @property {Record<string, any>|null} rules
  */
 /**
+ * @typedef {Object} AdrApprovalState
+ * @property {'approved'|'missing'|'stale'} state
+ * @property {number} count `## …결정 (ADR 후보)` sections found; only 1 can
+ * be approved.
+ * @property {string|null} digest Current section digest, null unless
+ * `count` is 1.
+ * @property {string} section Heading and body of every section, as written.
+ */
+/**
  * @typedef {Object} QuickFixHandoffState
  * @property {'reviewed'|'stale'|'unreviewed'|'unknown'} state
  * @property {string[]} missing
  * @property {string|null} digest
+ * @property {AdrApprovalState} [adr] Present only when the body has an ADR
+ * candidate section; card chip material (UI-yylj).
  */
 
 /** @type {QuickFixHandoffLoad|null} */
@@ -653,6 +667,155 @@ function adrCandidateSectionLines(text, suffix, label_patterns) {
 }
 
 /**
+ * Every `## …<suffix>` section as `check-adr-candidates.py` `split_sections`
+ * and `candidate_sections_of` read it: the heading line and its body up to the
+ * next h1/h2, a fenced line never opening one. `lone_cr` is what a lone CR
+ * becomes — `'\n'` in the section reader, `' '` where
+ * `check-quick-fix-handoff.py` `adr_approval_state` tests presence.
+ *
+ * @param {string} text
+ * @param {string} suffix
+ * @param {string} lone_cr
+ * @returns {Array<{ heading: string, body: string[] }>}
+ */
+function adrCandidateSections(text, suffix, lone_cr) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, lone_cr).split('\n');
+  /** @type {Array<{ heading: string, body: string[] }>} */
+  const sections = [];
+  /** @type {{ heading: string, body: string[] }|null} */
+  let current = null;
+  let fenced = false;
+  for (const line of lines) {
+    if (line.replace(PY_LSTRIP_RE, '').startsWith(FENCE)) {
+      fenced = !fenced;
+    }
+    const match = fenced ? null : ADR_HEADING_RE.exec(line);
+    if (match && match[1].length <= 2) {
+      current = null;
+      if (match[1].length === 2 && match[2].endsWith(suffix)) {
+        current = { heading: line, body: [] };
+        sections.push(current);
+      }
+      continue;
+    }
+    if (current) {
+      current.body.push(line);
+    }
+  }
+  return sections;
+}
+
+/**
+ * The `adr_approval` digest of one section body, ported from
+ * `check-adr-candidates.py` `section_digest`: trailing spaces and tabs off each
+ * line, outer blank lines dropped, LF-joined UTF-8, SHA-256 first 12 hex.
+ *
+ * @param {string[]} body
+ * @returns {string}
+ */
+export function adrSectionDigest(body) {
+  const lines = body.map((line) => line.replace(/[ \t]+$/, ''));
+  while (lines.length > 0 && lines[0] === '') {
+    lines.shift();
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  return nodeCrypto
+    .createHash('sha256')
+    .update(lines.join('\n'), 'utf8')
+    .digest('hex')
+    .slice(0, 12);
+}
+
+const ADR_DIGEST_OF =
+  'adr_candidate_section_body_rstrip_space_tab_outer_blanks_dropped_lf_joined_utf8_sha256_12_hex';
+
+/**
+ * Whether the pinned `checks.adr_approval` rule names the fields and the
+ * digest recipe this module ports; false keeps the ADR state unread.
+ *
+ * @param {unknown} rule
+ * @returns {boolean}
+ */
+function adrApprovalUsable(rule) {
+  return (
+    isRecord(rule) &&
+    isNonEmptyString(rule.section_heading_suffix) &&
+    isNonEmptyString(rule.key) &&
+    isNonEmptyString(rule.format_regex) &&
+    rule.digest_of === ADR_DIGEST_OF &&
+    isRecord(rule.missing_tokens) &&
+    isNonEmptyString(rule.missing_tokens.adr_approval_missing) &&
+    isNonEmptyString(rule.missing_tokens.adr_approval_stale)
+  );
+}
+
+/**
+ * The ADR candidate section approval of one body, or null when the body has
+ * no section. A port of `check-quick-fix-handoff.py` `adr_approval_state` over
+ * `check-adr-candidates.py` `approval_problem`: a section count other than 1
+ * or an absent/malformed value is `missing`, a digest mismatch is `stale`.
+ *
+ * @param {string} text
+ * @param {unknown} value
+ * @param {Record<string, any>} rule
+ * @returns {AdrApprovalState|null}
+ */
+function adrApprovalState(text, value, rule) {
+  const suffix = rule.section_heading_suffix;
+  if (
+    !text.includes(suffix) ||
+    adrCandidateSections(text, suffix, ' ').length === 0
+  ) {
+    return null;
+  }
+  const sections = adrCandidateSections(text, suffix, '\n');
+  const section = sections
+    .map((entry) => [entry.heading, ...entry.body].join('\n').trimEnd())
+    .join('\n\n');
+  if (sections.length !== 1) {
+    return { state: 'missing', count: sections.length, digest: null, section };
+  }
+  const digest = adrSectionDigest(sections[0].body);
+  // Python `$` also matches before one trailing newline.
+  const approved = typeof value === 'string' ? value.replace(/\n$/, '') : null;
+  if (approved === null || !new RegExp(rule.format_regex).test(approved)) {
+    return { state: 'missing', count: 1, digest, section };
+  }
+  const state =
+    approved.slice(approved.lastIndexOf('@') + 1) === digest
+      ? 'approved'
+      : 'stale';
+  return { state, count: 1, digest, section };
+}
+
+/**
+ * The ADR candidate section approval of one quick_fix issue against the
+ * pinned rule, or null when the issue is not quick_fix, has no section, or the
+ * pin cannot be read. The UI placement writer and the card chip read this.
+ *
+ * @param {unknown} issue
+ * @param {{ fs?: QuickFixHandoffFs }} [deps]
+ * @returns {(AdrApprovalState & { key: string })|null}
+ */
+export function judgeAdrApproval(issue, deps = {}) {
+  const record = isRecord(issue) ? issue : {};
+  const metadata = isRecord(record.metadata) ? record.metadata : {};
+  if (metadata.route !== 'quick_fix') {
+    return null;
+  }
+  const loaded = loadQuickFixHandoff(deps);
+  const rule = loaded.rules?.quick_fix_handoff?.checks?.adr_approval;
+  if (!loaded.supported || !adrApprovalUsable(rule)) {
+    return null;
+  }
+  const text = typeof record.description === 'string' ? record.description : '';
+  const adr = adrApprovalState(text, metadata[rule.key], rule);
+  return adr ? { ...adr, key: rule.key } : null;
+}
+
+/**
  * `user_decision_reserved:L<n>` tokens for every trimmed body line matching
  * one of the pinned reservation regexes, resolver-independent (§4.4). Lines
  * in `excluded` are skipped: an ADR candidate section is proven by
@@ -766,6 +929,13 @@ export function judgeQuickFixHandoff(issue, deps = {}) {
             )
           )
         : new Set();
+    const adr_rule = checks.adr_approval;
+    const adr = adrApprovalUsable(adr_rule)
+      ? adrApprovalState(text, metadata[adr_rule.key], adr_rule)
+      : null;
+    if (adr && adr.state !== 'approved') {
+      missing.push(adr_rule.missing_tokens[`adr_approval_${adr.state}`]);
+    }
     missing.push(...reservationTokens(text, reservation_rule, excluded));
 
     const digest = bodyDigest(description);
@@ -784,7 +954,7 @@ export function judgeQuickFixHandoff(issue, deps = {}) {
       state = 'stale';
     }
 
-    return { state, missing, digest };
+    return adr ? { state, missing, digest, adr } : { state, missing, digest };
   } catch {
     return { state: 'unknown', missing: [], digest: null };
   }

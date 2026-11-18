@@ -26,10 +26,15 @@ import {
   pushLogPath,
   readPushLog
 } from './guard-hook.js';
+import {
+  holdPlacementApproval,
+  releasePlacementApproval
+} from './placement-adr-approval.js';
 import { resolveExecSettings } from './policy.js';
 import { createProviderHealth } from './provider-health.js';
 import { RETRY_DELAYS_MS } from './queue-hold.js';
 import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
+import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
 import * as operationPolicy from './repo-operation-policy.js';
 import { selfRepairFailureIdentity } from './resolution-ladder.js';
@@ -1982,6 +1987,7 @@ function makeFakeBd(config) {
         description: c.description ?? null,
         issue_type: c.issue_type,
         quick_fix_review: c.quick_fix_review,
+        adr_approval: c.adr_approval,
         ...(Object.hasOwn(c, 'awaiting_user')
           ? { awaiting_user: c.awaiting_user }
           : {}),
@@ -32775,7 +32781,7 @@ describe('quick_fix self-review dispatch block (UI-r7or §6)', () => {
   /**
    * A quick_fix bead config whose snapshot carries the judgement inputs.
    *
-   * @param {{ quick_fix_review?: unknown, description?: string, issue_type?: string }} [patch]
+   * @param {{ quick_fix_review?: unknown, adr_approval?: unknown, description?: string, issue_type?: string }} [patch]
    */
   function quickFixBead(patch = {}) {
     return {
@@ -32830,6 +32836,47 @@ describe('quick_fix self-review dispatch block (UI-r7or §6)', () => {
     expect(
       quickFixSelfReviewBlock(
         { state: 'reviewed', missing: [], digest: '8c1d40ffab52' },
+        RECEIPT
+      )
+    ).toBeNull();
+  });
+
+  test('builds an ADR block for a reviewed judgement whose approval is missing', () => {
+    const block = quickFixSelfReviewBlock(
+      {
+        state: 'reviewed',
+        missing: ['adr_approval_missing'],
+        digest: '8c1d40ffab52',
+        adr: { state: 'missing', count: 1, digest: 'aaaaaaaaaaaa', section: '' }
+      },
+      RECEIPT
+    );
+
+    expect(block).toBe(
+      [
+        '[quick_fix self-review]',
+        `reviewed quick_fix_review 관측 — 영수증 \`${RECEIPT}\`, 현재 본문 digest \`8c1d40ffab52\`.`,
+        '누락: adr_approval_missing',
+        '',
+        '구현에 들어가기 전에 workflow 계약의 quick_fix ADR 절 승인(Quick_fix ADR actions)을 먼저 확인하라.'
+      ].join('\n')
+    );
+  });
+
+  test('builds no block for a reviewed judgement whose approval matches', () => {
+    expect(
+      quickFixSelfReviewBlock(
+        {
+          state: 'reviewed',
+          missing: [],
+          digest: '8c1d40ffab52',
+          adr: {
+            state: 'approved',
+            count: 1,
+            digest: 'aaaaaaaaaaaa',
+            section: ''
+          }
+        },
         RECEIPT
       )
     ).toBeNull();
@@ -32909,6 +32956,109 @@ describe('quick_fix self-review dispatch block (UI-r7or §6)', () => {
       `stale quick_fix_review 관측 — 영수증 \`${RECEIPT}\``
     );
     expect(prompt).toContain(BODY_DIGEST);
+  });
+
+  test.each([
+    [undefined, 'adr_approval_missing'],
+    [`user@${'0'.repeat(12)}`, 'adr_approval_stale']
+  ])(
+    'carries the ADR approval token on the 누락 line for adr_approval=%s',
+    async (adr_approval, token) => {
+      const description = BODY.replace(
+        '## scope',
+        '## 결정 (ADR 후보)\n- 칩 자리는 슬롯 1이다 → ADR\n\n## scope'
+      );
+      const env = setup({
+        config: { S1: quickFixBead({ description, adr_approval }) },
+        slots: 1,
+        admission: { validate: vi.fn(async () => ({ ok: true })) }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnedBead('S1').prompt).toContain(`누락: ${token}`);
+    }
+  );
+
+  test('adds the ADR block to a reviewed quick_fix without an approval', async () => {
+    const description = BODY.replace(
+      '## scope',
+      '## 결정 (ADR 후보)\n- 칩 자리는 슬롯 1이다 → ADR\n\n## scope'
+    );
+    const judged = judgeQuickFixHandoff({
+      description,
+      issue_type: 'task',
+      metadata: { route: 'quick_fix' }
+    });
+    const env = setup({
+      config: {
+        S1: quickFixBead({
+          description,
+          quick_fix_review: `self@${judged?.digest}`
+        })
+      },
+      slots: 1,
+      admission: { validate: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const prompt = env.runner.spawnedBead('S1').prompt;
+    expect(prompt).toContain('reviewed quick_fix_review 관측');
+    expect(prompt).toContain('누락: adr_approval_missing');
+  });
+
+  test('skips a row whose placement approval record is still in flight', async () => {
+    const env = setup({
+      config: { S1: quickFixBead({ description: BODY }) },
+      slots: 1,
+      admission: { validate: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+    holdPlacementApproval(WS, ['S1']);
+
+    try {
+      await env.scheduler.tick(WS);
+    } finally {
+      releasePlacementApproval(WS, ['S1']);
+    }
+    const held_spawn = env.runner.spawnedBead('S1');
+    await env.scheduler.tick(WS);
+
+    expect(held_spawn).toBeUndefined();
+    expect(env.runner.spawnedBead('S1')).toBeDefined();
+  });
+
+  test('backs off a launch whose placement approval began after the scan', async () => {
+    const add = vi.fn(async ({ bead_id }) => {
+      if (add.mock.calls.length === 1) {
+        holdPlacementApproval(WS, ['S1']);
+      }
+      return { path: `/wt/${bead_id}`, branch: bead_id, base_oid: 'base-S1' };
+    });
+    const env = setup({
+      config: { S1: quickFixBead({ description: BODY }) },
+      slots: 1,
+      admission: { validate: vi.fn(async () => ({ ok: true })) },
+      worktree: { add }
+    });
+    seedQueue(env.store, ['S1']);
+
+    try {
+      await env.scheduler.tick(WS);
+    } finally {
+      releasePlacementApproval(WS, ['S1']);
+    }
+    const held_spawn = env.runner.spawnedBead('S1');
+    const held_skip = env.store.snapshot(WS).admission.S1;
+    await env.scheduler.tick(WS);
+
+    expect(add).toHaveBeenCalledTimes(2);
+    expect(held_spawn).toBeUndefined();
+    expect(held_skip).toBeUndefined();
+    expect(env.runner.spawnedBead('S1')).toBeDefined();
   });
 
   test('adds no block to a spec_backed bead that carries the receipt key', async () => {

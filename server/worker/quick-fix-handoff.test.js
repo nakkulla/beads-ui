@@ -6,6 +6,8 @@ import { describe, expect, test } from 'vitest';
 import {
   QUICK_FIX_HANDOFF_PATH,
   QUICK_FIX_HANDOFF_PROVENANCE_PATH,
+  adrSectionDigest,
+  judgeAdrApproval,
   judgeQuickFixHandoff,
   loadQuickFixHandoff
 } from './quick-fix-handoff.js';
@@ -110,7 +112,7 @@ describe('loadQuickFixHandoff', () => {
     expect(first).toMatchObject({
       supported: true,
       schema_version: 1,
-      source_commit: '8c338d4f6ba3f5b68627646571f83f31c80bffb2'
+      source_commit: '55b0dd7861e27463c04eca7a091125f39bce79c0'
     });
     expect(first.rules?.quick_fix_handoff.receipt.key).toBe('quick_fix_review');
     expect(second).toBe(first);
@@ -241,7 +243,10 @@ describe('loadQuickFixHandoff', () => {
       { fs: fixtureFs(artifact) }
     );
 
-    expect(judged?.missing).toEqual(['user_decision_reserved:L8']);
+    expect(judged?.missing).toEqual([
+      'adr_approval_missing',
+      'user_decision_reserved:L8'
+    ]);
   });
 });
 
@@ -302,5 +307,97 @@ describe('quick_fix handoff boundary fixtures', () => {
       state: judged?.state,
       missing: judged?.missing
     }).toEqual(/** @type {HandoffCase} */ (entry).expect);
+  });
+});
+
+/**
+ * Fixed vectors printed by dotfiles `check-adr-candidates.py --bead <id>
+ * --description-file <file> --approval-digest` at dotfiles 55b0dd786.
+ */
+const ADR_BODY = (/** @type {string} */ section) =>
+  `출처 — 테스트\n\n## 결정 (ADR 후보)\n${section}\n## 다음\n끝\n`;
+const ADR_TRAILING = ADR_BODY(
+  '- 승인 기록은 화면 통로에서만 쓴다 → ADR  \t\n- 둘째 줄\t\n'
+);
+
+describe('ADR candidate section approval', () => {
+  test.each([
+    [
+      'one section',
+      ADR_BODY('- 승인 기록은 화면 통로에서만 쓴다 → ADR\n'),
+      '283f1b8707c5'
+    ],
+    ['trailing spaces and tabs', ADR_TRAILING, '5220efbf2539'],
+    [
+      'outer blank lines',
+      ADR_BODY('\n\n- 승인 기록은 화면 통로에서만 쓴다 → ADR\n\n\n'),
+      '283f1b8707c5'
+    ],
+    ['CRLF line ends', ADR_TRAILING.replace(/\n/g, '\r\n'), '5220efbf2539']
+  ])('matches the dotfiles digest for %s', (_name, description, digest) => {
+    const adr = judgeAdrApproval({
+      description,
+      metadata: { route: 'quick_fix' }
+    });
+
+    expect(adr?.digest).toBe(digest);
+  });
+
+  test('hashes an empty body like the dotfiles reader', () => {
+    const digest = adrSectionDigest(['', '  ', '\t']);
+
+    expect(digest).toBe(
+      nodeCrypto.createHash('sha256').update('').digest('hex').slice(0, 12)
+    );
+  });
+
+  test.each([
+    [undefined, 'missing'],
+    ['user@283F1B8707C5', 'missing'],
+    ['user@000000000000', 'stale'],
+    ['user@283f1b8707c5', 'approved']
+  ])('judges adr_approval=%s as %s', (value, state) => {
+    const adr = judgeAdrApproval({
+      description: ADR_BODY('- 승인 기록은 화면 통로에서만 쓴다 → ADR\n'),
+      metadata: { route: 'quick_fix', adr_approval: value }
+    });
+
+    expect(adr?.state).toBe(state);
+  });
+
+  test('reports two sections as missing with no digest', () => {
+    const adr = judgeAdrApproval({
+      description: ADR_BODY('- 하나\n\n## 결정 (ADR 후보)\n- 둘\n'),
+      metadata: { route: 'quick_fix', adr_approval: 'user@283f1b8707c5' }
+    });
+
+    expect(adr).toMatchObject({ state: 'missing', count: 2, digest: null });
+  });
+
+  test('returns null for a body without a section or a non-quick_fix route', () => {
+    const none = judgeAdrApproval({
+      description: '## 출처/배경\n- 한 줄\n',
+      metadata: { route: 'quick_fix' }
+    });
+    const other = judgeAdrApproval({
+      description: ADR_BODY('- 하나\n'),
+      metadata: { route: 'spec_backed' }
+    });
+
+    expect([none, other]).toEqual([null, null]);
+  });
+
+  test('carries the section text as chip material on the handoff judgement', () => {
+    const judged = judgeQuickFixHandoff({
+      description: ADR_BODY('- 승인 기록은 화면 통로에서만 쓴다 → ADR\n'),
+      metadata: { route: 'quick_fix', adr_approval: 'user@000000000000' }
+    });
+
+    expect(judged?.adr).toEqual({
+      state: 'stale',
+      count: 1,
+      digest: '283f1b8707c5',
+      section: '## 결정 (ADR 후보)\n- 승인 기록은 화면 통로에서만 쓴다 → ADR'
+    });
   });
 });

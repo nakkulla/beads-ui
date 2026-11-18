@@ -6674,6 +6674,24 @@ summary.repo-ops-log-viewer__attempt-head {
   border-color: var(--border-blocked);
 }
 
+/* ADR 승인 칩 (UI-yylj): self-review 칩과 같은 색 어휘 — 승인됨은 초록, 승인
+   필요·낡음은 경고색이다. 새 token은 만들지 않는다. */
+.worker-card__adr {
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
+.worker-card__adr--approved {
+  color: var(--accent-success);
+  border-color: var(--stage-merge-dim);
+}
+
+.worker-card__adr--missing,
+.worker-card__adr--stale {
+  color: var(--accent-warn);
+  border-color: var(--border-blocked);
+}
+
 .worker-card__title {
   color: var(--text-title);
   font-size: var(--fs-body);
@@ -7571,6 +7589,11 @@ summary.repo-ops-log-viewer__attempt-head {
   font-size: var(--fs-caption);
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+/* ADR 후보 절 전문 (UI-yylj): 빈 줄과 들여쓰기를 그대로 보인다. */
+.chip-popover__section {
+  white-space: pre-wrap;
 }
 
 /* 팝업의 출구 줄 (UI-pw2g §3.4): 사실을 말하는 칩과 그 판정을 앞당기는 조작이

@@ -1223,6 +1223,71 @@ export function quickFixReviewChipTemplate(workflow, open = false) {
 }
 
 /**
+ * The ADR 승인 칩 sentence of each `adr` state (UI-yylj).
+ *
+ * @type {Readonly<Record<'approved'|'missing'|'stale', { label: string, sentence: string }>>}
+ */
+const ADR_APPROVAL_TEXT = {
+  approved: {
+    label: 'ADR 승인됨',
+    sentence: 'ADR 후보 절 승인이 지금 본문과 일치합니다'
+  },
+  missing: {
+    label: 'ADR 승인 필요',
+    sentence: 'ADR 후보 절 승인 기록이 없습니다'
+  },
+  stale: {
+    label: 'ADR 승인 낡음',
+    sentence: 'ADR 후보 절 승인이 지금 본문과 다릅니다'
+  }
+};
+
+/**
+ * The `adr` material of a card, or `null` when there is nothing to draw.
+ *
+ * @param {MiniItem['workflow']} workflow
+ * @returns {AdrApprovalView|null}
+ */
+function adrApprovalOf(workflow) {
+  const adr = workflow?.quick_fix_review?.adr;
+  if (!adr || !Object.hasOwn(ADR_APPROVAL_TEXT, adr.state)) {
+    return null;
+  }
+  return adr;
+}
+
+/**
+ * The `ADR` 속성 칩 (UI-yylj) — a `quick_fix` Bead whose body carries a
+ * `## …결정 (ADR 후보)` section shows whether a person approved that section:
+ * `ADR 승인됨` · `ADR 승인 필요` · `ADR 승인 낡음`. Material is the server's
+ * handoff judgement (`workflow.quick_fix_review.adr`), so the dispatch prompt's
+ * `누락:` line and this chip read one judgement. Without a section the server
+ * sends no `adr` and nothing is drawn (fail-quiet). Click opens the shared 판정
+ * 팝업 with the state sentence and the whole section, like the self-review chip.
+ *
+ * @param {MiniItem['workflow']} workflow
+ * @param {boolean} [open] - Whether this chip's 사유 팝업 is open; becomes
+ * `aria-expanded`.
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function adrApprovalChipTemplate(workflow, open = false) {
+  const adr = adrApprovalOf(workflow);
+  if (!adr) {
+    return '';
+  }
+  const text = ADR_APPROVAL_TEXT[adr.state];
+  return html`<button
+    type="button"
+    class="ui-chip ctl-chip judgement-chip worker-card__adr worker-card__adr--${adr.state}"
+    data-chip-key="adr"
+    aria-expanded=${open ? 'true' : 'false'}
+    title=${text.sentence}
+  >
+    ${text.label}
+  </button>`;
+}
+
+/**
  * The 출처 칩 하나 — `discovered-from` 간선의 원본 bead. Board 카드가 이미 같은
  * 문장(`↩ from <id>`)을 쓰므로 두 탭에서 같은 사실이 같은 모양으로 읽힌다.
  * {@link routeChipTemplate}과 같은 이유로 카드마다 복제하지 않고 여기 하나를
@@ -1458,7 +1523,8 @@ export const ATTRIBUTE_CHIP_KEYS = [
   'complex',
   'frontend',
   'backend',
-  'qfr'
+  'qfr',
+  'adr'
 ];
 
 /**
@@ -1476,14 +1542,15 @@ export function attributePopoverOpen(item) {
 
 /**
  * The slot-1 Bead attribute chips (UI-refs §3.1·§3.2): `worker-ineligible` |
- * `세션 실행`/`Worker 실행` · `복잡` · `frontend` · `backend` · `quick_fix` 리뷰 칩, in
+ * `세션 실행`/`Worker 실행` · `복잡` · `frontend` · `backend` · `quick_fix` 리뷰 칩 ·
+ * `ADR` 승인 칩, in
  * the candidate card's order. Every renderer of every lane calls this one
  * template, so the same Bead carries the same chips, classes, binding state and
  * click meaning in every lane and both tabs; the renderer only picks the place.
  *
  * Material is the item's own attribute fields (`worker_ineligible`,
  * `session_preferred`, `exec_lane`, `complex_reason`, `labels`,
- * `chip_metadata`, `workflow.quick_fix_review`). A chip without material is not
+ * `chip_metadata`, `workflow.quick_fix_review`, its `adr`). A chip without material is not
  * drawn, and without any chip there is no group element (fail-quiet).
  *
  * @param {MiniItem} item
@@ -1519,11 +1586,18 @@ export function attributeChipsTemplate(item, ctx = null) {
     item.workflow,
     chipOpen(item, 'qfr')
   );
-  if (lane_el === '' && complex_el === '' && area_el === '' && qfr_el === '') {
+  const adr_el = adrApprovalChipTemplate(item.workflow, chipOpen(item, 'adr'));
+  if (
+    lane_el === '' &&
+    complex_el === '' &&
+    area_el === '' &&
+    qfr_el === '' &&
+    adr_el === ''
+  ) {
     return '';
   }
   return html`<span class="worker-attrs"
-    >${lane_el}${complex_el}${area_el}${qfr_el}</span
+    >${lane_el}${complex_el}${area_el}${qfr_el}${adr_el}</span
   >`;
 }
 
@@ -2233,6 +2307,16 @@ export function interactiveSessionClosingTemplate(views) {
 }
 
 /**
+ * @typedef {Object} AdrApprovalView
+ * The server's ADR candidate section approval verdict (UI-yylj); `section` is
+ * the section text the popup shows.
+ * @property {'approved'|'missing'|'stale'} state
+ * @property {number} count
+ * @property {string|null} digest
+ * @property {string} section
+ */
+
+/**
  * @typedef {Object} MiniItem
  * @property {string} [spec_authoring_state]
  * @property {any[]} [spec_authoring_actions]
@@ -2363,7 +2447,7 @@ export function interactiveSessionClosingTemplate(views) {
  * The merge's current step, when one is running (UI-raqh §4).
  * @property {string} [merge_title] - Tooltip: what the click is based on, or
  * why it is refused.
- * @property {(import('../stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string, exec_receipt?: import('../exec-format.js').ExecReceipt|null }, quick_fix_review?: { state: 'reviewed'|'stale'|'unreviewed'|'unknown', missing: string[], digest: string|null } }) | null} [workflow] - Server-enriched workflow. 실행가능 카드는 stepper와 route
+ * @property {(import('../stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string, exec_receipt?: import('../exec-format.js').ExecReceipt|null }, quick_fix_review?: { state: 'reviewed'|'stale'|'unreviewed'|'unknown', missing: string[], digest: string|null, adr?: AdrApprovalView } }) | null} [workflow] - Server-enriched workflow. 실행가능 카드는 stepper와 route
  * 칩을, 대기·PR 대기 행은 route 칩을 여기서 얻는다 (UI-yrzu §7.2).
  * `quick_fix_review`는 서버가 route pin이 `quick_fix`일 때만 붙이는 판정이며
  * (UI-r7or §4) 클라이언트는 읽어 그리기만 한다. 완료 행은 싣지 않는다.
@@ -4978,7 +5062,7 @@ const SESSION_PREFERRED_TOOLTIP = {
  * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
  * into the DOM so one click handler per tab covers every surface.
  *
- * @typedef {'complex'|'frontend'|'backend'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'|'plan'|'withdrawn'} JudgementChipKey
+ * @typedef {'complex'|'frontend'|'backend'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'adr'|'spec_after_blocker'|'readiness'|'plan'|'withdrawn'} JudgementChipKey
  */
 
 /**
@@ -5298,6 +5382,21 @@ export function judgementPopoverContent(item, chip_key, plan_context) {
       lines: missing.length > 0 ? missing : ['빠진 항목 없음']
     };
   }
+  if (chip_key === 'adr') {
+    const adr = adrApprovalOf(item.workflow);
+    if (!adr) {
+      return null;
+    }
+    return {
+      title: ADR_APPROVAL_TEXT[adr.state].sentence,
+      // The whole section as one block, blank lines and indentation kept.
+      lines: [
+        {
+          body: html`<span class="chip-popover__section">${adr.section}</span>`
+        }
+      ]
+    };
+  }
   return null;
 }
 
@@ -5318,6 +5417,7 @@ export const JUDGEMENT_CHIP_KEYS = [
   'session_preferred',
   'ineligible',
   'qfr',
+  'adr',
   'spec_after_blocker',
   'readiness',
   'plan',

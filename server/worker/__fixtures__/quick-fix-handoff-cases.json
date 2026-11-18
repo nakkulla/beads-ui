@@ -1115,5 +1115,49 @@
       "state": "unreviewed",
       "missing": ["user_decision_reserved:L8"]
     }
+  },
+  {
+    "name": "결정 (ADR 후보) 절에 adr_approval이 없으면 승인 누락이다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 결정 (ADR 후보)\n- 승인 기록은 화면 통로에서만 쓴다 → ADR\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["adr_approval_missing"]
+    }
+  },
+  {
+    "name": "현재 절 다이제스트와 다른 adr_approval은 승인 낡음이다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "adr_approval": "user@000000000000"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 결정 (ADR 후보)\n- 승인 기록은 화면 통로에서만 쓴다 → ADR\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["adr_approval_stale"]
+    }
+  },
+  {
+    "name": "결정 (ADR 후보) 절이 둘이면 승인이 있어도 승인 누락이다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "adr_approval": "user@000000000000"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 결정 (ADR 후보)\n- 승인 기록은 화면 통로에서만 쓴다 → ADR\n\n## 결정 (ADR 후보)\n- 둘째 절 → ADR 아님\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["adr_approval_missing"]
+    }
   }
 ]

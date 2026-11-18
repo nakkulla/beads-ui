@@ -1942,8 +1942,10 @@ function mergeStage(md, status) {
  * Structured review outcome per step, read from the contract's
  * `<step>_review_stats` metadata. Display only — a step whose key is absent or
  * malformed is `null` and draws nothing.
- * @property {{ state: 'reviewed'|'stale'|'unreviewed'|'unknown', missing: string[], digest: string|null }} [quick_fix_review]
- * The pinned quick_fix self-review projection's verdict for this issue. Absent
+ * @property {import('./worker/quick-fix-handoff.js').QuickFixHandoffState} [quick_fix_review]
+ * The pinned quick_fix self-review projection's verdict for this issue; its
+ * `adr` (present only when the body has an ADR candidate section) is the `ADR`
+ * card chip material (UI-yylj). Absent
  * (key and all) whenever the judgement does not apply — `metadata.route` is not
  * the `quick_fix` pin — so a missing key never reads as a negative verdict.
  * `missing` holds canonical projection tokens verbatim, never translated:

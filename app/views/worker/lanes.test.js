@@ -5062,6 +5062,107 @@ describe('quick_fix self-review 칩 (UI-r7or §5.1)', () => {
   });
 });
 
+describe('ADR 승인 칩 (UI-yylj)', () => {
+  const STAGES = {
+    impl: { fill: 'none', glyph: null, stale: false },
+    close: { fill: 'none', glyph: null, stale: false }
+  };
+  const SECTION =
+    '## 결정 (ADR 후보)\n- 승인 기록은 화면 통로에서만 쓴다 → ADR';
+
+  /**
+   * @param {any} adr
+   * @returns {any}
+   */
+  function workflowWith(adr) {
+    return {
+      route: 'quick_fix',
+      route_source: 'explicit',
+      stages: STAGES,
+      quick_fix_review: {
+        state: 'unreviewed',
+        missing: [],
+        digest: null,
+        ...(adr === undefined ? {} : { adr })
+      }
+    };
+  }
+
+  test.each([
+    ['approved', 'ADR 승인됨'],
+    ['missing', 'ADR 승인 필요'],
+    ['stale', 'ADR 승인 낡음']
+  ])('draws the %s state as %s', (state, label) => {
+    const card = renderCandidate({
+      workflow: workflowWith({
+        state,
+        count: 1,
+        digest: '283f1b8707c5',
+        section: SECTION
+      })
+    });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__adr')
+    );
+
+    expect(chip.textContent?.trim()).toBe(label);
+    expect(chip.classList.contains(`worker-card__adr--${state}`)).toBe(true);
+  });
+
+  test('draws no chip when the body has no ADR candidate section', () => {
+    const card = renderCandidate({ workflow: workflowWith(undefined) });
+
+    expect(card.querySelector('.worker-card__adr')).toBeNull();
+  });
+
+  test('opens a popup with the state sentence and the whole section', () => {
+    const section = `${SECTION}\n\n  - 들여쓴 근거 줄`;
+    const item = /** @type {any} */ ({
+      workflow: workflowWith({
+        state: 'missing',
+        count: 1,
+        digest: '283f1b8707c5',
+        section
+      })
+    });
+    const mount = document.createElement('div');
+
+    const popover = judgementPopoverOf(item, (key) => key === 'adr');
+    render(chipPopoverTemplate(/** @type {any} */ (popover?.content)), mount);
+
+    expect(popover?.chip_key).toBe('adr');
+    expect(mount.querySelector('.chip-popover__title')?.textContent).toBe(
+      'ADR 후보 절 승인 기록이 없습니다'
+    );
+    expect(mount.querySelectorAll('.chip-popover__lines li')).toHaveLength(1);
+    expect(mount.querySelector('.chip-popover__section')?.textContent).toBe(
+      section
+    );
+  });
+
+  test('draws the same chip on the monitor runnable lane as on the worker lane', () => {
+    const workflow = workflowWith({
+      state: 'stale',
+      count: 1,
+      digest: '283f1b8707c5',
+      section: SECTION
+    });
+
+    const worker_chip = renderCandidate({
+      lane: 'candidate',
+      workflow
+    }).querySelector('.worker-card__adr');
+    const monitor_chip = renderCandidate({
+      lane: 'runnable',
+      workspace_name: 'beads-ui',
+      root_dir: '/repo',
+      workflow
+    }).querySelector('.worker-card__adr');
+
+    expect(monitor_chip?.outerHTML).toBe(worker_chip?.outerHTML);
+  });
+});
+
 describe('quick_fix self-review 칩 자리 (UI-251y §3.2)', () => {
   /**
    * @param {'reviewed'|'stale'} state

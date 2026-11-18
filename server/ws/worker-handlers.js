@@ -5219,7 +5219,9 @@ export async function handleWorkerQueuePlace(ws, req) {
     bead_id: p.bead_id,
     lane: typeof p.lane === 'string' ? p.lane : undefined,
     index: typeof p.index === 'number' ? p.index : undefined,
-    expected_revision: revisionOf(p)
+    expected_revision: revisionOf(p),
+    // A person's on-screen placement records the ADR approval (UI-yylj).
+    ui_placement: true
   });
   if (typeof outcome.admission_reason === 'string') {
     // The refusal's own fanout already happened inside the shared body; this
@@ -5360,7 +5362,8 @@ export async function handleWorkerQueuePlaceBundle(ws, req) {
     lane: p.lane,
     binds: shape.binds,
     steps: shape.steps,
-    expected_revision: revisionOf(p)
+    expected_revision: revisionOf(p),
+    ui_placement: true
   });
   ws.send(
     JSON.stringify(
