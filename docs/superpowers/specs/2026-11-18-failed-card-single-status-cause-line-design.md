@@ -41,34 +41,34 @@ Claude readonly preauthorization probe failed`) 자동 재시도 한 번도 같�
 
 ## 2. 검증된 전제
 
-기준 커밋 `35df8908fda86a53f5dd3933eb156a5e3ac765e6`.
+기준 커밋 `b33b2842a41f2b9ba940b0463a03c7067a2ad867`.
 
 - 실패 타일의 원인 배지는 `failureCategory(failure.cause)` 한 낱말이고 대기 배지가 그
   뒤에 따로 붙으며, 같은 자리에 `자동 진행 꺼짐` 라벨이 설 수 있다 —
-  app/views/worker/running-grid.js:1371, :1383, :1392, :1429
+  app/views/worker/running-grid.js:1385, :1397, :1406, :1443
 - 머리줄 조작 영역의 `실패`·`중단됨` 낱말은 `elapsed_el`이 그린다 —
-  app/views/worker/running-grid.js:1190, :1197
+  app/views/worker/running-grid.js:1204, :1211
 - 실패 상세는 원인 배지 클릭으로만 열리고(`failure.open`), 행 순서는 보고·이력·원인·
   다음·재시도 이력·실패 코드·가드/원인·명령·착지 단계·실패 시각·실행·attempt id·비용·
   재개다. 착지 단계 행은 `landing.reason`(원시 코드)을 함께 싣는다 —
-  app/views/worker/running-grid.js:503, :535, :578
+  app/views/worker/running-grid.js:512, :544, :587
 - `원인` 칸은 `failureSentence(cause)`가 없으면 `failureText`로 물러서고, 문장 사전에
   `script_failed` 항목이 없어 이 실패는 범주 낱말만 남는다 —
-  app/views/worker/running-grid.js:507, app/utils/failure-sentences.js:22
+  app/views/worker/running-grid.js:516, app/utils/failure-sentences.js:22
 - `다음` 문장은 `FAILURE_NEXT_ACTIONS`의 마지막 일치 조각에서 오고 `script_failed`는
   Worker 설정의 `[배포 실행]`을 가리킨다 — app/utils/failure-sentences.js:212,
-  app/views/worker/running-grid.js:465
+  app/views/worker/running-grid.js:474
 - 이력 블록은 투영이 준 `timeline` 줄의 `summary`를 그대로 그리고, 줄은 최신이
   위다. 실패 상세와 확인 필요 타일 두 곳이 같은 블록을 쓴다 —
-  app/views/worker/running-grid.js:373, :568, :1062, app/views/worker/lane-model.js:1314
+  app/views/worker/running-grid.js:382, :577, :1071, app/views/worker/lane-model.js:1354
 - 서버는 타일마다 최근 이력 기록 5개만 보낸다. 이력 이벤트는 정해진 필드만 갖고
   클라이언트 투영도 `event_id`·`kind`·`summary`·`at`만 읽는다 —
-  server/ws/worker-handlers.js:1250, :1314, server/worker/bead-timeline.js:135,
-  app/views/worker/lane-model.js:1332
+  server/ws/worker-handlers.js:1252, :1316, server/worker/bead-timeline.js:135,
+  app/views/worker/lane-model.js:1372
 - 이력 `summary`는 서버가 기록 시점에 만든 문자열이다. 착지 단계와 착지 실패 —
-  server/worker/quickfix-landing.js:497, attempt 실패 — server/worker/scheduler.js:1816
-  (`appendFailedEvent`, 보통의 경로)와 server/worker/queue-store.js:6898(이관 때 빠진
-  종단 기록 보충), 복구 분류 — server/worker/repo-operation-coordinator.js:1316
+  server/worker/quickfix-landing.js:498, attempt 실패 — server/worker/scheduler.js:1881
+  (`appendFailedEvent`, 보통의 경로)와 server/worker/queue-store.js:6932(이관 때 빠진
+  종단 기록 보충), 복구 분류 — server/worker/repo-operation-coordinator.js:1320
 - 한 번의 배포 실패가 `operation_failed`·`operation_recovery`·`landing_step`(failed)·
   `attempt_failed` 네 이벤트를 남기고, 앞의 둘에는 attempt id가 없다. 정리 재시도는
   같은 attempt id로 돌아 한 attempt에 저장소 작업 id가 다른 실패가 둘 남는다 — `tail
@@ -76,25 +76,25 @@ Claude readonly preauthorization probe failed`) 자동 재시도 한 번도 같�
   (14:45 작업 `d3409a96…`, 16:54 작업 `d758432e…`)
 - 대기 사유는 해결 문장(`resolution`)과 풀리는 조건(`release`)을 따로 갖는다.
   "검증 실패를 세션에서 고친 뒤…"는 사유 없는 `repair` 처분의 공용 `release` 문장이고
-  확인 필요 타일도 같은 문장을 읽는다 — server/worker/wait-judgment.js:432,
+  확인 필요 타일도 같은 문장을 읽는다 — server/worker/wait-judgment.js:433,
   app/views/worker/tile-resolve.js:83
 - `Discord 준비 중`은 머리줄 버튼과 대기 팝업 해결 줄 두 곳에 선다 —
-  app/views/worker/lanes.js:2041, app/views/worker/tile-resolve.js:83
+  app/views/worker/lanes.js:2119, app/views/worker/tile-resolve.js:83
 - 실패 낱말·문장 사전은 서버와 클라이언트가 같은 파일을 읽는다 —
   app/views/worker/failure-labels.js:213, server/worker/failure-class.js:307
 - 카드 본문의 회색 줄은 대기 대표 사유의 headline이다 —
-  app/views/worker/running-grid.js:1699
+  app/views/worker/running-grid.js:1718
 - 속성 칩(`backend`·`리뷰 ✓`)과 `병렬` 칩은 각각 `attr_chips`, `lane_chip`이 그린다 —
-  app/views/worker/running-grid.js:1278, :1237, :1766
+  app/views/worker/running-grid.js:1292, :1251, :1785
 - 조작 줄의 짝(`[세션에서 이어가기]`·`[워커로 이어가기]`)과 폐기 조작의 유무는
   `tileResolveFields`와 타일의 `discard` 재료가 정한다 —
-  app/views/worker/running-grid.js:1454, :1483, :1502, :1555
+  app/views/worker/running-grid.js:1468, :1497, :1516, :1569
 - Worker 탭과 모니터는 같은 `runningTile`을 쓰고 상세 열림 상태만 각자 가진다 —
   app/views/worker/index.js:664, app/views/monitor/index.js:565
 - 배포 실패의 exit code와 자동 재시도 소진 사실은 서버의 저장소 작업 기록에만 있고
   실패 타일 투영에는 없다 — `grep -n -e exit_code -e first_failure` 를
   app/views/worker/lane-model.js 와 app/views/worker/running-grid.js 에 돌려 0건,
-  app/views/worker/lane-model.js:1265
+  app/views/worker/lane-model.js:1305
 
 ## 3. 목표
 
@@ -257,16 +257,17 @@ Claude readonly preauthorization probe failed · 자동 재시도 1회도 같은
 
 ## 결정 (ADR 후보)
 
-- 전제: ADR UI-gmww — 슬롯 표에 없는 요소는 스펙을 먼저 갱신한다는 조항을 따라 §4.4로
-  슬롯 표를 먼저 고친다. 실패 attempt 타일 슬롯 1의 `↻ 정리 재시도`·`↻ 이어하기`,
-  대화 레코드와 짝의 판정, 대화형 세션 배지 낱말은 그대로 둔다.
+- 전제: ADR UI-6kj0(UI-1fss·UI-gmww 승계) — 슬롯 표에 없는 요소는 스펙을 먼저
+  갱신한다는 승계 조항을 따라 §4.4로 슬롯 표를 먼저 고친다. 실패 attempt 타일 슬롯 1의
+  `↻ 정리 재시도`·`↻ 이어하기`, 대화 레코드와 짝의 판정(UI-1fss의 착지 배포 실패 행
+  포함), 대화형 세션 배지 낱말은 그대로 둔다.
 - 실패 타일은 대기 배지와 대기 판정 근거 팝업을 따로 그리지 않고, 해결 문장을 포함한
-  대기 정보를 실패 상세의 `다음`에 싣는다. 되돌리기 어려움: UI-gmww가 해결 문장의
-  자리를 대기 팝업 첫 줄로, `awaiting_user`·`recovery` 행의 라벨을 `확인 필요`로
+  대기 정보를 실패 상세의 `다음`에 싣는다. 되돌리기 어려움: UI-6kj0이 승계한 조항이
+  해결 문장의 자리를 대기 팝업 첫 줄로, `awaiting_user`·`recovery` 행의 라벨을 `확인 필요`로
   정했고 Worker 탭·모니터·카드 문법 스펙·동일성 테스트가 그 자리를 함께 읽는다. 대안:
   실패 타일에도 대기 배지와 팝업을 남긴다(같은 상태가 두 배지로 남는다). 맥락 없이는 왜
   실패 타일만 `확인 필요` 배지와 팝업이 없는지 알 수 없다.
-  `summary`: "실패 타일은 상태 배지 하나와 상세 상자 하나만 갖고 대기 사유가 함께 있어도 확인 필요 배지를 그리지 않으며 해결 문장은 그 상세의 다음에 살아 있는 대화 안내 다음 순서로 싣는다 — 나머지 조항은 UI-gmww 그대로다" → ADR, supersede UI-gmww
+  `summary`: "실패 타일은 상태 배지 하나와 상세 상자 하나만 갖고 대기 사유가 함께 있어도 확인 필요 배지를 그리지 않으며 해결 문장은 그 상세의 다음에 살아 있는 대화 안내 다음 순서로 싣는다 — 나머지 조항은 UI-6kj0 그대로다" → ADR, supersede UI-6kj0
 - 경위를 사건 단위로 묶어 서버가 고르고 시간순으로 그린다 — 표시와 투영 규칙이고
   소비자가 이 저장소의 실패 상세 하나다 → ADR 아님
 - 서버 이력 줄을 사전 낱말로 쓰고 원시 코드를 별도 필드로 싣는다 — 문구와 필드 추가이며
@@ -280,5 +281,6 @@ Claude readonly preauthorization probe failed · 자동 재시도 1회도 같은
 | ---- | ---------- | ---------------- | --------- | ---------------- | ------- |
 
 - 관찰: 실패 흐름(자동 해결 세션, hub, Worker 인계)은 같은 요청에서 나온 독립 작업
-  UI-1fss다 — 이 스펙의 형제가 아니라 별도 설계라 표에 넣지 않는다. 둘 다 UI-gmww를
-  supersede하므로 나중에 착지하는 쪽이 그때 유효한 ADR을 대상으로 다시 적는다.
+  UI-1fss다 — 이 스펙의 형제가 아니라 별도 설계라 표에 넣지 않는다. UI-1fss가 먼저
+  착지해 UI-gmww를 supersede했고 UI-6kj0이 다시 UI-1fss를 supersede했으므로, 이
+  스펙은 그때 유효한 UI-6kj0을 대상으로 적는다.
