@@ -163,9 +163,18 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {boolean} [resolve_action] - Render `[세션에서 이어가기]` (UI-jw27
  * §4, UI-18a5 §3.2). `tileResolveFields`가 켠다 — 확인 필요·실패·외부 작업
  * 완료 타일이고 살아 있는 대화형 세션이 없을 때만이다.
- * @property {'handoff'|'merge'|'discard'|'external'|null} [pair_anchor] - Which
+ * @property {import('./tile-resolve.js').PairAnchor} [pair_anchor] - Which
  * button is this tile's `[워커로 이어가기]`; the session button stands right in
- * front of it (`tileResolveFields`).
+ * front of it (`tileResolveFields`). A paused row's (`resume`) is its slot-1
+ * `▶ 재개`, so its session button stands alone in the foot.
+ * @property {boolean} [user_paused] - 사람이 `⏸`로 멈춘 일시정지 행 (UI-6kj0
+ * §3.1); lane-model이 공용 술어 `isUserPausedAttempt`로 싣는다.
+ * @property {'dialog'|'handoff'|'disabled'} [pause_resume_mode] - 일시정지
+ * 행의 `▶ 재개`가 무엇을 하는지 (UI-6kj0 §3.2): 재개 대화상자, 대화 인계,
+ * 또는 비활성. `tileResolveFields`가 정하고, 없으면 지금 그대로 대화상자다.
+ * @property {string} [pause_resume_title] - 그 `▶ 재개`의 hover 문구.
+ * @property {string|null} [pause_resume_attempt_id] - 대화 인계가 넘기는
+ * attempt.
  * @property {boolean} [pair_held] - A decided conversation outcome holds the
  * pair (`tileResolveFields`).
  * @property {boolean} [resolve_enabled] - false면 이 타일의 클릭이 아직 서버
@@ -1145,7 +1154,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const park = parked ? tile.failure || null : null;
   const wait = waiting ? tile.wait || null : null;
   const hold = provider_hold ? tile.hold || null : null;
-  const wait_reasons = tile.wait_reasons || [];
+  // 일시정지 행의 답 대기 사유 (UI-6kj0 §3.2)는 `▶ 재개`의 인계 재료일 뿐이다:
+  // 슬롯 1 판정 칩·본문·시각 줄을 얻지 않고, 대화 상태는 대화 칩과 슬롯 3 진행
+  // 줄이 말한다.
+  const wait_reasons = (tile.wait_reasons || []).filter(
+    (reason) => !(tile.user_paused === true && reason.kind === 'awaiting_user')
+  );
   const external = externalWaitCardParts(tile, now);
   // 외부 대기는 다섯째 held 상태다 (UI-l48z §4.1). 술어는 레코드가 아니라
   // 사유다 — 레코드 없는 `wait_record_missing` 사유도 그 출구를 가져야 한다.
@@ -1675,7 +1689,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     ? html`<button
                         type="button"
                         class="op-btn rtile__resume"
-                        title="같은 세션으로 이어서 재개 — 바로 재개하거나 지시를 입력할 수 있음"
+                        data-resume-mode=${tile.pause_resume_mode || 'dialog'}
+                        data-handoff-attempt-id=${tile.pause_resume_attempt_id ||
+                        ''}
+                        ?disabled=${tile.pause_resume_mode === 'disabled'}
+                        title=${tile.pause_resume_title ||
+                        '같은 세션으로 이어서 재개 — 바로 재개하거나 지시를 입력할 수 있음'}
                         aria-label="재개"
                       >
                         ▶ 재개
@@ -1696,7 +1715,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ${head_popover}
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${wait_body_lines.body}${parked || waiting
+    ${wait_body_lines.body}${parked || waiting || paused
       ? interactiveProgressLineTemplate(tile.interactive_sessions, now)
       : ''}${external_wait
       ? // 세션 소유 외부 대기 타일 (UI-l48z §4.1): 활동 줄 없이 4a·4b·5 재료와

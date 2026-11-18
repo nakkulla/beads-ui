@@ -3420,6 +3420,20 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('rtile__resume')) {
+      // 일시정지 행의 `▶ 재개` (UI-6kj0 §3.2): Worker 탭과 같은 재료로 같은 일을
+      // 한다 — 답 대기 대화는 대화상자 없이 인계, 턴 진행 중은 무시.
+      if (button.dataset.resumeMode === 'disabled') {
+        return;
+      }
+      if (button.dataset.resumeMode === 'handoff') {
+        void handoffToWorker(
+          bead_id,
+          button.dataset.handoffAttemptId || attempt_id || '',
+          root_dir,
+          exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision
+        );
+        return;
+      }
       resumeAttempt(
         bead_id,
         attempt_id,

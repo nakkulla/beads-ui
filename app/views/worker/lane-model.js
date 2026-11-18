@@ -26,6 +26,7 @@ import { accountDisplayName } from '../../utils/account-display-name.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
+  isUserPausedAttempt,
   latestImplementationAttempts,
   reviewSessionAttemptStates,
   sessionOwnershipMap
@@ -484,6 +485,7 @@ const DONE_KIND_LABELS = {
  *   status_label?: string,
  *   can_pause?: boolean,
  *   can_resume?: boolean,
+ *   user_paused?: boolean,
  *   started_at?: number|null,
  *   last_event_at?: number|null,
  *   last_activity?: Record<string, any>|null,
@@ -951,6 +953,11 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       ...liveAttemptFields(a, attempts, run_state, input.runner_catalog),
       started_at,
       ...(failure ? { failure } : {}),
+      // 일시정지 행 (UI-6kj0 §3.1): the server's click routing reads the same
+      // shared predicate, so the card and the click never disagree.
+      ...(run_state === 'paused' && isUserPausedAttempt(a)
+        ? { user_paused: true }
+        : {}),
       // A session-lane attempt has no pause (UI-lbm5 §4.5): its tile draws
       // neither `⏸` nor `▶`.
       can_pause: run_state === 'running' && has_session && a.exec !== 'session',
@@ -3922,6 +3929,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         can_pause: live.can_pause,
         can_resume: live.can_resume,
+        ...(live.user_paused === true ? { user_paused: true } : {}),
         started_at: live.started_at,
         last_event_at: live.last_event_at,
         last_activity: live.last_activity,

@@ -5227,3 +5227,192 @@ describe('session-lane running tile (UI-lbm5 §4.6)', () => {
     expect(tile.querySelector('.interactive-session-badge')).toBeNull();
   });
 });
+
+describe('일시정지 타일의 이어가기 (UI-6kj0 §3.2)', () => {
+  const now = 10 * 60_000;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * A paused row through the shared tile input both tabs use.
+   *
+   * @param {Record<string, any>} [over]
+   * @returns {any}
+   */
+  function pausedTile(over = {}) {
+    return runningTileInput({
+      id: 'UI-6',
+      attempt_id: 'a6',
+      title: '일시정지한 작업',
+      runner: 'claude',
+      model: 'opus',
+      started_at: 1000,
+      run_state: 'paused',
+      status: 'paused',
+      user_paused: true,
+      can_pause: false,
+      interactive_sessions: [],
+      ...over
+    });
+  }
+
+  /**
+   * The paused attempt's same-session conversation view.
+   *
+   * @param {'question'|'running'} turn_state
+   * @returns {Record<string, any>}
+   */
+  function conversation(turn_state) {
+    return {
+      key: 'UI-6:inquiry',
+      kind: 'inquiry',
+      state: 'live',
+      closing: false,
+      mode: 'resume',
+      source: 'attempt',
+      attempt_id: 'a6',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-6',
+      launched_at: now - 7 * 60_000,
+      turn_state,
+      turn_state_since: now - 60_000,
+      last_message: { text: '멈춘 지점 요약', at: now - 60_000 }
+    };
+  }
+
+  /** The server's paused-row projection while the conversation awaits. */
+  const AWAITING_REASON = {
+    kind: 'awaiting_user',
+    subject: { bead_id: 'UI-6', root_dir: '/repo' },
+    headline: '일시정지한 세션의 대화가 답을 기다림',
+    verdict: 'action_required',
+    since: now - 20 * 60_000,
+    targets: [],
+    actions: [
+      {
+        op: 'worker-resolve-in-session',
+        label: '[세션에서 이어가기]',
+        payload: { bead_id: 'UI-6', root_dir: '/repo' }
+      },
+      {
+        op: 'worker-conversation-handoff',
+        label: '[워커로 이어가기]',
+        payload: { bead_id: 'UI-6', root_dir: '/repo', attempt_id: 'a6' }
+      }
+    ],
+    notify_plan: { on_complete: 'none', on_overdue: 'none' }
+  };
+
+  test('stands [세션에서 이어가기] alone in the paused tile foot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([pausedTile()], now), mount);
+
+    const foot = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__foot')
+    );
+    expect(
+      foot.querySelector('.op-btn.rtile__resolve')?.getAttribute('title')
+    ).toBe(
+      '일시정지한 세션을 같은 세션 그대로 대화로 다시 엽니다 — 대화하며 작업을 잇고, Worker로 넘기면 Worker가 이어갑니다'
+    );
+    expect(mount.querySelector('.rtile__handoff')).toBeNull();
+  });
+
+  test('opens the resume dialog from ▶ 재개 without a conversation', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([pausedTile()], now), mount);
+
+    const resume = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__hd-actions .rtile__resume')
+    );
+    expect([resume.dataset.resumeMode, resume.disabled]).toEqual([
+      'dialog',
+      false
+    ]);
+  });
+
+  test('turns ▶ 재개 into the conversation handoff while it awaits the answer', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate(
+        [
+          pausedTile({
+            wait_reasons: [AWAITING_REASON],
+            interactive_sessions: [conversation('question')]
+          })
+        ],
+        now
+      ),
+      mount
+    );
+
+    const resume = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__hd-actions .rtile__resume')
+    );
+    expect([
+      resume.dataset.resumeMode,
+      resume.dataset.handoffAttemptId,
+      resume.disabled
+    ]).toEqual(['handoff', 'a6', false]);
+  });
+
+  test('disables ▶ 재개 while the conversation runs a turn', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate(
+        [pausedTile({ interactive_sessions: [conversation('running')] })],
+        now
+      ),
+      mount
+    );
+
+    const resume = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__hd-actions .rtile__resume')
+    );
+    expect([resume.dataset.resumeMode, resume.disabled]).toEqual([
+      'disabled',
+      true
+    ]);
+  });
+
+  test('draws the conversation progress line on a paused tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate(
+        [pausedTile({ interactive_sessions: [conversation('running')] })],
+        now
+      ),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.rtile__activity--session')?.textContent
+    ).toContain('멈춘 지점 요약');
+  });
+
+  test('keeps the verdict chip slot empty while the paused conversation awaits', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate(
+        [
+          pausedTile({
+            wait_reasons: [AWAITING_REASON],
+            interactive_sessions: [conversation('question')]
+          })
+        ],
+        now
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__hd .wait-verdict')).toBeNull();
+  });
+});

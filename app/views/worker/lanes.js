@@ -2414,7 +2414,7 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {string} [handoff_title] - Tooltip.
  * @property {string|null} [handoff_attempt_id] - The stopped attempt handed back.
  * @property {string} [handoff_op] - The server-projected recovery resume operation.
- * @property {'handoff'|'merge'|'discard'|'external'|null} [pair_anchor] -
+ * @property {import('./tile-resolve.js').PairAnchor} [pair_anchor] -
  * Which button is this row's [워커로 이어가기] (UI-18a5 §3.2); the session
  * button stands right in front of it. Set by `tileResolveFields` only.
  * @property {boolean} [pair_held] - A decided conversation outcome holds the

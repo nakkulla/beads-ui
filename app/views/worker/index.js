@@ -4321,6 +4321,21 @@ export function createWorkerView(mount_element, options = {}) {
       const tile = /** @type {HTMLElement|null} */ (
         target?.closest?.('.rtile')
       );
+      // 일시정지 행의 `▶ 재개` (UI-6kj0 §3.2): 답을 기다리는 대화가 있으면
+      // 대화상자 없이 대화 인계를 보내고, 턴 진행 중이면 아무것도 하지 않는다.
+      const resume_mode = resume_button?.dataset?.resumeMode;
+      if (resume_mode === 'disabled') {
+        return;
+      }
+      if (resume_mode === 'handoff') {
+        void handoffToWorker(
+          tile?.dataset?.beadId || '',
+          resume_button?.dataset?.handoffAttemptId ||
+            tile?.dataset?.attemptId ||
+            ''
+        );
+        return;
+      }
       const att = tile?.dataset?.attemptId;
       if (att) {
         void resumeAttempt(
