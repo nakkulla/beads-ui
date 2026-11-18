@@ -19,6 +19,7 @@
  * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
 import { TRANSIENT_ADMISSION_REASONS } from '../../../server/worker/continuation-refusal.js';
+import { normalizeStartupWait } from '../../../server/worker/startup-wait.js';
 import { priceUsage } from '../../../server/worker/usage-pricing.js';
 import { isExternalWaitObservation } from '../../protocol.js';
 import { accountDisplayName } from '../../utils/account-display-name.js';
@@ -466,6 +467,9 @@ const DONE_KIND_LABELS = {
  * @property {{ processed_message_at: number|null, result: { kind: string }|null }|null} [conversation]
  * - The server's same-session conversation state (UI-nuwy §3.3), read only
  * by the badge tail.
+ * @property {import('../../../server/worker/startup-wait.js').StartupWait|null} [startup_wait]
+ * - The server's codex startup-screen wait (UI-ahzh §3.3), read only by the
+ * session-lane slot-3 line; null without material.
  */
 
 /**
@@ -3419,6 +3423,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         turn_state_since: record.turn_state_since ?? null,
         last_message: record.last_message ?? null,
         conversation: record.conversation ?? null,
+        startup_wait: normalizeStartupWait(record.startup_wait),
         closing: record.state === 'exiting' || record.settled_at !== null
       });
       interactive_by_bead.set(identity, views);

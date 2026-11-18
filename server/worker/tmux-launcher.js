@@ -88,6 +88,23 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  */
 
 /**
+ * The startup screen a marked Codex pane shows before SessionStart, as the
+ * hub's read-only `codex-startup` answered it (UI-ahzh §3.1). `screen` is
+ * null when the pane is not alive or shows no startup screen; the hub owns
+ * the classification (ADR UI-jlov).
+ *
+ * @typedef {Object} CodexStartupScreen
+ * @property {'startup'|'trust'|'unknown_screen'} dialog
+ * @property {string|null} startup_kind - Only for `dialog=startup`.
+ * @property {string} fingerprint
+ */
+
+/**
+ * @typedef {{ ok: true, alive: 'alive'|'dead'|'unknown', screen: CodexStartupScreen|null }
+ *   | { ok: false, error: string }} CodexStartupResult
+ */
+
+/**
  * @typedef {Object} LaunchInput
  * @property {string} marker
  * @property {string} key
@@ -897,6 +914,73 @@ export function createTmuxLauncher(deps = {}) {
   }
 
   /**
+   * The startup screen of one marked Codex pane (UI-ahzh §3.1), read through
+   * the hub's read-only `codex-startup`. Nothing is sent to the pane. A refusal,
+   * an unreachable hub, or a reply outside the documented shape is a failure
+   * the caller only logs.
+   *
+   * @param {{ pane: string, marker: string, key: string }} input
+   * @returns {Promise<CodexStartupResult>}
+   */
+  async function codexStartup(input) {
+    const read = await hubChecked([
+      'codex-startup',
+      '--pane',
+      input.pane,
+      '--marker-option',
+      input.marker,
+      '--marker-value',
+      input.key
+    ]);
+    if (!read.ok) {
+      return read;
+    }
+    const value = read.value;
+    const invalid = {
+      ok: /** @type {const} */ (false),
+      error: 'launch_failed:session_hub_invalid_response'
+    };
+    if (
+      value.alive !== 'alive' &&
+      value.alive !== 'dead' &&
+      value.alive !== 'unknown'
+    ) {
+      return invalid;
+    }
+    if (value.screen === null) {
+      return { ok: true, alive: value.alive, screen: null };
+    }
+    const screen = value.screen;
+    if (
+      value.alive !== 'alive' ||
+      !screen ||
+      typeof screen !== 'object' ||
+      (screen.dialog !== 'startup' &&
+        screen.dialog !== 'trust' &&
+        screen.dialog !== 'unknown_screen') ||
+      typeof screen.fingerprint !== 'string' ||
+      !/^[0-9a-f]+$/.test(screen.fingerprint) ||
+      (screen.dialog === 'startup' &&
+        (typeof screen.startup_kind !== 'string' ||
+          screen.startup_kind.length === 0))
+    ) {
+      return invalid;
+    }
+    // Only a `startup` dialog names its kind.
+    const startup_kind =
+      screen.dialog === 'startup' ? String(screen.startup_kind) : null;
+    return {
+      ok: true,
+      alive: 'alive',
+      screen: {
+        dialog: screen.dialog,
+        startup_kind,
+        fingerprint: screen.fingerprint
+      }
+    };
+  }
+
+  /**
    * Whether the Discord bridge beat recently enough to relay this session's
    * questions. A stat that fails reads as inactive — the caller then tells the
    * user to answer in tmux directly.
@@ -926,6 +1010,7 @@ export function createTmuxLauncher(deps = {}) {
     launch,
     focusRunning,
     focusRegistryPane,
+    codexStartup,
     bridgeActive
   };
 }

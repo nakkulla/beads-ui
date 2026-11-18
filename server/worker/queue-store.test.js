@@ -294,6 +294,77 @@ describe('interactive session persistence', () => {
     });
   });
 
+  test('drops a startup wait whose kind is outside the list', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(
+      WS,
+      record({ kind: 'session_lane', provider: 'codex' })
+    );
+
+    store.updateInteractiveSession(WS, 'B1:session_lane', {
+      startup_wait: /** @type {any} */ ({
+        kind: 'boot',
+        fingerprint: 'fp',
+        since: 20,
+        notified_at: null
+      })
+    });
+
+    expect(
+      store.snapshot(WS).interactive_sessions['B1:session_lane'].startup_wait
+    ).toBeUndefined();
+  });
+
+  test('keeps a listed startup wait and its pass fact through a cold reload', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(
+      WS,
+      record({ kind: 'session_lane', provider: 'codex' })
+    );
+
+    store.updateInteractiveSession(WS, 'B1:session_lane', {
+      startup_wait: {
+        kind: 'hooks',
+        fingerprint: 'fp',
+        since: 20,
+        notified_at: 30
+      },
+      startup_passed_at: 40
+    });
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:session_lane']
+    ).toMatchObject({
+      startup_wait: {
+        kind: 'hooks',
+        fingerprint: 'fp',
+        since: 20,
+        notified_at: 30
+      },
+      startup_passed_at: 40
+    });
+  });
+
+  test('drops an attempt window startup wait whose kind is outside the list', () => {
+    const attempt = makeAttempt({
+      attempt_id: 'cx',
+      bead_id: 'B1',
+      interactive: {
+        pane_id: '%8',
+        tmux_session: 's',
+        tmux_window: 'B1',
+        startup_wait: /** @type {any} */ ({
+          kind: 'boot',
+          fingerprint: 'fp',
+          since: 20,
+          notified_at: null
+        })
+      }
+    });
+
+    expect(attempt.interactive?.startup_wait).toBeUndefined();
+  });
+
   test('persists a failure handoff target and its start through a cold reload', () => {
     const store = createQueueStore();
     store.recordInteractiveSession(

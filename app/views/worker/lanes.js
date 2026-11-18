@@ -15,6 +15,10 @@ import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { discardOperationActive } from '../../../server/worker/discard-phase.js';
 import {
+  STARTUP_WAIT_LABELS,
+  normalizeStartupWait
+} from '../../../server/worker/startup-wait.js';
+import {
   AREA_LABELS,
   areaLabels,
   areaTooltip
@@ -2153,6 +2157,9 @@ export function liveSessionLaneView(views) {
   );
 }
 
+/** The startup-wait line's tooltip (UI-ahzh §3.4). */
+const STARTUP_WAIT_TOOLTIP = 'tmux 창에서 선택해야 세션이 시작됩니다';
+
 /**
  * The slot-3 conversation line of a running session-lane tile (UI-lbm5
  * §4.6), drawn by the same turn words a same-session conversation uses:
@@ -2167,6 +2174,20 @@ export function sessionLaneProgressTemplate(views, now = Date.now()) {
   const view = liveSessionLaneView(views);
   if (!view) {
     return '';
+  }
+  // A codex window still on a startup screen (UI-ahzh §3.4): the wait leads
+  // the line, timed from the screen's own `since`.
+  const startup = normalizeStartupWait(view.startup_wait);
+  if (startup) {
+    const word = `시작 화면 대기 · ${STARTUP_WAIT_LABELS[startup.kind]}`;
+    const wait =
+      timeSpan(startup.since, 'dur', now, { pre: `${word} ` }) || word;
+    return html`<div
+      class="rtile__activity rtile__activity--session rtile__activity--session-lane"
+      title=${STARTUP_WAIT_TOOLTIP}
+    >
+      <span class="rtile__activity-text">▤ ${wait}</span>
+    </div>`;
   }
   const { word, timed } = interactiveTurnWord(view);
   const tail =

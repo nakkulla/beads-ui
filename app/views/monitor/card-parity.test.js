@@ -2208,7 +2208,11 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
    * @param {string} [provider]
    * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
    */
-  async function drawSessionLane(provider = 'claude') {
+  /**
+   * @param {string} [provider]
+   * @param {import('../../../server/worker/startup-wait.js').StartupWait|null} [startup_wait]
+   */
+  async function drawSessionLane(provider = 'claude', startup_wait = null) {
     extra_rows = [
       row('L-1', { labels: ['worker-ineligible'] }),
       row('L-2', {
@@ -2298,7 +2302,8 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
           conversation: {
             processed_message_at: NOW - 5 * 60 * 1000,
             result: null
-          }
+          },
+          ...(startup_wait ? { startup_wait } : {})
         }
       }
     });
@@ -2455,6 +2460,28 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
     );
 
     expect(lines[0]).toContain('답 대기 · 어느 쪽으로 갈까요?');
+    expect(lines[1]).toBe(lines[0]);
+  });
+
+  test('draws the same startup wait line on the running tile of both tabs', async () => {
+    const { worker, monitor } = await drawSessionLane('codex', {
+      kind: 'hooks',
+      fingerprint: 'fp-hooks',
+      since: NOW - 6 * 60 * 1000,
+      notified_at: null
+    });
+
+    const lines = [worker, monitor].map((mount) =>
+      (
+        cardsByBead(mount)
+          .get('L-4')
+          ?.querySelector('.rtile__activity--session-lane')?.textContent || ''
+      )
+        .replace(/\s+/g, ' ')
+        .trim()
+    );
+
+    expect(lines[0]).toContain('시작 화면 대기 · 훅 확인');
     expect(lines[1]).toBe(lines[0]);
   });
 });

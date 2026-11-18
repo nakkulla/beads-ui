@@ -41323,6 +41323,397 @@ describe('session lane (UI-lbm5)', () => {
     });
   });
 
+  describe('codex startup wait (UI-ahzh)', () => {
+    const HOOKS_SCREEN = {
+      ok: true,
+      alive: 'alive',
+      screen: {
+        dialog: 'startup',
+        startup_kind: 'hooks',
+        fingerprint: 'fp-hooks'
+      }
+    };
+
+    /**
+     * A live codex session-lane window C1 whose `@agent_session` and hub
+     * `codex-startup` answer are both settable, with a timeline that keeps
+     * what it is given.
+     *
+     * @param {{ mode?: 'fresh'|'resume' }} [input]
+     */
+    function startupEnv(input = {}) {
+      /** @type {any[]} */
+      const events = [];
+      const timeline = {
+        append: vi.fn((/** @type {any} */ event) => {
+          events.push({
+            ...event,
+            event_id: `${event.kind}:${event.attempt_id ?? event.bead_id}:${event.seq}`
+          });
+        }),
+        readTimeline: vi.fn(() => events)
+      };
+      /** @type {Array<[string, any]>} */
+      const pushes = [];
+      /** @type {{ on: boolean }} */
+      const notify_enabled = { on: true };
+      const notify = new Proxy(
+        {},
+        {
+          get: (_target, key) =>
+            key === 'enabled'
+              ? () => notify_enabled.on
+              : (/** @type {any} */ payload) => {
+                  pushes.push([String(key), payload]);
+                  return Promise.resolve();
+                }
+        }
+      );
+      const env = laneEnv({ config: {}, extra: { timeline, notify } });
+      /** @type {{ reply: any }} */
+      const hub = { reply: HOOKS_SCREEN };
+      /** @type {{ value: string|null }} */
+      const agent_session = { value: null };
+      const codexStartup = vi.fn(async () => hub.reply);
+      Object.assign(env.launcher, { codexStartup });
+      /** @type {any} */ (env.launcher.readPaneOption).mockImplementation(
+        async () => ({ ok: true, value: agent_session.value })
+      );
+      const session_id =
+        input.mode === 'resume' ? '0199a000-0000-7000-8000-000000000002' : null;
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'cx',
+          bead_id: 'C1',
+          status: 'running',
+          exec: 'session',
+          runner: 'codex',
+          session_id,
+          started_at: 1000,
+          interactive: { pane_id: '%8', tmux_session: 's', tmux_window: 'C1' },
+          pid: null
+        }
+      });
+      env.store.recordInteractiveSession(WS, {
+        bead_id: 'C1',
+        kind: 'session_lane',
+        provider: 'codex',
+        session_id,
+        session_id_source: session_id === null ? null : 'launch',
+        mode: input.mode ?? 'fresh',
+        source: 'attempt',
+        attempt_id: 'cx',
+        pane_id: '%8',
+        tmux_session: 's',
+        tmux_window: 'C1',
+        cwd: '/wt/C1',
+        launched_at: 1000,
+        state: 'live',
+        conversation: {
+          stop: '세션 레인',
+          wait_id: null,
+          processed_message_at: null,
+          message_excerpt: null,
+          result: null,
+          handoff: null,
+          takeover_notified_at: null
+        }
+      });
+      env.panes.rows.push({
+        key: 'C1',
+        pane: '%8',
+        dead: '0',
+        session: 's',
+        window: 'C1',
+        cwd: '/wt/C1',
+        agent_runtime: 'codex',
+        agent_running: '1',
+        agent_attention: ''
+      });
+      return {
+        ...env,
+        hub,
+        agent_session,
+        codexStartup,
+        notify_enabled,
+        /** The startup lines this window's timeline holds, in order. */
+        startupLines() {
+          return events
+            .filter((event) => String(event.seq).includes(':startup_'))
+            .map((event) => event.summary);
+        },
+        /** The startup-wait pushes sent so far. */
+        startupPushes() {
+          return pushes.filter(([name]) => name === 'sessionLaneStartupWait');
+        }
+      };
+    }
+
+    test('records a hooks wait on a fresh window and its attempt', async () => {
+      const env = startupEnv();
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('C1').startup_wait).toEqual({
+        kind: 'hooks',
+        fingerprint: 'fp-hooks',
+        since: 1000,
+        notified_at: null
+      });
+      expect(env.laneAttempt('C1').interactive.startup_wait).toEqual({
+        kind: 'hooks',
+        fingerprint: 'fp-hooks',
+        since: 1000,
+        notified_at: null
+      });
+    });
+
+    test('appends one wait line for the same screen seen twice', async () => {
+      const env = startupEnv();
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.clock.at = 31_000;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.startupLines()).toEqual([
+        '세션 레인 시작 화면 대기 · 훅 확인'
+      ]);
+    });
+
+    test('records a hooks wait on a resume launch whose session id is pre-filled', async () => {
+      const env = startupEnv({ mode: 'resume' });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('C1').startup_wait?.kind).toBe('hooks');
+      expect(env.laneAttempt('C1').interactive.startup_wait?.kind).toBe(
+        'hooks'
+      );
+      expect(env.startupLines()).toEqual([
+        '세션 레인 시작 화면 대기 · 훅 확인'
+      ]);
+    });
+
+    test('appends a new wait line when the screen kind changes', async () => {
+      const env = startupEnv();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.hub.reply = {
+        ok: true,
+        alive: 'alive',
+        screen: { dialog: 'trust', startup_kind: null, fingerprint: 'fp-trust' }
+      };
+      env.clock.at = 31_000;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.startupLines()).toEqual([
+        '세션 레인 시작 화면 대기 · 훅 확인',
+        '세션 레인 시작 화면 대기 · 폴더 신뢰'
+      ]);
+    });
+
+    test('clears the wait and appends the pass line once @agent_session fills', async () => {
+      const env = startupEnv();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.agent_session.value = '0199a000-0000-7000-8000-000000000003';
+      env.clock.at = 31_000;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('C1').startup_wait).toBeUndefined();
+      expect(env.laneAttempt('C1').interactive.startup_wait).toBeUndefined();
+      expect(env.startupLines()).toEqual([
+        '세션 레인 시작 화면 대기 · 훅 확인',
+        '세션 레인 시작 화면 통과'
+      ]);
+    });
+
+    test('stops querying the hub after the pass', async () => {
+      const env = startupEnv();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.agent_session.value = '0199a000-0000-7000-8000-000000000003';
+      env.clock.at = 31_000;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.agent_session.value = null;
+      env.clock.at = 61_000;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.codexStartup).toHaveBeenCalledTimes(1);
+      expect(env.laneRecord('C1').startup_passed_at).toBe(31_000);
+    });
+
+    test('creates no wait for an unknown_screen answer', async () => {
+      const env = startupEnv();
+      env.hub.reply = {
+        ok: true,
+        alive: 'alive',
+        screen: {
+          dialog: 'unknown_screen',
+          startup_kind: null,
+          fingerprint: 'fp-boot'
+        }
+      };
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('C1').startup_wait).toBeUndefined();
+      expect(env.startupLines()).toEqual([]);
+    });
+
+    test('clears an existing wait on an unknown_screen answer without a line', async () => {
+      const env = startupEnv();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.hub.reply = {
+        ok: true,
+        alive: 'alive',
+        screen: {
+          dialog: 'unknown_screen',
+          startup_kind: null,
+          fingerprint: 'fp-boot'
+        }
+      };
+      env.clock.at = 31_000;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('C1').startup_wait).toBeUndefined();
+      expect(env.startupLines()).toEqual([
+        '세션 레인 시작 화면 대기 · 훅 확인'
+      ]);
+    });
+
+    test('keeps the previous wait when the hub read fails', async () => {
+      const env = startupEnv();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.hub.reply = {
+        ok: false,
+        error: 'launch_failed:session_hub_unavailable'
+      };
+      env.clock.at = 400_000;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('C1').startup_wait).toEqual({
+        kind: 'hooks',
+        fingerprint: 'fp-hooks',
+        since: 1000,
+        notified_at: null
+      });
+      expect(env.startupPushes()).toEqual([]);
+    });
+
+    test('never queries the hub for a claude session-lane window', async () => {
+      const env = laneEnv();
+      const codexStartup = vi.fn(async () => HOOKS_SCREEN);
+      Object.assign(env.launcher, { codexStartup });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(codexStartup).not.toHaveBeenCalled();
+      expect(env.laneRecord('S1').startup_wait).toBeUndefined();
+    });
+
+    test('pushes one notice after the same screen outlasts five minutes', async () => {
+      const env = startupEnv();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.clock.at = 1000 + 5 * 60_000 + 1;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.clock.at += 60_000;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.startupPushes()).toEqual([
+        [
+          'sessionLaneStartupWait',
+          {
+            bead_id: 'C1',
+            title: null,
+            label: '훅 확인',
+            tmux_session: 's',
+            tmux_window: 'C1',
+            repo: WS
+          }
+        ]
+      ]);
+    });
+
+    test('pushes again once a changed screen outlasts five minutes', async () => {
+      const env = startupEnv();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.clock.at = 1000 + 5 * 60_000 + 1;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.hub.reply = {
+        ok: true,
+        alive: 'alive',
+        screen: {
+          dialog: 'startup',
+          startup_kind: 'update',
+          fingerprint: 'fp-update'
+        }
+      };
+      const changed_at = env.clock.at + 30_000;
+      env.clock.at = changed_at;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.clock.at = changed_at + 5 * 60_000 + 1;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.startupPushes().map(([, payload]) => payload.label)).toEqual([
+        '훅 확인',
+        '업데이트 안내'
+      ]);
+    });
+
+    test('stamps nothing while notifications are off and pushes once they turn on', async () => {
+      const env = startupEnv();
+      env.notify_enabled.on = false;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.clock.at = 1000 + 5 * 60_000 + 1;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      const stamped_while_off = env.laneRecord('C1').startup_wait?.notified_at;
+      env.notify_enabled.on = true;
+      env.clock.at += 30_000;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(stamped_while_off).toBeNull();
+      expect(env.startupPushes()).toHaveLength(1);
+    });
+
+    test('records no wait for a window settled before the hub answers', async () => {
+      const env = startupEnv();
+      env.codexStartup.mockImplementation(async () => {
+        env.store.updateInteractiveSession(WS, 'C1:session_lane', {
+          settled_at: 2000
+        });
+        return HOOKS_SCREEN;
+      });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('C1')?.startup_wait ?? null).toBeNull();
+      expect(env.laneAttempt('C1').interactive.startup_wait).toBeUndefined();
+      expect(env.startupLines()).toEqual([]);
+    });
+
+    test('pushes nothing when the wait ends before five minutes', async () => {
+      const env = startupEnv();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.agent_session.value = '0199a000-0000-7000-8000-000000000003';
+      env.clock.at = 1000 + 4 * 60_000;
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.clock.at = 1000 + 10 * 60_000;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.startupPushes()).toEqual([]);
+    });
+  });
+
   describe('controls', () => {
     test('refuses to pause a session-lane attempt', async () => {
       const env = laneEnv();

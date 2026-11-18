@@ -983,3 +983,193 @@ describe('tmux-launcher session-lane launch input (UI-lbm5 §4.3)', () => {
     ).toEqual({ projects: { [test_dir]: { trust_level: 'trusted' } } });
   });
 });
+
+describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
+  /**
+   * A launcher whose hub answers every call with `reply`, recording the argv.
+   *
+   * @param {() => Promise<any>} reply
+   */
+  function startupLauncher(reply) {
+    /** @type {string[][]} */
+    const calls = [];
+    const launcher = createTmuxLauncher({
+      runSessionHub: async (args) => {
+        calls.push(args);
+        return reply();
+      },
+      log: () => {}
+    });
+    return { calls, launcher };
+  }
+
+  const INPUT = {
+    pane: '%8',
+    marker: SESSION_LANE_PANE_MARKER,
+    key: 'UI-ahzh'
+  };
+
+  test('asks the hub for the marked pane read-only', async () => {
+    const { calls, launcher } = startupLauncher(async () =>
+      hubReply({ alive: 'alive', screen: null })
+    );
+
+    await launcher.codexStartup(INPUT);
+
+    expect(calls).toEqual([
+      [
+        'codex-startup',
+        '--pane',
+        '%8',
+        '--marker-option',
+        SESSION_LANE_PANE_MARKER,
+        '--marker-value',
+        'UI-ahzh'
+      ]
+    ]);
+  });
+
+  test('returns a startup screen with its kind and fingerprint', async () => {
+    const { launcher } = startupLauncher(async () =>
+      hubReply({
+        alive: 'alive',
+        screen: {
+          dialog: 'startup',
+          startup_kind: 'hooks',
+          fingerprint: 'a1b2c3'
+        }
+      })
+    );
+
+    const result = await launcher.codexStartup(INPUT);
+
+    expect(result).toEqual({
+      ok: true,
+      alive: 'alive',
+      screen: {
+        dialog: 'startup',
+        startup_kind: 'hooks',
+        fingerprint: 'a1b2c3'
+      }
+    });
+  });
+
+  test('drops the startup kind of a trust screen', async () => {
+    const { launcher } = startupLauncher(async () =>
+      hubReply({
+        alive: 'alive',
+        screen: {
+          dialog: 'trust',
+          startup_kind: 'hooks',
+          fingerprint: 'a1b2c3'
+        }
+      })
+    );
+
+    const result = await launcher.codexStartup(INPUT);
+
+    expect(result).toEqual({
+      ok: true,
+      alive: 'alive',
+      screen: { dialog: 'trust', startup_kind: null, fingerprint: 'a1b2c3' }
+    });
+  });
+
+  test('reads a trust reply that carries no startup kind key', async () => {
+    const { launcher } = startupLauncher(async () =>
+      hubReply({
+        alive: 'alive',
+        screen: { dialog: 'trust', fingerprint: 'a1b2c3' }
+      })
+    );
+
+    const result = await launcher.codexStartup(INPUT);
+
+    expect(result).toEqual({
+      ok: true,
+      alive: 'alive',
+      screen: { dialog: 'trust', startup_kind: null, fingerprint: 'a1b2c3' }
+    });
+  });
+
+  test('returns no screen for a pane the marker does not confirm', async () => {
+    const { launcher } = startupLauncher(async () =>
+      hubReply({ alive: 'unknown', screen: null })
+    );
+
+    const result = await launcher.codexStartup(INPUT);
+
+    expect(result).toEqual({ ok: true, alive: 'unknown', screen: null });
+  });
+
+  test.each([
+    [
+      'an unknown dialog',
+      {
+        alive: 'alive',
+        screen: { dialog: 'boot', startup_kind: null, fingerprint: 'a1b2c3' }
+      }
+    ],
+    [
+      'an empty fingerprint',
+      {
+        alive: 'alive',
+        screen: { dialog: 'startup', startup_kind: 'hooks', fingerprint: '' }
+      }
+    ],
+    [
+      'a fingerprint that is not hex',
+      {
+        alive: 'alive',
+        screen: { dialog: 'trust', startup_kind: null, fingerprint: 'fp' }
+      }
+    ],
+    [
+      'a startup screen without its kind',
+      {
+        alive: 'alive',
+        screen: { dialog: 'startup', startup_kind: null, fingerprint: 'a1b2c3' }
+      }
+    ],
+    ['a missing alive', { screen: null }],
+    [
+      'a screen on a dead pane',
+      {
+        alive: 'dead',
+        screen: { dialog: 'trust', startup_kind: null, fingerprint: 'a1b2c3' }
+      }
+    ]
+  ])('refuses a reply with %s', async (_name, value) => {
+    const { launcher } = startupLauncher(async () => hubReply(value));
+
+    const result = await launcher.codexStartup(INPUT);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'launch_failed:session_hub_invalid_response'
+    });
+  });
+
+  test('passes a hub refusal through as a failure', async () => {
+    const { launcher } = startupLauncher(async () =>
+      hubReply({ ok: false, code: 'tmux_unavailable' }, 1)
+    );
+
+    const result = await launcher.codexStartup(INPUT);
+
+    expect(result).toEqual({ ok: false, error: 'tmux_unavailable' });
+  });
+
+  test('reports an unreachable hub as a failure', async () => {
+    const { launcher } = startupLauncher(async () => {
+      throw new Error('spawn session-hub ENOENT');
+    });
+
+    const result = await launcher.codexStartup(INPUT);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'launch_failed:session_hub_unavailable'
+    });
+  });
+});

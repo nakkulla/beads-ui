@@ -59,6 +59,7 @@ const TITLE = {
   condition_wait: `${SENDER} ⏳ 배포 조건 대기`,
   provider_recovered: `${SENDER} ✅ 공급자 회복`,
   provider_live_preempt: `${SENDER} 🔀 실행 중 계정 전환`,
+  startup_wait: `${SENDER} ⏳ 시작 화면 대기`,
   provider_disarmed: `${SENDER} 🚨 자동 재개 중단`,
   hold: `${SENDER} ⏸️ 머지 보류`
 };
@@ -438,6 +439,8 @@ function failureConversationLine(conversation) {
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   providerLivePreempt: (input: { bead_id: string, runner: string, from: string, to: string, window: string, pct: number, repo?: string|null }) => Promise<void>,
+ *   enabled: () => boolean,
+ *   sessionLaneStartupWait: (input: { bead_id: string, title?: string|null, label: string, tmux_session?: string|null, tmux_window?: string|null, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
  *   hold: (input: NeedsHumanInput) => Promise<void>,
  *   externalWaitCompleted: (input: { bead_id: string, headline: string, repo: string, session?: { label: string, resume_command: string }|null }) => Promise<boolean>,
@@ -1077,6 +1080,43 @@ export function createNotifier(deps) {
         send(cmd, lines.join('\n'));
       } catch (err) {
         log('providerLivePreempt failed: %o', err);
+      }
+    },
+
+    // Whether a push would go out now; a caller that stamps a once-only
+    // push as sent asks this first so a disabled notifier stamps nothing.
+    enabled() {
+      return resolveCmd() !== null;
+    },
+
+    async sessionLaneStartupWait(input) {
+      // UI-ahzh §3.5: one push per startup-screen fingerprint that outlived
+      // five minutes. It only says where to choose; nothing is sent to the pane.
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title =
+          text(input.title) ?? (await lookupTitle(input.bead_id));
+        const lines = [
+          headline(TITLE.startup_wait, input.bead_id, bead_title),
+          `시작 화면 대기 · ${input.label}`
+        ];
+        const place = [text(input.tmux_session), text(input.tmux_window)]
+          .filter(Boolean)
+          .join(':');
+        if (place) {
+          lines.push(`tmux ${place}`);
+        }
+        lines.push('tmux 창에서 선택해야 시작됩니다');
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('sessionLaneStartupWait failed: %o', err);
       }
     },
 

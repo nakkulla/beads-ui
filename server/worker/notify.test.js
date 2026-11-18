@@ -502,6 +502,24 @@ describe('worker/notify argv assembly', () => {
     );
   });
 
+  test('names the startup screen and its tmux window on the startup-wait push', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.sessionLaneStartupWait({
+      bead_id: 'UI-1',
+      title: '세션 레인',
+      label: '훅 확인',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-1',
+      repo: '/r/proj'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      '🤖 ⏳ 시작 화면 대기 — UI-1 세션 레인\n시작 화면 대기 · 훅 확인\ntmux bdui-inquiry:UI-1\ntmux 창에서 선택해야 시작됩니다\n리포: proj'
+    );
+  });
+
   test('sends the start event with the transition, bead, repo and exec', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });

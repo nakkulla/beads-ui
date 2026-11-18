@@ -541,6 +541,8 @@
  * @property {number|null} [processed_message_at]
  * @property {boolean} [awaiting_answer] - The window waits for the person: a
  * question prompt, or an idle turn whose last message is no result line.
+ * @property {import('./startup-wait.js').StartupWait|null} [startup_wait] -
+ * The interactive record's codex startup-screen wait, mirrored (UI-ahzh §3.3).
  */
 /**
  * @typedef {Object} InteractiveSession
@@ -570,6 +572,12 @@
  * @property {number|null} turn_state_since
  * @property {InteractiveLastMessage|null} last_message
  * @property {number|null} last_message_read_at
+ * @property {import('./startup-wait.js').StartupWait|null} [startup_wait] - A
+ * session-lane codex window held on a startup screen before SessionStart
+ * (UI-ahzh §3.3). Absent reads as no wait.
+ * @property {number|null} [startup_passed_at] - When the pane's
+ * `@agent_session` was first seen filled: SessionStart passed, and the
+ * startup screen is never queried again for this window.
  * @property {ConversationState|null} conversation - Present on every
  * conversation a launcher opened since UI-18a5 §3.4 — 멈춤 (`inquiry`),
  * 실패 (`resolve`) and 외부 작업 완료 (`external_resume`). A record without
@@ -1355,6 +1363,7 @@ import {
   hasSessionObservation,
   readTerminalObservation
 } from './session-observation.js';
+import { normalizeStartupWait } from './startup-wait.js';
 import {
   attemptRecordPath,
   beadsRootDir,
@@ -4065,6 +4074,8 @@ function normalizeInteractiveSessions(raw) {
         ? value[key]
         : null;
     const bead_id = String(value.bead_id);
+    const startup_wait = normalizeStartupWait(value.startup_wait);
+    const startup_passed_at = numberOrNull('startup_passed_at');
     sessions[`${bead_id}:${value.kind}`] = {
       bead_id,
       kind: /** @type {InteractiveSession['kind']} */ (value.kind),
@@ -4118,7 +4129,9 @@ function normalizeInteractiveSessions(raw) {
       turn_state_since: numberOrNull('turn_state_since'),
       last_message: normalizeLastMessage(value.last_message),
       last_message_read_at: numberOrNull('last_message_read_at'),
-      conversation: normalizeConversation(value.conversation)
+      conversation: normalizeConversation(value.conversation),
+      ...(startup_wait ? { startup_wait } : {}),
+      ...(startup_passed_at === null ? {} : { startup_passed_at })
     };
   }
   return sessions;
@@ -4295,6 +4308,7 @@ function normalizeSessionLaneWindow(value) {
     value.turn_state === 'idle'
       ? value.turn_state
       : null;
+  const startup_wait = normalizeStartupWait(value.startup_wait);
   return {
     pane_id: text('pane_id'),
     tmux_session: text('tmux_session'),
@@ -4304,7 +4318,8 @@ function normalizeSessionLaneWindow(value) {
     turn_state_since: time('turn_state_since'),
     last_message_excerpt: text('last_message_excerpt'),
     processed_message_at: time('processed_message_at'),
-    awaiting_answer: value.awaiting_answer === true
+    awaiting_answer: value.awaiting_answer === true,
+    ...(startup_wait ? { startup_wait } : {})
   };
 }
 
