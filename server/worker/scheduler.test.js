@@ -5582,6 +5582,39 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     });
   });
 
+  test('refuses a 워커가 이어감 line on a parked row as having no Worker exit', async () => {
+    const env = failureEnv();
+    env.real.clearCleanupFailure(WS, BEAD);
+    seedQueue(env.real, [BEAD]);
+    env.real.appendAttempt(WS, {
+      expected_revision: env.real.snapshot(WS).revision,
+      attempt: { attempt_id: 'parked-1', bead_id: BEAD }
+    });
+    env.real.updateAttempt(WS, {
+      attempt_id: 'parked-1',
+      patch: {
+        status: 'parked',
+        cause_detail: { awaiting_user: 'scope_question', summary: 'ask' }
+      }
+    });
+    openFailureConversation(env);
+    say(env, '워커가 이어감 · 다시');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const reserved = record(env)?.conversation?.handoff;
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await flush();
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(reserved?.target).toBeNull();
+    expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    expect(env.real.snapshot(WS).conversation_refusals[BEAD]).toMatchObject({
+      reason: '이 행에는 Worker 출구 없음',
+      kind: 'resolve'
+    });
+  });
+
   test('keeps the no-exit refusal through the next pass while its row stands', async () => {
     const env = failureEnv();
     openFailureConversation(env, {

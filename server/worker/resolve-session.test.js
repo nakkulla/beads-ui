@@ -888,6 +888,24 @@ describe('failureHandoffTarget (UI-18a5 §3.4)', () => {
       log_path: '/logs/deploy.log'
     });
   });
+
+  test('prints the landing exit line in the conversation entry', () => {
+    const failure = resolveFailureContext(landingDeployQueue(), BEAD);
+
+    const entry = buildFailureEntry({
+      failure: /** @type {any} */ (failure),
+      worktree: null,
+      checkout: REPO
+    });
+
+    expect(entry).toContain('- 대화 사유: 실패 착지 실패 · script_failed\n');
+    expect(entry).toContain(
+      '진단 restart failed · 워커가 이어감이면 Worker가 실패한 착지 단계(배포)부터 한 번 다시 실행한다'
+    );
+    expect(
+      entry.endsWith(CONVERSATION_ENTRY_BLOCK.split('\n').at(-1) || '')
+    ).toBe(true);
+  });
 });
 
 describe('createResolveSession (UI-jw27 §4)', () => {
