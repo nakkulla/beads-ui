@@ -10,6 +10,7 @@ import {
   runningTile,
   runningTileInput
 } from './running-grid.js';
+import { tileResolveFields } from './tile-resolve.js';
 
 describe('worker failed running tile template', () => {
   beforeEach(() => {
@@ -5913,6 +5914,53 @@ describe('failed tile with one status badge and one cause line (UI-lx9o)', () =>
     expect(nextLines(tile)[0]).toBe(
       '해결 — [다시 확인]으로 작업 상태를 다시 읽는다'
     );
+    expect(
+      tile.querySelector('.external-wait__action')?.textContent?.trim()
+    ).toBe('다시 확인');
+  });
+
+  test('says the landing card of the spec with only its own controls in 다음', () => {
+    const wait_reasons = [
+      reasonInput({
+        kind: 'recovery',
+        verdict_reason: { code: 'awaiting', message: '사용자의 답변이 필요함' },
+        resolution: undefined,
+        release:
+          '검증 실패를 세션에서 고친 뒤 [워커로 이어가기] — 이어갈 지시 또는 폐기를 결정합니다.'
+      })
+    ];
+    const interactive_sessions = [conversation({ discord_pending: true })];
+    /** @type {Partial<import('./running-grid.js').FailureTile>} */
+    const failure = {
+      open: true,
+      cause: 'quickfix_landing_failed:script_failed',
+      quickfix_lane: true,
+      quickfix_landing: { cursor: 'repo_operations', reason: 'script_failed' },
+      operation: { kind: 'deploy', exit_code: 1 }
+    };
+    const fields = tileResolveFields({
+      id: 'UI-t1',
+      run_state: 'failed',
+      landing_deploy_failure: true,
+      failure,
+      failure_material: { cleanup_retry: true },
+      wait_reasons,
+      interactive_sessions
+    });
+
+    const tile = failedTile(failure, {
+      ...fields,
+      wait_reasons,
+      interactive_sessions
+    });
+
+    expect(nextLines(tile)).toEqual([
+      '해결 — Discord 스레드 준비 중 — 세션의 첫 답 뒤 생긴다',
+      '실패한 스크립트의 출력에서 원인을 확인하고 고치는 것이 먼저입니다. 아래 [정리 재시도]를 눌러 실패한 착지 후 절차를 다시 실행하세요.',
+      '사용자의 답변이 필요함',
+      `대기 시작 ${formatClockLocal(NOW - 60 * 60 * 1000, NOW)}`,
+      `다음 확인 ${formatClockLocal(NOW + 10 * 60 * 1000, NOW)}`
+    ]);
   });
 
   test.each([
