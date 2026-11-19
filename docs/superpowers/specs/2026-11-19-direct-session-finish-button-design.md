@@ -339,6 +339,11 @@ sha256을 시험으로 고정한다. 서버가 채우는 자리는 `<Bead ID>` �
   블록. beads-ui 구현 진입 전에 착지해야 하는 선행이다(사본 바이트의 원본).
   quick_fix로 dotfiles Worker 병렬 레인에 배치했고 `UI-lxxf`의 foreign `blocks`
   엣지가 그 Bead를 가리킨다.
+- 크로스 리포 unit: dotfiles dotfiles-zcylg — 스펙 리뷰 r1 정정 전 초안으로
+  `dotfiles-stlfs`가 이미 커밋했으므로, 그 착지 뒤 블록 문구를 이 정정본 §3.5와
+  같게 고친다. dotfiles 직렬 레인에서 `dotfiles-stlfs` 뒤에 배치했고
+  `UI-lxxf`의 foreign `blocks` 엣지가 이 Bead도 가리킨다. 지시문 사본은 이 Bead
+  착지 바이트로 고정한다.
 - 관찰: Codex 직접 세션 — 세션 허브의 비중계 `send`가 Codex 입력을 지원하지
   않아 버튼이 비활성이다. 허브가 지원하면 §3.1 술어 한 줄로 열린다.
 - 관찰: 한 세션이 잡은 Bead 여러 개의 일괄 마감 — 누른 Bead만 마감한다(사용자
