@@ -1989,21 +1989,6 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     expect(without_action.querySelector('.rtile__finish')).toBeNull();
   });
 
-  test('draws no 마무리 button on a Worker attempt tile', () => {
-    const direct = renderSession({
-      session_refs: [view()],
-      finish_action: { enabled: true, title: FINISH_TITLE }
-    });
-    const attempt = renderSession({
-      attempt_id: 'a1',
-      session_refs: [view()],
-      finish_action: { enabled: true, title: FINISH_TITLE }
-    });
-
-    expect(direct.querySelector('.rtile__finish')).not.toBeNull();
-    expect(attempt.querySelector('.rtile__finish')).toBeNull();
-  });
-
   test('draws the session chip before the exec_receipt chip', () => {
     const tile = renderSession({
       session_refs: [view()],

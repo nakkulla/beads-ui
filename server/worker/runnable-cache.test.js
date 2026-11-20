@@ -1748,6 +1748,21 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
     });
   });
 
+  test('projects has_external_wait true for an in_progress row holding an empty key', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [sessionRow({ metadata: { external_wait: '' } })]
+      })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out[0]).toMatchObject({
+      status: 'in_progress',
+      has_external_wait: true
+    });
+  });
+
   test('projects has_external_wait false for an in_progress row without the key', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({ [WS_A]: [sessionRow()] })

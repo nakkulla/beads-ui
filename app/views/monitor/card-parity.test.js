@@ -2827,11 +2827,19 @@ describe('direct session tile finish button parity between the Worker and Monito
    * Draw both tabs with one direct session Bead whose claude transcript sits
    * in a stubbed home directory, so the `session_ref` reads as local.
    *
+   * A contrast Bead `FN-2` with the same `session_ref` and no patch is drawn
+   * next to it when `with_contrast` is true.
+   *
    * @param {string} metadata_session_ref
    * @param {Record<string, unknown>} [metadata_patch]
+   * @param {boolean} [with_contrast]
    * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
    */
-  async function drawDirectSession(metadata_session_ref, metadata_patch = {}) {
+  async function drawDirectSession(
+    metadata_session_ref,
+    metadata_patch = {},
+    with_contrast = false
+  ) {
     const home = path.join(tmp_root, 'home');
     fs.mkdirSync(path.join(home, '.claude', 'projects', 'p'), {
       recursive: true
@@ -2849,7 +2857,18 @@ describe('direct session tile finish button parity between the Worker and Monito
           session_ref: metadata_session_ref,
           ...metadata_patch
         }
-      })
+      }),
+      ...(with_contrast
+        ? [
+            row('FN-2', {
+              status: 'in_progress',
+              metadata: {
+                route: 'quick_fix',
+                session_ref: metadata_session_ref
+              }
+            })
+          ]
+        : [])
     ];
     return drawBothTabs();
   }
@@ -2877,16 +2896,21 @@ describe('direct session tile finish button parity between the Worker and Monito
     expect(partsOf(cards[1])).toEqual(partsOf(cards[0]));
   });
 
-  test('draws no finish button on either tab while an external wait key is set', async () => {
+  test('draws the finish button only on the tile without an external wait key on both tabs', async () => {
     const { worker, monitor } = await drawDirectSession(
       `claude:${SESSION_ID}@host`,
-      { external_wait: 'job-1' }
+      { external_wait: 'job-1' },
+      true
     );
 
-    for (const mount of [worker, monitor]) {
-      expect(
-        cardsByBead(mount).get('FN-1')?.querySelector('.rtile__finish')
-      ).toBe(null);
-    }
+    const present = [worker, monitor].map((mount) => [
+      cardsByBead(mount).get('FN-1')?.querySelector('.rtile__finish') != null,
+      cardsByBead(mount).get('FN-2')?.querySelector('.rtile__finish') != null
+    ]);
+
+    expect(present).toEqual([
+      [false, true],
+      [false, true]
+    ]);
   });
 });

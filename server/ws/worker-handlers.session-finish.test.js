@@ -102,6 +102,18 @@ function setup(options = {}) {
   const finish = createSessionFinish({
     readBead: async () => (options.unreadable ? null : bead),
     snapshot: () => queue,
+    ownership: () => {
+      if (options.queue_unreadable) {
+        throw new Error('queue_unreadable');
+      }
+      return {
+        attempts: [
+          ...Object.values(queue.attempts || {}),
+          ...(options.transferred || [])
+        ],
+        interactive_sessions: queue.interactive_sessions || {}
+      };
+    },
     runHub,
     realpath: (target) => target,
     locate: () => ({
@@ -142,6 +154,19 @@ describe('session finish rejections', () => {
     expect(sends()).toHaveLength(0);
   });
 
+  test('rejects a Bead holding an empty external_wait key without calling the hub', async () => {
+    const { finish, sends } = setup({
+      bead: {
+        metadata: { session_ref: `claude:${SID}@host`, external_wait: '' }
+      }
+    });
+
+    const reply = await finish({ root_dir: ROOT, bead_id: BEAD });
+
+    expect(reply.reason).toBe('not_session_tile');
+    expect(sends()).toHaveLength(0);
+  });
+
   test('rejects a Bead a Worker lane claimed after the tile rendered', async () => {
     const { finish, sends } = setup({ queue: { queue: [{ bead_id: BEAD }] } });
 
@@ -155,6 +180,26 @@ describe('session finish rejections', () => {
     const { finish, sends } = setup({
       queue: { attempts: { a1: { bead_id: 'UI-other', session_id: SID } } }
     });
+
+    const reply = await finish({ root_dir: ROOT, bead_id: BEAD });
+
+    expect(reply.reason).toBe('session_mismatch');
+    expect(sends()).toHaveLength(0);
+  });
+
+  test('rejects a session id of a transferred Worker attempt the display queue trimmed', async () => {
+    const { finish, sends } = setup({
+      transferred: [{ bead_id: BEAD, attempt_id: 'old', session_id: SID }]
+    });
+
+    const reply = await finish({ root_dir: ROOT, bead_id: BEAD });
+
+    expect(reply.reason).toBe('session_mismatch');
+    expect(sends()).toHaveLength(0);
+  });
+
+  test('rejects when the queue file cannot be read', async () => {
+    const { finish, sends } = setup({ queue_unreadable: true });
 
     const reply = await finish({ root_dir: ROOT, bead_id: BEAD });
 
@@ -290,6 +335,7 @@ describe('session finish hub call', () => {
         metadata: { session_ref: `claude:${SID}@host` }
       }),
       snapshot: () => ({}),
+      ownership: () => ({ attempts: [], interactive_sessions: {} }),
       runHub,
       realpath: (target) => target,
       locate: () => ({ locality: 'local', file: '/x', last_event_at: 1 })
@@ -301,6 +347,41 @@ describe('session finish hub call', () => {
     );
     const second = await finish({ root_dir: ROOT, bead_id: BEAD });
     release(hubResult(HUB_TYPED));
+    const first_reply = await first;
+
+    expect(second.reason).toBe('in_flight');
+    expect(first_reply.sent).toBe(true);
+    expect(runHub.mock.calls.filter(([a]) => a[0] === 'send')).toHaveLength(1);
+  });
+
+  test('answers in_flight to a request arriving while the first reads the session state', async () => {
+    /** @type {(value: any) => void} */
+    let release_state = () => {};
+    const state_pending = new Promise((resolve) => {
+      release_state = resolve;
+    });
+    const runHub = vi.fn(
+      /** @type {(args: string[]) => Promise<any>} */ (
+        async (args) =>
+          args[0] === 'state' ? state_pending : hubResult(HUB_TYPED)
+      )
+    );
+    const finish = createSessionFinish({
+      readBead: async () => ({
+        status: 'in_progress',
+        metadata: { session_ref: `claude:${SID}@host` }
+      }),
+      snapshot: () => ({}),
+      ownership: () => ({ attempts: [], interactive_sessions: {} }),
+      runHub,
+      realpath: (target) => target,
+      locate: () => ({ locality: 'local', file: '/x', last_event_at: 1 })
+    });
+
+    const first = finish({ root_dir: ROOT, bead_id: BEAD });
+    await vi.waitFor(() => expect(runHub).toHaveBeenCalledTimes(1));
+    const second = await finish({ root_dir: ROOT, bead_id: BEAD });
+    release_state(hubResult(HUB_STATE));
     const first_reply = await first;
 
     expect(second.reason).toBe('in_flight');

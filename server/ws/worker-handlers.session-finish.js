@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runShell } from '../bd.js';
-import { hasExternalWait } from '../worker/runnable-cache.js';
+import { hasExternalWaitKey } from '../worker/runnable-cache.js';
 import {
   isSafeSessionId,
   parseSessionRef,
@@ -52,7 +52,8 @@ const HUB_SEND_TIMEOUT_MS = 60000;
 /**
  * @typedef {Object} SessionFinishDeps
  * @property {(root_dir: string, bead_id: string) => Promise<SessionFinishBead|null>} readBead - Fresh Bead read, never a screen cache.
- * @property {(root_dir: string) => Record<string, any>} snapshot - Decorated queue snapshot.
+ * @property {(root_dir: string) => Record<string, any>} snapshot - Decorated queue snapshot, the one the tile was drawn from.
+ * @property {(root_dir: string, bead_id: string) => { attempts: any[], interactive_sessions: Record<string, any> }} ownership - Untrimmed Worker attempts (queue and transferred records of this Bead) and conversation records; throws when the queue cannot be read.
  * @property {(args: string[], options: { input?: string, timeout_ms: number }) => Promise<{ code: number, stdout: string, stderr: string }>} runHub
  * @property {(target: string) => string} realpath - Throws when the path cannot be resolved.
  * @property {typeof resolveSessionFile} [locate]
@@ -162,7 +163,7 @@ export function createSessionFinish(deps) {
     if (
       !bead ||
       bead.status !== 'in_progress' ||
-      hasExternalWait(/** @type {Record<string, unknown>} */ (bead)) ||
+      hasExternalWaitKey(/** @type {Record<string, unknown>} */ (bead)) ||
       sessionExcludedBeadIds(deps.snapshot(root_dir)).has(bead_id)
     ) {
       return refusal(bead_id, 'not_session_tile');
@@ -186,17 +187,18 @@ export function createSessionFinish(deps) {
     }
     const session_id = entry.session_id;
 
-    // Step 3: the session must be a human session of this repository.
-    if (!(await isRepositoryHumanSession(root_dir, session_id))) {
-      return refusal(bead_id, 'session_mismatch');
-    }
-
-    // Step 4: synchronous check-and-add, released in `finally`.
+    // Step 4 runs before step 3: a synchronous check-and-add as soon as the
+    // session id is known, held across the `state` read and the send, so a
+    // second request can never pass while the first is still under way.
     if (in_flight.has(session_id)) {
       return refusal(bead_id, 'in_flight');
     }
     in_flight.add(session_id);
     try {
+      // Step 3: the session must be a human session of this repository.
+      if (!(await isRepositoryHumanSession(root_dir, bead_id, session_id))) {
+        return refusal(bead_id, 'session_mismatch');
+      }
       // Step 5: exactly one send, never retried.
       const result = await deps.runHub(['send', session_id], {
         input: fillSessionFinishBlock(bead_id),
@@ -210,20 +212,25 @@ export function createSessionFinish(deps) {
 
   /**
    * @param {string} root
+   * @param {string} bead_id
    * @param {string} session_id
    * @returns {Promise<boolean>}
    */
-  async function isRepositoryHumanSession(root, session_id) {
-    const queue = deps.snapshot(root);
-    for (const attempt of Object.values(queue.attempts || {})) {
-      if (attempt?.session_id === session_id) {
-        return false;
+  async function isRepositoryHumanSession(root, bead_id, session_id) {
+    try {
+      const owned = deps.ownership(root, bead_id);
+      for (const attempt of owned.attempts) {
+        if (attempt?.session_id === session_id) {
+          return false;
+        }
       }
-    }
-    for (const record of Object.values(queue.interactive_sessions || {})) {
-      if (record?.session_id === session_id) {
-        return false;
+      for (const record of Object.values(owned.interactive_sessions)) {
+        if (record?.session_id === session_id) {
+          return false;
+        }
       }
+    } catch {
+      return false;
     }
     try {
       const state = await deps.runHub(['state', session_id], {

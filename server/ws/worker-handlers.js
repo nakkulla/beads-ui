@@ -8737,6 +8737,20 @@ export async function handleWorkerSessionFinish(ws, req) {
       /** @type {Record<string, any>} */ (
         decorateQueue(root_dir, queueStore().snapshot(root_dir))
       ),
+    // Ownership reads the untrimmed queue, never the display projection that
+    // retention trims, and refuses an unreadable queue (UI-lxxf §3.4 step 3).
+    ownership: (root_dir, bead_id) => {
+      const store = queueStore();
+      const raw = store.snapshot(root_dir, { strict: true });
+      const transferred =
+        typeof store.readAttemptsForBead === 'function'
+          ? store.readAttemptsForBead(root_dir, bead_id)
+          : [];
+      return {
+        attempts: [...Object.values(raw.attempts || {}), ...transferred],
+        interactive_sessions: raw.interactive_sessions || {}
+      };
+    },
     runHub: runSessionHub,
     realpath: realpathOf
   });

@@ -2339,7 +2339,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? html`<div class="worker-chips worker-chips--coords">${lane_chip}</div>`
       : ''}${failed && !held && !external_wait
       ? pair_foot
-      : ''}${direct_session && tile.finish_action
+      : ''}${tile.finish_action
       ? html`<div class="rtile__foot">${sessionFinishButton(tile)}</div>`
       : ''}${tile.spec_authoring_actions?.length
       ? html`<div class="rtile__foot">
