@@ -80,7 +80,7 @@ function git(repo, ...args) {
  * `bdui-shared` and `node` stand in for the real ones. `node` is only shadowed
  * for the health probe, so the fake forwards everything else to the real one.
  *
- * @param {{ health?: string, npm_body?: string, restart_body?: string }} [options]
+ * @param {{ health?: string, npm_body?: string, restart_body?: string, discord_body?: string }} [options]
  */
 function fixture(options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-deploy-'));
@@ -122,13 +122,23 @@ function fixture(options = {}) {
   for (const name of ['npm', 'bdui-shared', 'node']) {
     fs.symlinkSync(TOOL_LAUNCHER, path.join(bin, name));
   }
+  // `HOME/bin/discord` is the installed notification tool the script calls; the
+  // fake logs instead, so a warning never reaches the real channel.
+  const home = path.join(root, 'home');
+  fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'discord'),
+    `#!/bin/sh\nprintf 'discord %s\\n' "$1 $2" >> "$CALL_LOG"\n${options.discord_body || ''}\n`,
+    'utf8'
+  );
+  fs.symlinkSync(TOOL_LAUNCHER, path.join(home, 'bin', 'discord'));
 
-  return { root, repo, sha, bin, log };
+  return { root, repo, sha, bin, log, home };
 }
 
 /**
  * @param {ReturnType<typeof fixture>} env
- * @param {{ sha?: string, root?: string, cwd?: string }} [overrides]
+ * @param {{ sha?: string, root?: string, cwd?: string, attempts?: string, notify_seconds?: string }} [overrides]
  */
 function run(env, overrides = {}) {
   return spawnSync(ADAPTER, [], {
@@ -137,12 +147,14 @@ function run(env, overrides = {}) {
     env: {
       ...process.env,
       PATH: `${env.bin}${path.delimiter}${process.env.PATH}`,
+      HOME: env.home,
       CALL_LOG: env.log,
       BDUI_TEST_TOOL_ROOT: env.root,
       REPO_OPS_TARGET_SHA: overrides.sha || env.sha,
       REPO_OPS_TARGET_BASE: 'main',
       REPO_OPS_REPO_ROOT: overrides.root || env.repo,
-      REPO_OPS_HEALTH_ATTEMPTS: '1',
+      REPO_OPS_HEALTH_ATTEMPTS: overrides.attempts || '1',
+      REPO_OPS_DEPLOY_NOTIFY_SECONDS: overrides.notify_seconds || '10',
       REPO_OPS_HEALTH_POLL_SECONDS: '0',
       BDUI_DEPLOY_HEALTH_URL: 'http://127.0.0.1:3000/healthz'
     }
@@ -159,6 +171,7 @@ function runAsync(env, extra_env = {}) {
     env: {
       ...process.env,
       PATH: `${env.bin}${path.delimiter}${process.env.PATH}`,
+      HOME: env.home,
       CALL_LOG: env.log,
       BDUI_TEST_TOOL_ROOT: env.root,
       REPO_OPS_TARGET_SHA: env.sha,
@@ -278,8 +291,76 @@ describe('repo-ops/script/deploy', () => {
 
     const result = run(env);
 
-    expect(result.status).not.toBe(0);
+    expect(result.status).toBe(1);
     expect(result.stderr).toContain('source_sha_mismatch');
+  });
+
+  test('deploys with one warning line when the bd workspace probe is red', () => {
+    const env = fixture({
+      health: `ok ${STUB_INSTANCE_ID} bd_workspace_probe_red`
+    });
+
+    const result = run(env);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain(
+      'repo-ops deploy: warn: bd_workspace_probe: health readback reports bd_workspace_probe_red'
+    );
+    expect(result.stdout).toContain('repo-ops deploy ok');
+    expect(calls(env)).toEqual([
+      'npm ci',
+      'npm run build',
+      'bdui-shared restart',
+      'node health',
+      'discord --channel ops'
+    ]);
+  });
+
+  test('settles on the first ok that carries a warning', () => {
+    const env = fixture({
+      health: `ok ${STUB_INSTANCE_ID} bd_workspace_probe_red`
+    });
+
+    const result = run(env, { attempts: '2' });
+
+    expect(result.status).toBe(0);
+    expect(calls(env).filter((line) => line === 'node health')).toHaveLength(1);
+  });
+
+  test('cuts a hanging notification at its limit as a warning', () => {
+    const env = fixture({
+      health: `ok ${STUB_INSTANCE_ID} bd_workspace_probe_red`,
+      discord_body: 'sleep 30; true'
+    });
+    const started = Date.now();
+
+    const result = run(env, { notify_seconds: '1' });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('repo-ops deploy: warn: notify:');
+    expect(result.stderr).toContain('timed out after 1s');
+    expect(Date.now() - started).toBeLessThan(15_000);
+  });
+
+  test('sends no notification when the deploy has no warning', () => {
+    const env = fixture();
+
+    run(env);
+
+    expect(calls(env)).not.toContain('discord --channel ops');
+  });
+
+  test('fails when the live runtime lacks bd consumer format support', () => {
+    const env = fixture({
+      health: `bd_consumer_support_missing ${STUB_INSTANCE_ID}`
+    });
+
+    const result = run(env);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'runtime health readback failed: bd_consumer_support_missing'
+    );
   });
 
   test('fails when the live runtime reports another source repo', () => {
@@ -562,7 +643,7 @@ describe('repo-ops/script/deploy health probe', () => {
     expect(verdict).not.toBe('ok');
   });
 
-  test('rejects a red workspace probe', async () => {
+  test('reports a red workspace probe as an ok verdict with a warning', async () => {
     const root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
     );
@@ -582,7 +663,30 @@ describe('repo-ops/script/deploy health probe', () => {
 
     const verdict = await runHealthProbe(body, { expect_root: root });
 
-    expect(verdict).not.toBe('ok');
+    expect(verdict).toBe(`ok ${STUB_INSTANCE_ID} bd_workspace_probe_red`);
+  });
+
+  test('still rejects an active bd protocol failure behind a red workspace probe', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+    const body = healthyBody(root, {
+      version: '1.2.0-fork.1',
+      producer_observations: {
+        default: { format: 'bare', schema_version: null },
+        envelope_opt_in: { format: 'envelope', schema_version: 2 }
+      },
+      producer_capabilities: ['envelope_v2', 'legacy_bare'],
+      consumer_supported_formats: ['bare', 'envelope_v2'],
+      workspace_probe: { ok: false },
+      active_protocol_failures: { workspace_count: 1, families: ['list'] },
+      error: 'bd_protocol_failure_active'
+    });
+
+    const verdict = await runHealthProbe(body, { expect_root: root });
+
+    expect(verdict).toBe(`bd_protocol_failure_active ${STUB_INSTANCE_ID}`);
   });
 
   test('rejects a body missing envelope_v2 consumer support', async () => {

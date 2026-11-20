@@ -101,9 +101,8 @@ afterEach(async () => {
 
 /**
  * @param {string} instance_id
- * @param {boolean} [workspace_probe_ok]
  */
-function healthyBody(instance_id, workspace_probe_ok = true) {
+function healthyBody(instance_id) {
   return {
     ok: true,
     checks: { bd: true, db: true },
@@ -120,7 +119,7 @@ function healthyBody(instance_id, workspace_probe_ok = true) {
           envelope_opt_in: { format: 'envelope', schema_version: 2 }
         },
         consumer_supported_formats: ['bare', 'envelope_v2'],
-        workspace_probe: { ok: workspace_probe_ok },
+        workspace_probe: { ok: true },
         active_protocol_failures: { workspace_count: 0, families: [] },
         error: null
       }
@@ -277,11 +276,14 @@ describe('repo-ops/script/deploy restart marker', () => {
   });
 
   test('fails when the runtime identity changes mid poll', async () => {
-    const health_url = await startHealthServer((index) =>
-      index === 0
-        ? healthyBody(INSTANCE_ID, false)
-        : healthyBody(OTHER_INSTANCE_ID)
-    );
+    const health_url = await startHealthServer((index) => {
+      if (index > 0) {
+        return healthyBody(OTHER_INSTANCE_ID);
+      }
+      const body = healthyBody(INSTANCE_ID);
+      body.diagnostics.bd.active_protocol_failures.workspace_count = 1;
+      return body;
+    });
 
     const result = await runDeploy(health_url);
 

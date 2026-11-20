@@ -46,7 +46,11 @@ afterEach(() => {
  * would squash into the throwaway checkout. A test that wants the gate red
  * mutates its own copy.
  *
- * @param {{ npm_body?: string }} [options]
+ * `HOME` is a fixture directory: the ADR scripts are linked in from the real
+ * installation, and `bin/discord` is a fake that logs, so a warning never
+ * reaches the real notification channel.
+ *
+ * @param {{ npm_body?: string, discord?: boolean, discord_body?: string }} [options]
  */
 function fixture(options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-verify-'));
@@ -78,12 +82,28 @@ function fixture(options = {}) {
   );
   fs.chmodSync(path.join(bin, 'npm'), 0o755);
 
-  return { root, repo, bin, log };
+  const home = path.join(root, 'home');
+  fs.mkdirSync(path.join(home, '.claude', 'skills'), { recursive: true });
+  fs.symlinkSync(
+    path.join(os.homedir(), '.claude', 'skills', 'adr'),
+    path.join(home, '.claude', 'skills', 'adr')
+  );
+  fs.mkdirSync(path.join(home, 'bin'));
+  if (options.discord !== false) {
+    fs.writeFileSync(
+      path.join(home, 'bin', 'discord'),
+      `#!/bin/sh\nprintf 'discord %s\\n' "$1 $2" >> "$CALL_LOG"\n${options.discord_body || ''}\n`,
+      'utf8'
+    );
+    fs.chmodSync(path.join(home, 'bin', 'discord'), 0o755);
+  }
+
+  return { root, repo, bin, log, home };
 }
 
 /**
  * @param {ReturnType<typeof fixture>} env
- * @param {{ sha?: string, root?: string, cwd?: string }} [overrides]
+ * @param {{ sha?: string, root?: string, cwd?: string, notify_seconds?: string }} [overrides]
  */
 function run(env, overrides = {}) {
   return spawnSync(ADAPTER, [], {
@@ -92,10 +112,12 @@ function run(env, overrides = {}) {
     env: {
       ...process.env,
       PATH: `${env.bin}${path.delimiter}${process.env.PATH}`,
+      HOME: env.home,
       CALL_LOG: env.log,
       REPO_OPS_TARGET_SHA: overrides.sha || 'a'.repeat(40),
       REPO_OPS_TARGET_BASE: 'main',
-      REPO_OPS_REPO_ROOT: overrides.root || env.repo
+      REPO_OPS_REPO_ROOT: overrides.root || env.repo,
+      REPO_OPS_VERIFY_NOTIFY_SECONDS: overrides.notify_seconds || '10'
     }
   });
 }
@@ -132,6 +154,19 @@ function commitAll(repo) {
       'candidate base'
     ],
     { cwd: repo }
+  );
+}
+
+/**
+ * Add an ADR file the generated index does not list.
+ *
+ * @param {string} repo
+ */
+function writeIndexDrift(repo) {
+  fs.writeFileSync(
+    path.join(repo, 'docs', 'adr', '9999-index-drift.md'),
+    '---\nid: 9999\ntitle: drift\nstatus: accepted\ndate: 2026-01-01\nsummary: drift\n---\n',
+    'utf8'
   );
 }
 
@@ -204,23 +239,149 @@ describe('repo-ops/script/verify', () => {
     expect(result.stderr).toContain('npm test failed');
   });
 
-  test('fails on ADR index drift before paying the install cost', () => {
+  test('fails on ADR index drift this change made before paying the install cost', () => {
     const env = fixture();
-    fs.writeFileSync(
-      path.join(env.repo, 'docs', 'adr', '9999-index-drift.md'),
-      '---\nid: 9999\ntitle: drift\nstatus: accepted\ndate: 2026-01-01\nsummary: drift\n---\n',
-      'utf8'
-    );
+    commitAll(env.repo);
+    writeIndexDrift(env.repo);
 
     const result = run(env);
 
-    expect(result.status).not.toBe(0);
+    expect(result.status).toBe(1);
     expect(result.stderr).toContain('ADR index drift check failed');
     expect(calls(env)).toEqual([]);
   });
 
+  test('warns on ADR index drift a change outside docs/adr did not make', () => {
+    const env = fixture();
+    writeIndexDrift(env.repo);
+    commitAll(env.repo);
+    fs.writeFileSync(path.join(env.repo, 'unrelated.js'), 'export {};\n');
+
+    const result = run(env);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain(
+      'repo-ops verify: warn: adr-index: ADR index drift check failed'
+    );
+    expect(result.stdout).toContain('repo-ops verify ok: base=main');
+    expect(calls(env)).toEqual([
+      'npm ci',
+      'npm run tsc',
+      'npm run build',
+      'npm test',
+      'discord --channel ops'
+    ]);
+  });
+
+  test('fails on ADR index drift staged the way the coordinator squashes', () => {
+    const env = fixture();
+    commitAll(env.repo);
+    writeIndexDrift(env.repo);
+    spawnSync('git', ['add', '-A'], { cwd: env.repo });
+
+    const result = run(env);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ADR index drift check failed');
+  });
+
+  test('fails on ADR index drift when a staged ADR path is put back in the working tree', () => {
+    const env = fixture();
+    writeIndexDrift(env.repo);
+    commitAll(env.repo);
+    const staged = path.join(env.repo, 'docs', 'adr', 'staged-note.txt');
+    fs.writeFileSync(staged, 'note\n', 'utf8');
+    spawnSync('git', ['add', '--', staged], { cwd: env.repo });
+    fs.rmSync(staged);
+
+    const result = run(env);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ADR index drift check failed');
+  });
+
+  test('carries the detail line under a validation heading into the warning', () => {
+    const env = fixture();
+    fs.writeFileSync(
+      path.join(env.repo, 'docs', 'adr', '9999-bad-status.md'),
+      '---\nid: 9999\ntitle: bad\nstatus: bogus\ndate: 2026-01-01\nsummary: bad\n---\n',
+      'utf8'
+    );
+    commitAll(env.repo);
+
+    const result = run(env);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain(
+      "warn: adr-index: ADR index drift check failed: ADR validation failed (1): 9999-bad-status.md: key 'status' must be one of"
+    );
+  });
+
+  test('warns on ADR index drift when the changed paths are unreadable', () => {
+    const env = fixture();
+    writeIndexDrift(env.repo);
+
+    const result = run(env);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('not blocking: changed paths are unknown');
+  });
+
+  test('cuts a hanging notification at its limit as a warning', () => {
+    const env = fixture({ discord_body: 'sleep 30; true' });
+    writeIndexDrift(env.repo);
+    commitAll(env.repo);
+    const started = Date.now();
+
+    const result = run(env, { notify_seconds: '1' });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('repo-ops verify: warn: notify:');
+    expect(result.stderr).toContain('timed out after 1s');
+    expect(Date.now() - started).toBeLessThan(15_000);
+  });
+
+  test('warns on ADR index drift when the change is empty', () => {
+    const env = fixture();
+    writeIndexDrift(env.repo);
+    commitAll(env.repo);
+
+    const result = run(env);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('not blocking: this change does not touch');
+  });
+
+  test('records a missing notification tool as one more warning', () => {
+    const env = fixture({ discord: false });
+    writeIndexDrift(env.repo);
+    commitAll(env.repo);
+
+    const result = run(env);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain(
+      'repo-ops verify: warn: notify: cannot run'
+    );
+    expect(result.stderr).toContain(
+      'repo-ops verify: warn: adr-index: ADR index drift check failed'
+    );
+  });
+
+  test('sends no warning notification when a blocking step fails', () => {
+    const env = fixture({ npm_body: 'if [ "$1" = test ]; then exit 1; fi' });
+    writeIndexDrift(env.repo);
+    commitAll(env.repo);
+
+    const result = run(env);
+
+    expect(result.status).toBe(1);
+    expect(calls(env)).not.toContain('discord --channel ops');
+  });
+
   test('fails on guidance citing an ADR that does not exist', () => {
     const env = fixture();
+    commitAll(env.repo);
     fs.appendFileSync(
       path.join(env.repo, 'AGENTS.md'),
       '\n- 없는 결정을 가리키는 문장이다(ADR 9998).\n',
@@ -229,9 +390,43 @@ describe('repo-ops/script/verify', () => {
 
     const result = run(env);
 
-    expect(result.status).not.toBe(0);
+    expect(result.status).toBe(1);
     expect(result.stderr).toContain('stale ADR guidance citation check failed');
     expect(calls(env)).toEqual([]);
+  });
+
+  test('fails on a stale citation when the change touches only CLAUDE.md', () => {
+    const env = fixture();
+    commitAll(env.repo);
+    fs.writeFileSync(
+      path.join(env.repo, 'CLAUDE.md'),
+      '@AGENTS.md\n\n- 없는 결정을 가리키는 문장이다(ADR 9998).\n',
+      'utf8'
+    );
+
+    const result = run(env);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('stale ADR guidance citation check failed');
+    expect(calls(env)).toEqual([]);
+  });
+
+  test('warns on a stale citation a change outside its inputs did not make', () => {
+    const env = fixture();
+    fs.appendFileSync(
+      path.join(env.repo, 'AGENTS.md'),
+      '\n- 없는 결정을 가리키는 문장이다(ADR 9998).\n',
+      'utf8'
+    );
+    commitAll(env.repo);
+    fs.writeFileSync(path.join(env.repo, 'unrelated.js'), 'export {};\n');
+
+    const result = run(env);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(
+      /repo-ops verify: warn: adr-cite: stale ADR guidance citation check failed: AGENTS\.md:\d+: missing ADR 9998/
+    );
   });
 
   test('refuses a cwd that is not the declared repo root', () => {

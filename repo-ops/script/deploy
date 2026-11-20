@@ -6,6 +6,71 @@ fail() {
     exit 1
 }
 
+# Step classes follow the repo-onboarding skill's `references/repo-ops-steps.md`.
+# Every step blocks except the health readback's bd workspace probe
+# (`bd_workspace_probe_red`): it reports an external workspace this deploy did
+# not change, so it is a warning. The remaining bd diagnostics prove the newly
+# deployed code can read what bd emits and still block, as do the source SHA,
+# source repo and instance identity checks. A warning prints one
+# `repo-ops deploy: warn:` line, keeps exit 0, and the run sends one Discord
+# notification at the end. NOTIFY_SECONDS is a constant the Worker never
+# overrides; only tests and manual runs set the variable.
+NOTIFY_SECONDS="${REPO_OPS_DEPLOY_NOTIFY_SECONDS:-10}"
+deploy_warnings=''
+
+warn() {
+    warn_step="$1"
+    shift
+    warn_cause="$(printf '%s' "$*" | tr '\n' ' ')"
+    printf 'repo-ops deploy: warn: %s: %s\n' "$warn_step" "$warn_cause" >&2
+    deploy_warnings="${deploy_warnings}${deploy_warnings:+
+}${warn_step}: ${warn_cause}"
+    return 0
+}
+
+# One notification for the whole run, through the installed tool outside the
+# deploy checkout, in its own process group under a wall-clock limit; past it
+# the whole group is killed and the exit is 124. A missing tool or a failed send
+# is itself a warning line.
+notify_warnings() {
+    [ -n "$deploy_warnings" ] || return 0
+    notify_tool="${HOME:-}/bin/discord"
+    if [ -z "${HOME:-}" ] || [ ! -x "$notify_tool" ]; then
+        warn notify "cannot run $notify_tool: not an installed executable"
+        return 0
+    fi
+    notify_body="target $REPO_OPS_TARGET_SHA
+$deploy_warnings"
+    python3 -I -c '
+import os
+import signal
+import subprocess
+import sys
+
+try:
+    proc = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, start_new_session=True)
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    sys.exit(127)
+try:
+    code = proc.wait(timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    proc.wait()
+    sys.exit(124)
+sys.exit(code if code >= 0 else 128 - code)
+' "$NOTIFY_SECONDS" "$notify_tool" --channel ops -c yellow \
+        -t "⚠️ repo-ops deploy 경고 · beads-ui" "$notify_body" && notify_rc=0 || notify_rc=$?
+    if [ "$notify_rc" -eq 124 ]; then
+        warn notify "$notify_tool timed out after ${NOTIFY_SECONDS}s"
+    elif [ "$notify_rc" -ne 0 ]; then
+        warn notify "$notify_tool exited $notify_rc"
+    fi
+}
+
 # The Worker gives this script no stdin, and a question would hang the operation
 # until its timeout. Closing stdin makes that a loud failure instead.
 exec </dev/null
@@ -141,10 +206,19 @@ const expect_sha = process.env.REPO_OPS_EXPECT_SHA;
 const expect_root = process.env.REPO_OPS_EXPECT_ROOT;
 // The caller pins the identity of the first target-SHA runtime it sees, so
 // every verdict from that point on carries the id. The reason word itself must
-// stay byte-identical because the shell surfaces it verbatim.
+// stay byte-identical because the shell surfaces it verbatim. An `ok` verdict
+// may carry one warning word after the id.
 let instance_id = "";
+let warning = "";
 function report(reason) {
-  process.stdout.write(instance_id ? `${reason} ${instance_id}` : reason);
+  const words = [reason];
+  if (instance_id) {
+    words.push(instance_id);
+    if (reason === "ok" && warning) {
+      words.push(warning);
+    }
+  }
+  process.stdout.write(words.join(" "));
   process.exit(0);
 }
 let body = null;
@@ -211,9 +285,13 @@ for (const required of ["bare", "envelope_v2"]) {
     report("bd_consumer_support_missing");
   }
 }
+// The workspace probe reads a workspace this deploy did not change, so a red
+// probe is a warning, not a verdict; the checks after it still decide. Today
+// the server answers 503 with no bd version whenever its probe is red, which
+// reads as `unreachable` and still blocks; the warning covers a 200 body only.
 const workspace_probe = bd.workspace_probe;
 if (!workspace_probe || typeof workspace_probe !== "object" || workspace_probe.ok !== true) {
-  report("bd_workspace_probe_red");
+  warning = "bd_workspace_probe_red";
 }
 const failures = bd.active_protocol_failures;
 if (!failures || typeof failures !== "object" || failures.workspace_count !== 0) {
@@ -230,13 +308,19 @@ report("ok");
 attempt=0
 probe_reason="unreachable"
 probe_instance=""
+probe_warning=""
 pinned_instance_id=""
 while [ "$attempt" -lt "$HEALTH_ATTEMPTS" ]; do
     probe_output="$(health_probe)" || probe_output="unreachable"
     probe_reason="${probe_output%% *}"
+    probe_rest=""
     case "$probe_output" in
-        *' '*) probe_instance="${probe_output#* }" ;;
-        *) probe_instance="" ;;
+        *' '*) probe_rest="${probe_output#* }" ;;
+    esac
+    probe_instance="${probe_rest%% *}"
+    probe_warning=""
+    case "$probe_rest" in
+        *' '*) probe_warning="${probe_rest#* }" ;;
     esac
     if [ -n "$probe_instance" ]; then
         if [ -z "$pinned_instance_id" ]; then
@@ -262,5 +346,12 @@ end_status="$(git -C "$repo_root" status --porcelain --untracked-files=all)" || 
 [ -z "$end_status" ] || fail "worktree is not tracked-clean"
 
 marker_result='ok'
+
+case "$probe_warning" in
+    '') ;;
+    bd_workspace_probe_red) warn bd_workspace_probe "health readback reports bd_workspace_probe_red" ;;
+    *) warn health_readback "health readback reports $probe_warning" ;;
+esac
+notify_warnings
 
 printf 'repo-ops deploy ok: base=%s target=%s\n' "$REPO_OPS_TARGET_BASE" "$REPO_OPS_TARGET_SHA"

@@ -37,15 +37,148 @@ cwd="$(pwd -P)"
 # writes only ignored files and leaves the candidate's tracked tree identical —
 # and it is what proves the PR still bundles, since no committed bundle does.
 #
+# Step classes follow the repo-onboarding skill's `references/repo-ops-steps.md`:
+#
+#   step       class                                         inputs it reads
+#   adr-index  blocking if this change touched its inputs,   docs/adr
+#              else warning
+#   adr-cite   blocking if this change touched its inputs,   docs/adr AGENTS.md
+#              else warning                                  CLAUDE.md docs/agents
+#   npm ci, npm run tsc, npm run build, npm test   blocking
+#
+# A warning prints one `repo-ops verify: warn:` line, keeps exit 0, and the run
+# sends one Discord notification at the end. The limits are constants the
+# Worker never overrides; only tests and manual runs set these variables.
+WARN_STEP_SECONDS="${REPO_OPS_VERIFY_WARN_STEP_SECONDS:-60}"
+NOTIFY_SECONDS="${REPO_OPS_VERIFY_NOTIFY_SECONDS:-10}"
+ADR_INDEX_INPUTS='docs/adr'
+ADR_CITE_INPUTS='docs/adr AGENTS.md CLAUDE.md docs/agents'
+verify_warnings=''
+
+warn() {
+    warn_step="$1"
+    shift
+    warn_cause="$(printf '%s' "$*" | tr '\n' ' ')"
+    printf 'repo-ops verify: warn: %s: %s\n' "$warn_step" "$warn_cause" >&2
+    verify_warnings="${verify_warnings}${verify_warnings:+
+}${warn_step}: ${warn_cause}"
+    return 0
+}
+
+# Run argv in its own process group under a wall-clock limit. Past the limit the
+# whole group is killed (a grandchild must not hold the output open) and the
+# exit is 124.
+run_limited() {
+    python3 -I -c '
+import os
+import signal
+import subprocess
+import sys
+
+try:
+    proc = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, start_new_session=True)
+except OSError as exc:
+    print(exc, file=sys.stderr)
+    sys.exit(127)
+try:
+    code = proc.wait(timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    proc.wait()
+    sys.exit(124)
+sys.exit(code if code >= 0 else 128 - code)
+' "$@"
+}
+
+# Did this change touch any of the given paths? The change is the candidate's
+# staged, unstaged and untracked paths against its HEAD (the PR head is squashed
+# in uncommitted). Returns 0 touched, 1 not touched, 2 when unreadable. An empty
+# change (a re-run of the base alone) touches nothing.
+touched() {
+    # The index is checked too: a path staged and then put back in the working
+    # tree still belongs to the change.
+    for touched_scope in --cached ''; do
+        # shellcheck disable=SC2086 # empty scope means the working tree
+        git diff --quiet --no-renames $touched_scope HEAD -- "$@" 2>/dev/null && touched_rc=0 || touched_rc=$?
+        case "$touched_rc" in
+            1) return 0 ;;
+            0) ;;
+            *) return 2 ;;
+        esac
+    done
+    touched_untracked="$(git ls-files --others --exclude-standard -- "$@" 2>/dev/null)" || return 2
+    [ -n "$touched_untracked" ] && return 0
+    return 1
+}
+
+# A consistency check blocks only when this change touched the inputs it reads;
+# otherwise its failure is a warning, run under WARN_STEP_SECONDS.
+consistency_check() {
+    check_step="$1"
+    check_label="$2"
+    check_inputs="$3"
+    shift 3
+    # shellcheck disable=SC2086 # the input lists are fixed, space-free paths
+    touched $check_inputs && check_scope=0 || check_scope=$?
+    if [ "$check_scope" -eq 0 ]; then
+        check_output="$("$@" 2>&1)" && check_rc=0 || check_rc=$?
+    else
+        check_output="$(run_limited "$WARN_STEP_SECONDS" "$@" 2>&1)" && check_rc=0 || check_rc=$?
+    fi
+    [ -z "$check_output" ] || printf '%s\n' "$check_output" >&2
+    [ "$check_rc" -ne 0 ] || return 0
+    # The first non-blank output line is the cause; a line ending in `:` is a
+    # heading (`ADR validation failed (1):`), so the next line joins it.
+    check_cause="$(printf '%s\n' "$check_output" | awk 'NF { sub(/^[[:space:]]+/, ""); if (cause == "") { cause = $0; if (cause !~ /:$/) { exit } next } cause = cause " " $0; exit } END { print cause }' | cut -c1-300)"
+    if [ "$check_scope" -ne 0 ] && [ "$check_rc" -eq 124 ]; then
+        check_cause="cut after ${WARN_STEP_SECONDS}s"
+    fi
+    [ -n "$check_cause" ] || check_cause="exit $check_rc"
+    [ "$check_scope" -ne 0 ] || fail "$check_label failed: $check_cause"
+    if [ "$check_scope" -eq 1 ]; then
+        check_reason="this change does not touch $check_inputs"
+    else
+        check_reason="changed paths are unknown"
+    fi
+    warn "$check_step" "$check_label failed: $check_cause (not blocking: $check_reason)"
+}
+
+# One notification for the whole run, through the installed tool outside the
+# candidate checkout. A missing tool or a failed send is itself a warning line.
+notify_warnings() {
+    [ -n "$verify_warnings" ] || return 0
+    notify_tool="${HOME:-}/bin/discord"
+    if [ -z "${HOME:-}" ] || [ ! -x "$notify_tool" ]; then
+        warn notify "cannot run $notify_tool: not an installed executable"
+        return 0
+    fi
+    notify_body="target $REPO_OPS_TARGET_SHA
+$verify_warnings"
+    run_limited "$NOTIFY_SECONDS" "$notify_tool" --channel ops -c yellow \
+        -t "⚠️ repo-ops verify 경고 · beads-ui" "$notify_body" && notify_rc=0 || notify_rc=$?
+    if [ "$notify_rc" -eq 124 ]; then
+        warn notify "$notify_tool timed out after ${NOTIFY_SECONDS}s"
+    elif [ "$notify_rc" -ne 0 ]; then
+        warn notify "$notify_tool exited $notify_rc"
+    fi
+}
+
 # The ADR index is generated and can drift silently; a retired ADR can also
 # leave a stale `(ADR NNNN)` pointer in AGENTS.md. Catch both before merge,
 # before paying the install cost.
-python3 "$HOME/.claude/skills/adr/scripts/adr-index.py" --dir "$repo_root/docs/adr" --check || fail "ADR index drift check failed"
-python3 "$HOME/.claude/skills/adr/scripts/adr-cite-check.py" --repo "$repo_root" || fail "stale ADR guidance citation check failed"
+consistency_check adr-index "ADR index drift check" "$ADR_INDEX_INPUTS" \
+    python3 "$HOME/.claude/skills/adr/scripts/adr-index.py" --dir "$repo_root/docs/adr" --check
+consistency_check adr-cite "stale ADR guidance citation check" "$ADR_CITE_INPUTS" \
+    python3 "$HOME/.claude/skills/adr/scripts/adr-cite-check.py" --repo "$repo_root"
 
 npm ci || fail "npm ci failed"
 npm run tsc || fail "npm run tsc failed"
 npm run build || fail "npm run build failed"
 npm test || fail "npm test failed"
+
+notify_warnings
 
 printf 'repo-ops verify ok: base=%s target=%s\n' "$REPO_OPS_TARGET_BASE" "$REPO_OPS_TARGET_SHA"
