@@ -117,6 +117,7 @@ import {
   runningTileInput,
   sessionLaneRef
 } from '../worker/running-grid.js';
+import { runSessionFinishAction } from '../worker/session-finish-action.js';
 import { createSessionToggle } from '../worker/session-toggle.js';
 import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
@@ -3394,6 +3395,15 @@ export function createMonitorView(mount_element, options) {
     }
     if (cls.contains('rtile__pause')) {
       void send('worker-attempt-pause', { attempt_id }, root_dir);
+      return;
+    }
+    if (cls.contains('rtile__finish')) {
+      if (transport) {
+        void runSessionFinishAction(button, {
+          transport,
+          confirm: confirmFn
+        });
+      }
       return;
     }
     if (cls.contains('rtile__withdraw')) {

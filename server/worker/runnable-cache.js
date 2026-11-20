@@ -230,6 +230,9 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * for display (UI-4xzk §4.1), read from THIS scan's row so the bucket still
  * costs no extra `bd` process. Empty when the key is absent, every item is
  * malformed, or the projection failed.
+ * @property {boolean} has_external_wait - Whether the row carries a non-empty
+ * `external_wait` key (UI-lxxf §3.1). An `in_progress` row keeps the key
+ * without the item's status saying so; the `[마무리]` button reads this.
  * @property {Record<string, unknown>} [session_observation] - Prepared local
  * usage and delegation facts for the current reference.
  */
@@ -564,7 +567,8 @@ function qualifySession(row, blocked_by = null) {
     workflow: null,
     blocked: blocked_by !== null,
     blocked_by: blocked_by || [],
-    session_refs: sessionRefsOf(meta)
+    session_refs: sessionRefsOf(meta),
+    has_external_wait: hasExternalWait(row)
   };
 }
 
@@ -574,7 +578,7 @@ function qualifySession(row, blocked_by = null) {
  * @param {Record<string, unknown>} row
  * @returns {boolean}
  */
-function hasExternalWait(row) {
+export function hasExternalWait(row) {
   const value = metadataOf(row).external_wait;
   return typeof value === 'string' && value.length > 0;
 }

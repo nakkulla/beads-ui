@@ -525,6 +525,48 @@ describe('runShell', () => {
     expect(res.code).not.toBe(0);
   });
 
+  test('writes the input option to stdin and closes it', async () => {
+    const cp = /** @type {any} */ (new EventEmitter());
+    const stdin = new PassThrough();
+    /** @type {string[]} */
+    const written = [];
+    stdin.on('data', (chunk) => written.push(String(chunk)));
+    cp.stdin = stdin;
+    cp.stdout = new PassThrough();
+    cp.stderr = new PassThrough();
+    setTimeout(() => {
+      cp.stdout.end();
+      cp.stderr.end();
+      cp.emit('close', 0);
+    }, 5);
+    mockedSpawn.mockReturnValueOnce(cp);
+
+    const res = await runShell('session-hub', ['send', 'sid'], {
+      input: '마감 지시'
+    });
+
+    expect(res.code).toBe(0);
+    expect(written.join('')).toBe('마감 지시');
+    expect(stdin.writableEnded).toBe(true);
+  });
+
+  test('leaves stdin untouched without an input option', async () => {
+    const cp = /** @type {any} */ (new EventEmitter());
+    cp.stdin = new PassThrough();
+    cp.stdout = new PassThrough();
+    cp.stderr = new PassThrough();
+    setTimeout(() => {
+      cp.stdout.end();
+      cp.stderr.end();
+      cp.emit('close', 0);
+    }, 0);
+    mockedSpawn.mockReturnValueOnce(cp);
+
+    await runShell('git', ['status']);
+
+    expect(cp.stdin.writableEnded).toBe(false);
+  });
+
   test('does not use bd run queue (parallel git ops)', async () => {
     let active = 0;
     let max_active = 0;

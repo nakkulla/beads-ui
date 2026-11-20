@@ -1682,7 +1682,8 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
         workflow: { route: 'spec_backed' },
         blocked: false,
         blocked_by: [],
-        session_refs: []
+        session_refs: [],
+        has_external_wait: false
       }
     ]);
   });
@@ -1729,6 +1730,35 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
     expect(cache.sessionActiveFor(WS_A)).toMatchObject([
       { bead_id: 'UI-1', status: 'open' }
     ]);
+  });
+
+  // UI-lxxf §3.1: an in_progress row keeps the key, so the projection must say it.
+  test('projects has_external_wait true for an in_progress row holding the key', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [sessionRow({ metadata: { external_wait: 'w-0123456789ab' } })]
+      })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out[0]).toMatchObject({
+      status: 'in_progress',
+      has_external_wait: true
+    });
+  });
+
+  test('projects has_external_wait false for an in_progress row without the key', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [sessionRow()] })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out[0]).toMatchObject({
+      status: 'in_progress',
+      has_external_wait: false
+    });
   });
 
   test('projects session_refs for an open external-wait row', async () => {
