@@ -372,6 +372,9 @@ describe('automatic prerequisite spec conversations', () => {
     expect(h.launcher.launch.mock.calls[0][0].commandArgs[0]).toContain(
       `${ROOT}/.worktrees/${O}`
     );
+    expect(h.launcher.launch.mock.calls[0][0].commandArgs[0]).toContain(
+      '- 열린 경로: 자동'
+    );
     expect(after.interactive_sessions[`${B}:spec_authoring`]).toMatchObject({
       mode: 'fresh',
       attempt_id: null,
@@ -418,6 +421,9 @@ describe('spec conversation clicks', () => {
     expect(result.launched).toBe(true);
     expect(h.launcher.launch).toHaveBeenCalledWith(
       expect.objectContaining({ placement: 'user' })
+    );
+    expect(h.launcher.launch.mock.calls[0][0].commandArgs[0]).toContain(
+      '- 열린 경로: 클릭'
     );
     expect(h.store.snapshot(ROOT).spec_authoring_launches).toEqual({});
     expect(h.notifier.conversationConfirm).not.toHaveBeenCalled();

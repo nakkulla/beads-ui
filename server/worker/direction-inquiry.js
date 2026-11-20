@@ -66,7 +66,7 @@ const ABSENT = '(없음)';
 
 /**
  * Verbatim dotfiles `## 스펙 작성 대화` text block, without a trailing newline,
- * at 96996fcda0af70c50113ffb0eb2d5336995c06e1. Only the five input slots belong
+ * at aa1c48f01bb8b19ed69ca19ae5fd0dd4dd0959de. Only the six input slots belong
  * to beads-ui; the authoring procedure belongs to dotfiles.
  */
 export const SPEC_AUTHORING_ENTRY_BLOCK = [
@@ -76,21 +76,27 @@ export const SPEC_AUTHORING_ENTRY_BLOCK = [
   '- 선행 조건: <원 Bead마다 `prerequisite:` notes 줄의 조건 | (없음)>',
   '- 원 attempt: <원 attempt ID | (없음)>',
   '- 보존 워크트리: <경로 | (없음)>',
+  '- 열린 경로: <자동 | 클릭>',
   '',
   '절차',
   '1. 대상 Bead로 workflow 라우터에 들어간다. route는 이미 `spec_backed`로 고정돼 있다.',
   '2. 질문하기 전에 증거부터 읽어 스펙을 채운다. 증거는 대상과 원 Bead 본문, `prerequisite:` 줄, 보존 워크트리의 diff와 로그다. 값이 `(없음)`이면 대상·원 Bead 본문과 `blocks` 간선을 근거로 작성을 계속한다. 증거로 답할 수 있는 사실은 묻지 않는다.',
   '3. 설계 선택만 묻는다(brainstorming 순서 그대로).',
-  '4. 스펙 게이트와 구현 진입 질문은 보통의 대화형 세션 규칙을 따른다. 구현 진입 질문의 `Worker 레인에 배치` 답도 포함한다. 다만 `Worker 레인에 배치`를 보일 때는 첫 보기로 두고 그 보기 설명에 추천이라고 적는다. 보기 라벨과 입구 태그 줄의 보기 순서는 바꾸지 않는다.',
-  '5. `Worker 레인에 배치` 답이면 배치와 되읽기 뒤, `보류` 답이면 아무것도 쓰지 않은 채, 같은 턴에서 `python3 <workflow 스킬 디렉터리>/../../../hooks/agent_handoff.py request-close --bead <대상 Bead ID>`로 이 창의 닫기를 요청하고 턴을 끝낸다. 창은 입력 없이 10분이 지나면 닫히고, 그 사이 입력이 오거나 질문을 기다리면 닫히지 않는다. `지금 세션에서 처리` 답이면 닫기를 요청하지 않고 구현을 이어간다.',
+  '4. 스펙 게이트는 보통의 대화형 세션 규칙을 따른다.',
+  '5. `열린 경로`가 `자동`이면 `spec_review` 영수증을 되읽은 직후 구현 진입 질문 없이 대상 Bead를 Worker 레인에 배치한다. Worker 배치 절차의 점검 1~2와 배치·되읽기를 따르고 0단계(답의 형태 점검)는 건너뛴다. `impl_entry`, `in_progress`, `session_ref`는 쓰지 않는다. 대상이 `bd ready`에 없어도 배치한다. 배치를 되읽으면 6단계 없이 7단계로 간다. 칸이 없거나 비었거나 두 값이 아니면 `클릭`으로 본다.',
+  '   - 이 대화에서 사용자가 이 세션에서 구현하겠다고 말했거나, 배치 점검이 통과하지 않거나, 배치 요청이나 되읽기가 실패했으면 이유를 한 줄로 알리고 6단계로 간다. 대상이 `bd ready`에 없으면 6단계 대신 그 한 줄을 알리고 턴을 끝낸다.',
+  '   - 배치 요청을 보낸 뒤 그 결과를 관측하지 못했으면(시간 초과나 연결 끊김으로 서버에 닿았는지 모를 때도 같다) 6단계의 `지금 세션에서 처리` 답은 실행 전에 대기열 GET을 다시 한다. 대상이 대기 자리나 활성 attempt로 보이면 로컬 구현에 들어가지 않고 배치된 것으로 알린 뒤 7단계의 닫기 요청으로 끝낸다. 대상이 없다고 확인되면 구현한다. GET도 실패하면 아무것도 쓰지 않고 알린 뒤 끝낸다(`보류`와 같다).',
+  '6. 질문하는 경우(`클릭`이거나 5단계 폴백) 구현 진입 질문은 보통의 대화형 세션 규칙을 따른다. 구현 진입 질문의 `Worker 레인에 배치` 답도 포함한다. 다만 `Worker 레인에 배치`를 보일 때는 첫 보기로 두고 그 보기 설명에 추천이라고 적는다. 보기 라벨과 입구 태그 줄의 보기 순서는 바꾸지 않는다. 대상이 `bd ready`에 없으면 질문 없이 영수증 되읽기에서 끝낸다.',
+  '7. `Worker 레인에 배치` 답이나 자동 배치면 배치와 되읽기 뒤, `보류` 답이면 아무것도 쓰지 않은 채, 같은 턴에서 `python3 <workflow 스킬 디렉터리>/../../../hooks/agent_handoff.py request-close --bead <대상 Bead ID>`로 이 창의 닫기를 요청하고 턴을 끝낸다. 창은 입력 없이 10분이 지나면 닫히고, 그 사이 입력이 오거나 질문을 기다리면 닫히지 않는다. `지금 세션에서 처리` 답이면 닫기를 요청하지 않고, 5단계의 대기열 재확인이 필요하면 그 확인 뒤에만 구현을 이어간다.',
   '',
   '금지: 원 Bead의 상태·클레임·Worker 대기열 자리·보존 워크트리를 바꾸지 않는다.'
 ].join('\n');
 
 /**
  * Fill only server-owned slots in one pass, without rescanning inserted text.
+ * The `열린 경로` slot reads `자동` only when `automatic` is true, else `클릭`.
  *
- * @param {{ bead_id: string, originals?: string|null, prerequisites?: string|null, attempts?: string|null, worktrees?: string|null }} input
+ * @param {{ bead_id: string, originals?: string|null, prerequisites?: string|null, attempts?: string|null, worktrees?: string|null, automatic?: boolean }} input
  * @returns {string}
  */
 export function fillSpecAuthoringEntry(input) {
@@ -101,7 +107,8 @@ export function fillSpecAuthoringEntry(input) {
     '<원 Bead마다 `prerequisite:` notes 줄의 조건 | (없음)>':
       input.prerequisites || ABSENT,
     '<원 attempt ID | (없음)>': input.attempts || ABSENT,
-    '<경로 | (없음)>': input.worktrees || ABSENT
+    '<경로 | (없음)>': input.worktrees || ABSENT,
+    '<자동 | 클릭>': input.automatic === true ? '자동' : '클릭'
   };
   return SPEC_AUTHORING_ENTRY_BLOCK.replace(
     /<[^>]+>/g,

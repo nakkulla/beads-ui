@@ -335,7 +335,7 @@ describe('direction-inquiry entry block', () => {
       .digest('hex');
 
     expect(digest).toBe(
-      '1ef91c665762c14dd12dc7eabbe3d9b0efd0fe5b471f0a248e57a37047660534'
+      '56db5b1f21e6f738a4f5daca5b7f212e007f0c29a3f658fdb24c7751aee87679'
     );
     expect(SPEC_AUTHORING_ENTRY_BLOCK.endsWith('\n')).toBe(false);
   });
@@ -348,6 +348,22 @@ describe('direction-inquiry entry block', () => {
     expect(block).toContain('- 선행 조건: (없음)');
     expect(block).toContain('- 원 attempt: (없음)');
     expect(block).toContain('- 보존 워크트리: (없음)');
+    expect(block).toContain('- 열린 경로: 클릭');
+  });
+
+  test('fills the opened path slot as automatic only for an automatic launch', () => {
+    const automatic = fillSpecAuthoringEntry({
+      bead_id: 'UI-x1',
+      automatic: true
+    });
+    const clicked = fillSpecAuthoringEntry({
+      bead_id: 'UI-x1',
+      automatic: false
+    });
+
+    expect(automatic).toContain('- 열린 경로: 자동');
+    expect(clicked).toContain('- 열린 경로: 클릭');
+    expect(automatic).not.toContain('<자동 | 클릭>');
   });
 
   test('fills the target Bead into the close request step', () => {

@@ -384,7 +384,8 @@ export function createSpecAuthoring(deps) {
             `${entry.bead_id}: ${entry.attempt?.attempt_id || '(없음)'}`
         )
         .join('\n'),
-      worktrees: worktrees.join('\n')
+      worktrees: worktrees.join('\n'),
+      automatic
     });
     const session_id = runner === 'claude' ? randomUUID() : null;
     const tmux_session =
