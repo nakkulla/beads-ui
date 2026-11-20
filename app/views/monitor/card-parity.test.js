@@ -2819,3 +2819,98 @@ describe('takeover handback on failure and external cards (UI-3713 §3.3)', () =
     }
   );
 });
+
+describe('direct session tile finish button parity between the Worker and Monitor tabs (UI-lxxf §3.4)', () => {
+  const SESSION_ID = '33333333-4444-4555-8666-777777777777';
+
+  /**
+   * Draw both tabs with one direct session Bead whose claude transcript sits
+   * in a stubbed home directory, so the `session_ref` reads as local.
+   *
+   * A contrast Bead `FN-2` with the same `session_ref` and no patch is drawn
+   * next to it when `with_contrast` is true.
+   *
+   * @param {string} metadata_session_ref
+   * @param {Record<string, unknown>} [metadata_patch]
+   * @param {boolean} [with_contrast]
+   * @returns {Promise<{ worker: HTMLElement, monitor: HTMLElement }>}
+   */
+  async function drawDirectSession(
+    metadata_session_ref,
+    metadata_patch = {},
+    with_contrast = false
+  ) {
+    const home = path.join(tmp_root, 'home');
+    fs.mkdirSync(path.join(home, '.claude', 'projects', 'p'), {
+      recursive: true
+    });
+    fs.writeFileSync(
+      path.join(home, '.claude', 'projects', 'p', `${SESSION_ID}.jsonl`),
+      '{"type":"user"}\n'
+    );
+    vi.stubEnv('HOME', home);
+    extra_rows = [
+      row('FN-1', {
+        status: 'in_progress',
+        metadata: {
+          route: 'quick_fix',
+          session_ref: metadata_session_ref,
+          ...metadata_patch
+        }
+      }),
+      ...(with_contrast
+        ? [
+            row('FN-2', {
+              status: 'in_progress',
+              metadata: {
+                route: 'quick_fix',
+                session_ref: metadata_session_ref
+              }
+            })
+          ]
+        : [])
+    ];
+    return drawBothTabs();
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test('draws the same enabled finish button in slot 6 of both tabs', async () => {
+    const { worker, monitor } = await drawDirectSession(
+      `claude:${SESSION_ID}@host`
+    );
+
+    const cards = [worker, monitor].map(
+      (mount) => /** @type {HTMLElement} */ (cardsByBead(mount).get('FN-1'))
+    );
+    const buttons = cards.map((card) =>
+      card.querySelector('.rtile__foot .rtile__finish')
+    );
+
+    expect(buttons[0]).not.toBeNull();
+    expect(buttons[1]).not.toBeNull();
+    expect(buttons[0]?.hasAttribute('disabled')).toBe(false);
+    expect(buttons[0]?.textContent?.trim()).toBe('마무리');
+    expect(partsOf(cards[1])).toEqual(partsOf(cards[0]));
+  });
+
+  test('draws the finish button only on the tile without an external wait key on both tabs', async () => {
+    const { worker, monitor } = await drawDirectSession(
+      `claude:${SESSION_ID}@host`,
+      { external_wait: 'job-1' },
+      true
+    );
+
+    const present = [worker, monitor].map((mount) => [
+      cardsByBead(mount).get('FN-1')?.querySelector('.rtile__finish') != null,
+      cardsByBead(mount).get('FN-2')?.querySelector('.rtile__finish') != null
+    ]);
+
+    expect(present).toEqual([
+      [false, true],
+      [false, true]
+    ]);
+  });
+});

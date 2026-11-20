@@ -4729,6 +4729,41 @@ describe('monitor 세션 정체 (UI-4xzk §6.4)', () => {
     expect(lanes.running[0].session_refs).toEqual([VIEW]);
   });
 
+  test('gives the finish action to the direct session tile but not to the Worker attempt tile of the same bead', () => {
+    const direct = buildLanes(
+      [
+        workspace({ session_active: [sessionActive({ session_refs: [VIEW] })] })
+      ],
+      [state()]
+    );
+    const claimed = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 50
+            }
+          },
+          session_active: [sessionActive({ session_refs: [VIEW] })]
+        })
+      ],
+      [state()]
+    );
+
+    expect(/** @type {any} */ (direct.running[0]).finish_action?.enabled).toBe(
+      true
+    );
+    expect(claimed.running.map((r) => [r.id, r.kind])).toEqual([
+      ['A-1', undefined]
+    ]);
+    expect(
+      /** @type {any} */ (claimed.running[0]).finish_action
+    ).toBeUndefined();
+  });
+
   test('falls back to an empty list when the key is absent', () => {
     const lanes = buildLanes(
       [workspace({ session_active: [sessionActive()] })],

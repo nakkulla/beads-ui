@@ -80,6 +80,7 @@ import {
 } from './lanes.js';
 import { logPathTemplate } from './log-path.js';
 import {
+  SESSION_OPEN_BLOCKED,
   liveConversationResolution,
   tileResolveFields
 } from './tile-resolve.js';
@@ -92,6 +93,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
 /**
  * @typedef {Object} RunningTile
  * @property {any[]} [spec_authoring_actions]
+ * @property {{ enabled: boolean, title: string }} [finish_action] - The `[마무리]` decision (`sessionFinishFields`).
  * @property {string} bead_id
  * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
  * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
@@ -1430,16 +1432,6 @@ function delegationGroup(label, state, legs) {
 }
 
 /**
- * Why a session's transcript cannot be opened from this server, by locality.
- *
- * @type {Record<string, string>}
- */
-const SESSION_OPEN_BLOCKED = {
-  remote: '다른 머신 세션 — 이 서버에 transcript 없음',
-  missing: 'transcript 파일 없음'
-};
-
-/**
  * The interactive transcript belonging to this session-lane attempt. Both
  * tabs and the button renderer use this identity, never the headless log key.
  *
@@ -1495,6 +1487,29 @@ function sessionOpenButton(current) {
     aria-label="라이브 세션 열기"
   >
     ▤ 세션
+  </button>`;
+}
+
+/**
+ * `마무리` — the slot-6 button of a direct session tile (UI-lxxf §3.2). The
+ * decision and its title come from the tile's `finish_action`; nothing here
+ * re-judges it.
+ *
+ * @param {RunningTile} tile
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function sessionFinishButton(tile) {
+  const action = tile.finish_action;
+  if (!action) {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="op-btn rtile__finish"
+    ?disabled=${!action.enabled}
+    title=${action.title}
+  >
+    마무리
   </button>`;
 }
 
@@ -2322,8 +2337,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
     ${(held || failed) && lane_chip
       ? html`<div class="worker-chips worker-chips--coords">${lane_chip}</div>`
-      : ''}${failed && !held && !external_wait ? pair_foot : ''}${tile
-      .spec_authoring_actions?.length
+      : ''}${failed && !held && !external_wait
+      ? pair_foot
+      : ''}${tile.finish_action
+      ? html`<div class="rtile__foot">${sessionFinishButton(tile)}</div>`
+      : ''}${tile.spec_authoring_actions?.length
       ? html`<div class="rtile__foot">
           ${specAuthoringActionsTemplate(tile)}
         </div>`

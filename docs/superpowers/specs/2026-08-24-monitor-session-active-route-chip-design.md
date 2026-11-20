@@ -180,6 +180,8 @@ running.push({
   — attempt가 없으므로 열 로그가 없다. 클릭 동작은 다른 타일과 같다: ID 클릭 =
   복사, 타일 클릭 = 이슈 상세(현행 `.rtile[data-bead-id]` 클릭 → `gotoIssue` 경로
   그대로).
+  **정정(UI-lxxf).** 직접 세션 타일의 슬롯 6 foot에는 `[마무리]` 버튼 하나가 서고,
+  나머지 운영 버튼은 여전히 그리지 않는다. 근거는 `2026-11-19-direct-session-finish-button-design.md`가 소유한다.
 - `selected_attempt` 하이라이트·heartbeat 정렬은 attempt가 없으니 적용되지 않는다.
 - `paused`/`failed` 상태 없음. `rtile--session` 수식 클래스로 좌측 테두리 색만
   구분한다(색 토큰은 기존 `.ctl-chip--route`와 같은 중립 계열, 경고색 금지 — 주의를
@@ -264,6 +266,8 @@ running.push({
   모니터링은 모니터 탭 소유). route 칩은 공용 컴포넌트라 Worker 탭에도 함께 나타난다.
 - 완료 행의 route 칩.
 - 세션 타일에서 상태 변경(open으로 되돌리기 등) 버튼.
+  **정정(UI-lxxf).** 상태 변경 버튼은 여전히 없다. 세션에 마감 지시를 보내는
+  `[마무리]`만 예외이며 Bead 상태는 세션이 바꾼다(`2026-11-19-direct-session-finish-button-design.md`).
 
 ## 12. 테스트 계획
 

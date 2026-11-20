@@ -1942,6 +1942,53 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     expect(button.getAttribute('title')).toBe('transcript 파일 없음');
   });
 
+  const FINISH_TITLE =
+    '이 세션에 마감 지시를 보낸다 — 세션이 이 Bead의 남은 마감 절차를 끝낸다';
+
+  test('draws the 마무리 button in the slot-6 foot of a direct session tile', () => {
+    const tile = renderSession({
+      session_refs: [view()],
+      root_dir: '/repo-a',
+      finish_action: { enabled: true, title: FINISH_TITLE }
+    });
+    const button = /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.rtile__foot > .op-btn.rtile__finish')
+    );
+
+    expect(button.textContent?.trim()).toBe('마무리');
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('title')).toBe(FINISH_TITLE);
+    expect(button.closest('.rtile')?.getAttribute('data-bead-id')).toBe(
+      'UI-t1'
+    );
+    expect(tile.getAttribute('data-root-dir')).toBe('/repo-a');
+    expect(button.hasAttribute('data-bead-id')).toBe(false);
+  });
+
+  test('disables the 마무리 button with the reason as its title', () => {
+    const tile = renderSession({
+      session_refs: [view({ provider: 'codex' })],
+      finish_action: { enabled: false, title: 'Codex 세션은 지원하지 않습니다' }
+    });
+    const button = /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.rtile__finish')
+    );
+
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('title')).toBe('Codex 세션은 지원하지 않습니다');
+  });
+
+  test('draws no 마무리 button without a finish decision', () => {
+    const with_action = renderSession({
+      session_refs: [view()],
+      finish_action: { enabled: true, title: FINISH_TITLE }
+    });
+    const without_action = renderSession({ session_refs: [view()] });
+
+    expect(with_action.querySelector('.rtile__finish')).not.toBeNull();
+    expect(without_action.querySelector('.rtile__finish')).toBeNull();
+  });
+
   test('draws the session chip before the exec_receipt chip', () => {
     const tile = renderSession({
       session_refs: [view()],

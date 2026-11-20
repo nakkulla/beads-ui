@@ -237,6 +237,11 @@ import {
 import { pushKeyed } from './push-patch.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
 import { trimQueueProjection } from './snapshot-retention.js';
+import {
+  createSessionFinish,
+  realpathOf,
+  runSessionHub
+} from './worker-handlers.session-finish.js';
 import { targetWorkspaceOf } from './workspace-target.js';
 
 // Re-exported so the opt-out rule keeps one import site per consumer lane
@@ -8677,6 +8682,80 @@ export async function handleWorkerSpecAuthoringSession(ws, req) {
   if (result.launched) {
     fanout(key, latest);
   }
+}
+
+/**
+ * Session ids with a `[마무리]` send under way in this server process. Memory
+ * only: a restart forgets it, as the spec's `in_flight` contract says.
+ *
+ * @type {Set<string>}
+ */
+const SESSION_FINISH_IN_FLIGHT = new Set();
+
+/**
+ * Send the finish directive to a direct session tile's own session (UI-lxxf).
+ * Reads the Bead and the queue, calls the session hub once, and writes neither.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerSessionFinish(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.trim().length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const finish = createSessionFinish({
+    in_flight: SESSION_FINISH_IN_FLIGHT,
+    readBead: async (root_dir, bead_id) => {
+      /** @type {any} */
+      let shown;
+      try {
+        shown = await runBdJsonProjectedInWorkspace(
+          ws,
+          'show',
+          ['show', bead_id, '--json'],
+          { cwd: root_dir, expected_id: bead_id }
+        );
+      } catch (err) {
+        log('session finish read threw for %s: %o', bead_id, err);
+        return null;
+      }
+      return shown.ok === true && shown.data && typeof shown.data === 'object'
+        ? shown.data
+        : null;
+    },
+    snapshot: (root_dir) =>
+      /** @type {Record<string, any>} */ (
+        decorateQueue(root_dir, queueStore().snapshot(root_dir))
+      ),
+    // Ownership reads the untrimmed queue, never the display projection that
+    // retention trims, and refuses an unreadable queue (UI-lxxf §3.4 step 3).
+    ownership: (root_dir, bead_id) => {
+      const store = queueStore();
+      const raw = store.snapshot(root_dir, { strict: true });
+      const transferred =
+        typeof store.readAttemptsForBead === 'function'
+          ? store.readAttemptsForBead(root_dir, bead_id)
+          : [];
+      return {
+        attempts: [...Object.values(raw.attempts || {}), ...transferred],
+        interactive_sessions: raw.interactive_sessions || {}
+      };
+    },
+    runHub: runSessionHub,
+    realpath: realpathOf
+  });
+  const result = await finish({ root_dir: key, bead_id: p.bead_id });
+  ws.send(JSON.stringify(makeOk(req, result)));
 }
 
 /**

@@ -170,6 +170,7 @@ import {
   handleWorkerResolveInSession,
   handleWorkerReviseApprove,
   handleWorkerReviseFix,
+  handleWorkerSessionFinish,
   handleWorkerSpecAuthoringSession
 } from './worker-handlers.js';
 import {
@@ -754,6 +755,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-resolve-in-session':
       await handleWorkerResolveInSession(ws, req);
+      return;
+    case 'worker-session-finish':
+      await handleWorkerSessionFinish(ws, req);
       return;
     case 'worker-spec-authoring-session':
       await handleWorkerSpecAuthoringSession(ws, req);

@@ -28,6 +28,69 @@ export function specAuthoringFields(targets) {
 }
 
 /**
+ * Why a session's transcript cannot be reached from this server, by locality.
+ * `▤ 세션` and `[마무리]` say the same fact in the same words.
+ *
+ * @type {Record<string, string>}
+ */
+export const SESSION_OPEN_BLOCKED = {
+  remote: '다른 머신 세션 — 이 서버에 transcript 없음',
+  missing: 'transcript 파일 없음'
+};
+
+/** What `[마무리]` does on a direct session tile (UI-lxxf §3.2). */
+const SESSION_FINISH_TITLE =
+  '이 세션에 마감 지시를 보낸다 — 세션이 이 Bead의 남은 마감 절차를 끝낸다';
+
+/**
+ * Why `[마무리]` is drawn but cannot be pressed, by the current session's
+ * provider (UI-lxxf §3.1).
+ *
+ * @type {Record<string, string>}
+ */
+const SESSION_FINISH_UNSUPPORTED = {
+  codex: 'Codex 세션은 지원하지 않습니다',
+  hermes: '지원하지 않는 세션 종류'
+};
+
+/**
+ * The `[마무리]` decision of one DIRECT session tile (UI-lxxf §3.1): the one
+ * place that says whether the button stands, so the renderer never re-judges.
+ * No current session, or a Bead that holds an `external_wait` key (the flag from
+ * the projection or any attached record), draws nothing.
+ *
+ * @param {{ session_refs?: any[]|null, has_external_wait?: boolean, external_wait?: unknown }} tile
+ * @returns {{ finish_action?: { enabled: boolean, title: string } }}
+ */
+export function sessionFinishFields(tile) {
+  if (tile.has_external_wait === true || tile.external_wait) {
+    return {};
+  }
+  const current = (
+    Array.isArray(tile.session_refs) ? tile.session_refs : []
+  ).find((view) => !!view && view.current === true);
+  if (!current) {
+    return {};
+  }
+  const unsupported = SESSION_FINISH_UNSUPPORTED[current.provider];
+  if (unsupported) {
+    return { finish_action: { enabled: false, title: unsupported } };
+  }
+  if (current.provider !== 'claude') {
+    return {
+      finish_action: { enabled: false, title: '지원하지 않는 세션 종류' }
+    };
+  }
+  const blocked = SESSION_OPEN_BLOCKED[current.locality];
+  if (blocked) {
+    return { finish_action: { enabled: false, title: blocked } };
+  }
+  return current.locality === 'local'
+    ? { finish_action: { enabled: true, title: SESSION_FINISH_TITLE } }
+    : {};
+}
+
+/**
  * Whether a live Worker session conversation of ANY kind — 멈춤, 실패 or
  * 외부 작업 완료 — already answers the card's `[세션에서 이어가기]` question
  * (UI-ri8n §3.4, UI-18a5 §3.2). A closing session does not count.
