@@ -178,6 +178,24 @@
         "no_human_answer_session": "pin_spec_backed"
       },
       "starts_after": "reviewed_body_and_existing_route_pin_order",
+      "unpublished_spec_predecessor": {
+        "applies_to": "separated_followup_blocked_by_spec_backed_predecessor_without_read_back_spec_review",
+        "placement": "deferred_until_predecessor_spec_review_readback",
+        "notes": "lane_deferred: <predecessor-id> — 스펙 미발행",
+        "predecessor_notes": "lane_deferred_dependent: <followup-id> @ <followup-repo-absolute-root>",
+        "recheck_after_notes": "predecessor_spec_review_present_then_place_now",
+        "placed_by": "predecessor_spec_gate_closing_session_after_spec_review_readback",
+        "discovery": "predecessor_notes_lane_deferred_dependent_lines",
+        "procedure": "same_worker_lane_placement",
+        "unplaced_when_gate_not_closed": "report_only",
+        "unchanged": [
+          "separated_prerequisite_handoff",
+          "prerequisite_ending_handoff",
+          "prerequisite_spec_authoring_targets",
+          "entry_question_worker_answer",
+          "full_plan_target_placement"
+        ]
+      },
       "config": {
         "source": "worker_url_resolver",
         "missing_invalid_or_unreachable": "report_failure"
