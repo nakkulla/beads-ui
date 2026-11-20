@@ -3,10 +3,11 @@ id: 'UI-lx9o'
 title: '실패 타일의 상태 배지 하나와 상세 상자 하나'
 date: '2026-11-19'
 summary: '실패 타일은 상태 배지 하나와 상세 상자 하나만 갖고 대기 사유가 함께 있어도 확인 필요 배지를 그리지 않으며 해결 문장은 그 상세의 다음에 살아 있는 대화 안내 다음 순서로 싣는다 — 나머지 조항은 UI-6kj0 그대로다'
-status: 'accepted'
+status: superseded
 spec: 'docs/superpowers/specs/2026-11-18-failed-card-single-status-cause-line-design.md'
 bead: 'UI-lx9o'
 supersedes: ['UI-6kj0']
+superseded_by: 'UI-lxxf'
 ---
 
 # 실패 타일의 상태 배지 하나와 상세 상자 하나
