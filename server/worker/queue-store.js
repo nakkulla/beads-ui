@@ -648,6 +648,9 @@
  * @property {boolean} [handback_allowed] - A takeover conversation with no
  * handoff may go back to the Worker: the last observed Bead status was
  * `open` (UI-3713 §3.3). Absent reads as false; only `true` is kept.
+ * @property {{ pr_url: string|null, head_sha: string }} [verify_hold] - The
+ * hold a verify-failure conversation opened for (UI-nqbx §4.2); a
+ * `수정 대기` line is judged against it. Absent for every other conversation.
  */
 /**
  * Why a failure or 외부 작업 완료 conversation's handoff did not run
@@ -1269,6 +1272,28 @@
  * @property {number|null} deadline_at - Null until the base-only verify failed.
  * @property {'base_verifying'|'waiting'} stage
  * @property {'base_moved'|null} outcome
+ * @property {true} [from_hold] - Entered from a verify-failure hold through a
+ * linked follow-up (UI-nqbx §4.1); absent for the pre-hold wait.
+ */
+/**
+ * A spent red-base wait pair. `links` is kept only for a wait entered from a
+ * hold, so a result line naming one of them stays acceptable after the wait
+ * ended (UI-nqbx §4.2).
+ *
+ * @typedef {Object} CompletionFollowupWaitPair
+ * @property {string|null} pr_url
+ * @property {string} head_sha
+ * @property {string[]} [links]
+ */
+/**
+ * A pending hold-return conversation request (UI-nqbx §4.3): the wait entered
+ * from a hold ended in a hold again, and the return conversation launches once
+ * the row's earlier conversation window is gone.
+ *
+ * @typedef {Object} CompletionHoldReturn
+ * @property {string|null} pr_url
+ * @property {string} head_sha
+ * @property {number} requested_at
  */
 /**
  * @typedef {Object} CompletionIntent
@@ -1285,10 +1310,15 @@
  * second one; absent until the first launch.
  * @property {CompletionFollowupWait} [followup_wait] - The red-base wait of the
  * current head; absent outside it.
- * @property {Array<{ pr_url: string|null, head_sha: string }>} [followup_waits] -
+ * @property {CompletionFollowupWaitPair[]} [followup_waits] -
  * The (PR, head) pairs that already entered a red-base wait (contract
  * `once_per: [pr, head_sha]`). Kept apart from `followup_wait`, which a hold or
  * a new head clears; absent until the first wait.
+ * @property {Array<{ pr_url: string|null, head_sha: string }>} [hold_exit_notices] -
+ * The (PR, head) pairs whose hold-entered wait already announced its return to
+ * the hold (UI-nqbx §4.3); counted apart from the hold entry itself.
+ * @property {CompletionHoldReturn} [hold_return] - The return conversation
+ * still owed; absent when none is pending.
  * @property {CompletionTerminal|null} terminal_reason
  * @property {CompletionAutoResolution|null} auto_resolution
  * @property {CompletionAutoResolution|null} paused_resolution - The resolution
@@ -1306,6 +1336,10 @@
  * @property {string[]} [cancelled_attempt_ids] - Sessions the same write
  * settled, for the caller that still owes their processes a stop (UI-d7fy
  * §5.6).
+ * @property {boolean} [noticed] - The hold write also claimed the one return
+ * notice of a hold-entered wait (UI-nqbx §4.3).
+ * @property {CompletionHoldReturn|null} [request] - The hold-return request a
+ * take consumed.
  */
 import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
@@ -1841,6 +1875,9 @@ function invalidCompletionIntent(root_bead_id, value) {
   // Carried like `hold_launches`: a malformed record must not refund the
   // once-per-(PR, head) wait the contract grants.
   const followup_waits = normalizeCompletionFollowupWaits(raw.followup_waits);
+  const hold_exit_notices = normalizeCompletionHoldLaunches(
+    raw.hold_exit_notices
+  );
   return {
     target_base: typeof raw.target_base === 'string' ? raw.target_base : '',
     phase: 'needs_human',
@@ -1859,6 +1896,7 @@ function invalidCompletionIntent(root_bead_id, value) {
     hold: null,
     ...(hold_launches.length > 0 ? { hold_launches } : {}),
     ...(followup_waits.length > 0 ? { followup_waits } : {}),
+    ...(hold_exit_notices.length > 0 ? { hold_exit_notices } : {}),
     terminal_reason: {
       reason: 'intent_state_invalid',
       stage: 'state',
@@ -1907,6 +1945,10 @@ function normalizeCompletionIntent(root_bead_id, value) {
   const hold_launches = normalizeCompletionHoldLaunches(value.hold_launches);
   const followup_wait = normalizeCompletionFollowupWait(value.followup_wait);
   const followup_waits = normalizeCompletionFollowupWaits(value.followup_waits);
+  const hold_exit_notices = normalizeCompletionHoldLaunches(
+    value.hold_exit_notices
+  );
+  const hold_return = normalizeCompletionHoldReturn(value.hold_return);
   if (
     typeof value.target_base !== 'string' ||
     value.target_base.length === 0 ||
@@ -1940,6 +1982,8 @@ function normalizeCompletionIntent(root_bead_id, value) {
     ...(hold_launches.length > 0 ? { hold_launches } : {}),
     ...(followup_wait ? { followup_wait } : {}),
     ...(followup_waits.length > 0 ? { followup_waits } : {}),
+    ...(hold_exit_notices.length > 0 ? { hold_exit_notices } : {}),
+    ...(hold_return ? { hold_return } : {}),
     terminal_reason
   };
   return resumed_terminal ? { ...normalized, resumed_terminal } : normalized;
@@ -1981,18 +2025,7 @@ function normalizeCompletionFollowupWait(value) {
   ) {
     return null;
   }
-  /** @type {string[]} */
-  const links = [];
-  for (const link of Array.isArray(value.links) ? value.links : []) {
-    if (
-      typeof link === 'string' &&
-      link.length > 0 &&
-      link.length <= COMPLETION_REASON_MAX &&
-      !links.includes(link)
-    ) {
-      links.push(link);
-    }
-  }
+  const links = normalizeCompletionWaitLinks(value.links);
   return {
     head_sha: value.head_sha,
     base_sha: value.base_sha,
@@ -2008,16 +2041,75 @@ function normalizeCompletionFollowupWait(value) {
         ? value.deadline_at
         : null,
     stage: value.stage,
-    outcome: value.outcome === 'base_moved' ? 'base_moved' : null
+    outcome: value.outcome === 'base_moved' ? 'base_moved' : null,
+    ...(value.from_hold === true
+      ? { from_hold: /** @type {true} */ (true) }
+      : {})
   };
 }
 
 /**
  * @param {unknown} value
- * @returns {Array<{ pr_url: string|null, head_sha: string }>}
+ * @returns {string[]}
+ */
+function normalizeCompletionWaitLinks(value) {
+  /** @type {string[]} */
+  const links = [];
+  for (const link of Array.isArray(value) ? value : []) {
+    if (
+      typeof link === 'string' &&
+      link.length > 0 &&
+      link.length <= COMPLETION_REASON_MAX &&
+      !links.includes(link)
+    ) {
+      links.push(link);
+    }
+  }
+  return links;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {CompletionFollowupWaitPair[]}
  */
 function normalizeCompletionFollowupWaits(value) {
-  return normalizeCompletionHoldLaunches(value);
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  /** @type {CompletionFollowupWaitPair[]} */
+  const pairs = [];
+  for (const item of value) {
+    if (isRecord(item) && typeof item.head_sha === 'string') {
+      const links = normalizeCompletionWaitLinks(item.links);
+      pairs.push({
+        pr_url: typeof item.pr_url === 'string' ? item.pr_url : null,
+        head_sha: item.head_sha,
+        ...(links.length > 0 ? { links } : {})
+      });
+    }
+  }
+  return pairs;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {CompletionHoldReturn|null}
+ */
+function normalizeCompletionHoldReturn(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.head_sha !== 'string' ||
+    value.head_sha.length === 0 ||
+    typeof value.requested_at !== 'number' ||
+    !Number.isFinite(value.requested_at)
+  ) {
+    return null;
+  }
+  return {
+    pr_url: typeof value.pr_url === 'string' ? value.pr_url : null,
+    head_sha: value.head_sha,
+    requested_at: value.requested_at
+  };
 }
 
 /**
@@ -3900,7 +3992,17 @@ function normalizeConversation(raw) {
     result,
     handoff,
     takeover_notified_at: finiteOrNull(raw.takeover_notified_at),
-    ...(raw.handback_allowed === true ? { handback_allowed: true } : {})
+    ...(raw.handback_allowed === true ? { handback_allowed: true } : {}),
+    ...(isRecord(raw.verify_hold) &&
+    typeof raw.verify_hold.head_sha === 'string' &&
+    raw.verify_hold.head_sha.length > 0
+      ? {
+          verify_hold: {
+            pr_url: stringOrNullValue(raw.verify_hold.pr_url),
+            head_sha: raw.verify_hold.head_sha
+          }
+        }
+      : {})
   };
 }
 
@@ -14674,6 +14776,12 @@ export function createQueueStore(options = {}) {
         ) {
           delete intent.followup_wait;
         }
+        if (
+          intent.hold_return &&
+          intent.hold_return.head_sha !== normalized_subject.head_sha
+        ) {
+          delete intent.hold_return;
+        }
         return true;
       });
     },
@@ -14820,7 +14928,8 @@ export function createQueueStore(options = {}) {
      */
     holdCompletionIntent(workspace, input) {
       const { root_bead_id, hold } = input;
-      return applyUnconditional(workspace, (next) => {
+      let noticed = false;
+      const result = applyUnconditional(workspace, (next) => {
         const intent = next.completion_intents[root_bead_id];
         const normalized = normalizeCompletionHold(hold);
         if (
@@ -14842,6 +14951,30 @@ export function createQueueStore(options = {}) {
           normalized.comment_at = intent.hold.comment_at;
         }
         intent.hold = normalized;
+        // A wait entered from a hold announces its return to the hold once per
+        // (PR, head), apart from the hold entry itself (UI-nqbx §4.3).
+        const wait = intent.followup_wait;
+        const pr_url = intent.subject.pr_url;
+        const notices = intent.hold_exit_notices || [];
+        if (
+          wait?.from_hold === true &&
+          wait.head_sha === normalized.head_sha &&
+          !notices.some(
+            (item) =>
+              item.pr_url === pr_url && item.head_sha === normalized.head_sha
+          )
+        ) {
+          intent.hold_exit_notices = [
+            ...notices,
+            { pr_url, head_sha: wait.head_sha }
+          ];
+          intent.hold_return = {
+            pr_url,
+            head_sha: wait.head_sha,
+            requested_at: normalized.at
+          };
+          noticed = true;
+        }
         // A hold is where a red-base wait ends (UI-ty6k §4.2).
         delete intent.followup_wait;
         next.merge_queue = next.merge_queue.filter(
@@ -14849,6 +14982,7 @@ export function createQueueStore(options = {}) {
         );
         return true;
       });
+      return result.ok ? { ...result, noticed } : result;
     },
 
     /**
@@ -14861,12 +14995,17 @@ export function createQueueStore(options = {}) {
      * The intent's `hold` is left as it is: a wait that ends in a hold for the
      * same head must not announce that head a second time.
      *
+     * A wait entered from a hold (UI-nqbx §4.1) passes `expect`: the save-time
+     * recheck refuses it unless `auto_merge` is still on, the intent still
+     * holds the very hold the caller observed for the same PR, and the row is
+     * not back in the merge queue.
+     *
      * @param {string} workspace
-     * @param {{ root_bead_id: string, wait: CompletionFollowupWait, resolution: CompletionAutoResolution }} input
+     * @param {{ root_bead_id: string, wait: CompletionFollowupWait, resolution: CompletionAutoResolution, expect?: { pr_url: string|null, hold: CompletionHold } }} input
      * @returns {QueueOpResult}
      */
     beginCompletionFollowupWait(workspace, input) {
-      const { root_bead_id, wait, resolution } = input;
+      const { root_bead_id, wait, resolution, expect } = input;
       return applyUnconditional(workspace, (next) => {
         const intent = next.completion_intents[root_bead_id];
         const normalized_wait = normalizeCompletionFollowupWait(wait);
@@ -14884,6 +15023,22 @@ export function createQueueStore(options = {}) {
           normalized_wait.head_sha !== intent.subject.head_sha
         ) {
           return false;
+        }
+        if (expect) {
+          const held = intent.hold;
+          if (
+            next.auto_merge !== true ||
+            intent.phase !== 'holding' ||
+            !held ||
+            held.head_sha !== expect.hold.head_sha ||
+            held.operation_id !== expect.hold.operation_id ||
+            held.at !== expect.hold.at ||
+            held.comment_at !== expect.hold.comment_at ||
+            intent.subject.pr_url !== expect.pr_url ||
+            next.merge_queue.some((entry) => entry.bead_id === root_bead_id)
+          ) {
+            return false;
+          }
         }
         const pr_url = intent.subject.pr_url;
         const spent = intent.followup_waits || [];
@@ -14904,7 +15059,13 @@ export function createQueueStore(options = {}) {
         intent.followup_wait = normalized_wait;
         intent.followup_waits = [
           ...spent,
-          { pr_url, head_sha: normalized_wait.head_sha }
+          normalized_wait.from_hold === true
+            ? {
+                pr_url,
+                head_sha: normalized_wait.head_sha,
+                links: normalized_wait.links
+              }
+            : { pr_url, head_sha: normalized_wait.head_sha }
         ];
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id
@@ -15081,6 +15242,74 @@ export function createQueueStore(options = {}) {
           return false;
         }
         intent.hold_launches = [...launches, { pr_url: pr, head_sha }];
+        return true;
+      });
+    },
+
+    /**
+     * Take the pending hold-return conversation request (UI-nqbx §4.3). The
+     * request stays put (deferred, not consumed) while the row still has a
+     * conversation window open, or when it no longer matches the held head
+     * and PR; the caller launches only on success.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    takeCompletionHoldReturn(workspace, input) {
+      const { root_bead_id } = input;
+      /** @type {CompletionHoldReturn|null} */
+      let taken = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const request = intent?.hold_return;
+        if (
+          !intent ||
+          !request ||
+          intent.phase !== 'holding' ||
+          !intent.hold ||
+          request.head_sha !== intent.hold.head_sha ||
+          request.head_sha !== intent.subject.head_sha ||
+          request.pr_url !== intent.subject.pr_url ||
+          Object.values(next.interactive_sessions || {}).some(
+            (record) =>
+              record?.bead_id === root_bead_id && record.settled_at === null
+          )
+        ) {
+          return false;
+        }
+        taken = request;
+        delete intent.hold_return;
+        return true;
+      });
+      return result.ok ? { ...result, request: taken } : result;
+    },
+
+    /**
+     * Put back a hold-return request whose launch did not happen, so a later
+     * pass launches it once (UI-nqbx §4.3). Refused when the held head moved
+     * on or another request is already pending.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, request: CompletionHoldReturn }} input
+     * @returns {QueueOpResult}
+     */
+    restoreCompletionHoldReturn(workspace, input) {
+      const { root_bead_id, request } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized = normalizeCompletionHoldReturn(request);
+        if (
+          !intent ||
+          !normalized ||
+          intent.hold_return ||
+          intent.phase !== 'holding' ||
+          intent.hold?.head_sha !== normalized.head_sha ||
+          intent.subject.head_sha !== normalized.head_sha
+        ) {
+          return false;
+        }
+        intent.hold_return = normalized;
         return true;
       });
     },

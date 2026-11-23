@@ -19,11 +19,11 @@ import {
 
 /**
  * The dotfiles entry block digest the failure conversation opens with
- * (`55b0dd7861e27463c04eca7a091125f39bce79c0`, 14207 bytes without a trailing
+ * (`bc2cf92e7e01cf79ad10274b969d640aa9d482d4`, 16311 bytes without a trailing
  * newline) — the same pin `direction-inquiry.test.js` holds (UI-18a5 §3.3).
  */
 const ENTRY_BLOCK_DIGEST =
-  '9d8595e2cf3a5bf9338a5edbf050357c2db4a521473caa13ed13712c580ddb90';
+  'bde618d234fc17f4b3573e1841551197c974e76c06aac6900a79b4d5d62c37be';
 
 const BEAD = 'UI-jw27';
 const REPO = '/tmp/example-workspace/project-a';
@@ -2438,6 +2438,93 @@ describe('automatic failure conversation (UI-jbl1 §3.1)', () => {
           failure: expect.objectContaining({ failure_class: '배포 실패' })
         })
       );
+    });
+  });
+
+  describe('pre-merge wait marker (UI-nqbx 결정 9)', () => {
+    const HEAD = 'a'.repeat(40);
+    const PR_URL = 'https://github.com/o/r/pull/1';
+
+    /**
+     * A held root whose failed verify is `repo_id`'s own retried
+     * `script_failed`.
+     *
+     * @param {{ repo_id?: string, auto_merge?: boolean }} [over]
+     */
+    function heldQueue(over = {}) {
+      return {
+        auto_merge: over.auto_merge ?? true,
+        completion_intents: {
+          [BEAD]: {
+            phase: 'holding',
+            subject: {
+              role: 'root',
+              bead_id: BEAD,
+              pr_url: PR_URL,
+              head_sha: HEAD,
+              base_sha: 'b'.repeat(40),
+              merged_sha: null
+            },
+            hold: {
+              class: 'pre_merge_hold',
+              cause: 'verify_failure',
+              reason: 'script_failed',
+              summary: null,
+              operation_id: 'verify-one',
+              log_path: null,
+              head_sha: HEAD,
+              base_sha: 'b'.repeat(40),
+              at: 20,
+              comment_at: 20
+            },
+            followup_waits: []
+          }
+        },
+        repo_operations: {
+          'verify-one': {
+            operation_id: 'verify-one',
+            kind: 'verify',
+            state: 'failed',
+            repo_id: over.repo_id ?? REPO,
+            failure: { code: 'script_failed' },
+            retry: { outcome: 'consumed', blocked_reason: null }
+          }
+        },
+        interactive_sessions: {},
+        attempts: {}
+      };
+    }
+
+    /**
+     * @param {ReturnType<typeof heldQueue>} queue
+     */
+    async function openedFailure(queue) {
+      const { auto, resolve } = makeAuto({ queue });
+      await auto.launchForBead({ workspace: REPO, repo: REPO, bead_id: BEAD });
+      return /** @type {any} */ (resolve.mock.calls[0])[0];
+    }
+
+    test('marks the entry situation when the hold meets the wait target', async () => {
+      const input = await openedFailure(heldQueue());
+
+      expect(failureSituation(input.failure)).toContain(
+        '대기 가능: pre_merge_wait'
+      );
+    });
+
+    test.each([
+      ['auto-merge is off', { auto_merge: false }],
+      ['the failed verify is a foreign target', { repo_id: '/elsewhere' }]
+    ])('leaves the marker off when %s', async (_label, over) => {
+      const input = await openedFailure(heldQueue(over));
+
+      expect(failureSituation(input.failure)).not.toContain('pre_merge_wait');
+    });
+
+    test('pins the held PR and head on the conversation it opens', async () => {
+      const input = await openedFailure(heldQueue());
+
+      expect(input.verify_hold).toEqual({ pr_url: PR_URL, head_sha: HEAD });
     });
   });
 });

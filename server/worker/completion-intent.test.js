@@ -28,12 +28,14 @@ import {
   needsHumanNextAction
 } from './completion-intent.js';
 import { createForeignHandoffAnnouncer } from './foreign-handoff.js';
+import { createLockManager } from './locks.js';
 import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrPoller } from './pr-poller.js';
 import { createQueueStore } from './queue-store.js';
 import { EXEC_RECEIPT_MERGE_GATE } from './receipt-check.js';
+import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { repoOpsVerifyReceiptState } from './repo-ops-display.js';
 import { createFailureConversationLauncher } from './resolve-session.js';
 import { __resetWorkerRuntimeForTest, getWorkerRuntime } from './runtime.js';
@@ -5168,7 +5170,7 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
   }
 
   /**
-   * @param {{ operations?: Record<string, any>, issues?: Record<string, any>, baseVerdict?: any, store?: ReturnType<typeof createQueueStore> }} [options]
+   * @param {{ operations?: Record<string, any>, issues?: Record<string, any>, baseVerdict?: any, store?: ReturnType<typeof createQueueStore>, repo?: string }} [options]
    */
   function waitHarness(options = {}) {
     const store =
@@ -5238,7 +5240,8 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
       timeline: { append },
       failureConversation: conversation,
       resolveBase,
-      now: () => clock.now
+      now: () => clock.now,
+      ...(options.repo ? { repo: options.repo } : {})
     });
     return {
       store,
@@ -6174,6 +6177,862 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
     expect(rootIntent(h)).toMatchObject({
       phase: 'holding',
       hold: { reason: 'script_failed:대기 상한 48시간' }
+    });
+  });
+
+  describe('hold-time link observation (UI-nqbx)', () => {
+    const BEFORE_HOLD = '1970-01-01T00:00:00.050Z';
+    const AFTER_HOLD = '1970-01-01T00:00:00.200Z';
+    const EXIT_TOKENS = [
+      'base_verify_not_script_failed',
+      'reverify_failed',
+      'linked_followups_settled_base_unchanged',
+      'wait_limit'
+    ];
+
+    /**
+     * A row held on its verify failure while its only declared follow-up had
+     * closed before the hold, with every effect spy cleared.
+     *
+     * @param {Parameters<typeof waitHarness>[0]} [options]
+     */
+    async function heldHarness(options = {}) {
+      const h = waitHarness({
+        ...options,
+        issues: {
+          'UI-fix1': {
+            id: 'UI-fix1',
+            status: 'closed',
+            closed_at: BEFORE_HOLD,
+            metadata: {}
+          },
+          ...options.issues
+        }
+      });
+      await driveOnce(h.store, h.driver);
+      await settle();
+      clearEffects(h);
+      return h;
+    }
+
+    /**
+     * @param {ReturnType<typeof waitHarness>} h
+     */
+    function clearEffects(h) {
+      for (const spy of [
+        h.hold,
+        h.needsHuman,
+        h.comment,
+        h.append,
+        h.conversation.launchForBead,
+        h.startCompletionBaseVerify,
+        h.awaitCompletionBaseVerify,
+        h.completionGate,
+        h.resolveBase,
+        h.findIssue
+      ]) {
+        spy.mockClear();
+      }
+    }
+
+    /**
+     * Reopen the declared follow-up and deliver the bd change event.
+     *
+     * @param {ReturnType<typeof waitHarness>} h
+     */
+    async function linkLive(h) {
+      h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'open', metadata: {} };
+      await h.driver.onIssuesChanged();
+      await settle();
+    }
+
+    /**
+     * Close the declared follow-up after the hold and deliver the bd change
+     * event.
+     *
+     * @param {ReturnType<typeof waitHarness>} h
+     */
+    async function linkSettled(h) {
+      h.issues['UI-fix1'] = {
+        id: 'UI-fix1',
+        status: 'closed',
+        closed_at: AFTER_HOLD,
+        metadata: {}
+      };
+      await h.driver.onIssuesChanged();
+      await settle();
+    }
+
+    /** @param {ReturnType<typeof waitHarness>} h */
+    function baseMoves(h) {
+      h.resolveBase.mockResolvedValue({
+        ok: true,
+        base: 'main',
+        base_oid: MOVED_BASE
+      });
+    }
+
+    /**
+     * A hold-entered wait driven to one of its four hold exits.
+     *
+     * @param {string} token
+     */
+    async function exitedVia(token) {
+      const h = await heldHarness(
+        token === 'base_verify_not_script_failed'
+          ? {
+              baseVerdict: {
+                operation_id: 'base-op',
+                state: 'succeeded',
+                reason: null
+              }
+            }
+          : {}
+      );
+      await linkLive(h);
+      if (token === 'reverify_failed') {
+        baseMoves(h);
+        await linkSettled(h);
+        h.completionGate.mockResolvedValue(
+          holdGate({
+            base_sha: MOVED_BASE,
+            subject: { ...intent().subject, base_sha: MOVED_BASE }
+          })
+        );
+        await driveOnce(h.store, h.driver);
+        await settle();
+      } else if (token === 'linked_followups_settled_base_unchanged') {
+        await linkSettled(h);
+      } else if (token === 'wait_limit') {
+        h.clock.now = 100 + LIMIT_MS;
+        await h.driver.onIssuesChanged();
+        await settle();
+      }
+      return h;
+    }
+
+    /**
+     * @param {ReturnType<typeof waitHarness>} h
+     * @param {string} prefix
+     */
+    function timelineSeqs(h, prefix) {
+      return h.append.mock.calls
+        .map(([event]) => event.seq)
+        .filter((seq) => String(seq).startsWith(prefix));
+    }
+
+    test('joins the wait from a hold once a live declared follow-up appears', async () => {
+      const h = await heldHarness();
+
+      await linkLive(h);
+
+      expect(rootIntent(h)).toMatchObject({
+        phase: 'waiting_followup',
+        auto_resolution: { class: 'base_red_followup' },
+        followup_wait: {
+          head_sha: RED_HEAD,
+          base_sha: RED_BASE,
+          links: ['UI-fix1'],
+          base_op_id: 'base-op',
+          stage: 'waiting',
+          deadline_at: 100 + LIMIT_MS,
+          outcome: null,
+          from_hold: true
+        }
+      });
+    });
+
+    test('runs the base-only verify once on the base the hold failed on', async () => {
+      const h = await heldHarness();
+
+      await linkLive(h);
+
+      expect(h.startCompletionBaseVerify).toHaveBeenCalledExactlyOnceWith(
+        'UI-root',
+        { target_base: 'main', base_sha: RED_BASE }
+      );
+    });
+
+    test('sends no push, comment or conversation when a hold joins the wait', async () => {
+      const h = await heldHarness();
+
+      await linkLive(h);
+
+      expect(h.hold).not.toHaveBeenCalled();
+      expect(h.needsHuman).not.toHaveBeenCalled();
+      expect(h.comment).not.toHaveBeenCalled();
+      expect(h.conversation.launchForBead).not.toHaveBeenCalled();
+    });
+
+    test('records the hold-entry wait line on the root timeline', async () => {
+      const h = await heldHarness();
+
+      await linkLive(h);
+
+      expect(
+        h.append.mock.calls.map(([event]) => [event.seq, event.summary])
+      ).toEqual([
+        [
+          `wait:${RED_HEAD}`,
+          '머지 대기 — 보류 중 후속 UI-fix1 연결 · base도 검증 실패 · 착지 대기'
+        ]
+      ]);
+    });
+
+    test('keeps the hold record while the joined wait verifies the base', async () => {
+      const h = await heldHarness();
+      h.awaitCompletionBaseVerify.mockImplementation(
+        () => new Promise(() => {})
+      );
+
+      h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'open', metadata: {} };
+      h.driver.onIssuesChanged();
+      await settle();
+
+      expect(rootIntent(h)).toMatchObject({
+        phase: 'waiting_followup',
+        followup_wait: { stage: 'base_verifying', from_hold: true },
+        hold: { cause: 'verify_failure', head_sha: RED_HEAD }
+      });
+    });
+
+    test('never joins the wait from a repair handoff Bead the root does not declare', async () => {
+      const h = await heldHarness({
+        operations: {
+          'verify-one': failedVerifyOperation({
+            recovery: {
+              classification: 'local_code_defect',
+              disposition: 'repair',
+              reason: null,
+              code_defect: true,
+              prover: 'deterministic_owned_script_failure',
+              handoff: {
+                key: '1'.repeat(64),
+                state: 'bead_recorded',
+                handoff_bead_id: 'UI-rep1',
+                reserved_at: 1,
+                recorded_at: 2,
+                error: null
+              }
+            }
+          })
+        },
+        issues: {
+          'UI-root': { id: 'UI-root', status: 'in_progress', metadata: {} },
+          'UI-rep1': {
+            id: 'UI-rep1',
+            status: 'closed',
+            closed_at: BEFORE_HOLD,
+            metadata: {}
+          }
+        }
+      });
+
+      h.issues['UI-rep1'] = { id: 'UI-rep1', status: 'open', metadata: {} };
+      await h.driver.onIssuesChanged();
+      await settle();
+
+      expect(rootIntent(h).phase).toBe('holding');
+      expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    });
+
+    test('writes nothing for a declared follow-up that closed before the hold', async () => {
+      const h = await heldHarness();
+      const revision = h.store.snapshot(DRIVER_WS).revision;
+
+      await h.driver.onIssuesChanged();
+      await coordinatorOver(h).reconcile();
+      await settle();
+
+      expect(h.store.snapshot(DRIVER_WS).revision).toBe(revision);
+      expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    });
+
+    test('writes nothing for a live follow-up the root does not declare', async () => {
+      const h = await heldHarness({
+        issues: {
+          'UI-root': { id: 'UI-root', status: 'in_progress', metadata: {} }
+        }
+      });
+      const revision = h.store.snapshot(DRIVER_WS).revision;
+
+      await linkLive(h);
+
+      expect(rootIntent(h).phase).toBe('holding');
+      expect(h.store.snapshot(DRIVER_WS).revision).toBe(revision);
+      expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    });
+
+    test('writes nothing for a live follow-up when the failed verify spent no retry', async () => {
+      const operation = failedVerifyOperation();
+      const h = await heldHarness({
+        operations: {
+          'verify-one': {
+            ...operation,
+            retry: { ...operation.retry, outcome: 'not_applicable' }
+          }
+        }
+      });
+      const revision = h.store.snapshot(DRIVER_WS).revision;
+
+      await linkLive(h);
+
+      expect(rootIntent(h).phase).toBe('holding');
+      expect(h.store.snapshot(DRIVER_WS).revision).toBe(revision);
+      expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    });
+
+    test('merges after the re-verify once the joined follow-up settles on a moved base', async () => {
+      const h = await heldHarness();
+      await linkLive(h);
+      baseMoves(h);
+      await linkSettled(h);
+      h.completionGate.mockResolvedValue(
+        redGate({
+          base_sha: MOVED_BASE,
+          subject: { ...intent().subject, base_sha: MOVED_BASE },
+          verdict: { enabled: true, tier: 'eligible' }
+        })
+      );
+
+      const { action } = await driveOnce(h.store, h.driver);
+
+      expect(action).toEqual({ kind: 'merge_subject' });
+    });
+
+    test('returns a hold whose follow-up settled after it to gating on a moved base', async () => {
+      const h = await heldHarness();
+      baseMoves(h);
+
+      await linkSettled(h);
+
+      expect(rootIntent(h)).toMatchObject({
+        phase: 'gating',
+        followup_wait: {
+          links: ['UI-fix1'],
+          outcome: 'base_moved',
+          from_hold: true
+        }
+      });
+      expect(h.startCompletionBaseVerify).toHaveBeenCalledTimes(1);
+    });
+
+    test.each(EXIT_TOKENS)('holds with the %s exit tail', async (token) => {
+      const h = await exitedVia(token);
+
+      expect(rootIntent(h)).toMatchObject({
+        phase: 'holding',
+        hold: { reason: `script_failed:대기 종료: ${token}` }
+      });
+    });
+
+    test.each(EXIT_TOKENS)(
+      'announces the %s exit once with push, comment, timeline line and conversation',
+      async (token) => {
+        const h = await exitedVia(token);
+
+        expect(h.hold).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            reason: `script_failed:대기 종료: ${token}`,
+            next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 이어가기]'
+          })
+        );
+        expect(h.comment).toHaveBeenCalledTimes(1);
+        expect(timelineSeqs(h, 'hold-exit:')).toEqual([
+          `hold-exit:${RED_HEAD}`
+        ]);
+        expect(h.conversation.launchForBead).toHaveBeenCalledTimes(1);
+      }
+    );
+
+    test.each(EXIT_TOKENS)(
+      'neither waits nor announces again on the same head after the %s exit',
+      async (token) => {
+        const h = await exitedVia(token);
+        const verifies = h.startCompletionBaseVerify.mock.calls.length;
+        clearEffects(h);
+        h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'open', metadata: {} };
+
+        await h.driver.onIssuesChanged();
+        await coordinatorOver(h).reconcile();
+        await settle();
+
+        expect(rootIntent(h).phase).toBe('holding');
+        expect(h.startCompletionBaseVerify.mock.calls.length).toBe(0);
+        expect(verifies).toBeGreaterThan(0);
+        expect(h.hold).not.toHaveBeenCalled();
+        expect(h.comment).not.toHaveBeenCalled();
+        expect(h.conversation.launchForBead).not.toHaveBeenCalled();
+      }
+    );
+
+    test.each(EXIT_TOKENS)(
+      'neither waits nor announces again after a restart following the %s exit',
+      async (token) => {
+        const h = await exitedVia(token);
+        const r = waitHarness({
+          store: restartedStore(h),
+          issues: {
+            'UI-fix1': { id: 'UI-fix1', status: 'open', metadata: {} }
+          }
+        });
+        r.clock.now = h.clock.now;
+
+        await coordinatorOver(r).reconcile();
+        await r.driver.onIssuesChanged();
+        await settle();
+
+        expect(rootIntent(r).phase).toBe('holding');
+        expect(r.startCompletionBaseVerify).not.toHaveBeenCalled();
+        expect(r.hold).not.toHaveBeenCalled();
+        expect(r.comment).not.toHaveBeenCalled();
+        expect(r.conversation.launchForBead).not.toHaveBeenCalled();
+      }
+    );
+
+    test('writes no wait while auto-merge is off', async () => {
+      const h = await heldHarness();
+      h.store.toggleAutoMerge(DRIVER_WS, {
+        expected_revision: h.store.snapshot(DRIVER_WS).revision,
+        on: false
+      });
+
+      await linkLive(h);
+
+      expect(rootIntent(h).phase).toBe('holding');
+      expect(rootIntent(h)).not.toHaveProperty('followup_wait');
+      expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    });
+
+    test('leaves a manual merge request made during the link read queued', async () => {
+      const h = await heldHarness();
+      h.findIssue.mockImplementationOnce(async (/** @type {string} */ id) => {
+        h.store.enqueueMergeManual(DRIVER_WS, {
+          expected_revision: h.store.snapshot(DRIVER_WS).revision,
+          entries: [
+            { bead_id: 'UI-root', head_sha: RED_HEAD, target_base: 'main' }
+          ]
+        });
+        return h.issues[id] ?? null;
+      });
+
+      await linkLive(h);
+
+      expect(
+        h.store.snapshot(DRIVER_WS).merge_queue.map((entry) => entry.bead_id)
+      ).toEqual(['UI-root']);
+      expect(rootIntent(h)).not.toHaveProperty('followup_wait');
+      expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    });
+
+    test('writes no wait when the hold changed during the link read', async () => {
+      const h = await heldHarness();
+      h.findIssue.mockImplementationOnce(async (/** @type {string} */ id) => {
+        const held = /** @type {import('./queue-store.js').CompletionHold} */ (
+          rootIntent(h).hold
+        );
+        h.store.holdCompletionIntent(DRIVER_WS, {
+          root_bead_id: 'UI-root',
+          hold: { ...held, at: held.at + 1 }
+        });
+        return h.issues[id] ?? null;
+      });
+
+      await linkLive(h);
+
+      expect(rootIntent(h).phase).toBe('holding');
+      expect(rootIntent(h)).not.toHaveProperty('followup_wait');
+      expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    });
+
+    test('writes nothing when the root read fails', async () => {
+      const h = await heldHarness();
+      h.issues['UI-root'] = new Error('bd unavailable');
+      const revision = h.store.snapshot(DRIVER_WS).revision;
+
+      await linkLive(h);
+
+      expect(h.store.snapshot(DRIVER_WS).revision).toBe(revision);
+      expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    });
+
+    test('writes nothing when a follow-up read fails', async () => {
+      const h = await heldHarness();
+      const revision = h.store.snapshot(DRIVER_WS).revision;
+      h.issues['UI-fix1'] = new Error('bd unavailable');
+
+      await h.driver.onIssuesChanged();
+      await settle();
+
+      expect(h.store.snapshot(DRIVER_WS).revision).toBe(revision);
+      expect(h.startCompletionBaseVerify).not.toHaveBeenCalled();
+    });
+
+    test('judges a failed read again on the next coordinator pass', async () => {
+      const h = await heldHarness();
+      h.issues['UI-fix1'] = new Error('bd unavailable');
+      await coordinatorOver(h).reconcile();
+      await settle();
+      h.issues['UI-fix1'] = { id: 'UI-fix1', status: 'open', metadata: {} };
+
+      await coordinatorOver(h).reconcile();
+      await settle();
+
+      expect(rootIntent(h).phase).toBe('waiting_followup');
+    });
+
+    test('observes a link already present after a restart on the first coordinator pass', async () => {
+      const first = await heldHarness();
+      const h = waitHarness({
+        store: restartedStore(first),
+        issues: { 'UI-fix1': { id: 'UI-fix1', status: 'open', metadata: {} } }
+      });
+
+      await coordinatorOver(h).reconcile();
+      await settle();
+
+      expect(rootIntent(h)).toMatchObject({
+        phase: 'waiting_followup',
+        followup_wait: { links: ['UI-fix1'], from_hold: true }
+      });
+    });
+
+    test('defers the return conversation while the first conversation window is live', async () => {
+      const h = await heldHarness();
+      h.store.recordInteractiveSession(DRIVER_WS, {
+        bead_id: 'UI-root',
+        kind: 'resolve',
+        provider: 'claude',
+        pane_id: '%1',
+        tmux_session: 'interactive',
+        tmux_window: 'resolve',
+        launched_at: 10,
+        state: 'live'
+      });
+      await linkLive(h);
+
+      await linkSettled(h);
+
+      expect(h.conversation.launchForBead).not.toHaveBeenCalled();
+      expect(rootIntent(h).hold_return).toMatchObject({
+        pr_url: PR_URL,
+        head_sha: RED_HEAD
+      });
+    });
+
+    test('launches the deferred return conversation once the window settles', async () => {
+      const h = await heldHarness();
+      h.store.recordInteractiveSession(DRIVER_WS, {
+        bead_id: 'UI-root',
+        kind: 'resolve',
+        provider: 'claude',
+        pane_id: '%1',
+        tmux_session: 'interactive',
+        tmux_window: 'resolve',
+        launched_at: 10,
+        state: 'live'
+      });
+      await linkLive(h);
+      await linkSettled(h);
+      h.store.markInteractiveSessionsSettled(DRIVER_WS, 'UI-root', 'done');
+
+      await coordinatorOver(h).reconcile();
+      await settle();
+      await coordinatorOver(h).reconcile();
+      await settle();
+
+      expect(h.conversation.launchForBead).toHaveBeenCalledTimes(1);
+      expect(rootIntent(h)).not.toHaveProperty('hold_return');
+    });
+
+    test('launches the deferred return conversation once across a restart', async () => {
+      const first = await heldHarness();
+      first.store.recordInteractiveSession(DRIVER_WS, {
+        bead_id: 'UI-root',
+        kind: 'resolve',
+        provider: 'claude',
+        pane_id: '%1',
+        tmux_session: 'interactive',
+        tmux_window: 'resolve',
+        launched_at: 10,
+        state: 'live'
+      });
+      await linkLive(first);
+      await linkSettled(first);
+      first.store.markInteractiveSessionsSettled(DRIVER_WS, 'UI-root', 'done');
+      const h = waitHarness({
+        store: restartedStore(first),
+        issues: {
+          'UI-fix1': {
+            id: 'UI-fix1',
+            status: 'closed',
+            closed_at: AFTER_HOLD,
+            metadata: {}
+          }
+        }
+      });
+
+      await coordinatorOver(h).reconcile();
+      await settle();
+      await coordinatorOver(h).reconcile();
+      await settle();
+
+      expect(first.conversation.launchForBead).not.toHaveBeenCalled();
+      expect(h.conversation.launchForBead).toHaveBeenCalledTimes(1);
+    });
+
+    test('keeps the return request when the launch finds the window still running', async () => {
+      const h = await heldHarness();
+      h.conversation.launchForBead.mockResolvedValue({
+        session: 'already_running'
+      });
+      await linkLive(h);
+
+      await linkSettled(h);
+
+      expect(h.conversation.launchForBead).toHaveBeenCalledTimes(1);
+      expect(rootIntent(h).hold_return).toMatchObject({ head_sha: RED_HEAD });
+    });
+
+    describe('recovery from a missed observation over the real verify path', () => {
+      const TREE = '3'.repeat(40);
+      const VERIFY_CONFIG = '[verify]\nscript = "repo-ops/script/verify"';
+
+      /** A git stand-in that answers the verify policy reads of any commit. */
+      function verifyGit() {
+        return vi.fn(async (/** @type {string[]} */ args) => {
+          if (args[0] === 'show') {
+            return { code: 0, stdout: VERIFY_CONFIG, stderr: '' };
+          }
+          if (args[0] === 'ls-tree') {
+            return args.at(-1) === 'repo-ops/config.toml'
+              ? {
+                  code: 0,
+                  stdout: `100644 blob ${'4'.repeat(40)}\trepo-ops/config.toml`,
+                  stderr: ''
+                }
+              : {
+                  code: 0,
+                  stdout: `100755 blob ${'5'.repeat(40)}\trepo-ops/script/verify`,
+                  stderr: ''
+                };
+          }
+          return { code: 0, stdout: '', stderr: '' };
+        });
+      }
+
+      /**
+       * A real repo operation coordinator over `store` whose verify runs
+       * exit 0 at once, and the PR poller that feeds it.
+       *
+       * @param {ReturnType<typeof createQueueStore>} store
+       * @param {string} repo
+       * @param {{ starts: string[] }} world
+       */
+      function verifyPath(store, repo, world) {
+        /** @type {Map<string, { exit_code: number, signal: null }>} */
+        const markers = new Map();
+        const operations = createRepoOperationCoordinator({
+          workspace: DRIVER_WS,
+          repo,
+          store,
+          locks: createLockManager(),
+          gitRun: /** @type {never} */ (verifyGit()),
+          runner: /** @type {never} */ ({
+            start: async (/** @type {any} */ input) => {
+              world.starts.push(input.operation_id);
+              markers.set(input.operation_id, { exit_code: 0, signal: null });
+              return {
+                ok: true,
+                process_identity: { pid: 2, pgid: 2, started_at: 2 },
+                log_path: path.join(repo, `${input.operation_id}.log`)
+              };
+            },
+            readMarker: (
+              /** @type {string} */ _workspace,
+              /** @type {string} */ operation_id
+            ) => markers.get(operation_id) ?? null,
+            readLaunchMarker: () => null,
+            processController: { probe: () => ({ state: 'owned' }) }
+          }),
+          transition: /** @type {never} */ ({
+            materialize: async () => ({
+              ok: true,
+              path: path.join(repo, 'script')
+            }),
+            reclaim: () => {}
+          }),
+          verifyCheckout: /** @type {never} */ ({
+            materialize: async () => ({ ok: true, path: repo, tree_sha: TREE }),
+            verify: async () => ({ ok: true }),
+            cleanup: async () => {}
+          })
+        });
+        const poller = createPrPoller({
+          workspace: DRIVER_WS,
+          repo,
+          store,
+          observations: getWorkerRuntime().prObservations,
+          getSubscriberCount: () => 0,
+          gh: {
+            prDetail: async () => ({
+              state: 'ok',
+              data: {
+                number: 1,
+                url: PR_URL,
+                state: 'OPEN',
+                mergeable: 'MERGEABLE',
+                merge_state_status: 'CLEAN',
+                head_ref: 'UI-root',
+                base_ref: 'main',
+                head_sha: RED_HEAD
+              }
+            })
+          },
+          readIssue: async () => ({ metadata: { route: 'quick_fix' } }),
+          resolveBase: async () =>
+            /** @type {any} */ ({
+              ok: true,
+              base: 'main',
+              base_oid: MOVED_BASE
+            }),
+          repoOperations: operations
+        });
+        return { operations, poller };
+      }
+
+      /**
+       * The UI-lxxf end state: the poller verified the held head on the
+       * moved base and the follow-up closed after the hold, all while the
+       * hold-time observation never ran. The server comes back, and one
+       * coordinator pass, one poller pass and the enroller run in order.
+       */
+      async function recoveredAfterRestart() {
+        const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-hold-repo-'));
+        tmp_dirs.push(repo);
+        process.env.XDG_STATE_HOME = path.join(repo, 'state');
+        const seeded = seededCompletionStore().snapshot(DRIVER_WS);
+        const file = queueFile({
+          ...seeded,
+          attempts: {
+            ...seeded.attempts,
+            'att-root': {
+              ...seeded.attempts['att-root'],
+              verify_result: {
+                ok: true,
+                reason: 'ok',
+                pr_url: PR_URL,
+                pr_number: 1
+              }
+            }
+          },
+          repo_operations: {
+            'verify-one': failedVerifyOperation({ repo_id: repo })
+          }
+        });
+        const first = waitHarness({
+          store: createQueueStore({ filePathFor: () => file }),
+          repo,
+          issues: {
+            'UI-fix1': {
+              id: 'UI-fix1',
+              status: 'closed',
+              closed_at: BEFORE_HOLD,
+              metadata: {}
+            }
+          }
+        });
+        await driveOnce(first.store, first.driver);
+        await settle();
+        const world = { starts: /** @type {string[]} */ ([]) };
+        await verifyPath(first.store, repo, world).poller.tick();
+        __resetWorkerRuntimeForTest();
+        const h = waitHarness({
+          store: restartedStore(first),
+          repo,
+          issues: {
+            'UI-fix1': {
+              id: 'UI-fix1',
+              status: 'closed',
+              closed_at: AFTER_HOLD,
+              metadata: {}
+            }
+          }
+        });
+        baseMoves(h);
+        const policy = {
+          declaration_state: /** @type {const} */ ('present'),
+          base_sha: MOVED_BASE
+        };
+        const runtime = getWorkerRuntime();
+        h.completionGate.mockImplementation(async () => {
+          const observed = runtime.prObservations.get(DRIVER_WS, 'UI-root');
+          return redGate({
+            base_sha: MOVED_BASE,
+            subject: { ...intent().subject, base_sha: MOVED_BASE },
+            evidence: { verify: observed?.verify },
+            verdict: evaluateMergeGate(observed, {
+              review_receipt_state: observedReviewReceiptState(observed),
+              verify_receipt_state: repoOpsVerifyReceiptState(
+                policy,
+                observed?.verify
+              )
+            })
+          });
+        });
+        await coordinatorOver(h).reconcile();
+        await settle();
+        await verifyPath(h.store, repo, world).poller.tick();
+        createAutoMerge({
+          workspace: DRIVER_WS,
+          store: h.store,
+          verifyState: () => policy
+        }).enroll();
+        return { h, world };
+      }
+
+      test('merges the recovered hold without a [머지] click', async () => {
+        const { h } = await recoveredAfterRestart();
+
+        const { action } = await driveOnce(h.store, h.driver);
+
+        expect(action).toEqual({ kind: 'merge_subject' });
+      });
+
+      test('adopts the verify the poller ran on the moved base instead of running it again', async () => {
+        const { h, world } = await recoveredAfterRestart();
+
+        await driveOnce(h.store, h.driver);
+
+        expect(world.starts).toHaveLength(1);
+        expect(
+          h.store.snapshot(DRIVER_WS).repo_operations[world.starts[0]]
+        ).toMatchObject({
+          state: 'succeeded',
+          effective_base_sha: MOVED_BASE
+        });
+      });
+
+      test('returns the recovered row to the merge queue', async () => {
+        const { h } = await recoveredAfterRestart();
+
+        expect(
+          h.store.snapshot(DRIVER_WS).merge_queue.map((entry) => entry.bead_id)
+        ).toEqual(['UI-root']);
+      });
+
+      test('runs the joined wait from the first coordinator pass after the restart', async () => {
+        const { h } = await recoveredAfterRestart();
+
+        expect(rootIntent(h)).toMatchObject({
+          phase: 'gating',
+          followup_wait: { outcome: 'base_moved', from_hold: true }
+        });
+        expect(h.startCompletionBaseVerify).toHaveBeenCalledExactlyOnceWith(
+          'UI-root',
+          { target_base: 'main', base_sha: RED_BASE }
+        );
+      });
     });
   });
 });

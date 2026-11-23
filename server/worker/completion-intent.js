@@ -430,6 +430,152 @@ const FOLLOWUP_LIVE_STATUSES = new Set([
 const FOLLOWUP_ID_RE = /^[A-Za-z0-9]+(?:-[A-Za-z0-9.]+)+$/;
 
 /**
+ * The follow-up ids among `values` a root may link to (UI-ty6k §4.1 3단계):
+ * same rig, not the root itself, well-formed, each once, in order.
+ *
+ * @param {string} root_bead_id
+ * @param {unknown[]} values
+ * @returns {string[]}
+ */
+function followupLinkIds(root_bead_id, values) {
+  const rig = root_bead_id.slice(0, root_bead_id.lastIndexOf('-'));
+  /** @type {string[]} */
+  const ids = [];
+  for (const bead_id of values) {
+    if (
+      typeof bead_id === 'string' &&
+      FOLLOWUP_ID_RE.test(bead_id) &&
+      bead_id !== root_bead_id &&
+      bead_id.slice(0, bead_id.lastIndexOf('-')) === rig &&
+      !ids.includes(bead_id)
+    ) {
+      ids.push(bead_id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * The links a held root declares (UI-nqbx §4.1): only the root's
+ * `base_red_followup` metadata value, never an operation's repair handoff.
+ *
+ * @param {string} root_bead_id
+ * @param {unknown} declared - The raw `base_red_followup` metadata value.
+ * @returns {string[]}
+ */
+export function holdLinkIds(root_bead_id, declared) {
+  return followupLinkIds(
+    root_bead_id,
+    typeof declared === 'string' ? declared.split(',') : []
+  );
+}
+
+/**
+ * Classify one linked follow-up of a held root (UI-nqbx §4.1): `live` while
+ * its status is a live one, `settled` when it closed at or after the hold was
+ * entered, and `other` for everything else — an unparsable `closed_at` is
+ * never counted as settled.
+ *
+ * @param {any} issue - The Bead as `bd` read it; null when missing.
+ * @param {number} hold_entry_at - `hold.comment_at ?? hold.at`.
+ * @returns {'live'|'settled'|'other'}
+ */
+export function classifyHoldLink(issue, hold_entry_at) {
+  if (typeof issue?.status !== 'string') {
+    return 'other';
+  }
+  if (FOLLOWUP_LIVE_STATUSES.has(issue.status)) {
+    return 'live';
+  }
+  const closed_at =
+    issue.status === 'closed' && typeof issue.closed_at === 'string'
+      ? Date.parse(issue.closed_at)
+      : Number.NaN;
+  return Number.isFinite(closed_at) && closed_at >= hold_entry_at
+    ? 'settled'
+    : 'other';
+}
+
+/**
+ * When the hold of a held intent was entered (UI-nqbx §4.1): the first
+ * announcement's time, else the record's own `at`.
+ *
+ * @param {{ comment_at: number|null, at: number }} hold
+ * @returns {number}
+ */
+export function holdEntryAt(hold) {
+  return typeof hold.comment_at === 'number' ? hold.comment_at : hold.at;
+}
+
+/**
+ * Whether a failed verify is the one a red-base wait may start from (UI-ty6k
+ * §4.1 1단계, contract entry `verify_failure_after_same_candidate_retry`): the
+ * workspace's own `script_failed`, with the same-candidate retry actually
+ * spent. Read from the raw record — a legacy record with no retry state proves
+ * nothing about a re-run. A foreign target's failure stays a plain hold
+ * (§4.4), which is what the `repo_id` check enforces.
+ *
+ * @param {any} operation
+ * @param {string} repo_id - The workspace's own repo id.
+ * @returns {boolean}
+ */
+function retriedScriptFailureIn(operation, repo_id) {
+  return (
+    !!operation &&
+    operation.kind === 'verify' &&
+    operation.state === 'failed' &&
+    operation.repo_id === repo_id &&
+    operation.failure?.code === 'script_failed' &&
+    operation.retry?.outcome === 'consumed' &&
+    !operation.retry.blocked_reason
+  );
+}
+
+/**
+ * The queue-only conditions under which a held root may join the red-base
+ * wait through a linked follow-up (UI-nqbx §4.1 대상 조건): a verify-failure
+ * hold of the current head on a base it can name, a (PR, head) pair not yet
+ * spent, the hold's own operation a retried `script_failed` of this
+ * workspace, and `auto_merge` on. Null when any fails.
+ *
+ * @param {any} queue
+ * @param {string} root_bead_id
+ * @param {string} repo_id - The workspace's own repo id.
+ * @returns {{ intent: any, hold: any, operation: any }|null}
+ */
+export function holdWaitTarget(queue, root_bead_id, repo_id) {
+  const intent = queue?.completion_intents?.[root_bead_id];
+  const hold = intent?.hold;
+  if (
+    queue?.auto_merge !== true ||
+    !intent ||
+    intent.phase !== 'holding' ||
+    !hold ||
+    hold.cause !== 'verify_failure' ||
+    typeof hold.head_sha !== 'string' ||
+    hold.head_sha !== intent.subject?.head_sha ||
+    typeof hold.base_sha !== 'string' ||
+    !/^[0-9a-f]{40,64}$/i.test(hold.base_sha) ||
+    typeof hold.operation_id !== 'string'
+  ) {
+    return null;
+  }
+  const pr_url = intent.subject.pr_url ?? null;
+  if (
+    (intent.followup_waits || []).some(
+      (/** @type {any} */ item) =>
+        item.pr_url === pr_url && item.head_sha === hold.head_sha
+    )
+  ) {
+    return null;
+  }
+  const operation = queue.repo_operations?.[hold.operation_id];
+  return retriedScriptFailureIn(operation, repo_id)
+    ? { intent, hold, operation }
+    : null;
+}
+
+/**
  * Decide for an intent parked in the red-base wait (UI-ty6k §4.2). The wait
  * decides from its own record — never `hold` or `needs_human` from an
  * observation, which would end it or overwrite its resolution. The one
@@ -476,7 +622,7 @@ function decideFollowupWait(intent, fact) {
  * `receipt_unbacked`/`review_receipt_missing` are exactly how the surviving
  * metadata-watch and automatic-review lanes are entered.
  *
- * @typedef {{ kind: 'gate'|'hold'|'enter_cleanup'|'resume_intent'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'retry_failed_op'|'check_followup'|'pause'|'needs_human'|'complete', fact?: ObservedCompletionFact, reason?: string, terminal?: boolean }} CompletionAction
+ * @typedef {{ kind: 'gate'|'hold'|'enter_cleanup'|'resume_intent'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'retry_failed_op'|'check_followup'|'observe_hold_links'|'launch_hold_return'|'pause'|'needs_human'|'complete', fact?: ObservedCompletionFact, reason?: string, terminal?: boolean }} CompletionAction
  */
 
 /**
@@ -777,6 +923,24 @@ export function createCompletionIntentCoordinator(deps) {
     );
     let handed = false;
     for (const [root_bead_id, intent] of Object.entries(intents)) {
+      // A held root is observed off-queue too (UI-nqbx §4.1, §4.3): a
+      // pending return conversation, then its linked follow-ups once per
+      // process. The driver applies the target conditions.
+      if (
+        intent?.phase === 'holding' &&
+        intent.hold?.cause === 'verify_failure' &&
+        !queued.has(root_bead_id)
+      ) {
+        const revision = deps.store.snapshot(workspace).revision;
+        if (intent.hold_return) {
+          await onAction(root_bead_id, { kind: 'launch_hold_return' }, intent);
+        }
+        await onAction(root_bead_id, { kind: 'observe_hold_links' }, intent);
+        if (deps.store.snapshot(workspace).revision !== revision) {
+          handed = true;
+        }
+        continue;
+      }
       if (intent?.phase !== 'waiting_followup' || queued.has(root_bead_id)) {
         continue;
       }
@@ -1544,6 +1708,15 @@ export function createCompletionActionDriver(deps) {
    * @type {Set<string>}
    */
   const followup_pass_checked = new Set();
+  /**
+   * Held roots whose linked follow-ups a COORDINATOR PASS already read since
+   * this process started (UI-nqbx §4.1) — the restart case, like
+   * {@link followup_pass_checked}. A root is added only after a read that
+   * fully succeeded, so a failed read is retried by the next pass.
+   *
+   * @type {Set<string>}
+   */
+  const hold_pass_checked = new Set();
 
   function notify() {
     if (typeof deps.notifyChanged === 'function') {
@@ -2824,6 +2997,10 @@ export function createCompletionActionDriver(deps) {
     }
     followup_pass_checked.delete(root_bead_id);
     notify();
+    if (written.noticed === true) {
+      announceHoldExit(root_bead_id, current, queue, hold);
+      return;
+    }
     if (!first_hold) {
       return;
     }
@@ -2866,6 +3043,104 @@ export function createCompletionActionDriver(deps) {
   }
 
   /**
+   * Announce that a wait entered from a hold went back to the hold (UI-nqbx
+   * §4.3): the hold-entry bundle — timeline, comment, push — once per (PR,
+   * head), claimed by the hold write itself, then the return conversation the
+   * same write requested.
+   *
+   * @param {string} root_bead_id
+   * @param {any} current - The intent before the hold write.
+   * @param {any} queue
+   * @param {any} hold
+   */
+  function announceHoldExit(root_bead_id, current, queue, hold) {
+    recordTimeline(
+      root_bead_id,
+      'merge_step',
+      `hold-exit:${hold.head_sha}`,
+      `머지 보류 — 검증 실패 · ${hold.reason}`
+    );
+    postCompletionComment(
+      root_bead_id,
+      completionHoldComment(current, queue, hold)
+    );
+    if (typeof failure_notify?.hold === 'function') {
+      try {
+        Promise.resolve(
+          failure_notify.hold({
+            bead_id: root_bead_id,
+            failure_class: PRE_MERGE_HOLD_NOTIFY_LABEL,
+            reason: hold.reason,
+            reason_detail: hold.summary,
+            next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 이어가기]',
+            pr_url: current.subject.pr_url,
+            repo: deps.repo ?? null
+          })
+        ).catch((err) =>
+          log('hold exit notify failed for %s: %o', root_bead_id, err)
+        );
+      } catch (err) {
+        log('hold exit notify failed for %s: %o', root_bead_id, err);
+      }
+    }
+    launchHoldReturn(root_bead_id).catch((err) => {
+      log('hold return launch failed for %s: %o', root_bead_id, err);
+    });
+  }
+
+  /**
+   * Launch the pending hold-return conversation once (UI-nqbx §4.3). The
+   * store hands the request out only when the row's earlier conversation
+   * window is gone; a launch that did not happen puts it back for a later
+   * pass, and one that did — or that has nothing to talk about — spends it.
+   *
+   * @param {string} root_bead_id
+   * @returns {Promise<void>}
+   */
+  async function launchHoldReturn(root_bead_id) {
+    if (
+      typeof failure_conversation?.launchForBead !== 'function' ||
+      typeof deps.store.takeCompletionHoldReturn !== 'function'
+    ) {
+      return;
+    }
+    const taken = deps.store.takeCompletionHoldReturn(deps.workspace, {
+      root_bead_id
+    });
+    if (!taken.ok || !taken.request) {
+      return;
+    }
+    notify();
+    /** @type {any} */
+    let outcome = null;
+    try {
+      outcome = await failure_conversation.launchForBead({
+        workspace: deps.workspace,
+        repo: deps.repo ?? null,
+        bead_id: root_bead_id
+      });
+    } catch (err) {
+      log('hold return launch failed for %s: %o', root_bead_id, err);
+    }
+    const spent =
+      outcome?.session === 'launched' ||
+      (outcome?.session === 'not_launched' &&
+        (outcome.reason === 'disabled' ||
+          outcome.reason === 'no_terminal_failure'));
+    if (spent) {
+      return;
+    }
+    if (
+      deps.store.restoreCompletionHoldReturn(deps.workspace, {
+        root_bead_id,
+        request: taken.request
+      }).ok
+    ) {
+      notify();
+    }
+  }
+
+  /**
    * The hold a gate verdict names. A head whose red-base wait ended on a moved
    * base carries the one re-verify's tail (UI-ty6k §4.2): that verdict is the
    * re-verify.
@@ -2882,13 +3157,25 @@ export function createCompletionActionDriver(deps) {
     return {
       head_sha,
       base_sha: fact.gated.base_sha,
-      reason: reverified
-        ? `${fact.failure_key.reason}:후속 ${wait.links.join(',')} 착지 뒤 재검증 실패`
-        : fact.failure_key.reason,
+      reason: !reverified
+        ? fact.failure_key.reason
+        : wait.from_hold === true
+          ? `${fact.failure_key.reason}:${holdExitTail('reverify_failed')}`
+          : `${fact.failure_key.reason}:후속 ${wait.links.join(',')} 착지 뒤 재검증 실패`,
       operation_id: fact.op_id ?? null,
       log_path: fact.evidence?.log_path ?? null,
       summary: completionFailureSummary(fact.evidence)
     };
+  }
+
+  /**
+   * The reason tail a wait entered from a hold ends with (UI-nqbx §4.3).
+   *
+   * @param {'reverify_failed'|'linked_followups_settled_base_unchanged'|'wait_limit'|'base_verify_not_script_failed'} token
+   * @returns {string}
+   */
+  function holdExitTail(token) {
+    return `대기 종료: ${token}`;
   }
 
   /**
@@ -2926,26 +3213,11 @@ export function createCompletionActionDriver(deps) {
   }
 
   /**
-   * Whether a failed verify is the one the red-base wait may start from
-   * (UI-ty6k §4.1 1단계, contract entry `verify_failure_after_same_candidate_
-   * retry`): this workspace's own `script_failed`, with the same-candidate
-   * retry actually spent. Read from the raw record — a legacy record with no
-   * retry state proves nothing about a re-run. A foreign target's failure
-   * stays a plain hold (§4.4).
-   *
    * @param {any} operation
    * @returns {boolean}
    */
   function retriedScriptFailure(operation) {
-    return (
-      !!operation &&
-      operation.kind === 'verify' &&
-      operation.state === 'failed' &&
-      operation.repo_id === (deps.repo ?? deps.workspace) &&
-      operation.failure?.code === 'script_failed' &&
-      operation.retry?.outcome === 'consumed' &&
-      !operation.retry.blocked_reason
-    );
+    return retriedScriptFailureIn(operation, deps.repo ?? deps.workspace);
   }
 
   /**
@@ -2981,23 +3253,6 @@ export function createCompletionActionDriver(deps) {
    * @returns {Promise<string[]>}
    */
   async function liveFollowupLinks(root_bead_id, operation) {
-    const rig = root_bead_id.slice(0, root_bead_id.lastIndexOf('-'));
-    /** @type {string[]} */
-    const candidates = [];
-    /**
-     * @param {unknown} bead_id
-     */
-    const consider = (bead_id) => {
-      if (
-        typeof bead_id === 'string' &&
-        FOLLOWUP_ID_RE.test(bead_id) &&
-        bead_id !== root_bead_id &&
-        bead_id.slice(0, bead_id.lastIndexOf('-')) === rig &&
-        !candidates.includes(bead_id)
-      ) {
-        candidates.push(bead_id);
-      }
-    };
     /** @type {Record<string, any>|null} */
     let root_issue = null;
     if (typeof deps.bd?.findIssue === 'function') {
@@ -3008,12 +3263,10 @@ export function createCompletionActionDriver(deps) {
       }
     }
     const declared = root_issue?.metadata?.[BASE_RED_FOLLOWUP_KEY];
-    if (typeof declared === 'string') {
-      for (const bead_id of declared.split(',')) {
-        consider(bead_id);
-      }
-    }
-    consider(operation?.recovery?.handoff?.handoff_bead_id);
+    const candidates = followupLinkIds(root_bead_id, [
+      ...(typeof declared === 'string' ? declared.split(',') : []),
+      operation?.recovery?.handoff?.handoff_bead_id
+    ]);
     /** @type {string[]} */
     const live = [];
     for (const bead_id of candidates) {
@@ -3129,13 +3382,25 @@ export function createCompletionActionDriver(deps) {
           root_bead_id,
           'merge_step',
           `wait:${head_sha}`,
-          `머지 대기 — base도 검증 실패 · 후속 ${wait.links.join(', ')} 착지 대기`
+          wait.from_hold === true
+            ? `머지 대기 — 보류 중 후속 ${wait.links.join(', ')} 연결 · base도 검증 실패 · 착지 대기`
+            : `머지 대기 — base도 검증 실패 · 후속 ${wait.links.join(', ')} 착지 대기`
         );
         notify();
       }
       return;
     }
-    writeHold(root_bead_id, plain ?? holdFromWait(queue, intent, null));
+    writeHold(
+      root_bead_id,
+      plain ??
+        holdFromWait(
+          queue,
+          intent,
+          wait.from_hold === true
+            ? holdExitTail('base_verify_not_script_failed')
+            : null
+        )
+    );
   }
 
   /**
@@ -3290,7 +3555,12 @@ export function createCompletionActionDriver(deps) {
       wait.base_sha
     );
     if (started === null) {
-      endWaitInHold(root_bead_id, null);
+      endWaitInHold(
+        root_bead_id,
+        wait.from_hold === true
+          ? holdExitTail('base_verify_not_script_failed')
+          : null
+      );
       return;
     }
     if (
@@ -3352,7 +3622,12 @@ export function createCompletionActionDriver(deps) {
         ? wait.deadline_at
         : wait.at + PRE_MERGE_WAIT_LIMIT_MS;
     if (now() >= deadline_at) {
-      endWaitInHold(root_bead_id, '대기 상한 48시간');
+      endWaitInHold(
+        root_bead_id,
+        wait.from_hold === true
+          ? holdExitTail('wait_limit')
+          : '대기 상한 48시간'
+      );
       return;
     }
     // Before the once-per-process pass gate: a queue placement draws no bd
@@ -3400,7 +3675,12 @@ export function createCompletionActionDriver(deps) {
     const ids = wait.links.join(',');
     const base_oid = pinned.base_oid.toLowerCase();
     if (base_oid === wait.base_sha.toLowerCase()) {
-      endWaitInHold(root_bead_id, `후속 ${ids} 끝남·base 그대로`);
+      endWaitInHold(
+        root_bead_id,
+        wait.from_hold === true
+          ? holdExitTail('linked_followups_settled_base_unchanged')
+          : `후속 ${ids} 끝남·base 그대로`
+      );
       return;
     }
     const finished = deps.store.finishCompletionFollowupWait(deps.workspace, {
@@ -3412,6 +3692,191 @@ export function createCompletionActionDriver(deps) {
       followup_pass_checked.delete(root_bead_id);
       notify();
     }
+  }
+
+  /**
+   * Read a held root's declared links and classify each (UI-nqbx §4.1). Any
+   * read failure — no reader, a throw, an unreadable root — is `ok: false`,
+   * so the caller writes nothing and a later pass or event reads again.
+   *
+   * @param {string} root_bead_id
+   * @param {any} hold
+   * @returns {Promise<{ ok: false }|{ ok: true, live: string[], settled: string[] }>}
+   */
+  async function readHoldLinks(root_bead_id, hold) {
+    if (typeof deps.bd?.findIssue !== 'function') {
+      return { ok: false };
+    }
+    try {
+      const root_issue = await deps.bd.findIssue(root_bead_id);
+      if (!root_issue) {
+        return { ok: false };
+      }
+      const entry_at = holdEntryAt(hold);
+      /** @type {string[]} */
+      const live = [];
+      /** @type {string[]} */
+      const settled = [];
+      for (const bead_id of holdLinkIds(
+        root_bead_id,
+        root_issue.metadata?.[BASE_RED_FOLLOWUP_KEY]
+      )) {
+        const verdict = classifyHoldLink(
+          await deps.bd.findIssue(bead_id),
+          entry_at
+        );
+        if (verdict === 'live') {
+          live.push(bead_id);
+        } else if (verdict === 'settled') {
+          settled.push(bead_id);
+        }
+      }
+      return { ok: true, live, settled };
+    } catch (err) {
+      log('hold link read failed for %s: %o', root_bead_id, err);
+      return { ok: false };
+    }
+  }
+
+  /**
+   * Observe one held root's linked follow-ups (UI-nqbx §4.1). A root that
+   * meets the target conditions and links a live follow-up — or one that
+   * settled after the hold — joins the red-base wait: the wait is written
+   * with the hold's own head, base, and operation (spending the pair), the
+   * base-only verify runs once, and a base that does not fail on its own
+   * ends the wait in the hold again. With only settled links the exit
+   * judgment follows the base verify at once.
+   *
+   * @param {string} root_bead_id
+   * @param {'pass'|'event'} source
+   */
+  async function observeHoldLinks(root_bead_id, source) {
+    const repo_id = deps.repo ?? deps.workspace;
+    const queue = deps.store.snapshot(deps.workspace);
+    const target = holdWaitTarget(queue, root_bead_id, repo_id);
+    if (!target) {
+      hold_pass_checked.delete(root_bead_id);
+      return;
+    }
+    if (
+      (queue.merge_queue || []).some(
+        (/** @type {any} */ entry) => entry?.bead_id === root_bead_id
+      )
+    ) {
+      // A row back in the queue is the queue head's to judge.
+      return;
+    }
+    if (source === 'pass' && hold_pass_checked.has(root_bead_id)) {
+      return;
+    }
+    const read = await readHoldLinks(root_bead_id, target.hold);
+    if (!read.ok) {
+      return;
+    }
+    hold_pass_checked.add(root_bead_id);
+    const links = [...read.live, ...read.settled];
+    if (links.length === 0) {
+      return;
+    }
+    const { intent, hold, operation } = target;
+    const reason = operation.failure.code;
+    const begun = deps.store.beginCompletionFollowupWait(deps.workspace, {
+      root_bead_id,
+      wait: {
+        head_sha: hold.head_sha,
+        base_sha: hold.base_sha,
+        links,
+        base_op_id: null,
+        at: now(),
+        deadline_at: null,
+        stage: 'base_verifying',
+        outcome: null,
+        from_hold: true
+      },
+      resolution: {
+        class: 'base_red_followup',
+        origin_reason: reason,
+        origin_stage: 'verify',
+        return_phase: 'gating',
+        attempts: 0,
+        next_at: null,
+        last_error: null,
+        op: autoResolutionOp(intent, queue, {
+          failure_key: createCompletionFailureKey({
+            stage: 'verify',
+            reason,
+            subject_sha: hold.head_sha,
+            base_sha: hold.base_sha,
+            evidence: { output_tail: operation.failure?.output_tail }
+          }),
+          operation_id: hold.operation_id
+        })
+      },
+      expect: { pr_url: intent.subject.pr_url ?? null, hold }
+    });
+    if (!begun.ok) {
+      return;
+    }
+    hold_pass_checked.delete(root_bead_id);
+    followup_pass_checked.delete(root_bead_id);
+    notify();
+    moveFollowupsOutOfSerialLanes(root_bead_id);
+    const started = await startBaseVerify(
+      root_bead_id,
+      intent.target_base,
+      hold.base_sha
+    );
+    if (started === null) {
+      endWaitInHold(
+        root_bead_id,
+        holdExitTail('base_verify_not_script_failed')
+      );
+      return;
+    }
+    const recorded = deps.store.updateCompletionFollowupWait(deps.workspace, {
+      root_bead_id,
+      head_sha: hold.head_sha,
+      from_stage: 'base_verifying',
+      patch: { base_op_id: started.operation_id }
+    });
+    if (!recorded.ok) {
+      return;
+    }
+    notify();
+    /** @type {any} */
+    let verdict = null;
+    if (typeof deps.prActions.awaitCompletionBaseVerify === 'function') {
+      try {
+        verdict = await deps.prActions.awaitCompletionBaseVerify(
+          started.operation_id,
+          { base_sha: hold.base_sha, timeout_ms: started.timeout_ms }
+        );
+      } catch (err) {
+        log('base-only verify read failed for %s: %o', root_bead_id, err);
+      }
+    }
+    settleBaseVerify(root_bead_id, hold.head_sha, verdict, null);
+    if (read.live.length === 0) {
+      await checkFollowupWait(root_bead_id, 'event');
+    }
+  }
+
+  /**
+   * One judgment of a root the red-base wait may concern: a held root's link
+   * observation, or a standing wait's re-read.
+   *
+   * @param {string} root_bead_id
+   * @param {'pass'|'event'} source
+   */
+  async function checkRoot(root_bead_id, source) {
+    const phase = deps.store.snapshot(deps.workspace).completion_intents?.[
+      root_bead_id
+    ]?.phase;
+    if (phase === 'holding') {
+      await observeHoldLinks(root_bead_id, source);
+      return;
+    }
+    await checkFollowupWait(root_bead_id, source);
   }
 
   /**
@@ -3445,9 +3910,7 @@ export function createCompletionActionDriver(deps) {
       }
       return;
     }
-    await guardFollowup(root_bead_id, () =>
-      checkFollowupWait(root_bead_id, source)
-    );
+    await guardFollowup(root_bead_id, () => checkRoot(root_bead_id, source));
   }
 
   /**
@@ -3475,6 +3938,14 @@ export function createCompletionActionDriver(deps) {
       await guardFollowup(root_bead_id, () =>
         enterFollowupWait(root_bead_id, fact)
       );
+      return;
+    }
+    if (action.kind === 'observe_hold_links') {
+      await runFollowupCheck(root_bead_id, 'pass');
+      return;
+    }
+    if (action.kind === 'launch_hold_return') {
+      await launchHoldReturn(root_bead_id);
       return;
     }
     if (action.kind === 'check_followup') {
@@ -3935,6 +4406,15 @@ export function createCompletionActionDriver(deps) {
       if (
         intent?.phase === 'waiting_followup' &&
         intent.auto_resolution?.class === 'base_red_followup'
+      ) {
+        await runFollowupCheck(root_bead_id, 'event');
+        continue;
+      }
+      // A held root's link appearing or settling is a bd change too
+      // (UI-nqbx §4.1); the observation applies the target conditions.
+      if (
+        intent?.phase === 'holding' &&
+        intent.hold?.cause === 'verify_failure'
       ) {
         await runFollowupCheck(root_bead_id, 'event');
         continue;

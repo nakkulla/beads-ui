@@ -472,6 +472,112 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
 
     expect(reply.payload.queue.revision).toBe(revision());
   });
+
+  describe('a verify-failure hold row (UI-nqbx §4.2)', () => {
+    const HEAD = 'a'.repeat(40);
+    const BASE = 'b'.repeat(40);
+    const PR_URL = 'https://github.com/o/r/pull/1';
+
+    /**
+     * Hold the row on its own retried `script_failed` verify, written into
+     * the queue file the store reloads.
+     */
+    function recordVerifyHold() {
+      const store = getWorkerRuntime().queueStore;
+      store.toggleAutoMerge(WS, { expected_revision: revision(), on: true });
+      const file = /** @type {string} */ (
+        fs
+          .readdirSync(tmp_state, { recursive: true, encoding: 'utf8' })
+          .map((name) => path.join(tmp_state, name))
+          .find((name) => path.basename(name) === 'queue.json')
+      );
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      raw.completion_intents = {
+        [BEAD]: {
+          target_base: 'main',
+          phase: 'holding',
+          subject: {
+            role: 'root',
+            bead_id: BEAD,
+            pr_url: PR_URL,
+            head_sha: HEAD,
+            base_sha: BASE,
+            merged_sha: null
+          },
+          active_op: null,
+          terminal_reason: null,
+          auto_resolution: null,
+          hold: {
+            class: 'pre_merge_hold',
+            cause: 'verify_failure',
+            reason: 'script_failed',
+            summary: null,
+            operation_id: 'verify-one',
+            log_path: null,
+            head_sha: HEAD,
+            base_sha: BASE,
+            at: 20,
+            comment_at: 20
+          }
+        }
+      };
+      raw.repo_operations = {
+        'verify-one': {
+          schema: 1,
+          repo_id: WS,
+          kind: 'verify',
+          subjects: [{ bead_id: BEAD, merged_sha: HEAD }],
+          effective_base_sha: BASE,
+          target_base: 'main',
+          target_sha: HEAD,
+          script_mode: '100755',
+          script_blob_sha: 'd'.repeat(40),
+          state: 'failed',
+          attempt_id: 'verify-one:1',
+          failure: {
+            code: 'script_failed',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          },
+          retry: {
+            first_failure: null,
+            first_fingerprint: null,
+            first_failed_at: null,
+            consumed_key: ['verify-one:1', HEAD, 'blob'],
+            absorbed: null,
+            outcome: 'consumed',
+            blocked_reason: null
+          }
+        }
+      };
+      fs.writeFileSync(file, JSON.stringify(raw));
+      store.__clearCacheForTest();
+    }
+
+    test('pins the held PR and head on the conversation the click opens', async () => {
+      recordVerifyHold();
+
+      await click({ bead_id: BEAD, expected_revision: revision() });
+
+      expect(launches).toEqual([
+        expect.objectContaining({
+          verify_hold: { pr_url: PR_URL, head_sha: HEAD }
+        })
+      ]);
+    });
+
+    test('marks the clicked conversation as able to join the pre-merge wait', async () => {
+      recordVerifyHold();
+
+      await click({ bead_id: BEAD, expected_revision: revision() });
+
+      expect(launches[0]?.failure).toMatchObject({
+        failure_class: '머지 전 검증 실패',
+        pre_merge_wait: true
+      });
+    });
+  });
 });
 
 describe('worker-resolve-in-session picks the launcher by row (UI-18a5 §3.2)', () => {

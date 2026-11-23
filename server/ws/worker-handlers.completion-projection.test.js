@@ -245,6 +245,53 @@ describe('completion_status follow-up wait projection (UI-ty6k §4.3)', () => {
 
     expect(status.followup_wait).toBeNull();
   });
+
+  describe('a wait entered from a hold (UI-nqbx §4.4)', () => {
+    const HOLD = {
+      class: 'pre_merge_hold',
+      cause: 'verify_failure',
+      reason: 'script_failed',
+      summary: null,
+      operation_id: 'verify-one',
+      log_path: null,
+      head_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      at: 5,
+      comment_at: 5
+    };
+
+    /**
+     * @param {'base_verifying'|'waiting'} stage
+     */
+    function holdWaitStatus(stage) {
+      return statusOf(
+        intentQueue('waiting_followup', RESOLUTION, {
+          hold: HOLD,
+          followup_wait: { ...WAIT, stage, from_hold: true }
+        })
+      );
+    }
+
+    test('keeps the hold badge while the base-only verify runs', () => {
+      const status = holdWaitStatus('base_verifying');
+
+      expect(status).toMatchObject({
+        phase: 'holding',
+        failure_reason: 'script_failed',
+        auto_resolution: null,
+        followup_wait: null
+      });
+    });
+
+    test('shows the wait badge once the wait stands', () => {
+      const status = holdWaitStatus('waiting');
+
+      expect(status).toMatchObject({
+        phase: 'waiting_followup',
+        followup_wait: { stage: 'waiting', links: ['R-9'] }
+      });
+    });
+  });
 });
 
 describe('lane membership excludes head review attempts (UI-hk74 §7)', () => {
