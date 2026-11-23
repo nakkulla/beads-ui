@@ -362,21 +362,24 @@ interactive SESSION holds: rows the shared `bd list --all` snapshot reports as
 `status: 'in_progress'` with no active worker attempt and no membership in
 `queue` ∪ serial lanes ∪ `pr_wait`. `done` membership does NOT remove a row — a
 bead a session reopened is being worked on now. Each row carries
-`{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by, session_refs, session_observation? }`.
-`route` is `metadata.route` or `''` when unpinned, `spec_id` is `''` when absent
-or in conflict, and `workflow` / `blocked` / `blocked_by` follow the same rules
-as the runnable rows below. `plan_path` (UI-anna §3.1) is `metadata.plan_path`
-or `null`, carried for the same reason a runnable row carries it: when the bead
-resolves an artifact, its declared scope is read from the SAME artifact set
-(`[spec_id, plan_path?]`) as a queued bead's. `scope: string[]` (UI-anna §3.1)
-is that declared scope, attached ADDITIVELY in the same shape and with the same
-reading as a runnable row's: present only on a scope-cache hit or a description
-declaration, and absent means 판정 불가 — not read yet, unreadable, or nothing
-declared — never "no scope". The source LADDER is the runnable row's too
-(UI-zw6j): the artifact set when `spec_id` resolves one, otherwise the
-description's `## scope` section, which ships no artifacts. Its value is the one
-the same snapshot's `bead_scope[bead_id].scope` carries, so a bead moving 세션
-착수 → 큐 적재 never changes the overlap verdict. Each row also carries
+`{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by, session_refs, has_external_wait, session_observation? }`.
+`has_external_wait` (UI-lxxf) is true when the bead holds a non-empty
+`external_wait` metadata key, whether or not a wait record is attached; the
+`[마무리]` predicate reads it. `route` is `metadata.route` or `''` when
+unpinned, `spec_id` is `''` when absent or in conflict, and `workflow` /
+`blocked` / `blocked_by` follow the same rules as the runnable rows below.
+`plan_path` (UI-anna §3.1) is `metadata.plan_path` or `null`, carried for the
+same reason a runnable row carries it: when the bead resolves an artifact, its
+declared scope is read from the SAME artifact set (`[spec_id, plan_path?]`) as a
+queued bead's. `scope: string[]` (UI-anna §3.1) is that declared scope, attached
+ADDITIVELY in the same shape and with the same reading as a runnable row's:
+present only on a scope-cache hit or a description declaration, and absent means
+판정 불가 — not read yet, unreadable, or nothing declared — never "no scope".
+The source LADDER is the runnable row's too (UI-zw6j): the artifact set when
+`spec_id` resolves one, otherwise the description's `## scope` section, which
+ships no artifacts. Its value is the one the same snapshot's
+`bead_scope[bead_id].scope` carries, so a bead moving 세션 착수 → 큐 적재 never
+changes the overlap verdict. Each row also carries
 `session_refs: SessionRefView[]` (UI-4xzk §4.1) — `metadata.session_ref`
 projected from the SAME scan, so the bucket still costs no extra `bd` process.
 One view is
@@ -1158,6 +1161,20 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `withdrawn_beads[bead_id] = { attempt_id, at, from_status, from_cause, worktree_path, worktree_present, branch, has_session }`
   for every bead whose latest implementation attempt was withdrawn (absent key ⇒
   none).
+- `worker-session-finish` payload: `{ bead_id, root_dir }` — 직접 세션 타일의
+  [마무리] (UI-lxxf). The server re-reads the Bead, and only an `in_progress`
+  Bead with no `external_wait` key that no active lane or winning Worker attempt
+  holds is a direct session tile. It takes the last valid `session_ref` item,
+  checks that the Claude session is local and belongs to this repository's human
+  sessions (not a Worker attempt or conversation session; its hub-reported `cwd`
+  is inside the workspace root), then calls `session-hub send` once with the
+  finish directive on stdin and never retries. Nothing is written to the Bead or
+  the queue. Reply `{ bead_id, sent, delivery, reason }`: `sent: true` carries
+  `delivery` `resumed` | `typed` | `queued`; `sent: false` carries
+  `delivery: null` and a `reason` that is a server refusal (`not_session_tile`,
+  `no_session_ref`, `unsafe_session_id`, `provider_unsupported`, `not_local`,
+  `session_mismatch`, `in_flight`, `hub_unavailable`, `hub_invalid_response`,
+  `trust_prompt`, `resume_unconfirmed`) or the hub's own `code` verbatim.
 - `worker-attempt-retry-now` payload: `{ bead_id }` — [지금 재시도] (D9): pulls
   that bead's retry rung to now and runs the due retries; the rung is still
   spent by the attempt that launches, and no other bead moves (this is not the

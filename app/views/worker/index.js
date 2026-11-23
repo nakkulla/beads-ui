@@ -142,6 +142,7 @@ import {
   runningTileInput,
   sessionLaneRef
 } from './running-grid.js';
+import { runSessionFinishAction } from './session-finish-action.js';
 import { createSessionToggle } from './session-toggle.js';
 import { tileResolveFields } from './tile-resolve.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
@@ -4281,6 +4282,18 @@ export function createWorkerView(mount_element, options = {}) {
       const att = tile?.dataset?.attemptId;
       if (att) {
         void pauseAttempt(att);
+      }
+      return;
+    }
+    const finish_button = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile__finish')
+    );
+    if (finish_button) {
+      if (transport) {
+        void runSessionFinishAction(finish_button, {
+          transport,
+          root_dir: rootDir()
+        });
       }
       return;
     }

@@ -3,6 +3,7 @@ import {
   hasLiveConversation,
   liveConversationResolution,
   repoOperationResolveFields,
+  sessionFinishFields,
   tileResolveFields
 } from './tile-resolve.js';
 
@@ -1268,5 +1269,122 @@ describe('tileResolveFields paused row (UI-6kj0 §3.1-§3.2)', () => {
     expect(fields.resolve_title).toBe(
       `이어가기 거절: bd_unavailable — ${PAUSED_TITLE}`
     );
+  });
+});
+
+describe('sessionFinishFields (UI-lxxf §3.1)', () => {
+  const FINISH_TITLE =
+    '이 세션에 마감 지시를 보낸다 — 세션이 이 Bead의 남은 마감 절차를 끝낸다';
+
+  /** @param {Record<string, any>} [over] */
+  function ref(over = {}) {
+    return {
+      index: 0,
+      provider: 'claude',
+      session_id: 'sid-1',
+      host: 'mac',
+      current: true,
+      locality: 'local',
+      ...over
+    };
+  }
+
+  test('enables the button for a local Claude current session', () => {
+    const fields = sessionFinishFields({ session_refs: [ref()] });
+
+    expect(fields).toEqual({
+      finish_action: { enabled: true, title: FINISH_TITLE }
+    });
+  });
+
+  test('disables the button for a Codex current session', () => {
+    const fields = sessionFinishFields({
+      session_refs: [ref({ provider: 'codex' })]
+    });
+
+    expect(fields).toEqual({
+      finish_action: {
+        enabled: false,
+        title: 'Codex 세션은 지원하지 않습니다'
+      }
+    });
+  });
+
+  test('disables the button for a Hermes current session', () => {
+    const fields = sessionFinishFields({
+      session_refs: [ref({ provider: 'hermes' })]
+    });
+
+    expect(fields).toEqual({
+      finish_action: { enabled: false, title: '지원하지 않는 세션 종류' }
+    });
+  });
+
+  test('disables the button with the 세션 sentence for a remote session', () => {
+    const fields = sessionFinishFields({
+      session_refs: [ref({ locality: 'remote' })]
+    });
+
+    expect(fields).toEqual({
+      finish_action: {
+        enabled: false,
+        title: '다른 머신 세션 — 이 서버에 transcript 없음'
+      }
+    });
+  });
+
+  test('disables the button with the 세션 sentence for a missing transcript', () => {
+    const fields = sessionFinishFields({
+      session_refs: [ref({ locality: 'missing' })]
+    });
+
+    expect(fields).toEqual({
+      finish_action: { enabled: false, title: 'transcript 파일 없음' }
+    });
+  });
+
+  test('reads only the current item of several references', () => {
+    const fields = sessionFinishFields({
+      session_refs: [
+        ref({ provider: 'codex', current: false }),
+        ref({ session_id: 'sid-2' })
+      ]
+    });
+
+    expect(fields.finish_action?.enabled).toBe(true);
+  });
+
+  test('draws no button without a current session', () => {
+    const with_current = sessionFinishFields({ session_refs: [ref()] });
+    const without_current = sessionFinishFields({
+      session_refs: [ref({ current: false })]
+    });
+    const empty = sessionFinishFields({ session_refs: [] });
+
+    expect(with_current.finish_action).toBeDefined();
+    expect(without_current).toEqual({});
+    expect(empty).toEqual({});
+  });
+
+  test('draws no button when only the external_wait key is present', () => {
+    const open = sessionFinishFields({ session_refs: [ref()] });
+    const key_only = sessionFinishFields({
+      session_refs: [ref()],
+      has_external_wait: true
+    });
+
+    expect(open.finish_action?.enabled).toBe(true);
+    expect(key_only).toEqual({});
+  });
+
+  test('draws no button when a wait record is attached', () => {
+    const open = sessionFinishFields({ session_refs: [ref()] });
+    const attached = sessionFinishFields({
+      session_refs: [ref()],
+      external_wait: { wait_id: 'w-1' }
+    });
+
+    expect(open.finish_action?.enabled).toBe(true);
+    expect(attached).toEqual({});
   });
 });

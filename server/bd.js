@@ -339,9 +339,13 @@ function releaseBdSlot() {
  * code), but does not pass through the bd run queue or BEADS_DB env injection.
  * Intended for non-bd binaries such as `git`.
  *
+ * `options.input`, when given, is written to the child's stdin which is then
+ * closed; a stdin write error (for example EPIPE) is ignored because the exit
+ * code and stdout stay the result.
+ *
  * @param {string} bin - Binary name or absolute path.
  * @param {string[]} args - Arguments (pre-split, no shell).
- * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, input?: string }} [options]
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
 export function runShell(bin, args, options = {}) {
@@ -372,6 +376,10 @@ export function runShell(bin, args, options = {}) {
       child.stderr.on('data', (chunk) => {
         err_chunks.push(String(chunk));
       });
+    }
+    if (typeof options.input === 'string' && child.stdin) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(options.input);
     }
 
     /** @type {ReturnType<typeof setTimeout> | undefined} */
