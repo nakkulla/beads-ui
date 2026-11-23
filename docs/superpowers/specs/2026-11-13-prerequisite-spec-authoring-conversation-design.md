@@ -22,7 +22,7 @@ Bead: `UI-cdrc` · 날짜: 2026-11-13 · 계약 정본: dotfiles `dotfiles-hid4r
 dotfiles 계약 `needs_human_reentry.conversation_auto_launch.prerequisite_spec_authoring`과 진입 블록 `## 스펙 작성 대화`를 소비해 세 가지를 구현한다.
 
 1. Worker 대기열의 작업을 막는 스펙 미발행 `spec_backed` 선행 B에 스펙 작성 대화를 자동으로 연다(공용 스위치가 꺼져 있으면 알림만 보낸다).
-2. 사람이 스펙을 확정하거나 구현 진입에 답해야 하는 자리를 카드에 표시한다.
+2. 사람이 스펙을 확정해야 하는 선행을 카드에 표시한다.
 3. 대화를 여는 버튼을 단다.
 
 대상 판정·식별자·한 번 규칙의 정의는 계약이 소유한다. 이 스펙은 그 정의를 코드 registry로 복제해 쓴다(ADR UI-jlov).
@@ -64,16 +64,15 @@ dotfiles 계약 `needs_human_reentry.conversation_auto_launch.prerequisite_spec_
 
 ### 3.3 카드 표시
 
-사람의 답을 기다리는 상태는 두 가지다.
+사람의 답을 기다리는 상태는 하나다.
 
 | 상태 | 조건 | B 카드 slot 1 머리 배지 | 원 Bead 카드 slot 4a |
 | --- | --- | --- | --- |
 | 스펙 확정 필요 | 3.1 대상 | `✍️ 스펙 확정 필요` | `⛓ <B>` 옆 `✍️` |
-| 구현 진입 답 필요 | B의 스펙이 `published`이고, B가 `open`이며, 대기열에 없고 실행 중도 아니고, 여전히 대기열 작업을 막음 | `✍️ 구현 진입 답 필요` | `⛓ <B>` 옆 `✍️` |
 
-- 두 번째 상태는 대화가 열리지 않고 표시만 한다. 스펙 발행 뒤 구현 진입 질문에 답이 오지 않아 다시 소리 없이 멈추는 것을 드러내려는 것이다.
+- 스펙이 `published`인 B는 대상이 아니다(UI-a444). 발행된 후보 카드에는 `스펙 미발행` 표시가 없어 이미 배치 가능으로 보이고, 원 Bead 카드의 `⛓ <B>` 칩이 어느 선행이 막는지 보여 주며, 구현 진입 질문은 스펙 작성 대화의 창과 스레드로 온다. 그래서 따로 `구현 진입 답 필요` 상태를 두지 않는다.
 - B 카드(후보 카드)의 slot 6, 그리고 원 Bead 카드의 slot 6에 `[스펙 작성 세션]` 버튼을 둔다. 버튼은 B의 대화를 연다. 대화가 살아 있으면 기존 "대화 중" 표시로 바꾼다.
-- 버튼은 새 WebSocket 요청(예: `worker-spec-authoring-session`, payload `{ bead_id, expected_revision }`)을 보낸다. 서버 처리기는 B가 3.1 대상(또는 3.3의 두 번째 상태)인지 다시 판정한 뒤 `spec_authoring` 런처로 사용자 tmux 세션에 연다. attempt·실패 기록을 요구하지 않고, 스위치와 B당 자동 기동 기록에 상관없이 연다. 행 게이트(살아 있는 대화)와 tmux 부재 거부는 그대로다. 기존 `worker-resolve-in-session`의 거부 규칙은 바꾸지 않는다.
+- 버튼은 새 WebSocket 요청(예: `worker-spec-authoring-session`, payload `{ bead_id, expected_revision }`)을 보낸다. 서버 처리기는 B가 3.1 대상인지 다시 판정한 뒤 `spec_authoring` 런처로 사용자 tmux 세션에 연다. attempt·실패 기록을 요구하지 않고, 스위치와 B당 자동 기동 기록에 상관없이 연다. 행 게이트(살아 있는 대화)와 tmux 부재 거부는 그대로다. 기존 `worker-resolve-in-session`의 거부 규칙은 바꾸지 않는다.
 - Worker 탭과 모니터 탭은 같은 공유 함수로 그린다. 카드 배치 문법 스펙 §5.1 슬롯 표에 새 배지·칩·버튼 행을 먼저 더한다.
 
 결정: 머리 배지는 B 카드 slot 1에 둔다 (대안: slot 4a 칩만 둠; 이유: 사용자가 "앞에 다른 이모지로" 사람이 확정할 자리를 표시해 달라고 했고, slot 1은 머리 상태 배지 자리다).
@@ -85,7 +84,7 @@ dotfiles 계약 `needs_human_reentry.conversation_auto_launch.prerequisite_spec_
 3. 제외 대상(quick_fix, route 미설정, `published`, `in_progress`, 준비되지 않은 `spec-after-blocker`, 아무것도 막지 않는 후속)에는 대화도 알림도 없다.
 4. 진입 블록 사본이 dotfiles 정본 바이트와 같고, 다이제스트 고정 시험이 이를 확인한다.
 5. 대화 기동은 원 Bead의 상태, 클레임, 대기열 자리, 보존 워크트리를 바꾸지 않는다.
-6. 3.3의 두 상태가 두 탭에서 같게 그려진다. B가 대기열에 들어가거나 `in_progress`가 되면 표시가 사라진다.
+6. 3.3의 상태가 두 탭에서 같게 그려진다. B가 대기열에 들어가거나 `in_progress`가 되면 표시가 사라진다.
 7. 배포 뒤 `dotfiles-p41u6`이 대기 중이면 `dotfiles-0ufwj`에 대화 하나가 열린다(실측).
 
 ## 5. 시험
@@ -95,7 +94,7 @@ dotfiles 계약 `needs_human_reentry.conversation_auto_launch.prerequisite_spec_
 - 스위치 꺼짐 경로, 기동 실패 경로.
 - 버튼 처리기: 스위치 OFF이고 B에 attempt가 없을 때 클릭으로 열림, 자동 기동 기록이 있어도 클릭으로 열림, 살아 있는 대화가 있으면 거부, 대상이 아닌 Bead는 거부.
 - 진입 블록 다이제스트 고정.
-- 카드 렌더: 두 상태, 두 탭 동일성(기존 카드 동일성 시험).
+- 카드 렌더: `스펙 확정 필요` 상태의 두 탭 동일성(기존 카드 동일성 시험).
 
 ## 6. 경계·후속
 

@@ -2313,13 +2313,9 @@ export function specAuthoringChips(chips, actions) {
  * @param {{ spec_authoring_state?: string }} item
  */
 export function specAuthoringBadgeTemplate(item) {
-  const label =
-    item.spec_authoring_state === 'spec_needed'
-      ? '✍️ 스펙 확정 필요'
-      : item.spec_authoring_state === 'entry_needed'
-        ? '✍️ 구현 진입 답 필요'
-        : '';
-  return label ? html`<span class="worker-card__badge">${label}</span>` : '';
+  return item.spec_authoring_state === 'spec_needed'
+    ? html`<span class="worker-card__badge">✍️ 스펙 확정 필요</span>`
+    : '';
 }
 
 /**

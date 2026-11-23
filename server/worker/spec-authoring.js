@@ -24,7 +24,7 @@ import {
 } from './tmux-launcher.js';
 
 /** @typedef {{ workspace: string, bead_id: string, blockers: any[], attempt: any|null }} SpecEvidence */
-/** @typedef {'spec_needed'|'entry_needed'} SpecAuthoringState */
+/** @typedef {'spec_needed'} SpecAuthoringState */
 /** @type {Set<string>} Reservations shared by auto triggers and clicks. */
 const in_flight = new Set();
 
@@ -87,8 +87,8 @@ export function specAuthoringEvidence(workspace, queue) {
 }
 
 /**
- * The same target judgment serves launches, clicks and card projection. Spec
- * publication uses the existing placement evidence, never a new receipt rule.
+ * The same target judgment serves launches, clicks and card projection. A
+ * published spec takes B out of the target set (UI-a444).
  *
  * @param {{ issue: any, queue: any, ready: boolean|null, root: string|null, blocks: boolean }} input
  * @returns {SpecAuthoringState|null}
@@ -119,7 +119,7 @@ export function specAuthoringState({ issue, queue, ready, root, blocks }) {
   }
   const spec = resolveSpecEvidence(issue).evidence;
   if (spec === 'published') {
-    return 'entry_needed';
+    return null;
   }
   if (
     workerLabels(issue.labels).includes('spec-after-blocker') &&

@@ -159,7 +159,7 @@ describe('prerequisite spec target judgment', () => {
     expect(state).toBeNull();
   });
 
-  test('projects the published second state with the existing spec evidence rule', () => {
+  test('excludes a blocker whose spec is published', () => {
     const state = specAuthoringState(
       judgment({
         issue: issue({
@@ -172,7 +172,7 @@ describe('prerequisite spec target judgment', () => {
       })
     );
 
-    expect(state).toBe('entry_needed');
+    expect(state).toBeNull();
   });
 });
 
@@ -482,7 +482,7 @@ describe('spec conversation clicks', () => {
     expect(h.launcher.launch).not.toHaveBeenCalled();
   });
 
-  test('opens the published state without an attempt or failure', async () => {
+  test('refuses a blocker whose spec is published', async () => {
     const h = fixture();
     h.issues[B] = issue({
       spec_id: 'spec.md',
@@ -494,39 +494,26 @@ describe('spec conversation clicks', () => {
       bead_id: B
     });
 
-    expect(result.launched).toBe(true);
+    expect(result).toMatchObject({ launched: false, reason: 'not_target' });
   });
 });
 
 describe('spec card projections', () => {
-  test.each(['spec_needed', 'entry_needed'])(
-    'projects %s on B and the queued original',
-    (state) => {
-      const h = fixture();
-      const target =
-        state === 'entry_needed'
-          ? issue({
-              spec_id: 'spec.md',
-              metadata: {
-                route: 'spec_backed',
-                spec_review: `self@${'f'.repeat(40)}`
-              }
-            })
-          : issue();
+  test('projects spec_needed on B and the queued original', () => {
+    const h = fixture();
 
-      const projection = projectSpecAuthoring({
-        workspace: ROOT,
-        roots: [ROOT],
-        snapshot: () => h.store.snapshot(ROOT),
-        issue: () => target,
-        ready: () => true,
-        owner: () => ROOT
-      });
+    const projection = projectSpecAuthoring({
+      workspace: ROOT,
+      roots: [ROOT],
+      snapshot: () => h.store.snapshot(ROOT),
+      issue: () => issue(),
+      ready: () => true,
+      owner: () => ROOT
+    });
 
-      expect(projection[B]).toMatchObject([
-        { bead_id: B, root_dir: ROOT, state }
-      ]);
-      expect(projection[O]).toEqual(projection[B]);
-    }
-  );
+    expect(projection[B]).toMatchObject([
+      { bead_id: B, root_dir: ROOT, state: 'spec_needed' }
+    ]);
+    expect(projection[O]).toEqual(projection[B]);
+  });
 });

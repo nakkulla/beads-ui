@@ -989,26 +989,13 @@ const SHARED_BEADS = [
 ];
 
 describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () => {
-  test.each([
-    ['spec_needed', 'admission'],
-    ['entry_needed', 'admission'],
-    ['spec_needed', 'waiting'],
-    ['entry_needed', 'waiting']
-  ])(
-    'renders %s from %s on the blocker and original identically in both tabs',
-    async (state, evidence) => {
+  test.each(['admission', 'waiting'])(
+    'renders spec_needed from %s on the blocker and original identically in both tabs',
+    async (evidence) => {
       const blocker = 'P-spec';
       const original = 'P-original';
       extra_rows = [
-        row(blocker, {
-          metadata: {
-            route: 'spec_backed',
-            ...(state === 'entry_needed'
-              ? { spec_review: `self@${'a'.repeat(40)}` }
-              : {})
-          },
-          ...(state === 'entry_needed' ? { spec_id: 'docs/spec.md' } : {})
-        }),
+        row(blocker, { metadata: { route: 'spec_backed' } }),
         row(original, {
           dependencies: [
             { issue_id: original, depends_on_id: blocker, type: 'blocks' }
@@ -1068,11 +1055,7 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
           if (id === blocker) {
             expect(
               card.querySelector('[class$="__head"]')?.textContent
-            ).toContain(
-              state === 'spec_needed'
-                ? '✍️ 스펙 확정 필요'
-                : '✍️ 구현 진입 답 필요'
-            );
+            ).toContain('✍️ 스펙 확정 필요');
           } else {
             expect(
               card.querySelector('.worker-dep--pred')?.textContent
@@ -1083,7 +1066,7 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
     }
   );
 
-  test.each(['queued', 'in_progress'])(
+  test.each(['queued', 'in_progress', 'published'])(
     'removes spec authoring displays when B becomes %s in both tabs',
     async (state) => {
       const blocker = 'P-spec';
@@ -1091,7 +1074,13 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
       extra_rows = [
         row(blocker, {
           status: state === 'in_progress' ? state : 'open',
-          metadata: { route: 'spec_backed' }
+          metadata: {
+            route: 'spec_backed',
+            ...(state === 'published'
+              ? { spec_review: `self@${'a'.repeat(40)}` }
+              : {})
+          },
+          ...(state === 'published' ? { spec_id: 'docs/spec.md' } : {})
         }),
         row(original, {
           dependencies: [
@@ -1115,8 +1104,7 @@ describe('card parity between the Worker and Monitor tabs (UI-f2sy §10)', () =>
 
       for (const mount of [worker, monitor]) {
         expect(mount.querySelector('.worker-spec-authoring')).toBeNull();
-        expect(mount.textContent).not.toContain('✍️ 스펙 확정 필요');
-        expect(mount.textContent).not.toContain('✍️ 구현 진입 답 필요');
+        expect(mount.textContent).not.toContain('✍️');
       }
     }
   );
