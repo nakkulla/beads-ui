@@ -169,7 +169,8 @@ import {
   landingDeployFailure,
   repoOperationFailureContext,
   repoOperationRowKey,
-  resolveFailureContext
+  resolveFailureContext,
+  verifyHoldOf
 } from '../worker/resolve-session.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
@@ -2965,8 +2966,21 @@ function completionStatusFor(workspace_key, queue) {
     // The log-reading API's `completion` source calls the same chooser
     // (UI-i8cy §5.3), so the path on the card is the file the popup reads.
     const log_path = completionLogPath(queue, root_bead_id, observe);
+    // A wait entered from a hold shows its badge only once it stands
+    // (UI-nqbx §4.4): during that wait's base-only verify the row still
+    // reads as the hold it came from.
+    const raw_wait = value.followup_wait;
+    const phase =
+      value.phase === 'waiting_followup' &&
+      raw_wait?.from_hold === true &&
+      raw_wait.stage === 'base_verifying' &&
+      value.hold &&
+      typeof value.hold === 'object' &&
+      !Array.isArray(value.hold)
+        ? 'holding'
+        : value.phase;
     const raw_hold =
-      value.phase === 'holding' &&
+      phase === 'holding' &&
       value.hold &&
       typeof value.hold === 'object' &&
       !Array.isArray(value.hold)
@@ -2988,7 +3002,7 @@ function completionStatusFor(workspace_key, queue) {
       : null;
     statuses[root_bead_id] = {
       root_bead_id,
-      phase: value.phase,
+      phase,
       subject_role: subject.role,
       subject_bead_id: subject.bead_id,
       head_sha: boundedCompletionText(subject.head_sha, 64),
@@ -2996,23 +3010,29 @@ function completionStatusFor(workspace_key, queue) {
       merged_sha: boundedCompletionText(subject.merged_sha, 64),
       active_attempt_id: boundedCompletionText(active_op?.attempt_id, 200),
       failure_stage:
-        value.phase === 'holding'
+        phase === 'holding'
           ? 'verify'
           : boundedCompletionText(failure_key?.stage, 200) ||
             boundedCompletionText(terminal?.stage, 200) ||
             boundedCompletionText(cleanup?.step, 200),
       failure_reason:
-        value.phase === 'holding'
+        phase === 'holding'
           ? (hold?.reason ?? null)
           : boundedCompletionText(failure_key?.reason, 500) ||
             boundedCompletionText(terminal?.reason, 500) ||
             boundedCompletionText(cleanup?.reason, 500),
       evidence,
-      log_path: value.phase === 'holding' ? (hold?.log_path ?? null) : log_path,
+      log_path: phase === 'holding' ? (hold?.log_path ?? null) : log_path,
       hold,
       terminal_reason: boundedCompletionText(terminal?.reason, 500),
-      auto_resolution: projectAutoResolution(value.auto_resolution),
-      followup_wait: projectFollowupWait(value.phase, value.followup_wait)
+      auto_resolution:
+        phase === 'holding'
+          ? null
+          : projectAutoResolution(value.auto_resolution),
+      followup_wait: projectFollowupWait(phase, value.followup_wait),
+      // The hold badge without the hold's conversation: nothing ends the
+      // base verify early, so `[세션에서 이어가기]` waits for it.
+      ...(phase !== value.phase ? { hold_wait_verifying: true } : {})
     };
   }
   return statuses;
@@ -8381,7 +8401,8 @@ export async function handleWorkerResolveInSession(ws, req) {
             current,
             p.bead_id,
             getWorkerRuntime().prObservations.get(key, p.bead_id)?.foreign ??
-              null
+              null,
+            key
           );
   // 일시정지 (UI-6kj0 §3.1): a person's own pause with nothing else in front
   // of it — the last row, so a failed discard on the same tile wins. The same
@@ -8532,12 +8553,19 @@ export async function handleWorkerResolveInSession(ws, req) {
         paused: true
       });
     } else {
+      // The hold a verify-hold conversation is judged against (UI-nqbx §4.2);
+      // absent for every other failure row.
+      const verify_hold =
+        !recovery && !takeover_job && completing === null
+          ? verifyHoldOf(current, p.bead_id)
+          : null;
       result = await getWorkerRuntime().resolveSession.resolve({
         workspace: key,
         repo: key,
         bead_id: p.bead_id,
         failure: /** @type {any} */ (failure),
-        attempt: latest_attempt
+        attempt: latest_attempt,
+        ...(verify_hold ? { verify_hold } : {})
       });
     }
   } catch (err) {

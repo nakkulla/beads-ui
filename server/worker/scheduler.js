@@ -100,6 +100,12 @@ import {
   windowsHaveRoom
 } from './codex-switch-candidate.js';
 import {
+  classifyHoldLink,
+  holdEntryAt,
+  holdLinkIds,
+  holdWaitTarget
+} from './completion-intent.js';
+import {
   autoResumeRetryDelayMs,
   continuationRefusalClass,
   isRetryableRefusal
@@ -13836,6 +13842,89 @@ export function createScheduler(deps) {
       );
     }
     /**
+     * Whether a verify-hold conversation's `수정 대기 · <ID>` names a link of
+     * the hold it opened for (UI-nqbx §4.2): the recorded PR and head must be
+     * the current subject's, and the ID must be a link in that (PR, head)
+     * wait record — standing or ended — or a link the hold observation would
+     * accept right now while the hold meets the target conditions. Null when
+     * a Bead read failed, so the message is read again later.
+     *
+     * @param {string} workspace
+     * @param {string} root_bead_id
+     * @param {{ pr_url: string|null, head_sha: string }} verify_hold
+     * @param {string|null} link_id
+     * @returns {Promise<boolean|null>}
+     */
+    async function verifyHoldLinkAccepted(
+      workspace,
+      root_bead_id,
+      verify_hold,
+      link_id
+    ) {
+      const q = deps.store.snapshot(workspace);
+      const intent = q.completion_intents?.[root_bead_id];
+      if (
+        !intent ||
+        link_id === null ||
+        (intent.subject.pr_url ?? null) !== verify_hold.pr_url ||
+        intent.subject.head_sha !== verify_hold.head_sha
+      ) {
+        return false;
+      }
+      const wait = intent.followup_wait;
+      if (
+        (wait?.head_sha === verify_hold.head_sha &&
+          wait.links.includes(link_id)) ||
+        (intent.followup_waits || []).some(
+          (/** @type {any} */ pair) =>
+            pair.pr_url === verify_hold.pr_url &&
+            pair.head_sha === verify_hold.head_sha &&
+            (pair.links || []).includes(link_id)
+        )
+      ) {
+        return true;
+      }
+      const target = holdWaitTarget(q, root_bead_id, workspace);
+      if (!target || typeof deps.bd.findIssue !== 'function') {
+        return false;
+      }
+      try {
+        const root_issue = await deps.bd.findIssue(root_bead_id);
+        if (!root_issue) {
+          return null;
+        }
+        if (
+          !holdLinkIds(
+            root_bead_id,
+            root_issue.metadata?.base_red_followup
+          ).includes(link_id)
+        ) {
+          return false;
+        }
+        const verdict = classifyHoldLink(
+          await deps.bd.findIssue(link_id),
+          holdEntryAt(target.hold)
+        );
+        if (verdict !== 'live' && verdict !== 'settled') {
+          return false;
+        }
+        // The reads awaited: the hold must still be the one the conversation
+        // opened for.
+        const subject =
+          deps.store.snapshot(workspace).completion_intents?.[root_bead_id]
+            ?.subject;
+        return (
+          !!subject &&
+          (subject.pr_url ?? null) === verify_hold.pr_url &&
+          subject.head_sha === verify_hold.head_sha
+        );
+      } catch (err) {
+        log('verify-hold link read failed for %s: %o', root_bead_id, err);
+        return null;
+      }
+    }
+
+    /**
      * Process the newest assistant message of a live conversation exactly once
      * (UI-nuwy §3.3). A message is new when it came after the launch and after
      * the last processed one, and the turn is not running — which also catches
@@ -13861,7 +13950,9 @@ export function createScheduler(deps) {
         // A window that did not take the close is asked again.
         if (
           record.state === 'live' &&
-          (conversation.handoff || conversation.result?.kind === 'hold')
+          (conversation.handoff ||
+            conversation.result?.kind === 'hold' ||
+            conversation.result?.kind === 'fix_wait')
         ) {
           await closeConversationWindow(workspace, key, record);
         }
@@ -13913,7 +14004,27 @@ export function createScheduler(deps) {
           bead_statuses.get(record.bead_id) === 'open')
           ? read
           : null;
-      if (parsed?.kind === 'fix_wait') {
+      if (
+        parsed?.kind === 'fix_wait' &&
+        record.kind === 'resolve' &&
+        conversation.verify_hold
+      ) {
+        // A verify-hold conversation's `수정 대기` is a result line only for
+        // a link of that very hold (UI-nqbx §4.2); it never writes
+        // `fix_waits`.
+        const accepted = await verifyHoldLinkAccepted(
+          workspace,
+          record.bead_id,
+          conversation.verify_hold,
+          parsed.bead_id ?? null
+        );
+        if (accepted === null) {
+          return;
+        }
+        if (!accepted) {
+          parsed = null;
+        }
+      } else if (parsed?.kind === 'fix_wait') {
         const q = deps.store.snapshot(workspace);
         const target = failureHandoffTarget(q, record.bead_id);
         const eligible =

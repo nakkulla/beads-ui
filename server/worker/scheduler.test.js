@@ -7059,6 +7059,339 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       expect.objectContaining({ summary: '대화 세션 종료 · pane_gone' })
     );
   });
+
+  describe('verify-hold conversation result (UI-nqbx §4.2)', () => {
+    const HEAD = 'a'.repeat(40);
+    const BASE = 'b'.repeat(40);
+    const PR_URL = 'https://github.com/o/r/pull/1';
+    const HOLD_AT = Date.parse('2026-11-23T00:00:00Z');
+    // Links share the root's rig: `F1` is in rig `F`.
+
+    /**
+     * @param {Record<string, any>} [intent_patch]
+     * @param {Record<string, any>} [queue_patch]
+     */
+    function holdQueue(intent_patch = {}, queue_patch = {}) {
+      return {
+        auto_merge: true,
+        completion_intents: {
+          [BEAD]: {
+            root_bead_id: BEAD,
+            phase: 'holding',
+            subject: {
+              role: 'root',
+              bead_id: BEAD,
+              pr_url: PR_URL,
+              head_sha: HEAD,
+              base_sha: BASE,
+              merged_sha: null
+            },
+            hold: {
+              class: 'pre_merge_hold',
+              cause: 'verify_failure',
+              reason: 'script_failed',
+              summary: null,
+              operation_id: 'verify-one',
+              log_path: null,
+              head_sha: HEAD,
+              base_sha: BASE,
+              at: HOLD_AT,
+              comment_at: HOLD_AT
+            },
+            followup_waits: [],
+            ...intent_patch
+          }
+        },
+        repo_operations: {
+          'verify-one': {
+            operation_id: 'verify-one',
+            kind: 'verify',
+            state: 'failed',
+            repo_id: WS,
+            failure: { code: 'script_failed' },
+            retry: { outcome: 'consumed', blocked_reason: null }
+          }
+        },
+        ...queue_patch
+      };
+    }
+
+    /**
+     * A verify-hold conversation over a held root whose Beads read as given.
+     *
+     * @param {{ intent?: Record<string, any>, queue?: Record<string, any>, issues?: Record<string, any>, verify_hold?: Record<string, any> }} [options]
+     */
+    function holdEnv(options = {}) {
+      const env = failureEnv({
+        patch: () => holdQueue(options.intent, options.queue)
+      });
+      /** @type {Record<string, any>} */
+      const issues = {
+        [BEAD]: {
+          id: BEAD,
+          status: 'open',
+          metadata: { base_red_followup: 'F-fix1' }
+        },
+        'F-fix1': { id: 'F-fix1', status: 'open' },
+        ...options.issues
+      };
+      env.bd.findIssue = /** @type {any} */ (
+        async (/** @type {string} */ id) => {
+          const issue = issues[id];
+          if (typeof issue === 'function') {
+            return issue();
+          }
+          if (issue instanceof Error) {
+            throw issue;
+          }
+          return issue ?? null;
+        }
+      );
+      openFailureConversation(env, {
+        conversation: {
+          stop: '실패 — 머지 전 검증 보류 · script_failed',
+          verify_hold: {
+            pr_url: PR_URL,
+            head_sha: HEAD,
+            ...options.verify_hold
+          }
+        }
+      });
+      return env;
+    }
+
+    /** @param {ReturnType<typeof failureEnv>} env */
+    function resultSummaries(env) {
+      return env.timeline.append.mock.calls
+        .map((/** @type {any[]} */ call) => call[0].summary)
+        .filter((/** @type {string} */ summary) =>
+          summary.startsWith('대화 결과 · ')
+        );
+    }
+
+    const SPENT_WAIT = {
+      followup_waits: [{ pr_url: PR_URL, head_sha: HEAD, links: ['F-fix1'] }]
+    };
+    const STANDING_WAIT = {
+      phase: 'waiting_followup',
+      followup_wait: {
+        head_sha: HEAD,
+        base_sha: BASE,
+        links: ['F-fix1'],
+        base_op_id: 'base-op',
+        at: HOLD_AT + 10,
+        deadline_at: HOLD_AT + 99,
+        stage: 'waiting',
+        outcome: null,
+        from_hold: true
+      },
+      followup_waits: [{ pr_url: PR_URL, head_sha: HEAD, links: ['F-fix1'] }]
+    };
+
+    test('takes a link of the standing hold-entered wait as the result', async () => {
+      const env = holdEnv({ intent: STANDING_WAIT });
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation?.result?.kind).toBe('fix_wait');
+    });
+
+    test('takes a link of an ended wait on the same head after the hold came back', async () => {
+      const env = holdEnv({ intent: SPENT_WAIT });
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation?.result?.kind).toBe('fix_wait');
+    });
+
+    test('takes a live declared link before the hold observation joined the wait', async () => {
+      const env = holdEnv();
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation?.result?.kind).toBe('fix_wait');
+    });
+
+    test('leaves the wait entry to the hold observation when taking a result line', async () => {
+      const env = holdEnv();
+      const begin = vi.spyOn(env.real, 'beginCompletionFollowupWait');
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(begin).not.toHaveBeenCalled();
+    });
+
+    test('takes a declared link that closed after the hold', async () => {
+      const env = holdEnv({
+        issues: {
+          'F-fix1': {
+            id: 'F-fix1',
+            status: 'closed',
+            closed_at: new Date(HOLD_AT + 5).toISOString()
+          }
+        }
+      });
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation?.result?.kind).toBe('fix_wait');
+    });
+
+    test('closes the window on an accepted verify-hold result', async () => {
+      const env = holdEnv({ intent: STANDING_WAIT });
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.launcher.sendExit).toHaveBeenCalledTimes(1);
+    });
+
+    test('records the accepted verify-hold result on the timeline', async () => {
+      const env = holdEnv({ intent: STANDING_WAIT });
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(resultSummaries(env)).toEqual([
+        '대화 결과 · 수정 대기 · F-fix1 — base defect'
+      ]);
+    });
+
+    test('writes no fix wait for an accepted verify-hold result', async () => {
+      const env = holdEnv({ intent: STANDING_WAIT });
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.real.snapshot(WS).fix_waits).toEqual({});
+    });
+
+    test.each([
+      [
+        'a declared link that closed before the hold',
+        {
+          issues: {
+            'F-fix1': {
+              id: 'F-fix1',
+              status: 'closed',
+              closed_at: new Date(HOLD_AT - 5).toISOString()
+            }
+          }
+        },
+        'F-fix1'
+      ],
+      [
+        'a declared Bead that does not exist',
+        {
+          issues: {
+            [BEAD]: {
+              id: BEAD,
+              status: 'open',
+              metadata: { base_red_followup: 'F-gone' }
+            },
+            'F-gone': null
+          }
+        },
+        'F-gone'
+      ],
+      [
+        'an ID the root does not declare',
+        { issues: { 'F-other': { id: 'F-other', status: 'open' } } },
+        'F-other'
+      ],
+      [
+        'a head the hold no longer pins',
+        { verify_hold: { head_sha: 'c'.repeat(40) } },
+        'F-fix1'
+      ],
+      [
+        'a hold whose (PR, head) wait is spent',
+        { intent: { followup_waits: [{ pr_url: PR_URL, head_sha: HEAD }] } },
+        'F-fix1'
+      ],
+      ['auto-merge off', { queue: { auto_merge: false } }, 'F-fix1'],
+      [
+        'an unlinked ID after the hold joined the wait',
+        {
+          intent: STANDING_WAIT,
+          issues: { 'F-other': { id: 'F-other', status: 'open' } }
+        },
+        'F-other'
+      ],
+      [
+        'an unlinked ID after the wait ended back in the hold',
+        {
+          intent: SPENT_WAIT,
+          issues: { 'F-other': { id: 'F-other', status: 'open' } }
+        },
+        'F-other'
+      ]
+    ])(
+      'leaves the conversation answer pending for %s',
+      async (_label, options, id) => {
+        const env = holdEnv(options);
+        say(env, `수정 대기 · ${id} — base defect`);
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+
+        expect(record(env).conversation?.result ?? null).toBeNull();
+        expect(env.launcher.sendExit).not.toHaveBeenCalled();
+        expect(env.real.snapshot(WS).fix_waits).toEqual({});
+      }
+    );
+
+    test('reads a verify-hold result again after a failed root read', async () => {
+      const env = holdEnv({ issues: { [BEAD]: new Error('bd show failed') } });
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation?.processed_message_at ?? null).toBeNull();
+    });
+
+    test('asks a window that did not take the close again on the next pass', async () => {
+      const env = holdEnv({ intent: STANDING_WAIT });
+      env.launcher.sendExit.mockResolvedValueOnce({ ok: false });
+      say(env, '수정 대기 · F-fix1 — base defect');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.launcher.sendExit).toHaveBeenCalledTimes(2);
+      expect(record(env).state).toBe('exiting');
+    });
+
+    test('leaves the answer pending when the held head moves during the link read', async () => {
+      /** @type {Record<string, any>} */
+      const moved = {};
+      const env = holdEnv({
+        intent: moved,
+        issues: {
+          'F-fix1': () => {
+            moved.subject = {
+              role: 'root',
+              bead_id: BEAD,
+              pr_url: PR_URL,
+              head_sha: 'c'.repeat(40),
+              base_sha: BASE,
+              merged_sha: null
+            };
+            return { id: 'F-fix1', status: 'open' };
+          }
+        }
+      });
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation?.result ?? null).toBeNull();
+    });
+  });
 });
 
 describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {

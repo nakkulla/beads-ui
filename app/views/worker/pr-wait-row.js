@@ -1170,8 +1170,11 @@ function prWaitRow(
     // 외부 PR 사람 처리 필요 행 (UI-k467 §3.7): `tileResolveFields`가 이것을
     // 먼저 읽어 그 행 종류를 정한다.
     foreign_handoff,
+    // 보류에서 든 대기의 base 검증 중(UI-nqbx §4.4)은 보류 배지만 남고
+    // 보류 대화는 받지 않는다.
     completion_phase:
-      completion?.phase === 'needs_human' || completion?.phase === 'holding'
+      completion?.phase === 'needs_human' ||
+      (completion?.phase === 'holding' && !completion.hold_wait_verifying)
         ? completion.phase
         : null
   };

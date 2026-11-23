@@ -17,6 +17,7 @@ import {
   GUARD_WARNING_COMMAND_MAX,
   LANE_RELEASING_ATTEMPT_STATUSES,
   TERMINAL_ATTEMPT_STATUSES,
+  completionHoldReturnState,
   createQueueStore,
   heldSerialLaneOf,
   makeAttempt,
@@ -19368,6 +19369,284 @@ describe('worker/queue-store red-base follow-up wait (UI-ty6k)', () => {
     });
 
     expect(result).toMatchObject({ ok: false, moved: [] });
+  });
+
+  describe('hold-entered wait (UI-nqbx)', () => {
+    /** @type {import('./queue-store.js').CompletionFollowupWait} */
+    const hold_wait = { ...wait, from_hold: true };
+
+    function heldStore() {
+      const store = storeWithIntent();
+      store.holdCompletionIntent(WS, { root_bead_id: 'UI-root', hold });
+      return store;
+    }
+
+    /**
+     * @param {ReturnType<typeof createQueueStore>} store
+     * @param {{ pr_url?: string, hold?: import('./queue-store.js').CompletionHold }} [observed]
+     */
+    function beginFromHold(store, observed = {}) {
+      return store.beginCompletionFollowupWait(WS, {
+        root_bead_id: 'UI-root',
+        wait: hold_wait,
+        resolution,
+        expect: { pr_url: PR_URL, hold, ...observed }
+      });
+    }
+
+    /**
+     * A hold-entered wait that just ended in the hold again.
+     *
+     * @returns {{ store: ReturnType<typeof createQueueStore>, result: any }}
+     */
+    function exitedStore() {
+      const store = heldStore();
+      beginFromHold(store);
+      const result = store.holdCompletionIntent(WS, {
+        root_bead_id: 'UI-root',
+        hold: { ...hold, reason: 'script_failed:대기 종료: wait_limit', at: 30 }
+      });
+      return { store, result };
+    }
+
+    function liveWindow() {
+      return {
+        bead_id: 'UI-root',
+        kind: 'resolve',
+        provider: 'claude',
+        pane_id: '%1',
+        tmux_session: 'interactive',
+        tmux_window: 'resolve',
+        launched_at: 10,
+        state: 'live'
+      };
+    }
+
+    test('persists the hold-entered marker through a cold load', () => {
+      const store = heldStore();
+      beginFromHold(store);
+
+      const restored = createQueueStore().snapshot(WS);
+
+      expect(
+        restored.completion_intents['UI-root'].followup_wait
+      ).toMatchObject({ from_hold: true, links: ['UI-fix1'] });
+    });
+
+    test('records the links on the spent pair of a hold-entered wait', () => {
+      const store = heldStore();
+
+      const result = beginFromHold(store);
+
+      expect(result.queue.completion_intents['UI-root'].followup_waits).toEqual(
+        [{ pr_url: PR_URL, head_sha: HEAD, links: ['UI-fix1'] }]
+      );
+    });
+
+    test('leaves the marker off a wait entered before a hold', () => {
+      const store = storeWithIntent();
+
+      const result = beginWait(store);
+
+      expect(
+        result.queue.completion_intents['UI-root'].followup_wait
+      ).not.toHaveProperty('from_hold');
+    });
+
+    test('keeps the hold record while a hold-entered wait stands', () => {
+      const store = heldStore();
+
+      const result = beginFromHold(store);
+
+      expect(result.queue.completion_intents['UI-root']).toMatchObject({
+        phase: 'waiting_followup',
+        hold
+      });
+    });
+
+    test('writes no hold-entered wait while auto-merge is off', () => {
+      const store = heldStore();
+      store.toggleAutoMerge(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        on: false
+      });
+
+      const result = beginFromHold(store);
+
+      expect(result.ok).toBe(false);
+      expect(
+        store.snapshot(WS).completion_intents['UI-root']
+      ).not.toHaveProperty('followup_wait');
+    });
+
+    test('leaves a manual merge request queued instead of writing the wait', () => {
+      const store = heldStore();
+      store.enqueueMergeManual(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
+      });
+
+      const result = beginFromHold(store);
+
+      expect(result.ok).toBe(false);
+      expect(
+        store.snapshot(WS).merge_queue.map((entry) => entry.bead_id)
+      ).toEqual(['UI-root']);
+    });
+
+    test.each([
+      ['hold time', { hold: { ...hold, at: 21 } }],
+      ['hold operation', { hold: { ...hold, operation_id: 'verify-two' } }],
+      ['hold head', { hold: { ...hold, head_sha: 'c'.repeat(40) } }],
+      ['PR', { pr_url: 'https://github.com/o/r/pull/2' }]
+    ])(
+      'writes no hold-entered wait when the %s changed',
+      (_label, observed) => {
+        const store = heldStore();
+
+        const result = beginFromHold(store, observed);
+
+        expect(result.ok).toBe(false);
+        expect(store.snapshot(WS).completion_intents['UI-root'].phase).toBe(
+          'holding'
+        );
+      }
+    );
+
+    test('claims the return notice when a hold-entered wait ends in the hold', () => {
+      const { result } = exitedStore();
+
+      expect(result.noticed).toBe(true);
+    });
+
+    test('gives no second return notice for the same (PR, head)', () => {
+      const { store } = exitedStore();
+
+      const again = store.holdCompletionIntent(WS, {
+        root_bead_id: 'UI-root',
+        hold: { ...hold, at: 40 }
+      });
+
+      expect(again.ok).toBe(true);
+      expect(again.noticed).toBe(false);
+    });
+
+    test('gives no return notice to a wait entered before a hold', () => {
+      const store = storeWithIntent();
+      beginWait(store);
+
+      const result = store.holdCompletionIntent(WS, {
+        root_bead_id: 'UI-root',
+        hold
+      });
+
+      expect(result.noticed).toBe(false);
+    });
+
+    test('persists the return notice and request through a cold load', () => {
+      exitedStore();
+
+      const restored = createQueueStore().snapshot(WS);
+
+      expect(restored.completion_intents['UI-root']).toMatchObject({
+        hold_exit_notices: [{ pr_url: PR_URL, head_sha: HEAD }],
+        hold_return: { pr_url: PR_URL, head_sha: HEAD, requested_at: 30 }
+      });
+    });
+
+    test('reports the return request due when no window stands in the way', () => {
+      const { store } = exitedStore();
+
+      const status = completionHoldReturnState(store.snapshot(WS), 'UI-root');
+
+      expect(status).toMatchObject({
+        state: 'due',
+        request: { pr_url: PR_URL, head_sha: HEAD, requested_at: 30 }
+      });
+    });
+
+    test('defers the return request while the row has a live conversation window', () => {
+      const { store } = exitedStore();
+      store.recordInteractiveSession(WS, liveWindow());
+
+      const status = completionHoldReturnState(store.snapshot(WS), 'UI-root');
+
+      expect(status.state).toBe('deferred');
+    });
+
+    test('reports the return request due once the window settles', () => {
+      const { store } = exitedStore();
+      store.recordInteractiveSession(WS, liveWindow());
+      store.markInteractiveSessionsSettled(WS, 'UI-root', 'done');
+
+      const status = completionHoldReturnState(store.snapshot(WS), 'UI-root');
+
+      expect(status.state).toBe('due');
+    });
+
+    test('reports the return request used once a conversation launched after it', () => {
+      const { store } = exitedStore();
+      store.recordInteractiveSession(WS, { ...liveWindow(), launched_at: 30 });
+
+      const status = completionHoldReturnState(store.snapshot(WS), 'UI-root');
+
+      expect(status.state).toBe('used');
+    });
+
+    test('keeps the return request on the record while it is only read', () => {
+      const { store } = exitedStore();
+      completionHoldReturnState(store.snapshot(WS), 'UI-root');
+
+      const restored = createQueueStore().snapshot(WS);
+
+      expect(restored.completion_intents['UI-root'].hold_return).toMatchObject({
+        head_sha: HEAD
+      });
+    });
+
+    test('spends the return request it names', () => {
+      const { store } = exitedStore();
+
+      const spent = store.spendCompletionHoldReturn(WS, {
+        root_bead_id: 'UI-root',
+        requested_at: 30
+      });
+
+      expect(spent.ok).toBe(true);
+      expect(spent.queue.completion_intents['UI-root']).not.toHaveProperty(
+        'hold_return'
+      );
+    });
+
+    test('leaves a return request recorded at another time unspent', () => {
+      const { store } = exitedStore();
+
+      const spent = store.spendCompletionHoldReturn(WS, {
+        root_bead_id: 'UI-root',
+        requested_at: 29
+      });
+
+      expect(spent.ok).toBe(false);
+      expect(
+        store.snapshot(WS).completion_intents['UI-root'].hold_return
+      ).toMatchObject({ requested_at: 30 });
+    });
+
+    test('drops the return request when a new head is pinned', () => {
+      const { store } = exitedStore();
+      const subject = store.snapshot(WS).completion_intents['UI-root'].subject;
+
+      const result = store.setCompletionSubject(WS, {
+        root_bead_id: 'UI-root',
+        phase: 'gating',
+        subject: { ...subject, head_sha: 'c'.repeat(40) }
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.queue.completion_intents['UI-root']).not.toHaveProperty(
+        'hold_return'
+      );
+    });
   });
 });
 

@@ -40,7 +40,8 @@ import {
 import { debug } from '../logging.js';
 import {
   CLEANUP_INTERRUPTION_NOTIFY_LABEL,
-  PRE_MERGE_HOLD_NOTIFY_LABEL
+  PRE_MERGE_HOLD_NOTIFY_LABEL,
+  holdWaitTarget
 } from './completion-intent.js';
 import {
   failureConversationReason,
@@ -492,6 +493,9 @@ function repairFailureContext(queue, row_key, failure) {
  * @property {string|null} [worktree] - The `구현 워크트리` a row names itself:
  * a residue disposition failure names the residue's worktree, or `(없음)`
  * (UI-68r5 §3.2). Absent means the row's `.worktrees/<bead>` when it exists.
+ * @property {boolean} [pre_merge_wait] - The hold meets the red-base wait's
+ * target conditions at open (UI-nqbx 결정 9); the `상황` carries the
+ * `대기 가능: pre_merge_wait` marker.
  */
 
 /**
@@ -557,14 +561,58 @@ function cleanupFailureContext(cleanup) {
  * row's pinned foreign PR observation (UI-k467 §3.7). A pre-merge
  * `foreign_handoff` lives only there: it is re-judged every turn, so the queue
  * snapshot holds no record of it.
+ * @param {string|null} [repo] - The workspace's own repo id; given, a
+ * verify-failure hold that meets the red-base wait's target conditions is
+ * marked `pre_merge_wait` (UI-nqbx 결정 9).
  * @returns {ResolveFailureContext|null}
  */
-export function resolveFailureContext(queue, bead_id, foreign = null) {
-  return repairFailureContext(
+export function resolveFailureContext(
+  queue,
+  bead_id,
+  foreign = null,
+  repo = null
+) {
+  const failure = repairFailureContext(
     queue,
     bead_id,
     baseFailureContext(queue, bead_id, foreign)
   );
+  if (
+    failure?.failure_class === PRE_MERGE_HOLD_NOTIFY_LABEL &&
+    typeof repo === 'string' &&
+    holdWaitTarget(queue, bead_id, repo) !== null
+  ) {
+    return { ...failure, pre_merge_wait: true };
+  }
+  return failure;
+}
+
+/**
+ * The verify-failure hold a pre-merge hold conversation opens for (UI-nqbx
+ * §4.2): the held PR and head the conversation record keeps, so a later
+ * `수정 대기` line is judged against that hold and not whatever the row is
+ * by then. Null outside a verify-failure hold.
+ *
+ * @param {any} queue
+ * @param {string} bead_id
+ * @returns {{ pr_url: string|null, head_sha: string }|null}
+ */
+export function verifyHoldOf(queue, bead_id) {
+  const intent = queue?.completion_intents?.[bead_id];
+  const hold = intent?.hold;
+  if (
+    intent?.phase !== 'holding' ||
+    hold?.cause !== 'verify_failure' ||
+    typeof hold.head_sha !== 'string' ||
+    hold.head_sha.length === 0
+  ) {
+    return null;
+  }
+  return {
+    pr_url:
+      typeof intent.subject?.pr_url === 'string' ? intent.subject.pr_url : null,
+    head_sha: hold.head_sha
+  };
 }
 
 /**
@@ -823,7 +871,8 @@ export function failureSituation(failure) {
     failure.fingerprint ? `지문: ${failure.fingerprint}` : '',
     failure.self_repair_exhausted
       ? `자가 수리: 소진 — ${failure.self_repair_exhausted}`
-      : ''
+      : '',
+    failure.pre_merge_wait ? '대기 가능: pre_merge_wait' : ''
   ]
     .filter(Boolean)
     .join('\n');
@@ -1350,7 +1399,7 @@ export function createResolveSession(deps) {
      * `placement: 'inquiry'` for the detached conversation session (UI-jbl1
      * §3.1).
      *
-     * @param {{ workspace: string, repo?: string|null, bead_id: string, failure: ResolveFailureContext, attempt?: any, placement?: import('./tmux-launcher.js').LaunchPlacement }} input
+     * @param {{ workspace: string, repo?: string|null, bead_id: string, failure: ResolveFailureContext, attempt?: any, placement?: import('./tmux-launcher.js').LaunchPlacement, verify_hold?: { pr_url: string|null, head_sha: string }|null }} input
      * @returns {Promise<ResolveSessionOutcome>}
      */
     async resolve(input) {
@@ -1425,7 +1474,10 @@ export function createResolveSession(deps) {
           tmux_window: outcome.tmux_window,
           pane_id: outcome.pane_id,
           cwd,
-          conversation: newConversation(input.failure)
+          conversation: newConversation(
+            input.failure,
+            input.verify_hold ?? null
+          )
         });
       }
       const startup =
@@ -1596,8 +1648,10 @@ export function createResolveSession(deps) {
  * The fresh `conversation` of a failure conversation record (UI-18a5 §3.4).
  *
  * @param {ResolveFailureContext} failure
+ * @param {{ pr_url: string|null, head_sha: string }|null} [verify_hold] - The
+ * hold a verify-hold conversation opens for (UI-nqbx §4.2).
  */
-function newConversation(failure) {
+function newConversation(failure, verify_hold = null) {
   return {
     ...(failure.early_diagnosis ? { early_diagnosis: true } : {}),
     stop: failureConversationReason(failure),
@@ -1606,7 +1660,8 @@ function newConversation(failure) {
     message_excerpt: null,
     result: null,
     handoff: null,
-    takeover_notified_at: null
+    takeover_notified_at: null,
+    ...(verify_hold ? { verify_hold } : {})
   };
 }
 
@@ -1808,7 +1863,12 @@ export function createFailureConversationLauncher(deps) {
         typeof cleanup === 'object' &&
         cleanup.at === input.cleanup_at
           ? cleanupFailureContext(cleanup)
-          : resolveFailureContext(queue, input.bead_id, foreign);
+          : resolveFailureContext(
+              queue,
+              input.bead_id,
+              foreign,
+              input.repo ?? input.workspace
+            );
       if (input.early_diagnosis) {
         const operation = queue.repo_operations?.[input.early_diagnosis];
         if (operation?.failure?.code === 'condition_wait') {
@@ -1871,7 +1931,11 @@ export function createFailureConversationLauncher(deps) {
             bead_id: input.bead_id,
             failure,
             attempt,
-            placement: 'inquiry'
+            placement: 'inquiry',
+            verify_hold:
+              failure.failure_class === PRE_MERGE_HOLD_NOTIFY_LABEL
+                ? verifyHoldOf(queue, input.bead_id)
+                : null
           }),
         input.bead_id
       );
