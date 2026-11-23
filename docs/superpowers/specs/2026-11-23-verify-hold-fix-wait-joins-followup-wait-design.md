@@ -101,7 +101,7 @@ beads-ui `d7f8c54251ca27b43d8c7a0310ba8cb21872bf55` 기준.
 - 결정: 보류에 들기 전에 시작하는 대기(UI-ty6k)의 진입·알림은 바꾸지 않는다 — 그 대기가 보류로 끝날 때의 보류 진입이
   지금처럼 첫 알림이다.
 - 결정: 검증 보류가 아닌 실패 대화의 `수정 대기`(`fix_waits` 기록, 닫힘 뒤 재실행, 사람 출구 복귀)는 바꾸지 않는다 —
-  ADR UI-lx9o가 승계한 UI-hozk 조항 그대로다.
+  ADR UI-lxxf가 UI-lx9o에서 승계한 UI-hozk 조항 그대로다.
 
 ## 4. 설계
 
@@ -109,7 +109,8 @@ beads-ui `d7f8c54251ca27b43d8c7a0310ba8cb21872bf55` 기준.
 
 대상은 다음을 모두 만족하는 완료 의도다: 단계가 `holding`, 보류 원인이 `verify_failure`, 보류된 head가 지금 주제의 head,
 그 (PR, head)의 대기가 쓰이지 않음, 보류가 가리키는 검증 operation이 같은 후보 재시도까지 실패한 `script_failed`,
-자동 머지가 켜져 있음.
+자동 머지가 켜져 있음, 다른 저장소 대상 PR 배달이 아님(`not_foreign_pr_delivery` — dotfiles `workflow-state.yaml`
+`failure_classes.pre_merge_wait.hold_entry.requires`).
 
 - bd 변경 이벤트마다, 그리고 정산 패스에서 프로세스당 root 한 번(재시작 복구) 대상의 연결을 읽는다. 연결은 원 Bead
   `base_red_followup`의 같은 rig ID에서만 모은다(결정 6). 각 ID는 살아 있는 후속, 보류 뒤에 끝난 후속(결정 5), 그 밖(보류
@@ -205,6 +206,9 @@ beads-ui `d7f8c54251ca27b43d8c7a0310ba8cb21872bf55` 기준.
 - `npx vitest run server/worker/completion-intent.test.js server/worker/queue-store.test.js server/worker/scheduler.test.js server/worker/interactive-progress.test.js server/worker/direction-inquiry.test.js --reporter=dot`
 - `npm run tsc`, `npm run lint`
 - `npx vitest run --reporter=dot`
+- 권한 모드 확인(dotfiles-gphqj 구현 리뷰의 미확인 전제): 실제 보류 대화와 같은 권한 모드(Claude `defaultMode: auto`)에서
+  시험용 원 Bead에 `bd update <원 Bead> --set-metadata base_red_followup=<수정 Bead> --json`을 쓰고 `bd show --json`으로
+  되읽은 결과를 완료 보고에 증거로 남긴다. 거부되면 Worker는 연결을 관측하지 못하므로 계약 쪽 정정을 별도로 제기한다.
 
 ## Test scope
 
@@ -231,7 +235,7 @@ beads-ui `d7f8c54251ca27b43d8c7a0310ba8cb21872bf55` 기준.
 - 전제: ADR UI-ny0h — 머지 자격은 저장소 안 입력과 `[verify]`만 본다. 대기는 머지를 허락하지 않고 재검증이 관문이다.
 - 전제: ADR UI-jlov — dotfiles 계약은 코드 사본으로 소비하고, 키가 없으면 표시를 생략한다.
 - 검증 보류 대화의 `수정 대기`를 결과 줄로 받되 `fix_waits`가 아니라 완료 의도의 후속 착지 대기로 잇고, 보류 중 연결
-  (살아 있거나 보류 뒤에 끝난 후속) 관찰로 대기에 들며, 보류에서 든 대기가 보류로 끝나면 알림 묶음을 (PR, head)당 한 번 더 낸다. 나머지 조항은 UI-lx9o 그대로다.
+  (살아 있거나 보류 뒤에 끝난 후속) 관찰로 대기에 들며, 보류에서 든 대기가 보류로 끝나면 알림 묶음을 (PR, head)당 한 번 더 낸다. 나머지 조항은 UI-lxxf 그대로다.
   - 되돌리기 어려움: `scheduler.js`의 결과 줄 수신 조건, `completion-intent.js`의 보류 중 관찰과 보류 알림 규칙,
     `queue-store.js`의 대기 기록과 복귀 대화 요청, `resolve-session.js`의 대화 기록과 진입 `상황`, `direction-inquiry.js`의
     블록 사본, dotfiles 계약 값(dotfiles-gphqj)이 함께 움직인다.
@@ -239,6 +243,6 @@ beads-ui `d7f8c54251ca27b43d8c7a0310ba8cb21872bf55` 기준.
     머지될 수 있다.
   - 실제 절충: 사람 클릭을 없애는 대신 보류 중인 행마다 bd 변경 때 연결 읽기가 더해지고 같은 head에 알림이 두 번 올 수
     있다. 기각한 대안은 §3의 결정 1~3에 있다.
-  - `summary`: "검증 보류 대화의 수정 대기는 fix_waits가 아니라 완료 의도의 후속 착지 대기로 이어지고 보류 중 연결 관찰로 대기에 들며 보류에서 든 대기가 보류로 끝나면 알림 묶음을 (PR, head)당 한 번 더 낸다 — 나머지 조항은 UI-lx9o 그대로다"
-    → ADR, supersede UI-lx9o
+  - `summary`: "검증 보류 대화의 수정 대기는 fix_waits가 아니라 완료 의도의 후속 착지 대기로 이어지고 보류 중 연결 관찰로 대기에 들며 보류에서 든 대기가 보류로 끝나면 알림 묶음을 (PR, head)당 한 번 더 낸다 — 나머지 조항은 UI-lxxf 그대로다"
+    → ADR, supersede UI-lxxf
 - 카드에 새 라벨·칩·버튼을 더하지 않고 기존 배지 문구를 쓴다 — 표시 문구 선택이다 → ADR 아님
