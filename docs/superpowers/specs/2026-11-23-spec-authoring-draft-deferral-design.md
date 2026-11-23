@@ -4,6 +4,7 @@ scope:
   - server/worker/spec-authoring.test.js
   - server/worker/scheduler.js
   - server/worker/scheduler.test.js
+  - server/worker/spec-authoring.cross-runtime.test.js
   - server/spec-id.js
 ---
 
@@ -23,13 +24,16 @@ Worker가 다른 세션이 스펙을 쓰는 중인 선행 Bead에 스펙 작성 
 
 인용은 beads-ui `7be5cc730b35e8d768846a1c10463534995009d3`, dotfiles `70fc3f4cea106ff00038cdce3c94c917e0f4bd59` 기준이다.
 
-- 대상 판정은 스펙 근거가 `published`인 선행만 빼고 `none`과 `draft`를 모두 대상으로 본다. 같은 판정을 자동 기동, 클릭, 카드 투영이 함께 쓴다 — `server/worker/spec-authoring.js:96-131`
-- 자동 기동은 `observe`가 맡는다. 선행 Bead당 기록이 있으면 건너뛰고, 대상이면 기록을 먼저 잡은 뒤 열거나 알림만 보낸다 — `server/worker/spec-authoring.js:455-541`
+- 대상 판정은 기존 조건(막는 선행, `open`·`spec_backed`, 대기열에 없고 실행 중이 아님, 준비되지 않은 `spec-after-blocker` 아님)을 모두 충족한 선행에서 스펙 근거가 `none`이든 `draft`든 대상으로 본다. 같은 판정을 자동 기동, 클릭, 카드 투영이 함께 쓴다 — `server/worker/spec-authoring.js:96-131`
+- 자동 기동은 `observe`가 맡는다. 선행 Bead당 기록이 있으면 건너뛰고, 살아 있는 대화가 있으면 건너뛰며, 대상이면 기록을 먼저 잡은 뒤 공용 스위치가 켜져 있으면 열고 꺼져 있으면 알림만 보낸다 — `server/worker/spec-authoring.js:455-541`
+- `observe`는 선행이 지금도 대기열의 원 Bead를 막는지를 대기열 저장소의 선행 대기 기록에서 스스로 다시 확인한다. 그래서 dispatch 패스 밖에서 불러도 같은 판정을 한다 — `server/worker/spec-authoring.js:60-87`, `server/worker/spec-authoring.js:273-304`
+- 자동으로 연 대화의 진입 블록은 `열린 경로: 자동` 칸을 채운 고정 사본이고, 사본의 다이제스트를 시험이 고정한다 — `server/worker/direction-inquiry.js:67-116`, `server/worker/spec-authoring.js:377-413`, `server/worker/direction-inquiry.test.js:331-340`
+- 클릭 요청의 처리기와 응답, 카드의 `✍️ 스펙 확정 필요` 배지와 `[스펙 작성 세션]` 버튼, 알림 문구 `🙋 스펙 확정 필요`의 현행 위치 — `server/ws/worker-handlers.js:8697-8713`, `app/views/worker/lanes.js:2278-2318`, `server/worker/notify.js:685-694`
 - 살아 있는 대화 게이트는 beads-ui가 직접 연 대화(대기열 저장소의 대화형 세션 기록, 창 표지)만 본다. 사람이 따로 연 세션은 보이지 않는다 — `server/worker/spec-authoring.js:315-332`
 - 클릭 경로는 자동 기동 기록과 상관없이 대상과 게이트만 다시 판정해 연다 — `server/worker/spec-authoring.js:548-568`
 - 카드 투영은 같은 대상 판정으로 선행 카드와 원 Bead 카드의 표시 재료를 만든다 — `server/worker/spec-authoring.js:140-192`
-- 판정 시점은 두 곳이다. attempt가 `waiting/prerequisite_unmet`으로 정산된 직후와, dispatch 패스가 준비되지 않은 대기열 항목에 `prerequisite_unmet`을 기록할 때다 — `server/worker/scheduler.js:7648-7656`, `server/worker/scheduler.js:8926-8931`
-- 스펙 근거는 `spec_id`와 형식이 유효한 `spec_review`가 함께 있으면 `published`, `spec_id`만 있으면 `draft`, 없으면 `none`이다 — `server/spec-id.js:71-85`
+- 판정 시점은 두 곳이다. attempt가 `waiting/prerequisite_unmet`으로 정산된 직후와, dispatch 패스가 준비되지 않은 대기열 항목에 `prerequisite_unmet`을 기록할 때다. 뒤쪽 기록은 정규 패스의 후보 순회, 개별 dispatch, 재시도·공급자 대기 재개 경로에서 불린다 — `server/worker/scheduler.js:7648-7656`, `server/worker/scheduler.js:8926-8931`, `server/worker/scheduler.js:24360-24367`, `server/worker/scheduler.js:15164-15173`, `server/worker/scheduler.js:19282-19291`
+- 스펙 근거는 `spec_id`와 형식이 유효한 `spec_review`가 함께 있으면 `published`, `spec_id`만 있으면 `draft`, 없으면 `none`이다 — `server/spec-id.js:69-83`. 영수증은 형식만 보고, 커밋 도달 가능성 같은 깊은 유효성은 admission과 stale 탐침에 남겨 둔다 — `server/spec-id.js:47-55`
 - 다른 rig의 선행은 투영된 `bd show`로 읽고, 투영은 행을 통째로 넘기므로 `updated_at`이 실린다 — `server/worker/spec-authoring.js:199-205`, `server/bd-json.js:222-269`
 - 같은 rig의 선행도 투영된 `bd show` 행 전체로 읽는다 — `server/worker/scheduler.js:1790-1816`, `server/worker/bd-metadata.js:282-298`
 - 선행 Bead당 자동 기동 기록은 대기열 저장소에 영속하고, 잡기와 마감이 따로 있다 — `server/worker/queue-store.js:8576-8604`
@@ -37,7 +41,10 @@ Worker가 다른 세션이 스펙을 쓰는 중인 선행 Bead에 스펙 작성 
 - 사고 때 자동 기동 시각의 선행은 `spec_id`가 4분 5초 전에 적힌 `draft`였다 — dotfiles 대기열 저장소 `spec_authoring_launches["dotfiles-mf52q"].at = 1794908741852`(2026-11-17T09:45:41Z)와 세션 기록의 `bd update dotfiles-mf52q --spec-id` 실행 시각 09:41:36Z
 - `spec_id`만 적는 쓰기가 Bead의 `updated_at`을 갱신한다 — 사고 기록: 작성 세션이 09:41:36Z에 `bd update dotfiles-mf52q --spec-id`만 실행했고, 자동으로 열린 세션이 09:45:54Z에 읽은 `bd show dotfiles-mf52q --json`의 `updated_at`이 `2026-11-17T09:41:37Z`였다(세션 기록 `5ba288fa…jsonl`의 도구 결과)
 - 의존 간선이나 라벨만 더하는 쓰기는 `updated_at`을 갱신하지 않는다 — 2026-11-23 실측: `UI-20pf`에 `bd dep add`를 실행한 뒤에도 값이 `2026-11-17T16:23:42Z` 그대로였다(`bd show --json`). 그래서 다른 Bead가 이 선행에 `blocks`를 걸어도 한도 시계는 움직이지 않는다
-- dispatch 패스를 주기적으로 깨우는 타이머는 없다. 패스는 대기열 변경, attempt 종료, 그 저장소나 선행이 있는 rig의 Bead 변경 신호 같은 사건으로 돌고, 준비되지 않은 대기열 항목마다 선행을 다시 관측한다 — `server/worker/attach.js:2465-2545`, `server/worker/scheduler.js:15164-15173`, `grep -rn 'setInterval(' server/worker`의 결과에 dispatch용 주기가 없음
+- dispatch 패스를 주기적으로 깨우는 타이머는 없다 — `grep -rn 'setInterval(' server/worker`의 결과에 dispatch용 주기가 없음
+- Bead 변경 신호(그 저장소와 선행이 있는 rig)는 대기 재스캔을 부르고, 재스캔은 대기 항목 중 `bd ready`로 돌아온 것이 있을 때만 정규 패스를 돌린다. 선행이 바뀌어도 원 Bead가 계속 막혀 있으면 그 신호만으로는 선행이 다시 관측되지 않는다 — `server/worker/attach.js:2465-2545`, `server/worker/scheduler.js:23102-23122`
+- 정규 패스는 빈 구현 슬롯이 없으면 후보 순회를 멈추고 직렬 레인은 선두만 후보로 삼는다. 패스가 돌아도 막힌 항목의 선행 관측에 닿지 않을 수 있다 — `server/worker/scheduler.js:24263-24304`
+- 코드에 복제한 계약 값은 dotfiles 계약 파일을 직접 읽는 cross-runtime 시험으로 동등성을 확인한다 — `docs/adr/UI-jlov-dotfiles-contract-and-checker-consumption.md:27`, 선례 `server/worker/quick-fix-handoff.cross-runtime.test.js`
 - 워크스페이스마다 재판정을 한 번 예약하는 메모리 타이머의 선례가 있다 — `server/worker/scheduler.js:19778-19792`
 - 미확인: `spec_review` 영수증 같은 metadata만 쓰는 갱신과 댓글이 `updated_at`을 갱신하는지 — 영수증이 적히면 `published`가 되어 판정에서 빠지므로 설계에는 영향이 없고, 리뷰가 길어질 때 한도 시계가 얼마나 자주 새로 도는지만 달라진다.
 
@@ -47,7 +54,8 @@ Worker가 다른 세션이 스펙을 쓰는 중인 선행 Bead에 스펙 작성 
 
 계약 3.1을 순수 술어 하나로 옮긴다(예: `specDraftInProgress(issue, now)`).
 
-- 스펙 근거가 `draft`이고, `updated_at`을 시각으로 읽을 수 있고, 그 시각이 판정 시각으로부터 한도 안이면 참이다.
+- 스펙 근거가 `draft`이고, `updated_at`을 시각으로 읽을 수 있고, 판정 시각이 `updated_at` + 한도보다 앞이면 참이다. 판정 시각이 그 시각과 같거나 뒤이면 거짓이다.
+- 스펙 근거는 대상 판정이 쓰는 `resolveSpecEvidence` 하나를 그대로 쓴다(계약 `spec_evidence: same_predicate_as_target_judgment`).
 - 스펙 근거가 `none`이거나 `published`이면 거짓이다.
 - `updated_at`이 없거나 읽을 수 없으면 거짓이다.
 - `updated_at`이 판정 시각보다 미래이면 한도 안으로 본다(서버 사이 시계 차이).
@@ -60,7 +68,9 @@ Worker가 다른 세션이 스펙을 쓰는 중인 선행 Bead에 스펙 작성 
 - 자동 기동 기록을 잡지 않는다. 그래서 다음 관측이 처음부터 다시 판정한다.
 - 대화를 열지 않고, 알림을 보내지 않고, 거부 기록도 남기지 않는다. 공용 스위치가 꺼져 있을 때도 같다.
 - 다음 관측에서 `published`이면 대상이 아니다. 여전히 `draft`인데 한도를 넘겼으면 기존 경로 그대로 기록을 잡고 연다(`열린 경로: 자동`).
-- 미룬 선행의 한도 시각(`updated_at` + 한도)에 원 Bead가 있는 워크스페이스의 dispatch 패스를 한 번 더 돌리도록 예약한다. 예약은 프로세스 메모리에만 두고 워크스페이스당 가장 이른 시각 하나만 유지한다. 그 패스가 선행을 다시 관측해 위 판정을 되풀이하므로, Bead가 그 사이 바뀌었으면 새 한도 시각으로 다시 예약된다.
+- 미룬 선행마다 한도 시각(`updated_at` + 한도)에 그 선행의 자동 기동 판정(`observe`)을 직접 다시 부르도록 예약한다. dispatch 패스를 거치지 않으므로 빈 구현 슬롯, 레인 순서, 자동 진행 설정과 무관하다. `observe`가 선행의 현재 대기열 소속과 막는 관계를 다시 확인한 뒤 기존 판정을 한다.
+- 예약은 프로세스 메모리에만 두고 선행(저장소 루트와 Bead ID)당 하나다. 같은 선행을 다시 미루면 새 한도 시각으로 바꾼다. 선행이 기동됐거나 대상이 아니게 되면 예약은 남지 않는다.
+- 예약으로 깨어난 판정에서 Bead가 그 사이 바뀌어 있으면 새 한도 시각으로 다시 미룬다.
 - 예약 콜백은 실패해도 조용히 끝난다. 다음 관측이 같은 판정을 다시 한다.
 
 ### 3.3 바꾸지 않는 것
@@ -80,12 +90,14 @@ Worker가 다른 세션이 스펙을 쓰는 중인 선행 Bead에 스펙 작성 
 ## 5. 수락 기준
 
 1. 대상 선행이 `draft`이고 `updated_at`이 한도 안이면 자동 기동 관측에서 대화가 열리지 않고, 알림이 나가지 않고, 선행 Bead당 자동 기동 기록이 생기지 않는다.
-2. 같은 선행이 `draft`인 채 한도를 넘기면, 그 사이 다른 사건이 없어도 한도 시각의 예약된 패스에서 대화가 한 번 열리고 알림이 한 번 나간다. 그 뒤 관측에서는 다시 열리지 않는다.
+2. 같은 선행이 `draft`인 채 한도 시각에 이르면, 그 사이 다른 사건이 없고 구현 슬롯이 꽉 차 있어도, 예약된 판정에서 기존 기동 조건(공용 스위치 켜짐, 살아 있는 대화 없음)이 충족된 경우 대화가 한 번 열리고 알림이 한 번 나간다. 공용 스위치가 꺼져 있으면 기존 알림 전용 경로대로 알림만 한 번 나간다. 그 뒤 관측에서는 다시 열리지도 알리지도 않는다.
 3. 미룬 뒤 다음 관측에서 `published`가 된 선행에는 대화도 알림도 없다.
-4. 스펙 근거 `none`인 선행, `updated_at`을 읽을 수 없는 `draft` 선행은 지금과 같이 첫 관측에서 열린다.
+4. 스펙 근거 `none`인 선행, `updated_at`을 읽을 수 없는 `draft` 선행은 첫 관측에서 지금과 같은 경로를 탄다(기존 기동 조건이 충족되면 열리고, 스위치가 꺼져 있으면 알림만).
 5. 작성 중인 선행도 클릭으로는 열리고, 카드 표시와 버튼이 지금과 같다.
 6. 사고 재현: 원 Bead가 대기열에 있고 선행의 `spec_id`가 4분 전에 적힌 상태로 dispatch 패스를 돌리면 대화가 열리지 않는다.
-7. 배포 뒤 실측: 실제 저장소에서 초안만 있는 선행에 막힌 작업을 대기열에 올렸을 때 스펙 작성 대화 창과 `🙋 스펙 확정 필요` 알림이 없고, 같은 선행 카드의 `[스펙 작성 세션]` 버튼은 남아 있다.
+7. 복제한 한도 상수가 dotfiles 계약의 `draft_in_progress.idle_limit_hours`와 같음을 cross-runtime 시험이 확인한다.
+
+배포 뒤 운영자 인계(수락 기준이 아니고 완료 보고의 `남은 것`에 적는다): 공용 스위치가 켜져 있고, 자동 기동 기록과 열린 대화가 없으며 `spec_id`를 한도 안에 적은 선행에 막힌 작업을 대기열에 올린다. 원 Bead 카드에 `prerequisite_unmet` 선행 칩이 뜬 것을 확인한 뒤, 스펙 작성 대화 창과 `🙋 스펙 확정 필요` 알림과 대기열 저장소의 그 선행 자동 기동 기록이 없고 선행 카드의 `[스펙 작성 세션]` 버튼은 남아 있는지 본다.
 
 ## 6. 시험
 
@@ -95,7 +107,9 @@ Worker가 다른 세션이 스펙을 쓰는 중인 선행 Bead에 스펙 작성 
 - `observe`: 작성 중이면 기록 잡기·기동·알림·거부 기록이 모두 불리지 않는다.
 - `observe` 두 번: 첫 관측은 미루고, 시계를 한도 뒤로 옮긴 둘째 관측은 한 번 연다. 셋째 관측은 열지 않는다.
 - `observe` 두 번: 첫 관측은 미루고, 둘째 관측 전에 영수증이 적히면 아무것도 하지 않는다.
-- 예약: 미룬 관측이 한도 시각에 패스 하나를 예약하고, 가짜 시계를 그 시각으로 옮기면 패스가 한 번 돈다. 같은 워크스페이스에서 두 선행을 미루면 이른 시각 하나만 남는다(`server/worker/scheduler.test.js`).
+- 예약(`server/worker/scheduler.test.js`): 미룬 관측이 한도 시각에 판정 하나를 예약한다. 구현 슬롯이 꽉 찬 채 가짜 시계를 그 시각으로 옮기면 대화와 알림이 한 번만 나간다. 같은 선행을 다시 미루면 예약이 하나로 유지된다. 한도 시각 정각의 판정은 미루지 않는다.
+- 스위치 꺼짐과 한도 경과: 예약된 판정이 알림만 한 번 보낸다.
+- cross-runtime(`server/worker/spec-authoring.cross-runtime.test.js`, 기존 cross-runtime 시험과 같은 건너뛰기 규칙): dotfiles `docs/contracts/workflow-state.yaml`의 `draft_in_progress.idle_limit_hours`와 소비자 상수가 같다. `dotfiles-kjyd1` 착지 뒤에 통과한다.
 - 스위치 꺼짐: 작성 중이면 알림도 없다.
 - `launchForClick`: 작성 중인 선행도 연다.
 - 기존 시험(대상 판정, 한 번 규칙, 스위치 꺼짐, 기동 실패, 진입 블록 다이제스트, 카드 동일성)은 그대로 통과한다.
