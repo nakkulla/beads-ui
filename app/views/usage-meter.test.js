@@ -2475,7 +2475,7 @@ describe('usage meter account login and removal (UI-xm29 §4.5)', () => {
     needs_code: true
   };
 
-  test('offers 재로그인 only on an expired row', async () => {
+  test('offers 재로그인 only on an expired row when no login expiry is near', async () => {
     vi.useFakeTimers();
     const mount = mountMeter();
     stubAccountApi({ claude: EXPIRED_CLAUDE });
@@ -2491,6 +2491,117 @@ describe('usage meter account login and removal (UI-xm29 §4.5)', () => {
     expect(buttons[0].className).toBe(
       'op-btn op-btn--primary usage-meter__relogin'
     );
+    meter.destroy();
+  });
+
+  /**
+   * A two-row Claude list whose inactive ok row carries the given expiry.
+   *
+   * @param {string | undefined} login_expires_at
+   */
+  function expiringClaude(login_expires_at) {
+    return {
+      available: false,
+      accounts: [
+        accountRow({ number: 1, active: true }),
+        {
+          ...accountRow({ number: 2, email: 'two@example.com' }),
+          loginExpiresAt: login_expires_at
+        }
+      ]
+    };
+  }
+
+  test('shows the login expiry and 재로그인 on an ok row expiring within 3 days', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-11-23T00:00:00Z'));
+    const mount = mountMeter();
+    stubAccountApi({ claude: expiringClaude('2026-11-23T20:20:56Z') });
+    const meter = createUsageMeter(mount);
+
+    await openFakeCard(mount);
+
+    const notice = el('.usage-meter__login-expiry');
+    expect([
+      notice
+        .closest('.usage-meter__account')
+        ?.textContent?.includes('two@example.com'),
+      text('.usage-meter__login-expiry .usage-meter__account-status'),
+      notice.querySelector('.usage-meter__relogin')?.className
+    ]).toEqual([
+      true,
+      '로그인 만료 20h 21m',
+      'op-btn op-btn--primary usage-meter__relogin'
+    ]);
+    meter.destroy();
+  });
+
+  test('stays quiet on an ok row expiring after 3 days', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-11-23T00:00:00Z'));
+    const mount = mountMeter();
+    stubAccountApi({ claude: expiringClaude('2026-11-26T00:01:00Z') });
+    const meter = createUsageMeter(mount);
+
+    await openFakeCard(mount);
+
+    expect(document.querySelector('.usage-meter__relogin')).toBeNull();
+    meter.destroy();
+  });
+
+  test('marks an ok row whose login expiry already passed', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-11-23T00:00:00Z'));
+    const mount = mountMeter();
+    stubAccountApi({ claude: expiringClaude('2026-11-22T23:00:00Z') });
+    const meter = createUsageMeter(mount);
+
+    await openFakeCard(mount);
+
+    expect(
+      text('.usage-meter__login-expiry .usage-meter__account-status')
+    ).toBe('로그인 만료 지남');
+    meter.destroy();
+  });
+
+  test.each([undefined, 'not-a-date', '2026-02-29T00:00:00Z'])(
+    'stays quiet on an ok row with login expiry %s',
+    async (login_expires_at) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(Date.parse('2026-11-23T00:00:00Z'));
+      const mount = mountMeter();
+      stubAccountApi({ claude: expiringClaude(login_expires_at) });
+      const meter = createUsageMeter(mount);
+
+      await openFakeCard(mount);
+
+      expect(document.querySelector('.usage-meter__login-expiry')).toBeNull();
+      meter.destroy();
+    }
+  );
+
+  test('opens the relogin panel from the login expiry notice', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-11-23T00:00:00Z'));
+    const mount = mountMeter();
+    const fetchMock = stubAccountApi({
+      claude: expiringClaude('2026-11-23T20:20:56Z'),
+      routes: {
+        'POST /api/account-login': [{ ok: true, login_id: 'L1' }],
+        'GET /api/account-login/L1': [CLAUDE_AWAITING]
+      }
+    });
+    const meter = createUsageMeter(mount);
+    await openFakeCard(mount);
+
+    el('.usage-meter__login-expiry .usage-meter__relogin').click();
+    await flush();
+
+    expect(postedBody(fetchMock, '/api/account-login')).toEqual({
+      provider: 'claude',
+      mode: 'relogin',
+      number: 2
+    });
     meter.destroy();
   });
 

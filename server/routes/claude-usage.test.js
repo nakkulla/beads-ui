@@ -400,10 +400,46 @@ describe('claude account rows', () => {
           status: 'token_expired',
           windows: [],
           fetchedAt: null,
-          ageSeconds: null
+          ageSeconds: null,
+          loginExpiresAt: null
         }
       ]
     });
+  });
+
+  test.each([
+    ['ok', {}],
+    ['token_expired', { usageStatus: 'token_expired' }],
+    ['no_usage_windows', { usage: {} }]
+  ])('passes the login expiry through on a %s row', (status, overrides) => {
+    const account = accountRow({
+      ...overrides,
+      loginExpiresAt: '2026-11-23T20:20:56Z'
+    });
+
+    const payload = normalizeClaudeUsage({ accounts: [account] });
+
+    expect(payload.accounts).toMatchObject([
+      { status, loginExpiresAt: '2026-11-23T20:20:56Z' }
+    ]);
+  });
+
+  test.each([
+    undefined,
+    null,
+    '',
+    'not-a-date',
+    1795409184373,
+    '2026-02-29T00:00:00Z',
+    '2026-11-23'
+  ])('reports a null login expiry for %s', (login_expires_at) => {
+    const account = accountRow({ loginExpiresAt: login_expires_at });
+
+    const payload = normalizeClaudeUsage({ accounts: [account] });
+
+    expect(payload.accounts).toMatchObject([
+      { status: 'ok', loginExpiresAt: null }
+    ]);
   });
 
   test('reports the top level unavailable when the active status is not ok', () => {

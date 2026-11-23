@@ -8,7 +8,7 @@ import path from 'node:path';
 
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string | null }} UsageWindow
- * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, sessionLoginOwn: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
+ * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, sessionLoginOwn: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null, loginExpiresAt: string | null }} UsageAccount
  * @typedef {{ available: false }} UsageUnavailable
  * @typedef {{ available: true, email: string, windows: UsageWindow[], fetchedAt: string, ageSeconds: number }} ClaudeUsageActive
  * @typedef {(UsageUnavailable | ClaudeUsageActive) & { accounts?: UsageAccount[] }} ClaudeUsagePayload
@@ -107,6 +107,29 @@ function normalizeAccountWindows(input) {
   return windows;
 }
 
+const UTC_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+
+/**
+ * The refresh-token expiry cswap reports for one account, kept only as a UTC
+ * timestamp naming a real calendar instant; a missing or malformed value is
+ * null. `Date.parse` alone rolls `2026-02-29` over to March 1.
+ *
+ * @param {unknown} input
+ * @returns {string | null}
+ */
+function loginExpiresAtOf(input) {
+  if (typeof input !== 'string' || !UTC_TIMESTAMP_RE.test(input)) {
+    return null;
+  }
+  const ms = Date.parse(input);
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+  return new Date(ms).toISOString().slice(0, 19) === input.slice(0, 19)
+    ? input
+    : null;
+}
+
 /**
  * Normalize one cswap account row for the multi-account card.
  *
@@ -131,6 +154,7 @@ function normalizeAccountRow(input) {
     typeof row.alias === 'string' && row.alias.length > 0 ? row.alias : null;
   const active = row.active === true;
   const session_login_own = row.sessionLogin === 'own';
+  const login_expires_at = loginExpiresAtOf(row.loginExpiresAt);
 
   if (row.usageStatus !== 'ok') {
     return {
@@ -144,7 +168,8 @@ function normalizeAccountRow(input) {
       status: row.usageStatus,
       windows: [],
       fetchedAt: null,
-      ageSeconds: null
+      ageSeconds: null,
+      loginExpiresAt: login_expires_at
     };
   }
 
@@ -175,7 +200,8 @@ function normalizeAccountRow(input) {
       status: 'no_usage_windows',
       windows: [],
       fetchedAt: row.usageFetchedAt,
-      ageSeconds: row.usageAgeSeconds
+      ageSeconds: row.usageAgeSeconds,
+      loginExpiresAt: login_expires_at
     };
   }
 
@@ -190,7 +216,8 @@ function normalizeAccountRow(input) {
     status: 'ok',
     windows,
     fetchedAt: row.usageFetchedAt,
-    ageSeconds: row.usageAgeSeconds
+    ageSeconds: row.usageAgeSeconds,
+    loginExpiresAt: login_expires_at
   };
 }
 

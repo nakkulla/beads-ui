@@ -50,7 +50,8 @@ function account(email, number, windows, options = {}) {
     status: options.status ?? 'ok',
     windows,
     fetchedAt: '2026-11-07T00:00:00.000Z',
-    ageSeconds: 0
+    ageSeconds: 0,
+    loginExpiresAt: null
   };
 }
 

@@ -14,7 +14,7 @@ import { showToast } from '../utils/toast.js';
 
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
- * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
+ * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null, loginExpiresAt: string | null }} UsageAccount
  * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean }} ProviderSnapshot
  * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, remove_endpoint: string, login_tools: string }} ProviderDescriptor
  * @typedef {{ number: number, key: string, name: string }} RemoveTarget
@@ -67,6 +67,10 @@ const LAYER_ID = 'usage-meter-layer';
 const STALE_AGE_SECONDS = 600;
 const POLL_MS = 60_000;
 const RELOGIN_STATUSES = ['token_expired', 'relogin_required'];
+// A still-working login whose refresh token ends within this window shows its
+// expiry and [재로그인] ahead of time (UI-ja45).
+const LOGIN_EXPIRY_NOTICE_MS = 3 * 24 * 60 * 60 * 1000;
+const UTC_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 const LOGIN_POLL_MS = 2_000;
 const LOGIN_END_STATES = ['done', 'failed', 'cancelled', 'expired'];
 const ERROR_CODE_RE = /^[a-z][a-z0-9_]*$/;
@@ -395,6 +399,32 @@ export function formatAge(age_seconds) {
 }
 
 /**
+ * The expiry notice of a working login whose refresh token ends within
+ * `LOGIN_EXPIRY_NOTICE_MS`, already-passed included; null when the expiry is
+ * unknown or further away.
+ *
+ * @param {string | null} login_expires_at
+ * @param {number} now_ms
+ * @returns {string | null}
+ */
+export function loginExpiryNotice(login_expires_at, now_ms) {
+  if (login_expires_at === null) {
+    return null;
+  }
+  const expires_ms = Date.parse(login_expires_at);
+  if (!Number.isFinite(expires_ms)) {
+    return null;
+  }
+  if (expires_ms - now_ms > LOGIN_EXPIRY_NOTICE_MS) {
+    return null;
+  }
+  if (expires_ms <= now_ms) {
+    return '로그인 만료 지남';
+  }
+  return `로그인 만료 ${formatCountdown(expires_ms, now_ms)}`;
+}
+
+/**
  * @param {number} pct
  */
 function colorClass(pct) {
@@ -503,8 +533,29 @@ function normalizeAccountRow(input) {
     ageSeconds:
       typeof row.ageSeconds === 'number' && Number.isFinite(row.ageSeconds)
         ? row.ageSeconds
-        : null
+        : null,
+    loginExpiresAt: loginExpiresAtOf(row.loginExpiresAt)
   };
+}
+
+/**
+ * A row's login expiry kept only as a UTC timestamp naming a real calendar
+ * instant, else null; `Date.parse` alone rolls `2026-02-29` over to March 1.
+ *
+ * @param {unknown} input
+ * @returns {string | null}
+ */
+function loginExpiresAtOf(input) {
+  if (typeof input !== 'string' || !UTC_TIMESTAMP_RE.test(input)) {
+    return null;
+  }
+  const ms = Date.parse(input);
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+  return new Date(ms).toISOString().slice(0, 19) === input.slice(0, 19)
+    ? input
+    : null;
 }
 
 /**
@@ -2011,6 +2062,23 @@ export function createUsageMeter(mount_element, options = {}) {
   }
 
   /**
+   * The row's [재로그인], opening the isolated relogin panel for its number.
+   *
+   * @param {ProviderDescriptor} provider
+   * @param {UsageAccount} account
+   */
+  function reloginButtonTemplate(provider, account) {
+    return html`<button
+      type="button"
+      class="op-btn op-btn--primary usage-meter__relogin"
+      ?disabled=${login_panels.has(provider.key)}
+      @click=${() => void startLogin(provider, 'relogin', account.number)}
+    >
+      재로그인
+    </button>`;
+  }
+
+  /**
    * One account row of the card.
    *
    * @param {ProviderDescriptor} provider
@@ -2029,6 +2097,9 @@ export function createUsageMeter(mount_element, options = {}) {
     const provider_switching = switching_number !== undefined;
     const row_switching = switching_number === account.number;
     const needs_relogin = RELOGIN_STATUSES.includes(account.status);
+    const expiry_notice = is_ok
+      ? loginExpiryNotice(account.loginExpiresAt, now_ms)
+      : null;
     /** @type {string[]} */
     const classes = ['usage-meter__account'];
     if (account.active) {
@@ -2088,17 +2159,15 @@ export function createUsageMeter(mount_element, options = {}) {
             <span class="usage-meter__account-status"
               >${statusText(account.status)}</span
             >
-            ${needs_relogin
-              ? html`<button
-                  type="button"
-                  class="op-btn op-btn--primary usage-meter__relogin"
-                  ?disabled=${login_panels.has(provider.key)}
-                  @click=${() =>
-                    void startLogin(provider, 'relogin', account.number)}
-                >
-                  재로그인
-                </button>`
-              : ''}
+            ${needs_relogin ? reloginButtonTemplate(provider, account) : ''}
+          </div>`}
+      ${expiry_notice === null
+        ? ''
+        : html`<div
+            class="usage-meter__account-state usage-meter__login-expiry"
+          >
+            <span class="usage-meter__account-status">${expiry_notice}</span>
+            ${reloginButtonTemplate(provider, account)}
           </div>`}
       ${message === undefined
         ? ''
