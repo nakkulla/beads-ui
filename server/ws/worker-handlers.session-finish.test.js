@@ -19,11 +19,16 @@ vi.mock('../bd.js', async (importOriginal) => ({
 const { runBdJsonProjected, runShell } = await import('../bd.js');
 const { getWorkerRuntime } = await import('../worker/runtime.js');
 const { setConnWorkspace } = await import('./context.js');
-const { __resetWorkerQueueForTest, handleWorkerSessionFinish } =
-  await import('./worker-handlers.js');
+const {
+  __resetWorkerQueueForTest,
+  decorateQueue,
+  handleWorkerSessionFinish,
+  onWorkerSnapshotRefresh
+} = await import('./worker-handlers.js');
 const {
   SESSION_FINISH_BLOCK,
   createSessionFinish,
+  createSessionFinishSent,
   fillSessionFinishBlock,
   mapHubSend
 } = await import('./worker-handlers.session-finish.js');
@@ -524,6 +529,61 @@ describe('session finish block', () => {
   });
 });
 
+describe('session finish send-time memory (UI-wjrm)', () => {
+  const AT = '2026-11-23T10:00:00.000Z';
+
+  test('adds the remembered send time to the row of that Bead only', () => {
+    const sent = createSessionFinishSent();
+    sent.remember(ROOT, BEAD, AT);
+
+    const rows = sent.decorate(ROOT, [
+      { bead_id: BEAD, status: 'in_progress' },
+      { bead_id: 'UI-other', status: 'in_progress' }
+    ]);
+
+    expect(rows).toEqual([
+      { bead_id: BEAD, status: 'in_progress', finish_sent_at: AT },
+      { bead_id: 'UI-other', status: 'in_progress' }
+    ]);
+  });
+
+  test('keeps the send time of one repository off the rows of another', () => {
+    const sent = createSessionFinishSent();
+    sent.remember(ROOT, BEAD, AT);
+
+    const rows = sent.decorate('/repo/other', [
+      { bead_id: BEAD, status: 'in_progress' }
+    ]);
+
+    expect(rows).toEqual([{ bead_id: BEAD, status: 'in_progress' }]);
+  });
+
+  test('forgets the entry once the Bead leaves the in_progress rows', () => {
+    const sent = createSessionFinishSent();
+    sent.remember(ROOT, BEAD, AT);
+
+    sent.decorate(ROOT, []);
+    const rows = sent.decorate(ROOT, [
+      { bead_id: BEAD, status: 'in_progress' }
+    ]);
+
+    expect(rows).toEqual([{ bead_id: BEAD, status: 'in_progress' }]);
+  });
+
+  test('forgets the entry when the row is an open external wait row', () => {
+    const sent = createSessionFinishSent();
+    sent.remember(ROOT, BEAD, AT);
+
+    const waiting = sent.decorate(ROOT, [{ bead_id: BEAD, status: 'open' }]);
+    const rows = sent.decorate(ROOT, [
+      { bead_id: BEAD, status: 'in_progress' }
+    ]);
+
+    expect(waiting).toEqual([{ bead_id: BEAD, status: 'open' }]);
+    expect(rows).toEqual([{ bead_id: BEAD, status: 'in_progress' }]);
+  });
+});
+
 describe('worker-session-finish handler wiring', () => {
   /** @type {string} */
   let tmp;
@@ -576,6 +636,7 @@ describe('worker-session-finish handler wiring', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     __resetWorkerQueueForTest();
     vi.unstubAllEnvs();
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -618,6 +679,70 @@ describe('worker-session-finish handler wiring', () => {
         .mocked(runBdJsonProjected)
         .mock.calls.every(([, args]) => args[0] === 'show')
     ).toBe(true);
+  });
+
+  /** Make the runnable cache project this Bead as a direct session row. */
+  function stubSessionRow() {
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockImplementation(
+      /** @type {any} */ (() => [{ bead_id: BEAD, status: 'in_progress' }])
+    );
+  }
+
+  /** @returns {Record<string, any>|undefined} */
+  function sessionRow() {
+    const store = getWorkerRuntime().queueStore;
+    const decorated = /** @type {any} */ (
+      decorateQueue(hoisted.root, store.snapshot(hoisted.root))
+    );
+    return decorated.session_active.find(
+      (/** @type {any} */ row) => row.bead_id === BEAD
+    );
+  }
+
+  test('projects the send time on the session row after a successful send', async () => {
+    stubSessionRow();
+    const before = Date.now();
+
+    const result = await click();
+
+    expect(result.sent).toBe(true);
+    const at = Date.parse(sessionRow()?.finish_sent_at);
+    expect(at).toBeGreaterThanOrEqual(before);
+    expect(at).toBeLessThanOrEqual(Date.now());
+  });
+
+  test('re-pushes the workspace snapshot after a successful send', async () => {
+    /** @type {string[]} */
+    const pushed = [];
+    const off = onWorkerSnapshotRefresh((key) => pushed.push(key));
+
+    await click();
+    off();
+
+    expect(pushed).toEqual([hoisted.root]);
+  });
+
+  test('projects no send time after a send the hub refused', async () => {
+    stubSessionRow();
+    vi.mocked(runShell).mockImplementation(
+      /** @type {any} */ (
+        async (/** @type {string} */ _bin, /** @type {string[]} */ args) =>
+          args[0] === 'state'
+            ? hubResult({
+                ...HUB_STATE,
+                cwd: path.join(hoisted.root, '.worktrees', BEAD)
+              })
+            : hubResult({ ok: false, code: 'session_busy' }, 1)
+      )
+    );
+
+    const result = await click();
+
+    expect(result).toMatchObject({ sent: false, reason: 'session_busy' });
+    expect(sessionRow()).toEqual({ bead_id: BEAD, status: 'in_progress' });
   });
 
   test('refuses a Bead a Worker lane holds without calling the hub', async () => {

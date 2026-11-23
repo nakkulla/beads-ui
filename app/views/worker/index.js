@@ -144,7 +144,7 @@ import {
 } from './running-grid.js';
 import { runSessionFinishAction } from './session-finish-action.js';
 import { createSessionToggle } from './session-toggle.js';
-import { tileResolveFields } from './tile-resolve.js';
+import { sessionFinishBoundaryMs, tileResolveFields } from './tile-resolve.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
@@ -659,6 +659,13 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {number|null}
    */
   let grace_timer = null;
+  /**
+   * The one render due when the earliest `마무리 중` button opens again
+   * (UI-wjrm). `null` means none is armed.
+   *
+   * @type {number|null}
+   */
+  let finish_timer = null;
   /** @type {string|null} Candidate whose queue-lane picker is open. */
   let place_menu_bead_id = null;
   /** @type {string|null} */
@@ -3126,6 +3133,36 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Re-arm the one render due when the earliest disabled `마무리 중` button
+   * opens again (UI-wjrm): no push announces the resend window passing. Every
+   * render re-arms from the tiles it just drew.
+   *
+   * @param {LaneModel} m
+   */
+  function syncFinishTimer(m) {
+    stopFinishTimer();
+    const left = sessionFinishBoundaryMs(m.running, Date.now());
+    if (left === null) {
+      return;
+    }
+    finish_timer = window.setTimeout(() => {
+      finish_timer = null;
+      try {
+        doRender();
+      } catch {
+        /* ignore — a render failure must not leave the timer wedged */
+      }
+    }, left);
+  }
+
+  function stopFinishTimer() {
+    if (finish_timer !== null) {
+      window.clearTimeout(finish_timer);
+      finish_timer = null;
+    }
+  }
+
+  /**
    * 바인딩된 판정 칩의 클릭 하나 (UI-wg68 §5.3). 서버가 적용과 복원을 고르므로
    * 여기서는 CAS revision과 `root_dir`만 싣는다.
    */
@@ -3186,6 +3223,7 @@ export function createWorkerView(mount_element, options = {}) {
     // 모듈을 쓰므로 그리는 쪽이 자기 맥락을 소유한다.
     setChipPresetContext(chipPresetContext(m));
     syncGraceTimer(m);
+    syncFinishTimer(m);
     refreshOverlapFacts(m);
     render(topTemplate(m), top_el);
     render(lanesTemplate(m), lanes_el);
@@ -4601,10 +4639,12 @@ export function createWorkerView(mount_element, options = {}) {
      */
     pause() {
       stopGraceTimer();
+      stopFinishTimer();
     },
     refreshSessionDefaults,
     destroy() {
       stopGraceTimer();
+      stopFinishTimer();
       for (const off of unsubscribers.splice(0)) {
         try {
           off();

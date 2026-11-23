@@ -93,7 +93,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
 /**
  * @typedef {Object} RunningTile
  * @property {any[]} [spec_authoring_actions]
- * @property {{ enabled: boolean, title: string }} [finish_action] - The `[마무리]` decision (`sessionFinishFields`).
+ * @property {import('./tile-resolve.js').SessionFinishAction} [finish_action] - The `[마무리]` decision (`sessionFinishFields`).
  * @property {string} bead_id
  * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
  * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
@@ -1492,13 +1492,15 @@ function sessionOpenButton(current) {
 
 /**
  * `마무리` — the slot-6 button of a direct session tile (UI-lxxf §3.2). The
- * decision and its title come from the tile's `finish_action`; nothing here
- * re-judges it.
+ * decision, its text, and its title come from the tile's `finish_action`;
+ * nothing here re-judges it. A `마무리 중` text carries the live elapsed time
+ * since the remembered send (UI-wjrm).
  *
  * @param {RunningTile} tile
+ * @param {number} now
  * @returns {import('lit-html').TemplateResult|''}
  */
-function sessionFinishButton(tile) {
+function sessionFinishButton(tile, now) {
   const action = tile.finish_action;
   if (!action) {
     return '';
@@ -1509,7 +1511,9 @@ function sessionFinishButton(tile) {
     ?disabled=${!action.enabled}
     title=${action.title}
   >
-    마무리
+    ${action.label}${action.sent_at === undefined
+      ? ''
+      : timeSpan(action.sent_at, 'clock', now, { pre: ' · ' })}
   </button>`;
 }
 
@@ -2340,7 +2344,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       : ''}${failed && !held && !external_wait
       ? pair_foot
       : ''}${tile.finish_action
-      ? html`<div class="rtile__foot">${sessionFinishButton(tile)}</div>`
+      ? html`<div class="rtile__foot">${sessionFinishButton(tile, now)}</div>`
       : ''}${tile.spec_authoring_actions?.length
       ? html`<div class="rtile__foot">
           ${specAuthoringActionsTemplate(tile)}

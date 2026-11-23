@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import {
+  SESSION_FINISH_RESEND_MS,
   hasLiveConversation,
   liveConversationResolution,
   repoOperationResolveFields,
+  sessionFinishBoundaryMs,
   sessionFinishFields,
   tileResolveFields
 } from './tile-resolve.js';
@@ -1293,7 +1295,7 @@ describe('sessionFinishFields (UI-lxxf §3.1)', () => {
     const fields = sessionFinishFields({ session_refs: [ref()] });
 
     expect(fields).toEqual({
-      finish_action: { enabled: true, title: FINISH_TITLE }
+      finish_action: { enabled: true, title: FINISH_TITLE, label: '마무리' }
     });
   });
 
@@ -1305,7 +1307,8 @@ describe('sessionFinishFields (UI-lxxf §3.1)', () => {
     expect(fields).toEqual({
       finish_action: {
         enabled: false,
-        title: 'Codex 세션은 지원하지 않습니다'
+        title: 'Codex 세션은 지원하지 않습니다',
+        label: '마무리'
       }
     });
   });
@@ -1316,7 +1319,11 @@ describe('sessionFinishFields (UI-lxxf §3.1)', () => {
     });
 
     expect(fields).toEqual({
-      finish_action: { enabled: false, title: '지원하지 않는 세션 종류' }
+      finish_action: {
+        enabled: false,
+        title: '지원하지 않는 세션 종류',
+        label: '마무리'
+      }
     });
   });
 
@@ -1328,7 +1335,8 @@ describe('sessionFinishFields (UI-lxxf §3.1)', () => {
     expect(fields).toEqual({
       finish_action: {
         enabled: false,
-        title: '다른 머신 세션 — 이 서버에 transcript 없음'
+        title: '다른 머신 세션 — 이 서버에 transcript 없음',
+        label: '마무리'
       }
     });
   });
@@ -1339,7 +1347,11 @@ describe('sessionFinishFields (UI-lxxf §3.1)', () => {
     });
 
     expect(fields).toEqual({
-      finish_action: { enabled: false, title: 'transcript 파일 없음' }
+      finish_action: {
+        enabled: false,
+        title: 'transcript 파일 없음',
+        label: '마무리'
+      }
     });
   });
 
@@ -1377,6 +1389,76 @@ describe('sessionFinishFields (UI-lxxf §3.1)', () => {
     expect(key_only).toEqual({});
   });
 
+  test('disables the button as 마무리 중 inside the resend window', () => {
+    const sent_at = Date.parse('2026-11-23T10:00:00.000Z');
+
+    const fields = sessionFinishFields(
+      {
+        session_refs: [ref()],
+        finish_sent_at: '2026-11-23T10:00:00.000Z'
+      },
+      sent_at + SESSION_FINISH_RESEND_MS - 1
+    );
+
+    expect(fields).toEqual({
+      finish_action: {
+        enabled: false,
+        title: '마감 지시를 보냈다 — 전송 10분 뒤부터 다시 보낼 수 있다',
+        label: '마무리 중',
+        sent_at,
+        resend_at: sent_at + SESSION_FINISH_RESEND_MS
+      }
+    });
+  });
+
+  test('enables the 마무리 중 button again once the resend window passes', () => {
+    const sent_at = Date.parse('2026-11-23T10:00:00.000Z');
+
+    const fields = sessionFinishFields(
+      {
+        session_refs: [ref()],
+        finish_sent_at: '2026-11-23T10:00:00.000Z'
+      },
+      sent_at + SESSION_FINISH_RESEND_MS
+    );
+
+    expect(fields).toEqual({
+      finish_action: {
+        enabled: true,
+        title:
+          '마감 지시를 보낸 지 10분이 지났다 — 누르면 같은 지시를 다시 보낸다',
+        label: '마무리 중',
+        sent_at
+      }
+    });
+  });
+
+  test('keeps the unsupported reason over a remembered send', () => {
+    const fields = sessionFinishFields(
+      {
+        session_refs: [ref({ provider: 'codex' })],
+        finish_sent_at: '2026-11-23T10:00:00.000Z'
+      },
+      Date.parse('2026-11-23T10:01:00.000Z')
+    );
+
+    expect(fields.finish_action).toMatchObject({
+      enabled: false,
+      label: '마무리'
+    });
+  });
+
+  test('reads an unparseable send time as no send', () => {
+    const fields = sessionFinishFields({
+      session_refs: [ref()],
+      finish_sent_at: 'not-a-time'
+    });
+
+    expect(fields).toEqual({
+      finish_action: { enabled: true, title: FINISH_TITLE, label: '마무리' }
+    });
+  });
+
   test('draws no button when a wait record is attached', () => {
     const open = sessionFinishFields({ session_refs: [ref()] });
     const attached = sessionFinishFields({
@@ -1386,5 +1468,36 @@ describe('sessionFinishFields (UI-lxxf §3.1)', () => {
 
     expect(open.finish_action?.enabled).toBe(true);
     expect(attached).toEqual({});
+  });
+});
+
+describe('sessionFinishBoundaryMs (UI-wjrm)', () => {
+  test('returns the time until the earliest disabled button opens', () => {
+    const tiles = [
+      { finish_action: { resend_at: 9000 } },
+      { finish_action: { resend_at: 4000 } },
+      { finish_action: { enabled: true } },
+      {}
+    ];
+
+    const left = sessionFinishBoundaryMs(tiles, 1000);
+
+    expect(left).toBe(3000);
+  });
+
+  test('returns zero for a disabled button whose window already passed', () => {
+    const tiles = [{ finish_action: { resend_at: 500 } }, {}];
+
+    const left = sessionFinishBoundaryMs(tiles, 1000);
+
+    expect(left).toBe(0);
+  });
+
+  test('returns null when no button waits for its resend window', () => {
+    const tiles = [{ finish_action: { enabled: true, sent_at: 500 } }, {}];
+
+    const left = sessionFinishBoundaryMs(tiles, 1000);
+
+    expect(left).toBeNull();
   });
 });

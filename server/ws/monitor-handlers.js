@@ -72,6 +72,7 @@ import {
   workerQueueSubscriberCount,
   workerQueueSubscriberTotal
 } from './worker-handlers.js';
+import { SESSION_FINISH_SENT } from './worker-handlers.session-finish.js';
 
 /** @typedef {{ include_unadmitted?: boolean }} RunnableReadOptions */
 
@@ -820,8 +821,10 @@ export function buildMonitorPipeline(options = {}) {
     /** @type {Array<Record<string, unknown>>} */
     let session_active = [];
     try {
-      session_active =
-        sessionActiveFor(root_dir, sessionExcludedBeadIds(projected)) || [];
+      session_active = SESSION_FINISH_SENT.decorate(
+        root_dir,
+        sessionActiveFor(root_dir, sessionExcludedBeadIds(projected)) || []
+      );
     } catch (err) {
       log('monitor: session_active lookup failed for %s: %o', root_dir, err);
       session_active = [];

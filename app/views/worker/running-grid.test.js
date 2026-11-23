@@ -1949,7 +1949,7 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     const tile = renderSession({
       session_refs: [view()],
       root_dir: '/repo-a',
-      finish_action: { enabled: true, title: FINISH_TITLE }
+      finish_action: { enabled: true, title: FINISH_TITLE, label: '마무리' }
     });
     const button = /** @type {HTMLButtonElement} */ (
       tile.querySelector('.rtile__foot > .op-btn.rtile__finish')
@@ -1968,7 +1968,11 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
   test('disables the 마무리 button with the reason as its title', () => {
     const tile = renderSession({
       session_refs: [view({ provider: 'codex' })],
-      finish_action: { enabled: false, title: 'Codex 세션은 지원하지 않습니다' }
+      finish_action: {
+        enabled: false,
+        title: 'Codex 세션은 지원하지 않습니다',
+        label: '마무리'
+      }
     });
     const button = /** @type {HTMLButtonElement} */ (
       tile.querySelector('.rtile__finish')
@@ -1978,10 +1982,34 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     expect(button.getAttribute('title')).toBe('Codex 세션은 지원하지 않습니다');
   });
 
+  test('draws the 마무리 중 text with the elapsed time since the send', () => {
+    const tile = renderSession({
+      session_refs: [view()],
+      finish_action: {
+        enabled: false,
+        title: '보냄',
+        label: '마무리 중',
+        sent_at: 2000,
+        resend_at: 602000
+      }
+    });
+    const button = /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.rtile__foot > .op-btn.rtile__finish')
+    );
+
+    expect(button.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      '마무리 중 · 3s'
+    );
+    expect(button.disabled).toBe(true);
+    expect(button.querySelector('[data-ts]')?.getAttribute('data-ts')).toBe(
+      '2000'
+    );
+  });
+
   test('draws no 마무리 button without a finish decision', () => {
     const with_action = renderSession({
       session_refs: [view()],
-      finish_action: { enabled: true, title: FINISH_TITLE }
+      finish_action: { enabled: true, title: FINISH_TITLE, label: '마무리' }
     });
     const without_action = renderSession({ session_refs: [view()] });
 

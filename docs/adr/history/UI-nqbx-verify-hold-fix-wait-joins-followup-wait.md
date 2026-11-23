@@ -3,10 +3,11 @@ id: 'UI-nqbx'
 title: '검증 보류 수정 대기의 후속 착지 대기 연결'
 date: '2026-11-23'
 summary: '검증 보류 대화의 수정 대기는 fix_waits가 아니라 완료 의도의 후속 착지 대기로 이어지고 보류 중 연결 관찰로 대기에 들며 보류에서 든 대기가 보류로 끝나면 알림 묶음을 (PR, head)당 한 번 더 낸다 — 나머지 조항은 UI-lxxf 그대로다'
-status: 'accepted'
+status: superseded
 spec: 'docs/superpowers/specs/2026-11-23-verify-hold-fix-wait-joins-followup-wait-design.md'
 bead: 'UI-nqbx'
 supersedes: ['UI-lxxf']
+superseded_by: 'UI-wjrm'
 ---
 
 # 검증 보류 수정 대기의 후속 착지 대기 연결

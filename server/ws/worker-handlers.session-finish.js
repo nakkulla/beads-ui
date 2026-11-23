@@ -251,6 +251,65 @@ export function createSessionFinish(deps) {
 }
 
 /**
+ * @typedef {Object} SessionFinishSent
+ * @property {(root_dir: string, bead_id: string, at: string) => void} remember - Record one successful send; call only for `sent: true`.
+ * @property {(root_dir: string, rows: Array<Record<string, unknown>>) => Array<Record<string, unknown>>} decorate - Add `finish_sent_at` to the `session_active` rows of one repository and forget every entry of it whose Bead is no longer an `in_progress` row.
+ */
+
+/**
+ * Create the `[마무리]` send-time memory (UI-wjrm). It lives in server process
+ * memory only, keyed by repository and Bead id: a restart forgets it, and
+ * nothing is written to a Bead, the queue, or the disk.
+ *
+ * @returns {SessionFinishSent}
+ */
+export function createSessionFinishSent() {
+  /** @type {Map<string, string>} */
+  const sent_at = new Map();
+
+  /**
+   * @param {string} root_dir
+   * @param {string} bead_id
+   */
+  function keyOf(root_dir, bead_id) {
+    return `${root_dir}\u0000${bead_id}`;
+  }
+
+  return {
+    remember(root_dir, bead_id, at) {
+      sent_at.set(keyOf(root_dir, bead_id), at);
+    },
+    decorate(root_dir, rows) {
+      /** @type {Set<string>} */
+      const live = new Set();
+      for (const row of rows) {
+        if (row && row.status === 'in_progress') {
+          live.add(String(row.bead_id));
+        }
+      }
+      const prefix = keyOf(root_dir, '');
+      for (const key of [...sent_at.keys()]) {
+        if (key.startsWith(prefix) && !live.has(key.slice(prefix.length))) {
+          sent_at.delete(key);
+        }
+      }
+      return rows.map((row) => {
+        const at = row ? sent_at.get(keyOf(root_dir, String(row.bead_id))) : '';
+        return at ? { ...row, finish_sent_at: at } : row;
+      });
+    }
+  };
+}
+
+/**
+ * The process-wide send-time memory both the Worker and the Monitor
+ * projections read, so the two tabs draw the same `마무리 중` tile.
+ *
+ * @type {SessionFinishSent}
+ */
+export const SESSION_FINISH_SENT = createSessionFinishSent();
+
+/**
  * Default `session-hub` runner: the same binary path the launcher uses.
  *
  * @param {string[]} args

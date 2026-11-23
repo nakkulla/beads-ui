@@ -4764,6 +4764,30 @@ describe('monitor 세션 정체 (UI-4xzk §6.4)', () => {
     ).toBeUndefined();
   });
 
+  test('reads the server send time into a disabled 마무리 중 finish action', () => {
+    const sent_at = Date.now() - 60_000;
+
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            sessionActive({
+              session_refs: [VIEW],
+              finish_sent_at: new Date(sent_at).toISOString()
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(/** @type {any} */ (lanes.running[0]).finish_action).toMatchObject({
+      enabled: false,
+      label: '마무리 중',
+      sent_at
+    });
+  });
+
   test('falls back to an empty list when the key is absent', () => {
     const lanes = buildLanes(
       [workspace({ session_active: [sessionActive()] })],

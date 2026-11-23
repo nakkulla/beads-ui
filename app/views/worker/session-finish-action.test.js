@@ -41,6 +41,19 @@ describe('runSessionFinishAction (UI-lxxf §3.3)', () => {
     });
   });
 
+  test('sends nothing from a disabled button', async () => {
+    const button = makeButton();
+    button.disabled = true;
+    const transport = vi.fn().mockResolvedValue({ sent: true });
+    const confirm = vi.fn(() => true);
+
+    const sent = await runSessionFinishAction(button, { transport, confirm });
+
+    expect(sent).toBe(false);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   test('sends the tab repository when the tile carries no root_dir', async () => {
     const button = makeButton();
     delete (

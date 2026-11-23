@@ -239,6 +239,7 @@ import { pushKeyed } from './push-patch.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
 import { trimQueueProjection } from './snapshot-retention.js';
 import {
+  SESSION_FINISH_SENT,
   createSessionFinish,
   realpathOf,
   runSessionHub
@@ -3361,7 +3362,8 @@ function repoOperationResolveMaterial(operation_id, raw, interactive_sessions) {
  */
 function sessionActiveRows(workspace_key, queue) {
   try {
-    return (
+    return SESSION_FINISH_SENT.decorate(
+      workspace_key,
       getWorkerRuntime().runnableCache.sessionActivePeek(
         workspace_key,
         sessionExcludedBeadIds(queue)
@@ -8723,6 +8725,8 @@ const SESSION_FINISH_IN_FLIGHT = new Set();
 /**
  * Send the finish directive to a direct session tile's own session (UI-lxxf).
  * Reads the Bead and the queue, calls the session hub once, and writes neither.
+ * A successful send is remembered in process memory and re-pushed so every
+ * device draws the tile as `마무리 중` (UI-wjrm).
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -8783,7 +8787,13 @@ export async function handleWorkerSessionFinish(ws, req) {
     realpath: realpathOf
   });
   const result = await finish({ root_dir: key, bead_id: p.bead_id });
+  if (result.sent === true) {
+    SESSION_FINISH_SENT.remember(key, p.bead_id, new Date().toISOString());
+  }
   ws.send(JSON.stringify(makeOk(req, result)));
+  if (result.sent === true) {
+    fanout(key, queueStore().snapshot(key));
+  }
 }
 
 /**

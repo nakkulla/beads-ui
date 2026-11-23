@@ -67,6 +67,8 @@ const {
 const { buildMonitorPipeline, buildMonitorWorkspacesState } =
   await import('../../../server/ws/monitor-handlers.js');
 const { decorateQueue } = await import('../../../server/ws/worker-handlers.js');
+const { SESSION_FINISH_SENT } =
+  await import('../../../server/ws/worker-handlers.session-finish.js');
 const { createMonitorPipelineStore } =
   await import('../../data/monitor-pipeline-store.js');
 const { createSubscriptionIssueStore } =
@@ -2881,6 +2883,30 @@ describe('direct session tile finish button parity between the Worker and Monito
     expect(buttons[1]).not.toBeNull();
     expect(buttons[0]?.hasAttribute('disabled')).toBe(false);
     expect(buttons[0]?.textContent?.trim()).toBe('마무리');
+    expect(partsOf(cards[1])).toEqual(partsOf(cards[0]));
+  });
+
+  test('draws the same disabled 마무리 중 button on both tabs after a send', async () => {
+    SESSION_FINISH_SENT.remember(
+      WS,
+      'FN-1',
+      new Date(NOW - 2 * 60_000).toISOString()
+    );
+
+    const { worker, monitor } = await drawDirectSession(
+      `claude:${SESSION_ID}@host`
+    );
+
+    const cards = [worker, monitor].map(
+      (mount) => /** @type {HTMLElement} */ (cardsByBead(mount).get('FN-1'))
+    );
+    const buttons = cards.map((card) =>
+      card.querySelector('.rtile__foot .rtile__finish')
+    );
+    expect(buttons[0]?.hasAttribute('disabled')).toBe(true);
+    expect(buttons[0]?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      '마무리 중 · 2m 00s'
+    );
     expect(partsOf(cards[1])).toEqual(partsOf(cards[0]));
   });
 

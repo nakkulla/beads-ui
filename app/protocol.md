@@ -365,19 +365,25 @@ bead a session reopened is being worked on now. Each row carries
 `{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by, session_refs, has_external_wait, session_observation? }`.
 `has_external_wait` (UI-lxxf) is true when the bead holds a non-empty
 `external_wait` metadata key, whether or not a wait record is attached; the
-`[마무리]` predicate reads it. `route` is `metadata.route` or `''` when
-unpinned, `spec_id` is `''` when absent or in conflict, and `workflow` /
-`blocked` / `blocked_by` follow the same rules as the runnable rows below.
-`plan_path` (UI-anna §3.1) is `metadata.plan_path` or `null`, carried for the
-same reason a runnable row carries it: when the bead resolves an artifact, its
-declared scope is read from the SAME artifact set (`[spec_id, plan_path?]`) as a
-queued bead's. `scope: string[]` (UI-anna §3.1) is that declared scope, attached
-ADDITIVELY in the same shape and with the same reading as a runnable row's:
-present only on a scope-cache hit or a description declaration, and absent means
-판정 불가 — not read yet, unreadable, or nothing declared — never "no scope".
-The source LADDER is the runnable row's too (UI-zw6j): the artifact set when
-`spec_id` resolves one, otherwise the description's `## scope` section, which
-ships no artifacts. Its value is the one the same snapshot's
+`[마무리]` predicate reads it. `finish_sent_at` (UI-wjrm) is the ISO time of the
+last successful `worker-session-finish` send for that bead, kept in server
+process memory only (a restart forgets it) and absent when none; an entry is
+forgotten once the bead is no longer an `in_progress` row of this bucket. The
+`[마무리]` predicate draws it as `마무리 중 · <elapsed>`, disabled for a fixed
+resend window and pressable again with the same text after it. Both the worker
+and monitor channels carry it from the same memory. `route` is `metadata.route`
+or `''` when unpinned, `spec_id` is `''` when absent or in conflict, and
+`workflow` / `blocked` / `blocked_by` follow the same rules as the runnable rows
+below. `plan_path` (UI-anna §3.1) is `metadata.plan_path` or `null`, carried for
+the same reason a runnable row carries it: when the bead resolves an artifact,
+its declared scope is read from the SAME artifact set (`[spec_id, plan_path?]`)
+as a queued bead's. `scope: string[]` (UI-anna §3.1) is that declared scope,
+attached ADDITIVELY in the same shape and with the same reading as a runnable
+row's: present only on a scope-cache hit or a description declaration, and
+absent means 판정 불가 — not read yet, unreadable, or nothing declared — never
+"no scope". The source LADDER is the runnable row's too (UI-zw6j): the artifact
+set when `spec_id` resolves one, otherwise the description's `## scope` section,
+which ships no artifacts. Its value is the one the same snapshot's
 `bead_scope[bead_id].scope` carries, so a bead moving 세션 착수 → 큐 적재 never
 changes the overlap verdict. Each row also carries
 `session_refs: SessionRefView[]` (UI-4xzk §4.1) — `metadata.session_ref`
@@ -1168,13 +1174,17 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   checks that the Claude session is local and belongs to this repository's human
   sessions (not a Worker attempt or conversation session; its hub-reported `cwd`
   is inside the workspace root), then calls `session-hub send` once with the
-  finish directive on stdin and never retries. Nothing is written to the Bead or
-  the queue. Reply `{ bead_id, sent, delivery, reason }`: `sent: true` carries
-  `delivery` `resumed` | `typed` | `queued`; `sent: false` carries
-  `delivery: null` and a `reason` that is a server refusal (`not_session_tile`,
-  `no_session_ref`, `unsafe_session_id`, `provider_unsupported`, `not_local`,
-  `session_mismatch`, `in_flight`, `hub_unavailable`, `hub_invalid_response`,
-  `trust_prompt`, `resume_unconfirmed`) or the hub's own `code` verbatim.
+  finish directive on stdin and never retries. Nothing is written to the Bead,
+  the queue, or the disk: a `sent: true` reply only records the send time in
+  server process memory, keyed by repository and Bead, and re-pushes the
+  workspace snapshot so every device's `session_active` row carries
+  `finish_sent_at` (UI-wjrm). Reply `{ bead_id, sent, delivery, reason }`:
+  `sent: true` carries `delivery` `resumed` | `typed` | `queued`; `sent: false`
+  carries `delivery: null` and a `reason` that is a server refusal
+  (`not_session_tile`, `no_session_ref`, `unsafe_session_id`,
+  `provider_unsupported`, `not_local`, `session_mismatch`, `in_flight`,
+  `hub_unavailable`, `hub_invalid_response`, `trust_prompt`,
+  `resume_unconfirmed`) or the hub's own `code` verbatim.
 - `worker-attempt-retry-now` payload: `{ bead_id }` — [지금 재시도] (D9): pulls
   that bead's retry rung to now and runs the due retries; the rung is still
   spent by the attempt that launches, and no other bead moves (this is not the

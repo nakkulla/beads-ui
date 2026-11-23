@@ -119,7 +119,10 @@ import {
 } from '../worker/running-grid.js';
 import { runSessionFinishAction } from '../worker/session-finish-action.js';
 import { createSessionToggle } from '../worker/session-toggle.js';
-import { tileResolveFields } from '../worker/tile-resolve.js';
+import {
+  sessionFinishBoundaryMs,
+  tileResolveFields
+} from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
 import { createMonitorPlacementPanel } from './placement-panel.js';
@@ -2747,8 +2750,10 @@ export function createMonitorView(mount_element, options) {
   /**
    * Arm the one render due at the next time boundary (UI-yu2o). A grace chip
    * and the `[지금 시작]` it stands up disappear when the clock passes the
-   * grace expiry, which no push announces and the text ticker cannot draw. Only
-   * a loaded tab arms it; every render re-arms from the lanes it just drew.
+   * grace expiry, and a `마무리 중` button opens again when its resend window
+   * passes (UI-wjrm) — neither is announced by a push nor drawable by the text
+   * ticker. Only a loaded tab arms it; every render re-arms from the lanes it
+   * just drew.
    *
    * @param {number} now
    */
@@ -2770,6 +2775,10 @@ export function createMonitorView(mount_element, options) {
       if (left > 0 && (next === null || left < next)) {
         next = left;
       }
+    }
+    const finish_left = sessionFinishBoundaryMs(lanes.running, now);
+    if (finish_left !== null && (next === null || finish_left < next)) {
+      next = finish_left;
     }
     if (next === null) {
       return;

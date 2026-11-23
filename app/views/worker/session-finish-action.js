@@ -68,13 +68,17 @@ export function sessionFinishToast(res) {
  * enclosing tile's `data-bead-id` and `data-root-dir`, so the button itself
  * carries no Bead identity. A tile without `data-root-dir` (the one-repo Worker
  * tab) sends `deps.root_dir`, the tab's own repository. A cancelled confirm
- * sends nothing.
+ * sends nothing, and so does a disabled button: a click on its elapsed-time
+ * span can still reach the delegated handler in some browsers (UI-wjrm).
  *
  * @param {HTMLElement} button - Sits in a `.rtile` tile.
  * @param {{ transport: (type: string, payload?: unknown) => Promise<any>, confirm?: (message: string) => boolean, root_dir?: string }} deps
  * @returns {Promise<boolean>} Whether a request was sent.
  */
 export async function runSessionFinishAction(button, deps) {
+  if (button instanceof HTMLButtonElement && button.disabled) {
+    return false;
+  }
   const tile = /** @type {HTMLElement|null} */ (button.closest('.rtile'));
   const bead_id = tile?.dataset.beadId || '';
   if (!bead_id) {

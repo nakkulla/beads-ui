@@ -4276,11 +4276,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : [],
         // `[마무리]` (UI-lxxf §3.1): 술어는 한 곳이 정한다. 외부 대기는 레코드가
         // 아니라 Bead의 키가 판정하므로 투영 플래그와 붙은 레코드를 함께 본다.
-        ...sessionFinishFields({
-          session_refs: entry.session_refs,
-          has_external_wait: entry.has_external_wait === true,
-          external_wait: session_wait
-        }),
+        ...sessionFinishFields(
+          {
+            session_refs: entry.session_refs,
+            has_external_wait: entry.has_external_wait === true,
+            external_wait: session_wait,
+            finish_sent_at: entry.finish_sent_at
+          },
+          now
+        ),
         badges: [],
         alert: false
       });

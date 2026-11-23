@@ -1,3 +1,4 @@
+import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 
 /** The `[워커로 이어가기]` op the server projects for a conversation stop. */
@@ -43,6 +44,27 @@ const SESSION_FINISH_TITLE =
   '이 세션에 마감 지시를 보낸다 — 세션이 이 Bead의 남은 마감 절차를 끝낸다';
 
 /**
+ * How long after a successful `[마무리]` send the button stays disabled before
+ * the same directive may be sent again (UI-wjrm).
+ */
+export const SESSION_FINISH_RESEND_MS = 10 * 60_000;
+
+/** `[마무리]` while a sent directive is inside the resend window. */
+const SESSION_FINISH_SENT_TITLE = `마감 지시를 보냈다 — 전송 ${SESSION_FINISH_RESEND_MS / 60_000}분 뒤부터 다시 보낼 수 있다`;
+
+/** `[마무리]` once the resend window of a sent directive has passed. */
+const SESSION_FINISH_RESEND_TITLE = `마감 지시를 보낸 지 ${SESSION_FINISH_RESEND_MS / 60_000}분이 지났다 — 누르면 같은 지시를 다시 보낸다`;
+
+/**
+ * @typedef {Object} SessionFinishAction
+ * @property {boolean} enabled
+ * @property {string} title
+ * @property {'마무리'|'마무리 중'} label - The button text; `마무리 중` is followed by the elapsed time since `sent_at`.
+ * @property {number} [sent_at] - Epoch ms of the last successful send this server remembers.
+ * @property {number} [resend_at] - Epoch ms when a disabled `마무리 중` button opens again.
+ */
+
+/**
  * Why `[마무리]` is drawn but cannot be pressed, by the current session's
  * provider (UI-lxxf §3.1).
  *
@@ -55,14 +77,18 @@ const SESSION_FINISH_UNSUPPORTED = {
 
 /**
  * The `[마무리]` decision of one DIRECT session tile (UI-lxxf §3.1): the one
- * place that says whether the button stands, so the renderer never re-judges.
- * No current session, or a Bead that holds an `external_wait` key (the flag from
- * the projection or any attached record), draws nothing.
+ * place that says whether the button stands, what it reads, and whether it can
+ * be pressed, so the renderer never re-judges. No current session, or a Bead
+ * that holds an `external_wait` key (the flag from the projection or any
+ * attached record), draws nothing. A server-remembered send (`finish_sent_at`,
+ * UI-wjrm) turns a pressable button into `마무리 중`, disabled until the resend
+ * window passes and then pressable again with the same text.
  *
- * @param {{ session_refs?: any[]|null, has_external_wait?: boolean, external_wait?: unknown }} tile
- * @returns {{ finish_action?: { enabled: boolean, title: string } }}
+ * @param {{ session_refs?: any[]|null, has_external_wait?: boolean, external_wait?: unknown, finish_sent_at?: unknown }} tile
+ * @param {number} [now]
+ * @returns {{ finish_action?: SessionFinishAction }}
  */
-export function sessionFinishFields(tile) {
+export function sessionFinishFields(tile, now = Date.now()) {
   if (tile.has_external_wait === true || tile.external_wait) {
     return {};
   }
@@ -74,20 +100,89 @@ export function sessionFinishFields(tile) {
   }
   const unsupported = SESSION_FINISH_UNSUPPORTED[current.provider];
   if (unsupported) {
-    return { finish_action: { enabled: false, title: unsupported } };
+    return {
+      finish_action: { enabled: false, title: unsupported, label: '마무리' }
+    };
   }
   if (current.provider !== 'claude') {
     return {
-      finish_action: { enabled: false, title: '지원하지 않는 세션 종류' }
+      finish_action: {
+        enabled: false,
+        title: '지원하지 않는 세션 종류',
+        label: '마무리'
+      }
     };
   }
   const blocked = SESSION_OPEN_BLOCKED[current.locality];
   if (blocked) {
-    return { finish_action: { enabled: false, title: blocked } };
+    return {
+      finish_action: { enabled: false, title: blocked, label: '마무리' }
+    };
   }
-  return current.locality === 'local'
-    ? { finish_action: { enabled: true, title: SESSION_FINISH_TITLE } }
-    : {};
+  if (current.locality !== 'local') {
+    return {};
+  }
+  const sent_at = coerceTimestampMs(
+    /** @type {number|string|null|undefined} */ (tile.finish_sent_at)
+  );
+  if (sent_at === null) {
+    return {
+      finish_action: {
+        enabled: true,
+        title: SESSION_FINISH_TITLE,
+        label: '마무리'
+      }
+    };
+  }
+  const resend_at = sent_at + SESSION_FINISH_RESEND_MS;
+  return now < resend_at
+    ? {
+        finish_action: {
+          enabled: false,
+          title: SESSION_FINISH_SENT_TITLE,
+          label: '마무리 중',
+          sent_at,
+          resend_at
+        }
+      }
+    : {
+        finish_action: {
+          enabled: true,
+          title: SESSION_FINISH_RESEND_TITLE,
+          label: '마무리 중',
+          sent_at
+        }
+      };
+}
+
+/**
+ * Milliseconds until the earliest disabled `마무리 중` button among `tiles`
+ * opens again, or null when none waits — the one render each tab arms, since
+ * no push announces the resend window passing (UI-wjrm). A button drawn
+ * disabled whose window has already passed by `now` yields 0, so the tab
+ * redraws it at once instead of leaving it disabled.
+ *
+ * @param {ReadonlyArray<Record<string, any>>} tiles - Running lane items; only their `finish_action` is read.
+ * @param {number} now
+ * @returns {number|null}
+ */
+export function sessionFinishBoundaryMs(tiles, now) {
+  /** @type {number|null} */
+  let next = null;
+  for (const tile of tiles) {
+    const action = /** @type {SessionFinishAction|undefined} */ (
+      tile.finish_action
+    );
+    const resend_at = action?.resend_at;
+    if (typeof resend_at !== 'number') {
+      continue;
+    }
+    const left = Math.max(0, resend_at - now);
+    if (next === null || left < next) {
+      next = left;
+    }
+  }
+  return next;
 }
 
 /**
