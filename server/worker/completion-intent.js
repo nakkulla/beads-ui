@@ -32,7 +32,8 @@ import {
 } from './merge-queue.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
-  COMPLETION_RETRY_MAX
+  COMPLETION_RETRY_MAX,
+  completionHoldReturnState
 } from './queue-store.js';
 import { RECEIPT_HOLD_RESOLUTION } from './receipt-check.js';
 import { conditionWaitPolicy } from './repo-operation-policy.js';
@@ -1717,6 +1718,14 @@ export function createCompletionActionDriver(deps) {
    * @type {Set<string>}
    */
   const hold_pass_checked = new Set();
+  /**
+   * Roots whose hold-return launch is in flight in this process (UI-nqbx
+   * §4.3). The persisted request stays until the launch is confirmed, so this
+   * only keeps a second pass from launching it again meanwhile.
+   *
+   * @type {Set<string>}
+   */
+  const hold_return_flights = new Set();
 
   function notify() {
     if (typeof deps.notifyChanged === 'function') {
@@ -3057,7 +3066,7 @@ export function createCompletionActionDriver(deps) {
     recordTimeline(
       root_bead_id,
       'merge_step',
-      `hold-exit:${hold.head_sha}`,
+      `hold-exit:${current.subject.pr_url ?? '-'}:${hold.head_sha}`,
       `머지 보류 — 검증 실패 · ${hold.reason}`
     );
     postCompletionComment(
@@ -3090,9 +3099,10 @@ export function createCompletionActionDriver(deps) {
 
   /**
    * Launch the pending hold-return conversation once (UI-nqbx §4.3). The
-   * store hands the request out only when the row's earlier conversation
-   * window is gone; a launch that did not happen puts it back for a later
-   * pass, and one that did — or that has nothing to talk about — spends it.
+   * request stays on the record until a launch is confirmed: a conversation
+   * of the row opened since the request spends it, a window still open defers
+   * it, and a launch that did not happen leaves it for a later pass without
+   * any write.
    *
    * @param {string} root_bead_id
    * @returns {Promise<void>}
@@ -3100,40 +3110,46 @@ export function createCompletionActionDriver(deps) {
   async function launchHoldReturn(root_bead_id) {
     if (
       typeof failure_conversation?.launchForBead !== 'function' ||
-      typeof deps.store.takeCompletionHoldReturn !== 'function'
+      typeof deps.store.spendCompletionHoldReturn !== 'function' ||
+      hold_return_flights.has(root_bead_id)
     ) {
       return;
     }
-    const taken = deps.store.takeCompletionHoldReturn(deps.workspace, {
+    const { request, state } = completionHoldReturnState(
+      deps.store.snapshot(deps.workspace),
       root_bead_id
-    });
-    if (!taken.ok || !taken.request) {
+    );
+    if (!request || state === 'deferred') {
       return;
     }
-    notify();
-    /** @type {any} */
-    let outcome = null;
-    try {
-      outcome = await failure_conversation.launchForBead({
-        workspace: deps.workspace,
-        repo: deps.repo ?? null,
-        bead_id: root_bead_id
-      });
-    } catch (err) {
-      log('hold return launch failed for %s: %o', root_bead_id, err);
-    }
-    const spent =
-      outcome?.session === 'launched' ||
-      (outcome?.session === 'not_launched' &&
-        (outcome.reason === 'disabled' ||
-          outcome.reason === 'no_terminal_failure'));
-    if (spent) {
-      return;
+    if (state === 'due') {
+      hold_return_flights.add(root_bead_id);
+      /** @type {any} */
+      let outcome = null;
+      try {
+        outcome = await failure_conversation.launchForBead({
+          workspace: deps.workspace,
+          repo: deps.repo ?? null,
+          bead_id: root_bead_id
+        });
+      } catch (err) {
+        log('hold return launch failed for %s: %o', root_bead_id, err);
+      } finally {
+        hold_return_flights.delete(root_bead_id);
+      }
+      const spent =
+        outcome?.session === 'launched' ||
+        (outcome?.session === 'not_launched' &&
+          (outcome.reason === 'disabled' ||
+            outcome.reason === 'no_terminal_failure'));
+      if (!spent) {
+        return;
+      }
     }
     if (
-      deps.store.restoreCompletionHoldReturn(deps.workspace, {
+      deps.store.spendCompletionHoldReturn(deps.workspace, {
         root_bead_id,
-        request: taken.request
+        requested_at: request.requested_at
       }).ok
     ) {
       notify();

@@ -283,6 +283,18 @@ describe('completion_status follow-up wait projection (UI-ty6k §4.3)', () => {
       });
     });
 
+    test('marks the base-only verify hold so the row offers no hold conversation', () => {
+      const status = holdWaitStatus('base_verifying');
+
+      expect(status.hold_wait_verifying).toBe(true);
+    });
+
+    test('leaves the base-verify mark off a standing wait', () => {
+      const status = holdWaitStatus('waiting');
+
+      expect(status.hold_wait_verifying).toBeUndefined();
+    });
+
     test('shows the wait badge once the wait stands', () => {
       const status = holdWaitStatus('waiting');
 

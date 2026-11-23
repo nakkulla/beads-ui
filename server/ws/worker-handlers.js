@@ -3029,7 +3029,10 @@ function completionStatusFor(workspace_key, queue) {
         phase === 'holding'
           ? null
           : projectAutoResolution(value.auto_resolution),
-      followup_wait: projectFollowupWait(phase, value.followup_wait)
+      followup_wait: projectFollowupWait(phase, value.followup_wait),
+      // The hold badge without the hold's conversation: nothing ends the
+      // base verify early, so `[세션에서 이어가기]` waits for it.
+      ...(phase !== value.phase ? { hold_wait_verifying: true } : {})
     };
   }
   return statuses;

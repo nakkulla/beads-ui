@@ -17,6 +17,7 @@ import {
   GUARD_WARNING_COMMAND_MAX,
   LANE_RELEASING_ATTEMPT_STATUSES,
   TERMINAL_ATTEMPT_STATUSES,
+  completionHoldReturnState,
   createQueueStore,
   heldSerialLaneOf,
   makeAttempt,
@@ -19553,81 +19554,82 @@ describe('worker/queue-store red-base follow-up wait (UI-ty6k)', () => {
       });
     });
 
-    test('hands the return request out once', () => {
+    test('reports the return request due when no window stands in the way', () => {
       const { store } = exitedStore();
 
-      const first = store.takeCompletionHoldReturn(WS, {
-        root_bead_id: 'UI-root'
-      });
-      const second = store.takeCompletionHoldReturn(WS, {
-        root_bead_id: 'UI-root'
-      });
+      const status = completionHoldReturnState(store.snapshot(WS), 'UI-root');
 
-      expect(first).toMatchObject({
-        ok: true,
-        request: { pr_url: PR_URL, head_sha: HEAD }
+      expect(status).toMatchObject({
+        state: 'due',
+        request: { pr_url: PR_URL, head_sha: HEAD, requested_at: 30 }
       });
-      expect(second.ok).toBe(false);
     });
 
-    test('keeps the return request while the row has a live conversation window', () => {
+    test('defers the return request while the row has a live conversation window', () => {
       const { store } = exitedStore();
       store.recordInteractiveSession(WS, liveWindow());
 
-      const taken = store.takeCompletionHoldReturn(WS, {
-        root_bead_id: 'UI-root'
-      });
+      const status = completionHoldReturnState(store.snapshot(WS), 'UI-root');
 
-      expect(taken.ok).toBe(false);
-      expect(
-        store.snapshot(WS).completion_intents['UI-root'].hold_return
-      ).toMatchObject({ head_sha: HEAD });
+      expect(status.state).toBe('deferred');
     });
 
-    test('hands the return request out once the window settles', () => {
+    test('reports the return request due once the window settles', () => {
       const { store } = exitedStore();
       store.recordInteractiveSession(WS, liveWindow());
       store.markInteractiveSessionsSettled(WS, 'UI-root', 'done');
 
-      const taken = store.takeCompletionHoldReturn(WS, {
-        root_bead_id: 'UI-root'
-      });
+      const status = completionHoldReturnState(store.snapshot(WS), 'UI-root');
 
-      expect(taken.ok).toBe(true);
+      expect(status.state).toBe('due');
     });
 
-    test('puts back a return request whose launch did not happen', () => {
+    test('reports the return request used once a conversation launched after it', () => {
       const { store } = exitedStore();
-      const taken = store.takeCompletionHoldReturn(WS, {
-        root_bead_id: 'UI-root'
-      });
+      store.recordInteractiveSession(WS, { ...liveWindow(), launched_at: 30 });
 
-      const restored = store.restoreCompletionHoldReturn(WS, {
+      const status = completionHoldReturnState(store.snapshot(WS), 'UI-root');
+
+      expect(status.state).toBe('used');
+    });
+
+    test('keeps the return request on the record while it is only read', () => {
+      const { store } = exitedStore();
+      completionHoldReturnState(store.snapshot(WS), 'UI-root');
+
+      const restored = createQueueStore().snapshot(WS);
+
+      expect(restored.completion_intents['UI-root'].hold_return).toMatchObject({
+        head_sha: HEAD
+      });
+    });
+
+    test('spends the return request it names', () => {
+      const { store } = exitedStore();
+
+      const spent = store.spendCompletionHoldReturn(WS, {
         root_bead_id: 'UI-root',
-        request: /** @type {any} */ (taken).request
+        requested_at: 30
       });
 
-      expect(restored.ok).toBe(true);
+      expect(spent.ok).toBe(true);
+      expect(spent.queue.completion_intents['UI-root']).not.toHaveProperty(
+        'hold_return'
+      );
+    });
+
+    test('leaves a return request recorded at another time unspent', () => {
+      const { store } = exitedStore();
+
+      const spent = store.spendCompletionHoldReturn(WS, {
+        root_bead_id: 'UI-root',
+        requested_at: 29
+      });
+
+      expect(spent.ok).toBe(false);
       expect(
         store.snapshot(WS).completion_intents['UI-root'].hold_return
-      ).toMatchObject({ head_sha: HEAD });
-    });
-
-    test('refuses to put back a return request for a head that moved on', () => {
-      const { store } = exitedStore();
-      const taken = store.takeCompletionHoldReturn(WS, {
-        root_bead_id: 'UI-root'
-      });
-
-      const restored = store.restoreCompletionHoldReturn(WS, {
-        root_bead_id: 'UI-root',
-        request: {
-          .../** @type {any} */ (taken).request,
-          head_sha: 'c'.repeat(40)
-        }
-      });
-
-      expect(restored.ok).toBe(false);
+      ).toMatchObject({ requested_at: 30 });
     });
 
     test('drops the return request when a new head is pinned', () => {

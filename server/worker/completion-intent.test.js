@@ -29,7 +29,11 @@ import {
 } from './completion-intent.js';
 import { createForeignHandoffAnnouncer } from './foreign-handoff.js';
 import { createLockManager } from './locks.js';
-import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
+import {
+  evaluateMergeGate,
+  observedReviewReceiptState,
+  reviewReceiptState
+} from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrPoller } from './pr-poller.js';
@@ -6539,7 +6543,7 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
         );
         expect(h.comment).toHaveBeenCalledTimes(1);
         expect(timelineSeqs(h, 'hold-exit:')).toEqual([
-          `hold-exit:${RED_HEAD}`
+          `hold-exit:${PR_URL}:${RED_HEAD}`
         ]);
         expect(h.conversation.launchForBead).toHaveBeenCalledTimes(1);
       }
@@ -6794,9 +6798,69 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
       expect(rootIntent(h).hold_return).toMatchObject({ head_sha: RED_HEAD });
     });
 
+    test('writes nothing when the return launch does not happen again', async () => {
+      const h = await heldHarness();
+      h.conversation.launchForBead.mockRejectedValue(new Error('tmux gone'));
+      await linkLive(h);
+      await linkSettled(h);
+      const revision = h.store.snapshot(DRIVER_WS).revision;
+
+      await coordinatorOver(h).reconcile();
+      await settle();
+
+      expect(h.conversation.launchForBead).toHaveBeenCalledTimes(2);
+      expect(h.store.snapshot(DRIVER_WS).revision).toBe(revision);
+    });
+
+    test('spends a request whose conversation launched before a restart instead of launching again', async () => {
+      const first = await heldHarness();
+      first.conversation.launchForBead.mockReturnValue(new Promise(() => {}));
+      await linkLive(first);
+      await linkSettled(first);
+      const requested_at = /** @type {any} */ (rootIntent(first)).hold_return
+        .requested_at;
+      first.store.recordInteractiveSession(DRIVER_WS, {
+        bead_id: 'UI-root',
+        kind: 'resolve',
+        provider: 'claude',
+        pane_id: '%2',
+        tmux_session: 'interactive',
+        tmux_window: 'resolve',
+        launched_at: requested_at,
+        state: 'live'
+      });
+      const h = waitHarness({
+        store: restartedStore(first),
+        issues: {
+          'UI-fix1': {
+            id: 'UI-fix1',
+            status: 'closed',
+            closed_at: AFTER_HOLD,
+            metadata: {}
+          }
+        }
+      });
+
+      await coordinatorOver(h).reconcile();
+      await settle();
+
+      expect(h.conversation.launchForBead).not.toHaveBeenCalled();
+      expect(rootIntent(h)).not.toHaveProperty('hold_return');
+    });
+
     describe('recovery from a missed observation over the real verify path', () => {
       const TREE = '3'.repeat(40);
       const VERIFY_CONFIG = '[verify]\nscript = "repo-ops/script/verify"';
+      const PR_DETAIL = {
+        number: 1,
+        url: PR_URL,
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-root',
+        base_ref: 'main',
+        head_sha: RED_HEAD
+      };
 
       /** A git stand-in that answers the verify policy reads of any commit. */
       function verifyGit() {
@@ -6875,19 +6939,7 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
           observations: getWorkerRuntime().prObservations,
           getSubscriberCount: () => 0,
           gh: {
-            prDetail: async () => ({
-              state: 'ok',
-              data: {
-                number: 1,
-                url: PR_URL,
-                state: 'OPEN',
-                mergeable: 'MERGEABLE',
-                merge_state_status: 'CLEAN',
-                head_ref: 'UI-root',
-                base_ref: 'main',
-                head_sha: RED_HEAD
-              }
-            })
+            prDetail: async () => ({ state: 'ok', data: PR_DETAIL })
           },
           readIssue: async () => ({ metadata: { route: 'quick_fix' } }),
           resolveBase: async () =>
@@ -6965,7 +7017,50 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
           base_sha: MOVED_BASE
         };
         const runtime = getWorkerRuntime();
+        const restarted = verifyPath(h.store, repo, world);
+        // The real gate's verify step (pr-actions `gateNow`): ensure the
+        // verify of the pinned (base, head), then read its receipt.
         h.completionGate.mockImplementation(async () => {
+          runtime.prObservations.record(DRIVER_WS, 'UI-root', {
+            error: null,
+            pr: PR_DETAIL,
+            review_receipt: {
+              state: await reviewReceiptState(
+                { metadata: { route: 'quick_fix' } },
+                RED_HEAD,
+                undefined
+              ),
+              head_sha: RED_HEAD
+            }
+          });
+          const ensured = await restarted.operations.ensureVerify({
+            repo,
+            origin: 'origin',
+            target_base: 'main',
+            base_sha: MOVED_BASE,
+            head_sha: RED_HEAD,
+            bead_id: 'UI-root',
+            pr_number: 1,
+            script_path: 'repo-ops/script/verify'
+          });
+          const receipt =
+            ensured.ok && typeof ensured.operation_id === 'string'
+              ? (await restarted.operations.waitForTerminal(
+                  ensured.operation_id,
+                  { head_sha: RED_HEAD, timeout_ms: ensured.timeout_ms }
+                )) ||
+                restarted.operations.verifyReceipt(
+                  ensured.operation_id,
+                  RED_HEAD
+                )
+              : null;
+          if (receipt?.state === 'succeeded' || receipt?.state === 'failed') {
+            runtime.prObservations.recordVerify(
+              DRIVER_WS,
+              'UI-root',
+              /** @type {any} */ (receipt)
+            );
+          }
           const observed = runtime.prObservations.get(DRIVER_WS, 'UI-root');
           return redGate({
             base_sha: MOVED_BASE,
@@ -6982,7 +7077,7 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
         });
         await coordinatorOver(h).reconcile();
         await settle();
-        await verifyPath(h.store, repo, world).poller.tick();
+        await restarted.poller.tick();
         createAutoMerge({
           workspace: DRIVER_WS,
           store: h.store,
@@ -6994,9 +7089,13 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
       test('merges the recovered hold without a [머지] click', async () => {
         const { h } = await recoveredAfterRestart();
 
-        const { action } = await driveOnce(h.store, h.driver);
+        const intent_now = rootIntent(h);
 
-        expect(action).toEqual({ kind: 'merge_subject' });
+        expect(intent_now).toMatchObject({
+          phase: 'merging',
+          active_op: { kind: 'merge_subject' },
+          subject: { head_sha: RED_HEAD }
+        });
       });
 
       test('adopts the verify the poller ran on the moved base instead of running it again', async () => {
@@ -7025,7 +7124,6 @@ describe('red-base follow-up wait (UI-ty6k)', () => {
         const { h } = await recoveredAfterRestart();
 
         expect(rootIntent(h)).toMatchObject({
-          phase: 'gating',
           followup_wait: { outcome: 'base_moved', from_hold: true }
         });
         expect(h.startCompletionBaseVerify).toHaveBeenCalledExactlyOnceWith(

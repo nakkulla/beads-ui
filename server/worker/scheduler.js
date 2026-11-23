@@ -13885,11 +13885,11 @@ export function createScheduler(deps) {
         return true;
       }
       const target = holdWaitTarget(q, root_bead_id, workspace);
-      if (!target || typeof deps.bd.readIssue !== 'function') {
+      if (!target || typeof deps.bd.findIssue !== 'function') {
         return false;
       }
       try {
-        const root_issue = await deps.bd.readIssue(root_bead_id);
+        const root_issue = await deps.bd.findIssue(root_bead_id);
         if (!root_issue) {
           return null;
         }
@@ -13902,10 +13902,22 @@ export function createScheduler(deps) {
           return false;
         }
         const verdict = classifyHoldLink(
-          await deps.bd.readIssue(link_id),
+          await deps.bd.findIssue(link_id),
           holdEntryAt(target.hold)
         );
-        return verdict === 'live' || verdict === 'settled';
+        if (verdict !== 'live' && verdict !== 'settled') {
+          return false;
+        }
+        // The reads awaited: the hold must still be the one the conversation
+        // opened for.
+        const subject =
+          deps.store.snapshot(workspace).completion_intents?.[root_bead_id]
+            ?.subject;
+        return (
+          !!subject &&
+          (subject.pr_url ?? null) === verify_hold.pr_url &&
+          subject.head_sha === verify_hold.head_sha
+        );
       } catch (err) {
         log('verify-hold link read failed for %s: %o', root_bead_id, err);
         return null;
@@ -13938,7 +13950,9 @@ export function createScheduler(deps) {
         // A window that did not take the close is asked again.
         if (
           record.state === 'live' &&
-          (conversation.handoff || conversation.result?.kind === 'hold')
+          (conversation.handoff ||
+            conversation.result?.kind === 'hold' ||
+            conversation.result?.kind === 'fix_wait')
         ) {
           await closeConversationWindow(workspace, key, record);
         }

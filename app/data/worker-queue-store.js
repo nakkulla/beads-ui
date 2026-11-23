@@ -24,6 +24,8 @@
  * @property {{ stage: string, links: string[], head_sha: string|null, base_sha: string|null, at: number|null, deadline_at: number|null }|null} [followup_wait] - The
  * red-base wait record (UI-ty6k §4.3), only in `waiting_followup`; absent on a
  * snapshot from a server that predates it.
+ * @property {true} [hold_wait_verifying] - A `holding` phase that is really a
+ * hold-entered wait's base verify (UI-nqbx §4.4); absent otherwise.
  * @typedef {Object} ResolutionProjection
  * @property {string} attempt_id
  * @property {string} subject_bead_id

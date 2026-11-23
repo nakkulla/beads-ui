@@ -1338,8 +1338,6 @@
  * §5.6).
  * @property {boolean} [noticed] - The hold write also claimed the one return
  * notice of a hold-entered wait (UI-nqbx §4.3).
- * @property {CompletionHoldReturn|null} [request] - The hold-return request a
- * take consumed.
  */
 import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
@@ -6642,6 +6640,47 @@ export function followupWaitStands(intent, head_sha) {
     typeof head_sha === 'string' &&
     intent.followup_wait?.head_sha === head_sha
   );
+}
+
+/**
+ * Where a held root's pending hold-return request stands (UI-nqbx §4.3). The
+ * request stays on the record until a launch is confirmed, so a restart in
+ * between still launches it once:
+ * - `used`: a conversation of the row launched at or after the request — the
+ *   return conversation itself, or one a person opened — so it is spent.
+ * - `deferred`: an earlier conversation window of the row is still open.
+ * - `due`: nothing stands in the way of the launch.
+ * Null `request` when there is none, or it no longer names the held head and
+ * PR.
+ *
+ * @param {Queue} queue
+ * @param {string} root_bead_id
+ * @returns {{ request: CompletionHoldReturn, state: 'used'|'deferred'|'due' }|{ request: null, state: null }}
+ */
+export function completionHoldReturnState(queue, root_bead_id) {
+  const intent = queue.completion_intents?.[root_bead_id];
+  const request = intent?.hold_return;
+  if (
+    !intent ||
+    !request ||
+    intent.phase !== 'holding' ||
+    !intent.hold ||
+    request.head_sha !== intent.hold.head_sha ||
+    request.head_sha !== intent.subject.head_sha ||
+    request.pr_url !== intent.subject.pr_url
+  ) {
+    return { request: null, state: null };
+  }
+  const windows = Object.values(queue.interactive_sessions || {}).filter(
+    (record) => record?.bead_id === root_bead_id
+  );
+  if (windows.some((record) => record.launched_at >= request.requested_at)) {
+    return { request, state: 'used' };
+  }
+  if (windows.some((record) => record.settled_at === null)) {
+    return { request, state: 'deferred' };
+  }
+  return { request, state: 'due' };
 }
 
 /**
@@ -15247,69 +15286,25 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Take the pending hold-return conversation request (UI-nqbx §4.3). The
-     * request stays put (deferred, not consumed) while the row still has a
-     * conversation window open, or when it no longer matches the held head
-     * and PR; the caller launches only on success.
+     * Spend the pending hold-return conversation request once its launch is
+     * confirmed (UI-nqbx §4.3). Only the request recorded at `requested_at`
+     * is spent, so a newer request raised meanwhile stays pending.
      *
      * @param {string} workspace
-     * @param {{ root_bead_id: string }} input
+     * @param {{ root_bead_id: string, requested_at: number }} input
      * @returns {QueueOpResult}
      */
-    takeCompletionHoldReturn(workspace, input) {
-      const { root_bead_id } = input;
-      /** @type {CompletionHoldReturn|null} */
-      let taken = null;
-      const result = applyUnconditional(workspace, (next) => {
-        const intent = next.completion_intents[root_bead_id];
-        const request = intent?.hold_return;
-        if (
-          !intent ||
-          !request ||
-          intent.phase !== 'holding' ||
-          !intent.hold ||
-          request.head_sha !== intent.hold.head_sha ||
-          request.head_sha !== intent.subject.head_sha ||
-          request.pr_url !== intent.subject.pr_url ||
-          Object.values(next.interactive_sessions || {}).some(
-            (record) =>
-              record?.bead_id === root_bead_id && record.settled_at === null
-          )
-        ) {
-          return false;
-        }
-        taken = request;
-        delete intent.hold_return;
-        return true;
-      });
-      return result.ok ? { ...result, request: taken } : result;
-    },
-
-    /**
-     * Put back a hold-return request whose launch did not happen, so a later
-     * pass launches it once (UI-nqbx §4.3). Refused when the held head moved
-     * on or another request is already pending.
-     *
-     * @param {string} workspace
-     * @param {{ root_bead_id: string, request: CompletionHoldReturn }} input
-     * @returns {QueueOpResult}
-     */
-    restoreCompletionHoldReturn(workspace, input) {
-      const { root_bead_id, request } = input;
+    spendCompletionHoldReturn(workspace, input) {
+      const { root_bead_id, requested_at } = input;
       return applyUnconditional(workspace, (next) => {
         const intent = next.completion_intents[root_bead_id];
-        const normalized = normalizeCompletionHoldReturn(request);
         if (
-          !intent ||
-          !normalized ||
-          intent.hold_return ||
-          intent.phase !== 'holding' ||
-          intent.hold?.head_sha !== normalized.head_sha ||
-          intent.subject.head_sha !== normalized.head_sha
+          !intent?.hold_return ||
+          intent.hold_return.requested_at !== requested_at
         ) {
           return false;
         }
-        intent.hold_return = normalized;
+        delete intent.hold_return;
         return true;
       });
     },

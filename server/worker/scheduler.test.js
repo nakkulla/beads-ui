@@ -7135,9 +7135,12 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
         'F-fix1': { id: 'F-fix1', status: 'open' },
         ...options.issues
       };
-      env.bd.readIssue = /** @type {any} */ (
+      env.bd.findIssue = /** @type {any} */ (
         async (/** @type {string} */ id) => {
           const issue = issues[id];
+          if (typeof issue === 'function') {
+            return issue();
+          }
           if (issue instanceof Error) {
             throw issue;
           }
@@ -7349,6 +7352,44 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       await env.scheduler.reconcileInteractiveSessions(WS);
 
       expect(record(env).conversation?.processed_message_at ?? null).toBeNull();
+    });
+
+    test('asks a window that did not take the close again on the next pass', async () => {
+      const env = holdEnv({ intent: STANDING_WAIT });
+      env.launcher.sendExit.mockResolvedValueOnce({ ok: false });
+      say(env, '수정 대기 · F-fix1 — base defect');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.launcher.sendExit).toHaveBeenCalledTimes(2);
+      expect(record(env).state).toBe('exiting');
+    });
+
+    test('leaves the answer pending when the held head moves during the link read', async () => {
+      /** @type {Record<string, any>} */
+      const moved = {};
+      const env = holdEnv({
+        intent: moved,
+        issues: {
+          'F-fix1': () => {
+            moved.subject = {
+              role: 'root',
+              bead_id: BEAD,
+              pr_url: PR_URL,
+              head_sha: 'c'.repeat(40),
+              base_sha: BASE,
+              merged_sha: null
+            };
+            return { id: 'F-fix1', status: 'open' };
+          }
+        }
+      });
+      say(env, '수정 대기 · F-fix1 — base defect');
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(record(env).conversation?.result ?? null).toBeNull();
     });
   });
 });

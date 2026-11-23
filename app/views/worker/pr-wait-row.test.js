@@ -350,8 +350,9 @@ describe('shared PR 대기 projection — base 실패 후속 대기 (UI-ty6k §4
 
   /**
    * @param {Record<string, unknown>} [wait]
+   * @param {Record<string, unknown>} [status]
    */
-  function waitingRow(wait = {}) {
+  function waitingRow(wait = {}, status = {}) {
     return rowsOf(
       workspace({
         pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
@@ -384,7 +385,8 @@ describe('shared PR 대기 projection — base 실패 후속 대기 (UI-ty6k §4
               at: 1,
               deadline_at: 2,
               ...wait
-            }
+            },
+            ...status
           }
         }
       })
@@ -414,6 +416,25 @@ describe('shared PR 대기 projection — base 실패 후속 대기 (UI-ty6k §4
     const row = waitingRow();
 
     expect(row.failure_material.completion_phase).toBeNull();
+  });
+
+  test('offers no session continuation while a hold-entered wait verifies the base', () => {
+    const row = waitingRow(
+      {},
+      {
+        phase: 'holding',
+        hold_wait_verifying: true,
+        followup_wait: null
+      }
+    );
+
+    expect(row.failure_material.completion_phase).toBeNull();
+  });
+
+  test('offers the hold conversation on a plain verify hold', () => {
+    const row = waitingRow({}, { phase: 'holding', followup_wait: null });
+
+    expect(row.failure_material.completion_phase).toBe('holding');
   });
 });
 
