@@ -60,6 +60,7 @@ const TITLE = {
   provider_recovered: `${SENDER} ✅ 공급자 회복`,
   provider_live_preempt: `${SENDER} 🔀 실행 중 계정 전환`,
   startup_wait: `${SENDER} ⏳ 시작 화면 대기`,
+  startup_advance: `${SENDER} ⏩ 시작 화면 자동 진행`,
   provider_disarmed: `${SENDER} 🚨 자동 재개 중단`,
   hold: `${SENDER} ⏸️ 머지 보류`
 };
@@ -440,7 +441,8 @@ function failureConversationLine(conversation) {
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   providerLivePreempt: (input: { bead_id: string, runner: string, from: string, to: string, window: string, pct: number, repo?: string|null }) => Promise<void>,
  *   enabled: () => boolean,
- *   sessionLaneStartupWait: (input: { bead_id: string, title?: string|null, label: string, tmux_session?: string|null, tmux_window?: string|null, repo?: string|null }) => Promise<void>,
+ *   startupWait: (input: { bead_id: string, title?: string|null, label: string, tmux_session?: string|null, tmux_window?: string|null, repo?: string|null }) => Promise<void>,
+ *   startupAutoAdvance: (input: { bead_id: string, title?: string|null, heading: string, choice: string, tmux_session?: string|null, tmux_window?: string|null, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
  *   hold: (input: NeedsHumanInput) => Promise<void>,
  *   externalWaitCompleted: (input: { bead_id: string, headline: string, repo: string, session?: { label: string, resume_command: string }|null }) => Promise<boolean>,
@@ -1089,9 +1091,10 @@ export function createNotifier(deps) {
       return resolveCmd() !== null;
     },
 
-    async sessionLaneStartupWait(input) {
-      // UI-ahzh §3.5: one push per startup-screen fingerprint that outlived
-      // five minutes. It only says where to choose; nothing is sent to the pane.
+    async startupWait(input) {
+      // UI-ahzh §3.5, every interactive window since UI-e5cq §3.6: one push
+      // per startup-screen fingerprint that outlived five minutes. It only
+      // says where to choose.
       try {
         const cmd = resolveCmd();
         if (!cmd) {
@@ -1116,7 +1119,43 @@ export function createNotifier(deps) {
         }
         send(cmd, lines.join('\n'));
       } catch (err) {
-        log('sessionLaneStartupWait failed: %o', err);
+        log('startupWait failed: %o', err);
+      }
+    },
+
+    async startupAutoAdvance(input) {
+      // UI-e5cq §3.6: only an unclassified screen the hub answered with its
+      // preselected row is pushed, once per fingerprint, so a person can check
+      // what was chosen and add the screen to the hub's table.
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title =
+          text(input.title) ?? (await lookupTitle(input.bead_id));
+        const lines = [
+          headline(TITLE.startup_advance, input.bead_id, bead_title),
+          '시작 화면 자동 진행'
+        ];
+        const heading = text(input.heading);
+        if (heading) {
+          lines.push(`화면: ${heading}`);
+        }
+        lines.push(`고른 행: ${input.choice}`);
+        const place = [text(input.tmux_session), text(input.tmux_window)]
+          .filter(Boolean)
+          .join(':');
+        if (place) {
+          lines.push(`tmux ${place}`);
+        }
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('startupAutoAdvance failed: %o', err);
       }
     },
 

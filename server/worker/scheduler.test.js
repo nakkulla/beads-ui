@@ -54,6 +54,7 @@ import {
   INTERACTIVE_EXIT_DEFER_MAX_MS,
   INTERACTIVE_EXIT_GRACE_MS,
   QUEUE_GRACE_MS,
+  STARTUP_ADVANCE_CAP,
   activeLaneLineages,
   createScheduler,
   quickFixSelfReviewBlock,
@@ -81,6 +82,7 @@ import {
   INQUIRY_PANE_MARKER,
   RESOLVE_PANE_MARKER,
   SESSION_LANE_PANE_MARKER,
+  SPEC_AUTHORING_PANE_MARKER,
   createTmuxLauncher
 } from './tmux-launcher.js';
 import { createUsageStore } from './usage-store.js';
@@ -42133,16 +42135,19 @@ describe('session lane (UI-lbm5)', () => {
     const HOOKS_SCREEN = {
       ok: true,
       alive: 'alive',
+      started: false,
       screen: {
         dialog: 'startup',
         startup_kind: 'hooks',
-        fingerprint: 'fp-hooks'
+        fingerprint: 'fp-hooks',
+        heading: 'Review hooks',
+        auto: null
       }
     };
 
     /**
      * A live codex session-lane window C1 whose `@agent_session` and hub
-     * `codex-startup` answer are both settable, with a timeline that keeps
+     * `startup-screen` answer are both settable, with a timeline that keeps
      * what it is given.
      *
      * @param {{ mode?: 'fresh'|'resume' }} [input]
@@ -42180,8 +42185,8 @@ describe('session lane (UI-lbm5)', () => {
       const hub = { reply: HOOKS_SCREEN };
       /** @type {{ value: string|null }} */
       const agent_session = { value: null };
-      const codexStartup = vi.fn(async () => hub.reply);
-      Object.assign(env.launcher, { codexStartup });
+      const startupScreen = vi.fn(async () => hub.reply);
+      Object.assign(env.launcher, { startupScreen });
       /** @type {any} */ (env.launcher.readPaneOption).mockImplementation(
         async () => ({ ok: true, value: agent_session.value })
       );
@@ -42241,7 +42246,7 @@ describe('session lane (UI-lbm5)', () => {
         ...env,
         hub,
         agent_session,
-        codexStartup,
+        startupScreen,
         notify_enabled,
         /** The startup lines this window's timeline holds, in order. */
         startupLines() {
@@ -42251,7 +42256,7 @@ describe('session lane (UI-lbm5)', () => {
         },
         /** The startup-wait pushes sent so far. */
         startupPushes() {
-          return pushes.filter(([name]) => name === 'sessionLaneStartupWait');
+          return pushes.filter(([name]) => name === 'startupWait');
         }
       };
     }
@@ -42307,7 +42312,14 @@ describe('session lane (UI-lbm5)', () => {
       env.hub.reply = {
         ok: true,
         alive: 'alive',
-        screen: { dialog: 'trust', startup_kind: null, fingerprint: 'fp-trust' }
+        started: false,
+        screen: {
+          dialog: 'trust',
+          startup_kind: null,
+          fingerprint: 'fp-trust',
+          heading: 'Trust this folder?',
+          auto: null
+        }
       };
       env.clock.at = 31_000;
 
@@ -42346,7 +42358,7 @@ describe('session lane (UI-lbm5)', () => {
 
       await env.scheduler.reconcileInteractiveSessions(WS);
 
-      expect(env.codexStartup).toHaveBeenCalledTimes(1);
+      expect(env.startupScreen).toHaveBeenCalledTimes(1);
       expect(env.laneRecord('C1').startup_passed_at).toBe(31_000);
     });
 
@@ -42355,10 +42367,13 @@ describe('session lane (UI-lbm5)', () => {
       env.hub.reply = {
         ok: true,
         alive: 'alive',
+        started: false,
         screen: {
           dialog: 'unknown_screen',
           startup_kind: null,
-          fingerprint: 'fp-boot'
+          fingerprint: 'fp-boot',
+          heading: '',
+          auto: null
         }
       };
 
@@ -42374,10 +42389,13 @@ describe('session lane (UI-lbm5)', () => {
       env.hub.reply = {
         ok: true,
         alive: 'alive',
+        started: false,
         screen: {
           dialog: 'unknown_screen',
           startup_kind: null,
-          fingerprint: 'fp-boot'
+          fingerprint: 'fp-boot',
+          heading: '',
+          auto: null
         }
       };
       env.clock.at = 31_000;
@@ -42410,17 +42428,27 @@ describe('session lane (UI-lbm5)', () => {
       expect(env.startupPushes()).toEqual([]);
     });
 
-    test('never queries the hub for a claude session-lane window', async () => {
+    test('reads the startup screen of a claude session-lane window before its first turn (UI-e5cq)', async () => {
       const env = laneEnv();
-      const codexStartup = vi.fn(async () => HOOKS_SCREEN);
-      Object.assign(env.launcher, { codexStartup });
+      const startupScreen = vi.fn(async () => ({
+        ok: true,
+        alive: 'alive',
+        started: false,
+        screen: null
+      }));
+      Object.assign(env.launcher, { startupScreen });
       seedQueue(env.store, ['S1']);
       await env.scheduler.tick(WS);
+      env.panes.rows[0].agent_running = '';
 
       await env.scheduler.reconcileInteractiveSessions(WS);
 
-      expect(codexStartup).not.toHaveBeenCalled();
-      expect(env.laneRecord('S1').startup_wait).toBeUndefined();
+      expect(startupScreen).toHaveBeenCalledWith({
+        runner: 'claude',
+        pane: '%7',
+        marker: SESSION_LANE_PANE_MARKER,
+        key: 'S1'
+      });
     });
 
     test('pushes one notice after the same screen outlasts five minutes', async () => {
@@ -42434,7 +42462,7 @@ describe('session lane (UI-lbm5)', () => {
 
       expect(env.startupPushes()).toEqual([
         [
-          'sessionLaneStartupWait',
+          'startupWait',
           {
             bead_id: 'C1',
             title: null,
@@ -42455,10 +42483,13 @@ describe('session lane (UI-lbm5)', () => {
       env.hub.reply = {
         ok: true,
         alive: 'alive',
+        started: false,
         screen: {
           dialog: 'startup',
           startup_kind: 'update',
-          fingerprint: 'fp-update'
+          fingerprint: 'fp-update',
+          heading: 'Update available',
+          auto: null
         }
       };
       const changed_at = env.clock.at + 30_000;
@@ -42492,7 +42523,7 @@ describe('session lane (UI-lbm5)', () => {
 
     test('records no wait for a window settled before the hub answers', async () => {
       const env = startupEnv();
-      env.codexStartup.mockImplementation(async () => {
+      env.startupScreen.mockImplementation(async () => {
         env.store.updateInteractiveSession(WS, 'C1:session_lane', {
           settled_at: 2000
         });
@@ -44429,5 +44460,689 @@ describe('reconcile during durable pause', () => {
 
     expect(verify.verifyPrSubmitted).toHaveBeenCalledTimes(1);
     expect(env.store.snapshot(WS).attempts['dead-b'].status).toBe('paused');
+  });
+});
+
+describe('worker window startup auto-advance (UI-e5cq)', () => {
+  const MINUTE = 60_000;
+  const MARKERS = {
+    resolve: RESOLVE_PANE_MARKER,
+    inquiry: INQUIRY_PANE_MARKER,
+    external_resume: EXTERNAL_RESUME_PANE_MARKER,
+    session_lane: SESSION_LANE_PANE_MARKER,
+    spec_authoring: SPEC_AUTHORING_PANE_MARKER
+  };
+  const NO_SCREEN = { ok: true, alive: 'alive', started: false, screen: null };
+
+  /**
+   * One selection screen as the hub's `startup-screen` reports it.
+   *
+   * @param {Record<string, any>} screen
+   */
+  function screenReply(screen) {
+    return {
+      ok: true,
+      alive: 'alive',
+      started: false,
+      screen: {
+        dialog: 'startup',
+        startup_kind: 'unknown',
+        heading: '',
+        auto: null,
+        ...screen
+      }
+    };
+  }
+
+  const CHROME = screenReply({
+    startup_kind: 'chrome',
+    fingerprint: 'fp-chrome',
+    heading: 'Claude in Chrome',
+    auto: { choice: 'No, keep browser tools off' }
+  });
+
+  /**
+   * A live interactive window W1 launched at 1000 whose pane marks, hub
+   * answers and transcript message are settable.
+   *
+   * @param {{ kind?: 'resolve'|'inquiry'|'external_resume'|'session_lane'|'spec_authoring', provider?: 'claude'|'codex', untrusted?: boolean }} [input]
+   */
+  function windowEnv(input = {}) {
+    const kind = input.kind ?? 'resolve';
+    const provider = input.provider ?? 'claude';
+    const clock = { at: 1000 };
+    /** @type {any[]} */
+    const events = [];
+    const timeline = {
+      append: vi.fn((/** @type {any} */ event) => {
+        events.push({
+          ...event,
+          event_id: `${event.kind}:${event.attempt_id ?? event.bead_id}:${event.seq}`
+        });
+      }),
+      readTimeline: vi.fn(() => events)
+    };
+    /** @type {Array<[string, any]>} */
+    const pushes = [];
+    const notify = new Proxy(
+      {},
+      {
+        get: (_target, key) =>
+          key === 'enabled'
+            ? () => true
+            : (/** @type {any} */ payload) => {
+                pushes.push([String(key), payload]);
+                return Promise.resolve();
+              }
+      }
+    );
+    const pane = {
+      key: 'W1',
+      pane: '%9',
+      dead: '0',
+      session: 's',
+      window: 'W1',
+      cwd: '/wt/W1',
+      agent_runtime: provider,
+      agent_running: '',
+      agent_attention: ''
+    };
+    /** @type {{ screen: any, advance: any, agent_session: string|null }} */
+    const hub = {
+      screen: NO_SCREEN,
+      advance: { ok: true, advanced: false, key_sent: false, reason: 'busy' },
+      agent_session: null
+    };
+    /** @type {{ value: any }} */
+    const message = { value: null };
+    const launcher = {
+      listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
+        ok: true,
+        rows: marker === MARKERS[kind] ? [pane] : []
+      })),
+      readPaneOption: vi.fn(async () => ({
+        ok: true,
+        value: hub.agent_session
+      })),
+      capturePaneTail: vi.fn(async () => ({ ok: true, line: '❯ ' })),
+      sendExit: vi.fn(async () => ({ ok: true })),
+      killWindow: vi.fn(async () => ({ ok: true })),
+      startupScreen: vi.fn(async () => hub.screen),
+      startupAdvance: vi.fn(async () => hub.advance)
+    };
+    const env = setup({
+      config: { W1: { status: 'in_progress' } },
+      slots: 1,
+      now: () => clock.at,
+      notify,
+      timeline,
+      resolveSessionFile: () => ({
+        locality: 'local',
+        file: '/transcript',
+        last_event_at: clock.at
+      }),
+      ...{
+        interactiveLauncher: launcher,
+        readLastAssistantMessage: () => message.value
+      }
+    });
+    const session_id =
+      provider === 'claude' ? '0199a000-0000-7000-8000-00000000000a' : null;
+    if (kind === 'session_lane') {
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'w1',
+          bead_id: 'W1',
+          status: 'running',
+          exec: 'session',
+          runner: provider,
+          session_id,
+          started_at: 1000,
+          interactive: { pane_id: '%9', tmux_session: 's', tmux_window: 'W1' },
+          pid: null
+        }
+      });
+    }
+    env.store.recordInteractiveSession(WS, {
+      bead_id: 'W1',
+      kind,
+      provider,
+      session_id,
+      session_id_source: session_id === null ? null : 'launch',
+      mode: 'fresh',
+      source: kind === 'session_lane' ? 'attempt' : 'fresh',
+      attempt_id: kind === 'session_lane' ? 'w1' : null,
+      pane_id: '%9',
+      tmux_session: 's',
+      tmux_window: 'W1',
+      cwd: '/wt/W1',
+      launched_at: 1000,
+      state: 'live',
+      conversation: null,
+      ...(input.untrusted ? { codex_project_untrusted: true } : {})
+    });
+    return {
+      ...env,
+      clock,
+      hub,
+      pane,
+      message,
+      launcher,
+      /**
+       * Run one interactive pass at the given clock.
+       *
+       * @param {number} at
+       */
+      async passAt(at) {
+        clock.at = at;
+        await env.scheduler.reconcileInteractiveSessions(WS);
+      },
+      record() {
+        return /** @type {any} */ (
+          env.store.snapshot(WS).interactive_sessions[`W1:${kind}`]
+        );
+      },
+      /** The startup lines of the timeline, in order. */
+      startupLines() {
+        return events
+          .filter((event) => String(event.seq).includes(':startup_'))
+          .map((event) => event.summary);
+      },
+      /** @param {string} name */
+      pushesOf(name) {
+        return pushes.filter(([key]) => key === name);
+      }
+    };
+  }
+
+  test.each(
+    /** @type {const} */ ([
+      ['resolve', 'claude'],
+      ['resolve', 'codex'],
+      ['inquiry', 'claude'],
+      ['inquiry', 'codex'],
+      ['external_resume', 'claude'],
+      ['external_resume', 'codex'],
+      ['session_lane', 'claude'],
+      ['session_lane', 'codex'],
+      ['spec_authoring', 'claude'],
+      ['spec_authoring', 'codex']
+    ])
+  )('reads the startup screen of a %s %s window', async (kind, provider) => {
+    const env = windowEnv({ kind, provider });
+
+    await env.passAt(1000);
+
+    expect(env.launcher.startupScreen).toHaveBeenCalledWith({
+      runner: provider,
+      pane: '%9',
+      marker: MARKERS[kind],
+      key: 'W1'
+    });
+  });
+
+  test('advances a claude chrome screen with the hub row', async () => {
+    const env = windowEnv();
+    env.hub.screen = CHROME;
+
+    await env.passAt(1000);
+
+    expect(env.launcher.startupAdvance).toHaveBeenCalledWith({
+      runner: 'claude',
+      pane: '%9',
+      marker: RESOLVE_PANE_MARKER,
+      key: 'W1',
+      fingerprint: 'fp-chrome'
+    });
+  });
+
+  test('records one auto-advance line and no push for a chrome screen', async () => {
+    const env = windowEnv();
+    env.hub.screen = CHROME;
+    env.hub.advance = {
+      ok: true,
+      advanced: true,
+      key_sent: true,
+      dialog: 'startup',
+      startup_kind: 'chrome',
+      choice: 'No, keep browser tools off',
+      heading: 'Claude in Chrome'
+    };
+
+    await env.passAt(1000);
+    env.hub.screen = NO_SCREEN;
+    await env.passAt(31_000);
+
+    expect(env.startupLines()).toEqual([
+      '대화 세션 시작 화면 자동 진행 · Chrome 사용 제안 → No, keep browser tools off'
+    ]);
+    expect(env.pushesOf('startupAutoAdvance')).toEqual([]);
+  });
+
+  test('records the advance count and fingerprint on the window', async () => {
+    const env = windowEnv();
+    env.hub.screen = CHROME;
+    env.hub.advance = {
+      ok: true,
+      advanced: false,
+      key_sent: true,
+      reason: 'not_confirmed'
+    };
+
+    await env.passAt(1000);
+
+    expect(env.record()).toMatchObject({
+      startup_advance_count: 1,
+      startup_advance_fingerprints: ['fp-chrome']
+    });
+  });
+
+  test('puts the heading on the line of an unknown screen it advanced', async () => {
+    const env = windowEnv({ provider: 'codex' });
+    env.hub.screen = screenReply({
+      fingerprint: 'fp-theme',
+      heading: 'Choose a theme',
+      auto: { choice: 'Dark mode' }
+    });
+    env.hub.advance = {
+      ok: true,
+      advanced: true,
+      key_sent: true,
+      dialog: 'startup',
+      startup_kind: 'unknown',
+      choice: 'Dark mode',
+      heading: 'Choose a theme'
+    };
+
+    await env.passAt(1000);
+
+    expect(env.startupLines()).toEqual([
+      '대화 세션 시작 화면 자동 진행 · 기타 시작 화면 (Choose a theme) → Dark mode'
+    ]);
+  });
+
+  test('pushes an unknown screen it advanced exactly once', async () => {
+    const env = windowEnv({ provider: 'codex' });
+    env.hub.screen = screenReply({
+      fingerprint: 'fp-theme',
+      heading: 'Choose a theme',
+      auto: { choice: 'Dark mode' }
+    });
+    env.hub.advance = {
+      ok: true,
+      advanced: true,
+      key_sent: true,
+      dialog: 'startup',
+      startup_kind: 'unknown',
+      choice: 'Dark mode',
+      heading: 'Choose a theme'
+    };
+
+    await env.passAt(1000);
+    await env.passAt(31_000);
+    await env.passAt(61_000);
+
+    expect(env.pushesOf('startupAutoAdvance')).toEqual([
+      [
+        'startupAutoAdvance',
+        {
+          bead_id: 'W1',
+          title: null,
+          heading: 'Choose a theme',
+          choice: 'Dark mode',
+          tmux_session: 's',
+          tmux_window: 'W1',
+          repo: WS
+        }
+      ]
+    ]);
+  });
+
+  test('sends no key to a login screen and records a login wait', async () => {
+    const env = windowEnv();
+    env.hub.screen = screenReply({
+      startup_kind: 'login',
+      fingerprint: 'fp-login',
+      heading: 'Log in'
+    });
+
+    await env.passAt(1000);
+
+    expect(env.launcher.startupAdvance).not.toHaveBeenCalled();
+    expect(env.record().startup_wait).toEqual({
+      kind: 'login',
+      fingerprint: 'fp-login',
+      since: 1000,
+      notified_at: null
+    });
+  });
+
+  test('pushes one notice once a login wait outlasts five minutes', async () => {
+    const env = windowEnv();
+    env.hub.screen = screenReply({
+      startup_kind: 'login',
+      fingerprint: 'fp-login',
+      heading: 'Log in'
+    });
+
+    await env.passAt(1000);
+    await env.passAt(1000 + 5 * MINUTE + 1);
+    await env.passAt(1000 + 6 * MINUTE);
+
+    expect(env.pushesOf('startupWait')).toEqual([
+      [
+        'startupWait',
+        {
+          bead_id: 'W1',
+          title: null,
+          label: '로그인',
+          tmux_session: 's',
+          tmux_window: 'W1',
+          repo: WS
+        }
+      ]
+    ]);
+  });
+
+  test('records a hooks wait without a key on a codex inquiry window', async () => {
+    const env = windowEnv({ kind: 'inquiry', provider: 'codex' });
+    env.hub.screen = screenReply({
+      startup_kind: 'hooks',
+      fingerprint: 'fp-hooks',
+      heading: 'Review hooks'
+    });
+
+    await env.passAt(1000);
+
+    expect(env.launcher.startupAdvance).not.toHaveBeenCalled();
+    expect(env.record().startup_wait?.kind).toBe('hooks');
+  });
+
+  test('holds the trust screen of a codex window launched on an untrusted entry', async () => {
+    const env = windowEnv({ provider: 'codex', untrusted: true });
+    env.hub.screen = screenReply({
+      dialog: 'trust',
+      startup_kind: null,
+      fingerprint: 'fp-trust',
+      heading: 'Trust this folder?',
+      auto: { choice: 'Trust and continue' }
+    });
+
+    await env.passAt(1000);
+
+    expect(env.launcher.startupAdvance).not.toHaveBeenCalled();
+    expect(env.record().startup_wait?.kind).toBe('trust');
+  });
+
+  test('advances the trust screen of a codex window launched without an untrusted entry', async () => {
+    const env = windowEnv({ provider: 'codex' });
+    env.hub.screen = screenReply({
+      dialog: 'trust',
+      startup_kind: null,
+      fingerprint: 'fp-trust',
+      heading: 'Trust this folder?',
+      auto: { choice: 'Trust and continue' }
+    });
+
+    await env.passAt(1000);
+
+    expect(env.launcher.startupAdvance).toHaveBeenCalledTimes(1);
+  });
+
+  test('records an unknown wait counted from launch once two minutes pass unseen', async () => {
+    const env = windowEnv();
+
+    await env.passAt(1000 + MINUTE);
+    await env.passAt(1000 + 2 * MINUTE);
+
+    expect(env.record().startup_wait).toEqual({
+      kind: 'unknown',
+      fingerprint: 'startup-unseen:1000',
+      since: 1000,
+      notified_at: null
+    });
+  });
+
+  test('records the unknown wait when the hub keeps failing for two minutes', async () => {
+    const env = windowEnv({ provider: 'codex' });
+    env.hub.screen = {
+      ok: false,
+      error: 'launch_failed:session_hub_unavailable'
+    };
+
+    await env.passAt(1000 + 2 * MINUTE);
+
+    expect(env.record().startup_wait?.kind).toBe('unknown');
+  });
+
+  test('records no unknown wait for a window that started within two minutes', async () => {
+    const env = windowEnv();
+    await env.passAt(1000 + MINUTE);
+    env.pane.agent_running = '1';
+
+    await env.passAt(1000 + 90_000);
+    env.pane.agent_running = '';
+    await env.passAt(1000 + 3 * MINUTE);
+
+    expect(env.record().startup_wait).toBeUndefined();
+  });
+
+  test('keeps a recorded wait unchanged while the hub fails', async () => {
+    const env = windowEnv();
+    env.hub.screen = screenReply({
+      startup_kind: 'login',
+      fingerprint: 'fp-login',
+      heading: 'Log in'
+    });
+    await env.passAt(1000);
+    env.hub.screen = {
+      ok: false,
+      error: 'launch_failed:session_hub_unavailable'
+    };
+
+    await env.passAt(1000 + 3 * MINUTE);
+
+    expect(env.record().startup_wait).toEqual({
+      kind: 'login',
+      fingerprint: 'fp-login',
+      since: 1000,
+      notified_at: null
+    });
+  });
+
+  test('pushes the two-minute wait once per window', async () => {
+    const env = windowEnv();
+
+    await env.passAt(1000 + 2 * MINUTE);
+    await env.passAt(1000 + 5 * MINUTE + 1);
+    await env.passAt(1000 + 6 * MINUTE);
+
+    expect(
+      env.pushesOf('startupWait').map(([, payload]) => payload.label)
+    ).toEqual(['기타 시작 화면']);
+  });
+
+  test('passes a claude window once its turn marker fills and clears the wait', async () => {
+    const env = windowEnv();
+    env.hub.screen = screenReply({
+      startup_kind: 'login',
+      fingerprint: 'fp-login',
+      heading: 'Log in'
+    });
+    await env.passAt(1000);
+    env.pane.agent_running = '1';
+
+    await env.passAt(31_000);
+
+    expect(env.record().startup_passed_at).toBe(31_000);
+    expect(env.record().startup_wait).toBeUndefined();
+  });
+
+  test('stops calling the hub for a claude window after its pass', async () => {
+    const env = windowEnv();
+    env.pane.agent_attention = 'question';
+    await env.passAt(1000);
+    env.pane.agent_attention = '';
+
+    await env.passAt(31_000);
+
+    expect(env.launcher.startupScreen).not.toHaveBeenCalled();
+  });
+
+  test('passes a claude window the hub reports started', async () => {
+    const env = windowEnv();
+    env.hub.screen = { ok: true, alive: 'alive', started: true, screen: null };
+
+    await env.passAt(1000);
+
+    expect(env.record().startup_passed_at).toBe(1000);
+  });
+
+  test('passes a claude window whose transcript holds a message after launch', async () => {
+    const env = windowEnv();
+    env.message.value = { text: '시작했습니다', at: 2000 };
+
+    await env.passAt(3000);
+
+    expect(env.record().startup_passed_at).toBe(3000);
+  });
+
+  test('does not pass a claude window on its pre-filled session id alone', async () => {
+    const env = windowEnv();
+
+    await env.passAt(1000);
+
+    expect(env.record().startup_passed_at).toBeUndefined();
+  });
+
+  test('does not pass a claude window on the server-made unreadable notice', async () => {
+    const env = windowEnv();
+    env.store.updateInteractiveSession(WS, 'W1:resolve', {
+      last_message: {
+        text: '마지막 답변을 읽지 못함 — tmux 창에서 확인한 뒤 답하거나 [워커로 이어가기]',
+        at: 2000
+      },
+      last_message_read_at: 5000
+    });
+
+    await env.passAt(3000);
+
+    expect(env.record().startup_passed_at).toBeUndefined();
+  });
+
+  test('clears a screen wait when the hub reports a codex window started', async () => {
+    const env = windowEnv({ provider: 'codex' });
+    env.hub.screen = screenReply({
+      startup_kind: 'hooks',
+      fingerprint: 'fp-hooks',
+      heading: 'Review hooks'
+    });
+    await env.passAt(1000);
+    env.hub.screen = { ok: true, alive: 'alive', started: true, screen: null };
+
+    await env.passAt(31_000);
+
+    expect(env.record().startup_wait).toBeUndefined();
+  });
+
+  test('appends the pass line after an advanced screen', async () => {
+    const env = windowEnv({ kind: 'spec_authoring', provider: 'codex' });
+    env.hub.screen = screenReply({
+      startup_kind: 'model',
+      fingerprint: 'fp-model',
+      heading: 'Try the new model',
+      auto: { choice: 'Use existing model' }
+    });
+    env.hub.advance = {
+      ok: true,
+      advanced: true,
+      key_sent: true,
+      dialog: 'startup',
+      startup_kind: 'model',
+      choice: 'Use existing model',
+      heading: 'Try the new model'
+    };
+    await env.passAt(1000);
+    env.hub.agent_session = '0199a000-0000-7000-8000-00000000000b';
+
+    await env.passAt(31_000);
+
+    expect(env.startupLines()).toEqual([
+      '스펙 작성 세션 시작 화면 자동 진행 · 모델 안내 → Use existing model',
+      '스펙 작성 세션 시작 화면 통과'
+    ]);
+  });
+
+  test('holds the screen after the advance cap as a wait', async () => {
+    const env = windowEnv();
+    env.hub.advance = {
+      ok: true,
+      advanced: true,
+      key_sent: true,
+      dialog: 'startup',
+      startup_kind: 'unknown',
+      choice: 'OK',
+      heading: 'Notice'
+    };
+    for (let index = 0; index < STARTUP_ADVANCE_CAP; index += 1) {
+      env.hub.screen = screenReply({
+        fingerprint: `fp-${index}`,
+        heading: 'Notice',
+        auto: { choice: 'OK' }
+      });
+      await env.passAt(1000 + index * 1000);
+    }
+    env.hub.screen = screenReply({
+      fingerprint: 'fp-last',
+      heading: 'Notice',
+      auto: { choice: 'OK' }
+    });
+
+    await env.passAt(10_000);
+
+    expect(env.launcher.startupAdvance).toHaveBeenCalledTimes(
+      STARTUP_ADVANCE_CAP
+    );
+    expect(env.record().startup_wait).toMatchObject({
+      kind: 'unknown',
+      fingerprint: 'fp-last'
+    });
+  });
+
+  test('never calls the hub again for a fingerprint left unconfirmed', async () => {
+    const env = windowEnv();
+    env.hub.screen = CHROME;
+    env.hub.advance = {
+      ok: true,
+      advanced: false,
+      key_sent: true,
+      reason: 'not_confirmed'
+    };
+    await env.passAt(1000);
+
+    await env.passAt(31_000);
+
+    expect(env.launcher.startupAdvance).toHaveBeenCalledTimes(1);
+    expect(env.record().startup_wait).toMatchObject({
+      kind: 'chrome',
+      fingerprint: 'fp-chrome'
+    });
+  });
+
+  test('does nothing in a pass whose advance found the screen changed', async () => {
+    const env = windowEnv();
+    env.hub.screen = CHROME;
+    env.hub.advance = {
+      ok: true,
+      advanced: false,
+      key_sent: false,
+      reason: 'screen_changed'
+    };
+
+    await env.passAt(1000);
+
+    expect(env.record()).not.toHaveProperty('startup_wait');
+    expect(env.record()).not.toHaveProperty('startup_advance_count');
   });
 });

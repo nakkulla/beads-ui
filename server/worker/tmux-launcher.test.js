@@ -675,6 +675,41 @@ describe('tmux-launcher Codex project trust', () => {
     }
   );
 
+  test('marks the launch of a folder with an existing untrusted entry (UI-e5cq)', async () => {
+    const { launch, config_path } = codexLaunch(test_dir);
+    fs.mkdirSync(codex_home);
+    fs.writeFileSync(
+      config_path,
+      `[projects.'${test_dir}']\ntrust_level = 'untrusted'\n`
+    );
+
+    const result = await launch();
+
+    expect(result).toMatchObject({
+      session: 'launched',
+      codex_project_untrusted: true
+    });
+  });
+
+  test.each(['missing', 'trusted'])(
+    'leaves the untrusted mark off a launch with a %s entry',
+    async (entry) => {
+      const { launch, config_path } = codexLaunch(test_dir);
+      if (entry === 'trusted') {
+        fs.mkdirSync(codex_home);
+        fs.writeFileSync(
+          config_path,
+          `[projects.'${test_dir}']\ntrust_level = 'trusted'\n`
+        );
+      }
+
+      const result = await launch();
+
+      expect(result.session).toBe('launched');
+      expect(result).not.toHaveProperty('codex_project_untrusted');
+    }
+  );
+
   test('escapes quoted directory names in the project key', async () => {
     const cwd = path.join(test_dir, 'a"quoted\\directory');
     fs.mkdirSync(cwd);
@@ -1011,7 +1046,7 @@ describe('tmux-launcher session-lane launch input (UI-lbm5 §4.3)', () => {
   });
 });
 
-describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
+describe('tmux-launcher startup screen (UI-e5cq §3.1)', () => {
   /**
    * A launcher whose hub answers every call with `reply`, recording the argv.
    *
@@ -1031,53 +1066,54 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
   }
 
   const INPUT = {
+    runner: /** @type {const} */ ('claude'),
     pane: '%8',
-    marker: SESSION_LANE_PANE_MARKER,
-    key: 'UI-ahzh'
+    marker: RESOLVE_PANE_MARKER,
+    key: 'UI-e5cq'
   };
 
-  test('asks the hub for the marked pane read-only', async () => {
+  const CHROME = {
+    dialog: 'startup',
+    startup_kind: 'chrome',
+    fingerprint: 'a1b2c3',
+    heading: 'Claude in Chrome',
+    auto: { choice: 'No, keep browser tools off' }
+  };
+
+  test('asks the hub for the marked pane of a runner read-only', async () => {
     const { calls, launcher } = startupLauncher(async () =>
-      hubReply({ alive: 'alive', screen: null })
+      hubReply({ alive: 'alive', started: false, screen: null })
     );
 
-    await launcher.codexStartup(INPUT);
+    await launcher.startupScreen(INPUT);
 
     expect(calls).toEqual([
       [
-        'codex-startup',
+        'startup-screen',
+        '--runner',
+        'claude',
         '--pane',
         '%8',
         '--marker-option',
-        SESSION_LANE_PANE_MARKER,
+        RESOLVE_PANE_MARKER,
         '--marker-value',
-        'UI-ahzh'
+        'UI-e5cq'
       ]
     ]);
   });
 
-  test('returns a startup screen with its kind and fingerprint', async () => {
+  test('returns a startup screen with its kind, heading and policy row', async () => {
     const { launcher } = startupLauncher(async () =>
-      hubReply({
-        alive: 'alive',
-        screen: {
-          dialog: 'startup',
-          startup_kind: 'hooks',
-          fingerprint: 'a1b2c3'
-        }
-      })
+      hubReply({ alive: 'alive', started: false, screen: CHROME })
     );
 
-    const result = await launcher.codexStartup(INPUT);
+    const result = await launcher.startupScreen(INPUT);
 
     expect(result).toEqual({
       ok: true,
       alive: 'alive',
-      screen: {
-        dialog: 'startup',
-        startup_kind: 'hooks',
-        fingerprint: 'a1b2c3'
-      }
+      started: false,
+      screen: CHROME
     });
   });
 
@@ -1085,91 +1121,122 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
     const { launcher } = startupLauncher(async () =>
       hubReply({
         alive: 'alive',
+        started: false,
         screen: {
           dialog: 'trust',
           startup_kind: 'hooks',
-          fingerprint: 'a1b2c3'
+          fingerprint: 'a1b2c3',
+          heading: 'Do you trust the files in this folder?',
+          auto: null
         }
       })
     );
 
-    const result = await launcher.codexStartup(INPUT);
+    const result = await launcher.startupScreen(INPUT);
 
     expect(result).toEqual({
       ok: true,
       alive: 'alive',
-      screen: { dialog: 'trust', startup_kind: null, fingerprint: 'a1b2c3' }
+      started: false,
+      screen: {
+        dialog: 'trust',
+        startup_kind: null,
+        fingerprint: 'a1b2c3',
+        heading: 'Do you trust the files in this folder?',
+        auto: null
+      }
     });
   });
 
-  test('reads a trust reply that carries no startup kind key', async () => {
+  test('returns the start of a started window', async () => {
     const { launcher } = startupLauncher(async () =>
-      hubReply({
-        alive: 'alive',
-        screen: { dialog: 'trust', fingerprint: 'a1b2c3' }
-      })
+      hubReply({ alive: 'alive', started: true, screen: null })
     );
 
-    const result = await launcher.codexStartup(INPUT);
+    const result = await launcher.startupScreen(INPUT);
 
     expect(result).toEqual({
       ok: true,
       alive: 'alive',
-      screen: { dialog: 'trust', startup_kind: null, fingerprint: 'a1b2c3' }
+      started: true,
+      screen: null
     });
   });
 
   test('returns no screen for a pane the marker does not confirm', async () => {
     const { launcher } = startupLauncher(async () =>
-      hubReply({ alive: 'unknown', screen: null })
+      hubReply({ alive: 'unknown', started: false, screen: null })
     );
 
-    const result = await launcher.codexStartup(INPUT);
+    const result = await launcher.startupScreen(INPUT);
 
-    expect(result).toEqual({ ok: true, alive: 'unknown', screen: null });
+    expect(result).toEqual({
+      ok: true,
+      alive: 'unknown',
+      started: false,
+      screen: null
+    });
   });
 
   test.each([
     [
       'an unknown dialog',
-      {
-        alive: 'alive',
-        screen: { dialog: 'boot', startup_kind: null, fingerprint: 'a1b2c3' }
-      }
+      { alive: 'alive', started: false, screen: { ...CHROME, dialog: 'boot' } }
     ],
     [
       'an empty fingerprint',
-      {
-        alive: 'alive',
-        screen: { dialog: 'startup', startup_kind: 'hooks', fingerprint: '' }
-      }
+      { alive: 'alive', started: false, screen: { ...CHROME, fingerprint: '' } }
     ],
     [
       'a fingerprint that is not hex',
       {
         alive: 'alive',
-        screen: { dialog: 'trust', startup_kind: null, fingerprint: 'fp' }
+        started: false,
+        screen: { ...CHROME, fingerprint: 'fp' }
       }
     ],
     [
       'a startup screen without its kind',
       {
         alive: 'alive',
-        screen: { dialog: 'startup', startup_kind: null, fingerprint: 'a1b2c3' }
+        started: false,
+        screen: { ...CHROME, startup_kind: null }
       }
     ],
-    ['a missing alive', { screen: null }],
+    [
+      'a screen without its heading',
+      {
+        alive: 'alive',
+        started: false,
+        screen: { ...CHROME, heading: undefined }
+      }
+    ],
+    [
+      'a policy row without its choice',
+      { alive: 'alive', started: false, screen: { ...CHROME, auto: {} } }
+    ],
+    [
+      'a policy row on an unclassified screen',
+      {
+        alive: 'alive',
+        started: false,
+        screen: { ...CHROME, dialog: 'unknown_screen', startup_kind: null }
+      }
+    ],
+    ['a missing alive', { started: false, screen: null }],
+    ['a missing started', { alive: 'alive', screen: null }],
+    [
+      'a screen on a started window',
+      { alive: 'alive', started: true, screen: CHROME }
+    ],
     [
       'a screen on a dead pane',
-      {
-        alive: 'dead',
-        screen: { dialog: 'trust', startup_kind: null, fingerprint: 'a1b2c3' }
-      }
+      { alive: 'dead', started: false, screen: CHROME }
     ]
   ])('refuses a reply with %s', async (_name, value) => {
     const { launcher } = startupLauncher(async () => hubReply(value));
 
-    const result = await launcher.codexStartup(INPUT);
+    const result = await launcher.startupScreen(INPUT);
 
     expect(result).toEqual({
       ok: false,
@@ -1179,12 +1246,12 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
 
   test('passes a hub refusal through as a failure', async () => {
     const { launcher } = startupLauncher(async () =>
-      hubReply({ ok: false, code: 'tmux_unavailable' }, 1)
+      hubReply({ ok: false, code: 'bad_request' }, 1)
     );
 
-    const result = await launcher.codexStartup(INPUT);
+    const result = await launcher.startupScreen(INPUT);
 
-    expect(result).toEqual({ ok: false, error: 'tmux_unavailable' });
+    expect(result).toEqual({ ok: false, error: 'launch_failed:bad_request' });
   });
 
   test('reports an unreachable hub as a failure', async () => {
@@ -1192,11 +1259,206 @@ describe('tmux-launcher codex startup screen (UI-ahzh §3.1)', () => {
       throw new Error('spawn session-hub ENOENT');
     });
 
-    const result = await launcher.codexStartup(INPUT);
+    const result = await launcher.startupScreen(INPUT);
 
     expect(result).toEqual({
       ok: false,
       error: 'launch_failed:session_hub_unavailable'
     });
+  });
+});
+
+describe('tmux-launcher startup advance (UI-e5cq §3.1)', () => {
+  /**
+   * A launcher whose hub answers every call with `reply`, recording the argv.
+   *
+   * @param {() => Promise<any>} reply
+   */
+  function advanceLauncher(reply) {
+    /** @type {string[][]} */
+    const calls = [];
+    const launcher = createTmuxLauncher({
+      runSessionHub: async (args) => {
+        calls.push(args);
+        return reply();
+      },
+      log: () => {}
+    });
+    return { calls, launcher };
+  }
+
+  const INPUT = {
+    runner: /** @type {const} */ ('codex'),
+    pane: '%8',
+    marker: SESSION_LANE_PANE_MARKER,
+    key: 'UI-e5cq',
+    fingerprint: 'a1b2c3'
+  };
+
+  test('asks the hub to answer the screen of that fingerprint', async () => {
+    const { calls, launcher } = advanceLauncher(async () =>
+      hubReply({ advanced: false, key_sent: false, reason: 'busy' })
+    );
+
+    await launcher.startupAdvance(INPUT);
+
+    expect(calls).toEqual([
+      [
+        'startup-advance',
+        '--runner',
+        'codex',
+        '--pane',
+        '%8',
+        '--marker-option',
+        SESSION_LANE_PANE_MARKER,
+        '--marker-value',
+        'UI-e5cq',
+        '--fingerprint',
+        'a1b2c3'
+      ]
+    ]);
+  });
+
+  test('returns a confirmed advance with its screen and row', async () => {
+    const { launcher } = advanceLauncher(async () =>
+      hubReply({
+        advanced: true,
+        key_sent: true,
+        dialog: 'startup',
+        startup_kind: 'model',
+        choice: 'Use existing model',
+        heading: 'Try the new model'
+      })
+    );
+
+    const result = await launcher.startupAdvance(INPUT);
+
+    expect(result).toEqual({
+      ok: true,
+      advanced: true,
+      key_sent: true,
+      dialog: 'startup',
+      startup_kind: 'model',
+      choice: 'Use existing model',
+      heading: 'Try the new model'
+    });
+  });
+
+  test('reads a confirmed advance that carries no key_sent key', async () => {
+    const { launcher } = advanceLauncher(async () =>
+      hubReply({
+        advanced: true,
+        dialog: 'trust',
+        startup_kind: null,
+        choice: 'Trust and continue',
+        heading: 'Trust this folder?'
+      })
+    );
+
+    const result = await launcher.startupAdvance(INPUT);
+
+    expect(result).toEqual({
+      ok: true,
+      advanced: true,
+      key_sent: true,
+      dialog: 'trust',
+      startup_kind: null,
+      choice: 'Trust and continue',
+      heading: 'Trust this folder?'
+    });
+  });
+
+  test('returns an unconfirmed key as sent', async () => {
+    const { launcher } = advanceLauncher(async () =>
+      hubReply({ advanced: false, key_sent: true, reason: 'not_confirmed' })
+    );
+
+    const result = await launcher.startupAdvance(INPUT);
+
+    expect(result).toEqual({
+      ok: true,
+      advanced: false,
+      key_sent: true,
+      reason: 'not_confirmed'
+    });
+  });
+
+  test.each([
+    'screen_changed',
+    'not_auto',
+    'already_answered',
+    'busy',
+    'not_alive',
+    'started'
+  ])('returns a keyless %s refusal', async (reason) => {
+    const { launcher } = advanceLauncher(async () =>
+      hubReply({ advanced: false, key_sent: false, reason })
+    );
+
+    const result = await launcher.startupAdvance(INPUT);
+
+    expect(result).toEqual({
+      ok: true,
+      advanced: false,
+      key_sent: false,
+      reason
+    });
+  });
+
+  test.each([
+    ['an unknown reason', { advanced: false, key_sent: false, reason: 'odd' }],
+    [
+      'a keyless not_confirmed',
+      { advanced: false, key_sent: false, reason: 'not_confirmed' }
+    ],
+    [
+      'a sent key with another reason',
+      { advanced: false, key_sent: true, reason: 'busy' }
+    ],
+    ['a missing advanced', { key_sent: false, reason: 'busy' }],
+    [
+      'an advance without its row',
+      { advanced: true, dialog: 'trust', startup_kind: null, heading: 'h' }
+    ],
+    [
+      'an advance on an unclassified screen',
+      {
+        advanced: true,
+        dialog: 'unknown_screen',
+        startup_kind: null,
+        choice: 'c',
+        heading: 'h'
+      }
+    ],
+    [
+      'an advance that says no key went in',
+      {
+        advanced: true,
+        key_sent: false,
+        dialog: 'trust',
+        startup_kind: null,
+        choice: 'c',
+        heading: 'h'
+      }
+    ]
+  ])('refuses a reply with %s', async (_name, value) => {
+    const { launcher } = advanceLauncher(async () => hubReply(value));
+
+    const result = await launcher.startupAdvance(INPUT);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'launch_failed:session_hub_invalid_response'
+    });
+  });
+
+  test('passes a hub refusal through as a failure', async () => {
+    const { launcher } = advanceLauncher(async () =>
+      hubReply({ ok: false, code: 'bad_request' }, 1)
+    );
+
+    const result = await launcher.startupAdvance(INPUT);
+
+    expect(result).toEqual({ ok: false, error: 'launch_failed:bad_request' });
   });
 });

@@ -1915,21 +1915,67 @@ export function liveInquiryView(views) {
   );
 }
 
+/** The startup-wait word of a conversation badge tail (UI-e5cq §3.5). */
+const STARTUP_WAIT_WORD = '시작 화면 대기';
+
+/**
+ * The startup-screen wait a live, not-closing window shows (UI-e5cq §3.5);
+ * null without material, so the turn tail stands (fail-quiet).
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView} view
+ * @returns {import('../../../server/worker/startup-wait.js').StartupWait|null}
+ */
+function shownStartupWait(view) {
+  if (view.state !== 'live' || view.closing) {
+    return null;
+  }
+  return normalizeStartupWait(view.startup_wait);
+}
+
 /**
  * The turn-state tail of an interactive session badge (UI-ri8n §3.3):
  * `작업 중 <경과>` · `질문 대기` · `한도 대기` · `턴 종료 <경과>`. A
  * same-session conversation (UI-nuwy §3.8) reads its server record instead:
- * `대화 중 <경과>` · `답 대기` · `대화에서 마무리 중`. A null `turn_state` draws
- * nothing (fail-quiet).
+ * `대화 중 <경과>` · `답 대기` · `대화에서 마무리 중`. A window still on a
+ * startup screen reads `시작 화면 대기 <경과>` (UI-e5cq §3.5). A null
+ * `turn_state` draws nothing (fail-quiet).
  *
  * @param {import('./lane-model.js').InteractiveSessionView} view
  * @param {number} [now]
  * @returns {string}
  */
 export function interactiveTurnTail(view, now = Date.now()) {
+  const startup = shownStartupWait(view);
+  if (startup) {
+    const waited = formatElapsedSince(startup.since, now).replace(/째$/, '');
+    return waited ? `${STARTUP_WAIT_WORD} ${waited}` : STARTUP_WAIT_WORD;
+  }
   const { word, timed } = interactiveTurnWord(view);
   const elapsed = timed ? turnElapsed(view, now) : '';
   return elapsed ? `${word} ${elapsed}` : word;
+}
+
+/**
+ * The badge form of {@link interactiveTurnTail}: the same words, with the
+ * elapsed as a `[data-ts]` span the ticker updates without a render (UI-yu2o).
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView} view
+ * @param {number} now
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+function interactiveTurnTailTemplate(view, now) {
+  const startup = shownStartupWait(view);
+  if (startup) {
+    return (
+      timeSpan(startup.since, 'dur', now, { pre: `${STARTUP_WAIT_WORD} ` }) ||
+      STARTUP_WAIT_WORD
+    );
+  }
+  const { word, timed } = interactiveTurnWord(view);
+  const elapsed = timed ? turnElapsed(view, now) : '';
+  return elapsed
+    ? timeSpan(view.turn_state_since, 'dur', now, { pre: `${word} ` })
+    : word;
 }
 
 /**
@@ -2017,12 +2063,8 @@ export function interactiveSessionBadgesTemplate(views, options) {
   return (views || [])
     .filter((view) => view.kind !== 'session_lane')
     .map((view) => {
-      const { word, timed } = interactiveTurnWord(view);
-      const elapsed = timed ? turnElapsed(view, now) : '';
-      // 턴 경과는 `[data-ts]` 글자라 ticker가 렌더 없이 고친다 (UI-yu2o).
-      const tail = elapsed
-        ? timeSpan(view.turn_state_since, 'dur', now, { pre: `${word} ` })
-        : word;
+      const tail = interactiveTurnTailTemplate(view, now);
+      const startup = shownStartupWait(view);
       // A same-session conversation reopens the attempt's own session, so it is
       // neither a fork nor a new session (UI-nuwy §3.2).
       const mode =
@@ -2063,6 +2105,9 @@ export function interactiveSessionBadgesTemplate(views, options) {
                 : '확인 필요';
       const title = [
         row_word,
+        startup
+          ? `${STARTUP_WAIT_WORD} · ${STARTUP_WAIT_LABELS[startup.kind]}`
+          : '',
         resumed
           ? `resume · ${view.source === 'recovered' ? '복구' : 'session_ref'}`
           : origin,
@@ -2179,8 +2224,9 @@ export function sessionLaneProgressTemplate(views, now = Date.now()) {
   if (!view) {
     return '';
   }
-  // A codex window still on a startup screen (UI-ahzh §3.4): the wait leads
-  // the line, timed from the screen's own `since`.
+  // A window of either runner still on a startup screen (UI-ahzh §3.4,
+  // UI-e5cq §3.5): the wait leads the line, timed from the screen's own
+  // `since`.
   const startup = normalizeStartupWait(view.startup_wait);
   if (startup) {
     const word = `시작 화면 대기 · ${STARTUP_WAIT_LABELS[startup.kind]}`;

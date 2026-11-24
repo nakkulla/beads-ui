@@ -576,11 +576,20 @@
  * @property {InteractiveLastMessage|null} last_message
  * @property {number|null} last_message_read_at
  * @property {import('./startup-wait.js').StartupWait|null} [startup_wait] - A
- * session-lane codex window held on a startup screen before SessionStart
- * (UI-ahzh §3.3). Absent reads as no wait.
- * @property {number|null} [startup_passed_at] - When the pane's
- * `@agent_session` was first seen filled: SessionStart passed, and the
- * startup screen is never queried again for this window.
+ * window held on a startup screen before its first turn (UI-ahzh §3.3, every
+ * kind and runner since UI-e5cq §3.4). Absent reads as no wait.
+ * @property {number|null} [startup_passed_at] - When the window's start was
+ * first seen (a codex `@agent_session`, a claude turn marker, hub `started`
+ * or a transcript message after launch): the startup screen is never queried
+ * again for this window.
+ * @property {number} [startup_advance_count] - How many hub
+ * `startup-advance` calls sent a key into this window (UI-e5cq §3.4); the
+ * cap of five reads it. Absent reads as 0.
+ * @property {string[]} [startup_advance_fingerprints] - The screen
+ * fingerprints already answered in this window; one call per fingerprint.
+ * @property {true} [codex_project_untrusted] - The codex launch found an
+ * existing non-trusted project entry for the folder (UI-e5cq §3.2): its
+ * trust screen is never advanced.
  * @property {ConversationState|null} conversation - Present on every
  * conversation a launcher opened since UI-18a5 §3.4 — 멈춤 (`inquiry`),
  * 실패 (`resolve`) and 외부 작업 완료 (`external_resume`). A record without
@@ -4180,6 +4189,24 @@ function normalizeInteractiveSessions(raw) {
     const bead_id = String(value.bead_id);
     const startup_wait = normalizeStartupWait(value.startup_wait);
     const startup_passed_at = numberOrNull('startup_passed_at');
+    const startup_advance_count =
+      Number.isSafeInteger(value.startup_advance_count) &&
+      /** @type {number} */ (value.startup_advance_count) > 0
+        ? /** @type {number} */ (value.startup_advance_count)
+        : 0;
+    /** @type {string[]} */
+    const startup_advance_fingerprints = Array.isArray(
+      value.startup_advance_fingerprints
+    )
+      ? [
+          ...new Set(
+            value.startup_advance_fingerprints.filter(
+              (fingerprint) =>
+                typeof fingerprint === 'string' && fingerprint.length > 0
+            )
+          )
+        ]
+      : [];
     sessions[`${bead_id}:${value.kind}`] = {
       bead_id,
       kind: /** @type {InteractiveSession['kind']} */ (value.kind),
@@ -4235,7 +4262,14 @@ function normalizeInteractiveSessions(raw) {
       last_message_read_at: numberOrNull('last_message_read_at'),
       conversation: normalizeConversation(value.conversation),
       ...(startup_wait ? { startup_wait } : {}),
-      ...(startup_passed_at === null ? {} : { startup_passed_at })
+      ...(startup_passed_at === null ? {} : { startup_passed_at }),
+      ...(startup_advance_count > 0 ? { startup_advance_count } : {}),
+      ...(startup_advance_fingerprints.length > 0
+        ? { startup_advance_fingerprints }
+        : {}),
+      ...(value.codex_project_untrusted === true
+        ? { codex_project_untrusted: true }
+        : {})
     };
   }
   return sessions;

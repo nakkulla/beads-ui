@@ -2583,6 +2583,75 @@ describe('session-lane card parity between the Worker and Monitor tabs (UI-lbm5 
   });
 });
 
+describe('conversation startup wait parity between the Worker and Monitor tabs (UI-e5cq §3.5)', () => {
+  /** K-1's live inquiry window still on a login screen. */
+  function startupWaitPatch() {
+    return {
+      interactive_sessions: {
+        'K-1:inquiry': {
+          bead_id: 'K-1',
+          kind: 'inquiry',
+          provider: 'claude',
+          pane_id: '%9',
+          tmux_session: 'bdui-inquiry',
+          tmux_window: 'K-1',
+          launched_at: NOW - 10 * 60 * 1000,
+          state: 'live',
+          settled_at: null,
+          session_id: 'sid-k1',
+          attempt_id: 'att-k1',
+          startup_wait: {
+            kind: 'login',
+            fingerprint: 'fp-login',
+            since: NOW - 6 * 60 * 1000,
+            notified_at: null
+          }
+        }
+      }
+    };
+  }
+
+  test('draws the same startup wait badge tail and title on the K-1 card of both tabs', async () => {
+    const { worker, monitor } = await drawBothTabs(
+      undefined,
+      startupWaitPatch(),
+      undefined,
+      ['K-1']
+    );
+
+    const badges = [worker, monitor].map((mount) => {
+      const badge = /** @type {HTMLElement|null|undefined} */ (
+        cardsByBead(mount)
+          .get('K-1')
+          ?.querySelector('.interactive-session-badge')
+      );
+      return {
+        text: (badge?.textContent || '').replace(/\s+/g, ' ').trim(),
+        title: badge?.title || ''
+      };
+    });
+
+    expect(badges[0].text).toContain('시작 화면 대기');
+    expect(badges[0].title).toContain('시작 화면 대기 · 로그인');
+    expect(badges[1]).toEqual(badges[0]);
+  });
+
+  test('draws the same K-1 card with a startup wait on both tabs', async () => {
+    const { worker, monitor } = await drawBothTabs(
+      undefined,
+      startupWaitPatch(),
+      undefined,
+      ['K-1']
+    );
+
+    const parts = [worker, monitor].map((mount) =>
+      partsOf(/** @type {HTMLElement} */ (cardsByBead(mount).get('K-1')))
+    );
+
+    expect(parts[1]).toEqual(parts[0]);
+  });
+});
+
 describe('takeover handback card parity between the Worker and Monitor tabs (UI-3713 §3.3)', () => {
   /**
    * K-1's parked attempt after its 멈춤 conversation ended in

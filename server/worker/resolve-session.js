@@ -1477,7 +1477,10 @@ export function createResolveSession(deps) {
           conversation: newConversation(
             input.failure,
             input.verify_hold ?? null
-          )
+          ),
+          ...(outcome.codex_project_untrusted
+            ? { codex_project_untrusted: true }
+            : {})
         });
       }
       const startup =
@@ -1610,7 +1613,10 @@ export function createResolveSession(deps) {
           tmux_window: outcome.tmux_window,
           pane_id: outcome.pane_id,
           cwd: checkout,
-          conversation: newConversation(input.failure)
+          conversation: newConversation(input.failure),
+          ...(outcome.codex_project_untrusted
+            ? { codex_project_untrusted: true }
+            : {})
         });
       }
       return {

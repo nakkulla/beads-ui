@@ -776,6 +776,9 @@ export function createDirectionInquiry(deps) {
             state: 'live',
             exit_requested_at: null,
             defer_since: null,
+            ...(launched.codex_project_untrusted
+              ? { codex_project_untrusted: true }
+              : {}),
             conversation: {
               stop: reason ?? ABSENT,
               wait_id: null,

@@ -506,7 +506,7 @@ describe('worker/notify argv assembly', () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    await notifier.sessionLaneStartupWait({
+    await notifier.startupWait({
       bead_id: 'UI-1',
       title: '세션 레인',
       label: '훅 확인',
@@ -518,6 +518,45 @@ describe('worker/notify argv assembly', () => {
     expect(messageOf(spawn.last())).toBe(
       '🤖 ⏳ 시작 화면 대기 — UI-1 세션 레인\n시작 화면 대기 · 훅 확인\ntmux bdui-inquiry:UI-1\ntmux 창에서 선택해야 시작됩니다\n리포: proj'
     );
+  });
+
+  test('names the screen, the chosen row and the window on the auto-advance push', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.startupAutoAdvance({
+      bead_id: 'UI-1',
+      title: '해결 대화',
+      heading: 'Choose a theme',
+      choice: 'Dark mode',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-UI-1',
+      repo: '/r/proj'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      '🤖 ⏩ 시작 화면 자동 진행 — UI-1 해결 대화\n시작 화면 자동 진행\n화면: Choose a theme\n고른 행: Dark mode\ntmux bdui-inquiry:resolve-UI-1\n리포: proj'
+    );
+  });
+
+  test('sends no auto-advance push while notifications are off', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(
+      { enabled: false, cmd: ['discord'] },
+      { spawnImpl: spawn.spawnImpl }
+    );
+
+    await notifier.startupAutoAdvance({
+      bead_id: 'UI-1',
+      title: '해결 대화',
+      heading: 'Choose a theme',
+      choice: 'Dark mode',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-UI-1',
+      repo: '/r/proj'
+    });
+
+    expect(spawn.calls).toHaveLength(0);
   });
 
   test('sends the start event with the transition, bead, repo and exec', async () => {

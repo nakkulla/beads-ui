@@ -269,10 +269,17 @@ const WAITING_RESCAN_COVER_MS = 2_000;
 const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
 export const INTERACTIVE_EXIT_GRACE_MS = 90_000;
 /**
- * How long one unchanged codex startup screen holds a session-lane window
- * before the single Discord notice (UI-ahzh §3.5).
+ * How long one unchanged startup screen holds an interactive window before
+ * the single Discord notice (UI-ahzh §3.5, every kind since UI-e5cq §3.6).
  */
 export const STARTUP_WAIT_NOTIFY_MS = 5 * 60_000;
+/**
+ * How long after launch a window with no start and no recorded wait reads as
+ * an `unknown` startup wait (UI-e5cq §3.3); the boot frame must not flicker.
+ */
+export const STARTUP_UNSEEN_WAIT_MS = 2 * 60_000;
+/** How many startup screens the hub may answer in one window (UI-e5cq §3.3). */
+export const STARTUP_ADVANCE_CAP = 5;
 /**
  * How long a dispatch refused at `base_unresolved:fetch` waits before its fence
  * is lifted for one more pass. Long enough that a failing remote is not hammered
@@ -1092,7 +1099,8 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   providerRecovered?: (i: any) => void,
  *   providerAutoResumeDisarmed?: (i: any) => void,
  *   providerLivePreempt?: (i: any) => void,
- *   sessionLaneStartupWait?: (i: any) => void,
+ *   startupWait?: (i: any) => void,
+ *   startupAutoAdvance?: (i: any) => void,
  *   enabled?: () => boolean,
  *   prWaitEntered: (i: any) => void,
  *   needsHuman?: (i: import('./notify.js').NeedsHumanInput) => Promise<void>|void
@@ -1517,6 +1525,32 @@ const INTERACTIVE_KIND_LABELS = {
   session_lane: '세션 레인',
   spec_authoring: '스펙 작성'
 };
+
+/**
+ * The pane marker each interactive kind's window carries; the hub's startup
+ * commands name the window by it (UI-e5cq §3.1).
+ *
+ * @type {Record<import('./queue-store.js').InteractiveSession['kind'], string>}
+ */
+const INTERACTIVE_PANE_MARKERS = {
+  resolve: RESOLVE_PANE_MARKER,
+  inquiry: INQUIRY_PANE_MARKER,
+  external_resume: EXTERNAL_RESUME_PANE_MARKER,
+  session_lane: SESSION_LANE_PANE_MARKER,
+  spec_authoring: SPEC_AUTHORING_PANE_MARKER
+};
+
+/**
+ * The startup event prefix of one interactive kind (UI-e5cq §3.4). The
+ * session lane keeps its UI-ahzh wording byte for byte.
+ *
+ * @param {import('./queue-store.js').InteractiveSession['kind']} kind
+ */
+function startupEventPrefix(kind) {
+  return kind === SESSION_LANE_KIND
+    ? '세션 레인'
+    : `${INTERACTIVE_KIND_LABELS[kind]} 세션`;
+}
 
 /**
  * The 외부 작업 완료 conversation an `인계` dispatch continues (UI-18a5 §3.4):
@@ -2273,7 +2307,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerAutoResumeDisarmed'|'providerLivePreempt'|'sessionLaneStartupWait'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerAutoResumeDisarmed'|'providerLivePreempt'|'startupWait'|'startupAutoAdvance'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -13562,83 +13596,174 @@ export function createScheduler(deps) {
       );
     }
     /**
-     * Observe one live codex session-lane window that has not yet started
-     * (UI-ahzh §3.2): a filled `@agent_session` is the pass and ends the
-     * observation for good; otherwise the hub's read-only `codex-startup`
-     * names the screen. A failed read only logs and keeps the previous wait,
-     * and a successful read of no startup screen clears it.
+     * Observe one live interactive window that has not yet started (UI-ahzh
+     * §3.2, every kind and runner since UI-e5cq §3.3). A seen start is the
+     * pass and ends the observation for good. Otherwise the hub's read-only
+     * `startup-screen` names the screen: one the hub policy answers goes
+     * through `startup-advance` (five per window, one call per fingerprint),
+     * and one it does not is a wait. A window with neither a start nor a
+     * recorded wait two minutes after launch is an `unknown` wait.
      *
      * @param {string} key
      * @param {import('./queue-store.js').InteractiveSession} record
-     * @param {string|null} agent_session
+     * @param {boolean} started - The pass-side start sign: a filled codex
+     * `@agent_session`, a claude turn marker, or a claude transcript message
+     * after launch.
      */
-    async function observeCodexStartup(key, record, agent_session) {
+    async function observeStartup(key, record, started) {
       if (!awaitingStart(key, record)) {
         return;
       }
-      const wait_prefix = `interactive_session:${record.bead_id}:${record.kind}:${record.launched_at}:startup_wait:`;
-      if (agent_session) {
+      const seq_prefix = `${record.kind}:${record.launched_at}`;
+      const event_prefix = startupEventPrefix(record.kind);
+      // The two-minute wait carries one fixed fingerprint per window, so it
+      // notifies once and no screen read clears it; only a start does.
+      const unseen_fingerprint = `startup-unseen:${record.launched_at}`;
+      const pass = () => {
+        const id_prefix = `interactive_session:${record.bead_id}:${seq_prefix}:`;
         const waited =
           record.startup_wait != null ||
+          (record.startup_advance_count ?? 0) > 0 ||
           (typeof deps.timeline?.readTimeline === 'function' &&
             deps.timeline
               .readTimeline(record.bead_id)
               .some(
                 (event) =>
                   typeof event.event_id === 'string' &&
-                  event.event_id.startsWith(wait_prefix)
+                  (event.event_id.startsWith(`${id_prefix}startup_wait:`) ||
+                    event.event_id.startsWith(`${id_prefix}startup_advance:`))
               ));
         update(key, record, { startup_wait: null, startup_passed_at: now() });
         if (waited) {
           appendTimeline({
             bead_id: record.bead_id,
             kind: 'interactive_session',
-            seq: `${record.kind}:${record.launched_at}:startup_passed`,
-            summary: '세션 레인 시작 화면 통과'
+            seq: `${seq_prefix}:startup_passed`,
+            summary: `${event_prefix} 시작 화면 통과`
           });
         }
+      };
+      // A screen that went away ends its wait without an event; the
+      // two-minute wait stays. Whether a wait was cleared.
+      const clearScreenWait = () => {
+        const current = normalizeStartupWait(record.startup_wait);
+        if (!current || current.fingerprint === unseen_fingerprint) {
+          return false;
+        }
+        update(key, record, { startup_wait: null });
+        return true;
+      };
+      /**
+       * Hold the window on one wait; an unchanged fingerprint keeps its
+       * `since` and its notice stamp.
+       *
+       * @param {import('./startup-wait.js').StartupWaitKind} kind
+       * @param {string} fingerprint
+       * @param {number} since
+       */
+      const enterWait = (kind, fingerprint, since) => {
+        const current = normalizeStartupWait(record.startup_wait);
+        const at = now();
+        /** @type {import('./startup-wait.js').StartupWait} */
+        let next =
+          current && current.fingerprint === fingerprint
+            ? { ...current, kind }
+            : { kind, fingerprint, since, notified_at: null };
+        const label = STARTUP_WAIT_LABELS[kind];
+        if (!current || current.kind !== kind) {
+          appendTimeline({
+            bead_id: record.bead_id,
+            kind: 'interactive_session',
+            seq: `${seq_prefix}:startup_wait:${kind}:${at}`,
+            summary: `${event_prefix} 시작 화면 대기 · ${label}`
+          });
+        }
+        // A disabled notifier sends nothing, so nothing is stamped as sent.
+        const notify =
+          next.notified_at === null &&
+          at - next.since > STARTUP_WAIT_NOTIFY_MS &&
+          typeof deps.notify?.startupWait === 'function' &&
+          (typeof deps.notify.enabled !== 'function' || deps.notify.enabled());
+        if (notify) {
+          next = { ...next, notified_at: at };
+        }
+        if (!sameStartupWait(current, next)) {
+          update(key, record, { startup_wait: next });
+        }
+        // Once per fingerprint, stamped whether or not the push is delivered,
+        // and only after the stamp landed so a failed write cannot repeat it.
+        // It is not a wait judgment and never opens an inquiry.
+        if (notify && record.startup_wait?.notified_at === at) {
+          notifyLifecycle('startupWait', {
+            bead_id: record.bead_id,
+            title: null,
+            label,
+            tmux_session: record.tmux_session,
+            tmux_window: record.tmux_window,
+            repo: workspace
+          });
+        }
+      };
+      // Re-entering the standing two-minute wait is what lets its notice fire.
+      const applyUnseenRule = () => {
+        const current = normalizeStartupWait(record.startup_wait);
+        if (
+          (current === null || current.fingerprint === unseen_fingerprint) &&
+          now() - record.launched_at >= STARTUP_UNSEEN_WAIT_MS
+        ) {
+          enterWait('unknown', unseen_fingerprint, record.launched_at);
+        }
+      };
+      if (started) {
+        pass();
         return;
       }
-      if (!launcher) {
+      if (!launcher || typeof launcher.startupScreen !== 'function') {
         return;
       }
-      /** @type {import('./tmux-launcher.js').CodexStartupResult} */
+      const target = {
+        runner: record.provider,
+        pane: record.pane_id,
+        marker: INTERACTIVE_PANE_MARKERS[record.kind],
+        key: record.bead_id
+      };
+      /** @type {import('./tmux-launcher.js').StartupScreenResult} */
       let read;
       try {
-        read = await launcher.codexStartup({
-          pane: record.pane_id,
-          marker: SESSION_LANE_PANE_MARKER,
-          key: record.bead_id
-        });
+        read = await launcher.startupScreen(target);
       } catch (err) {
         read = { ok: false, error: String(err) };
       }
       if (!read.ok) {
-        log(
-          'codex startup observation failed for %s/%s: %o',
-          workspace,
-          key,
-          read
-        );
+        log('startup observation failed for %s/%s: %o', workspace, key, read);
+        if (awaitingStart(key, record)) {
+          applyUnseenRule();
+        }
         return;
       }
       // A pane the hub could not confirm alive tells nothing about its
-      // screen; the liveness pass owns its end.
-      if (read.alive !== 'alive') {
+      // screen; the liveness pass owns its end. The Bead can also settle
+      // while the hub read is in flight.
+      if (read.alive !== 'alive' || !awaitingStart(key, record)) {
         return;
       }
-      // The Bead can settle while the hub read is in flight.
-      if (!awaitingStart(key, record)) {
+      // A codex window at its input box is not waiting, but only its
+      // `@agent_session` is its start.
+      if (read.started) {
+        if (record.provider === 'claude') {
+          pass();
+        } else if (record.startup_wait != null) {
+          update(key, record, { startup_wait: null });
+        }
         return;
       }
       const screen = read.screen;
-      const current = normalizeStartupWait(record.startup_wait);
-      // No startup screen (the prompt, or a declined hook) and an
-      // unclassified screen (the boot frame reads the same) are not waits:
-      // they end one without an event.
+      // No selection screen and an unclassified screen (the boot frame reads
+      // the same) are not waits by themselves. A wait cleared in this pass
+      // defers the two-minute rule to the next one.
       if (screen === null || screen.dialog === 'unknown_screen') {
-        if (current) {
-          update(key, record, { startup_wait: null });
+        if (!clearScreenWait()) {
+          applyUnseenRule();
         }
         return;
       }
@@ -13649,51 +13774,110 @@ export function createScheduler(deps) {
           : isStartupWaitKind(screen.startup_kind)
             ? screen.startup_kind
             : 'unknown';
-      const at = now();
-      /** @type {import('./startup-wait.js').StartupWait} */
-      let next =
-        current && current.fingerprint === screen.fingerprint
-          ? { ...current, kind }
-          : {
-              kind,
-              fingerprint: screen.fingerprint,
-              since: at,
-              notified_at: null
-            };
-      const label = STARTUP_WAIT_LABELS[kind];
-      if (!current || current.kind !== kind) {
-        appendTimeline({
-          bead_id: record.bead_id,
-          kind: 'interactive_session',
-          seq: `${record.kind}:${record.launched_at}:startup_wait:${kind}:${at}`,
-          summary: `세션 레인 시작 화면 대기 · ${label}`
-        });
+      const used = record.startup_advance_fingerprints ?? [];
+      const count = record.startup_advance_count ?? 0;
+      // A person's own non-trusted entry is never overturned (§3.2).
+      const protected_trust =
+        record.provider === 'codex' &&
+        screen.dialog === 'trust' &&
+        record.codex_project_untrusted === true;
+      if (
+        screen.auto !== null &&
+        !protected_trust &&
+        !used.includes(screen.fingerprint) &&
+        count < STARTUP_ADVANCE_CAP &&
+        typeof launcher.startupAdvance === 'function'
+      ) {
+        /** @type {import('./tmux-launcher.js').StartupAdvanceResult} */
+        let sent;
+        try {
+          sent = await launcher.startupAdvance({
+            ...target,
+            fingerprint: screen.fingerprint
+          });
+        } catch (err) {
+          sent = { ok: false, error: String(err) };
+        }
+        if (!sent.ok) {
+          log('startup advance failed for %s/%s: %o', workspace, key, sent);
+          if (awaitingStart(key, record)) {
+            applyUnseenRule();
+          }
+          return;
+        }
+        if (!awaitingStart(key, record)) {
+          return;
+        }
+        if (sent.key_sent || sent.reason === 'already_answered') {
+          // The fingerprint is spent before any event, and a key that went
+          // in counts toward the cap whether or not it was confirmed.
+          const patch = {
+            startup_advance_fingerprints: [...used, screen.fingerprint],
+            ...(sent.key_sent ? { startup_advance_count: count + 1 } : {})
+          };
+          update(key, record, patch);
+          if (
+            !(record.startup_advance_fingerprints ?? []).includes(
+              screen.fingerprint
+            )
+          ) {
+            return;
+          }
+        }
+        if (sent.advanced) {
+          /** @type {import('./startup-wait.js').StartupWaitKind} */
+          const advanced_kind =
+            sent.dialog === 'trust'
+              ? 'trust'
+              : isStartupWaitKind(sent.startup_kind)
+                ? sent.startup_kind
+                : 'unknown';
+          const heading =
+            advanced_kind === 'unknown' && sent.heading.length > 0
+              ? ` (${sent.heading})`
+              : '';
+          appendTimeline({
+            bead_id: record.bead_id,
+            kind: 'interactive_session',
+            seq: `${seq_prefix}:startup_advance:${screen.fingerprint}`,
+            summary: `${event_prefix} 시작 화면 자동 진행 · ${STARTUP_WAIT_LABELS[advanced_kind]}${heading} → ${sent.choice}`
+          });
+          clearScreenWait();
+          // Only a screen outside the hub's table is pushed, so a person can
+          // check the row it chose; the spent fingerprint makes it once.
+          if (advanced_kind === 'unknown') {
+            notifyLifecycle('startupAutoAdvance', {
+              bead_id: record.bead_id,
+              title: null,
+              heading: sent.heading,
+              choice: sent.choice,
+              tmux_session: record.tmux_session,
+              tmux_window: record.tmux_window,
+              repo: workspace
+            });
+          }
+          return;
+        }
+        // An unconfirmed key is judged by the next pass's read; a moved
+        // screen, a busy pane or a lost marker does nothing this pass.
+        if (
+          sent.key_sent ||
+          sent.reason === 'screen_changed' ||
+          sent.reason === 'busy' ||
+          sent.reason === 'not_alive'
+        ) {
+          return;
+        }
+        if (sent.reason === 'started') {
+          if (record.provider === 'claude') {
+            pass();
+          } else if (record.startup_wait != null) {
+            update(key, record, { startup_wait: null });
+          }
+          return;
+        }
       }
-      // A disabled notifier sends nothing, so nothing is stamped as sent.
-      const notify =
-        next.notified_at === null &&
-        at - next.since > STARTUP_WAIT_NOTIFY_MS &&
-        typeof deps.notify?.sessionLaneStartupWait === 'function' &&
-        (typeof deps.notify.enabled !== 'function' || deps.notify.enabled());
-      if (notify) {
-        next = { ...next, notified_at: at };
-      }
-      if (!sameStartupWait(current, next)) {
-        update(key, record, { startup_wait: next });
-      }
-      // Once per fingerprint, stamped whether or not the push is delivered,
-      // and only after the stamp landed so a failed write cannot repeat it.
-      // It is not a wait judgment and never opens an inquiry.
-      if (notify && record.startup_wait?.notified_at === at) {
-        notifyLifecycle('sessionLaneStartupWait', {
-          bead_id: record.bead_id,
-          title: null,
-          label,
-          tmux_session: record.tmux_session,
-          tmux_window: record.tmux_window,
-          repo: workspace
-        });
-      }
+      enterWait(kind, screen.fingerprint, now());
     }
     /**
      * @param {string} key
@@ -14511,17 +14695,35 @@ export function createScheduler(deps) {
       if (Object.keys(observation_patch).length > 0) {
         update(key, record, observation_patch);
       }
-      // A live codex session-lane window that has not passed its startup
-      // screens (UI-ahzh §3.2). It reads `@agent_session` itself rather than
-      // `record.session_id`, which a resume launch pre-fills.
+      // A live interactive window that has not passed its startup screens
+      // (UI-e5cq §3.3). A codex window reads `@agent_session` itself rather
+      // than `record.session_id`, which a resume launch pre-fills; a claude
+      // window never judges its start by the session id it was launched with.
       const startup_target =
-        record.kind === SESSION_LANE_KIND &&
-        record.provider === 'codex' &&
         record.state === 'live' &&
         record.settled_at === null &&
         record.startup_passed_at == null &&
-        typeof launcher.codexStartup === 'function';
-      if (record.session_id === null || startup_target) {
+        typeof launcher.startupScreen === 'function';
+      if (startup_target && record.provider === 'claude') {
+        const marked =
+          (typeof pane_row.agent_running === 'string' &&
+            pane_row.agent_running.length > 0 &&
+            pane_row.agent_running !== '0') ||
+          (typeof pane_row.agent_attention === 'string' &&
+            pane_row.agent_attention.length > 0);
+        // A server-made notice (the unreadable answer) is no message.
+        const answered =
+          record.last_message !== null &&
+          typeof record.last_message.at === 'number' &&
+          record.last_message.at > record.launched_at &&
+          record.last_message.text !== INTERACTIVE_UNREADABLE_MESSAGE;
+        if (isCurrent(key, record)) {
+          await observeStartup(key, record, marked || answered);
+        }
+      }
+      const codex_startup_target =
+        startup_target && record.provider === 'codex';
+      if (record.session_id === null || codex_startup_target) {
         const session = await launcher.readPaneOption(
           record.pane_id,
           '@agent_session'
@@ -14543,8 +14745,8 @@ export function createScheduler(deps) {
               session_id_source: 'pane_option'
             });
           }
-          if (startup_target && isCurrent(key, record)) {
-            await observeCodexStartup(key, record, session.value || null);
+          if (codex_startup_target && isCurrent(key, record)) {
+            await observeStartup(key, record, Boolean(session.value));
           }
         }
       }
@@ -16909,7 +17111,10 @@ export function createScheduler(deps) {
       cwd: wt_path,
       launched_at: started_at,
       state: 'live',
-      conversation: newSessionLaneConversation()
+      conversation: newSessionLaneConversation(),
+      ...(outcome.codex_project_untrusted
+        ? { codex_project_untrusted: true }
+        : {})
     });
     log(
       'attempt %s session lane opened: %s %s:%s',

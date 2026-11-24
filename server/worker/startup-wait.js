@@ -1,17 +1,18 @@
 /**
- * The session-lane Codex startup-screen wait vocabulary (UI-ahzh §3.3): the
- * kinds a `startup_wait` record may carry, their display labels, and the one
- * normalizer the queue store, the scheduler and the card read. The hub
- * (`session-hub codex-startup`) owns the classification; this module only
+ * The startup-screen wait vocabulary of a Worker-opened window (UI-ahzh
+ * §3.3, widened to every interactive kind and both runners by UI-e5cq §3.4):
+ * the kinds a `startup_wait` record may carry, their display labels, and the
+ * one normalizer the queue store, the scheduler and the card read. The hub
+ * (`session-hub startup-screen`) owns the classification; this module only
  * names what it answered (ADR UI-jlov).
  */
 
 /**
- * @typedef {'hooks'|'update'|'model'|'login'|'trust'|'unknown'} StartupWaitKind
+ * @typedef {'hooks'|'update'|'model'|'login'|'trust'|'chrome'|'unknown'} StartupWaitKind
  */
 
 /**
- * One observed startup-screen wait of a live session-lane Codex window.
+ * One observed startup-screen wait of a live interactive window.
  * `since` restarts and `notified_at` clears whenever `fingerprint` changes.
  *
  * @typedef {Object} StartupWait
@@ -28,6 +29,7 @@ export const STARTUP_WAIT_LABELS = Object.freeze({
   model: '모델 안내',
   login: '로그인',
   trust: '폴더 신뢰',
+  chrome: 'Chrome 사용 제안',
   unknown: '기타 시작 화면'
 });
 
