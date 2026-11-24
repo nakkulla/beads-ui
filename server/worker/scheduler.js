@@ -1816,6 +1816,11 @@ export function createScheduler(deps) {
   const wait_unresolved_at = new Map();
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   const wait_retry_timers = new Map();
+  // One in-memory wake-up per deferred spec draft, keyed `${root}\0${bead_id}`
+  // by the owning root. The closure holds the workspace and blocker it
+  // re-observes with.
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const spec_draft_timers = new Map();
   /** @type {ReturnType<typeof createExternalWaitSessionResume>|null} */
   let external_wait_session_resume = null;
 
@@ -1848,9 +1853,45 @@ export function createScheduler(deps) {
         return resolved.ok ? resolved.exec.runner : null;
       },
       resolveSessionAccounts,
-      now
+      now,
+      onDraftDeferred: armSpecDraftWake,
+      onDraftSettled: ({ root, bead_id }) => {
+        clearSpecDraftWake(`${root}\0${bead_id}`);
+      }
     });
     await authoring.observe({ workspace, blockers });
+  }
+
+  /**
+   * @param {string} key
+   */
+  function clearSpecDraftWake(key) {
+    const timer = spec_draft_timers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      spec_draft_timers.delete(key);
+    }
+  }
+
+  /**
+   * Re-observe a deferred prerequisite directly when its draft idle limit
+   * elapses; no dispatch pass is involved, so free slots and lane order do not
+   * matter. A later deferral of the same prerequisite replaces the wake-up.
+   *
+   * @param {{ workspace: string, root: string, blocker: { id: string, rig: string|null, status: string }, until_ms: number }} input
+   */
+  function armSpecDraftWake({ workspace, root, blocker, until_ms }) {
+    const key = `${root}\0${blocker.id}`;
+    clearSpecDraftWake(key);
+    const delay = Math.min(Math.max(until_ms - now(), 0), 2 ** 31 - 1);
+    const timer = setTimeout(() => {
+      spec_draft_timers.delete(key);
+      observePrerequisiteSpecs(workspace, [blocker]).catch(() => {});
+    }, delay);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    spec_draft_timers.set(key, timer);
   }
 
   /**

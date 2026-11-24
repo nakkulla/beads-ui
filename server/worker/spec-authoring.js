@@ -131,6 +131,48 @@ export function specAuthoringState({ issue, queue, ready, root, blocks }) {
 }
 
 /**
+ * Copy of dotfiles workflow-state.yaml `draft_in_progress.idle_limit_hours`;
+ * spec-authoring.cross-runtime.test.js keeps the two equal (ADR UI-jlov).
+ */
+export const SPEC_DRAFT_IDLE_LIMIT_HOURS = 24;
+const SPEC_DRAFT_IDLE_LIMIT_MS = SPEC_DRAFT_IDLE_LIMIT_HOURS * 3_600_000;
+
+/**
+ * The instant (epoch ms) an unpublished draft stops counting as in progress,
+ * or null when it is not in progress at now_ms. An unreadable `updated_at`
+ * never defers, and a future one lies inside the limit.
+ *
+ * @param {any} issue
+ * @param {number} now_ms
+ * @returns {number|null}
+ */
+export function specDraftLimitAt(issue, now_ms) {
+  if (resolveSpecEvidence(issue).evidence !== 'draft') {
+    return null;
+  }
+  const updated_at = issue?.updated_at;
+  const updated_ms =
+    typeof updated_at === 'string' ? Date.parse(updated_at) : Number.NaN;
+  if (Number.isNaN(updated_ms)) {
+    return null;
+  }
+  const limit_ms = updated_ms + SPEC_DRAFT_IDLE_LIMIT_MS;
+  return now_ms < limit_ms ? limit_ms : null;
+}
+
+/**
+ * True while the draft's author is presumed still writing (the idle limit has
+ * not yet elapsed since the Bead last changed).
+ *
+ * @param {any} issue
+ * @param {number} now_ms
+ * @returns {boolean}
+ */
+export function specDraftInProgress(issue, now_ms) {
+  return specDraftLimitAt(issue, now_ms) !== null;
+}
+
+/**
  * Live projections are derived from observed issue rows and dependency proofs;
  * absence of a row or its owner yields no badge or button.
  *
@@ -235,7 +277,9 @@ export async function readSpecAuthoringReady(root, bead_id) {
  *   currentRunner?: (root: string, issue: any) => string|null,
  *   resolveSessionAccounts?: import('./session-launch-accounts.js').ResolveSessionAccounts,
  *   conversationSettings?: typeof getConversationSettings,
- *   existsSync?: (file: string) => boolean, now?: () => number
+ *   existsSync?: (file: string) => boolean, now?: () => number,
+ *   onDraftDeferred?: (input: { workspace: string, root: string, blocker: any, until_ms: number }) => void,
+ *   onDraftSettled?: (input: { root: string, bead_id: string }) => void
  * }} deps
  */
 export function createSpecAuthoring(deps) {
@@ -467,13 +511,16 @@ export function createSpecAuthoring(deps) {
             },
             blocker
           );
+          if (!root) {
+            continue;
+          }
           if (
-            !root ||
             Object.hasOwn(
               deps.store.snapshot(root).spec_authoring_launches,
               blocker.id
             )
           ) {
+            deps.onDraftSettled?.({ root, bead_id: blocker.id });
             continue;
           }
           const key = `${root}\0${blocker.id}`;
@@ -483,6 +530,23 @@ export function createSpecAuthoring(deps) {
           in_flight.add(key);
           try {
             const target = await targetOf(root, blocker.id);
+            const until_ms =
+              target?.state === 'spec_needed'
+                ? specDraftLimitAt(target.issue, now())
+                : null;
+            if (until_ms !== null) {
+              deps.onDraftDeferred?.({
+                workspace: input.workspace,
+                root,
+                blocker,
+                until_ms
+              });
+              continue;
+            }
+            // A failed read is no verdict: the pending wake-up stays armed.
+            if (target) {
+              deps.onDraftSettled?.({ root, bead_id: blocker.id });
+            }
             if (!target || target.state !== 'spec_needed') {
               continue;
             }

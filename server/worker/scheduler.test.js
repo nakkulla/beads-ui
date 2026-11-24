@@ -36695,6 +36695,159 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     });
     factory.mockRestore();
   });
+
+  describe('spec draft deferral wake-up', () => {
+    const DRAFT_UPDATED_MS = Date.parse('2026-11-17T09:41:37Z');
+    const DRAFT_LIMIT_MS = DRAFT_UPDATED_MS + 24 * 3_600_000;
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    /**
+     * The real spec authoring over the fake bd, with S9 a draft written four
+     * minutes ago and the clock a test can move.
+     *
+     * @param {{ enabled?: boolean }} [opts]
+     */
+    function draftEnv({ enabled = true } = {}) {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const clock = { now: DRAFT_UPDATED_MS + 4 * 60_000 };
+      const launcher = {
+        listPanes: vi.fn(async () => ({ ok: true, rows: [] })),
+        launch: vi.fn(async (/** @type {any} */ input) => ({
+          session: 'launched',
+          tmux_session: 'inquiry',
+          tmux_window: 'S9',
+          pane_id: '%1',
+          placement: input.placement
+        }))
+      };
+      const conversationConfirm = vi.fn(async () => true);
+      const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }], {
+        ready: false
+      });
+      const env = setup(
+        /** @type {any} */ ({
+          config,
+          slots: 1,
+          now: () => clock.now,
+          interactiveLauncher: launcher,
+          notify: { conversationConfirm }
+        })
+      );
+      const real = specAuthoring.createSpecAuthoring;
+      vi.spyOn(specAuthoring, 'createSpecAuthoring').mockImplementation(
+        (deps) =>
+          real({
+            ...deps,
+            readIssue: async (root, bead_id) =>
+              bead_id === 'S9'
+                ? {
+                    id: 'S9',
+                    status: 'open',
+                    labels: [],
+                    metadata: { route: 'spec_backed' },
+                    spec_id: 'docs/spec.md',
+                    updated_at: '2026-11-17T09:41:37Z'
+                  }
+                : (deps.readIssue?.(root, bead_id) ?? null),
+            listRoots: () => [WS],
+            autoLaunchEnabled: () => enabled,
+            getConfig: () => ({
+              worker_direction_inquiry: { enabled, tmux_session: 'inquiry' }
+            }),
+            conversationSettings: /** @type {any} */ (
+              () => ({ fresh_runtime: 'inherit' })
+            ),
+            existsSync: () => true
+          })
+      );
+      seedQueue(env.store, ['S1']);
+      return { env, clock, launcher, conversationConfirm };
+    }
+
+    test('defers the launch and notification of a draft inside the idle limit', async () => {
+      const h = draftEnv();
+
+      await h.env.scheduler.tick(WS);
+
+      expect(h.launcher.launch).not.toHaveBeenCalled();
+      expect(h.conversationConfirm).not.toHaveBeenCalled();
+      expect(h.env.store.snapshot(WS).spec_authoring_launches).toEqual({});
+    });
+
+    test('arms one wake-up for the deferred draft', async () => {
+      const h = draftEnv();
+      const before = vi.getTimerCount();
+
+      await h.env.scheduler.tick(WS);
+
+      expect(vi.getTimerCount()).toBe(before + 1);
+    });
+
+    test('opens one conversation at the idle limit while the slots are full', async () => {
+      const h = draftEnv();
+      await h.env.scheduler.tick(WS);
+      h.env.store.setSlots(WS, {
+        expected_revision: h.env.store.snapshot(WS).revision,
+        slots: 0
+      });
+
+      h.clock.now = DRAFT_LIMIT_MS;
+      await vi.advanceTimersByTimeAsync(DRAFT_LIMIT_MS - DRAFT_UPDATED_MS);
+      await flush();
+      await vi.runOnlyPendingTimersAsync();
+      await flush();
+
+      expect(h.launcher.launch).toHaveBeenCalledTimes(1);
+      expect(h.conversationConfirm).toHaveBeenCalledTimes(1);
+      expect(h.env.store.snapshot(WS).spec_authoring_launches.S9).toMatchObject(
+        { session: 'launched' }
+      );
+    });
+
+    test('keeps the wake-up waiting before the idle limit', async () => {
+      const h = draftEnv();
+      await h.env.scheduler.tick(WS);
+
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      await flush();
+
+      expect(h.launcher.launch).not.toHaveBeenCalled();
+      expect(h.conversationConfirm).not.toHaveBeenCalled();
+    });
+
+    test('keeps a single wake-up when the same draft defers again', async () => {
+      const h = draftEnv();
+      await h.env.scheduler.tick(WS);
+      const after_first = vi.getTimerCount();
+
+      await h.env.scheduler.tick(WS);
+
+      expect(vi.getTimerCount()).toBe(after_first);
+    });
+
+    test('only notifies at the idle limit while the shared switch is off', async () => {
+      const h = draftEnv({ enabled: false });
+      await h.env.scheduler.tick(WS);
+      expect(h.conversationConfirm).not.toHaveBeenCalled();
+
+      h.clock.now = DRAFT_LIMIT_MS;
+      await vi.advanceTimersByTimeAsync(DRAFT_LIMIT_MS - DRAFT_UPDATED_MS);
+      await flush();
+      await vi.runOnlyPendingTimersAsync();
+      await flush();
+
+      expect(h.launcher.launch).not.toHaveBeenCalled();
+      expect(h.conversationConfirm).toHaveBeenCalledTimes(1);
+      expect(h.env.store.snapshot(WS).spec_authoring_launches.S9).toMatchObject(
+        { reason: 'disabled' }
+      );
+    });
+  });
+
   /**
    * A quick_fix bead whose session will end without pushing. `dependencies` is
    * what `readIssue` answers with, and `status` seeds both the live bd status
