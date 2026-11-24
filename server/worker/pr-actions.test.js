@@ -2392,7 +2392,7 @@ describe('post-merge cleanup — 자동 진행 rerun of a closure stop (UI-19sj)
    * rerun.
    */
   async function branchStop() {
-    /** @type {{ removeByBranchResult?: any }} */
+    /** @type {{ removeByBranchResult?: any, bdMetadata?: Record<string, string> }} */
     const options = {
       removeByBranchResult: {
         ok: false,
@@ -2403,7 +2403,7 @@ describe('post-merge cleanup — 자동 진행 rerun of a closure stop (UI-19sj)
     const h = makeActions(options);
     await h.actions.merge(BEAD);
     delete options.removeByBranchResult;
-    return h;
+    return { ...h, options };
   }
 
   test('resumes the closure when the pin equals the merged commit', async () => {
@@ -2425,6 +2425,29 @@ describe('post-merge cleanup — 자동 진행 rerun of a closure stop (UI-19sj)
     });
 
     expect(result).toEqual({ ok: false, step: null, reason: 'target_moved' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup',
+      retry_count: 0
+    });
+  });
+
+  test('refuses without a new failure on a row with a foreign pin', async () => {
+    const h = await branchStop();
+    h.options.bdMetadata = {
+      foreign_repo: 'git@github.com:acme/research-repo-template.git',
+      foreign_path: '/targets/research-repo-template',
+      foreign_base: 'main'
+    };
+
+    const result = await h.actions.retryCleanup(BEAD, {
+      expected_target_sha: MERGED
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      step: null,
+      reason: 'auto_proceed_foreign'
+    });
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'branch_cleanup',
       retry_count: 0

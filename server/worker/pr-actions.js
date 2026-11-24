@@ -4613,9 +4613,14 @@ export function createPrActions(deps) {
       ) {
         return { ok: false, step: null, reason: 'target_moved' };
       }
+      // A foreign pin closes through its target, as on the deploy path.
+      const foreign = await foreignTargetFor(bead_id, row?.pr_url || null);
+      if (foreign.state !== 'none') {
+        return { ok: false, step: null, reason: 'auto_proceed_foreign' };
+      }
       // A `자동 진행` rerun is no click (UI-19sj §3.5); resuming past the
       // jobs, it carries no job retry authority either.
-      return await closeCoveredRow(bead_id, true, false);
+      return await closeCoveredRow(bead_id, true, false, foreign);
     }
     if (closure) {
       // The human-click boundary: both callers are clicks, so this is the one
