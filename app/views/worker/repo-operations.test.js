@@ -1360,6 +1360,16 @@ describe('배포 실행 버튼 (UI-s582 §3)', () => {
     ).toBe('수동');
   });
 
+  test('leaves an automatic proceed rerun unbadged', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ source: 'manual', auto_proceed: true })]
+    });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__st--manual')
+    ).toBeNull();
+  });
+
   test('leaves an automatic operation unbadged', () => {
     const { mount } = mountWorker({
       repo_operations: [operationCard({ source: 'automatic' })]

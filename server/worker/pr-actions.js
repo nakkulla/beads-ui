@@ -2376,7 +2376,9 @@ export function createPrActions(deps) {
    * waited to a success (UI-btsr §3.3), so the cleanup goes on to the deploy
    * without re-ensuring it. `expected_target_sha`: a `자동 진행` rerun
    * (UI-19sj §3.2) stops as `target_moved` — recording no new failure —
-   * when the synced base tip is no longer the failed deploy's target.
+   * when the synced base tip is no longer the failed deploy's target, and
+   * as `target_moved` or `repo_operation_busy` when the coordinator's last
+   * check before the launch refuses it.
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
   async function runCleanup(bead_id, refs = {}, options = {}) {
@@ -2702,11 +2704,31 @@ export function createPrActions(deps) {
           target_sha: wait_target ?? synced.sha,
           subjects: [{ bead_id, merged_sha: merge_sha }],
           ...(retry_authorized ? { retry_authorized: true } : {}),
+          // A `자동 진행` rerun's pin (UI-19sj §3.2): the coordinator checks
+          // the tip again under its lock and refuses to queue the run.
+          ...(typeof options.expected_target_sha === 'string'
+            ? { expected_target_sha: options.expected_target_sha }
+            : {}),
           // The coordinator also records a successor on its own for a
           // `condition_wait` tip whose recheck time came (dotfiles-rnyd9), so
           // the row resumes the same way whoever authorized the new run.
           on_retry_recorded: () => resumeRetriedRow(bead_id)
         });
+        if (
+          !deployed.ok &&
+          typeof options.expected_target_sha === 'string' &&
+          (deployed.code === 'target_moved' ||
+            deployed.code === 'repo_operation_busy')
+        ) {
+          // The pinned rerun did not start; the failure it reran stays the
+          // row's record.
+          return {
+            ok: false,
+            step: 'repo_operations',
+            reason: deployed.code,
+            base_sync
+          };
+        }
         if (!deployed.ok) {
           return failCleanup(
             bead_id,

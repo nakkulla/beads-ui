@@ -65,7 +65,8 @@ describe('parseConversationResult', () => {
     '자동 진행 · 실패 단계 재실행 — 되돌리기:',
     '자동 진행 · 실패 단계 재실행 — 되돌리기: 없음',
     '자동 진행 · 실패 단계 재실행 — 되돌리기: 없음 —',
-    '자동 진행 · — 되돌리기: 없음 — 사유'
+    '자동 진행 · — 되돌리기: 없음 — 사유',
+    '자동 진행 · 실패 단계 재실행 — 되돌리기: — 사유'
   ])('rejects the malformed automatic proceed line %s', (line) => {
     const result = parseConversationResult(line);
 

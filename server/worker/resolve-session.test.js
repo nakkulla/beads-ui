@@ -6,8 +6,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { hubCommand, hubReply } from '../../test/session-hub.js';
 import { conversationLaunchFlags } from '../conversation-settings.js';
 import { CONVERSATION_ENTRY_BLOCK } from './direction-inquiry.js';
-import { selfRepairFailureIdentity } from './resolution-ladder.js';
 import {
+  operationIncidentFingerprint,
+  selfRepairFailureIdentity
+} from './resolution-ladder.js';
+import {
+  autoProceedBasis,
   buildFailureEntry,
   createFailureConversationLauncher,
   createResolveSession,
@@ -2189,6 +2193,24 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
 
       expect(failureSituation(failure)).toContain(
         '자동 진행: 소진 — 같은 실패 재발'
+      );
+    });
+
+    test('fingerprints the rerun record, not the newest failure of the repo', () => {
+      const newer = {
+        ...OPERATION,
+        manual_run_id: 4,
+        failure: { ...OPERATION.failure, fingerprint: 'f2', summary: 'boom' }
+      };
+      const queue = { repo_operations: { 'op-1': OPERATION, 'op-2': newer } };
+
+      const basis = autoProceedBasis(queue, 'repo-op:op-1', '/repo');
+
+      expect(basis?.fingerprint).toBe(
+        operationIncidentFingerprint('/repo', OPERATION)
+      );
+      expect(basis?.fingerprint).not.toBe(
+        operationIncidentFingerprint('/repo', newer)
       );
     });
 

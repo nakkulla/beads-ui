@@ -37,9 +37,11 @@ const RESULT_LINE_PREFIXES = [
 /**
  * `자동 진행 · <고른 것> — 되돌리기: <값>[ — <사유>]` (UI-19sj §3.1). The
  * chosen text may itself hold ` — `; the last ` — 되돌리기:` splits it off.
+ * An undo value never starts with `—`, so an empty value cannot borrow the
+ * reason that follows it.
  */
 const AUTO_PROCEED_LINE =
-  /^자동 진행 ·\s+(\S.*?)\s+—\s+되돌리기:\s*(\S.*?)(?:\s+—\s+(\S.*))?$/;
+  /^자동 진행 ·\s+(\S.*?)\s+—\s+되돌리기:\s*((?!—)\S.*?)(?:\s+—\s+(\S.*))?$/;
 
 /**
  * Whether a `자동 진행 ·` line carries a chosen text and an undo value, and a

@@ -1038,6 +1038,10 @@
  * @property {number|null} manual_run_id - The per-workspace sequence value this
  * MANUAL run was issued, and part of its operation id. Null on every automatic
  * record.
+ * @property {true} [auto_proceed] - A failure conversation's `자동 진행` line
+ * requested this rerun (UI-19sj §3.5), not a person's click: `source` keeps
+ * the run's lane, and this marks that no person asked for it. Absent on every
+ * other record.
  * @property {{ at: number, by: string }|null} dismissed - A human acknowledged
  * this failed row (UI-q0uy §4.6-2). NOT a state transition: the row stays
  * `failed` and auditable, and only the 해결 필요 tally leaves it out.
@@ -5413,6 +5417,7 @@ function normalizeRepoOperation(value) {
       value.source === 'manual' && Number.isInteger(value.manual_run_id)
         ? Number(value.manual_run_id)
         : null,
+    ...(value.auto_proceed === true ? { auto_proceed: true } : {}),
     dismissed:
       isRecord(value.dismissed) &&
       typeof value.dismissed.at === 'number' &&
@@ -9857,7 +9862,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, retry_of?: string, target?: 'base_only' }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, retry_of?: string, target?: 'base_only', auto_proceed?: true }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -9995,6 +10000,9 @@ export function createQueueStore(options = {}) {
             input.source === 'manual' && Number.isInteger(input.manual_run_id)
               ? Number(input.manual_run_id)
               : null,
+          ...(input.auto_proceed === true
+            ? { auto_proceed: /** @type {const} */ (true) }
+            : {}),
           dismissed: null
         };
         return true;

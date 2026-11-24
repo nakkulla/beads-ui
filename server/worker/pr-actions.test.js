@@ -8428,6 +8428,56 @@ describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)',
     });
   });
 
+  describe('자동 진행 rerun pin (UI-19sj)', () => {
+    test('hands the pinned target to the deploy step', async () => {
+      const env = waitRow({ finished_at: 0 });
+
+      await env.actions.retryCleanup(BEAD, { expected_target_sha: BASE_SHA });
+
+      expect(env.operations.ensureDeploy.mock.calls[0][0]).toMatchObject({
+        expected_target_sha: BASE_SHA
+      });
+    });
+
+    test('stops without a new failure when the synced tip moved', async () => {
+      const env = waitRow({ finished_at: 0, base_moved: true });
+
+      const result = await env.actions.retryCleanup(BEAD, {
+        expected_target_sha: BASE_SHA
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        step: 'repo_operations',
+        reason: 'target_moved'
+      });
+      expect(env.operations.ensureDeploy).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+        reason: 'condition_wait'
+      });
+    });
+
+    test('stops without a new failure when the coordinator refuses the launch', async () => {
+      const env = waitRow({ finished_at: 0 });
+      env.operations.ensureDeploy.mockResolvedValueOnce(
+        /** @type {any} */ ({ ok: false, code: 'repo_operation_busy' })
+      );
+
+      const result = await env.actions.retryCleanup(BEAD, {
+        expected_target_sha: BASE_SHA
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        step: 'repo_operations',
+        reason: 'repo_operation_busy'
+      });
+      expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+        reason: 'condition_wait'
+      });
+    });
+  });
+
   test('deploys the moved base on an automatic replay past the chain deadline', async () => {
     const env = waitRow({
       finished_at: 0,

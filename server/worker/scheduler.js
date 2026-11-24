@@ -185,8 +185,8 @@ import {
   AUTO_PROCEED_TARGET_KINDS,
   LANDING_FAILURE_CLASS,
   STALE_RESIDUE_FAILURE_CLASS,
+  autoProceedOperation,
   failedDiscardOperation,
-  failedManualDeploy,
   failureHandoffTarget,
   failureRowIdentity,
   isBeadlessRowKey,
@@ -12553,10 +12553,12 @@ export function createScheduler(deps) {
 
   /**
    * The commit a `자동 진행` rerun is pinned to (UI-19sj §3.2): the failed
-   * deploy run's own `target_sha`, read off the row's failure record. A
-   * cleanup stop counts only at its deploy step, and a landing only when its
-   * failed run deployed the landing's bound commit. Null when the record names
-   * no such run or the run's cause is a `condition_wait`.
+   * deploy run's own `target_sha`, read off the row's failure record
+   * ({@link autoProceedOperation}). Null when the record names no such run,
+   * the run's cause is a `condition_wait`, or the run's declaration was not
+   * read at its own target commit (`effective_base_sha` differs): a rerun
+   * reads the declaration at the target commit, so only then does it repeat
+   * the failed run's step, commit and declaration together.
    *
    * @param {any} q - Queue snapshot.
    * @param {string} row_key
@@ -12564,35 +12566,15 @@ export function createScheduler(deps) {
    * @returns {string|null}
    */
   function autoProceedTargetSha(q, row_key, kind) {
-    /** @type {any} */
-    let operation = null;
-    if (kind === 'repo_operation') {
-      const operation_id = repoOperationIdOf(row_key);
-      operation =
-        operation_id !== null ? failedManualDeploy(q, operation_id) : null;
-    } else if (kind === 'cleanup') {
-      const cleanup = q.cleanup_failed?.[row_key];
-      operation =
-        cleanup?.step === 'repo_operations' &&
-        cleanup.reason !== 'condition_wait' &&
-        typeof cleanup.deploy_operation_id === 'string'
-          ? q.repo_operations?.[cleanup.deploy_operation_id] || null
-          : null;
-    } else if (kind === 'quickfix_landing') {
-      const landing = landingDeployFailure(q, row_key);
-      operation =
-        landing &&
-        landing.operation.target_sha ===
-          landing.attempt.quickfix_landing?.head_sha
-          ? landing.operation
-          : null;
-    }
+    const operation = autoProceedOperation(q, row_key, kind);
     if (
       !operation ||
-      operation.kind !== 'deploy' ||
       operation.failure?.code === 'condition_wait' ||
       typeof operation.target_sha !== 'string' ||
-      operation.target_sha.length === 0
+      operation.target_sha.length === 0 ||
+      typeof operation.effective_base_sha !== 'string' ||
+      operation.effective_base_sha.toLowerCase() !==
+        operation.target_sha.toLowerCase()
     ) {
       return null;
     }
@@ -12620,7 +12602,11 @@ export function createScheduler(deps) {
     ) {
       return { ok: false, reason: 'target_changed' };
     }
-    const fingerprint = selfRepairFailureIdentity(q, row_key, opened.repo);
+    const operation = autoProceedOperation(q, row_key, target.kind);
+    if (!operation) {
+      return { ok: false, reason: 'target_commit_unknown' };
+    }
+    const fingerprint = operationIncidentFingerprint(opened.repo, operation);
     if (!fingerprint || fingerprint !== opened.fingerprint) {
       return { ok: false, reason: 'fingerprint_changed' };
     }
@@ -15106,19 +15092,28 @@ export function createScheduler(deps) {
             started_at: null
           }
         };
-        const reserved = deps.store.reserveAutoProceed?.(
-          workspace,
-          key,
-          { pane_id: record.pane_id, launched_at: record.launched_at },
-          next,
-          opened.fingerprint,
-          {
-            row_key: record.bead_id,
-            used_at: at,
-            line,
-            repo: opened.repo
-          }
-        );
+        /** @type {{ ok: boolean }|undefined} */
+        let reserved;
+        try {
+          reserved = deps.store.reserveAutoProceed?.(
+            workspace,
+            key,
+            { pane_id: record.pane_id, launched_at: record.launched_at },
+            next,
+            opened.fingerprint,
+            {
+              row_key: record.bead_id,
+              used_at: at,
+              line,
+              repo: opened.repo
+            }
+          );
+        } catch (err) {
+          // A store write that threw recorded nothing this pass can rely on:
+          // the line is refused, never left for a later pass to take (§4).
+          log('auto proceed record failed for %s: %o', record.bead_id, err);
+          reserved = { ok: false };
+        }
         if (reserved?.ok) {
           Object.assign(record, { conversation: next });
           notifyChanged(workspace);

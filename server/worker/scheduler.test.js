@@ -8416,7 +8416,7 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
    * transcript the test moves, and the manual deploy rerun as a spy that
    * supersedes the failed record the way a same-target `[배포 실행]` does.
    */
-  function repoOpEnv(extra = {}) {
+  function repoOpEnv(extra = {}, declaration_base = 'b'.repeat(40)) {
     let at = 1000;
     const failureConversation = {
       launchForRepoOperation: vi.fn(async () => ({ session: 'not_launched' }))
@@ -8428,7 +8428,7 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       repo_id: WS,
       kind: 'deploy',
       subjects: [{ bead_id: 'manual', merged_sha: 'a'.repeat(40) }],
-      effective_base_sha: 'b'.repeat(40),
+      effective_base_sha: declaration_base,
       target_base: 'main',
       target_sha: 'a'.repeat(40),
       script_mode: '100755',
@@ -8654,14 +8654,17 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
     /**
      * @param {string} [tip]
      */
-    function autoEnv(tip = TIP) {
-      return repoOpEnv({
-        resolveBase: vi.fn(async () => ({
-          ok: true,
-          base: 'main',
-          base_oid: tip
-        }))
-      });
+    function autoEnv(tip = TIP, declaration_base = TIP) {
+      return repoOpEnv(
+        {
+          resolveBase: vi.fn(async () => ({
+            ok: true,
+            base: 'main',
+            base_oid: tip
+          }))
+        },
+        declaration_base
+      );
     }
 
     /** @param {ReturnType<typeof repoOpEnv>} env */
@@ -8776,7 +8779,7 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
         repo_id: WS,
         kind: 'deploy',
         subjects: [{ bead_id: 'manual', merged_sha: TIP }],
-        effective_base_sha: 'b'.repeat(40),
+        effective_base_sha: TIP,
         target_base: 'main',
         target_sha: TIP,
         script_mode: '100755',
@@ -8957,6 +8960,17 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       expectRefused(env, 'target_moved');
     });
 
+    test('refuses the line when the failed run read its declaration elsewhere', async () => {
+      const env = autoEnv(TIP, 'b'.repeat(40));
+      openAutoConversation(env);
+      say(env, LINE);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expectRefused(env, 'target_commit_unknown');
+    });
+
     test('sends the refusal confirm once across later reconciles', async () => {
       const env = autoEnv('f'.repeat(40));
       openAutoConversation(env);
@@ -8977,6 +8991,20 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       vi.spyOn(env.real, 'reserveAutoProceed').mockReturnValue(
         /** @type {any} */ ({ ok: false, conflict: false })
       );
+      openAutoConversation(env);
+      say(env, LINE);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expectRefused(env, 'record_failed');
+    });
+
+    test('refuses the line when writing the once record throws', async () => {
+      const env = autoEnv();
+      vi.spyOn(env.real, 'reserveAutoProceed').mockImplementation(() => {
+        throw new Error('disk full');
+      });
       openAutoConversation(env);
       say(env, LINE);
 

@@ -422,10 +422,51 @@ export const AUTO_PROCEED_TARGET_KINDS = Object.freeze([
 ]);
 
 /**
+ * The failed deploy run a `자동 진행` line would rerun for a row (UI-19sj
+ * §3.2), read off the row's own failure record: a repo-operation row's failed
+ * manual deploy, a cleanup stop's `repo_operations` deploy run, or a quick_fix
+ * landing's failed run when it deployed the landing's bound commit. Null when
+ * the record names no such deploy run. Its fingerprint, its target commit and
+ * its declaration all come from this one record.
+ *
+ * @param {any} queue
+ * @param {string} row_key
+ * @param {string} kind - The row's failure target kind.
+ * @returns {any|null}
+ */
+export function autoProceedOperation(queue, row_key, kind) {
+  /** @type {any} */
+  let operation = null;
+  if (kind === 'repo_operation') {
+    const operation_id = repoOperationIdOf(row_key);
+    operation =
+      operation_id !== null ? failedManualDeploy(queue, operation_id) : null;
+  } else if (kind === 'cleanup') {
+    const cleanup = queue?.cleanup_failed?.[row_key];
+    operation =
+      cleanup?.step === 'repo_operations' &&
+      cleanup.reason !== 'condition_wait' &&
+      typeof cleanup.deploy_operation_id === 'string'
+        ? queue.repo_operations?.[cleanup.deploy_operation_id] || null
+        : null;
+  } else if (kind === 'quickfix_landing') {
+    const landing = landingDeployFailure(queue, row_key);
+    operation =
+      landing &&
+      landing.operation.target_sha ===
+        landing.attempt.quickfix_landing?.head_sha
+        ? landing.operation
+        : null;
+  }
+  return operation && operation.kind === 'deploy' ? operation : null;
+}
+
+/**
  * What a failure conversation records at open for a later `자동 진행` line
- * (UI-19sj §3.2): the row's failure target and its fingerprint, computed in
- * `repo`. Null when the row is not a kind the line may rerun or either value
- * cannot be read — such a conversation never accepts the line.
+ * (UI-19sj §3.2): the row's failure target and the fingerprint of the deploy
+ * run the line would rerun, computed in `repo`. Null when the row is not a
+ * kind the line may rerun or either value cannot be read — such a
+ * conversation never accepts the line.
  *
  * @param {any} queue
  * @param {string} row_key
@@ -440,7 +481,10 @@ export function autoProceedBasis(queue, row_key, repo) {
   if (!target || !AUTO_PROCEED_TARGET_KINDS.includes(target.kind)) {
     return null;
   }
-  const fingerprint = selfRepairFailureIdentity(queue, row_key, repo);
+  const operation = autoProceedOperation(queue, row_key, target.kind);
+  const fingerprint = operation
+    ? operationIncidentFingerprint(repo, operation)
+    : null;
   return fingerprint ? { target, fingerprint, repo } : null;
 }
 
