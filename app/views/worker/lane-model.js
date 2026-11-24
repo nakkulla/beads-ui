@@ -473,8 +473,9 @@ const DONE_KIND_LABELS = {
  * - The server's same-session conversation state (UI-nuwy §3.3), read only
  * by the badge tail.
  * @property {import('../../../server/worker/startup-wait.js').StartupWait|null} [startup_wait]
- * - The server's codex startup-screen wait (UI-ahzh §3.3), read only by the
- * session-lane slot-3 line; null without material.
+ * - The server's startup-screen wait of either runner (UI-ahzh §3.3,
+ * UI-e5cq §3.4), read by the session-lane slot-3 line and every other kind's
+ * badge tail; null without material.
  */
 
 /**

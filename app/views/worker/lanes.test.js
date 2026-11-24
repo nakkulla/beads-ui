@@ -188,6 +188,132 @@ describe('session-lane startup wait line (UI-ahzh)', () => {
 
     expect(mount.innerHTML.replace(/<!--.*?-->/g, '').trim()).toBe('');
   });
+
+  test('draws the startup wait line of a claude session-lane window', () => {
+    const view = laneView({
+      provider: 'claude',
+      startup_wait: {
+        kind: 'chrome',
+        fingerprint: 'fp',
+        since: STARTED,
+        notified_at: null
+      }
+    });
+
+    render(sessionLaneProgressTemplate([view], STARTED + 3 * MINUTE), mount);
+
+    expect(
+      mount.querySelector('.rtile__activity--session-lane')?.textContent?.trim()
+    ).toBe('▤ 시작 화면 대기 · Chrome 사용 제안 3분');
+  });
+});
+
+describe('conversation badge startup wait tail (UI-e5cq)', () => {
+  const STARTED = 1_000_000;
+  const LOGIN_WAIT = {
+    kind: /** @type {const} */ ('login'),
+    fingerprint: 'fp',
+    since: STARTED,
+    notified_at: null
+  };
+
+  test.each(
+    /** @type {const} */ ([
+      'resolve',
+      'inquiry',
+      'external_resume',
+      'spec_authoring'
+    ])
+  )('draws the startup wait tail on a %s badge', (kind) => {
+    const view = interactiveView({
+      kind,
+      turn_state: 'running',
+      turn_state_since: STARTED,
+      startup_wait: LOGIN_WAIT
+    });
+
+    render(
+      interactiveSessionBadgesTemplate([view], {
+        bead_id: 'UI-x1',
+        now: STARTED + 4 * MINUTE
+      }),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.interactive-session-badge')?.textContent?.trim()
+    ).toBe('▤ 대화 세션 · bdui-inquiry:resolve-UI-x1 · 시작 화면 대기 4분');
+  });
+
+  test('names the startup screen in the badge title', () => {
+    const view = interactiveView({ startup_wait: LOGIN_WAIT });
+
+    render(
+      interactiveSessionBadgesTemplate([view], {
+        bead_id: 'UI-x1',
+        now: STARTED + MINUTE
+      }),
+      mount
+    );
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.interactive-session-badge')
+      ).title
+    ).toBe(
+      '실패 · 시작 화면 대기 · 로그인 · fork · attempt 12345678 · bdui-inquiry:resolve-UI-x1'
+    );
+  });
+
+  test('keeps the turn tail of a badge without a startup wait', () => {
+    const view = interactiveView({
+      turn_state: 'running',
+      turn_state_since: STARTED,
+      startup_wait: null
+    });
+
+    render(
+      interactiveSessionBadgesTemplate([view], {
+        bead_id: 'UI-x1',
+        now: STARTED + 2 * MINUTE
+      }),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.interactive-session-badge')?.textContent?.trim()
+    ).toBe('▤ 대화 세션 · bdui-inquiry:resolve-UI-x1 · 작업 중 2분');
+  });
+
+  test('draws the startup wait tail on the wait badge popup line', () => {
+    const view = interactiveView({
+      kind: 'inquiry',
+      turn_state: 'question',
+      startup_wait: LOGIN_WAIT
+    });
+
+    render(
+      waitStatusBadge({
+        wait_reasons: [
+          waitReason({
+            kind: 'recovery',
+            verdict: 'action_required',
+            verdict_reason: {
+              code: 'decision',
+              message: '대화 세션이 답을 기다림'
+            }
+          })
+        ],
+        interactive_sessions: [view],
+        now: STARTED + 7 * MINUTE
+      }),
+      mount
+    );
+
+    expect(mount.querySelector('.wait-verdict')?.textContent || '').toContain(
+      '대화 세션 bdui-inquiry:resolve-UI-x1 · 시작 화면 대기 7분'
+    );
+  });
 });
 
 describe('interactive session badges', () => {

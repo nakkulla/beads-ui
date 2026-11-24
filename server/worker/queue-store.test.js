@@ -346,6 +346,113 @@ describe('interactive session persistence', () => {
     });
   });
 
+  test('keeps a chrome startup wait on a claude resolve window (UI-e5cq)', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, record());
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      startup_wait: {
+        kind: 'chrome',
+        fingerprint: 'fp',
+        since: 20,
+        notified_at: null
+      }
+    });
+
+    expect(
+      store.snapshot(WS).interactive_sessions['B1:resolve'].startup_wait
+    ).toEqual({
+      kind: 'chrome',
+      fingerprint: 'fp',
+      since: 20,
+      notified_at: null
+    });
+  });
+
+  test('keeps the advance count, fingerprints and untrusted fact through a cold reload', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(
+      WS,
+      record({ provider: 'codex', codex_project_untrusted: true })
+    );
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      startup_advance_count: 2,
+      startup_advance_fingerprints: ['fp1', 'fp2']
+    });
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+    ).toMatchObject({
+      startup_advance_count: 2,
+      startup_advance_fingerprints: ['fp1', 'fp2'],
+      codex_project_untrusted: true
+    });
+  });
+
+  test('keeps a false untrusted fact through a cold reload', () => {
+    const store = createQueueStore();
+
+    store.recordInteractiveSession(
+      WS,
+      record({ provider: 'codex', codex_project_untrusted: false })
+    );
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+        .codex_project_untrusted
+    ).toBe(false);
+  });
+
+  test('keeps the two-minute notice stamp through a cold reload', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, record({}));
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      startup_unseen_notified_at: 300_000
+    });
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+        .startup_unseen_notified_at
+    ).toBe(300_000);
+  });
+
+  test.each([
+    ['a string', '300000'],
+    ['NaN', Number.NaN],
+    ['null', null]
+  ])('drops a two-minute notice stamp that is %s', (_name, value) => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, record({}));
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      startup_unseen_notified_at: /** @type {any} */ (value)
+    });
+
+    expect(
+      store.snapshot(WS).interactive_sessions['B1:resolve']
+    ).not.toHaveProperty('startup_unseen_notified_at');
+  });
+
+  test('drops a malformed advance count, blank fingerprints and a non-boolean untrusted flag', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(
+      WS,
+      record({ codex_project_untrusted: /** @type {any} */ ('yes') })
+    );
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      startup_advance_count: /** @type {any} */ (-1),
+      startup_advance_fingerprints: /** @type {any} */ (['', 3])
+    });
+
+    const stored = store.snapshot(WS).interactive_sessions['B1:resolve'];
+    expect(stored.startup_advance_count).toBeUndefined();
+    expect(stored.startup_advance_fingerprints).toBeUndefined();
+    expect(stored.codex_project_untrusted).toBeUndefined();
+  });
+
   test('drops an attempt window startup wait whose kind is outside the list', () => {
     const attempt = makeAttempt({
       attempt_id: 'cx',

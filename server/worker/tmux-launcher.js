@@ -82,26 +82,42 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  */
 
 /**
- * @typedef {{ session: 'launched', placement: LaunchPlacement, tmux_session: string, tmux_window: string, pane_id: string }
+ * `codex_project_untrusted` is on every codex launch and on no claude launch:
+ * `true` when the folder had an existing non-trusted project entry, `false`
+ * when it had none (UI-e5cq §3.2).
+ *
+ * @typedef {{ session: 'launched', placement: LaunchPlacement, tmux_session: string, tmux_window: string, pane_id: string, codex_project_untrusted?: boolean }
  *   | { session: 'already_running', placement?: LaunchPlacement, tmux_session?: string, tmux_window?: string, pane_id?: string }
  *   | { session: 'not_launched', reason: string }} LaunchOutcome
  */
 
 /**
- * The startup screen a marked Codex pane shows before SessionStart, as the
- * hub's read-only `codex-startup` answered it (UI-ahzh §3.1). `screen` is
- * null when the pane is not alive or shows no startup screen; the hub owns
- * the classification (ADR UI-jlov).
+ * The startup screen a marked Worker window shows before its first turn, as
+ * the hub's read-only `startup-screen` answered it (UI-e5cq §3.1). `screen`
+ * is null when the pane is not alive, has started, or shows no selection
+ * screen; `auto` names the row the hub policy would pick. The hub owns the
+ * classification and the policy table (ADR UI-jlov).
  *
- * @typedef {Object} CodexStartupScreen
+ * @typedef {Object} StartupScreen
  * @property {'startup'|'trust'|'unknown_screen'} dialog
  * @property {string|null} startup_kind - Only for `dialog=startup`.
  * @property {string} fingerprint
+ * @property {string} heading - The masked heading, at most 80 characters.
+ * @property {{ choice: string }|null} auto
  */
 
 /**
- * @typedef {{ ok: true, alive: 'alive'|'dead'|'unknown', screen: CodexStartupScreen|null }
- *   | { ok: false, error: string }} CodexStartupResult
+ * @typedef {{ ok: true, alive: 'alive'|'dead'|'unknown', started: boolean, screen: StartupScreen|null }
+ *   | { ok: false, error: string }} StartupScreenResult
+ */
+
+/**
+ * The hub's `startup-advance` answer (UI-e5cq §3.1). `key_sent` is true when
+ * Enter went in, confirmed (`advanced`) or not (`not_confirmed`).
+ *
+ * @typedef {{ ok: true, advanced: true, key_sent: true, dialog: 'startup'|'trust', startup_kind: string|null, choice: string, heading: string }
+ *   | { ok: true, advanced: false, key_sent: boolean, reason: 'screen_changed'|'not_auto'|'already_answered'|'busy'|'not_alive'|'started'|'not_confirmed' }
+ *   | { ok: false, error: string }} StartupAdvanceResult
  */
 
 /**
@@ -258,7 +274,9 @@ export function defaultResolveClaude() {
  * @param {string} cwd
  * @param {string|null} [home] - The account `CODEX_HOME` the window will run
  * under, when the launch names one; the trust must land in THAT config.
- * @returns {Promise<string>} Absolute config home for the new window's environment.
+ * @returns {Promise<{ codex_home: string, untrusted: boolean }>} Absolute
+ * config home for the new window's environment, and whether an existing
+ * entry for the folder is not `trusted`.
  */
 async function ensureCodexProjectTrust(cwd, home = null) {
   const common = await runShell(
@@ -288,14 +306,21 @@ async function ensureCodexProjectTrust(cwd, home = null) {
     typeof config.projects === 'object' &&
     Object.hasOwn(config.projects, root)
   ) {
-    return codex_home;
+    const entry = /** @type {Record<string, unknown>} */ (config.projects)[
+      root
+    ];
+    const trusted =
+      Boolean(entry) &&
+      typeof entry === 'object' &&
+      /** @type {Record<string, unknown>} */ (entry).trust_level === 'trusted';
+    return { codex_home, untrusted: !trusted };
   }
   const addition = `\n[projects.${JSON.stringify(root)}]\ntrust_level = "trusted"\n`;
   // Inline or malformed project tables cannot be extended by appending a table.
   parseToml(contents + addition);
   fs.mkdirSync(codex_home, { recursive: true, mode: 0o700 });
   fs.appendFileSync(config_path, addition, { mode: 0o600 });
-  return codex_home;
+  return { codex_home, untrusted: false };
 }
 
 /**
@@ -821,15 +846,17 @@ export function createTmuxLauncher(deps = {}) {
     const extra_env = input.env || {};
     /** @type {string|null} */
     let codex_home = null;
+    let codex_project_untrusted = false;
     if (runner === 'codex') {
       try {
-        codex_home = await ensureCodexProjectTrust(
-          input.cwd,
-          typeof extra_env.CODEX_HOME === 'string' &&
-            extra_env.CODEX_HOME.length > 0
-            ? extra_env.CODEX_HOME
-            : null
-        );
+        ({ codex_home, untrusted: codex_project_untrusted } =
+          await ensureCodexProjectTrust(
+            input.cwd,
+            typeof extra_env.CODEX_HOME === 'string' &&
+              extra_env.CODEX_HOME.length > 0
+              ? extra_env.CODEX_HOME
+              : null
+          ));
       } catch {
         log('codex project trust setup failed for %s', input.key);
         return {
@@ -913,29 +940,42 @@ export function createTmuxLauncher(deps = {}) {
       placement,
       tmux_session: value.tmux_session,
       tmux_window: input.window_name,
-      pane_id: value.pane
+      pane_id: value.pane,
+      ...(runner === 'codex' ? { codex_project_untrusted } : {})
     };
   }
 
   /**
-   * The startup screen of one marked Codex pane (UI-ahzh §3.1), read through
-   * the hub's read-only `codex-startup`. Nothing is sent to the pane. A refusal,
-   * an unreachable hub, or a reply outside the documented shape is a failure
-   * the caller only logs.
+   * The hub arguments that name one marked pane of a runner.
    *
-   * @param {{ pane: string, marker: string, key: string }} input
-   * @returns {Promise<CodexStartupResult>}
+   * @param {string} command
+   * @param {{ runner: 'claude'|'codex', pane: string, marker: string, key: string }} input
    */
-  async function codexStartup(input) {
-    const read = await hubChecked([
-      'codex-startup',
+  function startupArgs(command, input) {
+    return [
+      command,
+      '--runner',
+      input.runner,
       '--pane',
       input.pane,
       '--marker-option',
       input.marker,
       '--marker-value',
       input.key
-    ]);
+    ];
+  }
+
+  /**
+   * The startup screen of one marked Worker window (UI-e5cq §3.1), read
+   * through the hub's read-only `startup-screen`. Nothing is sent to the
+   * pane. A refusal, an unreachable hub, or a reply outside the documented
+   * shape is a failure the caller only logs.
+   *
+   * @param {{ runner: 'claude'|'codex', pane: string, marker: string, key: string }} input
+   * @returns {Promise<StartupScreenResult>}
+   */
+  async function startupScreen(input) {
+    const read = await hubChecked(startupArgs('startup-screen', input));
     if (!read.ok) {
       return read;
     }
@@ -945,28 +985,44 @@ export function createTmuxLauncher(deps = {}) {
       error: 'launch_failed:session_hub_invalid_response'
     };
     if (
-      value.alive !== 'alive' &&
-      value.alive !== 'dead' &&
-      value.alive !== 'unknown'
+      (value.alive !== 'alive' &&
+        value.alive !== 'dead' &&
+        value.alive !== 'unknown') ||
+      typeof value.started !== 'boolean'
     ) {
       return invalid;
     }
     if (value.screen === null) {
-      return { ok: true, alive: value.alive, screen: null };
+      return {
+        ok: true,
+        alive: value.alive,
+        started: value.alive === 'alive' && value.started,
+        screen: null
+      };
     }
     const screen = value.screen;
+    const auto = screen?.auto;
     if (
       value.alive !== 'alive' ||
+      value.started ||
       !screen ||
       typeof screen !== 'object' ||
       (screen.dialog !== 'startup' &&
         screen.dialog !== 'trust' &&
         screen.dialog !== 'unknown_screen') ||
       typeof screen.fingerprint !== 'string' ||
-      !/^[0-9a-f]+$/.test(screen.fingerprint) ||
-      (screen.dialog === 'startup' &&
-        (typeof screen.startup_kind !== 'string' ||
-          screen.startup_kind.length === 0))
+      !/^[0-9a-f]{24}$/.test(screen.fingerprint) ||
+      typeof screen.heading !== 'string' ||
+      (screen.dialog === 'startup'
+        ? typeof screen.startup_kind !== 'string' ||
+          screen.startup_kind.length === 0
+        : screen.startup_kind !== null) ||
+      (auto !== null &&
+        (screen.dialog === 'unknown_screen' ||
+          !auto ||
+          typeof auto !== 'object' ||
+          typeof auto.choice !== 'string' ||
+          auto.choice.length === 0))
     ) {
       return invalid;
     }
@@ -976,11 +1032,85 @@ export function createTmuxLauncher(deps = {}) {
     return {
       ok: true,
       alive: 'alive',
+      started: false,
       screen: {
         dialog: screen.dialog,
         startup_kind,
-        fingerprint: screen.fingerprint
+        fingerprint: screen.fingerprint,
+        heading: screen.heading,
+        auto: auto === null ? null : { choice: auto.choice }
       }
+    };
+  }
+
+  /**
+   * Ask the hub to answer one startup screen of a marked Worker window with
+   * its policy row (UI-e5cq §3.1). The hub re-reads the screen, compares the
+   * fingerprint and sends the keys; this side never types into the pane.
+   *
+   * @param {{ runner: 'claude'|'codex', pane: string, marker: string, key: string, fingerprint: string }} input
+   * @returns {Promise<StartupAdvanceResult>}
+   */
+  async function startupAdvance(input) {
+    const sent = await hubChecked([
+      ...startupArgs('startup-advance', input),
+      '--fingerprint',
+      input.fingerprint
+    ]);
+    if (!sent.ok) {
+      return sent;
+    }
+    const value = sent.value;
+    const invalid = {
+      ok: /** @type {const} */ (false),
+      error: 'launch_failed:session_hub_invalid_response'
+    };
+    if (value.advanced === true) {
+      if (
+        (value.key_sent !== undefined && value.key_sent !== true) ||
+        (value.dialog !== 'startup' && value.dialog !== 'trust') ||
+        typeof value.choice !== 'string' ||
+        value.choice.length === 0 ||
+        typeof value.heading !== 'string' ||
+        (value.dialog === 'startup'
+          ? typeof value.startup_kind !== 'string' ||
+            value.startup_kind.length === 0
+          : value.startup_kind !== null)
+      ) {
+        return invalid;
+      }
+      return {
+        ok: true,
+        advanced: true,
+        key_sent: true,
+        dialog: value.dialog,
+        startup_kind:
+          value.dialog === 'startup' ? String(value.startup_kind) : null,
+        choice: value.choice,
+        heading: value.heading
+      };
+    }
+    const reasons = [
+      'screen_changed',
+      'not_auto',
+      'already_answered',
+      'busy',
+      'not_alive',
+      'started'
+    ];
+    if (
+      value.advanced !== false ||
+      !(value.key_sent === true
+        ? value.reason === 'not_confirmed'
+        : value.key_sent === false && reasons.includes(value.reason))
+    ) {
+      return invalid;
+    }
+    return {
+      ok: true,
+      advanced: false,
+      key_sent: value.key_sent,
+      reason: value.reason
     };
   }
 
@@ -1014,7 +1144,8 @@ export function createTmuxLauncher(deps = {}) {
     launch,
     focusRunning,
     focusRegistryPane,
-    codexStartup,
+    startupScreen,
+    startupAdvance,
     bridgeActive
   };
 }
