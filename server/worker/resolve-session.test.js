@@ -12,6 +12,7 @@ import {
 } from './resolution-ladder.js';
 import {
   autoProceedBasis,
+  autoProceedClosureStop,
   buildFailureEntry,
   createFailureConversationLauncher,
   createResolveSession,
@@ -2220,6 +2221,44 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       );
 
       expect(failureSituation(failure)).not.toContain('자동 진행');
+    });
+
+    /**
+     * A merged row stopped at the cleanup step `step`.
+     *
+     * @param {string} step
+     */
+    function closureQueue(step) {
+      return {
+        pr_wait: [{ bead_id: BEAD, merge_sha: 'C'.repeat(40) }],
+        cleanup_failed: {
+          [BEAD]: { step, reason: 'git_failed', detail: 'hung up', at: 5 }
+        }
+      };
+    }
+
+    test('fingerprints a branch cleanup stop by its own failure identity', () => {
+      const queue = closureQueue('branch_cleanup');
+
+      const basis = autoProceedBasis(queue, BEAD, '/repo');
+
+      expect(basis).toEqual({
+        target: { kind: 'cleanup', identity: 'cleanup:branch_cleanup:5' },
+        fingerprint: selfRepairFailureIdentity(queue, BEAD, '/repo'),
+        repo: '/repo'
+      });
+    });
+
+    test('pins a closure stop to the lowercased merged commit', () => {
+      expect(
+        autoProceedClosureStop(closureQueue('parent_close'), BEAD)?.merge_sha
+      ).toBe('c'.repeat(40));
+    });
+
+    test('records no basis for a post-merge job stop', () => {
+      expect(
+        autoProceedBasis(closureQueue('post_merge_jobs'), BEAD, '/repo')
+      ).toBeNull();
     });
   });
 });

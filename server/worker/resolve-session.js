@@ -462,11 +462,68 @@ export function autoProceedOperation(queue, row_key, kind) {
 }
 
 /**
+ * The cleanup steps after the repo operations that a `자동 진행` line may
+ * rerun on their own (UI-19sj §3.2): branch cleanup and parent close, which
+ * read no commit or declaration besides the merged one. A post-merge job
+ * stop is not one of them: its rerun resolves the job at the advancing
+ * deploy head and may follow a revision a later commit declares
+ * (`server/worker/post-merge-job.js`), so it cannot repeat the failed run's
+ * commit and declaration.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const AUTO_PROCEED_CLOSURE_STEPS = Object.freeze([
+  'branch_cleanup',
+  'parent_close'
+]);
+
+/**
+ * The stopped closure step a `자동 진행` line would rerun for a cleanup row
+ * (UI-19sj §3.2): a branch cleanup or parent close stop that is not a
+ * `condition_wait`, with the merged commit those steps run against. Null
+ * otherwise, and when the queue names no merged commit. Its fingerprint is
+ * the stop record's own failure identity.
+ *
+ * @param {any} queue
+ * @param {string} row_key
+ * @returns {{ kind: string, failure: { code: string, summary: string }, merge_sha: string }|null}
+ */
+export function autoProceedClosureStop(queue, row_key) {
+  const cleanup = queue?.cleanup_failed?.[row_key];
+  if (
+    !cleanup ||
+    typeof cleanup !== 'object' ||
+    !AUTO_PROCEED_CLOSURE_STEPS.includes(cleanup.step) ||
+    cleanup.reason === 'condition_wait'
+  ) {
+    return null;
+  }
+  const row = (Array.isArray(queue?.pr_wait) ? queue.pr_wait : []).find(
+    (/** @type {any} */ entry) => entry?.bead_id === row_key
+  );
+  const merge_sha = [
+    row?.merge_sha,
+    queue?.completion_intents?.[row_key]?.subject?.merged_sha
+  ].find(
+    (candidate) =>
+      typeof candidate === 'string' && /^[0-9a-f]{40}$/i.test(candidate)
+  );
+  if (typeof merge_sha !== 'string') {
+    return null;
+  }
+  return {
+    kind: cleanup.step,
+    failure: { code: cleanup.reason, summary: cleanup.detail },
+    merge_sha: merge_sha.toLowerCase()
+  };
+}
+
+/**
  * What a failure conversation records at open for a later `자동 진행` line
  * (UI-19sj §3.2): the row's failure target and the fingerprint of the deploy
- * run the line would rerun, computed in `repo`. Null when the row is not a
- * kind the line may rerun or either value cannot be read — such a
- * conversation never accepts the line.
+ * run or closure stop the line would rerun, computed in `repo`. Null when the
+ * row is not a kind the line may rerun or either value cannot be read — such
+ * a conversation never accepts the line.
  *
  * @param {any} queue
  * @param {string} row_key
@@ -481,7 +538,9 @@ export function autoProceedBasis(queue, row_key, repo) {
   if (!target || !AUTO_PROCEED_TARGET_KINDS.includes(target.kind)) {
     return null;
   }
-  const operation = autoProceedOperation(queue, row_key, target.kind);
+  const operation =
+    autoProceedOperation(queue, row_key, target.kind) ??
+    (target.kind === 'cleanup' ? autoProceedClosureStop(queue, row_key) : null);
   const fingerprint = operation
     ? operationIncidentFingerprint(repo, operation)
     : null;

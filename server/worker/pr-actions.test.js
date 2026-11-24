@@ -2384,6 +2384,79 @@ describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', ()
   });
 });
 
+describe('post-merge cleanup — 자동 진행 rerun of a closure stop (UI-19sj)', () => {
+  const MERGED = 'c'.repeat(40);
+
+  /**
+   * A row stopped at branch_cleanup whose worktree removal succeeds on the
+   * rerun.
+   */
+  async function branchStop() {
+    /** @type {{ removeByBranchResult?: any }} */
+    const options = {
+      removeByBranchResult: {
+        ok: false,
+        removed: false,
+        reason: 'observe_failed'
+      }
+    };
+    const h = makeActions(options);
+    await h.actions.merge(BEAD);
+    delete options.removeByBranchResult;
+    return h;
+  }
+
+  test('resumes the closure when the pin equals the merged commit', async () => {
+    const h = await branchStop();
+
+    const result = await h.actions.retryCleanup(BEAD, {
+      expected_target_sha: MERGED
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('refuses without a new failure when the merged commit differs from the pin', async () => {
+    const h = await branchStop();
+
+    const result = await h.actions.retryCleanup(BEAD, {
+      expected_target_sha: '9'.repeat(40)
+    });
+
+    expect(result).toEqual({ ok: false, step: null, reason: 'target_moved' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup',
+      retry_count: 0
+    });
+  });
+
+  test.each(['post_merge_jobs', 'base_containment'])(
+    'refuses a pinned rerun of a %s stop',
+    async (step) => {
+      const h = await branchStop();
+      h.store.clearCleanupFailure(WS, BEAD);
+      h.store.recordCleanupFailure(WS, {
+        bead_id: BEAD,
+        step,
+        reason: 'git_failed',
+        detail: 'remote hung up'
+      });
+
+      const result = await h.actions.retryCleanup(BEAD, {
+        expected_target_sha: MERGED
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        step: null,
+        reason: 'auto_proceed_step_mismatch'
+      });
+      expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({ step });
+    }
+  );
+});
+
 describe('post-merge cleanup — ref operations hold the topology lock (§8)', () => {
   test('runs the base sync under the lock, and the branch deletes under a lock taken after the worktree removal', async () => {
     const h = makeActions({ gitBranch: 'main' });

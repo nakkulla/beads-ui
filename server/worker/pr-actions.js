@@ -4571,8 +4571,11 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {{ base_ref?: string|null, head_ref?: string|null, merge_sha?: string|null, pr_url?: string|null }} [refs]
    * @param {{ expected_target_sha?: string }} [options] - A `자동 진행`
-   * rerun's pinned target (UI-19sj §3.2); it reruns only a
-   * `repo_operations` stop.
+   * rerun's pinned target (UI-19sj §3.2): the failed deploy's commit for a
+   * `repo_operations` stop, the merged commit for a branch cleanup or
+   * parent close stop. It reruns no `base_containment` or `post_merge_jobs`
+   * stop: a job rerun resolves at the advancing deploy head, not the failed
+   * run's commit.
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
    */
   async function retryCleanupLocked(bead_id, refs = {}, options = {}) {
@@ -4587,13 +4590,34 @@ export function createPrActions(deps) {
     if (!cleanup_failure) {
       return { ok: false, step: null, reason: 'cleanup_failed_missing' };
     }
+    const pinned = typeof options.expected_target_sha === 'string';
+    const closure = CLOSURE_STEPS.includes(cleanup_failure.step);
     if (
-      typeof options.expected_target_sha === 'string' &&
-      cleanup_failure.step !== 'repo_operations'
+      pinned &&
+      cleanup_failure.step !== 'repo_operations' &&
+      cleanup_failure.step !== 'branch_cleanup' &&
+      cleanup_failure.step !== 'parent_close'
     ) {
       return { ok: false, step: null, reason: 'auto_proceed_step_mismatch' };
     }
-    if (CLOSURE_STEPS.includes(cleanup_failure.step)) {
+    if (closure && pinned) {
+      const row = q.pr_wait.find(
+        (/** @type {any} */ entry) => entry.bead_id === bead_id
+      );
+      const merge_sha = await cleanupMergeSha(q, bead_id, {
+        merge_sha: row?.merge_sha ?? null
+      });
+      if (
+        merge_sha === null ||
+        merge_sha !== String(options.expected_target_sha).toLowerCase()
+      ) {
+        return { ok: false, step: null, reason: 'target_moved' };
+      }
+      // A `자동 진행` rerun is no click (UI-19sj §3.5); resuming past the
+      // jobs, it carries no job retry authority either.
+      return await closeCoveredRow(bead_id, true, false);
+    }
+    if (closure) {
       // The human-click boundary: both callers are clicks, so this is the one
       // entry that may re-run an outcome-unknown post-merge job (§3).
       return await closeCoveredRow(bead_id, true, true);

@@ -185,6 +185,7 @@ import {
   AUTO_PROCEED_TARGET_KINDS,
   LANDING_FAILURE_CLASS,
   STALE_RESIDUE_FAILURE_CLASS,
+  autoProceedClosureStop,
   autoProceedOperation,
   failedDiscardOperation,
   failureHandoffTarget,
@@ -12585,12 +12586,14 @@ export function createScheduler(deps) {
    * Re-derive a `자동 진행` line's pin from the row as it stands now
    * (UI-19sj §3.2): the target and fingerprint the conversation recorded at
    * open must still be the row's, and the failed run must still name its
-   * target commit.
+   * target commit. A branch cleanup or parent close stop pins the merged
+   * commit those steps run against, and its rerun reads no base tip
+   * (`reads_base` false).
    *
    * @param {string} workspace
    * @param {string} row_key
    * @param {import('./queue-store.js').OpenedFailure} opened
-   * @returns {{ ok: true, expected_target_sha: string }|{ ok: false, reason: string }}
+   * @returns {{ ok: true, expected_target_sha: string, reads_base: boolean }|{ ok: false, reason: string }}
    */
   function autoProceedPin(workspace, row_key, opened) {
     const q = deps.store.snapshot(workspace);
@@ -12603,17 +12606,35 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'target_changed' };
     }
     const operation = autoProceedOperation(q, row_key, target.kind);
-    if (!operation) {
+    const closure =
+      operation || target.kind !== 'cleanup'
+        ? null
+        : autoProceedClosureStop(q, row_key);
+    if (!operation && !closure) {
       return { ok: false, reason: 'target_commit_unknown' };
     }
-    const fingerprint = operationIncidentFingerprint(opened.repo, operation);
+    const fingerprint = operationIncidentFingerprint(
+      opened.repo,
+      operation ?? closure
+    );
     if (!fingerprint || fingerprint !== opened.fingerprint) {
       return { ok: false, reason: 'fingerprint_changed' };
+    }
+    if (closure) {
+      return {
+        ok: true,
+        expected_target_sha: closure.merge_sha,
+        reads_base: false
+      };
     }
     const expected_target_sha = autoProceedTargetSha(q, row_key, target.kind);
     return expected_target_sha === null
       ? { ok: false, reason: 'target_commit_unknown' }
-      : { ok: true, expected_target_sha };
+      : {
+          ok: true,
+          expected_target_sha,
+          reads_base: target.kind !== 'quickfix_landing'
+        };
   }
 
   /**
@@ -12664,9 +12685,10 @@ export function createScheduler(deps) {
     if (!pinned.ok) {
       return pinned;
     }
-    if (opened.target.kind !== 'quickfix_landing') {
+    if (pinned.reads_base) {
       // The manual deploy and the cleanup deploy both read the remote base
-      // tip again; the landing deploys its own bound commit.
+      // tip again; the landing deploys its own bound commit, and a closure
+      // stop reruns against the merged commit.
       if (typeof deps.resolveBase !== 'function') {
         return { ok: false, reason: 'target_unresolved' };
       }

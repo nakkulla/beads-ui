@@ -6262,6 +6262,74 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
         expect.objectContaining({ summary: '자동 진행 거절 · condition_wait' })
       );
     });
+
+    /**
+     * A cleanup row stopped at `step` after its merge `merge_sha`, over a
+     * base tip that moved past it.
+     *
+     * @param {string} step
+     * @param {string|null} [merge_sha]
+     */
+    function closureEnv(step, merge_sha = 'c'.repeat(40)) {
+      const resolveBase = vi.fn(async () => ({
+        ok: true,
+        base: 'main',
+        base_oid: 'f'.repeat(40)
+      }));
+      const env = failureEnv({
+        resolveBase,
+        patch: () =>
+          merge_sha === null ? {} : { pr_wait: [{ bead_id: BEAD, merge_sha }] }
+      });
+      env.real.clearCleanupFailure(WS, BEAD);
+      env.real.recordCleanupFailure(WS, {
+        bead_id: BEAD,
+        step,
+        reason: 'git_failed',
+        detail: 'remote hung up'
+      });
+      return { env, resolveBase };
+    }
+
+    test('retries a branch cleanup stop pinned to the merged commit', async () => {
+      const { env, resolveBase } = closureEnv('branch_cleanup');
+      openAutoCleanup(env);
+
+      await settleAuto(env);
+
+      expect(env.exits.retryCleanup).toHaveBeenCalledExactlyOnceWith(WS, BEAD, {
+        expected_target_sha: 'c'.repeat(40)
+      });
+      expect(resolveBase).not.toHaveBeenCalled();
+    });
+
+    test('refuses the line on a post-merge job stop', async () => {
+      const { env } = closureEnv('post_merge_jobs');
+      openAutoCleanup(env);
+
+      await settleAuto(env);
+
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          summary: '자동 진행 거절 · target_commit_unknown'
+        })
+      );
+    });
+
+    test('refuses the line on a closure stop with no merged commit', async () => {
+      const { env } = closureEnv('parent_close', null);
+      openAutoCleanup(env);
+
+      await settleAuto(env);
+
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          summary: '자동 진행 거절 · target_commit_unknown'
+        })
+      );
+    });
   });
 
   test('refuses a handoff reserved without a Worker exit as having none', async () => {
