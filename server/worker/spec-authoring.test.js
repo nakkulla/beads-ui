@@ -4,9 +4,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createQueueStore } from './queue-store.js';
 import {
+  SPEC_DRAFT_IDLE_LIMIT_HOURS,
   createSpecAuthoring,
   projectSpecAuthoring,
-  specAuthoringState
+  specAuthoringState,
+  specDraftInProgress,
+  specDraftLimitAt
 } from './spec-authoring.js';
 import { SPEC_AUTHORING_PANE_MARKER } from './tmux-launcher.js';
 
@@ -14,6 +17,10 @@ const ROOT = '/tmp/spec-authoring-rig';
 const B = 'UI-spec';
 const O = 'UI-original';
 const BLOCKERS = [{ id: B, rig: null, status: 'open' }];
+const HOUR_MS = 3_600_000;
+const UPDATED_AT = '2026-11-17T09:41:37Z';
+const UPDATED_MS = Date.parse(UPDATED_AT);
+const LIMIT_MS = UPDATED_MS + SPEC_DRAFT_IDLE_LIMIT_HOURS * HOUR_MS;
 /** @type {string} */
 let tmp;
 /** @type {string|undefined} */
@@ -173,6 +180,90 @@ describe('prerequisite spec target judgment', () => {
     );
 
     expect(state).toBeNull();
+  });
+});
+
+/** @param {Record<string, any>} [patch] */
+function draft(patch = {}) {
+  return issue({ spec_id: 'docs/spec.md', updated_at: UPDATED_AT, ...patch });
+}
+
+describe('spec draft in progress judgment', () => {
+  test('holds a draft inside the idle limit', () => {
+    const result = specDraftInProgress(draft(), LIMIT_MS - 1);
+
+    expect(result).toBe(true);
+  });
+
+  test('releases a draft past the idle limit', () => {
+    const result = specDraftInProgress(draft(), LIMIT_MS + 1);
+
+    expect(result).toBe(false);
+  });
+
+  test('releases a draft exactly at the idle limit', () => {
+    const result = specDraftInProgress(draft(), LIMIT_MS);
+
+    expect(result).toBe(false);
+  });
+
+  test('reports the limit instant of a held draft', () => {
+    const limit = specDraftLimitAt(draft(), UPDATED_MS);
+
+    expect(limit).toBe(LIMIT_MS);
+  });
+
+  test('reports no limit instant once the draft is released', () => {
+    const limit = specDraftLimitAt(draft(), LIMIT_MS);
+
+    expect(limit).toBeNull();
+  });
+
+  test('ignores a Bead without spec evidence', () => {
+    const result = specDraftInProgress(
+      issue({ updated_at: UPDATED_AT }),
+      UPDATED_MS
+    );
+
+    expect(result).toBe(false);
+  });
+
+  test('ignores a published spec', () => {
+    const result = specDraftInProgress(
+      draft({
+        metadata: {
+          route: 'spec_backed',
+          spec_review: `self@${'a'.repeat(40)}`
+        }
+      }),
+      UPDATED_MS
+    );
+
+    expect(result).toBe(false);
+  });
+
+  test('ignores a draft without updated_at', () => {
+    const result = specDraftInProgress(
+      draft({ updated_at: undefined }),
+      UPDATED_MS
+    );
+
+    expect(result).toBe(false);
+  });
+
+  test.each(['not a time', '', null, 12345])(
+    'ignores a draft whose updated_at is %j',
+    (updated_at) => {
+      const result = specDraftInProgress(draft({ updated_at }), UPDATED_MS);
+
+      expect(result).toBe(false);
+    }
+  );
+
+  test('holds a draft updated in the future', () => {
+    const result = specDraftInProgress(draft(), UPDATED_MS - HOUR_MS);
+
+    expect(result).toBe(true);
   });
 });
 
@@ -409,7 +500,172 @@ describe('automatic prerequisite spec conversations', () => {
   });
 });
 
+describe('deferring a draft that is still being written', () => {
+  /**
+   * @param {Record<string, any>} [overrides]
+   * @returns {ReturnType<typeof fixture> & { clock: { now: number }, hooks: { onDraftDeferred: ReturnType<typeof vi.fn>, onDraftSettled: ReturnType<typeof vi.fn> } }}
+   */
+  function draftFixture(overrides = {}) {
+    const clock = { now: UPDATED_MS + 4 * 60_000 };
+    const hooks = { onDraftDeferred: vi.fn(), onDraftSettled: vi.fn() };
+    const h = fixture({ now: () => clock.now, ...hooks, ...overrides });
+    h.issues[B] = draft();
+    return { ...h, clock, hooks };
+  }
+
+  test('skips every launch side effect for a spec_id written four minutes ago', async () => {
+    const h = draftFixture();
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.launcher.launch).not.toHaveBeenCalled();
+    expect(h.notifier.conversationConfirm).not.toHaveBeenCalled();
+    expect(h.store.snapshot(ROOT).spec_authoring_launches).toEqual({});
+    expect(h.store.snapshot(ROOT).conversation_refusals).toEqual({});
+  });
+
+  test('skips the disabled notification while the draft is in progress', async () => {
+    const h = draftFixture({ autoLaunchEnabled: () => false });
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.notifier.conversationConfirm).not.toHaveBeenCalled();
+    expect(h.store.snapshot(ROOT).spec_authoring_launches).toEqual({});
+    expect(h.store.snapshot(ROOT).conversation_refusals).toEqual({});
+  });
+
+  test('reports the deferral with the limit instant', async () => {
+    const h = draftFixture();
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.hooks.onDraftDeferred).toHaveBeenCalledExactlyOnceWith({
+      workspace: ROOT,
+      root: ROOT,
+      blocker: BLOCKERS[0],
+      until_ms: LIMIT_MS
+    });
+    expect(h.hooks.onDraftSettled).not.toHaveBeenCalled();
+  });
+
+  test('opens once after the idle limit and not on a third observation', async () => {
+    const h = draftFixture();
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+    h.clock.now = LIMIT_MS;
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.launcher.launch).toHaveBeenCalledTimes(1);
+    expect(h.notifier.conversationConfirm).toHaveBeenCalledTimes(1);
+    expect(h.store.snapshot(ROOT).spec_authoring_launches[B]).toMatchObject({
+      session: 'launched'
+    });
+  });
+
+  test('releases the wake-up when the draft is no longer deferred', async () => {
+    const h = draftFixture();
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    h.clock.now = LIMIT_MS;
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.hooks.onDraftSettled).toHaveBeenCalledWith({
+      root: ROOT,
+      bead_id: B
+    });
+  });
+
+  test('keeps the wake-up when the prerequisite read fails', async () => {
+    const h = draftFixture();
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+    delete h.issues[B];
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.hooks.onDraftSettled).not.toHaveBeenCalled();
+  });
+
+  test('releases the wake-up once a review receipt lands', async () => {
+    const h = draftFixture();
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+    h.issues[B] = draft({
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `self@${'c'.repeat(40)}`
+      }
+    });
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.hooks.onDraftSettled).toHaveBeenCalledExactlyOnceWith({
+      root: ROOT,
+      bead_id: B
+    });
+  });
+
+  test('does nothing after a review receipt lands during the deferral', async () => {
+    const h = draftFixture();
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+    h.issues[B] = draft({
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `self@${'c'.repeat(40)}`
+      }
+    });
+    h.clock.now = LIMIT_MS;
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.launcher.launch).not.toHaveBeenCalled();
+    expect(h.notifier.conversationConfirm).not.toHaveBeenCalled();
+    expect(h.store.snapshot(ROOT).spec_authoring_launches).toEqual({});
+  });
+
+  test('opens at once for a Bead without spec evidence', async () => {
+    const h = draftFixture();
+    h.issues[B] = issue({ updated_at: UPDATED_AT });
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.launcher.launch).toHaveBeenCalledTimes(1);
+    expect(h.hooks.onDraftDeferred).not.toHaveBeenCalled();
+  });
+
+  test('opens at once for a draft whose updated_at is unreadable', async () => {
+    const h = draftFixture();
+    h.issues[B] = draft({ updated_at: 'garbled' });
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.launcher.launch).toHaveBeenCalledTimes(1);
+    expect(h.notifier.conversationConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  test('notifies only for an unreadable draft while the switch is off', async () => {
+    const h = draftFixture({ autoLaunchEnabled: () => false });
+    h.issues[B] = draft({ updated_at: 'garbled' });
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.launcher.launch).not.toHaveBeenCalled();
+    expect(h.notifier.conversationConfirm).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('spec conversation clicks', () => {
+  test('opens a draft that is still in progress', async () => {
+    const h = fixture({ now: () => UPDATED_MS + 4 * 60_000 });
+    h.issues[B] = draft();
+
+    const result = await h.authoring.launchForClick({
+      workspace: ROOT,
+      bead_id: B
+    });
+
+    expect(result.launched).toBe(true);
+  });
+
   test('opens without an attempt while the automatic switch is off', async () => {
     const h = fixture({ autoLaunchEnabled: () => false });
 
