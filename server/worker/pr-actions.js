@@ -2368,13 +2368,15 @@ export function createPrActions(deps) {
    * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, target_base?: string|null, verify_operation_id?: string|null, verified_base_sha?: string, verified_head_sha?: string }} [refs]
    * - What the click-time gate observed on GitHub (UI-7agi §3). Load-bearing
    * for an external PR, which has no attempt to read a target base from.
-   * @param {{ retry_authorized?: boolean, settled_verify?: string }} [options]
+   * @param {{ retry_authorized?: boolean, settled_verify?: string, expected_target_sha?: string }} [options]
    * - `retry_authorized`: a person's cleanup retry of a `repo_operations` stop
    * (UI-btsr §3.1). Only {@link retryCleanupLocked} passes it; it lets that
    * step's verify and deploy record one new run of a failed operation instead
    * of adopting it. `settled_verify`: the cleanup verify a boot resume already
    * waited to a success (UI-btsr §3.3), so the cleanup goes on to the deploy
-   * without re-ensuring it.
+   * without re-ensuring it. `expected_target_sha`: a `자동 진행` rerun
+   * (UI-19sj §3.2) stops as `target_moved` — recording no new failure —
+   * when the synced base tip is no longer the failed deploy's target.
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
   async function runCleanup(bead_id, refs = {}, options = {}) {
@@ -2395,6 +2397,15 @@ export function createPrActions(deps) {
       return failCleanup(bead_id, 'base_containment', foreign.reason, null);
     }
     if (foreign.state === 'ok') {
+      // A foreign closure has no pinned deploy a `자동 진행` rerun could hold.
+      if (typeof options.expected_target_sha === 'string') {
+        return {
+          ok: false,
+          step: null,
+          reason: 'auto_proceed_foreign',
+          base_sync: null
+        };
+      }
       return runForeignCleanup(bead_id, foreign.target, refs);
     }
     // The EXPECTED base, never the observed one (§5): this is the branch that
@@ -2502,6 +2513,17 @@ export function createPrActions(deps) {
         return failCleanup(bead_id, 'base_containment', synced.reason, null);
       }
       base_sync = synced.outcome;
+      if (
+        typeof options.expected_target_sha === 'string' &&
+        synced.sha.toLowerCase() !== options.expected_target_sha.toLowerCase()
+      ) {
+        return {
+          ok: false,
+          step: 'repo_operations',
+          reason: 'target_moved',
+          base_sync
+        };
+      }
       const covers_merge = await deps.gitRun(
         ['merge-base', '--is-ancestor', merge_sha, synced.sha],
         { cwd: repo }
@@ -4526,9 +4548,12 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {{ base_ref?: string|null, head_ref?: string|null, merge_sha?: string|null, pr_url?: string|null }} [refs]
+   * @param {{ expected_target_sha?: string }} [options] - A `자동 진행`
+   * rerun's pinned target (UI-19sj §3.2); it reruns only a
+   * `repo_operations` stop.
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
    */
-  async function retryCleanupLocked(bead_id, refs = {}) {
+  async function retryCleanupLocked(bead_id, refs = {}, options = {}) {
     const q = deps.store.snapshot(workspace);
     if (discardActive(q, bead_id)) {
       return { ok: false, step: null, reason: 'discard_in_progress' };
@@ -4540,6 +4565,12 @@ export function createPrActions(deps) {
     if (!cleanup_failure) {
       return { ok: false, step: null, reason: 'cleanup_failed_missing' };
     }
+    if (
+      typeof options.expected_target_sha === 'string' &&
+      cleanup_failure.step !== 'repo_operations'
+    ) {
+      return { ok: false, step: null, reason: 'auto_proceed_step_mismatch' };
+    }
     if (CLOSURE_STEPS.includes(cleanup_failure.step)) {
       // The human-click boundary: both callers are clicks, so this is the one
       // entry that may re-run an outcome-unknown post-merge job (§3).
@@ -4550,7 +4581,10 @@ export function createPrActions(deps) {
     // adopted again. Boot resume, the coordinator replay and the first run
     // reach `runCleanup` without it.
     return await runCleanup(bead_id, refs, {
-      retry_authorized: cleanup_failure.step === 'repo_operations'
+      retry_authorized: cleanup_failure.step === 'repo_operations',
+      ...(typeof options.expected_target_sha === 'string'
+        ? { expected_target_sha: options.expected_target_sha }
+        : {})
     });
   }
 
@@ -4559,15 +4593,17 @@ export function createPrActions(deps) {
    * This entry deliberately has no retry policy of its own.
    *
    * @param {string} bead_id
+   * @param {{ expected_target_sha?: string }} [options] - A `자동 진행`
+   * rerun's pinned target (UI-19sj §3.2).
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
    */
-  async function retryCleanup(bead_id) {
+  async function retryCleanup(bead_id, options = {}) {
     if (in_flight.has(bead_id)) {
       return { ok: false, step: null, reason: 'action_in_flight' };
     }
     in_flight.add(bead_id);
     try {
-      return await retryCleanupLocked(bead_id);
+      return await retryCleanupLocked(bead_id, {}, options);
     } finally {
       in_flight.delete(bead_id);
       clearStep(bead_id);

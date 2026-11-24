@@ -35,11 +35,37 @@ const RESULT_LINE_PREFIXES = [
 ];
 
 /**
+ * `자동 진행 · <고른 것> — 되돌리기: <값>[ — <사유>]` (UI-19sj §3.1). The
+ * chosen text may itself hold ` — `; the last ` — 되돌리기:` splits it off.
+ */
+const AUTO_PROCEED_LINE =
+  /^자동 진행 ·\s+(\S.*?)\s+—\s+되돌리기:\s*(\S.*?)(?:\s+—\s+(\S.*))?$/;
+
+/**
+ * Whether a `자동 진행 ·` line carries a chosen text and an undo value, and a
+ * reason when that value is `없음` (UI-19sj §3.1).
+ *
+ * @param {string} line
+ * @returns {boolean}
+ */
+function isAutoProceedLine(line) {
+  const match = AUTO_PROCEED_LINE.exec(line);
+  if (!match) {
+    return false;
+  }
+  const value = match[2].trim();
+  if (value.endsWith('—')) {
+    return false;
+  }
+  return value !== '없음' || typeof match[3] === 'string';
+}
+
+/**
  * Read a conversation result line off a message's FIRST non-empty line; the
  * line is returned whole, never cut to the display budget.
  *
  * @param {unknown} first_line
- * @returns {{ kind: 'handoff'|'takeover'|'hold'|'fix_wait', line: string, bead_id?: string }|null}
+ * @returns {{ kind: 'handoff'|'takeover'|'hold'|'fix_wait'|'auto_proceed', line: string, bead_id?: string }|null}
  */
 export function parseConversationResult(first_line) {
   if (typeof first_line !== 'string') {
@@ -52,6 +78,9 @@ export function parseConversationResult(first_line) {
         line
       );
     return match ? { kind: 'fix_wait', line, bead_id: match[1] } : null;
+  }
+  if (line.startsWith('자동 진행 ·')) {
+    return isAutoProceedLine(line) ? { kind: 'auto_proceed', line } : null;
   }
   for (const [prefix, kind] of RESULT_LINE_PREFIXES) {
     if (line.startsWith(prefix)) {

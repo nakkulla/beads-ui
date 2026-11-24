@@ -92,12 +92,14 @@ const SESSION_LANE_STARTED = '▶ 세션 레인 시작';
 const FAILURE_CONVERSATION_FALLBACK = '대화를 열지 못함 — [세션에서 이어가기]';
 
 /**
- * The three conversation-stage first lines (UI-nuwy §3.7, UI-5chz). The spec
- * fixes these words, so they carry no sender mark.
+ * The conversation-stage first lines (UI-nuwy §3.7, UI-5chz); `auto_proceed`
+ * is the exit a `자동 진행` line started (UI-19sj §3.6). The specs fix these
+ * words, so they carry no sender mark.
  */
 const CONVERSATION_TITLE = {
   confirm: '🙋 확인 필요',
   resumed: '↪ Worker가 이어감',
+  auto_proceed: '↪ 자동 진행',
   takeover: '🙋 대화에서 마무리'
 };
 
@@ -429,7 +431,7 @@ function failureConversationLine(conversation) {
  *   attemptStarted: (input: { bead_id: string, title?: string|null, runner?: string|null, model?: string|null, effort?: string|null, speed?: string|null, repo?: string|null, kind?: string|null, decision?: string|null, session_lane?: { tmux_session?: string|null, tmux_window?: string|null }|null }) => Promise<void>,
  *   conversationConfirm: (input: ConversationConfirmInput) => Promise<boolean>,
  *   conversationTakeover: (input: { bead_id: string }) => Promise<boolean>,
- *   conversationResumed: (input: { bead_id: string, title?: string|null, decision?: string|null, action?: string|null, repo?: string|null }) => Promise<boolean>,
+ *   conversationResumed: (input: { bead_id: string, title?: string|null, decision?: string|null, action?: string|null, repo?: string|null, auto_proceed?: boolean }) => Promise<boolean>,
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
@@ -737,13 +739,20 @@ export function createNotifier(deps) {
     // The `↪ Worker가 이어감` push of a handoff that runs a row's exit rather
     // than resuming an attempt (UI-18a5 §3.4): headline, decision, then what
     // ran. It does not look at the conversation kind — the scheduler sends it
-    // once, when the exit started.
+    // once, when the exit started. A `자동 진행` exit (UI-19sj §3.6) has its
+    // own title and the same body.
     conversationResumed(input) {
       return sendConversation('conversationResumed', async () => {
         const bead_title =
           text(input.title) ?? (await lookupTitle(input.bead_id));
         const lines = [
-          headline(CONVERSATION_TITLE.resumed, input.bead_id, bead_title)
+          headline(
+            input.auto_proceed === true
+              ? CONVERSATION_TITLE.auto_proceed
+              : CONVERSATION_TITLE.resumed,
+            input.bead_id,
+            bead_title
+          )
         ];
         const decision = firstLine(input.decision);
         if (decision) {

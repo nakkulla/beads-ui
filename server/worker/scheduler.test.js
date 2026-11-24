@@ -44,7 +44,10 @@ import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
 import * as operationPolicy from './repo-operation-policy.js';
 import { selfRepairFailureIdentity } from './resolution-ladder.js';
-import { createFailureConversationLauncher } from './resolve-session.js';
+import {
+  createFailureConversationLauncher,
+  failureHandoffTarget
+} from './resolve-session.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
@@ -5346,7 +5349,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
    * extra snapshot material layered on), one `resolve` pane, a transcript the
    * test moves, and the three Worker exits as spies.
    *
-   * @param {{ patch?: () => Record<string, any>, exits?: Record<string, any>, quickfixLanding?: any, failureConversation?: any, needsHuman?: any, observeDiscoveredFrom?: any }} [options]
+   * @param {{ patch?: () => Record<string, any>, exits?: Record<string, any>, quickfixLanding?: any, failureConversation?: any, needsHuman?: any, observeDiscoveredFrom?: any, resolveBase?: any }} [options]
    */
   function failureEnv(options = {}) {
     let at = 1000;
@@ -5432,7 +5435,8 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
           : {}),
         ...(options.observeDiscoveredFrom
           ? { observeDiscoveredFrom: options.observeDiscoveredFrom }
-          : {})
+          : {}),
+        ...(options.resolveBase ? { resolveBase: options.resolveBase } : {})
       }
     });
     return {
@@ -6030,6 +6034,223 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       expect(input.job_retry).not.toBe(true);
       expect(Object.keys(env.real.snapshot(WS).repo_operations).sort()).toEqual(
         ['dep-1', 'dep-cover']
+      );
+    });
+
+    describe('자동 진행 (UI-19sj)', () => {
+      const LINE =
+        '자동 진행 · 착지 배포 재실행 — 포트가 비었다 — 되돌리기: 없음 — 같은 커밋을 다시 배포할 뿐이다';
+
+      /** @param {ReturnType<typeof landingEnv>} env */
+      function openAutoLanding(env) {
+        const q = env.real.snapshot(WS);
+        openFailureConversation(env, {
+          conversation: {
+            stop: '착지 실패 · script_failed',
+            opened_failure: {
+              target: failureHandoffTarget(q, BEAD),
+              fingerprint: selfRepairFailureIdentity(q, BEAD, WS),
+              repo: WS
+            }
+          }
+        });
+        say(env, LINE);
+      }
+
+      /** @param {ReturnType<typeof landingEnv>} env */
+      async function settleAuto(env) {
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        env.panes.rows = [];
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        await flush();
+        await flush();
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        await flush();
+      }
+
+      test('reruns the landing settlement once with the deploy retry', async () => {
+        const env = landingEnv({ ok: true });
+        openAutoLanding(env);
+
+        await settleAuto(env);
+
+        expect(env.settle).toHaveBeenCalledExactlyOnceWith({
+          attempt_id: 'quickfix-land',
+          bead_id: BEAD,
+          target_base: 'main',
+          job_retry: true
+        });
+        expect(env.notify.conversationResumed).toHaveBeenCalledWith(
+          expect.objectContaining({
+            bead_id: BEAD,
+            decision: LINE,
+            auto_proceed: true
+          })
+        );
+      });
+
+      test('refuses the line when the landing run deployed another commit', async () => {
+        const env = landingEnv({ ok: true });
+        env.real.updateAttempt(WS, {
+          attempt_id: 'quickfix-land',
+          patch: {
+            quickfix_landing: {
+              cursor: 'repo_operations',
+              head_sha: 'e'.repeat(40),
+              reason: 'script_failed',
+              deploy_operation_id: 'dep-1'
+            }
+          }
+        });
+        openAutoLanding(env);
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        await flush();
+
+        expect(env.settle).not.toHaveBeenCalled();
+        expect(record(env)?.conversation?.handoff).toBeNull();
+        expect(env.timeline.append).toHaveBeenCalledWith(
+          expect.objectContaining({
+            summary: '자동 진행 거절 · target_commit_unknown'
+          })
+        );
+      });
+    });
+  });
+
+  describe('자동 진행 on a cleanup row (UI-19sj)', () => {
+    const LINE =
+      '자동 진행 · 정리 배포 재실행 — 원격 호스트가 다시 응답한다 — 되돌리기: 없음 — 같은 커밋을 다시 배포할 뿐이다';
+    const TIP = 'a'.repeat(40);
+
+    /**
+     * A cleanup row stopped at its deploy step on the failed run `cdep`,
+     * whose target commit is the remote base tip `tip`.
+     *
+     * @param {{ tip?: string, reason?: string }} [input]
+     */
+    function cleanupEnv(input = {}) {
+      const env = failureEnv({
+        resolveBase: vi.fn(async () => ({
+          ok: true,
+          base: 'main',
+          base_oid: input.tip ?? TIP
+        }))
+      });
+      env.real.clearCleanupFailure(WS, BEAD);
+      env.real.ensureRepoOperation(WS, {
+        operation_id: 'cdep',
+        repo_id: WS,
+        kind: 'deploy',
+        subjects: [{ bead_id: BEAD, merged_sha: TIP }],
+        effective_base_sha: TIP,
+        target_base: 'main',
+        target_sha: TIP,
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40)
+      });
+      const operation = env.real.snapshot(WS).repo_operations.cdep;
+      env.real.settleRepoOperation(WS, {
+        operation_id: 'cdep',
+        attempt_id: operation.attempt_id,
+        exit_code: 1,
+        signal: null,
+        finished_at: 800,
+        failure: {
+          code: 'script_failed',
+          fingerprint: 'deploy',
+          detail: '',
+          interrupted: false
+        }
+      });
+      env.real.recordCleanupFailure(WS, {
+        bead_id: BEAD,
+        step: 'repo_operations',
+        reason: input.reason ?? 'script_failed',
+        deploy_operation_id: 'cdep'
+      });
+      return env;
+    }
+
+    /** @param {ReturnType<typeof failureEnv>} env */
+    function openAutoCleanup(env) {
+      const q = env.real.snapshot(WS);
+      openFailureConversation(env, {
+        conversation: {
+          stop: '실패 정리 중단 · script_failed',
+          opened_failure: {
+            target: failureHandoffTarget(q, BEAD),
+            fingerprint: selfRepairFailureIdentity(q, BEAD, WS),
+            repo: WS
+          }
+        }
+      });
+      say(env, LINE);
+    }
+
+    /** @param {ReturnType<typeof failureEnv>} env */
+    async function settleAuto(env) {
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+    }
+
+    test('retries the cleanup once pinned to the failed run commit', async () => {
+      const env = cleanupEnv();
+      openAutoCleanup(env);
+
+      await settleAuto(env);
+
+      expect(env.exits.retryCleanup).toHaveBeenCalledExactlyOnceWith(WS, BEAD, {
+        expected_target_sha: TIP
+      });
+      expect(env.notify.conversationResumed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bead_id: BEAD,
+          decision: LINE,
+          action: '정리 재시도',
+          auto_proceed: true
+        })
+      );
+    });
+
+    test('refuses the line when the base tip moved past the failed run', async () => {
+      const env = cleanupEnv({ tip: 'f'.repeat(40) });
+      openAutoCleanup(env);
+
+      await settleAuto(env);
+
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({ summary: '자동 진행 거절 · target_moved' })
+      );
+    });
+
+    test('refuses the line on a cleanup stopped by a condition wait', async () => {
+      const env = cleanupEnv({ reason: 'condition_wait' });
+      openAutoCleanup(env);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+      expect(record(env)?.conversation?.result).toBeNull();
+    });
+
+    test('refuses the line on a condition wait row', async () => {
+      const env = cleanupEnv();
+      env.real.clearCleanupFailure(WS, BEAD);
+      recordConditionWait(env, 'wait-tip');
+      openAutoCleanup(env);
+
+      await settleAuto(env);
+
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({ summary: '자동 진행 거절 · condition_wait' })
       );
     });
   });
@@ -8186,7 +8407,7 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
    * transcript the test moves, and the manual deploy rerun as a spy that
    * supersedes the failed record the way a same-target `[배포 실행]` does.
    */
-  function repoOpEnv() {
+  function repoOpEnv(extra = {}) {
     let at = 1000;
     const failureConversation = {
       launchForRepoOperation: vi.fn(async () => ({ session: 'not_launched' }))
@@ -8262,12 +8483,14 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       attemptFailed: vi.fn(),
       prWaitEntered: vi.fn(),
       conversationTakeover: vi.fn(),
-      conversationResumed: vi.fn()
+      conversationResumed: vi.fn(),
+      conversationConfirm: vi.fn()
     };
+    const timeline = { append: vi.fn() };
     const env = setup({
       config: {},
       store: real,
-      timeline: { append: vi.fn() },
+      timeline,
       notify,
       now: () => at,
       resolveSessionFile: () => transcript.location,
@@ -8276,11 +8499,13 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
         readLastAssistantMessage: () => message.current,
         conversationExits: exits,
         failureConversation
-      }
+      },
+      ...extra
     });
     const readStatus = vi.spyOn(env.bd, 'readStatus');
     return {
       ...env,
+      timeline,
       real,
       launcher,
       panes,
@@ -8410,6 +8635,418 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       reason: '결과 미상'
     });
     expect(record(env)).toBeUndefined();
+  });
+
+  describe('자동 진행 result line (UI-19sj)', () => {
+    const LINE =
+      '자동 진행 · 실패 단계 재실행 — 원격 호스트가 다시 응답한다 — 되돌리기: 없음 — 같은 커밋을 다시 배포할 뿐이다';
+    const TIP = 'a'.repeat(40);
+
+    /**
+     * @param {string} [tip]
+     */
+    function autoEnv(tip = TIP) {
+      return repoOpEnv({
+        resolveBase: vi.fn(async () => ({
+          ok: true,
+          base: 'main',
+          base_oid: tip
+        }))
+      });
+    }
+
+    /** @param {ReturnType<typeof repoOpEnv>} env */
+    function openedFailure(env) {
+      const q = env.real.snapshot(WS);
+      return {
+        target: failureHandoffTarget(q, ROW),
+        fingerprint: selfRepairFailureIdentity(q, ROW, WS),
+        repo: WS
+      };
+    }
+
+    /** @param {ReturnType<typeof repoOpEnv>} env */
+    function openAutoConversation(env) {
+      openRepoOpConversation(env, {
+        conversation: {
+          stop: '실패 수동 배포 실패 · script_failed',
+          opened_failure: openedFailure(env)
+        }
+      });
+    }
+
+    /** @param {ReturnType<typeof repoOpEnv>} env */
+    async function settle(env) {
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.panes.rows = [];
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+    }
+
+    test('reruns the failed manual deploy once on its recorded target commit', async () => {
+      const env = autoEnv();
+      openAutoConversation(env);
+      say(env, LINE);
+
+      await settle(env);
+
+      expect(env.exits.rerunManualDeploy).toHaveBeenCalledExactlyOnceWith(WS, {
+        expected_target_sha: TIP
+      });
+      expect(env.notify.conversationResumed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bead_id: ROW,
+          decision: LINE,
+          auto_proceed: true
+        })
+      );
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({ summary: `대화 결과 · ${LINE}` })
+      );
+    });
+
+    test('spends the failure fingerprint in the write that reserves the handoff', async () => {
+      const env = autoEnv();
+      openAutoConversation(env);
+      say(env, LINE);
+      const fingerprint = openedFailure(env).fingerprint;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      const q = env.real.snapshot(WS);
+      expect(q.interactive_sessions[KEY]?.conversation?.handoff).toMatchObject({
+        source: 'auto_proceed',
+        line: LINE,
+        started_at: null
+      });
+      expect(q.auto_proceed_used[String(fingerprint)]).toEqual({
+        row_key: ROW,
+        used_at: 1000,
+        line: LINE,
+        repo: WS
+      });
+    });
+
+    /**
+     * Assert a refused line: the message is processed, nothing is reserved
+     * or spent, the window stays, and the person hears once.
+     *
+     * @param {ReturnType<typeof repoOpEnv>} env
+     * @param {string} reason
+     */
+    function expectRefused(env, reason) {
+      const q = env.real.snapshot(WS);
+      expect(q.interactive_sessions[KEY]?.conversation).toMatchObject({
+        processed_message_at: 900,
+        result: null,
+        handoff: null
+      });
+      expect(q.auto_proceed_used).toEqual({});
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({ summary: `자동 진행 거절 · ${reason}` })
+      );
+      expect(env.notify.conversationConfirm).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ bead_id: ROW, sentence: LINE })
+      );
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+      expect(env.exits.rerunManualDeploy).not.toHaveBeenCalled();
+    }
+
+    test('refuses a second line on a new failure with a spent fingerprint', async () => {
+      const env = autoEnv();
+      openAutoConversation(env);
+      say(env, LINE);
+      await settle(env);
+      const spent = structuredClone(env.real.snapshot(WS).auto_proceed_used);
+      env.real.issueManualDeployRun(WS);
+      env.real.ensureRepoOperation(WS, {
+        operation_id: 'op-n',
+        attempt_id: 'op-n:1',
+        repo_id: WS,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'manual', merged_sha: TIP }],
+        effective_base_sha: 'b'.repeat(40),
+        target_base: 'main',
+        target_sha: TIP,
+        script_mode: '100755',
+        script_blob_sha: 'c'.repeat(40),
+        source: 'manual',
+        manual_run_id: 2
+      });
+      env.real.settleRepoOperation(WS, {
+        operation_id: 'op-n',
+        attempt_id: 'op-n:1',
+        exit_code: 2,
+        signal: null,
+        failure: {
+          code: 'script_failed',
+          fingerprint: 'f1',
+          detail: '',
+          interrupted: false
+        }
+      });
+      const row = 'repo-op:op-n';
+      const q = env.real.snapshot(WS);
+      env.real.recordInteractiveSession(WS, {
+        bead_id: row,
+        kind: 'resolve',
+        provider: 'claude',
+        pane_id: '%9',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'resolve-repo-op-op-n',
+        cwd: WS,
+        launched_at: 500,
+        last_seen_alive_at: 500,
+        state: 'live',
+        mode: 'fresh',
+        source: 'fresh',
+        session_id: 'fresh-session-2',
+        session_id_source: 'launch',
+        conversation: {
+          stop: '실패 수동 배포 실패 · script_failed',
+          opened_failure: {
+            target: failureHandoffTarget(q, row),
+            fingerprint: selfRepairFailureIdentity(q, row, WS),
+            repo: WS
+          }
+        }
+      });
+      env.panes.rows = [
+        {
+          key: row,
+          pane: '%9',
+          dead: '0',
+          session: 'bdui-inquiry',
+          window: 'resolve-repo-op-op-n',
+          cwd: WS,
+          agent_runtime: 'claude',
+          agent_running: '',
+          agent_attention: ''
+        }
+      ];
+      env.message.current = {
+        text: LINE,
+        at: 1900,
+        first_line: LINE,
+        excerpt: LINE
+      };
+      env.transcript.location = {
+        ...env.transcript.location,
+        last_event_at: 1950
+      };
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      const conversation =
+        env.real.snapshot(WS).interactive_sessions[`${row}:resolve`]
+          ?.conversation;
+      expect(conversation).toMatchObject({
+        processed_message_at: 1900,
+        result: null,
+        handoff: null
+      });
+      expect(env.real.snapshot(WS).auto_proceed_used).toEqual(spent);
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          summary: '자동 진행 거절 · fingerprint_used'
+        })
+      );
+      expect(env.notify.conversationConfirm).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ bead_id: row, sentence: LINE })
+      );
+      expect(env.exits.rerunManualDeploy).toHaveBeenCalledOnce();
+    });
+
+    test.each([
+      ['early_diagnosis', { early_diagnosis: true }],
+      ['verify_hold', { verify_hold: { pr_url: null, head_sha: TIP } }],
+      ['opened_failure_missing', { opened_failure: undefined }]
+    ])('refuses the line on a %s conversation', async (reason, patch) => {
+      const env = autoEnv();
+      openRepoOpConversation(env, {
+        conversation: {
+          stop: '실패 수동 배포 실패 · script_failed',
+          opened_failure: openedFailure(env),
+          ...patch
+        }
+      });
+      say(env, LINE);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expectRefused(env, reason);
+    });
+
+    test('refuses the line in a conversation a person took over', async () => {
+      const env = autoEnv();
+      openRepoOpConversation(env, {
+        conversation: {
+          stop: '실패 수동 배포 실패 · script_failed',
+          opened_failure: openedFailure(env),
+          result: { kind: 'takeover', line: '사람이 이어감', at: 800 }
+        }
+      });
+      say(env, LINE);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(record(env)?.conversation).toMatchObject({
+        processed_message_at: 900,
+        result: { kind: 'takeover' },
+        handoff: null
+      });
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({ summary: '자동 진행 거절 · takeover' })
+      );
+      expect(env.exits.rerunManualDeploy).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['discard', { target: { kind: 'discard', identity: 'discard:d1' } }],
+      [
+        'target_changed',
+        {
+          target: {
+            kind: 'repo_operation',
+            identity: `repo_operation:${OP}:f0`
+          }
+        }
+      ],
+      ['fingerprint_changed', { fingerprint: 'another-failure' }]
+    ])(
+      'refuses the line when the opened failure is %s',
+      async (reason, patch) => {
+        const env = autoEnv();
+        openRepoOpConversation(env, {
+          conversation: {
+            stop: '실패 수동 배포 실패 · script_failed',
+            opened_failure: { ...openedFailure(env), ...patch }
+          }
+        });
+        say(env, LINE);
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        await flush();
+
+        expectRefused(env, reason);
+      }
+    );
+
+    test('refuses the line when the base tip moved past the failed run', async () => {
+      const env = autoEnv('f'.repeat(40));
+      openAutoConversation(env);
+      say(env, LINE);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expectRefused(env, 'target_moved');
+    });
+
+    test('refuses the line when the once record cannot be written', async () => {
+      const env = autoEnv();
+      vi.spyOn(env.real, 'reserveAutoProceed').mockReturnValue(
+        /** @type {any} */ ({ ok: false, conflict: false })
+      );
+      openAutoConversation(env);
+      say(env, LINE);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expectRefused(env, 'record_failed');
+    });
+
+    test.each(['inquiry', 'external_resume'])(
+      'refuses the line in a %s conversation',
+      async (kind) => {
+        const env = autoEnv();
+        env.launcher.listPanesExtended.mockImplementation(async () => ({
+          ok: true,
+          rows: env.panes.rows
+        }));
+        openRepoOpConversation(env, {
+          kind,
+          conversation: {
+            stop: '실패 수동 배포 실패 · script_failed',
+            opened_failure: openedFailure(env)
+          }
+        });
+        say(env, LINE);
+
+        await env.scheduler.reconcileInteractiveSessions(WS);
+        await flush();
+
+        const conversation =
+          env.real.snapshot(WS).interactive_sessions[`${ROW}:${kind}`]
+            ?.conversation;
+        expect(conversation).toMatchObject({
+          processed_message_at: 900,
+          handoff: null
+        });
+        expect(env.timeline.append).toHaveBeenCalledWith(
+          expect.objectContaining({
+            summary: '자동 진행 거절 · not_failure_conversation'
+          })
+        );
+        expect(env.real.snapshot(WS).auto_proceed_used).toEqual({});
+      }
+    );
+
+    test('keeps the spent fingerprint through a store reload', async () => {
+      const env = autoEnv();
+      openAutoConversation(env);
+      say(env, LINE);
+      const fingerprint = String(openedFailure(env).fingerprint);
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      const reloaded = makeQueueStore();
+      reloaded.__clearCacheForTest();
+
+      const q = reloaded.snapshot(WS);
+
+      expect(q.auto_proceed_used[fingerprint]).toMatchObject({
+        row_key: ROW,
+        line: LINE
+      });
+      expect(q.interactive_sessions[KEY]?.conversation).toMatchObject({
+        result: { kind: 'auto_proceed', line: LINE },
+        handoff: { source: 'auto_proceed' }
+      });
+    });
+
+    test('runs no rerun again for a started line a restart finds', async () => {
+      const env = autoEnv();
+      openRepoOpConversation(env, {
+        conversation: {
+          stop: '실패 수동 배포 실패 · script_failed',
+          opened_failure: openedFailure(env),
+          processed_message_at: 900,
+          result: { kind: 'auto_proceed', line: LINE, at: 950 },
+          handoff: {
+            line: LINE,
+            source: 'auto_proceed',
+            message_at: 900,
+            reserved_at: 950,
+            target: openedFailure(env).target,
+            started_at: 960
+          }
+        }
+      });
+      env.panes.rows = [];
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.rerunManualDeploy).not.toHaveBeenCalled();
+      expect(env.real.snapshot(WS).conversation_refusals[ROW]).toMatchObject({
+        reason: '결과 미상'
+      });
+    });
   });
 });
 

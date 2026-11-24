@@ -1362,6 +1362,29 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
     );
   });
 
+  test('titles the push of an exit an automatic proceed line started', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conversationResumed({
+      bead_id: 'UI-1',
+      title: '워커 알림',
+      decision: '자동 진행 · 실패 단계 재실행 — 되돌리기: 없음 — 같은 커밋',
+      action: '정리 재시도',
+      repo: '/r/proj',
+      auto_proceed: true
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '↪ 자동 진행 — UI-1 워커 알림',
+        '결정: 자동 진행 · 실패 단계 재실행 — 되돌리기: 없음 — 같은 커밋',
+        '실행: 정리 재시도',
+        '리포: proj'
+      ].join('\n')
+    );
+  });
+
   test('sends nothing from the conversation pushes when notifications are off', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(

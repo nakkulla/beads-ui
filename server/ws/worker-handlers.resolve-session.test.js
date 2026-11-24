@@ -48,6 +48,8 @@ const {
   SESSION_LANE_PANE_MARKER
 } = await import('../worker/tmux-launcher.js');
 const { getWorkerRuntime } = await import('../worker/runtime.js');
+const { selfRepairFailureIdentity } =
+  await import('../worker/resolution-ladder.js');
 const handlers = await import('./worker-handlers.js');
 
 /** @type {string} */
@@ -289,6 +291,8 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
 
   test('hands the launcher the failure the row was refused for', async () => {
     recordCleanupStop();
+    const queue = getWorkerRuntime().queueStore.snapshot(WS);
+    const at = queue.cleanup_failed[BEAD].at;
 
     await click({ bead_id: BEAD, expected_revision: revision() });
 
@@ -306,7 +310,15 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
           reason: 'local_branch_delete_failed',
           stage: 'branch_cleanup',
           detail: null,
-          log_path: null
+          log_path: null,
+          auto_proceed_basis: {
+            target: {
+              kind: 'cleanup',
+              identity: `cleanup:branch_cleanup:${at}`
+            },
+            fingerprint: selfRepairFailureIdentity(queue, BEAD, WS),
+            repo: WS
+          }
         }
       }
     ]);

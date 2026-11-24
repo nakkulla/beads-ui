@@ -4945,6 +4945,28 @@ describe('manual deploy run', () => {
     });
   });
 
+  test('refuses a pinned rerun when the fetched tip is another commit', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+    const before = store.snapshot(root).repo_operations;
+
+    const result = await coordinator.runManualDeploy({
+      expected_target_sha: 'e'.repeat(40)
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'target_moved' });
+    expect(store.snapshot(root).repo_operations).toEqual(before);
+  });
+
+  test('runs a pinned rerun while the fetched tip is its commit', async () => {
+    const { coordinator } = manualCoordinatorFor();
+
+    const result = await coordinator.runManualDeploy({
+      expected_target_sha: TARGET
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
   test('reads policy and script from the fetched tip, not the previous base', async () => {
     const { store, coordinator } = manualCoordinatorFor();
     seedPreviousSuccess(store);

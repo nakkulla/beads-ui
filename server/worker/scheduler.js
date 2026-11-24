@@ -182,9 +182,11 @@ import {
   selfRepairFailureIdentity
 } from './resolution-ladder.js';
 import {
+  AUTO_PROCEED_TARGET_KINDS,
   LANDING_FAILURE_CLASS,
   STALE_RESIDUE_FAILURE_CLASS,
   failedDiscardOperation,
+  failedManualDeploy,
   failureHandoffTarget,
   failureRowIdentity,
   isBeadlessRowKey,
@@ -908,7 +910,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
  * @property {ReturnType<typeof import('./tmux-launcher.js').createTmuxLauncher>} [interactiveLauncher]
- * @property {{ retryCleanup: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, retryDiscard: (workspace: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }>, enqueueMerge: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, rerunManualDeploy?: (workspace: string) => Promise<{ ok: boolean, reason?: string|null }>, resumeCoveredCleanup?: (workspace: string, bead_id: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }> }} [conversationExits]
+ * @property {{ retryCleanup: (workspace: string, bead_id: string, options?: { expected_target_sha?: string }) => Promise<{ ok: boolean, reason?: string|null }>, retryDiscard: (workspace: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }>, enqueueMerge: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, rerunManualDeploy?: (workspace: string, options?: { expected_target_sha?: string }) => Promise<{ ok: boolean, reason?: string|null }>, resumeCoveredCleanup?: (workspace: string, bead_id: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }> }} [conversationExits]
  * The Worker exits a failure conversation's `인계` runs (UI-18a5 §3.4): the
  * same cleanup retry, discard retry and `[머지]` merge-queue re-enqueue the
  * row's own buttons call, and a repo-operation row's one `[배포 실행]`
@@ -1739,7 +1741,7 @@ export function interactiveTurnState(running, attention) {
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session', automatic?: boolean, refused?: 'resume_reserved' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
  *   inspectExternalWaitOwner: (workspace: string, wait_id: string, input: { bead_id: string, version: number, action: 'recheck'|'focus' }) => Promise<{ ok: boolean, reason: string, focus_error?: string|null }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean, coverage_resume?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean, auto_proceed_retry?: boolean, coverage_resume?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<ProviderAutoResumeOutcome>,
  *   reevaluateProviderSwitches: (workspace: string, catalog_accounts?: import('./account-catalog.js').Account[]) => Promise<void>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
@@ -2352,7 +2354,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerAutoResumeDisarmed'|'providerLivePreempt'|'startupWait'|'startupAutoAdvance'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationConfirm'|'conversationTakeover'|'conversationResumed'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerAutoResumeDisarmed'|'providerLivePreempt'|'startupWait'|'startupAutoAdvance'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -12550,6 +12552,171 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The commit a `자동 진행` rerun is pinned to (UI-19sj §3.2): the failed
+   * deploy run's own `target_sha`, read off the row's failure record. A
+   * cleanup stop counts only at its deploy step, and a landing only when its
+   * failed run deployed the landing's bound commit. Null when the record names
+   * no such run or the run's cause is a `condition_wait`.
+   *
+   * @param {any} q - Queue snapshot.
+   * @param {string} row_key
+   * @param {string} kind - The failure target kind.
+   * @returns {string|null}
+   */
+  function autoProceedTargetSha(q, row_key, kind) {
+    /** @type {any} */
+    let operation = null;
+    if (kind === 'repo_operation') {
+      const operation_id = repoOperationIdOf(row_key);
+      operation =
+        operation_id !== null ? failedManualDeploy(q, operation_id) : null;
+    } else if (kind === 'cleanup') {
+      const cleanup = q.cleanup_failed?.[row_key];
+      operation =
+        cleanup?.step === 'repo_operations' &&
+        cleanup.reason !== 'condition_wait' &&
+        typeof cleanup.deploy_operation_id === 'string'
+          ? q.repo_operations?.[cleanup.deploy_operation_id] || null
+          : null;
+    } else if (kind === 'quickfix_landing') {
+      const landing = landingDeployFailure(q, row_key);
+      operation =
+        landing &&
+        landing.operation.target_sha ===
+          landing.attempt.quickfix_landing?.head_sha
+          ? landing.operation
+          : null;
+    }
+    if (
+      !operation ||
+      operation.kind !== 'deploy' ||
+      operation.failure?.code === 'condition_wait' ||
+      typeof operation.target_sha !== 'string' ||
+      operation.target_sha.length === 0
+    ) {
+      return null;
+    }
+    return operation.target_sha;
+  }
+
+  /**
+   * Re-derive a `자동 진행` line's pin from the row as it stands now
+   * (UI-19sj §3.2): the target and fingerprint the conversation recorded at
+   * open must still be the row's, and the failed run must still name its
+   * target commit.
+   *
+   * @param {string} workspace
+   * @param {string} row_key
+   * @param {import('./queue-store.js').OpenedFailure} opened
+   * @returns {{ ok: true, expected_target_sha: string }|{ ok: false, reason: string }}
+   */
+  function autoProceedPin(workspace, row_key, opened) {
+    const q = deps.store.snapshot(workspace);
+    const target = failureHandoffTarget(q, row_key);
+    if (
+      !target ||
+      target.kind !== opened.target.kind ||
+      target.identity !== opened.target.identity
+    ) {
+      return { ok: false, reason: 'target_changed' };
+    }
+    const fingerprint = selfRepairFailureIdentity(q, row_key, opened.repo);
+    if (!fingerprint || fingerprint !== opened.fingerprint) {
+      return { ok: false, reason: 'fingerprint_changed' };
+    }
+    const expected_target_sha = autoProceedTargetSha(q, row_key, target.kind);
+    return expected_target_sha === null
+      ? { ok: false, reason: 'target_commit_unknown' }
+      : { ok: true, expected_target_sha };
+  }
+
+  /**
+   * Judge a failure conversation's `자동 진행` line (UI-19sj §3.2): a
+   * 실패 conversation that is neither an early diagnosis nor a verify hold,
+   * opened on a `repo_operation`·`cleanup`·`quickfix_landing` failure that is
+   * still the row's, whose fingerprint no line used yet, and whose rerun
+   * would deploy the failure record's own target commit. An exit that reads
+   * the remote base tip again passes only while that tip is the commit.
+   *
+   * @param {string} workspace
+   * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+   * @returns {Promise<{ ok: true, opened: import('./queue-store.js').OpenedFailure }|{ ok: false, reason: string }>}
+   */
+  async function autoProceedVerdict(workspace, record) {
+    const conversation = record.conversation;
+    if (record.kind !== 'resolve') {
+      return { ok: false, reason: 'not_failure_conversation' };
+    }
+    if (conversation.result?.kind === 'takeover') {
+      return { ok: false, reason: 'takeover' };
+    }
+    if (conversation.early_diagnosis === true) {
+      return { ok: false, reason: 'early_diagnosis' };
+    }
+    if (conversation.verify_hold) {
+      return { ok: false, reason: 'verify_hold' };
+    }
+    const opened = conversation.opened_failure;
+    if (!opened) {
+      return { ok: false, reason: 'opened_failure_missing' };
+    }
+    if (!AUTO_PROCEED_TARGET_KINDS.includes(opened.target.kind)) {
+      return { ok: false, reason: opened.target.kind };
+    }
+    if (typeof deps.store.reserveAutoProceed !== 'function') {
+      return { ok: false, reason: 'record_unavailable' };
+    }
+    const used = () =>
+      Object.hasOwn(
+        deps.store.snapshot(workspace).auto_proceed_used || {},
+        opened.fingerprint
+      );
+    if (used()) {
+      return { ok: false, reason: 'fingerprint_used' };
+    }
+    const pinned = autoProceedPin(workspace, record.bead_id, opened);
+    if (!pinned.ok) {
+      return pinned;
+    }
+    if (opened.target.kind !== 'quickfix_landing') {
+      // The manual deploy and the cleanup deploy both read the remote base
+      // tip again; the landing deploys its own bound commit.
+      if (typeof deps.resolveBase !== 'function') {
+        return { ok: false, reason: 'target_unresolved' };
+      }
+      /** @type {import('./target-base.js').TargetBaseResult|null} */
+      let resolved = null;
+      try {
+        resolved = await deps.resolveBase({ force: true });
+      } catch (err) {
+        log('auto proceed base read failed for %s: %o', record.bead_id, err);
+      }
+      if (
+        !resolved?.ok ||
+        typeof resolved.base_oid !== 'string' ||
+        resolved.base_oid.length === 0
+      ) {
+        return { ok: false, reason: 'target_unresolved' };
+      }
+      if (
+        resolved.base_oid.toLowerCase() !==
+        pinned.expected_target_sha.toLowerCase()
+      ) {
+        return { ok: false, reason: 'target_moved' };
+      }
+      // The row may have moved while the tip was read.
+      const again = autoProceedPin(workspace, record.bead_id, opened);
+      if (!again.ok) {
+        return again;
+      }
+      if (used()) {
+        return { ok: false, reason: 'fingerprint_used' };
+      }
+    }
+    return { ok: true, opened };
+  }
+
+  /**
    * Run a failure conversation's `인계` once its window is gone (UI-18a5 §3.4
    * 인계 표): the row's own Worker exit with the person's click authority —
    * the cleanup retry (an unknown-outcome post-merge job included), the
@@ -12581,6 +12748,12 @@ export function createScheduler(deps) {
    * identity, whose conversation the caller's `end` announces once the
    * record is gone. A handoff reserved on a row with no Worker exit is
    * refused as {@link NO_WORKER_EXIT_REFUSAL}, never `이미 정산됨` (§4.3).
+   *
+   * An accepted `자동 진행` line's exit (UI-19sj §3.2·§3.5) is the same
+   * failed step rerun, pinned to the failure record's target commit, which is
+   * derived again right before the run; it carries no click authority and a
+   * moved target refuses it. Its fingerprint stays used whatever the exit
+   * returns.
    *
    * @param {string} workspace
    * @param {string} key
@@ -12670,6 +12843,25 @@ export function createScheduler(deps) {
       refuseConversationHandoff(workspace, record, 'exit_unwired');
       return { done: true };
     }
+    const auto_proceed = handoff.source === 'auto_proceed';
+    /** @type {string|null} */
+    let expected_target_sha = null;
+    if (auto_proceed) {
+      const pinned = conversation.opened_failure
+        ? autoProceedPin(workspace, bead_id, conversation.opened_failure)
+        : { ok: false, reason: 'opened_failure_missing' };
+      if (!pinned.ok) {
+        refuseConversationHandoff(
+          workspace,
+          record,
+          /** @type {{ reason: string }} */ (pinned).reason
+        );
+        return { done: true };
+      }
+      expected_target_sha = /** @type {{ expected_target_sha: string }} */ (
+        pinned
+      ).expected_target_sha;
+    }
     if (
       !patchInteractiveRecord(workspace, key, record, {
         conversation: {
@@ -12704,15 +12896,24 @@ export function createScheduler(deps) {
               )
             : null;
         const wired = /** @type {NonNullable<typeof exits>} */ (exits);
+        // A `자동 진행` exit names its pinned commit; a person's handoff
+        // keeps the click's current-base behavior.
+        /** @type {[] | [{ expected_target_sha: string }]} */
+        const pin =
+          expected_target_sha !== null ? [{ expected_target_sha }] : [];
         result =
           attempt?.quickfix_lane === true
-            ? await resume(workspace, attempt.attempt_id, {
-                job_retry_authorized: true
-              })
+            ? await resume(
+                workspace,
+                attempt.attempt_id,
+                auto_proceed
+                  ? { auto_proceed_retry: true }
+                  : { job_retry_authorized: true }
+              )
             : target.kind === 'quickfix_landing'
               ? { ok: false, reason: 'exit_unwired' }
               : target.kind === 'cleanup' || target.kind === 'condition_wait'
-                ? await wired.retryCleanup(workspace, bead_id)
+                ? await wired.retryCleanup(workspace, bead_id, ...pin)
                 : target.kind === 'discard'
                   ? await wired.retryDiscard(
                       workspace,
@@ -12722,7 +12923,7 @@ export function createScheduler(deps) {
                   : target.kind === 'repo_operation'
                     ? await /** @type {NonNullable<typeof wired.rerunManualDeploy>} */ (
                         wired.rerunManualDeploy
-                      )(workspace)
+                      )(workspace, ...pin)
                     : await wired.enqueueMerge(workspace, bead_id);
       } catch (err) {
         log('conversation handoff exit failed for %s: %o', bead_id, err);
@@ -12744,7 +12945,8 @@ export function createScheduler(deps) {
               : {}),
             decision: handoff.line,
             action,
-            repo: workspace
+            repo: workspace,
+            ...(auto_proceed ? { auto_proceed: true } : {})
           });
         }
         end();
@@ -14504,7 +14706,9 @@ export function createScheduler(deps) {
           attempt_id: record.attempt_id,
           launched_at: record.launched_at,
           line: conversation.handoff.line,
-          source: conversation.handoff.source
+          // `auto_proceed` is a failure conversation's only (UI-19sj).
+          source:
+            conversation.handoff.source === 'button' ? 'button' : 'result_line'
         });
         if (!outcome.done) {
           return;
@@ -14693,6 +14897,10 @@ export function createScheduler(deps) {
       }
       const at = now();
       const read = parseConversationResult(message.first_line ?? message.text);
+      if (read?.kind === 'auto_proceed') {
+        await processAutoProceedLine(key, record, message, at, read.line);
+        return;
+      }
       let parsed =
         !reopenable ||
         (read?.kind === 'handoff' &&
@@ -14851,6 +15059,109 @@ export function createScheduler(deps) {
       } else if (parsed?.kind === 'takeover') {
         notifyLifecycle('conversationTakeover', { bead_id: record.bead_id });
       }
+    }
+    /**
+     * Take or refuse a failure conversation's `자동 진행` line (UI-19sj
+     * §3.2-§3.3). Taken, the result and the handoff reservation are written in
+     * the SAME store mutation that spends the failure fingerprint, then the
+     * line is processed like any handoff: the `대화 결과` timeline line and
+     * the window close, the exit running once the window is gone. Refused,
+     * the message is only marked processed — no result, so the conversation
+     * still waits for the person — with a `자동 진행 거절` timeline line and
+     * one `🙋 확인 필요` push.
+     *
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+     * @param {import('./queue-store.js').InteractiveLastMessage} message
+     * @param {number} at
+     * @param {string} line
+     */
+    async function processAutoProceedLine(key, record, message, at, line) {
+      const conversation = record.conversation;
+      const message_at = message.at ?? message.event_at ?? null;
+      /** @type {import('./queue-store.js').ConversationState} */
+      const processed = {
+        ...conversation,
+        processed_message_at: message_at,
+        message_excerpt: message.excerpt ?? message.text
+      };
+      const verdict = await autoProceedVerdict(workspace, record);
+      /** @type {string|null} */
+      let refusal = verdict.ok
+        ? null
+        : /** @type {{ reason: string }} */ (verdict).reason;
+      if (verdict.ok) {
+        const opened = verdict.opened;
+        /** @type {import('./queue-store.js').ConversationState} */
+        const next = {
+          ...processed,
+          result: { kind: 'auto_proceed', line, at },
+          handback_allowed: false,
+          handoff: {
+            line,
+            source: 'auto_proceed',
+            message_at,
+            reserved_at: at,
+            target: opened.target,
+            started_at: null
+          }
+        };
+        const reserved = deps.store.reserveAutoProceed?.(
+          workspace,
+          key,
+          { pane_id: record.pane_id, launched_at: record.launched_at },
+          next,
+          opened.fingerprint,
+          {
+            row_key: record.bead_id,
+            used_at: at,
+            line,
+            repo: opened.repo
+          }
+        );
+        if (reserved?.ok) {
+          Object.assign(record, { conversation: next });
+          notifyChanged(workspace);
+          appendTimeline({
+            bead_id: record.bead_id,
+            ...(record.attempt_id ? { attempt_id: record.attempt_id } : {}),
+            kind: 'interactive_session',
+            seq: `${record.kind}:${record.launched_at}:auto_proceed`,
+            summary: `대화 결과 · ${line}`
+          });
+          await closeConversationWindow(workspace, key, record);
+          return;
+        }
+        // Without the once record the line is not taken (§4).
+        refusal = 'record_failed';
+      }
+      if (
+        !patchInteractiveRecord(workspace, key, record, {
+          conversation: processed
+        })
+      ) {
+        return;
+      }
+      appendTimeline({
+        bead_id: record.bead_id,
+        ...(record.attempt_id ? { attempt_id: record.attempt_id } : {}),
+        kind: 'interactive_session',
+        seq: `${record.kind}:${record.launched_at}:auto_proceed_refused:${message_at}`,
+        summary: `자동 진행 거절 · ${refusal}`
+      });
+      notifyLifecycle('conversationConfirm', {
+        bead_id: record.bead_id,
+        // A repo-operation row names no Bead whose title could be read.
+        ...(repoOperationIdOf(record.bead_id) !== null
+          ? { title: FAILURE_HANDOFF_ROWS.repo_operation }
+          : {}),
+        stop: conversation.stop,
+        sentence: line,
+        session: 'already_running',
+        tmux_session: record.tmux_session ?? null,
+        tmux_window: record.tmux_window ?? null,
+        repo: workspace
+      });
     }
     /**
      * Process the newest assistant message of a live SESSION-LANE window
@@ -19710,7 +20021,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean, coverage_resume?: boolean }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean, auto_proceed_retry?: boolean, coverage_resume?: boolean }} [continuation]
    * `conversation_return` is the UI-nuwy §3.4 handoff: it alone admits a
    * `parked` prior, skips only admission's `awaiting_user` presence refusal,
    * and puts the `## 대화 결과` block at the head of the resume prompt.
@@ -19719,6 +20030,10 @@ export function createScheduler(deps) {
    * (UI-1eag §3.1): only that attachment boundary sets it, and it is read only
    * by a quick_fix settlement resume, never by a session resume. The same
    * click is refused first when a newer session owns the Bead (UI-68r5 §3.4).
+   * `auto_proceed_retry` marks a failure conversation's accepted `자동 진행`
+   * line (UI-19sj §3.5): it is no click, but it reruns the failed landing
+   * deploy step on that landing's own bound commit, so a settlement resume
+   * gets the job-retry authority exactly as a fix wait's rerun does.
    * `coverage_resume` marks the Worker's own resume of a landing whose failed
    * deploy a later success covered (UI-8ufc): it only passes a standing fix
    * wait and carries no job-retry authority, so the settlement adopts that
@@ -19745,6 +20060,17 @@ export function createScheduler(deps) {
       !!prior &&
       q.fix_waits[prior.bead_id]?.state === 'rerunning' &&
       q.fix_waits[prior.bead_id].attempt_id === attempt_id;
+    // Only the started exit of an accepted `자동 진행` line, on a landing
+    // still stopped at its deploy step, carries that authority (UI-19sj).
+    const auto_proceed_handoff = prior
+      ? q.interactive_sessions?.[`${prior.bead_id}:resolve`]?.conversation
+          ?.handoff
+      : null;
+    const auto_proceed_retry =
+      continuation.auto_proceed_retry === true &&
+      prior?.quickfix_landing?.cursor === 'repo_operations' &&
+      auto_proceed_handoff?.source === 'auto_proceed' &&
+      auto_proceed_handoff.started_at !== null;
     if (
       prior &&
       q.fix_waits[prior.bead_id]?.state === 'waiting' &&
@@ -19957,6 +20283,7 @@ export function createScheduler(deps) {
       // marker is never that click, whatever else it says.
       const job_retry =
         self_repair_retry ||
+        auto_proceed_retry ||
         (continuation.job_retry_authorized === true &&
           !continuation.retry &&
           continuation.provider_auto_resume !== true &&

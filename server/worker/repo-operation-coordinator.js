@@ -3130,7 +3130,10 @@ export function createRepoOperationCoordinator(deps) {
    * is a REFUSAL: no record is written, nothing is queued, and the client says
    * exactly which precondition failed.
    *
-   * @typedef {'deploy_not_declared'|'deploy_opted_out'|'deploy_in_flight'|'target_unresolved'|'remote_history_not_monotonic'} ManualDeployRefusal
+   * `target_moved` refuses only a run pinned to an expected target
+   * (UI-19sj §3.2): the fetched tip is no longer the failure record's commit.
+   *
+   * @typedef {'deploy_not_declared'|'deploy_opted_out'|'deploy_in_flight'|'target_unresolved'|'remote_history_not_monotonic'|'target_moved'} ManualDeployRefusal
    */
 
   /**
@@ -3197,10 +3200,14 @@ export function createRepoOperationCoordinator(deps) {
    * The target is NOT an input. It comes from the attachment's one base
    * resolver, which pins remote, base and the fetched tip together, so nothing
    * here assumes `origin` and a client cannot name a commit of its own.
+   * `expected_target_sha` only narrows that: a `자동 진행` rerun (UI-19sj
+   * §3.2) runs only while the fetched tip is still the failure record's
+   * commit, and is refused `target_moved` otherwise.
    *
+   * @param {{ expected_target_sha?: string }} [options]
    * @returns {Promise<{ ok: true, operation_id: string }|{ ok: false, reason: ManualDeployRefusal }>}
    */
-  async function runManualDeploy() {
+  async function runManualDeploy(options = {}) {
     if (typeof deps.resolveBase !== 'function') {
       return { ok: false, reason: 'target_unresolved' };
     }
@@ -3220,6 +3227,13 @@ export function createRepoOperationCoordinator(deps) {
       !/^[0-9a-f]{40}$/i.test(resolved.base_oid)
     ) {
       return { ok: false, reason: 'target_unresolved' };
+    }
+    if (
+      options.expected_target_sha !== undefined &&
+      resolved.base_oid.toLowerCase() !==
+        String(options.expected_target_sha).toLowerCase()
+    ) {
+      return { ok: false, reason: 'target_moved' };
     }
     const release = await deps.locks.repoOperationLock(deps.repo);
     try {

@@ -146,6 +146,9 @@ function seedCollections() {
         state: 'passed'
       }
     },
+    auto_proceed_used: {
+      failure: { row_key: 'FIX', used_at: 1, line: 'line', repo: WS }
+    },
     conversation_refusals: {
       SESSION: { reason: 'refused', at: 1, kind: 'resolve' }
     },
