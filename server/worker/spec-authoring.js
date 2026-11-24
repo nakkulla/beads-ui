@@ -427,8 +427,8 @@ export function createSpecAuthoring(deps) {
         state: 'live',
         exit_requested_at: null,
         defer_since: null,
-        ...(outcome.codex_project_untrusted
-          ? { codex_project_untrusted: true }
+        ...(typeof outcome.codex_project_untrusted === 'boolean'
+          ? { codex_project_untrusted: outcome.codex_project_untrusted }
           : {}),
         conversation: null
       });

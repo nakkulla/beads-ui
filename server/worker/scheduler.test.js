@@ -44620,7 +44620,9 @@ describe('worker window startup auto-advance (UI-e5cq)', () => {
       launched_at: 1000,
       state: 'live',
       conversation: null,
-      ...(input.untrusted ? { codex_project_untrusted: true } : {})
+      ...(typeof input.untrusted === 'boolean'
+        ? { codex_project_untrusted: input.untrusted }
+        : {})
     });
     return {
       ...env,
@@ -44876,7 +44878,7 @@ describe('worker window startup auto-advance (UI-e5cq)', () => {
   });
 
   test('advances the trust screen of a codex window launched without an untrusted entry', async () => {
-    const env = windowEnv({ provider: 'codex' });
+    const env = windowEnv({ provider: 'codex', untrusted: false });
     env.hub.screen = screenReply({
       dialog: 'trust',
       startup_kind: null,
@@ -44888,6 +44890,27 @@ describe('worker window startup auto-advance (UI-e5cq)', () => {
     await env.passAt(1000);
 
     expect(env.launcher.startupAdvance).toHaveBeenCalledTimes(1);
+  });
+
+  test('holds the trust screen of a codex window whose record lacks the untrusted fact', async () => {
+    const env = windowEnv({ provider: 'codex' });
+    env.hub.screen = screenReply({
+      dialog: 'trust',
+      startup_kind: null,
+      fingerprint: 'fp-trust',
+      heading: 'Trust this folder?',
+      auto: { choice: 'Trust and continue' }
+    });
+
+    await env.passAt(1000);
+
+    expect(env.launcher.startupAdvance).not.toHaveBeenCalled();
+    expect(env.record().startup_wait).toEqual({
+      kind: 'trust',
+      fingerprint: 'fp-trust',
+      since: 1000,
+      notified_at: null
+    });
   });
 
   test('records an unknown wait counted from launch once two minutes pass unseen', async () => {
@@ -44961,6 +44984,32 @@ describe('worker window startup auto-advance (UI-e5cq)', () => {
     expect(
       env.pushesOf('startupWait').map(([, payload]) => payload.label)
     ).toEqual(['기타 시작 화면']);
+  });
+
+  test('keeps the two-minute notice once when a screen wait came between', async () => {
+    const env = windowEnv();
+    await env.passAt(1000 + 2 * MINUTE);
+    await env.passAt(1000 + 5 * MINUTE + 1);
+    env.hub.screen = screenReply({
+      startup_kind: 'login',
+      fingerprint: 'fp-login',
+      heading: 'Log in'
+    });
+    await env.passAt(1000 + 6 * MINUTE);
+    env.hub.screen = NO_SCREEN;
+    await env.passAt(1000 + 7 * MINUTE);
+
+    await env.passAt(1000 + 8 * MINUTE);
+
+    expect(
+      env.pushesOf('startupWait').map(([, payload]) => payload.label)
+    ).toEqual(['기타 시작 화면']);
+    expect(env.record().startup_wait).toEqual({
+      kind: 'unknown',
+      fingerprint: 'startup-unseen:1000',
+      since: 1000,
+      notified_at: 1000 + 5 * MINUTE + 1
+    });
   });
 
   test('passes a claude window once its turn marker fills and clears the wait', async () => {

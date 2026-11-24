@@ -587,9 +587,14 @@
  * cap of five reads it. Absent reads as 0.
  * @property {string[]} [startup_advance_fingerprints] - The screen
  * fingerprints already answered in this window; one call per fingerprint.
- * @property {true} [codex_project_untrusted] - The codex launch found an
- * existing non-trusted project entry for the folder (UI-e5cq §3.2): its
- * trust screen is never advanced.
+ * @property {boolean} [codex_project_untrusted] - What the codex launch
+ * found for the folder (UI-e5cq §3.2): `true` for an existing non-trusted
+ * project entry, `false` for none. Only `false` lets its trust screen be
+ * advanced; a codex record without it (older or recovered) is held.
+ * @property {number} [startup_unseen_notified_at] - When the two-minute
+ * `unknown` wait of this window was notified (UI-e5cq §3.4). It outlives a
+ * screen wait that replaces that wait, so a recreated one never notifies
+ * again.
  * @property {ConversationState|null} conversation - Present on every
  * conversation a launcher opened since UI-18a5 §3.4 — 멈춤 (`inquiry`),
  * 실패 (`resolve`) and 외부 작업 완료 (`external_resume`). A record without
@@ -4189,6 +4194,9 @@ function normalizeInteractiveSessions(raw) {
     const bead_id = String(value.bead_id);
     const startup_wait = normalizeStartupWait(value.startup_wait);
     const startup_passed_at = numberOrNull('startup_passed_at');
+    const startup_unseen_notified_at = numberOrNull(
+      'startup_unseen_notified_at'
+    );
     const startup_advance_count =
       Number.isSafeInteger(value.startup_advance_count) &&
       /** @type {number} */ (value.startup_advance_count) > 0
@@ -4267,9 +4275,12 @@ function normalizeInteractiveSessions(raw) {
       ...(startup_advance_fingerprints.length > 0
         ? { startup_advance_fingerprints }
         : {}),
-      ...(value.codex_project_untrusted === true
-        ? { codex_project_untrusted: true }
-        : {})
+      ...(typeof value.codex_project_untrusted === 'boolean'
+        ? { codex_project_untrusted: value.codex_project_untrusted }
+        : {}),
+      ...(startup_unseen_notified_at === null
+        ? {}
+        : { startup_unseen_notified_at })
     };
   }
   return sessions;

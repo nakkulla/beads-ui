@@ -1478,8 +1478,8 @@ export function createResolveSession(deps) {
             input.failure,
             input.verify_hold ?? null
           ),
-          ...(outcome.codex_project_untrusted
-            ? { codex_project_untrusted: true }
+          ...(typeof outcome.codex_project_untrusted === 'boolean'
+            ? { codex_project_untrusted: outcome.codex_project_untrusted }
             : {})
         });
       }
@@ -1614,8 +1614,8 @@ export function createResolveSession(deps) {
           pane_id: outcome.pane_id,
           cwd: checkout,
           conversation: newConversation(input.failure),
-          ...(outcome.codex_project_untrusted
-            ? { codex_project_untrusted: true }
+          ...(typeof outcome.codex_project_untrusted === 'boolean'
+            ? { codex_project_untrusted: outcome.codex_project_untrusted }
             : {})
         });
       }

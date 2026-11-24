@@ -692,7 +692,7 @@ describe('tmux-launcher Codex project trust', () => {
   });
 
   test.each(['missing', 'trusted'])(
-    'leaves the untrusted mark off a launch with a %s entry',
+    'marks the launch of a folder with a %s entry as not untrusted',
     async (entry) => {
       const { launch, config_path } = codexLaunch(test_dir);
       if (entry === 'trusted') {
@@ -705,8 +705,10 @@ describe('tmux-launcher Codex project trust', () => {
 
       const result = await launch();
 
-      expect(result.session).toBe('launched');
-      expect(result).not.toHaveProperty('codex_project_untrusted');
+      expect(result).toMatchObject({
+        session: 'launched',
+        codex_project_untrusted: false
+      });
     }
   );
 
@@ -741,6 +743,14 @@ describe('tmux-launcher Codex project trust', () => {
 
     expect(result.session).toBe('launched');
     expect(fs.existsSync(config_path)).toBe(false);
+  });
+
+  test('leaves the untrusted mark off a Claude launch', async () => {
+    const { launch } = codexLaunch(test_dir, 'claude');
+
+    const result = await launch();
+
+    expect(result).not.toHaveProperty('codex_project_untrusted');
   });
 
   test('refuses to open a window when the config cannot be extended', async () => {
@@ -1075,7 +1085,7 @@ describe('tmux-launcher startup screen (UI-e5cq §3.1)', () => {
   const CHROME = {
     dialog: 'startup',
     startup_kind: 'chrome',
-    fingerprint: 'a1b2c3',
+    fingerprint: 'a1b2c3d4e5f6a7b8c9d0e1f2',
     heading: 'Claude in Chrome',
     auto: { choice: 'No, keep browser tools off' }
   };
@@ -1117,19 +1127,16 @@ describe('tmux-launcher startup screen (UI-e5cq §3.1)', () => {
     });
   });
 
-  test('drops the startup kind of a trust screen', async () => {
+  test('returns a trust screen without a startup kind', async () => {
+    const trust = {
+      dialog: 'trust',
+      startup_kind: null,
+      fingerprint: 'a1b2c3d4e5f6a7b8c9d0e1f2',
+      heading: 'Do you trust the files in this folder?',
+      auto: null
+    };
     const { launcher } = startupLauncher(async () =>
-      hubReply({
-        alive: 'alive',
-        started: false,
-        screen: {
-          dialog: 'trust',
-          startup_kind: 'hooks',
-          fingerprint: 'a1b2c3',
-          heading: 'Do you trust the files in this folder?',
-          auto: null
-        }
-      })
+      hubReply({ alive: 'alive', started: false, screen: trust })
     );
 
     const result = await launcher.startupScreen(INPUT);
@@ -1138,13 +1145,7 @@ describe('tmux-launcher startup screen (UI-e5cq §3.1)', () => {
       ok: true,
       alive: 'alive',
       started: false,
-      screen: {
-        dialog: 'trust',
-        startup_kind: null,
-        fingerprint: 'a1b2c3',
-        heading: 'Do you trust the files in this folder?',
-        auto: null
-      }
+      screen: trust
     });
   });
 
@@ -1193,6 +1194,48 @@ describe('tmux-launcher startup screen (UI-e5cq §3.1)', () => {
         alive: 'alive',
         started: false,
         screen: { ...CHROME, fingerprint: 'fp' }
+      }
+    ],
+    [
+      'a fingerprint shorter than 24 hex digits',
+      {
+        alive: 'alive',
+        started: false,
+        screen: { ...CHROME, fingerprint: 'a1b2c3' }
+      }
+    ],
+    [
+      'an uppercase fingerprint',
+      {
+        alive: 'alive',
+        started: false,
+        screen: { ...CHROME, fingerprint: 'A1B2C3D4E5F6A7B8C9D0E1F2' }
+      }
+    ],
+    [
+      'a startup kind on a trust screen',
+      {
+        alive: 'alive',
+        started: false,
+        screen: {
+          ...CHROME,
+          dialog: 'trust',
+          startup_kind: 'hooks',
+          auto: null
+        }
+      }
+    ],
+    [
+      'a trust screen without its startup kind key',
+      {
+        alive: 'alive',
+        started: false,
+        screen: {
+          dialog: 'trust',
+          fingerprint: 'a1b2c3d4e5f6a7b8c9d0e1f2',
+          heading: 'h',
+          auto: null
+        }
       }
     ],
     [
@@ -1292,7 +1335,7 @@ describe('tmux-launcher startup advance (UI-e5cq §3.1)', () => {
     pane: '%8',
     marker: SESSION_LANE_PANE_MARKER,
     key: 'UI-e5cq',
-    fingerprint: 'a1b2c3'
+    fingerprint: 'a1b2c3d4e5f6a7b8c9d0e1f2'
   };
 
   test('asks the hub to answer the screen of that fingerprint', async () => {
@@ -1314,7 +1357,7 @@ describe('tmux-launcher startup advance (UI-e5cq §3.1)', () => {
         '--marker-value',
         'UI-e5cq',
         '--fingerprint',
-        'a1b2c3'
+        'a1b2c3d4e5f6a7b8c9d0e1f2'
       ]
     ]);
   });
@@ -1426,6 +1469,17 @@ describe('tmux-launcher startup advance (UI-e5cq §3.1)', () => {
         advanced: true,
         dialog: 'unknown_screen',
         startup_kind: null,
+        choice: 'c',
+        heading: 'h'
+      }
+    ],
+    [
+      'a startup kind on an advanced trust screen',
+      {
+        advanced: true,
+        key_sent: true,
+        dialog: 'trust',
+        startup_kind: 'hooks',
         choice: 'c',
         heading: 'h'
       }

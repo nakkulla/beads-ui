@@ -390,7 +390,52 @@ describe('interactive session persistence', () => {
     });
   });
 
-  test('drops a malformed advance count, blank fingerprints and a non-true untrusted flag', () => {
+  test('keeps a false untrusted fact through a cold reload', () => {
+    const store = createQueueStore();
+
+    store.recordInteractiveSession(
+      WS,
+      record({ provider: 'codex', codex_project_untrusted: false })
+    );
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+        .codex_project_untrusted
+    ).toBe(false);
+  });
+
+  test('keeps the two-minute notice stamp through a cold reload', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, record({}));
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      startup_unseen_notified_at: 300_000
+    });
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+        .startup_unseen_notified_at
+    ).toBe(300_000);
+  });
+
+  test.each([
+    ['a string', '300000'],
+    ['NaN', Number.NaN],
+    ['null', null]
+  ])('drops a two-minute notice stamp that is %s', (_name, value) => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, record({}));
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      startup_unseen_notified_at: /** @type {any} */ (value)
+    });
+
+    expect(
+      store.snapshot(WS).interactive_sessions['B1:resolve']
+    ).not.toHaveProperty('startup_unseen_notified_at');
+  });
+
+  test('drops a malformed advance count, blank fingerprints and a non-boolean untrusted flag', () => {
     const store = createQueueStore();
     store.recordInteractiveSession(
       WS,

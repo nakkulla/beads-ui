@@ -82,10 +82,11 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  */
 
 /**
- * `codex_project_untrusted` is present only on a codex launch that found an
- * existing non-trusted project entry for its folder (UI-e5cq §3.2).
+ * `codex_project_untrusted` is on every codex launch and on no claude launch:
+ * `true` when the folder had an existing non-trusted project entry, `false`
+ * when it had none (UI-e5cq §3.2).
  *
- * @typedef {{ session: 'launched', placement: LaunchPlacement, tmux_session: string, tmux_window: string, pane_id: string, codex_project_untrusted?: true }
+ * @typedef {{ session: 'launched', placement: LaunchPlacement, tmux_session: string, tmux_window: string, pane_id: string, codex_project_untrusted?: boolean }
  *   | { session: 'already_running', placement?: LaunchPlacement, tmux_session?: string, tmux_window?: string, pane_id?: string }
  *   | { session: 'not_launched', reason: string }} LaunchOutcome
  */
@@ -940,9 +941,7 @@ export function createTmuxLauncher(deps = {}) {
       tmux_session: value.tmux_session,
       tmux_window: input.window_name,
       pane_id: value.pane,
-      ...(codex_project_untrusted
-        ? { codex_project_untrusted: /** @type {const} */ (true) }
-        : {})
+      ...(runner === 'codex' ? { codex_project_untrusted } : {})
     };
   }
 
@@ -1012,11 +1011,12 @@ export function createTmuxLauncher(deps = {}) {
         screen.dialog !== 'trust' &&
         screen.dialog !== 'unknown_screen') ||
       typeof screen.fingerprint !== 'string' ||
-      !/^[0-9a-f]+$/.test(screen.fingerprint) ||
+      !/^[0-9a-f]{24}$/.test(screen.fingerprint) ||
       typeof screen.heading !== 'string' ||
-      (screen.dialog === 'startup' &&
-        (typeof screen.startup_kind !== 'string' ||
-          screen.startup_kind.length === 0)) ||
+      (screen.dialog === 'startup'
+        ? typeof screen.startup_kind !== 'string' ||
+          screen.startup_kind.length === 0
+        : screen.startup_kind !== null) ||
       (auto !== null &&
         (screen.dialog === 'unknown_screen' ||
           !auto ||
@@ -1072,9 +1072,10 @@ export function createTmuxLauncher(deps = {}) {
         typeof value.choice !== 'string' ||
         value.choice.length === 0 ||
         typeof value.heading !== 'string' ||
-        (value.dialog === 'startup' &&
-          (typeof value.startup_kind !== 'string' ||
-            value.startup_kind.length === 0))
+        (value.dialog === 'startup'
+          ? typeof value.startup_kind !== 'string' ||
+            value.startup_kind.length === 0
+          : value.startup_kind !== null)
       ) {
         return invalid;
       }

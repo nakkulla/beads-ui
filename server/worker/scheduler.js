@@ -13655,7 +13655,9 @@ export function createScheduler(deps) {
       };
       /**
        * Hold the window on one wait; an unchanged fingerprint keeps its
-       * `since` and its notice stamp.
+       * `since` and its notice stamp. The two-minute wait also keeps its
+       * stamp on the record (`startup_unseen_notified_at`), so recreating it
+       * after a screen wait replaced it notifies nothing again (§3.4).
        *
        * @param {import('./startup-wait.js').StartupWaitKind} kind
        * @param {string} fingerprint
@@ -13668,7 +13670,15 @@ export function createScheduler(deps) {
         let next =
           current && current.fingerprint === fingerprint
             ? { ...current, kind }
-            : { kind, fingerprint, since, notified_at: null };
+            : {
+                kind,
+                fingerprint,
+                since,
+                notified_at:
+                  fingerprint === unseen_fingerprint
+                    ? (record.startup_unseen_notified_at ?? null)
+                    : null
+              };
         const label = STARTUP_WAIT_LABELS[kind];
         if (!current || current.kind !== kind) {
           appendTimeline({
@@ -13688,7 +13698,12 @@ export function createScheduler(deps) {
           next = { ...next, notified_at: at };
         }
         if (!sameStartupWait(current, next)) {
-          update(key, record, { startup_wait: next });
+          update(key, record, {
+            startup_wait: next,
+            ...(notify && fingerprint === unseen_fingerprint
+              ? { startup_unseen_notified_at: at }
+              : {})
+          });
         }
         // Once per fingerprint, stamped whether or not the push is delivered,
         // and only after the stamp landed so a failed write cannot repeat it.
@@ -13776,11 +13791,14 @@ export function createScheduler(deps) {
             : 'unknown';
       const used = record.startup_advance_fingerprints ?? [];
       const count = record.startup_advance_count ?? 0;
-      // A person's own non-trusted entry is never overturned (§3.2).
+      // A person's own non-trusted entry is never overturned (§3.2). Only a
+      // launch that saw no such entry (`false`) may answer a codex trust
+      // screen; a record that predates the fact or was recovered without it
+      // cannot rule the entry out, so its trust screen is held too.
       const protected_trust =
         record.provider === 'codex' &&
         screen.dialog === 'trust' &&
-        record.codex_project_untrusted === true;
+        record.codex_project_untrusted !== false;
       if (
         screen.auto !== null &&
         !protected_trust &&
@@ -17112,8 +17130,8 @@ export function createScheduler(deps) {
       launched_at: started_at,
       state: 'live',
       conversation: newSessionLaneConversation(),
-      ...(outcome.codex_project_untrusted
-        ? { codex_project_untrusted: true }
+      ...(typeof outcome.codex_project_untrusted === 'boolean'
+        ? { codex_project_untrusted: outcome.codex_project_untrusted }
         : {})
     });
     log(
