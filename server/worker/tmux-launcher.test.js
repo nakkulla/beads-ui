@@ -520,6 +520,31 @@ describe('tmux-launcher Codex permission flags', () => {
   });
 });
 
+describe('tmux-launcher Chrome dialog flag (UI-hdj5)', () => {
+  test('starts Claude windows with --no-chrome', async () => {
+    const { launch, runSessionHub } = codexLaunch(test_dir, 'claude');
+
+    await launch();
+
+    const args = runSessionHub.mock.calls.find(
+      ([call]) => call[0] === 'open'
+    )?.[0];
+    expect(args?.slice(args.indexOf('--') + 1)).toContain('--no-chrome');
+  });
+
+  test('omits --no-chrome from Codex windows', async () => {
+    const { launch, runSessionHub } = codexLaunch(test_dir);
+
+    await launch();
+
+    const args = runSessionHub.mock.calls.find(
+      ([call]) => call[0] === 'open'
+    )?.[0];
+    expect(args).toBeDefined();
+    expect(args).not.toContain('--no-chrome');
+  });
+});
+
 describe('tmux-launcher Codex project trust', () => {
   test.each(['missing', 'existing'])(
     'passes the absolute config home to the hub for a %s project entry',
@@ -830,6 +855,7 @@ describe('tmux-launcher conversation flags (UI-jbl1 §3.4)', () => {
       expect(opened.slice(opened.indexOf('--') + 1)).toEqual([
         '/usr/bin/claude',
         '--allow-dangerously-skip-permissions',
+        '--no-chrome',
         '--model',
         'sonnet',
         '--effort',
@@ -946,6 +972,7 @@ describe('tmux-launcher session-lane launch input (UI-lbm5 §4.3)', () => {
       '--share-history',
       '--',
       '--allow-dangerously-skip-permissions',
+      '--no-chrome',
       '--session-id',
       'sid',
       'prompt'

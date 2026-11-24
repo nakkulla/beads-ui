@@ -858,7 +858,11 @@ export function createTmuxLauncher(deps = {}) {
       ...(input.wrapper
         ? [input.wrapper.executable, ...input.wrapper.args]
         : [executable]),
-      ...(runner === 'claude' ? ['--allow-dangerously-skip-permissions'] : []),
+      // `--no-chrome` keeps the Chrome auto-enable dialog from holding the
+      // window before its first turn on an account that never answered it.
+      ...(runner === 'claude'
+        ? ['--allow-dangerously-skip-permissions', '--no-chrome']
+        : []),
       ...withLaunchFlags(
         runner,
         input.commandArgs,

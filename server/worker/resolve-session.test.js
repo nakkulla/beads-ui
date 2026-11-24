@@ -1159,7 +1159,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
         'claude'
       );
       expect(hubCommand(tmux.calls)).toContain(
-        "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '--allow-dangerously-skip-permissions' '--session-id'"
+        "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '--allow-dangerously-skip-permissions' '--no-chrome' '--session-id'"
       );
     }
   );
@@ -1341,7 +1341,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       attempt_id: null
     });
     expect(hubCommand(tmux.calls)).toContain(
-      `exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--session-id' '${record.session_id}'`
+      `exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--no-chrome' '--session-id' '${record.session_id}'`
     );
   });
 
@@ -1486,7 +1486,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     const launch_id = wrapper?.match(/'--session-id' '([^']+)'/)?.[1];
     expect(wrapper).toBe(
       'exec ' +
-        `'/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--resume' '${SESSION_ID}' '--fork-session' '--session-id' '${launch_id}' ` +
+        `'/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--no-chrome' '--resume' '${SESSION_ID}' '--fork-session' '--session-id' '${launch_id}' ` +
         `'${buildFailureEntry({
           failure: FAILURE,
           worktree: null,
@@ -1670,7 +1670,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
 
     const wrapper = hubCommand(tmux.calls);
     expect(wrapper).toContain(
-      `exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--resume' '${SESSION_ID}' '--fork-session'`
+      `exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--no-chrome' '--resume' '${SESSION_ID}' '--fork-session'`
     );
   });
 
@@ -1887,7 +1887,7 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
 
     expect([outcome.mode, outcome.runner]).toEqual(['fresh', 'claude']);
     expect(launchedWrapper(tmux)).toContain(
-      "exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--model' 'sonnet' '--effort' 'high' '--session-id'"
+      "exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--no-chrome' '--model' 'sonnet' '--effort' 'high' '--session-id'"
     );
   });
 
@@ -1952,7 +1952,7 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
 
     const wrapper = launchedWrapper(tmux);
     expect(wrapper).toContain(
-      `exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--resume'`
+      `exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--no-chrome' '--resume'`
     );
     expect(wrapper).not.toContain('--model');
     expect(wrapper).not.toContain('--effort');

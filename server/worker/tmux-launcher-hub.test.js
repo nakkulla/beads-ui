@@ -77,6 +77,7 @@ describe('conversation model/effort flags', () => {
     expect(openedCommand(runSessionHub)).toEqual([
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
+      '--no-chrome',
       '--model',
       'opus',
       ...INPUT.commandArgs
@@ -91,6 +92,7 @@ describe('conversation model/effort flags', () => {
     expect(openedCommand(runSessionHub)).toEqual([
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
+      '--no-chrome',
       ...INPUT.commandArgs
     ]);
   });
@@ -132,6 +134,7 @@ describe('session-hub interactive launch', () => {
       '--',
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
+      '--no-chrome',
       ...INPUT.commandArgs
     ]);
     expect(runSessionHub.mock.calls[2][0]).toEqual([
@@ -207,6 +210,7 @@ describe('session-hub interactive launch', () => {
       '--',
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
+      '--no-chrome',
       ...INPUT.commandArgs
     ]);
     expect(runTmux).toHaveBeenCalledExactlyOnceWith([

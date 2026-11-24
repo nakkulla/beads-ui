@@ -702,6 +702,7 @@ describe('session-inquiry resume launch flags', () => {
     expect(open?.slice(open.indexOf('--') + 1)).toEqual([
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
+      '--no-chrome',
       '--resume',
       SID_A,
       expect.any(String)
