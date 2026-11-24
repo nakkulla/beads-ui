@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { discardOperationActive } from './discard-phase.js';
 
 export const FIX_WAIT_LIMIT_MS = 48 * 60 * 60 * 1000;
 
@@ -74,6 +75,28 @@ export function selfRepairFailureIdentity(queue, bead_id, repo) {
     return operationIncidentFingerprint(repo, {
       kind: cleanup.step,
       failure: { code: cleanup.reason, summary: cleanup.detail }
+    });
+  }
+  // A discard failure row (UI-8ufc) is identified by its own stopped phase
+  // and error, the same record its 폐기 실패 row retries.
+  const discard = Object.values(queue.discard_operations || {})
+    .filter(
+      (/** @type {any} */ row) =>
+        row?.bead_id === bead_id &&
+        discardOperationActive(row) &&
+        typeof row.last_error === 'string' &&
+        row.last_error.length > 0
+    )
+    .sort(
+      (/** @type {any} */ left, /** @type {any} */ right) =>
+        (left.requested_at || 0) - (right.requested_at || 0)
+    )
+    .at(-1);
+  if (discard) {
+    const row = /** @type {any} */ (discard);
+    return operationIncidentFingerprint(repo, {
+      kind: 'discard',
+      failure: { code: row.phase, summary: row.last_error }
     });
   }
   const attempt = Object.values(queue.attempts || {})

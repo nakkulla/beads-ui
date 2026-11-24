@@ -11,6 +11,7 @@ import {
   onForeignBlockerResolved,
   prefixOfBeadId,
   prewarmIssuePrefix,
+  queryDiscoveredFromDependents,
   queryForeignBlockerStatus,
   visibleWorkspaceRoots
 } from './foreign-blocker-status.js';
@@ -1022,5 +1023,97 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
       close_reason: null
     });
     expect(cachedIssuePrefixFor(WS_B)).toBeNull();
+  });
+});
+
+describe('queryDiscoveredFromDependents (UI-8ufc)', () => {
+  const SINCE = Date.parse('2026-11-24T00:00:00Z');
+
+  /**
+   * @param {string} id
+   * @param {string} created_at
+   * @param {string} type
+   */
+  function row(id, created_at, type) {
+    return {
+      id,
+      status: 'open',
+      created_at,
+      dependencies: [{ issue_id: id, depends_on_id: 'UI-a1', type }]
+    };
+  }
+
+  test('keeps only discovered-from dependents created after the failure', async () => {
+    /** @type {Record<string, any[]>} */
+    const rows = {
+      [WS_A]: [
+        row('UI-new', '2026-11-24T01:00:00Z', 'discovered-from'),
+        row('UI-old', '2026-11-23T23:00:00Z', 'discovered-from'),
+        row('UI-blk', '2026-11-24T01:00:00Z', 'blocks')
+      ],
+      [WS_B]: [row('dotfiles-new', '2026-11-24T02:00:00Z', 'discovered-from')]
+    };
+    const runJson = vi.fn(async (_cmd, _args, /** @type {any} */ opts) => ({
+      ok: true,
+      data: rows[opts.cwd]
+    }));
+
+    const result = await queryDiscoveredFromDependents(
+      [{ bead_id: 'UI-a1', since: SINCE }],
+      WS_A,
+      { listRoots: () => [WS_A, WS_B], runJson: /** @type {any} */ (runJson) }
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      dependents: [
+        {
+          id: 'UI-new',
+          owner_root: WS_A,
+          depends_on_id: 'UI-a1',
+          status: 'open',
+          created_at: Date.parse('2026-11-24T01:00:00Z')
+        },
+        {
+          id: 'dotfiles-new',
+          owner_root: WS_B,
+          depends_on_id: 'UI-a1',
+          status: 'open',
+          created_at: Date.parse('2026-11-24T02:00:00Z')
+        }
+      ]
+    });
+  });
+
+  test('fails the whole answer when one rig cannot be read', async () => {
+    const runJson = vi.fn(async (_cmd, _args, /** @type {any} */ opts) =>
+      opts.cwd === WS_B ? { ok: false } : { ok: true, data: [] }
+    );
+
+    const result = await queryDiscoveredFromDependents(
+      [{ bead_id: 'UI-a1', since: SINCE }],
+      WS_A,
+      { listRoots: () => [WS_A, WS_B], runJson: /** @type {any} */ (runJson) }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'bd_failed' });
+  });
+
+  test('fails the answer when the rig registry cannot be read', async () => {
+    const list = vi
+      .spyOn(registry, 'getAvailableWorkspaces')
+      .mockImplementation(() => {
+        throw new Error('registry unreadable');
+      });
+    const runJson = vi.fn(async () => ({ ok: true, data: [] }));
+
+    const result = await queryDiscoveredFromDependents(
+      [{ bead_id: 'UI-a1', since: SINCE }],
+      WS_A,
+      { runJson: /** @type {any} */ (runJson) }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'no_rig' });
+    expect(list).toHaveBeenCalledWith({ strict: true });
   });
 });

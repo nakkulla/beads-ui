@@ -165,6 +165,167 @@ describe('interactive session persistence', () => {
 
     expect(queue.fix_waits.B1).toEqual(wait);
   });
+  test('retains an observed fix-wait source after cold load', () => {
+    const store = createQueueStore();
+    store.recordFixWait(WS, 'B1', {
+      bead_id: 'UI-fix',
+      rig: WS,
+      entered_at: 1000,
+      failure_identity: '012345abcdef',
+      state: /** @type {const} */ ('waiting'),
+      chain_head: null,
+      attempt_id: null,
+      exhausted_reason: null,
+      used_identities: ['012345abcdef'],
+      source: /** @type {const} */ ('observed')
+    });
+
+    const queue = createQueueStore().load(WS);
+
+    expect(queue.fix_waits.B1.source).toBe('observed');
+  });
+
+  describe('claimCoverageResume (UI-8ufc)', () => {
+    /**
+     * A failed deploy `dep-fail` superseded by `dep-cover`, which settled
+     * `exit_code`; `retry` marks the successor as its own retry.
+     *
+     * @param {number} exit_code
+     * @param {boolean} retry
+     */
+    function seedCoveredDeploy(exit_code, retry) {
+      const store = createQueueStore();
+      for (const [operation_id, code] of /** @type {const} */ ([
+        ['dep-fail', 1],
+        ['dep-cover', exit_code]
+      ])) {
+        store.ensureRepoOperation(WS, {
+          operation_id,
+          repo_id: WS,
+          kind: 'deploy',
+          subjects: [
+            { bead_id: 'UI-1', merged_sha: 'a'.repeat(40) },
+            { bead_id: 'UI-2', merged_sha: 'd'.repeat(40) }
+          ],
+          effective_base_sha: 'b'.repeat(40),
+          target_base: 'main',
+          script_mode: '100755',
+          script_blob_sha: 'c'.repeat(40),
+          ...(retry && operation_id === 'dep-cover'
+            ? { retry_of: 'dep-fail' }
+            : {})
+        });
+        store.settleRepoOperation(WS, {
+          operation_id,
+          attempt_id:
+            store.snapshot(WS).repo_operations[operation_id].attempt_id,
+          exit_code: code,
+          signal: null,
+          ...(code === 0
+            ? {}
+            : {
+                failure: {
+                  code: 'script_failed',
+                  fingerprint: 'f'.repeat(64),
+                  detail: '',
+                  interrupted: false
+                }
+              })
+        });
+      }
+      store.supersedeRepoOperation(WS, {
+        operation_id: 'dep-fail',
+        successor_id: 'dep-cover'
+      });
+      return store;
+    }
+
+    test('spends a subject resume of a covered failed deploy only once', () => {
+      const store = seedCoveredDeploy(0, false);
+
+      const first = store.claimCoverageResume(WS, 'dep-fail', 'UI-1');
+      const second = store.claimCoverageResume(WS, 'dep-fail', 'UI-1');
+
+      expect([first.ok, second.ok]).toEqual([true, false]);
+    });
+
+    test('keeps each subject resume of one deploy separate', () => {
+      const store = seedCoveredDeploy(0, false);
+      store.claimCoverageResume(WS, 'dep-fail', 'UI-1');
+
+      const other = store.claimCoverageResume(WS, 'dep-fail', 'UI-2');
+
+      expect(other.ok).toBe(true);
+    });
+
+    test('keeps spent subject resumes through a cold reload', () => {
+      const store = seedCoveredDeploy(0, false);
+      store.claimCoverageResume(WS, 'dep-fail', 'UI-2');
+
+      const loaded = createQueueStore().load(WS).repo_operations['dep-fail'];
+
+      expect(Object.keys(loaded.coverage_resumed || {})).toEqual(['UI-2']);
+    });
+
+    test('refuses a failed deploy covered by its own retry', () => {
+      const store = seedCoveredDeploy(0, true);
+
+      const result = store.claimCoverageResume(WS, 'dep-fail', 'UI-1');
+
+      expect(result.ok).toBe(false);
+    });
+
+    test('refuses a failed deploy whose successor also failed', () => {
+      const store = seedCoveredDeploy(1, false);
+
+      const result = store.claimCoverageResume(WS, 'dep-fail', 'UI-1');
+
+      expect(result.ok).toBe(false);
+    });
+  });
+
+  test('keeps the deploy run a cleanup stop waited on through a cold reload', () => {
+    const store = createQueueStore();
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'repo_operations',
+      reason: 'deploy_failed',
+      deploy_operation_id: 'dep-fail'
+    });
+
+    const loaded = createQueueStore().load(WS).cleanup_failed['UI-1'];
+
+    expect(loaded.deploy_operation_id).toBe('dep-fail');
+  });
+
+  test('keeps the time a discard stopped through a cold reload', () => {
+    let clock = 100;
+    const store = createQueueStore({ now: () => clock });
+    const revision = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-1'
+    }).queue.revision;
+    store.createDiscardOperation(WS, {
+      expected_revision: revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: 'UI-1',
+        attempt_id: null,
+        process_identity: null,
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+    clock = 250;
+    store.failDiscardOperation(WS, {
+      operation_id: 'discard-1',
+      expected_phase: 'requested',
+      reason: 'archive_corrupt'
+    });
+
+    const loaded = createQueueStore().load(WS).discard_operations['discard-1'];
+
+    expect(loaded.failed_at).toBe(250);
+  });
   /** @param {Record<string, unknown>} [patch] */
   function record(patch = {}) {
     return {

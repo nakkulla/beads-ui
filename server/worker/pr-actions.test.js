@@ -3167,7 +3167,8 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
       failure_code: 'repo_ops_fetch_failed',
       fetch_failure: 'nonzero',
       elapsed_ms: 28,
-      log_path: '/tmp/deploy.log'
+      log_path: '/tmp/deploy.log',
+      deploy_operation_id: 'deploy-1'
     });
   });
 
@@ -3385,7 +3386,8 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
       failure_code: 'repo_ops_fetch_failed',
       fetch_failure: 'timeout',
       elapsed_ms: 99,
-      log_path: '/tmp/deploy.log'
+      log_path: '/tmp/deploy.log',
+      deploy_operation_id: 'deploy-1'
     });
     expect(env.git_argv.some((args) => args[0] === 'fetch')).toBe(false);
   });
@@ -3408,6 +3410,126 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
     });
     expect(operations.waitForDeployTerminal).not.toHaveBeenCalled();
     expect(env.git_argv.some((args) => args[0] === 'fetch')).toBe(false);
+  });
+
+  /**
+   * A `repo_operations` cleanup stop that waited on deploy `dep-fail`, which
+   * failed and was superseded by `dep-cover` settling `cover_exit`
+   * (UI-8ufc). `recorded` is the run the stop names.
+   *
+   * @param {{ cover_exit?: number, recorded?: string|null }} [options]
+   */
+  function coveredCleanupEnv({ cover_exit = 0, recorded = 'dep-fail' } = {}) {
+    const operations = coordinatorFor(null);
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+    for (const [operation_id, code] of /** @type {const} */ ([
+      ['dep-fail', 1],
+      ['dep-cover', cover_exit]
+    ])) {
+      env.store.ensureRepoOperation(WS, {
+        operation_id,
+        repo_id: WS,
+        kind: 'deploy',
+        subjects: [{ bead_id: BEAD, merged_sha: 'c'.repeat(40) }],
+        effective_base_sha: 'b'.repeat(40),
+        target_base: 'main',
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40)
+      });
+      env.store.settleRepoOperation(WS, {
+        operation_id,
+        attempt_id:
+          env.store.snapshot(WS).repo_operations[operation_id].attempt_id,
+        exit_code: code,
+        signal: null,
+        ...(code === 0
+          ? {}
+          : {
+              failure: {
+                code: 'script_failed',
+                fingerprint: 'f'.repeat(64),
+                detail: '',
+                interrupted: false
+              }
+            })
+      });
+    }
+    env.store.supersedeRepoOperation(WS, {
+      operation_id: 'dep-fail',
+      successor_id: 'dep-cover'
+    });
+    env.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'repo_operations',
+      reason: 'script_failed',
+      ...(recorded ? { deploy_operation_id: recorded } : {})
+    });
+    return { env, operations };
+  }
+
+  test('closes a covered cleanup row without starting a deploy', async () => {
+    const { env, operations } = coveredCleanupEnv();
+
+    const result = await env.actions.resumeCoveredCleanup(BEAD, 'dep-fail');
+
+    expect(result.ok).toBe(true);
+    expect(operations.ensureDeploy).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).pr_wait).toEqual([]);
+  });
+
+  test('refuses a cleanup row whose covering deploy did not succeed', async () => {
+    const { env, operations } = coveredCleanupEnv({ cover_exit: 1 });
+
+    const result = await env.actions.resumeCoveredCleanup(BEAD, 'dep-fail');
+
+    expect(result).toEqual({ ok: false, step: null, reason: 'not_covered' });
+    expect(operations.ensureDeploy).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'repo_operations'
+    });
+  });
+
+  test('refuses a cleanup stop that recorded no deploy run', async () => {
+    const { env } = coveredCleanupEnv({ recorded: null });
+
+    const result = await env.actions.resumeCoveredCleanup(BEAD, 'dep-fail');
+
+    expect(result).toEqual({ ok: false, step: null, reason: 'not_covered' });
+  });
+
+  test('refuses a covered cleanup row under an active discard unspent', async () => {
+    const { env } = coveredCleanupEnv();
+    env.store.createDiscardOperation(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: BEAD,
+        attempt_id: 'a1',
+        source_snapshot: { repo: REPO, branch: BEAD }
+      }
+    });
+
+    const result = await env.actions.resumeCoveredCleanup(BEAD, 'dep-fail');
+
+    expect(result).toEqual({ ok: false, step: null, reason: 'discard_active' });
+    expect(
+      env.store.snapshot(WS).repo_operations['dep-fail'].coverage_resumed
+    ).toBeUndefined();
+  });
+
+  test('refuses a covered cleanup resume while another runs on the row', async () => {
+    const { env } = coveredCleanupEnv();
+    const first = env.actions.resumeCoveredCleanup(BEAD, 'dep-fail');
+
+    const second = await env.actions.resumeCoveredCleanup(BEAD, 'dep-fail');
+
+    expect(second).toEqual({
+      ok: false,
+      step: null,
+      reason: 'action_in_flight'
+    });
+    expect((await first).ok).toBe(true);
   });
 
   /**

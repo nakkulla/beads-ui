@@ -530,6 +530,128 @@ export async function queryForeignBlockerStatus(
 }
 
 /**
+ * @typedef {Object} DiscoveredFromDependent
+ * @property {string} id - The dependent Bead.
+ * @property {string} owner_root - The registered rig that holds it.
+ * @property {string} depends_on_id - The failed row's Bead it names.
+ * @property {string} status
+ * @property {number} created_at - Epoch ms.
+ */
+
+/**
+ * Find the Beads that name a failed row's Bead through a `discovered-from`
+ * edge and were created after `since` (UI-8ufc), in every registered rig —
+ * the requester included, hidden ones too. An edge is stored with its
+ * dependent, so a fix filed in another rig is found only by reading that
+ * rig. One `bd list` per rig, which writes no last-touched mark.
+ *
+ * Any unreadable rig fails the whole answer: a partial one could hide the
+ * open candidate that must hold the rerun back.
+ *
+ * @param {Array<{ bead_id: string, since: number }>} targets
+ * @param {string} requester_root
+ * @param {{
+ *   listRoots?: () => string[],
+ *   runJson?: typeof runBdJsonProjected
+ * }} [options] - Test seams; each defaults to the live source.
+ * @returns {Promise<{ ok: true, dependents: DiscoveredFromDependent[] }|{ ok: false, reason: string }>}
+ */
+export async function queryDiscoveredFromDependents(
+  targets,
+  requester_root,
+  options = {}
+) {
+  const runJson = options.runJson || runBdJsonProjected;
+  const listRoots =
+    options.listRoots ||
+    (() =>
+      registeredWorkspaceRoots(
+        () => getAvailableWorkspaces({ strict: true }),
+        true
+      ));
+  /** @type {Map<string, number>} */
+  const since_by_id = new Map();
+  for (const target of targets) {
+    const prior = since_by_id.get(target.bead_id);
+    since_by_id.set(
+      target.bead_id,
+      prior === undefined ? target.since : Math.min(prior, target.since)
+    );
+  }
+  if (since_by_id.size === 0) {
+    return { ok: true, dependents: [] };
+  }
+  // A day of slack keeps a timezone reading of the flag from dropping a row;
+  // the exact cut is the epoch comparison below.
+  const created_after = new Date(
+    Math.min(...since_by_id.values()) - 86_400_000
+  ).toISOString();
+  /** @type {string[]} */
+  let roots;
+  try {
+    roots = [path.resolve(String(requester_root || '')), ...listRoots()].filter(
+      (root, index, all) => all.indexOf(root) === index
+    );
+  } catch (err) {
+    log('registered roots unreadable for discovered-from read: %o', err);
+    return { ok: false, reason: 'no_rig' };
+  }
+  /** @type {DiscoveredFromDependent[]} */
+  const dependents = [];
+  for (const root of roots) {
+    /** @type {any} */
+    let listed;
+    try {
+      listed = await runJson(
+        'list',
+        [
+          'list',
+          '--all',
+          '--json',
+          '--limit',
+          '0',
+          '--created-after',
+          created_after
+        ],
+        { cwd: root }
+      );
+    } catch (err) {
+      log('discovered-from read threw for %s: %o', root, err);
+      return { ok: false, reason: 'bd_failed' };
+    }
+    if (!listed || listed.ok !== true || !Array.isArray(listed.data)) {
+      return { ok: false, reason: 'bd_failed' };
+    }
+    for (const row of listed.data) {
+      const created_at = Date.parse(String(row?.created_at || ''));
+      if (!Number.isFinite(created_at) || typeof row.status !== 'string') {
+        continue;
+      }
+      for (const edge of Array.isArray(row.dependencies)
+        ? row.dependencies
+        : []) {
+        const since = since_by_id.get(String(edge?.depends_on_id || ''));
+        if (
+          edge?.type !== 'discovered-from' ||
+          since === undefined ||
+          created_at <= since
+        ) {
+          continue;
+        }
+        dependents.push({
+          id: String(row.id),
+          owner_root: root,
+          depends_on_id: String(edge.depends_on_id),
+          status: row.status,
+          created_at
+        });
+      }
+    }
+  }
+  return { ok: true, dependents };
+}
+
+/**
  * @param {string} bead_id
  * @param {string} owner_root
  * @returns {string}
@@ -587,9 +709,14 @@ export function visibleWorkspaceRoots(options = {}) {
  * Normalize registered roots independently of display visibility.
  *
  * @param {() => Array<{ path: string }>} [listWorkspaces]
+ * @param {boolean} [strict] - Throw on an unreadable list instead of
+ * reading it as no workspace (UI-8ufc).
  * @returns {string[]}
  */
-function registeredWorkspaceRoots(listWorkspaces = getAvailableWorkspaces) {
+function registeredWorkspaceRoots(
+  listWorkspaces = getAvailableWorkspaces,
+  strict = false
+) {
   /** @type {string[]} */
   const out = [];
   /** @type {Set<string>} */
@@ -612,6 +739,9 @@ function registeredWorkspaceRoots(listWorkspaces = getAvailableWorkspaces) {
     }
   } catch (err) {
     log('workspace list unreadable: %o', err);
+    if (strict) {
+      throw err;
+    }
     return [];
   }
   return out;

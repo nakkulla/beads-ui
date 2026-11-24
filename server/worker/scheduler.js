@@ -908,7 +908,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
  * @property {ReturnType<typeof import('./tmux-launcher.js').createTmuxLauncher>} [interactiveLauncher]
- * @property {{ retryCleanup: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, retryDiscard: (workspace: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }>, enqueueMerge: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, rerunManualDeploy?: (workspace: string) => Promise<{ ok: boolean, reason?: string|null }> }} [conversationExits]
+ * @property {{ retryCleanup: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, retryDiscard: (workspace: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }>, enqueueMerge: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string|null }>, rerunManualDeploy?: (workspace: string) => Promise<{ ok: boolean, reason?: string|null }>, resumeCoveredCleanup?: (workspace: string, bead_id: string, operation_id: string) => Promise<{ ok: boolean, reason?: string|null }> }} [conversationExits]
  * The Worker exits a failure conversation's `인계` runs (UI-18a5 §3.4): the
  * same cleanup retry, discard retry and `[머지]` merge-queue re-enqueue the
  * row's own buttons call, and a repo-operation row's one `[배포 실행]`
@@ -1017,6 +1017,10 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * residue disposition failure opens once (UI-68r5 §3.2), and a quick_fix
  * landing's `[deploy]` condition wait opens once when its chain's deadline
  * passes (dotfiles-rnyd9). Absent wiring only announces the failure.
+ * @property {(targets: Array<{ bead_id: string, since: number }>, workspace: string) => Promise<{ ok: true, dependents: import('./foreign-blocker-status.js').DiscoveredFromDependent[] }|{ ok: false, reason: string }>} [observeDiscoveredFrom]
+ * The fix-Bead observation (UI-8ufc): the Beads in any registered rig that
+ * name a failed row's Bead through `discovered-from` and were created after
+ * `since`. Absent wiring observes nothing; only a result line enters a wait.
  * @property {() => import('./resolution-ladder.js').ConditionWaitPolicy|null} [conditionWaitPolicy]
  * The pinned `[deploy]` exit-75 condition wait (dotfiles-rnyd9); defaults to
  * the pinned repo-operation policy. Null keeps every landing failure on its
@@ -1735,7 +1739,7 @@ export function interactiveTurnState(running, attention) {
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session', automatic?: boolean, refused?: 'resume_reserved' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
  *   inspectExternalWaitOwner: (workspace: string, wait_id: string, input: { bead_id: string, version: number, action: 'recheck'|'focus' }) => Promise<{ ok: boolean, reason: string, focus_error?: string|null }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean, coverage_resume?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<ProviderAutoResumeOutcome>,
  *   reevaluateProviderSwitches: (workspace: string, catalog_accounts?: import('./account-catalog.js').Account[]) => Promise<void>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
@@ -12983,6 +12987,9 @@ export function createScheduler(deps) {
 
   /** @type {Set<string>} */
   const fix_wait_flights = new Set();
+  /** Rows whose coverage resume (UI-8ufc) is running, as `workspace:bead`. */
+  /** @type {Set<string>} */
+  const coverage_flights = new Set();
 
   /**
    * Persist exhaustion before any human-exit conversation can compose its entry.
@@ -13037,8 +13044,10 @@ export function createScheduler(deps) {
    * Observe durable fix waits independently of pane lifetime and auto-advance.
    *
    * @param {string} workspace
+   * @param {Set<string>} [held] - Rows whose observed fix wait this pass could
+   * not confirm against every candidate (UI-8ufc): their rerun waits.
    */
-  async function reconcileFixWaits(workspace) {
+  async function reconcileFixWaits(workspace, held = new Set()) {
     for (const [bead_id, stored_wait] of Object.entries(
       deps.store.snapshot(workspace).fix_waits || {}
     )) {
@@ -13046,7 +13055,8 @@ export function createScheduler(deps) {
       const flight = `${workspace}:${bead_id}`;
       if (
         !['waiting', 'rerunning'].includes(wait.state) ||
-        fix_wait_flights.has(flight)
+        fix_wait_flights.has(flight) ||
+        coverage_flights.has(flight)
       ) {
         continue;
       }
@@ -13122,6 +13132,7 @@ export function createScheduler(deps) {
       } else {
         if (
           running ||
+          held.has(bead_id) ||
           (await sessionOwnerRefusal(workspace, bead_id)) !== null
         ) {
           continue;
@@ -13226,18 +13237,39 @@ export function createScheduler(deps) {
           fix_wait_flights.add(flight);
           // Cleanup exits reconcile conversations themselves; keep the exit
           // outside this pass so that reconciliation never awaits itself.
+          // A discard or residue disposition failure reruns through the
+          // same exit its row's own retry and a conversation's `인계` use
+          // (UI-8ufc), never the cleanup retry, which reruns neither.
+          const rerun_target = failureHandoffTarget(current, bead_id);
+          const rerun_discard =
+            rerun_target?.kind === 'discard'
+              ? failedDiscardOperation(current, bead_id)
+              : null;
           const run = async () => {
             try {
-              const result = wait.attempt_id
-                ? await resume(workspace, wait.attempt_id, {
-                    self_repair_retry: true
-                  })
-                : repoOperationIdOf(bead_id) !== null
-                  ? await deps.conversationExits?.rerunManualDeploy?.(workspace)
-                  : await deps.conversationExits?.retryCleanup(
+              const result = rerun_discard
+                ? await deps.conversationExits?.retryDiscard(
+                    workspace,
+                    rerun_discard.operation_id
+                  )
+                : rerun_target?.kind === 'stale_residue'
+                  ? await resume(
                       workspace,
-                      bead_id
-                    );
+                      staleResidueAttemptIdOf(rerun_target.identity),
+                      {}
+                    )
+                  : wait.attempt_id
+                    ? await resume(workspace, wait.attempt_id, {
+                        self_repair_retry: true
+                      })
+                    : repoOperationIdOf(bead_id) !== null
+                      ? await deps.conversationExits?.rerunManualDeploy?.(
+                          workspace
+                        )
+                      : await deps.conversationExits?.retryCleanup(
+                          workspace,
+                          bead_id
+                        );
               // A successor deploy run that failed is judged by the next
               // pass from its record — the same cause exhausts the wait,
               // another passes it — never as a refused rerun (UI-1fss §4.2).
@@ -13485,9 +13517,429 @@ export function createScheduler(deps) {
     }
   }
 
+  /**
+   * Follow a failed deploy record along its own retry chain to the newest
+   * record, and name that record when a later succeeded deploy that is not
+   * its retry covered it and `bead_id`'s one coverage resume on it is
+   * unspent (UI-8ufc). Every subject row keeps its own resume.
+   *
+   * @param {Record<string, any>} operations
+   * @param {string} operation_id
+   * @param {string} bead_id - The subject row asking.
+   * @returns {string|null}
+   */
+  function coveredDeployTip(operations, operation_id, bead_id) {
+    let cursor = operation_id;
+    const seen = new Set([cursor]);
+    for (;;) {
+      const next = retrySuccessorRecord(operations, cursor);
+      if (next === null || seen.has(next)) {
+        break;
+      }
+      seen.add(next);
+      cursor = next;
+    }
+    const tip = operations[cursor];
+    const successor =
+      typeof tip?.superseded_by === 'string'
+        ? operations[tip.superseded_by]
+        : null;
+    return !!tip &&
+      tip.kind === 'deploy' &&
+      tip.state === 'failed' &&
+      !tip.dismissed &&
+      typeof tip.coverage_resumed?.[bead_id] !== 'number' &&
+      successor?.state === 'succeeded' &&
+      successor.retry_of !== cursor
+      ? cursor
+      : null;
+  }
+
+  /**
+   * Resume, once and without a person, every row standing on a failed deploy
+   * a later succeeded deploy covered (UI-8ufc): a quick_fix landing stopped
+   * at its deploy, and a merged row's `repo_operations` cleanup failure —
+   * a condition wait included. Neither entry carries retry authority, so the
+   * resume adopts the covering success and starts no deploy run. Each row
+   * spends its own durable once-mark on the failed record: a landing's
+   * before its resume, a cleanup row's inside the cleanup entry after its
+   * discard and in-flight checks. A cleanup row resumes only from the exact
+   * deploy run its stop recorded. A standing rerun or running attempt leaves
+   * the row to its own flow.
+   *
+   * @param {string} workspace
+   */
+  function reconcileCoverageResumes(workspace) {
+    const q = deps.store.snapshot(workspace);
+    const operations = q.repo_operations || {};
+    /** @type {Array<{ bead_id: string, operation_id: string, claim: boolean, run: () => Promise<any> }>} */
+    const due = [];
+    /** @type {Map<string, [string, any]>} */
+    const latest = new Map();
+    for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
+      if (isImplementationAttempt(attempt)) {
+        latest.set(attempt.bead_id, [attempt_id, attempt]);
+      }
+    }
+    for (const [bead_id, [attempt_id, attempt]] of latest) {
+      const landing = attempt.quickfix_landing;
+      if (
+        attempt.status !== 'failed' ||
+        attempt.quickfix_lane !== true ||
+        landing?.cursor !== 'repo_operations' ||
+        typeof landing.reason !== 'string' ||
+        landing.reason.length === 0 ||
+        resumeKindOf(landing) !== 'settlement' ||
+        typeof landing.deploy_operation_id !== 'string' ||
+        settling.has(attempt_id)
+      ) {
+        continue;
+      }
+      const tip = coveredDeployTip(
+        operations,
+        landing.deploy_operation_id,
+        bead_id
+      );
+      if (tip !== null) {
+        due.push({
+          bead_id,
+          operation_id: tip,
+          claim: true,
+          run: () => resume(workspace, attempt_id, { coverage_resume: true })
+        });
+      }
+    }
+    for (const [bead_id, failure] of Object.entries(q.cleanup_failed || {})) {
+      const row = q.pr_wait.find(
+        (/** @type {any} */ entry) => entry.bead_id === bead_id
+      );
+      const recorded = failure?.deploy_operation_id;
+      if (
+        failure?.step !== 'repo_operations' ||
+        typeof recorded !== 'string' ||
+        typeof row?.merge_sha !== 'string' ||
+        !deps.conversationExits?.resumeCoveredCleanup
+      ) {
+        continue;
+      }
+      // Only the run this stop waited on: a verify stop records none, and a
+      // chain that moved past it is no longer this stop's.
+      if (coveredDeployTip(operations, recorded, bead_id) === recorded) {
+        const exits = deps.conversationExits;
+        due.push({
+          bead_id,
+          operation_id: recorded,
+          claim: false,
+          run: async () =>
+            exits.resumeCoveredCleanup?.(workspace, bead_id, recorded)
+        });
+      }
+    }
+    for (const { bead_id, operation_id, claim, run } of due) {
+      const flight = `${workspace}:${bead_id}`;
+      if (
+        coverage_flights.has(flight) ||
+        fix_wait_flights.has(flight) ||
+        claimed.has(bead_id) ||
+        q.fix_waits?.[bead_id]?.state === 'rerunning' ||
+        Object.values(q.discard_operations || {}).some(
+          (/** @type {any} */ discard) =>
+            discard?.bead_id === bead_id && discardOperationActive(discard)
+        ) ||
+        deployInFlightFor(operations, bead_id) ||
+        Object.values(q.attempts || {}).some(
+          (row) => row.bead_id === bead_id && row.status === 'running'
+        ) ||
+        (claim &&
+          !deps.store.claimCoverageResume?.(workspace, operation_id, bead_id)
+            ?.ok)
+      ) {
+        continue;
+      }
+      coverage_flights.add(flight);
+      appendTimeline({
+        bead_id,
+        kind: 'interactive_session',
+        seq: `coverage-resume:${operation_id}`,
+        summary: '배포 덮임 · 성공한 배포를 채택해 다시 진행'
+      });
+      void (async () => {
+        try {
+          const result = await run();
+          if (!result?.ok) {
+            log(
+              'coverage resume refused for %s: %s',
+              bead_id,
+              result?.reason || 'unknown'
+            );
+          }
+        } catch (err) {
+          log('coverage resume failed for %s: %o', bead_id, err);
+        } finally {
+          coverage_flights.delete(flight);
+          notifyChanged(workspace);
+        }
+      })();
+    }
+  }
+
+  /**
+   * When a failure row's failure happened (UI-8ufc): a discovered-from Bead
+   * created after it is a fix for it. Null when the row records no time.
+   *
+   * @param {any} q - Queue snapshot.
+   * @param {string} bead_id
+   * @param {string} kind - The row's `failureHandoffTarget` kind.
+   * @returns {number|null}
+   */
+  function observedFailureAt(q, bead_id, kind) {
+    /** @type {unknown} */
+    let at = null;
+    if (kind === 'cleanup') {
+      at = q.cleanup_failed?.[bead_id]?.at;
+    } else if (kind === 'discard') {
+      // The stop's own time, never the request's: a Bead filed between the
+      // request and the failure is no fix for it.
+      at = /** @type {any} */ (failedDiscardOperation(q, bead_id))?.failed_at;
+    } else if (kind === 'quickfix_landing') {
+      at = landingDeployFailure(q, bead_id)?.operation.finished_at;
+    } else if (kind === 'condition_wait') {
+      const schedule = conditionWaitTipFor(
+        q.repo_operations,
+        bead_id,
+        conditionWait()
+      );
+      at = schedule ? q.repo_operations[schedule.head_id]?.finished_at : null;
+    } else if (kind === 'stale_residue') {
+      const target = failureHandoffTarget(q, bead_id);
+      at =
+        target?.kind === 'stale_residue'
+          ? q.attempts?.[staleResidueAttemptIdOf(target.identity)]?.finished_at
+          : null;
+    }
+    return typeof at === 'number' && Number.isFinite(at) ? at : null;
+  }
+
+  /** The failure rows a fix Bead may be observed for (UI-8ufc). */
+  const OBSERVED_ROW_KINDS = new Set([
+    'cleanup',
+    'discard',
+    'stale_residue',
+    'quickfix_landing',
+    'condition_wait'
+  ]);
+
+  /**
+   * Observe fix Beads filed outside a failure conversation (UI-8ufc): a Bead
+   * in any registered rig that names a failure row's Bead through
+   * `discovered-from` and was created after that failure enters the row's
+   * fix wait with no result line, under the same rules a result line enters
+   * by — row eligibility, one wait per failure identity, and everything
+   * {@link reconcileFixWaits} judges afterwards. The wait names the newest
+   * open candidate, or the newest candidate once all are closed, so the one
+   * rerun waits for every candidate. A result-line record and any running
+   * or rerunning wait are never touched; an observed waiting record of the
+   * same failure is only re-pointed. Reads only, and announces nothing.
+   * Holding fails closed: every observed waiting record starts held and is
+   * released only by a read that saw its row with no open candidate, and a
+   * row this pass saw an open candidate for stays held even when the
+   * candidate its wait names closes before the wait is judged.
+   *
+   * @param {string} workspace
+   * @returns {Promise<Set<string>>} The rows whose rerun waits this pass —
+   * their wait could not be confirmed against every candidate.
+   */
+  async function observeFixBeads(workspace) {
+    const q = deps.store.snapshot(workspace);
+    /** @type {Set<string>} */
+    const unconfirmed = new Set(
+      Object.entries(q.fix_waits || {})
+        .filter(
+          ([, wait]) => wait.source === 'observed' && wait.state === 'waiting'
+        )
+        .map(([bead_id]) => bead_id)
+    );
+    const observe = deps.observeDiscoveredFrom;
+    if (!observe) {
+      return unconfirmed;
+    }
+    /** @type {Set<string>} */
+    const beads = new Set(Object.keys(q.cleanup_failed || {}));
+    for (const operation of Object.values(q.discard_operations || {})) {
+      beads.add(/** @type {any} */ (operation)?.bead_id);
+    }
+    for (const attempt of Object.values(q.attempts || {})) {
+      if (['failed', 'waiting', 'parked'].includes(attempt.status)) {
+        beads.add(attempt.bead_id);
+      }
+    }
+    for (const operation of Object.values(q.repo_operations || {})) {
+      if (operation.kind === 'deploy' && operation.state === 'failed') {
+        for (const subject of operation.subjects || []) {
+          beads.add(subject?.bead_id);
+        }
+      }
+    }
+    /** @type {Array<{ bead_id: string, kind: string, since: number, identity: string, repoint: boolean }>} */
+    const targets = [];
+    for (const bead_id of beads) {
+      if (
+        typeof bead_id !== 'string' ||
+        bead_id.length === 0 ||
+        bead_id === 'manual' ||
+        isBeadlessRowKey(bead_id) ||
+        coverage_flights.has(`${workspace}:${bead_id}`)
+      ) {
+        continue;
+      }
+      const target = failureHandoffTarget(q, bead_id);
+      const identity = selfRepairFailureIdentity(q, bead_id, workspace);
+      const since = target ? observedFailureAt(q, bead_id, target.kind) : null;
+      if (
+        !target ||
+        !OBSERVED_ROW_KINDS.has(target.kind) ||
+        !identity ||
+        since === null
+      ) {
+        continue;
+      }
+      const wait = q.fix_waits?.[bead_id];
+      const repoint =
+        wait?.state === 'waiting' &&
+        wait.source === 'observed' &&
+        wait.failure_identity === identity;
+      if (
+        wait &&
+        !repoint &&
+        (['waiting', 'rerunning'].includes(wait.state) ||
+          wait.used_identities.includes(identity))
+      ) {
+        continue;
+      }
+      targets.push({ bead_id, kind: target.kind, since, identity, repoint });
+    }
+    if (targets.length === 0) {
+      return unconfirmed;
+    }
+    /** @type {Awaited<ReturnType<NonNullable<typeof observe>>>} */
+    let found;
+    try {
+      found = await observe(
+        targets.map(({ bead_id, since }) => ({ bead_id, since })),
+        workspace
+      );
+    } catch (err) {
+      log('fix bead observation failed for %s: %o', workspace, err);
+      found = { ok: false, reason: 'error' };
+    }
+    if (!found.ok) {
+      return unconfirmed;
+    }
+    for (const target of targets) {
+      const candidates = found.dependents.filter(
+        (row) =>
+          row.depends_on_id === target.bead_id && row.created_at > target.since
+      );
+      if (candidates.length === 0) {
+        continue;
+      }
+      const open = candidates.filter((row) => row.status !== 'closed');
+      // A rerun waits for every candidate, so an open one holds the row
+      // even after its wait closes on another.
+      if (open.length > 0) {
+        unconfirmed.add(target.bead_id);
+      } else if (target.repoint) {
+        unconfirmed.delete(target.bead_id);
+      }
+      const pick = (open.length > 0 ? open : candidates).reduce((best, row) =>
+        row.created_at > best.created_at ||
+        (row.created_at === best.created_at && row.id > best.id)
+          ? row
+          : best
+      );
+      const current = deps.store.snapshot(workspace);
+      const wait = current.fix_waits?.[target.bead_id];
+      if (
+        selfRepairFailureIdentity(current, target.bead_id, workspace) !==
+        target.identity
+      ) {
+        continue;
+      }
+      if (target.repoint) {
+        if (
+          wait?.state === 'waiting' &&
+          wait.source === 'observed' &&
+          wait.failure_identity === target.identity &&
+          (wait.bead_id !== pick.id || wait.rig !== pick.owner_root)
+        ) {
+          deps.store.recordFixWait(workspace, target.bead_id, {
+            ...wait,
+            bead_id: pick.id,
+            rig: pick.owner_root
+          });
+        }
+        continue;
+      }
+      if (
+        wait &&
+        (['waiting', 'rerunning'].includes(wait.state) ||
+          wait.used_identities.includes(target.identity))
+      ) {
+        continue;
+      }
+      const at = now();
+      /** @type {any} */
+      let latest_attempt = null;
+      for (const [attempt_id, attempt] of Object.entries(current.attempts)) {
+        if (
+          attempt.bead_id === target.bead_id &&
+          isImplementationAttempt(attempt)
+        ) {
+          latest_attempt = { attempt_id, attempt };
+        }
+      }
+      const entry = {
+        bead_id: pick.id,
+        rig: pick.owner_root,
+        entered_at: at,
+        failure_identity: target.identity,
+        failure_repo: workspace,
+        state: /** @type {const} */ ('waiting'),
+        chain_head:
+          conditionWaitTipFor(
+            current.repo_operations,
+            target.bead_id,
+            conditionWait()
+          )?.head_id || null,
+        // A discard or residue row reruns through its own record, never
+        // the quick_fix attempt's landing resume.
+        attempt_id:
+          latest_attempt?.attempt.quickfix_lane &&
+          target.kind !== 'discard' &&
+          target.kind !== 'stale_residue'
+            ? latest_attempt.attempt_id
+            : null,
+        exhausted_reason: null,
+        used_identities: [...(wait?.used_identities || []), target.identity],
+        source: /** @type {const} */ ('observed')
+      };
+      if (!deps.store.recordFixWait(workspace, target.bead_id, entry).ok) {
+        continue;
+      }
+      appendTimeline({
+        bead_id: target.bead_id,
+        kind: 'interactive_session',
+        seq: `fix-wait:${at}:enter`,
+        summary: `수정 대기 · ${pick.id} (discovered-from 관찰)`
+      });
+    }
+    return unconfirmed;
+  }
+
   /** @param {string} workspace */
   async function reconcileInteractivePass(workspace) {
-    await reconcileFixWaits(workspace);
+    reconcileCoverageResumes(workspace);
+    await reconcileFixWaits(workspace, await observeFixBeads(workspace));
     sweepLandingDeployFailures(workspace);
     const launcher = deps.interactiveLauncher;
     if (!launcher) {
@@ -14281,7 +14733,8 @@ export function createScheduler(deps) {
                 ? record.attempt_id
                 : null,
             exhausted_reason: null,
-            used_identities: [...(previous?.used_identities || []), identity]
+            used_identities: [...(previous?.used_identities || []), identity],
+            source: /** @type {const} */ ('result_line')
           };
           if (!deps.store.recordFixWait(workspace, record.bead_id, wait).ok) {
             return;
@@ -19216,7 +19669,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch'|'provider_wait', auto_resume_origin?: import('./queue-store.js').AutoResumeOrigin, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' }, job_retry_authorized?: boolean, self_repair_retry?: boolean, coverage_resume?: boolean }} [continuation]
    * `conversation_return` is the UI-nuwy §3.4 handoff: it alone admits a
    * `parked` prior, skips only admission's `awaiting_user` presence refusal,
    * and puts the `## 대화 결과` block at the head of the resume prompt.
@@ -19225,6 +19678,10 @@ export function createScheduler(deps) {
    * (UI-1eag §3.1): only that attachment boundary sets it, and it is read only
    * by a quick_fix settlement resume, never by a session resume. The same
    * click is refused first when a newer session owns the Bead (UI-68r5 §3.4).
+   * `coverage_resume` marks the Worker's own resume of a landing whose failed
+   * deploy a later success covered (UI-8ufc): it only passes a standing fix
+   * wait and carries no job-retry authority, so the settlement adopts that
+   * success instead of starting a new deploy run.
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
   async function resumeAttempt(workspace, attempt_id, continuation = {}) {
@@ -19252,7 +19709,8 @@ export function createScheduler(deps) {
       q.fix_waits[prior.bead_id]?.state === 'waiting' &&
       !conditionWaitTipFor(q.repo_operations, prior.bead_id, conditionWait()) &&
       continuation.job_retry_authorized !== true &&
-      !continuation.conversation_return
+      !continuation.conversation_return &&
+      continuation.coverage_resume !== true
     ) {
       return { ok: false, reason: 'fix_wait' };
     }

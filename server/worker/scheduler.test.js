@@ -2262,6 +2262,8 @@ function setup(opts) {
     // Absent by default: a terminal residue disposition failure is then only
     // announced (UI-68r5 §3.2).
     failureConversation: /** @type {any} */ (opts).failureConversation,
+    // Absent by default: only a result line enters a fix wait (UI-8ufc).
+    observeDiscoveredFrom: /** @type {any} */ (opts).observeDiscoveredFrom,
     backupFreshResidue: /** @type {any} */ (opts).backupFreshResidue,
     // Absent by default: the external registry is a live-wiring dep, and a
     // scheduler built without it must refuse the external dispatch outright.
@@ -5344,7 +5346,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
    * extra snapshot material layered on), one `resolve` pane, a transcript the
    * test moves, and the three Worker exits as spies.
    *
-   * @param {{ patch?: () => Record<string, any>, exits?: Record<string, any>, quickfixLanding?: any, failureConversation?: any, needsHuman?: any }} [options]
+   * @param {{ patch?: () => Record<string, any>, exits?: Record<string, any>, quickfixLanding?: any, failureConversation?: any, needsHuman?: any, observeDiscoveredFrom?: any }} [options]
    */
   function failureEnv(options = {}) {
     let at = 1000;
@@ -5394,6 +5396,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     const transcript = {
       location: { locality: 'local', file: '/t', last_event_at: 450 }
     };
+    /** @type {Record<string, any>} */
     const exits = {
       retryCleanup: vi.fn(async () => {
         real.clearCleanupFailure(WS, BEAD);
@@ -5426,6 +5429,9 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
         conversationExits: exits,
         ...(options.failureConversation
           ? { failureConversation: options.failureConversation }
+          : {}),
+        ...(options.observeDiscoveredFrom
+          ? { observeDiscoveredFrom: options.observeDiscoveredFrom }
           : {})
       }
     });
@@ -5974,6 +5980,58 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       expect(env.resolve).toHaveBeenCalledOnce();
       expect(env.real.snapshot(WS).conversation_refusals).toEqual({});
     });
+
+    test('resumes a covered landing once without retry authority or a new run', async () => {
+      const settle = vi.fn(async () => {
+        env.real.updateAttempt(WS, {
+          attempt_id: 'quickfix-land',
+          patch: { status: 'done' }
+        });
+        return { ok: true };
+      });
+      const env = failureEnv({ quickfixLanding: { settle } });
+      seedLandingFailure(env);
+      env.real.ensureRepoOperation(WS, {
+        operation_id: 'dep-cover',
+        repo_id: '/repo',
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-other', merged_sha: 'b'.repeat(40) }],
+        effective_base_sha: 'b'.repeat(40),
+        target_base: 'main',
+        target_sha: 'b'.repeat(40),
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40)
+      });
+      env.real.settleRepoOperation(WS, {
+        operation_id: 'dep-cover',
+        attempt_id:
+          env.real.snapshot(WS).repo_operations['dep-cover'].attempt_id,
+        exit_code: 0,
+        signal: null,
+        finished_at: 900
+      });
+      env.real.supersedeRepoOperation(WS, {
+        operation_id: 'dep-1',
+        successor_id: 'dep-cover'
+      });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      await flush();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(settle).toHaveBeenCalledOnce();
+      const input = /** @type {any[][]} */ (settle.mock.calls)[0][0];
+      expect(input).toMatchObject({
+        attempt_id: 'quickfix-land',
+        bead_id: BEAD
+      });
+      expect(input.job_retry).not.toBe(true);
+      expect(Object.keys(env.real.snapshot(WS).repo_operations).sort()).toEqual(
+        ['dep-1', 'dep-cover']
+      );
+    });
   });
 
   test('refuses a handoff reserved without a Worker exit as having none', async () => {
@@ -6457,6 +6515,561 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     expect(env.store.snapshot(WS).fix_waits.F1).toMatchObject({
       state: 'exhausted',
       exhausted_reason: '같은 실패 재발'
+    });
+  });
+
+  describe('coverage resume and fix-Bead observation (UI-8ufc)', () => {
+    const SHA = 'a'.repeat(40);
+
+    /**
+     * Cleanup failures of `beads` at their `repo_operations` step standing on
+     * the failed deploy `dep-fail` they share, which `dep-cover` (another
+     * Bead's deploy) covered when `covered` is set. Each stop records
+     * `recorded` as the deploy run it waited on.
+     *
+     * @param {ReturnType<typeof failureEnv>} env
+     * @param {boolean} covered
+     * @param {{ beads?: string[], recorded?: string|null }} [options]
+     */
+    function seedDeployCleanupFailure(
+      env,
+      covered,
+      { beads = [BEAD], recorded = 'dep-fail' } = {}
+    ) {
+      for (const bead_id of beads) {
+        env.real.recordCleanupFailure(WS, {
+          bead_id,
+          step: 'repo_operations',
+          reason: 'script_failed',
+          ...(recorded ? { deploy_operation_id: recorded } : {})
+        });
+      }
+      for (const [operation_id, subjects, ok] of /** @type {const} */ ([
+        ['dep-fail', beads, false],
+        ['dep-cover', ['UI-other'], true]
+      ])) {
+        env.real.ensureRepoOperation(WS, {
+          operation_id,
+          repo_id: '/repo',
+          kind: 'deploy',
+          subjects: subjects.map((bead_id) => ({ bead_id, merged_sha: SHA })),
+          effective_base_sha: SHA,
+          target_base: 'main',
+          target_sha: SHA,
+          script_mode: '100755',
+          script_blob_sha: 'd'.repeat(40)
+        });
+        env.real.settleRepoOperation(WS, {
+          operation_id,
+          attempt_id:
+            env.real.snapshot(WS).repo_operations[operation_id].attempt_id,
+          exit_code: ok ? 0 : 1,
+          signal: null,
+          finished_at: 800,
+          ...(ok
+            ? {}
+            : {
+                failure: {
+                  code: 'script_failed',
+                  fingerprint: 'deploy',
+                  detail: '',
+                  interrupted: false
+                }
+              })
+        });
+      }
+      if (covered) {
+        env.real.supersedeRepoOperation(WS, {
+          operation_id: 'dep-fail',
+          successor_id: 'dep-cover'
+        });
+      }
+    }
+
+    /**
+     * @param {Record<string, any>} [exits]
+     * @param {Record<string, any>} [extra]
+     */
+    function coverageEnv(exits = {}, extra = {}) {
+      // Stands in for the cleanup entry, which spends the row's resume.
+      const resumeCoveredCleanup = vi.fn(
+        async (
+          /** @type {string} */ _ws,
+          /** @type {string} */ bead_id,
+          /** @type {string} */ operation_id
+        ) => {
+          env.real.claimCoverageResume(WS, operation_id, bead_id);
+          env.real.clearCleanupFailure(WS, bead_id);
+          return { ok: true, reason: null };
+        }
+      );
+      const env = failureEnv({
+        patch: () => ({
+          pr_wait: [
+            { bead_id: BEAD, merge_sha: SHA },
+            { bead_id: 'F2', merge_sha: SHA }
+          ],
+          ...extra
+        }),
+        exits: { resumeCoveredCleanup, ...exits }
+      });
+      return env;
+    }
+
+    test('closes a covered cleanup failure row without a click', async () => {
+      const env = coverageEnv();
+      seedDeployCleanupFailure(env, true);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.resumeCoveredCleanup).toHaveBeenCalledExactlyOnceWith(
+        WS,
+        BEAD,
+        'dep-fail'
+      );
+      expect(env.real.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    });
+
+    test('creates no deploy record for a coverage resume', async () => {
+      const env = coverageEnv();
+      seedDeployCleanupFailure(env, true);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(Object.keys(env.real.snapshot(WS).repo_operations).sort()).toEqual(
+        ['dep-cover', 'dep-fail']
+      );
+    });
+
+    test('resumes a covered failure only once', async () => {
+      const env = coverageEnv({
+        resumeCoveredCleanup: vi.fn(
+          async (
+            /** @type {string} */ _ws,
+            /** @type {string} */ bead_id,
+            /** @type {string} */ operation_id
+          ) => {
+            env.real.claimCoverageResume(WS, operation_id, bead_id);
+            return { ok: false, reason: 'step_failed' };
+          }
+        )
+      });
+      seedDeployCleanupFailure(env, true);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.resumeCoveredCleanup).toHaveBeenCalledOnce();
+    });
+
+    test('resumes every subject row of one covered deploy', async () => {
+      const env = coverageEnv();
+      seedDeployCleanupFailure(env, true, { beads: [BEAD, 'F2'] });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.resumeCoveredCleanup.mock.calls).toEqual([
+        [WS, BEAD, 'dep-fail'],
+        [WS, 'F2', 'dep-fail']
+      ]);
+    });
+
+    test('leaves a cleanup stop that recorded no deploy run standing', async () => {
+      const env = coverageEnv();
+      seedDeployCleanupFailure(env, true, { recorded: null });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.resumeCoveredCleanup).not.toHaveBeenCalled();
+    });
+
+    test('holds a coverage resume while a discard of the Bead runs', async () => {
+      const env = coverageEnv(
+        {},
+        {
+          discard_operations: {
+            op1: {
+              operation_id: 'op1',
+              bead_id: BEAD,
+              phase: 'closing_pr',
+              requested_at: 5
+            }
+          }
+        }
+      );
+      seedDeployCleanupFailure(env, true);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.resumeCoveredCleanup).not.toHaveBeenCalled();
+    });
+
+    test('leaves an uncovered cleanup failure row standing', async () => {
+      const env = coverageEnv();
+      seedDeployCleanupFailure(env, false);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.resumeCoveredCleanup).not.toHaveBeenCalled();
+    });
+
+    /**
+     * @param {Array<{ id: string, status: string, created_at: number }>} rows
+     * @param {Record<string, any>} [options]
+     */
+    function observedEnv(rows, options = {}) {
+      const observe = vi.fn(async () => ({
+        ok: true,
+        dependents: rows.map((row) => ({
+          owner_root: WS,
+          depends_on_id: BEAD,
+          ...row
+        }))
+      }));
+      const env = failureEnv({ observeDiscoveredFrom: observe, ...options });
+      env.bd.readIssue = /** @type {any} */ (
+        async (/** @type {string} */ id) => {
+          const row = rows.find((candidate) => candidate.id === id);
+          if (!row) {
+            throw new Error('missing');
+          }
+          return { id, status: row.status, close_reason: 'merged' };
+        }
+      );
+      return { ...env, observe };
+    }
+
+    test('enters a fix wait for a discovered-from Bead created after the failure', async () => {
+      const env = observedEnv([
+        { id: 'UI-fix', status: 'open', created_at: 2000 }
+      ]);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.observe).toHaveBeenCalledWith(
+        [{ bead_id: BEAD, since: 1000 }],
+        WS
+      );
+      expect(env.store.snapshot(WS).fix_waits?.F1).toMatchObject({
+        bead_id: 'UI-fix',
+        rig: WS,
+        state: 'waiting',
+        source: 'observed'
+      });
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    });
+
+    test('ignores a discovered-from Bead created before the failure', async () => {
+      const env = observedEnv([
+        { id: 'UI-old', status: 'open', created_at: 500 }
+      ]);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.store.snapshot(WS).fix_waits?.F1).toBeUndefined();
+    });
+
+    test('holds the rerun while another candidate stays open', async () => {
+      const rows = [
+        { id: 'UI-fix-a', status: 'open', created_at: 3000 },
+        { id: 'UI-fix-b', status: 'open', created_at: 2000 }
+      ];
+      const env = observedEnv(rows, {
+        patch: () => ({
+          done: [{ bead_id: 'UI-fix-a', merge_sha: SHA }],
+          repo_operations: {
+            deploy: {
+              kind: 'deploy',
+              state: 'succeeded',
+              target_sha: SHA,
+              subjects: [{ bead_id: 'UI-fix-a', merged_sha: SHA }]
+            }
+          }
+        })
+      });
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      rows[0].status = 'closed';
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.store.snapshot(WS).fix_waits.F1).toMatchObject({
+        bead_id: 'UI-fix-b',
+        state: 'waiting'
+      });
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    });
+
+    test('reruns once every candidate is closed', async () => {
+      const rows = [
+        { id: 'UI-fix-a', status: 'open', created_at: 3000 },
+        { id: 'UI-fix-b', status: 'open', created_at: 2000 }
+      ];
+      const env = observedEnv(rows, {
+        patch: () => ({
+          done: [{ bead_id: 'UI-fix-a', merge_sha: SHA }],
+          repo_operations: {
+            deploy: {
+              kind: 'deploy',
+              state: 'succeeded',
+              target_sha: SHA,
+              subjects: [{ bead_id: 'UI-fix-a', merged_sha: SHA }]
+            }
+          }
+        })
+      });
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      rows[0].status = 'closed';
+      rows[1].status = 'closed';
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryCleanup).toHaveBeenCalledExactlyOnceWith(WS, BEAD);
+    });
+
+    test('holds an observed rerun when the observation cannot be read', async () => {
+      const rows = [{ id: 'UI-fix', status: 'open', created_at: 2000 }];
+      const env = observedEnv(rows, {
+        patch: () => ({
+          done: [{ bead_id: 'UI-fix', merge_sha: SHA }],
+          repo_operations: {
+            deploy: {
+              kind: 'deploy',
+              state: 'succeeded',
+              target_sha: SHA,
+              subjects: [{ bead_id: 'UI-fix', merged_sha: SHA }]
+            }
+          }
+        })
+      });
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      rows[0].status = 'closed';
+      env.observe.mockResolvedValue(
+        /** @type {any} */ ({ ok: false, reason: 'bd_failed' })
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    });
+
+    test('holds an observed rerun the observation no longer sees', async () => {
+      const rows = [{ id: 'UI-fix', status: 'open', created_at: 2000 }];
+      const env = observedEnv(rows, {
+        patch: () => ({
+          done: [{ bead_id: 'UI-fix', merge_sha: SHA }],
+          repo_operations: {
+            deploy: {
+              kind: 'deploy',
+              state: 'succeeded',
+              target_sha: SHA,
+              subjects: [{ bead_id: 'UI-fix', merged_sha: SHA }]
+            }
+          }
+        })
+      });
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      rows[0].status = 'closed';
+      env.observe.mockResolvedValue(
+        /** @type {any} */ ({ ok: true, dependents: [] })
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    });
+
+    /**
+     * A failed discard of F1 requested at 5 that stopped at `failed_at`,
+     * standing as the row's only failure, plus `extra` snapshot keys.
+     *
+     * @param {number} failed_at
+     * @param {Record<string, any>} [extra]
+     */
+    function discardPatch(failed_at, extra = {}) {
+      return () => ({
+        cleanup_failed: {},
+        discard_operations: {
+          op1: {
+            operation_id: 'op1',
+            bead_id: BEAD,
+            phase: 'closing_pr',
+            last_error: 'pr_close_failed',
+            requested_at: 5,
+            failed_at
+          }
+        },
+        ...extra
+      });
+    }
+
+    test('observes a discard row from the time it stopped', async () => {
+      const env = observedEnv(
+        [{ id: 'UI-early', status: 'open', created_at: 1000 }],
+        { patch: discardPatch(1500) }
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.observe).toHaveBeenCalledWith(
+        [{ bead_id: BEAD, since: 1500 }],
+        WS
+      );
+      expect(env.store.snapshot(WS).fix_waits?.F1).toBeUndefined();
+    });
+
+    test('reruns an observed discard fix wait through the discard retry', async () => {
+      const rows = [{ id: 'UI-fix', status: 'open', created_at: 2000 }];
+      const env = observedEnv(rows, {
+        patch: discardPatch(1500, {
+          done: [{ bead_id: 'UI-fix', merge_sha: SHA }],
+          repo_operations: {
+            deploy: {
+              kind: 'deploy',
+              state: 'succeeded',
+              target_sha: SHA,
+              subjects: [{ bead_id: 'UI-fix', merged_sha: SHA }]
+            }
+          }
+        })
+      });
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      rows[0].status = 'closed';
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryDiscard).toHaveBeenCalledExactlyOnceWith(WS, 'op1');
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    });
+
+    test('reruns a discard row of a quick_fix Bead through the discard retry', async () => {
+      const rows = [{ id: 'UI-fix', status: 'open', created_at: 2000 }];
+      const env = observedEnv(rows, {
+        patch: discardPatch(1500, {
+          attempts: {
+            'qf-1': {
+              attempt_id: 'qf-1',
+              bead_id: BEAD,
+              quickfix_lane: true,
+              status: 'done'
+            }
+          },
+          done: [{ bead_id: 'UI-fix', merge_sha: SHA }],
+          repo_operations: {
+            deploy: {
+              kind: 'deploy',
+              state: 'succeeded',
+              target_sha: SHA,
+              subjects: [{ bead_id: 'UI-fix', merged_sha: SHA }]
+            }
+          }
+        })
+      });
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      rows[0].status = 'closed';
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryDiscard).toHaveBeenCalledExactlyOnceWith(WS, 'op1');
+    });
+
+    test('holds the rerun when the named candidate closes after an open read', async () => {
+      const rows = [
+        { id: 'UI-fix-a', status: 'open', created_at: 3000 },
+        { id: 'UI-fix-b', status: 'open', created_at: 2000 }
+      ];
+      const env = observedEnv(rows, {
+        patch: () => ({
+          done: [{ bead_id: 'UI-fix-a', merge_sha: SHA }],
+          repo_operations: {
+            deploy: {
+              kind: 'deploy',
+              state: 'succeeded',
+              target_sha: SHA,
+              subjects: [{ bead_id: 'UI-fix-a', merged_sha: SHA }]
+            }
+          }
+        })
+      });
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      const open_read = rows.map((row) => ({
+        owner_root: WS,
+        depends_on_id: BEAD,
+        ...row
+      }));
+      env.observe.mockImplementationOnce(async () => {
+        rows[0].status = 'closed';
+        return /** @type {any} */ ({ ok: true, dependents: open_read });
+      });
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expect(env.exits.retryCleanup).not.toHaveBeenCalled();
+    });
+
+    test('leaves a result-line fix wait unchanged by observation', async () => {
+      const rows = [{ id: 'UI-fix', status: 'open', created_at: 2000 }];
+      const env = observedEnv([]);
+      env.bd.readIssue = /** @type {any} */ (
+        async (/** @type {string} */ id) => ({ id, status: 'open' })
+      );
+      openFailureConversation(env);
+      say(env, '수정 대기 · UI-result — job defect');
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      env.observe.mockResolvedValue(
+        /** @type {any} */ ({
+          ok: true,
+          dependents: rows.map((row) => ({
+            owner_root: WS,
+            depends_on_id: BEAD,
+            ...row
+          }))
+        })
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.store.snapshot(WS).fix_waits.F1).toMatchObject({
+        bead_id: 'UI-result',
+        source: 'result_line'
+      });
+    });
+
+    test('observes no verify-hold row', async () => {
+      const env = observedEnv(
+        [{ id: 'UI-fix', status: 'open', created_at: 2000 }],
+        {
+          patch: () => ({
+            completion_intents: {
+              [BEAD]: {
+                phase: 'holding',
+                hold: { head_sha: SHA },
+                subject: { head_sha: SHA }
+              }
+            }
+          })
+        }
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.observe).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS).fix_waits?.F1).toBeUndefined();
     });
   });
 

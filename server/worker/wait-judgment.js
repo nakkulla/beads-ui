@@ -1332,7 +1332,9 @@ export function judgeWaitReasons(input) {
       bead_id,
       root_dir,
       `수정 대기 · ${wait.bead_id}`,
-      `48시간 상한까지 ${Math.floor(remaining / 60)}시간 ${remaining % 60}분`
+      // An observed entry (UI-8ufc) waits by the same rules; the release
+      // line only says no result line put it there.
+      `${wait.source === 'observed' ? 'discovered-from 관찰 · ' : ''}48시간 상한까지 ${Math.floor(remaining / 60)}시간 ${remaining % 60}분`
     );
     addClocks(result, { since: wait.entered_at });
     wait_reasons.push(result);

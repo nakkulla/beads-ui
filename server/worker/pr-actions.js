@@ -2717,7 +2717,10 @@ export function createPrActions(deps) {
               undefined,
               undefined,
               evidence.log_path,
-              repoOpsFailureEvidence(evidence)
+              {
+                ...repoOpsFailureEvidence(evidence),
+                deploy_operation_id: deployed.operation_id
+              }
             );
           }
           if (evidence.state !== 'succeeded') {
@@ -3118,7 +3121,7 @@ export function createPrActions(deps) {
    * @param {string} [log_path] - Absolute path to that command's FULL preserved
    * output (UI-0x54), when the run produced a complete log file. A cleanup
    * retry overwrites it with its own run's log.
-   * @param {{ failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} [failure_evidence]
+   * @param {{ failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, deploy_operation_id?: string }} [failure_evidence]
    * @returns {Promise<{ ok: false, step: string, reason: string, base_sync: BaseSyncOutcome|null }>}
    */
   async function failCleanup(
@@ -4288,6 +4291,62 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Resume a `repo_operations` cleanup failure whose failed deploy a later
+   * succeeded deploy covered (UI-8ufc). This entry carries no retry
+   * authority and starts no deploy. It is bound to the exact deploy run the
+   * stop recorded: only when `operation_id` is that run, still failed, and
+   * the record its `superseded_by` names succeeded without being its own
+   * retry does it spend the row's one resume and run the idempotent closure
+   * half. A discard in progress or another action on the row refuses before
+   * anything is spent; anything else refuses and leaves the row as it stands.
+   *
+   * @param {string} bead_id
+   * @param {string} operation_id - The covered failed deploy run.
+   * @returns {Promise<{ ok: boolean, step?: string|null, reason?: string|null }>}
+   */
+  async function resumeCoveredCleanup(bead_id, operation_id) {
+    if (in_flight.has(bead_id)) {
+      return { ok: false, step: null, reason: 'action_in_flight' };
+    }
+    const queue = deps.store.snapshot(workspace);
+    if (discardActive(queue, bead_id)) {
+      return { ok: false, step: null, reason: 'discard_active' };
+    }
+    const failure = queue.cleanup_failed?.[bead_id];
+    const row = queue.pr_wait.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    );
+    const operation = queue.repo_operations?.[operation_id];
+    const successor =
+      typeof operation?.superseded_by === 'string'
+        ? queue.repo_operations[operation.superseded_by]
+        : null;
+    if (
+      failure?.step !== 'repo_operations' ||
+      failure.deploy_operation_id !== operation_id ||
+      typeof row?.merge_sha !== 'string' ||
+      operation?.kind !== 'deploy' ||
+      operation.state !== 'failed' ||
+      successor?.state !== 'succeeded' ||
+      successor.retry_of === operation_id
+    ) {
+      return { ok: false, step: null, reason: 'not_covered' };
+    }
+    in_flight.add(bead_id);
+    try {
+      if (
+        !deps.store.claimCoverageResume?.(workspace, operation_id, bead_id)?.ok
+      ) {
+        return { ok: false, step: null, reason: 'coverage_spent' };
+      }
+      return await closeCoveredRow(bead_id, true);
+    } finally {
+      in_flight.delete(bead_id);
+      clearStep(bead_id);
+    }
+  }
+
+  /**
    * Resume only nonterminal coordinator-owned cleanup rows after restart.
    *
    * A row is resumed from where its cursor stopped. `base_containment` replays
@@ -4385,7 +4444,10 @@ export function createPrActions(deps) {
                   undefined,
                   undefined,
                   evidence.log_path,
-                  repoOpsFailureEvidence(evidence)
+                  {
+                    ...repoOpsFailureEvidence(evidence),
+                    deploy_operation_id: exact.operation_id
+                  }
                 );
               }
               continue;
@@ -4837,6 +4899,7 @@ export function createPrActions(deps) {
     cleanupObservedMerge,
     cleanupFacts,
     resumeMigratedClosure,
+    resumeCoveredCleanup,
     resumeRepoOperations,
     retryCleanup,
     rollbackBaseSync,

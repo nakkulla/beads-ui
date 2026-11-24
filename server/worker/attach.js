@@ -78,7 +78,8 @@ import {
   applyForeignBlockerCleanup,
   cachedIssuePrefixFor,
   foreignBlockerStatusFor,
-  prewarmIssuePrefix
+  prewarmIssuePrefix,
+  queryDiscoveredFromDependents
 } from './foreign-blocker-status.js';
 import { createForeignHandoffAnnouncer } from './foreign-handoff.js';
 import { readPushLog } from './guard-hook.js';
@@ -1506,6 +1507,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // disposition failure (UI-68r5 §3.2) — the same launcher every other
     // failure conversation goes through.
     failureConversation: runtime.failureConversation,
+    // The fix-Bead observation (UI-8ufc): discovered-from dependents of a
+    // failed row's Bead across every registered rig, read-only.
+    observeDiscoveredFrom: (targets, ws) =>
+      queryDiscoveredFromDependents(targets, ws),
     // The Worker exits a failure conversation's `인계` runs (UI-18a5 §3.4):
     // the SAME owners the row's `[워커로 이어가기]` and `[머지]` clicks reach,
     // bound late because both are built after the scheduler.
@@ -1513,6 +1518,13 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       retryCleanup: (_ws, bead_id) =>
         prActions
           ? prActions.retryCleanup(bead_id)
+          : Promise.resolve({ ok: false, reason: 'no_attachment' }),
+      // The coverage resume (UI-8ufc): a cleanup row whose failed deploy a
+      // later success covered closes through the closure half, with no retry
+      // authority and no new deploy run.
+      resumeCoveredCleanup: (_ws, bead_id, operation_id) =>
+        prActions
+          ? prActions.resumeCoveredCleanup(bead_id, operation_id)
           : Promise.resolve({ ok: false, reason: 'no_attachment' }),
       retryDiscard: (_ws, operation_id) =>
         discardCoordinator.retry(operation_id),

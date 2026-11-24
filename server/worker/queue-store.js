@@ -754,7 +754,7 @@
  * `stale:true` marks the ONE non-blocking record (UI-dlim §3.4): the bead was
  * ADMITTED with a stale spec_review receipt, so the badge must not read as a
  * refusal. Every record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean }, interruption_notified_at?: number }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, deploy_operation_id?: string, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean }, interruption_notified_at?: number }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and transient observations retain their retry budget across a
@@ -965,6 +965,10 @@
  * @typedef {Object} RepoOperation
  * @property {FixWait} [fix_wait]
  * @property {number} [early_diagnosis_at]
+ * @property {Record<string, number>} [coverage_resumed] - Per subject Bead,
+ * when its row standing on this failed deploy was resumed once after a
+ * succeeded deploy covered it (UI-8ufc); an entry spends that row's one
+ * resume, and every other subject keeps its own.
  * @property {number} schema
  * @property {string} repo_id
  * @property {'verify'|'deploy'|'job'} kind
@@ -1045,6 +1049,8 @@
  * @property {Record<string, unknown>|null} revert_pr
  * @property {Record<string, unknown>} receipts
  * @property {string|null} last_error
+ * @property {number} [failed_at] - When `last_error` was last recorded
+ * (UI-8ufc): a fix Bead observed for this failure must be newer.
  * @property {number|null} abandoned_at
  * @property {'continued'|'gone'|'recycled'|null} abandon_resume
  */
@@ -3859,6 +3865,9 @@ function normalizeDiscardOperation(value, operation_id) {
       typeof value.last_error === 'string' && value.last_error.length > 0
         ? value.last_error
         : null,
+    ...(typeof value.failed_at === 'number' && Number.isFinite(value.failed_at)
+      ? { failed_at: value.failed_at }
+      : {}),
     abandoned_at:
       typeof value.abandoned_at === 'number' &&
       Number.isFinite(value.abandoned_at)
@@ -4036,6 +4045,10 @@ function normalizeConversation(raw) {
  * landing rerun re-runs (UI-1fss §4.2): its verdict is read from the run whose
  * `retry_of` names this one.
  * @property {string[]} used_identities
+ * @property {'result_line'|'observed'} [source] - How the wait was entered
+ * (UI-8ufc): a conversation's `수정 대기` result line, or the Worker's own
+ * observation of a discovered-from fix Bead. An absent value, including a
+ * record from before the field, reads as `result_line`.
  */
 
 /**
@@ -4082,7 +4095,10 @@ function normalizeFixWait(value) {
       : {}),
     used_identities: Array.isArray(value.used_identities)
       ? value.used_identities.filter((id) => typeof id === 'string')
-      : [String(value.failure_identity)]
+      : [String(value.failure_identity)],
+    ...(value.source === 'observed' || value.source === 'result_line'
+      ? { source: value.source }
+      : {})
   };
 }
 
@@ -5104,6 +5120,26 @@ function normalizeRepoOperationRecovery(value) {
 }
 
 /**
+ * The per-subject coverage resume marks (UI-8ufc), or null when none is valid.
+ *
+ * @param {unknown} value
+ * @returns {Record<string, number>|null}
+ */
+function coverageResumed(value) {
+  if (!isRecord(value)) {
+    return null;
+  }
+  /** @type {Record<string, number>} */
+  const out = {};
+  for (const [bead_id, at] of Object.entries(value)) {
+    if (bead_id.length > 0 && typeof at === 'number' && Number.isFinite(at)) {
+      out[bead_id] = at;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
  * @param {unknown} value
  * @returns {RepoOperation|null}
  */
@@ -5194,6 +5230,7 @@ function normalizeRepoOperation(value) {
           detail: '',
           interrupted: false
         };
+  const coverage_resumed = coverageResumed(value.coverage_resumed);
   return {
     schema: 1,
     repo_id: value.repo_id,
@@ -5251,6 +5288,7 @@ function normalizeRepoOperation(value) {
     ...(typeof value.early_diagnosis_at === 'number'
       ? { early_diagnosis_at: value.early_diagnosis_at }
       : {}),
+    ...(coverage_resumed ? { coverage_resumed } : {}),
     ...(recovery ? { recovery } : {}),
     superseded_by:
       typeof value.superseded_by === 'string' ? value.superseded_by : null,
@@ -6179,6 +6217,13 @@ function normalizeQueue(raw) {
           Number(value.elapsed_ms) >= 0
         ) {
           q.cleanup_failed[bead_id].elapsed_ms = Number(value.elapsed_ms);
+        }
+        if (
+          typeof value.deploy_operation_id === 'string' &&
+          value.deploy_operation_id.length > 0
+        ) {
+          q.cleanup_failed[bead_id].deploy_operation_id =
+            value.deploy_operation_id;
         }
         if (
           typeof value.interruption_notified_at === 'number' &&
@@ -8512,6 +8557,43 @@ export function createQueueStore(options = {}) {
           return false;
         }
         operation.early_diagnosis_at = now();
+        return true;
+      });
+    },
+
+    /**
+     * Spend one subject row's coverage resume of a failed deploy (UI-8ufc):
+     * only a failed record a succeeded record superseded qualifies — never
+     * its own retry, whose flow owns what follows — and only once per
+     * subject Bead, so rows sharing one deploy run each keep their own.
+     *
+     * @param {string} workspace
+     * @param {string} operation_id
+     * @param {string} bead_id
+     */
+    claimCoverageResume(workspace, operation_id, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[operation_id];
+        const successor =
+          operation && typeof operation.superseded_by === 'string'
+            ? next.repo_operations[operation.superseded_by]
+            : null;
+        if (
+          !operation ||
+          operation.kind !== 'deploy' ||
+          operation.state !== 'failed' ||
+          successor?.state !== 'succeeded' ||
+          successor.retry_of === operation_id ||
+          typeof bead_id !== 'string' ||
+          bead_id.length === 0 ||
+          typeof operation.coverage_resumed?.[bead_id] === 'number'
+        ) {
+          return false;
+        }
+        operation.coverage_resumed = {
+          ...operation.coverage_resumed,
+          [bead_id]: now()
+        };
         return true;
       });
     },
@@ -12437,6 +12519,7 @@ export function createQueueStore(options = {}) {
           return false;
         }
         current.last_error = failure;
+        current.failed_at = now();
         return true;
       });
       return reason === null ? result : { ...result, reason };
@@ -13011,7 +13094,7 @@ export function createQueueStore(options = {}) {
      * output (UI-0x54); omit it when the run left no complete log file.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, summary?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} input
+     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, summary?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, deploy_operation_id?: string }} input
      * @returns {QueueOpResult}
      */
     recordCleanupFailure(workspace, input) {
@@ -13029,7 +13112,8 @@ export function createQueueStore(options = {}) {
         retry_count,
         next_retry_at,
         fetch_failure,
-        elapsed_ms
+        elapsed_ms,
+        deploy_operation_id
       } = input;
       return applyUnconditional(workspace, (next) => {
         if (
@@ -13096,6 +13180,15 @@ export function createQueueStore(options = {}) {
         }
         if (Number.isFinite(elapsed_ms) && Number(elapsed_ms) >= 0) {
           next.cleanup_failed[bead_id].elapsed_ms = Number(elapsed_ms);
+        }
+        // The failed deploy run this stop waited on (UI-8ufc): a coverage
+        // resume adopts only that run's covering success.
+        if (
+          typeof deploy_operation_id === 'string' &&
+          deploy_operation_id.length > 0
+        ) {
+          next.cleanup_failed[bead_id].deploy_operation_id =
+            deploy_operation_id;
         }
         if (diagnosis) {
           next.cleanup_failed[bead_id].diagnosis = diagnosis;
