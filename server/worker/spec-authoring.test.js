@@ -586,6 +586,24 @@ describe('deferring a draft that is still being written', () => {
     expect(h.hooks.onDraftSettled).not.toHaveBeenCalled();
   });
 
+  test('releases the wake-up once a review receipt lands', async () => {
+    const h = draftFixture();
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+    h.issues[B] = draft({
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `self@${'c'.repeat(40)}`
+      }
+    });
+
+    await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });
+
+    expect(h.hooks.onDraftSettled).toHaveBeenCalledExactlyOnceWith({
+      root: ROOT,
+      bead_id: B
+    });
+  });
+
   test('does nothing after a review receipt lands during the deferral', async () => {
     const h = draftFixture();
     await h.authoring.observe({ workspace: ROOT, blockers: BLOCKERS });

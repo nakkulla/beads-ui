@@ -315,24 +315,40 @@ export function createSpecAuthoring(deps) {
    * @param {string} bead_id
    */
   async function targetOf(root, bead_id) {
+    return (await judgeTarget(root, bead_id)).target;
+  }
+
+  /**
+   * The target judgment plus whether a lookup failed (`unread`), which is no
+   * verdict on the prerequisite.
+   *
+   * @param {string} root
+   * @param {string} bead_id
+   */
+  async function judgeTarget(root, bead_id) {
+    let unread = false;
     /** @type {SpecEvidence[]} */
     const originals = [];
     for (const evidence of evidenceOf(root)) {
       for (const blocker of evidence.blockers.filter(
         (entry) => entry.id === bead_id
       )) {
-        if ((await ownerOf(evidence, blocker)) === root) {
+        const owner = await ownerOf(evidence, blocker);
+        if (owner === null) {
+          unread = true;
+        }
+        if (owner === root) {
           originals.push(evidence);
           break;
         }
       }
     }
     if (originals.length === 0) {
-      return null;
+      return { target: null, unread };
     }
     const issue = await issueOf(root, bead_id);
     if (issue?.id !== bead_id) {
-      return null;
+      return { target: null, unread: true };
     }
     const ready = workerLabels(issue?.labels).includes('spec-after-blocker')
       ? await readyOf(root, bead_id)
@@ -344,7 +360,10 @@ export function createSpecAuthoring(deps) {
       root,
       blocks: true
     });
-    return state ? { issue, state, originals } : null;
+    return {
+      target: state ? { issue, state, originals } : null,
+      unread: false
+    };
   }
 
   /** @param {string} reason */
@@ -529,7 +548,7 @@ export function createSpecAuthoring(deps) {
           }
           in_flight.add(key);
           try {
-            const target = await targetOf(root, blocker.id);
+            const { target, unread } = await judgeTarget(root, blocker.id);
             const until_ms =
               target?.state === 'spec_needed'
                 ? specDraftLimitAt(target.issue, now())
@@ -544,7 +563,7 @@ export function createSpecAuthoring(deps) {
               continue;
             }
             // A failed read is no verdict: the pending wake-up stays armed.
-            if (target) {
+            if (!unread) {
               deps.onDraftSettled?.({ root, bead_id: blocker.id });
             }
             if (!target || target.state !== 'spec_needed') {

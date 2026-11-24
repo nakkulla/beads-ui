@@ -21,21 +21,8 @@ const CONTRACT = path.join(DOTFILES_ROOT, 'docs/contracts/workflow-state.yaml');
 const READ_IDLE_LIMIT = [
   'import sys, yaml',
   'data = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))',
-  'def find(node):',
-  '    if isinstance(node, dict):',
-  '        if "draft_in_progress" in node:',
-  '            return node["draft_in_progress"]',
-  '        for value in node.values():',
-  '            found = find(value)',
-  '            if found is not None:',
-  '                return found',
-  '    elif isinstance(node, list):',
-  '        for value in node:',
-  '            found = find(value)',
-  '            if found is not None:',
-  '                return found',
-  '    return None',
-  'print(find(data)["idle_limit_hours"])'
+  'node = data["needs_human_reentry"]["conversation_auto_launch"]',
+  'print(node["prerequisite_spec_authoring"]["draft_in_progress"]["idle_limit_hours"])'
 ].join('\n');
 
 /**

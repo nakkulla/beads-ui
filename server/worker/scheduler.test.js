@@ -36790,10 +36790,14 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     test('opens one conversation at the idle limit while the slots are full', async () => {
       const h = draftEnv();
       await h.env.scheduler.tick(WS);
-      h.env.store.setSlots(WS, {
+      h.env.store.appendAttempt(WS, {
         expected_revision: h.env.store.snapshot(WS).revision,
-        slots: 0
+        attempt: { attempt_id: 'busy', bead_id: 'X1', status: 'running' }
       });
+      const snap = h.env.store.snapshot(WS);
+      expect(
+        Object.values(snap.attempts).filter((a) => a.status === 'running')
+      ).toHaveLength(snap.slots);
 
       h.clock.now = DRAFT_LIMIT_MS;
       await vi.advanceTimersByTimeAsync(DRAFT_LIMIT_MS - DRAFT_UPDATED_MS);
