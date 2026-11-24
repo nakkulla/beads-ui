@@ -6237,7 +6237,16 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
       await flush();
 
       expect(env.exits.retryCleanup).not.toHaveBeenCalled();
-      expect(record(env)?.conversation?.result).toBeNull();
+      expect(record(env)?.conversation).toMatchObject({
+        processed_message_at: 900,
+        result: null,
+        handoff: null
+      });
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          summary: '자동 진행 거절 · target_commit_unknown'
+        })
+      );
     });
 
     test('refuses the line on a condition wait row', async () => {
@@ -8942,6 +8951,21 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       openAutoConversation(env);
       say(env, LINE);
 
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+
+      expectRefused(env, 'target_moved');
+    });
+
+    test('sends the refusal confirm once across later reconciles', async () => {
+      const env = autoEnv('f'.repeat(40));
+      openAutoConversation(env);
+      say(env, LINE);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
+      await env.scheduler.reconcileInteractiveSessions(WS);
+      await flush();
       await env.scheduler.reconcileInteractiveSessions(WS);
       await flush();
 
