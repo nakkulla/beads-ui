@@ -3,9 +3,10 @@ id: 'UI-8ufc'
 title: '막힌 실패 행의 관찰 재개'
 date: '2026-11-24'
 summary: '막힌 실패 행은 실패 배포가 성공 배포에 덮이거나 실패 뒤 만들어진 discovered-from 수정 Bead가 착지하면 사람 클릭 없이 한 번 다시 돌고, 덮임은 새 실행 없이 성공 기록을 채택하며 관찰로 든 수정 대기는 결과 줄로 든 것과 같은 규칙을 탄다 — 나머지 조항은 UI-wjrm 그대로다'
-status: 'accepted'
+status: superseded
 bead: 'UI-8ufc'
 supersedes: ['UI-wjrm']
+superseded_by: 'UI-19sj'
 ---
 
 # 막힌 실패 행의 관찰 재개
