@@ -2384,6 +2384,102 @@ describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', ()
   });
 });
 
+describe('post-merge cleanup — 자동 진행 rerun of a closure stop (UI-19sj)', () => {
+  const MERGED = 'c'.repeat(40);
+
+  /**
+   * A row stopped at branch_cleanup whose worktree removal succeeds on the
+   * rerun.
+   */
+  async function branchStop() {
+    /** @type {{ removeByBranchResult?: any, bdMetadata?: Record<string, string> }} */
+    const options = {
+      removeByBranchResult: {
+        ok: false,
+        removed: false,
+        reason: 'observe_failed'
+      }
+    };
+    const h = makeActions(options);
+    await h.actions.merge(BEAD);
+    delete options.removeByBranchResult;
+    return { ...h, options };
+  }
+
+  test('resumes the closure when the pin equals the merged commit', async () => {
+    const h = await branchStop();
+
+    const result = await h.actions.retryCleanup(BEAD, {
+      expected_target_sha: MERGED
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('refuses without a new failure when the merged commit differs from the pin', async () => {
+    const h = await branchStop();
+
+    const result = await h.actions.retryCleanup(BEAD, {
+      expected_target_sha: '9'.repeat(40)
+    });
+
+    expect(result).toEqual({ ok: false, step: null, reason: 'target_moved' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup',
+      retry_count: 0
+    });
+  });
+
+  test('refuses without a new failure on a row with a foreign pin', async () => {
+    const h = await branchStop();
+    h.options.bdMetadata = {
+      foreign_repo: 'git@github.com:acme/research-repo-template.git',
+      foreign_path: '/targets/research-repo-template',
+      foreign_base: 'main'
+    };
+
+    const result = await h.actions.retryCleanup(BEAD, {
+      expected_target_sha: MERGED
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      step: null,
+      reason: 'auto_proceed_foreign'
+    });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup',
+      retry_count: 0
+    });
+  });
+
+  test.each(['post_merge_jobs', 'base_containment'])(
+    'refuses a pinned rerun of a %s stop',
+    async (step) => {
+      const h = await branchStop();
+      h.store.clearCleanupFailure(WS, BEAD);
+      h.store.recordCleanupFailure(WS, {
+        bead_id: BEAD,
+        step,
+        reason: 'git_failed',
+        detail: 'remote hung up'
+      });
+
+      const result = await h.actions.retryCleanup(BEAD, {
+        expected_target_sha: MERGED
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        step: null,
+        reason: 'auto_proceed_step_mismatch'
+      });
+      expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({ step });
+    }
+  );
+});
+
 describe('post-merge cleanup — ref operations hold the topology lock (§8)', () => {
   test('runs the base sync under the lock, and the branch deletes under a lock taken after the worktree removal', async () => {
     const h = makeActions({ gitBranch: 'main' });
@@ -8425,6 +8521,56 @@ describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)',
     expect(env.operations.ensureDeploy.mock.calls[0][0]).toMatchObject({
       retry_authorized: true,
       target_sha: MOVED_BASE
+    });
+  });
+
+  describe('자동 진행 rerun pin (UI-19sj)', () => {
+    test('hands the pinned target to the deploy step', async () => {
+      const env = waitRow({ finished_at: 0 });
+
+      await env.actions.retryCleanup(BEAD, { expected_target_sha: BASE_SHA });
+
+      expect(env.operations.ensureDeploy.mock.calls[0][0]).toMatchObject({
+        expected_target_sha: BASE_SHA
+      });
+    });
+
+    test('stops without a new failure when the synced tip moved', async () => {
+      const env = waitRow({ finished_at: 0, base_moved: true });
+
+      const result = await env.actions.retryCleanup(BEAD, {
+        expected_target_sha: BASE_SHA
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        step: 'repo_operations',
+        reason: 'target_moved'
+      });
+      expect(env.operations.ensureDeploy).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+        reason: 'condition_wait'
+      });
+    });
+
+    test('stops without a new failure when the coordinator refuses the launch', async () => {
+      const env = waitRow({ finished_at: 0 });
+      env.operations.ensureDeploy.mockResolvedValueOnce(
+        /** @type {any} */ ({ ok: false, code: 'repo_operation_busy' })
+      );
+
+      const result = await env.actions.retryCleanup(BEAD, {
+        expected_target_sha: BASE_SHA
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        step: 'repo_operations',
+        reason: 'repo_operation_busy'
+      });
+      expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+        reason: 'condition_wait'
+      });
     });
   });
 

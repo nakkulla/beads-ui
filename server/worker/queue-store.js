@@ -615,7 +615,7 @@
  * @property {number|null} [event_at]
  */
 /**
- * @typedef {'handoff'|'takeover'|'hold'|'fix_wait'} ConversationResultKind
+ * @typedef {'handoff'|'takeover'|'hold'|'fix_wait'|'auto_proceed'} ConversationResultKind
  */
 /**
  * The row a failure conversation's handoff will act on, fixed when the
@@ -636,7 +636,10 @@
  *
  * @typedef {Object} ConversationHandoff
  * @property {string} line
- * @property {'result_line'|'button'} source
+ * @property {'result_line'|'button'|'auto_proceed'} source - `auto_proceed`
+ * is a `자동 진행` line the server accepted (UI-19sj §3.5): its exit reruns
+ * the failed step on the failure record's own target commit, never as a
+ * human click.
  * @property {number|null} message_at
  * @property {number} reserved_at
  * @property {ConversationHandoffTarget|null} target
@@ -665,6 +668,25 @@
  * @property {{ pr_url: string|null, head_sha: string }} [verify_hold] - The
  * hold a verify-failure conversation opened for (UI-nqbx §4.2); a
  * `수정 대기` line is judged against it. Absent for every other conversation.
+ * @property {OpenedFailure} [opened_failure] - The failure target and
+ * fingerprint a failure conversation was opened for (UI-19sj §3.2); a
+ * `자동 진행` line is judged against it. Absent for every other conversation,
+ * including one opened before the field.
+ */
+/**
+ * @typedef {Object} OpenedFailure
+ * @property {ConversationHandoffTarget} target
+ * @property {string} fingerprint
+ * @property {string} repo - The repository the fingerprint was computed in.
+ */
+/**
+ * One failure fingerprint a `자동 진행` line already used (UI-19sj §3.3).
+ *
+ * @typedef {Object} AutoProceedUse
+ * @property {string} row_key
+ * @property {number} used_at
+ * @property {string} line
+ * @property {string} repo
  */
 /**
  * Why a failure or 외부 작업 완료 conversation's handoff did not run
@@ -684,6 +706,9 @@
  * @property {Record<string, import('../../app/protocol.js').ExternalWaitFeedback>} external_wait_feedback
  * @property {Record<string, { at: number, session: string, reason: string|null }>} spec_authoring_launches - Per-blocker automatic opening, retained after failure or restart.
  * @property {Record<string, FixWait>} fix_waits - Durable self-repair attempts, including exhausted identities.
+ * @property {Record<string, AutoProceedUse>} auto_proceed_used - Failure
+ * fingerprints a `자동 진행` line already used, keyed by fingerprint
+ * (UI-19sj §3.3). Nothing deletes them.
  * @property {Record<string, InteractiveSession>} interactive_sessions - Live interactive panes, keyed by bead and kind.
  * @property {Record<string, ConversationRefusal>} conversation_refusals - The
  * last refused conversation handoff of a failure or 외부 작업 완료 row, keyed
@@ -1013,6 +1038,10 @@
  * @property {number|null} manual_run_id - The per-workspace sequence value this
  * MANUAL run was issued, and part of its operation id. Null on every automatic
  * record.
+ * @property {true} [auto_proceed] - A failure conversation's `자동 진행` line
+ * requested this rerun (UI-19sj §3.5), not a person's click: `source` keeps
+ * the run's lane, and this marks that no person asked for it. Absent on every
+ * other record.
  * @property {{ at: number, by: string }|null} dismissed - A human acknowledged
  * this failed row (UI-q0uy §4.6-2). NOT a state transition: the row stays
  * `failed` and auditable, and only the 해결 필요 tally leaves it out.
@@ -2939,6 +2968,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'discard_operations',
   'interactive_sessions',
   'fix_waits',
+  'auto_proceed_used',
   'conversation_refusals',
   'external_wait_feedback',
   'spec_authoring_launches',
@@ -3011,6 +3041,7 @@ function emptyQueue() {
     discard_operations: {},
     interactive_sessions: {},
     fix_waits: {},
+    auto_proceed_used: {},
     conversation_refusals: {},
     external_wait_feedback: {},
     spec_authoring_launches: {},
@@ -3964,7 +3995,8 @@ function normalizeConversation(raw) {
     (result_raw.kind === 'handoff' ||
       result_raw.kind === 'takeover' ||
       result_raw.kind === 'hold' ||
-      result_raw.kind === 'fix_wait') &&
+      result_raw.kind === 'fix_wait' ||
+      result_raw.kind === 'auto_proceed') &&
     stringOrNullValue(result_raw.line) !== null &&
     finiteOrNull(result_raw.at) !== null
       ? {
@@ -3993,17 +4025,22 @@ function normalizeConversation(raw) {
   const handoff =
     isRecord(handoff_raw) &&
     stringOrNullValue(handoff_raw.line) !== null &&
-    (handoff_raw.source === 'result_line' || handoff_raw.source === 'button') &&
+    (handoff_raw.source === 'result_line' ||
+      handoff_raw.source === 'button' ||
+      handoff_raw.source === 'auto_proceed') &&
     finiteOrNull(handoff_raw.reserved_at) !== null
       ? {
           line: String(handoff_raw.line),
-          source: /** @type {'result_line'|'button'} */ (handoff_raw.source),
+          source: /** @type {ConversationHandoff['source']} */ (
+            handoff_raw.source
+          ),
           message_at: finiteOrNull(handoff_raw.message_at),
           reserved_at: /** @type {number} */ (handoff_raw.reserved_at),
           target,
           started_at: finiteOrNull(handoff_raw.started_at)
         }
       : null;
+  const opened_failure = normalizeOpenedFailure(raw.opened_failure);
   return {
     stop: raw.stop,
     ...(raw.early_diagnosis === true ? { early_diagnosis: true } : {}),
@@ -4023,8 +4060,65 @@ function normalizeConversation(raw) {
             head_sha: raw.verify_hold.head_sha
           }
         }
-      : {})
+      : {}),
+    ...(opened_failure ? { opened_failure } : {})
   };
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {OpenedFailure|null}
+ */
+function normalizeOpenedFailure(raw) {
+  if (
+    !isRecord(raw) ||
+    !isRecord(raw.target) ||
+    stringOrNullValue(raw.target.kind) === null ||
+    typeof raw.target.identity !== 'string' ||
+    stringOrNullValue(raw.fingerprint) === null ||
+    stringOrNullValue(raw.repo) === null
+  ) {
+    return null;
+  }
+  return {
+    target: {
+      kind: /** @type {ConversationHandoffTarget['kind']} */ (raw.target.kind),
+      identity: raw.target.identity
+    },
+    fingerprint: String(raw.fingerprint),
+    repo: String(raw.repo)
+  };
+}
+
+/**
+ * Normalize the used `자동 진행` fingerprints, dropping malformed entries.
+ *
+ * @param {unknown} raw
+ * @returns {Record<string, AutoProceedUse>}
+ */
+function normalizeAutoProceedUsed(raw) {
+  /** @type {Record<string, AutoProceedUse>} */
+  const out = {};
+  if (!isRecord(raw)) {
+    return out;
+  }
+  for (const [fingerprint, value] of Object.entries(raw)) {
+    if (
+      isRecord(value) &&
+      stringOrNullValue(value.row_key) !== null &&
+      finiteOrNull(value.used_at) !== null &&
+      stringOrNullValue(value.line) !== null &&
+      stringOrNullValue(value.repo) !== null
+    ) {
+      out[fingerprint] = {
+        row_key: String(value.row_key),
+        used_at: Number(value.used_at),
+        line: String(value.line),
+        repo: String(value.repo)
+      };
+    }
+  }
+  return out;
 }
 
 /**
@@ -5323,6 +5417,7 @@ function normalizeRepoOperation(value) {
       value.source === 'manual' && Number.isInteger(value.manual_run_id)
         ? Number(value.manual_run_id)
         : null,
+    ...(value.auto_proceed === true ? { auto_proceed: true } : {}),
     dismissed:
       isRecord(value.dismissed) &&
       typeof value.dismissed.at === 'number' &&
@@ -6332,6 +6427,7 @@ function normalizeQueue(raw) {
       q.fix_waits[bead_id] = wait;
     }
   }
+  q.auto_proceed_used = normalizeAutoProceedUsed(raw.auto_proceed_used);
   // 부재·비객체·비불리언은 모두 '실행'으로 읽는다: opt-out은 사용자가 명시적으로
   // 켠 설정이며, 읽을 수 없는 값이 게이트를 건너뛰게 만들어서는 안 된다.
   q.repo_ops_opt_out = {
@@ -8906,6 +9002,54 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Reserve an accepted `자동 진행` result and use up its failure
+     * fingerprint in one mutation (UI-19sj §3.3): either both land or
+     * neither does. Fails when the record is no longer the same pane launch
+     * or the fingerprint was already used.
+     *
+     * @param {string} workspace
+     * @param {string} key
+     * @param {{ pane_id: string|null, launched_at: number }} expected
+     * @param {ConversationState} conversation
+     * @param {string} fingerprint
+     * @param {AutoProceedUse} use
+     * @returns {QueueOpResult}
+     */
+    reserveAutoProceed(
+      workspace,
+      key,
+      expected,
+      conversation,
+      fingerprint,
+      use
+    ) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.interactive_sessions[key];
+        if (
+          !current ||
+          current.pane_id !== expected.pane_id ||
+          current.launched_at !== expected.launched_at ||
+          Object.hasOwn(next.auto_proceed_used || {}, fingerprint)
+        ) {
+          return false;
+        }
+        const record = normalizeInteractiveSessions({
+          record: { ...current, conversation }
+        })[key];
+        const normalized_use = normalizeAutoProceedUsed({
+          [fingerprint]: use
+        })[fingerprint];
+        if (!record?.conversation?.handoff || !normalized_use) {
+          return false;
+        }
+        next.interactive_sessions[key] = record;
+        next.auto_proceed_used ||= {};
+        next.auto_proceed_used[fingerprint] = normalized_use;
+        return true;
+      });
+    },
+
+    /**
      * @param {string} workspace
      * @param {string} key
      * @returns {QueueOpResult}
@@ -9718,7 +9862,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, retry_of?: string, target?: 'base_only' }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, retry_of?: string, target?: 'base_only', auto_proceed?: true }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -9856,6 +10000,9 @@ export function createQueueStore(options = {}) {
             input.source === 'manual' && Number.isInteger(input.manual_run_id)
               ? Number(input.manual_run_id)
               : null,
+          ...(input.auto_proceed === true
+            ? { auto_proceed: /** @type {const} */ (true) }
+            : {}),
           dismissed: null
         };
         return true;

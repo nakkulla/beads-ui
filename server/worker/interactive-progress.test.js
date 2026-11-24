@@ -49,6 +49,29 @@ describe('parseConversationResult', () => {
 
     expect(result).toBeNull();
   });
+
+  test.each([
+    '자동 진행 · 실패 단계 재실행 — 원격 호스트가 다시 응답한다 — 되돌리기: 없음 — 같은 커밋을 다시 배포할 뿐이다',
+    '자동 진행 · 실패 단계 재실행 — 되돌리기: 이전 커밋 재배포'
+  ])('reads %s as an automatic proceed line', (line) => {
+    const result = parseConversationResult(line);
+
+    expect(result).toEqual({ kind: 'auto_proceed', line });
+  });
+
+  test.each([
+    '자동 진행 ·',
+    '자동 진행 · 실패 단계 재실행',
+    '자동 진행 · 실패 단계 재실행 — 되돌리기:',
+    '자동 진행 · 실패 단계 재실행 — 되돌리기: 없음',
+    '자동 진행 · 실패 단계 재실행 — 되돌리기: 없음 —',
+    '자동 진행 · — 되돌리기: 없음 — 사유',
+    '자동 진행 · 실패 단계 재실행 — 되돌리기: — 사유'
+  ])('rejects the malformed automatic proceed line %s', (line) => {
+    const result = parseConversationResult(line);
+
+    expect(result).toBeNull();
+  });
 });
 
 /** @type {string[]} */

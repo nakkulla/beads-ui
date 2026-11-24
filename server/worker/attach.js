@@ -1515,9 +1515,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // the SAME owners the row's `[워커로 이어가기]` and `[머지]` clicks reach,
     // bound late because both are built after the scheduler.
     conversationExits: {
-      retryCleanup: (_ws, bead_id) =>
+      retryCleanup: (_ws, bead_id, options) =>
         prActions
-          ? prActions.retryCleanup(bead_id)
+          ? prActions.retryCleanup(bead_id, options)
           : Promise.resolve({ ok: false, reason: 'no_attachment' }),
       // The coverage resume (UI-8ufc): a cleanup row whose failed deploy a
       // later success covered closes through the closure half, with no retry
@@ -1536,8 +1536,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // A repo-operation conversation's `인계` (UI-jbl1 §3.3): the SAME entry
       // as the `[배포 실행]` re-click, which reads the declaration at the
       // fetched base tip.
-      rerunManualDeploy: async () => {
-        const result = await repoOperationCoordinator.runManualDeploy();
+      rerunManualDeploy: async (_ws, options) => {
+        const result = await repoOperationCoordinator.runManualDeploy(options);
         return result.ok
           ? { ok: true, reason: null }
           : { ok: false, reason: result.reason };

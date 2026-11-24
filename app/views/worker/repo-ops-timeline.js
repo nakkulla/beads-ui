@@ -607,7 +607,7 @@ function operationEventTemplate(event, repo_ops, repo = '') {
         ${operation.superseded_by
           ? html`<span class="worker-ev__st worker-ev__st--quiet">덮임</span>`
           : ''}
-        ${operation.source === 'manual'
+        ${operation.source === 'manual' && operation.auto_proceed !== true
           ? html`<span
               class="worker-ev__st worker-ev__st--manual"
               title="사람이 배포 실행을 눌러 시작한 작업입니다"

@@ -4945,6 +4945,104 @@ describe('manual deploy run', () => {
     });
   });
 
+  test('refuses a pinned rerun when the fetched tip is another commit', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+    const before = store.snapshot(root).repo_operations;
+
+    const result = await coordinator.runManualDeploy({
+      expected_target_sha: 'e'.repeat(40)
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'target_moved' });
+    expect(store.snapshot(root).repo_operations).toEqual(before);
+  });
+
+  test('runs a pinned rerun while the fetched tip is its commit', async () => {
+    const { coordinator } = manualCoordinatorFor();
+
+    const result = await coordinator.runManualDeploy({
+      expected_target_sha: TARGET
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  test('marks a pinned rerun record as an automatic proceed', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+
+    const result = /** @type {any} */ (
+      await coordinator.runManualDeploy({ expected_target_sha: TARGET })
+    );
+
+    const operation =
+      store.snapshot(root).repo_operations[String(result.operation_id)];
+    expect([operation.source, operation.auto_proceed]).toEqual([
+      'manual',
+      true
+    ]);
+  });
+
+  test('refuses a pinned rerun when the tip moves before the locked launch', async () => {
+    let calls = 0;
+    const { store, coordinator } = manualCoordinatorFor({
+      resolveBase: async () => {
+        calls += 1;
+        return calls === 1
+          ? RESOLVED_BASE
+          : { ...RESOLVED_BASE, base_oid: 'e'.repeat(40) };
+      }
+    });
+    const before = Object.keys(store.snapshot(root).repo_operations);
+
+    const result = await coordinator.runManualDeploy({
+      expected_target_sha: TARGET
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'target_moved' });
+    expect(Object.keys(store.snapshot(root).repo_operations)).toEqual(before);
+  });
+
+  test('refuses a pinned rerun while another repo operation runs', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+    store.ensureRepoOperation(root, {
+      operation_id: 'running-verify',
+      repo_id: root,
+      kind: 'verify',
+      subjects: [{ bead_id: 'UI-1', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      target_sha: TARGET,
+      verify_head_sha: TARGET,
+      script_path: 'repo-ops/script/verify',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const seeded = store.snapshot(root).repo_operations['running-verify'];
+    store.startRepoOperation(root, {
+      operation_id: 'running-verify',
+      attempt_id: seeded.attempt_id,
+      process_identity: { pid: 7, pgid: 7, started_at: 1 },
+      log_path: path.join(root, 'running.log'),
+      target_sha: TARGET
+    });
+
+    const result = await coordinator.runManualDeploy({
+      expected_target_sha: TARGET
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'repo_operation_busy' });
+  });
+
+  test('leaves a person-run manual deploy record unmarked', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+
+    const result = /** @type {any} */ (await coordinator.runManualDeploy());
+
+    const operation =
+      store.snapshot(root).repo_operations[String(result.operation_id)];
+    expect(operation.auto_proceed).toBeUndefined();
+  });
+
   test('reads policy and script from the fetched tip, not the previous base', async () => {
     const { store, coordinator } = manualCoordinatorFor();
     seedPreviousSuccess(store);

@@ -5,7 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
-| UI-8ufc | [막힌 실패 행의 관찰 재개](UI-8ufc-blocked-failure-row-observed-resume.md) | 2026-11-24 | 막힌 실패 행은 실패 배포가 성공 배포에 덮이거나 실패 뒤 만들어진 discovered-from 수정 Bead가 착지하면 사람 클릭 없이 한 번 다시 돌고, 덮임은 새 실행 없이 성공 기록을 채택하며 관찰로 든 수정 대기는 결과 줄로 든 것과 같은 규칙을 탄다 — 나머지 조항은 UI-wjrm 그대로다 |
+| UI-19sj | [실패 대화 결과 줄 자동 진행](UI-19sj-conversation-automatic-proceed.md) | 2026-11-25 | 실패 대화의 결과 줄 자동 진행은 서버가 형식·실패 종류·대화를 열 때의 실패 대상·대상 커밋을 검사한 뒤에만 받아 같은 실패 지문에 한 번 실패 기록의 커밋 그대로 실패 단계를 다시 돌리고, 쓴 지문으로 다시 열리는 대화에 소진 표지를 싣는다 — 나머지 조항은 UI-8ufc 그대로다 |
 | UI-xj50 | [Claude 계정 추가와 세션 전용 로그인](UI-xj50-claude-add-session-login.md) | 2026-11-15 | 화면 로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이고, Claude 계정 추가는 cswap login 뒤 같은 창에서 cswap session login까지 이어 세션 전용 로그인을 만들며 그 성공은 종료 코드와 계정 목록의 sessionLoginOwn으로 확인한다 — 나머지 조항은 UI-xm29 그대로다 |
 | UI-y7h1 | [auto 구현 리프 후보는 beads-ui 서버 전역 설정이다](UI-y7h1-auto-pool-server-global-setting.md) | 2026-11-11 | auto 구현 리프의 후보 모델과 effort 범위는 beads-ui 서버 전역 설정이 정본이고 저장소별 값 없이 dotfiles가 GET /api/auto-pool로만 읽으며, 빠진 런타임은 dotfiles 출하 기본값을 따른다 |
 | UI-jlov | [dotfiles 계약 소비와 설치본 체커 소비](UI-jlov-dotfiles-contract-and-checker-consumption.md) | 2026-11-11 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호와 Worker 착지 알림의 보호 경로 표시는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며, 보호 경로 판정 실패는 생략하지 않고 확인 못 함으로 적는다 |
@@ -183,4 +183,5 @@
 | UI-lx9o | [실패 타일의 상태 배지 하나와 상세 상자 하나](history/UI-lx9o-failed-tile-single-badge-detail.md) | superseded | [UI-lxxf](history/UI-lxxf-direct-session-finish-op.md) |
 | UI-lxxf | [직접 세션 타일의 [마무리] 조작](history/UI-lxxf-direct-session-finish-op.md) | superseded | [UI-nqbx](history/UI-nqbx-verify-hold-fix-wait-joins-followup-wait.md) |
 | UI-nqbx | [검증 보류 수정 대기의 후속 착지 대기 연결](history/UI-nqbx-verify-hold-fix-wait-joins-followup-wait.md) | superseded | [UI-wjrm](history/UI-wjrm-direct-session-finish-in-progress.md) |
-| UI-wjrm | [직접 세션 마무리 전송 시각의 메모리 표시](history/UI-wjrm-direct-session-finish-in-progress.md) | superseded | [UI-8ufc](UI-8ufc-blocked-failure-row-observed-resume.md) |
+| UI-wjrm | [직접 세션 마무리 전송 시각의 메모리 표시](history/UI-wjrm-direct-session-finish-in-progress.md) | superseded | [UI-8ufc](history/UI-8ufc-blocked-failure-row-observed-resume.md) |
+| UI-8ufc | [막힌 실패 행의 관찰 재개](history/UI-8ufc-blocked-failure-row-observed-resume.md) | superseded | [UI-19sj](UI-19sj-conversation-automatic-proceed.md) |

@@ -6,8 +6,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { hubCommand, hubReply } from '../../test/session-hub.js';
 import { conversationLaunchFlags } from '../conversation-settings.js';
 import { CONVERSATION_ENTRY_BLOCK } from './direction-inquiry.js';
-import { selfRepairFailureIdentity } from './resolution-ladder.js';
 import {
+  operationIncidentFingerprint,
+  selfRepairFailureIdentity
+} from './resolution-ladder.js';
+import {
+  autoProceedBasis,
+  autoProceedClosureStop,
   buildFailureEntry,
   createFailureConversationLauncher,
   createResolveSession,
@@ -19,11 +24,11 @@ import {
 
 /**
  * The dotfiles entry block digest the failure conversation opens with
- * (`bc2cf92e7e01cf79ad10274b969d640aa9d482d4`, 16311 bytes without a trailing
+ * (`b4b89d8d5f727133cff838aa250524b5061958f4`, 19508 bytes without a trailing
  * newline) — the same pin `direction-inquiry.test.js` holds (UI-18a5 §3.3).
  */
 const ENTRY_BLOCK_DIGEST =
-  'bde618d234fc17f4b3573e1841551197c974e76c06aac6900a79b4d5d62c37be';
+  '64a401cb976bad5a3d8ddbb96e69fe66533b864dccbba92a1f8fbbbbbcf43c53';
 
 const BEAD = 'UI-jw27';
 const REPO = '/tmp/example-workspace/project-a';
@@ -2134,6 +2139,126 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
       mode: 'fresh',
       attempt_id: null,
       cwd: REPO
+    });
+  });
+
+  describe('자동 진행 basis (UI-19sj)', () => {
+    const OPERATION = { ...MANUAL_OPERATION, repo_id: '/repo' };
+    const QUEUE = { repo_operations: { 'op-1': OPERATION } };
+    const FINGERPRINT = String(
+      selfRepairFailureIdentity(QUEUE, 'repo-op:op-1', '/repo')
+    );
+
+    test('records the failure target and fingerprint at open', async () => {
+      const recordInteractiveSession = vi.fn();
+      const { resolver } = makeLauncher({
+        store: { recordInteractiveSession }
+      });
+      const failure = /** @type {any} */ (
+        repoOperationFailureContext(QUEUE, 'op-1')
+      );
+
+      await resolver.resolveRepoOperation({
+        workspace: REPO,
+        repo: REPO,
+        operation_id: 'op-1',
+        failure
+      });
+
+      expect(
+        recordInteractiveSession.mock.calls[0]?.[1]?.conversation
+          ?.opened_failure
+      ).toEqual({
+        target: { kind: 'repo_operation', identity: 'repo_operation:op-1:f1' },
+        fingerprint: FINGERPRINT,
+        repo: '/repo'
+      });
+    });
+
+    test('marks the situation exhausted once the fingerprint was used', () => {
+      const queue = {
+        ...QUEUE,
+        auto_proceed_used: {
+          [FINGERPRINT]: {
+            row_key: 'repo-op:op-0',
+            used_at: 1,
+            line: '자동 진행 · 재실행 — 되돌리기: 없음 — 같은 커밋',
+            repo: '/repo'
+          }
+        }
+      };
+
+      const failure = /** @type {any} */ (
+        repoOperationFailureContext(queue, 'op-1')
+      );
+
+      expect(failureSituation(failure)).toContain(
+        '자동 진행: 소진 — 같은 실패 재발'
+      );
+    });
+
+    test('fingerprints the rerun record, not the newest failure of the repo', () => {
+      const newer = {
+        ...OPERATION,
+        manual_run_id: 4,
+        failure: { ...OPERATION.failure, fingerprint: 'f2', summary: 'boom' }
+      };
+      const queue = { repo_operations: { 'op-1': OPERATION, 'op-2': newer } };
+
+      const basis = autoProceedBasis(queue, 'repo-op:op-1', '/repo');
+
+      expect(basis?.fingerprint).toBe(
+        operationIncidentFingerprint('/repo', OPERATION)
+      );
+      expect(basis?.fingerprint).not.toBe(
+        operationIncidentFingerprint('/repo', newer)
+      );
+    });
+
+    test('leaves the situation unmarked before the fingerprint is used', () => {
+      const failure = /** @type {any} */ (
+        repoOperationFailureContext(QUEUE, 'op-1')
+      );
+
+      expect(failureSituation(failure)).not.toContain('자동 진행');
+    });
+
+    /**
+     * A merged row stopped at the cleanup step `step`.
+     *
+     * @param {string} step
+     */
+    function closureQueue(step) {
+      return {
+        pr_wait: [{ bead_id: BEAD, merge_sha: 'C'.repeat(40) }],
+        cleanup_failed: {
+          [BEAD]: { step, reason: 'git_failed', detail: 'hung up', at: 5 }
+        }
+      };
+    }
+
+    test('fingerprints a branch cleanup stop by its own failure identity', () => {
+      const queue = closureQueue('branch_cleanup');
+
+      const basis = autoProceedBasis(queue, BEAD, '/repo');
+
+      expect(basis).toEqual({
+        target: { kind: 'cleanup', identity: 'cleanup:branch_cleanup:5' },
+        fingerprint: selfRepairFailureIdentity(queue, BEAD, '/repo'),
+        repo: '/repo'
+      });
+    });
+
+    test('pins a closure stop to the lowercased merged commit', () => {
+      expect(
+        autoProceedClosureStop(closureQueue('parent_close'), BEAD)?.merge_sha
+      ).toBe('c'.repeat(40));
+    });
+
+    test('records no basis for a post-merge job stop', () => {
+      expect(
+        autoProceedBasis(closureQueue('post_merge_jobs'), BEAD, '/repo')
+      ).toBeNull();
     });
   });
 });

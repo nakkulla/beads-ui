@@ -393,16 +393,182 @@ export function repoOperationFailureContext(queue, operation_id) {
    */
   const textOrNull = (value) =>
     typeof value === 'string' && value.length > 0 ? value : null;
-  return repairFailureContext(queue, repoOperationRowKey(operation_id), {
-    failure_class: MANUAL_DEPLOY_FAILURE_CLASS,
-    reason: textOrNull(failure.code) ?? '원인 미상',
-    stage: 'deploy',
-    detail: textOrNull(failure.summary) ?? textOrNull(failure.detail),
-    log_path: textOrNull(operation.log_path),
-    operation_id,
-    target_sha: textOrNull(operation.target_sha),
-    deploy_worktree: textOrNull(operation.deploy_worktree)
-  });
+  return repairFailureContext(
+    queue,
+    repoOperationRowKey(operation_id),
+    {
+      failure_class: MANUAL_DEPLOY_FAILURE_CLASS,
+      reason: textOrNull(failure.code) ?? '원인 미상',
+      stage: 'deploy',
+      detail: textOrNull(failure.summary) ?? textOrNull(failure.detail),
+      log_path: textOrNull(operation.log_path),
+      operation_id,
+      target_sha: textOrNull(operation.target_sha),
+      deploy_worktree: textOrNull(operation.deploy_worktree)
+    },
+    textOrNull(operation.repo_id)
+  );
+}
+
+/**
+ * The failure target kinds a `자동 진행` line may rerun (UI-19sj §3.2).
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const AUTO_PROCEED_TARGET_KINDS = Object.freeze([
+  'repo_operation',
+  'cleanup',
+  'quickfix_landing'
+]);
+
+/**
+ * The failed deploy run a `자동 진행` line would rerun for a row (UI-19sj
+ * §3.2), read off the row's own failure record: a repo-operation row's failed
+ * manual deploy, a cleanup stop's `repo_operations` deploy run, or a quick_fix
+ * landing's failed run when it deployed the landing's bound commit. Null when
+ * the record names no such deploy run. Its fingerprint, its target commit and
+ * its declaration all come from this one record.
+ *
+ * @param {any} queue
+ * @param {string} row_key
+ * @param {string} kind - The row's failure target kind.
+ * @returns {any|null}
+ */
+export function autoProceedOperation(queue, row_key, kind) {
+  /** @type {any} */
+  let operation = null;
+  if (kind === 'repo_operation') {
+    const operation_id = repoOperationIdOf(row_key);
+    operation =
+      operation_id !== null ? failedManualDeploy(queue, operation_id) : null;
+  } else if (kind === 'cleanup') {
+    const cleanup = queue?.cleanup_failed?.[row_key];
+    operation =
+      cleanup?.step === 'repo_operations' &&
+      cleanup.reason !== 'condition_wait' &&
+      typeof cleanup.deploy_operation_id === 'string'
+        ? queue.repo_operations?.[cleanup.deploy_operation_id] || null
+        : null;
+  } else if (kind === 'quickfix_landing') {
+    const landing = landingDeployFailure(queue, row_key);
+    operation =
+      landing &&
+      landing.operation.target_sha ===
+        landing.attempt.quickfix_landing?.head_sha
+        ? landing.operation
+        : null;
+  }
+  return operation && operation.kind === 'deploy' ? operation : null;
+}
+
+/**
+ * The cleanup steps after the repo operations that a `자동 진행` line may
+ * rerun on their own (UI-19sj §3.2): branch cleanup and parent close, which
+ * read no commit or declaration besides the merged one. A post-merge job
+ * stop is not one of them: its rerun resolves the job at the advancing
+ * deploy head and may follow a revision a later commit declares
+ * (`server/worker/post-merge-job.js`), so it cannot repeat the failed run's
+ * commit and declaration.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const AUTO_PROCEED_CLOSURE_STEPS = Object.freeze([
+  'branch_cleanup',
+  'parent_close'
+]);
+
+/**
+ * The stopped closure step a `자동 진행` line would rerun for a cleanup row
+ * (UI-19sj §3.2): a branch cleanup or parent close stop that is not a
+ * `condition_wait`, with the merged commit those steps run against. Null
+ * otherwise, and when the queue names no merged commit. Its fingerprint is
+ * the stop record's own failure identity.
+ *
+ * @param {any} queue
+ * @param {string} row_key
+ * @returns {{ kind: string, failure: { code: string, summary: string }, merge_sha: string }|null}
+ */
+export function autoProceedClosureStop(queue, row_key) {
+  const cleanup = queue?.cleanup_failed?.[row_key];
+  if (
+    !cleanup ||
+    typeof cleanup !== 'object' ||
+    !AUTO_PROCEED_CLOSURE_STEPS.includes(cleanup.step) ||
+    cleanup.reason === 'condition_wait'
+  ) {
+    return null;
+  }
+  const row = (Array.isArray(queue?.pr_wait) ? queue.pr_wait : []).find(
+    (/** @type {any} */ entry) => entry?.bead_id === row_key
+  );
+  const merge_sha = [
+    row?.merge_sha,
+    queue?.completion_intents?.[row_key]?.subject?.merged_sha
+  ].find(
+    (candidate) =>
+      typeof candidate === 'string' && /^[0-9a-f]{40}$/i.test(candidate)
+  );
+  if (typeof merge_sha !== 'string') {
+    return null;
+  }
+  return {
+    kind: cleanup.step,
+    failure: { code: cleanup.reason, summary: cleanup.detail },
+    merge_sha: merge_sha.toLowerCase()
+  };
+}
+
+/**
+ * What a failure conversation records at open for a later `자동 진행` line
+ * (UI-19sj §3.2): the row's failure target and the fingerprint of the deploy
+ * run or closure stop the line would rerun, computed in `repo`. Null when the
+ * row is not a kind the line may rerun or either value cannot be read — such
+ * a conversation never accepts the line.
+ *
+ * @param {any} queue
+ * @param {string} row_key
+ * @param {string|null} repo
+ * @returns {import('./queue-store.js').OpenedFailure|null}
+ */
+export function autoProceedBasis(queue, row_key, repo) {
+  if (typeof repo !== 'string' || repo.length === 0) {
+    return null;
+  }
+  const target = failureHandoffTarget(queue, row_key);
+  if (!target || !AUTO_PROCEED_TARGET_KINDS.includes(target.kind)) {
+    return null;
+  }
+  const operation =
+    autoProceedOperation(queue, row_key, target.kind) ??
+    (target.kind === 'cleanup' ? autoProceedClosureStop(queue, row_key) : null);
+  const fingerprint = operation
+    ? operationIncidentFingerprint(repo, operation)
+    : null;
+  return fingerprint ? { target, fingerprint, repo } : null;
+}
+
+/**
+ * Add the `자동 진행` basis to a failure context, and the exhaustion marker
+ * when that fingerprint was already used (UI-19sj §3.4).
+ *
+ * @param {any} queue
+ * @param {string} row_key
+ * @param {string|null} repo
+ * @param {ResolveFailureContext} failure
+ * @returns {ResolveFailureContext}
+ */
+function withAutoProceedBasis(queue, row_key, repo, failure) {
+  const basis = autoProceedBasis(queue, row_key, repo);
+  if (!basis) {
+    return failure;
+  }
+  return {
+    ...failure,
+    auto_proceed_basis: basis,
+    ...(Object.hasOwn(queue.auto_proceed_used || {}, basis.fingerprint)
+      ? { auto_proceed_exhausted: true }
+      : {})
+  };
 }
 
 /**
@@ -411,9 +577,11 @@ export function repoOperationFailureContext(queue, operation_id) {
  * @param {any} queue
  * @param {string} row_key
  * @param {ResolveFailureContext|null} failure
+ * @param {string|null} [repo] - The repo the `자동 진행` fingerprint is read
+ * in; absent means no basis is recorded.
  * @returns {ResolveFailureContext|null}
  */
-function repairFailureContext(queue, row_key, failure) {
+function repairFailureContext(queue, row_key, failure, repo = null) {
   if (!failure) {
     return null;
   }
@@ -453,7 +621,7 @@ function repairFailureContext(queue, row_key, failure) {
               row.failure_repo || operation?.repo_id || ''
             ))
   );
-  return {
+  return withAutoProceedBasis(queue, row_key, repo, {
     ...failure,
     ...(typeof operation?.repo_id === 'string' && operation.repo_id.length > 0
       ? {
@@ -466,7 +634,7 @@ function repairFailureContext(queue, row_key, failure) {
     ...(wait
       ? { self_repair_exhausted: wait.exhausted_reason || '같은 실패 재발' }
       : {})
-  };
+  });
 }
 
 /**
@@ -496,6 +664,11 @@ function repairFailureContext(queue, row_key, failure) {
  * @property {boolean} [pre_merge_wait] - The hold meets the red-base wait's
  * target conditions at open (UI-nqbx 결정 9); the `상황` carries the
  * `대기 가능: pre_merge_wait` marker.
+ * @property {import('./queue-store.js').OpenedFailure} [auto_proceed_basis] -
+ * The failure target and fingerprint the conversation records at open
+ * (UI-19sj §3.2).
+ * @property {boolean} [auto_proceed_exhausted] - That fingerprint already
+ * used its `자동 진행` (UI-19sj §3.4); the `상황` carries the marker.
  */
 
 /**
@@ -575,7 +748,8 @@ export function resolveFailureContext(
   const failure = repairFailureContext(
     queue,
     bead_id,
-    baseFailureContext(queue, bead_id, foreign)
+    baseFailureContext(queue, bead_id, foreign),
+    repo
   );
   if (
     failure?.failure_class === PRE_MERGE_HOLD_NOTIFY_LABEL &&
@@ -872,6 +1046,7 @@ export function failureSituation(failure) {
     failure.self_repair_exhausted
       ? `자가 수리: 소진 — ${failure.self_repair_exhausted}`
       : '',
+    failure.auto_proceed_exhausted ? '자동 진행: 소진 — 같은 실패 재발' : '',
     failure.pre_merge_wait ? '대기 가능: pre_merge_wait' : ''
   ]
     .filter(Boolean)
@@ -1667,7 +1842,10 @@ function newConversation(failure, verify_hold = null) {
     result: null,
     handoff: null,
     takeover_notified_at: null,
-    ...(verify_hold ? { verify_hold } : {})
+    ...(verify_hold ? { verify_hold } : {}),
+    ...(failure.auto_proceed_basis && !failure.early_diagnosis
+      ? { opened_failure: failure.auto_proceed_basis }
+      : {})
   };
 }
 
@@ -1868,7 +2046,12 @@ export function createFailureConversationLauncher(deps) {
         cleanup &&
         typeof cleanup === 'object' &&
         cleanup.at === input.cleanup_at
-          ? cleanupFailureContext(cleanup)
+          ? withAutoProceedBasis(
+              queue,
+              input.bead_id,
+              input.repo ?? input.workspace,
+              cleanupFailureContext(cleanup)
+            )
           : resolveFailureContext(
               queue,
               input.bead_id,

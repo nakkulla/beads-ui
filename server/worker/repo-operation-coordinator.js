@@ -2381,6 +2381,58 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * The last check of a `자동 진행` deploy rerun (UI-19sj §3.2, 수락 기준 6),
+   * made under the repo-operation lock right before the record is written and
+   * launched: the remote base tip is fetched again and must still be the
+   * pinned commit, and no other operation may be running — a queued record
+   * would launch later, past this check. Null lets the run go on.
+   *
+   * @param {string} expected_target_sha
+   * @param {string} target_sha - The commit this run binds.
+   * @param {string} operation_id - The record this run would write.
+   * @returns {Promise<'target_moved'|'repo_operation_busy'|'repo_ops_target_unresolved'|null>}
+   */
+  async function autoProceedLaunchRefusal(
+    expected_target_sha,
+    target_sha,
+    operation_id
+  ) {
+    const expected = expected_target_sha.toLowerCase();
+    if (target_sha.toLowerCase() !== expected) {
+      return 'target_moved';
+    }
+    if (typeof deps.resolveBase !== 'function') {
+      return 'repo_ops_target_unresolved';
+    }
+    /** @type {any} */
+    let resolved = null;
+    try {
+      resolved = await deps.resolveBase({ force: true });
+    } catch {
+      resolved = null;
+    }
+    if (
+      resolved?.ok !== true ||
+      typeof resolved.base_oid !== 'string' ||
+      resolved.base_oid.length === 0
+    ) {
+      return 'repo_ops_target_unresolved';
+    }
+    if (resolved.base_oid.toLowerCase() !== expected) {
+      return 'target_moved';
+    }
+    if (
+      runningOperationFor(
+        deps.store.snapshot(deps.workspace).repo_operations,
+        operation_id
+      )
+    ) {
+      return 'repo_operation_busy';
+    }
+    return null;
+  }
+
+  /**
    * @param {any} subject
    */
   async function ensureDeploy(subject) {
@@ -2544,6 +2596,16 @@ export function createRepoOperationCoordinator(deps) {
         operation_id = tip_id;
       }
     }
+    if (typeof subject.expected_target_sha === 'string') {
+      const pinned_refusal = await autoProceedLaunchRefusal(
+        subject.expected_target_sha,
+        target_sha,
+        operation_id
+      );
+      if (pinned_refusal !== null) {
+        return { ok: false, code: pinned_refusal };
+      }
+    }
     const prerecord = deps.store.ensureRepoOperation(workspace, {
       operation_id,
       repo_id: deps.repo,
@@ -2567,7 +2629,10 @@ export function createRepoOperationCoordinator(deps) {
               : {})
           }
         : {}),
-      ...(retry_of !== null ? { retry_of } : {})
+      ...(retry_of !== null ? { retry_of } : {}),
+      ...(typeof subject.expected_target_sha === 'string'
+        ? { auto_proceed: true }
+        : {})
     });
     if (!prerecord.ok)
       return { ok: false, code: 'repo_operation_prerecord_failed' };
@@ -3130,7 +3195,12 @@ export function createRepoOperationCoordinator(deps) {
    * is a REFUSAL: no record is written, nothing is queued, and the client says
    * exactly which precondition failed.
    *
-   * @typedef {'deploy_not_declared'|'deploy_opted_out'|'deploy_in_flight'|'target_unresolved'|'remote_history_not_monotonic'} ManualDeployRefusal
+   * `target_moved` and `repo_operation_busy` refuse only a run pinned to an
+   * expected target (UI-19sj §3.2): the fetched tip is no longer the failure
+   * record's commit, or another operation runs, so the record would wait in
+   * the queue and launch later without its tip checked again.
+   *
+   * @typedef {'deploy_not_declared'|'deploy_opted_out'|'deploy_in_flight'|'target_unresolved'|'remote_history_not_monotonic'|'target_moved'|'repo_operation_busy'} ManualDeployRefusal
    */
 
   /**
@@ -3197,10 +3267,14 @@ export function createRepoOperationCoordinator(deps) {
    * The target is NOT an input. It comes from the attachment's one base
    * resolver, which pins remote, base and the fetched tip together, so nothing
    * here assumes `origin` and a client cannot name a commit of its own.
+   * `expected_target_sha` only narrows that: a `자동 진행` rerun (UI-19sj
+   * §3.2) runs only while the fetched tip is still the failure record's
+   * commit, and is refused `target_moved` otherwise.
    *
+   * @param {{ expected_target_sha?: string }} [options]
    * @returns {Promise<{ ok: true, operation_id: string }|{ ok: false, reason: ManualDeployRefusal }>}
    */
-  async function runManualDeploy() {
+  async function runManualDeploy(options = {}) {
     if (typeof deps.resolveBase !== 'function') {
       return { ok: false, reason: 'target_unresolved' };
     }
@@ -3221,11 +3295,25 @@ export function createRepoOperationCoordinator(deps) {
     ) {
       return { ok: false, reason: 'target_unresolved' };
     }
+    if (
+      options.expected_target_sha !== undefined &&
+      resolved.base_oid.toLowerCase() !==
+        String(options.expected_target_sha).toLowerCase()
+    ) {
+      return { ok: false, reason: 'target_moved' };
+    }
     const release = await deps.locks.repoOperationLock(deps.repo);
     try {
       return await runManualDeployLocked({
         target_base: resolved.base,
-        target_sha: resolved.base_oid.toLowerCase()
+        target_sha: resolved.base_oid.toLowerCase(),
+        ...(options.expected_target_sha !== undefined
+          ? {
+              expected_target_sha: String(
+                options.expected_target_sha
+              ).toLowerCase()
+            }
+          : {})
       });
     } finally {
       release();
@@ -3237,7 +3325,7 @@ export function createRepoOperationCoordinator(deps) {
    * acquisition as the enqueue below it, so the in-flight guard and the record
    * it protects cannot interleave with a second click.
    *
-   * @param {{ target_base: string, target_sha: string }} pinned
+   * @param {{ target_base: string, target_sha: string, expected_target_sha?: string }} pinned
    * @returns {Promise<{ ok: true, operation_id: string }|{ ok: false, reason: ManualDeployRefusal }>}
    */
   async function runManualDeployLocked(pinned) {
@@ -3284,7 +3372,10 @@ export function createRepoOperationCoordinator(deps) {
       manual_run_id,
       target_base: pinned.target_base,
       target_sha: pinned.target_sha,
-      subjects: [{ bead_id: 'manual', merged_sha: pinned.target_sha }]
+      subjects: [{ bead_id: 'manual', merged_sha: pinned.target_sha }],
+      ...(typeof pinned.expected_target_sha === 'string'
+        ? { expected_target_sha: pinned.expected_target_sha }
+        : {})
     });
     // A record that exists is the answer, whatever the run then did with it:
     // the script's own failure belongs on its card, not on the click.
@@ -3303,6 +3394,12 @@ export function createRepoOperationCoordinator(deps) {
     // word, so it is mapped before the generic inert reason.
     if (ensured.opted_out === true) {
       return { ok: false, reason: 'deploy_opted_out' };
+    }
+    if (
+      ensured.code === 'target_moved' ||
+      ensured.code === 'repo_operation_busy'
+    ) {
+      return { ok: false, reason: ensured.code };
     }
     return {
       ok: false,

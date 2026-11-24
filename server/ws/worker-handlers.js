@@ -3203,6 +3203,9 @@ function projectRepoOperations(operations, interactive_sessions = {}) {
       // Who asked for this operation (UI-s582 §3.7): `manual` is the 배포 실행
       // click, everything else is the Worker's own work.
       source: raw.source === 'manual' ? 'manual' : 'automatic',
+      // A `자동 진행` rerun (UI-19sj §3.5) is no person's click, whatever its
+      // lane; absent on every other record.
+      ...(raw.auto_proceed === true ? { auto_proceed: true } : {}),
       // A human acknowledged this failed row (UI-q0uy §4.6-2). Projected so the
       // client can drop it from the 해결 필요 tally without inventing its own
       // notion of "handled".
