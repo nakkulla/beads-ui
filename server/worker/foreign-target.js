@@ -20,7 +20,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseOriginRepo } from './gh.js';
+import {
+  GH_CALL_TIMEOUT_MS,
+  classifyGithubFailure,
+  parseOriginRepo
+} from './gh.js';
 import { branchForBead } from './worktree.js';
 
 /**
@@ -88,7 +92,7 @@ const SHA40_RE = /^[0-9a-f]{40}$/i;
  */
 
 /**
- * @typedef {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRun
+ * @typedef {(args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRun
  */
 
 /**
@@ -578,9 +582,13 @@ export async function fetchForeignBase(foreign, remote, gitRun) {
  * refspec, so `refs/remotes/<remote>/<base>` names exactly the fetched tip the
  * verify candidate is checked against.
  *
+ * The fetch is bounded per call and a failed fetch carries its GitHub failure
+ * class (UI-aui8 §3.1) — never the raw output — so the merge queue can tell a
+ * connection wait from a permanent failure.
+ *
  * @param {BoundForeignTarget} target
  * @param {GitRun} gitRun
- * @returns {Promise<{ ok: true, sha: string }|{ ok: false }>}
+ * @returns {Promise<{ ok: true, sha: string }|{ ok: false, failure_class: import('./gh.js').GithubFailureClass }>}
  */
 export async function fetchForeignBaseTip(target, gitRun) {
   const tracking = `refs/remotes/${target.remote}/${target.base}`;
@@ -592,21 +600,24 @@ export async function fetchForeignBaseTip(target, gitRun) {
         target.remote,
         `+refs/heads/${target.base}:${tracking}`
       ],
-      { cwd: target.path }
+      { cwd: target.path, timeout_ms: GH_CALL_TIMEOUT_MS }
     );
     if (fetched.code !== 0) {
-      return { ok: false };
+      return {
+        ok: false,
+        failure_class: classifyGithubFailure(fetched.stderr, fetched.code)
+      };
     }
     const rev = await gitRun(['rev-parse', `${tracking}^{commit}`], {
       cwd: target.path
     });
     const sha = rev.stdout.trim();
     if (rev.code !== 0 || !SHA40_RE.test(sha)) {
-      return { ok: false };
+      return { ok: false, failure_class: 'unknown' };
     }
     return { ok: true, sha: sha.toLowerCase() };
   } catch {
-    return { ok: false };
+    return { ok: false, failure_class: 'unknown' };
   }
 }
 

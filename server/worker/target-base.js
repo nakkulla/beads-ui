@@ -26,6 +26,7 @@
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
+import { classifyGithubFailure } from './gh.js';
 
 /**
  * The declaration's path inside the target repo's working tree. Read from the
@@ -49,7 +50,7 @@ const FETCH_RETRY_DELAYS_MS = Object.freeze([100, 300]);
 const FETCH_ATTEMPT_TIMEOUT_MS = 30_000;
 
 /**
- * @typedef {'ref_lock'|'network'|'auth'|'missing_ref'|'unknown'} FetchFailureCategory
+ * @typedef {'ref_lock'|'network'|'rate_limit'|'auth'|'missing_ref'|'unknown'} FetchFailureCategory
  */
 
 /**
@@ -65,12 +66,20 @@ const SHELL_UNSAFE = /[^A-Za-z0-9._/-]/;
 
 /**
  * Classify fetch stderr without retaining credential-bearing remote output.
+ * The GitHub part (`network`, `rate_limit`, `auth`) is the shared table in
+ * `gh.js` (UI-aui8 §3.1); a fetch killed at its ceiling (exit 124) is
+ * `network`. `ref_lock` and `missing_ref` are local or real-ref states, not
+ * GitHub classes.
  *
  * @param {string} stderr
+ * @param {number|null} [code] - The fetch's exit code.
  * @returns {FetchFailureCategory}
  */
-function classifyFetchFailure(stderr) {
+function classifyFetchFailure(stderr, code = null) {
   const message = String(stderr || '');
+  if (code === 124) {
+    return 'network';
+  }
   if (
     /cannot lock ref|unable to create .*\.lock|cannot update ref|reference already exists/i.test(
       message
@@ -78,12 +87,9 @@ function classifyFetchFailure(stderr) {
   ) {
     return 'ref_lock';
   }
-  if (
-    /permission denied|authentication failed|could not read username|terminal prompts disabled|publickey|credential/i.test(
-      message
-    )
-  ) {
-    return 'auth';
+  const github = classifyGithubFailure(message);
+  if (github === 'rate_limit' || github === 'auth') {
+    return github;
   }
   if (
     /couldn't find remote ref|remote ref .* not found|remote branch .* not found/i.test(
@@ -92,12 +98,24 @@ function classifyFetchFailure(stderr) {
   ) {
     return 'missing_ref';
   }
+  return github;
+}
+
+/**
+ * The GitHub failure class (UI-aui8 §3.1) of a fetch failure category: a
+ * local ref lock or a missing ref is not a GitHub failure, so it reads as
+ * `unknown` (never transient).
+ *
+ * @param {FetchFailureCategory} category
+ * @returns {import('./gh.js').GithubFailureClass}
+ */
+function githubClassOfFetch(category) {
   if (
-    /could not resolve host|connection (?:timed out|reset|refused)|network is unreachable|operation timed out|early eof|remote end hung up unexpectedly/i.test(
-      message
-    )
+    category === 'network' ||
+    category === 'rate_limit' ||
+    category === 'auth'
   ) {
-    return 'network';
+    return category;
   }
   return 'unknown';
 }
@@ -128,6 +146,8 @@ function classifyFetchFailure(stderr) {
  * @property {'declaration'|'format'|'remote_prefix'|'remote'|'fetch'|'ref'|'git_error'} step
  * @property {string|null} base - The declared value, when there was one.
  * @property {string} detail - Short machine-readable cause.
+ * @property {import('./gh.js').GithubFailureClass} [failure_class] - GitHub
+ * failure class of a `fetch` step failure (UI-aui8 §3.1); absent elsewhere.
  */
 
 /**
@@ -403,13 +423,17 @@ export async function resolveTargetBase(input) {
       }
     }
     if (!fetched || fetched.code !== 0) {
-      const category = classifyFetchFailure(fetched ? fetched.stderr : '');
       const exit_code = fetched ? fetched.code : -1;
+      const category = classifyFetchFailure(
+        fetched ? fetched.stderr : '',
+        exit_code
+      );
       return {
         ok: false,
         step: 'fetch',
         base,
-        detail: `remote:${remote};attempts:${FETCH_RETRY_DELAYS_MS.length + 1};exit:${exit_code};category:${category}`
+        detail: `remote:${remote};attempts:${FETCH_RETRY_DELAYS_MS.length + 1};exit:${exit_code};category:${category}`,
+        failure_class: githubClassOfFetch(category)
       };
     }
     const remote_ref = `refs/remotes/${remote}/${base}`;

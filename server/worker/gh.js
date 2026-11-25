@@ -45,8 +45,74 @@ import { runShell } from '../bd.js';
 
 /**
  * @template T
- * @typedef {{ state: 'ok', data: T } | { state: 'empty' } | { state: 'error', reason: string }} GhResult
+ * @typedef {{ state: 'ok', data: T } | { state: 'empty' } | { state: 'error', reason: string, failure_class?: GithubFailureClass }} GhResult
  */
+
+/**
+ * The one GitHub failure classification `gh` calls, the ordinary base fetch
+ * and the foreign base fetch share (UI-aui8 §3.1). Only `network` and
+ * `rate_limit` are transient; an absent class reads as `unknown`.
+ *
+ * @typedef {'network'|'rate_limit'|'auth'|'unknown'} GithubFailureClass
+ */
+
+/**
+ * Finite per-call ceiling for one `gh` spawn (UI-aui8 §3.1). A call killed at
+ * this ceiling exits 124 and classifies as `network`; the ceiling bounds one
+ * call, never the merge queue's connection wait.
+ */
+export const GH_CALL_TIMEOUT_MS = 60_000;
+
+/** Exit code `runShell` reports for a call killed at its `timeout_ms`. */
+const TIMEOUT_EXIT_CODE = 124;
+
+const RATE_LIMIT_PATTERN =
+  /rate limit|HTTP 429|returned error: 429|too many requests/i;
+
+const AUTH_PATTERN =
+  /HTTP 401|returned error: 401|bad credentials|gh auth login|authentication failed|permission denied|could not read username|terminal prompts disabled|publickey|credential/i;
+
+const NETWORK_PATTERN =
+  /dial tcp|i\/o timeout|tls handshake timeout|connection (?:timed out|reset|refused)|could not resolve host|network is unreachable|operation timed out|early eof|remote end hung up unexpectedly|error connecting to|context deadline exceeded|HTTP 50[0234]\b|returned error: 50[0234]\b/i;
+
+/**
+ * Classify a failed GitHub call from its output WITHOUT retaining that output
+ * (it can carry credentials, the `target-base.js` precedent). A call that hit
+ * its per-call ceiling (exit 124) is `network` whatever it printed; rate
+ * limits are read before auth because a secondary limit arrives as HTTP 403.
+ *
+ * @param {unknown} text - The failed call's stderr (and stdout, if useful).
+ * @param {number|null} [code] - The exit code, when there was one.
+ * @returns {GithubFailureClass}
+ */
+export function classifyGithubFailure(text, code = null) {
+  if (code === TIMEOUT_EXIT_CODE) {
+    return 'network';
+  }
+  const message = typeof text === 'string' ? text : '';
+  if (RATE_LIMIT_PATTERN.test(message)) {
+    return 'rate_limit';
+  }
+  if (AUTH_PATTERN.test(message)) {
+    return 'auth';
+  }
+  if (NETWORK_PATTERN.test(message)) {
+    return 'network';
+  }
+  return 'unknown';
+}
+
+/**
+ * Whether a failure class is a transient GitHub failure the merge queue waits
+ * out (`network`, `rate_limit`). An absent or unrecognized class is NOT
+ * transient — unknown failures must never wait forever (UI-aui8 §3.1).
+ *
+ * @param {unknown} failure_class
+ * @returns {boolean}
+ */
+export function isTransientGithubFailure(failure_class) {
+  return failure_class === 'network' || failure_class === 'rate_limit';
+}
 
 /**
  * One open pull request as observed by {@link createGh}'s `openPrForBranch`.
@@ -218,11 +284,37 @@ function exitReason(code) {
 }
 
 /**
+ * The error state for a non-zero `gh` exit: the stable reason plus, for a
+ * call that ran, the {@link classifyGithubFailure} class of what it printed.
+ * A missing binary carries no class (it is not a GitHub failure).
+ *
+ * @param {{ code: number, stdout: string, stderr: string }} r
+ * @returns {{ state: 'error', reason: string, failure_class?: GithubFailureClass }}
+ */
+function exitError(r) {
+  const reason = exitReason(r.code);
+  if (reason === 'gh_missing') {
+    return { state: 'error', reason };
+  }
+  return {
+    state: 'error',
+    reason,
+    failure_class: classifyGithubFailure(
+      `${r.stderr || ''}\n${r.stdout || ''}`,
+      r.code
+    )
+  };
+}
+
+/**
  * Create the `gh` adapter.
  *
  * `run` spawns `gh` and `git_run` spawns `git`; they stay separate runners
  * because each is bound to its own binary — reusing `run` for the origin lookup
  * would hand `git` arguments to `gh`.
+ *
+ * The default `run` bounds every spawn at {@link GH_CALL_TIMEOUT_MS}; an
+ * injected runner owns its own ceiling.
  *
  * @param {{
  *   run?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
@@ -231,7 +323,10 @@ function exitReason(code) {
  * }} [deps]
  */
 export function createGh(deps = {}) {
-  const run = deps.run || ((args, options) => runShell('gh', args, options));
+  const run =
+    deps.run ||
+    ((args, options) =>
+      runShell('gh', args, { ...options, timeout_ms: GH_CALL_TIMEOUT_MS }));
   const gitRun =
     deps.git_run || ((args, options) => runShell('git', args, options));
   const now = deps.now || (() => Date.now());
@@ -300,7 +395,7 @@ export function createGh(deps = {}) {
    *
    * @param {string[]} args
    * @param {string} cwd
-   * @returns {Promise<{ state: 'ok', data: unknown } | { state: 'error', reason: string }>}
+   * @returns {Promise<{ state: 'ok', data: unknown } | { state: 'error', reason: string, failure_class?: GithubFailureClass }>}
    */
   async function runJson(args, cwd) {
     /** @type {{ code: number, stdout: string, stderr: string }} */
@@ -311,7 +406,7 @@ export function createGh(deps = {}) {
       return { state: 'error', reason: 'gh_spawn_failed' };
     }
     if (r.code !== 0) {
-      return { state: 'error', reason: exitReason(r.code) };
+      return exitError(r);
     }
     try {
       return { state: 'ok', data: JSON.parse(r.stdout) };
@@ -338,7 +433,7 @@ export function createGh(deps = {}) {
       return { state: 'error', reason: 'gh_spawn_failed' };
     }
     if (r.code !== 0) {
-      return { state: 'error', reason: exitReason(r.code) };
+      return exitError(r);
     }
     return { state: 'ok', data: true };
   }
@@ -384,7 +479,7 @@ export function createGh(deps = {}) {
       return { state: 'error', reason: 'gh_spawn_failed' };
     }
     if (r.code !== 0) {
-      return { state: 'error', reason: exitReason(r.code) };
+      return exitError(r);
     }
     /** @type {unknown} */
     let parsed;

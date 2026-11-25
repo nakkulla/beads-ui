@@ -1,5 +1,18 @@
 import { describe, expect, test, vi } from 'vitest';
-import { createGh } from './gh.js';
+import { runShell } from '../bd.js';
+import {
+  GH_CALL_TIMEOUT_MS,
+  classifyGithubFailure,
+  createGh,
+  isTransientGithubFailure
+} from './gh.js';
+
+// The default runner is the one place a real `gh` would spawn; every other
+// test injects its own runner, so this stub only answers the ceiling test.
+vi.mock('../bd.js', async (importOriginal) => ({
+  .../** @type {object} */ (await importOriginal()),
+  runShell: vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }))
+}));
 
 const PR = {
   number: 7,
@@ -95,7 +108,11 @@ describe('worker/gh — openPrForBranch', () => {
 
     const r = await makeGh(run).openPrForBranch('/repo', 'UI-1');
 
-    expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
+    expect(r).toEqual({
+      state: 'error',
+      reason: 'gh_failed',
+      failure_class: 'unknown'
+    });
   });
 
   test('reports a missing gh binary distinctly', async () => {
@@ -189,7 +206,11 @@ describe('worker/gh — mergedPrForBranch', () => {
 
     const r = await makeGh(run).mergedPrForBranch('/repo', 'UI-1');
 
-    expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
+    expect(r).toEqual({
+      state: 'error',
+      reason: 'gh_failed',
+      failure_class: 'unknown'
+    });
   });
 
   test('returns error (not empty) on unparseable output', async () => {
@@ -685,7 +706,11 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
 
     const r = await makeGh(run).prDetail('/repo', 999999);
 
-    expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
+    expect(r).toEqual({
+      state: 'error',
+      reason: 'gh_failed',
+      failure_class: 'unknown'
+    });
   });
 
   test('returns error on a payload without a state', async () => {
@@ -780,7 +805,11 @@ describe('worker/gh — write operations (worker-phase2 §6)', () => {
 
     const r = await makeGh(run).mergeSquash('/repo', 304, 'a'.repeat(40));
 
-    expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
+    expect(r).toEqual({
+      state: 'error',
+      reason: 'gh_failed',
+      failure_class: 'unknown'
+    });
   });
 
   test('updates the branch from its base', async () => {
@@ -1225,5 +1254,115 @@ describe('worker/gh — explicit slug entry (UI-k467)', () => {
     await makeGh(run, git_run).forSlug('acme/repo').closePr('/rig', 4);
 
     expect(git_run).not.toHaveBeenCalled();
+  });
+});
+
+describe('worker/gh — GitHub failure classification (UI-aui8 §3.1)', () => {
+  test.each([
+    {
+      failure_class: 'network',
+      stderr: 'dial tcp 140.82.112.6:443: i/o timeout'
+    },
+    { failure_class: 'network', stderr: 'net/http: TLS handshake timeout' },
+    { failure_class: 'network', stderr: 'read: connection reset by peer' },
+    {
+      failure_class: 'network',
+      stderr: 'fatal: Could not resolve host: github.com'
+    },
+    { failure_class: 'network', stderr: 'HTTP 500: Internal Server Error' },
+    { failure_class: 'network', stderr: 'HTTP 502: Bad Gateway' },
+    { failure_class: 'network', stderr: 'HTTP 503: Service Unavailable' },
+    { failure_class: 'network', stderr: 'HTTP 504: Gateway Timeout' },
+    {
+      failure_class: 'rate_limit',
+      stderr: 'GraphQL: API rate limit exceeded for user ID 1.'
+    },
+    {
+      failure_class: 'rate_limit',
+      stderr: 'HTTP 403: You have exceeded a secondary rate limit.'
+    },
+    { failure_class: 'rate_limit', stderr: 'HTTP 429: Too Many Requests' },
+    { failure_class: 'auth', stderr: 'HTTP 401: Bad credentials' },
+    {
+      failure_class: 'auth',
+      stderr: 'To get started with GitHub CLI, please run:  gh auth login'
+    },
+    { failure_class: 'auth', stderr: 'remote: Authentication failed' },
+    { failure_class: 'auth', stderr: 'Permission denied (publickey).' },
+    {
+      failure_class: 'unknown',
+      stderr:
+        'GraphQL: Could not resolve to a PullRequest with the number of 9.'
+    },
+    { failure_class: 'unknown', stderr: 'sensitive-marker' }
+  ])(
+    'classifies "$stderr" as $failure_class',
+    async ({ failure_class, stderr }) => {
+      const run = makeRun({ code: 1, stderr });
+
+      const r = await makeGh(run).prDetail('/repo', 7);
+
+      expect(r).toEqual({ state: 'error', reason: 'gh_failed', failure_class });
+    }
+  );
+
+  test('classifies a call killed at its ceiling as network', async () => {
+    const run = makeRun({ code: 124, stderr: 'HTTP 401: Bad credentials' });
+
+    const r = await makeGh(run).mergeSquash('/repo', 7, 'a'.repeat(40));
+
+    expect(r).toEqual({
+      state: 'error',
+      reason: 'gh_failed',
+      failure_class: 'network'
+    });
+  });
+
+  test('keeps the raw failure text out of the result', async () => {
+    const run = makeRun({
+      code: 1,
+      stderr: 'HTTP 502 for https://x-access-token:SECRET-TOKEN@github.com'
+    });
+
+    const r = await makeGh(run).openPrForBranch('/repo', 'UI-1');
+
+    expect(JSON.stringify(r)).not.toContain('SECRET-TOKEN');
+  });
+
+  test('bounds every default gh spawn with a finite per-call ceiling', async () => {
+    const gh = createGh();
+
+    await gh.checkAvailability();
+
+    expect(runShell).toHaveBeenCalledWith('gh', ['auth', 'status'], {
+      timeout_ms: GH_CALL_TIMEOUT_MS
+    });
+    expect(GH_CALL_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  test('reports a missing gh binary without a GitHub class', async () => {
+    const run = makeRun({ code: 127 });
+
+    const r = await makeGh(run).prDetail('/repo', 7);
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_missing' });
+  });
+
+  test('treats only network and rate_limit as transient', () => {
+    const transient = [
+      'network',
+      'rate_limit',
+      'auth',
+      'unknown',
+      undefined
+    ].map((failure_class) => isTransientGithubFailure(failure_class));
+
+    expect(transient).toEqual([true, true, false, false, false]);
+  });
+
+  test('classifies unrecognized text as unknown', () => {
+    const failure_class = classifyGithubFailure('something else entirely', 1);
+
+    expect(failure_class).toBe('unknown');
   });
 });
