@@ -90,6 +90,7 @@ import {
 import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
 import {
+  FOLLOWUP_LOOKUP_TIMEOUT_MS,
   createNotifier,
   notifyExternalWaitCompleted,
   notifyWaitReasons
@@ -1242,7 +1243,20 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // centre cannot place, and the cache already knows how to read — and not
       // re-read — a title.
       resolveTitle: (bead_id) =>
-        runtime.titleCache.ensureTitle(workspace_root, bead_id)
+        runtime.titleCache.ensureTitle(workspace_root, bead_id),
+      // The handoff and park pushes name the follow-ups this bead's attempt
+      // created in this rig (UI-kd1x). The lookup's own timeout kills a hung
+      // `bd list`, so a push that went out without the lines leaves no child
+      // holding later bd reads.
+      listByMetadataField: (key, value) =>
+        createBdMetadata({
+          cwd: workspace_root,
+          runJson: (family, args, options) =>
+            runBdJsonProjected(family, args, {
+              ...options,
+              timeout_ms: FOLLOWUP_LOOKUP_TIMEOUT_MS
+            })
+        }).listByMetadataField(key, value)
     });
 
   // The `foreign_handoff` announcer (UI-k467 §3.7): the Bead timeline holds the

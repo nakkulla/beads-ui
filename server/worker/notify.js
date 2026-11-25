@@ -162,7 +162,73 @@ const TITLE_MAX = 60;
  * @property {(command: string, args: string[], options: any) => any} [spawnImpl]
  * @property {(...args: any[]) => void} [log]
  * @property {(bead_id: string) => Promise<string|null>} [resolveTitle] - Bead title source for the headline. Optional: a notifier built without one sends id-only headlines rather than failing.
+ * @property {(key: string, value: string) => Promise<unknown[]>} [listByMetadataField] - Same-rig bd rows carrying one metadata key=value, the source of the follow-up lines (UI-kd1x). Optional: a notifier built without one sends no follow-up lines.
  */
+
+/**
+ * How long a follow-up lookup may hold a push before it goes out without one;
+ * the production lookup also kills its `bd` child at this bound.
+ */
+export const FOLLOWUP_LOOKUP_TIMEOUT_MS = 5000;
+
+/**
+ * How many follow-ups a push names before `외 <k>건`: Discord refuses a whole
+ * message over its length limit, so an unbounded list could cost the push.
+ */
+const FOLLOWUPS_SHOWN = 5;
+
+/**
+ * The follow-up lines of a handoff or park push (UI-kd1x): `후속 Bead <n>건`,
+ * then one `<ID> — <제목>` line per issue whose `metadata.worker_created_from`
+ * names this bead, at most `FOLLOWUPS_SHOWN` of them with titles cut like the
+ * headline's. Pure; rows that do not verify are dropped, and no follow-up
+ * leaves the body as it was.
+ *
+ * @param {unknown} rows - bd list rows.
+ * @param {string} bead_id
+ * @returns {string[]}
+ */
+export function followupLines(rows, bead_id) {
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  /** @type {string[]} */
+  const items = [];
+  for (const row of rows) {
+    if (row === null || typeof row !== 'object') {
+      continue;
+    }
+    const issue = /** @type {Record<string, any>} */ (row);
+    const id = text(issue.id);
+    if (
+      id === null ||
+      id === bead_id ||
+      issue.metadata?.worker_created_from !== bead_id
+    ) {
+      continue;
+    }
+    const title = text(
+      typeof issue.title === 'string'
+        ? issue.title.replace(/[\r\n]+/g, ' ')
+        : null
+    );
+    const chars = title === null ? [] : Array.from(title);
+    const shown =
+      chars.length > TITLE_MAX
+        ? `${chars.slice(0, TITLE_MAX).join('')}…`
+        : title;
+    items.push(shown ? `${id} — ${shown}` : id);
+  }
+  if (items.length === 0) {
+    return [];
+  }
+  const rest = items.length - FOLLOWUPS_SHOWN;
+  return [
+    `후속 Bead ${items.length}건`,
+    ...items.slice(0, FOLLOWUPS_SHOWN),
+    ...(rest > 0 ? [`외 ${rest}건`] : [])
+  ];
+}
 
 /**
  * The `🙋 확인 필요` push (UI-nuwy §3.7): sent once per stopped attempt, after
@@ -552,6 +618,41 @@ export function createNotifier(deps) {
   }
 
   /**
+   * The follow-up lines for a bead, or none. Absent, failed, or slow lookups
+   * are fail-quiet: the push goes out without the lines rather than waiting on
+   * or failing over them, because the landing path awaits this push.
+   *
+   * @param {unknown} bead_id
+   * @returns {Promise<string[]>}
+   */
+  async function lookupFollowupLines(bead_id) {
+    if (typeof deps.listByMetadataField !== 'function') {
+      return [];
+    }
+    const id = String(bead_id);
+    /** @type {ReturnType<typeof setTimeout>|undefined} */
+    let timer;
+    try {
+      const rows = await Promise.race([
+        deps.listByMetadataField('worker_created_from', id),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('follow-up lookup timed out')),
+            FOLLOWUP_LOOKUP_TIMEOUT_MS
+          );
+          timer.unref?.();
+        })
+      ]);
+      return followupLines(rows, id);
+    } catch (err) {
+      log('follow-up lookup failed: %o', err);
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * The body the two PR-side notifications share: the headline, the PR url when
    * one was observed, and the repo label. Everything but the headline is
    * dropped when absent rather than printed empty.
@@ -899,7 +1000,13 @@ export function createNotifier(deps) {
           return;
         }
         const bead_title = await lookupTitle(input.bead_id);
-        send(cmd, prBody(TITLE.pr_wait, input, bead_title));
+        send(
+          cmd,
+          [
+            prBody(TITLE.pr_wait, input, bead_title),
+            ...(await lookupFollowupLines(input.bead_id))
+          ].join('\n')
+        );
       } catch (err) {
         log('prWaitEntered failed: %o', err);
       }
@@ -954,6 +1061,7 @@ export function createNotifier(deps) {
         if (repo) {
           lines.push(`리포: ${repo}`);
         }
+        lines.push(...(await lookupFollowupLines(input.bead_id)));
         send(cmd, lines.join('\n'));
       } catch (err) {
         log('awaitingUser failed: %o', err);
@@ -1238,6 +1346,7 @@ export function createNotifier(deps) {
           lines.push(`리포: ${repo}`);
         }
         lines.push(...selfImprovementLines(input.self_improvement));
+        lines.push(...(await lookupFollowupLines(input.bead_id)));
         send(cmd, lines.join('\n'));
       } catch (err) {
         log('quickfixLanded failed: %o', err);

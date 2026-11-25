@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from './bead-timeline.js';
 import {
   createNotifier,
+  followupLines,
   notifyExternalWaitCompleted,
   notifyWaitReasons
 } from './notify.js';
@@ -35,13 +36,14 @@ function makeFakeSpawn() {
 
 /**
  * @param {any} worker_notify
- * @param {{ spawnImpl?: any, log?: any, resolveTitle?: any }} [overrides]
+ * @param {{ spawnImpl?: any, log?: any, resolveTitle?: any, listByMetadataField?: any }} [overrides]
  */
 function makeNotifier(worker_notify, overrides = {}) {
   return createNotifier({
     getConfig: () => ({ worker_notify }),
     spawnImpl: overrides.spawnImpl,
     resolveTitle: overrides.resolveTitle,
+    listByMetadataField: overrides.listByMetadataField,
     log: overrides.log || (() => {})
   });
 }
@@ -2007,5 +2009,217 @@ describe('worker/notify deploy condition wait (dotfiles-rnyd9)', () => {
     await notifier.conditionWaitEntered({ bead_id: 'UI-1', release: 'x' });
 
     expect(spawn.calls).toHaveLength(0);
+  });
+});
+
+describe('worker/notify follow-up beads (UI-kd1x)', () => {
+  const FOLLOWUPS = [
+    {
+      id: 'UI-f1',
+      title: '첫 후속',
+      metadata: { worker_created_from: 'UI-1' }
+    },
+    {
+      id: 'UI-f2',
+      title: '둘째 후속',
+      metadata: { worker_created_from: 'UI-1' }
+    }
+  ];
+  const FOLLOWUP_LINES = [
+    '후속 Bead 2건',
+    'UI-f1 — 첫 후속',
+    'UI-f2 — 둘째 후속'
+  ];
+
+  /** @type {Array<[string, (notifier: any) => Promise<void>, string[]]>} */
+  const PUSHES = [
+    [
+      'prWaitEntered',
+      (notifier) =>
+        notifier.prWaitEntered({
+          bead_id: 'UI-1',
+          pr_url: 'https://example.test/pr/1',
+          repo: '/r/beads-ui'
+        }),
+      ['🤖 📬 PR 제출 — UI-1', 'https://example.test/pr/1', '리포: beads-ui']
+    ],
+    [
+      'quickfixLanded',
+      (notifier) =>
+        notifier.quickfixLanded({
+          bead_id: 'UI-1',
+          head_sha: 'abc1234',
+          repo: '/r/beads-ui'
+        }),
+      ['🤖 ✅ 착지 완료 — UI-1', '착지: abc1234', '리포: beads-ui']
+    ],
+    [
+      'awaitingUser',
+      (notifier) =>
+        notifier.awaitingUser({
+          bead_id: 'UI-1',
+          awaiting_user: 'plan_approval',
+          session: 'launched',
+          mode: 'fork',
+          session_id: '12345678-aaaa',
+          bridge_active: true,
+          repo: '/r/beads-ui'
+        }),
+      [
+        '🤖 ⏸️ 파킹 — UI-1',
+        '파킹: plan_approval',
+        '문의 세션: generic · launched · fork 12345678',
+        '브리지: 활성',
+        '리포: beads-ui'
+      ]
+    ]
+  ];
+
+  test.each(PUSHES)(
+    'appends the follow-up lines to the %s body',
+    async (_name, push, base_lines) => {
+      const spawn = makeFakeSpawn();
+      const listByMetadataField = vi.fn(async () => FOLLOWUPS);
+      const notifier = makeNotifier(ENABLED, {
+        spawnImpl: spawn.spawnImpl,
+        listByMetadataField
+      });
+
+      await push(notifier);
+
+      expect(listByMetadataField).toHaveBeenCalledWith(
+        'worker_created_from',
+        'UI-1'
+      );
+      expect(messageOf(spawn.last())).toBe(
+        [...base_lines, ...FOLLOWUP_LINES].join('\n')
+      );
+    }
+  );
+
+  test.each(PUSHES)(
+    'keeps the %s body unchanged without follow-ups',
+    async (_name, push, base_lines) => {
+      const spawn = makeFakeSpawn();
+      const notifier = makeNotifier(ENABLED, {
+        spawnImpl: spawn.spawnImpl,
+        listByMetadataField: async () => []
+      });
+
+      await push(notifier);
+
+      expect(messageOf(spawn.last())).toBe(base_lines.join('\n'));
+    }
+  );
+
+  test.each(PUSHES)(
+    'sends the %s push without follow-up lines when the lookup fails',
+    async (_name, push, base_lines) => {
+      const spawn = makeFakeSpawn();
+      const log = vi.fn();
+      const notifier = makeNotifier(ENABLED, {
+        spawnImpl: spawn.spawnImpl,
+        listByMetadataField: async () => {
+          throw new Error('bd exploded');
+        },
+        log
+      });
+
+      await push(notifier);
+
+      expect(messageOf(spawn.last())).toBe(base_lines.join('\n'));
+      expect(log).toHaveBeenCalled();
+    }
+  );
+
+  test('drops rows that do not name the bead as their creator', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      listByMetadataField: async () => [
+        FOLLOWUPS[0],
+        {
+          id: 'UI-x',
+          title: '남의 후속',
+          metadata: { worker_created_from: 'UI-9' }
+        },
+        {
+          id: 'UI-1',
+          title: '자기 자신',
+          metadata: { worker_created_from: 'UI-1' }
+        }
+      ]
+    });
+
+    await notifier.prWaitEntered({ bead_id: 'UI-1' });
+
+    expect(messageOf(spawn.last())).toBe(
+      ['🤖 📬 PR 제출 — UI-1', '후속 Bead 1건', 'UI-f1 — 첫 후속'].join('\n')
+    );
+  });
+
+  test('looks up no follow-ups when notifications are off', async () => {
+    const spawn = makeFakeSpawn();
+    const listByMetadataField = vi.fn(async () => FOLLOWUPS);
+    const notifier = makeNotifier(
+      { enabled: false, cmd: ['discord'] },
+      { spawnImpl: spawn.spawnImpl, listByMetadataField }
+    );
+
+    await notifier.prWaitEntered({ bead_id: 'UI-1' });
+    await notifier.quickfixLanded({ bead_id: 'UI-1' });
+    await notifier.awaitingUser({ bead_id: 'UI-1' });
+
+    expect(listByMetadataField).not.toHaveBeenCalled();
+    expect(spawn.calls).toHaveLength(0);
+  });
+
+  test('leaves the merge push without follow-up lines', async () => {
+    const spawn = makeFakeSpawn();
+    const listByMetadataField = vi.fn(async () => FOLLOWUPS);
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      listByMetadataField
+    });
+
+    await notifier.mergeCompleted({ bead_id: 'UI-1' });
+
+    expect(messageOf(spawn.last())).toBe('🤖 ✅ 머지 완료 — UI-1');
+  });
+});
+
+describe('worker/notify follow-up line bound (UI-kd1x)', () => {
+  test('names five follow-ups and counts the rest', () => {
+    const rows = Array.from({ length: 7 }, (_, index) => ({
+      id: `UI-f${index + 1}`,
+      title: `후속 ${index + 1}`,
+      metadata: { worker_created_from: 'UI-1' }
+    }));
+
+    const lines = followupLines(rows, 'UI-1');
+
+    expect(lines).toEqual([
+      '후속 Bead 7건',
+      'UI-f1 — 후속 1',
+      'UI-f2 — 후속 2',
+      'UI-f3 — 후속 3',
+      'UI-f4 — 후속 4',
+      'UI-f5 — 후속 5',
+      '외 2건'
+    ]);
+  });
+
+  test('cuts a long follow-up title like the headline', () => {
+    const rows = [
+      {
+        id: 'UI-f1',
+        title: '가'.repeat(80),
+        metadata: { worker_created_from: 'UI-1' }
+      }
+    ];
+
+    const lines = followupLines(rows, 'UI-1');
+
+    expect(lines[1]).toBe(`UI-f1 — ${'가'.repeat(60)}…`);
   });
 });
