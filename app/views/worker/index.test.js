@@ -12890,9 +12890,12 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
      * manual authority.
      *
      * @param {Record<string, any>} hold
+     * @param {Record<string, any>} [over] - More queue fields, such as a
+     * completion record.
      */
-    function heldLane(hold) {
+    function heldLane(hold, over = {}) {
       return laneOf(['RD-1'], {
+        ...over,
         merge_queue: [
           {
             bead_id: 'RD-1',
@@ -12964,6 +12967,35 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
           row.querySelector('.worker-mini__merge-cancel')
         )?.disabled
       ]).toEqual([null, false]);
+    });
+
+    test('draws the connection wait on a completion root held in its merge turn', () => {
+      const { mount } = mountLane(
+        heldLane(
+          { ...WAIT_HOLD, wait_point: 'merge_command' },
+          {
+            completion_status: {
+              'RD-1': {
+                root_bead_id: 'RD-1',
+                phase: 'merging',
+                subject_role: 'root',
+                subject_bead_id: 'RD-1',
+                active_attempt_id: 'a1',
+                failure_stage: null,
+                failure_reason: null,
+                terminal_reason: null
+              }
+            }
+          }
+        )
+      );
+
+      const badge = badgeOf(mount);
+
+      expect([
+        badge.textContent?.trim(),
+        badge.classList.contains('worker-mini__badge--activity')
+      ]).toEqual(['GitHub 연결 대기', true]);
     });
 
     test('ranks the connection wait below 머지 중', () => {
