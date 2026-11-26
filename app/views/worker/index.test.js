@@ -2188,6 +2188,56 @@ describe('views/worker', () => {
     );
   });
 
+  test('advances relative time text every tick without a render', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    try {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const queueStore = createWorkerQueueStore();
+      queueStore.set(
+        queueOf({
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'W1',
+              status: 'running',
+              runner: 'claude',
+              started_at: Date.now() - 5000,
+              last_activity: {
+                at: Date.now() - 1000,
+                kind: 'tool',
+                tool: 'Bash',
+                command: 'git commit -m fix',
+                delegated: true,
+                delegated_runtime: 'claude'
+              }
+            }
+          }
+        })
+      );
+      const view = createWorkerView(mount, {
+        issueStores: seedCandidates(),
+        queueStore,
+        transport: vi.fn()
+      });
+      view.load();
+      const age = () =>
+        mount.querySelector('.rtile[data-bead-id="W1"] .rtile__activity-age')
+          ?.textContent;
+      const reads = vi.spyOn(queueStore, 'get');
+      const before = age();
+
+      vi.advanceTimersByTime(60_000);
+
+      expect(before).toBe('방금');
+      expect(age()).toBe('1분 전');
+      expect(reads).not.toHaveBeenCalled();
+      view.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('draws 위임 중 and 위임 완료 chips from the attempt legs', () => {
     const mount = mountAttemptTiles({
       attempts: {
