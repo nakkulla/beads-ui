@@ -8789,6 +8789,88 @@ describe('worker/pr-actions — GitHub failures at merge time (UI-aui8 §3.2, §
     });
   });
 
+  /**
+   * A worker attempt that recorded no `target_base`, so the base gate reads
+   * the declaration with one more base fetch after the gate's own.
+   */
+  function declarationStore() {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: BEAD }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        repo: REPO,
+        session_id: 'sess-1',
+        finished_at: 10,
+        verify_result: /** @type {any} */ ({
+          ok: true,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304
+        })
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: BEAD,
+      attempt_id: 'a1',
+      patch: { status: 'done' }
+    });
+    return store;
+  }
+
+  test('refuses with the connection wait when the expected-base fetch after the gate read fails with network', async () => {
+    const h = makeActions({
+      store: declarationStore(),
+      resolveBase: baseReads(BASE_OK, baseDown('network'))
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: 'sha-aaa'
+    });
+  });
+
+  test('holds a MERGED PR for the connection when the expected-base fetch fails with rate_limit', async () => {
+    const h = makeActions({
+      store: declarationStore(),
+      details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })],
+      resolveBase: baseReads(baseDown('rate_limit'))
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      head_sha: 'sha-aaa'
+    });
+  });
+
+  test('reports the connection wait from the mergeability probe when the expected-base fetch fails with network', async () => {
+    const h = makeActions({
+      store: declarationStore(),
+      resolveBase: baseReads(BASE_OK, baseDown('network'))
+    });
+
+    const probe = await h.actions.probeMergeability(BEAD);
+
+    expect(probe).toMatchObject({
+      ok: false,
+      kind: 'blocked',
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      head_sha: 'sha-aaa',
+      base_ref: 'main'
+    });
+  });
+
   test('refuses with the connection wait at verify_recheck when the pre-merge PR re-read fails with network', async () => {
     const h = makeActions({ details: [prOf(), ghDown('network')] });
 

@@ -626,6 +626,22 @@ export function createPrActions(deps) {
   }
 
   /**
+   * A failed base comparison as a {@link gateFailure} input: the PR it read is
+   * the identity already observed, so a GitHub failure of the extra base fetch
+   * never reads as an unread head (UI-aui8 §3.2).
+   *
+   * @param {any} failed - The `baseGate` refusal.
+   * @param {{ head_sha?: string }} pr - The PR the gate already read.
+   */
+  function baseGateFailure(failed, pr) {
+    return {
+      error: String(failed.reason),
+      ...(failed.failure_class ? { failure_class: failed.failure_class } : {}),
+      pr
+    };
+  }
+
+  /**
    * @param {Queue} q
    * @param {string} bead_id
    * @returns {boolean}
@@ -754,7 +770,7 @@ export function createPrActions(deps) {
    * @param {Queue} q
    * @param {string} bead_id
    * @param {import('./target-base.js').TargetBaseResult} [declaration]
-   * @returns {Promise<{ ok: true, base: string, source: 'attempt'|'declaration' }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true, base: string, source: 'attempt'|'declaration' }|{ ok: false, reason: string, failure_class?: GithubFailureClass }>}
    */
   async function expectedBaseFor(q, bead_id, declaration = undefined) {
     const attempts = q && q.attempts ? Object.values(q.attempts) : [];
@@ -792,7 +808,16 @@ export function createPrActions(deps) {
       }
     }
     if (!resolved.ok) {
-      return { ok: false, reason: `base_unresolved:${resolved.step}` };
+      // The fetch's GitHub class travels with the refusal, so a transient
+      // failure of this extra base read is the connection wait like the gate's
+      // own read (UI-aui8 §3.2).
+      return {
+        ok: false,
+        reason: `base_unresolved:${resolved.step}`,
+        ...(resolved.failure_class
+          ? { failure_class: resolved.failure_class }
+          : {})
+      };
     }
     return { ok: true, base: resolved.base, source: 'declaration' };
   }
@@ -813,7 +838,7 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {string|null|undefined} observed_base_ref
    * @param {{ ok: true, base: string, source: 'attempt'|'declaration' }} [expected_input]
-   * @returns {Promise<{ ok: true, base: string }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true, base: string }|{ ok: false, reason: string, failure_class?: GithubFailureClass }>}
    */
   async function baseGate(
     q,
@@ -3618,7 +3643,7 @@ export function createPrActions(deps) {
       return {
         ok: false,
         kind: 'blocked',
-        reason: /** @type {any} */ (base_ok).reason,
+        ...gateFailure(baseGateFailure(base_ok, observed.pr)),
         head_sha: observed.pr.head_sha,
         base_ref: observed.pr.base_ref || null,
         external: is_external
@@ -3826,7 +3851,12 @@ export function createPrActions(deps) {
         ? { ok: /** @type {const} */ (true) }
         : await baseGate(q, bead_id, first.pr.base_ref);
       if (!base_ok.ok) {
-        return refuse(/** @type {any} */ (base_ok).reason);
+        return {
+          ok: false,
+          action: 'refused',
+          ...gateFailure(baseGateFailure(base_ok, first.pr)),
+          head_sha: first.pr.head_sha
+        };
       }
       const refs = {
         base_ref: first.pr.base_ref || null,
