@@ -278,6 +278,8 @@ function permanentGithubHead(result, head_sha) {
  * @property {string|null} [failure_class]
  * @property {string|null} [wait_point]
  * @property {number|null} [since]
+ * @property {import('./queue-store.js').LostBaseUpdate|null} [base_update] -
+ * The base update whose answer was lost (§3.2); omitted keeps the stored one.
  */
 
 /**
@@ -374,7 +376,10 @@ export function writeGithubHold(ctx, bead_id, input) {
         auto_review_wait: null,
         failure_class: input.failure_class ?? null,
         wait_point: input.wait_point ?? null,
-        ...(typeof input.since === 'number' ? { since: input.since } : {})
+        ...(typeof input.since === 'number' ? { since: input.since } : {}),
+        ...(input.base_update !== undefined
+          ? { base_update: input.base_update }
+          : {})
       },
       at: ctx.now()
     }).ok
@@ -1368,6 +1373,55 @@ export function createMergeQueue(deps) {
    */
   function githubHoldOf(bead_id) {
     return queuedGithubHold(github_hold_ctx, bead_id);
+  }
+
+  /**
+   * Decide a base update whose answer was lost (UI-aui8 §3.2) from an
+   * observation that read the PR head. An unmoved head means the update did
+   * not apply; a moved head means the PR is already past that request, so it
+   * is not sent again. The decided record is cleared, so a later observation
+   * judges afresh.
+   *
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').LostBaseUpdate} lost
+   * @param {{ head_sha?: string|null }} observed
+   * @returns {'applied'|'not_applied'|'undecided'|'failed'} `failed` when the
+   * clearing write threw; this drain ends (UI-aui8 §3.3).
+   */
+  function decideLostBaseUpdate(bead_id, lost, observed) {
+    const head =
+      typeof observed.head_sha === 'string' && observed.head_sha.length > 0
+        ? observed.head_sha.toLowerCase()
+        : null;
+    if (head === null) {
+      return 'undecided';
+    }
+    const hold = githubHoldOf(bead_id);
+    if (hold?.base_update) {
+      try {
+        deps.store.setMergeHold(workspace, {
+          bead_id,
+          hold: {
+            reason: hold.reason,
+            head_sha: hold.head_sha,
+            failure_class: hold.failure_class ?? null,
+            wait_point: hold.wait_point ?? null,
+            base_update: null
+          },
+          at: now()
+        });
+      } catch (err) {
+        log(
+          'merge queue lost base update clear failed for %s: %o',
+          bead_id,
+          err
+        );
+        halted = true;
+        notify();
+        return 'failed';
+      }
+    }
+    return head === lost.head_sha ? 'not_applied' : 'applied';
   }
 
   /**
@@ -2983,6 +3037,7 @@ export function createMergeQueue(deps) {
       // as any other commit, so there is no queue-owned mutation voucher to
       // carry and no `resolver-self:` receipt to demand.
       const verified_operation = verifiedOperation(bead_id);
+      const lost_base_update = githubHoldOf(bead_id)?.base_update ?? null;
       const result = await runLatestMerge(
         bead_id,
         bead_id,
@@ -3021,6 +3076,18 @@ export function createMergeQueue(deps) {
           wait_point: result.wait_point ?? 'gate_read'
         });
         return;
+      }
+      // A base update whose answer was lost is decided by this observation
+      // before any new one is sent (UI-aui8 §3.2): one that applied is this
+      // turn's update, as if its answer had come back.
+      if (lost_base_update) {
+        const decided = decideLostBaseUpdate(bead_id, lost_base_update, result);
+        if (decided === 'failed') {
+          return;
+        }
+        if (decided === 'applied') {
+          base_update_attempted = true;
+        }
       }
       // The poller's own cleanup of a MERGED PR holds the bead in flight: the
       // connection-wait rejudge accepts it rather than run a second one
@@ -3259,12 +3326,16 @@ export function createMergeQueue(deps) {
         }
         if (isTransientGithubFailure(updated.failure_class)) {
           // The update never reached GitHub, or its answer never came back
-          // (UI-aui8 §3.2): the next turn re-gates and finds out.
+          // (UI-aui8 §3.2): the hold keeps the request, and the next
+          // observation decides whether it applied before any new one.
           holdOnGithub(bead_id, {
             reason: GITHUB_UNREACHABLE,
             head_sha: result.head_sha ?? null,
             failure_class: updated.failure_class ?? null,
-            wait_point: 'resolution'
+            wait_point: 'resolution',
+            base_update: result.head_sha
+              ? { head_sha: result.head_sha, base_ref: result.base_ref ?? null }
+              : null
           });
           return;
         }

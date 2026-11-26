@@ -4937,6 +4937,125 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
     expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
   });
 
+  describe('a base update whose answer was lost (UI-aui8 §3.2)', () => {
+    /**
+     * A mergeability probe that reads the PR BEHIND its base at `head_sha`.
+     *
+     * @param {string} head_sha
+     */
+    function behind(head_sha) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: 'base_behind',
+        head_sha,
+        base_ref: 'main',
+        head_ref: 'UI-1',
+        external: false
+      };
+    }
+
+    /** A mergeability probe that could not reach GitHub. */
+    const PROBE_UNREACHABLE = {
+      ok: false,
+      kind: 'blocked',
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: null,
+      base_ref: null,
+      external: false
+    };
+
+    /**
+     * A probe that answers from a script, call by call (the last entry
+     * repeats).
+     *
+     * @param {any[]} script
+     */
+    function scriptedProbe(script) {
+      return vi.fn(async () =>
+        script.length > 1 ? script.shift() : script[0]
+      );
+    }
+
+    /** An update whose request went out and whose answer never came back. */
+    function lostUpdate() {
+      return vi.fn(async () => ({
+        ok: false,
+        reason: 'update_branch_failed:network',
+        result_head_sha: null,
+        failure_class: 'network'
+      }));
+    }
+
+    test('keeps the lost request head and base on the hold', async () => {
+      const store = seedManual(['UI-1']);
+      const mq = driver(store, {
+        merge: vi.fn(),
+        updateBase: lostUpdate(),
+        probeMergeability: scriptedProbe([behind(HEAD)])
+      });
+
+      await mq.kick();
+
+      expect(entryOf(store).hold.base_update).toEqual({
+        head_sha: HEAD,
+        base_ref: 'main'
+      });
+    });
+
+    test('does not update again once the next observation shows the lost update applied', async () => {
+      const store = seedManual(['UI-1']);
+      const updateBase = lostUpdate();
+      const mq = driver(store, {
+        merge: vi.fn(),
+        updateBase,
+        probeMergeability: scriptedProbe([behind(HEAD), behind(MOVED_HEAD)])
+      });
+      await mq.kick();
+
+      await mq.kick();
+
+      expect(updateBase).toHaveBeenCalledTimes(1);
+    });
+
+    test('keeps the lost update undecided across a turn that could not reach GitHub', async () => {
+      const store = seedManual(['UI-1']);
+      const updateBase = lostUpdate();
+      const mq = driver(store, {
+        merge: vi.fn(),
+        updateBase,
+        probeMergeability: scriptedProbe([
+          behind(HEAD),
+          PROBE_UNREACHABLE,
+          behind(MOVED_HEAD)
+        ])
+      });
+      await mq.kick();
+      await mq.kick();
+
+      await mq.kick();
+
+      expect(updateBase).toHaveBeenCalledTimes(1);
+    });
+
+    test('updates again once the next observation shows the lost update did not apply', async () => {
+      const store = seedManual(['UI-1']);
+      const updateBase = lostUpdate();
+      const mq = driver(store, {
+        merge: vi.fn(),
+        updateBase,
+        probeMergeability: scriptedProbe([behind(HEAD)])
+      });
+      await mq.kick();
+
+      await mq.kick();
+
+      expect(updateBase).toHaveBeenCalledTimes(2);
+    });
+  });
+
   test('merges without a click once the next turn reaches GitHub', async () => {
     const store = seed(['UI-1']);
     const merge = scriptedMerge(store, [unreachable('gate_read'), LANDED]);

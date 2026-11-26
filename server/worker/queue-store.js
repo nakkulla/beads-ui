@@ -1162,6 +1162,16 @@
  * @property {number} [notified_at] - When the hold's one Discord notification
  * was claimed (UI-aui8 §3.8) — written BEFORE the send, so a restart never
  * sends it twice.
+ * @property {LostBaseUpdate} [base_update] - The base update whose answer was
+ * lost (UI-aui8 §3.2), kept until an observation decides whether it applied.
+ */
+/**
+ * The head and base a queue-owned base update was sent for when its answer
+ * never came back (UI-aui8 §3.2).
+ *
+ * @typedef {Object} LostBaseUpdate
+ * @property {string} head_sha
+ * @property {string|null} base_ref
  */
 /**
  * @typedef {'waiting'|'yielded'|'ready'} ResolutionWaitState
@@ -3299,6 +3309,30 @@ const GITHUB_FAILURE_CLASSES = new Set(
 const GITHUB_WAIT_POINTS = new Set(Object.keys(GITHUB_WAIT_POINT_LABELS));
 
 /**
+ * Read a GitHub hold's lost base update (UI-aui8 §3.2); null when the value
+ * is absent or its shape cannot be trusted.
+ *
+ * @param {unknown} value
+ * @returns {LostBaseUpdate|null}
+ */
+function normalizeLostBaseUpdate(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.head_sha !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(value.head_sha)
+  ) {
+    return null;
+  }
+  return {
+    head_sha: value.head_sha.toLowerCase(),
+    base_ref:
+      typeof value.base_ref === 'string' && value.base_ref.length > 0
+        ? value.base_ref
+        : null
+  };
+}
+
+/**
  * @param {unknown} value
  * @returns {MergeHold|null}
  */
@@ -3313,6 +3347,7 @@ function normalizeMergeHold(value) {
   ) {
     return null;
   }
+  const base_update = normalizeLostBaseUpdate(value.base_update);
   return {
     reason: value.reason,
     head_sha: value.head_sha.toLowerCase(),
@@ -3331,7 +3366,8 @@ function normalizeMergeHold(value) {
     ...(typeof value.notified_at === 'number' &&
     Number.isFinite(value.notified_at)
       ? { notified_at: value.notified_at }
-      : {})
+      : {}),
+    ...(base_update === null ? {} : { base_update })
   };
 }
 
@@ -14634,12 +14670,14 @@ export function createQueueStore(options = {}) {
      * marker (§3.8). `notified_at` follows the `auto_review_wait` rule — an
      * omitted value preserves the stored one — but only while the reason is
      * unchanged: a new reason is a new hold, and a new hold has not notified.
+     * The lost `base_update` (§3.2) follows the same rule as `notified_at`,
+     * and `null` clears it.
      * `since` may be passed for a hold whose start predates this write (the
      * post-merge confirm wait, §3.5); a refresh of the same reason still keeps
      * the stored `since`.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, hold: { reason: string, head_sha: string|null, auto_review_wait?: 'slot'|null, failure_class?: string|null, wait_point?: string|null, notified_at?: number|null, since?: number|null }|null, at: number }} input
+     * @param {{ bead_id: string, hold: { reason: string, head_sha: string|null, auto_review_wait?: 'slot'|null, failure_class?: string|null, wait_point?: string|null, notified_at?: number|null, since?: number|null, base_update?: LostBaseUpdate|null }|null, at: number }} input
      * @returns {QueueOpResult}
      */
     setMergeHold(workspace, input) {
@@ -14692,6 +14730,11 @@ export function createQueueStore(options = {}) {
                 Number.isFinite(input.hold.notified_at)
               ? input.hold.notified_at
               : null;
+        const prior_update = same_reason ? (prior?.base_update ?? null) : null;
+        const base_update =
+          input.hold.base_update === undefined
+            ? prior_update
+            : normalizeLostBaseUpdate(input.hold.base_update);
         if (
           prior &&
           same_reason &&
@@ -14699,7 +14742,8 @@ export function createQueueStore(options = {}) {
           prior_wait === auto_review_wait &&
           (prior.failure_class ?? null) === failure_class &&
           (prior.wait_point ?? null) === wait_point &&
-          (prior.notified_at ?? null) === notified_at
+          (prior.notified_at ?? null) === notified_at &&
+          JSON.stringify(prior_update) === JSON.stringify(base_update)
         ) {
           return false;
         }
@@ -14719,7 +14763,8 @@ export function createQueueStore(options = {}) {
           ...(auto_review_wait === null ? {} : { auto_review_wait }),
           ...(failure_class === null ? {} : { failure_class }),
           ...(wait_point === null ? {} : { wait_point }),
-          ...(notified_at === null ? {} : { notified_at })
+          ...(notified_at === null ? {} : { notified_at }),
+          ...(base_update === null ? {} : { base_update })
         };
         return true;
       });
