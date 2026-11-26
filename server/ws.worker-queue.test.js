@@ -2219,7 +2219,8 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
    * A driver stub whose `kick` never merges: these tests assert the QUEUE
    * contract, and letting the real loop run would reach `gh`.
    *
-   * @param {{ active?: string|null }} [state]
+   * @param {{ active?: string|null, probe?: Record<string, unknown> }} [state]
+   * `probe` replaces the click-time probe's answer.
    */
   function registerDriver(state = {}) {
     const kick = vi.fn(async () => {});
@@ -2241,14 +2242,17 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
           isInFlight: () => false,
           // The click-time authoritative identity read the manual authority
           // binds (UI-58w8 §1).
-          probeMergeability: vi.fn(async () => ({
-            ok: true,
-            kind: 'clean',
-            reason: null,
-            head_sha: 'f'.repeat(40),
-            base_ref: 'main',
-            external: false
-          }))
+          probeMergeability: vi.fn(
+            async () =>
+              state.probe ?? {
+                ok: true,
+                kind: 'clean',
+                reason: null,
+                head_sha: 'f'.repeat(40),
+                base_ref: 'main',
+                external: false
+              }
+          )
         },
         mergeQueue: {
           kick,
@@ -3361,6 +3365,125 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     });
 
     expect(replyFor(sock, 'm1').ok).toBe(false);
+  });
+
+  describe('[머지] click while GitHub is unreachable (UI-aui8 §3.10)', () => {
+    const UNREACHABLE_PROBE = {
+      ok: false,
+      kind: 'blocked',
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: null,
+      base_ref: null,
+      external: false
+    };
+
+    test('replies the connection wait without queuing or kicking', async () => {
+      parkInPrWait('UI-1');
+      const kick = registerDriver({ probe: UNREACHABLE_PROBE });
+      const sock = fakeSocket();
+      await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+      await send(sock, 'm1', 'worker-merge-queue-add', {
+        bead_id: 'UI-1',
+        expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+      });
+
+      expect(replyFor(sock, 'm1').payload).toMatchObject({
+        applied: false,
+        conflict: false,
+        queued: 0,
+        reason: 'github_unreachable',
+        failure_class: 'network',
+        wait_point: 'gate_read'
+      });
+      expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual(
+        []
+      );
+      expect(kick).not.toHaveBeenCalled();
+    });
+
+    test('keeps the refused click in the history with its Korean reason', async () => {
+      parkInPrWait('UI-1');
+      registerDriver({ probe: UNREACHABLE_PROBE });
+      const timeline = vi.spyOn(
+        getWorkerRuntime().queueStore,
+        'recordTimelineEvent'
+      );
+      const sock = fakeSocket();
+
+      await send(sock, 'm1', 'worker-merge-queue-add', {
+        bead_id: 'UI-1',
+        expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+      });
+
+      expect(timeline).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          bead_id: 'UI-1',
+          kind: 'user_action',
+          summary: '[머지] 클릭 — 거부: GitHub 연결 대기'
+        })
+      );
+    });
+
+    test('keeps a permanent GitHub refusal in the history with its class phrase', async () => {
+      parkInPrWait('UI-1');
+      registerDriver({
+        probe: {
+          ok: false,
+          kind: 'blocked',
+          reason: 'gh_failed:auth',
+          failure_class: 'auth',
+          head_unread: true,
+          head_sha: null,
+          base_ref: null,
+          external: false
+        }
+      });
+      const timeline = vi.spyOn(
+        getWorkerRuntime().queueStore,
+        'recordTimelineEvent'
+      );
+      const sock = fakeSocket();
+
+      await send(sock, 'm1', 'worker-merge-queue-add', {
+        bead_id: 'UI-1',
+        expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+      });
+
+      expect(timeline).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          kind: 'user_action',
+          summary: '[머지] 클릭 — 거부: GitHub 인증 실패'
+        })
+      );
+    });
+
+    test('keeps a queued click in the history as queued', async () => {
+      parkInPrWait('UI-1');
+      registerDriver();
+      const timeline = vi.spyOn(
+        getWorkerRuntime().queueStore,
+        'recordTimelineEvent'
+      );
+      const sock = fakeSocket();
+
+      await send(sock, 'm1', 'worker-merge-queue-add', {
+        bead_id: 'UI-1',
+        expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+      });
+
+      expect(timeline).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          kind: 'user_action',
+          summary: '[머지] 클릭 — 큐 등록'
+        })
+      );
+    });
   });
 });
 

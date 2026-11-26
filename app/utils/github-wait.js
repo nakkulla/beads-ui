@@ -70,6 +70,90 @@ export const GITHUB_FAILURE_PHRASES = Object.freeze({
 });
 
 /**
+ * The name of the connection wait wherever a person reads it — the PR-wait
+ * badge, a history line, a refused `[머지]` click (UI-aui8 §3.9, §3.10).
+ */
+export const GITHUB_WAIT_LABEL = 'GitHub 연결 대기';
+
+/**
+ * Reason prefixes whose tail is the GitHub failure class of a permanent
+ * failure (UI-aui8 §3.2, §3.6): the gate read, the merge command, and the
+ * pre-merge recheck.
+ */
+const CLASS_TAIL_PREFIXES = Object.freeze([
+  'gh_failed:',
+  'merge_failed:',
+  'verify_candidate_unreadable:'
+]);
+
+/**
+ * The failure class a permanent-failure reason ends with, or null.
+ *
+ * @param {string} reason
+ * @returns {string|null}
+ */
+function classTailOf(reason) {
+  for (const prefix of CLASS_TAIL_PREFIXES) {
+    if (reason.startsWith(prefix)) {
+      const tail = reason.slice(prefix.length);
+      return Object.hasOwn(GITHUB_FAILURE_CLASS_LABELS, tail) ? tail : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * The Korean phrase of a permanent GitHub failure or a moved-candidate
+ * exclusion (UI-aui8 §3.9), chosen by the failure class — the one given, or
+ * the one the reason ends with. Null for the connection wait and for any
+ * reason GitHub did not decide, so the caller keeps its own wording.
+ *
+ * @param {unknown} reason - A refusal, hold or exclusion reason.
+ * @param {unknown} [failure_class]
+ * @returns {string|null}
+ */
+export function githubFailurePhrase(reason, failure_class) {
+  const text =
+    typeof reason === 'string' ? reason.replace(/^retry_exhausted:/, '') : '';
+  if (text === VERIFY_CANDIDATE_MOVED) {
+    return GITHUB_FAILURE_PHRASES[VERIFY_CANDIDATE_MOVED];
+  }
+  if (text === GITHUB_UNREACHABLE) {
+    return null;
+  }
+  const given =
+    typeof failure_class === 'string' && failure_class.length > 0
+      ? failure_class
+      : null;
+  if (text === GITHUB_HEAD_UNREADABLE) {
+    return (
+      GITHUB_FAILURE_PHRASES[given ?? 'unknown'] ??
+      GITHUB_FAILURE_PHRASES.unknown
+    );
+  }
+  const failure = given ?? classTailOf(text);
+  return failure !== null && Object.hasOwn(GITHUB_FAILURE_PHRASES, failure)
+    ? GITHUB_FAILURE_PHRASES[failure]
+    : null;
+}
+
+/**
+ * The Korean reason a GitHub refusal reads as (UI-aui8 §3.10): the
+ * connection wait by name, a permanent failure by its class phrase, and null
+ * for a reason GitHub did not decide.
+ *
+ * @param {unknown} reason
+ * @param {unknown} [failure_class]
+ * @returns {string|null}
+ */
+export function githubReasonText(reason, failure_class) {
+  if (reason === GITHUB_UNREACHABLE) {
+    return GITHUB_WAIT_LABEL;
+  }
+  return githubFailurePhrase(reason, failure_class);
+}
+
+/**
  * Whether a merge hold is the connection wait (UI-aui8 §3.3).
  *
  * @param {unknown} hold - A `merge_holds` record, or nothing.

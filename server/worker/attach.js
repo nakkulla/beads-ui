@@ -4187,6 +4187,32 @@ export function workerMergeEffectInFlight(workspace_root, bead_id) {
 }
 
 /**
+ * The refusal of a `[머지]` click whose probe pinned no PR identity. A probe
+ * a GitHub failure decided carries that failure's reason, class and wait
+ * point (UI-aui8 §3.10); any other unreadable identity is the plain
+ * `pr_identity_unreadable`.
+ *
+ * @param {any} probe - The click-time mergeability probe, or null.
+ * @returns {{ reason: string, failure_class?: string, wait_point?: string }}
+ */
+function unreadableIdentityRefusal(probe) {
+  if (
+    !probe ||
+    typeof probe.reason !== 'string' ||
+    typeof probe.failure_class !== 'string'
+  ) {
+    return { reason: 'pr_identity_unreadable' };
+  }
+  return {
+    reason: probe.reason,
+    failure_class: probe.failure_class,
+    ...(typeof probe.wait_point === 'string'
+      ? { wait_point: probe.wait_point }
+      : {})
+  };
+}
+
+/**
  * Queue a manual [머지] click as a durable per-item continuation authority
  * (UI-58w8 §1). The authority binds the head/base THIS click observed, so the
  * identity comes from one fresh authoritative probe — never a cached badge —
@@ -4195,9 +4221,13 @@ export function workerMergeEffectInFlight(workspace_root, bead_id) {
  * authority authorizes. Without an attachment there is nothing to observe
  * through, which is the same unreadable-identity refusal.
  *
+ * A probe GitHub could not answer keeps its own reason and class (UI-aui8
+ * §3.10): the connection wait when the failure was transient, the class-named
+ * reason otherwise.
+ *
  * @param {string} workspace_root
  * @param {{ bead_id: string, expected_revision: number }} input
- * @returns {Promise<import('./queue-store.js').QueueOpResult & { reason?: string }>}
+ * @returns {Promise<import('./queue-store.js').QueueOpResult & { reason?: string, failure_class?: string, wait_point?: string }>}
  */
 export async function enqueueWorkerManualMerge(workspace_root, input) {
   const key = keyFor(workspace_root);
@@ -4241,7 +4271,7 @@ export async function enqueueWorkerManualMerge(workspace_root, input) {
     return {
       ok: false,
       conflict: false,
-      reason: 'pr_identity_unreadable',
+      ...unreadableIdentityRefusal(probe),
       queue: store.snapshot(key)
     };
   }
