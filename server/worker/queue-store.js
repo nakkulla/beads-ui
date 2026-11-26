@@ -15891,8 +15891,11 @@ export function createQueueStore(options = {}) {
      * user saw, the enroller passes none (it is a server-owned mutation, like
      * every other scheduler/driver write).
      *
+     * An entry's `observed_at` is when its head was observed; a head observed
+     * no later than an exclusion was recorded does not clear it (UI-aui8 §3.4).
+     *
      * @param {string} workspace
-     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, target_base?: string, foreign_rearm?: boolean, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
+     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, observed_at?: number, target_base?: string, foreign_rearm?: boolean, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
      * @returns {QueueOpResult}
      */
     enqueueMergeAuto(workspace, input) {
@@ -16052,6 +16055,15 @@ export function createQueueStore(options = {}) {
           if (skip) {
             if (skip.head_sha === entry.head_sha) {
               // Same head that already failed — the exclusion still holds.
+              continue;
+            }
+            if (
+              typeof entry.observed_at === 'number' &&
+              entry.observed_at <= skip.at
+            ) {
+              // The head was observed no later than the exclusion was decided,
+              // and that decision read GitHub itself (the third moved
+              // recheck's head, UI-aui8 §3.4) — this older head proves no move.
               continue;
             }
             // The branch moved, so whatever failed last time is not what would

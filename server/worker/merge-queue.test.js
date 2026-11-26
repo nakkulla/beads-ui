@@ -6,8 +6,10 @@ import {
   __resetTimingSettingsForTest,
   __setTimingOverridesForTest
 } from '../timing-settings.js';
+import { createAutoMerge } from './auto-merge.js';
 import { createCompletionIntentCoordinator } from './completion-intent.js';
 import { createMergeQueue } from './merge-queue.js';
+import { createPrObservationStore } from './pr-observations.js';
 import {
   __resetQueueEventsForTest,
   emitQueueChanged,
@@ -5666,24 +5668,66 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
     });
   });
 
-  test('keeps the third moved head out of the next automatic enrolment', async () => {
+  test('keeps the exclusion when the enrolment its queue change drives reads the older gate head', async () => {
     const store = seed(['UI-1']);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    // The poller's cache still holds the head the last gate read, taken
+    // before the third recheck saw the branch move again.
+    const observations = createPrObservationStore();
+    observations.record(WS, 'UI-1', {
+      pr: /** @type {any} */ ({
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        head_sha: MOVED_HEAD,
+        base_ref: 'main'
+      })
+    });
+    /** @type {Array<(ws: string) => void>} */
+    const listeners = [];
+    const row = [{ bead_id: 'UI-1', external: true }];
+    const auto = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyState: () => ({
+        declaration_state: 'present',
+        base_sha: 'b'.repeat(40)
+      }),
+      headSha: (bead_id) => observations.get(WS, bead_id)?.pr?.head_sha ?? null,
+      observedAt: (bead_id) =>
+        observations.get(WS, bead_id)?.observed_at ?? null,
+      baseRef: () => 'main',
+      lane: () => row,
+      candidates: () => row,
+      subscribeQueueChanged: (fn) => {
+        listeners.push(fn);
+        return () => {};
+      }
+    });
+    auto.start();
     const mq = driver(store, {
       merge: scriptedMerge(store, [
         moved(MOVED_HEAD),
         moved(MOVED_HEAD),
-        moved(THIRD_HEAD)
-      ])
+        moved(THIRD_HEAD),
+        LANDED
+      ]),
+      notifyChanged: (/** @type {string} */ ws) => {
+        for (const fn of [...listeners]) {
+          fn(ws);
+        }
+      }
     });
+
     await mq.kick();
 
-    store.enqueueMergeAuto(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      entries: [{ bead_id: 'UI-1', head_sha: THIRD_HEAD, target_base: 'main' }],
-      present_ids: ['UI-1']
-    });
-
     expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toMatchObject({
+      head_sha: THIRD_HEAD
+    });
   });
 
   test('starts no review session, resolver or failure for a connection wait', async () => {

@@ -413,3 +413,22 @@ export function observedBaseRef(workspace_key, bead_id) {
     return null;
   }
 }
+
+/**
+ * When the cache entry {@link observedHeadSha} reads was observed (UI-aui8
+ * §3.4), or null when the cache cannot answer. An exclusion recorded after it
+ * was decided on a newer GitHub read than this head.
+ *
+ * @param {string} workspace_key
+ * @param {string} bead_id
+ * @returns {number|null}
+ */
+export function observedAtOf(workspace_key, bead_id) {
+  try {
+    const entry = getWorkerRuntime().prObservations.get(workspace_key, bead_id);
+    const at = entry && entry.pr ? entry.observed_at : null;
+    return typeof at === 'number' && Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
