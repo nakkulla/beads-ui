@@ -81,6 +81,7 @@ import {
   evaluateMergeGate,
   reviewReceiptState
 } from './merge-gate.js';
+import { endGithubHold, queuedGithubHold } from './merge-queue.js';
 import { createPostMergeJobRunner } from './post-merge-job.js';
 import { resolvePrRef } from './pr-poller.js';
 import {
@@ -2593,8 +2594,20 @@ export function createPrActions(deps) {
         log('external row drop failed for %s: %o', bead_id, err);
       }
     }
+    // The queue row leaves with the lane (UI-aui8 §4), and a GitHub hold it
+    // stood on ends here: a cleanup the poller ran between two drains leaves
+    // no row for the merge driver to close the hold's history on (§3.9).
+    const hold_ctx = {
+      workspace,
+      store: deps.store,
+      timeline: deps.timeline,
+      now: deps.now || Date.now,
+      log
+    };
+    const github_hold = queuedGithubHold(hold_ctx, bead_id);
     const moved = deps.store.moveToDone(workspace, { bead_id });
     if (moved.ok) {
+      endGithubHold(hold_ctx, bead_id, github_hold);
       deps.store.markInteractiveSessionsSettled?.(workspace, bead_id, 'done');
       try {
         await deps.scheduler.reconcileInteractiveSessions?.(workspace);

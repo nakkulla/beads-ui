@@ -98,7 +98,7 @@ import {
   notifyWaitReasons
 } from './notify.js';
 import { createPrActions } from './pr-actions.js';
-import { createPrPoller } from './pr-poller.js';
+import { createPrPoller, resolvePrRef } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { checkProtectedPaths } from './protected-paths.js';
 import { createProviderHealth } from './provider-health.js';
@@ -2219,17 +2219,27 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   // The one push of a merge-queue GitHub hold (UI-aui8 §3.6, §3.8). The merge
   // queue and the completion driver write the same hold record and its
-  // marker, so both send through this one sender.
+  // marker, so both send through this one sender. A hold entered on the first
+  // PR read has no observed PR yet, so the PR the queue itself records names it.
   const announceGithubHold = (
     /** @type {import('./merge-queue.js').GithubHoldNotice} */ notice
-  ) =>
-    notify.githubHold({
+  ) => {
+    const ws_key = keyFor(workspace_root);
+    const observed_url =
+      runtime.prObservations.get(ws_key, notice.bead_id)?.pr?.url || null;
+    return notify.githubHold({
       ...notice,
       pr_url:
-        runtime.prObservations.get(keyFor(workspace_root), notice.bead_id)?.pr
-          ?.url ?? null,
+        observed_url ||
+        resolvePrRef(
+          runtime.queueStore.snapshot(ws_key),
+          notice.bead_id,
+          runtime.externalPrs.get(ws_key, notice.bead_id)
+        )?.url ||
+        null,
       repo
     });
+  };
 
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions

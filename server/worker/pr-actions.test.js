@@ -2627,6 +2627,40 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
     ).toEqual([BEAD]);
   });
 
+  test('writes the GitHub hold end line when the observed cleanup takes a held queue row (UI-aui8 §3.9)', async () => {
+    const merge_sha = 'c'.repeat(40);
+    /** @type {any[]} */
+    const lines = [];
+    const h = makeActions({
+      details: [prOf({ state: 'MERGED', merge_sha })],
+      timeline: { append: (/** @type {any} */ line) => lines.push(line) }
+    });
+    h.store.enqueueMergeManual(WS, {
+      expected_revision: h.store.snapshot(WS).revision,
+      entries: [
+        { bead_id: BEAD, head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+    h.store.setMergeHold(WS, {
+      bead_id: BEAD,
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: 'a'.repeat(40),
+        failure_class: 'network',
+        wait_point: 'gate_read',
+        since: 500
+      },
+      at: 500
+    });
+
+    await h.actions.cleanupObservedMerge(BEAD, merge_sha);
+
+    expect(h.store.snapshot(WS).merge_queue).toEqual([]);
+    expect(lines.map((line) => line.seq)).toContain(
+      'gh-github_unreachable-500-end'
+    );
+  });
+
   test('never auto-retries a cleanup that already failed', async () => {
     const store = seedStore({
       cleanup_failed: { [BEAD]: { step: 'branch_cleanup', reason: 'boom' } }

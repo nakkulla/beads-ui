@@ -5303,6 +5303,96 @@ describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
   });
 });
 
+describe('worker/attach GitHub hold push wiring (UI-aui8 §3.8)', () => {
+  test('names the queued PR in the hold push when no PR read has succeeded', async () => {
+    const head = 'a'.repeat(40);
+    const base_sha = 'd'.repeat(40);
+    const runtime = createWorkerRuntime();
+    const githubHold = vi.fn(async () => {});
+    const notify = new Proxy(
+      { githubHold },
+      {
+        get: (target, key) => {
+          if (key in target) {
+            return /** @type {any} */ (target)[key];
+          }
+          if (key === 'then') {
+            return undefined;
+          }
+          if (key === 'enabled' || key === 'codexCreditNotice') {
+            return () => false;
+          }
+          return async () => false;
+        }
+      }
+    );
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      notify,
+      bd: {
+        ...fakeBd(),
+        readIssue: async () => ({
+          id: 'UI-1',
+          metadata: { route: 'quick_fix' }
+        })
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      resolveBase: okBase('main', base_sha),
+      gitRun: async (/** @type {string[]} */ args) =>
+        args[0] === 'show' && args[1]?.endsWith(':repo-ops/config.toml')
+          ? { code: 128, stdout: '', stderr: 'missing' }
+          : { code: 0, stdout: '', stderr: '' },
+      gh: /** @type {any} */ ({
+        checkAvailability: async () => ({ state: 'ok', data: true }),
+        prDetail: vi.fn(async () => ({
+          state: 'error',
+          reason: 'gh_failed',
+          failure_class: 'auth'
+        })),
+        updateBranch: vi.fn(),
+        mergeSquash: vi.fn(),
+        closePr: vi.fn()
+      })
+    });
+    runtime.queueStore.appendAttempt(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'att-UI-1',
+        bead_id: 'UI-1',
+        repo: WS,
+        target_base: 'main',
+        base_oid: base_sha,
+        runner: 'codex',
+        verify_result: {
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304
+        }
+      }
+    });
+    runtime.queueStore.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-UI-1',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    runtime.queueStore.enqueueMergeManual(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: head, target_base: 'main' }]
+    });
+
+    await att.mergeQueue.kick();
+
+    expect(githubHold).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bead_id: 'UI-1',
+        reason: 'github_head_unreadable',
+        pr_url: 'https://github.com/o/r/pull/304'
+      })
+    );
+  });
+});
+
 describe('worker/attach — review-session restart recovery (UI-d7fy §5)', () => {
   /**
    * The crash-window state on disk: a queued row with a manual authority, and
