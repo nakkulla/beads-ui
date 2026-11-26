@@ -848,6 +848,179 @@ describe('worker/session-log subagent last_event_at (UI-2mpn §6.4)', () => {
   });
 });
 
+describe('worker/session-log subagent last_activity (UI-k57cf §5.1)', () => {
+  const LAUNCH = 'toolu_01AgentBBBBBBBBBBBBBBBB';
+
+  /**
+   * A log attached the way the runner attaches it, with an injectable clock.
+   *
+   * @returns {{ log: ReturnType<typeof createSessionLog>, emit: (event: unknown, at: number) => void }}
+   */
+  function attachedLog() {
+    let now = 0;
+    const log = createSessionLog({
+      now: () => now,
+      fanoutMs: 1,
+      emitChanged: () => {}
+    });
+    const events = new EventEmitter();
+    log.attach(WS, 'att-k', events);
+    return {
+      log,
+      emit: (event, at) => {
+        now = at;
+        events.emit('raw', event);
+      }
+    };
+  }
+
+  /**
+   * @param {string} id
+   * @param {string} command
+   * @param {string|null} parent_tool_use_id
+   */
+  function bashUse(id, command, parent_tool_use_id) {
+    return {
+      type: 'assistant',
+      parent_tool_use_id,
+      message: {
+        content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }]
+      }
+    };
+  }
+
+  /**
+   * @param {string} id
+   * @param {string} content
+   * @param {string|null} parent_tool_use_id
+   */
+  function toolResult(id, content, parent_tool_use_id) {
+    return {
+      type: 'user',
+      parent_tool_use_id,
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: id, content }]
+      }
+    };
+  }
+
+  /**
+   * @param {string} text
+   * @param {string|null} parent_tool_use_id
+   */
+  function assistantText(text, parent_tool_use_id) {
+    return {
+      type: 'assistant',
+      parent_tool_use_id,
+      message: { content: [{ type: 'text', text }] }
+    };
+  }
+
+  test('records a launch-published subagent line as delegated last_activity', () => {
+    const { log, emit } = attachedLog();
+    emit(assistantText('부모가 한 일', null), 1_000);
+
+    emit(bashUse('toolu_sub1', 'git commit -m fix', LAUNCH), 5_000);
+
+    expect(log.lastActivity(WS, 'att-k')).toEqual({
+      at: 5_000,
+      kind: 'tool',
+      text: 'git commit -m fix',
+      tool: 'Bash',
+      command: 'git commit -m fix',
+      delegated: true,
+      delegated_runtime: 'claude'
+    });
+  });
+
+  test('restamps last_activity when a subagent tool result arrives', () => {
+    const { log, emit } = attachedLog();
+    emit(bashUse('toolu_sub1', 'npm test', LAUNCH), 1_000);
+
+    emit(toolResult('toolu_sub1', 'all passed', LAUNCH), 9_000);
+
+    expect(log.lastActivity(WS, 'att-k')).toMatchObject({
+      at: 9_000,
+      command: 'npm test',
+      result: 'all passed',
+      delegated: true,
+      delegated_runtime: 'claude'
+    });
+  });
+
+  test('keeps the parent line as last_activity until a subagent line arrives', () => {
+    const { log, emit } = attachedLog();
+    emit(assistantText('부모가 한 일', null), 1_000);
+
+    emit(
+      {
+        type: 'assistant',
+        parent_tool_use_id: LAUNCH,
+        message: { content: [{ type: 'thinking', thinking: '자식 생각' }] }
+      },
+      5_000
+    );
+
+    expect(log.lastActivity(WS, 'att-k')).toEqual({
+      at: 1_000,
+      kind: 'assistant',
+      text: '부모가 한 일'
+    });
+  });
+
+  test('ignores the prompt a subagent receives as last_activity', () => {
+    const { log, emit } = attachedLog();
+    emit(assistantText('부모가 한 일', null), 1_000);
+
+    emit(
+      {
+        type: 'user',
+        parent_tool_use_id: LAUNCH,
+        message: { content: [{ type: 'text', text: '이 파일을 고쳐라' }] }
+      },
+      5_000
+    );
+
+    expect(log.lastActivity(WS, 'att-k')).toMatchObject({
+      at: 1_000,
+      text: '부모가 한 일'
+    });
+  });
+
+  test('leaves last_activity time alone when a parent tool result arrives', () => {
+    const { log, emit } = attachedLog();
+    emit(bashUse('toolu_parent1', 'npm test', null), 1_000);
+
+    emit(toolResult('toolu_parent1', 'all passed', null), 9_000);
+
+    expect(log.lastActivity(WS, 'att-k')?.at).toBe(1_000);
+  });
+
+  test('omits delegated_runtime on a codex delegation line', () => {
+    let now = 0;
+    const log = createSessionLog({
+      now: () => now,
+      fanoutMs: 1,
+      emitChanged: () => {}
+    });
+    now = 3_000;
+
+    log.publish(
+      WS,
+      'att-codex',
+      {
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'ls', exit_code: 0 }
+      },
+      'launch-codex'
+    );
+
+    const activity = log.lastActivity(WS, 'att-codex');
+    expect(activity).toMatchObject({ delegated: true, at: 3_000 });
+    expect(activity).not.toHaveProperty('delegated_runtime');
+  });
+});
+
 describe('worker/session-log — recorded attempt log path (UI-hk74 §7)', () => {
   /**
    * A transcript written outside `sessions/`: beside the

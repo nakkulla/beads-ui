@@ -257,6 +257,8 @@ export const LAST_ACTIVITY_TEXT_LIMIT = 160;
  * @property {string} [path]
  * @property {string} [result]
  * @property {boolean} [delegated]
+ * @property {'claude'} [delegated_runtime] - Set when the delegated line came
+ * from a Claude subagent rather than a Codex delegation.
  * @property {boolean} [is_error]
  */
 
@@ -336,9 +338,10 @@ function isObject(value) {
  * @param {any} line
  * @param {number} at
  * @param {boolean} delegated
+ * @param {'claude'|null} delegated_runtime
  * @returns {LastActivity}
  */
-function activityOf(line, at, delegated) {
+function activityOf(line, at, delegated, delegated_runtime) {
   const tool = typeof line.tool === 'string' ? line.tool : '';
   const command = typeof line.command === 'string' ? line.command : '';
   const file_path = typeof line.path === 'string' ? line.path : '';
@@ -358,6 +361,7 @@ function activityOf(line, at, delegated) {
     ...(file_path.length > 0 ? { path: file_path } : {}),
     ...(result.length > 0 ? { result } : {}),
     ...(delegated ? { delegated: true } : {}),
+    ...(delegated && delegated_runtime ? { delegated_runtime } : {}),
     ...(typeof line.is_error === 'boolean' ? { is_error: line.is_error } : {})
   };
 }
@@ -428,7 +432,11 @@ export function createSessionLog(options = {}) {
    * `tool_result` pairing is per stream and crossing them would let one
    * session's result land on another's tool line.
    *
-   * @type {Map<string, { push: (event: unknown) => any[] }>}
+   * `filled` collects, for the event being pushed, the launch stream's tool
+   * lines a `tool_result` back-filled (UI-k57cf §5.1); it stays empty on the
+   * attempt's own stream.
+   *
+   * @type {Map<string, { reducer: { push: (event: unknown) => any[] }, filled: any[] }>}
    */
   const reducers = new Map();
   /**
@@ -440,7 +448,7 @@ export function createSessionLog(options = {}) {
    * line learns its result summary when the later `tool_result` back-fills it in
    * place, and projecting at read time is what lets that update show.
    *
-   * @type {Map<string, { at: number, line: any, delegated: boolean }>}
+   * @type {Map<string, { at: number, line: any, delegated: boolean, delegated_runtime: 'claude'|null }>}
    */
   const last_activity = new Map();
   /**
@@ -557,28 +565,63 @@ export function createSessionLog(options = {}) {
    */
   function observeActivity(workspace, attempt_id, launch_id, event) {
     const stream_key = keyOf(workspace, attempt_id, launch_id);
-    let reducer = reducers.get(stream_key);
-    if (!reducer) {
-      // `skip_delegated` keeps a subagent line out of the ATTEMPT's activity
-      // overlay (UI-2mpn §6.4): the running card says what the session is
-      // doing, and a child's `Read` is not the parent's work. The drawer's own
-      // parse keeps those lines — it folds them under the `Agent` call instead.
-      reducer = createTranscriptReducer({ skip_delegated: true });
-      reducers.set(stream_key, reducer);
+    const launched = typeof launch_id === 'string' && launch_id.length > 0;
+    let stream = reducers.get(stream_key);
+    if (!stream) {
+      // A subagent line is published twice (UI-2mpn §6.3): once on the
+      // attempt's own stream, whose reducer skips it so it never pairs with the
+      // parent's tools, and once under its launch id, whose reducer keeps it so
+      // the running card can show it as delegated work (UI-k57cf §5.1).
+      /** @type {any[]} */
+      const filled = [];
+      const reducer = createTranscriptReducer({
+        skip_delegated: !launched,
+        ...(launched
+          ? {
+              onToolResult: (/** @type {any[]} */ lines) => {
+                filled.push(...lines);
+              }
+            }
+          : {})
+      });
+      stream = { reducer, filled };
+      reducers.set(stream_key, stream);
     }
-    const produced = reducer.push(event);
+    stream.filled.length = 0;
+    const produced = stream.reducer.push(event);
     observeBeadWrites(workspace, stream_key, event);
+    // A Codex delegation event carries no `parent_tool_use_id`, so only a
+    // Claude subagent line is marked with its runtime.
+    /** @type {'claude'|null} */
+    const delegated_runtime =
+      launched && delegatedLaunchIdOf(event) ? 'claude' : null;
+    /** @param {any} line */
+    const record = (line) => {
+      last_activity.set(keyOf(workspace, attempt_id), {
+        at: now(),
+        line,
+        delegated: launched,
+        delegated_runtime
+      });
+    };
+    // A subagent result produces no line of its own; re-recording the tool
+    // line it completed is what lets "the command just finished" reset the age.
+    if (stream.filled.length > 0) {
+      record(stream.filled[stream.filled.length - 1]);
+    }
     if (!Array.isArray(produced)) {
       return;
     }
     for (let i = produced.length - 1; i >= 0; i -= 1) {
       const line = produced[i];
-      if (line && line.kind !== 'thinking') {
-        last_activity.set(keyOf(workspace, attempt_id), {
-          at: now(),
-          line,
-          delegated: typeof launch_id === 'string' && launch_id.length > 0
-        });
+      // A Claude subagent's `user` line is the parent's instruction to it, not
+      // something the subagent did; Codex delegation lines keep their old rule.
+      if (
+        line &&
+        line.kind !== 'thinking' &&
+        !(delegated_runtime === 'claude' && line.kind === 'user')
+      ) {
+        record(line);
         return;
       }
     }
@@ -876,11 +919,11 @@ export function createSessionLog(options = {}) {
           ? launch_id
           : undefined;
       // A subagent line stamps ITS OWN launch, never the parent attempt
-      // (UI-2mpn §6.4). The parent's "최근 활동" answers what the session is
-      // doing, and a child's `Read` is not the parent doing anything — the same
-      // separation the activity reducer makes one line below. The republish of
-      // the very same event under its `launch_id` carries `delegation_id`, so
-      // the subagent row still gets its own recency.
+      // (UI-2mpn §6.4). The parent's recency answers whether the session
+      // itself moved, and a child's `Read` is not the parent doing anything.
+      // The republish of the very same event under its `launch_id` carries
+      // `delegation_id`, so the subagent row still gets its own recency; the
+      // activity line shows that republish as delegated work (UI-k57cf §5.1).
       if (delegation_id || !delegatedLaunchIdOf(event)) {
         last_event_at.set(keyOf(workspace, attempt_id, delegation_id), now());
       }
@@ -1007,7 +1050,12 @@ export function createSessionLog(options = {}) {
         return null;
       }
       try {
-        return activityOf(hit.line, hit.at, hit.delegated);
+        return activityOf(
+          hit.line,
+          hit.at,
+          hit.delegated,
+          hit.delegated_runtime
+        );
       } catch {
         return null;
       }
