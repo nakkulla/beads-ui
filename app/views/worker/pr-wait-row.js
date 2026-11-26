@@ -1434,10 +1434,13 @@ function prWaitRow(
     shelve_title: shelved
       ? '보관을 풉니다 — 자동 머지가 켜져 있으면 다음 관측에서 다시 머지 대상이 됩니다'
       : '자동 머지·일괄 머지에서 이 PR을 빼고 [보관 해제]까지 둡니다 (머지 큐에 있으면 빠집니다)',
-    // 잠겨야 하는 것은 되돌릴 수 없는 머지 효과뿐이다 (UI-d7fy §5.6).
-    cancel_enabled: !queue_active && !(recovery && recovery.lock_actions),
+    // 잠겨야 하는 것은 되돌릴 수 없는 머지 효과뿐이다 (UI-d7fy §5.6). A
+    // completion root held on GitHub has yielded its turn, so no merge request
+    // of its is running and [취소] stays its one control (UI-aui8 §3.9).
+    cancel_enabled:
+      !queue_active && (!!github_hold || !(recovery && recovery.lock_actions)),
     cancel_title:
-      recovery && recovery.lock_actions
+      recovery && recovery.lock_actions && !github_hold
         ? `${recovery.badge} — 중단하려면 상단 자동 머지 중단을 사용하세요`
         : queue_active
           ? '머지 진행 중 — 취소할 수 없습니다'

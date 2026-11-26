@@ -12998,6 +12998,67 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       ]).toEqual(['GitHub 연결 대기', true]);
     });
 
+    /**
+     * A completion root in its merge turn, held on GitHub, with the driver
+     * working on whichever item `active` names.
+     *
+     * @param {string|null} active
+     */
+    function heldMergingLane(active) {
+      const lane = heldLane(
+        { ...WAIT_HOLD, wait_point: 'merge_command' },
+        {
+          completion_status: {
+            'RD-1': {
+              root_bead_id: 'RD-1',
+              phase: 'merging',
+              subject_role: 'root',
+              subject_bead_id: 'RD-1',
+              active_attempt_id: 'a1',
+              failure_stage: null,
+              failure_reason: null,
+              terminal_reason: null
+            }
+          }
+        }
+      );
+      return { ...lane, merge_queue_state: { active, failures: {} } };
+    }
+
+    /**
+     * @param {HTMLElement} mount
+     * @returns {HTMLButtonElement|null}
+     */
+    function cancelOf(mount) {
+      return rowOf(mount, 'RD-1').querySelector('.worker-mini__merge-cancel');
+    }
+
+    test('enables [취소] on a completion root held in its merge turn', () => {
+      const { mount } = mountLane(heldMergingLane(null));
+
+      const cancel = cancelOf(mount);
+
+      expect(cancel?.disabled).toBe(false);
+    });
+
+    test('titles [취소] on a held completion root as leaving the queue', () => {
+      const { mount } = mountLane(heldMergingLane(null));
+
+      const title = cancelOf(mount)?.getAttribute('title');
+
+      expect(title).toBe(
+        '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)'
+      );
+    });
+
+    test('keeps [취소] locked on a held completion root the driver is on', () => {
+      const { mount } = mountLane(heldMergingLane('RD-1'));
+
+      const cancel = cancelOf(mount);
+
+      expect(cancel?.disabled).toBe(true);
+    });
+
     test('ranks the connection wait below 머지 중', () => {
       const result = prStatusBadge({
         merge_step: { label: '머지 2/6' },
