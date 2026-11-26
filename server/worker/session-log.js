@@ -614,12 +614,12 @@ export function createSessionLog(options = {}) {
     }
     for (let i = produced.length - 1; i >= 0; i -= 1) {
       const line = produced[i];
-      // On a launch stream a `user` line is the parent's instruction to the
-      // subagent, not something the subagent did.
+      // A Claude subagent's `user` line is the parent's instruction to it, not
+      // something the subagent did; Codex delegation lines keep their old rule.
       if (
         line &&
         line.kind !== 'thinking' &&
-        !(launched && line.kind === 'user')
+        !(delegated_runtime === 'claude' && line.kind === 'user')
       ) {
         record(line);
         return;
