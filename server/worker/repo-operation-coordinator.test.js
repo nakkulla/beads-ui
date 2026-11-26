@@ -1391,6 +1391,33 @@ describe('verify candidate pinned commits', () => {
       ).toBe(false);
     }
   );
+
+  test('answers the connection wait when the PR head fetch cannot reach GitHub (UI-aui8 §3.1)', async () => {
+    const policyGit = gitForVerify({ verify: true });
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'fetch') {
+        return {
+          code: 128,
+          stdout: '',
+          stderr:
+            'fatal: unable to access https://github.com/o/r/: Could not resolve host: github.com'
+        };
+      }
+      if (args[0] === 'cat-file') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      return policyGit(args);
+    });
+    const { coordinator } = coordinatorFor({ gitRun });
+
+    const result = await coordinator.ensureVerify(verifyCandidate());
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'github_unreachable',
+      failure_class: 'network'
+    });
+  });
 });
 
 const FIRST_DEPLOY = {

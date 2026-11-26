@@ -1273,6 +1273,61 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
+  test('waits for GitHub when the ancestry probe cannot fetch the head (UI-aui8 §3.1)', async () => {
+    const h = makeActions({
+      details: [prOf({ head_sha: 'a'.repeat(40) })],
+      bdSpecId: 'docs/spec.md',
+      bdMetadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${'b'.repeat(40)}`,
+        impl_review: `self@${'c'.repeat(40)}`
+      },
+      implReviewAncestry: 'probe_error'
+    });
+    const answer = /** @type {any} */ (h.gitRun.getMockImplementation());
+    h.gitRun.mockImplementation(async (/** @type {string[]} */ args) =>
+      args[0] === 'fetch'
+        ? {
+            code: 128,
+            stdout: '',
+            stderr:
+              'fatal: unable to access https://github.com/o/r/: Could not resolve host: github.com'
+          }
+        : answer(args)
+    );
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: 'a'.repeat(40)
+    });
+  });
+
+  test('waits for GitHub when the verify candidate cannot fetch the PR head (UI-aui8 §3.1)', async () => {
+    const operations = failedVerifyOperations();
+    operations.ensureVerify = vi.fn(async () => ({
+      ok: false,
+      code: 'github_unreachable',
+      failure_class: 'network'
+    }));
+    const h = makeActions({ repoOperations: operations });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: 'sha-aaa'
+    });
+  });
+
   test('refuses a merge whose gh call fails, and never cleans up', async () => {
     const h = makeActions({ mergeFails: true });
 
@@ -7120,8 +7175,10 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
    * A harness whose bd carries the three pins, whose gh answers ONLY through
    * the pinned slug, and whose git models the bound target checkout.
    *
-   * @param {{ pr?: Partial<import('./gh.js').PrDetail>, after?: Partial<import('./gh.js').PrDetail>, policy?: (sha: string) => any, containment?: number, post_merge_jobs?: boolean, remote_head?: string|null, verify_receipt?: any, tips?: string[], metadata?: Record<string, string>, fetch_stderr?: string }} [opts]
+   * @param {{ pr?: Partial<import('./gh.js').PrDetail>, after?: Partial<import('./gh.js').PrDetail>, policy?: (sha: string) => any, containment?: number, post_merge_jobs?: boolean, remote_head?: string|null, verify_receipt?: any, tips?: string[], metadata?: Record<string, string>, fetch_stderr?: string, head_fetch_stderr?: string }} [opts]
    * - `fetch_stderr` fails every `git fetch` in the target with that output.
+   * - `head_fetch_stderr` leaves the PR head absent from the target and fails
+   *   every fetch of it with that output; the base fetch still succeeds.
    */
   function makeForeign(opts = {}) {
     const store = seedStore();
@@ -7209,6 +7266,14 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
       });
       if (args[0] === 'fetch' && typeof opts.fetch_stderr === 'string') {
         return { code: 1, stdout: '', stderr: opts.fetch_stderr };
+      }
+      if (typeof opts.head_fetch_stderr === 'string') {
+        if (args[0] === 'cat-file' && args.at(-1) === `${HEAD}^{commit}`) {
+          return { code: 1, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'fetch' && !String(args[3]).startsWith('+refs/')) {
+          return { code: 128, stdout: '', stderr: opts.head_fetch_stderr };
+        }
       }
       if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
         return ok(`${TARGET_PATH}\n`);
@@ -7713,6 +7778,23 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
       wait_point: 'gate_read'
     });
     expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses with the connection wait when the foreign head fetch cannot reach GitHub (UI-aui8 §3.1)', async () => {
+    const h = makeForeign({
+      head_fetch_stderr:
+        'fatal: unable to access https://github.com/acme/research-repo-template/: Could not resolve host: github.com'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: HEAD
+    });
   });
 
   test('names the class when the foreign base fetch fails with auth (UI-aui8 §3.6)', async () => {

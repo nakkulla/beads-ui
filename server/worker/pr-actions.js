@@ -1014,17 +1014,33 @@ export function createPrActions(deps) {
    * metadata watch tell "the record says no" from "the record could not be
    * read", and wait for the next event instead of stopping for a human.
    *
+   * `fetch_failure_class` is the GitHub class of the first object fetch the
+   * ancestry probe could not complete (UI-aui8 §3.1), or null.
+   *
    * @param {string} bead_id
    * @param {string} head_sha
    * @param {import('./merge-gate.js').AncestryProbe} [probe]
-   * @returns {Promise<{ review_receipt_state: import('./merge-gate.js').CurrentState, receipt_state: import('./merge-gate.js').ReceiptGateState, authority_unreadable: boolean }>}
+   * @returns {Promise<{ review_receipt_state: import('./merge-gate.js').CurrentState, receipt_state: import('./merge-gate.js').ReceiptGateState, authority_unreadable: boolean, fetch_failure_class: GithubFailureClass|null }>}
    */
   async function readGateAuthority(bead_id, head_sha, probe = probeAncestry) {
+    /** @type {GithubFailureClass|null} */
+    let fetch_failure_class = null;
+    /** @type {import('./merge-gate.js').AncestryProbe} */
+    const tracked = (receipt_sha, probed_head, report) =>
+      probe(receipt_sha, probed_head, (failure_class) => {
+        if (fetch_failure_class === null) {
+          fetch_failure_class = failure_class;
+        }
+        if (report) {
+          report(failure_class);
+        }
+      });
     if (typeof deps.bd.readIssue !== 'function') {
       return {
         review_receipt_state: 'invalid',
         receipt_state: { state: 'probe_error', codes: [], details: [] },
-        authority_unreadable: true
+        authority_unreadable: true,
+        fetch_failure_class
       };
     }
     /** @type {Record<string, any>} */
@@ -1036,7 +1052,8 @@ export function createPrActions(deps) {
       return {
         review_receipt_state: 'invalid',
         receipt_state: { state: 'probe_error', codes: [], details: [] },
-        authority_unreadable: true
+        authority_unreadable: true,
+        fetch_failure_class
       };
     }
     const metadata =
@@ -1049,11 +1066,17 @@ export function createPrActions(deps) {
       metadata,
       bead_id,
       head_sha,
-      probe
+      tracked
+    );
+    const review_receipt_state = await reviewReceiptState(
+      issue,
+      head_sha,
+      tracked
     );
     return {
       authority_unreadable: false,
-      review_receipt_state: await reviewReceiptState(issue, head_sha, probe),
+      review_receipt_state,
+      fetch_failure_class,
       receipt_state:
         receipt_state.state !== 'ok' &&
         manualMergeAuthorityCovers(bead_id, head_sha)
@@ -1064,6 +1087,41 @@ export function createPrActions(deps) {
             }
           : receipt_state
     };
+  }
+
+  /**
+   * The connection wait of a gate whose review or receipt verdict stayed
+   * undecided because the ancestry probe could not fetch an object from
+   * GitHub (UI-aui8 §3.1), or null. A permanent class keeps the verdict's own
+   * hold.
+   *
+   * @param {{ review_receipt_state: string, receipt_state: { state: string }, fetch_failure_class: GithubFailureClass|null }} authority
+   * @returns {GithubFailureClass|null}
+   */
+  function ancestryFetchWait(authority) {
+    const undecided =
+      authority.review_receipt_state === 'undetermined' ||
+      authority.receipt_state.state === 'probe_error';
+    return undecided &&
+      authority.fetch_failure_class !== null &&
+      isTransientGithubFailure(authority.fetch_failure_class)
+      ? authority.fetch_failure_class
+      : null;
+  }
+
+  /**
+   * The connection wait of a verify candidate whose PR head fetch could not
+   * reach GitHub (UI-aui8 §3.1), or null.
+   *
+   * @param {any} ensured - The `ensureVerify` answer.
+   * @returns {GithubFailureClass|null}
+   */
+  function verifyFetchWait(ensured) {
+    return !ensured.ok &&
+      ensured.code === GITHUB_UNREACHABLE &&
+      isTransientGithubFailure(ensured.failure_class)
+      ? ensured.failure_class
+      : null;
   }
 
   /**
@@ -1231,8 +1289,9 @@ export function createPrActions(deps) {
       repo: bound.target.path,
       remote: bound.target.remote
     });
+    const authority = await readGateAuthority(bead_id, pr.head_sha, probe);
     const { review_receipt_state, receipt_state, authority_unreadable } =
-      await readGateAuthority(bead_id, pr.head_sha, probe);
+      authority;
     const review_receipt = {
       state: review_receipt_state,
       head_sha: pr.head_sha
@@ -1254,7 +1313,8 @@ export function createPrActions(deps) {
         error: judgment.reason,
         ...('failure_class' in judgment && judgment.failure_class
           ? { failure_class: judgment.failure_class }
-          : {})
+          : {}),
+        pr
       };
     }
     if (judgment.handoff !== null) {
@@ -1295,6 +1355,10 @@ export function createPrActions(deps) {
       review_receipt,
       foreign
     });
+    const ancestry_wait = ancestryFetchWait(authority);
+    if (ancestry_wait !== null) {
+      return { error: GITHUB_UNREACHABLE, failure_class: ancestry_wait, pr };
+    }
     const base_sha = /** @type {string} */ (judgment.base_sha);
     const common = {
       pr,
@@ -1343,6 +1407,10 @@ export function createPrActions(deps) {
         verify_operation_id: null,
         verify_attempted: false
       };
+    }
+    const verify_wait = verifyFetchWait(ensured);
+    if (verify_wait !== null) {
+      return { error: GITHUB_UNREACHABLE, failure_class: verify_wait, pr };
     }
     if (!ensured.ok || typeof ensured.operation_id !== 'string') {
       return {
@@ -1410,7 +1478,9 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {number} number
    * @param {import('./target-base.js').TargetBaseResult} [base_pin]
-   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean, authority_unreadable?: boolean, receipt_state?: import('./merge-gate.js').ReceiptGateState }|{ error: string, failure_class?: GithubFailureClass, head_unread?: boolean }>}
+   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean, authority_unreadable?: boolean, receipt_state?: import('./merge-gate.js').ReceiptGateState }|{ error: string, failure_class?: GithubFailureClass, head_unread?: boolean, pr?: PrDetail }>}
+   * A PR or ancestry fetch that could not reach GitHub is the connection wait
+   * with the PR it read (UI-aui8 §3.1).
    */
   async function gateNow(bead_id, number, base_pin) {
     const observed = await observeNow(bead_id, number);
@@ -1444,8 +1514,9 @@ export function createPrActions(deps) {
       if (!config.ok) {
         return { error: config.code || 'repo_ops_config_invalid' };
       }
+      const authority = await readGateAuthority(bead_id, pr.head_sha);
       const { review_receipt_state, receipt_state, authority_unreadable } =
-        await readGateAuthority(bead_id, pr.head_sha);
+        authority;
       deps.observations.record(workspace, bead_id, {
         error: null,
         pr,
@@ -1454,6 +1525,10 @@ export function createPrActions(deps) {
           head_sha: pr.head_sha
         }
       });
+      const ancestry_wait = ancestryFetchWait(authority);
+      if (ancestry_wait !== null) {
+        return { error: GITHUB_UNREACHABLE, failure_class: ancestry_wait, pr };
+      }
       const preliminary = evaluateMergeGate(
         deps.observations.get(workspace, bead_id),
         {
@@ -1500,6 +1575,10 @@ export function createPrActions(deps) {
           authority_unreadable,
           receipt_state
         };
+      }
+      const verify_wait = verifyFetchWait(ensured);
+      if (verify_wait !== null) {
+        return { error: GITHUB_UNREACHABLE, failure_class: verify_wait, pr };
       }
       if (!ensured.ok || typeof ensured.operation_id !== 'string') {
         return {

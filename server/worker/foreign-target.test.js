@@ -2,9 +2,10 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   cleanupForeignResidue,
+  ensureForeignCommit,
   foreignCandidateCommonDir,
   foreignTargetFromMetadata,
   judgeForeignPinShape,
@@ -370,5 +371,56 @@ describe('foreign-target — owned residue cleanup', () => {
     expect(
       git(t.repo, ['ls-remote', '--heads', 'upstream', 'UI-9']).split(/\s+/)[0]
     ).toBe(late_head);
+  });
+});
+
+describe('foreign-target — PR head fetch (UI-aui8 §3.1)', () => {
+  const TARGET = {
+    repo_url: 'git@github.com:acme/repo.git',
+    path: '/tmp/example/repo',
+    base: 'main',
+    slug: 'acme/repo',
+    repo_name: 'repo',
+    remote: 'upstream'
+  };
+  const HEAD = 'e'.repeat(40);
+
+  test('bounds both head fetches at the per-call GitHub ceiling', async () => {
+    /** @type {Array<{ cwd?: string, timeout_ms?: number }>} */
+    const fetch_options = [];
+    const gitRun = async (
+      /** @type {string[]} */ args,
+      /** @type {{ cwd?: string, timeout_ms?: number }} */ options
+    ) => {
+      if (args[0] === 'fetch') {
+        fetch_options.push(options);
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    };
+
+    await ensureForeignCommit(TARGET, HEAD, 4, gitRun);
+
+    expect(fetch_options).toEqual([
+      { cwd: TARGET.path, timeout_ms: 60_000 },
+      { cwd: TARGET.path, timeout_ms: 60_000 }
+    ]);
+  });
+
+  test('carries the GitHub class of the head fetch that failed', async () => {
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) =>
+      args[0] === 'fetch'
+        ? {
+            code: 128,
+            stdout: '',
+            stderr:
+              'fatal: unable to access https://github.com/acme/repo/: Could not resolve host: github.com'
+          }
+        : { code: 1, stdout: '', stderr: '' }
+    );
+
+    const ensured = await ensureForeignCommit(TARGET, HEAD, 4, gitRun);
+
+    expect(ensured).toEqual({ ok: false, failure_class: 'network' });
   });
 });
