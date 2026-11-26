@@ -2388,6 +2388,40 @@ describe('worker/completion-intent lifecycle', () => {
     );
   });
 
+  test('observes the completion behind a root whose observation waits for GitHub', async () => {
+    const root = intent();
+    const later = intent({
+      subject: { ...intent().subject, bead_id: 'UI-later' }
+    });
+    const wait = {
+      state: /** @type {const} */ ('github_wait'),
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    };
+    const onAction = vi.fn();
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: '/repo',
+      store: {
+        snapshot: () => ({
+          auto_merge: true,
+          merge_queue: [{ bead_id: 'UI-root' }, { bead_id: 'UI-later' }],
+          completion_intents: { 'UI-root': root, 'UI-later': later }
+        })
+      },
+      observe: async (bead_id) =>
+        bead_id === 'UI-root' ? wait : { state: 'green' },
+      onAction
+    });
+
+    await coordinator.reconcile();
+
+    expect(onAction.mock.calls).toEqual([
+      ['UI-root', { kind: 'github_wait', fact: wait }, root],
+      ['UI-later', { kind: 'merge_subject' }, later]
+    ]);
+  });
+
   test('coalesces queue wakeups and stops its subscription', async () => {
     const events = new EventEmitter();
     const unsubscribe = vi.fn();

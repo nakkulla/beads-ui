@@ -1015,34 +1015,42 @@ export function createCompletionIntentCoordinator(deps) {
           ? queue.completion_intents
           : {};
     }
-    const head = Array.isArray(queue.merge_queue)
-      ? queue.merge_queue.find(
+    const runnable = Array.isArray(queue.merge_queue)
+      ? queue.merge_queue.filter(
           (/** @type {any} */ entry) =>
             entry?.resolution?.state !== 'yielded' &&
             !cleanupRetryParked(queue, entry?.bead_id, now(), conditionWait())
         )
-      : null;
-    const root_bead_id =
-      head && typeof head.bead_id === 'string' ? head.bead_id : null;
-    if (!root_bead_id || !Object.hasOwn(intents, root_bead_id)) {
-      return;
-    }
-    const intent = intents[root_bead_id];
-    // A row parked on metadata or a retry delay decides from its own durable
-    // record alone, so observing it would spend a `gh` round trip on a fact the
-    // judgment discards.
-    const fact =
-      intent?.phase === 'waiting_metadata' || intent?.phase === 'retrying'
-        ? /** @type {CompletionFact} */ ({ state: 'waiting' })
-        : await observe(root_bead_id, intent, queue);
-    const action = decideCompletionAction({
-      auto_merge: queue.auto_merge === true,
-      intent,
-      fact,
-      now: now()
-    });
-    if (action) {
-      await onAction(root_bead_id, action, intent);
+      : [];
+    for (const head of runnable) {
+      const root_bead_id =
+        head && typeof head.bead_id === 'string' ? head.bead_id : null;
+      if (!root_bead_id || !Object.hasOwn(intents, root_bead_id)) {
+        return;
+      }
+      const intent = intents[root_bead_id];
+      // A row parked on metadata or a retry delay decides from its own durable
+      // record alone, so observing it would spend a `gh` round trip on a fact
+      // the judgment discards.
+      const fact =
+        intent?.phase === 'waiting_metadata' || intent?.phase === 'retrying'
+          ? /** @type {CompletionFact} */ ({ state: 'waiting' })
+          : await observe(root_bead_id, intent, queue);
+      const action = decideCompletionAction({
+        auto_merge: queue.auto_merge === true,
+        intent,
+        fact,
+        now: now()
+      });
+      if (action) {
+        await onAction(root_bead_id, action, intent);
+      }
+      // A root waiting for GitHub keeps its slot and yields this pass only
+      // (UI-aui8 §3.3, §3.7): the next pass observes it again, and the
+      // completion behind it is judged now, as the merge queue merges it.
+      if (action?.kind !== 'github_wait') {
+        return;
+      }
     }
   }
 

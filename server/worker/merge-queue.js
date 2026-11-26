@@ -2463,6 +2463,13 @@ export function createMergeQueue(deps) {
    */
   async function processCompletionItem(root_bead_id, intent) {
     if (intent.phase !== 'merging') {
+      // A root whose observation stands on a GitHub hold keeps its slot and
+      // yields this pass (UI-aui8 §3.3, §3.7): the completion intent's next
+      // observation judges it, and the items behind it keep merging.
+      if (githubHoldOf(root_bead_id)) {
+        held_this_pass.add(root_bead_id);
+        return;
+      }
       halted = true;
       halted_on_completion = {
         bead_id: root_bead_id,

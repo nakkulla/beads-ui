@@ -5113,6 +5113,54 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
     ]);
   });
 
+  /**
+   * Put the completion root back in `gating` on the connection wait its
+   * observation wrote.
+   *
+   * @param {any} store
+   */
+  function waitRootGatingOnGithub(store) {
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'gating',
+      subject: store.snapshot(WS).completion_intents['UI-root'].subject
+    });
+    store.setMergeHold(WS, {
+      bead_id: 'UI-root',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: HEAD,
+        failure_class: 'network',
+        wait_point: 'gate_read'
+      },
+      at: 5
+    });
+  }
+
+  test('merges the item behind a gating completion root on the connection wait', async () => {
+    const store = seedCompletionRoot(['UI-2']);
+    waitRootGatingOnGithub(store);
+    const merge = rootHeadUnreadMerge(store);
+    const mq = driver(store, { merge, onCompletionResult: vi.fn() });
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual(['UI-2']);
+  });
+
+  test('does not wait on a gating completion root on the connection wait', async () => {
+    const store = seedCompletionRoot([]);
+    waitRootGatingOnGithub(store);
+    const mq = driver(store, {
+      merge: rootHeadUnreadMerge(store),
+      onCompletionResult: vi.fn()
+    });
+
+    await mq.kick();
+
+    expect(mq.state().waiting).toBeNull();
+  });
+
   test('names the permanent hold by its class phrase on the history', async () => {
     const store = seed(['UI-1']);
     const timeline = recorder();
