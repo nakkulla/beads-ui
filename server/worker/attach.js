@@ -30,6 +30,7 @@ import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { sessionGuardedAttempt } from '../../app/utils/active-attempts.js';
+import { isGithubHold } from '../../app/utils/github-wait.js';
 import {
   execLaneOf,
   workerLabels
@@ -2226,8 +2227,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
       timeline,
-      merge: (/** @type {string} */ bead_id) =>
-        prActions.merge(bead_id, { allow_conflict_resolution: false }),
+      merge: (
+        /** @type {string} */ bead_id,
+        /** @type {{ retry_failed_cleanup?: boolean }} */ merge_options = {}
+      ) =>
+        prActions.merge(bead_id, {
+          ...merge_options,
+          allow_conflict_resolution: false
+        }),
       probeMergeability: (/** @type {string} */ bead_id) =>
         prActions.probeMergeability(bead_id),
       dispatchConflict: (
@@ -2517,11 +2524,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // standing so an ordinary `bd update` costs no merge pass: without a hold
       // there is nothing here for the queue to re-judge, and with one the PR
       // observation pass would otherwise be the upper bound on how long the row
-      // waits after the receipt lands.
+      // waits after the receipt lands. A GitHub hold (UI-aui8 §3.3) waits on
+      // GitHub, not on the Bead, so it is the poller pass's to re-judge.
       try {
         const held = (
           runtime.queueStore.snapshot(keyFor(workspace_root)).merge_queue || []
-        ).some((/** @type {any} */ entry) => !!entry.hold);
+        ).some(
+          (/** @type {any} */ entry) =>
+            !!entry.hold && !isGithubHold(entry.hold)
+        );
         if (held) {
           Promise.resolve(mergeQueue.kick()).catch((err) => {
             log(

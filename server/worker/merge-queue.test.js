@@ -1250,6 +1250,48 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     });
   });
 
+  test('charges nothing and holds when the re-probe cannot reach GitHub (UI-aui8 §3.2)', async () => {
+    const { store, consume } = await chargeCase({
+      probe: {
+        ok: false,
+        kind: 'blocked',
+        reason: 'github_unreachable',
+        failure_class: 'network',
+        wait_point: 'gate_read',
+        head_sha: null,
+        external: false
+      }
+    });
+
+    expect(consume).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      bead_id: 'UI-1',
+      resolution_rounds: 0,
+      rebase_rounds: 0,
+      resolution: { attempt_id: 'res-charge', state: 'ready' },
+      hold: {
+        reason: 'github_unreachable',
+        wait_point: 'resolution',
+        failure_class: 'network'
+      }
+    });
+  });
+
+  test('charges nothing and holds when the containment fetch cannot reach GitHub (UI-aui8 §3.2)', async () => {
+    const { store, consume } = await chargeCase({
+      probe: probeOf('dirty', PUSHED_HEAD),
+      baseContained: async () => 'unreachable'
+    });
+
+    expect(consume).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      bead_id: 'UI-1',
+      resolution_rounds: 0,
+      rebase_rounds: 0,
+      hold: { reason: 'github_unreachable', wait_point: 'resolution' }
+    });
+  });
+
   test('skips the item once the rebase budget runs out', async () => {
     const { store, mq } = await chargeCase({
       probe: probeOf('dirty', PUSHED_HEAD),
@@ -4536,5 +4578,746 @@ describe('worker/merge-queue — foreign_handoff hold (UI-k467 §3.7)', () => {
     await mq.kick();
 
     expect(merge).toHaveBeenCalledWith('UI-1');
+  });
+});
+
+describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)', () => {
+  const HEAD = 'a'.repeat(40);
+  const MOVED_HEAD = 'b'.repeat(40);
+  const THIRD_HEAD = 'c'.repeat(40);
+  /** The scripted `merge` result that lands the bead and reports merged. */
+  const LANDED = 'landed';
+
+  /**
+   * A merge-turn refusal that could not reach GitHub.
+   *
+   * @param {string} wait_point
+   * @param {string} [failure_class]
+   */
+  function unreachable(wait_point, failure_class = 'network') {
+    return {
+      ok: false,
+      action: 'refused',
+      reason: 'github_unreachable',
+      failure_class,
+      wait_point,
+      head_sha: HEAD
+    };
+  }
+
+  /**
+   * A pre-merge recheck that saw the candidate move to `head_sha`.
+   *
+   * @param {string} head_sha
+   */
+  function moved(head_sha) {
+    return {
+      ok: false,
+      action: 'refused',
+      reason: 'verify_candidate_moved',
+      head_sha
+    };
+  }
+
+  /**
+   * A `merge` that answers UI-1 from a script, call by call (the last entry
+   * repeats), and lands every other bead.
+   *
+   * @param {any} queue_store
+   * @param {any[]} script
+   */
+  function scriptedMerge(queue_store, script) {
+    return vi.fn(async (/** @type {string} */ bead_id) => {
+      const next =
+        bead_id !== 'UI-1'
+          ? LANDED
+          : script.length > 1
+            ? script.shift()
+            : script[0];
+      if (next === LANDED) {
+        landMerge(queue_store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      }
+      return next;
+    });
+  }
+
+  /**
+   * Queue beads whose authority a `[머지]` click minted.
+   *
+   * @param {string[]} bead_ids
+   */
+  function seedManual(bead_ids) {
+    const store = seed(bead_ids);
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: bead_ids.map((bead_id) => ({
+        bead_id,
+        head_sha: HEAD,
+        target_base: 'main'
+      }))
+    });
+    return store;
+  }
+
+  /** A timeline that records what it was asked to append. */
+  function recorder() {
+    /** @type {any[]} */
+    const events = [];
+    return { events, append: (/** @type {any} */ input) => events.push(input) };
+  }
+
+  /**
+   * @param {any} queue_store
+   */
+  function entryOf(queue_store) {
+    return queue_store
+      .snapshot(WS)
+      .merge_queue.find((/** @type {any} */ e) => e.bead_id === 'UI-1');
+  }
+
+  test('keeps the item in its slot on the connection wait when the pre-merge re-read fails with network', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [unreachable('verify_recheck')])
+    });
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).merge_queue).toMatchObject([
+      {
+        bead_id: 'UI-1',
+        hold: {
+          reason: 'github_unreachable',
+          head_sha: HEAD,
+          failure_class: 'network',
+          wait_point: 'verify_recheck'
+        }
+      }
+    ]);
+  });
+
+  test('writes no exclusion and no failure for the connection wait', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [unreachable('verify_recheck')])
+    });
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
+    expect(mq.state().failures['UI-1']).toBeUndefined();
+  });
+
+  test('merges the item behind in the same drain while one waits for GitHub', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    const merge = scriptedMerge(store, [unreachable('verify_recheck')]);
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual(['UI-1', 'UI-2']);
+  });
+
+  test.each([
+    ['merge_command', 'rate_limit'],
+    ['verify_recheck', 'network'],
+    ['gate_read', 'rate_limit']
+  ])(
+    'holds at %s on a %s merge-turn failure',
+    async (wait_point, failure_class) => {
+      const store = seed(['UI-1']);
+      const mq = driver(store, {
+        merge: scriptedMerge(store, [unreachable(wait_point, failure_class)])
+      });
+
+      await mq.kick();
+
+      expect(entryOf(store).hold).toMatchObject({
+        reason: 'github_unreachable',
+        failure_class,
+        wait_point
+      });
+    }
+  );
+
+  test('holds at gate_read when the mergeability probe cannot reach GitHub', async () => {
+    const store = seed(['UI-1']);
+    const merge = vi.fn();
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'github_unreachable',
+        failure_class: 'rate_limit',
+        wait_point: 'gate_read',
+        head_sha: null,
+        external: false
+      })
+    });
+
+    await mq.kick();
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(entryOf(store).hold).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('holds at resolution with the manual authority when the base update cannot reach GitHub', async () => {
+    const store = seedManual(['UI-1']);
+    const updateBase = vi.fn(async () => ({
+      ok: false,
+      reason: 'update_branch_failed',
+      result_head_sha: null,
+      failure_class: 'network'
+    }));
+    const mq = driver(store, {
+      merge: vi.fn(),
+      updateBase,
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'base_behind',
+        head_sha: HEAD,
+        base_ref: 'main',
+        head_ref: 'UI-1',
+        external: false
+      })
+    });
+
+    await mq.kick();
+
+    expect(updateBase).toHaveBeenCalledTimes(1);
+    expect(entryOf(store)).toMatchObject({
+      authority: { source: 'manual' },
+      hold: { reason: 'github_unreachable', wait_point: 'resolution' }
+    });
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
+  });
+
+  test('merges without a click once the next turn reaches GitHub', async () => {
+    const store = seed(['UI-1']);
+    const merge = scriptedMerge(store, [unreachable('gate_read'), LANDED]);
+    const mq = driver(store, { merge });
+    await mq.kick();
+
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledTimes(2);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(mq.state().failures['UI-1']).toBeUndefined();
+  });
+
+  test('asks the rejudge not to retry a failed cleanup, and only the rejudge', async () => {
+    const store = seed(['UI-1']);
+    const merge = scriptedMerge(store, [unreachable('merge_command'), LANDED]);
+    const mq = driver(store, { merge });
+    await mq.kick();
+
+    await mq.kick();
+
+    expect(merge.mock.calls).toEqual([
+      ['UI-1'],
+      ['UI-1', { retry_failed_cleanup: false }]
+    ]);
+  });
+
+  test('ends the item on the failed cleanup the rejudge reports after a lost merge command', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [
+        unreachable('merge_command'),
+        {
+          ok: false,
+          action: 'already_merged',
+          reason: 'worktree_busy',
+          cleanup_step: 'worktree',
+          head_sha: HEAD
+        }
+      ])
+    });
+    await mq.kick();
+
+    await mq.kick();
+
+    expect(mq.state().failures['UI-1']).toBe(
+      '정리 실패(worktree): worktree_busy'
+    );
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('accepts the poller cleanup already in flight without failing the item', async () => {
+    const store = seed(['UI-1']);
+    const merge = scriptedMerge(store, [
+      unreachable('merge_command'),
+      { ok: false, action: 'refused', reason: 'action_in_flight' }
+    ]);
+    const mq = driver(store, { merge });
+    await mq.kick();
+
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledTimes(2);
+    expect(mq.state().failures['UI-1']).toBeUndefined();
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
+    expect(entryOf(store).hold).toMatchObject({ reason: 'github_unreachable' });
+  });
+
+  test('keeps since and the notification marker across wait points and a re-gate', async () => {
+    const store = seed(['UI-1']);
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: HEAD,
+        failure_class: 'network',
+        wait_point: 'gate_read',
+        notified_at: 7
+      },
+      at: 5
+    });
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [
+        moved(MOVED_HEAD),
+        unreachable('verify_recheck'),
+        unreachable('merge_command', 'rate_limit')
+      ])
+    });
+    await mq.kick();
+
+    await mq.kick();
+
+    expect(entryOf(store).hold).toEqual({
+      reason: 'github_unreachable',
+      head_sha: HEAD,
+      since: 5,
+      failure_class: 'rate_limit',
+      wait_point: 'merge_command',
+      notified_at: 7
+    });
+  });
+
+  test('writes one start and one end line across rejudges at changing wait points', async () => {
+    const store = seed(['UI-1']);
+    const timeline = recorder();
+    const mq = driver(store, {
+      timeline,
+      merge: scriptedMerge(store, [
+        unreachable('gate_read'),
+        unreachable('verify_recheck'),
+        unreachable('merge_command', 'rate_limit'),
+        LANDED
+      ])
+    });
+
+    for (let turn = 0; turn < 4; turn += 1) {
+      await mq.kick();
+    }
+
+    expect(
+      timeline.events.map((/** @type {any} */ e) => [e.seq, e.summary])
+    ).toEqual([
+      ['gh-github_unreachable-0', '머지 큐 · GitHub 연결 대기 — 게이트 읽기'],
+      ['m4', '머지 큐 · squash 머지 완료'],
+      ['gh-github_unreachable-0-end', '머지 큐 · GitHub 연결 대기 끝']
+    ]);
+  });
+
+  test('holds on the connection wait when the post-merge confirm runs out on a transient read', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [
+        { ok: true, action: 'merge_unconfirmed', reason: 'merge_pending' }
+      ]),
+      observePr: async () => ({
+        state: null,
+        error: 'gh_failed',
+        failure_class: 'network'
+      })
+    });
+
+    await mq.kick();
+
+    expect(mq.state().failures['UI-1']).toBeUndefined();
+    expect(entryOf(store).hold).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'merge_confirm',
+      // The first confirm poll (10 ms in) is where the wait first failed.
+      since: 10
+    });
+  });
+
+  test('still excludes on the confirm timeout when the last read saw OPEN', async () => {
+    const store = seed(['UI-1']);
+    let reads = 0;
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [
+        { ok: true, action: 'merge_unconfirmed', reason: 'merge_pending' }
+      ]),
+      observePr: async () => {
+        reads += 1;
+        return reads === 1
+          ? { state: null, error: 'gh_failed', failure_class: 'network' }
+          : { state: 'OPEN', error: null };
+      }
+    });
+
+    await mq.kick();
+
+    expect(mq.state().failures['UI-1']).toBe('merge_unconfirmed_timeout');
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('pins a permanent failure exclusion to the head the failing read saw', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [
+        {
+          ok: false,
+          action: 'refused',
+          reason: 'gh_failed:auth',
+          failure_class: 'auth',
+          head_sha: THIRD_HEAD
+        }
+      ])
+    });
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toMatchObject({
+      head_sha: THIRD_HEAD,
+      reason: 'gh_failed:auth'
+    });
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('holds only the item and keeps draining when a permanent failure never read the head', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    const merge = scriptedMerge(store, [
+      {
+        ok: false,
+        action: 'refused',
+        reason: 'gh_failed:auth',
+        failure_class: 'auth',
+        wait_point: 'gate_read',
+        head_unread: true
+      }
+    ]);
+    const mq = driver(store, { merge, headSha: () => null });
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual(['UI-1', 'UI-2']);
+    expect(store.snapshot(WS).merge_queue).toMatchObject([
+      {
+        bead_id: 'UI-1',
+        hold: {
+          reason: 'github_head_unreadable',
+          failure_class: 'auth',
+          wait_point: 'gate_read'
+        }
+      }
+    ]);
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
+  });
+
+  test('names the permanent hold by its class phrase on the history', async () => {
+    const store = seed(['UI-1']);
+    const timeline = recorder();
+    const mq = driver(store, {
+      timeline,
+      merge: scriptedMerge(store, [
+        {
+          ok: false,
+          action: 'refused',
+          reason: 'gh_failed:auth',
+          failure_class: 'auth',
+          wait_point: 'gate_read',
+          head_unread: true
+        }
+      ])
+    });
+
+    await mq.kick();
+
+    expect(timeline.events.map((/** @type {any} */ e) => e.summary)).toEqual([
+      '머지 큐 · GitHub 확인 실패 보류 — GitHub 인증 실패'
+    ]);
+  });
+
+  test('re-gates in the same turn when the candidate moved before the merge command', async () => {
+    const store = seed(['UI-1']);
+    const merge = scriptedMerge(store, [moved(MOVED_HEAD), LANDED]);
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledTimes(2);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
+  });
+
+  test('excludes on the third consecutive move at the head the third recheck saw', async () => {
+    const store = seed(['UI-1']);
+    const merge = scriptedMerge(store, [
+      moved(MOVED_HEAD),
+      moved(MOVED_HEAD),
+      moved(THIRD_HEAD)
+    ]);
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledTimes(3);
+    expect(mq.state().failures['UI-1']).toBe('verify_candidate_moved');
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toMatchObject({
+      head_sha: THIRD_HEAD,
+      reason: 'verify_candidate_moved'
+    });
+  });
+
+  test('keeps the third moved head out of the next automatic enrolment', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [
+        moved(MOVED_HEAD),
+        moved(MOVED_HEAD),
+        moved(THIRD_HEAD)
+      ])
+    });
+    await mq.kick();
+
+    store.enqueueMergeAuto(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: THIRD_HEAD, target_base: 'main' }],
+      present_ids: ['UI-1']
+    });
+
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('starts no review session, resolver or failure for a connection wait', async () => {
+    const store = seedManual(['UI-1']);
+    const startAuto = vi.fn();
+    const dispatchConflict = vi.fn();
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      dispatchConflict,
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'github_unreachable',
+        failure_class: 'network',
+        wait_point: 'gate_read',
+        head_sha: null,
+        external: false
+      })
+    });
+
+    await mq.kick();
+
+    expect(startAuto).not.toHaveBeenCalled();
+    expect(dispatchConflict).not.toHaveBeenCalled();
+    expect(mq.state().failures['UI-1']).toBeUndefined();
+  });
+
+  test('stops the drain without a dequeue when the hold cannot be written', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    const merge = scriptedMerge(store, [unreachable('verify_recheck')]);
+    vi.spyOn(store, 'setMergeHold').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual(['UI-1']);
+    expect(
+      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1', 'UI-2']);
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
+  });
+
+  test('keeps draining when the rejudge writes an unchanged hold', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: HEAD,
+        failure_class: 'network',
+        wait_point: 'verify_recheck'
+      },
+      at: 5
+    });
+    const merge = scriptedMerge(store, [unreachable('verify_recheck')]);
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual(['UI-1', 'UI-2']);
+    expect(
+      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1']);
+  });
+
+  test('keeps a GitHub hold when a click promotes the row to a fresh manual authority', () => {
+    // An automatically enrolled row: the click mints a fresh authority.
+    const store = seed(['UI-1']);
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: { reason: 'github_unreachable', head_sha: HEAD },
+      at: 5
+    });
+
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: HEAD, target_base: 'main' }]
+    });
+
+    expect(entryOf(store)).toMatchObject({
+      authority: { source: 'manual' },
+      hold: { reason: 'github_unreachable', since: 5 }
+    });
+  });
+
+  test.each([['current'], ['failed']])(
+    'keeps a GitHub hold when a review session settles %s',
+    (outcome) => {
+      const store = seedManual(['UI-1']);
+      store.setMergeHold(WS, {
+        bead_id: 'UI-1',
+        hold: { reason: 'github_unreachable', head_sha: HEAD },
+        at: 5
+      });
+      store.enqueueMergeManual(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        entries: [{ bead_id: 'UI-1', head_sha: HEAD, target_base: 'main' }],
+        review_session: { attempt_id: 'review:click', session_source: 'resume' }
+      });
+
+      const settled = store.settleReviewSession(WS, {
+        attempt_id: 'review:click',
+        outcome: /** @type {'current'|'failed'} */ (outcome),
+        // A fresh review verdict, which would replace a review hold's reason.
+        hold_reason: 'review_receipt_missing',
+        final_head_sha: HEAD,
+        head_moved_by_session: false,
+        at: 900
+      });
+
+      expect(settled.ok).toBe(true);
+      expect(entryOf(store).hold).toEqual({
+        reason: 'github_unreachable',
+        head_sha: HEAD,
+        since: 5
+      });
+    }
+  );
+
+  test('reloads a GitHub hold with its class, point and marker', () => {
+    const store = seed(['UI-1']);
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: HEAD,
+        failure_class: 'rate_limit',
+        wait_point: 'merge_command',
+        notified_at: 42
+      },
+      at: 5
+    });
+
+    store.__clearCacheForTest();
+
+    expect(entryOf(store).hold).toEqual({
+      reason: 'github_unreachable',
+      head_sha: HEAD,
+      since: 5,
+      failure_class: 'rate_limit',
+      wait_point: 'merge_command',
+      notified_at: 42
+    });
+  });
+
+  test('loads a hold written before the GitHub fields existed', () => {
+    const store = seed(['UI-1']);
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.merge_queue[0].hold = {
+      reason: 'github_unreachable',
+      head_sha: HEAD,
+      since: 3
+    };
+    fs.writeFileSync(file, JSON.stringify(raw));
+
+    store.__clearCacheForTest();
+
+    expect(entryOf(store).hold).toEqual({
+      reason: 'github_unreachable',
+      head_sha: HEAD,
+      since: 3
+    });
+  });
+
+  test('counts a hold that returns after a release as a new one', () => {
+    const store = seed(['UI-1']);
+    const hold = {
+      reason: 'github_unreachable',
+      head_sha: HEAD,
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    };
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: { ...hold, notified_at: 7 },
+      at: 5
+    });
+    store.setMergeHold(WS, { bead_id: 'UI-1', hold: null, at: 6 });
+
+    store.setMergeHold(WS, { bead_id: 'UI-1', hold, at: 9 });
+
+    expect(entryOf(store).hold).toEqual({ ...hold, since: 9 });
+  });
+
+  test('drops the marker and restarts since when the hold reason changes', () => {
+    const store = seed(['UI-1']);
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'github_head_unreadable',
+        head_sha: '',
+        failure_class: 'auth',
+        wait_point: 'gate_read',
+        notified_at: 7
+      },
+      at: 5
+    });
+
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: HEAD,
+        failure_class: 'network',
+        wait_point: 'gate_read'
+      },
+      at: 9
+    });
+
+    expect(entryOf(store).hold).toEqual({
+      reason: 'github_unreachable',
+      head_sha: HEAD,
+      since: 9,
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    });
   });
 });

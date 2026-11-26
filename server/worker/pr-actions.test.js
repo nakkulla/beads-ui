@@ -8996,3 +8996,95 @@ describe('worker/pr-actions — GitHub failures at merge time (UI-aui8 §3.2, §
     expect(r).toBeNull();
   });
 });
+
+describe('merge queue — GitHub unreachable while merging (UI-aui8)', () => {
+  const HEAD = 'a'.repeat(40);
+  const OTHER = 'UI-2';
+
+  /** A repo-ops coordinator whose `[verify]` is satisfied without a run. */
+  function configuredOperations() {
+    return {
+      hasConfig: vi.fn(async () => ({
+        ok: true,
+        present: true,
+        verify_script_path: VERIFY_SCRIPT_PATH
+      })),
+      ensureVerify: vi.fn(async () => ({ ok: true, inert: true })),
+      ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
+      waitForTerminal: vi.fn(),
+      waitForDeployTerminal: vi.fn(async () => ({ state: 'succeeded' })),
+      verifyReceipt: vi.fn(),
+      findExactDeployOperation: vi.fn(async () => null),
+      deploymentEvidence: vi.fn(async () => ({ state: 'succeeded' }))
+    };
+  }
+
+  /**
+   * Put a second `pr_wait` bead behind the harness bead and queue both.
+   *
+   * @param {any} store
+   */
+  function queueBoth(store) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'a2',
+        bead_id: OTHER,
+        repo: REPO,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude'
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: OTHER,
+      attempt_id: 'a2',
+      patch: { status: 'done' }
+    });
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: BEAD }, { bead_id: OTHER }]
+    });
+  }
+
+  test('holds the item in its slot when the pre-merge PR re-read fails with network', async () => {
+    const env = makeActions({
+      repoOperations: configuredOperations(),
+      details: [
+        prOf({ head_sha: HEAD }),
+        { state: 'error', reason: 'gh_failed', failure_class: 'network' }
+      ]
+    });
+    queueBoth(env.store);
+    const mergeOther = vi.fn(async (/** @type {string} */ bead_id) => {
+      env.store.moveToDone(WS, { bead_id, attempt_id: 'a2' });
+      return /** @type {const} */ ({
+        ok: true,
+        action: 'merged',
+        reason: null
+      });
+    });
+    const mq = createMergeQueue({
+      workspace: WS,
+      store: env.store,
+      merge: (/** @type {string} */ id) =>
+        id === BEAD ? env.actions.merge(id) : mergeOther(id),
+      observePr: async () => ({ state: 'OPEN', error: null }),
+      headSha: () => HEAD
+    });
+
+    await mq.kick();
+
+    const after = env.store.snapshot(WS);
+    expect(after.merge_queue.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+      BEAD
+    ]);
+    expect(after.merge_queue[0].hold).toMatchObject({
+      reason: 'github_unreachable'
+    });
+    expect(after.auto_merge_skips[BEAD]).toBeUndefined();
+    expect(mq.state().failures[BEAD]).toBeUndefined();
+    expect(mergeOther).toHaveBeenCalledWith(OTHER);
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+});
