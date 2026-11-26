@@ -15,6 +15,10 @@ import {
   FAILURE_SENTENCES,
   RECOVERY_WAIT_SENTENCES
 } from '../../app/utils/failure-sentences.js';
+import {
+  GITHUB_UNREACHABLE,
+  VERIFY_CANDIDATE_MOVED
+} from '../../app/utils/github-wait.js';
 import { timingLadder } from '../timing-settings.js';
 import { scriptSummary } from './failure-class.js';
 import { commentHeading, logRow, summaryRow } from './failure-comment.js';
@@ -27,8 +31,12 @@ import {
 } from './foreign-handoff.js';
 import { FOREIGN_HANDOFF_CLASS } from './foreign-target.js';
 import {
+  MOVED_CANDIDATE_LIMIT,
   RESOLUTION_ROUND_CAP,
-  resolutionWaitSettingMs
+  endGithubHold,
+  queuedGithubHold,
+  resolutionWaitSettingMs,
+  writeGithubHold
 } from './merge-queue.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
@@ -605,16 +613,20 @@ function decideFollowupWait(intent, fact) {
 }
 
 /**
- * @typedef {'green'|'conflict'|'verify_hold'|'cleanup_repairable'|'cleanup_pending'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
+ * `github_wait` is a completion gate that could not reach GitHub (UI-aui8
+ * §3.7): not a verdict, so it keeps the phase and the execution record.
+ *
+ * @typedef {'green'|'conflict'|'verify_hold'|'cleanup_repairable'|'cleanup_pending'|'completed'|'stale'|'undecidable'|'waiting'|'github_wait'} CompletionFactState
  */
 /**
  * @typedef {{ state: CompletionFactState, reason?: string }} CompletionFact
  */
 /**
- * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any, op_id?: string|null, terminal?: boolean, condition_wait?: import('./resolution-ladder.js').ConditionWaitSchedule }} ObservedCompletionFact
+ * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any, op_id?: string|null, terminal?: boolean, condition_wait?: import('./resolution-ladder.js').ConditionWaitSchedule, failure_class?: string, wait_point?: string }} ObservedCompletionFact
  * `condition_wait` is the recheck schedule of a cleanup stopped at its deploy
  * on a `[deploy]` condition wait (dotfiles-rnyd9), read from the durable
  * deploy chain; absent for every other stop and under a pin without it.
+ * `failure_class`/`wait_point` name a `github_wait` fact's failure.
  */
 /**
  * `terminal` marks a `needs_human` the KERNEL itself judged terminal (UI-8w4t
@@ -623,7 +635,7 @@ function decideFollowupWait(intent, fact) {
  * `receipt_unbacked`/`review_receipt_missing` are exactly how the surviving
  * metadata-watch and automatic-review lanes are entered.
  *
- * @typedef {{ kind: 'gate'|'hold'|'enter_cleanup'|'resume_intent'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'retry_failed_op'|'check_followup'|'observe_hold_links'|'launch_hold_return'|'pause'|'needs_human'|'complete', fact?: ObservedCompletionFact, reason?: string, terminal?: boolean }} CompletionAction
+ * @typedef {{ kind: 'gate'|'hold'|'enter_cleanup'|'resume_intent'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'retry_failed_op'|'check_followup'|'observe_hold_links'|'launch_hold_return'|'pause'|'needs_human'|'complete'|'github_wait', fact?: ObservedCompletionFact, reason?: string, terminal?: boolean }} CompletionAction
  */
 
 /**
@@ -781,6 +793,11 @@ export function decideCompletionAction(input) {
   }
   if (intent.phase === 'paused') {
     return { kind: 'resume_intent' };
+  }
+  // A gate that could not reach GitHub decides nothing (UI-aui8 §3.7): the
+  // row waits on its connection, and the next observation judges again.
+  if (fact.state === 'github_wait') {
+    return { kind: 'github_wait', fact };
   }
   if (fact.state === 'undecidable') {
     return needsHuman(
@@ -1738,6 +1755,87 @@ export function createCompletionActionDriver(deps) {
   }
 
   /**
+   * The root's connection wait (UI-aui8 §3.7) lives on its merge-queue entry,
+   * in the one record the merge queue writes too: one identity, one `since`
+   * and one notification marker whichever side observed the failure.
+   *
+   * @type {import('./merge-queue.js').GithubHoldContext}
+   */
+  const github_hold_ctx = {
+    workspace: deps.workspace,
+    store: deps.store,
+    timeline: deps.timeline ?? null,
+    now,
+    log
+  };
+  /**
+   * Consecutive moved-candidate merge results per root (UI-aui8 §3.7); any
+   * other merge result resets the count.
+   *
+   * @type {Map<string, number>}
+   */
+  const moved_streaks = new Map();
+
+  /**
+   * Put the root on the connection wait for one transient `false` gate or
+   * merge read. Phase and execution record stay as they are; a hold write
+   * that fails is retried by the next observation.
+   *
+   * @param {string} root_bead_id
+   * @param {{ failure_class?: string|null, wait_point?: string|null }} failed
+   * @param {string|null|undefined} head_sha
+   * @returns {boolean} false when the root has no queue row to hold, so no
+   * observation would ever judge it again.
+   */
+  function holdRootOnGithub(root_bead_id, failed, head_sha) {
+    const outcome = writeGithubHold(github_hold_ctx, root_bead_id, {
+      reason: GITHUB_UNREACHABLE,
+      head_sha: head_sha ?? null,
+      failure_class: failed.failure_class ?? 'network',
+      wait_point: failed.wait_point ?? 'gate_read'
+    });
+    log(
+      'completion intent %s waits for GitHub (%s at %s): %s',
+      root_bead_id,
+      failed.failure_class ?? 'network',
+      failed.wait_point ?? 'gate_read',
+      outcome
+    );
+    if (outcome === 'written') {
+      notify();
+    }
+    return isQueued(root_bead_id);
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @returns {boolean}
+   */
+  function isQueued(root_bead_id) {
+    try {
+      const lane = deps.store.snapshot(deps.workspace).merge_queue;
+      return (
+        Array.isArray(lane) &&
+        lane.some((/** @type {any} */ entry) => entry?.bead_id === root_bead_id)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * End the root's connection wait at a disposition that is not a transient
+   * GitHub failure (UI-aui8 §3.7); a root on no GitHub hold is untouched.
+   *
+   * @param {string} root_bead_id
+   */
+  function endGithubWait(root_bead_id) {
+    if (endGithubHold(github_hold_ctx, root_bead_id, null)) {
+      notify();
+    }
+  }
+
+  /**
    * @param {any} left
    * @param {any} right
    */
@@ -2110,6 +2208,9 @@ export function createCompletionActionDriver(deps) {
     // to folded, so a re-observation of the same failure still finds its
     // earlier comment.
     const folded = foldNeedsHumanReason(reason);
+    // A terminal is a disposition: the connection wait ends before the store
+    // takes the row (UI-aui8 §3.7).
+    endGithubWait(root_bead_id);
     const text =
       evidence === null
         ? null
@@ -2406,6 +2507,9 @@ export function createCompletionActionDriver(deps) {
     evidence = null,
     extras = {}
   ) {
+    // Every settled failure is a disposition that is not a transient GitHub
+    // failure, so it ends the connection wait (UI-aui8 §3.7).
+    endGithubWait(root_bead_id);
     const policy = classifyCompletionFailure(reason);
     if (policy.class === 'human') {
       terminalize(root_bead_id, reason, stage, failure_key, evidence);
@@ -2488,6 +2592,14 @@ export function createCompletionActionDriver(deps) {
   function factFromGate(gated, intent = null) {
     if (!gated || gated.ok !== true) {
       const reason = gated?.reason || 'completion_gate_unreadable';
+      if (reason === GITHUB_UNREACHABLE) {
+        return {
+          state: 'github_wait',
+          reason,
+          failure_class: gated.failure_class ?? 'network',
+          wait_point: gated.wait_point ?? 'gate_read'
+        };
+      }
       return reason === 'pr_ref_unknown'
         ? { state: 'waiting', reason }
         : { state: 'undecidable', reason };
@@ -3936,6 +4048,20 @@ export function createCompletionActionDriver(deps) {
    */
   async function onAction(root_bead_id, action, intent) {
     const fact = action.fact || facts.get(root_bead_id) || { state: 'waiting' };
+    if (action.kind === 'github_wait') {
+      holdRootOnGithub(root_bead_id, fact, intent?.subject?.head_sha);
+      return;
+    }
+    // A gate verdict that reached GitHub ends the connection wait (UI-aui8
+    // §3.7). A moved candidate is re-gated first, the way the merge queue
+    // re-gates one within its turn, so it does not.
+    if (
+      action.kind === 'hold' ||
+      action.kind === 'enter_cleanup' ||
+      (action.kind === 'gate' && fact.state !== 'stale')
+    ) {
+      endGithubWait(root_bead_id);
+    }
     if (action.kind === 'hold') {
       if (followup_checks.has(root_bead_id)) {
         // Another judgment of this root is mid-flight; the hold is the
@@ -3988,6 +4114,13 @@ export function createCompletionActionDriver(deps) {
         return;
       }
       if (op.kind === 'merge_subject') {
+        // A merge turn that is waiting on GitHub is re-judged by the merge
+        // queue's own pass-driven drain (UI-aui8 §3.7). Kicking it from here
+        // would loop: every drain notifies, every notify wakes this
+        // coordinator, and every kick spends a GitHub round trip.
+        if (queuedGithubHold(github_hold_ctx, root_bead_id)) {
+          return;
+        }
         if (typeof deps.kickMerge === 'function') {
           await deps.kickMerge();
         }
@@ -4294,6 +4427,15 @@ export function createCompletionActionDriver(deps) {
     if (result?.reason === 'resolution_timeout') {
       return;
     }
+    // A merge turn that could not reach GitHub settles nothing (UI-aui8
+    // §3.7): the merge operation stays prepared and the phase stays put, and
+    // the merge queue re-judges it on the connection wait.
+    if (
+      result?.reason === GITHUB_UNREACHABLE &&
+      holdRootOnGithub(root_bead_id, result, result.head_sha)
+    ) {
+      return;
+    }
     if (CONFLICT_RESOLUTION_FAILURES.has(result?.reason)) {
       settleFailure(
         root_bead_id,
@@ -4317,6 +4459,16 @@ export function createCompletionActionDriver(deps) {
     ) {
       return;
     }
+    // Three consecutive moved candidates end the intent on the merge queue's
+    // own exclusion reason (UI-aui8 §3.4, §3.7); any other result resets it.
+    const moved =
+      result?.action === 'refused' && result.reason === VERIFY_CANDIDATE_MOVED;
+    const moved_streak = moved ? (moved_streaks.get(root_bead_id) ?? 0) + 1 : 0;
+    if (moved_streak === 0 || moved_streak >= MOVED_CANDIDATE_LIMIT) {
+      moved_streaks.delete(root_bead_id);
+    } else {
+      moved_streaks.set(root_bead_id, moved_streak);
+    }
     if (intent.active_op?.kind === 'merge_subject') {
       const consumed = deps.store.advanceCompletionOp(deps.workspace, {
         root_bead_id,
@@ -4338,12 +4490,31 @@ export function createCompletionActionDriver(deps) {
       queue = consumed.queue;
       intent = queue.completion_intents[root_bead_id];
     }
+    if (moved_streak >= MOVED_CANDIDATE_LIMIT) {
+      terminalize(
+        root_bead_id,
+        `retry_exhausted:${VERIFY_CANDIDATE_MOVED}`,
+        'merge_subject',
+        null,
+        result
+      );
+      return;
+    }
     if (merged && subject_bead_id === root_bead_id) {
       let root_gate;
       try {
         root_gate = await deps.prActions.completionGate(root_bead_id, 'root');
       } catch {
         root_gate = null;
+      }
+      // The merge landed and only the read that pins its cleanup could not
+      // reach GitHub: the root waits in `gating`, and the next observation
+      // sees MERGED and enters the cleanup (UI-aui8 §3.7).
+      if (
+        root_gate?.reason === GITHUB_UNREACHABLE &&
+        holdRootOnGithub(root_bead_id, root_gate, intent.subject.head_sha)
+      ) {
+        return;
       }
       if (root_gate?.ok !== true) {
         settleFailure(
@@ -4366,6 +4537,7 @@ export function createCompletionActionDriver(deps) {
         );
         return;
       }
+      endGithubWait(root_bead_id);
       notify();
       return;
     }
@@ -4386,6 +4558,14 @@ export function createCompletionActionDriver(deps) {
         subject: gated.subject
       });
       notify();
+      return;
+    }
+    // The refused merge's re-judgment could not reach GitHub: the connection
+    // wait, never a failure (UI-aui8 §3.7).
+    if (
+      gated?.reason === GITHUB_UNREACHABLE &&
+      holdRootOnGithub(root_bead_id, gated, result?.head_sha)
+    ) {
       return;
     }
     settleFailure(

@@ -211,6 +211,17 @@ const CLOSURE_STEPS = CLEANUP_STEPS.slice(
  */
 
 /**
+ * @typedef {Object} CompletionGateRefusal
+ * @property {false} ok
+ * @property {string} reason
+ * @property {GithubFailureClass} [failure_class] - The GitHub failure class
+ * of a gate read that failed (UI-aui8 §3.7).
+ * @property {GithubWaitPoint} [wait_point] - Where a `github_unreachable`
+ * completion gate failed.
+ * @property {boolean} [head_unread] - The gate's first PR read failed.
+ */
+
+/**
  * @typedef {Object} DiscardResult
  * @property {boolean} ok
  * @property {string|null} reason
@@ -1527,7 +1538,7 @@ export function createPrActions(deps) {
    * @param {Queue} q
    * @param {string} bead_id
    * @param {number} number
-   * @returns {Promise<{ ok: true, gated: any, authority: { target_base: string, base_sha: string } }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true, gated: any, authority: { target_base: string, base_sha: string } }|CompletionGateRefusal>}
    */
   async function workspaceCompletionAuthority(q, bead_id, number) {
     if (typeof deps.resolveBase !== 'function') {
@@ -1540,7 +1551,15 @@ export function createPrActions(deps) {
       return { ok: false, reason: 'base_unresolved:git_error' };
     }
     if (!pinned.ok) {
-      return { ok: false, reason: `base_unresolved:${pinned.step}` };
+      return {
+        ok: false,
+        ...gateFailure({
+          error: `base_unresolved:${pinned.step}`,
+          ...(pinned.failure_class
+            ? { failure_class: pinned.failure_class }
+            : {})
+        })
+      };
     }
     const expected = await expectedBaseFor(q, bead_id, pinned);
     if (!expected.ok) {
@@ -1557,7 +1576,7 @@ export function createPrActions(deps) {
     }
     const gated = await gateNow(bead_id, number, pinned);
     if ('error' in gated) {
-      return { ok: false, reason: gated.error };
+      return { ok: false, ...gateFailure(gated) };
     }
     const base_ok = await baseGate(q, bead_id, gated.pr.base_ref, expected);
     if (!base_ok.ok) {
@@ -1596,7 +1615,7 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {import('./foreign-target.js').ForeignPrTarget} target
    * @param {{ number: number, url?: string|null }} ref
-   * @returns {Promise<{ ok: true, gated: any, authority: { target_base: string, base_sha: string } }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true, gated: any, authority: { target_base: string, base_sha: string } }|CompletionGateRefusal>}
    */
   async function foreignCompletionAuthority(bead_id, target, ref) {
     const pinned = prNumberFor(target, ref);
@@ -1605,7 +1624,7 @@ export function createPrActions(deps) {
     }
     const gated = await foreignGateNow(bead_id, pinned.number, target);
     if ('error' in gated) {
-      return { ok: false, reason: gated.error };
+      return { ok: false, ...gateFailure(gated) };
     }
     if (!mergedShaObserved(gated.pr)) {
       return { ok: false, reason: 'merge_sha_unobserved' };
@@ -1621,6 +1640,15 @@ export function createPrActions(deps) {
         return { ok: false, reason: bound.reason };
       }
       const tip = await fetchForeignBaseTip(bound.target, deps.gitRun);
+      if (!tip.ok && isTransientGithubFailure(tip.failure_class)) {
+        return {
+          ok: false,
+          ...gateFailure({
+            error: 'base_authority_unobserved',
+            failure_class: tip.failure_class
+          })
+        };
+      }
       base_sha = tip.ok ? tip.sha : null;
     }
     if (base_sha === null || base_sha.length === 0) {
@@ -1668,7 +1696,7 @@ export function createPrActions(deps) {
         ? await foreignCompletionAuthority(bead_id, foreign.target, ref)
         : await workspaceCompletionAuthority(q, bead_id, ref.number);
     if (!judged.ok) {
-      return { ok: false, reason: judged.reason };
+      return judged;
     }
     const { gated, authority } = judged;
     const entry = deps.observations.get(workspace, bead_id);

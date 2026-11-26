@@ -8995,6 +8995,44 @@ describe('worker/pr-actions — GitHub failures at merge time (UI-aui8 §3.2, §
 
     expect(r).toBeNull();
   });
+
+  test('answers the connection wait when the completion gate PR read fails with network (§3.7)', async () => {
+    const h = makeActions({ details: [ghDown('network')] });
+
+    const r = await h.actions.completionGate(BEAD);
+
+    expect(r).toEqual({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('answers the connection wait when the completion gate base pin fails with rate_limit (§3.7)', async () => {
+    const h = makeActions({ resolveBase: baseReads(baseDown('rate_limit')) });
+
+    const r = await h.actions.completionGate(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('names the class of a completion gate PR read that fails with auth (§3.7)', async () => {
+    const h = makeActions({ details: [ghDown('auth')] });
+
+    const r = await h.actions.completionGate(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth'
+    });
+  });
 });
 
 describe('merge queue — GitHub unreachable while merging (UI-aui8)', () => {
