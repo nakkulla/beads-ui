@@ -946,7 +946,8 @@ function prConflicting(pr) {
  * An observation it cannot complete is `{ ok: false, reason }`, never a pass.
  *
  * @param {{ target: BoundForeignTarget, pr: { number?: number|null, base_ref?: string, head_sha?: string, mergeable?: string, merge_state_status?: string }, gitRun: GitRun, resolveRepoOps: (input: { repo: string, sha: string, gitRun: GitRun }) => Promise<any> }} input
- * @returns {Promise<{ ok: true, handoff: string|null, base_sha: string|null, verify_script_path: string|null }|{ ok: false, reason: string }>}
+ * @returns {Promise<{ ok: true, handoff: string|null, base_sha: string|null, verify_script_path: string|null }|{ ok: false, reason: string, failure_class?: import('./gh.js').GithubFailureClass }>}
+ * A failed base fetch carries its GitHub class (UI-aui8 §3.1).
  */
 export async function judgeForeignPreMerge(input) {
   const { target, pr, gitRun } = input;
@@ -968,7 +969,11 @@ export async function judgeForeignPreMerge(input) {
   }
   const tip = await fetchForeignBaseTip(target, gitRun);
   if (!tip.ok) {
-    return { ok: false, reason: 'base_fetch_failed' };
+    return {
+      ok: false,
+      reason: 'base_fetch_failed',
+      failure_class: tip.failure_class
+    };
   }
   /** @type {any} */
   let policy;

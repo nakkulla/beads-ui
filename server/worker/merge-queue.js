@@ -190,7 +190,7 @@ const MERGE_STEP_LABELS = Object.freeze({
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
  *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, head_ref?: string|null, external: boolean, continuation?: 'verify' }>,
  *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null, head_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha: string, base_ref: string, head_ref: string }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
- *   baseContained?: (bead_id: string, input: { base_ref: string, head_ref: string, head_sha: string }) => Promise<'contained'|'not_contained'|null>,
+ *   baseContained?: (bead_id: string, input: { base_ref: string, head_ref: string, head_sha: string }) => Promise<'contained'|'not_contained'|'unreachable'|null>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
  *   verifiedOperation?: (bead_id: string) => string|null,
@@ -1536,7 +1536,7 @@ export function createMergeQueue(deps) {
     if (typeof deps.baseContained !== 'function') {
       return 'session';
     }
-    /** @type {'contained'|'not_contained'|null} */
+    /** @type {'contained'|'not_contained'|'unreachable'|null} */
     let contained = null;
     try {
       contained = await deps.baseContained(subject_bead_id, {

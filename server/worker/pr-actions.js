@@ -42,12 +42,17 @@
  * lane to reach a terminal success on the exact merged SHA.
  *
  * @import { Queue } from './queue-store.js'
- * @import { PrDetail } from './gh.js'
+ * @import { GithubFailureClass, PrDetail } from './gh.js'
+ * @import { GithubWaitPoint } from '../../app/utils/github-wait.js'
  * @import { BaseSyncOutcome } from './base-sync.js'
  */
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { FOREIGN_HANDOFF_SENTENCES } from '../../app/utils/failure-sentences.js';
+import {
+  GITHUB_UNREACHABLE,
+  VERIFY_CANDIDATE_MOVED
+} from '../../app/utils/github-wait.js';
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { createBaseSync } from './base-sync.js';
@@ -66,6 +71,11 @@ import {
   judgeForeignTargetMetadata,
   readForeignTarget
 } from './foreign-target.js';
+import {
+  GH_CALL_TIMEOUT_MS,
+  classifyGithubFailure,
+  isTransientGithubFailure
+} from './gh.js';
 import {
   createAncestryProbe,
   evaluateMergeGate,
@@ -161,6 +171,12 @@ const CLOSURE_STEPS = CLEANUP_STEPS.slice(
  * when the refusal came from a mergeability probe that observed one.
  * @property {string|null} [head_ref] - The PR head ref the probe observed.
  * @property {Record<string, unknown>|null} [continuation_mismatch]
+ * @property {GithubFailureClass} [failure_class] - The GitHub failure class
+ * when a GitHub call decided the outcome (UI-aui8 §3.1).
+ * @property {GithubWaitPoint} [wait_point] - Where a `github_unreachable`
+ * refusal failed (UI-aui8 §3.2) — additional information, never the reason.
+ * @property {boolean} [head_unread] - The gate's first PR read failed, so no
+ * head could be pinned (UI-aui8 §3.6).
  */
 
 /**
@@ -187,6 +203,11 @@ const CLOSURE_STEPS = CLEANUP_STEPS.slice(
  * @property {string|null} [head_ref]
  * @property {boolean} external
  * @property {'verify'} [continuation]
+ * @property {GithubFailureClass} [failure_class] - The GitHub failure class
+ * of a gate read that failed (UI-aui8 §3.1).
+ * @property {GithubWaitPoint} [wait_point] - Where a `github_unreachable`
+ * probe failed.
+ * @property {boolean} [head_unread] - The gate's first PR read failed.
  */
 
 /**
@@ -261,7 +282,7 @@ function authoritativeMergeSha(pr) {
  *     removeIfDiscardable?: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
- *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
+ *   gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runBaseSync?: (file: string, args: string[], options: { cwd: string, encoding: 'utf8' }) => Promise<{ stdout: string }>,
  *   homeDir?: string,
  *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void>, reconcileInteractiveSessions?: (workspace: string) => Promise<void>, onConditionRecheck?: (listener: (workspace: string) => Promise<unknown>) => () => void },
@@ -559,6 +580,38 @@ export function createPrActions(deps) {
    */
   function refuse(reason) {
     return { ok: false, action: 'refused', reason };
+  }
+
+  /**
+   * The refusal of a gate that could not be read (UI-aui8 §3.2, §3.6). A
+   * transient GitHub failure is the connection wait wherever the gate failed;
+   * a permanent `gh` failure names its class in the reason, and a failed first
+   * PR read says no head could be pinned. Every other gate error keeps its
+   * reason unchanged.
+   *
+   * @param {{ error: string, failure_class?: GithubFailureClass, head_unread?: boolean, pr?: { head_sha?: string } }} failed
+   * @returns {{ reason: string, failure_class?: GithubFailureClass, wait_point?: GithubWaitPoint, head_unread?: boolean }}
+   */
+  function gateFailure(failed) {
+    const failure_class = failed.failure_class;
+    if (failure_class && isTransientGithubFailure(failure_class)) {
+      return {
+        reason: GITHUB_UNREACHABLE,
+        failure_class,
+        wait_point: 'gate_read'
+      };
+    }
+    const reason =
+      failed.error === 'gh_failed' && failure_class
+        ? `gh_failed:${failure_class}`
+        : failed.error;
+    return {
+      reason,
+      ...(failure_class ? { failure_class } : {}),
+      ...(failed.head_unread === true && !failed.pr
+        ? { head_unread: true }
+        : {})
+    };
   }
 
   /**
@@ -996,7 +1049,9 @@ export function createPrActions(deps) {
    * @param {number} number
    * @param {import('./foreign-target.js').ForeignPrTarget|null} [target] - A
    * pinned foreign PR is read through its slug (UI-k467 §3.1).
-   * @returns {Promise<{ pr: PrDetail }|{ error: string }>}
+   * @returns {Promise<{ pr: PrDetail }|{ error: string, failure_class?: GithubFailureClass, head_unread: true }>}
+   * A failed read carries its GitHub class (UI-aui8 §3.1) and says the head
+   * was never read.
    */
   async function observeNow(bead_id, number, target = null) {
     const gh = ghFor(target);
@@ -1016,7 +1071,13 @@ export function createPrActions(deps) {
       await sleep(requery_delay_ms);
       try {
         const again = await gh.prDetail(repo, number);
-        if (again.state === 'ok') {
+        if (
+          again.state === 'ok' ||
+          (again.state === 'error' &&
+            isTransientGithubFailure(again.failure_class))
+        ) {
+          // A re-observation GitHub could not answer is the connection wait
+          // (UI-aui8 §3.2), not a reason to judge the first reading.
           detail = again;
         }
       } catch {
@@ -1026,7 +1087,13 @@ export function createPrActions(deps) {
     if (detail.state !== 'ok') {
       const error = detail.state === 'error' ? detail.reason : 'gh_empty';
       deps.observations.record(workspace, bead_id, { error, ...foreign });
-      return { error };
+      return {
+        error,
+        ...(detail.state === 'error' && detail.failure_class
+          ? { failure_class: detail.failure_class }
+          : {}),
+        head_unread: true
+      };
     }
     const pr = /** @type {PrDetail} */ (detail.data);
     // A terminal PR is classified by its state alone.
@@ -1105,7 +1172,12 @@ export function createPrActions(deps) {
         review_receipt,
         foreign: foreignObservation(target)
       });
-      return { error: judgment.reason };
+      return {
+        error: judgment.reason,
+        ...('failure_class' in judgment && judgment.failure_class
+          ? { failure_class: judgment.failure_class }
+          : {})
+      };
     }
     if (judgment.handoff !== null) {
       const reason = foreignHandoffReason(judgment.handoff);
@@ -1260,7 +1332,7 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {number} number
    * @param {import('./target-base.js').TargetBaseResult} [base_pin]
-   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean, authority_unreadable?: boolean, receipt_state?: import('./merge-gate.js').ReceiptGateState }|{ error: string }>}
+   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean, authority_unreadable?: boolean, receipt_state?: import('./merge-gate.js').ReceiptGateState }|{ error: string, failure_class?: GithubFailureClass, head_unread?: boolean }>}
    */
   async function gateNow(bead_id, number, base_pin) {
     const observed = await observeNow(bead_id, number);
@@ -1282,7 +1354,10 @@ export function createPrActions(deps) {
       }
       if (!pinned?.ok || typeof pinned.base_oid !== 'string') {
         return {
-          error: `base_unresolved:${pinned && 'step' in pinned ? pinned.step : 'no_resolver'}`
+          error: `base_unresolved:${pinned && 'step' in pinned ? pinned.step : 'no_resolver'}`,
+          ...(pinned && 'failure_class' in pinned && pinned.failure_class
+            ? { failure_class: pinned.failure_class }
+            : {})
         };
       }
       const config = await repo_operations.hasConfig(pinned.base_oid, {
@@ -3495,11 +3570,12 @@ export function createPrActions(deps) {
       : await gateNow(bead_id, pinned.number);
     if ('error' in observed) {
       // A foreign handoff still names the head and base it was judged on, so
-      // a queue hold binds that identity (UI-k467 §3.7).
+      // a queue hold binds that identity (UI-k467 §3.7). A GitHub failure
+      // carries its class and wait point (UI-aui8 §3.2).
       return {
         ok: false,
         kind: 'blocked',
-        reason: observed.error,
+        ...gateFailure(observed),
         head_sha: observed.pr?.head_sha ?? null,
         base_ref: observed.pr?.base_ref || null,
         external: is_external
@@ -3646,7 +3722,11 @@ export function createPrActions(deps) {
    * The authoritative [머지] click (§6).
    *
    * @param {string} bead_id
-   * @param {{ allow_conflict_resolution?: boolean }} [options]
+   * @param {{ allow_conflict_resolution?: boolean, retry_failed_cleanup?: boolean }} [options]
+   * - `retry_failed_cleanup: false` is the merge queue's connection-wait
+   * rejudge (UI-aui8 §3.3): a MERGED PR whose cleanup already failed is
+   * reported, never cleaned up again — that record belongs to its banner and
+   * a person.
    * @returns {Promise<MergeClickResult>}
    */
   async function merge(bead_id, options = {}) {
@@ -3705,7 +3785,9 @@ export function createPrActions(deps) {
         : await gateNow(bead_id, pinned.number);
       if ('error' in first) {
         return {
-          ...refuse(first.error),
+          ok: false,
+          action: 'refused',
+          ...gateFailure(first),
           ...(first.pr ? { head_sha: first.pr.head_sha } : {})
         };
       }
@@ -3736,7 +3818,17 @@ export function createPrActions(deps) {
         if (discardActive(deps.store.snapshot(workspace), bead_id)) {
           return refuse('discard_in_progress');
         }
-        const c = q.cleanup_failed?.[bead_id]
+        const prior_failure = q.cleanup_failed?.[bead_id];
+        if (prior_failure && options.retry_failed_cleanup === false) {
+          return {
+            ok: false,
+            action: 'already_merged',
+            reason: prior_failure.reason || 'merged_cleanup_failed',
+            cleanup_step: prior_failure.step || null,
+            head_sha: first.pr.head_sha
+          };
+        }
+        const c = prior_failure
           ? await retryCleanupLocked(bead_id, refs)
           : await runCleanup(bead_id, refs);
         return {
@@ -3821,6 +3913,95 @@ export function createPrActions(deps) {
   }
 
   /**
+   * The pre-merge recheck of the candidate the gate verified (UI-aui8 §3.2):
+   * the PR and the base are re-read together and disposed of in order —
+   *
+   *   1. a permanent failure on either read is `verify_candidate_unreadable`
+   *      with its class, pinned to the gate's head (§3.6);
+   *   2. a transient failure on either read is the connection wait, whatever
+   *      the other read showed — the rejudge runs the gate again anyway;
+   *   3. a PR no longer OPEN, or a head, base tip or PR base branch name that
+   *      differs from what the gate verified, is `verify_candidate_moved`,
+   *      carrying the head this recheck saw (§3.4);
+   *   4. otherwise `null`: the merge command may run.
+   *
+   * @param {number} number
+   * @param {string} head_sha - The head the gate verified.
+   * @param {string|null} base_ref - The PR base branch the gate verified.
+   * @param {{ base_sha?: string, target?: import('./foreign-target.js').BoundForeignTarget|null }} verification
+   * @returns {Promise<MergeClickResult|null>}
+   */
+  async function recheckCandidate(number, head_sha, base_ref, verification) {
+    const target = verification.target || null;
+    const gh = ghFor(target);
+    /** @type {[any, any]} */
+    const [fresh_pr, fresh_base] = await Promise.all([
+      Promise.resolve()
+        .then(() => gh.prDetail(repo, number))
+        .catch(() => ({ state: 'error', reason: 'gh_spawn_failed' })),
+      target
+        ? fetchForeignBaseTip(target, deps.gitRun).then((tip) =>
+            tip.ok
+              ? { ok: true, base_oid: tip.sha }
+              : { ok: false, failure_class: tip.failure_class }
+          )
+        : Promise.resolve()
+            .then(() => deps.resolveBase?.({ force: true }))
+            .catch(() => ({ ok: false, failure_class: 'unknown' }))
+    ]);
+    const pr_read = fresh_pr?.state === 'ok';
+    const base_read =
+      !!fresh_base?.ok && typeof fresh_base.base_oid === 'string';
+    /** @type {Array<GithubFailureClass>} */
+    const failures = [];
+    if (!pr_read) {
+      failures.push(
+        fresh_pr?.state === 'error' && fresh_pr.failure_class
+          ? fresh_pr.failure_class
+          : 'unknown'
+      );
+    }
+    if (!base_read) {
+      failures.push(fresh_base?.failure_class || 'unknown');
+    }
+    const permanent = failures.find((c) => !isTransientGithubFailure(c));
+    if (permanent) {
+      return {
+        ok: false,
+        action: 'refused',
+        reason: `verify_candidate_unreadable:${permanent}`,
+        failure_class: permanent,
+        head_sha
+      };
+    }
+    if (failures.length > 0) {
+      return {
+        ok: false,
+        action: 'refused',
+        reason: GITHUB_UNREACHABLE,
+        failure_class: failures[0],
+        wait_point: 'verify_recheck',
+        head_sha
+      };
+    }
+    const pr = fresh_pr.data;
+    if (
+      pr.state !== 'OPEN' ||
+      pr.head_sha !== head_sha ||
+      fresh_base.base_oid !== verification.base_sha ||
+      (pr.base_ref || null) !== base_ref
+    ) {
+      return {
+        ok: false,
+        action: 'refused',
+        reason: VERIFY_CANDIDATE_MOVED,
+        head_sha: typeof pr.head_sha === 'string' ? pr.head_sha : head_sha
+      };
+    }
+    return null;
+  }
+
+  /**
    * Perform the squash merge and, only once the PR is OBSERVED merged, the
    * cleanup.
    *
@@ -3866,22 +4047,14 @@ export function createPrActions(deps) {
     /** @type {any} */
     let merged;
     if (verification.repo_operations) {
-      const [fresh_pr, fresh_base] = await Promise.all([
-        gh.prDetail(repo, number),
-        target
-          ? fetchForeignBaseTip(target, deps.gitRun).then((tip) =>
-              tip.ok ? { ok: true, base_oid: tip.sha } : { ok: false }
-            )
-          : deps.resolveBase?.({ force: true })
-      ]);
-      if (
-        fresh_pr?.state !== 'ok' ||
-        fresh_pr.data.state !== 'OPEN' ||
-        fresh_pr.data.head_sha !== head_sha ||
-        !fresh_base?.ok ||
-        fresh_base.base_oid !== verification.base_sha
-      ) {
-        return refuse('verify_candidate_stale');
+      const stale = await recheckCandidate(
+        number,
+        head_sha,
+        refs.base_ref ?? null,
+        verification
+      );
+      if (stale) {
+        return stale;
       }
     }
     if (deps.store.snapshot(workspace).completion_intents?.[bead_id]) {
@@ -3901,10 +4074,25 @@ export function createPrActions(deps) {
       merged = { state: 'error', reason: 'gh_spawn_failed' };
     }
     if (merged.state !== 'ok') {
+      // The command may have failed after GitHub merged: the rejudge after
+      // the wait runs the gate first, which sees MERGED (UI-aui8 §3.2).
+      if (isTransientGithubFailure(merged.failure_class)) {
+        return {
+          ok: false,
+          action: 'refused',
+          reason: GITHUB_UNREACHABLE,
+          failure_class: merged.failure_class,
+          wait_point: 'merge_command',
+          head_sha
+        };
+      }
       return {
         ok: false,
         action: 'refused',
-        reason: `merge_failed:${merged.reason || 'gh_failed'}`,
+        reason: `merge_failed:${merged.failure_class || merged.reason || 'gh_failed'}`,
+        ...(merged.failure_class
+          ? { failure_class: merged.failure_class }
+          : {}),
         head_sha
       };
     }
@@ -3923,6 +4111,7 @@ export function createPrActions(deps) {
         ok: false,
         action: 'merge_unconfirmed',
         reason: `merge_state_unconfirmed:${after.reason || 'gh_failed'}`,
+        ...(after.failure_class ? { failure_class: after.failure_class } : {}),
         head_sha
       };
     }
@@ -4078,11 +4267,13 @@ export function createPrActions(deps) {
    * Every unreadable step answers `null`, which the caller charges to the
    * session; a head that moved again between the probe and this fetch is one
    * such step, because the judgment would then be about a different commit.
+   * A fetch that failed transiently answers `unreachable` instead: the
+   * connection wait charges no resolution round (UI-aui8 §3.2).
    *
    * @param {string} bead_id - Named for the seam's shape; the repo is the
    * workspace's, exactly like every other git command here.
    * @param {{ base_ref: string, head_ref: string, head_sha: string }} input
-   * @returns {Promise<'contained'|'not_contained'|null>}
+   * @returns {Promise<'contained'|'not_contained'|'unreachable'|null>}
    */
   async function baseContained(bead_id, input) {
     const { base_ref, head_ref, head_sha } = input;
@@ -4092,10 +4283,14 @@ export function createPrActions(deps) {
     return deps.worktree.withTopologyLock(repo, async () => {
       const fetched = await deps.gitRun(
         ['fetch', '--no-tags', 'origin', base_ref, head_ref],
-        { cwd: repo }
+        { cwd: repo, timeout_ms: GH_CALL_TIMEOUT_MS }
       );
       if (fetched.code !== 0) {
-        return null;
+        return isTransientGithubFailure(
+          classifyGithubFailure(fetched.stderr, fetched.code)
+        )
+          ? /** @type {const} */ ('unreachable')
+          : null;
       }
       const head = await deps.gitRun(['rev-parse', `origin/${head_ref}`], {
         cwd: repo
@@ -4762,7 +4957,7 @@ export function createPrActions(deps) {
    *
    * @param {number} number
    * @param {import('./foreign-target.js').ForeignPrTarget|null} [target]
-   * @returns {Promise<{ pr_state: string }|{ error: string }>}
+   * @returns {Promise<{ pr_state: string }|{ error: string, failure_class?: GithubFailureClass }>}
    */
   async function readPrState(number, target = null) {
     /** @type {any} */
@@ -4773,7 +4968,12 @@ export function createPrActions(deps) {
       detail = { state: 'error', reason: 'gh_spawn_failed' };
     }
     if (detail.state !== 'ok') {
-      return { error: detail.state === 'error' ? detail.reason : 'gh_empty' };
+      return {
+        error: detail.state === 'error' ? detail.reason : 'gh_empty',
+        ...(detail.state === 'error' && detail.failure_class
+          ? { failure_class: detail.failure_class }
+          : {})
+      };
     }
     return { pr_state: /** @type {PrDetail} */ (detail.data).state };
   }
@@ -4788,7 +4988,8 @@ export function createPrActions(deps) {
    * included, so the watch reads the same PR the merge targeted.
    *
    * @param {string} bead_id
-   * @returns {Promise<{ state: string|null, error: string|null }>}
+   * @returns {Promise<{ state: string|null, error: string|null, failure_class?: GithubFailureClass }>}
+   * An unreadable PR carries its GitHub class (UI-aui8 §3.5).
    */
   async function prState(bead_id) {
     const q = deps.store.snapshot(workspace);
@@ -4824,7 +5025,13 @@ export function createPrActions(deps) {
     }
     const observed = await readPrState(pinned.number, target);
     if ('error' in observed) {
-      return { state: null, error: observed.error };
+      return {
+        state: null,
+        error: observed.error,
+        ...(observed.failure_class
+          ? { failure_class: observed.failure_class }
+          : {})
+      };
     }
     return { state: observed.pr_state, error: null };
   }
@@ -4906,7 +5113,8 @@ export function createPrActions(deps) {
    * the PR separately and requires exact equality before §4 may relax review.
    *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null }>}
+   * @returns {Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null, failure_class?: GithubFailureClass }>}
+   * A failed update carries its GitHub class (UI-aui8 §3.2).
    */
   async function updateBase(bead_id) {
     const q = deps.store.snapshot(workspace);
@@ -4963,7 +5171,10 @@ export function createPrActions(deps) {
           updated && typeof updated.reason === 'string'
             ? updated.reason
             : 'update_branch_failed',
-        result_head_sha: null
+        result_head_sha: null,
+        ...(updated && updated.failure_class
+          ? { failure_class: updated.failure_class }
+          : {})
       };
     }
     notifyChanged(workspace);
