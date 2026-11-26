@@ -70,16 +70,18 @@ const RATE_LIMIT_PATTERN =
   /rate limit|HTTP 429|returned error: 429|too many requests/i;
 
 const AUTH_PATTERN =
-  /HTTP 401|returned error: 401|bad credentials|gh auth login|authentication failed|permission denied|could not read username|terminal prompts disabled|publickey|credential/i;
+  /HTTP 40[13]\b|returned error: 40[13]\b|bad credentials|gh auth login|authentication failed|permission denied|could not read username|terminal prompts disabled|publickey|credential/i;
 
 const NETWORK_PATTERN =
-  /dial tcp|i\/o timeout|tls handshake timeout|connection (?:timed out|reset|refused)|could not resolve host|network is unreachable|operation timed out|early eof|remote end hung up unexpectedly|error connecting to|context deadline exceeded|HTTP 50[0234]\b|returned error: 50[0234]\b/i;
+  /dial tcp|i\/o timeout|tls handshake timeout|connection (?:timed out|reset|refused)|could not resolve host|network is unreachable|operation timed out|early eof|remote end hung up unexpectedly|error connecting to|context deadline exceeded|HTTP 5\d\d\b|returned error: 5\d\d\b/i;
 
 /**
  * Classify a failed GitHub call from its output WITHOUT retaining that output
  * (it can carry credentials, the `target-base.js` precedent). A call that hit
  * its per-call ceiling (exit 124) is `network` whatever it printed; rate
- * limits are read before auth because a secondary limit arrives as HTTP 403.
+ * limits are read before auth because a secondary limit arrives as HTTP 403,
+ * and only a 403 without rate-limit text is a permission refusal. Every HTTP
+ * 5xx answer is a server-side failure and reads as `network`.
  *
  * @param {unknown} text - The failed call's stderr (and stdout, if useful).
  * @param {number|null} [code] - The exit code, when there was one.

@@ -1365,4 +1365,23 @@ describe('worker/gh — GitHub failure classification (UI-aui8 §3.1)', () => {
 
     expect(failure_class).toBe('unknown');
   });
+
+  test.each([
+    'HTTP 501: Not Implemented',
+    'HTTP 507: Insufficient Storage',
+    'The requested URL returned error: 599'
+  ])('classifies the 5xx answer "%s" as network', (stderr) => {
+    const failure_class = classifyGithubFailure(stderr, 1);
+
+    expect(failure_class).toBe('network');
+  });
+
+  test.each([
+    'HTTP 403: Resource not accessible by integration',
+    'The requested URL returned error: 403'
+  ])('classifies the permission refusal "%s" as auth', (stderr) => {
+    const failure_class = classifyGithubFailure(stderr, 1);
+
+    expect(failure_class).toBe('auth');
+  });
 });
