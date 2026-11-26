@@ -8831,6 +8831,61 @@ describe('worker/pr-actions — GitHub failures at merge time (UI-aui8 §3.2, §
     expect(r.head_unread).toBeUndefined();
   });
 
+  test('carries the GitHub class when the conflict dispatch re-probe cannot reach GitHub', async () => {
+    const h = makeActions({ details: [ghDown('rate_limit')] });
+
+    const r = await h.actions.dispatchConflict(BEAD, {
+      head_sha: 'sha-aaa',
+      base_ref: 'main'
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit'
+    });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('consumes the caller resolution before the resolver starts', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+    const decided = vi.fn(() => true);
+
+    await h.actions.dispatchConflict(
+      BEAD,
+      { head_sha: 'sha-aaa', base_ref: 'main' },
+      null,
+      undefined,
+      decided
+    );
+
+    expect(decided).toHaveBeenCalledTimes(1);
+    expect(h.scheduler.resolveConflict).toHaveBeenCalledTimes(1);
+    expect(decided.mock.invocationCallOrder[0]).toBeLessThan(
+      h.scheduler.resolveConflict.mock.invocationCallOrder[0]
+    );
+  });
+
+  test('starts no resolver when the caller resolution cannot be consumed', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+
+    const r = await h.actions.dispatchConflict(
+      BEAD,
+      { head_sha: 'sha-aaa', base_ref: 'main' },
+      null,
+      undefined,
+      () => false
+    );
+
+    expect(r).toMatchObject({ ok: false, action: 'refused' });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
   test('refuses with the connection wait when the UNKNOWN re-query fails with rate_limit', async () => {
     const h = makeActions({
       details: [prOf({ mergeable: 'UNKNOWN' }), ghDown('rate_limit')]

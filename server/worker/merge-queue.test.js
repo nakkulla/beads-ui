@@ -1067,7 +1067,7 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
    * Drive ONE settled resolution through the charge judgment (spec §4.2) and
    * hand back the spy on what the store was asked to charge.
    *
-   * @param {{ probe: any, blank_identity?: boolean, baseContained?: any, rebase_round_cap?: number }} input
+   * @param {{ probe: any, blank_identity?: boolean, baseContained?: any, rebase_round_cap?: number, dispatchConflictFor?: (store: any) => any }} input
    */
   async function chargeCase(input) {
     const store = seed(['UI-1']);
@@ -1113,11 +1113,13 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
       ...(input.rebase_round_cap === undefined
         ? {}
         : { rebase_round_cap: input.rebase_round_cap }),
-      dispatchConflict: async () => ({
-        ok: false,
-        action: 'conflict_resolution',
-        reason: 'worktree_missing'
-      })
+      dispatchConflict: input.dispatchConflictFor
+        ? input.dispatchConflictFor(store)
+        : async () => ({
+            ok: false,
+            action: 'conflict_resolution',
+            reason: 'worktree_missing'
+          })
     });
 
     await mq.kick();
@@ -1292,6 +1294,71 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     });
   });
 
+  test('charges nothing and holds when the dispatch re-probe cannot reach GitHub (UI-aui8 §3.2)', async () => {
+    const { store, consume } = await chargeCase({
+      probe: probeOf('dirty', PUSHED_HEAD),
+      baseContained: async () => 'contained',
+      dispatchConflictFor: () => async () => ({
+        ok: false,
+        action: 'refused',
+        reason: 'github_unreachable',
+        failure_class: 'rate_limit',
+        wait_point: 'gate_read',
+        head_sha: null
+      })
+    });
+
+    expect(consume).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      bead_id: 'UI-1',
+      resolution_rounds: 0,
+      resolution: { attempt_id: 'res-charge', state: 'ready' },
+      hold: {
+        reason: 'github_unreachable',
+        wait_point: 'resolution',
+        failure_class: 'rate_limit',
+        head_sha: PUSHED_HEAD
+      }
+    });
+  });
+
+  test('consumes the ready resolution only once the dispatch re-probe decided (UI-aui8 §3.2)', async () => {
+    /** @type {string[]} */
+    const states_at_dispatch = [];
+
+    const { consume } = await chargeCase({
+      probe: probeOf('dirty', PUSHED_HEAD),
+      baseContained: async () => 'contained',
+      dispatchConflictFor:
+        (/** @type {any} */ queue_store) =>
+        async (
+          /** @type {string} */ bead_id,
+          /** @type {any} */ approved,
+          /** @type {any} */ resolution_wait,
+          /** @type {any} */ continuation,
+          /** @type {(() => boolean)|undefined} */ decided
+        ) => {
+          states_at_dispatch.push(
+            String(queue_store.snapshot(WS).merge_queue[0].resolution?.state)
+          );
+          decided?.();
+          return {
+            ok: false,
+            action: 'conflict_resolution',
+            reason: 'worktree_missing'
+          };
+        }
+    });
+
+    expect(states_at_dispatch).toEqual(['ready']);
+    expect(consume).toHaveBeenCalledTimes(1);
+    expect(consume).toHaveBeenCalledWith(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      charge: 'session'
+    });
+  });
+
   test('skips the item once the rebase budget runs out', async () => {
     const { store, mq } = await chargeCase({
       probe: probeOf('dirty', PUSHED_HEAD),
@@ -1333,7 +1400,8 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
         base_ref: 'main',
         head_ref: 'feature-branch'
       }),
-      undefined
+      undefined,
+      expect.any(Function)
     );
   });
 
@@ -4175,6 +4243,76 @@ describe('worker/merge-queue — 자기 알림 재드레인 고리 (UI-nfkp §4)
     expect(store.snapshot(WS).merge_queue[0].hold?.reason).toBe(
       'review_receipt_missing'
     );
+    mq.stop();
+  });
+
+  test('stops re-draining a GitHub-held ready resolution on a closed bus (UI-aui8 §3.3)', async () => {
+    const store = seed(['UI-1']);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'res-held',
+        bead_id: 'UI-1',
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 0
+      }
+    });
+    store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-held',
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'UI-1'
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'res-held',
+      patch: { status: 'done', finished_at: 2 }
+    });
+    store.settleResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-held',
+      settled_at: 2,
+      active_bead_id: null
+    });
+    const bus = realBus();
+    const guard = loopGuard();
+    const probeMergeability = vi.fn(async () => {
+      guard.count();
+      return {
+        ok: false,
+        kind: /** @type {const} */ ('blocked'),
+        reason: 'github_unreachable',
+        failure_class: 'network',
+        wait_point: 'gate_read',
+        head_sha: null,
+        external: false
+      };
+    });
+    const mq = driver(store, { merge: vi.fn(), probeMergeability, ...bus });
+    guard.arm(mq);
+
+    mq.start();
+    await settle();
+    const settled_probes = probeMergeability.mock.calls.length;
+    await settle(5);
+
+    // The pick-time notify of the first pass, before the hold existed, may
+    // latch one more pass; the held record itself schedules none, so the
+    // loop guard's budget is never reached.
+    expect(settled_probes).toBeLessThanOrEqual(2);
+    expect(probeMergeability).toHaveBeenCalledTimes(settled_probes);
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      resolution: { attempt_id: 'res-held', state: 'ready' },
+      hold: { reason: 'github_unreachable', wait_point: 'resolution' }
+    });
     mq.stop();
   });
 

@@ -523,7 +523,7 @@ export function endGithubHold(ctx, bead_id, started) {
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   merge: (bead_id: string, options?: { retry_failed_cleanup?: boolean }) => Promise<MergeClickResult>,
  *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, head_ref?: string|null, external: boolean, continuation?: 'verify', failure_class?: string, wait_point?: string, head_unread?: boolean }>,
- *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null, head_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha: string, base_ref: string, head_ref: string }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
+ *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null, head_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha: string, base_ref: string, head_ref: string }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }, decided?: () => boolean) => Promise<MergeClickResult>,
  *   baseContained?: (bead_id: string, input: { base_ref: string, head_ref: string, head_sha: string }) => Promise<'contained'|'not_contained'|'unreachable'|null>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null, failure_class?: string }>,
  *   headSha?: (bead_id: string) => string|null,
@@ -1783,6 +1783,12 @@ export function createMergeQueue(deps) {
         return true;
       }
       if (resolution.state === 'ready') {
+        // A ready record a GitHub hold kept unconsumed (UI-aui8 §3.2) waits
+        // for the hold's own rejudge; the driver's own event would only
+        // re-read GitHub in a closed loop.
+        if (isGithubHold(entry.hold)) {
+          continue;
+        }
         return (
           lineage.state !== 'terminal' ||
           q.auto_merge === true ||
@@ -2364,6 +2370,21 @@ export function createMergeQueue(deps) {
       (before?.resolution_rounds ?? round_cap) + (charge === 'session' ? 1 : 0);
     const effective_rebase =
       (before?.rebase_rounds ?? rebase_cap) + (charge === 'rebase' ? 1 : 0);
+    const dispatch_refusal =
+      probe.ok && probe.kind === 'dirty'
+        ? conflictDispatchRefusal(probe, effective_rounds, effective_rebase)
+        : null;
+    // A resolver dispatch re-probes before its effect, so a ready resolution
+    // it would start from is consumed only once THAT read decided (UI-aui8
+    // §3.2); every other disposition was decided by the probe above.
+    if (probe.ok && probe.kind === 'dirty' && dispatch_refusal === null) {
+      return dispatchLatestConflict(
+        queue_bead_id,
+        subject_bead_id,
+        probe,
+        ready_attempt_id ? { attempt_id: ready_attempt_id, charge } : null
+      );
+    }
     if (
       ready_attempt_id &&
       !consumeResolution(queue_bead_id, ready_attempt_id, charge)
@@ -2389,6 +2410,18 @@ export function createMergeQueue(deps) {
       // freshness rule of the queue's own.
       return runMerge(subject_bead_id, queue_bead_id);
     }
+    return dispatch_refusal;
+  }
+
+  /**
+   * Why a DIRTY probe cannot start a resolver, or null when it can.
+   *
+   * @param {any} probe
+   * @param {number} effective_rounds
+   * @param {number} effective_rebase
+   * @returns {MergeClickResult|null}
+   */
+  function conflictDispatchRefusal(probe, effective_rounds, effective_rebase) {
     if (effective_rounds >= round_cap) {
       return {
         ok: false,
@@ -2417,9 +2450,48 @@ export function createMergeQueue(deps) {
         head_sha: probe.head_sha || null
       };
     }
+    return null;
+  }
+
+  /**
+   * Start a resolver for the DIRTY identity the probe approved. A ready
+   * resolution is consumed through `decided` once the dispatch re-probe chose
+   * the effect and before the next record binds (UI-aui8 §3.2); a re-probe
+   * that could not reach GitHub leaves it ready and holds at `resolution`,
+   * and any other refusal consumes it afterwards.
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @param {any} probe
+   * @param {{ attempt_id: string, charge: 'session'|'rebase'|'none' }|null} ready
+   * @returns {Promise<MergeClickResult|null>}
+   */
+  async function dispatchLatestConflict(
+    queue_bead_id,
+    subject_bead_id,
+    probe,
+    ready
+  ) {
+    let consumed = ready === null;
+    let consume_failed = false;
+    const decided = () => {
+      if (!consumed && ready) {
+        consumed = true;
+        consume_failed = !consumeResolution(
+          queue_bead_id,
+          ready.attempt_id,
+          ready.charge
+        );
+      }
+      return !consume_failed;
+    };
     const identity = dispatchIdentity(probe);
+    /** @type {MergeClickResult} */
+    let result;
     try {
-      return await deps.dispatchConflict(
+      result = await /** @type {NonNullable<typeof deps.dispatchConflict>} */ (
+        deps.dispatchConflict
+      )(
         subject_bead_id,
         {
           head_sha: probe.head_sha,
@@ -2432,7 +2504,8 @@ export function createMergeQueue(deps) {
           manual_authority: manualContinuation(queue_bead_id),
           ...identity
         },
-        continuationInput(queue_bead_id, subject_bead_id)
+        continuationInput(queue_bead_id, subject_bead_id),
+        decided
       );
     } catch (err) {
       log(
@@ -2440,12 +2513,25 @@ export function createMergeQueue(deps) {
         subject_bead_id,
         err
       );
-      return {
+      result = {
         ok: false,
         action: 'conflict_resolution',
         reason: 'resolution_dispatch_error'
       };
     }
+    if (consume_failed) {
+      return null;
+    }
+    if (result.reason === GITHUB_UNREACHABLE) {
+      return githubUnreachable(
+        result.head_sha ? result : { ...result, head_sha: probe.head_sha },
+        'resolution'
+      );
+    }
+    if (!decided()) {
+      return null;
+    }
+    return result;
   }
 
   /**

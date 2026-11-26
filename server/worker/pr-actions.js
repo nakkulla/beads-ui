@@ -4504,13 +4504,17 @@ export function createPrActions(deps) {
    * @param {{ head_sha: string, base_ref: string|null, head_ref?: string|null }} approved
    * @param {ResolutionWaitInput|null} [resolution_wait]
    * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
+   * @param {() => boolean} [decided] - The caller's settled-resolution
+   * consumption (UI-aui8 §3.2), run once this re-probe chose the dispatch and
+   * before the resolver starts; `false` starts none.
    * @returns {Promise<MergeClickResult>}
    */
   async function dispatchConflict(
     bead_id,
     approved,
     resolution_wait = null,
-    continuation
+    continuation,
+    decided
   ) {
     if (in_flight.has(bead_id)) {
       return refuse('action_in_flight');
@@ -4519,6 +4523,20 @@ export function createPrActions(deps) {
     markStep(bead_id, 'merging');
     try {
       const latest = await probeMergeability(bead_id);
+      // A re-probe that could not reach GitHub decides nothing (UI-aui8 §3.2):
+      // the refusal keeps its class, and the caller's resolution is untouched.
+      if (!latest.ok && latest.reason === GITHUB_UNREACHABLE) {
+        return {
+          ok: false,
+          action: 'refused',
+          reason: GITHUB_UNREACHABLE,
+          failure_class: latest.failure_class,
+          wait_point: latest.wait_point,
+          head_sha: latest.head_sha ?? null,
+          base_ref: latest.base_ref ?? null,
+          head_ref: latest.head_ref ?? null
+        };
+      }
       if (
         !latest.ok ||
         latest.kind !== 'dirty' ||
@@ -4531,6 +4549,9 @@ export function createPrActions(deps) {
               ? 'mergeability_identity_changed'
               : 'mergeability_changed')
         );
+      }
+      if (decided && !decided()) {
+        return refuse('resolution_unconsumed');
       }
       if (latest.external) {
         return dispatchExternalResolution(
