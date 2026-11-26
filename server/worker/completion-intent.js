@@ -1774,7 +1774,7 @@ export function createCompletionActionDriver(deps) {
   };
   /**
    * Consecutive moved-candidate merge results per root (UI-aui8 §3.7); any
-   * other merge result resets the count.
+   * other merge result, and a yield to a GitHub hold, resets the count.
    *
    * @type {Map<string, number>}
    */
@@ -1793,6 +1793,9 @@ export function createCompletionActionDriver(deps) {
    * observation would ever judge it again.
    */
   function holdRootOnGithub(root_bead_id, failed, head_sha) {
+    // Yielding to GitHub ends the merge turn's run of moved candidates, as
+    // the merge queue's per-turn count ends with its turn (UI-aui8 §3.4).
+    moved_streaks.delete(root_bead_id);
     const unreadable = failed.reason === GITHUB_HEAD_UNREADABLE;
     const failure_class =
       failed.failure_class ?? (unreadable ? 'unknown' : 'network');

@@ -7898,7 +7898,7 @@ describe('worker/completion-intent — GitHub connection wait (UI-aui8 §3.7)', 
     ).toMatchObject({ phase: 'gating', terminal_reason: null });
   });
 
-  test('neither counts nor restarts the moved count on a connection wait', async () => {
+  test('restarts the moved count when the root yields to the connection wait', async () => {
     const store = seededCompletionStore();
     const driver = actionDriver(store, {
       prActions: {
@@ -7930,8 +7930,41 @@ describe('worker/completion-intent — GitHub connection wait (UI-aui8 §3.7)', 
     await driver.onMergeResult('UI-root', 'UI-root', moved);
 
     expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root'].terminal_reason
-    ).toMatchObject({ reason: 'retry_exhausted:verify_candidate_moved' });
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'gating', terminal_reason: null });
+  });
+
+  test('restarts the moved count when an observation yields to the connection wait', async () => {
+    const store = seededCompletionStore();
+    const completionGate = vi.fn(async () =>
+      redGate({
+        verdict: { enabled: true, tier: 'ready', reason: null },
+        evidence: {}
+      })
+    );
+    const driver = actionDriver(store, {
+      prActions: { completionGate },
+      now: () => 100
+    });
+    const moved = {
+      ok: false,
+      action: 'refused',
+      reason: 'verify_candidate_moved',
+      head_sha: 'c'.repeat(40)
+    };
+    startMergeTurn(store, 'op-1');
+    await driver.onMergeResult('UI-root', 'UI-root', moved);
+    startMergeTurn(store, 'op-2');
+    await driver.onMergeResult('UI-root', 'UI-root', moved);
+    completionGate.mockImplementationOnce(async () => unreachableGate());
+    await driveOnce(store, driver);
+    startMergeTurn(store, 'op-3');
+
+    await driver.onMergeResult('UI-root', 'UI-root', moved);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'gating', terminal_reason: null });
   });
 
   test('does not kick the merge queue for a merging root that waits on GitHub', async () => {
