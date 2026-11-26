@@ -1,5 +1,6 @@
 import { render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { providerProbeRefusalText } from '../worker/lanes.js';
 import { createMonitorView, parseCandidateSort } from './index.js';
 
@@ -7091,6 +7092,165 @@ describe('views/monitor PR 대기 줄 공유 투영 (UI-f2sy §4·§5)', () => {
     view.load();
 
     expect(prBadge(mount)).toBe('최종 변경 리뷰 필요 · 자동 리뷰 세션 실행 중');
+  });
+
+  describe('GitHub 연결 대기 (UI-aui8 §3.9, §3.10)', () => {
+    const SINCE = Date.UTC(2026, 10, 25, 3, 4);
+
+    /**
+     * A repository whose one PR is queued on the connection wait.
+     *
+     * @returns {Record<string, any>}
+     */
+    function waitingRepo() {
+      return workspace({
+        pr_wait: [{ bead_id: 'A-1' }],
+        pr_observations: { 'A-1': GREEN },
+        merge_queue: [
+          {
+            bead_id: 'A-1',
+            authority: {
+              id: 'authority-1',
+              source: 'manual',
+              granted_at: 1,
+              requested_head_sha: 'a'.repeat(40),
+              target_base: 'main'
+            },
+            hold: {
+              reason: 'github_unreachable',
+              head_sha: 'a'.repeat(40),
+              since: SINCE,
+              failure_class: 'rate_limit',
+              wait_point: 'merge_command'
+            }
+          }
+        ]
+      });
+    }
+
+    /**
+     * @param {(type: string) => Promise<any>} [transport]
+     */
+    function mountWaiting(transport) {
+      const { mount, view } = setup({
+        workspaces: [waitingRepo()],
+        workspaces_state: [state()],
+        transport
+      });
+      view.load();
+      return mount;
+    }
+
+    /**
+     * @param {(type: string) => Promise<any>} transport
+     */
+    function mountClickable(transport) {
+      const { mount, view } = setup({
+        workspaces: [
+          workspace({
+            pr_wait: [{ bead_id: 'A-1' }],
+            pr_observations: { 'A-1': GREEN }
+          })
+        ],
+        workspaces_state: [state()],
+        transport
+      });
+      view.load();
+      return mount;
+    }
+
+    test('draws the same live connection-wait badge as the Worker tab', () => {
+      const mount = mountWaiting();
+
+      const badge = el(mount, '#monitor-pr_wait .worker-mini__badge');
+
+      expect([
+        prBadge(mount),
+        badge.classList.contains('worker-mini__badge--activity')
+      ]).toEqual(['GitHub 연결 대기', true]);
+    });
+
+    test('puts the start time, failure point and class in the badge tooltip', () => {
+      const mount = mountWaiting();
+
+      const title =
+        el(mount, '#monitor-pr_wait .worker-mini__badge [title]')?.getAttribute(
+          'title'
+        ) || '';
+
+      expect(title.split('\n')).toEqual([
+        `대기 시작 ${formatTimestampLocal(SINCE)}`,
+        '마지막 실패 지점: 머지 명령',
+        '분류: 호출 한도'
+      ]);
+    });
+
+    test('keeps [취소] as the only control of a waiting row', () => {
+      const mount = mountWaiting();
+
+      expect([
+        mount.querySelector('#monitor-pr_wait .worker-mini__merge'),
+        /** @type {HTMLButtonElement|null} */ (
+          mount.querySelector('#monitor-pr_wait .worker-mini__merge-cancel')
+        )?.disabled
+      ]).toEqual([null, false]);
+    });
+
+    test('toasts the connection-wait notice for a refused [머지] click', async () => {
+      const mount = mountClickable(async (type) =>
+        type === 'worker-merge-queue-add'
+          ? {
+              applied: false,
+              conflict: false,
+              reason: 'github_unreachable',
+              failure_class: 'network',
+              wait_point: 'gate_read',
+              queued: 0
+            }
+          : null
+      );
+
+      click(mount, '#monitor-pr_wait .worker-mini__merge');
+      await flushMicrotasks();
+
+      expect(document.querySelector('.toast')?.textContent).toBe(
+        'GitHub에 연결되지 않아 머지 큐에 넣지 못했습니다 — 연결이 돌아오면 다시 눌러 주세요'
+      );
+    });
+
+    test('toasts the class phrase and reason of a permanently refused [머지] click', async () => {
+      const mount = mountClickable(async (type) =>
+        type === 'worker-merge-queue-add'
+          ? {
+              applied: false,
+              conflict: false,
+              reason: 'gh_failed:unknown',
+              failure_class: 'unknown',
+              queued: 0
+            }
+          : null
+      );
+
+      click(mount, '#monitor-pr_wait .worker-mini__merge');
+      await flushMicrotasks();
+
+      expect(document.querySelector('.toast')?.textContent).toBe(
+        '머지 큐에 넣지 못했습니다 — GitHub 확인 실패 (gh_failed:unknown)'
+      );
+    });
+
+    test('raises no refusal toast for a queued [머지] click', async () => {
+      const mount = mountClickable(async (type) =>
+        type === 'worker-merge-queue-add'
+          ? { applied: true, conflict: false, queued: 1 }
+          : null
+      );
+
+      click(mount, '#monitor-pr_wait .worker-mini__merge');
+      await flushMicrotasks();
+
+      expect(document.querySelector('.toast')).toBeNull();
+    });
   });
 });
 

@@ -77,14 +77,16 @@ export const GITHUB_WAIT_LABEL = 'GitHub 연결 대기';
 
 /**
  * Reason prefixes whose tail is the GitHub failure class of a permanent
- * failure (UI-aui8 §3.2, §3.6): the gate read, the merge command, and the
- * pre-merge recheck.
+ * failure (UI-aui8 §3.2, §3.6), each with the wait point it failed at: the
+ * gate read, the merge command, and the pre-merge recheck.
+ *
+ * @type {Readonly<Record<string, GithubWaitPoint>>}
  */
-const CLASS_TAIL_PREFIXES = Object.freeze([
-  'gh_failed:',
-  'merge_failed:',
-  'verify_candidate_unreadable:'
-]);
+const CLASS_TAIL_POINTS = Object.freeze({
+  'gh_failed:': 'gate_read',
+  'merge_failed:': 'merge_command',
+  'verify_candidate_unreadable:': 'verify_recheck'
+});
 
 /**
  * The failure class a permanent-failure reason ends with, or null.
@@ -93,10 +95,32 @@ const CLASS_TAIL_PREFIXES = Object.freeze([
  * @returns {string|null}
  */
 function classTailOf(reason) {
-  for (const prefix of CLASS_TAIL_PREFIXES) {
+  for (const prefix of Object.keys(CLASS_TAIL_POINTS)) {
     if (reason.startsWith(prefix)) {
       const tail = reason.slice(prefix.length);
       return Object.hasOwn(GITHUB_FAILURE_CLASS_LABELS, tail) ? tail : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * The wait point a GitHub exclusion reason failed at (UI-aui8 §3.9: the point
+ * rides in the tooltip), or null for a reason that names none.
+ *
+ * @param {unknown} reason
+ * @returns {GithubWaitPoint|null}
+ */
+export function githubFailurePoint(reason) {
+  if (typeof reason !== 'string') {
+    return null;
+  }
+  if (reason.replace(/^retry_exhausted:/, '') === VERIFY_CANDIDATE_MOVED) {
+    return 'verify_recheck';
+  }
+  for (const [prefix, point] of Object.entries(CLASS_TAIL_POINTS)) {
+    if (reason.startsWith(prefix)) {
+      return point;
     }
   }
   return null;

@@ -101,7 +101,11 @@ import {
   placePlanFromPopup,
   planPlaceLanesOf
 } from '../worker/plan-place.js';
-import { pendingKey, prWaitRowsOf } from '../worker/pr-wait-row.js';
+import {
+  mergeQueueRefusalText,
+  pendingKey,
+  prWaitRowsOf
+} from '../worker/pr-wait-row.js';
 import {
   providerResumeDialogTemplate,
   providerResumeDraft,
@@ -1254,11 +1258,27 @@ export function createMonitorView(mount_element, options) {
     }
     merge_pending.add(key);
     doRender();
+    /** @type {any} */
+    let res;
     try {
-      await sendCas('worker-merge-queue-add', { bead_id }, root_dir, revision);
+      res = await sendCas(
+        'worker-merge-queue-add',
+        { bead_id },
+        root_dir,
+        revision
+      );
     } finally {
       merge_pending.delete(key);
       doRender();
+    }
+    // The same refusal notice as the Worker tab (UI-aui8 §3.10) — a GitHub
+    // refusal must not read as a dead button here either.
+    if (res && !res.applied && !res.conflict) {
+      showToast(
+        mergeQueueRefusalText(res.reason, res.failure_class),
+        'error',
+        2400
+      );
     }
   }
 
