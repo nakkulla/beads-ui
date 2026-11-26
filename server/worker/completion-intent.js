@@ -1849,7 +1849,7 @@ export function createCompletionActionDriver(deps) {
    * @param {string} root_bead_id
    */
   function endGithubWait(root_bead_id) {
-    if (endGithubHold(github_hold_ctx, root_bead_id, null)) {
+    if (endGithubHold(github_hold_ctx, root_bead_id, null) === 'released') {
       notify();
     }
   }

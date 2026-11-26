@@ -5746,4 +5746,117 @@ describe('worker/merge-queue — GitHub hold notification (UI-aui8 §3.6, §3.8)
 
     expect(announce).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * The store with a `setMergeHold` that throws for the writes `fails` picks.
+   *
+   * @param {any} queue_store
+   * @param {(input: any) => boolean} fails
+   */
+  function failingHoldWrites(queue_store, fails) {
+    return {
+      ...queue_store,
+      setMergeHold: (/** @type {string} */ ws, /** @type {any} */ input) => {
+        if (fails(input)) {
+          throw new Error('queue file unwritable');
+        }
+        return queue_store.setMergeHold(ws, input);
+      }
+    };
+  }
+
+  test('ends the drain when the hold marker write fails', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    const merge = scriptedMerge(store, [HEAD_UNREAD]);
+    const mq = driver(
+      failingHoldWrites(
+        store,
+        (input) => typeof input.hold?.notified_at === 'number'
+      ),
+      {
+        now: () => 1_000,
+        headSha: () => null,
+        announceGithubHold: vi.fn(),
+        merge
+      }
+    );
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual(['UI-1']);
+  });
+
+  /**
+   * Queue UI-1 on a standing connection wait ahead of `others`.
+   *
+   * @param {string[]} others
+   */
+  function seedHeld(others) {
+    const store = seed(['UI-1', ...others]);
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: HEAD,
+        failure_class: 'network',
+        wait_point: 'gate_read'
+      },
+      at: 5
+    });
+    return store;
+  }
+
+  /** A permanent refusal at a head the turn read. */
+  const AUTH_AT_HEAD = {
+    ok: false,
+    action: 'refused',
+    reason: 'gh_failed:auth',
+    failure_class: 'auth',
+    head_sha: HEAD
+  };
+
+  test('keeps the item queued without an exclusion when its hold release fails', async () => {
+    const store = seedHeld([]);
+    const mq = driver(
+      failingHoldWrites(store, (input) => input.hold === null),
+      { merge: scriptedMerge(store, [AUTH_AT_HEAD]) }
+    );
+
+    await mq.kick();
+
+    expect(entryOf(store)).toBeDefined();
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
+  });
+
+  test('ends the drain when a hold release fails', async () => {
+    const store = seedHeld(['UI-2']);
+    const merge = scriptedMerge(store, [AUTH_AT_HEAD]);
+    const mq = driver(
+      failingHoldWrites(store, (input) => input.hold === null),
+      { merge }
+    );
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual(['UI-1']);
+  });
+
+  test('writes no end line when a hold release fails', async () => {
+    const store = seedHeld([]);
+    /** @type {any[]} */
+    const events = [];
+    const mq = driver(
+      failingHoldWrites(store, (input) => input.hold === null),
+      {
+        timeline: { append: (/** @type {any} */ e) => events.push(e) },
+        merge: scriptedMerge(store, [AUTH_AT_HEAD])
+      }
+    );
+
+    await mq.kick();
+
+    expect(events.map((e) => e.summary)).not.toContain(
+      '머지 큐 · GitHub 연결 대기 끝'
+    );
+  });
 });
