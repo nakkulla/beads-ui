@@ -13110,6 +13110,22 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       expect(result?.label).toBe('머지 실패 — GitHub 인증 실패');
     });
 
+    test('names a permanent confirm-timeout exclusion by its class phrase', () => {
+      const result = prStatusBadge({
+        queue_failure: 'merge_unconfirmed_timeout:auth'
+      });
+
+      expect(result?.label).toBe('머지 실패 — GitHub 인증 실패');
+    });
+
+    test('puts the confirm point of a permanent confirm-timeout exclusion in its tooltip', () => {
+      const result = prStatusBadge({
+        queue_failure: 'merge_unconfirmed_timeout:unknown'
+      });
+
+      expect(result?.title).toContain('마지막 실패 지점: 머지 뒤 상태 확인');
+    });
+
     test('names a moved-candidate exclusion by its phrase', () => {
       const result = prStatusBadge({ queue_failure: 'verify_candidate_moved' });
 

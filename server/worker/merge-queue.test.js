@@ -5230,6 +5230,89 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
+  /** The merge command's answer when its own post-merge read failed. */
+  const CONFIRM_READ_FAILED = {
+    ok: true,
+    action: 'merge_unconfirmed',
+    reason: 'merge_state_unconfirmed:gh_failed',
+    failure_class: 'network',
+    head_sha: THIRD_HEAD
+  };
+
+  test('writes no attempt line when the confirm wait ends on the connection wait', async () => {
+    const store = seed(['UI-1']);
+    const timeline = recorder();
+    const mq = driver(store, {
+      timeline,
+      merge: scriptedMerge(store, [CONFIRM_READ_FAILED]),
+      observePr: async () => ({
+        state: null,
+        error: 'gh_failed',
+        failure_class: 'network'
+      })
+    });
+
+    await mq.kick();
+
+    expect(
+      timeline.events.filter((/** @type {any} */ e) => /^m\d+$/.test(e.seq))
+    ).toEqual([]);
+  });
+
+  test('writes the attempt line once the confirm wait ends on an exclusion', async () => {
+    const store = seed(['UI-1']);
+    const timeline = recorder();
+    const mq = driver(store, {
+      timeline,
+      merge: scriptedMerge(store, [
+        { ok: true, action: 'merge_unconfirmed', reason: 'merge_pending' }
+      ]),
+      observePr: async () => ({ state: 'OPEN', error: null })
+    });
+
+    await mq.kick();
+
+    expect(
+      timeline.events
+        .filter((/** @type {any} */ e) => /^m\d+$/.test(e.seq))
+        .map((/** @type {any} */ e) => e.seq)
+    ).toEqual(['m1']);
+  });
+
+  test('excludes with the last read permanent class when the confirm runs out', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [CONFIRM_READ_FAILED]),
+      observePr: async () => ({
+        state: null,
+        error: 'gh_failed',
+        failure_class: 'auth'
+      })
+    });
+
+    await mq.kick();
+
+    expect(mq.state().failures['UI-1']).toBe('merge_unconfirmed_timeout:auth');
+  });
+
+  test('pins a confirm-timeout class exclusion to the head the merge ran on', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: scriptedMerge(store, [CONFIRM_READ_FAILED]),
+      observePr: async () => ({
+        state: null,
+        error: 'gh_failed',
+        failure_class: 'auth'
+      })
+    });
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toMatchObject({
+      head_sha: THIRD_HEAD
+    });
+  });
+
   test('pins a permanent failure exclusion to the head the failing read saw', async () => {
     const store = seed(['UI-1']);
     const mq = driver(store, {
@@ -5368,6 +5451,33 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
       'UI-root',
       'UI-2'
     ]);
+  });
+
+  test('hands a completion root the last read permanent class when its confirm runs out', async () => {
+    const store = seedCompletionRoot([]);
+    const onCompletionResult = vi.fn();
+    const mq = driver(store, {
+      merge: vi.fn(async () => ({
+        ok: true,
+        action: 'merge_unconfirmed',
+        reason: 'merge_pending',
+        head_sha: HEAD
+      })),
+      observePr: async () => ({
+        state: null,
+        error: 'gh_failed',
+        failure_class: 'unknown'
+      }),
+      onCompletionResult
+    });
+
+    await mq.kick();
+
+    expect(onCompletionResult).toHaveBeenCalledWith('UI-root', 'UI-root', {
+      ok: false,
+      action: 'refused',
+      reason: 'merge_unconfirmed_timeout:unknown'
+    });
   });
 
   /**

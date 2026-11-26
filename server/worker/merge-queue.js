@@ -40,6 +40,7 @@
  * @import { MergeClickResult } from './pr-actions.js'
  */
 import {
+  GITHUB_FAILURE_CLASS_LABELS,
   GITHUB_FAILURE_PHRASES,
   GITHUB_HEAD_UNREADABLE,
   GITHUB_UNREACHABLE,
@@ -233,8 +234,9 @@ function permanentGithubHead(result, head_sha) {
 
 /**
  * One item's post-merge confirm wait, read for its GitHub outcome (UI-aui8
- * §3.5): when an observation first failed transiently, and the class of the
- * last observation if it failed transiently (null when it did not).
+ * §3.5, §3.6): when an observation first failed transiently, and the GitHub
+ * failure class of the last observation (null when it was no GitHub
+ * failure).
  *
  * @typedef {Object} UnconfirmedGithubWait
  * @property {number|null} first_transient_at
@@ -2097,14 +2099,16 @@ export function createMergeQueue(deps) {
    *
    * A deadline whose LAST observation failed transiently is not an OPEN PR
    * (UI-aui8 §3.5): it answers `github_unreachable`, and `confirm` carries
-   * when the wait first failed so the hold can start there.
+   * when the wait first failed so the hold can start there. A last
+   * observation that failed permanently keeps its class in the timeout
+   * (§3.6).
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
    * @param {number} deadline
-   * @param {UnconfirmedGithubWait} [confirm] - The item's transient
+   * @param {UnconfirmedGithubWait} [confirm] - The item's GitHub
    * observation record, shared across re-entries like the deadline.
-   * @returns {Promise<'merged'|'pr_closed_unmerged'|'merge_unconfirmed_timeout'|'github_unreachable'|'gone'|'stopped'>}
+   * @returns {Promise<'merged'|'pr_closed_unmerged'|'merge_unconfirmed_timeout'|`merge_unconfirmed_timeout:${string}`|'github_unreachable'|'gone'|'stopped'>}
    */
   async function watchUnconfirmed(
     queue_bead_id,
@@ -2115,9 +2119,12 @@ export function createMergeQueue(deps) {
     while (!stopped) {
       const left = deadline - now();
       if (left <= 0) {
-        return confirm.last_class === null
-          ? 'merge_unconfirmed_timeout'
-          : GITHUB_UNREACHABLE;
+        if (confirm.last_class === null) {
+          return 'merge_unconfirmed_timeout';
+        }
+        return isTransientGithubFailure(confirm.last_class)
+          ? GITHUB_UNREACHABLE
+          : `merge_unconfirmed_timeout:${confirm.last_class}`;
       }
       await sleepOrWake(Math.min(unconfirmedPollMs(), left));
       if (stopped) {
@@ -2164,22 +2171,26 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * Record one post-merge observation's GitHub outcome (UI-aui8 §3.5): a
-   * transient failure keeps its class and, the first time, its moment; any
-   * other observation means the last one was not transient.
+   * Record one post-merge observation's GitHub outcome (UI-aui8 §3.5, §3.6):
+   * a GitHub failure keeps its class, and a transient one, the first time,
+   * its moment; any other observation means the last one was not a GitHub
+   * failure.
    *
    * @param {UnconfirmedGithubWait} confirm
    * @param {unknown} failure_class
    */
   function noteUnconfirmedObservation(confirm, failure_class) {
-    if (isTransientGithubFailure(failure_class)) {
-      confirm.last_class = String(failure_class);
-      if (confirm.first_transient_at === null) {
-        confirm.first_transient_at = now();
-      }
+    if (!Object.hasOwn(GITHUB_FAILURE_CLASS_LABELS, String(failure_class))) {
+      confirm.last_class = null;
       return;
     }
-    confirm.last_class = null;
+    confirm.last_class = String(failure_class);
+    if (
+      isTransientGithubFailure(failure_class) &&
+      confirm.first_transient_at === null
+    ) {
+      confirm.first_transient_at = now();
+    }
   }
 
   /**
@@ -2310,6 +2321,55 @@ export function createMergeQueue(deps) {
     if (reason === GITHUB_UNREACHABLE || result?.head_unread === true) {
       return result;
     }
+    // An unconfirmed merge's line waits for its confirm wait to end: a wait
+    // that ends on the connection wait has only the hold's lines (§3.9).
+    if (action === 'merge_unconfirmed') {
+      deferred_merge_steps.set(bead_id, { attempt_seq, result });
+      return result;
+    }
+    appendMergeStep(bead_id, attempt_seq, result);
+    return result;
+  }
+
+  /**
+   * The unconfirmed merge attempt per subject bead whose line waits for its
+   * confirm wait to end (UI-aui8 §3.9).
+   *
+   * @type {Map<string, { attempt_seq: string, result: { action?: string, reason?: string|null } }>}
+   */
+  const deferred_merge_steps = new Map();
+
+  /**
+   * End the confirm wait of one subject's unconfirmed merge attempt: write its
+   * deferred line when the wait reached a disposition other than the
+   * connection wait or a stop, and drop it either way.
+   *
+   * @param {string} bead_id - The subject bead.
+   * @param {string} verdict - How {@link watchUnconfirmed} ended.
+   */
+  function settleDeferredMergeStep(bead_id, verdict) {
+    const deferred = deferred_merge_steps.get(bead_id);
+    deferred_merge_steps.delete(bead_id);
+    if (!deferred || verdict === GITHUB_UNREACHABLE || verdict === 'stopped') {
+      return;
+    }
+    appendMergeStep(bead_id, deferred.attempt_seq, deferred.result);
+  }
+
+  /**
+   * Append one merge attempt's line (§5). The result of the append is
+   * ignored, as in {@link recordMergeStep}.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_seq
+   * @param {{ action?: string, reason?: string|null }} result
+   */
+  function appendMergeStep(bead_id, attempt_seq, result) {
+    const label = MERGE_STEP_LABELS[String(result?.action ?? '')];
+    if (!deps.timeline || label === undefined) {
+      return;
+    }
+    const reason = typeof result?.reason === 'string' ? result.reason : null;
     deps.timeline.append({
       bead_id,
       kind: 'merge_step',
@@ -2325,7 +2385,6 @@ export function createMergeQueue(deps) {
           ? `머지 큐 · ${label}`
           : `머지 큐 · ${label} — ${failureTokenSummary(reason) ?? reason}`
     });
-    return result;
   }
 
   /**
@@ -2849,6 +2908,7 @@ export function createMergeQueue(deps) {
           unconfirmed_deadline,
           confirm
         );
+        settleDeferredMergeStep(subject_bead_id, verdict);
         if (verdict === 'stopped') {
           return;
         }
@@ -3256,6 +3316,7 @@ export function createMergeQueue(deps) {
           unconfirmed_deadline,
           confirm
         );
+        settleDeferredMergeStep(bead_id, verdict);
         if (verdict === 'stopped') {
           return;
         }
@@ -3284,7 +3345,18 @@ export function createMergeQueue(deps) {
         if (!settleGithub()) {
           return;
         }
-        failAndDequeue(bead_id, verdict);
+        // A timeout whose last read failed permanently pins the exclusion to
+        // the head the merge ran on (§3.6).
+        failAndDequeue(
+          bead_id,
+          verdict,
+          verdict.startsWith('merge_unconfirmed_timeout:')
+            ? permanentGithubHead(
+                { failure_class: confirm.last_class },
+                result.head_sha
+              )
+            : null
+        );
         return;
       }
 
