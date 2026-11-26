@@ -5321,3 +5321,294 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
     });
   });
 });
+
+describe('worker/merge-queue — GitHub hold notification (UI-aui8 §3.6, §3.8)', () => {
+  const HEAD = 'a'.repeat(40);
+  /** The default of `merge_github_wait_notify_seconds`, in ms. */
+  const NOTIFY_MS = 30 * 60 * 1000;
+  /** The connection wait the scripted merge turn answers. */
+  const UNREACHABLE = {
+    ok: false,
+    action: 'refused',
+    reason: 'github_unreachable',
+    failure_class: 'network',
+    wait_point: 'verify_recheck',
+    head_sha: HEAD
+  };
+  /** A permanent failure whose PR head was never read. */
+  const HEAD_UNREAD = {
+    ok: false,
+    action: 'refused',
+    reason: 'gh_failed:auth',
+    failure_class: 'auth',
+    wait_point: 'gate_read',
+    head_unread: true
+  };
+
+  /**
+   * A `merge` that answers UI-1 from a script, call by call (the last entry
+   * repeats), and lands every other bead.
+   *
+   * @param {any} queue_store
+   * @param {any[]} script
+   */
+  function scriptedMerge(queue_store, script) {
+    return vi.fn(async (/** @type {string} */ bead_id) => {
+      const next =
+        bead_id !== 'UI-1'
+          ? 'landed'
+          : script.length > 1
+            ? script.shift()
+            : script[0];
+      if (next === 'landed') {
+        landMerge(queue_store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      }
+      return next;
+    });
+  }
+
+  /**
+   * @param {any} queue_store
+   */
+  function entryOf(queue_store) {
+    return queue_store
+      .snapshot(WS)
+      .merge_queue.find((/** @type {any} */ e) => e.bead_id === 'UI-1');
+  }
+
+  test('stays quiet while the connection wait is younger than its notify setting', async () => {
+    const store = seed(['UI-1']);
+    const announce = vi.fn();
+    let t = 1_000;
+    const mq = driver(store, {
+      now: () => t,
+      announceGithubHold: announce,
+      merge: scriptedMerge(store, [UNREACHABLE])
+    });
+    await mq.kick();
+    t += NOTIFY_MS - 1;
+
+    await mq.kick();
+
+    expect(announce).not.toHaveBeenCalled();
+  });
+
+  test('notifies the connection wait once it has stood its notify setting', async () => {
+    const store = seed(['UI-1']);
+    const announce = vi.fn();
+    let t = 1_000;
+    const mq = driver(store, {
+      now: () => t,
+      announceGithubHold: announce,
+      merge: scriptedMerge(store, [UNREACHABLE])
+    });
+    await mq.kick();
+    t += NOTIFY_MS;
+
+    await mq.kick();
+
+    expect(announce.mock.calls).toEqual([
+      [
+        {
+          bead_id: 'UI-1',
+          reason: 'github_unreachable',
+          since: 1_000,
+          head_sha: HEAD,
+          failure_class: 'network',
+          wait_point: 'verify_recheck'
+        }
+      ]
+    ]);
+  });
+
+  test('notifies one connection wait only once across rejudges', async () => {
+    const store = seed(['UI-1']);
+    const announce = vi.fn();
+    let t = 1_000;
+    const mq = driver(store, {
+      now: () => t,
+      announceGithubHold: announce,
+      merge: scriptedMerge(store, [UNREACHABLE])
+    });
+    await mq.kick();
+    t += NOTIFY_MS;
+    await mq.kick();
+    t += NOTIFY_MS;
+
+    await mq.kick();
+
+    expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  test('marks the hold before it sends', async () => {
+    const store = seed(['UI-1']);
+    /** @type {unknown[]} */
+    const marker_at_send = [];
+    let t = 1_000;
+    const mq = driver(store, {
+      now: () => t,
+      announceGithubHold: () => {
+        marker_at_send.push(entryOf(store).hold.notified_at);
+      },
+      merge: scriptedMerge(store, [UNREACHABLE])
+    });
+    await mq.kick();
+    t += NOTIFY_MS;
+
+    await mq.kick();
+
+    expect(marker_at_send).toEqual([1_000 + NOTIFY_MS]);
+  });
+
+  test('sends one push across a restart', async () => {
+    const store = seed(['UI-1']);
+    const announce = vi.fn();
+    let t = 1_000;
+    const merge = scriptedMerge(store, [UNREACHABLE]);
+    const first = driver(store, {
+      now: () => t,
+      announceGithubHold: announce,
+      merge
+    });
+    await first.kick();
+    t += NOTIFY_MS;
+    await first.kick();
+    first.stop();
+    store.__clearCacheForTest();
+    const restarted = driver(store, {
+      now: () => t,
+      announceGithubHold: announce,
+      merge
+    });
+    t += NOTIFY_MS;
+
+    await restarted.kick();
+
+    expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  test('counts a stored hold without a marker as not yet notified', async () => {
+    const store = seed(['UI-1']);
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.merge_queue[0].hold = {
+      reason: 'github_unreachable',
+      head_sha: HEAD,
+      since: 3
+    };
+    fs.writeFileSync(file, JSON.stringify(raw));
+    store.__clearCacheForTest();
+    const announce = vi.fn();
+    const mq = driver(store, {
+      now: () => 3 + NOTIFY_MS,
+      announceGithubHold: announce,
+      merge: scriptedMerge(store, [UNREACHABLE])
+    });
+
+    await mq.kick();
+
+    expect(announce.mock.calls).toMatchObject([
+      [{ bead_id: 'UI-1', reason: 'github_unreachable', since: 3 }]
+    ]);
+  });
+
+  test('sends no recovery notification when the wait ends in a merge', async () => {
+    const store = seed(['UI-1']);
+    const announce = vi.fn();
+    let t = 1_000;
+    const mq = driver(store, {
+      now: () => t,
+      announceGithubHold: announce,
+      merge: scriptedMerge(store, [UNREACHABLE, UNREACHABLE, 'landed'])
+    });
+    await mq.kick();
+    t += NOTIFY_MS;
+    await mq.kick();
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  test('reads the notify wait from the timing setting', async () => {
+    __setTimingOverridesForTest({ merge_github_wait_notify_seconds: 300 });
+    const store = seed(['UI-1']);
+    const announce = vi.fn();
+    let t = 1_000;
+    const mq = driver(store, {
+      now: () => t,
+      announceGithubHold: announce,
+      merge: scriptedMerge(store, [UNREACHABLE])
+    });
+    await mq.kick();
+    t += 300 * 1000;
+
+    await mq.kick();
+
+    expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  test('notifies a hold whose head was never read once, on entry', async () => {
+    const store = seed(['UI-1']);
+    const announce = vi.fn();
+    const mq = driver(store, {
+      now: () => 1_000,
+      headSha: () => null,
+      announceGithubHold: announce,
+      merge: scriptedMerge(store, [HEAD_UNREAD])
+    });
+    await mq.kick();
+
+    await mq.kick();
+
+    expect(announce.mock.calls).toEqual([
+      [
+        {
+          bead_id: 'UI-1',
+          reason: 'github_head_unreadable',
+          since: 1_000,
+          head_sha: '',
+          failure_class: 'auth',
+          wait_point: 'gate_read'
+        }
+      ]
+    ]);
+  });
+
+  test('keeps draining when the hold push throws', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    const merge = scriptedMerge(store, [HEAD_UNREAD]);
+    const mq = driver(store, {
+      now: () => 1_000,
+      headSha: () => null,
+      announceGithubHold: () => {
+        throw new Error('discord down');
+      },
+      merge
+    });
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual(['UI-1', 'UI-2']);
+  });
+
+  test('does not retry a hold push that failed', async () => {
+    const store = seed(['UI-1']);
+    const announce = vi.fn(async () => {
+      throw new Error('discord down');
+    });
+    const mq = driver(store, {
+      now: () => 1_000,
+      headSha: () => null,
+      announceGithubHold: announce,
+      merge: scriptedMerge(store, [HEAD_UNREAD])
+    });
+    await mq.kick();
+
+    await mq.kick();
+
+    expect(announce).toHaveBeenCalledTimes(1);
+  });
+});

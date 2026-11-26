@@ -146,6 +146,12 @@ export const TIMING_FIELDS = Object.freeze({
     min: 300,
     max: 14400,
     unit: 'minutes'
+  },
+  merge_github_wait_notify_seconds: {
+    default: 1800,
+    min: 300,
+    max: 14400,
+    unit: 'minutes'
   }
 });
 

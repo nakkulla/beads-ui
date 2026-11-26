@@ -128,6 +128,17 @@ export function unconfirmedWaitSettingMs() {
 }
 
 /**
+ * How long a connection wait stands, from its `since`, before its one push
+ * (UI-aui8 §3.8): the timing setting `merge_github_wait_notify_seconds`, read
+ * at each rejudge like the other merge-queue waits.
+ *
+ * @returns {number}
+ */
+export function githubWaitNotifySettingMs() {
+  return timingSeconds('merge_github_wait_notify_seconds') * 1000;
+}
+
+/**
  * Backstop wake interval while waiting on a resolution session. The primary
  * signal is the queue-changed event the scheduler emits when the attempt ends;
  * this only bounds how long a MISSED event can stall the queue.
@@ -242,6 +253,22 @@ function permanentGithubHead(result, head_sha) {
  * @property {{ append: (input: any) => unknown }|null} [timeline]
  * @property {() => number} now
  * @property {(...args: any[]) => void} log
+ * @property {((notice: GithubHoldNotice) => unknown)|null} [announce] - The
+ * one push of a hold (§3.6, §3.8). Absent, no hold is marked or sent.
+ * @property {() => number} [notifyAfterMs] - How long a connection wait
+ * stands before its push; the timing setting when absent.
+ */
+
+/**
+ * What the one push of a GitHub hold says (UI-aui8 §3.8).
+ *
+ * @typedef {Object} GithubHoldNotice
+ * @property {string} bead_id
+ * @property {string} reason
+ * @property {number} since
+ * @property {string} head_sha
+ * @property {string|null} failure_class
+ * @property {string|null} wait_point
  */
 
 /**
@@ -320,7 +347,9 @@ function appendGithubHoldLine(ctx, bead_id, hold, edge) {
  *
  * The write's three outcomes are kept apart: an unchanged record is the
  * normal re-judgment, a write that THROWS is `failed`, and the caller decides
- * what a failed write stops.
+ * what a failed write stops. Every write that sticks or is unchanged also
+ * judges the hold's one push ({@link announceGithubHold}); the marker that
+ * push writes makes the outcome `written`.
  *
  * @param {GithubHoldContext} ctx
  * @param {string} bead_id
@@ -362,7 +391,82 @@ export function writeGithubHold(ctx, bead_id, input) {
   if (stored && (!prior || prior.reason !== stored.reason)) {
     appendGithubHoldLine(ctx, bead_id, stored, 'start');
   }
+  if (stored && announceGithubHold(ctx, bead_id, stored)) {
+    return 'written';
+  }
   return outcome;
+}
+
+/**
+ * The one push of a GitHub hold (UI-aui8 §3.6, §3.8), judged at the rejudge
+ * that wrote it: a connection wait once it has stood the notify setting from
+ * `since`, a head-unreadable hold at once — waiting does not clear that
+ * failure. A hold that already carries its marker sends nothing, and one
+ * stored before the marker existed has not sent.
+ *
+ * The marker is written BEFORE the send, so a restart never sends twice; a
+ * marker write that does not stick sends nothing and the next rejudge tries
+ * again. The send is fire-and-forget and never retried: a failed push blocks
+ * no queue transition.
+ *
+ * @param {GithubHoldContext} ctx
+ * @param {string} bead_id
+ * @param {import('./queue-store.js').MergeHold} hold
+ * @returns {boolean} true when the marker write changed the queue file.
+ */
+function announceGithubHold(ctx, bead_id, hold) {
+  if (!ctx.announce || typeof hold.notified_at === 'number') {
+    return false;
+  }
+  const at = ctx.now();
+  if (hold.reason === GITHUB_UNREACHABLE) {
+    const after_ms = ctx.notifyAfterMs
+      ? ctx.notifyAfterMs()
+      : githubWaitNotifySettingMs();
+    if (at - hold.since < after_ms) {
+      return false;
+    }
+  }
+  const failure_class = hold.failure_class ?? null;
+  const wait_point = hold.wait_point ?? null;
+  try {
+    const marked = ctx.store.setMergeHold(ctx.workspace, {
+      bead_id,
+      hold: {
+        reason: hold.reason,
+        head_sha: hold.head_sha,
+        failure_class,
+        wait_point,
+        notified_at: at
+      },
+      at
+    }).ok;
+    if (!marked) {
+      return false;
+    }
+  } catch (err) {
+    ctx.log('merge queue GitHub hold marker failed for %s: %o', bead_id, err);
+    return false;
+  }
+  /** @param {unknown} err */
+  const pushFailed = (err) => {
+    ctx.log('merge queue GitHub hold push failed for %s: %o', bead_id, err);
+  };
+  try {
+    void Promise.resolve(
+      ctx.announce({
+        bead_id,
+        reason: hold.reason,
+        since: hold.since,
+        head_sha: hold.head_sha,
+        failure_class,
+        wait_point
+      })
+    ).catch(pushFailed);
+  } catch (err) {
+    pushFailed(err);
+  }
+  return true;
 }
 
 /**
@@ -433,7 +537,9 @@ export function endGithubHold(ctx, bead_id, started) {
  *   rebase_round_cap?: number,
  *   resolution_wait_ms?: number,
  *   unconfirmed_poll_ms?: number,
- *   unconfirmed_wait_ms?: number
+ *   unconfirmed_wait_ms?: number,
+ *   announceGithubHold?: (notice: GithubHoldNotice) => unknown,
+ *   github_wait_notify_ms?: number
  * }} deps
  */
 export function createMergeQueue(deps) {
@@ -527,7 +633,10 @@ export function createMergeQueue(deps) {
     store: deps.store,
     timeline: deps.timeline ?? null,
     now,
-    log
+    log,
+    announce: deps.announceGithubHold ?? null,
+    notifyAfterMs: () =>
+      deps.github_wait_notify_ms ?? githubWaitNotifySettingMs()
   };
   /** @type {(() => void)|null} */
   let unsubscribe = null;

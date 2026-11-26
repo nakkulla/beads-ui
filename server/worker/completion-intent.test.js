@@ -8012,4 +8012,57 @@ describe('worker/completion-intent — GitHub connection wait (UI-aui8 §3.7)', 
       completion_intents: { 'UI-root': { phase: 'completed' } }
     });
   });
+
+  test('notifies the observed connection wait once it has stood the notify setting (§3.8)', async () => {
+    const store = seededCompletionStore();
+    const announce = vi.fn();
+    let clock = 100;
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => unreachableGate()) },
+      announceGithubHold: announce,
+      now: () => clock
+    });
+    await driveOnce(store, driver);
+    clock = 100 + 30 * 60 * 1000;
+
+    await driveOnce(store, driver);
+
+    expect(announce.mock.calls).toEqual([
+      [
+        {
+          bead_id: 'UI-root',
+          reason: 'github_unreachable',
+          since: 100,
+          head_sha: 'a'.repeat(40),
+          failure_class: 'network',
+          wait_point: 'gate_read'
+        }
+      ]
+    ]);
+  });
+
+  test('sends nothing for a root whose wait the merge queue already notified (§3.8)', async () => {
+    const store = seededCompletionStore();
+    store.setMergeHold(DRIVER_WS, {
+      bead_id: 'UI-root',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: 'a'.repeat(40),
+        failure_class: 'network',
+        wait_point: 'merge_command',
+        notified_at: 50
+      },
+      at: 10
+    });
+    const announce = vi.fn();
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => unreachableGate()) },
+      announceGithubHold: announce,
+      now: () => 10 + 30 * 60 * 1000
+    });
+
+    await driveOnce(store, driver);
+
+    expect(announce).not.toHaveBeenCalled();
+  });
 });

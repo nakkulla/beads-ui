@@ -31,6 +31,12 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { externalJobIdentity } from '../../app/protocol.js';
+import {
+  GITHUB_FAILURE_CLASS_LABELS,
+  GITHUB_FAILURE_PHRASES,
+  GITHUB_UNREACHABLE,
+  GITHUB_WAIT_POINT_LABELS
+} from '../../app/utils/github-wait.js';
 import { debug } from '../logging.js';
 import { parseSessionRef, sessionResumeCommand } from './session-ref.js';
 
@@ -62,7 +68,9 @@ const TITLE = {
   startup_wait: `${SENDER} ⏳ 시작 화면 대기`,
   startup_advance: `${SENDER} ⏩ 시작 화면 자동 진행`,
   provider_disarmed: `${SENDER} 🚨 자동 재개 중단`,
-  hold: `${SENDER} ⏸️ 머지 보류`
+  hold: `${SENDER} ⏸️ 머지 보류`,
+  github_wait: `${SENDER} ⏳ GitHub 연결 대기`,
+  github_head_unreadable: `${SENDER} ⏸️ GitHub 확인 실패 보류`
 };
 
 /**
@@ -505,6 +513,7 @@ function failureConversationLine(conversation) {
  *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, branch?: string|null, session?: string|null, reason?: string|null, mode?: string|null, fallback_reason?: string|null, session_id?: string|null, tmux_session?: string|null, tmux_window?: string|null, redispatch_refusal?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
  *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'unconfigured'|'disabled'|null, cross_runner?: boolean, repo?: string|null }) => Promise<void>,
  *   conditionWaitEntered: (input: { bead_id: string, summary?: string|null, release: string, repo?: string|null }) => Promise<void>,
+ *   githubHold: (input: { bead_id: string, reason: string, since: number, wait_point?: string|null, failure_class?: string|null, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   providerLivePreempt: (input: { bead_id: string, runner: string, from: string, to: string, window: string, pct: number, repo?: string|null }) => Promise<void>,
@@ -1139,6 +1148,61 @@ export function createNotifier(deps) {
         send(cmd, lines.join('\n'));
       } catch (err) {
         log('conditionWaitEntered failed: %o', err);
+      }
+    },
+
+    // A merge-queue GitHub hold (UI-aui8 §3.6, §3.8): the connection wait once
+    // it outlasts its notify setting, or a hold whose PR head was never read.
+    // A system wait like the provider hold, so it rides the plain channel; the
+    // caller marks the hold before it calls, once per hold.
+    async githubHold(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const waiting = input.reason === GITHUB_UNREACHABLE;
+        const bead_title = await lookupTitle(input.bead_id);
+        const lines = [
+          headline(
+            waiting ? TITLE.github_wait : TITLE.github_head_unreadable,
+            input.bead_id,
+            bead_title
+          )
+        ];
+        const failure_class = text(input.failure_class);
+        if (!waiting) {
+          lines.push(
+            `사유: ${GITHUB_FAILURE_PHRASES[String(failure_class)] ?? GITHUB_FAILURE_PHRASES.unknown}`
+          );
+        }
+        const pr_url = text(input.pr_url);
+        if (pr_url) {
+          lines.push(pr_url);
+        }
+        if (typeof input.since === 'number' && Number.isFinite(input.since)) {
+          lines.push(
+            `${waiting ? '대기' : '보류'} 시작: ${new Date(input.since).toISOString()}`
+          );
+        }
+        const wait_point = text(input.wait_point);
+        if (wait_point) {
+          lines.push(
+            `마지막 실패 지점: ${GITHUB_WAIT_POINT_LABELS[wait_point] ?? wait_point}`
+          );
+        }
+        if (failure_class) {
+          lines.push(
+            `분류: ${GITHUB_FAILURE_CLASS_LABELS[failure_class] ?? failure_class} (${failure_class})`
+          );
+        }
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('githubHold failed: %o', err);
       }
     },
 

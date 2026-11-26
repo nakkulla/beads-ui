@@ -93,7 +93,7 @@ export const TIMING_GROUPS = [
   {
     id: 'merge-queue',
     title: '머지 큐',
-    note: '머지 큐가 해소 세션과 미확정 머지를 기다리는 시간입니다.',
+    note: '머지 큐가 해소 세션과 미확정 머지를 기다리는 시간, GitHub 연결 대기를 알리기까지의 시간입니다.',
     rows: [
       {
         key: 'merge_resolution_wait_seconds',
@@ -106,6 +106,10 @@ export const TIMING_GROUPS = [
       {
         key: 'merge_unconfirmed_wait_seconds',
         label: '머지 미확정 대기 상한'
+      },
+      {
+        key: 'merge_github_wait_notify_seconds',
+        label: 'GitHub 연결 대기 알림'
       }
     ]
   }

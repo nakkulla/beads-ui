@@ -1624,6 +1624,7 @@ function operationIdentity(root_bead_id, kind, failure_key) {
  *   notify?: { needsHuman: (input: any) => Promise<void>, hold?: (input: any) => Promise<void> }|null,
  *   failureConversation?: { launchForBead: (input: { workspace: string, repo: string|null, bead_id: string }) => Promise<any> }|null,
  *   conditionWaitPolicy?: () => import('./resolution-ladder.js').ConditionWaitPolicy|null,
+ *   announceGithubHold?: (notice: import('./merge-queue.js').GithubHoldNotice) => unknown,
  *   now?: () => number,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -1757,7 +1758,8 @@ export function createCompletionActionDriver(deps) {
   /**
    * The root's connection wait (UI-aui8 §3.7) lives on its merge-queue entry,
    * in the one record the merge queue writes too: one identity, one `since`
-   * and one notification marker whichever side observed the failure.
+   * and one notification marker whichever side observed the failure. The
+   * push and its notify setting are the merge queue's too (§3.8).
    *
    * @type {import('./merge-queue.js').GithubHoldContext}
    */
@@ -1766,7 +1768,8 @@ export function createCompletionActionDriver(deps) {
     store: deps.store,
     timeline: deps.timeline ?? null,
     now,
-    log
+    log,
+    announce: deps.announceGithubHold ?? null
   };
   /**
    * Consecutive moved-candidate merge results per root (UI-aui8 §3.7); any

@@ -2216,6 +2216,20 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         prActions.resumeMigratedClosure(bead_id)
     });
 
+  // The one push of a merge-queue GitHub hold (UI-aui8 §3.6, §3.8). The merge
+  // queue and the completion driver write the same hold record and its
+  // marker, so both send through this one sender.
+  const announceGithubHold = (
+    /** @type {import('./merge-queue.js').GithubHoldNotice} */ notice
+  ) =>
+    notify.githubHold({
+      ...notice,
+      pr_url:
+        runtime.prObservations.get(keyFor(workspace_root), notice.bead_id)?.pr
+          ?.url ?? null,
+      repo
+    });
+
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions
   // instance every click routes into — a click queues, this merges. Started by
@@ -2351,6 +2365,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       prepare: refreshExternalPrs,
       subscribeQueueChanged: onQueueChanged,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
+      announceGithubHold,
       log
     });
 
@@ -2397,6 +2412,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       notify,
       // The automatic failure conversation (UI-jbl1 §3.1).
       failureConversation: runtime.failureConversation,
+      announceGithubHold,
       log
     });
   completionActionDriver = resolvedCompletionActionDriver;

@@ -2012,6 +2012,69 @@ describe('worker/notify deploy condition wait (dotfiles-rnyd9)', () => {
   });
 });
 
+describe('worker/notify GitHub hold (UI-aui8 §3.6, §3.8)', () => {
+  test('sends the connection wait with its PR, start, last point and class', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.githubHold({
+      bead_id: 'UI-1',
+      reason: 'github_unreachable',
+      since: Date.parse('2026-11-25T09:00:00Z'),
+      wait_point: 'verify_recheck',
+      failure_class: 'rate_limit',
+      pr_url: 'https://github.com/o/r/pull/7',
+      repo: '/r/proj'
+    });
+
+    expect(messageOf(spawn.last()).split('\n')).toEqual([
+      '🤖 ⏳ GitHub 연결 대기 — UI-1',
+      'https://github.com/o/r/pull/7',
+      '대기 시작: 2026-11-25T09:00:00.000Z',
+      '마지막 실패 지점: 머지 직전 재확인',
+      '분류: 호출 한도 (rate_limit)',
+      '리포: proj'
+    ]);
+  });
+
+  test('sends a hold whose head was never read with its class phrase', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.githubHold({
+      bead_id: 'UI-1',
+      reason: 'github_head_unreadable',
+      since: Date.parse('2026-11-25T09:00:00Z'),
+      wait_point: 'gate_read',
+      failure_class: 'auth'
+    });
+
+    expect(messageOf(spawn.last()).split('\n')).toEqual([
+      '🤖 ⏸️ GitHub 확인 실패 보류 — UI-1',
+      '사유: GitHub 인증 실패',
+      '보류 시작: 2026-11-25T09:00:00.000Z',
+      '마지막 실패 지점: 게이트 읽기',
+      '분류: 인증 (auth)'
+    ]);
+  });
+
+  test('sends no GitHub hold while notifications are off', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(
+      { enabled: false },
+      { spawnImpl: spawn.spawnImpl }
+    );
+
+    await notifier.githubHold({
+      bead_id: 'UI-1',
+      reason: 'github_unreachable',
+      since: 1
+    });
+
+    expect(spawn.calls).toHaveLength(0);
+  });
+});
+
 describe('worker/notify follow-up beads (UI-kd1x)', () => {
   const FOLLOWUPS = [
     {
