@@ -18098,13 +18098,14 @@ describe('views/worker 숨김과 lifecycle (UI-hhn9 §6)', () => {
     view.pause();
     expect(activeTimers()).toBe(0);
 
+    // `load` runs the grace timer and the 1s time-text ticker (UI-k57cf §5.2).
     view.load();
-    expect(activeTimers()).toBe(1);
+    expect(activeTimers()).toBe(2);
 
     view.pause();
     view.load();
 
-    expect(activeTimers()).toBe(1);
+    expect(activeTimers()).toBe(2);
     view.destroy();
     set_interval.mockRestore();
     clear_interval.mockRestore();
