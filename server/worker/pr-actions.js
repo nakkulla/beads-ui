@@ -190,6 +190,9 @@ const CLOSURE_STEPS = CLEANUP_STEPS.slice(
  * refusal failed (UI-aui8 §3.2) — additional information, never the reason.
  * @property {boolean} [head_unread] - The gate's first PR read failed, so no
  * head could be pinned (UI-aui8 §3.6).
+ * @property {boolean} [prior_cleanup_failure] - The `already_merged` failure
+ * is the poller's earlier cleanup failure, reported without a rerun
+ * (UI-aui8 §3.3).
  */
 
 /**
@@ -3922,7 +3925,8 @@ export function createPrActions(deps) {
             action: 'already_merged',
             reason: prior_failure.reason || 'merged_cleanup_failed',
             cleanup_step: prior_failure.step || null,
-            head_sha: first.pr.head_sha
+            head_sha: first.pr.head_sha,
+            prior_cleanup_failure: true
           };
         }
         const c = prior_failure

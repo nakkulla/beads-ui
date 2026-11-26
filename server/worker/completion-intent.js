@@ -4530,6 +4530,20 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (merged && subject_bead_id === root_bead_id) {
+      // A connection-wait rejudge reports the poller's earlier cleanup
+      // failure without rerunning it (UI-aui8 §3.3): that record belongs to
+      // its banner and a person, so the intent does not enter a cleanup that
+      // would retry it.
+      if (result.prior_cleanup_failure === true) {
+        terminalize(
+          root_bead_id,
+          `cleanup_failed:${result.reason || 'unrecorded'}`,
+          'post_merge_cleanup',
+          null,
+          result
+        );
+        return;
+      }
       let root_gate;
       try {
         root_gate = await deps.prActions.completionGate(root_bead_id, 'root');

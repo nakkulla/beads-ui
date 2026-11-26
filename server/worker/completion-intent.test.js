@@ -7842,6 +7842,28 @@ describe('worker/completion-intent — GitHub connection wait (UI-aui8 §3.7)', 
     });
   });
 
+  test('hands the earlier failed cleanup to a person instead of entering the cleanup again', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    const driver = actionDriver(store, { now: () => 100 });
+
+    await driver.onMergeResult('UI-root', 'UI-root', {
+      ok: false,
+      action: 'already_merged',
+      reason: 'remote_branch_delete_failed',
+      cleanup_step: 'branch_cleanup',
+      head_sha: 'a'.repeat(40),
+      prior_cleanup_failure: true
+    });
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'cleanup_failed:remote_branch_delete_failed' }
+    });
+  });
+
   // With no queue row there is nowhere to keep the wait and no observation
   // that would reach the root again, so it stops for a person instead.
   test('stops for a person instead of stranding a waiting root that has no queue row', async () => {

@@ -9144,6 +9144,20 @@ describe('worker/pr-actions — GitHub failures at merge time (UI-aui8 §3.2, §
     ).toEqual([]);
   });
 
+  test('marks the reported cleanup failure as the earlier one when the rejudge does not rerun it', async () => {
+    const store = seedStore({
+      cleanup_failed: { [BEAD]: { step: 'branch_cleanup', reason: 'boom' } }
+    });
+    const h = makeActions({
+      store,
+      details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })]
+    });
+
+    const r = await h.actions.merge(BEAD, { retry_failed_cleanup: false });
+
+    expect(r.prior_cleanup_failure).toBe(true);
+  });
+
   test('answers unreachable when the containment fetch cannot reach GitHub', async () => {
     const h = makeActions();
     h.gitRun.mockImplementationOnce(async () => ({

@@ -2467,13 +2467,33 @@ export function createMergeQueue(deps) {
     }
     if (queuedEntry(root_bead_id)) {
       const intent = completionIntent(root_bead_id);
-      halted = true;
-      halted_on_completion = {
-        bead_id: root_bead_id,
-        phase: typeof intent?.phase === 'string' ? intent.phase : 'unknown'
-      };
+      // A root the intent kept on its connection wait yields this pass, as a
+      // gating root on a GitHub hold does (UI-aui8 §3.3, §3.7).
+      if (keptGithubWait(root_bead_id)) {
+        held_this_pass.add(root_bead_id);
+      } else {
+        halted = true;
+        halted_on_completion = {
+          bead_id: root_bead_id,
+          phase: typeof intent?.phase === 'string' ? intent.phase : 'unknown'
+        };
+      }
     }
     notify();
+  }
+
+  /**
+   * Whether the completion intent left this root `gating` on a GitHub hold
+   * (UI-aui8 §3.7), the wait it keeps until its next observation.
+   *
+   * @param {string} root_bead_id
+   * @returns {boolean}
+   */
+  function keptGithubWait(root_bead_id) {
+    return (
+      completionIntent(root_bead_id)?.phase === 'gating' &&
+      githubHoldOf(root_bead_id) !== null
+    );
   }
 
   /**
@@ -2609,10 +2629,17 @@ export function createMergeQueue(deps) {
         action === 'updated_and_merged' ||
         action === 'already_merged'
       ) {
-        if (!settleGithub()) {
+        // The root's own merge hands its wait to the intent, which ends it at
+        // the cleanup handoff or keeps it — `since` and notification mark
+        // included — when the read that pins the cleanup fails again
+        // (UI-aui8 §3.3, §3.7). A child subject's merge ends it here.
+        if (subject_bead_id !== root_bead_id && !settleGithub()) {
           return;
         }
         await handoffCompletion(root_bead_id, subject_bead_id, result);
+        if (!keptGithubWait(root_bead_id)) {
+          settleGithub();
+        }
         return;
       }
       if (action === 'conflict_resolution') {

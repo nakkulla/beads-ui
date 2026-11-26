@@ -5148,6 +5148,89 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
     expect(merge.mock.calls.map((call) => call[0])).toEqual(['UI-2']);
   });
 
+  /**
+   * Put the merging completion root on a standing connection wait.
+   *
+   * @param {any} store
+   */
+  function holdRootOnGithub(store) {
+    store.setMergeHold(WS, {
+      bead_id: 'UI-root',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: HEAD,
+        failure_class: 'network',
+        wait_point: 'merge_command',
+        notified_at: 7
+      },
+      at: 5
+    });
+  }
+
+  /**
+   * A `merge` that reports the completion root merged and lands every other
+   * bead.
+   *
+   * @param {any} queue_store
+   */
+  function rootMergedMerge(queue_store) {
+    return vi.fn(async (/** @type {string} */ bead_id) => {
+      if (bead_id !== 'UI-root') {
+        landMerge(queue_store, bead_id);
+      }
+      return { ok: true, action: 'merged', reason: null };
+    });
+  }
+
+  test('hands a merged completion root over with its connection wait standing', async () => {
+    const store = seedCompletionRoot([]);
+    holdRootOnGithub(store);
+    /** @type {any[]} */
+    const holds_at_handoff = [];
+    const mq = driver(store, {
+      merge: rootMergedMerge(store),
+      onCompletionResult: () => {
+        holds_at_handoff.push(
+          store
+            .snapshot(WS)
+            .merge_queue.find((/** @type {any} */ e) => e.bead_id === 'UI-root')
+            ?.hold
+        );
+      }
+    });
+
+    await mq.kick();
+
+    expect(holds_at_handoff).toMatchObject([
+      { reason: 'github_unreachable', since: 5, notified_at: 7 }
+    ]);
+  });
+
+  test('merges the item behind a merged completion root that still waits for GitHub', async () => {
+    const store = seedCompletionRoot(['UI-2']);
+    holdRootOnGithub(store);
+    const merge = rootMergedMerge(store);
+    const mq = driver(store, {
+      merge,
+      // The cleanup pin read failed again: the intent re-gates the root and
+      // keeps its connection wait.
+      onCompletionResult: () => {
+        store.setCompletionSubject(WS, {
+          root_bead_id: 'UI-root',
+          phase: 'gating',
+          subject: store.snapshot(WS).completion_intents['UI-root'].subject
+        });
+      }
+    });
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual([
+      'UI-root',
+      'UI-2'
+    ]);
+  });
+
   test('does not wait on a gating completion root on the connection wait', async () => {
     const store = seedCompletionRoot([]);
     waitRootGatingOnGithub(store);
