@@ -254,6 +254,31 @@ describe('worker/attach — enqueueWorkerManualMerge GitHub refusal (UI-aui8 §3
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
+  test('refuses a permanent GitHub failure on a read identity with its class', async () => {
+    const store = seedLane();
+    registerAttachment({
+      ok: false,
+      kind: 'blocked',
+      reason: 'gh_failed:auth',
+      failure_class: 'auth',
+      head_sha: HEAD,
+      base_ref: 'main',
+      external: false
+    });
+
+    const result = await enqueueWorkerManualMerge(WS, {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth'
+    });
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
   test('keeps the identity refusal for a probe GitHub did not decide', async () => {
     const store = seedLane();
     registerAttachment({

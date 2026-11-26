@@ -83,6 +83,7 @@ import {
   queryDiscoveredFromDependents
 } from './foreign-blocker-status.js';
 import { createForeignHandoffAnnouncer } from './foreign-handoff.js';
+import { isTransientGithubFailure } from './gh.js';
 import { readPushLog } from './guard-hook.js';
 import {
   observationVerifyPolicy,
@@ -4187,10 +4188,27 @@ export function workerMergeEffectInFlight(workspace_root, bead_id) {
 }
 
 /**
- * The refusal of a `[머지]` click whose probe pinned no PR identity. A probe
- * a GitHub failure decided carries that failure's reason, class and wait
- * point (UI-aui8 §3.10); any other unreadable identity is the plain
- * `pr_identity_unreadable`.
+ * Whether a click-time probe was decided by a permanent GitHub failure
+ * (UI-aui8 §3.10): such a click is refused with its class even when the
+ * first read pinned the PR identity.
+ *
+ * @param {any} probe - The click-time mergeability probe, or null.
+ * @returns {boolean}
+ */
+function permanentGithubProbe(probe) {
+  return (
+    !!probe &&
+    typeof probe.reason === 'string' &&
+    typeof probe.failure_class === 'string' &&
+    !isTransientGithubFailure(probe.failure_class)
+  );
+}
+
+/**
+ * The refusal of a `[머지]` click whose probe pinned no PR identity, or that
+ * a permanent GitHub failure decided. A probe a GitHub failure decided
+ * carries that failure's reason, class and wait point (UI-aui8 §3.10); any
+ * other unreadable identity is the plain `pr_identity_unreadable`.
  *
  * @param {any} probe - The click-time mergeability probe, or null.
  * @returns {{ reason: string, failure_class?: string, wait_point?: string }}
@@ -4222,8 +4240,9 @@ function unreadableIdentityRefusal(probe) {
  * through, which is the same unreadable-identity refusal.
  *
  * A probe GitHub could not answer keeps its own reason and class (UI-aui8
- * §3.10): the connection wait when the failure was transient, the class-named
- * reason otherwise.
+ * §3.10): the connection wait when the failure was transient and no identity
+ * was read, the class-named reason for a permanent failure. A transient
+ * failure after the identity was read queues like any blocked probe.
  *
  * @param {string} workspace_root
  * @param {{ bead_id: string, expected_revision: number }} input
@@ -4267,7 +4286,11 @@ export async function enqueueWorkerManualMerge(workspace_root, input) {
     probe && typeof probe.base_ref === 'string' && probe.base_ref.length > 0
       ? probe.base_ref
       : null;
-  if (head_sha === null || target_base === null) {
+  if (
+    head_sha === null ||
+    target_base === null ||
+    permanentGithubProbe(probe)
+  ) {
     return {
       ok: false,
       conflict: false,

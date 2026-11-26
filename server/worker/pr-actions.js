@@ -1076,6 +1076,24 @@ export function createPrActions(deps) {
   }
 
   /**
+   * The error and GitHub class of a failed `prDetail` read (UI-aui8 §3.1): a
+   * failure that names no class is `unknown`, never transient.
+   *
+   * @param {any} detail - A non-`ok` `prDetail` result.
+   * @returns {{ error: string, failure_class: GithubFailureClass }}
+   */
+  function readFailure(detail) {
+    const error = detail.state === 'error' ? detail.reason : 'gh_empty';
+    return {
+      error,
+      failure_class:
+        detail.state === 'error' && detail.failure_class
+          ? detail.failure_class
+          : 'unknown'
+    };
+  }
+
+  /**
    * ONE authoritative observation at click time: read the PR, resolve a lazy
    * `UNKNOWN` mergeability, and write the result into the observation cache so
    * the badge the user sees next matches the decision that
@@ -1085,9 +1103,12 @@ export function createPrActions(deps) {
    * @param {number} number
    * @param {import('./foreign-target.js').ForeignPrTarget|null} [target] - A
    * pinned foreign PR is read through its slug (UI-k467 §3.1).
-   * @returns {Promise<{ pr: PrDetail }|{ error: string, failure_class?: GithubFailureClass, head_unread: true }>}
-   * A failed read carries its GitHub class (UI-aui8 §3.1) and says the head
-   * was never read.
+   * @returns {Promise<{ pr: PrDetail }|{ error: string, failure_class: GithubFailureClass, head_unread: true }|{ error: string, failure_class: GithubFailureClass, pr: PrDetail }>}
+   * A failed read carries its GitHub class (UI-aui8 §3.1) — `unknown` when
+   * the failure named none (a missing `gh`, an unparseable answer), since
+   * neither is transient. A failed first read says the head was never read;
+   * a failed `UNKNOWN` re-query keeps the PR the first read observed, so its
+   * head and base still bind the refusal.
    */
   async function observeNow(bead_id, number, target = null) {
     const gh = ghFor(target);
@@ -1105,31 +1126,35 @@ export function createPrActions(deps) {
       detail.data.mergeable === 'UNKNOWN'
     ) {
       await sleep(requery_delay_ms);
+      /** @type {any} */
+      let again;
       try {
-        const again = await gh.prDetail(repo, number);
-        if (
-          again.state === 'ok' ||
-          (again.state === 'error' &&
-            isTransientGithubFailure(again.failure_class))
-        ) {
-          // A re-observation GitHub could not answer is the connection wait
-          // (UI-aui8 §3.2), not a reason to judge the first reading.
-          detail = again;
-        }
+        again = await gh.prDetail(repo, number);
       } catch {
-        // Keep the first reading; the gate below fails closed on UNKNOWN.
+        again = { state: 'error', reason: 'gh_spawn_failed' };
       }
+      if (again.state !== 'ok') {
+        // A re-observation that failed is judged by its own class (UI-aui8
+        // §3.2): the connection wait or a permanent failure, never the
+        // first reading's UNKNOWN.
+        const first = /** @type {PrDetail} */ (detail.data);
+        const failed = readFailure(again);
+        deps.observations.record(workspace, bead_id, {
+          error: failed.error,
+          pr: first,
+          ...foreign
+        });
+        return { ...failed, pr: first };
+      }
+      detail = again;
     }
     if (detail.state !== 'ok') {
-      const error = detail.state === 'error' ? detail.reason : 'gh_empty';
-      deps.observations.record(workspace, bead_id, { error, ...foreign });
-      return {
-        error,
-        ...(detail.state === 'error' && detail.failure_class
-          ? { failure_class: detail.failure_class }
-          : {}),
-        head_unread: true
-      };
+      const failed = readFailure(detail);
+      deps.observations.record(workspace, bead_id, {
+        error: failed.error,
+        ...foreign
+      });
+      return { ...failed, head_unread: true };
     }
     const pr = /** @type {PrDetail} */ (detail.data);
     // A terminal PR is classified by its state alone.

@@ -8748,6 +8748,49 @@ describe('worker/pr-actions — GitHub failures at merge time (UI-aui8 §3.2, §
     });
   });
 
+  test('keeps the first-read head and base when the UNKNOWN re-query fails with network', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'UNKNOWN' }), ghDown('network')]
+    });
+
+    const probe = await h.actions.probeMergeability(BEAD);
+
+    expect(probe).toMatchObject({
+      reason: 'github_unreachable',
+      head_sha: 'sha-aaa',
+      base_ref: 'main'
+    });
+    expect(probe.head_unread).toBeUndefined();
+  });
+
+  test('names the class of an UNKNOWN re-query that fails with auth', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'UNKNOWN' }), ghDown('auth')]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth',
+      head_sha: 'sha-aaa'
+    });
+    expect(r.head_unread).toBeUndefined();
+  });
+
+  test('classifies a missing gh binary on the gate read as unknown', async () => {
+    const h = makeActions({ details: [{ state: 'error', reason: 'gh_missing' }] });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'gh_missing',
+      failure_class: 'unknown',
+      head_unread: true
+    });
+  });
+
   test('refuses with the connection wait when the gate base fetch fails with network', async () => {
     const h = makeActions({ resolveBase: baseReads(baseDown('network')) });
 
