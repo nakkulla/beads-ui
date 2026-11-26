@@ -110,6 +110,19 @@ const log = debug('worker:pr-actions');
  */
 export const DEFAULT_CLICK_REQUERY_DELAY_MS = 2000;
 
+/**
+ * Gate errors whose permanent GitHub failure names its class as the reason's
+ * tail (UI-aui8 §3.6, §3.9): the PR read, the workspace base fetch, and the
+ * foreign base fetch. `app/utils/github-wait.js` reads the same prefixes.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const CLASS_TAILED_GATE_ERRORS = new Set([
+  'gh_failed',
+  'base_unresolved:fetch',
+  'base_fetch_failed'
+]);
+
 /** @type {Set<string>} */
 const RESUMABLE_TERMINAL_STATUSES = new Set([
   'done',
@@ -596,9 +609,10 @@ export function createPrActions(deps) {
   /**
    * The refusal of a gate that could not be read (UI-aui8 §3.2, §3.6). A
    * transient GitHub failure is the connection wait wherever the gate failed;
-   * a permanent `gh` failure names its class in the reason, and a failed first
-   * PR read says no head could be pinned. Every other gate error keeps its
-   * reason unchanged.
+   * a permanent `gh` or base-fetch failure names its class in the reason (the
+   * exclusion badge reads the class from it, §3.9), and a failed first PR read
+   * says no head could be pinned. Every other gate error keeps its reason
+   * unchanged.
    *
    * @param {{ error: string, failure_class?: GithubFailureClass, head_unread?: boolean, pr?: { head_sha?: string } }} failed
    * @returns {{ reason: string, failure_class?: GithubFailureClass, wait_point?: GithubWaitPoint, head_unread?: boolean }}
@@ -613,8 +627,8 @@ export function createPrActions(deps) {
       };
     }
     const reason =
-      failed.error === 'gh_failed' && failure_class
-        ? `gh_failed:${failure_class}`
+      CLASS_TAILED_GATE_ERRORS.has(failed.error) && failure_class
+        ? `${failed.error}:${failure_class}`
         : failed.error;
     return {
       reason,
@@ -5248,12 +5262,16 @@ export function createPrActions(deps) {
       typeof updated.data !== 'string' ||
       !/^[0-9a-f]{40}$/i.test(updated.data)
     ) {
+      // A GitHub failure names its class in the reason, so the exclusion badge
+      // can say what failed and where (UI-aui8 §3.6, §3.9).
       return {
         ok: false,
         reason:
-          updated && typeof updated.reason === 'string'
-            ? updated.reason
-            : 'update_branch_failed',
+          updated && updated.failure_class
+            ? `update_branch_failed:${updated.failure_class}`
+            : updated && typeof updated.reason === 'string'
+              ? updated.reason
+              : 'update_branch_failed',
         result_head_sha: null,
         ...(updated && updated.failure_class
           ? { failure_class: updated.failure_class }

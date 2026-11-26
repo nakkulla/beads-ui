@@ -1814,8 +1814,23 @@ describe('worker/attach construction + live loop (F1)', () => {
       verify: okVerify,
       resolveBase: okBase('main', 'b'.repeat(40)),
       completionActionDriver,
+      // A closed PR is a refusal the root hands back; a failed first read
+      // would hold the root on its unread head instead (UI-aui8 §3.6).
       gh: /** @type {any} */ ({
-        prDetail: vi.fn(async () => ({ state: 'error', reason: 'unreadable' }))
+        prDetail: vi.fn(async () => ({
+          state: 'ok',
+          data: {
+            number: 1,
+            url: 'https://github.com/o/r/pull/1',
+            state: 'CLOSED',
+            mergeable: 'MERGEABLE',
+            merge_state_status: 'CLEAN',
+            head_ref: 'UI-root',
+            head_sha: 'a'.repeat(40),
+            base_ref: 'main',
+            merged_sha: null
+          }
+        }))
       }),
       spawn_impl: makeFixtureSpawn({ lines: [] })
     });

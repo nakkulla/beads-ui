@@ -2541,6 +2541,17 @@ export function createMergeQueue(deps) {
         });
         return;
       }
+      // A permanent failure that never read the head holds the root alone,
+      // as `processItem` holds a plain item (UI-aui8 §3.6): no handoff, so
+      // the drain goes on past it.
+      if (result.head_unread === true) {
+        holdOnGithub(root_bead_id, {
+          reason: GITHUB_HEAD_UNREADABLE,
+          failure_class: result.failure_class ?? 'unknown',
+          wait_point: result.wait_point ?? 'gate_read'
+        });
+        return;
+      }
       if (
         action === 'refused' &&
         result.reason === 'action_in_flight' &&

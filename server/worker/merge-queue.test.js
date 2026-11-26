@@ -5026,6 +5026,93 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
     expect(store.snapshot(WS).auto_merge_skips?.['UI-1']).toBeUndefined();
   });
 
+  /**
+   * Queue a completion root `UI-root` in its merge turn ahead of `others`.
+   *
+   * @param {string[]} others
+   */
+  function seedCompletionRoot(others) {
+    const store = seed(['UI-root', ...others]);
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: HEAD,
+        base_sha: MOVED_HEAD,
+        merged_sha: null
+      }
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: store.snapshot(WS).completion_intents['UI-root'].subject
+    });
+    return store;
+  }
+
+  /**
+   * A `merge` whose completion root never reads its head with an auth
+   * failure, and that lands every other bead.
+   *
+   * @param {any} queue_store
+   */
+  function rootHeadUnreadMerge(queue_store) {
+    return vi.fn(async (/** @type {string} */ bead_id) => {
+      if (bead_id === 'UI-root') {
+        return {
+          ok: false,
+          action: 'refused',
+          reason: 'gh_failed:auth',
+          failure_class: 'auth',
+          wait_point: 'gate_read',
+          head_unread: true
+        };
+      }
+      landMerge(queue_store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+  }
+
+  test('puts a completion root on the head-unreadable hold when its merge turn never read the head', async () => {
+    const store = seedCompletionRoot([]);
+    const onCompletionResult = vi.fn();
+    const mq = driver(store, {
+      merge: rootHeadUnreadMerge(store),
+      onCompletionResult
+    });
+
+    await mq.kick();
+
+    expect(
+      store
+        .snapshot(WS)
+        .merge_queue.find((/** @type {any} */ e) => e.bead_id === 'UI-root')
+        ?.hold
+    ).toMatchObject({
+      reason: 'github_head_unreadable',
+      failure_class: 'auth',
+      wait_point: 'gate_read'
+    });
+    expect(onCompletionResult).not.toHaveBeenCalled();
+  });
+
+  test('merges the item behind a completion root held on an unread head', async () => {
+    const store = seedCompletionRoot(['UI-2']);
+    const merge = rootHeadUnreadMerge(store);
+    const mq = driver(store, { merge, onCompletionResult: vi.fn() });
+
+    await mq.kick();
+
+    expect(merge.mock.calls.map((call) => call[0])).toEqual([
+      'UI-root',
+      'UI-2'
+    ]);
+  });
+
   test('names the permanent hold by its class phrase on the history', async () => {
     const store = seed(['UI-1']);
     const timeline = recorder();

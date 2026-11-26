@@ -78,12 +78,16 @@ export const GITHUB_WAIT_LABEL = 'GitHub 연결 대기';
 /**
  * Reason prefixes whose tail is the GitHub failure class of a permanent
  * failure (UI-aui8 §3.2, §3.6), each with the wait point it failed at: the
- * gate read, the merge command, and the pre-merge recheck.
+ * gate read (PR read, workspace and foreign base fetch), the base update, the
+ * merge command, and the pre-merge recheck.
  *
  * @type {Readonly<Record<string, GithubWaitPoint>>}
  */
 const CLASS_TAIL_POINTS = Object.freeze({
   'gh_failed:': 'gate_read',
+  'base_unresolved:fetch:': 'gate_read',
+  'base_fetch_failed:': 'gate_read',
+  'update_branch_failed:': 'resolution',
   'merge_failed:': 'merge_command',
   'verify_candidate_unreadable:': 'verify_recheck'
 });

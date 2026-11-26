@@ -13088,6 +13088,28 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       expect(result?.title).toContain('마지막 실패 지점: 머지 명령');
     });
 
+    test('puts the gate read point of a permanent base fetch exclusion in its tooltip', () => {
+      const result = prStatusBadge({
+        queue_failure: 'base_unresolved:fetch:auth'
+      });
+
+      expect(result?.title).toContain('마지막 실패 지점: 게이트 읽기');
+    });
+
+    test('puts the resolution point of a permanent base update exclusion in its tooltip', () => {
+      const result = prStatusBadge({
+        queue_failure: 'update_branch_failed:auth'
+      });
+
+      expect(result?.title).toContain('마지막 실패 지점: 충돌 해소·base 갱신');
+    });
+
+    test('names a permanent foreign base fetch exclusion by its class phrase', () => {
+      const result = prStatusBadge({ queue_failure: 'base_fetch_failed:auth' });
+
+      expect(result?.label).toBe('머지 실패 — GitHub 인증 실패');
+    });
+
     test('names a moved-candidate exclusion by its phrase', () => {
       const result = prStatusBadge({ queue_failure: 'verify_candidate_moved' });
 

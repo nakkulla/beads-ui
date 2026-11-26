@@ -16,6 +16,7 @@ import {
   RECOVERY_WAIT_SENTENCES
 } from '../../app/utils/failure-sentences.js';
 import {
+  GITHUB_HEAD_UNREADABLE,
   GITHUB_UNREACHABLE,
   VERIFY_CANDIDATE_MOVED
 } from '../../app/utils/github-wait.js';
@@ -1781,26 +1782,30 @@ export function createCompletionActionDriver(deps) {
 
   /**
    * Put the root on the connection wait for one transient `false` gate or
-   * merge read. Phase and execution record stay as they are; a hold write
-   * that fails is retried by the next observation.
+   * merge read, or on the permanent-failure hold for a gate that never read
+   * the head (UI-aui8 §3.6). Phase and execution record stay as they are; a
+   * hold write that fails is retried by the next observation.
    *
    * @param {string} root_bead_id
-   * @param {{ failure_class?: string|null, wait_point?: string|null }} failed
+   * @param {{ reason?: string, failure_class?: string|null, wait_point?: string|null }} failed
    * @param {string|null|undefined} head_sha
    * @returns {boolean} false when the root has no queue row to hold, so no
    * observation would ever judge it again.
    */
   function holdRootOnGithub(root_bead_id, failed, head_sha) {
+    const unreadable = failed.reason === GITHUB_HEAD_UNREADABLE;
+    const failure_class =
+      failed.failure_class ?? (unreadable ? 'unknown' : 'network');
     const outcome = writeGithubHold(github_hold_ctx, root_bead_id, {
-      reason: GITHUB_UNREACHABLE,
-      head_sha: head_sha ?? null,
-      failure_class: failed.failure_class ?? 'network',
+      reason: unreadable ? GITHUB_HEAD_UNREADABLE : GITHUB_UNREACHABLE,
+      head_sha: unreadable ? null : (head_sha ?? null),
+      failure_class,
       wait_point: failed.wait_point ?? 'gate_read'
     });
     log(
       'completion intent %s waits for GitHub (%s at %s): %s',
       root_bead_id,
-      failed.failure_class ?? 'network',
+      failure_class,
       failed.wait_point ?? 'gate_read',
       outcome
     );
@@ -2600,6 +2605,16 @@ export function createCompletionActionDriver(deps) {
           state: 'github_wait',
           reason,
           failure_class: gated.failure_class ?? 'network',
+          wait_point: gated.wait_point ?? 'gate_read'
+        };
+      }
+      // A permanent failure of the first PR read pinned no head, so it holds
+      // the root alone instead of ending the intent (UI-aui8 §3.6).
+      if (gated?.head_unread === true) {
+        return {
+          state: 'github_wait',
+          reason: GITHUB_HEAD_UNREADABLE,
+          failure_class: gated.failure_class ?? 'unknown',
           wait_point: gated.wait_point ?? 'gate_read'
         };
       }

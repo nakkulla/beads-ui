@@ -7715,6 +7715,21 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
     expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
   });
 
+  test('names the class when the foreign base fetch fails with auth (UI-aui8 §3.6)', async () => {
+    const h = makeForeign({
+      fetch_stderr:
+        'fatal: Authentication failed for https://github.com/acme/research-repo-template/'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_fetch_failed:auth',
+      failure_class: 'auth'
+    });
+  });
+
   /**
    * Enrol the foreign row the way the auto-merge enroller does with the
    * global switch on: a completion-owned queue entry.
@@ -8780,7 +8795,9 @@ describe('worker/pr-actions — GitHub failures at merge time (UI-aui8 §3.2, §
   });
 
   test('classifies a missing gh binary on the gate read as unknown', async () => {
-    const h = makeActions({ details: [{ state: 'error', reason: 'gh_missing' }] });
+    const h = makeActions({
+      details: [{ state: 'error', reason: 'gh_missing' }]
+    });
 
     const r = await h.actions.merge(BEAD);
 
@@ -8911,6 +8928,47 @@ describe('worker/pr-actions — GitHub failures at merge time (UI-aui8 §3.2, §
       failure_class: 'network',
       head_sha: 'sha-aaa',
       base_ref: 'main'
+    });
+  });
+
+  test('names the class of a permanent gate base fetch failure in the refusal', async () => {
+    const h = makeActions({ resolveBase: baseReads(baseDown('auth')) });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_unresolved:fetch:auth',
+      failure_class: 'auth'
+    });
+  });
+
+  test('names the class of a permanent expected-base fetch failure in the refusal', async () => {
+    const h = makeActions({
+      store: declarationStore(),
+      resolveBase: baseReads(BASE_OK, baseDown('auth'))
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_unresolved:fetch:auth',
+      failure_class: 'auth',
+      head_sha: 'sha-aaa'
+    });
+  });
+
+  test('names the class of a permanent base update failure', async () => {
+    const h = makeActions({ updateBranchResult: ghDown('auth') });
+
+    const result = await h.actions.updateBase(BEAD);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'update_branch_failed:auth',
+      result_head_sha: null,
+      failure_class: 'auth'
     });
   });
 

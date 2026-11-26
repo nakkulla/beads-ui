@@ -7664,6 +7664,54 @@ describe('worker/completion-intent — GitHub connection wait (UI-aui8 §3.7)', 
     ]);
   });
 
+  /**
+   * A completion gate whose first PR read failed permanently before it read
+   * the head (UI-aui8 §3.6).
+   *
+   * @returns {any}
+   */
+  function headUnreadGate() {
+    return {
+      ok: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth',
+      head_unread: true
+    };
+  }
+
+  test('puts the root on the head-unreadable hold when the observed gate never read the head', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => headUnreadGate()) },
+      now: () => 100
+    });
+
+    await driveOnce(store, driver);
+
+    expect(rootRow(store).hold).toMatchObject({
+      reason: 'github_head_unreadable',
+      failure_class: 'auth',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('keeps the intent gating when the observed gate never read the head', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => headUnreadGate()) },
+      now: () => 100
+    });
+
+    await driveOnce(store, driver);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'gating',
+      terminal_reason: null
+    });
+  });
+
   test('keeps the merge operation and phase when the merge turn cannot reach GitHub', async () => {
     const store = seededCompletionStore();
     startMergeTurn(store);
