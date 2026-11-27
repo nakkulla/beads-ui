@@ -2457,7 +2457,9 @@ describe('worker/completion-intent lifecycle', () => {
     const later = intent({
       subject: { ...intent().subject, bead_id: 'UI-later' }
     });
-    const observe = vi.fn(async () => ({ state: 'green' }));
+    const observe = vi.fn(async () => ({
+      state: /** @type {const} */ ('green')
+    }));
     const coordinator = createCompletionIntentCoordinator({
       workspace: '/repo',
       store: {
