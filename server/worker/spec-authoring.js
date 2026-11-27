@@ -402,9 +402,13 @@ export function createSpecAuthoring(deps) {
    * @param {boolean} automatic
    */
   async function launch(root, bead_id, target, automatic) {
-    // No resolvable runner keeps today's claude default; a resolved name the
-    // registry does not know is refused rather than run as claude (UI-6o70).
-    const inherited = deps.currentRunner?.(root, target.issue) ?? 'claude';
+    // Without a wired resolver the conversation keeps its claude default. A
+    // wired resolver that yields no registered runner (`null` is how dispatch
+    // resolution reports `unknown_runner`) is refused rather than run as
+    // claude (UI-6o70).
+    const inherited = deps.currentRunner
+      ? deps.currentRunner(root, target.issue)
+      : 'claude';
     if (inherited !== 'claude' && inherited !== 'codex') {
       return refused(UNKNOWN_RUNNER);
     }

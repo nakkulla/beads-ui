@@ -765,6 +765,18 @@ describe('spec conversation clicks', () => {
     expect(h.launcher.launch).not.toHaveBeenCalled();
   });
 
+  test('refuses unknown_runner when the wired resolver yields no runner', async () => {
+    const h = fixture({ currentRunner: () => null });
+
+    const result = await h.authoring.launchForClick({
+      workspace: ROOT,
+      bead_id: B
+    });
+
+    expect(result).toMatchObject({ launched: false, reason: 'unknown_runner' });
+    expect(h.launcher.launch).not.toHaveBeenCalled();
+  });
+
   test('launches claude for an inherited claude runner', async () => {
     const h = fixture({ currentRunner: () => 'claude' });
 
